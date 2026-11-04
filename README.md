@@ -44,6 +44,7 @@ Requires a Rust toolchain (stable) and `make`.
 ```sh
 make                  # list every target
 make check            # format check, clippy, unit tests (no ROMs needed)
+make m68k-tests       # 68000 core vs the SingleStepTests suite (fetches ~200 MB, 1.1 GB unpacked, into out/)
 
 # With an unpacked dump in ./rom:
 make verify           # check every chip
@@ -75,6 +76,7 @@ crates/
   analyze/   recursive-descent code discovery      (CPU-generic)
   model2/    board model: memory map, IRQs, timers, I/O, copro interface
   mb86235/   MB86235 (TGPx4) decoder, disassembler and interpreter
+  m68k/      68000 interpreter and disassembler (sound CPUs)
   cli/       the `remodel` command
 ```
 

@@ -15,12 +15,17 @@ INPUT ?=
 BENCH_STEPS ?= 600000000
 BENCH_INPUT ?= coin1@1100-1104,start@1250-1254
 
+# Where `make m68k-tests` keeps the SingleStepTests 68000 suite.
+M68K_TESTS     ?= out/m68k-tests
+M68K_TESTS_API := https://api.github.com/repos/SingleStepTests/680x0/contents/68000/v1
+M68K_TESTS_RAW := https://raw.githubusercontent.com/SingleStepTests/680x0/main/68000/v1
+
 CARGO   ?= cargo
 REMODEL := target/release/remodel
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release test lint fmt fmt-check check ci games verify boot disasm analyze run copro-disasm clean
+.PHONY: help build release test lint fmt fmt-check check ci games verify boot disasm analyze run copro-disasm m68k-tests clean
 
 ##@ General
 
@@ -53,6 +58,20 @@ fmt-check: ## Fail if any Rust code is unformatted
 check: fmt-check lint test ## Everything a change must pass before commit
 
 ci: check ## Alias for check
+
+m68k-tests: $(M68K_TESTS)/.done ## Run the 68000 core against the SingleStepTests suite (downloaded to out/ on first use)
+	M68K_TESTS=$(abspath $(M68K_TESTS)) $(CARGO) test --release -p m68k --test singlestep -- --ignored --nocapture
+
+# Fetch the public SingleStepTests 68000 suite and decompress it; never committed.
+$(M68K_TESTS)/.done:
+	mkdir -p $(M68K_TESTS)/gz $(M68K_TESTS)/json
+	curl -fsSL $(M68K_TESTS_API) | grep -o '"name": *"[^"]*\.json\.gz"' | sed 's/.*"\([^"]*\)"$$/\1/' \
+		> $(M68K_TESTS)/files.txt
+	while read -r f; do \
+		curl -fsSL -o $(M68K_TESTS)/gz/$$f $(M68K_TESTS_RAW)/$$f || exit 1; \
+		gzip -dc $(M68K_TESTS)/gz/$$f > $(M68K_TESTS)/json/$${f%.gz} || exit 1; \
+	done < $(M68K_TESTS)/files.txt
+	touch $@
 
 ##@ ROM tools (need a user-supplied dump in ROM=)
 
