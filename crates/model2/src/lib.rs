@@ -48,13 +48,13 @@ impl Machine {
     }
 
     pub fn step(&mut self) -> Result<(), Stop> {
-        let ip = self.cpu.ip;
-        let insn = self.cpu.decode_at(&self.bus);
+        // Interrupt entry happens inside `step`, so attribute bus accesses
+        // to the instruction actually executed (approximate on IRQ entry).
+        self.bus.cur_ip = self.cpu.ip;
+        let (ip, flow) = self.cpu.step(&mut self.bus)?;
         self.coverage.insert(ip);
         *self.frame_profile.entry(ip).or_default() += 1;
-        self.bus.cur_ip = ip;
-        self.cpu.step(&mut self.bus)?;
-        if matches!(insn.flow, i960::Flow::IndirectJump | i960::Flow::IndirectCall | i960::Flow::IndirectLink) {
+        if matches!(flow, i960::Flow::IndirectJump | i960::Flow::IndirectCall | i960::Flow::IndirectLink) {
             self.indirect.insert((ip, self.cpu.ip));
         }
 

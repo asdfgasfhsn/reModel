@@ -13,6 +13,7 @@
 //!   table; the handlers in this ROM only print a message and halt.
 
 use crate::{decode, Flow, Insn, MemRef, Operand};
+use std::rc::Rc;
 
 /// Memory and I/O as seen by the CPU.
 pub trait Bus {
@@ -24,7 +25,15 @@ pub trait Bus {
     fn write32(&mut self, addr: u32, v: u32);
     /// Side-effect-free instruction fetch. `None` for unmapped/non-code.
     fn fetch(&self, addr: u32) -> Option<u32>;
+    /// True if `addr` is read-only memory, so decoded instructions there
+    /// can be cached.
+    fn is_rom(&self, _addr: u32) -> bool {
+        false
+    }
 }
+
+/// Decoded-instruction cache covers the low 2 MB (Model 2 program ROM).
+const ICACHE_BYTES: u32 = 0x20_0000;
 
 /// IAC (inter-agent communication) port: `synmovq` here messages the CPU.
 pub const IAC_PORT: u32 = 0xff00_0010;
@@ -90,6 +99,7 @@ pub struct Cpu {
     pub icount: u64,
     /// IAC messages other than the ones handled here, for diagnostics.
     pub unhandled_iac: Vec<[u32; 4]>,
+    icache: Vec<Option<Rc<Insn>>>,
 }
 
 impl Default for Cpu {
@@ -113,6 +123,7 @@ impl Cpu {
             pending: [0; 8],
             icount: 0,
             unhandled_iac: Vec::new(),
+            icache: Vec::new(),
         }
     }
 
@@ -367,16 +378,29 @@ impl Cpu {
         decode(self.ip, |a| bus.fetch(a))
     }
 
+    fn fetch_insn(&mut self, bus: &impl Bus) -> Rc<Insn> {
+        let ip = self.ip;
+        if ip < ICACHE_BYTES && ip & 3 == 0 && bus.is_rom(ip) {
+            if self.icache.is_empty() {
+                self.icache = vec![None; (ICACHE_BYTES / 4) as usize];
+            }
+            let slot = &mut self.icache[(ip / 4) as usize];
+            return slot.get_or_insert_with(|| Rc::new(decode(ip, |a| bus.fetch(a)))).clone();
+        }
+        Rc::new(self.decode_at(bus))
+    }
+
     /// Execute one instruction (taking any interrupt that's due first).
-    pub fn step(&mut self, bus: &mut impl Bus) -> Result<(), Stop> {
+    /// Returns the executed instruction's address and control flow.
+    pub fn step(&mut self, bus: &mut impl Bus) -> Result<(u32, Flow), Stop> {
         if self.has_pending() {
             self.check_interrupts(bus);
         }
-        let insn = self.decode_at(bus);
+        let insn = self.fetch_insn(bus);
         let ip = self.ip;
         self.exec(bus, &insn).map_err(|kind| Stop::Fault { kind, ip })?;
         self.icount += 1;
-        Ok(())
+        Ok((ip, insn.flow))
     }
 
     fn exec(&mut self, bus: &mut impl Bus, insn: &Insn) -> Result<(), FaultKind> {

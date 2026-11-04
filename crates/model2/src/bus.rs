@@ -514,4 +514,7 @@ impl Bus for Model2Bus {
     fn fetch(&self, a: u32) -> Option<u32> {
         self.mem_read(a, 4)
     }
+    fn is_rom(&self, a: u32) -> bool {
+        a < 0x20_0000
+    }
 }
