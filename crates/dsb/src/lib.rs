@@ -19,10 +19,13 @@
 //!
 //! The decoder runs at 32 kHz; [`Dsb2::run`] resamples to 44.1 kHz.
 
+pub mod audio;
 mod decoder;
+pub mod soundtrack;
 
 pub use decoder::Event;
 use decoder::MpegChip;
+pub use soundtrack::{Manifest, Replacement, Soundtrack};
 use std::collections::{HashMap, VecDeque};
 
 /// 68000 clock: 33 MHz / 3.
@@ -208,6 +211,8 @@ impl Dsb2 {
                 self.hist[3] = self.bus.chip.next();
             }
             let (l, r) = cubic(&self.hist, self.phase as f32);
+            let (rl, rr) = self.bus.chip.replacement_next();
+            let (l, r) = (l + rl, r + rr);
             out.push((l * 32767.0).clamp(-32768.0, 32767.0) as i16);
             out.push((r * 32767.0).clamp(-32768.0, 32767.0) as i16);
             *self.pcs.entry(self.cpu.pc).or_default() += 1;
@@ -278,6 +283,47 @@ impl Dsb2 {
 
     pub fn playing(&self) -> bool {
         self.bus.chip.playing()
+    }
+
+    /// The firmware's track table: entry n - 1 is the MPEG ROM range
+    /// `[start, end)` that `AE 10 n` plays. Read from the layout of
+    /// topskatr's firmware (`docs/hw/sound.md` §3.7): a pointer at `0x8000`
+    /// to the entry pointers, the track count + 1 at `0x800A`, and in each
+    /// entry a flags word then the 32-bit start and end. Empty when the
+    /// program does not look like that.
+    pub fn track_table(&self) -> Vec<(u32, u32)> {
+        let rom = &self.bus.rom;
+        let be32 = |a: usize| rom.get(a..a + 4).map(|b| u32::from_be_bytes(b.try_into().unwrap()));
+        let (Some(table), Some(count)) = (be32(0x8000), rom.get(0x800a..0x800c)) else { return vec![] };
+        let count = u16::from_be_bytes([count[0], count[1]]) as usize;
+        if !(2..=128).contains(&count) {
+            return vec![];
+        }
+        let mut v = vec![];
+        for i in 0..count - 1 {
+            let entry = be32(table as usize + 4 * i).map(|e| e as usize);
+            let range = entry.and_then(|e| Some((be32(e + 2)? & 0xff_ffff, be32(e + 6)? & 0xff_ffff)));
+            match range {
+                Some((s, e)) if s < e => v.push((s, e)),
+                _ => return vec![],
+            }
+        }
+        v
+    }
+
+    /// Play replacement tracks from `st` in place of the ROM ranges it
+    /// replaces.
+    pub fn set_soundtrack(&mut self, st: Soundtrack) {
+        self.bus.chip.soundtrack = Some(st);
+    }
+
+    pub fn soundtrack(&self) -> Option<&Soundtrack> {
+        self.bus.chip.soundtrack.as_ref()
+    }
+
+    /// The soundtrack track playing in place of the ROM, if any.
+    pub fn replacing(&self) -> Option<u8> {
+        self.bus.chip.replacing()
     }
 }
 
@@ -359,5 +405,22 @@ mod tests {
         assert_eq!(d.bus.ram[0x10], 0x05);
         assert_eq!(d.bus.ram[0x11], 3);
         assert_eq!(d.stats().overruns, 0);
+    }
+
+    #[test]
+    fn reads_the_firmware_track_table() {
+        // Table pointer 0x8010, count 3 (two tracks); entries as in topskatr:
+        // flags, start, end, fade-in, volumes, [loop start].
+        let mut words: Vec<u16> = vec![0x00f0, 0xfffe, 0x0000, 0x0400];
+        words.resize(0x4000, 0xffff);
+        words.extend([0x0000, 0x8010, 0, 0, 0xff, 0x0003, 0, 0]);
+        words.extend([0x0000, 0x8020, 0x0000, 0x8040, 0, 0, 0, 0]);
+        words.extend([0x8002, 0x0001, 0x1000, 0x0041, 0x3fc0, 0, 0x8080, 0x0001, 0x1000, 0, 0, 0, 0, 0, 0, 0]);
+        words.extend([0x0002, 0x0096, 0xfbc2, 0x00ab, 0x68c2, 0, 0x8080, 0]);
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let d = Dsb2::new(&bytes, vec![]);
+        assert_eq!(d.track_table(), vec![(0x011000, 0x413fc0), (0x96fbc2, 0xab68c2)]);
+        // No table: empty.
+        assert!(board(&[0x60fe], vec![]).track_table().is_empty());
     }
 }

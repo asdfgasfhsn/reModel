@@ -37,7 +37,7 @@ RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 ##@ General
 
-help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, RECOMP)
+help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, RECOMP, SOUNDTRACK)
 	@awk 'BEGIN {FS = ":.*## "; printf "usage: make <target> [VAR=value]\n"} \
 		/^##@/ {printf "\n%s\n", substr($$0, 5)} \
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -117,11 +117,21 @@ sound: release ## Boot the sound board, replay the sound bytes captured by `make
 
 sound-disasm: release ## Disassemble the sound 68000 program: make sound-disasm ADDR=0x600120 COUNT=64
 	$(RUN) sound-disasm $(ADDR) $(COUNT)
-.PHONY: music mpeg-dump mpeg-test
+.PHONY: music mpeg-dump mpeg-test soundtrack-import
 SECONDS ?= 10
+# Replacement soundtrack for `make music` (docs/mods.md): a name under
+# soundtracks/, or a path when it contains a `/`.
+SOUNDTRACK ?=
+SRC        ?=
+SOUNDTRACK_DIR = $(if $(findstring /,$(SOUNDTRACK)),$(SOUNDTRACK),soundtracks/$(SOUNDTRACK))
 
-music: release ## Replay the UART stream captured by `make run` into the DSB2 music board: OUT=/music.wav
-	$(RUN) music-render $(OUT)/music.wav
+music: release ## DSB2 music from the stream `make run` captured -> OUT/music.wav; SOUNDTRACK=name replaces tracks (OUT/music-name.wav)
+	$(RUN) music-render $(if $(SOUNDTRACK),--soundtrack "$(SOUNDTRACK_DIR)") \
+		$(OUT)/music$(if $(SOUNDTRACK),-$(notdir $(SOUNDTRACK))).wav
+
+soundtrack-import: release ## Make soundtracks/SOUNDTRACK from the audio files in SRC= (ffmpeg converts non-WAV/MP2)
+	@test -n "$(SRC)" -a -n "$(SOUNDTRACK)" || { echo "usage: make soundtrack-import SRC=dir SOUNDTRACK=name"; exit 1; }
+	$(REMODEL) soundtrack-import "$(SRC)" "$(SOUNDTRACK_DIR)"
 
 mpeg-dump: release ## Decode MPEG ROM frames directly: make mpeg-dump ADDR=0x11000 SECONDS=10
 	$(RUN) mpeg-dump $(ADDR) $(SECONDS)

@@ -1,12 +1,13 @@
 mod music;
 mod png;
 mod sound_render;
+mod soundtrack;
 
 use analyze::{explore, read_boot, Image, Trace};
 use romset::{games, RomSet};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
@@ -43,10 +44,17 @@ commands:
                        by `run` (out/GAME/sound-tx.txt) and render the SCSP
                        output (default out/GAME/sound.wav; length: until 3 s
                        after the last byte)
-  music-render [WAV] [SECONDS]
+  music-render [--soundtrack DIR] [WAV] [SECONDS]
                        replay out/GAME/sound-tx.txt (from `run`) into the
                        DSB2 MPEG music board; writes WAV (default
-                       out/GAME/music.wav, 44.1 kHz stereo)
+                       out/GAME/music.wav, 44.1 kHz stereo). With
+                       --soundtrack, tracks listed in DIR/tracks.txt play
+                       from their files (docs/mods.md)
+  soundtrack-import SRC_DIR NAME
+                       copy the audio files in SRC_DIR into soundtracks/NAME
+                       (NAME with a `/` is used as a path), converting
+                       anything but WAV and MP2 to WAV with ffmpeg, and
+                       write a tracks.txt numbered from the file names
   mpeg-dump ADDR [SECONDS]
                        decode MPEG ROM frames from ADDR directly to
                        out/GAME/mpeg-ADDR.{wav,f32,mp2} (default 10 s)
@@ -83,10 +91,28 @@ fn main() -> ExitCode {
     };
     let game_id = game_id.unwrap_or_else(|| "topskatr".into());
     let rom_dir = PathBuf::from(rom_dir.unwrap_or_else(|| "rom".into()));
+    let Ok(soundtrack) = opt("--soundtrack") else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
     let Some(cmd) = args.first().cloned() else {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
     };
+    if cmd == "soundtrack-import" {
+        let (Some(src), Some(name)) = (args.get(1), args.get(2)) else {
+            eprint!("{USAGE}");
+            return ExitCode::FAILURE;
+        };
+        let dest = if name.contains('/') { PathBuf::from(name) } else { PathBuf::from("soundtracks").join(name) };
+        return match soundtrack::import(Path::new(src), &dest) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if cmd == "games" {
         for g in games::ALL {
             println!("{:<10} {:<20} {:?}", g.id, g.title, g.board);
@@ -315,7 +341,7 @@ fn main() -> ExitCode {
             let r = if cmd == "music-render" {
                 let wav = args.get(1).map(PathBuf::from).unwrap_or_else(|| dir.join("music.wav"));
                 let secs = args.get(2).and_then(|s| s.parse().ok());
-                music::music_render(&roms, &dir.join("sound-tx.txt"), &wav, secs)
+                music::music_render(&roms, &dir.join("sound-tx.txt"), &wav, secs, soundtrack.as_deref().map(Path::new))
             } else {
                 let Some(addr) = args.get(1).and_then(|s| parse_num(s)) else {
                     eprint!("{USAGE}");

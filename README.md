@@ -40,6 +40,7 @@ music`). There is no live window yet.
 | Speed | interpreters about 2x real time (`make bench`); recompiler not needed to reach full speed |
 | Sound board: 68000 + SCSP (slots, EG, LFO, FM, timers, MIDI, DSP) | done offline: replays the captured command stream to a WAV at about 12x real time |
 | DSB2 music board (68000 firmware + MPEG Layer II decoder) | done; `make music` renders the game's music from a `run` capture |
+| Custom soundtracks (replace any music track, game logic intact) | done offline: `make music SOUNDTRACK=name`; see `docs/mods.md` |
 | Live window and real-time sound | planned |
 
 ## Quick start
@@ -66,7 +67,12 @@ make bench                # timed run into a race: speed and state hash
 make recomp               # recompile the TGP programs captured by `run` (slow build)
 make bench RECOMP=1       # same run on the recompiled build: same hash, faster
 make music                # after a `run` into a race: DSB2 music -> out/topskatr/music.wav
+make soundtrack-import SRC=~/my-mix SOUNDTRACK=my-mix   # your own music (ffmpeg converts)
+make music SOUNDTRACK=my-mix      # same, with your tracks -> out/topskatr/music-my-mix.wav
 ```
+
+Custom soundtracks, their `tracks.txt` format and how the game still drives
+them are described in `docs/mods.md`.
 
 `make bench` prints a hash of all RAM and the last rasteriser stream. A change
 meant only to make things faster must leave it unchanged. The hash depends on
@@ -89,7 +95,8 @@ crates/
   m68k/      68000 interpreter and disassembler (sound CPUs)
   sound/     SCSP (YMF292) with its DSP, and the sound board (Model 2-generic)
   mpeg/      MPEG-1 Audio Layer II decoder          (generic)
-  dsb/       DSB2 MPEG music board: 68000, UART, decoder chip model
+  dsb/       DSB2 MPEG music board: 68000, UART, decoder chip model,
+             replacement soundtracks (WAV/MP2 reader, resampler)
   cli/       the `remodel` command
 ```
 
@@ -205,7 +212,12 @@ documentation and hasn't been contradicted yet.
   boundaries), a volume per side and an optional loop point. `AE 10 nn` plays
   track nn (0 = stop), `AE 02 vv` sets the master volume, `AE 03 vv` fades out
   and then stops. Remodel's decoder matches ffmpeg's to within 3e-6 of full
-  scale on the game's MPEG data.
+  scale on the game's MPEG data. Of the 12 tracks, 1-3, 5, 7-9 and 12 are
+  played with looping armed (`64` before `74`) and 4, 6, 10 and 11 once.
+  The firmware never reads decoder status beyond the always-clear busy bit,
+  so it can't tell when a track ends. A replacement soundtrack of a
+  different length therefore can't change the game's behaviour
+  (`docs/mods.md`).
 - *Unverified:* the board map, IRQ controller semantics (`0xE80000`
   request/ack, `0xE80004` enable), timers and I/O chip layout in
   `crates/model2/src/bus.rs`.

@@ -110,8 +110,14 @@ pub fn mpeg_dump(roms: &RomSet, addr: u32, seconds: f64, dir: &Path) -> Result<(
 }
 
 /// Replay the host's UART stream (`sound-tx.txt` from `run`) into the DSB2
-/// and render its music.
-pub fn music_render(roms: &RomSet, tx: &Path, wav: &Path, seconds: Option<f64>) -> Result<(), String> {
+/// and render its music. With `soundtrack`, replaced tracks play from its files.
+pub fn music_render(
+    roms: &RomSet,
+    tx: &Path,
+    wav: &Path,
+    seconds: Option<f64>,
+    soundtrack: Option<&Path>,
+) -> Result<(), String> {
     let text = std::fs::read_to_string(tx).map_err(|e| format!("{}: {e} (make it with `run`)", tx.display()))?;
     let bytes: Vec<(f64, u8)> = text
         .lines()
@@ -151,6 +157,48 @@ pub fn music_render(roms: &RomSet, tx: &Path, wav: &Path, seconds: Option<f64>) 
 
     let program = roms.game.files.iter().position(|f| f.role == Role::MpegCpu).ok_or("game has no DSB2")?;
     let mut dsb = dsb::Dsb2::new(&roms.chips[program], mpeg_rom(roms));
+    let table = dsb.track_table();
+    println!("firmware track table: {} tracks", table.len());
+    let track_of = |start: u32, end: u32| table.iter().position(|&r| r == (start, end)).map(|i| i + 1);
+    if let Some(dir) = soundtrack {
+        let st = dsb::Soundtrack::load(dir, &table)?;
+        println!(
+            "soundtrack {}{}: {} of {} tracks replaced",
+            dir.display(),
+            st.title.as_ref().map_or(String::new(), |t| format!(" ({t})")),
+            st.replacements.len(),
+            table.len()
+        );
+        for r in &st.replacements {
+            let s = &r.spec;
+            let mut extra = vec![];
+            if s.loop_mode != dsb::audio::LoopMode::Game {
+                extra.push(format!("loop {:?}", s.loop_mode).to_lowercase());
+            }
+            if s.loop_start.is_some() || s.loop_end.is_some() {
+                let p = |p: Option<dsb::soundtrack::Pos>, d: &str| p.map_or(d.to_string(), |p| p.to_string());
+                extra.push(format!("loop {} to {}", p(s.loop_start, "start"), p(s.loop_end, "end")));
+            }
+            if s.gain != 1.0 {
+                extra.push(format!("gain {:+.1} dB", db(s.gain as f64)));
+            }
+            println!(
+                "  track {:2} {:#08x}-{:#08x} <- {} ({}{})",
+                s.track,
+                r.start,
+                r.end,
+                s.file.display(),
+                r.info,
+                extra.iter().map(|e| format!("; {e}")).collect::<String>()
+            );
+        }
+        let kept: Vec<String> = (1..=table.len())
+            .filter(|t| !st.replacements.iter().any(|r| r.spec.track as usize == *t))
+            .map(|t| t.to_string())
+            .collect();
+        println!("  original: tracks {}", if kept.is_empty() { "none".into() } else { kept.join(", ") });
+        dsb.set_soundtrack(st);
+    }
     let total = (seconds * dsb::OUT_HZ as f64) as usize;
     let mut pcm = Vec::with_capacity(total * 2);
     let mut next = 0;
@@ -196,10 +244,15 @@ pub fn music_render(roms: &RomSet, tx: &Path, wav: &Path, seconds: Option<f64>) 
         }
         let what = match e {
             dsb::Event::Play { start, end, looped } => format!(
-                "play {start:#08x}-{end:#08x} ({:.1} s){}",
+                "play {}{start:#08x}-{end:#08x} ({:.1} s){}",
+                track_of(*start, *end).map_or(String::new(), |t| format!("track {t} ")),
                 (end - start) as f64 / 576.0 * 0.036,
                 if *looped { ", looping" } else { "" }
             ),
+            dsb::Event::Replaced { track } => format!("  -> replaced: soundtrack track {track}"),
+            dsb::Event::ReplaceFailed { track } => format!("  -> soundtrack track {track} failed to load, ROM plays"),
+            dsb::Event::ReplacementEnd { track, looped: true } => format!("soundtrack track {track} looped"),
+            dsb::Event::ReplacementEnd { track, looped: false } => format!("soundtrack track {track} ended, stopped"),
             dsb::Event::LoopStart(a) => format!("loop point {a:#08x}"),
             dsb::Event::SegmentEnd { restart: Some(a) } => format!("end reached, loop to {a:#08x}"),
             dsb::Event::SegmentEnd { restart: None } => "end reached, stopped".into(),
@@ -215,6 +268,11 @@ pub fn music_render(roms: &RomSet, tx: &Path, wav: &Path, seconds: Option<f64>) 
     }
     let unknown: Vec<String> = unknown.iter().map(|(c, n)| format!("{c:02X} x{n}")).collect();
     println!("decoder bytes with no known meaning (boot upload and setup): {}", unknown.join(", "));
+    if let Some(st) = dsb.soundtrack() {
+        for e in &st.errors {
+            println!("soundtrack error: {e}");
+        }
+    }
     let (peak, rms, clipped) = levels(&pcm);
     println!("peak {:.1} dBFS, rms {:.1} dBFS, {clipped} clipped samples", db(peak), db(rms));
     println!("rendered {seconds:.1} s in {host:.2} s ({:.0}x real time)", seconds / host);
