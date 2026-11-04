@@ -18,6 +18,11 @@ PACK  ?=
 # Fixed run for `make bench`: attract, coin-up, start, into a race.
 BENCH_STEPS ?= 600000000
 BENCH_INPUT ?= coin1@1100-1104,start@1250-1254
+# Capture sessions for `make assets` (topskatr): menus stepping through every
+# skater, then a Novice and an Expert race with some steering.
+ASSET_MENUS ?= coin1@1100-1104,start@1250-1254,selright@2000-2004,selright@2070-2074,selright@2140-2144,selright@2210-2214,selright@2280-2284,selright@2350-2354,selright@2420-2424,selright@2490-2494,selright@2560-2564,selright@2630-2634
+ASSET_STEER ?= curving=0x50@3000-3400,curving=0xb0@3600-3900,curving=0x60@4300-4700,curving=0xa0@5200-5500,curving=0x58@6200-6600,curving=0xa8@7300-7600
+ASSET_RACE_STEPS ?= 1600000000
 
 # Where `make m68k-tests` keeps the SingleStepTests 68000 suite.
 M68K_TESTS     ?= out/m68k-tests
@@ -109,6 +114,20 @@ analyze: release ## Recursive-descent code discovery; listing goes to OUT=
 
 run: release ## Boot and report; PNG every SNAP frames; scripted INPUT (see remodel usage)
 	$(RUN) $(VIEW) $(if $(PACK),--texture-pack $(PACK)) $(if $(INPUT),--input $(INPUT)) run $(STEPS) $(SNAP)
+
+.PHONY: assets
+assets: release ## Extract the game's art for review: capture sessions, then distinct textures, screens and contact sheets in OUT/assets (about 15 min)
+	rm -rf $(OUT)/assets && mkdir -p $(OUT)/assets/raw
+	$(RUN) --dump-textures $(OUT)/assets/raw/attract run 900000000 20 > $(OUT)/assets/raw/attract.log
+	cp -r $(OUT)/frames $(OUT)/assets/frames-attract
+	$(RUN) --dump-textures $(OUT)/assets/raw/menus --input $(ASSET_MENUS) run 480000000 10 > $(OUT)/assets/raw/menus.log
+	cp -r $(OUT)/frames $(OUT)/assets/frames-menus
+	$(RUN) --dump-textures $(OUT)/assets/raw/novice --input coin1@1100-1104,start@1250-1254,$(ASSET_STEER) \
+		run $(ASSET_RACE_STEPS) 15 > $(OUT)/assets/raw/novice.log & \
+	$(RUN) --dump-textures $(OUT)/assets/raw/expert --input coin1@1100-1104,start@1250-1254,selright@1330-1336,$(ASSET_STEER) \
+		run $(ASSET_RACE_STEPS) 15 > $(OUT)/assets/raw/expert.log & \
+	wait
+	python3 -I tools/asset-review.py $(OUT)/assets
 
 .PHONY: dump-textures
 dump-textures: release ## Coin-start-race run dumping every 3D texture and tile pattern drawn (each 60 frames) to OUT/texdump

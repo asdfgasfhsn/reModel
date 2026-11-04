@@ -69,6 +69,7 @@ make run STEPS=485000000 INPUT=coin1@1100-1104,start@1250-1254 \
 make dump-textures        # race run: every 3D texture and tile drawn -> out/topskatr/texdump/
 make run STEPS=600000000 INPUT=coin1@1100-1104,start@1250-1254 \
     PACK=out/topskatr/texpack VIEW="--height 1080"   # snapshots with a texture pack (docs/texture-packs.md)
+make assets               # extract the game's art for review -> out/topskatr/assets (needs ImageMagick)
 make bench                # timed run into a race: speed and state hash
 make recomp               # recompile the TGP programs captured by `run` (slow build)
 make bench RECOMP=1       # same run on the recompiled build: same hash, faster
@@ -105,6 +106,8 @@ crates/
              replacement soundtracks (WAV/MP2 reader, resampler)
   png/       PNG decode/encode with zlib inflate/deflate (generic)
   cli/       the `remodel` command
+tools/
+  asset-review.py   distinct textures, screens and contact sheets from capture runs (`make assets`)
 ```
 
 ## Reuse across Model 2
