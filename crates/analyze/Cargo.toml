@@ -1,0 +1,12 @@
+[package]
+name = "remodel-analyze"
+description = "Static code discovery for i960 program images"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "analyze"
+
+[dependencies]
+i960.workspace = true

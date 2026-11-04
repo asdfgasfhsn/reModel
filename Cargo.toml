@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = ["crates/i960", "crates/romset", "crates/analyze", "crates/cli"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+i960 = { path = "crates/i960" }
+remodel-romset = { path = "crates/romset" }
+remodel-analyze = { path = "crates/analyze" }
+
+[profile.release]
+debug = true

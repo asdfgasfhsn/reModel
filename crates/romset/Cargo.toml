@@ -1,0 +1,11 @@
+[package]
+name = "remodel-romset"
+description = "ROM set manifests and loading for Model 2 games"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "romset"
+
+[dependencies]

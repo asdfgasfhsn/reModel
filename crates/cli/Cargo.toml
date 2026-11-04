@@ -1,0 +1,15 @@
+[package]
+name = "remodel"
+description = "Command-line front end for the Remodel toolchain"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "remodel"
+path = "src/main.rs"
+
+[dependencies]
+i960.workspace = true
+remodel-romset.workspace = true
+remodel-analyze.workspace = true
