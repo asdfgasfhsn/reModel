@@ -9,6 +9,7 @@ OUT   ?= out/$(GAME)
 ADDR  ?= 0x5c0
 COUNT ?= 32
 STEPS ?= 50000000
+SNAP  ?= 0
 
 CARGO   ?= cargo
 REMODEL := target/release/remodel
@@ -19,7 +20,7 @@ RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 ##@ General
 
-help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS)
+help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP)
 	@awk 'BEGIN {FS = ":.*## "; printf "usage: make <target> [VAR=value]\n"} \
 		/^##@/ {printf "\n%s\n", substr($$0, 5)} \
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -66,8 +67,8 @@ disasm: release ## Linear disassembly: make disasm ADDR=0x6f0 COUNT=64
 analyze: release ## Recursive-descent code discovery; listing goes to OUT=
 	$(RUN) analyze $(OUT)/program.lst
 
-run: release ## Boot on the reference interpreter and report: make run STEPS=50000000
-	$(RUN) run $(STEPS)
+run: release ## Boot and report; tile layer PNG every SNAP frames: make run STEPS=50000000 SNAP=60
+	$(RUN) run $(STEPS) $(SNAP)
 
 copro-disasm: release ## Disassemble the geometry program captured by `make run`
 	$(RUN) copro-disasm

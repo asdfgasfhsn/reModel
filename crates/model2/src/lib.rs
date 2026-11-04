@@ -6,6 +6,7 @@
 
 pub mod bus;
 pub mod eeprom;
+pub mod video;
 
 pub use bus::Model2Bus;
 use bus::{FRAME_CYCLES, IRQ_VBLANK};

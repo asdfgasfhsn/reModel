@@ -27,7 +27,8 @@ nothing renders yet.
 | MB86235 geometry processor: disassembler and reference interpreter | done; runs the game's uploaded program |
 | Recompiler (i960 → C) | planned |
 | Geometry processor fast path (high-level per-command) | planned |
-| Renderer (OpenGL/Vulkan) | planned |
+| 2D tile layer renderer (PNG snapshots) | done; boot, logo, title and attract text render |
+| 3D renderer (OpenGL/Vulkan) | planned |
 | Sound (68000 + SCSP) and input | planned |
 
 ## Quick start
@@ -44,6 +45,7 @@ make boot             # boot record and system-table entry points
 make analyze          # code discovery -> out/topskatr/program.lst
 make disasm ADDR=0x6f0 COUNT=64
 make run STEPS=50000000   # boot on the interpreter, report hardware use
+make run SNAP=60          # also write the tile layer every 60 frames
 ```
 
 Variables: `GAME` (manifest id, default `topskatr`), `ROM` (chip directory,
@@ -120,6 +122,12 @@ documentation and hasn't been contradicted yet.
 - *Confirmed:* every instruction the interpreter executed was already found
   by static analysis. The trace (`make run`, then `make analyze`) resolves
   the indirect jumps it observes.
+- *Confirmed:* with a blank settings EEPROM the game writes 38 words of
+  defaults, and accepts them on the next boot.
+- *Confirmed:* the 2D tile layer shows the full boot sequence ("Downloading",
+  "Initializing"), the publisher logo, the title screen and attract mode,
+  whose 3D scenes are not rendered yet. See `docs/hw/tilemap.md` for the
+  split-mode finding, which differs from MAME.
 - *Unverified:* the board map, IRQ controller semantics (`0xE80000`
   request/ack, `0xE80004` enable), timers and I/O chip layout in
   `crates/model2/src/bus.rs`.

@@ -1,3 +1,5 @@
+mod png;
+
 use analyze::{explore, read_boot, Image, Trace};
 use romset::{games, RomSet};
 use std::collections::BTreeMap;
@@ -20,8 +22,10 @@ commands:
   analyze [OUT]        recursive-descent listing (default out/GAME/program.lst)
   copro-disasm [FILE]  disassemble the uploaded geometry program
                        (default out/GAME/copro.bin, written by `run`)
-  run [STEPS]          boot on the reference interpreter and report what
-                       the game did (default 50M instructions)
+  run [STEPS] [SNAP]   boot on the reference interpreter and report what
+                       the game did (default 50M instructions); writes the
+                       tile layer to out/GAME/frames/ every SNAP frames
+                       (0 = final frame only)
 ";
 
 fn parse_num(s: &str) -> Option<u32> {
@@ -192,7 +196,8 @@ fn main() -> ExitCode {
         }
         "run" => {
             let steps = args.get(1).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(50_000_000);
-            run(&roms, steps);
+            let snap = args.get(2).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(0);
+            run(&roms, steps, snap);
         }
         _ => {
             eprint!("{USAGE}");
@@ -202,7 +207,13 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run(roms: &RomSet, steps: u64) {
+fn snapshot(m: &model2::Machine, path: &std::path::Path) {
+    let rgb = model2::video::render_tiles(m.bus.tile_ram(), m.bus.palette_ram());
+    let png = png::encode_rgb(model2::video::WIDTH as u32, model2::video::HEIGHT as u32, &rgb);
+    let _ = std::fs::write(path, png);
+}
+
+fn run(roms: &RomSet, steps: u64, snap: u64) {
     let mut m = model2::Machine::new(roms);
     let dir = PathBuf::from("out").join(roms.game.id);
     let eeprom_path = dir.join("eeprom.bin");
@@ -210,8 +221,23 @@ fn run(roms: &RomSet, steps: u64) {
         m.bus.eeprom.load(&bytes);
         println!("eeprom        loaded {}", eeprom_path.display());
     }
+    let frames_dir = dir.join("frames");
+    let _ = std::fs::remove_dir_all(&frames_dir);
+    let _ = std::fs::create_dir_all(&frames_dir);
     let started = std::time::Instant::now();
-    let stop = m.run(steps);
+    let mut stop = None;
+    let mut last_frame = 0;
+    for _ in 0..steps {
+        if let Err(s) = m.step() {
+            stop = Some(s);
+            break;
+        }
+        if snap > 0 && m.frames != last_frame && m.frames.is_multiple_of(snap) {
+            snapshot(&m, &frames_dir.join(format!("{:06}.png", m.frames)));
+        }
+        last_frame = m.frames;
+    }
+    snapshot(&m, &frames_dir.join("final.png"));
     let secs = started.elapsed().as_secs_f64();
     let b = &m.bus;
 
@@ -287,6 +313,7 @@ fn run(roms: &RomSet, steps: u64) {
     let _ = std::fs::write(dir.join("coverage.txt"), cov);
     let _ = std::fs::write(dir.join("indirect.txt"), ind);
     println!("trace written to {}/{{coverage,indirect}}.txt", dir.display());
+    println!("frames written to {}", frames_dir.display());
     if !b.copro_program.is_empty() {
         // Little-endian 64-bit words, in upload order.
         let bin: Vec<u8> = b.copro_program.iter().flat_map(|w| w.to_le_bytes()).collect();
