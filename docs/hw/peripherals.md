@@ -152,6 +152,11 @@ For example, 0x4E is 8N1 at x16. This is a typical value; it has not yet been co
 - **Reply / ack:** the MAME150 HLE (before the 68k was emulated) made the status always read 0x07 (TxRDY, RxRDY and TxEMPTY all set) and RX data always 0xFF. Its comment says one game (Zero Gunner) also needed bit 4. This strongly suggests some games poll RxRDY and read replies at boot (MAME-only, L).
 - **Action for us:** find i960 reads of 0x01C80000/2 in topskatr, and 68k writes to MOBUF (0x100406) in the sound program. Together these show whether the sound driver echoes or acknowledges commands, and what values the i960 expects.
 - The current `bus.rs` returns status 0x05 (no RxRDY), so it will never deliver a reply. If init spins on RxRDY, that is the first place to look.
+- **Observed in topskatr (Remodel `run`, `out/topskatr/sound-tx.txt`; confirmed):**
+  - **Initialisation.** On frame 88 the game writes the UART control register 00, 00, 00, 40 (the 8251 software reset sequence), then mode 0x4E (async ×16, 8 data bits, no parity, 1 stop bit), then command 0x37 (TxEN, DTR, RxEN, error reset, RTS). It then sends 0xFF.
+  - **Commands are MIDI-shaped.** Each is a status byte of 0x80 or above followed by two data bytes below 0x80, for example `AE 10 00`, `A0 1A 02` and `B6 50 00`. A0 to AF (polyphonic key pressure in MIDI terms) dominate, and B6 to B8 (control change) appear in bursts.
+  - **Commands follow events.** `A0 15 02` is sent on the frame a coin is inserted. About 6,000 bytes are sent from boot to mid-race.
+  - **No reply needed so far.** The game never waits for a reply: with status stuck at 0x05 (TxRDY, TxEMPTY, never RxRDY) it runs through attract into gameplay.
 
 ### DSB2 (MPEG digital sound board, 68000-based)
 - Both MAME (Model 2 topskatr) and Supermodel (Model 3) feed the **same host serial byte stream** to the DSB in parallel with the SCSP. The DSB sees every command byte, and its firmware decides which ones apply to it (MAME, SM; M).

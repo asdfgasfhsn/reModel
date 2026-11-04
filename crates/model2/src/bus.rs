@@ -145,6 +145,9 @@ pub struct Model2Bus {
     /// Write watch (debugging): an address, and the (cycle, ip, address,
     /// value, size) of every memory write touching its 32-bit word.
     pub watch: Option<(u32, Vec<WatchHit>)>,
+    /// Everything written to the sound link UART: (cycle, control register,
+    /// byte). Data bytes are the commands for the sound boards.
+    pub uart_log: Vec<(u64, bool, u8)>,
     /// Video status bit 2 at 0x98000C. Hypothesis (from the boot code, which
     /// times how long it takes to change): toggles once per frame.
     pub frame_toggle: bool,
@@ -247,6 +250,7 @@ impl Model2Bus {
             geo_words: 0,
             geo_trace: None,
             watch: None,
+            uart_log: Vec::new(),
             frame_toggle: false,
             board_ctrl: 0,
             inputs: [0xff; 4],
@@ -478,7 +482,14 @@ impl Model2Bus {
                     }
                 }
             }
-            0x01c8_0000..=0x01c8_0003 => {}
+            0x01c8_0000..=0x01c8_0003 => {
+                // Sound link UART: data in lane 0, mode/command in lane 2.
+                for (lane, control) in [(0, false), (2, true)] {
+                    if lanes & (1 << lane) != 0 {
+                        self.uart_log.push((self.now, control, (v >> (8 * lane)) as u8));
+                    }
+                }
+            }
             0x1000_0000..=0x105f_ffff => {}
             _ => return false,
         }

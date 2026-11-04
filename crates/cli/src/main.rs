@@ -399,6 +399,18 @@ fn run(roms: &RomSet, steps: u64, snap: u64, script: &model2::input::InputScript
         v.sort_by_key(|&(&k, a)| (std::cmp::Reverse(a.reads + a.writes), k));
         v.into_iter().take(n).map(|(&k, &a)| (k, a)).collect::<Vec<_>>()
     };
+    let tx = b.uart_log.iter().filter(|e| !e.1).count();
+    println!(
+        "sound link    {tx} data bytes, {} control writes (out/{}/sound-tx.txt)",
+        b.uart_log.len() - tx,
+        roms.game.id
+    );
+    let text: String = b
+        .uart_log
+        .iter()
+        .map(|&(t, c, v)| format!("{:>6} {} {v:02x}\n", t / model2::bus::FRAME_CYCLES, if c { "ctl " } else { "data" }))
+        .collect();
+    let _ = std::fs::write(dir.join("sound-tx.txt"), text);
     if let Some((a, log)) = &b.watch {
         println!("watch {a:#010x}: {} writes", log.len());
         for &(t, ip, addr, v, n) in log.iter().take(64) {
