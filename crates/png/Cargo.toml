@@ -1,0 +1,9 @@
+[package]
+name = "remodel-png"
+description = "Small PNG decoder and encoder with zlib inflate/deflate, std only"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "png"

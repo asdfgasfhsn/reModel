@@ -66,6 +66,9 @@ make sound-disasm ADDR=0x6004ea   # disassemble the sound 68000 program
                           # coin up, start, and play into a race
 make run STEPS=485000000 INPUT=coin1@1100-1104,start@1250-1254 \
     VIEW="--height 1080 --aspect 21:9 --hud edges"   # enhanced snapshot
+make dump-textures        # race run: every 3D texture and tile drawn -> out/topskatr/texdump/
+make run STEPS=600000000 INPUT=coin1@1100-1104,start@1250-1254 \
+    PACK=out/topskatr/texpack VIEW="--height 1080"   # snapshots with a texture pack (docs/texture-packs.md)
 make bench                # timed run into a race: speed and state hash
 make recomp               # recompile the TGP programs captured by `run` (slow build)
 make bench RECOMP=1       # same run on the recompiled build: same hash, faster
@@ -100,6 +103,7 @@ crates/
   mpeg/      MPEG-1 Audio Layer II decoder          (generic)
   dsb/       DSB2 MPEG music board: 68000, UART, decoder chip model,
              replacement soundtracks (WAV/MP2 reader, resampler)
+  png/       PNG decode/encode with zlib inflate/deflate (generic)
   cli/       the `remodel` command
 ```
 

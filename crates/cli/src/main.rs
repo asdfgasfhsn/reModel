@@ -1,7 +1,7 @@
 mod music;
-mod png;
 mod sound_render;
 mod soundtrack;
+mod texpack;
 
 use analyze::{explore, read_boot, Image, Trace};
 use romset::{games, RomSet};
@@ -25,6 +25,10 @@ options:
                        element to the nearest screen edge
   --input SCRIPT       scripted inputs for `run`, e.g.
                        coin1@1100-1105,start@1300-1305,curving=0x40@1400-1500
+  --dump-textures DIR  at each `run` snapshot, write every distinct 3D texture
+                       and tile pattern drawn to DIR as PNG, plus DIR/index.txt
+  --texture-pack DIR   draw snapshots with the replacement PNGs in DIR (same
+                       names as a dump; any size); see docs/texture-packs.md
 
 commands:
   games                list supported games
@@ -110,6 +114,14 @@ fn main() -> ExitCode {
             view.hud_windows = g.hud_windows.iter().fold(0, |m, &w| m | 1 << w);
         }
         let _ = VIEW.set(view);
+    }
+    let (Ok(dump_textures), Ok(texture_pack)) = (opt("--dump-textures"), opt("--texture-pack")) else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    if let Err(e) = texpack::configure(dump_textures, texture_pack) {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
     }
     let game_id = game_id.unwrap_or_else(|| "topskatr".into());
     let rom_dir = PathBuf::from(rom_dir.unwrap_or_else(|| "rom".into()));
@@ -403,7 +415,14 @@ fn snapshot(m: &mut model2::Machine, path: &std::path::Path) {
         yoff,
     };
     let mut polys = model2::raster::build(&geo.stream, &src);
-    let (rgb3d, covered) = model2::raster::draw_view(&mut polys, &src, &view);
+    let mut packs = texpack::PACKS.lock().unwrap();
+    let (rgb3d, covered) = match packs.as_mut() {
+        Some(p) => {
+            p.frame = m.frames;
+            model2::raster::draw_enhanced(&mut polys, &src, &view, p)
+        }
+        None => model2::raster::draw_view(&mut polys, &src, &view),
+    };
     if let Some((x, y)) = std::env::var("REMODEL_PROBE").ok().and_then(|v| {
         let (x, y) = v.split_once(',')?;
         Some((x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?))
@@ -413,8 +432,16 @@ fn snapshot(m: &mut model2::Machine, path: &std::path::Path) {
             println!("  {line}");
         }
     }
-    let rgb = model2::video::compose(b.tile_ram(), b.palette_ram(), Some((&rgb3d, &covered)), &view);
-    let png = png::encode_rgb(view.width as u32, view.height as u32, &rgb);
+    let layer3d = Some((&rgb3d[..], &covered[..]));
+    let rgb = match packs.as_mut() {
+        Some(p) => {
+            let rgb = model2::video::compose_enhanced(b.tile_ram(), b.palette_ram(), layer3d, &view, p);
+            p.finish_snapshot();
+            rgb
+        }
+        None => model2::video::compose(b.tile_ram(), b.palette_ram(), layer3d, &view),
+    };
+    let png = png::encode_rgb(view.width, view.height, &rgb);
     let _ = std::fs::write(path, png);
 }
 
@@ -458,6 +485,9 @@ fn run(roms: &RomSet, steps: u64, snap: u64, script: &model2::input::InputScript
         last_frame = m.frames;
     }
     snapshot(&mut m, &frames_dir.join("final.png"));
+    if let Some(p) = texpack::PACKS.lock().unwrap().as_ref() {
+        println!("textures      {}", p.summary());
+    }
     let secs = started.elapsed().as_secs_f64();
     let state_hash = m.bus.state_hash();
     let b = &m.bus;
