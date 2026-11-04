@@ -112,6 +112,18 @@ bench: release ## Timed fixed run into a race: speed vs real time and the state 
 copro-disasm: release ## Disassemble the geometry program captured by `make run`
 	$(RUN) copro-disasm
 
+.PHONY: music mpeg-dump mpeg-test
+SECONDS ?= 10
+
+music: release ## Replay the UART stream captured by `make run` into the DSB2 music board: OUT=/music.wav
+	$(RUN) music-render $(OUT)/music.wav
+
+mpeg-dump: release ## Decode MPEG ROM frames directly: make mpeg-dump ADDR=0x11000 SECONDS=10
+	$(RUN) mpeg-dump $(ADDR) $(SECONDS)
+
+mpeg-test: ## MPEG decoder test against the MPEG ROMs in ROM=
+	REMODEL_ROM=$(abspath $(ROM)) $(CARGO) test --release -p remodel-mpeg -- --ignored
+
 ##@ Housekeeping
 
 clean: ## Remove build output and generated listings

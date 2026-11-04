@@ -1,0 +1,11 @@
+[package]
+name = "remodel-mpeg"
+description = "MPEG-1 Audio Layer II decoder"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "mpeg"
+
+[dependencies]

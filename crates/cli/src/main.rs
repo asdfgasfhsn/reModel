@@ -1,3 +1,4 @@
+mod music;
 mod png;
 
 use analyze::{explore, read_boot, Image, Trace};
@@ -33,6 +34,13 @@ commands:
                        the game did (default 50M instructions); writes the
                        tile layer to out/GAME/frames/ every SNAP frames
                        (0 = final frame only)
+  music-render [WAV] [SECONDS]
+                       replay out/GAME/sound-tx.txt (from `run`) into the
+                       DSB2 MPEG music board; writes WAV (default
+                       out/GAME/music.wav, 44.1 kHz stereo)
+  mpeg-dump ADDR [SECONDS]
+                       decode MPEG ROM frames from ADDR directly to
+                       out/GAME/mpeg-ADDR.{wav,f32,mp2} (default 10 s)
 
 debugging (environment variables for `run`):
   REMODEL_PROBE=X,Y    at each snapshot, list the 3D polygons covering
@@ -256,6 +264,25 @@ fn main() -> ExitCode {
             };
             let geo_frame = geo_frame.and_then(|s| parse_num(&s)).map(u64::from);
             run(&roms, steps, snap, &script, geo_frame);
+        }
+        "music-render" | "mpeg-dump" => {
+            let dir = PathBuf::from("out").join(roms.game.id);
+            let r = if cmd == "music-render" {
+                let wav = args.get(1).map(PathBuf::from).unwrap_or_else(|| dir.join("music.wav"));
+                let secs = args.get(2).and_then(|s| s.parse().ok());
+                music::music_render(&roms, &dir.join("sound-tx.txt"), &wav, secs)
+            } else {
+                let Some(addr) = args.get(1).and_then(|s| parse_num(s)) else {
+                    eprint!("{USAGE}");
+                    return ExitCode::FAILURE;
+                };
+                let secs = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10.0);
+                music::mpeg_dump(&roms, addr, secs, &dir)
+            };
+            if let Err(e) = r {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
         }
         _ => {
             eprint!("{USAGE}");

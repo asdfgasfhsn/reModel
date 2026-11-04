@@ -547,15 +547,21 @@ Interrupts (ROM vectors, H; meanings M):
 - autovector 2 (`0x68`) → `0x1BC`: **periodic tick** (SM and MAME use
   1 kHz; Supermodel notes that 1 kHz makes fades time correctly in other
   games, L for the exact rate). It increments a counter at `0xF0100E` and
-  pulses latch bit 4.
+  pulses latch bit 4 low and back high. Because the 68000's interrupt inputs
+  are level-sensitive, that pulse must be what clears the request; Remodel
+  models it that way and the firmware runs normally (M). The firmware only
+  uses the tick in units of 80 (§3.7), so its rate is not pinned down by
+  the code; Remodel uses 1 kHz (L).
 - autovector 3 (`0x6C`) → `0x100`: a stub that resets SP and jumps into the
   L1 handler. Its purpose is unknown (L).
 
 ### 3.3 Host byte handling on the DSB2 (ROM `0x110–0x1BA`, H; interpretation M)
 - Every byte from the host UART raises IRQ1. The ISR:
-  - counts consecutive `0xFF` bytes. A run of them can send the DSB2 to its
-    reset entry (`0x1F0`: reload SP, jump to `0x500`); the exact count test
-    is unclear, L;
+  - counts consecutive `0xFF` bytes in `0xF01011`, but then compares
+    **`d0`**, not the count, with 4 before jumping to its reset entry
+    (`0x1F0`: reload SP, jump to `0x500`). `d0` there is whatever the
+    interrupted code left in it, so the reset-on-`0xFF`-run feature is
+    effectively broken: a firmware bug (H for the code);
   - keeps a two-state parser:
     - **a status byte `0xAE`** (MIDI "channel 14") switches to *capture*.
       The `0xAE` and every following data byte are stored in a 4 KB ring at
@@ -598,6 +604,25 @@ Byte-wide commands. The low bit of each opcode selects MPEG player 0 or 1
   This looks like loading microcode or configuration into the 315-6028A (L).
   None of the uploaded bytes match the FIFO opcodes, so MAME's
   byte-for-byte parser doesn't misfire on them.
+- **What topskatr's firmware actually sends** (ROM, H; meanings from the
+  firmware's use and Remodel's render, M unless marked):
+  - `80`-`87`, then `A0`-`A7` each with `00`, at boot (`0xD2E`);
+  - `14 aa aa aa`, `24 aa aa aa`: start and end, **byte addresses into the
+    16 MB MPEG space**. Every track range lands on frame boundaries (§3.7);
+  - `64` then `74` for a looping track, `74` alone for a one-shot. A start
+    address written while playing is the loop point. So `64` arms looping
+    (M), and Supermodel's "set loop" reading of a mid-play start write holds
+    for this firmware;
+  - `84` stops (before every new track, and when a fade reaches zero);
+  - gain bytes `A0`, `A1`, `A4`, `A5`. A 2-bit mode per track picks which
+    pair is zeroed and which carries the volume: mode 0 sets `A0`/`A4`,
+    mode 1 `A1`/`A5`, mode 2 `A0`/`A5` (table at `0xE1C`). Every topskatr
+    track uses mode 2, and the music is stereo, so the best fit is a 2×2
+    matrix: `A0` L←L, `A1` L←R, `A4` R←L, `A5` R←R (modes: mono-left,
+    mono-right, stereo). Remodel models it that way with gain = value/255
+    (L for both the matrix and the linear scale). This is not the
+    `A0`/`B1`, `B0`/`A1` layout Supermodel uses for other games;
+  - no `B0`-`B7`, no odd (player 1) opcodes.
 - Data path (M): the decoder **reads MPEG ROM directly** between the
   start/end addresses. The 68k never maps the MPEG ROM (no 68k address
   reaches it in MAME or SM, and the ROM has no references to one). Output
@@ -627,8 +652,55 @@ Byte-wide commands. The low bit of each opcode selects MPEG player 0 or 1
   It holds only if a Model 2C board feeds digital audio into the SCSP's EXTS
   input, and nothing suggests that.
 - **Emulation choice:** decode at 32 kHz, resample to 44.1 kHz, and add to
-  the SCSP output with the per-channel volumes from the `0xB0/0xA1`-style
-  commands (Supermodel does this).
+  the SCSP output after the gain matrix of §3.4. `crates/dsb` does the
+  first two (Catmull-Rom resampling).
+
+### 3.7 DSB2 firmware: commands and track table (ROM, H unless marked)
+The main loop (`0x6D2`) takes bytes from the 4 KB ring and parses MIDI with
+running status; only `AE` messages are acted on:
+
+| Message | Firmware action |
+|---|---|
+| `AE 10 nn` | `84` (stop). nn = 0: nothing else. 1 ≤ nn < 13 (count at `0x800A`): play track nn from the table; nn ≥ 13 is ignored. |
+| `AE 02 vv` | master volume = 2·vv (default `0x00FF` from `0x8008`); if playing, rewrite both gains at once and cancel fades |
+| `AE 03 vv` | if playing, fade out at a rate of `−496·vv − 256` (16.16 per step); `84` when both sides reach 0 |
+| `AE 60 01` + 12 bytes, mode, volume, loop flag | direct play: start, end and loop addresses as three 4×7-bit groups. Not sent by the i960 (a test hook, L) |
+| `AE xx yy` (other) | ignored |
+
+- Track table: a pointer at `0x8000` to 12 entry pointers. Each entry: a
+  flags word (bit 15 loop, bit 14 a second loop segment, low bits the gain
+  mode), start and end (32-bit, low 24 bits used), a fade-in rate word, a
+  left and right volume byte, then the loop start (and with bit 14 two more
+  addresses) and a fade-out rate word plus delay. topskatr uses no fade-in,
+  no auto fade-out, no bit 14, volume `0x80/0x80` and mode 2 throughout.
+- Volume → gain register goes through a 256-byte curve at `0xE28`, close to
+  linear (entry `0x80` is `0x60`, entry `0xFF` is `0xFE`). The fade-out
+  step writes the raw volume, skipping the curve: a firmware slip (H).
+- Timing runs in steps of 80 ticks. The main loop does one action per step
+  when idle: 8 steps after a looping play it writes the loop start (`14`),
+  and each fade step waits a further 80 ticks per side. With a 1 kHz tick,
+  `AE 03 40` from gain `0xE8` fades out in about 1.8 s (L: rate).
+
+| Track | Start | End | Loop to | Length |
+|---|---|---|---|---|
+| 1 | `0x011000` | `0x413FC0` | `0x011000` | 262.9 s |
+| 2 | `0x193700` | `0x413FC0` | `0x011000` | 164.0 s |
+| 3 | `0x2EAFC0` | `0x413FC0` | `0x011000` | 76.0 s |
+| 4 | `0x96FBC2` | `0xAB68C2` | once | 83.7 s |
+| 5 | `0x7AC3C4` | `0x7E9B04` | `0x7AD144` | 15.7 s |
+| 6 | `0x800000` | `0x96FBC0` | once | 94.1 s |
+| 7 | `0x413FC2` | `0x7A9482` | `0x413FC2` | 234.8 s |
+| 8 | `0x544042` | `0x7A9482` | `0x413FC2` | 157.0 s |
+| 9 | `0x67AF02` | `0x7A9482` | `0x413FC2` | 77.4 s |
+| 10 | `0xAB68C4` | `0xBBE804` | once | 67.6 s |
+| 11 | `0xBBE806` | `0xCC7706` | once | 67.8 s |
+| 12 | `0xCC7708` | `0xEC8948` | `0xCCFBC8` | 131.4 s |
+
+Every start, end and loop address is a frame boundary and every range is a
+whole number of 576-byte frames (H). Tracks 2-3 and 8-9 are later entry
+points into tracks 1 and 7. In the captured attract-into-race run the i960
+plays 4 (attract), stops it, plays 5 (whose 15.5 s loop repeats), fades it
+out with `AE 03 40`, then plays 7 (`make music`).
 
 ---
 
@@ -700,12 +772,14 @@ From `out/topskatr/program.lst` (i960):
    reset? If it holds the 68k in reset, a model must keep the 68k halted
    until the i960 writes 1.
 9. **DSB2 315-6028A.** What does the 256-byte boot upload do? What is
-   `0xE00001` for (address/command half of a 16-bit port)? Do the start/end
-   commands take byte addresses into the 16 MB space? MAME assumes yes.
-   Topskatr's track table (in the DSB2 ROM) will show it: the addresses
-   should land on the frame starts found in §3.5.
+   `0xE00001` for (address/command half of a 16-bit port)? *Answered:* the
+   start/end commands take byte addresses into the 16 MB space (§3.7).
+   Still open: the gain registers' scale (linear or log) and the `64`
+   opcode's exact meaning.
 10. **DSB2 timer rate** (IRQ2): 1 kHz is a guess shared by MAME and SM.
-    Derive it from fade timing or from the firmware's tick-based delays.
+    The firmware only counts ticks in steps of 80 for fades and the
+    loop-point write, so it cannot confirm the rate. Fade length on real
+    hardware would.
 11. **MPEG ROM header** `0x0000–0x10FFF` of `.18s`: what reads it?
 12. **SCSP 68k bus waits.** MAME's 1-cycle guess. It only matters if music
     tempo is visibly off; MDF notes the same issue on the Saturn.

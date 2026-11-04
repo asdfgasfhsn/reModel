@@ -18,7 +18,7 @@ The original program runs on the reference interpreters from boot through
 attract, coin-up, course and skater select into a race, with textured 3D
 frames written as PNG snapshots. The interpreters run the bench (attract into
 a race) at about 2x real time on a desktop CPU, with the geometrizer on its
-own thread. There is no live window or sound yet.
+own thread. There is no live window or SCSP sound yet; the DSB2 music board renders offline.
 
 | Stage | State |
 |---|---|
@@ -36,6 +36,7 @@ own thread. There is no live window or sound yet.
 | 3D rasteriser (software) | textured, bilinear-filtered gameplay frames (topskatr uses no mipmaps) |
 | Scripted input (headless) | done; every button and both analog channels confirmed |
 | Speed | interpreters about 2x real time (`make bench`); recompiler not needed to reach full speed |
+| DSB2 music board (68000 firmware + MPEG Layer II decoder) | done; `make music` renders the game's music from a `run` capture |
 | Live window and sound (68000 + SCSP) | planned |
 
 ## Quick start
@@ -59,6 +60,7 @@ make run STEPS=900000000 SNAP=115 INPUT=coin1@1100-1104,start@1250-1254
 make bench                # timed run into a race: speed and state hash
 make recomp               # recompile the TGP programs captured by `run` (slow build)
 make bench RECOMP=1       # same run on the recompiled build: same hash, faster
+make music                # after a `run` into a race: DSB2 music -> out/topskatr/music.wav
 ```
 
 `make bench` prints a hash of all RAM and the last rasteriser stream. A change
@@ -80,6 +82,8 @@ crates/
   model2/    board model: memory map, IRQs, timers, I/O, copro interface
   mb86235/   MB86235 (TGPx4) decoder, disassembler and interpreter
   m68k/      68000 interpreter and disassembler (sound CPUs)
+  mpeg/      MPEG-1 Audio Layer II decoder          (generic)
+  dsb/       DSB2 MPEG music board: 68000, UART, decoder chip model
   cli/       the `remodel` command
 ```
 
@@ -180,6 +184,13 @@ documentation and hasn't been contradicted yet.
   Over") captures, while it forwards all other bytes out of its own UART.
   The MPEG ROMs hold MPEG-1 Layer II, 32 kHz, 128 kbit/s stereo, stored
   unswapped.
+- *Confirmed (DSB2 firmware and MPEG ROMs; `docs/hw/sound.md` §3):* the
+  DSB2 firmware holds a 12-track table at its ROM `0x8000`. Each entry gives
+  a start and end byte address in the 16 MB MPEG space (always on frame
+  boundaries), a volume per side and an optional loop point. `AE 10 nn` plays
+  track nn (0 = stop), `AE 02 vv` sets the master volume, `AE 03 vv` fades out
+  and then stops. Remodel's decoder matches ffmpeg's to within 3e-6 of full
+  scale on the game's MPEG data.
 - *Unverified:* the board map, IRQ controller semantics (`0xE80000`
   request/ack, `0xE80004` enable), timers and I/O chip layout in
   `crates/model2/src/bus.rs`.

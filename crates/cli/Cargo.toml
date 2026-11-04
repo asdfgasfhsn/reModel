@@ -15,3 +15,5 @@ remodel-romset.workspace = true
 remodel-analyze.workspace = true
 remodel-model2.workspace = true
 mb86235.workspace = true
+remodel-mpeg.workspace = true
+remodel-dsb.workspace = true
