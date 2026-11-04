@@ -19,3 +19,4 @@ remodel-sound.workspace = true
 m68k.workspace = true
 remodel-mpeg.workspace = true
 remodel-dsb.workspace = true
+remodel-png.workspace = true

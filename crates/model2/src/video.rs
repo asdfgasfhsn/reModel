@@ -9,6 +9,10 @@
 //!   0xC000 / 0xD000  window masks for planes A / B
 //! Character RAM at +0x80000: 8x8 tiles, 4bpp, 32 bytes per tile.
 
+use crate::enhance::{Address, Enhance, Fnv, Rgba, TileInfo};
+use std::collections::HashMap;
+use std::sync::Arc;
+
 pub const WIDTH: usize = 496;
 pub const HEIGHT: usize = 384;
 
@@ -23,7 +27,7 @@ fn rd16(ram: &[u8], off: usize) -> u16 {
 }
 
 /// xBGR555 to RGB888.
-fn rgb(entry: u16) -> [u8; 3] {
+pub fn rgb(entry: u16) -> [u8; 3] {
     let c = |v: u16| ((v & 31) << 3 | (v & 31) >> 2) as u8;
     [c(entry), c(entry >> 5), c(entry >> 10)]
 }
@@ -65,6 +69,18 @@ fn split_scroll(tiles: &[u8], map: usize, y: usize) -> u16 {
 /// scrolled by the registers of `scroll_map`, or None if transparent or
 /// disabled.
 fn sample(tiles: &[u8], map: usize, scroll_map: usize, x: usize, y: usize, opaque: bool) -> Option<(usize, bool)> {
+    let (entry, row, col) = locate(tiles, map, scroll_map, x, y)?;
+    let p = pen(tiles, entry, row, col);
+    if p == 0 && !opaque {
+        return None;
+    }
+    Some((((entry & 0x7f80) >> 3) | p as usize, entry & 0x8000 != 0))
+}
+
+/// Map entry, and row and column within its tile, for `map` at screen
+/// pixel (x, y) scrolled by the registers of `scroll_map`; None if the map
+/// is disabled.
+fn locate(tiles: &[u8], map: usize, scroll_map: usize, x: usize, y: usize) -> Option<(usize, usize, usize)> {
     if rd16(tiles, VSCROLL + 2 * map) & 0x8000 != 0 {
         return None;
     }
@@ -73,11 +89,7 @@ fn sample(tiles: &[u8], map: usize, scroll_map: usize, x: usize, y: usize, opaqu
     let mx = (x + 512 - h) & 511;
     let my = (y + v) & 511;
     let entry = rd16(tiles, map * 0x2000 + ((my / 8) * 64 + mx / 8) * 2) as usize;
-    let p = pen(tiles, entry, my & 7, mx & 7);
-    if p == 0 && !opaque {
-        return None;
-    }
-    Some((((entry & 0x7f80) >> 3) | p as usize, entry & 0x8000 != 0))
+    Some((entry, my & 7, mx & 7))
 }
 
 /// Which map of `plane` (0 = A, 1 = B) covers screen pixel (x, y), and
@@ -196,6 +208,69 @@ pub fn render_frame(tiles: &[u8], palette: &[u8], layer3d: Option<(&[u8], &[bool
 /// nearest-neighbour sampling. With nothing drawn in 3D the frame is a 2D
 /// screen and is pillarboxed in a wide view.
 pub fn compose(tiles: &[u8], palette: &[u8], layer3d: Option<(&[u8], &[bool])>, view: &View) -> Vec<u8> {
+    compose_impl(tiles, palette, layer3d, view, None)
+}
+
+/// `compose`, reporting the tile patterns on screen to `hooks` and drawing
+/// the replacements it returns, sampled at output resolution.
+pub fn compose_enhanced(
+    tiles: &[u8],
+    palette: &[u8],
+    layer3d: Option<(&[u8], &[bool])>,
+    view: &View,
+    hooks: &mut dyn Enhance,
+) -> Vec<u8> {
+    compose_impl(tiles, palette, layer3d, view, Some(hooks))
+}
+
+/// A tile pixel for the enhanced compose: map entry (with the priority
+/// bit), position in the tile, and the replacement (index into the
+/// frame's list, NONE for the original pattern).
+#[derive(Clone, Copy)]
+struct Hit {
+    entry: u16,
+    row: u8,
+    col: u8,
+    rep: u16,
+}
+
+const NONE: u16 = u16::MAX;
+
+/// Pattern and colours of map entry `entry` (tile and bank), or None for a
+/// blank tile (all pen 0), which is not worth replacing.
+fn tile_info(tiles: &[u8], palette: &[u8], entry: usize) -> Option<TileInfo> {
+    let mut pens = [0u8; 64];
+    for (i, p) in pens.iter_mut().enumerate() {
+        *p = pen(tiles, entry, i / 8, i % 8);
+    }
+    if pens.iter().all(|&p| p == 0) {
+        return None;
+    }
+    let base = (entry & 0x7f80) >> 3;
+    let colours = std::array::from_fn(|p| rd16(palette, ((base | p) & 0xfff) * 2) & 0x7fff);
+    let mut f = Fnv::default();
+    f.bytes(&pens);
+    let mut used = [false; 16];
+    for &p in &pens {
+        used[p as usize] = true;
+    }
+    for p in (0..16).filter(|&p| used[p]) {
+        f.byte(p as u8);
+        f.bytes(&colours[p].to_le_bytes());
+    }
+    Some(TileInfo { key: f.0, tile: (entry & 0x3fff) as u16, bank: (base >> 4) as u16, pens, colours })
+}
+
+fn compose_impl(
+    tiles: &[u8],
+    palette: &[u8],
+    layer3d: Option<(&[u8], &[bool])>,
+    view: &View,
+    hooks: Option<&mut dyn Enhance>,
+) -> Vec<u8> {
+    let enhanced = hooks.is_some();
+    // Enhanced only: per game pixel, the hits of plane B then A.
+    let mut hits: Vec<[Option<Hit>; 2]> = if enhanced { vec![[None; 2]; WIDTH * HEIGHT] } else { Vec::new() };
     let backdrop = rgb(rd16(palette, 0));
     // Game-resolution layers: the base (backdrop + low-priority tiles) and
     // the HUD (high-priority tiles, None where transparent).
@@ -207,6 +282,14 @@ pub fn compose(tiles: &[u8], palette: &[u8], layer3d: Option<(&[u8], &[bool])>, 
             for (slot, (plane, opaque)) in [(1, true), (0, false)].into_iter().enumerate() {
                 let (map, scroll) = map_for(tiles, plane, x, y);
                 samples[slot] = sample(tiles, map, scroll, x, y, opaque);
+                if enhanced {
+                    hits[y * WIDTH + x][slot] = locate(tiles, map, scroll, x, y).map(|(entry, row, col)| Hit {
+                        entry: entry as u16,
+                        row: row as u8,
+                        col: col as u8,
+                        rep: NONE,
+                    });
+                }
             }
             let mut c = backdrop;
             let mut h = None;
@@ -239,6 +322,11 @@ pub fn compose(tiles: &[u8], palette: &[u8], layer3d: Option<(&[u8], &[bool])>, 
         }
     }
 
+    if let Some(hooks) = hooks {
+        let tl = TileLayers { tiles, palette, backdrop, hits, reps: Vec::new() };
+        return tl.output(hooks, layer3d, view, &hud, &shift, has_3d);
+    }
+
     let mut out = vec![0u8; view.width * view.height * 3];
     for oy in 0..view.height {
         let gy = ((oy as f32 + 0.5) / view.sy) as usize;
@@ -268,6 +356,148 @@ pub fn compose(tiles: &[u8], palette: &[u8], layer3d: Option<(&[u8], &[bool])>, 
         }
     }
     out
+}
+
+/// The enhanced compose's tile state for one frame.
+struct TileLayers<'a> {
+    tiles: &'a [u8],
+    palette: &'a [u8],
+    backdrop: [u8; 3],
+    hits: Vec<[Option<Hit>; 2]>,
+    reps: Vec<Arc<Rgba>>,
+}
+
+impl TileLayers<'_> {
+    /// Ask `hooks` about every tile pattern on screen, once each.
+    fn resolve(&mut self, hooks: &mut dyn Enhance) {
+        let mut seen: HashMap<u16, u16> = HashMap::new();
+        for px in self.hits.iter_mut() {
+            for hit in px.iter_mut().flatten() {
+                let e = hit.entry & 0x7fff;
+                hit.rep = *seen.entry(e).or_insert_with(|| {
+                    match tile_info(self.tiles, self.palette, e as usize).and_then(|info| hooks.tile(&info)) {
+                        Some(img) if img.width >= 8 && img.height >= 8 => {
+                            self.reps.push(img);
+                            (self.reps.len() - 1) as u16
+                        }
+                        _ => NONE,
+                    }
+                });
+            }
+        }
+    }
+
+    /// Colour of `hit` at (fx, fy) within its game pixel; None if
+    /// transparent. A replacement's alpha decides transparency, except on
+    /// the opaque back plane, where the original pen shows through.
+    fn colour(&self, hit: Hit, fx: f32, fy: f32, opaque: bool) -> Option<[u8; 3]> {
+        if let Some(img) = self.reps.get(hit.rep as usize) {
+            let x = (hit.col as f32 + fx) * img.width as f32 / 8.0;
+            let y = (hit.row as f32 + fy) * img.height as f32 / 8.0;
+            let (c, a) = img.sample(x, y, Address::Clamp, Address::Clamp);
+            if a >= 0.5 {
+                return Some(c.map(|v| v.round().clamp(0.0, 255.0) as u8));
+            }
+            if !opaque {
+                return None;
+            }
+        }
+        let e = hit.entry as usize;
+        let p = pen(self.tiles, e, hit.row as usize, hit.col as usize) as usize;
+        if p == 0 && !opaque {
+            return None;
+        }
+        Some(rgb(rd16(self.palette, ((((e & 0x7f80) >> 3) | p) & 0xfff) * 2)))
+    }
+
+    /// Low-priority tiles over the backdrop at game pixel (x, y).
+    fn base(&self, x: usize, y: usize, fx: f32, fy: f32) -> [u8; 3] {
+        let mut c = self.backdrop;
+        for (slot, hit) in self.hits[y * WIDTH + x].iter().enumerate() {
+            if let Some(h) = hit.filter(|h| h.entry & 0x8000 == 0) {
+                if let Some(col) = self.colour(h, fx, fy, slot == 0) {
+                    c = col;
+                }
+            }
+        }
+        c
+    }
+
+    /// High-priority tiles at game pixel (x, y); pen 0 is transparent on
+    /// both planes.
+    fn hud(&self, x: usize, y: usize, fx: f32, fy: f32) -> Option<[u8; 3]> {
+        let mut c = None;
+        for h in self.hits[y * WIDTH + x].iter().flatten().filter(|h| h.entry & 0x8000 != 0) {
+            if let Some(col) = self.colour(*h, fx, fy, false) {
+                c = Some(col);
+            }
+        }
+        c
+    }
+
+    /// The output loop of `compose`, sampling every layer at output pixel
+    /// centres instead of upscaling game pixels.
+    fn output(
+        mut self,
+        hooks: &mut dyn Enhance,
+        layer3d: Option<(&[u8], &[bool])>,
+        view: &View,
+        hud: &[Option<[u8; 3]>],
+        shift: &[usize],
+        has_3d: bool,
+    ) -> Vec<u8> {
+        self.resolve(hooks);
+        // Extended HUD layer: the source game x of each placed pixel. Pen-0
+        // pixels are kept too (a replacement may cover them) unless a
+        // drawn pixel lands on the same spot.
+        let ext_w = WIDTH + (2.0 * view.pad).ceil() as usize;
+        let mut hud_src = vec![u32::MAX; ext_w * HEIGHT];
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH {
+                if !self.hits[y * WIDTH + x].iter().flatten().any(|h| h.entry & 0x8000 != 0) {
+                    continue;
+                }
+                let ex = x + shift[(y / 8) * CELLS_X + x / 8];
+                if ex < ext_w && (hud[y * WIDTH + x].is_some() || hud_src[y * ext_w + ex] == u32::MAX) {
+                    hud_src[y * ext_w + ex] = x as u32;
+                }
+            }
+        }
+        let mut out = vec![0u8; view.width * view.height * 3];
+        for oy in 0..view.height {
+            let gyf = (oy as f32 + 0.5) / view.sy;
+            let gy = gyf as usize;
+            if gy >= HEIGHT {
+                continue;
+            }
+            let fy = gyf - gy as f32;
+            for ox in 0..view.width {
+                let o = oy * view.width + ox;
+                let ex = (ox as f32 + 0.5) / view.sx;
+                let gx = ex - view.pad;
+                let mut c = if gx >= 0.0 && (gx as usize) < WIDTH {
+                    self.base(gx as usize, gy, gx - gx.floor(), fy)
+                } else if has_3d {
+                    self.backdrop
+                } else {
+                    [0, 0, 0]
+                };
+                if let Some((rgb3d, covered)) = layer3d {
+                    if covered[o] {
+                        c.copy_from_slice(&rgb3d[o * 3..o * 3 + 3]);
+                    }
+                }
+                let sx = hud_src.get(gy * ext_w + ex as usize).copied().unwrap_or(u32::MAX);
+                if sx != u32::MAX {
+                    if let Some(h) = self.hud(sx as usize, gy, ex - ex.floor(), fy) {
+                        c = h;
+                    }
+                }
+                out[o * 3..o * 3 + 3].copy_from_slice(&c);
+            }
+        }
+        out
+    }
 }
 
 const CELLS_X: usize = WIDTH / 8 + 1;
@@ -347,6 +577,49 @@ mod tests {
         tiles[off + 2..off + 4].copy_from_slice(&hi.to_le_bytes());
         let row: Vec<u8> = (0..8).map(|px| pen(&tiles, 1, 0, px)).collect();
         assert_eq!(row, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    struct Rep(Option<Arc<Rgba>>);
+
+    impl Enhance for Rep {
+        fn texture(&mut self, _: &crate::enhance::TexInfo) -> Option<Arc<Rgba>> {
+            None
+        }
+        fn texture_drawn(&mut self, _: &crate::enhance::TexInfo, _: &crate::raster::Sources, _: usize) {}
+        fn tile(&mut self, info: &TileInfo) -> Option<Arc<Rgba>> {
+            assert_eq!(info.tile, 1);
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn tile_replacement_at_output_resolution() {
+        // Plane A shows tile 1 (all pen 3) at the top left; plane B is blank.
+        let mut tiles = vec![0u8; 0x10_0000];
+        tiles[0..2].copy_from_slice(&1u16.to_le_bytes());
+        tiles[CHAR_BASE + 32..CHAR_BASE + 64].fill(0x33);
+        let mut palette = vec![0u8; 0x2_0000];
+        palette[0..2].copy_from_slice(&0x7c00u16.to_le_bytes()); // backdrop / pen 0: blue
+        palette[6..8].copy_from_slice(&0x03e0u16.to_le_bytes()); // pen 3: green
+        let view = View { width: 2 * WIDTH, height: 2 * HEIGHT, sx: 2.0, sy: 2.0, ..View::native() };
+        let native = compose(&tiles, &palette, None, &view);
+        // No replacement: identical to the original path.
+        assert_eq!(compose_enhanced(&tiles, &palette, None, &view, &mut Rep(None)), native);
+        // A 4x replacement, red on the left half, transparent on the right.
+        let mut data = Vec::new();
+        for _ in 0..32 {
+            for x in 0..32 {
+                data.extend_from_slice(if x < 16 { &[255, 0, 0, 255] } else { &[0, 0, 0, 0] });
+            }
+        }
+        let img = Arc::new(Rgba { width: 32, height: 32, data });
+        let out = compose_enhanced(&tiles, &palette, None, &view, &mut Rep(Some(img)));
+        let px = |x: usize, y: usize| &out[(y * view.width + x) * 3..(y * view.width + x) * 3 + 3];
+        assert_eq!(px(0, 0), [255, 0, 0]);
+        assert_eq!(px(6, 3), [255, 0, 0]);
+        // Right half of the tile: plane B's pen 0 shows through.
+        assert_eq!(px(12, 3), [0, 0, 255]);
+        assert_eq!(&native[..3], [0, 255, 0]);
     }
 
     #[test]

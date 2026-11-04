@@ -6,6 +6,7 @@
 
 pub mod bus;
 pub mod eeprom;
+pub mod enhance;
 pub mod geo;
 pub mod input;
 pub mod raster;

@@ -13,6 +13,8 @@ SNAP  ?= 0
 INPUT ?=
 # Snapshot view options for `run`, e.g. VIEW="--height 1080 --aspect 16:9 --hud edges".
 VIEW  ?=
+# Texture pack directory for `run` snapshots (docs/texture-packs.md), e.g. PACK=out/topskatr/texpack.
+PACK  ?=
 # Fixed run for `make bench`: attract, coin-up, start, into a race.
 BENCH_STEPS ?= 600000000
 BENCH_INPUT ?= coin1@1100-1104,start@1250-1254
@@ -39,7 +41,7 @@ RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 ##@ General
 
-help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, RECOMP)
+help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, RECOMP)
 	@awk 'BEGIN {FS = ":.*## "; printf "usage: make <target> [VAR=value]\n"} \
 		/^##@/ {printf "\n%s\n", substr($$0, 5)} \
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -106,7 +108,12 @@ analyze: release ## Recursive-descent code discovery; listing goes to OUT=
 	$(RUN) analyze $(OUT)/program.lst
 
 run: release ## Boot and report; PNG every SNAP frames; scripted INPUT (see remodel usage)
-	$(RUN) $(VIEW) $(if $(INPUT),--input $(INPUT)) run $(STEPS) $(SNAP)
+	$(RUN) $(VIEW) $(if $(PACK),--texture-pack $(PACK)) $(if $(INPUT),--input $(INPUT)) run $(STEPS) $(SNAP)
+
+.PHONY: dump-textures
+dump-textures: release ## Coin-start-race run dumping every 3D texture and tile pattern drawn (each 60 frames) to OUT/texdump
+	rm -rf $(OUT)/texdump
+	$(RUN) $(VIEW) --dump-textures $(OUT)/texdump --input $(BENCH_INPUT) run $(BENCH_STEPS) 60
 
 bench: release ## Timed fixed run into a race: speed vs real time and the state hash (must not change with speed-ups)
 	$(RUN) --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep -E '^(instructions|emulated|host time|state hash)'

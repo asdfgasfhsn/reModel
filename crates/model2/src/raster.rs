@@ -6,7 +6,9 @@
 //! Polygons are drawn back to front (painter's algorithm on the z-sort key)
 //! with perspective-correct, point-sampled textures (level 0, no mipmaps).
 
+use crate::enhance::{Address, Enhance, Fnv, Rgba, TexInfo};
 use crate::video::{View, WIDTH};
+use std::collections::HashMap;
 
 /// One 24-bit float from the stream (IEEE single with the low 8 bits cut).
 fn f24(w: u32) -> f32 {
@@ -374,6 +376,138 @@ pub fn probe(polys: &[Poly], src: &Sources, x: f32, y: f32) -> Vec<String> {
         .collect()
 }
 
+/// Largest texture (in texels) that dumps and packs handle; bigger ones
+/// come from garbage headers.
+const MAX_HOOKED_TEXELS: u32 = 1 << 21;
+
+/// Identify a polygon's texture for dumps and packs: a hash of its texels
+/// (cached per sheet rectangle in `rects`) and of the header fields and
+/// colour that change its appearance.
+fn tex_info(p: &Poly, t: &Texture, src: &Sources, rects: &mut HashMap<[u32; 5], u64>) -> Option<TexInfo> {
+    if t.w * t.h > MAX_HOOKED_TEXELS {
+        return None;
+    }
+    let texels = *rects.entry([t.bank, t.x0, t.y0, t.w, t.h]).or_insert_with(|| {
+        let mut f = Fnv::default();
+        for y in 0..t.h {
+            for x in 0..t.w {
+                f.byte(src.texel(t.bank, t.x0 + x, t.y0 + y) as u8);
+            }
+        }
+        f.0
+    });
+    let colour = (p.colour[0] | p.colour[1] << 5 | p.colour[2] << 10) as u16;
+    let mut f = Fnv::default();
+    f.bytes(&texels.to_le_bytes());
+    for v in [t.w, t.h, t.luma_table, t.translucent as u32, colour as u32] {
+        f.bytes(&v.to_le_bytes());
+    }
+    Some(TexInfo {
+        key: f.0,
+        width: t.w,
+        height: t.h,
+        header: p.header,
+        colour,
+        bank: t.bank,
+        x0: t.x0,
+        y0: t.y0,
+        luma_table: t.luma_table,
+        translucent: t.translucent,
+    })
+}
+
+/// Full polygon luma: the brightest a texture can be drawn.
+const FULL_LUMA: u32 = 255;
+
+/// A texture as the game's pipeline draws it at full polygon luma, one
+/// pixel per texel (unfiltered); texel 15 of a translucent texture has
+/// alpha 0. This is what dumps contain and packs replace.
+pub fn texture_image(src: &Sources, info: &TexInfo) -> Rgba {
+    let c = [info.colour as u32 & 31, (info.colour as u32 >> 5) & 31, (info.colour as u32 >> 10) & 31];
+    let mut data = Vec::with_capacity((info.width * info.height * 4) as usize);
+    for y in 0..info.height {
+        for x in 0..info.width {
+            let t = src.texel(info.bank, info.x0 + x, info.y0 + y);
+            let lum = (src.luma(info.luma_table, t * 17 / 2) * FULL_LUMA / 256).min(63);
+            let rgb = [0, 1, 2].map(|ch| src.translate(ch, c[ch], lum));
+            data.extend_from_slice(&[rgb[0], rgb[1], rgb[2], if info.translucent && t == 15 { 0 } else { 255 }]);
+        }
+    }
+    Rgba { width: info.width as usize, height: info.height as usize, data }
+}
+
+/// Lighting for a replaced texture: the replacement stands for the texture
+/// at full luma, so each pixel is scaled per channel by what the original
+/// pipeline gives at this polygon's luma over what it gives at full luma,
+/// for the original (filtered) texel under the pixel. That keeps the
+/// game's luma table, cap at 63 and colour translation curves.
+struct Light {
+    /// Polygon luma is full: nothing to scale.
+    full: bool,
+    luma: u32,
+    colour: [u32; 3],
+    /// Fallback ratio where the original texel is transparent or black at
+    /// full luma: the ratio for the brightest luma.
+    poly: [f32; 3],
+}
+
+impl Light {
+    fn new(p: &Poly, src: &Sources) -> Self {
+        let poly = [0, 1, 2].map(|ch| {
+            let full = src.translate(ch, p.colour[ch], 63) as f32;
+            if full > 0.0 {
+                src.translate(ch, p.colour[ch], (64 * p.luma / 256).min(63)) as f32 / full
+            } else {
+                p.luma as f32 / FULL_LUMA as f32
+            }
+        });
+        Light { full: p.luma >= FULL_LUMA, luma: p.luma, colour: p.colour, poly }
+    }
+
+    fn ratio(&self, t: &Texture, src: &Sources, u: f32, v: f32) -> [f32; 3] {
+        if self.full {
+            return [1.0; 3];
+        }
+        let Some(t8) = filtered_texel(t, src, u, v) else { return self.poly };
+        let l = src.luma(t.luma_table, t8 / 2);
+        let (lp, lf) = ((l * self.luma / 256).min(63), (l * FULL_LUMA / 256).min(63));
+        [0, 1, 2].map(|ch| {
+            let full = src.translate(ch, self.colour[ch], lf);
+            if full == 0 {
+                self.poly[ch]
+            } else {
+                src.translate(ch, self.colour[ch], lp) as f32 / full as f32
+            }
+        })
+    }
+}
+
+/// Shade one pixel from a replacement image; None if transparent.
+#[allow(clippy::too_many_arguments)]
+fn shade_replaced(
+    t: &Texture,
+    img: &Rgba,
+    light: &Light,
+    src: &Sources,
+    x: usize,
+    y: usize,
+    u: f32,
+    v: f32,
+) -> Option<[u8; 3]> {
+    if t.checker && (x ^ y) & 1 != 0 {
+        return None;
+    }
+    let mode = |mirror| if mirror { Address::Mirror } else { Address::Repeat };
+    let sx = u * img.width as f32 / t.w as f32;
+    let sy = v * img.height as f32 / t.h as f32;
+    let (rgb, alpha) = img.sample(sx, sy, mode(t.mirror_x), mode(t.mirror_y));
+    if alpha < 0.5 {
+        return None;
+    }
+    let r = light.ratio(t, src, u, v);
+    Some([0, 1, 2].map(|ch| (rgb[ch] * r[ch]).round().clamp(0.0, 255.0) as u8))
+}
+
 /// Draw polygons into an RGB layer with a coverage mask: windows in order,
 /// and within a window from far (large key) to near.
 pub fn draw(polys: &mut [Poly], src: &Sources) -> (Vec<u8>, Vec<bool>) {
@@ -384,6 +518,22 @@ pub fn draw(polys: &mut [Poly], src: &Sources) -> (Vec<u8>, Vec<bool>) {
 /// width are widened to the view's edges, so whatever 3D the game sends
 /// beyond the original frame is drawn.
 pub fn draw_view(polys: &mut [Poly], src: &Sources, view: &View) -> (Vec<u8>, Vec<bool>) {
+    draw_impl(polys, src, view, None)
+}
+
+/// `draw_view`, reporting textures to `hooks` and drawing the replacements
+/// it returns (texture dumps and packs).
+pub fn draw_enhanced(polys: &mut [Poly], src: &Sources, view: &View, hooks: &mut dyn Enhance) -> (Vec<u8>, Vec<bool>) {
+    draw_impl(polys, src, view, Some(hooks))
+}
+
+fn draw_impl(
+    polys: &mut [Poly],
+    src: &Sources,
+    view: &View,
+    mut hooks: Option<&mut dyn Enhance>,
+) -> (Vec<u8>, Vec<bool>) {
+    let mut rects = HashMap::new();
     let (w, h) = (view.width, view.height);
     let mut rgb = vec![0u8; w * h * 3];
     let mut covered = vec![false; w * h];
@@ -413,14 +563,40 @@ pub fn draw_view(polys: &mut [Poly], src: &Sources, view: &View) -> (Vec<u8>, Ve
         // Texel-space filtering works per output pixel; the checker pattern
         // stays in game pixels.
         let (gsx, gsy) = (view.sx, view.sy);
-        fill(&points, (cx0, cy0, cx1, cy1), w, h, |x, y, iz, uz, vz| {
-            let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
-            if let Some(c) = shade(p, src, gx, gy, uz / iz, vz / iz) {
-                let o = y * w + x;
-                covered[o] = true;
-                rgb[o * 3..o * 3 + 3].copy_from_slice(&c);
-            }
-        });
+        let clip = (cx0, cy0, cx1, cy1);
+        let hooked = match (hooks.as_deref_mut(), &p.texture) {
+            (Some(hk), Some(t)) => tex_info(p, t, src, &mut rects).map(|info| {
+                let img = hk.texture(&info);
+                (info, img)
+            }),
+            _ => None,
+        };
+        let mut pixels = 0;
+        if let (Some((_, Some(img))), Some(t)) = (&hooked, &p.texture) {
+            let light = Light::new(p, src);
+            fill(&points, clip, w, h, |x, y, iz, uz, vz| {
+                let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
+                if let Some(c) = shade_replaced(t, img, &light, src, gx, gy, uz / iz, vz / iz) {
+                    let o = y * w + x;
+                    covered[o] = true;
+                    rgb[o * 3..o * 3 + 3].copy_from_slice(&c);
+                    pixels += 1;
+                }
+            });
+        } else {
+            fill(&points, clip, w, h, |x, y, iz, uz, vz| {
+                let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
+                if let Some(c) = shade(p, src, gx, gy, uz / iz, vz / iz) {
+                    let o = y * w + x;
+                    covered[o] = true;
+                    rgb[o * 3..o * 3 + 3].copy_from_slice(&c);
+                    pixels += 1;
+                }
+            });
+        }
+        if let (Some(hk), Some((info, _))) = (hooks.as_deref_mut(), &hooked) {
+            hk.texture_drawn(info, src, pixels);
+        }
     }
     (rgb, covered)
 }

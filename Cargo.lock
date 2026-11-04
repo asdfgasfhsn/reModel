@@ -25,6 +25,7 @@ dependencies = [
  "remodel-dsb",
  "remodel-model2",
  "remodel-mpeg",
+ "remodel-png",
  "remodel-romset",
  "remodel-sound",
 ]
@@ -55,6 +56,10 @@ dependencies = [
 
 [[package]]
 name = "remodel-mpeg"
+version = "0.1.0"
+
+[[package]]
+name = "remodel-png"
 version = "0.1.0"
 
 [[package]]
