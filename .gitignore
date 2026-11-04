@@ -2,3 +2,4 @@
 # Game data is user-supplied and never committed.
 /rom/
 /out/
+/.claude/worktrees/
