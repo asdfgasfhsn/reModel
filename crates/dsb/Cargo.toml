@@ -1,0 +1,13 @@
+[package]
+name = "remodel-dsb"
+description = "Sega DSB2 MPEG music board: 68000, UART and MPEG decoder"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "dsb"
+
+[dependencies]
+m68k.workspace = true
+remodel-mpeg.workspace = true

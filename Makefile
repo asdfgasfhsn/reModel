@@ -117,6 +117,17 @@ sound: release ## Boot the sound board, replay the sound bytes captured by `make
 
 sound-disasm: release ## Disassemble the sound 68000 program: make sound-disasm ADDR=0x600120 COUNT=64
 	$(RUN) sound-disasm $(ADDR) $(COUNT)
+.PHONY: music mpeg-dump mpeg-test
+SECONDS ?= 10
+
+music: release ## Replay the UART stream captured by `make run` into the DSB2 music board: OUT=/music.wav
+	$(RUN) music-render $(OUT)/music.wav
+
+mpeg-dump: release ## Decode MPEG ROM frames directly: make mpeg-dump ADDR=0x11000 SECONDS=10
+	$(RUN) mpeg-dump $(ADDR) $(SECONDS)
+
+mpeg-test: ## MPEG decoder test against the MPEG ROMs in ROM=
+	REMODEL_ROM=$(abspath $(ROM)) $(CARGO) test --release -p remodel-mpeg -- --ignored
 
 ##@ Housekeeping
 

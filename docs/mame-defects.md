@@ -107,7 +107,7 @@ and keep the evidence concrete (addresses, counts, outputs).
 - **MAME does:** runs the DSB2's 68000 at 8 MHz.
 - **Correct (probably):** MAME's own Model 3 PCB note for the DSB2 (`model3.cpp`, board 837-12273) gives "68EC000FN12, clock 11.000MHz [33/3]". Supermodel uses 11 MHz too.
 - **Impact:** small. The firmware is interrupt-driven (UART IRQ1, tick IRQ2), but busy-wait delays and command latency scale with the clock.
-- **Evidence:** `docs/hw/sound.md` §3.1. Not yet exercised by Remodel (no DSB2 emulation).
+- **Evidence:** `docs/hw/sound.md` §3.1. Remodel's `crates/dsb` runs the firmware at 11 MHz (`make music`); nothing in it depends visibly on the clock, so this stays unconfirmed from the game.
 - **Fix direction:** use `33_MHz_XTAL / 3`.
 
 ### MD-12. DSB2: decoder port 0xE00001 unmapped, boot upload and busy flag not modelled
@@ -124,6 +124,23 @@ and keep the evidence concrete (addresses, counts, outputs).
 - **Impact:** with accurate timing a deeper FIFO hides overruns. MAME probably keeps it deep because its CPU/serial interleave is coarse. Supermodel enlarges it for the same reason. Not a topskatr blocker.
 - **Fix direction:** keep it deep only behind a "coarse timing" option, or fix the scheduling and use 4.
 - **Evidence that 4 is enough:** Remodel's sound board runs the 68000 in one-sample (256-cycle) slices, delivers link bytes no faster than 31.25 kbaud and uses a 4-byte FIFO. topskatr's driver reads all 6,253 bytes of a boot-to-race capture with **0 overflows**. Reproduce: `make run STEPS=600000000 INPUT=coin1@1100-1104,start@1250-1254`, then `make sound` and read the `midi in` line.
+
+### MD-14. DSB2: looping tracks stop at their end address
+- **Where:** `src/mame/sega/dsb2.cpp`, `fifo_w` (start-address case around lines 140-156) and `sound_stream_update` (end handling around lines 270-291, loop code commented out).
+- **MAME does:** ignores opcode `0x64`. A start address written while playing just overwrites the start register, and at the end address playback stops. The loop variables are never set.
+- **Correct (per topskatr's DSB2 firmware):** 8 of the 12 tracks loop. For them the firmware sends `64`, `74` (play), then about 8 × 80 ticks later a new `14` start address: the loop point. Track 5 (the race music) is 15.7 s long and loops from 6 frames in, at `0x7AD144`. Supermodel's reading (a mid-play start write sets the loop point) fits the firmware.
+- **Impact:** in MAME the race music would go silent after 15.7 s, and the other looping tracks after one pass.
+- **Evidence:** `docs/hw/sound.md` §3.4 and §3.7 (firmware `0x848–0x8A0` and `0xAB6–0xAFE`, track table at `0x8000`).
+- **Reproduce:** `make music` (after a `make run` into a race). The log shows `play 0x7ac3c4-0x7e9b04 ..., looping`, `loop point 0x7ad144`, then `end reached, loop to 0x7ad144` at about 37.5 s.
+- **Fix direction:** on `0x64` arm looping. On a start write while playing, latch it as the next start. At the end, if armed, restart from the latched start; `0x84` disarms.
+
+### MD-15. DSB2: gain commands ignored, so master volume and fades have no effect
+- **Where:** `src/mame/sega/dsb2.cpp`, `fifo_w` (only `14/24/74/84` handled) and the constructor/reset (volume fixed at `0x7F`, pan 0).
+- **MAME does:** drops `A0`-`A7` and their argument bytes. Volume and pan never change.
+- **Correct (per topskatr):** the firmware writes `A0`, `A1`, `A4`, `A5` with gains derived from each track's volume, the host's master volume (`AE 02 vv`, sent before every track) and its fade-out (`AE 03 vv`, which steps the gains down to 0 over about 1.8 s before `84`). The best fit is a 2×2 L/R matrix (`docs/hw/sound.md` §3.4; the matrix layout is unconfirmed).
+- **Impact:** music at a fixed level regardless of the game's volume, and fade-outs cut off abruptly. Because MAME does not track argument bytes after unknown opcodes, an `Ax` argument equal to `0x14`/`0x24`/`0x74`/`0x84` would also be taken as a command. topskatr's gain bytes vary with the master volume and each fade step, so such collisions are possible.
+- **Reproduce:** `make music`: the log lists every gain write (`gain A0 L<-L = ...`).
+- **Fix direction:** parse `A0`-`A7`/`B0`-`B7` as two-byte commands and apply the gains as a per-output mix.
 
 ---
 

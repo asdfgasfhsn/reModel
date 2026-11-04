@@ -1,3 +1,4 @@
+mod music;
 mod png;
 mod sound_render;
 
@@ -42,6 +43,13 @@ commands:
                        by `run` (out/GAME/sound-tx.txt) and render the SCSP
                        output (default out/GAME/sound.wav; length: until 3 s
                        after the last byte)
+  music-render [WAV] [SECONDS]
+                       replay out/GAME/sound-tx.txt (from `run`) into the
+                       DSB2 MPEG music board; writes WAV (default
+                       out/GAME/music.wav, 44.1 kHz stereo)
+  mpeg-dump ADDR [SECONDS]
+                       decode MPEG ROM frames from ADDR directly to
+                       out/GAME/mpeg-ADDR.{wav,f32,mp2} (default 10 s)
 
 debugging (environment variables for `run`):
   REMODEL_PROBE=X,Y    at each snapshot, list the 3D polygons covering
@@ -298,6 +306,25 @@ fn main() -> ExitCode {
             let seconds = args.get(2).and_then(|s| s.parse::<f64>().ok());
             println!("host bytes    {} from {}", tx.len(), tx_path.display());
             if let Err(e) = sound_render::render(&roms, &tx, seconds, &wav) {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        "music-render" | "mpeg-dump" => {
+            let dir = PathBuf::from("out").join(roms.game.id);
+            let r = if cmd == "music-render" {
+                let wav = args.get(1).map(PathBuf::from).unwrap_or_else(|| dir.join("music.wav"));
+                let secs = args.get(2).and_then(|s| s.parse().ok());
+                music::music_render(&roms, &dir.join("sound-tx.txt"), &wav, secs)
+            } else {
+                let Some(addr) = args.get(1).and_then(|s| parse_num(s)) else {
+                    eprint!("{USAGE}");
+                    return ExitCode::FAILURE;
+                };
+                let secs = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10.0);
+                music::mpeg_dump(&roms, addr, secs, &dir)
+            };
+            if let Err(e) = r {
                 eprintln!("error: {e}");
                 return ExitCode::FAILURE;
             }

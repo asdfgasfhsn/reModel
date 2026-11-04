@@ -17,3 +17,5 @@ remodel-model2.workspace = true
 mb86235.workspace = true
 remodel-sound.workspace = true
 m68k.workspace = true
+remodel-mpeg.workspace = true
+remodel-dsb.workspace = true

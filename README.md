@@ -18,9 +18,9 @@ The original program runs on the reference interpreters from boot through
 attract, coin-up, course and skater select into a race, with textured 3D
 frames written as PNG snapshots. The interpreters run the bench (attract into
 a race) at about 2x real time on a desktop CPU, with the geometrizer on its
-own thread. The sound board (68000 + SCSP) renders offline from the command
-bytes a run captures (`make sound`). There is no live window yet, and the
-DSB2 MPEG music board is not emulated.
+own thread. The sound board (68000 + SCSP) and the DSB2 MPEG music board
+render offline from the command bytes a run captures (`make sound`, `make
+music`). There is no live window yet.
 
 | Stage | State |
 |---|---|
@@ -39,7 +39,7 @@ DSB2 MPEG music board is not emulated.
 | Scripted input (headless) | done; every button and both analog channels confirmed |
 | Speed | interpreters about 2x real time (`make bench`); recompiler not needed to reach full speed |
 | Sound board: 68000 + SCSP (slots, EG, LFO, FM, timers, MIDI, DSP) | done offline: replays the captured command stream to a WAV at about 12x real time |
-| DSB2 MPEG music board | planned |
+| DSB2 music board (68000 firmware + MPEG Layer II decoder) | done; `make music` renders the game's music from a `run` capture |
 | Live window and real-time sound | planned |
 
 ## Quick start
@@ -65,6 +65,7 @@ make sound-disasm ADDR=0x6004ea   # disassemble the sound 68000 program
 make bench                # timed run into a race: speed and state hash
 make recomp               # recompile the TGP programs captured by `run` (slow build)
 make bench RECOMP=1       # same run on the recompiled build: same hash, faster
+make music                # after a `run` into a race: DSB2 music -> out/topskatr/music.wav
 ```
 
 `make bench` prints a hash of all RAM and the last rasteriser stream. A change
@@ -87,6 +88,8 @@ crates/
   mb86235/   MB86235 (TGPx4) decoder, disassembler and interpreter
   m68k/      68000 interpreter and disassembler (sound CPUs)
   sound/     SCSP (YMF292) with its DSP, and the sound board (Model 2-generic)
+  mpeg/      MPEG-1 Audio Layer II decoder          (generic)
+  dsb/       DSB2 MPEG music board: 68000, UART, decoder chip model
   cli/       the `remodel` command
 ```
 
@@ -196,6 +199,13 @@ documentation and hasn't been contradicted yet.
   driver. Channel 14 is not special to it: the game's `AE` commands hit empty
   table entries, so they make no SCSP sound whether or not the link runs
   through the DSB2 first.
+- *Confirmed (DSB2 firmware and MPEG ROMs; `docs/hw/sound.md` §3):* the
+  DSB2 firmware holds a 12-track table at its ROM `0x8000`. Each entry gives
+  a start and end byte address in the 16 MB MPEG space (always on frame
+  boundaries), a volume per side and an optional loop point. `AE 10 nn` plays
+  track nn (0 = stop), `AE 02 vv` sets the master volume, `AE 03 vv` fades out
+  and then stops. Remodel's decoder matches ffmpeg's to within 3e-6 of full
+  scale on the game's MPEG data.
 - *Unverified:* the board map, IRQ controller semantics (`0xE80000`
   request/ack, `0xE80004` enable), timers and I/O chip layout in
   `crates/model2/src/bus.rs`.

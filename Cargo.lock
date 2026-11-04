@@ -22,7 +22,9 @@ dependencies = [
  "m68k",
  "mb86235",
  "remodel-analyze",
+ "remodel-dsb",
  "remodel-model2",
+ "remodel-mpeg",
  "remodel-romset",
  "remodel-sound",
 ]
@@ -35,6 +37,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "remodel-dsb"
+version = "0.1.0"
+dependencies = [
+ "m68k",
+ "remodel-mpeg",
+]
+
+[[package]]
 name = "remodel-model2"
 version = "0.1.0"
 dependencies = [
@@ -42,6 +52,10 @@ dependencies = [
  "mb86235",
  "remodel-romset",
 ]
+
+[[package]]
+name = "remodel-mpeg"
+version = "0.1.0"
 
 [[package]]
 name = "remodel-romset"
