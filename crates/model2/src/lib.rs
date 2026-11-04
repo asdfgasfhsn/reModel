@@ -51,6 +51,7 @@ impl Machine {
         let insn = self.cpu.decode_at(&self.bus);
         self.coverage.insert(ip);
         *self.frame_profile.entry(ip).or_default() += 1;
+        self.bus.cur_ip = ip;
         self.cpu.step(&mut self.bus)?;
         if matches!(insn.flow, i960::Flow::IndirectJump | i960::Flow::IndirectCall | i960::Flow::IndirectLink) {
             self.indirect.insert((ip, self.cpu.ip));

@@ -107,6 +107,13 @@ documentation and hasn't been contradicted yet.
   once that bit changes, consistent with a per-frame toggle.
 - *Confirmed:* init enables IRQ mask `0x215` and programs timer 0
   (`0xF00000`) with 50,000 ticks (2 ms at 25 MHz).
+- *Confirmed:* with the geometry coprocessor stubbed, the game runs about
+  27 s of game time into its main loop. It reads coprocessor results at
+  369 distinct sites, so nothing past init is meaningful until the MB86235 is
+  reimplemented. The first failure is a divide by zero on a stubbed result.
+- *Confirmed:* every instruction the interpreter executed was already found
+  by static analysis. The trace (`make run`, then `make analyze`) resolves
+  the indirect jumps it observes.
 - *Unverified:* the board map, IRQ controller semantics (`0xE80000`
   request/ack, `0xE80004` enable), timers and I/O chip layout in
   `crates/model2/src/bus.rs`.

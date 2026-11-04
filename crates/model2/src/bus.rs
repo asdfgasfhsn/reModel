@@ -83,6 +83,11 @@ pub struct Model2Bus {
     pub copro_fifo_in: Vec<u32>,
     pub copro_fifo_out: Vec<u32>,
     pub copro_empty_reads: u64,
+    /// Where the CPU read the copro output FIFO while it was empty (real
+    /// hardware stalls there until a result arrives), by IP.
+    pub copro_empty_by_ip: BTreeMap<u32, u64>,
+    /// IP of the instruction being executed, set by the machine.
+    pub cur_ip: u32,
     pub geo_words: u64,
     /// Video status bit 2 at 0x98000C. Hypothesis (from the boot code, which
     /// times how long it takes to change): toggles once per frame.
@@ -151,6 +156,8 @@ impl Model2Bus {
             copro_fifo_in: Vec::new(),
             copro_fifo_out: Vec::new(),
             copro_empty_reads: 0,
+            copro_empty_by_ip: BTreeMap::new(),
+            cur_ip: 0,
             geo_words: 0,
             frame_toggle: false,
             board_ctrl: 0,
@@ -209,6 +216,7 @@ impl Model2Bus {
                 if self.copro_fifo_out.is_empty() {
                     // Hardware would stall the CPU here.
                     self.copro_empty_reads += 1;
+                    *self.copro_empty_by_ip.entry(self.cur_ip).or_default() += 1;
                     0
                 } else {
                     self.copro_fifo_out.remove(0)

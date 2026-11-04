@@ -153,7 +153,33 @@ fn looks_like_code(img: &Image, mut addr: u32) -> bool {
     true
 }
 
-pub fn explore(img: &Image, seeds: &[u32]) -> Analysis {
+/// Dynamic evidence from the reference interpreter.
+#[derive(Default)]
+pub struct Trace {
+    /// Every instruction address that executed.
+    pub executed: BTreeSet<u32>,
+    /// Indirect transfers observed: (source, target).
+    pub indirect: BTreeSet<(u32, u32)>,
+}
+
+impl Trace {
+    /// Parse `coverage.txt` (one hex address per line) and `indirect.txt`
+    /// (hex source and target per line), as written by `remodel run`.
+    pub fn parse(coverage: &str, indirect: &str) -> Trace {
+        let hex = |s: &str| u32::from_str_radix(s.trim(), 16).ok();
+        let executed = coverage.lines().filter_map(hex).collect();
+        let indirect = indirect
+            .lines()
+            .filter_map(|l| {
+                let (s, t) = l.split_once(' ')?;
+                Some((hex(s)?, hex(t)?))
+            })
+            .collect();
+        Trace { executed, indirect }
+    }
+}
+
+pub fn explore(img: &Image, seeds: &[u32], trace: &Trace) -> Analysis {
     let mut a = Analysis::default();
     let mut work: VecDeque<u32> = VecDeque::new();
     for &s in seeds {
@@ -324,6 +350,25 @@ pub fn explore(img: &Image, seeds: &[u32]) -> Analysis {
             }
         }
 
+        // Code the interpreter saw run but static flow didn't reach:
+        // indirect targets first, then any executed block heads left over.
+        let traced: Vec<u32> = trace
+            .indirect
+            .iter()
+            .map(|&(_, t)| t)
+            .chain(trace.executed.iter().copied())
+            .filter(|t| img.contains(*t) && !a.insns.contains_key(t))
+            .collect();
+        if !traced.is_empty() {
+            for t in traced {
+                if !a.insns.contains_key(&t) {
+                    a.labels.insert(t);
+                    work.push_back(t);
+                }
+            }
+            continue;
+        }
+
         // Data words that point just past a terminator into plausible code:
         // dispatch tables and callback pointers stored in ROM.
         for off in (0..img.bytes.len() as u32).step_by(4) {
@@ -353,5 +398,7 @@ pub fn explore(img: &Image, seeds: &[u32]) -> Analysis {
             work.push_back(p);
         }
     }
+    let observed: BTreeSet<u32> = trace.indirect.iter().map(|&(s, _)| s).collect();
+    a.indirect.retain(|s| !observed.contains(s));
     a
 }

@@ -1,4 +1,4 @@
-use analyze::{explore, read_boot, Image};
+use analyze::{explore, read_boot, Image, Trace};
 use romset::{games, RomSet};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -116,7 +116,11 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             };
             let seeds: Vec<u32> = b.seeds.iter().map(|s| s.1).collect();
-            let a = explore(&img, &seeds);
+            // Use the interpreter's trace from `remodel run`, when present.
+            let dir = PathBuf::from("out").join(roms.game.id);
+            let read = |f: &str| std::fs::read_to_string(dir.join(f)).unwrap_or_default();
+            let trace = Trace::parse(&read("coverage.txt"), &read("indirect.txt"));
+            let a = explore(&img, &seeds, &trace);
 
             let mut text = String::new();
             for (addr, i) in &a.insns {
@@ -144,6 +148,18 @@ fn main() -> ExitCode {
             );
             println!("functions     {} ({} via lda code pointers)", a.functions.len(), a.speculative.len());
             println!("indirect      {} (jump tables / function pointers to resolve)", a.indirect.len());
+            if !trace.executed.is_empty() {
+                let confirmed = trace.executed.iter().filter(|e| a.insns.contains_key(e)).count();
+                let spec_hit = a.speculative.iter().filter(|p| trace.executed.contains(p)).count();
+                println!(
+                    "trace         {} executed, {} in listing; {} indirect pairs; {} of {} pointer guesses ran",
+                    trace.executed.len(),
+                    confirmed,
+                    trace.indirect.len(),
+                    spec_hit,
+                    a.speculative.len()
+                );
+            }
             println!("invalid stops {}", a.invalid.len());
             for &p in a.invalid.iter().take(8) {
                 println!("  invalid at {p:#x}");
@@ -201,6 +217,18 @@ fn run(roms: &RomSet, steps: u64) {
         b.copro_empty_reads
     );
     println!("geo           {} data words", b.geo_words);
+    if !b.copro_empty_by_ip.is_empty() {
+        let first = b.copro_empty_by_ip.keys().next();
+        println!(
+            "copro waits   {} sites read results that don't exist yet (lowest {first:x?}):",
+            b.copro_empty_by_ip.len()
+        );
+        let mut v: Vec<_> = b.copro_empty_by_ip.iter().collect();
+        v.sort_by_key(|(_, n)| std::cmp::Reverse(**n));
+        for (ip, n) in v.into_iter().take(6) {
+            println!("  {ip:08x} {n:>9}");
+        }
+    }
     if !m.cpu.unhandled_iac.is_empty() {
         println!("unhandled IAC {:x?}", m.cpu.unhandled_iac);
     }
