@@ -80,7 +80,7 @@ and keep the evidence concrete (addresses, counts, outputs).
 
 ### MD-9. topskatr inputs overlap the EEPROM read-mode bits
 - **Where:** `model2.cpp`, the `topskatr` input ports. They put four buttons on IN0 bits 4-7, the bits that show EEPROM DO and fixed 1s when port A control mode is on.
-- Verify once inputs are wired in Remodel.
+- **Progress:** coin 1 (IN0 bit 0) and start (IN0 bit 6) are confirmed in Remodel. Coin gives "CREDIT 1"; start leads to course select, skater select and a race. So MAME's start bit is right, and the overlap hasn't caused trouble: the game reads buttons outside control mode. Select left/right and jump front/tail are still unverified. This may turn out to be no defect at all.
 
 ---
 

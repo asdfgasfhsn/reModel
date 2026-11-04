@@ -13,6 +13,8 @@ usage: remodel [--game ID] [--rom DIR] <command>
 options:
   --game ID            game manifest to use (default topskatr)
   --rom DIR            directory of unpacked chips (default rom)
+  --input SCRIPT       scripted inputs for `run`, e.g.
+                       coin1@1100-1105,start@1300-1305,curving=0x40@1400-1500
 
 commands:
   games                list supported games
@@ -46,7 +48,7 @@ fn main() -> ExitCode {
         args.remove(i);
         Ok(Some(v))
     };
-    let (Ok(game_id), Ok(rom_dir)) = (opt("--game"), opt("--rom")) else {
+    let (Ok(game_id), Ok(rom_dir), Ok(input)) = (opt("--game"), opt("--rom"), opt("--input")) else {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
     };
@@ -197,7 +199,14 @@ fn main() -> ExitCode {
         "run" => {
             let steps = args.get(1).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(50_000_000);
             let snap = args.get(2).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(0);
-            run(&roms, steps, snap);
+            let script = match model2::input::InputScript::parse(input.as_deref().unwrap_or("")) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("error: --input: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            run(&roms, steps, snap, &script);
         }
         _ => {
             eprint!("{USAGE}");
@@ -213,7 +222,7 @@ fn snapshot(m: &model2::Machine, path: &std::path::Path) {
     let _ = std::fs::write(path, png);
 }
 
-fn run(roms: &RomSet, steps: u64, snap: u64) {
+fn run(roms: &RomSet, steps: u64, snap: u64, script: &model2::input::InputScript) {
     let mut m = model2::Machine::new(roms);
     let dir = PathBuf::from("out").join(roms.game.id);
     let eeprom_path = dir.join("eeprom.bin");
@@ -231,6 +240,9 @@ fn run(roms: &RomSet, steps: u64, snap: u64) {
         if let Err(s) = m.step() {
             stop = Some(s);
             break;
+        }
+        if m.frames != last_frame {
+            script.apply(m.frames, &mut m.bus);
         }
         if snap > 0 && m.frames != last_frame && m.frames.is_multiple_of(snap) {
             snapshot(&m, &frames_dir.join(format!("{:06}.png", m.frames)));

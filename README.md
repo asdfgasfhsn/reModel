@@ -46,6 +46,8 @@ make analyze          # code discovery -> out/topskatr/program.lst
 make disasm ADDR=0x6f0 COUNT=64
 make run STEPS=50000000   # boot on the interpreter, report hardware use
 make run SNAP=60          # also write the tile layer every 60 frames
+make run STEPS=900000000 SNAP=115 INPUT=coin1@1100-1104,start@1250-1254
+                          # coin up, start, and play into a race
 ```
 
 Variables: `GAME` (manifest id, default `topskatr`), `ROM` (chip directory,
@@ -130,6 +132,9 @@ documentation and hasn't been contradicted yet.
   "Initializing"), the publisher logo, the title screen and attract mode,
   whose 3D scenes are not rendered yet. See `docs/hw/tilemap.md` for the
   split-mode finding, which differs from MAME.
+- *Confirmed:* coin 1 is IN0 bit 0 and start is IN0 bit 6 (active low). A
+  scripted coin and start go through course select and skater select into
+  a race: the HUD timer, checkpoints and hints all run, with no 3D drawn yet.
 - *Unverified:* the board map, IRQ controller semantics (`0xE80000`
   request/ack, `0xE80004` enable), timers and I/O chip layout in
   `crates/model2/src/bus.rs`.

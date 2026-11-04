@@ -6,6 +6,7 @@
 
 pub mod bus;
 pub mod eeprom;
+pub mod input;
 pub mod video;
 
 pub use bus::Model2Bus;
