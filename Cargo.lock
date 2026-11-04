@@ -7,6 +7,10 @@ name = "i960"
 version = "0.1.0"
 
 [[package]]
+name = "m68k"
+version = "0.1.0"
+
+[[package]]
 name = "mb86235"
 version = "0.1.0"
 
