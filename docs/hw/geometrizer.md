@@ -503,4 +503,10 @@ Rasteriser checks (Remodel `crates/model2/src/raster.rs`, gameplay frame 4555), 
   0x1009) between 0xD3FF and black on alternate frames (i960 0x20C58). Snapshots taken
   on even frames show it black; that is the game, not a rasteriser fault. Found with
   `REMODEL_PROBE` and `REMODEL_WATCH`.
+- Remodel filters textures bilinearly (section 5.4's rule for translucent texels). The
+  hardware's exact filter is still unconfirmed, but it removes the blockiness of point
+  sampling and looks like Model 2 footage.
+- topskatr uploads no mipmaps: both texture banks hold only full-size textures (the
+  first 1 MB of each bank is used), and the level-1 positions of its textures are empty
+  or hold other textures. So LOD selection can't matter for this game.
 - Not yet checked: mipmaps/LOD, microtexture, translucency/checker details, the z-sort key format (Remodel sorts on float z), and clipping without a near plane (Remodel clips at z = 1).

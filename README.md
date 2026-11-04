@@ -32,7 +32,7 @@ own thread. There is no live window or sound yet.
 | Recompiler (i960 → C) | planned |
 | Geometry processor fast path (high-level per-command) | planned |
 | 2D tile layer renderer (PNG snapshots) | done; boot, logo, title and attract text render |
-| 3D rasteriser (software) | textured gameplay frames render (point-sampled, no mipmaps yet) |
+| 3D rasteriser (software) | textured, bilinear-filtered gameplay frames (topskatr uses no mipmaps) |
 | Scripted input (headless) | done; every button and both analog channels confirmed |
 | Speed | interpreters about 2x real time (`make bench`); recompiler not needed to reach full speed |
 | Live window and sound (68000 + SCSP) | planned |

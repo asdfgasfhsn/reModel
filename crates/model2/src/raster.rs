@@ -295,6 +295,33 @@ fn wrap(c: i32, size: u32, mirror: bool) -> u32 {
     }
 }
 
+/// Bilinearly filtered texel at (u, v), scaled to 8 bits (0-255). For a
+/// translucent texture, texel 15 is transparent: the opaque neighbours'
+/// average stands in for it, and the pixel is dropped when less than half
+/// its weight is opaque (docs/hw/geometrizer.md 5.4; the hardware filter is
+/// unconfirmed).
+fn filtered_texel(t: &Texture, src: &Sources, u: f32, v: f32) -> Option<u32> {
+    let (u, v) = (u - 0.5, v - 0.5);
+    let (fu, fv) = (u - u.floor(), v - v.floor());
+    let (u0, v0) = (u.floor() as i32, v.floor() as i32);
+    let (mut sum, mut weight) = (0.0, 0.0);
+    for (du, dv, w) in
+        [(0, 0, (1.0 - fu) * (1.0 - fv)), (1, 0, fu * (1.0 - fv)), (0, 1, (1.0 - fu) * fv), (1, 1, fu * fv)]
+    {
+        let tx = t.x0 + wrap(u0 + du, t.w, t.mirror_x);
+        let ty = t.y0 + wrap(v0 + dv, t.h, t.mirror_y);
+        let texel = src.texel(t.bank, tx, ty);
+        if !(t.translucent && texel == 15) {
+            sum += texel as f32 * w;
+            weight += w;
+        }
+    }
+    if weight < 0.5 {
+        return None;
+    }
+    Some((sum / weight * 17.0).round() as u32)
+}
+
 /// Shade one pixel; None if it is transparent.
 fn shade(p: &Poly, src: &Sources, x: usize, y: usize, u: f32, v: f32) -> Option<[u8; 3]> {
     let lum = match p.texture {
@@ -302,13 +329,7 @@ fn shade(p: &Poly, src: &Sources, x: usize, y: usize, u: f32, v: f32) -> Option<
             if t.checker && (x ^ y) & 1 != 0 {
                 return None;
             }
-            let tx = t.x0 + wrap(u.floor() as i32, t.w, t.mirror_x);
-            let ty = t.y0 + wrap(v.floor() as i32, t.h, t.mirror_y);
-            let texel = src.texel(t.bank, tx, ty);
-            if t.translucent && texel == 15 {
-                return None;
-            }
-            let t8 = texel * 17;
+            let t8 = filtered_texel(&t, src, u, v)?;
             (src.luma(t.luma_table, t8 / 2) * p.luma / 256).min(63)
         }
         None => p.luma >> 2,
@@ -433,6 +454,30 @@ mod tests {
         let c = clip_near(&[v(0.0, -1.0), v(0.0, 3.0), v(1.0, 3.0)], 1.0);
         assert_eq!(c.len(), 4);
         assert!(c.iter().all(|p| p.z >= 1.0));
+    }
+
+    #[test]
+    fn bilinear_filter_and_translucent_coverage() {
+        // Texels (0,0) = 0 and (1,0) = 15 share the sheet's first word.
+        let mut render_ram = vec![0u8; 0x40_0000];
+        render_ram[1] = 0x0f;
+        let src = Sources {
+            texture_rom: &[],
+            texture_point_ram: &[],
+            render_ram: &render_ram,
+            palette: &[],
+            xoff: 0.0,
+            yoff: 0.0,
+        };
+        let mut t = texture_from_header([0x4000, 0, 0, 0]).unwrap();
+        // Halfway between the two texel centres: the average, 7.5 * 17.
+        assert_eq!(filtered_texel(&t, &src, 1.0, 0.5), Some(128));
+        assert_eq!(filtered_texel(&t, &src, 0.5, 0.5), Some(0));
+        t.translucent = true;
+        // 15 is transparent: mostly-opaque pixels take the opaque texel,
+        // mostly-transparent ones are dropped.
+        assert_eq!(filtered_texel(&t, &src, 0.9, 0.5), Some(0));
+        assert_eq!(filtered_texel(&t, &src, 1.1, 0.5), None);
     }
 
     #[test]
