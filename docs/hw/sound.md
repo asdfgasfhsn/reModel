@@ -700,6 +700,10 @@ Byte-wide commands. The low bit of each opcode selects MPEG player 0 or 1
 - **Emulation choice:** decode at 32 kHz, resample to 44.1 kHz, and add to
   the SCSP output after the gain matrix of §3.4. `crates/dsb` does the
   first two (Catmull-Rom resampling).
+- **Replacement soundtracks** (`docs/mods.md`) hook in at the decoder: a
+  play (`74`) whose start/end matches a replaced track's range streams a
+  file instead, resampled straight to 44.1 kHz. It goes through the same
+  gain matrix and obeys `64` (loop armed) and `84` (stop).
 
 ### 3.7 DSB2 firmware: commands and track table (ROM, H unless marked)
 The main loop (`0x6D2`) takes bytes from the 4 KB ring and parses MIDI with

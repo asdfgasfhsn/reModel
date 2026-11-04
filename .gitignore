@@ -2,4 +2,6 @@
 # Game data is user-supplied and never committed.
 /rom/
 /out/
+# User soundtracks (docs/mods.md): their audio is not ours to commit.
+/soundtracks/
 /.claude/worktrees/
