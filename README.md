@@ -33,7 +33,7 @@ own thread. There is no live window or sound yet.
 | Geometry processor fast path (high-level per-command) | planned |
 | 2D tile layer renderer (PNG snapshots) | done; boot, logo, title and attract text render |
 | 3D rasteriser (software) | textured gameplay frames render (point-sampled, no mipmaps yet) |
-| Scripted input (headless) | done; coin and start confirmed, other buttons unverified |
+| Scripted input (headless) | done; every button and both analog channels confirmed |
 | Speed | interpreters about 2x real time (`make bench`); recompiler not needed to reach full speed |
 | Live window and sound (68000 + SCSP) | planned |
 
@@ -145,7 +145,17 @@ documentation and hasn't been contradicted yet.
   split-mode finding, which differs from MAME.
 - *Confirmed:* coin 1 is IN0 bit 0 and start is IN0 bit 6 (active low). A
   scripted coin and start go through course select and skater select into
-  a race: the HUD timer, checkpoints and hints all run, with no 3D drawn yet.
+  a race: the HUD timer, checkpoints and hints all run.
+- *Confirmed:* the other controls, each from the game's response to a
+  scripted press (all active low):
+  - select right is IN0 bit 4 and select left is IN0 bit 7: they move the
+    course-select highlight;
+  - jump front is IN0 bit 5 (the skater presses the nose) and jump tail is
+    IN1 bit 0 (presses the tail into a manual);
+  - analog channel 0 is steering: 0x10 carves right, 0xF0 carves left, 0x80
+    is centred;
+  - analog channel 1 is slide: 0xF0 makes the skater crouch into a slide,
+    with sparks off the board.
 - *Confirmed:* gameplay frames render in 3D with textures from the game's own
   geometrizer output, composited between low- and high-priority tiles. This
   confirms:

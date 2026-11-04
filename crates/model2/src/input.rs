@@ -8,8 +8,8 @@ use crate::bus::Model2Bus;
 
 /// Digital inputs: (name, port index into `Model2Bus::inputs`, bit).
 /// Ports read active low. Coin/test/service follow the common Model 2
-/// layout; the game buttons are topskatr's and come from MAME, unverified
-/// (see docs/mame-defects.md MD-9).
+/// layout. The game buttons are topskatr's; all were confirmed by scripted
+/// presses (README, "What's known"). Test and service are not yet checked.
 const BUTTONS: &[(&str, usize, u8)] = &[
     ("coin1", 0, 0x01),
     ("coin2", 0, 0x02),
@@ -22,7 +22,8 @@ const BUTTONS: &[(&str, usize, u8)] = &[
     ("jumptail", 1, 0x01),
 ];
 
-/// Analog channels on the I/O chip: topskatr's two board pots.
+/// Analog channels on the I/O chip: topskatr's two board pots. Curving
+/// is steering (low = right), slide makes the skater crouch and slide.
 const ANALOG: &[(&str, usize)] = &[("curving", 0), ("slide", 1)];
 
 #[derive(Clone, Debug, PartialEq, Eq)]

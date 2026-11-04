@@ -78,9 +78,16 @@ and keep the evidence concrete (addresses, counts, outputs).
 - **Where:** `src/mame/sega/model2.cpp` (header PCB notes vs the `model2c` machine config).
 - **Now strong evidence (promote with MD-10):** topskatr uploads a second 4,096-word MB86235 program through 0x00804000 with 0x00980008 bit 31 set (i960 0x47EC0). That program is the geometrizer, and running it in Remodel produces the full rasteriser stream. MAME counts these words and discards them.
 
-### MD-9. topskatr inputs overlap the EEPROM read-mode bits
+### MD-9. topskatr inputs overlap the EEPROM read-mode bits (resolved: not a defect)
 - **Where:** `model2.cpp`, the `topskatr` input ports. They put four buttons on IN0 bits 4-7, the bits that show EEPROM DO and fixed 1s when port A control mode is on.
-- **Progress:** coin 1 (IN0 bit 0) and start (IN0 bit 6) are confirmed in Remodel. Coin gives "CREDIT 1"; start leads to course select, skater select and a race. So MAME's start bit is right, and the overlap hasn't caused trouble: the game reads buttons outside control mode. Select left/right and jump front/tail are still unverified. This may turn out to be no defect at all.
+- **Resolved: not a defect.** Every button in MAME's layout is confirmed in Remodel from the game's response to a scripted press:
+  - coin 1 (IN0 bit 0) gives "CREDIT 1";
+  - start (IN0 bit 6) leads to course select;
+  - select right and left (IN0 bits 4 and 7) move the course highlight;
+  - jump front (IN0 bit 5) and jump tail (IN1 bit 0) press the nose and the tail;
+  - the two analog channels steer and slide.
+
+  The overlap with the EEPROM bits is harmless because the game reads buttons outside control mode. Kept here so nobody re-investigates it.
 
 ### MD-10. Model 2B/2C geometrizer is HLE'd from one game's program, not run
 - **Where:** `src/mame/sega/model2_v.cpp` (`geo_parse` and its command handlers), `model2.cpp` (the geo upload in `geo_ctl_w`).
