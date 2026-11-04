@@ -144,7 +144,7 @@ pub struct Model2Bus {
     pub geo_trace: Option<Vec<(u32, u32)>>,
     /// Write watch (debugging): an address, and the (cycle, ip, address,
     /// value, size) of every memory write touching its 32-bit word.
-    pub watch: Option<(u32, Vec<(u64, u32, u32, u32, usize)>)>,
+    pub watch: Option<(u32, Vec<WatchHit>)>,
     /// Video status bit 2 at 0x98000C. Hypothesis (from the boot code, which
     /// times how long it takes to change): toggles once per frame.
     pub frame_toggle: bool,
@@ -645,6 +645,9 @@ impl std::hash::Hasher for AddrHasher {
         self.0 = (v as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
     }
 }
+
+/// A watched write: (cycle, ip, address, value, size in bytes).
+pub type WatchHit = (u64, u32, u32, u32, usize);
 
 struct Fnv(u64);
 
