@@ -40,6 +40,20 @@ pub enum Role {
     Program,
     /// i960-visible data ROM, 16-bit interleaved pairs.
     MainData,
+    /// Geometry coprocessor data ROM, 16-bit interleaved pairs.
+    CoproData,
+    /// Polygon model data read by the geometry engine, interleaved pairs.
+    Polygons,
+    /// Texture ROM, interleaved pairs.
+    Textures,
+    /// 68000 sound program (byte-swapped 16-bit).
+    AudioCpu,
+    /// SCSP sample ROMs (byte-swapped 16-bit, concatenated).
+    Samples,
+    /// MPEG sound board CPU program (byte-swapped 16-bit).
+    MpegCpu,
+    /// MPEG sound board stream data, concatenated.
+    MpegData,
     /// Not yet identified.
     Unknown,
 }
@@ -112,6 +126,11 @@ impl RomSet {
         Ok(RomSet { game, program, chips })
     }
 
+    /// Assemble a 32-bit region from its interleaved chip pairs.
+    pub fn region32(&self, role: Role) -> Vec<u8> {
+        assemble(self.game, &self.chips, role)
+    }
+
     pub fn chip(&self, name: &str) -> Option<&[u8]> {
         self.game.files.iter().position(|r| r.name == name).map(|i| self.chips[i].as_slice())
     }
@@ -151,8 +170,10 @@ mod tests {
     #[test]
     fn manifests_have_program_pairs() {
         for g in games::ALL {
-            let n = g.files.iter().filter(|f| f.role == Role::Program).count();
-            assert!(n > 0 && n % 2 == 0, "{}: program chips must come in pairs", g.id);
+            for role in [Role::Program, Role::MainData, Role::CoproData, Role::Polygons, Role::Textures] {
+                let n = g.files.iter().filter(|f| f.role == role).count();
+                assert!(n % 2 == 0, "{}: {role:?} chips must come in pairs", g.id);
+            }
         }
     }
 }

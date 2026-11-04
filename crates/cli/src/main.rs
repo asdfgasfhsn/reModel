@@ -17,7 +17,9 @@ commands:
   verify               check every chip against known-good hashes
   boot                 print the boot record and system table seeds
   disasm ADDR [COUNT]  linear disassembly of the program ROM
-  analyze [OUT]        recursive-descent listing (default out/program.lst)
+  analyze [OUT]        recursive-descent listing (default out/GAME/program.lst)
+  run [STEPS]          boot on the reference interpreter and report what
+                       the game did (default 50M instructions)
 ";
 
 fn parse_num(s: &str) -> Option<u32> {
@@ -161,10 +163,73 @@ fn main() -> ExitCode {
             }
             println!("listing written to {}", out.display());
         }
+        "run" => {
+            let steps = args.get(1).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(50_000_000);
+            run(&roms, steps);
+        }
         _ => {
             eprint!("{USAGE}");
             return ExitCode::FAILURE;
         }
     }
     ExitCode::SUCCESS
+}
+
+fn run(roms: &RomSet, steps: u64) {
+    let mut m = model2::Machine::new(roms);
+    let started = std::time::Instant::now();
+    let stop = m.run(steps);
+    let secs = started.elapsed().as_secs_f64();
+    let b = &m.bus;
+
+    match stop {
+        Some(s) => println!("stopped       {s:?}"),
+        None => println!("stopped       step limit"),
+    }
+    println!("instructions  {} ({:.1} M/s)", m.cpu.icount, m.cpu.icount as f64 / secs / 1e6);
+    println!("emulated      {} frames ({:.2}s)", m.frames, m.frames as f64 / 60.0);
+    println!("ip            {:#x}  priority {}  icr {:#010x}", m.cpu.ip, m.cpu.priority(), m.cpu.icr);
+    println!("irq           request {:#x} enable {:#x}", b.irq_request, b.irq_enable);
+    println!("coverage      {} distinct instructions", m.coverage.len());
+    println!("indirect      {} distinct (source, target) pairs", m.indirect.len());
+    println!(
+        "copro         program {} words, booted {}, fifo in {} out {}, empty reads {}",
+        b.copro_program.len(),
+        b.copro_booted,
+        b.copro_fifo_in.len(),
+        b.copro_fifo_out.len(),
+        b.copro_empty_reads
+    );
+    println!("geo           {} data words", b.geo_words);
+    if !m.cpu.unhandled_iac.is_empty() {
+        println!("unhandled IAC {:x?}", m.cpu.unhandled_iac);
+    }
+    println!("hot spots (current frame):");
+    for (a, n) in m.hot_spots(8) {
+        let insn = i960::decode(a, |x| i960::cpu::Bus::fetch(&m.bus, x));
+        println!("  {a:08x} {n:>9}  {insn}");
+    }
+    let top = |log: &BTreeMap<u32, model2::bus::Access>, n: usize| {
+        let mut v: Vec<_> = log.iter().collect();
+        v.sort_by_key(|(_, a)| std::cmp::Reverse(a.reads + a.writes));
+        v.into_iter().take(n).map(|(&k, &a)| (k, a)).collect::<Vec<_>>()
+    };
+    println!("hardware registers ({} touched):", b.io_log.len());
+    for (a, e) in top(&b.io_log, 16) {
+        println!("  {a:08x}  r {:>9}  w {:>9}  last {:#x}", e.reads, e.writes, e.last_write);
+    }
+    if !b.unmapped.is_empty() {
+        println!("unmapped ({} addresses):", b.unmapped.len());
+        for (a, e) in top(&b.unmapped, 12) {
+            println!("  {a:08x}  r {:>9}  w {:>9}  last {:#x}", e.reads, e.writes, e.last_write);
+        }
+    }
+
+    let dir = PathBuf::from("out").join(roms.game.id);
+    let _ = std::fs::create_dir_all(&dir);
+    let cov: String = m.coverage.iter().map(|a| format!("{a:08x}\n")).collect();
+    let ind: String = m.indirect.iter().map(|(s, t)| format!("{s:08x} {t:08x}\n")).collect();
+    let _ = std::fs::write(dir.join("coverage.txt"), cov);
+    let _ = std::fs::write(dir.join("indirect.txt"), ind);
+    println!("trace written to {}/{{coverage,indirect}}.txt", dir.display());
 }

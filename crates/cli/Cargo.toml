@@ -13,3 +13,4 @@ path = "src/main.rs"
 i960.workspace = true
 remodel-romset.workspace = true
 remodel-analyze.workspace = true
+remodel-model2.workspace = true

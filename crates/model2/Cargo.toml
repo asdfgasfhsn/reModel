@@ -1,0 +1,13 @@
+[package]
+name = "remodel-model2"
+description = "Sega Model 2 board model: memory map, interrupts, timers, I/O"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "model2"
+
+[dependencies]
+i960.workspace = true
+remodel-romset.workspace = true

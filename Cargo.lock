@@ -12,6 +12,7 @@ version = "0.1.0"
 dependencies = [
  "i960",
  "remodel-analyze",
+ "remodel-model2",
  "remodel-romset",
 ]
 
@@ -20,6 +21,14 @@ name = "remodel-analyze"
 version = "0.1.0"
 dependencies = [
  "i960",
+]
+
+[[package]]
+name = "remodel-model2"
+version = "0.1.0"
+dependencies = [
+ "i960",
+ "remodel-romset",
 ]
 
 [[package]]

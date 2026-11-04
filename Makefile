@@ -8,17 +8,18 @@ ROM   ?= rom
 OUT   ?= out/$(GAME)
 ADDR  ?= 0x5c0
 COUNT ?= 32
+STEPS ?= 50000000
 
 CARGO   ?= cargo
 REMODEL := target/release/remodel
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release test lint fmt fmt-check check ci games verify boot disasm analyze clean
+.PHONY: help build release test lint fmt fmt-check check ci games verify boot disasm analyze run clean
 
 ##@ General
 
-help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT)
+help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS)
 	@awk 'BEGIN {FS = ":.*## "; printf "usage: make <target> [VAR=value]\n"} \
 		/^##@/ {printf "\n%s\n", substr($$0, 5)} \
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -64,6 +65,9 @@ disasm: release ## Linear disassembly: make disasm ADDR=0x6f0 COUNT=64
 
 analyze: release ## Recursive-descent code discovery; listing goes to OUT=
 	$(RUN) analyze $(OUT)/program.lst
+
+run: release ## Boot on the reference interpreter and report: make run STEPS=50000000
+	$(RUN) run $(STEPS)
 
 ##@ Housekeeping
 

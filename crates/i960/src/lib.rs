@@ -9,6 +9,8 @@
 //!         MEMA (bit12=0): mode[13] offset[11:0]
 //!         MEMB (bit12=1): mode[13:10] scale[9:7] index[4:0] (+ 32-bit disp word)
 
+pub mod cpu;
+
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
