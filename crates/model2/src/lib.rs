@@ -5,6 +5,7 @@
 //! and later used as the oracle for the recompiled build.
 
 pub mod bus;
+pub mod eeprom;
 
 pub use bus::Model2Bus;
 use bus::{FRAME_CYCLES, IRQ_VBLANK};

@@ -9,6 +9,7 @@
 //! anything that isn't plain memory is counted so the runner can report
 //! what the game is waiting on.
 
+use crate::eeprom::Eeprom;
 use i960::cpu::Bus;
 use mb86235::cpu::{External, Step, Tgp};
 use romset::{Role, RomSet};
@@ -136,6 +137,9 @@ pub struct Model2Bus {
     pub inputs: [u8; 4],
     io_analog_channel: usize,
     pub analog: [u8; 8],
+    /// 315-5649 output latches, by register.
+    io_latch: [u8; 16],
+    pub eeprom: Eeprom,
 
     /// Non-memory accesses, by word address.
     pub io_log: BTreeMap<u32, Access>,
@@ -209,6 +213,8 @@ impl Model2Bus {
             inputs: [0xff; 4],
             io_analog_channel: 0,
             analog: [0x80; 8],
+            io_latch: [0; 16],
+            eeprom: Eeprom::new(),
             io_log: BTreeMap::new(),
             unmapped: BTreeMap::new(),
         }
@@ -319,9 +325,13 @@ impl Model2Bus {
         Some(v)
     }
 
-    /// 315-5649 register read. Inputs are active low.
+    /// 315-5649 register read. Inputs are active low. Unverified (MAME):
+    /// port A bit 0 ("control mode") routes EEPROM DO onto port B bit 5, with
+    /// bits 7, 6 and 4 reading high.
     fn io_reg_read(&mut self, reg: usize) -> u8 {
         match reg {
+            0 | 5 => self.io_latch[reg],
+            1 if self.io_latch[0] & 1 != 0 => (self.inputs[0] & 0x0f) | 0xd0 | ((self.eeprom.dout() as u8) << 5),
             1 => self.inputs[0],
             2 => self.inputs[1],
             3 => self.inputs[2],
@@ -329,14 +339,25 @@ impl Model2Bus {
             8 => 0xff,
             0xf => {
                 let v = self.analog[self.io_analog_channel & 7];
-                self.io_analog_channel += 1;
+                self.io_analog_channel = (self.io_analog_channel + 1) & 7;
                 v
             }
             _ => 0,
         }
     }
 
-    fn io_write32(&mut self, addr: u32, v: u32) -> bool {
+    fn io_reg_write(&mut self, reg: usize, v: u8) {
+        self.io_latch[reg & 15] = v;
+        match reg {
+            // Port A: bit 5 DI, bit 6 CS, bit 7 CLK.
+            0 => self.eeprom.set_lines(v & 0x40 != 0, v & 0x80 != 0, v & 0x20 != 0),
+            0xf => self.io_analog_channel = (v & 7) as usize,
+            _ => {}
+        }
+    }
+
+    /// `lanes` is the byte-enable mask of the access within its word.
+    fn io_write32(&mut self, addr: u32, v: u32, lanes: u32) -> bool {
         match addr & !3 {
             0x0080_4000..=0x0080_7fff => self.geo_words += 1,
             0x0080_0000..=0x0080_3fff => {}
@@ -380,9 +401,12 @@ impl Model2Bus {
                 t.running = true;
             }
             0x01c0_0000..=0x01c0_001f => {
+                // Two 8-bit registers per word, in byte lanes 0 and 2.
                 let reg = (((addr - 0x01c0_0000) >> 2) * 2) as usize;
-                if reg + 1 == 0xf {
-                    self.io_analog_channel = ((v >> 16) & 7) as usize;
+                for k in 0..2 {
+                    if lanes & (1 << (2 * k)) != 0 {
+                        self.io_reg_write(reg + k, (v >> (16 * k)) as u8);
+                    }
                 }
             }
             0x01c8_0000..=0x01c8_0003 => {}
@@ -443,16 +467,28 @@ impl Model2Bus {
         if self.mem_write(addr, v, n) {
             return;
         }
-        let shifted = v << ((addr & 3) * 8);
-        if self.io_write32(addr, shifted) {
+        let shift = (addr & 3) * 8;
+        let shifted = v << shift;
+        let lanes = ((1u32 << n) - 1) << (addr & 3);
+        if self.io_write32(addr, shifted, lanes) {
             return;
         }
         self.unmapped(addr, Some(v));
     }
 
-    /// Raw view of a RAM/ROM region for snapshots and the recompiler.
+    /// Backup SRAM at 0x01D00000.
     pub fn backup_ram(&self) -> &[u8] {
         &self.mems[8].data
+    }
+
+    /// Tile RAM, character RAM and tilemap registers: 0x01000000-0x011FFFFF.
+    pub fn tile_ram(&self) -> &[u8] {
+        &self.mems[5].data
+    }
+
+    /// Palette and colour tables: 0x01800000-0x0181FFFF.
+    pub fn palette_ram(&self) -> &[u8] {
+        &self.mems[6].data
     }
 }
 

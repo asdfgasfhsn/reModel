@@ -204,6 +204,12 @@ fn main() -> ExitCode {
 
 fn run(roms: &RomSet, steps: u64) {
     let mut m = model2::Machine::new(roms);
+    let dir = PathBuf::from("out").join(roms.game.id);
+    let eeprom_path = dir.join("eeprom.bin");
+    if let Ok(bytes) = std::fs::read(&eeprom_path) {
+        m.bus.eeprom.load(&bytes);
+        println!("eeprom        loaded {}", eeprom_path.display());
+    }
     let started = std::time::Instant::now();
     let stop = m.run(steps);
     let secs = started.elapsed().as_secs_f64();
@@ -265,8 +271,17 @@ fn run(roms: &RomSet, steps: u64) {
         }
     }
 
-    let dir = PathBuf::from("out").join(roms.game.id);
     let _ = std::fs::create_dir_all(&dir);
+    let blank = b.eeprom.data.iter().filter(|&&w| w == 0xffff).count();
+    println!("eeprom        {} of 64 words programmed, changed this run: {}", 64 - blank, b.eeprom.dirty);
+    if b.eeprom.dirty {
+        let _ = std::fs::write(&eeprom_path, b.eeprom.save());
+    }
+    // Raw video memory for offline inspection (game-derived: stays in out/).
+    let vram = dir.join("vram");
+    let _ = std::fs::create_dir_all(&vram);
+    let _ = std::fs::write(vram.join("tiles.bin"), b.tile_ram());
+    let _ = std::fs::write(vram.join("palette.bin"), b.palette_ram());
     let cov: String = m.coverage.iter().map(|a| format!("{a:08x}\n")).collect();
     let ind: String = m.indirect.iter().map(|(s, t)| format!("{s:08x} {t:08x}\n")).collect();
     let _ = std::fs::write(dir.join("coverage.txt"), cov);
