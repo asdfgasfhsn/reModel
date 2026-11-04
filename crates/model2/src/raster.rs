@@ -70,6 +70,8 @@ pub struct Poly {
     colour: [u32; 3],
     /// Polygon luma, 0-255.
     luma: u32,
+    /// The 4-word texture header, kept for probing.
+    header: [u16; 4],
 }
 
 /// Inputs the rasteriser reads besides the stream.
@@ -245,6 +247,7 @@ pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
                                 texture: texture_from_header(header),
                                 colour: [c & 31, (c >> 5) & 31, (c >> 10) & 31],
                                 luma: (luma_word >> 15) & 0xff,
+                                header,
                             });
                         }
                     }
@@ -311,6 +314,43 @@ fn shade(p: &Poly, src: &Sources, x: usize, y: usize, u: f32, v: f32) -> Option<
         None => p.luma >> 2,
     };
     Some([0, 1, 2].map(|ch| src.translate(ch, p.colour[ch], lum)))
+}
+
+/// Describe the polygons covering screen pixel (x, y), in draw order
+/// (debugging aid: `remodel run` prints these with `REMODEL_PROBE=x,y`).
+pub fn probe(polys: &[Poly], src: &Sources, x: f32, y: f32) -> Vec<String> {
+    let inside = |p: &Poly| {
+        let n = p.points.len();
+        let side = |i: usize| {
+            let (a, b) = (p.points[i], p.points[(i + 1) % n]);
+            (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x)
+        };
+        n >= 3 && ((0..n).all(|i| side(i) >= 0.0) || (0..n).all(|i| side(i) <= 0.0))
+    };
+    polys
+        .iter()
+        .filter(|p| inside(p))
+        .map(|p| {
+            let mut hist = [0u32; 16];
+            if let Some(t) = p.texture {
+                for ty in 0..t.h {
+                    for tx in 0..t.w {
+                        hist[src.texel(t.bank, t.x0 + tx, t.y0 + ty) as usize] += 1;
+                    }
+                }
+            }
+            format!(
+                "window {} key {:.1} header {:04x?} colour {:?} luma {} texel histogram {hist:?}\n    texture {:?} points {:?}",
+                p.window,
+                p.key,
+                p.header,
+                p.colour,
+                p.luma,
+                p.texture,
+                p.points.iter().map(|v| (v.x as i32, v.y as i32)).collect::<Vec<_>>()
+            )
+        })
+        .collect()
 }
 
 /// Draw polygons into an RGB layer with a coverage mask: windows in order,

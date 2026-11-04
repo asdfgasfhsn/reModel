@@ -30,6 +30,11 @@ commands:
                        the game did (default 50M instructions); writes the
                        tile layer to out/GAME/frames/ every SNAP frames
                        (0 = final frame only)
+
+debugging (environment variables for `run`):
+  REMODEL_PROBE=X,Y    at each snapshot, list the 3D polygons covering
+                       pixel (X, Y) with their texture header and texels
+  REMODEL_WATCH=ADDR   log every memory write to ADDR's 32-bit word
 ";
 
 fn parse_num(s: &str) -> Option<u32> {
@@ -244,6 +249,15 @@ fn snapshot(m: &mut model2::Machine, path: &std::path::Path) {
     };
     let mut polys = model2::raster::build(&geo.stream, &src);
     let (rgb3d, covered) = model2::raster::draw(&mut polys, &src);
+    if let Some((x, y)) = std::env::var("REMODEL_PROBE").ok().and_then(|v| {
+        let (x, y) = v.split_once(',')?;
+        Some((x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?))
+    }) {
+        println!("probe {x},{y} in {}:", path.display());
+        for line in model2::raster::probe(&polys, &src, x, y) {
+            println!("  {line}");
+        }
+    }
     let rgb = model2::video::render_frame(b.tile_ram(), b.palette_ram(), Some((&rgb3d, &covered)));
     let png = png::encode_rgb(model2::video::WIDTH as u32, model2::video::HEIGHT as u32, &rgb);
     let _ = std::fs::write(path, png);
@@ -260,6 +274,9 @@ fn run(roms: &RomSet, steps: u64, snap: u64, script: &model2::input::InputScript
     let frames_dir = dir.join("frames");
     let _ = std::fs::remove_dir_all(&frames_dir);
     let _ = std::fs::create_dir_all(&frames_dir);
+    if let Some(a) = std::env::var("REMODEL_WATCH").ok().and_then(|v| parse_num(&v)) {
+        m.bus.watch = Some((a, Vec::new()));
+    }
     let started = std::time::Instant::now();
     let mut stop = None;
     let mut last_frame = 0;
@@ -382,6 +399,12 @@ fn run(roms: &RomSet, steps: u64, snap: u64, script: &model2::input::InputScript
         v.sort_by_key(|&(&k, a)| (std::cmp::Reverse(a.reads + a.writes), k));
         v.into_iter().take(n).map(|(&k, &a)| (k, a)).collect::<Vec<_>>()
     };
+    if let Some((a, log)) = &b.watch {
+        println!("watch {a:#010x}: {} writes", log.len());
+        for &(t, ip, addr, v, n) in log.iter().take(64) {
+            println!("  frame {:>6} ip {ip:#08x} {addr:#010x} <- {v:#x} ({n} bytes)", t / model2::bus::FRAME_CYCLES);
+        }
+    }
     println!("hardware registers ({} touched):", b.io_log.len());
     for (a, e) in top(&mut b.io_log.iter(), 16) {
         println!("  {a:08x}  r {:>9}  w {:>9}  last {:#x}", e.reads, e.writes, e.last_write);
@@ -404,6 +427,7 @@ fn run(roms: &RomSet, steps: u64, snap: u64, script: &model2::input::InputScript
     let _ = std::fs::create_dir_all(&vram);
     let _ = std::fs::write(vram.join("tiles.bin"), b.tile_ram());
     let _ = std::fs::write(vram.join("palette.bin"), b.palette_ram());
+    let _ = std::fs::write(vram.join("render.bin"), b.render_ram());
     let cov: String = m.coverage.iter().map(|a| format!("{a:08x}\n")).collect();
     let ind: String = m.indirect.iter().map(|(s, t)| format!("{s:08x} {t:08x}\n")).collect();
     let _ = std::fs::write(dir.join("coverage.txt"), cov);

@@ -499,4 +499,8 @@ Rasteriser checks (Remodel `crates/model2/src/raster.rs`, gameplay frame 4555), 
 - Projection (§4.4) with the window centre and sync offsets.
 - Texture header fields for size, position, mirror and luma table (§5.3); 13.3 V-then-U texture points; sheet addressing with 2x2 nibble packing and bank selection (§5.1).
 - Shading path: texel, then luma table times polygon luma, then the colour translation tables (§5.4).
+- topskatr's FINISH gantry sign blinks: the game toggles its polygon colour (palette
+  0x1009) between 0xD3FF and black on alternate frames (i960 0x20C58). Snapshots taken
+  on even frames show it black; that is the game, not a rasteriser fault. Found with
+  `REMODEL_PROBE` and `REMODEL_WATCH`.
 - Not yet checked: mipmaps/LOD, microtexture, translucency/checker details, the z-sort key format (Remodel sorts on float z), and clipping without a near plane (Remodel clips at z = 1).

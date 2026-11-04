@@ -142,6 +142,9 @@ pub struct Model2Bus {
     pub geo_words: u64,
     /// When set, geo port writes (address, value) are recorded here.
     pub geo_trace: Option<Vec<(u32, u32)>>,
+    /// Write watch (debugging): an address, and the (cycle, ip, address,
+    /// value, size) of every memory write touching its 32-bit word.
+    pub watch: Option<(u32, Vec<(u64, u32, u32, u32, usize)>)>,
     /// Video status bit 2 at 0x98000C. Hypothesis (from the boot code, which
     /// times how long it takes to change): toggles once per frame.
     pub frame_toggle: bool,
@@ -243,6 +246,7 @@ impl Model2Bus {
             cur_ip: 0,
             geo_words: 0,
             geo_trace: None,
+            watch: None,
             frame_toggle: false,
             board_ctrl: 0,
             inputs: [0xff; 4],
@@ -494,6 +498,11 @@ impl Model2Bus {
 
     fn mem_write(&mut self, addr: u32, v: u32, n: usize) -> bool {
         let Some((m, off)) = self.find(addr) else { return false };
+        if let Some((w, log)) = &mut self.watch {
+            if addr & !3 == *w & !3 {
+                log.push((self.now, self.cur_ip, addr, v, n));
+            }
+        }
         let mem = &mut self.mems[m];
         if mem.writable {
             let len = mem.data.len();
