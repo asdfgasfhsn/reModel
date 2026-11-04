@@ -260,6 +260,11 @@ fn run(roms: &RomSet, steps: u64, snap: u64) {
         b.copro_empty_reads
     );
     println!("tgp           {} words executed, pc {:#05x}, fault {:x?}", b.tgp.steps, b.tgp.pc, b.tgp_fault);
+    println!("copro results hash {:016x}", b.copro_result_hash);
+    let tgp_cov: Vec<u32> = (0..4096).filter(|&a| b.tgp.executed[a as usize]).collect();
+    println!("tgp coverage  {} of 4096 words executed", tgp_cov.len());
+    let tgp_txt: String = tgp_cov.iter().map(|a| format!("{a:03x}\n")).collect();
+    let _ = std::fs::write(dir.join("copro-coverage.txt"), tgp_txt);
     println!("geo           {} data words", b.geo_words);
     if !b.copro_empty_by_ip.is_empty() {
         let first = b.copro_empty_by_ip.keys().next();

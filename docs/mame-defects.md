@@ -1,0 +1,93 @@
+# MAME defects found while building Remodel
+
+A record of places where MAME's emulation differs from what the hardware
+does, kept so they can be turned into upstream patches. MAME marks
+`topskatr` as `MACHINE_NOT_WORKING`; several entries below are plausible
+reasons why.
+
+**Scope and method.** Remodel is clean-room: we read MAME for facts, never
+copy its code. A patch to MAME would be written fresh against MAME's tree and
+its licence, using the evidence here. Line numbers refer to `mamedev/mame`
+master at commit `64eae1fe` (fetched 2026-11-05). Re-check them before
+patching.
+
+**Status levels**
+
+| Status | Meaning |
+|---|---|
+| Confirmed | The game's own code or output demonstrates the defect, and MAME's code was read to confirm what it does. |
+| Suspected | MAME's code contradicts other sources or itself, but the game hasn't exercised the path yet (or doesn't use it). |
+| Known hack | MAME's own comments admit a placeholder or guess. |
+
+To add an entry: give it the next ID, say how to reproduce it with Remodel,
+and keep the evidence concrete (addresses, counts, outputs).
+
+---
+
+## Confirmed
+
+### MD-1. MB86235: absolute addressing mode (0xC) is fatal
+- **Where:** `src/devices/cpu/mb86235/mb86235ops.cpp`, `mb86235_device::decode_ea` (switch around lines 100-178; `fatalerror` at line 180).
+- **MAME does:** the switch has cases for modes 0x0-0xB and 0xD-0xF but none for 0xC, so mode 0xC hits `fatalerror("TGPx4: illegal decode_ea type ...")`.
+- **Correct:** mode 0xC is a valid absolute address (the displacement field is the address). MAME's own disassembler (`mb86235d.cpp`) prints it as such.
+- **Evidence:** the 4,096-word program `topskatr` uploads contains 8 mode-0xC transfers (program addresses 0xAC7, 0xAE1, 0xB08, 0xB1E, 0xBFB, 0xC00, 0xC18, 0xCE5). All 8 execute during boot and attract (Remodel's TGP coverage), so MAME would abort the moment the copro reaches the first one. **Likely a blocker for topskatr in MAME.**
+- **Reproduce:** `make run STEPS=300000000`, then check `out/topskatr/copro-coverage.txt` for those addresses.
+- **Fix direction:** add `case 0x0c: return disp;` (absolute, no post-modify). Remodel implements it this way and the game runs. The exact displacement width/sign for mode 0xC still deserves a check against more games.
+
+### MD-2. System 24 tile chip: split mode applies the line-scroll entry as X scroll
+- **Where:** `src/mame/sega/segaic24.cpp`, `segas24_tile_device::draw_common`, the `hscr & 0x8000` branch, `case 2: case 3:` (around lines 389-417; scroll set at lines 397-401).
+- **MAME does:** with line scroll enabled in left/right split mode, it reads the line's table entry and uses its low 9 bits as **both** the split point and the X scroll of both maps.
+- **Correct (per topskatr):** the table entry is only the split point (bit 9 picks which map is on the left). The maps keep their HSCROLL register scroll. topskatr's attract text ("INSERT COIN(S)" / "CREDIT 0") is centred in the map with zero scroll. Under MAME's reading it jumps sideways from frame to frame; under ours it stays put while the split wipes it in and out.
+- **Evidence:** rendering the same frames both ways (`docs/hw/tilemap.md`, "Checks against topskatr").
+- **Reproduce:** `make run STEPS=300000000 SNAP=86` and view `out/topskatr/frames/`.
+- **Fix direction:** in that branch, keep `set_scrollx` from the HSCROLL register (`hscr` before it is replaced by the table entry), and use the table entry only for the split point and side. Affects Model 1, Model 2 and System 24 games that use split mode with line scroll; check one of them for regressions.
+- **Related, suspected:** the top/bottom split case (`case 1:`, lines 381-384) uses the table entry as X scroll in the same way. topskatr doesn't use mode 1.
+
+### MD-3. MB86235 disassembler and recompiler: relative branch target off by one
+- **Where:** `src/devices/cpu/mb86235/mb86235d.cpp` (relative targets for DBLP/DBBC/DBBS and EF2 bit 12), plus `mb86235fe.cpp` / `mb86235drc.cpp`.
+- **MAME does:** computes the target as branch address + displacement. The interpreter (`mb86235ops.cpp`) uses branch address + 1 + displacement.
+- **Correct:** address + 1 + displacement (the interpreter is right).
+- **Evidence:** in topskatr's program, all 4 DBLP loops land 1-2 words after their SETL with +1, and none do with +0.
+- **Impact:** wrong labels in debugger disassembly. The DRC (disabled by `ENABLE_DRC 0`) would branch wrongly if enabled.
+- **Fix direction:** add 1 in the disassembler and frontend relative-target paths.
+
+---
+
+## Suspected
+
+### MD-4. MB86235 interpreter: MVD1 register-to-register moves are no-ops
+- **Where:** `mb86235ops.cpp`, `mb86235_device::do_alu2_trans2_1`, `case 0:` (around lines 899-906 and 926-932).
+- **MAME does:** for SD = 0 it reads the A source from bits 24..20 and the B source from bits 13..10, then writes them back to the **same** fields. That makes the move a no-op, and the B field is one bit narrower than the disassembler's.
+- **Expected:** A source 24..20 to A destination 19..15; B source 14..10 to B destination 9..5 (B codes OR 0x20). This is the layout `mb86235d.cpp` prints.
+- **Evidence so far:** topskatr's program has 44 non-trivial SD = 0 moves, all at 0xFBE and above. None execute during boot or attract (TGP coverage), and outputs are identical either way over 300M instructions. Promote to Confirmed once gameplay reaches them.
+
+### MD-5. MB86235 interpreter: EBL write shifts the value into the high bits
+- **Where:** `mb86235ops.cpp`, transfer-register write for code 0x12 (EBL).
+- **Expected:** replace EB's low 14 bits. topskatr never writes EBL.
+
+### MD-6. MB86235 interpreter: FEA/FES/FLOG arithmetic
+- **Where:** `mb86235ops.cpp`, ALU ops 0x08, 0x09 and 0x0C.
+- **MAME does:** FEA/FES keep only the exponent bits, and FLOG computes ln(x)/log10(2) rather than log2(x).
+- **Expected:** FEA/FES scale by a power of two via the exponent, and FLOG is log2. topskatr doesn't use these ops.
+
+### MD-7. MB86235: unimplemented MOV4/ICDTR, MOVI and MVD2 field disagreement
+- **Where:** `mb86235ops.cpp`: MOV4 is executed as MOV2, MOVI isn't executed at all, and MVD2 memory-to-register takes the register from the destination field.
+- topskatr's program uses none of these (no format-4 words).
+
+### MD-8. Model 2C: one TGPx4 emulated, PCB note lists two
+- **Where:** `src/mame/sega/model2.cpp` (header PCB notes vs the `model2c` machine config).
+- Unverified either way. Needs a PCB photo or a game that clearly drives a second chip.
+
+### MD-9. topskatr inputs overlap the EEPROM read-mode bits
+- **Where:** `model2.cpp`, the `topskatr` input ports. They put four buttons on IN0 bits 4-7, the bits that show EEPROM DO and fixed 1s when port A control mode is on.
+- Verify once inputs are wired in Remodel.
+
+---
+
+## Known hacks (admitted in MAME's source)
+
+| ID | Where | Note |
+|---|---|---|
+| MH-1 | `315_5649.cpp`, serial status register 0x0D | Hard-coded to 0x0C; the source calls it a hack. |
+| MH-2 | `model2.cpp`, uPD71051/i8251 UART clock | 8 MHz is a guess, so the baud rate is unmeasured. |
+| MH-3 | `model2rd.ipp` / `model2_v.cpp`, colour gamma | The gamma step is a calibration guess, not hardware. |

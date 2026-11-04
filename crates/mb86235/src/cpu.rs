@@ -87,6 +87,8 @@ pub struct Tgp {
     pub fifo_in: VecDeque<u32>,
     pub fifo_out: VecDeque<u32>,
     pub steps: u64,
+    /// Which program words have executed at least once.
+    pub executed: Vec<bool>,
     decoded: Vec<Option<Insn>>,
 }
 
@@ -126,6 +128,7 @@ impl Tgp {
             fifo_in: VecDeque::new(),
             fifo_out: VecDeque::new(),
             steps: 0,
+            executed: vec![false; PROGRAM_WORDS as usize],
             decoded: vec![None; PROGRAM_WORDS as usize],
         }
     }
@@ -706,6 +709,7 @@ impl Tgp {
         self.pending = branch;
         self.pc = next;
         self.steps += 1;
+        self.executed[pc as usize] = true;
         Step::Ran
     }
 

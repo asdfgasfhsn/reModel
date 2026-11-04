@@ -85,7 +85,9 @@ needed. `topskatr` is Model 2C-CRX (MB86235 geometry processor).
 The board table is from public documentation (largely MAME's driver notes).
 MAME does not run `topskatr` correctly, so its board details are treated as
 **unverified hypotheses**: the game's own code is the ground truth, and the
-board model logs every access it doesn't fully understand.
+board model logs every access it doesn't fully understand. Places where
+MAME is demonstrably wrong are tracked in `docs/mame-defects.md`, written up
+so they can become upstream patches.
 
 ## What's known about `topskatr`
 

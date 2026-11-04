@@ -122,6 +122,9 @@ pub struct Model2Bus {
     /// First instruction the TGP model couldn't execute, if any.
     pub tgp_fault: Option<u32>,
     pub copro_empty_reads: u64,
+    /// Running FNV-1a hash of every value the i960 read from the copro, to
+    /// compare runs.
+    pub copro_result_hash: u64,
     /// Where the CPU read the copro output FIFO while it was empty (real
     /// hardware stalls there until a result arrives), by IP.
     pub copro_empty_by_ip: BTreeMap<u32, u64>,
@@ -205,6 +208,7 @@ impl Model2Bus {
                 .collect(),
             tgp_fault: None,
             copro_empty_reads: 0,
+            copro_result_hash: 0xcbf2_9ce4_8422_2325,
             copro_empty_by_ip: BTreeMap::new(),
             cur_ip: 0,
             geo_words: 0,
@@ -280,7 +284,10 @@ impl Model2Bus {
                     self.run_tgp(TGP_STALL_LIMIT);
                 }
                 match self.tgp.fifo_out.pop_front() {
-                    Some(v) => v,
+                    Some(v) => {
+                        self.copro_result_hash = (self.copro_result_hash ^ v as u64).wrapping_mul(0x100_0000_01b3);
+                        v
+                    }
                     None => {
                         self.copro_empty_reads += 1;
                         *self.copro_empty_by_ip.entry(self.cur_ip).or_default() += 1;

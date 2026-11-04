@@ -12,3 +12,6 @@
   code. `rom/` and `out/` are git-ignored.
 - Record confirmed hardware or game findings in the README's "What's known"
   section, and mark anything unconfirmed as such.
+- When behaviour contradicts MAME (confirmed from the game, or found in
+  MAME's code), add or update an entry in `docs/mame-defects.md` with
+  evidence and a way to reproduce it, so it can become an upstream patch.
