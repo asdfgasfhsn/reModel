@@ -25,10 +25,11 @@ nothing renders yet.
 | i960 interpreter (reference and tracer) | done; boots `topskatr` into its interrupt-driven init |
 | Model 2C board model (memory, IRQs, timers, I/O, copro interface) | in progress |
 | MB86235 geometry processor: disassembler and reference interpreter | done; runs the game's uploaded program |
+| Geometrizer (second MB86235) running the game's own program | done; gameplay frames produce the rasteriser stream |
 | Recompiler (i960 → C) | planned |
 | Geometry processor fast path (high-level per-command) | planned |
 | 2D tile layer renderer (PNG snapshots) | done; boot, logo, title and attract text render |
-| 3D renderer (OpenGL/Vulkan) | planned |
+| 3D rasteriser (software first) | next |
 | Sound (68000 + SCSP) and input | planned |
 
 ## Quick start

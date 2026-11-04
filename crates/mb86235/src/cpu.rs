@@ -86,6 +86,9 @@ pub struct Tgp {
     pending: Option<u32>,
     pub fifo_in: VecDeque<u32>,
     pub fifo_out: VecDeque<u32>,
+    /// External flag inputs F0-F2 (bits 0-2), driven by the board; they
+    /// appear in ST bits 28-30 for branch conditions.
+    pub ext_flags: u32,
     pub steps: u64,
     /// Which program words have executed at least once.
     pub executed: Vec<bool>,
@@ -127,6 +130,7 @@ impl Tgp {
             pending: None,
             fifo_in: VecDeque::new(),
             fifo_out: VecDeque::new(),
+            ext_flags: 0,
             steps: 0,
             executed: vec![false; PROGRAM_WORDS as usize],
             decoded: vec![None; PROGRAM_WORDS as usize],
@@ -151,7 +155,7 @@ impl Tgp {
     }
 
     fn live_flags(&self) -> u32 {
-        let mut f = self.st & !(IFE | IFF | OFE | OFF);
+        let mut f = (self.st & !(IFE | IFF | OFE | OFF | (7 << 28))) | ((self.ext_flags & 7) << 28);
         if self.fifo_in.is_empty() {
             f |= IFE;
         }

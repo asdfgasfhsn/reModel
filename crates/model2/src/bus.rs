@@ -10,6 +10,7 @@
 //! what the game is waiting on.
 
 use crate::eeprom::Eeprom;
+use crate::geo::Geometrizer;
 use i960::cpu::Bus;
 use mb86235::cpu::{External, Step, Tgp};
 use romset::{Role, RomSet};
@@ -115,6 +116,8 @@ pub struct Model2Bus {
     pub copro_program: Vec<u64>,
     copro_upload_half: Option<u32>,
     pub copro_booted: bool,
+    /// The second MB86235: transforms display lists for the rasteriser.
+    pub geo: Geometrizer,
     /// The geometry processor, running the uploaded program.
     pub tgp: Tgp,
     /// "copro_data" ROM as 32-bit words, at TGP external address 0x800000.
@@ -209,6 +212,9 @@ impl Model2Bus {
                 .map(|c| u32::from_le_bytes(*c))
                 .collect(),
             tgp_fault: None,
+            geo: Geometrizer::new(
+                roms.region32(Role::Polygons).as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect(),
+            ),
             copro_empty_reads: 0,
             copro_result_hash: 0xcbf2_9ce4_8422_2325,
             copro_empty_by_ip: BTreeMap::new(),
@@ -241,6 +247,11 @@ impl Model2Bus {
         if let Step::Unsupported(pc) = self.tgp.run(&mut ext, n) {
             self.tgp_fault = Some(pc);
         }
+    }
+
+    /// Process this frame's display list (called at vblank).
+    pub fn run_geometrizer(&mut self) {
+        self.geo.run_frame(&self.mems[BUFFER_RAM].data);
     }
 
     /// Raise IRQ request bits (only those already enabled latch).
@@ -280,7 +291,7 @@ impl Model2Bus {
 
     fn io_read32(&mut self, addr: u32) -> Option<u32> {
         let v = match addr & !3 {
-            0x0080_0000..=0x0080_7fff => 0,
+            0x0080_0000..=0x0080_7fff => self.geo.port_read(addr - 0x0080_0000),
             0x0088_4000..=0x0088_7fff => {
                 // The i960 stalls until a result arrives: let the TGP run.
                 if self.tgp.fifo_out.is_empty() {
@@ -372,8 +383,15 @@ impl Model2Bus {
             t.push((addr, v));
         }
         match addr & !3 {
-            0x0080_4000..=0x0080_7fff => self.geo_words += 1,
-            0x0080_0000..=0x0080_3fff => {}
+            0x0080_0000..=0x0080_7fff => {
+                if addr >= 0x0080_4000 {
+                    self.geo_words += 1;
+                }
+                let buffer = &mut self.mems[BUFFER_RAM].data;
+                if !self.geo.port_write(addr - 0x0080_0000, v, buffer) {
+                    return false;
+                }
+            }
             0x0088_4000..=0x0088_7fff => {
                 if self.copro_uploading {
                     // Program RAM takes 64-bit words, low half first.
@@ -403,6 +421,7 @@ impl Model2Bus {
                 }
                 self.copro_ctrl = v;
             }
+            0x0098_0008 => self.geo.control_write(v),
             0x0098_0004..=0x0098_003f => {}
             0x00f8_0000 => self.board_ctrl = v as u8,
             0x00e8_0000 => self.irq_request &= v,

@@ -24,8 +24,8 @@ commands:
   boot                 print the boot record and system table seeds
   disasm ADDR [COUNT]  linear disassembly of the program ROM
   analyze [OUT]        recursive-descent listing (default out/GAME/program.lst)
-  copro-disasm [FILE]  disassemble the uploaded geometry program
-                       (default out/GAME/copro.bin, written by `run`)
+  copro-disasm [FILE]  disassemble an MB86235 program image to FILE.lst
+                       (default out/GAME/copro.bin; `run` also writes geo.bin)
   run [STEPS] [SNAP]   boot on the reference interpreter and report what
                        the game did (default 50M instructions); writes the
                        tile layer to out/GAME/frames/ every SNAP frames
@@ -198,7 +198,15 @@ fn main() -> ExitCode {
                 eprintln!("error: {}: not found (run `make run` first)", input.display());
                 return ExitCode::FAILURE;
             };
-            copro_disasm(&bin, &dir.join("copro.lst"));
+            copro_disasm(&bin, &input.with_extension("lst"));
+        }
+        // Debug: boot out/GAME/geo.bin, pulse F0, feed hex words, trace.
+        "geo-trace-words" => {
+            let dir = PathBuf::from("out").join(roms.game.id);
+            let bin = std::fs::read(dir.join("geo.bin")).unwrap_or_default();
+            let prog: Vec<u64> = bin.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect();
+            let words: Vec<u32> = args[1..].iter().filter_map(|s| u32::from_str_radix(s, 16).ok()).collect();
+            geo_trace_words(&prog, &words);
         }
         "run" => {
             let steps = args.get(1).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(50_000_000);
@@ -291,6 +299,33 @@ fn run(roms: &RomSet, steps: u64, snap: u64, script: &model2::input::InputScript
     let tgp_txt: String = tgp_cov.iter().map(|a| format!("{a:03x}\n")).collect();
     let _ = std::fs::write(dir.join("copro-coverage.txt"), tgp_txt);
     println!("geo           {} data words", b.geo_words);
+    println!(
+        "geometrizer   program {} words, booted {}, frames {}, last list {} words -> {} raster words, bad cmds {}, fault {:x?}, steps {}, pc {:#05x}",
+        b.geo.program.len(),
+        b.geo.booted,
+        b.geo.frames,
+        b.geo.list_words,
+        b.geo.stream.len(),
+        b.geo.bad_commands,
+        b.geo.fault,
+        b.geo.tgp.steps,
+        b.geo.tgp.pc
+    );
+    if let Some((frame, fed)) = &b.geo.first_error {
+        let text: String = fed.iter().map(|w| format!("{w:08x}\n")).collect();
+        let _ = std::fs::write(dir.join("geo-error-list.txt"), text);
+        let tr: String = b.geo.first_error_trace.iter().map(|(pc, f)| format!("{pc:03x} {f}\n")).collect();
+        let _ = std::fs::write(dir.join("geo-error-pcs.txt"), tr);
+        println!("geometrizer   first command-check error at geo frame {frame} ({} words fed)", fed.len());
+    }
+    if !b.geo.program.is_empty() {
+        let bin: Vec<u8> = b.geo.program.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let _ = std::fs::write(dir.join("geo.bin"), &bin);
+    }
+    let fed: String = b.geo.fed.iter().map(|w| format!("{w:08x}\n")).collect();
+    let _ = std::fs::write(dir.join("geo-last-list.txt"), fed);
+    let raster: String = b.geo.stream.iter().map(|w| format!("{w:08x}\n")).collect();
+    let _ = std::fs::write(dir.join("raster-last.txt"), raster);
     if !b.copro_empty_by_ip.is_empty() {
         let first = b.copro_empty_by_ip.keys().next();
         println!(
@@ -389,4 +424,37 @@ fn copro_disasm(bin: &[u8], out: &std::path::Path) {
     println!("computed      {unresolved} branches/calls with register or memory targets");
     println!("invalid       {invalid}   unsupported transfers {unsupported}");
     println!("listing written to {}", out.display());
+}
+
+fn geo_trace_words(prog: &[u64], words: &[u32]) {
+    use mb86235::cpu::{External, Tgp};
+    struct Nul;
+    impl External for Nul {
+        fn read(&mut self, _: u32) -> u32 {
+            0
+        }
+        fn write(&mut self, _: u32, _: u32) {}
+    }
+    let mut t = Tgp::new();
+    t.boot(prog);
+    t.run(&mut Nul, 100_000);
+    t.ext_flags = 1;
+    t.run(&mut Nul, 256);
+    t.ext_flags = 0;
+    t.fifo_in.extend(words.iter().copied());
+    for _ in 0..60 {
+        let pc = t.pc;
+        let i = mb86235::decode(pc, t.program[pc as usize]);
+        t.step(&mut Nul);
+        println!(
+            "{pc:03x} {:<60} AA0={:08x} AA1={:08x} AA3={:08x} AR0={:x} AR1={:x} fifo={}",
+            i.to_string(),
+            t.aa[0],
+            t.aa[1],
+            t.aa[3],
+            t.ar[0],
+            t.ar[1],
+            t.fifo_in.len()
+        );
+    }
 }

@@ -6,6 +6,7 @@
 
 pub mod bus;
 pub mod eeprom;
+pub mod geo;
 pub mod input;
 pub mod video;
 
@@ -69,6 +70,7 @@ impl Machine {
             self.next_vblank += FRAME_CYCLES;
             self.frames += 1;
             self.bus.frame_toggle = !self.bus.frame_toggle;
+            self.bus.run_geometrizer();
             self.bus.request_irq(IRQ_VBLANK);
             self.frame_profile.clear();
         }

@@ -76,11 +76,24 @@ and keep the evidence concrete (addresses, counts, outputs).
 
 ### MD-8. Model 2C: one TGPx4 emulated, PCB note lists two
 - **Where:** `src/mame/sega/model2.cpp` (header PCB notes vs the `model2c` machine config).
-- Unverified either way. Needs a PCB photo or a game that clearly drives a second chip.
+- **Now strong evidence (promote with MD-10):** topskatr uploads a second 4,096-word MB86235 program through 0x00804000 with 0x00980008 bit 31 set (i960 0x47EC0). That program is the geometrizer, and running it in Remodel produces the full rasteriser stream. MAME counts these words and discards them.
 
 ### MD-9. topskatr inputs overlap the EEPROM read-mode bits
 - **Where:** `model2.cpp`, the `topskatr` input ports. They put four buttons on IN0 bits 4-7, the bits that show EEPROM DO and fixed 1s when port A control mode is on.
 - **Progress:** coin 1 (IN0 bit 0) and start (IN0 bit 6) are confirmed in Remodel. Coin gives "CREDIT 1"; start leads to course select, skater select and a race. So MAME's start bit is right, and the overlap hasn't caused trouble: the game reads buttons outside control mode. Select left/right and jump front/tail are still unverified. This may turn out to be no defect at all.
+
+### MD-10. Model 2B/2C geometrizer is HLE'd from one game's program, not run
+- **Where:** `src/mame/sega/model2_v.cpp` (`geo_parse` and its command handlers), `model2.cpp` (the geo upload in `geo_ctl_w`).
+- **MAME does:** discards the uploaded geometrizer program and runs a fixed C++ HLE modelled on a 2B program.
+- **Correct (per topskatr):** the game's program differs from that HLE in at least four ways, all **Confirmed** by running it in Remodel (`docs/hw/geometrizer.md`):
+  1. Command 0x11 is a compact skinned model format (attr, then 1-2 points, no stored normals; bit 0 of X selects a second matrix). MAME treats it as an alias of 0x01 with the 10-word format.
+  2. Command 0x1B writes a secondary matrix. MAME treats it as an ordinary matrix overwrite.
+  3. Command 0x1C copies matrix 0 into matrix 1. MAME treats it as a translation.
+  4. Commands 0x12, 0x13, 0x15, 0x17-0x1A and 0x1D-0x1F are invalid in this program and trap to its error loop. MAME aliases them.
+- **Also observed:** the program's frame handshake is driven by flag input F0, and it emits a NOP to the rasteriser on every pass of its idle loop (a delay-slot write). MAME's HLE has no equivalent.
+- **Impact:** with MAME's HLE, topskatr's models (sent as command 0x11) are decoded with the wrong record size, so its 3D cannot render correctly. Together with MD-1, this explains MAME's `MACHINE_NOT_WORKING`.
+- **Fix direction:** run the uploaded program on an MB86235 core (LLE), at least for 2C. Otherwise, add a topskatr-specific HLE for 0x11, 0x1B and 0x1C.
+- **Reproduce:** `make run STEPS=660000000 INPUT=coin1@1100-1104,start@1250-1254`. The report's geometrizer line shows list words turning into raster words, and `out/topskatr/raster-last.txt` holds the stream.
 
 ---
 

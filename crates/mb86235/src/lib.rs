@@ -392,7 +392,27 @@ pub fn decode(addr: u32, w: u64) -> Insn {
             }
         }
         2 | 6 => Transfer::Control(control(w, addr)),
-        4 => Transfer::Unsupported(if bits(w, 39, 38) == 3 { "MOVI" } else { "MVD2" }),
+        4 if bits(w, 39, 38) == 3 => Transfer::Unsupported("MOVI"),
+        4 => {
+            // MVD2: A side in bits 39..20, B side in 19..0. Each side has a
+            // 2-bit direction, a 5-bit register (B-side codes OR 0x20) and an
+            // EA with a 3-bit displacement. For memory-to-register the
+            // register comes from the source field, as MAME's disassembler
+            // prints it (its interpreter disagrees; see docs/hw/mb86235.md).
+            let side = |base: u32, bbus: bool| -> (Loc, Loc) {
+                let f = |hi: u32, lo: u32| bits(w, base + hi, base + lo);
+                let or = if bbus { 0x20 } else { 0 };
+                let reg = Loc::Reg(f(17, 13) | or);
+                let mem =
+                    Loc::Mem(Mem { b_bus: bbus, arx: f(12, 10), ary: f(9, 7), mode: f(3, 0), disp: sext(f(6, 4), 3) });
+                match f(19, 18) {
+                    0 => (reg, Loc::Reg(f(12, 8) | or)),
+                    1 => (reg, mem),
+                    _ => (mem, reg),
+                }
+            };
+            Transfer::Double { a: side(20, false), b: side(0, true) }
+        }
         5 => {
             if bits(w, 40, 39) == 2 {
                 Transfer::Unsupported("MOV4")
@@ -633,6 +653,24 @@ mod tests {
         let w = put(&[(63, 61, 1), (60, 56, 7), (25, 19, 0x31), (18, 12, 0x41), (11, 7, 5), (3, 0, 0xa)]);
         let s = decode(0, w).to_string();
         assert!(s.ends_with("MOV FI, A(@AR1+5)"), "{s}");
+    }
+
+    #[test]
+    fn mvd2_memory_to_register_and_register_to_fifo() {
+        // A: mem -> reg, A(@AR6+1) -> AA7 (code 0x0f), MD 0xA.
+        // B: reg -> reg, AB0 -> FO0 (codes 0x08 / 0x12, OR 0x20).
+        let w = put(&[
+            (63, 61, 4),
+            (39, 38, 2),
+            (37, 33, 0x0f),
+            (32, 30, 6),
+            (26, 24, 1),
+            (23, 20, 0xa),
+            (19, 18, 0),
+            (17, 13, 0x08),
+            (12, 8, 0x12),
+        ]);
+        assert!(decode(0, w).to_string().ends_with("MVD A(@AR6+1), AA7 : AB0, FO0"), "{}", decode(0, w));
     }
 
     #[test]
