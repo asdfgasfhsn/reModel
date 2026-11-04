@@ -223,10 +223,11 @@ fn run(roms: &RomSet, steps: u64) {
         "copro         program {} words, booted {}, fifo in {} out {}, empty reads {}",
         b.copro_program.len(),
         b.copro_booted,
-        b.copro_fifo_in.len(),
-        b.copro_fifo_out.len(),
+        b.tgp.fifo_in.len(),
+        b.tgp.fifo_out.len(),
         b.copro_empty_reads
     );
+    println!("tgp           {} words executed, pc {:#05x}, fault {:x?}", b.tgp.steps, b.tgp.pc, b.tgp_fault);
     println!("geo           {} data words", b.geo_words);
     if !b.copro_empty_by_ip.is_empty() {
         let first = b.copro_empty_by_ip.keys().next();

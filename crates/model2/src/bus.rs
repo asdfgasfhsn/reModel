@@ -10,6 +10,7 @@
 //! what the game is waiting on.
 
 use i960::cpu::Bus;
+use mb86235::cpu::{External, Step, Tgp};
 use romset::{Role, RomSet};
 use std::collections::BTreeMap;
 
@@ -51,6 +52,36 @@ impl Mem {
     }
 }
 
+/// Index of buffer RAM in `mems`; shared with the TGP's external bus.
+const BUFFER_RAM: usize = 3;
+/// How far the TGP may run while the i960 waits on an empty output FIFO.
+const TGP_STALL_LIMIT: u64 = 2_000_000;
+
+/// The TGP's view of its external bus.
+struct TgpExt<'a> {
+    buffer: &'a mut [u8],
+    data: &'a [u32],
+}
+
+impl External for TgpExt<'_> {
+    fn read(&mut self, addr: u32) -> u32 {
+        match addr {
+            0x40_0000..=0x7f_ffff => {
+                let o = (addr as usize & 0x7fff) * 4;
+                u32::from_le_bytes(self.buffer[o..o + 4].try_into().unwrap())
+            }
+            0x80_0000..=0x9f_ffff => self.data.get((addr - 0x80_0000) as usize).copied().unwrap_or(0),
+            _ => 0,
+        }
+    }
+    fn write(&mut self, addr: u32, v: u32) {
+        if let 0x40_0000..=0x7f_ffff = addr {
+            let o = (addr as usize & 0x7fff) * 4;
+            self.buffer[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        }
+    }
+}
+
 /// Region table entry: [start, end] inclusive, index into `mems`. A window
 /// larger than its backing store mirrors it.
 struct Map {
@@ -83,8 +114,12 @@ pub struct Model2Bus {
     pub copro_program: Vec<u64>,
     copro_upload_half: Option<u32>,
     pub copro_booted: bool,
-    pub copro_fifo_in: Vec<u32>,
-    pub copro_fifo_out: Vec<u32>,
+    /// The geometry processor, running the uploaded program.
+    pub tgp: Tgp,
+    /// "copro_data" ROM as 32-bit words, at TGP external address 0x800000.
+    copro_data: Vec<u32>,
+    /// First instruction the TGP model couldn't execute, if any.
+    pub tgp_fault: Option<u32>,
     pub copro_empty_reads: u64,
     /// Where the CPU read the copro output FIFO while it was empty (real
     /// hardware stalls there until a result arrives), by IP.
@@ -156,8 +191,15 @@ impl Model2Bus {
             copro_program: Vec::new(),
             copro_upload_half: None,
             copro_booted: false,
-            copro_fifo_in: Vec::new(),
-            copro_fifo_out: Vec::new(),
+            tgp: Tgp::new(),
+            copro_data: roms
+                .region32(Role::CoproData)
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| u32::from_le_bytes(*c))
+                .collect(),
+            tgp_fault: None,
             copro_empty_reads: 0,
             copro_empty_by_ip: BTreeMap::new(),
             cur_ip: 0,
@@ -175,6 +217,17 @@ impl Model2Bus {
     fn find(&self, addr: u32) -> Option<(usize, usize)> {
         let m = self.map.iter().find(|m| addr >= m.start && addr <= m.end)?;
         Some((m.mem, (addr - m.start) as usize % self.mems[m.mem].data.len()))
+    }
+
+    /// Run the TGP for up to `n` words, stopping when it waits for input.
+    pub fn run_tgp(&mut self, n: u64) {
+        if !self.copro_booted || self.tgp_fault.is_some() {
+            return;
+        }
+        let mut ext = TgpExt { buffer: &mut self.mems[BUFFER_RAM].data, data: &self.copro_data };
+        if let Step::Unsupported(pc) = self.tgp.run(&mut ext, n) {
+            self.tgp_fault = Some(pc);
+        }
     }
 
     /// Raise IRQ request bits (only those already enabled latch).
@@ -216,17 +269,21 @@ impl Model2Bus {
         let v = match addr & !3 {
             0x0080_0000..=0x0080_7fff => 0,
             0x0088_4000..=0x0088_7fff => {
-                if self.copro_fifo_out.is_empty() {
-                    // Hardware would stall the CPU here.
-                    self.copro_empty_reads += 1;
-                    *self.copro_empty_by_ip.entry(self.cur_ip).or_default() += 1;
-                    0
-                } else {
-                    self.copro_fifo_out.remove(0)
+                // The i960 stalls until a result arrives: let the TGP run.
+                if self.tgp.fifo_out.is_empty() {
+                    self.run_tgp(TGP_STALL_LIMIT);
+                }
+                match self.tgp.fifo_out.pop_front() {
+                    Some(v) => v,
+                    None => {
+                        self.copro_empty_reads += 1;
+                        *self.copro_empty_by_ip.entry(self.cur_ip).or_default() += 1;
+                        0
+                    }
                 }
             }
             0x0098_0000 => self.copro_ctrl,
-            0x0098_0004 => self.copro_fifo_out.is_empty() as u32,
+            0x0098_0004 => self.tgp.fifo_out.is_empty() as u32,
             0x0098_000c => (self.frame_toggle as u32) << 2,
             0x0098_0014 => {
                 if self.copro_uploading && self.copro_program.is_empty() {
@@ -291,12 +348,12 @@ impl Model2Bus {
                         Some(lo) => self.copro_program.push(((v as u64) << 32) | lo as u64),
                     }
                 } else {
-                    self.copro_fifo_in.push(v);
+                    self.tgp.fifo_in.push_back(v);
                 }
             }
             0x0088_0000..=0x0088_3fff => {
                 let tagged = (v & 0x800f_ffff) | (((addr >> 4) & 0xff) << 23);
-                self.copro_fifo_in.push(tagged);
+                self.tgp.fifo_in.push_back(tagged);
             }
             0x0098_0000 => {
                 let rising = v & 0x8000_0000 != 0 && self.copro_ctrl & 0x8000_0000 == 0;
@@ -308,6 +365,7 @@ impl Model2Bus {
                 if falling {
                     self.copro_uploading = false;
                     self.copro_booted = true;
+                    self.tgp.boot(&self.copro_program);
                 }
                 self.copro_ctrl = v;
             }

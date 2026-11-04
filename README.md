@@ -24,8 +24,9 @@ nothing renders yet.
 | Static code discovery | done (~28% of `topskatr` program ROM mapped) |
 | i960 interpreter (reference and tracer) | done; boots `topskatr` into its interrupt-driven init |
 | Model 2C board model (memory, IRQs, timers, I/O, copro interface) | in progress |
+| MB86235 geometry processor: disassembler and reference interpreter | done; runs the game's uploaded program |
 | Recompiler (i960 → C) | planned |
-| Geometry processor (high-level reimplementation) | planned |
+| Geometry processor fast path (high-level per-command) | planned |
 | Renderer (OpenGL/Vulkan) | planned |
 | Sound (68000 + SCSP) and input | planned |
 
@@ -58,6 +59,7 @@ crates/
     src/games/  one module per supported game
   analyze/   recursive-descent code discovery      (CPU-generic)
   model2/    board model: memory map, IRQs, timers, I/O, copro interface
+  mb86235/   MB86235 (TGPx4) decoder, disassembler and interpreter
   cli/       the `remodel` command
 ```
 
@@ -107,10 +109,14 @@ documentation and hasn't been contradicted yet.
   once that bit changes, consistent with a per-frame toggle.
 - *Confirmed:* init enables IRQ mask `0x215` and programs timer 0
   (`0xF00000`) with 50,000 ticks (2 ms at 25 MHz).
-- *Confirmed:* with the geometry coprocessor stubbed, the game runs about
-  27 s of game time into its main loop. It reads coprocessor results at
-  369 distinct sites, so nothing past init is meaningful until the MB86235 is
-  reimplemented. The first failure is a divide by zero on a stubbed result.
+- *Confirmed:* the game reads coprocessor results at 369 distinct sites.
+  With the coprocessor stubbed, it fails after about 27 s on a divide by
+  zero. With the MB86235 interpreter running the uploaded program, 300M
+  instructions (36 s of game time) run with no faults and no unanswered
+  result reads; the coprocessor executes 53M words.
+- *Confirmed:* the coprocessor program is a command dispatcher (see
+  `docs/hw/mb86235.md` section 6). Hardware notes with sources are in
+  `docs/hw/`.
 - *Confirmed:* every instruction the interpreter executed was already found
   by static analysis. The trace (`make run`, then `make analyze`) resolves
   the indirect jumps it observes.

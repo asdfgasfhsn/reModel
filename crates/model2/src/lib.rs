@@ -15,6 +15,7 @@ use std::collections::{BTreeSet, HashMap};
 /// Average cycles per instruction, for timing timers and vblank against
 /// instruction count. The i960KB averages a little under this on game code.
 pub const CYCLES_PER_INSN: u64 = 3;
+const TGP_WORDS_PER_INSN: u64 = 2;
 
 pub struct Machine {
     pub cpu: Cpu,
@@ -56,6 +57,9 @@ impl Machine {
             self.indirect.insert((ip, self.cpu.ip));
         }
 
+        // The TGP runs at 20 MHz against the i960's 25 MHz: about two of its
+        // words per i960 instruction at our cycles-per-instruction estimate.
+        self.bus.run_tgp(TGP_WORDS_PER_INSN);
         self.bus.now += CYCLES_PER_INSN;
         self.bus.tick_timers();
         if self.bus.now >= self.next_vblank {

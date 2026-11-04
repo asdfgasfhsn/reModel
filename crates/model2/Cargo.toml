@@ -11,3 +11,4 @@ name = "model2"
 [dependencies]
 i960.workspace = true
 remodel-romset.workspace = true
+mb86235.workspace = true

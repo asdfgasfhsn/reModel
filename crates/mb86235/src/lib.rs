@@ -5,6 +5,8 @@
 //! sources disagree, the choice made here is the one the uploaded Top
 //! Skater program supports (see that document's "Checks against topskatr").
 
+pub mod cpu;
+
 use std::fmt;
 
 fn bits(w: u64, hi: u32, lo: u32) -> u32 {
