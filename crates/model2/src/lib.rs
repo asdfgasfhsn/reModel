@@ -7,7 +7,7 @@
 pub mod bus;
 
 pub use bus::Model2Bus;
-use bus::{CPU_HZ, IRQ_VBLANK, VBLANK_HZ};
+use bus::{FRAME_CYCLES, IRQ_VBLANK};
 use i960::cpu::{Cpu, Stop};
 use romset::RomSet;
 use std::collections::{BTreeSet, HashMap};
@@ -15,7 +15,6 @@ use std::collections::{BTreeSet, HashMap};
 /// Average cycles per instruction, for timing timers and vblank against
 /// instruction count. The i960KB averages a little under this on game code.
 pub const CYCLES_PER_INSN: u64 = 3;
-const FRAME_CYCLES: u64 = CPU_HZ / VBLANK_HZ;
 
 pub struct Machine {
     pub cpu: Cpu,

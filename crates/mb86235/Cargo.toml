@@ -1,0 +1,8 @@
+[package]
+name = "mb86235"
+description = "Fujitsu MB86235 (TGPx4) geometry processor: decoder and disassembler"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]

@@ -15,7 +15,7 @@ REMODEL := target/release/remodel
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release test lint fmt fmt-check check ci games verify boot disasm analyze run clean
+.PHONY: help build release test lint fmt fmt-check check ci games verify boot disasm analyze run copro-disasm clean
 
 ##@ General
 
@@ -68,6 +68,9 @@ analyze: release ## Recursive-descent code discovery; listing goes to OUT=
 
 run: release ## Boot on the reference interpreter and report: make run STEPS=50000000
 	$(RUN) run $(STEPS)
+
+copro-disasm: release ## Disassemble the geometry program captured by `make run`
+	$(RUN) copro-disasm
 
 ##@ Housekeeping
 

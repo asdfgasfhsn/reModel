@@ -15,7 +15,10 @@ use std::collections::BTreeMap;
 
 /// Main CPU clock: 25 MHz.
 pub const CPU_HZ: u64 = 25_000_000;
-pub const VBLANK_HZ: u64 = 60;
+/// One video frame in CPU cycles: 656x424 total pixels at a 16 MHz pixel
+/// clock gives 57.524 Hz, which matches measured captures of Model 2 boards
+/// (see docs/hw/peripherals.md).
+pub const FRAME_CYCLES: u64 = 434_600;
 
 // IRQ controller request/enable bits.
 pub const IRQ_VBLANK: u32 = 1 << 0;

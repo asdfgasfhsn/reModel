@@ -18,6 +18,8 @@ commands:
   boot                 print the boot record and system table seeds
   disasm ADDR [COUNT]  linear disassembly of the program ROM
   analyze [OUT]        recursive-descent listing (default out/GAME/program.lst)
+  copro-disasm [FILE]  disassemble the uploaded geometry program
+                       (default out/GAME/copro.bin, written by `run`)
   run [STEPS]          boot on the reference interpreter and report what
                        the game did (default 50M instructions)
 ";
@@ -179,6 +181,15 @@ fn main() -> ExitCode {
             }
             println!("listing written to {}", out.display());
         }
+        "copro-disasm" => {
+            let dir = PathBuf::from("out").join(roms.game.id);
+            let input = args.get(1).map(PathBuf::from).unwrap_or_else(|| dir.join("copro.bin"));
+            let Ok(bin) = std::fs::read(&input) else {
+                eprintln!("error: {}: not found (run `make run` first)", input.display());
+                return ExitCode::FAILURE;
+            };
+            copro_disasm(&bin, &dir.join("copro.lst"));
+        }
         "run" => {
             let steps = args.get(1).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(50_000_000);
             run(&roms, steps);
@@ -203,7 +214,7 @@ fn run(roms: &RomSet, steps: u64) {
         None => println!("stopped       step limit"),
     }
     println!("instructions  {} ({:.1} M/s)", m.cpu.icount, m.cpu.icount as f64 / secs / 1e6);
-    println!("emulated      {} frames ({:.2}s)", m.frames, m.frames as f64 / 60.0);
+    println!("emulated      {} frames ({:.2}s)", m.frames, m.frames as f64 / 57.524);
     println!("ip            {:#x}  priority {}  icr {:#010x}", m.cpu.ip, m.cpu.priority(), m.cpu.icr);
     println!("irq           request {:#x} enable {:#x}", b.irq_request, b.irq_enable);
     println!("coverage      {} distinct instructions", m.coverage.len());
@@ -266,4 +277,43 @@ fn run(roms: &RomSet, steps: u64) {
         let _ = std::fs::write(dir.join("copro.bin"), &bin);
         println!("copro program written to {}/copro.bin ({} words)", dir.display(), b.copro_program.len());
     }
+}
+
+fn copro_disasm(bin: &[u8], out: &std::path::Path) {
+    use mb86235::Flow;
+    let words: Vec<u64> = bin.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect();
+    let insns: Vec<mb86235::Insn> = words.iter().enumerate().map(|(a, &w)| mb86235::decode(a as u32, w)).collect();
+    let mut subs = std::collections::BTreeSet::from([0u32]);
+    let mut locs = std::collections::BTreeSet::new();
+    let (mut unresolved, mut invalid) = (0, 0);
+    for i in &insns {
+        match i.flow() {
+            Flow::Call(Some(t)) => {
+                subs.insert(t);
+            }
+            Flow::Jump(Some(t)) | Flow::Branch(Some(t)) => {
+                locs.insert(t);
+            }
+            Flow::Call(None) | Flow::Jump(None) | Flow::Branch(None) => unresolved += 1,
+            Flow::Invalid => invalid += 1,
+            _ => {}
+        }
+    }
+    let mut text = String::new();
+    for i in &insns {
+        if subs.contains(&i.addr) {
+            let _ = writeln!(text, "\nsub_{:03x}:", i.addr);
+        } else if locs.contains(&i.addr) {
+            let _ = writeln!(text, "loc_{:03x}:", i.addr);
+        }
+        let _ = writeln!(text, "  {:03x}  {:016x}  {i}", i.addr, i.word);
+    }
+    let _ = std::fs::write(out, text);
+    let unsupported = insns.iter().filter(|i| matches!(i.transfer, mb86235::Transfer::Unsupported(_))).count();
+    println!("words         {}", insns.len());
+    println!("subroutines   {}", subs.len());
+    println!("branch labels {}", locs.len());
+    println!("computed      {unresolved} branches/calls with register or memory targets");
+    println!("invalid       {invalid}   unsupported transfers {unsupported}");
+    println!("listing written to {}", out.display());
 }

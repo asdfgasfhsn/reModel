@@ -7,10 +7,15 @@ name = "i960"
 version = "0.1.0"
 
 [[package]]
+name = "mb86235"
+version = "0.1.0"
+
+[[package]]
 name = "remodel"
 version = "0.1.0"
 dependencies = [
  "i960",
+ "mb86235",
  "remodel-analyze",
  "remodel-model2",
  "remodel-romset",

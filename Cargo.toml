@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/i960", "crates/romset", "crates/analyze", "crates/model2", "crates/cli"]
+members = ["crates/i960", "crates/romset", "crates/analyze", "crates/model2", "crates/mb86235", "crates/cli"]
 
 [workspace.package]
 edition = "2021"
@@ -12,6 +12,7 @@ i960 = { path = "crates/i960" }
 remodel-romset = { path = "crates/romset" }
 remodel-analyze = { path = "crates/analyze" }
 remodel-model2 = { path = "crates/model2" }
+mb86235 = { path = "crates/mb86235" }
 
 [profile.release]
 debug = true
