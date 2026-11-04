@@ -131,6 +131,18 @@ impl RomSet {
         assemble(self.game, &self.chips, role)
     }
 
+    /// Concatenate the chips with `role` (16-bit, stored little-endian per
+    /// word) and swap each byte pair, giving a 68000's big-endian view.
+    pub fn region16be(&self, role: Role) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (f, c) in self.game.files.iter().zip(&self.chips) {
+            if f.role == role {
+                out.extend(c.as_chunks::<2>().0.iter().flat_map(|&[a, b]| [b, a]));
+            }
+        }
+        out
+    }
+
     pub fn chip(&self, name: &str) -> Option<&[u8]> {
         self.game.files.iter().position(|r| r.name == name).map(|i| self.chips[i].as_slice())
     }

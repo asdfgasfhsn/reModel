@@ -123,6 +123,7 @@ and keep the evidence concrete (addresses, counts, outputs).
 - **Correct:** the SCSP manual (MIDI register page, p04_2a) gives the MIDI-in buffer as 4 bytes. MIFULL is set at 4 and MIOVF on the 5th byte.
 - **Impact:** with accurate timing a deeper FIFO hides overruns. MAME probably keeps it deep because its CPU/serial interleave is coarse. Supermodel enlarges it for the same reason. Not a topskatr blocker.
 - **Fix direction:** keep it deep only behind a "coarse timing" option, or fix the scheduling and use 4.
+- **Evidence that 4 is enough:** Remodel's sound board runs the 68000 in one-sample (256-cycle) slices, delivers link bytes no faster than 31.25 kbaud and uses a 4-byte FIFO. topskatr's driver reads all 6,253 bytes of a boot-to-race capture with **0 overflows**. Reproduce: `make run STEPS=600000000 INPUT=coin1@1100-1104,start@1250-1254`, then `make sound` and read the `midi in` line.
 
 ---
 
@@ -133,5 +134,5 @@ and keep the evidence concrete (addresses, counts, outputs).
 | MH-1 | `315_5649.cpp`, serial status register 0x0D | Hard-coded to 0x0C; the source calls it a hack. |
 | MH-2 | `model2.cpp`, uPD71051/i8251 UART clock | 8 MHz is a guess, so the baud rate is unmeasured. |
 | MH-3 | `model2rd.ipp` / `model2_v.cpp`, colour gamma | The gamma step is a calibration guess, not hardware. |
-| MH-4 | `model2.cpp`, `reset_model2_scsp` | Copies the first 16 bytes of the sound program ROM into sound RAM so the 68000 finds a reset vector. How real hardware provides it is unknown. topskatr's driver installs its own vector table in RAM (`docs/hw/sound.md` §1). |
+| MH-4 | `model2.cpp`, `reset_model2_scsp` | Copies the first 16 bytes of the sound program ROM into sound RAM so the 68000 finds a reset vector. How real hardware provides it is unknown. topskatr's driver installs its own vector table in RAM (`docs/hw/sound.md` §1), and before that copy it reads no RAM below `0xC04`, so only SSP/PC at reset matter. Remodel fetches them from the program ROM during reset, which plays identically. |
 | MH-5 | `model2.cpp`, `topskatr` machine config (line 3127) | MPEG output goes straight to the speaker. The TODO says it "should be chained with SCSP EXTS", but the DSB2 has its own DACs, so analog mixing is more likely (`docs/hw/sound.md` §3.6). |

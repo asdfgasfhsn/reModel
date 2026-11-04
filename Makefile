@@ -33,7 +33,7 @@ endif
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release test lint fmt fmt-check check ci games verify boot disasm analyze run copro-disasm m68k-tests clean recomp bench
+.PHONY: help build release test lint fmt fmt-check check ci games verify boot disasm analyze run copro-disasm m68k-tests clean recomp bench sound sound-disasm
 
 ##@ General
 
@@ -111,6 +111,12 @@ bench: release ## Timed fixed run into a race: speed vs real time and the state 
 
 copro-disasm: release ## Disassemble the geometry program captured by `make run`
 	$(RUN) copro-disasm
+
+sound: release ## Boot the sound board, replay the sound bytes captured by `make run`, write OUT/sound.wav
+	$(RUN) sound-render $(OUT)/sound.wav
+
+sound-disasm: release ## Disassemble the sound 68000 program: make sound-disasm ADDR=0x600120 COUNT=64
+	$(RUN) sound-disasm $(ADDR) $(COUNT)
 
 ##@ Housekeeping
 

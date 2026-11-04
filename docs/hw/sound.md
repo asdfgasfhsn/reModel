@@ -81,6 +81,12 @@ stored **little-endian per 16-bit word**. Swap each byte pair to get the
 - **Emulation choice:** at reset, load SSP/PC from the ROM image (as if
   ROM were at 0), then let the driver install its own table. This is
   equivalent to MAME's copy.
+- ROM (H): between reset and the vector copy the driver reads RAM only at
+  `0xC04–0xC0F` (`0x600174`): a warm-restart marker, the ASCII
+  `"ErroRSet"` at `0xC08`, which its `0xFF` handler writes before jumping
+  back to `0x600120` (§2.10). Nothing reads `0x0–0xF`, so how the real
+  board supplies the reset vector does not matter once the CPU is running.
+  `crates/sound` boots it this way (first unmasked interrupt at 0.40 s).
 
 ### Board control latch `0x400001` (write, byte)
 - ROM: written at init with 0, then with `0x08, 0x0C, 0x0E, 0x0F` as the
@@ -109,6 +115,21 @@ stored **little-endian per 16-bit word**. Swap each byte pair to get the
   (sample ROM addresses).
 - **Emulation choice:** map ROM only into the 68k. Give the SCSP the 512 KB
   RAM only, with SA masked to `0x7FFFF` (MEM4MB=1, 512 KB; see §2.2).
+- **Confirmed by running the driver** (`crates/sound`, H for what the code
+  does): every sound is **streamed**. A voice table at RAM `0x1000` (32
+  entries × `0x20`) holds a ROM source pointer, a RAM buffer pointer and a
+  remaining length. The main loop (`0x6019DC–0x601B5E`, about 93% of the
+  68k's time) selects each streaming slot with MSLC, waits a few
+  instructions, tests CA bit 0 (`tst.b $409(a5)`, bit 7 = sample offset bit
+  12, i.e. which half of the buffer is playing) and copies the other half
+  in 512-byte `movem.l` chunks from `0x800000+`. Buffers are 8 KB each at
+  RAM `0x60000–0x6FFFF` (SA `0x6xxxx`), played as **8-bit PCM** (PCM8B=1),
+  LPCTL=1, LSA=0, LEA=`0x1FFF`, OCT=−1 FNS=0 (**22.05 kHz**). Stereo
+  sounds use two slots, one with DIPAN `0x1F` (left only) and one with
+  `0x0F` (right only). Typical voice: AR=`0x1F`, D1R=D2R=0, DL=0, RR=`0x1F`
+  (some `0x0C`), KRS=0, TL `0x0D–0x3F`, DISDL 6-7, and `+0x14` either
+  `0x0004` (ISEL 0, IMXL 4: send to the DSP at −18 dB) or `0x0008` (ISEL 1,
+  IMXL 0: dry). No LFO, no FM, no DMA seen.
 
 ### Interrupt wiring
 - The SCSP drives the 68k IPL0-2 lines directly. Interrupts are
@@ -470,6 +491,14 @@ Per-slot amplitude (MDF, M; TL table from SCSP p04_24, H):
   feeds TEMP, EFREG (`>>8`), memory writes and FRC/ADRS latches. Memory
   data uses a 16-bit float (sign, 4-bit exponent, 11-bit mantissa) unless
   NOFL. MAME only performs memory accesses on odd steps.
+- ROM (H, by running it): topskatr loads a **108-step** program (MPRO,
+  COEF, MADRS) after init; the ring is `0x70000–0x7FFFF` (RBL=2, RBP=`0x38`).
+  Voices send to MIXS 0. The program writes EFREG 0-4, 14 and 15, has 10
+  memory steps, and reads MIXS 0-2. Slots 0-4 keep EFSDL 7 in the low byte
+  of `+0x16` (the driver writes only the high byte, DISDL/DIPAN, per voice):
+  EFPAN `0x1F` on slots 0 and 2 (left), `0x0F` on 1 and 3 (right), `0x00`
+  on 4 (centre); EFREG 14/15 have no return. A stereo reverb.
+  `crates/sound` runs it, and tails follow each voice.
 - Read the full semantics in MDF `ss/scsp.inc` (`RunDSPStep`, the
   `dspfloat_to_int`/`int_to_dspfloat` pair) and MAME `scspdsp.cpp`. The
   Neill Corlett "SCSP DSP" notes (Highly Theoretical / SSF) are the
@@ -496,6 +525,23 @@ Per-slot amplitude (MDF, M; TL table from SCSP p04_24, H):
   - blinks the LEDs.
 - The interrupt stays asserted while bytes remain, so the 68k re-enters
   until the FIFO is empty.
+- ROM (H): a **`0xFF`** byte (MIDI System Reset) makes the ISR reset SP,
+  write the `"ErroRSet"` marker to RAM `0xC08` and jump to the reset entry
+  `0x600120`: the driver restarts (re-initialising the SCSP and clearing
+  RAM). The i960 sends one at init (§4), so the driver always restarts
+  then.
+- Status dispatch (`0x6006D4`): `(status >> 4) & 7` indexes a jump table at
+  `0x600710`. `An` (`0x601E60`): first data byte `0x10–0x5F` = sound bank
+  (`bank − 0x10` indexes the table at ROM `[0x60801C]`), second = entry;
+  `< 0x10` and `≥ 0x60` go to other handlers (`0x70|a` from `sub_b1a30` lands
+  in the latter). **The channel nibble is not filtered**: replaying
+  `AE 1A nn` keys on slots exactly like `A0 1A nn` (M: by emulation). The
+  game's own `AE 10 nn` / `AE 02 vv` / `AE 03 vv` select entries that start
+  no voice, so they are silent on the SCSP. A sound already playing is not
+  restarted by a repeat command (`A0 1D 05` arrives every ~0.3 s in a race,
+  and its looping slot is keyed on once).
+- With a 4-byte FIFO and bytes spaced at the link rate, the ISR keeps up:
+  0 of 6,253 bytes lost in a boot-to-race capture (see MD-13).
 - MIDI-out: the driver waits for MOFULL (bit 12 of `0x100404`, tested as
   bit 4 of byte `0x100404`) to clear, then writes MOBUF (`0x6029E2`, ROM,
   H). So the sound 68k **does transmit** in some state. See §4 for what the
@@ -673,29 +719,48 @@ From `out/topskatr/program.lst` (i960):
   driver-specific commands, not real aftertouch or CC semantics. This
   matches what topskatr's tables show. No public specification is known.
 
+### 4.1 Emulation choices in `crates/sound` (where the sources disagree)
+
+| Topic | Choice | Other source |
+|---|---|---|
+| EG rates and clocking | MDF's scheme (§2.4) | MAME: manual time tables, different octave weight |
+| Instant attack | AR + KS ≥ `0x1F` | MDF: ≥ `0x20` |
+| PLFO depth | manual cents table | MDF: about ±190 cents at 7 |
+| Master volume | MDF's 3 dB steps | MAME: MVOL/15 linear |
+| MIDI-in FIFO | 4 bytes (manual) | MAME 32 (MD-13) |
+| DSP NOFL bit | bit 8 (MDF) | MAME: bit 15 |
+| DSP memory access | every step, one-step read latch | MAME: odd steps only; MDF: two-step delay |
+| FM sound stack | written without MDF's 4-slot delay | MDF delays by 4 slots |
+| 68k bus | no wait states | MAME: 1 wait per RAM/SCSP access |
+
+None of these is known to matter for topskatr: its voices use instant
+attack, sustain, fast release, no LFO and no FM.
+
 ---
 
 ## 5. Open questions / what to verify against the ROM
 
 1. **Reset vector source.** Does real hardware mirror the program ROM at 0
-   during reset? Emulate by loading SSP/PC from ROM. Check that nothing
-   reads RAM `0x0–0xF` before `0x600354` runs.
-2. **Sample streaming.** Trace the 68k's reads from `0x800000+` and its
-   writes to sound RAM. That confirms ROM→RAM copying and shows the buffer
-   layout and the role of the MSLC/CA polling at `0x6019DC–0x601BB6`.
+   during reset? Emulate by loading SSP/PC from ROM. *Answered for the
+   emulation:* nothing reads RAM `0x0–0xF` before `0x600354` (§1). The
+   hardware mechanism is still unknown.
+2. **Sample streaming.** *Answered* (§1, "Confirmed by running the
+   driver"): double-buffered 8 KB streams refilled on CA.
 3. **`0x400001` bits.** Are bits 3-0 really LEDs? Does anything ever set bits
    4-7? topskatr's writes say no.
-4. **DSP use.** Does the driver load MPRO/COEF/MADRS? If not, the DSP can be
-   stubbed (EFREG = 0).
+4. **DSP use.** *Answered:* yes, a 108-step program (§2.9).
 5. **EG timing.** MDF's and MAME's rate formulas differ (octave weighting,
    FNS bit 9). Use MDF's, and compare a known sound's decay by ear if
    possible.
 6. **PLFO depth.** MDF's arithmetic gives about ±190 cents at PLFOS=7 while
-   the manual and MAME use ±494 cents. See whether topskatr uses PLFO at
-   all.
+   the manual and MAME use ±494 cents. topskatr's voices seen so far set
+   PLFOS=0, so it doesn't matter here; `crates/sound` uses the manual's
+   table.
 7. **Link topology.** Parallel (MAME/SM) or daisy-chained through the DSB2's
-   MIDI-thru (§3.3)? Check whether the sound 68k's parser treats channel 14
-   specially. Check the cabinet wiring if a manual turns up.
+   MIDI-thru (§3.3)? The sound 68k does **not** treat channel 14 specially,
+   but topskatr's `AE` commands make no SCSP sound (§2.10), so both
+   topologies give the same output for this game. The real wiring is
+   still unknown.
 8. **`0x01CE0000`** on the i960 side, written 0/1 around UART init: a sound
    reset? If it holds the 68k in reset, a model must keep the 68k halted
    until the i960 writes 1.

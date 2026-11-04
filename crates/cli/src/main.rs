@@ -1,4 +1,5 @@
 mod png;
+mod sound_render;
 
 use analyze::{explore, read_boot, Image, Trace};
 use romset::{games, RomSet};
@@ -33,6 +34,14 @@ commands:
                        the game did (default 50M instructions); writes the
                        tile layer to out/GAME/frames/ every SNAP frames
                        (0 = final frame only)
+  sound-disasm ADDR [COUNT]
+                       disassemble the sound board's 68000 program (its own
+                       address space: ROM at 0x600000)
+  sound-render [WAV] [SECONDS]
+                       boot the sound board, replay the host bytes captured
+                       by `run` (out/GAME/sound-tx.txt) and render the SCSP
+                       output (default out/GAME/sound.wav; length: until 3 s
+                       after the last byte)
 
 debugging (environment variables for `run`):
   REMODEL_PROBE=X,Y    at each snapshot, list the 3D polygons covering
@@ -256,6 +265,42 @@ fn main() -> ExitCode {
             };
             let geo_frame = geo_frame.and_then(|s| parse_num(&s)).map(u64::from);
             run(&roms, steps, snap, &script, geo_frame);
+        }
+        "sound-disasm" => {
+            let Some(mut pc) = args.get(1).and_then(|s| parse_num(s)) else {
+                eprint!("{USAGE}");
+                return ExitCode::FAILURE;
+            };
+            let count = args.get(2).and_then(|s| parse_num(s)).unwrap_or(32);
+            let rom = roms.region16be(romset::Role::AudioCpu);
+            let fetch = |a: u32| {
+                let o = a.wrapping_sub(0x60_0000) as usize;
+                rom.get(o..o + 2).map_or(0, |b| u16::from_be_bytes([b[0], b[1]]))
+            };
+            for _ in 0..count {
+                let (text, len) = m68k::disasm(pc, fetch);
+                let words: Vec<String> = (0..len / 2).map(|i| format!("{:04x}", fetch(pc + 2 * i))).collect();
+                println!("{pc:06x}  {:<20}  {text}", words.join(" "));
+                pc += len;
+            }
+        }
+        "sound-render" => {
+            let dir = PathBuf::from("out").join(roms.game.id);
+            let tx_path = dir.join("sound-tx.txt");
+            let tx = match std::fs::read_to_string(&tx_path) {
+                Ok(t) => sound_render::parse_tx(&t),
+                Err(e) => {
+                    eprintln!("error: {}: {e} (run `make run` first)", tx_path.display());
+                    return ExitCode::FAILURE;
+                }
+            };
+            let wav = args.get(1).map(PathBuf::from).unwrap_or_else(|| dir.join("sound.wav"));
+            let seconds = args.get(2).and_then(|s| s.parse::<f64>().ok());
+            println!("host bytes    {} from {}", tx.len(), tx_path.display());
+            if let Err(e) = sound_render::render(&roms, &tx, seconds, &wav) {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
         }
         _ => {
             eprint!("{USAGE}");

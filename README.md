@@ -18,7 +18,9 @@ The original program runs on the reference interpreters from boot through
 attract, coin-up, course and skater select into a race, with textured 3D
 frames written as PNG snapshots. The interpreters run the bench (attract into
 a race) at about 2x real time on a desktop CPU, with the geometrizer on its
-own thread. There is no live window or sound yet.
+own thread. The sound board (68000 + SCSP) renders offline from the command
+bytes a run captures (`make sound`). There is no live window yet, and the
+DSB2 MPEG music board is not emulated.
 
 | Stage | State |
 |---|---|
@@ -36,7 +38,9 @@ own thread. There is no live window or sound yet.
 | 3D rasteriser (software) | textured, bilinear-filtered gameplay frames (topskatr uses no mipmaps) |
 | Scripted input (headless) | done; every button and both analog channels confirmed |
 | Speed | interpreters about 2x real time (`make bench`); recompiler not needed to reach full speed |
-| Live window and sound (68000 + SCSP) | planned |
+| Sound board: 68000 + SCSP (slots, EG, LFO, FM, timers, MIDI, DSP) | done offline: replays the captured command stream to a WAV at about 12x real time |
+| DSB2 MPEG music board | planned |
+| Live window and real-time sound | planned |
 
 ## Quick start
 
@@ -55,6 +59,8 @@ make disasm ADDR=0x6f0 COUNT=64
 make run STEPS=50000000   # boot on the interpreter, report hardware use
 make run SNAP=60          # also write the tile layer every 60 frames
 make run STEPS=900000000 SNAP=115 INPUT=coin1@1100-1104,start@1250-1254
+make sound                # render the sound commands of the last run -> out/topskatr/sound.wav
+make sound-disasm ADDR=0x6004ea   # disassemble the sound 68000 program
                           # coin up, start, and play into a race
 make bench                # timed run into a race: speed and state hash
 make recomp               # recompile the TGP programs captured by `run` (slow build)
@@ -80,6 +86,7 @@ crates/
   model2/    board model: memory map, IRQs, timers, I/O, copro interface
   mb86235/   MB86235 (TGPx4) decoder, disassembler and interpreter
   m68k/      68000 interpreter and disassembler (sound CPUs)
+  sound/     SCSP (YMF292) with its DSP, and the sound board (Model 2-generic)
   cli/       the `remodel` command
 ```
 
@@ -180,6 +187,15 @@ documentation and hasn't been contradicted yet.
   Over") captures, while it forwards all other bytes out of its own UART.
   The MPEG ROMs hold MPEG-1 Layer II, 32 kHz, 128 kbit/s stereo, stored
   unswapped.
+- *Confirmed (running the sound program on `crates/sound`):* the driver
+  streams every sound: the 68000 copies 512-byte chunks of 8-bit PCM from the
+  sample ROM into 8 KB double buffers in sound RAM (`0x60000-0x6FFFF`) and
+  refills by polling the slot monitor's CA bit. Voices play at 22.05 kHz,
+  stereo sounds as hard-panned slot pairs. It loads a 108-step DSP program
+  (reverb into the ring at `0x70000`). A `0xFF` byte soft-restarts the
+  driver. Channel 14 is not special to it: the game's `AE` commands hit empty
+  table entries, so they make no SCSP sound whether or not the link runs
+  through the DSB2 first.
 - *Unverified:* the board map, IRQ controller semantics (`0xE80000`
   request/ack, `0xE80004` enable), timers and I/O chip layout in
   `crates/model2/src/bus.rs`.

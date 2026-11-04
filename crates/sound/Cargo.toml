@@ -1,0 +1,12 @@
+[package]
+name = "remodel-sound"
+description = "Model 2 sound board: SCSP (YMF292) and its 68EC000"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "sound"
+
+[dependencies]
+m68k.workspace = true
