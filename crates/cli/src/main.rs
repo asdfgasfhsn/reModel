@@ -260,4 +260,10 @@ fn run(roms: &RomSet, steps: u64) {
     let _ = std::fs::write(dir.join("coverage.txt"), cov);
     let _ = std::fs::write(dir.join("indirect.txt"), ind);
     println!("trace written to {}/{{coverage,indirect}}.txt", dir.display());
+    if !b.copro_program.is_empty() {
+        // Little-endian 64-bit words, in upload order.
+        let bin: Vec<u8> = b.copro_program.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let _ = std::fs::write(dir.join("copro.bin"), &bin);
+        println!("copro program written to {}/copro.bin ({} words)", dir.display(), b.copro_program.len());
+    }
 }
