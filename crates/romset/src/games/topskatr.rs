@@ -6,6 +6,9 @@ pub static TOPSKATR: Game = Game {
     id: "topskatr",
     title: "Top Skater",
     board: Board::Model2C,
+    // Window 4 holds the speed gauge and the time-limit ring (confirmed with
+    // REMODEL_PROBE); the course is window 2 and the sky window 0.
+    hud_windows: &[4],
     files: &[
         RomFile {
             name: "epr-19755a.15",

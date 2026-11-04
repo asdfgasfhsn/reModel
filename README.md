@@ -40,6 +40,7 @@ music`). There is no live window yet.
 | Speed | interpreters about 2x real time (`make bench`); recompiler not needed to reach full speed |
 | Sound board: 68000 + SCSP (slots, EG, LFO, FM, timers, MIDI, DSP) | done offline: replays the captured command stream to a WAV at about 12x real time |
 | DSB2 music board (68000 firmware + MPEG Layer II decoder) | done; `make music` renders the game's music from a `run` capture |
+| Enhanced views: any resolution, 16:9 / 21:9 with HUD moved to the edges | done for snapshots (`--height`, `--aspect`, `--hud`) |
 | Live window and real-time sound | planned |
 
 ## Quick start
@@ -62,6 +63,8 @@ make run STEPS=900000000 SNAP=115 INPUT=coin1@1100-1104,start@1250-1254
 make sound                # render the sound commands of the last run -> out/topskatr/sound.wav
 make sound-disasm ADDR=0x6004ea   # disassemble the sound 68000 program
                           # coin up, start, and play into a race
+make run STEPS=485000000 INPUT=coin1@1100-1104,start@1250-1254 \
+    VIEW="--height 1080 --aspect 21:9 --hud edges"   # enhanced snapshot
 make bench                # timed run into a race: speed and state hash
 make recomp               # recompile the TGP programs captured by `run` (slow build)
 make bench RECOMP=1       # same run on the recompiled build: same hash, faster
@@ -206,6 +209,12 @@ documentation and hasn't been contradicted yet.
   track nn (0 = stop), `AE 02 vv` sets the master volume, `AE 03 vv` fades out
   and then stops. Remodel's decoder matches ffmpeg's to within 3e-6 of full
   scale on the game's MPEG data.
+- *Confirmed (enhancement):* topskatr's courses hold up in wide views. At
+  16:9 and 21:9 the game sends enough of the scene that the widened
+  viewport fills to the edges with no visible pop-in across a race, so no
+  game patch has been needed so far. The 3D HUD (speed gauge, time-limit
+  ring) is in window 4, separate from the course (window 2) and sky
+  (window 0).
 - *Unverified:* the board map, IRQ controller semantics (`0xE80000`
   request/ack, `0xE80004` enable), timers and I/O chip layout in
   `crates/model2/src/bus.rs`.

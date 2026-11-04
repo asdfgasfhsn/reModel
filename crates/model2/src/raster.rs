@@ -6,7 +6,7 @@
 //! Polygons are drawn back to front (painter's algorithm on the z-sort key)
 //! with perspective-correct, point-sampled textures (level 0, no mipmaps).
 
-use crate::video::{HEIGHT, WIDTH};
+use crate::video::{View, WIDTH};
 
 /// One 24-bit float from the stream (IEEE single with the low 8 bits cut).
 fn f24(w: u32) -> f32 {
@@ -377,13 +377,46 @@ pub fn probe(polys: &[Poly], src: &Sources, x: f32, y: f32) -> Vec<String> {
 /// Draw polygons into an RGB layer with a coverage mask: windows in order,
 /// and within a window from far (large key) to near.
 pub fn draw(polys: &mut [Poly], src: &Sources) -> (Vec<u8>, Vec<bool>) {
-    let mut rgb = vec![0u8; WIDTH * HEIGHT * 3];
-    let mut covered = vec![false; WIDTH * HEIGHT];
+    draw_view(polys, src, &View::native())
+}
+
+/// `draw` at the size of `view`. Viewports spanning the full original
+/// width are widened to the view's edges, so whatever 3D the game sends
+/// beyond the original frame is drawn.
+pub fn draw_view(polys: &mut [Poly], src: &Sources, view: &View) -> (Vec<u8>, Vec<bool>) {
+    let (w, h) = (view.width, view.height);
+    let mut rgb = vec![0u8; w * h * 3];
+    let mut covered = vec![false; w * h];
     polys.sort_by(|a, b| a.window.cmp(&b.window).then(b.key.total_cmp(&a.key)));
     for p in polys.iter() {
-        fill(&p.points, p.clip, |x, y, iz, uz, vz| {
-            if let Some(c) = shade(p, src, x, y, uz / iz, vz / iz) {
-                let o = y * WIDTH + x;
+        // HUD polygons move as a unit with the HUD placement.
+        let dx = if view.hud_windows & (1 << p.window) != 0 {
+            let (lo, hi) = p.points.iter().fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(v.x), b.max(v.x)));
+            view.hud_shift((lo + hi) / 2.0)
+        } else {
+            0.0
+        };
+        let points: Vec<SVtx> = p
+            .points
+            .iter()
+            .map(|v| {
+                let (x, y) = view.to_output(v.x + dx, v.y);
+                SVtx { x, y, ..*v }
+            })
+            .collect();
+        let (mut x0, y0, mut x1, y1) = p.clip;
+        if view.pad > 0.0 && x0 <= 1.0 && x1 >= WIDTH as f32 - 1.0 {
+            (x0, x1) = (view.x_min(), WIDTH as f32 + view.pad);
+        }
+        let (cx0, cy0) = view.to_output(x0, y0);
+        let (cx1, cy1) = view.to_output(x1, y1);
+        // Texel-space filtering works per output pixel; the checker pattern
+        // stays in game pixels.
+        let (gsx, gsy) = (view.sx, view.sy);
+        fill(&points, (cx0, cy0, cx1, cy1), w, h, |x, y, iz, uz, vz| {
+            let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
+            if let Some(c) = shade(p, src, gx, gy, uz / iz, vz / iz) {
+                let o = y * w + x;
                 covered[o] = true;
                 rgb[o * 3..o * 3 + 3].copy_from_slice(&c);
             }
@@ -395,10 +428,16 @@ pub fn draw(polys: &mut [Poly], src: &Sources) -> (Vec<u8>, Vec<bool>) {
 /// Scanline fill of a convex polygon with pixel-centre sampling, limited to
 /// `clip` (x0, y0, x1, y1) and the screen. `plot` receives (x, y, 1/z,
 /// u/z, v/z) interpolated linearly in screen space.
-fn fill(pts: &[SVtx], clip: (f32, f32, f32, f32), mut plot: impl FnMut(usize, usize, f32, f32, f32)) {
+fn fill(
+    pts: &[SVtx],
+    clip: (f32, f32, f32, f32),
+    width: usize,
+    height: usize,
+    mut plot: impl FnMut(usize, usize, f32, f32, f32),
+) {
     let (ymin, ymax) = pts.iter().fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.y), b.max(p.y)));
     let y0 = ymin.max(clip.1).ceil().max(0.0) as i64;
-    let y1 = (ymax.min(clip.3).ceil() as i64).min(HEIGHT as i64);
+    let y1 = (ymax.min(clip.3).ceil() as i64).min(height as i64);
     for y in y0..y1 {
         let yc = y as f32 + 0.5;
         // Left and right span ends: (x, iz, uz, vz).
@@ -422,7 +461,7 @@ fn fill(pts: &[SVtx], clip: (f32, f32, f32, f32), mut plot: impl FnMut(usize, us
             continue;
         }
         let x0 = (l.0.max(clip.0) - 0.5).ceil().max(0.0) as i64;
-        let x1 = ((r.0.min(clip.2) - 0.5).ceil() as i64).min(WIDTH as i64);
+        let x1 = ((r.0.min(clip.2) - 0.5).ceil() as i64).min(width as i64);
         let span = (r.0 - l.0).max(1e-6);
         for x in x0..x1 {
             let t = ((x as f32 + 0.5) - l.0) / span;
@@ -435,6 +474,7 @@ fn fill(pts: &[SVtx], clip: (f32, f32, f32, f32), mut plot: impl FnMut(usize, us
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::video::HEIGHT;
 
     fn sv(x: f32, y: f32) -> SVtx {
         SVtx { x, y, iz: 1.0, uz: 0.0, vz: 0.0 }
@@ -444,7 +484,13 @@ mod tests {
     fn fills_a_square() {
         let mut n = 0;
         let screen = (0.0, 0.0, WIDTH as f32, HEIGHT as f32);
-        fill(&[sv(10.0, 10.0), sv(20.0, 10.0), sv(20.0, 20.0), sv(10.0, 20.0)], screen, |_, _, _, _, _| n += 1);
+        fill(
+            &[sv(10.0, 10.0), sv(20.0, 10.0), sv(20.0, 20.0), sv(10.0, 20.0)],
+            screen,
+            WIDTH,
+            HEIGHT,
+            |_, _, _, _, _| n += 1,
+        );
         assert_eq!(n, 100);
     }
 

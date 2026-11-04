@@ -11,6 +11,8 @@ COUNT ?= 32
 STEPS ?= 50000000
 SNAP  ?= 0
 INPUT ?=
+# Snapshot view options for `run`, e.g. VIEW="--height 1080 --aspect 16:9 --hud edges".
+VIEW  ?=
 # Fixed run for `make bench`: attract, coin-up, start, into a race.
 BENCH_STEPS ?= 600000000
 BENCH_INPUT ?= coin1@1100-1104,start@1250-1254
@@ -37,7 +39,7 @@ RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 ##@ General
 
-help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, RECOMP)
+help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, RECOMP)
 	@awk 'BEGIN {FS = ":.*## "; printf "usage: make <target> [VAR=value]\n"} \
 		/^##@/ {printf "\n%s\n", substr($$0, 5)} \
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -104,7 +106,7 @@ analyze: release ## Recursive-descent code discovery; listing goes to OUT=
 	$(RUN) analyze $(OUT)/program.lst
 
 run: release ## Boot and report; PNG every SNAP frames; scripted INPUT (see remodel usage)
-	$(RUN) $(if $(INPUT),--input $(INPUT)) run $(STEPS) $(SNAP)
+	$(RUN) $(VIEW) $(if $(INPUT),--input $(INPUT)) run $(STEPS) $(SNAP)
 
 bench: release ## Timed fixed run into a race: speed vs real time and the state hash (must not change with speed-ups)
 	$(RUN) --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep -E '^(instructions|emulated|host time|state hash)'

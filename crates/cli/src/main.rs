@@ -17,6 +17,11 @@ options:
   --rom DIR            directory of unpacked chips (default rom)
   --geo-trace FRAME    record geometrizer port writes during FRAME of `run`
                        to out/GAME/geo-FRAME.txt (plus buffer RAM dump)
+  --height N           snapshot height in pixels (enhancement; default 384)
+  --aspect W:H         snapshot aspect ratio, e.g. 16:9 or 21:9 (default 4:3);
+                       wider than 4:3 shows more of the 3D scene at the sides
+  --hud center|edges   wide views: keep the HUD centred, or move each HUD
+                       element to the nearest screen edge
   --input SCRIPT       scripted inputs for `run`, e.g.
                        coin1@1100-1105,start@1300-1305,curving=0x40@1400-1500
 
@@ -81,6 +86,23 @@ fn main() -> ExitCode {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
     };
+    let (Ok(height), Ok(aspect), Ok(hud)) = (opt("--height"), opt("--aspect"), opt("--hud")) else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    if height.is_some() || aspect.is_some() || hud.is_some() {
+        let height = height.and_then(|h| h.parse().ok()).unwrap_or(model2::video::HEIGHT);
+        let aspect = match aspect.as_deref().map(|a| a.split_once(':').unwrap_or((a, "1"))) {
+            Some((w, h)) => w.parse::<f32>().unwrap_or(4.0) / h.parse::<f32>().unwrap_or(3.0),
+            None => 4.0 / 3.0,
+        };
+        let hud = if hud.as_deref() == Some("edges") { model2::video::Hud::Edges } else { model2::video::Hud::Center };
+        let mut view = model2::video::View::new(height, aspect, hud);
+        if let Ok(g) = games::find(game_id.as_deref().unwrap_or("topskatr")) {
+            view.hud_windows = g.hud_windows.iter().fold(0, |m, &w| m | 1 << w);
+        }
+        let _ = VIEW.set(view);
+    }
     let game_id = game_id.unwrap_or_else(|| "topskatr".into());
     let rom_dir = PathBuf::from(rom_dir.unwrap_or_else(|| "rom".into()));
     let Some(cmd) = args.first().cloned() else {
@@ -337,7 +359,11 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Output view for snapshots (`--height`, `--aspect`, `--hud`); native when unset.
+static VIEW: std::sync::OnceLock<model2::video::View> = std::sync::OnceLock::new();
+
 fn snapshot(m: &mut model2::Machine, path: &std::path::Path) {
+    let view = VIEW.get().copied().unwrap_or_else(model2::video::View::native);
     m.bus.geo.sync();
     let b = &m.bus;
     let geo = b.geo.engine();
@@ -351,7 +377,7 @@ fn snapshot(m: &mut model2::Machine, path: &std::path::Path) {
         yoff,
     };
     let mut polys = model2::raster::build(&geo.stream, &src);
-    let (rgb3d, covered) = model2::raster::draw(&mut polys, &src);
+    let (rgb3d, covered) = model2::raster::draw_view(&mut polys, &src, &view);
     if let Some((x, y)) = std::env::var("REMODEL_PROBE").ok().and_then(|v| {
         let (x, y) = v.split_once(',')?;
         Some((x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?))
@@ -361,8 +387,8 @@ fn snapshot(m: &mut model2::Machine, path: &std::path::Path) {
             println!("  {line}");
         }
     }
-    let rgb = model2::video::render_frame(b.tile_ram(), b.palette_ram(), Some((&rgb3d, &covered)));
-    let png = png::encode_rgb(model2::video::WIDTH as u32, model2::video::HEIGHT as u32, &rgb);
+    let rgb = model2::video::compose(b.tile_ram(), b.palette_ram(), Some((&rgb3d, &covered)), &view);
+    let png = png::encode_rgb(view.width as u32, view.height as u32, &rgb);
     let _ = std::fs::write(path, png);
 }
 

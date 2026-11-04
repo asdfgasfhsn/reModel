@@ -114,41 +114,222 @@ pub fn render_tiles(tiles: &[u8], palette: &[u8]) -> Vec<u8> {
     render_frame(tiles, palette, None)
 }
 
-/// Compose a frame, back to front: backdrop; low-priority tiles (plane B
-/// opaque, then A); the 3D layer where it has coverage; then high-priority
-/// tiles (B, then A).
+/// Where HUD (high-priority tile) elements go when the view is wider than
+/// the game's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hud {
+    /// Keep the HUD in the middle, where the game drew it.
+    Center,
+    /// Move each HUD element towards the edge it sits nearest.
+    Edges,
+}
+
+/// How a game frame (`WIDTH` x `HEIGHT` game pixels) maps to the output
+/// image: a scale, extra game pixels on each side for wider aspect ratios,
+/// and HUD placement. An enhancement: the hardware only has the native view.
+#[derive(Clone, Copy, Debug)]
+pub struct View {
+    pub width: usize,
+    pub height: usize,
+    /// Output pixels per game pixel, horizontally and vertically.
+    pub sx: f32,
+    pub sy: f32,
+    /// Game pixels added on each side of the original 496.
+    pub pad: f32,
+    pub hud: Hud,
+    /// 3D windows holding HUD elements (bit n = window n), placed like
+    /// the tile HUD.
+    pub hud_windows: u32,
+}
+
+impl View {
+    /// The hardware's own 496x384.
+    pub fn native() -> Self {
+        View { width: WIDTH, height: HEIGHT, sx: 1.0, sy: 1.0, pad: 0.0, hud: Hud::Center, hud_windows: 0 }
+    }
+
+    /// An output `height` pixels tall with display aspect `aspect` (e.g.
+    /// 16/9). The original frame fills a 4:3 display, so its pixels are
+    /// slightly wider than tall; wider aspects add game area at the sides.
+    pub fn new(height: usize, aspect: f32, hud: Hud) -> Self {
+        let sy = height as f32 / HEIGHT as f32;
+        let sx = sy * (4.0 / 3.0) / (WIDTH as f32 / HEIGHT as f32);
+        let width = (height as f32 * aspect).round() as usize;
+        let pad = ((width as f32 / sx - WIDTH as f32) / 2.0).max(0.0);
+        View { width, height, sx, sy, pad, hud, hud_windows: 0 }
+    }
+
+    /// Horizontal shift in game pixels for a HUD element centred at game x
+    /// `mid`: none when centred, else by the third of the screen it is in.
+    pub fn hud_shift(&self, mid: f32) -> f32 {
+        if self.hud != Hud::Edges {
+            return 0.0;
+        }
+        if mid < WIDTH as f32 / 3.0 {
+            -self.pad
+        } else if mid > WIDTH as f32 * 2.0 / 3.0 {
+            self.pad
+        } else {
+            0.0
+        }
+    }
+
+    /// Game-space x of the left edge of the output (negative when widened).
+    pub fn x_min(&self) -> f32 {
+        -self.pad
+    }
+
+    /// Output coordinates of a game-space point.
+    pub fn to_output(&self, x: f32, y: f32) -> (f32, f32) {
+        ((x + self.pad) * self.sx, y * self.sy)
+    }
+}
+
+/// Compose a frame at native resolution (see `compose`).
 pub fn render_frame(tiles: &[u8], palette: &[u8], layer3d: Option<(&[u8], &[bool])>) -> Vec<u8> {
-    let mut out = vec![0u8; WIDTH * HEIGHT * 3];
+    compose(tiles, palette, layer3d, &View::native())
+}
+
+/// Compose a frame, back to front: backdrop; low-priority tiles (plane B
+/// opaque, then A); the 3D layer (already at the view's size) where it has
+/// coverage; then high-priority tiles (B, then A). Tiles are scaled with
+/// nearest-neighbour sampling. With nothing drawn in 3D the frame is a 2D
+/// screen and is pillarboxed in a wide view.
+pub fn compose(tiles: &[u8], palette: &[u8], layer3d: Option<(&[u8], &[bool])>, view: &View) -> Vec<u8> {
     let backdrop = rgb(rd16(palette, 0));
+    // Game-resolution layers: the base (backdrop + low-priority tiles) and
+    // the HUD (high-priority tiles, None where transparent).
+    let mut base = vec![[0u8; 3]; WIDTH * HEIGHT];
+    let mut hud = vec![None; WIDTH * HEIGHT];
     for y in 0..HEIGHT {
         for x in 0..WIDTH {
-            let o = y * WIDTH + x;
             let mut samples = [None; 2];
             for (slot, (plane, opaque)) in [(1, true), (0, false)].into_iter().enumerate() {
                 let (map, scroll) = map_for(tiles, plane, x, y);
                 samples[slot] = sample(tiles, map, scroll, x, y, opaque);
             }
             let mut c = backdrop;
+            let mut h = None;
             for s in samples.iter().flatten() {
                 if !s.1 {
                     c = rgb(rd16(palette, (s.0 & 0xfff) * 2));
+                } else if s.0 & 0xf != 0 {
+                    // Plane B's pen 0 stays transparent in the high-priority pass.
+                    h = Some(rgb(rd16(palette, (s.0 & 0xfff) * 2)));
                 }
             }
+            base[y * WIDTH + x] = c;
+            hud[y * WIDTH + x] = h;
+        }
+    }
+    let has_3d = layer3d.is_some_and(|(_, cov)| cov.iter().any(|&c| c));
+    let shift = hud_shifts(&hud, view, has_3d);
+
+    // Place the HUD in an extended game-space layer, element by element.
+    let ext_w = WIDTH + (2.0 * view.pad).ceil() as usize;
+    let mut hud_ext = vec![None; ext_w * HEIGHT];
+    for y in 0..HEIGHT {
+        for x in 0..WIDTH {
+            if let Some(c) = hud[y * WIDTH + x] {
+                let ex = x + shift[(y / 8) * CELLS_X + x / 8];
+                if ex < ext_w {
+                    hud_ext[y * ext_w + ex] = Some(c);
+                }
+            }
+        }
+    }
+
+    let mut out = vec![0u8; view.width * view.height * 3];
+    for oy in 0..view.height {
+        let gy = ((oy as f32 + 0.5) / view.sy) as usize;
+        if gy >= HEIGHT {
+            continue;
+        }
+        for ox in 0..view.width {
+            let o = oy * view.width + ox;
+            let ex = (ox as f32 + 0.5) / view.sx;
+            let gx = ex - view.pad;
+            let mut c = if gx >= 0.0 && (gx as usize) < WIDTH {
+                base[gy * WIDTH + gx as usize]
+            } else if has_3d {
+                backdrop
+            } else {
+                [0, 0, 0]
+            };
             if let Some((rgb3d, covered)) = layer3d {
                 if covered[o] {
                     c.copy_from_slice(&rgb3d[o * 3..o * 3 + 3]);
                 }
             }
-            for s in samples.iter().flatten() {
-                // Plane B's pen 0 stays transparent in the high-priority pass.
-                if s.1 && s.0 & 0xf != 0 {
-                    c = rgb(rd16(palette, (s.0 & 0xfff) * 2));
-                }
+            if let Some(h) = hud_ext.get(gy * ext_w + ex as usize).copied().flatten() {
+                c = h;
             }
             out[o * 3..o * 3 + 3].copy_from_slice(&c);
         }
     }
     out
+}
+
+const CELLS_X: usize = WIDTH / 8 + 1;
+const CELLS_Y: usize = HEIGHT / 8;
+
+/// Horizontal shift (in game pixels) for each 8x8 HUD cell. Centred: every
+/// cell moves by `pad`. Edges (only with 3D on screen): cells are grouped
+/// into elements (touching cells, allowing a one-cell gap so words stay
+/// together), and each element stays left, moves right by `2 * pad`, or
+/// moves by `pad`, by which third of the screen its centre is in.
+fn hud_shifts(hud: &[Option<[u8; 3]>], view: &View, has_3d: bool) -> Vec<usize> {
+    let centre = view.pad.round() as usize;
+    let mut shift = vec![centre; CELLS_X * CELLS_Y];
+    if view.hud != Hud::Edges || !has_3d || view.pad <= 0.0 {
+        return shift;
+    }
+    let mut used = vec![false; CELLS_X * CELLS_Y];
+    for y in 0..HEIGHT {
+        for x in 0..WIDTH {
+            if hud[y * WIDTH + x].is_some() {
+                used[(y / 8) * CELLS_X + x / 8] = true;
+            }
+        }
+    }
+    let mut label = vec![usize::MAX; CELLS_X * CELLS_Y];
+    for start in 0..used.len() {
+        if !used[start] || label[start] != usize::MAX {
+            continue;
+        }
+        let (mut stack, mut members) = (vec![start], Vec::new());
+        label[start] = start;
+        while let Some(c) = stack.pop() {
+            members.push(c);
+            let (cx, cy) = ((c % CELLS_X) as i32, (c / CELLS_X) as i32);
+            for dy in -2..=2i32 {
+                for dx in -2..=2i32 {
+                    let (nx, ny) = (cx + dx, cy + dy);
+                    if nx < 0 || ny < 0 || nx >= CELLS_X as i32 || ny >= CELLS_Y as i32 {
+                        continue;
+                    }
+                    let n = ny as usize * CELLS_X + nx as usize;
+                    if used[n] && label[n] == usize::MAX {
+                        label[n] = start;
+                        stack.push(n);
+                    }
+                }
+            }
+        }
+        let (lo, hi) = members.iter().fold((usize::MAX, 0), |(a, b), &c| (a.min(c % CELLS_X), b.max(c % CELLS_X)));
+        let mid = (lo + hi + 1) * 4; // centre in game pixels
+        let s = if mid < WIDTH / 3 {
+            0
+        } else if mid > WIDTH * 2 / 3 {
+            (2.0 * view.pad).round() as usize
+        } else {
+            centre
+        };
+        for c in members {
+            shift[c] = s;
+        }
+    }
+    shift
 }
 
 #[cfg(test)]

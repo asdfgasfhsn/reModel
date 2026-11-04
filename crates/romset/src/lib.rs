@@ -64,6 +64,10 @@ pub struct Game {
     pub title: &'static str,
     pub board: Board,
     pub files: &'static [RomFile],
+    /// 3D viewports (window numbers) that hold HUD elements rather than the
+    /// scene. Only enhancements use this (wide views move them with the
+    /// rest of the HUD).
+    pub hud_windows: &'static [usize],
 }
 
 #[derive(Debug)]
