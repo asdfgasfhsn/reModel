@@ -118,6 +118,8 @@ pub struct Model2Bus {
     pub copro_booted: bool,
     /// The second MB86235: transforms display lists for the rasteriser.
     pub geo: Geometrizer,
+    /// "textures" ROM (texture headers and point lists) as u16 words.
+    pub texture_rom: Vec<u16>,
     /// The geometry processor, running the uploaded program.
     pub tgp: Tgp,
     /// "copro_data" ROM as 32-bit words, at TGP external address 0x800000.
@@ -212,6 +214,13 @@ impl Model2Bus {
                 .map(|c| u32::from_le_bytes(*c))
                 .collect(),
             tgp_fault: None,
+            texture_rom: roms
+                .region32(Role::Textures)
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_le_bytes(*c))
+                .collect(),
             geo: Geometrizer::new(
                 roms.region32(Role::Polygons).as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect(),
             ),
@@ -521,6 +530,15 @@ impl Model2Bus {
     /// Buffer RAM shared with the geometrizer and TGP: 0x00900000-0x0091FFFF.
     pub fn buffer_ram(&self) -> &[u8] {
         &self.mems[BUFFER_RAM].data
+    }
+
+    /// 3D screen offsets from the H/V sync registers (0x01040000 and
+    /// 0x01060000): (84 + H, 130 + V), per docs/hw/geometrizer.md 4.4.
+    pub fn sync_offsets(&self) -> (f32, f32) {
+        let t = &self.mems[5].data;
+        let h = i16::from_le_bytes([t[0x4_0000], t[0x4_0001]]) as f32;
+        let v = i16::from_le_bytes([t[0x6_0000], t[0x6_0001]]) as f32;
+        (84.0 + h, 130.0 + v)
     }
 
     /// Palette and colour tables: 0x01800000-0x0181FFFF.

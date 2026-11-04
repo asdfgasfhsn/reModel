@@ -8,6 +8,7 @@ pub mod bus;
 pub mod eeprom;
 pub mod geo;
 pub mod input;
+pub mod raster;
 pub mod video;
 
 pub use bus::Model2Bus;

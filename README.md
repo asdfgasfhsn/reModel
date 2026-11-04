@@ -29,7 +29,7 @@ nothing renders yet.
 | Recompiler (i960 → C) | planned |
 | Geometry processor fast path (high-level per-command) | planned |
 | 2D tile layer renderer (PNG snapshots) | done; boot, logo, title and attract text render |
-| 3D rasteriser (software first) | next |
+| 3D rasteriser (software) | flat-shaded gameplay frames render; textures next |
 | Sound (68000 + SCSP) and input | planned |
 
 ## Quick start
@@ -136,6 +136,11 @@ documentation and hasn't been contradicted yet.
 - *Confirmed:* coin 1 is IN0 bit 0 and start is IN0 bit 6 (active low). A
   scripted coin and start go through course select and skater select into
   a race: the HUD timer, checkpoints and hints all run, with no 3D drawn yet.
+- *Confirmed:* gameplay frames render in 3D (flat-shaded) from the game's own
+  geometrizer output, composited between low- and high-priority tiles: the
+  skater, board, street and buildings are recognisable. This confirms the
+  vertex linking, the 24-bit float stream, and the projection with the sync
+  offsets (xoff 0, yoff 128).
 - *Unverified:* the board map, IRQ controller semantics (`0xE80000`
   request/ack, `0xE80004` enable), timers and I/O chip layout in
   `crates/model2/src/bus.rs`.

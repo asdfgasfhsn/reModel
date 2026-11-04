@@ -61,9 +61,10 @@ fn split_scroll(tiles: &[u8], map: usize, y: usize) -> u16 {
     }
 }
 
-/// Palette index for `map` at screen pixel (x, y), scrolled by the
-/// registers of `scroll_map`, or None if transparent or disabled.
-fn sample(tiles: &[u8], map: usize, scroll_map: usize, x: usize, y: usize, opaque: bool) -> Option<usize> {
+/// Palette index and priority bit for `map` at screen pixel (x, y),
+/// scrolled by the registers of `scroll_map`, or None if transparent or
+/// disabled.
+fn sample(tiles: &[u8], map: usize, scroll_map: usize, x: usize, y: usize, opaque: bool) -> Option<(usize, bool)> {
     if rd16(tiles, VSCROLL + 2 * map) & 0x8000 != 0 {
         return None;
     }
@@ -76,7 +77,7 @@ fn sample(tiles: &[u8], map: usize, scroll_map: usize, x: usize, y: usize, opaqu
     if p == 0 && !opaque {
         return None;
     }
-    Some(((entry & 0x7f80) >> 3) | p as usize)
+    Some((((entry & 0x7f80) >> 3) | p as usize, entry & 0x8000 != 0))
 }
 
 /// Which map of `plane` (0 = A, 1 = B) covers screen pixel (x, y), and
@@ -110,19 +111,41 @@ fn map_for(tiles: &[u8], plane: usize, x: usize, y: usize) -> (usize, usize) {
 
 /// Render the tile layers to RGB888 (`WIDTH` x `HEIGHT`).
 pub fn render_tiles(tiles: &[u8], palette: &[u8]) -> Vec<u8> {
+    render_frame(tiles, palette, None)
+}
+
+/// Compose a frame, back to front: backdrop; low-priority tiles (plane B
+/// opaque, then A); the 3D layer where it has coverage; then high-priority
+/// tiles (B, then A).
+pub fn render_frame(tiles: &[u8], palette: &[u8], layer3d: Option<(&[u8], &[bool])>) -> Vec<u8> {
     let mut out = vec![0u8; WIDTH * HEIGHT * 3];
     let backdrop = rgb(rd16(palette, 0));
     for y in 0..HEIGHT {
         for x in 0..WIDTH {
-            let mut c = backdrop;
-            // Plane B is opaque (its pen 0 is the backdrop); plane A on top.
-            for (plane, opaque) in [(1, true), (0, false)] {
+            let o = y * WIDTH + x;
+            let mut samples = [None; 2];
+            for (slot, (plane, opaque)) in [(1, true), (0, false)].into_iter().enumerate() {
                 let (map, scroll) = map_for(tiles, plane, x, y);
-                if let Some(i) = sample(tiles, map, scroll, x, y, opaque) {
-                    c = rgb(rd16(palette, (i & 0xfff) * 2));
+                samples[slot] = sample(tiles, map, scroll, x, y, opaque);
+            }
+            let mut c = backdrop;
+            for s in samples.iter().flatten() {
+                if !s.1 {
+                    c = rgb(rd16(palette, (s.0 & 0xfff) * 2));
                 }
             }
-            out[(y * WIDTH + x) * 3..][..3].copy_from_slice(&c);
+            if let Some((rgb3d, covered)) = layer3d {
+                if covered[o] {
+                    c.copy_from_slice(&rgb3d[o * 3..o * 3 + 3]);
+                }
+            }
+            for s in samples.iter().flatten() {
+                // Plane B's pen 0 stays transparent in the high-priority pass.
+                if s.1 && s.0 & 0xf != 0 {
+                    c = rgb(rd16(palette, (s.0 & 0xfff) * 2));
+                }
+            }
+            out[o * 3..o * 3 + 3].copy_from_slice(&c);
         }
     }
     out
@@ -152,6 +175,6 @@ mod tests {
         tiles[0..2].copy_from_slice(&0x0080u16.to_le_bytes());
         let off = CHAR_BASE + 0x80 * 32;
         tiles[off..off + 32].fill(0x33);
-        assert_eq!(sample(&tiles, 0, 0, 0, 0, false), Some(0x10 | 3));
+        assert_eq!(sample(&tiles, 0, 0, 0, 0, false), Some((0x10 | 3, false)));
     }
 }
