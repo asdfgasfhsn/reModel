@@ -492,3 +492,11 @@ Remodel runs the uploaded geometrizer program on a second MB86235 interpreter (`
 - The geo ports build the list in buffer RAM. Command words are `(v & 0xFFFFF) | fn << 23 | eye << 29`, and data appends at the write pointer.
 - At each vblank, F0 is pulsed and the list at the read pointer is streamed into the input FIFO, kept full to depth 8, until the program goes idle.
 - Result for a topskatr gameplay frame: a 1,644-word list becomes 33,376 rasteriser words (z-sort, 5 windows and 87 object blocks), with no command-check errors.
+
+Rasteriser checks (Remodel `crates/model2/src/raster.rs`, gameplay frame 4555), **confirmed** by recognisable textured output:
+- Raster stream framing (§4.2): the polygon buffer layout, quads with 9 words and triangles with 6, ending at the next command word.
+- Vertex linking table (§3.4), cull on link type 0, and the backface bit in the luma word.
+- Projection (§4.4) with the window centre and sync offsets.
+- Texture header fields for size, position, mirror and luma table (§5.3); 13.3 V-then-U texture points; sheet addressing with 2x2 nibble packing and bank selection (§5.1).
+- Shading path: texel, then luma table times polygon luma, then the colour translation tables (§5.4).
+- Not yet checked: mipmaps/LOD, microtexture, translucency/checker details, the z-sort key format (Remodel sorts on float z), and clipping without a near plane (Remodel clips at z = 1).

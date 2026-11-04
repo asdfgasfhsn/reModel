@@ -232,9 +232,16 @@ fn main() -> ExitCode {
 fn snapshot(m: &model2::Machine, path: &std::path::Path) {
     let b = &m.bus;
     let (xoff, yoff) = b.sync_offsets();
-    let src = model2::raster::Sources { texture_rom: &b.texture_rom, palette: b.palette_ram(), xoff, yoff };
+    let src = model2::raster::Sources {
+        texture_rom: &b.texture_rom,
+        texture_point_ram: &b.geo.texture_point_ram,
+        render_ram: b.render_ram(),
+        palette: b.palette_ram(),
+        xoff,
+        yoff,
+    };
     let mut polys = model2::raster::build(&b.geo.stream, &src);
-    let (rgb3d, covered) = model2::raster::draw(&mut polys);
+    let (rgb3d, covered) = model2::raster::draw(&mut polys, &src);
     let rgb = model2::video::render_frame(b.tile_ram(), b.palette_ram(), Some((&rgb3d, &covered)));
     let png = png::encode_rgb(model2::video::WIDTH as u32, model2::video::HEIGHT as u32, &rgb);
     let _ = std::fs::write(path, png);

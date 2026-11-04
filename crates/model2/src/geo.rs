@@ -69,6 +69,9 @@ pub struct Geometrizer {
     pub bad_commands: u64,
     pub fault: Option<u32>,
     pub frames: u64,
+    /// Rasteriser texture point RAM (u16[64K]), written by raster cmd 4
+    /// with address bit 23 set. Persists across frames.
+    pub texture_point_ram: Vec<u16>,
     /// List words fed during the most recent frame (diagnostics).
     pub fed: Vec<u32>,
     /// First frame that ended with the program in its command-check error
@@ -96,6 +99,7 @@ impl Geometrizer {
             bad_commands: 0,
             fault: None,
             frames: 0,
+            texture_point_ram: vec![0; 0x1_0000],
             fed: Vec::new(),
             first_error: None,
             pc_trace: std::collections::VecDeque::new(),
@@ -163,6 +167,26 @@ impl Geometrizer {
             self.booted = true;
         }
         self.uploading = on;
+    }
+
+    /// Apply this frame's raster memory writes (cmd 4: addr, count, data)
+    /// to the persistent texture point RAM.
+    fn apply_raster_writes(&mut self) {
+        let mut i = 0;
+        while i < self.stream.len() {
+            let w = self.stream[i];
+            i += 1;
+            if w >> 24 == 0xff && w & 0xf == 4 && i + 1 < self.stream.len() {
+                let (addr, count) = (self.stream[i], self.stream[i + 1] as usize);
+                let data = self.stream.get(i + 2..i + 2 + count).unwrap_or(&[]);
+                if addr & 0x80_0000 != 0 {
+                    for (k, d) in data.iter().enumerate() {
+                        self.texture_point_ram[(addr as usize + k) & 0xffff] = *d as u16;
+                    }
+                }
+                i += 2 + count;
+            }
+        }
     }
 
     /// Run one frame: stream the list at the read pointer into the
@@ -233,5 +257,6 @@ impl Geometrizer {
         }
         // The DMA stops at END; words read ahead of it are not consumed.
         self.tgp.fifo_in.clear();
+        self.apply_raster_writes();
     }
 }

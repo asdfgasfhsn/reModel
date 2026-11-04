@@ -541,6 +541,11 @@ impl Model2Bus {
         (84.0 + h, 130.0 + v)
     }
 
+    /// Render RAM from 0x11000000: texture banks, luma tables, framebuffers.
+    pub fn render_ram(&self) -> &[u8] {
+        &self.mems[10].data
+    }
+
     /// Palette and colour tables: 0x01800000-0x0181FFFF.
     pub fn palette_ram(&self) -> &[u8] {
         &self.mems[6].data
