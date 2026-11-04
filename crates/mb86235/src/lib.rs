@@ -239,7 +239,7 @@ pub enum Transfer {
     Control(Control),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Insn {
     pub addr: u32,
     pub word: u64,

@@ -26,6 +26,8 @@ const RASTER_NOP: u32 = 0xff00_0000;
 /// Steps with no input consumed and no output produced after which the
 /// program is taken to be idle (finished the list, waiting for F0).
 const IDLE_STEPS: u64 = 4096;
+/// Geometrizer PCs kept for the first-error dump.
+const PC_TRACE_LEN: usize = 4096;
 
 /// The geometrizer's external bus: polygon RAM below 0x800000, the
 /// polygons ROM from 0x800000 (word addressed).
@@ -50,23 +52,18 @@ impl External for GeoExt<'_> {
     }
 }
 
-pub struct Geometrizer {
+/// The geometrizer's TGP and everything it owns. Runs a frame at a time,
+/// on a worker thread, from a copy of buffer RAM taken at vblank.
+pub struct Engine {
     pub tgp: Tgp,
-    pub program: Vec<u64>,
-    uploading: bool,
-    upload_half: Option<u32>,
-    pub booted: bool,
-    /// Byte offsets into buffer RAM.
-    pub write_ptr: u32,
-    pub read_ptr: u32,
     poly_ram: Vec<u32>,
     poly_rom: Vec<u32>,
+    /// Buffer RAM as it was when the frame started.
+    buffer: Vec<u8>,
     /// Rasteriser stream produced for the most recent frame.
     pub stream: Vec<u32>,
     /// List words consumed for the most recent frame.
     pub list_words: usize,
-    /// Command words that failed the `fn | fn << 8` check.
-    pub bad_commands: u64,
     pub fault: Option<u32>,
     pub frames: u64,
     /// Rasteriser texture point RAM (u16[64K]), written by raster cmd 4
@@ -77,34 +74,108 @@ pub struct Geometrizer {
     /// First frame that ended with the program in its command-check error
     /// loop, with the words fed that frame.
     pub first_error: Option<(u64, Vec<u32>)>,
-    /// Recent geometrizer PCs (ring), dumped with the first error.
-    pub pc_trace: std::collections::VecDeque<(u32, usize)>,
+    /// Recent geometrizer PCs and input FIFO depths (a ring indexed by
+    /// step count), dumped with the first error.
+    pc_trace: Vec<(u32, usize)>,
     pub first_error_trace: Vec<(u32, usize)>,
+    /// Host time spent running frames.
+    pub busy: std::time::Duration,
+}
+
+enum Slot {
+    Idle(Box<Engine>),
+    Running(std::thread::JoinHandle<Box<Engine>>),
+    Empty,
+}
+
+/// The i960's side of the geometrizer: command and data ports, list
+/// pointers and program upload. The engine runs behind it.
+pub struct Geometrizer {
+    pub program: Vec<u64>,
+    uploading: bool,
+    upload_half: Option<u32>,
+    pub booted: bool,
+    /// Byte offsets into buffer RAM.
+    pub write_ptr: u32,
+    pub read_ptr: u32,
+    /// Command words that failed the `fn | fn << 8` check.
+    pub bad_commands: u64,
+    /// Host time the emulation thread spent waiting for the worker.
+    pub waited: std::time::Duration,
+    engine: Slot,
 }
 
 impl Geometrizer {
     pub fn new(poly_rom: Vec<u32>) -> Self {
         Geometrizer {
-            tgp: Tgp::new(),
             program: Vec::new(),
             uploading: false,
             upload_half: None,
             booted: false,
             write_ptr: 0,
             read_ptr: 0,
-            poly_ram: vec![0; 0x10_0000],
-            poly_rom,
-            stream: Vec::new(),
-            list_words: 0,
             bad_commands: 0,
-            fault: None,
-            frames: 0,
-            texture_point_ram: vec![0; 0x1_0000],
-            fed: Vec::new(),
-            first_error: None,
-            pc_trace: std::collections::VecDeque::new(),
-            first_error_trace: Vec::new(),
+            waited: std::time::Duration::ZERO,
+            engine: Slot::Idle(Box::new(Engine {
+                tgp: Tgp::new(),
+                poly_ram: vec![0; 0x10_0000],
+                poly_rom,
+                buffer: Vec::new(),
+                stream: Vec::new(),
+                list_words: 0,
+                fault: None,
+                frames: 0,
+                texture_point_ram: vec![0; 0x1_0000],
+                fed: Vec::new(),
+                first_error: None,
+                pc_trace: vec![(0, 0); PC_TRACE_LEN],
+                first_error_trace: Vec::new(),
+                busy: std::time::Duration::ZERO,
+            })),
         }
+    }
+
+    /// Wait for a frame running on the worker, if any.
+    pub fn sync(&mut self) {
+        if !matches!(self.engine, Slot::Running(_)) {
+            return;
+        }
+        if let Slot::Running(h) = std::mem::replace(&mut self.engine, Slot::Empty) {
+            let t = std::time::Instant::now();
+            self.engine = Slot::Idle(h.join().expect("geometrizer worker panicked"));
+            self.waited += t.elapsed();
+        }
+    }
+
+    /// The engine's state. Call `sync` first if a frame may be running.
+    pub fn engine(&self) -> &Engine {
+        match &self.engine {
+            Slot::Idle(e) => e,
+            _ => panic!("geometrizer frame still running: call sync() first"),
+        }
+    }
+
+    fn engine_mut(&mut self) -> &mut Engine {
+        self.sync();
+        match &mut self.engine {
+            Slot::Idle(e) => e,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Start a frame on the worker thread from the list at the read
+    /// pointer. Runs in the background until the next `sync`.
+    pub fn start_frame(&mut self, buffer: &[u8]) {
+        let (booted, read_ptr) = (self.booted, self.read_ptr);
+        let mut e = std::mem::replace(self.engine_mut(), Engine::placeholder());
+        e.buffer.clear();
+        e.buffer.extend_from_slice(buffer);
+        let handle = std::thread::spawn(move || {
+            let mut e = Box::new(e);
+            e.run_frame(booted, read_ptr);
+            e
+        });
+        self.engine = Slot::Running(handle);
     }
 
     fn append(&mut self, buffer: &mut [u8], word: u32) {
@@ -163,10 +234,33 @@ impl Geometrizer {
             self.upload_half = None;
         }
         if !on && self.uploading {
-            self.tgp.boot(&self.program);
+            let program = std::mem::take(&mut self.program);
+            self.engine_mut().tgp.boot(&program);
+            self.program = program;
             self.booted = true;
         }
         self.uploading = on;
+    }
+}
+
+impl Engine {
+    fn placeholder() -> Self {
+        Engine {
+            tgp: Tgp::new(),
+            poly_ram: Vec::new(),
+            poly_rom: Vec::new(),
+            buffer: Vec::new(),
+            stream: Vec::new(),
+            list_words: 0,
+            fault: None,
+            frames: 0,
+            texture_point_ram: Vec::new(),
+            fed: Vec::new(),
+            first_error: None,
+            pc_trace: Vec::new(),
+            first_error_trace: Vec::new(),
+            busy: std::time::Duration::ZERO,
+        }
     }
 
     /// Apply this frame's raster memory writes (cmd 4: addr, count, data)
@@ -191,15 +285,24 @@ impl Geometrizer {
 
     /// Run one frame: stream the list at the read pointer into the
     /// geometrizer until it emits END, collecting its output.
-    pub fn run_frame(&mut self, buffer: &[u8]) {
+    fn run_frame(&mut self, booted: bool, read_ptr: u32) {
         self.stream.clear();
         self.fed.clear();
         self.list_words = 0;
-        if !self.booted || self.fault.is_some() {
+        if !booted || self.fault.is_some() {
             return;
         }
+        let t = std::time::Instant::now();
+        let buffer = std::mem::take(&mut self.buffer);
+        self.process(&buffer, read_ptr);
+        self.busy += t.elapsed();
+        self.buffer = buffer;
+        self.apply_raster_writes();
+    }
+
+    fn process(&mut self, buffer: &[u8], read_ptr: u32) {
         self.frames += 1;
-        let mut pos = self.read_ptr as usize & (buffer.len() - 1) & !3;
+        let mut pos = read_ptr as usize & (buffer.len() - 1) & !3;
         let mut ext = GeoExt { ram: &mut self.poly_ram, rom: &self.poly_rom };
         let start = self.tgp.steps;
         // Frame-start handshake: the program waits for F0 to rise, clears
@@ -233,12 +336,10 @@ impl Geometrizer {
                     Step::Stalled => break,
                     Step::Ran => {}
                 }
-                if self.pc_trace.len() >= 4000 {
-                    self.pc_trace.pop_front();
-                }
-                self.pc_trace.push_back((pc, self.tgp.fifo_in.len()));
+                self.pc_trace[self.tgp.steps as usize % PC_TRACE_LEN] = (pc, self.tgp.fifo_in.len());
                 if pc == TS_COMMAND_ERROR_PC && self.first_error_trace.is_empty() {
-                    self.first_error_trace = self.pc_trace.iter().copied().collect();
+                    let at = self.tgp.steps as usize % PC_TRACE_LEN + 1;
+                    self.first_error_trace = [&self.pc_trace[at..], &self.pc_trace[..at]].concat();
                     self.first_error = Some((self.frames, self.fed.clone()));
                 }
             }
@@ -257,6 +358,5 @@ impl Geometrizer {
         }
         // The DMA stops at END; words read ahead of it are not consumed.
         self.tgp.fifo_in.clear();
-        self.apply_raster_writes();
     }
 }

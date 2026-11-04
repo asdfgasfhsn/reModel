@@ -131,6 +131,22 @@ fn rep_repeats_next_word() {
 }
 
 #[test]
+fn repeated_nop_takes_its_full_count_of_steps() {
+    // REP 20; NOP; then a word that marks completion.
+    let prog = [ctrl(0x01, 0, 20), NOP, alu_ctrl(0x10, 0, 0x19, OUT_AA0, 0, 0, 0)];
+    let (mut t, mut e) = boot(&prog);
+    while t.pc != 2 {
+        assert_eq!(t.step(&mut e), Step::Ran);
+    }
+    assert_eq!(t.steps, 21, "REP word plus 20 NOPs");
+    assert_eq!(t.counts[1], 20);
+    assert_eq!(t.rpc, 0);
+    assert_eq!(t.st & RP, 0);
+    t.step(&mut e);
+    assert_eq!(t.aa[0], 1);
+}
+
+#[test]
 fn external_transfer_advances_eo() {
     // F5 external read: TRM=1, DIR=1 (ext -> int), disp6 = +1, DR = AA0
     let rd = put(&[(63, 61, 5), (60, 56, 7), (41, 41, 1), (38, 38, 1), (37, 37, 1), (36, 31, 1), (30, 24, AA0)]);

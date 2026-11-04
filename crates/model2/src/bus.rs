@@ -101,6 +101,8 @@ pub struct Timer {
 pub struct Model2Bus {
     mems: Vec<Mem>,
     map: Vec<Map>,
+    /// For each 64 KB page, 1 + the index of the map entry in it (0: none).
+    pages: Vec<u8>,
     /// Current time in CPU cycles; advanced by the machine.
     pub now: u64,
 
@@ -126,6 +128,8 @@ pub struct Model2Bus {
     copro_data: Vec<u32>,
     /// First instruction the TGP model couldn't execute, if any.
     pub tgp_fault: Option<u32>,
+    /// The last run stopped waiting for input.
+    tgp_stalled: bool,
     pub copro_empty_reads: u64,
     /// Running FNV-1a hash of every value the i960 read from the copro, to
     /// compare runs.
@@ -152,7 +156,7 @@ pub struct Model2Bus {
     pub eeprom: Eeprom,
 
     /// Non-memory accesses, by word address.
-    pub io_log: BTreeMap<u32, Access>,
+    pub io_log: AccessLog,
     /// Accesses that hit nothing, by word address.
     pub unmapped: BTreeMap<u32, Access>,
 }
@@ -191,10 +195,18 @@ impl Model2Bus {
             Map { start: 0x0200_0000, end: 0x03ff_ffff, mem: 9 },
             Map { start: 0x1100_0000, end: 0x116f_ffff, mem: 10 },
         ];
+        let mut pages = vec![0u8; 0x1_0000];
+        for (i, m) in map.iter().enumerate() {
+            for p in m.start >> 16..=m.end >> 16 {
+                assert_eq!(pages[p as usize], 0, "two map entries share page {p:#x}");
+                pages[p as usize] = i as u8 + 1;
+            }
+        }
         let timer = || Timer { reload: 0xfffff, started_at: 0, running: false };
         Model2Bus {
             mems,
             map,
+            pages,
             now: 0,
             irq_request: 0,
             irq_enable: 0,
@@ -214,6 +226,7 @@ impl Model2Bus {
                 .map(|c| u32::from_le_bytes(*c))
                 .collect(),
             tgp_fault: None,
+            tgp_stalled: false,
             texture_rom: roms
                 .region32(Role::Textures)
                 .as_chunks::<2>()
@@ -237,13 +250,16 @@ impl Model2Bus {
             analog: [0x80; 8],
             io_latch: [0; 16],
             eeprom: Eeprom::new(),
-            io_log: BTreeMap::new(),
+            io_log: AccessLog::default(),
             unmapped: BTreeMap::new(),
         }
     }
 
     fn find(&self, addr: u32) -> Option<(usize, usize)> {
-        let m = self.map.iter().find(|m| addr >= m.start && addr <= m.end)?;
+        let m = &self.map[self.pages[(addr >> 16) as usize].checked_sub(1)? as usize];
+        if addr < m.start || addr > m.end {
+            return None;
+        }
         Some((m.mem, (addr - m.start) as usize % self.mems[m.mem].data.len()))
     }
 
@@ -252,15 +268,22 @@ impl Model2Bus {
         if !self.copro_booted || self.tgp_fault.is_some() {
             return;
         }
+        // A stalled TGP stays stalled until its input FIFO has a word; this
+        // is called on every i960 instruction, so don't step it until then.
+        if self.tgp_stalled && self.tgp.fifo_in.is_empty() {
+            return;
+        }
         let mut ext = TgpExt { buffer: &mut self.mems[BUFFER_RAM].data, data: &self.copro_data };
-        if let Step::Unsupported(pc) = self.tgp.run(&mut ext, n) {
-            self.tgp_fault = Some(pc);
+        match self.tgp.run(&mut ext, n) {
+            Step::Unsupported(pc) => self.tgp_fault = Some(pc),
+            r => self.tgp_stalled = r == Step::Stalled,
         }
     }
 
-    /// Process this frame's display list (called at vblank).
+    /// Start processing this frame's display list (called at vblank). It
+    /// runs alongside the i960; `geo.sync()` waits for it.
     pub fn run_geometrizer(&mut self) {
-        self.geo.run_frame(&self.mems[BUFFER_RAM].data);
+        self.geo.start_frame(&self.mems[BUFFER_RAM].data);
     }
 
     /// Raise IRQ request bits (only those already enabled latch).
@@ -427,6 +450,7 @@ impl Model2Bus {
                     self.copro_uploading = false;
                     self.copro_booted = true;
                     self.tgp.boot(&self.copro_program);
+                    self.tgp_stalled = false;
                 }
                 self.copro_ctrl = v;
             }
@@ -550,6 +574,22 @@ impl Model2Bus {
     pub fn palette_ram(&self) -> &[u8] {
         &self.mems[6].data
     }
+
+    /// Hash of all RAM, the last raster stream and the copro results. Two
+    /// runs with the same inputs must agree; used to check that speed-ups
+    /// and the recompiler don't change behaviour.
+    pub fn state_hash(&mut self) -> u64 {
+        self.geo.sync();
+        let mut h = Fnv(0xcbf2_9ce4_8422_2325);
+        for m in &self.mems {
+            if m.writable {
+                m.data.chunks(8).for_each(|c| h.word(c.iter().fold(0, |a, &b| a << 8 | b as u64)));
+            }
+        }
+        self.geo.engine().stream.iter().for_each(|&w| h.word(w as u64));
+        h.word(self.copro_result_hash);
+        h.0
+    }
 }
 
 impl Bus for Model2Bus {
@@ -576,5 +616,31 @@ impl Bus for Model2Bus {
     }
     fn is_rom(&self, a: u32) -> bool {
         a < 0x20_0000
+    }
+}
+
+/// Access counts by address, with a cheap hash (logged on every I/O access).
+pub type AccessLog = std::collections::HashMap<u32, Access, std::hash::BuildHasherDefault<AddrHasher>>;
+
+#[derive(Default)]
+pub struct AddrHasher(u64);
+
+impl std::hash::Hasher for AddrHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        bytes.iter().for_each(|&b| self.0 = (self.0 << 8 | b as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+    }
+    fn write_u32(&mut self, v: u32) {
+        self.0 = (v as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
+
+struct Fnv(u64);
+
+impl Fnv {
+    fn word(&mut self, v: u64) {
+        self.0 = (self.0 ^ v).wrapping_mul(0x100_0000_01b3);
     }
 }

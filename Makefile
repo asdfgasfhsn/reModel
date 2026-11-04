@@ -11,6 +11,9 @@ COUNT ?= 32
 STEPS ?= 50000000
 SNAP  ?= 0
 INPUT ?=
+# Fixed run for `make bench`: attract, coin-up, start, into a race.
+BENCH_STEPS ?= 600000000
+BENCH_INPUT ?= coin1@1100-1104,start@1250-1254
 
 CARGO   ?= cargo
 REMODEL := target/release/remodel
@@ -70,6 +73,9 @@ analyze: release ## Recursive-descent code discovery; listing goes to OUT=
 
 run: release ## Boot and report; PNG every SNAP frames; scripted INPUT (see remodel usage)
 	$(RUN) $(if $(INPUT),--input $(INPUT)) run $(STEPS) $(SNAP)
+
+bench: release ## Timed fixed run into a race: speed vs real time and the state hash (must not change with speed-ups)
+	$(RUN) --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep -E '^(instructions|emulated|host time|state hash)'
 
 copro-disasm: release ## Disassemble the geometry program captured by `make run`
 	$(RUN) copro-disasm

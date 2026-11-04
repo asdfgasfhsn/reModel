@@ -90,9 +90,10 @@ pub struct Tgp {
     /// appear in ST bits 28-30 for branch conditions.
     pub ext_flags: u32,
     pub steps: u64,
-    /// Which program words have executed at least once.
-    pub executed: Vec<bool>,
-    decoded: Vec<Option<Insn>>,
+    /// How many times each program word has executed.
+    pub counts: Vec<u64>,
+    /// The program, decoded at boot.
+    decoded: Vec<Insn>,
 }
 
 impl Default for Tgp {
@@ -132,8 +133,8 @@ impl Tgp {
             fifo_out: VecDeque::new(),
             ext_flags: 0,
             steps: 0,
-            executed: vec![false; PROGRAM_WORDS as usize],
-            decoded: vec![None; PROGRAM_WORDS as usize],
+            counts: vec![0; PROGRAM_WORDS as usize],
+            decoded: (0..PROGRAM_WORDS).map(|a| decode(a, 0)).collect(),
         }
     }
 
@@ -141,17 +142,12 @@ impl Tgp {
     pub fn boot(&mut self, program: &[u64]) {
         self.program.iter_mut().for_each(|w| *w = 0);
         self.program[..program.len().min(PROGRAM_WORDS as usize)].copy_from_slice(program);
-        self.decoded.iter_mut().for_each(|d| *d = None);
+        self.decoded = self.program.iter().enumerate().map(|(a, &w)| decode(a as u32, w)).collect();
         self.pc = 0;
         self.pending = None;
         self.pcsp = 0;
         self.rpc = 0;
         self.st &= !(RP | LP);
-    }
-
-    fn insn(&mut self, pc: u32) -> Insn {
-        let slot = &mut self.decoded[pc as usize];
-        slot.get_or_insert_with(|| decode(pc, self.program[pc as usize])).clone()
     }
 
     fn live_flags(&self) -> u32 {
@@ -573,13 +569,34 @@ impl Tgp {
 
     /// Execute one word.
     pub fn step(&mut self, ext: &mut impl External) -> Step {
+        // Borrow the decoded program out of `self` so the word can be used
+        // in place while the registers change.
+        let decoded = std::mem::take(&mut self.decoded);
+        let r = self.exec(&decoded[self.pc as usize], ext);
+        self.decoded = decoded;
+        r
+    }
+
+    fn exec(&mut self, insn: &Insn, ext: &mut impl External) -> Step {
         let pc = self.pc;
-        let insn = self.insn(pc);
         if let Transfer::Unsupported(_) = insn.transfer {
             return Step::Unsupported(pc);
         }
         if Self::reads_fifo(&insn.transfer) && self.fifo_in.is_empty() {
             return Step::Stalled;
+        }
+        // A repeated word that does nothing (a REP n / NOP delay) would just
+        // count down: skip to its last repetition, which runs normally.
+        if self.rpc > 1
+            && self.pending.is_none()
+            && insn.alu.is_none()
+            && insn.mul.is_none()
+            && matches!(insn.transfer, Transfer::None | Transfer::Control(Control::Nop))
+        {
+            let skip = self.rpc as u64 - 1;
+            self.steps += skip;
+            self.counts[pc as usize] += skip;
+            self.rpc = 1;
         }
         let delayed = self.pending.take();
 
@@ -665,17 +682,14 @@ impl Tgp {
         }
 
         // Read phase: transfer source, then arithmetic sources.
-        let moved: Vec<(Loc, u32)> = match insn.transfer {
-            Transfer::Move { src, dst } => {
-                let v = self.loc_read(&src, ext);
-                vec![(dst, v)]
-            }
+        let moved: [Option<(Loc, u32)>; 2] = match insn.transfer {
+            Transfer::Move { src, dst } => [Some((dst, self.loc_read(&src, ext))), None],
             Transfer::Double { a, b } => {
                 let va = self.loc_read(&a.0, ext);
                 let vb = self.loc_read(&b.0, ext);
-                vec![(a.1, va), (b.1, vb)]
+                [Some((a.1, va)), Some((b.1, vb))]
             }
-            _ => vec![],
+            _ => [None, None],
         };
         let alu = insn.alu.as_ref().and_then(|a| self.alu(a));
         let mul = insn.mul.as_ref().map(|m| self.mul(m));
@@ -687,7 +701,7 @@ impl Tgp {
         if let Some((o, v)) = mul {
             self.out_write(o, v);
         }
-        for (dst, v) in moved {
+        for (dst, v) in moved.into_iter().flatten() {
             self.loc_write(&dst, v, ext);
         }
         if let Some(r) = pop {
@@ -713,7 +727,7 @@ impl Tgp {
         self.pending = branch;
         self.pc = next;
         self.steps += 1;
-        self.executed[pc as usize] = true;
+        self.counts[pc as usize] += 1;
         Step::Ran
     }
 

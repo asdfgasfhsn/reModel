@@ -229,18 +229,20 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn snapshot(m: &model2::Machine, path: &std::path::Path) {
+fn snapshot(m: &mut model2::Machine, path: &std::path::Path) {
+    m.bus.geo.sync();
     let b = &m.bus;
+    let geo = b.geo.engine();
     let (xoff, yoff) = b.sync_offsets();
     let src = model2::raster::Sources {
         texture_rom: &b.texture_rom,
-        texture_point_ram: &b.geo.texture_point_ram,
+        texture_point_ram: &geo.texture_point_ram,
         render_ram: b.render_ram(),
         palette: b.palette_ram(),
         xoff,
         yoff,
     };
-    let mut polys = model2::raster::build(&b.geo.stream, &src);
+    let mut polys = model2::raster::build(&geo.stream, &src);
     let (rgb3d, covered) = model2::raster::draw(&mut polys, &src);
     let rgb = model2::video::render_frame(b.tile_ram(), b.palette_ram(), Some((&rgb3d, &covered)));
     let png = png::encode_rgb(model2::video::WIDTH as u32, model2::video::HEIGHT as u32, &rgb);
@@ -278,20 +280,30 @@ fn run(roms: &RomSet, steps: u64, snap: u64, script: &model2::input::InputScript
             }
         }
         if snap > 0 && m.frames != last_frame && m.frames.is_multiple_of(snap) {
-            snapshot(&m, &frames_dir.join(format!("{:06}.png", m.frames)));
+            let path = frames_dir.join(format!("{:06}.png", m.frames));
+            snapshot(&mut m, &path);
         }
         last_frame = m.frames;
     }
-    snapshot(&m, &frames_dir.join("final.png"));
+    snapshot(&mut m, &frames_dir.join("final.png"));
     let secs = started.elapsed().as_secs_f64();
+    let state_hash = m.bus.state_hash();
     let b = &m.bus;
+    let geo = b.geo.engine();
 
     match stop {
         Some(s) => println!("stopped       {s:?}"),
         None => println!("stopped       step limit"),
     }
     println!("instructions  {} ({:.1} M/s)", m.cpu.icount, m.cpu.icount as f64 / secs / 1e6);
-    println!("emulated      {} frames ({:.2}s)", m.frames, m.frames as f64 / 57.524);
+    let emulated = m.frames as f64 / 57.524;
+    println!("emulated      {} frames ({emulated:.2}s)", m.frames);
+    println!(
+        "host time     {secs:.2}s ({:.2}x real time), geometrizer {:.2}s on its thread, {:.2}s waited for",
+        emulated / secs,
+        geo.busy.as_secs_f64(),
+        b.geo.waited.as_secs_f64()
+    );
     println!("ip            {:#x}  priority {}  icr {:#010x}", m.cpu.ip, m.cpu.priority(), m.cpu.icr);
     println!("irq           request {:#x} enable {:#x}", b.irq_request, b.irq_enable);
     println!("coverage      {} distinct instructions", m.coverage.len());
@@ -306,7 +318,8 @@ fn run(roms: &RomSet, steps: u64, snap: u64, script: &model2::input::InputScript
     );
     println!("tgp           {} words executed, pc {:#05x}, fault {:x?}", b.tgp.steps, b.tgp.pc, b.tgp_fault);
     println!("copro results hash {:016x}", b.copro_result_hash);
-    let tgp_cov: Vec<u32> = (0..4096).filter(|&a| b.tgp.executed[a as usize]).collect();
+    println!("state hash    {:016x} (ip {:#x})", state_hash, m.cpu.ip);
+    let tgp_cov: Vec<u32> = (0..4096).filter(|&a| b.tgp.counts[a as usize] > 0).collect();
     println!("tgp coverage  {} of 4096 words executed", tgp_cov.len());
     let tgp_txt: String = tgp_cov.iter().map(|a| format!("{a:03x}\n")).collect();
     let _ = std::fs::write(dir.join("copro-coverage.txt"), tgp_txt);
@@ -315,18 +328,24 @@ fn run(roms: &RomSet, steps: u64, snap: u64, script: &model2::input::InputScript
         "geometrizer   program {} words, booted {}, frames {}, last list {} words -> {} raster words, bad cmds {}, fault {:x?}, steps {}, pc {:#05x}",
         b.geo.program.len(),
         b.geo.booted,
-        b.geo.frames,
-        b.geo.list_words,
-        b.geo.stream.len(),
+        geo.frames,
+        geo.list_words,
+        geo.stream.len(),
         b.geo.bad_commands,
-        b.geo.fault,
-        b.geo.tgp.steps,
-        b.geo.tgp.pc
+        geo.fault,
+        geo.tgp.steps,
+        geo.tgp.pc
     );
-    if let Some((frame, fed)) = &b.geo.first_error {
+    let mut geo_hot: Vec<(usize, u64)> = geo.tgp.counts.iter().copied().enumerate().filter(|c| c.1 > 0).collect();
+    geo_hot.sort_by_key(|&(a, c)| (std::cmp::Reverse(c), a));
+    println!("geometrizer   hot spots (whole run):");
+    for &(a, c) in geo_hot.iter().take(8) {
+        println!("  {a:03x} {c:>12} ({:.1}%)", c as f64 * 100.0 / geo.tgp.steps.max(1) as f64);
+    }
+    if let Some((frame, fed)) = &geo.first_error {
         let text: String = fed.iter().map(|w| format!("{w:08x}\n")).collect();
         let _ = std::fs::write(dir.join("geo-error-list.txt"), text);
-        let tr: String = b.geo.first_error_trace.iter().map(|(pc, f)| format!("{pc:03x} {f}\n")).collect();
+        let tr: String = geo.first_error_trace.iter().map(|(pc, f)| format!("{pc:03x} {f}\n")).collect();
         let _ = std::fs::write(dir.join("geo-error-pcs.txt"), tr);
         println!("geometrizer   first command-check error at geo frame {frame} ({} words fed)", fed.len());
     }
@@ -334,9 +353,9 @@ fn run(roms: &RomSet, steps: u64, snap: u64, script: &model2::input::InputScript
         let bin: Vec<u8> = b.geo.program.iter().flat_map(|w| w.to_le_bytes()).collect();
         let _ = std::fs::write(dir.join("geo.bin"), &bin);
     }
-    let fed: String = b.geo.fed.iter().map(|w| format!("{w:08x}\n")).collect();
+    let fed: String = geo.fed.iter().map(|w| format!("{w:08x}\n")).collect();
     let _ = std::fs::write(dir.join("geo-last-list.txt"), fed);
-    let raster: String = b.geo.stream.iter().map(|w| format!("{w:08x}\n")).collect();
+    let raster: String = geo.stream.iter().map(|w| format!("{w:08x}\n")).collect();
     let _ = std::fs::write(dir.join("raster-last.txt"), raster);
     if !b.copro_empty_by_ip.is_empty() {
         let first = b.copro_empty_by_ip.keys().next();
@@ -358,18 +377,18 @@ fn run(roms: &RomSet, steps: u64, snap: u64, script: &model2::input::InputScript
         let insn = i960::decode(a, |x| i960::cpu::Bus::fetch(&m.bus, x));
         println!("  {a:08x} {n:>9}  {insn}");
     }
-    let top = |log: &BTreeMap<u32, model2::bus::Access>, n: usize| {
-        let mut v: Vec<_> = log.iter().collect();
-        v.sort_by_key(|(_, a)| std::cmp::Reverse(a.reads + a.writes));
+    let top = |log: &mut dyn Iterator<Item = (&u32, &model2::bus::Access)>, n: usize| {
+        let mut v: Vec<_> = log.collect();
+        v.sort_by_key(|&(&k, a)| (std::cmp::Reverse(a.reads + a.writes), k));
         v.into_iter().take(n).map(|(&k, &a)| (k, a)).collect::<Vec<_>>()
     };
     println!("hardware registers ({} touched):", b.io_log.len());
-    for (a, e) in top(&b.io_log, 16) {
+    for (a, e) in top(&mut b.io_log.iter(), 16) {
         println!("  {a:08x}  r {:>9}  w {:>9}  last {:#x}", e.reads, e.writes, e.last_write);
     }
     if !b.unmapped.is_empty() {
         println!("unmapped ({} addresses):", b.unmapped.len());
-        for (a, e) in top(&b.unmapped, 12) {
+        for (a, e) in top(&mut b.unmapped.iter(), 12) {
             println!("  {a:08x}  r {:>9}  w {:>9}  last {:#x}", e.reads, e.writes, e.last_write);
         }
     }

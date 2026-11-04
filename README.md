@@ -14,8 +14,11 @@ the Model 2 family.
 
 ## Status
 
-Early tooling. The original program boots on the reference interpreter;
-nothing renders yet.
+The original program runs on the reference interpreters from boot through
+attract, coin-up, course and skater select into a race, with textured 3D
+frames written as PNG snapshots. The interpreters run the bench (attract into
+a race) at about 2x real time on a desktop CPU, with the geometrizer on its
+own thread. There is no live window or sound yet.
 
 | Stage | State |
 |---|---|
@@ -30,7 +33,9 @@ nothing renders yet.
 | Geometry processor fast path (high-level per-command) | planned |
 | 2D tile layer renderer (PNG snapshots) | done; boot, logo, title and attract text render |
 | 3D rasteriser (software) | textured gameplay frames render (point-sampled, no mipmaps yet) |
-| Sound (68000 + SCSP) and input | planned |
+| Scripted input (headless) | done; coin and start confirmed, other buttons unverified |
+| Speed | interpreters about 2x real time (`make bench`); recompiler not needed to reach full speed |
+| Live window and sound (68000 + SCSP) | planned |
 
 ## Quick start
 
@@ -49,7 +54,12 @@ make run STEPS=50000000   # boot on the interpreter, report hardware use
 make run SNAP=60          # also write the tile layer every 60 frames
 make run STEPS=900000000 SNAP=115 INPUT=coin1@1100-1104,start@1250-1254
                           # coin up, start, and play into a race
+make bench                # timed run into a race: speed and state hash
 ```
+
+`make bench` prints a hash of all RAM and the last rasteriser stream. A change
+meant only to make things faster must leave it unchanged. The hash depends on
+`out/GAME/eeprom.bin`, which `run` creates on first boot.
 
 Variables: `GAME` (manifest id, default `topskatr`), `ROM` (chip directory,
 default `rom`), `OUT`, `ADDR`, `COUNT`, `STEPS`. The `Makefile` is the supported
