@@ -11,6 +11,11 @@ pub mod input;
 pub mod raster;
 pub mod video;
 
+/// Recompiled MB86235 programs found at build time (see build.rs).
+pub mod recomp {
+    include!(concat!(env!("OUT_DIR"), "/recomp_registry.rs"));
+}
+
 pub use bus::Model2Bus;
 use bus::{FRAME_CYCLES, IRQ_VBLANK};
 use i960::cpu::{Cpu, Stop};

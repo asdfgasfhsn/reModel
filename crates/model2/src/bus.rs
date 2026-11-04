@@ -282,7 +282,11 @@ impl Model2Bus {
             return;
         }
         let mut ext = TgpExt { buffer: &mut self.mems[BUFFER_RAM].data, data: &self.copro_data };
-        match self.tgp.run(&mut ext, n) {
+        let r = match crate::recomp::lookup::<TgpExt>(self.tgp.program_hash) {
+            Some(step) => (0..n).map(|_| step(&mut self.tgp, &mut ext)).find(|&r| r != Step::Ran).unwrap_or(Step::Ran),
+            None => self.tgp.run(&mut ext, n),
+        };
+        match r {
             Step::Unsupported(pc) => self.tgp_fault = Some(pc),
             r => self.tgp_stalled = r == Step::Stalled,
         }

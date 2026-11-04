@@ -5,6 +5,7 @@
 //! sources disagree, the choice made here is the one the uploaded Top
 //! Skater program supports (see that document's "Checks against topskatr").
 
+pub mod codegen;
 pub mod cpu;
 
 use std::fmt;

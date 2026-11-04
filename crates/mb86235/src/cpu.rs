@@ -58,6 +58,16 @@ pub enum Step {
     Unsupported(u32),
 }
 
+/// FNV-1a over a program's words (padded to the full 4096-word space), as
+/// used to match a booted program with its recompiled module.
+pub fn program_hash(program: &[u64]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for i in 0..PROGRAM_WORDS as usize {
+        h = (h ^ program.get(i).copied().unwrap_or(0)).wrapping_mul(0x100_0000_01b3);
+    }
+    h
+}
+
 pub struct Tgp {
     pub program: Vec<u64>,
     pub aram: Vec<u32>,
@@ -94,6 +104,8 @@ pub struct Tgp {
     pub counts: Vec<u64>,
     /// The program, decoded at boot.
     decoded: Vec<Insn>,
+    /// `program_hash` of the booted program: selects recompiled code.
+    pub program_hash: u64,
 }
 
 impl Default for Tgp {
@@ -135,6 +147,7 @@ impl Tgp {
             steps: 0,
             counts: vec![0; PROGRAM_WORDS as usize],
             decoded: (0..PROGRAM_WORDS).map(|a| decode(a, 0)).collect(),
+            program_hash: 0,
         }
     }
 
@@ -143,6 +156,7 @@ impl Tgp {
         self.program.iter_mut().for_each(|w| *w = 0);
         self.program[..program.len().min(PROGRAM_WORDS as usize)].copy_from_slice(program);
         self.decoded = self.program.iter().enumerate().map(|(a, &w)| decode(a as u32, w)).collect();
+        self.program_hash = program_hash(&self.program);
         self.pc = 0;
         self.pending = None;
         self.pcsp = 0;
@@ -150,6 +164,7 @@ impl Tgp {
         self.st &= !(RP | LP);
     }
 
+    #[inline(always)]
     fn live_flags(&self) -> u32 {
         let mut f = (self.st & !(IFE | IFF | OFE | OFF | (7 << 28))) | ((self.ext_flags & 7) << 28);
         if self.fifo_in.is_empty() {
@@ -167,6 +182,7 @@ impl Tgp {
         f
     }
 
+    #[inline(always)]
     fn cond(&self, c: u32) -> bool {
         const BIT: [u32; 25] =
             [20, 19, 18, 17, 11, 10, 9, 8, 4, 3, 2, 1, 16, 0, 99, 99, 28, 29, 30, 99, 26, 27, 24, 25, 99];
@@ -178,6 +194,7 @@ impl Tgp {
 
     // --- registers -------------------------------------------------------
 
+    #[inline(always)]
     fn reg_read(&mut self, code: u32) -> u32 {
         let i = (code & 7) as usize;
         match code & 0x3f {
@@ -204,6 +221,7 @@ impl Tgp {
         }
     }
 
+    #[inline(always)]
     fn reg_write(&mut self, code: u32, v: u32) {
         let i = (code & 7) as usize;
         match code & 0x3f {
@@ -234,6 +252,7 @@ impl Tgp {
     }
 
     /// Arithmetic output code (5 bits).
+    #[inline(always)]
     fn out_write(&mut self, code: u32, v: u32) {
         let i = (code & 7) as usize;
         match code {
@@ -244,6 +263,7 @@ impl Tgp {
         }
     }
 
+    #[inline(always)]
     fn pr_read(&mut self, code: u32) -> u32 {
         let v = self.pr[self.prp as usize];
         match code {
@@ -255,6 +275,7 @@ impl Tgp {
         v
     }
 
+    #[inline(always)]
     fn alu_in1(&self, v: u32) -> u32 {
         if v < 8 {
             self.aa[v as usize]
@@ -263,6 +284,7 @@ impl Tgp {
         }
     }
 
+    #[inline(always)]
     fn mul_in1(&self, v: u32) -> u32 {
         if v < 8 {
             self.ma[v as usize]
@@ -271,6 +293,7 @@ impl Tgp {
         }
     }
 
+    #[inline(always)]
     fn in2(&mut self, alu: bool, v: u32, float: bool) -> u32 {
         match v {
             0x00..=0x0f if alu => self.alu_in1(v),
@@ -285,6 +308,7 @@ impl Tgp {
     // --- memory ----------------------------------------------------------
 
     /// Effective address with its post-modify applied.
+    #[inline(always)]
     fn ea(&mut self, m: &Mem) -> u32 {
         let (x, y) = (m.arx as usize, m.ary as usize);
         let d = m.disp as u32;
@@ -342,6 +366,7 @@ impl Tgp {
         wrap(addr)
     }
 
+    #[inline(always)]
     fn mem_read(&mut self, m: &Mem, ext: &mut impl External) -> u32 {
         let a = self.ea(m);
         if m.b_bus {
@@ -353,6 +378,7 @@ impl Tgp {
         }
     }
 
+    #[inline(always)]
     fn mem_write(&mut self, m: &Mem, v: u32, ext: &mut impl External) {
         let a = self.ea(m);
         if m.b_bus {
@@ -364,6 +390,7 @@ impl Tgp {
         }
     }
 
+    #[inline(always)]
     fn loc_read(&mut self, l: &Loc, ext: &mut impl External) -> u32 {
         match l {
             Loc::Reg(r) => self.reg_read(*r),
@@ -377,6 +404,7 @@ impl Tgp {
         }
     }
 
+    #[inline(always)]
     fn loc_write(&mut self, l: &Loc, v: u32, ext: &mut impl External) {
         match l {
             Loc::Reg(r) => self.reg_write(*r, v),
@@ -391,6 +419,7 @@ impl Tgp {
 
     // --- arithmetic ------------------------------------------------------
 
+    #[inline(always)]
     fn alu(&mut self, a: &AluOp) -> Option<(u32, u32)> {
         let float = a.is_float();
         let x = self.alu_in1(a.in1);
@@ -499,6 +528,7 @@ impl Tgp {
         Some((a.out, r))
     }
 
+    #[inline(always)]
     fn set_alu_flags_f(&mut self, v: f32, extra: u32) {
         let mut f = extra;
         if v < 0.0 {
@@ -510,6 +540,7 @@ impl Tgp {
         self.st = (self.st & !(AN | AZ | AV | AU | AD | ZC | ZD | NR | IL)) | f;
     }
 
+    #[inline(always)]
     fn set_alu_flags_i(&mut self, v: u32, extra: u32) {
         let mut f = extra;
         if (v as i32) < 0 {
@@ -521,6 +552,7 @@ impl Tgp {
         self.st = (self.st & !(AN | AZ | AV | AU | AD | ZC | ZD | NR | IL)) | f;
     }
 
+    #[inline(always)]
     fn mul(&mut self, m: &MulOp) -> (u32, u32) {
         let x = self.mul_in1(m.in1);
         let y = self.in2(false, m.in2, m.float);
@@ -543,6 +575,7 @@ impl Tgp {
 
     // --- control ---------------------------------------------------------
 
+    #[inline(always)]
     fn target(&mut self, t: BranchTarget, pc: u32) -> u32 {
         let v = match t {
             BranchTarget::Imm(a) => a,
@@ -557,6 +590,7 @@ impl Tgp {
     }
 
     /// Does this word read the input FIFO?
+    #[inline(always)]
     fn reads_fifo(t: &Transfer) -> bool {
         let fi = |l: &Loc| matches!(l, Loc::Reg(0x31));
         match t {
@@ -577,7 +611,12 @@ impl Tgp {
         r
     }
 
-    fn exec(&mut self, insn: &Insn, ext: &mut impl External) -> Step {
+    /// Execute `insn` as the word at the current PC. Public for recompiled
+    /// programs, which call it with each word's decoding as a constant so
+    /// the compiler specialises it; everything else should use `step`.
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn exec(&mut self, insn: &Insn, ext: &mut impl External) -> Step {
         let pc = self.pc;
         if let Transfer::Unsupported(_) = insn.transfer {
             return Step::Unsupported(pc);

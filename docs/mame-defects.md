@@ -102,6 +102,28 @@ and keep the evidence concrete (addresses, counts, outputs).
 - **Fix direction:** run the uploaded program on an MB86235 core (LLE), at least for 2C. Otherwise, add a topskatr-specific HLE for 0x11, 0x1B and 0x1C.
 - **Reproduce:** `make run STEPS=660000000 INPUT=coin1@1100-1104,start@1250-1254`. The report's geometrizer line shows list words turning into raster words, and `out/topskatr/raster-last.txt` holds the stream.
 
+### MD-11. DSB2: 68000 clocked at 8 MHz; the PCB note says 11 MHz
+- **Where:** `src/mame/sega/dsb2.cpp`, `device_add_mconfig` (`M68000(config, m_ourcpu, 8'000'000)`, line 62, commented "unknown clocks").
+- **MAME does:** runs the DSB2's 68000 at 8 MHz.
+- **Correct (probably):** MAME's own Model 3 PCB note for the DSB2 (`model3.cpp`, board 837-12273) gives "68EC000FN12, clock 11.000MHz [33/3]". Supermodel uses 11 MHz too.
+- **Impact:** small. The firmware is interrupt-driven (UART IRQ1, tick IRQ2), but busy-wait delays and command latency scale with the clock.
+- **Evidence:** `docs/hw/sound.md` §3.1. Not yet exercised by Remodel (no DSB2 emulation).
+- **Fix direction:** use `33_MHz_XTAL / 3`.
+
+### MD-12. DSB2: decoder port 0xE00001 unmapped, boot upload and busy flag not modelled
+- **Where:** `src/mame/sega/dsb2.cpp`, `dsb2_map` (lines 52-55).
+- **MAME does:** maps only `0xE00003` (command FIFO). `0xE00001` is commented "acknowledge FIFO writes?" and unmapped. The status at `0xE80001` always reads `0x01`.
+- **Correct (per topskatr's DSB2 program `mpr-19760.2s`):** at boot the firmware writes byte pairs to `0xE00001`/`0xE00003` and then streams a 256-byte block from its ROM (`0xF28`) through both ports. It polls `0xE80001` **bit 1** (busy) before every write. So `0xE00001` is part of the decoder interface, apparently the other half of a 16-bit port.
+- **Impact:** none observed. None of the uploaded bytes collide with the FIFO opcodes, and a never-busy status is harmless. Listed so that a future LLE of the 315-6028A knows the upload exists.
+- **Evidence:** `docs/hw/sound.md` §3.2, §3.4 (ROM `0x5E8–0x672`).
+
+### MD-13. SCSP: MIDI input FIFO is 32 bytes; the manual says 4
+- **Where:** `src/devices/sound/scsp.h` (`m_MidiStack[32]`, line 138), `scsp.cpp` (`& 31` wrap, lines 976 and 1540).
+- **MAME does:** buffers up to 31 received bytes before MIOVF/MIFULL.
+- **Correct:** the SCSP manual (MIDI register page, p04_2a) gives the MIDI-in buffer as 4 bytes. MIFULL is set at 4 and MIOVF on the 5th byte.
+- **Impact:** with accurate timing a deeper FIFO hides overruns. MAME probably keeps it deep because its CPU/serial interleave is coarse. Supermodel enlarges it for the same reason. Not a topskatr blocker.
+- **Fix direction:** keep it deep only behind a "coarse timing" option, or fix the scheduling and use 4.
+
 ---
 
 ## Known hacks (admitted in MAME's source)
@@ -111,3 +133,5 @@ and keep the evidence concrete (addresses, counts, outputs).
 | MH-1 | `315_5649.cpp`, serial status register 0x0D | Hard-coded to 0x0C; the source calls it a hack. |
 | MH-2 | `model2.cpp`, uPD71051/i8251 UART clock | 8 MHz is a guess, so the baud rate is unmeasured. |
 | MH-3 | `model2rd.ipp` / `model2_v.cpp`, colour gamma | The gamma step is a calibration guess, not hardware. |
+| MH-4 | `model2.cpp`, `reset_model2_scsp` | Copies the first 16 bytes of the sound program ROM into sound RAM so the 68000 finds a reset vector. How real hardware provides it is unknown. topskatr's driver installs its own vector table in RAM (`docs/hw/sound.md` §1). |
+| MH-5 | `model2.cpp`, `topskatr` machine config (line 3127) | MPEG output goes straight to the speaker. The TODO says it "should be chained with SCSP EXTS", but the DSB2 has its own DACs, so analog mixing is more likely (`docs/hw/sound.md` §3.6). |

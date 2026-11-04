@@ -16,15 +16,23 @@ BENCH_STEPS ?= 600000000
 BENCH_INPUT ?= coin1@1100-1104,start@1250-1254
 
 CARGO   ?= cargo
+# RECOMP=1: use the build with recompiled TGP programs (see `make recomp`).
+RECOMP  ?=
+ifneq ($(RECOMP),)
+REMODEL := target/recomp/release/remodel
+RELEASE_ENV := REMODEL_RECOMP_DIR=$(abspath out/recomp) CARGO_TARGET_DIR=target/recomp
+else
 REMODEL := target/release/remodel
+RELEASE_ENV :=
+endif
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release test lint fmt fmt-check check ci games verify boot disasm analyze run copro-disasm clean
+.PHONY: help build release test lint fmt fmt-check check ci games verify boot disasm analyze run copro-disasm clean recomp bench
 
 ##@ General
 
-help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT)
+help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, RECOMP)
 	@awk 'BEGIN {FS = ":.*## "; printf "usage: make <target> [VAR=value]\n"} \
 		/^##@/ {printf "\n%s\n", substr($$0, 5)} \
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -35,8 +43,13 @@ help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, IN
 build: ## Debug build of the whole workspace
 	$(CARGO) build --workspace
 
-release: ## Optimised build of the remodel CLI
+release: ## Optimised build of the remodel CLI (RECOMP=1: with recompiled TGP programs)
+	$(RELEASE_ENV) $(CARGO) build --release -p remodel
+
+recomp: ## Recompile the TGP programs captured by `make run` into out/recomp and build them (slow); then use RECOMP=1
 	$(CARGO) build --release -p remodel
+	target/release/remodel --game $(GAME) --rom $(ROM) recomp
+	$(MAKE) release RECOMP=1
 
 test: ## Run all unit tests (no ROMs needed)
 	$(CARGO) test --workspace

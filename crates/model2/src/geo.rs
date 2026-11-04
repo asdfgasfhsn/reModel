@@ -78,8 +78,9 @@ pub struct Engine {
     /// step count), dumped with the first error.
     pc_trace: Vec<(u32, usize)>,
     pub first_error_trace: Vec<(u32, usize)>,
-    /// Host time spent running frames.
+    /// Host time spent running frames, in total and for the slowest one.
     pub busy: std::time::Duration,
+    pub slowest: std::time::Duration,
 }
 
 enum Slot {
@@ -131,6 +132,7 @@ impl Geometrizer {
                 pc_trace: vec![(0, 0); PC_TRACE_LEN],
                 first_error_trace: Vec::new(),
                 busy: std::time::Duration::ZERO,
+                slowest: std::time::Duration::ZERO,
             })),
         }
     }
@@ -260,6 +262,7 @@ impl Engine {
             pc_trace: Vec::new(),
             first_error_trace: Vec::new(),
             busy: std::time::Duration::ZERO,
+            slowest: std::time::Duration::ZERO,
         }
     }
 
@@ -296,6 +299,7 @@ impl Engine {
         let buffer = std::mem::take(&mut self.buffer);
         self.process(&buffer, read_ptr);
         self.busy += t.elapsed();
+        self.slowest = self.slowest.max(t.elapsed());
         self.buffer = buffer;
         self.apply_raster_writes();
     }
@@ -316,6 +320,9 @@ impl Engine {
         self.tgp.ext_flags &= !1;
         // The handshake emits NOP, NOP, END: the previous frame's terminator.
         self.tgp.fifo_out.clear();
+        // Recompiled code for this program if the build has it, else the
+        // interpreter; they must behave identically.
+        let step = crate::recomp::lookup::<GeoExt>(self.tgp.program_hash).unwrap_or(|t, e| t.step(e));
         let mut last_activity = self.tgp.steps;
         loop {
             while self.tgp.fifo_in.len() < FIFO_FILL && self.list_words < MAX_LIST_WORDS {
@@ -328,7 +335,7 @@ impl Engine {
             let mut fault = None;
             for _ in 0..256 {
                 let pc = self.tgp.pc;
-                match self.tgp.step(&mut ext) {
+                match step(&mut self.tgp, &mut ext) {
                     Step::Unsupported(p) => {
                         fault = Some(p);
                         break;

@@ -29,7 +29,8 @@ own thread. There is no live window or sound yet.
 | Model 2C board model (memory, IRQs, timers, I/O, copro interface) | in progress |
 | MB86235 geometry processor: disassembler and reference interpreter | done; runs the game's uploaded program |
 | Geometrizer (second MB86235) running the game's own program | done; gameplay frames produce the rasteriser stream |
-| Recompiler (i960 → C) | planned |
+| Recompiler: MB86235 programs → Rust | done; opt-in (`make recomp`, then `RECOMP=1`), identical state hash, geometrizer about 1.5x faster |
+| Recompiler: i960 → native | planned (the interpreter already runs faster than real time) |
 | Geometry processor fast path (high-level per-command) | planned |
 | 2D tile layer renderer (PNG snapshots) | done; boot, logo, title and attract text render |
 | 3D rasteriser (software) | textured, bilinear-filtered gameplay frames (topskatr uses no mipmaps) |
@@ -55,6 +56,8 @@ make run SNAP=60          # also write the tile layer every 60 frames
 make run STEPS=900000000 SNAP=115 INPUT=coin1@1100-1104,start@1250-1254
                           # coin up, start, and play into a race
 make bench                # timed run into a race: speed and state hash
+make recomp               # recompile the TGP programs captured by `run` (slow build)
+make bench RECOMP=1       # same run on the recompiled build: same hash, faster
 ```
 
 `make bench` prints a hash of all RAM and the last rasteriser stream. A change
@@ -165,6 +168,16 @@ documentation and hasn't been contradicted yet.
     texel sheets in texture RAM;
   - the luma tables and the colour translation tables (section 5 of
     `docs/hw/geometrizer.md`).
+- *Confirmed (from the ROMs; see `docs/hw/sound.md`):* the sound program
+  (`mpr-19759.31`, word-swapped) is Sega's "CRX_drv" Ver3.2.8 and runs from
+  `0x600000`. It routes SCSP MIDI-in to 68k IRQ level 3, timer A to level 2
+  and timer B to level 1, and parses its input as MIDI with running status.
+  The i960 sends 3-byte messages (`An`/`Bn` statuses) from a 278-entry
+  table, plus `0xFF` at init, and never reads the UART data register. Music
+  is `AE 10 nn` on channel 14, which the DSB2 firmware (working title "Ollie
+  Over") captures, while it forwards all other bytes out of its own UART.
+  The MPEG ROMs hold MPEG-1 Layer II, 32 kHz, 128 kbit/s stereo, stored
+  unswapped.
 - *Unverified:* the board map, IRQ controller semantics (`0xE80000`
   request/ack, `0xE80004` enable), timers and I/O chip layout in
   `crates/model2/src/bus.rs`.

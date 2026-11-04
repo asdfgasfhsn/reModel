@@ -26,6 +26,9 @@ commands:
   analyze [OUT]        recursive-descent listing (default out/GAME/program.lst)
   copro-disasm [FILE]  disassemble an MB86235 program image to FILE.lst
                        (default out/GAME/copro.bin; `run` also writes geo.bin)
+  recomp               recompile the copro and geometrizer programs captured
+                       by `run` (only words it executed) into out/recomp/;
+                       the next build uses them in place of the interpreter
   run [STEPS] [SNAP]   boot on the reference interpreter and report what
                        the game did (default 50M instructions); writes the
                        tile layer to out/GAME/frames/ every SNAP frames
@@ -205,6 +208,34 @@ fn main() -> ExitCode {
             };
             copro_disasm(&bin, &input.with_extension("lst"));
         }
+        "recomp" => {
+            let dir = PathBuf::from("out").join(roms.game.id);
+            let out = PathBuf::from("out/recomp");
+            let _ = std::fs::create_dir_all(&out);
+            let mut made = 0;
+            for name in ["copro", "geo"] {
+                let (Ok(bin), Ok(cov)) = (
+                    std::fs::read(dir.join(format!("{name}.bin"))),
+                    std::fs::read_to_string(dir.join(format!("{name}-coverage.txt"))),
+                ) else {
+                    eprintln!(
+                        "{name}: no {name}.bin / {name}-coverage.txt in {} (run `make run` first)",
+                        dir.display()
+                    );
+                    continue;
+                };
+                let prog: Vec<u64> = bin.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect();
+                let words: Vec<u32> = cov.lines().filter_map(|l| u32::from_str_radix(l.trim(), 16).ok()).collect();
+                let hash = mb86235::cpu::program_hash(&prog);
+                let path = out.join(format!("tgp_{hash:016x}.rs"));
+                let _ = std::fs::write(&path, mb86235::codegen::program_module(&prog, &words));
+                println!("{name}: {} of {} words recompiled -> {}", words.len(), prog.len(), path.display());
+                made += 1;
+            }
+            if made == 0 {
+                return ExitCode::FAILURE;
+            }
+        }
         // Debug: boot out/GAME/geo.bin, pulse F0, feed hex words, trace.
         "geo-trace-words" => {
             let dir = PathBuf::from("out").join(roms.game.id);
@@ -316,9 +347,10 @@ fn run(roms: &RomSet, steps: u64, snap: u64, script: &model2::input::InputScript
     let emulated = m.frames as f64 / 57.524;
     println!("emulated      {} frames ({emulated:.2}s)", m.frames);
     println!(
-        "host time     {secs:.2}s ({:.2}x real time), geometrizer {:.2}s on its thread, {:.2}s waited for",
+        "host time     {secs:.2}s ({:.2}x real time), geometrizer {:.2}s on its thread (slowest frame {:.1} ms), {:.2}s waited for",
         emulated / secs,
         geo.busy.as_secs_f64(),
+        geo.slowest.as_secs_f64() * 1e3,
         b.geo.waited.as_secs_f64()
     );
     println!("ip            {:#x}  priority {}  icr {:#010x}", m.cpu.ip, m.cpu.priority(), m.cpu.icr);
@@ -369,6 +401,8 @@ fn run(roms: &RomSet, steps: u64, snap: u64, script: &model2::input::InputScript
     if !b.geo.program.is_empty() {
         let bin: Vec<u8> = b.geo.program.iter().flat_map(|w| w.to_le_bytes()).collect();
         let _ = std::fs::write(dir.join("geo.bin"), &bin);
+        let cov: String = (0..4096).filter(|&a| geo.tgp.counts[a] > 0).map(|a| format!("{a:03x}\n")).collect();
+        let _ = std::fs::write(dir.join("geo-coverage.txt"), cov);
     }
     let fed: String = geo.fed.iter().map(|w| format!("{w:08x}\n")).collect();
     let _ = std::fs::write(dir.join("geo-last-list.txt"), fed);
