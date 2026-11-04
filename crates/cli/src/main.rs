@@ -13,6 +13,8 @@ usage: remodel [--game ID] [--rom DIR] <command>
 options:
   --game ID            game manifest to use (default topskatr)
   --rom DIR            directory of unpacked chips (default rom)
+  --geo-trace FRAME    record geometrizer port writes during FRAME of `run`
+                       to out/GAME/geo-FRAME.txt (plus buffer RAM dump)
   --input SCRIPT       scripted inputs for `run`, e.g.
                        coin1@1100-1105,start@1300-1305,curving=0x40@1400-1500
 
@@ -48,7 +50,9 @@ fn main() -> ExitCode {
         args.remove(i);
         Ok(Some(v))
     };
-    let (Ok(game_id), Ok(rom_dir), Ok(input)) = (opt("--game"), opt("--rom"), opt("--input")) else {
+    let (Ok(game_id), Ok(rom_dir), Ok(input), Ok(geo_frame)) =
+        (opt("--game"), opt("--rom"), opt("--input"), opt("--geo-trace"))
+    else {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
     };
@@ -206,7 +210,8 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            run(&roms, steps, snap, &script);
+            let geo_frame = geo_frame.and_then(|s| parse_num(&s)).map(u64::from);
+            run(&roms, steps, snap, &script, geo_frame);
         }
         _ => {
             eprint!("{USAGE}");
@@ -222,7 +227,7 @@ fn snapshot(m: &model2::Machine, path: &std::path::Path) {
     let _ = std::fs::write(path, png);
 }
 
-fn run(roms: &RomSet, steps: u64, snap: u64, script: &model2::input::InputScript) {
+fn run(roms: &RomSet, steps: u64, snap: u64, script: &model2::input::InputScript, geo_frame: Option<u64>) {
     let mut m = model2::Machine::new(roms);
     let dir = PathBuf::from("out").join(roms.game.id);
     let eeprom_path = dir.join("eeprom.bin");
@@ -243,6 +248,14 @@ fn run(roms: &RomSet, steps: u64, snap: u64, script: &model2::input::InputScript
         }
         if m.frames != last_frame {
             script.apply(m.frames, &mut m.bus);
+            if geo_frame == Some(m.frames) {
+                m.bus.geo_trace = Some(Vec::new());
+            } else if let Some(t) = m.bus.geo_trace.take() {
+                let text: String = t.iter().map(|(a, v)| format!("{a:08x} {v:08x}\n")).collect();
+                let _ = std::fs::write(dir.join(format!("geo-{}.txt", m.frames - 1)), text);
+                let _ = std::fs::write(dir.join(format!("buffer-{}.bin", m.frames - 1)), m.bus.buffer_ram());
+                println!("geo trace     frame {}: {} writes", m.frames - 1, t.len());
+            }
         }
         if snap > 0 && m.frames != last_frame && m.frames.is_multiple_of(snap) {
             snapshot(&m, &frames_dir.join(format!("{:06}.png", m.frames)));

@@ -131,6 +131,8 @@ pub struct Model2Bus {
     /// IP of the instruction being executed, set by the machine.
     pub cur_ip: u32,
     pub geo_words: u64,
+    /// When set, geo port writes (address, value) are recorded here.
+    pub geo_trace: Option<Vec<(u32, u32)>>,
     /// Video status bit 2 at 0x98000C. Hypothesis (from the boot code, which
     /// times how long it takes to change): toggles once per frame.
     pub frame_toggle: bool,
@@ -212,6 +214,7 @@ impl Model2Bus {
             copro_empty_by_ip: BTreeMap::new(),
             cur_ip: 0,
             geo_words: 0,
+            geo_trace: None,
             frame_toggle: false,
             board_ctrl: 0,
             inputs: [0xff; 4],
@@ -365,6 +368,9 @@ impl Model2Bus {
 
     /// `lanes` is the byte-enable mask of the access within its word.
     fn io_write32(&mut self, addr: u32, v: u32, lanes: u32) -> bool {
+        if let (Some(t), 0x0080_0000..=0x0080_7fff) = (self.geo_trace.as_mut(), addr) {
+            t.push((addr, v));
+        }
         match addr & !3 {
             0x0080_4000..=0x0080_7fff => self.geo_words += 1,
             0x0080_0000..=0x0080_3fff => {}
@@ -491,6 +497,11 @@ impl Model2Bus {
     /// Tile RAM, character RAM and tilemap registers: 0x01000000-0x011FFFFF.
     pub fn tile_ram(&self) -> &[u8] {
         &self.mems[5].data
+    }
+
+    /// Buffer RAM shared with the geometrizer and TGP: 0x00900000-0x0091FFFF.
+    pub fn buffer_ram(&self) -> &[u8] {
+        &self.mems[BUFFER_RAM].data
     }
 
     /// Palette and colour tables: 0x01800000-0x0181FFFF.
