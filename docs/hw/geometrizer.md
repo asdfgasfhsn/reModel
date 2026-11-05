@@ -73,6 +73,7 @@ i960 --geo ports--> buffer RAM display list --(list DMA, jumps)--> GEOMETRIZER (
 | 0x10000000 | R/W (16-bit) | Render mode. Bit 0 = test mode (host access to the framebuffer, no 3D), bit 2 = 60 Hz (else 30 Hz), bit 14 unknown. topskatr writes **0x4004**; one routine sets and clears bit 0. | M2 + TSI, M |
 | 0x0181C000 | W (byte) | Master Z-clip. 0xFF = disabled. topskatr writes 0xFF. | M2 + TSI, M |
 | 0x10400000 | R | Polygon count (MAME: only Sky Target uses it). | M2, L |
+| 0x10A00000-0x10A0FFFF, 0x10C00000-0x10C0FFFF | R/W (8-bit) | RAMs **IC55** and **IC54**, 64 KB each, 4 bits wide (the memory test compares bits 0-3 only). Only the memory test of segawski, skisuprg and waverunr touches them, after setting render mode bit 0; their purpose is unknown. Remodel maps them as plain RAM. | The games' memory-test tables, **H** for address and size; function unknown |
 
 **Command word check (TSG, H):** for every command word, the geometrizer compares fn =
 (word >> 23) & 0x1F with (word >> 8) & 0x1F and with word & 0x1F. If they differ, it

@@ -49,6 +49,15 @@ struct Mem {
 }
 
 impl Mem {
+    /// Load contents and write count saved by [`Model2Bus`]'s state.
+    fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
+        let len = self.data.len();
+        state::State::load(&mut self.data, r)?;
+        if self.data.len() != len {
+            return Err(state::Error("memory size differs".into()));
+        }
+        state::State::load(&mut self.writes, r)
+    }
     fn zeroed(size: usize) -> Self {
         Mem { data: vec![0; size], writable: true, writes: 0 }
     }
@@ -103,6 +112,8 @@ pub struct Timer {
 
 pub struct Model2Bus {
     mems: Vec<Mem>,
+    /// Index in `mems` of the first memory-test-only RAM (the rest follow).
+    test_rams: usize,
     map: Vec<Map>,
     /// For each 64 KB page, 1 + the index of the map entry in it (0: none).
     pages: Vec<u8>,
@@ -225,6 +236,17 @@ impl Model2Bus {
             map.push(Map { start: 0x0600_0000, end: 0x07ff_ffff, mem: mems.len() });
             mems.push(Mem::from(main_data_high, false));
         }
+        // Two 64 KB RAMs on the video side that only the memory test uses:
+        // IC55 at 0x10A00000 and IC54 at 0x10C00000 (segawski, skisuprg and
+        // waverunr test them byte-wide, comparing the low four bits, with
+        // render mode bit 0 set). Kept last, apart from the rest of RAM
+        // in save states and the state hash, so neither changes for runs
+        // that never touch them (docs/hw/geometrizer.md 1.1).
+        let test_rams = mems.len();
+        for start in [0x10a0_0000, 0x10c0_0000] {
+            map.push(Map { start, end: start + 0xffff, mem: mems.len() });
+            mems.push(Mem::zeroed(0x1_0000));
+        }
         let mut pages = vec![0u8; 0x1_0000];
         for (i, m) in map.iter().enumerate() {
             for p in m.start >> 16..=m.end >> 16 {
@@ -235,6 +257,7 @@ impl Model2Bus {
         let timer = || Timer { reload: 0xfffff, started_at: 0, running: false };
         Model2Bus {
             mems,
+            test_rams,
             map,
             pages,
             now: 0,
@@ -670,10 +693,9 @@ impl Model2Bus {
     pub fn state_hash(&mut self) -> u64 {
         self.geo.sync();
         let mut h = Fnv(0xcbf2_9ce4_8422_2325);
-        for m in &self.mems {
-            if m.writable {
-                m.data.chunks(8).for_each(|c| h.word(c.iter().fold(0, |a, &b| a << 8 | b as u64)));
-            }
+        let (core, test) = self.mems.split_at(self.test_rams);
+        for m in core.iter().filter(|m| m.writable).chain(test.iter().filter(|m| m.writes > 0)) {
+            m.data.chunks(8).for_each(|c| h.word(c.iter().fold(0, |a, &b| a << 8 | b as u64)));
         }
         self.geo.engine().stream.iter().for_each(|&w| h.word(w as u64));
         h.word(self.copro_result_hash);
@@ -761,7 +783,7 @@ impl Fnv {
 // EEPROM. ROMs, the memory map and diagnostics stay as they are.
 impl state::State for Model2Bus {
     fn save(&self, w: &mut state::Writer) {
-        for m in self.mems.iter().filter(|m| m.writable) {
+        for m in self.mems[..self.test_rams].iter().filter(|m| m.writable) {
             m.data.save(w);
             m.writes.save(w);
         }
@@ -794,15 +816,16 @@ impl state::State for Model2Bus {
         }
         // Last, so states from before list jumps were modelled still load.
         self.geo.jumps().save(w);
+        // After that, the memory-test RAMs.
+        for m in &self.mems[self.test_rams..] {
+            m.data.save(w);
+            m.writes.save(w);
+        }
     }
     fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
-        for m in self.mems.iter_mut().filter(|m| m.writable) {
-            let len = m.data.len();
-            m.data.load(r)?;
-            if m.data.len() != len {
-                return Err(state::Error("memory size differs".into()));
-            }
-            m.writes.load(r)?;
+        let test_rams = self.test_rams;
+        for m in self.mems[..test_rams].iter_mut().filter(|m| m.writable) {
+            m.load(r)?;
         }
         let mut t = [0u64; 3];
         t.load(r)?;
@@ -837,6 +860,13 @@ impl state::State for Model2Bus {
             jumps.load(r)?;
         }
         self.geo.set_jumps(jumps);
+        for m in &mut self.mems[test_rams..] {
+            if r.done() {
+                *m = Mem::zeroed(m.data.len());
+            } else {
+                m.load(r)?;
+            }
+        }
         Ok(())
     }
 }

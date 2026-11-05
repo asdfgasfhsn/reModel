@@ -166,6 +166,28 @@ board model logs every access it doesn't fully understand. Places where
 MAME is demonstrably wrong are tracked in `docs/mame-defects.md`, written up
 so they can become upstream patches.
 
+## What's known about the Model 2C board
+
+From the five games' own code and test menus; it holds for every 2C set
+supported unless a game's section says otherwise.
+
+- *Confirmed (from the code, then by running it):* the memory test in
+  `segawski`, `skisuprg` and `waverunr` checks two more RAMs on the video
+  side, IC55 at `0x10A00000` and IC54 at `0x10C00000`, 64 KB each. Its
+  table entry gives each one byte-wide, 64 KB long, compared through mask
+  `0x0F` (a 4-bit-wide RAM, presumably 64K x 4), next to IC81, the luma
+  RAM at `0x11400000`, tested the same way. The test sets render mode bit
+  0 (`0x10000000` = `0x4005`, host access) first, then for 16 rotations of
+  `0x1234ABCD` saves each location, writes the pattern, reads it back and
+  restores it. Remodel left both unmapped (reads 0), so the three games
+  reported them BAD; they are now plain RAM (`bus.rs`). No game reads or
+  writes them outside the test in a coin-start run, so their function is
+  *unconfirmed*, as are mirrors past 64 KB and the upper four bits of each
+  byte. `topskatr`'s and `stcc`'s memory tests don't list them.
+- *Unconfirmed:* `stcc`'s memory test reports IC29 and IC30 BAD; those are
+  its copro data ROMs (`.29/.30`), which the i960 can only reach through
+  the TGP. Not investigated.
+
 ## What's known about `topskatr`
 
 Recorded as it's found, so nobody has to re-derive it. *Confirmed* means the
@@ -475,9 +497,10 @@ Aug 22 1997).
   round-trips, `make lockstep GAME=segawski` runs 300M instructions
   identical, and a coin-start run of 600M instructions gives the same
   state hash (`505a972b9e8a3c89`) recompiled and interpreted.
-- *Unconfirmed:* the memory test reports RAM IC54 and IC55 BAD; which
-  RAMs those are, and whether the game uses them, is not known (the game
-  plays).
+- *Confirmed (from the code, then by running it):* the memory test's
+  IC55 and IC54 are 64 KB RAMs at `0x10A00000` and `0x10C00000` (see
+  "What's known about the Model 2C board"); with them modelled every chip
+  in the test reads GOOD.
 
 ## What's known about `waverunr`
 
