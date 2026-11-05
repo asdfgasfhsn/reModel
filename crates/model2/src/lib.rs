@@ -5,6 +5,7 @@
 //! and later used as the oracle for the recompiled build.
 
 pub mod bus;
+pub mod capture;
 pub mod eeprom;
 pub mod enhance;
 pub mod geo;

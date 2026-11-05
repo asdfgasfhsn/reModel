@@ -135,6 +135,13 @@ dump-textures: release ## Coin-start-race run dumping every 3D texture and tile 
 	rm -rf $(OUT)/texdump
 	$(RUN) $(VIEW) --dump-textures $(OUT)/texdump --input $(BENCH_INPUT) run $(BENCH_STEPS) 60
 
+capture: release ## Run into a race saving every 300th frame's renderer inputs to out/GAME/capture (~200 MB)
+	rm -rf $(OUT)/capture
+	$(RUN) --capture $(OUT)/capture --input $(BENCH_INPUT) run 900000000 300 >/dev/null
+
+gpu-check: release ## Draw the captured frames on the software and GPU rasterisers; time and compare them (needs a GPU)
+	$(RUN) gpu-check
+
 lockstep: ## Run the recompiled i960 code beside the interpreter, block by block, and stop at the first difference (RECOMP=1, STEPS)
 	$(MAKE) release RECOMP=1
 	target/recomp/release/remodel --game $(GAME) --rom $(ROM) lockstep $(STEPS)

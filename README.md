@@ -35,7 +35,8 @@ music`). There is no live window yet.
 | Recompiler: MB86235 programs → Rust | done; built with the i960 code, geometrizer about 1.5x faster |
 | Geometry processor fast path (high-level per-command) | planned |
 | 2D tile layer renderer (PNG snapshots) | done; boot, logo, title and attract text render |
-| 3D rasteriser (software) | textured, bilinear-filtered gameplay frames (topskatr uses no mipmaps) |
+| 3D rasteriser (software) | textured, bilinear-filtered gameplay frames (topskatr uses no mipmaps); the reference, but too slow for live races (15-27 ms a frame at native size) |
+| 3D rasteriser (GPU, wgpu: Vulkan / Metal / DirectX 12) | off-screen preflight: about 3 ms a frame native and 7 ms at 1080p, matching the software renderer on 99.96% of coverage; see `docs/gpu.md` |
 | Scripted input (headless) | done; every button and both analog channels confirmed |
 | Speed | interpreters about 2.2x real time (`make bench`); recompiled build about 4.4x (`make bench RECOMP=1`), where the geometrizer thread becomes the limit |
 | Sound board: 68000 + SCSP (slots, EG, LFO, FM, timers, MIDI, DSP) | done offline: replays the captured command stream to a WAV at about 12x real time |
@@ -73,6 +74,8 @@ make assets               # extract the game's art for review -> out/topskatr/as
 make bench                # timed run into a race: speed and state hash
 make recomp               # recompile the game's i960 code and TGP programs (after a `run`; ~2 min build)
 make bench RECOMP=1       # same run on the recompiled build: same hash, about twice as fast
+make capture              # save renderer inputs from a run into a race -> out/topskatr/capture
+make gpu-check            # draw them on the software and GPU rasterisers, time and compare
 make lockstep RECOMP=1    # recompiled vs interpreted i960, block by block, until they differ
 make music                # after a `run` into a race: DSB2 music -> out/topskatr/music.wav
 make soundtrack-import SRC=~/my-mix SOUNDTRACK=my-mix   # your own music (ffmpeg converts)

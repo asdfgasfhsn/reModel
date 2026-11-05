@@ -30,9 +30,10 @@ struct Vtx {
 pub struct SVtx {
     pub x: f32,
     pub y: f32,
-    iz: f32,
-    uz: f32,
-    vz: f32,
+    /// 1/z, u/z and v/z: linear in screen space.
+    pub iz: f32,
+    pub uz: f32,
+    pub vz: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -46,17 +47,20 @@ struct Window {
 
 /// Texture parameters from a polygon's 4-word header (section 5.3).
 #[derive(Clone, Copy, Debug)]
-struct Texture {
-    x0: u32,
-    y0: u32,
-    w: u32,
-    h: u32,
-    mirror_x: bool,
-    mirror_y: bool,
-    bank: u32,
-    translucent: bool,
-    checker: bool,
-    luma_table: u32,
+pub struct Texture {
+    /// Position on the texture sheet and size, in texels.
+    pub x0: u32,
+    pub y0: u32,
+    pub w: u32,
+    pub h: u32,
+    pub mirror_x: bool,
+    pub mirror_y: bool,
+    pub bank: u32,
+    /// Texel 15 is transparent.
+    pub translucent: bool,
+    /// Every other pixel is dropped (a checkerboard, by screen pixel).
+    pub checker: bool,
+    pub luma_table: u32,
 }
 
 /// A polygon ready to draw.
@@ -67,13 +71,25 @@ pub struct Poly {
     pub window: usize,
     /// Viewport clip rectangle (x0, y0, x1, y1) in screen pixels.
     pub clip: (f32, f32, f32, f32),
-    texture: Option<Texture>,
+    pub texture: Option<Texture>,
     /// Base colour components (5 bits each) from palette entry 0x1000 + n.
-    colour: [u32; 3],
+    pub colour: [u32; 3],
     /// Polygon luma, 0-255.
-    luma: u32,
+    pub luma: u32,
     /// The 4-word texture header, kept for probing.
-    header: [u16; 4],
+    pub header: [u16; 4],
+}
+
+/// A polygon placed in a view's output pixels, ready for a rasteriser
+/// (this one or a GPU backend).
+#[derive(Clone, Debug)]
+pub struct Placed {
+    /// Index of the polygon in the (sorted) slice passed to [`place`].
+    pub poly: usize,
+    /// Vertices in output pixels.
+    pub points: Vec<SVtx>,
+    /// Clip rectangle (x0, y0, x1, y1) in output pixels.
+    pub clip: (f32, f32, f32, f32),
 }
 
 /// Inputs the rasteriser reads besides the stream.
@@ -527,6 +543,41 @@ pub fn draw_enhanced(polys: &mut [Poly], src: &Sources, view: &View, hooks: &mut
     draw_impl(polys, src, view, Some(hooks))
 }
 
+/// Sort `polys` into draw order (windows in order, and within a window from
+/// far to near) and place each in `view`'s output pixels. Viewports
+/// spanning the full original width are widened to the view's edges, and
+/// HUD polygons move as a unit with the HUD placement.
+pub fn place(polys: &mut [Poly], view: &View) -> Vec<Placed> {
+    polys.sort_by(|a, b| a.window.cmp(&b.window).then(b.key.total_cmp(&a.key)));
+    polys
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let dx = if view.hud_windows & (1 << p.window) != 0 {
+                let (lo, hi) = p.points.iter().fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(v.x), b.max(v.x)));
+                view.hud_shift((lo + hi) / 2.0)
+            } else {
+                0.0
+            };
+            let points = p
+                .points
+                .iter()
+                .map(|v| {
+                    let (x, y) = view.to_output(v.x + dx, v.y);
+                    SVtx { x, y, ..*v }
+                })
+                .collect();
+            let (mut x0, y0, mut x1, y1) = p.clip;
+            if view.pad > 0.0 && x0 <= 1.0 && x1 >= WIDTH as f32 - 1.0 {
+                (x0, x1) = (view.x_min(), WIDTH as f32 + view.pad);
+            }
+            let (cx0, cy0) = view.to_output(x0, y0);
+            let (cx1, cy1) = view.to_output(x1, y1);
+            Placed { poly: i, points, clip: (cx0, cy0, cx1, cy1) }
+        })
+        .collect()
+}
+
 fn draw_impl(
     polys: &mut [Poly],
     src: &Sources,
@@ -537,33 +588,13 @@ fn draw_impl(
     let (w, h) = (view.width, view.height);
     let mut rgb = vec![0u8; w * h * 3];
     let mut covered = vec![false; w * h];
-    polys.sort_by(|a, b| a.window.cmp(&b.window).then(b.key.total_cmp(&a.key)));
-    for p in polys.iter() {
-        // HUD polygons move as a unit with the HUD placement.
-        let dx = if view.hud_windows & (1 << p.window) != 0 {
-            let (lo, hi) = p.points.iter().fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(v.x), b.max(v.x)));
-            view.hud_shift((lo + hi) / 2.0)
-        } else {
-            0.0
-        };
-        let points: Vec<SVtx> = p
-            .points
-            .iter()
-            .map(|v| {
-                let (x, y) = view.to_output(v.x + dx, v.y);
-                SVtx { x, y, ..*v }
-            })
-            .collect();
-        let (mut x0, y0, mut x1, y1) = p.clip;
-        if view.pad > 0.0 && x0 <= 1.0 && x1 >= WIDTH as f32 - 1.0 {
-            (x0, x1) = (view.x_min(), WIDTH as f32 + view.pad);
-        }
-        let (cx0, cy0) = view.to_output(x0, y0);
-        let (cx1, cy1) = view.to_output(x1, y1);
-        // Texel-space filtering works per output pixel; the checker pattern
-        // stays in game pixels.
-        let (gsx, gsy) = (view.sx, view.sy);
-        let clip = (cx0, cy0, cx1, cy1);
+    let placed = place(polys, view);
+    // Texel-space filtering works per output pixel; the checker pattern
+    // stays in game pixels.
+    let (gsx, gsy) = (view.sx, view.sy);
+    for pl in &placed {
+        let p = &polys[pl.poly];
+        let (points, clip) = (&pl.points[..], pl.clip);
         let hooked = match (hooks.as_deref_mut(), &p.texture) {
             (Some(hk), Some(t)) => tex_info(p, t, src, &mut rects).map(|info| {
                 let img = hk.texture(&info);
@@ -574,7 +605,7 @@ fn draw_impl(
         let mut pixels = 0;
         if let (Some((_, Some(img))), Some(t)) = (&hooked, &p.texture) {
             let light = Light::new(p, src);
-            fill(&points, clip, w, h, |x, y, iz, uz, vz| {
+            fill(points, clip, w, h, |x, y, iz, uz, vz| {
                 let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
                 if let Some(c) = shade_replaced(t, img, &light, src, gx, gy, uz / iz, vz / iz) {
                     let o = y * w + x;
@@ -584,7 +615,7 @@ fn draw_impl(
                 }
             });
         } else {
-            fill(&points, clip, w, h, |x, y, iz, uz, vz| {
+            fill(points, clip, w, h, |x, y, iz, uz, vz| {
                 let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
                 if let Some(c) = shade(p, src, gx, gy, uz / iz, vz / iz) {
                     let o = y * w + x;

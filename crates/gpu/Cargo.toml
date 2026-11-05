@@ -1,0 +1,18 @@
+[package]
+name = "remodel-gpu"
+description = "Model 2 3D rasteriser on the GPU (wgpu: Vulkan, Metal, DirectX 12, OpenGL)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "gpu"
+
+[dependencies]
+remodel-model2.workspace = true
+wgpu = "30.0.1"
+pollster = "1.0.1"
+
+[dev-dependencies]
+# Already in the tree through wgpu: validates the shader without a GPU.
+naga = { version = "30.0.1", features = ["wgsl-in"] }

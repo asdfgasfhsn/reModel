@@ -1,3 +1,4 @@
+mod gpu_check;
 mod music;
 mod sound_render;
 mod soundtrack;
@@ -29,6 +30,9 @@ options:
                        and tile pattern drawn to DIR as PNG, plus DIR/index.txt
   --interp             run the i960 on the interpreter even when this build
                        has recompiled code for the game
+  --capture DIR        at each `run` snapshot, save what the renderers read
+                       (raster stream, video RAMs) to DIR/FRAME/, for
+                       `gpu-check`
   --texture-pack DIR   draw snapshots with the replacement PNGs in DIR (same
                        names as a dump; any size); see docs/texture-packs.md
 
@@ -44,6 +48,9 @@ commands:
                        plus everything `run` executed) and the copro and
                        geometrizer programs `run` captured into out/recomp/;
                        the next build uses them in place of the interpreters
+  gpu-check [DIR]      draw the frames captured with --capture in DIR
+                       (default out/GAME/capture) with the software and GPU
+                       rasterisers; time both and report how they differ
   lockstep [STEPS]     run the recompiled i960 code and the interpreter side
                        by side, block by block; report the first difference
   run [STEPS] [SNAP]   boot on the reference interpreter and report what
@@ -130,6 +137,13 @@ fn main() -> ExitCode {
     }
     let game_id = game_id.unwrap_or_else(|| "topskatr".into());
     let rom_dir = PathBuf::from(rom_dir.unwrap_or_else(|| "rom".into()));
+    let Ok(capture) = opt("--capture") else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    if let Some(c) = capture {
+        let _ = CAPTURE.set(PathBuf::from(c));
+    }
     let Ok(soundtrack) = opt("--soundtrack") else {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
@@ -355,6 +369,15 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
+        "gpu-check" => {
+            let default = PathBuf::from("out").join(roms.game.id).join("capture");
+            let root = args.get(1).map(PathBuf::from).unwrap_or(default);
+            let windows = roms.game.hud_windows.iter().fold(0, |m, &w| m | 1 << w);
+            if let Err(e) = gpu_check::run(&root, windows) {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
         // Debug: run recompiled and interpreted i960s side by side, one
         // instruction at a time, and report the first that differs.
         "lockstep" => {
@@ -487,10 +510,18 @@ fn main() -> ExitCode {
 
 /// Output view for snapshots (`--height`, `--aspect`, `--hud`); native when unset.
 static VIEW: std::sync::OnceLock<model2::video::View> = std::sync::OnceLock::new();
+/// Where `--capture` saves snapshot frames.
+static CAPTURE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 fn snapshot(m: &mut model2::Machine, path: &std::path::Path) {
     let view = VIEW.get().copied().unwrap_or_else(model2::video::View::native);
     m.bus.geo.sync();
+    if let Some(root) = CAPTURE.get() {
+        let frame = model2::capture::Frame::grab(&mut m.bus);
+        if let Err(e) = frame.save(root, &m.bus.texture_rom) {
+            eprintln!("capture: {}: {e}", root.display());
+        }
+    }
     let b = &m.bus;
     let geo = b.geo.engine();
     let (xoff, yoff) = b.sync_offsets();
