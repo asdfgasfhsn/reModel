@@ -27,6 +27,12 @@ pub struct Renderer {
     /// The compose pipeline for the last output format used.
     compose: Option<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
     adapter: String,
+    /// Render RAM and palette RAM on the GPU, with the versions uploaded.
+    ram: [Option<(Option<u64>, wgpu::Buffer)>; 2],
+    /// Versions for the next frame's RAM (see `set_ram_versions`).
+    versions: Option<(u64, u64)>,
+    /// Textures kept between frames, by label.
+    textures: Vec<(&'static str, wgpu::Texture)>,
 }
 
 /// Bytes per vertex: x, y, 1/z, u/z, v/z, polygon index.
@@ -165,7 +171,19 @@ impl Renderer {
             label: Some("compose"),
             entries: &[uniform(0, wgpu::ShaderStages::FRAGMENT), texture(1), texture(2), texture(3)],
         });
-        Renderer { device, queue, raster, raster_layout, compose_shader, compose_layout, compose: None, adapter }
+        Renderer {
+            device,
+            queue,
+            raster,
+            raster_layout,
+            compose_shader,
+            compose_layout,
+            compose: None,
+            adapter,
+            ram: [None, None],
+            versions: None,
+            textures: Vec::new(),
+        }
     }
 
     /// The GPU in use: name, backend and driver.
@@ -182,10 +200,55 @@ impl Renderer {
         &self.queue
     }
 
+    /// Versions of the next frame's render RAM and palette RAM (e.g.
+    /// `Model2Bus::video_ram_versions`): unchanged ones aren't uploaded
+    /// again. Without this, every frame uploads both.
+    pub fn set_ram_versions(&mut self, render: u64, palette: u64) {
+        self.versions = Some((render, palette));
+    }
+
+    /// A storage buffer holding `data` (game memory slot 0: render RAM,
+    /// 1: palette RAM), uploaded only if `version` changed.
+    fn ram_buffer(&mut self, slot: usize, data: &[u8], version: Option<u64>) -> wgpu::Buffer {
+        let size = data.len().div_ceil(4).max(1) as u64 * 4;
+        if let Some((v, b)) = &self.ram[slot] {
+            if b.size() == size && version.is_some() && *v == version {
+                return b.clone();
+            }
+        }
+        let b = match &self.ram[slot] {
+            Some((_, b)) if b.size() == size => b.clone(),
+            _ => self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(["render ram", "palette"][slot]),
+                size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+        };
+        if data.len().is_multiple_of(4) {
+            self.queue.write_buffer(&b, 0, data);
+        } else {
+            self.queue.write_buffer(&b, 0, &words(data));
+        }
+        self.ram[slot] = Some((version, b.clone()));
+        b
+    }
+
+    /// A texture kept between frames (re-created if the size changed).
+    fn kept_texture(&mut self, label: &'static str, w: u32, h: u32, usage: wgpu::TextureUsages) -> wgpu::Texture {
+        if let Some((_, t)) = self.textures.iter().find(|(l, t)| *l == label && t.width() == w && t.height() == h) {
+            return t.clone();
+        }
+        let t = self.texture(label, w, h, usage);
+        self.textures.retain(|(l, _)| *l != label);
+        self.textures.push((label, t.clone()));
+        t
+    }
+
     /// Encode the 3D layer of `placed` into `target` (FORMAT, the size of
     /// `view`; alpha 0 where nothing is drawn).
     fn encode_3d(
-        &self,
+        &mut self,
         enc: &mut wgpu::CommandEncoder,
         polys: &[Poly],
         placed: &[Placed],
@@ -222,6 +285,9 @@ impl Renderer {
         if table.is_empty() {
             table.resize(64, 0);
         }
+        let versions = self.versions.take();
+        let render = self.ram_buffer(0, src.render_ram, versions.map(|v| v.0));
+        let palette = self.ram_buffer(1, src.palette, versions.map(|v| v.1));
         let d = &self.device;
         let buffer = |label, contents: &[u8], usage| {
             d.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage })
@@ -229,8 +295,6 @@ impl Renderer {
         let screen = le([w as f32, h as f32, view.sx, view.sy].map(f32::to_le_bytes));
         let screen = buffer("screen", &screen, wgpu::BufferUsages::UNIFORM);
         let table = buffer("polys", &table, wgpu::BufferUsages::STORAGE);
-        let render = buffer("render ram", &words(src.render_ram), wgpu::BufferUsages::STORAGE);
-        let palette = buffer("palette", &words(src.palette), wgpu::BufferUsages::STORAGE);
         let vertices = buffer("vertices", &words(&verts), wgpu::BufferUsages::VERTEX);
         let bind = d.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("raster"),
@@ -308,7 +372,7 @@ impl Renderer {
     /// Draw `placed` (from `model2::raster::place` over `polys`) at the size
     /// of `view` and read it back: RGB and a coverage mask, like the
     /// software rasteriser's `draw_view`. Blocks: native only.
-    pub fn draw(&self, polys: &[Poly], placed: &[Placed], src: &Sources, view: &View) -> (Vec<u8>, Vec<bool>) {
+    pub fn draw(&mut self, polys: &[Poly], placed: &[Placed], src: &Sources, view: &View) -> (Vec<u8>, Vec<bool>) {
         let (w, h) = (view.width as u32, view.height as u32);
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
         let target = self.texture("3d layer", w, h, usage);
@@ -320,9 +384,9 @@ impl Renderer {
         (rgb, covered)
     }
 
-    fn upload(&self, label: &str, rgba: &[u8], w: u32, h: u32) -> wgpu::Texture {
+    fn upload(&mut self, label: &'static str, rgba: &[u8], w: u32, h: u32) -> wgpu::Texture {
         let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
-        let t = self.texture(label, w, h, usage);
+        let t = self.kept_texture(label, w, h, usage);
         self.queue.write_texture(
             t.as_image_copy(),
             rgba,
@@ -385,7 +449,7 @@ impl Renderer {
     ) {
         let (w, h) = (view.width as u32, view.height as u32);
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-        let layer3d = self.texture("3d layer", w, h, usage);
+        let layer3d = self.kept_texture("3d layer", w, h, usage);
         let layer3d_view = layer3d.create_view(&Default::default());
         self.encode_3d(enc, polys, placed, src, view, &layer3d_view);
         let base = self.upload("base", &layers.base, WIDTH as u32, HEIGHT as u32);

@@ -31,11 +31,12 @@ M68K_TESTS_RAW := https://raw.githubusercontent.com/SingleStepTests/680x0/main/6
 
 CARGO   ?= cargo
 # The browser build needs a toolchain with the wasm32 target and
-# wasm-bindgen-cli matching Cargo.lock. Default: rustup's cargo, from
+# wasm-bindgen-cli matching Cargo.lock. Default: rustup's stable cargo, from
 # ~/.local/share/rustup-wasm/bin (a rustup kept out of ~/.cargo/bin, where
 # its proxies would shadow the system toolchain's `cargo fmt` and clippy)
 # or ~/.cargo/bin.
-WASM_CARGO   ?= $(firstword $(wildcard $(HOME)/.local/share/rustup-wasm/bin/cargo) $(HOME)/.cargo/bin/cargo)
+WASM_RUSTUP  ?= $(firstword $(wildcard $(HOME)/.local/share/rustup-wasm/bin/rustup) $(HOME)/.cargo/bin/rustup)
+WASM_CARGO   ?= RUSTC=$(shell $(WASM_RUSTUP) which rustc) $(shell $(WASM_RUSTUP) which cargo)
 WASM_BINDGEN ?= $(HOME)/.cargo/bin/wasm-bindgen
 WEB_OUT      ?= out/web
 # RECOMP=1: use the build with recompiled i960 and TGP code (see `make recomp`).

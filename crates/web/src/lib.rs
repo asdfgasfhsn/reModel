@@ -33,6 +33,9 @@ struct App {
     epoch: f64,
     /// FPS counter: window start (ms), frames emulated and drawn since.
     counter: (f64, u32, u32),
+    /// Host time (ms) in this window: emulating, preparing frames on the
+    /// CPU, and encoding and submitting them to the GPU.
+    spent: [f64; 3],
     status: web_sys::Element,
     stopped: bool,
     /// Kept alive: in a browser, dropping the instance loses the device.
@@ -114,6 +117,7 @@ impl App {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             _ => return,
         };
+        let t0 = now();
         let m = &mut self.machine;
         m.bus.geo.sync();
         let b = &m.bus;
@@ -130,9 +134,14 @@ impl App {
         let mut polys = raster::build(&geo.stream, &src);
         let placed = raster::place(&mut polys, &self.view);
         let layers = video::layers_2d(b.tile_ram(), b.palette_ram(), &self.view, !placed.is_empty());
+        let t1 = now();
         let target = frame.texture.create_view(&Default::default());
+        let (render, palette) = b.video_ram_versions();
+        self.renderer.set_ram_versions(render, palette);
         self.renderer.present(&polys, &placed, &src, &self.view, &layers, &target, self.format);
         self.renderer.queue().present(frame);
+        self.spent[1] += t1 - t0;
+        self.spent[2] += now() - t1;
     }
 
     fn tick(&mut self, t: f64) {
@@ -141,6 +150,7 @@ impl App {
         }
         let due = ((t - self.epoch) * FPS / 1000.0) as u64;
         let mut ran = 0;
+        let t0 = now();
         while self.machine.frames < due && ran < MAX_CATCH_UP {
             self.apply_inputs();
             if let Err(e) = self.machine.run_slice(u64::MAX) {
@@ -150,6 +160,7 @@ impl App {
             }
             ran += 1;
         }
+        self.spent[0] += now() - t0;
         if self.machine.frames < due {
             // Too far behind: drop the time rather than spiral.
             self.epoch = t - self.machine.frames as f64 * 1000.0 / FPS;
@@ -162,18 +173,23 @@ impl App {
         if t - self.counter.0 >= 1000.0 {
             let secs = (t - self.counter.0) / 1000.0;
             let speed = self.counter.1 as f64 / secs / FPS * 100.0;
+            let (emulated, drawn) = (self.counter.1.max(1) as f64, self.counter.2.max(1) as f64);
             set_status(
                 &self.status,
                 &format!(
-                    "{:.0}% speed · {:.0} fps drawn · {}x{} · i960 {}",
+                    "{:.0}% speed · {:.0} fps drawn · {}x{} · i960 {} · ms per frame: emulate {:.1}, prepare {:.1}, submit {:.1}",
                     speed,
                     self.counter.2 as f64 / secs,
                     self.view.width,
                     self.view.height,
-                    if self.machine.is_native() { "recompiled" } else { "interpreted" }
+                    if self.machine.is_native() { "recompiled" } else { "interpreted" },
+                    self.spent[0] / emulated,
+                    self.spent[1] / drawn,
+                    self.spent[2] / drawn,
                 ),
             );
             self.counter = (t, 0, 0);
+            self.spent = [0.0; 3];
         }
     }
 }
@@ -263,6 +279,7 @@ pub async fn start(
         counter: (now(), 0, 0),
         status,
         stopped: false,
+        spent: [0.0; 3],
         _gpu: (instance, adapter),
     }));
 

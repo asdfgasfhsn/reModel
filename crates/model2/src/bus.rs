@@ -43,14 +43,16 @@ pub struct Access {
 struct Mem {
     data: Vec<u8>,
     writable: bool,
+    /// Writes so far: a version number for caching what's derived from it.
+    writes: u64,
 }
 
 impl Mem {
     fn zeroed(size: usize) -> Self {
-        Mem { data: vec![0; size], writable: true }
+        Mem { data: vec![0; size], writable: true, writes: 0 }
     }
     fn from(data: Vec<u8>, writable: bool) -> Self {
-        Mem { data, writable }
+        Mem { data, writable, writes: 0 }
     }
 }
 
@@ -554,6 +556,7 @@ impl Model2Bus {
         }
         let mem = &mut self.mems[m];
         if mem.writable {
+            mem.writes += 1;
             let len = mem.data.len();
             for i in 0..n {
                 mem.data[(off + i) % len] = (v >> (8 * i)) as u8;
@@ -631,6 +634,12 @@ impl Model2Bus {
     /// Palette and colour tables: 0x01800000-0x0181FFFF.
     pub fn palette_ram(&self) -> &[u8] {
         &self.mems[6].data
+    }
+
+    /// Versions of render RAM and palette RAM: they change whenever the
+    /// memory does, so a renderer can skip re-uploading it.
+    pub fn video_ram_versions(&self) -> (u64, u64) {
+        (self.mems[10].writes, self.mems[6].writes)
     }
 
     /// Hash of all RAM, the last raster stream and the copro results. Two

@@ -21,7 +21,7 @@ would shadow the system ones. The Makefile looks in
 sh rustup-init.sh -y --no-modify-path --profile minimal --target wasm32-unknown-unknown
 mkdir -p ~/.local/share/rustup-wasm/bin
 mv ~/.cargo/bin/{rustup,cargo,rustc,rustdoc,cargo-fmt,cargo-clippy,clippy-driver,rustfmt} ~/.local/share/rustup-wasm/bin/
-~/.local/share/rustup-wasm/bin/cargo install wasm-bindgen-cli --version <Cargo.lock's> --locked
+RUSTC=$(~/.local/share/rustup-wasm/bin/rustup which rustc) $(~/.local/share/rustup-wasm/bin/rustup which cargo) install wasm-bindgen-cli --version <Cargo.lock's> --locked
 ```
 
 **Serving.** WebGPU only works on secure pages (HTTPS, or localhost), so
