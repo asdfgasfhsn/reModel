@@ -27,6 +27,9 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlCanvasElement, KeyboardEvent};
 
+/// The buttons `set_touch` reports, by bit.
+const TOUCH_BUTTONS: [&str; 6] = ["jumpfront", "jumptail", "start", "coin1", "selleft", "selright"];
+
 /// Model 2 video frame rate.
 const FPS: f64 = 57.524;
 /// Most emulated frames run per browser frame before dropping time.
@@ -44,6 +47,9 @@ struct App {
     format: wgpu::TextureFormat,
     view: video::View,
     keys: HashSet<String>,
+    /// On-screen controls ([`set_touch`]): steering and slide (-1 to 1, 0 to
+    /// 1) and held buttons (bits in `TOUCH_BUTTONS` order).
+    touch: (f64, f64, u32),
     /// Real time (ms) that emulated frame 0 corresponds to.
     epoch: f64,
     /// FPS counter: window start (ms), frames emulated and drawn since.
@@ -115,6 +121,10 @@ impl App {
         };
         let pressed = |i: u32| button(i) > 0.5;
         let stick = pad.as_ref().and_then(|p| p.axes().get(0).as_f64()).filter(|x| x.abs() > 0.15).unwrap_or(0.0);
+        let (touch_steer, touch_slide, touch_buttons) = self.touch;
+        let stick = if stick == 0.0 { touch_steer.clamp(-1.0, 1.0) } else { stick };
+        let held =
+            |name: &str| TOUCH_BUTTONS.iter().position(|&b| b == name).is_some_and(|i| touch_buttons & 1 << i != 0);
         // Steering: 0x10 carves right, 0xF0 left, 0x80 centred.
         let steer = if key("ArrowLeft") || pressed(14) {
             -1.0
@@ -123,7 +133,7 @@ impl App {
         } else {
             stick
         };
-        let slide = if key("ArrowDown") || key("Space") || pressed(1) { 1.0 } else { button(7) };
+        let slide = if key("ArrowDown") || key("Space") || pressed(1) { 1.0 } else { button(7).max(touch_slide) };
         let bus = &mut self.machine.bus;
         model2::input::set_analog(bus, "curving", (128.0 - steer * 112.0).round() as u8);
         model2::input::set_analog(bus, "slide", (128.0 + slide * 112.0).round() as u8);
@@ -135,7 +145,7 @@ impl App {
             ("selleft", key("KeyQ") || pressed(4)),
             ("selright", key("KeyE") || pressed(5)),
         ] {
-            model2::input::set_button(bus, name, down);
+            model2::input::set_button(bus, name, down || held(name));
         }
     }
 
@@ -275,6 +285,18 @@ impl App {
 thread_local! {
     /// The running app, for calls from the page after `start`.
     static APP: RefCell<Option<Rc<RefCell<App>>>> = const { RefCell::new(None) };
+}
+
+/// On-screen controls: `steer` from -1 (left) to 1 (right), `slide` from 0
+/// to 1, and `buttons` held as bits: jump front, jump tail, start, coin,
+/// select left, select right. Merged with the keyboard and gamepad.
+#[wasm_bindgen]
+pub fn set_touch(steer: f64, slide: f64, buttons: u32) {
+    APP.with(|a| {
+        if let Some(app) = a.borrow().as_ref() {
+            app.borrow_mut().touch = (steer, slide, buttons);
+        }
+    });
 }
 
 /// The geometrizer worker's newest frame: the raster stream and texture
@@ -489,6 +511,7 @@ pub async fn start(
         format: config.format,
         view,
         keys: HashSet::new(),
+        touch: (0.0, 0.0, 0),
         epoch: now(),
         counter: (now(), 0, 0),
         status,

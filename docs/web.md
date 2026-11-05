@@ -79,17 +79,23 @@ to the GPU. The sound label adds the worker's time per frame.
 
 **Controls.**
 
-| Action | Keyboard | Gamepad |
-|---|---|---|
-| Coin | C or 5 | Back |
-| Start | Enter | Start |
-| Steer | Left / Right | Left stick or d-pad |
-| Slide | Down or Space | Right trigger or B |
-| Jump (front) | Z or Up | A |
-| Jump (tail) | X | X |
-| Select | Q / E | Shoulder buttons |
+| Action | Keyboard | Gamepad | Touch |
+|---|---|---|---|
+| Coin | C or 5 | Back | Coin |
+| Start | Enter | Start | Start |
+| Steer | Left / Right | Left stick or d-pad | drag sideways on the left of the screen, or Tilt |
+| Slide | Down or Space | Right trigger or B | Slide (hold) |
+| Jump (front) | Z or Up | A | Jump |
+| Jump (tail) | X | X | Tail |
+| Select | Q / E | Shoulder buttons | ◀ / ▶ |
 
 F toggles fullscreen and H hides the bar.
+
+The touch controls (`crates/web/touch.js`) appear on touch screens, or
+anywhere with `?touch=1`; on touch screens the bar starts hidden, behind
+the ⓘ button. Steering is analog: full lock 70 CSS pixels from where the
+finger went down. Tilt steers by turning the device like a wheel (full
+lock at 30 degrees; iOS asks for motion permission).
 
 **Testing headless.** Headless Chromium here can't keep a WebGPU canvas
 alive, even for a plain JavaScript test page: the device is lost with "A

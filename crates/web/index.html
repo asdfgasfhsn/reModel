@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Remodel</title>
 <style>
   :root { color-scheme: dark; }
@@ -12,6 +12,27 @@
   #bar.hidden { display: none; }
   #status { color: #fff; }
   kbd { border: 1px solid #555; border-radius: 3px; padding: 0 4px; font: inherit; }
+  /* On-screen controls (touch.js) */
+  #touch { position: fixed; inset: 0; pointer-events: none; }
+  #touch * { pointer-events: auto; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+  #touch [hidden] { display: none; }
+  #t-steer { position: absolute; left: 0; top: 18%; bottom: 0; width: 45%; }
+  #t-knob { position: absolute; width: 64px; height: 64px; margin: -34px; border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.35); display: none; pointer-events: none; }
+  #t-knob.on { display: block; }
+  #t-knob::after { content: ""; position: absolute; left: 16px; top: 16px; width: 32px; height: 32px; border-radius: 50%;
+    background: rgba(255, 255, 255, 0.45); transform: translateX(var(--dx, 0)); }
+  #t-actions { position: absolute; right: max(16px, env(safe-area-inset-right)); bottom: max(20px, env(safe-area-inset-bottom));
+    display: grid; grid-template-columns: auto auto; gap: 14px; align-items: end; }
+  #t-top { position: absolute; top: max(8px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%);
+    display: flex; gap: 8px; }
+  .t-btn { width: 72px; height: 72px; border-radius: 50%; background: rgba(255, 255, 255, 0.14);
+    border: 2px solid rgba(255, 255, 255, 0.35); color: #fff; font: 600 13px system-ui, sans-serif;
+    display: grid; place-items: center; }
+  .t-btn.big { width: 88px; height: 88px; }
+  .t-pill { padding: 6px 12px; border-radius: 14px; background: rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.3); color: #fff; font: 600 12px system-ui, sans-serif; }
+  .t-btn.on, .t-pill.on { background: rgba(255, 255, 255, 0.45); }
 </style>
 </head>
 <body>
@@ -22,8 +43,26 @@
     <kbd>Z</kbd> jump front <kbd>X</kbd> jump tail <kbd>Q</kbd><kbd>E</kbd> select · gamepad works too ·
     <kbd>F</kbd> fullscreen <kbd>H</kbd> hide bar · <span id="sound">tap or press a key for sound</span></span>
 </div>
+<div id="touch" hidden>
+  <div id="t-steer"><div id="t-knob"></div></div>
+  <div id="t-top">
+    <span class="t-pill" data-bit="3">Coin</span>
+    <span class="t-pill" data-bit="2">Start</span>
+    <span class="t-pill" data-bit="4">◀</span>
+    <span class="t-pill" data-bit="5">▶</span>
+    <span class="t-pill" id="t-tilt">Tilt</span>
+    <span class="t-pill" id="t-info">ⓘ</span>
+  </div>
+  <div id="t-actions">
+    <span class="t-btn" id="t-slide">Slide</span>
+    <span class="t-btn" data-bit="1">Tail</span>
+    <span></span>
+    <span class="t-btn big" data-bit="0">Jump</span>
+  </div>
+</div>
 <script type="module">
-  import init, { start, set_audio_level, set_geo_frame } from "./pkg/remodel_web.js";
+  import { setupTouch } from "./touch.js";
+  import init, { start, set_audio_level, set_geo_frame, set_touch } from "./pkg/remodel_web.js";
 
   const status = document.getElementById("status");
   const params = new URLSearchParams(location.search);
@@ -86,10 +125,13 @@
   for (const ev of ["pointerdown", "keydown", "touchend"]) addEventListener(ev, enableAudio);
   if (!sound) soundLabel.textContent = "sound off";
 
+  const toggleBar = () => document.getElementById("bar").classList.toggle("hidden");
   addEventListener("keydown", (e) => {
     if (e.code === "KeyF") document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
-    if (e.code === "KeyH") document.getElementById("bar").classList.toggle("hidden");
+    if (e.code === "KeyH") toggleBar();
   });
+  // Touch screens: on-screen controls, and the bar out of the way until ⓘ.
+  if (setupTouch((steer, slide, buttons) => started && set_touch(steer, slide, buttons), toggleBar)) toggleBar();
 
   if (!navigator.gpu) {
     status.textContent = "This browser has no WebGPU (try a recent Chrome, Edge or Safari; on Linux, check chrome://gpu).";
