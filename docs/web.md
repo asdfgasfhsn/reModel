@@ -24,7 +24,7 @@ against the sound card is corrected by stretching the audio by at most
 clock pacing).
 
 ```sh
-make web            # interpreter build -> out/web (index.html, pkg/)
+make web            # interpreter build -> out/web (index.html, the logo, pkg/)
 make web RECOMP=1   # with the recompiled game code (after `make recomp`)
 ```
 

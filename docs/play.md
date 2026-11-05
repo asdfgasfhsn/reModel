@@ -5,6 +5,12 @@ builds and runs `remodel-play`: the game in a window, rendered on the GPU
 (`docs/gpu.md`), with both sound boards running live. `remodel-play --help`
 lists its options.
 
+At startup the Remodel logo shows for 1.5 s, then fades out over 0.5 s
+while the game boots underneath (or the menu, with no game to start). Any
+key, click or gamepad button skips it; `--no-splash` leaves it out. The
+logo (`assets/reModel-logo-1086.png`, half the size of the original) is
+built into the binary and decoded with `remodel-png`.
+
 ## Keys
 
 | Key | |

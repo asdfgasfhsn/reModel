@@ -8,6 +8,11 @@
   :root { color-scheme: dark; }
   html, body { margin: 0; height: 100%; background: #000; color: #ccc; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
   canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; object-fit: contain; display: block; }
+  /* The logo while loading, fading out as the game starts. */
+  #splash { position: fixed; inset: 0; background: #000; display: grid; place-items: center; pointer-events: none;
+    transition: opacity 0.5s; }
+  #splash img { max-width: 70vw; max-height: 50vh; }
+  #splash.gone { opacity: 0; }
   #bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 6px 12px; background: rgba(0, 0, 0, 0.6); display: flex; gap: 16px; flex-wrap: wrap; }
   #bar.hidden { display: none; }
   #status { color: #fff; }
@@ -39,6 +44,7 @@
 </head>
 <body>
 <canvas id="screen"></canvas>
+<div id="splash"><img src="reModel-logo.png" alt="reModel"></div>
 <div id="bar">
   <span id="status">loading…</span>
   <span><kbd>C</kbd> coin <kbd>Enter</kbd> start <kbd>←</kbd><kbd>→</kbd> steer <kbd>↓</kbd> slide
@@ -187,6 +193,10 @@
       }
       await start(document.getElementById("screen"), status, "./rom/topskatr", height, aspect, hudEdges, link, geo);
       started = true;
+      // Fade the logo once it's been up for 1.5 s.
+      const splash = document.getElementById("splash");
+      setTimeout(() => splash.classList.add("gone"), Math.max(0, 1500 - performance.now()));
+      splash.addEventListener("transitionend", () => splash.remove());
     } catch (e) {
       status.textContent = "error: " + (e.message ?? e);
       console.error(e);

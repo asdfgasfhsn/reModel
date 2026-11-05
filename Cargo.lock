@@ -2382,6 +2382,7 @@ dependencies = [
  "pollster",
  "remodel-gpu",
  "remodel-model2",
+ "remodel-png",
  "remodel-romset",
  "remodel-state",
  "wgpu",

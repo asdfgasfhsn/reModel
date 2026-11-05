@@ -14,12 +14,14 @@
 //! the audio queue corrects the drift between the clocks by stretching the
 //! audio by at most 0.5% (inaudible), never by stalling the game.
 //!
-//! Esc opens the menu (and pauses): save states, sound mix, display, game
-//! and ROM folder. Settings persist (`settings`).
+//! The logo shows for two seconds at startup, fading out over the game
+//! booting underneath (`splash`). Esc opens the menu (and pauses): save
+//! states, sound mix, display, game and ROM folder. Settings persist (`settings`).
 
 mod menu;
 mod settings;
 mod sound;
+mod splash;
 
 use gilrs::{Axis, Button, Gilrs};
 use settings::Settings;
@@ -52,6 +54,7 @@ usage: remodel-play [options]
                      refresh is 60 or 120 Hz, which is 4.3% fast but smooth)
   --fullscreen       start fullscreen
   --seconds N        quit after N seconds (for timing runs)
+  --no-splash        don't show the logo at startup
   --input SCRIPT     scripted inputs, as for `remodel run` (for timing runs),
                      e.g. coin1@1100-1104,start@1250-1254
 
@@ -78,10 +81,11 @@ struct Options {
     input: Option<model2::input::InputScript>,
     /// `--game`: remembered only once it starts (`Play::start_game`).
     game: Option<String>,
+    splash: bool,
 }
 
 fn options(s: &mut Settings) -> Result<Options, String> {
-    let mut o = Options { sound: true, interp: false, seconds: None, input: None, game: None };
+    let mut o = Options { sound: true, interp: false, seconds: None, input: None, game: None, splash: true };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{a} needs a value"));
@@ -96,6 +100,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
             "--no-sound" => o.sound = false,
             "--hud" => s.hud_edges = value()? != "center",
             "--interp" => o.interp = true,
+            "--no-splash" => o.splash = false,
             "--fullscreen" => s.fullscreen = true,
             "--exact" => s.exact = true,
             "--input" => o.input = Some(model2::input::InputScript::parse(&value()?)?),
@@ -193,6 +198,7 @@ struct Play {
     games: Vec<(String, &'static str)>,
     unsupported: usize,
     menu: menu::Menu,
+    splash: splash::Splash,
     gpu: Option<Gpu>,
     keys: HashSet<KeyCode>,
     gilrs: Option<Gilrs>,
@@ -375,17 +381,25 @@ impl Play {
         [1.0, 0.5].into_iter().find(|k| (0.95..=1.1).contains(&(hz * k / FPS)))
     }
 
-    /// Keyboard and the last used gamepad onto the cabinet's controls.
-    fn apply_inputs(&mut self) {
-        let mut pad = None;
+    /// Take the gamepads' events: note the one last used, and whether a
+    /// button was pressed.
+    fn poll_pads(&mut self) -> bool {
+        let mut pressed = false;
         if let Some(g) = &mut self.gilrs {
             while let Some(ev) = g.next_event() {
+                pressed |= matches!(ev.event, gilrs::EventType::ButtonPressed(..));
                 if matches!(ev.event, gilrs::EventType::ButtonPressed(..) | gilrs::EventType::AxisChanged(..)) {
                     self.pad = Some(ev.id);
                 }
             }
-            pad = self.pad.map(|id| g.gamepad(id));
         }
+        pressed
+    }
+
+    /// Keyboard and the last used gamepad onto the cabinet's controls.
+    fn apply_inputs(&mut self) {
+        self.poll_pads();
+        let pad = self.gilrs.as_ref().and_then(|g| self.pad.map(|id| g.gamepad(id)));
         let Some(s) = &mut self.session else { return };
         let key = |k: KeyCode| self.keys.contains(&k);
         let pressed = |b: Button| pad.as_ref().is_some_and(|p| p.is_pressed(b));
@@ -467,6 +481,9 @@ impl Play {
 
     /// One redraw: run the game, draw it and the menu, report status.
     fn frame(&mut self, el: &ActiveEventLoop) {
+        if self.splash.active() && self.poll_pads() {
+            self.splash.skip();
+        }
         let t0 = Instant::now();
         match self.emulate() {
             Ok(ran) => {
@@ -503,15 +520,20 @@ impl Play {
             g.renderer.present_bus(&mut s.machine.bus, None, &g.view, &target, g.config.format, g.origin);
         }
         let mut actions = Vec::new();
-        if self.menu.visible() || self.session.is_none() {
+        if self.menu.visible() || self.session.is_none() || self.splash.active() {
             let view = menu::View {
                 playing: self.session.as_ref().map(|s| s.game.title),
                 games: &self.games,
                 unsupported: self.unsupported,
                 slots: &slots,
             };
-            let (menu, settings) = (&mut self.menu, &mut self.settings);
-            actions = draw_overlay(g, &target, self.session.is_none(), |ctx| menu.ui(ctx, settings, &view));
+            let (menu, settings, splash) = (&mut self.menu, &mut self.settings, &mut self.splash);
+            actions = draw_overlay(g, &target, self.session.is_none(), |ctx| {
+                let actions = menu.ui(ctx, settings, &view);
+                // Over the game or the menu, fading to show it.
+                splash.ui(ctx);
+                actions
+            });
         }
         g.renderer.queue().present(frame);
         self.stats.drawn += 1;
@@ -695,6 +717,18 @@ impl ApplicationHandler for Play {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+        // Any key, click or touch skips the splash, and does nothing else.
+        if self.splash.active() {
+            let press = match &event {
+                WindowEvent::KeyboardInput { event, .. } => event.state == ElementState::Pressed,
+                WindowEvent::MouseInput { state, .. } => *state == ElementState::Pressed,
+                WindowEvent::Touch(t) => t.phase == winit::event::TouchPhase::Started,
+                _ => false,
+            };
+            if press {
+                return self.splash.skip();
+            }
+        }
         let to_menu = match &mut self.gpu {
             Some(g) => {
                 let r = g.overlay.state.on_window_event(&g.window, &event);
@@ -761,6 +795,7 @@ fn main() {
             println!("controller    {} (used once a button or stick moves)", p.name());
         }
     }
+    let splash = splash::Splash::new(opts.splash);
     let mut play = Play {
         opts,
         applied: settings.clone(),
@@ -769,6 +804,7 @@ fn main() {
         games: Vec::new(),
         unsupported: 0,
         menu: menu::Menu::default(),
+        splash,
         gpu: None,
         keys: HashSet::new(),
         gilrs,

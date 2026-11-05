@@ -184,6 +184,7 @@ web: ## Build the browser version (WebAssembly + WebGPU) into out/web; needs the
 	CARGO_TARGET_DIR=target/web CARGO_PROFILE_RELEASE_DEBUG=false $(WEB_ENV) $(WASM_CARGO) build --release --target wasm32-unknown-unknown -p remodel-web
 	$(WASM_BINDGEN) --target web --no-typescript --out-dir $(WEB_OUT)/pkg target/web/wasm32-unknown-unknown/release/remodel_web.wasm
 	cp crates/web/index.html crates/web/audio-worklet.js crates/web/sound-worker.js crates/web/geo-worker.js crates/web/touch.js $(WEB_OUT)/
+	cp assets/reModel-logo-1086.png $(WEB_OUT)/reModel-logo.png
 	@echo "built $(WEB_OUT): serve it over HTTPS (WebGPU needs a secure page) with the ROM files at $(WEB_OUT)/rom/"
 
 capture: release ## Run into a race saving every 300th frame's renderer inputs to out/GAME/capture (~200 MB)
