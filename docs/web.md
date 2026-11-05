@@ -140,7 +140,30 @@ around 1x.
 
 ## Left to do
 
-- A ROM picker that keeps ROMs in IndexedDB, for a page that doesn't
-  serve them.
-- Persistent GPU buffers: each frame still re-creates every buffer and
-  uploads all of render RAM.
+The native player's menu, save states and remembered settings
+(`docs/play.md`) aren't in the browser build yet. The plan:
+
+- **Menu: an HTML overlay, not egui.** egui runs on WebGPU, but an
+  overlay in `index.html` keeps the WebAssembly small, and its sliders and
+  text fields work with touch and the on-screen keyboard, where egui's
+  text input is weak. Esc opens it; touch screens get a menu button next
+  to ⓘ. It drives small `App` exports, like `set_touch` and
+  `set_audio_level` do now: pause, mix, HUD placement, exact speed.
+- **Settings** kept in `localStorage`. URL parameters still override
+  them, so links like `?sfx=8&music=-8` keep working.
+- **Save states.** The machine is split three ways: the i960 board on the
+  main thread, both sound boards in the sound worker, and (by default) the
+  geometrizer in the geometry worker. A save pauses, asks each worker for
+  its state, and joins the replies with the main thread's into the format
+  `model2::save_session_parts` writes. Each worker handles messages in
+  order, as the native sound thread does, so every part reflects the
+  same moment. Loading does the reverse. Saves (about 1.2 MB each) go in
+  IndexedDB. The format matches the native player's, so a save exported
+  as a download should load in either, though that's not yet tested.
+- **Game picker.** The page fetches ROMs from its server, so it would
+  list the sets the server holds, or take a zip from a file picker (kept
+  in IndexedDB) for a page that doesn't serve ROMs. Only useful once a
+  second game is supported.
+
+Order: the overlay with settings and pause first, then save states,
+then the picker.
