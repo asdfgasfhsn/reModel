@@ -106,6 +106,16 @@ pub struct Geometrizer {
     pub waited: std::time::Duration,
     engine: Slot,
     threaded: bool,
+    /// Remote mode: jobs go here instead of to the local engine.
+    remote: Option<Box<dyn FnMut(Job)>>,
+}
+
+/// Work for an engine elsewhere (another worker or process): the program
+/// the game uploaded, or one frame's list. An engine fed the same jobs in
+/// order gives the same results as the local one ([`Engine::run_job`]).
+pub enum Job {
+    Boot(Vec<u64>),
+    Frame { buffer: Vec<u8>, booted: bool, read_ptr: u32 },
 }
 
 /// Host time measurement that works where `std::time::Instant` doesn't
@@ -141,23 +151,8 @@ impl Geometrizer {
             waited: std::time::Duration::ZERO,
             // WebAssembly without threads support can't spawn.
             threaded: cfg!(not(target_arch = "wasm32")),
-            engine: Slot::Idle(Box::new(Engine {
-                tgp: Tgp::new(),
-                poly_ram: vec![0; 0x10_0000],
-                poly_rom,
-                buffer: Vec::new(),
-                stream: Vec::new(),
-                list_words: 0,
-                fault: None,
-                frames: 0,
-                texture_point_ram: vec![0; 0x1_0000],
-                fed: Vec::new(),
-                first_error: None,
-                pc_trace: vec![(0, 0); PC_TRACE_LEN],
-                first_error_trace: Vec::new(),
-                busy: std::time::Duration::ZERO,
-                slowest: std::time::Duration::ZERO,
-            })),
+            remote: None,
+            engine: Slot::Idle(Box::new(Engine::new(poly_rom))),
         }
     }
 
@@ -189,6 +184,14 @@ impl Geometrizer {
         }
     }
 
+    /// Send jobs to `sink` instead of running them: an engine elsewhere (a
+    /// browser worker) runs them with [`Engine::run_job`], and the local
+    /// engine stays idle. Its results then come from there.
+    pub fn set_remote(&mut self, sink: Box<dyn FnMut(Job)>) {
+        self.sync();
+        self.remote = Some(sink);
+    }
+
     /// Run frames on a worker thread (the default where threads exist) or
     /// inline in `start_frame`. Results are identical: the engine works on
     /// its own copy of buffer RAM and is only seen after `sync`.
@@ -201,6 +204,10 @@ impl Geometrizer {
     /// pointer. Runs in the background until the next `sync`.
     pub fn start_frame(&mut self, buffer: &[u8]) {
         let (booted, read_ptr) = (self.booted, self.read_ptr);
+        if let Some(remote) = &mut self.remote {
+            remote(Job::Frame { buffer: buffer.to_vec(), booted, read_ptr });
+            return;
+        }
         let mut e = std::mem::replace(self.engine_mut(), Engine::placeholder());
         e.buffer.clear();
         e.buffer.extend_from_slice(buffer);
@@ -274,7 +281,10 @@ impl Geometrizer {
         }
         if !on && self.uploading {
             let program = std::mem::take(&mut self.program);
-            self.engine_mut().tgp.boot(&program);
+            match &mut self.remote {
+                Some(remote) => remote(Job::Boot(program.clone())),
+                None => self.engine_mut().tgp.boot(&program),
+            }
             self.program = program;
             self.booted = true;
         }
@@ -283,6 +293,39 @@ impl Geometrizer {
 }
 
 impl Engine {
+    /// A fresh engine over the polygon ROM (u32 words).
+    pub fn new(poly_rom: Vec<u32>) -> Self {
+        Engine {
+            tgp: Tgp::new(),
+            poly_ram: vec![0; 0x10_0000],
+            poly_rom,
+            buffer: Vec::new(),
+            stream: Vec::new(),
+            list_words: 0,
+            fault: None,
+            frames: 0,
+            texture_point_ram: vec![0; 0x1_0000],
+            fed: Vec::new(),
+            first_error: None,
+            pc_trace: vec![(0, 0); PC_TRACE_LEN],
+            first_error_trace: Vec::new(),
+            busy: std::time::Duration::ZERO,
+            slowest: std::time::Duration::ZERO,
+        }
+    }
+
+    /// Run a job from a remote-mode [`Geometrizer`]. After a frame, `stream`
+    /// and `texture_point_ram` hold its results.
+    pub fn run_job(&mut self, job: Job) {
+        match job {
+            Job::Boot(program) => self.tgp.boot(&program),
+            Job::Frame { buffer, booted, read_ptr } => {
+                self.buffer = buffer;
+                self.run_frame(booted, read_ptr);
+            }
+        }
+    }
+
     fn placeholder() -> Self {
         Engine {
             tgp: Tgp::new(),

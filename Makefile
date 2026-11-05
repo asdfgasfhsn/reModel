@@ -149,7 +149,7 @@ dump-textures: release ## Coin-start-race run dumping every 3D texture and tile 
 web: ## Build the browser version (WebAssembly + WebGPU) into out/web; needs the wasm32 target and wasm-bindgen (docs/web.md); RECOMP=1 includes the recompiled game code
 	CARGO_TARGET_DIR=target/web CARGO_PROFILE_RELEASE_DEBUG=false $(WEB_ENV) $(WASM_CARGO) build --release --target wasm32-unknown-unknown -p remodel-web
 	$(WASM_BINDGEN) --target web --no-typescript --out-dir $(WEB_OUT)/pkg target/web/wasm32-unknown-unknown/release/remodel_web.wasm
-	cp crates/web/index.html crates/web/audio-worklet.js crates/web/sound-worker.js $(WEB_OUT)/
+	cp crates/web/index.html crates/web/audio-worklet.js crates/web/sound-worker.js crates/web/geo-worker.js $(WEB_OUT)/
 	@echo "built $(WEB_OUT): serve it over HTTPS (WebGPU needs a secure page) with the ROM files at $(WEB_OUT)/rom/"
 
 capture: release ## Run into a race saving every 300th frame's renderer inputs to out/GAME/capture (~200 MB)

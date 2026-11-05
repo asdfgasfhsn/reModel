@@ -22,6 +22,16 @@ make web            # interpreter build -> out/web (index.html, pkg/)
 make web RECOMP=1   # with the recompiled game code (after `make recomp`)
 ```
 
+**Three cores.** The page's thread runs the main CPU, the copro and the
+drawing. The geometrizer runs in `crates/web/geo-worker.js`: at each
+vblank the game posts the frame's job (a copy of buffer RAM, the read
+pointer), and at boot the uploaded program. The worker runs the jobs in
+order (`model2::geo::Engine::run_job`) and posts back each frame's raster
+stream and texture point RAM. The page draws the newest one, so polygons
+can lag the 2D layers by about a frame. The game never waits for the
+geometrizer: nothing the i960 reads depends on it, so results are the same
+as with the engine on the page's thread. `?geo=local` keeps it there.
+
 **Toolchain.** It needs the `wasm32-unknown-unknown` target and a
 `wasm-bindgen` CLI matching the version in Cargo.lock (`WASM_CARGO`,
 `WASM_BINDGEN`). With a system Rust and no rustup, a user-local rustup
@@ -60,7 +70,8 @@ of all private ranges also admits them.
 - `?aspect=16:9` (default: the window's shape, 4:3 to 21:9);
 - `height=1080` (default: the screen's, up to 1080);
 - `hud=center` (default `edges`);
-- `sound=0` (don't run the sound boards at all).
+- `sound=0` (don't run the sound boards at all);
+- `geo=local` (run the geometrizer on the page's thread).
 
 The bar shows the speed, frames drawn per second, and milliseconds per
 frame spent emulating, preparing the frame on the CPU, and submitting it
@@ -119,5 +130,3 @@ around 1x.
   serve them.
 - Persistent GPU buffers: each frame still re-creates every buffer and
   uploads all of render RAM.
-- Optional: WebAssembly threads for the geometrizer. These need
-  cross-origin isolation headers and a nightly `build-std`.

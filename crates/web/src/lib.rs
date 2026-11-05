@@ -12,6 +12,10 @@
 //! [`SoundEngine`] from this same module), on another core: each frame the
 //! game posts the sound link bytes it sent, with their CPU cycles, and the
 //! worker renders the audio and posts it to the page's AudioWorklet.
+//!
+//! The geometrizer runs in another worker (geo-worker.js, [`GeoEngine`]):
+//! the game posts each vblank's job (`model2::geo::Job`) and draws the
+//! newest polygon stream the worker sends back ([`set_geo_frame`]).
 
 #![cfg(target_arch = "wasm32")]
 
@@ -56,6 +60,9 @@ struct App {
     audio_level: Option<(f64, f64)>,
     /// Stereo frames asked for since that report.
     sent_since: f64,
+    /// Geometrizer in a worker: its newest frame (raster stream, texture
+    /// point RAM), once one arrives. None with the local engine.
+    geo_frame: Option<Option<(Vec<u32>, Vec<u16>)>>,
     status: web_sys::Element,
     stopped: bool,
     /// Kept alive: in a browser, dropping the instance loses the device.
@@ -141,17 +148,22 @@ impl App {
         let m = &mut self.machine;
         m.bus.geo.sync();
         let b = &m.bus;
-        let geo = b.geo.engine();
+        let (stream, points): (&[u32], &[u16]) = match &self.geo_frame {
+            // The worker's newest frame (nothing to draw before the first).
+            Some(Some((s, p))) => (s, p),
+            Some(None) => (&[], &[]),
+            None => (&b.geo.engine().stream, &b.geo.engine().texture_point_ram),
+        };
         let (xoff, yoff) = b.sync_offsets();
         let src = raster::Sources {
             texture_rom: &b.texture_rom,
-            texture_point_ram: &geo.texture_point_ram,
+            texture_point_ram: points,
             render_ram: b.render_ram(),
             palette: b.palette_ram(),
             xoff,
             yoff,
         };
-        let mut polys = raster::build(&geo.stream, &src);
+        let mut polys = raster::build(stream, &src);
         let placed = raster::place(&mut polys, &self.view);
         let layers = video::layers_2d(b.tile_ram(), b.palette_ram(), &self.view, !placed.is_empty());
         let t1 = now();
@@ -265,6 +277,58 @@ thread_local! {
     static APP: RefCell<Option<Rc<RefCell<App>>>> = const { RefCell::new(None) };
 }
 
+/// The geometrizer worker's newest frame: the raster stream and texture
+/// point RAM.
+#[wasm_bindgen]
+pub fn set_geo_frame(stream: Vec<u32>, points: Vec<u16>) {
+    APP.with(|a| {
+        if let Some(app) = a.borrow().as_ref() {
+            app.borrow_mut().geo_frame = Some(Some((stream, points)));
+        }
+    });
+}
+
+/// The geometrizer on its own, for a Web Worker: it runs the jobs the
+/// game's geometrizer front end posts (boot, then one per frame).
+#[wasm_bindgen]
+pub struct GeoEngine {
+    engine: model2::geo::Engine,
+}
+
+#[wasm_bindgen]
+impl GeoEngine {
+    /// `chips`: Uint8Arrays of the files [`rom_files`] lists, in order.
+    #[wasm_bindgen(constructor)]
+    pub fn new(chips: js_sys::Array) -> Result<GeoEngine, JsValue> {
+        console_error_panic_hook::set_once();
+        let game = romset::games::find("topskatr").map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let chips = chips.iter().map(|c| js_sys::Uint8Array::new(&c).to_vec()).collect();
+        let roms = romset::RomSet::from_chips(game, chips, false).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(GeoEngine { engine: model2::geo::Engine::new(model2::bus::polygon_rom(&roms)) })
+    }
+
+    /// Boot the uploaded program: 64-bit words as (low, high) u32 pairs.
+    pub fn boot(&mut self, words: &[u32]) {
+        let program: Vec<u64> = words.chunks_exact(2).map(|w| w[0] as u64 | (w[1] as u64) << 32).collect();
+        self.engine.run_job(model2::geo::Job::Boot(program));
+    }
+
+    /// Run one frame's list from a copy of buffer RAM.
+    pub fn frame(&mut self, buffer: Vec<u8>, booted: bool, read_ptr: u32) {
+        self.engine.run_job(model2::geo::Job::Frame { buffer, booted, read_ptr });
+    }
+
+    /// The last frame's raster stream.
+    pub fn stream(&self) -> Vec<u32> {
+        self.engine.stream.clone()
+    }
+
+    /// Texture point RAM after the last frame.
+    pub fn points(&self) -> Vec<u16> {
+        self.engine.texture_point_ram.clone()
+    }
+}
+
 /// The ROM file names the game needs, in manifest order (for a worker that
 /// fetches them itself).
 #[wasm_bindgen]
@@ -322,7 +386,9 @@ pub fn set_audio_level(queued: f64) {
 /// WebGPU on `canvas` and start the game. `aspect` is width / height,
 /// `hud_edges` moves HUD elements to the screen edges in wide views. `link`
 /// receives the sound link bytes each frame (see `App::send_link`) for the
-/// sound worker; leave it out for no sound.
+/// sound worker; leave it out for no sound. `geo`, if given, receives the
+/// geometrizer's jobs for a worker: ("boot", Uint32Array of (low, high)
+/// word pairs) or ("frame", Uint8Array buffer RAM, booted, read pointer).
 #[wasm_bindgen]
 pub async fn start(
     canvas: HtmlCanvasElement,
@@ -332,6 +398,7 @@ pub async fn start(
     aspect: f32,
     hud_edges: bool,
     link: Option<js_sys::Function>,
+    geo: Option<js_sys::Function>,
 ) -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
     let err = |e: &dyn std::fmt::Display| JsValue::from_str(&e.to_string());
@@ -342,7 +409,27 @@ pub async fn start(
         chips.push(fetch(&format!("{rom_url}/{}", f.name)).await?);
     }
     let roms = romset::RomSet::from_chips(game, chips, false).map_err(|e| err(&e))?;
-    let machine = model2::Machine::new(&roms);
+    let mut machine = model2::Machine::new(&roms);
+    let remote_geo = geo.is_some();
+    if let Some(post) = geo {
+        machine.bus.geo.set_remote(Box::new(move |job| {
+            let args = js_sys::Array::new();
+            match job {
+                model2::geo::Job::Boot(program) => {
+                    let words: Vec<u32> = program.iter().flat_map(|&w| [w as u32, (w >> 32) as u32]).collect();
+                    args.push(&"boot".into());
+                    args.push(&js_sys::Uint32Array::from(&words[..]));
+                }
+                model2::geo::Job::Frame { buffer, booted, read_ptr } => {
+                    args.push(&"frame".into());
+                    args.push(&js_sys::Uint8Array::from(&buffer[..]));
+                    args.push(&booted.into());
+                    args.push(&read_ptr.into());
+                }
+            }
+            let _ = post.apply(&JsValue::NULL, &args);
+        }));
+    }
 
     set_status(&status, "starting WebGPU");
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
@@ -411,6 +498,7 @@ pub async fn start(
         samples: 0,
         audio_level: None,
         sent_since: 0.0,
+        geo_frame: remote_geo.then_some(None),
         _gpu: (instance, adapter),
     }));
 

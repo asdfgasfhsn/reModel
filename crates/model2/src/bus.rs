@@ -250,9 +250,7 @@ impl Model2Bus {
                 .iter()
                 .map(|c| u16::from_le_bytes(*c))
                 .collect(),
-            geo: Geometrizer::new(
-                roms.region32(Role::Polygons).as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect(),
-            ),
+            geo: Geometrizer::new(polygon_rom(roms)),
             copro_empty_reads: 0,
             copro_result_hash: 0xcbf2_9ce4_8422_2325,
             copro_empty_by_ip: BTreeMap::new(),
@@ -657,6 +655,11 @@ impl Model2Bus {
         h.word(self.copro_result_hash);
         h.0
     }
+}
+
+/// The polygon ROM as the geometrizer reads it (u32 words).
+pub fn polygon_rom(roms: &RomSet) -> Vec<u32> {
+    roms.region32(Role::Polygons).as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect()
 }
 
 /// Recompiled code returns at the end of each frame and when its budget
