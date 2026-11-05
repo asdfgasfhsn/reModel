@@ -47,6 +47,8 @@ pub enum Event {
     BadFrame(u32),
     /// A command byte with no known meaning.
     Unknown(u8),
+    /// DSB1: the output attenuation (port `E8`) changed.
+    Attenuation(u8),
     /// The play just issued streams this soundtrack track instead of the ROM.
     Replaced {
         track: u8,
@@ -145,54 +147,83 @@ impl MpegChip {
     fn execute(&mut self) {
         let addr = || self.args.iter().fold(0u32, |a, &b| a << 8 | b as u32);
         match self.cmd {
-            0x14 | 0x15 => {
-                self.start = addr();
-                if self.playing {
-                    self.events.push(Event::LoopStart(self.start));
-                }
-            }
+            0x14 | 0x15 => self.set_start(addr()),
             0x24 | 0x25 => self.end = addr(),
             0x64 | 0x65 => self.looped = true,
-            0x74 | 0x75 => {
-                self.playing = true;
-                self.cur = self.start;
-                self.seg_end = self.end;
-                self.at = FRAME_SAMPLES;
-                self.dec.reset();
-                self.events.push(Event::Play { start: self.start, end: self.end, looped: self.looped });
-                self.voice = None;
-                if let Some(st) = &mut self.soundtrack {
-                    match st.voice(self.start, self.end, crate::OUT_HZ as u32) {
-                        Some(Ok(v)) => {
-                            self.events.push(Event::Replaced { track: v.track });
-                            self.voice = Some(v);
-                        }
-                        Some(Err(_)) => {
-                            let track =
-                                st.replacements.iter().find(|r| r.start == self.start).map_or(0, |r| r.spec.track);
-                            self.events.push(Event::ReplaceFailed { track });
-                        }
-                        None => {}
-                    }
-                }
-            }
-            0x80..=0x87 => {
-                if self.playing {
-                    self.events.push(Event::Stop);
-                }
-                self.playing = false;
-                self.looped = false;
-                self.voice = None;
-            }
-            c @ (0xa0..=0xa7 | 0xb0..=0xb7) => {
-                let reg = (c & 7) | (c & 0x10) >> 1;
-                if self.gain[reg as usize] != self.args[0] {
-                    self.events.push(Event::Gain { reg: c, value: self.args[0] });
-                }
-                self.gain[reg as usize] = self.args[0];
-            }
+            0x74 | 0x75 => self.play(),
+            0x80..=0x87 => self.stop(),
+            c @ (0xa0..=0xa7 | 0xb0..=0xb7) => self.set_gain(c, self.args[0]),
             c => self.events.push(Event::Unknown(c)),
         }
+    }
+
+    /// Set the start address: where the next play begins, and where a
+    /// looping play continues when it reaches its end.
+    pub fn set_start(&mut self, start: u32) {
+        self.start = start;
+        if self.playing {
+            self.events.push(Event::LoopStart(start));
+        }
+    }
+
+    /// Set the end address (exclusive): where the next play ends, and the
+    /// end of the segment a looping play continues into.
+    pub fn set_end(&mut self, end: u32) {
+        self.end = end;
+    }
+
+    /// At the end of the segment, continue at the start and end addresses
+    /// current then (true), or stop (false).
+    pub fn set_looped(&mut self, on: bool) {
+        self.looped = on;
+    }
+
+    /// The address of the next frame the decoder reads.
+    pub fn position(&self) -> u32 {
+        self.cur
+    }
+
+    /// Play from the start address to the end address.
+    pub fn play(&mut self) {
+        self.playing = true;
+        self.cur = self.start;
+        self.seg_end = self.end;
+        self.at = FRAME_SAMPLES;
+        self.dec.reset();
+        self.events.push(Event::Play { start: self.start, end: self.end, looped: self.looped });
+        self.voice = None;
+        if let Some(st) = &mut self.soundtrack {
+            match st.voice(self.start, self.end, crate::OUT_HZ as u32) {
+                Some(Ok(v)) => {
+                    self.events.push(Event::Replaced { track: v.track });
+                    self.voice = Some(v);
+                }
+                Some(Err(_)) => {
+                    let track = st.replacements.iter().find(|r| r.start == self.start).map_or(0, |r| r.spec.track);
+                    self.events.push(Event::ReplaceFailed { track });
+                }
+                None => {}
+            }
+        }
+    }
+
+    /// Stop now (also clears loop).
+    pub fn stop(&mut self) {
+        if self.playing {
+            self.events.push(Event::Stop);
+        }
+        self.playing = false;
+        self.looped = false;
+        self.voice = None;
+    }
+
+    /// Gain register `A0`-`A7` or `B0`-`B7`.
+    pub fn set_gain(&mut self, c: u8, value: u8) {
+        let reg = (c & 7) | (c & 0x10) >> 1;
+        if self.gain[reg as usize] != value {
+            self.events.push(Event::Gain { reg: c, value });
+        }
+        self.gain[reg as usize] = value;
     }
 
     /// The next 32 kHz stereo sample after the gain matrix.

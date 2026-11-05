@@ -1,4 +1,7 @@
-//! Sega DSB2 ("Digital Sound Board 2"), the MPEG music board of `topskatr`.
+//! Sega's MPEG music boards: the DSB2 ("Digital Sound Board 2") of
+//! `topskatr`, below, and the DSB1 of `stcc` ([`dsb1`]).
+//!
+//! The DSB2:
 //!
 //! A 68000 runs Sega's firmware from its own ROM. It takes the host's
 //! MIDI-style byte stream on a UART (IRQ1), keeps channel-14 messages (`AE`)
@@ -21,10 +24,12 @@
 
 pub mod audio;
 mod decoder;
+pub mod dsb1;
 pub mod soundtrack;
 
 pub use decoder::Event;
 use decoder::MpegChip;
+pub use dsb1::Dsb1;
 pub use soundtrack::{Manifest, Replacement, Soundtrack};
 use std::collections::{HashMap, VecDeque};
 
@@ -342,7 +347,7 @@ impl Dsb2 {
 }
 
 /// Catmull-Rom interpolation between `h[1]` and `h[2]`.
-fn cubic(h: &[(f32, f32); 4], t: f32) -> (f32, f32) {
+pub(crate) fn cubic(h: &[(f32, f32); 4], t: f32) -> (f32, f32) {
     let f = |p0: f32, p1: f32, p2: f32, p3: f32| {
         p1 + 0.5 * t * (p2 - p0 + t * (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3 + t * (3.0 * (p1 - p2) + p3 - p0)))
     };

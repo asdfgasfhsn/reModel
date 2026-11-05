@@ -1,6 +1,6 @@
 [package]
 name = "remodel-dsb"
-description = "Sega DSB2 MPEG music board: 68000, UART and MPEG decoder"
+description = "Sega DSB1 and DSB2 MPEG music boards: Z80 or 68000, UART and MPEG decoder"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -11,4 +11,5 @@ name = "dsb"
 [dependencies]
 remodel-state.workspace = true
 m68k.workspace = true
+remodel-z80.workspace = true
 remodel-mpeg.workspace = true

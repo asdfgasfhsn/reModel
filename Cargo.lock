@@ -2337,6 +2337,7 @@ dependencies = [
  "m68k",
  "remodel-mpeg",
  "remodel-state",
+ "remodel-z80",
 ]
 
 [[package]]
