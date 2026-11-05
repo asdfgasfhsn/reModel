@@ -190,8 +190,9 @@ impl Model2Bus {
         program.resize(0x20_0000, 0);
         let mut main_data = roms.region32_slots(Role::MainData, ROM_SLOT);
         main_data.resize(0x200_0000, 0);
+        let main_data_high = roms.region32_slots(Role::MainDataHigh, ROM_SLOT);
 
-        let mems = vec![
+        let mut mems = vec![
             Mem::from(program, false),
             Mem::zeroed(0x4_0000),
             Mem::zeroed(0x10_0000),
@@ -204,7 +205,7 @@ impl Model2Bus {
             Mem::from(main_data, false),
             Mem::zeroed(0x70_0000),
         ];
-        let map = vec![
+        let mut map = vec![
             Map { start: 0x0000_0000, end: 0x001f_ffff, mem: 0 },
             Map { start: 0x0020_0000, end: 0x0023_ffff, mem: 1 },
             Map { start: 0x0050_0000, end: 0x005f_ffff, mem: 2 },
@@ -218,6 +219,12 @@ impl Model2Bus {
             Map { start: 0x0200_0000, end: 0x03ff_ffff, mem: 9 },
             Map { start: 0x1100_0000, end: 0x116f_ffff, mem: 10 },
         ];
+        // The second main data bank, mapped only for games with chips in
+        // it (segawski), so the others keep their memory map unchanged.
+        if !main_data_high.is_empty() {
+            map.push(Map { start: 0x0600_0000, end: 0x07ff_ffff, mem: mems.len() });
+            mems.push(Mem::from(main_data_high, false));
+        }
         let mut pages = vec![0u8; 0x1_0000];
         for (i, m) in map.iter().enumerate() {
             for p in m.start >> 16..=m.end >> 16 {

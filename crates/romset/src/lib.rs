@@ -72,8 +72,13 @@ pub enum Role {
     /// i960 program ROM. Chips appear in pairs, 16-bit interleaved
     /// (first = low half-word).
     Program,
-    /// i960-visible data ROM, 16-bit interleaved pairs.
+    /// i960-visible data ROM, 16-bit interleaved pairs, in 8 MB slots
+    /// from `0x2000000`.
     MainData,
+    /// The second bank of i960-visible data ROM, 8 MB slots from
+    /// `0x6000000`. Only `segawski` fills it (README, "What's known about
+    /// segawski").
+    MainDataHigh,
     /// Geometry coprocessor data ROM, 16-bit interleaved pairs.
     CoproData,
     /// Polygon model data read by the geometry engine, interleaved pairs.
@@ -319,7 +324,9 @@ mod tests {
     #[test]
     fn manifests_have_program_pairs() {
         for g in games::ALL {
-            for role in [Role::Program, Role::MainData, Role::CoproData, Role::Polygons, Role::Textures] {
+            for role in
+                [Role::Program, Role::MainData, Role::MainDataHigh, Role::CoproData, Role::Polygons, Role::Textures]
+            {
                 let n = g.files.iter().filter(|f| f.role == role).count();
                 assert!(n % 2 == 0, "{}: {role:?} chips must come in pairs", g.id);
             }
