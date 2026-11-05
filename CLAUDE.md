@@ -19,3 +19,7 @@
   artwork made with the Codex CLI's image generation, following
   `assets/posters/README.md` (no text, logos, characters or real brands),
   with its prompt recorded there.
+- Scratch files (traces, test renders, unpacked data, agent work) go in
+  `out/scratch/`, which is on disk and git-ignored, not in `/tmp`: here
+  `/tmp` is RAM-backed and filling it starves the machine of memory.
+  Delete scratch output once a task is done.
