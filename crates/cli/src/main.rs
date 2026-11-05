@@ -32,6 +32,8 @@ options:
                        has recompiled code for the game
   --single-thread      run the geometrizer inline instead of on a second
                        thread (as a browser build must); same results
+  --audio WAV          `run`: play the sound and music boards live, fed as
+                       the game sends, and record the mix to WAV
   --capture DIR        at each `run` snapshot, save what the renderers read
                        (raster stream, video RAMs) to DIR/FRAME/, for
                        `gpu-check`
@@ -139,6 +141,13 @@ fn main() -> ExitCode {
     }
     let game_id = game_id.unwrap_or_else(|| "topskatr".into());
     let rom_dir = PathBuf::from(rom_dir.unwrap_or_else(|| "rom".into()));
+    let Ok(audio) = opt("--audio") else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    if let Some(a) = audio {
+        let _ = AUDIO.set(PathBuf::from(a));
+    }
     let Ok(capture) = opt("--capture") else {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
@@ -513,6 +522,8 @@ fn main() -> ExitCode {
 
 /// Output view for snapshots (`--height`, `--aspect`, `--hud`); native when unset.
 static VIEW: std::sync::OnceLock<model2::video::View> = std::sync::OnceLock::new();
+/// Where `--audio` records the live sound.
+static AUDIO: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 /// Where `--capture` saves snapshot frames.
 static CAPTURE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
@@ -594,6 +605,8 @@ fn run(
     if let Some(a) = std::env::var("REMODEL_WATCH").ok().and_then(|v| parse_num(&v)) {
         m.bus.watch = Some((a, Vec::new()));
     }
+    let mut live = AUDIO.get().map(|_| model2::audio::Live::new(roms));
+    let (mut pcm, mut link, mut audio_secs) = (Vec::new(), Vec::new(), 0.0);
     let started = std::time::Instant::now();
     let mut stop = None;
     let mut last_frame = 0;
@@ -601,6 +614,13 @@ fn run(
         if let Err(s) = m.run_slice(steps - m.cpu.icount) {
             stop = Some(s);
             break;
+        }
+        if let Some(live) = &mut live {
+            // `Live` consumes the link log; keep it for sound-tx.txt.
+            link.extend_from_slice(&m.bus.uart_log);
+            let t = std::time::Instant::now();
+            live.run(&mut m.bus, &mut pcm);
+            audio_secs += t.elapsed().as_secs_f64();
         }
         if m.frames != last_frame {
             script.apply(m.frames, &mut m.bus);
@@ -624,6 +644,18 @@ fn run(
         println!("textures      {}", p.summary());
     }
     let secs = started.elapsed().as_secs_f64();
+    if let (Some(path), Some(_)) = (AUDIO.get(), &live) {
+        m.bus.uart_log = link;
+        let len = pcm.len() as f64 / 2.0 / model2::audio::RATE as f64;
+        match music::write_wav(path, model2::audio::RATE, 2, &pcm) {
+            Ok(()) => println!(
+                "audio         {len:.1}s live mix -> {} ({audio_secs:.2}s host: {:.1}x real time)",
+                path.display(),
+                len / audio_secs.max(1e-9)
+            ),
+            Err(e) => eprintln!("audio: {}: {e}", path.display()),
+        }
+    }
     let state_hash = m.bus.state_hash();
     let b = &m.bus;
     let geo = b.geo.engine();

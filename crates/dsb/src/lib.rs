@@ -146,6 +146,9 @@ pub struct Dsb2 {
     pcs: HashMap<u32, u64>,
     /// Decoder events with their time in output samples.
     events: Vec<(u64, Event)>,
+    /// Keep `pcs` and `events` (off for live playback, where they would
+    /// cost time every sample and grow without bound).
+    diagnostics: bool,
 }
 
 impl Dsb2 {
@@ -180,9 +183,16 @@ impl Dsb2 {
             hist: [(0.0, 0.0); 4],
             pcs: HashMap::new(),
             events: Vec::new(),
+            diagnostics: true,
         };
         d.cpu.reset(&mut d.bus);
         d
+    }
+
+    /// Record the PC histogram and decoder events (on by default; turn off
+    /// for long live playback).
+    pub fn set_diagnostics(&mut self, on: bool) {
+        self.diagnostics = on;
     }
 
     /// Change the IRQ2 tick rate.
@@ -215,9 +225,13 @@ impl Dsb2 {
             let (l, r) = (l + rl, r + rr);
             out.push((l * 32767.0).clamp(-32768.0, 32767.0) as i16);
             out.push((r * 32767.0).clamp(-32768.0, 32767.0) as i16);
-            *self.pcs.entry(self.cpu.pc).or_default() += 1;
-            let t = self.out_samples;
-            self.events.extend(self.bus.chip.events.drain(..).map(|e| (t, e)));
+            if self.diagnostics {
+                *self.pcs.entry(self.cpu.pc).or_default() += 1;
+                let t = self.out_samples;
+                self.events.extend(self.bus.chip.events.drain(..).map(|e| (t, e)));
+            } else {
+                self.bus.chip.events.clear();
+            }
         }
     }
 

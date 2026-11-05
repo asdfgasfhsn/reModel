@@ -721,7 +721,9 @@ version = "0.1.0"
 dependencies = [
  "i960",
  "mb86235",
+ "remodel-dsb",
  "remodel-romset",
+ "remodel-sound",
 ]
 
 [[package]]

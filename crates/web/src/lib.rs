@@ -5,7 +5,9 @@
 //! The page calls [`start`] with a canvas and the URL of the ROM files;
 //! everything after that runs from `requestAnimationFrame`. The machine
 //! runs one emulated frame per 1/57.524 s of real time, catching up a few
-//! frames at most when the browser falls behind. No sound yet.
+//! frames at most when the browser falls behind. The sound and music boards
+//! run alongside (`model2::audio::Live`); each frame's samples go to the
+//! page's audio sink ([`set_audio_sink`]), an AudioWorklet.
 
 #![cfg(target_arch = "wasm32")]
 
@@ -34,8 +36,14 @@ struct App {
     /// FPS counter: window start (ms), frames emulated and drawn since.
     counter: (f64, u32, u32),
     /// Host time (ms) in this window: emulating, preparing frames on the
-    /// CPU, and encoding and submitting them to the GPU.
-    spent: [f64; 3],
+    /// CPU, encoding and submitting them to the GPU, and running the sound
+    /// boards.
+    spent: [f64; 4],
+    /// The sound and music boards (None with sound turned off).
+    live: Option<model2::audio::Live>,
+    pcm: Vec<i16>,
+    /// Called with each frame's audio, interleaved stereo Float32Array.
+    sink: Option<js_sys::Function>,
     status: web_sys::Element,
     stopped: bool,
     /// Kept alive: in a browser, dropping the instance loses the device.
@@ -144,13 +152,23 @@ impl App {
         self.spent[2] += now() - t1;
     }
 
+    /// Hand this frame's audio to the page's sink (dropped if there's none
+    /// yet: browsers only start audio after a tap or key press).
+    fn flush_audio(&mut self) {
+        if let (Some(sink), false) = (&self.sink, self.pcm.is_empty()) {
+            let samples: Vec<f32> = self.pcm.iter().map(|&v| v as f32 / 32768.0).collect();
+            let _ = sink.call1(&JsValue::NULL, &js_sys::Float32Array::from(&samples[..]));
+        }
+        self.pcm.clear();
+    }
+
     fn tick(&mut self, t: f64) {
         if self.stopped {
             return;
         }
         let due = ((t - self.epoch) * FPS / 1000.0) as u64;
         let mut ran = 0;
-        let t0 = now();
+        let (t0, sound0) = (now(), self.spent[3]);
         while self.machine.frames < due && ran < MAX_CATCH_UP {
             self.apply_inputs();
             if let Err(e) = self.machine.run_slice(u64::MAX) {
@@ -158,9 +176,15 @@ impl App {
                 set_status(&self.status, &format!("stopped: {e:?}"));
                 return;
             }
+            if let Some(live) = &mut self.live {
+                let t = now();
+                live.run(&mut self.machine.bus, &mut self.pcm);
+                self.spent[3] += now() - t;
+            }
             ran += 1;
         }
-        self.spent[0] += now() - t0;
+        self.spent[0] += now() - t0 - (self.spent[3] - sound0);
+        self.flush_audio();
         if self.machine.frames < due {
             // Too far behind: drop the time rather than spiral.
             self.epoch = t - self.machine.frames as f64 * 1000.0 / FPS;
@@ -177,21 +201,38 @@ impl App {
             set_status(
                 &self.status,
                 &format!(
-                    "{:.0}% speed · {:.0} fps drawn · {}x{} · i960 {} · ms per frame: emulate {:.1}, prepare {:.1}, submit {:.1}",
+                    "{:.0}% speed · {:.0} fps drawn · {}x{} · i960 {} · ms per frame: emulate {:.1}, sound {:.1}, prepare {:.1}, submit {:.1}",
                     speed,
                     self.counter.2 as f64 / secs,
                     self.view.width,
                     self.view.height,
                     if self.machine.is_native() { "recompiled" } else { "interpreted" },
                     self.spent[0] / emulated,
+                    self.spent[3] / emulated,
                     self.spent[1] / drawn,
                     self.spent[2] / drawn,
                 ),
             );
             self.counter = (t, 0, 0);
-            self.spent = [0.0; 3];
+            self.spent = [0.0; 4];
         }
     }
+}
+
+thread_local! {
+    /// The running app, for calls from the page after `start`.
+    static APP: RefCell<Option<Rc<RefCell<App>>>> = const { RefCell::new(None) };
+}
+
+/// Send each frame's audio (interleaved stereo Float32Array, 44.1 kHz) to
+/// `sink`, e.g. a function posting it to an AudioWorklet.
+#[wasm_bindgen]
+pub fn set_audio_sink(sink: js_sys::Function) {
+    APP.with(|a| {
+        if let Some(app) = a.borrow().as_ref() {
+            app.borrow_mut().sink = Some(sink);
+        }
+    });
 }
 
 /// Load the ROMs from `rom_url` (one file per chip, as in `rom/`), set up
@@ -205,6 +246,7 @@ pub async fn start(
     height: u32,
     aspect: f32,
     hud_edges: bool,
+    sound: bool,
 ) -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
     let err = |e: &dyn std::fmt::Display| JsValue::from_str(&e.to_string());
@@ -216,6 +258,7 @@ pub async fn start(
     }
     let roms = romset::RomSet::from_chips(game, chips, false).map_err(|e| err(&e))?;
     let machine = model2::Machine::new(&roms);
+    let live = sound.then(|| model2::audio::Live::new(&roms));
 
     set_status(&status, "starting WebGPU");
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
@@ -279,9 +322,14 @@ pub async fn start(
         counter: (now(), 0, 0),
         status,
         stopped: false,
-        spent: [0.0; 3],
+        spent: [0.0; 4],
+        live,
+        pcm: Vec::new(),
+        sink: None,
         _gpu: (instance, adapter),
     }));
+
+    APP.with(|a| *a.borrow_mut() = Some(app.clone()));
 
     // Keyboard: remember held keys by code; keep the page from scrolling.
     for (event, down) in [("keydown", true), ("keyup", false)] {

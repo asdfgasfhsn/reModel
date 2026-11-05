@@ -43,8 +43,8 @@ music`). There is no live window yet.
 | DSB2 music board (68000 firmware + MPEG Layer II decoder) | done; `make music` renders the game's music from a `run` capture |
 | Enhanced views: any resolution, 16:9 / 21:9 with HUD moved to the edges | done for snapshots (`--height`, `--aspect`, `--hud`) |
 | Custom soundtracks (replace any music track, game logic intact) | done offline: `make music SOUNDTRACK=name`; see `docs/mods.md` |
-| Live window and real-time sound | planned |
-| Browser build (WebAssembly + WebGPU) | playable (`make web`), keyboard and gamepad, no sound yet; see `docs/web.md` |
+| Live window and real-time sound | real-time sound done (`model2::audio::Live`; `run --audio` records it natively at 7.8x real time); native window planned |
+| Browser build (WebAssembly + WebGPU) | playable (`make web`), with sound, keyboard and gamepad; see `docs/web.md` |
 
 ## Quick start
 

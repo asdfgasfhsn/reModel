@@ -12,3 +12,5 @@ name = "model2"
 i960.workspace = true
 remodel-romset.workspace = true
 mb86235.workspace = true
+remodel-sound.workspace = true
+remodel-dsb.workspace = true

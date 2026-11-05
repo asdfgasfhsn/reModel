@@ -4,6 +4,7 @@
 //! behaviour can be observed (which code runs, what hardware it touches)
 //! and later used as the oracle for the recompiled build.
 
+pub mod audio;
 pub mod bus;
 pub mod capture;
 pub mod eeprom;

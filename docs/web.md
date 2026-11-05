@@ -1,8 +1,12 @@
 # Browser build
 
 Remodel compiled to WebAssembly, running in a browser and drawing with
-WebGPU (`crates/web`). It is playable with keyboard or gamepad. Sound
-isn't in yet.
+WebGPU (`crates/web`), with sound. It is playable with keyboard or
+gamepad. The sound and music boards run alongside the game
+(`model2::audio::Live`, fed each byte the game sends at its exact
+sample), and an AudioWorklet (`crates/web/audio-worklet.js`) plays them.
+Browsers only start audio after a tap or key press, so the page enables
+it on the first one.
 
 ```sh
 make web            # interpreter build -> out/web (index.html, pkg/)
@@ -46,7 +50,12 @@ of all private ranges also admits them.
 
 - `?aspect=16:9` (default: the window's shape, 4:3 to 21:9);
 - `height=1080` (default: the screen's, up to 1080);
-- `hud=center` (default `edges`).
+- `hud=center` (default `edges`);
+- `sound=0` (don't run the sound boards at all).
+
+The bar shows the speed, frames drawn per second, and milliseconds per
+frame spent emulating, running the sound boards, preparing the frame on
+the CPU, and submitting it to the GPU.
 
 **Controls.**
 
@@ -97,8 +106,6 @@ around 1x.
 
 ## Left to do
 
-- Sound: the sound and music boards running live, with audio through an
-  AudioWorklet.
 - A ROM picker that keeps ROMs in IndexedDB, for a page that doesn't
   serve them.
 - Persistent GPU buffers: each frame still re-creates every buffer and

@@ -20,10 +20,10 @@
   <span id="status">loading…</span>
   <span><kbd>C</kbd> coin <kbd>Enter</kbd> start <kbd>←</kbd><kbd>→</kbd> steer <kbd>↓</kbd> slide
     <kbd>Z</kbd> jump front <kbd>X</kbd> jump tail <kbd>Q</kbd><kbd>E</kbd> select · gamepad works too ·
-    <kbd>F</kbd> fullscreen <kbd>H</kbd> hide bar · no sound yet</span>
+    <kbd>F</kbd> fullscreen <kbd>H</kbd> hide bar · <span id="sound">tap or press a key for sound</span></span>
 </div>
 <script type="module">
-  import init, { start } from "./pkg/remodel_web.js";
+  import init, { start, set_audio_sink } from "./pkg/remodel_web.js";
 
   const status = document.getElementById("status");
   const params = new URLSearchParams(location.search);
@@ -35,6 +35,25 @@
   const height = Number(params.get("height")) ||
     Math.min(1080, Math.round(innerHeight * devicePixelRatio / 2) * 2);
   const hudEdges = params.get("hud") !== "center";
+  const sound = params.get("sound") !== "0";
+
+  // Browsers only start audio from a user gesture: set it up on the first.
+  let audio = null;
+  let sink = null;
+  let started = false;
+  async function enableAudio() {
+    if (audio || !sound) return;
+    audio = new AudioContext({ sampleRate: 44100, latencyHint: "interactive" });
+    audio.resume();
+    await audio.audioWorklet.addModule("./audio-worklet.js");
+    const node = new AudioWorkletNode(audio, "remodel-sink", { outputChannelCount: [2] });
+    node.connect(audio.destination);
+    sink = (buf) => node.port.postMessage(buf, [buf.buffer]);
+    if (started) set_audio_sink(sink);
+    document.getElementById("sound").textContent = "sound on";
+  }
+  for (const ev of ["pointerdown", "keydown", "touchend"]) addEventListener(ev, enableAudio);
+  if (!sound) document.getElementById("sound").textContent = "sound off";
 
   addEventListener("keydown", (e) => {
     if (e.code === "KeyF") document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
@@ -46,7 +65,9 @@
   } else {
     try {
       await init();
-      await start(document.getElementById("screen"), status, "./rom", height, aspect, hudEdges);
+      await start(document.getElementById("screen"), status, "./rom", height, aspect, hudEdges, sound);
+      started = true;
+      if (sink) set_audio_sink(sink);
     } catch (e) {
       status.textContent = "error: " + (e.message ?? e);
       console.error(e);
