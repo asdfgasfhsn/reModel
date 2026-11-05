@@ -39,7 +39,7 @@ music`). There is no live window yet.
 | 2D tile layer renderer (PNG snapshots) | done; boot, logo, title and attract text render |
 | 3D rasteriser (software) | textured, bilinear-filtered gameplay frames (topskatr uses no mipmaps); the reference, but too slow for live races (15-27 ms a frame at native size) |
 | 3D rasteriser (GPU, wgpu: Vulkan / Metal / DirectX 12) | off-screen preflight: about 3 ms a frame native and 7 ms at 1080p, matching the software renderer on 99.96% of coverage; see `docs/gpu.md` |
-| Scripted input (headless) | done; every button and both analog channels confirmed |
+| Scripted input (headless) | done; names, ports and bindings per game in its manifest; every `topskatr` button and both analog channels confirmed |
 | Speed | interpreters about 2.2x real time (`make bench`); recompiled build about 4.4x (`make bench RECOMP=1`), where the geometrizer thread becomes the limit |
 | Sound board: 68000 + SCSP (slots, EG, LFO, FM, timers, MIDI, DSP) | done offline: replays the captured command stream to a WAV at about 12x real time |
 | DSB2 music board (68000 firmware + MPEG Layer II decoder) | done; `make music` renders the game's music from a `run` capture |
@@ -47,7 +47,7 @@ music`). There is no live window yet.
 | Custom soundtracks (replace any music track, game logic intact) | done offline: `make music SOUNDTRACK=name`; see `docs/mods.md` |
 | Native window (`make play`) | playable: GPU renderer, live sound (cpal), keyboard and gamepad (gilrs), any window shape from 4:3 to 32:9; about 2 ms of CPU per frame recompiled. Esc menu (sound mix, display, save slots, game picker), save states; see `docs/play.md` |
 | Browser build (WebAssembly + WebGPU) | playable (`make web`), with sound, keyboard and gamepad; see `docs/web.md` |
-| Second game: `skisuprg` (Sega Ski Super G, 2C) | manifest and `verify` done; boots on the interpreter (copro and geometrizer programs, sound board, tile layer) and stops at "DRIVE BOARD TROUBLE": the drive board isn't modelled yet |
+| Second game: `skisuprg` (Sega Ski Super G, 2C) | playable (`make play GAME=skisuprg`): drive board modelled from the game's code, its own controls and coin-start script from its manifest; save states round-trip |
 
 ## Quick start
 
@@ -66,7 +66,8 @@ make analyze          # code discovery -> out/topskatr/program.lst
 make disasm ADDR=0x6f0 COUNT=64
 make run STEPS=50000000   # boot on the interpreter, report hardware use
 make run SNAP=60          # also write the tile layer every 60 frames
-make run STEPS=900000000 SNAP=115 INPUT=coin1@1100-1104,start@1250-1254
+make run STEPS=900000000 SNAP=115 INPUT=coin-start   # coin-start: the game's own coin-up and start
+make inputs               # the game's input names for INPUT=, and their keys and pad bindings
 make sound                # render the sound commands of the last run -> out/topskatr/sound.wav
 make sound-disasm ADDR=0x6004ea   # disassemble the sound 68000 program
                           # coin up, start, and play into a race
@@ -96,6 +97,10 @@ them are described in `docs/mods.md`.
 `make bench` prints a hash of all RAM and the last rasteriser stream. A change
 meant only to make things faster must leave it unchanged. The hash depends on
 `out/GAME/eeprom.bin`, which `run` creates on first boot.
+
+Every target takes `GAME=skisuprg` for Sega Ski Super G (`make play
+GAME=skisuprg`, `make capture GAME=skisuprg`, ...), except `make assets`,
+which is `topskatr`'s.
 
 Variables: `GAME` (manifest id, default `topskatr`), `ROM` (chip directory,
 default `rom`), `OUT`, `ADDR`, `COUNT`, `STEPS`. The `Makefile` is the supported
@@ -137,7 +142,12 @@ system. The geometry processor is what differs between revisions:
 
 Supporting a new game should mean adding a manifest under
 `crates/romset/src/games/`, plus whatever per-game patches turn out to be
-needed. `topskatr` is Model 2C-CRX (MB86235 geometry processor).
+needed. A manifest holds the chips, the game's controls (input names,
+ports and analog channels, default keys and pad bindings, and its
+coin-start script) and which drive board it needs, if any; the board
+model, scripted input and both players read them from there. Drive board
+protocols live in `crates/model2/src/drive.rs`, one per kind. `topskatr`
+and `skisuprg` are Model 2C-CRX (MB86235 geometry processor).
 
 The board table is from public documentation (largely MAME's driver notes).
 MAME does not run `topskatr` correctly, so its board details are treated as
@@ -273,21 +283,54 @@ Second 2C game, added to find what is still `topskatr`-specific.
 - *Confirmed:* init enables IRQ mask `0x19` (`topskatr`: `0x215`).
 - *Confirmed:* `epr-19491.31` is CRX_drv Ver3.2.8 (96 10/28); the sound board
   plays the attract's commands (`make sound GAME=skisuprg`).
-- *Confirmed (from the code):* the game needs its drive board. It writes
-  commands to the I/O byte at `0x1C00008` and reads replies at `0x1C00006`.
-  At boot it sends `0x00`, waits for the reply `0xCE`, sends a byte from its
-  settings, waits for `0xFF`, then sends `0x00`; after 479 frames it gives up
-  and shows "DRIVE BOARD TROUBLE CODE: xx" with the last reply in hex
-  (`FF` with nothing attached). Replies `0xB0`-`0xB7` are treated as faults.
-  With a throwaway stub that answers `0xCE` to command `0x00` and `0xFF`
-  otherwise, it passes the check and runs its attract mode in 3D (title,
-  course fly-throughs, a scrolling notice that the platform is locked until
-  a game starts).
-- *Confirmed (from the code):* each frame it reads all eight analog
-  channels and uses channels 0-2, each through a calibration table built
-  from its settings. What each channel measures is unverified. Digital
-  inputs are read at `0x1C00002`, `0x1C00004`, `0x1C00006` and `0x1C0000C`
-  (the last inverted).
+- *Confirmed (from the code):* the game needs its drive board. Its vblank
+  handler reads the board's reply from the I/O byte at `0x1C00006` and then
+  writes the frame's command to `0x1C00008`. At boot it sends `0x00`, waits
+  for the reply `0xCE`, sends a byte from its settings (the swing channel's
+  calibrated centre, `0x80` by default), waits for `0xFF`, then sends
+  `0x00`; after 479 frames it gives up and shows "DRIVE BOARD TROUBLE
+  CODE: xx" with the last reply in hex (`FF` with nothing attached).
+  Replies `0xB0`-`0xB7` are faults; `0xB8`/`0xB9` start a 120-frame
+  warning. In the test menu, after command `0xDC` each nibble of the reply
+  shows a switch (`0x0`/`0xF`: off/on), and after `0xA3`/`0xA4` bit 4 is a
+  status the drive test shows and follows.
+- *Confirmed (from the code):* commands seen: during a run `0x10`-`0x1F`
+  (picked from tables by the ski inputs), `0x40` and `0xD1` in turn, one a
+  frame; `0x80` at rest; `0xC2`/`0xC3` around test mode and attract;
+  `0xA0`-`0xA6` and `0xD0` in the drive tests. *Unconfirmed:* what each
+  does on the board, and what a real board replies to them.
+- *Confirmed (by running it):* a drive board that replies `0xCE` while told
+  `0x00` and `0xFF` to anything else (`crates/model2/src/drive.rs`, chosen
+  by the manifest's `drive_board`) passes the boot check; the game runs its
+  attract, takes coins and plays a full run (`make capture GAME=skisuprg`
+  reaches the results screen).
+- *Confirmed (by running it):* `make recomp GAME=skisuprg` recompiles its
+  i960 code (keyed by its program hash, beside `topskatr`'s) and both
+  MB86235 programs; `make lockstep GAME=skisuprg` runs 300M instructions
+  identical, and a coin-start run reaches the same state hash on both.
+- *Confirmed (from the code):* the boot code calls the per-frame input
+  read, which reads all eight analog channels and uses channels 0-2, each
+  through a calibration table built from its settings (min, centre, max per
+  channel; defaults `0x00`/`0x80`/`0xFF`). Digital inputs are read at
+  `0x1C00002` (twice: with I/O register 0 bit 0 clear and set),
+  `0x1C00004`, `0x1C00006` (the drive board's reply) and `0x1C0000C` (the
+  last inverted).
+- *Confirmed (by scripted runs):* coins are port `0x1C00002` bits 0 and 1
+  as in `topskatr`, and one credit is two coins by default. The three
+  panel buttons (blue, red, green) are bits 6, 7 and 4 of that port: on
+  the select screens they pick the left, middle and right choice, and blue
+  also starts a game. Channels 0 and 1 both turn the skier, in opposite
+  senses (right: channel 0 up, channel 1 down); the game's demo drives
+  them with equal calibrated values. Remodel names them `edge` and
+  `swing`; *unconfirmed* which ski angle each measures.
+- *Unconfirmed:* channel 2 (`push`): the skier's physics adds its offset
+  from `0x80` to the speed outside `0x70`-`0x8F`, the demo sets it at the
+  start, but holding it had no visible effect in a run. Port `0x1C00002`
+  bit 5 and `0x1C00004` bit 0 step a selection right and left, and
+  `0x1C00004` bit 4 confirms, in a mode of the select screens the runs
+  didn't reach (named `selright`, `selleft`, `decide`); which switches they
+  are on the cabinet is unknown. The test menu uses port bits 2 and 3
+  (test, service) and bits 6 and 7 of the second `0x1C00002` read.
 
 ## License
 

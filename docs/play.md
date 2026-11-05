@@ -13,17 +13,48 @@ built into the binary and decoded with `remodel-png`.
 
 ## Keys
 
+The player's own keys are the same for every game:
+
 | Key | |
 |---|---|
-| C, Enter | coin, start |
-| arrows | steer (Down slides) |
-| Z, X | jump front, jump tail |
-| Q, E | select |
 | Esc | menu (the game pauses while it's open) |
 | F5, F9 | quick save, quick load |
 | F11 | fullscreen |
 
-Gamepads work too; the one used last drives the game.
+Each game's controls, and their default keys and gamepad bindings, are in
+its manifest (`crates/romset/src/games/<set>.rs`, `Controls`); the native
+player, the browser build and scripted `--input` all read them.
+`make inputs GAME=<set>` lists them. Gamepads use the standard layout
+(A/B/X/Y named as on an Xbox pad); the one used last drives the game.
+
+### Top Skater (`topskatr`)
+
+| Control | Keys | Gamepad |
+|---|---|---|
+| coin | C, 5 | Back |
+| start | Enter | Start |
+| steer (`curving`) | Left, Right | left stick, d-pad |
+| slide | Down, Space | right trigger, B |
+| jump front, jump tail | Z (or Up), X | A, X |
+| select left, right | Q, E | shoulder buttons |
+
+### Sega Ski Super G (`skisuprg`)
+
+One credit is two coins (the game's default setting). The skis' two angle
+inputs (`edge`, `swing`) both follow the left stick, which is how the
+game's own demo drives them; full deflection on the keyboard turns hard.
+
+| Control | Keys | Gamepad |
+|---|---|---|
+| coin | C, 5 | Back |
+| blue panel button: starts a game, left choice | Enter, A | Start, X |
+| red, green panel buttons: middle, right choice | S, D | B, A |
+| turn (`edge` and `swing`) | Left, Right | left stick, d-pad |
+| `push` (unconfirmed what it does) | Up, Down | right trigger minus left trigger |
+| select left, right, decide | Q, E, W | shoulder buttons, Y |
+
+The game needs its drive board (the platform motor); Remodel answers its
+boot check and commands as an idle board at rest (`crates/model2/src/drive.rs`).
 
 ## The menu
 

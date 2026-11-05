@@ -127,7 +127,7 @@ board (i960KB on all, gk). Controls and special hardware are gk throughout.
 | Set | Title | Year | Clones in zip | Sound | Controls | Special hardware | Complete |
 |---|---|---|---|---|---|---|---|
 | `topskatr` | Top Skater | 1997 | `topskatrj`, `topskatru` | SCSP, CRX_drv 3.2.8; **DSB2** | skateboard deck (2 analog channels), jump buttons (confirmed, README) | none | yes; also unpacked in `topskatr/` |
-| `skisuprg` | Sega Ski Super G | 1996 | none | SCSP, CRX_drv 3.2.8 | ski platform (analog; code uses channels 0-2), pole grips with buttons | drive board (confirmed: boot checks it, README) | yes; supported (manifest), stops at the drive board check |
+| `skisuprg` | Sega Ski Super G | 1996 | none | SCSP, CRX_drv 3.2.8 | ski platform (analog channels 0-2: two ski angles, a third unconfirmed), three panel buttons (confirmed, README) | drive board (confirmed: boot checks it; modelled, README) | yes; supported and playable |
 | `segawski` | Sega Water Ski | 1997 | none | SCSP, CRX_drv 3.4.8 | water-ski platform and tow handle (analog) | none known | yes |
 | `waverunr` | Wave Runner | 1996 | none | SCSP, CRX_drv 3.2.7 | personal watercraft: handlebar, throttle (analog) | ride-on cabinet; link (weak) | yes |
 | `hotd` | The House of the Dead | 1997 | none | SCSP, CRX_drv 3.2.8 | 2 light guns | none known | yes |
@@ -155,7 +155,9 @@ games, ranked by how little new work each needs:
    Little-known, but the cheapest proof that the 2C stack generalises.
    *Found:* it does have an extra board: boot handshakes with a drive
    board over two I/O bytes and stops with "DRIVE BOARD TROUBLE" without
-   one (README, "What's known about `skisuprg`").
+   one (README, "What's known about `skisuprg`"). *Done:* the drive board
+   is modelled (`crates/model2/src/drive.rs`) and the controls moved into
+   each game's manifest; it plays from coin-up to the results screen.
 2. **`waverunr`, Wave Runner.** Same shape: SCSP only (driver 3.2.7),
    analog handlebar and throttle, similar layout with a few extra 512 KB
    polygon/texture/data chips. A possible link port is unconfirmed; it
@@ -182,8 +184,10 @@ games, ranked by how little new work each needs:
 8. **`bel`, Behind Enemy Lines.** Obscure, its own sound driver, small
    128 KB program chips laid out differently, unknown controls.
 
-Recommendation: `skisuprg` to shake out what's still `topskatr`-specific,
-then `hotd` as the game most worth having.
+Recommendation: `skisuprg` to shake out what's still `topskatr`-specific
+(done), then `hotd` as the game most worth having. `hotd` needs a light
+gun: a new kind of control in the manifest (`romset::Controls` leaves room
+for it).
 
 ## Where the evidence is weak
 

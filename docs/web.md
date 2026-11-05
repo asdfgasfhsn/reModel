@@ -54,8 +54,9 @@ RUSTC=$(~/.local/share/rustup-wasm/bin/rustup which rustc) $(~/.local/share/rust
 ```
 
 **Serving.** WebGPU only works on secure pages (HTTPS, or localhost), so
-serve over HTTPS. The page loads the ROM files from `rom/topskatr/` next
-to `index.html`, one file per chip, as in the repo's `rom/topskatr/`. They are your
+serve over HTTPS. The page loads the ROM files from `rom/<set>/` next
+to `index.html` (`rom/topskatr/` unless `?game=` says otherwise), one file
+per chip, as in the repo's `rom/topskatr/`. They are your
 dump: keep the server private to your network. One setup is a file server
 container on a reverse proxy's Docker network:
 
@@ -73,7 +74,8 @@ of all private ranges also admits them.
 
 **Page options.** These are URL parameters:
 
-- `?aspect=16:9` (default: the window's shape, 4:3 to 21:9);
+- `?game=skisuprg` (default `topskatr`): the set to play;
+- `aspect=16:9` (default: the window's shape, 4:3 to 21:9);
 - `height=1080` (default: the screen's, up to 1080);
 - `hud=center` (default `edges`);
 - `sound=0` (don't run the sound boards at all);
@@ -85,7 +87,11 @@ The bar shows the speed, frames drawn per second, and milliseconds per
 frame spent emulating, preparing the frame on the CPU, and submitting it
 to the GPU. The sound label adds the worker's time per frame.
 
-**Controls.**
+**Controls.** Each game's keys and gamepad bindings come from its
+manifest, as in the native player (`docs/play.md`); for games other than
+`topskatr` the bar lists them. The touch controls act as a gamepad (the
+stick, the right trigger and six buttons), so they drive any game through
+its pad bindings, but their labels are `topskatr`'s. For `topskatr`:
 
 | Action | Keyboard | Gamepad | Touch |
 |---|---|---|---|
