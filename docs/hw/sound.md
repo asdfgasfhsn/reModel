@@ -569,7 +569,11 @@ Per-slot amplitude (MDF, M; TL table from SCSP p04_24, H):
   Top Skater as the one Model 2 game with a DSB2, but nobody has documented
   its board revision.
 - The first DSB (Z80, 837-10084) used a different decoder (NEC uPD65654
-  gate array plus Sega 315-5762). It is not relevant here.
+  gate array plus Sega 315-5762). `stcc` has one; it is modelled from its
+  Z80 program in `docs/hw/dsb1.md`. Its MPEG data is the same format as
+  the DSB2's and its decoder is driven the same way (start, end, a
+  continue mode, read-back position), so the model reuses this decoder's
+  behaviour behind the DSB1's ports.
 - ROM string at DSB2 `0x7F00` (H): "DS2-BOARD SOUND PROGRAM FOR OLLIE OVER
   VERSION 0.30 PROGRAMMED BY YOHSUKE TAKEDA COPYRIGHT SEGA ENTERPRISES,LTD."
   ("Ollie Over" was evidently the working title).

@@ -43,13 +43,14 @@ music`). There is no live window yet.
 | Speed | interpreters about 2.2x real time (`make bench`); recompiled build about 4.4x (`make bench RECOMP=1`), where the geometrizer thread becomes the limit |
 | Sound board: 68000 + SCSP (slots, EG, LFO, FM, timers, MIDI, DSP) | done offline: replays the captured command stream to a WAV at about 12x real time |
 | DSB2 music board (68000 firmware + MPEG Layer II decoder) | done; `make music` renders the game's music from a `run` capture |
-| Z80 core (for `stcc`'s DSB1 music board) | done, not yet used by a board: full instruction set with undocumented flags, interrupts, T-state timing, save states; see `docs/hw/z80.md` |
+| DSB1 music board (`stcc`: Z80 firmware + MPEG Layer II decoder) | done; live in `make play GAME=stcc` and the browser, `make music GAME=stcc` offline; modelled from the Z80 program (`docs/hw/dsb1.md`) |
+| Z80 core (the DSB1's CPU) | done: full instruction set with undocumented flags, interrupts, T-state timing, save states; see `docs/hw/z80.md` |
 | Enhanced views: any resolution, 16:9 / 21:9 with HUD moved to the edges | done for snapshots (`--height`, `--aspect`, `--hud`) |
 | Custom soundtracks (replace any music track, game logic intact) | done offline: `make music SOUNDTRACK=name`; see `docs/mods.md` |
 | Native window (`make play`) | playable: GPU renderer, live sound (cpal), keyboard and gamepad (gilrs), any window shape from 4:3 to 32:9; about 2 ms of CPU per frame recompiled. Esc menu (sound mix, display, save slots, game picker), save states; see `docs/play.md` |
 | Browser build (WebAssembly + WebGPU) | playable (`make web`), with sound, keyboard and gamepad; see `docs/web.md` |
 | Second game: `skisuprg` (Sega Ski Super G, 2C) | playable (`make play GAME=skisuprg`): drive board modelled from the game's code, its own controls and coin-start script from its manifest; save states round-trip |
-| Third game: `stcc` (Sega Touring Car Championship, 2C) | playable with sound effects, no music (`make play GAME=stcc`): attract, car and gearbox select, name entry and races; its DSB1 music board (Z80) isn't modelled yet. Needed geometrizer list jumps and mirrored ROM slots; recompiled build identical |
+| Third game: `stcc` (Sega Touring Car Championship, 2C) | playable with sound effects and music (`make play GAME=stcc`): attract, car and gearbox select, name entry and races; its DSB1 music board (Z80) is modelled from its program. Needed geometrizer list jumps and mirrored ROM slots; recompiled build identical |
 
 ## Quick start
 
@@ -89,7 +90,7 @@ make dist                 # player to hand out (interpreter only, no ROMs) -> ou
 make capture              # save renderer inputs from a run into a race -> out/topskatr/capture
 make gpu-check            # draw them on the software and GPU rasterisers, time and compare
 make lockstep RECOMP=1    # recompiled vs interpreted i960, block by block, until they differ
-make music                # after a `run` into a race: DSB2 music -> out/topskatr/music.wav
+make music                # after a `run` into a race: the music board's music -> out/topskatr/music.wav (GAME=stcc too)
 make soundtrack-import SRC=~/my-mix SOUNDTRACK=my-mix   # your own music (ffmpeg converts)
 make music SOUNDTRACK=my-mix      # same, with your tracks -> out/topskatr/music-my-mix.wav
 ```
@@ -104,7 +105,7 @@ meant only to make things faster must leave it unchanged. The hash depends on
 Every target takes `GAME=skisuprg` for Sega Ski Super G or `GAME=stcc` for
 Sega Touring Car Championship (`make play GAME=stcc`, `make capture
 GAME=skisuprg`, ...), except `make assets`, which is `topskatr`'s, and
-`make music`, which needs a DSB2 (`topskatr`).
+`make music`, which needs a music board (`topskatr`'s DSB2 or `stcc`'s DSB1).
 
 Variables: `GAME` (manifest id, default `topskatr`), `ROM` (chip directory,
 default `rom`), `OUT`, `ADDR`, `COUNT`, `STEPS`. The `Makefile` is the supported
@@ -124,8 +125,9 @@ crates/
   z80/       Z80 interpreter (DSB1 music board CPU)   (generic)
   sound/     SCSP (YMF292) with its DSP, and the sound board (Model 2-generic)
   mpeg/      MPEG-1 Audio Layer II decoder          (generic)
-  dsb/       DSB2 MPEG music board: 68000, UART, decoder chip model,
-             replacement soundtracks (WAV/MP2 reader, resampler)
+  dsb/       DSB2 and DSB1 MPEG music boards: 68000 or Z80, UART,
+             decoder chip model, replacement soundtracks (WAV/MP2
+             reader, resampler)
   png/       PNG decode/encode with zlib inflate/deflate (generic)
   cli/       the `remodel` command
 tools/
@@ -393,12 +395,23 @@ Third 2C game: the first with a DSB1 music board, a wheel and a gearbox.
   each byte in its interrupt handler (mode 1, `0x38`) from UART data port
   `0xF0`, waits for bit 0 of status port `0xF1` (transmitter ready),
   echoes the byte out of `0xF0`, and stores it in a 4 KB ring at
-  `0x8000-0x8FFF` (write pointer at `0x9002`). Ports `0xE0`-`0xEB` look like the MPEG
-  decoder and ROM bank interface (*unconfirmed*). Music commands appear to
-  be channel 15: `AF 6F nn` (`nn` = 0, 1, 6, 0x0B seen), `AF 01 50`, `AF 03
-  40`/`AF 03 20` (*unconfirmed* which do what). So a DSB1 model must take
-  the same link bytes as the sound board and needs no reply path, which is
-  where `topskatr`'s DSB2 sits in `model2::audio::Live`.
+  `0x8000-0x8FFF` (write pointer at `0x9002`). So the DSB1 takes the same
+  link bytes as the sound board and needs no reply path.
+- *Confirmed (from the Z80 program, then by running it):* the DSB1 plays
+  the music (`docs/hw/dsb1.md`). ROM `0000-7FFF` (8 KB used), RAM
+  `8000-FFFF`, no banking. The decoder sits on ports `E0` (play mode: 0
+  stop, 2 play and continue into the next queued segment, 1 play to the
+  end), `E2-E4` start (read back: current address), `E5-E7` end (the
+  last byte; confirmed by all 23 segments ending one frame short of
+  end + 1), `E8` attenuation (`00` loud to `7F` silent). Channel 15
+  commands: `AF 6F n` plays track `n` (0 stops), `AF 01 v` scales later
+  volumes, `AF 02 v` sets the volume, `AF 03 r` fades out. The 17 tracks
+  are lists of segments (start and end in the 8 MB MPEG space) that the
+  program queues one ahead while the decoder plays. A coin-start session
+  plays track 1, then track 11 looping until the race's fade-out.
+  *Unconfirmed:* the Z80 clock (4 MHz used; it sets only the fade speed),
+  the attenuation curve (linear used), and what ports `E9`, `EB` and `E8`
+  values above `7F` set (ignored).
 - *Confirmed (from the input test, then by scripted runs):* port
   `0x1C00002` bits 0/1 coins (one coin a credit by default), 2 test, 3
   service, 6 start; port `0x1C00004` bit 0 view 1 (the camera changes),

@@ -13,7 +13,8 @@ tells the decoder to play a range of MPEG ROM that belongs to a replaced
 track, the decoder streams your file and leaves the ROM alone. Tracks you
 don't replace play the original music, bit for bit.
 
-This works for any game with a DSB2 music board. Tracks are matched by number
+This works for any game with a DSB2 music board, and for `stcc`'s DSB1
+(`make music GAME=stcc SOUNDTRACK=...`). Tracks are matched by number
 through the firmware's track table, or by an explicit ROM range (see
 `range` below).
 
@@ -132,6 +133,12 @@ table from the firmware layout found in topskatr's DSB2 program (pointer at
 `0x8000`, count at `0x800A`, start and end at entry offsets 2 and 6). Other
 DSB2 firmware is untested. If its table isn't recognised, the render says
 `firmware track table: 0 tracks`; give each entry a `range` instead.
+
+On the DSB1 (`stcc`) a track is a list of segments the Z80 program chains
+(`docs/hw/dsb1.md`). Its number is matched through the range of its first
+segment, and the file then stands in for the whole track: intro and loop
+segments alike. The game's play mode decides whether it loops (all but
+track 17 do), unless `loop` says otherwise.
 
 ### Limitations
 

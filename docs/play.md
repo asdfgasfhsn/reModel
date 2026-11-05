@@ -58,7 +58,7 @@ boot check and commands as an idle board at rest (`crates/model2/src/drive.rs`).
 
 ### Sega Touring Car Championship (`stcc`)
 
-Sound effects only: the music board (DSB1) isn't modelled yet. One coin
+Sound effects and music (the DSB1 music board, `docs/hw/dsb1.md`). One coin
 is one credit. On the menus the wheel moves the selection and the gas
 pedal confirms; hold the brake while confirming the car to get the manual
 gearbox (MT), which the shift buttons step through.
@@ -82,7 +82,7 @@ never checks its reply; Remodel keeps the commands
   whole machine, both sound boards included, so loading one resumes the
   sound exactly where it was. The one thing not saved is a replacement
   soundtrack voice that's playing (`docs/mods.md`).
-- **Sound**: the effects (sound board) and music (DSB2) levels in dB; the
+- **Sound**: the effects (sound board) and music (DSB2 or DSB1) levels in dB; the
   default 8:-8 was set by ear (`docs/hw/sound.md`).
 - **Display**: where the HUD goes on wide windows, and exact arcade speed
   (57.524 frames per second) against the default of one game frame per
