@@ -79,7 +79,7 @@
   const sound = params.get("sound") !== "0";
   // Mix in dB (sound board: effects and announcer; music board), if set.
   const mix = params.has("sfx") || params.has("music")
-    ? [Number(params.get("sfx") ?? 6), Number(params.get("music") ?? -6)]
+    ? [Number(params.get("sfx") ?? 8), Number(params.get("music") ?? -8)]
     : undefined;
 
   // Browsers only start audio from a user gesture: set it up on the first.

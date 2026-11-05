@@ -17,9 +17,9 @@ pub const RATE: u32 = 44_100;
 
 /// Default mix, in dB: sound board (effects, announcer) and music board.
 /// Summed at unity, the music averaged about 18 dB above the sound board
-/// in a race and buried the announcer; these bring them within about 6 dB,
-/// effect peaks above the music. Unconfirmed: a listening choice.
-pub const DEFAULT_MIX: (f32, f32) = (6.0, -6.0);
+/// in a race and buried the announcer. +8 / -8 was judged right by ear on
+/// the native build. Unconfirmed against a cabinet: a listening choice.
+pub const DEFAULT_MIX: (f32, f32) = (8.0, -8.0);
 
 pub struct Live {
     sound: Option<sound::SoundBoard>,

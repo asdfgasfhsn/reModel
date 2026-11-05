@@ -4,10 +4,14 @@
 //! drawing (the GPU renderer, presented with vsync). The geometrizer runs on
 //! its own thread (the board model's default) and the sound boards on
 //! another (`Sound`), which plays through the system's audio API (cpal).
-//! While sound plays, its queue paces the emulation, as in the browser
-//! build: frames run whenever less than `AUDIO_TARGET` is queued, so there's
-//! no drift against the sound card's clock. Without sound, frames follow
-//! time at 57.524 per second.
+//!
+//! Pacing: with a display near the game's 57.524 Hz (60 Hz, or 120 Hz at
+//! one game frame per two refreshes) the game runs exactly one frame per
+//! refresh, so motion is perfectly even; that's 4.3% fast at 60 Hz, and the
+//! audio is resampled to match. With `--exact`, or other refresh rates,
+//! frames follow a steady clock at 57.524 per second instead. Either way
+//! the audio queue corrects the drift between the clocks by stretching the
+//! audio by at most 0.5% (inaudible), never by stalling the game.
 
 use gilrs::{Axis, Button, Gilrs};
 use std::collections::HashSet;
@@ -26,12 +30,19 @@ usage: remodel-play [--game ID] [--rom DIR] [--mix SFX:MUSIC] [--no-sound] [--hu
 
   --game ID          game manifest (default topskatr)
   --rom DIR          directory of unpacked chips (default rom)
-  --mix SFX:MUSIC    sound board and music board gains in dB (default 6:-6)
+  --mix SFX:MUSIC    sound board and music board gains in dB (default 8:-8)
   --no-sound         don't run the sound boards
   --hud center|edges wide windows: keep the HUD centred, or move each HUD
                      element to the nearest screen edge (default edges)
   --interp           run the i960 on the interpreter even if this build
                      has recompiled code
+  --exact            run at the arcade's exact 57.524 frames per second
+                     (default: one frame per display refresh when the
+                     refresh is 60 or 120 Hz, which is 4.3% fast but smooth)
+  --fullscreen       start fullscreen
+  --seconds N        quit after N seconds (for timing runs)
+  --input SCRIPT     scripted inputs, as for `remodel run` (for timing runs),
+                     e.g. coin1@1100-1104,start@1250-1254
 
 keys: C coin, Enter start, arrows steer (Down slide), Z jump front, X jump
 tail, Q/E select, F11 fullscreen, Esc quit. Gamepads work too.
@@ -41,8 +52,10 @@ tail, Q/E select, F11 fullscreen, Esc quit. Gamepads work too.
 const FPS: f64 = 57.524;
 /// Most emulated frames run per redraw before dropping time.
 const MAX_CATCH_UP: u32 = 3;
-/// Audio the sound queue should hold (seconds): frames run below this.
+/// Audio the sound queue should hold (seconds); output starts once it does.
 const AUDIO_TARGET: f64 = 0.05;
+/// Most the audio rate is stretched to keep the queue at `AUDIO_TARGET`.
+const DRIFT: f64 = 0.005;
 /// Most audio queued before the oldest is dropped (seconds).
 const AUDIO_MAX: f64 = 0.25;
 /// Narrowest and widest views; windows beyond are letterboxed.
@@ -55,6 +68,10 @@ struct Options {
     sound: bool,
     hud: model2::video::Hud,
     interp: bool,
+    fullscreen: bool,
+    exact: bool,
+    seconds: Option<f64>,
+    input: Option<model2::input::InputScript>,
 }
 
 fn options() -> Result<Options, String> {
@@ -65,6 +82,10 @@ fn options() -> Result<Options, String> {
         sound: true,
         hud: model2::video::Hud::Edges,
         interp: false,
+        fullscreen: false,
+        exact: false,
+        seconds: None,
+        input: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -82,6 +103,10 @@ fn options() -> Result<Options, String> {
                 o.hud = if value()? == "center" { model2::video::Hud::Center } else { model2::video::Hud::Edges }
             }
             "--interp" => o.interp = true,
+            "--fullscreen" => o.fullscreen = true,
+            "--exact" => o.exact = true,
+            "--input" => o.input = Some(model2::input::InputScript::parse(&value()?)?),
+            "--seconds" => o.seconds = Some(value()?.parse().map_err(|_| "bad --seconds")?),
             _ => return Err(format!("unknown option {a}")),
         }
     }
@@ -98,6 +123,10 @@ type Link = (Vec<(u64, bool, u8)>, u64);
 struct Queue {
     samples: std::collections::VecDeque<f32>,
     underruns: u64,
+    /// Playing (else filling up to `AUDIO_TARGET` first).
+    primed: bool,
+    /// Samples per second (per channel) at the device.
+    rate: f64,
 }
 
 /// The sound boards on their own thread, playing through cpal.
@@ -110,6 +139,9 @@ struct Sound {
     asked: u64,
     made: Arc<AtomicU64>,
     rate: u32,
+    /// Game samples per real-time sample (f64 bits): the game's speed
+    /// relative to real time, times the drift correction.
+    ratio: Arc<AtomicU64>,
 }
 
 impl Sound {
@@ -120,7 +152,7 @@ impl Sound {
         let rate = supported.sample_rate();
         let channels = supported.channels() as usize;
         let config = supported.config();
-        let queue = Arc::new(Mutex::new(Queue::default()));
+        let queue = Arc::new(Mutex::new(Queue { rate: rate as f64, ..Queue::default() }));
         let q = queue.clone();
         let stream = match supported.sample_format() {
             cpal::SampleFormat::F32 => device.build_output_stream(
@@ -146,19 +178,21 @@ impl Sound {
         let made = Arc::new(AtomicU64::new(0));
         let mut live = model2::audio::Live::new(roms);
         live.set_mix(mix.0, mix.1);
-        let (q, m) = (queue.clone(), made.clone());
+        let ratio = Arc::new(AtomicU64::new(1f64.to_bits()));
+        let (q, m, r) = (queue.clone(), made.clone(), ratio.clone());
         std::thread::Builder::new()
             .name("sound".into())
             .spawn(move || {
                 let mut pcm = Vec::new();
-                // Linear resampler from 44.1 kHz to the device rate.
-                let step = model2::audio::RATE as f64 / rate as f64;
+                // Linear resampler from 44.1 kHz game time to the device rate.
+                let base = model2::audio::RATE as f64 / rate as f64;
                 let (mut pos, mut prev) = (0.0f64, [0.0f32; 2]);
                 let max = (AUDIO_MAX * rate as f64) as usize * 2;
                 while let Ok((bytes, until)) = rx.recv() {
                     pcm.clear();
                     live.feed(&bytes, until, &mut pcm);
                     m.fetch_add(pcm.len() as u64 / 2, Ordering::Relaxed);
+                    let step = base * f64::from_bits(r.load(Ordering::Relaxed));
                     let mut out = Vec::with_capacity(pcm.len() * 2);
                     for frame in pcm.as_chunks::<2>().0 {
                         let cur = [frame[0] as f32 / 32768.0, frame[1] as f32 / 32768.0];
@@ -177,7 +211,14 @@ impl Sound {
                 }
             })
             .map_err(|e| e.to_string())?;
-        Ok(Sound { _stream: stream, queue, link, asked: 0, made, rate })
+        Ok(Sound { _stream: stream, queue, link, asked: 0, made, rate, ratio })
+    }
+
+    /// Set the game's speed relative to real time (1 = exact), corrected
+    /// for drift to hold the queue at `AUDIO_TARGET`.
+    fn set_speed(&self, speed: f64) {
+        let error = ((self.queued() - AUDIO_TARGET) / AUDIO_TARGET).clamp(-1.0, 1.0);
+        self.ratio.store((speed * (1.0 + error * DRIFT)).to_bits(), Ordering::Relaxed);
     }
 
     /// Seconds of audio queued or still being made.
@@ -198,6 +239,13 @@ impl Sound {
 /// Copy queued audio into a device buffer of `channels` channels.
 fn fill<T: Copy>(q: &Mutex<Queue>, out: &mut [T], channels: usize, conv: impl Fn(f32) -> T) {
     let mut q = q.lock().unwrap();
+    if !q.primed && q.samples.len() as f64 >= AUDIO_TARGET * q.rate * 2.0 {
+        q.primed = true;
+    }
+    if !q.primed {
+        out.iter_mut().for_each(|s| *s = conv(0.0));
+        return;
+    }
     let mut dry = false;
     for frame in out.chunks_mut(channels) {
         let (l, r) = match (q.samples.pop_front(), q.samples.pop_front()) {
@@ -211,7 +259,10 @@ fn fill<T: Copy>(q: &Mutex<Queue>, out: &mut [T], channels: usize, conv: impl Fn
             *s = conv(if c % 2 == 0 { l } else { r });
         }
     }
-    q.underruns += dry as u64;
+    if dry {
+        q.underruns += 1;
+        q.primed = false;
+    }
 }
 
 struct Gpu {
@@ -221,6 +272,8 @@ struct Gpu {
     renderer: gpu::Renderer,
     view: model2::video::View,
     origin: (u32, u32),
+    /// The display's refresh rate (Hz), if known.
+    refresh: Option<f64>,
 }
 
 struct Play {
@@ -244,6 +297,16 @@ struct Play {
     surface_misses: u64,
     /// Status reports so far (printed every fifth).
     reports: u64,
+    started: Instant,
+    repeats: u32,
+    longest_gap: Duration,
+    last_new: Instant,
+    redraws: u64,
+}
+
+/// The refresh rate (Hz) of the monitor `window` is on, if known.
+fn refresh_hz(window: &Window) -> Option<f64> {
+    window.current_monitor()?.refresh_rate_millihertz().map(|m| m as f64 / 1000.0)
 }
 
 impl Play {
@@ -268,7 +331,19 @@ impl Play {
             g.surface.configure(g.renderer.device(), &g.config);
             g.view = view;
             g.origin = origin;
+            // A resize can mean the window moved to another monitor.
+            g.refresh = refresh_hz(&g.window);
         }
+    }
+
+    /// Game frames per display refresh when the game follows the display
+    /// (1 at about 60 Hz, 1/2 at about 120 Hz), or None to follow the clock.
+    fn per_refresh(&self) -> Option<f64> {
+        let hz = self.gpu.as_ref()?.refresh?;
+        if self.opts.exact {
+            return None;
+        }
+        [1.0, 0.5].into_iter().find(|k| (0.95..=1.1).contains(&(hz * k / FPS)))
     }
 
     /// Keyboard and the first gamepad onto the cabinet's controls.
@@ -317,18 +392,26 @@ impl Play {
             return;
         }
         let now = Instant::now();
-        let due = ((now - self.epoch).as_secs_f64() * FPS) as u64;
+        self.redraws += 1;
+        // Follow the display (one frame per refresh, or per two) or the clock.
+        let (due, speed) = match self.per_refresh() {
+            Some(k) => {
+                let hz = self.gpu.as_ref().and_then(|g| g.refresh).unwrap_or(60.0);
+                let due = self.machine.frames + (k == 1.0 || self.redraws.is_multiple_of(2)) as u64;
+                (due, hz * k / FPS)
+            }
+            None => (((now - self.epoch).as_secs_f64() * FPS) as u64, 1.0),
+        };
+        if let Some(s) = &self.sound {
+            s.set_speed(speed);
+        }
         let t0 = Instant::now();
         let mut ran = 0;
-        loop {
-            let more = match &self.sound {
-                Some(s) => s.queued() < AUDIO_TARGET,
-                None => self.machine.frames < due,
-            };
-            if !more || ran >= MAX_CATCH_UP {
-                break;
+        while self.machine.frames < due && ran < MAX_CATCH_UP {
+            match &self.opts.input {
+                Some(script) => script.apply(self.machine.frames, &mut self.machine.bus),
+                None => self.apply_inputs(),
             }
-            self.apply_inputs();
             if let Err(e) = self.machine.run_slice(u64::MAX) {
                 eprintln!("stopped: {e:?}");
                 self.stopped = true;
@@ -340,12 +423,20 @@ impl Play {
             }
             ran += 1;
         }
-        if self.sound.is_some() || self.machine.frames < due {
-            // Audio paces (or we fell behind): keep the time base current.
+        if self.per_refresh().is_some() || self.machine.frames < due {
+            // Following the display (or fell behind): keep the clock current.
             self.epoch = now - Duration::from_secs_f64(self.machine.frames as f64 / FPS);
         }
         self.counter.3 += t0.elapsed();
         self.counter.1 += ran;
+        // Pacing: redraws that showed no new game frame (a repeat on
+        // screen), and the longest time between new frames.
+        if ran == 0 {
+            self.repeats += 1;
+        } else {
+            self.longest_gap = self.longest_gap.max(self.last_new.elapsed());
+            self.last_new = Instant::now();
+        }
         if let Some(g) = &mut self.gpu {
             match g.surface.get_current_texture() {
                 wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
@@ -368,10 +459,16 @@ impl Play {
                 let underruns = s.queue.lock().unwrap().underruns;
                 format!(" · audio {:.0} ms queued, {underruns} underruns", s.queued() * 1000.0)
             });
+            let mode = match (self.per_refresh(), self.gpu.as_ref().and_then(|g| g.refresh)) {
+                (Some(_), Some(hz)) => format!("synced to {hz:.0} Hz"),
+                _ => "exact speed".into(),
+            };
             let status = format!(
-                "{:.0}% speed · {:.0} fps · i960 {} · emulate {:.1} ms/frame{audio}{}",
+                "{mode} · {:.0}% speed · {:.0} fps ({} repeats, longest gap {:.0} ms) · i960 {} · emulate {:.1} ms/frame{audio}{}",
                 emulated as f64 / secs / FPS * 100.0,
                 drawn as f64 / secs,
+                self.repeats,
+                self.longest_gap.as_secs_f64() * 1000.0,
                 if self.machine.is_native() { "recompiled" } else { "interpreted" },
                 self.counter.3.as_secs_f64() * 1000.0 / emulated.max(1) as f64,
                 if self.surface_misses > 0 {
@@ -389,6 +486,8 @@ impl Play {
                 println!("status        {status}");
             }
             self.counter = (Instant::now(), 0, 0, Duration::ZERO);
+            self.repeats = 0;
+            self.longest_gap = Duration::ZERO;
         }
     }
 
@@ -409,7 +508,8 @@ impl ApplicationHandler for Play {
         }
         let attrs = Window::default_attributes()
             .with_title("Remodel")
-            .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0));
+            .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0))
+            .with_fullscreen(self.opts.fullscreen.then_some(Fullscreen::Borderless(None)));
         let window = Arc::new(el.create_window(attrs).expect("create window"));
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(
             el.owned_display_handle(),
@@ -444,7 +544,8 @@ impl ApplicationHandler for Play {
         let (view, origin) = self.fit(config.width, config.height);
         // Redraws drive everything; Wayland sends none until asked.
         window.request_redraw();
-        self.gpu = Some(Gpu { window, surface, config, renderer, view, origin });
+        let refresh = refresh_hz(&window);
+        self.gpu = Some(Gpu { window, surface, config, renderer, view, origin, refresh });
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
@@ -475,6 +576,11 @@ impl ApplicationHandler for Play {
                 }
             }
             WindowEvent::RedrawRequested => {
+                if self.opts.seconds.is_some_and(|s| self.started.elapsed().as_secs_f64() >= s) {
+                    self.save_eeprom();
+                    el.exit();
+                    return;
+                }
                 self.frame();
                 if let Some(g) = &self.gpu {
                     g.window.request_redraw();
@@ -551,6 +657,11 @@ fn main() {
         stopped: false,
         surface_misses: 0,
         reports: 0,
+        started: Instant::now(),
+        repeats: 0,
+        longest_gap: Duration::ZERO,
+        last_new: Instant::now(),
+        redraws: 0,
     };
     let event_loop = EventLoop::new().expect("event loop");
     event_loop.run_app(&mut play).expect("event loop");

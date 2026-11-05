@@ -71,7 +71,7 @@ of all private ranges also admits them.
 - `height=1080` (default: the screen's, up to 1080);
 - `hud=center` (default `edges`);
 - `sound=0` (don't run the sound boards at all);
-- `sfx=6&music=-6` (the mix in dB: sound board, music board; these are
+- `sfx=8&music=-8` (the mix in dB: sound board, music board; these are
   the defaults);
 - `geo=local` (run the geometrizer on the page's thread).
 

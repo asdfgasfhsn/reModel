@@ -75,7 +75,7 @@ make assets               # extract the game's art for review -> out/topskatr/as
 make bench                # timed run into a race: speed and state hash
 make recomp               # recompile the game's i960 code and TGP programs (after a `run`; ~2 min build)
 make bench RECOMP=1       # same run on the recompiled build: same hash, about twice as fast
-make play RECOMP=1        # play in a native window (F11 fullscreen, Esc quit; PLAY_ARGS="--mix 6:-6")
+make play RECOMP=1        # play in a native window (F11 fullscreen, Esc quit; PLAY_ARGS="--mix 8:-8")
 make web RECOMP=1         # browser build -> out/web (WebGPU; serve over HTTPS, docs/web.md)
 make capture              # save renderer inputs from a run into a race -> out/topskatr/capture
 make gpu-check            # draw them on the software and GPU rasterisers, time and compare

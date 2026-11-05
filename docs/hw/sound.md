@@ -703,8 +703,9 @@ Byte-wide commands. The low bit of each opcode selects MPEG player 0 or 1
   18 dB above the SCSP in a race (RMS −17 vs −35 dBFS; peaks −0.4 vs −10)
   and buried the announcer. The analog gains aren't in any ROM. The SCSP is
   set to 18-bit DAC mode (DAC18B), and how its 16-bit mix maps onto that
-  DAC's full scale is also open. `model2::audio::DEFAULT_MIX` (SCSP +6 dB,
-  DSB2 −6 dB) is a listening choice, adjustable per player. `crates/dsb` does the
+  DAC's full scale is also open. `model2::audio::DEFAULT_MIX` (SCSP +8 dB,
+  DSB2 −8 dB, chosen by ear in play) is a listening choice, adjustable per
+  player. `crates/dsb` does the
   first two (Catmull-Rom resampling).
 - **Replacement soundtracks** (`docs/mods.md`) hook in at the decoder: a
   play (`74`) whose start/end matches a replaced track's range streams a

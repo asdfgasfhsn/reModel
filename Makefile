@@ -148,7 +148,7 @@ dump-textures: release ## Coin-start-race run dumping every 3D texture and tile 
 	rm -rf $(OUT)/texdump
 	$(RUN) $(VIEW) --dump-textures $(OUT)/texdump --input $(BENCH_INPUT) run $(BENCH_STEPS) 60
 
-play: ## Play in a native window: GPU, live sound, keyboard and gamepad (RECOMP=1: recompiled code; PLAY_ARGS, e.g. --mix 6:-6 --hud center)
+play: ## Play in a native window: GPU, live sound, keyboard and gamepad (RECOMP=1: recompiled code; PLAY_ARGS, e.g. --mix 8:-8 --hud center)
 	$(RELEASE_ENV) $(CARGO) build --release -p remodel-play
 	$(PLAY) --game $(GAME) --rom $(ROM) $(PLAY_ARGS)
 
