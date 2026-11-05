@@ -52,12 +52,10 @@ REMODEL := target/recomp/release/remodel
 PLAY    := target/recomp/release/remodel-play
 # No debug info: the generated code is large and only slows the build.
 RELEASE_ENV := REMODEL_RECOMP_DIR=$(abspath out/recomp) CARGO_TARGET_DIR=target/recomp CARGO_PROFILE_RELEASE_DEBUG=false
-WEB_ENV := REMODEL_RECOMP_DIR=$(abspath out/recomp)
 else
 REMODEL := target/release/remodel
 PLAY    := target/release/remodel-play
 RELEASE_ENV :=
-WEB_ENV :=
 endif
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
@@ -201,12 +199,8 @@ dist: ## Distributable player for this platform (interpreter only, stripped) -> 
 	tar -C $(DIST_OUT) -czf $$dir.tar.gz $$name; \
 	echo "built $$dir.tar.gz ($$(du -h $$dir.tar.gz | cut -f1))"
 
-web: ## Build the browser version (WebAssembly + WebGPU) into out/web; needs the wasm32 target and wasm-bindgen (docs/web.md); RECOMP=1 includes the recompiled game code
-	CARGO_TARGET_DIR=target/web CARGO_PROFILE_RELEASE_DEBUG=false $(WEB_ENV) $(WASM_CARGO) build --release --target wasm32-unknown-unknown -p remodel-web
-	$(WASM_BINDGEN) --target web --no-typescript --out-dir $(WEB_OUT)/pkg target/web/wasm32-unknown-unknown/release/remodel_web.wasm
-	cp crates/web/index.html crates/web/audio-worklet.js crates/web/sound-worker.js crates/web/geo-worker.js crates/web/touch.js $(WEB_OUT)/
-	cp assets/reModel-logo-1086.png $(WEB_OUT)/reModel-logo.png
-	@echo "built $(WEB_OUT): serve it over HTTPS (WebGPU needs a secure page) with the ROM files at $(WEB_OUT)/rom/"
+web: ## Browser build into out/web: game list, a page per game (model2/SET/), screenshots; RECOMP=1 gives each game its own module with its recompiled code (docs/web.md)
+	WEB_OUT=$(WEB_OUT) ROM=$(ROM) RECOMP=$(RECOMP) CARGO="$(CARGO)" WASM_CARGO="$(WASM_CARGO)" WASM_BINDGEN=$(WASM_BINDGEN) sh tools/web.sh
 
 capture: release ## Run into a race saving every 300th frame's renderer inputs to out/GAME/capture (~200 MB)
 	rm -rf $(OUT)/capture

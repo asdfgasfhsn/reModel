@@ -94,6 +94,12 @@ never checks its reply; Remodel keeps the commands
   current directory has a `rom/` folder), else to `roms/` beside the
   settings (`~/.local/share/remodel/roms`), created on first run.
 
+Later, the browser build's game list (`docs/web.md`: a card per game with
+an attract mode screenshot, its year and controls, grouped by board) could
+become the player's start screen in place of the Game page of the menu.
+The cards come from `remodel web-index` and `remodel shot`, which work from
+the manifests alone.
+
 ## Files
 
 Run from the Remodel source tree (an `out/` directory in the current

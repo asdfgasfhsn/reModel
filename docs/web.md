@@ -24,9 +24,64 @@ against the sound card is corrected by stretching the audio by at most
 clock pacing).
 
 ```sh
-make web            # interpreter build -> out/web (index.html, the logo, pkg/)
-make web RECOMP=1   # with the recompiled game code (after `make recomp`)
+make web            # out/web: game list, a page per game, one shared interpreter module
+make web RECOMP=1   # each game gets its own module with its recompiled code (after `make recomp GAME=...`)
 ```
+
+**Layout.** `make web` (`tools/web.sh`) writes:
+
+| URL | file | what |
+|---|---|---|
+| `/` | `index.html` (`crates/web/index.html`) | the game list: no WebAssembly, just `games.json`, the logo, posters and screenshots |
+| `/posters/<set>.webp` | `assets/posters/` | the cards' posters (`placeholder.webp` for a game without one) |
+| `/games.json` | | the games to list (`remodel web-index`) |
+| `/model2/<set>/` | `model2/<set>/index.html` (`crates/web/game.html`) | the game's page |
+| `/model2/<set>/shot.png` | | its card's screenshot |
+| `/model2/<set>/pkg/` | | its WebAssembly module (`RECOMP=1`) |
+| `/model2/pkg/` | | the interpreter module the games share (without `RECOMP`, or for a game with no recompiled code) |
+| `/model2/*.js` | `crates/web/*.js` | the workers, the audio worklet and the touch controls, shared |
+| `/rom/<set>/` | | the ROM files: not written, the server provides them (see Serving) |
+
+The game list holds the supported games whose chips are all in
+`rom/<set>/` as loose files (the browser fetches them one by one): a card
+each, grouped by board, with its poster (`assets/posters/README.md`), an
+attract mode screenshot inset in it (enlarged on hover or focus), and the
+title, year and main keys as text.
+It remembers the last game played (`localStorage`) and offers to continue
+it. The old address `/?game=<set>` (and its other options) redirects to
+`/model2/<set>/`. A game page takes its set from its path, links back to
+the list (except in fullscreen) and loads the module the `remodel-pkg` meta
+tag names (`make web` fills it in); the sound and geometry workers import
+the same one.
+
+**Screenshots** are made once, by `remodel --game <set> --height 360
+--aspect 4:3 shot FILE`: it boots the game, runs to the manifest's
+`attract_frame` with no inputs and saves the screen (software renderer, the
+same path as `run`'s snapshots) as a 480x360 PNG, 100-150 KB. Each takes
+15-40 s; `make web` makes the missing ones in parallel. Delete a `shot.png`
+to remake it; if one fails, its card has no picture.
+
+**Per-game modules.** `model2`'s build script compiles every
+`i960_<hash>.rs` and `tgp_<hash>.rs` in `REMODEL_RECOMP_DIR`.
+`remodel --game <set> recomp-files` names the ones in `out/recomp/` that
+belong to a set (the hash of its program ROM, and of the copro and
+geometrizer programs `run` captured in `out/<set>/`), and `make web
+RECOMP=1` builds each game in turn from a directory of links to just
+those, in one target directory (`target/web`): only `remodel-model2` and
+`remodel-web` rebuild between games. Measured here (16 cores):
+`topskatr` 62 s (12 MB module), `skisuprg` 110 s (18 MB), `stcc` 120 s
+(15 MB), 5 minutes for `make web RECOMP=1` in all, against 44 MB for one
+module holding all three before. Without `RECOMP` the shared interpreter
+module is 0.8 MB and `make web` takes about half a minute (most of it the
+first screenshots).
+
+**Adding a game.** Nothing in the web build names a game: a new manifest
+in `crates/romset/src/games/` (with its `year` and `attract_frame`), its
+chips in `rom/<set>/`, and `make web` lists it. Add `assets/posters/<set>.webp` (600x900) for its
+card, or it gets the placeholder. For recompiled code, `make
+run GAME=<set>` and `make recomp GAME=<set>` first. The touch controls,
+help bar and card come from the manifest's controls: buttons can carry a
+short `labelled(...)` name for the on-screen buttons and the card.
 
 **Three cores.** The page's thread runs the main CPU, the copro and the
 drawing. The geometrizer runs in `crates/web/geo-worker.js`: at each
@@ -54,10 +109,10 @@ RUSTC=$(~/.local/share/rustup-wasm/bin/rustup which rustc) $(~/.local/share/rust
 ```
 
 **Serving.** WebGPU only works on secure pages (HTTPS, or localhost), so
-serve over HTTPS. The page loads the ROM files from `rom/<set>/` next
-to `index.html` (`rom/topskatr/` unless `?game=` says otherwise), one file
-per chip, as in the repo's `rom/topskatr/`. They are your
-dump: keep the server private to your network. One setup is a file server
+serve over HTTPS. A game page loads its ROM files from `/rom/<set>/` at the
+site root (`../../rom/<set>/` from the page), one file per chip, as in the
+repo's `rom/topskatr/`. They are your dump: keep the server private to
+your network. One setup is a file server
 container on a reverse proxy's Docker network:
 
 ```sh
@@ -72,9 +127,9 @@ restrict by client IP, beware of Docker's IPv6 port forwarding: outside
 clients can appear from Docker's own private addresses, so an allowlist
 of all private ranges also admits them.
 
-**Page options.** These are URL parameters:
+**Page options.** These are URL parameters of a game page
+(`/model2/stcc/?aspect=16:9`):
 
-- `?game=skisuprg` or `?game=stcc` (default `topskatr`): the set to play;
 - `aspect=16:9` (default: the window's shape, 4:3 to 21:9);
 - `height=1080` (default: the screen's, up to 1080);
 - `hud=center` (default `edges`);
@@ -88,10 +143,13 @@ frame spent emulating, preparing the frame on the CPU, and submitting it
 to the GPU. The sound label adds the worker's time per frame.
 
 **Controls.** Each game's keys and gamepad bindings come from its
-manifest, as in the native player (`docs/play.md`); for games other than
-`topskatr` the bar lists them. The touch controls act as a gamepad (the
-stick, the right trigger and six buttons), so they drive any game through
-its pad bindings, but their labels are `topskatr`'s. For `topskatr`:
+manifest, as in the native player (`docs/play.md`), and the bar lists them.
+The touch controls act as a gamepad too, so they drive any game through
+its pad bindings, and they are laid out from them (`touch_layout`): a
+steering area if an analog control follows the left stick; coin, start and
+the shoulder buttons along the top; the face buttons and the analog
+triggers as round buttons at the right, the A button big. Each input shows
+once, labelled from the manifest. For `topskatr`:
 
 | Action | Keyboard | Gamepad | Touch |
 |---|---|---|---|
@@ -166,10 +224,9 @@ The native player's menu, save states and remembered settings
   same moment. Loading does the reverse. Saves (about 1.2 MB each) go in
   IndexedDB. The format matches the native player's, so a save exported
   as a download should load in either, though that's not yet tested.
-- **Game picker.** The page fetches ROMs from its server, so it would
-  list the sets the server holds, or take a zip from a file picker (kept
-  in IndexedDB) for a page that doesn't serve ROMs. Only useful once a
-  second game is supported.
+- **Games from a file.** The game list shows the sets the server holds.
+  A page that doesn't serve ROMs could take a zip from a file picker
+  instead (kept in IndexedDB).
 
 Order: the overlay with settings and pause first, then save states,
-then the picker.
+then zips from a file.

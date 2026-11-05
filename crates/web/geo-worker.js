@@ -1,12 +1,16 @@
 // The geometrizer, on its own core. The page posts:
-//   {type: "init", module, game, rom}       the shared compiled module, ROM URL
+//   {type: "init", pkg, module, game, rom}
+//                                       the package URL, the shared compiled
+//                                       module, the ROM URL
 //   {type: "boot", program}             the uploaded program (u32 pairs)
 //   {type: "frame", buffer, booted, readPtr, jumps}
 //                                       one frame's job, at vblank
 // and gets back {type: "frame", stream, points} per frame. Jobs that arrive
 // while the ROMs load are kept and run in order: the engine's state carries
 // from frame to frame.
-import init, { GeoEngine, rom_files } from "./pkg/remodel_web.js";
+// The page names its WebAssembly package (`pkg`, a URL ending in /); the
+// worker imports the same one.
+let wasm = null;
 
 let engine = null;
 const pending = [];
@@ -35,11 +39,12 @@ onmessage = async (e) => {
   const m = e.data;
   if (m.type === "init") {
     try {
-      await init({ module_or_path: m.module ?? "./pkg/remodel_web_bg.wasm" });
+      wasm = await import(m.pkg + "remodel_web.js");
+      await wasm.default({ module_or_path: m.module ?? m.pkg + "remodel_web_bg.wasm" });
       const chips = await Promise.all(
-        rom_files(m.game).map(async (f) => new Uint8Array(await (await fetch(`${m.rom}/${f}`)).arrayBuffer())),
+        wasm.rom_files(m.game).map(async (f) => new Uint8Array(await (await fetch(`${m.rom}/${f}`)).arrayBuffer())),
       );
-      engine = new GeoEngine(m.game, chips);
+      engine = new wasm.GeoEngine(m.game, chips);
       postMessage({ type: "ready" });
       while (pending.length) run(pending.shift());
     } catch (err) {

@@ -23,26 +23,13 @@
 #![cfg(target_arch = "wasm32")]
 
 use model2::video;
-use romset::PadButton;
+use romset::{PadAxis, PadButton};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlCanvasElement, KeyboardEvent};
-
-/// The pad buttons `set_touch`'s button bits stand for, by bit: touch
-/// works as a gamepad, so it plays every game by its pad bindings (the
-/// on-screen labels are topskatr's: jump front, jump tail, start, coin,
-/// select left, select right).
-const TOUCH_BUTTONS: [romset::PadButton; 6] = [
-    romset::PadButton::South,
-    romset::PadButton::West,
-    romset::PadButton::Start,
-    romset::PadButton::Select,
-    romset::PadButton::LeftShoulder,
-    romset::PadButton::RightShoulder,
-];
 
 /// Model 2 video frame rate.
 const FPS: f64 = 57.524;
@@ -63,9 +50,9 @@ struct App {
     format: wgpu::TextureFormat,
     view: video::View,
     keys: HashSet<String>,
-    /// On-screen controls ([`set_touch`]): steering and slide (-1 to 1, 0 to
-    /// 1) and held buttons (bits in `TOUCH_BUTTONS` order).
-    touch: (f64, f64, u32),
+    /// On-screen controls ([`set_touch`]): steering (-1 to 1), the right and
+    /// left triggers (0 to 1) and held pad buttons (bits by index).
+    touch: (f64, f64, f64, u32),
     /// Real time (ms) that emulated frame 0 corresponds to.
     epoch: f64,
     /// FPS counter: window start (ms), frames emulated and drawn since.
@@ -131,9 +118,9 @@ fn gamepad() -> Option<web_sys::Gamepad> {
 struct Devices<'a> {
     keys: &'a HashSet<String>,
     pad: Option<web_sys::Gamepad>,
-    /// Touch steering (-1 to 1, the left stick), slide (0 to 1, the right
-    /// trigger) and buttons (`TOUCH_BUTTONS` bits).
-    touch: (f64, f64, u32),
+    /// Touch steering (-1 to 1, the left stick), the right and left
+    /// triggers (0 to 1) and pad buttons (bits by index).
+    touch: (f64, f64, f64, u32),
 }
 
 impl Devices<'_> {
@@ -160,14 +147,12 @@ impl model2::input::PlayerInput for Devices<'_> {
     }
 
     fn pad_button(&self, b: romset::PadButton) -> bool {
-        let touched = TOUCH_BUTTONS.iter().position(|&t| t == b).is_some_and(|i| self.touch.2 & 1 << i != 0);
-        touched || self.button(b.index()) > 0.5
+        self.touch.3 & 1 << b.index() != 0 || self.button(b.index()) > 0.5
     }
 
     fn pad_axis(&self, a: romset::PadAxis) -> f32 {
-        use romset::PadAxis;
         let right_trigger = self.button(PadButton::RightTrigger.index()).max(self.touch.1 as f32);
-        let left_trigger = self.button(PadButton::LeftTrigger.index());
+        let left_trigger = self.button(PadButton::LeftTrigger.index()).max(self.touch.2 as f32);
         match a {
             PadAxis::None => 0.0,
             PadAxis::LeftStickX => match self.axis(0) {
@@ -334,16 +319,72 @@ thread_local! {
     static APP: RefCell<Option<Rc<RefCell<App>>>> = const { RefCell::new(None) };
 }
 
-/// On-screen controls: `steer` from -1 (left) to 1 (right), `slide` from 0
-/// to 1, and `buttons` held as bits: jump front, jump tail, start, coin,
-/// select left, select right. Merged with the keyboard and gamepad.
+/// On-screen controls, which act as a gamepad: `steer` (the left stick,
+/// -1 left to 1 right), the right and left triggers (0 to 1), and the pad
+/// buttons held, as bits by W3C standard index ([`touch_layout`] says which
+/// to offer). Merged with the keyboard and gamepad.
 #[wasm_bindgen]
-pub fn set_touch(steer: f64, slide: f64, buttons: u32) {
+pub fn set_touch(steer: f64, right: f64, left: f64, buttons: u32) {
     APP.with(|a| {
         if let Some(app) = a.borrow().as_ref() {
-            app.borrow_mut().touch = (steer, slide, buttons);
+            app.borrow_mut().touch = (steer, right, left, buttons);
         }
     });
+}
+
+/// The on-screen controls for `game`, from its pad bindings, as JSON:
+/// `steer` (an analog follows the left stick), `top` (coin, start and the
+/// shoulder buttons: small, along the top) and `actions` (the face buttons
+/// and the triggers: round, at the right), each `{label, bit}` with `bit`
+/// the pad button's index, or `{label, trigger: "right" | "left"}`. Each of
+/// the game's inputs appears once, at its first binding in that order.
+#[wasm_bindgen]
+pub fn touch_layout(game: &str) -> String {
+    let Ok(game) = romset::games::find(game) else { return "{}".into() };
+    let c = &game.controls;
+    let mut shown = HashSet::new();
+    let mut place = |pads: &[PadButton]| -> Vec<String> {
+        let mut out = Vec::new();
+        for &p in pads {
+            if let Some(b) = c.buttons.iter().find(|b| b.pad.contains(&p) && !shown.contains(b.name)) {
+                shown.insert(b.name);
+                out.push(format!("{{\"label\": {}, \"bit\": {}}}", json_str(&b.label()), p.index()));
+            }
+        }
+        out
+    };
+    let mut actions = place(&[PadButton::North, PadButton::East, PadButton::West]);
+    let south = place(&[PadButton::South]);
+    let top = place(&[PadButton::Select, PadButton::Start, PadButton::LeftShoulder, PadButton::RightShoulder]);
+    for (side, axis, sign) in [("left", PadAxis::LeftTrigger, " −"), ("right", PadAxis::RightTrigger, " +")] {
+        let label = c.analogs.iter().find_map(|a| match a.axis {
+            x if x == axis => Some(a.label()),
+            PadAxis::Triggers => Some(a.label() + sign),
+            _ => None,
+        });
+        if let Some(l) = label {
+            actions.push(format!("{{\"label\": {}, \"trigger\": \"{side}\"}}", json_str(&l)));
+        }
+    }
+    actions.extend(south);
+    let steer = c.analogs.iter().any(|a| a.axis == PadAxis::LeftStickX);
+    format!("{{\"steer\": {steer}, \"top\": [{}], \"actions\": [{}]}}", top.join(", "), actions.join(", "))
+}
+
+/// `s` as a JSON string.
+fn json_str(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            c if (c as u32) < 0x20 => out += &format!("\\u{:04x}", c as u32),
+            c => out.push(c),
+        }
+    }
+    out + "\""
 }
 
 /// The geometrizer worker's newest frame: the raster stream and texture
@@ -404,6 +445,12 @@ impl GeoEngine {
 #[wasm_bindgen]
 pub fn rom_files(game: &str) -> Vec<String> {
     romset::games::find(game).map_or(Vec::new(), |g| g.files.iter().map(|f| f.name.to_string()).collect())
+}
+
+/// The game's title (for the page's).
+#[wasm_bindgen]
+pub fn game_title(game: &str) -> String {
+    romset::games::find(game).map_or(String::new(), |g| g.title.to_string())
 }
 
 /// The game's controls with their keys and pad bindings, one per line
@@ -582,7 +629,7 @@ pub async fn start(
         format: config.format,
         view,
         keys: HashSet::new(),
-        touch: (0.0, 0.0, 0),
+        touch: (0.0, 0.0, 0.0, 0),
         epoch: now(),
         counter: (now(), 0, 0),
         status,

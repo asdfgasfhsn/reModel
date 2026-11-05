@@ -85,7 +85,7 @@ make bench                # timed run into a race: speed and state hash
 make recomp               # recompile the game's i960 code and TGP programs (after a `run`; ~2 min build)
 make bench RECOMP=1       # same run on the recompiled build: same hash, about twice as fast
 make play RECOMP=1        # play in a native window (Esc menu, F5/F9 quick save/load, F11 fullscreen)
-make web RECOMP=1         # browser build -> out/web (WebGPU; serve over HTTPS, docs/web.md)
+make web RECOMP=1         # browser build -> out/web: game list, a page and module per game (WebGPU; serve over HTTPS, docs/web.md)
 make dist                 # player to hand out (interpreter only, no ROMs) -> out/dist/remodel-VERSION-TARGET.tar.gz
 make capture              # save renderer inputs from a run into a race -> out/topskatr/capture
 make gpu-check            # draw them on the software and GPU rasterisers, time and compare

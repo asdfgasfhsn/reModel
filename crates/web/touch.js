@@ -1,11 +1,14 @@
-// On-screen controls for touch screens (or any device with ?touch=1).
+// On-screen controls for touch screens (or any device with ?touch=1). They
+// act as a gamepad, so they play every game by its pad bindings; the page
+// passes the game's layout (`touch_layout` in lib.rs).
 //
 // Left part of the screen: drag sideways to steer (analog: the further from
-// where the finger went down, the harder the carve), or turn on tilt to steer
-// by turning the device like a wheel. Right: jump (front), jump (tail) and
-// slide. Top: coin, start, select left/right, tilt, and info (status bar).
-// Everything is reported through `report(steer, slide, buttons)`; the button
-// bits are those of the game's `set_touch`.
+// where the finger went down, the harder the turn), or turn on tilt to steer
+// by turning the device like a wheel. Right: the face buttons and triggers
+// the game uses. Top: coin, start and the shoulder buttons, tilt, and info
+// (status bar). Everything is reported through
+// `report(steer, rightTrigger, leftTrigger, buttons)`, buttons as bits by
+// standard gamepad index.
 
 /// Drag distance (CSS pixels) for full steering lock.
 const RANGE = 70;
@@ -14,15 +17,36 @@ const TILT_RANGE = 30;
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
-/// Show the controls if this is a touch screen; true if shown.
-export function setupTouch(report, toggleBar) {
+/// Show the controls if this is a touch screen; true if shown. `layout`:
+/// {steer, top: [{label, bit}], actions: [{label, bit} or {label, trigger}]}.
+export function setupTouch(layout, report, toggleBar) {
   const root = document.getElementById("touch");
   const touchScreen = matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
   if (!touchScreen && !new URLSearchParams(location.search).has("touch")) return false;
   root.hidden = false;
 
-  const state = { steer: 0, slide: 0, buttons: 0, tilt: null };
-  const send = () => report(state.tilt ?? state.steer, state.slide, state.buttons);
+  const state = { steer: 0, right: 0, left: 0, buttons: 0, tilt: null };
+  const send = () => report(state.tilt ?? state.steer, state.right, state.left, state.buttons);
+
+  // The game's buttons: small pills along the top (before tilt and info),
+  // round ones at the right, the last (the pad's A, usually) big at the
+  // bottom right.
+  const make = (cls, c) => {
+    const el = document.createElement("span");
+    el.className = cls;
+    el.textContent = c.label;
+    if ("bit" in c) el.dataset.bit = c.bit;
+    else el.dataset.trigger = c.trigger;
+    return el;
+  };
+  const top = document.getElementById("t-top");
+  for (const c of layout.top ?? []) top.insertBefore(make("t-pill", c), document.getElementById("t-tilt"));
+  const actions = document.getElementById("t-actions");
+  const list = layout.actions ?? [];
+  list.forEach((c, i) => {
+    if (i === list.length - 1 && list.length % 2) actions.append(document.createElement("span"));
+    actions.append(make(i === list.length - 1 ? "t-btn big" : "t-btn", c));
+  });
 
   // Hold-to-press buttons: each finger is tracked on the button it went
   // down on, so several can be held at once.
@@ -47,7 +71,10 @@ export function setupTouch(report, toggleBar) {
     const bit = 1 << Number(el.dataset.bit);
     hold(el, () => (state.buttons |= bit), () => (state.buttons &= ~bit));
   }
-  hold(document.getElementById("t-slide"), () => (state.slide = 1), () => (state.slide = 0));
+  for (const el of root.querySelectorAll("[data-trigger]")) {
+    const side = el.dataset.trigger;
+    hold(el, () => (state[side] = 1), () => (state[side] = 0));
+  }
 
   // Steering: relative to where the finger went down.
   const pad = document.getElementById("t-steer");
@@ -84,6 +111,10 @@ export function setupTouch(report, toggleBar) {
 
   // Tilt: turn the device like a steering wheel. iOS asks for permission.
   const tiltButton = document.getElementById("t-tilt");
+  if (!layout.steer) {
+    pad.hidden = true;
+    tiltButton.hidden = true;
+  }
   const onTilt = (e) => {
     const angle = screen.orientation?.angle ?? window.orientation ?? 0;
     // Landscape: turning the device changes beta; portrait: gamma.

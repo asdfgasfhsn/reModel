@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Remodel</title>
+<!-- `make web` copies this page to model2/<set>/index.html, with @PKG@ set to
+     the directory of the WebAssembly module for that set. -->
+<meta name="remodel-pkg" content="@PKG@">
 <style>
   :root { color-scheme: dark; }
   html, body { margin: 0; height: 100%; background: #000; color: #ccc; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
@@ -16,6 +19,12 @@
   #bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 6px 12px; background: rgba(0, 0, 0, 0.6); display: flex; gap: 16px; flex-wrap: wrap; }
   #bar.hidden { display: none; }
   #status { color: #fff; }
+  /* Back to the game list; not in fullscreen. */
+  #back { position: fixed; left: max(8px, env(safe-area-inset-left)); top: max(8px, env(safe-area-inset-top));
+    padding: 4px 10px; border-radius: 14px; background: rgba(0, 0, 0, 0.5); color: #fff; text-decoration: none;
+    opacity: 0.6; z-index: 1; }
+  #back:hover, #back:focus { opacity: 1; }
+  :fullscreen #back { display: none; }
   kbd { border: 1px solid #555; border-radius: 3px; padding: 0 4px; font: inherit; }
   /* On-screen controls (touch.js) */
   #touch { position: fixed; inset: 0; pointer-events: none; }
@@ -28,7 +37,7 @@
   #t-knob::after { content: ""; position: absolute; left: 16px; top: 16px; width: 32px; height: 32px; border-radius: 50%;
     background: rgba(255, 255, 255, 0.85); box-shadow: 0 1px 4px #000; transform: translateX(var(--dx, 0)); }
   #t-actions { position: absolute; right: max(16px, env(safe-area-inset-right)); bottom: max(20px, env(safe-area-inset-bottom));
-    display: grid; grid-template-columns: auto auto; gap: 14px; align-items: end; }
+    display: grid; grid-template-columns: auto auto; gap: 14px; align-items: end; justify-items: center; }
   #t-top { position: absolute; top: max(8px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%);
     display: flex; gap: 8px; }
   /* Dark fill, light outline and shadowed text: readable over sky and road alike. */
@@ -44,39 +53,39 @@
 </head>
 <body>
 <canvas id="screen"></canvas>
-<div id="splash"><img src="reModel-logo.png" alt="reModel"></div>
+<div id="splash"><img src="../../reModel-logo.png" alt="reModel"></div>
+<a id="back" href="../../">← Games</a>
 <div id="bar">
   <span id="status">loading…</span>
-  <span><span id="keys"><kbd>C</kbd> coin <kbd>Enter</kbd> start <kbd>←</kbd><kbd>→</kbd> steer <kbd>↓</kbd> slide
-    <kbd>Z</kbd> jump front <kbd>X</kbd> jump tail <kbd>Q</kbd><kbd>E</kbd> select · </span>gamepad works too ·
+  <span><span id="keys"></span>gamepad works too ·
     <kbd>F</kbd> fullscreen <kbd>H</kbd> hide bar · <span id="sound">tap or press a key for sound</span></span>
 </div>
 <div id="touch" hidden>
   <div id="t-steer"><div id="t-knob"></div></div>
+  <!-- touch.js adds the game's buttons (touch_layout) -->
   <div id="t-top">
-    <span class="t-pill" data-bit="3">Coin</span>
-    <span class="t-pill" data-bit="2">Start</span>
-    <span class="t-pill" data-bit="4">◀</span>
-    <span class="t-pill" data-bit="5">▶</span>
     <span class="t-pill" id="t-tilt">Tilt</span>
     <span class="t-pill" id="t-info">ⓘ</span>
   </div>
-  <div id="t-actions">
-    <span class="t-btn" id="t-slide">Slide</span>
-    <span class="t-btn" data-bit="1">Tail</span>
-    <span></span>
-    <span class="t-btn big" data-bit="0">Jump</span>
-  </div>
+  <div id="t-actions"></div>
 </div>
 <script type="module">
-  import { setupTouch } from "./touch.js";
-  import init, { start, set_audio_level, set_geo_frame, set_touch, controls_help } from "./pkg/remodel_web.js";
+  import { setupTouch } from "../touch.js";
 
   const status = document.getElementById("status");
   const params = new URLSearchParams(location.search);
-  // ?game=ID picks the set (default topskatr); its ROM files are at rom/ID/.
-  const game = params.get("game") ?? "topskatr";
-  const rom = `./rom/${game}`;
+  // The set is in the path (/model2/ID/); its ROM files are at /rom/ID/.
+  const game = decodeURIComponent(location.pathname.match(/\/model2\/([^/]+)/)?.[1] ?? "topskatr");
+  const rom = new URL(`../../rom/${game}`, location.href).href;
+  // This set's WebAssembly module: its own with recompiled code, or the
+  // shared interpreter build (the meta tag above).
+  const pkg = new URL(document.querySelector('meta[name="remodel-pkg"]').content, location.href).href;
+  const { default: init, start, set_audio_level, set_geo_frame, set_touch, controls_help, touch_layout, game_title } =
+    await import(pkg + "remodel_web.js");
+  // For the game list's "Continue".
+  try {
+    localStorage.setItem("remodel.last", game);
+  } catch {}
   // Defaults: fill this window (4:3 to 21:9) at the screen's resolution.
   const fit = Math.min(Math.max(innerWidth / innerHeight, 4 / 3), 21 / 9);
   const aspect = params.has("aspect")
@@ -113,7 +122,7 @@
     audio.resume();
     soundLabel.textContent = "sound: starting";
     try {
-      await audio.audioWorklet.addModule("./audio-worklet.js");
+      await audio.audioWorklet.addModule("../audio-worklet.js");
     } catch (e) {
       soundLabel.textContent = "sound: worklet failed: " + (e.message ?? e);
       return;
@@ -145,19 +154,23 @@
     if (e.code === "KeyF") document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
     if (e.code === "KeyH") toggleBar();
   });
-  // Touch screens: on-screen controls, and the bar out of the way until ⓘ.
-  if (setupTouch((steer, slide, buttons) => started && set_touch(steer, slide, buttons), toggleBar)) toggleBar();
 
   if (!navigator.gpu) {
     status.textContent = "This browser has no WebGPU (try a recent Chrome, Edge or Safari; on Linux, check chrome://gpu).";
   } else {
     try {
       // Compile once; the sound worker instantiates the same module.
-      const module = await WebAssembly.compileStreaming(fetch("./pkg/remodel_web_bg.wasm"));
+      const module = await WebAssembly.compileStreaming(fetch(pkg + "remodel_web_bg.wasm"));
       await init({ module_or_path: module });
+      document.title = `${game_title(game)} · Remodel`;
+      document.getElementById("keys").textContent = controls_help(game).trim().replace(/\n\s*/g, " · ").replace(/ {2,}/g, " ") + " · ";
+      // Touch screens: on-screen controls (the game's, from its pad
+      // bindings), and the bar out of the way until ⓘ.
+      const report = (steer, right, left, buttons) => started && set_touch(steer, right, left, buttons);
+      if (setupTouch(JSON.parse(touch_layout(game)), report, toggleBar)) toggleBar();
       let link;
       if (sound) {
-        worker = new Worker("./sound-worker.js", { type: "module" });
+        worker = new Worker("../sound-worker.js", { type: "module" });
         worker.onmessage = (e) => {
           const m = e.data;
           if (m.type === "stats") workerMs = m.msPerFrame;
@@ -165,10 +178,10 @@
           else if (m.type === "error") soundLabel.textContent = "sound worker: " + m.message;
         };
         try {
-          worker.postMessage({ type: "init", module, game, rom, mix });
+          worker.postMessage({ type: "init", pkg, module, game, rom, mix });
         } catch {
           // Browsers that can't pass a compiled module: the worker fetches it.
-          worker.postMessage({ type: "init", game, rom, mix });
+          worker.postMessage({ type: "init", pkg, game, rom, mix });
         }
         link = (cycles, bytes, until, ratio) =>
           worker.postMessage({ type: "link", cycles, bytes, until, ratio }, [cycles.buffer, bytes.buffer]);
@@ -177,7 +190,7 @@
       // this thread).
       let geo;
       if (params.get("geo") !== "local") {
-        const gw = new Worker("./geo-worker.js", { type: "module" });
+        const gw = new Worker("../geo-worker.js", { type: "module" });
         gw.onmessage = (e) => {
           const m = e.data;
           if (m.type === "frame") set_geo_frame(m.stream, m.points);
@@ -185,17 +198,15 @@
           else if (m.type === "error") status.textContent = "geometry worker: " + m.message;
         };
         try {
-          gw.postMessage({ type: "init", module, game, rom });
+          gw.postMessage({ type: "init", pkg, module, game, rom });
         } catch {
-          gw.postMessage({ type: "init", game, rom });
+          gw.postMessage({ type: "init", pkg, game, rom });
         }
         geo = (kind, data, booted, readPtr, jumps) =>
           kind === "boot"
             ? gw.postMessage({ type: "boot", program: data }, [data.buffer])
             : gw.postMessage({ type: "frame", buffer: data, booted, readPtr, jumps }, [data.buffer, jumps.buffer]);
       }
-      // The help bar above is topskatr's; other games list their bindings.
-      if (game !== "topskatr") document.getElementById("keys").textContent = controls_help(game).trim().replace(/\n\s*/g, " · ") + " · ";
       await start(game, document.getElementById("screen"), status, rom, height, aspect, hudEdges, link, geo);
       started = true;
       // Fade the logo once it's been up for 1.5 s.
