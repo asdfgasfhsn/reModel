@@ -43,7 +43,7 @@ music`). There is no live window yet.
 | DSB2 music board (68000 firmware + MPEG Layer II decoder) | done; `make music` renders the game's music from a `run` capture |
 | Enhanced views: any resolution, 16:9 / 21:9 with HUD moved to the edges | done for snapshots (`--height`, `--aspect`, `--hud`) |
 | Custom soundtracks (replace any music track, game logic intact) | done offline: `make music SOUNDTRACK=name`; see `docs/mods.md` |
-| Native window (`make play`) | playable: GPU renderer, live sound (cpal), keyboard and gamepad (gilrs), any window shape from 4:3 to 32:9; about 2 ms of CPU per frame recompiled |
+| Native window (`make play`) | playable: GPU renderer, live sound (cpal), keyboard and gamepad (gilrs), any window shape from 4:3 to 32:9; about 2 ms of CPU per frame recompiled. Esc menu (sound mix, display, save slots, game picker), save states; see `docs/play.md` |
 | Browser build (WebAssembly + WebGPU) | playable (`make web`), with sound, keyboard and gamepad; see `docs/web.md` |
 
 ## Quick start
@@ -76,7 +76,7 @@ make assets               # extract the game's art for review -> out/topskatr/as
 make bench                # timed run into a race: speed and state hash
 make recomp               # recompile the game's i960 code and TGP programs (after a `run`; ~2 min build)
 make bench RECOMP=1       # same run on the recompiled build: same hash, about twice as fast
-make play RECOMP=1        # play in a native window (F11 fullscreen, Esc quit; PLAY_ARGS="--mix 8:-8")
+make play RECOMP=1        # play in a native window (Esc menu, F5/F9 quick save/load, F11 fullscreen)
 make web RECOMP=1         # browser build -> out/web (WebGPU; serve over HTTPS, docs/web.md)
 make capture              # save renderer inputs from a run into a race -> out/topskatr/capture
 make gpu-check            # draw them on the software and GPU rasterisers, time and compare

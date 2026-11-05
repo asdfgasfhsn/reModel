@@ -207,12 +207,16 @@ const SAVE_MAGIC: &[u8] = b"REMODEL-SAVE-1\n";
 /// A save file: the machine's state and, if given, the sound boards' (see
 /// [`audio::Live`]), compressed (about 1 MB for topskatr).
 pub fn save_session(machine: &mut Machine, live: Option<&audio::Live>) -> Vec<u8> {
+    save_session_parts(machine, live.map(state::to_bytes))
+}
+
+/// [`save_session`] with the sound boards' state already saved (for boards
+/// running on another thread).
+pub fn save_session_parts(machine: &mut Machine, live: Option<Vec<u8>>) -> Vec<u8> {
     let m = machine.save_state();
     let mut raw = (m.len() as u64).to_le_bytes().to_vec();
     raw.extend(m);
-    if let Some(l) = live {
-        raw.extend(state::to_bytes(l));
-    }
+    raw.extend(live.unwrap_or_default());
     let mut out = SAVE_MAGIC.to_vec();
     out.extend(png::zlib::compress(&raw));
     out
@@ -222,17 +226,22 @@ pub fn save_session(machine: &mut Machine, live: Option<&audio::Live>) -> Vec<u8
 /// in it is ignored; with `live` but none saved, the boards are left as
 /// they are.
 pub fn load_session(machine: &mut Machine, live: Option<&mut audio::Live>, data: &[u8]) -> Result<(), String> {
+    let rest = load_session_parts(machine, data)?;
+    match live {
+        Some(l) if !rest.is_empty() => audio::load_state(l, &rest),
+        _ => Ok(()),
+    }
+}
+
+/// Load the machine from a [`save_session`] file; returns the sound
+/// boards' state (empty if none was saved), for [`audio::load_state`].
+pub fn load_session_parts(machine: &mut Machine, data: &[u8]) -> Result<Vec<u8>, String> {
     let body = data.strip_prefix(SAVE_MAGIC).ok_or("not a Remodel save file (or from another version)")?;
     let data = png::zlib::decompress(body).map_err(|e| format!("save file damaged: {e}"))?;
     let len = data.get(..8).map(|b| u64::from_le_bytes(b.try_into().unwrap()) as usize).ok_or("save file truncated")?;
     let m = data.get(8..8 + len).ok_or("save file truncated")?;
     machine.load_state(m)?;
-    let rest = &data[8 + len..];
-    if let (Some(l), false) = (live, rest.is_empty()) {
-        let mut r = state::Reader::new(rest);
-        state::State::load(l, &mut r).map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    Ok(data[8 + len..].to_vec())
 }
 
 /// Save state header: format name and version.

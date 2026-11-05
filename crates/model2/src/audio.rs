@@ -70,6 +70,11 @@ impl Live {
         }
     }
 
+    /// Output samples rendered so far (at [`RATE`]), since boot.
+    pub fn samples(&self) -> u64 {
+        self.samples
+    }
+
     pub fn has_sound(&self) -> bool {
         self.sound.is_some() || self.music.is_some()
     }
@@ -185,6 +190,12 @@ impl state::State for Live {
         }
         Ok(())
     }
+}
+
+/// Load sound board state saved with `state::to_bytes(&live)`.
+pub fn load_state(live: &mut Live, bytes: &[u8]) -> Result<(), String> {
+    let mut r = state::Reader::new(bytes);
+    state::State::load(live, &mut r).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

@@ -1,24 +1,33 @@
-//! remodel-play: a Model 2 game in a native window.
+//! remodel-play: Model 2 games in a native window.
 //!
-//! The main thread runs the window (winit), input, the board model and
-//! drawing (the GPU renderer, presented with vsync). The geometrizer runs on
-//! its own thread (the board model's default) and the sound boards on
-//! another (`Sound`), which plays through the system's audio API (cpal).
+//! The main thread runs the window (winit), input, the board model, drawing
+//! (the GPU renderer, presented with vsync) and the menu (egui, over the
+//! game). The geometrizer runs on its own thread (the board model's
+//! default) and the sound boards on another (`sound`), playing through the
+//! system's audio API.
 //!
 //! Pacing: with a display near the game's 57.524 Hz (60 Hz, or 120 Hz at
 //! one game frame per two refreshes) the game runs exactly one frame per
 //! refresh, so motion is perfectly even; that's 4.3% fast at 60 Hz, and the
-//! audio is resampled to match. With `--exact`, or other refresh rates,
+//! audio is resampled to match. With exact speed, or other refresh rates,
 //! frames follow a steady clock at 57.524 per second instead. Either way
 //! the audio queue corrects the drift between the clocks by stretching the
 //! audio by at most 0.5% (inaudible), never by stalling the game.
+//!
+//! Esc opens the menu (and pauses): save states, sound mix, display, game
+//! and ROM folder. Settings persist (`settings`).
+
+mod menu;
+mod settings;
+mod sound;
 
 use gilrs::{Axis, Button, Gilrs};
+use settings::Settings;
+use sound::Sound;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -26,10 +35,11 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
 const USAGE: &str = "\
-usage: remodel-play [--game ID] [--rom DIR] [--mix SFX:MUSIC] [--no-sound] [--hud center|edges] [--interp]
+usage: remodel-play [options]
 
-  --game ID          game manifest (default topskatr)
-  --rom DIR          directory of unpacked chips (default rom)
+  --game ID          set to play (default: the last one played, or topskatr)
+  --rom DIR          ROM folder: MAME sets as zips or folders (default: the
+                     last one used, or rom)
   --mix SFX:MUSIC    sound board and music board gains in dB (default 8:-8)
   --no-sound         don't run the sound boards
   --hud center|edges wide windows: keep the HUD centred, or move each HUD
@@ -44,216 +54,86 @@ usage: remodel-play [--game ID] [--rom DIR] [--mix SFX:MUSIC] [--no-sound] [--hu
   --input SCRIPT     scripted inputs, as for `remodel run` (for timing runs),
                      e.g. coin1@1100-1104,start@1250-1254
 
+Options given here are remembered, as are changes made in the menu.
+
 keys: C coin, Enter start, arrows steer (Down slide), Z jump front, X jump
-tail, Q/E select, F11 fullscreen, Esc quit. Gamepads work too.
+tail, Q/E select, Esc menu (pause), F5 quick save, F9 quick load, F11
+fullscreen. Gamepads work too.
 ";
 
 /// Model 2 video frame rate.
 const FPS: f64 = 57.524;
 /// Most emulated frames run per redraw before dropping time.
 const MAX_CATCH_UP: u32 = 3;
-/// Audio the sound queue should hold (seconds); output starts once it does.
-const AUDIO_TARGET: f64 = 0.05;
-/// Most the audio rate is stretched to keep the queue at `AUDIO_TARGET`.
-const DRIFT: f64 = 0.005;
-/// Most audio queued before the oldest is dropped (seconds).
-const AUDIO_MAX: f64 = 0.25;
 /// Narrowest and widest views; windows beyond are letterboxed.
 const ASPECTS: (f32, f32) = (4.0 / 3.0, 32.0 / 9.0);
 
+/// Options for this run only (the rest go into the settings).
 struct Options {
-    game: String,
-    rom: PathBuf,
-    mix: (f32, f32),
     sound: bool,
-    hud: model2::video::Hud,
     interp: bool,
-    fullscreen: bool,
-    exact: bool,
     seconds: Option<f64>,
     input: Option<model2::input::InputScript>,
 }
 
-fn options() -> Result<Options, String> {
-    let mut o = Options {
-        game: "topskatr".into(),
-        rom: PathBuf::from("rom"),
-        mix: model2::audio::DEFAULT_MIX,
-        sound: true,
-        hud: model2::video::Hud::Edges,
-        interp: false,
-        fullscreen: false,
-        exact: false,
-        seconds: None,
-        input: None,
-    };
+fn options(s: &mut Settings) -> Result<Options, String> {
+    let mut o = Options { sound: true, interp: false, seconds: None, input: None };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{a} needs a value"));
         match a.as_str() {
-            "--game" => o.game = value()?,
-            "--rom" => o.rom = PathBuf::from(value()?),
+            "--game" => s.game = value()?,
+            "--rom" => s.rom = PathBuf::from(value()?),
             "--mix" => {
                 let v = value()?;
-                let (s, m) = v.split_once(':').ok_or("--mix wants SFX:MUSIC")?;
-                o.mix = (s.parse().map_err(|_| "bad --mix")?, m.parse().map_err(|_| "bad --mix")?);
+                let (x, y) = v.split_once(':').ok_or("--mix wants SFX:MUSIC")?;
+                (s.sfx_db, s.music_db) = (x.parse().map_err(|_| "bad --mix")?, y.parse().map_err(|_| "bad --mix")?);
             }
             "--no-sound" => o.sound = false,
-            "--hud" => {
-                o.hud = if value()? == "center" { model2::video::Hud::Center } else { model2::video::Hud::Edges }
-            }
+            "--hud" => s.hud_edges = value()? != "center",
             "--interp" => o.interp = true,
-            "--fullscreen" => o.fullscreen = true,
-            "--exact" => o.exact = true,
+            "--fullscreen" => s.fullscreen = true,
+            "--exact" => s.exact = true,
             "--input" => o.input = Some(model2::input::InputScript::parse(&value()?)?),
             "--seconds" => o.seconds = Some(value()?.parse().map_err(|_| "bad --seconds")?),
+            "-h" | "--help" => return Err(String::new()),
             _ => return Err(format!("unknown option {a}")),
         }
     }
     Ok(o)
 }
 
-/// One frame's sound link bytes (as `Model2Bus::uart_log`) and the cycle
-/// to render up to.
-type Link = (Vec<(u64, bool, u8)>, u64);
-
-/// Audio queue shared with the output callback: interleaved stereo at the
-/// device's rate.
-#[derive(Default)]
-struct Queue {
-    samples: std::collections::VecDeque<f32>,
-    underruns: u64,
-    /// Playing (else filling up to `AUDIO_TARGET` first).
-    primed: bool,
-    /// Samples per second (per channel) at the device.
-    rate: f64,
+/// The game being played.
+struct Session {
+    game: &'static romset::Game,
+    machine: model2::Machine,
+    sound: Option<Sound>,
 }
 
-/// The sound boards on their own thread, playing through cpal.
-struct Sound {
-    _stream: cpal::Stream,
-    queue: Arc<Mutex<Queue>>,
-    /// Each frame's sound link bytes and the cycle to render up to.
-    link: mpsc::Sender<Link>,
-    /// Output samples (44.1 kHz) the game asked for, and the thread made.
-    asked: u64,
-    made: Arc<AtomicU64>,
-    rate: u32,
-    /// Game samples per real-time sample (f64 bits): the game's speed
-    /// relative to real time, times the drift correction.
-    ratio: Arc<AtomicU64>,
-}
-
-impl Sound {
-    fn new(roms: &romset::RomSet, mix: (f32, f32)) -> Result<Sound, String> {
-        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-        let device = cpal::default_host().default_output_device().ok_or("no audio output device")?;
-        let supported = device.default_output_config().map_err(|e| format!("audio: {e}"))?;
-        let rate = supported.sample_rate();
-        let channels = supported.channels() as usize;
-        let config = supported.config();
-        let queue = Arc::new(Mutex::new(Queue { rate: rate as f64, ..Queue::default() }));
-        let q = queue.clone();
-        let stream = match supported.sample_format() {
-            cpal::SampleFormat::F32 => device.build_output_stream(
-                config,
-                move |out: &mut [f32], _: &cpal::OutputCallbackInfo| fill(&q, out, channels, |v| v),
-                |e| eprintln!("audio: {e}"),
-                None,
-            ),
-            cpal::SampleFormat::I16 => device.build_output_stream(
-                config,
-                move |out: &mut [i16], _: &cpal::OutputCallbackInfo| {
-                    fill(&q, out, channels, |v| (v * 32767.0).clamp(-32768.0, 32767.0) as i16)
-                },
-                |e| eprintln!("audio: {e}"),
-                None,
-            ),
-            f => return Err(format!("audio: unsupported sample format {f:?}")),
-        }
-        .map_err(|e| format!("audio: {e}"))?;
-        stream.play().map_err(|e| format!("audio: {e}"))?;
-
-        let (link, rx) = mpsc::channel::<Link>();
-        let made = Arc::new(AtomicU64::new(0));
-        let mut live = model2::audio::Live::new(roms);
-        live.set_mix(mix.0, mix.1);
-        let ratio = Arc::new(AtomicU64::new(1f64.to_bits()));
-        let (q, m, r) = (queue.clone(), made.clone(), ratio.clone());
-        std::thread::Builder::new()
-            .name("sound".into())
-            .spawn(move || {
-                let mut pcm = Vec::new();
-                // Game time at 44.1 kHz to the device rate.
-                let base = model2::audio::RATE as f64 / rate as f64;
-                let mut resampler = model2::audio::Resampler::default();
-                let max = (AUDIO_MAX * rate as f64) as usize * 2;
-                while let Ok((bytes, until)) = rx.recv() {
-                    pcm.clear();
-                    live.feed(&bytes, until, &mut pcm);
-                    m.fetch_add(pcm.len() as u64 / 2, Ordering::Relaxed);
-                    let step = base * f64::from_bits(r.load(Ordering::Relaxed));
-                    let mut out = Vec::with_capacity(pcm.len() * 2);
-                    resampler.run(&pcm, step, &mut out);
-                    let mut q = q.lock().unwrap();
-                    q.samples.extend(out);
-                    let excess = q.samples.len().saturating_sub(max);
-                    q.samples.drain(..excess);
-                }
-            })
-            .map_err(|e| e.to_string())?;
-        Ok(Sound { _stream: stream, queue, link, asked: 0, made, rate, ratio })
+impl Session {
+    fn dir(&self) -> PathBuf {
+        settings::data_dir().join(self.game.id)
     }
 
-    /// Set the game's speed relative to real time (1 = exact), corrected
-    /// for drift to hold the queue at `AUDIO_TARGET`.
-    fn set_speed(&self, speed: f64) {
-        let error = ((self.queued() - AUDIO_TARGET) / AUDIO_TARGET).clamp(-1.0, 1.0);
-        self.ratio.store((speed * (1.0 + error * DRIFT)).to_bits(), Ordering::Relaxed);
+    fn slot_path(&self, slot: u8) -> PathBuf {
+        let name = if slot == 0 { "quick.save".to_string() } else { format!("slot{slot}.save") };
+        self.dir().join("saves").join(name)
     }
 
-    /// Seconds of audio queued or still being made.
-    fn queued(&self) -> f64 {
-        let in_queue = self.queue.lock().unwrap().samples.len() as f64 / 2.0 / self.rate as f64;
-        let in_flight = self.asked.saturating_sub(self.made.load(Ordering::Relaxed));
-        in_queue + in_flight as f64 / model2::audio::RATE as f64
-    }
-
-    /// Send the sound link bytes written since the last call.
-    fn send(&mut self, bus: &mut model2::Model2Bus) {
-        let target = (bus.now as u128 * model2::audio::RATE as u128 / model2::bus::CPU_HZ as u128) as u64;
-        self.asked = target;
-        let _ = self.link.send((std::mem::take(&mut bus.uart_log), bus.now));
-    }
-}
-
-/// Copy queued audio into a device buffer of `channels` channels.
-fn fill<T: Copy>(q: &Mutex<Queue>, out: &mut [T], channels: usize, conv: impl Fn(f32) -> T) {
-    let mut q = q.lock().unwrap();
-    if !q.primed && q.samples.len() as f64 >= AUDIO_TARGET * q.rate * 2.0 {
-        q.primed = true;
-    }
-    if !q.primed {
-        out.iter_mut().for_each(|s| *s = conv(0.0));
-        return;
-    }
-    let mut dry = false;
-    for frame in out.chunks_mut(channels) {
-        let (l, r) = match (q.samples.pop_front(), q.samples.pop_front()) {
-            (Some(l), Some(r)) => (l, r),
-            _ => {
-                dry = true;
-                (0.0, 0.0)
-            }
-        };
-        for (c, s) in frame.iter_mut().enumerate() {
-            *s = conv(if c % 2 == 0 { l } else { r });
+    fn save_eeprom(&self) {
+        let bus = &self.machine.bus;
+        if bus.eeprom.dirty {
+            let _ = std::fs::create_dir_all(self.dir());
+            let _ = std::fs::write(self.dir().join("eeprom.bin"), bus.eeprom.save());
         }
     }
-    if dry {
-        q.underruns += 1;
-        q.primed = false;
-    }
+}
+
+/// egui over the game: its context, window input and renderer.
+struct Overlay {
+    ctx: egui::Context,
+    state: egui_winit::State,
+    renderer: egui_wgpu::Renderer,
 }
 
 struct Gpu {
@@ -265,34 +145,61 @@ struct Gpu {
     origin: (u32, u32),
     /// The display's refresh rate (Hz), if known.
     refresh: Option<f64>,
+    overlay: Overlay,
+}
+
+/// Status line counters for the current one-second window.
+struct Stats {
+    start: Instant,
+    emulated: u32,
+    drawn: u32,
+    emulating: Duration,
+    /// Redraws that showed no new game frame, and the longest time between
+    /// new frames.
+    repeats: u32,
+    longest_gap: Duration,
+    last_new: Instant,
+    reports: u64,
+    surface_misses: u64,
+}
+
+impl Stats {
+    fn new() -> Self {
+        Stats {
+            start: Instant::now(),
+            emulated: 0,
+            drawn: 0,
+            emulating: Duration::ZERO,
+            repeats: 0,
+            longest_gap: Duration::ZERO,
+            last_new: Instant::now(),
+            reports: 0,
+            surface_misses: 0,
+        }
+    }
 }
 
 struct Play {
     opts: Options,
-    machine: model2::Machine,
-    sound: Option<Sound>,
+    settings: Settings,
+    /// Settings as last applied (to see what the menu changed).
+    applied: Settings,
+    session: Option<Session>,
+    /// Playable games in the ROM folder, and how many sets aren't supported.
+    games: Vec<(String, &'static str)>,
+    unsupported: usize,
+    menu: menu::Menu,
     gpu: Option<Gpu>,
     keys: HashSet<KeyCode>,
     gilrs: Option<Gilrs>,
     /// The gamepad last used (a button or stick moved): keyboards' media-key
     /// interfaces show up as gamepads too, so wait to see which one plays.
     pad: Option<gilrs::GamepadId>,
-    hud_windows: u32,
-    eeprom: PathBuf,
     /// Real time that emulated frame 0 corresponds to.
     epoch: Instant,
-    /// Status window: start, frames emulated and drawn, emulation time.
-    counter: (Instant, u32, u32, Duration),
-    stopped: bool,
-    /// Redraws where the surface gave no texture to draw into.
-    surface_misses: u64,
-    /// Status reports so far (printed every fifth).
-    reports: u64,
-    started: Instant,
-    repeats: u32,
-    longest_gap: Duration,
-    last_new: Instant,
     redraws: u64,
+    stats: Stats,
+    started: Instant,
 }
 
 /// The refresh rate (Hz) of the monitor `window` is on, if known.
@@ -301,43 +208,170 @@ fn refresh_hz(window: &Window) -> Option<f64> {
 }
 
 impl Play {
+    /// Find the playable games in the ROM folder.
+    fn scan(&mut self) {
+        let sets = romset::sets_in(&self.settings.rom);
+        self.games = sets.iter().filter_map(|s| romset::games::find(s).ok().map(|g| (s.clone(), g.title))).collect();
+        self.unsupported = sets.len() - self.games.len();
+        self.menu.rom_text = self.settings.rom.display().to_string();
+    }
+
+    /// Start `set` from power-on (saving the current game's EEPROM first).
+    fn start_game(&mut self, set: &str) {
+        if let Some(s) = self.session.take() {
+            s.save_eeprom();
+        }
+        let started = romset::games::find(set).map_err(|e| e.to_string()).and_then(|game| {
+            let roms = romset::RomSet::load(game, &self.settings.rom, false).map_err(|e| e.to_string())?;
+            let mut machine = model2::Machine::new(&roms);
+            if self.opts.interp {
+                machine.disable_native();
+            }
+            let dir = settings::data_dir().join(game.id);
+            if let Ok(bytes) = std::fs::read(dir.join("eeprom.bin")) {
+                machine.bus.eeprom.load(&bytes);
+            }
+            let sound = if self.opts.sound {
+                Sound::new(&roms, (self.settings.sfx_db, self.settings.music_db))
+                    .inspect_err(|e| eprintln!("{e}; playing without sound"))
+                    .ok()
+            } else {
+                None
+            };
+            println!(
+                "game          {} ({}), i960 {}{}",
+                game.title,
+                game.id,
+                if machine.is_native() { "recompiled" } else { "interpreted" },
+                sound.as_ref().map_or(String::new(), |s| format!(", audio {} Hz", s.rate))
+            );
+            Ok(Session { game, machine, sound })
+        });
+        match started {
+            Ok(s) => {
+                self.settings.game = set.to_string();
+                self.settings.save();
+                self.session = Some(s);
+                self.epoch = Instant::now();
+                self.refit();
+            }
+            Err(e) => {
+                eprintln!("{set}: {e}");
+                self.menu.notify(format!("Can't start {set}: {e}"));
+                self.menu.open = true;
+            }
+        }
+    }
+
+    fn save_slot(&mut self, slot: u8) {
+        let Some(s) = &mut self.session else { return };
+        let live = s.sound.as_ref().map(|snd| snd.save());
+        let data = model2::save_session_parts(&mut s.machine, live);
+        let path = s.slot_path(slot);
+        let result = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&path, data));
+        let name = if slot == 0 { "Quick save".to_string() } else { format!("Saved to slot {slot}") };
+        self.menu.notify(match result {
+            Ok(()) => name,
+            Err(e) => format!("Save failed: {e}"),
+        });
+    }
+
+    fn load_slot(&mut self, slot: u8) {
+        let Some(s) = &mut self.session else { return };
+        let data = match std::fs::read(s.slot_path(slot)) {
+            Ok(d) => d,
+            Err(_) => return self.menu.notify(if slot == 0 { "No quick save yet" } else { "That slot is empty" }),
+        };
+        let result = model2::load_session_parts(&mut s.machine, &data).and_then(|live| match &mut s.sound {
+            Some(snd) if !live.is_empty() => snd.load(live, &s.machine.bus),
+            _ => Ok(()),
+        });
+        match result {
+            Ok(()) => {
+                self.epoch = Instant::now() - Duration::from_secs_f64(s.machine.frames as f64 / FPS);
+                self.menu.notify(if slot == 0 { "Quick load".to_string() } else { format!("Loaded slot {slot}") });
+            }
+            Err(e) => {
+                // The machine may be half loaded: start the game afresh.
+                let set = s.game.id.to_string();
+                self.start_game(&set);
+                self.menu.notify(format!("Load failed: {e}"));
+            }
+        }
+    }
+
+    fn slot_times(&self) -> Vec<Option<SystemTime>> {
+        let Some(s) = &self.session else { return Vec::new() };
+        (0..menu::SLOTS).map(|n| std::fs::metadata(s.slot_path(n)).and_then(|m| m.modified()).ok()).collect()
+    }
+
+    /// Apply what the menu changed in the settings, and remember them.
+    fn apply_settings(&mut self) {
+        if self.settings == self.applied {
+            return;
+        }
+        let (old, new) = (&self.applied, &self.settings);
+        if (old.sfx_db, old.music_db) != (new.sfx_db, new.music_db) {
+            if let Some(snd) = self.session.as_ref().and_then(|s| s.sound.as_ref()) {
+                snd.set_mix(new.sfx_db, new.music_db);
+            }
+        }
+        if old.fullscreen != new.fullscreen {
+            if let Some(g) = &self.gpu {
+                g.window.set_fullscreen(new.fullscreen.then_some(Fullscreen::Borderless(None)));
+            }
+        }
+        let refit = old.hud_edges != new.hud_edges;
+        self.settings.save();
+        self.applied = self.settings.clone();
+        if refit {
+            self.refit();
+        }
+    }
+
     /// Fit a view into the window: full size between `ASPECTS`, else
     /// letterboxed. Returns it and its top-left corner.
     fn fit(&self, w: u32, h: u32) -> (model2::video::View, (u32, u32)) {
         let aspect = w as f32 / h.max(1) as f32;
         let a = aspect.clamp(ASPECTS.0, ASPECTS.1);
-        let (vw, vh) = if a < aspect { ((h as f32 * a) as u32, h) } else { (w, (w as f32 / a) as u32) };
-        let mut view = model2::video::View::new(vh.max(1) as usize, a, self.opts.hud);
-        view.hud_windows = self.hud_windows;
+        let vh = if a < aspect { h } else { (w as f32 / a) as u32 };
+        let hud = if self.settings.hud_edges { model2::video::Hud::Edges } else { model2::video::Hud::Center };
+        let mut view = model2::video::View::new(vh.max(1) as usize, a, hud);
+        view.hud_windows = self.session.as_ref().map_or(0, |s| s.game.hud_windows.iter().fold(0, |m, &w| m | 1 << w));
         let origin = ((w - (view.width as u32).min(w)) / 2, (h - (view.height as u32).min(h)) / 2);
-        let _ = vw;
         (view, origin)
     }
 
+    fn refit(&mut self) {
+        if let Some((w, h)) = self.gpu.as_ref().map(|g| (g.config.width, g.config.height)) {
+            let (view, origin) = self.fit(w, h);
+            let g = self.gpu.as_mut().unwrap();
+            (g.view, g.origin) = (view, origin);
+        }
+    }
+
     fn resize(&mut self, w: u32, h: u32) {
-        let (view, origin) = self.fit(w, h);
         if let Some(g) = &mut self.gpu {
             g.config.width = w.max(1);
             g.config.height = h.max(1);
             g.surface.configure(g.renderer.device(), &g.config);
-            g.view = view;
-            g.origin = origin;
             // A resize can mean the window moved to another monitor.
             g.refresh = refresh_hz(&g.window);
         }
+        self.refit();
     }
 
     /// Game frames per display refresh when the game follows the display
     /// (1 at about 60 Hz, 1/2 at about 120 Hz), or None to follow the clock.
     fn per_refresh(&self) -> Option<f64> {
         let hz = self.gpu.as_ref()?.refresh?;
-        if self.opts.exact {
+        if self.settings.exact {
             return None;
         }
         [1.0, 0.5].into_iter().find(|k| (0.95..=1.1).contains(&(hz * k / FPS)))
     }
 
-    /// Keyboard and the first gamepad onto the cabinet's controls.
+    /// Keyboard and the last used gamepad onto the cabinet's controls.
     fn apply_inputs(&mut self) {
         let mut pad = None;
         if let Some(g) = &mut self.gilrs {
@@ -348,6 +382,7 @@ impl Play {
             }
             pad = self.pad.map(|id| g.gamepad(id));
         }
+        let Some(s) = &mut self.session else { return };
         let key = |k: KeyCode| self.keys.contains(&k);
         let pressed = |b: Button| pad.as_ref().is_some_and(|p| p.is_pressed(b));
         let stick = pad.as_ref().map_or(0.0, |p| p.value(Axis::LeftStickX)).clamp(-1.0, 1.0);
@@ -361,7 +396,7 @@ impl Play {
             stick
         };
         let slide = if key(KeyCode::ArrowDown) || key(KeyCode::Space) || pressed(Button::East) { 1.0 } else { trigger };
-        let bus = &mut self.machine.bus;
+        let bus = &mut s.machine.bus;
         // Steering: 0x10 carves right, 0xF0 left, 0x80 centred.
         model2::input::set_analog(bus, "curving", (128.0 - steer * 112.0).round() as u8);
         model2::input::set_analog(bus, "slide", (128.0 + slide * 112.0).round() as u8);
@@ -377,119 +412,224 @@ impl Play {
         }
     }
 
-    /// Run the frames that are due, then draw.
-    fn frame(&mut self) {
-        if self.stopped {
-            return;
-        }
+    /// Run the frames that are due (unless paused in the menu).
+    fn emulate(&mut self) -> Result<u32, i960::cpu::Stop> {
         let now = Instant::now();
         self.redraws += 1;
+        if self.menu.open || self.session.is_none() {
+            // Paused: keep the clock with the game for when it resumes.
+            if let Some(s) = &self.session {
+                self.epoch = now - Duration::from_secs_f64(s.machine.frames as f64 / FPS);
+            }
+            return Ok(0);
+        }
+        let frames = self.session.as_ref().map_or(0, |s| s.machine.frames);
         // Follow the display (one frame per refresh, or per two) or the clock.
         let (due, speed) = match self.per_refresh() {
             Some(k) => {
                 let hz = self.gpu.as_ref().and_then(|g| g.refresh).unwrap_or(60.0);
-                let due = self.machine.frames + (k == 1.0 || self.redraws.is_multiple_of(2)) as u64;
-                (due, hz * k / FPS)
+                (frames + (k == 1.0 || self.redraws.is_multiple_of(2)) as u64, hz * k / FPS)
             }
             None => (((now - self.epoch).as_secs_f64() * FPS) as u64, 1.0),
         };
-        if let Some(s) = &self.sound {
-            s.set_speed(speed);
+        if let Some(snd) = self.session.as_ref().and_then(|s| s.sound.as_ref()) {
+            snd.set_speed(speed);
         }
-        let t0 = Instant::now();
         let mut ran = 0;
-        while self.machine.frames < due && ran < MAX_CATCH_UP {
-            match &self.opts.input {
-                Some(script) => script.apply(self.machine.frames, &mut self.machine.bus),
+        while self.session.as_ref().is_some_and(|s| s.machine.frames < due) && ran < MAX_CATCH_UP {
+            match self.opts.input.take() {
+                Some(script) => {
+                    let s = self.session.as_mut().unwrap();
+                    script.apply(s.machine.frames, &mut s.machine.bus);
+                    self.opts.input = Some(script);
+                }
                 None => self.apply_inputs(),
             }
-            if let Err(e) = self.machine.run_slice(u64::MAX) {
-                eprintln!("stopped: {e:?}");
-                self.stopped = true;
-                return;
-            }
-            match &mut self.sound {
-                Some(s) => s.send(&mut self.machine.bus),
-                None => self.machine.bus.uart_log.clear(),
+            let s = self.session.as_mut().unwrap();
+            s.machine.run_slice(u64::MAX)?;
+            match &mut s.sound {
+                Some(snd) => snd.send(&mut s.machine.bus),
+                None => s.machine.bus.uart_log.clear(),
             }
             ran += 1;
         }
-        if self.per_refresh().is_some() || self.machine.frames < due {
+        let frames = self.session.as_ref().map_or(0, |s| s.machine.frames);
+        if self.per_refresh().is_some() || frames < due {
             // Following the display (or fell behind): keep the clock current.
-            self.epoch = now - Duration::from_secs_f64(self.machine.frames as f64 / FPS);
+            self.epoch = now - Duration::from_secs_f64(frames as f64 / FPS);
         }
-        self.counter.3 += t0.elapsed();
-        self.counter.1 += ran;
-        // Pacing: redraws that showed no new game frame (a repeat on
-        // screen), and the longest time between new frames.
-        if ran == 0 {
-            self.repeats += 1;
-        } else {
-            self.longest_gap = self.longest_gap.max(self.last_new.elapsed());
-            self.last_new = Instant::now();
-        }
-        if let Some(g) = &mut self.gpu {
-            match g.surface.get_current_texture() {
-                wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
-                    let target = frame.texture.create_view(&Default::default());
-                    g.renderer.present_bus(&mut self.machine.bus, None, &g.view, &target, g.config.format, g.origin);
-                    g.renderer.queue().present(frame);
-                    self.counter.2 += 1;
-                }
-                // Lost, outdated, hidden or timed out: reconfigure, skip a draw.
-                _ => {
-                    g.surface.configure(g.renderer.device(), &g.config);
-                    self.surface_misses += 1;
-                }
-            }
-        }
-        let secs = self.counter.0.elapsed().as_secs_f64();
-        if secs >= 1.0 {
-            let (emulated, drawn) = (self.counter.1, self.counter.2);
-            let audio = self.sound.as_ref().map_or(String::new(), |s| {
-                let underruns = s.queue.lock().unwrap().underruns;
-                format!(" · audio {:.0} ms queued, {underruns} underruns", s.queued() * 1000.0)
-            });
-            let mode = match (self.per_refresh(), self.gpu.as_ref().and_then(|g| g.refresh)) {
-                (Some(_), Some(hz)) => format!("synced to {hz:.0} Hz"),
-                _ => "exact speed".into(),
-            };
-            let status = format!(
-                "{mode} · {:.0}% speed · {:.0} fps ({} repeats, longest gap {:.0} ms) · i960 {} · emulate {:.1} ms/frame{audio}{}",
-                emulated as f64 / secs / FPS * 100.0,
-                drawn as f64 / secs,
-                self.repeats,
-                self.longest_gap.as_secs_f64() * 1000.0,
-                if self.machine.is_native() { "recompiled" } else { "interpreted" },
-                self.counter.3.as_secs_f64() * 1000.0 / emulated.max(1) as f64,
-                if self.surface_misses > 0 {
-                    format!(" · {} draws skipped", self.surface_misses)
-                } else {
-                    String::new()
-                },
-            );
-            if let Some(g) = &self.gpu {
-                g.window
-                    .set_title(&format!("Remodel: {} · {}x{} · {status}", self.opts.game, g.view.width, g.view.height));
-            }
-            self.reports += 1;
-            if self.reports.is_multiple_of(5) {
-                println!("status        {status}");
-            }
-            self.counter = (Instant::now(), 0, 0, Duration::ZERO);
-            self.repeats = 0;
-            self.longest_gap = Duration::ZERO;
-        }
+        Ok(ran)
     }
 
-    fn save_eeprom(&self) {
-        if self.machine.bus.eeprom.dirty {
-            if let Some(dir) = self.eeprom.parent() {
-                let _ = std::fs::create_dir_all(dir);
+    /// One redraw: run the game, draw it and the menu, report status.
+    fn frame(&mut self, el: &ActiveEventLoop) {
+        let t0 = Instant::now();
+        match self.emulate() {
+            Ok(ran) => {
+                let st = &mut self.stats;
+                st.emulating += t0.elapsed();
+                st.emulated += ran;
+                if ran == 0 && !self.menu.open {
+                    st.repeats += 1;
+                } else if ran > 0 {
+                    st.longest_gap = st.longest_gap.max(st.last_new.elapsed());
+                    st.last_new = Instant::now();
+                }
             }
-            let _ = std::fs::write(&self.eeprom, self.machine.bus.eeprom.save());
+            Err(e) => {
+                eprintln!("stopped: {e:?}");
+                self.menu.notify(format!("The game stopped: {e:?}"));
+                self.session = None;
+                self.menu.open = true;
+            }
+        }
+        let slots = if self.menu.open { self.slot_times() } else { Vec::new() };
+        let Some(g) = &mut self.gpu else { return };
+        let frame = match g.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+            // Lost, outdated, hidden or timed out: reconfigure, skip a draw.
+            _ => {
+                g.surface.configure(g.renderer.device(), &g.config);
+                self.stats.surface_misses += 1;
+                return;
+            }
+        };
+        let target = frame.texture.create_view(&Default::default());
+        if let Some(s) = &mut self.session {
+            g.renderer.present_bus(&mut s.machine.bus, None, &g.view, &target, g.config.format, g.origin);
+        }
+        let mut actions = Vec::new();
+        if self.menu.visible() || self.session.is_none() {
+            let view = menu::View {
+                playing: self.session.as_ref().map(|s| s.game.title),
+                games: &self.games,
+                unsupported: self.unsupported,
+                slots: &slots,
+            };
+            let (menu, settings) = (&mut self.menu, &mut self.settings);
+            actions = draw_overlay(g, &target, self.session.is_none(), |ctx| menu.ui(ctx, settings, &view));
+        }
+        g.renderer.queue().present(frame);
+        self.stats.drawn += 1;
+        for action in actions {
+            match action {
+                menu::Action::Resume => self.set_menu(false),
+                menu::Action::Save(n) => self.save_slot(n),
+                menu::Action::Load(n) => {
+                    self.load_slot(n);
+                    self.set_menu(false);
+                }
+                menu::Action::Game(set) => {
+                    self.start_game(&set);
+                    self.set_menu(self.session.is_none());
+                }
+                menu::Action::Rescan => self.scan(),
+                menu::Action::Quit => self.quit(el),
+            }
+        }
+        self.apply_settings();
+        self.status();
+    }
+
+    fn status(&mut self) {
+        let secs = self.stats.start.elapsed().as_secs_f64();
+        if secs < 1.0 {
+            return;
+        }
+        let st = &self.stats;
+        let snd = self.session.as_ref().and_then(|s| s.sound.as_ref());
+        let audio = snd.map_or(String::new(), |s| {
+            let underruns = s.queue.lock().unwrap().underruns;
+            format!(" · audio {:.0} ms queued, {underruns} underruns", s.queued() * 1000.0)
+        });
+        let mode = match (self.per_refresh(), self.gpu.as_ref().and_then(|g| g.refresh)) {
+            (Some(_), Some(hz)) => format!("synced to {hz:.0} Hz"),
+            _ => "exact speed".into(),
+        };
+        let status = format!(
+            "{mode} · {:.0}% speed · {:.0} fps ({} repeats, longest gap {:.0} ms) · emulate {:.1} ms/frame{audio}{}",
+            st.emulated as f64 / secs / FPS * 100.0,
+            st.drawn as f64 / secs,
+            st.repeats,
+            st.longest_gap.as_secs_f64() * 1000.0,
+            st.emulating.as_secs_f64() * 1000.0 / st.emulated.max(1) as f64,
+            if st.surface_misses > 0 { format!(" · {} draws skipped", st.surface_misses) } else { String::new() },
+        );
+        if let Some(g) = &self.gpu {
+            let game = self.session.as_ref().map_or("no game", |s| s.game.title);
+            g.window.set_title(&format!("Remodel: {game} · {}x{} · {status}", g.view.width, g.view.height));
+        }
+        let reports = self.stats.reports + 1;
+        if reports.is_multiple_of(5) && !self.menu.open {
+            println!("status        {status}");
+        }
+        let misses = self.stats.surface_misses;
+        self.stats = Stats { reports, surface_misses: misses, ..Stats::new() };
+    }
+
+    /// Open or close the menu; the game pauses while it's open.
+    fn set_menu(&mut self, open: bool) {
+        self.menu.open = open || self.session.is_none();
+        // Keys held when the menu opened would stay pressed otherwise.
+        self.keys.clear();
+    }
+
+    fn quit(&mut self, el: &ActiveEventLoop) {
+        if let Some(s) = &self.session {
+            s.save_eeprom();
+        }
+        self.settings.save();
+        el.exit();
+    }
+}
+
+/// Draw egui over `target`, building the UI with `ui`; returns what it
+/// returned. `clear` clears to black first (no game under it).
+fn draw_overlay<T: Default>(
+    g: &mut Gpu,
+    target: &wgpu::TextureView,
+    clear: bool,
+    mut ui: impl FnMut(&egui::Context) -> T,
+) -> T {
+    let o = &mut g.overlay;
+    let raw = o.state.take_egui_input(&g.window);
+    let mut result = T::default();
+    let out = o.ctx.run_ui(raw, |ui_root| result = ui(ui_root.ctx()));
+    o.state.handle_platform_output(&g.window, out.platform_output);
+    let jobs = o.ctx.tessellate(out.shapes, out.pixels_per_point);
+    let (device, queue) = (g.renderer.device(), g.renderer.queue());
+    for (id, deltas) in &out.textures_delta.set {
+        for delta in deltas {
+            o.renderer.update_texture(device, queue, *id, delta);
         }
     }
+    let screen = egui_wgpu::ScreenDescriptor {
+        size_in_pixels: [g.config.width, g.config.height],
+        pixels_per_point: out.pixels_per_point,
+    };
+    let mut enc = device.create_command_encoder(&Default::default());
+    let extra = o.renderer.update_buffers(device, queue, &mut enc, &jobs, &screen);
+    {
+        let load = if clear { wgpu::LoadOp::Clear(wgpu::Color::BLACK) } else { wgpu::LoadOp::Load };
+        let mut pass = enc
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("menu"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
+                })],
+                ..Default::default()
+            })
+            .forget_lifetime();
+        o.renderer.render(&mut pass, &jobs, &screen);
+    }
+    queue.submit(extra.into_iter().chain([enc.finish()]));
+    for id in &out.textures_delta.free {
+        o.renderer.free_texture(id);
+    }
+    result
 }
 
 impl ApplicationHandler for Play {
@@ -500,7 +640,7 @@ impl ApplicationHandler for Play {
         let attrs = Window::default_attributes()
             .with_title("Remodel")
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0))
-            .with_fullscreen(self.opts.fullscreen.then_some(Fullscreen::Borderless(None)));
+            .with_fullscreen(self.settings.fullscreen.then_some(Fullscreen::Borderless(None)));
         let window = Arc::new(el.create_window(attrs).expect("create window"));
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(
             el.owned_display_handle(),
@@ -531,48 +671,65 @@ impl ApplicationHandler for Play {
         config.present_mode = wgpu::PresentMode::AutoVsync;
         surface.configure(&device, &config);
         println!("gpu           {name}");
+        let ctx = egui::Context::default();
+        let state = egui_winit::State::new(
+            ctx.clone(),
+            egui::ViewportId::ROOT,
+            &window,
+            Some(window.scale_factor() as f32),
+            None,
+            Some(device.limits().max_texture_dimension_2d as usize),
+        );
+        let egui_renderer = egui_wgpu::Renderer::new(&device, config.format, Default::default());
         let renderer = gpu::Renderer::from_device(device, queue, name);
         let (view, origin) = self.fit(config.width, config.height);
         // Redraws drive everything; Wayland sends none until asked.
         window.request_redraw();
         let refresh = refresh_hz(&window);
-        self.gpu = Some(Gpu { window, surface, config, renderer, view, origin, refresh });
+        let overlay = Overlay { ctx, state, renderer: egui_renderer };
+        self.gpu = Some(Gpu { window, surface, config, renderer, view, origin, refresh, overlay });
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
-        match event {
-            WindowEvent::CloseRequested => {
-                self.save_eeprom();
-                el.exit();
+        let to_menu = match &mut self.gpu {
+            Some(g) => {
+                let r = g.overlay.state.on_window_event(&g.window, &event);
+                self.menu.open && r.consumed
             }
+            None => false,
+        };
+        match event {
+            WindowEvent::CloseRequested => self.quit(el),
             WindowEvent::Resized(size) => self.resize(size.width, size.height),
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else { return };
-                match event.state {
-                    ElementState::Pressed => {
-                        if code == KeyCode::Escape {
-                            self.save_eeprom();
-                            el.exit();
-                        } else if code == KeyCode::F11 {
-                            if let Some(g) = &self.gpu {
-                                let full = g.window.fullscreen().is_some();
-                                g.window.set_fullscreen((!full).then_some(Fullscreen::Borderless(None)));
-                            }
+                let pressed = event.state == ElementState::Pressed;
+                if pressed && !event.repeat {
+                    match code {
+                        KeyCode::Escape => return self.set_menu(!self.menu.open),
+                        KeyCode::F11 => {
+                            self.settings.fullscreen = !self.settings.fullscreen;
+                            return;
                         }
-                        self.keys.insert(code);
+                        KeyCode::F5 => return self.save_slot(0),
+                        KeyCode::F9 => return self.load_slot(0),
+                        _ => {}
                     }
-                    ElementState::Released => {
-                        self.keys.remove(&code);
-                    }
+                }
+                if self.menu.open || to_menu {
+                    return;
+                }
+                if pressed {
+                    self.keys.insert(code);
+                } else {
+                    self.keys.remove(&code);
                 }
             }
             WindowEvent::RedrawRequested => {
                 if self.opts.seconds.is_some_and(|s| self.started.elapsed().as_secs_f64() >= s) {
-                    self.save_eeprom();
-                    el.exit();
-                    return;
+                    return self.quit(el);
                 }
-                self.frame();
+                self.frame(el);
                 if let Some(g) = &self.gpu {
                     g.window.request_redraw();
                 }
@@ -583,49 +740,16 @@ impl ApplicationHandler for Play {
 }
 
 fn main() {
-    let opts = match options() {
+    let mut settings = Settings::load();
+    let opts = match options(&mut settings) {
         Ok(o) => o,
         Err(e) => {
-            eprint!("error: {e}\n\n{USAGE}");
+            if !e.is_empty() {
+                eprintln!("error: {e}\n");
+            }
+            eprint!("{USAGE}");
             std::process::exit(2);
         }
-    };
-    let game = match romset::games::find(&opts.game) {
-        Ok(g) => g,
-        Err(e) => {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        }
-    };
-    let roms = match romset::RomSet::load(game, &opts.rom, false) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        }
-    };
-    let mut machine = model2::Machine::new(&roms);
-    if opts.interp {
-        machine.disable_native();
-    }
-    println!("i960          {}", if machine.is_native() { "recompiled" } else { "interpreter" });
-    let eeprom = PathBuf::from("out").join(game.id).join("eeprom.bin");
-    if let Ok(bytes) = std::fs::read(&eeprom) {
-        machine.bus.eeprom.load(&bytes);
-    }
-    let sound = if opts.sound {
-        match Sound::new(&roms, opts.mix) {
-            Ok(s) => {
-                println!("audio         {} Hz, mix sound {:+} dB, music {:+} dB", s.rate, opts.mix.0, opts.mix.1);
-                Some(s)
-            }
-            Err(e) => {
-                eprintln!("{e}; playing without sound");
-                None
-            }
-        }
-    } else {
-        None
     };
     let gilrs = Gilrs::new().ok();
     if let Some(g) = &gilrs {
@@ -634,26 +758,31 @@ fn main() {
         }
     }
     let mut play = Play {
-        hud_windows: game.hud_windows.iter().fold(0, |m, &w| m | 1 << w),
         opts,
-        machine,
-        sound,
+        applied: settings.clone(),
+        settings,
+        session: None,
+        games: Vec::new(),
+        unsupported: 0,
+        menu: menu::Menu::default(),
         gpu: None,
         keys: HashSet::new(),
         gilrs,
         pad: None,
-        eeprom,
         epoch: Instant::now(),
-        counter: (Instant::now(), 0, 0, Duration::ZERO),
-        stopped: false,
-        surface_misses: 0,
-        reports: 0,
-        started: Instant::now(),
-        repeats: 0,
-        longest_gap: Duration::ZERO,
-        last_new: Instant::now(),
         redraws: 0,
+        stats: Stats::new(),
+        started: Instant::now(),
     };
+    play.scan();
+    // The last game played (or --game), if it's here; else the menu.
+    let set = play.settings.game.clone();
+    if play.games.iter().any(|g| g.0 == set) {
+        play.start_game(&set);
+    } else {
+        println!("no {set} in {}: choose a game in the menu", play.settings.rom.display());
+        play.menu.open = true;
+    }
     let event_loop = EventLoop::new().expect("event loop");
     event_loop.run_app(&mut play).expect("event loop");
 }
