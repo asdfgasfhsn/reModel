@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/reModel-logo.png" alt="Remodel" width="640"></p>
+
 # Remodel
 
 **Static recompilation toolkit for Sega Model 2 arcade games.**
