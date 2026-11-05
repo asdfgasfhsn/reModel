@@ -33,7 +33,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
@@ -584,6 +584,22 @@ impl Play {
         self.keys.clear();
     }
 
+    /// Quit if `--seconds` has run out, reporting the run; true if so.
+    fn time_up(&mut self, el: &ActiveEventLoop) -> bool {
+        if !self.opts.seconds.is_some_and(|s| self.started.elapsed().as_secs_f64() >= s) {
+            return false;
+        }
+        if let Some(s) = &mut self.session {
+            let hash = s.machine.bus.state_hash();
+            println!("frames        {}, state hash {hash:016x}", s.machine.frames);
+            if let Some(d) = &s.machine.bus.drive {
+                println!("drive board   {}", d.describe());
+            }
+        }
+        self.quit(el);
+        true
+    }
+
     fn quit(&mut self, el: &ActiveEventLoop) {
         if let Some(s) = &self.session {
             s.save_eeprom();
@@ -643,6 +659,17 @@ fn draw_overlay<T: Default>(
 }
 
 impl ApplicationHandler for Play {
+    /// `--seconds` is checked here as well as on redraws, and the loop set
+    /// to wake at the limit: a hidden window may get almost no redraws
+    /// (about one a second on Wayland). Without `--seconds` the loop keeps
+    /// winit's default (wait for events), so pacing is unchanged.
+    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        let Some(s) = self.opts.seconds else { return };
+        if !self.time_up(el) {
+            el.set_control_flow(ControlFlow::WaitUntil(self.started + Duration::from_secs_f64(s)));
+        }
+    }
+
     fn resumed(&mut self, el: &ActiveEventLoop) {
         if self.gpu.is_some() {
             return;
@@ -748,15 +775,8 @@ impl ApplicationHandler for Play {
                 }
             }
             WindowEvent::RedrawRequested => {
-                if self.opts.seconds.is_some_and(|s| self.started.elapsed().as_secs_f64() >= s) {
-                    if let Some(s) = &mut self.session {
-                        let hash = s.machine.bus.state_hash();
-                        println!("frames        {}, state hash {hash:016x}", s.machine.frames);
-                        if let Some(d) = &s.machine.bus.drive {
-                            println!("drive board   {}", d.describe());
-                        }
-                    }
-                    return self.quit(el);
+                if self.time_up(el) {
+                    return;
                 }
                 self.frame(el);
                 if let Some(g) = &self.gpu {
