@@ -19,7 +19,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use model2::{raster, video};
+use model2::video;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -155,35 +155,18 @@ impl App {
             _ => return,
         };
         let t0 = now();
-        let m = &mut self.machine;
-        m.bus.geo.sync();
-        let b = &m.bus;
-        let (stream, points): (&[u32], &[u16]) = match &self.geo_frame {
+        let geo = match &self.geo_frame {
             // The worker's newest frame (nothing to draw before the first).
-            Some(Some((s, p))) => (s, p),
-            Some(None) => (&[], &[]),
-            None => (&b.geo.engine().stream, &b.geo.engine().texture_point_ram),
+            Some(Some((s, p))) => Some((&s[..], &p[..])),
+            Some(None) => Some((&[][..], &[][..])),
+            None => None,
         };
-        let (xoff, yoff) = b.sync_offsets();
-        let src = raster::Sources {
-            texture_rom: &b.texture_rom,
-            texture_point_ram: points,
-            render_ram: b.render_ram(),
-            palette: b.palette_ram(),
-            xoff,
-            yoff,
-        };
-        let mut polys = raster::build(stream, &src);
-        let placed = raster::place(&mut polys, &self.view);
-        let layers = video::layers_2d(b.tile_ram(), b.palette_ram(), &self.view, !placed.is_empty());
-        let t1 = now();
         let target = frame.texture.create_view(&Default::default());
-        let (render, palette) = b.video_ram_versions();
-        self.renderer.set_ram_versions(render, palette);
-        self.renderer.present(&polys, &placed, &src, &self.view, &layers, &target, self.format);
+        self.renderer.present_bus(&mut self.machine.bus, geo, &self.view, &target, self.format, (0, 0));
+        let t1 = now();
         self.renderer.queue().present(frame);
+        // Preparation and submission are one call now: report them together.
         self.spent[1] += t1 - t0;
-        self.spent[2] += now() - t1;
     }
 
     /// Post the sound link bytes sent since the last call to the sound
@@ -265,7 +248,7 @@ impl App {
             set_status(
                 &self.status,
                 &format!(
-                    "{:.0}% speed · {:.0} fps drawn · {}x{} · i960 {} · ms per frame: emulate {:.1}, prepare {:.1}, submit {:.1}",
+                    "{:.0}% speed · {:.0} fps drawn · {}x{} · i960 {} · ms per frame: emulate {:.1}, draw {:.1}",
                     speed,
                     self.counter.2 as f64 / secs,
                     self.view.width,
@@ -273,7 +256,6 @@ impl App {
                     if self.machine.is_native() { "recompiled" } else { "interpreted" },
                     self.spent[0] / emulated,
                     self.spent[1] / drawn,
-                    self.spent[2] / drawn,
                 ),
             );
             self.counter = (t, 0, 0);

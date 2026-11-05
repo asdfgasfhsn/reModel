@@ -10,8 +10,8 @@ struct Params {
     has_3d: u32,
     ext_w: u32,
     _a: u32,
-    _b: u32,
-    _c: u32,
+    // Top-left of the frame in the target (letterboxing), in pixels.
+    origin: vec2f,
     backdrop: vec4f,
 }
 
@@ -29,8 +29,9 @@ fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
 }
 
 @fragment
-fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
-    // pos.xy is the pixel centre, (ox + 0.5, oy + 0.5).
+fn fs(@builtin(position) frag: vec4f) -> @location(0) vec4f {
+    // pos.xy is the pixel centre in the frame, (ox + 0.5, oy + 0.5).
+    let pos = vec4f(frag.xy - pr.origin, frag.zw);
     let gy = i32(floor(pos.y / pr.scale.y));
     if gy >= 384 {
         return vec4f(0.0, 0.0, 0.0, 1.0);

@@ -89,11 +89,15 @@ fn le(values: impl IntoIterator<Item = [u8; 4]>) -> Vec<u8> {
     values.into_iter().flatten().collect()
 }
 
-/// Limits to ask for: the defaults, with storage buffers as large as the
-/// adapter allows (render RAM is 4+ MB).
+/// Limits to ask for: the portable defaults, with storage buffers (render
+/// RAM is 4+ MB) and textures (window and output size) as large as the
+/// adapter allows.
 pub fn limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
+    let a = adapter.limits();
     wgpu::Limits {
-        max_storage_buffer_binding_size: adapter.limits().max_storage_buffer_binding_size,
+        max_storage_buffer_binding_size: a.max_storage_buffer_binding_size,
+        max_texture_dimension_1d: a.max_texture_dimension_1d,
+        max_texture_dimension_2d: a.max_texture_dimension_2d,
         ..wgpu::Limits::downlevel_defaults()
     }
 }
@@ -446,6 +450,7 @@ impl Renderer {
         layers: &Layers2d,
         target: &wgpu::TextureView,
         format: wgpu::TextureFormat,
+        origin: (u32, u32),
     ) {
         let (w, h) = (view.width as u32, view.height as u32);
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
@@ -456,7 +461,8 @@ impl Renderer {
         let hud = self.upload("hud", &layers.hud, layers.ext_w as u32, HEIGHT as u32);
         let b = layers.backdrop.map(|c| c as f32 / 255.0);
         let mut params = le([view.sx, view.sy, view.pad].map(f32::to_le_bytes));
-        params.extend(le([!placed.is_empty() as u32, layers.ext_w as u32, 0, 0, 0].map(u32::to_le_bytes)));
+        params.extend(le([!placed.is_empty() as u32, layers.ext_w as u32, 0].map(u32::to_le_bytes)));
+        params.extend(le([origin.0 as f32, origin.1 as f32].map(f32::to_le_bytes)));
         params.extend(le([b[0], b[1], b[2], 1.0].map(f32::to_le_bytes)));
         let params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("compose params"),
@@ -485,6 +491,7 @@ impl Renderer {
             })],
             ..Default::default()
         });
+        pass.set_viewport(origin.0 as f32, origin.1 as f32, w as f32, h as f32, 0.0, 1.0);
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(0, &bind, &[]);
         pass.draw(0..3, 0..1);
@@ -503,7 +510,43 @@ impl Renderer {
         format: wgpu::TextureFormat,
     ) {
         let mut enc = self.device.create_command_encoder(&Default::default());
-        self.encode_frame(&mut enc, polys, placed, src, view, layers, target, format);
+        self.encode_frame(&mut enc, polys, placed, src, view, layers, target, format, (0, 0));
+        self.queue.submit([enc.finish()]);
+    }
+
+    /// Draw the Model 2 board's current frame into `target` at `origin`
+    /// (the rest of `target` is cleared to black) and submit. `geo` is the
+    /// geometrizer output to draw (raster stream, texture point RAM), or
+    /// None for the bus's own engine.
+    #[allow(clippy::too_many_arguments)]
+    pub fn present_bus(
+        &mut self,
+        bus: &mut model2::Model2Bus,
+        geo: Option<(&[u32], &[u16])>,
+        view: &View,
+        target: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        origin: (u32, u32),
+    ) {
+        bus.geo.sync();
+        let b = &*bus;
+        let (stream, points) = geo.unwrap_or_else(|| (&b.geo.engine().stream, &b.geo.engine().texture_point_ram));
+        let (xoff, yoff) = b.sync_offsets();
+        let src = Sources {
+            texture_rom: &b.texture_rom,
+            texture_point_ram: points,
+            render_ram: b.render_ram(),
+            palette: b.palette_ram(),
+            xoff,
+            yoff,
+        };
+        let mut polys = model2::raster::build(stream, &src);
+        let placed = model2::raster::place(&mut polys, view);
+        let layers = model2::video::layers_2d(b.tile_ram(), b.palette_ram(), view, !placed.is_empty());
+        let (render, palette) = b.video_ram_versions();
+        self.set_ram_versions(render, palette);
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        self.encode_frame(&mut enc, &polys, &placed, &src, view, &layers, target, format, origin);
         self.queue.submit([enc.finish()]);
     }
 
@@ -521,7 +564,17 @@ impl Renderer {
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
         let out = self.texture("frame", w, h, usage);
         let mut enc = self.device.create_command_encoder(&Default::default());
-        self.encode_frame(&mut enc, polys, placed, src, view, layers, &out.create_view(&Default::default()), FORMAT);
+        self.encode_frame(
+            &mut enc,
+            polys,
+            placed,
+            src,
+            view,
+            layers,
+            &out.create_view(&Default::default()),
+            FORMAT,
+            (0, 0),
+        );
         let rgba = self.read_back(enc, &out, w, h);
         rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect()
     }

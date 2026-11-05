@@ -43,11 +43,13 @@ WEB_OUT      ?= out/web
 RECOMP  ?=
 ifneq ($(RECOMP),)
 REMODEL := target/recomp/release/remodel
+PLAY    := target/recomp/release/remodel-play
 # No debug info: the generated code is large and only slows the build.
 RELEASE_ENV := REMODEL_RECOMP_DIR=$(abspath out/recomp) CARGO_TARGET_DIR=target/recomp CARGO_PROFILE_RELEASE_DEBUG=false
 WEB_ENV := REMODEL_RECOMP_DIR=$(abspath out/recomp)
 else
 REMODEL := target/release/remodel
+PLAY    := target/release/remodel-play
 RELEASE_ENV :=
 WEB_ENV :=
 endif
@@ -145,6 +147,10 @@ assets: release ## Extract the game's art for review: capture sessions, then dis
 dump-textures: release ## Coin-start-race run dumping every 3D texture and tile pattern drawn (each 60 frames) to OUT/texdump
 	rm -rf $(OUT)/texdump
 	$(RUN) $(VIEW) --dump-textures $(OUT)/texdump --input $(BENCH_INPUT) run $(BENCH_STEPS) 60
+
+play: ## Play in a native window: GPU, live sound, keyboard and gamepad (RECOMP=1: recompiled code; PLAY_ARGS, e.g. --mix 6:-6 --hud center)
+	$(RELEASE_ENV) $(CARGO) build --release -p remodel-play
+	$(PLAY) --game $(GAME) --rom $(ROM) $(PLAY_ARGS)
 
 web: ## Build the browser version (WebAssembly + WebGPU) into out/web; needs the wasm32 target and wasm-bindgen (docs/web.md); RECOMP=1 includes the recompiled game code
 	CARGO_TARGET_DIR=target/web CARGO_PROFILE_RELEASE_DEBUG=false $(WEB_ENV) $(WASM_CARGO) build --release --target wasm32-unknown-unknown -p remodel-web

@@ -1,0 +1,20 @@
+[package]
+name = "remodel-play"
+description = "Remodel in a native window: GPU renderer, live sound, keyboard and gamepad"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "remodel-play"
+path = "src/main.rs"
+
+[dependencies]
+remodel-model2.workspace = true
+remodel-romset.workspace = true
+remodel-gpu.workspace = true
+wgpu = "30.0.1"
+pollster = "1.0.1"
+winit = "0.30"
+cpal = "0.18.2"
+gilrs = "0.11.2"
