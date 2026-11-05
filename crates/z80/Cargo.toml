@@ -1,0 +1,12 @@
+[package]
+name = "remodel-z80"
+description = "Zilog Z80 interpreter"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "z80"
+
+[dependencies]
+remodel-state.workspace = true

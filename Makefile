@@ -31,6 +31,10 @@ M68K_TESTS     ?= out/m68k-tests
 M68K_TESTS_API := https://api.github.com/repos/SingleStepTests/680x0/contents/68000/v1
 M68K_TESTS_RAW := https://raw.githubusercontent.com/SingleStepTests/680x0/main/68000/v1
 
+# Where `make z80-test` looks for the zexdoc/zexall exercisers (never committed).
+Z80_TESTS     ?= out/z80-tests
+Z80_TESTS_URL := https://raw.githubusercontent.com/anotherlin/z80emu/master/testfiles
+
 CARGO   ?= cargo
 # The browser build needs a toolchain with the wasm32 target and
 # wasm-bindgen-cli matching Cargo.lock. Default: rustup's stable cargo, from
@@ -58,7 +62,7 @@ endif
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release dist test lint fmt fmt-check check ci games inputs verify boot disasm analyze run copro-disasm m68k-tests clean recomp bench sound sound-disasm
+.PHONY: help build release dist test lint fmt fmt-check check ci z80-test games inputs verify boot disasm analyze run copro-disasm m68k-tests clean recomp bench sound sound-disasm
 
 ##@ General
 
@@ -110,6 +114,18 @@ $(M68K_TESTS)/.done:
 		gzip -dc $(M68K_TESTS)/gz/$$f > $(M68K_TESTS)/json/$${f%.gz} || exit 1; \
 	done < $(M68K_TESTS)/files.txt
 	touch $@
+
+z80-test: ## Run the Z80 core against the zexdoc and zexall exercisers in Z80_TESTS= (default out/z80-tests; see docs/hw/z80.md)
+	@if [ -f $(Z80_TESTS)/zexdoc.com ] || [ -f $(Z80_TESTS)/zexall.com ]; then \
+		Z80_TESTS=$(abspath $(Z80_TESTS)) $(CARGO) test --release -p remodel-z80 --test zex -- --ignored --nocapture --test-threads 2; \
+	else \
+		echo "no zexdoc.com or zexall.com in $(Z80_TESTS). They are Frank Cringle's freely redistributable"; \
+		echo "Z80 exercisers (CP/M .com files); fetch them into $(Z80_TESTS), e.g.:"; \
+		echo "  mkdir -p $(Z80_TESTS)"; \
+		echo "  curl -fsSL -o $(Z80_TESTS)/zexdoc.com $(Z80_TESTS_URL)/zexdoc.com"; \
+		echo "  curl -fsSL -o $(Z80_TESTS)/zexall.com $(Z80_TESTS_URL)/zexall.com"; \
+		exit 1; \
+	fi
 
 ##@ ROM tools (need a user-supplied dump in ROM=)
 
