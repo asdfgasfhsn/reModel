@@ -14,26 +14,33 @@ fn main() {
     if let Some(dir) = &dir {
         println!("cargo:rerun-if-changed={}", dir.display());
     }
-    let mut modules: Vec<(String, PathBuf)> = dir
-        .iter()
-        .flat_map(std::fs::read_dir)
-        .flatten()
-        .flatten()
-        .filter_map(|e| {
-            let name = e.file_name().into_string().ok()?;
-            let stem = name.strip_prefix("tgp_")?.strip_suffix(".rs")?.to_string();
-            println!("cargo:rerun-if-changed={}", e.path().display());
-            Some((stem, e.path()))
-        })
-        .collect();
-    modules.sort();
+    let find = |prefix: &str| {
+        let mut v: Vec<(String, PathBuf)> = dir
+            .iter()
+            .flat_map(std::fs::read_dir)
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().into_string().ok()?;
+                let stem = name.strip_prefix(prefix)?.strip_suffix(".rs")?.to_string();
+                println!("cargo:rerun-if-changed={}", e.path().display());
+                Some((stem, e.path()))
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    let modules = find("tgp_");
+    let cpus = find("i960_");
     let mut s = String::new();
-    for (stem, path) in &modules {
-        let _ = writeln!(
-            s,
-            "#[allow(clippy::all)]\nmod tgp_{stem} {{\n    include!({:?});\n}}",
-            path.canonicalize().unwrap()
-        );
+    for (prefix, list) in [("tgp", &modules), ("i960", &cpus)] {
+        for (stem, path) in list {
+            let _ = writeln!(
+                s,
+                "#[allow(clippy::all, unused_braces)]\nmod {prefix}_{stem} {{\n    include!({:?});\n}}",
+                path.canonicalize().unwrap()
+            );
+        }
     }
     s.push_str("/// The recompiled `step` for a program, if one was built.\n#[allow(clippy::match_single_binding)]\n");
     s.push_str("pub fn lookup<E: mb86235::cpu::External>(hash: u64) -> Option<fn(&mut mb86235::cpu::Tgp, &mut E) -> mb86235::cpu::Step> {\n    match hash {\n");
@@ -42,6 +49,12 @@ fn main() {
     }
     s.push_str("        _ => None,\n    }\n}\n\n/// How many recompiled programs this build contains.\npub const COUNT: usize = ");
     let _ = writeln!(s, "{};", modules.len());
+    s.push_str("\n/// The recompiled i960 blocks for a program ROM image, if this build has them.\n#[allow(clippy::match_single_binding, clippy::type_complexity)]\n");
+    s.push_str("pub fn i960_blocks<H: i960::cpu::Host>(hash: u64) -> Option<Vec<(u32, fn(&mut i960::cpu::Cpu, &mut H) -> Result<(), i960::cpu::Stop>)>> {\n    match hash {\n");
+    for (stem, _) in &cpus {
+        let _ = writeln!(s, "        i960_{stem}::HASH => Some(i960_{stem}::blocks::<H>()),");
+    }
+    s.push_str("        _ => None,\n    }\n}\n");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("recomp_registry.rs");
     std::fs::write(out, s).unwrap();
 }

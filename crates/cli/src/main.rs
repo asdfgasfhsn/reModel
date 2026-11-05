@@ -5,7 +5,7 @@ mod texpack;
 
 use analyze::{explore, read_boot, Image, Trace};
 use romset::{games, RomSet};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -27,6 +27,8 @@ options:
                        coin1@1100-1105,start@1300-1305,curving=0x40@1400-1500
   --dump-textures DIR  at each `run` snapshot, write every distinct 3D texture
                        and tile pattern drawn to DIR as PNG, plus DIR/index.txt
+  --interp             run the i960 on the interpreter even when this build
+                       has recompiled code for the game
   --texture-pack DIR   draw snapshots with the replacement PNGs in DIR (same
                        names as a dump; any size); see docs/texture-packs.md
 
@@ -38,9 +40,12 @@ commands:
   analyze [OUT]        recursive-descent listing (default out/GAME/program.lst)
   copro-disasm [FILE]  disassemble an MB86235 program image to FILE.lst
                        (default out/GAME/copro.bin; `run` also writes geo.bin)
-  recomp               recompile the copro and geometrizer programs captured
-                       by `run` (only words it executed) into out/recomp/;
-                       the next build uses them in place of the interpreter
+  recomp               recompile the i960 program (code found by `analyze`
+                       plus everything `run` executed) and the copro and
+                       geometrizer programs `run` captured into out/recomp/;
+                       the next build uses them in place of the interpreters
+  lockstep [STEPS]     run the recompiled i960 code and the interpreter side
+                       by side, block by block; report the first difference
   run [STEPS] [SNAP]   boot on the reference interpreter and report what
                        the game did (default 50M instructions); writes the
                        tile layer to out/GAME/frames/ every SNAP frames
@@ -128,6 +133,13 @@ fn main() -> ExitCode {
     let Ok(soundtrack) = opt("--soundtrack") else {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
+    };
+    let interp = match args.iter().position(|a| a == "--interp") {
+        Some(i) => {
+            args.remove(i);
+            true
+        }
+        None => false,
     };
     let Some(cmd) = args.first().cloned() else {
         eprint!("{USAGE}");
@@ -290,6 +302,36 @@ fn main() -> ExitCode {
             let out = PathBuf::from("out/recomp");
             let _ = std::fs::create_dir_all(&out);
             let mut made = 0;
+            {
+                let read = |f: &str| std::fs::read_to_string(dir.join(f)).unwrap_or_default();
+                let trace = Trace::parse(&read("coverage.txt"), &read("indirect.txt"));
+                if trace.executed.is_empty() {
+                    eprintln!("i960: no coverage.txt in {} (run `make run` first)", dir.display());
+                }
+                let Some(b) = read_boot(&img) else {
+                    eprintln!("error: boot record out of range");
+                    return ExitCode::FAILURE;
+                };
+                let seeds: Vec<u32> = b.seeds.iter().map(|s| s.1).collect();
+                let a = explore(&img, &seeds, &trace);
+                // Only code the interpreter ran or control flow reaches for
+                // certain; `lda` pointer guesses may be data.
+                let mut insns = a.insns;
+                insns.retain(|addr, _| !a.speculative.contains(addr) || trace.executed.contains(addr));
+                for &addr in &trace.executed {
+                    insns.entry(addr).or_insert_with(|| img.decode(addr));
+                }
+                let mut entries: BTreeSet<u32> = a.functions.iter().copied().collect();
+                entries.extend(trace.indirect.iter().map(|&(_, t)| t));
+                entries.extend(seeds);
+                let hash = model2::program_hash(&roms);
+                let path = out.join(format!("i960_{hash:016x}.rs"));
+                let code = i960::codegen::program_module(&insns, &entries, hash);
+                let _ = std::fs::write(&path, &code);
+                let blocks = code.matches("\nfn b").count();
+                println!("i960: {} instructions in {blocks} blocks -> {}", insns.len(), path.display());
+                made += 1;
+            }
             for name in ["copro", "geo"] {
                 let (Ok(bin), Ok(cov)) = (
                     std::fs::read(dir.join(format!("{name}.bin"))),
@@ -313,6 +355,52 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
+        // Debug: run recompiled and interpreted i960s side by side, one
+        // instruction at a time, and report the first that differs.
+        "lockstep" => {
+            let steps = args.get(1).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(50_000_000);
+            let mut native = model2::Machine::new(&roms);
+            let mut reference = model2::Machine::new(&roms);
+            reference.disable_native();
+            if !native.is_native() {
+                eprintln!("error: this build has no recompiled i960 code for {}", roms.game.id);
+                return ExitCode::FAILURE;
+            }
+            while native.cpu.icount < steps {
+                let ip = native.cpu.ip;
+                let before = native.cpu.r;
+                let a = native.run_block();
+                let mut b = Ok(());
+                while b.is_ok() && reference.cpu.icount < native.cpu.icount {
+                    b = reference.step();
+                }
+                let (n, r) = (&native.cpu, &reference.cpu);
+                if a.is_err() || b.is_err() || n.r != r.r || n.ip != r.ip || n.ac != r.ac || n.pc != r.pc {
+                    println!("diverged after {} instructions, in the block at {ip:#x}:", r.icount);
+                    let mut pc = ip;
+                    for _ in 0..a.as_ref().map_or(1, |&n| n) {
+                        let i = img.decode(pc);
+                        println!("  {pc:08x}  {i}");
+                        pc = i.next();
+                    }
+                    println!("  results: recompiled {a:?}, interpreter {b:?}");
+                    println!(
+                        "  ip {:#x} / {:#x}  ac {:#x} / {:#x}  pc {:#x} / {:#x}",
+                        n.ip, r.ip, n.ac, r.ac, n.pc, r.pc
+                    );
+                    for (i, ((&was, &got), &want)) in before.iter().zip(&n.r).zip(&r.r).enumerate() {
+                        if got != want || was != want {
+                            let name = i960::reg_name(i as u8);
+                            println!(
+                                "  {name:>4}: before {was:#010x}  recompiled {got:#010x}  interpreter {want:#010x}"
+                            );
+                        }
+                    }
+                    return ExitCode::FAILURE;
+                }
+            }
+            println!("{} instructions identical", native.cpu.icount);
+        }
         // Debug: boot out/GAME/geo.bin, pulse F0, feed hex words, trace.
         "geo-trace-words" => {
             let dir = PathBuf::from("out").join(roms.game.id);
@@ -332,7 +420,7 @@ fn main() -> ExitCode {
                 }
             };
             let geo_frame = geo_frame.and_then(|s| parse_num(&s)).map(u64::from);
-            run(&roms, steps, snap, &script, geo_frame);
+            run(&roms, steps, snap, &script, geo_frame, interp);
         }
         "sound-disasm" => {
             let Some(mut pc) = args.get(1).and_then(|s| parse_num(s)) else {
@@ -445,8 +533,19 @@ fn snapshot(m: &mut model2::Machine, path: &std::path::Path) {
     let _ = std::fs::write(path, png);
 }
 
-fn run(roms: &RomSet, steps: u64, snap: u64, script: &model2::input::InputScript, geo_frame: Option<u64>) {
+fn run(
+    roms: &RomSet,
+    steps: u64,
+    snap: u64,
+    script: &model2::input::InputScript,
+    geo_frame: Option<u64>,
+    interp: bool,
+) {
     let mut m = model2::Machine::new(roms);
+    if interp {
+        m.disable_native();
+    }
+    println!("i960          {}", if m.is_native() { "recompiled" } else { "interpreter" });
     let dir = PathBuf::from("out").join(roms.game.id);
     let eeprom_path = dir.join("eeprom.bin");
     if let Ok(bytes) = std::fs::read(&eeprom_path) {
@@ -462,8 +561,8 @@ fn run(roms: &RomSet, steps: u64, snap: u64, script: &model2::input::InputScript
     let started = std::time::Instant::now();
     let mut stop = None;
     let mut last_frame = 0;
-    for _ in 0..steps {
-        if let Err(s) = m.step() {
+    while m.cpu.icount < steps {
+        if let Err(s) = m.run_slice(steps - m.cpu.icount) {
             stop = Some(s);
             break;
         }
@@ -630,9 +729,13 @@ fn run(roms: &RomSet, steps: u64, snap: u64, script: &model2::input::InputScript
     let _ = std::fs::write(vram.join("render.bin"), b.render_ram());
     let cov: String = m.coverage.iter().map(|a| format!("{a:08x}\n")).collect();
     let ind: String = m.indirect.iter().map(|(s, t)| format!("{s:08x} {t:08x}\n")).collect();
-    let _ = std::fs::write(dir.join("coverage.txt"), cov);
-    let _ = std::fs::write(dir.join("indirect.txt"), ind);
-    println!("trace written to {}/{{coverage,indirect}}.txt", dir.display());
+    // Recompiled runs only see the interpreter's share of the code: keep the
+    // full trace the recompiler was built from.
+    if !m.is_native() {
+        let _ = std::fs::write(dir.join("coverage.txt"), cov);
+        let _ = std::fs::write(dir.join("indirect.txt"), ind);
+        println!("trace written to {}/{{coverage,indirect}}.txt", dir.display());
+    }
     println!("frames written to {}", frames_dir.display());
     if !b.copro_program.is_empty() {
         // Little-endian 64-bit words, in upload order.

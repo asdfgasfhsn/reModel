@@ -31,13 +31,13 @@ music`). There is no live window yet.
 | Model 2C board model (memory, IRQs, timers, I/O, copro interface) | in progress |
 | MB86235 geometry processor: disassembler and reference interpreter | done; runs the game's uploaded program |
 | Geometrizer (second MB86235) running the game's own program | done; gameplay frames produce the rasteriser stream |
-| Recompiler: MB86235 programs → Rust | done; opt-in (`make recomp`, then `RECOMP=1`), identical state hash, geometrizer about 1.5x faster |
-| Recompiler: i960 → native | planned (the interpreter already runs faster than real time) |
+| Recompiler: i960 → native | done; opt-in (`make recomp`, then `RECOMP=1`), identical state hash; 96% of the game's instructions become plain Rust, the rest call the interpreter with the instruction pre-decoded; see `docs/recompiler.md` |
+| Recompiler: MB86235 programs → Rust | done; built with the i960 code, geometrizer about 1.5x faster |
 | Geometry processor fast path (high-level per-command) | planned |
 | 2D tile layer renderer (PNG snapshots) | done; boot, logo, title and attract text render |
 | 3D rasteriser (software) | textured, bilinear-filtered gameplay frames (topskatr uses no mipmaps) |
 | Scripted input (headless) | done; every button and both analog channels confirmed |
-| Speed | interpreters about 2x real time (`make bench`); recompiler not needed to reach full speed |
+| Speed | interpreters about 2.2x real time (`make bench`); recompiled build about 4.4x (`make bench RECOMP=1`), where the geometrizer thread becomes the limit |
 | Sound board: 68000 + SCSP (slots, EG, LFO, FM, timers, MIDI, DSP) | done offline: replays the captured command stream to a WAV at about 12x real time |
 | DSB2 music board (68000 firmware + MPEG Layer II decoder) | done; `make music` renders the game's music from a `run` capture |
 | Enhanced views: any resolution, 16:9 / 21:9 with HUD moved to the edges | done for snapshots (`--height`, `--aspect`, `--hud`) |
@@ -71,8 +71,9 @@ make run STEPS=600000000 INPUT=coin1@1100-1104,start@1250-1254 \
     PACK=out/topskatr/texpack VIEW="--height 1080"   # snapshots with a texture pack (docs/texture-packs.md)
 make assets               # extract the game's art for review -> out/topskatr/assets (needs ImageMagick)
 make bench                # timed run into a race: speed and state hash
-make recomp               # recompile the TGP programs captured by `run` (slow build)
-make bench RECOMP=1       # same run on the recompiled build: same hash, faster
+make recomp               # recompile the game's i960 code and TGP programs (after a `run`; ~2 min build)
+make bench RECOMP=1       # same run on the recompiled build: same hash, about twice as fast
+make lockstep RECOMP=1    # recompiled vs interpreted i960, block by block, until they differ
 make music                # after a `run` into a race: DSB2 music -> out/topskatr/music.wav
 make soundtrack-import SRC=~/my-mix SOUNDTRACK=my-mix   # your own music (ffmpeg converts)
 make music SOUNDTRACK=my-mix      # same, with your tracks -> out/topskatr/music-my-mix.wav

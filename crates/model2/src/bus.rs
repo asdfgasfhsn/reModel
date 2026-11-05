@@ -105,6 +105,11 @@ pub struct Model2Bus {
     pages: Vec<u8>,
     /// Current time in CPU cycles; advanced by the machine.
     pub now: u64,
+    /// Video frames completed (vblanks).
+    pub frames: u64,
+    next_vblank: u64,
+    /// Instructions recompiled code may still run before returning.
+    pub budget: u64,
 
     pub irq_request: u32,
     pub irq_enable: u32,
@@ -214,6 +219,9 @@ impl Model2Bus {
             map,
             pages,
             now: 0,
+            frames: 0,
+            next_vblank: FRAME_CYCLES,
+            budget: 0,
             irq_request: 0,
             irq_enable: 0,
             raised_lines: [false; 4],
@@ -296,6 +304,32 @@ impl Model2Bus {
     /// runs alongside the i960; `geo.sync()` waits for it.
     pub fn run_geometrizer(&mut self) {
         self.geo.start_frame(&self.mems[BUFFER_RAM].data);
+    }
+
+    /// Everything that happens between two i960 instructions: the TGP runs,
+    /// time and timers advance, vblank and interrupt lines are raised.
+    /// True if this instruction ended a frame.
+    #[inline]
+    pub fn retire_insn(&mut self, cpu: &mut i960::cpu::Cpu) -> bool {
+        // The TGP runs at 20 MHz against the i960's 25 MHz: about two of its
+        // words per i960 instruction at our cycles-per-instruction estimate.
+        self.run_tgp(crate::TGP_WORDS_PER_INSN);
+        self.now += crate::CYCLES_PER_INSN;
+        self.tick_timers();
+        let vblank = self.now >= self.next_vblank;
+        if vblank {
+            self.next_vblank += FRAME_CYCLES;
+            self.frames += 1;
+            self.frame_toggle = !self.frame_toggle;
+            self.run_geometrizer();
+            self.request_irq(IRQ_VBLANK);
+        }
+        for line in 0..4 {
+            if std::mem::take(&mut self.raised_lines[line]) {
+                cpu.raise_line(line as u32);
+            }
+        }
+        vblank
     }
 
     /// Raise IRQ request bits (only those already enabled latch).
@@ -613,6 +647,20 @@ impl Model2Bus {
         self.geo.engine().stream.iter().for_each(|&w| h.word(w as u64));
         h.word(self.copro_result_hash);
         h.0
+    }
+}
+
+/// Recompiled code returns at the end of each frame and when its budget
+/// runs out.
+impl i960::cpu::Host for Model2Bus {
+    #[inline(always)]
+    fn at(&mut self, ip: u32) {
+        self.cur_ip = ip;
+    }
+    fn retire(&mut self, cpu: &mut i960::cpu::Cpu) -> bool {
+        let vblank = self.retire_insn(cpu);
+        self.budget -= 1;
+        !vblank && self.budget > 0
     }
 }
 

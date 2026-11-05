@@ -30,11 +30,12 @@ M68K_TESTS_API := https://api.github.com/repos/SingleStepTests/680x0/contents/68
 M68K_TESTS_RAW := https://raw.githubusercontent.com/SingleStepTests/680x0/main/68000/v1
 
 CARGO   ?= cargo
-# RECOMP=1: use the build with recompiled TGP programs (see `make recomp`).
+# RECOMP=1: use the build with recompiled i960 and TGP code (see `make recomp`).
 RECOMP  ?=
 ifneq ($(RECOMP),)
 REMODEL := target/recomp/release/remodel
-RELEASE_ENV := REMODEL_RECOMP_DIR=$(abspath out/recomp) CARGO_TARGET_DIR=target/recomp
+# No debug info: the generated code is large and only slows the build.
+RELEASE_ENV := REMODEL_RECOMP_DIR=$(abspath out/recomp) CARGO_TARGET_DIR=target/recomp CARGO_PROFILE_RELEASE_DEBUG=false
 else
 REMODEL := target/release/remodel
 RELEASE_ENV :=
@@ -57,10 +58,10 @@ help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, IN
 build: ## Debug build of the whole workspace
 	$(CARGO) build --workspace
 
-release: ## Optimised build of the remodel CLI (RECOMP=1: with recompiled TGP programs)
+release: ## Optimised build of the remodel CLI (RECOMP=1: with the recompiled game code)
 	$(RELEASE_ENV) $(CARGO) build --release -p remodel
 
-recomp: ## Recompile the TGP programs captured by `make run` into out/recomp and build them (slow); then use RECOMP=1
+recomp: ## Recompile the game's i960 code and the TGP programs captured by `make run` into out/recomp and build them; then use RECOMP=1
 	$(CARGO) build --release -p remodel
 	target/release/remodel --game $(GAME) --rom $(ROM) recomp
 	$(MAKE) release RECOMP=1
@@ -133,6 +134,10 @@ assets: release ## Extract the game's art for review: capture sessions, then dis
 dump-textures: release ## Coin-start-race run dumping every 3D texture and tile pattern drawn (each 60 frames) to OUT/texdump
 	rm -rf $(OUT)/texdump
 	$(RUN) $(VIEW) --dump-textures $(OUT)/texdump --input $(BENCH_INPUT) run $(BENCH_STEPS) 60
+
+lockstep: ## Run the recompiled i960 code beside the interpreter, block by block, and stop at the first difference (RECOMP=1, STEPS)
+	$(MAKE) release RECOMP=1
+	target/recomp/release/remodel --game $(GAME) --rom $(ROM) lockstep $(STEPS)
 
 bench: release ## Timed fixed run into a race: speed vs real time and the state hash (must not change with speed-ups)
 	$(RUN) --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep -E '^(instructions|emulated|host time|state hash)'

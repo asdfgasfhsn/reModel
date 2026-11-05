@@ -9,6 +9,7 @@
 //!         MEMA (bit12=0): mode[13] offset[11:0]
 //!         MEMB (bit12=1): mode[13:10] scale[9:7] index[4:0] (+ 32-bit disp word)
 
+pub mod codegen;
 pub mod cpu;
 
 use std::fmt;
@@ -75,6 +76,35 @@ pub struct Insn {
 }
 
 impl Insn {
+    pub fn next(&self) -> u32 {
+        self.addr.wrapping_add(self.size)
+    }
+
+    pub fn view(&self) -> InsnRef<'_> {
+        InsnRef {
+            addr: self.addr,
+            size: self.size,
+            word: self.word,
+            mnemonic: self.mnemonic,
+            operands: &self.operands,
+            flow: self.flow,
+        }
+    }
+}
+
+/// A borrowed [`Insn`], what the interpreter executes. Recompiled code
+/// writes these as constants.
+#[derive(Clone, Copy, Debug)]
+pub struct InsnRef<'a> {
+    pub addr: u32,
+    pub size: u32,
+    pub word: u32,
+    pub mnemonic: &'static str,
+    pub operands: &'a [Operand],
+    pub flow: Flow,
+}
+
+impl InsnRef<'_> {
     pub fn next(&self) -> u32 {
         self.addr.wrapping_add(self.size)
     }

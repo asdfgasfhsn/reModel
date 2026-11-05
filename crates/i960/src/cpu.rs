@@ -12,7 +12,7 @@
 //! - Faults stop execution with `Stop::Fault` instead of entering the fault
 //!   table; the handlers in this ROM only print a message and halt.
 
-use crate::{decode, Flow, Insn, MemRef, Operand};
+use crate::{decode, Flow, Insn, InsnRef, MemRef, Operand};
 use std::rc::Rc;
 
 /// Memory and I/O as seen by the CPU.
@@ -30,6 +30,17 @@ pub trait Bus {
     fn is_rom(&self, _addr: u32) -> bool {
         false
     }
+}
+
+/// The machine around the CPU, as recompiled code sees it.
+pub trait Host: Bus {
+    /// Called before each instruction executes, with its address.
+    #[inline(always)]
+    fn at(&mut self, _ip: u32) {}
+    /// Called after each instruction retires (everything that happens
+    /// between instructions: timers, other processors, interrupt lines).
+    /// False makes recompiled code return to its caller.
+    fn retire(&mut self, cpu: &mut Cpu) -> bool;
 }
 
 /// Decoded-instruction cache covers the low 2 MB (Model 2 program ROM).
@@ -152,11 +163,15 @@ impl Cpu {
         (self.pc & PC_PRIORITY_MASK) >> PC_PRIORITY_SHIFT
     }
 
-    fn cc(&self) -> u32 {
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn cc(&self) -> u32 {
         self.ac & 7
     }
 
-    fn set_cc(&mut self, cc: u32) {
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn set_cc(&mut self, cc: u32) {
         self.ac = (self.ac & !7) | cc;
     }
 
@@ -185,7 +200,9 @@ impl Cpu {
             .map(|i| (i as u32 * 32 + 31 - self.pending[i].leading_zeros()) as u8)
     }
 
-    fn check_interrupts(&mut self, bus: &mut impl Bus) {
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn check_interrupts(&mut self, bus: &mut impl Bus) {
         let Some(v) = self.highest_pending() else { return };
         let level = (v >> 3) as u32;
         if level == 31 || level > self.priority() {
@@ -222,13 +239,17 @@ impl Cpu {
         self.r[SP] = fp + 64;
     }
 
-    fn call(&mut self, bus: &mut impl Bus, target: u32, ret: u32) {
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn call(&mut self, bus: &mut impl Bus, target: u32, ret: u32) {
         let fp = (self.r[SP] + 63) & !63;
         self.push_frame(bus, ret, fp, 0);
         self.ip = target;
     }
 
-    fn calls(&mut self, bus: &mut impl Bus, n: u32, ret: u32) -> Result<(), FaultKind> {
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn calls(&mut self, bus: &mut impl Bus, n: u32, ret: u32) -> Result<(), FaultKind> {
         if n > 259 {
             return Err(FaultKind::Constraint);
         }
@@ -248,7 +269,9 @@ impl Cpu {
         Ok(())
     }
 
-    fn ret(&mut self, bus: &mut impl Bus) -> Result<(), FaultKind> {
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn ret(&mut self, bus: &mut impl Bus) -> Result<(), FaultKind> {
         let ret_type = self.r[PFP] & 7;
         let frame = self.r[FP];
         let restore = |cpu: &mut Self, bus: &mut dyn FnMut(u32) -> u32| {
@@ -353,7 +376,9 @@ impl Cpu {
         }
     }
 
-    fn compare<T: PartialOrd>(&mut self, a: T, b: T) {
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn compare<T: PartialOrd>(&mut self, a: T, b: T) {
         self.set_cc(if a < b {
             CC_LESS
         } else if a == b {
@@ -366,7 +391,9 @@ impl Cpu {
     }
 
     /// Branch condition for the low three opcode bits (`bno` is mask 0).
-    fn cond(&self, mask: u32) -> bool {
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn cond(&self, mask: u32) -> bool {
         if mask == 0 {
             self.cc() == 0
         } else {
@@ -390,22 +417,43 @@ impl Cpu {
         Rc::new(self.decode_at(bus))
     }
 
-    /// Execute one instruction (taking any interrupt that's due first).
-    /// Returns the executed instruction's address and control flow.
-    pub fn step(&mut self, bus: &mut impl Bus) -> Result<(u32, Flow), Stop> {
+    /// True if an interrupt is pending at a priority that would be taken now.
+    #[inline(always)]
+    pub fn interrupt_due(&self) -> bool {
+        self.has_pending()
+            && self.highest_pending().is_some_and(|v| (v >> 3) as u32 == 31 || (v >> 3) as u32 > self.priority())
+    }
+
+    /// Take the highest pending interrupt if it is due (what `step` does
+    /// before each instruction).
+    pub fn take_interrupts(&mut self, bus: &mut impl Bus) {
         if self.has_pending() {
             self.check_interrupts(bus);
         }
+    }
+
+    /// Execute one instruction without checking for interrupts first.
+    pub fn step_insn(&mut self, bus: &mut impl Bus) -> Result<(u32, Flow), Stop> {
         let insn = self.fetch_insn(bus);
         let ip = self.ip;
-        self.exec(bus, &insn).map_err(|kind| Stop::Fault { kind, ip })?;
+        self.exec(bus, &insn.view()).map_err(|kind| Stop::Fault { kind, ip })?;
         self.icount += 1;
         Ok((ip, insn.flow))
     }
 
-    fn exec(&mut self, bus: &mut impl Bus, insn: &Insn) -> Result<(), FaultKind> {
+    /// Execute one instruction (taking any interrupt that's due first).
+    /// Returns the executed instruction's address and control flow.
+    pub fn step(&mut self, bus: &mut impl Bus) -> Result<(u32, Flow), Stop> {
+        self.take_interrupts(bus);
+        self.step_insn(bus)
+    }
+
+    /// Execute `insn` (at `self.ip`). Public for recompiled code, which
+    /// calls it with constant instructions it doesn't translate itself.
+    #[doc(hidden)]
+    pub fn exec(&mut self, bus: &mut impl Bus, insn: &InsnRef) -> Result<(), FaultKind> {
         let next = insn.next();
-        let ops = &insn.operands;
+        let ops = insn.operands;
         let op = insn.word >> 24;
         self.ip = next;
 
@@ -468,9 +516,9 @@ impl Cpu {
         Ok(())
     }
 
-    fn exec_reg(&mut self, bus: &mut impl Bus, insn: &Insn, next: u32) -> Result<(), FaultKind> {
+    fn exec_reg(&mut self, bus: &mut impl Bus, insn: &InsnRef, next: u32) -> Result<(), FaultKind> {
         let full = ((insn.word >> 24) << 4) | ((insn.word >> 7) & 0xf);
-        let ops = &insn.operands;
+        let ops = insn.operands;
         let s1 = || self.get(&ops[0]);
         let s2 = || self.get(&ops[1]);
         let bit = |v: u32| 1u32 << (v & 31);
@@ -570,8 +618,8 @@ impl Cpu {
                 let d = Self::reg_index(&ops[1]);
                 match ops[0] {
                     Operand::Reg(s) => {
-                        let vals: Vec<u32> = (0..n).map(|i| self.r[(s as usize + i) & 31]).collect();
-                        for (i, v) in vals.into_iter().enumerate() {
+                        let vals: [u32; 4] = std::array::from_fn(|i| self.r[(s as usize + i) & 31]);
+                        for (i, &v) in vals.iter().enumerate().take(n) {
                             self.r[(d + i) & 31] = v;
                         }
                     }
@@ -587,13 +635,16 @@ impl Cpu {
             0x600..=0x602 => {
                 let (dst, src) = (s1(), s2());
                 let words = [1, 2, 4][(full - 0x600) as usize];
-                let msg: Vec<u32> = (0..words).map(|i| bus.read32(src + 4 * i)).collect();
+                let mut msg = [0; 4];
+                for (i, w) in msg.iter_mut().enumerate().take(words as usize) {
+                    *w = bus.read32(src + 4 * i as u32);
+                }
                 if dst == IAC_PORT && words == 4 {
-                    self.iac(bus, [msg[0], msg[1], msg[2], msg[3]]);
+                    self.iac(bus, msg);
                 } else if dst == ICR_PORT && words == 1 {
                     self.icr = msg[0];
                 } else {
-                    for (i, w) in msg.into_iter().enumerate() {
+                    for (i, &w) in msg.iter().enumerate().take(words as usize) {
                         bus.write32(dst + 4 * i as u32, w);
                     }
                 }
@@ -717,9 +768,9 @@ impl Cpu {
         Ok(())
     }
 
-    fn exec_float(&mut self, insn: &Insn, full: u32) -> Result<(), FaultKind> {
+    fn exec_float(&mut self, insn: &InsnRef, full: u32) -> Result<(), FaultKind> {
         use Real::*;
-        let ops = &insn.operands;
+        let ops = insn.operands;
         let k = if (full >> 4) & 1 == 1 && full < 0x6c0 || matches!(full, 0x79b..=0x79f | 0x6d9 | 0x676) {
             Double
         } else {
@@ -829,9 +880,9 @@ impl Cpu {
         Ok(())
     }
 
-    fn exec_mem(&mut self, bus: &mut impl Bus, insn: &Insn, next: u32) -> Result<(), FaultKind> {
+    fn exec_mem(&mut self, bus: &mut impl Bus, insn: &InsnRef, next: u32) -> Result<(), FaultKind> {
         let op = insn.word >> 24;
-        let ops = &insn.operands;
+        let ops = insn.operands;
         let (Some(Operand::Mem(m)), reg) = (ops.iter().find(|o| matches!(o, Operand::Mem(_))), ops.first()) else {
             return Err(FaultKind::Operation);
         };

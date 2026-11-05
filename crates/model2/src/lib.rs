@@ -18,7 +18,6 @@ pub mod recomp {
 }
 
 pub use bus::Model2Bus;
-use bus::{FRAME_CYCLES, IRQ_VBLANK};
 use i960::cpu::{Cpu, Stop};
 use romset::RomSet;
 use std::collections::BTreeSet;
@@ -26,13 +25,20 @@ use std::collections::BTreeSet;
 /// Average cycles per instruction, for timing timers and vblank against
 /// instruction count. The i960KB averages a little under this on game code.
 pub const CYCLES_PER_INSN: u64 = 3;
-const TGP_WORDS_PER_INSN: u64 = 2;
+pub(crate) const TGP_WORDS_PER_INSN: u64 = 2;
+
+/// A recompiled i960 block: runs from its start address until it
+/// transfers control, ends a frame or uses up `Model2Bus::budget`.
+pub type Block = fn(&mut Cpu, &mut Model2Bus) -> Result<(), Stop>;
 
 pub struct Machine {
     pub cpu: Cpu,
     pub bus: Model2Bus,
+    /// Video frames completed (a copy of `bus.frames`).
     pub frames: u64,
-    next_vblank: u64,
+    /// Recompiled blocks by address / 4 over the program ROM, if this build
+    /// has recompiled code for the game's ROM.
+    native: Option<Vec<Option<Block>>>,
     /// Every instruction address executed.
     pub coverage: Coverage,
     /// Targets of indirect branches/calls actually taken, by source.
@@ -46,11 +52,18 @@ impl Machine {
         let mut bus = Model2Bus::new(roms);
         let mut cpu = Cpu::new();
         cpu.reset(&mut bus);
+        let native = recomp::i960_blocks::<Model2Bus>(program_hash(roms)).map(|blocks| {
+            let mut table = vec![None; (PROGRAM_END / 4) as usize];
+            for (a, f) in blocks {
+                table[(a / 4) as usize] = Some(f);
+            }
+            table
+        });
         Machine {
             cpu,
             bus,
             frames: 0,
-            next_vblank: FRAME_CYCLES,
+            native,
             coverage: Coverage::default(),
             indirect: BTreeSet::new(),
             frame_profile: Profile::default(),
@@ -68,24 +81,64 @@ impl Machine {
             self.indirect.insert((ip, self.cpu.ip));
         }
 
-        // The TGP runs at 20 MHz against the i960's 25 MHz: about two of its
-        // words per i960 instruction at our cycles-per-instruction estimate.
-        self.bus.run_tgp(TGP_WORDS_PER_INSN);
-        self.bus.now += CYCLES_PER_INSN;
-        self.bus.tick_timers();
-        if self.bus.now >= self.next_vblank {
-            self.next_vblank += FRAME_CYCLES;
-            self.frames += 1;
-            self.bus.frame_toggle = !self.bus.frame_toggle;
-            self.bus.run_geometrizer();
-            self.bus.request_irq(IRQ_VBLANK);
+        if self.bus.retire_insn(&mut self.cpu) {
+            self.frames = self.bus.frames;
             self.frame_profile.clear();
         }
-        for line in 0..4 {
-            if std::mem::take(&mut self.bus.raised_lines[line]) {
-                self.cpu.raise_line(line as u32);
+        Ok(())
+    }
+
+    /// True if the i960 runs recompiled code (this build has it for the
+    /// game's ROM and it hasn't been turned off).
+    pub fn is_native(&self) -> bool {
+        self.native.is_some()
+    }
+
+    /// Run the interpreter only, even if recompiled code is available.
+    pub fn disable_native(&mut self) {
+        self.native = None;
+    }
+
+    /// Run up to `max` instructions, stopping after the one that ends a
+    /// frame. Returns how many ran. Identical in effect to calling `step`
+    /// that many times, but runs recompiled code where there is some.
+    pub fn run_slice(&mut self, max: u64) -> Result<u64, Stop> {
+        let (start, frames) = (self.cpu.icount, self.frames);
+        if self.native.is_none() {
+            while self.cpu.icount - start < max && self.frames == frames {
+                self.step()?;
+            }
+            return Ok(self.cpu.icount - start);
+        }
+        while self.cpu.icount - start < max && self.frames == frames {
+            self.dispatch(max - (self.cpu.icount - start))?;
+        }
+        Ok(self.cpu.icount - start)
+    }
+
+    /// Run one recompiled block (or, where none starts, one interpreted
+    /// instruction). Returns how many instructions ran.
+    pub fn run_block(&mut self) -> Result<u64, Stop> {
+        let start = self.cpu.icount;
+        self.dispatch(u64::MAX)?;
+        Ok(self.cpu.icount - start)
+    }
+
+    fn dispatch(&mut self, budget: u64) -> Result<(), Stop> {
+        self.bus.budget = budget;
+        self.cpu.take_interrupts(&mut self.bus);
+        let ip = self.cpu.ip;
+        let block = self.native.as_ref().and_then(|t| t.get((ip / 4) as usize).copied().flatten());
+        match block {
+            Some(block) if ip & 3 == 0 => block(&mut self.cpu, &mut self.bus)?,
+            _ => {
+                self.bus.cur_ip = ip;
+                let (ip, _) = self.cpu.step_insn(&mut self.bus)?;
+                self.coverage.insert(ip);
+                self.bus.retire_insn(&mut self.cpu);
             }
         }
+        self.frames = self.bus.frames;
         Ok(())
     }
 
@@ -107,6 +160,16 @@ impl Machine {
         v
     }
 }
+
+/// Identifies the program ROM image, which recompiled i960 code is keyed by.
+pub fn program_hash(roms: &RomSet) -> u64 {
+    let p = &roms.program;
+    let word = |a: u32| p.get(a as usize..a as usize + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    i960::codegen::image_hash(word, p.len() as u32)
+}
+
+/// End of the program ROM, where all recompilable code lives.
+const PROGRAM_END: u32 = 0x20_0000;
 
 /// Instruction addresses below this are tracked in flat arrays (the program
 /// ROM and the RAM code is copied to); the rest fall back to a set.
