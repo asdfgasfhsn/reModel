@@ -659,8 +659,9 @@ screen says ©SEGA 1996.
   `0x2000000` and `.9/.10` at `0x2800000`; the second data bank, `.7/.8`
   at `0x6000000` and the 1 MB pair `.5/.6` at `0x6800000` (as in
   `segawski`). The memory test checks IC15, 16, 13, 14, 11, 12, 9, 10, 7,
-  8, 5 and 6 in that order and passes them all. As in `segawski` it reports
-  RAM IC54 and IC55 BAD (unconfirmed which RAMs; the game plays).
+  8, 5 and 6 in that order and passes them all. Its RAM IC54 and IC55
+  are the 64 KB RAMs the board model now maps (see "What's known about the
+  Model 2C board"; it reported them BAD before they were mapped).
 - *Confirmed (from the code):* both MB86235 programs come from `.9/.10`,
   not the program ROM: the boot uploads the geometrizer's from
   `0x2F40000` (code at `0xA1C34`) and the copro's from `0x2F48000`
