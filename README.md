@@ -47,6 +47,7 @@ music`). There is no live window yet.
 | Custom soundtracks (replace any music track, game logic intact) | done offline: `make music SOUNDTRACK=name`; see `docs/mods.md` |
 | Native window (`make play`) | playable: GPU renderer, live sound (cpal), keyboard and gamepad (gilrs), any window shape from 4:3 to 32:9; about 2 ms of CPU per frame recompiled. Esc menu (sound mix, display, save slots, game picker), save states; see `docs/play.md` |
 | Browser build (WebAssembly + WebGPU) | playable (`make web`), with sound, keyboard and gamepad; see `docs/web.md` |
+| Second game: `skisuprg` (Sega Ski Super G, 2C) | manifest and `verify` done; boots on the interpreter (copro and geometrizer programs, sound board, tile layer) and stops at "DRIVE BOARD TROUBLE": the drive board isn't modelled yet |
 
 ## Quick start
 
@@ -252,6 +253,41 @@ documentation and hasn't been contradicted yet.
   hot port at `0x00800000` (about 4.9k accesses to 26 addresses, likely the
   geometry processor's input); `0x01C00000` and `0x01D00000` (probably I/O);
   `0x01000000` and `0x01800000` (probably tilemap and palette).
+
+## What's known about `skisuprg`
+
+Second 2C game, added to find what is still `topskatr`-specific.
+
+- *Confirmed:* the program is `epr-19489.15`/`epr-19490.16` at `0x0` (`.15`
+  = low half) and `epr-19551.13`/`epr-19552.14` at `0x100000` (`.13` low;
+  the code loads a table at `0x195900` that only makes sense in that order).
+  Boot record: PRCB `0xB0`, first IP `0x5F0`, interrupt table `0x46E20`,
+  system-procedure table `0x1C0`. Nothing executes above `0x100000`.
+- *Confirmed:* main data is `.11/.12` at `0x2000000` and `.9/.10` at
+  `0x2800000`, as in `topskatr`: a table at `0x2E783E0` holds pointers into
+  `0x2E77xxx`. Both MB86235 programs are uploaded from the program ROM
+  (copro from `0x8D480`, geometrizer from `0x90708`).
+- *Confirmed:* the polygon ROM is 16 MB (`.17/.21` then `.18/.22`), four
+  times `topskatr`'s, so the geometrizer now sizes its ROM window from the
+  ROM. Copro data (`.29/.30`) fills the whole 8 MB window.
+- *Confirmed:* init enables IRQ mask `0x19` (`topskatr`: `0x215`).
+- *Confirmed:* `epr-19491.31` is CRX_drv Ver3.2.8 (96 10/28); the sound board
+  plays the attract's commands (`make sound GAME=skisuprg`).
+- *Confirmed (from the code):* the game needs its drive board. It writes
+  commands to the I/O byte at `0x1C00008` and reads replies at `0x1C00006`.
+  At boot it sends `0x00`, waits for the reply `0xCE`, sends a byte from its
+  settings, waits for `0xFF`, then sends `0x00`; after 479 frames it gives up
+  and shows "DRIVE BOARD TROUBLE CODE: xx" with the last reply in hex
+  (`FF` with nothing attached). Replies `0xB0`-`0xB7` are treated as faults.
+  With a throwaway stub that answers `0xCE` to command `0x00` and `0xFF`
+  otherwise, it passes the check and runs its attract mode in 3D (title,
+  course fly-throughs, a scrolling notice that the platform is locked until
+  a game starts).
+- *Confirmed (from the code):* each frame it reads all eight analog
+  channels and uses channels 0-2, each through a calibration table built
+  from its settings. What each channel measures is unverified. Digital
+  inputs are read at `0x1C00002`, `0x1C00004`, `0x1C00006` and `0x1C0000C`
+  (the last inverted).
 
 ## License
 

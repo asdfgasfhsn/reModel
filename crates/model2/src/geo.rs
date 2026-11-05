@@ -30,16 +30,26 @@ const IDLE_STEPS: u64 = 4096;
 const PC_TRACE_LEN: usize = 4096;
 
 /// The geometrizer's external bus: polygon RAM below 0x800000, the
-/// polygons ROM from 0x800000 (word addressed).
+/// polygons ROM from 0x800000 (word addressed), mirrored to fill the window
+/// (4 MB in topskatr, 16 MB in skisuprg).
 struct GeoExt<'a> {
     ram: &'a mut [u32],
     rom: &'a [u32],
+    /// Word-address mask for the ROM: its size rounded up to a power of two.
+    rom_mask: u32,
+}
+
+impl<'a> GeoExt<'a> {
+    fn new(ram: &'a mut [u32], rom: &'a [u32]) -> Self {
+        let rom_mask = (rom.len().next_power_of_two().max(1) - 1) as u32;
+        GeoExt { ram, rom, rom_mask }
+    }
 }
 
 impl External for GeoExt<'_> {
     fn read(&mut self, addr: u32) -> u32 {
         if addr >= 0x80_0000 {
-            self.rom.get((addr & 0xf_ffff) as usize).copied().unwrap_or(0)
+            self.rom.get((addr & self.rom_mask) as usize).copied().unwrap_or(0)
         } else {
             self.ram[addr as usize % self.ram.len()]
         }
@@ -387,7 +397,7 @@ impl Engine {
     fn process(&mut self, buffer: &[u8], read_ptr: u32) {
         self.frames += 1;
         let mut pos = read_ptr as usize & (buffer.len() - 1) & !3;
-        let mut ext = GeoExt { ram: &mut self.poly_ram, rom: &self.poly_rom };
+        let mut ext = GeoExt::new(&mut self.poly_ram, &self.poly_rom);
         let start = self.tgp.steps;
         // Frame-start handshake: the program waits for F0 to rise, clears
         // its input FIFO, then waits for F0 to fall before reading the list

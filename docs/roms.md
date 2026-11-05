@@ -127,7 +127,7 @@ board (i960KB on all, gk). Controls and special hardware are gk throughout.
 | Set | Title | Year | Clones in zip | Sound | Controls | Special hardware | Complete |
 |---|---|---|---|---|---|---|---|
 | `topskatr` | Top Skater | 1997 | `topskatrj`, `topskatru` | SCSP, CRX_drv 3.2.8; **DSB2** | skateboard deck (2 analog channels), jump buttons (confirmed, README) | none | yes; also unpacked in `topskatr/` |
-| `skisuprg` | Sega Ski Super G | 1996 | none | SCSP, CRX_drv 3.2.8 | ski platform (analog), pole grips with buttons | none known | yes |
+| `skisuprg` | Sega Ski Super G | 1996 | none | SCSP, CRX_drv 3.2.8 | ski platform (analog; code uses channels 0-2), pole grips with buttons | drive board (confirmed: boot checks it, README) | yes; supported (manifest), stops at the drive board check |
 | `segawski` | Sega Water Ski | 1997 | none | SCSP, CRX_drv 3.4.8 | water-ski platform and tow handle (analog) | none known | yes |
 | `waverunr` | Wave Runner | 1996 | none | SCSP, CRX_drv 3.2.7 | personal watercraft: handlebar, throttle (analog) | ride-on cabinet; link (weak) | yes |
 | `hotd` | The House of the Dead | 1997 | none | SCSP, CRX_drv 3.2.8 | 2 light guns | none known | yes |
@@ -148,11 +148,14 @@ Only 2C games reuse the MB86235 work, so the choice is among the eight 2C
 games, ranked by how little new work each needs:
 
 1. **`skisuprg`, Sega Ski Super G.** Closest to `topskatr`: same driver
-   version (3.2.8), no music board, no known extra board, and nearly the
+   version (3.2.8), no music board, and nearly the
    same chip layout (program `.15/.16` plus a `.13/.14` pair, data
    `.9`-`.12`, polygons `.17/.21/.18/.22`, textures `.25/.27`, copro data
    `.29/.30`, samples `.32/.34`). Analog platform controls like the deck.
    Little-known, but the cheapest proof that the 2C stack generalises.
+   *Found:* it does have an extra board: boot handshakes with a drive
+   board over two I/O bytes and stops with "DRIVE BOARD TROUBLE" without
+   one (README, "What's known about `skisuprg`").
 2. **`waverunr`, Wave Runner.** Same shape: SCSP only (driver 3.2.7),
    analog handlebar and throttle, similar layout with a few extra 512 KB
    polygon/texture/data chips. A possible link port is unconfirmed; it
