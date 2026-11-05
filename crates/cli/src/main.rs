@@ -61,6 +61,16 @@ commands:
                        plus everything `run` executed) and the copro and
                        geometrizer programs `run` captured into out/recomp/;
                        the next build uses them in place of the interpreters
+  recomp-files         list the files in out/recomp/ that belong to the game:
+                       its i960 program and the copro and geometrizer
+                       programs `run` captured (for per-game builds)
+  shot FILE [FRAME]    boot, run to FRAME (default: the manifest's attract
+                       mode frame) and save the screen to FILE as PNG,
+                       touching nothing in out/GAME (--input, --height and
+                       --aspect apply)
+  web-index [DIR]      list the supported games whose chips are all loose in
+                       ROM/<set>/ (as the browser build fetches them); with
+                       DIR, also write DIR/games.json for its landing page
   gpu-check [DIR]      draw the frames captured with --capture in DIR
                        (default out/GAME/capture) with the software and GPU
                        rasterisers; time both and report how they differ
@@ -229,6 +239,21 @@ fn main() -> ExitCode {
             }
         }
         println!("{} sets, {supported} supported", sets.len());
+        return ExitCode::SUCCESS;
+    }
+    if cmd == "web-index" {
+        let games = web_index(&rom_dir);
+        if let Some(dir) = args.get(1).map(PathBuf::from) {
+            let path = dir.join("games.json");
+            if let Err(e) = std::fs::write(&path, games_json(&games, &dir)) {
+                eprintln!("error: {}: {e}", path.display());
+                return ExitCode::FAILURE;
+            }
+            eprintln!("wrote {} ({} games)", path.display(), games.len());
+        }
+        for g in games {
+            println!("{}", g.id);
+        }
         return ExitCode::SUCCESS;
     }
     if cmd == "games" {
@@ -444,6 +469,54 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
+        "recomp-files" => {
+            let dir = PathBuf::from("out").join(roms.game.id);
+            let mut hashes = vec![format!("i960_{:016x}.rs", model2::program_hash(&roms))];
+            for name in ["copro", "geo"] {
+                if let Ok(bin) = std::fs::read(dir.join(format!("{name}.bin"))) {
+                    let prog: Vec<u64> = bin.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect();
+                    hashes.push(format!("tgp_{:016x}.rs", mb86235::cpu::program_hash(&prog)));
+                }
+            }
+            hashes.dedup();
+            for f in hashes.iter().filter(|f| Path::new("out/recomp").join(f).is_file()) {
+                println!("{f}");
+            }
+        }
+        "shot" => {
+            let Some(path) = args.get(1).map(PathBuf::from) else {
+                eprint!("{USAGE}");
+                return ExitCode::FAILURE;
+            };
+            let frame = args.get(2).and_then(|s| parse_num(s)).map_or(roms.game.attract_frame, u64::from);
+            let script = match model2::input::InputScript::parse(input.as_deref().unwrap_or(""), &roms.game.controls) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("error: --input: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let mut m = model2::Machine::new(&roms);
+            if interp {
+                m.disable_native();
+            }
+            m.bus.geo.set_threaded(!single_thread);
+            while m.frames < frame {
+                let last = m.frames;
+                if let Err(s) = m.run_slice(u64::MAX) {
+                    eprintln!("error: stopped at frame {}: {s:?}", m.frames);
+                    return ExitCode::FAILURE;
+                }
+                if m.frames != last {
+                    script.apply(m.frames, &mut m.bus);
+                }
+            }
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            snapshot(&mut m, &path);
+            println!("frame {frame} -> {}", path.display());
+        }
         "gpu-check" => {
             let default = PathBuf::from("out").join(roms.game.id).join("capture");
             let root = args.get(1).map(PathBuf::from).unwrap_or(default);
@@ -581,6 +654,83 @@ fn main() -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// The supported games whose chips are all in `rom_dir/<set>/` with the
+/// right sizes: what the browser build can serve, one file per chip.
+fn web_index(rom_dir: &Path) -> Vec<&'static romset::Game> {
+    games::ALL
+        .iter()
+        .copied()
+        .filter(|g| {
+            let missing: Vec<_> = g
+                .files
+                .iter()
+                .filter(|f| {
+                    std::fs::metadata(rom_dir.join(g.id).join(f.name)).map_or(true, |m| m.len() != f.size as u64)
+                })
+                .map(|f| f.name)
+                .collect();
+            if !missing.is_empty() && missing.len() < g.files.len() {
+                eprintln!("{}: left out, {}/{}/ lacks {}", g.id, rom_dir.display(), g.id, missing.join(", "));
+            }
+            missing.is_empty()
+        })
+        .collect()
+}
+
+/// `s` as a JSON string.
+fn json_str(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out += "\\\"",
+            '\\' => out += "\\\\",
+            c if (c as u32) < 0x20 => out += &format!("\\u{:04x}", c as u32),
+            c => out.push(c),
+        }
+    }
+    out + "\""
+}
+
+/// The browser build's game list (`web-index DIR`): for each game its
+/// title, year, board, page, poster (`DIR/posters/<set>.webp`, else
+/// `posters/placeholder.webp`, if there), screenshot (if
+/// `DIR/model2/<set>/shot.png` exists) and controls summary.
+fn games_json(games: &[&romset::Game], dir: &Path) -> String {
+    let mut out = String::from("{\"games\": [");
+    for (i, g) in games.iter().enumerate() {
+        let page = format!("model2/{}/", g.id);
+        let shot = format!("{page}shot.png");
+        let shot = if dir.join(&shot).is_file() { json_str(&shot) } else { "null".into() };
+        let poster = [format!("posters/{}.webp", g.id), "posters/placeholder.webp".into()]
+            .into_iter()
+            .find(|p| dir.join(p).is_file())
+            .map_or("null".into(), |p| json_str(&p));
+        let controls: Vec<String> = g
+            .controls
+            .summary()
+            .iter()
+            .map(|(keys, label)| {
+                let keys: Vec<String> = keys.iter().map(|k| json_str(k)).collect();
+                format!("{{\"keys\": [{}], \"label\": {}}}", keys.join(", "), json_str(label))
+            })
+            .collect();
+        let _ = write!(
+            out,
+            "{}\n  {{\"id\": {}, \"title\": {}, \"year\": {}, \"board\": {}, \"page\": {}, \"poster\": {}, \"shot\": {}, \"controls\": [{}]}}",
+            if i > 0 { "," } else { "" },
+            json_str(g.id),
+            json_str(g.title),
+            g.year,
+            json_str(g.board.name()),
+            json_str(&page),
+            poster,
+            shot,
+            controls.join(", ")
+        );
+    }
+    out + "\n]}\n"
 }
 
 /// Output view for snapshots (`--height`, `--aspect`, `--hud`); native when unset.
