@@ -51,6 +51,7 @@ music`). There is no live window yet.
 | Browser build (WebAssembly + WebGPU) | playable (`make web`), with sound, keyboard and gamepad; see `docs/web.md` |
 | Second game: `skisuprg` (Sega Ski Super G, 2C) | playable (`make play GAME=skisuprg`): drive board modelled from the game's code, its own controls and coin-start script from its manifest; save states round-trip |
 | Third game: `stcc` (Sega Touring Car Championship, 2C) | playable with sound effects and music (`make play GAME=stcc`): attract, car and gearbox select, name entry and races; its DSB1 music board (Z80) is modelled from its program. Needed geometrizer list jumps and mirrored ROM slots; recompiled build identical |
+| Fourth game: `segawski` (Sega Water Ski, 2C) | playable with sound (`make play GAME=segawski`): attract, player and course select, runs. No extra boards; needed a second main data ROM bank at `0x6000000`; recompiled build identical |
 
 ## Quick start
 
@@ -102,8 +103,8 @@ them are described in `docs/mods.md`.
 meant only to make things faster must leave it unchanged. The hash depends on
 `out/GAME/eeprom.bin`, which `run` creates on first boot.
 
-Every target takes `GAME=skisuprg` for Sega Ski Super G or `GAME=stcc` for
-Sega Touring Car Championship (`make play GAME=stcc`, `make capture
+Every target takes `GAME=skisuprg` for Sega Ski Super G, `GAME=stcc` for
+Sega Touring Car Championship or `GAME=segawski` for Sega Water Ski (`make play GAME=stcc`, `make capture
 GAME=skisuprg`, ...), except `make assets`, which is `topskatr`'s, and
 `make music`, which needs a music board (`topskatr`'s DSB2 or `stcc`'s DSB1).
 
@@ -154,7 +155,7 @@ ports and analog channels, default keys and pad bindings, and its
 coin-start script) and which drive board it needs, if any; the board
 model, scripted input and both players read them from there. Drive board
 protocols live in `crates/model2/src/drive.rs`, one per kind. `topskatr`,
-`skisuprg` and `stcc` are Model 2C-CRX (MB86235 geometry processor).
+`skisuprg`, `stcc` and `segawski` are Model 2C-CRX (MB86235 geometry processor).
 
 The board table is from public documentation (largely MAME's driver notes).
 MAME does not run `topskatr` correctly, so its board details are treated as
@@ -430,6 +431,51 @@ Third 2C game: the first with a DSB1 music board, a wheel and a gearbox.
 - *Unconfirmed:* `epr-18643a.7` (also in `sgt24h` and `von`) is Z80 code
   whose header names Sega part 837-10074; it belongs to another cabinet
   board (link or drive, not known).
+
+## What's known about `segawski`
+
+Sega Water Ski, a different game from Ski Super G (water skiing behind a
+boat, not snow), on the same 2C board. The set is the Japanese release
+(the boot warning says "used only in Japan"; the program's build date is
+Aug 22 1997).
+
+- *Confirmed (from the code and the game's memory test):* program
+  `epr-19963a.15`/`epr-19964a.16` at `0x0` (`.15` low); main data `.11/.12`
+  at `0x2000000` and `.9/.10` at `0x2800000` (its pointer tables point
+  into `0x2800000`), and a second data bank: `.7/.8` at `0x6000000` (the
+  font is loaded from `0x622BF70`, and its own pointer tables point into
+  `0x6000000`) and the 1 MB pair `.5/.6` at `0x6800000`, read 4 MB into
+  its slot at `0x6C0xxxx` (sprite headers and palettes like `.7/.8`'s), so
+  it repeats as `stcc`'s small pairs do. Nothing executes or reads above
+  `0x100000` in program space. With this layout the memory test passes
+  IC15, 16, 11, 12, 9, 10, 7, 8, 5 and 6, which it checks in that order.
+  `romset::Role::MainDataHigh` holds the second bank; the bus maps it at
+  `0x6000000`-`0x7FFFFFF` only for games that have it. *Unconfirmed:*
+  what the board decodes at `0x4000000`-`0x5FFFFFF` and above
+  `0x7000000` (nothing reads there).
+- *Confirmed:* polygons are four pairs (`.17/.21`, `.18/.22`, `.19/.23`,
+  `.20/.24`, 32 MB), textures two (`.27/.25`, `.28/.26`), copro data
+  `.29/.30`, samples `.32/.34`; `epr-19967.31` is CRX_drv Ver3.4.8 (97
+  8/20), and `make sound GAME=segawski` plays a run's commands.
+- *Confirmed (by running it):* it needs no drive or music board. It never
+  waits on the drive board registers; before a run it shows "the foot
+  controller is being unlocked, take care", the output test's SLIDE LOCK.
+- *Confirmed (from the input test, then by scripted runs):* port
+  `0x1C00002` bits 0/1 coins (one credit is two coins by default; the test
+  shows one COIN CHUTE), 2 test, 3 service, 6 SELECT(DOWN); port
+  `0x1C00004` bit 0 SET (starts a game, confirms), 1 SELECT(UP), 2 PITCH
+  LEFT, 3 PITCH RIGHT; analog channel 0 SLIDE (`0x10` swings the skier
+  left, `0xF0` right). *Unconfirmed:* what the pitch switches do; the game
+  shows a "jump!" prompt with a foot-tilt icon at ramps.
+- *Confirmed (by running it):* coin-start reaches player select, course
+  select (Palm Beach, Au-Pau River, Whale Park) and a run at Palm Beach;
+  the attract demos ski in 3D. `make state-check GAME=segawski`
+  round-trips, `make lockstep GAME=segawski` runs 300M instructions
+  identical, and a coin-start run of 600M instructions gives the same
+  state hash (`505a972b9e8a3c89`) recompiled and interpreted.
+- *Unconfirmed:* the memory test reports RAM IC54 and IC55 BAD; which
+  RAMs those are, and whether the game uses them, is not known (the game
+  plays).
 
 ## License
 

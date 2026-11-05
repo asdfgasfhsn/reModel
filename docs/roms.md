@@ -128,7 +128,7 @@ board (i960KB on all, gk). Controls and special hardware are gk throughout.
 |---|---|---|---|---|---|---|---|
 | `topskatr` | Top Skater | 1997 | `topskatrj`, `topskatru` | SCSP, CRX_drv 3.2.8; **DSB2** | skateboard deck (2 analog channels), jump buttons (confirmed, README) | none | yes; also unpacked in `topskatr/` |
 | `skisuprg` | Sega Ski Super G | 1996 | none | SCSP, CRX_drv 3.2.8 | ski platform (analog channels 0-2: two ski angles, a third unconfirmed), three panel buttons (confirmed, README) | drive board (confirmed: boot checks it; modelled, README) | yes; supported and playable |
-| `segawski` | Sega Water Ski | 1997 | none | SCSP, CRX_drv 3.4.8 | water-ski platform and tow handle (analog) | none known | yes |
+| `segawski` | Sega Water Ski (Japan) | 1997 | none | SCSP, CRX_drv 3.4.8 (confirmed) | slide (ch. 0), pitch left/right switches, select up/down and set buttons (confirmed, README) | none needed (confirmed); a second main data bank at `0x6000000` (README) | yes; supported and playable |
 | `waverunr` | Wave Runner | 1996 | none | SCSP, CRX_drv 3.2.7 | personal watercraft: handlebar, throttle (analog) | ride-on cabinet; link (weak) | yes |
 | `hotd` | The House of the Dead | 1997 | none | SCSP, CRX_drv 3.2.8 | 2 light guns | none known | yes |
 | `stcc` | Sega Touring Car Championship | 1996 | `stcca`, `stccb` (the zip holds all three program pairs; Remodel uses `epr-19570/19571`) | SCSP, CRX_drv 3.2.5 (confirmed); **DSB1 (Z80)**, modelled (`docs/hw/dsb1.md`) | wheel (ch. 0), gas (1), brake (2), shift up/down buttons, two view buttons (confirmed, README) | wheel drive board (commanded every frame, reply never checked; modelled, README); link (skipped by the default settings); `epr-18643a.7` (Z80 code for another board) | yes; supported and playable, with music |
@@ -169,7 +169,9 @@ games, ranked by how little new work each needs:
    chips), and its copro program sits in a data ROM pair (`.9/.10`) rather
    than the program ROM (ROM), so it can't assume `topskatr`'s boot path.
 4. **`segawski`, Sega Water Ski.** Like Ski Super G, with more ROM (eight
-   polygon and four texture chips) and a newer driver (3.4.8).
+   polygon and four texture chips) and a newer driver (3.4.8). *Done:* a
+   different game from `skisuprg`, not a release of it; it needed only a
+   second main data bank (`.7/.8`, `.5/.6` at `0x6000000`) and plays.
 5. **`overrev`, Over Rev.** The smallest 2C set and the closest layout
    (no copro data ROMs at all), but Jaleco's own sound driver, wheel and
    shifter controls, and unknown cabinet hardware. Well liked.

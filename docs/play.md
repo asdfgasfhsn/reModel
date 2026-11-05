@@ -56,6 +56,19 @@ game's own demo drives them; full deflection on the keyboard turns hard.
 The game needs its drive board (the platform motor); Remodel answers its
 boot check and commands as an idle board at rest (`crates/model2/src/drive.rs`).
 
+### Sega Water Ski (`segawski`)
+
+One credit is two coins. Slide the platform to steer; SET starts a game
+and confirms on the select screens, the select buttons move the choice.
+
+| Control | Keys | Gamepad |
+|---|---|---|
+| coin | C, 5 | Back |
+| set: start, confirm | Enter, S | Start, A |
+| select up, down | W, X | d-pad up, down |
+| steer (`slide`) | Left, Right | left stick, d-pad |
+| pitch left, right (unconfirmed what they do) | Q, E | left, right shoulder |
+
 ### Sega Touring Car Championship (`stcc`)
 
 Sound effects and music (the DSB1 music board, `docs/hw/dsb1.md`). One coin
