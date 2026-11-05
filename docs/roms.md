@@ -132,7 +132,7 @@ board (i960KB on all, gk). Controls and special hardware are gk throughout.
 | `waverunr` | Wave Runner | 1996 | none | SCSP, CRX_drv 3.2.7 (confirmed) | handlebar (ch. 0), throttle (2), body roll (1) and pitch (3), start, view (confirmed, README) | ride-on cabinet board: optional, skipped when absent (README); link not read by default | yes; supported and playable |
 | `hotd` | The House of the Dead | 1997 | none | SCSP, CRX_drv 3.2.8 | 2 light guns | none known | yes |
 | `stcc` | Sega Touring Car Championship | 1996 | `stcca`, `stccb` (the zip holds all three program pairs; Remodel uses `epr-19570/19571`) | SCSP, CRX_drv 3.2.5 (confirmed); **DSB1 (Z80)**, modelled (`docs/hw/dsb1.md`) | wheel (ch. 0), gas (1), brake (2), shift up/down buttons, two view buttons (confirmed, README) | wheel drive board (commanded every frame, reply never checked; modelled, README); link (skipped by the default settings); `epr-18643a.7` (Z80 code for another board) | yes; supported and playable, with music |
-| `overrev` | Over Rev | 1997 | `overrevb` (2B) | SCSP (Jaleco driver) | wheel, pedals, shifter | unknown | yes |
+| `overrev` | Over Rev | 1997 | `overrevb` (2B; the zip holds both program pairs, Remodel uses the 2C `epr-20124a/20125a`) | SCSP, Jaleco's own driver (confirmed; streams its music, no music board) | wheel (ch. 0), gas (1), brake (2), shift up/down, view (confirmed, README) | none needed; the link board check reads it as absent and runs stand-alone (README) | yes; supported and playable, with sound |
 | `bel` | Behind Enemy Lines | 1998 (Sega / EPL) | none | SCSP (EPL driver; 128 KB sound program) | gun (gk, weak) | unknown | yes |
 | `dynmcopc` | Dynamite Cop (2C) | 1998 | clone of 2A `dynamcop` | SCSP, CRX_drv 3.2.8 | stick, 3 buttons | none | yes (2 own chips; the rest comes from the 2A parent) |
 
@@ -178,6 +178,11 @@ games, ranked by how little new work each needs:
 5. **`overrev`, Over Rev.** The smallest 2C set and the closest layout
    (no copro data ROMs at all), but Jaleco's own sound driver, wheel and
    shifter controls, and unknown cabinet hardware. Well liked.
+   *Done:* it needed no board model: its every-boot network check takes
+   the link board's registers reading all ones as "no board" and goes on
+   stand-alone. Jaleco's sound driver runs on the SCSP board model
+   unchanged (README, "What's known about `overrev`"; `docs/hw/sound.md`
+   §6).
 6. **`dynmcopc`, Dynamite Cop (2C).** Simplest controls (digital) and the
    3.2.8 driver, but it's a clone whose data chips were named for the 2A
    board, so which chip goes where on 2C has to come from MAME (gk) and then

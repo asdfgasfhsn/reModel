@@ -863,3 +863,76 @@ attack, sustain, fast release, no LFO and no FM.
 11. **MPEG ROM header** `0x0000–0x10FFF` of `.18s`: what reads it?
 12. **SCSP 68k bus waits.** MAME's 1-cycle guess. It only matters if music
     tempo is visibly off; MDF notes the same issue on the Saturn.
+
+---
+
+## 6. Jaleco's driver on `overrev` (ROM, H unless marked)
+
+`overrev`'s sound program `epr-20002.31` (512 KB, about 90 KB used) is
+Jaleco's own driver, not CRX_drv: no driver string, a different layout,
+and its own conventions. It runs on the same board model with **no
+changes**: everything it uses is already covered above. Found by running
+it (`make run GAME=overrev INPUT=coin-start STEPS=900000000`, then `make
+sound GAME=overrev`) and reading the code with `make sound-disasm
+GAME=overrev`.
+
+- **Reset.** SSP `0x5000`, PC `0x601200`. The vector table is copied to
+  RAM from ROM `0x600000` as by CRX_drv; reset and all unused vectors point
+  at `0x60186E`, which restarts the driver.
+- **Init.** Clears all 512 KB of RAM, sets `0x100400` high byte to 3
+  (MEM4MB and DAC18B), then probes the RAM size: it writes `0x12345678`
+  to RAM 0 and loops forever if it shows up at `0x40000`, so it needs the
+  whole 512 KB (no mirroring at 256 KB). Then it loads a DSP image (COEF,
+  MADRS, MPRO: `0x500` bytes copied to `0x100700`), sets up the slots
+  (KYONEX with KYONB clear, so all keyed off), the ring (`0x100402` =
+  `0x0138`: RBL 2, 32K words at `0x70000`, as `topskatr`), interrupts and
+  timers, reads MIBUF four times to flush the MIDI FIFO, and then
+  **busy-waits about 2.2 s** (`0x8000` × 20 `muls.w`) before setting MVOL
+  15 and unmasking interrupts. So the first commands are taken about 3 s
+  after reset.
+- **Interrupts.** SCIEB `0x01C8`: MIDI in (bit 3), timers A, B and **C**
+  (bits 6, 7, 8). SCILV0 `0x48`, SCILV1 `0x88`, SCILV2 0: MIDI in →
+  level 3, timer A → level 1, timer B → level 2, and timer C shares timer
+  B's level (bits 7-10 of SCIPD all take SCILV bit 7's level; SCSP
+  p04_2c). CRX_drv never enables timer C. The level 2 handler tests
+  SCIPD bit 7 to tell timer B from C, reloads that timer from RAM and
+  clears its SCIRE bit. Timer A: TACTL 3, `0xC0` (512 samples, 86 Hz);
+  B and C: ÷1, `0xCE` (50 samples, 882 Hz).
+- **MIDI.** The level 3 handler (`0x6017A2`) reads one MIBUF byte per
+  entry into a ring in RAM; `0xFF` restarts the driver. The i960 sends the
+  same `A0 xx yy` messages and one `0xFF` at init as in the Sega games. The
+  `0xFF` arrives during the driver's first busy-wait and waits in the
+  FIFO, so the driver initialises twice and is ready about 5.7 s after
+  reset (H, by running it). Nothing is ever written to MOBUF.
+- **Voices.** All 8-bit PCM (PCM8B), no FM, LFO depth 0, LPCTL 0 or 1.
+  Long sounds, the music included, are **streamed** from sample ROM into
+  8 KB double buffers (LEA `0x1FFF`) refilled when CA (`0x100409` bit 7,
+  after selecting the slot with MSLC) shows the other half playing, much
+  as CRX_drv does; others play from RAM outside the stream buffers
+  (SA `0x50000`, LEA `0x9980`, for example).
+  Most voices play at OCT −1 (22.05 kHz) with DISDL 3 (−24 dB), so the
+  mix is about 10 dB quieter than `topskatr`'s (peak −22 dBFS in a race).
+  Direct-out level, pan and the effect send (ISEL 0 or 1, IMXL 1-3) are
+  written per voice, and the driver writes the whole `+0x16` word, EFSDL
+  3 / EFPAN 0 included.
+- **DSP.** The init image is an 80-step program: 28 memory steps, all on
+  odd steps, each MEMS write (IWT) taking the read two steps before; it
+  reads MIXS 0 and 1 and writes EFREG 1-4 (an echo/reverb). The driver
+  loads other programs on command (5,120 MPRO writes in a boot-to-race
+  run; a 42-step one writing only EFREG 0 was loaded at the end).
+  Nothing uses TABLE, ADRL, FRCL, NOFL or EXTS, so the open DSP
+  questions in §2.9 and §4.1 don't matter for it.
+- **Board latch `0x400001`.** Bits 3-0 count down through init (`0x3F`,
+  `0x3E`, `0x3C`, `0x38`, `0x30`) and then blink; **bits 4 and 5 are
+  always set** (the base value is `0x30`), where `topskatr` keeps them
+  clear. MAME takes bit 5 as a sample bank select for boards with more
+  than 8 MB of samples (§1); `overrev` has exactly 8 MB, and its music
+  and effects come out as recognisable sound with the plain linear map,
+  so the bits are ignored here. *Unconfirmed:* what bits 4-5 do on the
+  real board.
+- *Seen, unconfirmed:* while the driver restarts with MVOL still 15, its
+  RAM clear runs through the DSP ring, and the DSP reads the zeroed words
+  as large values (16-bit float `0x0000` has the hidden bit set, so it
+  is +0.5 full scale, not 0): about 30 ms of DC (2,046) comes out until
+  the restart clears MVOL. Whether the real board makes the same click
+  isn't known.

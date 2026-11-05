@@ -53,6 +53,7 @@ music`). There is no live window yet.
 | Third game: `stcc` (Sega Touring Car Championship, 2C) | playable with sound effects and music (`make play GAME=stcc`): attract, car and gearbox select, name entry and races; its DSB1 music board (Z80) is modelled from its program. Needed geometrizer list jumps and mirrored ROM slots; recompiled build identical |
 | Fourth game: `segawski` (Sega Water Ski, 2C) | playable with sound (`make play GAME=segawski`): attract, player and course select, runs. No extra boards; needed a second main data ROM bank at `0x6000000`; recompiled build identical |
 | Fifth game: `waverunr` (Wave Runner, 2C) | playable (`make play GAME=waverunr`): attract, course select and races to game over, sound from the SCSP (no music board). Needed a data ROM window at `0x06000000` and the recompiler leaving code run from RAM to the interpreter; its ride-on cabinet's board isn't needed; recompiled build identical |
+| Sixth game: `overrev` (Over Rev, 2C, Jaleco) | playable with sound (`make play GAME=overrev`): attract, mode, car and gearbox select, races. Jaleco's own sound driver runs on the SCSP board model unchanged (music streamed from sample ROM; no music board). Needed the link board's registers to read as absent; recompiled build identical |
 
 ## Quick start
 
@@ -105,8 +106,8 @@ meant only to make things faster must leave it unchanged. The hash depends on
 `out/GAME/eeprom.bin`, which `run` creates on first boot.
 
 Every target takes `GAME=skisuprg` for Sega Ski Super G, `GAME=stcc` for
-Sega Touring Car Championship, `GAME=segawski` for Sega Water Ski or
-`GAME=waverunr` for Wave Runner (`make play GAME=stcc`, `make capture
+Sega Touring Car Championship, `GAME=segawski` for Sega Water Ski,
+`GAME=waverunr` for Wave Runner or `GAME=overrev` for Over Rev (`make play GAME=stcc`, `make capture
 GAME=skisuprg`, ...), except `make assets`, which is `topskatr`'s, and
 `make music`, which needs a music board (`topskatr`'s DSB2 or `stcc`'s DSB1).
 
@@ -157,7 +158,7 @@ ports and analog channels, default keys and pad bindings, and its
 coin-start script) and which drive board it needs, if any; the board
 model, scripted input and both players read them from there. Drive board
 protocols live in `crates/model2/src/drive.rs`, one per kind. `topskatr`,
-`skisuprg`, `stcc`, `segawski` and `waverunr` are Model 2C-CRX (MB86235 geometry processor).
+`skisuprg`, `stcc`, `segawski`, `waverunr` and `overrev` are Model 2C-CRX (MB86235 geometry processor).
 
 The board table is from public documentation (largely MAME's driver notes).
 MAME does not run `topskatr` correctly, so its board details are treated as
@@ -576,6 +577,70 @@ Fifth game, 2C: a ride-on personal watercraft cabinet, SCSP sound only.
   every other pixel and the water shows through. *Unconfirmed:* how it
   looks on the hardware's display (a half-tone, or blended by the
   monitor).
+
+## What's known about `overrev`
+
+Sixth game, 2C, and the first not by Sega: Jaleco's, with its own sound
+driver. A sit-down driving cabinet; no extra boards are needed.
+
+- *Confirmed (from the code):* `overrev.zip` holds two program pairs.
+  `epr-20124a.15`/`epr-20125a.16` is the 2C one: it carries the MB86235
+  geometrizer and copro code the other 2C programs share (17 of 37 and 22
+  of 128 32-byte windows of `topskatr`'s uploaded programs match, as for
+  the other 2C sets), while `epr-19992b`/`19993b` (the 2B clone
+  `overrevb`'s) matches none. Both have the same strings and "Sep 10 1997"
+  build dates. Boot record: PRCB `0xB0`, first IP `0x690`, interrupt table
+  `0x1690`, system-procedure table `0x1C0`.
+- *Confirmed (from the code):* main data is `.11/.12` at `0x2000000` and
+  `.9/.10` at `0x2800000`: of the 2,826 program words pointing into
+  `0x2000000-0x2FFFFFF`, 92 land on filler (`0xCC`/`0xFF` runs) in that
+  order and 434 the other way round. No copro data ROMs, no second data
+  bank. *Unconfirmed:* textures `.27/.25` and polygons `.17/.21` follow
+  `topskatr`'s order; the game draws correctly with them.
+- *Confirmed (from the code):* every boot runs a network check ("CHECKING
+  NETWORK NOW"), whatever the link setting, as a state machine copied to
+  work RAM (from program `0x6D6A0`). It reads the communication board at
+  `0x1A14000`: bit 0 set means no board. With no board and the link
+  setting stand-alone (the default: the setting byte at `0x590D16` is 0,
+  from the EEPROM) it then waits for bit 7 of `0x1A14002` to be set and
+  goes on "STAND ALONE"; with no board and a linked setting it stops on
+  "Nothing communication board!". With a board it writes 1 to `0x1A14000`,
+  waits for bit 7 of `0x1A14002` to clear, and starts the link. Remodel
+  reads the board's registers as all ones (no board), which the game takes
+  as a stand-alone cabinet; reading 0 (as before) left it waiting at "Link
+  check." forever. *Unconfirmed:* that an empty slot reads as all ones on
+  the real board (pull-ups); it's the reading the game's code expects.
+- *Confirmed (by running it):* no drive board: `0x1C00006` is never read.
+  The game writes `0x1C00008` every frame. *Unconfirmed:* what (lamps,
+  presumably).
+- *Confirmed (from the input test, then by scripted runs):* port
+  `0x1C00002` bit 0 coin (one coin a credit by default), 2 test, 3
+  service, 6 start; port `0x1C00004` bit 0 view (cycles chase, cockpit and
+  bumper cameras), 4 shift up, 5 shift down (they change gear with the
+  manual gearbox). VIEW2 is listed but unused ("---"). Analog channels: 0
+  wheel (0x30 steers left, 0xD0 right; it also moves the menu selection),
+  1 gas and 2 brake, both 0xFF released and 0x00 fully down (the input
+  test shows the raw value). A gas press (release to down) confirms each
+  menu: mode, car, gearbox (AT or MT, chosen with the wheel).
+- *Confirmed (from the code, then by running it):* the sound program
+  `epr-20002.31` is Jaleco's own 68000 driver, not CRX_drv; it needs
+  nothing beyond what Sega's drivers use (`docs/hw/sound.md` §6). The
+  i960 sends the same 3-byte `A0 xx yy` messages over the link, and one
+  `0xFF` at init, which restarts the driver as it does CRX_drv. Music is
+  streamed PCM from the sample ROMs like the effects; there is no music
+  board.
+- *Confirmed (by running it):* `make capture GAME=overrev` (coin-start:
+  one coin, start, the gas pedal to confirm challenge cup, the first car
+  and AT, then held down) races the first course until time runs out.
+  `make sound GAME=overrev` plays the run's commands on all 32 slots,
+  about -37 dBFS RMS through the race with the music and engine. `make
+  state-check GAME=overrev` round-trips, `make lockstep GAME=overrev` runs
+  300M instructions identical, and a coin-start run of 600M instructions
+  gives the same state hash (`d41686f041683f4c`, with an `eeprom.bin` from
+  an earlier run) recompiled and interpreted.
+- *Unconfirmed:* steering, braking and the AI cars' behaviour were only
+  checked as far as a scripted run shows; the car stays last when
+  nothing steers it.
 
 ## License
 

@@ -106,6 +106,23 @@ cabinet board were attached.
 | view (unconfirmed what it changes) | V | Y |
 | body roll (`roll`, no effect seen yet) | A, D | right stick |
 
+### Over Rev (`overrev`)
+
+All its sound, music included, comes from the SCSP sound board, run by
+Jaleco's own driver (no music board). One coin is one credit. On the
+menus the wheel moves the selection and the gas pedal confirms: mode,
+car, then the gearbox (AT or MT; the shift buttons step through MT's
+gears).
+
+| Control | Keys | Gamepad |
+|---|---|---|
+| coin | C, 5 | Back |
+| start | Enter | Start |
+| steer (`wheel`) | Left, Right | left stick, d-pad |
+| gas, brake | Up, Down | right trigger, left trigger |
+| shift up, shift down | A, Z | right shoulder or B, left shoulder or X |
+| view (chase, cockpit, bumper) | V | Y |
+
 ## The menu
 
 - **Save states**: a quick slot (F5/F9) and four more. A save holds the
