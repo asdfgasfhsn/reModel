@@ -18,12 +18,13 @@
 //! booting underneath (`splash`). Esc opens the menu (and pauses): save
 //! states, sound mix, display, game and ROM folder. Settings persist (`settings`).
 
+mod controls;
 mod menu;
 mod settings;
 mod sound;
 mod splash;
 
-use gilrs::{Axis, Button, Gilrs};
+use gilrs::Gilrs;
 use settings::Settings;
 use sound::Sound;
 use std::collections::HashSet;
@@ -56,14 +57,14 @@ usage: remodel-play [options]
   --seconds N        quit after N seconds (for timing runs)
   --no-splash        don't show the logo at startup
   --input SCRIPT     scripted inputs, as for `remodel run` (for timing runs),
-                     e.g. coin1@1100-1104,start@1250-1254
+                     e.g. coin-start (the game's own coin-up and start)
 
 Options given here are remembered (the game once it starts), as are
 changes made in the menu.
 
-keys: C coin, Enter start, arrows steer (Down slide), Z jump front, X jump
-tail, Q/E select, Esc menu (pause), F5 quick save, F9 quick load, F11
-fullscreen. Gamepads work too.
+keys: Esc menu (pause), F5 quick save, F9 quick load, F11 fullscreen. The
+game's controls depend on the game (docs/play.md); C coins up and arrows
+steer in both games. Gamepads work too.
 ";
 
 /// Model 2 video frame rate.
@@ -78,7 +79,8 @@ struct Options {
     sound: bool,
     interp: bool,
     seconds: Option<f64>,
-    input: Option<model2::input::InputScript>,
+    /// `--input`, parsed against the game's inputs when it starts.
+    input: Option<String>,
     /// `--game`: remembered only once it starts (`Play::start_game`).
     game: Option<String>,
     splash: bool,
@@ -103,7 +105,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
             "--no-splash" => o.splash = false,
             "--fullscreen" => s.fullscreen = true,
             "--exact" => s.exact = true,
-            "--input" => o.input = Some(model2::input::InputScript::parse(&value()?)?),
+            "--input" => o.input = Some(value()?),
             "--seconds" => o.seconds = Some(value()?.parse().map_err(|_| "bad --seconds")?),
             "-h" | "--help" => return Err(String::new()),
             _ => return Err(format!("unknown option {a}")),
@@ -117,6 +119,8 @@ struct Session {
     game: &'static romset::Game,
     machine: model2::Machine,
     sound: Option<Sound>,
+    /// `--input`, if given: replaces the player's controls.
+    script: Option<model2::input::InputScript>,
 }
 
 impl Session {
@@ -232,6 +236,12 @@ impl Play {
             s.save_eeprom();
         }
         let started = romset::games::find(set).map_err(|e| e.to_string()).and_then(|game| {
+            let script = match &self.opts.input {
+                Some(spec) => {
+                    Some(model2::input::InputScript::parse(spec, &game.controls).map_err(|e| format!("--input: {e}"))?)
+                }
+                None => None,
+            };
             let roms = romset::RomSet::load(game, &self.settings.rom, false).map_err(|e| e.to_string())?;
             let mut machine = model2::Machine::new(&roms);
             if self.opts.interp {
@@ -255,7 +265,7 @@ impl Play {
                 if machine.is_native() { "recompiled" } else { "interpreted" },
                 sound.as_ref().map_or(String::new(), |s| format!(", audio {} Hz", s.rate))
             );
-            Ok(Session { game, machine, sound })
+            Ok(Session { game, machine, sound, script })
         });
         match started {
             Ok(s) => {
@@ -396,37 +406,18 @@ impl Play {
         pressed
     }
 
-    /// Keyboard and the last used gamepad onto the cabinet's controls.
+    /// Keyboard and the last used gamepad onto the cabinet's controls, by
+    /// the game's bindings (`romset::Controls`), or the `--input` script.
     fn apply_inputs(&mut self) {
         self.poll_pads();
         let pad = self.gilrs.as_ref().and_then(|g| self.pad.map(|id| g.gamepad(id)));
         let Some(s) = &mut self.session else { return };
-        let key = |k: KeyCode| self.keys.contains(&k);
-        let pressed = |b: Button| pad.as_ref().is_some_and(|p| p.is_pressed(b));
-        let stick = pad.as_ref().map_or(0.0, |p| p.value(Axis::LeftStickX)).clamp(-1.0, 1.0);
-        let stick = if stick.abs() > 0.15 { stick } else { 0.0 };
-        let trigger = pad.as_ref().and_then(|p| p.button_data(Button::RightTrigger2)).map_or(0.0, |d| d.value());
-        let steer = if key(KeyCode::ArrowLeft) || pressed(Button::DPadLeft) {
-            -1.0
-        } else if key(KeyCode::ArrowRight) || pressed(Button::DPadRight) {
-            1.0
-        } else {
-            stick
-        };
-        let slide = if key(KeyCode::ArrowDown) || key(KeyCode::Space) || pressed(Button::East) { 1.0 } else { trigger };
-        let bus = &mut s.machine.bus;
-        // Steering: 0x10 carves right, 0xF0 left, 0x80 centred.
-        model2::input::set_analog(bus, "curving", (128.0 - steer * 112.0).round() as u8);
-        model2::input::set_analog(bus, "slide", (128.0 + slide * 112.0).round() as u8);
-        for (name, down) in [
-            ("jumpfront", key(KeyCode::KeyZ) || key(KeyCode::ArrowUp) || pressed(Button::South)),
-            ("jumptail", key(KeyCode::KeyX) || pressed(Button::West)),
-            ("start", key(KeyCode::Enter) || pressed(Button::Start)),
-            ("coin1", key(KeyCode::KeyC) || key(KeyCode::Digit5) || pressed(Button::Select)),
-            ("selleft", key(KeyCode::KeyQ) || pressed(Button::LeftTrigger)),
-            ("selright", key(KeyCode::KeyE) || pressed(Button::RightTrigger)),
-        ] {
-            model2::input::set_button(bus, name, down);
+        match &s.script {
+            Some(script) => script.apply(s.machine.frames, &mut s.machine.bus),
+            None => {
+                let devices = controls::Devices { keys: &self.keys, pad };
+                model2::input::apply_player(&mut s.machine.bus, &devices, |_| false);
+            }
         }
     }
 
@@ -455,14 +446,7 @@ impl Play {
         }
         let mut ran = 0;
         while self.session.as_ref().is_some_and(|s| s.machine.frames < due) && ran < MAX_CATCH_UP {
-            match self.opts.input.take() {
-                Some(script) => {
-                    let s = self.session.as_mut().unwrap();
-                    script.apply(s.machine.frames, &mut s.machine.bus);
-                    self.opts.input = Some(script);
-                }
-                None => self.apply_inputs(),
-            }
+            self.apply_inputs();
             let s = self.session.as_mut().unwrap();
             s.machine.run_slice(u64::MAX)?;
             match &mut s.sound {
@@ -765,6 +749,13 @@ impl ApplicationHandler for Play {
             }
             WindowEvent::RedrawRequested => {
                 if self.opts.seconds.is_some_and(|s| self.started.elapsed().as_secs_f64() >= s) {
+                    if let Some(s) = &mut self.session {
+                        let hash = s.machine.bus.state_hash();
+                        println!("frames        {}, state hash {hash:016x}", s.machine.frames);
+                        if let Some(d) = &s.machine.bus.drive {
+                            println!("drive board   {}", d.describe());
+                        }
+                    }
                     return self.quit(el);
                 }
                 self.frame(el);

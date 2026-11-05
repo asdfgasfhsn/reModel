@@ -1,5 +1,5 @@
 // The geometrizer, on its own core. The page posts:
-//   {type: "init", module, rom}         the shared compiled module, ROM URL
+//   {type: "init", module, game, rom}       the shared compiled module, ROM URL
 //   {type: "boot", program}             the uploaded program (u32 pairs)
 //   {type: "frame", buffer, booted, readPtr}
 //                                       one frame's job, at vblank
@@ -37,9 +37,9 @@ onmessage = async (e) => {
     try {
       await init({ module_or_path: m.module ?? "./pkg/remodel_web_bg.wasm" });
       const chips = await Promise.all(
-        rom_files().map(async (f) => new Uint8Array(await (await fetch(`${m.rom}/${f}`)).arrayBuffer())),
+        rom_files(m.game).map(async (f) => new Uint8Array(await (await fetch(`${m.rom}/${f}`)).arrayBuffer())),
       );
-      engine = new GeoEngine(chips);
+      engine = new GeoEngine(m.game, chips);
       postMessage({ type: "ready" });
       while (pending.length) run(pending.shift());
     } catch (err) {

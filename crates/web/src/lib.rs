@@ -23,6 +23,7 @@
 #![cfg(target_arch = "wasm32")]
 
 use model2::video;
+use romset::PadButton;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -30,8 +31,18 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlCanvasElement, KeyboardEvent};
 
-/// The buttons `set_touch` reports, by bit.
-const TOUCH_BUTTONS: [&str; 6] = ["jumpfront", "jumptail", "start", "coin1", "selleft", "selright"];
+/// The pad buttons `set_touch`'s button bits stand for, by bit: touch
+/// works as a gamepad, so it plays every game by its pad bindings (the
+/// on-screen labels are topskatr's: jump front, jump tail, start, coin,
+/// select left, select right).
+const TOUCH_BUTTONS: [romset::PadButton; 6] = [
+    romset::PadButton::South,
+    romset::PadButton::West,
+    romset::PadButton::Start,
+    romset::PadButton::Select,
+    romset::PadButton::LeftShoulder,
+    romset::PadButton::RightShoulder,
+];
 
 /// Model 2 video frame rate.
 const FPS: f64 = 57.524;
@@ -116,50 +127,70 @@ fn gamepad() -> Option<web_sys::Gamepad> {
     pads.iter().find_map(|p| p.dyn_into::<web_sys::Gamepad>().ok())
 }
 
-impl App {
-    /// Map the keyboard and first gamepad onto the cabinet's controls.
-    ///
-    /// Keyboard: arrows steer (Down slides), Z jump (front), X jump (tail),
-    /// Enter start, C or 5 coin, Q / E select left / right.
-    /// Gamepad (standard layout): left stick or d-pad steers, right
-    /// trigger or B slides, A jump (front), X jump (tail), Start, Back
-    /// coin, shoulder buttons select.
-    fn apply_inputs(&mut self) {
-        let key = |c: &str| self.keys.contains(c);
-        let pad = gamepad();
-        let button = |i: u32| {
-            pad.as_ref()
-                .and_then(|p| p.buttons().get(i).dyn_into::<web_sys::GamepadButton>().ok())
-                .map_or(0.0, |b| b.value())
-        };
-        let pressed = |i: u32| button(i) > 0.5;
-        let stick = pad.as_ref().and_then(|p| p.axes().get(0).as_f64()).filter(|x| x.abs() > 0.15).unwrap_or(0.0);
-        let (touch_steer, touch_slide, touch_buttons) = self.touch;
-        let stick = if stick == 0.0 { touch_steer.clamp(-1.0, 1.0) } else { stick };
-        let held =
-            |name: &str| TOUCH_BUTTONS.iter().position(|&b| b == name).is_some_and(|i| touch_buttons & 1 << i != 0);
-        // Steering: 0x10 carves right, 0xF0 left, 0x80 centred.
-        let steer = if key("ArrowLeft") || pressed(14) {
-            -1.0
-        } else if key("ArrowRight") || pressed(15) {
-            1.0
+/// Keyboard, gamepad and touch as one player (W3C standard pad layout).
+struct Devices<'a> {
+    keys: &'a HashSet<String>,
+    pad: Option<web_sys::Gamepad>,
+    /// Touch steering (-1 to 1, the left stick), slide (0 to 1, the right
+    /// trigger) and buttons (`TOUCH_BUTTONS` bits).
+    touch: (f64, f64, u32),
+}
+
+impl Devices<'_> {
+    fn button(&self, i: u32) -> f32 {
+        self.pad
+            .as_ref()
+            .and_then(|p| p.buttons().get(i).dyn_into::<web_sys::GamepadButton>().ok())
+            .map_or(0.0, |b| b.value() as f32)
+    }
+
+    fn axis(&self, i: u32) -> f32 {
+        let v = self.pad.as_ref().and_then(|p| p.axes().get(i).as_f64()).unwrap_or(0.0) as f32;
+        if v.abs() > 0.15 {
+            v.clamp(-1.0, 1.0)
         } else {
-            stick
-        };
-        let slide = if key("ArrowDown") || key("Space") || pressed(1) { 1.0 } else { button(7).max(touch_slide) };
-        let bus = &mut self.machine.bus;
-        model2::input::set_analog(bus, "curving", (128.0 - steer * 112.0).round() as u8);
-        model2::input::set_analog(bus, "slide", (128.0 + slide * 112.0).round() as u8);
-        for (name, down) in [
-            ("jumpfront", key("KeyZ") || key("ArrowUp") || pressed(0)),
-            ("jumptail", key("KeyX") || pressed(2)),
-            ("start", key("Enter") || pressed(9)),
-            ("coin1", key("KeyC") || key("Digit5") || pressed(8)),
-            ("selleft", key("KeyQ") || pressed(4)),
-            ("selright", key("KeyE") || pressed(5)),
-        ] {
-            model2::input::set_button(bus, name, down || held(name));
+            0.0
         }
+    }
+}
+
+impl model2::input::PlayerInput for Devices<'_> {
+    fn key(&self, code: &str) -> bool {
+        self.keys.contains(code)
+    }
+
+    fn pad_button(&self, b: romset::PadButton) -> bool {
+        let touched = TOUCH_BUTTONS.iter().position(|&t| t == b).is_some_and(|i| self.touch.2 & 1 << i != 0);
+        touched || self.button(b.index()) > 0.5
+    }
+
+    fn pad_axis(&self, a: romset::PadAxis) -> f32 {
+        use romset::PadAxis;
+        let right_trigger = self.button(PadButton::RightTrigger.index()).max(self.touch.1 as f32);
+        let left_trigger = self.button(PadButton::LeftTrigger.index());
+        match a {
+            PadAxis::None => 0.0,
+            PadAxis::LeftStickX => match self.axis(0) {
+                0.0 => (self.touch.0 as f32).clamp(-1.0, 1.0),
+                v => v,
+            },
+            PadAxis::LeftStickY => self.axis(1),
+            PadAxis::RightStickX => self.axis(2),
+            PadAxis::RightStickY => self.axis(3),
+            PadAxis::LeftTrigger => left_trigger,
+            PadAxis::RightTrigger => right_trigger,
+            PadAxis::Triggers => right_trigger - left_trigger,
+        }
+    }
+}
+
+impl App {
+    /// Map the keyboard, the first gamepad and the on-screen controls onto
+    /// the cabinet's, by the game's bindings (`romset::Controls`; the page
+    /// lists them).
+    fn apply_inputs(&mut self) {
+        let devices = Devices { keys: &self.keys, pad: gamepad(), touch: self.touch };
+        model2::input::apply_player(&mut self.machine.bus, &devices, |_| false);
     }
 
     fn draw(&mut self) {
@@ -335,11 +366,12 @@ pub struct GeoEngine {
 
 #[wasm_bindgen]
 impl GeoEngine {
-    /// `chips`: Uint8Arrays of the files [`rom_files`] lists, in order.
+    /// `chips`: Uint8Arrays of the files [`rom_files`] lists for `game`,
+    /// in order.
     #[wasm_bindgen(constructor)]
-    pub fn new(chips: js_sys::Array) -> Result<GeoEngine, JsValue> {
+    pub fn new(game: &str, chips: js_sys::Array) -> Result<GeoEngine, JsValue> {
         console_error_panic_hook::set_once();
-        let game = romset::games::find("topskatr").map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let game = romset::games::find(game).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let chips = chips.iter().map(|c| js_sys::Uint8Array::new(&c).to_vec()).collect();
         let roms = romset::RomSet::from_chips(game, chips, false).map_err(|e| JsValue::from_str(&e.to_string()))?;
         Ok(GeoEngine { engine: model2::geo::Engine::new(model2::bus::polygon_rom(&roms)) })
@@ -370,8 +402,15 @@ impl GeoEngine {
 /// The ROM file names the game needs, in manifest order (for a worker that
 /// fetches them itself).
 #[wasm_bindgen]
-pub fn rom_files() -> Vec<String> {
-    romset::games::find("topskatr").map_or(Vec::new(), |g| g.files.iter().map(|f| f.name.to_string()).collect())
+pub fn rom_files(game: &str) -> Vec<String> {
+    romset::games::find(game).map_or(Vec::new(), |g| g.files.iter().map(|f| f.name.to_string()).collect())
+}
+
+/// The game's controls with their keys and pad bindings, one per line
+/// (for the page's help bar).
+#[wasm_bindgen]
+pub fn controls_help(game: &str) -> String {
+    romset::games::find(game).map_or(String::new(), |g| g.controls.describe())
 }
 
 /// The sound and music boards on their own, for a Web Worker: fed the sound
@@ -386,11 +425,12 @@ pub struct SoundEngine {
 
 #[wasm_bindgen]
 impl SoundEngine {
-    /// `chips`: Uint8Arrays of the files [`rom_files`] lists, in order.
+    /// `chips`: Uint8Arrays of the files [`rom_files`] lists for `game`,
+    /// in order.
     #[wasm_bindgen(constructor)]
-    pub fn new(chips: js_sys::Array) -> Result<SoundEngine, JsValue> {
+    pub fn new(game: &str, chips: js_sys::Array) -> Result<SoundEngine, JsValue> {
         console_error_panic_hook::set_once();
-        let game = romset::games::find("topskatr").map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let game = romset::games::find(game).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let chips = chips.iter().map(|c| js_sys::Uint8Array::new(&c).to_vec()).collect();
         let roms = romset::RomSet::from_chips(game, chips, false).map_err(|e| JsValue::from_str(&e.to_string()))?;
         Ok(SoundEngine {
@@ -433,7 +473,7 @@ pub fn set_audio_level(queued: f64) {
     });
 }
 
-/// Load the ROMs from `rom_url` (one file per chip, as in `rom/`), set up
+/// Load `game`'s ROMs from `rom_url` (one file per chip, as in `rom/`), set up
 /// WebGPU on `canvas` and start the game. `aspect` is width / height,
 /// `hud_edges` moves HUD elements to the screen edges in wide views. `link`
 /// receives the sound link bytes each frame (see `App::send_link`) for the
@@ -442,6 +482,7 @@ pub fn set_audio_level(queued: f64) {
 /// word pairs) or ("frame", Uint8Array buffer RAM, booted, read pointer).
 #[wasm_bindgen]
 pub async fn start(
+    game: String,
     canvas: HtmlCanvasElement,
     status: web_sys::Element,
     rom_url: String,
@@ -453,7 +494,7 @@ pub async fn start(
 ) -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
     let err = |e: &dyn std::fmt::Display| JsValue::from_str(&e.to_string());
-    let game = romset::games::find("topskatr").map_err(|e| err(&e))?;
+    let game = romset::games::find(&game).map_err(|e| err(&e))?;
     let mut chips = Vec::new();
     for (i, f) in game.files.iter().enumerate() {
         set_status(&status, &format!("loading ROMs: {} ({}/{})", f.name, i + 1, game.files.len()));

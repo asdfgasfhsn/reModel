@@ -1,4 +1,5 @@
-use crate::{Board, DriveBoard, Game, Role, RomFile};
+use crate::controls::button;
+use crate::{AnalogInput, Board, Controls, DriveBoard, Game, PadAxis, PadButton, Role, RomFile};
 
 /// Sega Ski Super G, Model 2C-CRX. Same layout as `topskatr` plus a second
 /// program pair (`.13/.14`, at `0x100000`) and twice the polygon ROM; no
@@ -8,6 +9,7 @@ pub static SKISUPRG: Game = Game {
     title: "Sega Ski Super G",
     board: Board::Model2C,
     hud_windows: &[],
+    controls: CONTROLS,
     drive_board: Some(DriveBoard::SkiPlatform),
     files: &[
         RomFile {
@@ -125,4 +127,69 @@ pub static SKISUPRG: Game = Game {
             role: Role::AudioCpu,
         },
     ],
+};
+
+/// The ski platform cabinet, as far as the game's code and scripted runs
+/// show (README, "What's known about skisuprg"). Ports read active low.
+/// One credit is two coins by default.
+const CONTROLS: Controls = Controls {
+    buttons: &[
+        button("coin1", 0, 0x01, &["KeyC", "Digit5"], &[PadButton::Select]),
+        button("coin2", 0, 0x02, &[], &[]),
+        button("test", 0, 0x04, &[], &[]),
+        button("service", 0, 0x08, &[], &[]),
+        // The three panel buttons: they pick the left, middle and right
+        // choice on the select screens; blue also starts a game.
+        button("blue", 0, 0x40, &["Enter", "KeyA"], &[PadButton::Start, PadButton::West]),
+        button("red", 0, 0x80, &["KeyS"], &[PadButton::East]),
+        button("green", 0, 0x10, &["KeyD"], &[PadButton::South]),
+        // Step a selection right / left and confirm it, in the select
+        // screens' other mode (unconfirmed which switches these are).
+        button("selright", 0, 0x20, &["KeyE"], &[PadButton::RightShoulder]),
+        button("selleft", 1, 0x01, &["KeyQ"], &[PadButton::LeftShoulder]),
+        button("decide", 1, 0x10, &["KeyW"], &[PadButton::North]),
+    ],
+    analogs: &[
+        // The skis' two angle sensors; both turn the skier, in opposite
+        // senses: right is edge up and swing down (confirmed by scripted
+        // runs). Which angle each one measures is unconfirmed. Swing's
+        // calibrated centre is what boot sends the drive board.
+        AnalogInput {
+            name: "edge",
+            channel: 0,
+            centre: 0x80,
+            span: 112,
+            axis: PadAxis::LeftStickX,
+            keys_neg: &["ArrowLeft"],
+            keys_pos: &["ArrowRight"],
+            pad_neg: &[PadButton::DPadLeft],
+            pad_pos: &[PadButton::DPadRight],
+        },
+        AnalogInput {
+            name: "swing",
+            channel: 1,
+            centre: 0x80,
+            span: -112,
+            axis: PadAxis::LeftStickX,
+            keys_neg: &["ArrowLeft"],
+            keys_pos: &["ArrowRight"],
+            pad_neg: &[PadButton::DPadLeft],
+            pad_pos: &[PadButton::DPadRight],
+        },
+        // Read and calibrated like the others; the skier's physics adds
+        // (value - 0x80) to the speed outside 0x70-0x8F, but no scripted
+        // run has shown an effect yet. Unconfirmed.
+        AnalogInput {
+            name: "push",
+            channel: 2,
+            centre: 0x80,
+            span: 112,
+            axis: PadAxis::Triggers,
+            keys_neg: &["ArrowDown"],
+            keys_pos: &["ArrowUp"],
+            pad_neg: &[],
+            pad_pos: &[],
+        },
+    ],
+    coin_start: "coin1@1100-1104,coin1@1120-1124,blue@1250-1254",
 };

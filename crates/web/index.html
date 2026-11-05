@@ -47,8 +47,8 @@
 <div id="splash"><img src="reModel-logo.png" alt="reModel"></div>
 <div id="bar">
   <span id="status">loading…</span>
-  <span><kbd>C</kbd> coin <kbd>Enter</kbd> start <kbd>←</kbd><kbd>→</kbd> steer <kbd>↓</kbd> slide
-    <kbd>Z</kbd> jump front <kbd>X</kbd> jump tail <kbd>Q</kbd><kbd>E</kbd> select · gamepad works too ·
+  <span><span id="keys"><kbd>C</kbd> coin <kbd>Enter</kbd> start <kbd>←</kbd><kbd>→</kbd> steer <kbd>↓</kbd> slide
+    <kbd>Z</kbd> jump front <kbd>X</kbd> jump tail <kbd>Q</kbd><kbd>E</kbd> select · </span>gamepad works too ·
     <kbd>F</kbd> fullscreen <kbd>H</kbd> hide bar · <span id="sound">tap or press a key for sound</span></span>
 </div>
 <div id="touch" hidden>
@@ -70,10 +70,13 @@
 </div>
 <script type="module">
   import { setupTouch } from "./touch.js";
-  import init, { start, set_audio_level, set_geo_frame, set_touch } from "./pkg/remodel_web.js";
+  import init, { start, set_audio_level, set_geo_frame, set_touch, controls_help } from "./pkg/remodel_web.js";
 
   const status = document.getElementById("status");
   const params = new URLSearchParams(location.search);
+  // ?game=ID picks the set (default topskatr); its ROM files are at rom/ID/.
+  const game = params.get("game") ?? "topskatr";
+  const rom = `./rom/${game}`;
   // Defaults: fill this window (4:3 to 21:9) at the screen's resolution.
   const fit = Math.min(Math.max(innerWidth / innerHeight, 4 / 3), 21 / 9);
   const aspect = params.has("aspect")
@@ -162,10 +165,10 @@
           else if (m.type === "error") soundLabel.textContent = "sound worker: " + m.message;
         };
         try {
-          worker.postMessage({ type: "init", module, rom: "./rom/topskatr", mix });
+          worker.postMessage({ type: "init", module, game, rom, mix });
         } catch {
           // Browsers that can't pass a compiled module: the worker fetches it.
-          worker.postMessage({ type: "init", rom: "./rom/topskatr", mix });
+          worker.postMessage({ type: "init", game, rom, mix });
         }
         link = (cycles, bytes, until, ratio) =>
           worker.postMessage({ type: "link", cycles, bytes, until, ratio }, [cycles.buffer, bytes.buffer]);
@@ -182,16 +185,18 @@
           else if (m.type === "error") status.textContent = "geometry worker: " + m.message;
         };
         try {
-          gw.postMessage({ type: "init", module, rom: "./rom/topskatr" });
+          gw.postMessage({ type: "init", module, game, rom });
         } catch {
-          gw.postMessage({ type: "init", rom: "./rom/topskatr" });
+          gw.postMessage({ type: "init", game, rom });
         }
         geo = (kind, data, booted, readPtr) =>
           kind === "boot"
             ? gw.postMessage({ type: "boot", program: data }, [data.buffer])
             : gw.postMessage({ type: "frame", buffer: data, booted, readPtr }, [data.buffer]);
       }
-      await start(document.getElementById("screen"), status, "./rom/topskatr", height, aspect, hudEdges, link, geo);
+      // The help bar above is topskatr's; other games list their bindings.
+      if (game !== "topskatr") document.getElementById("keys").textContent = controls_help(game).trim().replace(/\n\s*/g, " · ") + " · ";
+      await start(game, document.getElementById("screen"), status, rom, height, aspect, hudEdges, link, geo);
       started = true;
       // Fade the logo once it's been up for 1.5 s.
       const splash = document.getElementById("splash");

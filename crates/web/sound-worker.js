@@ -1,5 +1,5 @@
 // The sound and music boards, on their own core. The page posts:
-//   {type: "init", module, rom, mix}
+//   {type: "init", module, game, rom, mix}
 //                                 the compiled WebAssembly module (shared
 //                                 with the page), the ROM directory URL and
 //                                 optionally [sound board dB, music dB]
@@ -35,9 +35,9 @@ onmessage = async (e) => {
     try {
       await init({ module_or_path: m.module ?? "./pkg/remodel_web_bg.wasm" });
       const chips = await Promise.all(
-        rom_files().map(async (f) => new Uint8Array(await (await fetch(`${m.rom}/${f}`)).arrayBuffer())),
+        rom_files(m.game).map(async (f) => new Uint8Array(await (await fetch(`${m.rom}/${f}`)).arrayBuffer())),
       );
-      engine = new SoundEngine(chips);
+      engine = new SoundEngine(m.game, chips);
       if (m.mix) engine.set_mix(m.mix[0], m.mix[1]);
       postMessage({ type: "ready" });
       for (const p of pending.splice(0)) feed(p);

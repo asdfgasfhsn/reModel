@@ -16,9 +16,11 @@ VIEW  ?=
 # Texture pack directory for `run` snapshots (docs/texture-packs.md), e.g. PACK=out/topskatr/texpack.
 PACK  ?=
 # Fixed run for `make bench`: attract, coin-up, start, into a race.
+# `coin-start` is the game's own coin-up and start script (its manifest's
+# controls); for topskatr that is coin1@1100-1104,start@1250-1254.
 BENCH_STEPS ?= 600000000
-BENCH_INPUT ?= coin1@1100-1104,start@1250-1254
-# Capture sessions for `make assets` (topskatr): menus stepping through every
+BENCH_INPUT ?= coin-start
+# Capture sessions for `make assets` (topskatr only): menus stepping through every
 # skater, then a Novice and an Expert race with some steering.
 ASSET_MENUS ?= coin1@1100-1104,start@1250-1254,selright@2000-2004,selright@2070-2074,selright@2140-2144,selright@2210-2214,selright@2280-2284,selright@2350-2354,selright@2420-2424,selright@2490-2494,selright@2560-2564,selright@2630-2634
 ASSET_STEER ?= curving=0x50@3000-3400,curving=0xb0@3600-3900,curving=0x60@4300-4700,curving=0xa0@5200-5500,curving=0x58@6200-6600,curving=0xa8@7300-7600
@@ -56,7 +58,7 @@ endif
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release dist test lint fmt fmt-check check ci games verify boot disasm analyze run copro-disasm m68k-tests clean recomp bench sound sound-disasm
+.PHONY: help build release dist test lint fmt fmt-check check ci games inputs verify boot disasm analyze run copro-disasm m68k-tests clean recomp bench sound sound-disasm
 
 ##@ General
 
@@ -114,6 +116,9 @@ $(M68K_TESTS)/.done:
 games: release ## List games with manifests
 	$(REMODEL) games
 
+inputs: release ## The game's inputs: names for INPUT=, ports and channels, default keys and pad bindings
+	$(REMODEL) --game $(GAME) inputs
+
 verify: release ## Check every chip in ROM= against known-good hashes
 	$(RUN) verify
 
@@ -129,11 +134,11 @@ disasm: release ## Linear disassembly: make disasm ADDR=0x6f0 COUNT=64
 analyze: release ## Recursive-descent code discovery; listing goes to OUT=
 	$(RUN) analyze $(OUT)/program.lst
 
-run: release ## Boot and report; PNG every SNAP frames; scripted INPUT (see remodel usage)
+run: release ## Boot and report; PNG every SNAP frames; scripted INPUT (see remodel usage; INPUT=coin-start coins up and starts)
 	$(RUN) $(VIEW) $(if $(PACK),--texture-pack $(PACK)) $(if $(INPUT),--input $(INPUT)) run $(STEPS) $(SNAP)
 
 .PHONY: assets
-assets: release ## Extract the game's art for review: capture sessions, then distinct textures, screens and contact sheets in OUT/assets (about 15 min)
+assets: release ## Extract topskatr's art for review: capture sessions, then distinct textures, screens and contact sheets in OUT/assets (about 15 min)
 	rm -rf $(OUT)/assets && mkdir -p $(OUT)/assets/raw
 	$(RUN) --dump-textures $(OUT)/assets/raw/attract run 900000000 20 > $(OUT)/assets/raw/attract.log
 	cp -r $(OUT)/frames $(OUT)/assets/frames-attract

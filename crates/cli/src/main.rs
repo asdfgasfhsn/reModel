@@ -24,8 +24,10 @@ options:
                        wider than 4:3 shows more of the 3D scene at the sides
   --hud center|edges   wide views: keep the HUD centred, or move each HUD
                        element to the nearest screen edge
-  --input SCRIPT       scripted inputs for `run`, e.g.
-                       coin1@1100-1105,start@1300-1305,curving=0x40@1400-1500
+  --input SCRIPT       scripted inputs for `run`, by the game's input names
+                       (`remodel --game ID inputs` lists them), e.g. for
+                       topskatr coin1@1100-1105,start@1300-1305,curving=0x40@1400-1500;
+                       coin-start is the game's own coin-up and start
   --dump-textures DIR  at each `run` snapshot, write every distinct 3D texture
                        and tile pattern drawn to DIR as PNG, plus DIR/index.txt
   --interp             run the i960 on the interpreter even when this build
@@ -46,6 +48,7 @@ options:
 
 commands:
   games                list supported games
+  inputs               the game's inputs for --input (ports, channels, keys)
   scan                 list the sets in the ROM directory (zips or folders,
                        as MAME keeps them) and check the supported ones
   verify               check every chip against known-good hashes
@@ -232,6 +235,23 @@ fn main() -> ExitCode {
         for g in games::ALL {
             println!("{:<10} {:<20} {:?}", g.id, g.title, g.board);
         }
+        return ExitCode::SUCCESS;
+    }
+    if cmd == "inputs" {
+        let Ok(g) = games::find(&game_id) else {
+            eprintln!("error: unknown game '{game_id}'");
+            return ExitCode::FAILURE;
+        };
+        let c = &g.controls;
+        println!("{} inputs (name: port bit / channel centre):", g.id);
+        for b in c.buttons {
+            println!("  {:<10} port {} bit 0x{:02x}", b.name, b.port, b.bit);
+        }
+        for a in c.analogs {
+            println!("  {:<10} analog channel {}, centre 0x{:02x}", a.name, a.channel, a.centre);
+        }
+        println!("coin-start = {}", c.coin_start);
+        println!("player bindings (keys / pad):\n{}", c.describe().trim_end());
         return ExitCode::SUCCESS;
     }
     let verify = cmd == "verify";
@@ -490,7 +510,7 @@ fn main() -> ExitCode {
         "run" => {
             let steps = args.get(1).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(50_000_000);
             let snap = args.get(2).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(0);
-            let script = match model2::input::InputScript::parse(input.as_deref().unwrap_or("")) {
+            let script = match model2::input::InputScript::parse(input.as_deref().unwrap_or(""), &roms.game.controls) {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("error: --input: {e}");

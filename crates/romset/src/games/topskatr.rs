@@ -1,4 +1,5 @@
-use crate::{Board, Game, Role, RomFile};
+use crate::controls::button;
+use crate::{AnalogInput, Board, Controls, Game, PadAxis, PadButton, Role, RomFile};
 
 /// Model 2C-CRX. Roles and interleave order follow the board wiring;
 /// pairs are listed low half-word first (note textures: `.27` before `.25`).
@@ -9,6 +10,7 @@ pub static TOPSKATR: Game = Game {
     // Window 4 holds the speed gauge and the time-limit ring (confirmed with
     // REMODEL_PROBE); the course is window 2 and the sky window 0.
     hud_windows: &[4],
+    controls: CONTROLS,
     drive_board: None,
     files: &[
         RomFile {
@@ -132,4 +134,49 @@ pub static TOPSKATR: Game = Game {
             role: Role::MpegCpu,
         },
     ],
+};
+
+/// The skateboard cabinet. Ports read active low. Coin, test and service
+/// follow the common Model 2 layout; the game buttons and both analog
+/// channels were confirmed by scripted presses (README, "What's known").
+/// Test and service are not yet checked.
+const CONTROLS: Controls = Controls {
+    buttons: &[
+        button("coin1", 0, 0x01, &["KeyC", "Digit5"], &[PadButton::Select]),
+        button("coin2", 0, 0x02, &[], &[]),
+        button("test", 0, 0x04, &[], &[]),
+        button("service", 0, 0x08, &[], &[]),
+        button("selright", 0, 0x10, &["KeyE"], &[PadButton::RightShoulder]),
+        button("jumpfront", 0, 0x20, &["KeyZ", "ArrowUp"], &[PadButton::South]),
+        button("start", 0, 0x40, &["Enter"], &[PadButton::Start]),
+        button("selleft", 0, 0x80, &["KeyQ"], &[PadButton::LeftShoulder]),
+        button("jumptail", 1, 0x01, &["KeyX"], &[PadButton::West]),
+    ],
+    analogs: &[
+        // Steering: 0x10 carves right, 0xF0 left, 0x80 centred.
+        AnalogInput {
+            name: "curving",
+            channel: 0,
+            centre: 0x80,
+            span: -112,
+            axis: PadAxis::LeftStickX,
+            keys_neg: &["ArrowLeft"],
+            keys_pos: &["ArrowRight"],
+            pad_neg: &[PadButton::DPadLeft],
+            pad_pos: &[PadButton::DPadRight],
+        },
+        // The board pressed down at the back: the skater crouches and slides.
+        AnalogInput {
+            name: "slide",
+            channel: 1,
+            centre: 0x80,
+            span: 112,
+            axis: PadAxis::RightTrigger,
+            keys_neg: &[],
+            keys_pos: &["ArrowDown", "Space"],
+            pad_neg: &[],
+            pad_pos: &[PadButton::East],
+        },
+    ],
+    coin_start: "coin1@1100-1104,start@1250-1254",
 };

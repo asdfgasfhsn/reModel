@@ -7,6 +7,7 @@
 //! A ROM directory holds sets as MAME does, by set name: `ROOT/<set>.zip`
 //! or unpacked in `ROOT/<set>/`. Loose chips directly in `ROOT` also work.
 
+pub mod controls;
 pub mod games;
 mod sha1;
 pub mod zip;
@@ -15,6 +16,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub use controls::{AnalogInput, ButtonInput, Controls, PadAxis, PadButton};
 pub use sha1::sha1_hex;
 
 /// Cabinet boards beyond the Model 2 board itself that the game talks to
@@ -83,6 +85,9 @@ pub struct Game {
     /// scene. Only enhancements use this (wide views move them with the
     /// rest of the HUD).
     pub hud_windows: &'static [usize],
+    /// The cabinet's controls, where the board reads them, and default
+    /// bindings.
+    pub controls: Controls,
     /// A drive (motion or force feedback) board the game needs, if any.
     pub drive_board: Option<DriveBoard>,
 }

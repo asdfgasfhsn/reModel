@@ -168,6 +168,8 @@ pub struct Model2Bus {
     /// 315-5649 output latches, by register.
     io_latch: [u8; 16],
     pub eeprom: Eeprom,
+    /// The game's controls (from its manifest): what `input` sets.
+    pub controls: &'static romset::Controls,
     /// The cabinet's drive board, if the game has one: commands on I/O
     /// register 4, replies on register 3 (in place of port `inputs[2]`).
     pub drive: Option<Drive>,
@@ -270,6 +272,7 @@ impl Model2Bus {
             analog: [0x80; 8],
             io_latch: [0; 16],
             eeprom: Eeprom::new(),
+            controls: &roms.game.controls,
             drive: roms.game.drive_board.map(Drive::new),
             io_log: AccessLog::default(),
             unmapped: BTreeMap::new(),
