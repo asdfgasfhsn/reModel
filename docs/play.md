@@ -123,6 +123,27 @@ gears).
 | shift up, shift down | A, Z | right shoulder or B, left shoulder or X |
 | view (chase, cockpit, bumper) | V | Y |
 
+### The House of the Dead (`hotd`)
+
+A light-gun game for two. Two coins are one credit. The mouse is player
+1's gun: the window shows a crosshair pointer, the left button fires and
+the right button reloads (the game reloads when you shoot off the screen;
+moving the pointer off the picture and clicking does the same). With a
+wide window (16:9 and up) the extra area at the sides counts as off the
+screen. A gamepad's sticks move a crosshair drawn over the game: it's player
+2's gun once the mouse has moved over the window, else player 1's.
+
+| Control | Keys | Mouse | Gamepad |
+|---|---|---|---|
+| coin | C, 5 | | Back |
+| start (player 1, 2) | Enter or 1, 2 | | Start |
+| aim | | move | either stick |
+| fire (`trigger1`) | Space | left button | right trigger, A |
+| reload | R | right button, or fire off the picture | left trigger, B |
+
+The game's own calibration (test menu, GUN SETTING) works on what
+Remodel reports; with a fresh EEPROM the shots land where the pointer is.
+
 ## The menu
 
 - **Save states**: a quick slot (F5/F9) and four more. A save holds the

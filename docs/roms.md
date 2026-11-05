@@ -130,7 +130,7 @@ board (i960KB on all, gk). Controls and special hardware are gk throughout.
 | `skisuprg` | Sega Ski Super G | 1996 | none | SCSP, CRX_drv 3.2.8 | ski platform (analog channels 0-2: two ski angles, a third unconfirmed), three panel buttons (confirmed, README) | drive board (confirmed: boot checks it; modelled, README) | yes; supported and playable |
 | `segawski` | Sega Water Ski (Japan) | 1997 | none | SCSP, CRX_drv 3.4.8 (confirmed) | slide (ch. 0), pitch left/right switches, select up/down and set buttons (confirmed, README) | none needed (confirmed); a second main data bank at `0x6000000` (README) | yes; supported and playable |
 | `waverunr` | Wave Runner | 1996 | none | SCSP, CRX_drv 3.2.7 (confirmed) | handlebar (ch. 0), throttle (2), body roll (1) and pitch (3), start, view (confirmed, README) | ride-on cabinet board: optional, skipped when absent (README); link not read by default | yes; supported and playable |
-| `hotd` | The House of the Dead | 1997 | none | SCSP, CRX_drv 3.2.8 | 2 light guns | none known | yes |
+| `hotd` | The House of the Dead | 1996 (title screen; the dat says 1997) | none | SCSP, CRX_drv 3.2.8 | 2 light guns, read through a gun interface on I/O registers 9-13 (confirmed, README) | none needed beyond the gun interface (modelled); a second main data bank at `0x6000000` (README) | yes; supported and playable |
 | `stcc` | Sega Touring Car Championship | 1996 | `stcca`, `stccb` (the zip holds all three program pairs; Remodel uses `epr-19570/19571`) | SCSP, CRX_drv 3.2.5 (confirmed); **DSB1 (Z80)**, modelled (`docs/hw/dsb1.md`) | wheel (ch. 0), gas (1), brake (2), shift up/down buttons, two view buttons (confirmed, README) | wheel drive board (commanded every frame, reply never checked; modelled, README); link (skipped by the default settings); `epr-18643a.7` (Z80 code for another board) | yes; supported and playable, with music |
 | `overrev` | Over Rev | 1997 | `overrevb` (2B; the zip holds both program pairs, Remodel uses the 2C `epr-20124a/20125a`) | SCSP, Jaleco's own driver (confirmed; streams its music, no music board) | wheel (ch. 0), gas (1), brake (2), shift up/down, view (confirmed, README) | none needed; the link board check reads it as absent and runs stand-alone (README) | yes; supported and playable, with sound |
 | `bel` | Behind Enemy Lines | 1998 (Sega / EPL) | none | SCSP (EPL driver; 128 KB sound program) | gun (gk, weak) | unknown | yes |
@@ -171,6 +171,10 @@ games, ranked by how little new work each needs:
    Larger set (84 MB: data `.5`-`.12`, eight polygon and four texture
    chips), and its copro program sits in a data ROM pair (`.9/.10`) rather
    than the program ROM (ROM), so it can't assume `topskatr`'s boot path.
+   *Done:* the boot path was the same code reading another address; the
+   new work was the gun interface (I/O registers 9-13, a command and
+   counter protocol worked out from the code) and generic light-gun
+   controls; it plays (README, "What's known about `hotd`").
 4. **`segawski`, Sega Water Ski.** Like Ski Super G, with more ROM (eight
    polygon and four texture chips) and a newer driver (3.4.8). *Done:* a
    different game from `skisuprg`, not a release of it; it needed only a

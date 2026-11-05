@@ -54,6 +54,7 @@ music`). There is no live window yet.
 | Fourth game: `segawski` (Sega Water Ski, 2C) | playable with sound (`make play GAME=segawski`): attract, player and course select, runs. No extra boards; needed a second main data ROM bank at `0x6000000`; recompiled build identical |
 | Fifth game: `waverunr` (Wave Runner, 2C) | playable (`make play GAME=waverunr`): attract, course select and races to game over, sound from the SCSP (no music board). Needed a data ROM window at `0x06000000` and the recompiler leaving code run from RAM to the interpreter; its ride-on cabinet's board isn't needed; recompiled build identical |
 | Sixth game: `overrev` (Over Rev, 2C, Jaleco) | playable with sound (`make play GAME=overrev`): attract, mode, car and gearbox select, races. Jaleco's own sound driver runs on the SCSP board model unchanged (music streamed from sample ROM; no music board). Needed the link board's registers to read as absent; recompiled build identical |
+| Seventh game: `hotd` (The House of the Dead, 2C) | playable (`make play GAME=hotd`) with light guns: mouse, touch, gamepad sticks or scripts aim, through generic gun controls in the manifest. Attract, coin-up and play through the first areas with shooting and off-screen reloads; sound from the SCSP. Needed a model of its gun interface (worked out from the game's code); recompiled build identical |
 
 ## Quick start
 
@@ -75,6 +76,8 @@ make run STEPS=50000000   # boot on the interpreter, report hardware use
 make run SNAP=60          # also write the tile layer every 60 frames
 make run STEPS=900000000 SNAP=115 INPUT=coin-start   # coin-start: the game's own coin-up and start
 make inputs               # the game's input names for INPUT=, and their keys and pad bindings
+                          # light guns: gun1=x:y@from-to aims (view pixels), gun1=off@... off screen;
+                          # name@from-to/n holds an input for 2 frames every n (e.g. trigger1@2000-3000/20)
 make sound                # render the sound commands of the last run -> out/topskatr/sound.wav
 make sound-disasm ADDR=0x6004ea   # disassemble the sound 68000 program
                           # coin up, start, and play into a race
@@ -107,7 +110,8 @@ meant only to make things faster must leave it unchanged. The hash depends on
 
 Every target takes `GAME=skisuprg` for Sega Ski Super G, `GAME=stcc` for
 Sega Touring Car Championship, `GAME=segawski` for Sega Water Ski,
-`GAME=waverunr` for Wave Runner or `GAME=overrev` for Over Rev (`make play GAME=stcc`, `make capture
+`GAME=waverunr` for Wave Runner, `GAME=overrev` for Over Rev or `GAME=hotd`
+for The House of the Dead (`make play GAME=stcc`, `make capture
 GAME=skisuprg`, ...), except `make assets`, which is `topskatr`'s, and
 `make music`, which needs a music board (`topskatr`'s DSB2 or `stcc`'s DSB1).
 
@@ -154,11 +158,13 @@ system. The geometry processor is what differs between revisions:
 Supporting a new game should mean adding a manifest under
 `crates/romset/src/games/`, plus whatever per-game patches turn out to be
 needed. A manifest holds the chips, the game's controls (input names,
-ports and analog channels, default keys and pad bindings, and its
-coin-start script) and which drive board it needs, if any; the board
-model, scripted input and both players read them from there. Drive board
-protocols live in `crates/model2/src/drive.rs`, one per kind. `topskatr`,
-`skisuprg`, `stcc`, `segawski`, `waverunr` and `overrev` are Model 2C-CRX (MB86235 geometry processor).
+ports and analog channels, light guns with where the board reads them and
+their calibration, default keys and pad bindings, and its coin-start
+script) and which drive board it needs, if any; the board model, scripted
+input and both players read them from there. Drive board protocols live
+in `crates/model2/src/drive.rs`, one per kind; the 2C gun interface in
+`crates/model2/src/gun.rs`. `topskatr`, `skisuprg`, `stcc`, `segawski`,
+`waverunr`, `overrev` and `hotd` are Model 2C-CRX (MB86235 geometry processor).
 
 The board table is from public documentation (largely MAME's driver notes).
 MAME does not run `topskatr` correctly, so its board details are treated as
@@ -641,6 +647,86 @@ driver. A sit-down driving cabinet; no extra boards are needed.
 - *Unconfirmed:* steering, braking and the AI cars' behaviour were only
   checked as far as a scripted run shows; the car stays last when
   nothing steers it.
+
+## What's known about `hotd`
+
+The House of the Dead, a two-player light-gun game on 2C. The set is the
+Japanese release (the boot warning says "used only in Japan"); the title
+screen says ©SEGA 1996.
+
+- *Confirmed (from the game's memory test):* program `.15/.16` at `0x0`
+  (`.15` low) and `.13/.14` at `0x100000`; main data `.11/.12` at
+  `0x2000000` and `.9/.10` at `0x2800000`; the second data bank, `.7/.8`
+  at `0x6000000` and the 1 MB pair `.5/.6` at `0x6800000` (as in
+  `segawski`). The memory test checks IC15, 16, 13, 14, 11, 12, 9, 10, 7,
+  8, 5 and 6 in that order and passes them all. As in `segawski` it reports
+  RAM IC54 and IC55 BAD (unconfirmed which RAMs; the game plays).
+- *Confirmed (from the code):* both MB86235 programs come from `.9/.10`,
+  not the program ROM: the boot uploads the geometrizer's from
+  `0x2F40000` (code at `0xA1C34`) and the copro's from `0x2F48000`
+  (`0xA36B8`), 4 MB into that pair. Nothing about the boot path is
+  special beyond that; the shared upload code just reads a different
+  address.
+- *Confirmed (by running it):* polygons are four pairs (`.17/.21`,
+  `.18/.22`, `.19/.23`, `.20/.24`), textures two (`.27/.25`, `.28/.26`),
+  copro data the 512 KB `.29/.30`, samples `.32/.34`; `epr-19720.31` is
+  the sound program (CRX_drv 3.2.8 per `docs/roms.md`). The game draws
+  correctly and `make sound GAME=hotd` plays a run's commands on the SCSP.
+  No music board.
+- *Confirmed (from the code):* boot waits on a **gun interface** behind
+  I/O registers 9-13 (the upper byte lanes of `0x1C00010`-`0x1C0001C`):
+  the game writes a parameter to `0x1C00014`, a command to `0x1C00012`,
+  waits for `0x1C0001A` bits 2 and 3, then reads the reply from
+  `0x1C00018` (and reads `0x1C00016`, unused). Commands below `0x80` write
+  a device register (low bits), `0x80` and up read one back; register 0
+  selects a counter, command `0x87` reads it. At boot (`0xA3750`) the game
+  sets registers 1 and 8, toggles bit 0 of register 1, then streams 5 KB
+  from program ROM `0xA3A00-0xA4DFF` through command `0x07`: a
+  configuration image, presumably for programmable logic that times the
+  guns (*unconfirmed* what the part is). Without a device answering, boot
+  spins at `0xA3728` forever. Remodel models only this (`model2::gun`),
+  for games with guns in their manifest.
+- *Confirmed (from the code, then the GUN SETTING test screen):* each frame
+  `0xA38C0` reads counters 0-7 as four 10-bit values (a low byte, then two
+  bits from the next counter): player 1's **Y** in 0/1 and **X** in 2/3,
+  player 2's Y in 4/5 and X in 6/7 (the GUN MARK CHECK screen shows them as
+  IP1X/IP1Y and IP2X/IP2Y). Counter 8 holds one bit a player (bit 0
+  player 1, bit 1 player 2), read inverted into `0x51EF08` and `0x51EF24`:
+  **1 means the gun sees no screen**. Reloading needs that bit: with the
+  coordinates zeroed but the bit clear, an off-screen shot doesn't reload
+  and the game shows its "shoot outside the screen" hint. *Unconfirmed:*
+  what the real board does with the counters while a gun sees nothing
+  (Remodel reports 0).
+- *Confirmed (from the test screens):* the game calibrates the guns
+  itself (GUN SETTING: adjustment, default adjustment, manual
+  adjustment). The defaults in a fresh EEPROM are X 173-596 (player 2:
+  163-596) and Y 87-380, which the game maps to points about 32 pixels in
+  from the view's edges. Measured on GUN MARK CHECK, the raw ranges that
+  put the mark on the aimed pixel (to within a pixel) are X 141-629
+  (player 2: 131-630) and Y 56-410 over the whole 496x384 view; these are
+  in the manifest. A cabinet recalibrated in the test menu would want
+  other values.
+- *Confirmed (from the input test, then by scripted runs):* port
+  `0x1C00002` bits 0/1 coin chutes, 2 test, 3 service, 4 START1, 5
+  START2; port `0x1C00004` bit 0 TRIGGER1, bit 1 TRIGGER2. Nothing else
+  on the ports or analog channels is used (the shared input routine reads
+  the analog channels but the game ignores them). Two coins a credit by
+  default ("2 CREDITS TO START").
+- *Confirmed (by running it):* the coin-start script plays: it aims at
+  the middle and either side in turn, fires every 20 frames and reloads
+  off screen every seventh shot; shots land where aimed (impact sparks at
+  the aim point, zombies hit), and the run gets through the first two
+  areas before the game over. `make state-check GAME=hotd` round-trips,
+  `make lockstep GAME=hotd` runs 300M instructions identical, and a
+  coin-start run of 600M instructions gives the same state hash
+  (`0473295c9891af45`, with an `eeprom.bin` from an earlier run)
+  recompiled and interpreted.
+- Light gun input is generic (`romset::Gun`): a gun is a position in the
+  view (or off screen) plus a trigger button; the manifest says where the
+  board reads it (`GunSource::Counters` for this interface), its
+  calibration and how it reloads. Players, the browser and `--input`
+  (`gun1=x:y@from-to`, `gun1=off@...`) produce positions; see
+  `docs/play.md` and `docs/web.md`.
 
 ## License
 

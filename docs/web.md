@@ -164,6 +164,24 @@ once, labelled from the manifest. For `topskatr`:
 
 F toggles fullscreen and H hides the bar.
 
+**Light guns** (`hotd`; `crates/web/gun.js`). Over the canvas the pointer
+is a crosshair: the mouse aims player 1's gun, the left button fires, the
+right button reloads, and moving off the picture points off the screen
+(where the game reloads). On a touch screen a tap fires at the spot
+tapped, and the touch layout is just coin, start and a Reload pill. A
+gamepad's sticks move a drawn crosshair for the first gun the page isn't
+aiming (player 1 until the mouse or a touch aims it, then player 2); the
+right trigger or A fires, the left trigger or B reloads, R reloads from
+the keyboard.
+
+Every source reports through one export, `set_gun(player, x, y,
+onscreen, buttons)`: x and y are fractions (0 to 1) across and down the
+game's 496x384 picture, `onscreen` false means the gun sees no screen,
+buttons bit 0 is the trigger and bit 1 reload. `view_point(x, y)` turns
+canvas pixels into those fractions (None, an empty array, off the picture,
+including a wide view's added sides). Another pointer source, such as a
+camera tracking a hand, needs only those two calls.
+
 The touch controls (`crates/web/touch.js`) appear on touch screens, or
 anywhere with `?touch=1`; on touch screens the bar starts hidden, behind
 the ⓘ button. Steering is analog: full lock 70 CSS pixels from where the
