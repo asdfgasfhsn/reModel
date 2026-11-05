@@ -23,6 +23,11 @@ use web_sys::{HtmlCanvasElement, KeyboardEvent};
 const FPS: f64 = 57.524;
 /// Most emulated frames run per browser frame before dropping time.
 const MAX_CATCH_UP: u32 = 3;
+/// With sound playing, audio paces the emulation: run frames while the
+/// worklet has less than this queued (stereo frames, about 70 ms).
+const AUDIO_TARGET: f64 = 0.07 * model2::audio::RATE as f64;
+/// Audio level reports older than this (ms) are stale: pace by time.
+const AUDIO_STALE_MS: f64 = 250.0;
 
 struct App {
     machine: model2::Machine,
@@ -44,6 +49,10 @@ struct App {
     pcm: Vec<i16>,
     /// Called with each frame's audio, interleaved stereo Float32Array.
     sink: Option<js_sys::Function>,
+    /// The worklet's last report: stereo frames queued, and when (ms).
+    audio_level: Option<(f64, f64)>,
+    /// Stereo frames sent since that report.
+    sent_since: f64,
     status: web_sys::Element,
     stopped: bool,
     /// Kept alive: in a browser, dropping the instance loses the device.
@@ -158,18 +167,34 @@ impl App {
         if let (Some(sink), false) = (&self.sink, self.pcm.is_empty()) {
             let samples: Vec<f32> = self.pcm.iter().map(|&v| v as f32 / 32768.0).collect();
             let _ = sink.call1(&JsValue::NULL, &js_sys::Float32Array::from(&samples[..]));
+            self.sent_since += (self.pcm.len() / 2) as f64;
         }
         self.pcm.clear();
+    }
+
+    /// Stereo frames the worklet holds now, estimated from its last report,
+    /// or None if there's no recent one (no sound, or it stalled).
+    fn audio_queued(&self, t: f64) -> Option<f64> {
+        let (level, at) = self.audio_level?;
+        let age = t - at;
+        (self.sink.is_some() && age < AUDIO_STALE_MS)
+            .then(|| level + self.sent_since - age * model2::audio::RATE as f64 / 1000.0)
     }
 
     fn tick(&mut self, t: f64) {
         if self.stopped {
             return;
         }
-        let due = ((t - self.epoch) * FPS / 1000.0) as u64;
+        // Paced by audio when it plays (no drift against the sound card's
+        // clock), else by time.
+        let mut queued = self.audio_queued(t);
+        let due = match queued {
+            Some(_) => u64::MAX,
+            None => ((t - self.epoch) * FPS / 1000.0) as u64,
+        };
         let mut ran = 0;
         let (t0, sound0) = (now(), self.spent[3]);
-        while self.machine.frames < due && ran < MAX_CATCH_UP {
+        while self.machine.frames < due && ran < MAX_CATCH_UP && queued.is_none_or(|q| q < AUDIO_TARGET) {
             self.apply_inputs();
             if let Err(e) = self.machine.run_slice(u64::MAX) {
                 self.stopped = true;
@@ -178,14 +203,21 @@ impl App {
             }
             if let Some(live) = &mut self.live {
                 let t = now();
+                let before = self.pcm.len();
                 live.run(&mut self.machine.bus, &mut self.pcm);
                 self.spent[3] += now() - t;
+                if let Some(q) = &mut queued {
+                    *q += ((self.pcm.len() - before) / 2) as f64;
+                }
             }
             ran += 1;
         }
         self.spent[0] += now() - t0 - (self.spent[3] - sound0);
         self.flush_audio();
-        if self.machine.frames < due {
+        if queued.is_some() {
+            // Keep the time base current for when audio stops pacing.
+            self.epoch = t - self.machine.frames as f64 * 1000.0 / FPS;
+        } else if self.machine.frames < due {
             // Too far behind: drop the time rather than spiral.
             self.epoch = t - self.machine.frames as f64 * 1000.0 / FPS;
         }
@@ -231,6 +263,19 @@ pub fn set_audio_sink(sink: js_sys::Function) {
     APP.with(|a| {
         if let Some(app) = a.borrow().as_ref() {
             app.borrow_mut().sink = Some(sink);
+        }
+    });
+}
+
+/// The audio worklet's level report: `queued` stereo frames waiting to play.
+/// Lets the audio clock pace the emulation.
+#[wasm_bindgen]
+pub fn set_audio_level(queued: f64) {
+    APP.with(|a| {
+        if let Some(app) = a.borrow().as_ref() {
+            let mut app = app.borrow_mut();
+            app.audio_level = Some((queued, now()));
+            app.sent_since = 0.0;
         }
     });
 }
@@ -326,6 +371,8 @@ pub async fn start(
         live,
         pcm: Vec::new(),
         sink: None,
+        audio_level: None,
+        sent_since: 0.0,
         _gpu: (instance, adapter),
     }));
 

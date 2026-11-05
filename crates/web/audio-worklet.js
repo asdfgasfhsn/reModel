@@ -1,10 +1,14 @@
-// Plays the interleaved stereo Float32Arrays the game posts, in order.
+// Plays the interleaved stereo Float32Arrays the game posts, in order, and
+// reports how much is queued every few render quanta: the game paces itself
+// by it.
 // Waits for PRIME seconds of audio before starting (and after running dry),
 // and drops the oldest audio beyond MAX seconds: the emulator's clock and
 // the device's audio clock drift apart slowly, and this keeps latency low
 // without constant underruns.
 const PRIME = 0.06;
 const MAX = 0.25;
+// Level reports every this many 128-frame quanta (about 23 ms).
+const LEVEL_EVERY = 8;
 
 class RemodelSink extends AudioWorkletProcessor {
   constructor() {
@@ -53,7 +57,8 @@ class RemodelSink extends AudioWorkletProcessor {
         if (this.queue.length === 0) this.primed = false;
       }
     }
-    if (++st.quanta * left.length >= sampleRate) {
+    if (++st.quanta % LEVEL_EVERY === 0) this.port.postMessage({ level: this.frames });
+    if (st.quanta * left.length >= sampleRate) {
       this.port.postMessage({ ...st, queued: this.frames });
       this.stats = { played: 0, energy: 0, dry: 0, quanta: 0 };
     }

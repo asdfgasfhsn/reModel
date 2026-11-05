@@ -23,7 +23,7 @@
     <kbd>F</kbd> fullscreen <kbd>H</kbd> hide bar · <span id="sound">tap or press a key for sound</span></span>
 </div>
 <script type="module">
-  import init, { start, set_audio_sink } from "./pkg/remodel_web.js";
+  import init, { start, set_audio_sink, set_audio_level } from "./pkg/remodel_web.js";
 
   const status = document.getElementById("status");
   const params = new URLSearchParams(location.search);
@@ -65,6 +65,10 @@
     node.connect(audio.destination);
     node.port.onmessage = (e) => {
       const s = e.data;
+      if ("level" in s) {
+        if (started) set_audio_level(s.level);
+        return;
+      }
       const db = s.played ? (10 * Math.log10(s.energy / s.played)).toFixed(0) : "-inf";
       soundLabel.textContent = `sound: ${audio.state}, ${audio.sampleRate} Hz, ` +
         `${(sent / 44100).toFixed(0)} s sent, playing ${db} dB, ${s.dry} dry, ` +

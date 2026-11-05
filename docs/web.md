@@ -6,7 +6,11 @@ gamepad. The sound and music boards run alongside the game
 (`model2::audio::Live`, fed each byte the game sends at its exact
 sample), and an AudioWorklet (`crates/web/audio-worklet.js`) plays them.
 Browsers only start audio after a tap or key press, so the page enables
-it on the first one.
+it on the first one. While sound plays, the audio clock paces the
+emulation: the worklet reports its queue every 23 ms or so, and the game
+runs another frame whenever less than 70 ms is queued. That avoids drift
+between the browser's frame timer and the sound card. Without sound,
+frames follow the timer.
 
 ```sh
 make web            # interpreter build -> out/web (index.html, pkg/)
