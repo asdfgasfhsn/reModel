@@ -1720,6 +1720,9 @@ version = "0.1.0"
 [[package]]
 name = "remodel-romset"
 version = "0.1.0"
+dependencies = [
+ "remodel-png",
+]
 
 [[package]]
 name = "remodel-sound"

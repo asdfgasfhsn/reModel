@@ -3,9 +3,13 @@
 //! Game data is always user-supplied. A manifest only records the chip names,
 //! sizes and SHA-1 hashes needed to recognise a good dump and assemble it into
 //! the address spaces the hardware sees.
+//!
+//! A ROM directory holds sets as MAME does, by set name: `ROOT/<set>.zip`
+//! or unpacked in `ROOT/<set>/`. Loose chips directly in `ROOT` also work.
 
 pub mod games;
 mod sha1;
+pub mod zip;
 
 use std::fmt;
 use std::fs;
@@ -74,8 +78,23 @@ pub struct Game {
 pub enum Error {
     UnknownGame(String),
     Io(PathBuf, std::io::Error),
-    Size { name: &'static str, expected: usize, actual: usize },
-    Hash { name: &'static str, expected: &'static str, actual: String },
+    Size {
+        name: &'static str,
+        expected: usize,
+        actual: usize,
+    },
+    Hash {
+        name: &'static str,
+        expected: &'static str,
+        actual: String,
+    },
+    /// A chip found in none of the places a set can be.
+    Missing {
+        name: &'static str,
+        root: PathBuf,
+        set: &'static str,
+    },
+    Zip(String),
 }
 
 impl fmt::Display for Error {
@@ -92,6 +111,11 @@ impl fmt::Display for Error {
             Error::Hash { name, expected, actual } => {
                 write!(f, "{name}: sha1 {actual} does not match known-good {expected}")
             }
+            Error::Missing { name, root, set } => {
+                let r = root.display();
+                write!(f, "{name}: not in {r}/{set}/, {r}/{set}.zip or {r}/")
+            }
+            Error::Zip(e) => write!(f, "{e}"),
         }
     }
 }
@@ -108,13 +132,27 @@ pub struct RomSet {
 }
 
 impl RomSet {
-    /// Load the unpacked chips for `game` from `dir`. With `verify`, sizes
-    /// and hashes must match a known-good dump.
-    pub fn load(game: &'static Game, dir: &Path, verify: bool) -> Result<Self, Error> {
+    /// Load `game`'s chips from ROM directory `root`: each chip from
+    /// `root/<set>/`, else `root/<set>.zip`, else `root/` itself. With
+    /// `verify`, sizes and hashes must match a known-good dump.
+    pub fn load(game: &'static Game, root: &Path, verify: bool) -> Result<Self, Error> {
+        let dir = root.join(game.id);
+        let zip_path = root.join(format!("{}.zip", game.id));
+        let archive = if zip_path.is_file() { Some(zip::Zip::open(&zip_path).map_err(Error::Zip)?) } else { None };
         let mut chips = Vec::with_capacity(game.files.len());
         for rom in game.files {
-            let path = dir.join(rom.name);
-            chips.push(fs::read(&path).map_err(|e| Error::Io(path.clone(), e))?);
+            let data = match fs::read(dir.join(rom.name)) {
+                Ok(d) => d,
+                Err(_) => match archive.as_ref().and_then(|z| z.read(rom.name)) {
+                    Some(member) => member.map_err(Error::Zip)?,
+                    None => fs::read(root.join(rom.name)).map_err(|_| Error::Missing {
+                        name: rom.name,
+                        root: root.to_path_buf(),
+                        set: game.id,
+                    })?,
+                },
+            };
+            chips.push(data);
         }
         Self::from_chips(game, chips, verify)
     }
@@ -157,6 +195,27 @@ impl RomSet {
     pub fn chip(&self, name: &str) -> Option<&[u8]> {
         self.game.files.iter().position(|r| r.name == name).map(|i| self.chips[i].as_slice())
     }
+}
+
+/// Set names in ROM directory `root`: `<set>.zip` files and directories.
+pub fn sets_in(root: &Path) -> Vec<String> {
+    let mut sets: Vec<String> = fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let kind = e.file_type().ok()?;
+            match name.strip_suffix(".zip") {
+                Some(set) if kind.is_file() => Some(set.to_string()),
+                None if kind.is_dir() => Some(name),
+                _ => None,
+            }
+        })
+        .collect();
+    sets.sort();
+    sets.dedup();
+    sets
 }
 
 /// Concatenate the interleaved pairs of chips with `role`, in manifest order.

@@ -42,6 +42,8 @@ options:
 
 commands:
   games                list supported games
+  scan                 list the sets in the ROM directory (zips or folders,
+                       as MAME keeps them) and check the supported ones
   verify               check every chip against known-good hashes
   boot                 print the boot record and system table seeds
   disasm ADDR [COUNT]  linear disassembly of the program ROM
@@ -184,6 +186,29 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         };
+    }
+    if cmd == "scan" {
+        let sets = romset::sets_in(&rom_dir);
+        if sets.is_empty() {
+            eprintln!("no sets in {} (expected <set>.zip or <set>/)", rom_dir.display());
+            return ExitCode::FAILURE;
+        }
+        let mut supported = 0;
+        for set in &sets {
+            match games::find(set) {
+                Ok(g) => {
+                    supported += 1;
+                    let state = match RomSet::load(g, &rom_dir, true) {
+                        Ok(_) => "ok".to_string(),
+                        Err(e) => format!("bad: {e}"),
+                    };
+                    println!("{set:<12} {:<34} {state}", g.title);
+                }
+                Err(_) => println!("{set:<12} {:<34} not supported yet", "-"),
+            }
+        }
+        println!("{} sets, {supported} supported", sets.len());
+        return ExitCode::SUCCESS;
     }
     if cmd == "games" {
         for g in games::ALL {

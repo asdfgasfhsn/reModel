@@ -156,10 +156,10 @@
           else if (m.type === "error") soundLabel.textContent = "sound worker: " + m.message;
         };
         try {
-          worker.postMessage({ type: "init", module, rom: "./rom", mix });
+          worker.postMessage({ type: "init", module, rom: "./rom/topskatr", mix });
         } catch {
           // Browsers that can't pass a compiled module: the worker fetches it.
-          worker.postMessage({ type: "init", rom: "./rom", mix });
+          worker.postMessage({ type: "init", rom: "./rom/topskatr", mix });
         }
         link = (cycles, bytes, until, ratio) =>
           worker.postMessage({ type: "link", cycles, bytes, until, ratio }, [cycles.buffer, bytes.buffer]);
@@ -176,16 +176,16 @@
           else if (m.type === "error") status.textContent = "geometry worker: " + m.message;
         };
         try {
-          gw.postMessage({ type: "init", module, rom: "./rom" });
+          gw.postMessage({ type: "init", module, rom: "./rom/topskatr" });
         } catch {
-          gw.postMessage({ type: "init", rom: "./rom" });
+          gw.postMessage({ type: "init", rom: "./rom/topskatr" });
         }
         geo = (kind, data, booted, readPtr) =>
           kind === "boot"
             ? gw.postMessage({ type: "boot", program: data }, [data.buffer])
             : gw.postMessage({ type: "frame", buffer: data, booted, readPtr }, [data.buffer]);
       }
-      await start(document.getElementById("screen"), status, "./rom", height, aspect, hudEdges, link, geo);
+      await start(document.getElementById("screen"), status, "./rom/topskatr", height, aspect, hudEdges, link, geo);
       started = true;
     } catch (e) {
       status.textContent = "error: " + (e.message ?? e);

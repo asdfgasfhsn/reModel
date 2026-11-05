@@ -55,8 +55,9 @@ make                  # list every target
 make check            # format check, clippy, unit tests (no ROMs needed)
 make m68k-tests       # 68000 core vs the SingleStepTests suite (fetches ~200 MB, 1.1 GB unpacked, into out/)
 
-# With an unpacked dump in ./rom:
+# With ROM sets in ./rom, as MAME keeps them (rom/topskatr.zip, or unpacked in rom/topskatr/):
 make verify           # check every chip
+make scan             # list the sets in rom/ (MAME zips or folders) and check the supported ones
 make boot             # boot record and system-table entry points
 make analyze          # code discovery -> out/topskatr/program.lst
 make disasm ADDR=0x6f0 COUNT=64

@@ -54,8 +54,8 @@ RUSTC=$(~/.local/share/rustup-wasm/bin/rustup which rustc) $(~/.local/share/rust
 ```
 
 **Serving.** WebGPU only works on secure pages (HTTPS, or localhost), so
-serve over HTTPS. The page loads the ROM files from `rom/` next to
-`index.html`, one file per chip, as in the repo's `rom/`. They are your
+serve over HTTPS. The page loads the ROM files from `rom/topskatr/` next
+to `index.html`, one file per chip, as in the repo's `rom/topskatr/`. They are your
 dump: keep the server private to your network. One setup is a file server
 container on a reverse proxy's Docker network:
 

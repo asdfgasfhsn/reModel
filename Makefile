@@ -117,6 +117,9 @@ games: release ## List games with manifests
 verify: release ## Check every chip in ROM= against known-good hashes
 	$(RUN) verify
 
+scan: release ## List the sets in ROM= (MAME zips or folders) and check the supported ones
+	$(RUN) scan
+
 boot: release ## Print the i960 boot record and system-table entry points
 	$(RUN) boot
 
