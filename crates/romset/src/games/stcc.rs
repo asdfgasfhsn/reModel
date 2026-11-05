@@ -17,7 +17,9 @@ use crate::{AnalogInput, Board, Controls, DriveBoard, Game, PadAxis, PadButton, 
 pub static STCC: Game = Game {
     id: "stcc",
     title: "Sega Touring Car Championship",
+    year: 1996,
     board: Board::Model2C,
+    attract_frame: 1050,
     hud_windows: &[],
     controls: CONTROLS,
     drive_board: Some(DriveBoard::Wheel),
@@ -181,19 +183,19 @@ pub static STCC: Game = Game {
 /// known about stcc"). One credit is one coin by default.
 const CONTROLS: Controls = Controls {
     buttons: &[
-        button("coin1", 0, 0x01, &["KeyC", "Digit5"], &[PadButton::Select]),
+        button("coin1", 0, 0x01, &["KeyC", "Digit5"], &[PadButton::Select]).labelled("Coin"),
         button("coin2", 0, 0x02, &[], &[]),
         button("test", 0, 0x04, &[], &[]),
         button("service", 0, 0x08, &[], &[]),
         button("start", 0, 0x40, &["Enter"], &[PadButton::Start]),
         // Sequential shifter, used with the manual gearbox (pick MT by
         // holding the brake while deciding on the car select screen).
-        button("shiftup", 1, 0x10, &["KeyA"], &[PadButton::RightShoulder, PadButton::East]),
-        button("shiftdown", 1, 0x20, &["KeyZ"], &[PadButton::LeftShoulder, PadButton::West]),
+        button("shiftup", 1, 0x10, &["KeyA"], &[PadButton::RightShoulder, PadButton::East]).labelled("Gear +"),
+        button("shiftdown", 1, 0x20, &["KeyZ"], &[PadButton::LeftShoulder, PadButton::West]).labelled("Gear −"),
         // View buttons: view 1 ("zoom in") changes the camera while racing;
         // view 2 ("zoom out") is from the input test only, not yet tried.
-        button("view1", 1, 0x01, &["KeyV"], &[PadButton::North]),
-        button("view2", 1, 0x02, &["KeyB"], &[PadButton::South]),
+        button("view1", 1, 0x01, &["KeyV"], &[PadButton::North]).labelled("View"),
+        button("view2", 1, 0x02, &["KeyB"], &[PadButton::South]).labelled("View 2"),
     ],
     analogs: &[
         // The wheel: 0x30 steers left, 0xD0 right. It also moves the

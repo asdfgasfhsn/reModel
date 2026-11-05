@@ -46,6 +46,19 @@ pub enum Board {
     Unconfirmed,
 }
 
+impl Board {
+    /// The board's name as Sega wrote it ("Model 2C"); "Model 2" for an
+    /// unconfirmed revision.
+    pub fn name(self) -> &'static str {
+        match self {
+            Board::Model2 | Board::Unconfirmed => "Model 2",
+            Board::Model2A => "Model 2A",
+            Board::Model2B => "Model 2B",
+            Board::Model2C => "Model 2C",
+        }
+    }
+}
+
 /// One chip in a set.
 pub struct RomFile {
     pub name: &'static str,
@@ -86,7 +99,13 @@ pub struct Game {
     /// Short set name, matching the usual dump naming (e.g. `topskatr`).
     pub id: &'static str,
     pub title: &'static str,
+    /// Year of release, as on the title screen's copyright line.
+    pub year: u16,
     pub board: Board,
+    /// A frame of the attract mode (counted from boot, no inputs) that shows
+    /// the game well: the browser build's game card screenshot
+    /// (`remodel shot`).
+    pub attract_frame: u64,
     pub files: &'static [RomFile],
     /// 3D viewports (window numbers) that hold HUD elements rather than the
     /// scene. Only enhancements use this (wide views move them with the

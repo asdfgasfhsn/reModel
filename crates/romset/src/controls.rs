@@ -37,6 +37,9 @@ pub struct ButtonInput {
     pub keys: &'static [&'static str],
     /// Default pad buttons.
     pub pad: &'static [PadButton],
+    /// What players see it called (help, on-screen buttons), if not its
+    /// name capitalised; set with [`ButtonInput::labelled`].
+    pub label_text: Option<&'static str>,
 }
 
 /// A [`ButtonInput`], for manifests.
@@ -47,7 +50,20 @@ pub(crate) const fn button(
     keys: &'static [&'static str],
     pad: &'static [PadButton],
 ) -> ButtonInput {
-    ButtonInput { name, port, bit, keys, pad }
+    ButtonInput { name, port, bit, keys, pad, label_text: None }
+}
+
+impl ButtonInput {
+    /// The same input with a label for players (e.g. "Jump" for
+    /// `jumpfront`).
+    pub const fn labelled(self, label: &'static str) -> ButtonInput {
+        ButtonInput { label_text: Some(label), ..self }
+    }
+
+    /// What players see it called.
+    pub fn label(&self) -> String {
+        self.label_text.map_or_else(|| capitalise(self.name), str::to_string)
+    }
 }
 
 /// An analog input: one ADC channel, driven by a player axis.
@@ -72,6 +88,11 @@ pub struct AnalogInput {
 }
 
 impl AnalogInput {
+    /// What players see it called: the name, capitalised.
+    pub fn label(&self) -> String {
+        capitalise(self.name)
+    }
+
     /// The channel value for an axis deflection (-1 to 1; 0 to 1 for a
     /// trigger).
     pub fn value(&self, deflection: f32) -> u8 {
@@ -162,6 +183,51 @@ impl Controls {
         }
         out
     }
+
+    /// The controls a player uses, each with its first default keys (both
+    /// directions for an analog), for short help: (key symbols, label).
+    /// Coin, test and service are left out, as is anything without keys;
+    /// start comes last.
+    pub fn summary(&self) -> Vec<(Vec<&'static str>, String)> {
+        let analogs = self.analogs.iter().map(|a| {
+            let keys: Vec<&'static str> =
+                a.keys_neg.iter().take(1).chain(a.keys_pos.iter().take(1)).map(|k| key_symbol(k)).collect();
+            (keys, a.label())
+        });
+        let mut buttons: Vec<&ButtonInput> = self
+            .buttons
+            .iter()
+            .filter(|b| !["coin", "test", "service"].iter().any(|p| b.name.starts_with(p)))
+            .collect();
+        buttons.sort_by_key(|b| b.name == "start");
+        let buttons =
+            buttons.into_iter().map(|b| (b.keys.iter().take(1).map(|k| key_symbol(k)).collect::<Vec<_>>(), b.label()));
+        let mut out: Vec<(Vec<&'static str>, String)> = Vec::new();
+        for (keys, label) in analogs.chain(buttons) {
+            // Analogs bound to the same keys (skisuprg's edge and swing) once.
+            if !keys.is_empty() && !out.iter().any(|o| o.0 == keys) {
+                out.push((keys, label));
+            }
+        }
+        out
+    }
+}
+
+/// `name` with its first letter in upper case.
+fn capitalise(name: &str) -> String {
+    let mut c = name.chars();
+    c.next().map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
+}
+
+/// A `KeyboardEvent.code` as printed on the key (arrows as arrows).
+pub fn key_symbol(code: &str) -> &str {
+    match code {
+        "ArrowLeft" => "←",
+        "ArrowRight" => "→",
+        "ArrowUp" => "↑",
+        "ArrowDown" => "↓",
+        _ => key_label(code),
+    }
 }
 
 /// Short label for a `KeyboardEvent.code`.
@@ -190,6 +256,18 @@ mod tests {
             }
             assert!(c.button("coin1").is_some(), "{}", g.id);
             assert!(c.coin_start.contains("coin1@"), "{}", g.id);
+        }
+    }
+
+    #[test]
+    fn summary_lists_what_players_press() {
+        let s = crate::games::TOPSKATR.controls.summary();
+        assert_eq!(s[0], (vec!["←", "→"], "Curving".to_string()));
+        assert!(s.iter().any(|c| c == &(vec!["Z"], "Jump".to_string())));
+        assert_eq!(s.last().unwrap().1, "Start");
+        assert!(!s.iter().any(|c| c.1 == "Coin"));
+        for g in crate::games::ALL {
+            assert!(!g.controls.summary().is_empty(), "{}", g.id);
         }
     }
 

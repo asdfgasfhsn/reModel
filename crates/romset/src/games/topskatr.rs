@@ -6,7 +6,9 @@ use crate::{AnalogInput, Board, Controls, Game, PadAxis, PadButton, Role, RomFil
 pub static TOPSKATR: Game = Game {
     id: "topskatr",
     title: "Top Skater",
+    year: 1997,
     board: Board::Model2C,
+    attract_frame: 1650,
     // Window 4 holds the speed gauge and the time-limit ring (confirmed with
     // REMODEL_PROBE); the course is window 2 and the sky window 0.
     hud_windows: &[4],
@@ -142,15 +144,15 @@ pub static TOPSKATR: Game = Game {
 /// Test and service are not yet checked.
 const CONTROLS: Controls = Controls {
     buttons: &[
-        button("coin1", 0, 0x01, &["KeyC", "Digit5"], &[PadButton::Select]),
+        button("coin1", 0, 0x01, &["KeyC", "Digit5"], &[PadButton::Select]).labelled("Coin"),
         button("coin2", 0, 0x02, &[], &[]),
         button("test", 0, 0x04, &[], &[]),
         button("service", 0, 0x08, &[], &[]),
-        button("selright", 0, 0x10, &["KeyE"], &[PadButton::RightShoulder]),
-        button("jumpfront", 0, 0x20, &["KeyZ", "ArrowUp"], &[PadButton::South]),
+        button("selright", 0, 0x10, &["KeyE"], &[PadButton::RightShoulder]).labelled("▶"),
+        button("jumpfront", 0, 0x20, &["KeyZ", "ArrowUp"], &[PadButton::South]).labelled("Jump"),
         button("start", 0, 0x40, &["Enter"], &[PadButton::Start]),
-        button("selleft", 0, 0x80, &["KeyQ"], &[PadButton::LeftShoulder]),
-        button("jumptail", 1, 0x01, &["KeyX"], &[PadButton::West]),
+        button("selleft", 0, 0x80, &["KeyQ"], &[PadButton::LeftShoulder]).labelled("◀"),
+        button("jumptail", 1, 0x01, &["KeyX"], &[PadButton::West]).labelled("Tail"),
     ],
     analogs: &[
         // Steering: 0x10 carves right, 0xF0 left, 0x80 centred.

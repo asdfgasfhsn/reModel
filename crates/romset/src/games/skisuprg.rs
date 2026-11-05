@@ -7,7 +7,9 @@ use crate::{AnalogInput, Board, Controls, DriveBoard, Game, PadAxis, PadButton, 
 pub static SKISUPRG: Game = Game {
     id: "skisuprg",
     title: "Sega Ski Super G",
+    year: 1996,
     board: Board::Model2C,
+    attract_frame: 3750,
     hud_windows: &[],
     controls: CONTROLS,
     drive_board: Some(DriveBoard::SkiPlatform),
@@ -134,7 +136,7 @@ pub static SKISUPRG: Game = Game {
 /// One credit is two coins by default.
 const CONTROLS: Controls = Controls {
     buttons: &[
-        button("coin1", 0, 0x01, &["KeyC", "Digit5"], &[PadButton::Select]),
+        button("coin1", 0, 0x01, &["KeyC", "Digit5"], &[PadButton::Select]).labelled("Coin"),
         button("coin2", 0, 0x02, &[], &[]),
         button("test", 0, 0x04, &[], &[]),
         button("service", 0, 0x08, &[], &[]),
@@ -145,8 +147,8 @@ const CONTROLS: Controls = Controls {
         button("green", 0, 0x10, &["KeyD"], &[PadButton::South]),
         // Step a selection right / left and confirm it, in the select
         // screens' other mode (unconfirmed which switches these are).
-        button("selright", 0, 0x20, &["KeyE"], &[PadButton::RightShoulder]),
-        button("selleft", 1, 0x01, &["KeyQ"], &[PadButton::LeftShoulder]),
+        button("selright", 0, 0x20, &["KeyE"], &[PadButton::RightShoulder]).labelled("▶"),
+        button("selleft", 1, 0x01, &["KeyQ"], &[PadButton::LeftShoulder]).labelled("◀"),
         button("decide", 1, 0x10, &["KeyW"], &[PadButton::North]),
     ],
     analogs: &[
