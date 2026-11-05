@@ -4,7 +4,12 @@ Remodel compiled to WebAssembly, running in a browser and drawing with
 WebGPU (`crates/web`), with sound. It is playable with keyboard or
 gamepad. The sound and music boards run alongside the game
 (`model2::audio::Live`, fed each byte the game sends at its exact
-sample), and an AudioWorklet (`crates/web/audio-worklet.js`) plays them.
+sample) in a Web Worker on another core (`crates/web/sound-worker.js`).
+Each frame the game posts the bytes it sent on the sound link, with their
+CPU cycles. The worker renders the audio and posts it straight to an
+AudioWorklet (`crates/web/audio-worklet.js`). The worker shares the
+page's compiled WebAssembly module and costs about 2.3 ms of its own core
+per frame (Chromium, desktop).
 Browsers only start audio after a tap or key press, so the page enables
 it on the first one. While sound plays, the audio clock paces the
 emulation: the worklet reports its queue every 23 ms or so, and the game
@@ -58,8 +63,8 @@ of all private ranges also admits them.
 - `sound=0` (don't run the sound boards at all).
 
 The bar shows the speed, frames drawn per second, and milliseconds per
-frame spent emulating, running the sound boards, preparing the frame on
-the CPU, and submitting it to the GPU.
+frame spent emulating, preparing the frame on the CPU, and submitting it
+to the GPU. The sound label adds the worker's time per frame.
 
 **Controls.**
 

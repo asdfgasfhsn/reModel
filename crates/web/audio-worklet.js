@@ -1,6 +1,7 @@
-// Plays the interleaved stereo Float32Arrays the game posts, in order, and
+// Plays the interleaved stereo Float32Arrays posted to it, in order, and
 // reports how much is queued every few render quanta: the game paces itself
-// by it.
+// by it. Audio arrives on the node's port, or on a MessagePort passed in as
+// {port} (from the sound worker).
 // Waits for PRIME seconds of audio before starting (and after running dry),
 // and drops the oldest audio beyond MAX seconds: the emulator's clock and
 // the device's audio clock drift apart slowly, and this keeps latency low
@@ -21,15 +22,20 @@ class RemodelSink extends AudioWorkletProcessor {
     // and how many render quanta ran dry.
     this.stats = { played: 0, energy: 0, dry: 0, quanta: 0 };
     this.port.onmessage = (e) => {
-      this.queue.push(e.data);
-      this.frames += e.data.length / 2;
-      const max = MAX * sampleRate;
-      while (this.frames > max && this.queue.length > 1) {
-        this.frames -= (this.queue[0].length - this.offset) / 2;
-        this.queue.shift();
-        this.offset = 0;
-      }
+      if (e.data instanceof Float32Array) this.push(e.data);
+      else if (e.data.port) e.data.port.onmessage = (m) => this.push(m.data);
     };
+  }
+
+  push(buf) {
+    this.queue.push(buf);
+    this.frames += buf.length / 2;
+    const max = MAX * sampleRate;
+    while (this.frames > max && this.queue.length > 1) {
+      this.frames -= (this.queue[0].length - this.offset) / 2;
+      this.queue.shift();
+      this.offset = 0;
+    }
   }
 
   process(_inputs, outputs) {

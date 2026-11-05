@@ -5,9 +5,13 @@
 //! The page calls [`start`] with a canvas and the URL of the ROM files;
 //! everything after that runs from `requestAnimationFrame`. The machine
 //! runs one emulated frame per 1/57.524 s of real time, catching up a few
-//! frames at most when the browser falls behind. The sound and music boards
-//! run alongside (`model2::audio::Live`); each frame's samples go to the
-//! page's audio sink ([`set_audio_sink`]), an AudioWorklet.
+//! frames at most when the browser falls behind; once sound plays, the
+//! audio clock paces it instead ([`set_audio_level`]).
+//!
+//! The sound and music boards run in a Web Worker (sound-worker.js, using
+//! [`SoundEngine`] from this same module), on another core: each frame the
+//! game posts the sound link bytes it sent, with their CPU cycles, and the
+//! worker renders the audio and posts it to the page's AudioWorklet.
 
 #![cfg(target_arch = "wasm32")]
 
@@ -41,17 +45,16 @@ struct App {
     /// FPS counter: window start (ms), frames emulated and drawn since.
     counter: (f64, u32, u32),
     /// Host time (ms) in this window: emulating, preparing frames on the
-    /// CPU, encoding and submitting them to the GPU, and running the sound
-    /// boards.
-    spent: [f64; 4],
-    /// The sound and music boards (None with sound turned off).
-    live: Option<model2::audio::Live>,
-    pcm: Vec<i16>,
-    /// Called with each frame's audio, interleaved stereo Float32Array.
-    sink: Option<js_sys::Function>,
+    /// CPU, and encoding and submitting them to the GPU.
+    spent: [f64; 3],
+    /// Called with the sound link bytes sent since the last call: (cycles
+    /// Float64Array, bytes Uint8Array, render-until cycle). None: no sound.
+    link: Option<js_sys::Function>,
+    /// Audio the link calls asked for so far, in output samples.
+    samples: u64,
     /// The worklet's last report: stereo frames queued, and when (ms).
     audio_level: Option<(f64, f64)>,
-    /// Stereo frames sent since that report.
+    /// Stereo frames asked for since that report.
     sent_since: f64,
     status: web_sys::Element,
     stopped: bool,
@@ -161,15 +164,28 @@ impl App {
         self.spent[2] += now() - t1;
     }
 
-    /// Hand this frame's audio to the page's sink (dropped if there's none
-    /// yet: browsers only start audio after a tap or key press).
-    fn flush_audio(&mut self) {
-        if let (Some(sink), false) = (&self.sink, self.pcm.is_empty()) {
-            let samples: Vec<f32> = self.pcm.iter().map(|&v| v as f32 / 32768.0).collect();
-            let _ = sink.call1(&JsValue::NULL, &js_sys::Float32Array::from(&samples[..]));
-            self.sent_since += (self.pcm.len() / 2) as f64;
+    /// Post the sound link bytes sent since the last call to the sound
+    /// worker, with the time to render up to. Returns the output samples
+    /// that asks for.
+    fn send_link(&mut self) -> u64 {
+        let bus = &mut self.machine.bus;
+        let log = std::mem::take(&mut bus.uart_log);
+        let target = (bus.now as u128 * model2::audio::RATE as u128 / model2::bus::CPU_HZ as u128) as u64;
+        let produced = target - self.samples;
+        self.samples = target;
+        if let Some(link) = &self.link {
+            let data = log.iter().filter(|e| !e.1);
+            let cycles: Vec<f64> = data.clone().map(|e| e.0 as f64).collect();
+            let bytes: Vec<u8> = data.map(|e| e.2).collect();
+            let _ = link.call3(
+                &JsValue::NULL,
+                &js_sys::Float64Array::from(&cycles[..]),
+                &js_sys::Uint8Array::from(&bytes[..]),
+                &JsValue::from_f64(bus.now as f64),
+            );
         }
-        self.pcm.clear();
+        self.sent_since += produced as f64;
+        produced
     }
 
     /// Stereo frames the worklet holds now, estimated from its last report,
@@ -177,7 +193,7 @@ impl App {
     fn audio_queued(&self, t: f64) -> Option<f64> {
         let (level, at) = self.audio_level?;
         let age = t - at;
-        (self.sink.is_some() && age < AUDIO_STALE_MS)
+        (self.link.is_some() && age < AUDIO_STALE_MS)
             .then(|| level + self.sent_since - age * model2::audio::RATE as f64 / 1000.0)
     }
 
@@ -193,7 +209,7 @@ impl App {
             None => ((t - self.epoch) * FPS / 1000.0) as u64,
         };
         let mut ran = 0;
-        let (t0, sound0) = (now(), self.spent[3]);
+        let t0 = now();
         while self.machine.frames < due && ran < MAX_CATCH_UP && queued.is_none_or(|q| q < AUDIO_TARGET) {
             self.apply_inputs();
             if let Err(e) = self.machine.run_slice(u64::MAX) {
@@ -201,19 +217,13 @@ impl App {
                 set_status(&self.status, &format!("stopped: {e:?}"));
                 return;
             }
-            if let Some(live) = &mut self.live {
-                let t = now();
-                let before = self.pcm.len();
-                live.run(&mut self.machine.bus, &mut self.pcm);
-                self.spent[3] += now() - t;
-                if let Some(q) = &mut queued {
-                    *q += ((self.pcm.len() - before) / 2) as f64;
-                }
+            let produced = self.send_link();
+            if let Some(q) = &mut queued {
+                *q += produced as f64;
             }
             ran += 1;
         }
-        self.spent[0] += now() - t0 - (self.spent[3] - sound0);
-        self.flush_audio();
+        self.spent[0] += now() - t0;
         if queued.is_some() {
             // Keep the time base current for when audio stops pacing.
             self.epoch = t - self.machine.frames as f64 * 1000.0 / FPS;
@@ -233,20 +243,19 @@ impl App {
             set_status(
                 &self.status,
                 &format!(
-                    "{:.0}% speed · {:.0} fps drawn · {}x{} · i960 {} · ms per frame: emulate {:.1}, sound {:.1}, prepare {:.1}, submit {:.1}",
+                    "{:.0}% speed · {:.0} fps drawn · {}x{} · i960 {} · ms per frame: emulate {:.1}, prepare {:.1}, submit {:.1}",
                     speed,
                     self.counter.2 as f64 / secs,
                     self.view.width,
                     self.view.height,
                     if self.machine.is_native() { "recompiled" } else { "interpreted" },
                     self.spent[0] / emulated,
-                    self.spent[3] / emulated,
                     self.spent[1] / drawn,
                     self.spent[2] / drawn,
                 ),
             );
             self.counter = (t, 0, 0);
-            self.spent = [0.0; 4];
+            self.spent = [0.0; 3];
         }
     }
 }
@@ -256,15 +265,44 @@ thread_local! {
     static APP: RefCell<Option<Rc<RefCell<App>>>> = const { RefCell::new(None) };
 }
 
-/// Send each frame's audio (interleaved stereo Float32Array, 44.1 kHz) to
-/// `sink`, e.g. a function posting it to an AudioWorklet.
+/// The ROM file names the game needs, in manifest order (for a worker that
+/// fetches them itself).
 #[wasm_bindgen]
-pub fn set_audio_sink(sink: js_sys::Function) {
-    APP.with(|a| {
-        if let Some(app) = a.borrow().as_ref() {
-            app.borrow_mut().sink = Some(sink);
-        }
-    });
+pub fn rom_files() -> Vec<String> {
+    romset::games::find("topskatr").map_or(Vec::new(), |g| g.files.iter().map(|f| f.name.to_string()).collect())
+}
+
+/// The sound and music boards on their own, for a Web Worker: fed the sound
+/// link bytes the game sends, it renders the audio.
+#[wasm_bindgen]
+pub struct SoundEngine {
+    live: model2::audio::Live,
+    link: Vec<(u64, bool, u8)>,
+    pcm: Vec<i16>,
+}
+
+#[wasm_bindgen]
+impl SoundEngine {
+    /// `chips`: Uint8Arrays of the files [`rom_files`] lists, in order.
+    #[wasm_bindgen(constructor)]
+    pub fn new(chips: js_sys::Array) -> Result<SoundEngine, JsValue> {
+        console_error_panic_hook::set_once();
+        let game = romset::games::find("topskatr").map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let chips = chips.iter().map(|c| js_sys::Uint8Array::new(&c).to_vec()).collect();
+        let roms = romset::RomSet::from_chips(game, chips, false).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(SoundEngine { live: model2::audio::Live::new(&roms), link: Vec::new(), pcm: Vec::new() })
+    }
+
+    /// Deliver link `bytes` written at CPU `cycles` and render up to cycle
+    /// `until`: interleaved stereo at 44.1 kHz.
+    pub fn feed(&mut self, cycles: &[f64], bytes: &[u8], until: f64) -> js_sys::Float32Array {
+        self.link.clear();
+        self.link.extend(cycles.iter().zip(bytes).map(|(&c, &b)| (c as u64, false, b)));
+        self.pcm.clear();
+        self.live.feed(&self.link, until as u64, &mut self.pcm);
+        let samples: Vec<f32> = self.pcm.iter().map(|&v| v as f32 / 32768.0).collect();
+        js_sys::Float32Array::from(&samples[..])
+    }
 }
 
 /// The audio worklet's level report: `queued` stereo frames waiting to play.
@@ -282,7 +320,9 @@ pub fn set_audio_level(queued: f64) {
 
 /// Load the ROMs from `rom_url` (one file per chip, as in `rom/`), set up
 /// WebGPU on `canvas` and start the game. `aspect` is width / height,
-/// `hud_edges` moves HUD elements to the screen edges in wide views.
+/// `hud_edges` moves HUD elements to the screen edges in wide views. `link`
+/// receives the sound link bytes each frame (see `App::send_link`) for the
+/// sound worker; leave it out for no sound.
 #[wasm_bindgen]
 pub async fn start(
     canvas: HtmlCanvasElement,
@@ -291,7 +331,7 @@ pub async fn start(
     height: u32,
     aspect: f32,
     hud_edges: bool,
-    sound: bool,
+    link: Option<js_sys::Function>,
 ) -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
     let err = |e: &dyn std::fmt::Display| JsValue::from_str(&e.to_string());
@@ -303,7 +343,6 @@ pub async fn start(
     }
     let roms = romset::RomSet::from_chips(game, chips, false).map_err(|e| err(&e))?;
     let machine = model2::Machine::new(&roms);
-    let live = sound.then(|| model2::audio::Live::new(&roms));
 
     set_status(&status, "starting WebGPU");
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
@@ -367,10 +406,9 @@ pub async fn start(
         counter: (now(), 0, 0),
         status,
         stopped: false,
-        spent: [0.0; 4],
-        live,
-        pcm: Vec::new(),
-        sink: None,
+        spent: [0.0; 3],
+        link,
+        samples: 0,
         audio_level: None,
         sent_since: 0.0,
         _gpu: (instance, adapter),

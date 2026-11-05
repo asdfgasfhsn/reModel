@@ -58,7 +58,16 @@ impl Live {
     /// written since the last call (taken from `bus.uart_log`). Appends
     /// interleaved stereo i16 at [`RATE`] to `out`.
     pub fn run(&mut self, bus: &mut Model2Bus, out: &mut Vec<i16>) {
-        for (t, control, byte) in std::mem::take(&mut bus.uart_log) {
+        let link = std::mem::take(&mut bus.uart_log);
+        self.feed(&link, bus.now, out);
+    }
+
+    /// `run` for boards that live apart from the bus (a browser worker, a
+    /// replay): `link` is the sound link log since the last call, as in
+    /// `Model2Bus::uart_log` (cycle, control register, byte), and `until`
+    /// the bus time to render up to.
+    pub fn feed(&mut self, link: &[(u64, bool, u8)], until: u64, out: &mut Vec<i16>) {
+        for &(t, control, byte) in link {
             if !control {
                 self.render_to(t, out);
                 if let Some(s) = &mut self.sound {
@@ -69,7 +78,7 @@ impl Live {
                 }
             }
         }
-        self.render_to(bus.now, out);
+        self.render_to(until, out);
     }
 
     fn render_to(&mut self, cycle: u64, out: &mut Vec<i16>) {
