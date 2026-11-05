@@ -56,6 +56,26 @@ game's own demo drives them; full deflection on the keyboard turns hard.
 The game needs its drive board (the platform motor); Remodel answers its
 boot check and commands as an idle board at rest (`crates/model2/src/drive.rs`).
 
+### Sega Touring Car Championship (`stcc`)
+
+Sound effects only: the music board (DSB1) isn't modelled yet. One coin
+is one credit. On the menus the wheel moves the selection and the gas
+pedal confirms; hold the brake while confirming the car to get the manual
+gearbox (MT), which the shift buttons step through.
+
+| Control | Keys | Gamepad |
+|---|---|---|
+| coin | C, 5 | Back |
+| start | Enter | Start |
+| steer (`wheel`) | Left, Right | left stick, d-pad |
+| gas, brake | Up, Down | right trigger, left trigger |
+| shift up, shift down | A, Z | right shoulder or B, left shoulder or X |
+| view 1, view 2 | V, B | Y, A |
+
+The wheel's force feedback board is commanded every frame but the game
+never checks its reply; Remodel keeps the commands
+(`crates/model2/src/drive.rs`) for a future gamepad rumble.
+
 ## The menu
 
 - **Save states**: a quick slot (F5/F9) and four more. A save holds the

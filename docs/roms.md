@@ -131,7 +131,7 @@ board (i960KB on all, gk). Controls and special hardware are gk throughout.
 | `segawski` | Sega Water Ski | 1997 | none | SCSP, CRX_drv 3.4.8 | water-ski platform and tow handle (analog) | none known | yes |
 | `waverunr` | Wave Runner | 1996 | none | SCSP, CRX_drv 3.2.7 | personal watercraft: handlebar, throttle (analog) | ride-on cabinet; link (weak) | yes |
 | `hotd` | The House of the Dead | 1997 | none | SCSP, CRX_drv 3.2.8 | 2 light guns | none known | yes |
-| `stcc` | Sega Touring Car Championship | 1996 | `stcca`, `stccb` | SCSP, CRX_drv 3.2.5; **DSB1 (Z80)** | wheel, pedals, shifter | drive board; link; `epr-18643a.7` | yes |
+| `stcc` | Sega Touring Car Championship | 1996 | `stcca`, `stccb` (the zip holds all three program pairs; Remodel uses `epr-19570/19571`) | SCSP, CRX_drv 3.2.5 (confirmed); **DSB1 (Z80)**, not modelled | wheel (ch. 0), gas (1), brake (2), shift up/down buttons, two view buttons (confirmed, README) | wheel drive board (commanded every frame, reply never checked; modelled, README); link (skipped by the default settings); `epr-18643a.7` (Z80 code for another board) | yes; supported and playable, without music |
 | `overrev` | Over Rev | 1997 | `overrevb` (2B) | SCSP (Jaleco driver) | wheel, pedals, shifter | unknown | yes |
 | `bel` | Behind Enemy Lines | 1998 (Sega / EPL) | none | SCSP (EPL driver; 128 KB sound program) | gun (gk, weak) | unknown | yes |
 | `dynmcopc` | Dynamite Cop (2C) | 1998 | clone of 2A `dynamcop` | SCSP, CRX_drv 3.2.8 | stick, 3 buttons | none | yes (2 own chips; the rest comes from the 2A parent) |
@@ -177,15 +177,16 @@ games, ranked by how little new work each needs:
    3.2.8 driver, but it's a clone whose data chips were named for the 2A
    board, so which chip goes where on 2C has to come from MAME (gk) and then
    the game.
-7. **`stcc`, Sega Touring Car Championship.** Famous, but needs the most
-   new hardware: a Z80 core and a DSB1 model (different MPEG decoder from
-   the DSB2's), a drive board and link to stub, and the unknown
-   `epr-18643a.7` board.
+7. **`stcc`, Sega Touring Car Championship.** Done, without music: it
+   needed no new boards to run (its drive board is never checked, the
+   link is off by default, nothing waits on the DSB1), but geometrizer
+   list jumps and mirrored ROM slots. Music needs a Z80 core and a DSB1
+   model (different MPEG decoder from the DSB2's).
 8. **`bel`, Behind Enemy Lines.** Obscure, its own sound driver, small
    128 KB program chips laid out differently, unknown controls.
 
 Recommendation: `skisuprg` to shake out what's still `topskatr`-specific
-(done), then `hotd` as the game most worth having. `hotd` needs a light
+(done; `stcc` done too), then `hotd` as the game most worth having. `hotd` needs a light
 gun: a new kind of control in the manifest (`romset::Controls` leaves room
 for it).
 

@@ -3,14 +3,15 @@ Remodel @VERSION@ (@TARGET@)
 
 remodel-play runs Sega Model 2 arcade games in a window: the game's own
 code on an emulated board, drawn on the GPU, with both sound boards live.
-Supported so far: Top Skater (topskatr) and Sega Ski Super G (skisuprg).
+Supported so far: Top Skater (topskatr), Sega Ski Super G (skisuprg) and
+Sega Touring Car Championship (stcc; sound effects, no music yet).
 This build runs the game code on the interpreter (no recompiled game code
 is included).
 
 Bring your own ROMs
 -------------------
 No game data is included. Put the sets as MAME keeps them, topskatr.zip or
-a topskatr/ folder (likewise skisuprg), in the ROM folder:
+a topskatr/ folder (likewise skisuprg, stcc), in the ROM folder:
 
     ~/.local/share/remodel/roms     ($XDG_DATA_HOME/remodel/roms)
 
@@ -36,7 +37,14 @@ Sega Ski Super G (two coins a credit):
     arrows       Left/Right turn the skis, Up/Down push (unconfirmed)
     Q, E, W      select left, right, decide
 
-Both:
+Sega Touring Car Championship:
+    C, Enter     coin, start
+    arrows       Left/Right steer, Up gas, Down brake
+    A, Z         shift up, shift down (manual gearbox: hold brake while
+                 choosing the car)
+    V, B         view buttons
+
+All games:
     Esc          menu (pauses): save slots, sound mix, display, game
     F5, F9       quick save, quick load
     F11          fullscreen
@@ -45,7 +53,9 @@ Gamepads work too; the one used last drives the game. Top Skater: left
 stick steers, right trigger or B slides, A / X jump, Start, Back coins,
 shoulders select. Ski Super G: left stick turns, triggers push, X / B / A
 are the blue / red / green buttons (Start is blue too), Back coins,
-shoulders and Y select and decide.
+shoulders and Y select and decide. Touring Car: left stick steers, right
+and left triggers are gas and brake, shoulders (or B / X) shift up and
+down, Y / A are the view buttons.
 
 Files
 -----

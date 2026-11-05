@@ -74,7 +74,7 @@ of all private ranges also admits them.
 
 **Page options.** These are URL parameters:
 
-- `?game=skisuprg` (default `topskatr`): the set to play;
+- `?game=skisuprg` or `?game=stcc` (default `topskatr`): the set to play;
 - `aspect=16:9` (default: the window's shape, 4:3 to 21:9);
 - `height=1080` (default: the screen's, up to 1080);
 - `hud=center` (default `edges`);
