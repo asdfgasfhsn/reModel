@@ -1,4 +1,4 @@
-use crate::{Board, Game, Role, RomFile};
+use crate::{Board, DriveBoard, Game, Role, RomFile};
 
 /// Sega Ski Super G, Model 2C-CRX. Same layout as `topskatr` plus a second
 /// program pair (`.13/.14`, at `0x100000`) and twice the polygon ROM; no
@@ -8,6 +8,7 @@ pub static SKISUPRG: Game = Game {
     title: "Sega Ski Super G",
     board: Board::Model2C,
     hud_windows: &[],
+    drive_board: Some(DriveBoard::SkiPlatform),
     files: &[
         RomFile {
             name: "epr-19489.15",

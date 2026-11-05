@@ -855,6 +855,9 @@ fn run(
     let _ = std::fs::create_dir_all(&dir);
     let blank = b.eeprom.data.iter().filter(|&&w| w == 0xffff).count();
     println!("eeprom        {} of 64 words programmed, changed this run: {}", 64 - blank, b.eeprom.dirty);
+    if let Some(d) = &b.drive {
+        println!("drive board   {}", d.describe());
+    }
     if b.eeprom.dirty {
         let _ = std::fs::write(&eeprom_path, b.eeprom.save());
     }

@@ -9,6 +9,7 @@ pub static TOPSKATR: Game = Game {
     // Window 4 holds the speed gauge and the time-limit ring (confirmed with
     // REMODEL_PROBE); the course is window 2 and the sky window 0.
     hud_windows: &[4],
+    drive_board: None,
     files: &[
         RomFile {
             name: "epr-19755a.15",

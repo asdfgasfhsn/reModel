@@ -9,6 +9,7 @@
 //! anything that isn't plain memory is counted so the runner can report
 //! what the game is waiting on.
 
+use crate::drive::Drive;
 use crate::eeprom::Eeprom;
 use crate::geo::Geometrizer;
 use i960::cpu::Bus;
@@ -167,6 +168,9 @@ pub struct Model2Bus {
     /// 315-5649 output latches, by register.
     io_latch: [u8; 16],
     pub eeprom: Eeprom,
+    /// The cabinet's drive board, if the game has one: commands on I/O
+    /// register 4, replies on register 3 (in place of port `inputs[2]`).
+    pub drive: Option<Drive>,
 
     /// Non-memory accesses, by word address.
     pub io_log: AccessLog,
@@ -266,6 +270,7 @@ impl Model2Bus {
             analog: [0x80; 8],
             io_latch: [0; 16],
             eeprom: Eeprom::new(),
+            drive: roms.game.drive_board.map(Drive::new),
             io_log: AccessLog::default(),
             unmapped: BTreeMap::new(),
         }
@@ -433,7 +438,7 @@ impl Model2Bus {
             1 if self.io_latch[0] & 1 != 0 => (self.inputs[0] & 0x0f) | 0xd0 | ((self.eeprom.dout() as u8) << 5),
             1 => self.inputs[0],
             2 => self.inputs[1],
-            3 => self.inputs[2],
+            3 => self.drive.as_ref().map_or(self.inputs[2], Drive::reply),
             6 => self.inputs[3],
             8 => 0xff,
             0xf => {
@@ -450,6 +455,11 @@ impl Model2Bus {
         match reg {
             // Port A: bit 5 DI, bit 6 CS, bit 7 CLK.
             0 => self.eeprom.set_lines(v & 0x40 != 0, v & 0x80 != 0, v & 0x20 != 0),
+            4 => {
+                if let Some(d) = &mut self.drive {
+                    d.command(v);
+                }
+            }
             0xf => self.io_analog_channel = (v & 7) as usize,
             _ => {}
         }
@@ -764,6 +774,10 @@ impl state::State for Model2Bus {
         self.analog.save(w);
         self.io_latch.save(w);
         state::State::save(&self.eeprom, w);
+        // Only games with a drive board have one (older states load).
+        if let Some(d) = &self.drive {
+            d.save(w);
+        }
     }
     fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
         for m in self.mems.iter_mut().filter(|m| m.writable) {
@@ -798,7 +812,11 @@ impl state::State for Model2Bus {
         self.io_analog_channel.load(r)?;
         self.analog.load(r)?;
         self.io_latch.load(r)?;
-        state::State::load(&mut self.eeprom, r)
+        state::State::load(&mut self.eeprom, r)?;
+        match &mut self.drive {
+            Some(d) => d.load(r),
+            None => Ok(()),
+        }
     }
 }
 

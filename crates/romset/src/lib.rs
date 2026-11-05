@@ -17,6 +17,17 @@ use std::path::{Path, PathBuf};
 
 pub use sha1::sha1_hex;
 
+/// Cabinet boards beyond the Model 2 board itself that the game talks to
+/// through the I/O chip, and which protocol they speak. The board model
+/// (`model2::drive`) emulates each kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriveBoard {
+    /// Sega Ski Super G's platform drive board: one command byte a frame
+    /// on I/O `0x1C00008`, one reply byte on `0x1C00006`; boots with a
+    /// `0x00` -> `0xCE` handshake (README, "What's known about skisuprg").
+    SkiPlatform,
+}
+
 /// Model 2 board revisions. They share the i960 main CPU and sound system;
 /// the geometry processor differs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,6 +83,8 @@ pub struct Game {
     /// scene. Only enhancements use this (wide views move them with the
     /// rest of the HUD).
     pub hud_windows: &'static [usize],
+    /// A drive (motion or force feedback) board the game needs, if any.
+    pub drive_board: Option<DriveBoard>,
 }
 
 #[derive(Debug)]

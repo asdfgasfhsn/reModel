@@ -7,6 +7,7 @@
 pub mod audio;
 pub mod bus;
 pub mod capture;
+pub mod drive;
 pub mod eeprom;
 pub mod enhance;
 pub mod geo;
