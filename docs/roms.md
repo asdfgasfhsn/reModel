@@ -129,7 +129,7 @@ board (i960KB on all, gk). Controls and special hardware are gk throughout.
 | `topskatr` | Top Skater | 1997 | `topskatrj`, `topskatru` | SCSP, CRX_drv 3.2.8; **DSB2** | skateboard deck (2 analog channels), jump buttons (confirmed, README) | none | yes; also unpacked in `topskatr/` |
 | `skisuprg` | Sega Ski Super G | 1996 | none | SCSP, CRX_drv 3.2.8 | ski platform (analog channels 0-2: two ski angles, a third unconfirmed), three panel buttons (confirmed, README) | drive board (confirmed: boot checks it; modelled, README) | yes; supported and playable |
 | `segawski` | Sega Water Ski (Japan) | 1997 | none | SCSP, CRX_drv 3.4.8 (confirmed) | slide (ch. 0), pitch left/right switches, select up/down and set buttons (confirmed, README) | none needed (confirmed); a second main data bank at `0x6000000` (README) | yes; supported and playable |
-| `waverunr` | Wave Runner | 1996 | none | SCSP, CRX_drv 3.2.7 | personal watercraft: handlebar, throttle (analog) | ride-on cabinet; link (weak) | yes |
+| `waverunr` | Wave Runner | 1996 | none | SCSP, CRX_drv 3.2.7 (confirmed) | handlebar (ch. 0), throttle (2), body roll (1) and pitch (3), start, view (confirmed, README) | ride-on cabinet board: optional, skipped when absent (README); link not read by default | yes; supported and playable |
 | `hotd` | The House of the Dead | 1997 | none | SCSP, CRX_drv 3.2.8 | 2 light guns | none known | yes |
 | `stcc` | Sega Touring Car Championship | 1996 | `stcca`, `stccb` (the zip holds all three program pairs; Remodel uses `epr-19570/19571`) | SCSP, CRX_drv 3.2.5 (confirmed); **DSB1 (Z80)**, modelled (`docs/hw/dsb1.md`) | wheel (ch. 0), gas (1), brake (2), shift up/down buttons, two view buttons (confirmed, README) | wheel drive board (commanded every frame, reply never checked; modelled, README); link (skipped by the default settings); `epr-18643a.7` (Z80 code for another board) | yes; supported and playable, with music |
 | `overrev` | Over Rev | 1997 | `overrevb` (2B) | SCSP (Jaleco driver) | wheel, pedals, shifter | unknown | yes |
@@ -160,8 +160,11 @@ games, ranked by how little new work each needs:
    each game's manifest; it plays from coin-up to the results screen.
 2. **`waverunr`, Wave Runner.** Same shape: SCSP only (driver 3.2.7),
    analog handlebar and throttle, similar layout with a few extra 512 KB
-   polygon/texture/data chips. A possible link port is unconfirmed; it
-   should be stubbable.
+   polygon/texture/data chips. *Done:* it needed no board model (its
+   cabinet board is skipped when absent, the link isn't read), but its
+   `.7/.8` data pair is read through a window at `0x06000000`, and it runs
+   routines copied to RAM, which the recompiler now leaves to the
+   interpreter (README, "What's known about `waverunr`").
 3. **`hotd`, The House of the Dead.** The best-known 2C game, and same
    driver as `topskatr`. New work: light-gun input (mouse or pointer to the
    gun's position, off-screen reload), and how 2C reads a gun is unknown.

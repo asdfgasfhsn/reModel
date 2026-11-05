@@ -52,6 +52,7 @@ music`). There is no live window yet.
 | Second game: `skisuprg` (Sega Ski Super G, 2C) | playable (`make play GAME=skisuprg`): drive board modelled from the game's code, its own controls and coin-start script from its manifest; save states round-trip |
 | Third game: `stcc` (Sega Touring Car Championship, 2C) | playable with sound effects and music (`make play GAME=stcc`): attract, car and gearbox select, name entry and races; its DSB1 music board (Z80) is modelled from its program. Needed geometrizer list jumps and mirrored ROM slots; recompiled build identical |
 | Fourth game: `segawski` (Sega Water Ski, 2C) | playable with sound (`make play GAME=segawski`): attract, player and course select, runs. No extra boards; needed a second main data ROM bank at `0x6000000`; recompiled build identical |
+| Fifth game: `waverunr` (Wave Runner, 2C) | playable (`make play GAME=waverunr`): attract, course select and races to game over, sound from the SCSP (no music board). Needed a data ROM window at `0x06000000` and the recompiler leaving code run from RAM to the interpreter; its ride-on cabinet's board isn't needed; recompiled build identical |
 
 ## Quick start
 
@@ -104,7 +105,8 @@ meant only to make things faster must leave it unchanged. The hash depends on
 `out/GAME/eeprom.bin`, which `run` creates on first boot.
 
 Every target takes `GAME=skisuprg` for Sega Ski Super G, `GAME=stcc` for
-Sega Touring Car Championship or `GAME=segawski` for Sega Water Ski (`make play GAME=stcc`, `make capture
+Sega Touring Car Championship, `GAME=segawski` for Sega Water Ski or
+`GAME=waverunr` for Wave Runner (`make play GAME=stcc`, `make capture
 GAME=skisuprg`, ...), except `make assets`, which is `topskatr`'s, and
 `make music`, which needs a music board (`topskatr`'s DSB2 or `stcc`'s DSB1).
 
@@ -155,7 +157,7 @@ ports and analog channels, default keys and pad bindings, and its
 coin-start script) and which drive board it needs, if any; the board
 model, scripted input and both players read them from there. Drive board
 protocols live in `crates/model2/src/drive.rs`, one per kind. `topskatr`,
-`skisuprg`, `stcc` and `segawski` are Model 2C-CRX (MB86235 geometry processor).
+`skisuprg`, `stcc`, `segawski` and `waverunr` are Model 2C-CRX (MB86235 geometry processor).
 
 The board table is from public documentation (largely MAME's driver notes).
 MAME does not run `topskatr` correctly, so its board details are treated as
@@ -476,6 +478,75 @@ Aug 22 1997).
 - *Unconfirmed:* the memory test reports RAM IC54 and IC55 BAD; which
   RAMs those are, and whether the game uses them, is not known (the game
   plays).
+
+## What's known about `waverunr`
+
+Fifth game, 2C: a ride-on personal watercraft cabinet, SCSP sound only.
+
+- *Confirmed:* one program pair, `epr-19282a.15`/`epr-19283a.16` (`.15`
+  low half: the i960 fault strings read in order). Boot record: PRCB
+  `0xB0`, first IP `0x5F0`, interrupt table `0x44C70`, system-procedure
+  table `0x1C0`. `epr-19284.31` is CRX_drv Ver3.2.7 (96 9/10).
+- *Confirmed (from the code):* main data is `.11/.12` at `0x2000000` and
+  `.9/.10` at `0x2800000` (8 MB slots, as in `stcc`): the course tables
+  at program `0x8E1B0` point into `0x2C00000-0x2C1FFFF`, and the record
+  chains there (a count, that many 32-byte records, until a zero count)
+  parse 4 MB into `.9/.10` and nowhere else.
+- *Confirmed (from the code):* `.7/.8` (1 MB) is read through a window at
+  **`0x06000000`**, the same second data bank as `segawski`'s. The tables at
+  program `0x90940` point into `0x6480000-0x64EFFFF`; the pair is blank
+  below `0x80000` and holds data at `0x80000-0xEFFFF`, and the same record
+  chains parse there with the pair repeating in an 8 MB slot from
+  `0x6000000` (as `stcc`'s 1 MB pairs do in theirs). Without it the game
+  read nothing there (unmapped) and still ran. Remodel calls these chips
+  `Role::MainDataHigh`. *Unconfirmed:* how the board decodes the rest of
+  `0x04000000-0x07FFFFFF`; nothing else there was read in our runs.
+- *Unconfirmed:* the polygon pairs are `.17/.21`, `.18/.22` and the 1 MB
+  `.19/.23`; textures `.27/.25` and the 1 MB `.28/.26`; copro data the
+  1 MB `.29/.30`. Roles and slot order follow the other 2C sets; the game
+  draws correctly with them, but byte order within the 1 MB pairs is by
+  analogy only.
+- *Confirmed (from the code):* the game copies routines from program ROM
+  `0xC0000-0xC7FFF` to work RAM `0x210000` and runs them there (calls to
+  `0x217090`, `0x21E1F0`, ...). The recompiler leaves them to the
+  interpreter.
+- *Confirmed (from the code):* the cabinet board (the body's air
+  compressor, valves and motion; boot messages "now cabinet initialize",
+  "compressor starting", "marine jet home position", ...) is optional. At
+  boot the game reads its status byte from `0x1C00006` and switches on
+  `0xC6-0xCF`, `0xE0`, `0xE1`; `0xFF` (nothing attached) skips the whole
+  sequence and marks the board absent. With the board absent the input
+  test shows "SAFETY SENSOR ERROR" and "EMERGENCY" isn't checked (with a
+  board, they'd be `0x1C00006` bits 4 and 6). Nothing is modelled.
+  *Unconfirmed:* what `0x1C00008` writes drive (lamps or valves,
+  presumably).
+- *Confirmed (by running it):* no link reads in a default-settings run
+  (two writes to `0x1A14000`). The program has a "net check command"
+  string; whether a link setting exists is unconfirmed.
+- *Confirmed (from the input test, then by scripted runs):* port
+  `0x1C00002` bit 0 coin (three coins a credit by default), 2 test, 3
+  service, 6 start, 7 view (the camera seemed to move closer once;
+  unconfirmed). Analog channels: 0 handlebar (0x30 steers left, 0xD0
+  right; it also moves the course selection), 2 throttle lever (0xFF
+  released, 0x00 fully open, about 100 km/h; it also confirms the
+  course), 1 the body's roll and 3 its pitch. The handlebar, roll and
+  throttle go through calibration tables built from the test menu's
+  settings (`0x45668` on). Pitch is read only by the test menus. Roll is
+  read in play (a lean more than `0x20` from centre sets a state in the
+  craft's physics), but scripted runs leaning both ways showed no
+  effect. *Unconfirmed:* what roll does.
+- *Confirmed (by running it):* `make capture GAME=waverunr` (coin-start:
+  three coins, start, the throttle to pick the first course and held
+  open) races the beginner course through a checkpoint until time runs
+  out and "GAME OVER". `make sound GAME=waverunr` plays the run's sound
+  commands on all 32 SCSP slots, about -30 dBFS through the race. `make
+  state-check GAME=waverunr` round-trips, `make lockstep GAME=waverunr`
+  runs 300M instructions identical, and a coin-start run of 600M
+  instructions gives the same state hash (`97d498bed77503a6`, with an
+  `eeprom.bin` from an earlier run) recompiled and interpreted.
+- *Unconfirmed:* under the rock arch on the beginner course the water
+  turns flat dark blue while the craft stays lit. It may be the game's
+  shading or a rendering gap; not checked against the hardware.
 
 ## License
 

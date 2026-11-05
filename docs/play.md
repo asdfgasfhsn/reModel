@@ -89,6 +89,23 @@ The wheel's force feedback board is commanded every frame but the game
 never checks its reply; Remodel keeps the commands
 (`crates/model2/src/drive.rs`) for a future gamepad rumble.
 
+### Wave Runner (`waverunr`)
+
+All its sound comes from the SCSP sound board (no music board). Three coins are
+one credit. On the course select screen the handlebar moves the selection
+and the throttle confirms. The ride-on cabinet's body (roll and pitch
+sensors, compressor and valves) isn't needed: the game plays as if no
+cabinet board were attached.
+
+| Control | Keys | Gamepad |
+|---|---|---|
+| coin | C, 5 | Back |
+| start | Enter | Start |
+| steer (`handlebar`) | Left, Right | left stick, d-pad |
+| throttle | Up, Z | right trigger, A |
+| view (unconfirmed what it changes) | V | Y |
+| body roll (`roll`, no effect seen yet) | A, D | right stick |
+
 ## The menu
 
 - **Save states**: a quick slot (F5/F9) and four more. A save holds the
