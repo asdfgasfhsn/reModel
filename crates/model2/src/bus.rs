@@ -220,7 +220,7 @@ impl Model2Bus {
             Map { start: 0x1100_0000, end: 0x116f_ffff, mem: 10 },
         ];
         // The second main data bank, mapped only for games with chips in
-        // it (segawski), so the others keep their memory map unchanged.
+        // it (segawski, waverunr), so the others keep their memory map unchanged.
         if !main_data_high.is_empty() {
             map.push(Map { start: 0x0600_0000, end: 0x07ff_ffff, mem: mems.len() });
             mems.push(Mem::from(main_data_high, false));

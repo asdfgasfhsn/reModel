@@ -1011,7 +1011,17 @@ fn run(
             println!("  frame {:>6} ip {ip:#08x} {addr:#010x} <- {v:#x} ({n} bytes)", t / model2::bus::FRAME_CYCLES);
         }
     }
-    println!("hardware registers ({} touched):", b.io_log.len());
+    // Every register and unmapped address, not just the busiest.
+    let _ = std::fs::create_dir_all(&dir);
+    let all: String = b
+        .io_log
+        .iter()
+        .map(|(a, e)| (a, e, ""))
+        .chain(b.unmapped.iter().map(|(a, e)| (a, e, " unmapped")))
+        .map(|(a, e, u)| format!("{a:08x}  r {:>9}  w {:>9}  last {:#x}{u}\n", e.reads, e.writes, e.last_write))
+        .collect();
+    let _ = std::fs::write(dir.join("io.txt"), all);
+    println!("hardware registers ({} touched, all in {}/io.txt):", b.io_log.len(), dir.display());
     for (a, e) in top(&mut b.io_log.iter(), 16) {
         println!("  {a:08x}  r {:>9}  w {:>9}  last {:#x}", e.reads, e.writes, e.last_write);
     }

@@ -75,9 +75,11 @@ pub enum Role {
     /// i960-visible data ROM, 16-bit interleaved pairs, in 8 MB slots
     /// from `0x2000000`.
     MainData,
-    /// The second bank of i960-visible data ROM, 8 MB slots from
-    /// `0x6000000`. Only `segawski` fills it (README, "What's known about
-    /// segawski").
+    /// The second bank of i960-visible data ROM, 16-bit interleaved pairs
+    /// in 8 MB slots from `0x6000000` (a smaller pair repeats in its slot).
+    /// segawski and waverunr fill it; their program pointers land on the
+    /// pairs' data there (README, "What's known" for each). How the board
+    /// decodes the rest of `0x4000000-0x7ffffff` is unconfirmed.
     MainDataHigh,
     /// Geometry coprocessor data ROM, 16-bit interleaved pairs.
     CoproData,
