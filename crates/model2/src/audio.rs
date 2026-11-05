@@ -4,14 +4,22 @@
 //!
 //! Each byte reaches the boards at the output sample matching the CPU cycle
 //! it was written at, so timing matches the offline replays (`remodel
-//! sound-render`, `music-render`). The two outputs are summed: on the
-//! cabinet they meet in the analog amplifier (docs/hw/sound.md 3.6).
+//! sound-render`, `music-render`). The two outputs are mixed at adjustable
+//! gains: on the cabinet they meet in the analog amplifier at levels the
+//! ROMs don't tell us (docs/hw/sound.md 3.6), so the default balance is a
+//! listening choice.
 
 use crate::bus::{Model2Bus, CPU_HZ};
 use romset::{Role, RomSet};
 
 /// Output sample rate.
 pub const RATE: u32 = 44_100;
+
+/// Default mix, in dB: sound board (effects, announcer) and music board.
+/// Summed at unity, the music averaged about 18 dB above the sound board
+/// in a race and buried the announcer; these bring them within about 6 dB,
+/// effect peaks above the music. Unconfirmed: a listening choice.
+pub const DEFAULT_MIX: (f32, f32) = (6.0, -6.0);
 
 pub struct Live {
     sound: Option<sound::SoundBoard>,
@@ -20,6 +28,12 @@ pub struct Live {
     samples: u64,
     a: Vec<i16>,
     b: Vec<i16>,
+    /// Linear gains for the sound board and the music board.
+    gains: (f32, f32),
+}
+
+fn gain(db: f32) -> f32 {
+    10f32.powf(db / 20.0)
 }
 
 impl Live {
@@ -40,7 +54,13 @@ impl Live {
             d.set_diagnostics(false);
             d
         });
-        Live { sound, music, samples: 0, a: Vec::new(), b: Vec::new() }
+        let gains = (gain(DEFAULT_MIX.0), gain(DEFAULT_MIX.1));
+        Live { sound, music, samples: 0, a: Vec::new(), b: Vec::new(), gains }
+    }
+
+    /// Set the mix: sound board and music board gains in dB.
+    pub fn set_mix(&mut self, sound_db: f32, music_db: f32) {
+        self.gains = (gain(sound_db), gain(music_db));
     }
 
     /// Replace music tracks with the files of a custom soundtrack.
@@ -98,6 +118,12 @@ impl Live {
             Some(m) => m.run(n, &mut self.b),
             None => self.b.resize(n * 2, 0),
         }
-        out.extend(self.a.iter().zip(&self.b).map(|(&x, &y)| x.saturating_add(y)));
+        let (ga, gb) = self.gains;
+        out.extend(
+            self.a
+                .iter()
+                .zip(&self.b)
+                .map(|(&x, &y)| (x as f32 * ga + y as f32 * gb).round().clamp(-32768.0, 32767.0) as i16),
+        );
     }
 }

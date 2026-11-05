@@ -77,6 +77,10 @@
     Math.min(1080, Math.round(innerHeight * devicePixelRatio / 2) * 2);
   const hudEdges = params.get("hud") !== "center";
   const sound = params.get("sound") !== "0";
+  // Mix in dB (sound board: effects and announcer; music board), if set.
+  const mix = params.has("sfx") || params.has("music")
+    ? [Number(params.get("sfx") ?? 6), Number(params.get("music") ?? -6)]
+    : undefined;
 
   // Browsers only start audio from a user gesture: set it up on the first.
   let audio = null;
@@ -152,10 +156,10 @@
           else if (m.type === "error") soundLabel.textContent = "sound worker: " + m.message;
         };
         try {
-          worker.postMessage({ type: "init", module, rom: "./rom" });
+          worker.postMessage({ type: "init", module, rom: "./rom", mix });
         } catch {
           // Browsers that can't pass a compiled module: the worker fetches it.
-          worker.postMessage({ type: "init", rom: "./rom" });
+          worker.postMessage({ type: "init", rom: "./rom", mix });
         }
         link = (cycles, bytes, until) =>
           worker.postMessage({ type: "link", cycles, bytes, until }, [cycles.buffer, bytes.buffer]);

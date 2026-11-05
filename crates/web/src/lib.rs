@@ -379,6 +379,11 @@ impl SoundEngine {
         Ok(SoundEngine { live: model2::audio::Live::new(&roms), link: Vec::new(), pcm: Vec::new() })
     }
 
+    /// Set the mix: sound board (effects, announcer) and music in dB.
+    pub fn set_mix(&mut self, sound_db: f32, music_db: f32) {
+        self.live.set_mix(sound_db, music_db);
+    }
+
     /// Deliver link `bytes` written at CPU `cycles` and render up to cycle
     /// `until`: interleaved stereo at 44.1 kHz.
     pub fn feed(&mut self, cycles: &[f64], bytes: &[u8], until: f64) -> js_sys::Float32Array {

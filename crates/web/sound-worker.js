@@ -1,6 +1,8 @@
 // The sound and music boards, on their own core. The page posts:
-//   {type: "init", module, rom}   the compiled WebAssembly module (shared
-//                                 with the page) and the ROM directory URL
+//   {type: "init", module, rom, mix}
+//                                 the compiled WebAssembly module (shared
+//                                 with the page), the ROM directory URL and
+//                                 optionally [sound board dB, music dB]
 //   {type: "link", cycles, bytes, until}
 //                                 each frame's sound link bytes
 //   {type: "port", port}          a MessagePort into the AudioWorklet
@@ -35,6 +37,7 @@ onmessage = async (e) => {
         rom_files().map(async (f) => new Uint8Array(await (await fetch(`${m.rom}/${f}`)).arrayBuffer())),
       );
       engine = new SoundEngine(chips);
+      if (m.mix) engine.set_mix(m.mix[0], m.mix[1]);
       postMessage({ type: "ready" });
       for (const p of pending.splice(0)) feed(p);
     } catch (err) {
