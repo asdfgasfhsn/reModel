@@ -12,7 +12,10 @@ use crate::{AnalogInput, Board, Controls, Game, PadAxis, PadButton, Role, RomFil
 pub static WAVERUNR: Game = Game {
     id: "waverunr",
     title: "Wave Runner",
+    year: 1996,
     board: Board::Model2C,
+    // The attract demo's race, three craft side by side.
+    attract_frame: 1800,
     hud_windows: &[],
     controls: CONTROLS,
     drive_board: None,
@@ -164,14 +167,14 @@ pub static WAVERUNR: Game = Game {
 /// known about waverunr"). One credit is three coins by default.
 const CONTROLS: Controls = Controls {
     buttons: &[
-        button("coin1", 0, 0x01, &["KeyC", "Digit5"], &[PadButton::Select]),
+        button("coin1", 0, 0x01, &["KeyC", "Digit5"], &[PadButton::Select]).labelled("Coin"),
         // Not in this cabinet's input test (one coin chute); the common
         // Model 2 layout, unconfirmed.
         button("coin2", 0, 0x02, &[], &[]),
         button("test", 0, 0x04, &[], &[]),
         button("service", 0, 0x08, &[], &[]),
         button("start", 0, 0x40, &["Enter"], &[PadButton::Start]),
-        button("view", 0, 0x80, &["KeyV"], &[PadButton::North]),
+        button("view", 0, 0x80, &["KeyV"], &[PadButton::North]).labelled("View"),
     ],
     analogs: &[
         // Handlebar: 0x30 steers left, 0xD0 right. Also moves the course
