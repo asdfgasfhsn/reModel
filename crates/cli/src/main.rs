@@ -830,7 +830,13 @@ fn run(
             .map_err(|e| e.to_string())
             .and_then(|d| model2::load_session(&mut m, live.as_mut(), &d));
         match loaded {
-            Ok(()) => println!("state         loaded {} (frame {})", path.display(), m.frames),
+            // A state is saved as its frame starts, before that frame's
+            // scripted inputs are applied: apply them now, as the
+            // uninterrupted run did.
+            Ok(()) => {
+                script.apply(m.frames, &mut m.bus);
+                println!("state         loaded {} (frame {})", path.display(), m.frames)
+            }
             Err(e) => {
                 eprintln!("error: {}: {e}", path.display());
                 return;
