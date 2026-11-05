@@ -180,11 +180,15 @@ pub struct Model2Bus {
     pub unmapped: BTreeMap<u32, Access>,
 }
 
+/// Each pair of a ROM bank (main data, textures, polygons) fills an 8 MB
+/// slot, repeating if it is smaller.
+pub const ROM_SLOT: usize = 0x80_0000;
+
 impl Model2Bus {
     pub fn new(roms: &RomSet) -> Self {
         let mut program = roms.program.clone();
         program.resize(0x20_0000, 0);
-        let mut main_data = roms.region32(Role::MainData);
+        let mut main_data = roms.region32_slots(Role::MainData, ROM_SLOT);
         main_data.resize(0x200_0000, 0);
 
         let mems = vec![
@@ -241,7 +245,7 @@ impl Model2Bus {
             copro_booted: false,
             tgp: Tgp::new(),
             copro_data: roms
-                .region32(Role::CoproData)
+                .region32_slots(Role::CoproData, ROM_SLOT)
                 .as_chunks::<4>()
                 .0
                 .iter()
@@ -250,7 +254,7 @@ impl Model2Bus {
             tgp_fault: None,
             tgp_stalled: false,
             texture_rom: roms
-                .region32(Role::Textures)
+                .region32_slots(Role::Textures, ROM_SLOT)
                 .as_chunks::<2>()
                 .0
                 .iter()
@@ -672,7 +676,7 @@ impl Model2Bus {
 
 /// The polygon ROM as the geometrizer reads it (u32 words).
 pub fn polygon_rom(roms: &RomSet) -> Vec<u32> {
-    roms.region32(Role::Polygons).as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect()
+    roms.region32_slots(Role::Polygons, ROM_SLOT).as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect()
 }
 
 /// Recompiled code returns at the end of each frame and when its budget
@@ -781,6 +785,8 @@ impl state::State for Model2Bus {
         if let Some(d) = &self.drive {
             d.save(w);
         }
+        // Last, so states from before list jumps were modelled still load.
+        self.geo.jumps().save(w);
     }
     fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
         for m in self.mems.iter_mut().filter(|m| m.writable) {
@@ -816,10 +822,15 @@ impl state::State for Model2Bus {
         self.analog.load(r)?;
         self.io_latch.load(r)?;
         state::State::load(&mut self.eeprom, r)?;
-        match &mut self.drive {
-            Some(d) => d.load(r),
-            None => Ok(()),
+        if let Some(d) = &mut self.drive {
+            d.load(r)?;
         }
+        let mut jumps: Vec<(u32, u32)> = Vec::new();
+        if !r.done() {
+            jumps.load(r)?;
+        }
+        self.geo.set_jumps(jumps);
+        Ok(())
     }
 }
 

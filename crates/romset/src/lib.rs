@@ -28,6 +28,10 @@ pub enum DriveBoard {
     /// on I/O `0x1C00008`, one reply byte on `0x1C00006`; boots with a
     /// `0x00` -> `0xCE` handshake (README, "What's known about skisuprg").
     SkiPlatform,
+    /// Sega Touring Car Championship's force feedback wheel: one command
+    /// byte a frame on `0x1C00008`; the game stores the reply from
+    /// `0x1C00006` but never checks it (README, "What's known about stcc").
+    Wheel,
 }
 
 /// Model 2 board revisions. They share the i960 main CPU and sound system;
@@ -71,6 +75,9 @@ pub enum Role {
     MpegCpu,
     /// MPEG sound board stream data, concatenated.
     MpegData,
+    /// DSB1 music board Z80 program (plain bytes). The MPEG ROMs beside
+    /// it are `MpegData`.
+    Dsb1Cpu,
     /// Not yet identified.
     Unknown,
 }
@@ -196,6 +203,29 @@ impl RomSet {
     /// Assemble a 32-bit region from its interleaved chip pairs.
     pub fn region32(&self, role: Role) -> Vec<u8> {
         assemble(self.game, &self.chips, role)
+    }
+
+    /// `region32`, with each pair in its own `slot` bytes: a pair smaller
+    /// than its slot repeats to fill it, as a board decoding fewer address
+    /// lines than the slot has. Model 2C's ROM banks are 8 MB slots
+    /// (stcc's 1 MB main data pair is read at `0x2C4B210`, 4 MB into the
+    /// second slot).
+    pub fn region32_slots(&self, role: Role, slot: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        let idx: Vec<usize> =
+            self.game.files.iter().enumerate().filter(|(_, f)| f.role == role).map(|(i, _)| i).collect();
+        for &[lo, hi] in idx.as_chunks::<2>().0 {
+            let pair = interleave16(&self.chips[lo], &self.chips[hi]);
+            if pair.is_empty() {
+                continue;
+            }
+            let start = out.len();
+            while out.len() - start < slot {
+                let n = pair.len().min(slot - (out.len() - start));
+                out.extend_from_slice(&pair[..n]);
+            }
+        }
+        out
     }
 
     /// Concatenate the chips with `role` (16-bit, stored little-endian per

@@ -384,8 +384,8 @@ impl GeoEngine {
     }
 
     /// Run one frame's list from a copy of buffer RAM.
-    pub fn frame(&mut self, buffer: Vec<u8>, booted: bool, read_ptr: u32) {
-        self.engine.run_job(model2::geo::Job::Frame { buffer, booted, read_ptr });
+    pub fn frame(&mut self, buffer: Vec<u8>, booted: bool, read_ptr: u32, jumps: Vec<u32>) {
+        self.engine.run_job(model2::geo::Job::Frame { buffer, booted, read_ptr, jumps });
     }
 
     /// The last frame's raster stream.
@@ -512,11 +512,12 @@ pub async fn start(
                     args.push(&"boot".into());
                     args.push(&js_sys::Uint32Array::from(&words[..]));
                 }
-                model2::geo::Job::Frame { buffer, booted, read_ptr } => {
+                model2::geo::Job::Frame { buffer, booted, read_ptr, jumps } => {
                     args.push(&"frame".into());
                     args.push(&js_sys::Uint8Array::from(&buffer[..]));
                     args.push(&booted.into());
                     args.push(&read_ptr.into());
+                    args.push(&js_sys::Uint32Array::from(&jumps[..]));
                 }
             }
             let _ = post.apply(&JsValue::NULL, &args);

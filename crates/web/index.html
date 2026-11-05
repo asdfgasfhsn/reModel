@@ -189,10 +189,10 @@
         } catch {
           gw.postMessage({ type: "init", game, rom });
         }
-        geo = (kind, data, booted, readPtr) =>
+        geo = (kind, data, booted, readPtr, jumps) =>
           kind === "boot"
             ? gw.postMessage({ type: "boot", program: data }, [data.buffer])
-            : gw.postMessage({ type: "frame", buffer: data, booted, readPtr }, [data.buffer]);
+            : gw.postMessage({ type: "frame", buffer: data, booted, readPtr, jumps }, [data.buffer, jumps.buffer]);
       }
       // The help bar above is topskatr's; other games list their bindings.
       if (game !== "topskatr") document.getElementById("keys").textContent = controls_help(game).trim().replace(/\n\s*/g, " · ") + " · ";

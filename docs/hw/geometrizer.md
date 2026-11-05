@@ -61,7 +61,7 @@ i960 --geo ports--> buffer RAM display list --(list DMA, jumps)--> GEOMETRIZER (
 | Address | R/W | Meaning | Source / conf. |
 |---|---|---|---|
 | 0x00800000 + fn·0x10 (offsets < 0x1000) | W | **Command port.** A write with value bit 31 = 0 to an offset whose low nibble is 0 appends one word to the list: `(value & 0x000FFFFF) \| (fn << 23)`, where fn = (offset >> 4) & 0x3F. | M2, **H** (TR decodes cleanly) |
-| same, value bit 31 = 1 | W | Appends a **jump** word: `(value & 0x800FFFFF) \| (fn << 23)`. When the list DMA sees bit 31, it continues at buffer byte offset `word & 0x1FFFF`. | M2, M [MAME-only]; topskatr doesn't use it |
+| same, value bit 31 = 1 | W | Appends a **jump** word: `(value & 0x800FFFFF) \| (fn << 23)`. When the list DMA sees bit 31, it continues at buffer byte offset `word & 0x1FFFF`. | M2, M [MAME-only]; topskatr doesn't use it. **stcc does** (`0x80004000`: continue at `0x4000`), linking each frame's list from pieces; its geometrizer program has no jump handling either, so the DMA resolves them (**H**). Data words with bit 31 set are not jumps, and stcc overwrites old jump words directly; Remodel follows only jump words written through this port and unchanged since (how the hardware decides is unconfirmed). |
 | offset bits 10-11 (0x400/0x800/0xC00) | W | **Eye mode** (centre select 1-3). MAME puts these bits into list-word bits 29-30, but **only when fn == 0x01**. | M2 (hack comment cites Sega Rally); see §9 |
 | fn·0x10 + 4, + 8 | W | MAME's dead debug code calls these "command length" (data & 0x3F) and "data length" (data & 0x7F). MAME ignores the writes. | M2, L |
 | 0x00801008 | W | **Write pointer**: buffer RAM byte offset (data & 0xFFFFF) where appends go. | M2 + TSI, **H** |
@@ -100,7 +100,8 @@ flag words that fail this check.
   poll flag input F0 and abort to the end-of-frame path when it is set. That looks like a
   hardware "frame time over" signal (L).
 - **List DMA (L):** something in hardware walks buffer RAM from the read pointer, follows
-  bit-31 jump words, and feeds the geometrizer's input FIFO. TSG only ever reads FI and has
+  jump words (only those written through the command port; stcc, see the
+  port table), and feeds the geometrizer's input FIFO. TSG only ever reads FI and has
   no jump handling, so jumps must be resolved before the FIFO. MAME also stops after 0x8000
   commands or at the end of buffer RAM.
 

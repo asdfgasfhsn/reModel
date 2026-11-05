@@ -16,12 +16,14 @@ use romset::DriveBoard;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Drive {
     Ski(SkiPlatform),
+    Wheel(Wheel),
 }
 
 impl Drive {
     pub fn new(kind: DriveBoard) -> Self {
         match kind {
             DriveBoard::SkiPlatform => Drive::Ski(SkiPlatform::default()),
+            DriveBoard::Wheel => Drive::Wheel(Wheel::default()),
         }
     }
 
@@ -29,6 +31,7 @@ impl Drive {
     pub fn command(&mut self, v: u8) {
         match self {
             Drive::Ski(b) => b.command(v),
+            Drive::Wheel(b) => b.command(v),
         }
     }
 
@@ -36,6 +39,7 @@ impl Drive {
     pub fn reply(&self) -> u8 {
         match self {
             Drive::Ski(b) => b.reply,
+            Drive::Wheel(_) => Wheel::REPLY,
         }
     }
 
@@ -48,6 +52,9 @@ impl Drive {
                 b.reply,
                 b.centre.map_or("not sent".into(), |c| format!("{c:#04x}"))
             ),
+            Drive::Wheel(b) => {
+                format!("wheel: last command {:#04x}, recent {:02x?}, {} commands", b.last(), b.recent(), b.count)
+            }
         }
     }
 
@@ -55,6 +62,7 @@ impl Drive {
     pub fn last_command(&self) -> u8 {
         match self {
             Drive::Ski(b) => b.last,
+            Drive::Wheel(b) => b.last(),
         }
     }
 }
@@ -107,21 +115,72 @@ impl SkiPlatform {
     }
 }
 
+/// A force feedback wheel board (Sega Touring Car Championship's). What
+/// the game's code and runs show (README, "What's known about stcc"):
+///
+/// - Each frame the I/O routine reads a reply byte from `0x1C00006` and
+///   writes the frame's command to `0x1C00008`, as `skisuprg` does, but the
+///   game only stores the reply: nothing reads it back, so there is no
+///   boot handshake and no fault check, and the game runs the same with
+///   no board attached.
+/// - Commands seen in runs: `0x00` through boot, `0x98` a while after it,
+///   then `0x30` (attract, menus), `0x34` (selection screens), `0x38`
+///   (racing, centred) and, while racing, `0x5x`/`0x6x` (by the run with
+///   steering and collisions, the force effects). What each does on the
+///   board is unconfirmed.
+///
+/// The model replies `0xFF` (what the port reads with nothing attached,
+/// so runs are as without a board) and keeps the last commands, for a
+/// player to turn into rumble.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Wheel {
+    /// The last [`Wheel::HISTORY`] commands, oldest first.
+    history: Vec<u8>,
+    /// Commands received.
+    pub count: u64,
+}
+
+impl Wheel {
+    pub const REPLY: u8 = 0xff;
+    pub const HISTORY: usize = 8;
+
+    fn command(&mut self, v: u8) {
+        if self.history.len() == Self::HISTORY {
+            self.history.remove(0);
+        }
+        self.history.push(v);
+        self.count += 1;
+    }
+
+    /// The last command, `0x00` before any.
+    pub fn last(&self) -> u8 {
+        self.history.last().copied().unwrap_or(0)
+    }
+
+    /// The last few commands, oldest first.
+    pub fn recent(&self) -> &[u8] {
+        &self.history
+    }
+}
+
 // The kind comes from the manifest, so a state only holds the board's own.
 impl state::State for Drive {
     fn save(&self, w: &mut state::Writer) {
         match self {
             Drive::Ski(b) => b.save(w),
+            Drive::Wheel(b) => b.save(w),
         }
     }
     fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
         match self {
             Drive::Ski(b) => b.load(r),
+            Drive::Wheel(b) => b.load(r),
         }
     }
 }
 
 state::fields!(SkiPlatform { reply, last, centre });
+state::fields!(Wheel { history, count });
 
 #[cfg(test)]
 mod tests {
@@ -151,8 +210,26 @@ mod tests {
             }
         }
         assert_eq!(step, 4);
-        let Drive::Ski(b) = &d;
+        let Drive::Ski(b) = &d else { panic!() };
         assert_eq!(b.centre, Some(0x7c));
+    }
+
+    #[test]
+    fn wheel_keeps_recent_commands() {
+        let mut d = Drive::new(DriveBoard::Wheel);
+        assert_eq!(d.last_command(), 0);
+        for v in 0..20u8 {
+            d.command(v);
+            assert_eq!(d.reply(), 0xff);
+        }
+        assert_eq!(d.last_command(), 19);
+        let Drive::Wheel(b) = &d else { panic!() };
+        assert_eq!(b.recent(), &[12, 13, 14, 15, 16, 17, 18, 19]);
+        assert_eq!(b.count, 20);
+        let bytes = state::to_bytes(&d);
+        let mut e = Drive::new(DriveBoard::Wheel);
+        state::State::load(&mut e, &mut state::Reader::new(&bytes)).unwrap();
+        assert_eq!(d, e);
     }
 
     #[test]

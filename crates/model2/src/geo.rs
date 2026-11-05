@@ -4,6 +4,7 @@
 //! Protocol per docs/hw/geometrizer.md sections 1-2.
 
 use mb86235::cpu::{External, Step, Tgp};
+use std::collections::BTreeMap;
 
 /// Cap on list words streamed per frame (MAME stops after 0x8000 commands;
 /// this bounds words, which is looser).
@@ -71,6 +72,8 @@ pub struct Engine {
     poly_rom: Vec<u32>,
     /// Buffer RAM as it was when the frame started.
     buffer: Vec<u8>,
+    /// Jump word offsets in `buffer` (see `Geometrizer::jumps`).
+    jumps: Vec<u32>,
     /// Rasteriser stream produced for the most recent frame.
     pub stream: Vec<u32>,
     /// List words consumed for the most recent frame.
@@ -112,6 +115,15 @@ pub struct Geometrizer {
     pub read_ptr: u32,
     /// Command words that failed the `fn | fn << 8` check.
     pub bad_commands: u64,
+    /// Jump words written through the command port: byte offset in buffer
+    /// RAM -> the word. The list DMA follows these and only these: data
+    /// words (negative floats) also have bit 31 set, so the bit alone
+    /// can't mark a jump. One stops being a jump once anything overwrites
+    /// it: the port's own appends drop it at once; writes from elsewhere
+    /// (the i960 or the copro storing into buffer RAM directly, as stcc's
+    /// do) are caught when the frame starts, by the word having changed.
+    /// How the hardware tells them apart is unconfirmed.
+    jumps: BTreeMap<u32, u32>,
     /// Host time the emulation thread spent waiting for the worker.
     pub waited: std::time::Duration,
     engine: Slot,
@@ -125,7 +137,13 @@ pub struct Geometrizer {
 /// order gives the same results as the local one ([`Engine::run_job`]).
 pub enum Job {
     Boot(Vec<u64>),
-    Frame { buffer: Vec<u8>, booted: bool, read_ptr: u32 },
+    /// `jumps`: byte offsets in `buffer` of jump words (ascending).
+    Frame {
+        buffer: Vec<u8>,
+        booted: bool,
+        read_ptr: u32,
+        jumps: Vec<u32>,
+    },
 }
 
 /// Host time measurement that works where `std::time::Instant` doesn't
@@ -158,6 +176,7 @@ impl Geometrizer {
             write_ptr: 0,
             read_ptr: 0,
             bad_commands: 0,
+            jumps: BTreeMap::new(),
             waited: std::time::Duration::ZERO,
             // WebAssembly without threads support can't spawn.
             threaded: cfg!(not(target_arch = "wasm32")),
@@ -214,13 +233,17 @@ impl Geometrizer {
     /// pointer. Runs in the background until the next `sync`.
     pub fn start_frame(&mut self, buffer: &[u8]) {
         let (booted, read_ptr) = (self.booted, self.read_ptr);
+        let word = |o: u32| u32::from_le_bytes(buffer[o as usize..o as usize + 4].try_into().unwrap());
+        self.jumps.retain(|&o, w| word(o) == *w);
+        let jumps: Vec<u32> = self.jumps.keys().copied().collect();
         if let Some(remote) = &mut self.remote {
-            remote(Job::Frame { buffer: buffer.to_vec(), booted, read_ptr });
+            remote(Job::Frame { buffer: buffer.to_vec(), booted, read_ptr, jumps });
             return;
         }
         let mut e = std::mem::replace(self.engine_mut(), Engine::placeholder());
         e.buffer.clear();
         e.buffer.extend_from_slice(buffer);
+        e.jumps = jumps;
         if !self.threaded {
             e.run_frame(booted, read_ptr);
             self.engine = Slot::Idle(Box::new(e));
@@ -236,6 +259,9 @@ impl Geometrizer {
 
     fn append(&mut self, buffer: &mut [u8], word: u32) {
         let o = (self.write_ptr as usize) & (buffer.len() - 1) & !3;
+        if !self.jumps.is_empty() {
+            self.jumps.remove(&(o as u32));
+        }
         buffer[o..o + 4].copy_from_slice(&word.to_le_bytes());
         self.write_ptr = (self.write_ptr + 4) & 0xf_ffff;
     }
@@ -264,14 +290,29 @@ impl Geometrizer {
                 if (v & 0x1f) != (fnc & 0x1f) || ((v >> 8) & 0x1f) != (fnc & 0x1f) {
                     self.bad_commands += 1;
                 }
-                let keep = if v & 0x8000_0000 != 0 { 0x800f_ffff } else { 0x000f_ffff };
-                self.append(buffer, (v & keep) | (fnc << 23) | (eye << 29));
+                let jump = v & 0x8000_0000 != 0;
+                let keep = if jump { 0x800f_ffff } else { 0x000f_ffff };
+                let at = (self.write_ptr as usize & (buffer.len() - 1) & !3) as u32;
+                let word = (v & keep) | (fnc << 23) | (eye << 29);
+                self.append(buffer, word);
+                if jump {
+                    self.jumps.insert(at, word);
+                }
             }
             // Command/data length writes (+4, +8): ignored by hardware models.
             0x0000..=0x0fff => {}
             _ => return false,
         }
         true
+    }
+
+    /// The jump words, for save states (offset, word).
+    pub fn jumps(&self) -> Vec<(u32, u32)> {
+        self.jumps.iter().map(|(&o, &w)| (o, w)).collect()
+    }
+
+    pub fn set_jumps(&mut self, jumps: Vec<(u32, u32)>) {
+        self.jumps = jumps.into_iter().collect();
     }
 
     pub fn port_read(&self, offset: u32) -> u32 {
@@ -310,6 +351,7 @@ impl Engine {
             poly_ram: vec![0; 0x10_0000],
             poly_rom,
             buffer: Vec::new(),
+            jumps: Vec::new(),
             stream: Vec::new(),
             list_words: 0,
             fault: None,
@@ -329,8 +371,9 @@ impl Engine {
     pub fn run_job(&mut self, job: Job) {
         match job {
             Job::Boot(program) => self.tgp.boot(&program),
-            Job::Frame { buffer, booted, read_ptr } => {
+            Job::Frame { buffer, booted, read_ptr, jumps } => {
                 self.buffer = buffer;
+                self.jumps = jumps;
                 self.run_frame(booted, read_ptr);
             }
         }
@@ -342,6 +385,7 @@ impl Engine {
             poly_ram: Vec::new(),
             poly_rom: Vec::new(),
             buffer: Vec::new(),
+            jumps: Vec::new(),
             stream: Vec::new(),
             list_words: 0,
             fault: None,
@@ -417,6 +461,14 @@ impl Engine {
         loop {
             while self.tgp.fifo_in.len() < FIFO_FILL && self.list_words < MAX_LIST_WORDS {
                 let w = u32::from_le_bytes(buffer[pos..pos + 4].try_into().unwrap());
+                if self.jumps.binary_search(&(pos as u32)).is_ok() {
+                    // A jump: the DMA continues at the target and the
+                    // geometrizer never sees the word (stcc links its list
+                    // from parts this way).
+                    pos = w as usize & (buffer.len() - 1) & !3;
+                    self.list_words += 1;
+                    continue;
+                }
                 self.tgp.fifo_in.push_back(w);
                 self.fed.push(w);
                 pos = (pos + 4) & (buffer.len() - 1);
@@ -489,3 +541,34 @@ impl state::State for Geometrizer {
 }
 
 state::fields!(Engine { tgp, poly_ram, buffer, stream, list_words, fault, frames, texture_point_ram });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Jump words come only from the command port, and stop being jumps
+    /// once overwritten: by the data port at once, by anything else when
+    /// the next frame starts.
+    #[test]
+    fn list_jumps_are_tracked() {
+        let mut g = Geometrizer::new(Vec::new());
+        g.set_threaded(false);
+        let mut buffer = vec![0u8; 0x2_0000];
+        g.port_write(0x1008, 0x100, &mut buffer);
+        g.port_write(0x0000, 0x8000_4000, &mut buffer);
+        // A negative float through the data port is not a jump.
+        g.port_write(0x4000, 0xbf80_0000, &mut buffer);
+        g.port_write(0x1008, 0x200, &mut buffer);
+        g.port_write(0x0000, 0x8000_8000, &mut buffer);
+        assert_eq!(g.jumps(), vec![(0x100, 0x8000_4000), (0x200, 0x8000_8000)]);
+        // Data appended over the first jump.
+        g.port_write(0x1008, 0x100, &mut buffer);
+        g.port_write(0x4000, 0x1234, &mut buffer);
+        assert_eq!(g.jumps(), vec![(0x200, 0x8000_8000)]);
+        // Written directly (as the copro or the i960 can): dropped at the
+        // next frame.
+        buffer[0x200..0x204].copy_from_slice(&0x0580_0b0bu32.to_le_bytes());
+        g.start_frame(&buffer);
+        assert!(g.jumps().is_empty());
+    }
+}

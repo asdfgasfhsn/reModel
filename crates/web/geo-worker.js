@@ -1,7 +1,7 @@
 // The geometrizer, on its own core. The page posts:
 //   {type: "init", module, game, rom}       the shared compiled module, ROM URL
 //   {type: "boot", program}             the uploaded program (u32 pairs)
-//   {type: "frame", buffer, booted, readPtr}
+//   {type: "frame", buffer, booted, readPtr, jumps}
 //                                       one frame's job, at vblank
 // and gets back {type: "frame", stream, points} per frame. Jobs that arrive
 // while the ROMs load are kept and run in order: the engine's state carries
@@ -19,7 +19,7 @@ function run(m) {
     return;
   }
   const t = performance.now();
-  engine.frame(m.buffer, m.booted, m.readPtr);
+  engine.frame(m.buffer, m.booted, m.readPtr, m.jumps);
   const stream = engine.stream();
   const points = engine.points();
   spent += performance.now() - t;
