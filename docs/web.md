@@ -77,8 +77,9 @@ first screenshots).
 
 **Adding a game.** Nothing in the web build names a game: a new manifest
 in `crates/romset/src/games/` (with its `year` and `attract_frame`), its
-chips in `rom/<set>/`, and `make web` lists it. Add `assets/posters/<set>.webp` (600x900) for its
-card, or it gets the placeholder. For recompiled code, `make
+chips in `rom/<set>/`, and `make web` lists it. Make its poster too,
+`assets/posters/<set>.webp` (600x900, see `assets/posters/README.md`);
+without one the card gets the placeholder and `make web` warns. For recompiled code, `make
 run GAME=<set>` and `make recomp GAME=<set>` first. The touch controls,
 help bar and card come from the manifest's controls: buttons can carry a
 short `labelled(...)` name for the on-screen buttons and the card.

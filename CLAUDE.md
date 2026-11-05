@@ -15,3 +15,7 @@
 - When behaviour contradicts MAME (confirmed from the game, or found in
   MAME's code), add or update an entry in `docs/mame-defects.md` with
   evidence and a way to reproduce it, so it can become an upstream patch.
+- When a game starts working, give it a poster in the same step: original
+  artwork made with the Codex CLI's image generation, following
+  `assets/posters/README.md` (no text, logos, characters or real brands),
+  with its prompt recorded there.

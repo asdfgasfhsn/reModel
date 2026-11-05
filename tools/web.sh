@@ -87,6 +87,9 @@ cp assets/reModel-logo-1086.png "$WEB_OUT/reModel-logo.png"
 # Card posters (assets/posters/README.md).
 mkdir -p "$WEB_OUT/posters"
 cp assets/posters/*.webp "$WEB_OUT/posters/"
+for g in $games; do
+    [ -f "assets/posters/$g.webp" ] || echo "web: warning: no poster for $g (assets/posters/README.md); using the placeholder" >&2
+done
 # Left from the single-page layout (before model2/).
 rm -rf "$WEB_OUT/pkg" "$WEB_OUT/audio-worklet.js" "$WEB_OUT/sound-worker.js" "$WEB_OUT/geo-worker.js" "$WEB_OUT/touch.js"
 $remodel --rom "$ROM" web-index "$WEB_OUT" >/dev/null
