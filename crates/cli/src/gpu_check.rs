@@ -3,7 +3,7 @@
 
 use model2::capture::{self, Frame};
 use model2::raster;
-use model2::video::{Hud, View};
+use model2::video::{self, Hud, View};
 use std::path::Path;
 use std::time::Instant;
 
@@ -61,7 +61,7 @@ fn comparison(view: &View, sw: &(Vec<u8>, Vec<bool>), gpu: &(Vec<u8>, Vec<bool>)
 pub fn run(root: &Path, hud_windows: u32) -> Result<(), String> {
     let texture_rom = capture::load_texture_rom(root)
         .map_err(|e| format!("{}: {e} (capture with `make capture`)", root.display()))?;
-    let gpu = gpu::Renderer::new()?;
+    let mut gpu = gpu::Renderer::new()?;
     println!("gpu           {}", gpu.adapter());
     let mut dirs: Vec<_> = std::fs::read_dir(root)
         .map_err(|e| e.to_string())?
@@ -84,8 +84,8 @@ pub fn run(root: &Path, hud_windows: u32) -> Result<(), String> {
         gpu.draw(&polys, &placed, &src, &native);
     }
     println!(
-        "{:<8} {:>6}  {:<11} {:>9} {:>9}  {:>9} {:>9} {:>9}",
-        "frame", "polys", "view", "software", "gpu", "coverage", "colour", ">16"
+        "{:<8} {:>6}  {:<11} {:>9} {:>9}  {:>9} {:>9} {:>9}  {:>9}",
+        "frame", "polys", "view", "software", "gpu", "coverage", "colour", ">16", "compose"
     );
     let mut totals = vec![(0.0, 0.0, Diff::default()); views.len()];
     for d in &dirs {
@@ -103,14 +103,25 @@ pub fn run(root: &Path, hud_windows: u32) -> Result<(), String> {
             let g = gpu.draw(&gpu_polys, &placed, &src, view);
             let gpu_ms = t.elapsed().as_secs_f64() * 1e3;
             let df = diff(&sw, &g);
+            // The whole frame: the GPU's compositor against the CPU's, both
+            // given the GPU's 3D layer, so only the 2D blend is compared.
+            let layers = video::layers_2d(&f.tiles, &f.palette, view, !placed.is_empty());
+            let gpu_frame = gpu.frame(&gpu_polys, &placed, &src, view, &layers);
+            let cpu_frame = video::compose(&f.tiles, &f.palette, Some((&g.0, &g.1)), view);
+            let compose_diff =
+                gpu_frame.as_chunks::<3>().0.iter().zip(cpu_frame.as_chunks::<3>().0).filter(|(a, b)| a != b).count();
             println!(
-                "{:<8} {:>6}  {name:<11} {sw_ms:>7.1}ms {gpu_ms:>7.1}ms  {:>8.3}% {:>8.3}% {:>8.3}%",
+                "{:<8} {:>6}  {name:<11} {sw_ms:>7.1}ms {gpu_ms:>7.1}ms  {:>8.3}% {:>8.3}% {:>8.3}%  {:>8.3}%",
                 f.frame,
                 polys.len(),
                 pct(df.coverage, df.pixels),
                 pct(df.colour, df.pixels),
-                pct(df.large, df.pixels)
+                pct(df.large, df.pixels),
+                pct(compose_diff, df.pixels)
             );
+            if k == 1 {
+                let _ = std::fs::write(d.join("gpu-frame.png"), png::encode_rgb(view.width, view.height, &gpu_frame));
+            }
             if k == 0 {
                 let png = png::encode_rgb(view.width * 3, view.height, &comparison(view, &sw, &g));
                 let _ = std::fs::write(d.join("gpu-check.png"), png);
@@ -137,5 +148,6 @@ pub fn run(root: &Path, hud_windows: u32) -> Result<(), String> {
         );
     }
     println!("comparisons   {}/*/gpu-check.png (software | GPU | differences)", root.display());
+    println!("gpu frames    {}/*/gpu-frame.png (1080p 16:9, composed on the GPU)", root.display());
     Ok(())
 }

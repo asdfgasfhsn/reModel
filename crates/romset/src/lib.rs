@@ -114,17 +114,24 @@ impl RomSet {
         let mut chips = Vec::with_capacity(game.files.len());
         for rom in game.files {
             let path = dir.join(rom.name);
-            let data = fs::read(&path).map_err(|e| Error::Io(path.clone(), e))?;
+            chips.push(fs::read(&path).map_err(|e| Error::Io(path.clone(), e))?);
+        }
+        Self::from_chips(game, chips, verify)
+    }
+
+    /// Assemble a set from chip images already in memory, in manifest
+    /// order (e.g. fetched by a browser build).
+    pub fn from_chips(game: &'static Game, chips: Vec<Vec<u8>>, verify: bool) -> Result<Self, Error> {
+        for (rom, data) in game.files.iter().zip(&chips) {
             if data.len() != rom.size {
                 return Err(Error::Size { name: rom.name, expected: rom.size, actual: data.len() });
             }
             if verify {
-                let actual = sha1_hex(&data);
+                let actual = sha1_hex(data);
                 if actual != rom.sha1 {
                     return Err(Error::Hash { name: rom.name, expected: rom.sha1, actual });
                 }
             }
-            chips.push(data);
         }
         let program = assemble(game, &chips, Role::Program);
         Ok(RomSet { game, program, chips })

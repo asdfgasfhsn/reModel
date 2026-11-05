@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Remodel</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #000; color: #ccc; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; object-fit: contain; display: block; }
+  #bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 6px 12px; background: rgba(0, 0, 0, 0.6); display: flex; gap: 16px; flex-wrap: wrap; }
+  #bar.hidden { display: none; }
+  #status { color: #fff; }
+  kbd { border: 1px solid #555; border-radius: 3px; padding: 0 4px; font: inherit; }
+</style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<div id="bar">
+  <span id="status">loading…</span>
+  <span><kbd>C</kbd> coin <kbd>Enter</kbd> start <kbd>←</kbd><kbd>→</kbd> steer <kbd>↓</kbd> slide
+    <kbd>Z</kbd> jump front <kbd>X</kbd> jump tail <kbd>Q</kbd><kbd>E</kbd> select · gamepad works too ·
+    <kbd>F</kbd> fullscreen <kbd>H</kbd> hide bar · no sound yet</span>
+</div>
+<script type="module">
+  import init, { start } from "./pkg/remodel_web.js";
+
+  const status = document.getElementById("status");
+  const params = new URLSearchParams(location.search);
+  // Defaults: fill this window (4:3 to 21:9) at the screen's resolution.
+  const fit = Math.min(Math.max(innerWidth / innerHeight, 4 / 3), 21 / 9);
+  const aspect = params.has("aspect")
+    ? params.get("aspect").split(":").map(Number).reduce((w, h) => w / h)
+    : fit;
+  const height = Number(params.get("height")) ||
+    Math.min(1080, Math.round(innerHeight * devicePixelRatio / 2) * 2);
+  const hudEdges = params.get("hud") !== "center";
+
+  addEventListener("keydown", (e) => {
+    if (e.code === "KeyF") document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+    if (e.code === "KeyH") document.getElementById("bar").classList.toggle("hidden");
+  });
+
+  if (!navigator.gpu) {
+    status.textContent = "This browser has no WebGPU (try a recent Chrome, Edge or Safari; on Linux, check chrome://gpu).";
+  } else {
+    try {
+      await init();
+      await start(document.getElementById("screen"), status, "./rom", height, aspect, hudEdges);
+    } catch (e) {
+      status.textContent = "error: " + (e.message ?? e);
+      console.error(e);
+    }
+  }
+</script>
+</body>
+</html>

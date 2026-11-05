@@ -102,6 +102,24 @@ impl InputScript {
     }
 }
 
+/// Press or release the button `name` (live input). False if unknown.
+pub fn set_button(bus: &mut Model2Bus, name: &str, pressed: bool) -> bool {
+    let Some(&(_, port, bit)) = BUTTONS.iter().find(|b| b.0 == name) else { return false };
+    if pressed {
+        bus.inputs[port] &= !bit;
+    } else {
+        bus.inputs[port] |= bit;
+    }
+    true
+}
+
+/// Set analog channel `name` (0x80 is centred). False if unknown.
+pub fn set_analog(bus: &mut Model2Bus, name: &str, value: u8) -> bool {
+    let Some(&(_, channel)) = ANALOG.iter().find(|a| a.0 == name) else { return false };
+    bus.analog[channel] = value;
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

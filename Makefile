@@ -30,15 +30,25 @@ M68K_TESTS_API := https://api.github.com/repos/SingleStepTests/680x0/contents/68
 M68K_TESTS_RAW := https://raw.githubusercontent.com/SingleStepTests/680x0/main/68000/v1
 
 CARGO   ?= cargo
+# The browser build needs a toolchain with the wasm32 target and
+# wasm-bindgen-cli matching Cargo.lock. Default: rustup's cargo, from
+# ~/.local/share/rustup-wasm/bin (a rustup kept out of ~/.cargo/bin, where
+# its proxies would shadow the system toolchain's `cargo fmt` and clippy)
+# or ~/.cargo/bin.
+WASM_CARGO   ?= $(firstword $(wildcard $(HOME)/.local/share/rustup-wasm/bin/cargo) $(HOME)/.cargo/bin/cargo)
+WASM_BINDGEN ?= $(HOME)/.cargo/bin/wasm-bindgen
+WEB_OUT      ?= out/web
 # RECOMP=1: use the build with recompiled i960 and TGP code (see `make recomp`).
 RECOMP  ?=
 ifneq ($(RECOMP),)
 REMODEL := target/recomp/release/remodel
 # No debug info: the generated code is large and only slows the build.
 RELEASE_ENV := REMODEL_RECOMP_DIR=$(abspath out/recomp) CARGO_TARGET_DIR=target/recomp CARGO_PROFILE_RELEASE_DEBUG=false
+WEB_ENV := REMODEL_RECOMP_DIR=$(abspath out/recomp)
 else
 REMODEL := target/release/remodel
 RELEASE_ENV :=
+WEB_ENV :=
 endif
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
@@ -134,6 +144,12 @@ assets: release ## Extract the game's art for review: capture sessions, then dis
 dump-textures: release ## Coin-start-race run dumping every 3D texture and tile pattern drawn (each 60 frames) to OUT/texdump
 	rm -rf $(OUT)/texdump
 	$(RUN) $(VIEW) --dump-textures $(OUT)/texdump --input $(BENCH_INPUT) run $(BENCH_STEPS) 60
+
+web: ## Build the browser version (WebAssembly + WebGPU) into out/web; needs the wasm32 target and wasm-bindgen (docs/web.md); RECOMP=1 includes the recompiled game code
+	CARGO_TARGET_DIR=target/web CARGO_PROFILE_RELEASE_DEBUG=false $(WEB_ENV) $(WASM_CARGO) build --release --target wasm32-unknown-unknown -p remodel-web
+	$(WASM_BINDGEN) --target web --no-typescript --out-dir $(WEB_OUT)/pkg target/web/wasm32-unknown-unknown/release/remodel_web.wasm
+	cp crates/web/index.html $(WEB_OUT)/
+	@echo "built $(WEB_OUT): serve it over HTTPS (WebGPU needs a secure page) with the ROM files at $(WEB_OUT)/rom/"
 
 capture: release ## Run into a race saving every 300th frame's renderer inputs to out/GAME/capture (~200 MB)
 	rm -rf $(OUT)/capture

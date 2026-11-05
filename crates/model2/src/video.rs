@@ -261,19 +261,17 @@ fn tile_info(tiles: &[u8], palette: &[u8], entry: usize) -> Option<TileInfo> {
     Some(TileInfo { key: f.0, tile: (entry & 0x3fff) as u16, bank: (base >> 4) as u16, pens, colours })
 }
 
-fn compose_impl(
+/// Per game pixel: the base layer (backdrop and low-priority tiles), the
+/// HUD (high-priority tiles, None where transparent) and, when `enhanced`,
+/// the tile hits of plane B then A.
+#[allow(clippy::type_complexity)]
+fn tile_planes(
     tiles: &[u8],
     palette: &[u8],
-    layer3d: Option<(&[u8], &[bool])>,
-    view: &View,
-    hooks: Option<&mut dyn Enhance>,
-) -> Vec<u8> {
-    let enhanced = hooks.is_some();
-    // Enhanced only: per game pixel, the hits of plane B then A.
+    enhanced: bool,
+) -> (Vec<[u8; 3]>, Vec<Option<[u8; 3]>>, Vec<[Option<Hit>; 2]>) {
     let mut hits: Vec<[Option<Hit>; 2]> = if enhanced { vec![[None; 2]; WIDTH * HEIGHT] } else { Vec::new() };
     let backdrop = rgb(rd16(palette, 0));
-    // Game-resolution layers: the base (backdrop + low-priority tiles) and
-    // the HUD (high-priority tiles, None where transparent).
     let mut base = vec![[0u8; 3]; WIDTH * HEIGHT];
     let mut hud = vec![None; WIDTH * HEIGHT];
     for y in 0..HEIGHT {
@@ -305,10 +303,13 @@ fn compose_impl(
             hud[y * WIDTH + x] = h;
         }
     }
-    let has_3d = layer3d.is_some_and(|(_, cov)| cov.iter().any(|&c| c));
-    let shift = hud_shifts(&hud, view, has_3d);
+    (base, hud, hits)
+}
 
-    // Place the HUD in an extended game-space layer, element by element.
+/// The HUD placed element by element in an extended game-space layer
+/// `ext_w` pixels wide (the view's width in game pixels). Returns it and
+/// `ext_w`.
+fn place_hud(hud: &[Option<[u8; 3]>], shift: &[usize], view: &View) -> (Vec<Option<[u8; 3]>>, usize) {
     let ext_w = WIDTH + (2.0 * view.pad).ceil() as usize;
     let mut hud_ext = vec![None; ext_w * HEIGHT];
     for y in 0..HEIGHT {
@@ -321,6 +322,50 @@ fn compose_impl(
             }
         }
     }
+    (hud_ext, ext_w)
+}
+
+/// The 2D layers of a frame for a compositor that blends them with the 3D
+/// layer itself (the GPU): output pixel (ox, oy) is at game row
+/// `(oy + 0.5) / sy` and extended column `ex = (ox + 0.5) / sx`; the base
+/// layer is at `ex - pad` (outside it: `backdrop` when there is 3D, else
+/// black), then the 3D layer where drawn, then the HUD at `ex` where opaque.
+pub struct Layers2d {
+    /// WIDTH x HEIGHT RGBA (alpha 255).
+    pub base: Vec<u8>,
+    /// `ext_w` x HEIGHT RGBA, alpha 0 where transparent.
+    pub hud: Vec<u8>,
+    pub ext_w: usize,
+    pub backdrop: [u8; 3],
+}
+
+/// The 2D layers for `view`. `has_3d`: whether the frame draws any 3D
+/// (moves the HUD to the edges and fills the sides with the backdrop).
+pub fn layers_2d(tiles: &[u8], palette: &[u8], view: &View, has_3d: bool) -> Layers2d {
+    let (base, hud, _) = tile_planes(tiles, palette, false);
+    let shift = hud_shifts(&hud, view, has_3d);
+    let (hud_ext, ext_w) = place_hud(&hud, &shift, view);
+    Layers2d {
+        base: base.iter().flat_map(|c| [c[0], c[1], c[2], 255]).collect(),
+        hud: hud_ext.iter().flat_map(|c| c.map_or([0; 4], |c| [c[0], c[1], c[2], 255])).collect(),
+        ext_w,
+        backdrop: rgb(rd16(palette, 0)),
+    }
+}
+
+fn compose_impl(
+    tiles: &[u8],
+    palette: &[u8],
+    layer3d: Option<(&[u8], &[bool])>,
+    view: &View,
+    hooks: Option<&mut dyn Enhance>,
+) -> Vec<u8> {
+    let enhanced = hooks.is_some();
+    let backdrop = rgb(rd16(palette, 0));
+    let (base, hud, hits) = tile_planes(tiles, palette, enhanced);
+    let has_3d = layer3d.is_some_and(|(_, cov)| cov.iter().any(|&c| c));
+    let shift = hud_shifts(&hud, view, has_3d);
+    let (hud_ext, ext_w) = place_hud(&hud, &shift, view);
 
     if let Some(hooks) = hooks {
         let tl = TileLayers { tiles, palette, backdrop, hits, reps: Vec::new() };
