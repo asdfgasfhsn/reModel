@@ -81,7 +81,7 @@ else
     rm -rf "$model2/pkg"
 fi
 
-cp crates/web/audio-worklet.js crates/web/sound-worker.js crates/web/geo-worker.js crates/web/touch.js "$model2/"
+cp crates/web/audio-worklet.js crates/web/sound-worker.js crates/web/geo-worker.js crates/web/touch.js crates/web/gun.js "$model2/"
 cp crates/web/index.html "$WEB_OUT/"
 cp assets/reModel-logo-1086.png "$WEB_OUT/reModel-logo.png"
 # Card posters (assets/posters/README.md).
@@ -91,6 +91,6 @@ for g in $games; do
     [ -f "assets/posters/$g.webp" ] || echo "web: warning: no poster for $g (assets/posters/README.md); using the placeholder" >&2
 done
 # Left from the single-page layout (before model2/).
-rm -rf "$WEB_OUT/pkg" "$WEB_OUT/audio-worklet.js" "$WEB_OUT/sound-worker.js" "$WEB_OUT/geo-worker.js" "$WEB_OUT/touch.js"
+rm -rf "$WEB_OUT/pkg" "$WEB_OUT/audio-worklet.js" "$WEB_OUT/sound-worker.js" "$WEB_OUT/geo-worker.js" "$WEB_OUT/touch.js" "$WEB_OUT/gun.js"
 $remodel --rom "$ROM" web-index "$WEB_OUT" >/dev/null
 echo "web: built $WEB_OUT in $(($(date +%s) - started)) s: serve it over HTTPS (WebGPU needs a secure page) with $ROM/ at $WEB_OUT/rom/"

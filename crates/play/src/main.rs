@@ -32,10 +32,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{Fullscreen, Window, WindowId};
+use winit::window::{CursorIcon, Fullscreen, Window, WindowId};
 
 const USAGE: &str = "\
 usage: remodel-play [options]
@@ -209,6 +209,13 @@ struct Play {
     /// The gamepad last used (a button or stick moved): keyboards' media-key
     /// interfaces show up as gamepads too, so wait to see which one plays.
     pad: Option<gilrs::GamepadId>,
+    /// Light guns: the mouse (window position, None outside the window;
+    /// left and right buttons), once it has moved over the window, aims
+    /// player 1; the pad's stick cursor aims player 2 then, else player 1.
+    mouse: Option<(f64, f64)>,
+    mouse_used: bool,
+    mouse_buttons: [bool; 2],
+    stick: model2::input::StickCursor,
     /// Real time that emulated frame 0 corresponds to.
     epoch: Instant,
     redraws: u64,
@@ -271,6 +278,11 @@ impl Play {
             Ok(s) => {
                 self.settings.game = set.to_string();
                 self.settings.save();
+                // A crosshair pointer over gun games.
+                if let Some(g) = &self.gpu {
+                    let gun = !s.game.controls.guns.is_empty();
+                    g.window.set_cursor(if gun { CursorIcon::Crosshair } else { CursorIcon::Default });
+                }
                 self.session = Some(s);
                 self.epoch = Instant::now();
                 self.refit();
@@ -411,14 +423,51 @@ impl Play {
     fn apply_inputs(&mut self) {
         self.poll_pads();
         let pad = self.gilrs.as_ref().and_then(|g| self.pad.map(|id| g.gamepad(id)));
+        let mouse_aim = self.mouse_aim();
         let Some(s) = &mut self.session else { return };
         match &s.script {
             Some(script) => script.apply(s.machine.frames, &mut s.machine.bus),
             None => {
                 let devices = controls::Devices { keys: &self.keys, pad };
-                model2::input::apply_player(&mut s.machine.bus, &devices, |_| false);
+                let bus = &mut s.machine.bus;
+                model2::input::apply_player(bus, &devices, |_| false);
+                if !bus.controls.guns.is_empty() {
+                    use model2::input::{apply_gun, GunState, PlayerInput};
+                    let key_reload = |p: usize| {
+                        bus.controls.guns.get(p).is_some_and(|g| g.keys_reload.iter().any(|k| devices.key(k)))
+                    };
+                    let (reload0, reload1) = (key_reload(0), key_reload(1));
+                    let mut stick = self.stick.update(&devices);
+                    if self.mouse_used {
+                        let [trigger, reload] = self.mouse_buttons;
+                        apply_gun(bus, 0, GunState { at: mouse_aim, trigger, reload: reload || reload0 });
+                        stick.reload |= reload1;
+                        apply_gun(bus, 1, stick);
+                    } else {
+                        stick.reload |= reload0;
+                        apply_gun(bus, 0, stick);
+                    }
+                }
             }
         }
+    }
+
+    /// Where the mouse points in the game's view (fractions), None off it.
+    fn mouse_aim(&self) -> Option<(f32, f32)> {
+        let (g, (x, y)) = (self.gpu.as_ref()?, self.mouse?);
+        g.view.to_view_fraction(x as f32 - g.origin.0 as f32, y as f32 - g.origin.1 as f32)
+    }
+
+    /// The stick cursor's crosshair, in window pixels, while a gamepad
+    /// aims a gun in a gun game (the mouse has the system cursor).
+    fn stick_crosshair(&self) -> Option<(f32, f32)> {
+        let (g, s) = (self.gpu.as_ref()?, self.session.as_ref()?);
+        if s.game.controls.guns.is_empty() || self.pad.is_none() || s.script.is_some() {
+            return None;
+        }
+        let (x, y) = self.stick.at;
+        let (ox, oy) = g.view.to_output(x * model2::video::WIDTH as f32, y * model2::video::HEIGHT as f32);
+        Some((ox + g.origin.0 as f32, oy + g.origin.1 as f32))
     }
 
     /// Run the frames that are due (unless paused in the menu).
@@ -489,6 +538,7 @@ impl Play {
             }
         }
         let slots = if self.menu.open { self.slot_times() } else { Vec::new() };
+        let crosshair = if self.menu.visible() { None } else { self.stick_crosshair() };
         let Some(g) = &mut self.gpu else { return };
         let frame = match g.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
@@ -504,7 +554,7 @@ impl Play {
             g.renderer.present_bus(&mut s.machine.bus, None, &g.view, &target, g.config.format, g.origin);
         }
         let mut actions = Vec::new();
-        if self.menu.visible() || self.session.is_none() || self.splash.active() {
+        if self.menu.visible() || self.session.is_none() || self.splash.active() || crosshair.is_some() {
             let view = menu::View {
                 playing: self.session.as_ref().map(|s| s.game.title),
                 games: &self.games,
@@ -512,7 +562,11 @@ impl Play {
                 slots: &slots,
             };
             let (menu, settings, splash) = (&mut self.menu, &mut self.settings, &mut self.splash);
+            let scale = g.window.scale_factor() as f32;
             actions = draw_overlay(g, &target, self.session.is_none(), |ctx| {
+                if let Some((x, y)) = crosshair {
+                    draw_crosshair(ctx, egui::pos2(x / scale, y / scale));
+                }
                 let actions = menu.ui(ctx, settings, &view);
                 // Over the game or the menu, fading to show it.
                 splash.ui(ctx);
@@ -611,6 +665,19 @@ impl Play {
 
 /// Draw egui over `target`, building the UI with `ui`; returns what it
 /// returned. `clear` clears to black first (no game under it).
+/// A crosshair at `at` (points), over everything.
+fn draw_crosshair(ctx: &egui::Context, at: egui::Pos2) {
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("crosshair")));
+    for (w, c) in [(4.0, egui::Color32::BLACK), (2.0, egui::Color32::WHITE)] {
+        let stroke = egui::Stroke::new(w, c);
+        painter.circle_stroke(at, 10.0, stroke);
+        for d in [egui::vec2(1.0, 0.0), egui::vec2(0.0, 1.0)] {
+            painter.line_segment([at - d * 16.0, at - d * 5.0], stroke);
+            painter.line_segment([at + d * 5.0, at + d * 16.0], stroke);
+        }
+    }
+}
+
 fn draw_overlay<T: Default>(
     g: &mut Gpu,
     target: &wgpu::TextureView,
@@ -774,6 +841,19 @@ impl ApplicationHandler for Play {
                     self.keys.remove(&code);
                 }
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.mouse = Some((position.x, position.y));
+                self.mouse_used = true;
+            }
+            WindowEvent::CursorLeft { .. } => self.mouse = None,
+            WindowEvent::MouseInput { state, button, .. } if !self.menu.open && !to_menu => {
+                let i = match button {
+                    MouseButton::Left => 0,
+                    MouseButton::Right => 1,
+                    _ => return,
+                };
+                self.mouse_buttons[i] = state == ElementState::Pressed;
+            }
             WindowEvent::RedrawRequested => {
                 if self.time_up(el) {
                     return;
@@ -820,6 +900,10 @@ fn main() {
         keys: HashSet::new(),
         gilrs,
         pad: None,
+        mouse: None,
+        mouse_used: false,
+        mouse_buttons: [false; 2],
+        stick: model2::input::StickCursor::default(),
         epoch: Instant::now(),
         redraws: 0,
         stats: Stats::new(),

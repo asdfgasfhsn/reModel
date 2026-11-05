@@ -6,7 +6,9 @@
 // where the finger went down, the harder the turn), or turn on tilt to steer
 // by turning the device like a wheel. Right: the face buttons and triggers
 // the game uses. Top: coin, start and the shoulder buttons, tilt, and info
-// (status bar). Everything is reported through
+// (status bar). Gun games have no steering or round buttons (taps on the
+// picture shoot, gun.js) but a reload pill, which holds `gun.reload`.
+// Everything else is reported through
 // `report(steer, rightTrigger, leftTrigger, buttons)`, buttons as bits by
 // standard gamepad index.
 
@@ -18,8 +20,9 @@ const TILT_RANGE = 30;
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 /// Show the controls if this is a touch screen; true if shown. `layout`:
-/// {steer, top: [{label, bit}], actions: [{label, bit} or {label, trigger}]}.
-export function setupTouch(layout, report, toggleBar) {
+/// {steer, gun, top: [{label, bit} or {label, gun}], actions: [{label, bit}
+/// or {label, trigger}]}. `gun`: gun.js's handle, for gun games.
+export function setupTouch(layout, report, toggleBar, gun) {
   const root = document.getElementById("touch");
   const touchScreen = matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
   if (!touchScreen && !new URLSearchParams(location.search).has("touch")) return false;
@@ -36,6 +39,7 @@ export function setupTouch(layout, report, toggleBar) {
     el.className = cls;
     el.textContent = c.label;
     if ("bit" in c) el.dataset.bit = c.bit;
+    else if ("gun" in c) el.dataset.gun = c.gun;
     else el.dataset.trigger = c.trigger;
     return el;
   };
@@ -70,6 +74,9 @@ export function setupTouch(layout, report, toggleBar) {
   for (const el of root.querySelectorAll("[data-bit]")) {
     const bit = 1 << Number(el.dataset.bit);
     hold(el, () => (state.buttons |= bit), () => (state.buttons &= ~bit));
+  }
+  for (const el of root.querySelectorAll('[data-gun="reload"]')) {
+    hold(el, () => gun?.reload(true), () => gun?.reload(false));
   }
   for (const el of root.querySelectorAll("[data-trigger]")) {
     const side = el.dataset.trigger;

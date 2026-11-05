@@ -53,6 +53,10 @@
   .t-pill { min-width: 44px; height: 44px; box-sizing: border-box; padding: 0 14px; border-radius: 22px;
     display: grid; place-items: center; }
   .t-btn.on, .t-pill.on { background: rgba(255, 255, 255, 0.8); color: #000; text-shadow: none; }
+  /* The gamepad's gun cursor (gun.js) */
+  #crosshair { position: fixed; width: 28px; height: 28px; margin: -16px; border: 2px solid #fff; border-radius: 50%;
+    box-shadow: 0 0 0 2px #000, inset 0 0 0 2px #000; pointer-events: none; }
+  #crosshair[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -76,6 +80,7 @@
 </div>
 <script type="module">
   import { setupTouch } from "../touch.js";
+  import { setupGun } from "../gun.js";
 
   const status = document.getElementById("status");
   const params = new URLSearchParams(location.search);
@@ -85,7 +90,8 @@
   // This set's WebAssembly module: its own with recompiled code, or the
   // shared interpreter build (the meta tag above).
   const pkg = new URL(document.querySelector('meta[name="remodel-pkg"]').content, location.href).href;
-  const { default: init, start, set_audio_level, set_geo_frame, set_touch, controls_help, touch_layout, game_title, rom_files } =
+  const { default: init, start, set_audio_level, set_geo_frame, set_touch, set_gun, view_point, stick_cursor,
+    controls_help, touch_layout, game_title, rom_files } =
     await import(pkg + "remodel_web.js");
   // For the game list's "Continue".
   try {
@@ -216,7 +222,20 @@
       // Touch screens: on-screen controls (the game's, from its pad
       // bindings), and the bar out of the way until ⓘ.
       const report = (steer, right, left, buttons) => started && set_touch(steer, right, left, buttons);
-      if (setupTouch(JSON.parse(touch_layout(game)), report, toggleBar)) toggleBar();
+      const layout = JSON.parse(touch_layout(game));
+      // Gun games: the mouse or a tap aims and fires (gun.js).
+      let gun;
+      if (layout.gun) {
+        const canvas = document.getElementById("screen");
+        gun = setupGun(canvas, (x, y) => (started ? view_point(x, y) : []),
+          (p, x, y, on, b) => started && set_gun(p, x, y, on, b));
+        const track = () => {
+          if (started) gun.cursor(stick_cursor());
+          requestAnimationFrame(track);
+        };
+        requestAnimationFrame(track);
+      }
+      if (setupTouch(layout, report, toggleBar, gun)) toggleBar();
       let link;
       if (sound) {
         worker = new Worker("../sound-worker.js", { type: "module" });

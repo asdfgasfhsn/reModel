@@ -53,6 +53,13 @@ struct App {
     /// On-screen controls ([`set_touch`]): steering (-1 to 1), the right and
     /// left triggers (0 to 1) and held pad buttons (bits by index).
     touch: (f64, f64, f64, u32),
+    /// Light guns as the page reports them ([`set_gun`]): None until a
+    /// pointer (mouse, touch, or any other source) has aimed that player.
+    guns: [Option<model2::input::GunState>; 2],
+    /// A gun the gamepad's sticks aim: player 1's until the page aims it,
+    /// then player 2's.
+    stick: model2::input::StickCursor,
+    stick_player: Option<usize>,
     /// Real time (ms) that emulated frame 0 corresponds to.
     epoch: f64,
     /// FPS counter: window start (ms), frames emulated and drawn since.
@@ -175,7 +182,30 @@ impl App {
     /// lists them).
     fn apply_inputs(&mut self) {
         let devices = Devices { keys: &self.keys, pad: gamepad(), touch: self.touch };
-        model2::input::apply_player(&mut self.machine.bus, &devices, |_| false);
+        let bus = &mut self.machine.bus;
+        model2::input::apply_player(bus, &devices, |_| false);
+        if bus.controls.guns.is_empty() {
+            return;
+        }
+        let keys = &self.keys;
+        let key_reload =
+            |p: usize| bus.controls.guns.get(p).is_some_and(|g| g.keys_reload.iter().any(|k| keys.contains(*k)));
+        for (player, g) in self.guns.iter().enumerate() {
+            if let Some(mut g) = *g {
+                g.reload |= key_reload(player);
+                model2::input::apply_gun(bus, player, g);
+            }
+        }
+        // The pad aims the first gun the page doesn't.
+        self.stick_player = None;
+        if devices.pad.is_some() {
+            if let Some(player) = (0..bus.controls.guns.len()).find(|&p| self.guns[p].is_none()) {
+                let mut g = self.stick.update(&devices);
+                g.reload |= key_reload(player);
+                model2::input::apply_gun(bus, player, g);
+                self.stick_player = Some(player);
+            }
+        }
     }
 
     fn draw(&mut self) {
@@ -332,12 +362,67 @@ pub fn set_touch(steer: f64, right: f64, left: f64, buttons: u32) {
     });
 }
 
+/// Aim light gun `player` (0 for player 1) at `(x, y)` in the game's view
+/// (fractions, 0 to 1 across and down the 496x384 picture), or off the
+/// screen when `onscreen` is false; `buttons`: bit 0 the trigger, bit 1
+/// reload. Every pointer source on the page (mouse, touch, and any other,
+/// such as a tracked hand) reports through here; [`view_point`] turns
+/// canvas pixels into view fractions. Takes effect from the next frame and
+/// holds until the next call.
+#[wasm_bindgen]
+pub fn set_gun(player: u32, x: f64, y: f64, onscreen: bool, buttons: u32) {
+    APP.with(|a| {
+        if let Some(app) = a.borrow().as_ref() {
+            if let Some(g) = app.borrow_mut().guns.get_mut(player as usize) {
+                *g = Some(model2::input::GunState {
+                    at: onscreen.then_some((x as f32, y as f32)),
+                    trigger: buttons & 1 != 0,
+                    reload: buttons & 2 != 0,
+                });
+            }
+        }
+    });
+}
+
+/// Where canvas pixel `(x, y)` (in the canvas's own pixels, not CSS
+/// pixels) falls in the game's view: `[x, y]` as fractions for
+/// [`set_gun`], or empty off the picture (including the sides a wide view
+/// adds).
+#[wasm_bindgen]
+pub fn view_point(x: f64, y: f64) -> Vec<f64> {
+    APP.with(|a| {
+        let app = a.borrow();
+        let Some(app) = app.as_ref() else { return Vec::new() };
+        let view = app.borrow().view;
+        view.to_view_fraction(x as f32, y as f32).map_or(Vec::new(), |(fx, fy)| vec![fx as f64, fy as f64])
+    })
+}
+
+/// The gamepad's gun cursor, for the page to draw: `[x, y]` in canvas
+/// pixels, or empty when no pad aims a gun.
+#[wasm_bindgen]
+pub fn stick_cursor() -> Vec<f64> {
+    APP.with(|a| {
+        let app = a.borrow();
+        let Some(app) = app.as_ref() else { return Vec::new() };
+        let app = app.borrow();
+        if app.stick_player.is_none() {
+            return Vec::new();
+        }
+        let (x, y) = app.stick.at;
+        let (ox, oy) = app.view.to_output(x * video::WIDTH as f32, y * video::HEIGHT as f32);
+        vec![ox as f64, oy as f64]
+    })
+}
+
 /// The on-screen controls for `game`, from its pad bindings, as JSON:
 /// `steer` (an analog follows the left stick), `top` (coin, start and the
 /// shoulder buttons: small, along the top) and `actions` (the face buttons
 /// and the triggers: round, at the right), each `{label, bit}` with `bit`
 /// the pad button's index, or `{label, trigger: "right" | "left"}`. Each of
 /// the game's inputs appears once, at its first binding in that order.
+/// Gun games (`gun: true`) get no `actions` (taps on the picture shoot)
+/// and a reload pill, `{label, gun: "reload"}`, in `top`.
 #[wasm_bindgen]
 pub fn touch_layout(game: &str) -> String {
     let Ok(game) = romset::games::find(game) else { return "{}".into() };
@@ -368,7 +453,19 @@ pub fn touch_layout(game: &str) -> String {
     }
     actions.extend(south);
     let steer = c.analogs.iter().any(|a| a.axis == PadAxis::LeftStickX);
-    format!("{{\"steer\": {steer}, \"top\": [{}], \"actions\": [{}]}}", top.join(", "), actions.join(", "))
+    // Gun games: taps on the picture shoot, so the right side stays clear;
+    // a reload pill joins coin and start.
+    let gun = !c.guns.is_empty();
+    let mut top = top;
+    if gun {
+        actions.clear();
+        top.push("{\"label\": \"Reload\", \"gun\": \"reload\"}".into());
+    }
+    format!(
+        "{{\"steer\": {steer}, \"gun\": {gun}, \"top\": [{}], \"actions\": [{}]}}",
+        top.join(", "),
+        actions.join(", ")
+    )
 }
 
 /// `s` as a JSON string.
@@ -630,6 +727,9 @@ pub async fn start(
         view,
         keys: HashSet::new(),
         touch: (0.0, 0.0, 0.0, 0),
+        guns: [None; 2],
+        stick: model2::input::StickCursor::default(),
+        stick_player: None,
         epoch: now(),
         counter: (now(), 0, 0),
         status,
