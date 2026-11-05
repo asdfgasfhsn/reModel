@@ -84,10 +84,12 @@ pub fn run(root: &Path, hud_windows: u32) -> Result<(), String> {
         gpu.draw(&polys, &placed, &src, &native);
     }
     println!(
-        "{:<8} {:>6}  {:<11} {:>9} {:>9}  {:>9} {:>9} {:>9}  {:>9}",
-        "frame", "polys", "view", "software", "gpu", "coverage", "colour", ">16", "compose"
+        "{:<8} {:>6}  {:<11} {:>9} {:>9}  {:>9} {:>9} {:>9}  {:>9}  {:>8} {:>8} {:>8}",
+        "frame", "polys", "view", "software", "gpu", "coverage", "colour", ">16", "compose", "build", "place", "2d"
     );
     let mut totals = vec![(0.0, 0.0, Diff::default()); views.len()];
+    // Frames where the fast 2D layer path differs from the reference one.
+    let mut tiles_differ = Vec::new();
     for d in &dirs {
         let f = Frame::load(d).map_err(|e| format!("{}: {e}", d.display()))?;
         let src = f.sources(&texture_rom);
@@ -103,15 +105,29 @@ pub fn run(root: &Path, hud_windows: u32) -> Result<(), String> {
             let g = gpu.draw(&gpu_polys, &placed, &src, view);
             let gpu_ms = t.elapsed().as_secs_f64() * 1e3;
             let df = diff(&sw, &g);
+            // What a live frame costs on the CPU before the GPU: parse the
+            // stream, place the polygons, build the 2D layers.
+            let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
+            let t = Instant::now();
+            let mut prep_polys = raster::build(&f.stream, &src);
+            let build_ms = ms(t);
+            let t = Instant::now();
+            let _ = raster::place(&mut prep_polys, view);
+            let place_ms = ms(t);
             // The whole frame: the GPU's compositor against the CPU's, both
             // given the GPU's 3D layer, so only the 2D blend is compared.
+            if k == 0 && video::tile_planes_check(&f.tiles, &f.palette) != 0 {
+                tiles_differ.push(f.frame);
+            }
+            let t = Instant::now();
             let layers = video::layers_2d(&f.tiles, &f.palette, view, !placed.is_empty());
+            let layers_ms = ms(t);
             let gpu_frame = gpu.frame(&gpu_polys, &placed, &src, view, &layers);
             let cpu_frame = video::compose(&f.tiles, &f.palette, Some((&g.0, &g.1)), view);
             let compose_diff =
                 gpu_frame.as_chunks::<3>().0.iter().zip(cpu_frame.as_chunks::<3>().0).filter(|(a, b)| a != b).count();
             println!(
-                "{:<8} {:>6}  {name:<11} {sw_ms:>7.1}ms {gpu_ms:>7.1}ms  {:>8.3}% {:>8.3}% {:>8.3}%  {:>8.3}%",
+                "{:<8} {:>6}  {name:<11} {sw_ms:>7.1}ms {gpu_ms:>7.1}ms  {:>8.3}% {:>8.3}% {:>8.3}%  {:>8.3}%  {build_ms:>6.2}ms {place_ms:>6.2}ms {layers_ms:>6.2}ms",
                 f.frame,
                 polys.len(),
                 pct(df.coverage, df.pixels),
@@ -146,6 +162,10 @@ pub fn run(root: &Path, hud_windows: u32) -> Result<(), String> {
             pct(df.colour, df.pixels),
             pct(df.large, df.pixels)
         );
+    }
+    match tiles_differ.len() {
+        0 => println!("2d layers     fast path identical to the reference on all {} frames", dirs.len()),
+        n => println!("2d layers     fast path DIFFERS from the reference on {n} frames: {tiles_differ:?}"),
     }
     println!("comparisons   {}/*/gpu-check.png (software | GPU | differences)", root.display());
     println!("gpu frames    {}/*/gpu-frame.png (1080p 16:9, composed on the GPU)", root.display());

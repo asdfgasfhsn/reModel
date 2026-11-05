@@ -339,10 +339,113 @@ pub struct Layers2d {
     pub backdrop: [u8; 3],
 }
 
+/// `tile_planes` without hits, and several times faster: the plane modes,
+/// scroll registers and mask words are read once per line, and pixels are
+/// produced in runs that share a map and a tile row. Same results.
+fn tile_planes_fast(tiles: &[u8], palette: &[u8]) -> (Vec<[u8; 3]>, Vec<Option<[u8; 3]>>) {
+    /// No pixel (transparent or map disabled).
+    const NONE: u16 = u16::MAX;
+    /// Priority bit in a packed pixel (palette index in the low 12 bits).
+    const PRIORITY: u16 = 0x8000;
+    let pal: Vec<[u8; 3]> = (0..0x1000).map(|i| rgb(rd16(palette, i * 2))).collect();
+    let backdrop = rgb(rd16(palette, 0));
+    let vscroll: [u16; 4] = std::array::from_fn(|m| rd16(tiles, VSCROLL + 2 * m));
+    let mut base = vec![backdrop; WIDTH * HEIGHT];
+    let mut hud = vec![None; WIDTH * HEIGHT];
+    // Per line, per plane: packed pixels.
+    let mut line = [[NONE; WIDTH]; 2];
+    for y in 0..HEIGHT {
+        for (slot, (plane, opaque)) in [(1usize, true), (0usize, false)].into_iter().enumerate() {
+            let first = plane * 2;
+            let mode = (vscroll[first] >> 13) & 3;
+            // Scroll position of each map this line.
+            let scroll: [(usize, usize); 4] =
+                std::array::from_fn(|m| (split_scroll(tiles, m, y) as usize & 0x1ff, vscroll[m] as usize & 0x1ff));
+            // Split modes: (map before, map after, split x, first map first).
+            let split = match mode {
+                1 => {
+                    let neg = 0u16.wrapping_sub(vscroll[first]);
+                    let first_on_top = neg & 0x200 != 0;
+                    let m = if (y < (neg & 0x1ff) as usize) == first_on_top { first } else { first + 1 };
+                    Some((m, m, 0, true))
+                }
+                2 | 3 => {
+                    let hs = hscroll(tiles, first, y);
+                    Some((first, first + 1, (hs & 0x1ff) as usize, hs & 0x200 != 0))
+                }
+                _ => None,
+            };
+            let out = &mut line[slot];
+            let mut x = 0;
+            while x < WIDTH {
+                // The map at x, and where the choice may change next.
+                let (map, sm, limit) = match split {
+                    None => {
+                        let word = rd16(tiles, MASK[plane] + y * 8 + (x / 128) * 2);
+                        let m = first + ((word >> (15 - (x / 8) % 16)) & 1) as usize;
+                        (m, m, (x / 8 + 1) * 8)
+                    }
+                    Some((a, b, at, first_on_left)) => {
+                        let before = x < at;
+                        let m = if before == first_on_left { a } else { b };
+                        (m, first, if before { at } else { WIDTH })
+                    }
+                };
+                let (h, v) = scroll[sm];
+                let mx = (x + 512 - h) & 511;
+                // The run: up to the end of this tile column or the limit.
+                let end = (x + 8 - (mx & 7)).min(limit).min(WIDTH);
+                if vscroll[map] & 0x8000 != 0 {
+                    out[x..end].fill(NONE);
+                    x = end;
+                    continue;
+                }
+                let my = (y + v) & 511;
+                let entry = rd16(tiles, map * 0x2000 + ((my / 8) * 64 + mx / 8) * 2) as usize;
+                let off = CHAR_BASE + (entry & 0x3fff) * 32 + (my & 7) * 4;
+                let w = u32::from_le_bytes([tiles[off], tiles[off + 1], tiles[off + 2], tiles[off + 3]]);
+                let colour = ((entry & 0x7f80) >> 3) as u16 | if entry & 0x8000 != 0 { PRIORITY } else { 0 };
+                for (i, o) in out[x..end].iter_mut().enumerate() {
+                    // Each 16-bit half holds 4 pixels, leftmost in the top nibble.
+                    let px = (mx + i) & 7;
+                    let half = if px < 4 { w & 0xffff } else { w >> 16 };
+                    let p = ((half >> (12 - 4 * (px & 3))) & 0xf) as u16;
+                    *o = if p == 0 && !opaque { NONE } else { colour | p };
+                }
+                x = end;
+            }
+        }
+        let row = y * WIDTH;
+        for x in 0..WIDTH {
+            for s in [line[0][x], line[1][x]] {
+                if s == NONE {
+                    continue;
+                }
+                if s & PRIORITY == 0 {
+                    base[row + x] = pal[(s & 0xfff) as usize];
+                } else if s & 0xf != 0 {
+                    // Plane B's pen 0 stays transparent in the high-priority pass.
+                    hud[row + x] = Some(pal[(s & 0xfff) as usize]);
+                }
+            }
+        }
+    }
+    (base, hud)
+}
+
+/// Pixels where the fast 2D layer path differs from the reference one
+/// (`remodel gpu-check` runs this over captured frames).
+#[doc(hidden)]
+pub fn tile_planes_check(tiles: &[u8], palette: &[u8]) -> usize {
+    let (b0, h0, _) = tile_planes(tiles, palette, false);
+    let (b1, h1) = tile_planes_fast(tiles, palette);
+    b0.iter().zip(&b1).filter(|(a, b)| a != b).count() + h0.iter().zip(&h1).filter(|(a, b)| a != b).count()
+}
+
 /// The 2D layers for `view`. `has_3d`: whether the frame draws any 3D
 /// (moves the HUD to the edges and fills the sides with the backdrop).
 pub fn layers_2d(tiles: &[u8], palette: &[u8], view: &View, has_3d: bool) -> Layers2d {
-    let (base, hud, _) = tile_planes(tiles, palette, false);
+    let (base, hud) = tile_planes_fast(tiles, palette);
     let shift = hud_shifts(&hud, view, has_3d);
     let (hud_ext, ext_w) = place_hud(&hud, &shift, view);
     Layers2d {
@@ -362,7 +465,12 @@ fn compose_impl(
 ) -> Vec<u8> {
     let enhanced = hooks.is_some();
     let backdrop = rgb(rd16(palette, 0));
-    let (base, hud, hits) = tile_planes(tiles, palette, enhanced);
+    let (base, hud, hits) = if enhanced {
+        tile_planes(tiles, palette, true)
+    } else {
+        let (base, hud) = tile_planes_fast(tiles, palette);
+        (base, hud, Vec::new())
+    };
     let has_3d = layer3d.is_some_and(|(_, cov)| cov.iter().any(|&c| c));
     let shift = hud_shifts(&hud, view, has_3d);
     let (hud_ext, ext_w) = place_hud(&hud, &shift, view);
