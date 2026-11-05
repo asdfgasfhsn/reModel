@@ -44,6 +44,7 @@ music`). There is no live window yet.
 | Enhanced views: any resolution, 16:9 / 21:9 with HUD moved to the edges | done for snapshots (`--height`, `--aspect`, `--hud`) |
 | Custom soundtracks (replace any music track, game logic intact) | done offline: `make music SOUNDTRACK=name`; see `docs/mods.md` |
 | Live window and real-time sound | planned |
+| Browser build (WebAssembly + WebGPU) | planned; single-threaded mode ready (`--single-thread`, same state hash, 3.2x real time recompiled); see `docs/web.md` |
 
 ## Quick start
 

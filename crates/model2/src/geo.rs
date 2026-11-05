@@ -53,7 +53,8 @@ impl External for GeoExt<'_> {
 }
 
 /// The geometrizer's TGP and everything it owns. Runs a frame at a time,
-/// on a worker thread, from a copy of buffer RAM taken at vblank.
+/// on a worker thread (or inline, see [`Geometrizer::set_threaded`]), from
+/// a copy of buffer RAM taken at vblank.
 pub struct Engine {
     pub tgp: Tgp,
     poly_ram: Vec<u32>,
@@ -104,6 +105,27 @@ pub struct Geometrizer {
     /// Host time the emulation thread spent waiting for the worker.
     pub waited: std::time::Duration,
     engine: Slot,
+    threaded: bool,
+}
+
+/// Host time measurement that works where `std::time::Instant` doesn't
+/// (WebAssembly in a browser has no clock in std: it measures nothing).
+struct Stopwatch(#[cfg(not(target_arch = "wasm32"))] std::time::Instant);
+
+impl Stopwatch {
+    fn start() -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        return Stopwatch(std::time::Instant::now());
+        #[cfg(target_arch = "wasm32")]
+        return Stopwatch();
+    }
+
+    fn elapsed(&self) -> std::time::Duration {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.0.elapsed();
+        #[cfg(target_arch = "wasm32")]
+        return std::time::Duration::ZERO;
+    }
 }
 
 impl Geometrizer {
@@ -117,6 +139,8 @@ impl Geometrizer {
             read_ptr: 0,
             bad_commands: 0,
             waited: std::time::Duration::ZERO,
+            // WebAssembly without threads support can't spawn.
+            threaded: cfg!(not(target_arch = "wasm32")),
             engine: Slot::Idle(Box::new(Engine {
                 tgp: Tgp::new(),
                 poly_ram: vec![0; 0x10_0000],
@@ -143,7 +167,7 @@ impl Geometrizer {
             return;
         }
         if let Slot::Running(h) = std::mem::replace(&mut self.engine, Slot::Empty) {
-            let t = std::time::Instant::now();
+            let t = Stopwatch::start();
             self.engine = Slot::Idle(h.join().expect("geometrizer worker panicked"));
             self.waited += t.elapsed();
         }
@@ -165,6 +189,14 @@ impl Geometrizer {
         }
     }
 
+    /// Run frames on a worker thread (the default where threads exist) or
+    /// inline in `start_frame`. Results are identical: the engine works on
+    /// its own copy of buffer RAM and is only seen after `sync`.
+    pub fn set_threaded(&mut self, threaded: bool) {
+        self.sync();
+        self.threaded = threaded;
+    }
+
     /// Start a frame on the worker thread from the list at the read
     /// pointer. Runs in the background until the next `sync`.
     pub fn start_frame(&mut self, buffer: &[u8]) {
@@ -172,6 +204,11 @@ impl Geometrizer {
         let mut e = std::mem::replace(self.engine_mut(), Engine::placeholder());
         e.buffer.clear();
         e.buffer.extend_from_slice(buffer);
+        if !self.threaded {
+            e.run_frame(booted, read_ptr);
+            self.engine = Slot::Idle(Box::new(e));
+            return;
+        }
         let handle = std::thread::spawn(move || {
             let mut e = Box::new(e);
             e.run_frame(booted, read_ptr);
@@ -295,7 +332,7 @@ impl Engine {
         if !booted || self.fault.is_some() {
             return;
         }
-        let t = std::time::Instant::now();
+        let t = Stopwatch::start();
         let buffer = std::mem::take(&mut self.buffer);
         self.process(&buffer, read_ptr);
         self.busy += t.elapsed();

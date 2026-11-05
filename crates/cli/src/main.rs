@@ -30,6 +30,8 @@ options:
                        and tile pattern drawn to DIR as PNG, plus DIR/index.txt
   --interp             run the i960 on the interpreter even when this build
                        has recompiled code for the game
+  --single-thread      run the geometrizer inline instead of on a second
+                       thread (as a browser build must); same results
   --capture DIR        at each `run` snapshot, save what the renderers read
                        (raster stream, video RAMs) to DIR/FRAME/, for
                        `gpu-check`
@@ -148,13 +150,14 @@ fn main() -> ExitCode {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
     };
-    let interp = match args.iter().position(|a| a == "--interp") {
+    let mut flag = |name: &str| match args.iter().position(|a| a == name) {
         Some(i) => {
             args.remove(i);
             true
         }
         None => false,
     };
+    let (interp, single_thread) = (flag("--interp"), flag("--single-thread"));
     let Some(cmd) = args.first().cloned() else {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
@@ -443,7 +446,7 @@ fn main() -> ExitCode {
                 }
             };
             let geo_frame = geo_frame.and_then(|s| parse_num(&s)).map(u64::from);
-            run(&roms, steps, snap, &script, geo_frame, interp);
+            run(&roms, steps, snap, &script, geo_frame, interp, single_thread);
         }
         "sound-disasm" => {
             let Some(mut pc) = args.get(1).and_then(|s| parse_num(s)) else {
@@ -571,11 +574,13 @@ fn run(
     script: &model2::input::InputScript,
     geo_frame: Option<u64>,
     interp: bool,
+    single_thread: bool,
 ) {
     let mut m = model2::Machine::new(roms);
     if interp {
         m.disable_native();
     }
+    m.bus.geo.set_threaded(!single_thread);
     println!("i960          {}", if m.is_native() { "recompiled" } else { "interpreter" });
     let dir = PathBuf::from("out").join(roms.game.id);
     let eeprom_path = dir.join("eeprom.bin");
@@ -631,9 +636,10 @@ fn run(
     let emulated = m.frames as f64 / 57.524;
     println!("emulated      {} frames ({emulated:.2}s)", m.frames);
     println!(
-        "host time     {secs:.2}s ({:.2}x real time), geometrizer {:.2}s on its thread (slowest frame {:.1} ms), {:.2}s waited for",
+        "host time     {secs:.2}s ({:.2}x real time), geometrizer {:.2}s {} (slowest frame {:.1} ms), {:.2}s waited for",
         emulated / secs,
         geo.busy.as_secs_f64(),
+        if single_thread { "inline" } else { "on its thread" },
         geo.slowest.as_secs_f64() * 1e3,
         b.geo.waited.as_secs_f64()
     );
