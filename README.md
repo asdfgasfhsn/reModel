@@ -567,9 +567,15 @@ Fifth game, 2C: a ride-on personal watercraft cabinet, SCSP sound only.
   runs 300M instructions identical, and a coin-start run of 600M
   instructions gives the same state hash (`97d498bed77503a6`, with an
   `eeprom.bin` from an earlier run) recompiled and interpreted.
-- *Unconfirmed:* under the rock arch on the beginner course the water
-  turns flat dark blue while the craft stays lit. It may be the game's
-  shading or a rendering gap; not checked against the hardware.
+- *Confirmed (from the raster stream):* under the rock arch on the
+  beginner course the game draws its shadow as one flat dark-blue polygon
+  (palette colour 5-bit (0, 0, 6), full luma) over the water and behind
+  the craft, with texture header bit 15, the checker (screen-door) flag,
+  set. Both renderers applied the checker only to textured polygons, so
+  the shadow came out solid and the water flat dark blue; it now drops
+  every other pixel and the water shows through. *Unconfirmed:* how it
+  looks on the hardware's display (a half-tone, or blended by the
+  monitor).
 
 ## License
 

@@ -266,12 +266,9 @@ impl Renderer {
         for (i, pl) in placed.iter().enumerate() {
             let p = &polys[pl.poly];
             let t = p.texture;
-            let flags = t.map_or(0, |t| {
-                1 | (t.mirror_x as u32) << 1
-                    | (t.mirror_y as u32) << 2
-                    | (t.translucent as u32) << 3
-                    | (t.checker as u32) << 4
-            });
+            let flags = t
+                .map_or(0, |t| 1 | (t.mirror_x as u32) << 1 | (t.mirror_y as u32) << 2 | (t.translucent as u32) << 3)
+                | (p.checker as u32) << 4;
             let (x0, y0, x1, y1) = pl.clip;
             let tex = t.map_or([0; 4], |t| [t.x0, t.y0, t.w, t.h]);
             let (bank, luma_table) = t.map_or((0, 0), |t| (t.bank, t.luma_table));

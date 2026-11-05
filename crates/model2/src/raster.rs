@@ -58,8 +58,6 @@ pub struct Texture {
     pub bank: u32,
     /// Texel 15 is transparent.
     pub translucent: bool,
-    /// Every other pixel is dropped (a checkerboard, by screen pixel).
-    pub checker: bool,
     pub luma_table: u32,
 }
 
@@ -76,6 +74,10 @@ pub struct Poly {
     pub colour: [u32; 3],
     /// Polygon luma, 0-255.
     pub luma: u32,
+    /// Header bit 15: every other pixel is dropped (a checkerboard, by
+    /// screen pixel), textured or flat. waverunr's arch shadow is a flat
+    /// one (docs/hw/geometrizer.md 5.3).
+    pub checker: bool,
     /// The 4-word texture header, kept for probing.
     pub header: [u16; 4],
 }
@@ -160,7 +162,6 @@ fn texture_from_header(h: [u16; 4]) -> Option<Texture> {
         mirror_x: h[0] & (1 << 8) != 0,
         mirror_y: h[0] & (1 << 9) != 0,
         translucent: h[0] & (1 << 13) != 0,
-        checker: h[0] & (1 << 15) != 0,
         luma_table: (h[1] & 0xff) as u32,
         x0: ((h[2] & 0x3f) as u32) * 32,
         y0: (((h[2] >> 6) & 0x1f) as u32) * 32,
@@ -265,6 +266,7 @@ pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
                                 texture: texture_from_header(header),
                                 colour: [c & 31, (c >> 5) & 31, (c >> 10) & 31],
                                 luma: (luma_word >> 15) & 0xff,
+                                checker: header[0] & (1 << 15) != 0,
                                 header,
                             });
                         }
@@ -342,11 +344,11 @@ fn filtered_texel(t: &Texture, src: &Sources, u: f32, v: f32) -> Option<u32> {
 
 /// Shade one pixel; None if it is transparent.
 fn shade(p: &Poly, src: &Sources, x: usize, y: usize, u: f32, v: f32) -> Option<[u8; 3]> {
+    if p.checker && (x ^ y) & 1 != 0 {
+        return None;
+    }
     let lum = match p.texture {
         Some(t) => {
-            if t.checker && (x ^ y) & 1 != 0 {
-                return None;
-            }
             let t8 = filtered_texel(&t, src, u, v)?;
             (src.luma(t.luma_table, t8 / 2) * p.luma / 256).min(63)
         }
@@ -502,6 +504,7 @@ impl Light {
 #[allow(clippy::too_many_arguments)]
 fn shade_replaced(
     t: &Texture,
+    checker: bool,
     img: &Rgba,
     light: &Light,
     src: &Sources,
@@ -510,7 +513,7 @@ fn shade_replaced(
     u: f32,
     v: f32,
 ) -> Option<[u8; 3]> {
-    if t.checker && (x ^ y) & 1 != 0 {
+    if checker && (x ^ y) & 1 != 0 {
         return None;
     }
     let mode = |mirror| if mirror { Address::Mirror } else { Address::Repeat };
@@ -607,7 +610,7 @@ fn draw_impl(
             let light = Light::new(p, src);
             fill(points, clip, w, h, |x, y, iz, uz, vz| {
                 let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
-                if let Some(c) = shade_replaced(t, img, &light, src, gx, gy, uz / iz, vz / iz) {
+                if let Some(c) = shade_replaced(t, p.checker, img, &light, src, gx, gy, uz / iz, vz / iz) {
                     let o = y * w + x;
                     covered[o] = true;
                     rgb[o * 3..o * 3 + 3].copy_from_slice(&c);
@@ -699,6 +702,33 @@ mod tests {
             |_, _, _, _, _| n += 1,
         );
         assert_eq!(n, 100);
+    }
+
+    #[test]
+    fn checker_applies_to_flat_polygons() {
+        let (ram, palette) = (vec![0u8; 0x40_0000 + 0x8000], vec![0u8; 0x1_c000]);
+        let src = Sources {
+            texture_rom: &[],
+            texture_point_ram: &[],
+            render_ram: &ram,
+            palette: &palette,
+            xoff: 0.0,
+            yoff: 0.0,
+        };
+        let p = Poly {
+            points: Vec::new(),
+            key: 0.0,
+            window: 0,
+            clip: (0.0, 0.0, 0.0, 0.0),
+            texture: texture_from_header([0x80c0, 0, 0, 0]),
+            colour: [0, 0, 6],
+            luma: 255,
+            checker: true,
+            header: [0x80c0, 0, 0, 0],
+        };
+        assert!(p.texture.is_none());
+        assert!(shade(&p, &src, 2, 4, 0.0, 0.0).is_some());
+        assert!(shade(&p, &src, 3, 4, 0.0, 0.0).is_none());
     }
 
     #[test]

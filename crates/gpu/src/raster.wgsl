@@ -145,12 +145,12 @@ fn fs(in: VsOut) -> @location(0) vec4f {
     if px.y < p.clip.y || px.y >= p.clip.w || px.x + 0.5 < p.clip.x || px.x + 0.5 >= p.clip.z {
         discard;
     }
+    let g = vec2u(floor(px / screen.scale));
+    if (p.flags & 16u) != 0u && ((g.x ^ g.y) & 1u) != 0u {
+        discard;
+    }
     var lum: u32;
     if (p.flags & 1u) != 0u {
-        let g = vec2u(floor(px / screen.scale));
-        if (p.flags & 16u) != 0u && ((g.x ^ g.y) & 1u) != 0u {
-            discard;
-        }
         let iz = in.attr.x;
         let t8 = filtered_texel(p, in.attr.y / iz, in.attr.z / iz);
         if t8 < 0 {

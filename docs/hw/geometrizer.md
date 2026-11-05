@@ -352,7 +352,7 @@ vertices [P1', P0', Pa, Pb] in that order. **M**
 | h0 | 10-11 / 12 | microtexture min-LOD / microtexture enable | L |
 | h0 | 13 | translucent (texel 15 = transparent) | M |
 | h0 | 14 | textured (else flat) | M |
-| h0 | 15 | checker: draw every other pixel (x ^ y parity), used as a screen-door translucency | M |
+| h0 | 15 | checker: draw every other pixel (x ^ y parity), used as a screen-door translucency. Applies to flat polygons too: waverunr's arch shadow is a flat checker polygon over the water (**H**, from the stream; drawn solid it hides the water) | M |
 | h1 | 0-7 | luma table number (× 128 bytes) | M |
 | h2 | 0-5 / 6-10 | X / 32, Y / 32 position in the sheet | M |
 | h2 | 12 | swap banks (level 0 from bank 1) | M |
