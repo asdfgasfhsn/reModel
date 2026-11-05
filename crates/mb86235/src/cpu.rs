@@ -782,5 +782,57 @@ impl Tgp {
     }
 }
 
+/// Save states: everything but the execution counts; the decoded program
+/// and its hash are rebuilt from the program words.
+impl state::State for Tgp {
+    fn save(&self, w: &mut state::Writer) {
+        self.program.save(w);
+        self.aram.save(w);
+        self.bram.save(w);
+        for v in [&self.aa, &self.ab, &self.ma, &self.mb, &self.ar] {
+            v.save(w);
+        }
+        self.pr.save(w);
+        [
+            self.prp, self.pwp, self.eb, self.eo, self.sp, self.st, self.md, self.lpc, self.rpc, self.pdr, self.ddr,
+            self.pc,
+        ]
+        .save(w);
+        self.pcs.save(w);
+        self.pcsp.save(w);
+        self.pending.save(w);
+        self.fifo_in.save(w);
+        self.fifo_out.save(w);
+        self.ext_flags.save(w);
+        self.steps.save(w);
+    }
+
+    fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
+        self.program.load(r)?;
+        self.aram.load(r)?;
+        self.bram.load(r)?;
+        for v in [&mut self.aa, &mut self.ab, &mut self.ma, &mut self.mb, &mut self.ar] {
+            v.load(r)?;
+        }
+        self.pr.load(r)?;
+        let mut regs = [0u32; 12];
+        regs.load(r)?;
+        [
+            self.prp, self.pwp, self.eb, self.eo, self.sp, self.st, self.md, self.lpc, self.rpc, self.pdr, self.ddr,
+            self.pc,
+        ] = regs;
+        self.pcs.load(r)?;
+        self.pcsp.load(r)?;
+        self.pending.load(r)?;
+        self.fifo_in.load(r)?;
+        self.fifo_out.load(r)?;
+        self.ext_flags.load(r)?;
+        self.steps.load(r)?;
+        self.decoded = self.program.iter().enumerate().map(|(a, &w)| decode(a as u32, w)).collect();
+        self.program_hash = program_hash(&self.program);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -349,6 +349,12 @@ fn cubic(h: &[(f32, f32); 4], t: f32) -> (f32, f32) {
     (f(h[0].0, h[1].0, h[2].0, h[3].0), f(h[0].1, h[1].1, h[2].1, h[3].1))
 }
 
+// Save states. ROMs and diagnostics (PC histogram, events, forwarded bytes,
+// unmapped accesses) stay as they are.
+state::fields!(Dsb2 { cpu, bus, stats, tick_cycles, next_tick, next_rx, out_samples, phase, hist });
+state::fields!(Bus { ram, latch, rx, rx_queue, tick_pending, chip, upload });
+state::fields!(Stats { instructions, cycles, ticks, rx_bytes, overruns, upload_bytes, frames });
+
 #[cfg(test)]
 mod tests {
     use super::*;

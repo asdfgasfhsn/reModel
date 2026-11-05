@@ -229,3 +229,7 @@ impl SoundBoard {
         self.coverage.iter().map(|w| w.count_ones() as u64).sum()
     }
 }
+
+// Save states: ROMs, coverage and statistics stay as they are.
+state::fields!(SoundBoard { cpu, bus, link, link_time, cycles, samples, instructions });
+state::fields!(BoardBus { scsp, latch, boot, pc });

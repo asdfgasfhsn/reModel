@@ -9,3 +9,4 @@ license.workspace = true
 name = "mpeg"
 
 [dependencies]
+remodel-state.workspace = true

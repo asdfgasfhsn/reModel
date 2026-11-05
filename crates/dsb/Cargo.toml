@@ -9,5 +9,6 @@ license.workspace = true
 name = "dsb"
 
 [dependencies]
+remodel-state.workspace = true
 m68k.workspace = true
 remodel-mpeg.workspace = true

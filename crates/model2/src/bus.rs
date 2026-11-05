@@ -731,3 +731,75 @@ impl Fnv {
         self.0 = (self.0 ^ v).wrapping_mul(0x100_0000_01b3);
     }
 }
+
+// Save states: writable memory (with its write counts), time, interrupts,
+// timers, the copro and its upload state, the geometrizer, I/O and the
+// EEPROM. ROMs, the memory map and diagnostics stay as they are.
+impl state::State for Model2Bus {
+    fn save(&self, w: &mut state::Writer) {
+        for m in self.mems.iter().filter(|m| m.writable) {
+            m.data.save(w);
+            m.writes.save(w);
+        }
+        [self.now, self.frames, self.next_vblank].save(w);
+        self.irq_request.save(w);
+        self.irq_enable.save(w);
+        self.raised_lines.save(w);
+        self.timers.save(w);
+        self.copro_ctrl.save(w);
+        self.copro_uploading.save(w);
+        self.copro_program.save(w);
+        self.copro_upload_half.save(w);
+        self.copro_booted.save(w);
+        self.geo.save(w);
+        self.tgp.save(w);
+        self.tgp_fault.save(w);
+        self.tgp_stalled.save(w);
+        self.copro_result_hash.save(w);
+        self.uart_log.save(w);
+        self.frame_toggle.save(w);
+        self.board_ctrl.save(w);
+        self.inputs.save(w);
+        self.io_analog_channel.save(w);
+        self.analog.save(w);
+        self.io_latch.save(w);
+        state::State::save(&self.eeprom, w);
+    }
+    fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
+        for m in self.mems.iter_mut().filter(|m| m.writable) {
+            let len = m.data.len();
+            m.data.load(r)?;
+            if m.data.len() != len {
+                return Err(state::Error("memory size differs".into()));
+            }
+            m.writes.load(r)?;
+        }
+        let mut t = [0u64; 3];
+        t.load(r)?;
+        [self.now, self.frames, self.next_vblank] = t;
+        self.irq_request.load(r)?;
+        self.irq_enable.load(r)?;
+        self.raised_lines.load(r)?;
+        self.timers.load(r)?;
+        self.copro_ctrl.load(r)?;
+        self.copro_uploading.load(r)?;
+        self.copro_program.load(r)?;
+        self.copro_upload_half.load(r)?;
+        self.copro_booted.load(r)?;
+        self.geo.load(r)?;
+        self.tgp.load(r)?;
+        self.tgp_fault.load(r)?;
+        self.tgp_stalled.load(r)?;
+        self.copro_result_hash.load(r)?;
+        self.uart_log.load(r)?;
+        self.frame_toggle.load(r)?;
+        self.board_ctrl.load(r)?;
+        self.inputs.load(r)?;
+        self.io_analog_channel.load(r)?;
+        self.analog.load(r)?;
+        self.io_latch.load(r)?;
+        state::State::load(&mut self.eeprom, r)
+    }
+}
+
+state::fields!(Timer { reload, started_at, running });

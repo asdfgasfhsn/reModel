@@ -9,4 +9,5 @@ license.workspace = true
 name = "sound"
 
 [dependencies]
+remodel-state.workspace = true
 m68k.workspace = true

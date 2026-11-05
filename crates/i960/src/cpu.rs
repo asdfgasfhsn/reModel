@@ -984,5 +984,9 @@ fn f64_to_ext80(v: f64) -> (u32, u32, u32) {
     (mant as u32, (mant >> 32) as u32, sign | exp as u32)
 }
 
+// Save states: the decoded-instruction cache and diagnostics are rebuilt or
+// dropped.
+state::fields!(Cpu { r, fpr, ip, ac, pc, tc, sat, prcb, icr, pending, icount });
+
 #[cfg(test)]
 mod tests;

@@ -34,6 +34,10 @@ options:
                        thread (as a browser build must); same results
   --audio WAV          `run`: play the sound and music boards live, fed as
                        the game sends, and record the mix to WAV
+  --save-state FILE@FRAME
+                       `run`: save the machine (and with --audio the sound
+                       boards) to FILE when FRAME starts
+  --load-state FILE    `run`: start from a save state instead of booting
   --capture DIR        at each `run` snapshot, save what the renderers read
                        (raster stream, video RAMs) to DIR/FRAME/, for
                        `gpu-check`
@@ -149,6 +153,20 @@ fn main() -> ExitCode {
     };
     if let Some(a) = audio {
         let _ = AUDIO.set(PathBuf::from(a));
+    }
+    let (Ok(save_state), Ok(load_state)) = (opt("--save-state"), opt("--load-state")) else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    if let Some(v) = save_state {
+        let Some((file, frame)) = v.rsplit_once('@').and_then(|(f, n)| Some((f, n.parse::<u64>().ok()?))) else {
+            eprintln!("error: --save-state wants FILE@FRAME");
+            return ExitCode::FAILURE;
+        };
+        let _ = SAVE_STATE.set((PathBuf::from(file), frame));
+    }
+    if let Some(f) = load_state {
+        let _ = LOAD_STATE.set(PathBuf::from(f));
     }
     let Ok(capture) = opt("--capture") else {
         eprint!("{USAGE}");
@@ -547,6 +565,10 @@ fn main() -> ExitCode {
 
 /// Output view for snapshots (`--height`, `--aspect`, `--hud`); native when unset.
 static VIEW: std::sync::OnceLock<model2::video::View> = std::sync::OnceLock::new();
+/// `--save-state`: where, and at which frame.
+static SAVE_STATE: std::sync::OnceLock<(PathBuf, u64)> = std::sync::OnceLock::new();
+/// `--load-state`: the state to start from.
+static LOAD_STATE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 /// Where `--audio` records the live sound.
 static AUDIO: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 /// Where `--capture` saves snapshot frames.
@@ -631,6 +653,18 @@ fn run(
         m.bus.watch = Some((a, Vec::new()));
     }
     let mut live = AUDIO.get().map(|_| model2::audio::Live::new(roms));
+    if let Some(path) = LOAD_STATE.get() {
+        let loaded = std::fs::read(path)
+            .map_err(|e| e.to_string())
+            .and_then(|d| model2::load_session(&mut m, live.as_mut(), &d));
+        match loaded {
+            Ok(()) => println!("state         loaded {} (frame {})", path.display(), m.frames),
+            Err(e) => {
+                eprintln!("error: {}: {e}", path.display());
+                return;
+            }
+        }
+    }
     let (mut pcm, mut link, mut audio_secs) = (Vec::new(), Vec::new(), 0.0);
     let started = std::time::Instant::now();
     let mut stop = None;
@@ -648,6 +682,15 @@ fn run(
             audio_secs += t.elapsed().as_secs_f64();
         }
         if m.frames != last_frame {
+            if let Some((path, frame)) = SAVE_STATE.get().filter(|s| s.1 == m.frames) {
+                let data = model2::save_session(&mut m, live.as_ref());
+                match std::fs::write(path, &data) {
+                    Ok(()) => {
+                        println!("state         saved {} at frame {frame} ({} KB)", path.display(), data.len() / 1024)
+                    }
+                    Err(e) => eprintln!("error: {}: {e}", path.display()),
+                }
+            }
             script.apply(m.frames, &mut m.bus);
             if geo_frame == Some(m.frames) {
                 m.bus.geo_trace = Some(Vec::new());

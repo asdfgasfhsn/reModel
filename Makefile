@@ -172,6 +172,12 @@ lockstep: ## Run the recompiled i960 code beside the interpreter, block by block
 	$(MAKE) release RECOMP=1
 	target/recomp/release/remodel --game $(GAME) --rom $(ROM) lockstep $(STEPS)
 
+state-check: release ## Save state round trip: a run saved at frame 2000 and resumed must match an uninterrupted one (state hash and audio)
+	@$(RUN) --audio $(OUT)/state-a.wav --save-state $(OUT)/state-check.save@2000 --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep '^state hash' > $(OUT)/state-a.txt
+	@$(RUN) --audio $(OUT)/state-b.wav --load-state $(OUT)/state-check.save --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep '^state hash' > $(OUT)/state-b.txt
+	@cmp -s $(OUT)/state-a.txt $(OUT)/state-b.txt && echo "state hash    same after save and load: $$(cut -c15- $(OUT)/state-a.txt)" || { echo "state hash DIFFERS:"; cat $(OUT)/state-a.txt $(OUT)/state-b.txt; exit 1; }
+	@python3 -I -c 'import sys, wave; a, b = (wave.open(f).readframes(1 << 30) for f in sys.argv[1:]); print("audio         " + ("resumed run matches the uninterrupted one" if a.endswith(b) else "DIFFERS")); sys.exit(not a.endswith(b))' $(OUT)/state-a.wav $(OUT)/state-b.wav
+
 bench: release ## Timed fixed run into a race: speed vs real time and the state hash (must not change with speed-ups)
 	$(RUN) --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep -E '^(instructions|emulated|host time|state hash)'
 

@@ -1,0 +1,9 @@
+[package]
+name = "remodel-state"
+description = "Save states: a small binary serialisation for emulator state, loaded in place"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "state"

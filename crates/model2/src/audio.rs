@@ -154,6 +154,39 @@ impl Resampler {
     }
 }
 
+// Save states: the boards and the sample count; the mix is configuration.
+impl state::State for Live {
+    fn save(&self, w: &mut state::Writer) {
+        self.samples.save(w);
+        self.sound.is_some().save(w);
+        if let Some(s) = &self.sound {
+            s.save(w);
+        }
+        self.music.is_some().save(w);
+        if let Some(m) = &self.music {
+            m.save(w);
+        }
+    }
+    fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
+        self.samples.load(r)?;
+        let mismatch = || state::Error("save state is for a different set of sound boards".into());
+        let mut saved = false;
+        saved.load(r)?;
+        match (&mut self.sound, saved) {
+            (Some(s), true) => s.load(r)?,
+            (None, false) => {}
+            _ => return Err(mismatch()),
+        }
+        saved.load(r)?;
+        match (&mut self.music, saved) {
+            (Some(m), true) => m.load(r)?,
+            (None, false) => {}
+            _ => return Err(mismatch()),
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

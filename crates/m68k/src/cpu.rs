@@ -1540,5 +1540,7 @@ impl Cpu {
     }
 }
 
+state::fields!(Cpu { d, a, other_sp, pc, t, s, mask, x, n, z, v, c, stopped, halted, irq, nmi, cyc, ppc, ir });
+
 #[cfg(test)]
 mod tests;

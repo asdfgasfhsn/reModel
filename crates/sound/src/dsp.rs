@@ -275,6 +275,24 @@ impl Dsp {
     }
 }
 
+state::fields!(Dsp {
+    coef,
+    madrs,
+    mpro,
+    temp,
+    mems,
+    mixs,
+    efreg,
+    exts,
+    len,
+    acc,
+    y_reg,
+    frc_reg,
+    adrs_reg,
+    memval,
+    dec
+});
+
 #[cfg(test)]
 mod tests {
     use super::*;

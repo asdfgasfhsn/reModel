@@ -381,6 +381,9 @@ impl Decoder {
     }
 }
 
+// Save states: the synthesis history; the matrix and window are constant.
+state::fields!(Decoder { v, pos });
+
 #[cfg(test)]
 mod tests {
     use super::*;

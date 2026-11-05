@@ -38,6 +38,8 @@ pub struct Machine {
     pub bus: Model2Bus,
     /// Video frames completed (a copy of `bus.frames`).
     pub frames: u64,
+    /// `program_hash` of the ROM set (save states carry it).
+    program_hash: u64,
     /// Recompiled blocks by address / 4 over the program ROM, if this build
     /// has recompiled code for the game's ROM.
     native: Option<Vec<Option<Block>>>,
@@ -65,6 +67,7 @@ impl Machine {
             cpu,
             bus,
             frames: 0,
+            program_hash: program_hash(roms),
             native,
             coverage: Coverage::default(),
             indirect: BTreeSet::new(),
@@ -154,6 +157,41 @@ impl Machine {
         None
     }
 
+    /// The whole machine's state (see `remodel-state`): load it into a
+    /// machine built from the same ROMs with [`Machine::load_state`].
+    pub fn save_state(&mut self) -> Vec<u8> {
+        use state::State as _;
+        self.bus.geo.sync();
+        let mut w = state::Writer::default();
+        w.buf.extend_from_slice(STATE_MAGIC);
+        self.program_hash.save(&mut w);
+        self.cpu.save(&mut w);
+        self.bus.save(&mut w);
+        w.buf
+    }
+
+    /// Restore a state from [`Machine::save_state`]. On error the machine
+    /// may be partly loaded: build a new one.
+    pub fn load_state(&mut self, data: &[u8]) -> Result<(), String> {
+        use state::State as _;
+        let mut r = state::Reader::new(data);
+        if r.bytes(STATE_MAGIC.len()).ok() != Some(STATE_MAGIC) {
+            return Err("not a Remodel save state (or from another version)".into());
+        }
+        let mut hash = 0u64;
+        hash.load(&mut r).map_err(|e| e.to_string())?;
+        if hash != self.program_hash {
+            return Err("save state is for a different ROM set".into());
+        }
+        self.cpu.load(&mut r).map_err(|e| e.to_string())?;
+        self.bus.load(&mut r).map_err(|e| e.to_string())?;
+        if !r.done() {
+            return Err("save state has trailing data".into());
+        }
+        self.frames = self.bus.frames;
+        Ok(())
+    }
+
     /// Hottest instruction addresses in the current frame window.
     pub fn hot_spots(&self, n: usize) -> Vec<(u32, u64)> {
         let mut v = self.frame_profile.counts();
@@ -162,6 +200,43 @@ impl Machine {
         v
     }
 }
+
+/// Save file header (the rest is zlib-compressed).
+const SAVE_MAGIC: &[u8] = b"REMODEL-SAVE-1\n";
+
+/// A save file: the machine's state and, if given, the sound boards' (see
+/// [`audio::Live`]), compressed (about 1 MB for topskatr).
+pub fn save_session(machine: &mut Machine, live: Option<&audio::Live>) -> Vec<u8> {
+    let m = machine.save_state();
+    let mut raw = (m.len() as u64).to_le_bytes().to_vec();
+    raw.extend(m);
+    if let Some(l) = live {
+        raw.extend(state::to_bytes(l));
+    }
+    let mut out = SAVE_MAGIC.to_vec();
+    out.extend(png::zlib::compress(&raw));
+    out
+}
+
+/// Load a file from [`save_session`]. Without `live`, any sound board state
+/// in it is ignored; with `live` but none saved, the boards are left as
+/// they are.
+pub fn load_session(machine: &mut Machine, live: Option<&mut audio::Live>, data: &[u8]) -> Result<(), String> {
+    let body = data.strip_prefix(SAVE_MAGIC).ok_or("not a Remodel save file (or from another version)")?;
+    let data = png::zlib::decompress(body).map_err(|e| format!("save file damaged: {e}"))?;
+    let len = data.get(..8).map(|b| u64::from_le_bytes(b.try_into().unwrap()) as usize).ok_or("save file truncated")?;
+    let m = data.get(8..8 + len).ok_or("save file truncated")?;
+    machine.load_state(m)?;
+    let rest = &data[8 + len..];
+    if let (Some(l), false) = (live, rest.is_empty()) {
+        let mut r = state::Reader::new(rest);
+        state::State::load(l, &mut r).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Save state header: format name and version.
+const STATE_MAGIC: &[u8] = b"REMODEL-STATE-1\n";
 
 /// Identifies the program ROM image, which recompiled i960 code is keyed by.
 pub fn program_hash(roms: &RomSet) -> u64 {

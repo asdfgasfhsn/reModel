@@ -274,6 +274,10 @@ impl MpegChip {
     }
 }
 
+// Save states. A replacement soundtrack track that is playing (`voice`)
+// isn't kept: it stops on load. The ROM and events stay as they are.
+state::fields!(MpegChip { cmd, args, need, start, end, looped, playing, cur, seg_end, gain, dec, pcm, at, frames });
+
 #[cfg(test)]
 mod tests {
     use super::*;

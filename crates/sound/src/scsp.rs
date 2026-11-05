@@ -852,6 +852,47 @@ fn pan_gains(sdl: u32, pan: u32) -> (i32, i32) {
     }
 }
 
+// Save states. The PLFO table is constant; statistics and the key log are
+// diagnostics.
+state::fields!(Scsp {
+    ram,
+    slots,
+    common,
+    timers,
+    scieb,
+    scipd,
+    scilv,
+    mcieb,
+    mcipd,
+    irq,
+    mi,
+    mi_ovf,
+    midi_out,
+    stack,
+    dsp,
+    samples,
+    lfsr
+});
+state::fields!(Slot { regs, active, phase, eg, pos, frac, backward, lfo, lfo_div });
+state::fields!(Timer { ctl, count });
+
+impl state::State for Phase {
+    fn save(&self, w: &mut state::Writer) {
+        (*self as u8).save(w);
+    }
+    fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
+        let mut v = 0u8;
+        v.load(r)?;
+        *self = match v {
+            0 => Phase::Attack,
+            1 => Phase::Decay1,
+            2 => Phase::Decay2,
+            _ => Phase::Release,
+        };
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

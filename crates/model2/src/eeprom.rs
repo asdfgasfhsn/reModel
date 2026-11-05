@@ -169,6 +169,52 @@ impl Eeprom {
     }
 }
 
+// Save states.
+state::fields!(Eeprom { data, write_enabled, state, cs, clk, dout, dirty });
+
+impl state::State for State {
+    fn save(&self, w: &mut state::Writer) {
+        match *self {
+            State::Idle => 0u8.save(w),
+            State::Command { bits, n } => (1u8, bits, n).save(w),
+            State::Data { op, addr, bits, n } => {
+                (2u8, matches!(op, Op::WriteAll), addr).save(w);
+                (bits, n).save(w);
+            }
+            State::Read { addr, word, n } => (3u8, addr, (word, n)).save(w),
+            State::Done => 4u8.save(w),
+        }
+    }
+    fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
+        let mut tag = 0u8;
+        tag.load(r)?;
+        *self = match tag {
+            0 => State::Idle,
+            1 => {
+                let mut v = (0u32, 0u32);
+                v.load(r)?;
+                State::Command { bits: v.0, n: v.1 }
+            }
+            2 => {
+                let (mut all, mut addr, mut v) = (false, 0u8, (0u32, 0u32));
+                all.load(r)?;
+                addr.load(r)?;
+                v.load(r)?;
+                State::Data { op: if all { Op::WriteAll } else { Op::Write }, addr, bits: v.0, n: v.1 }
+            }
+            3 => {
+                let (mut addr, mut v) = (0u8, (0u32, 0u32));
+                addr.load(r)?;
+                v.load(r)?;
+                State::Read { addr, word: v.0, n: v.1 }
+            }
+            4 => State::Done,
+            t => return Err(state::Error(format!("bad EEPROM state {t}"))),
+        };
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -447,3 +447,35 @@ impl Engine {
         self.tgp.fifo_in.clear();
     }
 }
+
+// Save states. The front end and, after any running frame finishes, the
+// engine (its TGP, polygon RAM, texture point RAM and last frame's
+// output); the polygon ROM and diagnostics stay. In remote mode the engine
+// lives elsewhere and isn't saved.
+impl state::State for Geometrizer {
+    fn save(&self, w: &mut state::Writer) {
+        self.program.save(w);
+        self.uploading.save(w);
+        self.upload_half.save(w);
+        self.booted.save(w);
+        self.write_ptr.save(w);
+        self.read_ptr.save(w);
+        self.bad_commands.save(w);
+        match &self.engine {
+            Slot::Idle(e) => e.save(w),
+            _ => panic!("geometrizer frame still running: call sync() before saving"),
+        }
+    }
+    fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
+        self.program.load(r)?;
+        self.uploading.load(r)?;
+        self.upload_half.load(r)?;
+        self.booted.load(r)?;
+        self.write_ptr.load(r)?;
+        self.read_ptr.load(r)?;
+        self.bad_commands.load(r)?;
+        self.engine_mut().load(r)
+    }
+}
+
+state::fields!(Engine { tgp, poly_ram, buffer, stream, list_words, fault, frames, texture_point_ram });
