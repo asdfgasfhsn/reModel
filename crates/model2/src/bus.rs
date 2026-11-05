@@ -459,6 +459,12 @@ impl Model2Bus {
             }
             // UART: status reports transmitter ready and empty, nothing received.
             0x01c8_0000..=0x01c8_0003 => 0x0005_0000,
+            // Communication (link) board registers with no board fitted:
+            // they read as all ones. Bit 0 of 0x1A14000 set is "no
+            // communication board" to stcc's and overrev's network checks,
+            // and overrev's stand-alone boot then waits for bit 7 of
+            // 0x1A14002 to be set (README, "What's known about overrev").
+            0x01a1_4000 => u32::MAX,
             0x1000_0000..=0x105f_ffff => 0,
             _ => return None,
         };
