@@ -56,7 +56,7 @@ endif
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release test lint fmt fmt-check check ci games verify boot disasm analyze run copro-disasm m68k-tests clean recomp bench sound sound-disasm
+.PHONY: help build release dist test lint fmt fmt-check check ci games verify boot disasm analyze run copro-disasm m68k-tests clean recomp bench sound sound-disasm
 
 ##@ General
 
@@ -154,6 +154,31 @@ dump-textures: release ## Coin-start-race run dumping every 3D texture and tile 
 play: ## Play in a native window: GPU, live sound, gamepads, Esc menu, save states (RECOMP=1: recompiled code; PLAY_ARGS, e.g. --game topskatr)
 	$(RELEASE_ENV) $(CARGO) build --release -p remodel-play
 	$(PLAY) --game $(GAME) --rom $(ROM) $(PLAY_ARGS)
+
+# `make dist`: interpreter only, so no game-derived recompiled code is
+# linked in; a target dir of its own keeps the stripped profile apart.
+DIST_TARGET_DIR := target/dist
+DIST_OUT        ?= out/dist
+
+dist: ## Distributable player for this platform (interpreter only, stripped) -> out/dist/remodel-VERSION-TARGET.tar.gz
+	@test -z "$(RECOMP)" || { echo "make dist builds the interpreter only: recompiled code is derived from the game, so it isn't distributed (drop RECOMP=1)"; exit 1; }
+	env -u REMODEL_RECOMP_DIR CARGO_TARGET_DIR=$(DIST_TARGET_DIR) CARGO_PROFILE_RELEASE_DEBUG=false CARGO_PROFILE_RELEASE_STRIP=true \
+		$(CARGO) build --release --locked -p remodel-play
+	@for f in $(DIST_TARGET_DIR)/release/build/remodel-model2-*/out/recomp_registry.rs; do \
+		if grep -q '::HASH =>' $$f; then echo "$$f: recompiled code in the dist build"; exit 1; fi; \
+	done
+	@set -e; \
+	version=$$($(CARGO) pkgid -p remodel-play | sed 's/.*[@#]//'); \
+	rev=$$(git describe --tags --always --dirty 2>/dev/null || true); \
+	target=$$(rustc -vV | sed -n 's/^host: //p'); \
+	name=remodel-$$version$${rev:+-$$rev}-$$target; \
+	dir=$(DIST_OUT)/$$name; \
+	rm -rf $$dir $$dir.tar.gz; mkdir -p $$dir; \
+	cp $(DIST_TARGET_DIR)/release/remodel-play $$dir/; \
+	for l in $(wildcard LICENSE*); do cp $$l $$dir/; done; \
+	sed -e "s|@VERSION@|$$version$${rev:+ ($$rev)}|" -e "s|@TARGET@|$$target|" crates/play/dist-README.txt > $$dir/README.txt; \
+	tar -C $(DIST_OUT) -czf $$dir.tar.gz $$name; \
+	echo "built $$dir.tar.gz ($$(du -h $$dir.tar.gz | cut -f1))"
 
 web: ## Build the browser version (WebAssembly + WebGPU) into out/web; needs the wasm32 target and wasm-bindgen (docs/web.md); RECOMP=1 includes the recompiled game code
 	CARGO_TARGET_DIR=target/web CARGO_PROFILE_RELEASE_DEBUG=false $(WEB_ENV) $(WASM_CARGO) build --release --target wasm32-unknown-unknown -p remodel-web

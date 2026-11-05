@@ -78,6 +78,7 @@ make recomp               # recompile the game's i960 code and TGP programs (aft
 make bench RECOMP=1       # same run on the recompiled build: same hash, about twice as fast
 make play RECOMP=1        # play in a native window (Esc menu, F5/F9 quick save/load, F11 fullscreen)
 make web RECOMP=1         # browser build -> out/web (WebGPU; serve over HTTPS, docs/web.md)
+make dist                 # player to hand out (interpreter only, no ROMs) -> out/dist/remodel-VERSION-TARGET.tar.gz
 make capture              # save renderer inputs from a run into a race -> out/topskatr/capture
 make gpu-check            # draw them on the software and GPU rasterisers, time and compare
 make lockstep RECOMP=1    # recompiled vs interpreted i960, block by block, until they differ

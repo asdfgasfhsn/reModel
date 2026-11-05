@@ -21,7 +21,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            rom: PathBuf::from("rom"),
+            rom: default_rom(),
             game: "topskatr".into(),
             sfx_db: model2::audio::DEFAULT_MIX.0,
             music_db: model2::audio::DEFAULT_MIX.1,
@@ -29,6 +29,16 @@ impl Default for Settings {
             exact: false,
             fullscreen: false,
         }
+    }
+}
+
+/// The ROM folder until one is chosen: `rom` in the source tree (or
+/// wherever there's a `rom/` folder), else `roms` beside the settings.
+fn default_rom() -> PathBuf {
+    if Path::new("rom").is_dir() || Path::new("out").is_dir() {
+        PathBuf::from("rom")
+    } else {
+        data_dir().join("roms")
     }
 }
 

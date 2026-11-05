@@ -33,6 +33,9 @@ Gamepads work too; the one used last drives the game.
 - **Game**: the ROM folder and the supported sets found in it. Sets are
   read as MAME keeps them: `<set>.zip` or a `<set>/` folder. With no ROM
   folder set up, or the last game missing, the player starts in the menu.
+  The ROM folder defaults to `rom/` in the source tree (or wherever the
+  current directory has a `rom/` folder), else to `roms/` beside the
+  settings (`~/.local/share/remodel/roms`), created on first run.
 
 ## Files
 
@@ -41,7 +44,22 @@ directory), the player keeps its files in `out/`; anywhere else in
 `$XDG_DATA_HOME/remodel` (normally `~/.local/share/remodel`):
 
 - `play-settings.txt`: the settings, as `key = value` lines. Options given
-  on the command line are remembered too.
+  on the command line are remembered too; `--game` once that game starts.
 - `<set>/eeprom.bin`: the game's EEPROM (settings, records), written on quit or on switching games.
 - `<set>/saves/quick.save`, `slot1.save` ...: save states, zlib-compressed,
   about 1.2 MB each. They only load into the same program ROMs.
+
+## A copy to hand out
+
+`make dist` builds the player for the machine it runs on (here
+`x86_64-unknown-linux-gnu`) as `out/dist/remodel-<version>-<target>.tar.gz`,
+about 6 MB: the stripped release binary and a `README.txt` (bring your own
+ROMs, keys, where files go). The version is the workspace's from Cargo plus
+`git describe`. It runs the i960 on the interpreter only: recompiled code is
+derived from the game's ROMs, so the target builds without
+`REMODEL_RECOMP_DIR` (in its own `target/dist`), checks that the recompiled
+registry came out empty, and refuses `RECOMP=1`.
+
+Unpacked anywhere outside the source tree, it keeps its files in
+`$XDG_DATA_HOME/remodel` and looks for sets in `roms/` there; with none
+found it opens in the menu, where another ROM folder can be typed in.

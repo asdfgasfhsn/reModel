@@ -37,7 +37,7 @@ fn main() {
         for (stem, path) in list {
             let _ = writeln!(
                 s,
-                "#[allow(clippy::all, unused_braces)]\nmod {prefix}_{stem} {{\n    include!({:?});\n}}",
+                "#[allow(clippy::all, unused_braces, dead_code)]\nmod {prefix}_{stem} {{\n    include!({:?});\n}}",
                 path.canonicalize().unwrap()
             );
         }

@@ -39,7 +39,8 @@ usage: remodel-play [options]
 
   --game ID          set to play (default: the last one played, or topskatr)
   --rom DIR          ROM folder: MAME sets as zips or folders (default: the
-                     last one used, or rom)
+                     last one used; else rom in the Remodel source tree,
+                     or $XDG_DATA_HOME/remodel/roms anywhere else)
   --mix SFX:MUSIC    sound board and music board gains in dB (default 8:-8)
   --no-sound         don't run the sound boards
   --hud center|edges wide windows: keep the HUD centred, or move each HUD
@@ -54,7 +55,8 @@ usage: remodel-play [options]
   --input SCRIPT     scripted inputs, as for `remodel run` (for timing runs),
                      e.g. coin1@1100-1104,start@1250-1254
 
-Options given here are remembered, as are changes made in the menu.
+Options given here are remembered (the game once it starts), as are
+changes made in the menu.
 
 keys: C coin, Enter start, arrows steer (Down slide), Z jump front, X jump
 tail, Q/E select, Esc menu (pause), F5 quick save, F9 quick load, F11
@@ -74,15 +76,17 @@ struct Options {
     interp: bool,
     seconds: Option<f64>,
     input: Option<model2::input::InputScript>,
+    /// `--game`: remembered only once it starts (`Play::start_game`).
+    game: Option<String>,
 }
 
 fn options(s: &mut Settings) -> Result<Options, String> {
-    let mut o = Options { sound: true, interp: false, seconds: None, input: None };
+    let mut o = Options { sound: true, interp: false, seconds: None, input: None, game: None };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{a} needs a value"));
         match a.as_str() {
-            "--game" => s.game = value()?,
+            "--game" => o.game = Some(value()?),
             "--rom" => s.rom = PathBuf::from(value()?),
             "--mix" => {
                 let v = value()?;
@@ -776,7 +780,11 @@ fn main() {
     };
     play.scan();
     // The last game played (or --game), if it's here; else the menu.
-    let set = play.settings.game.clone();
+    let set = play.opts.game.clone().unwrap_or_else(|| play.settings.game.clone());
+    if play.settings.rom == Settings::default().rom {
+        // So there's an obvious place to put sets.
+        let _ = std::fs::create_dir_all(&play.settings.rom);
+    }
     if play.games.iter().any(|g| g.0 == set) {
         play.start_game(&set);
     } else {
