@@ -12,9 +12,13 @@
   html, body { margin: 0; height: 100%; background: #000; color: #ccc; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
   canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; object-fit: contain; display: block; }
   /* The logo while loading, fading out as the game starts. */
-  #splash { position: fixed; inset: 0; background: #000; display: grid; place-items: center; pointer-events: none;
-    transition: opacity 0.5s; }
+  #splash { position: fixed; inset: 0; background: #000; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 18px; pointer-events: none; transition: opacity 0.5s; }
   #splash img { max-width: 70vw; max-height: 50vh; }
+  /* Download progress under the logo. */
+  #progress { width: min(420px, 70vw); height: 4px; border-radius: 2px; background: #1a2a33; overflow: hidden; }
+  #fill { height: 100%; width: 0; background: #2ee6ff; box-shadow: 0 0 8px #2ee6ff; transition: width 0.15s; }
+  #ptext { color: #9ab; font-variant-numeric: tabular-nums; min-height: 1.4em; text-align: center; padding: 0 16px; }
   #splash.gone { opacity: 0; }
   #bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 6px 12px; background: rgba(0, 0, 0, 0.6); display: flex; gap: 16px; flex-wrap: wrap; }
   #bar.hidden { display: none; }
@@ -53,7 +57,8 @@
 </head>
 <body>
 <canvas id="screen"></canvas>
-<div id="splash"><img src="../../reModel-logo.png" alt="reModel"></div>
+<div id="splash"><img src="../../reModel-logo.png" alt="reModel">
+  <div id="progress"><div id="fill"></div></div><div id="ptext">loading…</div></div>
 <a id="back" href="../../">← Games</a>
 <div id="bar">
   <span id="status">loading…</span>
@@ -80,7 +85,7 @@
   // This set's WebAssembly module: its own with recompiled code, or the
   // shared interpreter build (the meta tag above).
   const pkg = new URL(document.querySelector('meta[name="remodel-pkg"]').content, location.href).href;
-  const { default: init, start, set_audio_level, set_geo_frame, set_touch, controls_help, touch_layout, game_title } =
+  const { default: init, start, set_audio_level, set_geo_frame, set_touch, controls_help, touch_layout, game_title, rom_files } =
     await import(pkg + "remodel_web.js");
   // For the game list's "Continue".
   try {
@@ -155,13 +160,57 @@
     if (e.code === "KeyH") toggleBar();
   });
 
+  // Loading progress on the splash.
+  const fill = document.getElementById("fill");
+  const ptext = document.getElementById("ptext");
+  const mb = (n) => (n / 1048576).toFixed(n < 10485760 ? 1 : 0);
+  function progress(label, done, total) {
+    fill.style.width = total ? `${Math.min(100, (100 * done) / total)}%` : "0";
+    ptext.textContent = total ? `${label} ${mb(done)} / ${mb(total)} MB` : label;
+  }
+  // Fetch URLs (at most four at once), reporting bytes as they arrive.
+  async function download(urls, label) {
+    const got = new Array(urls.length).fill(0);
+    const size = new Array(urls.length).fill(0);
+    const update = () => progress(label, got.reduce((a, b) => a + b, 0), size.reduce((a, b) => a + b, 0));
+    const out = new Array(urls.length);
+    let next = 0;
+    async function one() {
+      while (next < urls.length) {
+        const i = next++;
+        const r = await fetch(urls[i]);
+        if (!r.ok) throw new Error(`${urls[i]}: ${r.status} ${r.statusText}`);
+        size[i] = Number(r.headers.get("content-length")) || 0;
+        const reader = r.body.getReader();
+        const parts = [];
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          parts.push(value);
+          got[i] += value.length;
+          update();
+        }
+        out[i] = new Blob(parts);
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(4, urls.length) }, one));
+    return out;
+  }
+
   if (!navigator.gpu) {
+    ptext.textContent = "This browser has no WebGPU.";
     status.textContent = "This browser has no WebGPU (try a recent Chrome, Edge or Safari; on Linux, check chrome://gpu).";
   } else {
     try {
-      // Compile once; the sound worker instantiates the same module.
-      const module = await WebAssembly.compileStreaming(fetch(pkg + "remodel_web_bg.wasm"));
+      // Compile once; the workers instantiate the same module.
+      const [code] = await download([pkg + "remodel_web_bg.wasm"], "Game code");
+      progress("Compiling…");
+      const module = await WebAssembly.compile(await code.arrayBuffer());
       await init({ module_or_path: module });
+      // The ROMs, once, before anything else asks for them: the workers and
+      // the game then get them from the browser's cache.
+      await download(rom_files(game).map((f) => `${rom}/${f}`), "ROMs");
+      progress("Starting…");
       document.title = `${game_title(game)} · Remodel`;
       document.getElementById("keys").textContent = controls_help(game).trim().replace(/\n\s*/g, " · ").replace(/ {2,}/g, " ") + " · ";
       // Touch screens: on-screen controls (the game's, from its pad
@@ -215,6 +264,8 @@
       splash.addEventListener("transitionend", () => splash.remove());
     } catch (e) {
       status.textContent = "error: " + (e.message ?? e);
+      ptext.textContent = "Couldn't start: " + (e.message ?? e);
+      ptext.style.color = "#f66";
       console.error(e);
     }
   }
