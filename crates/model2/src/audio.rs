@@ -1,5 +1,5 @@
 //! Live audio: the sound board (68000 + SCSP) and, on games that have one,
-//! the DSB2 music board, run alongside the main board and fed the bytes the
+//! the DSB2 or DSB1 music board, run alongside the main board and fed the bytes the
 //! game sends on the sound link as it sends them.
 //!
 //! Each byte reaches the boards at the output sample matching the CPU cycle
@@ -21,9 +21,54 @@ pub const RATE: u32 = 44_100;
 /// the native build. Unconfirmed against a cabinet: a listening choice.
 pub const DEFAULT_MIX: (f32, f32) = (8.0, -8.0);
 
+/// A music board: the DSB2 (68000, `topskatr`) or the DSB1 (Z80, `stcc`).
+/// Both take the sound link's bytes and give 44.1 kHz stereo.
+enum Music {
+    Dsb2(dsb::Dsb2),
+    Dsb1(dsb::Dsb1),
+}
+
+impl Music {
+    fn midi_in(&mut self, byte: u8) {
+        match self {
+            Music::Dsb2(m) => m.midi_in(byte),
+            Music::Dsb1(m) => m.midi_in(byte),
+        }
+    }
+
+    fn run(&mut self, samples: usize, out: &mut Vec<i16>) {
+        match self {
+            Music::Dsb2(m) => m.run(samples, out),
+            Music::Dsb1(m) => m.run(samples, out),
+        }
+    }
+
+    fn set_soundtrack(&mut self, st: dsb::Soundtrack) {
+        match self {
+            Music::Dsb2(m) => m.set_soundtrack(st),
+            Music::Dsb1(m) => m.set_soundtrack(st),
+        }
+    }
+}
+
+impl state::State for Music {
+    fn save(&self, w: &mut state::Writer) {
+        match self {
+            Music::Dsb2(m) => m.save(w),
+            Music::Dsb1(m) => m.save(w),
+        }
+    }
+    fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
+        match self {
+            Music::Dsb2(m) => m.load(r),
+            Music::Dsb1(m) => m.load(r),
+        }
+    }
+}
+
 pub struct Live {
     sound: Option<sound::SoundBoard>,
-    music: Option<dsb::Dsb2>,
+    music: Option<Music>,
     /// Output samples produced so far (per channel).
     samples: u64,
     a: Vec<i16>,
@@ -37,23 +82,32 @@ fn gain(db: f32) -> f32 {
 }
 
 impl Live {
-    /// The boards `roms` has: none, the sound board, or both.
+    /// The boards `roms` has: none, the sound board, or the sound board and
+    /// a music board (DSB2 or DSB1).
     pub fn new(roms: &RomSet) -> Self {
         let prog = roms.region16be(Role::AudioCpu);
         let sound = (!prog.is_empty()).then(|| sound::SoundBoard::new(prog, roms.region16be(Role::Samples)));
-        let music = roms.game.files.iter().position(|f| f.role == Role::MpegCpu).map(|i| {
-            let mpeg: Vec<u8> = roms
-                .game
+        let mpeg = || -> Vec<u8> {
+            roms.game
                 .files
                 .iter()
                 .zip(&roms.chips)
                 .filter(|(f, _)| f.role == Role::MpegData)
                 .flat_map(|(_, c)| c.iter().copied())
-                .collect();
-            let mut d = dsb::Dsb2::new(&roms.chips[i], mpeg);
+                .collect()
+        };
+        let chip = |role| roms.game.files.iter().position(|f| f.role == role).map(|i| &roms.chips[i]);
+        let music = if let Some(prog) = chip(Role::MpegCpu) {
+            let mut d = dsb::Dsb2::new(prog, mpeg());
             d.set_diagnostics(false);
-            d
-        });
+            Some(Music::Dsb2(d))
+        } else if let Some(prog) = chip(Role::Dsb1Cpu) {
+            let mut d = dsb::Dsb1::new(prog, mpeg());
+            d.set_diagnostics(false);
+            Some(Music::Dsb1(d))
+        } else {
+            None
+        };
         let gains = (gain(DEFAULT_MIX.0), gain(DEFAULT_MIX.1));
         Live { sound, music, samples: 0, a: Vec::new(), b: Vec::new(), gains }
     }

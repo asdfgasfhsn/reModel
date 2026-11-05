@@ -1,4 +1,4 @@
-//! `music-render` and `mpeg-dump`: the DSB2 music board and its decoder.
+//! `music-render` and `mpeg-dump`: the DSB2 and DSB1 music boards and their decoder.
 
 use romset::{Role, RomSet};
 use std::path::Path;
@@ -132,6 +132,10 @@ pub fn music_render(
     let seconds = seconds.unwrap_or(last + 5.0);
     println!("{} host bytes over {last:.1} s; rendering {seconds:.1} s", bytes.len());
 
+    if !roms.game.files.iter().any(|f| f.role == Role::MpegCpu) {
+        return dsb1_render(roms, &bytes, seconds, wav, soundtrack);
+    }
+
     // Music commands as the host sent them (channel 14, `AE cc vv`).
     let mut status = 0;
     let mut msg = vec![];
@@ -262,6 +266,7 @@ pub fn music_render(
             }
             dsb::Event::Gain { reg, value } => format!("gain {reg:02X} = {value:#04x}"),
             dsb::Event::BadFrame(a) => format!("no frame at {a:#08x}, stopped"),
+            dsb::Event::Attenuation(v) => format!("attenuation {v:#04x}"),
             dsb::Event::Unknown(_) => unreachable!(),
         };
         println!("  dsb2 {t:7.2} s  {what}");
@@ -273,6 +278,155 @@ pub fn music_render(
             println!("soundtrack error: {e}");
         }
     }
+    let (peak, rms, clipped) = levels(&pcm);
+    println!("peak {:.1} dBFS, rms {:.1} dBFS, {clipped} clipped samples", db(peak), db(rms));
+    println!("rendered {seconds:.1} s in {host:.2} s ({:.0}x real time)", seconds / host);
+    if let Some(d) = wav.parent() {
+        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+    }
+    write_wav(wav, dsb::OUT_HZ as u32, 2, &pcm).map_err(|e| e.to_string())?;
+    println!("wrote {}", wav.display());
+    Ok(())
+}
+
+/// Load a soundtrack against `table` and print what it replaces.
+fn load_soundtrack(dir: &Path, table: &[(u32, u32)]) -> Result<dsb::Soundtrack, String> {
+    let st = dsb::Soundtrack::load(dir, table)?;
+    println!(
+        "soundtrack {}{}: {} of {} tracks replaced",
+        dir.display(),
+        st.title.as_ref().map_or(String::new(), |t| format!(" ({t})")),
+        st.replacements.len(),
+        table.len()
+    );
+    for r in &st.replacements {
+        println!(
+            "  track {:2} {:#08x}-{:#08x} <- {} ({})",
+            r.spec.track,
+            r.start,
+            r.end,
+            r.spec.file.display(),
+            r.info
+        );
+    }
+    Ok(st)
+}
+
+/// `music_render` for the DSB1 (Z80) board: the host's channel-15 (`AF`)
+/// commands, the decoder's events, and per-second levels.
+fn dsb1_render(
+    roms: &RomSet,
+    bytes: &[(f64, u8)],
+    seconds: f64,
+    wav: &Path,
+    soundtrack: Option<&Path>,
+) -> Result<(), String> {
+    let mut status = 0;
+    let mut msg = vec![];
+    for &(t, b) in bytes {
+        if b & 0x80 != 0 {
+            status = b;
+            msg.clear();
+        } else if status == 0xaf {
+            msg.push(b);
+            if msg.len() == 2 {
+                let what = match msg[0] {
+                    0x6f if msg[1] == 0 => "stop".into(),
+                    0x6f => format!("play track {}", msg[1]),
+                    0x01 => format!("volume scale {:#04x}", msg[1]),
+                    0x02 => format!("volume {:#04x}", msg[1]),
+                    0x03 => format!("fade out, rate {:#04x}", msg[1]),
+                    _ => "?".into(),
+                };
+                println!("  host {t:7.2} s  AF {:02X} {:02X}  {what}", msg[0], msg[1]);
+                msg.clear();
+            }
+        }
+    }
+
+    let program = roms.game.files.iter().position(|f| f.role == Role::Dsb1Cpu).ok_or("game has no music board")?;
+    let mut dsb = dsb::Dsb1::new(&roms.chips[program], mpeg_rom(roms));
+    let table = dsb.track_table();
+    println!("firmware track list: {} tracks", table.len());
+    if let Some(dir) = soundtrack {
+        dsb.set_soundtrack(load_soundtrack(dir, &table)?);
+    }
+    let track_of = |start: u32| table.iter().position(|&r| r.0 == start).map(|i| i + 1);
+    let total = (seconds * dsb::OUT_HZ as f64) as usize;
+    let mut pcm = Vec::with_capacity(total * 2);
+    let mut next = 0;
+    let t0 = Instant::now();
+    while pcm.len() / 2 < total {
+        let now = (pcm.len() / 2) as f64 / dsb::OUT_HZ as f64;
+        while next < bytes.len() && bytes[next].0 <= now {
+            dsb.midi_in(bytes[next].1);
+            next += 1;
+        }
+        dsb.run(441.min(total - pcm.len() / 2), &mut pcm);
+    }
+    let host = t0.elapsed().as_secs_f64();
+
+    let s = dsb.stats();
+    println!(
+        "z80: {} instructions, {} UART bytes in ({} overruns), {} echoed, {} MPEG frames{}",
+        s.instructions,
+        s.rx_bytes,
+        s.overruns,
+        s.tx_bytes,
+        s.frames,
+        if dsb.halted() { ", HALTED" } else { "" }
+    );
+    let pcs = dsb.pc_histogram();
+    let n: u64 = pcs.iter().map(|p| p.1).sum();
+    let top: Vec<String> =
+        pcs.iter().take(8).map(|(a, c)| format!("{a:04x} {:.0}%", 100.0 * *c as f64 / n as f64)).collect();
+    println!("z80 PCs: {}", top.join(", "));
+    for (p, v, c) in dsb.other_ports() {
+        match v {
+            Some(v) => println!("  port {p:02X} <- {v:02X} x{c}"),
+            None => println!("  port {p:02X} read x{c}"),
+        }
+    }
+    let events = dsb.events();
+    for (i, (t, e)) in events.iter().enumerate() {
+        // A fade steps the attenuation every few ms: show where each run ends.
+        let fading = |j: usize| matches!(events.get(j), Some((u, dsb::Event::Attenuation(_))) if u - t < 4410);
+        if matches!(e, dsb::Event::Attenuation(_)) && fading(i + 1) {
+            continue;
+        }
+        let t = *t as f64 / dsb::OUT_HZ as f64;
+        let what = match e {
+            dsb::Event::Attenuation(v) => format!("attenuation {v:#04x}"),
+            dsb::Event::Play { start, end, looped } => format!(
+                "play {}{start:#08x}-{end:#08x} ({:.1} s){}",
+                track_of(*start).map_or(String::new(), |t| format!("track {t} ")),
+                (end - start) as f64 / 576.0 * 0.036,
+                if *looped { ", continuing" } else { "" }
+            ),
+            dsb::Event::LoopStart(a) => format!("next segment from {a:#08x}"),
+            dsb::Event::SegmentEnd { restart: Some(a) } => format!("segment end, on to {a:#08x}"),
+            dsb::Event::SegmentEnd { restart: None } => "segment end, stopped".into(),
+            e => format!("{e:?}"),
+        };
+        println!("  dsb1 {t:7.2} s  {what}");
+    }
+    if let Some(st) = dsb.soundtrack() {
+        for e in &st.errors {
+            println!("soundtrack error: {e}");
+        }
+    }
+    let per_second: Vec<String> = pcm
+        .chunks(2 * dsb::OUT_HZ as usize)
+        .map(|c| {
+            let (_, rms, _) = levels(c);
+            if rms > 0.0 {
+                format!("{:.0}", db(rms))
+            } else {
+                "-".into()
+            }
+        })
+        .collect();
+    println!("rms dBFS per second: {}", per_second.join(" "));
     let (peak, rms, clipped) = levels(&pcm);
     println!("peak {:.1} dBFS, rms {:.1} dBFS, {clipped} clipped samples", db(peak), db(rms));
     println!("rendered {seconds:.1} s in {host:.2} s ({:.0}x real time)", seconds / host);
