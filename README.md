@@ -43,6 +43,7 @@ music`). There is no live window yet.
 | Speed | interpreters about 2.2x real time (`make bench`); recompiled build about 4.4x (`make bench RECOMP=1`), where the geometrizer thread becomes the limit |
 | Sound board: 68000 + SCSP (slots, EG, LFO, FM, timers, MIDI, DSP) | done offline: replays the captured command stream to a WAV at about 12x real time |
 | DSB2 music board (68000 firmware + MPEG Layer II decoder) | done; `make music` renders the game's music from a `run` capture |
+| Z80 core (for `stcc`'s DSB1 music board) | done, not yet used by a board: full instruction set with undocumented flags, interrupts, T-state timing, save states; see `docs/hw/z80.md` |
 | Enhanced views: any resolution, 16:9 / 21:9 with HUD moved to the edges | done for snapshots (`--height`, `--aspect`, `--hud`) |
 | Custom soundtracks (replace any music track, game logic intact) | done offline: `make music SOUNDTRACK=name`; see `docs/mods.md` |
 | Native window (`make play`) | playable: GPU renderer, live sound (cpal), keyboard and gamepad (gilrs), any window shape from 4:3 to 32:9; about 2 ms of CPU per frame recompiled. Esc menu (sound mix, display, save slots, game picker), save states; see `docs/play.md` |
@@ -58,6 +59,7 @@ Requires a Rust toolchain (stable) and `make`.
 make                  # list every target
 make check            # format check, clippy, unit tests (no ROMs needed)
 make m68k-tests       # 68000 core vs the SingleStepTests suite (fetches ~200 MB, 1.1 GB unpacked, into out/)
+make z80-test         # Z80 core vs the zexdoc/zexall exercisers in out/z80-tests (docs/hw/z80.md)
 
 # With ROM sets in ./rom, as MAME keeps them (rom/topskatr.zip, or unpacked in rom/topskatr/):
 make verify           # check every chip
@@ -119,6 +121,7 @@ crates/
   model2/    board model: memory map, IRQs, timers, I/O, copro interface
   mb86235/   MB86235 (TGPx4) decoder, disassembler and interpreter
   m68k/      68000 interpreter and disassembler (sound CPUs)
+  z80/       Z80 interpreter (DSB1 music board CPU)   (generic)
   sound/     SCSP (YMF292) with its DSP, and the sound board (Model 2-generic)
   mpeg/      MPEG-1 Audio Layer II decoder          (generic)
   dsb/       DSB2 MPEG music board: 68000, UART, decoder chip model,
