@@ -161,8 +161,8 @@
           // Browsers that can't pass a compiled module: the worker fetches it.
           worker.postMessage({ type: "init", rom: "./rom", mix });
         }
-        link = (cycles, bytes, until) =>
-          worker.postMessage({ type: "link", cycles, bytes, until }, [cycles.buffer, bytes.buffer]);
+        link = (cycles, bytes, until, ratio) =>
+          worker.postMessage({ type: "link", cycles, bytes, until, ratio }, [cycles.buffer, bytes.buffer]);
       }
       // The geometrizer runs in its own worker too (?geo=local keeps it on
       // this thread).

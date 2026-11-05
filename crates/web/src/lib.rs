@@ -3,10 +3,13 @@
 //! `make web` builds it into out/web/ (see docs/web.md).
 //!
 //! The page calls [`start`] with a canvas and the URL of the ROM files;
-//! everything after that runs from `requestAnimationFrame`. The machine
-//! runs one emulated frame per 1/57.524 s of real time, catching up a few
-//! frames at most when the browser falls behind; once sound plays, the
-//! audio clock paces it instead ([`set_audio_level`]).
+//! everything after that runs from `requestAnimationFrame`. At a display
+//! refresh near the game's (60 Hz, or 120 Hz at one frame per two) the
+//! machine runs exactly one frame per refresh, measured from the animation
+//! frame times; otherwise it follows a steady 57.524 Hz clock. The sound
+//! worker resamples the audio to match, and corrects drift against the
+//! sound card by stretching it at most 0.5%, from the worklet's level
+//! reports ([`set_audio_level`]).
 //!
 //! The sound and music boards run in a Web Worker (sound-worker.js, using
 //! [`SoundEngine`] from this same module), on another core: each frame the
@@ -34,9 +37,11 @@ const TOUCH_BUTTONS: [&str; 6] = ["jumpfront", "jumptail", "start", "coin1", "se
 const FPS: f64 = 57.524;
 /// Most emulated frames run per browser frame before dropping time.
 const MAX_CATCH_UP: u32 = 3;
-/// With sound playing, audio paces the emulation: run frames while the
-/// worklet has less than this queued (stereo frames, about 70 ms).
+/// Audio the worklet should hold (stereo frames, about 70 ms): drift
+/// correction steers towards it.
 const AUDIO_TARGET: f64 = 0.07 * model2::audio::RATE as f64;
+/// Most the audio rate is stretched for drift correction.
+const DRIFT: f64 = 0.005;
 /// Audio level reports older than this (ms) are stale: pace by time.
 const AUDIO_STALE_MS: f64 = 250.0;
 
@@ -64,8 +69,16 @@ struct App {
     samples: u64,
     /// The worklet's last report: stereo frames queued, and when (ms).
     audio_level: Option<(f64, f64)>,
-    /// Stereo frames asked for since that report.
+    /// Stereo frames sent since that report (after resampling).
     sent_since: f64,
+    /// Average time between animation frames (ms), and the last frame time.
+    refresh_ms: f64,
+    last_t: f64,
+    redraws: u64,
+    /// Animation frames this status window that showed no new game frame.
+    repeats: u32,
+    /// Game samples per output sample for the sound worker's resampler.
+    ratio: f64,
     /// Geometrizer in a worker: its newest frame (raster stream, texture
     /// point RAM), once one arrives. None with the local engine.
     geo_frame: Option<Option<(Vec<u32>, Vec<u16>)>>,
@@ -182,14 +195,15 @@ impl App {
             let data = log.iter().filter(|e| !e.1);
             let cycles: Vec<f64> = data.clone().map(|e| e.0 as f64).collect();
             let bytes: Vec<u8> = data.map(|e| e.2).collect();
-            let _ = link.call3(
-                &JsValue::NULL,
+            let args = js_sys::Array::of4(
                 &js_sys::Float64Array::from(&cycles[..]),
                 &js_sys::Uint8Array::from(&bytes[..]),
                 &JsValue::from_f64(bus.now as f64),
+                &JsValue::from_f64(self.ratio),
             );
+            let _ = link.apply(&JsValue::NULL, &args);
         }
-        self.sent_since += produced as f64;
+        self.sent_since += produced as f64 / self.ratio;
         produced
     }
 
@@ -202,39 +216,53 @@ impl App {
             .then(|| level + self.sent_since - age * model2::audio::RATE as f64 / 1000.0)
     }
 
+    /// Game frames per animation frame when following the display (1 at
+    /// about 60 Hz, 1/2 at about 120 Hz), or None to follow the clock.
+    fn per_refresh(&self) -> Option<f64> {
+        let hz = 1000.0 / self.refresh_ms;
+        [1.0, 0.5].into_iter().find(|k| (0.95..=1.1).contains(&(hz * k / FPS)))
+    }
+
     fn tick(&mut self, t: f64) {
         if self.stopped {
             return;
         }
-        // Paced by audio when it plays (no drift against the sound card's
-        // clock), else by time.
-        let mut queued = self.audio_queued(t);
-        let due = match queued {
-            Some(_) => u64::MAX,
-            None => ((t - self.epoch) * FPS / 1000.0) as u64,
+        // Measure the refresh rate (ignoring gaps such as a hidden tab).
+        let dt = t - self.last_t;
+        self.last_t = t;
+        if dt > 2.0 && dt < 50.0 {
+            self.refresh_ms += (dt - self.refresh_ms) * 0.05;
+        }
+        self.redraws += 1;
+        let (due, speed) = match self.per_refresh() {
+            Some(k) => {
+                let next = (k == 1.0 || self.redraws.is_multiple_of(2)) as u64;
+                (self.machine.frames + next, 1000.0 / self.refresh_ms * k / FPS)
+            }
+            None => (((t - self.epoch) * FPS / 1000.0) as u64, 1.0),
         };
+        // Drift correction from the worklet's queue.
+        let drift = self.audio_queued(t).map_or(0.0, |q| ((q - AUDIO_TARGET) / AUDIO_TARGET).clamp(-1.0, 1.0));
+        self.ratio = speed * (1.0 + drift * DRIFT);
         let mut ran = 0;
         let t0 = now();
-        while self.machine.frames < due && ran < MAX_CATCH_UP && queued.is_none_or(|q| q < AUDIO_TARGET) {
+        while self.machine.frames < due && ran < MAX_CATCH_UP {
             self.apply_inputs();
             if let Err(e) = self.machine.run_slice(u64::MAX) {
                 self.stopped = true;
                 set_status(&self.status, &format!("stopped: {e:?}"));
                 return;
             }
-            let produced = self.send_link();
-            if let Some(q) = &mut queued {
-                *q += produced as f64;
-            }
+            self.send_link();
             ran += 1;
         }
         self.spent[0] += now() - t0;
-        if queued.is_some() {
-            // Keep the time base current for when audio stops pacing.
+        if self.per_refresh().is_some() || self.machine.frames < due {
+            // Following the display, or too far behind: keep the clock current.
             self.epoch = t - self.machine.frames as f64 * 1000.0 / FPS;
-        } else if self.machine.frames < due {
-            // Too far behind: drop the time rather than spiral.
-            self.epoch = t - self.machine.frames as f64 * 1000.0 / FPS;
+        }
+        if ran == 0 {
+            self.repeats += 1;
         }
         if ran > 0 {
             self.draw();
@@ -248,9 +276,14 @@ impl App {
             set_status(
                 &self.status,
                 &format!(
-                    "{:.0}% speed · {:.0} fps drawn · {}x{} · i960 {} · ms per frame: emulate {:.1}, draw {:.1}",
+                    "{} · {:.0}% speed · {:.0} fps drawn ({} repeats) · {}x{} · i960 {} · ms per frame: emulate {:.1}, draw {:.1}",
+                    match self.per_refresh() {
+                        Some(_) => format!("synced to {:.0} Hz", 1000.0 / self.refresh_ms),
+                        None => "exact speed".into(),
+                    },
                     speed,
                     self.counter.2 as f64 / secs,
+                    self.repeats,
                     self.view.width,
                     self.view.height,
                     if self.machine.is_native() { "recompiled" } else { "interpreted" },
@@ -260,6 +293,7 @@ impl App {
             );
             self.counter = (t, 0, 0);
             self.spent = [0.0; 3];
+            self.repeats = 0;
         }
     }
 }
@@ -347,6 +381,7 @@ pub struct SoundEngine {
     live: model2::audio::Live,
     link: Vec<(u64, bool, u8)>,
     pcm: Vec<i16>,
+    resampler: model2::audio::Resampler,
 }
 
 #[wasm_bindgen]
@@ -358,7 +393,12 @@ impl SoundEngine {
         let game = romset::games::find("topskatr").map_err(|e| JsValue::from_str(&e.to_string()))?;
         let chips = chips.iter().map(|c| js_sys::Uint8Array::new(&c).to_vec()).collect();
         let roms = romset::RomSet::from_chips(game, chips, false).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        Ok(SoundEngine { live: model2::audio::Live::new(&roms), link: Vec::new(), pcm: Vec::new() })
+        Ok(SoundEngine {
+            live: model2::audio::Live::new(&roms),
+            link: Vec::new(),
+            pcm: Vec::new(),
+            resampler: Default::default(),
+        })
     }
 
     /// Set the mix: sound board (effects, announcer) and music in dB.
@@ -367,14 +407,16 @@ impl SoundEngine {
     }
 
     /// Deliver link `bytes` written at CPU `cycles` and render up to cycle
-    /// `until`: interleaved stereo at 44.1 kHz.
-    pub fn feed(&mut self, cycles: &[f64], bytes: &[u8], until: f64) -> js_sys::Float32Array {
+    /// `until`: interleaved stereo at 44.1 kHz, resampled by `ratio` (game
+    /// samples per output sample: the game's speed, with drift correction).
+    pub fn feed(&mut self, cycles: &[f64], bytes: &[u8], until: f64, ratio: f64) -> js_sys::Float32Array {
         self.link.clear();
         self.link.extend(cycles.iter().zip(bytes).map(|(&c, &b)| (c as u64, false, b)));
         self.pcm.clear();
         self.live.feed(&self.link, until as u64, &mut self.pcm);
-        let samples: Vec<f32> = self.pcm.iter().map(|&v| v as f32 / 32768.0).collect();
-        js_sys::Float32Array::from(&samples[..])
+        let mut out = Vec::with_capacity(self.pcm.len());
+        self.resampler.run(&self.pcm, ratio, &mut out);
+        js_sys::Float32Array::from(&out[..])
     }
 }
 
@@ -508,6 +550,11 @@ pub async fn start(
         samples: 0,
         audio_level: None,
         sent_since: 0.0,
+        refresh_ms: 1000.0 / 60.0,
+        last_t: 0.0,
+        redraws: 0,
+        repeats: 0,
+        ratio: 1.0,
         geo_frame: remote_geo.then_some(None),
         _gpu: (instance, adapter),
     }));

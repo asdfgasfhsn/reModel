@@ -184,9 +184,9 @@ impl Sound {
             .name("sound".into())
             .spawn(move || {
                 let mut pcm = Vec::new();
-                // Linear resampler from 44.1 kHz game time to the device rate.
+                // Game time at 44.1 kHz to the device rate.
                 let base = model2::audio::RATE as f64 / rate as f64;
-                let (mut pos, mut prev) = (0.0f64, [0.0f32; 2]);
+                let mut resampler = model2::audio::Resampler::default();
                 let max = (AUDIO_MAX * rate as f64) as usize * 2;
                 while let Ok((bytes, until)) = rx.recv() {
                     pcm.clear();
@@ -194,16 +194,7 @@ impl Sound {
                     m.fetch_add(pcm.len() as u64 / 2, Ordering::Relaxed);
                     let step = base * f64::from_bits(r.load(Ordering::Relaxed));
                     let mut out = Vec::with_capacity(pcm.len() * 2);
-                    for frame in pcm.as_chunks::<2>().0 {
-                        let cur = [frame[0] as f32 / 32768.0, frame[1] as f32 / 32768.0];
-                        while pos < 1.0 {
-                            let t = pos as f32;
-                            out.extend([prev[0] + (cur[0] - prev[0]) * t, prev[1] + (cur[1] - prev[1]) * t]);
-                            pos += step;
-                        }
-                        pos -= 1.0;
-                        prev = cur;
-                    }
+                    resampler.run(&pcm, step, &mut out);
                     let mut q = q.lock().unwrap();
                     q.samples.extend(out);
                     let excess = q.samples.len().saturating_sub(max);

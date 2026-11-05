@@ -127,3 +127,44 @@ impl Live {
         );
     }
 }
+
+/// Linear resampler for the live mix: interleaved stereo i16 at [`RATE`]
+/// in, f32 out, `step` input samples per output sample. A step above 1
+/// plays faster (fewer samples out) and raises the pitch: front ends use it
+/// to match the game's speed to the display, and to correct clock drift.
+#[derive(Default)]
+pub struct Resampler {
+    pos: f64,
+    prev: [f32; 2],
+}
+
+impl Resampler {
+    pub fn run(&mut self, input: &[i16], step: f64, out: &mut Vec<f32>) {
+        for frame in input.as_chunks::<2>().0 {
+            let cur = [frame[0] as f32 / 32768.0, frame[1] as f32 / 32768.0];
+            while self.pos < 1.0 {
+                let t = self.pos as f32;
+                let p = self.prev;
+                out.extend([p[0] + (cur[0] - p[0]) * t, p[1] + (cur[1] - p[1]) * t]);
+                self.pos += step;
+            }
+            self.pos -= 1.0;
+            self.prev = cur;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resampler_rates() {
+        let input: Vec<i16> = (0..2000).flat_map(|i| [i as i16, -(i as i16)]).collect();
+        for (step, expect) in [(1.0, 2000), (0.5, 4000), (1.25, 1600)] {
+            let mut out = Vec::new();
+            Resampler::default().run(&input, step, &mut out);
+            assert!((out.len() as i64 / 2 - expect).abs() <= 1, "step {step}: {} frames", out.len() / 2);
+        }
+    }
+}

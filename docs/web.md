@@ -11,11 +11,17 @@ AudioWorklet (`crates/web/audio-worklet.js`). The worker shares the
 page's compiled WebAssembly module and costs about 2.3 ms of its own core
 per frame (Chromium, desktop).
 Browsers only start audio after a tap or key press, so the page enables
-it on the first one. While sound plays, the audio clock paces the
-emulation: the worklet reports its queue every 23 ms or so, and the game
-runs another frame whenever less than 70 ms is queued. That avoids drift
-between the browser's frame timer and the sound card. Without sound,
-frames follow the timer.
+it on the first one.
+
+**Pacing.** The page measures the display's refresh rate from its
+animation frames. At about 60 Hz the game runs exactly one frame per
+refresh; at about 120 Hz, one per two. That is 4.3% fast at 60 Hz, but
+every refresh shows a new frame. The sound worker resamples the audio to
+match. At other rates, frames follow a steady 57.524 Hz clock. Drift
+against the sound card is corrected by stretching the audio by at most
+0.5%, steering the worklet's queue (reported every 23 ms or so) towards
+70 ms. The native window paces the same way (`--exact` there forces
+clock pacing).
 
 ```sh
 make web            # interpreter build -> out/web (index.html, pkg/)

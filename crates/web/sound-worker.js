@@ -3,8 +3,9 @@
 //                                 the compiled WebAssembly module (shared
 //                                 with the page), the ROM directory URL and
 //                                 optionally [sound board dB, music dB]
-//   {type: "link", cycles, bytes, until}
-//                                 each frame's sound link bytes
+//   {type: "link", cycles, bytes, until, ratio}
+//                                 each frame's sound link bytes, and the
+//                                 resampling ratio (the game's speed)
 //   {type: "port", port}          a MessagePort into the AudioWorklet
 // Link messages that arrive while the ROMs load are kept and replayed, so the
 // boards always follow the game from boot. Audio is dropped until there's a
@@ -19,7 +20,7 @@ let fed = 0;
 
 function feed(m) {
   const t = performance.now();
-  const pcm = engine.feed(m.cycles, m.bytes, m.until);
+  const pcm = engine.feed(m.cycles, m.bytes, m.until, m.ratio ?? 1);
   spent += performance.now() - t;
   if (out && pcm.length) out.postMessage(pcm, [pcm.buffer]);
   if (++fed % 60 === 0) {
