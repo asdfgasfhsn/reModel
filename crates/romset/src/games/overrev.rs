@@ -160,5 +160,6 @@ const CONTROLS: Controls = Controls {
     ],
     // One coin, start, the gas pedal to confirm the mode, car and gearbox
     // (and skip the round intro), then the gas held down through the race.
+    guns: &[],
     coin_start: "coin1@1100-1104,start@1250-1254,gas=0x00@1400-1410,gas=0x00@1600-1610,gas=0x00@1800-1810,gas=0x00@2000-2010,gas=0x00@2200-2210,gas=0x00@2600-99999",
 };

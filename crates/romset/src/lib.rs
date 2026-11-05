@@ -16,7 +16,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub use controls::{AnalogInput, ButtonInput, Controls, PadAxis, PadButton};
+pub use controls::{AnalogInput, ButtonInput, Controls, Gun, GunSource, PadAxis, PadButton, Reload};
 pub use sha1::sha1_hex;
 
 /// Cabinet boards beyond the Model 2 board itself that the game talks to

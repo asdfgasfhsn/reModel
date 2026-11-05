@@ -214,5 +214,6 @@ const CONTROLS: Controls = Controls {
         pad_neg: &[PadButton::DPadLeft],
         pad_pos: &[PadButton::DPadRight],
     }],
+    guns: &[],
     coin_start: "coin1@1100-1104,coin1@1120-1124,set@1250-1254",
 };

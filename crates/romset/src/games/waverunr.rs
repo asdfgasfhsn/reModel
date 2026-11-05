@@ -233,5 +233,6 @@ const CONTROLS: Controls = Controls {
     ],
     // Three coins, start, the throttle to pick the first course, then the
     // throttle held open through the race.
+    guns: &[],
     coin_start: "coin1@1100-1104,coin1@1120-1124,coin1@1140-1144,start@1250-1254,throttle=0x00@1300-1700,throttle=0x00@1900-99999",
 };

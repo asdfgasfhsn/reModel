@@ -12,6 +12,7 @@
 use crate::drive::Drive;
 use crate::eeprom::Eeprom;
 use crate::geo::Geometrizer;
+use crate::gun::GunBoard;
 use i960::cpu::Bus;
 use mb86235::cpu::{External, Step, Tgp};
 use romset::{Role, RomSet};
@@ -184,6 +185,9 @@ pub struct Model2Bus {
     /// The cabinet's drive board, if the game has one: commands on I/O
     /// register 4, replies on register 3 (in place of port `inputs[2]`).
     pub drive: Option<Drive>,
+    /// The light gun interface, for games with guns: commands on I/O
+    /// registers 9 and 10, replies on 12, status on 13.
+    pub gun: Option<GunBoard>,
 
     /// Non-memory accesses, by word address.
     pub io_log: AccessLog,
@@ -308,6 +312,7 @@ impl Model2Bus {
             eeprom: Eeprom::new(),
             controls: &roms.game.controls,
             drive: roms.game.drive_board.map(Drive::new),
+            gun: (!roms.game.controls.guns.is_empty()).then(GunBoard::default),
             io_log: AccessLog::default(),
             unmapped: BTreeMap::new(),
         }
@@ -484,6 +489,8 @@ impl Model2Bus {
             3 => self.drive.as_ref().map_or(self.inputs[2], Drive::reply),
             6 => self.inputs[3],
             8 => 0xff,
+            12 if self.gun.is_some() => self.gun.as_ref().map_or(0, GunBoard::reply),
+            13 if self.gun.is_some() => GunBoard::STATUS,
             0xf => {
                 let v = self.analog[self.io_analog_channel & 7];
                 self.io_analog_channel = (self.io_analog_channel + 1) & 7;
@@ -501,6 +508,11 @@ impl Model2Bus {
             4 => {
                 if let Some(d) = &mut self.drive {
                     d.command(v);
+                }
+            }
+            9 => {
+                if let Some(g) = &mut self.gun {
+                    g.command(v, self.io_latch[10]);
                 }
             }
             0xf => self.io_analog_channel = (v & 7) as usize,
@@ -820,6 +832,10 @@ impl state::State for Model2Bus {
         if let Some(d) = &self.drive {
             d.save(w);
         }
+        // Likewise the gun interface, for gun games only.
+        if let Some(g) = &self.gun {
+            g.save(w);
+        }
         // Last, so states from before list jumps were modelled still load.
         self.geo.jumps().save(w);
         // After that, the memory-test RAMs.
@@ -860,6 +876,9 @@ impl state::State for Model2Bus {
         state::State::load(&mut self.eeprom, r)?;
         if let Some(d) = &mut self.drive {
             d.load(r)?;
+        }
+        if let Some(g) = &mut self.gun {
+            g.load(r)?;
         }
         let mut jumps: Vec<(u32, u32)> = Vec::new();
         if !r.done() {

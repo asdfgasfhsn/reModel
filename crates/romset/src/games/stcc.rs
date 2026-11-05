@@ -236,5 +236,6 @@ const CONTROLS: Controls = Controls {
             pad_pos: &[],
         },
     ],
+    guns: &[],
     coin_start: "coin1@1100-1104,start@1250-1254",
 };

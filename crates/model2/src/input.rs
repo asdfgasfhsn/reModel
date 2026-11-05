@@ -2,18 +2,34 @@
 //! both by the names in the game's manifest (`romset::Controls`).
 //!
 //! A script is a comma-separated list of `name@from-to` (hold a button for
-//! frames `from..=to`) or `name=value@from-to` (set an analog channel).
-//! `coin-start` stands for the game's own coin-up and start (its
+//! frames `from..=to`), `name=value@from-to` (set an analog channel) or,
+//! for light guns, `gun1=x:y@from-to` (aim at view pixel x, y of the
+//! 496x384 view) and `gun1=off@from-to` (aim off the screen). A range
+//! may end in `/n`: then the input is held only for the first two frames
+//! of every `n` from `from` (`trigger1@2000-3000/20` fires every 20
+//! frames). `coin-start` stands for the game's own coin-up and start (its
 //! `Controls::coin_start`). Example for topskatr:
 //! `coin1@1100-1105,start@1300-1305,curving=0x40@1400-1500`.
 
 use crate::bus::Model2Bus;
+use crate::video;
 use romset::Controls;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Action {
-    Button { port: usize, bit: u8 },
-    Analog { channel: usize, value: u8 },
+    Button {
+        port: usize,
+        bit: u8,
+    },
+    Analog {
+        channel: usize,
+        value: u8,
+    },
+    /// Aim gun `player` at view pixel (x, y), or off screen.
+    Gun {
+        player: usize,
+        at: Option<(u16, u16)>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,6 +37,17 @@ struct Event {
     action: Action,
     from: u64,
     to: u64,
+    /// Held only for the first [`PULSE`] frames of every `every`.
+    every: Option<u64>,
+}
+
+/// Frames a periodic input (`@from-to/n`) is held each time.
+const PULSE: u64 = 2;
+
+impl Event {
+    fn active(&self, frame: u64) -> bool {
+        (self.from..=self.to).contains(&frame) && self.every.is_none_or(|n| (frame - self.from) % n < PULSE)
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -45,12 +72,33 @@ impl InputScript {
                 continue;
             }
             let (what, frames) = item.split_once('@').ok_or_else(|| format!("{item}: missing @frames"))?;
+            let (frames, every) = match frames.split_once('/') {
+                Some((f, n)) => match num(n) {
+                    Some(n) if n > PULSE => (f, Some(n)),
+                    _ => return Err(format!("{item}: repeat every n > {PULSE} frames")),
+                },
+                None => (frames, None),
+            };
             let (from, to) = match frames.split_once('-') {
                 Some((a, b)) => (num(a), num(b)),
                 None => (num(frames), num(frames)),
             };
             let (Some(from), Some(to)) = (from, to) else { return Err(format!("{item}: bad frame range")) };
             let action = match what.split_once('=') {
+                Some((name, v)) if controls.gun(name).is_some() => {
+                    let player = controls.gun(name).map_or(0, |g| g.0);
+                    let at = match v.split_once(':') {
+                        _ if v == "off" => None,
+                        Some((x, y)) => match (num(x), num(y)) {
+                            (Some(x), Some(y)) if x < video::WIDTH as u64 && y < video::HEIGHT as u64 => {
+                                Some((x as u16, y as u16))
+                            }
+                            _ => return Err(format!("{item}: aim at x:y in view pixels (0-495, 0-383) or off")),
+                        },
+                        None => return Err(format!("{item}: aim at x:y in view pixels (0-495, 0-383) or off")),
+                    };
+                    Action::Gun { player, at }
+                }
                 Some((name, v)) => {
                     let a = controls.analog(name).ok_or_else(|| {
                         format!("{name}: unknown analog input (known: {})", Self::analog_names(controls))
@@ -65,7 +113,7 @@ impl InputScript {
                     Action::Button { port: b.port as usize, bit: b.bit }
                 }
             };
-            events.push(Event { action, from, to });
+            events.push(Event { action, from, to, every });
         }
         Ok(InputScript { events })
     }
@@ -75,25 +123,81 @@ impl InputScript {
     }
 
     /// Set the bus inputs for `frame`: everything released and centred
-    /// except what the script holds.
+    /// (guns aimed at the middle of the view) except what the script holds.
     pub fn apply(&self, frame: u64, bus: &mut Model2Bus) {
         release_all(bus);
-        for e in self.events.iter().filter(|e| (e.from..=e.to).contains(&frame)) {
+        for e in self.events.iter().filter(|e| e.active(frame)) {
             match e.action {
                 Action::Button { port, bit } => bus.inputs[port] &= !bit,
                 Action::Analog { channel, value } => bus.analog[channel] = value,
+                Action::Gun { player, at } => {
+                    let at = at.map(|(x, y)| {
+                        ((x as f32 + 0.5) / video::WIDTH as f32, (y as f32 + 0.5) / video::HEIGHT as f32)
+                    });
+                    set_gun(bus, player, at);
+                }
             }
         }
     }
 }
 
-/// Every button released and every analog channel at rest.
+/// Every button released, every analog channel at rest and every gun
+/// aimed at the middle of the view.
 pub fn release_all(bus: &mut Model2Bus) {
     bus.inputs = [0xff; 4];
     bus.analog = [0x80; 8];
     for a in bus.controls.analogs {
         bus.analog[a.channel as usize] = a.centre;
     }
+    for p in 0..bus.controls.guns.len() {
+        set_gun(bus, p, Some((0.5, 0.5)));
+    }
+}
+
+/// Aim player `player`'s gun (0 for the first) at `at` in view
+/// coordinates (0 to 1 across and down the 496x384 view), or off the
+/// screen with `None`. Every pointer source (mouse, touch, a stick, a
+/// script) comes through here. False if the game has no such gun.
+pub fn set_gun(bus: &mut Model2Bus, player: usize, at: Option<(f32, f32)>) -> bool {
+    let Some(gun) = bus.controls.guns.get(player) else { return false };
+    let Some(board) = &mut bus.gun else { return false };
+    match gun.source {
+        romset::GunSource::Counters { x, y, offscreen_bit } => {
+            let (rx, ry) = at.map_or((0, 0), |(ax, ay)| gun.raw(ax, ay));
+            board.set_counter_pair(x, rx);
+            board.set_counter_pair(y, ry);
+            board.set_offscreen(offscreen_bit, at.is_none());
+        }
+    }
+    true
+}
+
+/// A gun and its buttons, as a player's pointer reports them for one
+/// frame: where it aims (view coordinates 0 to 1, `None` off screen), the
+/// trigger, and a reload request. Reload on a game that reloads by
+/// shooting off screen aims off screen and pulls the trigger.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GunState {
+    pub at: Option<(f32, f32)>,
+    pub trigger: bool,
+    pub reload: bool,
+}
+
+/// Apply a player's [`GunState`]: aim, trigger and reload. The trigger is
+/// only ever pressed here, never released, so a key bound to it (set by
+/// [`apply_player`] first) still fires. False if the game has no gun for
+/// `player`.
+pub fn apply_gun(bus: &mut Model2Bus, player: usize, g: GunState) -> bool {
+    let Some(gun) = bus.controls.guns.get(player) else { return false };
+    let (at, fire) = match gun.reload {
+        romset::Reload::Offscreen if g.reload => (None, true),
+        romset::Reload::Offscreen => (g.at, g.trigger),
+    };
+    set_gun(bus, player, at);
+    if fire {
+        set_button(bus, gun.trigger, true);
+    }
+    true
 }
 
 /// Press or release the button `name` (live input). False if the game has
@@ -115,6 +219,47 @@ pub fn set_analog(bus: &mut Model2Bus, name: &str, value: u8) -> bool {
     let Some(a) = bus.controls.analog(name) else { return false };
     bus.analog[a.channel as usize] = value;
     true
+}
+
+/// Gamepad bindings for aiming a gun with a stick ([`StickCursor`]): both
+/// sticks move it, these fire and reload.
+pub const PAD_GUN_TRIGGER: &[romset::PadButton] = &[romset::PadButton::RightTrigger, romset::PadButton::South];
+pub const PAD_GUN_RELOAD: &[romset::PadButton] = &[romset::PadButton::LeftTrigger, romset::PadButton::East];
+
+/// A gun aimed with a gamepad: a cursor the sticks move, for players
+/// without a mouse or touch screen (or for player 2 beside a mouse).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StickCursor {
+    /// Where it aims, as view fractions.
+    pub at: (f32, f32),
+}
+
+impl Default for StickCursor {
+    fn default() -> Self {
+        StickCursor { at: (0.5, 0.5) }
+    }
+}
+
+impl StickCursor {
+    /// View widths a fully deflected stick crosses per frame (about a
+    /// second for the whole screen).
+    const SPEED: f32 = 1.0 / 50.0;
+
+    /// Move by one frame of the pad's sticks and read its buttons.
+    pub fn update(&mut self, p: &impl PlayerInput) -> GunState {
+        use romset::PadAxis::*;
+        let pick = |a: f32, b: f32| if a.abs() > b.abs() { a } else { b };
+        let dx = pick(p.pad_axis(RightStickX), p.pad_axis(LeftStickX));
+        let dy = pick(p.pad_axis(RightStickY), p.pad_axis(LeftStickY));
+        // Same speed in screen distance both ways (the view is 4:3).
+        self.at.0 = (self.at.0 + dx * Self::SPEED).clamp(0.0, 0.999);
+        self.at.1 = (self.at.1 + dy * Self::SPEED * 4.0 / 3.0).clamp(0.0, 0.999);
+        GunState {
+            at: Some(self.at),
+            trigger: PAD_GUN_TRIGGER.iter().any(|&b| p.pad_button(b)),
+            reload: PAD_GUN_RELOAD.iter().any(|&b| p.pad_button(b)),
+        }
+    }
 }
 
 /// Where a player's devices stand, for [`apply_player`]. Keys are
@@ -163,14 +308,35 @@ mod tests {
     fn parses_buttons_and_analog() {
         let s = InputScript::parse("coin1@10-12, curving=0x40@5", topskatr()).unwrap();
         assert_eq!(s.events.len(), 2);
-        assert_eq!(s.events[0], Event { action: Action::Button { port: 0, bit: 1 }, from: 10, to: 12 });
-        assert_eq!(s.events[1], Event { action: Action::Analog { channel: 0, value: 0x40 }, from: 5, to: 5 });
+        assert_eq!(s.events[0], Event { action: Action::Button { port: 0, bit: 1 }, from: 10, to: 12, every: None });
+        assert_eq!(
+            s.events[1],
+            Event { action: Action::Analog { channel: 0, value: 0x40 }, from: 5, to: 5, every: None }
+        );
     }
 
     #[test]
     fn rejects_unknown_names() {
         assert!(InputScript::parse("kickflip@1", topskatr()).is_err());
         assert!(InputScript::parse("coin1", topskatr()).is_err());
+    }
+
+    #[test]
+    fn parses_gun_aims() {
+        let c = &romset::games::find("hotd").unwrap().controls;
+        let s = InputScript::parse("gun1=10:20@5-6,gun2=off@7", c).unwrap();
+        assert_eq!(s.events[0].action, Action::Gun { player: 0, at: Some((10, 20)) });
+        assert_eq!(s.events[1].action, Action::Gun { player: 1, at: None });
+        assert!(InputScript::parse("gun1=496:0@1", c).is_err());
+        assert!(InputScript::parse("gun1=5@1", c).is_err());
+    }
+
+    #[test]
+    fn periodic_inputs_pulse() {
+        let s = InputScript::parse("coin1@100-200/20", topskatr()).unwrap();
+        let on: Vec<u64> = (90..150).filter(|&f| s.events[0].active(f)).collect();
+        assert_eq!(on, [100, 101, 120, 121, 140, 141]);
+        assert!(InputScript::parse("coin1@1-9/1", topskatr()).is_err());
     }
 
     #[test]

@@ -8,10 +8,9 @@
 //! native player maps to its own key codes. Pad bindings use the W3C
 //! "standard" gamepad layout ([`PadButton`], [`PadAxis`]).
 //!
-//! Light guns (House of the Dead) will need a third kind of control, a
-//! pointer read through its own I/O (not the analog channels); it would be
-//! a new list here (say `guns: &[Gun]`, each with its port, trigger button
-//! and calibration) that players bind to the mouse or a touch.
+//! Light guns are a third kind of control ([`Gun`]): a position in the
+//! game's view per player, from any pointer (mouse, touch, a stick, a
+//! script), which the manifest maps to where and how the board reads it.
 
 /// A game's controls.
 pub struct Controls {
@@ -19,9 +18,62 @@ pub struct Controls {
     pub buttons: &'static [ButtonInput],
     /// Analog inputs: channels of the I/O chip's ADC.
     pub analogs: &'static [AnalogInput],
+    /// Light guns (pointers): where the board reads each player's aim.
+    pub guns: &'static [Gun],
     /// Coin up and start a game, in the `--input` script syntax: what
     /// `coin-start` in a script stands for (`make capture`, `make bench`).
     pub coin_start: &'static str,
+}
+
+/// A light gun: one player's aim and its buttons. Players and scripts give
+/// the aim in view coordinates (0 to 1 across and down the game's 496x384
+/// view, or off screen); the manifest says where the board reads it and
+/// what raw values the view's edges give, so any pointer (mouse, touch,
+/// stick, a tracked hand) can drive it.
+pub struct Gun {
+    /// Name in input scripts: `gun1=x:y@from-to` with x and y in view
+    /// pixels (0-495, 0-383), or `gun1=off@from-to`.
+    pub name: &'static str,
+    /// Where the board reads the aim.
+    pub source: GunSource,
+    /// Raw X at the view's left and right edges, and raw Y at its top and
+    /// bottom: the calibration a cabinet's gun setting would hold. Values
+    /// between follow linearly; either end may be the larger.
+    pub x_range: (u16, u16),
+    pub y_range: (u16, u16),
+    /// The button input that is this gun's trigger (fires where it aims).
+    pub trigger: &'static str,
+    /// How the player reloads.
+    pub reload: Reload,
+    /// Keys that reload (the trigger's keys are the trigger button's).
+    pub keys_reload: &'static [&'static str],
+}
+
+/// Where a board reads a gun's position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GunSource {
+    /// Model 2C's gun interface (`model2::gun`): X and Y are counter
+    /// pairs (a low byte, then the next counter's two high bits), and
+    /// `offscreen_bit` of counter 8 reads 0 while the gun points at the
+    /// screen and 1 when it sees nothing.
+    Counters { x: u8, y: u8, offscreen_bit: u8 },
+}
+
+/// How a gun game reloads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reload {
+    /// Pull the trigger aimed off the screen. Players that can't point
+    /// off screen offer a reload button that aims away for a moment.
+    Offscreen,
+}
+
+impl Gun {
+    /// The raw X and Y for an aim at `(x, y)` in view coordinates (0 to 1;
+    /// clamped to the view).
+    pub fn raw(&self, x: f32, y: f32) -> (u16, u16) {
+        let map = |(a, b): (u16, u16), t: f32| (a as f32 + t.clamp(0.0, 1.0) * (b as f32 - a as f32)).round() as u16;
+        (map(self.x_range, x), map(self.y_range, y))
+    }
 }
 
 /// A digital input.
@@ -156,15 +208,27 @@ impl Controls {
         self.analogs.iter().find(|a| a.name == name)
     }
 
+    /// The gun called `name`, with its player index (0 for the first).
+    pub fn gun(&self, name: &str) -> Option<(usize, &Gun)> {
+        self.guns.iter().enumerate().find(|(_, g)| g.name == name)
+    }
+
     /// All input names, for messages.
     pub fn names(&self) -> String {
-        self.buttons.iter().map(|b| b.name).chain(self.analogs.iter().map(|a| a.name)).collect::<Vec<_>>().join(", ")
+        let names = self.buttons.iter().map(|b| b.name).chain(self.analogs.iter().map(|a| a.name));
+        names.chain(self.guns.iter().map(|g| g.name)).collect::<Vec<_>>().join(", ")
     }
 
     /// One line per control with its default keys and pad bindings (for
     /// help text and docs).
     pub fn describe(&self) -> String {
         let mut out = String::new();
+        for (i, g) in self.guns.iter().enumerate() {
+            let aim = if i == 0 { "mouse or touch, else pad sticks" } else { "pad sticks (beside a mouse)" };
+            let keys: Vec<_> = g.keys_reload.iter().map(|k| key_label(k)).collect();
+            out += &format!("  {:<10} aim: {aim}; fire: {}; reload: shoot off screen", g.name, g.trigger);
+            out += &if keys.is_empty() { "\n".to_string() } else { format!(" or {}\n", keys.join(" ")) };
+        }
         for a in self.analogs {
             let keys: Vec<_> = a.keys_neg.iter().chain(a.keys_pos).map(|k| key_label(k)).collect();
             let mut pad: Vec<String> = Vec::new();
@@ -203,6 +267,10 @@ impl Controls {
         let buttons =
             buttons.into_iter().map(|b| (b.keys.iter().take(1).map(|k| key_symbol(k)).collect::<Vec<_>>(), b.label()));
         let mut out: Vec<(Vec<&'static str>, String)> = Vec::new();
+        if let Some(g) = self.guns.first() {
+            out.push((vec!["Mouse"], "Aim, click to shoot".to_string()));
+            out.push((g.keys_reload.iter().take(1).map(|k| key_symbol(k)).collect(), "Reload".to_string()));
+        }
         for (keys, label) in analogs.chain(buttons) {
             // Analogs bound to the same keys (skisuprg's edge and swing) once.
             if !keys.is_empty() && !out.iter().any(|o| o.0 == keys) {
@@ -244,6 +312,7 @@ mod tests {
         for g in crate::games::ALL {
             let c = &g.controls;
             let mut names: Vec<_> = c.buttons.iter().map(|b| b.name).chain(c.analogs.iter().map(|a| a.name)).collect();
+            names.extend(c.guns.iter().map(|g| g.name));
             names.sort();
             let n = names.len();
             names.dedup();
@@ -253,6 +322,12 @@ mod tests {
             }
             for a in c.analogs {
                 assert!(a.channel < 8, "{}: {}", g.id, a.name);
+            }
+            assert!(c.guns.len() <= 2, "{}: at most two guns", g.id);
+            for gun in c.guns {
+                assert!(c.button(gun.trigger).is_some(), "{}: {} has no trigger button", g.id, gun.name);
+                let GunSource::Counters { x, y, offscreen_bit } = gun.source;
+                assert!(x < 15 && y < 15 && offscreen_bit < 8, "{}: {}", g.id, gun.name);
             }
             assert!(c.button("coin1").is_some(), "{}", g.id);
             assert!(c.coin_start.contains("coin1@"), "{}", g.id);
@@ -269,6 +344,16 @@ mod tests {
         for g in crate::games::ALL {
             assert!(!g.controls.summary().is_empty(), "{}", g.id);
         }
+    }
+
+    #[test]
+    fn gun_aims_map_through_the_calibration() {
+        let (_, gun) = crate::games::HOTD.controls.gun("gun1").unwrap();
+        assert_eq!(gun.raw(0.0, 0.0), (gun.x_range.0, gun.y_range.0));
+        assert_eq!(gun.raw(1.0, 1.0), (gun.x_range.1, gun.y_range.1));
+        assert_eq!(gun.raw(-1.0, 2.0), (gun.x_range.0, gun.y_range.1));
+        let (mx, my) = gun.raw(0.5, 0.5);
+        assert!(mx > gun.x_range.0 && mx < gun.x_range.1 && my > gun.y_range.0 && my < gun.y_range.1);
     }
 
     #[test]

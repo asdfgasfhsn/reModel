@@ -1046,6 +1046,9 @@ fn run(
     if let Some(d) = &b.drive {
         println!("drive board   {}", d.describe());
     }
+    if let Some(g) = &b.gun {
+        println!("gun interface {} configuration bytes, counters {:02x?}", g.config_bytes, &g.counters[..9]);
+    }
     if b.eeprom.dirty {
         let _ = std::fs::write(&eeprom_path, b.eeprom.save());
     }

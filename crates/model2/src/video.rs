@@ -195,6 +195,16 @@ impl View {
     pub fn to_output(&self, x: f32, y: f32) -> (f32, f32) {
         ((x + self.pad) * self.sx, y * self.sy)
     }
+
+    /// Where an output point (pixels from the view's top left) falls in the
+    /// game's own 496x384 view, as fractions (0 to 1 across and down); None
+    /// outside it, including the area a wide view adds at the sides (a gun
+    /// pointed there sees no screen).
+    pub fn to_view_fraction(&self, x: f32, y: f32) -> Option<(f32, f32)> {
+        let (gx, gy) = (x / self.sx - self.pad, y / self.sy);
+        let (fx, fy) = (gx / WIDTH as f32, gy / HEIGHT as f32);
+        ((0.0..1.0).contains(&fx) && (0.0..1.0).contains(&fy)).then_some((fx, fy))
+    }
 }
 
 /// Compose a frame at native resolution (see `compose`).
@@ -718,6 +728,20 @@ fn hud_shifts(hud: &[Option<[u8; 3]>], view: &View, has_3d: bool) -> Vec<usize> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn view_fractions_skip_the_added_sides() {
+        let v = View::native();
+        assert_eq!(v.to_view_fraction(248.0, 192.0), Some((0.5, 0.5)));
+        assert_eq!(v.to_view_fraction(-1.0, 10.0), None);
+        // 16:9 at 720 lines: the 4:3 picture is the middle 960 pixels.
+        let w = View::new(720, 16.0 / 9.0, Hud::Center);
+        assert_eq!(w.to_view_fraction(100.0, 360.0), None);
+        let (fx, fy) = w.to_view_fraction(640.0, 360.0).unwrap();
+        assert!((fx - 0.5).abs() < 1e-3 && (fy - 0.5).abs() < 1e-3);
+        let (fx, _) = w.to_view_fraction(161.0, 0.0).unwrap();
+        assert!(fx < 0.01);
+    }
 
     #[test]
     fn pixel_order_within_a_row() {
