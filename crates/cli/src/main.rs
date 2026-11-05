@@ -432,11 +432,13 @@ fn main() -> ExitCode {
                 // certain; `lda` pointer guesses may be data.
                 let mut insns = a.insns;
                 insns.retain(|addr, _| !a.speculative.contains(addr) || trace.executed.contains(addr));
-                for &addr in &trace.executed {
+                // Code run from RAM (waverunr copies routines to work RAM)
+                // stays on the interpreter: only program ROM is compiled.
+                for &addr in trace.executed.iter().filter(|&&a| img.contains(a)) {
                     insns.entry(addr).or_insert_with(|| img.decode(addr));
                 }
                 let mut entries: BTreeSet<u32> = a.functions.iter().copied().collect();
-                entries.extend(trace.indirect.iter().map(|&(_, t)| t));
+                entries.extend(trace.indirect.iter().map(|&(_, t)| t).filter(|&t| img.contains(t)));
                 entries.extend(seeds);
                 let hash = model2::program_hash(&roms);
                 let path = out.join(format!("i960_{hash:016x}.rs"));
