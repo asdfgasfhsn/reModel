@@ -41,19 +41,43 @@
   let audio = null;
   let sink = null;
   let started = false;
+  const soundLabel = document.getElementById("sound");
+  let sent = 0;
   async function enableAudio() {
-    if (audio || !sound) return;
+    if (!sound) return;
+    if (audio) {
+      // iOS can suspend or interrupt the context: any later gesture resumes it.
+      if (audio.state !== "running") audio.resume();
+      return;
+    }
+    // Safari 17+: play as media, not "ambient" sound that silent mode mutes.
+    if (navigator.audioSession) navigator.audioSession.type = "playback";
     audio = new AudioContext({ sampleRate: 44100, latencyHint: "interactive" });
     audio.resume();
-    await audio.audioWorklet.addModule("./audio-worklet.js");
+    soundLabel.textContent = "sound: starting";
+    try {
+      await audio.audioWorklet.addModule("./audio-worklet.js");
+    } catch (e) {
+      soundLabel.textContent = "sound: worklet failed: " + (e.message ?? e);
+      return;
+    }
     const node = new AudioWorkletNode(audio, "remodel-sink", { outputChannelCount: [2] });
     node.connect(audio.destination);
-    sink = (buf) => node.port.postMessage(buf, [buf.buffer]);
+    node.port.onmessage = (e) => {
+      const s = e.data;
+      const db = s.played ? (10 * Math.log10(s.energy / s.played)).toFixed(0) : "-inf";
+      soundLabel.textContent = `sound: ${audio.state}, ${audio.sampleRate} Hz, ` +
+        `${(sent / 44100).toFixed(0)} s sent, playing ${db} dB, ${s.dry} dry, ` +
+        `${(s.queued / 44.1).toFixed(0)} ms queued`;
+    };
+    sink = (buf) => {
+      sent += buf.length / 2;
+      node.port.postMessage(buf, [buf.buffer]);
+    };
     if (started) set_audio_sink(sink);
-    document.getElementById("sound").textContent = "sound on";
   }
   for (const ev of ["pointerdown", "keydown", "touchend"]) addEventListener(ev, enableAudio);
-  if (!sound) document.getElementById("sound").textContent = "sound off";
+  if (!sound) soundLabel.textContent = "sound off";
 
   addEventListener("keydown", (e) => {
     if (e.code === "KeyF") document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
