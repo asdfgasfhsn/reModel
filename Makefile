@@ -41,6 +41,12 @@ FILE ?= out/overrevb/sharc-copro.bin
 Z80_TESTS     ?= out/z80-tests
 Z80_TESTS_URL := https://raw.githubusercontent.com/anotherlin/z80emu/master/testfiles
 
+# With no `cargo` on PATH (no system Rust), fall back to the rustup below:
+# its proxies then serve cargo, `cargo fmt` and clippy, here and in the
+# scripts make runs.
+ifeq ($(shell command -v cargo 2>/dev/null),)
+export PATH := $(HOME)/.local/share/rustup-wasm/bin:$(PATH)
+endif
 CARGO   ?= cargo
 # The browser build needs a toolchain with the wasm32 target and
 # wasm-bindgen-cli matching Cargo.lock. Default: rustup's stable cargo, from
