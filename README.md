@@ -62,7 +62,7 @@ music`). There is no live window yet.
 | Ninth game: `overrevb` (Over Rev, 2B, Jaleco) | playable with sound (`make play GAME=overrevb`): the 2B version of `overrev`, same data and controls, its own i960 program and two SHARC programs. Attract, menus and races look and sound as `overrev` does. Full speed recompiled (`RECOMP=1`: i960 and both SHARCs; races at 3.3x real time natively, and the browser's geometrizer keeps up), below real time interpreted; recompiled build identical |
 | Tenth game: `sgt24h` (Super GT 24h, 2B, Jaleco) | playable with sound (`make play GAME=sgt24h`): attract, course, car and gearbox select, races to game over. The second 2B game, on the same SHARC code as `overrevb`; needed the i960's local-register cache and its I/O board type set in backup RAM (a manifest default); its link board's Z80 ROM isn't needed. Full speed recompiled; recompiled build identical |
 | Eleventh game: `dynabb97` (Dynamite Baseball '97, 2B, Sega) | playable with sound (`make play GAME=dynabb97`): attract, team and pitcher select, batting with the bat lever, pitching and fielding. The first Sega 2B game: its own copro SHARC program, the same geometrizer SHARC code as Jaleco's games; needed nothing new from the board model. Full speed recompiled; recompiled build identical |
-| Twelfth game: `doa` (Dead or Alive, 2B, Tecmo) | playable with sound (`make play GAME=doa`, interpreted for now): attract, character select and fights through rounds, replays and the next opponent. Needed its protection device answered: the game's own check, with the answer it compares against declared in the manifest and read from the ROM (the device's algorithm is unknown); the character select's large model still draws with wrong-texture patches. The recompiled build and the browser build aren't checked yet |
+| Twelfth game: `doa` (Dead or Alive, 2B, Tecmo) | playable with sound (`make play GAME=doa`): attract, character select and fights through rounds, replays and the next opponent. Needed its protection device answered: the game's own check, with the answer it compares against declared in the manifest and read from the ROM (the device's algorithm is unknown); the character select's large model still draws with wrong-texture patches. Its geometrizer runs the shared Jaleco/Sega geometrizer crate, its copro program its own. Full speed recompiled; recompiled build identical |
 
 ## Quick start
 
@@ -1019,9 +1019,15 @@ model as it is, once the i960 returns keep PFP's address bits 4 and 5
   throughout; `make sound` of that run averages -30 dBFS RMS (peak -11),
   louder than the games at 0 dB, so the manifest takes 3 dB off. `make
   state-check GAME=doa` round-trips, and a coin-start run of 600M
-  instructions gives the state hash `ba5d806c8790a9a2` (interpreted, with
-  an `eeprom.bin` from an earlier run). The recompiled build (lockstep)
-  and the browser build haven't been checked yet.
+  instructions gives the state hash `ba5d806c8790a9a2` (with an
+  `eeprom.bin` from an earlier run) recompiled and interpreted. `make
+  lockstep GAME=doa RECOMP=1 INPUT=coin-start` runs 600M instructions
+  identical (i960 and both SHARCs recompiled). Its geometrizer code is
+  the other 2B games' (2,987 words, the same crate); its copro program is
+  its own (3,261 words, a crate of its own).
+- *Speed (by running it):* that run plays at 2.69x real time recompiled
+  natively (the geometrizer on its thread, slowest frame 14.3 ms), and at
+  0.82x interpreted (slowest frame 50.3 ms).
 - *Confirmed (by running it):* the input test gives port `0x1C00002` bit
   0 coin 1, 1 coin 2, 2 test, 3 service, 4 start 1, 5 start 2 (one coin a
   credit), and ports `0x1C00004`/`0x1C00006` for players 1 and 2: bit 0

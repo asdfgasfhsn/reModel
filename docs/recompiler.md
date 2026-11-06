@@ -26,10 +26,11 @@ Every recompiled program is a crate of its own, named by its hash:
 for a 2C copro or geometrizer program, `out/recomp/sharc_<hash>/` for a 2B
 one. Games share them where the program is the same. A SHARC crate is
 named after the words it compiles (`adsp2106x::cpu::code_hash` of their
-addresses and contents), not the whole upload: `overrevb`, `sgt24h` and
-`dynabb97` upload the same geometrizer code with different words past it,
-and the Jaleco games the same copro code, so the three games have three
-SHARC crates between them rather than six.
+addresses and contents), not the whole upload: `overrevb`, `sgt24h`,
+`dynabb97` and `doa` upload the same geometrizer code with different words
+past it, and the Jaleco games the same copro code, so the four games have
+four SHARC crates between them rather than eight (one geometrizer crate,
+and copro crates for the Jaleco games, `dynabb97` and `doa`).
 Each holds `program.rs` from the code generator, generic over the machine around the
 processor, and a `lib.rs` that instantiates it for the Model 2 board
 (`Model2Bus`, the TGP's external buses), so its machine code is compiled in
@@ -287,8 +288,11 @@ percentile (WebAssembly):
 
 About 13 ns an instruction natively, from 30. Over those race frames,
 with the geometrizer on its thread, `overrevb` runs at 3.3 times real
-time natively (1.9 before) and `sgt24h` at 2.7 (1.2 before).
+time natively (1.9 before) and `sgt24h` at 2.7 (1.2 before). `doa`'s
+whole 600M-instruction coin-start run (4,141 frames) runs at 2.69x real
+time natively, the geometrizer on its thread (slowest frame 14.3 ms;
+0.82x and 50.3 ms interpreted).
 Every game's state hash is unchanged, recompiled and interpreted, and `make
-lockstep` is identical for 600M instructions on `overrevb`, `sgt24h` and
-`dynabb97` (which runs the geometrizer crate compiled from the Jaleco
-uploads, with its own data).
+lockstep` is identical for 600M instructions on `overrevb`, `sgt24h`,
+`dynabb97` and `doa` (the last two run the geometrizer crate compiled from
+the Jaleco uploads, with their own data).

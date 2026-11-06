@@ -10,7 +10,8 @@ code), and it uses the same ports. Neither did `dynabb97`, Sega's own:
 its geometrizer code is the Jaleco games' too (2,987 words, identical up
 to `0x20C30`), its copro program its own (1,956 words), which uses only
 the command and result FIFOs and FLAG0/FLAG1 described below. `doa`
-(Tecmo) also runs on this model; it checks for a protection device at
+(Tecmo) also runs on this model, with the same geometrizer code and a
+copro program of its own (3,261 words); it checks for a protection device at
 `0x1D80000`, answered as described under "The protection device"
 below. This page
 is what the board model (`crates/model2`: `bus.rs`, `sharc.rs`, `geo.rs`)
@@ -265,7 +266,10 @@ recompiled geometrizer takes 3.6 ms a frame (slowest 5.0; frames
 one, 6.1 ms (slowest 10.3). In WebAssembly (Node, `docs/web.md`) it took
 10.7 ms a frame (worst 12.5) as single steps where the interpreter took
 33 ms; with blocks 4.8 ms, and 8.1 ms for `sgt24h`, inside the 17.4 ms of
-a frame. So `overrevb` runs at full speed recompiled,
+a frame. `doa`'s whole coin-start run (600M instructions, 4,141 frames)
+runs at 2.69x real time recompiled natively (geometrizer slowest frame
+14.3 ms) and 0.82x interpreted (slowest 50.3 ms).
+So `overrevb` runs at full speed recompiled,
 natively and in the browser; the SHARC recompiler is described in
 `docs/recompiler.md`. Interpreted it still races below real time, and the
 front ends then slow the game to what the geometrizer manages
@@ -291,7 +295,8 @@ that run alone, and the run took nearly three times as long).
 - The SHARC clock and wait states (`WAIT` = `0xC9400` copro,
   `0xB400` geometrizer, both written by the programs) aren't modelled.
 - Sega's 2B games upload their own copro programs and may use more of
-  the board than the three running (`overrevb`, `sgt24h`, `dynabb97`) do.
+  the board than the ones running (`overrevb`, `sgt24h`, `dynabb97`,
+  `doa`) do.
 - What the device at `0x1D80000-0x1D87FFF` that `doa` checks for is
   (*unconfirmed* whether it sits on the game board or the ROM board),
   and how it turns the block into its answer (above).

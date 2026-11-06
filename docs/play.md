@@ -164,11 +164,10 @@ Model 2B, Tecmo's: its sound is the SCSP's. One coin is one credit. The
 stick picks the character and punch confirms. In a fight the three
 buttons are hold, punch and kick. Its protection device is
 answered by the board model, so nothing needs setting up. Like the other
-2B games it will want the recompiled build (`RECOMP=1`) for full speed;
-that build isn't checked for `doa` yet, so it plays interpreted for now,
-below real time (a headless coin-start run manages about 0.7x; the
-player then paces it by the clock, see "Display" below). Player 2's
-controls are in the manifest but have no default keys.
+2B games it needs the recompiled build (`RECOMP=1`) for full speed: a
+headless coin-start run manages 2.7x real time recompiled, but only about
+0.8x interpreted (the player then paces it by the clock, see "Display"
+below). Player 2's controls are in the manifest but have no default keys.
 
 | Control | Keys | Gamepad |
 |---|---|---|
