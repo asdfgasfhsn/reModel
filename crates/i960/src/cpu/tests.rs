@@ -140,6 +140,24 @@ fn return_restores_cached_frame_not_memory() {
     assert!(cpu.locals.sets().is_empty());
 }
 
+// A frame set up by hand on a 16-byte boundary (as doa's task switch
+// does): the call's new frame is 64-byte aligned, and the return gives
+// back the caller's FP from PFP's address bits, 4 and 5 included.
+#[test]
+fn return_keeps_pfp_address_bits_4_and_5() {
+    let prog = [ctrl(0x09, 0x1000, 0x1100), mov_lit(1, G0)];
+    let (mut cpu, mut ram) = setup(&prog);
+    cpu.r[FP] = 0x80d0;
+    cpu.r[SP] = 0x8110;
+    ram.load(0x1100, &[RET]);
+    run(&mut cpu, &mut ram, 1);
+    assert_eq!(cpu.r[FP], 0x8140, "new frame on a 64-byte boundary");
+    assert_eq!(cpu.r[PFP], 0x80d0);
+    run(&mut cpu, &mut ram, 1);
+    assert_eq!(cpu.r[FP], 0x80d0);
+    assert_eq!(cpu.r[SP], 0x8110);
+}
+
 // Four nested calls overflow the three cached sets: the oldest (the
 // outermost caller's) goes to memory and returns from there.
 #[test]

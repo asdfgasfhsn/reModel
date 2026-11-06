@@ -284,8 +284,20 @@ impl Cpu {
         let frame = self.r[FP];
         // The previous frame becomes current: its locals come from the
         // cache, or from its frame in memory if they were spilled.
+        //
+        // FP <- PFP with only bits 0-3 cleared: bits 0-2 are the return
+        // status and bit 3 the prereturn-trace flag, the rest is the
+        // address (80960KB Programmer's Reference Manual, 270567-001,
+        // ch. 4 "Return Status and Prereturn-Trace Information" and
+        // Figure 4-2; `ret` in ch. 11: "FP <- PFP"). The same manual says
+        // the KB aligns each *new* frame on 64 bytes (SALIGN = 4, appendix
+        // E), which `call`, `calls` and interrupts do, and that it ignores
+        // FP's six low bits. Masking those off here breaks `doa`, which
+        // loads FP and PFP by hand for its tasks with 16-byte-aligned
+        // frames (its first is at 0x5018D0) and runs on the real chip: a
+        // return there must give back the frame address it saved.
         let restore = |cpu: &mut Self, bus: &mut B| {
-            cpu.r[FP] = cpu.r[PFP] & !63;
+            cpu.r[FP] = cpu.r[PFP] & !15;
             let locals = cpu.locals.pop(bus, cpu.r[FP]);
             cpu.r[..16].copy_from_slice(&locals);
             cpu.ip = cpu.r[RIP];
