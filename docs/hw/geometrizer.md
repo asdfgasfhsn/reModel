@@ -515,4 +515,16 @@ Rasteriser checks (Remodel `crates/model2/src/raster.rs`, gameplay frame 4555), 
 - topskatr uploads no mipmaps: both texture banks hold only full-size textures (the
   first 1 MB of each bank is used), and the level-1 positions of its textures are empty
   or hold other textures. So LOD selection can't matter for this game.
-- Not yet checked: mipmaps/LOD, microtexture, translucency/checker details, the z-sort key format (Remodel sorts on float z), and clipping without a near plane (Remodel clips at z = 1).
+- Clipping (§4.3): Remodel clips each polygon in view space against four side planes through
+  the eye and a near plane at z = 10^-6, which only keeps 1/z finite. The side planes bound a
+  guard band 992 pixels (twice the screen width) beyond each screen edge, not the window, so
+  widened views still get the 3D past the original frame; the window rectangle is applied when
+  filling. Until 2026-11 Remodel clipped at z = 1 instead, an arbitrary plane in the game's view
+  units: `doa`'s close-ups (attract camera, character select) have fighters' arms, heads and
+  bodies at z below 1, which vanished whole; `stcc`'s attract left a black band where the
+  road comes nearer than 1; and `sgt24h` lost its course map and tachometer needle, 3D HUD
+  polygons drawn nearer than 1. **Confirmed** by running them: with the near plane at 10^-6 they draw
+  whole. What the hardware does with geometry this close is *unconfirmed*; dropping the near
+  plane altogether (z near 0 with x, y unbounded) gives projected coordinates too large for f32
+  spans (floor polygons running under the camera smeared), which the side planes prevent.
+- Not yet checked: mipmaps/LOD, microtexture, translucency/checker details, and the z-sort key format (Remodel sorts on float z).

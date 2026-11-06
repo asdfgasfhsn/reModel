@@ -1066,7 +1066,14 @@ model as it is, once the i960 returns keep PFP's address bits 4 and 5
   compare). Hairline cracks of background pixels along some polygon
   edges remain on the large character select models, Jann Lee's from the
   intact first pair too, so they are the rasteriser's, not the dump's
-  (*unconfirmed* why).
+  (*unconfirmed* why; not the near plane below: they stay with it at
+  10^-6, on polygons well beyond it).
+- *Confirmed (by running it):* the camera's close-ups (attract mode, the
+  character select screen) put fighters' arms, heads and bodies less
+  than one unit in front of the eye. Remodel's rasteriser clipped at z =
+  1, so those parts vanished as if the camera had cut them away. It now
+  clips to the view volume with a near plane at 10^-6
+  (`docs/hw/geometrizer.md`, Remodel status), and they draw whole.
 
 ## What's known about `hotd`
 

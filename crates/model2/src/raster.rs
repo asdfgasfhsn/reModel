@@ -7,7 +7,7 @@
 //! with perspective-correct, point-sampled textures (level 0, no mipmaps).
 
 use crate::enhance::{Address, Enhance, Fnv, Rgba, TexInfo};
-use crate::video::{View, WIDTH};
+use crate::video::{View, HEIGHT, WIDTH};
 use std::collections::HashMap;
 
 /// One 24-bit float from the stream (IEEE single with the low 8 bits cut).
@@ -248,7 +248,7 @@ pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
                     if link != 0 && (double_sided || !backface) && maxz > 0.0 {
                         let w = &windows[win];
                         let (cx, cy) = w.centres[centre];
-                        let clipped = clip_near(&verts, 1.0);
+                        let clipped = clip_view(&verts, cx, cy);
                         if clipped.len() >= 3 {
                             let points = clipped
                                 .iter()
@@ -286,19 +286,57 @@ pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
     polys
 }
 
-/// Sutherland-Hodgman against z >= near, interpolating texture coordinates.
-fn clip_near(v: &[Vtx], near: f32) -> Vec<Vtx> {
-    let mut out = Vec::with_capacity(v.len() + 2);
+/// Nearest view-space z kept by [`clip_view`]: only there to keep 1/z
+/// finite. The side planes bound x/z and y/z, so a vertex this close
+/// to the eye still projects inside the guard band.
+const NEAR: f32 = 1e-6;
+
+/// Screen-space guard band [`clip_view`] clips to, in game pixels beyond
+/// each edge of the screen: wide enough for any widened view to draw what
+/// lies past the original frame, and small enough to keep projected
+/// coordinates (and 1/z across a span) well inside f32 precision.
+const GUARD: f32 = 2.0 * WIDTH as f32;
+
+/// Clip a view-space polygon to the volume that projects into the guard
+/// band around the screen, given the window centre (cx, cy) in screen
+/// pixels (sx = cx + x/z, sy = cy - y/z): four side planes through the
+/// eye and a near plane at [`NEAR`]. Polygons are clipped, not dropped,
+/// so geometry crossing in front of the camera keeps its visible part.
+fn clip_view(v: &[Vtx], cx: f32, cy: f32) -> Vec<Vtx> {
+    let (x0, x1) = (-GUARD - cx, WIDTH as f32 + GUARD - cx);
+    let (y0, y1) = (cy - (HEIGHT as f32 + GUARD), cy + GUARD);
+    // Each plane as (a, b, c, d): inside where a·x + b·y + c·z + d >= 0.
+    let planes = [
+        [0.0, 0.0, 1.0, -NEAR],
+        [1.0, 0.0, -x0, 0.0],
+        [-1.0, 0.0, x1, 0.0],
+        [0.0, 1.0, -y0, 0.0],
+        [0.0, -1.0, y1, 0.0],
+    ];
+    let mut poly = v.to_vec();
+    for [a, b, c, d] in planes {
+        if poly.len() < 3 {
+            break;
+        }
+        poly = clip_plane(&poly, |p| a * p.x + b * p.y + c * p.z + d);
+    }
+    poly
+}
+
+/// Sutherland-Hodgman against one plane (inside where `dist` >= 0),
+/// interpolating texture coordinates linearly in view space.
+fn clip_plane(v: &[Vtx], dist: impl Fn(&Vtx) -> f32) -> Vec<Vtx> {
+    let mut out = Vec::with_capacity(v.len() + 1);
     for k in 0..v.len() {
         let (a, b) = (v[k], v[(k + 1) % v.len()]);
-        let (ain, bin) = (a.z >= near, b.z >= near);
-        if ain {
+        let (da, db) = (dist(&a), dist(&b));
+        if da >= 0.0 {
             out.push(a);
         }
-        if ain != bin {
-            let t = (near - a.z) / (b.z - a.z);
+        if (da >= 0.0) != (db >= 0.0) {
+            let t = da / (da - db);
             let l = |p: f32, q: f32| p + (q - p) * t;
-            out.push(Vtx { x: l(a.x, b.x), y: l(a.y, b.y), z: near, u: l(a.u, b.u), v: l(a.v, b.v) });
+            out.push(Vtx { x: l(a.x, b.x), y: l(a.y, b.y), z: l(a.z, b.z), u: l(a.u, b.u), v: l(a.v, b.v) });
         }
     }
     out
@@ -684,7 +722,6 @@ fn fill(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::video::HEIGHT;
 
     fn sv(x: f32, y: f32) -> SVtx {
         SVtx { x, y, iz: 1.0, uz: 0.0, vz: 0.0 }
@@ -732,11 +769,22 @@ mod tests {
     }
 
     #[test]
-    fn near_clip_keeps_front_part() {
-        let v = |x, z| Vtx { x, y: 0.0, z, u: x, v: 0.0 };
-        let c = clip_near(&[v(0.0, -1.0), v(0.0, 3.0), v(1.0, 3.0)], 1.0);
-        assert_eq!(c.len(), 4);
-        assert!(c.iter().all(|p| p.z >= 1.0));
+    fn close_geometry_is_clipped_not_dropped() {
+        let v = |x, y, z| Vtx { x, y, z, u: x, v: 0.0 };
+        // A triangle in front of the eye, nearer than one unit: kept whole.
+        let c = clip_view(&[v(-0.1, 0.0, 0.5), v(0.1, 0.0, 0.5), v(0.0, 0.1, 0.4)], 248.0, 192.0);
+        assert_eq!(c.len(), 3);
+        // One crossing the eye plane keeps its front part, inside the guard band.
+        let c = clip_view(&[v(0.0, 0.0, -1.0), v(-0.1, 0.0, 0.5), v(0.1, 0.0, 0.5)], 248.0, 192.0);
+        assert!(c.len() >= 3);
+        for p in &c {
+            // Near NEAR, give or take rounding at the plane: 1/z stays finite.
+            assert!(p.z > NEAR * 0.5);
+            let sx = 248.0 + p.x / p.z;
+            assert!((-GUARD - 1.0..=WIDTH as f32 + GUARD + 1.0).contains(&sx));
+        }
+        // Wholly behind the eye: nothing.
+        assert!(clip_view(&[v(0.0, 0.0, -1.0), v(1.0, 0.0, -1.0), v(0.0, 1.0, -2.0)], 248.0, 192.0).len() < 3);
     }
 
     #[test]
