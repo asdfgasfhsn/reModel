@@ -45,6 +45,7 @@ music`). There is no live window yet.
 | DSB2 music board (68000 firmware + MPEG Layer II decoder) | done; `make music` renders the game's music from a `run` capture |
 | DSB1 music board (`stcc`: Z80 firmware + MPEG Layer II decoder) | done; live in `make play GAME=stcc` and the browser, `make music GAME=stcc` offline; modelled from the Z80 program (`docs/hw/dsb1.md`) |
 | Z80 core (the DSB1's CPU) | done: full instruction set with undocumented flags, interrupts, T-state timing, save states; see `docs/hw/z80.md` |
+| ADSP-21062 SHARC core (Model 2B's two geometry DSPs) | interpreter done, not yet wired to a board: every instruction group, 40-bit floating point, DAGs, loops, interrupts, host boot through DMA channel 6, save states. Both 2B programs decode with no undefined encodings and boot to their first external access (`make sharc-test`); written from Analog Devices' manual, see `docs/hw/adsp2106x.md` |
 | Enhanced views: any resolution, 16:9 / 21:9 with HUD moved to the edges | done for snapshots (`--height`, `--aspect`, `--hud`) |
 | Custom soundtracks (replace any music track, game logic intact) | done offline: `make music SOUNDTRACK=name`; see `docs/mods.md` |
 | Native window (`make play`) | playable: GPU renderer, live sound (cpal), keyboard and gamepad (gilrs), any window shape from 4:3 to 32:9; about 2 ms of CPU per frame recompiled. Esc menu (sound mix, display, save slots, game picker), save states; see `docs/play.md` |
@@ -66,6 +67,7 @@ make                  # list every target
 make check            # format check, clippy, unit tests (no ROMs needed)
 make m68k-tests       # 68000 core vs the SingleStepTests suite (fetches ~200 MB, 1.1 GB unpacked, into out/)
 make z80-test         # Z80 core vs the zexdoc/zexall exercisers in out/z80-tests (docs/hw/z80.md)
+make sharc-test       # ADSP-21062 (SHARC) tests, plus the 2B programs if captured (docs/hw/adsp2106x.md)
 
 # With ROM sets in ./rom, as MAME keeps them (rom/topskatr.zip, or unpacked in rom/topskatr/):
 make verify           # check every chip
@@ -130,6 +132,8 @@ crates/
   analyze/   recursive-descent code discovery      (CPU-generic)
   model2/    board model: memory map, IRQs, timers, I/O, copro interface
   mb86235/   MB86235 (TGPx4) decoder, disassembler and interpreter
+  adsp2106x/ ADSP-21062 (SHARC) decoder, disassembler and interpreter
+             (Model 2B's geometry DSPs; generic)
   m68k/      68000 interpreter and disassembler (sound CPUs)
   z80/       Z80 interpreter (DSB1 music board CPU)   (generic)
   sound/     SCSP (YMF292) with its DSP, and the sound board (Model 2-generic)
@@ -153,7 +157,7 @@ system. The geometry processor is what differs between revisions:
 | i960 decoder, interpreter, recompiler | shared | shared | shared | shared |
 | ROM loading, code analysis | shared | shared | shared | shared |
 | Sound (68000 + SCSP) | shared | shared | shared | shared |
-| Geometry processor | Fujitsu TGP (MB86234), program uploaded | as Model 2; fixed-function geometrizer | two ADSP-21062 SHARCs (copro, geometrizer), programs uploaded | Fujitsu TGP (MB86235) |
+| Geometry processor | Fujitsu TGP (MB86234), program uploaded | as Model 2; fixed-function geometrizer | two ADSP-21062 SHARCs (copro, geometrizer), programs uploaded; core in `crates/adsp2106x` | Fujitsu TGP (MB86235) |
 | Renderer | shared | shared | shared | shared |
 
 Supporting a new game should mean adding a manifest under
@@ -243,6 +247,19 @@ From throwaway boots of `srallyc` (2A), `overrevb` and `sgt24h` (2B) on the
   halves to `0x884000` / `0x804000`. The sound UART is at `0x9C0000`
   (2C: `0x1C80000`). `overrevb` reaches attract mode on the 2C map with
   small stubs; both Jaleco games upload the same two SHARC programs.
+- *Confirmed (`overrevb`, with the ADSP-21062 core):* each SHARC is booted
+  as UM §11.6.3 describes for a 16-bit host. Its window maps IOP register
+  *n* at window + 4*n*, each 32-bit register written as two 16-bit halves,
+  low first: DMAC6 = 0, II6 = `0x20000`, IM6 = 1, C6 = `0x1000`, DMAC6 =
+  `0xA1` (instruction words, 16-to-48 packing, LSW first), then 12,288 halves
+  to EPB0 (the geometrizer first gets MSGR7 = `0x7378842E`). The DMA's end
+  vectors through `0x20040` (`RTI`) to `0x20005`, `JUMP 0x20080 (DB)`. The
+  copro program has 2,110 words of code, the geometrizer's 2,987, none with
+  an undefined encoding. Both set FLAG2/FLAG3 (geometrizer also FLAG1) as
+  outputs and handshake on FLAG0; the copro reads commands from external
+  `0x400000`. Details in `docs/hw/adsp2106x.md`. *Unconfirmed:* whether bit
+  31 of `0x980000`/`0x980008`, which brackets each upload, is the SHARC's
+  RESET or its host bus request.
 - *Confirmed (`sgt24h`):* boot clears work RAM (`0x500000-0x57FFFF`,
   its callers' stack frames included) from inside the function called at
   `0x710`, then returns. That works only because the i960KB keeps recent
