@@ -35,6 +35,7 @@ music`). There is no live window yet.
 | Geometrizer (second MB86235) running the game's own program | done; gameplay frames produce the rasteriser stream |
 | Recompiler: i960 → native | done; opt-in (`make recomp`, then `RECOMP=1`), identical state hash; 96% of the game's instructions become plain Rust, the rest call the interpreter with the instruction pre-decoded; see `docs/recompiler.md` |
 | Recompiler: MB86235 programs → Rust | done; built with the i960 code, geometrizer about 1.5x faster |
+| Recompiler: ADSP-21062 (SHARC) programs → Rust | done (Model 2B); built with the i960 code, each word the interpreter's step specialised for its instruction, interpreter fallback for anything not compiled or overwritten; `overrevb`'s geometrizer 2.2x faster (9.3 ms a race frame native, 10.7 ms in WebAssembly), identical state hash and `make lockstep`; see `docs/recompiler.md` |
 | Geometry processor fast path (high-level per-command) | planned |
 | 2D tile layer renderer (PNG snapshots) | done; boot, logo, title and attract text render |
 | 3D rasteriser (software) | textured, bilinear-filtered gameplay frames (topskatr uses no mipmaps); the reference, but too slow for live races (15-27 ms a frame at native size) |
@@ -45,7 +46,7 @@ music`). There is no live window yet.
 | DSB2 music board (68000 firmware + MPEG Layer II decoder) | done; `make music` renders the game's music from a `run` capture |
 | DSB1 music board (`stcc`: Z80 firmware + MPEG Layer II decoder) | done; live in `make play GAME=stcc` and the browser, `make music GAME=stcc` offline; modelled from the Z80 program (`docs/hw/dsb1.md`) |
 | Z80 core (the DSB1's CPU) | done: full instruction set with undocumented flags, interrupts, T-state timing, save states; see `docs/hw/z80.md` |
-| ADSP-21062 SHARC core (Model 2B's two geometry DSPs) | interpreter done and running both of `overrevb`'s programs on the 2B board model: every instruction group, 40-bit floating point, DAGs, loops, interrupts, host boot through DMA channel 6, save states (`make sharc-test`); written from Analog Devices' manual, see `docs/hw/adsp2106x.md`. No recompiler yet |
+| ADSP-21062 SHARC core (Model 2B's two geometry DSPs) | interpreter done and running both of `overrevb`'s programs on the 2B board model: every instruction group, 40-bit floating point, DAGs, loops, interrupts, host boot through DMA channel 6, save states (`make sharc-test`); written from Analog Devices' manual, see `docs/hw/adsp2106x.md`. Recompiler above |
 | Model 2B-CRX board model | done for `overrevb`: the copro and geometrizer SHARCs booted through their host windows, their FIFOs and flags, the moved sound UART; the geometrizer program's raster stream has 2C's format, so both renderers take it unchanged. Worked out from the game's programs, see `docs/hw/model2b.md` |
 | Enhanced views: any resolution, 16:9 / 21:9 with HUD moved to the edges | done for snapshots (`--height`, `--aspect`, `--hud`) |
 | Custom soundtracks (replace any music track, game logic intact) | done offline: `make music SOUNDTRACK=name`; see `docs/mods.md` |
@@ -58,7 +59,7 @@ music`). There is no live window yet.
 | Sixth game: `overrev` (Over Rev, 2C, Jaleco) | playable with sound (`make play GAME=overrev`): attract, mode, car and gearbox select, races. Jaleco's own sound driver runs on the SCSP board model unchanged (music streamed from sample ROM; no music board). Needed the link board's registers to read as absent; recompiled build identical |
 | Seventh game: `hotd` (The House of the Dead, 2C) | playable (`make play GAME=hotd`) with light guns: mouse, touch, gamepad sticks or scripts aim, through generic gun controls in the manifest. Attract, coin-up and play through the first areas with shooting and off-screen reloads; sound from the SCSP. Needed a model of its gun interface (worked out from the game's code); recompiled build identical |
 | Eighth game: `bel` (Behind Enemy Lines, 2C, EPL) | playable with sound (`make play GAME=bel`): two mounted guns aimed by mouse, touch, gamepad sticks or scripts. Attract, coin-up and the first mission with shooting and missiles to game over. Needed packed main data and polygon banks, the copro status read before its upload, and the sound UART's transmit interrupt; EPL's sound driver runs on the SCSP board model unchanged; recompiled build identical |
-| Ninth game: `overrevb` (Over Rev, 2B, Jaleco) | playable with sound (`make play GAME=overrevb`): the 2B version of `overrev`, same data and controls, its own i960 program and two SHARC programs. Attract, menus and races look and sound as `overrev` does. About real time with the i960 recompiled (the geometrizer SHARC, interpreted, is the limit); recompiled build identical |
+| Ninth game: `overrevb` (Over Rev, 2B, Jaleco) | playable with sound (`make play GAME=overrevb`): the 2B version of `overrev`, same data and controls, its own i960 program and two SHARC programs. Attract, menus and races look and sound as `overrev` does. Full speed recompiled (`RECOMP=1`: i960 and both SHARCs; races at 1.8x real time natively, and the browser's geometrizer keeps up), below real time interpreted; recompiled build identical |
 
 ## Quick start
 
@@ -94,14 +95,14 @@ make run STEPS=600000000 INPUT=coin1@1100-1104,start@1250-1254 \
 make assets               # extract the game's art for review -> out/topskatr/assets (needs ImageMagick)
 make bench                # timed run into a race: speed and state hash
 make latency              # frames from a wheel change to the game reacting and its polygons (LATENCY_CHANGE, LATENCY_FRAME)
-make recomp               # recompile the game's i960 code and TGP programs (after a `run`; builds only what changed)
+make recomp               # recompile the game's i960 code and TGP or SHARC programs (after a `run`; builds only what changed)
 make bench RECOMP=1       # same run on the recompiled build: same hash, about twice as fast
 make play RECOMP=1        # play in a native window (Esc menu, F5/F9 quick save/load, F11 fullscreen)
 make web RECOMP=1         # browser build -> out/web: game list, a page and module per game (WebGPU; serve over HTTPS, docs/web.md)
 make dist                 # player to hand out (interpreter only, no ROMs) -> out/dist/remodel-VERSION-TARGET.tar.gz
 make capture              # save renderer inputs from a run into a race -> out/topskatr/capture
 make gpu-check            # draw them on the software and GPU rasterisers, time and compare
-make lockstep RECOMP=1    # recompiled vs interpreted i960, block by block, until they differ
+make lockstep RECOMP=1    # recompiled vs interpreted i960 (and 2B SHARCs), block by block, until they differ
 make music                # after a `run` into a race: the music board's music -> out/topskatr/music.wav (GAME=stcc too)
 make soundtrack-import SRC=~/my-mix SOUNDTRACK=my-mix   # your own music (ffmpeg converts)
 make music SOUNDTRACK=my-mix      # same, with your tracks -> out/topskatr/music-my-mix.wav
@@ -249,7 +250,7 @@ chip but the program pair). Details, addresses and evidence in
   `0xA1` (instruction words, 16-to-48 packing, LSW first), then 12,288 halves
   to EPB0 (the geometrizer first gets MSGR7 = `0x7378842E`). The DMA's end
   vectors through `0x20040` (`RTI`) to `0x20005`, `JUMP 0x20080 (DB)`. The
-  copro program has 2,110 words of code, the geometrizer's 2,987, none with
+  copro program has 2,111 words of code, the geometrizer's 2,987, none with
   an undefined encoding (`docs/hw/adsp2106x.md`).
 - *Confirmed (the upload code and UM §11.6.3):* bit 31 of `0x980000` /
   `0x980008` is not the SHARC's RESET: the i960 programs the SHARC while
@@ -284,6 +285,13 @@ chip but the program pair). Details, addresses and evidence in
   5 SHARC instructions per i960 instruction), the FIFO depths and the wait
   states. The copro and geometrizer flags the programs drive (copro FLAG2
   error, FLAG3 waiting; geometrizer FLAG1-3) go nowhere in the model.
+- *Confirmed (`overrevb`, by running them recompiled):* neither SHARC
+  program writes its own code in a coin-start run into a race, and
+  everything they execute is reached statically from the vectors and
+  their dispatch tables (2,111 copro words, 2,987 geometrizer words);
+  `docs/recompiler.md`. *Unconfirmed* for paths a coin-start run doesn't
+  take (the geometrizer's code upload command, fn 0x1D, would load code;
+  any such word runs on the interpreter).
 - *Confirmed (`sgt24h`):* boot clears work RAM (`0x500000-0x57FFFF`,
   its callers' stack frames included) from inside the function called at
   `0x710`, then returns. That works only because the i960KB keeps recent

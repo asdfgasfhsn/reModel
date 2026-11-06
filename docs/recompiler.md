@@ -1,24 +1,18 @@
 # Static recompilation
 
 Remodel can turn the game's own code into Rust and compile it into the
-binary: the i960 main program and the MB86235 programs uploaded to the
-copro and geometrizer. Nothing is reimplemented; the original
-instructions run, just translated ahead of time instead of decoded at run
-time.
+binary: the i960 main program, the MB86235 programs uploaded to the 2C
+copro and geometrizer, and the ADSP-21062 (SHARC) programs uploaded to
+Model 2B's. Nothing is reimplemented; the original instructions run, just
+translated ahead of time instead of decoded at run time.
 
 ```sh
 make run STEPS=900000000 INPUT=coin1@1100-1104,start@1250-1254   # trace what runs
 make recomp               # generate out/recomp/<program>/ and build target/recomp
 make bench RECOMP=1       # same run on the recompiled build: same state hash
+make lockstep RECOMP=1    # recompiled beside interpreted, compared as they go
 target/recomp/release/remodel --interp ...   # recompiled build, interpreter for the i960
 ```
-
-On Model 2B (`overrevb`) the copro and geometrizer are ADSP-21062 SHARCs,
-which have no recompiler yet: `remodel recomp` makes the game's i960 crate
-only, says so, and the SHARCs run on their interpreter in every build
-(`recomp-files` names just the i960 crate). The recompiled i960 code calls
-the same `Model2Bus::retire`, which steps the copro SHARC, so the state hash
-is the interpreter's.
 
 The generated code is derived from the ROMs, so it lives in `out/recomp/`
 and is never committed. Ordinary builds (and `make check`) leave it out. A
@@ -29,16 +23,21 @@ so the same binary still runs other games and revisions.
 
 Every recompiled program is a crate of its own, named by its hash:
 `out/recomp/i960_<hash>/` for a game's i960 program, `out/recomp/tgp_<hash>/`
-for a copro or geometrizer program (games can share these). Each holds
+for a 2C copro or geometrizer program, `out/recomp/sharc_<hash>/` for a 2B
+one (games can share these: `overrevb` and `sgt24h` upload the same two
+SHARC programs). Each holds
 `program.rs` from the code generator, generic over the machine around the
 processor, and a `lib.rs` that instantiates it for the Model 2 board
 (`Model2Bus`, the TGP's external buses), so its machine code is compiled in
-that crate and nowhere else. Program crates depend on `i960`, `mb86235` and
-`remodel-model2`; model2 depends on none of them.
+that crate and nowhere else. Program crates depend on `i960`, `mb86235`, `adsp2106x` and
+`remodel-model2`; model2 depends on none of them. A SHARC crate's
+`roles.txt` says which processor(s) the program was captured on (`copro`,
+`geo`), and its glue instantiates it for those buses only.
 
 model2 takes the programs at run time instead: `model2::recomp::register`
-installs a table of (hash, i960 blocks) and (hash, copro and geometrizer
-`step`), and the machine looks programs up there by hash. The front ends
+installs a table of (hash, i960 blocks), (hash, copro and geometrizer
+`step`) and (hash, image, compiled words, copro and geometrizer `run`), and
+the machine looks programs up there by hash. The front ends
 (`remodel`, `remodel-play`, `remodel-web`) call `recomp::register()` first
 thing. In the checkout's workspace `recomp` is `crates/recomp`, a stub that
 registers nothing, so ordinary builds, `make check` and `make dist` never
@@ -87,6 +86,11 @@ What keeps it bounded:
   compiles on one thread (up to 100 s for `stcc`'s geometrizer program);
   splitting it would add a call per TGP instruction.
 - **No debug info** for the recompiled build, as before.
+- **SHARC programs** go 256 words to a submodule. `overrevb`'s
+  geometrizer crate (2,987 words, 1.3 MB of Rust) builds in about 56 s
+  with available memory going from 18.6 GB to 8.6 GB (16 codegen units in
+  parallel); its copro crate (2,111 words) in about 40 s. Both are compiled
+  for the bus they run on only; for both buses they took twice as long.
 
 Splitting into crates costs nothing at run time: blocks are
 `#[inline(never)]` anyway, and model2 marks what they call on every
@@ -163,3 +167,80 @@ Each program word the interpreter executed becomes a match arm calling
 `#[inline(always)]`, so the compiler specialises each arm. Words that
 never ran fall back to the interpreter. The programs are uploaded by the
 game at boot, so they are keyed by a hash of the uploaded image.
+
+## ADSP-21062 (`crates/adsp2106x/src/codegen.rs`)
+
+**Which code.** The programs are uploaded by the i960 at boot (`make run`
+writes them to `out/GAME/sharc-copro.bin`, `sharc-geo.bin`), so they are
+keyed by a hash of the image. `remodel recomp` compiles the words that
+static discovery (`codegen::discover`, also behind `sharc-disasm`) reaches
+from the reset and interrupt vectors, following jumps, calls, loops, delay
+slots and the command dispatch tables (both programs store their handlers'
+addresses as immediates at init and jump through them: discovery takes
+immediates that point into the image as code), plus anything `make run`
+saw execute (`sharc-*-coverage.txt`). For `overrevb` that is 2,111 of the
+copro's 4,096 words and 2,987 of the geometrizer's; nothing executed in a
+coin-start run is missing from the static set.
+
+**Instructions.** Each compiled word is a function that runs one step of
+the interpreter for that instruction, with its decoding as a constant
+(`Sharc::run_compiled`). Everything it calls (execution, compute, ALU,
+multiplier, shifter, conditions, DAGs, universal registers, memory) is
+`#[inline(always)]`, so the compiler specialises each word: decode and
+operand dispatch fold away, and so do the fetch stage's branch and loop
+set-up paths for instructions that can't take them. What remains is the
+interpreter's own cycle in the same order: the timer and latches tick, the
+loop test of the fetch sees the status from before the instruction, the
+two-slot pipeline moves on, delayed branches, loop ends tested at the last
+word's fetch, PC/loop/status stacks, interrupts and their hold-off after
+branches. The program's `step` is a `match` on the address in the execute
+slot (after running any bubbles, as the interpreter's `step` does); `run`
+loops over it until the bus's `after_step` says stop, which is how the
+board's stopping rules (the copro waiting on a FLAG, the geometrizer's end
+of frame) are kept exact without a call per instruction.
+
+The geometrizer program is float-heavy: with RND32 (both programs set it)
+an add or multiply of two normal inputs is computed exactly in f64 and
+rounded to 23 fraction bits in place (`float::single`), which the
+interpreter uses too; anything else (zeros, specials, results that over-
+or underflow, adds of very different magnitudes) takes the exact
+significand path. A unit test checks the two agree bit for bit, flags
+included.
+
+**Fallback.** A word without code (not found, or the program's own code
+loaded later) runs on the interpreter: `Sharc::step_uncompiled` counts it
+per address, and `remodel run` reports any (`recompiled code missed N
+instructions`); `overrevb` misses none. **Self-modifying code:** neither
+program writes its code (95 geometrizer words store through the PM bus,
+all to data), but that can't be proven statically, so the core watches
+every compiled word: when attaching, any that doesn't hold what was
+compiled, and later any written, runs on the interpreter from then on
+(`Sharc::watch_code`; a unit test overwrites a compiled word). After a save
+state load the program is found by hash, or else by its compiled words
+being in memory, and attached again.
+
+**Spinning.** `Sharc::spinning` (the board stops stepping a SHARC that
+only waits on a FLAG input) decodes from memory when the decode cache,
+which recompiled code doesn't fill, has no entry; it gives the same answer
+either way.
+
+**Checking.** `make lockstep GAME=overrevb RECOMP=1 INPUT=coin-start` runs
+both SHARCs recompiled in one machine and interpreted in the other (beside
+the i960 comparison): the copro's steps, PC and registers after every i960
+block, and both SHARCs' whole state (memory, registers, stacks, pipeline,
+counters) and the geometrizer's output after every frame. 600M i960
+instructions (4,141 frames, into a race) are identical. The coin-start
+state hash is the interpreter's (`ee2bcd89e419e428`).
+
+**Speed** (`overrevb`, from a save state at frame 3000 of a coin-start
+run, 658 race frames, native; WebAssembly in Node, 390 frames, as
+`docs/web.md` times it):
+
+| geometrizer per frame | native | WebAssembly |
+|---|---|---|
+| interpreter, before | 20.8 ms (spikes 25) | 33.1 ms |
+| interpreter, now (inlining, f64 fast path) | 16.8 ms | |
+| recompiled | 9.3 ms (slowest 12.4) | 10.7 ms (worst 12.5) |
+
+The race runs at 1.8 times real time natively with the geometrizer on its
+thread, so `overrevb` reaches full speed in both.

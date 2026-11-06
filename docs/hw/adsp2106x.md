@@ -38,6 +38,8 @@ as code decode to undefined encodings.
 | `src/mem.rs` | Internal memory as 16-bit columns (UM §5.3) |
 | `src/cpu.rs` | `Sharc`: registers, sequencer pipeline, loops, interrupts, DAGs, memory access, IOP registers, host interface, save states |
 | `src/cpu/exec.rs` | Instruction execution and the computation units |
+| `src/cpu/recomp.rs` | What recompiled programs run on: one interpreter step of a constant instruction, dispatch, watching compiled words, `program_hash` |
+| `src/codegen.rs` | The recompiler (`docs/recompiler.md`): code discovery and a Rust crate per program |
 | `crates/cli/src/sharc.rs` | `remodel sharc-disasm` / `sharc-check`: listings, code discovery, a host boot and run |
 
 `make sharc-test` runs the unit tests and, when the programs have been
@@ -65,7 +67,9 @@ add/subtract). Flags: ASTAT (incl. compare accumulation and BTF) and STKY
 sticky bits as Tables 2.5.4, 2.6.6 and 2.7.4 list them.
 
 **Floating point:** the 40-bit format, RND32 (inputs lose their 8 LSBs,
-results rounded to 23 fraction bits), TRUNC (round toward zero; FIX toward
+results rounded to 23 fraction bits; an add or multiply of two normal
+inputs is then done exactly in f64 and rounded once, the same result as
+the exact significand path, which handles everything else), TRUNC (round toward zero; FIX toward
 -Infinity), denormal inputs as zero, post-rounding overflow to Infinity or
 NORM.MAX, underflow to zero, NaN results as all ones.
 
@@ -264,11 +268,16 @@ GAME=overrevb` writes them from the uploads it sees.
 
 | | copro | geometrizer |
 |---|---|---|
-| words reached as code (from the vectors, following jumps, calls, loops and the dispatch tables) | 2,110 | 2,987 |
+| words reached as code (from the vectors, following jumps, calls, loops and the dispatch tables) | 2,111 | 2,987 |
 | undefined encodings among them | 0 | 0 |
 | undefined words elsewhere (data tables after or inside the code) | 57 | 684 |
-| DO UNTIL loops / RTS / RTI | 28 / 90 / 28 | 32 / 2 / 28 |
+| DO UNTIL loops / RTS / RTI | 28 / 91 / 28 | 32 / 2 / 28 |
 | host boot, then run | 148 instructions to its first external read, `0x400000` | polls FLAG0; once it is raised, sets FLAG1 and writes `0x3F000000` to `0x430002` |
+
+Discovery follows a delay slot on from where it is also a branch target
+(the copro's `0x20811`, a slot of the `RTS (DB)` at `0x2080F` and the
+target of `IF LT JUMP` at `0x20809`, falls through to the `RTS` at
+`0x20812`); before that was fixed it found 2,110 words and 90 RTS.
 
 - *Confirmed (from the programs):* both write SYSCON and WAIT through I0 in
   IOP space early on: the copro SYSCON = `0xA100` (IMDW0: block 0 holds
@@ -301,7 +310,8 @@ GAME=overrevb` writes them from the uploads it sees.
 - Whether the copro's backwards DO is reached, and what the chip does with
   the leftover loop stack entry.
 - Cycle timing beyond branch bubbles, if the board needs it.
-- Speed: the interpreter takes about 28 ns an instruction for a NOP and
-  60-70 ns for a multifunction compute with transfers on a desktop CPU;
-  the 2B geometrizer runs about 225,000 instructions a race frame. A
-  recompiler (as for the MB86235) is the next step.
+- Speed: the interpreter takes about 54 ns an instruction on the 2B
+  geometrizer program (a race frame is about 310,000 instructions); the
+  recompiled programs (`docs/recompiler.md`) about 30 ns, most of it the
+  instructions' own work (40-bit float, the memory columns, the pipeline
+  and loop bookkeeping each cycle).

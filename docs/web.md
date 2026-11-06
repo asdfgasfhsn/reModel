@@ -227,8 +227,10 @@ and time the two calls per frame with `performance.now()`. Race frames
 |---|---|---|
 | `overrev` (2C, TGP recompiled) | 6.8 ms | 8.1 ms |
 | `overrevb` (2B, SHARC interpreted) | 9.5 ms | 33.1 ms (worst 36.9) |
+| `overrevb` (2B, SHARCs recompiled) | 8.2 ms | 10.7 ms (worst 12.5) |
 
-About 1.6 times native for the SHARC (20 ms native).
+Interpreted, about 1.6 times native for the SHARC (20 ms native then);
+recompiled about 1.2 times (9.3 ms native).
 
 ## Ready
 

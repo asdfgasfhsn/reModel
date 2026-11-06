@@ -169,39 +169,34 @@ the state hash is identical with it off.
 ## Speed
 
 The geometrizer SHARC is the cost: about 310,000 instructions a race
-frame (frames 3000-3313 of a coin-start run), 20 ms on the interpreter
-(65 ns an instruction; 21.5 ms before the tick, ALU flag and rounding
-paths were trimmed), with spikes to 24 ms. Measured from a save state
+frame (frames 3000-3313 of a coin-start run). Measured from a save state
 in the race (`--load-state`, 658 frames), native:
 
 | | `overrev` (2C) | `overrevb` (2B) |
 |---|---|---|
-| i960 + copro, i960 recompiled | 4.8 ms | 6.7 ms (the copro SHARC about 2 ms) |
+| i960 + copro, i960 recompiled | 4.8 ms | 6.7 ms (the copro SHARC about 2 ms, interpreted) |
 | i960 + copro, interpreted | 8.1 ms | 9.9 ms |
-| geometrizer | 5.9 ms (TGP recompiled) | 20 ms |
-| race, geometrizer on its thread | 15x real time | 0.86x |
+| geometrizer, interpreted | | 16.8 ms (20.8 before the interpreter's inlining and f64 fast path) |
+| geometrizer, recompiled | 5.9 ms (TGP) | 9.3 ms (slowest frame 12.4) |
+| race, all recompiled, geometrizer on its thread | 15x real time | 1.8x |
 
-So `overrevb` races below real time even natively, and in WebAssembly
-the geometrizer takes 33 ms (`docs/web.md`, "Timing without a browser").
+In WebAssembly (Node, `docs/web.md`) the recompiled geometrizer takes
+10.7 ms a frame (worst 12.5) where the interpreter took 33 ms, inside the
+14 ms full speed needs there. So `overrevb` runs at full speed recompiled,
+natively and in the browser; the SHARC recompiler is described in
+`docs/recompiler.md`. Interpreted it still races below real time, and the
+front ends then slow the game to what the geometrizer manages
+(`docs/play.md`, `docs/web.md`).
+
 Input latency is the same on both boards: `make latency GAME=overrevb`
 shows the game reading the wheel at the start of the frame after the
 change and the display list and polygons changing in that same frame, so
 at full speed the player draws it one frame later (the browser two).
-What made `overrevb` feel unresponsive was speed: the native player
-dropped to half the refresh rate (main thread and geometrizer, 27 ms, in
-series), and the browser let its geometry worker fall ever further
-behind. Both are fixed in the front ends (`docs/play.md`, `docs/web.md`):
-now the game slows to what the geometrizer manages, the polygons at most
-a frame (native) or two (browser) behind. Full speed needs the
-geometrizer at about 12 ms natively and 14 ms in WebAssembly: 1.7 and
-2.4 times faster, more than tuning the interpreter gives (its profile is
-flat: dispatch, condition and flag work, the ALU and float paths each a
-few percent). That takes a SHARC recompiler. The copro is much lighter: 121 million
-instructions in a 600M-instruction coin-start run against the
-geometrizer's 900 million, once its waits aren't stepped (stepping them,
-it ran 2,000 million in the first half of that run alone, and the run
-took nearly three times as long). A SHARC
-recompiler, like the MB86235 one, is the way to go faster.
+
+The copro is much lighter: 121 million instructions in a 600M-instruction
+coin-start run against the geometrizer's 900 million, once its waits
+aren't stepped (stepping them, it ran 2,000 million in the first half of
+that run alone, and the run took nearly three times as long).
 
 ## Open questions
 
