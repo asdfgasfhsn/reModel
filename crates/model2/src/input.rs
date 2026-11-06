@@ -160,13 +160,21 @@ pub fn release_all(bus: &mut Model2Bus) {
 /// script) comes through here. False if the game has no such gun.
 pub fn set_gun(bus: &mut Model2Bus, player: usize, at: Option<(f32, f32)>) -> bool {
     let Some(gun) = bus.controls.guns.get(player) else { return false };
-    let Some(board) = &mut bus.gun else { return false };
     match gun.source {
         romset::GunSource::Counters { x, y, offscreen_bit } => {
+            let Some(board) = &mut bus.gun else { return false };
             let (rx, ry) = at.map_or((0, 0), |(ax, ay)| gun.raw(ax, ay));
             board.set_counter_pair(x, rx);
             board.set_counter_pair(y, ry);
             board.set_offscreen(offscreen_bit, at.is_none());
+        }
+        // A mounted gun stays where it was when the pointer leaves the view.
+        romset::GunSource::Analog { x, y } => {
+            if let Some((ax, ay)) = at {
+                let (rx, ry) = gun.raw(ax, ay);
+                bus.analog[x as usize] = rx.min(255) as u8;
+                bus.analog[y as usize] = ry.min(255) as u8;
+            }
         }
     }
     true
@@ -192,6 +200,12 @@ pub fn apply_gun(bus: &mut Model2Bus, player: usize, g: GunState) -> bool {
     let (at, fire) = match gun.reload {
         romset::Reload::Offscreen if g.reload => (None, true),
         romset::Reload::Offscreen => (g.at, g.trigger),
+        romset::Reload::Button(b) => {
+            if g.reload {
+                set_button(bus, b, true);
+            }
+            (g.at, g.trigger)
+        }
     };
     set_gun(bus, player, at);
     if fire {

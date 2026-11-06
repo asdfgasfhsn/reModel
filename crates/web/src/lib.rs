@@ -459,7 +459,8 @@ pub fn touch_layout(game: &str) -> String {
     let mut top = top;
     if gun {
         actions.clear();
-        top.push("{\"label\": \"Reload\", \"gun\": \"reload\"}".into());
+        let label = c.guns[0].reload_label(c);
+        top.push(format!("{{\"label\": {}, \"gun\": \"reload\"}}", json_str(&label)));
     }
     format!(
         "{{\"steer\": {steer}, \"gun\": {gun}, \"top\": [{}], \"actions\": [{}]}}",

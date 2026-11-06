@@ -38,9 +38,11 @@ pub struct Gun {
     pub source: GunSource,
     /// Raw X at the view's left and right edges, and raw Y at its top and
     /// bottom: the calibration a cabinet's gun setting would hold. Values
-    /// between follow linearly; either end may be the larger.
-    pub x_range: (u16, u16),
-    pub y_range: (u16, u16),
+    /// between follow linearly; either end may be the larger. An end may
+    /// lie beyond what the board can read (raw values clamp to it) when the
+    /// game's aim can't reach the view's edge.
+    pub x_range: (i16, i16),
+    pub y_range: (i16, i16),
     /// The button input that is this gun's trigger (fires where it aims).
     pub trigger: &'static str,
     /// How the player reloads.
@@ -57,6 +59,9 @@ pub enum GunSource {
     /// `offscreen_bit` of counter 8 reads 0 while the gun points at the
     /// screen and 1 when it sees nothing.
     Counters { x: u8, y: u8, offscreen_bit: u8 },
+    /// A mounted gun on two ADC channels (yaw and pitch potentiometers,
+    /// bel), read like any analog input. It can't point off the screen.
+    Analog { x: u8, y: u8 },
 }
 
 /// How a gun game reloads.
@@ -65,13 +70,26 @@ pub enum Reload {
     /// Pull the trigger aimed off the screen. Players that can't point
     /// off screen offer a reload button that aims away for a moment.
     Offscreen,
+    /// No reloading: the players' reload controls (right mouse button, the
+    /// pad's reload buttons, the touch pill) press this button instead
+    /// (bel's missile button).
+    Button(&'static str),
 }
 
 impl Gun {
+    /// What players see the reload control called: "Reload", or the
+    /// label of the button that stands in for it.
+    pub fn reload_label(&self, controls: &Controls) -> String {
+        match self.reload {
+            Reload::Offscreen => "Reload".to_string(),
+            Reload::Button(b) => controls.button(b).map_or_else(|| capitalise(b), ButtonInput::label),
+        }
+    }
+
     /// The raw X and Y for an aim at `(x, y)` in view coordinates (0 to 1;
-    /// clamped to the view).
+    /// clamped to the view; raw values below 0 read 0).
     pub fn raw(&self, x: f32, y: f32) -> (u16, u16) {
-        let map = |(a, b): (u16, u16), t: f32| (a as f32 + t.clamp(0.0, 1.0) * (b as f32 - a as f32)).round() as u16;
+        let map = |(a, b): (i16, i16), t: f32| (a as f32 + t.clamp(0.0, 1.0) * (b as f32 - a as f32)).round() as u16;
         (map(self.x_range, x), map(self.y_range, y))
     }
 }
@@ -226,7 +244,11 @@ impl Controls {
         for (i, g) in self.guns.iter().enumerate() {
             let aim = if i == 0 { "mouse or touch, else pad sticks" } else { "pad sticks (beside a mouse)" };
             let keys: Vec<_> = g.keys_reload.iter().map(|k| key_label(k)).collect();
-            out += &format!("  {:<10} aim: {aim}; fire: {}; reload: shoot off screen", g.name, g.trigger);
+            let reload = match g.reload {
+                Reload::Offscreen => "reload: shoot off screen".to_string(),
+                Reload::Button(b) => format!("{b}: right button"),
+            };
+            out += &format!("  {:<10} aim: {aim}; fire: {}; {reload}", g.name, g.trigger);
             out += &if keys.is_empty() { "\n".to_string() } else { format!(" or {}\n", keys.join(" ")) };
         }
         for a in self.analogs {
@@ -269,7 +291,9 @@ impl Controls {
         let mut out: Vec<(Vec<&'static str>, String)> = Vec::new();
         if let Some(g) = self.guns.first() {
             out.push((vec!["Mouse"], "Aim, click to shoot".to_string()));
-            out.push((g.keys_reload.iter().take(1).map(|k| key_symbol(k)).collect(), "Reload".to_string()));
+            if g.reload == Reload::Offscreen {
+                out.push((g.keys_reload.iter().take(1).map(|k| key_symbol(k)).collect(), "Reload".to_string()));
+            }
         }
         for (keys, label) in analogs.chain(buttons) {
             // Analogs bound to the same keys (skisuprg's edge and swing) once.
@@ -326,8 +350,17 @@ mod tests {
             assert!(c.guns.len() <= 2, "{}: at most two guns", g.id);
             for gun in c.guns {
                 assert!(c.button(gun.trigger).is_some(), "{}: {} has no trigger button", g.id, gun.name);
-                let GunSource::Counters { x, y, offscreen_bit } = gun.source;
-                assert!(x < 15 && y < 15 && offscreen_bit < 8, "{}: {}", g.id, gun.name);
+                match gun.source {
+                    GunSource::Counters { x, y, offscreen_bit } => {
+                        assert!(x < 15 && y < 15 && offscreen_bit < 8, "{}: {}", g.id, gun.name)
+                    }
+                    GunSource::Analog { x, y } => {
+                        assert!(x < 8 && y < 8, "{}: {}", g.id, gun.name)
+                    }
+                }
+                if let Reload::Button(b) = gun.reload {
+                    assert!(c.button(b).is_some(), "{}: {} reloads with no button {b}", g.id, gun.name);
+                }
             }
             assert!(c.button("coin1").is_some(), "{}", g.id);
             assert!(c.coin_start.contains("coin1@"), "{}", g.id);
@@ -349,11 +382,12 @@ mod tests {
     #[test]
     fn gun_aims_map_through_the_calibration() {
         let (_, gun) = crate::games::HOTD.controls.gun("gun1").unwrap();
-        assert_eq!(gun.raw(0.0, 0.0), (gun.x_range.0, gun.y_range.0));
-        assert_eq!(gun.raw(1.0, 1.0), (gun.x_range.1, gun.y_range.1));
-        assert_eq!(gun.raw(-1.0, 2.0), (gun.x_range.0, gun.y_range.1));
+        let r = |v: i16| v as u16;
+        assert_eq!(gun.raw(0.0, 0.0), (r(gun.x_range.0), r(gun.y_range.0)));
+        assert_eq!(gun.raw(1.0, 1.0), (r(gun.x_range.1), r(gun.y_range.1)));
+        assert_eq!(gun.raw(-1.0, 2.0), (r(gun.x_range.0), r(gun.y_range.1)));
         let (mx, my) = gun.raw(0.5, 0.5);
-        assert!(mx > gun.x_range.0 && mx < gun.x_range.1 && my > gun.y_range.0 && my < gun.y_range.1);
+        assert!(mx > r(gun.x_range.0) && mx < r(gun.x_range.1) && my > r(gun.y_range.0) && my < r(gun.y_range.1));
     }
 
     #[test]
