@@ -7,9 +7,10 @@
 //! refresh near the game's (60 Hz, or 120 Hz at one frame per two) the
 //! machine runs exactly one frame per refresh, measured from the animation
 //! frame times; otherwise it follows a steady 57.524 Hz clock. The sound
-//! worker resamples the audio to match, and corrects drift against the
-//! sound card by stretching it at most 0.5%, from the worklet's level
-//! reports ([`set_audio_level`]).
+//! worker resamples the audio to match: the game's speed, scaled by the
+//! pace it actually keeps and steered by the worklet's level reports
+//! ([`set_audio_level`]) through `model2::audio::Pace`, so the audio slows
+//! with the game when it can't keep up instead of running dry.
 //!
 //! The sound and music boards run in a Web Worker (sound-worker.js, using
 //! [`SoundEngine`] from this same module), on another core: each frame the
@@ -35,11 +36,13 @@ use web_sys::{HtmlCanvasElement, KeyboardEvent};
 const FPS: f64 = 57.524;
 /// Most emulated frames run per browser frame before dropping time.
 const MAX_CATCH_UP: u32 = 3;
-/// Audio the worklet should hold (stereo frames, about 70 ms): drift
-/// correction steers towards it.
-const AUDIO_TARGET: f64 = 0.07 * model2::audio::RATE as f64;
-/// Most the audio rate is stretched for drift correction.
-const DRIFT: f64 = 0.005;
+/// Audio the worklet should hold (seconds): the rate control
+/// (`model2::audio::Pace`) steers towards it.
+const AUDIO_TARGET: f64 = 0.07;
+/// Following the display, frames a held-back game may run late (at most
+/// `MAX_CATCH_UP` in one animation frame): one the geometry worker held
+/// back is run with the next, not lost.
+const MAX_OWED: u64 = 2;
 /// Most frames the geometry worker may have in hand: the game waits for it
 /// beyond that (runs slower) rather than letting the polygons fall ever
 /// further behind the rest of the picture and the inputs.
@@ -88,6 +91,10 @@ struct App {
     repeats: u32,
     /// Game samples per output sample for the sound worker's resampler.
     ratio: f64,
+    /// The audio rate control: follows the game's actual pace.
+    pace: model2::audio::Pace,
+    /// Following the display: frames due and not yet run.
+    owed: u64,
     /// Geometrizer in a worker: its newest frame (raster stream, texture
     /// point RAM), once one arrives. None with the local engine.
     geo_frame: Option<Option<(Vec<u32>, Vec<u16>)>>,
@@ -264,13 +271,13 @@ impl App {
         produced
     }
 
-    /// Stereo frames the worklet holds now, estimated from its last report,
-    /// or None if there's no recent one (no sound, or it stalled).
+    /// Seconds of audio the worklet holds now, estimated from its last
+    /// report, or None if there's no recent one (no sound, or it stalled).
     fn audio_queued(&self, t: f64) -> Option<f64> {
         let (level, at) = self.audio_level?;
         let age = t - at;
-        (self.link.is_some() && age < AUDIO_STALE_MS)
-            .then(|| level + self.sent_since - age * model2::audio::RATE as f64 / 1000.0)
+        let rate = model2::audio::RATE as f64;
+        (self.link.is_some() && age < AUDIO_STALE_MS).then(|| (level + self.sent_since) / rate - age / 1000.0)
     }
 
     /// Game frames per animation frame when following the display (1 at
@@ -294,13 +301,11 @@ impl App {
         let (due, speed) = match self.per_refresh() {
             Some(k) => {
                 let next = (k == 1.0 || self.redraws.is_multiple_of(2)) as u64;
-                (self.machine.frames + next, 1000.0 / self.refresh_ms * k / FPS)
+                self.owed = (self.owed + next).min(MAX_OWED);
+                (self.machine.frames + self.owed, 1000.0 / self.refresh_ms * k / FPS)
             }
             None => (((t - self.epoch) * FPS / 1000.0) as u64, 1.0),
         };
-        // Drift correction from the worklet's queue.
-        let drift = self.audio_queued(t).map_or(0.0, |q| ((q - AUDIO_TARGET) / AUDIO_TARGET).clamp(-1.0, 1.0));
-        self.ratio = speed * (1.0 + drift * DRIFT);
         let mut ran = 0;
         let t0 = now();
         while self.machine.frames < due && ran < MAX_CATCH_UP {
@@ -317,7 +322,17 @@ impl App {
             self.send_link();
             ran += 1;
         }
+        self.owed = self.owed.saturating_sub(ran as u64);
         self.spent[0] += now() - t0;
+        // The audio rate for the next frames: the game's speed, scaled by
+        // how well it's keeping it (held back by the geometry worker, or
+        // its own cost) and steered by the worklet's queue, so the audio
+        // slows with the game instead of running dry.
+        if self.redraws > 1 {
+            let queued = self.audio_queued(t);
+            let pace = self.pace.update(dt / 1000.0, ran as f64, dt * FPS * speed / 1000.0, queued, AUDIO_TARGET);
+            self.ratio = speed * pace;
+        }
         if self.per_refresh().is_some() || self.machine.frames < due {
             // Following the display, or too far behind: keep the clock current.
             self.epoch = t - self.machine.frames as f64 * 1000.0 / FPS;
@@ -578,6 +593,8 @@ pub struct Headless {
     script: model2::input::InputScript,
     jobs: Rc<RefCell<Vec<model2::geo::Job>>>,
     geo: model2::geo::Engine,
+    /// Sound link data bytes since the last `link_bytes`: (cycle, byte).
+    link: Vec<(f64, u8)>,
 }
 
 #[wasm_bindgen]
@@ -596,7 +613,7 @@ impl Headless {
         machine.bus.geo.set_remote(Box::new(move |job| sink.borrow_mut().push(job)));
         let geo = model2::geo::Engine::new(model2::bus::polygon_rom(&roms), model2::geo::Core::of(game.board));
         script.apply(0, &mut machine.bus);
-        Ok(Headless { machine, script, jobs, geo })
+        Ok(Headless { machine, script, jobs, geo, link: Vec::new() })
     }
 
     /// Start from a save file (`remodel run --save-state`), sound boards
@@ -612,9 +629,25 @@ impl Headless {
     /// Run the i960 side (CPU, copro, I/O) to the end of the frame.
     pub fn run_frame(&mut self) -> Result<(), JsValue> {
         self.machine.run_slice(u64::MAX).map_err(|e| JsValue::from_str(&format!("stopped: {e:?}")))?;
-        self.machine.bus.uart_log.clear();
+        let log = std::mem::take(&mut self.machine.bus.uart_log);
+        self.link.extend(log.iter().filter(|e| !e.1).map(|e| (e.0 as f64, e.2)));
         self.script.apply(self.machine.frames, &mut self.machine.bus);
         Ok(())
+    }
+
+    /// The sound link bytes sent since the last call, as the page posts
+    /// them to the sound worker: their CPU cycles (then the bus time, last).
+    /// Feed `SoundEngine::feed` with these and `link_bytes` to time the
+    /// sound boards on the same frames.
+    pub fn link_cycles(&mut self) -> Vec<f64> {
+        let mut v: Vec<f64> = self.link.iter().map(|e| e.0).collect();
+        v.push(self.machine.bus.now as f64);
+        v
+    }
+
+    /// The bytes for [`Headless::link_cycles`]; clears them.
+    pub fn link_bytes(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.link).into_iter().map(|e| e.1).collect()
     }
 
     /// Run the geometrizer jobs the frames so far posted.
@@ -846,6 +879,8 @@ pub async fn start(
         redraws: 0,
         repeats: 0,
         ratio: 1.0,
+        pace: Default::default(),
+        owed: 0,
         geo_frame: remote_geo.then_some(None),
         geo_in_flight,
         geo_new: false,

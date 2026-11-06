@@ -217,6 +217,77 @@ impl Resampler {
     }
 }
 
+/// The audio rate control for a front end: the factor by which to scale
+/// the resampler's step (game samples per output sample) on top of the
+/// speed the game is meant to run at, so the output queue neither runs
+/// dry nor overflows when the game can't keep that speed.
+///
+/// Two parts. The game's measured pace: frames it ran against frames it
+/// should have run, each a rate through two 150 ms low-pass stages. It is
+/// exactly 1 while the game keeps up, and follows the game down when it
+/// can't (a geometrizer slower than real time), so the audio then plays
+/// in slow motion, lower in pitch, instead of breaking up. And a
+/// correction from the queue's level (low-passed over 150 ms): at most
+/// 0.5% near the target, which is the drift between the clocks, and more
+/// once the level is more than 20% off (up to 20% slower when it runs
+/// low, 3% faster when it piles up), which catches what the pace misses
+/// while it settles. Modelled on sgt24h's measured frame costs in
+/// WebAssembly (docs/web.md): 61 dropouts a minute in a race before, 1
+/// after.
+pub struct Pace {
+    /// Frames run and frames due per second, after one and two low-pass
+    /// stages.
+    ran: [f64; 2],
+    due: [f64; 2],
+    /// The queue level (seconds), low-passed; None without a report.
+    level: Option<f64>,
+}
+
+impl Default for Pace {
+    fn default() -> Self {
+        Pace { ran: [60.0; 2], due: [60.0; 2], level: None }
+    }
+}
+
+impl Pace {
+    /// Time constant of the pace's two stages, and the level's (seconds).
+    const PACE_TAU: f64 = 0.15;
+    const LEVEL_TAU: f64 = 0.15;
+    /// Most correction near the target level (the clock drift).
+    const DRIFT: f64 = 0.005;
+    /// Beyond this fraction off the target, correct harder: up to
+    /// `SLOWER` at an empty queue, `FASTER` at twice the target.
+    const DEADBAND: f64 = 0.2;
+    const SLOWER: f64 = 0.2;
+    const FASTER: f64 = 0.03;
+
+    /// After `dt` seconds in which the game ran `ran` frames of the `due`
+    /// it should have: the factor for the resampler's step. `queued`: the
+    /// audio queued now (seconds), if known; `target`: what it should be.
+    pub fn update(&mut self, dt: f64, ran: f64, due: f64, queued: Option<f64>, target: f64) -> f64 {
+        // Past a long gap (a hidden tab, a stall) the pace stays as it was.
+        let gap = dt > 0.1;
+        let dt = dt.clamp(0.001, 0.1);
+        let a = (dt / Self::PACE_TAU).min(1.0);
+        if !gap {
+            for (s, n) in [(&mut self.ran, ran), (&mut self.due, due)] {
+                s[0] += (n / dt - s[0]) * a;
+                s[1] += (s[0] - s[1]) * a;
+            }
+        }
+        let pace = if self.due[1] > 0.0 { (self.ran[1] / self.due[1]).clamp(0.25, 1.5) } else { 1.0 };
+        self.level = queued.map(|q| match self.level {
+            Some(l) => l + (q - l) * (dt / Self::LEVEL_TAU).min(1.0),
+            None => q,
+        });
+        let Some(level) = self.level else { return pace };
+        let e = ((level - target) / target).clamp(-1.0, 1.0);
+        let beyond = (e.abs() - Self::DEADBAND).max(0.0) / (1.0 - Self::DEADBAND);
+        let extra = if e < 0.0 { -beyond * Self::SLOWER } else { beyond * Self::FASTER };
+        pace * (1.0 + e * Self::DRIFT + extra)
+    }
+}
+
 // Save states: the boards and the sample count; the mix is configuration.
 impl state::State for Live {
     fn save(&self, w: &mut state::Writer) {
@@ -268,5 +339,51 @@ mod tests {
             Resampler::default().run(&input, step, &mut out);
             assert!((out.len() as i64 / 2 - expect).abs() <= 1, "step {step}: {} frames", out.len() / 2);
         }
+    }
+
+    /// A 60 Hz display, one game frame per refresh while the game keeps
+    /// up, `speed(second)` of them when it can't: the queue's lowest
+    /// level after the first second, and the last factor.
+    fn pace_run(seconds: f64, speed: impl Fn(f64) -> f64) -> (f64, f64) {
+        let (dt, frame) = (1.0 / 60.0, 1.0 / 57.524);
+        let step = 60.0 / 57.524;
+        let mut pace = Pace::default();
+        let (mut queued, mut lowest, mut credit, mut factor) = (0.07, f64::MAX, 0.0, 1.0);
+        let mut t = 0.0;
+        while t < seconds {
+            credit += speed(t);
+            let ran = if credit >= 1.0 { 1.0 } else { 0.0 };
+            credit -= ran;
+            queued += ran * frame / (step * factor) - dt;
+            if t > 1.0 {
+                lowest = lowest.min(queued);
+            }
+            factor = pace.update(dt, ran, 1.0, Some(queued.max(0.0)), 0.07);
+            t += dt;
+        }
+        (lowest, factor)
+    }
+
+    #[test]
+    fn pace_keeps_audio_flowing() {
+        // Keeping up: no change beyond the drift correction.
+        let (lowest, factor) = pace_run(10.0, |_| 1.0);
+        assert!((factor - 1.0).abs() < 0.001 && lowest > 0.05, "steady: {factor} {lowest}");
+        // Slowing to 80% and then 60% of the display's rate: the audio
+        // slows to match and never runs dry.
+        let (lowest, factor) = pace_run(20.0, |t| {
+            if t < 3.0 {
+                1.0
+            } else if t < 10.0 {
+                0.8
+            } else {
+                0.6
+            }
+        });
+        assert!(lowest > 0.0, "ran dry: {lowest}");
+        assert!((factor - 0.6).abs() < 0.03, "factor {factor}");
+        // And back to full speed without piling up.
+        let (_, factor) = pace_run(20.0, |t| if t < 10.0 { 0.7 } else { 1.0 });
+        assert!((factor - 1.0).abs() < 0.01, "recovered: {factor}");
     }
 }

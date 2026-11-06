@@ -155,9 +155,11 @@
         return;
       }
       const db = s.played ? (10 * Math.log10(s.energy / s.played)).toFixed(0) : "-inf";
+      // For measuring from outside the page (devtools, a test driver).
+      window.remodelAudio = { dropouts: s.dropouts, dry: s.dry, queuedMs: s.queued / 44.1, workerMs, geoMs };
       soundLabel.textContent = `sound: ${audio.state}, ${audio.sampleRate} Hz, ` +
         `worker ${workerState} ${workerMs.toFixed(1)} ms/frame, geometry worker ${geoMs.toFixed(1)} ms/frame, ` +
-        `playing ${db} dB, ${s.dry} dry, ` +
+        `playing ${db} dB, ${s.dry} dry, ${s.dropouts} dropouts, ` +
         `${(s.queued / 44.1).toFixed(0)} ms queued`;
     };
   }

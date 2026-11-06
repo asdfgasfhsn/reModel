@@ -12,7 +12,9 @@
 //! audio is resampled to match. With exact speed, or other refresh rates,
 //! frames follow a steady clock at 57.524 per second instead. Either way
 //! the audio queue corrects the drift between the clocks by stretching the
-//! audio by at most 0.5% (inaudible), never by stalling the game.
+//! audio by at most 0.5% (inaudible), never by stalling the game. Below
+//! full speed the audio follows the frames the game actually runs
+//! (`model2::audio::Pace`), so it slows with it instead of running dry.
 //!
 //! The logo shows for two seconds at startup, fading out over the game
 //! booting underneath (`splash`). Esc opens the menu (and pauses): save
@@ -223,6 +225,8 @@ struct Play {
     /// Real time that emulated frame 0 corresponds to.
     epoch: Instant,
     redraws: u64,
+    /// When `emulate` last ran (for the audio rate control).
+    last_emulate: Option<Instant>,
     /// Host time per game frame (emulating, waiting for the geometrizer and
     /// drawing, not waiting for vsync), smoothed, in seconds; and whether
     /// that is too slow to follow the display (then the clock paces).
@@ -511,9 +515,6 @@ impl Play {
             }
             None => (((now - self.epoch).as_secs_f64() * FPS) as u64, 1.0),
         };
-        if let Some(snd) = self.session.as_ref().and_then(|s| s.sound.as_ref()) {
-            snd.set_speed(speed);
-        }
         let mut ran = 0;
         while self.session.as_ref().is_some_and(|s| s.machine.frames < due) && ran < MAX_CATCH_UP {
             self.apply_inputs();
@@ -524,6 +525,17 @@ impl Play {
                 None => s.machine.bus.uart_log.clear(),
             }
             ran += 1;
+        }
+        // The audio rate for the next frames: the game's speed, scaled by
+        // how well it kept it since the last redraw (a geometrizer slower
+        // than real time holds it back), so the audio slows with the game
+        // instead of running dry.
+        let dt = self.last_emulate.map_or(0.0, |l| (now - l).as_secs_f64());
+        self.last_emulate = Some(now);
+        if let Some(snd) = self.session.as_mut().and_then(|s| s.sound.as_mut()) {
+            if dt > 0.0 {
+                snd.set_speed(speed, dt, ran as f64, dt * FPS * speed);
+            }
         }
         let frames = self.session.as_ref().map_or(0, |s| s.machine.frames);
         if self.per_refresh().is_some() || frames < due {
@@ -964,6 +976,7 @@ fn main() {
         stick: model2::input::StickCursor::default(),
         epoch: Instant::now(),
         redraws: 0,
+        last_emulate: None,
         frame_cost: 0.0,
         behind: false,
         stats: Stats::new(),

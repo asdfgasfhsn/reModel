@@ -201,6 +201,13 @@ CALIBRATION in the test menu changes that.
   (counted in the title bar), so the geometrizer runs alongside the next
   frame instead of after it: polygons then lag the 2D layers and inputs
   by a frame, as in the browser.
+  The audio follows the frames the game actually runs
+  (`model2::audio::Pace`, described in `docs/web.md`): below full speed
+  it slows with the game, lower in pitch, instead of running dry. Before,
+  only a 0.5% drift correction steered the 50 ms queue, so `sgt24h`'s race
+  start (its geometrizer at 18.7 ms a frame natively) would run it dry
+  every few seconds, modelled from its frame costs; the title bar counts
+  underruns.
 - **Game**: the ROM folder and the supported sets found in it. Sets are
   read as MAME keeps them: `<set>.zip` or a `<set>/` folder, and a
   supported clone is listed after its parent when its chips are in the

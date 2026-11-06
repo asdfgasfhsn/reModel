@@ -19,8 +19,10 @@ class RemodelSink extends AudioWorkletProcessor {
     this.frames = 0; // stereo frames queued
     this.primed = false;
     // Stats posted back about once a second: frames played, sum of squares,
-    // and how many render quanta ran dry.
+    // how many render quanta ran dry, and how many times the audio broke
+    // off (ran out while playing) since it started.
     this.stats = { played: 0, energy: 0, dry: 0, quanta: 0 };
+    this.dropouts = 0;
     this.port.onmessage = (e) => {
       if (e.data instanceof Float32Array) this.push(e.data);
       else if (e.data.port) e.data.port.onmessage = (m) => this.push(m.data);
@@ -60,12 +62,15 @@ class RemodelSink extends AudioWorkletProcessor {
       if (this.offset >= b.length) {
         this.queue.shift();
         this.offset = 0;
-        if (this.queue.length === 0) this.primed = false;
+        if (this.queue.length === 0) {
+          this.primed = false;
+          this.dropouts++;
+        }
       }
     }
     if (++st.quanta % LEVEL_EVERY === 0) this.port.postMessage({ level: this.frames });
     if (st.quanta * left.length >= sampleRate) {
-      this.port.postMessage({ ...st, queued: this.frames });
+      this.port.postMessage({ ...st, queued: this.frames, dropouts: this.dropouts });
       this.stats = { played: 0, energy: 0, dry: 0, quanta: 0 };
     }
     return true;

@@ -7,8 +7,6 @@ use std::sync::{mpsc, Arc, Mutex};
 
 /// Audio the queue should hold (seconds); output starts once it does.
 pub const AUDIO_TARGET: f64 = 0.05;
-/// Most the audio rate is stretched to keep the queue at `AUDIO_TARGET`.
-const DRIFT: f64 = 0.005;
 /// Most audio queued before the oldest is dropped (seconds).
 const AUDIO_MAX: f64 = 0.25;
 
@@ -50,6 +48,9 @@ pub struct Sound {
     /// Game samples per real-time sample (f64 bits): the game's speed
     /// relative to real time, times the drift correction.
     ratio: Arc<AtomicU64>,
+    /// The rate control: follows the game's actual pace, holds the queue
+    /// at `AUDIO_TARGET`.
+    pace: model2::audio::Pace,
 }
 
 impl Sound {
@@ -124,14 +125,16 @@ impl Sound {
                 }
             })
             .map_err(|e| e.to_string())?;
-        Ok(Sound { _stream: stream, queue, commands, asked: 0, made, rate, ratio })
+        Ok(Sound { _stream: stream, queue, commands, asked: 0, made, rate, ratio, pace: Default::default() })
     }
 
-    /// Set the game's speed relative to real time (1 = exact), corrected
-    /// for drift to hold the queue at `AUDIO_TARGET`.
-    pub fn set_speed(&self, speed: f64) {
-        let error = ((self.queued() - AUDIO_TARGET) / AUDIO_TARGET).clamp(-1.0, 1.0);
-        self.ratio.store((speed * (1.0 + error * DRIFT)).to_bits(), Ordering::Relaxed);
+    /// Set the game's speed relative to real time (1 = exact), after `dt`
+    /// seconds in which it ran `ran` frames of the `due` it should have:
+    /// the audio follows its actual pace, corrected to hold the queue at
+    /// `AUDIO_TARGET` (`model2::audio::Pace`).
+    pub fn set_speed(&mut self, speed: f64, dt: f64, ran: f64, due: f64) {
+        let pace = self.pace.update(dt, ran, due, Some(self.queued()), AUDIO_TARGET);
+        self.ratio.store((speed * pace).to_bits(), Ordering::Relaxed);
     }
 
     /// Seconds of audio queued or still being made.

@@ -17,11 +17,41 @@ it on the first one.
 animation frames. At about 60 Hz the game runs exactly one frame per
 refresh; at about 120 Hz, one per two. That is 4.3% fast at 60 Hz, but
 every refresh shows a new frame. The sound worker resamples the audio to
-match. At other rates, frames follow a steady 57.524 Hz clock. Drift
-against the sound card is corrected by stretching the audio by at most
-0.5%, steering the worklet's queue (reported every 23 ms or so) towards
-70 ms. The native window paces the same way (`--exact` there forces
-clock pacing).
+match. At other rates, frames follow a steady 57.524 Hz clock. A frame
+the game couldn't run in its refresh (held back by the geometry worker)
+runs with the next one, at most one late.
+
+**Audio when the game can't keep up.** The resampler's rate is the
+game's speed times a factor from `model2::audio::Pace`, shared with the
+native window: the frames the game actually ran against those due (two
+150 ms low-pass stages), and a correction from the worklet's queue,
+reported every 23 ms or so and low-passed, towards 70 ms. Near the
+target the correction is at most 0.5% (clock drift); more than 20% off
+it grows, to 20% slower at an empty queue and 3% faster at twice the
+target. While the game keeps up the factor is 1 and nothing is audible;
+when it runs below real time (a geometrizer slower than the refresh,
+`sgt24h` at the start of a race) the audio slows with it, lower in pitch,
+instead of breaking up. The bar counts dropouts (the queue running out
+while playing) since sound started; `window.remodelAudio` holds the same
+numbers for a test driver. The native window paces the same way
+(`--exact` there forces clock pacing).
+
+Before this, the rate was the display's speed with only the 0.5%
+correction, so every frame the game lost to the geometry worker took
+17 ms out of the 70 ms queue for good. Modelled from per-frame costs
+measured in WebAssembly (below), a race from frame 2100 to 6600 at 60 Hz:
+
+| set | speed | dropouts a minute, before | after |
+|---|---|---|---|
+| `sgt24h` | 97% (104% is full speed at 60 Hz) | 61 | 1 |
+| `sgt24h`, costs 20% higher (a slower machine) | 85% | 155 | 1.3 |
+| `overrevb`, `overrev` | 104% | 0 | 0 |
+
+The model (a script, not kept) replays the measured costs through the
+page's scheduling: animation frames at 60 Hz, the geometry worker's queue
+(`GEO_QUEUE`), the sound worker, and the worklet's 128-frame quanta with
+its 60 ms priming. It can't model a real browser's timer jitter or other
+load, and hasn't been checked against a browser.
 
 ```sh
 make web            # out/web: game list, a page per game, one shared interpreter module
@@ -228,6 +258,24 @@ and time the two calls per frame with `performance.now()`. Race frames
 | `overrev` (2C, TGP recompiled) | 6.8 ms | 8.1 ms |
 | `overrevb` (2B, SHARC interpreted) | 9.5 ms | 33.1 ms (worst 36.9) |
 | `overrevb` (2B, SHARCs recompiled) | 8.2 ms | 10.7 ms (worst 12.5) |
+
+Frame by frame from boot, with the sound boards fed the frame's link
+bytes as the sound worker is (`Headless::link_cycles`, `link_bytes`, then
+`SoundEngine::feed`), Node 26, frames 3000-6600 of a coin-start run, all
+recompiled:
+
+| set | i960 side | geometrizer | sound boards |
+|---|---|---|---|
+| `sgt24h` | 5.4 ms | 14.9 ms (95th percentile 19.9, worst 23.9; 16% of frames over 16.7) | 1.5 ms |
+| `overrevb` | 8.4 ms | 11.6 ms (worst 18.8) | 1.5 ms |
+| `overrev` | 6.9 ms | 7.7 ms (worst 13.9) | 1.5 ms |
+
+`sgt24h`'s geometrizer is the limit: from frame 2100 to 3000 (the start of
+the race) it averages 19-25 ms a frame, and 18.5 ms from 6000 to 6600, so
+the game can't hold a 60 Hz display there. Natively it is not much
+faster: 18.7 ms a frame from 2100 to 2900. Neither the sound boards nor
+the i960 side come close. The mix doesn't clip: the loudest sample in the
+race is 5.7 dB under full scale at the default mix with the game's +6 dB.
 
 Interpreted, about 1.6 times native for the SHARC (20 ms native then);
 recompiled about 1.2 times (9.3 ms native).
