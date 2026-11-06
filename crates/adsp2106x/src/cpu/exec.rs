@@ -493,19 +493,17 @@ impl Sharc {
     }
 
     fn set_alu_flags(&mut self, f: AluFlags) {
-        let mut a = self.astat & !(AZ | AV | AN | AC | AS | AI | AF);
-        for (on, bit) in [(f.az, AZ), (f.av, AV), (f.an, AN), (f.ac, AC), (f.as_, AS), (f.ai, AI), (f.af, AF)] {
-            if on {
-                a |= bit;
-            }
-        }
-        self.astat = a;
+        let bit = |on: bool, bit: u32| if on { bit } else { 0 };
+        self.astat = (self.astat & !(AZ | AV | AN | AC | AS | AI | AF))
+            | bit(f.az, AZ)
+            | bit(f.av, AV)
+            | bit(f.an, AN)
+            | bit(f.ac, AC)
+            | bit(f.as_, AS)
+            | bit(f.ai, AI)
+            | bit(f.af, AF);
         if f.af {
-            for (on, bit) in [(f.au, AUS), (f.av, AVS), (f.ai, AIS)] {
-                if on {
-                    self.stky |= bit;
-                }
-            }
+            self.stky |= bit(f.au, AUS) | bit(f.av, AVS) | bit(f.ai, AIS);
         } else if f.av {
             self.stky |= AOS;
         }

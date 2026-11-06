@@ -124,17 +124,19 @@ fn zero_result(sign: bool) -> (u64, Flags) {
 /// Round `sign` × `m` × 2^`e2` (`m` nonzero) to `frac_bits` fraction bits,
 /// to nearest even or toward zero, and pack it. Overflow gives ±Infinity
 /// (nearest) or ±NORM.MAX (toward zero); a result below the normal range
-/// is ±0 with underflow (UM B-24).
-pub fn round_pack(sign: bool, m: u128, e2: i32, frac_bits: u32, trunc: bool) -> (u64, Flags) {
+/// is ±0 with underflow (UM B-24). `m` has at most 64 bits: every
+/// operation's exact result (or one with a sticky bit standing for what was
+/// shifted out, below the rounding position) fits.
+pub fn round_pack(sign: bool, m: u64, e2: i32, frac_bits: u32, trunc: bool) -> (u64, Flags) {
     debug_assert!(m != 0);
-    let top = 127 - m.leading_zeros() as i32;
+    let top = 63 - m.leading_zeros() as i32;
     let mut exp = top + e2;
     let shift = top - frac_bits as i32;
     let mut kept = if shift > 0 {
         let s = shift as u32;
         let kept = m >> s;
-        let rem = m & ((1u128 << s) - 1);
-        let half = 1u128 << (s - 1);
+        let rem = m & ((1u64 << s) - 1);
+        let half = 1u64 << (s - 1);
         if !trunc && (rem > half || rem == half && kept & 1 == 1) {
             kept + 1
         } else {
@@ -155,7 +157,7 @@ pub fn round_pack(sign: bool, m: u128, e2: i32, frac_bits: u32, trunc: bool) -> 
     if exp < -126 {
         return (pack_zero(sign), Flags { zero: true, underflow: true, ..flags });
     }
-    let frac = (kept as u64) & ((1 << frac_bits) - 1);
+    let frac = kept & ((1 << frac_bits) - 1);
     ((sign as u64) << 39 | ((exp + 127) as u64) << 31 | frac << (31 - frac_bits), flags)
 }
 
@@ -190,24 +192,27 @@ pub fn add(x: u64, y: u64, sub: bool, half: bool, m: Mode) -> (u64, Flags) {
         (Class::Zero, Class::Zero) => return zero_result(a.sign && b.sign),
         _ => {}
     }
-    // Align on the larger exponent with 64 guard bits; anything shifted
-    // out sets a sticky bit.
-    let term = |u: Unpacked, emax: i32| -> i128 {
+    // Align on the larger exponent with 30 guard bits; anything shifted
+    // out sets a sticky bit. The larger term is at least 2^61, so the sum
+    // keeps at least 29 bits below the 32-bit significand whenever bits
+    // were shifted out: the sticky bit stays below the rounding position
+    // and the rounding is that of the exact sum.
+    let term = |u: Unpacked, emax: i32| -> i64 {
         if u.class == Class::Zero {
             return 0;
         }
         let d = (emax - u.exp) as u32;
-        let wide = (u.sig as u128) << 64;
-        let v = if d >= 127 {
+        let wide = u.sig << 30;
+        let v = if d >= 63 {
             1
         } else {
             let s = wide >> d;
-            s | ((s << d != wide) as u128)
+            s | ((s << d != wide) as u64)
         };
         if u.sign {
-            -(v as i128)
+            -(v as i64)
         } else {
-            v as i128
+            v as i64
         }
     };
     let emax = [a, b].iter().filter(|u| u.class == Class::Normal).map(|u| u.exp).max().unwrap();
@@ -215,7 +220,7 @@ pub fn add(x: u64, y: u64, sub: bool, half: bool, m: Mode) -> (u64, Flags) {
     if sum == 0 {
         return zero_result(false);
     }
-    let e2 = emax - 31 - 64 - half as i32;
+    let e2 = emax - 31 - 30 - half as i32;
     round_pack(sum < 0, sum.unsigned_abs(), e2, m.frac_bits(), m.trunc)
 }
 
@@ -228,7 +233,7 @@ pub fn mul(x: u64, y: u64, m: Mode) -> (u64, Flags) {
         (Class::Inf, Class::Zero) | (Class::Zero, Class::Inf) => nan(),
         (Class::Inf, _) | (_, Class::Inf) => (pack_inf(sign), Flags { neg: sign, ..Flags::default() }),
         (Class::Zero, _) | (_, Class::Zero) => zero_result(sign),
-        _ => round_pack(sign, a.sig as u128 * b.sig as u128, a.exp + b.exp - 62, m.frac_bits(), m.trunc),
+        _ => round_pack(sign, a.sig * b.sig, a.exp + b.exp - 62, m.frac_bits(), m.trunc),
     }
 }
 
@@ -242,7 +247,7 @@ pub fn compare(x: u64, y: u64, m: Mode) -> Option<std::cmp::Ordering> {
 pub fn rnd(x: u64, m: Mode) -> (u64, Flags) {
     let u = unpack(x);
     match u.class {
-        Class::Normal => round_pack(u.sign, u.sig as u128, u.exp - 31, 23, m.trunc),
+        Class::Normal => round_pack(u.sign, u.sig, u.exp - 31, 23, m.trunc),
         _ => pack(u),
     }
 }
@@ -253,7 +258,7 @@ pub fn scalb(x: u64, scale: i32, m: Mode) -> (u64, Flags) {
     match u.class {
         Class::Normal => {
             let e = (u.exp as i64 + scale as i64).clamp(-1000, 1000) as i32;
-            round_pack(u.sign, u.sig as u128, e - 31, m.frac_bits(), m.trunc)
+            round_pack(u.sign, u.sig, e - 31, m.frac_bits(), m.trunc)
         }
         _ => pack(u),
     }
@@ -265,7 +270,7 @@ pub fn float(x: u32, scale: i32, m: Mode) -> (u64, Flags) {
     if v == 0 {
         return zero_result(false);
     }
-    round_pack(v < 0, v.unsigned_abs() as u128, scale.clamp(-1000, 1000), 31, m.trunc)
+    round_pack(v < 0, v.unsigned_abs(), scale.clamp(-1000, 1000), 31, m.trunc)
 }
 
 /// How FIX/TRUNC round to an integer.

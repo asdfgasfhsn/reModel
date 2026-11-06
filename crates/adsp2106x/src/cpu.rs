@@ -1001,6 +1001,7 @@ impl Sharc {
 
     /// One clock of the timer, level-sensitive IRQs and the arithmetic
     /// exception interrupts, which follow STKY (UM §3.6.4, §3.7).
+    #[inline]
     fn tick(&mut self) {
         if self.mode2 & TIMEN != 0 {
             if self.tcount <= 1 {
@@ -1013,16 +1014,19 @@ impl Sharc {
         }
         // Latch, as `latch` does for each, every request below at once.
         let mut req = 0;
-        for line in 0..3 {
-            if self.irq_lines[line] && self.mode2 >> line & 1 == 0 {
-                req |= 1 << (8 - line);
+        if self.irq_lines != [false; 3] {
+            for line in 0..3 {
+                if self.irq_lines[line] && self.mode2 >> line & 1 == 0 {
+                    req |= 1 << (8 - line);
+                }
             }
         }
         let s = self.stky;
-        for (bits, irq) in [(AOS | MOS, 24), (AVS | MVS, 25), (AUS | MUS, 26), (AIS | MIS, 27)] {
-            if s & bits != 0 {
-                req |= 1 << irq;
-            }
+        if s & (AOS | MOS | AVS | MVS | AUS | MUS | AIS | MIS) != 0 {
+            req |= ((s & (AOS | MOS) != 0) as u32) << 24
+                | ((s & (AVS | MVS) != 0) as u32) << 25
+                | ((s & (AUS | MUS) != 0) as u32) << 26
+                | ((s & (AIS | MIS) != 0) as u32) << 27;
         }
         self.irptl |= req & !self.imaskp;
     }
@@ -1048,7 +1052,11 @@ impl Sharc {
     /// Take a pending interrupt if there is one (UM §3.6): push the next
     /// instruction's address, and ASTAT/MODE1 for IRQ2-0, timer and
     /// VIRPT; the two words in the pipeline become NOPs.
+    #[inline]
     fn take_interrupt(&mut self) -> Result<bool, Fault> {
+        if self.irptl & self.imask == 0 {
+            return Ok(false);
+        }
         let Some(k) = self.pending_irq() else { return Ok(false) };
         let ret = self.exec_slot.map_or(self.faddr, |s| s.0);
         // A squashed fetch that already looped back must not test again.
