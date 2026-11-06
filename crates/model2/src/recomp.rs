@@ -5,16 +5,24 @@
 //! interpreters.
 
 use crate::Block;
+use adsp2106x::cpu::{Sharc, Step as SharcStep};
 use mb86235::cpu::{Step, Tgp};
 use std::sync::OnceLock;
 
 pub use crate::bus::TgpExt;
-pub use crate::geo::GeoExt;
+pub use crate::geo::{GeoExt, SharcGeoBus};
+pub use crate::sharc::CoproBus as SharcCoproBus;
 
 /// A recompiled copro (TGP) program's `step`.
 pub type CoproStep = for<'a> fn(&mut Tgp, &mut TgpExt<'a>) -> Step;
 /// A recompiled geometrizer program's `step`.
 pub type GeoStep = for<'a> fn(&mut Tgp, &mut GeoExt<'a>) -> Step;
+
+/// A recompiled ADSP-21062 program's `run` on the 2B copro: instructions
+/// as `Sharc::run_bus` runs them.
+pub type SharcCoproRun = for<'a> fn(&mut Sharc, &mut SharcCoproBus<'a>) -> SharcStep;
+/// The same on the 2B geometrizer.
+pub type SharcGeoRun = for<'a> fn(&mut Sharc, &mut SharcGeoBus<'a>) -> SharcStep;
 
 /// A recompiled i960 program, keyed by `program_hash`.
 pub struct I960Program {
@@ -31,14 +39,28 @@ pub struct TgpProgram {
     pub geo: GeoStep,
 }
 
+/// A recompiled ADSP-21062 program, keyed by
+/// `adsp2106x::cpu::program_hash` of its image, compiled for the processor
+/// (copro or geometrizer) it was captured on, or both.
+pub struct SharcProgram {
+    pub hash: u64,
+    /// The image it was compiled from: 48-bit words from 0x20000.
+    pub image: &'static [u64],
+    /// The compiled words' addresses.
+    pub words: &'static [u32],
+    pub copro: Option<SharcCoproRun>,
+    pub geo: Option<SharcGeoRun>,
+}
+
 /// Everything a build has recompiled code for.
 pub struct Programs {
     pub i960: &'static [I960Program],
     pub tgp: &'static [TgpProgram],
+    pub sharc: &'static [SharcProgram],
 }
 
 static PROGRAMS: OnceLock<Programs> = OnceLock::new();
-const NONE: Programs = Programs { i960: &[], tgp: &[] };
+const NONE: Programs = Programs { i960: &[], tgp: &[], sharc: &[] };
 
 /// Install the build's recompiled programs. Call it once, before the first
 /// `Machine`; later calls are ignored.
@@ -50,9 +72,10 @@ fn programs() -> &'static Programs {
     PROGRAMS.get().unwrap_or(&NONE)
 }
 
-/// How many recompiled programs (i960 and MB86235) are registered.
+/// How many recompiled programs (i960, MB86235 and ADSP-21062) are
+/// registered.
 pub fn count() -> usize {
-    programs().i960.len() + programs().tgp.len()
+    programs().i960.len() + programs().tgp.len() + programs().sharc.len()
 }
 
 /// The recompiled i960 blocks for a program ROM image, if registered.
@@ -69,4 +92,27 @@ pub fn copro(hash: u64) -> Option<CoproStep> {
 /// The recompiled geometrizer `step` for an MB86235 program, if registered.
 pub fn geo(hash: u64) -> Option<GeoStep> {
     programs().tgp.iter().find(|p| p.hash == hash).map(|p| p.geo)
+}
+
+/// The recompiled program for what a SHARC holds, if registered: found by
+/// the hash of its image (just after an upload), or else (after a save
+/// state load, when the program may have changed data in its image) the
+/// one whose compiled words are all in memory. Attaches it to `cpu` (see
+/// `Sharc::watch_code`); detaches when there is none.
+pub fn attach_sharc(cpu: &mut Sharc) -> Option<&'static SharcProgram> {
+    let all = programs().sharc;
+    let found = if all.is_empty() {
+        None
+    } else {
+        let hash = adsp2106x::cpu::program_hash(&adsp2106x::cpu::program_image(cpu));
+        all.iter().find(|p| p.hash == hash).or_else(|| {
+            all.iter()
+                .find(|p| p.words.iter().all(|&a| p.image.get((a - 0x2_0000) as usize) == Some(&cpu.mem.read48(a))))
+        })
+    };
+    match found {
+        Some(p) => cpu.watch_code(p.words, p.image),
+        None => cpu.watch_code(&[], &[]),
+    }
+    found
 }

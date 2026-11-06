@@ -99,7 +99,7 @@ impl External for GeoExt<'_> {
 /// address register at `0x430000` with the data at `0x430001`. Its fast
 /// polygon RAM (model addresses with bit 24 set) is the SHARC's own
 /// internal memory and never reaches the bus.
-struct SharcGeoBus<'a> {
+pub struct SharcGeoBus<'a> {
     poly: GeoExt<'a>,
     /// Polygon memory address register (`0x430000`).
     latch: &'a mut u32,
@@ -109,6 +109,19 @@ struct SharcGeoBus<'a> {
     /// program is still working on the frame.
     active: &'a mut bool,
     other: &'a mut BTreeMap<u32, u64>,
+    /// When to stop running (`after_step`).
+    phase: Phase,
+}
+
+/// The two parts of a 2B geometrizer frame (`Engine::process_sharc`).
+enum Phase {
+    /// FLAG0 is high: run until the program waits for it to fall, at most
+    /// `SHARC_PULSE_STEPS`; `k` instructions so far.
+    Pulse { k: u64 },
+    /// The list: run until the program has gone `IDLE_STEPS` without
+    /// reading the list or drawing, spins on a flag, or has run
+    /// `MAX_STEPS_PER_FRAME`; checked every 256 instructions.
+    Frame { start: u64, last_activity: u64 },
 }
 
 /// The list DMA: buffer RAM from the read pointer, following jump words.
@@ -173,6 +186,25 @@ impl SharcBus for SharcGeoBus<'_> {
             _ => *self.other.entry(addr).or_default() += 1,
         }
     }
+    #[inline(always)]
+    fn after_step(&mut self, cpu: &mut Sharc) -> bool {
+        match &mut self.phase {
+            Phase::Pulse { k } => {
+                let stop = *k > 0 && cpu.spinning();
+                *k += 1;
+                !stop && *k < SHARC_PULSE_STEPS
+            }
+            Phase::Frame { start, last_activity } => {
+                let steps = cpu.steps;
+                if std::mem::take(&mut *self.active) {
+                    *last_activity = steps;
+                }
+                // Every so often: done (idle, waiting on a flag, or out of time)?
+                !(steps.is_multiple_of(256)
+                    && (steps - *last_activity > IDLE_STEPS || steps - *start > MAX_STEPS_PER_FRAME || cpu.spinning()))
+            }
+        }
+    }
 }
 
 /// The geometrizer's DSP and everything it owns. Runs a frame at a time,
@@ -186,6 +218,10 @@ pub struct Engine {
     poly_latch: u32,
     /// Its external accesses outside the map above (diagnostics).
     pub sharc_other: BTreeMap<u32, u64>,
+    /// Recompiled code for its program, if the build has it
+    /// (docs/recompiler.md); `sharc_interpret` keeps it on the interpreter.
+    sharc_native: Option<crate::recomp::SharcGeoRun>,
+    pub sharc_interpret: bool,
     poly_ram: Vec<u32>,
     poly_rom: Vec<u32>,
     /// Buffer RAM as it was when the frame started.
@@ -393,6 +429,14 @@ impl Geometrizer {
         self.threaded = threaded;
     }
 
+    /// Keep a 2B geometrizer's SHARC on the interpreter even when the build
+    /// has recompiled code for its program (`make lockstep`'s reference).
+    pub fn set_sharc_interpret(&mut self, interpret: bool) {
+        let e = self.engine_mut();
+        e.sharc_interpret = interpret;
+        e.attach_sharc();
+    }
+
     /// Start a frame on the worker thread from the list at the read
     /// pointer. Runs in the background until the next `sync`.
     pub fn start_frame(&mut self, buffer: &[u8]) {
@@ -536,6 +580,8 @@ impl Engine {
             sharc: (core == Core::Sharc).then(|| Box::new(Sharc::new())),
             poly_latch: 0,
             sharc_other: BTreeMap::new(),
+            sharc_native: None,
+            sharc_interpret: false,
             poly_ram: vec![0; 0x10_0000],
             poly_rom,
             buffer: Vec::new(),
@@ -573,6 +619,8 @@ impl Engine {
             sharc: None,
             poly_latch: 0,
             sharc_other: BTreeMap::new(),
+            sharc_native: None,
+            sharc_interpret: false,
             poly_ram: Vec::new(),
             poly_rom: Vec::new(),
             buffer: Vec::new(),
@@ -606,8 +654,29 @@ impl Engine {
                         self.fault = Some(0x8000_0000 | (w >> 32) as u32);
                     }
                 }
+                self.attach_sharc();
             }
         }
+    }
+
+    /// Use the build's recompiled code for the program the SHARC holds, if
+    /// it has some and `sharc_interpret` isn't set.
+    pub fn attach_sharc(&mut self) {
+        self.sharc_native = None;
+        let Some(s) = self.sharc.as_deref_mut() else { return };
+        if self.sharc_interpret {
+            s.watch_code(&[], &[]);
+        } else {
+            self.sharc_native = crate::recomp::attach_sharc(s).and_then(|p| p.geo);
+            if self.sharc_native.is_none() {
+                s.watch_code(&[], &[]);
+            }
+        }
+    }
+
+    /// True if the 2B geometrizer runs recompiled code.
+    pub fn sharc_is_native(&self) -> bool {
+        self.sharc_native.is_some()
     }
 
     /// Apply this frame's raster memory writes (cmd 4: addr, count, data)
@@ -732,7 +801,14 @@ impl Engine {
     /// to fall before reading the list from its input FIFO.
     fn process_sharc(&mut self, buffer: &[u8], read_ptr: u32) {
         self.frames += 1;
+        let native = self.sharc_native;
         let Some(s) = self.sharc.as_deref_mut() else { return };
+        // Recompiled code for this program if the build has it, else the
+        // interpreter; they must behave identically.
+        let run = |s: &mut Sharc, bus: &mut SharcGeoBus| match native {
+            Some(f) => f(s, bus),
+            None => s.run_bus(bus),
+        };
         let mut out = Vec::new();
         let mut active = false;
         let mut bus = SharcGeoBus {
@@ -748,42 +824,22 @@ impl Engine {
             out: &mut out,
             active: &mut active,
             other: &mut self.sharc_other,
+            phase: Phase::Pulse { k: 0 },
         };
         let start = s.steps;
         let mut fault = None;
         // FLAG0 high until the program waits for it to fall again.
         s.flag_in |= 1;
-        for k in 0..SHARC_PULSE_STEPS {
-            match s.step(&mut bus) {
-                SharcStep::Ran => {}
-                SharcStep::Idle => break,
-                SharcStep::Fault(f) => {
-                    fault = Some(f);
-                    break;
-                }
-            }
-            if k > 0 && s.spinning() {
-                break;
-            }
+        if let SharcStep::Fault(f) = run(s, &mut bus) {
+            fault = Some(f);
         }
         s.flag_in &= !1;
         bus.out.clear();
         *bus.active = false;
-        let mut last_activity = s.steps;
-        while fault.is_none() {
-            match s.step(&mut bus) {
-                SharcStep::Ran => {}
-                SharcStep::Idle => break,
-                SharcStep::Fault(f) => fault = Some(f),
-            }
-            if std::mem::take(&mut *bus.active) {
-                last_activity = s.steps;
-            }
-            // Every so often: done (idle, waiting on a flag, or out of time)?
-            if s.steps % 256 == 0
-                && (s.steps - last_activity > IDLE_STEPS || s.steps - start > MAX_STEPS_PER_FRAME || s.spinning())
-            {
-                break;
+        if fault.is_none() {
+            bus.phase = Phase::Frame { start, last_activity: s.steps };
+            if let SharcStep::Fault(f) = run(s, &mut bus) {
+                fault = Some(f);
             }
         }
         if let Some(f) = fault {
@@ -857,6 +913,7 @@ impl state::State for Engine {
         if let Some(s) = &mut self.sharc {
             s.load(r)?;
             self.poly_latch.load(r)?;
+            self.attach_sharc();
         }
         Ok(())
     }

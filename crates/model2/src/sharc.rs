@@ -43,6 +43,10 @@ pub struct Copro {
     /// The core is spinning on a flag input with these inputs: stepping
     /// it again can't change anything until they do.
     spin: Option<u8>,
+    /// Recompiled code for the uploaded program, if the build has it
+    /// (docs/recompiler.md); `interpret` keeps it on the interpreter.
+    native: Option<crate::recomp::SharcCoproRun>,
+    pub interpret: bool,
     /// Diagnostics: reads of an empty input FIFO, host interface errors,
     /// and accesses to anything else on the external bus.
     pub empty_reads: u64,
@@ -50,11 +54,29 @@ pub struct Copro {
     pub other: BTreeMap<u32, u64>,
 }
 
-struct CoproBus<'a> {
+/// The copro SHARC's external bus: its FIFOs.
+pub struct CoproBus<'a> {
     fifo_in: &'a mut VecDeque<u32>,
     fifo_out: &'a mut VecDeque<u32>,
     empty_reads: &'a mut u64,
     other: &'a mut BTreeMap<u32, u64>,
+    /// Instructions still to run.
+    left: u64,
+    /// The FLAG inputs the current instruction ran with.
+    flags: u8,
+    spin: &'a mut Option<u8>,
+}
+
+impl CoproBus<'_> {
+    /// FLAG0: input FIFO empty; FLAG1: output FIFO full.
+    fn flags(&self) -> u8 {
+        self.fifo_in.is_empty() as u8 | ((self.fifo_out.len() >= OUT_DEPTH) as u8) << 1
+    }
+
+    fn set_flags(&mut self, cpu: &mut Sharc) {
+        self.flags = self.flags();
+        cpu.flag_in = (cpu.flag_in & !3) | self.flags;
+    }
 }
 
 impl Bus for CoproBus<'_> {
@@ -78,6 +100,22 @@ impl Bus for CoproBus<'_> {
             *self.other.entry(addr).or_default() += 1;
         }
     }
+    /// Stop when the program only waits on a FLAG input (it can't do
+    /// anything else until the FIFOs change), else set the inputs for the
+    /// next instruction.
+    #[inline(always)]
+    fn after_step(&mut self, cpu: &mut Sharc) -> bool {
+        if cpu.spinning() {
+            *self.spin = Some(self.flags);
+            return false;
+        }
+        self.left -= 1;
+        if self.left == 0 {
+            return false;
+        }
+        self.set_flags(cpu);
+        true
+    }
 }
 
 impl Default for Copro {
@@ -97,13 +135,16 @@ impl Copro {
             program: Vec::new(),
             fault: None,
             spin: None,
+            native: None,
+            interpret: false,
             empty_reads: 0,
             host_errors: 0,
             other: BTreeMap::new(),
         }
     }
 
-    /// FLAG0: input FIFO empty; FLAG1: output FIFO full.
+    /// FLAG0: input FIFO empty; FLAG1: output FIFO full (as
+    /// `CoproBus::flags`).
     fn flags(&self) -> u8 {
         self.fifo_in.is_empty() as u8 | ((self.fifo_out.len() >= OUT_DEPTH) as u8) << 1
     }
@@ -112,12 +153,37 @@ impl Copro {
     /// SHARC reset into host boot mode; releasing it lets the program run.
     pub fn control(&mut self, hold: bool) {
         if hold && !self.held {
-            *self = Copro { empty_reads: self.empty_reads, host_errors: self.host_errors, ..Copro::new() };
+            *self = Copro {
+                empty_reads: self.empty_reads,
+                host_errors: self.host_errors,
+                interpret: self.interpret,
+                ..Copro::new()
+            };
         }
         if !hold && self.held {
             self.booted = true;
+            self.attach();
         }
         self.held = hold;
+    }
+
+    /// Use the build's recompiled code for the program the core holds, if
+    /// it has some and `interpret` isn't set.
+    pub fn attach(&mut self) {
+        self.native = None;
+        if self.interpret {
+            self.cpu.watch_code(&[], &[]);
+        } else {
+            self.native = crate::recomp::attach_sharc(&mut self.cpu).and_then(|p| p.copro);
+            if self.native.is_none() {
+                self.cpu.watch_code(&[], &[]);
+            }
+        }
+    }
+
+    /// True if the copro runs recompiled code.
+    pub fn is_native(&self) -> bool {
+        self.native.is_some()
     }
 
     /// A host write to IOP register `reg` (the window at `0x8C0000`, or
@@ -154,27 +220,25 @@ impl Copro {
     #[inline(never)]
     fn step(&mut self, n: u64) {
         self.spin = None;
-        for _ in 0..n {
-            let flags = self.flags();
-            self.cpu.flag_in = (self.cpu.flag_in & !3) | flags;
-            let mut bus = CoproBus {
-                fifo_in: &mut self.fifo_in,
-                fifo_out: &mut self.fifo_out,
-                empty_reads: &mut self.empty_reads,
-                other: &mut self.other,
-            };
-            match self.cpu.step(&mut bus) {
-                Step::Ran => {}
-                Step::Idle => break,
-                Step::Fault(f) => {
-                    self.fault = Some(f);
-                    break;
-                }
-            }
-            if self.cpu.spinning() {
-                self.spin = Some(flags);
-                break;
-            }
+        if n == 0 {
+            return;
+        }
+        let mut bus = CoproBus {
+            fifo_in: &mut self.fifo_in,
+            fifo_out: &mut self.fifo_out,
+            empty_reads: &mut self.empty_reads,
+            other: &mut self.other,
+            left: n,
+            flags: 0,
+            spin: &mut self.spin,
+        };
+        bus.set_flags(&mut self.cpu);
+        let r = match self.native {
+            Some(run) => run(&mut self.cpu, &mut bus),
+            None => self.cpu.run_bus(&mut bus),
+        };
+        if let Step::Fault(f) = r {
+            self.fault = Some(f);
         }
     }
 
@@ -203,10 +267,7 @@ pub fn image(host_writes: &[u64]) -> Vec<u64> {
     for &w in host_writes {
         let _ = s.host_write((w >> 32) as u32, w as u32);
     }
-    let mut words: Vec<u64> = (0..0x2800).map(|k| s.mem.read48(0x2_0000 + k)).collect();
-    let used = words.iter().rposition(|&w| w != 0).map_or(0, |k| k + 1);
-    words.truncate(used);
-    words
+    adsp2106x::cpu::program_image(&s)
 }
 
 /// The most executed words of a SHARC's internal memory: (address, count).
@@ -235,6 +296,7 @@ impl state::State for Copro {
         self.booted.load(r)?;
         self.fault = None;
         self.spin = None;
+        self.attach();
         Ok(())
     }
 }

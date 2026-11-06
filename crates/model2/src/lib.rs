@@ -104,6 +104,16 @@ impl Machine {
         self.native = None;
     }
 
+    /// Run the SHARCs (Model 2B) on their interpreter, even if the build has
+    /// recompiled code for their programs.
+    pub fn disable_native_sharc(&mut self) {
+        if let Some(c) = self.bus.sharc.as_deref_mut() {
+            c.interpret = true;
+            c.attach();
+        }
+        self.bus.geo.set_sharc_interpret(true);
+    }
+
     /// Run up to `max` instructions, stopping after the one that ends a
     /// frame. Returns how many ran. Identical in effect to calling `step`
     /// that many times, but runs recompiled code where there is some.

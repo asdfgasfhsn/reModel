@@ -64,7 +64,7 @@ RECOMP_CARGO := CARGO_TARGET_DIR=target/recomp CARGO_PROFILE_RELEASE_DEBUG=false
 # with every core (the largest take about 5 GB; docs/recompiler.md), then
 # the rest.
 release_build = @test -f out/recomp/Cargo.toml || { echo "no out/recomp/Cargo.toml: run make recomp (or make recomp-workspace) first"; exit 1; }; \
-	for p in $$(cd out/recomp && ls -d i960_* tgp_* 2>/dev/null); do \
+	for p in $$(cd out/recomp && ls -d i960_* tgp_* sharc_* 2>/dev/null); do \
 		echo "recompiled program $$p"; \
 		$(RECOMP_CARGO) --quiet -p remodel-recomp-$$(echo $$p | tr _ -) || exit 1; \
 	done; \
@@ -239,9 +239,9 @@ capture: release ## Run into a race saving every 300th frame's renderer inputs t
 gpu-check: release ## Draw the captured frames on the software and GPU rasterisers; time and compare them (needs a GPU)
 	$(RUN) gpu-check
 
-lockstep: ## Run the recompiled i960 code beside the interpreter, block by block, and stop at the first difference (RECOMP=1, STEPS)
+lockstep: ## Run the recompiled code beside the interpreter (i960 block by block; Model 2B's SHARCs too) and stop at the first difference (RECOMP=1, STEPS, INPUT)
 	$(MAKE) release RECOMP=1
-	target/recomp/release/remodel --game $(GAME) --rom $(ROM) lockstep $(STEPS)
+	target/recomp/release/remodel --game $(GAME) --rom $(ROM) $(if $(INPUT),--input $(INPUT)) lockstep $(STEPS)
 
 state-check: release ## Save state round trip: a run saved at frame 2000 and resumed must match an uninterrupted one (state hash and audio)
 	@$(RUN) --audio $(OUT)/state-a.wav --save-state $(OUT)/state-check.save@2000 --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep '^state hash' > $(OUT)/state-a.txt

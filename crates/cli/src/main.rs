@@ -68,8 +68,8 @@ commands:
                        boot and run to the first external access
   recomp               recompile the i960 program (code found by `analyze`
                        plus everything `run` executed) and the copro and
-                       geometrizer programs `run` captured (MB86235 only:
-                       Model 2B's SHARCs stay interpreted) into crates in
+                       geometrizer programs `run` captured (MB86235, or
+                       ADSP-21062 on Model 2B) into crates in
                        out/recomp/, and the workspace there that builds
                        them in (`make release RECOMP=1`)
   recomp-files         list the program crates in out/recomp/ that belong to
@@ -102,6 +102,8 @@ commands:
                        when its RAM, display list and polygons differ
   lockstep [STEPS]     run the recompiled i960 code and the interpreter side
                        by side, block by block; report the first difference
+                       (Model 2B: also the SHARCs, the copro after every
+                       block, both whole after every frame)
   run [STEPS] [SNAP]   boot on the reference interpreter and report what
                        the game did (default 50M instructions); writes the
                        tile layer to out/GAME/frames/ every SNAP frames
@@ -537,14 +539,51 @@ fn main() -> ExitCode {
                 println!("i960: {} instructions in {blocks} blocks -> {}", insns.len(), path.display());
                 made += 1;
             }
-            // Model 2B's copro and geometrizer are SHARCs, which have no
-            // recompiler yet: they stay on the interpreter.
-            let tgp_programs: &[&str] = if model2::geo::Core::of(roms.game.board) == model2::geo::Core::Sharc {
-                println!("copro, geo: SHARC programs (Model 2B) run on the interpreter");
-                &[]
-            } else {
-                &["copro", "geo"]
-            };
+            // Model 2B's copro and geometrizer are SHARCs: their programs
+            // are ADSP-21062 code.
+            let sharc = model2::geo::Core::of(roms.game.board) == model2::geo::Core::Sharc;
+            let tgp_programs: &[&str] = if sharc { &[] } else { &["copro", "geo"] };
+            for name in ["copro", "geo"].into_iter().filter(|_| sharc) {
+                let bin = dir.join(format!("sharc-{name}.bin"));
+                let prog = match sharc::load(&bin) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("{name}: {e} (run `make run` first)");
+                        continue;
+                    }
+                };
+                // Static discovery, plus every word `run` executed.
+                let found = sharc::discover(&prog);
+                let mut words = found.code.clone();
+                let cov = std::fs::read_to_string(dir.join(format!("sharc-{name}-coverage.txt"))).unwrap_or_default();
+                let ran: BTreeSet<u32> = cov.lines().filter_map(|l| u32::from_str_radix(l.trim(), 16).ok()).collect();
+                let extra = ran.difference(&found.code).count();
+                words.extend(&ran);
+                for note in adsp2106x::codegen::check(&prog, &words) {
+                    println!("{name}: {note}");
+                }
+                let hash = adsp2106x::cpu::program_hash(&prog);
+                let code = adsp2106x::codegen::program_module(&prog, &words);
+                let krate = format!("sharc_{hash:016x}");
+                let path = match recomp_crates::add_role(&out, &krate, name)
+                    .and_then(|()| recomp_crates::write_program(&out, &krate, &code))
+                {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                };
+                println!(
+                    "{name}: SHARC, {} of {} words recompiled ({} found statically, {extra} more from {} executed) -> {}",
+                    words.len(),
+                    prog.len(),
+                    found.code.len(),
+                    ran.len(),
+                    path.display()
+                );
+                made += 1;
+            }
             for &name in tgp_programs {
                 let (Ok(bin), Ok(cov)) = (
                     std::fs::read(dir.join(format!("{name}.bin"))),
@@ -587,8 +626,12 @@ fn main() -> ExitCode {
             let dir = PathBuf::from("out").join(roms.game.id);
             let mut hashes = vec![format!("i960_{:016x}", model2::program_hash(&roms))];
             let sharc = model2::geo::Core::of(roms.game.board) == model2::geo::Core::Sharc;
-            for name in ["copro", "geo"].into_iter().filter(|_| !sharc) {
-                if let Ok(bin) = std::fs::read(dir.join(format!("{name}.bin"))) {
+            for name in ["copro", "geo"] {
+                if sharc {
+                    if let Ok(prog) = sharc::load(&dir.join(format!("sharc-{name}.bin"))) {
+                        hashes.push(format!("sharc_{:016x}", adsp2106x::cpu::program_hash(&prog)));
+                    }
+                } else if let Ok(bin) = std::fs::read(dir.join(format!("{name}.bin"))) {
                     let prog: Vec<u64> = bin.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect();
                     hashes.push(format!("tgp_{:016x}", mb86235::cpu::program_hash(&prog)));
                 }
@@ -651,10 +694,16 @@ fn main() -> ExitCode {
             let mut native = model2::Machine::new(&roms);
             let mut reference = model2::Machine::new(&roms);
             reference.disable_native();
+            reference.disable_native_sharc();
             if !native.is_native() {
                 eprintln!("error: this build has no recompiled i960 code for {}", roms.game.id);
                 return ExitCode::FAILURE;
             }
+            // Model 2B: the SHARCs too, the copro after every block, the
+            // geometrizer (inline, so its frame has run) every frame.
+            native.bus.geo.set_threaded(false);
+            reference.bus.geo.set_threaded(false);
+            let (mut sharcs_reported, mut checked_frame) = (false, 0);
             while native.cpu.icount < steps {
                 let ip = native.cpu.ip;
                 let before = native.cpu.r;
@@ -696,6 +745,10 @@ fn main() -> ExitCode {
                             );
                         }
                     }
+                    return ExitCode::FAILURE;
+                }
+                if let Err(e) = sharc_lockstep(&native, &reference, &mut sharcs_reported, &mut checked_frame) {
+                    println!("diverged after {} i960 instructions (frame {}): {e}", r.icount, native.frames);
                     return ExitCode::FAILURE;
                 }
             }
@@ -1410,6 +1463,57 @@ fn report_2c(dir: &std::path::Path, b: &model2::Model2Bus, geo: &model2::geo::En
     }
 }
 
+/// `lockstep` on Model 2B: the copro SHARCs' registers, pipeline and
+/// counters must match after every i960 block, and after each frame both
+/// SHARCs' whole state (memory included) and the geometrizer's output.
+/// `reported`: whether the SHARCs' recompiled code has been announced;
+/// `checked`: the last frame compared.
+fn sharc_lockstep(
+    native: &model2::Machine,
+    reference: &model2::Machine,
+    reported: &mut bool,
+    checked: &mut u64,
+) -> Result<(), String> {
+    let (Some(n), Some(r)) = (native.bus.sharc.as_deref(), reference.bus.sharc.as_deref()) else { return Ok(()) };
+    let (nc, rc) = (&n.cpu, &r.cpu);
+    if nc.steps != rc.steps || nc.pc != rc.pc || nc.r != rc.r || n.fault != r.fault {
+        return Err(format!(
+            "copro SHARC: recompiled {} steps at pc {:#x}, interpreter {} steps at pc {:#x}; faults {:x?} / {:x?}",
+            nc.steps, nc.pc, rc.steps, rc.pc, n.fault, r.fault
+        ));
+    }
+    if !*reported && n.booted && native.bus.geo.booted {
+        *reported = true;
+        let geo = native.bus.geo.engine().sharc_is_native();
+        println!("SHARCs: copro {}, geometrizer {}", native_name(n.is_native()), native_name(geo));
+    }
+    if native.frames == *checked {
+        return Ok(());
+    }
+    *checked = native.frames;
+    if nc.digest() != rc.digest() || state::to_bytes(nc) != state::to_bytes(rc) {
+        return Err(format!("copro SHARC state differs at the frame's end (pc {:#x}, {} steps)", nc.pc, nc.steps));
+    }
+    let (ng, rg) = (native.bus.geo.engine(), reference.bus.geo.engine());
+    if let (Some(a), Some(b)) = (ng.sharc.as_deref(), rg.sharc.as_deref()) {
+        if a.digest() != b.digest() || state::to_bytes(a) != state::to_bytes(b) || ng.stream != rg.stream {
+            return Err(format!(
+                "geometrizer SHARC state or output differs after frame {}: recompiled {} steps at pc {:#x}, interpreter {} at {:#x}",
+                ng.frames, a.steps, a.pc, b.steps, b.pc
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn native_name(native: bool) -> &'static str {
+    if native {
+        "recompiled"
+    } else {
+        "interpreted (no recompiled code in this build)"
+    }
+}
+
 /// The SHARC copro and geometrizer in a `run` report (Model 2B), and
 /// their uploaded programs as images for `sharc-disasm`.
 fn report_2b(
@@ -1439,7 +1543,30 @@ fn report_2b(
             .map(|&(a, n)| format!("{a:05x} {:.1}%", n as f64 * 100.0 / total))
             .collect();
         println!("{name:<13} hot spots: {}", spots.join(", "));
+        let misses: u64 = cpu.misses.values().sum();
+        if !cpu.misses.is_empty() {
+            let mut top: Vec<_> = cpu.misses.iter().collect();
+            top.sort_by_key(|(_, n)| std::cmp::Reverse(**n));
+            let top: Vec<String> = top.iter().take(8).map(|(a, n)| format!("{a:05x} x{n}")).collect();
+            println!(
+                "{name:<13} recompiled code missed {misses} instructions at {} addresses: {}",
+                cpu.misses.len(),
+                top.join(", ")
+            );
+        }
+        let overwritten = cpu.overwritten_code();
+        if !overwritten.is_empty() {
+            println!("{name:<13} {} compiled words overwritten (interpreted): {overwritten:05x?}", overwritten.len());
+        }
+        // Every word executed, for `remodel recomp`.
+        let cov: String = (0x2_0000..0x4_0000u32)
+            .filter(|&a| cpu.count_at(a).is_some_and(|n| n > 0))
+            .map(|a| format!("{a:05x}\n"))
+            .collect();
+        let file = if name == "copro" { "sharc-copro-coverage.txt" } else { "sharc-geo-coverage.txt" };
+        let _ = std::fs::write(dir.join(file), cov);
     };
+    println!("copro         {}", if c.is_native() { "recompiled" } else { "interpreter" });
     hot("copro", &c.cpu);
     match &geo.sharc {
         Some(s) => {
@@ -1457,6 +1584,7 @@ fn report_2b(
             for (a, n) in &geo.sharc_other {
                 println!("geometrizer   unknown external access {a:#x}: {n}");
             }
+            println!("geometrizer   {}", if geo.sharc_is_native() { "recompiled" } else { "interpreter" });
             hot("geometrizer", s);
         }
         None => println!("geometrizer   SHARC (on another worker)"),
