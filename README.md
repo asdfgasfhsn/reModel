@@ -976,9 +976,10 @@ Dynamite Baseball '97, a two-player baseball cabinet with a bat lever.
   coin-start run of 600M instructions gives the same state hash
   (`69e50b78363de101`, with an `eeprom.bin` from an earlier run)
   recompiled and interpreted.
-- *Speed (by running it):* that run plays at 1.86x real time recompiled
-  natively (the geometrizer SHARC is the limit, slowest frame 21 ms), and
-  at about real time interpreted (slowest frame 32 ms).
+- *Speed (by running it):* that run plays at 2.74x real time recompiled
+  natively with the SHARC block compiler (1.86x before it, when the
+  geometrizer SHARC was the limit), and at about real time interpreted
+  (slowest frame 32 ms).
 
 ## What's known about `doa`
 
