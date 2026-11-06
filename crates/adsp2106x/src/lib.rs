@@ -14,6 +14,9 @@
 //! reported by the interpreter, never skipped.
 
 pub mod compute;
+pub mod cpu;
+pub mod float;
+pub mod mem;
 
 pub use compute::{AluOp, Compute, MulOp, ShiftOp};
 use std::fmt;
