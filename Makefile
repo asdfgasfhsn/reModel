@@ -31,6 +31,12 @@ M68K_TESTS     ?= out/m68k-tests
 M68K_TESTS_API := https://api.github.com/repos/SingleStepTests/680x0/contents/68000/v1
 M68K_TESTS_RAW := https://raw.githubusercontent.com/SingleStepTests/680x0/main/68000/v1
 
+# ADSP-21062 (Model 2B SHARC) program images for `make sharc-test`, and the
+# one `make sharc-disasm` lists. Captured from a 2B upload into out/ (never
+# committed; docs/hw/adsp2106x.md says how).
+SHARC_PROGRAMS ?= $(wildcard out/overrevb/sharc-copro.bin out/overrevb/sharc-geo.bin)
+FILE ?= out/overrevb/sharc-copro.bin
+
 # Where `make z80-test` looks for the zexdoc/zexall exercisers (never committed).
 Z80_TESTS     ?= out/z80-tests
 Z80_TESTS_URL := https://raw.githubusercontent.com/anotherlin/z80emu/master/testfiles
@@ -72,7 +78,7 @@ endif
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release dist test lint fmt fmt-check check ci z80-test games inputs verify boot disasm analyze run copro-disasm m68k-tests clean recomp recomp-workspace bench sound sound-disasm
+.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm m68k-tests clean recomp recomp-workspace bench sound sound-disasm
 
 ##@ General
 
@@ -139,6 +145,14 @@ z80-test: ## Run the Z80 core against the zexdoc and zexall exercisers in Z80_TE
 		echo "  curl -fsSL -o $(Z80_TESTS)/zexdoc.com $(Z80_TESTS_URL)/zexdoc.com"; \
 		echo "  curl -fsSL -o $(Z80_TESTS)/zexall.com $(Z80_TESTS_URL)/zexall.com"; \
 		exit 1; \
+	fi
+
+sharc-test: ## ADSP-21062 (SHARC) unit tests; then decode, discovery and a boot of the 2B programs in SHARC_PROGRAMS= (default: those captured in out/overrevb)
+	$(CARGO) test -p adsp2106x
+	@if [ -n "$(SHARC_PROGRAMS)" ]; then \
+		$(MAKE) --no-print-directory release && $(REMODEL) sharc-check $(SHARC_PROGRAMS); \
+	else \
+		echo "no SHARC program images in out/overrevb (docs/hw/adsp2106x.md): unit tests only"; \
 	fi
 
 ##@ ROM tools (need a user-supplied dump in ROM=)
@@ -240,6 +254,9 @@ bench: release ## Timed fixed run into a race: speed vs real time and the state 
 
 copro-disasm: release ## Disassemble the geometry program captured by `make run`
 	$(RUN) copro-disasm
+
+sharc-disasm: release ## Disassemble an ADSP-21062 program image: make sharc-disasm FILE=out/overrevb/sharc-geo.bin (listing to FILE.lst)
+	$(REMODEL) sharc-disasm $(FILE)
 
 sound: release ## Boot the sound board, replay the sound bytes captured by `make run`, write OUT/sound.wav
 	$(RUN) sound-render $(OUT)/sound.wav

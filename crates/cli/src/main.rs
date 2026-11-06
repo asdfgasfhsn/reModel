@@ -1,6 +1,7 @@
 mod gpu_check;
 mod music;
 mod recomp_crates;
+mod sharc;
 mod sound_render;
 mod soundtrack;
 mod texpack;
@@ -58,6 +59,13 @@ commands:
   analyze [OUT]        recursive-descent listing (default out/GAME/program.lst)
   copro-disasm [FILE]  disassemble an MB86235 program image to FILE.lst
                        (default out/GAME/copro.bin; `run` also writes geo.bin)
+  sharc-disasm FILE [OUT]
+                       disassemble an ADSP-21062 (Model 2B SHARC) program
+                       image (48-bit words, 6 little-endian bytes each,
+                       loaded at 0x20000) to OUT (default FILE.lst)
+  sharc-check FILE...  for each SHARC image: undefined encodings, code
+                       discovery from the vectors, loop sanity, and a host
+                       boot and run to the first external access
   recomp               recompile the i960 program (code found by `analyze`
                        plus everything `run` executed) and the copro and
                        geometrizer programs `run` captured into crates in
@@ -220,6 +228,26 @@ fn main() -> ExitCode {
         };
         let dest = if name.contains('/') { PathBuf::from(name) } else { PathBuf::from("soundtracks").join(name) };
         return match soundtrack::import(Path::new(src), &dest) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if cmd == "sharc-disasm" || cmd == "sharc-check" {
+        let r = match (cmd.as_str(), args.get(1)) {
+            ("sharc-disasm", Some(file)) => {
+                let out = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{file}.lst")));
+                sharc::disasm(Path::new(file), &out)
+            }
+            ("sharc-check", Some(_)) => sharc::check(&args[1..], 10_000_000),
+            _ => {
+                eprint!("{USAGE}");
+                return ExitCode::FAILURE;
+            }
+        };
+        return match r {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("error: {e}");
