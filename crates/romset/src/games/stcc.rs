@@ -25,6 +25,7 @@ pub static STCC: Game = Game {
     drive_board: Some(DriveBoard::Wheel),
     parent: None,
     backup_ram: &[],
+    protection: None,
     packed: &[],
     volume_db: 0.0,
     files: &[

@@ -19,6 +19,7 @@ pub static SEGAWSKI: Game = Game {
     drive_board: None,
     parent: None,
     backup_ram: &[],
+    protection: None,
     packed: &[],
     volume_db: 0.0,
     files: &[

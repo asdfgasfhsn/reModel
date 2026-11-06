@@ -28,6 +28,7 @@ pub static SGT24H: Game = Game {
     // power-on 0xFFFF scrambles the pedals; type A (0) is what the menu
     // shows for an unset value, and reads the pedals as they come.
     backup_ram: &[(0x0a, &[0, 0])],
+    protection: None,
     packed: &[],
     // Jaleco's driver plays its voices at DISDL 3 as on overrev: a race
     // averages about -38 dBFS RMS, as overrev's does (docs/hw/sound.md §6).

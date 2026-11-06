@@ -15,6 +15,7 @@ pub static SKISUPRG: Game = Game {
     drive_board: Some(DriveBoard::SkiPlatform),
     parent: None,
     backup_ram: &[],
+    protection: None,
     packed: &[],
     volume_db: 0.0,
     files: &[

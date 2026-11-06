@@ -13,6 +13,7 @@ pub mod enhance;
 pub mod geo;
 pub mod gun;
 pub mod input;
+pub mod protection;
 pub mod raster;
 pub mod sharc;
 pub mod video;

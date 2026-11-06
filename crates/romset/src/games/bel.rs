@@ -20,6 +20,7 @@ pub static BEL: Game = Game {
     drive_board: None,
     parent: None,
     backup_ram: &[],
+    protection: None,
     packed: &[Role::MainData, Role::Polygons],
     volume_db: 0.0,
     files: &[

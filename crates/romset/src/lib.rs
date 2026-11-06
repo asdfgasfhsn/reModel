@@ -34,6 +34,31 @@ pub enum DriveBoard {
     Wheel,
 }
 
+/// A device on the board's expansion bus at `0x1D80000-0x1D87FFF` that the
+/// game checks at boot (`model2::protection`). The game sends it a block of
+/// data and two tables and compares the stream it reads back with bytes in
+/// its own program ROM. How the device turns one into the other isn't
+/// known (the block isn't the plain code the tables describe), so the
+/// board model answers each request with those bytes, read from the ROM at
+/// run time. This answers the check; it doesn't model what the device
+/// computes for anything else.
+#[derive(Clone, Copy, Debug)]
+pub struct Protection {
+    pub replies: &'static [ProtectionReply],
+}
+
+/// One request the game makes of its [`Protection`] device, and the answer.
+#[derive(Clone, Copy, Debug)]
+pub struct ProtectionReply {
+    /// The value the game writes to the command register (`0x1D84000`)
+    /// before the request.
+    pub command: u16,
+    /// Where the answer is in the program ROM (i960 address) and how many
+    /// bytes long: the bytes the game compares the device's stream with.
+    pub rom: u32,
+    pub len: u32,
+}
+
 /// Model 2 board revisions. They share the i960 main CPU and sound system;
 /// the geometry processor differs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,6 +169,8 @@ pub struct Game {
     /// contents (all ones) at boot. sgt24h reads its I/O board type from
     /// there and indexes a table with it unchecked.
     pub backup_ram: &'static [(usize, &'static [u8])],
+    /// The protection device the game checks for at `0x1D80000`, if any.
+    pub protection: Option<Protection>,
 }
 
 #[derive(Debug)]

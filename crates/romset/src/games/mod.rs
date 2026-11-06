@@ -2,6 +2,7 @@
 //! it in `ALL`.
 
 mod bel;
+mod doa;
 mod dynabb97;
 mod hotd;
 mod overrev;
@@ -16,6 +17,7 @@ mod waverunr;
 use crate::{Error, Game};
 
 pub use bel::BEL;
+pub use doa::DOA;
 pub use dynabb97::DYNABB97;
 pub use hotd::HOTD;
 pub use overrev::OVERREV;
@@ -28,7 +30,7 @@ pub use topskatr::TOPSKATR;
 pub use waverunr::WAVERUNR;
 
 pub static ALL: &[&Game] =
-    &[&TOPSKATR, &SKISUPRG, &STCC, &SEGAWSKI, &WAVERUNR, &OVERREV, &HOTD, &BEL, &OVERREVB, &SGT24H, &DYNABB97];
+    &[&TOPSKATR, &SKISUPRG, &STCC, &SEGAWSKI, &WAVERUNR, &OVERREV, &HOTD, &BEL, &OVERREVB, &SGT24H, &DYNABB97, &DOA];
 
 pub fn find(id: &str) -> Result<&'static Game, Error> {
     ALL.iter().copied().find(|g| g.id == id).ok_or_else(|| Error::UnknownGame(id.to_string()))

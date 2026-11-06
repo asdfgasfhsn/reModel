@@ -19,6 +19,7 @@ pub static OVERREVB: Game = Game {
     // A clone: its chips can sit in the parent set as MAME merges them.
     parent: Some("overrev"),
     backup_ram: &[],
+    protection: None,
     packed: &[],
     // Its voices mostly play at DISDL 3: the sound board averages about
     // 5.5 dB below the other SCSP-only games (docs/hw/sound.md §6).

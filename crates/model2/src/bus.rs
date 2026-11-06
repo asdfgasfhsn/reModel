@@ -13,6 +13,7 @@ use crate::drive::Drive;
 use crate::eeprom::Eeprom;
 use crate::geo::{self, Geometrizer};
 use crate::gun::GunBoard;
+use crate::protection;
 use crate::sharc;
 use i960::cpu::Bus;
 use mb86235::cpu::{External, Step, Tgp};
@@ -201,6 +202,8 @@ pub struct Model2Bus {
     /// The light gun interface, for games with guns: commands on I/O
     /// registers 9 and 10, replies on 12, status on 13.
     pub gun: Option<GunBoard>,
+    /// The protection device at 0x1D80000, for games whose manifest has one.
+    protection: Option<Box<protection::Device>>,
 
     /// Non-memory accesses, by word address.
     pub io_log: AccessLog,
@@ -331,6 +334,7 @@ impl Model2Bus {
                 .iter()
                 .any(|g| matches!(g.source, romset::GunSource::Counters { .. }))
                 .then(GunBoard::default),
+            protection: roms.game.protection.as_ref().map(|p| Box::new(protection::Device::new(p, &roms.program))),
             io_log: AccessLog::default(),
             unmapped: BTreeMap::new(),
         }
@@ -763,6 +767,11 @@ impl Model2Bus {
             let mask = if n == 4 { u32::MAX } else { (1u32 << (8 * n)) - 1 };
             return (w >> shift) & mask;
         }
+        if let Some(p) = self.protection.as_mut().filter(|_| (protection::START..=protection::END).contains(&addr)) {
+            let v = p.read(addr - protection::START, n);
+            self.log(addr, None);
+            return v;
+        }
         self.unmapped(addr, None);
         0
     }
@@ -776,6 +785,11 @@ impl Model2Bus {
         let shifted = v << shift;
         let lanes = ((1u32 << n) - 1) << (addr & 3);
         if self.io_write32(addr, shifted, lanes) {
+            return;
+        }
+        if let Some(p) = self.protection.as_mut().filter(|_| (protection::START..=protection::END).contains(&addr)) {
+            p.write(addr - protection::START, v, n);
+            self.log(addr, Some(v));
             return;
         }
         self.unmapped(addr, Some(v));
@@ -986,6 +1000,10 @@ impl state::State for Model2Bus {
         if let Some(c) = &self.sharc {
             c.save(w);
         }
+        // Then the protection device, for games with one.
+        if let Some(p) = &self.protection {
+            p.save(w);
+        }
     }
     fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
         let test_rams = self.test_rams;
@@ -1041,6 +1059,9 @@ impl state::State for Model2Bus {
         }
         if let Some(c) = &mut self.sharc {
             c.load(r)?;
+        }
+        if let Some(p) = &mut self.protection {
+            p.load(r)?;
         }
         Ok(())
     }
