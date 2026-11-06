@@ -31,6 +31,7 @@ impl Default for Internal {
 
 /// Location of a normal-word address: block, group (address bits 14-12)
 /// and row (bits 11-0). Addresses 0x30000-0x3FFFF alias block 1.
+#[inline]
 pub fn locate(addr: u32) -> Option<(usize, usize, usize)> {
     if !(0x2_0000..0x4_0000).contains(&addr) {
         return None;
@@ -42,6 +43,7 @@ pub fn locate(addr: u32) -> Option<(usize, usize, usize)> {
 
 /// The columns holding the high, middle and low 16 bits of a 48-bit word
 /// in group `g`: H M L in even groups, L H M in odd ones (Figure 5.9a).
+#[inline]
 fn cols48(g: usize) -> [usize; 3] {
     let c = 3 * g;
     if g.is_multiple_of(2) {
@@ -52,16 +54,19 @@ fn cols48(g: usize) -> [usize; 3] {
 }
 
 impl Internal {
+    #[inline]
     fn get(&self, b: usize, col: usize, row: usize) -> u64 {
         self.cols[b][col * ROWS + row] as u64
     }
 
+    #[inline]
     fn set(&mut self, b: usize, col: usize, row: usize, v: u64) {
         self.cols[b][col * ROWS + row] = v as u16;
     }
 
     /// A 48-bit word; groups 5-7 hold none (the "non-existent" addresses
     /// at the end of a block of instructions) and read as zero.
+    #[inline]
     pub fn read48(&self, addr: u32) -> u64 {
         match locate(addr) {
             Some((b, g, r)) if g < 5 => {
@@ -73,6 +78,7 @@ impl Internal {
     }
 
     /// Returns false if the address holds no 48-bit word.
+    #[inline]
     pub fn write48(&mut self, addr: u32, v: u64) -> bool {
         match locate(addr) {
             Some((b, g, r)) if g < 5 => {
@@ -86,6 +92,7 @@ impl Internal {
         }
     }
 
+    #[inline]
     pub fn read32(&self, addr: u32) -> u32 {
         match locate(addr) {
             Some((b, g, r)) => (self.get(b, 2 * g, r) << 16 | self.get(b, 2 * g + 1, r)) as u32,
@@ -93,6 +100,7 @@ impl Internal {
         }
     }
 
+    #[inline]
     pub fn write32(&mut self, addr: u32, v: u32) {
         if let Some((b, g, r)) = locate(addr) {
             self.set(b, 2 * g, r, (v >> 16) as u64);
@@ -103,6 +111,7 @@ impl Internal {
     /// A short word (0x40000-0x7FFFF): the normal-word address is the
     /// short address shifted right; bit 0 picks the MSW (1) or LSW (0) of
     /// the 32-bit word (UM §5.3.4).
+    #[inline]
     pub fn read16(&self, saddr: u32) -> u16 {
         match locate(short_to_normal(saddr)) {
             Some((b, g, r)) => self.get(b, 2 * g + (saddr & 1 == 0) as usize, r) as u16,
@@ -110,6 +119,7 @@ impl Internal {
         }
     }
 
+    #[inline]
     pub fn write16(&mut self, saddr: u32, v: u16) {
         if let Some((b, g, r)) = locate(short_to_normal(saddr)) {
             self.set(b, 2 * g + (saddr & 1 == 0) as usize, r, v as u64);
@@ -118,6 +128,7 @@ impl Internal {
 
     /// The 48-bit word addresses whose contents a write to `addr` of the
     /// given width can change, for instruction cache invalidation.
+    #[inline]
     pub fn words48_touched(addr: u32, width48: bool) -> [Option<u32>; 2] {
         let Some((b, g, r)) = locate(addr) else { return [None, None] };
         let base = if b == 0 { BLOCK0 } else { BLOCK1 };
@@ -133,6 +144,7 @@ impl Internal {
 }
 
 /// Normal-word address of a short-word address (0x40000 → 0x20000).
+#[inline]
 pub fn short_to_normal(saddr: u32) -> u32 {
     let n = saddr >> 1;
     // Block 1 and its aliases: 0x50000-0x7FFFF map to 0x28000-0x3FFFF.

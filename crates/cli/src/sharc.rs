@@ -3,8 +3,7 @@
 //! SHARC uploads; docs/hw/adsp2106x.md says how to capture them).
 
 use adsp2106x::cpu::{self, Bus, Sharc, Step, Width};
-use adsp2106x::{decode, Flow, Insn, Op};
-use std::collections::{BTreeMap, BTreeSet};
+use adsp2106x::{decode, Op};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -19,92 +18,7 @@ pub fn load(path: &Path) -> Result<Vec<u64>, String> {
     Ok(bytes.chunks(6).map(|c| c.iter().rev().fold(0u64, |a, &b| a << 8 | b as u64)).collect())
 }
 
-/// What recursive descent from the reset and interrupt vectors finds.
-#[derive(Default)]
-pub struct Discovery {
-    /// Words reached as instructions.
-    pub code: BTreeSet<u32>,
-    /// Branch, call and loop targets, with how they were reached.
-    pub labels: BTreeMap<u32, &'static str>,
-    /// Indirect branches and calls (targets unknown statically).
-    pub indirect: BTreeSet<u32>,
-}
-
-/// Follow control flow from the reset vector (0x20004: execution starts
-/// at 0x20005 after the boot interrupt) and every interrupt vector.
-pub fn discover(words: &[u64]) -> Discovery {
-    let end = BASE + words.len() as u32;
-    let at = |a: u32| -> Option<Insn> { (BASE..end).contains(&a).then(|| decode(a, words[(a - BASE) as usize])) };
-    let mut d = Discovery::default();
-    let mut work: Vec<u32> = (0..32).map(|k| BASE + 4 * k).collect();
-    work.push(BASE + 5);
-    d.labels.insert(BASE + 5, "reset");
-    while let Some(a) = work.pop() {
-        let Some(insn) = at(a) else { continue };
-        if !d.code.insert(a) {
-            continue;
-        }
-        // The two words after a delayed transfer run before it lands.
-        let slots = |d: &mut Discovery| {
-            for s in [a + 1, a + 2] {
-                if at(s).is_some() {
-                    d.code.insert(s);
-                }
-            }
-        };
-        let target = |t: Option<u32>, kind: &'static str, d: &mut Discovery, work: &mut Vec<u32>| match t {
-            Some(t) => {
-                d.labels.entry(t).or_insert(kind);
-                work.push(t);
-            }
-            None => {
-                d.indirect.insert(a);
-            }
-        };
-        // Immediates that point into the image are taken as code pointers
-        // (the programs build their command dispatch tables this way).
-        if let Op::StoreImm { data, .. } | Op::LoadImm { data, .. } = insn.op {
-            if (BASE + 0x80..end).contains(&data) {
-                d.labels.entry(data).or_insert("table");
-                work.push(data);
-            }
-        }
-        match insn.flow() {
-            Flow::Next | Flow::Idle => work.push(a + 1),
-            Flow::Jump { target: t, delayed } => {
-                target(t, "jump", &mut d, &mut work);
-                if delayed {
-                    slots(&mut d);
-                }
-            }
-            Flow::Branch { target: t, delayed } | Flow::Call { target: t, delayed } => {
-                let kind = if matches!(insn.flow(), Flow::Call { .. }) { "call" } else { "branch" };
-                target(t, kind, &mut d, &mut work);
-                if delayed {
-                    slots(&mut d);
-                    work.push(a + 3);
-                } else {
-                    work.push(a + 1);
-                }
-            }
-            Flow::Return { cond, delayed } => {
-                if delayed {
-                    slots(&mut d);
-                }
-                if cond {
-                    work.push(if delayed { a + 3 } else { a + 1 });
-                }
-            }
-            Flow::Do { end } => {
-                d.labels.entry(end + 1).or_insert("loop exit");
-                work.push(a + 1);
-                work.push(end + 1);
-            }
-            Flow::Invalid => {}
-        }
-    }
-    d
-}
+pub use adsp2106x::codegen::discover;
 
 /// `sharc-disasm`: the listing of every word, code first marked by
 /// discovery.

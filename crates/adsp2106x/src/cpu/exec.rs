@@ -15,6 +15,7 @@ pub(super) struct Results {
 }
 
 impl Results {
+    #[inline(always)]
     fn push(&mut self, r: u8, v: u64) {
         self.w[self.n] = (r & 15, v);
         self.n += 1;
@@ -35,6 +36,7 @@ struct AluFlags {
 }
 
 impl AluFlags {
+    #[inline(always)]
     fn or(self, o: AluFlags) -> AluFlags {
         AluFlags {
             az: self.az || o.az,
@@ -48,6 +50,7 @@ impl AluFlags {
         }
     }
 
+    #[inline(always)]
     fn float(f: float::Flags) -> AluFlags {
         AluFlags {
             az: f.zero,
@@ -60,6 +63,7 @@ impl AluFlags {
         }
     }
 
+    #[inline(always)]
     fn fixed(v: u32) -> AluFlags {
         AluFlags { az: v == 0, an: v >> 31 != 0, ..Default::default() }
     }
@@ -79,22 +83,26 @@ struct ShiftY {
 }
 
 impl ShiftY {
+    #[inline(always)]
     fn reg(y: u32) -> ShiftY {
         ShiftY { shift: y as i32 as i64, pos: y as u64, bit6: y & 0x3f, len6: (y >> 6) & 0x3f }
     }
 
+    #[inline(always)]
     fn imm(imm: u16) -> ShiftY {
         let i = imm as u32;
         ShiftY { shift: imm as u8 as i8 as i64, pos: (i & 0xff) as u64, bit6: i & 0x3f, len6: (i >> 6) & 0x3f }
     }
 }
 
+#[inline(always)]
 fn wrap80(v: i128) -> i128 {
     (v << 48) >> 48
 }
 
 /// Round an MR value to nearest (even) at bit 32, clearing MR0 (UM
 /// §2.6.3.2).
+#[inline(always)]
 fn round80(v: i128) -> i128 {
     let low = v & 0xffff_ffff;
     let mut q = v >> 32;
@@ -105,6 +113,7 @@ fn round80(v: i128) -> i128 {
 }
 
 /// `a + b + c` in 32 bits: result, carry out, signed overflow.
+#[inline(always)]
 fn add3(a: u32, b: u32, c: u32) -> (u32, bool, bool) {
     let s = a as u64 + b as u64 + c as u64;
     let r = s as u32;
@@ -120,22 +129,26 @@ fn sext_from(v: u64, len: u32) -> u64 {
 }
 
 impl Sharc {
+    #[inline(always)]
     fn fmode(&self) -> Mode {
         Mode { trunc: self.mode1 & TRUNC != 0, rnd32: self.mode1 & RND32 != 0 }
     }
 
+    #[inline(always)]
     fn apply(&mut self, res: &Results) {
         for &(r, v) in &res.w[..res.n] {
             self.r[r as usize] = v & 0xff_ffff_ffff;
         }
     }
 
+    #[inline(always)]
     fn branch(&mut self, target: u32, delayed: bool) {
         self.redirect = Some((target, delayed));
         // No interrupt until the branch (and its delay slots) are done.
         self.irq_hold = if delayed { 2 } else { 1 };
     }
 
+    #[inline(always)]
     fn target(&self, t: Target, pc: u32) -> u32 {
         match t {
             Target::Abs(a) => a,
@@ -154,6 +167,7 @@ impl Sharc {
     /// A compute operation with an optional memory transfer (types 1, 3, 4,
     /// 6, 10): registers are read, then the compute runs, then memory is
     /// accessed, then results land: compute, then the loaded value.
+    #[inline(always)]
     fn compute_move(&mut self, res: Results, mv: Option<Move>, ext: &mut impl Bus) -> Result<(), Fault> {
         let loaded = match mv {
             Some(mv) => {
@@ -170,6 +184,7 @@ impl Sharc {
         Ok(())
     }
 
+    #[inline(always)]
     pub(super) fn exec(&mut self, insn: &Insn, ext: &mut impl Bus) -> Result<(), Fault> {
         let pc = insn.addr;
         let undefined = Fault::Undefined { pc, word: insn.word };
@@ -376,6 +391,7 @@ impl Sharc {
     /// address; PUSH PCSTK pushes zero (the program writes the new tops
     /// through LADDR, CURLCNTR and PCSTK). Pops of empty stacks do
     /// nothing.
+    #[inline(always)]
     fn stacks(&mut self, s: StackOps) -> Result<(), Fault> {
         if s.push_loop {
             self.push_loop(0, self.lcntr)?;
@@ -403,6 +419,7 @@ impl Sharc {
     /// Run a compute operation: operands are read first, flags updated, and
     /// the register file results returned for the caller to write. `None`
     /// for an undefined encoding.
+    #[inline(always)]
     pub(super) fn compute(&mut self, c: &Compute) -> Option<Results> {
         let mut res = Results::default();
         let r = |s: &Self, n: u8| s.r[n as usize & 15];
@@ -492,6 +509,7 @@ impl Sharc {
         Some(res)
     }
 
+    #[inline(always)]
     fn set_alu_flags(&mut self, f: AluFlags) {
         let bit = |on: bool, bit: u32| if on { bit } else { 0 };
         self.astat = (self.astat & !(AZ | AV | AN | AC | AS | AI | AF))
@@ -511,6 +529,7 @@ impl Sharc {
 
     /// Shift the compare accumulation bits and record `x > y` (UM
     /// §2.5.3.9).
+    #[inline(always)]
     fn cacc(&mut self, gt: bool) {
         let c = (self.astat >> 24) >> 1 | (gt as u32) << 7;
         self.astat = (self.astat & 0xff_ffff) | c << 24;
@@ -518,6 +537,7 @@ impl Sharc {
 
     /// One ALU operation on 40-bit register values: the 40-bit result (if
     /// any) and its flags (UM B.2.1, §2.5.4).
+    #[inline(always)]
     fn alu(&mut self, op: AluOp, x40: u64, y40: u64) -> (Option<u64>, AluFlags) {
         use AluOp::*;
         let (x, y) = ((x40 >> 8) as u32, (y40 >> 8) as u32);
@@ -705,6 +725,7 @@ impl Sharc {
         }
     }
 
+    #[inline(always)]
     fn mr_index(&self, m: Mr) -> usize {
         match m {
             Mr::F => self.mrf(),
@@ -715,6 +736,7 @@ impl Sharc {
     /// Fixed-point multiplier flags for the 80-bit result `r` (UM
     /// §2.6.5): MV for the format's overflow bits (`check_mv`), MU for a
     /// fractional result that only has bits in MR0.
+    #[inline(always)]
     fn mul_fixed_flags(&mut self, r: i128, signed: bool, frac: bool, check_mv: bool) {
         let u = r as u128 & ((1u128 << 80) - 1);
         let top_zero = |n: u32| u >> (80 - n) == 0;
@@ -739,6 +761,7 @@ impl Sharc {
         }
     }
 
+    #[inline(always)]
     fn mul_out(&mut self, dst: MulDst, r: i128, frac: bool) -> Option<u64> {
         match dst {
             MulDst::Reg => Some((((if frac { r >> 32 } else { r }) as u32) as u64) << 8),
@@ -752,6 +775,7 @@ impl Sharc {
 
     /// One multiplier operation (UM B.2.2): the register file result, if
     /// any.
+    #[inline(always)]
     fn mul(&mut self, op: MulOp, x40: u64, y40: u64) -> Option<u64> {
         let (x, y) = ((x40 >> 8) as u32, (y40 >> 8) as u32);
         match op {
@@ -815,6 +839,7 @@ impl Sharc {
 
     /// One shifter operation (UM B.2.3, §2.7): `n40` is Rn's old value
     /// (the OR forms' third input).
+    #[inline(always)]
     fn shift(&mut self, op: ShiftOp, x40: u64, y: ShiftY, n40: u64) -> Option<u64> {
         use ShiftOp::*;
         let (x, n) = ((x40 >> 8) as u32, (n40 >> 8) as u32);

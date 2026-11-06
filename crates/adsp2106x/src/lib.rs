@@ -13,6 +13,7 @@
 //! define decode to [`Op::Unknown`] (or [`Compute::Unknown`]) and are
 //! reported by the interpreter, never skipped.
 
+pub mod codegen;
 pub mod compute;
 pub mod cpu;
 pub mod float;

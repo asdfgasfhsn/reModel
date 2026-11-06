@@ -24,6 +24,8 @@ use crate::{decode, Addr, Insn, Modifier, Op, LCE, TRUE};
 use std::collections::VecDeque;
 
 mod exec;
+mod recomp;
+pub use recomp::{program_hash, program_image};
 
 /// Width of an external port access.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,6 +42,14 @@ pub enum Width {
 pub trait Bus {
     fn read(&mut self, addr: u32, width: Width) -> u64;
     fn write(&mut self, addr: u32, width: Width, v: u64);
+    /// Called by [`Sharc::run_bus`] (and recompiled programs' `run`)
+    /// after each instruction that ran: false stops the run there. The
+    /// host can look at or change the core here (its FLAG inputs, say),
+    /// as it could between calls to [`Sharc::step`].
+    #[inline(always)]
+    fn after_step(&mut self, _cpu: &mut Sharc) -> bool {
+        true
+    }
 }
 
 /// Why the core stopped.
@@ -300,6 +310,13 @@ pub struct Sharc {
     /// Executions per internal 48-bit word, block 0 then block 1.
     pub counts: Vec<u64>,
     decoded: Vec<Option<Insn>>,
+    /// Recompiled code (`recomp.rs`): per internal word, 0 if none, 1 if
+    /// compiled, 2 if compiled and since overwritten.
+    code: Vec<u8>,
+    /// Some compiled word has been overwritten.
+    code_dirty: bool,
+    /// Instructions recompiled code had none for, by address.
+    pub misses: std::collections::BTreeMap<u32, u64>,
 }
 
 impl Default for Sharc {
@@ -309,7 +326,7 @@ impl Default for Sharc {
 }
 
 /// Index of an internal 48-bit word in `counts` and the decode cache.
-fn word_index(addr: u32) -> Option<usize> {
+pub fn word_index(addr: u32) -> Option<usize> {
     let (b, g, r) = mem::locate(addr)?;
     (g < 5).then_some(b * mem::WORDS48 as usize + g * mem::ROWS + r)
 }
@@ -366,6 +383,9 @@ impl Sharc {
             steps: 0,
             counts: vec![0; 2 * mem::WORDS48 as usize],
             decoded: vec![None; 2 * mem::WORDS48 as usize],
+            code: Vec::new(),
+            code_dirty: false,
+            misses: Default::default(),
         };
         s.reset();
         s
@@ -442,10 +462,17 @@ impl Sharc {
         }
     }
 
+    #[inline]
     fn invalidate(&mut self, addr: u32, width48: bool) {
         for a in Internal::words48_touched(addr, width48).into_iter().flatten() {
             if let Some(k) = word_index(a) {
                 self.decoded[k] = None;
+                if let Some(c @ 1..) = self.code.get_mut(k) {
+                    // Self-modifying code: that word runs on the
+                    // interpreter from now on.
+                    *c = 2;
+                    self.code_dirty = true;
+                }
             }
         }
     }
@@ -458,6 +485,7 @@ impl Sharc {
     }
 
     /// ASTAT as read: FLAG3-0 configured as inputs show the pins.
+    #[inline(always)]
     pub fn astat(&self) -> u32 {
         let outputs = (self.mode2 >> FLG_OUT_SHIFT) & 0xf;
         let pins = (self.flag_in as u32 & !outputs) << FLG_SHIFT;
@@ -474,6 +502,7 @@ impl Sharc {
         self.stky
     }
 
+    #[inline(always)]
     fn update_stack_flags(&mut self) {
         let mut s = self.stky & !(PCFL | PCEM | SSEM | LSEM);
         if self.pc_stack.len() >= PC_STACK {
@@ -518,16 +547,19 @@ impl Sharc {
         self.mode1 = v;
     }
 
+    #[inline(always)]
     fn mrf(&self) -> usize {
         (self.mode1 & SRCU != 0) as usize
     }
 
     /// Evaluate condition code `c` of an `IF` (UM Table 3.2).
+    #[inline(always)]
     pub fn cond(&self, c: u8) -> bool {
         self.cond_with(c, self.astat(), self.mode1)
     }
 
     /// `cond` against a given ASTAT and MODE1.
+    #[inline(always)]
     fn cond_with(&self, c: u8, a: u32, mode1: u32) -> bool {
         let f = |bit: u32| a & bit != 0;
         let base = |c: u8| -> bool {
@@ -566,6 +598,7 @@ impl Sharc {
 
     /// Does loop termination code `t` hold (UM Table 3.2: LCE, FOREVER)?
     /// Arithmetic conditions are those at the start of the cycle.
+    #[inline(always)]
     fn term(&self, t: u8) -> bool {
         let (a, m) = self.fetch_status;
         match t & 31 {
@@ -575,6 +608,7 @@ impl Sharc {
         }
     }
 
+    #[inline(always)]
     pub fn curlcntr(&self) -> u32 {
         self.loop_stack.last().map_or(u32::MAX, |e| e.1)
     }
@@ -590,6 +624,7 @@ impl Sharc {
     // --- registers --------------------------------------------------------
 
     /// The 32-bit fixed-point field of a register file location.
+    #[inline(always)]
     pub fn rf(&self, n: u8) -> u32 {
         (self.r[n as usize & 15] >> 8) as u32
     }
@@ -600,6 +635,7 @@ impl Sharc {
 
     /// A universal register as the 40-bit DM data bus carries it: 32-bit
     /// registers in bits 39-8 (UM §4.4, §5.1.4).
+    #[inline(always)]
     pub fn ureg_read(&self, code: u8) -> u64 {
         let n = (code & 15) as usize;
         let sext24 = |v: u32| ((v << 8) as i32 >> 8) as u32;
@@ -643,6 +679,7 @@ impl Sharc {
     }
 
     /// Write a universal register from the 40-bit DM bus.
+    #[inline(always)]
     pub fn ureg_write(&mut self, code: u8, v: u64) {
         let n = (code & 15) as usize;
         let v32 = (v >> 8) as u32;
@@ -708,6 +745,7 @@ impl Sharc {
     // --- DAGs --------------------------------------------------------------
 
     /// An M register as a signed modifier (DAG2's are 24-bit).
+    #[inline(always)]
     fn m_value(&self, m: u8) -> i64 {
         let v = self.m[m as usize];
         if m >= 8 {
@@ -720,6 +758,7 @@ impl Sharc {
     /// Post-modify update of I`i` by `m`, with circular buffering when
     /// L`i` is nonzero (UM §4.3.2.1); I7 and I15 flag wrap-around
     /// (§4.3.2.3).
+    #[inline(always)]
     fn modify(&mut self, i: usize, m: i64) {
         let dag2 = i >= 8;
         let mask: u64 = if dag2 { 0xff_ffff } else { 0xffff_ffff };
@@ -746,6 +785,7 @@ impl Sharc {
     /// The address a DAG outputs for `a`, updating the I register for
     /// post-modify. I0/I8 outputs are bit-reversed in BR0/BR8 mode (UM
     /// §4.3.3.1).
+    #[inline(always)]
     fn dag_output(&mut self, a: &Addr) -> u32 {
         let i = a.i as usize;
         let m = match a.modifier {
@@ -770,6 +810,7 @@ impl Sharc {
     // --- memory -------------------------------------------------------------
 
     /// IMDW of the block `addr` is in: 40-bit data (UM §E.9).
+    #[inline(always)]
     fn data48(&self, addr: u32) -> bool {
         let block1 = addr >= mem::BLOCK1;
         self.iop[SYSCON as usize] >> (8 + block1 as u32) & 1 != 0
@@ -777,6 +818,7 @@ impl Sharc {
 
     /// Read for a register transfer: the register's new 40-bit value, or
     /// for PX all 48 bits (`px48`).
+    #[inline(always)]
     fn load(&mut self, pm: bool, addr: u32, px: bool, ext: &mut impl Bus) -> Result<Loaded, Fault> {
         Ok(match addr {
             0..=0xff => Loaded::Bus((self.iop_read(addr)? as u64) << 8),
@@ -815,6 +857,7 @@ impl Sharc {
 
     /// Store a register transfer: `v` is the 40-bit DM bus value, `px48`
     /// the whole of PX when PX is the register.
+    #[inline(always)]
     fn store(&mut self, pm: bool, addr: u32, v: u64, px48: Option<u64>, ext: &mut impl Bus) -> Result<(), Fault> {
         match addr {
             0..=0xff => self.iop_write(addr, (v >> 8) as u32)?,
@@ -850,6 +893,7 @@ impl Sharc {
     /// Transfer between memory and universal register `reg` through the
     /// DM bus (DAG1, `pm` false) or PM bus. For a store, `value` is the
     /// register's value read at the start of the instruction.
+    #[inline(always)]
     fn transfer(
         &mut self,
         pm: bool,
@@ -868,6 +912,7 @@ impl Sharc {
         }
     }
 
+    #[inline(always)]
     fn apply_load(&mut self, reg: u8, l: Loaded) {
         match l {
             Loaded::Bus(v) => self.ureg_write(reg, v),
@@ -895,6 +940,7 @@ impl Sharc {
 
     // --- sequencer ------------------------------------------------------------
 
+    #[inline(always)]
     fn push_pc(&mut self, v: u32) -> Result<(), Fault> {
         if self.pc_stack.len() >= PC_STACK {
             return Err(Fault::Stack { pc: self.pc, what: "PC stack overflow" });
@@ -904,12 +950,14 @@ impl Sharc {
         Ok(())
     }
 
+    #[inline(always)]
     fn pop_pc(&mut self) -> Option<u32> {
         let v = self.pc_stack.pop();
         self.update_stack_flags();
         v
     }
 
+    #[inline(always)]
     fn push_loop(&mut self, laddr: u32, count: u32) -> Result<(), Fault> {
         if self.loop_stack.len() >= LOOP_STACK {
             self.stky |= LSOV;
@@ -920,6 +968,7 @@ impl Sharc {
         Ok(())
     }
 
+    #[inline(always)]
     fn pop_loop(&mut self) {
         self.last_loopback = None;
         self.loop_stack.pop();
@@ -950,6 +999,7 @@ impl Sharc {
     /// the loop either goes back to its top (on the PC stack) or ends
     /// (popping the loop and PC stacks). The bool is true if it looped
     /// back.
+    #[inline(always)]
     fn next_after(&mut self, addr: u32) -> (u32, bool) {
         let Some(&(laddr, count)) = self.loop_stack.last() else { return (addr.wrapping_add(1), false) };
         if laddr_end(laddr) != addr {
@@ -1001,7 +1051,7 @@ impl Sharc {
 
     /// One clock of the timer, level-sensitive IRQs and the arithmetic
     /// exception interrupts, which follow STKY (UM §3.6.4, §3.7).
-    #[inline]
+    #[inline(always)]
     fn tick(&mut self) {
         if self.mode2 & TIMEN != 0 {
             if self.tcount <= 1 {
@@ -1052,11 +1102,18 @@ impl Sharc {
     /// Take a pending interrupt if there is one (UM §3.6): push the next
     /// instruction's address, and ASTAT/MODE1 for IRQ2-0, timer and
     /// VIRPT; the two words in the pipeline become NOPs.
-    #[inline]
+    #[inline(always)]
     fn take_interrupt(&mut self) -> Result<bool, Fault> {
-        if self.irptl & self.imask == 0 {
+        // Nothing to take: nothing latched and unmasked, or interrupts off
+        // (all a pending_irq would find).
+        if self.irptl & self.imask == 0 || (!self.booting && self.mode1 & IRPTEN == 0) {
             return Ok(false);
         }
+        self.take_pending()
+    }
+
+    #[inline(never)]
+    fn take_pending(&mut self) -> Result<bool, Fault> {
         let Some(k) = self.pending_irq() else { return Ok(false) };
         let ret = self.exec_slot.map_or(self.faddr, |s| s.0);
         // A squashed fetch that already looped back must not test again.
@@ -1107,33 +1164,46 @@ impl Sharc {
                     Err(f) => return Step::Fault(f),
                 }
             }
-            self.tick();
-            self.cycles += 1;
-            // The loop test of this cycle's fetch sees the status from
-            // before this cycle's instruction, but the loop stack after it
-            // (a DO's new loop applies to the word fetched as it executes,
-            // UM Figure 3.8).
-            self.fetch_status = (self.astat(), self.mode1);
-            let exec = self.exec_slot.take();
-            let executed = match exec {
-                Some((addr, _)) => {
-                    self.pc = addr;
-                    let r = self.fetch(addr, ext).and_then(|insn| self.exec(&insn, ext));
-                    if let Err(f) = r {
-                        return Step::Fault(f);
-                    }
-                    self.steps += 1;
-                    true
-                }
-                None => false,
+            self.begin_cycle();
+            let Some((addr, _)) = self.exec_slot.take() else {
+                self.fetch_stage(false, false);
+                continue;
             };
-            // Fetch stage. A non-delayed branch still fetches (and tests a
-            // loop end) before squashing the word.
-            let fetched = self.faddr;
-            let (succ, looped) = self.next_after(fetched);
-            self.exec_slot = self.decode_slot;
-            self.decode_slot = Some((fetched, looped));
-            self.faddr = succ;
+            self.pc = addr;
+            let r = self.fetch(addr, ext).and_then(|insn| self.exec(&insn, ext));
+            if let Err(f) = r {
+                return Step::Fault(f);
+            }
+            self.steps += 1;
+            self.fetch_stage(true, true);
+            return self.end_insn();
+        }
+    }
+
+    /// The start of a cycle: the timer and interrupt latches tick, and the
+    /// loop test of this cycle's fetch will see the status from before
+    /// this cycle's instruction, but the loop stack after it (a DO's new
+    /// loop applies to the word fetched as it executes, UM Figure 3.8).
+    #[inline(always)]
+    fn begin_cycle(&mut self) {
+        self.tick();
+        self.cycles += 1;
+        self.fetch_status = (self.astat(), self.mode1);
+    }
+
+    /// The fetch stage, after the cycle's instruction (if any) executed. A
+    /// non-delayed branch still fetches (and tests a loop end) before
+    /// squashing the word. `redirect` and `rebuild` say whether the
+    /// instruction could have branched or started a loop (they are false
+    /// for bubbles, and recompiled code knows them per instruction).
+    #[inline(always)]
+    fn fetch_stage(&mut self, redirect: bool, rebuild: bool) {
+        let fetched = self.faddr;
+        let (succ, looped) = self.next_after(fetched);
+        self.exec_slot = self.decode_slot;
+        self.decode_slot = Some((fetched, looped));
+        self.faddr = succ;
+        if redirect {
             if let Some((target, delayed)) = self.redirect.take() {
                 self.faddr = target & 0xff_ffff;
                 if !delayed {
@@ -1141,27 +1211,29 @@ impl Sharc {
                     self.decode_slot = None;
                 }
             }
-            if std::mem::take(&mut self.rebuild) {
-                // A one-instruction loop: its only word was fetched before
-                // the loop existed; fetch again through the loop logic.
-                if let Some((first, _)) = self.exec_slot {
-                    let (second, l1) = self.next_after(first);
-                    let (next, l2) = self.next_after(second);
-                    self.exec_slot = Some((first, l1));
-                    self.decode_slot = Some((second, l2));
-                    self.faddr = next;
-                }
-            }
-            if !executed {
-                continue;
-            }
-            if self.irq_hold > 0 {
-                self.irq_hold -= 1;
-            } else if let Err(f) = self.take_interrupt() {
-                return Step::Fault(f);
-            }
-            return Step::Ran;
         }
+        if rebuild && std::mem::take(&mut self.rebuild) {
+            // A one-instruction loop: its only word was fetched before
+            // the loop existed; fetch again through the loop logic.
+            if let Some((first, _)) = self.exec_slot {
+                let (second, l1) = self.next_after(first);
+                let (next, l2) = self.next_after(second);
+                self.exec_slot = Some((first, l1));
+                self.decode_slot = Some((second, l2));
+                self.faddr = next;
+            }
+        }
+    }
+
+    /// After an instruction: interrupts, unless a branch holds them off.
+    #[inline(always)]
+    fn end_insn(&mut self) -> Step {
+        if self.irq_hold > 0 {
+            self.irq_hold -= 1;
+        } else if let Err(f) = self.take_interrupt() {
+            return Step::Fault(f);
+        }
+        Step::Ran
     }
 
     /// How many times the internal word at `addr` has executed.
@@ -1181,14 +1253,16 @@ impl Sharc {
         if self.idle || self.mode2 & TIMEN != 0 || self.pending_irq().is_some() {
             return false;
         }
-        let Some(k) = word_index(self.pc) else { return false };
-        let Some(insn) = self.decoded[k] else { return false };
-        if insn.op == Op::Nop {
-            return self.nop_loop();
+        // (A NOP loop's words are all NOPs, so the two cases don't overlap.)
+        if self.nop_loop() {
+            return true;
         }
         if self.exec_slot.is_some() || self.decode_slot.is_some() || self.faddr != self.pc {
             return false;
         }
+        // Recompiled code doesn't fill the decode cache.
+        let Some(k) = word_index(self.pc) else { return false };
+        let insn = self.decoded[k].unwrap_or_else(|| decode(self.pc, self.mem.read48(self.pc)));
         matches!(insn.op, Op::Branch {
                 cond: 9..=12 | 25..=28,
                 call: false,
@@ -1218,6 +1292,18 @@ impl Sharc {
             return false;
         }
         body.into_iter().all(|a| decode(a, self.mem.read48(a)).op == Op::Nop)
+    }
+
+    /// [`step`](Sharc::step) until the bus's
+    /// [`after_step`](Bus::after_step) says to stop, or a step doesn't
+    /// run (IDLE or a fault).
+    pub fn run_bus<B: Bus>(&mut self, ext: &mut B) -> Step {
+        loop {
+            let r = self.step(ext);
+            if r != Step::Ran || !ext.after_step(self) {
+                return r;
+            }
+        }
     }
 
     /// Run up to `max` instructions; stops early on a fault or in IDLE.
@@ -1500,6 +1586,7 @@ impl state::State for Sharc {
         self.steps.save(w);
     }
 
+    #[inline(always)]
     fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
         self.mem.cols[0].load(r)?;
         self.mem.cols[1].load(r)?;
@@ -1556,6 +1643,10 @@ impl state::State for Sharc {
         self.redirect = None;
         self.rebuild = false;
         self.decoded.iter_mut().for_each(|d| *d = None);
+        // Memory changed under any recompiled code: the host attaches it
+        // again.
+        self.code.clear();
+        self.code_dirty = false;
         Ok(())
     }
 }

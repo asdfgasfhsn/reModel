@@ -1256,3 +1256,128 @@ fn save_state_round_trip() {
     assert_eq!(ta, tb);
     assert_eq!((a.r, a.mr, a.stky()), (b.r, b.mr, b.stky()));
 }
+
+// --- recompiled code (recomp.rs) ------------------------------------------------
+
+/// What a recompiled program's `step` does (codegen.rs), with each word
+/// decoded from `image`, as it was when compiled, rather than from memory.
+fn compiled_step(s: &mut Sharc, e: &mut Ext, image: &[u64]) -> Step {
+    let a = s.compiled_pc();
+    match a.checked_sub(0x2_0000).and_then(|k| image.get(k as usize)) {
+        Some(&w) => s.run_compiled(&decode(a, w), word_index(a).unwrap(), e),
+        None => s.step_uncompiled(e),
+    }
+}
+
+/// Run `prog` on the interpreter and as recompiled code side by side for
+/// `n` steps (or until IDLE): the whole state must match after every one.
+fn same_compiled(prog: &[u64], n: usize) -> Sharc {
+    let (mut a, mut ea) = boot(prog);
+    let (mut b, mut eb) = boot(prog);
+    let words: Vec<u32> = (0..prog.len() as u32).map(|k| 0x2_0000 + k).collect();
+    b.watch_code(&words, prog);
+    for k in 0..n {
+        let (ra, rb) = (a.step(&mut ea), compiled_step(&mut b, &mut eb, prog));
+        assert_eq!(ra, rb, "step {k}");
+        assert_eq!(a.digest(), b.digest(), "step {k}: pc {:#x} / {:#x}", a.pc, b.pc);
+        assert_eq!(state::to_bytes(&a), state::to_bytes(&b), "step {k}");
+        if ra != Step::Ran {
+            break;
+        }
+    }
+    b
+}
+
+#[test]
+fn recompiled_steps_match_the_interpreter() {
+    let inc = |r: u64| c(alu(INC, r, r, r));
+    let dec0 = c(alu(DEC, 0, 0, 0));
+    for n in [3u16, 2, 1, 5] {
+        same_compiled(&[do_lce(n, 1), inc(1), NOP], 12);
+        same_compiled(&[do_lce(n, 2), inc(1), inc(2), NOP], 16);
+        same_compiled(&[do_lce(n, 3), inc(1), mv(CURLCNTR, R2, 0), inc(3), NOP], 24);
+    }
+    same_compiled(&[ld(R0, 5), do_until(0, 1), dec0, NOP], 30);
+    same_compiled(&[ld(R0, 2), do_until(0, 2), dec0, NOP, NOP], 30);
+    same_compiled(&[ld(R0, 3), do_until(0, 3), dec0, NOP, NOP, NOP], 40);
+    same_compiled(
+        &[ld(R0, 3), do_until(31, 5), dec0, jump(0x2_0008, 0, false, false, true), NOP, NOP, NOP, NOP, NOP],
+        60,
+    );
+    same_compiled(
+        &[
+            do_lce(3, 3),
+            inc(1),
+            jump(0x2_0006, T, true, false, false),
+            inc(2),
+            jump(0x2_0008, T, false, false, false),
+            NOP,
+            inc(3),
+            rts(T, false, true),
+            NOP,
+        ],
+        60,
+    );
+    same_compiled(
+        &[
+            jump(0x2_0004, T, true, true, false),
+            inc(1),
+            inc(2),
+            jrel(T, 0, false, false, false, 0),
+            inc(3),
+            rts(T, true, false),
+            inc(4),
+            inc(5),
+        ],
+        20,
+    );
+    // Interrupts: a software one, the timer, one held off by a delayed
+    // branch.
+    let mut p = vec![ld(IMASKR, 1 << 28), ld(MODE1R, IRPTEN), ld(IRPTL, 1 << 28), inc(1), inc(2), IDLE];
+    p.resize(0x70, NOP);
+    p.extend([ld(5, 7), RTI]);
+    same_compiled(&p, 20);
+    let mut p = vec![
+        ld(TPERIOD, 3),
+        ld(TCOUNT, 3),
+        ld(IMASKR, 1 << IRQ_TMZH),
+        ld(MODE1R, IRPTEN | ALUSAT),
+        ld(MODE2R, 1 << 5),
+        NOP,
+        NOP,
+        NOP,
+        IDLE,
+    ];
+    p.resize(0x10, NOP);
+    p.extend([ld(MODE1R, 0), ld(ASTATR, AZ), inc(6), ld(MODE2R, 0), RTI]);
+    same_compiled(&p, 40);
+    let mut p =
+        vec![ld(IMASKR, 1 << 28), ld(MODE1R, IRPTEN), jump(0x2_0006, T, false, true, false), ld(IRPTL, 1 << 28)];
+    p.extend([NOP, NOP, NOP]);
+    p.resize(0x70, NOP);
+    p.extend([RTI]);
+    same_compiled(&p, 20);
+}
+
+#[test]
+fn overwritten_compiled_words_run_on_the_interpreter() {
+    // The program writes INC R2 over its own word 0x20007 (an INC R1)
+    // through PX on the PM bus, then runs it: R2 is incremented, not R1.
+    let new = c(alu(INC, 2, 2, 2));
+    let p = vec![
+        ld(0x18, 0x2_0007), // I8
+        ld(0x28, 0),        // M8
+        ld(0xdd, (new >> 16) as u32),
+        ld(0xdc, (new & 0xffff) as u32),
+        t3(true, 0, 0, true, true, PXR, 0), // PM(I8,M8) = PX
+        NOP,
+        NOP,
+        c(alu(INC, 1, 1, 1)),
+        NOP,
+    ];
+    let s = same_compiled(&p, 9);
+    assert_eq!(s.mem.read48(0x2_0007), new);
+    assert_eq!(s.overwritten_code(), [0x2_0007]);
+    assert_eq!(s.misses.get(&0x2_0007), Some(&1));
+    assert_eq!((s.rf(1), s.rf(2)), (0, 1));
+}

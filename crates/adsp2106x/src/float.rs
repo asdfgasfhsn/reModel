@@ -175,9 +175,62 @@ pub fn pack(u: Unpacked) -> (u64, Flags) {
     }
 }
 
+/// The 32-bit (RND32) fast path shared by `add` and `mul`: `r` is the
+/// exact result of an operation on two normal single-precision inputs,
+/// computed in f64 (which holds it exactly). Rounds it to 23 fraction bits
+/// as `round_pack` would; `None` if the result is zero, or would overflow
+/// or underflow, for the exact path to handle.
+#[inline(always)]
+fn single(r: f64, trunc: bool) -> Option<(u64, Flags)> {
+    let bits = r.to_bits();
+    let sign = bits >> 63 != 0;
+    let mag = bits & !(1 << 63);
+    if mag == 0 {
+        return None;
+    }
+    // Drop 29 of f64's 52 fraction bits, to nearest even or toward zero;
+    // a carry out of the fraction lands in the exponent, as it should.
+    let rounded = if trunc { mag >> 29 } else { (mag + ((1 << 28) - 1) + ((mag >> 29) & 1)) >> 29 };
+    let e = (rounded >> 23) as i32 - 1023;
+    if !(-126..=127).contains(&e) {
+        return None;
+    }
+    let v32 = (sign as u64) << 31 | ((e + 127) as u64) << 23 | (rounded & 0x7f_ffff);
+    Some((v32 << 8, Flags { neg: sign, ..Flags::default() }))
+}
+
+/// A normal single-precision value's f32 bits from a 40-bit register (RND32
+/// inputs ignore the low 8 bits), or None for zero, denormal, Inf, NaN.
+#[inline(always)]
+fn normal32(v: u64) -> Option<u32> {
+    let b = (v >> 8) as u32;
+    let e = (b >> 23) & 0xff;
+    (e != 0 && e != 0xff).then_some(b)
+}
+
 /// `x + y` (`sub`: `x - y`), halved if `half` ((Fx+Fy)/2: the exponent is
 /// decremented before rounding, UM B-28).
+#[inline]
 pub fn add(x: u64, y: u64, sub: bool, half: bool, m: Mode) -> (u64, Flags) {
+    if m.rnd32 && !half {
+        if let (Some(a), Some(b)) = (normal32(x), normal32(y)) {
+            // Exact in f64 while the exponents are at most 28 apart: the
+            // aligned sum then has at most 53 significant bits.
+            let d = ((a >> 23) & 0xff) as i32 - ((b >> 23) & 0xff) as i32;
+            if d.abs() <= 28 {
+                let (fa, fb) = (f32::from_bits(a) as f64, f32::from_bits(b) as f64);
+                let r = if sub { fa - fb } else { fa + fb };
+                if let Some(v) = single(r, m.trunc) {
+                    return v;
+                }
+            }
+        }
+    }
+    add_exact(x, y, sub, half, m)
+}
+
+#[inline(never)]
+fn add_exact(x: u64, y: u64, sub: bool, half: bool, m: Mode) -> (u64, Flags) {
     let (a, mut b) = (input(x, m), input(y, m));
     if sub {
         b.sign = !b.sign;
@@ -225,7 +278,21 @@ pub fn add(x: u64, y: u64, sub: bool, half: bool, m: Mode) -> (u64, Flags) {
 }
 
 /// `x * y` (UM B-53).
+#[inline]
 pub fn mul(x: u64, y: u64, m: Mode) -> (u64, Flags) {
+    if m.rnd32 {
+        if let (Some(a), Some(b)) = (normal32(x), normal32(y)) {
+            // Two 24-bit significands: the product is exact in f64.
+            if let Some(v) = single(f32::from_bits(a) as f64 * f32::from_bits(b) as f64, m.trunc) {
+                return v;
+            }
+        }
+    }
+    mul_exact(x, y, m)
+}
+
+#[inline(never)]
+fn mul_exact(x: u64, y: u64, m: Mode) -> (u64, Flags) {
     let (a, b) = (input(x, m), input(y, m));
     let sign = a.sign != b.sign;
     match (a.class, b.class) {
@@ -463,6 +530,44 @@ pub fn funpack(v: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The f64 fast paths of `add` and `mul` agree with the exact ones bit
+    /// for bit, flags included, over random and edge-case inputs.
+    #[test]
+    fn single_precision_fast_paths_match_exact() {
+        let mut seed = 0x1234_5678_9abc_def1u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let edge = |r: u64, k: u64| -> u64 {
+            // Exponents near the ends of the range, near each other, and
+            // anything; low 8 bits random (RND32 ignores them).
+            let e = match k % 4 {
+                0 => r >> 40 & 0xff,
+                1 => 1 + (r >> 40) % 8,
+                2 => 0xfe - (r >> 40) % 8,
+                _ => 0x7f + (r >> 40) % 30 - 15,
+            };
+            (r & 1 << 39) | e << 31 | (r & 0x7fff_ffff)
+        };
+        for mode in [Mode { trunc: true, rnd32: true }, Mode { trunc: false, rnd32: true }] {
+            for i in 0..400_000u64 {
+                let (x, y) = (edge(next(), i), edge(next(), i / 4));
+                let y = if i % 7 == 0 { x ^ (next() & 0xffff) } else { y };
+                for sub in [false, true] {
+                    assert_eq!(
+                        add(x, y, sub, false, mode),
+                        add_exact(x, y, sub, false, mode),
+                        "{x:#x} {y:#x} {sub} {mode:?}"
+                    );
+                }
+                assert_eq!(mul(x, y, mode), mul_exact(x, y, mode), "{x:#x} * {y:#x} {mode:?}");
+            }
+        }
+    }
 
     const RN40: Mode = Mode { trunc: false, rnd32: false };
     const RN32: Mode = Mode { trunc: false, rnd32: true };
