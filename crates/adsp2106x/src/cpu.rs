@@ -20,7 +20,7 @@
 //!   branch or interrupt.
 
 use crate::mem::{self, Internal};
-use crate::{decode, Addr, Insn, Modifier, LCE, TRUE};
+use crate::{decode, Addr, Insn, Modifier, Op, LCE, TRUE};
 use std::collections::VecDeque;
 
 mod exec;
@@ -1011,17 +1011,20 @@ impl Sharc {
                 self.tcount -= 1;
             }
         }
+        // Latch, as `latch` does for each, every request below at once.
+        let mut req = 0;
         for line in 0..3 {
             if self.irq_lines[line] && self.mode2 >> line & 1 == 0 {
-                self.latch(8 - line as u32);
+                req |= 1 << (8 - line);
             }
         }
         let s = self.stky;
         for (bits, irq) in [(AOS | MOS, 24), (AVS | MVS, 25), (AUS | MUS, 26), (AIS | MIS, 27)] {
             if s & bits != 0 {
-                self.latch(irq);
+                req |= 1 << irq;
             }
         }
+        self.irptl |= req & !self.imaskp;
     }
 
     /// The highest-priority interrupt that can be taken now (UM §3.6.5).
@@ -1151,6 +1154,62 @@ impl Sharc {
             }
             return Step::Ran;
         }
+    }
+
+    /// How many times the internal word at `addr` has executed.
+    pub fn count_at(&self, addr: u32) -> Option<u64> {
+        word_index(addr).map(|k| self.counts[k])
+    }
+
+    /// True while the core spins on a flag input: the last instruction
+    /// was a non-delayed `IF [NOT] FLAGn_IN JUMP` to itself, with no
+    /// compute, and it was taken. Until a FLAG input changes (or an
+    /// interrupt is latched that can be taken), stepping only repeats it,
+    /// so a host may stop stepping. The timer must be off: it would count
+    /// meanwhile.
+    /// Also true inside a `DO ... UNTIL [NOT] FLAGn_IN` (or `FOREVER`)
+    /// loop of at most four NOPs.
+    pub fn spinning(&self) -> bool {
+        if self.idle || self.mode2 & TIMEN != 0 || self.pending_irq().is_some() {
+            return false;
+        }
+        let Some(k) = word_index(self.pc) else { return false };
+        let Some(insn) = self.decoded[k] else { return false };
+        if insn.op == Op::Nop {
+            return self.nop_loop();
+        }
+        if self.exec_slot.is_some() || self.decode_slot.is_some() || self.faddr != self.pc {
+            return false;
+        }
+        matches!(insn.op, Op::Branch {
+                cond: 9..=12 | 25..=28,
+                call: false,
+                target,
+                delayed: false,
+                loop_abort: false,
+                compute: crate::Compute::None,
+                ..
+            } if target.resolve(self.pc) == Some(self.pc))
+    }
+
+    /// The innermost loop is a short run of NOPs ending on a flag input
+    /// (or never), and the pipeline holds only its words.
+    fn nop_loop(&self) -> bool {
+        let Some(&(laddr, _)) = self.loop_stack.last() else { return false };
+        let term = laddr_term(laddr) & 31;
+        if laddr_counter(laddr) || !matches!(term, 9..=12 | 25..=28 | TRUE) {
+            return false;
+        }
+        let (Some(&start), end) = (self.pc_stack.last(), laddr_end(laddr)) else { return false };
+        if end < start || end - start >= 4 {
+            return false;
+        }
+        let body = start..=end;
+        let in_body = |s: Slot| s.is_none_or(|(a, _)| body.contains(&a));
+        if !body.contains(&self.pc) || !in_body(self.exec_slot) || !in_body(self.decode_slot) {
+            return false;
+        }
+        body.into_iter().all(|a| decode(a, self.mem.read48(a)).op == Op::Nop)
     }
 
     /// Run up to `max` instructions; stops early on a fault or in IDLE.

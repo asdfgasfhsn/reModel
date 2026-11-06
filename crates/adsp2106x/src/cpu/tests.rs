@@ -1200,6 +1200,42 @@ fn flags_as_outputs() {
 }
 
 #[test]
+fn spinning_on_flag_inputs() {
+    // The two waits of the 2B programs: `IF FLAG0_IN JUMP (PC,0)`, and a
+    // one-NOP `DO ... UNTIL NOT FLAG0_IN`.
+    let p = vec![
+        jrel(9, 0, false, false, false, 0),
+        do_until(25, 1),
+        NOP,
+        c(alu(INC, 1, 1, 1)),
+        jump(0x2_0003, T, false, false, false),
+    ];
+    let (mut s, mut e) = boot(&p);
+    s.flag_in = 1;
+    trace(&mut s, &mut e, 1);
+    assert!(s.spinning(), "taken jump to itself on FLAG0");
+    s.flag_in = 0;
+    trace(&mut s, &mut e, 1);
+    assert!(!s.spinning(), "fell through");
+    s.flag_in = 1;
+    trace(&mut s, &mut e, 2);
+    assert_eq!(s.pc, 0x2_0002);
+    assert!(s.spinning(), "inside the NOP loop");
+    s.flag_in = 0;
+    let t = trace(&mut s, &mut e, 4);
+    assert_eq!(t[t.len() - 1], 3, "left the loop: {t:?}");
+    assert!(!s.spinning());
+    // An unmasked, enabled interrupt that is latched ends a spin.
+    let (mut s, mut e) = boot(&[jrel(9, 0, false, false, false, 0)]);
+    s.flag_in = 1;
+    trace(&mut s, &mut e, 1);
+    s.set_mode1(IRPTEN);
+    s.imask |= 1 << IRQ_VIRPT;
+    s.latch(IRQ_VIRPT);
+    assert!(!s.spinning());
+}
+
+#[test]
 fn save_state_round_trip() {
     let p = vec![
         ld(R0, 3),
