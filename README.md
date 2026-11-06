@@ -243,9 +243,18 @@ From throwaway boots of `srallyc` (2A), `overrevb` and `sgt24h` (2B) on the
   halves to `0x884000` / `0x804000`. The sound UART is at `0x9C0000`
   (2C: `0x1C80000`). `overrevb` reaches attract mode on the 2C map with
   small stubs; both Jaleco games upload the same two SHARC programs.
-- *Confirmed (`sgt24h`):* boot clears work RAM from inside a called
-  function and then returns, which works only if the i960 keeps recent
-  register frames on-chip, as the i960KB does (general knowledge).
+- *Confirmed (`sgt24h`):* boot clears work RAM (`0x500000-0x57FFFF`,
+  its callers' stack frames included) from inside the function called at
+  `0x710`, then returns. That works only because the i960KB keeps recent
+  callers' local registers on-chip: its data sheet says the cache "holds up
+  to four local register frames" (the current one and three callers'), and
+  the oldest is written to memory only when a fifth procedure is entered;
+  `flushreg` writes the cached sets out (i960 Jx manual; the KA/KB
+  reference wasn't to hand). With the cache modelled (`i960::cpu::LocalCache`)
+  the unpatched ROM boots past `0x710` to "CHECKING NETWORK NOW", "STAND
+  ALONE" and "INSERT COIN" on the 2C model with the 2B stubs; without it,
+  the return reloads the zeroed frame and faults at IP 0. That it is
+  exactly three cached sets is the data sheet's, not tested by the game.
 
 ## What's known about `topskatr`
 

@@ -5,9 +5,12 @@
 //!
 //! Simplifications, chosen so observable behaviour matches what software can
 //! see:
-//! - The local-register cache is write-through with zero entries: every call
-//!   spills the caller's r0-r15 to its frame, every return reloads them. Code
-//!   can only tell the difference by reading a frame without `flushreg`.
+//! - The local-register cache ([`LocalCache`]) holds the three most recent
+//!   callers' r0-r15 and returns restore from it, as on the KB, but a call
+//!   also writes the caller's set to its frame in memory straight away (the
+//!   chip only does so when the cache overflows or on `flushreg`). Software
+//!   can only tell by reading a cached frame from memory, whose contents the
+//!   architecture leaves undefined until `flushreg`.
 //! - fp0-fp3 hold `f64` rather than 80-bit extended values.
 //! - Faults stop execution with `Stop::Fault` instead of entering the fault
 //!   table; the handlers in this ROM only print a message and halt.
@@ -108,6 +111,8 @@ pub struct Cpu {
     /// Pending interrupt vectors, one bit each.
     pending: [u32; 8],
     pub icount: u64,
+    /// Saved local-register sets of the most recent callers.
+    pub locals: LocalCache,
     /// IAC messages other than the ones handled here, for diagnostics.
     pub unhandled_iac: Vec<[u32; 4]>,
     icache: Vec<Option<Rc<Insn>>>,
@@ -133,6 +138,7 @@ impl Cpu {
             icr: ICR_RESET,
             pending: [0; 8],
             icount: 0,
+            locals: LocalCache::default(),
             unhandled_iac: Vec::new(),
             icache: Vec::new(),
         }
@@ -157,6 +163,8 @@ impl Cpu {
         self.r[FP] = bus.read32(prcb + 24);
         self.r[SP] = self.r[FP] + 64;
         self.r[PFP] = 0;
+        // Assumed (no source to hand): a reinit discards cached frames.
+        self.locals = LocalCache::default();
     }
 
     pub fn priority(&self) -> u32 {
@@ -227,13 +235,13 @@ impl Cpu {
         self.ip = handler;
     }
 
-    /// Spill the current frame and open a new one at `fp`.
+    /// Save the current frame's locals in the cache and open a new frame
+    /// at `fp`.
     fn push_frame(&mut self, bus: &mut impl Bus, ret: u32, fp: u32, ret_type: u32) {
         self.r[RIP] = ret;
         let old = self.r[FP];
-        for i in 0..16 {
-            bus.write32(old + 4 * i as u32, self.r[i]);
-        }
+        let locals: [u32; 16] = self.r[..16].try_into().unwrap();
+        self.locals.push(bus, old, locals);
         self.r[PFP] = old | ret_type;
         self.r[FP] = fp;
         self.r[SP] = fp + 64;
@@ -271,22 +279,23 @@ impl Cpu {
 
     #[doc(hidden)]
     #[inline(always)]
-    pub fn ret(&mut self, bus: &mut impl Bus) -> Result<(), FaultKind> {
+    pub fn ret<B: Bus>(&mut self, bus: &mut B) -> Result<(), FaultKind> {
         let ret_type = self.r[PFP] & 7;
         let frame = self.r[FP];
-        let restore = |cpu: &mut Self, bus: &mut dyn FnMut(u32) -> u32| {
+        // The previous frame becomes current: its locals come from the
+        // cache, or from its frame in memory if they were spilled.
+        let restore = |cpu: &mut Self, bus: &mut B| {
             cpu.r[FP] = cpu.r[PFP] & !63;
-            for i in 0..16 {
-                cpu.r[i] = bus(cpu.r[FP] + 4 * i as u32);
-            }
+            let locals = cpu.locals.pop(bus, cpu.r[FP]);
+            cpu.r[..16].copy_from_slice(&locals);
             cpu.ip = cpu.r[RIP];
         };
         match ret_type {
-            0 => restore(self, &mut |a| bus.read32(a)),
+            0 => restore(self, bus),
             1 | 7 => {
                 let pc = bus.read32(frame - 16);
                 let ac = bus.read32(frame - 12);
-                restore(self, &mut |a| bus.read32(a));
+                restore(self, bus);
                 self.ac = ac;
                 // Only supervisor code may restore the full process controls.
                 if self.pc & PC_SUPERVISOR != 0 {
@@ -295,7 +304,7 @@ impl Cpu {
                 self.check_interrupts(bus);
             }
             2 | 3 => {
-                restore(self, &mut |a| bus.read32(a));
+                restore(self, bus);
                 if self.pc & PC_SUPERVISOR != 0 {
                     self.pc = (self.pc & !(PC_SUPERVISOR | PC_TRACE)) | (ret_type & 1);
                 }
@@ -713,7 +722,8 @@ impl Cpu {
                 let n = s1();
                 self.calls(bus, n, next)?
             }
-            0x66b | 0x66c | 0x66d | 0x66f => {}
+            0x66d => self.locals.flush(bus),
+            0x66b | 0x66c | 0x66f => {}
             0x670 => {
                 let v = s1() as u64 * s2() as u64;
                 let d = Self::reg_index(&ops[2]);
@@ -948,6 +958,96 @@ impl Cpu {
     }
 }
 
+/// The on-chip local-register cache.
+///
+/// What it models (Intel 80960KB data sheet, "Multiple Register Sets";
+/// i960 Jx Microprocessor Developer's Manual, ch. 7 and `flushreg`):
+/// - The 80960KB "holds up to four local register frames", so "up to three
+///   procedure calls can be made without having to access the procedure
+///   stack resident in memory"; when another is called "the 80960KB moves
+///   the oldest local register set in the stack-frame cache to a procedure
+///   stack in memory" (80960KB data sheet). One frame is the current
+///   procedure's, so three callers' sets are cached here.
+/// - A call (and an interrupt, an implicit call) pushes the caller's r0-r15;
+///   a return pops the newest set, or reads the frame from memory if none
+///   is cached (it was spilled, or `flushreg` ran).
+/// - `flushreg` "copies the contents of every cached register set, except
+///   the current set, to its associated stack frame in memory" and marks
+///   the cache purged (i960 Jx manual, `flushreg`; assumed the same on the
+///   KB, which shares the architecture).
+/// - Like the hardware as documented, it is a stack, not tagged by address:
+///   a store to a cached frame in memory doesn't change the set, and code
+///   that changes a caller's PFP must `flushreg` first. `sgt24h` relies on
+///   the first: it clears work RAM, its own callers' frames included, from
+///   inside a call and then returns.
+///
+/// Not modelled: memory is also written when a set is pushed
+/// ([`WRITE_THROUGH`]), so RAM, and the state hash over it, is what it was
+/// before the cache was modelled. Reading a cached frame from memory, the
+/// only way to tell, is undefined by the architecture until `flushreg`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LocalCache {
+    /// Frame address and r0-r15 of each cached set, oldest first.
+    sets: [(u32, [u32; 16]); CACHED_SETS],
+    len: usize,
+}
+
+/// Cached caller frames: the KB's four sets less the current procedure's.
+pub const CACHED_SETS: usize = 3;
+
+/// Also write each pushed set to its frame at once. Measured on the eight
+/// supported games' coin-start runs, false (write-back only, as the chip
+/// does) leaves every game's behaviour unchanged (same report, same final
+/// IP) but changes the state hash: 100-200 words of dead stack frames in
+/// work RAM hold older contents.
+const WRITE_THROUGH: bool = true;
+
+impl LocalCache {
+    /// Cached sets, oldest first.
+    pub fn sets(&self) -> &[(u32, [u32; 16])] {
+        &self.sets[..self.len]
+    }
+
+    #[inline(always)]
+    fn push(&mut self, bus: &mut impl Bus, fp: u32, locals: [u32; 16]) {
+        if self.len == CACHED_SETS {
+            let (old_fp, old) = self.sets[0];
+            write_frame(bus, old_fp, &old);
+            self.sets.rotate_left(1);
+            self.len -= 1;
+        }
+        self.sets[self.len] = (fp, locals);
+        self.len += 1;
+        if WRITE_THROUGH {
+            write_frame(bus, fp, &locals);
+        }
+    }
+
+    #[inline(always)]
+    fn pop(&mut self, bus: &mut impl Bus, fp: u32) -> [u32; 16] {
+        if self.len > 0 {
+            self.len -= 1;
+            return self.sets[self.len].1;
+        }
+        std::array::from_fn(|i| bus.read32(fp + 4 * i as u32))
+    }
+
+    fn flush(&mut self, bus: &mut impl Bus) {
+        for (fp, locals) in &self.sets[..self.len] {
+            write_frame(bus, *fp, locals);
+        }
+        self.len = 0;
+    }
+}
+
+fn write_frame(bus: &mut impl Bus, fp: u32, locals: &[u32; 16]) {
+    for (i, &v) in locals.iter().enumerate() {
+        bus.write32(fp + 4 * i as u32, v);
+    }
+}
+
+state::fields!(LocalCache { sets, len });
+
 /// 80-bit extended real (in three registers: mantissa lo, hi, sign/exp) to f64.
 fn ext80_to_f64(lo: u32, hi: u32, se: u32) -> f64 {
     let mant = ((hi as u64) << 32) | lo as u64;
@@ -986,7 +1086,7 @@ fn f64_to_ext80(v: f64) -> (u32, u32, u32) {
 
 // Save states: the decoded-instruction cache and diagnostics are rebuilt or
 // dropped.
-state::fields!(Cpu { r, fpr, ip, ac, pc, tc, sat, prcb, icr, pending, icount });
+state::fields!(Cpu { r, fpr, ip, ac, pc, tc, sat, prcb, icr, pending, icount, locals });
 
 #[cfg(test)]
 mod tests;

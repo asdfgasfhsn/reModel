@@ -126,6 +126,53 @@ fn call_preserves_caller_locals() {
     assert_eq!(cpu.r[SP], 0x8040);
 }
 
+// The callee overwrites the caller's register save area (as sgt24h's boot
+// does when it clears work RAM); the caller's locals come back from the
+// on-chip cache regardless.
+#[test]
+fn return_restores_cached_frame_not_memory() {
+    let prog = [mov_lit(7, R4), ctrl(0x09, 0x1004, 0x1100), reg(0x5cc, R4, 0, G1, false)];
+    let (mut cpu, mut ram) = setup(&prog);
+    let st = mem_abs(0x92, G0, 0x8010); // st g0 (= 0), caller's r4 slot
+    ram.load(0x1100, &[st[0], st[1], RET]);
+    run(&mut cpu, &mut ram, 5);
+    assert_eq!(cpu.r[G1 as usize], 7);
+    assert!(cpu.locals.sets().is_empty());
+}
+
+// Four nested calls overflow the three cached sets: the oldest (the
+// outermost caller's) goes to memory and returns from there.
+#[test]
+fn fourth_nested_call_spills_oldest_frame() {
+    let prog = [mov_lit(7, R4), ctrl(0x09, 0x1004, 0x1100), reg(0x5cc, R4, 0, G1, false)];
+    let (mut cpu, mut ram) = setup(&prog);
+    ram.load(0x1100, &[ctrl(0x09, 0x1100, 0x1200), RET]);
+    ram.load(0x1200, &[ctrl(0x09, 0x1200, 0x1300), RET]);
+    ram.load(0x1300, &[ctrl(0x09, 0x1300, 0x1400), RET]);
+    let st = mem_abs(0x92, G0, 0x8010);
+    ram.load(0x1400, &[st[0], st[1], RET]);
+    run(&mut cpu, &mut ram, 5);
+    assert_eq!(cpu.locals.sets().iter().map(|s| s.0).collect::<Vec<_>>(), [0x8040, 0x8080, 0x80c0]);
+    run(&mut cpu, &mut ram, 6);
+    assert_eq!(cpu.r[G1 as usize], 0, "spilled frame reloaded from memory");
+    assert_eq!(cpu.r[FP], 0x8000);
+}
+
+// `flushreg` writes the cached sets to memory and empties the cache, so a
+// change to a saved frame made after it takes effect.
+#[test]
+fn flushreg_spills_cached_frames() {
+    let prog = [mov_lit(7, R4), ctrl(0x09, 0x1004, 0x1100), reg(0x5cc, R4, 0, G1, false)];
+    let (mut cpu, mut ram) = setup(&prog);
+    let st = mem_abs(0x92, G0, 0x8010);
+    ram.load(0x1100, &[reg(0x66d, 0, 0, 0, false), st[0], st[1], RET]);
+    run(&mut cpu, &mut ram, 3);
+    assert!(cpu.locals.sets().is_empty());
+    assert_eq!(ram.fetch(0x8010), Some(7), "flushed to the frame");
+    run(&mut cpu, &mut ram, 3);
+    assert_eq!(cpu.r[G1 as usize], 0);
+}
+
 #[test]
 fn bal_links_through_g14() {
     let prog = [ctrl(0x0b, 0x1000, 0x1100), mov_lit(1, G0)];

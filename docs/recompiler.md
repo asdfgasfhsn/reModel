@@ -124,7 +124,9 @@ and floating-point ones, a call to the interpreter's `Cpu::exec` with the
 decoded instruction as a constant. In `topskatr`, 96% of the 53,000
 instructions are translated. Compares, condition tests, `call` and `ret`
 use the interpreter's own helpers, so frame and flag behaviour can't
-drift.
+drift; that includes the on-chip local-register cache (`LocalCache`: the
+KB's three cached caller frames, spilled on overflow and by `flushreg`),
+which lives in `Cpu` and so is the same state for both.
 
 Not every instruction that "falls through" really does. A `synmovq` to the
 IAC port can reinitialise the processor at a new IP, and `modpc` can let an
@@ -144,7 +146,8 @@ matches.
 **Checking.** `make lockstep RECOMP=1` boots two machines, one recompiled
 and one interpreted, runs the first a block at a time and the second the
 same number of instructions, and stops at the first block after which
-registers or flags differ, printing the block and the registers involved.
+registers, flags or cached register frames differ, printing the block and
+the registers involved.
 
 ## MB86235 (`crates/mb86235/src/codegen.rs`)
 

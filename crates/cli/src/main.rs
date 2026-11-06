@@ -599,7 +599,14 @@ fn main() -> ExitCode {
                     b = reference.step();
                 }
                 let (n, r) = (&native.cpu, &reference.cpu);
-                if a.is_err() || b.is_err() || n.r != r.r || n.ip != r.ip || n.ac != r.ac || n.pc != r.pc {
+                if a.is_err()
+                    || b.is_err()
+                    || n.r != r.r
+                    || n.ip != r.ip
+                    || n.ac != r.ac
+                    || n.pc != r.pc
+                    || n.locals != r.locals
+                {
                     println!("diverged after {} instructions, in the block at {ip:#x}:", r.icount);
                     let mut pc = ip;
                     for _ in 0..a.as_ref().map_or(1, |&n| n) {
@@ -612,6 +619,10 @@ fn main() -> ExitCode {
                         "  ip {:#x} / {:#x}  ac {:#x} / {:#x}  pc {:#x} / {:#x}",
                         n.ip, r.ip, n.ac, r.ac, n.pc, r.pc
                     );
+                    if n.locals != r.locals {
+                        println!("  cached frames: recompiled {:x?}", n.locals.sets());
+                        println!("               interpreter {:x?}", r.locals.sets());
+                    }
                     for (i, ((&was, &got), &want)) in before.iter().zip(&n.r).zip(&r.r).enumerate() {
                         if got != want || was != want {
                             let name = i960::reg_name(i as u8);
