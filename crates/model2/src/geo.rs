@@ -1,10 +1,35 @@
-//! Model 2B/2C geometrizer: a second MB86235 running a program the game
-//! uploads, fed with a display list from buffer RAM once per frame. Its
-//! output FIFO is the command stream for the fixed-function rasteriser.
-//! Protocol per docs/hw/geometrizer.md sections 1-2.
+//! Model 2B/2C geometrizer: a DSP running a program the game uploads,
+//! fed with a display list from buffer RAM once per frame. Its output FIFO
+//! is the command stream for the fixed-function rasteriser. On 2C it is a
+//! second MB86235 (protocol per docs/hw/geometrizer.md sections 1-2); on
+//! 2B an ADSP-21062 SHARC, booted through its host interface, whose
+//! program emits the same stream (docs/hw/model2b.md).
 
+use adsp2106x::cpu::{Bus as SharcBus, Sharc, Step as SharcStep, Width};
 use mb86235::cpu::{External, Step, Tgp};
 use std::collections::BTreeMap;
+
+/// The geometrizer's processor, which sets how it is programmed and fed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Core {
+    /// Model 2C: an MB86235, its program uploaded as 64-bit words.
+    Tgp,
+    /// Model 2B: an ADSP-21062 SHARC, booted through its IOP registers.
+    Sharc,
+}
+
+impl Core {
+    pub fn of(board: romset::Board) -> Self {
+        match board {
+            romset::Board::Model2B => Core::Sharc,
+            _ => Core::Tgp,
+        }
+    }
+}
+
+/// IOP register number of EPB0, the SHARC's DMA buffer a host boots it
+/// through (the `0x804000` port during an upload).
+const EPB0: u32 = adsp2106x::cpu::EPB0;
 
 /// Cap on list words streamed per frame (MAME stops after 0x8000 commands;
 /// this bounds words, which is looser).
@@ -27,6 +52,9 @@ const RASTER_NOP: u32 = 0xff00_0000;
 /// Steps with no input consumed and no output produced after which the
 /// program is taken to be idle (finished the list, waiting for F0).
 const IDLE_STEPS: u64 = 4096;
+/// Most SHARC instructions the frame-start pulse may take before the
+/// program waits for FLAG0 to fall.
+const SHARC_PULSE_STEPS: u64 = 4096;
 /// Geometrizer PCs kept for the first-error dump.
 const PC_TRACE_LEN: usize = 4096;
 
@@ -65,11 +93,99 @@ impl External for GeoExt<'_> {
     }
 }
 
-/// The geometrizer's TGP and everything it owns. Runs a frame at a time,
+/// The 2B geometrizer SHARC's external bus (from its program): the list
+/// FIFO at `0x400000`, the rasteriser FIFO at `0x410000`, polygon RAM
+/// writes at `0x420000 + address`, and polygon memory reads through an
+/// address register at `0x430000` with the data at `0x430001`. Its fast
+/// polygon RAM (model addresses with bit 24 set) is the SHARC's own
+/// internal memory and never reaches the bus.
+struct SharcGeoBus<'a> {
+    poly: GeoExt<'a>,
+    /// Polygon memory address register (`0x430000`).
+    latch: &'a mut u32,
+    list: ListDma<'a>,
+    out: &'a mut Vec<u32>,
+    /// Set by a list read or a rasteriser word other than a NOP: the
+    /// program is still working on the frame.
+    active: &'a mut bool,
+    other: &'a mut BTreeMap<u32, u64>,
+}
+
+/// The list DMA: buffer RAM from the read pointer, following jump words.
+struct ListDma<'a> {
+    buffer: &'a [u8],
+    jumps: &'a [u32],
+    pos: usize,
+    words: &'a mut usize,
+    fed: &'a mut Vec<u32>,
+}
+
+impl ListDma<'_> {
+    /// The next list word, or None once the frame's cap is reached.
+    fn next(&mut self) -> Option<u32> {
+        let mask = self.buffer.len() - 1;
+        while *self.words < MAX_LIST_WORDS {
+            let w = u32::from_le_bytes(self.buffer[self.pos..self.pos + 4].try_into().unwrap());
+            *self.words += 1;
+            if self.jumps.binary_search(&(self.pos as u32)).is_ok() {
+                self.pos = w as usize & mask & !3;
+                continue;
+            }
+            self.pos = (self.pos + 4) & mask;
+            self.fed.push(w);
+            return Some(w);
+        }
+        None
+    }
+}
+
+/// What the list FIFO gives once the frame's cap is reached: END, the
+/// word the games fill buffer RAM with.
+const LIST_END: u32 = 0x0780_0f0f;
+
+impl SharcBus for SharcGeoBus<'_> {
+    fn read(&mut self, addr: u32, _: Width) -> u64 {
+        match addr {
+            0x40_0000 => {
+                *self.active = true;
+                self.list.next().unwrap_or(LIST_END) as u64
+            }
+            0x43_0001 => self.poly.read(*self.latch) as u64,
+            _ => {
+                *self.other.entry(addr).or_default() += 1;
+                0
+            }
+        }
+    }
+    fn write(&mut self, addr: u32, _: Width, v: u64) {
+        let v = v as u32;
+        match addr {
+            0x41_0000 => {
+                if v != RASTER_NOP {
+                    *self.active = true;
+                }
+                self.out.push(v);
+            }
+            0x42_0000..=0x42_ffff => self.poly.write(addr - 0x42_0000, v),
+            0x43_0000 => *self.latch = v,
+            // Written at each frame handshake; meaning unknown.
+            0x43_0002 => {}
+            _ => *self.other.entry(addr).or_default() += 1,
+        }
+    }
+}
+
+/// The geometrizer's DSP and everything it owns. Runs a frame at a time,
 /// on a worker thread (or inline, see [`Geometrizer::set_threaded`]), from
 /// a copy of buffer RAM taken at vblank.
 pub struct Engine {
     pub tgp: Tgp,
+    /// The 2B geometrizer, in place of `tgp`.
+    pub sharc: Option<Box<Sharc>>,
+    /// Its polygon memory address register.
+    poly_latch: u32,
+    /// Its external accesses outside the map above (diagnostics).
+    pub sharc_other: BTreeMap<u32, u64>,
     poly_ram: Vec<u32>,
     poly_rom: Vec<u32>,
     /// Buffer RAM as it was when the frame started.
@@ -108,6 +224,9 @@ enum Slot {
 /// The i960's side of the geometrizer: command and data ports, list
 /// pointers and program upload. The engine runs behind it.
 pub struct Geometrizer {
+    pub core: Core,
+    /// The uploaded program: 64-bit MB86235 words, or for a SHARC the host
+    /// writes that boot it, each `IOP register << 32 | data`.
     pub program: Vec<u64>,
     uploading: bool,
     upload_half: Option<u32>,
@@ -138,14 +257,10 @@ pub struct Geometrizer {
 /// the game uploaded, or one frame's list. An engine fed the same jobs in
 /// order gives the same results as the local one ([`Engine::run_job`]).
 pub enum Job {
+    /// The uploaded program, as [`Geometrizer::program`] holds it.
     Boot(Vec<u64>),
     /// `jumps`: byte offsets in `buffer` of jump words (ascending).
-    Frame {
-        buffer: Vec<u8>,
-        booted: bool,
-        read_ptr: u32,
-        jumps: Vec<u32>,
-    },
+    Frame { buffer: Vec<u8>, booted: bool, read_ptr: u32, jumps: Vec<u32> },
 }
 
 /// Host time measurement that works where `std::time::Instant` doesn't
@@ -169,8 +284,9 @@ impl Stopwatch {
 }
 
 impl Geometrizer {
-    pub fn new(poly_rom: Vec<u32>) -> Self {
+    pub fn new(poly_rom: Vec<u32>, core: Core) -> Self {
         Geometrizer {
+            core,
             program: Vec::new(),
             uploading: false,
             upload_half: None,
@@ -183,7 +299,7 @@ impl Geometrizer {
             // WebAssembly without threads support can't spawn.
             threaded: cfg!(not(target_arch = "wasm32")),
             remote: None,
-            engine: Slot::Idle(Box::new(Engine::new(poly_rom))),
+            engine: Slot::Idle(Box::new(Engine::new(poly_rom, core))),
         }
     }
 
@@ -272,6 +388,10 @@ impl Geometrizer {
     /// 0x00800000). Returns false if the offset isn't handled.
     pub fn port_write(&mut self, offset: u32, v: u32, buffer: &mut [u8]) -> bool {
         match offset {
+            0x4000..=0x7fff if self.uploading && self.core == Core::Sharc => {
+                // The SHARC's EPB0: 16-bit halves of 48-bit words.
+                self.program.push((EPB0 as u64) << 32 | v as u64);
+            }
             0x4000..=0x7fff => {
                 if self.uploading {
                     // Program words: 64-bit, low dword first.
@@ -308,6 +428,17 @@ impl Geometrizer {
         true
     }
 
+    /// A write to the 2B geometrizer SHARC's host window (`0x840000`): IOP
+    /// register `reg`. Kept with the upload while the host holds the bus;
+    /// false if it isn't (no game is known to do that).
+    pub fn host_write(&mut self, reg: u32, v: u32) -> bool {
+        if self.core == Core::Sharc && self.uploading {
+            self.program.push((reg as u64) << 32 | v as u64);
+            return true;
+        }
+        false
+    }
+
     /// The jump words, for save states (offset, word).
     pub fn jumps(&self) -> Vec<(u32, u32)> {
         self.jumps.iter().map(|(&o, &w)| (o, w)).collect()
@@ -336,7 +467,7 @@ impl Geometrizer {
             let program = std::mem::take(&mut self.program);
             match &mut self.remote {
                 Some(remote) => remote(Job::Boot(program.clone())),
-                None => self.engine_mut().tgp.boot(&program),
+                None => self.engine_mut().boot(&program),
             }
             self.program = program;
             self.booted = true;
@@ -347,9 +478,12 @@ impl Geometrizer {
 
 impl Engine {
     /// A fresh engine over the polygon ROM (u32 words).
-    pub fn new(poly_rom: Vec<u32>) -> Self {
+    pub fn new(poly_rom: Vec<u32>, core: Core) -> Self {
         Engine {
             tgp: Tgp::new(),
+            sharc: (core == Core::Sharc).then(|| Box::new(Sharc::new())),
+            poly_latch: 0,
+            sharc_other: BTreeMap::new(),
             poly_ram: vec![0; 0x10_0000],
             poly_rom,
             buffer: Vec::new(),
@@ -372,7 +506,7 @@ impl Engine {
     /// and `texture_point_ram` hold its results.
     pub fn run_job(&mut self, job: Job) {
         match job {
-            Job::Boot(program) => self.tgp.boot(&program),
+            Job::Boot(program) => self.boot(&program),
             Job::Frame { buffer, booted, read_ptr, jumps } => {
                 self.buffer = buffer;
                 self.jumps = jumps;
@@ -384,6 +518,9 @@ impl Engine {
     fn placeholder() -> Self {
         Engine {
             tgp: Tgp::new(),
+            sharc: None,
+            poly_latch: 0,
+            sharc_other: BTreeMap::new(),
             poly_ram: Vec::new(),
             poly_rom: Vec::new(),
             buffer: Vec::new(),
@@ -399,6 +536,25 @@ impl Engine {
             first_error_trace: Vec::new(),
             busy: std::time::Duration::ZERO,
             slowest: std::time::Duration::ZERO,
+        }
+    }
+
+    /// Load an uploaded program ([`Geometrizer::program`]).
+    pub fn boot(&mut self, program: &[u64]) {
+        match &mut self.sharc {
+            None => self.tgp.boot(program),
+            Some(s) => {
+                // A fresh SHARC in host boot mode, then the host's writes.
+                // A write it can't take leaves `fault` at 0x80000000 | the
+                // IOP register (a PC can't be that high).
+                **s = Sharc::new();
+                self.fault = None;
+                for &w in program {
+                    if s.host_write((w >> 32) as u32, w as u32).is_err() {
+                        self.fault = Some(0x8000_0000 | (w >> 32) as u32);
+                    }
+                }
+            }
         }
     }
 
@@ -433,7 +589,11 @@ impl Engine {
         }
         let t = Stopwatch::start();
         let buffer = std::mem::take(&mut self.buffer);
-        self.process(&buffer, read_ptr);
+        if self.sharc.is_some() {
+            self.process_sharc(&buffer, read_ptr);
+        } else {
+            self.process(&buffer, read_ptr);
+        }
         self.busy += t.elapsed();
         self.slowest = self.slowest.max(t.elapsed());
         self.buffer = buffer;
@@ -512,6 +672,81 @@ impl Engine {
     }
 }
 
+impl Engine {
+    /// [`Engine::process`] for the 2B SHARC. The handshake is the 2C
+    /// program's (topskatr's geometrizer, docs/hw/geometrizer.md 1.2): at
+    /// a frame start FLAG0 rises; the program abandons what it was doing,
+    /// emits NOP and END (the last frame's terminator), and waits for FLAG0
+    /// to fall before reading the list from its input FIFO.
+    fn process_sharc(&mut self, buffer: &[u8], read_ptr: u32) {
+        self.frames += 1;
+        let Some(s) = self.sharc.as_deref_mut() else { return };
+        let mut out = Vec::new();
+        let mut active = false;
+        let mut bus = SharcGeoBus {
+            poly: GeoExt::new(&mut self.poly_ram, &self.poly_rom),
+            latch: &mut self.poly_latch,
+            list: ListDma {
+                buffer,
+                jumps: &self.jumps,
+                pos: read_ptr as usize & (buffer.len() - 1) & !3,
+                words: &mut self.list_words,
+                fed: &mut self.fed,
+            },
+            out: &mut out,
+            active: &mut active,
+            other: &mut self.sharc_other,
+        };
+        let start = s.steps;
+        let mut fault = None;
+        // FLAG0 high until the program waits for it to fall again.
+        s.flag_in |= 1;
+        for k in 0..SHARC_PULSE_STEPS {
+            match s.step(&mut bus) {
+                SharcStep::Ran => {}
+                SharcStep::Idle => break,
+                SharcStep::Fault(f) => {
+                    fault = Some(f);
+                    break;
+                }
+            }
+            if k > 0 && s.spinning() {
+                break;
+            }
+        }
+        s.flag_in &= !1;
+        bus.out.clear();
+        *bus.active = false;
+        let mut last_activity = s.steps;
+        while fault.is_none() {
+            match s.step(&mut bus) {
+                SharcStep::Ran => {}
+                SharcStep::Idle => break,
+                SharcStep::Fault(f) => fault = Some(f),
+            }
+            if std::mem::take(&mut *bus.active) {
+                last_activity = s.steps;
+            }
+            // Every so often: done (idle, waiting on a flag, or out of time)?
+            if s.steps % 256 == 0
+                && (s.steps - last_activity > IDLE_STEPS || s.steps - start > MAX_STEPS_PER_FRAME || s.spinning())
+            {
+                break;
+            }
+        }
+        if let Some(f) = fault {
+            self.fault = Some(match f {
+                adsp2106x::cpu::Fault::Undefined { pc, .. }
+                | adsp2106x::cpu::Fault::Unimplemented { pc, .. }
+                | adsp2106x::cpu::Fault::Iop { pc, .. }
+                | adsp2106x::cpu::Fault::BadAddress { pc, .. }
+                | adsp2106x::cpu::Fault::Stack { pc, .. } => pc,
+            });
+        }
+        self.stream.extend(out.into_iter().filter(|&w| w != RASTER_NOP));
+    }
+}
+
 // Save states. The front end and, after any running frame finishes, the
 // engine (its TGP, polygon RAM, texture point RAM and last frame's
 // output); the polygon ROM and diagnostics stay. In remote mode the engine
@@ -542,7 +777,38 @@ impl state::State for Geometrizer {
     }
 }
 
-state::fields!(Engine { tgp, poly_ram, buffer, stream, list_words, fault, frames, texture_point_ram });
+// The 2C fields, then a 2B engine's SHARC (2C states are unchanged).
+impl state::State for Engine {
+    fn save(&self, w: &mut state::Writer) {
+        self.tgp.save(w);
+        self.poly_ram.save(w);
+        self.buffer.save(w);
+        self.stream.save(w);
+        self.list_words.save(w);
+        self.fault.save(w);
+        self.frames.save(w);
+        self.texture_point_ram.save(w);
+        if let Some(s) = &self.sharc {
+            s.save(w);
+            self.poly_latch.save(w);
+        }
+    }
+    fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
+        self.tgp.load(r)?;
+        self.poly_ram.load(r)?;
+        self.buffer.load(r)?;
+        self.stream.load(r)?;
+        self.list_words.load(r)?;
+        self.fault.load(r)?;
+        self.frames.load(r)?;
+        self.texture_point_ram.load(r)?;
+        if let Some(s) = &mut self.sharc {
+            s.load(r)?;
+            self.poly_latch.load(r)?;
+        }
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -553,7 +819,7 @@ mod tests {
     /// the next frame starts.
     #[test]
     fn list_jumps_are_tracked() {
-        let mut g = Geometrizer::new(Vec::new());
+        let mut g = Geometrizer::new(Vec::new(), Core::Tgp);
         g.set_threaded(false);
         let mut buffer = vec![0u8; 0x2_0000];
         g.port_write(0x1008, 0x100, &mut buffer);

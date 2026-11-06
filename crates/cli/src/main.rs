@@ -68,7 +68,8 @@ commands:
                        boot and run to the first external access
   recomp               recompile the i960 program (code found by `analyze`
                        plus everything `run` executed) and the copro and
-                       geometrizer programs `run` captured into crates in
+                       geometrizer programs `run` captured (MB86235 only:
+                       Model 2B's SHARCs stay interpreted) into crates in
                        out/recomp/, and the workspace there that builds
                        them in (`make release RECOMP=1`)
   recomp-files         list the program crates in out/recomp/ that belong to
@@ -98,7 +99,9 @@ commands:
   run [STEPS] [SNAP]   boot on the reference interpreter and report what
                        the game did (default 50M instructions); writes the
                        tile layer to out/GAME/frames/ every SNAP frames
-                       (0 = final frame only)
+                       (0 = final frame only), and the uploaded copro and
+                       geometrizer programs (copro.bin, geo.bin; on Model
+                       2B sharc-copro.bin, sharc-geo.bin for sharc-disasm)
   sound-disasm ADDR [COUNT]
                        disassemble the sound board's 68000 program (its own
                        address space: ROM at 0x600000)
@@ -528,7 +531,15 @@ fn main() -> ExitCode {
                 println!("i960: {} instructions in {blocks} blocks -> {}", insns.len(), path.display());
                 made += 1;
             }
-            for name in ["copro", "geo"] {
+            // Model 2B's copro and geometrizer are SHARCs, which have no
+            // recompiler yet: they stay on the interpreter.
+            let tgp_programs: &[&str] = if model2::geo::Core::of(roms.game.board) == model2::geo::Core::Sharc {
+                println!("copro, geo: SHARC programs (Model 2B) run on the interpreter");
+                &[]
+            } else {
+                &["copro", "geo"]
+            };
+            for &name in tgp_programs {
                 let (Ok(bin), Ok(cov)) = (
                     std::fs::read(dir.join(format!("{name}.bin"))),
                     std::fs::read_to_string(dir.join(format!("{name}-coverage.txt"))),
@@ -569,7 +580,8 @@ fn main() -> ExitCode {
         "recomp-files" => {
             let dir = PathBuf::from("out").join(roms.game.id);
             let mut hashes = vec![format!("i960_{:016x}", model2::program_hash(&roms))];
-            for name in ["copro", "geo"] {
+            let sharc = model2::geo::Core::of(roms.game.board) == model2::geo::Core::Sharc;
+            for name in ["copro", "geo"].into_iter().filter(|_| !sharc) {
                 if let Ok(bin) = std::fs::read(dir.join(format!("{name}.bin"))) {
                     let prog: Vec<u64> = bin.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect();
                     hashes.push(format!("tgp_{:016x}", mb86235::cpu::program_hash(&prog)));
@@ -1040,52 +1052,12 @@ fn run(
     println!("irq           request {:#x} enable {:#x}", b.irq_request, b.irq_enable);
     println!("coverage      {} distinct instructions", m.coverage.len());
     println!("indirect      {} distinct (source, target) pairs", m.indirect.len());
-    println!(
-        "copro         program {} words, booted {}, fifo in {} out {}, empty reads {}",
-        b.copro_program.len(),
-        b.copro_booted,
-        b.tgp.fifo_in.len(),
-        b.tgp.fifo_out.len(),
-        b.copro_empty_reads
-    );
-    println!("tgp           {} words executed, pc {:#05x}, fault {:x?}", b.tgp.steps, b.tgp.pc, b.tgp_fault);
     println!("copro results hash {:016x}", b.copro_result_hash);
     println!("state hash    {:016x} (ip {:#x})", state_hash, m.cpu.ip);
-    let tgp_cov: Vec<u32> = (0..4096).filter(|&a| b.tgp.counts[a as usize] > 0).collect();
-    println!("tgp coverage  {} of 4096 words executed", tgp_cov.len());
-    let tgp_txt: String = tgp_cov.iter().map(|a| format!("{a:03x}\n")).collect();
-    let _ = std::fs::write(dir.join("copro-coverage.txt"), tgp_txt);
     println!("geo           {} data words", b.geo_words);
-    println!(
-        "geometrizer   program {} words, booted {}, frames {}, last list {} words -> {} raster words, bad cmds {}, fault {:x?}, steps {}, pc {:#05x}",
-        b.geo.program.len(),
-        b.geo.booted,
-        geo.frames,
-        geo.list_words,
-        geo.stream.len(),
-        b.geo.bad_commands,
-        geo.fault,
-        geo.tgp.steps,
-        geo.tgp.pc
-    );
-    let mut geo_hot: Vec<(usize, u64)> = geo.tgp.counts.iter().copied().enumerate().filter(|c| c.1 > 0).collect();
-    geo_hot.sort_by_key(|&(a, c)| (std::cmp::Reverse(c), a));
-    println!("geometrizer   hot spots (whole run):");
-    for &(a, c) in geo_hot.iter().take(8) {
-        println!("  {a:03x} {c:>12} ({:.1}%)", c as f64 * 100.0 / geo.tgp.steps.max(1) as f64);
-    }
-    if let Some((frame, fed)) = &geo.first_error {
-        let text: String = fed.iter().map(|w| format!("{w:08x}\n")).collect();
-        let _ = std::fs::write(dir.join("geo-error-list.txt"), text);
-        let tr: String = geo.first_error_trace.iter().map(|(pc, f)| format!("{pc:03x} {f}\n")).collect();
-        let _ = std::fs::write(dir.join("geo-error-pcs.txt"), tr);
-        println!("geometrizer   first command-check error at geo frame {frame} ({} words fed)", fed.len());
-    }
-    if !b.geo.program.is_empty() {
-        let bin: Vec<u8> = b.geo.program.iter().flat_map(|w| w.to_le_bytes()).collect();
-        let _ = std::fs::write(dir.join("geo.bin"), &bin);
-        let cov: String = (0..4096).filter(|&a| geo.tgp.counts[a] > 0).map(|a| format!("{a:03x}\n")).collect();
-        let _ = std::fs::write(dir.join("geo-coverage.txt"), cov);
+    match &b.sharc {
+        Some(c) => report_2b(&dir, c, &b.geo, geo),
+        None => report_2c(&dir, b, geo),
     }
     let fed: String = geo.fed.iter().map(|w| format!("{w:08x}\n")).collect();
     let _ = std::fs::write(dir.join("geo-last-list.txt"), fed);
@@ -1260,5 +1232,114 @@ fn geo_trace_words(prog: &[u64], words: &[u32]) {
             t.ar[1],
             t.fifo_in.len()
         );
+    }
+}
+
+/// The MB86235 copro and geometrizer in a `run` report (Model 2C).
+fn report_2c(dir: &std::path::Path, b: &model2::Model2Bus, geo: &model2::geo::Engine) {
+    println!(
+        "copro         program {} words, booted {}, fifo in {} out {}, empty reads {}",
+        b.copro_program.len(),
+        b.copro_booted,
+        b.tgp.fifo_in.len(),
+        b.tgp.fifo_out.len(),
+        b.copro_empty_reads
+    );
+    println!("tgp           {} words executed, pc {:#05x}, fault {:x?}", b.tgp.steps, b.tgp.pc, b.tgp_fault);
+    let tgp_cov: Vec<u32> = (0..4096).filter(|&a| b.tgp.counts[a as usize] > 0).collect();
+    println!("tgp coverage  {} of 4096 words executed", tgp_cov.len());
+    let tgp_txt: String = tgp_cov.iter().map(|a| format!("{a:03x}\n")).collect();
+    let _ = std::fs::write(dir.join("copro-coverage.txt"), tgp_txt);
+    println!(
+        "geometrizer   program {} words, booted {}, frames {}, last list {} words -> {} raster words, bad cmds {}, fault {:x?}, steps {}, pc {:#05x}",
+        b.geo.program.len(),
+        b.geo.booted,
+        geo.frames,
+        geo.list_words,
+        geo.stream.len(),
+        b.geo.bad_commands,
+        geo.fault,
+        geo.tgp.steps,
+        geo.tgp.pc
+    );
+    let mut geo_hot: Vec<(usize, u64)> = geo.tgp.counts.iter().copied().enumerate().filter(|c| c.1 > 0).collect();
+    geo_hot.sort_by_key(|&(a, c)| (std::cmp::Reverse(c), a));
+    println!("geometrizer   hot spots (whole run):");
+    for &(a, c) in geo_hot.iter().take(8) {
+        println!("  {a:03x} {c:>12} ({:.1}%)", c as f64 * 100.0 / geo.tgp.steps.max(1) as f64);
+    }
+    if let Some((frame, fed)) = &geo.first_error {
+        let text: String = fed.iter().map(|w| format!("{w:08x}\n")).collect();
+        let _ = std::fs::write(dir.join("geo-error-list.txt"), text);
+        let tr: String = geo.first_error_trace.iter().map(|(pc, f)| format!("{pc:03x} {f}\n")).collect();
+        let _ = std::fs::write(dir.join("geo-error-pcs.txt"), tr);
+        println!("geometrizer   first command-check error at geo frame {frame} ({} words fed)", fed.len());
+    }
+    if !b.geo.program.is_empty() {
+        let bin: Vec<u8> = b.geo.program.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let _ = std::fs::write(dir.join("geo.bin"), &bin);
+        let cov: String = (0..4096).filter(|&a| geo.tgp.counts[a] > 0).map(|a| format!("{a:03x}\n")).collect();
+        let _ = std::fs::write(dir.join("geo-coverage.txt"), cov);
+    }
+}
+
+/// The SHARC copro and geometrizer in a `run` report (Model 2B), and
+/// their uploaded programs as images for `sharc-disasm`.
+fn report_2b(
+    dir: &std::path::Path,
+    c: &model2::sharc::Copro,
+    front: &model2::geo::Geometrizer,
+    geo: &model2::geo::Engine,
+) {
+    println!(
+        "copro         SHARC, booted {}, fifo in {} out {}, {} instructions, pc {:#x}, fault {:x?}, host errors {}, empty reads {}",
+        c.booted,
+        c.fifo_in.len(),
+        c.fifo_out.len(),
+        c.cpu.steps,
+        c.cpu.pc,
+        c.fault,
+        c.host_errors,
+        c.empty_reads
+    );
+    for (a, n) in &c.other {
+        println!("copro         unknown external access {a:#x}: {n}");
+    }
+    let hot = |name: &str, cpu: &adsp2106x::cpu::Sharc| {
+        let total = cpu.steps.max(1) as f64;
+        let spots: Vec<String> = model2::sharc::hot_spots(cpu, 8)
+            .iter()
+            .map(|&(a, n)| format!("{a:05x} {:.1}%", n as f64 * 100.0 / total))
+            .collect();
+        println!("{name:<13} hot spots: {}", spots.join(", "));
+    };
+    hot("copro", &c.cpu);
+    match &geo.sharc {
+        Some(s) => {
+            println!(
+                "geometrizer   SHARC, booted {}, frames {}, last list {} words -> {} raster words, bad cmds {}, fault {:x?}, {} instructions, pc {:#x}",
+                front.booted,
+                geo.frames,
+                geo.list_words,
+                geo.stream.len(),
+                front.bad_commands,
+                geo.fault,
+                s.steps,
+                s.pc
+            );
+            for (a, n) in &geo.sharc_other {
+                println!("geometrizer   unknown external access {a:#x}: {n}");
+            }
+            hot("geometrizer", s);
+        }
+        None => println!("geometrizer   SHARC (on another worker)"),
+    }
+    for (name, program) in [("sharc-copro.bin", &c.program), ("sharc-geo.bin", &front.program)] {
+        if !program.is_empty() {
+            let bin: Vec<u8> =
+                model2::sharc::image(program).iter().flat_map(|w| w.to_le_bytes().into_iter().take(6)).collect();
+            let _ = std::fs::write(dir.join(name), &bin);
+            println!("program       {} ({} words)", dir.join(name).display(), bin.len() / 6);
+        }
     }
 }

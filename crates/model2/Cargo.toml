@@ -13,6 +13,7 @@ remodel-state.workspace = true
 i960.workspace = true
 remodel-romset.workspace = true
 mb86235.workspace = true
+adsp2106x.workspace = true
 remodel-sound.workspace = true
 remodel-dsb.workspace = true
 remodel-png.workspace = true

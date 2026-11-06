@@ -515,7 +515,8 @@ impl GeoEngine {
         let game = romset::games::find(game).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let chips = chips.iter().map(|c| js_sys::Uint8Array::new(&c).to_vec()).collect();
         let roms = romset::RomSet::from_chips(game, chips, false).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        Ok(GeoEngine { engine: model2::geo::Engine::new(model2::bus::polygon_rom(&roms)) })
+        let core = model2::geo::Core::of(game.board);
+        Ok(GeoEngine { engine: model2::geo::Engine::new(model2::bus::polygon_rom(&roms), core) })
     }
 
     /// Boot the uploaded program: 64-bit words as (low, high) u32 pairs.

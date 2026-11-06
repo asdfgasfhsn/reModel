@@ -1,4 +1,4 @@
-//! Model 2C-CRX i960 address space.
+//! Model 2B-CRX and 2C-CRX i960 address space.
 //!
 //! Provenance: the layout below is a working hypothesis taken from MAME's
 //! public driver notes, which do not run this game correctly. Treat every
@@ -11,11 +11,12 @@
 
 use crate::drive::Drive;
 use crate::eeprom::Eeprom;
-use crate::geo::Geometrizer;
+use crate::geo::{self, Geometrizer};
 use crate::gun::GunBoard;
+use crate::sharc;
 use i960::cpu::Bus;
 use mb86235::cpu::{External, Step, Tgp};
-use romset::{Role, RomSet};
+use romset::{Board, Role, RomSet};
 use std::collections::BTreeMap;
 
 /// Main CPU clock: 25 MHz.
@@ -114,6 +115,9 @@ pub struct Timer {
 }
 
 pub struct Model2Bus {
+    /// The board revision (from the game's manifest): 2B has SHARCs where
+    /// 2C has MB86235s, and moves the sound UART.
+    pub board: Board,
     mems: Vec<Mem>,
     /// Index in `mems` of the first memory-test-only RAM (the rest follow).
     test_rams: usize,
@@ -146,6 +150,8 @@ pub struct Model2Bus {
     pub texture_rom: Vec<u16>,
     /// The geometry processor, running the uploaded program.
     pub tgp: Tgp,
+    /// Model 2B's copro, a SHARC, in place of `tgp`.
+    pub sharc: Option<Box<sharc::Copro>>,
     /// "copro_data" ROM as 32-bit words, at TGP external address 0x800000.
     copro_data: Vec<u32>,
     /// First instruction the TGP model couldn't execute, if any.
@@ -259,7 +265,9 @@ impl Model2Bus {
             }
         }
         let timer = || Timer { reload: 0xfffff, started_at: 0, running: false };
+        let board = roms.game.board;
         Model2Bus {
+            board,
             mems,
             test_rams,
             map,
@@ -278,11 +286,12 @@ impl Model2Bus {
             copro_upload_half: None,
             copro_booted: false,
             tgp: Tgp::new(),
+            sharc: (board == Board::Model2B).then(|| Box::new(sharc::Copro::new())),
             copro_data: roms.bank(Role::CoproData).as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect(),
             tgp_fault: None,
             tgp_stalled: false,
             texture_rom: roms.bank(Role::Textures).as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect(),
-            geo: Geometrizer::new(polygon_rom(roms)),
+            geo: Geometrizer::new(polygon_rom(roms), geo::Core::of(board)),
             copro_empty_reads: 0,
             copro_result_hash: 0xcbf2_9ce4_8422_2325,
             copro_empty_by_ip: BTreeMap::new(),
@@ -365,6 +374,9 @@ impl Model2Bus {
         // The TGP runs at 20 MHz against the i960's 25 MHz: about two of its
         // words per i960 instruction at our cycles-per-instruction estimate.
         self.run_tgp(crate::TGP_WORDS_PER_INSN);
+        if let Some(c) = &mut self.sharc {
+            c.run(sharc::STEPS_PER_INSN);
+        }
         self.now += crate::CYCLES_PER_INSN;
         self.tick_timers();
         // The UART's TxRDY pin holds request bit 10 while it's enabled: set
@@ -424,7 +436,73 @@ impl Model2Bus {
         }
     }
 
+    /// Model 2B's registers where they differ from 2C's.
+    fn io_read32_2b(&mut self, addr: u32) -> Option<u32> {
+        let c = self.sharc.as_mut()?;
+        Some(match addr & !3 {
+            0x0088_4000..=0x0088_7fff => {
+                // The i960 stalls until a result arrives: let the copro run.
+                if c.fifo_out.is_empty() {
+                    c.run_for_result();
+                }
+                match c.fifo_out.pop_front() {
+                    Some(v) => {
+                        self.copro_result_hash = (self.copro_result_hash ^ v as u64).wrapping_mul(0x100_0000_01b3);
+                        v
+                    }
+                    None => {
+                        self.copro_empty_reads += 1;
+                        *self.copro_empty_by_ip.entry(self.cur_ip).or_default() += 1;
+                        0
+                    }
+                }
+            }
+            0x0098_0004 => c.fifo_out.is_empty() as u32,
+            0x008c_0000..=0x008c_03ff => c.host_read((addr - 0x008c_0000) >> 2),
+            0x0084_0000..=0x0084_03ff => 0,
+            // Sound UART (8251 type): status, then data, a register a word.
+            // Status: transmitter ready and empty, nothing received.
+            0x009c_0004 => 0x05,
+            0x009c_0000 => 0,
+            // 2C's UART isn't here on 2B. (The 2B program writes mode
+            // bytes beside it, to 0x1C80004, which stays unmapped.)
+            0x01c8_0000..=0x01c8_0003 => 0,
+            _ => return None,
+        })
+    }
+
+    /// Model 2B's registers where they differ from 2C's. False if `addr`
+    /// isn't one.
+    fn io_write32_2b(&mut self, addr: u32, v: u32) -> bool {
+        let Some(c) = self.sharc.as_mut() else { return false };
+        match addr & !3 {
+            0x0088_4000..=0x0088_7fff if c.held => c.host_write(adsp2106x::cpu::EPB0, v),
+            0x0088_4000..=0x0088_7fff => c.fifo_in.push_back(v),
+            0x0088_0000..=0x0088_3fff => c.fifo_in.push_back((v & 0x800f_ffff) | (((addr >> 4) & 0xff) << 23)),
+            0x008c_0000..=0x008c_03ff => c.host_write((addr - 0x008c_0000) >> 2, v),
+            0x0084_0000..=0x0084_03ff => {
+                self.geo.host_write((addr - 0x0084_0000) >> 2, v);
+            }
+            0x0098_0000 => {
+                c.control(v & 0x8000_0000 != 0);
+                self.copro_ctrl = v;
+            }
+            0x009c_0000 | 0x009c_0004 => {
+                let control = addr & 4 != 0;
+                self.uart_log.push((self.now, control, v as u8));
+                self.uart.write(control, v as u8, self.now);
+            }
+            0x01c8_0000..=0x01c8_0003 => {}
+            _ => return false,
+        }
+        true
+    }
+
     fn io_read32(&mut self, addr: u32) -> Option<u32> {
+        if let Some(v) = self.io_read32_2b(addr) {
+            self.log(addr, None);
+            return Some(v);
+        }
         let v = match addr & !3 {
             0x0080_0000..=0x0080_7fff => self.geo.port_read(addr - 0x0080_0000),
             0x0088_4000..=0x0088_7fff => {
@@ -537,6 +615,10 @@ impl Model2Bus {
     fn io_write32(&mut self, addr: u32, v: u32, lanes: u32) -> bool {
         if let (Some(t), 0x0080_0000..=0x0080_7fff) = (self.geo_trace.as_mut(), addr) {
             t.push((addr, v));
+        }
+        if self.io_write32_2b(addr, v) {
+            self.log(addr, Some(v));
+            return true;
         }
         match addr & !3 {
             0x0080_0000..=0x0080_7fff => {
@@ -873,6 +955,10 @@ impl state::State for Model2Bus {
         }
         // Then the UART's transmitter.
         self.uart.save(w);
+        // And on 2B, the copro SHARC.
+        if let Some(c) = &self.sharc {
+            c.save(w);
+        }
     }
     fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
         let test_rams = self.test_rams;
@@ -925,6 +1011,9 @@ impl state::State for Model2Bus {
         self.uart = Uart::default();
         if !r.done() {
             self.uart.load(r)?;
+        }
+        if let Some(c) = &mut self.sharc {
+            c.load(r)?;
         }
         Ok(())
     }
