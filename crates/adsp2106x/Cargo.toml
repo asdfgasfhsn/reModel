@@ -1,0 +1,9 @@
+[package]
+name = "adsp2106x"
+description = "Analog Devices ADSP-2106x (SHARC) DSP: decoder, disassembler and interpreter"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+remodel-state.workspace = true
