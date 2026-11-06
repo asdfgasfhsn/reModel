@@ -1,7 +1,8 @@
 # Model 2B-CRX: the board as `overrevb` uses it
 
 Status: 2026-11-07. Remodel runs `overrevb` (Over Rev, the 2B version),
-`sgt24h` (Super GT 24h) and `dynabb97` (Dynamite Baseball '97) from boot
+`sgt24h` (Super GT 24h), `dynabb97` (Dynamite Baseball '97) and `doa`
+(Dead or Alive) from boot
 through attract into play, with both SHARCs running the programs the
 games upload. `sgt24h` needed nothing more from the board model: its
 SHARC code is `overrevb`'s (the uploaded images differ only past the
@@ -9,8 +10,9 @@ code), and it uses the same ports. Neither did `dynabb97`, Sega's own:
 its geometrizer code is the Jaleco games' too (2,987 words, identical up
 to `0x20C30`), its copro program its own (1,956 words), which uses only
 the command and result FIFOs and FLAG0/FLAG1 described below. `doa`
-(Tecmo) also runs on this model but has a protection device at
-`0x1D80000` (README, "What's known about `doa`"). This page
+(Tecmo) also runs on this model; it checks for a protection device at
+`0x1D80000`, answered as described under "The protection device"
+below. This page
 is what the board model (`crates/model2`: `bus.rs`, `sharc.rs`, `geo.rs`)
 is built on. The SHARC core itself is
 described in `adsp2106x.md`; the parts 2B shares with 2C in
@@ -64,6 +66,74 @@ as the host bus request: *confirmed* that it is not RESET in either sense,
 *unconfirmed* that it drives the HBR pin itself. What resets the SHARCs
 before a second upload isn't known: the game uploads each once per boot.
 Remodel resets a SHARC into host boot mode when its bit 31 rises.
+
+## The protection device (`doa`)
+
+`doa` talks to a device at `0x1D80000-0x1D87FFF` from one routine (i960
+`0x29F0`, called once at boot from `0x5B8`), all 16-bit accesses. The
+interface below is the game's side of it; *confirmed* from the code, and
+by running it with the board model (`crates/model2/src/protection.rs`)
+answering as the game expects.
+
+| Offset from `0x1D80000` | Access | What the game does |
+|---|---|---|
+| `0x400C` | read | status: polled for `0xFFF0` before the request (up to 10,000 reads; anything else means "no device") and after each step below |
+| `0x4000` | write | a command: `6` |
+| `0x0000 + 2·n` | write | a data block, from halfword offset *n* (here 0): 12 halfwords, after a 4-byte header that isn't sent (output length `0x30`, then 0) |
+| `0x7FF4` | write | a table address: 0, then `0x80` |
+| `0x7FF6` | write | table words at that address: 24 halfwords at 0, 128 at `0x80`, waiting for the status after each |
+| `0x7FF0` | write | 0 |
+| `0x7FF2` | write | *n*, the block's offset: starts the device |
+| `0x7FF8` | read | the answer: one read that the game discards, then 24 halfwords, the earlier byte of each pair in its high half |
+
+The game byte-swaps the answer into RAM (`0x54B390`) and compares its 48
+bytes with ROM `0x2810`, which reads `TECMO LTD.  DEAD OR ALIVE
+1996.10.22  VER. 1.00`. It keeps the result (1 for a match) at
+`0x54FABC`.
+
+*Confirmed (from the ROM data):* the two tables describe a canonical
+Huffman code. The first holds twelve entries of two halfwords, by code
+length: (length, index of the first symbol of that length) and the first
+code of that length left-justified in 12 bits. Lengths 2 to 6 are used
+(the length-6 entry repeats to fill the rest); the counts they give (1,
+1, 6, 6 and 4 symbols) make a complete code (the Kraft sum is exactly
+1). The second table is the symbols, two to a halfword, high byte first:
+the 18 characters of the string above, from the most frequent (space, 10
+times) to the least. *Confirmed (by decoding it):* the data block isn't
+that code read straight: decoded with the tables, in either byte order
+and either bit order, it gives the wrong characters, and the string's
+code (187 bits) doesn't start the block in any of those orders, nor
+inverted. So the device does more than decode it (presumably it
+descrambles the block first, perhaps keyed by the command);
+*unconfirmed* how. With one request in the whole program there isn't
+enough to work that out.
+
+So the board model doesn't compute the answer: a game's manifest names,
+per command, the ROM bytes the game compares the answer with
+(`romset::Protection`), read from the ROM at run time, and the device
+streams them back one halfword behind (the discarded first read) with
+the status always `0xFFF0`. That answers `doa`'s check and nothing more.
+
+What the check guards (*confirmed*, from the code): with `0x54FABC` 0,
+starting a game (i960 `0x3558`) sets a countdown at `0x54F3B0` to 300
+plus a random number below 900 frames (from the game's random number
+generator at `0x8E640`); when it runs out (i960 `0x2FA4`) the game kills
+its own tasks and the fight freezes. The same countdown arms when a
+checksum of the boot code (30 halfwords at `0x570`, every other one,
+against the value at `0x8FCE0`, i960 `0x520`) fails, so patching the
+boot check would trip it too. With the check answered the countdown
+never arms.
+
+The other 2B games that touch `0x1D80000` use another interface (*seen*
+in throwaway boots, with no device answering): `zerogun` writes 0 to
+`0x1D9000A` and a block of 96 halfwords to `0x1D80000`, from code it runs
+in RAM, then faults at IP 0 without reading anything back. `dynmcopb` and
+`dyndek2b` write 0 to `0x1D9000A`, 10 halfwords to `0x1D80000`, then
+`0x1D90008` and `0x1D9000C`, read `0x1D9000E` and `0x1D90000` nine times
+each and fault at IP 0. `pltkids` faults at IP 0 before touching it.
+None of them compares an answer with its ROM the way `doa` does, so the
+`doa` device model doesn't apply to them; *unconfirmed* whether their
+faults come from the missing device.
 
 ## The copro SHARC
 
@@ -224,4 +294,4 @@ that run alone, and the run took nearly three times as long).
   the board than the three running (`overrevb`, `sgt24h`, `dynabb97`) do.
 - What the device at `0x1D80000-0x1D87FFF` that `doa` checks for is
   (*unconfirmed* whether it sits on the game board or the ROM board),
-  and what it computes.
+  and how it turns the block into its answer (above).

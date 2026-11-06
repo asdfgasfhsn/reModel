@@ -62,6 +62,7 @@ music`). There is no live window yet.
 | Ninth game: `overrevb` (Over Rev, 2B, Jaleco) | playable with sound (`make play GAME=overrevb`): the 2B version of `overrev`, same data and controls, its own i960 program and two SHARC programs. Attract, menus and races look and sound as `overrev` does. Full speed recompiled (`RECOMP=1`: i960 and both SHARCs; races at 3.3x real time natively, and the browser's geometrizer keeps up), below real time interpreted; recompiled build identical |
 | Tenth game: `sgt24h` (Super GT 24h, 2B, Jaleco) | playable with sound (`make play GAME=sgt24h`): attract, course, car and gearbox select, races to game over. The second 2B game, on the same SHARC code as `overrevb`; needed the i960's local-register cache and its I/O board type set in backup RAM (a manifest default); its link board's Z80 ROM isn't needed. Full speed recompiled; recompiled build identical |
 | Eleventh game: `dynabb97` (Dynamite Baseball '97, 2B, Sega) | playable with sound (`make play GAME=dynabb97`): attract, team and pitcher select, batting with the bat lever, pitching and fielding. The first Sega 2B game: its own copro SHARC program, the same geometrizer SHARC code as Jaleco's games; needed nothing new from the board model. Full speed recompiled; recompiled build identical |
+| Twelfth game: `doa` (Dead or Alive, 2B, Tecmo) | playable with sound (`make play GAME=doa`, interpreted for now): attract, character select and fights through rounds, replays and the next opponent. Needed its protection device answered: the game's own check, with the answer it compares against declared in the manifest and read from the ROM (the device's algorithm is unknown); the character select's large model still draws with wrong-texture patches. The recompiled build and the browser build aren't checked yet |
 
 ## Quick start
 
@@ -327,6 +328,11 @@ chip but the program pair). Details, addresses and evidence in
   and 5 on return lands it on the wrong frame, and the game never gets as
   far as uploading its SHARC programs. Calls still open 64-byte-aligned
   frames (`i960::cpu::Cpu::ret`).
+- *Confirmed (`doa`, from the code, then by running it):* Tecmo's game
+  checks for a protection device at `0x1D80000-0x1D87FFF` at boot. The
+  board model answers it from the manifest (`romset::Protection`,
+  `crates/model2/src/protection.rs`); the interface is in
+  `docs/hw/model2b.md`, "The protection device".
 
 ## What's known about Model 2A (scoping, not yet supported)
 
@@ -974,26 +980,48 @@ Dynamite Baseball '97, a two-player baseball cabinet with a bat lever.
   natively (the geometrizer SHARC is the limit, slowest frame 21 ms), and
   at about real time interpreted (slowest frame 32 ms).
 
-## What's known about `doa` (not yet supported)
+## What's known about `doa`
 
-Dead or Alive (Tecmo, 2B, Japan). It boots, attracts with 3D, coins up,
-and starts a fight on the board model as it is, once the i960 returns
-keep PFP's address bits 4 and 5 (Model 2B above). It isn't supported
-because of a protection device:
+Dead or Alive (Tecmo, 2B, Japan), the twelfth game and the fourth on
+Model 2B. It boots, attracts with 3D, coins up and fights on the board
+model as it is, once the i960 returns keep PFP's address bits 4 and 5
+(Model 2B above), and plays on once its protection device is answered:
 
 - *Confirmed (from the code, then by running it):* at boot (i960
   `0x5A0`) the game polls `0x1D8400C` up to 10,000 times for `0xFFF0`.
-  If it sees it, it sends a block of data to the device at `0x1D80000`
-  to `0x1D87FFF` (i960 `0x29F0`), reads an answer back from `0x1D87FF8`
-  and compares it with bytes in its own ROM, keeping the result at
-  `0x54FABC`. With no device the result is 0, and starting a game (i960
-  `0x3558`) then arms a random countdown at `0x54F3B0` (300 to 1,199
-  frames; 892 in a coin-start run). When it runs out (i960 `0x2FA4`) the
-  game kills its own tasks: the fight freezes with only the background
-  drawn.
-- *Unconfirmed:* what the device computes. Answering the check would mean
-  knowing its algorithm, not just its interface, so it's left for when
-  that's documented; the game isn't patched around it.
+  If it sees it, it sends a command, a block of data and two tables to
+  the device at `0x1D80000` to `0x1D87FFF` (i960 `0x29F0`, its only code
+  that touches the device), reads an answer back from `0x1D87FF8` and
+  compares it with the 48 bytes at ROM `0x2810` (its copyright and
+  version line), keeping the result at `0x54FABC`. With no device the
+  result is 0, and starting a game (i960 `0x3558`) then arms a random
+  countdown at `0x54F3B0` (300 to 1,199 frames; 892 in a coin-start
+  run). When it runs out (i960 `0x2FA4`) the game kills its own tasks:
+  the fight freezes with only the background drawn. A checksum of the
+  boot code that makes the check (i960 `0x520`, result at `0x54FAB0`)
+  arms the same countdown when it fails. The interface, step by step, is
+  in `docs/hw/model2b.md`, "The protection device".
+- *Confirmed (from the ROM data):* the two tables are a canonical Huffman
+  code whose symbols are the characters of that ROM line, sorted by how
+  often they occur in it; but the block isn't that code as it stands, so
+  the device does something more to it first. *Unconfirmed* what: one
+  request is all there is to go on. The board model therefore doesn't
+  compute the answer. The manifest names the ROM bytes the game compares
+  it with (command 6: 48 bytes at `0x2810`), read from the ROM at run
+  time, and the device streams those back. That answers the game's check
+  without patching it; it doesn't model the device for any other input.
+- *Confirmed (by running it):* with the check answered `0x54FABC` is 1,
+  the countdown never arms, and a coin-start run (`make run GAME=doa
+  INPUT=coin-start`, punch and kick every half second) plays 6,200
+  frames: character select, a won bout against the first opponent over
+  several rounds with K.O.s, replays and "GET READY", then the next
+  opponent, 4,700 frames past where it used to freeze. Sound plays
+  throughout; `make sound` of that run averages -30 dBFS RMS (peak -11),
+  louder than the games at 0 dB, so the manifest takes 3 dB off. `make
+  state-check GAME=doa` round-trips, and a coin-start run of 600M
+  instructions gives the state hash `ba5d806c8790a9a2` (interpreted, with
+  an `eeprom.bin` from an earlier run). The recompiled build (lockstep)
+  and the browser build haven't been checked yet.
 - *Confirmed (by running it):* the input test gives port `0x1C00002` bit
   0 coin 1, 1 coin 2, 2 test, 3 service, 4 start 1, 5 start 2 (one coin a
   credit), and ports `0x1C00004`/`0x1C00006` for players 1 and 2: bit 0
@@ -1003,9 +1031,9 @@ because of a protection device:
   `.19/.23`; textures `.27/.25`; four sample ROMs) its attract demo and
   fights draw correctly; the memory test wasn't run. The Model 2A chips
   also in `doa.zip` belong to the 2A clone `doaa`.
-- *Seen, unconfirmed:* the character select screen's large 3D model draws
-  with patches of wrong texture where the attract demo's models look
-  right.
+- *Seen, unconfirmed:* the character select screen's large 3D model
+  still draws with patches of wrong texture (dark blocks over the face
+  and hair), where the attract demo's and the fights' models look right.
 
 ## What's known about `hotd`
 

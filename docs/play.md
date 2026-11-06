@@ -158,6 +158,25 @@ default keys.
 | button 1, button 2 (`sw1`, `sw2`; what 2 does is unconfirmed) | Z, X | A, B |
 | bat (pull back, let go to swing) | Space | right trigger |
 
+### Dead or Alive (`doa`)
+
+Model 2B, Tecmo's: its sound is the SCSP's. One coin is one credit. The
+stick picks the character and punch confirms. In a fight the three
+buttons are hold, punch and kick. Its protection device is
+answered by the board model, so nothing needs setting up. Like the other
+2B games it will want the recompiled build (`RECOMP=1`) for full speed;
+that build isn't checked for `doa` yet, so it plays interpreted for now,
+below real time (a headless coin-start run manages about 0.7x; the
+player then paces it by the clock, see "Display" below). Player 2's
+controls are in the manifest but have no default keys.
+
+| Control | Keys | Gamepad |
+|---|---|---|
+| coin | C, 5 | Back |
+| start (player 1, 2) | Enter or 1, 2 | Start |
+| stick | arrow keys | d-pad |
+| hold, punch, kick | Z, X, V | X, A, B |
+
 ### The House of the Dead (`hotd`)
 
 A light-gun game for two. Two coins are one credit. The mouse is player

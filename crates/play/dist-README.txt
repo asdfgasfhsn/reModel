@@ -6,8 +6,8 @@ code on an emulated board, drawn on the GPU, with both sound boards live.
 Supported so far: Top Skater (topskatr), Sega Ski Super G (skisuprg),
 Sega Touring Car Championship (stcc), Sega Water Ski (segawski),
 Wave Runner (waverunr), Over Rev (overrev), Super GT 24h (sgt24h), The
-House of the Dead (hotd), Behind Enemy Lines (bel) and Dynamite Baseball
-'97 (dynabb97).
+House of the Dead (hotd), Behind Enemy Lines (bel), Dynamite Baseball
+'97 (dynabb97) and Dead or Alive (doa).
 This build runs the game code on the interpreter (no recompiled game code
 is included).
 
@@ -15,7 +15,7 @@ Bring your own ROMs
 -------------------
 No game data is included. Put the sets as MAME keeps them, topskatr.zip or
 a topskatr/ folder (likewise skisuprg, stcc, segawski, waverunr,
-overrev, sgt24h, hotd, bel, dynabb97), in the ROM folder:
+overrev, sgt24h, hotd, bel, dynabb97, doa), in the ROM folder:
 
     ~/.local/share/remodel/roms     ($XDG_DATA_HOME/remodel/roms)
 
@@ -91,6 +91,11 @@ Behind Enemy Lines (mounted guns):
     Enter, 2     start player 1, player 2
     Space, X     fire, missile
 
+Dead or Alive (Model 2B: below full speed on this build):
+    C, Enter     coin, start (2 starts player 2)
+    arrows       stick (picks the character)
+    Z, X, V      hold, punch (it also confirms), kick
+
 All games:
     Esc          menu (pauses): save slots, sound mix, display, game
     F5, F9       quick save, quick load
@@ -111,7 +116,8 @@ left stick steers, right and left triggers are gas and brake, shoulders
 Dead: either stick moves a crosshair (player 2's once the mouse has
 moved over the window), right trigger or A fires, left trigger or B
 reloads. Behind Enemy Lines: the same, with the left trigger or B firing
-a missile.
+a missile. Dead or Alive: d-pad is the stick, X / A / B hold, punch
+and kick.
 
 Files
 -----
