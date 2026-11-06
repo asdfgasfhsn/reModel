@@ -14,6 +14,7 @@ pub static TOPSKATR: Game = Game {
     hud_windows: &[4],
     controls: CONTROLS,
     drive_board: None,
+    packed: &[],
     files: &[
         RomFile {
             name: "epr-19755a.15",

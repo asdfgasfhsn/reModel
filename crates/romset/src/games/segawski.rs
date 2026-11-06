@@ -17,6 +17,7 @@ pub static SEGAWSKI: Game = Game {
     attract_frame: 2550,
     controls: CONTROLS,
     drive_board: None,
+    packed: &[],
     files: &[
         RomFile {
             name: "epr-19963a.15",

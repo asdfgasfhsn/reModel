@@ -19,6 +19,7 @@ pub static HOTD: Game = Game {
     hud_windows: &[],
     controls: CONTROLS,
     drive_board: None,
+    packed: &[],
     files: &[
         RomFile {
             name: "epr-19696.15",

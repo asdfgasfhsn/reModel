@@ -19,6 +19,7 @@ pub static WAVERUNR: Game = Game {
     hud_windows: &[],
     controls: CONTROLS,
     drive_board: None,
+    packed: &[],
     files: &[
         RomFile {
             name: "epr-19282a.15",

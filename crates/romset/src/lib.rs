@@ -102,6 +102,9 @@ pub enum Role {
     Unknown,
 }
 
+/// Model 2C's ROM banks give each chip pair an 8 MB slot.
+pub const ROM_SLOT: usize = 0x80_0000;
+
 pub struct Game {
     /// Short set name, matching the usual dump naming (e.g. `topskatr`).
     pub id: &'static str,
@@ -114,6 +117,10 @@ pub struct Game {
     /// (`remodel shot`).
     pub attract_frame: u64,
     pub files: &'static [RomFile],
+    /// Banks whose chip pairs follow each other with no gap, rather than
+    /// each in its own [`ROM_SLOT`]: bel's main data and polygon ROMs, of
+    /// 16 Mbit chips, sit every 4 MB (its textures still take 8 MB slots).
+    pub packed: &'static [Role],
     /// 3D viewports (window numbers) that hold HUD elements rather than the
     /// scene. Only enhancements use this (wide views move them with the
     /// rest of the HUD).
@@ -252,6 +259,17 @@ impl RomSet {
             }
         }
         out
+    }
+
+    /// The bank of chips with `role` as the board maps it: pairs in
+    /// [`ROM_SLOT`]s, or back to back for a bank the manifest lists as
+    /// packed.
+    pub fn bank(&self, role: Role) -> Vec<u8> {
+        if self.game.packed.contains(&role) {
+            self.region32(role)
+        } else {
+            self.region32_slots(role, ROM_SLOT)
+        }
     }
 
     /// Concatenate the chips with `role` (16-bit, stored little-endian per

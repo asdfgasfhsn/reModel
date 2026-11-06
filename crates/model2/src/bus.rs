@@ -170,6 +170,8 @@ pub struct Model2Bus {
     /// Everything written to the sound link UART: (cycle, control register,
     /// byte). Data bytes are the commands for the sound boards.
     pub uart_log: Vec<(u64, bool, u8)>,
+    /// The sound link UART's transmitter, for its TxRDY interrupt.
+    uart: Uart,
     /// Video status bit 2 at 0x98000C. Hypothesis (from the boot code, which
     /// times how long it takes to change): toggles once per frame.
     pub frame_toggle: bool,
@@ -197,17 +199,13 @@ pub struct Model2Bus {
     pub unmapped: BTreeMap<u32, Access>,
 }
 
-/// Each pair of a ROM bank (main data, textures, polygons) fills an 8 MB
-/// slot, repeating if it is smaller.
-pub const ROM_SLOT: usize = 0x80_0000;
-
 impl Model2Bus {
     pub fn new(roms: &RomSet) -> Self {
         let mut program = roms.program.clone();
         program.resize(0x20_0000, 0);
-        let mut main_data = roms.region32_slots(Role::MainData, ROM_SLOT);
+        let mut main_data = roms.bank(Role::MainData);
         main_data.resize(0x200_0000, 0);
-        let main_data_high = roms.region32_slots(Role::MainDataHigh, ROM_SLOT);
+        let main_data_high = roms.bank(Role::MainDataHigh);
 
         let mut mems = vec![
             Mem::from(program, false),
@@ -280,22 +278,10 @@ impl Model2Bus {
             copro_upload_half: None,
             copro_booted: false,
             tgp: Tgp::new(),
-            copro_data: roms
-                .region32_slots(Role::CoproData, ROM_SLOT)
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|c| u32::from_le_bytes(*c))
-                .collect(),
+            copro_data: roms.bank(Role::CoproData).as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect(),
             tgp_fault: None,
             tgp_stalled: false,
-            texture_rom: roms
-                .region32_slots(Role::Textures, ROM_SLOT)
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|c| u16::from_le_bytes(*c))
-                .collect(),
+            texture_rom: roms.bank(Role::Textures).as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect(),
             geo: Geometrizer::new(polygon_rom(roms)),
             copro_empty_reads: 0,
             copro_result_hash: 0xcbf2_9ce4_8422_2325,
@@ -307,6 +293,7 @@ impl Model2Bus {
             uart_log: Vec::new(),
             frame_toggle: false,
             board_ctrl: 0,
+            uart: Uart::default(),
             inputs: [0xff; 4],
             io_analog_channel: 0,
             analog: [0x80; 8],
@@ -314,7 +301,13 @@ impl Model2Bus {
             eeprom: Eeprom::new(),
             controls: &roms.game.controls,
             drive: roms.game.drive_board.map(Drive::new),
-            gun: (!roms.game.controls.guns.is_empty()).then(GunBoard::default),
+            gun: roms
+                .game
+                .controls
+                .guns
+                .iter()
+                .any(|g| matches!(g.source, romset::GunSource::Counters { .. }))
+                .then(GunBoard::default),
             io_log: AccessLog::default(),
             unmapped: BTreeMap::new(),
         }
@@ -374,6 +367,11 @@ impl Model2Bus {
         self.run_tgp(crate::TGP_WORDS_PER_INSN);
         self.now += crate::CYCLES_PER_INSN;
         self.tick_timers();
+        // The UART's TxRDY pin holds request bit 10 while it's enabled: set
+        // again whenever the game clears it with the transmitter ready.
+        if self.irq_enable & IRQ_UART != 0 && self.irq_request & IRQ_UART == 0 && self.uart.tx_ready(self.now) {
+            self.request_irq(IRQ_UART);
+        }
         let vblank = self.now >= self.next_vblank;
         if vblank {
             self.next_vblank += FRAME_CYCLES;
@@ -449,8 +447,11 @@ impl Model2Bus {
             0x0098_0000 => self.copro_ctrl,
             0x0098_0004 => self.tgp.fifo_out.is_empty() as u32,
             0x0098_000c => (self.frame_toggle as u32) << 2,
+            // All ones while the copro holds no program: from reset until
+            // an upload's first word, and again once a new upload starts.
+            // bel uploads its program only if it reads bit 0 set at boot.
             0x0098_0014 => {
-                if self.copro_uploading && self.copro_program.is_empty() {
+                if self.copro_program.is_empty() {
                     u32::MAX
                 } else {
                     0
@@ -601,7 +602,9 @@ impl Model2Bus {
                 // Sound link UART: data in lane 0, mode/command in lane 2.
                 for (lane, control) in [(0, false), (2, true)] {
                     if lanes & (1 << lane) != 0 {
-                        self.uart_log.push((self.now, control, (v >> (8 * lane)) as u8));
+                        let b = (v >> (8 * lane)) as u8;
+                        self.uart_log.push((self.now, control, b));
+                        self.uart.write(control, b, self.now);
                     }
                 }
             }
@@ -739,7 +742,7 @@ impl Model2Bus {
 
 /// The polygon ROM as the geometrizer reads it (u32 words).
 pub fn polygon_rom(roms: &RomSet) -> Vec<u32> {
-    roms.region32_slots(Role::Polygons, ROM_SLOT).as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect()
+    roms.bank(Role::Polygons).as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect()
 }
 
 /// Recompiled code returns at the end of each frame and when its budget
@@ -868,6 +871,8 @@ impl state::State for Model2Bus {
             m.data.save(w);
             m.writes.save(w);
         }
+        // Then the UART's transmitter.
+        self.uart.save(w);
     }
     fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
         let test_rams = self.test_rams;
@@ -917,8 +922,56 @@ impl state::State for Model2Bus {
                 m.load(r)?;
             }
         }
+        self.uart = Uart::default();
+        if !r.done() {
+            self.uart.load(r)?;
+        }
         Ok(())
     }
 }
 
 state::fields!(Timer { reload, started_at, running });
+
+/// One byte on the sound link: 10 bits at 31.25 kbaud, in 25 MHz cycles.
+const UART_BYTE_CYCLES: u64 = 8_000;
+
+/// The sound link UART's transmit side (an 8251-type uPD71051), as far as
+/// its TxRDY interrupt needs: bel sends its sound commands a byte per
+/// interrupt (docs/hw/peripherals.md). The first control write after a
+/// reset is the mode, later ones are commands; TxRDY is high while the
+/// command enables the transmitter (bit 0) and it can take a byte, a byte
+/// time after the last one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Uart {
+    expect_mode: bool,
+    tx_enabled: bool,
+    ready_at: u64,
+}
+
+impl Default for Uart {
+    fn default() -> Self {
+        Uart { expect_mode: true, tx_enabled: false, ready_at: 0 }
+    }
+}
+
+impl Uart {
+    fn write(&mut self, control: bool, b: u8, now: u64) {
+        if !control {
+            self.ready_at = now + UART_BYTE_CYCLES;
+        } else if self.expect_mode {
+            self.expect_mode = false;
+        } else if b & 0x40 != 0 {
+            // Internal reset: a mode byte comes next.
+            *self = Uart { ready_at: self.ready_at, ..Uart::default() };
+        } else {
+            self.tx_enabled = b & 1 != 0;
+        }
+    }
+
+    #[inline]
+    fn tx_ready(&self, now: u64) -> bool {
+        self.tx_enabled && now >= self.ready_at
+    }
+}
+
+state::fields!(Uart { expect_mode, tx_enabled, ready_at });

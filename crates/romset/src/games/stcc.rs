@@ -23,6 +23,7 @@ pub static STCC: Game = Game {
     hud_windows: &[],
     controls: CONTROLS,
     drive_board: Some(DriveBoard::Wheel),
+    packed: &[],
     files: &[
         RomFile {
             name: "epr-19570.15",
