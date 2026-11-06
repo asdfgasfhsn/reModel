@@ -48,6 +48,10 @@ i960 --geo ports--> buffer RAM display list --(list DMA, jumps)--> GEOMETRIZER (
   - Implementation consequence: Remodel can run TSG on a second instance of our MB86235
     interpreter (LLE). Then only the fixed-function raster side (§4-§6) has to be written
     from MAME's description.
+- **On 2B** the geometrizer is an ADSP-21062 SHARC, also running a program the game uploads,
+  fed the same lists through the same ports and frame protocol; its program emits this same
+  rasteriser stream (§4.2), so everything from §4 on applies to 2B unchanged. Its external
+  map and the comparison with a 2C program are in `model2b.md`. **H** (`overrevb`)
 - MAME notes that "Top Skater seems to use a slightly different geometry code that has a
   secondary transformation matrix". TSG confirms this and shows what is different (§2.3,
   §3.2). **H**

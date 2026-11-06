@@ -45,7 +45,8 @@ music`). There is no live window yet.
 | DSB2 music board (68000 firmware + MPEG Layer II decoder) | done; `make music` renders the game's music from a `run` capture |
 | DSB1 music board (`stcc`: Z80 firmware + MPEG Layer II decoder) | done; live in `make play GAME=stcc` and the browser, `make music GAME=stcc` offline; modelled from the Z80 program (`docs/hw/dsb1.md`) |
 | Z80 core (the DSB1's CPU) | done: full instruction set with undocumented flags, interrupts, T-state timing, save states; see `docs/hw/z80.md` |
-| ADSP-21062 SHARC core (Model 2B's two geometry DSPs) | interpreter done, not yet wired to a board: every instruction group, 40-bit floating point, DAGs, loops, interrupts, host boot through DMA channel 6, save states. Both 2B programs decode with no undefined encodings and boot to their first external access (`make sharc-test`); written from Analog Devices' manual, see `docs/hw/adsp2106x.md` |
+| ADSP-21062 SHARC core (Model 2B's two geometry DSPs) | interpreter done and running both of `overrevb`'s programs on the 2B board model: every instruction group, 40-bit floating point, DAGs, loops, interrupts, host boot through DMA channel 6, save states (`make sharc-test`); written from Analog Devices' manual, see `docs/hw/adsp2106x.md`. No recompiler yet |
+| Model 2B-CRX board model | done for `overrevb`: the copro and geometrizer SHARCs booted through their host windows, their FIFOs and flags, the moved sound UART; the geometrizer program's raster stream has 2C's format, so both renderers take it unchanged. Worked out from the game's programs, see `docs/hw/model2b.md` |
 | Enhanced views: any resolution, 16:9 / 21:9 with HUD moved to the edges | done for snapshots (`--height`, `--aspect`, `--hud`) |
 | Custom soundtracks (replace any music track, game logic intact) | done offline: `make music SOUNDTRACK=name`; see `docs/mods.md` |
 | Native window (`make play`) | playable: GPU renderer, live sound (cpal), keyboard and gamepad (gilrs), any window shape from 4:3 to 32:9; about 2 ms of CPU per frame recompiled. Esc menu (sound mix, display, save slots, game picker), save states; see `docs/play.md` |
@@ -57,6 +58,7 @@ music`). There is no live window yet.
 | Sixth game: `overrev` (Over Rev, 2C, Jaleco) | playable with sound (`make play GAME=overrev`): attract, mode, car and gearbox select, races. Jaleco's own sound driver runs on the SCSP board model unchanged (music streamed from sample ROM; no music board). Needed the link board's registers to read as absent; recompiled build identical |
 | Seventh game: `hotd` (The House of the Dead, 2C) | playable (`make play GAME=hotd`) with light guns: mouse, touch, gamepad sticks or scripts aim, through generic gun controls in the manifest. Attract, coin-up and play through the first areas with shooting and off-screen reloads; sound from the SCSP. Needed a model of its gun interface (worked out from the game's code); recompiled build identical |
 | Eighth game: `bel` (Behind Enemy Lines, 2C, EPL) | playable with sound (`make play GAME=bel`): two mounted guns aimed by mouse, touch, gamepad sticks or scripts. Attract, coin-up and the first mission with shooting and missiles to game over. Needed packed main data and polygon banks, the copro status read before its upload, and the sound UART's transmit interrupt; EPL's sound driver runs on the SCSP board model unchanged; recompiled build identical |
+| Ninth game: `overrevb` (Over Rev, 2B, Jaleco) | playable with sound (`make play GAME=overrevb`): the 2B version of `overrev`, same data and controls, its own i960 program and two SHARC programs. Attract, menus and races look and sound as `overrev` does. About real time with the i960 recompiled (the geometrizer SHARC, interpreted, is the limit); recompiled build identical |
 
 ## Quick start
 
@@ -113,7 +115,9 @@ meant only to make things faster must leave it unchanged. The hash depends on
 
 Every target takes `GAME=skisuprg` for Sega Ski Super G, `GAME=stcc` for
 Sega Touring Car Championship, `GAME=segawski` for Sega Water Ski,
-`GAME=waverunr` for Wave Runner, `GAME=overrev` for Over Rev, `GAME=hotd`
+`GAME=waverunr` for Wave Runner, `GAME=overrev` for Over Rev,
+`GAME=overrevb` for its Model 2B version (its chips in `overrev.zip`, as
+MAME merges them), `GAME=hotd`
 for The House of the Dead or `GAME=bel` for Behind Enemy Lines (`make play GAME=stcc`, `make capture
 GAME=skisuprg`, ...), except `make assets`, which is `topskatr`'s, and
 `make music`, which needs a music board (`topskatr`'s DSB2 or `stcc`'s DSB1).
@@ -130,7 +134,8 @@ crates/
   romset/    ROM manifests, verification, assembly (Model 2-generic)
     src/games/  one module per supported game
   analyze/   recursive-descent code discovery      (CPU-generic)
-  model2/    board model: memory map, IRQs, timers, I/O, copro interface
+  model2/    board model (2B and 2C): memory map, IRQs, timers, I/O,
+             copro and geometrizer interfaces
   mb86235/   MB86235 (TGPx4) decoder, disassembler and interpreter
   adsp2106x/ ADSP-21062 (SHARC) decoder, disassembler and interpreter
              (Model 2B's geometry DSPs; generic)
@@ -157,7 +162,7 @@ system. The geometry processor is what differs between revisions:
 | i960 decoder, interpreter, recompiler | shared | shared | shared | shared |
 | ROM loading, code analysis | shared | shared | shared | shared |
 | Sound (68000 + SCSP) | shared | shared | shared | shared |
-| Geometry processor | Fujitsu TGP (MB86234), program uploaded | as Model 2; fixed-function geometrizer | two ADSP-21062 SHARCs (copro, geometrizer), programs uploaded; core in `crates/adsp2106x` | Fujitsu TGP (MB86235) |
+| Geometry processor | Fujitsu TGP (MB86234), program uploaded | as Model 2; fixed-function geometrizer | two ADSP-21062 SHARCs (copro, geometrizer), programs uploaded; core in `crates/adsp2106x`, board in `crates/model2` | Fujitsu TGP (MB86235) |
 | Renderer | shared | shared | shared | shared |
 
 Supporting a new game should mean adding a manifest under
@@ -170,7 +175,12 @@ input and both players read them from there. Drive board protocols live
 in `crates/model2/src/drive.rs`, one per kind; the 2C gun interface in
 `crates/model2/src/gun.rs`. `topskatr`, `skisuprg`, `stcc`, `segawski`,
 `waverunr`, `overrev`, `hotd` and `bel` are Model 2C-CRX (MB86235 geometry
-processor).
+processor); `overrevb` is Model 2B-CRX (ADSP-21062 SHARCs). The manifest's
+`board` picks the board model: `crates/model2` keeps what differs between
+the two (the copro and geometrizer cores, the 2B host windows, the UART
+address) behind it, with nothing keyed on a game's name. A manifest's
+`parent` marks a clone: its chips may sit in the parent set's zip or
+folder, and it shares the parent's poster.
 
 The board table is from public documentation (largely MAME's driver notes).
 MAME does not run `topskatr` correctly, so its board details are treated as
@@ -218,10 +228,79 @@ supported unless a game's section says otherwise.
   its copro data ROMs (`.29/.30`), which the i960 can only reach through
   the TGP. Not investigated.
 
-## What's known about Models 2A and 2B (scoping, not yet supported)
+## What's known about Model 2B
 
-From throwaway boots of `srallyc` (2A), `overrevb` and `sgt24h` (2B) on the
-2C board model, and from their ROMs. Nothing here runs yet.
+From `overrevb`'s i960 program and its two SHARC programs, run on the board
+model and compared with `overrev` (the same game on 2C, which shares every
+chip but the program pair). Details, addresses and evidence in
+`docs/hw/model2b.md`.
+
+- *Confirmed (`overrevb`, `sgt24h`):* 2B has **two SHARCs**, the copro and
+  the geometrizer, each programmed by the i960 through its I/O-processor
+  registers (host windows `0x8C0000` and `0x840000`): a DMA of 4,096 48-bit
+  words, sent as 16-bit halves to `0x884000` / `0x804000` while bit 31 of
+  `0x980000` (copro) or `0x980008` (geometrizer) is set. Both Jaleco games
+  upload the same two SHARC programs.
+- *Confirmed (`overrevb`, with the ADSP-21062 core):* each SHARC is booted
+  as UM §11.6.3 describes for a 16-bit host. Its window maps IOP register
+  *n* at window + 4*n*, each 32-bit register written as two 16-bit halves,
+  low first: DMAC6 = 0, II6 = `0x20000`, IM6 = 1, C6 = `0x1000`, DMAC6 =
+  `0xA1` (instruction words, 16-to-48 packing, LSW first), then 12,288 halves
+  to EPB0 (the geometrizer first gets MSGR7 = `0x7378842E`). The DMA's end
+  vectors through `0x20040` (`RTI`) to `0x20005`, `JUMP 0x20080 (DB)`. The
+  copro program has 2,110 words of code, the geometrizer's 2,987, none with
+  an undefined encoding (`docs/hw/adsp2106x.md`).
+- *Confirmed (the upload code and UM §11.6.3):* bit 31 of `0x980000` /
+  `0x980008` is not the SHARC's RESET: the i960 programs the SHARC while
+  the bit is set (a SHARC in reset ignores its host) and the program runs
+  once it is cleared. It behaves as the host bus request (HBR);
+  *unconfirmed* that it is that pin, and what resets a SHARC for a second
+  upload (each is uploaded once a boot). `0x980020` is written 0 after
+  each bit 31 is set: *unconfirmed* what for.
+- *Confirmed:* the copro keeps 2C's i960 interface: commands into a FIFO
+  through `0x880000 + 16·fn` (tagged) and `0x884000`, results read from
+  `0x884000`, `0x980004` bit 0 set while there are none. The SHARC reads
+  commands from external `0x400000` (FLAG0: FIFO empty) and writes results
+  to `0xC00000` (FLAG1: FIFO full).
+- *Confirmed:* the geometrizer keeps 2C's display list ports, buffer RAM
+  and frame protocol (FLAG0 is 2C's F0). The SHARC reads the list from
+  external `0x400000`, writes the rasteriser stream to `0x410000`, and
+  reads the polygon ROM through an address register at `0x430000` and a
+  data port at `0x430001`; polygon RAM is written at `0x420000` and its
+  fast part is the SHARC's own internal memory (neither is used by
+  `overrevb`).
+- *Confirmed:* the 2B geometrizer program emits **the same rasteriser
+  stream format as the 2C programs**, so the renderers take it unchanged.
+  Fed the same lists as `overrev`'s 2C geometrizer, it gives the same
+  command words and lengths, vertices within float rounding, and a
+  rendered frame within 4 pixels; the two programs differ in the luma word
+  of back faces (`docs/hw/model2b.md`).
+- *Confirmed:* the sound UART is at `0x9C0000` (data) and `0x9C0004`
+  (mode, command, status), one register a 32-bit word (2C: `0x1C80000`,
+  two a word). The 2B program also writes `0x40` and `0x4E` to `0x1C80004`
+  at boot: *unconfirmed* what is there.
+- *Unconfirmed:* the SHARC clock (40 MHz, general knowledge; Remodel runs
+  5 SHARC instructions per i960 instruction), the FIFO depths and the wait
+  states. The copro and geometrizer flags the programs drive (copro FLAG2
+  error, FLAG3 waiting; geometrizer FLAG1-3) go nowhere in the model.
+- *Confirmed (`sgt24h`):* boot clears work RAM (`0x500000-0x57FFFF`,
+  its callers' stack frames included) from inside the function called at
+  `0x710`, then returns. That works only because the i960KB keeps recent
+  callers' local registers on-chip: its data sheet says the cache "holds up
+  to four local register frames" (the current one and three callers'), and
+  the oldest is written to memory only when a fifth procedure is entered;
+  `flushreg` writes the cached sets out (i960 Jx manual; the KA/KB
+  reference wasn't to hand). With the cache modelled (`i960::cpu::LocalCache`)
+  the unpatched ROM boots past `0x710` to "CHECKING NETWORK NOW", "STAND
+  ALONE" and "INSERT COIN" on the 2C model with the 2B stubs; without it,
+  the return reloads the zeroed frame and faults at IP 0. That it is
+  exactly three cached sets is the data sheet's, not tested by the game.
+  `sgt24h` isn't supported yet.
+
+## What's known about Model 2A (scoping, not yet supported)
+
+From a throwaway boot of `srallyc` on the 2C board model, and from the
+ROMs. Nothing here runs yet.
 
 - *Confirmed (`srallyc`'s code):* the 2A TGP's program is **uploaded by the
   game**, not internal to the chip as general knowledge had it. The loader
@@ -240,38 +319,6 @@ From throwaway boots of `srallyc` (2A), `overrevb` and `sgt24h` (2B) on the
   go straight to `0x804000`. The 2A geometrizer is presumably fixed-function
   (unconfirmed). Writes to `0x12000000-0x128xxxxx` look like texture and
   luma RAM (unconfirmed).
-- *Confirmed (`overrevb`, `sgt24h`):* 2B has **two SHARCs**, the copro and
-  the geometrizer, each programmed by the i960 through its I/O-processor
-  registers (host windows `0x8C0000` and `0x840000`; reset bits in
-  `0x980000` and `0x980008`): a DMA of 4,096 48-bit words, sent as 16-bit
-  halves to `0x884000` / `0x804000`. The sound UART is at `0x9C0000`
-  (2C: `0x1C80000`). `overrevb` reaches attract mode on the 2C map with
-  small stubs; both Jaleco games upload the same two SHARC programs.
-- *Confirmed (`overrevb`, with the ADSP-21062 core):* each SHARC is booted
-  as UM §11.6.3 describes for a 16-bit host. Its window maps IOP register
-  *n* at window + 4*n*, each 32-bit register written as two 16-bit halves,
-  low first: DMAC6 = 0, II6 = `0x20000`, IM6 = 1, C6 = `0x1000`, DMAC6 =
-  `0xA1` (instruction words, 16-to-48 packing, LSW first), then 12,288 halves
-  to EPB0 (the geometrizer first gets MSGR7 = `0x7378842E`). The DMA's end
-  vectors through `0x20040` (`RTI`) to `0x20005`, `JUMP 0x20080 (DB)`. The
-  copro program has 2,110 words of code, the geometrizer's 2,987, none with
-  an undefined encoding. Both set FLAG2/FLAG3 (geometrizer also FLAG1) as
-  outputs and handshake on FLAG0; the copro reads commands from external
-  `0x400000`. Details in `docs/hw/adsp2106x.md`. *Unconfirmed:* whether bit
-  31 of `0x980000`/`0x980008`, which brackets each upload, is the SHARC's
-  RESET or its host bus request.
-- *Confirmed (`sgt24h`):* boot clears work RAM (`0x500000-0x57FFFF`,
-  its callers' stack frames included) from inside the function called at
-  `0x710`, then returns. That works only because the i960KB keeps recent
-  callers' local registers on-chip: its data sheet says the cache "holds up
-  to four local register frames" (the current one and three callers'), and
-  the oldest is written to memory only when a fifth procedure is entered;
-  `flushreg` writes the cached sets out (i960 Jx manual; the KA/KB
-  reference wasn't to hand). With the cache modelled (`i960::cpu::LocalCache`)
-  the unpatched ROM boots past `0x710` to "CHECKING NETWORK NOW", "STAND
-  ALONE" and "INSERT COIN" on the 2C model with the 2B stubs; without it,
-  the return reloads the zeroed frame and faults at IP 0. That it is
-  exactly three cached sets is the data sheet's, not tested by the game.
 
 ## What's known about `topskatr`
 
@@ -725,6 +772,39 @@ driver. A sit-down driving cabinet; no extra boards are needed.
 - *Unconfirmed:* steering, braking and the AI cars' behaviour were only
   checked as far as a scripted run shows; the car stays last when
   nothing steers it.
+
+## What's known about `overrevb`
+
+Ninth game and the first Model 2B one: Over Rev's 2B version, a clone of
+`overrev` in MAME's naming. Its chips are in `overrev.zip` (or an
+`overrevb` folder or zip of its own); the manifest's `parent` says so.
+
+- *Confirmed (ROM):* only the program pair differs from `overrev`
+  (`epr-19992b.15/.16`); data, polygon, texture and sound chips are the
+  same files, in the same order, and the controls are the same.
+- *Confirmed (from the code):* its i960 program is a 2B build of the same
+  game (same strings, "Sep 10 1997"), with the 2B uploads, UART address and
+  copro boot described under Model 2B. It reads the controls, EEPROM and
+  link board as `overrev` does.
+- *Confirmed (by running it):* `make run GAME=overrevb INPUT=coin-start`
+  attracts, coins up, goes through the mode, car and gear menus and races
+  the first course with textured 3D that matches `overrev`'s at the same
+  frames (sampled every 300) through the menus and into the race; in the
+  unsteered race the two drift apart after frame 3,300 (the 2B car loses
+  speed in the next curve and falls behind), as two builds of the physics
+  can.
+  *Unconfirmed* whether the copro maths differs from 2C's anywhere it
+  matters. The attract demo runs about 20 frames behind `overrev`'s.
+- *Confirmed (by running it):* `make sound GAME=overrevb` plays the run's
+  commands, about -37 dBFS RMS through the race as for `overrev`. `make
+  state-check GAME=overrevb` round-trips (save states hold both SHARCs),
+  `make lockstep GAME=overrevb RECOMP=1` runs 300M instructions
+  identical, and a coin-start run of 600M instructions gives the same state
+  hash (`ee2bcd89e419e428`, with an `eeprom.bin` from an earlier run)
+  recompiled and interpreted.
+- *Speed:* the interpreted geometrizer SHARC takes about 16 ms a race
+  frame, so races run at about real time with the i960 recompiled and the
+  geometrizer thread is what limits it (`docs/hw/model2b.md`, "Speed").
 
 ## What's known about `hotd`
 

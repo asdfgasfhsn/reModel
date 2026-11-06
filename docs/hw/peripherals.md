@@ -87,6 +87,8 @@ The C/D input selects data or control. Reading and writing both have a C/D=0 and
 
 **Model 2C mapping:** in MAME the USART sits at 0x01C80000–0x01C80003 on the low byte of each 16-bit half (MAME, M). That puts data at byte 0x01C80000 and control/status at 0x01C80002. A 32-bit read therefore returns data in bits 7:0 and status in bits 23:16. MAME150 used the same layout and returned its status hack in bits 23:16. This matches the existing `bus.rs` assumption.
 
+**Model 2B mapping** (from `overrevb`'s code, confirmed by running it): data at 0x009C0000 and mode/command/status at 0x009C0004, one register per 32-bit word with the byte in bits 7:0. Its init writes 0, 0, 0, then 0xD0 (internal reset), mode 0x4E and command 0x37, and polls status bit 0 (TxRDY) before each byte (`model2b.md`).
+
 ### Initialisation sequence (INTEL, H)
 1. After a reset, the **first** control write is the **Mode instruction**.
 2. In sync mode, one or two sync-character bytes follow. In async mode nothing follows.

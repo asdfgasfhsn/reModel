@@ -1,8 +1,8 @@
 # Analog Devices ADSP-21062 "SHARC": decoder and interpreter notes
 
-Status: 2026-11-06. The core is complete as an interpreter and runs the two
-Model 2B programs to their first external access; it is not wired to a board
-yet. The crate is `crates/adsp2106x`.
+Status: 2026-11-06. The core is complete as an interpreter and runs both of
+`overrevb`'s programs on the Model 2B board model (`docs/hw/model2b.md`),
+which plays. The crate is `crates/adsp2106x`.
 
 **Clean room.** Everything here was written from Analog Devices' public
 documentation. No emulator's source code was read (MAME's, ElSemi's or any
@@ -102,6 +102,14 @@ The host side is `host_write`/`host_read`, one bus transfer at a time.
 Anything else (other DMA channels when enabled, link ports, SPORTs, DMASTAT)
 is reported, not ignored: a core access returns `Fault::Iop`, a host access
 `HostError::Unimplemented`.
+
+**Waiting on the host:** `Sharc::spinning` says when the core can only
+repeat itself until a FLAG input changes: the last instruction was a taken,
+non-delayed `IF [NOT] FLAGn_IN JUMP` to itself with no compute, or the
+innermost loop is up to four NOPs ending on a FLAG input (or `FOREVER`),
+with the timer off and no interrupt that could be taken. The board stops
+stepping a SHARC then (both 2B programs wait this way); the result is the
+same as stepping it.
 
 **Reporting:** undefined encodings decode to `Op::Unknown` or
 `Compute::Unknown` and execute as `Fault::Undefined`; stack overflow, a return
@@ -218,11 +226,11 @@ the EPB0 FIFO (`remodel-state`); the decode cache is rebuilt.
 
 ## Model 2B: the upload, as observed
 
-From a throwaway boot of `overrevb` on the 2C board model with logging of
-the i960's writes to the SHARC windows (`sgt24h` uploads the same two
-programs but its boot needs the i960 change being made separately). The host
-windows map IOP register *n* at window + 4*n*: `0x8C0000` is the copro
-SHARC's, `0x840000` the geometrizer's. Each 32-bit register is written as two
+First seen in a throwaway boot of `overrevb` on the 2C board model with
+logging of the i960's writes to the SHARC windows; now what the 2B board
+model does (`docs/hw/model2b.md`). `sgt24h` uploads the same two programs.
+The host windows map IOP register *n* at window + 4*n*: `0x8C0000` is the
+copro SHARC's, `0x840000` the geometrizer's. Each 32-bit register is written as two
 16-bit transfers to the same address, low half first: the reset SYSCON
 (HPM=01, 16-bit host bus, HMSWF=0).
 
@@ -240,15 +248,15 @@ SHARC's, `0x840000` the geometrizer's. Each 32-bit register is written as two
 
 With the core's host interface this loads 0x20000-0x20FFF; the count
 reaching zero raises EP0I, whose vector (0x20040) is `RTI`, returning to
-0x20005: `JUMP 0x20080 (DB)`. *Unconfirmed:* what `0x980000`/`0x980008` bit 31
-drives. UM §11.6.3 needs the SHARC out of reset (idling in host boot mode) to
-take the host's writes, so it reads more like the host bus request (HBR) than
-RESET; the board step has to decide.
+0x20005: `JUMP 0x20080 (DB)`. Bit 31 of `0x980000`/`0x980008` can't be
+RESET (UM §11.6.3 needs the SHARC out of reset, idling in host boot mode, to
+take the host's writes, and the program runs once the bit clears): it
+behaves as the host bus request (HBR); `docs/hw/model2b.md` has the
+reasoning.
 
 Captured images are 48-bit words, six little-endian bytes each, loaded at
-0x20000 (`out/overrevb/sharc-copro.bin`, `sharc-geo.bin`). Capturing them
-needs the throwaway 2B manifests and a write logger in the bus model (not
-committed: 2B isn't a supported board yet).
+0x20000 (`out/overrevb/sharc-copro.bin`, `sharc-geo.bin`): `make run
+GAME=overrevb` writes them from the uploads it sees.
 
 ### What the programs show
 
@@ -286,9 +294,14 @@ committed: 2B isn't a supported board yet).
 ## Open questions
 
 - The RECIPS and RSQRTS seed ROM contents (item 10 above).
-- The board side of 2B: what `0x980000`/`0x980008` bit 31 drive, how FLAG0-3
-  and IRQ2-0 are wired, and what lives at the external addresses the programs
-  use (`0x400000`, `0x410000`, `0x430000`...).
+- The board side of 2B is in `docs/hw/model2b.md`, with its own open
+  questions (what the output flags and some registers drive, FIFO depths,
+  resets). Neither program enables interrupts (IRPTEN stays clear), so
+  IRQ2-0 and the timer don't matter to them.
 - Whether the copro's backwards DO is reached, and what the chip does with
   the leftover loop stack entry.
 - Cycle timing beyond branch bubbles, if the board needs it.
+- Speed: the interpreter takes about 28 ns an instruction for a NOP and
+  60-70 ns for a multifunction compute with transfers on a desktop CPU;
+  the 2B geometrizer runs about 225,000 instructions a race frame. A
+  recompiler (as for the MB86235) is the next step.

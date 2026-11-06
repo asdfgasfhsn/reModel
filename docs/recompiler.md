@@ -13,6 +13,13 @@ make bench RECOMP=1       # same run on the recompiled build: same state hash
 target/recomp/release/remodel --interp ...   # recompiled build, interpreter for the i960
 ```
 
+On Model 2B (`overrevb`) the copro and geometrizer are ADSP-21062 SHARCs,
+which have no recompiler yet: `remodel recomp` makes the game's i960 crate
+only, says so, and the SHARCs run on their interpreter in every build
+(`recomp-files` names just the i960 crate). The recompiled i960 code calls
+the same `Model2Bus::retire`, which steps the copro SHARC, so the state hash
+is the interpreter's.
+
 The generated code is derived from the ROMs, so it lives in `out/recomp/`
 and is never committed. Ordinary builds (and `make check`) leave it out. A
 build with no recompiled code for a ROM image runs it on the interpreters,
