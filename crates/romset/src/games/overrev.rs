@@ -19,6 +19,7 @@ pub static OVERREV: Game = Game {
     controls: CONTROLS,
     drive_board: None,
     parent: None,
+    backup_ram: &[],
     packed: &[],
     // Its voices mostly play at DISDL 3: the sound board averages about
     // 5.5 dB below the other SCSP-only games (docs/hw/sound.md §6).

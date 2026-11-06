@@ -138,6 +138,12 @@ pub struct Game {
     /// its chips are also looked for in the parent's folder or zip, as a
     /// merged MAME set keeps them, and it shares the parent's poster.
     pub parent: Option<&'static str>,
+    /// Settings the game keeps in its battery-backed SRAM (`0x1D00000`)
+    /// and never initialises itself, as (offset, bytes): what an operator
+    /// would have chosen in the test menu. Written over the SRAM's power-on
+    /// contents (all ones) at boot. sgt24h reads its I/O board type from
+    /// there and indexes a table with it unchecked.
+    pub backup_ram: &'static [(usize, &'static [u8])],
 }
 
 #[derive(Debug)]

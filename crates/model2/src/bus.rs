@@ -208,6 +208,16 @@ pub struct Model2Bus {
     pub unmapped: BTreeMap<u32, Access>,
 }
 
+/// Backup SRAM's contents at power-on: all ones, with the operator
+/// settings the game's manifest gives (`Game::backup_ram`).
+fn backup_ram(game: &romset::Game) -> Vec<u8> {
+    let mut ram = vec![0xff; 0x4000];
+    for &(at, bytes) in game.backup_ram {
+        ram[at..at + bytes.len()].copy_from_slice(bytes);
+    }
+    ram
+}
+
 impl Model2Bus {
     pub fn new(roms: &RomSet) -> Self {
         let mut program = roms.program.clone();
@@ -225,7 +235,7 @@ impl Model2Bus {
             Mem::zeroed(0x20_0000),
             Mem::zeroed(0x2_0000),
             Mem::zeroed(0x4000),
-            Mem::from(vec![0xff; 0x4000], true),
+            Mem::from(backup_ram(roms.game), true),
             Mem::from(main_data, false),
             Mem::zeroed(0x70_0000),
         ];
