@@ -265,9 +265,15 @@
         const gw = new Worker("../geo-worker.js", { type: "module" });
         gw.onmessage = (e) => {
           const m = e.data;
-          if (m.type === "frame") set_geo_frame(m.stream, m.points);
+          if (m.type === "frame") set_geo_frame(m.stream, m.points); // undefined for a skipped frame
           else if (m.type === "stats") geoMs = m.msPerFrame;
-          else if (m.type === "error") status.textContent = "geometry worker: " + m.message;
+          else if (m.type === "error") {
+            // The game waits for this worker: without it, run the
+            // geometrizer on this thread instead.
+            console.error("geometry worker: " + m.message);
+            params.set("geo", "local");
+            location.search = params.toString();
+          }
         };
         try {
           gw.postMessage({ type: "init", pkg, module, game, rom });

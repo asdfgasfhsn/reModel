@@ -94,6 +94,12 @@ commands:
   gpu-check [DIR]      draw the frames captured with --capture in DIR
                        (default out/GAME/capture) with the software and GPU
                        rasterisers; time both and report how they differ
+  latency FRAME CHANGE [FRAMES]
+                       input latency: two runs from FRAME (with --input,
+                       or --load-state), one with CHANGE (an --input item
+                       without frames, e.g. wheel=0xF0) held from FRAME;
+                       for each frame after, when the game read it and
+                       when its RAM, display list and polygons differ
   lockstep [STEPS]     run the recompiled i960 code and the interpreter side
                        by side, block by block; report the first difference
   run [STEPS] [SNAP]   boot on the reference interpreter and report what
@@ -703,6 +709,19 @@ fn main() -> ExitCode {
             let words: Vec<u32> = args[1..].iter().filter_map(|s| u32::from_str_radix(s, 16).ok()).collect();
             geo_trace_words(&prog, &words);
         }
+        "latency" => {
+            let (Some(at), Some(change)) = (args.get(1).and_then(|s| parse_num(s)), args.get(2)) else {
+                eprint!("{USAGE}");
+                return ExitCode::FAILURE;
+            };
+            let frames = args.get(3).and_then(|s| parse_num(s)).map_or(12, u64::from);
+            if let Err(e) =
+                latency(&roms, at as u64, change, frames, input.as_deref().unwrap_or(""), interp, single_thread)
+            {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
         "run" => {
             let steps = args.get(1).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(50_000_000);
             let snap = args.get(2).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(0);
@@ -922,6 +941,114 @@ fn snapshot(m: &mut model2::Machine, path: &std::path::Path) {
     };
     let png = png::encode_rgb(view.width, view.height, &rgb);
     let _ = std::fs::write(path, png);
+}
+
+/// `latency`: run to frame `at`, then on as two machines, one with
+/// `change` held from there on, and report per frame where they differ.
+/// Frame i is the i-th after the change took effect: the game reads its
+/// inputs, then at the vblank that ends it the display list goes to the
+/// geometrizer, whose polygons a player sees drawn next (native player;
+/// the browser's geometry worker adds about a frame).
+fn latency(
+    roms: &RomSet,
+    at: u64,
+    change: &str,
+    frames: u64,
+    spec: &str,
+    interp: bool,
+    single_thread: bool,
+) -> Result<(), String> {
+    use model2::input::InputScript;
+    let controls = &roms.game.controls;
+    let base = InputScript::parse(spec, controls).map_err(|e| format!("--input: {e}"))?;
+    let changed = InputScript::parse(&format!("{spec},{change}@{at}-{}", u32::MAX), controls)?;
+    let channel = change.split_once('=').and_then(|(n, _)| controls.analog(n)).map(|a| a.channel as usize);
+    let new = |roms| {
+        let mut m = model2::Machine::new(roms);
+        if interp {
+            m.disable_native();
+        }
+        m.bus.geo.set_threaded(!single_thread);
+        m
+    };
+    let mut a = new(roms);
+    if let Ok(bytes) = std::fs::read(PathBuf::from("out").join(roms.game.id).join("eeprom.bin")) {
+        a.bus.eeprom.load(&bytes);
+    }
+    if let Some(path) = LOAD_STATE.get() {
+        let d = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        model2::load_session(&mut a, None, &d)?;
+    }
+    base.apply(a.frames, &mut a.bus);
+    if a.frames > at {
+        return Err(format!("the run starts at frame {}, after {at}", a.frames));
+    }
+    while a.frames < at {
+        let f = a.frames;
+        a.run_slice(u64::MAX).map_err(|s| format!("stopped: {s:?}"))?;
+        if a.frames != f {
+            base.apply(a.frames, &mut a.bus);
+        }
+    }
+    let mut b = new(roms);
+    b.load_state(&a.save_state())?;
+    base.apply(at, &mut a.bus);
+    changed.apply(at, &mut b.bus);
+    println!("{} from frame {at}: {change}", roms.game.id);
+    println!(
+        "frame  read{}  RAM  list  polygons (words differing)",
+        if channel.is_some() { " (at, value)" } else { "" }
+    );
+    let (mut first_ram, mut first_list, mut first_poly) = (None, None, None);
+    for i in 0..frames {
+        let start = b.bus.now;
+        a.run_slice(u64::MAX).map_err(|s| format!("stopped: {s:?}"))?;
+        b.run_slice(u64::MAX).map_err(|s| format!("stopped: {s:?}"))?;
+        a.bus.geo.sync();
+        b.bus.geo.sync();
+        let read = channel.map_or(String::new(), |c| {
+            let (when, v) = b.bus.analog_reads[c];
+            if when >= start {
+                let into = (when - start) as f64 / (b.bus.now - start).max(1) as f64;
+                format!("  {:3.0}% {v:#04x}", into * 100.0)
+            } else {
+                "  -         ".into()
+            }
+        });
+        let ((ra, la), (rb, lb)) = (a.bus.ram_hashes(), b.bus.ram_hashes());
+        let (sa, sb) = (&a.bus.geo.engine().stream, &b.bus.geo.engine().stream);
+        let poly = sa.iter().zip(sb).filter(|(x, y)| x != y).count() + sa.len().abs_diff(sb.len());
+        let mark = |d: bool, first: &mut Option<u64>| {
+            if d && first.is_none() {
+                *first = Some(i);
+            }
+            if d {
+                "yes"
+            } else {
+                "-"
+            }
+        };
+        println!(
+            "{i:5}{read}  {:>3}  {:>4}  {:>8} ({poly})",
+            mark(ra != rb, &mut first_ram),
+            mark(la != lb, &mut first_list),
+            mark(poly > 0, &mut first_poly)
+        );
+        let f = a.frames;
+        base.apply(f, &mut a.bus);
+        changed.apply(f, &mut b.bus);
+    }
+    let show = |f: Option<u64>| f.map_or("not within the run".into(), |f| format!("frame {f}"));
+    println!(
+        "first difference: RAM {}, display list {}, polygons {}",
+        show(first_ram),
+        show(first_list),
+        show(first_poly)
+    );
+    if let Some(f) = first_poly {
+        println!("drawn after {} frames from the input (native player; browser: about one more)", f + 1);
+    }
+    Ok(())
 }
 
 fn run(

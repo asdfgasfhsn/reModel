@@ -78,7 +78,7 @@ endif
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm m68k-tests clean recomp recomp-workspace bench sound sound-disasm
+.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm m68k-tests clean recomp recomp-workspace bench latency sound sound-disasm
 
 ##@ General
 
@@ -248,6 +248,11 @@ state-check: release ## Save state round trip: a run saved at frame 2000 and res
 	@$(RUN) --audio $(OUT)/state-b.wav --load-state $(OUT)/state-check.save --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep '^state hash' > $(OUT)/state-b.txt
 	@cmp -s $(OUT)/state-a.txt $(OUT)/state-b.txt && echo "state hash    same after save and load: $$(cut -c15- $(OUT)/state-a.txt)" || { echo "state hash DIFFERS:"; cat $(OUT)/state-a.txt $(OUT)/state-b.txt; exit 1; }
 	@python3 -I -c 'import sys, wave; a, b = (wave.open(f).readframes(1 << 30) for f in sys.argv[1:]); print("audio         " + ("resumed run matches the uninterrupted one" if a.endswith(b) else "DIFFERS")); sys.exit(not a.endswith(b))' $(OUT)/state-a.wav $(OUT)/state-b.wav
+
+LATENCY_FRAME  ?= 3100
+LATENCY_CHANGE ?= wheel=0xF0
+latency: release ## Input latency: frames from a held input (LATENCY_CHANGE, from frame LATENCY_FRAME of a coin-start run) to the game's RAM, display list and polygons
+	$(RUN) --input $(BENCH_INPUT) latency $(LATENCY_FRAME) $(LATENCY_CHANGE)
 
 bench: release ## Timed fixed run into a race: speed vs real time and the state hash (must not change with speed-ups)
 	$(RUN) --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep -E '^(instructions|emulated|host time|state hash)'

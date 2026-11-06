@@ -525,9 +525,38 @@ impl Renderer {
         format: wgpu::TextureFormat,
         origin: (u32, u32),
     ) {
-        bus.geo.sync();
+        if geo.is_none() {
+            bus.geo.sync();
+        }
         let b = &*bus;
-        let (stream, points) = geo.unwrap_or_else(|| (&b.geo.engine().stream, &b.geo.engine().texture_point_ram));
+        let geo = geo.unwrap_or_else(|| (&b.geo.engine().stream, &b.geo.engine().texture_point_ram));
+        self.draw_bus(b, geo, view, target, format, origin);
+    }
+
+    /// [`Renderer::present_bus`] with the polygons of the geometrizer's
+    /// previous frame (`Geometrizer::last_frame`), not waiting for the one
+    /// in progress.
+    pub fn present_bus_last(
+        &mut self,
+        bus: &model2::Model2Bus,
+        view: &View,
+        target: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        origin: (u32, u32),
+    ) {
+        self.draw_bus(bus, bus.geo.last_frame(), view, target, format, origin);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_bus(
+        &mut self,
+        b: &model2::Model2Bus,
+        (stream, points): (&[u32], &[u16]),
+        view: &View,
+        target: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        origin: (u32, u32),
+    ) {
         let (xoff, yoff) = b.sync_offsets();
         let src = Sources {
             texture_rom: &b.texture_rom,

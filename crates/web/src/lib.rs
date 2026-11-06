@@ -24,7 +24,7 @@
 
 use model2::video;
 use romset::{PadAxis, PadButton};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
@@ -40,6 +40,10 @@ const MAX_CATCH_UP: u32 = 3;
 const AUDIO_TARGET: f64 = 0.07 * model2::audio::RATE as f64;
 /// Most the audio rate is stretched for drift correction.
 const DRIFT: f64 = 0.005;
+/// Most frames the geometry worker may have in hand: the game waits for it
+/// beyond that (runs slower) rather than letting the polygons fall ever
+/// further behind the rest of the picture and the inputs.
+const GEO_QUEUE: u32 = 2;
 /// Audio level reports older than this (ms) are stale: pace by time.
 const AUDIO_STALE_MS: f64 = 250.0;
 
@@ -87,6 +91,13 @@ struct App {
     /// Geometrizer in a worker: its newest frame (raster stream, texture
     /// point RAM), once one arrives. None with the local engine.
     geo_frame: Option<Option<(Vec<u32>, Vec<u16>)>>,
+    /// Frames posted to the geometry worker and not yet back.
+    geo_in_flight: Rc<Cell<u32>>,
+    /// A worker frame arrived since the last draw.
+    geo_new: bool,
+    /// Animation frames this status window that held the game back for the
+    /// geometry worker.
+    geo_held: u32,
     status: web_sys::Element,
     stopped: bool,
     /// Kept alive: in a browser, dropping the instance loses the device.
@@ -293,6 +304,10 @@ impl App {
         let mut ran = 0;
         let t0 = now();
         while self.machine.frames < due && ran < MAX_CATCH_UP {
+            if self.geo_frame.is_some() && self.geo_in_flight.get() >= GEO_QUEUE {
+                self.geo_held += 1;
+                break;
+            }
             self.apply_inputs();
             if let Err(e) = self.machine.run_slice(u64::MAX) {
                 self.stopped = true;
@@ -310,7 +325,8 @@ impl App {
         if ran == 0 {
             self.repeats += 1;
         }
-        if ran > 0 {
+        // A new frame, or the worker's polygons for one already shown.
+        if ran > 0 || std::mem::take(&mut self.geo_new) {
             self.draw();
             self.counter.2 += 1;
         }
@@ -322,12 +338,13 @@ impl App {
             set_status(
                 &self.status,
                 &format!(
-                    "{} · {:.0}% speed · {:.0} fps drawn ({} repeats) · {}x{} · i960 {} · ms per frame: emulate {:.1}, draw {:.1}",
+                    "{} · {:.0}% speed{} · {:.0} fps drawn ({} repeats) · {}x{} · i960 {} · ms per frame: emulate {:.1}, draw {:.1}",
                     match self.per_refresh() {
                         Some(_) => format!("synced to {:.0} Hz", 1000.0 / self.refresh_ms),
                         None => "exact speed".into(),
                     },
                     speed,
+                    if self.geo_held > 0 { format!(" (waiting for geometry: {} times)", self.geo_held) } else { String::new() },
                     self.counter.2 as f64 / secs,
                     self.repeats,
                     self.view.width,
@@ -340,6 +357,7 @@ impl App {
             self.counter = (t, 0, 0);
             self.spent = [0.0; 3];
             self.repeats = 0;
+            self.geo_held = 0;
         }
     }
 }
@@ -485,13 +503,19 @@ fn json_str(s: &str) -> String {
     out + "\""
 }
 
-/// The geometrizer worker's newest frame: the raster stream and texture
-/// point RAM.
+/// The geometrizer worker finished a frame: its raster stream and texture
+/// point RAM, or neither for a frame it skipped posting (overtaken by
+/// newer ones while it caught up). Called once per frame job.
 #[wasm_bindgen]
-pub fn set_geo_frame(stream: Vec<u32>, points: Vec<u16>) {
+pub fn set_geo_frame(stream: Option<Vec<u32>>, points: Option<Vec<u16>>) {
     APP.with(|a| {
         if let Some(app) = a.borrow().as_ref() {
-            app.borrow_mut().geo_frame = Some(Some((stream, points)));
+            let mut app = app.borrow_mut();
+            app.geo_in_flight.set(app.geo_in_flight.get().saturating_sub(1));
+            if let (Some(stream), Some(points)) = (stream, points) {
+                app.geo_frame = Some(Some((stream, points)));
+                app.geo_new = true;
+            }
         }
     });
 }
@@ -543,6 +567,76 @@ impl GeoEngine {
 
 /// The ROM file names the game needs, in manifest order (for a worker that
 /// fetches them itself).
+/// The machine without a page (no canvas, sound or workers), for timing
+/// the emulation core in any WebAssembly host, such as Node: scripted
+/// inputs (`remodel` input scripts), the i960 side and the geometrizer
+/// run by separate calls so a host can time each (docs/web.md, "Timing
+/// without a browser").
+#[wasm_bindgen]
+pub struct Headless {
+    machine: model2::Machine,
+    script: model2::input::InputScript,
+    jobs: Rc<RefCell<Vec<model2::geo::Job>>>,
+    geo: model2::geo::Engine,
+}
+
+#[wasm_bindgen]
+impl Headless {
+    #[wasm_bindgen(constructor)]
+    pub fn new(game: &str, chips: js_sys::Array, script: &str) -> Result<Headless, JsValue> {
+        recomp::register();
+        console_error_panic_hook::set_once();
+        let game = romset::games::find(game).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let chips = chips.iter().map(|c| js_sys::Uint8Array::new(&c).to_vec()).collect();
+        let roms = romset::RomSet::from_chips(game, chips, false).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let script = model2::input::InputScript::parse(script, &game.controls).map_err(|e| JsValue::from_str(&e))?;
+        let mut machine = model2::Machine::new(&roms);
+        let jobs = Rc::new(RefCell::new(Vec::new()));
+        let sink = jobs.clone();
+        machine.bus.geo.set_remote(Box::new(move |job| sink.borrow_mut().push(job)));
+        let geo = model2::geo::Engine::new(model2::bus::polygon_rom(&roms), model2::geo::Core::of(game.board));
+        script.apply(0, &mut machine.bus);
+        Ok(Headless { machine, script, jobs, geo })
+    }
+
+    /// Start from a save file (`remodel run --save-state`), sound boards
+    /// left out. The geometrizer starts from its state in the file.
+    pub fn load(&mut self, data: &[u8]) -> Result<(), JsValue> {
+        model2::load_session(&mut self.machine, None, data).map_err(|e| JsValue::from_str(&e))?;
+        self.geo = self.machine.bus.geo.take_engine();
+        self.jobs.borrow_mut().clear();
+        self.script.apply(self.machine.frames, &mut self.machine.bus);
+        Ok(())
+    }
+
+    /// Run the i960 side (CPU, copro, I/O) to the end of the frame.
+    pub fn run_frame(&mut self) -> Result<(), JsValue> {
+        self.machine.run_slice(u64::MAX).map_err(|e| JsValue::from_str(&format!("stopped: {e:?}")))?;
+        self.machine.bus.uart_log.clear();
+        self.script.apply(self.machine.frames, &mut self.machine.bus);
+        Ok(())
+    }
+
+    /// Run the geometrizer jobs the frames so far posted.
+    pub fn run_geo(&mut self) -> u32 {
+        let jobs = std::mem::take(&mut *self.jobs.borrow_mut());
+        let n = jobs.len() as u32;
+        for j in jobs {
+            self.geo.run_job(j);
+        }
+        n
+    }
+
+    pub fn frames(&self) -> f64 {
+        self.machine.frames as f64
+    }
+
+    /// Words in the last raster stream (to check it's drawing).
+    pub fn stream_len(&self) -> u32 {
+        self.geo.stream.len() as u32
+    }
+}
+
 #[wasm_bindgen]
 pub fn rom_files(game: &str) -> Vec<String> {
     romset::games::find(game).map_or(Vec::new(), |g| g.files.iter().map(|f| f.name.to_string()).collect())
@@ -652,7 +746,9 @@ pub async fn start(
     let roms = romset::RomSet::from_chips(game, chips, false).map_err(|e| err(&e))?;
     let mut machine = model2::Machine::new(&roms);
     let remote_geo = geo.is_some();
+    let geo_in_flight = Rc::new(Cell::new(0));
     if let Some(post) = geo {
+        let in_flight = geo_in_flight.clone();
         machine.bus.geo.set_remote(Box::new(move |job| {
             let args = js_sys::Array::new();
             match job {
@@ -662,6 +758,7 @@ pub async fn start(
                     args.push(&js_sys::Uint32Array::from(&words[..]));
                 }
                 model2::geo::Job::Frame { buffer, booted, read_ptr, jumps } => {
+                    in_flight.set(in_flight.get() + 1);
                     args.push(&"frame".into());
                     args.push(&js_sys::Uint8Array::from(&buffer[..]));
                     args.push(&booted.into());
@@ -750,6 +847,9 @@ pub async fn start(
         repeats: 0,
         ratio: 1.0,
         geo_frame: remote_geo.then_some(None),
+        geo_in_flight,
+        geo_new: false,
+        geo_held: 0,
         _gpu: (instance, adapter),
     }));
 

@@ -93,6 +93,7 @@ make run STEPS=600000000 INPUT=coin1@1100-1104,start@1250-1254 \
     PACK=out/topskatr/texpack VIEW="--height 1080"   # snapshots with a texture pack (docs/texture-packs.md)
 make assets               # extract the game's art for review -> out/topskatr/assets (needs ImageMagick)
 make bench                # timed run into a race: speed and state hash
+make latency              # frames from a wheel change to the game reacting and its polygons (LATENCY_CHANGE, LATENCY_FRAME)
 make recomp               # recompile the game's i960 code and TGP programs (after a `run`; builds only what changed)
 make bench RECOMP=1       # same run on the recompiled build: same hash, about twice as fast
 make play RECOMP=1        # play in a native window (Esc menu, F5/F9 quick save/load, F11 fullscreen)
@@ -802,9 +803,16 @@ Ninth game and the first Model 2B one: Over Rev's 2B version, a clone of
   identical, and a coin-start run of 600M instructions gives the same state
   hash (`ee2bcd89e419e428`, with an `eeprom.bin` from an earlier run)
   recompiled and interpreted.
-- *Speed:* the interpreted geometrizer SHARC takes about 16 ms a race
-  frame, so races run at about real time with the i960 recompiled and the
-  geometrizer thread is what limits it (`docs/hw/model2b.md`, "Speed").
+- *Speed:* the interpreted geometrizer SHARC takes about 20 ms a race
+  frame natively (33 ms in WebAssembly), so races run below real time
+  (0.86x natively, about half in a browser) and the geometrizer is what
+  limits it. The game slows to its pace rather than the polygons falling
+  behind the inputs; full speed needs a SHARC recompiler
+  (`docs/hw/model2b.md`, "Speed").
+- *Confirmed (by running it, `make latency`):* the game reads the wheel
+  at the start of each frame and its display list and polygons follow in
+  the same frame, on 2B as on 2C: one frame from input to screen at full
+  speed in the native player, two in the browser.
 
 ## What's known about `hotd`
 

@@ -174,6 +174,9 @@ struct Stats {
     last_new: Instant,
     reports: u64,
     surface_misses: u64,
+    /// Frames drawn with the previous frame's polygons (the geometrizer
+    /// wasn't done in time).
+    geo_late: u32,
 }
 
 impl Stats {
@@ -188,6 +191,7 @@ impl Stats {
             last_new: Instant::now(),
             reports: 0,
             surface_misses: 0,
+            geo_late: 0,
         }
     }
 }
@@ -219,8 +223,22 @@ struct Play {
     /// Real time that emulated frame 0 corresponds to.
     epoch: Instant,
     redraws: u64,
+    /// Host time per game frame (emulating, waiting for the geometrizer and
+    /// drawing, not waiting for vsync), smoothed, in seconds; and whether
+    /// that is too slow to follow the display (then the clock paces).
+    frame_cost: f64,
+    behind: bool,
     stats: Stats,
     started: Instant,
+}
+
+/// Host time one game frame may take: a refresh when following the
+/// display (two at about 120 Hz), else the game's frame period.
+fn frame_budget(refresh: Option<f64>, exact: bool) -> Duration {
+    let per_refresh = refresh
+        .filter(|_| !exact)
+        .and_then(|hz| [1.0, 0.5].into_iter().find(|k| (0.95..=1.1).contains(&(hz * k / FPS))).map(|k| 1.0 / (hz * k)));
+    Duration::from_secs_f64(per_refresh.unwrap_or(1.0 / FPS))
 }
 
 /// The refresh rate (Hz) of the monitor `window` is on, if known.
@@ -254,6 +272,9 @@ impl Play {
             if self.opts.interp {
                 machine.disable_native();
             }
+            // Drawing can go ahead with the last frame's polygons when the
+            // geometrizer is late (`frame`).
+            machine.bus.geo.set_keep_last(true);
             let dir = settings::data_dir().join(game.id);
             if let Ok(bytes) = std::fs::read(dir.join("eeprom.bin")) {
                 machine.bus.eeprom.load(&bytes);
@@ -397,7 +418,7 @@ impl Play {
     /// (1 at about 60 Hz, 1/2 at about 120 Hz), or None to follow the clock.
     fn per_refresh(&self) -> Option<f64> {
         let hz = self.gpu.as_ref()?.refresh?;
-        if self.settings.exact {
+        if self.settings.exact || self.behind {
             return None;
         }
         [1.0, 0.5].into_iter().find(|k| (0.95..=1.1).contains(&(hz * k / FPS)))
@@ -518,8 +539,12 @@ impl Play {
             self.splash.skip();
         }
         let t0 = Instant::now();
-        match self.emulate() {
-            Ok(ran) => {
+        let mut ran = 0;
+        let result = self.emulate();
+        let emulate_time = t0.elapsed();
+        match result {
+            Ok(n) => {
+                ran = n;
                 let st = &mut self.stats;
                 st.emulating += t0.elapsed();
                 st.emulated += ran;
@@ -549,9 +574,21 @@ impl Play {
                 return;
             }
         };
+        let t_draw = Instant::now();
         let target = frame.texture.create_view(&Default::default());
         if let Some(s) = &mut self.session {
-            g.renderer.present_bus(&mut s.machine.bus, None, &g.view, &target, g.config.format, g.origin);
+            // Draw this frame's polygons if the geometrizer has them in time
+            // to make this refresh, else the previous frame's: when it's the
+            // slowest part, it then runs alongside the next frame instead of
+            // after it, at the cost of the polygons lagging a frame.
+            let budget = frame_budget(g.refresh, self.settings.exact);
+            let bus = &mut s.machine.bus;
+            if bus.geo.wait_until(t0 + budget.mul_f64(0.8)) {
+                g.renderer.present_bus(bus, None, &g.view, &target, g.config.format, g.origin);
+            } else {
+                g.renderer.present_bus_last(bus, &g.view, &target, g.config.format, g.origin);
+                self.stats.geo_late += 1;
+            }
         }
         let mut actions = Vec::new();
         if self.menu.visible() || self.session.is_none() || self.splash.active() || crosshair.is_some() {
@@ -573,8 +610,23 @@ impl Play {
                 actions
             });
         }
+        // Not counting `present`, which can wait for vsync.
+        let draw_time = t_draw.elapsed();
         g.renderer.queue().present(frame);
         self.stats.drawn += 1;
+        if ran > 0 {
+            // Below full speed when following the display, pace by the clock
+            // instead: frames are then run as fast as they can be (dropping
+            // to half the refresh rate otherwise).
+            let cost = (emulate_time + draw_time).as_secs_f64() / ran as f64;
+            self.frame_cost += (cost - self.frame_cost) * 0.05;
+            let budget = frame_budget(g.refresh, false).as_secs_f64();
+            if self.frame_cost > budget * 0.95 {
+                self.behind = true;
+            } else if self.frame_cost < budget * 0.8 {
+                self.behind = false;
+            }
+        }
         for action in actions {
             match action {
                 menu::Action::Resume => self.set_menu(false),
@@ -608,6 +660,7 @@ impl Play {
         });
         let mode = match (self.per_refresh(), self.gpu.as_ref().and_then(|g| g.refresh)) {
             (Some(_), Some(hz)) => format!("synced to {hz:.0} Hz"),
+            _ if self.behind => "too slow to sync, paced by the clock".into(),
             _ => "exact speed".into(),
         };
         let status = format!(
@@ -618,7 +671,11 @@ impl Play {
             st.longest_gap.as_secs_f64() * 1000.0,
             st.emulating.as_secs_f64() * 1000.0 / st.emulated.max(1) as f64,
             if st.surface_misses > 0 { format!(" · {} draws skipped", st.surface_misses) } else { String::new() },
-        );
+        ) + &if st.geo_late > 0 {
+            format!(" · {} drawn with the last frame's polygons", st.geo_late)
+        } else {
+            String::new()
+        };
         if let Some(g) = &self.gpu {
             let game = self.session.as_ref().map_or("no game", |s| s.game.title);
             g.window.set_title(&format!("Remodel: {game} · {}x{} · {status}", g.view.width, g.view.height));
@@ -907,6 +964,8 @@ fn main() {
         stick: model2::input::StickCursor::default(),
         epoch: Instant::now(),
         redraws: 0,
+        frame_cost: 0.0,
+        behind: false,
         stats: Stats::new(),
         started: Instant::now(),
     };

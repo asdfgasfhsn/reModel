@@ -187,6 +187,9 @@ pub struct Model2Bus {
     pub inputs: [u8; 4],
     io_analog_channel: usize,
     pub analog: [u8; 8],
+    /// Diagnostics, not machine state: when each analog channel was last
+    /// read (CPU cycle) and the value it gave (`remodel latency`).
+    pub analog_reads: [(u64, u8); 8],
     /// 315-5649 output latches, by register.
     io_latch: [u8; 16],
     pub eeprom: Eeprom,
@@ -306,6 +309,7 @@ impl Model2Bus {
             inputs: [0xff; 4],
             io_analog_channel: 0,
             analog: [0x80; 8],
+            analog_reads: [(0, 0); 8],
             io_latch: [0; 16],
             eeprom: Eeprom::new(),
             controls: &roms.game.controls,
@@ -584,6 +588,7 @@ impl Model2Bus {
             13 if self.gun.is_some() => GunBoard::STATUS,
             0xf => {
                 let v = self.analog[self.io_analog_channel & 7];
+                self.analog_reads[self.io_analog_channel & 7] = (self.now, v);
                 self.io_analog_channel = (self.io_analog_channel + 1) & 7;
                 v
             }
@@ -804,6 +809,18 @@ impl Model2Bus {
     /// memory does, so a renderer can skip re-uploading it.
     pub fn video_ram_versions(&self) -> (u64, u64) {
         (self.mems[10].writes, self.mems[6].writes)
+    }
+
+    /// Hashes of the writable RAM apart from buffer RAM (the game's own
+    /// state), and of buffer RAM (the display list), for comparing two runs
+    /// frame by frame (`remodel latency`).
+    pub fn ram_hashes(&self) -> (u64, u64) {
+        let (mut ram, mut buffer) = (Fnv(0xcbf2_9ce4_8422_2325), Fnv(0xcbf2_9ce4_8422_2325));
+        for (i, m) in self.mems[..self.test_rams].iter().enumerate().filter(|(_, m)| m.writable) {
+            let h = if i == BUFFER_RAM { &mut buffer } else { &mut ram };
+            m.data.chunks(8).for_each(|c| h.word(c.iter().fold(0, |a, &b| a << 8 | b as u64)));
+        }
+        (ram.0, buffer.0)
     }
 
     /// Hash of all RAM, the last raster stream and the copro results. Two

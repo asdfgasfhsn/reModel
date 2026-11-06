@@ -93,9 +93,20 @@ vblank the game posts the frame's job (a copy of buffer RAM, the read
 pointer), and at boot the uploaded program. The worker runs the jobs in
 order (`model2::geo::Engine::run_job`) and posts back each frame's raster
 stream and texture point RAM. The page draws the newest one, so polygons
-can lag the 2D layers by about a frame. The game never waits for the
-geometrizer: nothing the i960 reads depends on it, so results are the same
-as with the engine on the page's thread. `?geo=local` keeps it there.
+can lag the 2D layers by about a frame. Nothing the i960 reads depends on
+the geometrizer, so results are the same as with the engine on the page's
+thread (`?geo=local` keeps it there), but the page doesn't let the game
+get more than two frames ahead of the worker (`GEO_QUEUE`): the worker
+answers every job, and with two unanswered the page waits, running the
+game slower and saying so on the bar ("waiting for geometry"). Before
+that limit, a worker slower than the game fell further behind every
+frame: `overrevb`'s interpreted SHARC geometrizer takes 33 ms a race
+frame in WebAssembly against the page's 17, so its polygons (the whole
+3D scene, steering included) trailed the inputs by half a second more
+for every second of racing, and its queued jobs (128 KB each) piled up.
+Now the game runs at the worker's pace (about half speed for `overrevb`
+in a race) with the polygons at most a few frames behind. If the
+worker fails, the page reloads with `?geo=local`.
 
 **Toolchain.** It needs the `wasm32-unknown-unknown` target and a
 `wasm-bindgen` CLI matching the version in Cargo.lock (`WASM_CARGO`,
@@ -201,6 +212,23 @@ lock at 30 degrees; iOS asks for motion permission).
 alive, even for a plain JavaScript test page: the device is lost with "A
 valid external Instance reference no longer exists". Test in a real
 browser.
+
+**Timing without a browser.** Headless Chromium has no WebGPU here, so
+the module also exports `Headless`: the machine with scripted inputs and
+no page, its i960 side (`run_frame`) and geometrizer (`run_geo`) run by
+separate calls, and `load` to start from a `remodel run --save-state`
+file. Node can time it: import the package's `remodel_web.js`, call its
+`default({ module_or_path: <the .wasm bytes> })`, build `new
+Headless(set, chips, "coin-start")` from the files `rom_files(set)` names,
+and time the two calls per frame with `performance.now()`. Race frames
+(from a save at frame 3000 of a coin-start run, 390 frames, Node 26):
+
+| set | i960 side (recompiled) | geometrizer |
+|---|---|---|
+| `overrev` (2C, TGP recompiled) | 6.8 ms | 8.1 ms |
+| `overrevb` (2B, SHARC interpreted) | 9.5 ms | 33.1 ms (worst 36.9) |
+
+About 1.6 times native for the SHARC (20 ms native).
 
 ## Ready
 

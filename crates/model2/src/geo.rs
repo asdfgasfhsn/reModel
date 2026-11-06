@@ -249,6 +249,10 @@ pub struct Geometrizer {
     pub waited: std::time::Duration,
     engine: Slot,
     threaded: bool,
+    /// Keep a copy of each frame's output when the next one starts
+    /// ([`Geometrizer::last_frame`]).
+    keep_last: bool,
+    last: (Vec<u32>, Vec<u16>),
     /// Remote mode: jobs go here instead of to the local engine.
     remote: Option<Box<dyn FnMut(Job)>>,
 }
@@ -298,6 +302,8 @@ impl Geometrizer {
             waited: std::time::Duration::ZERO,
             // WebAssembly without threads support can't spawn.
             threaded: cfg!(not(target_arch = "wasm32")),
+            keep_last: false,
+            last: (Vec::new(), Vec::new()),
             remote: None,
             engine: Slot::Idle(Box::new(Engine::new(poly_rom, core))),
         }
@@ -331,6 +337,46 @@ impl Geometrizer {
         }
     }
 
+    /// Keep the output of each frame (raster stream, texture point RAM)
+    /// once the next one starts, for a front end that draws without
+    /// waiting for the frame in progress: [`Geometrizer::last_frame`].
+    pub fn set_keep_last(&mut self, keep: bool) {
+        self.keep_last = keep;
+    }
+
+    /// The output of the frame before the one last started (with
+    /// [`Geometrizer::set_keep_last`]; empty otherwise).
+    pub fn last_frame(&self) -> (&[u32], &[u16]) {
+        (&self.last.0, &self.last.1)
+    }
+
+    /// Wait for a frame running on the worker until `deadline`: true if
+    /// it finished (its results are then the engine's, as after `sync`),
+    /// false if it's still running.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn wait_until(&mut self, deadline: std::time::Instant) -> bool {
+        loop {
+            match &self.engine {
+                Slot::Running(h) if !h.is_finished() => {
+                    if std::time::Instant::now() >= deadline {
+                        return false;
+                    }
+                    std::thread::sleep(std::time::Duration::from_micros(200));
+                }
+                _ => {
+                    self.sync();
+                    return true;
+                }
+            }
+        }
+    }
+
+    /// Move the engine out (for running it elsewhere, as after
+    /// [`Geometrizer::set_remote`]), leaving an empty one.
+    pub fn take_engine(&mut self) -> Engine {
+        std::mem::replace(self.engine_mut(), Engine::placeholder())
+    }
+
     /// Send jobs to `sink` instead of running them: an engine elsewhere (a
     /// browser worker) runs them with [`Engine::run_job`], and the local
     /// engine stays idle. Its results then come from there.
@@ -359,6 +405,12 @@ impl Geometrizer {
             return;
         }
         let mut e = std::mem::replace(self.engine_mut(), Engine::placeholder());
+        if self.keep_last {
+            self.last.0.clear();
+            self.last.0.extend_from_slice(&e.stream);
+            self.last.1.clear();
+            self.last.1.extend_from_slice(&e.texture_point_ram);
+        }
         e.buffer.clear();
         e.buffer.extend_from_slice(buffer);
         e.jumps = jumps;

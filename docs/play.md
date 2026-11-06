@@ -174,6 +174,16 @@ CALIBRATION in the test menu changes that.
 - **Display**: where the HUD goes on wide windows, and exact arcade speed
   (57.524 frames per second) against the default of one game frame per
   display refresh at 60 or 120 Hz, which is 4.3% fast but smooth.
+  **Below full speed** (a game frame taking longer than a refresh, as
+  `overrevb`'s interpreted SHARC geometrizer does in races) the player
+  doesn't let the game drop to half speed with the refresh rate: it paces
+  by the clock instead, running frames as fast as they come (the title
+  bar says "too slow to sync, paced by the clock"), and goes back to the
+  display once frames fit again. When the geometrizer isn't done in time
+  for a refresh, that frame is drawn with the previous frame's polygons
+  (counted in the title bar), so the geometrizer runs alongside the next
+  frame instead of after it: polygons then lag the 2D layers and inputs
+  by a frame, as in the browser.
 - **Game**: the ROM folder and the supported sets found in it. Sets are
   read as MAME keeps them: `<set>.zip` or a `<set>/` folder, and a
   supported clone is listed after its parent when its chips are in the
