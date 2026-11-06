@@ -6,6 +6,7 @@ mod hotd;
 mod overrev;
 mod overrevb;
 mod segawski;
+mod sgt24h;
 mod skisuprg;
 mod stcc;
 mod topskatr;
@@ -18,12 +19,14 @@ pub use hotd::HOTD;
 pub use overrev::OVERREV;
 pub use overrevb::OVERREVB;
 pub use segawski::SEGAWSKI;
+pub use sgt24h::SGT24H;
 pub use skisuprg::SKISUPRG;
 pub use stcc::STCC;
 pub use topskatr::TOPSKATR;
 pub use waverunr::WAVERUNR;
 
-pub static ALL: &[&Game] = &[&TOPSKATR, &SKISUPRG, &STCC, &SEGAWSKI, &WAVERUNR, &OVERREV, &HOTD, &BEL, &OVERREVB];
+pub static ALL: &[&Game] =
+    &[&TOPSKATR, &SKISUPRG, &STCC, &SEGAWSKI, &WAVERUNR, &OVERREV, &HOTD, &BEL, &OVERREVB, &SGT24H];
 
 pub fn find(id: &str) -> Result<&'static Game, Error> {
     ALL.iter().copied().find(|g| g.id == id).ok_or_else(|| Error::UnknownGame(id.to_string()))
