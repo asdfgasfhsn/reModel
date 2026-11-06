@@ -5,8 +5,8 @@ remodel-play runs Sega Model 2 arcade games in a window: the game's own
 code on an emulated board, drawn on the GPU, with both sound boards live.
 Supported so far: Top Skater (topskatr), Sega Ski Super G (skisuprg),
 Sega Touring Car Championship (stcc), Sega Water Ski (segawski),
-Wave Runner (waverunr), Over Rev (overrev), The House of the Dead (hotd)
-and Behind Enemy Lines (bel).
+Wave Runner (waverunr), Over Rev (overrev), Super GT 24h (sgt24h), The
+House of the Dead (hotd) and Behind Enemy Lines (bel).
 This build runs the game code on the interpreter (no recompiled game code
 is included).
 
@@ -14,7 +14,7 @@ Bring your own ROMs
 -------------------
 No game data is included. Put the sets as MAME keeps them, topskatr.zip or
 a topskatr/ folder (likewise skisuprg, stcc, segawski, waverunr,
-overrev, hotd, bel), in the ROM folder:
+overrev, sgt24h, hotd, bel), in the ROM folder:
 
     ~/.local/share/remodel/roms     ($XDG_DATA_HOME/remodel/roms)
 
@@ -69,6 +69,14 @@ Over Rev:
                  wheel on the gear select screen)
     V            view (chase, cockpit, bumper)
 
+Super GT 24h (Model 2B: below full speed in races without recompiled code):
+    C, Enter     coin, start
+    arrows       Left/Right steer, Up gas (it also confirms on the
+                 menus), Down brake
+    A, Z         shift up, shift down (manual gearbox: pick MT with the
+                 wheel on the gear select screen)
+    V            view
+
 The House of the Dead (two coins a credit; light gun):
     mouse        aim; left button fires, right button reloads (or
                  fire off the picture)
@@ -98,7 +106,7 @@ left/right slides, Start or A is set, d-pad up/down select, shoulders
 pitch. Wave Runner: left stick steers, right
 trigger or A is the throttle, right stick leans, Y is view. Over Rev:
 left stick steers, right and left triggers are gas and brake, shoulders
-(or B / X) shift up and down, Y is view. House of the
+(or B / X) shift up and down, Y is view; Super GT 24h the same. House of the
 Dead: either stick moves a crosshair (player 2's once the mouse has
 moved over the window), right trigger or A fires, left trigger or B
 reloads. Behind Enemy Lines: the same, with the left trigger or B firing

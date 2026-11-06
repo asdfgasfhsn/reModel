@@ -1,9 +1,12 @@
 # Model 2B-CRX: the board as `overrevb` uses it
 
-Status: 2026-11-06. Remodel runs `overrevb` (Over Rev, the 2B version) from
-boot through attract into races, with both SHARCs running the programs the
-game uploads. This page is what the board model (`crates/model2`:
-`bus.rs`, `sharc.rs`, `geo.rs`) is built on. The SHARC core itself is
+Status: 2026-11-06. Remodel runs `overrevb` (Over Rev, the 2B version) and
+`sgt24h` (Super GT 24h) from boot through attract into races, with both
+SHARCs running the programs the games upload. `sgt24h` needed nothing
+more from the board model: its SHARC code is `overrevb`'s (the uploaded
+images differ only past the code), and it uses the same ports. This page
+is what the board model (`crates/model2`: `bus.rs`, `sharc.rs`, `geo.rs`)
+is built on. The SHARC core itself is
 described in `adsp2106x.md`; the parts 2B shares with 2C in
 `geometrizer.md` and `peripherals.md`.
 
@@ -207,5 +210,5 @@ that run alone, and the run took nearly three times as long).
   waits on the real board.
 - The SHARC clock and wait states (`WAIT` = `0xC9400` copro,
   `0xB400` geometrizer, both written by the programs) aren't modelled.
-- Other 2B games (`sgt24h`, Jaleco's other one, boots the same two SHARC
-  programs; Sega's 2B games have their own) may use more of the board.
+- Sega's 2B games upload their own SHARC programs and may use more of the
+  board than Jaleco's two (`overrevb`, `sgt24h`) do.

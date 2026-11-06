@@ -232,7 +232,8 @@ the EPB0 FIFO (`remodel-state`); the decode cache is rebuilt.
 
 First seen in a throwaway boot of `overrevb` on the 2C board model with
 logging of the i960's writes to the SHARC windows; now what the 2B board
-model does (`docs/hw/model2b.md`). `sgt24h` uploads the same two programs.
+model does (`docs/hw/model2b.md`). `sgt24h` uploads the same two programs'
+code (the 4,096-word images differ past it).
 The host windows map IOP register *n* at window + 4*n*: `0x8C0000` is the
 copro SHARC's, `0x840000` the geometrizer's. Each 32-bit register is written as two
 16-bit transfers to the same address, low half first: the reset SYSCON

@@ -123,6 +123,23 @@ gears).
 | shift up, shift down | A, Z | right shoulder or B, left shoulder or X |
 | view (chase, cockpit, bumper) | V | Y |
 
+### Super GT 24h (`sgt24h`)
+
+Model 2B, Jaleco, like `overrevb`: its sound is the SCSP's, run by
+Jaleco's driver. One coin is one credit. On the menus the wheel moves the
+selection and the gas pedal confirms: course, car, then the gearbox (AT
+or MT; the shift buttons step through MT's gears). It needs the
+recompiled build (`RECOMP=1`) for full speed in races, as `overrevb` does.
+
+| Control | Keys | Gamepad |
+|---|---|---|
+| coin | C, 5 | Back |
+| start | Enter | Start |
+| steer (`wheel`) | Left, Right | left stick, d-pad |
+| gas, brake | Up, Down | right trigger, left trigger |
+| shift up, shift down | A, Z | right shoulder or B, left shoulder or X |
+| view | V | Y |
+
 ### The House of the Dead (`hotd`)
 
 A light-gun game for two. Two coins are one credit. The mouse is player

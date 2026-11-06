@@ -24,9 +24,10 @@ so the same binary still runs other games and revisions.
 Every recompiled program is a crate of its own, named by its hash:
 `out/recomp/i960_<hash>/` for a game's i960 program, `out/recomp/tgp_<hash>/`
 for a 2C copro or geometrizer program, `out/recomp/sharc_<hash>/` for a 2B
-one (games can share these: `overrevb` and `sgt24h` upload the same two
-SHARC programs). Each holds
-`program.rs` from the code generator, generic over the machine around the
+one. Games can share these, but only for the same whole image: `overrevb`
+and `sgt24h` upload the same SHARC code, yet each upload is 4,096 words
+and the words past the code differ, so each game has its own two crates.
+Each holds `program.rs` from the code generator, generic over the machine around the
 processor, and a `lib.rs` that instantiates it for the Model 2 board
 (`Model2Bus`, the TGP's external buses), so its machine code is compiled in
 that crate and nowhere else. Program crates depend on `i960`, `mb86235`, `adsp2106x` and

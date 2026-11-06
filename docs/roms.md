@@ -46,7 +46,7 @@ the same). The geometry hardware is what changes:
 |---|---|---|
 | Model 2 (1993-94) | Fujitsu TGP MB86234 (gk). **ROM:** the game uploads its program (`daytona`, `vcop`; each game its own), contrary to the gk that it is internal and undumped. | A TGP interpreter for its undocumented instruction set, the original board's memory map and its sound board ROM layout. Large new work. |
 | 2A-CRX (1995) | Same TGP as Model 2 (gk). **ROM:** `srallyc` and `vf2` upload theirs too; no geometrizer program is uploaded (fixed function, unconfirmed). | As Model 2, plus 2A's map and a fixed-function geometrizer. Once one 2A game runs, the others are mostly manifests. |
-| 2B-CRX (1995) | Two ADSP-21062 SHARCs (gk for the chip; **ROM** for two): copro and geometrizer, both programmed by the i960 through their I/O-processor DMA. | *Done for `overrevb`:* the SHARC core (interpreter; a recompiler would make it faster), 2B's uploads and port map, and the geometrizer SHARC's output, which has the 2C stream's format (`docs/hw/model2b.md`). Sega's 2B games run their own SHARC programs and may use more of the board. |
+| 2B-CRX (1995) | Two ADSP-21062 SHARCs (gk for the chip; **ROM** for two): copro and geometrizer, both programmed by the i960 through their I/O-processor DMA. | *Done for `overrevb` and `sgt24h`:* the SHARC core (interpreter and recompiler), 2B's uploads and port map, and the geometrizer SHARC's output, which has the 2C stream's format (`docs/hw/model2b.md`). Sega's 2B games run their own SHARC programs and may use more of the board. |
 | 2C-CRX (1996-98) | Fujitsu MB86235 (TGPx4) copro and geometrizer, both running programs the i960 uploads. **ROM:** every 2C program set contains MB86235 code shared with `topskatr`'s uploaded programs; no 2A or 2B set does. | Mostly a manifest per game. The MB86235 interpreter and recompiler, the geometrizer, the 2C memory map and the sound board are all there. New work is per game: inputs, any extra board, and whatever the game's code uses that `topskatr`'s doesn't. |
 
 Two ROM clues sort the boards (the chips are ROM evidence; what they are is gk): every Model 2 and 2A
@@ -118,7 +118,7 @@ board (i960KB on all, gk). Controls and special hardware are gk throughout.
 | `pltkids` | Pilot Kids | 1998 | `pltkidsa` (2A) | SCSP, CRX_drv 3.4.9 | stick, buttons | none | yes (Psikyo chip names: `.pr0`, `.sd0`, `.tp0`...) |
 | `rchase2` | Rail Chase 2 | 1995 | none | SCSP | 2 mounted guns | motion ride | yes |
 | `schamp` | Sonic Championship | 1996 | `sfight` | SCSP | stick, 3 buttons | none | yes |
-| `sgt24h` | Super GT 24h | 1996 | none | SCSP (Jaleco driver) | wheel, pedals, shifter | 128 KB `epr-18643a.7` on another board (ROM; role unknown, also in `von`, `stcc`) | yes |
+| `sgt24h` | Super GT 24h | 1996 | none | SCSP, Jaleco's own driver (confirmed; the same code as `overrev`'s) | wheel (ch. 0), gas (1), brake (2), shift up/down, view (confirmed, README) | none needed; `epr-18643a.7` is a Z80 program (Sega 837-10074, most likely the link board's; unconfirmed), and the game runs stand-alone without it (README) | yes; supported and playable, with sound (2B, on `overrevb`'s SHARC code) |
 | `vstriker` | Virtua Striker (Rev A) | 1994 | `vstrikro` | SCSP | stick, 3 buttons | none | yes (`ep`/`mp` chip names) |
 | `von` | Virtual On Cybertroopers (US) | 1996 | `vonj` | SCSP | twin sticks, triggers | link (2 cabinets); `epr-18643a.7` | yes (US program chips named `vo-prog0.usa`) |
 | `zerogun` | Zero Gunner | 1997 | `zerogunj`, `zeroguna`, `zerogunaj` (2A) | SCSP, CRX_drv 3.4.9 | stick, buttons | none | yes |
@@ -220,7 +220,9 @@ for it).
 - Controls and special hardware are general knowledge for every game but
   `topskatr`. Extra 128 KB chips on sockets that the main board also uses
   (`desert`, `manxtt`, `sgt24h`, `von`, `stcc`) show another board is
-  present, not which.
+  present, not which. The one `sgt24h`, `stcc` and `von` share,
+  `epr-18643a.7`, is a Z80 program headed Sega 837-10074, most likely the
+  link board's (README, "What's known about `sgt24h`").
 - The dat's years are sometimes late (see above).
 - That the 2B chips are SHARCs and the 2/2A copro an MB86234 comes from
   public docs (the 2B upload writes 2106x I/O-processor registers, which
