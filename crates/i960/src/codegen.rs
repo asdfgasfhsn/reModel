@@ -260,6 +260,12 @@ fn translate_reg(i: &Insn) -> Option<String> {
     }
 }
 
+/// Blocks per submodule of a program module. rustc never splits a module
+/// across codegen units, so a whole program in one module compiles on one
+/// thread; in submodules it compiles on as many as the crate's codegen
+/// units allow.
+const BLOCKS_PER_MODULE: usize = 512;
+
 /// A Rust module for the code in `insns` (ROM image `hash`), with
 /// `pub const HASH` and `pub fn blocks<H: Host>()` listing each block's
 /// start address and function. `extra` are entry points to start blocks at
@@ -275,54 +281,71 @@ pub fn program_module(insns: &BTreeMap<u32, Insn>, extra: &BTreeSet<u32>, hash: 
     let _ = writeln!(s, "pub const HASH: u64 = {hash:#018x};\n");
     let _ = writeln!(s, "pub type Block<H> = fn(&mut Cpu, &mut H) -> Result<(), Stop>;\n");
     let (mut translated, mut total) = (0, 0);
-    for &start in &leaders {
-        let _ =
-            writeln!(s, "#[inline(never)]\nfn b{start:08x}<H: Host>(c: &mut Cpu, h: &mut H) -> Result<(), Stop> {{");
-        let mut pc = start;
-        loop {
-            let i = &insns[&pc];
-            let next = i.next();
-            let _ = writeln!(s, "    // {i}");
-            let _ = writeln!(s, "    h.at({pc:#x});");
-            total += 1;
-            let code = translate(i);
-            let fallback = code.is_none();
-            match code {
-                Some(code) => {
-                    translated += 1;
-                    let _ = writeln!(s, "    {{ {code} }}");
+    let order: Vec<u32> = leaders.iter().copied().collect();
+    let chunks: Vec<&[u32]> = order.chunks(BLOCKS_PER_MODULE).collect();
+    for (m, chunk) in chunks.iter().enumerate() {
+        let _ = writeln!(s, "mod m{m:03} {{\n#[allow(unused_imports)]\nuse super::*;\n");
+        for &start in chunk.iter() {
+            let _ = writeln!(
+                s,
+                "#[inline(never)]\nfn b{start:08x}<H: Host>(c: &mut Cpu, h: &mut H) -> Result<(), Stop> {{"
+            );
+            let mut pc = start;
+            loop {
+                let i = &insns[&pc];
+                let next = i.next();
+                let _ = writeln!(s, "    // {i}");
+                let _ = writeln!(s, "    h.at({pc:#x});");
+                total += 1;
+                let code = translate(i);
+                let fallback = code.is_none();
+                match code {
+                    Some(code) => {
+                        translated += 1;
+                        let _ = writeln!(s, "    {{ {code} }}");
+                    }
+                    None => {
+                        let _ = writeln!(s, "    {{ const I: InsnRef<'static> = {};", insn_expr(i));
+                        let _ =
+                            writeln!(s, "      c.exec(h, &I).map_err(|kind| Stop::Fault {{ kind, ip: {pc:#x} }})?; }}");
+                    }
                 }
-                None => {
-                    let _ = writeln!(s, "    {{ const I: InsnRef<'static> = {};", insn_expr(i));
-                    let _ = writeln!(s, "      c.exec(h, &I).map_err(|kind| Stop::Fault {{ kind, ip: {pc:#x} }})?; }}");
+                s.push_str("    c.icount += 1;\n");
+                let ends = !matches!(i.flow, Flow::Next | Flow::CondFault);
+                if fallback && !ends {
+                    // Some "sequential" instructions can still move the IP: an
+                    // IAC reinit, or an interrupt taken by `modpc`.
+                    let _ = writeln!(s, "    if c.ip != {next:#x} {{ h.retire(c); return Ok(()); }}");
                 }
+                if ends {
+                    s.push_str("    h.retire(c);\n    Ok(())\n}\n\n");
+                    break;
+                }
+                if !insns.contains_key(&next) || leaders.contains(&next) {
+                    let _ = writeln!(s, "    h.retire(c);\n    c.ip = {next:#x};\n    Ok(())\n}}\n");
+                    break;
+                }
+                let _ = writeln!(s, "    if !h.retire(c) || c.interrupt_due() {{ c.ip = {next:#x}; return Ok(()); }}");
+                pc = next;
             }
-            s.push_str("    c.icount += 1;\n");
-            let ends = !matches!(i.flow, Flow::Next | Flow::CondFault);
-            if fallback && !ends {
-                // Some "sequential" instructions can still move the IP: an
-                // IAC reinit, or an interrupt taken by `modpc`.
-                let _ = writeln!(s, "    if c.ip != {next:#x} {{ h.retire(c); return Ok(()); }}");
-            }
-            if ends {
-                s.push_str("    h.retire(c);\n    Ok(())\n}\n\n");
-                break;
-            }
-            if !insns.contains_key(&next) || leaders.contains(&next) {
-                let _ = writeln!(s, "    h.retire(c);\n    c.ip = {next:#x};\n    Ok(())\n}}\n");
-                break;
-            }
-            let _ = writeln!(s, "    if !h.retire(c) || c.interrupt_due() {{ c.ip = {next:#x}; return Ok(()); }}");
-            pc = next;
         }
+        s.push_str("pub(super) fn blocks<H: Host>(v: &mut Vec<(u32, Block<H>)>) {\n");
+        for &start in chunk.iter() {
+            let _ = writeln!(s, "    v.push(({start:#x}, b{start:08x}::<H>));");
+        }
+        s.push_str("}\n}\n\n");
     }
     let _ = writeln!(s, "/// {translated} of {total} instructions translated, the rest run through `Cpu::exec`.");
     let _ = writeln!(s, "#[allow(dead_code)]\npub const TRANSLATED: (usize, usize) = ({translated}, {total});\n");
-    s.push_str("pub fn blocks<H: Host>() -> Vec<(u32, Block<H>)> {\n    vec![\n");
-    for &start in &leaders {
-        let _ = writeln!(s, "        ({start:#x}, b{start:08x}::<H>),");
+    let _ = writeln!(
+        s,
+        "pub fn blocks<H: Host>() -> Vec<(u32, Block<H>)> {{\n    let mut v = Vec::with_capacity({});",
+        leaders.len()
+    );
+    for m in 0..chunks.len() {
+        let _ = writeln!(s, "    m{m:03}::blocks(&mut v);");
     }
-    s.push_str("    ]\n}\n");
+    s.push_str("    v\n}\n");
     s
 }
 
