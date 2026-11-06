@@ -121,6 +121,10 @@ pub struct Game {
     /// each in its own [`ROM_SLOT`]: bel's main data and polygon ROMs, of
     /// 16 Mbit chips, sit every 4 MB (its textures still take 8 MB slots).
     pub packed: &'static [Role],
+    /// Output level in dB on top of the player's mix, standing in for the
+    /// cabinet amplifier's volume pot so games play at similar loudness.
+    /// A listening choice: the ROMs don't set the analog gain.
+    pub volume_db: f32,
     /// 3D viewports (window numbers) that hold HUD elements rather than the
     /// scene. Only enhancements use this (wide views move them with the
     /// rest of the HUD).

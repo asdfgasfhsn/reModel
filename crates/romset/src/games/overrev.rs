@@ -19,6 +19,9 @@ pub static OVERREV: Game = Game {
     controls: CONTROLS,
     drive_board: None,
     packed: &[],
+    // Its voices mostly play at DISDL 3: the sound board averages about
+    // 5.5 dB below the other SCSP-only games (docs/hw/sound.md §6).
+    volume_db: 6.0,
     files: &[
         RomFile {
             name: "epr-20124a.15",

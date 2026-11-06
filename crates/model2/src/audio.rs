@@ -75,6 +75,8 @@ pub struct Live {
     b: Vec<i16>,
     /// Linear gains for the sound board and the music board.
     gains: (f32, f32),
+    /// The game's level (`Game::volume_db`), added to both.
+    volume_db: f32,
 }
 
 fn gain(db: f32) -> f32 {
@@ -108,13 +110,15 @@ impl Live {
         } else {
             None
         };
-        let gains = (gain(DEFAULT_MIX.0), gain(DEFAULT_MIX.1));
-        Live { sound, music, samples: 0, a: Vec::new(), b: Vec::new(), gains }
+        let volume_db = roms.game.volume_db;
+        let gains = (gain(DEFAULT_MIX.0 + volume_db), gain(DEFAULT_MIX.1 + volume_db));
+        Live { sound, music, samples: 0, a: Vec::new(), b: Vec::new(), gains, volume_db }
     }
 
-    /// Set the mix: sound board and music board gains in dB.
+    /// Set the mix: sound board and music board gains in dB (the game's
+    /// own level is added to both).
     pub fn set_mix(&mut self, sound_db: f32, music_db: f32) {
-        self.gains = (gain(sound_db), gain(music_db));
+        self.gains = (gain(sound_db + self.volume_db), gain(music_db + self.volume_db));
     }
 
     /// Replace music tracks with the files of a custom soundtrack.

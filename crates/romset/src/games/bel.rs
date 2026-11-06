@@ -19,6 +19,7 @@ pub static BEL: Game = Game {
     controls: CONTROLS,
     drive_board: None,
     packed: &[Role::MainData, Role::Polygons],
+    volume_db: 0.0,
     files: &[
         RomFile {
             name: "epr-20225.15",

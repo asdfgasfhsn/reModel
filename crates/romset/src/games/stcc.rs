@@ -24,6 +24,7 @@ pub static STCC: Game = Game {
     controls: CONTROLS,
     drive_board: Some(DriveBoard::Wheel),
     packed: &[],
+    volume_db: 0.0,
     files: &[
         RomFile {
             name: "epr-19570.15",

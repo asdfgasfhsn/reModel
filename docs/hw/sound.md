@@ -911,7 +911,11 @@ GAME=overrev`.
   as CRX_drv does; others play from RAM outside the stream buffers
   (SA `0x50000`, LEA `0x9980`, for example).
   Most voices play at OCT −1 (22.05 kHz) with DISDL 3 (−24 dB), so the
-  mix is about 10 dB quieter than `topskatr`'s (peak −22 dBFS in a race).
+  mix is quieter than the other games': over 75 s of `make sound` its mean
+  is −40.2 dB (peak −21.9 dBFS) against −30.9 to −37.6 dB (peaks −10.2 to
+  −16.6) for the other sound boards. The manifest's `volume_db: 6.0`
+  stands in for the cabinet's volume pot (a listening choice; the ROMs
+  don't set the analog gain).
   Direct-out level, pan and the effect send (ISEL 0 or 1, IMXL 1-3) are
   written per voice, and the driver writes the whole `+0x16` word, EFSDL
   3 / EFPAN 0 included.

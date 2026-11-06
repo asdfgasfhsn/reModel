@@ -14,6 +14,7 @@ pub static SKISUPRG: Game = Game {
     controls: CONTROLS,
     drive_board: Some(DriveBoard::SkiPlatform),
     packed: &[],
+    volume_db: 0.0,
     files: &[
         RomFile {
             name: "epr-19489.15",
