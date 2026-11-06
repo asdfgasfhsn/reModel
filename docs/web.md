@@ -165,7 +165,7 @@ once, labelled from the manifest. For `topskatr`:
 
 F toggles fullscreen and H hides the bar.
 
-**Light guns** (`hotd`; `crates/web/gun.js`). Over the canvas the pointer
+**Light guns** (`hotd`, `bel`; `crates/web/gun.js`). Over the canvas the pointer
 is a crosshair: the mouse aims player 1's gun, the left button fires, the
 right button reloads, and moving off the picture points off the screen
 (where the game reloads). On a touch screen a tap fires at the spot
@@ -182,6 +182,12 @@ buttons bit 0 is the trigger and bit 1 reload. `view_point(x, y)` turns
 canvas pixels into those fractions (None, an empty array, off the picture,
 including a wide view's added sides). Another pointer source, such as a
 camera tracking a hand, needs only those two calls.
+
+`bel`'s guns are mounted guns read on analog channels: they can't point
+off the screen, so leaving the picture keeps the last aim, and the reload
+controls (right button, left trigger or B, the touch pill, labelled
+Missile) press the gun's missile button instead (`Reload::Button` in the
+manifest).
 
 The touch controls (`crates/web/touch.js`) appear on touch screens, or
 anywhere with `?touch=1`; on touch screens the bar starts hidden, behind

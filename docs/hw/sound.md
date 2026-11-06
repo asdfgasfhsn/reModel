@@ -936,3 +936,43 @@ GAME=overrev`.
   is +0.5 full scale, not 0): about 30 ms of DC (2,046) comes out until
   the restart clears MVOL. Whether the real board makes the same click
   isn't known.
+
+## 7. EPL's driver on `bel` (ROM, H unless marked)
+
+`bel`'s sound program `mpr-20249.31` (128 KB) has no driver string either,
+and it is largely the same code as Jaleco's driver in §6: about half of
+its 32-byte windows (2,127 of 4,096) appear in `overrev`'s `epr-20002.31`,
+and it starts the same way (SSP `0x5000`, PC `0x601200`). Presumably both
+companies used the same third-party library (*unconfirmed*). It runs on
+the board model with **no changes**; found with `make run GAME=bel
+INPUT=coin-start STEPS=900000000` and `make sound GAME=bel`.
+
+- **Getting commands at all** needed an i960-side change: `bel` sends its
+  sound commands from the UART's transmit interrupt (I/O request bit 10,
+  i960 IRQ3), not by writing the bytes in a loop as the other games do.
+  The handler (`0x6F930`) masks bit 10, clears the request until it reads
+  clear, writes one byte to `0x1C80000` and enables bit 10 again; when
+  its queue is empty it leaves the bit masked, and queuing a command
+  enables it. Without a TxRDY interrupt nothing was sent. The board model
+  now raises request bit 10 whenever it is enabled, the UART's command
+  register has TxEN set and the transmitter took its last byte at least a
+  byte time ago (10 bits at 31.25 kbaud). The other games never enable
+  bit 10, so they're unaffected (their command streams and renders are
+  byte-identical).
+- **Commands.** The same `A0 xx yy` three-byte messages as the Sega games;
+  2,214 bytes boot to game over in a coin-start run. Nothing is written
+  to MOBUF.
+- **Init.** Like §6: interrupts unmasked at 2.65 s, the first key-on at
+  7.3 s after reset (the busy-wait and the double initialisation).
+- **Voices.** All 8-bit PCM, OCT −1 or 0 (22.05 or 44.1 kHz), looping or
+  one-shot, no FM (MDL 0), LFO written with zero depth. The 8 MB of
+  samples (`.32`-`.35`, 2 MB each, concatenated in that order) are
+  streamed into RAM as in §6. All 32 slots get used; music plays
+  throughout, at about −35 dBFS RMS (peak −13 dBFS) over a run.
+- **DSP.** An 80-step program with 28 memory steps that reads MIXS 0 and 1
+  and writes EFREG 1-4, the same shape as `overrev`'s; slots 0-2 send to
+  it (EFSDL 3).
+- *Unconfirmed:* whether the music and effects sound as on the board
+  (they come out continuous and unclipped, with no silent gaps after the
+  driver starts), and what the board latch's upper bits do (the last
+  value written is `0x1B`).

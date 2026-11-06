@@ -133,7 +133,7 @@ board (i960KB on all, gk). Controls and special hardware are gk throughout.
 | `hotd` | The House of the Dead | 1996 (title screen; the dat says 1997) | none | SCSP, CRX_drv 3.2.8 | 2 light guns, read through a gun interface on I/O registers 9-13 (confirmed, README) | none needed beyond the gun interface (modelled); a second main data bank at `0x6000000` (README) | yes; supported and playable |
 | `stcc` | Sega Touring Car Championship | 1996 | `stcca`, `stccb` (the zip holds all three program pairs; Remodel uses `epr-19570/19571`) | SCSP, CRX_drv 3.2.5 (confirmed); **DSB1 (Z80)**, modelled (`docs/hw/dsb1.md`) | wheel (ch. 0), gas (1), brake (2), shift up/down buttons, two view buttons (confirmed, README) | wheel drive board (commanded every frame, reply never checked; modelled, README); link (skipped by the default settings); `epr-18643a.7` (Z80 code for another board) | yes; supported and playable, with music |
 | `overrev` | Over Rev | 1997 | `overrevb` (2B; the zip holds both program pairs, Remodel uses the 2C `epr-20124a/20125a`) | SCSP, Jaleco's own driver (confirmed; streams its music, no music board) | wheel (ch. 0), gas (1), brake (2), shift up/down, view (confirmed, README) | none needed; the link board check reads it as absent and runs stand-alone (README) | yes; supported and playable, with sound |
-| `bel` | Behind Enemy Lines | 1998 (Sega / EPL) | none | SCSP (EPL driver; 128 KB sound program) | gun (gk, weak) | unknown | yes |
+| `bel` | Behind Enemy Lines | 1997 (title screen; the dat says 1998) (Sega / EPL) | none | SCSP, EPL's driver (confirmed; much of its code shared with Jaleco's, `docs/hw/sound.md` §7) | two mounted guns on ADC channels 0-3 (yaw, pitch), triggers and missile buttons (confirmed, README) | none; needs packed main data and polygon banks and the UART's transmit interrupt (README) | yes; supported and playable, with sound |
 | `dynmcopc` | Dynamite Cop (2C) | 1998 | clone of 2A `dynamcop` | SCSP, CRX_drv 3.2.8 | stick, 3 buttons | none | yes (2 own chips; the rest comes from the 2A parent) |
 
 Counts, by parent (one zip each): 3 original Model 2, 8 2A, 13 2B, 8 2C.
@@ -200,6 +200,11 @@ games, ranked by how little new work each needs:
    the decoder model.
 8. **`bel`, Behind Enemy Lines.** Obscure, its own sound driver, small
    128 KB program chips laid out differently, unknown controls.
+   *Done:* its main data and polygon pairs are packed every 4 MB, it
+   uploads its copro program only when the copro status says it has none,
+   and it sends sound commands from the UART's transmit interrupt; the
+   guns are analog, the driver needed nothing new. It plays (README,
+   "What's known about `bel`").
 
 Recommendation: `skisuprg` to shake out what's still `topskatr`-specific
 (done; `stcc` done too), then `hotd` as the game most worth having. `hotd` needs a light

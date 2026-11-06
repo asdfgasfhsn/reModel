@@ -55,6 +55,7 @@ music`). There is no live window yet.
 | Fifth game: `waverunr` (Wave Runner, 2C) | playable (`make play GAME=waverunr`): attract, course select and races to game over, sound from the SCSP (no music board). Needed a data ROM window at `0x06000000` and the recompiler leaving code run from RAM to the interpreter; its ride-on cabinet's board isn't needed; recompiled build identical |
 | Sixth game: `overrev` (Over Rev, 2C, Jaleco) | playable with sound (`make play GAME=overrev`): attract, mode, car and gearbox select, races. Jaleco's own sound driver runs on the SCSP board model unchanged (music streamed from sample ROM; no music board). Needed the link board's registers to read as absent; recompiled build identical |
 | Seventh game: `hotd` (The House of the Dead, 2C) | playable (`make play GAME=hotd`) with light guns: mouse, touch, gamepad sticks or scripts aim, through generic gun controls in the manifest. Attract, coin-up and play through the first areas with shooting and off-screen reloads; sound from the SCSP. Needed a model of its gun interface (worked out from the game's code); recompiled build identical |
+| Eighth game: `bel` (Behind Enemy Lines, 2C, EPL) | playable with sound (`make play GAME=bel`): two mounted guns aimed by mouse, touch, gamepad sticks or scripts. Attract, coin-up and the first mission with shooting and missiles to game over. Needed packed main data and polygon banks, the copro status read before its upload, and the sound UART's transmit interrupt; EPL's sound driver runs on the SCSP board model unchanged; recompiled build identical |
 
 ## Quick start
 
@@ -110,8 +111,8 @@ meant only to make things faster must leave it unchanged. The hash depends on
 
 Every target takes `GAME=skisuprg` for Sega Ski Super G, `GAME=stcc` for
 Sega Touring Car Championship, `GAME=segawski` for Sega Water Ski,
-`GAME=waverunr` for Wave Runner, `GAME=overrev` for Over Rev or `GAME=hotd`
-for The House of the Dead (`make play GAME=stcc`, `make capture
+`GAME=waverunr` for Wave Runner, `GAME=overrev` for Over Rev, `GAME=hotd`
+for The House of the Dead or `GAME=bel` for Behind Enemy Lines (`make play GAME=stcc`, `make capture
 GAME=skisuprg`, ...), except `make assets`, which is `topskatr`'s, and
 `make music`, which needs a music board (`topskatr`'s DSB2 or `stcc`'s DSB1).
 
@@ -164,7 +165,8 @@ script) and which drive board it needs, if any; the board model, scripted
 input and both players read them from there. Drive board protocols live
 in `crates/model2/src/drive.rs`, one per kind; the 2C gun interface in
 `crates/model2/src/gun.rs`. `topskatr`, `skisuprg`, `stcc`, `segawski`,
-`waverunr`, `overrev` and `hotd` are Model 2C-CRX (MB86235 geometry processor).
+`waverunr`, `overrev`, `hotd` and `bel` are Model 2C-CRX (MB86235 geometry
+processor).
 
 The board table is from public documentation (largely MAME's driver notes).
 MAME does not run `topskatr` correctly, so its board details are treated as
@@ -191,6 +193,23 @@ supported unless a game's section says otherwise.
   writes them outside the test in a coin-start run, so their function is
   *unconfirmed*, as are mirrors past 64 KB and the upper four bits of each
   byte. `topskatr`'s and `stcc`'s memory tests don't list them.
+- *Confirmed (from `bel`'s code and memory test):* ROM banks don't always
+  give each chip pair an 8 MB slot. `bel`'s main data (four pairs of
+  16 Mbit chips) sits every 4 MB, `.11/.12`, `.9/.10`, `.7/.8`, `.5/.6`
+  from `0x2000000`, and so do its four polygon pairs (model addresses run
+  to `0xBFFFFF`, 4M words), while its two texture pairs still take 8 MB
+  slots. The manifest lists the packed banks (`Game::packed`). Why the
+  banks differ (jumpers, the ROM board revision) is *unconfirmed*.
+- *Confirmed (from `bel`'s code):* the copro status `0x980014` reads with
+  bit 0 set before any program is uploaded, not only once an upload has
+  started: `bel` uploads its copro program at boot only if bit 0 of
+  `0x980010` or `0x980014` is set, and otherwise sends commands to a copro
+  with no program. The board model now reads all ones whenever the copro
+  holds no program. The other games start an upload unconditionally.
+- *Confirmed (from `bel`'s code):* the sound UART raises I/O request bit
+  10 (IRQ3) while its transmitter can take a byte, and a game may send
+  its sound commands from that interrupt (`docs/hw/peripherals.md`,
+  `docs/hw/sound.md` §7).
 - *Unconfirmed:* `stcc`'s memory test reports IC29 and IC30 BAD; those are
   its copro data ROMs (`.29/.30`), which the i960 can only reach through
   the TGP. Not investigated.
@@ -728,6 +747,62 @@ screen says ©SEGA 1996.
   calibration and how it reloads. Players, the browser and `--input`
   (`gun1=x:y@from-to`, `gun1=off@...`) produce positions; see
   `docs/play.md` and `docs/web.md`.
+
+## What's known about `bel`
+
+Behind Enemy Lines, a two-player game on 2C by EPL Productions for Sega:
+each player works a gun mounted on a vehicle that drives itself through
+the mission. The title screen says ©1996, 1997 SEGA / REAL 3D (the dat
+says 1998). The sound program is EPL's (`docs/hw/sound.md` §7).
+
+- *Confirmed (from the code, then the memory test):* program `.15/.16` at
+  `0x0` and `.13/.14` at `0x40000` (128 KB chips; the code's pointers run
+  straight on); main data `.11/.12`, `.9/.10`, `.7/.8`, `.5/.6` packed at
+  `0x2000000`, `0x2400000`, `0x2800000` and `0x2C00000` (tilemaps at
+  `0x28xxxxx` and a pointer table at `0x2C00000` show it). With 8 MB slots
+  boot read garbage tilemap sizes and copied 13 MB past texture RAM. The
+  memory test then passes IC5-16 and every CPU board RAM.
+- *Confirmed (by running it):* polygons are four pairs (`.17/.21`,
+  `.18/.22`, `.19/.23`, `.20/.24`, low halves `.17`-`.20` by their float
+  exponents), packed every 4 MB like the main data; with 8 MB slots
+  enemies and buildings came out as huge flat shards. Textures are two
+  pairs (`.27/.25`, `.28/.26`) in 8 MB slots (texture addresses reach
+  `0x46xxxx` half-words, the second slot); copro data the 4 MB `.29/.30`;
+  samples `.32`-`.35`; `.31` the sound program.
+- *Confirmed (from the code):* the routine at `0x27030` uploads the copro
+  program from program ROM `0x27090`, only when the status at `0x980010` or
+  `0x980014` shows bit 0 (see "What's known about the Model 2C board").
+  The geometrizer program is the same 4,096 words as `hotd`'s, `skisuprg`'s,
+  `segawski`'s and `waverunr`'s.
+- *Confirmed (from the code):* sound commands go out a byte per UART
+  transmit interrupt (`0x6F930`); with no such interrupt the game ran
+  silent.
+- *Confirmed (from the input test, then by scripted runs):* port
+  `0x1C00002` bits 0/1 coin chutes, 2 **service**, 3 **test** (the other
+  way round from most games here), 4/5 START 1/2; port `0x1C00004` bits
+  0/1 the guns' triggers, 4/5 their missile buttons ("launch button
+  located at front of gun"). The guns are potentiometers on the ADC:
+  channel 0 player 1's yaw, 1 player 2's yaw, 2 player 1's pitch, 3
+  player 2's pitch (`GunSource::Analog`). One coin a credit by default.
+- *Confirmed (from the test menu):* GUN CALIBRATION asks for each gun at
+  its lower-left then upper-right stops: yaw grows to the right and pitch
+  upwards. With the defaults of a fresh EEPROM the crosshair can't reach
+  the view's edges; the manifest's ranges (X −19 to 273, Y 273 to −18,
+  clamped to 0-255) put it on the aimed pixel to within a few pixels,
+  measured from the crosshair lines at three aims.
+- *Seen, unconfirmed:* an `eeprom.bin` written while probing the test
+  menu left the guns not moving in game; a fresh one works. Small blue
+  specks show through some terrain seams.
+- *Confirmed (by running it):* the coin-start script plays the first
+  mission to the game over, scoring hits; `make sound GAME=bel` renders
+  the commands with music throughout. `make state-check GAME=bel`
+  round-trips, `make lockstep GAME=bel` runs 300M instructions identical,
+  and a coin-start run of 600M instructions gives the same state hash
+  (`25f923c57d7362eb`, with an `eeprom.bin` from an earlier run)
+  recompiled and interpreted.
+- Players aim with the generic gun controls; the right mouse button (or
+  the pad's left trigger / B) fires a missile, as the manifest makes the
+  missile button stand in for reloading (`Reload::Button`).
 
 ## License
 

@@ -144,6 +144,25 @@ screen. A gamepad's sticks move a crosshair drawn over the game: it's player
 The game's own calibration (test menu, GUN SETTING) works on what
 Remodel reports; with a fresh EEPROM the shots land where the pointer is.
 
+### Behind Enemy Lines (`bel`)
+
+Two gunners on mounted guns while the vehicle drives itself. One coin is
+one credit. The mouse is player 1's gun as in `hotd`, but the guns are
+mounted (analog yaw and pitch), so they can't point off the screen: the
+right button fires a missile instead of reloading, and leaving the
+picture keeps the last aim. A gamepad's sticks aim as in `hotd`.
+
+| Control | Keys | Mouse | Gamepad |
+|---|---|---|---|
+| coin | C, 5 | | Back |
+| start (player 1, 2) | Enter or 1, 2 | | Start |
+| aim | | move | either stick |
+| fire (`trigger1`) | Space | left button | right trigger, A |
+| missile (`missile1`) | X | right button | left trigger, B |
+
+With a fresh EEPROM the crosshair follows the pointer; the game's GUN
+CALIBRATION in the test menu changes that.
+
 ## The menu
 
 - **Save states**: a quick slot (F5/F9) and four more. A save holds the
