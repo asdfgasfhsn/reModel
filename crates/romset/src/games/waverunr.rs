@@ -22,6 +22,7 @@ pub static WAVERUNR: Game = Game {
     parent: None,
     backup_ram: &[],
     protection: None,
+    dropouts: &[],
     packed: &[],
     volume_db: 0.0,
     files: &[

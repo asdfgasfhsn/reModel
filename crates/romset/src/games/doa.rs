@@ -1,5 +1,5 @@
 use crate::controls::button;
-use crate::{Board, Controls, Game, PadButton, Protection, ProtectionReply, Role, RomFile};
+use crate::{Board, Controls, Dropout, Game, PadButton, Protection, ProtectionReply, Role, RomFile};
 
 /// Dead or Alive (Tecmo, Japan), Model 2B-CRX. Pairs are listed low
 /// half-word first, each in an 8 MB slot, laid out as dynabb97's: program
@@ -26,6 +26,13 @@ pub static DOA: Game = Game {
     // when a game starts and stops itself mid-fight (README, "What's known
     // about doa").
     protection: Some(Protection { replies: &[ProtectionReply { command: 6, rom: 0x2810, len: 0x30 }] }),
+    // The dump of mpr-19324.19 (the low half of the third polygon pair,
+    // Kasumi's and other fighters' models) reads 60% of the 1s on data line
+    // 9 as 0: its last quarter, the same data as the other two pairs' last
+    // quarters, differs from them only there, always 1 to 0. In attribute
+    // words that is link bit 9, which drew Kasumi as scattered shards
+    // (README, "What's known about doa").
+    dropouts: &[Dropout { chip: "mpr-19324.19", bit: 9 }],
     packed: &[],
     // A coin-start run's `make sound` averages -30 dBFS RMS (peak -11),
     // louder than the games here that play at 0 dB (about -31 to -38):

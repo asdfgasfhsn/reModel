@@ -62,7 +62,7 @@ music`). There is no live window yet.
 | Ninth game: `overrevb` (Over Rev, 2B, Jaleco) | playable with sound (`make play GAME=overrevb`): the 2B version of `overrev`, same data and controls, its own i960 program and two SHARC programs. Attract, menus and races look and sound as `overrev` does. Full speed recompiled (`RECOMP=1`: i960 and both SHARCs; races at 3.3x real time natively, and the browser's geometrizer keeps up), below real time interpreted; recompiled build identical |
 | Tenth game: `sgt24h` (Super GT 24h, 2B, Jaleco) | playable with sound (`make play GAME=sgt24h`): attract, course, car and gearbox select, races to game over. The second 2B game, on the same SHARC code as `overrevb`; needed the i960's local-register cache and its I/O board type set in backup RAM (a manifest default); its link board's Z80 ROM isn't needed. Full speed recompiled; recompiled build identical |
 | Eleventh game: `dynabb97` (Dynamite Baseball '97, 2B, Sega) | playable with sound (`make play GAME=dynabb97`): attract, team and pitcher select, batting with the bat lever, pitching and fielding. The first Sega 2B game: its own copro SHARC program, the same geometrizer SHARC code as Jaleco's games; needed nothing new from the board model. Full speed recompiled; recompiled build identical |
-| Twelfth game: `doa` (Dead or Alive, 2B, Tecmo) | playable with sound (`make play GAME=doa`): attract, character select and fights through rounds, replays and the next opponent. Needed its protection device answered: the game's own check, with the answer it compares against declared in the manifest and read from the ROM (the device's algorithm is unknown); the character select's large model still draws with wrong-texture patches. Its geometrizer runs the shared Jaleco/Sega geometrizer crate, its copro program its own. Full speed recompiled; recompiled build identical |
+| Twelfth game: `doa` (Dead or Alive, 2B, Tecmo) | playable with sound (`make play GAME=doa`): attract, character select and fights through rounds, replays and the next opponent. Needed its protection device answered: the game's own check, with the answer it compares against declared in the manifest and read from the ROM (the device's algorithm is unknown); a bad dump of one polygon ROM, which drew Kasumi as shards, is repaired at load. Its geometrizer runs the shared Jaleco/Sega geometrizer crate, its copro program its own. Full speed recompiled; recompiled build identical |
 
 ## Quick start
 
@@ -1020,8 +1020,9 @@ model as it is, once the i960 returns keep PFP's address bits 4 and 5
   throughout; `make sound` of that run averages -30 dBFS RMS (peak -11),
   louder than the games at 0 dB, so the manifest takes 3 dB off. `make
   state-check GAME=doa` round-trips, and a coin-start run of 600M
-  instructions gives the state hash `ba5d806c8790a9a2` (with an
-  `eeprom.bin` from an earlier run) recompiled and interpreted. `make
+  instructions gives the state hash `78f308b4da95cefb` (with an
+  `eeprom.bin` from an earlier run; `ba5d806c8790a9a2` before the
+  polygon ROM repair below) recompiled and interpreted. `make
   lockstep GAME=doa RECOMP=1 INPUT=coin-start` runs 600M instructions
   identical (i960 and both SHARCs recompiled). Its geometrizer code is
   the other 2B games' (2,987 words, the same crate); its copro program is
@@ -1038,9 +1039,34 @@ model as it is, once the i960 returns keep PFP's address bits 4 and 5
   `.19/.23`; textures `.27/.25`; four sample ROMs) its attract demo and
   fights draw correctly; the memory test wasn't run. The Model 2A chips
   also in `doa.zip` belong to the 2A clone `doaa`.
-- *Seen, unconfirmed:* the character select screen's large 3D model
-  still draws with patches of wrong texture (dark blocks over the face
-  and hair), where the attract demo's and the fights' models look right.
+- *Confirmed (from the ROM data):* the set's dump of `mpr-19324.19`, the
+  low half of the third polygon pair (`0xC00000-0xDFFFFF` to the
+  geometrizer: Kasumi's models, and others'), is bad on data line 9: it
+  reads about 60% of that bit's 1s as 0. Its last quarter holds the
+  same data as the last quarters of `.22` and `.23`, and differs from
+  them in 138,737 of 524,288 words, every one of them bit 9 read 0
+  where the others have 1 (none the other way, no address pattern); in
+  its first three quarters bit 9 is set in 38-45% of nonzero words,
+  its other bits in 58-71%. Floats lose a
+  mantissa bit (at most 2^-14 relative), but in a polygon's attribute
+  word bit 9 is the link type's high bit: Kasumi drew as scattered
+  shards with holes, in fights and on the character select screen (the
+  "dark blocks over the face and hair" seen there before), while the
+  geometrizer transformed every vertex as the ROM gives it (checked
+  against a transform of the ROM data, object by object) and Zack, from
+  the first pair, drew right. Bits 23-24 of an attribute word copy bits
+  8-9 (`docs/hw/geometrizer.md` §3.3) and come from the intact `.23`:
+  linked by them, her meshes are coherent (every polygon's stored normal
+  agrees with its vertices' winding, 199 of 199 in her largest head
+  model, against 145 of 197 linked by the dump's bits 8-9). The manifest
+  declares the bad line (`romset::Dropout`) and loading restores bit 9
+  of attribute-shaped words from bit 24 (45,916 words); Kasumi then
+  draws whole in fights and on the character select screen. The chip on
+  a real board is presumably good (*unconfirmed*: no other dump to
+  compare). Hairline cracks of background pixels along some polygon
+  edges remain on the large character select models, Jann Lee's from the
+  intact first pair too, so they are the rasteriser's, not the dump's
+  (*unconfirmed* why).
 
 ## What's known about `hotd`
 

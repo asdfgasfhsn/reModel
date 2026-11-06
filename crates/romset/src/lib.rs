@@ -59,6 +59,22 @@ pub struct ProtectionReply {
     pub len: u32,
 }
 
+/// A data line of a polygon ROM chip that reads some of its 1 bits as 0
+/// in the only dump there is (a bad dump; the hash is still the one
+/// [`RomFile::sha1`] checks). Loading restores what can be restored: the
+/// low half's link bits 8 and 9 of a polygon's attribute word, from their
+/// copy in bits 23 and 24 (the high chip of the pair), which every intact
+/// polygon ROM keeps equal ([`repair_link_bits`]). A float word that lost
+/// the bit stays off by that mantissa bit (at most 2^-14 relative for bit
+/// 9 of the low half).
+#[derive(Clone, Copy, Debug)]
+pub struct Dropout {
+    /// The chip: the low half of a [`Role::Polygons`] pair.
+    pub chip: &'static str,
+    /// The data line, 8 or 9.
+    pub bit: u8,
+}
+
 /// Model 2 board revisions. They share the i960 main CPU and sound system;
 /// the geometry processor differs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -171,6 +187,8 @@ pub struct Game {
     pub backup_ram: &'static [(usize, &'static [u8])],
     /// The protection device the game checks for at `0x1D80000`, if any.
     pub protection: Option<Protection>,
+    /// Known bad data lines in the set's dump, repaired at load.
+    pub dropouts: &'static [Dropout],
 }
 
 #[derive(Debug)]
@@ -273,6 +291,13 @@ impl RomSet {
                     return Err(Error::Hash { name: rom.name, expected: rom.sha1, actual });
                 }
             }
+        }
+        let mut chips = chips;
+        for d in game.dropouts {
+            let (lo, hi) =
+                polygon_pair(game, d.chip).unwrap_or_else(|| panic!("{}: {} is no polygon low half", game.id, d.chip));
+            let [lo_chip, hi_chip] = chips.get_disjoint_mut([lo, hi]).expect("distinct chips");
+            repair_link_bits(lo_chip, hi_chip, d.bit);
         }
         let program = assemble(game, &chips, Role::Program);
         Ok(RomSet { game, program, chips })
@@ -391,6 +416,40 @@ fn assemble(game: &Game, chips: &[Vec<u8>], role: Role) -> Vec<u8> {
 
 /// Combine two 16-bit-wide chips into one 32-bit little-endian bus:
 /// `lo` supplies bytes 0-1 of each word, `hi` bytes 2-3.
+/// The manifest indices of `chip` and its partner, if `chip` is the low
+/// half of a [`Role::Polygons`] pair.
+fn polygon_pair(game: &Game, chip: &str) -> Option<(usize, usize)> {
+    let idx: Vec<usize> =
+        game.files.iter().enumerate().filter(|(_, f)| f.role == Role::Polygons).map(|(i, _)| i).collect();
+    idx.as_chunks::<2>().0.iter().find(|&&[lo, _]| game.files[lo].name == chip).map(|&[lo, hi]| (lo, hi))
+}
+
+/// Restore link bit `bit` (8 or 9) of the polygon attribute words in a
+/// pair's low chip `lo` from its copy 15 bits up, in the high chip `hi`.
+/// An attribute word has a polygon type in bits 0-1 and bits 2-7 and 25-26
+/// clear; its bits 23-24 repeat the link bits 8-9 (in every intact Model 2
+/// polygon ROM here; `docs/hw/geometrizer.md` §3.3). The bit is set where
+/// it reads 0, its copy 1, and the other link bit agrees with its own
+/// copy. A float word that happens to look like that gets one mantissa bit
+/// of its low half set, a change of at most 2^-14 relative, the size of
+/// the error the dropout itself leaves in floats. Returns how many words
+/// changed.
+pub fn repair_link_bits(lo: &mut [u8], hi: &[u8], bit: u8) -> usize {
+    assert!(bit == 8 || bit == 9, "only link bits 8 and 9 have a copy");
+    let other = 17 - bit as u32;
+    let mut n = 0;
+    for (l, h) in lo.as_chunks_mut::<2>().0.iter_mut().zip(hi.as_chunks::<2>().0) {
+        let w = u16::from_le_bytes(*l) as u32 | (u16::from_le_bytes(*h) as u32) << 16;
+        let attr = w & 3 != 0 && w >> 2 & 0x3F == 0 && w >> 25 & 3 == 0;
+        let lost = w >> bit & 1 == 0 && w >> (bit + 15) & 1 == 1;
+        if attr && lost && w >> other & 1 == w >> (other + 15) & 1 {
+            *l = (w as u16 | 1 << bit).to_le_bytes();
+            n += 1;
+        }
+    }
+    n
+}
+
 pub fn interleave16(lo: &[u8], hi: &[u8]) -> Vec<u8> {
     assert_eq!(lo.len(), hi.len());
     let mut out = Vec::with_capacity(lo.len() * 2);
@@ -408,6 +467,45 @@ mod tests {
     #[test]
     fn interleave_order() {
         assert_eq!(interleave16(&[1, 2, 5, 6], &[3, 4, 7, 8]), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    /// Halves of a 32-bit word as two chips' little-endian 16-bit words.
+    fn halves(words: &[u32]) -> (Vec<u8>, Vec<u8>) {
+        let lo = words.iter().flat_map(|w| (*w as u16).to_le_bytes()).collect();
+        let hi = words.iter().flat_map(|w| ((w >> 16) as u16).to_le_bytes()).collect();
+        (lo, hi)
+    }
+
+    #[test]
+    fn link_bit_repair() {
+        let words = [
+            0x7884_0902, // link 1, copy 1: intact
+            0x7984_0902, // link 1, copy 3: bit 9 lost -> 0x7984_0b02
+            0x7904_0801, // link 0, copy 2: bit 9 lost -> 0x7904_0a01
+            0x7880_0902, // link 1, copy 1 with bit 23 clear: copies disagree on bit 8, left alone
+            0x3f80_0001, // 1.0000001: bits 25-26 set, not an attribute word
+            0x7984_09c2, // bits 2-7 not clear: not an attribute word
+        ];
+        let (mut lo, hi) = halves(&words);
+        assert_eq!(repair_link_bits(&mut lo, &hi, 9), 2);
+        let got: Vec<u32> = lo
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(hi.as_chunks::<2>().0)
+            .map(|(l, h)| u16::from_le_bytes(*l) as u32 | (u16::from_le_bytes(*h) as u32) << 16)
+            .collect();
+        assert_eq!(got, [0x7884_0902, 0x7984_0b02, 0x7904_0a01, 0x7880_0902, 0x3f80_0001, 0x7984_09c2]);
+    }
+
+    #[test]
+    fn dropouts_name_polygon_low_halves() {
+        for g in games::ALL {
+            for d in g.dropouts {
+                assert!(polygon_pair(g, d.chip).is_some(), "{}: {} is no polygon low half", g.id, d.chip);
+                assert!(d.bit == 8 || d.bit == 9, "{}: only link bits can be restored", g.id);
+            }
+        }
     }
 
     #[test]

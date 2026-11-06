@@ -108,7 +108,7 @@ board (i960KB on all, gk). Controls and special hardware are gk throughout.
 
 | Set | Title | Year | Clones in zip | Sound | Controls | Special hardware | Complete |
 |---|---|---|---|---|---|---|---|
-| `doa` | Dead or Alive | 1996 | `doaa` (2A) | SCSP | stick, 3 buttons (confirmed, README) | a protection device at `0x1D80000` (confirmed from the code): without it the game stops itself during the first fight; answered by the board model from the manifest (README, "What's known about `doa`") | yes; supported and playable, with sound (2B; its own copro program, the shared geometrizer code; full speed recompiled) |
+| `doa` | Dead or Alive | 1996 | `doaa` (2A) | SCSP | stick, 3 buttons (confirmed, README) | a protection device at `0x1D80000` (confirmed from the code): without it the game stops itself during the first fight; answered by the board model from the manifest (README, "What's known about `doa`") | yes, but `mpr-19324.19` is a bad dump: data line 9 reads some 1s as 0 (confirmed from the data; repaired at load where the polygon format keeps a copy, README); supported and playable, with sound (2B; its own copro program, the shared geometrizer code; full speed recompiled) |
 | `dynabb97` | Dynamite Baseball 97 (Rev A) | 1997 | none | SCSP, CRX_drv 3.2.8 | per player a stick, two buttons and a bat lever (analog channels 0, 1) (confirmed, README) | none needed (confirmed) | yes; supported and playable, with sound (2B; its own copro program, the Jaleco games' geometrizer code) |
 | `fvipers` | Fighting Vipers | 1995 | none | SCSP | stick, 3 buttons | none | yes |
 | `gunblade` | Gunblade NY | 1995 | none | SCSP | 2 mounted machine guns | none known | yes |
