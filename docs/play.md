@@ -140,6 +140,24 @@ recompiled build (`RECOMP=1`) for full speed in races, as `overrevb` does.
 | shift up, shift down | A, Z | right shoulder or B, left shoulder or X |
 | view | V | Y |
 
+### Dynamite Baseball '97 (`dynabb97`)
+
+Model 2B, Sega's own: its sound is the SCSP's, run by CRX_drv. One coin
+is one credit. Button 1 confirms on the menus (team, then starting
+pitcher). At bat, the stick moves the hitting point and the bat lever
+swings: hold Space (or the right trigger) to pull it back and let go to
+swing. It needs the recompiled build (`RECOMP=1`) for full speed, as the
+other 2B games do. Player 2's controls are in the manifest but have no
+default keys.
+
+| Control | Keys | Gamepad |
+|---|---|---|
+| coin | C, 5 | Back |
+| start (player 1, 2) | Enter or 1, 2 | Start |
+| stick | arrow keys | d-pad |
+| button 1, button 2 (`sw1`, `sw2`; what 2 does is unconfirmed) | Z, X | A, B |
+| bat (pull back, let go to swing) | Space | right trigger |
+
 ### The House of the Dead (`hotd`)
 
 A light-gun game for two. Two coins are one credit. The mouse is player

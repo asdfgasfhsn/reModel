@@ -1,10 +1,16 @@
 # Model 2B-CRX: the board as `overrevb` uses it
 
-Status: 2026-11-06. Remodel runs `overrevb` (Over Rev, the 2B version) and
-`sgt24h` (Super GT 24h) from boot through attract into races, with both
-SHARCs running the programs the games upload. `sgt24h` needed nothing
-more from the board model: its SHARC code is `overrevb`'s (the uploaded
-images differ only past the code), and it uses the same ports. This page
+Status: 2026-11-07. Remodel runs `overrevb` (Over Rev, the 2B version),
+`sgt24h` (Super GT 24h) and `dynabb97` (Dynamite Baseball '97) from boot
+through attract into play, with both SHARCs running the programs the
+games upload. `sgt24h` needed nothing more from the board model: its
+SHARC code is `overrevb`'s (the uploaded images differ only past the
+code), and it uses the same ports. Neither did `dynabb97`, Sega's own:
+its geometrizer code is the Jaleco games' too (2,987 words, identical up
+to `0x20C30`), its copro program its own (1,956 words), which uses only
+the command and result FIFOs and FLAG0/FLAG1 described below. `doa`
+(Tecmo) also runs on this model but has a protection device at
+`0x1D80000` (README, "What's known about `doa`"). This page
 is what the board model (`crates/model2`: `bus.rs`, `sharc.rs`, `geo.rs`)
 is built on. The SHARC core itself is
 described in `adsp2106x.md`; the parts 2B shares with 2C in
@@ -210,5 +216,8 @@ that run alone, and the run took nearly three times as long).
   waits on the real board.
 - The SHARC clock and wait states (`WAIT` = `0xC9400` copro,
   `0xB400` geometrizer, both written by the programs) aren't modelled.
-- Sega's 2B games upload their own SHARC programs and may use more of the
-  board than Jaleco's two (`overrevb`, `sgt24h`) do.
+- Sega's 2B games upload their own copro programs and may use more of
+  the board than the three running (`overrevb`, `sgt24h`, `dynabb97`) do.
+- What the device at `0x1D80000-0x1D87FFF` that `doa` checks for is
+  (*unconfirmed* whether it sits on the game board or the ROM board),
+  and what it computes.

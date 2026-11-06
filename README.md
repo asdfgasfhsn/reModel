@@ -61,6 +61,7 @@ music`). There is no live window yet.
 | Eighth game: `bel` (Behind Enemy Lines, 2C, EPL) | playable with sound (`make play GAME=bel`): two mounted guns aimed by mouse, touch, gamepad sticks or scripts. Attract, coin-up and the first mission with shooting and missiles to game over. Needed packed main data and polygon banks, the copro status read before its upload, and the sound UART's transmit interrupt; EPL's sound driver runs on the SCSP board model unchanged; recompiled build identical |
 | Ninth game: `overrevb` (Over Rev, 2B, Jaleco) | playable with sound (`make play GAME=overrevb`): the 2B version of `overrev`, same data and controls, its own i960 program and two SHARC programs. Attract, menus and races look and sound as `overrev` does. Full speed recompiled (`RECOMP=1`: i960 and both SHARCs; races at 1.8x real time natively, and the browser's geometrizer keeps up), below real time interpreted; recompiled build identical |
 | Tenth game: `sgt24h` (Super GT 24h, 2B, Jaleco) | playable with sound (`make play GAME=sgt24h`): attract, course, car and gearbox select, races to game over. The second 2B game, on the same SHARC code as `overrevb`; needed the i960's local-register cache and its I/O board type set in backup RAM (a manifest default); its link board's Z80 ROM isn't needed. Full speed recompiled; recompiled build identical |
+| Eleventh game: `dynabb97` (Dynamite Baseball '97, 2B, Sega) | playable with sound (`make play GAME=dynabb97`): attract, team and pitcher select, batting with the bat lever, pitching and fielding. The first Sega 2B game: its own copro SHARC program, the same geometrizer SHARC code as Jaleco's games; needed nothing new from the board model. Full speed recompiled; recompiled build identical |
 
 ## Quick start
 
@@ -303,12 +304,29 @@ chip but the program pair). Details, addresses and evidence in
   callers' local registers on-chip: its data sheet says the cache "holds up
   to four local register frames" (the current one and three callers'), and
   the oldest is written to memory only when a fifth procedure is entered;
-  `flushreg` writes the cached sets out (i960 Jx manual; the KA/KB
-  reference wasn't to hand). With the cache modelled (`i960::cpu::LocalCache`)
+  `flushreg` writes the cached sets out (i960 Jx manual, and the 80960KB
+  Programmer's Reference Manual, 270567-001, ch. 4). With the cache modelled (`i960::cpu::LocalCache`)
   the unpatched ROM boots past `0x710` to "CHECKING NETWORK NOW", "STAND
   ALONE" and "INSERT COIN" on the 2C model with the 2B stubs; without it,
   the return reloads the zeroed frame and faults at IP 0. That it is
   exactly three cached sets is the data sheet's, not tested by the game.
+- *Confirmed (`dynabb97`, ROM and by running it):* Sega's own 2B game
+  uploads its SHARCs the same way. Its geometrizer program is the Jaleco
+  games' code word for word (2,987 words; the images differ only from
+  `0x20C31` on, past the code), so the geometrizer SHARC program looks
+  like the board's standard one (*unconfirmed* beyond these three games).
+  Its copro program is its own (1,956 words of code, different from
+  `0x20099` on) and uses only the two FIFOs and flags; nothing else on
+  the board model needed changing.
+- *Confirmed (`doa`, from the code):* on return the i960 takes the
+  caller's frame from PFP with only bits 0-3 (return status and the
+  prereturn-trace flag) cleared, not the six low bits the 80960KB manual
+  says it ignores (270567-001, ch. 4 and appendix E: new frames are
+  aligned on 64 bytes). `doa`'s task switch loads FP, PFP and SP by hand
+  with 16-byte-aligned frames (the first at `0x5018D0`); clearing bits 4
+  and 5 on return lands it on the wrong frame, and the game never gets as
+  far as uploading its SHARC programs. Calls still open 64-byte-aligned
+  frames (`i960::cpu::Cpu::ret`).
 
 ## What's known about Model 2A (scoping, not yet supported)
 
@@ -911,6 +929,83 @@ below (the register cache and the I/O type).
   interpreted it races below real time.
 - *Unconfirmed:* steering and braking were only checked as far as a
   scripted run shows (the unsteered car ends against the wall).
+
+## What's known about `dynabb97`
+
+Eleventh game and the third on Model 2B, the first of Sega's own there:
+Dynamite Baseball '97, a two-player baseball cabinet with a bat lever.
+
+- *Confirmed (ROM, then the memory test):* program `epr-19833a.15/.16`
+  then `.13/.14`; main data `.11/.12` at `0x2000000`, `.9/.10` at
+  `0x2800000`, and a second bank `.7/.8` and `.5/.6` at `0x6000000`, as
+  in `hotd`. The test menu's MEMORY TEST shows every ROM (IC 5-16) and
+  RAM GOOD in that layout. Polygons `.17/.21` then `.18/.22` and
+  textures `.27/.25` draw correctly. Four sample ROMs (`.32-.35`), no copro
+  data, no music board. The boot warning says "used only in Japan"; the
+  title screen says ©SEGA 1997.
+- *Confirmed (by running it):* the board model runs it unchanged: the
+  i960 uploads both SHARC programs as the Jaleco games do, the geometrizer
+  code is theirs and the copro program is Sega's own (Model 2B above). No
+  protection device: nothing is read outside the known map. Boot writes
+  zeros once over `0x600000-0x62FFFF`, which Remodel doesn't map and the
+  game never reads back (*unconfirmed* what is there).
+- *Confirmed (from the input test, then by scripted runs):* port
+  `0x1C00002` bit 0 coin 1, 1 coin 2, 2 test, 3 service, 4 start 1, 5
+  start 2 (one coin a credit); port `0x1C00004` player 1 and `0x1C00006`
+  player 2, each bit 0 SW #1, 1 SW #2, 4 down, 5 up, 6 right, 7 left.
+  SW #1 confirms the team and the starting pitcher. BAT VOLUME is analog
+  channel 0 (player 1) and 1 (player 2): the input test shows 0 for
+  `0x50` and below, `0xFF` from about `0xC0`, `0x6D` at `0x80`. Pulling
+  the bat to `0xC0` and letting it back to `0x50` swings; holding it
+  doesn't. *Unconfirmed:* that the lever rests at the low end (inferred
+  from that), and what SW #2 does.
+- *Confirmed (by running it):* `make run GAME=dynabb97 INPUT=coin-start`
+  attracts, coins up, goes through team and pitcher select and plays
+  innings (batting with strikes, balls and outs, then pitching and
+  fielding). `make sound` of the run averages -34 dBFS RMS (peak -13),
+  between `hotd`'s and `skisuprg`'s (same driver, CRX_drv 3.2.8), so the
+  manifest adds no gain. `make state-check GAME=dynabb97` round-trips,
+  `make lockstep GAME=dynabb97 RECOMP=1` runs 300M instructions of a
+  coin-start run identical (i960 and both SHARCs recompiled), and a
+  coin-start run of 600M instructions gives the same state hash
+  (`69e50b78363de101`, with an `eeprom.bin` from an earlier run)
+  recompiled and interpreted.
+- *Speed (by running it):* that run plays at 1.86x real time recompiled
+  natively (the geometrizer SHARC is the limit, slowest frame 21 ms), and
+  at about real time interpreted (slowest frame 32 ms).
+
+## What's known about `doa` (not yet supported)
+
+Dead or Alive (Tecmo, 2B, Japan). It boots, attracts with 3D, coins up,
+and starts a fight on the board model as it is, once the i960 returns
+keep PFP's address bits 4 and 5 (Model 2B above). It isn't supported
+because of a protection device:
+
+- *Confirmed (from the code, then by running it):* at boot (i960
+  `0x5A0`) the game polls `0x1D8400C` up to 10,000 times for `0xFFF0`.
+  If it sees it, it sends a block of data to the device at `0x1D80000`
+  to `0x1D87FFF` (i960 `0x29F0`), reads an answer back from `0x1D87FF8`
+  and compares it with bytes in its own ROM, keeping the result at
+  `0x54FABC`. With no device the result is 0, and starting a game (i960
+  `0x3558`) then arms a random countdown at `0x54F3B0` (300 to 1,199
+  frames; 892 in a coin-start run). When it runs out (i960 `0x2FA4`) the
+  game kills its own tasks: the fight freezes with only the background
+  drawn.
+- *Unconfirmed:* what the device computes. Answering the check would mean
+  knowing its algorithm, not just its interface, so it's left for when
+  that's documented; the game isn't patched around it.
+- *Confirmed (by running it):* the input test gives port `0x1C00002` bit
+  0 coin 1, 1 coin 2, 2 test, 3 service, 4 start 1, 5 start 2 (one coin a
+  credit), and ports `0x1C00004`/`0x1C00006` for players 1 and 2: bit 0
+  hold, 1 punch, 2 kick, 4 down, 5 up, 6 right, 7 left. Laid out as
+  `dynabb97`'s (program `.15/.16`; main data `.11/.12`, `.9/.10`; a
+  second bank `.7/.8`, `.5/.6`; polygons `.17/.21`, `.18/.22`,
+  `.19/.23`; textures `.27/.25`; four sample ROMs) its attract demo and
+  fights draw correctly; the memory test wasn't run. The Model 2A chips
+  also in `doa.zip` belong to the 2A clone `doaa`.
+- *Seen, unconfirmed:* the character select screen's large 3D model draws
+  with patches of wrong texture where the attract demo's models look
+  right.
 
 ## What's known about `hotd`
 

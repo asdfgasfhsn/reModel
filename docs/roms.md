@@ -46,7 +46,7 @@ the same). The geometry hardware is what changes:
 |---|---|---|
 | Model 2 (1993-94) | Fujitsu TGP MB86234 (gk). **ROM:** the game uploads its program (`daytona`, `vcop`; each game its own), contrary to the gk that it is internal and undumped. | A TGP interpreter for its undocumented instruction set, the original board's memory map and its sound board ROM layout. Large new work. |
 | 2A-CRX (1995) | Same TGP as Model 2 (gk). **ROM:** `srallyc` and `vf2` upload theirs too; no geometrizer program is uploaded (fixed function, unconfirmed). | As Model 2, plus 2A's map and a fixed-function geometrizer. Once one 2A game runs, the others are mostly manifests. |
-| 2B-CRX (1995) | Two ADSP-21062 SHARCs (gk for the chip; **ROM** for two): copro and geometrizer, both programmed by the i960 through their I/O-processor DMA. | *Done for `overrevb` and `sgt24h`:* the SHARC core (interpreter and recompiler), 2B's uploads and port map, and the geometrizer SHARC's output, which has the 2C stream's format (`docs/hw/model2b.md`). Sega's 2B games run their own SHARC programs and may use more of the board. |
+| 2B-CRX (1995) | Two ADSP-21062 SHARCs (gk for the chip; **ROM** for two): copro and geometrizer, both programmed by the i960 through their I/O-processor DMA. | *Done for `overrevb`, `sgt24h` and `dynabb97`:* the SHARC core (interpreter and recompiler), 2B's uploads and port map, and the geometrizer SHARC's output, which has the 2C stream's format (`docs/hw/model2b.md`). Sega's 2B games run their own SHARC programs and may use more of the board. |
 | 2C-CRX (1996-98) | Fujitsu MB86235 (TGPx4) copro and geometrizer, both running programs the i960 uploads. **ROM:** every 2C program set contains MB86235 code shared with `topskatr`'s uploaded programs; no 2A or 2B set does. | Mostly a manifest per game. The MB86235 interpreter and recompiler, the geometrizer, the 2C memory map and the sound board are all there. New work is per game: inputs, any extra board, and whatever the game's code uses that `topskatr`'s doesn't. |
 
 Two ROM clues sort the boards (the chips are ROM evidence; what they are is gk): every Model 2 and 2A
@@ -108,8 +108,8 @@ board (i960KB on all, gk). Controls and special hardware are gk throughout.
 
 | Set | Title | Year | Clones in zip | Sound | Controls | Special hardware | Complete |
 |---|---|---|---|---|---|---|---|
-| `doa` | Dead or Alive | 1996 | `doaa` (2A) | SCSP | stick, 3 buttons | none | yes |
-| `dynabb97` | Dynamite Baseball 97 (Rev A) | 1997 | none | SCSP, CRX_drv 3.2.8 | stick, buttons (gk, weak) | none known | yes |
+| `doa` | Dead or Alive | 1996 | `doaa` (2A) | SCSP | stick, 3 buttons (confirmed, README) | a protection device at `0x1D80000` (confirmed from the code): without it the game stops itself during the first fight (README, "What's known about `doa`") | yes; boots, attracts and fights, not supported until the device is understood |
+| `dynabb97` | Dynamite Baseball 97 (Rev A) | 1997 | none | SCSP, CRX_drv 3.2.8 | per player a stick, two buttons and a bat lever (analog channels 0, 1) (confirmed, README) | none needed (confirmed) | yes; supported and playable, with sound (2B; its own copro program, the Jaleco games' geometrizer code) |
 | `fvipers` | Fighting Vipers | 1995 | none | SCSP | stick, 3 buttons | none | yes |
 | `gunblade` | Gunblade NY | 1995 | none | SCSP | 2 mounted machine guns | none known | yes |
 | `indy500` | Indianapolis 500 (Rev A, Twin) | 1995 | `indy500d`, `indy500to` | SCSP | wheel, pedals, shifter | drive board; link | yes |
