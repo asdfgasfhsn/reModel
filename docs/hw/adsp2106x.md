@@ -38,8 +38,8 @@ as code decode to undefined encodings.
 | `src/mem.rs` | Internal memory as 16-bit columns (UM §5.3) |
 | `src/cpu.rs` | `Sharc`: registers, sequencer pipeline, loops, interrupts, DAGs, memory access, IOP registers, host interface, save states |
 | `src/cpu/exec.rs` | Instruction execution and the computation units |
-| `src/cpu/recomp.rs` | What recompiled programs run on: one interpreter step of a constant instruction, dispatch, watching compiled words, `program_hash` |
-| `src/codegen.rs` | The recompiler (`docs/recompiler.md`): code discovery and a Rust crate per program |
+| `src/cpu/recomp.rs` | What recompiled programs run on: one interpreter step of a constant instruction, blocks of straight-line instructions (below), dispatch, watching compiled words, `code_hash` |
+| `src/codegen.rs` | The recompiler (`docs/recompiler.md`): code discovery, block regions and a Rust crate per program |
 | `crates/cli/src/sharc.rs` | `remodel sharc-disasm` / `sharc-check`: listings, code discovery, a host boot and run |
 
 `make sharc-test` runs the unit tests and, when the programs have been
@@ -149,6 +149,55 @@ the EPB0 FIFO (`remodel-state`); the decode cache is rebuilt.
   one cycle), stall cycles (DAG register loads, PM bus conflicts, cache misses,
   wait states), the instruction cache, multiprocessing, link ports, SPORTs,
   DMA other than the host boot channel.
+
+## Recompiled code: blocks
+
+A recompiled program (`docs/recompiler.md`) runs most of its instructions
+as blocks: straight-line runs of words executed one after the other, with
+everything the pipeline model does per cycle (the tick of the timer and
+interrupt latches, the fetch stage's loop test and slot moves, the
+interrupt check, the step and cycle counters, the board's `after_step`)
+done once at the block's end, for all of them (`Sharc::block_start`,
+`block_exec`, `block_end` in `src/cpu/recomp.rs`). The state at the end is
+what single steps leave, bit for bit; that holds because a block runs only
+where that bookkeeping could do nothing but count:
+
+- **The pipeline is the plain sequence**: the word executing at *a*, *a*+1
+  in decode, *a*+2 being fetched. Each instruction of the block fetches the
+  word two after it, and the block stops before the one whose fetch reaches
+  the innermost loop's end (where the loop test happens), so the loop
+  stacks and status aren't consulted inside it.
+- **No interrupt can be taken**: IRPTEN is clear and the core isn't
+  booting, and the timer is off. The latches still tick: the IRQ lines are
+  constant during a run and STKY only gains bits inside a block (nothing
+  in it writes STKY), so the last tick's latch, with STKY as it was before
+  the last instruction, is the union of them all.
+- **Which words** (`codegen::in_block`): no DO, stack operation, IDLE,
+  unconditional branch, or sequencer or system register operand (universal
+  registers are limited to the register file, the DAG registers and PX),
+  and no undefined compute. A conditional branch or return can be inside:
+  not taken it is an ordinary instruction; taken, the block ends before it
+  and it runs as a single step.
+- **Memory**: before each instruction runs, the addresses its DAGs will
+  output are worked out (`dag_peek`, which `dag_output` itself uses). An
+  instruction that would reach IOP registers or reserved addresses (side
+  effects such as a reset or DMA) ends the block before it, and runs as a
+  single step. A store that overwrites compiled code ends the block after
+  it.
+- **The board** says how many instructions it can let run before it must
+  look (`Bus::block_budget`): the 2B geometrizer to its next check every
+  256 instructions or the end of its FLAG0 pulse, the copro to its step
+  limit. Its per-step work between those is replayed exactly:
+  `Bus::after_access` runs after each instruction that used the external
+  port, with `steps` counting it (the copro sets its FIFO flags there,
+  the geometrizer notes list or rasteriser activity), and `spinning`
+  can't hold after any instruction of a block but the last, since none is
+  a taken branch and a block doesn't start inside a short loop that ends
+  on a condition.
+
+`make lockstep` checks it against the interpreter (both SHARCs' whole
+state after every frame), and a unit test runs programs through blocks
+of several sizes beside single steps (`blocks_match_the_interpreter`).
 
 ## Ambiguities in the manual, and what the core does
 
@@ -312,7 +361,7 @@ target of `IF LT JUMP` at `0x20809`, falls through to the `RTS` at
   the leftover loop stack entry.
 - Cycle timing beyond branch bubbles, if the board needs it.
 - Speed: the interpreter takes about 54 ns an instruction on the 2B
-  geometrizer program (a race frame is about 310,000 instructions); the
-  recompiled programs (`docs/recompiler.md`) about 30 ns, most of it the
-  instructions' own work (40-bit float, the memory columns, the pipeline
-  and loop bookkeeping each cycle).
+  geometrizer program (a race frame is 300,000-500,000 instructions);
+  recompiled, about 30 ns as single steps and 13 ns with blocks
+  (`docs/recompiler.md`), most of what's left the instructions' own work
+  (40-bit float, the memory columns).

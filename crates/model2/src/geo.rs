@@ -116,8 +116,8 @@ pub struct SharcGeoBus<'a> {
 /// The two parts of a 2B geometrizer frame (`Engine::process_sharc`).
 enum Phase {
     /// FLAG0 is high: run until the program waits for it to fall, at most
-    /// `SHARC_PULSE_STEPS`; `k` instructions so far.
-    Pulse { k: u64 },
+    /// `SHARC_PULSE_STEPS`; from the core's `steps` at `start`.
+    Pulse { start: u64 },
     /// The list: run until the program has gone `IDLE_STEPS` without
     /// reading the list or drawing, spins on a flag, or has run
     /// `MAX_STEPS_PER_FRAME`; checked every 256 instructions.
@@ -189,10 +189,10 @@ impl SharcBus for SharcGeoBus<'_> {
     #[inline(always)]
     fn after_step(&mut self, cpu: &mut Sharc) -> bool {
         match &mut self.phase {
-            Phase::Pulse { k } => {
-                let stop = *k > 0 && cpu.spinning();
-                *k += 1;
-                !stop && *k < SHARC_PULSE_STEPS
+            Phase::Pulse { start } => {
+                // Instructions so far, this one included.
+                let k = cpu.steps - *start;
+                !(k > 1 && cpu.spinning()) && k < SHARC_PULSE_STEPS
             }
             Phase::Frame { start, last_activity } => {
                 let steps = cpu.steps;
@@ -202,6 +202,25 @@ impl SharcBus for SharcGeoBus<'_> {
                 // Every so often: done (idle, waiting on a flag, or out of time)?
                 !(steps.is_multiple_of(256)
                     && (steps - *last_activity > IDLE_STEPS || steps - *start > MAX_STEPS_PER_FRAME || cpu.spinning()))
+            }
+        }
+    }
+    /// To the end of the pulse, or the next multiple of 256 instructions:
+    /// before that `after_step` only notes activity, which only an
+    /// external access makes (`after_access`), and the core can't be
+    /// spinning inside a block.
+    #[inline(always)]
+    fn block_budget(&mut self, cpu: &Sharc) -> u64 {
+        match self.phase {
+            Phase::Pulse { start } => SHARC_PULSE_STEPS.saturating_sub(cpu.steps - start),
+            Phase::Frame { .. } => 256 - cpu.steps % 256,
+        }
+    }
+    #[inline(always)]
+    fn after_access(&mut self, cpu: &mut Sharc) {
+        if let Phase::Frame { last_activity, .. } = &mut self.phase {
+            if std::mem::take(&mut *self.active) {
+                *last_activity = cpu.steps;
             }
         }
     }
@@ -667,7 +686,7 @@ impl Engine {
         if self.sharc_interpret {
             s.watch_code(&[], &[]);
         } else {
-            self.sharc_native = crate::recomp::attach_sharc(s).and_then(|p| p.geo);
+            self.sharc_native = crate::recomp::attach_sharc(s, crate::recomp::SharcRole::Geo).and_then(|p| p.geo);
             if self.sharc_native.is_none() {
                 s.watch_code(&[], &[]);
             }
@@ -824,7 +843,7 @@ impl Engine {
             out: &mut out,
             active: &mut active,
             other: &mut self.sharc_other,
-            phase: Phase::Pulse { k: 0 },
+            phase: Phase::Pulse { start: s.steps },
         };
         let start = s.steps;
         let mut fault = None;

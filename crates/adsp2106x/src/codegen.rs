@@ -5,10 +5,15 @@
 //! that instruction with its decoding as a constant
 //! ([`Sharc::run_compiled`](crate::cpu::Sharc::run_compiled)); everything
 //! it calls is `#[inline(always)]`, so the compiler specialises each one.
-//! The program's `step` dispatches on the address of the instruction about
-//! to execute and leaves any other to the interpreter, so correctness never
-//! depends on which words were compiled. Words go 256 to a submodule so
-//! that rustc compiles them in parallel.
+//! Runs of consecutive words that can be (see [`in_block`]) also become a
+//! region function, entered at any of its words, that runs them as one
+//! block ([`Sharc::block_start`](crate::cpu::Sharc::block_start)), the
+//! bookkeeping of the pipeline and counters done once at its end. The
+//! program's `run` dispatches on the address of the instruction about to
+//! execute: a block where one can run, else that word's single step, and
+//! anything not compiled on the interpreter, so correctness never depends
+//! on which words were compiled. Words go 256 to a submodule so that rustc
+//! compiles them in parallel.
 //!
 //! The output is derived from game code: write it under `out/`, never commit
 //! it.
@@ -313,27 +318,85 @@ pub fn check(words: &[u64], code: &BTreeSet<u32>) -> Vec<String> {
     notes
 }
 
-/// A Rust module for `program` (48-bit words from [`BASE`]) with `pub const
-/// HASH` (its [`program_hash`](crate::cpu::program_hash)), `IMAGE` (the
-/// program), `WORDS` (the compiled addresses), a `step` that runs one
+/// Whether a word can run inside a block
+/// ([`Sharc::block_start`](crate::cpu::Sharc::block_start)): it changes
+/// none of the loop, PC and status stacks, the sequencer or system
+/// registers or interrupt state, and doesn't idle. A conditional branch or
+/// return can be in one (taken, it ends the block and runs as a single
+/// step); an unconditional one, a DO, a stack operation or anything with
+/// a sequencer or system register operand can't. Its universal registers
+/// are the register file, the DAG registers and PX.
+pub fn in_block(insn: &Insn) -> bool {
+    let ureg = |r: u8| r < 0x50 || matches!(r, 0xdb..=0xdd);
+    let known = |c: &Compute| !matches!(c, Compute::Unknown(_));
+    match insn.op {
+        Op::Nop | Op::StoreImm { .. } | Op::ModifyImm { .. } => true,
+        Op::Compute { compute, .. } | Op::Modify { compute, .. } => known(&compute),
+        Op::Dual { compute, dm, pm } => known(&compute) && ureg(dm.reg) && ureg(pm.reg),
+        Op::Transfer { compute, mv, .. } => known(&compute) && ureg(mv.reg),
+        Op::RegMove { compute, src, dst, .. } => known(&compute) && ureg(src) && ureg(dst),
+        Op::ShiftImm { mv, .. } => mv.is_none_or(|m| ureg(m.reg)),
+        Op::Branch { cond, compute, .. } | Op::Return { cond, compute, .. } => cond != crate::TRUE && known(&compute),
+        Op::JumpElseMove { cond, compute, mv, .. } => cond != crate::TRUE && known(&compute) && ureg(mv.reg),
+        Op::Direct { reg, .. } | Op::IndirectImm { reg, .. } | Op::LoadImm { reg, .. } => ureg(reg),
+        _ => false,
+    }
+}
+
+/// Longest block region: its function nests a labelled block per word.
+const REGION_WORDS: usize = 128;
+
+/// Runs of consecutive compiled words that can be in a block, at least two
+/// long, within one 4,096-word group of memory (so their execution counts
+/// are adjacent) and at most [`REGION_WORDS`]: (first, words).
+pub fn regions(program: &[u64], words: &[u32]) -> Vec<(u32, u32)> {
+    let mut out: Vec<(u32, u32)> = Vec::new();
+    let mut cur: Option<(u32, u32)> = None;
+    for &a in words {
+        let ok = in_block(&decode(a, program[(a - BASE) as usize]));
+        cur = match cur {
+            Some((s, n)) if ok && s + n == a && a & 0xfff != 0 && (n as usize) < REGION_WORDS => Some((s, n + 1)),
+            _ => {
+                out.extend(cur.filter(|&(_, n)| n >= 2));
+                ok.then_some((a, 1))
+            }
+        };
+    }
+    out.extend(cur.filter(|&(_, n)| n >= 2));
+    out
+}
+
+/// A Rust module for `program` (48-bit words from [`BASE`]) compiled for
+/// the addresses in `words`, with `pub const HASH` (their
+/// [`code_hash`](crate::cpu::code_hash)), `IMAGE` (those words, zero
+/// elsewhere), `WORDS` (their addresses), a `step` that runs one
 /// instruction like [`Sharc::step`](crate::cpu::Sharc::step) and a `run`
 /// that runs them like [`Sharc::run_bus`](crate::cpu::Sharc::run_bus),
-/// compiled for the addresses in `words`.
+/// with runs of straight-line words as blocks ([`regions`]).
 pub fn program_module(program: &[u64], words: &BTreeSet<u32>) -> String {
-    let hash = crate::cpu::program_hash(program);
     let words: Vec<u32> =
         words.iter().copied().filter(|&a| a >= BASE && ((a - BASE) as usize) < program.len()).collect();
+    let hash = crate::cpu::code_hash(program, &words);
     let mut s = String::new();
-    let _ = writeln!(s, "// ADSP-21062 program {hash:#018x}, recompiled by `remodel recomp`. Derived from");
+    let _ = writeln!(s, "// ADSP-21062 code {hash:#018x}, recompiled by `remodel recomp`. Derived from");
     let _ = writeln!(s, "// game code: generated under out/, never commit it.");
     s.push_str("#[allow(unused_imports)]\n");
     s.push_str(
-        "use adsp2106x::{compute::{MfRegs, Mr, MulDst}, cpu::{Bus, Sharc, Step}, AluOp, Addr, BitOp, Compute, \
-         Count, Insn, Modifier, Move, MulOp, Op, ShiftOp, StackOps, Target};\n\n",
+        "use adsp2106x::{compute::{MfRegs, Mr, MulDst}, cpu::{BlockEnd, Bus, InBlock, Sharc, Step}, AluOp, Addr, \
+         BitOp, Compute, Count, Insn, Modifier, Move, MulOp, Op, ShiftOp, StackOps, Target};\n\n",
     );
     let _ = writeln!(s, "pub const HASH: u64 = {hash:#018x};\n");
-    s.push_str("/// The image compiled: 48-bit words from 0x20000.\npub const IMAGE: &[u64] = &[\n");
-    for chunk in program.chunks(8) {
+    // Only the compiled words: data around them (which differs between
+    // uploads of the same code) isn't compiled, so the crate doesn't
+    // depend on it.
+    let len = words.last().map_or(0, |&a| (a - BASE) as usize + 1);
+    let image: Vec<u64> =
+        (0..len).map(|k| if words.binary_search(&(BASE + k as u32)).is_ok() { program[k] } else { 0 }).collect();
+    s.push_str(
+        "/// The words compiled, as they were: 48-bit words from 0x20000 (zero where none was).\n\
+         pub const IMAGE: &[u64] = &[\n",
+    );
+    for chunk in image.chunks(8) {
         let line: Vec<String> = chunk.iter().map(|w| format!("{w:#x}")).collect();
         let _ = writeln!(s, "    {},", line.join(", "));
     }
@@ -344,9 +407,37 @@ pub fn program_module(program: &[u64], words: &BTreeSet<u32>) -> String {
         let _ = writeln!(s, "    {},", line.join(", "));
     }
     s.push_str("];\n\n");
+    let regions = regions(program, &words);
+    let module = |a: u32| words.binary_search(&a).unwrap() / MODULE_WORDS;
+    // The region each word is in, if any.
+    let mut region_of = BTreeMap::new();
+    for &(r, n) in &regions {
+        for a in r..r + n {
+            region_of.insert(a, r);
+        }
+    }
     s.push_str(
-        "/// Instructions until the bus's `after_step` says to stop, as `Sharc::run_bus` runs them.\n\
-         pub fn run<B: Bus>(s: &mut Sharc, ext: &mut B) -> Step {\n    loop {\n        let r = step(s, ext);\n        \
+        "/// Instructions until the bus's `after_step` says to stop, as `Sharc::run_bus` runs them; runs of\n\
+         /// straight-line words as blocks (`Sharc::block_start`) where they can be.\n\
+         pub fn run<B: Bus>(s: &mut Sharc, ext: &mut B) -> Step {\n    loop {\n        let r = match s.compiled_pc() {\n",
+    );
+    for &a in &words {
+        let m = module(a);
+        match region_of.get(&a) {
+            Some(&r) => {
+                let _ = writeln!(
+                    s,
+                    "            {a:#x} => match m{}::r{r:x}(s, ext, {a:#x}) {{ Some(r) => r, None => m{m}::w{a:x}(s, ext) }},",
+                    module(r)
+                );
+            }
+            None => {
+                let _ = writeln!(s, "            {a:#x} => m{m}::w{a:x}(s, ext),");
+            }
+        }
+    }
+    s.push_str(
+        "            _ => s.step_uncompiled(ext),\n        };\n        \
          if r != Step::Ran || !ext.after_step(s) {\n            return r;\n        }\n    }\n}\n\n",
     );
     s.push_str("/// One instruction, as `Sharc::step` runs it.\n");
@@ -361,6 +452,9 @@ pub fn program_module(program: &[u64], words: &BTreeSet<u32>) -> String {
     s.push_str("        _ => s.step_uncompiled(ext),\n    }\n}\n");
     for (k, chunk) in words.chunks(MODULE_WORDS).enumerate() {
         let _ = writeln!(s, "\nmod m{k} {{\n    use super::*;");
+        for &(r, n) in regions.iter().filter(|&&(r, _)| module(r) == k) {
+            s.push_str(&region_fn(program, r, n));
+        }
         for &a in chunk {
             let insn = decode(a, program[(a - BASE) as usize]);
             let index = crate::cpu::word_index(a).expect("compiled words are internal");
@@ -373,6 +467,53 @@ pub fn program_module(program: &[u64], words: &BTreeSet<u32>) -> String {
         }
         s.push_str("}\n");
     }
+    s
+}
+
+/// The function for the region of `n` words from `r`: entered at any of
+/// them (`at`), it runs them as a block from there, falling through from
+/// word to word, until the block's stop, a word that ends it, or the
+/// region's end.
+fn region_fn(program: &[u64], r: u32, n: u32) -> String {
+    let mut s = String::new();
+    let end = r + n;
+    let _ = write!(
+        s,
+        "\n    /// Words {r:#x}-{:#x} as a block.\n    #[inline(never)]\n    \
+         pub fn r{r:x}<B: Bus>(s: &mut Sharc, ext: &mut B, at: u32) -> Option<Step> {{\n        \
+         let budget = ext.block_budget(s);\n        let b = s.block_start(at, {end:#x}, budget)?;\n        \
+         let base = b.steps.wrapping_sub(at as u64);\n        let mut st = 0;\n        let end = 'run: {{\n",
+        end - 1
+    );
+    for j in (0..n).rev() {
+        let _ = writeln!(s, "        'l{j}: {{");
+    }
+    s.push_str("        match at {\n");
+    for j in 0..n {
+        let _ = writeln!(s, "            {:#x} => break 'l{j},", r + j);
+    }
+    s.push_str("            _ => break 'run BlockEnd::Before(at),\n        }\n");
+    for j in 0..n {
+        let a = r + j;
+        let insn = decode(a, program[(a - BASE) as usize]);
+        let _ = writeln!(s, "        }}\n        // {insn}");
+        if j > 0 {
+            let _ = writeln!(
+                s,
+                "        if b.stop == {a:#x} {{\n            break 'run BlockEnd::Before({a:#x});\n        }}"
+            );
+        }
+        let _ = writeln!(
+            s,
+            "        const I{j}: Insn = {};\n        match s.block_exec(&I{j}, &mut st, base.wrapping_add({:#x}), ext) {{\n            \
+             InBlock::Ran => {{}}\n            InBlock::Last => break 'run BlockEnd::Last({a:#x}),\n            \
+             InBlock::Bail => break 'run BlockEnd::Before({a:#x}),\n            \
+             InBlock::Fault(f) => break 'run BlockEnd::Fault({a:#x}, f),\n        }}",
+            insn_expr(&insn),
+            a as u64 + 1
+        );
+    }
+    let _ = write!(s, "        BlockEnd::Before({end:#x})\n        }};\n        s.block_end(&b, end, st)\n    }}\n");
     s
 }
 

@@ -1269,6 +1269,175 @@ fn compiled_step(s: &mut Sharc, e: &mut Ext, image: &[u64]) -> Step {
     }
 }
 
+/// A bus allowing blocks of up to `budget` instructions, recording the
+/// step counts `after_access` sees.
+struct BlockExt {
+    ext: Ext,
+    budget: u64,
+    accesses: Vec<u64>,
+}
+
+impl Bus for BlockExt {
+    fn read(&mut self, a: u32, w: Width) -> u64 {
+        self.ext.read(a, w)
+    }
+    fn write(&mut self, a: u32, w: Width, v: u64) {
+        self.ext.write(a, w, v)
+    }
+    fn block_budget(&mut self, _: &Sharc) -> u64 {
+        self.budget
+    }
+    fn after_access(&mut self, cpu: &mut Sharc) {
+        self.accesses.push(cpu.steps);
+    }
+}
+
+/// What a recompiled program's `run` does for one dispatch (codegen.rs):
+/// a block from the execute slot's word if it is in one of `regions`
+/// (decoded from `image`, as the generated region function has them), else
+/// a single compiled step.
+fn compiled_dispatch(s: &mut Sharc, e: &mut BlockExt, image: &[u64], regions: &[(u32, u32)]) -> Step {
+    let a = s.compiled_pc();
+    if let Some(&(r, n)) = regions.iter().find(|&&(r, n)| (r..r + n).contains(&a)) {
+        let budget = e.block_budget(s);
+        if let Some(b) = s.block_start(a, r + n, budget) {
+            let base = b.steps.wrapping_sub(a as u64);
+            let mut st = 0;
+            let mut end = BlockEnd::Before(r + n);
+            for x in a..r + n {
+                if x > a && b.stop == x {
+                    end = BlockEnd::Before(x);
+                    break;
+                }
+                let insn = decode(x, image[(x - 0x2_0000) as usize]);
+                match s.block_exec(&insn, &mut st, base.wrapping_add(x as u64 + 1), e) {
+                    InBlock::Ran => {}
+                    InBlock::Last => {
+                        end = BlockEnd::Last(x);
+                        break;
+                    }
+                    InBlock::Bail => {
+                        end = BlockEnd::Before(x);
+                        break;
+                    }
+                    InBlock::Fault(f) => {
+                        end = BlockEnd::Fault(x, f);
+                        break;
+                    }
+                }
+            }
+            if let Some(r) = s.block_end(&b, end, st) {
+                return r;
+            }
+        }
+    }
+    compiled_step(s, &mut e.ext, image)
+}
+
+/// Run `prog` on the interpreter and as recompiled code with blocks of up
+/// to `budget` instructions side by side, until `n` steps or IDLE: after
+/// every block the interpreter has stepped as far, and the whole state,
+/// the external accesses and the steps `after_access` saw must match.
+/// Returns the recompiled core and how many blocks ran more than one
+/// instruction.
+fn same_blocks(prog: &[u64], n: u64, budget: u64) -> (Sharc, usize) {
+    let (mut a, mut ea) = boot(prog);
+    let (mut b, _) = boot(prog);
+    let mut eb = BlockExt { ext: Ext::default(), budget, accesses: Vec::new() };
+    let words: Vec<u32> = (0..prog.len() as u32).map(|k| 0x2_0000 + k).collect();
+    b.watch_code(&words, prog);
+    let regions = crate::codegen::regions(prog, &words);
+    let mut accesses = Vec::new();
+    let mut blocks = 0;
+    while b.steps < n {
+        let before = b.steps;
+        let rb = compiled_dispatch(&mut b, &mut eb, prog, &regions);
+        let ran = b.steps - before;
+        blocks += (ran > 1) as usize;
+        let mut ra = Step::Ran;
+        for _ in 0..ran.max(1) {
+            let log = ea.log.len();
+            ra = a.step(&mut ea);
+            if ea.log.len() > log && ra == Step::Ran {
+                accesses.push(a.steps);
+            }
+            if ra != Step::Ran {
+                break;
+            }
+        }
+        assert_eq!(ra, rb, "at step {}", a.steps);
+        assert_eq!(a.digest(), b.digest(), "after step {}: pc {:#x} / {:#x}", a.steps, a.pc, b.pc);
+        assert_eq!(state::to_bytes(&a), state::to_bytes(&b), "after step {}", a.steps);
+        assert_eq!(ea.log, eb.ext.log);
+        assert_eq!(a.counts, b.counts);
+        if rb != Step::Ran {
+            break;
+        }
+    }
+    // Within a block `after_access` comes after its instruction; a single
+    // step's access is seen by `after_step` instead.
+    for s in &eb.accesses {
+        assert!(accesses.contains(s), "after_access at step {s}");
+    }
+    (b, blocks)
+}
+
+#[test]
+fn blocks_match_the_interpreter() {
+    let inc = |r: u64| c(alu(INC, r, r, r));
+    let new = c(alu(INC, 2, 2, 2));
+    let p = vec![
+        ld(I0, 0x3_0000),
+        ld(M0, 1),
+        ld(I0 + 1, 0x40_0000), // I1: external
+        ld(M0 + 1, 0),
+        inc(1),
+        t3(true, 0, 0, false, true, R1, 0),  // DM(I0,M0) = R1
+        t3(true, 1, 1, false, false, R2, 0), // R2 = DM(I1,M1), external
+        do_lce(4, 4),
+        inc(1),
+        t3(true, 0, 0, false, true, R1, 0),
+        t3(true, 1, 1, false, false, R2, 0),
+        inc(3),
+        jump(0x2_0010, 0, false, false, false), // IF EQ: not taken
+        c(alu(SUB, 4, 4, 4)),
+        jump(0x2_0010, 0, false, false, false), // taken
+        inc(5),
+        ld(I0 + 2, 0),                      // I2: SYSCON
+        t3(true, 2, 0, false, false, 6, 0), // R6 = DM(I2,M0): an IOP register
+        inc(7),
+        ld(0x18, 0x2_0018), // I8 -> word 0x20018
+        ld(0x28, 0),
+        ld(0xdd, (new >> 16) as u32),
+        ld(0xdc, (new & 0xffff) as u32),
+        t3(true, 0, 0, true, true, PXR, 0), // PM(I8,M8) = PX over compiled code
+        inc(1),
+        inc(3),
+        inc(4),
+        IDLE,
+    ];
+    for budget in [1, 2, 3, 5, 1000] {
+        let (s, blocks) = same_blocks(&p, 200, budget);
+        assert_eq!(s.overwritten_code(), [0x2_0018]);
+        assert_eq!((s.rf(1), s.rf(2), s.rf(3)), (5, 1, 4 + 1));
+        assert!(budget == 1 || blocks >= 3, "budget {budget}: {blocks} blocks");
+    }
+    // The programs of the single-step test, through blocks.
+    let dec0 = c(alu(DEC, 0, 0, 0));
+    for budget in [2, 1000] {
+        for n in [3u16, 2, 1, 5] {
+            same_blocks(&[do_lce(n, 1), inc(1), NOP], 12, budget);
+            same_blocks(&[do_lce(n, 3), inc(1), mv(CURLCNTR, R2, 0), inc(3), NOP, inc(1), inc(2), NOP], 24, budget);
+        }
+        same_blocks(&[ld(R0, 3), do_until(0, 3), dec0, NOP, NOP, NOP, inc(1), inc(2)], 40, budget);
+        // Interrupts on: no blocks.
+        let mut p = vec![ld(IMASKR, 1 << 28), ld(MODE1R, IRPTEN), ld(IRPTL, 1 << 28), inc(1), inc(2), inc(3), IDLE];
+        p.resize(0x70, NOP);
+        p.extend([ld(5, 7), inc(4), inc(5), RTI]);
+        assert_eq!(same_blocks(&p, 30, budget).1, 0);
+    }
+}
+
 /// Run `prog` on the interpreter and as recompiled code side by side for
 /// `n` steps (or until IDLE): the whole state must match after every one.
 fn same_compiled(prog: &[u64], n: usize) -> Sharc {

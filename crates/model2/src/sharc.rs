@@ -60,8 +60,8 @@ pub struct CoproBus<'a> {
     fifo_out: &'a mut VecDeque<u32>,
     empty_reads: &'a mut u64,
     other: &'a mut BTreeMap<u32, u64>,
-    /// Instructions still to run.
-    left: u64,
+    /// The core's `steps` to stop at.
+    end: u64,
     /// The FLAG inputs the current instruction ran with.
     flags: u8,
     spin: &'a mut Option<u8>,
@@ -109,12 +109,22 @@ impl Bus for CoproBus<'_> {
             *self.spin = Some(self.flags);
             return false;
         }
-        self.left -= 1;
-        if self.left == 0 {
+        if cpu.steps >= self.end {
             return false;
         }
         self.set_flags(cpu);
         true
+    }
+    /// Up to the step limit: until then `after_step` only sets the FLAG
+    /// inputs, which change only with the FIFOs (`after_access`), and the
+    /// core can't be spinning inside a block.
+    #[inline(always)]
+    fn block_budget(&mut self, cpu: &Sharc) -> u64 {
+        self.end.saturating_sub(cpu.steps)
+    }
+    #[inline(always)]
+    fn after_access(&mut self, cpu: &mut Sharc) {
+        self.set_flags(cpu);
     }
 }
 
@@ -174,7 +184,8 @@ impl Copro {
         if self.interpret {
             self.cpu.watch_code(&[], &[]);
         } else {
-            self.native = crate::recomp::attach_sharc(&mut self.cpu).and_then(|p| p.copro);
+            self.native =
+                crate::recomp::attach_sharc(&mut self.cpu, crate::recomp::SharcRole::Copro).and_then(|p| p.copro);
             if self.native.is_none() {
                 self.cpu.watch_code(&[], &[]);
             }
@@ -228,7 +239,7 @@ impl Copro {
             fifo_out: &mut self.fifo_out,
             empty_reads: &mut self.empty_reads,
             other: &mut self.other,
-            left: n,
+            end: self.cpu.steps + n,
             flags: 0,
             spin: &mut self.spin,
         };

@@ -25,7 +25,7 @@ use std::collections::VecDeque;
 
 mod exec;
 mod recomp;
-pub use recomp::{program_hash, program_image};
+pub use recomp::{code_hash, program_hash, program_image, Block, BlockEnd, InBlock};
 
 /// Width of an external port access.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +50,28 @@ pub trait Bus {
     fn after_step(&mut self, _cpu: &mut Sharc) -> bool {
         true
     }
+    /// How many instructions recompiled code may run as one block from
+    /// here, calling [`after_step`](Bus::after_step) only after the last
+    /// of them (and [`after_access`](Bus::after_access) after each that
+    /// used the external port). 1, the default, is a call after every
+    /// instruction. A bus that allows more promises that, for every
+    /// instruction of the block but the last, `after_step` would have
+    /// returned true and done nothing but what `after_access` does,
+    /// given what the core guarantees of a block's instructions before
+    /// its last (`Sharc::block_start`): none is a taken branch, changes
+    /// the loop, PC or status stacks or a sequencer or system register,
+    /// takes an interrupt or idles, and [`Sharc::spinning`] is false
+    /// after each of them; `steps` counts them as usual.
+    #[inline(always)]
+    fn block_budget(&mut self, _cpu: &Sharc) -> u64 {
+        1
+    }
+    /// Within a block, after an instruction that read or wrote the
+    /// external port, with the core's `steps` counting it. The rest of the
+    /// core's state may lag (the pipeline, cycles, interrupt latches); this
+    /// may read `steps` and change the FLAG inputs, nothing else.
+    #[inline(always)]
+    fn after_access(&mut self, _cpu: &mut Sharc) {}
 }
 
 /// Why the core stopped.
@@ -787,18 +809,30 @@ impl Sharc {
     /// §4.3.3.1).
     #[inline(always)]
     fn dag_output(&mut self, a: &Addr) -> u32 {
-        let i = a.i as usize;
-        let m = match a.modifier {
+        let out = self.dag_peek(a);
+        if a.post {
+            self.modify(a.i as usize, self.dag_modifier(a));
+        }
+        out
+    }
+
+    #[inline(always)]
+    fn dag_modifier(&self, a: &Addr) -> i64 {
+        match a.modifier {
             Modifier::M(m) => self.m_value(m),
             Modifier::Imm(v) => v as i64,
-        };
+        }
+    }
+
+    /// The address [`dag_output`](Sharc::dag_output) gives for `a`,
+    /// without the post-modify.
+    #[inline(always)]
+    fn dag_peek(&self, a: &Addr) -> u32 {
+        let i = a.i as usize;
         let dag2 = i >= 8;
         let width = if dag2 { 24 } else { 32 };
         let mask = if dag2 { 0xff_ffff } else { u32::MAX };
-        let out = if a.post { self.i[i] } else { (self.i[i] as i64 + m) as u32 & mask };
-        if a.post {
-            self.modify(i, m);
-        }
+        let out = if a.post { self.i[i] } else { (self.i[i] as i64 + self.dag_modifier(a)) as u32 & mask };
         let br = if dag2 { BR8 } else { BR0 };
         if (i == 0 || i == 8) && self.mode1 & br != 0 {
             bitrev(out, width)

@@ -257,7 +257,7 @@ and time the two calls per frame with `performance.now()`. Race frames
 |---|---|---|
 | `overrev` (2C, TGP recompiled) | 6.8 ms | 8.1 ms |
 | `overrevb` (2B, SHARC interpreted) | 9.5 ms | 33.1 ms (worst 36.9) |
-| `overrevb` (2B, SHARCs recompiled) | 8.2 ms | 10.7 ms (worst 12.5) |
+| `overrevb` (2B, SHARCs recompiled) | 8.2 ms | 10.7 ms (worst 12.5); with blocks 4.8 ms (below) |
 
 Frame by frame from boot, with the sound boards fed the frame's link
 bytes as the sound worker is (`Headless::link_cycles`, `link_bytes`, then
@@ -270,15 +270,28 @@ recompiled:
 | `overrevb` | 8.4 ms | 11.6 ms (worst 18.8) | 1.5 ms |
 | `overrev` | 6.9 ms | 7.7 ms (worst 13.9) | 1.5 ms |
 
-`sgt24h`'s geometrizer is the limit: from frame 2100 to 3000 (the start of
-the race) it averages 19-25 ms a frame, and 18.5 ms from 6000 to 6600, so
-the game can't hold a 60 Hz display there. Natively it is not much
+`sgt24h`'s geometrizer was the limit: from frame 2100 to 3000 (the start
+of the race) it averaged 19-25 ms a frame, and 18.5 ms from 6000 to 6600,
+so the game couldn't hold a 60 Hz display there. Natively it wasn't much
 faster: 18.7 ms a frame from 2100 to 2900. Neither the sound boards nor
 the i960 side come close. The mix doesn't clip: the loudest sample in the
 race is 5.7 dB under full scale at the default mix with the game's +6 dB.
 
+Since the SHARC programs run as blocks (`docs/recompiler.md`), from a
+save at frame 2000 (2,070 frames, Node 26), the geometrizer takes:
+
+| set | before | blocks |
+|---|---|---|
+| `sgt24h` | 16.5 ms (95th percentile 24.2, worst 46.8; 35% of frames over 17.4) | 8.1 ms (95th percentile 11.8, worst 17.4; none over) |
+| `sgt24h`, race start (frames 2000-2899) | | 9.0 ms (95th percentile 11.9) |
+| `overrevb` | 10.2 ms (95th percentile 11.7) | 4.8 ms (95th percentile 5.5) |
+
+so `sgt24h` fits a frame (17.4 ms at 57.524 Hz) with room to spare, in a
+worker of its own or on the page's thread beside the 5.4 ms i960 side.
+
 Interpreted, about 1.6 times native for the SHARC (20 ms native then);
-recompiled about 1.2 times (9.3 ms native).
+recompiled about 1.2 times as single steps (9.3 ms native), 1.3 times
+with blocks (6.1 ms native for `sgt24h`).
 
 ## Ready
 

@@ -544,27 +544,26 @@ fn main() -> ExitCode {
             let sharc = model2::geo::Core::of(roms.game.board) == model2::geo::Core::Sharc;
             let tgp_programs: &[&str] = if sharc { &[] } else { &["copro", "geo"] };
             for name in ["copro", "geo"].into_iter().filter(|_| sharc) {
-                let bin = dir.join(format!("sharc-{name}.bin"));
-                let prog = match sharc::load(&bin) {
+                let p = match sharc_program(&dir, name) {
                     Ok(p) => p,
                     Err(e) => {
                         eprintln!("{name}: {e} (run `make run` first)");
                         continue;
                     }
                 };
-                // Static discovery, plus every word `run` executed.
-                let found = sharc::discover(&prog);
-                let mut words = found.code.clone();
-                let cov = std::fs::read_to_string(dir.join(format!("sharc-{name}-coverage.txt"))).unwrap_or_default();
-                let ran: BTreeSet<u32> = cov.lines().filter_map(|l| u32::from_str_radix(l.trim(), 16).ok()).collect();
-                let extra = ran.difference(&found.code).count();
-                words.extend(&ran);
-                for note in adsp2106x::codegen::check(&prog, &words) {
+                let (prog, words, found, ran) = (&p.image, &p.words, &p.found, &p.ran);
+                let extra = ran.difference(found).count();
+                for note in adsp2106x::codegen::check(prog, words) {
                     println!("{name}: {note}");
                 }
-                let hash = adsp2106x::cpu::program_hash(&prog);
-                let code = adsp2106x::codegen::program_module(&prog, &words);
-                let krate = format!("sharc_{hash:016x}");
+                let code = adsp2106x::codegen::program_module(prog, words);
+                let krate = p.krate();
+                // Crates were named after the whole image before they were
+                // named after their code: that one is out of date.
+                let old = out.join(format!("sharc_{:016x}", adsp2106x::cpu::program_hash(prog)));
+                if old != out.join(&krate) && old.is_dir() {
+                    let _ = std::fs::remove_dir_all(&old);
+                }
                 let path = match recomp_crates::add_role(&out, &krate, name)
                     .and_then(|()| recomp_crates::write_program(&out, &krate, &code))
                 {
@@ -578,7 +577,7 @@ fn main() -> ExitCode {
                     "{name}: SHARC, {} of {} words recompiled ({} found statically, {extra} more from {} executed) -> {}",
                     words.len(),
                     prog.len(),
-                    found.code.len(),
+                    found.len(),
                     ran.len(),
                     path.display()
                 );
@@ -628,8 +627,8 @@ fn main() -> ExitCode {
             let sharc = model2::geo::Core::of(roms.game.board) == model2::geo::Core::Sharc;
             for name in ["copro", "geo"] {
                 if sharc {
-                    if let Ok(prog) = sharc::load(&dir.join(format!("sharc-{name}.bin"))) {
-                        hashes.push(format!("sharc_{:016x}", adsp2106x::cpu::program_hash(&prog)));
+                    if let Ok(p) = sharc_program(&dir, name) {
+                        hashes.push(p.krate());
                     }
                 } else if let Ok(bin) = std::fs::read(dir.join(format!("{name}.bin"))) {
                     let prog: Vec<u64> = bin.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect();
@@ -1512,6 +1511,39 @@ fn native_name(native: bool) -> &'static str {
     } else {
         "interpreted (no recompiled code in this build)"
     }
+}
+
+/// A captured SHARC program (`run` writes `sharc-ROLE.bin` and its
+/// coverage) and the words `recomp` compiles of it: what static discovery
+/// finds plus everything `run` executed.
+struct SharcProgram {
+    image: Vec<u64>,
+    words: BTreeSet<u32>,
+    found: BTreeSet<u32>,
+    ran: BTreeSet<u32>,
+}
+
+impl SharcProgram {
+    /// Its crate in out/recomp, named after the compiled words
+    /// (`adsp2106x::cpu::code_hash`): uploads with the same code and
+    /// different data share it.
+    fn krate(&self) -> String {
+        let words: Vec<u32> = self.words.iter().copied().collect();
+        format!("sharc_{:016x}", adsp2106x::cpu::code_hash(&self.image, &words))
+    }
+}
+
+fn sharc_program(dir: &Path, role: &str) -> Result<SharcProgram, String> {
+    let image = sharc::load(&dir.join(format!("sharc-{role}.bin")))?;
+    let found = sharc::discover(&image).code;
+    let cov = std::fs::read_to_string(dir.join(format!("sharc-{role}-coverage.txt"))).unwrap_or_default();
+    let ran: BTreeSet<u32> = cov.lines().filter_map(|l| u32::from_str_radix(l.trim(), 16).ok()).collect();
+    let words = found
+        .union(&ran)
+        .copied()
+        .filter(|&a| a.checked_sub(0x2_0000).is_some_and(|k| (k as usize) < image.len()))
+        .collect();
+    Ok(SharcProgram { image, words, found, ran })
 }
 
 /// The SHARC copro and geometrizer in a `run` report (Model 2B), and

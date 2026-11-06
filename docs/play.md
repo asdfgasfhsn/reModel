@@ -223,7 +223,8 @@ CALIBRATION in the test menu changes that.
   (`model2::audio::Pace`, described in `docs/web.md`): below full speed
   it slows with the game, lower in pitch, instead of running dry. Before,
   only a 0.5% drift correction steered the 50 ms queue, so `sgt24h`'s race
-  start (its geometrizer at 18.7 ms a frame natively) would run it dry
+  start (its geometrizer at 18.7 ms a frame natively then, before the
+  SHARC blocks; 6.8 ms now) would run it dry
   every few seconds, modelled from its frame costs; the title bar counts
   underruns.
 - **Game**: the ROM folder and the supported sets found in it. Sets are

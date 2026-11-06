@@ -39,12 +39,15 @@ pub struct TgpProgram {
     pub geo: GeoStep,
 }
 
-/// A recompiled ADSP-21062 program, keyed by
-/// `adsp2106x::cpu::program_hash` of its image, compiled for the processor
-/// (copro or geometrizer) it was captured on, or both.
+/// A recompiled ADSP-21062 program, named by
+/// `adsp2106x::cpu::code_hash` of the words it has code for and found by
+/// those words being in a SHARC's memory (uploads with the same code and
+/// different data share one), compiled for the processor (copro or
+/// geometrizer) it was captured on, or both.
 pub struct SharcProgram {
     pub hash: u64,
-    /// The image it was compiled from: 48-bit words from 0x20000.
+    /// The words it was compiled from, as 48-bit words from 0x20000 (zero
+    /// where none was compiled).
     pub image: &'static [u64],
     /// The compiled words' addresses.
     pub words: &'static [u32],
@@ -94,22 +97,31 @@ pub fn geo(hash: u64) -> Option<GeoStep> {
     programs().tgp.iter().find(|p| p.hash == hash).map(|p| p.geo)
 }
 
-/// The recompiled program for what a SHARC holds, if registered: found by
-/// the hash of its image (just after an upload), or else (after a save
-/// state load, when the program may have changed data in its image) the
-/// one whose compiled words are all in memory. Attaches it to `cpu` (see
-/// `Sharc::watch_code`); detaches when there is none.
-pub fn attach_sharc(cpu: &mut Sharc) -> Option<&'static SharcProgram> {
-    let all = programs().sharc;
-    let found = if all.is_empty() {
-        None
-    } else {
-        let hash = adsp2106x::cpu::program_hash(&adsp2106x::cpu::program_image(cpu));
-        all.iter().find(|p| p.hash == hash).or_else(|| {
-            all.iter()
-                .find(|p| p.words.iter().all(|&a| p.image.get((a - 0x2_0000) as usize) == Some(&cpu.mem.read48(a))))
-        })
+/// Which SHARC a program runs on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SharcRole {
+    Copro,
+    Geo,
+}
+
+/// The recompiled program for what a SHARC holds, if registered for its
+/// `role`: one whose compiled words are all in memory as they were
+/// compiled (the one with the most, should several be). Attaches it to
+/// `cpu` (see `Sharc::watch_code`); detaches when there is none. The
+/// words are what the code was compiled from: data elsewhere in the image
+/// (or changed since, as after a save state load) doesn't matter, since
+/// recompiled code reads memory as it runs.
+pub fn attach_sharc(cpu: &mut Sharc, role: SharcRole) -> Option<&'static SharcProgram> {
+    let has_role = |p: &SharcProgram| match role {
+        SharcRole::Copro => p.copro.is_some(),
+        SharcRole::Geo => p.geo.is_some(),
     };
+    let found = programs()
+        .sharc
+        .iter()
+        .filter(|p| has_role(p))
+        .filter(|p| p.words.iter().all(|&a| p.image.get((a - 0x2_0000) as usize) == Some(&cpu.mem.read48(a))))
+        .max_by_key(|p| p.words.len());
     match found {
         Some(p) => cpu.watch_code(p.words, p.image),
         None => cpu.watch_code(&[], &[]),

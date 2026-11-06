@@ -24,9 +24,12 @@ so the same binary still runs other games and revisions.
 Every recompiled program is a crate of its own, named by its hash:
 `out/recomp/i960_<hash>/` for a game's i960 program, `out/recomp/tgp_<hash>/`
 for a 2C copro or geometrizer program, `out/recomp/sharc_<hash>/` for a 2B
-one. Games can share these, but only for the same whole image: `overrevb`
-and `sgt24h` upload the same SHARC code, yet each upload is 4,096 words
-and the words past the code differ, so each game has its own two crates.
+one. Games share them where the program is the same. A SHARC crate is
+named after the words it compiles (`adsp2106x::cpu::code_hash` of their
+addresses and contents), not the whole upload: `overrevb`, `sgt24h` and
+`dynabb97` upload the same geometrizer code with different words past it,
+and the Jaleco games the same copro code, so the three games have three
+SHARC crates between them rather than six.
 Each holds `program.rs` from the code generator, generic over the machine around the
 processor, and a `lib.rs` that instantiates it for the Model 2 board
 (`Model2Bus`, the TGP's external buses), so its machine code is compiled in
@@ -38,7 +41,8 @@ that crate and nowhere else. Program crates depend on `i960`, `mb86235`, `adsp21
 model2 takes the programs at run time instead: `model2::recomp::register`
 installs a table of (hash, i960 blocks), (hash, copro and geometrizer
 `step`) and (hash, image, compiled words, copro and geometrizer `run`), and
-the machine looks programs up there by hash. The front ends
+the machine looks programs up there: i960 and TGP programs by hash, SHARC
+programs by their compiled words being in the SHARC's memory. The front ends
 (`remodel`, `remodel-play`, `remodel-web`) call `recomp::register()` first
 thing. In the checkout's workspace `recomp` is `crates/recomp`, a stub that
 registers nothing, so ordinary builds, `make check` and `make dist` never
@@ -87,11 +91,13 @@ What keeps it bounded:
   compiles on one thread (up to 100 s for `stcc`'s geometrizer program);
   splitting it would add a call per TGP instruction.
 - **No debug info** for the recompiled build, as before.
-- **SHARC programs** go 256 words to a submodule. `overrevb`'s
-  geometrizer crate (2,987 words, 1.3 MB of Rust) builds in about 56 s
-  with available memory going from 18.6 GB to 8.6 GB (16 codegen units in
-  parallel); its copro crate (2,111 words) in about 40 s. Both are compiled
-  for the bus they run on only; for both buses they took twice as long.
+- **SHARC programs** go 256 words to a submodule, each with the region
+  functions that start in it. The geometrizer crate (2,987 words, 3.7 MB
+  of Rust with its blocks) builds in about 150 s (56 s as single steps
+  only, with available memory going from 18.6 GB to 8.6 GB on 16 codegen
+  units); the copro crate (2,111 words) in about 60 s (40 s). Both are
+  compiled for the bus they run on only; for both buses they took twice as
+  long.
 
 Splitting into crates costs nothing at run time: blocks are
 `#[inline(never)]` anyway, and model2 marks what they call on every
@@ -172,8 +178,8 @@ game at boot, so they are keyed by a hash of the uploaded image.
 ## ADSP-21062 (`crates/adsp2106x/src/codegen.rs`)
 
 **Which code.** The programs are uploaded by the i960 at boot (`make run`
-writes them to `out/GAME/sharc-copro.bin`, `sharc-geo.bin`), so they are
-keyed by a hash of the image. `remodel recomp` compiles the words that
+writes them to `out/GAME/sharc-copro.bin`, `sharc-geo.bin`). `remodel
+recomp` compiles the words that
 static discovery (`codegen::discover`, also behind `sharc-disasm`) reaches
 from the reset and interrupt vectors, following jumps, calls, loops, delay
 slots and the command dispatch tables (both programs store their handlers'
@@ -181,7 +187,15 @@ addresses as immediates at init and jump through them: discovery takes
 immediates that point into the image as code), plus anything `make run`
 saw execute (`sharc-*-coverage.txt`). For `overrevb` that is 2,111 of the
 copro's 4,096 words and 2,987 of the geometrizer's; nothing executed in a
-coin-start run is missing from the static set.
+coin-start run is missing from the static set. The crate is named after
+those words and holds only them (`IMAGE` is zero elsewhere), and a SHARC
+attaches the program whose compiled words are all in its memory as
+compiled (with that role, the one with the most words should several
+match). Nothing else of the image is compiled in: data the program reads,
+from wherever, is read from memory as it runs, so another upload of the
+same code with other data runs the same crate correctly. A crate from
+before (named after the whole image) is deleted when `recomp` writes its
+replacement.
 
 **Instructions.** Each compiled word is a function that runs one step of
 the interpreter for that instruction, with its decoding as a constant
@@ -195,10 +209,27 @@ loop test of the fetch sees the status from before the instruction, the
 two-slot pipeline moves on, delayed branches, loop ends tested at the last
 word's fetch, PC/loop/status stacks, interrupts and their hold-off after
 branches. The program's `step` is a `match` on the address in the execute
-slot (after running any bubbles, as the interpreter's `step` does); `run`
-loops over it until the bus's `after_step` says stop, which is how the
-board's stopping rules (the copro waiting on a FLAG, the geometrizer's end
-of frame) are kept exact without a call per instruction.
+slot (after running any bubbles, as the interpreter's `step` does).
+
+**Blocks.** That per-cycle bookkeeping (tick, fetch stage, interrupt
+check, counters, the bus's `after_step`) cost more than most instructions'
+own work. So runs of consecutive words that can be in one
+(`codegen::in_block`: no DO, stack operation, IDLE, unconditional branch,
+or sequencer or system register operand) also become a region function of
+up to 128 words, entered at any of them through a `match` that breaks out
+of nested labelled blocks, so execution falls through from word to word.
+It runs them as one block (`Sharc::block_start`/`block_exec`/`block_end`)
+and brings the pipeline, loop logic, counters and latches up to date at
+the end, as single steps would have left them; `docs/hw/adsp2106x.md`
+says why that is exact and when a block can't run (interrupts on, the
+fetch reaching a loop end, a taken branch, IOP registers, overwritten
+code). Then the word runs as its single step. The board says how far a
+block may go before it must look (`Bus::block_budget`: the geometrizer's
+check every 256 instructions or its FLAG0 pulse, the copro's step limit)
+and replays its per-instruction work after each external access
+(`Bus::after_access`), so its stopping rules (the copro waiting on a FLAG,
+the geometrizer's end of frame) are kept exact. `run` loops over blocks
+and single steps until `after_step` says stop.
 
 The geometrizer program is float-heavy: with RND32 (both programs set it)
 an add or multiply of two normal inputs is computed exactly in f64 and
@@ -217,8 +248,8 @@ all to data), but that can't be proven statically, so the core watches
 every compiled word: when attaching, any that doesn't hold what was
 compiled, and later any written, runs on the interpreter from then on
 (`Sharc::watch_code`; a unit test overwrites a compiled word). After a save
-state load the program is found by hash, or else by its compiled words
-being in memory, and attached again.
+state load the program is found again by its compiled words being in
+memory.
 
 **Spinning.** `Sharc::spinning` (the board stops stepping a SHARC that
 only waits on a FLAG input) decodes from memory when the decode cache,
@@ -241,7 +272,23 @@ run, 658 race frames, native; WebAssembly in Node, 390 frames, as
 |---|---|---|
 | interpreter, before | 20.8 ms (spikes 25) | 33.1 ms |
 | interpreter, now (inlining, f64 fast path) | 16.8 ms | |
-| recompiled | 9.3 ms (slowest 12.4) | 10.7 ms (worst 12.5) |
+| recompiled, single steps | 9.3 ms (slowest 12.4) | 10.7 ms (worst 12.5) |
 
-The race runs at 1.8 times real time natively with the geometrizer on its
-thread, so `overrevb` reaches full speed in both.
+With blocks, from a save state at frame 2000 of a coin-start run to the
+600M-instruction mark (frame 4141 natively, single-threaded; 2,070 frames
+in Node 26), mean per frame with the slowest (native) or the 95th
+percentile (WebAssembly):
+
+| geometrizer per frame | native, single steps | native, blocks | WebAssembly, single steps | WebAssembly, blocks |
+|---|---|---|---|---|
+| `overrevb` | 8.9 ms (slowest 12.5) | 3.6 ms (5.0) | 10.2 ms (p95 11.7) | 4.8 ms (5.5) |
+| `sgt24h` | 14.6 ms (24.4) | 6.1 ms (10.3) | 16.5 ms (p95 24.2; 35% of frames over 17.4) | 8.1 ms (11.8; none) |
+| `sgt24h`, race start (frames 2000-2899) | 16.4 ms (24.5) | 6.8 ms (9.1) | | 9.0 ms (11.9) |
+
+About 13 ns an instruction natively, from 30. Over those race frames,
+with the geometrizer on its thread, `overrevb` runs at 3.3 times real
+time natively (1.9 before) and `sgt24h` at 2.7 (1.2 before).
+Every game's state hash is unchanged, recompiled and interpreted, and `make
+lockstep` is identical for 600M instructions on `overrevb`, `sgt24h` and
+`dynabb97` (which runs the geometrizer crate compiled from the Jaleco
+uploads, with its own data).

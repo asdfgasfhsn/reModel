@@ -189,9 +189,13 @@ in the race (`--load-state`, 658 frames), native:
 | geometrizer, recompiled | 5.9 ms (TGP) | 9.3 ms (slowest frame 12.4) |
 | race, all recompiled, geometrizer on its thread | 15x real time | 1.8x |
 
-In WebAssembly (Node, `docs/web.md`) the recompiled geometrizer takes
-10.7 ms a frame (worst 12.5) where the interpreter took 33 ms, inside the
-14 ms full speed needs there. So `overrevb` runs at full speed recompiled,
+Since the SHARC programs run as blocks (`docs/recompiler.md`), the
+recompiled geometrizer takes 3.6 ms a frame (slowest 5.0; frames
+2000-4141) and the race runs at 3.3x real time; `sgt24h`'s, the heavier
+one, 6.1 ms (slowest 10.3). In WebAssembly (Node, `docs/web.md`) it took
+10.7 ms a frame (worst 12.5) as single steps where the interpreter took
+33 ms; with blocks 4.8 ms, and 8.1 ms for `sgt24h`, inside the 17.4 ms of
+a frame. So `overrevb` runs at full speed recompiled,
 natively and in the browser; the SHARC recompiler is described in
 `docs/recompiler.md`. Interpreted it still races below real time, and the
 front ends then slow the game to what the geometrizer manages
