@@ -6,7 +6,8 @@ code on an emulated board, drawn on the GPU, with both sound boards live.
 Supported so far: Top Skater (topskatr), Sega Ski Super G (skisuprg),
 Sega Touring Car Championship (stcc), Sega Water Ski (segawski),
 Wave Runner (waverunr), Over Rev (overrev), Super GT 24h (sgt24h), The
-House of the Dead (hotd) and Behind Enemy Lines (bel).
+House of the Dead (hotd), Behind Enemy Lines (bel) and Dynamite Baseball
+'97 (dynabb97).
 This build runs the game code on the interpreter (no recompiled game code
 is included).
 
@@ -14,7 +15,7 @@ Bring your own ROMs
 -------------------
 No game data is included. Put the sets as MAME keeps them, topskatr.zip or
 a topskatr/ folder (likewise skisuprg, stcc, segawski, waverunr,
-overrev, sgt24h, hotd, bel), in the ROM folder:
+overrev, sgt24h, hotd, bel, dynabb97), in the ROM folder:
 
     ~/.local/share/remodel/roms     ($XDG_DATA_HOME/remodel/roms)
 
