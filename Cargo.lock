@@ -2319,6 +2319,7 @@ dependencies = [
  "remodel-model2",
  "remodel-mpeg",
  "remodel-png",
+ "remodel-recomp",
  "remodel-romset",
  "remodel-sound",
 ]
@@ -2384,6 +2385,7 @@ dependencies = [
  "remodel-gpu",
  "remodel-model2",
  "remodel-png",
+ "remodel-recomp",
  "remodel-romset",
  "remodel-state",
  "wgpu",
@@ -2392,6 +2394,10 @@ dependencies = [
 
 [[package]]
 name = "remodel-png"
+version = "0.1.0"
+
+[[package]]
+name = "remodel-recomp"
 version = "0.1.0"
 
 [[package]]
@@ -2421,6 +2427,7 @@ dependencies = [
  "js-sys",
  "remodel-gpu",
  "remodel-model2",
+ "remodel-recomp",
  "remodel-romset",
  "wasm-bindgen",
  "wasm-bindgen-futures",

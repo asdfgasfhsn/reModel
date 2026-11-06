@@ -16,10 +16,7 @@ pub mod input;
 pub mod raster;
 pub mod video;
 
-/// Recompiled MB86235 programs found at build time (see build.rs).
-pub mod recomp {
-    include!(concat!(env!("OUT_DIR"), "/recomp_registry.rs"));
-}
+pub mod recomp;
 
 pub use bus::Model2Bus;
 use i960::cpu::{Cpu, Stop};
@@ -58,7 +55,7 @@ impl Machine {
         let mut bus = Model2Bus::new(roms);
         let mut cpu = Cpu::new();
         cpu.reset(&mut bus);
-        let native = recomp::i960_blocks::<Model2Bus>(program_hash(roms)).map(|blocks| {
+        let native = recomp::i960_blocks(program_hash(roms)).map(|blocks| {
             let mut table = vec![None; (PROGRAM_END / 4) as usize];
             for (a, f) in blocks {
                 table[(a / 4) as usize] = Some(f);

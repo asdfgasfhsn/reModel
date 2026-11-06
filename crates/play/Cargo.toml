@@ -16,6 +16,7 @@ remodel-gpu.workspace = true
 remodel-state.workspace = true
 remodel-png.workspace = true
 i960.workspace = true
+remodel-recomp.workspace = true
 wgpu = "30.0.1"
 pollster = "1.0.1"
 winit = "0.30"

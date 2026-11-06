@@ -33,7 +33,7 @@ const PC_TRACE_LEN: usize = 4096;
 /// The geometrizer's external bus: polygon RAM below 0x800000, the
 /// polygons ROM from 0x800000 (word addressed), mirrored to fill the window
 /// (4 MB in topskatr, 16 MB in skisuprg).
-struct GeoExt<'a> {
+pub struct GeoExt<'a> {
     ram: &'a mut [u32],
     rom: &'a [u32],
     /// Word-address mask for the ROM: its size rounded up to a power of two.
@@ -48,6 +48,7 @@ impl<'a> GeoExt<'a> {
 }
 
 impl External for GeoExt<'_> {
+    #[inline]
     fn read(&mut self, addr: u32) -> u32 {
         if addr >= 0x80_0000 {
             self.rom.get((addr & self.rom_mask) as usize).copied().unwrap_or(0)
@@ -55,6 +56,7 @@ impl External for GeoExt<'_> {
             self.ram[addr as usize % self.ram.len()]
         }
     }
+    #[inline]
     fn write(&mut self, addr: u32, v: u32) {
         if addr < 0x80_0000 {
             let n = self.ram.len();
@@ -456,7 +458,7 @@ impl Engine {
         self.tgp.fifo_out.clear();
         // Recompiled code for this program if the build has it, else the
         // interpreter; they must behave identically.
-        let step = crate::recomp::lookup::<GeoExt>(self.tgp.program_hash).unwrap_or(|t, e| t.step(e));
+        let step = crate::recomp::geo(self.tgp.program_hash).unwrap_or(|t, e| t.step(e));
         let mut last_activity = self.tgp.steps;
         loop {
             while self.tgp.fifo_in.len() < FIFO_FILL && self.list_words < MAX_LIST_WORDS {

@@ -1,5 +1,6 @@
 mod gpu_check;
 mod music;
+mod recomp_crates;
 mod sound_render;
 mod soundtrack;
 mod texpack;
@@ -59,11 +60,18 @@ commands:
                        (default out/GAME/copro.bin; `run` also writes geo.bin)
   recomp               recompile the i960 program (code found by `analyze`
                        plus everything `run` executed) and the copro and
-                       geometrizer programs `run` captured into out/recomp/;
-                       the next build uses them in place of the interpreters
-  recomp-files         list the files in out/recomp/ that belong to the game:
-                       its i960 program and the copro and geometrizer
-                       programs `run` captured (for per-game builds)
+                       geometrizer programs `run` captured into crates in
+                       out/recomp/, and the workspace there that builds
+                       them in (`make release RECOMP=1`)
+  recomp-files         list the program crates in out/recomp/ that belong to
+                       the game: its i960 program and the copro and
+                       geometrizer programs `run` captured (for per-game
+                       builds)
+  recomp-workspace [--web DIR PROGRAM...]
+                       rewrite out/recomp/'s Cargo workspace (the native
+                       recompiled build, with every program there); with
+                       --web, a workspace at DIR for the browser module with
+                       just the PROGRAMs named (crates in out/recomp/)
   shot FILE [FRAME]    boot, run to FRAME (default: the manifest's attract
                        mode frame) and save the screen to FILE as PNG,
                        touching nothing in out/GAME (--input, --height and
@@ -117,6 +125,7 @@ fn parse_num(s: &str) -> Option<u32> {
 }
 
 fn main() -> ExitCode {
+    recomp::register();
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let mut opt = |flag: &str| -> Result<Option<String>, ()> {
         let Some(i) = args.iter().position(|a| a == flag) else { return Ok(None) };
@@ -253,6 +262,25 @@ fn main() -> ExitCode {
         }
         for g in games {
             println!("{}", g.id);
+        }
+        return ExitCode::SUCCESS;
+    }
+    if cmd == "recomp-workspace" {
+        let out = Path::new(recomp_crates::DIR);
+        let r = match args.get(1).map(String::as_str) {
+            None => recomp_crates::programs(out)
+                .and_then(|names| recomp_crates::write_workspace(out, out, &names, recomp_crates::Front::Native)),
+            Some("--web") if args.len() > 2 => {
+                recomp_crates::write_workspace(Path::new(&args[2]), out, &args[3..], recomp_crates::Front::Web)
+            }
+            _ => {
+                eprint!("{USAGE}");
+                return ExitCode::FAILURE;
+            }
+        };
+        if let Err(e) = r {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
         }
         return ExitCode::SUCCESS;
     }
@@ -413,7 +441,7 @@ fn main() -> ExitCode {
         }
         "recomp" => {
             let dir = PathBuf::from("out").join(roms.game.id);
-            let out = PathBuf::from("out/recomp");
+            let out = PathBuf::from(recomp_crates::DIR);
             let _ = std::fs::create_dir_all(&out);
             let mut made = 0;
             {
@@ -441,9 +469,14 @@ fn main() -> ExitCode {
                 entries.extend(trace.indirect.iter().map(|&(_, t)| t).filter(|&t| img.contains(t)));
                 entries.extend(seeds);
                 let hash = model2::program_hash(&roms);
-                let path = out.join(format!("i960_{hash:016x}.rs"));
                 let code = i960::codegen::program_module(&insns, &entries, hash);
-                let _ = std::fs::write(&path, &code);
+                let path = match recomp_crates::write_program(&out, &format!("i960_{hash:016x}"), &code) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                };
                 let blocks = code.matches("\nfn b").count();
                 println!("i960: {} instructions in {blocks} blocks -> {}", insns.len(), path.display());
                 made += 1;
@@ -462,26 +495,44 @@ fn main() -> ExitCode {
                 let prog: Vec<u64> = bin.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect();
                 let words: Vec<u32> = cov.lines().filter_map(|l| u32::from_str_radix(l.trim(), 16).ok()).collect();
                 let hash = mb86235::cpu::program_hash(&prog);
-                let path = out.join(format!("tgp_{hash:016x}.rs"));
-                let _ = std::fs::write(&path, mb86235::codegen::program_module(&prog, &words));
+                let code = mb86235::codegen::program_module(&prog, &words);
+                let path = match recomp_crates::write_program(&out, &format!("tgp_{hash:016x}"), &code) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                };
                 println!("{name}: {} of {} words recompiled -> {}", words.len(), prog.len(), path.display());
                 made += 1;
             }
             if made == 0 {
                 return ExitCode::FAILURE;
             }
+            // Every game's programs, not just this one's: the native build
+            // has them all.
+            if let Err(e) = recomp_crates::programs(&out)
+                .and_then(|names| recomp_crates::write_workspace(&out, &out, &names, recomp_crates::Front::Native))
+            {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+            println!("workspace: {}/Cargo.toml", out.display());
         }
         "recomp-files" => {
             let dir = PathBuf::from("out").join(roms.game.id);
-            let mut hashes = vec![format!("i960_{:016x}.rs", model2::program_hash(&roms))];
+            let mut hashes = vec![format!("i960_{:016x}", model2::program_hash(&roms))];
             for name in ["copro", "geo"] {
                 if let Ok(bin) = std::fs::read(dir.join(format!("{name}.bin"))) {
                     let prog: Vec<u64> = bin.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect();
-                    hashes.push(format!("tgp_{:016x}.rs", mb86235::cpu::program_hash(&prog)));
+                    hashes.push(format!("tgp_{:016x}", mb86235::cpu::program_hash(&prog)));
                 }
             }
             hashes.dedup();
-            for f in hashes.iter().filter(|f| Path::new("out/recomp").join(f).is_file()) {
+            let out = Path::new(recomp_crates::DIR);
+            // Moves loose files from the older layout into crates.
+            let have = recomp_crates::programs(out).unwrap_or_default();
+            for f in hashes.iter().filter(|f| have.contains(f)) {
                 println!("{f}");
             }
         }

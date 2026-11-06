@@ -508,6 +508,8 @@ impl GeoEngine {
     /// in order.
     #[wasm_bindgen(constructor)]
     pub fn new(game: &str, chips: js_sys::Array) -> Result<GeoEngine, JsValue> {
+        // This worker is a module instance of its own.
+        recomp::register();
         console_error_panic_hook::set_once();
         let game = romset::games::find(game).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let chips = chips.iter().map(|c| js_sys::Uint8Array::new(&c).to_vec()).collect();
@@ -637,6 +639,7 @@ pub async fn start(
     geo: Option<js_sys::Function>,
 ) -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
+    recomp::register();
     let err = |e: &dyn std::fmt::Display| JsValue::from_str(&e.to_string());
     let game = romset::games::find(&game).map_err(|e| err(&e))?;
     let mut chips = Vec::new();

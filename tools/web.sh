@@ -4,9 +4,10 @@
 # WEB_OUT/model2/<set>/ with a screenshot and its WebAssembly module.
 #
 # With RECOMP set, each game gets its own module with only its recompiled
-# code (`remodel recomp-files` names the files in out/recomp/), built in
-# turn from one target directory. Without, all games share one interpreter
-# module at WEB_OUT/model2/pkg/.
+# code (`remodel recomp-files` names its program crates in out/recomp/),
+# built in turn from one target directory, each from a workspace of its own
+# (`remodel recomp-workspace --web`) that registers just those programs.
+# Without, all games share one interpreter module at WEB_OUT/model2/pkg/.
 #
 # Environment (the Makefile sets these): WEB_OUT, ROM, RECOMP, CARGO,
 # WASM_CARGO (a command, may start with VAR=value), WASM_BINDGEN.
@@ -42,10 +43,19 @@ for g in $games; do
 done
 wait
 
-# Build the module the page is going to load, and bind it into $1.
+# Build the module the page is going to load from the workspace whose
+# manifest is $1, with the program crates named after it ($3...) built one
+# at a time first, as natively (docs/recompiler.md), and bind it into $2.
 build() {
     t=$(date +%s)
-    env $WASM_CARGO build --release --target wasm32-unknown-unknown -p remodel-web
+    manifest=$1 pkg_dir=$2
+    shift 2
+    for p in "$@"; do
+        echo "web: recompiled program $p"
+        env $WASM_CARGO build --quiet --release --target wasm32-unknown-unknown --manifest-path "$manifest" -p "remodel-recomp-$(echo "$p" | tr _ -)"
+    done
+    set -- "$pkg_dir"
+    env $WASM_CARGO build --release --target wasm32-unknown-unknown --manifest-path "$manifest" -p remodel-web
     $WASM_BINDGEN --target web --no-typescript --out-dir "$1" "$wasm"
     echo "web: $1 built in $(($(date +%s) - t)) s, $(du -h "$1/remodel_web_bg.wasm" | cut -f1)"
 }
@@ -63,20 +73,18 @@ for g in $games; do
         pkg=../pkg/
         rm -rf "$model2/$g/pkg"
     else
-        # Only this game's files, as links, for model2's build script.
+        # A workspace registering only this game's program crates.
         dir=target/web-recomp/$g
-        rm -rf "$dir"
-        mkdir -p "$dir"
-        for f in $files; do
-            ln -s "$PWD/out/recomp/$f" "$dir/$f"
-        done
-        REMODEL_RECOMP_DIR=$PWD/$dir build "$model2/$g/pkg"
+        # shellcheck disable=SC2086 # one argument per program
+        $remodel recomp-workspace --web "$dir" $files
+        # shellcheck disable=SC2086
+        build "$dir/Cargo.toml" "$model2/$g/pkg" $files
         pkg=./pkg/
     fi
     sed "s|@PKG@|$pkg|" crates/web/game.html >"$model2/$g/index.html"
 done
 if [ -n "$shared" ]; then
-    (unset REMODEL_RECOMP_DIR && build "$model2/pkg")
+    build Cargo.toml "$model2/pkg"
 else
     rm -rf "$model2/pkg"
 fi

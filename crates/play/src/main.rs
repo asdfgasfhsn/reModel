@@ -869,6 +869,7 @@ impl ApplicationHandler for Play {
 }
 
 fn main() {
+    recomp::register();
     let mut settings = Settings::load();
     let opts = match options(&mut settings) {
         Ok(o) => o,

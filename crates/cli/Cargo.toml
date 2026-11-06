@@ -21,3 +21,4 @@ remodel-mpeg.workspace = true
 remodel-dsb.workspace = true
 remodel-png.workspace = true
 remodel-gpu.workspace = true
+remodel-recomp.workspace = true

@@ -50,17 +50,29 @@ RECOMP  ?=
 ifneq ($(RECOMP),)
 REMODEL := target/recomp/release/remodel
 PLAY    := target/recomp/release/remodel-play
-# No debug info: the generated code is large and only slows the build.
-RELEASE_ENV := REMODEL_RECOMP_DIR=$(abspath out/recomp) CARGO_TARGET_DIR=target/recomp CARGO_PROFILE_RELEASE_DEBUG=false
+# Built from the generated workspace in out/recomp, which links the
+# registry of recompiled programs in place of the crates/recomp stub. No
+# debug info: the generated code is large and only slows the build.
+RECOMP_CARGO := CARGO_TARGET_DIR=target/recomp CARGO_PROFILE_RELEASE_DEBUG=false $(CARGO) build --release --manifest-path out/recomp/Cargo.toml
+# $(call release_build,PACKAGE): the program crates one at a time, each
+# with every core (the largest take about 5 GB; docs/recompiler.md), then
+# the rest.
+release_build = @test -f out/recomp/Cargo.toml || { echo "no out/recomp/Cargo.toml: run make recomp (or make recomp-workspace) first"; exit 1; }; \
+	for p in $$(cd out/recomp && ls -d i960_* tgp_* 2>/dev/null); do \
+		echo "recompiled program $$p"; \
+		$(RECOMP_CARGO) --quiet -p remodel-recomp-$$(echo $$p | tr _ -) || exit 1; \
+	done; \
+	echo "$(RECOMP_CARGO) -p $(1)"; \
+	$(RECOMP_CARGO) -p $(1)
 else
 REMODEL := target/release/remodel
 PLAY    := target/release/remodel-play
-RELEASE_ENV :=
+release_build = $(CARGO) build --release -p $(1)
 endif
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release dist test lint fmt fmt-check check ci z80-test games inputs verify boot disasm analyze run copro-disasm m68k-tests clean recomp bench sound sound-disasm
+.PHONY: help build release dist test lint fmt fmt-check check ci z80-test games inputs verify boot disasm analyze run copro-disasm m68k-tests clean recomp recomp-workspace bench sound sound-disasm
 
 ##@ General
 
@@ -76,12 +88,16 @@ build: ## Debug build of the whole workspace
 	$(CARGO) build --workspace
 
 release: ## Optimised build of the remodel CLI (RECOMP=1: with the recompiled game code)
-	$(RELEASE_ENV) $(CARGO) build --release -p remodel
+	$(call release_build,remodel)
 
-recomp: ## Recompile the game's i960 code and the TGP programs captured by `make run` into out/recomp and build them; then use RECOMP=1
+recomp: ## Recompile the game's i960 code and the TGP programs captured by `make run` into crates in out/recomp and build them (only what changed); then use RECOMP=1
 	$(CARGO) build --release -p remodel
 	target/release/remodel --game $(GAME) --rom $(ROM) recomp
 	$(MAKE) release RECOMP=1
+
+recomp-workspace: ## Rewrite out/recomp's Cargo workspace and program crate manifests from the programs there (after updating Remodel or moving the checkout)
+	$(CARGO) build --release -p remodel
+	target/release/remodel recomp-workspace
 
 test: ## Run all unit tests (no ROMs needed)
 	$(CARGO) test --workspace
@@ -171,7 +187,7 @@ dump-textures: release ## Coin-start-race run dumping every 3D texture and tile 
 	$(RUN) $(VIEW) --dump-textures $(OUT)/texdump --input $(BENCH_INPUT) run $(BENCH_STEPS) 60
 
 play: ## Play in a native window: GPU, live sound, gamepads, Esc menu, save states (RECOMP=1: recompiled code; PLAY_ARGS, e.g. --game topskatr)
-	$(RELEASE_ENV) $(CARGO) build --release -p remodel-play
+	$(call release_build,remodel-play)
 	$(PLAY) --game $(GAME) --rom $(ROM) $(PLAY_ARGS)
 
 # `make dist`: interpreter only, so no game-derived recompiled code is
@@ -181,11 +197,10 @@ DIST_OUT        ?= out/dist
 
 dist: ## Distributable player for this platform (interpreter only, stripped) -> out/dist/remodel-VERSION-TARGET.tar.gz
 	@test -z "$(RECOMP)" || { echo "make dist builds the interpreter only: recompiled code is derived from the game, so it isn't distributed (drop RECOMP=1)"; exit 1; }
-	env -u REMODEL_RECOMP_DIR CARGO_TARGET_DIR=$(DIST_TARGET_DIR) CARGO_PROFILE_RELEASE_DEBUG=false CARGO_PROFILE_RELEASE_STRIP=true \
-		$(CARGO) build --release --locked -p remodel-play
-	@for f in $(DIST_TARGET_DIR)/release/build/remodel-model2-*/out/recomp_registry.rs; do \
-		if grep -q '::HASH =>' $$f; then echo "$$f: recompiled code in the dist build"; exit 1; fi; \
-	done
+	CARGO_TARGET_DIR=$(DIST_TARGET_DIR) CARGO_PROFILE_RELEASE_DEBUG=false CARGO_PROFILE_RELEASE_STRIP=true \
+		$(CARGO) build --release --locked --manifest-path Cargo.toml -p remodel-play
+	@$(CARGO) tree --locked --manifest-path Cargo.toml -p remodel-play -i remodel-recomp --prefix none | head -1 | grep -q "($(CURDIR)/crates/recomp)" \
+		|| { echo "dist: remodel-recomp isn't the crates/recomp stub: recompiled code in the dist build"; exit 1; }
 	@set -e; \
 	version=$$($(CARGO) pkgid -p remodel-play | sed 's/.*[@#]//'); \
 	rev=$$(git describe --tags --always --dirty 2>/dev/null || true); \

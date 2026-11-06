@@ -1,0 +1,9 @@
+[package]
+name = "remodel-recomp"
+description = "Stand-in for the generated registry of recompiled programs: registers none"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "recomp"

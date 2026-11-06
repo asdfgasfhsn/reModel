@@ -73,12 +73,13 @@ const BUFFER_RAM: usize = 3;
 const TGP_STALL_LIMIT: u64 = 2_000_000;
 
 /// The TGP's view of its external bus.
-struct TgpExt<'a> {
+pub struct TgpExt<'a> {
     buffer: &'a mut [u8],
     data: &'a [u32],
 }
 
 impl External for TgpExt<'_> {
+    #[inline]
     fn read(&mut self, addr: u32) -> u32 {
         match addr {
             0x40_0000..=0x7f_ffff => {
@@ -89,6 +90,7 @@ impl External for TgpExt<'_> {
             _ => 0,
         }
     }
+    #[inline]
     fn write(&mut self, addr: u32, v: u32) {
         if let 0x40_0000..=0x7f_ffff = addr {
             let o = (addr as usize & 0x7fff) * 4;
@@ -318,6 +320,7 @@ impl Model2Bus {
         }
     }
 
+    #[inline]
     fn find(&self, addr: u32) -> Option<(usize, usize)> {
         let m = &self.map[self.pages[(addr >> 16) as usize].checked_sub(1)? as usize];
         if addr < m.start || addr > m.end {
@@ -327,6 +330,9 @@ impl Model2Bus {
     }
 
     /// Run the TGP for up to `n` words, stopping when it waits for input.
+    // Called on every i960 instruction: the checks inline into the
+    // recompiled program crates, the stepping doesn't.
+    #[inline]
     pub fn run_tgp(&mut self, n: u64) {
         if !self.copro_booted || self.tgp_fault.is_some() {
             return;
@@ -336,8 +342,13 @@ impl Model2Bus {
         if self.tgp_stalled && self.tgp.fifo_in.is_empty() {
             return;
         }
+        self.step_tgp(n);
+    }
+
+    #[inline(never)]
+    fn step_tgp(&mut self, n: u64) {
         let mut ext = TgpExt { buffer: &mut self.mems[BUFFER_RAM].data, data: &self.copro_data };
-        let r = match crate::recomp::lookup::<TgpExt>(self.tgp.program_hash) {
+        let r = match crate::recomp::copro(self.tgp.program_hash) {
             Some(step) => (0..n).map(|_| step(&mut self.tgp, &mut ext)).find(|&r| r != Step::Ran).unwrap_or(Step::Ran),
             None => self.tgp.run(&mut ext, n),
         };
@@ -392,6 +403,7 @@ impl Model2Bus {
     }
 
     /// Advance timers to `now`, raising their IRQs on expiry.
+    #[inline]
     pub fn tick_timers(&mut self) {
         for i in 0..4 {
             let t = &mut self.timers[i];
@@ -600,6 +612,7 @@ impl Model2Bus {
         true
     }
 
+    #[inline]
     fn mem_read(&self, addr: u32, n: usize) -> Option<u32> {
         let (m, off) = self.find(addr)?;
         let d = &self.mems[m].data;
@@ -610,6 +623,7 @@ impl Model2Bus {
         Some(v)
     }
 
+    #[inline]
     fn mem_write(&mut self, addr: u32, v: u32, n: usize) -> bool {
         let Some((m, off)) = self.find(addr) else { return false };
         if let Some((w, log)) = &mut self.watch {
@@ -639,6 +653,7 @@ impl Model2Bus {
         }
     }
 
+    #[inline]
     fn read(&mut self, addr: u32, n: usize) -> u32 {
         if let Some(v) = self.mem_read(addr, n) {
             return v;
@@ -652,6 +667,7 @@ impl Model2Bus {
         0
     }
 
+    #[inline]
     fn write(&mut self, addr: u32, v: u32, n: usize) {
         if self.mem_write(addr, v, n) {
             return;
@@ -733,6 +749,9 @@ impl i960::cpu::Host for Model2Bus {
     fn at(&mut self, ip: u32) {
         self.cur_ip = ip;
     }
+    // Inline into the recompiled program crates, as it was when they were
+    // compiled into this one.
+    #[inline]
     fn retire(&mut self, cpu: &mut i960::cpu::Cpu) -> bool {
         let vblank = self.retire_insn(cpu);
         self.budget -= 1;
@@ -741,21 +760,27 @@ impl i960::cpu::Host for Model2Bus {
 }
 
 impl Bus for Model2Bus {
+    #[inline]
     fn read8(&mut self, a: u32) -> u8 {
         self.read(a, 1) as u8
     }
+    #[inline]
     fn read16(&mut self, a: u32) -> u16 {
         self.read(a, 2) as u16
     }
+    #[inline]
     fn read32(&mut self, a: u32) -> u32 {
         self.read(a, 4)
     }
+    #[inline]
     fn write8(&mut self, a: u32, v: u8) {
         self.write(a, v as u32, 1)
     }
+    #[inline]
     fn write16(&mut self, a: u32, v: u16) {
         self.write(a, v as u32, 2)
     }
+    #[inline]
     fn write32(&mut self, a: u32, v: u32) {
         self.write(a, v, 4)
     }
