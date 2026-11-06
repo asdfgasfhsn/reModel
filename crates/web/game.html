@@ -5,8 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Remodel</title>
 <!-- `make web` copies this page to model2/<set>/index.html, with @PKG@ set to
-     the directory of the WebAssembly module for that set. -->
+     the directory of the WebAssembly module for that set and @ROMSET@ to the
+     folder under rom/ its chips are in (its own, or a clone's parent's). -->
 <meta name="remodel-pkg" content="@PKG@">
+<meta name="remodel-rom" content="@ROMSET@">
 <style>
   :root { color-scheme: dark; }
   html, body { margin: 0; height: 100%; background: #000; color: #ccc; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
@@ -84,9 +86,11 @@
 
   const status = document.getElementById("status");
   const params = new URLSearchParams(location.search);
-  // The set is in the path (/model2/ID/); its ROM files are at /rom/ID/.
+  // The set is in the path (/model2/ID/); its ROM files are at /rom/ID/,
+  // or in the parent set's folder for a clone (the meta tag above).
   const game = decodeURIComponent(location.pathname.match(/\/model2\/([^/]+)/)?.[1] ?? "topskatr");
-  const rom = new URL(`../../rom/${game}`, location.href).href;
+  const romset = document.querySelector('meta[name="remodel-rom"]')?.content ?? game;
+  const rom = new URL(`../../rom/${romset.startsWith("@") ? game : romset}`, location.href).href;
   // This set's WebAssembly module: its own with recompiled code, or the
   // shared interpreter build (the meta tag above).
   const pkg = new URL(document.querySelector('meta[name="remodel-pkg"]').content, location.href).href;

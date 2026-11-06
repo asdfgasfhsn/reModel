@@ -13,6 +13,7 @@ pub static SKISUPRG: Game = Game {
     hud_windows: &[],
     controls: CONTROLS,
     drive_board: Some(DriveBoard::SkiPlatform),
+    parent: None,
     packed: &[],
     volume_db: 0.0,
     files: &[

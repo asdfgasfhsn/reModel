@@ -18,6 +18,7 @@ pub static BEL: Game = Game {
     hud_windows: &[],
     controls: CONTROLS,
     drive_board: None,
+    parent: None,
     packed: &[Role::MainData, Role::Polygons],
     volume_db: 0.0,
     files: &[

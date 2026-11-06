@@ -19,6 +19,7 @@ pub static HOTD: Game = Game {
     hud_windows: &[],
     controls: CONTROLS,
     drive_board: None,
+    parent: None,
     packed: &[],
     volume_db: 0.0,
     files: &[

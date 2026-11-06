@@ -231,7 +231,7 @@ fn refresh_hz(window: &Window) -> Option<f64> {
 impl Play {
     /// Find the playable games in the ROM folder.
     fn scan(&mut self) {
-        let sets = romset::sets_in(&self.settings.rom);
+        let sets = romset::sets_with_clones(&self.settings.rom);
         self.games = sets.iter().filter_map(|s| romset::games::find(s).ok().map(|g| (s.clone(), g.title))).collect();
         self.unsupported = sets.len() - self.games.len();
         self.menu.rom_text = self.settings.rom.display().to_string();

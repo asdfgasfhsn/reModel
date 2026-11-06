@@ -85,8 +85,11 @@ commands:
                        touching nothing in out/GAME (--input, --height and
                        --aspect apply)
   web-index [DIR]      list the supported games whose chips are all loose in
-                       ROM/<set>/ (as the browser build fetches them); with
-                       DIR, also write DIR/games.json for its landing page
+                       ROM/<set>/ (as the browser build fetches them; a
+                       clone's may be in its parent's); with DIR, also
+                       write DIR/games.json for its landing page
+  rom-folder           the set folder in ROM with all the game's chips
+                       loose: its own, or for a clone its parent's
   gpu-check [DIR]      draw the frames captured with --capture in DIR
                        (default out/GAME/capture) with the software and GPU
                        rasterisers; time both and report how they differ
@@ -256,7 +259,7 @@ fn main() -> ExitCode {
         };
     }
     if cmd == "scan" {
-        let sets = romset::sets_in(&rom_dir);
+        let sets = romset::sets_with_clones(&rom_dir);
         if sets.is_empty() {
             eprintln!("no sets in {} (expected <set>.zip or <set>/)", rom_dir.display());
             return ExitCode::FAILURE;
@@ -312,9 +315,25 @@ fn main() -> ExitCode {
         }
         return ExitCode::SUCCESS;
     }
+    if cmd == "rom-folder" {
+        // The set folder in --rom with all of the game's chips (its own or
+        // its parent's), for the browser build's pages.
+        let Ok(g) = games::find(&game_id) else {
+            eprintln!("error: unknown game '{game_id}'");
+            return ExitCode::FAILURE;
+        };
+        return match romset::rom_folder(g, &rom_dir) {
+            Some(set) => {
+                println!("{set}");
+                ExitCode::SUCCESS
+            }
+            None => ExitCode::FAILURE,
+        };
+    }
     if cmd == "games" {
         for g in games::ALL {
-            println!("{:<10} {:<20} {:?}", g.id, g.title, g.board);
+            // Last, the set it is a clone of ("-" for none).
+            println!("{:<10} {:<20} {:<12} {}", g.id, g.title, format!("{:?}", g.board), g.parent.unwrap_or("-"));
         }
         return ExitCode::SUCCESS;
     }
@@ -755,6 +774,9 @@ fn web_index(rom_dir: &Path) -> Vec<&'static romset::Game> {
         .iter()
         .copied()
         .filter(|g| {
+            if romset::rom_folder(g, rom_dir).is_some() {
+                return true;
+            }
             let missing: Vec<_> = g
                 .files
                 .iter()
@@ -763,10 +785,10 @@ fn web_index(rom_dir: &Path) -> Vec<&'static romset::Game> {
                 })
                 .map(|f| f.name)
                 .collect();
-            if !missing.is_empty() && missing.len() < g.files.len() {
+            if missing.len() < g.files.len() {
                 eprintln!("{}: left out, {}/{}/ lacks {}", g.id, rom_dir.display(), g.id, missing.join(", "));
             }
-            missing.is_empty()
+            false
         })
         .collect()
 }
@@ -786,8 +808,8 @@ fn json_str(s: &str) -> String {
 }
 
 /// The browser build's game list (`web-index DIR`): for each game its
-/// title, year, board, page, poster (`DIR/posters/<set>.webp`, else
-/// `posters/placeholder.webp`, if there), screenshot (if
+/// title, year, board, page, poster (`DIR/posters/<set>.webp`, else its
+/// parent set's, else `posters/placeholder.webp`, if there), screenshot (if
 /// `DIR/model2/<set>/shot.png` exists) and controls summary.
 fn games_json(games: &[&romset::Game], dir: &Path) -> String {
     let mut out = String::from("{\"games\": [");
@@ -795,8 +817,11 @@ fn games_json(games: &[&romset::Game], dir: &Path) -> String {
         let page = format!("model2/{}/", g.id);
         let shot = format!("{page}shot.png");
         let shot = if dir.join(&shot).is_file() { json_str(&shot) } else { "null".into() };
-        let poster = [format!("posters/{}.webp", g.id), "posters/placeholder.webp".into()]
-            .into_iter()
+        // A clone shows its parent's poster (the same game).
+        let poster = std::iter::once(g.id)
+            .chain(g.parent)
+            .map(|set| format!("posters/{set}.webp"))
+            .chain(["posters/placeholder.webp".into()])
             .find(|p| dir.join(p).is_file())
             .map_or("null".into(), |p| json_str(&p));
         let controls: Vec<String> = g

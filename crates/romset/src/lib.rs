@@ -134,6 +134,10 @@ pub struct Game {
     pub controls: Controls,
     /// A drive (motion or force feedback) board the game needs, if any.
     pub drive_board: Option<DriveBoard>,
+    /// The set this one is a clone of (another revision of the same game):
+    /// its chips are also looked for in the parent's folder or zip, as a
+    /// merged MAME set keeps them, and it shares the parent's poster.
+    pub parent: Option<&'static str>,
 }
 
 #[derive(Debug)]
@@ -195,26 +199,30 @@ pub struct RomSet {
 
 impl RomSet {
     /// Load `game`'s chips from ROM directory `root`: each chip from
-    /// `root/<set>/`, else `root/<set>.zip`, else `root/` itself. With
-    /// `verify`, sizes and hashes must match a known-good dump.
+    /// `root/<set>/`, else `root/<set>.zip`, then (for a clone) the same
+    /// for its parent set, else `root/` itself. With `verify`, sizes and
+    /// hashes must match a known-good dump.
     pub fn load(game: &'static Game, root: &Path, verify: bool) -> Result<Self, Error> {
-        let dir = root.join(game.id);
-        let zip_path = root.join(format!("{}.zip", game.id));
-        let archive = if zip_path.is_file() { Some(zip::Zip::open(&zip_path).map_err(Error::Zip)?) } else { None };
+        let mut places = Vec::new();
+        for set in std::iter::once(game.id).chain(game.parent) {
+            let zip_path = root.join(format!("{set}.zip"));
+            let archive = if zip_path.is_file() { Some(zip::Zip::open(&zip_path).map_err(Error::Zip)?) } else { None };
+            places.push((root.join(set), archive));
+        }
         let mut chips = Vec::with_capacity(game.files.len());
-        for rom in game.files {
-            let data = match fs::read(dir.join(rom.name)) {
-                Ok(d) => d,
-                Err(_) => match archive.as_ref().and_then(|z| z.read(rom.name)) {
-                    Some(member) => member.map_err(Error::Zip)?,
-                    None => fs::read(root.join(rom.name)).map_err(|_| Error::Missing {
-                        name: rom.name,
-                        root: root.to_path_buf(),
-                        set: game.id,
-                    })?,
-                },
-            };
-            chips.push(data);
+        'chip: for rom in game.files {
+            for (dir, archive) in &places {
+                if let Ok(d) = fs::read(dir.join(rom.name)) {
+                    chips.push(d);
+                    continue 'chip;
+                }
+                if let Some(member) = archive.as_ref().and_then(|z| z.read(rom.name)) {
+                    chips.push(member.map_err(Error::Zip)?);
+                    continue 'chip;
+                }
+            }
+            let loose = fs::read(root.join(rom.name));
+            chips.push(loose.map_err(|_| Error::Missing { name: rom.name, root: root.to_path_buf(), set: game.id })?);
         }
         Self::from_chips(game, chips, verify)
     }
@@ -293,6 +301,16 @@ impl RomSet {
     }
 }
 
+/// The set folder in ROM directory `root` that holds every chip of `game`
+/// unpacked, at its size: `root/<set>/`, else (for a clone) its parent's,
+/// as a merged MAME set keeps them. The browser build fetches chips from
+/// there.
+pub fn rom_folder(game: &Game, root: &Path) -> Option<&'static str> {
+    std::iter::once(game.id).chain(game.parent).find(|set| {
+        game.files.iter().all(|f| fs::metadata(root.join(set).join(f.name)).is_ok_and(|m| m.len() == f.size as u64))
+    })
+}
+
 /// Set names in ROM directory `root`: `<set>.zip` files and directories.
 pub fn sets_in(root: &Path) -> Vec<String> {
     let mut sets: Vec<String> = fs::read_dir(root)
@@ -312,6 +330,20 @@ pub fn sets_in(root: &Path) -> Vec<String> {
     sets.sort();
     sets.dedup();
     sets
+}
+
+/// [`sets_in`], with each supported clone after its parent when the clone
+/// has no zip or folder of its own (a merged MAME set keeps a clone's
+/// chips in its parent's).
+pub fn sets_with_clones(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let sets = sets_in(root);
+    for set in &sets {
+        out.push(set.clone());
+        let clones = games::ALL.iter().filter(|g| g.parent == Some(set.as_str()) && !sets.iter().any(|s| s == g.id));
+        out.extend(clones.map(|g| g.id.to_string()));
+    }
+    out
 }
 
 /// Concatenate the interleaved pairs of chips with `role`, in manifest order.

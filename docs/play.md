@@ -175,7 +175,9 @@ CALIBRATION in the test menu changes that.
   (57.524 frames per second) against the default of one game frame per
   display refresh at 60 or 120 Hz, which is 4.3% fast but smooth.
 - **Game**: the ROM folder and the supported sets found in it. Sets are
-  read as MAME keeps them: `<set>.zip` or a `<set>/` folder. With no ROM
+  read as MAME keeps them: `<set>.zip` or a `<set>/` folder, and a
+  supported clone is listed after its parent when its chips are in the
+  parent's (`overrevb` in `overrev.zip`). With no ROM
   folder set up, or the last game missing, the player starts in the menu.
   The ROM folder defaults to `rom/` in the source tree (or wherever the
   current directory has a `rom/` folder), else to `roms/` beside the

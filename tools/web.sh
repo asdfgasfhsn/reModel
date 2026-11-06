@@ -81,7 +81,9 @@ for g in $games; do
         build "$dir/Cargo.toml" "$model2/$g/pkg" $files
         pkg=./pkg/
     fi
-    sed "s|@PKG@|$pkg|" crates/web/game.html >"$model2/$g/index.html"
+    # Its chips' folder under rom/: its own, or a clone's parent's.
+    romset=$($remodel --game "$g" --rom "$ROM" rom-folder)
+    sed -e "s|@PKG@|$pkg|" -e "s|@ROMSET@|$romset|" crates/web/game.html >"$model2/$g/index.html"
 done
 if [ -n "$shared" ]; then
     build Cargo.toml "$model2/pkg"
@@ -96,8 +98,11 @@ cp assets/reModel-logo-1086.png "$WEB_OUT/reModel-logo.png"
 # Card posters (assets/posters/README.md).
 mkdir -p "$WEB_OUT/posters"
 cp assets/posters/*.webp "$WEB_OUT/posters/"
+# A clone uses its parent's poster: `games` lists each set's parent.
 for g in $games; do
-    [ -f "assets/posters/$g.webp" ] || echo "web: warning: no poster for $g (assets/posters/README.md); using the placeholder" >&2
+    parent=$($remodel games | awk -v g="$g" '$1 == g { print $NF }')
+    [ -f "assets/posters/$g.webp" ] || [ -f "assets/posters/$parent.webp" ] ||
+        echo "web: warning: no poster for $g (assets/posters/README.md); using the placeholder" >&2
 done
 # Left from the single-page layout (before model2/).
 rm -rf "$WEB_OUT/pkg" "$WEB_OUT/audio-worklet.js" "$WEB_OUT/sound-worker.js" "$WEB_OUT/geo-worker.js" "$WEB_OUT/touch.js" "$WEB_OUT/gun.js"

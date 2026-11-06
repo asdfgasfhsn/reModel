@@ -33,7 +33,7 @@ make web RECOMP=1   # each game gets its own module with its recompiled code (af
 | URL | file | what |
 |---|---|---|
 | `/` | `index.html` (`crates/web/index.html`) | the game list: no WebAssembly, just `games.json`, the logo, posters and screenshots |
-| `/posters/<set>.webp` | `assets/posters/` | the cards' posters (`placeholder.webp` for a game without one) |
+| `/posters/<set>.webp` | `assets/posters/` | the cards' posters (a clone shows its parent's; `placeholder.webp` for a game without one) |
 | `/LICENSE`, `/THIRD-PARTY-NOTICES.txt` | `LICENSE`, `tools/notices.py` | the licence and the crates linked into the module, linked from the landing page's footer |
 | `/games.json` | | the games to list (`remodel web-index`) |
 | `/model2/<set>/` | `model2/<set>/index.html` (`crates/web/game.html`) | the game's page |
@@ -41,10 +41,11 @@ make web RECOMP=1   # each game gets its own module with its recompiled code (af
 | `/model2/<set>/pkg/` | | its WebAssembly module (`RECOMP=1`) |
 | `/model2/pkg/` | | the interpreter module the games share (without `RECOMP`, or for a game with no recompiled code) |
 | `/model2/*.js` | `crates/web/*.js` | the workers, the audio worklet and the touch controls, shared |
-| `/rom/<set>/` | | the ROM files: not written, the server provides them (see Serving) |
+| `/rom/<set>/` | | the ROM files: not written, the server provides them (see Serving). A clone's page fetches from its parent's folder when its chips are there (`overrevb`'s from `rom/overrev/`): `make web` writes that folder into the page's `remodel-rom` meta tag (`remodel --game <set> rom-folder`) |
 
 The game list holds the supported games whose chips are all in
-`rom/<set>/` as loose files (the browser fetches them one by one): a card
+`rom/<set>/` (or, for a clone, its parent's folder) as loose files (the
+browser fetches them one by one): a card
 each, grouped by board, with its poster (`assets/posters/README.md`), an
 attract mode screenshot inset in it (enlarged on hover or focus), and the
 title, year and main keys as text.

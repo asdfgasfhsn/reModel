@@ -14,6 +14,7 @@ pub static TOPSKATR: Game = Game {
     hud_windows: &[4],
     controls: CONTROLS,
     drive_board: None,
+    parent: None,
     packed: &[],
     volume_db: 0.0,
     files: &[

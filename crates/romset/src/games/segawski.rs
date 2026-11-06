@@ -17,6 +17,7 @@ pub static SEGAWSKI: Game = Game {
     attract_frame: 2550,
     controls: CONTROLS,
     drive_board: None,
+    parent: None,
     packed: &[],
     volume_db: 0.0,
     files: &[

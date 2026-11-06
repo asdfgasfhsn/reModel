@@ -18,6 +18,7 @@ pub static OVERREV: Game = Game {
     hud_windows: &[],
     controls: CONTROLS,
     drive_board: None,
+    parent: None,
     packed: &[],
     // Its voices mostly play at DISDL 3: the sound board averages about
     // 5.5 dB below the other SCSP-only games (docs/hw/sound.md §6).
@@ -108,7 +109,7 @@ pub static OVERREV: Game = Game {
 /// which comes from the game's input test; each one's effect was confirmed
 /// by scripted runs (README, "What's known about overrev"). The input test
 /// lists a VIEW2 button as unused ("---"). One credit is one coin by default.
-const CONTROLS: Controls = Controls {
+pub(super) const CONTROLS: Controls = Controls {
     buttons: &[
         button("coin1", 0, 0x01, &["KeyC", "Digit5"], &[PadButton::Select]).labelled("Coin"),
         button("coin2", 0, 0x02, &[], &[]),
