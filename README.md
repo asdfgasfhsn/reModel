@@ -88,7 +88,7 @@ make run STEPS=600000000 INPUT=coin1@1100-1104,start@1250-1254 \
     PACK=out/topskatr/texpack VIEW="--height 1080"   # snapshots with a texture pack (docs/texture-packs.md)
 make assets               # extract the game's art for review -> out/topskatr/assets (needs ImageMagick)
 make bench                # timed run into a race: speed and state hash
-make recomp               # recompile the game's i960 code and TGP programs (after a `run`; ~2 min build)
+make recomp               # recompile the game's i960 code and TGP programs (after a `run`; builds only what changed)
 make bench RECOMP=1       # same run on the recompiled build: same hash, about twice as fast
 make play RECOMP=1        # play in a native window (Esc menu, F5/F9 quick save/load, F11 fullscreen)
 make web RECOMP=1         # browser build -> out/web: game list, a page and module per game (WebGPU; serve over HTTPS, docs/web.md)

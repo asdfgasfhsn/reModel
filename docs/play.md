@@ -187,9 +187,10 @@ directory), the player keeps its files in `out/`; anywhere else in
 about 6 MB: the stripped release binary and a `README.txt` (bring your own
 ROMs, keys, where files go). The version is the workspace's from Cargo plus
 `git describe`. It runs the i960 on the interpreter only: recompiled code is
-derived from the game's ROMs, so the target builds without
-`REMODEL_RECOMP_DIR` (in its own `target/dist`), checks that the recompiled
-registry came out empty, and refuses `RECOMP=1`.
+derived from the game's ROMs, so the target builds from the checkout's own
+workspace (in its own `target/dist`), never the generated one in
+`out/recomp/`, checks that it linked the empty `crates/recomp` stub, and
+refuses `RECOMP=1`.
 
 Unpacked anywhere outside the source tree, it keeps its files in
 `$XDG_DATA_HOME/remodel` and looks for sets in `roms/` there; with none

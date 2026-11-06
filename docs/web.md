@@ -61,14 +61,15 @@ same path as `run`'s snapshots) as a 480x360 PNG, 100-150 KB. Each takes
 15-40 s; `make web` makes the missing ones in parallel. Delete a `shot.png`
 to remake it; if one fails, its card has no picture.
 
-**Per-game modules.** `model2`'s build script compiles every
-`i960_<hash>.rs` and `tgp_<hash>.rs` in `REMODEL_RECOMP_DIR`.
-`remodel --game <set> recomp-files` names the ones in `out/recomp/` that
-belong to a set (the hash of its program ROM, and of the copro and
-geometrizer programs `run` captured in `out/<set>/`), and `make web
-RECOMP=1` builds each game in turn from a directory of links to just
-those, in one target directory (`target/web`): only `remodel-model2` and
-`remodel-web` rebuild between games. Measured here (16 cores):
+**Per-game modules.** Each recompiled program is a crate of its own in
+`out/recomp/` (docs/recompiler.md). `remodel --game <set> recomp-files`
+names the ones that belong to a set (the hash of its program ROM, and of
+the copro and geometrizer programs `run` captured in `out/<set>/`), and
+`make web RECOMP=1` builds each game in turn from a workspace of its own,
+`target/web-recomp/<set>/` (`remodel recomp-workspace --web`), whose
+registry lists just those, in one target directory (`target/web`): a
+program crate compiles once, and only the registry and `remodel-web`
+rebuild between games. Measured here (16 cores):
 `topskatr` 62 s (12 MB module), `skisuprg` 110 s (18 MB), `stcc` 120 s
 (15 MB), 5 minutes for `make web RECOMP=1` in all, against 44 MB for one
 module holding all three before. Without `RECOMP` the shared interpreter

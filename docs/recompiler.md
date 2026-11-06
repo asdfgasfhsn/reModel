@@ -8,17 +8,88 @@ time.
 
 ```sh
 make run STEPS=900000000 INPUT=coin1@1100-1104,start@1250-1254   # trace what runs
-make recomp               # generate out/recomp/*.rs and build target/recomp
+make recomp               # generate out/recomp/<program>/ and build target/recomp
 make bench RECOMP=1       # same run on the recompiled build: same state hash
 target/recomp/release/remodel --interp ...   # recompiled build, interpreter for the i960
 ```
 
 The generated code is derived from the ROMs, so it lives in `out/recomp/`
-and is never committed. Ordinary builds (and `make check`) leave it out.
-`build.rs` in `crates/model2` picks up every `i960_*.rs` and `tgp_*.rs` there
-when `REMODEL_RECOMP_DIR` is set and registers them by program hash. A
-build whose registry has no entry for a ROM image runs it on the
-interpreters, so the same binary still runs other games and revisions.
+and is never committed. Ordinary builds (and `make check`) leave it out. A
+build with no recompiled code for a ROM image runs it on the interpreters,
+so the same binary still runs other games and revisions.
+
+## Layout and registration
+
+Every recompiled program is a crate of its own, named by its hash:
+`out/recomp/i960_<hash>/` for a game's i960 program, `out/recomp/tgp_<hash>/`
+for a copro or geometrizer program (games can share these). Each holds
+`program.rs` from the code generator, generic over the machine around the
+processor, and a `lib.rs` that instantiates it for the Model 2 board
+(`Model2Bus`, the TGP's external buses), so its machine code is compiled in
+that crate and nowhere else. Program crates depend on `i960`, `mb86235` and
+`remodel-model2`; model2 depends on none of them.
+
+model2 takes the programs at run time instead: `model2::recomp::register`
+installs a table of (hash, i960 blocks) and (hash, copro and geometrizer
+`step`), and the machine looks programs up there by hash. The front ends
+(`remodel`, `remodel-play`, `remodel-web`) call `recomp::register()` first
+thing. In the checkout's workspace `recomp` is `crates/recomp`, a stub that
+registers nothing, so ordinary builds, `make check` and `make dist` never
+see `out/`.
+
+`remodel recomp` also writes a Cargo workspace in `out/recomp/`:
+`registry/` is a crate called `remodel-recomp` that depends on every
+program crate there and registers them all, and the workspace's `[patch]`
+puts it in place of the stub; `front/` only brings `remodel` and
+`remodel-play` into the workspace (under a `cfg` that never holds) so that
+`cargo build -p` can build them. It has its own `Cargo.lock`, copied from
+the checkout's, so the checkout's never changes. `make ... RECOMP=1`
+builds from it (`--manifest-path out/recomp/Cargo.toml`) into
+`target/recomp`. `make recomp-workspace` rewrites it and every program
+crate's manifest without recompiling anything (after updating Remodel or
+moving the checkout; it also moves loose `i960_<hash>.rs` / `tgp_<hash>.rs`
+files from the older layout into crates). Files are only written when
+their contents change, so Cargo rebuilds only programs that did.
+
+## Memory and parallelism
+
+Measured here (16 cores, 31 GB, seven 2C games; their program crates hold
+4-24 MB of generated Rust each):
+
+| build | before (one model2 crate with every game) | program crates |
+|---|---|---|
+| clean `target/recomp`, `remodel` + `remodel-play` | available memory 14 GB to 85 MB | 12.3 GB to 7.9 GB (largest rustc 4.8 GB, `hotd`); 10 min |
+| one game's programs regenerated | everything rebuilt | 12.0 GB to 10.2 GB; 87 s (`topskatr`) |
+
+What keeps it bounded:
+
+- **One program crate at a time.** `make release RECOMP=1` (and so `play`,
+  `bench`, `lockstep`, ...) runs one `cargo build -p` per program crate in
+  `out/recomp/`, then builds the front end. Each is compiled with every
+  core, but only one is in memory at once, so the peak is the largest
+  program's (about 5 GB for `hotd`'s 24 MB i960 module), however many games
+  there are. Cargo's `-j` would not do: rustc's codegen threads share its
+  job tokens, so `-j1` also makes each crate's LLVM work serial. A crate
+  whose sources didn't change is not rebuilt; the registry and the front
+  ends relink when any program changes (a minute or so).
+- **Submodules.** rustc never splits one module across codegen units, so
+  the i960 code generator puts every 512 blocks in a submodule of their
+  own. With the whole program in one module, `hotd`'s crate compiled on one
+  thread in 217 s; in submodules it takes about 60 s on 16, with the same
+  peak memory. An MB86235 program is still one `match` in one function and
+  compiles on one thread (up to 100 s for `stcc`'s geometrizer program);
+  splitting it would add a call per TGP instruction.
+- **No debug info** for the recompiled build, as before.
+
+Splitting into crates costs nothing at run time: blocks are
+`#[inline(never)]` anyway, and model2 marks what they call on every
+instruction (`Model2Bus`'s `Bus` and `Host` methods, memory lookup, the
+check in `run_tgp`, the TGP buses' `External` methods) `#[inline]`, so it
+still inlines into each program crate. That also made the
+recompiled builds 0-16% faster than the single crate (`make bench
+RECOMP=1`) and the interpreters about as fast as before. More codegen
+units made no difference: 64 against the default 16 took the same time
+and memory on `hotd`'s crate (as one module, before the submodules).
 
 ## The oracle
 
@@ -41,8 +112,9 @@ unless it ran.
 
 **Blocks.** Code is cut into basic blocks at branch and call targets, after
 each control transfer, at known entry points, and wherever an instruction
-isn't reached by falling through. Each block becomes one Rust function, and
-the machine keeps a table of them indexed by address. Execution enters at
+isn't reached by falling through. Each block becomes one Rust function
+(512 to a submodule, so the crate compiles in parallel), and the machine
+keeps a table of them indexed by address. Execution enters at
 any block start. Anywhere else, such as the point an interrupt returns to,
 runs on the interpreter until it reaches one.
 
