@@ -210,6 +210,7 @@ dist: ## Distributable player for this platform (interpreter only, stripped) -> 
 	rm -rf $$dir $$dir.tar.gz; mkdir -p $$dir; \
 	cp $(DIST_TARGET_DIR)/release/remodel-play $$dir/; \
 	for l in $(wildcard LICENSE*); do cp $$l $$dir/; done; \
+	python3 -I tools/notices.py remodel-play $$target $$dir/THIRD-PARTY-NOTICES.txt; \
 	sed -e "s|@VERSION@|$$version$${rev:+ ($$rev)}|" -e "s|@TARGET@|$$target|" crates/play/dist-README.txt > $$dir/README.txt; \
 	tar -C $(DIST_OUT) -czf $$dir.tar.gz $$name; \
 	echo "built $$dir.tar.gz ($$(du -h $$dir.tar.gz | cut -f1))"

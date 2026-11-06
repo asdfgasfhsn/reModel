@@ -90,7 +90,8 @@ else
 fi
 
 cp crates/web/audio-worklet.js crates/web/sound-worker.js crates/web/geo-worker.js crates/web/touch.js crates/web/gun.js "$model2/"
-cp crates/web/index.html "$WEB_OUT/"
+cp crates/web/index.html LICENSE "$WEB_OUT/"
+python3 -I tools/notices.py remodel-web wasm32-unknown-unknown "$WEB_OUT/THIRD-PARTY-NOTICES.txt"
 cp assets/reModel-logo-1086.png "$WEB_OUT/reModel-logo.png"
 # Card posters (assets/posters/README.md).
 mkdir -p "$WEB_OUT/posters"

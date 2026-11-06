@@ -806,5 +806,7 @@ says 1998). The sound program is EPL's (`docs/hw/sound.md` §7).
 
 ## License
 
-MIT for Remodel's own code. Game software and data remain the property of
-their respective owners.
+MIT for Remodel's own code ([LICENSE](LICENSE)). `make dist` and `make web`
+also ship `THIRD-PARTY-NOTICES.txt` for the crates they link
+(`tools/notices.py`). Game software and data remain the property of their
+respective owners.

@@ -114,3 +114,9 @@ Settings, EEPROMs and save states go in $XDG_DATA_HOME/remodel (normally
     <set>/saves/*.save          save states (quick, slot1 ... slot4)
 
 Needs a GPU with Vulkan (or GL) drivers and a sound device.
+
+Licence
+-------
+Remodel is MIT licensed (LICENSE). THIRD-PARTY-NOTICES.txt lists the
+crates built into remodel-play and their licences. Game software and data
+remain the property of their respective owners.

@@ -203,8 +203,10 @@ directory), the player keeps its files in `out/`; anywhere else in
 
 `make dist` builds the player for the machine it runs on (here
 `x86_64-unknown-linux-gnu`) as `out/dist/remodel-<version>-<target>.tar.gz`,
-about 6 MB: the stripped release binary and a `README.txt` (bring your own
-ROMs, keys, where files go). The version is the workspace's from Cargo plus
+about 6 MB: the stripped release binary, a `README.txt` (bring your own
+ROMs, keys, where files go), `LICENSE`, and `THIRD-PARTY-NOTICES.txt`, which
+`tools/notices.py` writes from `cargo metadata`: every crate linked in, its
+licence, and the licence texts it ships (bundled fonts' included). The version is the workspace's from Cargo plus
 `git describe`. It runs the i960 on the interpreter only: recompiled code is
 derived from the game's ROMs, so the target builds from the checkout's own
 workspace (in its own `target/dist`), never the generated one in

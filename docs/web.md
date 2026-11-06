@@ -34,6 +34,7 @@ make web RECOMP=1   # each game gets its own module with its recompiled code (af
 |---|---|---|
 | `/` | `index.html` (`crates/web/index.html`) | the game list: no WebAssembly, just `games.json`, the logo, posters and screenshots |
 | `/posters/<set>.webp` | `assets/posters/` | the cards' posters (`placeholder.webp` for a game without one) |
+| `/LICENSE`, `/THIRD-PARTY-NOTICES.txt` | `LICENSE`, `tools/notices.py` | the licence and the crates linked into the module, linked from the landing page's footer |
 | `/games.json` | | the games to list (`remodel web-index`) |
 | `/model2/<set>/` | `model2/<set>/index.html` (`crates/web/game.html`) | the game's page |
 | `/model2/<set>/shot.png` | | its card's screenshot |
