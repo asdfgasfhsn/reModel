@@ -153,7 +153,7 @@ system. The geometry processor is what differs between revisions:
 | i960 decoder, interpreter, recompiler | shared | shared | shared | shared |
 | ROM loading, code analysis | shared | shared | shared | shared |
 | Sound (68000 + SCSP) | shared | shared | shared | shared |
-| Geometry processor | Fujitsu TGP | Fujitsu TGP | ADSP-21062 SHARC | Fujitsu TGP (MB86235) |
+| Geometry processor | Fujitsu TGP (MB86234), program uploaded | as Model 2; fixed-function geometrizer | two ADSP-21062 SHARCs (copro, geometrizer), programs uploaded | Fujitsu TGP (MB86235) |
 | Renderer | shared | shared | shared | shared |
 
 Supporting a new game should mean adding a manifest under
@@ -213,6 +213,39 @@ supported unless a game's section says otherwise.
 - *Unconfirmed:* `stcc`'s memory test reports IC29 and IC30 BAD; those are
   its copro data ROMs (`.29/.30`), which the i960 can only reach through
   the TGP. Not investigated.
+
+## What's known about Models 2A and 2B (scoping, not yet supported)
+
+From throwaway boots of `srallyc` (2A), `overrevb` and `sgt24h` (2B) on the
+2C board model, and from their ROMs. Nothing here runs yet.
+
+- *Confirmed (`srallyc`'s code):* the 2A TGP's program is **uploaded by the
+  game**, not internal to the chip as general knowledge had it. The loader
+  holds the copro in reset (`0x980000` bit 31), writes 1,664 32-bit words to
+  `0x884000`, releases it, writes 0 to `0x880080` and requires the copro to
+  answer 8, else "Coprocessor Load Error". `vcop`, `daytona` and `vf2` each
+  carry their own TGP program (a 6-word vector and a dispatch table of 73,
+  73 and 112 entries); the programs differ between games. So the TGP needs
+  an interpreter for its (undocumented) instruction set, not a
+  function-by-function model.
+- *Confirmed (numerically):* the shared Model 2/2A chips are maths tables:
+  `opr-14742a.45/.46` a quarter-wave sine (65,536 steps a circle, within
+  3e-8), `.58/.59` reciprocal mantissas, `.62/.63` inverse square root
+  mantissas for even and odd exponents.
+- *Confirmed (`srallyc`):* no geometrizer program is uploaded; display lists
+  go straight to `0x804000`. The 2A geometrizer is presumably fixed-function
+  (unconfirmed). Writes to `0x12000000-0x128xxxxx` look like texture and
+  luma RAM (unconfirmed).
+- *Confirmed (`overrevb`, `sgt24h`):* 2B has **two SHARCs**, the copro and
+  the geometrizer, each programmed by the i960 through its I/O-processor
+  registers (host windows `0x8C0000` and `0x840000`; reset bits in
+  `0x980000` and `0x980008`): a DMA of 4,096 48-bit words, sent as 16-bit
+  halves to `0x884000` / `0x804000`. The sound UART is at `0x9C0000`
+  (2C: `0x1C80000`). `overrevb` reaches attract mode on the 2C map with
+  small stubs; both Jaleco games upload the same two SHARC programs.
+- *Confirmed (`sgt24h`):* boot clears work RAM from inside a called
+  function and then returns, which works only if the i960 keeps recent
+  register frames on-chip, as the i960KB does (general knowledge).
 
 ## What's known about `topskatr`
 

@@ -44,16 +44,18 @@ the same). The geometry hardware is what changes:
 
 | Board | Geometry (gk unless marked) | What Remodel would need |
 |---|---|---|
-| Model 2 (1993-94) | Fujitsu TGP MB86234; its program is inside the chip and not dumped. | A TGP model (high-level, function by function, as MAME does), the original board's memory map and its sound board ROM layout. Large new work. |
-| 2A-CRX (1995) | Same TGP as Model 2, on a cheaper board. | As Model 2, plus 2A's map. Once one 2A game runs, the other 13 2A sets are mostly manifests. |
-| 2B-CRX (1995) | Analog Devices ADSP-21062 SHARC copro; the i960 uploads its program. | A SHARC core (interpreter, ideally a recompiler) and 2B's copro interface. The geometrizer side is unknown: 2B sets contain none of `topskatr`'s geometrizer code (ROM). |
+| Model 2 (1993-94) | Fujitsu TGP MB86234 (gk). **ROM:** the game uploads its program (`daytona`, `vcop`; each game its own), contrary to the gk that it is internal and undumped. | A TGP interpreter for its undocumented instruction set, the original board's memory map and its sound board ROM layout. Large new work. |
+| 2A-CRX (1995) | Same TGP as Model 2 (gk). **ROM:** `srallyc` and `vf2` upload theirs too; no geometrizer program is uploaded (fixed function, unconfirmed). | As Model 2, plus 2A's map and a fixed-function geometrizer. Once one 2A game runs, the others are mostly manifests. |
+| 2B-CRX (1995) | Two ADSP-21062 SHARCs (gk for the chip; **ROM** for two): copro and geometrizer, both programmed by the i960 through their I/O-processor DMA. | A SHARC core (interpreter, ideally a recompiler), 2B's upload and port map, and how the geometrizer SHARC's output reaches the rasteriser. |
 | 2C-CRX (1996-98) | Fujitsu MB86235 (TGPx4) copro and geometrizer, both running programs the i960 uploads. **ROM:** every 2C program set contains MB86235 code shared with `topskatr`'s uploaded programs; no 2A or 2B set does. | Mostly a manifest per game. The MB86235 interpreter and recompiler, the geometrizer, the 2C memory map and the sound board are all there. New work is per game: inputs, any extra board, and whatever the game's code uses that `topskatr`'s doesn't. |
 
 Two ROM clues sort the boards (the chips are ROM evidence; what they are is gk): every Model 2 and 2A
 set carries the same nine shared chips, `opr-14742a.45` to `opr-14747.63`
 (6 x 128 KB) and `mpr-16310.15`, `mpr-16311.16`, `mpr-16312.14`
-(3 x 512 KB); no 2B or 2C set does. MAME treats the 512 KB three as the
-TGP's function tables (gk). The 2B/2C zips that contain them (`doa`,
+(3 x 512 KB); no 2B or 2C set does. The 128 KB pairs are maths tables for
+the TGP (confirmed numerically: sine, reciprocal and inverse square root,
+README); the 512 KB three hold 8-bit lookup tables, probably for the
+rasteriser (unconfirmed). The 2B/2C zips that contain them (`doa`,
 `dynamcop`, `pltkids`, `zerogun`) only do so because of a 2A clone merged
 in.
 
@@ -220,8 +222,9 @@ for it).
   (`desert`, `manxtt`, `sgt24h`, `von`, `stcc`) show another board is
   present, not which.
 - The dat's years are sometimes late (see above).
-- SHARC on 2B and TGP MB86234 on 2/2A come from MAME and public docs, not
-  from these ROMs.
+- That the 2B chips are SHARCs and the 2/2A copro an MB86234 comes from
+  public docs (the 2B upload writes 2106x I/O-processor registers, which
+  fits); that both boards' programs are uploaded is from the ROMs.
 
 ## How this was checked
 
