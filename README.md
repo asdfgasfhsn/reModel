@@ -51,7 +51,7 @@ music`). There is no live window yet.
 | Enhanced views: any resolution, 16:9 / 21:9 with HUD moved to the edges | done for snapshots (`--height`, `--aspect`, `--hud`) |
 | Custom soundtracks (replace any music track, game logic intact) | done offline: `make music SOUNDTRACK=name`; see `docs/mods.md` |
 | Native window (`make play`) | playable: GPU renderer, live sound (cpal), keyboard and gamepad (gilrs), any window shape from 4:3 to 32:9; about 2 ms of CPU per frame recompiled. Esc menu (sound mix, display, save slots, game picker), save states; see `docs/play.md` |
-| Browser build (WebAssembly + WebGPU) | playable (`make web`), with sound, keyboard and gamepad; see `docs/web.md` |
+| Browser build (WebAssembly + WebGPU) | playable (`make web`), with sound, keyboard, gamepad and touch, and a settings panel before each game (resolution, aspect, HUD, mix, touch and tilt; kept in the browser); see `docs/web.md` |
 | Second game: `skisuprg` (Sega Ski Super G, 2C) | playable (`make play GAME=skisuprg`): drive board modelled from the game's code, its own controls and coin-start script from its manifest; save states round-trip |
 | Third game: `stcc` (Sega Touring Car Championship, 2C) | playable with sound effects and music (`make play GAME=stcc`): attract, car and gearbox select, name entry and races; its DSB1 music board (Z80) is modelled from its program. Needed geometrizer list jumps and mirrored ROM slots; recompiled build identical |
 | Fourth game: `segawski` (Sega Water Ski, 2C) | playable with sound (`make play GAME=segawski`): attract, player and course select, runs. No extra boards; needed a second main data ROM bank at `0x6000000`; recompiled build identical |

@@ -1,4 +1,5 @@
-// On-screen controls for touch screens (or any device with ?touch=1). They
+// On-screen controls for touch screens (or any device with the touch setting
+// on, `?touch=1`). They
 // act as a gamepad, so they play every game by its pad bindings; the page
 // passes the game's layout (`touch_layout` in lib.rs).
 //
@@ -19,14 +20,30 @@ const TILT_RANGE = 30;
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
-/// Show the controls if this is a touch screen; true if shown. `layout`:
-/// {steer, gun, top: [{label, bit} or {label, gun}], actions: [{label, bit}
-/// or {label, trigger}]}. `gun`: gun.js's handle, for gun games.
-export function setupTouch(layout, report, toggleBar, gun) {
+/// Whether this is a touch screen (the touch controls' default).
+export const touchScreen = () => matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
+
+/// Ask for motion events (iOS asks the player; elsewhere there's nothing to
+/// ask). Call it from a tap or key press: iOS refuses otherwise. Resolves
+/// true if tilt can work.
+export function tiltPermission() {
+  const DOE = globalThis.DeviceOrientationEvent;
+  if (typeof DOE?.requestPermission !== "function") return Promise.resolve(true);
+  try {
+    return DOE.requestPermission().then((r) => r === "granted", () => false);
+  } catch {
+    return Promise.resolve(false);
+  }
+}
+
+/// Set up the controls, shown if `show`. `layout`: {steer, gun, top:
+/// [{label, bit} or {label, gun}], actions: [{label, bit} or {label,
+/// trigger}]}. `gun`: gun.js's handle, for gun games. Returns
+/// {show(on), tilt(on, permission), shown}: `permission` a promise from
+/// `tiltPermission`, asked for in the gesture that turned tilt on.
+export function setupTouch(layout, report, toggleBar, gun, show) {
   const root = document.getElementById("touch");
-  const touchScreen = matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
-  if (!touchScreen && !new URLSearchParams(location.search).has("touch")) return false;
-  root.hidden = false;
+  root.hidden = !show;
 
   const state = { steer: 0, right: 0, left: 0, buttons: 0, tilt: null };
   const send = () => report(state.tilt ?? state.steer, state.right, state.left, state.buttons);
@@ -130,28 +147,41 @@ export function setupTouch(layout, report, toggleBar, gun) {
     state.tilt = clamp(deg / TILT_RANGE, -1, 1);
     send();
   };
-  tiltButton.addEventListener("click", async () => {
-    if (state.tilt !== null) {
-      removeEventListener("deviceorientation", onTilt);
-      state.tilt = null;
-      tiltButton.classList.remove("on");
-      pad.hidden = false;
-      send();
-      return;
-    }
-    if (typeof DeviceOrientationEvent?.requestPermission === "function") {
-      try {
-        if ((await DeviceOrientationEvent.requestPermission()) !== "granted") return;
-      } catch {
-        return;
-      }
-    }
+  const tiltOff = () => {
+    removeEventListener("deviceorientation", onTilt);
+    state.tilt = null;
+    tiltButton.classList.remove("on");
+    pad.hidden = false;
+    send();
+  };
+  const tiltOn = async (permission) => {
+    if (!layout.steer || state.tilt !== null || !(await permission)) return;
     state.tilt = 0;
     tiltButton.classList.add("on");
     pad.hidden = true;
     addEventListener("deviceorientation", onTilt);
-  });
+  };
+  tiltButton.addEventListener("click", () => (state.tilt !== null ? tiltOff() : tiltOn(tiltPermission())));
 
   document.getElementById("t-info").addEventListener("click", toggleBar);
-  return true;
+  return {
+    show(on) {
+      root.hidden = !on;
+      if (!on) {
+        // Let go of anything held.
+        Object.assign(state, { steer: 0, right: 0, left: 0, buttons: 0 });
+        for (const e of root.querySelectorAll(".on:not(#t-tilt)")) e.classList.remove("on");
+        knob.classList.remove("on");
+        finger = null;
+        send();
+      }
+    },
+    tilt(on, permission) {
+      if (on) tiltOn(permission);
+      else if (state.tilt !== null) tiltOff();
+    },
+    get shown() {
+      return !root.hidden;
+    },
+  };
 }

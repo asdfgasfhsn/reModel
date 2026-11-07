@@ -107,6 +107,8 @@ struct App {
     geo_held: u32,
     status: web_sys::Element,
     stopped: bool,
+    /// Paused by the page ([`set_paused`]): no frames run or drawn.
+    paused: bool,
     /// Kept alive: in a browser, dropping the instance loses the device.
     _gpu: (wgpu::Instance, wgpu::Adapter),
 }
@@ -291,6 +293,16 @@ impl App {
         if self.stopped {
             return;
         }
+        if self.paused {
+            // Hold the clocks where they are, so the game resumes from this
+            // frame rather than catching up on the time it was paused.
+            self.last_t = t;
+            self.owed = 0;
+            self.epoch = t - self.machine.frames as f64 * 1000.0 / FPS;
+            self.counter = (t, 0, 0);
+            self.spent = [0.0; 3];
+            return;
+        }
         // Measure the refresh rate (ignoring gaps such as a hidden tab).
         let dt = t - self.last_t;
         self.last_t = t;
@@ -391,6 +403,33 @@ pub fn set_touch(steer: f64, right: f64, left: f64, buttons: u32) {
     APP.with(|a| {
         if let Some(app) = a.borrow().as_ref() {
             app.borrow_mut().touch = (steer, right, left, buttons);
+        }
+    });
+}
+
+/// Pause or resume the game (the settings panel pauses it). While paused
+/// no frames run, nothing is drawn (the canvas keeps the last picture) and
+/// nothing goes to the workers; resuming continues from the same frame.
+#[wasm_bindgen]
+pub fn set_paused(paused: bool) {
+    APP.with(|a| {
+        if let Some(app) = a.borrow().as_ref() {
+            let mut app = app.borrow_mut();
+            app.paused = paused;
+            if paused {
+                set_status(&app.status, "paused");
+            }
+        }
+    });
+}
+
+/// HUD placement in wide views: at the screen's edges, or centred as on
+/// the original 4:3 screen. Takes effect from the next frame drawn.
+#[wasm_bindgen]
+pub fn set_hud(edges: bool) {
+    APP.with(|a| {
+        if let Some(app) = a.borrow().as_ref() {
+            app.borrow_mut().view.hud = if edges { video::Hud::Edges } else { video::Hud::Center };
         }
     });
 }
@@ -688,6 +727,119 @@ pub fn controls_help(game: &str) -> String {
     romset::games::find(game).map_or(String::new(), |g| g.controls.describe())
 }
 
+/// The game's controls for the settings panel, as JSON: a list of
+/// `{label, keys, pad}`, `keys` the default keys as printed on them and
+/// `pad` the gamepad bindings (W3C standard layout, Xbox names), one row
+/// per input that has either. Light guns come first, as `{label, keys,
+/// pad, gun: true}`.
+#[wasm_bindgen]
+pub fn controls_table(game: &str) -> String {
+    let Ok(game) = romset::games::find(game) else { return "[]".into() };
+    let c = &game.controls;
+    let list = |v: Vec<String>| v.iter().map(|s| json_str(s)).collect::<Vec<_>>().join(", ");
+    let keys = |k: &[&str]| k.iter().map(|k| romset::controls::key_symbol(k).to_string()).collect::<Vec<_>>();
+    let pads = |p: &[PadButton]| p.iter().map(|&b| pad_name(b).to_string()).collect::<Vec<_>>();
+    // (label, keys, pad, gun): an input labelled like one before it (bel's
+    // missile button, which the guns' reload controls also press) joins it.
+    let mut rows: Vec<(String, Vec<String>, Vec<String>, bool)> = Vec::new();
+    let mut row = |label: String, keys: Vec<String>, pad: Vec<String>, gun: bool| {
+        if keys.is_empty() && pad.is_empty() {
+            return;
+        }
+        match rows.iter_mut().find(|r| r.0 == label) {
+            Some(r) => {
+                for k in keys {
+                    if !r.1.contains(&k) {
+                        r.1.push(k);
+                    }
+                }
+                for p in pad {
+                    if !r.2.contains(&p) {
+                        r.2.push(p);
+                    }
+                }
+            }
+            None => rows.push((label, keys, pad, gun)),
+        }
+    };
+    for (i, g) in c.guns.iter().enumerate() {
+        let who = if c.guns.len() > 1 { format!(" (player {})", i + 1) } else { String::new() };
+        let aim = if i == 0 { "mouse or touch, else sticks" } else { "sticks" };
+        row(format!("Aim{who}"), vec![aim.into()], Vec::new(), true);
+        if let Some(t) = c.button(g.trigger) {
+            let click = if i == 0 { vec!["left button".to_string()] } else { Vec::new() };
+            row(t.label(), click, pads(model2::input::PAD_GUN_TRIGGER), true);
+        }
+        let mut reload = keys(g.keys_reload);
+        if i == 0 {
+            reload.insert(0, "right button".into());
+        }
+        // A reload that presses a button (bel's missile) joins that
+        // button's row.
+        let label = match g.reload {
+            romset::Reload::Offscreen => format!("{}{who}", g.reload_label(c)),
+            romset::Reload::Button(_) => g.reload_label(c),
+        };
+        row(label, reload, pads(model2::input::PAD_GUN_RELOAD), true);
+    }
+    for a in c.analogs {
+        let mut pad = Vec::new();
+        if a.axis != PadAxis::None {
+            pad.push(axis_name(a.axis).to_string());
+        }
+        pad.extend(pads(a.pad_neg).into_iter().chain(pads(a.pad_pos)));
+        let k: Vec<&str> = a.keys_neg.iter().chain(a.keys_pos).copied().collect();
+        row(a.label(), keys(&k), pad, false);
+    }
+    for b in c.buttons {
+        row(b.label(), keys(b.keys), pads(b.pad), false);
+    }
+    let rows: Vec<String> = rows
+        .into_iter()
+        .map(|(label, keys, pad, gun)| {
+            let gun = if gun { ", \"gun\": true" } else { "" };
+            format!("{{\"label\": {}, \"keys\": [{}], \"pad\": [{}]{gun}}}", json_str(&label), list(keys), list(pad))
+        })
+        .collect();
+    format!("[{}]", rows.join(", "))
+}
+
+/// A standard gamepad button as an Xbox pad labels it.
+fn pad_name(b: PadButton) -> &'static str {
+    match b {
+        PadButton::South => "A",
+        PadButton::East => "B",
+        PadButton::West => "X",
+        PadButton::North => "Y",
+        PadButton::LeftShoulder => "LB",
+        PadButton::RightShoulder => "RB",
+        PadButton::LeftTrigger => "LT",
+        PadButton::RightTrigger => "RT",
+        PadButton::Select => "Back",
+        PadButton::Start => "Start",
+        PadButton::LeftStick => "L stick press",
+        PadButton::RightStick => "R stick press",
+        PadButton::DPadUp => "D-pad ↑",
+        PadButton::DPadDown => "D-pad ↓",
+        PadButton::DPadLeft => "D-pad ←",
+        PadButton::DPadRight => "D-pad →",
+    }
+}
+
+/// A pad axis for players.
+fn axis_name(a: PadAxis) -> &'static str {
+    match a {
+        PadAxis::None => "",
+        PadAxis::LeftStickX => "left stick ↔",
+        PadAxis::LeftStickY => "left stick ↕",
+        PadAxis::RightStickX => "right stick ↔",
+        PadAxis::RightStickY => "right stick ↕",
+        PadAxis::LeftTrigger => "LT",
+        PadAxis::RightTrigger => "RT",
+        PadAxis::Triggers => "RT − LT",
+    }
+}
+
 /// The sound and music boards on their own, for a Web Worker: fed the sound
 /// link bytes the game sends, it renders the audio.
 #[wasm_bindgen]
@@ -869,6 +1021,7 @@ pub async fn start(
         counter: (now(), 0, 0),
         status,
         stopped: false,
+        paused: false,
         spent: [0.0; 3],
         link,
         samples: 0,

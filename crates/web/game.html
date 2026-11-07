@@ -31,6 +31,14 @@
     opacity: 0.6; z-index: 1; }
   #back:hover, #back:focus { opacity: 1; }
   :fullscreen #back { display: none; }
+  /* Settings (panel.js): before the game starts, and in the bar. */
+  #gear { position: fixed; right: max(8px, env(safe-area-inset-right)); top: max(8px, env(safe-area-inset-top));
+    width: 44px; height: 44px; border-radius: 22px; border: 0; background: rgba(0, 0, 0, 0.5); color: #fff;
+    font-size: 22px; opacity: 0.7; z-index: 1; cursor: pointer; }
+  #gear:hover, #gear:focus { opacity: 1; }
+  #gear[hidden] { display: none; }
+  #bar-gear { margin-left: auto; padding: 0 8px; border: 1px solid #555; border-radius: 10px; background: none;
+    color: inherit; font: inherit; cursor: pointer; }
   kbd { border: 1px solid #555; border-radius: 3px; padding: 0 4px; font: inherit; }
   /* On-screen controls (touch.js) */
   #touch { position: fixed; inset: 0; pointer-events: none; }
@@ -66,10 +74,12 @@
 <div id="splash"><img src="../../reModel-logo.png" alt="reModel">
   <div id="progress"><div id="fill"></div></div><div id="ptext">loading…</div></div>
 <a id="back" href="../../">← Games</a>
+<button id="gear" type="button" aria-label="Settings" hidden>⚙︎</button>
 <div id="bar">
   <span id="status">loading…</span>
   <span><span id="keys"></span>gamepad works too ·
     <kbd>F</kbd> fullscreen <kbd>H</kbd> hide bar · <span id="sound">tap or press a key for sound</span></span>
+  <button id="bar-gear" type="button">⚙︎ Settings <kbd>Esc</kbd></button>
 </div>
 <div id="touch" hidden>
   <div id="t-steer"><div id="t-knob"></div></div>
@@ -77,12 +87,15 @@
   <div id="t-top">
     <span class="t-pill" id="t-tilt">Tilt</span>
     <span class="t-pill" id="t-info">ⓘ</span>
+    <span class="t-pill" id="t-gear" aria-label="Settings">⚙︎</span>
   </div>
   <div id="t-actions"></div>
 </div>
 <script type="module">
-  import { setupTouch } from "../touch.js";
+  import { setupTouch, touchScreen, tiltPermission } from "../touch.js";
   import { setupGun } from "../gun.js";
+  import * as S from "../settings.js";
+  import { createPanel } from "../panel.js";
 
   const status = document.getElementById("status");
   const params = new URLSearchParams(location.search);
@@ -94,41 +107,141 @@
   // This set's WebAssembly module: its own with recompiled code, or the
   // shared interpreter build (the meta tag above).
   const pkg = new URL(document.querySelector('meta[name="remodel-pkg"]').content, location.href).href;
-  const { default: init, start, set_audio_level, set_geo_frame, set_touch, set_gun, view_point, stick_cursor,
-    controls_help, touch_layout, game_title, rom_files } =
+  const { default: init, start, set_geo_frame, set_touch, set_gun, view_point, stick_cursor, set_audio_level,
+    set_paused, set_hud, controls_help, controls_table, touch_layout, game_title, rom_files } =
     await import(pkg + "remodel_web.js");
+
+  // Settings (settings.js): built-in defaults < stored for all games <
+  // stored for this game < this page's URL. The page works without storage.
+  const storage = (() => {
+    try {
+      return localStorage;
+    } catch {
+      return null;
+    }
+  })();
   // For the game list's "Continue".
   try {
-    localStorage.setItem("remodel.last", game);
+    storage?.setItem("remodel.last", game);
   } catch {}
-  // Defaults: fill this window (4:3 to 21:9) at the screen's resolution.
-  const fit = Math.min(Math.max(innerWidth / innerHeight, 4 / 3), 21 / 9);
-  const aspect = params.has("aspect")
-    ? params.get("aspect").split(":").map(Number).reduce((w, h) => w / h)
-    : fit;
-  const height = Number(params.get("height")) ||
-    Math.min(1080, Math.round(innerHeight * devicePixelRatio / 2) * 2);
-  const hudEdges = params.get("hud") !== "center";
-  const sound = params.get("sound") !== "0";
-  // Mix in dB (sound board: effects and announcer; music board), if set.
-  const mix = params.has("sfx") || params.has("music")
-    ? [Number(params.get("sfx") ?? 8), Number(params.get("music") ?? -8)]
-    : undefined;
+  const env = () => ({ innerWidth, innerHeight, devicePixelRatio, touchScreen: touchScreen() });
+  const base = S.builtin(env());
+  const url = S.fromParams(params);
+  let store = S.readStore(storage);
+  let { values, source } = S.resolve(base, store, game, url);
+  // #settings (the game list's gear) shows the panel even if it's off for
+  // this game; #play (a restart from the panel) skips it once.
+  const hash = location.hash;
+  const clean = () => location.pathname + (params.size ? "?" + params : "");
+  if (hash === "#settings" || hash === "#play") history.replaceState(null, "", clean());
+  const showFirst = hash === "#settings" || (hash !== "#play" && !store.skip[game]);
+  // Reload with the settings saved, without the panel.
+  const restart = () => {
+    history.replaceState(null, "", clean() + "#play");
+    location.reload();
+  };
 
-  // Browsers only start audio from a user gesture: set it up on the first.
-  let audio = null;
+  // The title, from the game list's data (the module isn't loaded yet).
+  let title = game;
+  try {
+    const r = await fetch("../../games.json");
+    title = (await r.json()).games.find((g) => g.id === game)?.title ?? game;
+  } catch {}
+
+  // The settings the game is running with (null before it starts), and
+  // the live parts' handles once it has.
+  let run = null;
   let started = false;
+  let touch = null;
+  let worker = null;
+  let tiltAsk = null;
+  const panel = createPanel({ title, back: "../../", env: env(), base, values, source, skip: !!store.skip[game],
+    onGesture(action, v) {
+      // Still in the tap or key press: audio and the motion permission.
+      if (v.touch && v.tilt && (!run || !run.tilt)) tiltAsk = tiltPermission();
+      if (action === "play") {
+        if (v.sound) enableAudio();
+      } else if (action === "resume") {
+        audio?.resume();
+      }
+    },
+  });
+  // Save what the panel chose: a URL override the player changed leaves
+  // the address, so the panel's value holds from now on.
+  function save(r) {
+    values = r.values;
+    for (const k of r.changed) {
+      params.delete(k);
+      delete url[k];
+    }
+    if (r.changed.size) history.replaceState(null, "", clean());
+    store = S.commit(base, S.readStore(storage), game, values,
+      { forAll: r.forAll, skip: r.skip, keep: Object.keys(url) });
+    if (storage) S.writeStore(storage, store);
+  }
+  // Before the game starts: Play (or Restart, the same then).
+  let choice = null;
+  const gear = document.getElementById("gear");
+  const openFirst = () => {
+    gear.hidden = true;
+    choice = panel.show("start").then((r) => {
+      save(r);
+      if (!started) gear.hidden = false;
+      return r;
+    });
+  };
+  gear.addEventListener("click", openFirst);
+  if (showFirst) openFirst();
+  else gear.hidden = false;
+  // In game: pause, show, then apply what can change live; the rest
+  // restarts the page.
+  async function openInGame() {
+    if (!started || panel.open) return;
+    set_paused(true);
+    audio?.suspend();
+    const r = await panel.show("game", run);
+    const before = run;
+    save(r);
+    if (r.action === "restart") return restart();
+    set_hud(values.hud !== "center");
+    worker?.postMessage({ type: "mix", mix: [values.sfx, values.music] });
+    if (touch && values.touch !== before.touch) {
+      touch.show(values.touch);
+      if (values.touch && values.tilt) touch.tilt(true, tiltAsk ?? tiltPermission());
+    }
+    if (touch && values.tilt !== before.tilt) touch.tilt(values.tilt, tiltAsk ?? tiltPermission());
+    tiltAsk = null;
+    run = { ...run, hud: values.hud, sfx: values.sfx, music: values.music, touch: values.touch, tilt: values.tilt };
+    set_paused(false);
+  }
+  document.getElementById("bar-gear").addEventListener("click", openInGame);
+  document.getElementById("t-gear").addEventListener("click", openInGame);
+  addEventListener("keydown", (e) => {
+    if (e.code === "Escape") openInGame();
+  });
+
+  // Browsers only start audio from a user gesture: set it up on the first
+  // (Play, or any tap or key press once the game runs).
+  let audio = null;
+  let node = null;
+  let connected = false;
   const soundLabel = document.getElementById("sound");
   // The sound boards run in a worker on another core (sound-worker.js).
-  let worker = null;
   let workerMs = 0;
   let workerState = "loading";
   let geoMs = 0;
+  // The worklet and the worker, joined once both exist.
+  function connectAudio() {
+    if (connected || !node || !worker) return;
+    connected = true;
+    const channel = new MessageChannel();
+    node.port.postMessage({ port: channel.port1 }, [channel.port1]);
+    worker.postMessage({ type: "port", port: channel.port2 }, [channel.port2]);
+  }
   async function enableAudio() {
-    if (!sound) return;
     if (audio) {
       // iOS can suspend or interrupt the context: any later gesture resumes it.
-      if (audio.state !== "running") audio.resume();
+      if (audio.state !== "running" && !panel.open) audio.resume();
       return;
     }
     // Safari 17+: play as media, not "ambient" sound that silent mode mutes.
@@ -142,12 +255,8 @@
       soundLabel.textContent = "sound: worklet failed: " + (e.message ?? e);
       return;
     }
-    const node = new AudioWorkletNode(audio, "remodel-sink", { outputChannelCount: [2] });
+    node = new AudioWorkletNode(audio, "remodel-sink", { outputChannelCount: [2] });
     node.connect(audio.destination);
-    // The worker posts its audio straight into the worklet.
-    const channel = new MessageChannel();
-    node.port.postMessage({ port: channel.port1 }, [channel.port1]);
-    worker.postMessage({ type: "port", port: channel.port2 }, [channel.port2]);
     node.port.onmessage = (e) => {
       const s = e.data;
       if ("level" in s) {
@@ -162,9 +271,10 @@
         `playing ${db} dB, ${s.dry} dry, ${s.dropouts} dropouts, ` +
         `${(s.queued / 44.1).toFixed(0)} ms queued`;
     };
+    // The worker posts its audio straight into the worklet.
+    connectAudio();
   }
-  for (const ev of ["pointerdown", "keydown", "touchend"]) addEventListener(ev, enableAudio);
-  if (!sound) soundLabel.textContent = "sound off";
+  for (const ev of ["pointerdown", "keydown", "touchend"]) addEventListener(ev, () => run?.sound && enableAudio());
 
   const toggleBar = () => document.getElementById("bar").classList.toggle("hidden");
   addEventListener("keydown", (e) => {
@@ -172,13 +282,14 @@
     if (e.code === "KeyH") toggleBar();
   });
 
-  // Loading progress on the splash.
+  // Loading progress on the splash (and the panel, while it's open).
   const fill = document.getElementById("fill");
   const ptext = document.getElementById("ptext");
   const mb = (n) => (n / 1048576).toFixed(n < 10485760 ? 1 : 0);
   function progress(label, done, total) {
     fill.style.width = total ? `${Math.min(100, (100 * done) / total)}%` : "0";
     ptext.textContent = total ? `${label} ${mb(done)} / ${mb(total)} MB` : label;
+    panel.setStatus(ptext.textContent);
   }
   // Fetch URLs (at most four at once), reporting bytes as they arrive.
   async function download(urls, label) {
@@ -208,27 +319,45 @@
     await Promise.all(Array.from({ length: Math.min(4, urls.length) }, one));
     return out;
   }
+  const fail = (e) => {
+    status.textContent = "error: " + (e.message ?? e);
+    ptext.textContent = "Couldn't start: " + (e.message ?? e);
+    ptext.style.color = "#f66";
+    panel.setStatus(ptext.textContent, true);
+    console.error(e);
+  };
 
   if (!navigator.gpu) {
     ptext.textContent = "This browser has no WebGPU.";
+    panel.setStatus("This browser has no WebGPU, which the game needs.", true);
     status.textContent = "This browser has no WebGPU (try a recent Chrome, Edge or Safari; on Linux, check chrome://gpu).";
   } else {
     try {
-      // Compile once; the workers instantiate the same module.
+      // While the panel is up: the module, compiled once (the workers
+      // instantiate the same one), then the ROMs, once, before anything
+      // else asks for them: the workers and the game then get them from
+      // the browser's cache.
       const [code] = await download([pkg + "remodel_web_bg.wasm"], "Game code");
       progress("Compiling…");
       const module = await WebAssembly.compile(await code.arrayBuffer());
       await init({ module_or_path: module });
-      // The ROMs, once, before anything else asks for them: the workers and
-      // the game then get them from the browser's cache.
+      const layout = JSON.parse(touch_layout(game));
+      panel.setControls(JSON.parse(controls_table(game)), layout);
       await download(rom_files(game).map((f) => `${rom}/${f}`), "ROMs");
+      progress("Ready");
+      // Wait for Play (the panel may also have been opened from the gear).
+      while (panel.open) await choice;
+      gear.hidden = true;
+      run = { ...values };
+      const opt = S.effective(values, env());
       progress("Starting…");
       document.title = `${game_title(game)} · Remodel`;
       document.getElementById("keys").textContent = controls_help(game).trim().replace(/\n\s*/g, " · ").replace(/ {2,}/g, " ") + " · ";
-      // Touch screens: on-screen controls (the game's, from its pad
-      // bindings), and the bar out of the way until ⓘ.
+      if (!opt.sound) soundLabel.textContent = "sound off";
+      // On-screen controls (the game's, from its pad bindings): on touch
+      // screens unless the settings say otherwise, with the bar out of the
+      // way until ⓘ.
       const report = (steer, right, left, buttons) => started && set_touch(steer, right, left, buttons);
-      const layout = JSON.parse(touch_layout(game));
       // Gun games: the mouse or a tap aims and fires (gun.js).
       let gun;
       if (layout.gun) {
@@ -241,9 +370,12 @@
         };
         requestAnimationFrame(track);
       }
-      if (setupTouch(layout, report, toggleBar, gun)) toggleBar();
+      touch = setupTouch(layout, report, toggleBar, gun, opt.touch);
+      if (touch.shown) toggleBar();
+      if (opt.touch && opt.tilt) touch.tilt(true, tiltAsk ?? tiltPermission());
+      tiltAsk = null;
       let link;
-      if (sound) {
+      if (opt.sound) {
         worker = new Worker("../sound-worker.js", { type: "module" });
         worker.onmessage = (e) => {
           const m = e.data;
@@ -252,18 +384,19 @@
           else if (m.type === "error") soundLabel.textContent = "sound worker: " + m.message;
         };
         try {
-          worker.postMessage({ type: "init", pkg, module, game, rom, mix });
+          worker.postMessage({ type: "init", pkg, module, game, rom, mix: opt.mix });
         } catch {
           // Browsers that can't pass a compiled module: the worker fetches it.
-          worker.postMessage({ type: "init", pkg, game, rom, mix });
+          worker.postMessage({ type: "init", pkg, game, rom, mix: opt.mix });
         }
+        connectAudio();
         link = (cycles, bytes, until, ratio) =>
           worker.postMessage({ type: "link", cycles, bytes, until, ratio }, [cycles.buffer, bytes.buffer]);
       }
-      // The geometrizer runs in its own worker too (?geo=local keeps it on
-      // this thread).
+      // The geometrizer runs in its own worker too (the geo setting, or
+      // ?geo=local, keeps it on this thread).
       let geo;
-      if (params.get("geo") !== "local") {
+      if (!opt.geoLocal) {
         const gw = new Worker("../geo-worker.js", { type: "module" });
         gw.onmessage = (e) => {
           const m = e.data;
@@ -274,7 +407,7 @@
             // geometrizer on this thread instead.
             console.error("geometry worker: " + m.message);
             params.set("geo", "local");
-            location.search = params.toString();
+            restart();
           }
         };
         try {
@@ -287,17 +420,16 @@
             ? gw.postMessage({ type: "boot", program: data }, [data.buffer])
             : gw.postMessage({ type: "frame", buffer: data, booted, readPtr, jumps }, [data.buffer, jumps.buffer]);
       }
-      await start(game, document.getElementById("screen"), status, rom, height, aspect, hudEdges, link, geo);
+      await start(game, document.getElementById("screen"), status, rom, opt.height, opt.aspect, opt.hudEdges, link, geo);
       started = true;
+      // For a test driver: what the game started with.
+      window.remodelSettings = { values: run, start: opt };
       // Fade the logo once it's been up for 1.5 s.
       const splash = document.getElementById("splash");
       setTimeout(() => splash.classList.add("gone"), Math.max(0, 1500 - performance.now()));
       splash.addEventListener("transitionend", () => splash.remove());
     } catch (e) {
-      status.textContent = "error: " + (e.message ?? e);
-      ptext.textContent = "Couldn't start: " + (e.message ?? e);
-      ptext.style.color = "#f66";
-      console.error(e);
+      fail(e);
     }
   }
 </script>

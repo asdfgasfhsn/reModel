@@ -8,6 +8,8 @@
 //                                 each frame's sound link bytes, and the
 //                                 resampling ratio (the game's speed)
 //   {type: "port", port}          a MessagePort into the AudioWorklet
+//   {type: "mix", mix}            a new mix, [sound board dB, music dB]
+//                                 (the settings panel)
 // Link messages that arrive while the ROMs load are kept and replayed, so the
 // boards always follow the game from boot. Audio is dropped until there's a
 // port (browsers start audio only after a tap or key press).
@@ -18,6 +20,7 @@ let wasm = null;
 let engine = null;
 let out = null;
 const pending = [];
+let pendingMix = null;
 let spent = 0;
 let fed = 0;
 
@@ -42,12 +45,17 @@ onmessage = async (e) => {
         wasm.rom_files(m.game).map(async (f) => new Uint8Array(await (await fetch(`${m.rom}/${f}`)).arrayBuffer())),
       );
       engine = new wasm.SoundEngine(m.game, chips);
-      if (m.mix) engine.set_mix(m.mix[0], m.mix[1]);
+      const mix = pendingMix ?? m.mix;
+      if (mix) engine.set_mix(mix[0], mix[1]);
       postMessage({ type: "ready" });
       for (const p of pending.splice(0)) feed(p);
     } catch (err) {
       postMessage({ type: "error", message: String(err.message ?? err) });
     }
+  } else if (m.type === "mix") {
+    // Before the engine exists, init's mix is replaced instead.
+    if (engine) engine.set_mix(m.mix[0], m.mix[1]);
+    else pendingMix = m.mix;
   } else if (m.type === "port") {
     out = m.port;
   } else if (m.type === "link") {

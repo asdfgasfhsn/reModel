@@ -70,7 +70,7 @@ make web RECOMP=1   # each game gets its own module with its recompiled code (af
 | `/model2/<set>/shot.png` | | its card's screenshot |
 | `/model2/<set>/pkg/` | | its WebAssembly module (`RECOMP=1`) |
 | `/model2/pkg/` | | the interpreter module the games share (without `RECOMP`, or for a game with no recompiled code) |
-| `/model2/*.js` | `crates/web/*.js` | the workers, the audio worklet and the touch controls, shared |
+| `/model2/*.js` | `crates/web/*.js` | the workers, the audio worklet, the touch controls and the settings panel, shared |
 | `/rom/<set>/` | | the ROM files: not written, the server provides them (see Serving). A clone's page fetches from its parent's folder when its chips are there (`overrevb`'s from `rom/overrev/`): `make web` writes that folder into the page's `remodel-rom` meta tag (`remodel --game <set> rom-folder`) |
 
 The game list holds the supported games whose chips are all in
@@ -172,15 +172,71 @@ restrict by client IP, beware of Docker's IPv6 port forwarding: outside
 clients can appear from Docker's own private addresses, so an allowlist
 of all private ranges also admits them.
 
-**Page options.** These are URL parameters of a game page
-(`/model2/stcc/?aspect=16:9`):
+**Settings.** Picking a game shows a settings panel over the page
+before the game boots (`crates/web/panel.js`, `crates/web/settings.js`;
+plain HTML, no egui). The module and the ROMs download behind it, so Play
+starts at once if they've arrived; the panel's last line shows the
+progress. It offers:
 
-- `aspect=16:9` (default: the window's shape, 4:3 to 21:9);
-- `height=1080` (default: the screen's, up to 1080);
-- `hud=center` (default `edges`);
+- **Display:** render height (384, the native height; 768; 1080; or the
+  screen's, the default: the window's height in device pixels, up to
+  1080), aspect (fit the window, the default, 4:3 to 21:9; 4:3; 16:9) and
+  HUD placement in wide views (at the edges, or centred);
+- **Sound:** on or off, and the effects (sound board) and music levels in
+  dB (defaults +8 and -8, `model2::audio::DEFAULT_MIX`; the game's own
+  level is added to both);
+- **Controls,** read-only for now: each input with its keys, gamepad
+  bindings (Xbox names) and on-screen control, from the manifest
+  (`controls_table`, `touch_layout`); on touch screens, touch controls on
+  or off and, where an analog follows the left stick, tilt steering;
+- **Advanced:** the geometrizer in a worker (the default) or on the
+  page's thread.
+
+Play (or Enter, or a gamepad's Start, or A on Play) starts the game; the
+Play tap also starts the audio and, on iOS, asks for the motion
+permission tilt needs (a gamepad press isn't a user gesture, so after a
+pad's Start the audio waits for a tap or key). On a gamepad the d-pad or
+left stick moves through the panel and changes values. While the panel is
+open, keys go to it, not the game. "Don't show this again for this game"
+boots that game straight away from then on; the ⚙ button on its card in
+the game list (`model2/<set>/#settings`), or on the page before it starts,
+brings the panel back.
+
+In game, ⚙ in the bar (or on touch screens beside ⓘ), or Esc, opens the
+panel and pauses the game (`set_paused`: no frames run or drawn, the
+audio context is suspended, nothing reaches the workers; it resumes from
+the same frame). Resume applies the HUD placement (`set_hud`), the mix
+(a `mix` message to the sound worker) and touch and tilt at once; render
+height, aspect, sound on or off and the geometrizer need a restart, and
+the panel offers "Restart to apply" when one of them changed (it reloads
+the page with `#play`, skipping the panel once).
+
+Settings are kept in `localStorage` (`remodel.settings`): defaults for
+all games, and each game's own, which hold only what differs from those
+defaults. The panel saves for the game it's on; "Use these for all games"
+makes its values the defaults instead, removing that game's own copies.
+The page works without storage (private windows, blocked site data): the
+panel just starts from the built-in defaults every time. Precedence,
+lowest first:
+
+1. the built-in defaults;
+2. the stored defaults for all games;
+3. the game's stored settings;
+4. the page's URL parameters (`/model2/stcc/?aspect=16:9`).
+
+The panel marks a URL override "from link" and doesn't store it, so a
+shared link doesn't change anyone's settings; changing it in the panel
+drops the parameter from the address and saves the new value. The URL
+parameters:
+
+- `height=1080`;
+- `aspect=16:9`;
+- `hud=center` (or `edges`);
 - `sound=0` (don't run the sound boards at all);
-- `sfx=8&music=-8` (the mix in dB: sound board, music board; these are
-  the defaults);
+- `sfx=8&music=-8` (the mix in dB);
+- `touch` or `touch=1` (on-screen controls on any device), `touch=0`
+  (off);
+- `tilt=1` (tilt steering on from the start, where the game steers);
 - `geo=local` (run the geometrizer on the page's thread).
 
 The bar shows the speed, frames drawn per second, and milliseconds per
@@ -206,7 +262,7 @@ once, labelled from the manifest. For `topskatr`:
 | Jump (tail) | X | X | Tail |
 | Select | Q / E | Shoulder buttons | ◀ / ▶ |
 
-F toggles fullscreen and H hides the bar.
+F toggles fullscreen, H hides the bar and Esc opens the settings.
 
 **Light guns** (`hotd`, `bel`; `crates/web/gun.js`). Over the canvas the pointer
 is a crosshair: the mouse aims player 1's gun, the left button fires, the
@@ -233,15 +289,19 @@ Missile) press the gun's missile button instead (`Reload::Button` in the
 manifest).
 
 The touch controls (`crates/web/touch.js`) appear on touch screens, or
-anywhere with `?touch=1`; on touch screens the bar starts hidden, behind
-the ⓘ button. Steering is analog: full lock 70 CSS pixels from where the
+anywhere with the touch setting on (`?touch=1`); while they show, the bar
+starts hidden, behind the ⓘ button. Steering is analog: full lock 70 CSS pixels from where the
 finger went down. Tilt steers by turning the device like a wheel (full
 lock at 30 degrees; iOS asks for motion permission).
 
 **Testing headless.** Headless Chromium here can't keep a WebGPU canvas
 alive, even for a plain JavaScript test page: the device is lost with "A
-valid external Instance reference no longer exists". Test in a real
-browser.
+valid external Instance reference no longer exists". Test the game in a
+real browser. The settings panel and the page around it don't need
+WebGPU: headless Chromium driven over its DevTools protocol, with a stub
+`remodel_web.js` standing in for the module (exports that record their
+calls), can check the panel, storage, URL overrides, pause and the
+options `start` gets; `settings.js` has no DOM and runs in Node.
 
 **Timing without a browser.** Headless Chromium has no WebGPU here, so
 the module also exports `Headless`: the machine with scripted inputs and
@@ -323,29 +383,29 @@ around 1x.
 
 ## Left to do
 
-The native player's menu, save states and remembered settings
-(`docs/play.md`) aren't in the browser build yet. The plan:
+The native player's menu has an HTML counterpart now (the settings panel
+above, with pause). Still to come:
 
-- **Menu: an HTML overlay, not egui.** egui runs on WebGPU, but an
-  overlay in `index.html` keeps the WebAssembly small, and its sliders and
-  text fields work with touch and the on-screen keyboard, where egui's
-  text input is weak. Esc opens it; touch screens get a menu button next
-  to ⓘ. It drives small `App` exports, like `set_touch` and
-  `set_audio_level` do now: pause, mix, HUD placement, exact speed.
-- **Settings** kept in `localStorage`. URL parameters still override
-  them, so links like `?sfx=8&music=-8` keep working.
 - **Save states.** The machine is split three ways: the i960 board on the
   main thread, both sound boards in the sound worker, and (by default) the
-  geometrizer in the geometry worker. A save pauses, asks each worker for
-  its state, and joins the replies with the main thread's into the format
-  `model2::save_session_parts` writes. Each worker handles messages in
-  order, as the native sound thread does, so every part reflects the
-  same moment. Loading does the reverse. Saves (about 1.2 MB each) go in
-  IndexedDB. The format matches the native player's, so a save exported
-  as a download should load in either, though that's not yet tested.
+  geometrizer in the geometry worker. A save pauses (`set_paused`), asks
+  each worker for its state, and joins the replies with the main thread's
+  into the format `model2::save_session_parts` writes. Each worker handles
+  messages in order, as the native sound thread does, so every part
+  reflects the same moment. Loading does the reverse. Saves (about 1.2 MB
+  each) go in IndexedDB, with buttons in the panel. The format matches the
+  native player's, so a save exported as a download should load in either,
+  though that's not yet tested.
 - **Games from a file.** The game list shows the sets the server holds.
   A page that doesn't serve ROMs could take a zip from a file picker
   instead (kept in IndexedDB).
+- **Remapping** keys and gamepad buttons in the panel's Controls section
+  (read-only now), stored with the other settings.
+- **Bezels and controller art** per game: artwork around a 4:3 picture,
+  and drawn touch controls laid out for each game's cabinet, which would
+  also let the touch controls sit where they make sense for the game
+  instead of the generic layout they get now from the pad bindings.
+- Height and aspect changes applied live (reconfiguring the canvas and
+  view) instead of on a restart.
 
-Order: the overlay with settings and pause first, then save states,
-then zips from a file.
+Order: save states, then zips from a file, then remapping, then bezels.
