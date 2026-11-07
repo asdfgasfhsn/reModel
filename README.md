@@ -983,6 +983,10 @@ below (the register cache and the I/O type).
   interpreted it races below real time.
 - *Unconfirmed:* steering and braking were only checked as far as a
   scripted run shows (the unsteered car ends against the wall).
+- *Confirmed (from the raster stream):* the shadow under the player's
+  car in a race is a set of flat dark-grey polygons (palette colour
+  (2, 2, 2)) with the checker bit set (header `80C0`), so they draw as a
+  screen-door half-tone over the track, as `waverunr`'s arch shadow does.
 
 ## What's known about `dynabb97`
 
@@ -1122,6 +1126,10 @@ model as it is, once the i960 returns keep PFP's address bits 4 and 5
   1, so those parts vanished as if the camera had cut them away. It now
   clips to the view volume with a near plane at 10^-6
   (`docs/hw/geometrizer.md`, Remodel status), and they draw whole.
+- *Confirmed (from the raster stream):* fighters' shadows are flat
+  (untextured) black polygons, header `00C0 0000 0000 0000` (palette
+  entry 0), checker bit clear, so they draw solid black, as sent.
+  *Unconfirmed:* how they look on the hardware.
 
 ## What's known about `indy500`
 
@@ -1186,8 +1194,15 @@ earliest 2B game here.
 - *Speed (by running it):* that run plays at 4.2x real time recompiled
   natively (the geometrizer on its thread, slowest frame 9.3 ms), and at
   1.1x interpreted (slowest frame 35 ms).
-- *Unconfirmed:* the dark solid shape under the player's car is drawn as
-  the game sends it (a flat shadow polygon); not compared with hardware.
+- *Confirmed (from the raster stream):* the dark shape under each car is
+  an opaque polygon: header `60DA 0064 0808 0A40`, a translucent
+  128×256 texture whose car silhouette is texel 0 (texel 15 around it
+  transparent), luma table 100 (entry 0 is 1) and grey palette colour
+  (22, 22, 22), so it draws at luma 0, close to black. Its attribute
+  word (`0xA01`), luma word and header carry nothing the car and track
+  polygons don't, and the checker bit is clear, so both renderers draw it
+  solid, as sent. *Unconfirmed:* how it looks on the hardware (no shadow
+  mechanism is visible in the data; `docs/hw/geometrizer.md` §5.4).
 
 ## What's known about `fvipers`
 
@@ -1237,13 +1252,24 @@ Model 2B, with the earliest Sega 2B SHARC programs here.
 - *Speed (by running it):* that run plays at 2.83x real time recompiled
   natively (the geometrizer on its thread, slowest frame 10.1 ms), and at
   0.82x interpreted (slowest frame 34.7 ms).
-- *Unconfirmed:* character shadows draw solid black, on the floor and,
-  in the introductions, as large silhouettes on the walls, as the game
-  sends them; not compared with hardware. At boot, and later from one of
-  several tables in ROM, the game writes a 128-entry 16-bit table to
-  `0x12800000` (a ramp at boot), where the board model has nothing; what it is
-  (perhaps a fog or colour table) is unknown, and frames look right
-  without it.
+- *Confirmed (from the raster stream):* character shadows are opaque
+  black polygons. On the floor they are translucent 32×32 and 32×64
+  textures (headers `6000`/`6008`, palette entry 247 = `0x8000`, black)
+  whose texels are only 14 (the shadow) and 15 (transparent); the large
+  silhouettes on the walls in the introductions use the plain texture
+  `4009 0000 1818` with palette entry 1, black. Nothing in their attribute
+  words, luma words or headers sets them apart, and the checker bit
+  (which the game does set, on the arena fences) is clear, so they draw
+  solid black, as sent. *Unconfirmed:* how they look on the hardware.
+- *Confirmed (from the game's code):* the 128 halfwords at `0x12800000`
+  are written at boot as the ramp (i + 1) / 2 (i960 `0x474`), and
+  otherwise only by a test menu's "TRANS MAP" / "TRANS NUM" items (i960
+  `0x57544`), which copy there one of the seven 128-byte luma tables in
+  ROM at `0x064266E0` (the same tables the game copies to luma RAM at
+  `0x11400000`, i960 `0x12024`). So it is a luma-table-shaped map, left
+  at its boot value in play. *Unconfirmed* what the hardware does with
+  it; the board model has nothing there, and frames look right without
+  it.
 
 ## What's known about `schamp`
 
@@ -1292,9 +1318,16 @@ the dat names it), which isn't supported.
 - *Speed (by running it):* that run plays at 2.71x real time recompiled
   natively (the geometrizer on its thread, slowest frame 10.1 ms), and at
   0.78x interpreted (slowest frame 59.1 ms).
+- *Confirmed (from the raster stream):* character shadows are opaque
+  black polygons that share the characters' own texture header (`4009
+  0000 1A00`, an all-15 64×64 texture that the palette colour tints),
+  with palette entry 1 (`0x8000`, black) and a fixed luma (205); the
+  checker bit is clear and nothing else sets them apart, so they draw
+  solid black, as sent. *Unconfirmed:* how they look on the hardware.
 - *Unconfirmed:* the story's white captions draw with gaps in mid-line
-  ("GET 8 EMERA... S!") while they animate; shadows draw solid black as
-  in `fvipers`; neither compared with hardware.
+  ("GET 8 EMERA... S!", "REVENG...ONIC") while they animate. They are in
+  the tile layer, not 3D (no polygon covers the letters), so the cause is
+  not the shadows; not compared with hardware.
 
 ## What's known about `hotd`
 

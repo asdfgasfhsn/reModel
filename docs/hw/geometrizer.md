@@ -356,7 +356,7 @@ vertices [P1', P0', Pa, Pb] in that order. **M**
 | h0 | 10-11 / 12 | microtexture min-LOD / microtexture enable | L |
 | h0 | 13 | translucent (texel 15 = transparent) | M |
 | h0 | 14 | textured (else flat) | M |
-| h0 | 15 | checker: draw every other pixel (x ^ y parity), used as a screen-door translucency. Applies to flat polygons too: waverunr's arch shadow is a flat checker polygon over the water (**H**, from the stream; drawn solid it hides the water) | M |
+| h0 | 15 | checker: draw every other pixel (x ^ y parity), used as a screen-door translucency. Applies to flat polygons too: waverunr's arch shadow is a flat checker polygon over the water (**H**, from the stream; drawn solid it hides the water); sgt24h's car shadow is flat checker polygons too (**H**, from the stream) | M |
 | h1 | 0-7 | luma table number (× 128 bytes) | M |
 | h2 | 0-5 / 6-10 | X / 32, Y / 32 position in the sheet | M |
 | h2 | 12 | swap banks (level 0 from bank 1) | M |
@@ -384,6 +384,21 @@ Negative values blend in the microtexture. **L** (MAME derived this itself)
      components of the palette colour.
 - **Flat:** lum = polygon_luma >> 2; same lookup. Flat translucent polygons are not drawn
   at all in MAME (**L**).
+- **Shadows** (from the raster streams, **H** for what is sent): no separate shadow mode
+  shows in the data. Games send shadows as ordinary polygons in a dark palette colour,
+  drawn after the floor. A see-through shadow sets the checker bit (h0 bit 15:
+  waverunr, sgt24h), and the renderers honour it. Sega's indy500, fvipers and schamp, and
+  Tecmo's doa, leave it clear, and their shadows carry nothing that other polygons don't:
+  - indy500: a translucent texture, silhouette texel 0, luma table 100, grey;
+  - fvipers: translucent textures of texels 14 and 15, palette black;
+  - schamp: the characters' own texture header, palette black;
+  - doa: flat, palette entry 0.
+
+  The attribute word, luma word, window and command words show nothing either. So these
+  shadows draw solid, as sent. Whether the hardware darkens them some other way (a register
+  outside the stream, for example) is **unconfirmed**. fvipers and schamp write a 128-entry
+  luma-table-shaped map at `0x12800000` that a test menu calls "TRANS MAP", but leave it
+  at its boot ramp in play (`model2b.md`).
 - **Gamma:** MAME then applies a guessed gamma (MH-3: out = max(0, (v − 64)·255/191)). It is
   calibration, not hardware.
 
