@@ -22,7 +22,7 @@ here), and nothing from the games, their cabinets or their flyers.
 generated at 1672x941). Each side panel, up to the plain opening the
 image leaves in its middle, was scaled to 1080 tall (squeezed to at most
 276 wide), put either side of a black 1440x1080 middle and saved as WebP at
-quality 80 with ImageMagick: 55-85 KB each.
+quality 80 with ImageMagick: 55-105 KB each.
 
 ## Prompts
 
@@ -58,5 +58,7 @@ Themes:
 - `dynabb97.webp` (Dynamite Baseball '97): night baseball: the side panels show a low-poly night stadium with towering floodlight banks, a sweeping tiered grandstand, an outfield of faceted green stripes, a white baseball streaking upward with a motion trail, crossed wooden bats, cyan wireframe hills beyond the stadium rim, with chrome trim and white and red neon tube accents along the edges
 - `doa.webp` (Dead or Alive): martial arts tournament: the side panels show a raised low-poly stone fighting ring with glowing blue edges, a low-poly red temple gate, paper lanterns without writing, falling pink blossom petals, orange energy blasts erupting from low-poly floor tiles, cyan wireframe mountains, with lacquered red and gold trim and blue neon tube accents along the edges; no people
 - `indy500.webp` (Indianapolis 500): open-wheel oval speedway racing on a sunny afternoon: the side panels show a steeply banked low-poly oval track turn with a white concrete retaining wall and catch fence, a long tiered grandstand, a generic unbranded open-wheel single-seater race car with exposed wheels, a low nose, front and rear wings and plain solid metallic teal bodywork with no stripes, numbers or decals, its shape simple and invented, not resembling any real car, make or team livery, speeding through the banking with motion streaks, a chequered pattern band, cyan wireframe sky grid above, with chrome trim and blue and orange neon tube accents along the edges. (The first attempt asked for plain solid colour bodywork and drew an all-red single-seater too close to a well-known team's livery, so it was made again in teal.)
+- `fvipers.webp` (Fighting Vipers): caged street-fighting arena on a city rooftop at night: the side panels show tall steel cage fencing with dented riveted metal wall panels, one panel bursting apart in sparks and flying twisted bars, glaring floodlights, low-poly rooftops and water towers, abstract spray-paint splashes with no letters, with diamond-plate steel trim and red and blue neon tube accents along the edges; no people
+- `schamp.webp` (Sonic Championship): cartoon tropical island fighting tournament: the side panels show bright low-poly palm trees, a tumbling waterfall, faceted turquoise sea, the corner posts and thick red and blue ropes of a boxing ring, floating faceted crystal gems in bright colours, puffy white clouds and cartoon starbursts, with glossy yellow and red trim and blue neon tube accents along the edges; no people, no animals, no gold rings, no checkerboard patterns
 - `overrevb` (Over Rev, Model 2B) has no file of its own: a clone (a
   manifest with a `parent`) uses its parent's bezel, as with posters.
