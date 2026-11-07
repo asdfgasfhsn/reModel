@@ -1025,6 +1025,11 @@ pub async fn start(
     let roms = romset::RomSet::from_chips(game, chips, false).map_err(|e| err(&e))?;
     let mut machine = model2::Machine::new(&roms);
     let remote_geo = geo.is_some();
+    if !remote_geo {
+        // On the page's thread, the native geometrizer where it implements
+        // the program (`?geo=sharc` is for the worker).
+        machine.bus.geo.set_mode(model2::geo::GeoMode::Native);
+    }
     let geo_in_flight = Rc::new(Cell::new(0));
     if let Some(post) = geo {
         let in_flight = geo_in_flight.clone();

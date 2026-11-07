@@ -77,7 +77,9 @@ export function clean(key, v) {
       return Number.isFinite(n) ? Math.min(24, Math.max(-40, n)) : undefined;
     }
     case "geo":
-      return v === "worker" || v === "local" || v === "native" ? v : undefined;
+      // "native" was the opt-in before the native geometrizer became the default.
+      if (v === "native") return "worker";
+      return v === "worker" || v === "local" || v === "sharc" ? v : undefined;
     case "controls":
       return typeof v === "string" && v.length <= 16384 ? v : undefined;
   }
@@ -99,8 +101,10 @@ function cleanAll(o) {
 /// The settings a page's URL parameters give (`?height=1080&sfx=8`...):
 /// `height`, `aspect=16:9`, `hud=center`, `bezel=0`, `sound=0`, `sfx` and
 /// `music` in dB, `touch` (`touch` or `touch=1` on, `touch=0` off), `tilt=1`,
-/// `geo=local` (the geometrizer on the page's thread) or `geo=native` (in
-/// its worker, the native implementation where there is one: 2B games).
+/// `geo=local` (the geometrizer on the page's thread) or `geo=sharc` (in its
+/// worker, but the game's own program on the SHARC even where the native
+/// implementation has it: 2B games; `geo=native` is the default, kept for
+/// old links).
 export function fromParams(params) {
   const raw = {};
   const flag = (k) => params.get(k) !== "0" && params.get(k) !== "off" && params.get(k) !== "false";
@@ -113,7 +117,7 @@ export function fromParams(params) {
   if (params.has("music")) raw.music = params.get("music");
   if (params.has("touch")) raw.touch = flag("touch");
   if (params.has("tilt")) raw.tilt = flag("tilt");
-  if (params.has("geo")) raw.geo = ["local", "native"].includes(params.get("geo")) ? params.get("geo") : "worker";
+  if (params.has("geo")) raw.geo = ["local", "sharc"].includes(params.get("geo")) ? params.get("geo") : "worker";
   return cleanAll(raw);
 }
 
@@ -221,7 +225,7 @@ export function effective(values, env) {
     touch: values.touch,
     tilt: values.tilt,
     geoLocal: values.geo === "local",
-    geoNative: values.geo === "native",
+    geoNative: values.geo !== "sharc",
   };
 }
 

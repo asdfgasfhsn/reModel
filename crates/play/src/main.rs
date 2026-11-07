@@ -58,9 +58,10 @@ usage: remodel-play [options]
                      window (default on)
   --interp           run the i960 on the interpreter even if this build
                      has recompiled code
-  --geo sharc|native Model 2B geometrizer: the game's program on the SHARC
-                     (default) or the native implementation, where there
-                     is one for the program (docs/hw/geometrizer-2b.md)
+  --geo sharc|native Model 2B geometrizer: the native implementation where
+                     there is one for the program (the default;
+                     docs/hw/geometrizer-2b.md), or the game's program on
+                     the SHARC
   --exact            run at the arcade's exact 57.524 frames per second
                      (default: one frame per display refresh when the
                      refresh is 60 or 120 Hz, which is 4.3% fast but smooth)
@@ -106,7 +107,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
     let mut o = Options {
         sound: true,
         interp: false,
-        geo: model2::geo::GeoMode::Sharc,
+        geo: model2::geo::GeoMode::Native,
         seconds: None,
         input: None,
         game: None,

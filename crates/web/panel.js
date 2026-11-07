@@ -182,7 +182,7 @@ export function createPanel(opts) {
     choice("geo", "Geometrizer", () => [
       ["worker", "In a worker"],
       ["local", "On the page's thread"],
-      ["native", "Native, in a worker (Model 2B; experimental)"],
+      ["sharc", "In a worker, on the game's SHARC program (Model 2B reference)"],
     ]));
 
   const forAll = el("input", { type: "checkbox", checked: !!opts.forAll });
