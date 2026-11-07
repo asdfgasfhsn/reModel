@@ -19,7 +19,9 @@
 //! The logo shows for two seconds at startup, fading out over the game
 //! booting underneath (`splash`). Esc opens the menu (and pauses): save
 //! states, sound mix, display, game and ROM folder. Settings persist (`settings`).
+//! Beside a 4:3 picture in a wider window, the game's bezel (`bezel`).
 
+mod bezel;
 mod controls;
 mod menu;
 mod settings;
@@ -30,7 +32,7 @@ use gilrs::Gilrs;
 use settings::Settings;
 use sound::Sound;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use winit::application::ApplicationHandler;
@@ -50,6 +52,10 @@ usage: remodel-play [options]
   --no-sound         don't run the sound boards
   --hud center|edges wide windows: keep the HUD centred, or move each HUD
                      element to the nearest screen edge (default edges)
+  --aspect fit|4:3   fit the window, drawing the game wider than its frame
+                     (the default), or keep its 4:3 picture
+  --bezel on|off     the game's bezel beside a 4:3 picture in a wider
+                     window (default on)
   --interp           run the i960 on the interpreter even if this build
                      has recompiled code
   --exact            run at the arcade's exact 57.524 frames per second
@@ -60,6 +66,8 @@ usage: remodel-play [options]
   --no-splash        don't show the logo at startup
   --input SCRIPT     scripted inputs, as for `remodel run` (for timing runs),
                      e.g. coin-start (the game's own coin-up and start)
+  --shot FILE        with --seconds: at the end, draw the last frame as a
+                     1920x1080 window would show it (bezel included) to a PNG
 
 Options given here are remembered (the game once it starts), as are
 changes made in the menu.
@@ -86,10 +94,12 @@ struct Options {
     /// `--game`: remembered only once it starts (`Play::start_game`).
     game: Option<String>,
     splash: bool,
+    shot: Option<PathBuf>,
 }
 
 fn options(s: &mut Settings) -> Result<Options, String> {
-    let mut o = Options { sound: true, interp: false, seconds: None, input: None, game: None, splash: true };
+    let mut o =
+        Options { sound: true, interp: false, seconds: None, input: None, game: None, splash: true, shot: None };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{a} needs a value"));
@@ -103,6 +113,15 @@ fn options(s: &mut Settings) -> Result<Options, String> {
             }
             "--no-sound" => o.sound = false,
             "--hud" => s.hud_edges = value()? != "center",
+            "--aspect" => {
+                s.wide = match value()?.as_str() {
+                    "fit" => true,
+                    "4:3" => false,
+                    _ => return Err("--aspect wants fit or 4:3".into()),
+                }
+            }
+            "--bezel" => s.bezel = value()? != "off",
+            "--shot" => o.shot = Some(value()?.into()),
             "--interp" => o.interp = true,
             "--no-splash" => o.splash = false,
             "--fullscreen" => s.fullscreen = true,
@@ -209,6 +228,9 @@ struct Play {
     unsupported: usize,
     menu: menu::Menu,
     splash: splash::Splash,
+    /// The game's bezel art: decoded when the game starts, a texture once
+    /// it's first drawn.
+    bezel: Option<Bezel>,
     gpu: Option<Gpu>,
     keys: HashSet<KeyCode>,
     gilrs: Option<Gilrs>,
@@ -234,6 +256,24 @@ struct Play {
     behind: bool,
     stats: Stats,
     started: Instant,
+}
+
+struct Bezel {
+    size: [usize; 2],
+    image: Option<egui::ColorImage>,
+    texture: Option<egui::TextureHandle>,
+}
+
+impl Bezel {
+    /// Paint it at `rect` beside the picture (left and right edges).
+    fn paint(&mut self, ctx: &egui::Context, rect: [f32; 4], pic: (f32, f32), window_w: f32, scale: f32) {
+        if let Some(image) = self.image.take() {
+            self.texture = Some(ctx.load_texture("bezel", image, egui::TextureOptions::LINEAR));
+        }
+        if let Some(tex) = &self.texture {
+            bezel::paint(ctx, tex, rect, pic, window_w, scale);
+        }
+    }
 }
 
 /// Host time one game frame may take: a refresh when following the
@@ -301,6 +341,8 @@ impl Play {
         });
         match started {
             Ok(s) => {
+                self.bezel =
+                    bezel::image(s.game).map(|image| Bezel { size: image.size, image: Some(image), texture: None });
                 self.settings.game = set.to_string();
                 self.settings.save();
                 // A crosshair pointer over gun games.
@@ -378,7 +420,7 @@ impl Play {
                 g.window.set_fullscreen(new.fullscreen.then_some(Fullscreen::Borderless(None)));
             }
         }
-        let refit = old.hud_edges != new.hud_edges;
+        let refit = old.hud_edges != new.hud_edges || old.wide != new.wide;
         self.settings.save();
         self.applied = self.settings.clone();
         if refit {
@@ -386,17 +428,60 @@ impl Play {
         }
     }
 
-    /// Fit a view into the window: full size between `ASPECTS`, else
-    /// letterboxed. Returns it and its top-left corner.
+    /// Fit a view into the window: full size between `ASPECTS` (just 4:3
+    /// unless `wide`), else letterboxed. Returns it and its top-left corner.
     fn fit(&self, w: u32, h: u32) -> (model2::video::View, (u32, u32)) {
         let aspect = w as f32 / h.max(1) as f32;
-        let a = aspect.clamp(ASPECTS.0, ASPECTS.1);
+        let a = if self.settings.wide { aspect.clamp(ASPECTS.0, ASPECTS.1) } else { ASPECTS.0 };
         let vh = if a < aspect { h } else { (w as f32 / a) as u32 };
         let hud = if self.settings.hud_edges { model2::video::Hud::Edges } else { model2::video::Hud::Center };
         let mut view = model2::video::View::new(vh.max(1) as usize, a, hud);
         view.hud_windows = self.session.as_ref().map_or(0, |s| s.game.hud_windows.iter().fold(0, |m, &w| m | 1 << w));
         let origin = ((w - (view.width as u32).min(w)) / 2, (h - (view.height as u32).min(h)) / 2);
         (view, origin)
+    }
+
+    /// Where the bezel goes in a window `w` pixels wide showing `view` at
+    /// `origin` (None: not shown), and the picture's left and right edges.
+    fn bezel_at(&self, view: &model2::video::View, origin: (u32, u32), w: u32) -> Option<([f32; 4], (f32, f32))> {
+        let b = self.bezel.as_ref().filter(|_| self.settings.bezel && self.session.is_some())?;
+        let pic = (origin.0, origin.1, view.width as u32, view.height as u32);
+        let rect = bezel::layout(w, pic, view.pad, b.size)?;
+        Some((rect, (origin.0 as f32, (origin.0 as usize + view.width) as f32)))
+    }
+
+    /// `--shot`: the game's current frame as a 1920x1080 window shows it,
+    /// bezel included, to a PNG.
+    fn shot(&mut self, path: &Path) -> Result<(), String> {
+        let (w, h) = (1920, 1080);
+        let (view, origin) = self.fit(w, h);
+        let at = self.bezel_at(&view, origin, w);
+        let (Some(g), Some(s)) = (&mut self.gpu, &mut self.session) else { return Err("no game in a window".into()) };
+        let format = g.config.format;
+        let texture = g.renderer.device().create_texture(&wgpu::TextureDescriptor {
+            label: Some("shot"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let target = texture.create_view(&Default::default());
+        g.renderer.present_bus(&mut s.machine.bus, None, &view, &target, format, origin);
+        let bezel = &mut self.bezel;
+        draw_overlay(g, &target, false, [w, h], |ctx| {
+            if let (Some(b), Some((rect, pic))) = (bezel.as_mut(), at) {
+                b.paint(ctx, rect, pic, w as f32, ctx.pixels_per_point());
+            }
+        });
+        let mut rgba = g.renderer.read_texture(&texture, w, h);
+        if format == wgpu::TextureFormat::Bgra8Unorm {
+            rgba.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p.swap(0, 2));
+        }
+        std::fs::write(path, png::encode_rgba(w as usize, h as usize, &rgba))
+            .map_err(|e| format!("{}: {e}", path.display()))
     }
 
     fn refit(&mut self) {
@@ -576,6 +661,7 @@ impl Play {
         }
         let slots = if self.menu.open { self.slot_times() } else { Vec::new() };
         let crosshair = if self.menu.visible() { None } else { self.stick_crosshair() };
+        let bezel_at = self.gpu.as_ref().and_then(|g| self.bezel_at(&g.view, g.origin, g.config.width));
         let Some(g) = &mut self.gpu else { return };
         let frame = match g.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
@@ -603,16 +689,26 @@ impl Play {
             }
         }
         let mut actions = Vec::new();
-        if self.menu.visible() || self.session.is_none() || self.splash.active() || crosshair.is_some() {
+        if self.menu.visible()
+            || self.session.is_none()
+            || self.splash.active()
+            || crosshair.is_some()
+            || bezel_at.is_some()
+        {
             let view = menu::View {
                 playing: self.session.as_ref().map(|s| s.game.title),
                 games: &self.games,
                 unsupported: self.unsupported,
                 slots: &slots,
             };
-            let (menu, settings, splash) = (&mut self.menu, &mut self.settings, &mut self.splash);
+            let (menu, settings, splash, bezel) =
+                (&mut self.menu, &mut self.settings, &mut self.splash, &mut self.bezel);
             let scale = g.window.scale_factor() as f32;
-            actions = draw_overlay(g, &target, self.session.is_none(), |ctx| {
+            let size = [g.config.width, g.config.height];
+            actions = draw_overlay(g, &target, self.session.is_none(), size, |ctx| {
+                if let (Some(b), Some((rect, pic))) = (bezel.as_mut(), bezel_at) {
+                    b.paint(ctx, rect, pic, size[0] as f32, scale);
+                }
                 if let Some((x, y)) = crosshair {
                     draw_crosshair(ctx, egui::pos2(x / scale, y / scale));
                 }
@@ -712,6 +808,12 @@ impl Play {
         if !self.opts.seconds.is_some_and(|s| self.started.elapsed().as_secs_f64() >= s) {
             return false;
         }
+        if let Some(path) = self.opts.shot.clone() {
+            match self.shot(&path) {
+                Ok(()) => println!("shot          {}", path.display()),
+                Err(e) => eprintln!("--shot: {e}"),
+            }
+        }
         if let Some(s) = &mut self.session {
             let hash = s.machine.bus.state_hash();
             println!("frames        {}, state hash {hash:016x}", s.machine.frames);
@@ -732,8 +834,6 @@ impl Play {
     }
 }
 
-/// Draw egui over `target`, building the UI with `ui`; returns what it
-/// returned. `clear` clears to black first (no game under it).
 /// A crosshair at `at` (points), over everything.
 fn draw_crosshair(ctx: &egui::Context, at: egui::Pos2) {
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("crosshair")));
@@ -747,14 +847,21 @@ fn draw_crosshair(ctx: &egui::Context, at: egui::Pos2) {
     }
 }
 
+/// Draw egui over `target` (`size` pixels), building the UI with `ui`;
+/// returns what it returned. `clear` clears to black first (no game under
+/// it).
 fn draw_overlay<T: Default>(
     g: &mut Gpu,
     target: &wgpu::TextureView,
     clear: bool,
+    size: [u32; 2],
     mut ui: impl FnMut(&egui::Context) -> T,
 ) -> T {
     let o = &mut g.overlay;
-    let raw = o.state.take_egui_input(&g.window);
+    let mut raw = o.state.take_egui_input(&g.window);
+    let ppp = g.window.scale_factor() as f32;
+    raw.screen_rect =
+        Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size[0] as f32, size[1] as f32) / ppp));
     let mut result = T::default();
     let out = o.ctx.run_ui(raw, |ui_root| result = ui(ui_root.ctx()));
     o.state.handle_platform_output(&g.window, out.platform_output);
@@ -765,10 +872,7 @@ fn draw_overlay<T: Default>(
             o.renderer.update_texture(device, queue, *id, delta);
         }
     }
-    let screen = egui_wgpu::ScreenDescriptor {
-        size_in_pixels: [g.config.width, g.config.height],
-        pixels_per_point: out.pixels_per_point,
-    };
+    let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: size, pixels_per_point: out.pixels_per_point };
     let mut enc = device.create_command_encoder(&Default::default());
     let extra = o.renderer.update_buffers(device, queue, &mut enc, &jobs, &screen);
     {
@@ -966,6 +1070,7 @@ fn main() {
         unsupported: 0,
         menu: menu::Menu::default(),
         splash,
+        bezel: None,
         gpu: None,
         keys: HashSet::new(),
         gilrs,

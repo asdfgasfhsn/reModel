@@ -14,7 +14,7 @@
 export const MIX = [8, -8];
 
 /// Every setting, in panel order.
-export const KEYS = ["height", "aspect", "hud", "sound", "sfx", "music", "touch", "tilt", "geo"];
+export const KEYS = ["height", "aspect", "hud", "bezel", "sound", "sfx", "music", "touch", "tilt", "geo"];
 /// Settings a running game can't change: they apply on a restart.
 export const RESTART = ["height", "aspect", "sound", "geo"];
 
@@ -28,6 +28,7 @@ export function builtin(env = {}) {
     height: "auto",
     aspect: "auto",
     hud: "edges",
+    bezel: true,
     sound: true,
     sfx: MIX[0],
     music: MIX[1],
@@ -57,6 +58,7 @@ export function clean(key, v) {
     }
     case "hud":
       return v === "edges" || v === "center" ? v : undefined;
+    case "bezel":
     case "sound":
     case "touch":
     case "tilt":
@@ -85,8 +87,8 @@ function cleanAll(o) {
 }
 
 /// The settings a page's URL parameters give (`?height=1080&sfx=8`...):
-/// `height`, `aspect=16:9`, `hud=center`, `sound=0`, `sfx` and `music` in
-/// dB, `touch` (`touch` or `touch=1` on, `touch=0` off), `tilt=1`,
+/// `height`, `aspect=16:9`, `hud=center`, `bezel=0`, `sound=0`, `sfx` and
+/// `music` in dB, `touch` (`touch` or `touch=1` on, `touch=0` off), `tilt=1`,
 /// `geo=local`.
 export function fromParams(params) {
   const raw = {};
@@ -94,6 +96,7 @@ export function fromParams(params) {
   if (params.has("height")) raw.height = params.get("height");
   if (params.has("aspect")) raw.aspect = params.get("aspect");
   if (params.has("hud")) raw.hud = params.get("hud");
+  if (params.has("bezel")) raw.bezel = flag("bezel");
   if (params.has("sound")) raw.sound = flag("sound");
   if (params.has("sfx")) raw.sfx = params.get("sfx");
   if (params.has("music")) raw.music = params.get("music");
@@ -193,12 +196,13 @@ export function windowAspect(env) {
 }
 
 /// What the page starts the game with: `{height, aspect (width / height),
-/// hudEdges, sound, mix: [sfx, music], touch, tilt, geoLocal}`.
+/// hudEdges, bezel, sound, mix: [sfx, music], touch, tilt, geoLocal}`.
 export function effective(values, env) {
   return {
     height: values.height === "auto" ? screenHeight(env) : values.height,
     aspect: values.aspect === "auto" ? windowAspect(env) : ratio(values.aspect),
     hudEdges: values.hud !== "center",
+    bezel: values.bezel,
     sound: values.sound,
     mix: [values.sfx, values.music],
     touch: values.touch,
@@ -212,3 +216,17 @@ export function differ(a, b, keys = KEYS) {
   return keys.filter((k) => a[k] !== b[k]);
 }
 
+
+/// Where the game's bezel goes (docs/web.md, "Bezels"): `{left, top, width,
+/// height}` in CSS pixels, or null when it doesn't show. It shows with the
+/// bezel setting `on` beside a 4:3 picture (`aspect`, the game's width /
+/// height) in a window wider than that; a wide view draws the game there
+/// instead, and a window 4:3 or taller has no room. The art (`artWidth` x
+/// `artHeight`, its middle 4:3 plain) is as tall as the picture, which
+/// fills the window's height, and centred on it.
+export function bezelRect(env, aspect, on, artWidth, artHeight) {
+  const { innerWidth: w, innerHeight: h } = env;
+  if (!on || !(artHeight > 0) || Math.abs(aspect - 4 / 3) > 0.005 || w <= (h * 4) / 3 + 1) return null;
+  const width = (h * artWidth) / artHeight;
+  return { left: (w - width) / 2, top: 0, width, height: h };
+}

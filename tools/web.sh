@@ -105,6 +105,10 @@ for g in $games; do
     [ -f "assets/posters/$g.webp" ] || [ -f "assets/posters/$parent.webp" ] ||
         echo "web: warning: no poster for $g (assets/posters/README.md); using the placeholder" >&2
 done
+# Bezels beside a 4:3 picture (assets/bezels/README.md); a clone uses its
+# parent's, as with posters.
+mkdir -p "$WEB_OUT/bezels"
+cp assets/bezels/*.webp "$WEB_OUT/bezels/"
 # Left from the single-page layout (before model2/).
 rm -rf "$WEB_OUT/pkg" "$WEB_OUT/audio-worklet.js" "$WEB_OUT/sound-worker.js" "$WEB_OUT/geo-worker.js" "$WEB_OUT/touch.js" "$WEB_OUT/gun.js" "$WEB_OUT/settings.js" "$WEB_OUT/panel.js"
 $remodel --rom "$ROM" web-index "$WEB_OUT" >/dev/null

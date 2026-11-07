@@ -13,6 +13,10 @@
   :root { color-scheme: dark; }
   html, body { margin: 0; height: 100%; background: #000; color: #ccc; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
   canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; object-fit: contain; display: block; }
+  /* The game's bezel, behind the canvas: it shows where the canvas is
+     letterboxed beside a 4:3 picture (placed by placeBezel). */
+  #bezel { position: fixed; pointer-events: none; user-select: none; }
+  #bezel[hidden] { display: none; }
   /* The logo while loading, fading out as the game starts. */
   #splash { position: fixed; inset: 0; background: #000; display: flex; flex-direction: column; align-items: center;
     justify-content: center; gap: 18px; pointer-events: none; transition: opacity 0.5s; }
@@ -70,6 +74,7 @@
 </style>
 </head>
 <body>
+<img id="bezel" alt="" hidden>
 <canvas id="screen"></canvas>
 <div id="splash"><img src="../../reModel-logo.png" alt="reModel">
   <div id="progress"><div id="fill"></div></div><div id="ptext">loading…</div></div>
@@ -141,11 +146,15 @@
     location.reload();
   };
 
-  // The title, from the game list's data (the module isn't loaded yet).
+  // The title and the bezel art, from the game list's data (the module
+  // isn't loaded yet).
   let title = game;
+  let bezelUrl = null;
   try {
     const r = await fetch("../../games.json");
-    title = (await r.json()).games.find((g) => g.id === game)?.title ?? game;
+    const entry = (await r.json()).games.find((g) => g.id === game);
+    title = entry?.title ?? game;
+    if (entry?.bezel) bezelUrl = new URL(`../../${entry.bezel}`, location.href).href;
   } catch {}
 
   // The settings the game is running with (null before it starts), and
@@ -155,6 +164,27 @@
   let touch = null;
   let worker = null;
   let tiltAsk = null;
+  // The game's bezel (settings.js `bezelRect`): with the bezel setting on,
+  // beside a 4:3 picture (the aspect the game started with) in a wider
+  // window; loaded the first time it shows.
+  const bezel = document.getElementById("bezel");
+  let startAspect = null;
+  function placeBezel() {
+    // (Whether it shows doesn't depend on the art's size.)
+    const on = !!(run?.bezel && bezelUrl && startAspect !== null && S.bezelRect(env(), startAspect, true, 16, 9));
+    if (on && !bezel.getAttribute("src")) {
+      bezel.addEventListener("load", placeBezel, { once: true });
+      bezel.src = bezelUrl;
+      return;
+    }
+    const r = on && bezel.naturalWidth
+      ? S.bezelRect(env(), startAspect, true, bezel.naturalWidth, bezel.naturalHeight) : null;
+    bezel.hidden = !r;
+    if (r) {
+      for (const k of ["left", "top", "width", "height"]) bezel.style[k] = `${r[k]}px`;
+    }
+  }
+  addEventListener("resize", placeBezel);
   const panel = createPanel({ title, back: "../../", env: env(), base, values, source, skip: !!store.skip[game],
     onGesture(action, v) {
       // Still in the tap or key press: audio and the motion permission.
@@ -211,7 +241,9 @@
     }
     if (touch && values.tilt !== before.tilt) touch.tilt(values.tilt, tiltAsk ?? tiltPermission());
     tiltAsk = null;
-    run = { ...run, hud: values.hud, sfx: values.sfx, music: values.music, touch: values.touch, tilt: values.tilt };
+    run = { ...run, hud: values.hud, bezel: values.bezel, sfx: values.sfx, music: values.music, touch: values.touch,
+      tilt: values.tilt };
+    placeBezel();
     set_paused(false);
   }
   document.getElementById("bar-gear").addEventListener("click", openInGame);
@@ -422,6 +454,8 @@
       }
       await start(game, document.getElementById("screen"), status, rom, opt.height, opt.aspect, opt.hudEdges, link, geo);
       started = true;
+      startAspect = opt.aspect;
+      placeBezel();
       // For a test driver: what the game started with.
       window.remodelSettings = { values: run, start: opt };
       // Fade the logo once it's been up for 1.5 s.

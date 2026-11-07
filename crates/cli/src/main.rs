@@ -892,8 +892,9 @@ fn json_str(s: &str) -> String {
 
 /// The browser build's game list (`web-index DIR`): for each game its
 /// title, year, board, page, poster (`DIR/posters/<set>.webp`, else its
-/// parent set's, else `posters/placeholder.webp`, if there), screenshot (if
-/// `DIR/model2/<set>/shot.png` exists) and controls summary.
+/// parent set's, else `posters/placeholder.webp`, if there), bezel
+/// (`DIR/bezels/<set>.webp`, else its parent set's, else null), screenshot
+/// (if `DIR/model2/<set>/shot.png` exists) and controls summary.
 fn games_json(games: &[&romset::Game], dir: &Path) -> String {
     let mut out = String::from("{\"games\": [");
     for (i, g) in games.iter().enumerate() {
@@ -907,6 +908,11 @@ fn games_json(games: &[&romset::Game], dir: &Path) -> String {
             .chain(["posters/placeholder.webp".into()])
             .find(|p| dir.join(p).is_file())
             .map_or("null".into(), |p| json_str(&p));
+        let bezel = std::iter::once(g.id)
+            .chain(g.parent)
+            .map(|set| format!("bezels/{set}.webp"))
+            .find(|p| dir.join(p).is_file())
+            .map_or("null".into(), |p| json_str(&p));
         let controls: Vec<String> = g
             .controls
             .summary()
@@ -918,7 +924,7 @@ fn games_json(games: &[&romset::Game], dir: &Path) -> String {
             .collect();
         let _ = write!(
             out,
-            "{}\n  {{\"id\": {}, \"title\": {}, \"year\": {}, \"board\": {}, \"page\": {}, \"poster\": {}, \"shot\": {}, \"controls\": [{}]}}",
+            "{}\n  {{\"id\": {}, \"title\": {}, \"year\": {}, \"board\": {}, \"page\": {}, \"poster\": {}, \"bezel\": {}, \"shot\": {}, \"controls\": [{}]}}",
             if i > 0 { "," } else { "" },
             json_str(g.id),
             json_str(g.title),
@@ -926,6 +932,7 @@ fn games_json(games: &[&romset::Game], dir: &Path) -> String {
             json_str(g.board.name()),
             json_str(&page),
             poster,
+            bezel,
             shot,
             controls.join(", ")
         );

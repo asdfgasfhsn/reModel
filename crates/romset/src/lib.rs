@@ -177,7 +177,8 @@ pub struct Game {
     pub drive_board: Option<DriveBoard>,
     /// The set this one is a clone of (another revision of the same game):
     /// its chips are also looked for in the parent's folder or zip, as a
-    /// merged MAME set keeps them, and it shares the parent's poster.
+    /// merged MAME set keeps them, and it shares the parent's poster and
+    /// bezel.
     pub parent: Option<&'static str>,
     /// Settings the game keeps in its battery-backed SRAM (`0x1D00000`)
     /// and never initialises itself, as (offset, bytes): what an operator

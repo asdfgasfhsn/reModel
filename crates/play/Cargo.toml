@@ -22,6 +22,7 @@ pollster = "1.0.1"
 winit = "0.30"
 cpal = "0.18.2"
 gilrs = "0.11.2"
+image-webp = "0.2"
 egui = { version = "0.37.0", features = ["default_fonts"] }
 egui-wgpu = "0.37.0"
 egui-winit = { version = "0.37.0", default-features = false, features = ["clipboard", "links", "wayland", "x11"] }

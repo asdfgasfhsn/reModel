@@ -124,6 +124,12 @@ impl Menu {
                 ui.separator();
                 ui.strong("Display");
                 ui.horizontal(|ui| {
+                    ui.label("Aspect:");
+                    ui.radio_value(&mut settings.wide, true, "fit the window");
+                    ui.radio_value(&mut settings.wide, false, "4:3");
+                });
+                ui.checkbox(&mut settings.bezel, "Bezel  (beside a 4:3 picture in a wider window)");
+                ui.horizontal(|ui| {
                     ui.label("HUD on wide screens:");
                     ui.radio_value(&mut settings.hud_edges, true, "at the edges");
                     ui.radio_value(&mut settings.hud_edges, false, "centred");

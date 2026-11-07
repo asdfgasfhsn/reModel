@@ -224,7 +224,9 @@ CALIBRATION in the test menu changes that.
   soundtrack voice that's playing (`docs/mods.md`).
 - **Sound**: the effects (sound board) and music (DSB2 or DSB1) levels in dB; the
   default 8:-8 was set by ear (`docs/hw/sound.md`).
-- **Display**: where the HUD goes on wide windows, and exact arcade speed
+- **Display**: the aspect (fit the window, the default, drawing the game
+  wider than its frame from 4:3 to 32:9; or 4:3, `--aspect 4:3`), the
+  bezel (below), where the HUD goes on wide windows, and exact arcade speed
   (57.524 frames per second) against the default of one game frame per
   display refresh at 60 or 120 Hz, which is 4.3% fast but smooth.
   **Below full speed** (a game frame taking longer than a refresh, as
@@ -259,6 +261,24 @@ an attract mode screenshot, its year and controls, grouped by board) could
 become the player's start screen in place of the Game page of the menu.
 The cards come from `remodel web-index` and `remodel shot`, which work from
 the manifests alone.
+
+## Bezels
+
+With the 4:3 aspect in a wider window, the game's bezel fills the sides:
+original cabinet-style artwork, one per game (`assets/bezels/README.md`;
+a clone uses its parent's), as tall as the picture and centred on it. It's
+on by default (Display, "Bezel", or `--bezel off`). A wide view draws the
+game there instead, so it shows no bezel, nor does a window 4:3 or taller.
+Every bezel is built into the binary (`crates/play/build.rs` embeds each
+`assets/bezels/<set>.webp`, decoded with `image-webp`) and drawn with egui
+under the menu (`crates/play/src/bezel.rs`). It's only drawn: emulation,
+the HUD and the light guns don't see it, and the area beside the picture
+still counts as off the screen.
+
+`--shot FILE` (with `--seconds`) draws the last frame as a 1920x1080 window
+would show it, bezel included, to a PNG: for checking without looking at
+the window, e.g.
+`remodel-play --game hotd --aspect 4:3 --no-sound --seconds 20 --input coin-start --shot out/hotd.png`.
 
 ## Files
 

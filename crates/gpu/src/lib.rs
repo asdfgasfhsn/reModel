@@ -370,6 +370,12 @@ impl Renderer {
         (0..h as usize).flat_map(|y| data[y * row as usize..y * row as usize + w as usize * 4].to_vec()).collect()
     }
 
+    /// Read back a `w`x`h` texture with `COPY_SRC` usage (4 bytes a pixel,
+    /// in its own channel order). Blocks: native only.
+    pub fn read_texture(&self, texture: &wgpu::Texture, w: u32, h: u32) -> Vec<u8> {
+        self.read_back(self.device.create_command_encoder(&Default::default()), texture, w, h)
+    }
+
     /// Draw `placed` (from `model2::raster::place` over `polys`) at the size
     /// of `view` and read it back: RGB and a coverage mask, like the
     /// software rasteriser's `draw_view`. Blocks: native only.

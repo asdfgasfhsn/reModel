@@ -146,7 +146,8 @@ export function createPanel(opts) {
       [[384, "384 (native)"], [768, "768"], [1080, "1080"], ["auto", `Screen's (${height})`]], (v) => String(v))),
     choice("aspect", "Aspect", () => withValue("aspect",
       [["auto", `Fit window (${fit.toFixed(2)}:1)`], ["4:3", "4:3"], ["16:9", "16:9"]], (v) => v)),
-    choice("hud", "HUD", () => [["edges", "At the edges"], ["center", "Centred"]], "in wide views"));
+    choice("hud", "HUD", () => [["edges", "At the edges"], ["center", "Centred"]], "in wide views"),
+    onOff("bezel", "Bezel", "beside a 4:3 picture in a wider window"));
   const sound = el("section", {}, el("h3", { textContent: "Sound" }),
     onOff("sound", "Sound"), slider("sfx", "Effects"), slider("music", "Music"));
   // Controls: read-only, filled in once the game's module is loaded.

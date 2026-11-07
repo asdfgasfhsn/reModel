@@ -64,6 +64,7 @@ make web RECOMP=1   # each game gets its own module with its recompiled code (af
 |---|---|---|
 | `/` | `index.html` (`crates/web/index.html`) | the game list: no WebAssembly, just `games.json`, the logo, posters and screenshots |
 | `/posters/<set>.webp` | `assets/posters/` | the cards' posters (a clone shows its parent's; `placeholder.webp` for a game without one) |
+| `/bezels/<set>.webp` | `assets/bezels/` | the bezels beside a 4:3 picture (`games.json` names each game's: its own, else its parent's) |
 | `/LICENSE`, `/THIRD-PARTY-NOTICES.txt` | `LICENSE`, `tools/notices.py` | the licence and the crates linked into the module, linked from the landing page's footer |
 | `/games.json` | | the games to list (`remodel web-index`) |
 | `/model2/<set>/` | `model2/<set>/index.html` (`crates/web/game.html`) | the game's page |
@@ -112,7 +113,8 @@ first screenshots).
 in `crates/romset/src/games/` (with its `year` and `attract_frame`), its
 chips in `rom/<set>/`, and `make web` lists it. Make its poster too,
 `assets/posters/<set>.webp` (600x900, see `assets/posters/README.md`);
-without one the card gets the placeholder and `make web` warns. For recompiled code, `make
+without one the card gets the placeholder and `make web` warns. And its
+bezel, `assets/bezels/<set>.webp` (see `assets/bezels/README.md`). For recompiled code, `make
 run GAME=<set>` and `make recomp GAME=<set>` first. The touch controls,
 help bar and card come from the manifest's controls: buttons can carry a
 short `labelled(...)` name for the on-screen buttons and the card.
@@ -180,8 +182,9 @@ progress. It offers:
 
 - **Display:** render height (384, the native height; 768; 1080; or the
   screen's, the default: the window's height in device pixels, up to
-  1080), aspect (fit the window, the default, 4:3 to 21:9; 4:3; 16:9) and
-  HUD placement in wide views (at the edges, or centred);
+  1080), aspect (fit the window, the default, 4:3 to 21:9; 4:3; 16:9),
+  HUD placement in wide views (at the edges, or centred) and the bezel (on,
+  the default, or off; below);
 - **Sound:** on or off, and the effects (sound board) and music levels in
   dB (defaults +8 and -8, `model2::audio::DEFAULT_MIX`; the game's own
   level is added to both);
@@ -205,7 +208,7 @@ brings the panel back.
 In game, ⚙ in the bar (or on touch screens beside ⓘ), or Esc, opens the
 panel and pauses the game (`set_paused`: no frames run or drawn, the
 audio context is suspended, nothing reaches the workers; it resumes from
-the same frame). Resume applies the HUD placement (`set_hud`), the mix
+the same frame). Resume applies the HUD placement (`set_hud`), the bezel, the mix
 (a `mix` message to the sound worker) and touch and tilt at once; render
 height, aspect, sound on or off and the geometrizer need a restart, and
 the panel offers "Restart to apply" when one of them changed (it reloads
@@ -232,12 +235,29 @@ parameters:
 - `height=1080`;
 - `aspect=16:9`;
 - `hud=center` (or `edges`);
+- `bezel=0` (no bezel; `bezel=1` on);
 - `sound=0` (don't run the sound boards at all);
 - `sfx=8&music=-8` (the mix in dB);
 - `touch` or `touch=1` (on-screen controls on any device), `touch=0`
   (off);
 - `tilt=1` (tilt steering on from the start, where the game steers);
 - `geo=local` (run the geometrizer on the page's thread).
+
+**Bezels.** With the 4:3 aspect in a window wider than 4:3, the game's
+bezel fills the sides: original cabinet-style artwork, one per game
+(`assets/bezels/README.md`), named in `games.json` (its own, else its
+parent set's) and loaded the first time it shows. It's an `<img>` behind
+the canvas, which is letterboxed by `object-fit: contain`, so it shows
+where the canvas draws nothing; it is as tall as the window (the picture's
+height) and centred (`settings.js` `bezelRect`, placed again on every
+resize). A wide view (the default aspect in a wide window, or 16:9) draws
+the game there instead and shows none, nor does a window 4:3 or taller.
+It never touches the game: the canvas still gets every pointer event, so
+the light guns see the sides as off the screen as before, and the HUD
+setting is unchanged. Turning it off or on in the panel applies on
+Resume. Checked headless against a stub module (the layout at several
+window sizes, the setting live, stored and from the URL; WebGPU isn't
+available there), not yet with a game in a real browser.
 
 The bar shows the speed, frames drawn per second, and milliseconds per
 frame spent emulating, preparing the frame on the CPU, and submitting it
@@ -401,11 +421,12 @@ above, with pause). Still to come:
   instead (kept in IndexedDB).
 - **Remapping** keys and gamepad buttons in the panel's Controls section
   (read-only now), stored with the other settings.
-- **Bezels and controller art** per game: artwork around a 4:3 picture,
-  and drawn touch controls laid out for each game's cabinet, which would
-  also let the touch controls sit where they make sense for the game
-  instead of the generic layout they get now from the pad bindings.
+- **Controller art** per game (the bezels are done, above): drawn touch
+  controls laid out for each game's cabinet, which would also let the
+  touch controls sit where they make sense for the game instead of the
+  generic layout they get now from the pad bindings.
 - Height and aspect changes applied live (reconfiguring the canvas and
   view) instead of on a restart.
 
-Order: save states, then zips from a file, then remapping, then bezels.
+Order: save states, then zips from a file, then remapping, then
+controller art.

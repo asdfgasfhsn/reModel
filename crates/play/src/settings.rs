@@ -14,6 +14,11 @@ pub struct Settings {
     pub sfx_db: f32,
     pub music_db: f32,
     pub hud_edges: bool,
+    /// Draw the game wider than its 4:3 frame to fill a wide window (else
+    /// the 4:3 picture, with the bezel beside it if `bezel`).
+    pub wide: bool,
+    /// The game's bezel art beside a 4:3 picture in a wider window.
+    pub bezel: bool,
     pub exact: bool,
     pub fullscreen: bool,
 }
@@ -26,6 +31,8 @@ impl Default for Settings {
             sfx_db: model2::audio::DEFAULT_MIX.0,
             music_db: model2::audio::DEFAULT_MIX.1,
             hud_edges: true,
+            wide: true,
+            bezel: true,
             exact: false,
             fullscreen: false,
         }
@@ -71,6 +78,8 @@ impl Settings {
                 "sfx_db" => s.sfx_db = v.parse().unwrap_or(s.sfx_db),
                 "music_db" => s.music_db = v.parse().unwrap_or(s.music_db),
                 "hud_edges" => s.hud_edges = v == "true",
+                "wide" => s.wide = v == "true",
+                "bezel" => s.bezel = v == "true",
                 "exact" => s.exact = v == "true",
                 "fullscreen" => s.fullscreen = v == "true",
                 _ => {}
@@ -81,12 +90,14 @@ impl Settings {
 
     pub fn save(&self) {
         let text = format!(
-            "# remodel-play settings\nrom = {}\ngame = {}\nsfx_db = {}\nmusic_db = {}\nhud_edges = {}\nexact = {}\nfullscreen = {}\n",
+            "# remodel-play settings\nrom = {}\ngame = {}\nsfx_db = {}\nmusic_db = {}\nhud_edges = {}\nwide = {}\nbezel = {}\nexact = {}\nfullscreen = {}\n",
             self.rom.display(),
             self.game,
             self.sfx_db,
             self.music_db,
             self.hud_edges,
+            self.wide,
+            self.bezel,
             self.exact,
             self.fullscreen
         );
