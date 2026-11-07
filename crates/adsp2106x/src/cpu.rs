@@ -189,6 +189,18 @@ pub const II6: u32 = 0x40;
 pub const IM6: u32 = 0x41;
 pub const C6: u32 = 0x42;
 
+/// IOP addresses Table E.7 marks reserved on the ADSP-21062 [UM E-9 to
+/// E-13]. The manual doesn't say what they do; the core ignores writes and
+/// reads them as 0. `schamp`'s copro program writes 0x20 (through an
+/// index register it hasn't set yet, docs/hw/adsp2106x.md).
+fn reserved_iop(a: u32) -> bool {
+    matches!(
+        a,
+        0x10..=0x17 | 0x1a | 0x20..=0x2f | 0x3f | 0x67 | 0x6f | 0x77 | 0x7f | 0xa0..=0xbf | 0xd0..=0xdf
+            | 0xe5 | 0xe7 | 0xec | 0xed | 0xef | 0xf5 | 0xf7 | 0xfc | 0xfd | 0xff
+    )
+}
+
 // DMAC bits (UM §E.12).
 const DEN: u32 = 1 << 0;
 const CHEN: u32 = 1 << 1;
@@ -1382,6 +1394,7 @@ impl Sharc {
                 self.iop[a] & !(FLSH | 3 << 14) | fs << 14
             }
             0x1d..=0x1f | 0x40..=0x47 => self.iop[a],
+            a if reserved_iop(a) => 0,
             _ => return None,
         })
     }
@@ -1436,6 +1449,7 @@ impl Sharc {
                 self.iop[a] = v;
                 self.run_dma();
             }
+            a if reserved_iop(a) => {}
             _ => return Err(()),
         }
         Ok(())
