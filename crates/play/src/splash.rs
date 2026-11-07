@@ -80,11 +80,12 @@ mod tests {
         let image = png::decode(LOGO).unwrap();
         assert_eq!((image.width, image.height), (1086, 362));
         let px = |x: usize, y: usize| &image.rgba[(y * image.width + x) * 4..][..4];
-        assert_eq!(px(0, 0), [0, 0, 0, 255]);
-        assert_eq!(px(1085, 361), [0, 0, 0, 255]);
-        // The white of "Model" and the red underline.
-        assert_eq!(px(600, 200), [254, 254, 254, 255]);
-        assert_eq!(px(500, 260), [252, 7, 24, 255]);
+        // Transparent around the badge.
+        assert_eq!(px(0, 0)[3], 0);
+        assert_eq!(px(1085, 361)[3], 0);
+        // The white of "Model" and the red underline, opaque.
+        assert_eq!(px(600, 200), [254, 252, 253, 254]);
+        assert_eq!(px(500, 260), [252, 4, 20, 253]);
     }
 
     /// Headless: the logo is centred, fits the window, keeps its shape.
