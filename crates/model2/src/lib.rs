@@ -11,6 +11,7 @@ pub mod drive;
 pub mod eeprom;
 pub mod enhance;
 pub mod geo;
+pub mod geo_native;
 pub mod gun;
 pub mod input;
 pub mod protection;
