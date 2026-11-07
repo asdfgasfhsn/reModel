@@ -518,6 +518,10 @@ fn main() -> ExitCode {
                 // certain; `lda` pointer guesses may be data.
                 let mut insns = a.insns;
                 insns.retain(|addr, _| !a.speculative.contains(addr) || trace.executed.contains(addr));
+                // Instructions are word aligned: discovery can decode data
+                // at an odd address (schamp's 0x20E), and a block there
+                // would take the table slot of the word it sits in.
+                insns.retain(|addr, _| addr & 3 == 0);
                 // Code run from RAM (waverunr copies routines to work RAM)
                 // stays on the interpreter: only program ROM is compiled.
                 for &addr in trace.executed.iter().filter(|&&a| img.contains(a)) {

@@ -59,7 +59,10 @@ impl Machine {
         cpu.reset(&mut bus);
         let native = recomp::i960_blocks(program_hash(roms)).map(|blocks| {
             let mut table = vec![None; (PROGRAM_END / 4) as usize];
-            for (a, f) in blocks {
+            // Only word-aligned starts can be dispatched; a block at an
+            // odd address (from a build before `remodel recomp` dropped
+            // them) would otherwise take its word's slot.
+            for (a, f) in blocks.into_iter().filter(|&(a, _)| a & 3 == 0) {
                 table[(a / 4) as usize] = Some(f);
             }
             table
