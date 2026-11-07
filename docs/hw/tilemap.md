@@ -116,7 +116,7 @@ applies to the whole plane:
 |---|---|
 | 0 | normal: the two maps of the plane are chosen per 8-pixel cell by the window mask (§2.4). Each map uses its own scroll registers. |
 | 1 | horizontal split (top/bottom). Both maps use the first map's H/V scroll. Split line = (−VSCROLL) & 0x1FF. Bit 9 of (−VSCROLL) set means the first map is on top. **L**: the same value serves as both scroll and split position. |
-| 2, 3 | vertical split (left/right) at x = HSCROLL & 0x1FF. HSCROLL bit 9 set means the first map is on the left. With line scroll on, each line's table entry gives both that line's scroll and its split point. **L** |
+| 2, 3 | vertical split (left/right) at x = HSCROLL & 0x1FF. HSCROLL bit 9 set means the first map is on the left. With line scroll on, each line's table entry gives both that line's scroll and its split point. Equivalently: map 0 and map 1 side by side as one 1024-pixel plane scrolled by the 10-bit value. **Confirmed** by schamp (see Checks below) |
 
 **Scroll direction** (S24, M): for screen pixel (x, y), the map pixel is
 mx = (x − HSCROLL) mod 512 and my = (y + VSCROLL) mod 512. H and V have
@@ -254,5 +254,5 @@ outrank the sources above.
 | Entry format, with tile and colour bank overlapping in bits 7-13 | **Confirmed**: logo and title colours are correct |
 | Palette xBGR555, tiles use entries 0x000-0xFFF | **Confirmed** (plain xBGR555, no translation table) |
 | Plane modes | The game uses mode 2 (left/right split) on plane A, with line scroll enabled on map 0 |
-| Split mode: is the line-scroll entry also the X scroll? | **No.** It is only the split point (bit 9 = first map on the left), and the map keeps its HSCROLL register scroll. Treating it as scroll too (MAME) makes the attract text jump sideways from frame to frame. As a split point only, the text stays put and the split wipes it in and out. |
+| Split mode: is the line-scroll entry also the X scroll? | **Yes** (as MAME reads it). In split mode the plane is one 1024-pixel-wide surface, map 0 then map 1, scrolled by the low 10 bits of the first map's value (line-scroll entry or HSCROLL): bits 0-8 are both maps' X scroll and the split point, bit 9 says which map is on the left. Confirmed from schamp's story captions ("REVENGE OF DR. ..."), a line longer than one map that scrolls 8 pixels a frame across both maps (the caption lines' entries run from 0x1FE0 down to 0x19F8); read as a split point only (our first reading, from topskatr), the split swept left over two still maps and cut letters out mid-word. topskatr's attract text ("INSERT COIN(S)", "CREDIT 0", lines 320-360, map 1 blank there) now scrolls out to the left and back in from the right every 200 frames, the second line a little behind the first. fvipers uses it for comb transitions (alternate lines scrolled +x and -x: the SEGA logo on plane B, the PLAYER SELECT header on plane A). topskatr's earlier "jumps sideways" probably came from looking at snapshots 20 frames apart. *Unconfirmed:* not compared with hardware footage. |
 | Visible window | 496x384 starting at map (0,0) with zero scroll; attract text is centred |

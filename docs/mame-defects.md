@@ -34,14 +34,9 @@ and keep the evidence concrete (addresses, counts, outputs).
 - **Reproduce:** `make run STEPS=300000000`, then check `out/topskatr/copro-coverage.txt` for those addresses.
 - **Fix direction:** add `case 0x0c: return disp;` (absolute, no post-modify). Remodel implements it this way and the game runs. The exact displacement width/sign for mode 0xC still deserves a check against more games.
 
-### MD-2. System 24 tile chip: split mode applies the line-scroll entry as X scroll
-- **Where:** `src/mame/sega/segaic24.cpp`, `segas24_tile_device::draw_common`, the `hscr & 0x8000` branch, `case 2: case 3:` (around lines 389-417; scroll set at lines 397-401).
-- **MAME does:** with line scroll enabled in left/right split mode, it reads the line's table entry and uses its low 9 bits as **both** the split point and the X scroll of both maps.
-- **Correct (per topskatr):** the table entry is only the split point (bit 9 picks which map is on the left). The maps keep their HSCROLL register scroll. topskatr's attract text ("INSERT COIN(S)" / "CREDIT 0") is centred in the map with zero scroll. Under MAME's reading it jumps sideways from frame to frame; under ours it stays put while the split wipes it in and out.
-- **Evidence:** rendering the same frames both ways (`docs/hw/tilemap.md`, "Checks against topskatr").
-- **Reproduce:** `make run STEPS=300000000 SNAP=86` and view `out/topskatr/frames/`.
-- **Fix direction:** in that branch, keep `set_scrollx` from the HSCROLL register (`hscr` before it is replaced by the table entry), and use the table entry only for the split point and side. Affects Model 1, Model 2 and System 24 games that use split mode with line scroll; check one of them for regressions.
-- **Related, suspected:** the top/bottom split case (`case 1:`, lines 381-384) uses the table entry as X scroll in the same way. topskatr doesn't use mode 1.
+### MD-2. (Withdrawn) System 24 tile chip: split mode and the line-scroll entry
+- **Was:** we claimed MAME was wrong to use the line-scroll entry as both the split point and the X scroll in left/right split mode, from topskatr's attract text.
+- **Withdrawn 2026-11-07:** MAME's reading is right. schamp's story captions scroll one line of text longer than a map across both maps of the split plane, 8 pixels a frame; with the entry as the split point only, letters went missing mid-word ("REVENG...ONIC"). Used as scroll as well, the captions are whole, and topskatr's text scrolls out and back in, which probably looked like jumping in snapshots 20 frames apart. See `docs/hw/tilemap.md`, "Checks against topskatr". Nothing to patch.
 
 ### MD-3. MB86235 disassembler and recompiler: relative branch target off by one
 - **Where:** `src/devices/cpu/mb86235/mb86235d.cpp` (relative targets for DBLP/DBBC/DBBS and EF2 bit 12), plus `mb86235fe.cpp` / `mb86235drc.cpp`.

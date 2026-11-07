@@ -443,8 +443,8 @@ documentation and hasn't been contradicted yet.
   defaults, and accepts them on the next boot.
 - *Confirmed:* the 2D tile layer shows the full boot sequence ("Downloading",
   "Initializing"), the publisher logo, the title screen and attract mode,
-  whose 3D scenes are not rendered yet. See `docs/hw/tilemap.md` for the
-  split-mode finding, which differs from MAME.
+  whose 3D scenes are not rendered yet. Its attract text scrolls out and
+  back in through the split plane (`docs/hw/tilemap.md`).
 - *Confirmed:* coin 1 is IN0 bit 0 and start is IN0 bit 6 (active low). A
   scripted coin and start go through course select and skater select into
   a race: the HUD timer, checkpoints and hints all run.
@@ -1324,10 +1324,13 @@ the dat names it), which isn't supported.
   with palette entry 1 (`0x8000`, black) and a fixed luma (205); the
   checker bit is clear and nothing else sets them apart, so they draw
   solid black, as sent. *Unconfirmed:* how they look on the hardware.
-- *Unconfirmed:* the story's white captions draw with gaps in mid-line
-  ("GET 8 EMERA... S!", "REVENG...ONIC") while they animate. They are in
-  the tile layer, not 3D (no polygon covers the letters), so the cause is
-  not the shadows; not compared with hardware.
+- *Confirmed (from its tile RAM):* the story's white captions ("REVENGE
+  OF DR. ...") are one line of text longer than a tile map, on plane A in
+  left/right split mode with line scroll: the game scrolls the line-scroll
+  entries 8 pixels a frame across both maps. They drew with gaps
+  ("REVENG...ONIC") because we took the entry as the split point only;
+  the tile chip scrolls both maps by it too, as one 1024-pixel plane
+  (`docs/hw/tilemap.md`). *Unconfirmed:* not compared with hardware.
 
 ## What's known about `hotd`
 

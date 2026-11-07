@@ -41,27 +41,21 @@ fn pen(tiles: &[u8], tile: usize, row: usize, px: usize) -> u8 {
     ((half >> (12 - 4 * (px & 3))) & 0xf) as u8
 }
 
-/// Line-scroll table entry for `map` on line `y` if enabled, else HSCROLL.
+/// X scroll of `map` on line `y`: its line-scroll table entry if enabled,
+/// else its HSCROLL register.
+///
+/// In the left/right split modes both maps scroll by the first map's value
+/// (the callers pass it), and the same value places the split: the plane
+/// is one 1024-pixel-wide surface, map 0 then map 1, scrolled by the low
+/// 10 bits. Confirmed from schamp's story captions, which scroll a line
+/// longer than one map across both; topskatr's attract text scrolls out
+/// to the left and back in from the right the same way.
 fn hscroll(tiles: &[u8], map: usize, y: usize) -> u16 {
     let hs = rd16(tiles, HSCROLL + 2 * map);
     if hs & 0x8000 != 0 {
         rd16(tiles, LINE_SCROLL + 0x400 * map + 2 * y)
     } else {
         hs
-    }
-}
-
-/// X scroll used for drawing `map` on line `y`. In left/right split mode
-/// the line-scroll entry is only the split point, and the map scrolls by its
-/// HSCROLL register. Confirmed from topskatr's attract text, which stays
-/// still while the split wipes it in and out; MAME instead applies the entry
-/// as scroll as well, which makes the text jump between frames.
-fn split_scroll(tiles: &[u8], map: usize, y: usize) -> u16 {
-    let first = map & 2;
-    if (rd16(tiles, VSCROLL + 2 * first) >> 13) & 3 >= 2 {
-        rd16(tiles, HSCROLL + 2 * map)
-    } else {
-        hscroll(tiles, map, y)
     }
 }
 
@@ -84,7 +78,7 @@ fn locate(tiles: &[u8], map: usize, scroll_map: usize, x: usize, y: usize) -> Op
     if rd16(tiles, VSCROLL + 2 * map) & 0x8000 != 0 {
         return None;
     }
-    let h = split_scroll(tiles, scroll_map, y) as usize & 0x1ff;
+    let h = hscroll(tiles, scroll_map, y) as usize & 0x1ff;
     let v = rd16(tiles, VSCROLL + 2 * scroll_map) as usize & 0x1ff;
     let mx = (x + 512 - h) & 511;
     let my = (y + v) & 511;
@@ -370,7 +364,7 @@ fn tile_planes_fast(tiles: &[u8], palette: &[u8]) -> (Vec<[u8; 3]>, Vec<Option<[
             let mode = (vscroll[first] >> 13) & 3;
             // Scroll position of each map this line.
             let scroll: [(usize, usize); 4] =
-                std::array::from_fn(|m| (split_scroll(tiles, m, y) as usize & 0x1ff, vscroll[m] as usize & 0x1ff));
+                std::array::from_fn(|m| (hscroll(tiles, m, y) as usize & 0x1ff, vscroll[m] as usize & 0x1ff));
             // Split modes: (map before, map after, split x, first map first).
             let split = match mode {
                 1 => {
@@ -797,6 +791,33 @@ mod tests {
         // Right half of the tile: plane B's pen 0 shows through.
         assert_eq!(px(12, 3), [0, 0, 255]);
         assert_eq!(&native[..3], [0, 255, 0]);
+    }
+
+    #[test]
+    fn split_plane_scrolls_as_one_wide_surface() {
+        let mut tiles = vec![0u8; 0x10_0000];
+        let put = |t: &mut [u8], off: usize, v: u16| t[off..off + 2].copy_from_slice(&v.to_le_bytes());
+        // Plane A in left/right split mode, map 0 with line scroll; line 0
+        // scrolls by 0x210: map 0 left of x = 16, map 1 from there.
+        put(&mut tiles, VSCROLL, 0x4000);
+        put(&mut tiles, HSCROLL, 0x8000);
+        put(&mut tiles, LINE_SCROLL, 0x210);
+        // Map 0's last column and map 1's first hold tiles 1 and 2 (pens 1, 2).
+        put(&mut tiles, 63 * 2, 1);
+        put(&mut tiles, 0x2000, 2);
+        tiles[CHAR_BASE + 32..CHAR_BASE + 64].fill(0x11);
+        tiles[CHAR_BASE + 64..CHAR_BASE + 96].fill(0x22);
+        let at = |x| {
+            let (map, scroll) = map_for(&tiles, 0, x, 0);
+            sample(&tiles, map, scroll, x, 0, false).map(|s| s.0)
+        };
+        // The two maps meet at the split point with no gap: both scroll by
+        // the line's value, not map 1 by its own HSCROLL.
+        assert_eq!(at(8), Some(1));
+        assert_eq!(at(15), Some(1));
+        assert_eq!(at(16), Some(2));
+        assert_eq!(at(23), Some(2));
+        assert_eq!(at(24), None);
     }
 
     #[test]
