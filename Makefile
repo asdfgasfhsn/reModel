@@ -84,7 +84,7 @@ endif
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm m68k-tests clean recomp recomp-workspace bench latency sound sound-disasm
+.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm m68k-tests clean recomp recomp-workspace bench latency sound sound-disasm geo-check geo-fuzz
 
 ##@ General
 
@@ -244,6 +244,16 @@ capture: release ## Run into a race saving every 300th frame's renderer inputs t
 
 gpu-check: release ## Draw the captured frames on the software and GPU rasterisers; time and compare them (needs a GPU)
 	$(RUN) gpu-check
+
+GEO_CHECK_STEPS ?= 750000000
+GEO_CHECK_FROM  ?= 3000
+FUZZ_FRAMES ?= 500
+FUZZ_SEED   ?= 1
+geo-check: release ## Model 2B: a coin-start run (GEO_CHECK_STEPS, INPUT) with the native geometrizer beside the SHARC, raster streams compared word by word each frame; both timed (from frame GEO_CHECK_FROM too; RECOMP=1: the recompiled SHARC)
+	$(RUN) --input $(or $(INPUT),$(BENCH_INPUT)) geo-check $(GEO_CHECK_STEPS) $(GEO_CHECK_FROM)
+
+geo-fuzz: release ## Model 2B: random display lists (FUZZ_FRAMES, FUZZ_SEED) through the game's geometrizer program on the SHARC and the native one, compared
+	$(RUN) geo-fuzz $(FUZZ_FRAMES) $(FUZZ_SEED)
 
 lockstep: ## Run the recompiled code beside the interpreter (i960 block by block; Model 2B's SHARCs too) and stop at the first difference (RECOMP=1, STEPS, INPUT)
 	$(MAKE) release RECOMP=1

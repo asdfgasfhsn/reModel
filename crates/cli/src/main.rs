@@ -1,3 +1,4 @@
+mod geo_check;
 mod gpu_check;
 mod music;
 mod recomp_crates;
@@ -47,6 +48,11 @@ options:
                        `gpu-check`
   --texture-pack DIR   draw snapshots with the replacement PNGs in DIR (same
                        names as a dump; any size); see docs/texture-packs.md
+  --geo sharc|native|check
+                       Model 2B geometrizer: the uploaded program on the
+                       SHARC (default), the native implementation where it
+                       implements the program (docs/hw/geometrizer-2b.md),
+                       or both, compared frame by frame (see geo-check)
 
 commands:
   games                list supported games
@@ -94,6 +100,17 @@ commands:
   gpu-check [DIR]      draw the frames captured with --capture in DIR
                        (default out/GAME/capture) with the software and GPU
                        rasterisers; time both and report how they differ
+  geo-check [STEPS] [FROM]
+                       Model 2B: run (with --input, --load-state) with the
+                       SHARC geometrizer and the native one fed the same
+                       lists, compare their raster streams word by word each
+                       frame and report the first difference; time both
+                       (mean and worst, overall and from frame FROM)
+  geo-fuzz [FRAMES] [SEED]
+                       Model 2B: random display lists (every command, model
+                       paths no game reaches) through the game's uploaded
+                       geometrizer program on the SHARC and the native one;
+                       report the first difference
   latency FRAME CHANGE [FRAMES]
                        input latency: two runs from FRAME (with --input,
                        or --load-state), one with CHANGE (an --input item
@@ -218,6 +235,17 @@ fn main() -> ExitCode {
     };
     if let Some(c) = capture {
         let _ = CAPTURE.set(PathBuf::from(c));
+    }
+    let Ok(geo_mode) = opt("--geo") else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    if let Some(g) = geo_mode {
+        let Some(mode) = model2::geo::GeoMode::parse(&g) else {
+            eprintln!("error: --geo wants sharc, native or check");
+            return ExitCode::FAILURE;
+        };
+        let _ = GEO_MODE.set(mode);
     }
     let Ok(soundtrack) = opt("--soundtrack") else {
         eprint!("{USAGE}");
@@ -660,7 +688,7 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let mut m = model2::Machine::new(&roms);
+            let mut m = machine(&roms);
             if interp {
                 m.disable_native();
             }
@@ -764,6 +792,35 @@ fn main() -> ExitCode {
             let prog: Vec<u64> = bin.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect();
             let words: Vec<u32> = args[1..].iter().filter_map(|s| u32::from_str_radix(s, 16).ok()).collect();
             geo_trace_words(&prog, &words);
+        }
+        "geo-check" => {
+            let steps = args.get(1).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(750_000_000);
+            let from = args.get(2).and_then(|s| parse_num(s)).map_or(0, u64::from);
+            let script = match model2::input::InputScript::parse(input.as_deref().unwrap_or(""), &roms.game.controls) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("error: --input: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let mut m = model2::Machine::new(&roms);
+            if interp {
+                m.disable_native();
+            }
+            m.bus.geo.set_threaded(!single_thread);
+            m.bus.geo.set_mode(model2::geo::GeoMode::Check);
+            if let Err(e) = geo_check::run(&mut m, &roms, steps, from, &script, LOAD_STATE.get()) {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        "geo-fuzz" => {
+            let frames = args.get(1).and_then(|s| parse_num(s)).map_or(200, u64::from);
+            let seed = args.get(2).and_then(|s| parse_num(s)).map_or(1, u64::from);
+            if let Err(e) = geo_check::fuzz(&roms, frames, seed) {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
         }
         "latency" => {
             let (Some(at), Some(change)) = (args.get(1).and_then(|s| parse_num(s)), args.get(2)) else {
@@ -946,6 +1003,15 @@ fn games_json(games: &[&romset::Game], dir: &Path) -> String {
 
 /// Output view for snapshots (`--height`, `--aspect`, `--hud`); native when unset.
 static VIEW: std::sync::OnceLock<model2::video::View> = std::sync::OnceLock::new();
+/// `--geo`: how the 2B geometrizer runs.
+static GEO_MODE: std::sync::OnceLock<model2::geo::GeoMode> = std::sync::OnceLock::new();
+
+/// A machine for `roms` with the command line's geometrizer mode.
+fn machine(roms: &RomSet) -> model2::Machine {
+    let mut m = model2::Machine::new(roms);
+    m.bus.geo.set_mode(GEO_MODE.get().copied().unwrap_or_default());
+    m
+}
 /// `--save-state`: where, and at which frame.
 static SAVE_STATE: std::sync::OnceLock<(PathBuf, u64)> = std::sync::OnceLock::new();
 /// `--load-state`: the state to start from.
@@ -1027,7 +1093,7 @@ fn latency(
     let changed = InputScript::parse(&format!("{spec},{change}@{at}-{}", u32::MAX), controls)?;
     let channel = change.split_once('=').and_then(|(n, _)| controls.analog(n)).map(|a| a.channel as usize);
     let new = |roms| {
-        let mut m = model2::Machine::new(roms);
+        let mut m = machine(roms);
         if interp {
             m.disable_native();
         }
@@ -1123,7 +1189,7 @@ fn run(
     interp: bool,
     single_thread: bool,
 ) {
-    let mut m = model2::Machine::new(roms);
+    let mut m = machine(roms);
     if interp {
         m.disable_native();
     }
