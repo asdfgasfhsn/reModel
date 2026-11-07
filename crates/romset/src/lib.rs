@@ -7,6 +7,7 @@
 //! A ROM directory holds sets as MAME does, by set name: `ROOT/<set>.zip`
 //! or unpacked in `ROOT/<set>/`. Loose chips directly in `ROOT` also work.
 
+pub mod bindings;
 pub mod controls;
 pub mod games;
 mod sha1;
@@ -16,6 +17,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub use bindings::Bindings;
 pub use controls::{AnalogInput, ButtonInput, Controls, Gun, GunSource, PadAxis, PadButton, Reload};
 pub use sha1::sha1_hex;
 

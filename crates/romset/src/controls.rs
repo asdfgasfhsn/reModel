@@ -171,7 +171,7 @@ impl AnalogInput {
 }
 
 /// Buttons of the W3C standard gamepad, in its index order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PadButton {
     /// A on Xbox pads, cross on PlayStation.
     South,
@@ -193,9 +193,61 @@ pub enum PadButton {
 }
 
 impl PadButton {
+    /// Every button, in index order.
+    pub const ALL: [PadButton; 16] = [
+        PadButton::South,
+        PadButton::East,
+        PadButton::West,
+        PadButton::North,
+        PadButton::LeftShoulder,
+        PadButton::RightShoulder,
+        PadButton::LeftTrigger,
+        PadButton::RightTrigger,
+        PadButton::Select,
+        PadButton::Start,
+        PadButton::LeftStick,
+        PadButton::RightStick,
+        PadButton::DPadUp,
+        PadButton::DPadDown,
+        PadButton::DPadLeft,
+        PadButton::DPadRight,
+    ];
+
     /// Index in the W3C standard gamepad's `buttons`.
     pub fn index(self) -> u32 {
         self as u32
+    }
+
+    /// The button at a W3C standard gamepad index.
+    pub fn from_index(i: u32) -> Option<PadButton> {
+        Self::ALL.get(i as usize).copied()
+    }
+
+    /// The button named `name` (its variant's name, as stored).
+    pub fn from_name(name: &str) -> Option<PadButton> {
+        Self::ALL.into_iter().find(|b| format!("{b:?}") == name)
+    }
+
+    /// As an Xbox pad labels it.
+    pub fn label(self) -> &'static str {
+        match self {
+            PadButton::South => "A",
+            PadButton::East => "B",
+            PadButton::West => "X",
+            PadButton::North => "Y",
+            PadButton::LeftShoulder => "LB",
+            PadButton::RightShoulder => "RB",
+            PadButton::LeftTrigger => "LT",
+            PadButton::RightTrigger => "RT",
+            PadButton::Select => "Back",
+            PadButton::Start => "Start",
+            PadButton::LeftStick => "L stick press",
+            PadButton::RightStick => "R stick press",
+            PadButton::DPadUp => "D-pad ↑",
+            PadButton::DPadDown => "D-pad ↓",
+            PadButton::DPadLeft => "D-pad ←",
+            PadButton::DPadRight => "D-pad →",
+        }
     }
 }
 
@@ -217,6 +269,38 @@ pub enum PadAxis {
     Triggers,
 }
 
+impl PadAxis {
+    pub const ALL: [PadAxis; 8] = [
+        PadAxis::None,
+        PadAxis::LeftStickX,
+        PadAxis::LeftStickY,
+        PadAxis::RightStickX,
+        PadAxis::RightStickY,
+        PadAxis::LeftTrigger,
+        PadAxis::RightTrigger,
+        PadAxis::Triggers,
+    ];
+
+    /// The axis named `name` (its variant's name, as stored).
+    pub fn from_name(name: &str) -> Option<PadAxis> {
+        Self::ALL.into_iter().find(|a| format!("{a:?}") == name)
+    }
+
+    /// For players.
+    pub fn label(self) -> &'static str {
+        match self {
+            PadAxis::None => "",
+            PadAxis::LeftStickX => "left stick ↔",
+            PadAxis::LeftStickY => "left stick ↕",
+            PadAxis::RightStickX => "right stick ↔",
+            PadAxis::RightStickY => "right stick ↕",
+            PadAxis::LeftTrigger => "LT",
+            PadAxis::RightTrigger => "RT",
+            PadAxis::Triggers => "RT − LT",
+        }
+    }
+}
+
 impl Controls {
     pub fn button(&self, name: &str) -> Option<&ButtonInput> {
         self.buttons.iter().find(|b| b.name == name)
@@ -235,39 +319,6 @@ impl Controls {
     pub fn names(&self) -> String {
         let names = self.buttons.iter().map(|b| b.name).chain(self.analogs.iter().map(|a| a.name));
         names.chain(self.guns.iter().map(|g| g.name)).collect::<Vec<_>>().join(", ")
-    }
-
-    /// One line per control with its default keys and pad bindings (for
-    /// help text and docs).
-    pub fn describe(&self) -> String {
-        let mut out = String::new();
-        for (i, g) in self.guns.iter().enumerate() {
-            let aim = if i == 0 { "mouse or touch, else pad sticks" } else { "pad sticks (beside a mouse)" };
-            let keys: Vec<_> = g.keys_reload.iter().map(|k| key_label(k)).collect();
-            let reload = match g.reload {
-                Reload::Offscreen => "reload: shoot off screen".to_string(),
-                Reload::Button(b) => format!("{b}: right button"),
-            };
-            out += &format!("  {:<10} aim: {aim}; fire: {}; {reload}", g.name, g.trigger);
-            out += &if keys.is_empty() { "\n".to_string() } else { format!(" or {}\n", keys.join(" ")) };
-        }
-        for a in self.analogs {
-            let keys: Vec<_> = a.keys_neg.iter().chain(a.keys_pos).map(|k| key_label(k)).collect();
-            let mut pad: Vec<String> = Vec::new();
-            if a.axis != PadAxis::None {
-                pad.push(format!("{:?}", a.axis));
-            }
-            pad.extend(a.pad_neg.iter().chain(a.pad_pos).map(|b| format!("{b:?}")));
-            out += &format!("  {:<10} {} / {}\n", a.name, keys.join(" "), pad.join(" "));
-        }
-        for b in self.buttons {
-            let keys: Vec<_> = b.keys.iter().map(|k| key_label(k)).collect();
-            let pad: Vec<_> = b.pad.iter().map(|p| format!("{p:?}")).collect();
-            if !keys.is_empty() || !pad.is_empty() {
-                out += &format!("  {:<10} {} / {}\n", b.name, keys.join(" "), pad.join(" "));
-            }
-        }
-        out
     }
 
     /// The controls a player uses, each with its first default keys (both
@@ -323,7 +374,7 @@ pub fn key_symbol(code: &str) -> &str {
 }
 
 /// Short label for a `KeyboardEvent.code`.
-fn key_label(code: &str) -> &str {
+pub(crate) fn key_label(code: &str) -> &str {
     code.strip_prefix("Key").or_else(|| code.strip_prefix("Digit")).unwrap_or(code)
 }
 

@@ -188,10 +188,10 @@ progress. It offers:
 - **Sound:** on or off, and the effects (sound board) and music levels in
   dB (defaults +8 and -8, `model2::audio::DEFAULT_MIX`; the game's own
   level is added to both);
-- **Controls,** read-only for now: each input with its keys, gamepad
-  bindings (Xbox names) and on-screen control, from the manifest
-  (`controls_table`, `touch_layout`); on touch screens, touch controls on
-  or off and, where an analog follows the left stick, tilt steering;
+- **Controls:** each input with its keys, gamepad bindings (Xbox names)
+  and on-screen control, remappable (below, "Remapping"); on touch
+  screens, touch controls on or off and, where an analog follows the left
+  stick, tilt steering;
 - **Advanced:** the geometrizer in a worker (the default) or on the
   page's thread.
 
@@ -209,7 +209,8 @@ In game, ⚙ in the bar (or on touch screens beside ⓘ), or Esc, opens the
 panel and pauses the game (`set_paused`: no frames run or drawn, the
 audio context is suspended, nothing reaches the workers; it resumes from
 the same frame). Resume applies the HUD placement (`set_hud`), the bezel, the mix
-(a `mix` message to the sound worker) and touch and tilt at once; render
+(a `mix` message to the sound worker), the remapped controls
+(`set_bindings`) and touch and tilt at once; render
 height, aspect, sound on or off and the geometrizer need a restart, and
 the panel offers "Restart to apply" when one of them changed (it reloads
 the page with `#play`, skipping the panel once).
@@ -217,7 +218,8 @@ the page with `#play`, skipping the panel once).
 Settings are kept in `localStorage` (`remodel.settings`): defaults for
 all games, and each game's own, which hold only what differs from those
 defaults. The panel saves for the game it's on; "Use these for all games"
-makes its values the defaults instead, removing that game's own copies.
+makes its values the defaults instead, removing that game's own copies
+(except the remapped controls, which are always the game's own).
 The page works without storage (private windows, blocked site data): the
 panel just starts from the built-in defaults every time. Precedence,
 lowest first:
@@ -263,8 +265,9 @@ The bar shows the speed, frames drawn per second, and milliseconds per
 frame spent emulating, preparing the frame on the CPU, and submitting it
 to the GPU. The sound label adds the worker's time per frame.
 
-**Controls.** Each game's keys and gamepad bindings come from its
-manifest, as in the native player (`docs/play.md`), and the bar lists them.
+**Controls.** Each game's default keys and gamepad bindings come from its
+manifest, as in the native player (`docs/play.md`), and the bar lists them
+(as remapped).
 The touch controls act as a gamepad too, so they drive any game through
 its pad bindings, and they are laid out from them (`touch_layout`): a
 steering area if an analog control follows the left stick; coin, start and
@@ -283,6 +286,44 @@ once, labelled from the manifest. For `topskatr`:
 | Select | Q / E | Shoulder buttons | ◀ / ▶ |
 
 F toggles fullscreen, H hides the bar and Esc opens the settings.
+
+**Remapping.** In the panel's Controls section, click or tap a binding,
+then press the key or gamepad button that should replace it; **+** in the
+Keyboard or Gamepad column adds one, **×** removes one, **↺** puts that
+input back and "Reset controls to defaults" all of them. Esc cancels
+waiting. On a gamepad, move to a binding and press A, release it, then
+press the new button (a button already held when it starts waiting
+doesn't count until pressed again). Analog inputs have an axis row (move
+a stick the way that should read as `+`: moved left or up it binds
+inverted, and "invert" flips it; or press a trigger; × leaves no axis) and
+`−` and `+` rows for the keys and buttons that hold it at full deflection
+(Left and Right for a wheel). Light-gun games keep the mouse or a tap as
+the gun ("left click", "right click" in the rows); their trigger and
+reload keys are rows like the rest, and the gamepad crosshair's fire and
+reload take pad buttons. Inputs the manifest leaves unbound are behind
+"Show unbound inputs". A key or button on two inputs is allowed but marked
+⚠ (both inputs get it), unless the manifest binds it so itself. Esc, F5,
+F9, F11, F and H stay the page's: the panel says so and keeps waiting.
+
+The rules are the native player's (`romset::bindings`, through the
+module's `bindings_view`, `bindings_capture` and `bindings_edit`): the
+panel only finds out what was pressed. What it stores is the game's
+`controls` setting in `remodel.settings`: the same text the native
+player keeps in `controls.txt`, only what differs from the manifest, one
+line per input (`docs/play.md`, "Remapping"). The module ignores what it
+can't parse, so stale or hand-edited storage can't break a game. The
+touch controls are laid out from the manifest's pad bindings and keep
+going through them, whatever the gamepad is remapped to. Scripted inputs
+(`Headless`, `--input`) never use bindings.
+
+Checked headless (Chromium over DevTools, the real module with `start`
+stubbed and `navigator.getGamepads` replaced by a scripted pad): keyboard
+capture, reserved keys, Esc, conflicts, ×, ↺ and reset, pad buttons, a
+stick axis (inverted) and a trigger, unbound inputs, storage (per game
+also with "for all games", bad stored values ignored), `set_bindings`
+before `start` and on Resume, and the gun games' rows. Not yet tried in a
+real browser with a game running or with a real gamepad (whose buttons
+and axes a browser may number off the standard layout).
 
 **Light guns** (`hotd`, `bel`; `crates/web/gun.js`). Over the canvas the pointer
 is a crosshair: the mouse aims player 1's gun, the left button fires, the
@@ -419,8 +460,6 @@ above, with pause). Still to come:
 - **Games from a file.** The game list shows the sets the server holds.
   A page that doesn't serve ROMs could take a zip from a file picker
   instead (kept in IndexedDB).
-- **Remapping** keys and gamepad buttons in the panel's Controls section
-  (read-only now), stored with the other settings.
 - **Controller art** per game (the bezels are done, above): drawn touch
   controls laid out for each game's cabinet, which would also let the
   touch controls sit where they make sense for the game instead of the
@@ -428,5 +467,5 @@ above, with pause). Still to come:
 - Height and aspect changes applied live (reconfiguring the canvas and
   view) instead of on a restart.
 
-Order: save states, then zips from a file, then remapping, then
-controller art.
+Remapping is done (above). Order: save states, then zips from a file,
+then controller art for the touch layout.

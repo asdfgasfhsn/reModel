@@ -108,3 +108,30 @@ impl Settings {
         let _ = std::fs::write(p, text);
     }
 }
+
+/// Where a game's remapped controls are kept: only what differs from its
+/// manifest (`romset::bindings`), in `<data dir>/<set>/controls.txt`.
+fn bindings_path(game: &romset::Game) -> PathBuf {
+    data_dir().join(game.id).join("controls.txt")
+}
+
+/// The game's bindings: its manifest's, with the player's changes.
+pub fn load_bindings(game: &'static romset::Game) -> romset::Bindings {
+    let text = std::fs::read_to_string(bindings_path(game)).unwrap_or_default();
+    romset::Bindings::with_overrides(&game.controls, &text, romset::bindings::RESERVED_KEYS)
+}
+
+/// Keep the player's changes (removing the file when there are none).
+pub fn save_bindings(game: &romset::Game, b: &romset::Bindings) {
+    let p = bindings_path(game);
+    let text = b.overrides();
+    if text.is_empty() {
+        let _ = std::fs::remove_file(p);
+        return;
+    }
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let _ =
+        std::fs::write(p, format!("# remodel-play controls for {} (only changes from its defaults)\n{text}", game.id));
+}

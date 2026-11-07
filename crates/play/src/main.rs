@@ -74,7 +74,7 @@ changes made in the menu.
 
 keys: Esc menu (pause), F5 quick save, F9 quick load, F11 fullscreen. The
 game's controls depend on the game (docs/play.md); C coins up and arrows
-steer in both games. Gamepads work too.
+steer. Gamepads work too. The menu's Controls page remaps them per game.
 ";
 
 /// Model 2 video frame rate.
@@ -142,6 +142,9 @@ struct Session {
     sound: Option<Sound>,
     /// `--input`, if given: replaces the player's controls.
     script: Option<model2::input::InputScript>,
+    /// The player's bindings: the manifest's, remapped in the menu's
+    /// Controls page (`settings::load_bindings`).
+    bindings: romset::Bindings,
 }
 
 impl Session {
@@ -337,7 +340,8 @@ impl Play {
                 if machine.is_native() { "recompiled" } else { "interpreted" },
                 sound.as_ref().map_or(String::new(), |s| format!(", audio {} Hz", s.rate))
             );
-            Ok(Session { game, machine, sound, script })
+            let bindings = settings::load_bindings(game);
+            Ok(Session { game, machine, sound, script, bindings })
         });
         match started {
             Ok(s) => {
@@ -517,15 +521,40 @@ impl Play {
     /// button was pressed.
     fn poll_pads(&mut self) -> bool {
         let mut pressed = false;
+        let mut events = Vec::new();
         if let Some(g) = &mut self.gilrs {
             while let Some(ev) = g.next_event() {
                 pressed |= matches!(ev.event, gilrs::EventType::ButtonPressed(..));
                 if matches!(ev.event, gilrs::EventType::ButtonPressed(..) | gilrs::EventType::AxisChanged(..)) {
                     self.pad = Some(ev.id);
                 }
+                if self.menu.capture.is_some() {
+                    events.extend(controls::captured(&ev.event));
+                }
             }
         }
+        for c in events {
+            self.capture(c);
+        }
         pressed
+    }
+
+    /// Bind what the player pressed or moved into the slot the Controls
+    /// page is waiting on, or say why it can't be.
+    fn capture(&mut self, c: romset::bindings::Capture) {
+        let (Some((slot, at)), Some(s)) = (self.menu.capture, &mut self.session) else { return };
+        let axis_slot = s.bindings.accepts(slot) == romset::bindings::Accepts::Axis;
+        // Sticks resting off centre, or moved on the way to a button.
+        if matches!(c, romset::bindings::Capture::Axis(..)) && !axis_slot {
+            return;
+        }
+        match s.bindings.capture(slot, at, c, romset::bindings::RESERVED_KEYS) {
+            Ok(()) => {
+                settings::save_bindings(s.game, &s.bindings);
+                self.menu.capture = None;
+            }
+            Err(e) => self.menu.notify(e),
+        }
     }
 
     /// Keyboard and the last used gamepad onto the cabinet's controls, by
@@ -540,14 +569,12 @@ impl Play {
             None => {
                 let devices = controls::Devices { keys: &self.keys, pad };
                 let bus = &mut s.machine.bus;
-                model2::input::apply_player(bus, &devices, |_| false);
+                let b = &s.bindings;
+                model2::input::apply_player(bus, &[(b, &devices)]);
                 if !bus.controls.guns.is_empty() {
-                    use model2::input::{apply_gun, GunState, PlayerInput};
-                    let key_reload = |p: usize| {
-                        bus.controls.guns.get(p).is_some_and(|g| g.keys_reload.iter().any(|k| devices.key(k)))
-                    };
-                    let (reload0, reload1) = (key_reload(0), key_reload(1));
-                    let mut stick = self.stick.update(&devices);
+                    use model2::input::{apply_gun, held, GunState};
+                    let (reload0, reload1) = (held(&devices, b.reload(0)), held(&devices, b.reload(1)));
+                    let mut stick = self.stick.update(&devices, b);
                     if self.mouse_used {
                         let [trigger, reload] = self.mouse_buttons;
                         apply_gun(bus, 0, GunState { at: mouse_aim, trigger, reload: reload || reload0 });
@@ -635,6 +662,11 @@ impl Play {
         if self.splash.active() && self.poll_pads() {
             self.splash.skip();
         }
+        // The game isn't reading the pads while the menu is open: the
+        // Controls page may be waiting for one.
+        if self.menu.open {
+            self.poll_pads();
+        }
         let t0 = Instant::now();
         let mut ran = 0;
         let result = self.emulate();
@@ -703,16 +735,18 @@ impl Play {
             };
             let (menu, settings, splash, bezel) =
                 (&mut self.menu, &mut self.settings, &mut self.splash, &mut self.bezel);
+            let no_game = self.session.is_none();
+            let mut bindings = self.session.as_mut().map(|s| &mut s.bindings);
             let scale = g.window.scale_factor() as f32;
             let size = [g.config.width, g.config.height];
-            actions = draw_overlay(g, &target, self.session.is_none(), size, |ctx| {
+            actions = draw_overlay(g, &target, no_game, size, |ctx| {
                 if let (Some(b), Some((rect, pic))) = (bezel.as_mut(), bezel_at) {
                     b.paint(ctx, rect, pic, size[0] as f32, scale);
                 }
                 if let Some((x, y)) = crosshair {
                     draw_crosshair(ctx, egui::pos2(x / scale, y / scale));
                 }
-                let actions = menu.ui(ctx, settings, &view);
+                let actions = menu.ui(ctx, settings, &view, bindings.as_deref_mut());
                 // Over the game or the menu, fading to show it.
                 splash.ui(ctx);
                 actions
@@ -748,6 +782,11 @@ impl Play {
                     self.set_menu(self.session.is_none());
                 }
                 menu::Action::Rescan => self.scan(),
+                menu::Action::Bindings => {
+                    if let Some(s) = &self.session {
+                        settings::save_bindings(s.game, &s.bindings);
+                    }
+                }
                 menu::Action::Quit => self.quit(el),
             }
         }
@@ -978,6 +1017,23 @@ impl ApplicationHandler for Play {
             };
             if press {
                 return self.splash.skip();
+            }
+        }
+        // Remapping: the next key binds (Esc cancels), and doesn't reach the
+        // menu.
+        if self.menu.capture.is_some() {
+            if let WindowEvent::KeyboardInput { event, .. } = &event {
+                if event.state == ElementState::Pressed && !event.repeat {
+                    match event.physical_key {
+                        PhysicalKey::Code(KeyCode::Escape) => self.menu.capture = None,
+                        PhysicalKey::Code(k) => match controls::code_name(k) {
+                            Some(name) => self.capture(romset::bindings::Capture::Key(name.to_string())),
+                            None => self.menu.notify("That key can't be bound: pick another"),
+                        },
+                        _ => self.menu.notify("That key can't be bound: pick another"),
+                    }
+                }
+                return;
             }
         }
         let to_menu = match &mut self.gpu {

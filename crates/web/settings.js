@@ -7,14 +7,21 @@
 // (named as the settings are).
 // A game stores only the settings that differ from the defaults under it,
 // so changing the defaults for all games reaches every game that hasn't
-// set its own.
+// set its own. The remapped controls (`controls`) are only ever a game's
+// own: what they bind depends on the game.
 
 /// The default mix in dB, sound board and music board:
 /// `model2::audio::DEFAULT_MIX` (the game's own level is added to both).
 export const MIX = [8, -8];
 
 /// Every setting, in panel order.
-export const KEYS = ["height", "aspect", "hud", "bezel", "sound", "sfx", "music", "touch", "tilt", "geo"];
+export const KEYS = ["height", "aspect", "hud", "bezel", "sound", "sfx", "music", "touch", "tilt", "geo", "controls"];
+/// Settings kept per game only, never as the defaults for all games:
+/// `controls` is the game's remapped keys and pad bindings, as the module
+/// keeps them (`romset::bindings`: one `slot = bindings` line per change
+/// from the manifest; "" for none). The module parses it and ignores what
+/// it can't, so here it only has to be a string of sensible size.
+export const PER_GAME = ["controls"];
 /// Settings a running game can't change: they apply on a restart.
 export const RESTART = ["height", "aspect", "sound", "geo"];
 
@@ -35,6 +42,7 @@ export function builtin(env = {}) {
     touch: !!env.touchScreen,
     tilt: false,
     geo: "worker",
+    controls: "",
   };
 }
 
@@ -70,6 +78,8 @@ export function clean(key, v) {
     }
     case "geo":
       return v === "worker" || v === "local" ? v : undefined;
+    case "controls":
+      return typeof v === "string" && v.length <= 16384 ? v : undefined;
   }
   return undefined;
 }
@@ -114,6 +124,7 @@ export function readStore(storage) {
     const s = JSON.parse(storage?.getItem(STORE) ?? "null");
     if (s && typeof s === "object") {
       store.defaults = cleanAll(s.defaults);
+      for (const k of PER_GAME) delete store.defaults[k];
       for (const [g, o] of Object.entries(s.games ?? {})) {
         const c = cleanAll(o);
         if (Object.keys(c).length) store.games[g] = c;
@@ -167,7 +178,7 @@ export function commit(base, store, game, values, { forAll = false, skip = false
     if (keep.includes(k)) continue;
     const v = clean(k, values[k]);
     if (v === undefined) continue;
-    if (forAll) {
+    if (forAll && !PER_GAME.includes(k)) {
       if (v === base[k]) delete out.defaults[k];
       else out.defaults[k] = v;
       delete own[k];

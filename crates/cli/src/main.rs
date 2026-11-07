@@ -362,7 +362,7 @@ fn main() -> ExitCode {
             println!("  {:<10} analog channel {}, centre 0x{:02x}", a.name, a.channel, a.centre);
         }
         println!("coin-start = {}", c.coin_start);
-        println!("player bindings (keys / pad):\n{}", c.describe().trim_end());
+        println!("player bindings (keys / pad):\n{}", romset::Bindings::defaults(c).describe().trim_end());
         return ExitCode::SUCCESS;
     }
     let verify = cmd == "verify";

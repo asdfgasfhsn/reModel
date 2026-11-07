@@ -113,7 +113,8 @@
   // shared interpreter build (the meta tag above).
   const pkg = new URL(document.querySelector('meta[name="remodel-pkg"]').content, location.href).href;
   const { default: init, start, set_geo_frame, set_touch, set_gun, view_point, stick_cursor, set_audio_level,
-    set_paused, set_hud, controls_help, controls_table, touch_layout, game_title, rom_files } =
+    set_paused, set_hud, controls_help, touch_layout, game_title, rom_files, set_bindings, bindings_view,
+    bindings_capture, bindings_edit } =
     await import(pkg + "remodel_web.js");
 
   // Settings (settings.js): built-in defaults < stored for all games <
@@ -234,6 +235,8 @@
     save(r);
     if (r.action === "restart") return restart();
     set_hud(values.hud !== "center");
+    set_bindings(values.controls);
+    showKeys();
     worker?.postMessage({ type: "mix", mix: [values.sfx, values.music] });
     if (touch && values.touch !== before.touch) {
       touch.show(values.touch);
@@ -242,7 +245,7 @@
     if (touch && values.tilt !== before.tilt) touch.tilt(values.tilt, tiltAsk ?? tiltPermission());
     tiltAsk = null;
     run = { ...run, hud: values.hud, bezel: values.bezel, sfx: values.sfx, music: values.music, touch: values.touch,
-      tilt: values.tilt };
+      tilt: values.tilt, controls: values.controls };
     placeBezel();
     set_paused(false);
   }
@@ -308,6 +311,9 @@
   }
   for (const ev of ["pointerdown", "keydown", "touchend"]) addEventListener(ev, () => run?.sound && enableAudio());
 
+  // The bar's list of keys, as remapped.
+  const showKeys = () => (document.getElementById("keys").textContent =
+    controls_help(game, values.controls).trim().replace(/\n\s*/g, " · ").replace(/ {2,}/g, " ") + " · ");
   const toggleBar = () => document.getElementById("bar").classList.toggle("hidden");
   addEventListener("keydown", (e) => {
     if (e.code === "KeyF") document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
@@ -374,7 +380,13 @@
       const module = await WebAssembly.compile(await code.arrayBuffer());
       await init({ module_or_path: module });
       const layout = JSON.parse(touch_layout(game));
-      panel.setControls(JSON.parse(controls_table(game)), layout);
+      // The panel remaps through the module (romset::bindings), which keeps
+      // the player's changes as text in the settings (`controls`).
+      panel.setControls({
+        view: (o) => JSON.parse(bindings_view(game, o)),
+        capture: (o, slot, index, kind, value) => JSON.parse(bindings_capture(game, o, slot, index, kind, value)),
+        edit: (o, op, slot, index) => bindings_edit(game, o, op, slot, index),
+      }, layout);
       await download(rom_files(game).map((f) => `${rom}/${f}`), "ROMs");
       progress("Ready");
       // Wait for Play (the panel may also have been opened from the gear).
@@ -384,7 +396,8 @@
       const opt = S.effective(values, env());
       progress("Starting…");
       document.title = `${game_title(game)} · Remodel`;
-      document.getElementById("keys").textContent = controls_help(game).trim().replace(/\n\s*/g, " · ").replace(/ {2,}/g, " ") + " · ";
+      set_bindings(values.controls);
+      showKeys();
       if (!opt.sound) soundLabel.textContent = "sound off";
       // On-screen controls (the game's, from its pad bindings): on touch
       // screens unless the settings say otherwise, with the bar out of the

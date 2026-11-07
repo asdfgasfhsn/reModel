@@ -1,7 +1,7 @@
 // The settings panel (docs/web.md, "Settings"): an HTML overlay shown
 // before a game starts, and from the gear button (or Esc) while it runs.
 // settings.js says what the settings are and how they're stored; this draws
-// them, from the game's manifest data (the module's `controls_table` and
+// them, from the game's manifest data (the module's `bindings_view` and
 // `touch_layout`) and nothing game-specific.
 //
 // Keyboard: Tab and the arrow keys move and change, Enter plays (or
@@ -9,6 +9,12 @@
 // moves, left and right changes, A presses the focused button or toggles
 // a box (else plays), Start plays, B resumes in game. Keys pressed while
 // the panel is open don't reach the game.
+//
+// Remapping (the Controls section): click or tap a binding (or +), then
+// press a key or gamepad button, or for an axis move a stick or press a
+// trigger; Esc cancels. The module does the binding (`bindings_capture`,
+// `bindings_edit`: the same rules as the native player) and says what it
+// refuses; the panel only finds out what was pressed.
 
 import { RESTART, differ, screenHeight, windowAspect } from "./settings.js";
 
@@ -61,6 +67,20 @@ const STYLE = `
 #settings kbd { display: inline-block; min-width: 1.6em; padding: 0 4px; margin: 0 2px 2px 0; border: 1px solid #2c3a48;
   border-bottom-width: 2px; border-radius: 4px; font: 12px/1.5 ui-monospace, monospace; text-align: center;
   background: #0d141d; color: #f2f4f8; }
+#settings .bind { display: inline-flex; align-items: center; margin: 0 4px 4px 0; border: 1px solid #2c3a48;
+  border-radius: 6px; background: #0d141d; }
+#settings .bind button, #settings .add, #settings .mini { min-height: 32px; padding: 0 8px; border-radius: 6px; border: 0;
+  background: none; font: 600 13px system-ui, sans-serif; color: #f2f4f8; }
+#settings .bind .x { color: #8b93a3; padding: 0 6px; }
+#settings .add, #settings .mini { border: 1px dashed #2c3a48; margin: 0 4px 4px 0; color: #8b93a3; }
+#settings .bind.wait { border-color: #ffd479; background: #3a2a05; }
+#settings .bind.wait button { color: #ffd479; }
+#settings tr.changed td:first-child::after { content: " •"; color: #2fe6ef; }
+#settings .warn { color: #ffb347; font-size: 12px; font-weight: 600; }
+#settings tr.conflict td { background: rgba(255, 179, 71, 0.07); }
+#settings .msg { min-height: 1.3em; margin: 0 0 8px; font-size: 13px; color: #ffd479; }
+#settings .ctl-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+#settings .ctl-actions button { min-height: 40px; font-size: 14px; padding: 0 14px; }
 #settings footer { padding: 6px 16px 8px; border-top: 1px solid #142230; }
 /* Play stays in reach on a small screen. */
 #settings .actions { position: sticky; bottom: calc(-1 * max(16px, env(safe-area-inset-bottom)));
@@ -150,8 +170,8 @@ export function createPanel(opts) {
     onOff("bezel", "Bezel", "beside a 4:3 picture in a wider window"));
   const sound = el("section", {}, el("h3", { textContent: "Sound" }),
     onOff("sound", "Sound"), slider("sfx", "Effects"), slider("music", "Music"));
-  // Controls: read-only, filled in once the game's module is loaded.
-  const table = el("p", { className: "hint", textContent: "Loading the game's controls…" });
+  // Controls: filled in once the game's module is loaded (setControls).
+  let table = el("p", { className: "hint", textContent: "Loading the game's controls…" });
   const controls = el("section", {}, el("h3", { textContent: "Controls" }), table);
   const touchRows = el("div");
   if (env.touchScreen || source.touch === "link") {
@@ -207,6 +227,7 @@ export function createPanel(opts) {
   reset.addEventListener("click", () => {
     for (const k of Object.keys(opts.base)) {
       if (k === "touch") continue; // the device's choice; Defaults shouldn't hide the controls
+      if (k === "controls") continue; // the Controls section has its own reset
       update(k, opts.base[k]);
       rows[k]?.draw();
     }
@@ -214,6 +235,7 @@ export function createPanel(opts) {
 
   const finish = (action) => {
     if (!resolveShow) return;
+    capture = null;
     const r = resolveShow;
     resolveShow = null;
     root.hidden = true;
@@ -234,6 +256,14 @@ export function createPanel(opts) {
   // when it opened is released).
   function onKey(e) {
     e.stopPropagation();
+    if (capture) {
+      // Remapping: this key binds (Esc cancels).
+      e.preventDefault();
+      if (e.repeat) return;
+      if (e.code === "Escape") endCapture();
+      else captured("key", e.code);
+      return;
+    }
     if (e.key === "Enter") {
       // The focused button (Defaults, Restart, Play), else Play.
       e.preventDefault();
@@ -280,6 +310,11 @@ export function createPanel(opts) {
     const pad = [...(navigator.getGamepads?.() ?? [])].find((p) => p);
     if (!pad) return;
     const b = (i) => pad.buttons[i]?.pressed;
+    if (capture) {
+      padCapture(pad);
+      held = null;
+      return;
+    }
     const x = pad.axes[0] ?? 0;
     const y = pad.axes[1] ?? 0;
     const now = {
@@ -309,6 +344,185 @@ export function createPanel(opts) {
     held = now;
   }
 
+  // Remapping. `capture`: {slot, index (-1 adds), accepts} while waiting
+  // for a key, button or stick; `base` the pad as it was when it started
+  // (what's already held or off centre doesn't count).
+  let binder = null;
+  let touchLayout = {};
+  let capture = null;
+  let showUnbound = false;
+  const msg = el("p", { className: "msg", role: "status" });
+  msg.setAttribute("aria-live", "polite");
+  const say = (text) => (msg.textContent = text);
+  function startCapture(row, index) {
+    capture = { slot: row.slot, index, accepts: row.accepts, label: row.label, base: null };
+    say(row.accepts === "axis"
+      ? `${row.label}: move a stick the way that reads +, or press a trigger… (Esc cancels)`
+      : `${row.label}: press a key or gamepad button… (Esc cancels)`);
+    drawControls();
+  }
+  function endCapture(text = "") {
+    capture = null;
+    say(text);
+    drawControls();
+  }
+  function setOverrides(o) {
+    update("controls", o);
+    drawControls();
+  }
+  // What was pressed: the module binds it, or says why not (then keep
+  // waiting, for another key).
+  function captured(kind, value) {
+    const r = binder.capture(values.controls, capture.slot, capture.index, kind, value);
+    if (r.error) {
+      say(r.error);
+      return;
+    }
+    const label = capture.label;
+    capture = null;
+    setOverrides(r.overrides);
+    say(`${label}: bound.`);
+  }
+  function padCapture(pad) {
+    const now = { buttons: pad.buttons.map((x) => x.pressed || x.value > 0.5), axes: [...pad.axes] };
+    const base = capture.base;
+    capture.base = now;
+    if (!base) return;
+    // Standard buttons only (16 and on are the guide button and extras).
+    for (let i = 0; i < Math.min(16, now.buttons.length); i++) {
+      if (now.buttons[i] && !base.buttons[i]) return captured("button", String(i));
+    }
+    if (capture.accepts !== "axis") return;
+    for (let i = 0; i < Math.min(4, now.axes.length); i++) {
+      const v = now.axes[i];
+      if (Math.abs(v) > 0.6 && Math.abs(base.axes[i] ?? 0) < 0.3) return captured("axis", `${i}${v < 0 ? "-" : "+"}`);
+      // Still near centre: a move from here counts.
+      if (Math.abs(v) >= 0.3) now.axes[i] = base.axes[i];
+    }
+  }
+  function drawControls() {
+    if (!binder) return;
+    const view = binder.view(values.controls);
+    const touch = env.touchScreen || values.touch;
+    const touchOf = (row) => {
+      if (row.accepts === "none") return touchLayout.gun && row.label.startsWith("Aim") ? "tap the picture" : "";
+      if (!row.input) return "";
+      const items = [...(touchLayout.top ?? []), ...(touchLayout.actions ?? [])];
+      if (row.accepts === "axis") {
+        const t = items.find((i) => i.trigger && (i.label === row.input || i.label.startsWith(row.input + " ")));
+        if (t) return t.label;
+        return touchLayout.steer && row.axis.text === "left stick ↔" && row.default ? "drag on the left, or Tilt" : "";
+      }
+      if (row.label !== row.input) return "";
+      return items.find((i) => i.label === row.input && !i.trigger)?.label ?? "";
+    };
+    const waiting = (row, i) => capture && capture.slot === row.slot && capture.index === i;
+    const chip = (row, text, i, removable = true) => {
+      const pick = el("button", { type: "button", textContent: waiting(row, i) ? "press…" : text });
+      pick.title = "Change: click, then press the new key or button";
+      pick.addEventListener("click", () => startCapture(row, i));
+      const box = el("span", { className: "bind" + (waiting(row, i) ? " wait" : "") }, pick);
+      if (removable) {
+        const x = el("button", { type: "button", className: "x", textContent: "×" });
+        x.setAttribute("aria-label", `Remove ${text} from ${row.label}`);
+        x.addEventListener("click", () => {
+          setOverrides(binder.edit(values.controls, "remove", row.slot, i));
+          say(`${row.label}: ${text} removed.`);
+        });
+        box.append(x);
+      }
+      return box;
+    };
+    const add = (row) => {
+      const b = el("button", { type: "button", className: "add", textContent: waiting(row, -1) ? "press…" : "+" });
+      b.setAttribute("aria-label", `Add a binding to ${row.label}`);
+      b.addEventListener("click", () => startCapture(row, -1));
+      return b;
+    };
+    const head = el("tr", {}, el("th", { textContent: "" }), el("th", { textContent: "Keyboard" }),
+      el("th", { textContent: "Gamepad" }));
+    if (touch) head.append(el("th", { textContent: "Touch" }));
+    const body = [];
+    let hidden = 0;
+    for (const row of view.rows) {
+      if (row.unbound && !showUnbound && !waiting(row, -1)) {
+        hidden++;
+        continue;
+      }
+      const keys = el("td");
+      const pad = el("td");
+      if (row.fixed) keys.append(row.fixed + " ");
+      if (row.accepts === "axis") {
+        keys.append(el("span", { className: "hint", textContent: "keys: − and + below" }));
+        const none = !row.axis.text;
+        pad.append(chip(row, none ? "none" : row.axis.text, -1, !none));
+        if (!none) {
+          const inv = el("button", { type: "button", className: "mini",
+            textContent: row.axis.invert ? "inverted ✓" : "invert" });
+          inv.setAttribute("aria-pressed", String(row.axis.invert));
+          inv.addEventListener("click", () => setOverrides(binder.edit(values.controls, "invert", row.slot, 0)));
+          pad.append(inv);
+        }
+      } else if (row.accepts !== "none") {
+        row.items.forEach((it, i) => (it.token.startsWith("pad:") ? pad : keys).append(chip(row, it.text, i)));
+        if (row.accepts === "inputs") keys.append(add(row));
+        pad.append(add(row));
+      }
+      const name = el("td", { textContent: row.label });
+      if (row.conflicts?.length) name.append(el("div", { className: "warn", textContent: "⚠ " + row.conflicts.join("; ") }));
+      if (row.slot && !row.default) {
+        const reset = el("button", { type: "button", className: "mini", textContent: "↺" });
+        reset.title = "Back to this input's defaults";
+        reset.setAttribute("aria-label", `Reset ${row.label}`);
+        reset.addEventListener("click", () => setOverrides(binder.edit(values.controls, "reset", row.slot, 0)));
+        name.append(" ", reset);
+      }
+      const tr = el("tr", { className: [row.slot && !row.default ? "changed" : "",
+        row.conflicts?.length ? "conflict" : ""].join(" ").trim() }, name, keys, pad);
+      if (touch) tr.append(el("td", { textContent: touchOf(row) }));
+      body.push(tr);
+    }
+    const focused = document.activeElement?.getAttribute?.("aria-label") ?? document.activeElement?.textContent;
+    const next = el("div", {});
+    if (view.conflicts) {
+      next.append(el("p", { className: "warn",
+        textContent: `⚠ ${view.conflicts === 1 ? "A key or button is" : `${view.conflicts} keys or buttons are`} ` +
+          "bound to two inputs: both get it." }));
+    }
+    next.append(el("table", {}, el("thead", {}, head), el("tbody", {}, ...body)), msg);
+    const actions = el("div", { className: "ctl-actions" });
+    if (hidden || showUnbound) {
+      const more = el("button", { type: "button",
+        textContent: showUnbound ? "Hide unbound inputs" : `Show ${hidden} unbound input${hidden === 1 ? "" : "s"}` });
+      more.addEventListener("click", () => {
+        showUnbound = !showUnbound;
+        drawControls();
+      });
+      actions.append(more);
+    }
+    const resetAll = el("button", { type: "button", textContent: "Reset controls to defaults" });
+    resetAll.disabled = !values.controls;
+    resetAll.addEventListener("click", () => {
+      capture = null;
+      setOverrides(binder.edit(values.controls, "reset-all", "", 0));
+      say("Controls back to the game's defaults.");
+    });
+    actions.append(resetAll);
+    next.append(actions, el("p", { className: "hint",
+      textContent: "Click a binding to change it, × to remove it, + to add one. Esc, F5, F9, F11, F and H stay the " +
+        "player's own. Kept for this game only." }));
+    next.id = "controls-table";
+    table.replaceWith(next);
+    table = next;
+    // Keep the focus where it was across the redraw (gamepad and keyboard
+    // navigation).
+    if (focused && card.contains(document.activeElement) === false) {
+      const same = [...next.querySelectorAll("button")].find((b) =>
+        (b.getAttribute("aria-label") ?? b.textContent) === focused);
+      same?.focus({ preventScroll: true });
+    }
+  }
+
   return {
     /// Show it: `mode` "start" (before the game, Play) or "game" (while it
     /// runs, Resume, and Restart when needed; `current` the settings it's
@@ -330,28 +544,14 @@ export function createPanel(opts) {
     get open() {
       return resolveShow !== null;
     },
-    /// The game's controls: `table` from `controls_table`, `layout` from
+    /// The game's controls, editable: `binder` reaches the module
+    /// (`view(overrides)`, `capture(overrides, slot, index, kind, value)`,
+    /// `edit(overrides, op, slot, index)`; see game.html), `layout` is
     /// `touch_layout` (a touch column, and tilt where it steers).
-    setControls(list, layout) {
-      const touchOf = (row) => {
-        if (row.gun) return row.label.startsWith("Aim") ? "tap the picture" : "";
-        const items = [...(layout.top ?? []), ...(layout.actions ?? [])];
-        const hit = items.find((i) => i.label === row.label || i.label.startsWith(row.label + " "));
-        if (hit) return hit.label;
-        return layout.steer && row.pad.includes("left stick ↔") ? "drag on the left, or Tilt" : "";
-      };
-      const touch = env.touchScreen || values.touch;
-      const head = el("tr", {}, el("th", { textContent: "" }), el("th", { textContent: "Keyboard" }),
-        el("th", { textContent: "Gamepad" }));
-      if (touch) head.append(el("th", { textContent: "Touch" }));
-      const body = list.map((r) => {
-        const tr = el("tr", {}, el("td", { textContent: r.label }),
-          el("td", {}, ...r.keys.map((k) => (k.includes(" ") ? k + " " : el("kbd", { textContent: k })))),
-          el("td", { textContent: r.pad.join(", ") }));
-        if (touch) tr.append(el("td", { textContent: touchOf(r) }));
-        return tr;
-      });
-      table.replaceWith(el("table", {}, el("thead", {}, head), el("tbody", {}, ...body)));
+    setControls(b, layout) {
+      binder = b;
+      touchLayout = layout;
+      drawControls();
       if (layout.steer && (env.touchScreen || source.touch === "link")) {
         touchRows.append(onOff("tilt", "Tilt steering", "turn the device like a wheel"));
         refresh();

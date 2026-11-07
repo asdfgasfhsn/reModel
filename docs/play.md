@@ -26,6 +26,8 @@ its manifest (`crates/romset/src/games/<set>.rs`, `Controls`); the native
 player, the browser build and scripted `--input` all read them.
 `make inputs GAME=<set>` lists them. Gamepads use the standard layout
 (A/B/X/Y named as on an Xbox pad); the one used last drives the game.
+Players can remap them per game (below, "Remapping"); the tables here are
+the defaults.
 
 ### Top Skater (`topskatr`)
 
@@ -268,6 +270,8 @@ CALIBRATION in the test menu changes that.
   SHARC blocks; 6.8 ms now) would run it dry
   every few seconds, modelled from its frame costs; the title bar counts
   underruns.
+- **Controls** (the button beside Resume): remap the game's keys and
+  gamepad bindings, below.
 - **Game**: the ROM folder and the supported sets found in it. Sets are
   read as MAME keeps them: `<set>.zip` or a `<set>/` folder, and a
   supported clone is listed after its parent when its chips are in the
@@ -276,6 +280,41 @@ CALIBRATION in the test menu changes that.
   The ROM folder defaults to `rom/` in the source tree (or wherever the
   current directory has a `rom/` folder), else to `roms/` beside the
   settings (`~/.local/share/remodel/roms`), created on first run.
+
+## Remapping
+
+The menu's Controls page lists every input of the game being played with
+its keys and gamepad bindings. Click a binding, then press the key or
+gamepad button that should replace it; **+** adds one (an input can have
+several), **×** removes one, **reset** puts one input back, and "Reset to
+defaults" all of them. Esc cancels waiting for a key. Analog inputs (a
+wheel, pedals, a ski angle) have three rows: the axis (click it, then move
+a stick the way that should read as `+`, which binds it inverted if
+that's left or up, or press a trigger; "invert" flips it, × leaves it
+with none), and the keys or buttons that hold it at full `−` and `+`
+(Left and Right for a wheel, as before). Light-gun games keep the mouse as
+the gun; their trigger and reload keys are rows like any other, and so are
+the buttons that fire and reload the gamepad's crosshair (pad buttons
+only). Inputs the manifest leaves unbound (the second coin slot, test,
+service, player 2 in `doa`) are behind "Show unbound inputs".
+
+A key or button bound to two inputs is allowed (both get it) but marked
+⚠ with the other input's name, except where the manifest itself binds it
+so (`skisuprg`'s two ski angles share the arrows on purpose). The player's
+own keys (Esc, F5, F9, F11) can't be bound: pressing one while it waits
+says so and waits for another.
+
+Changes apply at once and are kept per game in
+`<data dir>/<set>/controls.txt` (`out/<set>/` in the source tree, else
+`~/.local/share/remodel/<set>/`), beside its EEPROM and saves: only what
+differs from the manifest, one line per changed input (`jumpfront =
+KeyX pad:South`, `curving.axis = -RightStickX`, `slide+ =` for none;
+`romset::bindings` describes the format). The file is removed when
+everything is back to the defaults; a line that doesn't parse (an unknown
+input, a bad or reserved key) is ignored. The browser build remaps through
+the same code and keeps the same text in its settings. Scripted `--input`
+ignores bindings: it names the cabinet's inputs, so runs, oracles and
+state hashes don't change.
 
 Later, the browser build's game list (`docs/web.md`: a card per game with
 an attract mode screenshot, its year and controls, grouped by board) could

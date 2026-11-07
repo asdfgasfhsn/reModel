@@ -235,10 +235,11 @@ pub fn set_analog(bus: &mut Model2Bus, name: &str, value: u8) -> bool {
     true
 }
 
-/// Gamepad bindings for aiming a gun with a stick ([`StickCursor`]): both
-/// sticks move it, these fire and reload.
-pub const PAD_GUN_TRIGGER: &[romset::PadButton] = &[romset::PadButton::RightTrigger, romset::PadButton::South];
-pub const PAD_GUN_RELOAD: &[romset::PadButton] = &[romset::PadButton::LeftTrigger, romset::PadButton::East];
+use romset::bindings::{Bindings, Input};
+/// Default gamepad bindings for aiming a gun with a stick ([`StickCursor`]):
+/// both sticks move it, these fire and reload (players can rebind them,
+/// `romset::bindings`).
+pub use romset::bindings::{PAD_GUN_FIRE as PAD_GUN_TRIGGER, PAD_GUN_RELOAD};
 
 /// A gun aimed with a gamepad: a cursor the sticks move, for players
 /// without a mouse or touch screen (or for player 2 beside a mouse).
@@ -259,8 +260,9 @@ impl StickCursor {
     /// second for the whole screen).
     const SPEED: f32 = 1.0 / 50.0;
 
-    /// Move by one frame of the pad's sticks and read its buttons.
-    pub fn update(&mut self, p: &impl PlayerInput) -> GunState {
+    /// Move by one frame of the pad's sticks and read its fire and reload
+    /// buttons (`b`'s).
+    pub fn update(&mut self, p: &dyn PlayerInput, b: &Bindings) -> GunState {
         use romset::PadAxis::*;
         let pick = |a: f32, b: f32| if a.abs() > b.abs() { a } else { b };
         let dx = pick(p.pad_axis(RightStickX), p.pad_axis(LeftStickX));
@@ -268,11 +270,7 @@ impl StickCursor {
         // Same speed in screen distance both ways (the view is 4:3).
         self.at.0 = (self.at.0 + dx * Self::SPEED).clamp(0.0, 0.999);
         self.at.1 = (self.at.1 + dy * Self::SPEED * 4.0 / 3.0).clamp(0.0, 0.999);
-        GunState {
-            at: Some(self.at),
-            trigger: PAD_GUN_TRIGGER.iter().any(|&b| p.pad_button(b)),
-            reload: PAD_GUN_RELOAD.iter().any(|&b| p.pad_button(b)),
-        }
+        GunState { at: Some(self.at), trigger: held(p, b.pad_fire()), reload: held(p, b.pad_reload()) }
     }
 }
 
@@ -286,28 +284,52 @@ pub trait PlayerInput {
     fn pad_axis(&self, a: romset::PadAxis) -> f32;
 }
 
-/// Set every control of the game from a player's keyboard and pad, with
-/// the manifest's default bindings. `extra_button` reports other sources
-/// (on-screen touch buttons) by input name.
-pub fn apply_player(bus: &mut Model2Bus, p: &impl PlayerInput, extra_button: impl Fn(&str) -> bool) {
+/// Whether any of `inputs` is held on `p`.
+pub fn held(p: &dyn PlayerInput, inputs: &[Input]) -> bool {
+    inputs.iter().any(|i| match i {
+        Input::Key(k) => p.key(k),
+        Input::Pad(b) => p.pad_button(*b),
+    })
+}
+
+/// Set every control of the game from a player's devices, each read
+/// through its bindings (`romset::Bindings`: the manifest's, or the
+/// player's remapped ones; the browser reads its touch controls through
+/// the manifest's, whatever the keys and pad are remapped to). A button is
+/// down if any source holds it; an analog follows the source deflecting it
+/// most, keys and buttons holding it at full deflection over its axis.
+pub fn apply_player(bus: &mut Model2Bus, sources: &[(&Bindings, &dyn PlayerInput)]) {
     let controls = bus.controls;
-    for a in controls.analogs {
-        let held = |keys: &[&str], pad: &[romset::PadButton]| {
-            keys.iter().any(|k| p.key(k)) || pad.iter().any(|&b| p.pad_button(b))
-        };
-        let deflection = if held(a.keys_neg, a.pad_neg) {
-            -1.0
-        } else if held(a.keys_pos, a.pad_pos) {
-            1.0
-        } else {
-            p.pad_axis(a.axis)
-        };
-        bus.analog[a.channel as usize] = a.value(deflection);
+    let (buttons, analogs) = read_player(controls, sources);
+    for (a, v) in controls.analogs.iter().zip(analogs) {
+        bus.analog[a.channel as usize] = v;
     }
-    for b in controls.buttons {
-        let down = b.keys.iter().any(|k| p.key(k)) || b.pad.iter().any(|&x| p.pad_button(x)) || extra_button(b.name);
+    for (b, down) in controls.buttons.iter().zip(buttons) {
         set_button(bus, b.name, down);
     }
+}
+
+/// What [`apply_player`] sets: each button's state and each analog's value,
+/// in the manifest's order.
+fn read_player(controls: &Controls, sources: &[(&Bindings, &dyn PlayerInput)]) -> (Vec<bool>, Vec<u8>) {
+    let analogs = controls.analogs.iter().enumerate().map(|(i, a)| {
+        let mut deflection = 0.0f32;
+        for (b, p) in sources {
+            let d = if held(*p, b.neg(i)) {
+                -1.0
+            } else if held(*p, b.pos(i)) {
+                1.0
+            } else {
+                b.axis(i).read(|x| p.pad_axis(x))
+            };
+            if d.abs() > deflection.abs() {
+                deflection = d;
+            }
+        }
+        a.value(deflection)
+    });
+    let buttons = (0..controls.buttons.len()).map(|i| sources.iter().any(|(b, p)| held(*p, b.button(i))));
+    (buttons.collect(), analogs.collect())
 }
 
 #[cfg(test)]
@@ -361,5 +383,65 @@ mod tests {
             assert!(!s.events.is_empty());
             assert_eq!(s.events, direct.events, "{}", g.id);
         }
+    }
+
+    /// A keyboard and pad for tests: keys held, pad buttons held, one axis.
+    struct Fake {
+        keys: Vec<&'static str>,
+        pad: Vec<romset::PadButton>,
+        axis: (romset::PadAxis, f32),
+    }
+
+    impl PlayerInput for Fake {
+        fn key(&self, code: &str) -> bool {
+            self.keys.contains(&code)
+        }
+        fn pad_button(&self, b: romset::PadButton) -> bool {
+            self.pad.contains(&b)
+        }
+        fn pad_axis(&self, a: romset::PadAxis) -> f32 {
+            if a == self.axis.0 {
+                self.axis.1
+            } else {
+                0.0
+            }
+        }
+    }
+
+    fn fake(keys: &[&'static str], pad: &[romset::PadButton], axis: (romset::PadAxis, f32)) -> Fake {
+        Fake { keys: keys.to_vec(), pad: pad.to_vec(), axis }
+    }
+
+    #[test]
+    fn players_follow_their_bindings() {
+        use romset::{PadAxis, PadButton};
+        let c = topskatr();
+        let jump = c.buttons.iter().position(|b| b.name == "jumpfront").unwrap();
+        let tail = c.buttons.iter().position(|b| b.name == "jumptail").unwrap();
+        let defaults = Bindings::defaults(c);
+        // The manifest's: Z jumps, the left stick steers.
+        let p = fake(&["KeyZ"], &[], (PadAxis::LeftStickX, 1.0));
+        let (b, a) = read_player(c, &[(&defaults, &p)]);
+        assert!(b[jump] && !b[tail]);
+        assert_eq!(a[0], c.analogs[0].value(1.0));
+        // Remapped: J jumps (not Z), the right stick steers, inverted.
+        let text = "jumpfront = KeyJ\ncurving.axis = -RightStickX\n";
+        let mine = Bindings::with_overrides(c, text, romset::bindings::RESERVED_KEYS);
+        let (b, a) = read_player(c, &[(&mine, &p)]);
+        assert!(!b[jump]);
+        assert_eq!(a[0], c.analogs[0].value(0.0));
+        let q = fake(&["KeyJ"], &[], (PadAxis::RightStickX, 0.5));
+        let (b, a) = read_player(c, &[(&mine, &q)]);
+        assert!(b[jump]);
+        assert_eq!(a[0], c.analogs[0].value(-0.5));
+        // A key held overrides the axis; two sources merge (the browser's
+        // touch controls through the manifest's bindings).
+        let r = fake(&["ArrowRight"], &[], (PadAxis::RightStickX, -1.0));
+        assert_eq!(read_player(c, &[(&mine, &r)]).1[0], c.analogs[0].value(1.0));
+        let touch = fake(&[], &[PadButton::South], (PadAxis::LeftStickX, -0.25));
+        let none = fake(&[], &[], (PadAxis::None, 0.0));
+        let (b, a) = read_player(c, &[(&mine, &none), (&defaults, &touch)]);
+        assert!(b[jump]);
+        assert_eq!(a[0], c.analogs[0].value(-0.25));
     }
 }

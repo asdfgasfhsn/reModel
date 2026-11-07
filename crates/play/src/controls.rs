@@ -1,8 +1,10 @@
 //! The keyboard and gamepad as a [`model2::input::PlayerInput`]: the
 //! game's manifest names its bindings as W3C key codes and standard-pad
-//! buttons and axes, mapped here onto winit and gilrs.
+//! buttons and axes, mapped here onto winit and gilrs (and back, for
+//! capturing what a player presses to remap a control).
 
 use gilrs::{Axis, Button};
+use romset::bindings::Capture;
 use romset::{PadAxis, PadButton};
 use std::collections::HashSet;
 use winit::keyboard::KeyCode;
@@ -71,23 +73,62 @@ fn button(b: PadButton) -> Button {
     }
 }
 
-/// winit's key for a `KeyboardEvent.code` (winit uses the same names).
-pub fn key_code(code: &str) -> Option<KeyCode> {
-    use KeyCode::*;
-    macro_rules! keys {
-        ($($k:ident)*) => {
+/// The keys a game can be bound to (and the player's own, so capturing
+/// one can say it's taken): winit names them as `KeyboardEvent.code` does.
+macro_rules! keys {
+    ($($k:ident)*) => {
+        /// winit's key for a `KeyboardEvent.code`.
+        pub fn key_code(code: &str) -> Option<KeyCode> {
             match code {
-                $(stringify!($k) => Some($k),)*
+                $(stringify!($k) => Some(KeyCode::$k),)*
                 _ => None,
             }
-        };
+        }
+
+        /// The `KeyboardEvent.code` of a winit key, if it's one of these.
+        pub fn code_name(key: KeyCode) -> Option<&'static str> {
+            match key {
+                $(KeyCode::$k => Some(stringify!($k)),)*
+                _ => None,
+            }
+        }
+    };
+}
+
+keys!(
+    KeyA KeyB KeyC KeyD KeyE KeyF KeyG KeyH KeyI KeyJ KeyK KeyL KeyM KeyN KeyO KeyP KeyQ KeyR KeyS KeyT KeyU
+    KeyV KeyW KeyX KeyY KeyZ Digit0 Digit1 Digit2 Digit3 Digit4 Digit5 Digit6 Digit7 Digit8 Digit9
+    ArrowLeft ArrowRight ArrowUp ArrowDown Enter Space Tab Backspace ShiftLeft ShiftRight ControlLeft
+    ControlRight AltLeft AltRight Comma Period Slash Semicolon Quote BracketLeft BracketRight Minus Equal
+    Backquote Backslash CapsLock Insert Delete Home End PageUp PageDown Escape
+    F1 F2 F3 F4 F5 F6 F7 F8 F9 F10 F11 F12
+    Numpad0 Numpad1 Numpad2 Numpad3 Numpad4 Numpad5 Numpad6 Numpad7 Numpad8 Numpad9
+    NumpadAdd NumpadSubtract NumpadMultiply NumpadDivide NumpadDecimal NumpadEnter
+);
+
+/// What a gamepad event gives when capturing a binding: a button pressed,
+/// or a stick moved well off centre (in the manifest's sense: down is
+/// positive).
+pub fn captured(ev: &gilrs::EventType) -> Option<Capture> {
+    match *ev {
+        gilrs::EventType::ButtonPressed(b, _) => pad_button(b).map(Capture::Button),
+        gilrs::EventType::AxisChanged(a, v, _) if v.abs() > 0.6 => {
+            let (axis, v) = match a {
+                Axis::LeftStickX => (PadAxis::LeftStickX, v),
+                Axis::LeftStickY => (PadAxis::LeftStickY, -v),
+                Axis::RightStickX => (PadAxis::RightStickX, v),
+                Axis::RightStickY => (PadAxis::RightStickY, -v),
+                _ => return None,
+            };
+            Some(Capture::Axis(axis, v < 0.0))
+        }
+        _ => None,
     }
-    keys!(
-        KeyA KeyB KeyC KeyD KeyE KeyF KeyG KeyH KeyI KeyJ KeyK KeyL KeyM KeyN KeyO KeyP KeyQ KeyR KeyS KeyT KeyU
-        KeyV KeyW KeyX KeyY KeyZ Digit0 Digit1 Digit2 Digit3 Digit4 Digit5 Digit6 Digit7 Digit8 Digit9
-        ArrowLeft ArrowRight ArrowUp ArrowDown Enter Space Tab Backspace ShiftLeft ShiftRight ControlLeft
-        ControlRight AltLeft AltRight Comma Period Slash Semicolon Quote BracketLeft BracketRight Minus Equal
-    )
+}
+
+/// The standard-pad button gilrs reports as `b`.
+fn pad_button(b: Button) -> Option<PadButton> {
+    PadButton::ALL.into_iter().find(|&p| button(p) == b)
 }
 
 #[cfg(test)]
@@ -106,6 +147,19 @@ mod tests {
             for k in keys {
                 assert!(key_code(k).is_some(), "{}: key {k}", g.id);
             }
+        }
+    }
+
+    #[test]
+    fn keys_and_buttons_map_both_ways() {
+        for k in ["KeyZ", "ArrowLeft", "Numpad5", "F5", "Escape"] {
+            assert_eq!(key_code(k).and_then(code_name), Some(k));
+        }
+        for k in romset::bindings::RESERVED_KEYS {
+            assert!(key_code(k).is_some(), "{k}");
+        }
+        for b in PadButton::ALL {
+            assert_eq!(pad_button(button(b)), Some(b));
         }
     }
 }

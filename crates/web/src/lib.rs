@@ -24,6 +24,7 @@
 #![cfg(target_arch = "wasm32")]
 
 use model2::video;
+use romset::bindings::{Bindings, Capture, Slot, Value};
 use romset::{PadAxis, PadButton};
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -57,6 +58,10 @@ struct App {
     format: wgpu::TextureFormat,
     view: video::View,
     keys: HashSet<String>,
+    /// The player's bindings ([`set_bindings`]), and the manifest's, which
+    /// the touch controls always go through (they're laid out from them).
+    bindings: Bindings,
+    defaults: Bindings,
     /// On-screen controls ([`set_touch`]): steering (-1 to 1), the right and
     /// left triggers (0 to 1) and held pad buttons (bits by index).
     touch: (f64, f64, f64, u32),
@@ -141,13 +146,47 @@ fn gamepad() -> Option<web_sys::Gamepad> {
     pads.iter().find_map(|p| p.dyn_into::<web_sys::Gamepad>().ok())
 }
 
-/// Keyboard, gamepad and touch as one player (W3C standard pad layout).
+/// The browser's own keys besides the players' (fullscreen, the bar):
+/// never bound to a game's input.
+const PAGE_KEYS: &[&str] = &["KeyF", "KeyH"];
+
+/// Keys the page won't bind: the players' own and the page's.
+fn reserved() -> Vec<&'static str> {
+    romset::bindings::RESERVED_KEYS.iter().chain(PAGE_KEYS).copied().collect()
+}
+
+/// Keyboard and gamepad (W3C standard pad layout), read through the
+/// player's bindings.
 struct Devices<'a> {
     keys: &'a HashSet<String>,
     pad: Option<web_sys::Gamepad>,
-    /// Touch steering (-1 to 1, the left stick), the right and left
-    /// triggers (0 to 1) and pad buttons (bits by index).
-    touch: (f64, f64, f64, u32),
+}
+
+/// The on-screen controls as a gamepad: steering (-1 to 1, the left
+/// stick), the right and left triggers (0 to 1) and pad buttons (bits by
+/// index). Read through the manifest's bindings, which they're laid out
+/// from.
+struct Touch((f64, f64, f64, u32));
+
+impl model2::input::PlayerInput for Touch {
+    fn key(&self, _: &str) -> bool {
+        false
+    }
+
+    fn pad_button(&self, b: romset::PadButton) -> bool {
+        self.0 .3 & 1 << b.index() != 0
+    }
+
+    fn pad_axis(&self, a: romset::PadAxis) -> f32 {
+        let (steer, right, left, _) = self.0;
+        match a {
+            PadAxis::LeftStickX => (steer as f32).clamp(-1.0, 1.0),
+            PadAxis::LeftTrigger => left as f32,
+            PadAxis::RightTrigger => right as f32,
+            PadAxis::Triggers => (right - left) as f32,
+            _ => 0.0,
+        }
+    }
 }
 
 impl Devices<'_> {
@@ -174,18 +213,15 @@ impl model2::input::PlayerInput for Devices<'_> {
     }
 
     fn pad_button(&self, b: romset::PadButton) -> bool {
-        self.touch.3 & 1 << b.index() != 0 || self.button(b.index()) > 0.5
+        self.button(b.index()) > 0.5
     }
 
     fn pad_axis(&self, a: romset::PadAxis) -> f32 {
-        let right_trigger = self.button(PadButton::RightTrigger.index()).max(self.touch.1 as f32);
-        let left_trigger = self.button(PadButton::LeftTrigger.index()).max(self.touch.2 as f32);
+        let right_trigger = self.button(PadButton::RightTrigger.index());
+        let left_trigger = self.button(PadButton::LeftTrigger.index());
         match a {
             PadAxis::None => 0.0,
-            PadAxis::LeftStickX => match self.axis(0) {
-                0.0 => (self.touch.0 as f32).clamp(-1.0, 1.0),
-                v => v,
-            },
+            PadAxis::LeftStickX => self.axis(0),
             PadAxis::LeftStickY => self.axis(1),
             PadAxis::RightStickX => self.axis(2),
             PadAxis::RightStickY => self.axis(3),
@@ -198,18 +234,19 @@ impl model2::input::PlayerInput for Devices<'_> {
 
 impl App {
     /// Map the keyboard, the first gamepad and the on-screen controls onto
-    /// the cabinet's, by the game's bindings (`romset::Controls`; the page
-    /// lists them).
+    /// the cabinet's: the keyboard and pad by the player's bindings (the
+    /// manifest's, remapped in the settings panel), the touch controls by
+    /// the manifest's.
     fn apply_inputs(&mut self) {
-        let devices = Devices { keys: &self.keys, pad: gamepad(), touch: self.touch };
+        let devices = Devices { keys: &self.keys, pad: gamepad() };
+        let touch = Touch(self.touch);
         let bus = &mut self.machine.bus;
-        model2::input::apply_player(bus, &devices, |_| false);
+        let b = &self.bindings;
+        model2::input::apply_player(bus, &[(b, &devices), (&self.defaults, &touch)]);
         if bus.controls.guns.is_empty() {
             return;
         }
-        let keys = &self.keys;
-        let key_reload =
-            |p: usize| bus.controls.guns.get(p).is_some_and(|g| g.keys_reload.iter().any(|k| keys.contains(*k)));
+        let key_reload = |p: usize| model2::input::held(&devices, b.reload(p));
         for (player, g) in self.guns.iter().enumerate() {
             if let Some(mut g) = *g {
                 g.reload |= key_reload(player);
@@ -220,7 +257,7 @@ impl App {
         self.stick_player = None;
         if devices.pad.is_some() {
             if let Some(player) = (0..bus.controls.guns.len()).find(|&p| self.guns[p].is_none()) {
-                let mut g = self.stick.update(&devices);
+                let mut g = self.stick.update(&devices, b);
                 g.reload |= key_reload(player);
                 model2::input::apply_gun(bus, player, g);
                 self.stick_player = Some(player);
@@ -392,6 +429,23 @@ impl App {
 thread_local! {
     /// The running app, for calls from the page after `start`.
     static APP: RefCell<Option<Rc<RefCell<App>>>> = const { RefCell::new(None) };
+    /// The player's remapped controls ([`set_bindings`]), for the game
+    /// `start` starts.
+    static OVERRIDES: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
+/// Use the player's remapped controls: `overrides` as the settings panel
+/// keeps them (`romset::bindings`; only what differs from the manifest).
+/// Before `start`, for the game it starts; after, from the next frame.
+#[wasm_bindgen]
+pub fn set_bindings(overrides: &str) {
+    OVERRIDES.with(|o| *o.borrow_mut() = overrides.to_string());
+    APP.with(|a| {
+        if let Some(app) = a.borrow().as_ref() {
+            let mut app = app.borrow_mut();
+            app.bindings = Bindings::with_overrides(app.defaults.controls(), overrides, &reserved());
+        }
+    });
 }
 
 /// On-screen controls, which act as a gamepad: `steer` (the left stick,
@@ -721,123 +775,151 @@ pub fn game_title(game: &str) -> String {
 }
 
 /// The game's controls with their keys and pad bindings, one per line
-/// (for the page's help bar).
+/// (for the page's help bar): the manifest's with the player's
+/// `overrides` ([`set_bindings`]).
 #[wasm_bindgen]
-pub fn controls_help(game: &str) -> String {
-    romset::games::find(game).map_or(String::new(), |g| g.controls.describe())
+pub fn controls_help(game: &str, overrides: &str) -> String {
+    romset::games::find(game).map_or(String::new(), |g| bindings(g, overrides).describe())
 }
 
-/// The game's controls for the settings panel, as JSON: a list of
-/// `{label, keys, pad}`, `keys` the default keys as printed on them and
-/// `pad` the gamepad bindings (W3C standard layout, Xbox names), one row
-/// per input that has either. Light guns come first, as `{label, keys,
-/// pad, gun: true}`.
+fn bindings(game: &'static romset::Game, overrides: &str) -> Bindings {
+    Bindings::with_overrides(&game.controls, overrides, &reserved())
+}
+
+/// The game's controls for the settings panel, as JSON, with the player's
+/// `overrides`: `{rows, conflicts}`. Each row is a bindable slot
+/// (`romset::bindings`): `{slot, label, input (the control's own label),
+/// accepts: "inputs" | "pad" | "axis", items: [{text, token}] (keys and
+/// pad buttons, Xbox names) or axis: {text, invert}, default (as the
+/// manifest has it), unbound (the manifest binds nothing and nor does the
+/// player), fixed (what else drives it and can't be remapped: the mouse's
+/// buttons on a gun), conflicts: [text]}`. Gun games start with their aim,
+/// `{label, fixed, accepts: "none"}`. `conflicts` counts the keys and
+/// buttons bound twice (allowed, but both inputs get them).
 #[wasm_bindgen]
-pub fn controls_table(game: &str) -> String {
-    let Ok(game) = romset::games::find(game) else { return "[]".into() };
+pub fn bindings_view(game: &str, overrides: &str) -> String {
+    let Ok(game) = romset::games::find(game) else { return "{\"rows\": [], \"conflicts\": 0}".into() };
     let c = &game.controls;
-    let list = |v: Vec<String>| v.iter().map(|s| json_str(s)).collect::<Vec<_>>().join(", ");
-    let keys = |k: &[&str]| k.iter().map(|k| romset::controls::key_symbol(k).to_string()).collect::<Vec<_>>();
-    let pads = |p: &[PadButton]| p.iter().map(|&b| pad_name(b).to_string()).collect::<Vec<_>>();
-    // (label, keys, pad, gun): an input labelled like one before it (bel's
-    // missile button, which the guns' reload controls also press) joins it.
-    let mut rows: Vec<(String, Vec<String>, Vec<String>, bool)> = Vec::new();
-    let mut row = |label: String, keys: Vec<String>, pad: Vec<String>, gun: bool| {
-        if keys.is_empty() && pad.is_empty() {
-            return;
-        }
-        match rows.iter_mut().find(|r| r.0 == label) {
-            Some(r) => {
-                for k in keys {
-                    if !r.1.contains(&k) {
-                        r.1.push(k);
-                    }
-                }
-                for p in pad {
-                    if !r.2.contains(&p) {
-                        r.2.push(p);
-                    }
-                }
-            }
-            None => rows.push((label, keys, pad, gun)),
-        }
-    };
-    for (i, g) in c.guns.iter().enumerate() {
+    let b = bindings(game, overrides);
+    let mut rows = Vec::new();
+    for (i, _) in c.guns.iter().enumerate() {
         let who = if c.guns.len() > 1 { format!(" (player {})", i + 1) } else { String::new() };
-        let aim = if i == 0 { "mouse or touch, else sticks" } else { "sticks" };
-        row(format!("Aim{who}"), vec![aim.into()], Vec::new(), true);
-        if let Some(t) = c.button(g.trigger) {
-            let click = if i == 0 { vec!["left button".to_string()] } else { Vec::new() };
-            row(t.label(), click, pads(model2::input::PAD_GUN_TRIGGER), true);
-        }
-        let mut reload = keys(g.keys_reload);
-        if i == 0 {
-            reload.insert(0, "right button".into());
-        }
-        // A reload that presses a button (bel's missile) joins that
-        // button's row.
-        let label = match g.reload {
-            romset::Reload::Offscreen => format!("{}{who}", g.reload_label(c)),
-            romset::Reload::Button(_) => g.reload_label(c),
+        let aim = if i == 0 { "mouse or touch, else the pad's sticks" } else { "the pad's sticks" };
+        rows.push(format!(
+            "{{\"label\": {}, \"fixed\": {}, \"accepts\": \"none\"}}",
+            json_str(&format!("Aim{who}")),
+            json_str(aim)
+        ));
+    }
+    let gun0 = c.guns.first();
+    for (slot, value) in b.slots() {
+        let input = match *slot {
+            Slot::Button(i) => c.buttons[i].label(),
+            Slot::Axis(i) | Slot::Neg(i) | Slot::Pos(i) => c.analogs[i].label(),
+            _ => String::new(),
         };
-        row(label, reload, pads(model2::input::PAD_GUN_RELOAD), true);
+        let fixed = match (*slot, gun0) {
+            (Slot::Button(i), Some(g)) if c.buttons[i].name == g.trigger => "left click",
+            (Slot::Reload(0), _) => "right click",
+            (Slot::Button(i), Some(g)) if g.reload == romset::Reload::Button(c.buttons[i].name) => "right click",
+            _ => "",
+        };
+        let what = match value {
+            Value::Inputs(list) => {
+                let items: Vec<String> = list
+                    .iter()
+                    .map(|x| format!("{{\"text\": {}, \"token\": {}}}", json_str(&x.text()), json_str(&x.token())))
+                    .collect();
+                format!("\"items\": [{}]", items.join(", "))
+            }
+            Value::Axis(a) => {
+                format!("\"axis\": {{\"text\": {}, \"invert\": {}}}", json_str(a.axis.label()), a.invert)
+            }
+        };
+        let conflicts: Vec<String> = b
+            .conflicts_of(*slot)
+            .iter()
+            .map(|x| {
+                let with: Vec<String> = x.slots.iter().filter(|s| *s != slot).map(|&s| b.label(s)).collect();
+                json_str(&format!("{} is also {}", x.input.text(), with.join(", ")))
+            })
+            .collect();
+        let empty = Value::Inputs(Vec::new());
+        let unbound = *value == empty && b.default_of(*slot) == Some(&empty);
+        rows.push(format!(
+            "{{\"slot\": {}, \"label\": {}, \"input\": {}, \"accepts\": \"{}\", {what}, \"default\": {}, \"unbound\": {unbound}, \"fixed\": {}, \"conflicts\": [{}]}}",
+            json_str(&b.slot_name(*slot)),
+            json_str(&b.label(*slot)),
+            json_str(&input),
+            b.accepts(*slot).name(),
+            b.is_default(*slot),
+            json_str(fixed),
+            conflicts.join(", ")
+        ));
     }
-    for a in c.analogs {
-        let mut pad = Vec::new();
-        if a.axis != PadAxis::None {
-            pad.push(axis_name(a.axis).to_string());
-        }
-        pad.extend(pads(a.pad_neg).into_iter().chain(pads(a.pad_pos)));
-        let k: Vec<&str> = a.keys_neg.iter().chain(a.keys_pos).copied().collect();
-        row(a.label(), keys(&k), pad, false);
-    }
-    for b in c.buttons {
-        row(b.label(), keys(b.keys), pads(b.pad), false);
-    }
-    let rows: Vec<String> = rows
-        .into_iter()
-        .map(|(label, keys, pad, gun)| {
-            let gun = if gun { ", \"gun\": true" } else { "" };
-            format!("{{\"label\": {}, \"keys\": [{}], \"pad\": [{}]{gun}}}", json_str(&label), list(keys), list(pad))
-        })
-        .collect();
-    format!("[{}]", rows.join(", "))
+    format!("{{\"rows\": [{}], \"conflicts\": {}}}", rows.join(", "), b.conflicts().len())
 }
 
-/// A standard gamepad button as an Xbox pad labels it.
-fn pad_name(b: PadButton) -> &'static str {
-    match b {
-        PadButton::South => "A",
-        PadButton::East => "B",
-        PadButton::West => "X",
-        PadButton::North => "Y",
-        PadButton::LeftShoulder => "LB",
-        PadButton::RightShoulder => "RB",
-        PadButton::LeftTrigger => "LT",
-        PadButton::RightTrigger => "RT",
-        PadButton::Select => "Back",
-        PadButton::Start => "Start",
-        PadButton::LeftStick => "L stick press",
-        PadButton::RightStick => "R stick press",
-        PadButton::DPadUp => "D-pad ↑",
-        PadButton::DPadDown => "D-pad ↓",
-        PadButton::DPadLeft => "D-pad ←",
-        PadButton::DPadRight => "D-pad →",
+/// Bind what the player pressed in the settings panel: in `slot` (its
+/// stored name), in place of binding `index` (-1: added). `kind` and
+/// `value`: "key" and a `KeyboardEvent.code`, "button" and a standard
+/// gamepad button's index, or "axis" and a stick axis's index (0 to 3) with
+/// `+` or `-`, the way it moved. Returns JSON `{overrides, error}`: the new
+/// overrides, or the old ones and why it couldn't be bound (a key the
+/// player or page keeps, the wrong kind for the slot).
+#[wasm_bindgen]
+pub fn bindings_capture(game: &str, overrides: &str, slot: &str, index: i32, kind: &str, value: &str) -> String {
+    let result = (|| {
+        let game = romset::games::find(game).map_err(|e| e.to_string())?;
+        let mut b = bindings(game, overrides);
+        let slot = b.slot_named(slot).ok_or("No such input")?;
+        let capture = match kind {
+            "key" => Capture::Key(value.to_string()),
+            "button" => Capture::Button(value.parse().ok().and_then(PadButton::from_index).ok_or("Unknown button")?),
+            "axis" => {
+                let (i, sign) = value.split_at(value.len().saturating_sub(1));
+                let axis = match i {
+                    "0" => PadAxis::LeftStickX,
+                    "1" => PadAxis::LeftStickY,
+                    "2" => PadAxis::RightStickX,
+                    "3" => PadAxis::RightStickY,
+                    _ => return Err("Unknown axis".to_string()),
+                };
+                Capture::Axis(axis, sign == "-")
+            }
+            _ => return Err("Unknown input".to_string()),
+        };
+        b.capture(slot, usize::try_from(index).ok(), capture, &reserved())?;
+        Ok(b.overrides())
+    })();
+    match result {
+        Ok(o) => format!("{{\"overrides\": {}, \"error\": null}}", json_str(&o)),
+        Err(e) => format!("{{\"overrides\": {}, \"error\": {}}}", json_str(overrides), json_str(&e)),
     }
 }
 
-/// A pad axis for players.
-fn axis_name(a: PadAxis) -> &'static str {
-    match a {
-        PadAxis::None => "",
-        PadAxis::LeftStickX => "left stick ↔",
-        PadAxis::LeftStickY => "left stick ↕",
-        PadAxis::RightStickX => "right stick ↔",
-        PadAxis::RightStickY => "right stick ↕",
-        PadAxis::LeftTrigger => "LT",
-        PadAxis::RightTrigger => "RT",
-        PadAxis::Triggers => "RT − LT",
+/// Change the player's bindings from the settings panel: `op` "remove"
+/// (binding `index` of `slot`, or its axis), "invert" (an axis), "reset"
+/// (`slot` to the manifest's) or "reset-all". Returns the new overrides.
+#[wasm_bindgen]
+pub fn bindings_edit(game: &str, overrides: &str, op: &str, slot: &str, index: u32) -> String {
+    let Ok(game) = romset::games::find(game) else { return overrides.to_string() };
+    let mut b = bindings(game, overrides);
+    match (op, b.slot_named(slot)) {
+        ("reset-all", _) => b.reset_all(),
+        ("remove", Some(s)) => b.remove(s, index as usize),
+        ("invert", Some(s)) => b.invert(s),
+        ("reset", Some(s)) => b.reset(s),
+        _ => {}
     }
+    b.overrides()
+}
+
+/// The keys the panel won't bind (the players' own and the page's), as
+/// `KeyboardEvent.code`s, one per line.
+#[wasm_bindgen]
+pub fn reserved_keys() -> String {
+    reserved().join("\n")
 }
 
 /// The sound and music boards on their own, for a Web Worker: fed the sound
@@ -1013,6 +1095,8 @@ pub async fn start(
         format: config.format,
         view,
         keys: HashSet::new(),
+        bindings: Bindings::with_overrides(&game.controls, &OVERRIDES.with(|o| o.borrow().clone()), &reserved()),
+        defaults: Bindings::defaults(&game.controls),
         touch: (0.0, 0.0, 0.0, 0),
         guns: [None; 2],
         stick: model2::input::StickCursor::default(),
