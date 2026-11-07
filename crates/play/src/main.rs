@@ -58,6 +58,9 @@ usage: remodel-play [options]
                      window (default on)
   --interp           run the i960 on the interpreter even if this build
                      has recompiled code
+  --geo sharc|native Model 2B geometrizer: the game's program on the SHARC
+                     (default) or the native implementation, where there
+                     is one for the program (docs/hw/geometrizer-2b.md)
   --exact            run at the arcade's exact 57.524 frames per second
                      (default: one frame per display refresh when the
                      refresh is 60 or 120 Hz, which is 4.3% fast but smooth)
@@ -88,6 +91,8 @@ const ASPECTS: (f32, f32) = (4.0 / 3.0, 32.0 / 9.0);
 struct Options {
     sound: bool,
     interp: bool,
+    /// `--geo`: how a 2B geometrizer runs.
+    geo: model2::geo::GeoMode,
     seconds: Option<f64>,
     /// `--input`, parsed against the game's inputs when it starts.
     input: Option<String>,
@@ -98,8 +103,16 @@ struct Options {
 }
 
 fn options(s: &mut Settings) -> Result<Options, String> {
-    let mut o =
-        Options { sound: true, interp: false, seconds: None, input: None, game: None, splash: true, shot: None };
+    let mut o = Options {
+        sound: true,
+        interp: false,
+        geo: model2::geo::GeoMode::Sharc,
+        seconds: None,
+        input: None,
+        game: None,
+        splash: true,
+        shot: None,
+    };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{a} needs a value"));
@@ -123,6 +136,13 @@ fn options(s: &mut Settings) -> Result<Options, String> {
             "--bezel" => s.bezel = value()? != "off",
             "--shot" => o.shot = Some(value()?.into()),
             "--interp" => o.interp = true,
+            "--geo" => {
+                o.geo = match value()?.as_str() {
+                    "sharc" => model2::geo::GeoMode::Sharc,
+                    "native" => model2::geo::GeoMode::Native,
+                    _ => return Err("--geo wants sharc or native".into()),
+                }
+            }
             "--no-splash" => o.splash = false,
             "--fullscreen" => s.fullscreen = true,
             "--exact" => s.exact = true,
@@ -319,6 +339,7 @@ impl Play {
             if self.opts.interp {
                 machine.disable_native();
             }
+            machine.bus.geo.set_mode(self.opts.geo);
             // Drawing can go ahead with the last frame's polygons when the
             // geometrizer is late (`frame`).
             machine.bus.geo.set_keep_last(true);

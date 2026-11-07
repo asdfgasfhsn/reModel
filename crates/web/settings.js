@@ -77,7 +77,7 @@ export function clean(key, v) {
       return Number.isFinite(n) ? Math.min(24, Math.max(-40, n)) : undefined;
     }
     case "geo":
-      return v === "worker" || v === "local" ? v : undefined;
+      return v === "worker" || v === "local" || v === "native" ? v : undefined;
     case "controls":
       return typeof v === "string" && v.length <= 16384 ? v : undefined;
   }
@@ -99,7 +99,8 @@ function cleanAll(o) {
 /// The settings a page's URL parameters give (`?height=1080&sfx=8`...):
 /// `height`, `aspect=16:9`, `hud=center`, `bezel=0`, `sound=0`, `sfx` and
 /// `music` in dB, `touch` (`touch` or `touch=1` on, `touch=0` off), `tilt=1`,
-/// `geo=local`.
+/// `geo=local` (the geometrizer on the page's thread) or `geo=native` (in
+/// its worker, the native implementation where there is one: 2B games).
 export function fromParams(params) {
   const raw = {};
   const flag = (k) => params.get(k) !== "0" && params.get(k) !== "off" && params.get(k) !== "false";
@@ -112,7 +113,7 @@ export function fromParams(params) {
   if (params.has("music")) raw.music = params.get("music");
   if (params.has("touch")) raw.touch = flag("touch");
   if (params.has("tilt")) raw.tilt = flag("tilt");
-  if (params.has("geo")) raw.geo = params.get("geo") === "local" ? "local" : "worker";
+  if (params.has("geo")) raw.geo = ["local", "native"].includes(params.get("geo")) ? params.get("geo") : "worker";
   return cleanAll(raw);
 }
 
@@ -207,7 +208,8 @@ export function windowAspect(env) {
 }
 
 /// What the page starts the game with: `{height, aspect (width / height),
-/// hudEdges, bezel, sound, mix: [sfx, music], touch, tilt, geoLocal}`.
+/// hudEdges, bezel, sound, mix: [sfx, music], touch, tilt, geoLocal,
+/// geoNative}`.
 export function effective(values, env) {
   return {
     height: values.height === "auto" ? screenHeight(env) : values.height,
@@ -219,6 +221,7 @@ export function effective(values, env) {
     touch: values.touch,
     tilt: values.tilt,
     geoLocal: values.geo === "local",
+    geoNative: values.geo === "native",
   };
 }
 

@@ -179,7 +179,11 @@ export function createPanel(opts) {
   }
   controls.append(touchRows);
   const advanced = el("section", {}, el("h3", { textContent: "Advanced" }),
-    choice("geo", "Geometrizer", () => [["worker", "In a worker"], ["local", "On the page's thread"]]));
+    choice("geo", "Geometrizer", () => [
+      ["worker", "In a worker"],
+      ["local", "On the page's thread"],
+      ["native", "Native, in a worker (Model 2B; experimental)"],
+    ]));
 
   const forAll = el("input", { type: "checkbox", checked: !!opts.forAll });
   const skip = el("input", { type: "checkbox", checked: !!opts.skip });

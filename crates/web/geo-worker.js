@@ -1,7 +1,9 @@
 // The geometrizer, on its own core. The page posts:
-//   {type: "init", pkg, module, game, rom}
+//   {type: "init", pkg, module, game, rom, native}
 //                                       the package URL, the shared compiled
-//                                       module, the ROM URL
+//                                       module, the ROM URL; native: the
+//                                       native geometrizer (Model 2B) where
+//                                       it implements the uploaded program
 //   {type: "boot", program}             the uploaded program (u32 pairs)
 //   {type: "frame", buffer, booted, readPtr, jumps}
 //                                       one frame's job, at vblank
@@ -50,6 +52,7 @@ onmessage = async (e) => {
         wasm.rom_files(m.game).map(async (f) => new Uint8Array(await (await fetch(`${m.rom}/${f}`)).arrayBuffer())),
       );
       engine = new wasm.GeoEngine(m.game, chips);
+      if (m.native) engine.set_native(true);
       postMessage({ type: "ready" });
       while (pending.length) run(pending.shift());
     } catch (err) {

@@ -455,10 +455,11 @@
             restart();
           }
         };
+        const native = opt.geoNative;
         try {
-          gw.postMessage({ type: "init", pkg, module, game, rom });
+          gw.postMessage({ type: "init", pkg, module, game, rom, native });
         } catch {
-          gw.postMessage({ type: "init", pkg, game, rom });
+          gw.postMessage({ type: "init", pkg, game, rom, native });
         }
         geo = (kind, data, booted, readPtr, jumps) =>
           kind === "boot"

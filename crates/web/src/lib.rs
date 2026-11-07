@@ -651,6 +651,13 @@ impl GeoEngine {
         Ok(GeoEngine { engine: model2::geo::Engine::new(model2::bus::polygon_rom(&roms), core) })
     }
 
+    /// Run frames on the native geometrizer when it implements the
+    /// uploaded program (Model 2B, docs/hw/geometrizer-2b.md), else the
+    /// SHARC. Call before the boot job.
+    pub fn set_native(&mut self, on: bool) {
+        self.engine.set_mode(if on { model2::geo::GeoMode::Native } else { model2::geo::GeoMode::Sharc });
+    }
+
     /// Boot the uploaded program: 64-bit words as (low, high) u32 pairs.
     pub fn boot(&mut self, words: &[u32]) {
         let program: Vec<u64> = words.chunks_exact(2).map(|w| w[0] as u64 | (w[1] as u64) << 32).collect();
@@ -741,6 +748,11 @@ impl Headless {
     /// The bytes for [`Headless::link_cycles`]; clears them.
     pub fn link_bytes(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.link).into_iter().map(|e| e.1).collect()
+    }
+
+    /// The geometrizer as [`GeoEngine::set_native`] says.
+    pub fn set_geo_native(&mut self, on: bool) {
+        self.geo.set_mode(if on { model2::geo::GeoMode::Native } else { model2::geo::GeoMode::Sharc });
     }
 
     /// Run the geometrizer jobs the frames so far posted.
