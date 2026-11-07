@@ -183,7 +183,9 @@ export function createPanel(opts) {
       ["worker", "In a worker"],
       ["local", "On the page's thread"],
       ["chip", "In a worker, on the game's own program on its chip (the reference)"],
-    ]));
+    ]),
+    onOff("smooth", "Smooth motion",
+      "in-between frames on displays faster than 60 Hz, a frame later; not with the chip"));
 
   const forAll = el("input", { type: "checkbox", checked: !!opts.forAll });
   const skip = el("input", { type: "checkbox", checked: !!opts.skip });
@@ -191,7 +193,7 @@ export function createPanel(opts) {
   const restart = el("button", { type: "button", textContent: "Restart to apply", hidden: true });
   const reset = el("button", { type: "button", textContent: "Defaults" });
   const note = el("p", { className: "hint", hidden: true,
-    textContent: "Render height, aspect, sound on or off and the geometrizer apply on a restart." });
+    textContent: "Render height, aspect, sound on or off, the geometrizer and smooth motion apply on a restart." });
   const status = el("p", { className: "status" });
   const footer = el("footer", {},
     el("label", { className: "check" }, forAll, "Use these for all games"),
@@ -227,6 +229,8 @@ export function createPanel(opts) {
     restart.hidden = !needRestart;
     note.hidden = mode !== "game";
     if (rows.tilt) rows.tilt.el.hidden = !values.touch;
+    // Smooth motion needs the native geometrizer.
+    rows.smooth.el.style.opacity = values.geo === "chip" ? 0.5 : "";
   }
   reset.addEventListener("click", () => {
     for (const k of Object.keys(opts.base)) {

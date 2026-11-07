@@ -1,13 +1,17 @@
 // The geometrizer, on its own core. The page posts:
-//   {type: "init", pkg, module, game, rom, native}
+//   {type: "init", pkg, module, game, rom, native, smooth}
 //                                       the package URL, the shared compiled
 //                                       module, the ROM URL; native: the
-//                                       native geometrizer (Model 2B) where
-//                                       it implements the uploaded program
+//                                       native geometrizer where it
+//                                       implements the uploaded program;
+//                                       smooth: smooth motion's in-betweens
 //   {type: "boot", program}             the uploaded program (u32 pairs)
-//   {type: "frame", buffer, booted, readPtr, jumps}
-//                                       one frame's job, at vblank
-// and gets back {type: "frame", stream, points} per frame job, without
+//   {type: "frame", buffer, booted, readPtr, jumps, steps}
+//                                       one frame's job, at vblank; steps:
+//                                       in-betweens wanted (smooth motion)
+// and gets back {type: "frame", stream, points, between} per frame job
+// (between: with smooth motion and steps over 1, the frame's in-betweens
+// at k / steps of the way from the frame before, GeoEngine::between), without
 // stream and points for a frame overtaken by later ones it already holds
 // (the page counts the replies: it lets the game run at most a couple of
 // frames ahead of this worker, docs/web.md). Jobs that arrive
@@ -34,8 +38,13 @@ function run(m) {
   spent += performance.now() - t;
   // Only the newest frame is drawn: don't send ones already overtaken, but
   // answer every job.
-  if (pending.length === 0) postMessage({ type: "frame", stream, points }, [stream.buffer, points.buffer]);
-  else postMessage({ type: "frame" });
+  if (pending.length === 0) {
+    const t1 = performance.now();
+    const between = m.steps > 1 ? engine.between(m.steps) : undefined;
+    spent += performance.now() - t1;
+    const buffers = [stream.buffer, points.buffer, ...(between ?? []).map((b) => b.buffer)];
+    postMessage({ type: "frame", stream, points, between }, buffers);
+  } else postMessage({ type: "frame" });
   if (++frames % 60 === 0) {
     postMessage({ type: "stats", msPerFrame: spent / 60 });
     spent = 0;
@@ -53,6 +62,7 @@ onmessage = async (e) => {
       );
       engine = new wasm.GeoEngine(m.game, chips);
       if (m.native) engine.set_native(true);
+      if (m.smooth) engine.set_smooth(true);
       postMessage({ type: "ready" });
       while (pending.length) run(pending.shift());
     } catch (err) {

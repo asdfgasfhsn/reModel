@@ -23,6 +23,30 @@ own program instead, for this run only. The `remodel` CLI keeps the chip
 as its default, since its oracles (`lockstep`, `geo-check`) test that
 program.
 
+**Smooth motion** (`--smooth`, this run only; off by default). On a
+display faster than the game's 57.5 Hz, the refreshes between two game
+frames show the 3D geometry part way from the frame before to the newest
+one, by the time since the newest was first shown, instead of repeating
+it: at 120 Hz every other refresh is an in-between at the halfway point,
+at 144 Hz they fall where the clock puts them. Each in-between runs the
+newest frame's display list again through the native geometrizer with
+every object's matrix interpolated (rotation on the arc, scale and
+position in a straight line) between its value in the two frames;
+`docs/hw/geometrizer.md`, "Smooth motion", has how objects are matched
+and when a frame counts as a camera cut and isn't blended. The 2D layers
+(HUD, text) stay on the game's frames, and the game itself runs exactly
+as without. The cost is one game frame (about 17 ms) of latency, since
+what shows is always between the last two frames, and an extra
+geometrizer pass per in-between on the main thread: 0.2-0.4 ms for the
+2C games tried, 1.4-1.8 ms for the 2B ones (`remodel --smooth`);
+the title bar counts the in-betweens and their time. It needs the native
+geometrizer: with `--geo chip` it is off. *Unconfirmed* in the player
+itself: it builds and the in-betweens it draws are the ones checked with
+`make smooth-frames`, but nobody has played with it on a fast display yet.
+At 60 Hz (one game frame per refresh) there is nothing to draw between,
+and none are drawn below 69 Hz or when the game is behind (paced by the
+clock).
+
 ## Keys
 
 The player's own keys are the same for every game:

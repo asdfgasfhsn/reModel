@@ -15,7 +15,8 @@
 export const MIX = [8, -8];
 
 /// Every setting, in panel order.
-export const KEYS = ["height", "aspect", "hud", "bezel", "sound", "sfx", "music", "touch", "tilt", "geo", "controls"];
+export const KEYS = ["height", "aspect", "hud", "bezel", "sound", "sfx", "music", "touch", "tilt", "geo", "smooth",
+  "controls"];
 /// Settings kept per game only, never as the defaults for all games:
 /// `controls` is the game's remapped keys and pad bindings, as the module
 /// keeps them (`romset::bindings`: one `slot = bindings` line per change
@@ -23,7 +24,7 @@ export const KEYS = ["height", "aspect", "hud", "bezel", "sound", "sfx", "music"
 /// it can't, so here it only has to be a string of sensible size.
 export const PER_GAME = ["controls"];
 /// Settings a running game can't change: they apply on a restart.
-export const RESTART = ["height", "aspect", "sound", "geo"];
+export const RESTART = ["height", "aspect", "sound", "geo", "smooth"];
 
 /// The localStorage key: `{defaults: {...}, games: {set: {...}}, skip:
 /// {set: true}}` (skip: don't show the panel before that game starts).
@@ -42,6 +43,7 @@ export function builtin(env = {}) {
     touch: !!env.touchScreen,
     tilt: false,
     geo: "worker",
+    smooth: false,
     controls: "",
   };
 }
@@ -70,6 +72,7 @@ export function clean(key, v) {
     case "sound":
     case "touch":
     case "tilt":
+    case "smooth":
       return typeof v === "boolean" ? v : undefined;
     case "sfx":
     case "music": {
@@ -106,7 +109,8 @@ function cleanAll(o) {
 /// `geo=local` (the geometrizer on the page's thread) or `geo=chip` (in its
 /// worker, but the game's own program on its chip, the 2B SHARC or 2C TGP,
 /// even where the native implementation has it; `geo=sharc` and `geo=tgp`
-/// say the same; `geo=native` is the default, kept for old links).
+/// say the same; `geo=native` is the default, kept for old links), `smooth=1`
+/// (smooth motion: in-between frames on displays faster than the game).
 export function fromParams(params) {
   const raw = {};
   const flag = (k) => params.get(k) !== "0" && params.get(k) !== "off" && params.get(k) !== "false";
@@ -119,6 +123,7 @@ export function fromParams(params) {
   if (params.has("music")) raw.music = params.get("music");
   if (params.has("touch")) raw.touch = flag("touch");
   if (params.has("tilt")) raw.tilt = flag("tilt");
+  if (params.has("smooth")) raw.smooth = flag("smooth");
   if (params.has("geo")) raw.geo = ["local", "chip", "sharc", "tgp"].includes(params.get("geo")) ? params.get("geo") : "worker";
   return cleanAll(raw);
 }
@@ -215,7 +220,8 @@ export function windowAspect(env) {
 
 /// What the page starts the game with: `{height, aspect (width / height),
 /// hudEdges, bezel, sound, mix: [sfx, music], touch, tilt, geoLocal,
-/// geoNative}`.
+/// geoNative, smooth}` (smooth motion needs the native geometrizer: off
+/// with the chip).
 export function effective(values, env) {
   return {
     height: values.height === "auto" ? screenHeight(env) : values.height,
@@ -228,6 +234,7 @@ export function effective(values, env) {
     tilt: values.tilt,
     geoLocal: values.geo === "local",
     geoNative: values.geo !== "chip",
+    smooth: values.smooth && values.geo !== "chip",
   };
 }
 

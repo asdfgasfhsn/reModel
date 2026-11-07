@@ -20,6 +20,12 @@
 //! The geometrizer runs in another worker (geo-worker.js, [`GeoEngine`]):
 //! the game posts each vblank's job (`model2::geo::Job`) and draws the
 //! newest polygon stream the worker sends back ([`set_geo_frame`]).
+//!
+//! Smooth motion ([`set_smooth`], `model2::smooth`): on a display faster
+//! than the game, refreshes between game frames show the 3D geometry part
+//! way from the frame before to the newest. On the page's thread each
+//! refresh draws its own in-between; the worker draws a few for each frame
+//! (one per refresh the frame lasts) and the page picks the nearest.
 
 #![cfg(target_arch = "wasm32")]
 
@@ -110,6 +116,17 @@ struct App {
     /// Animation frames this status window that held the game back for the
     /// geometry worker.
     geo_held: u32,
+    /// Smooth motion ([`set_smooth`]): on; with the worker, the in-betweens
+    /// per game frame it should draw (shared with the job poster), and the
+    /// ones it sent with its newest frame (at t = k / their number; empty:
+    /// the frame's own stream); when the newest frame's polygons first
+    /// showed (ms); in-betweens drawn this status window, and their time
+    /// (ms, page thread only).
+    smooth: bool,
+    smooth_steps: Rc<Cell<u32>>,
+    geo_between: Vec<Vec<u32>>,
+    smooth_at: f64,
+    smooth_drawn: (u32, f64),
     status: web_sys::Element,
     stopped: bool,
     /// Paused by the page ([`set_paused`]): no frames run or drawn.
@@ -265,17 +282,47 @@ impl App {
         }
     }
 
+    /// A game frame's length (ms): a refresh's (two at about 120 Hz) when
+    /// following the display, else the game's.
+    fn period(&self) -> f64 {
+        match self.per_refresh() {
+            Some(k) => self.refresh_ms / k,
+            None => 1000.0 / FPS,
+        }
+    }
+
     fn draw(&mut self) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             _ => return,
         };
         let t0 = now();
+        // Smooth motion: how far into the newest frame this refresh is.
+        let t = ((t0 - self.smooth_at) / self.period()).max(0.0);
+        let mut own = None;
+        // Only on a display faster than the game.
+        if self.smooth && self.geo_frame.is_none() && 1000.0 / self.refresh_ms > FPS * 1.2 {
+            if let Some(f) = self.machine.bus.geo.engine().smooth_frame() {
+                own = f.render(t as f32).map(|s| (s, f));
+                if own.is_some() {
+                    self.smooth_drawn.0 += 1;
+                    self.smooth_drawn.1 += now() - t0;
+                }
+            }
+        }
+        let between = (t * self.geo_between.len() as f64).round() as usize;
         let geo = match &self.geo_frame {
-            // The worker's newest frame (nothing to draw before the first).
-            Some(Some((s, p))) => Some((&s[..], &p[..])),
+            // The worker's newest frame (nothing to draw before the first),
+            // or the in-between it sent nearest this refresh.
+            Some(Some((s, p))) => match self.geo_between.get(between).filter(|b| !b.is_empty()) {
+                Some(b) => {
+                    self.smooth_drawn.0 += 1;
+                    Some((&b[..], &p[..]))
+                }
+                None => Some((&s[..], &p[..])),
+            },
             Some(None) => Some((&[][..], &[][..])),
-            None => None,
+            None => own.as_ref().map(|(s, f)| (&s[..], &f.points[..])),
         };
         let target = frame.texture.create_view(&Default::default());
         self.renderer.present_bus(&mut self.machine.bus, geo, &self.view, &target, self.format, (0, 0));
@@ -347,6 +394,11 @@ impl App {
             self.refresh_ms += (dt - self.refresh_ms) * 0.05;
         }
         self.redraws += 1;
+        if self.smooth {
+            // In-betweens the worker draws per game frame: one per refresh
+            // the frame lasts (none at 60 Hz), at most 4.
+            self.smooth_steps.set((self.period() / self.refresh_ms).round().clamp(1.0, 4.0) as u32);
+        }
         let (due, speed) = match self.per_refresh() {
             Some(k) => {
                 let next = (k == 1.0 || self.redraws.is_multiple_of(2)) as u64;
@@ -373,6 +425,10 @@ impl App {
         }
         self.owed = self.owed.saturating_sub(ran as u64);
         self.spent[0] += now() - t0;
+        if ran > 0 && self.geo_frame.is_none() {
+            // On the page's thread the new frame's polygons are ready now.
+            self.smooth_at = t;
+        }
         // The audio rate for the next frames: the game's speed, scaled by
         // how well it's keeping it (held back by the geometry worker, or
         // its own cost) and steered by the worklet's queue, so the audio
@@ -389,8 +445,11 @@ impl App {
         if ran == 0 {
             self.repeats += 1;
         }
-        // A new frame, or the worker's polygons for one already shown.
-        if ran > 0 || std::mem::take(&mut self.geo_new) {
+        // A new frame, or the worker's polygons for one already shown (or,
+        // with smooth motion on a display faster than the game, every
+        // refresh).
+        let smoothing = self.smooth && 1000.0 / self.refresh_ms > FPS * 1.2;
+        if ran > 0 || std::mem::take(&mut self.geo_new) || smoothing {
             self.draw();
             self.counter.2 += 1;
         }
@@ -402,7 +461,7 @@ impl App {
             set_status(
                 &self.status,
                 &format!(
-                    "{} · {:.0}% speed{} · {:.0} fps drawn ({} repeats) · {}x{} · i960 {} · ms per frame: emulate {:.1}, draw {:.1}",
+                    "{} · {:.0}% speed{} · {:.0} fps drawn ({} repeats) · {}x{} · i960 {} · ms per frame: emulate {:.1}, draw {:.1}{}",
                     match self.per_refresh() {
                         Some(_) => format!("synced to {:.0} Hz", 1000.0 / self.refresh_ms),
                         None => "exact speed".into(),
@@ -416,8 +475,14 @@ impl App {
                     if self.machine.is_native() { "recompiled" } else { "interpreted" },
                     self.spent[0] / emulated,
                     self.spent[1] / drawn,
+                    match self.smooth_drawn {
+                        (0, _) => String::new(),
+                        (n, ms) if self.geo_frame.is_none() => format!(" · {n} in-betweens, {:.1} ms each", ms / n as f64),
+                        (n, _) => format!(" · {n} in-betweens"),
+                    },
                 ),
             );
+            self.smooth_drawn = (0, 0.0);
             self.counter = (t, 0, 0);
             self.spent = [0.0; 3];
             self.repeats = 0;
@@ -432,6 +497,19 @@ thread_local! {
     /// The player's remapped controls ([`set_bindings`]), for the game
     /// `start` starts.
     static OVERRIDES: RefCell<String> = const { RefCell::new(String::new()) };
+    /// Smooth motion for the game `start` starts ([`set_smooth`]).
+    static SMOOTH: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Smooth motion (`model2::smooth`, docs/web.md): on a display faster than
+/// the game's 57.5 Hz, draw the refreshes between game frames with the 3D
+/// geometry interpolated between the last two (one game frame of extra
+/// latency). Native geometrizer only: off with the chip. Call before
+/// `start`; the geometry worker needs `smooth: true` in its init message
+/// too (geo-worker.js).
+#[wasm_bindgen]
+pub fn set_smooth(on: bool) {
+    SMOOTH.with(|s| s.set(on));
 }
 
 /// Use the player's remapped controls: `overrides` as the settings panel
@@ -613,9 +691,10 @@ fn json_str(s: &str) -> String {
 
 /// The geometrizer worker finished a frame: its raster stream and texture
 /// point RAM, or neither for a frame it skipped posting (overtaken by
-/// newer ones while it caught up). Called once per frame job.
+/// newer ones while it caught up). Called once per frame job. `between`:
+/// with smooth motion, the frame's in-betweens ([`GeoEngine::between`]).
 #[wasm_bindgen]
-pub fn set_geo_frame(stream: Option<Vec<u32>>, points: Option<Vec<u16>>) {
+pub fn set_geo_frame(stream: Option<Vec<u32>>, points: Option<Vec<u16>>, between: Option<js_sys::Array>) {
     APP.with(|a| {
         if let Some(app) = a.borrow().as_ref() {
             let mut app = app.borrow_mut();
@@ -623,6 +702,9 @@ pub fn set_geo_frame(stream: Option<Vec<u32>>, points: Option<Vec<u16>>) {
             if let (Some(stream), Some(points)) = (stream, points) {
                 app.geo_frame = Some(Some((stream, points)));
                 app.geo_new = true;
+                app.geo_between =
+                    between.map_or(Vec::new(), |b| b.iter().map(|s| js_sys::Uint32Array::new(&s).to_vec()).collect());
+                app.smooth_at = now();
             }
         }
     });
@@ -656,6 +738,28 @@ impl GeoEngine {
     /// else the chip (the 2B SHARC, the 2C TGP). Call before the boot job.
     pub fn set_native(&mut self, on: bool) {
         self.engine.set_mode(if on { model2::geo::GeoMode::Native } else { model2::geo::GeoMode::Chip });
+    }
+
+    /// Smooth motion: keep what in-betweens of each frame need
+    /// (`model2::smooth`; native geometrizer only).
+    pub fn set_smooth(&mut self, on: bool) {
+        self.engine.set_smooth(on);
+    }
+
+    /// The last frame's in-betweens at t = k / `steps` for k from 0 to
+    /// `steps` - 1, from the frame before towards it: Uint32Arrays, empty
+    /// where the frame's own stream shows (a cut, nothing to blend). Empty
+    /// without smooth motion, or for a frame the native geometrizer didn't
+    /// run.
+    pub fn between(&self, steps: u32) -> js_sys::Array {
+        let out = js_sys::Array::new();
+        if let Some(f) = self.engine.smooth_frame() {
+            for k in 0..steps {
+                let s = f.render(k as f32 / steps as f32).unwrap_or_default();
+                out.push(&js_sys::Uint32Array::from(&s[..]));
+            }
+        }
+        out
     }
 
     /// Boot the uploaded program: 64-bit words as (low, high) u32 pairs.
@@ -753,6 +857,17 @@ impl Headless {
     /// The geometrizer as [`GeoEngine::set_native`] says.
     pub fn set_geo_native(&mut self, on: bool) {
         self.geo.set_mode(if on { model2::geo::GeoMode::Native } else { model2::geo::GeoMode::Chip });
+    }
+
+    /// Smooth motion as [`GeoEngine::set_smooth`] says.
+    pub fn set_geo_smooth(&mut self, on: bool) {
+        self.geo.set_smooth(on);
+    }
+
+    /// Draw the last geometrizer frame's in-between at `t` (to time it):
+    /// its words, 0 where the frame's own stream shows.
+    pub fn between_len(&self, t: f32) -> u32 {
+        self.geo.smooth_frame().and_then(|f| f.render(t)).map_or(0, |s| s.len() as u32)
     }
 
     /// Run the geometrizer jobs the frames so far posted.
@@ -1025,14 +1140,18 @@ pub async fn start(
     let roms = romset::RomSet::from_chips(game, chips, false).map_err(|e| err(&e))?;
     let mut machine = model2::Machine::new(&roms);
     let remote_geo = geo.is_some();
+    let smooth = SMOOTH.with(|s| s.get());
     if !remote_geo {
         // On the page's thread, the native geometrizer where it implements
         // the program (`?geo=chip` is for the worker).
         machine.bus.geo.set_mode(model2::geo::GeoMode::Native);
+        machine.bus.geo.set_smooth(smooth);
     }
     let geo_in_flight = Rc::new(Cell::new(0));
+    let smooth_steps = Rc::new(Cell::new(0));
     if let Some(post) = geo {
         let in_flight = geo_in_flight.clone();
+        let steps = smooth_steps.clone();
         machine.bus.geo.set_remote(Box::new(move |job| {
             let args = js_sys::Array::new();
             match job {
@@ -1048,6 +1167,7 @@ pub async fn start(
                     args.push(&booted.into());
                     args.push(&read_ptr.into());
                     args.push(&js_sys::Uint32Array::from(&jumps[..]));
+                    args.push(&steps.get().into());
                 }
             }
             let _ = post.apply(&JsValue::NULL, &args);
@@ -1139,6 +1259,11 @@ pub async fn start(
         geo_in_flight,
         geo_new: false,
         geo_held: 0,
+        smooth,
+        smooth_steps,
+        geo_between: Vec::new(),
+        smooth_at: 0.0,
+        smooth_drawn: (0, 0.0),
         _gpu: (instance, adapter),
     }));
 

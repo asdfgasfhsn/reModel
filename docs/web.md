@@ -202,7 +202,8 @@ progress. It offers:
   stick, tilt steering;
 - **Advanced:** the geometrizer in a worker (the default) or on the
   page's thread, or the game's own program on its chip (the 2B SHARC,
-  the 2C TGP) in a worker instead of the native geometrizer.
+  the 2C TGP) in a worker instead of the native geometrizer; and smooth
+  motion (off by default; below).
 
 Play (or Enter, or a gamepad's Start, or A on Play) starts the game; the
 Play tap also starts the audio and, on iOS, asks for the motion
@@ -220,7 +221,7 @@ audio context is suspended, nothing reaches the workers; it resumes from
 the same frame). Resume applies the HUD placement (`set_hud`), the bezel, the mix
 (a `mix` message to the sound worker), the remapped controls
 (`set_bindings`) and touch and tilt at once; render
-height, aspect, sound on or off and the geometrizer need a restart, and
+height, aspect, sound on or off, the geometrizer and smooth motion need a restart, and
 the panel offers "Restart to apply" when one of them changed (it reloads
 the page with `#play`, skipping the panel once).
 
@@ -254,7 +255,36 @@ parameters:
 - `tilt=1` (tilt steering on from the start, where the game steers);
 - `geo=local` (run the geometrizer on the page's thread), or `geo=chip`
   (in its worker, on the game's own program on its SHARC or TGP even where
-  the native geometrizer has it; `geo=sharc` and `geo=tgp` too).
+  the native geometrizer has it; `geo=sharc` and `geo=tgp` too);
+- `smooth=1` (smooth motion on; `smooth=0` off).
+
+**Smooth motion.** With the setting on (`?smooth=1`, or Advanced in the
+panel; off by default), a display faster than the game's 57.5 Hz shows
+in-between frames: the 3D geometry part way from the frame before to the
+newest, the native geometrizer running the newest frame's display list
+again with each object's matrix interpolated (`docs/hw/geometrizer.md`,
+"Smooth motion"; the native player's `--smooth` is the same, `docs/play.md`).
+The 2D layers stay on the game's frames. It adds one game frame (about
+17 ms) of latency, and needs the native geometrizer: with the chip
+(`geo=chip`) it is off. It works in both geometrizer modes:
+
+- on the page's thread (`geo=local`), each animation frame draws its own
+  in-between, at the fraction of a game frame since the newest frame was
+  first drawn (`set_smooth` before `start`; the page then redraws every
+  animation frame);
+- in the worker (the default), the page tells it with each frame job how
+  many in-betweens a game frame needs at the measured refresh rate (one
+  per refresh it lasts, at most 4: 2 at 120 Hz, 3 at 144 Hz, none at
+  60 Hz), the worker draws them after the frame (`GeoEngine::between`, at
+  k / n of the way) and sends them with it, and the page draws the one
+  nearest each refresh. That costs the worker n geometrizer passes a
+  frame whether or not each is shown.
+
+*Unconfirmed:* the module type-checks for WebAssembly, but the browser
+build hasn't been run with it, so its cost there (a pass natively is
+0.2-0.4 ms for 2C games, 1.4-1.8 ms for 2B ones) and how it looks on a
+real 120 or 144 Hz display are untested. `Headless::set_geo_smooth` and
+`Headless::between_len` let Node time an in-between.
 
 **Bezels.** With the 4:3 aspect in a window wider than 4:3, the game's
 bezel fills the sides: original cabinet-style artwork, one per game

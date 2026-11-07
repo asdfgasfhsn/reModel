@@ -63,6 +63,11 @@ usage: remodel-play [options]
                      docs/hw/geometrizer-2b.md, geometrizer-2c.md), or the
                      game's program on its chip, the 2B SHARC or 2C TGP
                      (`sharc` and `tgp` name it too)
+  --smooth           smooth motion: on a display faster than the game's
+                     57.5 Hz, draw in-between frames, the 3D geometry
+                     interpolated between the last two game frames (one
+                     game frame, about 17 ms, of extra latency; the native
+                     geometrizer only; docs/play.md)
   --exact            run at the arcade's exact 57.524 frames per second
                      (default: one frame per display refresh when the
                      refresh is 60 or 120 Hz, which is 4.3% fast but smooth)
@@ -95,6 +100,8 @@ struct Options {
     interp: bool,
     /// `--geo`: how the geometrizer runs.
     geo: model2::geo::GeoMode,
+    /// `--smooth`: draw in-between frames (`model2::smooth`).
+    smooth: bool,
     seconds: Option<f64>,
     /// `--input`, parsed against the game's inputs when it starts.
     input: Option<String>,
@@ -109,6 +116,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
         sound: true,
         interp: false,
         geo: model2::geo::GeoMode::Native,
+        smooth: false,
         seconds: None,
         input: None,
         game: None,
@@ -138,6 +146,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
             "--bezel" => s.bezel = value()? != "off",
             "--shot" => o.shot = Some(value()?.into()),
             "--interp" => o.interp = true,
+            "--smooth" => o.smooth = true,
             "--geo" => {
                 o.geo = match model2::geo::GeoMode::parse(&value()?) {
                     Some(model2::geo::GeoMode::Check) | None => return Err("--geo wants native or chip".into()),
@@ -152,6 +161,10 @@ fn options(s: &mut Settings) -> Result<Options, String> {
             "-h" | "--help" => return Err(String::new()),
             _ => return Err(format!("unknown option {a}")),
         }
+    }
+    if o.smooth && o.geo == model2::geo::GeoMode::Chip {
+        eprintln!("--smooth: off with --geo chip (in-betweens come from the native geometrizer)");
+        o.smooth = false;
     }
     Ok(o)
 }
@@ -222,6 +235,9 @@ struct Stats {
     /// Frames drawn with the previous frame's polygons (the geometrizer
     /// wasn't done in time).
     geo_late: u32,
+    /// `--smooth`: in-betweens drawn, and the host time computing them.
+    smooth: u32,
+    smoothing: Duration,
 }
 
 impl Stats {
@@ -237,6 +253,8 @@ impl Stats {
             reports: 0,
             surface_misses: 0,
             geo_late: 0,
+            smooth: 0,
+            smoothing: Duration::ZERO,
         }
     }
 }
@@ -270,6 +288,8 @@ struct Play {
     stick: model2::input::StickCursor,
     /// Real time that emulated frame 0 corresponds to.
     epoch: Instant,
+    /// `--smooth`: when the newest game frame was first drawn.
+    smooth_at: Instant,
     redraws: u64,
     /// When `emulate` last ran (for the audio rate control).
     last_emulate: Option<Instant>,
@@ -341,6 +361,7 @@ impl Play {
                 machine.disable_native();
             }
             machine.bus.geo.set_mode(self.opts.geo);
+            machine.bus.geo.set_smooth(self.opts.smooth);
             // Drawing can go ahead with the last frame's polygons when the
             // geometrizer is late (`frame`).
             machine.bus.geo.set_keep_last(true);
@@ -692,6 +713,15 @@ impl Play {
         let t0 = Instant::now();
         let mut ran = 0;
         let result = self.emulate();
+        if let (Ok(1..), Some(s)) = (&result, &self.session) {
+            // When the newest frame was due: on the clock, or now when
+            // following the display (which sets the clock to now).
+            self.smooth_at = self.epoch + Duration::from_secs_f64(s.machine.frames as f64 / FPS);
+        }
+        // A game frame's length in host time: a refresh's (two at about
+        // 120 Hz) when following the display, else the game's.
+        let period =
+            frame_budget(self.gpu.as_ref().and_then(|g| g.refresh), self.settings.exact || self.behind).as_secs_f64();
         let emulate_time = t0.elapsed();
         match result {
             Ok(n) => {
@@ -736,7 +766,31 @@ impl Play {
             let budget = frame_budget(g.refresh, self.settings.exact);
             let bus = &mut s.machine.bus;
             if bus.geo.wait_until(t0 + budget.mul_f64(0.8)) {
-                g.renderer.present_bus(bus, None, &g.view, &target, g.config.format, g.origin);
+                // `--smooth`: the polygons part way from the frame before
+                // to this one, by the time since this one was first shown.
+                // Only on a display faster than the game, and not when it's
+                // already behind.
+                let t_smooth = Instant::now();
+                let fast = g.refresh.is_none_or(|hz| hz > FPS * 1.2) && !self.behind && !self.menu.open;
+                let between = bus.geo.engine().smooth_frame().filter(|_| fast).and_then(|f| {
+                    let t = t_smooth.saturating_duration_since(self.smooth_at).as_secs_f64() / period;
+                    f.render(t as f32).map(|stream| (stream, f))
+                });
+                match &between {
+                    Some((stream, f)) => {
+                        self.stats.smooth += 1;
+                        self.stats.smoothing += t_smooth.elapsed();
+                        g.renderer.present_bus(
+                            bus,
+                            Some((stream, &f.points)),
+                            &g.view,
+                            &target,
+                            g.config.format,
+                            g.origin,
+                        )
+                    }
+                    None => g.renderer.present_bus(bus, None, &g.view, &target, g.config.format, g.origin),
+                }
             } else {
                 g.renderer.present_bus_last(bus, &g.view, &target, g.config.format, g.origin);
                 self.stats.geo_late += 1;
@@ -842,6 +896,14 @@ impl Play {
             if st.surface_misses > 0 { format!(" · {} draws skipped", st.surface_misses) } else { String::new() },
         ) + &if st.geo_late > 0 {
             format!(" · {} drawn with the last frame's polygons", st.geo_late)
+        } else {
+            String::new()
+        } + &if st.smooth > 0 {
+            format!(
+                " · {} in-betweens, {:.2} ms each",
+                st.smooth,
+                st.smoothing.as_secs_f64() * 1000.0 / st.smooth as f64
+            )
         } else {
             String::new()
         };
@@ -1158,6 +1220,7 @@ fn main() {
         mouse_buttons: [false; 2],
         stick: model2::input::StickCursor::default(),
         epoch: Instant::now(),
+        smooth_at: Instant::now(),
         redraws: 0,
         last_emulate: None,
         frame_cost: 0.0,

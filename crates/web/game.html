@@ -114,7 +114,7 @@
   const pkg = new URL(document.querySelector('meta[name="remodel-pkg"]').content, location.href).href;
   const { default: init, start, set_geo_frame, set_touch, set_gun, view_point, stick_cursor, set_audio_level,
     set_paused, set_hud, controls_help, touch_layout, game_title, rom_files, set_bindings, bindings_view,
-    bindings_capture, bindings_edit } =
+    bindings_capture, bindings_edit, set_smooth } =
     await import(pkg + "remodel_web.js");
 
   // Settings (settings.js): built-in defaults < stored for all games <
@@ -445,7 +445,8 @@
         const gw = new Worker("../geo-worker.js", { type: "module" });
         gw.onmessage = (e) => {
           const m = e.data;
-          if (m.type === "frame") set_geo_frame(m.stream, m.points); // undefined for a skipped frame
+          // Undefined for a skipped frame; `between`: smooth motion's in-betweens.
+          if (m.type === "frame") set_geo_frame(m.stream, m.points, m.between);
           else if (m.type === "stats") geoMs = m.msPerFrame;
           else if (m.type === "error") {
             // The game waits for this worker: without it, run the
@@ -456,16 +457,20 @@
           }
         };
         const native = opt.geoNative;
+        const smooth = opt.smooth;
         try {
-          gw.postMessage({ type: "init", pkg, module, game, rom, native });
+          gw.postMessage({ type: "init", pkg, module, game, rom, native, smooth });
         } catch {
-          gw.postMessage({ type: "init", pkg, game, rom, native });
+          gw.postMessage({ type: "init", pkg, game, rom, native, smooth });
         }
-        geo = (kind, data, booted, readPtr, jumps) =>
+        // `steps`: the in-betweens smooth motion wants per frame.
+        geo = (kind, data, booted, readPtr, jumps, steps) =>
           kind === "boot"
             ? gw.postMessage({ type: "boot", program: data }, [data.buffer])
-            : gw.postMessage({ type: "frame", buffer: data, booted, readPtr, jumps }, [data.buffer, jumps.buffer]);
+            : gw.postMessage({ type: "frame", buffer: data, booted, readPtr, jumps, steps },
+              [data.buffer, jumps.buffer]);
       }
+      set_smooth(opt.smooth);
       await start(game, document.getElementById("screen"), status, rom, opt.height, opt.aspect, opt.hudEdges, link, geo);
       started = true;
       startAspect = opt.aspect;
