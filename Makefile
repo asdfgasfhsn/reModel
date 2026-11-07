@@ -249,10 +249,10 @@ GEO_CHECK_STEPS ?= 750000000
 GEO_CHECK_FROM  ?= 3000
 FUZZ_FRAMES ?= 500
 FUZZ_SEED   ?= 1
-geo-check: release ## Model 2B: a coin-start run (GEO_CHECK_STEPS, INPUT) with the native geometrizer beside the SHARC, raster streams compared word by word each frame; both timed (from frame GEO_CHECK_FROM too; RECOMP=1: the recompiled SHARC)
+geo-check: release ## A coin-start run (GEO_CHECK_STEPS, INPUT) with the native geometrizer beside the chip (2B SHARC, 2C TGP), raster streams and state compared each frame; both timed (from frame GEO_CHECK_FROM too; RECOMP=1: the recompiled chip)
 	$(RUN) --input $(or $(INPUT),$(BENCH_INPUT)) geo-check $(GEO_CHECK_STEPS) $(GEO_CHECK_FROM)
 
-geo-fuzz: release ## Model 2B: random display lists (FUZZ_FRAMES, FUZZ_SEED) through the game's geometrizer program on the SHARC and the native one, compared
+geo-fuzz: release ## Random display lists (FUZZ_FRAMES, FUZZ_SEED) through the game's geometrizer program on its chip (SHARC or TGP) and the native one, compared
 	$(RUN) geo-fuzz $(FUZZ_FRAMES) $(FUZZ_SEED)
 
 lockstep: ## Run the recompiled code beside the interpreter (i960 block by block; Model 2B's SHARCs too) and stop at the first difference (RECOMP=1, STEPS, INPUT)

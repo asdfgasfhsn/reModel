@@ -48,11 +48,13 @@ options:
                        `gpu-check`
   --texture-pack DIR   draw snapshots with the replacement PNGs in DIR (same
                        names as a dump; any size); see docs/texture-packs.md
-  --geo sharc|native|check
-                       Model 2B geometrizer: the uploaded program on the
-                       SHARC (default), the native implementation where it
-                       implements the program (docs/hw/geometrizer-2b.md),
-                       or both, compared frame by frame (see geo-check)
+  --geo chip|native|check
+                       the geometrizer: the uploaded program on its chip,
+                       the 2B SHARC or 2C TGP (default; `sharc` and `tgp`
+                       name it too), the native implementation where it
+                       implements the program (docs/hw/geometrizer-2b.md,
+                       docs/hw/geometrizer-2c.md), or both, compared frame
+                       by frame (see geo-check)
 
 commands:
   games                list supported games
@@ -101,16 +103,16 @@ commands:
                        (default out/GAME/capture) with the software and GPU
                        rasterisers; time both and report how they differ
   geo-check [STEPS] [FROM]
-                       Model 2B: run (with --input, --load-state) with the
-                       SHARC geometrizer and the native one fed the same
-                       lists, compare their raster streams word by word each
-                       frame and report the first difference; time both
+                       run (with --input, --load-state) with the geometrizer
+                       chip (SHARC or TGP) and the native geometrizer fed the
+                       same lists, compare their raster streams word by word
+                       each frame and report the first difference; time both
                        (mean and worst, overall and from frame FROM)
   geo-fuzz [FRAMES] [SEED]
-                       Model 2B: random display lists (every command, model
-                       paths no game reaches) through the game's uploaded
-                       geometrizer program on the SHARC and the native one;
-                       report the first difference
+                       random display lists (every command, model paths no
+                       game reaches) through the game's uploaded geometrizer
+                       program on its chip and the native one; report the
+                       first difference
   latency FRAME CHANGE [FRAMES]
                        input latency: two runs from FRAME (with --input,
                        or --load-state), one with CHANGE (an --input item
@@ -242,7 +244,7 @@ fn main() -> ExitCode {
     };
     if let Some(g) = geo_mode {
         let Some(mode) = model2::geo::GeoMode::parse(&g) else {
-            eprintln!("error: --geo wants sharc, native or check");
+            eprintln!("error: --geo wants chip, native or check");
             return ExitCode::FAILURE;
         };
         let _ = GEO_MODE.set(mode);
@@ -1518,6 +1520,11 @@ fn report_2c(dir: &std::path::Path, b: &model2::Model2Bus, geo: &model2::geo::En
         geo.tgp.steps,
         geo.tgp.pc
     );
+    match (geo.mode, &geo.native_tgp) {
+        (model2::geo::GeoMode::Chip, _) => {}
+        (mode, Some(n)) => println!("geometrizer   {mode:?}: native {:?}, stopped {:?}", n.program, n.stop),
+        (mode, None) => println!("geometrizer   {mode:?}: no native implementation of the program, on the TGP"),
+    }
     let mut geo_hot: Vec<(usize, u64)> = geo.tgp.counts.iter().copied().enumerate().filter(|c| c.1 > 0).collect();
     geo_hot.sort_by_key(|&(a, c)| (std::cmp::Reverse(c), a));
     println!("geometrizer   hot spots (whole run):");
@@ -1678,7 +1685,7 @@ fn report_2b(
     println!("copro         {}", if c.is_native() { "recompiled" } else { "interpreter" });
     hot("copro", &c.cpu);
     match (geo.mode, &geo.native) {
-        (model2::geo::GeoMode::Sharc, _) => {}
+        (model2::geo::GeoMode::Chip, _) => {}
         (mode, Some(n)) => println!("geometrizer   {mode:?}: native {:?}, stopped {:?}", n.program, n.stop),
         (mode, None) => println!("geometrizer   {mode:?}: no native implementation of the program, on the SHARC"),
     }

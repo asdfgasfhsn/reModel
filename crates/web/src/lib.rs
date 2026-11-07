@@ -652,10 +652,10 @@ impl GeoEngine {
     }
 
     /// Run frames on the native geometrizer when it implements the
-    /// uploaded program (Model 2B, docs/hw/geometrizer-2b.md), else the
-    /// SHARC. Call before the boot job.
+    /// uploaded program (docs/hw/geometrizer-2b.md, geometrizer-2c.md),
+    /// else the chip (the 2B SHARC, the 2C TGP). Call before the boot job.
     pub fn set_native(&mut self, on: bool) {
-        self.engine.set_mode(if on { model2::geo::GeoMode::Native } else { model2::geo::GeoMode::Sharc });
+        self.engine.set_mode(if on { model2::geo::GeoMode::Native } else { model2::geo::GeoMode::Chip });
     }
 
     /// Boot the uploaded program: 64-bit words as (low, high) u32 pairs.
@@ -752,7 +752,7 @@ impl Headless {
 
     /// The geometrizer as [`GeoEngine::set_native`] says.
     pub fn set_geo_native(&mut self, on: bool) {
-        self.geo.set_mode(if on { model2::geo::GeoMode::Native } else { model2::geo::GeoMode::Sharc });
+        self.geo.set_mode(if on { model2::geo::GeoMode::Native } else { model2::geo::GeoMode::Chip });
     }
 
     /// Run the geometrizer jobs the frames so far posted.
@@ -1027,7 +1027,7 @@ pub async fn start(
     let remote_geo = geo.is_some();
     if !remote_geo {
         // On the page's thread, the native geometrizer where it implements
-        // the program (`?geo=sharc` is for the worker).
+        // the program (`?geo=chip` is for the worker).
         machine.bus.geo.set_mode(model2::geo::GeoMode::Native);
     }
     let geo_in_flight = Rc::new(Cell::new(0));

@@ -1,6 +1,8 @@
-//! `remodel geo-check`: a run with the 2B geometrizer in `GeoMode::Check`,
-//! the SHARC's raster stream compared with the native geometrizer's each
-//! frame (docs/hw/geometrizer-2b.md).
+//! `remodel geo-check`: a run with the geometrizer in `GeoMode::Check`, the
+//! chip's raster stream (the 2B SHARC's, the 2C TGP's) compared with the
+//! native geometrizer's each frame (docs/hw/geometrizer-2b.md,
+//! docs/hw/geometrizer-2c.md); `remodel geo-fuzz`, random lists through
+//! both.
 
 use romset::RomSet;
 use std::path::PathBuf;
@@ -23,9 +25,6 @@ pub fn run(
         println!("state         loaded {} (frame {})", path.display(), m.frames);
     }
     script.apply(m.frames, &mut m.bus);
-    if m.bus.sharc.is_none() {
-        return Err(format!("{} is not a Model 2B game: its geometrizer is a TGP", roms.game.id));
-    }
     let started = std::time::Instant::now();
     let mut last = m.frames;
     let mut reported = 0;
@@ -45,28 +44,13 @@ pub fn run(
     m.bus.geo.sync();
     let state_hash = m.bus.state_hash();
     let e = m.bus.geo.engine();
-    let image = model2::sharc::image(&m.bus.geo.program);
-    println!(
-        "program       {} words, code hash {:016x}: {}",
-        image.len(),
-        model2::geo_native::image_hash(&image),
-        match &e.native {
-            Some(n) => format!("native {:?}", n.program),
-            None => "no native implementation (nothing compared)".into(),
-        }
-    );
-    println!(
-        "SHARC         {}",
-        if e.sharc_is_native() { "recompiled" } else { "interpreted (no recompiled code for it in this build)" }
-    );
+    describe(e, &m.bus.geo.program);
     let c = &e.check;
     println!(
         "compared      {} frames, {} words: {} frames differ, {} read the list differently, {} end with other state",
         c.frames, c.words, c.differing, c.list_differing, c.state_differing
     );
-    if let Some(stop) = e.native.as_ref().and_then(|n| n.stop) {
-        println!("native        stopped: {stop:?}");
-    }
+    stopped(e);
     if let Some(d) = &c.first {
         println!(
             "first diff    frame {}, word {} (stream lengths: SHARC {}, native {}), under command {}",
@@ -84,8 +68,9 @@ pub fn run(
         }
     }
     if let Some((frame, addr, a, b)) = c.first_state {
-        println!("first state   frame {frame}: word {addr:#x} SHARC {a:08x}, native {b:08x}");
+        println!("first state   frame {frame}: word {addr:#x} chip {a:08x}, native {b:08x}");
     }
+    let chip = if e.sharc.is_some() { "SHARC" } else { "TGP" };
     let summary = |label: &str, t: &[(f32, f32)]| {
         if t.is_empty() {
             return;
@@ -94,7 +79,7 @@ pub fn run(
         let (sm, nm) = (t.iter().map(|x| x.0).sum::<f32>() / n, t.iter().map(|x| x.1).sum::<f32>() / n);
         let (sw, nw) = t.iter().fold((0f32, 0f32), |a, x| (a.0.max(x.0), a.1.max(x.1)));
         println!(
-            "time {label:<8} {} frames: SHARC mean {sm:.3} ms, worst {sw:.3}; native mean {nm:.3} ms, worst {nw:.3} ({:.1}x)",
+            "time {label:<8} {} frames: {chip} mean {sm:.3} ms, worst {sw:.3}; native mean {nm:.3} ms, worst {nw:.3} ({:.1}x)",
             t.len(),
             sm / nm.max(1e-6)
         );
@@ -111,6 +96,55 @@ pub fn run(
     println!("emulated      {} frames in {secs:.1}s", m.frames);
     println!("state hash    {state_hash:016x} (ip {:#x})", m.cpu.ip);
     Ok(())
+}
+
+/// The uploaded program, which native implementation it has, and whether
+/// the chip runs recompiled code.
+fn describe(e: &model2::geo::Engine, upload: &[u64]) {
+    if e.sharc.is_some() {
+        let image = model2::sharc::image(upload);
+        println!(
+            "program       {} words, code hash {:016x}: {}",
+            image.len(),
+            model2::geo_native::image_hash(&image),
+            match &e.native {
+                Some(n) => format!("native {:?}", n.program),
+                None => "no native implementation (nothing compared)".into(),
+            }
+        );
+        println!(
+            "SHARC         {}",
+            if e.sharc_is_native() { "recompiled" } else { "interpreted (no recompiled code for it in this build)" }
+        );
+    } else {
+        let hash = e.tgp.program_hash;
+        println!(
+            "program       {} words, program hash {hash:016x}: {}",
+            upload.len(),
+            match &e.native_tgp {
+                Some(n) => format!("native {:?}", n.program),
+                None => "no native implementation (nothing compared)".into(),
+            }
+        );
+        println!(
+            "TGP           {}",
+            if model2::recomp::geo(hash).is_some() {
+                "recompiled"
+            } else {
+                "interpreted (no recompiled code for it in this build)"
+            }
+        );
+    }
+}
+
+/// Why the native geometrizer stopped, if it did.
+fn stopped(e: &model2::geo::Engine) {
+    if let Some(stop) = e.native.as_ref().and_then(|n| n.stop) {
+        println!("native        stopped: {stop:?}");
+    }
+    if let Some(stop) = e.native_tgp.as_ref().and_then(|n| n.stop) {
+        println!("native        stopped: {stop:?}");
+    }
 }
 
 /// A small deterministic generator for `fuzz`.
@@ -327,7 +361,7 @@ fn list(g: &mut Gen, rom_words: u32) -> Vec<u32> {
 
 /// `remodel geo-fuzz`: random display lists, covering every command and
 /// path of the program (also those no game's runs reach: fast polygon RAM,
-/// direct data, the test command), through the SHARC and the native
+/// direct data, the test command), through the chip and the native
 /// geometrizer side by side.
 pub fn fuzz(roms: &RomSet, frames: u64, seed: u64) -> Result<(), String> {
     use model2::geo::{Core, Engine, GeoMode, Job};
@@ -337,8 +371,11 @@ pub fn fuzz(roms: &RomSet, frames: u64, seed: u64) -> Result<(), String> {
     while !m.bus.geo.booted && m.frames < 3000 {
         m.run_slice(u64::MAX).map_err(|s| format!("stopped at frame {}: {s:?}", m.frames))?;
     }
-    if !m.bus.geo.booted || m.bus.sharc.is_none() {
-        return Err(format!("{} uploaded no SHARC geometrizer program", roms.game.id));
+    if !m.bus.geo.booted {
+        return Err(format!("{} uploaded no geometrizer program", roms.game.id));
+    }
+    if m.bus.sharc.is_none() {
+        return fuzz_tgp(roms, &m.bus.geo.program.clone(), frames, seed);
     }
     let program = m.bus.geo.program.clone();
     let rom = model2::bus::polygon_rom(roms);
@@ -392,14 +429,17 @@ pub fn fuzz(roms: &RomSet, frames: u64, seed: u64) -> Result<(), String> {
             }
         }
     }
+    fuzz_report(&e, frames)
+}
+
+/// What `fuzz` found.
+fn fuzz_report(e: &model2::geo::Engine, frames: u64) -> Result<(), String> {
     let c = &e.check;
     println!(
         "fuzz          {} frames ({} compared), {} words: {} differ, {} read the list differently, {} end with other state",
         frames, c.frames, c.words, c.differing, c.list_differing, c.state_differing
     );
-    if let Some(stop) = e.native.as_ref().and_then(|n| n.stop) {
-        println!("native        stopped: {stop:?}");
-    }
+    stopped(e);
     if let Some(d) = &c.first {
         println!(
             "first diff    frame {}, word {} (lengths {} / {}), under command {}",
@@ -417,10 +457,234 @@ pub fn fuzz(roms: &RomSet, frames: u64, seed: u64) -> Result<(), String> {
         }
     }
     if let Some((frame, addr, a, b)) = c.first_state {
-        println!("first state   frame {frame}: word {addr:#x} SHARC {a:08x}, native {b:08x}");
+        println!("first state   frame {frame}: word {addr:#x} chip {a:08x}, native {b:08x}");
     }
     if c.differing + c.state_differing + c.list_differing > 0 {
         return Err("the native geometrizer differs".into());
     }
     Ok(())
+}
+
+/// A TGP (2C) model: two vertices, then `n` polygons of 10 words (attr,
+/// normal, Pa, Pb), or in `topskatr`'s compact format 7 (a quad) or 4 (a
+/// triangle) with no normal; maybe a terminator.
+fn model_tgp(g: &mut Gen, n: u32, compact: bool) -> Vec<u32> {
+    let mut v = Vec::new();
+    for _ in 0..6 {
+        v.push(g.float(500.0));
+    }
+    for _ in 0..n {
+        let kind = [1, 1, 2, 2, 3][g.below(5) as usize];
+        let attr = kind
+            | g.below(4) << 8
+            | g.below(4) << 10
+            | g.below(32) << 12
+            | g.below(2) << 17
+            | g.below(32) << 18
+            | g.below(4) << 23
+            | g.below(32) << 27;
+        v.push(attr);
+        let words = if compact { 3 + 3 * (kind & 1) } else { 9 };
+        for _ in 0..words {
+            v.push(g.float(500.0));
+        }
+    }
+    if g.chance(80) {
+        v.push(0);
+    }
+    v
+}
+
+/// A frame's display list for a 2C program: random commands with operands
+/// its checks accept (the rest make it loop forever). `skater`: the
+/// commands `topskatr`'s program adds (fn 0x11, 0x1B, 0x1C).
+fn list_tgp(g: &mut Gen, rom_words: u32, skater: bool) -> Vec<u32> {
+    let mut l = Vec::new();
+    l.push(command(g, 0x16));
+    l.push(g.float(65536.0));
+    for _ in 0..g.below(60) + 10 {
+        match g.below(22) {
+            0 => {
+                l.push(command(g, 7));
+                l.push(g.below(4));
+            }
+            1 => {
+                l.push(command(g, 9));
+                l.push(g.float(1000.0));
+                l.push(g.float(1000.0));
+            }
+            2 => {
+                l.push(command(g, 0x0a));
+                for _ in 0..3 {
+                    l.push(g.float(1.0));
+                }
+            }
+            3 => {
+                // Lighting entries, all within the 32 (the coefficients of
+                // more would overwrite the table of squarings). The
+                // specular control (byte 3) indexes that table, which runs
+                // on into other words: values 15 and up can square
+                // thousands of times, which the TGP's frame model takes for
+                // an idle program and cuts short.
+                l.push(command(g, 6));
+                let n = g.below(4) + 1;
+                l.push(g.below(33 - n));
+                l.push(n);
+                for _ in 0..n {
+                    let control = if g.chance(70) { g.below(9) } else { g.below(15) };
+                    l.push(control << 24 | (g.next() >> 40) as u32);
+                    l.push(g.float(4.0));
+                }
+            }
+            4 | 5 => {
+                let f = if skater && g.chance(40) { 0x1b } else { 0x0b };
+                l.push(command(g, f));
+                for k in 0..12 {
+                    l.push(g.float(if k < 9 { 1.5 } else { 2000.0 }));
+                }
+            }
+            6 => {
+                l.push(command(g, 0x0c));
+                for _ in 0..3 {
+                    l.push(g.float(2000.0));
+                }
+            }
+            7 => {
+                l.push(command(g, 8));
+                l.push(g.float(16.0));
+            }
+            8 => {
+                l.push(command(g, 3));
+                for _ in 0..6 {
+                    l.push((g.next() >> 32) as u32);
+                }
+            }
+            9 => {
+                let f = if g.chance(50) { 4 } else { 0x14 };
+                l.push(command(g, f));
+                l.push(g.below(0x1_0000) | if g.chance(50) { 0x80_0000 } else { 0 });
+                let n = g.below(8) + 1;
+                l.push(n);
+                for _ in 0..n {
+                    l.push((g.next() >> 32) as u32);
+                }
+            }
+            10 => {
+                l.push(command(g, 2));
+                l.push((g.next() >> 32) as u32);
+                l.push((g.next() >> 32) as u32);
+                for _ in 0..6 {
+                    l.push(g.float(500.0));
+                }
+                let n = g.below(5) + 1;
+                for k in 0..n {
+                    let quad = g.chance(50);
+                    l.push(if quad { 1 } else { 2 } | g.below(1 << 16) << 2);
+                    for _ in 0..if quad { 8 } else { 5 } {
+                        l.push(g.float(500.0));
+                    }
+                    if k + 1 == n {
+                        l.push(0);
+                    }
+                }
+            }
+            11 | 12 => {
+                // A model into polygon RAM, then drawn.
+                let compact = skater && g.chance(50);
+                let at = g.below(0x4000);
+                let n = g.below(30) + 1;
+                let m = model_tgp(g, n, compact);
+                l.push(command(g, 5));
+                l.push(at);
+                l.push(m.len() as u32);
+                l.extend_from_slice(&m);
+                let f = if compact { 0x11 } else { 1 };
+                l.push(command(g, f));
+                l.push((g.next() >> 40) as u32);
+                l.push((g.next() >> 40) as u32);
+                l.push(at);
+                l.push(if g.chance(50) { 0 } else { g.below(n + 2) + 1 });
+            }
+            13..=15 => {
+                // An object from the polygon ROM (anything there).
+                let f = if skater && g.chance(40) { 0x11 } else { 1 };
+                l.push(command(g, f));
+                l.push((g.next() >> 40) as u32);
+                l.push((g.next() >> 40) as u32);
+                l.push(0x80_0000 + g.below(rom_words.max(16) - 16));
+                l.push(g.below(40) + 1);
+            }
+            16 => {
+                // Data push from polygon RAM or ROM.
+                l.push(command(g, 0x0d));
+                l.push(if g.chance(50) { g.below(0x4000) } else { 0x80_0000 + g.below(rom_words.max(16)) });
+                l.push(g.below(16) + 1);
+            }
+            17 => {
+                // The board test, with small blocks (`overrev`'s needs one).
+                l.push(command(g, 0x0e));
+                for i in 0..32 {
+                    l.push(1 << i);
+                }
+                let n = g.below(3) + 1;
+                l.push(n);
+                for _ in 0..n {
+                    l.push(0x80_0000 + g.below(rom_words.max(16)));
+                    l.push(g.below(12) + 1);
+                    l.push((g.next() >> 32) as u32);
+                }
+            }
+            18 => {
+                l.push(command(g, 0x10));
+                l.push((g.next() >> 32) as u32);
+            }
+            19 if skater => l.push(command(g, 0x1c)),
+            _ => l.push(command(g, 0)),
+        }
+    }
+    l.push(command(g, 0x0f));
+    l
+}
+
+/// `fuzz` for a 2C game: its TGP geometrizer program and the native one.
+fn fuzz_tgp(roms: &RomSet, program: &[u64], frames: u64, seed: u64) -> Result<(), String> {
+    use model2::geo::{Core, Engine, GeoMode, Job};
+    let rom = model2::bus::polygon_rom(roms);
+    let rom_words = rom.len() as u32;
+    let mut e = Engine::new(rom, Core::Tgp);
+    e.set_mode(GeoMode::Check);
+    e.run_job(Job::Boot(program.to_vec()));
+    let Some(skater) = e.native_tgp.as_ref().map(|n| n.program == model2::geo_native_2c::Program::TopSkater) else {
+        return Err("no native implementation of this program".into());
+    };
+    let mut g = Gen(seed.max(1));
+    for _ in 0..frames {
+        let words = list_tgp(&mut g, rom_words, skater);
+        let mut buffer = vec![0u8; 0x2_0000];
+        for (k, w) in words.iter().take(buffer.len() / 4).enumerate() {
+            buffer[4 * k..4 * k + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        let before = e.check.differing + e.check.state_differing + e.check.list_differing;
+        e.run_job(Job::Frame { buffer, booted: true, read_ptr: 0, jumps: Vec::new() });
+        if std::env::var_os("REMODEL_FUZZ_TRACE").is_some() {
+            println!(
+                "frame {}: list {} words, read {}, stream {}, tgp pc {:#x} steps {}",
+                e.frames,
+                words.len(),
+                e.fed.len(),
+                e.stream.len(),
+                e.tgp.pc,
+                e.tgp.steps
+            );
+        }
+        if let Some(path) = std::env::var_os("REMODEL_FUZZ_DUMP") {
+            if before == 0 && e.check.differing + e.check.state_differing + e.check.list_differing > 0 {
+                let text: String = words.iter().map(|w| format!("{w:08x}\n")).collect();
+                let _ = std::fs::write(&path, text);
+                let text: String = e.stream.iter().map(|w| format!("{w:08x}\n")).collect();
+                let _ = std::fs::write(format!("{}.stream", path.to_string_lossy()), text);
+            }
+        }
+    }
+    fuzz_report(&e, frames)
 }

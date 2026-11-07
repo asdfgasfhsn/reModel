@@ -150,11 +150,11 @@ pub struct Io<'a, 'b> {
 
 impl Io<'_, '_> {
     #[inline]
-    fn rd(&mut self) -> u32 {
+    pub(crate) fn rd(&mut self) -> u32 {
         self.list.next().unwrap_or(LIST_END)
     }
     #[inline]
-    fn emit(&mut self, w: u32) {
+    pub(crate) fn emit(&mut self, w: u32) {
         self.out.push(w);
     }
 }

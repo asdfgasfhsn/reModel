@@ -58,10 +58,11 @@ usage: remodel-play [options]
                      window (default on)
   --interp           run the i960 on the interpreter even if this build
                      has recompiled code
-  --geo sharc|native Model 2B geometrizer: the native implementation where
-                     there is one for the program (the default;
-                     docs/hw/geometrizer-2b.md), or the game's program on
-                     the SHARC
+  --geo native|chip  the geometrizer: the native implementation where there
+                     is one for the program the game uploads (the default;
+                     docs/hw/geometrizer-2b.md, geometrizer-2c.md), or the
+                     game's program on its chip, the 2B SHARC or 2C TGP
+                     (`sharc` and `tgp` name it too)
   --exact            run at the arcade's exact 57.524 frames per second
                      (default: one frame per display refresh when the
                      refresh is 60 or 120 Hz, which is 4.3% fast but smooth)
@@ -92,7 +93,7 @@ const ASPECTS: (f32, f32) = (4.0 / 3.0, 32.0 / 9.0);
 struct Options {
     sound: bool,
     interp: bool,
-    /// `--geo`: how a 2B geometrizer runs.
+    /// `--geo`: how the geometrizer runs.
     geo: model2::geo::GeoMode,
     seconds: Option<f64>,
     /// `--input`, parsed against the game's inputs when it starts.
@@ -138,10 +139,9 @@ fn options(s: &mut Settings) -> Result<Options, String> {
             "--shot" => o.shot = Some(value()?.into()),
             "--interp" => o.interp = true,
             "--geo" => {
-                o.geo = match value()?.as_str() {
-                    "sharc" => model2::geo::GeoMode::Sharc,
-                    "native" => model2::geo::GeoMode::Native,
-                    _ => return Err("--geo wants sharc or native".into()),
+                o.geo = match model2::geo::GeoMode::parse(&value()?) {
+                    Some(model2::geo::GeoMode::Check) | None => return Err("--geo wants native or chip".into()),
+                    Some(mode) => mode,
                 }
             }
             "--no-splash" => o.splash = false,

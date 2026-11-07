@@ -27,25 +27,28 @@ impl Core {
     }
 }
 
-/// Which implementation of the 2B geometrizer program runs a frame.
+/// Which implementation of the uploaded geometrizer program runs a frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GeoMode {
-    /// The uploaded program on the SHARC core (recompiled if the build has
-    /// it): the reference, and the default.
+    /// The uploaded program on the geometrizer's own processor, the
+    /// "chip" (a 2B SHARC, a 2C TGP; recompiled if the build has it): the
+    /// reference, and the default.
     #[default]
-    Sharc,
-    /// The native implementation (`geo_native`) when it implements the
-    /// uploaded program, else the SHARC.
+    Chip,
+    /// The native implementation (`geo_native` on 2B, `geo_native_2c` on
+    /// 2C) when it implements the uploaded program, else the chip.
     Native,
-    /// The SHARC's output, with the native one computed beside it from the
+    /// The chip's output, with the native one computed beside it from the
     /// same input and compared word by word ([`Engine::check`]).
     Check,
 }
 
 impl GeoMode {
+    /// `chip` (or by the processor's name, `sharc` or `tgp`), `native` or
+    /// `check`.
     pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "sharc" => Some(GeoMode::Sharc),
+            "chip" | "sharc" | "tgp" => Some(GeoMode::Chip),
             "native" => Some(GeoMode::Native),
             "check" => Some(GeoMode::Check),
             _ => None,
@@ -67,6 +70,30 @@ pub struct Mismatch {
     pub native: Vec<u32>,
     /// The raster command word the difference falls under, and its index.
     pub command: Option<(usize, u32)>,
+}
+
+impl Mismatch {
+    /// The difference at word `i` of frame `frame`'s streams.
+    fn at(frame: u64, i: usize, chip: &[u32], native: &[u32]) -> Self {
+        let start = i.saturating_sub(16);
+        let command = chip[..i.min(chip.len())].iter().rposition(|&w| w >> 24 == 0xff).map(|k| (k, chip[k]));
+        Mismatch {
+            frame,
+            index: i,
+            sharc_len: chip.len(),
+            native_len: native.len(),
+            start,
+            sharc: chip.iter().skip(start).take(32).copied().collect(),
+            native: native.iter().skip(start).take(32).copied().collect(),
+            command,
+        }
+    }
+}
+
+/// The index of the first word two streams differ at, if they do.
+fn first_difference(a: &[u32], b: &[u32]) -> Option<usize> {
+    let first = a.iter().zip(b).position(|(x, y)| x != y);
+    first.or((a.len() != b.len()).then(|| a.len().min(b.len())))
 }
 
 /// What `GeoMode::Check` found, and how long each side took.
@@ -91,6 +118,9 @@ pub struct CheckReport {
 /// The polygon memory address register, as `CheckReport::first_state`
 /// names it.
 pub const POLY_ADDRESS_LATCH: u32 = 0x43_0000;
+/// Polygon RAM word 0 as `CheckReport::first_state` names it on 2C (the
+/// TGP's own words are below: `geo_native_2c::Native::compare`).
+pub const POLY_RAM_STATE: u32 = 0x100_0000;
 
 /// IOP register number of EPB0, the SHARC's DMA buffer a host boots it
 /// through (the `0x804000` port during an upload).
@@ -353,6 +383,11 @@ pub struct Engine {
     /// implements the uploaded program (only with a mode other than Sharc).
     pub mode: GeoMode,
     pub native: Option<Box<crate::geo_native::Native>>,
+    /// The 2C native geometrizer, likewise.
+    pub native_tgp: Option<Box<crate::geo_native_2c::Native>>,
+    /// List words the TGP's program read in the most recent frame (the
+    /// DMA's read-ahead not counted; `GeoMode::Check`).
+    list_consumed: usize,
     /// `GeoMode::Check`: the native side's own polygon RAM, and what the
     /// comparison found.
     check_poly: Vec<u32>,
@@ -728,8 +763,10 @@ impl Engine {
             first_error_trace: Vec::new(),
             busy: std::time::Duration::ZERO,
             slowest: std::time::Duration::ZERO,
-            mode: GeoMode::Sharc,
+            mode: GeoMode::Chip,
             native: None,
+            native_tgp: None,
+            list_consumed: 0,
             check_poly: Vec::new(),
             check_latch: 0,
             check: CheckReport::default(),
@@ -772,8 +809,10 @@ impl Engine {
             first_error_trace: Vec::new(),
             busy: std::time::Duration::ZERO,
             slowest: std::time::Duration::ZERO,
-            mode: GeoMode::Sharc,
+            mode: GeoMode::Chip,
             native: None,
+            native_tgp: None,
+            list_consumed: 0,
             check_poly: Vec::new(),
             check_latch: 0,
             check: CheckReport::default(),
@@ -783,6 +822,21 @@ impl Engine {
     /// Use `mode` from the next frame. A native geometrizer for the program
     /// the SHARC holds takes over the SHARC's state ([`Engine::attach_native`]).
     pub fn set_mode(&mut self, mode: GeoMode) {
+        if mode == self.mode && (self.native.is_some() || self.native_tgp.is_some()) {
+            return;
+        }
+        // The chip hasn't run the native frames: give it their state first.
+        if self.mode == GeoMode::Native {
+            if let (Some(n), Some(s)) = (&self.native, self.sharc.as_deref_mut()) {
+                n.export(s);
+            }
+            if let Some(n) = self.native_tgp.take() {
+                if crate::geo_native_2c::fresh(&self.tgp) {
+                    self.tgp = crate::geo_native_2c::started(&self.tgp);
+                }
+                n.export(&mut self.tgp);
+            }
+        }
         self.mode = mode;
         self.attach_native();
     }
@@ -793,10 +847,14 @@ impl Engine {
     /// engine's frame count: games upload once).
     pub fn attach_native(&mut self) {
         self.native = None;
-        let Some(s) = self.sharc.as_deref() else { return };
-        if self.mode == GeoMode::Sharc || self.fault.is_some() {
+        self.native_tgp = None;
+        if self.mode == GeoMode::Chip || self.fault.is_some() {
             return;
         }
+        let Some(s) = self.sharc.as_deref() else {
+            self.attach_native_tgp();
+            return;
+        };
         let image = adsp2106x::cpu::program_image(s);
         let Some(program) = crate::geo_native::recognise(&image) else { return };
         let mut n = crate::geo_native::Native::new(program, s.iop.get(0xf).copied().unwrap_or(0));
@@ -814,10 +872,30 @@ impl Engine {
         }
     }
 
+    /// [`Engine::attach_native`] for a 2C TGP: the native geometrizer for
+    /// its program by the program's hash, from the TGP's state (run
+    /// through its start-up code if it hasn't run yet).
+    fn attach_native_tgp(&mut self) {
+        let Some(program) = crate::geo_native_2c::recognise(self.tgp.program_hash) else { return };
+        let mut n = crate::geo_native_2c::Native::new(program);
+        if crate::geo_native_2c::fresh(&self.tgp) {
+            n.import(&crate::geo_native_2c::started(&self.tgp), true);
+        } else {
+            n.import(&self.tgp, false);
+        }
+        self.native_tgp = Some(Box::new(n));
+        if self.mode == GeoMode::Check {
+            self.check_poly.clone_from(&self.poly_ram);
+        }
+    }
+
     /// Load an uploaded program ([`Geometrizer::program`]).
     pub fn boot(&mut self, program: &[u64]) {
         match &mut self.sharc {
-            None => self.tgp.boot(program),
+            None => {
+                self.tgp.boot(program);
+                self.attach_native();
+            }
             Some(s) => {
                 // A fresh SHARC in host boot mode, then the host's writes.
                 // A write it can't take leaves `fault` at 0x80000000 | the
@@ -886,9 +964,11 @@ impl Engine {
         }
         let t = Stopwatch::start();
         let buffer = std::mem::take(&mut self.buffer);
-        match (self.mode, self.native.is_some()) {
-            (GeoMode::Native, true) => self.process_native(&buffer, read_ptr),
-            (GeoMode::Check, true) => self.process_check(&buffer, read_ptr),
+        match (self.mode, self.native.is_some(), self.native_tgp.is_some()) {
+            (GeoMode::Native, true, _) => self.process_native(&buffer, read_ptr),
+            (GeoMode::Check, true, _) => self.process_check(&buffer, read_ptr),
+            (GeoMode::Native, _, true) => self.process_native_tgp(&buffer, read_ptr),
+            (GeoMode::Check, _, true) => self.process_check_tgp(&buffer, read_ptr),
             _ if self.sharc.is_some() => self.process_sharc(&buffer, read_ptr),
             _ => self.process(&buffer, read_ptr),
         }
@@ -950,27 +1030,11 @@ impl Engine {
             resync = true;
             c.first_state.get_or_insert((self.frames, POLY_ADDRESS_LATCH, self.poly_latch, self.check_latch));
         }
-        let first = self.stream.iter().zip(&native).position(|(a, b)| a != b);
-        let first = first.or((self.stream.len() != native.len()).then(|| self.stream.len().min(native.len())));
-        if let Some(i) = first {
+        if let Some(i) = first_difference(&self.stream, &native) {
             c.differing += 1;
             resync = true;
             if c.first.is_none() {
-                let start = i.saturating_sub(16);
-                let command = self.stream[..i.min(self.stream.len())]
-                    .iter()
-                    .rposition(|&w| w >> 24 == 0xff)
-                    .map(|k| (k, self.stream[k]));
-                c.first = Some(Mismatch {
-                    frame: self.frames,
-                    index: i,
-                    sharc_len: self.stream.len(),
-                    native_len: native.len(),
-                    start,
-                    sharc: self.stream.iter().skip(start).take(32).copied().collect(),
-                    native: native.iter().skip(start).take(32).copied().collect(),
-                    command,
-                });
+                c.first = Some(Mismatch::at(self.frames, i, &self.stream, &native));
             }
         }
         // The program's state words: the transform, lights and parameters,
@@ -995,6 +1059,77 @@ impl Engine {
             }
             self.check_poly.clone_from(&self.poly_ram);
             self.check_latch = self.poly_latch;
+        }
+    }
+
+    /// [`Engine::process`] by the 2C native geometrizer: the same list,
+    /// polygon memory and output.
+    fn process_native_tgp(&mut self, buffer: &[u8], read_ptr: u32) {
+        self.frames += 1;
+        let Some(n) = self.native_tgp.as_deref_mut() else { return };
+        let (mut out, mut latch) = (Vec::new(), 0);
+        let mut list = ListDma::new(buffer, &self.jumps, read_ptr, &mut self.list_words, &mut self.fed);
+        let mut io = crate::geo_native::Io {
+            list: &mut list,
+            poly: GeoExt::new(&mut self.poly_ram, &self.poly_rom),
+            latch: &mut latch,
+            out: &mut out,
+        };
+        n.run_frame(&mut io);
+        self.stream.extend(out.into_iter().filter(|&w| w != RASTER_NOP));
+    }
+
+    /// [`Engine::process_check`] for a 2C TGP: its frame (the result), then
+    /// the native one from the same input on its own state and polygon RAM,
+    /// compared: the stream, the list words read, and the program's state
+    /// (A and B RAM, the matrix queue; [`crate::geo_native_2c::Native::compare`]).
+    fn process_check_tgp(&mut self, buffer: &[u8], read_ptr: u32) {
+        let t = Stopwatch::start();
+        self.process(buffer, read_ptr);
+        let chip_ms = t.elapsed().as_secs_f32() * 1e3;
+        let Some(n) = self.native_tgp.as_deref_mut() else { return };
+        let t = Stopwatch::start();
+        let (mut out, mut words, mut fed, mut latch) = (Vec::new(), 0, Vec::new(), 0);
+        let mut list = ListDma::new(buffer, &self.jumps, read_ptr, &mut words, &mut fed);
+        let mut io = crate::geo_native::Io {
+            list: &mut list,
+            poly: GeoExt::new(&mut self.check_poly, &self.poly_rom),
+            latch: &mut latch,
+            out: &mut out,
+        };
+        n.run_frame(&mut io);
+        let native: Vec<u32> = out.into_iter().filter(|&w| w != RASTER_NOP).collect();
+        let native_ms = t.elapsed().as_secs_f32() * 1e3;
+        let mut resync = false;
+        let c = &mut self.check;
+        c.frames += 1;
+        c.words += self.stream.len() as u64;
+        c.times.push((chip_ms, native_ms));
+        if fed.len() != self.list_consumed {
+            c.list_differing += 1;
+            resync = true;
+        }
+        if let Some(i) = first_difference(&self.stream, &native) {
+            c.differing += 1;
+            resync = true;
+            if c.first.is_none() {
+                c.first = Some(Mismatch::at(self.frames, i, &self.stream, &native));
+            }
+        }
+        if let Some((addr, a, b)) = n.compare(&self.tgp) {
+            c.state_differing += 1;
+            resync = true;
+            c.first_state.get_or_insert((self.frames, addr, a, b));
+        }
+        if self.check_poly != self.poly_ram {
+            c.state_differing += 1;
+            resync = true;
+            let k = self.check_poly.iter().zip(&self.poly_ram).position(|(a, b)| a != b).unwrap_or(0);
+            c.first_state.get_or_insert((self.frames, POLY_RAM_STATE + k as u32, self.poly_ram[k], self.check_poly[k]));
+        }
+        if resync {
+            n.import(&self.tgp, false);
+            self.check_poly.clone_from(&self.poly_ram);
         }
     }
 
@@ -1066,6 +1201,7 @@ impl Engine {
             }
         }
         // The DMA stops at END; words read ahead of it are not consumed.
+        self.list_consumed = self.fed.len() - self.tgp.fifo_in.len();
         self.tgp.fifo_in.clear();
     }
 }
@@ -1188,7 +1324,23 @@ impl state::State for Geometrizer {
 // The 2C fields, then a 2B engine's SHARC (2C states are unchanged).
 impl state::State for Engine {
     fn save(&self, w: &mut state::Writer) {
-        self.tgp.save(w);
+        match (self.mode, &self.native_tgp) {
+            // The native state, where the program keeps it, so the state
+            // loads the same way whichever runs it.
+            (GeoMode::Native, Some(n)) => {
+                let mut copy = if crate::geo_native_2c::fresh(&self.tgp) {
+                    crate::geo_native_2c::started(&self.tgp)
+                } else {
+                    let mut copy = Tgp::new();
+                    let bytes = state::to_bytes(&self.tgp);
+                    let _ = state::State::load(&mut copy, &mut state::Reader::new(&bytes));
+                    copy
+                };
+                n.export(&mut copy);
+                copy.save(w);
+            }
+            _ => self.tgp.save(w),
+        }
         self.poly_ram.save(w);
         self.buffer.save(w);
         self.stream.save(w);
@@ -1228,8 +1380,8 @@ impl state::State for Engine {
             s.load(r)?;
             self.poly_latch.load(r)?;
             self.attach_sharc();
-            self.attach_native();
         }
+        self.attach_native();
         Ok(())
     }
 }
