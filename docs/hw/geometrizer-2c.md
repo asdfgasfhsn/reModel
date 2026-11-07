@@ -273,6 +273,13 @@ Front ends: `remodel --geo chip|native|check` (`sharc` and `tgp` name the
 chip too), `remodel-play --geo chip`, the browser's `?geo=chip` (also
 `?geo=sharc`, `?geo=tgp`; docs/web.md).
 
+**Smooth motion** (`geometrizer.md`, "Smooth motion"): the matrix (fn
+0x0B), translation (0x0C), focal-length (0x09) and `topskatr`'s second
+matrix (0x1B) handlers pass their operands through `Io::xform` before
+using them, and objects (0x01, `topskatr`'s 0x11) their model address
+through `Io::object`, as on 2B. fn 0x1C copies the first matrix, so it
+follows the blended one. `topskatr`'s skinned skaters blend both bones.
+
 ## Verification
 
 `make geo-check GAME=...` (750M instructions of a coin-start run, past

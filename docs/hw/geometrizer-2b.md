@@ -293,6 +293,15 @@ too), `remodel-play --geo chip`, and the browser's `?geo=chip` for the
 SHARC (the geometrizer worker runs the native code by default;
 docs/web.md). The 2C counterpart is `geometrizer-2c.md`.
 
+**Smooth motion** (`geometrizer.md`, "Smooth motion"): the matrix (fn
+0x0B and 0x1B), translation (0x0C, 0x1C) and focal-length (0x09, 0x19)
+handlers pass their operands through `Io::xform` before using them, and
+objects their model address through `Io::object`. With no tap (every
+real frame unless smooth motion is on, and then it only reads them) that
+changes nothing: the state hashes above are the same with in-betweens
+drawn every frame. In-betweens rerun a frame's list on a copy of this
+state with the transforms replaced.
+
 ## Verification
 
 `make geo-check GAME=...` runs a coin-start run (`geo-check STEPS FROM`:
@@ -422,8 +431,7 @@ TGP.
   queue if the renderer moves there too.
 
 What it enables: per-object matrices are explicit in the object table, so
-interpolated frames (120 Hz: blend each object's transform between two
-frames, matched by list position and model address, and run the GPU pass
-again), run-ahead and rollback (the geometrizer state is a few kilobytes,
+interpolated frames (now done on the CPU: `geometrizer.md`, "Smooth
+motion"; a GPU pass would make each in-between nearly free), run-ahead and rollback (the geometrizer state is a few kilobytes,
 saved and restored with the machine), full-precision geometry, and MSAA in
 the renderer, without the SHARC.

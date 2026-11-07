@@ -84,7 +84,7 @@ endif
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm m68k-tests clean recomp recomp-workspace bench latency sound sound-disasm geo-check geo-fuzz
+.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm m68k-tests clean recomp recomp-workspace bench latency sound sound-disasm geo-check geo-fuzz smooth-frames
 
 ##@ General
 
@@ -254,6 +254,11 @@ geo-check: release ## A coin-start run (GEO_CHECK_STEPS, INPUT) with the native 
 
 geo-fuzz: release ## Random display lists (FUZZ_FRAMES, FUZZ_SEED) through the game's geometrizer program on its chip (SHARC or TGP) and the native one, compared
 	$(RUN) geo-fuzz $(FUZZ_FRAMES) $(FUZZ_SEED)
+
+SMOOTH_T    ?= 0,0.25,0.5,0.75
+SMOOTH_SNAP ?= 500
+smooth-frames: release ## Smooth motion's in-betweens: a coin-start run (BENCH_STEPS, INPUT) on the native geometrizer; every SMOOTH_SNAP-th frame also drawn at SMOOTH_T of the way from the frame before (out/GAME/frames/FRAME-tTT.png, FRAME-prev.png), in-betweens timed
+	$(RUN) --geo native --smooth $(SMOOTH_T) --input $(or $(INPUT),$(BENCH_INPUT)) run $(BENCH_STEPS) $(SMOOTH_SNAP)
 
 lockstep: ## Run the recompiled code beside the interpreter (i960 block by block; Model 2B's SHARCs too) and stop at the first difference (RECOMP=1, STEPS, INPUT)
 	$(MAKE) release RECOMP=1

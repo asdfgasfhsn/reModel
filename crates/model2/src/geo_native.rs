@@ -20,6 +20,7 @@
 //! and handed back ([`Native::export`]).
 
 use crate::geo::{GeoExt, ListDma, LIST_END};
+use crate::smooth::Kind;
 use adsp2106x::float::{self, Flags, Mode, Select, ToInt};
 use mb86235::cpu::External;
 
@@ -169,9 +170,26 @@ pub struct Io<'a, 'b> {
     pub poly: GeoExt<'a>,
     pub latch: &'a mut u32,
     pub out: &'a mut Vec<u32>,
+    /// Smooth motion's hook (`crate::smooth`): the transforms a real frame
+    /// sets are noted, an in-between's replaced. None: nothing happens.
+    pub tap: Option<&'a mut crate::smooth::Tap>,
 }
 
 impl Io<'_, '_> {
+    /// A transform command's operands as read, before they are used.
+    #[inline]
+    pub(crate) fn xform(&mut self, kind: crate::smooth::Kind, w: &mut [u32]) {
+        if let Some(t) = self.tap.as_deref_mut() {
+            t.xform(kind, w);
+        }
+    }
+    /// An object at model address `oba`.
+    #[inline]
+    pub(crate) fn object(&mut self, oba: u32) {
+        if let Some(t) = self.tap.as_deref_mut() {
+            t.object(oba);
+        }
+    }
     #[inline]
     pub(crate) fn rd(&mut self) -> u32 {
         self.list.next().unwrap_or(LIST_END)
@@ -541,8 +559,9 @@ impl Native {
                     io.emit(v >> 8);
                 }
                 0x09 | 0x19 => {
-                    self.dm[FOCUS] = io.rd();
-                    self.dm[FOCUS + 1] = io.rd();
+                    let mut f = [io.rd(), io.rd()];
+                    io.xform(Kind::Focus, &mut f);
+                    self.dm[FOCUS..FOCUS + 2].copy_from_slice(&f);
                 }
                 0x0a | 0x1a => {
                     for k in 0..3 {
@@ -552,8 +571,9 @@ impl Native {
                     }
                 }
                 0x0b | 0x1b => {
-                    for k in 0..12 {
-                        let v = io.rd();
+                    let mut m: [u32; 12] = std::array::from_fn(|_| io.rd());
+                    io.xform(Kind::Matrix, &mut m);
+                    for (k, &v) in m.iter().enumerate() {
                         if k < 9 {
                             self.dm[MATRIX + k] = v;
                         } else {
@@ -567,8 +587,9 @@ impl Native {
                     }
                 }
                 0x0c | 0x1c => {
-                    for k in 0..3 {
-                        let v = io.rd();
+                    let mut t = [io.rd(), io.rd(), io.rd()];
+                    io.xform(Kind::Translation, &mut t);
+                    for (k, &v) in t.iter().enumerate() {
                         self.dm[TRANSLATION + k] = v;
                         self.pm[3 + k] = v;
                     }
@@ -735,6 +756,7 @@ impl Native {
         let tha = io.rd();
         let oba = io.rd();
         let obc = io.rd();
+        io.object(oba);
         io.emit(cmd);
         io.emit(tpa & 0xff_ffff);
         io.emit(tha & 0xff_ffff);
@@ -962,7 +984,8 @@ mod tests {
         let (mut words, mut fed, mut out, mut latch) = (0, Vec::new(), Vec::new(), 0);
         let mut ram = vec![0; 0x1_0000];
         let mut list = ListDma::new(&buffer, &[], 0, &mut words, &mut fed);
-        let mut io = Io { list: &mut list, poly: GeoExt::new(&mut ram, rom), latch: &mut latch, out: &mut out };
+        let mut io =
+            Io { list: &mut list, poly: GeoExt::new(&mut ram, rom), latch: &mut latch, out: &mut out, tap: None };
         n.run_frame(&mut io);
         out
     }

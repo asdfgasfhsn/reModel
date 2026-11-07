@@ -18,6 +18,7 @@ pub mod input;
 pub mod protection;
 pub mod raster;
 pub mod sharc;
+pub mod smooth;
 pub mod video;
 
 pub mod recomp;

@@ -7,7 +7,8 @@
 
 use adsp2106x::cpu::{Bus as SharcBus, Sharc, Step as SharcStep, Width};
 use mb86235::cpu::{External, Step, Tgp};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 /// The geometrizer's processor, which sets how it is programmed and fed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,7 +144,7 @@ const F0_PULSE_STEPS: u64 = 256;
 const TS_COMMAND_ERROR_PC: u32 = 0x34d;
 /// Rasteriser NOP. The idle loop's delay slot emits one per pass, which the
 /// rasteriser discards.
-const RASTER_NOP: u32 = 0xff00_0000;
+pub(crate) const RASTER_NOP: u32 = 0xff00_0000;
 /// Steps with no input consumed and no output produced after which the
 /// program is taken to be idle (finished the list, waiting for F0).
 const IDLE_STEPS: u64 = 4096;
@@ -157,16 +158,32 @@ const PC_TRACE_LEN: usize = 4096;
 /// polygons ROM from 0x800000 (word addressed), mirrored to fill the window
 /// (4 MB in topskatr, 16 MB in skisuprg).
 pub struct GeoExt<'a> {
-    ram: &'a mut [u32],
+    ram: PolyRam<'a>,
     rom: &'a [u32],
     /// Word-address mask for the ROM: its size rounded up to a power of two.
     rom_mask: u32,
+    /// Polygon RAM was written.
+    pub(crate) wrote: bool,
+}
+
+/// Polygon RAM as a [`GeoExt`] sees it: its own, or (for smooth motion's
+/// in-betweens, `crate::smooth`) a copy read through an overlay that
+/// takes the writes, leaving the copy as it was.
+enum PolyRam<'a> {
+    Own(&'a mut [u32]),
+    Overlay(&'a [u32], &'a mut HashMap<u32, u32>),
 }
 
 impl<'a> GeoExt<'a> {
     pub(crate) fn new(ram: &'a mut [u32], rom: &'a [u32]) -> Self {
         let rom_mask = (rom.len().next_power_of_two().max(1) - 1) as u32;
-        GeoExt { ram, rom, rom_mask }
+        GeoExt { ram: PolyRam::Own(ram), rom, rom_mask, wrote: false }
+    }
+
+    /// Polygon RAM `ram`, unchanged: writes go to `overlay`.
+    pub(crate) fn overlay(ram: &'a [u32], overlay: &'a mut HashMap<u32, u32>, rom: &'a [u32]) -> Self {
+        let rom_mask = (rom.len().next_power_of_two().max(1) - 1) as u32;
+        GeoExt { ram: PolyRam::Overlay(ram, overlay), rom, rom_mask, wrote: false }
     }
 }
 
@@ -176,14 +193,28 @@ impl External for GeoExt<'_> {
         if addr >= 0x80_0000 {
             self.rom.get((addr & self.rom_mask) as usize).copied().unwrap_or(0)
         } else {
-            self.ram[addr as usize % self.ram.len()]
+            match &self.ram {
+                PolyRam::Own(ram) => ram[addr as usize % ram.len()],
+                PolyRam::Overlay(ram, o) => {
+                    let i = addr as usize % ram.len();
+                    o.get(&(i as u32)).copied().unwrap_or(ram[i])
+                }
+            }
         }
     }
     #[inline]
     fn write(&mut self, addr: u32, v: u32) {
         if addr < 0x80_0000 {
-            let n = self.ram.len();
-            self.ram[addr as usize % n] = v;
+            self.wrote = true;
+            match &mut self.ram {
+                PolyRam::Own(ram) => {
+                    let n = ram.len();
+                    ram[addr as usize % n] = v;
+                }
+                PolyRam::Overlay(ram, o) => {
+                    o.insert((addr as usize % ram.len()) as u32, v);
+                }
+            }
         }
     }
 }
@@ -353,7 +384,7 @@ pub struct Engine {
     sharc_native: Option<crate::recomp::SharcGeoRun>,
     pub sharc_interpret: bool,
     poly_ram: Vec<u32>,
-    poly_rom: Vec<u32>,
+    poly_rom: Arc<Vec<u32>>,
     /// Buffer RAM as it was when the frame started.
     buffer: Vec<u8>,
     /// Jump word offsets in `buffer` (see `Geometrizer::jumps`).
@@ -393,6 +424,52 @@ pub struct Engine {
     check_poly: Vec<u32>,
     check_latch: u32,
     pub check: CheckReport,
+    /// Smooth motion (`crate::smooth`), when it's on.
+    smooth: Option<Box<Smooth>>,
+}
+
+/// What smooth motion keeps between frames ([`Engine::set_smooth`]).
+#[derive(Default)]
+struct Smooth {
+    /// The last frame's transforms, to match the next frame's with.
+    prev: Vec<crate::smooth::Xform>,
+    /// Polygon RAM as it was before the frame being run, shared with its
+    /// in-betweens; stale after a frame that may have written it.
+    poly: Arc<Vec<u32>>,
+    stale: bool,
+    /// The frame being run: the native state and address latch before it,
+    /// what it recorded, and whether it wrote polygon RAM.
+    pending: Option<(crate::smooth::Native, u32, Vec<crate::smooth::Xform>, bool)>,
+    /// The in-betweens of the last frame, if it can have any.
+    frame: Option<Arc<crate::smooth::Frame>>,
+    /// Host time spent on it in the frames (copies and matching; not
+    /// drawing in-betweens, which the front end does).
+    busy: std::time::Duration,
+}
+
+impl Smooth {
+    /// Before a frame: polygon RAM `ram` as the frame starts, if the copy
+    /// is stale.
+    fn begin(&mut self, ram: &[u32]) {
+        if std::mem::take(&mut self.stale) {
+            match Arc::get_mut(&mut self.poly) {
+                Some(v) => {
+                    v.clear();
+                    v.extend_from_slice(ram);
+                }
+                None => self.poly = Arc::new(ram.to_vec()),
+            }
+        }
+    }
+
+    /// Nothing to blend the next frame with (after a load, a mode change,
+    /// an upload).
+    fn reset(&mut self) {
+        self.prev.clear();
+        self.pending = None;
+        self.frame = None;
+        self.stale = true;
+    }
 }
 
 enum Slot {
@@ -591,6 +668,11 @@ impl Geometrizer {
         self.engine_mut().set_mode(mode);
     }
 
+    /// Smooth motion on or off ([`Engine::set_smooth`]; the local engine).
+    pub fn set_smooth(&mut self, on: bool) {
+        self.engine_mut().set_smooth(on);
+    }
+
     /// Start a frame on the worker thread from the list at the read
     /// pointer. Runs in the background until the next `sync`.
     pub fn start_frame(&mut self, buffer: &[u8]) {
@@ -749,7 +831,7 @@ impl Engine {
             sharc_native: None,
             sharc_interpret: false,
             poly_ram: vec![0; 0x10_0000],
-            poly_rom,
+            poly_rom: Arc::new(poly_rom),
             buffer: Vec::new(),
             jumps: Vec::new(),
             stream: Vec::new(),
@@ -770,6 +852,7 @@ impl Engine {
             check_poly: Vec::new(),
             check_latch: 0,
             check: CheckReport::default(),
+            smooth: None,
         }
     }
 
@@ -795,7 +878,7 @@ impl Engine {
             sharc_native: None,
             sharc_interpret: false,
             poly_ram: Vec::new(),
-            poly_rom: Vec::new(),
+            poly_rom: Arc::new(Vec::new()),
             buffer: Vec::new(),
             jumps: Vec::new(),
             stream: Vec::new(),
@@ -816,6 +899,7 @@ impl Engine {
             check_poly: Vec::new(),
             check_latch: 0,
             check: CheckReport::default(),
+            smooth: None,
         }
     }
 
@@ -848,6 +932,9 @@ impl Engine {
     pub fn attach_native(&mut self) {
         self.native = None;
         self.native_tgp = None;
+        if let Some(s) = &mut self.smooth {
+            s.reset();
+        }
         if self.mode == GeoMode::Chip || self.fault.is_some() {
             return;
         }
@@ -976,13 +1063,88 @@ impl Engine {
         self.slowest = self.slowest.max(t.elapsed());
         self.buffer = buffer;
         self.apply_raster_writes();
+        self.finish_smooth(read_ptr);
+    }
+
+    /// Smooth motion (docs/hw/geometrizer.md, "Smooth motion"): from the
+    /// next frame, each frame the native geometrizer runs also notes its
+    /// transforms and keeps what an in-between of it needs
+    /// ([`Engine::smooth_frame`]). Render-only: the frames' output and the
+    /// state are the same either way. Only frames the native geometrizer
+    /// runs (`GeoMode::Native`) get in-betweens.
+    pub fn set_smooth(&mut self, on: bool) {
+        match (on, self.smooth.is_some()) {
+            (true, false) => self.smooth = Some(Box::new(Smooth { stale: true, ..Default::default() })),
+            (false, true) => self.smooth = None,
+            _ => {}
+        }
+    }
+
+    /// The last frame's in-betweens ([`crate::smooth::Frame::render`]),
+    /// if smooth motion is on and the native geometrizer ran it.
+    pub fn smooth_frame(&self) -> Option<Arc<crate::smooth::Frame>> {
+        self.smooth.as_ref()?.frame.clone()
+    }
+
+    /// Host time smooth motion has added to the frames so far.
+    pub fn smooth_busy(&self) -> std::time::Duration {
+        self.smooth.as_ref().map_or(std::time::Duration::ZERO, |s| s.busy)
+    }
+
+    /// Before a frame the native geometrizer runs, with smooth motion on:
+    /// polygon RAM's copy brought up to date. Returns a tap to record with.
+    fn begin_smooth(&mut self) -> Option<crate::smooth::Tap> {
+        let s = self.smooth.as_deref_mut()?;
+        let t = Stopwatch::start();
+        s.begin(&self.poly_ram);
+        s.busy += t.elapsed();
+        Some(crate::smooth::Tap::record())
+    }
+
+    /// After a frame: its in-betweens' plan, from what the frame recorded
+    /// and the frame before's.
+    fn finish_smooth(&mut self, read_ptr: u32) {
+        let Some(s) = self.smooth.as_deref_mut() else { return };
+        let t = Stopwatch::start();
+        s.frame = None;
+        match s.pending.take() {
+            Some((native, latch, list, wrote)) => {
+                let plan = crate::smooth::Plan::new(&s.prev, list.clone());
+                s.prev = list;
+                s.frame = Some(Arc::new(crate::smooth::Frame::new(
+                    native,
+                    self.buffer.clone(),
+                    self.jumps.clone(),
+                    read_ptr,
+                    latch,
+                    s.poly.clone(),
+                    self.poly_rom.clone(),
+                    self.texture_point_ram.clone(),
+                    plan,
+                    self.frames,
+                )));
+                s.stale |= wrote;
+            }
+            // Not a native frame: nothing to blend the next with, and
+            // polygon RAM may have changed.
+            None => {
+                s.prev.clear();
+                s.stale = true;
+            }
+        }
+        s.busy += t.elapsed();
     }
 
     /// [`Engine::process_sharc`] by the native geometrizer: the same list,
     /// polygon memory and output.
     fn process_native(&mut self, buffer: &[u8], read_ptr: u32) {
         self.frames += 1;
+        if self.native.is_none() {
+            return;
+        }
+        let mut tap = self.begin_smooth();
         let Some(n) = self.native.as_deref_mut() else { return };
+        let before = tap.is_some().then(|| (crate::smooth::Native::B(Box::new(n.clone())), self.poly_latch));
         let mut out = Vec::new();
         let mut list = ListDma::new(buffer, &self.jumps, read_ptr, &mut self.list_words, &mut self.fed);
         let mut io = crate::geo_native::Io {
@@ -990,9 +1152,14 @@ impl Engine {
             poly: GeoExt::new(&mut self.poly_ram, &self.poly_rom),
             latch: &mut self.poly_latch,
             out: &mut out,
+            tap: tap.as_mut(),
         };
         n.run_frame(&mut io);
+        let wrote = io.poly.wrote;
         self.stream.extend(out.into_iter().filter(|&w| w != RASTER_NOP));
+        if let (Some(s), Some((native, latch)), Some(tap)) = (self.smooth.as_deref_mut(), before, tap) {
+            s.pending = Some((native, latch, tap.into_list(), wrote));
+        }
     }
 
     /// `GeoMode::Check`: the SHARC's frame (the result), then the native
@@ -1012,6 +1179,7 @@ impl Engine {
             poly: GeoExt::new(&mut self.check_poly, &self.poly_rom),
             latch: &mut self.check_latch,
             out: &mut out,
+            tap: None,
         };
         n.run_frame(&mut io);
         let native: Vec<u32> = out.into_iter().filter(|&w| w != RASTER_NOP).collect();
@@ -1065,7 +1233,12 @@ impl Engine {
     /// polygon memory and output.
     fn process_native_tgp(&mut self, buffer: &[u8], read_ptr: u32) {
         self.frames += 1;
+        if self.native_tgp.is_none() {
+            return;
+        }
+        let mut tap = self.begin_smooth();
         let Some(n) = self.native_tgp.as_deref_mut() else { return };
+        let before = tap.is_some().then(|| crate::smooth::Native::C(Box::new(n.clone())));
         let (mut out, mut latch) = (Vec::new(), 0);
         let mut list = ListDma::new(buffer, &self.jumps, read_ptr, &mut self.list_words, &mut self.fed);
         let mut io = crate::geo_native::Io {
@@ -1073,9 +1246,14 @@ impl Engine {
             poly: GeoExt::new(&mut self.poly_ram, &self.poly_rom),
             latch: &mut latch,
             out: &mut out,
+            tap: tap.as_mut(),
         };
         n.run_frame(&mut io);
+        let wrote = io.poly.wrote;
         self.stream.extend(out.into_iter().filter(|&w| w != RASTER_NOP));
+        if let (Some(s), Some(native), Some(tap)) = (self.smooth.as_deref_mut(), before, tap) {
+            s.pending = Some((native, 0, tap.into_list(), wrote));
+        }
     }
 
     /// [`Engine::process_check`] for a 2C TGP: its frame (the result), then
@@ -1095,6 +1273,7 @@ impl Engine {
             poly: GeoExt::new(&mut self.check_poly, &self.poly_rom),
             latch: &mut latch,
             out: &mut out,
+            tap: None,
         };
         n.run_frame(&mut io);
         let native: Vec<u32> = out.into_iter().filter(|&w| w != RASTER_NOP).collect();

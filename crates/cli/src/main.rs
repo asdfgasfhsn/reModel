@@ -55,6 +55,13 @@ options:
                        implements the program (docs/hw/geometrizer-2b.md,
                        docs/hw/geometrizer-2c.md), or both, compared frame
                        by frame (see geo-check)
+  --smooth T,T...      `run` with --geo native: smooth motion's in-between
+                       frames (docs/hw/geometrizer.md, Smooth motion); at
+                       each snapshot also draw the in-betweens at these
+                       fractions (0 to 1) of the way from the frame before
+                       to FRAME-tTT.png (and the frame before to
+                       FRAME-prev.png), and time one in-between of every
+                       frame (the state hash is the same as without)
 
 commands:
   games                list supported games
@@ -248,6 +255,23 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         };
         let _ = GEO_MODE.set(mode);
+    }
+    let Ok(smooth) = opt("--smooth") else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    if let Some(v) = smooth {
+        let ts: Option<Vec<f32>> =
+            v.split(',').map(|t| t.trim().parse::<f32>().ok().filter(|t| (0.0..=1.0).contains(t))).collect();
+        let Some(ts) = ts else {
+            eprintln!("error: --smooth wants fractions from 0 to 1, e.g. 0.25,0.5,0.75");
+            return ExitCode::FAILURE;
+        };
+        if GEO_MODE.get() != Some(&model2::geo::GeoMode::Native) {
+            eprintln!("error: --smooth needs --geo native (in-betweens come from the native geometrizer)");
+            return ExitCode::FAILURE;
+        }
+        let _ = SMOOTH.set(ts);
     }
     let Ok(soundtrack) = opt("--soundtrack") else {
         eprint!("{USAGE}");
@@ -1008,11 +1032,35 @@ static VIEW: std::sync::OnceLock<model2::video::View> = std::sync::OnceLock::new
 /// `--geo`: how the 2B geometrizer runs.
 static GEO_MODE: std::sync::OnceLock<model2::geo::GeoMode> = std::sync::OnceLock::new();
 
+/// `--smooth`: the in-betweens to draw at each snapshot.
+static SMOOTH: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
+/// Smooth motion's in-betweens drawn in a run: how many, host time in all
+/// and the slowest (seconds).
+static SMOOTH_TIME: std::sync::Mutex<(u64, f64, f64)> = std::sync::Mutex::new((0, 0.0, 0.0));
+
 /// A machine for `roms` with the command line's geometrizer mode.
 fn machine(roms: &RomSet) -> model2::Machine {
     let mut m = model2::Machine::new(roms);
     m.bus.geo.set_mode(GEO_MODE.get().copied().unwrap_or_default());
+    m.bus.geo.set_smooth(SMOOTH.get().is_some());
+    // For the frame before each snapshot (`snapshot`).
+    m.bus.geo.set_keep_last(SMOOTH.get().is_some());
     m
+}
+
+/// The last frame's in-between at `t`, timed (None: the frame's own
+/// stream is what shows then).
+fn in_between(m: &mut model2::Machine, t: f32) -> Option<Vec<u32>> {
+    m.bus.geo.sync();
+    let frame = m.bus.geo.engine().smooth_frame()?;
+    let start = std::time::Instant::now();
+    let stream = frame.render(t);
+    if stream.is_some() {
+        let secs = start.elapsed().as_secs_f64();
+        let mut st = SMOOTH_TIME.lock().unwrap();
+        *st = (st.0 + 1, st.1 + secs, st.2.max(secs));
+    }
+    stream
 }
 /// `--save-state`: where, and at which frame.
 static SAVE_STATE: std::sync::OnceLock<(PathBuf, u64)> = std::sync::OnceLock::new();
@@ -1024,7 +1072,6 @@ static AUDIO: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 static CAPTURE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 fn snapshot(m: &mut model2::Machine, path: &std::path::Path) {
-    let view = VIEW.get().copied().unwrap_or_else(model2::video::View::native);
     m.bus.geo.sync();
     if let Some(root) = CAPTURE.get() {
         let frame = model2::capture::Frame::grab(&mut m.bus);
@@ -1032,8 +1079,38 @@ fn snapshot(m: &mut model2::Machine, path: &std::path::Path) {
             eprintln!("capture: {}: {e}", root.display());
         }
     }
+    draw_png(m, None, path);
+    let Some(ts) = SMOOTH.get() else { return };
+    let Some(frame) = m.bus.geo.engine().smooth_frame() else {
+        println!("smooth        {}: no in-betweens (the native geometrizer didn't run the frame)", path.display());
+        return;
+    };
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let p = &frame.plan;
+    println!(
+        "smooth        {}: {} transforms, {} matched, {} drawn at this frame's{}",
+        path.display(),
+        p.transforms().len(),
+        p.matched,
+        p.snapped,
+        if p.cut { ", a cut: nothing blended" } else { "" }
+    );
+    for &t in ts {
+        let stream = in_between(m, t);
+        draw_png(m, stream.as_deref(), &path.with_file_name(format!("{stem}-t{:03.0}.png", t * 100.0)));
+    }
+    // The frame before as it was drawn, to compare with t = 0.
+    let prev = m.bus.geo.last_frame().0.to_vec();
+    draw_png(m, Some(&prev), &path.with_file_name(format!("{stem}-prev.png")));
+}
+
+/// Draw the machine's current frame to a PNG at `path`, with `stream` for
+/// its polygons if given, else the geometrizer's last frame's.
+fn draw_png(m: &model2::Machine, stream: Option<&[u32]>, path: &std::path::Path) {
+    let view = VIEW.get().copied().unwrap_or_else(model2::video::View::native);
     let b = &m.bus;
     let geo = b.geo.engine();
+    let stream = stream.unwrap_or(&geo.stream);
     let (xoff, yoff) = b.sync_offsets();
     let src = model2::raster::Sources {
         texture_rom: &b.texture_rom,
@@ -1043,7 +1120,7 @@ fn snapshot(m: &mut model2::Machine, path: &std::path::Path) {
         xoff,
         yoff,
     };
-    let mut polys = model2::raster::build(&geo.stream, &src);
+    let mut polys = model2::raster::build(stream, &src);
     let mut packs = texpack::PACKS.lock().unwrap();
     let (rgb3d, covered) = match packs.as_mut() {
         Some(p) => {
@@ -1267,6 +1344,10 @@ fn run(
         if snap > 0 && m.frames != last_frame && m.frames.is_multiple_of(snap) {
             let path = frames_dir.join(format!("{:06}.png", m.frames));
             snapshot(&mut m, &path);
+        } else if SMOOTH.get().is_some() && m.frames != last_frame {
+            // Time an in-between of every frame (drawn nowhere): what a
+            // front end adds per display refresh.
+            in_between(&mut m, 0.5);
         }
         last_frame = m.frames;
     }
@@ -1310,6 +1391,15 @@ fn run(
     println!("irq           request {:#x} enable {:#x}", b.irq_request, b.irq_enable);
     println!("coverage      {} distinct instructions", m.coverage.len());
     println!("indirect      {} distinct (source, target) pairs", m.indirect.len());
+    if SMOOTH.get().is_some() {
+        let (n, total, worst) = *SMOOTH_TIME.lock().unwrap();
+        println!(
+            "smooth        {n} in-betweens, {:.2} ms each (slowest {:.2} ms); recording and matching {:.3} ms a frame",
+            total * 1e3 / n.max(1) as f64,
+            worst * 1e3,
+            geo.smooth_busy().as_secs_f64() * 1e3 / m.frames.max(1) as f64
+        );
+    }
     println!("copro results hash {:016x}", b.copro_result_hash);
     println!("state hash    {:016x} (ip {:#x})", state_hash, m.cpu.ip);
     println!("geo           {} data words", b.geo_words);

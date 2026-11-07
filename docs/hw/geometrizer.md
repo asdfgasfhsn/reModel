@@ -548,3 +548,125 @@ Rasteriser checks (Remodel `crates/model2/src/raster.rs`, gameplay frame 4555), 
   plane altogether (z near 0 with x, y unbounded) gives projected coordinates too large for f32
   spans (floor polygons running under the camera smeared), which the side planes prevent.
 - Not yet checked: mipmaps/LOD, microtexture, translucency/checker details, and the z-sort key format (Remodel sorts on float z).
+
+## Smooth motion (Remodel's in-between frames)
+
+Not hardware: an option of Remodel's front ends (`remodel-play --smooth`,
+the browser's `?smooth=1`, off by default) for displays faster than the
+game's 57.5 Hz. The game runs as always; refreshes between two of its
+frames show the 3D geometry part way from frame N-1 to frame N, frame N
+being the newest. That is interpolation, never a guess at frame N+1, and
+it costs one game frame (about 17 ms) of latency: what shows is always
+somewhere between the last two frames. The 2D tile layers stay on the
+game's frames. Code: `crates/model2/src/smooth.rs`, the hooks in
+`geo_native.rs` and `geo_native_2c.rs`, `Engine::set_smooth` in `geo.rs`.
+
+**Only with the native geometrizer** (`geometrizer-2b.md`,
+`geometrizer-2c.md`): it runs a frame's list again, which the chip
+emulations could too but at many times the cost; with `--geo chip` the
+option is off.
+
+**Recording.** While the native geometrizer runs frame N for real, each
+transform command's operands are noted as read (`Io::xform`): the matrix
+(fn 0x0B, 12 floats: rotation column by column, then translation; on 2B
+fn 0x1B too), the translation (fn 0x0C; 2B's 0x1C), the focal lengths
+(fn 0x09) and `topskatr`'s second matrix (fn 0x1B on its program, which
+its skinned skaters use). Each is keyed by the model address (`oba`) of
+the next object drawn (`Io::object`). The real frame's stream and state
+are untouched: the recording only reads.
+
+**Matching** (`Plan::new`). Frame N's transforms are matched with frame
+N-1's of the same kind, cheapest first, each once. The cost is the
+distance between their translations, doubled between different keys,
+plus a tenth of the distance from the eye times how much the 3x3 parts
+differ (relative Frobenius norm: of two parts drawn at one place, the one
+turned the same way). Candidates:
+
+- the same key, at most 32 places apart among that key's transforms and
+  moved by at most its distance from the eye. Games draw identical models
+  in an order that changes (`vstriker` sorts its players and their
+  shadows), so the k-th of a model in one frame isn't always the k-th in
+  the other: matching by order alone slid a shadow from one player to
+  another across the pitch;
+- another key, moved by at most 0.2 of its distance and its 3x3 part
+  changed by at most half, found by depth whatever its place in the list.
+  A character's part in a new pose is often a model of its own
+  (`vstriker`'s players are four matrices each, the body's model
+  changing with the pose, and their order in the list shifts by dozens of
+  places from frame to frame), and characters share pose models: with
+  the key only a preference, a player keeps his own previous transform
+  rather than another's who was in that pose;
+- focal lengths under another key, by order.
+
+What doesn't match (an object that appears, one that jumped) is drawn
+with frame N's values throughout. Models themselves aren't blended: a
+part in a new pose shows the new pose for the whole in-between, at the
+blended place.
+
+**Blending** (`pair`, `Pair::at`). A matrix whose 3x3 part is a rotation
+(possibly mirrored) times a scale per axis, within 2% (column dot
+products) and 5% (determinant), is split into a unit quaternion, the
+three column lengths and the translation; in between, the quaternions
+are interpolated spherically (on the short arc), the scales and the
+translation linearly, and the matrix rebuilt. The games' matrices are
+only nearly rotations, so what the rebuilt 3x3 part misses of each end
+is interpolated and added back too: otherwise the "nearest rotation" at
+t = 0 shifted `topskatr`'s fence by sub-pixel amounts from frame N-1's,
+which showed as shimmer on its fine mesh. Anything else (shear,
+degenerate scales such as flattened shadows) blends element by element,
+as do translation-only commands and focal lengths. A rotation of more
+than 2 radians between frames (a spinning wheel: which way it turned
+can't be told) switches at the halfway point while its translation still
+blends. A mirror that comes or goes snaps. At t = 0 the in-between has
+frame N-1's values (to rounding); at t = 1 it is frame N's stream word
+for word (a unit test checks that through the 2B native code).
+
+**Cuts.** When at least half of a frame's matched matrices turned by more
+than 0.8 radians or moved by more than half their distance (a matrix
+whose model was in frame N-1 but that matched nothing counts too), or the
+focal lengths changed by more than a quarter, the frame is a camera cut
+and no in-between is drawn: frame N shows at once.
+
+**Render-only.** An in-between (`smooth::Frame::render`) runs a copy of
+the native geometrizer in its state from before frame N on a copy of
+frame N's list (buffer RAM, jumps, read pointer, the 2B address latch),
+reading polygon RAM as it was before frame N (a copy, refreshed only after
+a frame that wrote polygon RAM) through an overlay that takes the list's
+writes. The transform commands get the blended values (`Tap::Replay`);
+nothing else changes, so the stream has the frame's shape. Nothing goes
+back into the machine or the engine: coin-start runs of 600M
+instructions with an in-between drawn after every frame (`remodel
+--geo native --smooth 0.5`) end with the same state hashes as without:
+`topskatr` `400275251269648e`, `sgt24h` `282c8d6fd5151c21`, `vstriker`
+`a4af0c62acc656f3`, `doa` `78f308b4da95cefb` (*confirmed*).
+
+**Seeing it.** `make smooth-frames GAME=...` (or `remodel --geo native
+--smooth 0,0.25,0.5,0.75 ... run STEPS SNAP`) writes, at every snapshot,
+the in-betweens at those fractions (`FRAME-t025.png` ...) and the frame
+before (`FRAME-prev.png`) beside the frame, and prints how many
+transforms matched.
+
+What they showed (coin-start runs, every 400th frame, t = 0, 0.25, 0.5,
+0.75; `topskatr`, `stcc`, `sgt24h`, `doa`, `fvipers`, `vstriker`):
+racers' cars, scenery and 3D HUD parts (`sgt24h`'s tachometer needle),
+`topskatr`'s skinned skater and the fighters' characters move evenly from
+frame N-1 towards frame N, with no parts torn off, swapped or exploding;
+the image difference from step to step is even across the four steps.
+All but a handful of each frame's transforms match: at most 4 of a
+frame's go unmatched (`vstriker`, 168 of 172; `fvipers` 119 of 122; most
+frames all), where matching by key and order alone had left up to 24 of
+`vstriker`'s 213 unmatched and slid a shadow between players. Two things stay on frame N's from
+the first in-between: models that change with the animation (a pose that
+is a model of its own, `vstriker`'s waving flags), and the windows (fn
+0x03), whose centres the games move by whole pixels (`topskatr`'s camera
+bob), which can't be split. No cuts came up in these runs; the cut test
+is checked by unit tests only, *unconfirmed* on a game's real camera
+cuts (replays, attract mode).
+
+**Cost** (natively, an in-between drawn after every frame of those runs,
+six runs sharing a 16-core desktop): about 0.2 ms (`stcc`) and 0.4 ms
+(`topskatr`) for 2C games, 1.4-1.8 ms for the 2B ones (slowest single
+in-betweens 2-10 ms on the busy machine); recording and matching add
+0.05-0.5 ms a game frame (`fvipers` the most, many transforms of the
+same few models). In-betweens per game frame: one at 120 Hz, about 1.5
+at 144 Hz.

@@ -20,6 +20,7 @@
 //! and handed back ([`Native::export`]).
 
 use crate::geo_native::Io;
+use crate::smooth::Kind;
 use mb86235::cpu::{External, Tgp};
 use mb86235::float::{abs, add, addz, cfib, cif, clamp_negative, mul, negative, rsq, sub, subz};
 
@@ -486,9 +487,10 @@ impl Native {
                     io.emit(v >> 8);
                 }
                 0x09 => {
-                    for k in 0..2 {
-                        let v = io.rd();
-                        self.set(l.focus, k, v);
+                    let mut f = [io.rd(), io.rd()];
+                    io.xform(Kind::Focus, &mut f);
+                    for (k, &v) in f.iter().enumerate() {
+                        self.set(l.focus, k as u32, v);
                     }
                 }
                 0x0a => {
@@ -498,30 +500,31 @@ impl Native {
                     }
                 }
                 0x0b => {
-                    for k in 0..9 {
-                        self.pr[k] = io.rd();
-                    }
+                    let mut m: [u32; 12] = std::array::from_fn(|_| io.rd());
+                    io.xform(Kind::Matrix, &mut m);
+                    self.pr[..9].copy_from_slice(&m[..9]);
                     for k in 0..3 {
-                        let v = io.rd();
-                        self.set(l.translation, k, v);
+                        self.set(l.translation, k as u32, m[9 + k]);
                     }
                 }
                 0x0c => {
-                    for k in 0..3 {
-                        let v = io.rd();
-                        self.set(l.translation, k, v);
+                    let mut t = [io.rd(), io.rd(), io.rd()];
+                    io.xform(Kind::Translation, &mut t);
+                    for (k, &v) in t.iter().enumerate() {
+                        self.set(l.translation, k as u32, v);
                     }
                 }
                 0x1b if skater => {
                     // The second matrix: the queue from the word B RAM holds
                     // (9), the translation after the first.
                     let at = (self.get(l.second_matrix, 0) % 24) as usize;
-                    for k in 0..9 {
-                        self.pr[(at + k) % 24] = io.rd();
+                    let mut m: [u32; 12] = std::array::from_fn(|_| io.rd());
+                    io.xform(Kind::Matrix2, &mut m);
+                    for (k, &v) in m[..9].iter().enumerate() {
+                        self.pr[(at + k) % 24] = v;
                     }
                     for k in 0..3 {
-                        let v = io.rd();
-                        self.set(l.translation, 3 + k, v);
+                        self.set(l.translation, 3 + k as u32, m[9 + k]);
                     }
                 }
                 0x1c if skater => {
@@ -786,6 +789,7 @@ impl Native {
         let tha = io.rd() & 0xff_ffff;
         let oba = io.rd();
         let obc = io.rd();
+        io.object(oba);
         self.set(l.count, 0, obc);
         io.emit(tpa);
         io.emit(tha);
@@ -1052,7 +1056,8 @@ mod tests {
         let (mut words, mut fed, mut out, mut latch) = (0, Vec::new(), Vec::new(), 0);
         let mut ram = vec![0; 0x1_0000];
         let mut list = ListDma::new(&buffer, &[], 0, &mut words, &mut fed);
-        let mut io = Io { list: &mut list, poly: GeoExt::new(&mut ram, rom), latch: &mut latch, out: &mut out };
+        let mut io =
+            Io { list: &mut list, poly: GeoExt::new(&mut ram, rom), latch: &mut latch, out: &mut out, tap: None };
         n.run_frame(&mut io);
         out
     }
