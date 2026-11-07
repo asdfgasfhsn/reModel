@@ -16,7 +16,7 @@ pub static FVIPERS: Game = Game {
     title: "Fighting Vipers",
     year: 1995,
     board: Board::Model2B,
-    // The attract demo: Bahn and Honey on the rooftop.
+    // The attract demo: Bahn squaring up to Honey on the rooftop.
     attract_frame: 3400,
     hud_windows: &[],
     controls: CONTROLS,

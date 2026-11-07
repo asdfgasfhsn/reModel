@@ -63,7 +63,9 @@ music`). There is no live window yet.
 | Tenth game: `sgt24h` (Super GT 24h, 2B, Jaleco) | playable with sound (`make play GAME=sgt24h`): attract, course, car and gearbox select, races to game over. The second 2B game, on the same SHARC code as `overrevb`; needed the i960's local-register cache and its I/O board type set in backup RAM (a manifest default); its link board's Z80 ROM isn't needed. Full speed recompiled; recompiled build identical |
 | Eleventh game: `dynabb97` (Dynamite Baseball '97, 2B, Sega) | playable with sound (`make play GAME=dynabb97`): attract, team and pitcher select, batting with the bat lever, pitching and fielding. The first Sega 2B game: its own copro SHARC program, the same geometrizer SHARC code as Jaleco's games; needed nothing new from the board model. Full speed recompiled; recompiled build identical |
 | Twelfth game: `doa` (Dead or Alive, 2B, Tecmo) | playable with sound (`make play GAME=doa`): attract, character select and fights through rounds, replays and the next opponent. Needed its protection device answered: the game's own check, with the answer it compares against declared in the manifest and read from the ROM (the device's algorithm is unknown); a bad dump of one polygon ROM, which drew Kasumi as shards, is repaired at load. Its geometrizer runs the shared Jaleco/Sega geometrizer crate, its copro program its own. Full speed recompiled; recompiled build identical |
-| Thirteenth game: `indy500` (Indianapolis 500, 2B, Sega) | playable with sound (`make play GAME=indy500`): attract, course and gearbox select, rolling start and races. The earliest 2B game, with its own copro and geometrizer SHARC programs; needed the copro SHARC's external bus (the copro data ROMs and a RAM) and the copro status its test menu reads. Full speed recompiled (4.2x real time natively); recompiled build identical |
+| Thirteenth game: `indy500` (Indianapolis 500, 2B, Sega) | playable with sound (`make play GAME=indy500`): attract, course and gearbox select, rolling start and races. The earliest 2B game, with its own copro and geometrizer SHARC programs; needed the copro SHARC's external bus (the copro data ROMs, and buffer RAM) and the copro status its test menu reads. Full speed recompiled (4.2x real time natively); recompiled build identical |
+| Fourteenth game: `fvipers` (Fighting Vipers, 2B, Sega) | playable with sound in scripted runs (`make play GAME=fvipers` to play it): attract, character select and fights through rounds. `indy500`'s geometrizer program and a copro program of its own that writes parts of the display list. Needed the copro SHARC's bank 2 as buffer RAM, list jumps the i960 patches in buffer RAM, 1 MB texture RAM banks (a manifest flag) and its polygon ROMs packed. Full speed recompiled (2.8x real time natively); recompiled build identical |
+| Fifteenth game: `schamp` (Sonic Championship, 2B, Sega) | playable with sound in scripted runs (`make play GAME=schamp` to play it): attract, character select and fights through rounds and replays. The shared geometrizer program and a copro program of its own, on the same board work as `fvipers`; needed the SHARC core to ignore a reserved I/O register its copro writes, and the i960 recompiler to drop a block discovery found at an odd address. Full speed recompiled (2.7x real time natively); recompiled build identical |
 
 ## Quick start
 
@@ -335,15 +337,44 @@ chip but the program pair). Details, addresses and evidence in
   with copro data ROMs. With SYSCON's MSIZE 10 (every 2B copro program
   sets it) the SHARC's four external banks are 8M words each from
   `0x400000` (ADSP-2106x User's Manual §5.4.1): the command FIFO is bank
-  0, the result FIFO bank 1, a RAM bank 2 (`0x1400000`) and the data ROMs
-  `.29/.30` bank 3 (`0x1C00000`), read as 32-bit words as on 2C. The
-  RAM's size and whether either repeats through its bank are
-  *unconfirmed* (a coin-start run never touches the RAM); details in
+  0, the result FIFO bank 1, buffer RAM bank 2 (`0x1400000`; confirmed
+  by `fvipers`, below: `indy500`'s runs never touch it) and the data ROMs
+  `.29/.30` bank 3 (`0x1C00000`), read as 32-bit words as on 2C. Whether
+  either repeats through its bank is *unconfirmed*; details in
   `docs/hw/model2b.md`, "The copro's external memory".
 - *Confirmed (`indy500`, from the code):* its test menu's T.G.P. TEST
   reads `0x980014` once and shows IC31 (bit 1) and IC37 (bit 0) BAD for
   a set bit. Answered as on 2C (all ones until the programs are uploaded,
   then 0) both show GOOD; *unconfirmed* what the bits really report.
+- *Confirmed (`fvipers`, from its programs and the i960 code, then by
+  running it):* the copro SHARC's bank 2 is **buffer RAM**, the display
+  list, word addressed. The i960 leaves an 18-word hole in the list by
+  moving its write pointer and sends the copro fn `0x78` with the hole's
+  offset; the copro writes a fn `0x0B` matrix and a fn 1 object there.
+  Remodel had a separate RAM there for `indy500` (never touched by its
+  runs); with it gone `indy500`'s state hash is `4a1b197bf00149d6`, its
+  runs otherwise unchanged.
+- *Confirmed (`fvipers`, `schamp`, from the programs):* Sega's 1995-96
+  fighting games don't write MSGR7 when uploading the geometrizer, so its
+  program checks the tag of every command word (fn in bits 27-23, 12-8
+  and 4-0) and, on a word that fails, leaves it in MSGR3 and toggles
+  FLAG2 forever: the 3D stops for good. That is where both stopped, on
+  words from the two places above and below. They also upload with
+  32-bit IOP writes, set SYSCON and WAIT through the host window, and
+  send only the program's length.
+- *Confirmed (`fvipers`, from the code):* the i960 writes fn 0
+  placeholders through the command port and later patches them into list
+  jumps, or retargets jumps, by writing buffer RAM directly. The list DMA
+  now follows such words; what tells a jump from a data word on the board
+  is still *unconfirmed* (the rule that fits every game is in
+  `docs/hw/model2b.md`, "Sega's earlier games").
+- *Confirmed (`fvipers`, `schamp`, from the code and the memory test):*
+  they upload textures only to the upper half of each texture RAM bank's
+  2 MB window (`0x11100000`, `0x11300000`), which their boards must read
+  as the 1 MB the rasteriser uses (`indy500` and `doa` use the lower
+  half; `overrevb` and `sgt24h` fill both with different data). A
+  manifest flag, `texture_ram_mirrored`, maps those banks as 1 MB
+  repeating; *unconfirmed* what makes their boards differ.
 - *Confirmed (`doa`, from the code, then by running it):* Tecmo's game
   checks for a protection device at `0x1D80000-0x1D87FFF` at boot. The
   board model answers it from the manifest (`romset::Protection`,
@@ -580,8 +611,9 @@ Third 2C game: the first with a DSB1 music board, a wheel and a gearbox.
   must follow them. Data words with bit 31 set (negative floats) are not
   jumps, and the game also overwrites old jump words directly (the copro
   stores matrices into the list), so Remodel follows only jump words written
-  through the command port and still in place when the frame starts. *How
-  the hardware tells them apart is unconfirmed.* Without this the
+  through the command port and not stored over by the copro since
+  (`fvipers` patches jumps in with the i960, which they survive; Model 2B
+  above). *How the hardware tells them apart is unconfirmed.* Without this the
   geometrizer stops at its command-check error on the first linked list
   and no 3D is drawn.
 - *Confirmed (from the code):* the wheel board is commanded like
@@ -1143,17 +1175,126 @@ earliest 2B game here.
   the manifest adds no gain; no CRX_drv version string in its sound
   program (*unconfirmed* which driver it is). `make
   state-check GAME=indy500` round-trips, and a coin-start run of 600M
-  instructions gives the state hash `c75add6c2ab149d6` (with an
-  `eeprom.bin` from an earlier run) recompiled and interpreted. `make
+  instructions gives the state hash `4a1b197bf00149d6` (with an
+  `eeprom.bin` from an earlier run; `c75add6c2ab149d6` while the copro's
+  bank 2 was a RAM of its own, which the run never touched) recompiled
+  and interpreted. `make
   lockstep GAME=indy500 RECOMP=1 INPUT=coin-start` runs 600M
-  instructions identical (i960 and both SHARCs recompiled). Its SHARC
-  programs share no crate with the other 2B games (two crates of its
-  own, `docs/recompiler.md`).
+  instructions identical (i960 and both SHARCs recompiled). Its
+  geometrizer crate is shared with `fvipers` only, its copro crate its
+  own (`docs/recompiler.md`).
 - *Speed (by running it):* that run plays at 4.2x real time recompiled
   natively (the geometrizer on its thread, slowest frame 9.3 ms), and at
   1.1x interpreted (slowest frame 35 ms).
 - *Unconfirmed:* the dark solid shape under the player's car is drawn as
   the game sends it (a flat shadow polygon); not compared with hardware.
+
+## What's known about `fvipers`
+
+Fighting Vipers (Sega; the title screen says ©SEGA 1995, the boot
+warning "used only in Japan"), the fourteenth game and the sixth on
+Model 2B, with the earliest Sega 2B SHARC programs here.
+
+- *Confirmed (ROM, then the memory test, which shows every ROM, IC 5-16,
+  and RAM GOOD):* program `.15/.16` at `0x0` and `.13/.14` at
+  `0x40000` (128 KB chips); main data `.11/.12` and `.9/.10`; the 1 MB
+  pairs `.7/.8` and `.5/.6` in the second data bank, each repeating
+  through its 8 MB slot (the program reads them at `0x64xxxxx` and
+  `0x6Cxxxxx`, 4 MB in, as `indy500` does; *unconfirmed* where they
+  really sit). The SHARC programs are uploaded from `.7/.8` like any data.
+  Polygons are three pairs of 2 MB chips, `.17/.21`, `.18/.22`,
+  `.19/.23`, **packed** back to back every 4 MB (in 8 MB slots the
+  fighters from the second and third pairs drew as large dark shards);
+  textures `.27/.25` and `.28/.26` in 8 MB slots (packed, Bahn's coat drew
+  with the wrong texture). The copro data ROMs `.29/.30` are the same
+  chips as `schamp`'s.
+- *Confirmed (from its programs, then by running it):* the geometrizer
+  SHARC program is `indy500`'s, word for word (2,983 words of code; the
+  same recompiled crate); the copro program is its own (4,267 words). The
+  i960 doesn't write MSGR7, so the geometrizer checks every command
+  word's tag, and both things that stopped it are now in the board model
+  (Model 2B above): the copro writes parts of the display list into
+  buffer RAM (fn `0x78`), and the i960 patches list jumps in buffer RAM.
+- *Confirmed (from the code and the memory test):* its textures go to
+  the upper half of each texture RAM bank (`0x11100000`, `0x11300000`);
+  the manifest's `texture_ram_mirrored` makes each bank 1 MB, repeating
+  through its window, and everything draws textured (Model 2B above).
+- *Confirmed (by the input test, then by running it):* port `0x1C00002`
+  bit 0 coin 1, 1 coin 2, 2 test, 3 service, 4 start 1, 5 start 2 (one
+  coin a credit); ports `0x1C00004`/`0x1C00006` for players 1 and 2: bit
+  0 punch, 1 kick, 2 guard, 4 down, 5 up, 6 right, 7 left.
+- *Confirmed (by running it):* `make run GAME=fvipers INPUT=coin-start`
+  boots, attracts (character introductions and a fight demo), coins up,
+  takes Grace at the character select and fights Bahn in the first stage
+  through rounds with sound. `make sound` of that run averages -32 dBFS
+  RMS (peak -12), so the manifest adds no gain. A coin-start run of 600M
+  instructions gives the state hash `96bd74a28b0455b6` recompiled and
+  interpreted (the game never writes its EEPROM in it). `make
+  state-check GAME=fvipers` round-trips, and `make lockstep GAME=fvipers
+  RECOMP=1 INPUT=coin-start` runs 600M instructions identical (i960 and
+  both SHARCs recompiled). Its geometrizer runs `indy500`'s crate, its
+  copro program a crate of its own.
+- *Speed (by running it):* that run plays at 2.83x real time recompiled
+  natively (the geometrizer on its thread, slowest frame 10.1 ms), and at
+  0.82x interpreted (slowest frame 34.7 ms).
+- *Unconfirmed:* character shadows draw solid black, on the floor and,
+  in the introductions, as large silhouettes on the walls, as the game
+  sends them; not compared with hardware. At boot, and later from one of
+  several tables in ROM, the game writes a 128-entry 16-bit table to
+  `0x12800000` (a ramp at boot), where the board model has nothing; what it is
+  (perhaps a fog or colour table) is unknown, and frames look right
+  without it.
+
+## What's known about `schamp`
+
+Sonic Championship (Sega; the title screen says ©SEGA 1996), the
+fifteenth game and the seventh on Model 2B. `schamp.zip` also holds the
+program and `.7/.8` chips of its clone `sfight` (Sonic the Fighters, as
+the dat names it), which isn't supported.
+
+- *Confirmed (ROM, then the memory test: every ROM, IC 7-16, and RAM
+  GOOD):* program `.15/.16`; main data `.11/.12` and `.9/.10`; the 1 MB
+  pair `.7/.8` in the second data bank, repeating (read at `0x64xxxxx`);
+  polygons `.17/.21`, `.18/.22` and textures `.27/.25`, `.28/.26` (4 MB
+  chips) in 8 MB slots; copro data `.29/.30`, the same chips as
+  `fvipers`'s.
+- *Confirmed (from its programs, then by running it):* the geometrizer
+  SHARC program is the code the Jaleco games, `dynabb97` and `doa`
+  share (2,987 words; the same crate); the copro program is its own
+  (4,870 words), built like `fvipers`'s: it reads and writes buffer RAM
+  through bank 2 at the same places. Like `fvipers` it doesn't write
+  MSGR7, relies on the i960's list jump patches, and uploads its textures
+  to the upper half of each texture RAM bank (Model 2B above).
+- *Confirmed (from its copro program):* the program clears its internal
+  memory early on and then stores a debug word through an index register
+  it hasn't set yet, into IOP register `0x20`, which the ADSP-21062
+  manual marks reserved; the SHARC core now ignores writes there
+  (`docs/hw/adsp2106x.md`).
+- *Confirmed (by the input test, then by running it):* the same ports as
+  `fvipers`: bit 0 punch, 1 kick, 2 barrier; directions, coins and starts
+  as there (one coin a credit).
+- *Confirmed (by running it):* `make run GAME=schamp INPUT=coin-start`
+  boots, attracts (the story, the character line-up and a fight demo),
+  coins up, takes Sonic and fights Knuckles through rounds and replays
+  with sound. `make sound` of that run averages -28 dBFS RMS (peak -8),
+  louder than the games at 0 dB, so the manifest takes 4 dB off. A
+  coin-start run of 600M instructions gives the state hash
+  `8d2b7b4cd55d64a0` recompiled and interpreted (the game never writes
+  its EEPROM in it).
+  `make state-check GAME=schamp` round-trips, and `make lockstep
+  GAME=schamp RECOMP=1 INPUT=coin-start` runs 600M instructions identical
+  (i960 and both SHARCs recompiled). Its geometrizer runs the shared
+  crate, its copro program a crate of its own. The recompiled build first
+  faulted at boot: code discovery had made an i960 block at `0x20E`, an
+  odd address, which took the slot of the buffer RAM clear at `0x20C`;
+  `remodel recomp` now drops unaligned instructions
+  (`docs/recompiler.md`).
+- *Speed (by running it):* that run plays at 2.71x real time recompiled
+  natively (the geometrizer on its thread, slowest frame 10.1 ms), and at
+  0.78x interpreted (slowest frame 59.1 ms).
+- *Unconfirmed:* the story's white captions draw with gaps in mid-line
+  ("GET 8 EMERA... S!") while they animate; shadows draw solid black as
+  in `fvipers`; neither compared with hardware.
 
 ## What's known about `hotd`
 

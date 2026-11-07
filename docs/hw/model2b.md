@@ -18,6 +18,12 @@ of its own (2,983 words, an earlier version of the shared one) and a
 copro program (3,937 words) that also reads data ROMs on its external
 bus, which needed that bus modelled ("The copro's external memory"
 below), and it reads the copro status at `0x980014` in its test menu.
+`fvipers` (Fighting Vipers, 1995) and `schamp` (Sonic Championship,
+1996) run `indy500`'s geometrizer code and the shared one respectively,
+and copro programs of their own (4,267 and 4,870 words) that write parts
+of the display list into buffer RAM, the copro's external bank 2. They
+needed that bank, list jumps the i960 patches in buffer RAM, and texture
+RAM banks of 1 MB ("Sega's earlier games" below).
 This page
 is what the board model (`crates/model2`: `bus.rs`, `sharc.rs`, `geo.rs`)
 is built on. The SHARC core itself is
@@ -53,7 +59,9 @@ interrupts, buffer RAM and the geometrizer's list ports) is as on 2C:
 | `0x804000` | with `0x980008` bit 31 set: the geometrizer's EPB0; otherwise the list data port, as on 2C | upload loop |
 | `0x9C0000` / `0x9C0004` | sound UART (8251 type): data / mode, command and status, one register a 32-bit word, the byte in bits 7-0 (2C: `0x1C80000`, two registers a word) | init writes 0, 0, 0, `0xD0` (internal reset), `0x4E` (mode), `0x37` (command) to `0x9C0004`, then polls its bit 0 (TxRDY); the sound commands go to `0x9C0000` and the 68000 plays them |
 | `0x1C80004` | written (16-bit) with `0x40` and `0x4E` during init: 2C's UART control address | *unconfirmed* what is there on 2B; nothing reads it, and treating it as the UART would only reset it again |
-| `0x980014` | copro status: `indy500`'s T.G.P. TEST (i960 `0xC7B50`) reads it once and shows IC31 BAD if bit 1 is set, IC37 BAD if bit 0 is | Remodel answers as on 2C: all ones until both SHARCs have programs, then 0, and the test shows both GOOD. *Unconfirmed* what the bits are; no other 2B game reads it |
+| `0x980014` | copro status: `indy500`'s T.G.P. TEST (i960 `0xC7B50`) reads it once and shows IC31 BAD if bit 1 is set, IC37 BAD if bit 0 is | Remodel answers as on 2C: all ones until both SHARCs have programs, then 0, and the test shows both GOOD. *Unconfirmed* what the bits are. `fvipers` reads it every frame (i960 `0x11914`) and tests bit 1, with both branches going to the same place |
+| `0x11100000`, `0x11300000` | texture RAM, the upper half of each bank's 2 MB window: `fvipers` and `schamp` upload their texels there and nowhere else ("Sega's earlier games" below) | the games' texture base pointers (`0x500254`, `0x500258`, set at i960 `0x144`); the memory test |
+| `0x12800000-0x128000FF` | written by `fvipers` and `schamp`: 128 halfwords, a ramp (0, 1, 1, 2, ... 64) at boot, later 128 bytes from one of several tables in ROM (`fvipers` i960 `0x57544`) | *unconfirmed* what is there; Remodel maps nothing, and nothing reads it back |
 
 **The upload** (i960 `0x1FEC0` for the copro, `0x23330` for the
 geometrizer): set bit 31, write 0 to `0x980020`, write the DMA channel 6
@@ -61,6 +69,14 @@ registers through the window as 16-bit halves (the geometrizer first gets
 MSGR7 = `0x7378842E`), then 12,288 halves to EPB0, then clear bit 31. The
 details and the boot that follows are in `adsp2106x.md`, "Model 2B: the
 upload".
+
+`fvipers` and `schamp` upload differently (*confirmed* from the host
+writes, by running them): each IOP register is one 32-bit write, not two
+halves; they write SYSCON (`0xA110` copro, `0x3110` geometrizer) and
+WAIT (`0xC9400`, `0xC400`) through the window before the DMA, set C6 to
+the program's length rather than `0x1000` (`fvipers` `0x10FF` and
+`0xC29` words, `schamp` `0x135A` and `0xC2D`), and never write MSGR7.
+The SHARC core takes them as they are.
 
 **What bit 31 is.** [UM §11.6.3]: a SHARC set up for host booting idles
 after reset; the host asserts HBR (host bus request), waits for HBG, then
@@ -164,28 +180,42 @@ words until a fn 8 command, which the i960's boot sends (`0x808` to
 address is used by the Jaleco games', `dynabb97`'s or `doa`'s programs:
 those sets have no copro data ROMs.
 
-### The copro's external memory (`indy500`)
+### The copro's external memory (`indy500`, `fvipers`, `schamp`)
 
 `indy500`'s copro program sets SYSCON to `0xA100`, as the others do:
 MSIZE 10, so its four external memory banks are 2^(10+13) = 8M words
 each from `0x400000` [UM §5.4.1, "External Memory Banks": bank 0 starts
 at `0x400000`, banks 1-3 follow; each asserts its own MS*x* select line].
 The command FIFO (`0x400000`) is bank 0 and the result FIFO (`0xC00000`)
-bank 1; `indy500` uses the other two (*confirmed* from its program, then
-by running it):
+bank 1; `indy500`, `fvipers` and `schamp` use the other two (*confirmed*
+from their programs, then by running them):
 
 | SHARC side | What |
 |---|---|
 | `0x1C00000+` (bank 3), read | the copro data ROMs `.29/.30` as 32-bit words, low half from `.29` (1 MB, `0x40000` words, the same interleave as 2C's copro data). fn 13 (`0x20256`) reads six pointers at `0x1C00000 + n + 0x10·k` and adds `0x1C00000` to each; fn 62 (`0x20BCB`) walks a table at `0x1C00000 +` an offset the i960 sends. Before the bus was modelled, 600M instructions of attract mode read it about 5,700 times (zeros) |
-| `0x1400000+` (bank 2), read/write | RAM: fn 54 (`0x206CB`) addresses it as `0x1400000 +` a 16-bit offset from the command plus up to 127, writes `0xFFFFFFFF` there and then reads and writes records through it. Not touched in a coin-start run or the attract mode, so its size and contents are *unconfirmed*; Remodel gives it `0x20000` words, all it can address |
+| `0x1400000+` (bank 2), read/write | **buffer RAM**, the display list the i960 builds at `0x900000`, word *n* at `0x1400000 + n` (see below). `fvipers`' fn `0x78` (`0x20908`) writes a part of the list there; both `fvipers`' and `schamp`'s programs also read tables at words `0x3E80` and `0x7E80` (bytes `0xFA00` and `0x1FA00`, near the top of each 64 KB half). `indy500`'s fn 54 (`0x206CB`) addresses it as `0x1400000 +` a 16-bit offset from the command plus up to 127, writes `0xFFFFFFFF` there and then reads and writes records through it; no run of `indy500` reaches it |
 
-Neither bank is touched past the ROM's size or the RAM's first `0x8000`
-words in those runs, so how many address lines each decodes (whether the
-ROM repeats through its bank) is *unconfirmed*; Remodel repeats both.
-The memory is modelled only for sets with copro data ROMs
-(`model2::sharc::ExtMem`), so the other 2B games' save states and hashes
-are unchanged; their programs never address banks 2 and 3. The RAM is
-in save states and the state hash.
+**Bank 2 is buffer RAM** (*confirmed* from `fvipers`' programs, then by
+running it). The i960's routine at `0x5A48` reads the list's write pointer
+(`0x802008`), moves it on by `0x48` bytes (`0x801008`), leaving a hole of
+18 words, and sends the copro fn `0x78` (`0x3C007878`) with the hole's
+byte offset and five more words. The copro handler (`0x20908`) writes 18
+words to `0x1400000 +` offset / 4: a fn `0x0B` command (`0x05800B0B`)
+with a 12-word matrix, a fn 1 command (`0x00800101`) with its operands,
+and the words the i960 sent. The list then runs through the hole; with
+nothing there it ran into buffer RAM's fill pattern and the geometrizer
+stopped on a bad command (below). Remodel maps the bank onto buffer RAM,
+128 KB repeating through the bank (*unconfirmed* how many address lines
+it decodes). Earlier Remodel gave `indy500` a separate RAM there, which
+none of its runs touched; that is now buffer RAM too, and nothing about
+`indy500`'s runs changed but its state hash, which no longer hashes the
+unused RAM (`4a1b197bf00149d6`, against `c75add6c2ab149d6` with it).
+
+The data ROM bank is modelled only for sets with copro data ROMs
+(`indy500`, `fvipers`, `schamp`); how many address lines it decodes
+(whether the ROM repeats through its bank) is *unconfirmed*; Remodel
+repeats it. The other 2B programs never address banks 2 and 3, so their
+save states and hashes are unchanged.
 
 The result FIFO's depth is *unconfirmed*; Remodel reports it full at 64
 words, which the program only ever waits on.
@@ -260,6 +290,58 @@ and the 2B one on the SHARC core, and comparing the streams word by word
 `overrevb` and `overrev` then render their own lists alike scene by scene
 (attract, menus, races; compared from `make run ... SNAP=300` of both).
 
+## Sega's earlier games (`fvipers`, `schamp`)
+
+Both games stopped with the geometrizer SHARC in its command-check loop:
+the 3D vanished a few seconds into the attract mode and never came back.
+What it waits for, and what was missing (*confirmed* from the programs
+and the i960 code, then by running them):
+
+- **The check.** Without MSGR7 = `0x7378842E` the geometrizer program
+  (`0x2010C`) checks each command word: its fn (bits 27-23) must equal
+  bits 4-0 and bits 12-8, as the tagged command port writes it. A word
+  that fails goes into MSGR3 (IOP `0x0B`, readable by the host), and the
+  program toggles FLAG2 forever (`0x2014B`; `DO ... UNTIL LCE` delay
+  loops of 3,000,000) until a reset. Nothing on the board answers it, so
+  it stops drawing for good. The Jaleco games, `dynabb97`, `doa` and
+  `indy500` write MSGR7 and skip the check; these two don't, so any word
+  that isn't a command reaching a command position stops them. MSGR3
+  showed two kinds.
+- **Copro list parts** (`fvipers`: the fill pattern `0x57575757`): the
+  list ran into a hole the copro should have filled. The copro's bank 2
+  is buffer RAM ("The copro's external memory" above).
+- **Jumps patched in buffer RAM** (`fvipers`: `0x80018D78`,
+  `0x80018DC4`): its i960 (`0x787C8`) writes a fn 0 word 0 through the
+  command port as a placeholder and keeps its offset; once the next piece
+  of the list is in place it writes a jump to that piece (bit 31 | the
+  piece's offset) over the placeholder directly in buffer RAM (`st r13,
+  0x900000(r14)`), and it retargets jumps it wrote through the port the
+  same way. Remodel's list DMA followed only jump words written through
+  the port and unchanged since (stcc's copro stores matrices over old jump
+  words, so a changed word couldn't stay a jump), so it fed the jump word
+  to the geometrizer. Now a word the port wrote as a jump or a fn 0
+  command stays a command word through the i960's own writes and is
+  followed when bit 31 is set; the port appending over it or a copro
+  store ends it. A copro store must end it: `fvipers`' copro writes a
+  matrix element of -0.0 (`0x80000000`) into such a slot (an earlier
+  rule, keeping any word rewritten into a bare jump, sent its list to
+  offset 0 there). How the hardware tells jumps from data is still
+  *unconfirmed*: this is the narrowest rule all the games agree with
+  (`geo.rs`, `Geometrizer::jumps`).
+- **Texture RAM.** With the list fixed, both drew with blank (all
+  index 0) textures: they upload their texels only to `0x11100000` and
+  `0x11300000`, the upper half of each texture bank's 2 MB window
+  (their base pointers, set at boot), where `indy500` and `doa` use the
+  lower half and `overrevb` and `sgt24h` fill both halves with
+  different data. The rasteriser reads 1 MB of each bank. On these two
+  games' boards the banks must be 1 MB, repeating through their windows:
+  so mapped (`Game::texture_ram_mirrored`), they draw fully textured and
+  their memory tests show every RAM GOOD. A board difference the i960
+  can't see, so a manifest flag; *unconfirmed* whether it is a board
+  revision, a jumper or RAM chips.
+- `schamp`'s copro program writes the reserved IOP register `0x20`
+  (`adsp2106x.md`), which faulted the core.
+
 ## Timing
 
 The SHARCs are clocked at 40 MHz (general knowledge, *unconfirmed* for
@@ -326,9 +408,11 @@ that run alone, and the run took nearly three times as long).
   `0xB400` geometrizer, both written by the programs) aren't modelled.
 - Sega's 2B games upload their own copro programs and may use more of
   the board than the ones running (`overrevb`, `sgt24h`, `dynabb97`,
-  `doa`, `indy500`) do.
-- The copro RAM's size, and whether the copro ROM and RAM repeat
-  through their banks (`indy500`); what the bits of `0x980014` are.
+  `doa`, `indy500`, `fvipers`, `schamp`) do.
+- Whether the copro's data ROM and buffer RAM repeat through their
+  banks; what the bits of `0x980014` are; what is at `0x12800000`.
+- How the list DMA tells jumps from data words, and what makes the
+  texture RAM banks 1 MB on `fvipers`' and `schamp`'s boards.
 - What the device at `0x1D80000-0x1D87FFF` that `doa` checks for is
   (*unconfirmed* whether it sits on the game board or the ROM board),
   and how it turns the block into its answer (above).

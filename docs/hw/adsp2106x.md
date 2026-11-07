@@ -105,7 +105,15 @@ slave-mode receive DMA with 16-to-32 and 16-to-48 packing, LSW or MSW first.
 The host side is `host_write`/`host_read`, one bus transfer at a time.
 Anything else (other DMA channels when enabled, link ports, SPORTs, DMASTAT)
 is reported, not ignored: a core access returns `Fault::Iop`, a host access
-`HostError::Unimplemented`.
+`HostError::Unimplemented`. The addresses Table E.7 marks reserved on the
+ADSP-21062 (`0x10-0x17`, `0x1A`, `0x20-0x2F`, `0x3F`, `0x67`, `0x6F`,
+`0x77`, `0x7F`, `0xA0-0xBF`, `0xD0-0xDF` and the gaps among the SPORT
+registers) read 0 and ignore writes: the manual doesn't say what they do
+(*unconfirmed*). `schamp`'s copro program writes `0x20` once at boot: a
+debug store through I3 (`DM(0x20,I3) = R15`, `0x20372`) made at the end
+of a memory clear that runs before I3 is set, so it lands in IOP space
+(I3 is 0 after the host boot here; on the chip it is undefined, so the
+store may go anywhere).
 
 **Waiting on the host:** `Sharc::spinning` says when the core can only
 repeat itself until a FLAG input changes: the last instruction was a taken,
@@ -314,6 +322,11 @@ GAME=overrevb` writes them from the uploads it sees.
 
 ### What the programs show
 
+`fvipers` and `schamp` write each register as one 32-bit transfer, set
+SYSCON and WAIT before the DMA, and give C6 their program's length
+(`docs/hw/model2b.md`, "The upload"); the core's host interface takes
+both ways.
+
 `make sharc-test` on both images (`remodel sharc-check`):
 
 | | copro | geometrizer |
@@ -355,8 +368,11 @@ target of `IF LT JUMP` at `0x20809`, falls through to the `RTS` at
 - The RECIPS and RSQRTS seed ROM contents (item 10 above).
 - The board side of 2B is in `docs/hw/model2b.md`, with its own open
   questions (what the output flags and some registers drive, FIFO depths,
-  resets). Neither program enables interrupts (IRPTEN stays clear), so
-  IRQ2-0 and the timer don't matter to them.
+  resets). None of the 2B programs here enables interrupts (MODE1 is
+  `0x18000` or `0x1A000`, IRPTEN clear, in all of them, `fvipers`' and
+  `schamp`'s included), so IRQ2-0 and the timer don't matter to them and
+  their recompiled code runs as blocks; nor do any use DMA beyond the
+  boot, link ports or SPORTs.
 - Whether the copro's backwards DO is reached, and what the chip does with
   the leftover loop stack entry.
 - Cycle timing beyond branch bubbles, if the board needs it.

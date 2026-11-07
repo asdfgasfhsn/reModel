@@ -32,7 +32,9 @@ past it, and the Jaleco games the same copro code, so the four games have
 four SHARC crates between them rather than eight (one geometrizer crate,
 and copro crates for the Jaleco games, `dynabb97` and `doa`). `indy500`'s
 geometrizer program is an earlier version of that code and its copro
-program its own, so it shares neither and adds two crates.
+program its own, so it shares neither and adds two crates. `fvipers`
+uploads `indy500`'s geometrizer code and `schamp` the shared one, so each
+adds only its copro crate.
 Each holds `program.rs` from the code generator, generic over the machine around the
 processor, and a `lib.rs` that instantiates it for the Model 2 board
 (`Model2Bus`, the TGP's external buses), so its machine code is compiled in
@@ -129,7 +131,10 @@ descent from the boot record, interrupt table and system procedures) and
 adds every address the interpreter executed in `make run` (`coverage.txt`),
 including the targets of indirect calls and jumps (`indirect.txt`). Code
 found only by guessing that an `lda` constant is a code pointer is left out
-unless it ran.
+unless it ran, and so is anything at an address that isn't a multiple of 4
+(the i960's instructions are word aligned; `schamp`'s discovery decoded
+data at `0x20E`, and the block made there took the table slot of the one
+at `0x20C`, so the recompiled build faulted at boot).
 
 **Blocks.** Code is cut into basic blocks at branch and call targets, after
 each control transfer, at known entry points, and wherever an instruction

@@ -199,6 +199,41 @@ manages about 1.1x real time with slow frames in races.
 | shift up, shift down | A, Z | right shoulder or B, left shoulder or X |
 | view in, view out (`view1`, `view2`) | V, B | Y, A |
 
+### Fighting Vipers (`fvipers`)
+
+Model 2B, Sega's own: its sound is the SCSP's. One coin is one credit.
+The stick picks the fighter and punch confirms. In a fight the three
+buttons are punch, kick and guard. Like the other 2B games it needs the
+recompiled build (`RECOMP=1`) for full speed: a
+headless coin-start run manages 2.8x real time recompiled, but only about
+0.8x interpreted (the player then paces it by the clock, see "Display"
+below). Player 2's
+controls are in the manifest but have no default keys.
+
+| Control | Keys | Gamepad |
+|---|---|---|
+| coin | C, 5 | Back |
+| start (player 1, 2) | Enter or 1, 2 | Start |
+| stick | arrow keys | d-pad |
+| guard, punch, kick | Z, X, V | X, A, B |
+
+### Sonic Championship (`schamp`)
+
+Model 2B, Sega's own: its sound is the SCSP's. One coin is one credit.
+The stick picks the fighter and punch confirms. In a fight the three
+buttons are punch, kick and barrier. Like the other 2B games it needs the
+recompiled build (`RECOMP=1`) for full speed: a
+headless coin-start run manages 2.7x real time recompiled, but only about
+0.8x interpreted. Player 2's
+controls are in the manifest but have no default keys.
+
+| Control | Keys | Gamepad |
+|---|---|---|
+| coin | C, 5 | Back |
+| start (player 1, 2) | Enter or 1, 2 | Start |
+| stick | arrow keys | d-pad |
+| barrier, punch, kick | Z, X, V | X, A, B |
+
 ### The House of the Dead (`hotd`)
 
 A light-gun game for two. Two coins are one credit. The mouse is player
