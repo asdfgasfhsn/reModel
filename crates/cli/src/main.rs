@@ -1677,6 +1677,11 @@ fn report_2b(
     };
     println!("copro         {}", if c.is_native() { "recompiled" } else { "interpreter" });
     hot("copro", &c.cpu);
+    match (geo.mode, &geo.native) {
+        (model2::geo::GeoMode::Sharc, _) => {}
+        (mode, Some(n)) => println!("geometrizer   {mode:?}: native {:?}, stopped {:?}", n.program, n.stop),
+        (mode, None) => println!("geometrizer   {mode:?}: no native implementation of the program, on the SHARC"),
+    }
     match &geo.sharc {
         Some(s) => {
             println!(

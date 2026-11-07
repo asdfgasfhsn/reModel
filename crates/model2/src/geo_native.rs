@@ -1,6 +1,7 @@
 //! A native geometrizer: the display-list program that the 2B games
-//! `overrevb`, `sgt24h`, `dynabb97`, `doa` and `schamp` upload to their
-//! geometrizer SHARC, implemented in Rust from its behaviour
+//! upload to their geometrizer SHARC (`overrevb`, `sgt24h`, `dynabb97`,
+//! `doa`, `schamp`, and an earlier version of it `indy500` and `fvipers`),
+//! implemented in Rust from its behaviour
 //! (docs/hw/geometrizer-2b.md). It takes the same inputs as the SHARC (the
 //! list from buffer RAM, the polygon memory, its own state from earlier
 //! commands) and gives the same rasteriser stream, word for word: every
@@ -96,8 +97,19 @@ pub fn image_hash(image: &[u64]) -> u64 {
     adsp2106x::cpu::code_hash(image, &words)
 }
 
-/// The program an uploaded image holds, if this module implements it.
+/// Words of program memory an upload fills (DMA channel 6's 12,288
+/// halves): the program writes data words above them as it runs.
+const UPLOAD_WORDS: usize = 0x1000;
+
+/// The program an image holds (as `adsp2106x::cpu::program_image` reads
+/// one, after the upload or later), if this module implements it. Only the
+/// upload's words count, without trailing zeros, so the data the program
+/// keeps above them doesn't change the answer.
 pub fn recognise(image: &[u64]) -> Option<Program> {
+    let mut image = &image[..image.len().min(UPLOAD_WORDS)];
+    while let [rest @ .., 0] = image {
+        image = rest;
+    }
     let h = image_hash(image);
     PROGRAMS.iter().find(|p| p.0 == h).map(|p| p.1)
 }
@@ -954,6 +966,7 @@ mod tests {
     #[test]
     fn unknown_programs_are_left_to_the_sharc() {
         assert_eq!(recognise(&[0; 16]), None);
+        assert_eq!(recognise(&[]), None);
     }
 
     /// An object in the given-normal mode: its block's layout, the luma of
