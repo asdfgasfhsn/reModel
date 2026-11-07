@@ -193,7 +193,7 @@ impl Machine {
         use state::State as _;
         let mut r = state::Reader::new(data);
         if r.bytes(STATE_MAGIC.len()).ok() != Some(STATE_MAGIC) {
-            return Err("not a Remodel save state (or from another version)".into());
+            return Err("not a reModel save state (or from another version)".into());
         }
         let mut hash = 0u64;
         hash.load(&mut r).map_err(|e| e.to_string())?;
@@ -253,7 +253,7 @@ pub fn load_session(machine: &mut Machine, live: Option<&mut audio::Live>, data:
 /// Load the machine from a [`save_session`] file; returns the sound
 /// boards' state (empty if none was saved), for [`audio::load_state`].
 pub fn load_session_parts(machine: &mut Machine, data: &[u8]) -> Result<Vec<u8>, String> {
-    let body = data.strip_prefix(SAVE_MAGIC).ok_or("not a Remodel save file (or from another version)")?;
+    let body = data.strip_prefix(SAVE_MAGIC).ok_or("not a reModel save file (or from another version)")?;
     let data = png::zlib::decompress(body).map_err(|e| format!("save file damaged: {e}"))?;
     let len = data.get(..8).map(|b| u64::from_le_bytes(b.try_into().unwrap()) as usize).ok_or("save file truncated")?;
     let m = data.get(8..8 + len).ok_or("save file truncated")?;

@@ -46,7 +46,7 @@ usage: remodel-play [options]
 
   --game ID          set to play (default: the last one played, or topskatr)
   --rom DIR          ROM folder: MAME sets as zips or folders (default: the
-                     last one used; else rom in the Remodel source tree,
+                     last one used; else rom in the reModel source tree,
                      or $XDG_DATA_HOME/remodel/roms anywhere else)
   --mix SFX:MUSIC    sound board and music board gains in dB (default 8:-8)
   --no-sound         don't run the sound boards
@@ -909,7 +909,7 @@ impl Play {
         };
         if let Some(g) = &self.gpu {
             let game = self.session.as_ref().map_or("no game", |s| s.game.title);
-            g.window.set_title(&format!("Remodel: {game} · {}x{} · {status}", g.view.width, g.view.height));
+            g.window.set_title(&format!("reModel: {game} · {}x{} · {status}", g.view.width, g.view.height));
         }
         let reports = self.stats.reports + 1;
         if reports.is_multiple_of(5) && !self.menu.open {
@@ -1038,7 +1038,7 @@ impl ApplicationHandler for Play {
             return;
         }
         let attrs = Window::default_attributes()
-            .with_title("Remodel")
+            .with_title("reModel")
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0))
             .with_fullscreen(self.settings.fullscreen.then_some(Fullscreen::Borderless(None)));
         let window = Arc::new(el.create_window(attrs).expect("create window"));

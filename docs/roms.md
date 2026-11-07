@@ -23,7 +23,7 @@ sizes and CRCs are metadata.
   sets: a parent's zip also holds its clones' chips.
 - `m2emu1.1a.zip` (642 MB) is not a game. It is the same 32 zips again, plus
   the dat, a configurator and ElSemi's Model 2 Emulator 1.1a (a closed-source
-  Windows binary with a few Lua scripts). Remodel is clean-room: use the dat
+  Windows binary with a few Lua scripts). reModel is clean-room: use the dat
   as a catalogue, don't use the emulator. `remodel scan` lists it as a set
   ("m2emu1.1a, not supported yet") because it treats every zip as one.
 - `topskatr/` is the 20 chips of `topskatr.zip`'s parent set, unpacked; every
@@ -34,7 +34,7 @@ sizes and CRCs are metadata.
   dat's sets mostly follow MAME's names, but this was not checked against
   MAME's own list, so a MAME-specific set or chip could still be missing.
 
-## Board generations and what they mean for Remodel
+## Board generations and what they mean for reModel
 
 Every board has the i960KB main CPU, the 68000 + SCSP sound board, the
 same tilemap/2D layers and the same kind of polygon raster stream, so the
@@ -42,7 +42,7 @@ i960 recompiler, ROM loading, the sound board, the GPU renderer and both
 players carry over (gk for the shared parts; the README's reuse table says
 the same). The geometry hardware is what changes:
 
-| Board | Geometry (gk unless marked) | What Remodel would need |
+| Board | Geometry (gk unless marked) | What reModel would need |
 |---|---|---|
 | Model 2 (1993-94) | Fujitsu TGP MB86234 (gk). **ROM:** the game uploads its program (`daytona`, `vcop`; each game its own), contrary to the gk that it is internal and undumped. | A TGP interpreter for its undocumented instruction set, the original board's memory map and its sound board ROM layout. Large new work. |
 | 2A-CRX (1995) | Same TGP as Model 2 (gk). **ROM:** `srallyc` and `vf2` upload theirs too; no geometrizer program is uploaded (fixed function, unconfirmed). | As Model 2, plus 2A's map and a fixed-function geometrizer. Once one 2A game runs, the others are mostly manifests. |
@@ -133,7 +133,7 @@ board (i960KB on all, gk). Controls and special hardware are gk throughout.
 | `segawski` | Sega Water Ski (Japan) | 1997 | none | SCSP, CRX_drv 3.4.8 (confirmed) | slide (ch. 0), pitch left/right switches, select up/down and set buttons (confirmed, README) | none needed (confirmed); a second main data bank at `0x6000000` (README) | yes; supported and playable |
 | `waverunr` | Wave Runner | 1996 | none | SCSP, CRX_drv 3.2.7 (confirmed) | handlebar (ch. 0), throttle (2), body roll (1) and pitch (3), start, view (confirmed, README) | ride-on cabinet board: optional, skipped when absent (README); link not read by default | yes; supported and playable |
 | `hotd` | The House of the Dead | 1996 (title screen; the dat says 1997) | none | SCSP, CRX_drv 3.2.8 | 2 light guns, read through a gun interface on I/O registers 9-13 (confirmed, README) | none needed beyond the gun interface (modelled); a second main data bank at `0x6000000` (README) | yes; supported and playable |
-| `stcc` | Sega Touring Car Championship | 1996 | `stcca`, `stccb` (the zip holds all three program pairs; Remodel uses `epr-19570/19571`) | SCSP, CRX_drv 3.2.5 (confirmed); **DSB1 (Z80)**, modelled (`docs/hw/dsb1.md`) | wheel (ch. 0), gas (1), brake (2), shift up/down buttons, two view buttons (confirmed, README) | wheel drive board (commanded every frame, reply never checked; modelled, README); link (skipped by the default settings); `epr-18643a.7` (Z80 code for another board) | yes; supported and playable, with music |
+| `stcc` | Sega Touring Car Championship | 1996 | `stcca`, `stccb` (the zip holds all three program pairs; reModel uses `epr-19570/19571`) | SCSP, CRX_drv 3.2.5 (confirmed); **DSB1 (Z80)**, modelled (`docs/hw/dsb1.md`) | wheel (ch. 0), gas (1), brake (2), shift up/down buttons, two view buttons (confirmed, README) | wheel drive board (commanded every frame, reply never checked; modelled, README); link (skipped by the default settings); `epr-18643a.7` (Z80 code for another board) | yes; supported and playable, with music |
 | `overrev` | Over Rev | 1997 | `overrevb` (2B; the zip holds both program pairs: `overrev` uses the 2C `epr-20124a/20125a`, `overrevb` the 2B `epr-19992b/19993b`, also supported) | SCSP, Jaleco's own driver (confirmed; streams its music, no music board) | wheel (ch. 0), gas (1), brake (2), shift up/down, view (confirmed, README) | none needed; the link board check reads it as absent and runs stand-alone (README) | yes; supported and playable, with sound |
 | `bel` | Behind Enemy Lines | 1997 (title screen; the dat says 1998) (Sega / EPL) | none | SCSP, EPL's driver (confirmed; much of its code shared with Jaleco's, `docs/hw/sound.md` §7) | two mounted guns on ADC channels 0-3 (yaw, pitch), triggers and missile buttons (confirmed, README) | none; needs packed main data and polygon banks and the UART's transmit interrupt (README) | yes; supported and playable, with sound |
 | `dynmcopc` | Dynamite Cop (2C) | 1998 | clone of 2A `dynamcop` | SCSP, CRX_drv 3.2.8 | stick, 3 buttons | none | yes (2 own chips; the rest comes from the 2A parent) |

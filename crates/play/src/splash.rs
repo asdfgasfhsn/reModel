@@ -1,4 +1,4 @@
-//! The Remodel logo on black at startup, fading out over the game (or the
+//! The reModel logo on black at startup, fading out over the game (or the
 //! menu) as it starts. It never holds anything up: the game boots underneath.
 
 use std::time::{Duration, Instant};

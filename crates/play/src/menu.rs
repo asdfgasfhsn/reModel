@@ -43,7 +43,7 @@ pub struct View<'a> {
     pub playing: Option<&'a str>,
     /// Playable games in the ROM folder: (set, title).
     pub games: &'a [(String, &'static str)],
-    /// Sets in the ROM folder Remodel doesn't support yet.
+    /// Sets in the ROM folder reModel doesn't support yet.
     pub unsupported: usize,
     /// When each slot was saved, if it has been.
     pub slots: &'a [Option<SystemTime>],
@@ -98,7 +98,7 @@ impl Menu {
             return actions;
         }
         self.controls = false;
-        egui::Window::new("Remodel")
+        egui::Window::new("reModel")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])

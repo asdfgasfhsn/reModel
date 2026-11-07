@@ -1,4 +1,4 @@
-# Remodel: build, test and analysis entry points.
+# reModel: build, test and analysis entry points.
 #
 # Every target with a `## description` shows up in `make help`, which is the
 # default goal. Keep descriptions current when adding targets.
@@ -107,7 +107,7 @@ recomp: ## Recompile the game's i960 code and the TGP programs captured by `make
 	target/release/remodel --game $(GAME) --rom $(ROM) recomp
 	$(MAKE) release RECOMP=1
 
-recomp-workspace: ## Rewrite out/recomp's Cargo workspace and program crate manifests from the programs there (after updating Remodel or moving the checkout)
+recomp-workspace: ## Rewrite out/recomp's Cargo workspace and program crate manifests from the programs there (after updating reModel or moving the checkout)
 	$(CARGO) build --release -p remodel
 	target/release/remodel recomp-workspace
 

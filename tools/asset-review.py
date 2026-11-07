@@ -1,4 +1,4 @@
-"""Turn Remodel capture sessions into an art review set: distinct 3D textures
+"""Turn reModel capture sessions into an art review set: distinct 3D textures
 and distinct screens, with contact sheets.
 
 usage: python3 -I tools/asset-review.py ASSETS_DIR

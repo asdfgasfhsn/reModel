@@ -1,4 +1,4 @@
-"""Write the third-party notices for a Remodel build: every crate linked into
+"""Write the third-party notices for a reModel build: every crate linked into
 PACKAGE for TARGET, its licence, and the licence texts the crate ships.
 
 usage: python3 -I tools/notices.py PACKAGE TARGET OUT_FILE
@@ -69,7 +69,7 @@ def main():
     lines = [
         f"Third-party software in {package} ({target})",
         "",
-        "Remodel itself is MIT licensed (LICENSE). It links the crates below,",
+        "reModel itself is MIT licensed (LICENSE). It links the crates below,",
         "each under its own licence; their licence texts follow the list. A",
         "crate that ships no text of its own uses licences whose standard texts",
         "appear with other crates.",

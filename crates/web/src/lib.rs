@@ -1,4 +1,4 @@
-//! Remodel in a browser: the board model compiled to WebAssembly, drawn
+//! reModel in a browser: the board model compiled to WebAssembly, drawn
 //! with WebGPU through the GPU rasteriser, with keyboard and gamepad input.
 //! `make web` builds it into out/web/ (see docs/web.md).
 //!

@@ -1,16 +1,16 @@
-<p align="center"><img src="assets/reModel-logo.png" alt="Remodel" width="640"></p>
+<p align="center"><img src="assets/reModel-logo.png" alt="reModel" width="640"></p>
 
-# Remodel
+# reModel
 
 **Static recompilation toolkit for Sega Model 2 arcade games.**
 
-Remodel turns the program code of a Model 2 game into native code that runs
+reModel turns the program code of a Model 2 game into native code that runs
 on a modern PC, with the custom hardware (geometry processor, renderer, sound)
 replaced by high-level reimplementations. The first target is *Top Skater*
 (`topskatr`); everything not specific to one game is built to be reused across
 the Model 2 family.
 
-> **Bring your own ROMs.** Remodel contains no game code or data. It reads a
+> **Bring your own ROMs.** reModel contains no game code or data. It reads a
 > dump you supply at runtime and checks it against known-good hashes. Never
 > commit ROM files or generated listings: `rom/` and `out/` are git-ignored.
 
@@ -216,7 +216,7 @@ supported unless a game's section says otherwise.
   RAM at `0x11400000`, tested the same way. The test sets render mode bit
   0 (`0x10000000` = `0x4005`, host access) first, then for 16 rotations of
   `0x1234ABCD` saves each location, writes the pattern, reads it back and
-  restores it. Remodel left both unmapped (reads 0), so the three games
+  restores it. reModel left both unmapped (reads 0), so the three games
   reported them BAD; they are now plain RAM (`bus.rs`). No game reads or
   writes them outside the test in a coin-start run, so their function is
   *unconfirmed*, as are mirrors past 64 KB and the upper four bits of each
@@ -264,7 +264,7 @@ supported unless a game's section says otherwise.
   `docs/hw/geometrizer-2c.md` has the command set, formats and maths, with
   the native implementation that reproduces the stream and state word for
   word.
-- *Unconfirmed:* the TGP's NaN results. Remodel defines them (the first
+- *Unconfirmed:* the TGP's NaN results. reModel defines them (the first
   NaN operand quieted, else `0xFFC00000`, `docs/hw/mb86235.md`) so that
   every build agrees; the 2C games' state hashes are the same with and
   without the rule.
@@ -324,7 +324,7 @@ chip but the program pair). Details, addresses and evidence in
   (mode, command, status), one register a 32-bit word (2C: `0x1C80000`,
   two a word). The 2B program also writes `0x40` and `0x4E` to `0x1C80004`
   at boot: *unconfirmed* what is there.
-- *Unconfirmed:* the SHARC clock (40 MHz, general knowledge; Remodel runs
+- *Unconfirmed:* the SHARC clock (40 MHz, general knowledge; reModel runs
   5 SHARC instructions per i960 instruction), the FIFO depths and the wait
   states. The copro and geometrizer flags the programs drive (copro FLAG2
   error, FLAG3 waiting; geometrizer FLAG1-3) go nowhere in the model.
@@ -383,7 +383,7 @@ chip but the program pair). Details, addresses and evidence in
   list, word addressed. The i960 leaves an 18-word hole in the list by
   moving its write pointer and sends the copro fn `0x78` with the hole's
   offset; the copro writes a fn `0x0B` matrix and a fn 1 object there.
-  Remodel had a separate RAM there for `indy500` (never touched by its
+  reModel had a separate RAM there for `indy500` (never touched by its
   runs); with it gone `indy500`'s state hash is `4a1b197bf00149d6`, its
   runs otherwise unchanged.
 - *Confirmed (`fvipers`, `schamp`, from the programs):* Sega's 1995-96
@@ -556,7 +556,7 @@ documentation and hasn't been contradicted yet.
   a start and end byte address in the 16 MB MPEG space (always on frame
   boundaries), a volume per side and an optional loop point. `AE 10 nn` plays
   track nn (0 = stop), `AE 02 vv` sets the master volume, `AE 03 vv` fades out
-  and then stops. Remodel's decoder matches ffmpeg's to within 3e-6 of full
+  and then stops. reModel's decoder matches ffmpeg's to within 3e-6 of full
   scale on the game's MPEG data. Of the 12 tracks, 1-3, 5, 7-9 and 12 are
   played with looping armed (`64` before `74`) and 4, 6, 10 and 11 once.
   The firmware never reads decoder status beyond the always-clear busy bit,
@@ -634,7 +634,7 @@ Second 2C game, added to find what is still `topskatr`-specific.
   the select screens they pick the left, middle and right choice, and blue
   also starts a game. Channels 0 and 1 both turn the skier, in opposite
   senses (right: channel 0 up, channel 1 down); the game's demo drives
-  them with equal calibrated values. Remodel names them `edge` and
+  them with equal calibrated values. reModel names them `edge` and
   `swing`; *unconfirmed* which ski angle each measures.
 - *Unconfirmed:* channel 2 (`push`): the skier's physics adds its offset
   from `0x80` to the speed outside `0x70`-`0x8F`, the demo sets it at the
@@ -675,7 +675,7 @@ Third 2C game: the first with a DSB1 music board, a wheel and a gearbox.
   `0x4000`). The geometrizer program has no jump handling, so the list DMA
   must follow them. Data words with bit 31 set (negative floats) are not
   jumps, and the game also overwrites old jump words directly (the copro
-  stores matrices into the list), so Remodel follows only jump words written
+  stores matrices into the list), so reModel follows only jump words written
   through the command port and not stored over by the copro since
   (`fvipers` patches jumps in with the i960, which they survive; Model 2B
   above). *How the hardware tells them apart is unconfirmed.* Without this the
@@ -804,7 +804,7 @@ Fifth game, 2C: a ride-on personal watercraft cabinet, SCSP sound only.
   below `0x80000` and holds data at `0x80000-0xEFFFF`, and the same record
   chains parse there with the pair repeating in an 8 MB slot from
   `0x6000000` (as `stcc`'s 1 MB pairs do in theirs). Without it the game
-  read nothing there (unmapped) and still ran. Remodel calls these chips
+  read nothing there (unmapped) and still ran. reModel calls these chips
   `Role::MainDataHigh`. *Unconfirmed:* how the board decodes the rest of
   `0x04000000-0x07FFFFFF`; nothing else there was read in our runs.
 - *Unconfirmed:* the polygon pairs are `.17/.21`, `.18/.22` and the 1 MB
@@ -887,7 +887,7 @@ driver. A sit-down driving cabinet; no extra boards are needed.
   from the EEPROM) it then waits for bit 7 of `0x1A14002` to be set and
   goes on "STAND ALONE"; with no board and a linked setting it stops on
   "Nothing communication board!". With a board it writes 1 to `0x1A14000`,
-  waits for bit 7 of `0x1A14002` to clear, and starts the link. Remodel
+  waits for bit 7 of `0x1A14002` to clear, and starts the link. reModel
   reads the board's registers as all ones (no board), which the game takes
   as a stand-alone cabinet; reading 0 (as before) left it waiting at "Link
   check." forever. *Unconfirmed:* that an empty slot reads as all ones on
@@ -1070,7 +1070,7 @@ Dynamite Baseball '97, a two-player baseball cabinet with a bat lever.
   i960 uploads both SHARC programs as the Jaleco games do, the geometrizer
   code is theirs and the copro program is Sega's own (Model 2B above). No
   protection device: nothing is read outside the known map. Boot writes
-  zeros once over `0x600000-0x62FFFF`, which Remodel doesn't map and the
+  zeros once over `0x600000-0x62FFFF`, which reModel doesn't map and the
   game never reads back (*unconfirmed* what is there).
 - *Confirmed (from the input test, then by scripted runs):* port
   `0x1C00002` bit 0 coin 1, 1 coin 2, 2 test, 3 service, 4 start 1, 5
@@ -1187,10 +1187,10 @@ model as it is, once the i960 returns keep PFP's address bits 4 and 5
   10^-6, on polygons well beyond it).
 - *Confirmed (by running it):* the camera's close-ups (attract mode, the
   character select screen) put fighters' arms, heads and bodies less
-  than one unit in front of the eye. Remodel's rasteriser clipped at z =
+  than one unit in front of the eye. reModel's rasteriser clipped at z =
   1, so those parts vanished as if the camera had cut them away. It now
   clips to the view volume with a near plane at 10^-6
-  (`docs/hw/geometrizer.md`, Remodel status), and they draw whole.
+  (`docs/hw/geometrizer.md`, reModel status), and they draw whole.
 - *Confirmed (from the raster stream):* fighters' shadows are flat
   (untextured) black polygons, header `00C0 0000 0000 0000` (palette
   entry 0), checker bit clear, so they draw solid black, as sent.
@@ -1525,7 +1525,7 @@ screen says ©SEGA 1996.
   from program ROM `0xA3A00-0xA4DFF` through command `0x07`: a
   configuration image, presumably for programmable logic that times the
   guns (*unconfirmed* what the part is). Without a device answering, boot
-  spins at `0xA3728` forever. Remodel models only this (`model2::gun`),
+  spins at `0xA3728` forever. reModel models only this (`model2::gun`),
   for games with guns in their manifest.
 - *Confirmed (from the code, then the GUN SETTING test screen):* each frame
   `0xA38C0` reads counters 0-7 as four 10-bit values (a low byte, then two
@@ -1537,7 +1537,7 @@ screen says ©SEGA 1996.
   coordinates zeroed but the bit clear, an off-screen shot doesn't reload
   and the game shows its "shoot outside the screen" hint. *Unconfirmed:*
   what the real board does with the counters while a gun sees nothing
-  (Remodel reports 0).
+  (reModel reports 0).
 - *Confirmed (from the test screens):* the game calibrates the guns
   itself (GUN SETTING: adjustment, default adjustment, manual
   adjustment). The defaults in a fresh EEPROM are X 173-596 (player 2:
@@ -1627,7 +1627,7 @@ says 1998). The sound program is EPL's (`docs/hw/sound.md` §7).
 
 ## License
 
-MIT for Remodel's own code ([LICENSE](LICENSE)). `make dist` and `make web`
+MIT for reModel's own code ([LICENSE](LICENSE)). `make dist` and `make web`
 also ship `THIRD-PARTY-NOTICES.txt` for the crates they link
 (`tools/notices.py`). Game software and data remain the property of their
 respective owners.

@@ -1,11 +1,11 @@
-# MAME defects found while building Remodel
+# MAME defects found while building reModel
 
 A record of places where MAME's emulation differs from what the hardware
 does, kept so they can be turned into upstream patches. MAME marks
 `topskatr` as `MACHINE_NOT_WORKING`; several entries below are plausible
 reasons why.
 
-**Scope and method.** Remodel is clean-room: we read MAME for facts, never
+**Scope and method.** reModel is clean-room: we read MAME for facts, never
 copy its code. A patch to MAME would be written fresh against MAME's tree and
 its licence, using the evidence here. Line numbers refer to `mamedev/mame`
 master at commit `64eae1fe` (fetched 2026-11-05). Re-check them before
@@ -19,7 +19,7 @@ patching.
 | Suspected | MAME's code contradicts other sources or itself, but the game hasn't exercised the path yet (or doesn't use it). |
 | Known hack | MAME's own comments admit a placeholder or guess. |
 
-To add an entry: give it the next ID, say how to reproduce it with Remodel,
+To add an entry: give it the next ID, say how to reproduce it with reModel,
 and keep the evidence concrete (addresses, counts, outputs).
 
 ---
@@ -30,9 +30,9 @@ and keep the evidence concrete (addresses, counts, outputs).
 - **Where:** `src/devices/cpu/mb86235/mb86235ops.cpp`, `mb86235_device::decode_ea` (switch around lines 100-178; `fatalerror` at line 180).
 - **MAME does:** the switch has cases for modes 0x0-0xB and 0xD-0xF but none for 0xC, so mode 0xC hits `fatalerror("TGPx4: illegal decode_ea type ...")`.
 - **Correct:** mode 0xC is a valid absolute address (the displacement field is the address). MAME's own disassembler (`mb86235d.cpp`) prints it as such.
-- **Evidence:** the 4,096-word program `topskatr` uploads contains 8 mode-0xC transfers (program addresses 0xAC7, 0xAE1, 0xB08, 0xB1E, 0xBFB, 0xC00, 0xC18, 0xCE5). All 8 execute during boot and attract (Remodel's TGP coverage), so MAME would abort the moment the copro reaches the first one. **Likely a blocker for topskatr in MAME.**
+- **Evidence:** the 4,096-word program `topskatr` uploads contains 8 mode-0xC transfers (program addresses 0xAC7, 0xAE1, 0xB08, 0xB1E, 0xBFB, 0xC00, 0xC18, 0xCE5). All 8 execute during boot and attract (reModel's TGP coverage), so MAME would abort the moment the copro reaches the first one. **Likely a blocker for topskatr in MAME.**
 - **Reproduce:** `make run STEPS=300000000`, then check `out/topskatr/copro-coverage.txt` for those addresses.
-- **Fix direction:** add `case 0x0c: return disp;` (absolute, no post-modify). Remodel implements it this way and the game runs. The exact displacement width/sign for mode 0xC still deserves a check against more games.
+- **Fix direction:** add `case 0x0c: return disp;` (absolute, no post-modify). reModel implements it this way and the game runs. The exact displacement width/sign for mode 0xC still deserves a check against more games.
 
 ### MD-2. (Withdrawn) System 24 tile chip: split mode and the line-scroll entry
 - **Was:** we claimed MAME was wrong to use the line-scroll entry as both the split point and the X scroll in left/right split mode, from topskatr's attract text.
@@ -71,11 +71,11 @@ and keep the evidence concrete (addresses, counts, outputs).
 
 ### MD-8. Model 2C: one TGPx4 emulated, PCB note lists two
 - **Where:** `src/mame/sega/model2.cpp` (header PCB notes vs the `model2c` machine config).
-- **Now strong evidence (promote with MD-10):** topskatr uploads a second 4,096-word MB86235 program through 0x00804000 with 0x00980008 bit 31 set (i960 0x47EC0). That program is the geometrizer, and running it in Remodel produces the full rasteriser stream. MAME counts these words and discards them.
+- **Now strong evidence (promote with MD-10):** topskatr uploads a second 4,096-word MB86235 program through 0x00804000 with 0x00980008 bit 31 set (i960 0x47EC0). That program is the geometrizer, and running it in reModel produces the full rasteriser stream. MAME counts these words and discards them.
 
 ### MD-9. topskatr inputs overlap the EEPROM read-mode bits (resolved: not a defect)
 - **Where:** `model2.cpp`, the `topskatr` input ports. They put four buttons on IN0 bits 4-7, the bits that show EEPROM DO and fixed 1s when port A control mode is on.
-- **Resolved: not a defect.** Every button in MAME's layout is confirmed in Remodel from the game's response to a scripted press:
+- **Resolved: not a defect.** Every button in MAME's layout is confirmed in reModel from the game's response to a scripted press:
   - coin 1 (IN0 bit 0) gives "CREDIT 1";
   - start (IN0 bit 6) leads to course select;
   - select right and left (IN0 bits 4 and 7) move the course highlight;
@@ -87,13 +87,13 @@ and keep the evidence concrete (addresses, counts, outputs).
 ### MD-10. Model 2B/2C geometrizer is HLE'd from one game's program, not run
 - **Where:** `src/mame/sega/model2_v.cpp` (`geo_parse` and its command handlers), `model2.cpp` (the geo upload in `geo_ctl_w`).
 - **MAME does:** discards the uploaded geometrizer program and runs a fixed C++ HLE modelled on a 2B program.
-- **Correct (per topskatr):** the game's program differs from that HLE in at least four ways, all **Confirmed** by running it in Remodel (`docs/hw/geometrizer.md`):
+- **Correct (per topskatr):** the game's program differs from that HLE in at least four ways, all **Confirmed** by running it in reModel (`docs/hw/geometrizer.md`):
   1. Command 0x11 is a compact skinned model format (attr, then 1-2 points, no stored normals; bit 0 of X selects a second matrix). MAME treats it as an alias of 0x01 with the 10-word format.
   2. Command 0x1B writes a secondary matrix. MAME treats it as an ordinary matrix overwrite.
   3. Command 0x1C copies matrix 0 into matrix 1. MAME treats it as a translation.
   4. Commands 0x12, 0x13, 0x15, 0x17-0x1A and 0x1D-0x1F are invalid in this program and trap to its error loop. MAME aliases them.
 - **Also observed:** the program's frame handshake is driven by flag input F0, and it emits a NOP to the rasteriser on every pass of its idle loop (a delay-slot write). MAME's HLE has no equivalent.
-- **The other 2C programs (2026-11-08):** all eight 2C games' programs (four versions, `docs/hw/geometrizer-2c.md`) light differently from the HLE as `docs/hw/geometrizer.md` §4.1 summarised it from MAME (not re-checked against MAME's code since; Remodel no longer reads it): the diffuse term is `n·L` clamped at 0, not `|n·L|` zeroed when light and eye are on opposite sides; a single-sided back face is sent unlit (luma 0 with the back-face bit), and a double-sided one lit from `−n·L` without the back-face bit; with computed normals the back-face test uses the dot product before normalising, and a single-sided back face's distance is the coefficient times LOD alone. `overrev`'s version also counts a quad with a zero dot product as a back face and takes the specular term from the clamped diffuse term. **Confirmed** for the programs by running them beside Remodel's native implementation (`make geo-check`, 0 differences over 5,000-frame runs); whether MAME's HLE does what §4.1 says is for whoever patches it to re-check.
+- **The other 2C programs (2026-11-08):** all eight 2C games' programs (four versions, `docs/hw/geometrizer-2c.md`) light differently from the HLE as `docs/hw/geometrizer.md` §4.1 summarised it from MAME (not re-checked against MAME's code since; reModel no longer reads it): the diffuse term is `n·L` clamped at 0, not `|n·L|` zeroed when light and eye are on opposite sides; a single-sided back face is sent unlit (luma 0 with the back-face bit), and a double-sided one lit from `−n·L` without the back-face bit; with computed normals the back-face test uses the dot product before normalising, and a single-sided back face's distance is the coefficient times LOD alone. `overrev`'s version also counts a quad with a zero dot product as a back face and takes the specular term from the clamped diffuse term. **Confirmed** for the programs by running them beside reModel's native implementation (`make geo-check`, 0 differences over 5,000-frame runs); whether MAME's HLE does what §4.1 says is for whoever patches it to re-check.
 - **Impact:** with MAME's HLE, topskatr's models (sent as command 0x11) are decoded with the wrong record size, so its 3D cannot render correctly. Together with MD-1, this explains MAME's `MACHINE_NOT_WORKING`.
 - **Fix direction:** run the uploaded program on an MB86235 core (LLE), at least for 2C. Otherwise, add a topskatr-specific HLE for 0x11, 0x1B and 0x1C.
 - **Reproduce:** `make run STEPS=660000000 INPUT=coin1@1100-1104,start@1250-1254`. The report's geometrizer line shows list words turning into raster words, and `out/topskatr/raster-last.txt` holds the stream.
@@ -103,7 +103,7 @@ and keep the evidence concrete (addresses, counts, outputs).
 - **MAME does:** runs the DSB2's 68000 at 8 MHz.
 - **Correct (probably):** MAME's own Model 3 PCB note for the DSB2 (`model3.cpp`, board 837-12273) gives "68EC000FN12, clock 11.000MHz [33/3]". Supermodel uses 11 MHz too.
 - **Impact:** small. The firmware is interrupt-driven (UART IRQ1, tick IRQ2), but busy-wait delays and command latency scale with the clock.
-- **Evidence:** `docs/hw/sound.md` §3.1. Remodel's `crates/dsb` runs the firmware at 11 MHz (`make music`); nothing in it depends visibly on the clock, so this stays unconfirmed from the game.
+- **Evidence:** `docs/hw/sound.md` §3.1. reModel's `crates/dsb` runs the firmware at 11 MHz (`make music`); nothing in it depends visibly on the clock, so this stays unconfirmed from the game.
 - **Fix direction:** use `33_MHz_XTAL / 3`.
 
 ### MD-12. DSB2: decoder port 0xE00001 unmapped, boot upload and busy flag not modelled
@@ -119,7 +119,7 @@ and keep the evidence concrete (addresses, counts, outputs).
 - **Correct:** the SCSP manual (MIDI register page, p04_2a) gives the MIDI-in buffer as 4 bytes. MIFULL is set at 4 and MIOVF on the 5th byte.
 - **Impact:** with accurate timing a deeper FIFO hides overruns. MAME probably keeps it deep because its CPU/serial interleave is coarse. Supermodel enlarges it for the same reason. Not a topskatr blocker.
 - **Fix direction:** keep it deep only behind a "coarse timing" option, or fix the scheduling and use 4.
-- **Evidence that 4 is enough:** Remodel's sound board runs the 68000 in one-sample (256-cycle) slices, delivers link bytes no faster than 31.25 kbaud and uses a 4-byte FIFO. topskatr's driver reads all 6,253 bytes of a boot-to-race capture with **0 overflows**. Reproduce: `make run STEPS=600000000 INPUT=coin1@1100-1104,start@1250-1254`, then `make sound` and read the `midi in` line.
+- **Evidence that 4 is enough:** reModel's sound board runs the 68000 in one-sample (256-cycle) slices, delivers link bytes no faster than 31.25 kbaud and uses a 4-byte FIFO. topskatr's driver reads all 6,253 bytes of a boot-to-race capture with **0 overflows**. Reproduce: `make run STEPS=600000000 INPUT=coin1@1100-1104,start@1250-1254`, then `make sound` and read the `midi in` line.
 
 ### MD-14. DSB2: looping tracks stop at their end address
 - **Where:** `src/mame/sega/dsb2.cpp`, `fifo_w` (start-address case around lines 140-156) and `sound_stream_update` (end handling around lines 270-291, loop code commented out).
@@ -147,5 +147,5 @@ and keep the evidence concrete (addresses, counts, outputs).
 | MH-1 | `315_5649.cpp`, serial status register 0x0D | Hard-coded to 0x0C; the source calls it a hack. |
 | MH-2 | `model2.cpp`, uPD71051/i8251 UART clock | 8 MHz is a guess, so the baud rate is unmeasured. |
 | MH-3 | `model2rd.ipp` / `model2_v.cpp`, colour gamma | The gamma step is a calibration guess, not hardware. |
-| MH-4 | `model2.cpp`, `reset_model2_scsp` | Copies the first 16 bytes of the sound program ROM into sound RAM so the 68000 finds a reset vector. How real hardware provides it is unknown. topskatr's driver installs its own vector table in RAM (`docs/hw/sound.md` §1), and before that copy it reads no RAM below `0xC04`, so only SSP/PC at reset matter. Remodel fetches them from the program ROM during reset, which plays identically. |
+| MH-4 | `model2.cpp`, `reset_model2_scsp` | Copies the first 16 bytes of the sound program ROM into sound RAM so the 68000 finds a reset vector. How real hardware provides it is unknown. topskatr's driver installs its own vector table in RAM (`docs/hw/sound.md` §1), and before that copy it reads no RAM below `0xC04`, so only SSP/PC at reset matter. reModel fetches them from the program ROM during reset, which plays identically. |
 | MH-5 | `model2.cpp`, `topskatr` machine config (line 3127) | MPEG output goes straight to the speaker. The TODO says it "should be chained with SCSP EXTS", but the DSB2 has its own DACs, so analog mixing is more likely (`docs/hw/sound.md` §3.6). |

@@ -45,14 +45,14 @@ i960 --geo ports--> buffer RAM display list --(list DMA, jumps)--> GEOMETRIZER (
   ROM 0x2262C), and it decodes cleanly with no invalid words. **H**
   - So 2C has a second TGPx4 after all. This bears on MD-8 in `mame-defects.md`: MAME counts
     these words and discards them.
-  - Implementation consequence: Remodel can run TSG on a second instance of our MB86235
+  - Implementation consequence: reModel can run TSG on a second instance of our MB86235
     interpreter (LLE). Then only the fixed-function raster side (§4-§6) has to be written
     from MAME's description.
 - **On 2B** the geometrizer is an ADSP-21062 SHARC, also running a program the game uploads,
   fed the same lists through the same ports and frame protocol; its program emits this same
   rasteriser stream (§4.2), so everything from §4 on applies to 2B unchanged. Its external
   map and the comparison with a 2C program are in `model2b.md`, and what its program does
-  (and Remodel's native implementation of it) in `geometrizer-2b.md`. **H** (`overrevb`)
+  (and reModel's native implementation of it) in `geometrizer-2b.md`. **H** (`overrevb`)
 - MAME notes that "Top Skater seems to use a slightly different geometry code that has a
   secondary transformation matrix". TSG confirms this and shows what is different (§2.3,
   §3.2). **H**
@@ -66,7 +66,7 @@ i960 --geo ports--> buffer RAM display list --(list DMA, jumps)--> GEOMETRIZER (
 | Address | R/W | Meaning | Source / conf. |
 |---|---|---|---|
 | 0x00800000 + fn·0x10 (offsets < 0x1000) | W | **Command port.** A write with value bit 31 = 0 to an offset whose low nibble is 0 appends one word to the list: `(value & 0x000FFFFF) \| (fn << 23)`, where fn = (offset >> 4) & 0x3F. | M2, **H** (TR decodes cleanly) |
-| same, value bit 31 = 1 | W | Appends a **jump** word: `(value & 0x800FFFFF) \| (fn << 23)`. When the list DMA sees bit 31, it continues at buffer byte offset `word & 0x1FFFF`. | M2, M [MAME-only]; topskatr doesn't use it. **stcc does** (`0x80004000`: continue at `0x4000`), linking each frame's list from pieces; its geometrizer program has no jump handling either, so the DMA resolves them (**H**). Data words with bit 31 set are not jumps, and stcc's copro overwrites old jump words directly; Remodel follows only words written through this port as jumps or fn 0 commands, keeps them through the i960's own writes to buffer RAM (fvipers patches placeholders into jumps that way, `model2b.md`) and drops them when the port appends over them or a copro stores there (how the hardware decides is unconfirmed). |
+| same, value bit 31 = 1 | W | Appends a **jump** word: `(value & 0x800FFFFF) \| (fn << 23)`. When the list DMA sees bit 31, it continues at buffer byte offset `word & 0x1FFFF`. | M2, M [MAME-only]; topskatr doesn't use it. **stcc does** (`0x80004000`: continue at `0x4000`), linking each frame's list from pieces; its geometrizer program has no jump handling either, so the DMA resolves them (**H**). Data words with bit 31 set are not jumps, and stcc's copro overwrites old jump words directly; reModel follows only words written through this port as jumps or fn 0 commands, keeps them through the i960's own writes to buffer RAM (fvipers patches placeholders into jumps that way, `model2b.md`) and drops them when the port appends over them or a copro stores there (how the hardware decides is unconfirmed). |
 | offset bits 10-11 (0x400/0x800/0xC00) | W | **Eye mode** (centre select 1-3). MAME puts these bits into list-word bits 29-30, but **only when fn == 0x01**. | M2 (hack comment cites Sega Rally); see §9 |
 | fn·0x10 + 4, + 8 | W | MAME's dead debug code calls these "command length" (data & 0x3F) and "data length" (data & 0x7F). MAME ignores the writes. | M2, L |
 | 0x00801008 | W | **Write pointer**: buffer RAM byte offset (data & 0xFFFFF) where appends go. | M2 + TSI, **H** |
@@ -78,7 +78,7 @@ i960 --geo ports--> buffer RAM display list --(list DMA, jumps)--> GEOMETRIZER (
 | 0x10000000 | R/W (16-bit) | Render mode. Bit 0 = test mode (host access to the framebuffer, no 3D), bit 2 = 60 Hz (else 30 Hz), bit 14 unknown. topskatr writes **0x4004**; one routine sets and clears bit 0. | M2 + TSI, M |
 | 0x0181C000 | W (byte) | Master Z-clip. 0xFF = disabled. topskatr writes 0xFF. | M2 + TSI, M |
 | 0x10400000 | R | Polygon count (MAME: only Sky Target uses it). | M2, L |
-| 0x10A00000-0x10A0FFFF, 0x10C00000-0x10C0FFFF | R/W (8-bit) | RAMs **IC55** and **IC54**, 64 KB each, 4 bits wide (the memory test compares bits 0-3 only). Only the memory test of segawski, skisuprg and waverunr touches them, after setting render mode bit 0; their purpose is unknown. Remodel maps them as plain RAM. | The games' memory-test tables, **H** for address and size; function unknown |
+| 0x10A00000-0x10A0FFFF, 0x10C00000-0x10C0FFFF | R/W (8-bit) | RAMs **IC55** and **IC54**, 64 KB each, 4 bits wide (the memory test compares bits 0-3 only). Only the memory test of segawski, skisuprg and waverunr touches them, after setting render mode bit 0; their purpose is unknown. reModel maps them as plain RAM. | The games' memory-test tables, **H** for address and size; function unknown |
 
 **Command word check (TSG, H):** for every command word, the geometrizer compares fn =
 (word >> 23) & 0x1F with (word >> 8) & 0x1F and with word & 0x1F. If they differ, it
@@ -227,7 +227,7 @@ It is a mantissa LSB, so using the value unmasked costs only 1 ulp.
 | 17 | Double-sided (no backface cull) | M |
 | 0-17 | sent to the rasteriser as is (`& 0x3FFFF`) | H |
 | 18-22 | Lighting parameter index (fn 0x06 entry) | H |
-| 23-24 | A copy of the link bits 8-9: in topskatr's data, and in `doa`'s intact polygon pairs (the second pair: all but 10 of 153,126 words shaped like an attribute word; the first: all but about 3,000 of 121,000, words that only look like one). The 2B geometrizer program doesn't read them (it sends `attr & 0x3FFFF` and links on bits 8-9); Remodel uses the copy to repair `doa`'s bad dump of `mpr-19324.19` (README, "What's known about `doa`") | L (observation) |
+| 23-24 | A copy of the link bits 8-9: in topskatr's data, and in `doa`'s intact polygon pairs (the second pair: all but 10 of 153,126 words shaped like an attribute word; the first: all but about 3,000 of 121,000, words that only look like one). The 2B geometrizer program doesn't read them (it sends `attr & 0x3FFFF` and links on bits 8-9); reModel uses the copy to repair `doa`'s bad dump of `mpr-19324.19` (README, "What's known about `doa`") | L (observation) |
 | 27-31 | Distance-coefficient index (fn 0x06 coef) | H |
 
 ### 3.4 Vertex linking (M2V, M [MAME-only]; the ROM meshes look right with it)
@@ -510,16 +510,16 @@ mask → mix (§6).
 5. Eye/centre-select mapping for functions other than 0x01.
 6. TS lighting and backface rule: read the TSG fn 0x11 handler (0x3AD-0x47F) or run it.
 
-## Remodel status (running TSG)
+## reModel status (running TSG)
 
-Remodel runs the uploaded geometrizer program on a second MB86235 interpreter (`crates/model2/src/geo.rs`), or by
+reModel runs the uploaded geometrizer program on a second MB86235 interpreter (`crates/model2/src/geo.rs`), or by
 default in the player and the browser the native implementation of it (`geometrizer-2c.md`), which gives the same
 stream:
 - The geo ports build the list in buffer RAM. Command words are `(v & 0xFFFFF) | fn << 23 | eye << 29`, and data appends at the write pointer.
 - At each vblank, F0 is pulsed and the list at the read pointer is streamed into the input FIFO, kept full to depth 8, until the program goes idle.
 - Result for a topskatr gameplay frame: a 1,644-word list becomes 33,376 rasteriser words (z-sort, 5 windows and 87 object blocks), with no command-check errors.
 
-Rasteriser checks (Remodel `crates/model2/src/raster.rs`, gameplay frame 4555), **confirmed** by recognisable textured output:
+Rasteriser checks (reModel `crates/model2/src/raster.rs`, gameplay frame 4555), **confirmed** by recognisable textured output:
 - Raster stream framing (§4.2): the polygon buffer layout, quads with 9 words and triangles with 6, ending at the next command word.
 - Vertex linking table (§3.4), cull on link type 0, and the backface bit in the luma word.
 - Projection (§4.4) with the window centre and sync offsets.
@@ -529,17 +529,17 @@ Rasteriser checks (Remodel `crates/model2/src/raster.rs`, gameplay frame 4555), 
   0x1009) between 0xD3FF and black on alternate frames (i960 0x20C58). Snapshots taken
   on even frames show it black; that is the game, not a rasteriser fault. Found with
   `REMODEL_PROBE` and `REMODEL_WATCH`.
-- Remodel filters textures bilinearly (section 5.4's rule for translucent texels). The
+- reModel filters textures bilinearly (section 5.4's rule for translucent texels). The
   hardware's exact filter is still unconfirmed, but it removes the blockiness of point
   sampling and looks like Model 2 footage.
 - topskatr uploads no mipmaps: both texture banks hold only full-size textures (the
   first 1 MB of each bank is used), and the level-1 positions of its textures are empty
   or hold other textures. So LOD selection can't matter for this game.
-- Clipping (§4.3): Remodel clips each polygon in view space against four side planes through
+- Clipping (§4.3): reModel clips each polygon in view space against four side planes through
   the eye and a near plane at z = 10^-6, which only keeps 1/z finite. The side planes bound a
   guard band 992 pixels (twice the screen width) beyond each screen edge, not the window, so
   widened views still get the 3D past the original frame; the window rectangle is applied when
-  filling. Until 2026-11 Remodel clipped at z = 1 instead, an arbitrary plane in the game's view
+  filling. Until 2026-11 reModel clipped at z = 1 instead, an arbitrary plane in the game's view
   units: `doa`'s close-ups (attract camera, character select) have fighters' arms, heads and
   bodies at z below 1, which vanished whole; `stcc`'s attract left a black band where the
   road comes nearer than 1; and `sgt24h` lost its course map and tachometer needle, 3D HUD
@@ -547,11 +547,11 @@ Rasteriser checks (Remodel `crates/model2/src/raster.rs`, gameplay frame 4555), 
   whole. What the hardware does with geometry this close is *unconfirmed*; dropping the near
   plane altogether (z near 0 with x, y unbounded) gives projected coordinates too large for f32
   spans (floor polygons running under the camera smeared), which the side planes prevent.
-- Not yet checked: mipmaps/LOD, microtexture, translucency/checker details, and the z-sort key format (Remodel sorts on float z).
+- Not yet checked: mipmaps/LOD, microtexture, translucency/checker details, and the z-sort key format (reModel sorts on float z).
 
-## Smooth motion (Remodel's in-between frames)
+## Smooth motion (reModel's in-between frames)
 
-Not hardware: an option of Remodel's front ends (`remodel-play --smooth`,
+Not hardware: an option of reModel's front ends (`remodel-play --smooth`,
 the browser's `?smooth=1`, off by default) for displays faster than the
 game's 57.5 Hz. The game runs as always; refreshes between two of its
 frames show the 3D geometry part way from frame N-1 to frame N, frame N

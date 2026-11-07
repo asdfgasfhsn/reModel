@@ -3,7 +3,7 @@
 Status: 2026-11-08. What the display-list program that most Model 2B
 games upload to their geometrizer SHARC does, worked out from its
 behaviour and its disassembly (`make sharc-disasm
-FILE=out/overrevb/sharc-geo.bin`), and how Remodel implements it natively
+FILE=out/overrevb/sharc-geo.bin`), and how reModel implements it natively
 (`crates/model2/src/geo_native.rs`, `--geo native`). The board side (the
 SHARC's ports, the list DMA, the frame protocol) is in `model2b.md`; the
 stream it produces and the rasteriser that draws it in `geometrizer.md`
@@ -53,7 +53,7 @@ SHARC.
   reads depends on the geometrizer: the list pointers (`0x802008`,
   `0x803008`) are the i960's own, the frame parity (`0x98000C`) is
   vblank's, the copro status (`0x980014`) only says both programs are
-  uploaded. Remodel's board model answers `0x840000` reads with 0 and
+  uploaded. reModel's board model answers `0x840000` reads with 0 and
   wires FLAG1-3 and `0x430002` to nothing, and the games run.
 - **From running it.** With `--geo native` the SHARC never runs a frame
   and the machine's state hash after 600M-instruction coin-start runs is
@@ -97,7 +97,7 @@ As `model2b.md` describes: after the upload the program waits for two
 frame handshakes, so the first frame after an upload reads no list and the
 second reads one; then one list a frame, from the read pointer until END.
 At each frame start it sends NOP and END (the previous frame's
-terminator, which Remodel's frame model discards) and resets the
+terminator, which reModel's frame model discards) and resets the
 fast-RAM attribute word below. The list DMA's cap (`MAX_LIST_WORDS`) ends a
 list with END words, as on the SHARC.
 
@@ -384,7 +384,7 @@ build is a heavy one); that it keeps its lead there is *unconfirmed*.
 ## Next steps (scoping)
 
 **Model 2B: done.** The three native programs cover every 2B game
-Remodel runs. Another 2B game with a new geometrizer program would run on
+reModel runs. Another 2B game with a new geometrizer program would run on
 the SHARC; `make geo-check GAME=...` says so ("no native implementation").
 
 **Model 2C: done.** The four TGP programs the 2C games upload are

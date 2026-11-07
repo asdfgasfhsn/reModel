@@ -1,6 +1,6 @@
 # Static recompilation
 
-Remodel can turn the game's own code into Rust and compile it into the
+reModel can turn the game's own code into Rust and compile it into the
 binary: the i960 main program, the MB86235 programs uploaded to the 2C
 copro and geometrizer, and the ADSP-21062 (SHARC) programs uploaded to
 Model 2B's. Nothing is reimplemented; the original instructions run, just
@@ -63,7 +63,7 @@ puts it in place of the stub; `front/` only brings `remodel` and
 the checkout's, so the checkout's never changes. `make ... RECOMP=1`
 builds from it (`--manifest-path out/recomp/Cargo.toml`) into
 `target/recomp`. `make recomp-workspace` rewrites it and every program
-crate's manifest without recompiling anything (after updating Remodel or
+crate's manifest without recompiling anything (after updating reModel or
 moving the checkout; it also moves loose `i960_<hash>.rs` / `tgp_<hash>.rs`
 files from the older layout into crates). Files are only written when
 their contents change, so Cargo rebuilds only programs that did.

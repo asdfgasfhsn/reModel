@@ -1,6 +1,6 @@
 //! Settings kept between runs, and where the player keeps its files.
 //!
-//! Run from the Remodel source tree (an `out/` directory in the current
+//! Run from the reModel source tree (an `out/` directory in the current
 //! directory), files go under `out/` next to the other per-game output;
 //! otherwise under `$XDG_DATA_HOME/remodel` (`~/.local/share/remodel`).
 

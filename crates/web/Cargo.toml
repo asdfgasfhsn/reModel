@@ -1,6 +1,6 @@
 [package]
 name = "remodel-web"
-description = "Remodel in a browser: WebAssembly, drawn with WebGPU"
+description = "reModel in a browser: WebAssembly, drawn with WebGPU"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

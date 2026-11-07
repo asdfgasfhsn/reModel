@@ -1,6 +1,6 @@
 # Browser build
 
-Remodel compiled to WebAssembly, running in a browser and drawing with
+reModel compiled to WebAssembly, running in a browser and drawing with
 WebGPU (`crates/web`), with sound. It is playable with keyboard or
 gamepad. The sound and music boards run alongside the game
 (`model2::audio::Live`, fed each byte the game sends at its exact

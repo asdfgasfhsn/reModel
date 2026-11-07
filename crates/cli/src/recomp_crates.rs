@@ -47,11 +47,11 @@ fn relative(from: &Path, to: &Path) -> String {
     }
 }
 
-/// The Remodel checkout: the current directory, as `make` runs from it.
+/// The reModel checkout: the current directory, as `make` runs from it.
 fn repo() -> Result<PathBuf, String> {
     let dir = canonical(Path::new("."))?;
     if !dir.join("crates/model2/Cargo.toml").is_file() || !dir.join("crates/recomp/Cargo.toml").is_file() {
-        return Err(format!("{}: not the Remodel checkout (run this from its root)", dir.display()));
+        return Err(format!("{}: not the reModel checkout (run this from its root)", dir.display()));
     }
     Ok(dir)
 }

@@ -1,6 +1,6 @@
 [package]
 name = "remodel-play"
-description = "Remodel in a native window: GPU renderer, live sound, keyboard and gamepad"
+description = "reModel in a native window: GPU renderer, live sound, keyboard and gamepad"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

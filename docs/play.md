@@ -5,7 +5,7 @@ builds and runs `remodel-play`: the game in a window, rendered on the GPU
 (`docs/gpu.md`), with both sound boards running live. `remodel-play --help`
 lists its options.
 
-At startup the Remodel logo shows for 1.5 s, then fades out over 0.5 s
+At startup the reModel logo shows for 1.5 s, then fades out over 0.5 s
 while the game boots underneath (or the menu, with no game to start). Any
 key, click or gamepad button skips it; `--no-splash` leaves it out. The
 logo (`assets/reModel-logo-1086.png`, half the size of the original) is
@@ -91,7 +91,7 @@ game's own demo drives them; full deflection on the keyboard turns hard.
 | `push` (unconfirmed what it does) | Up, Down | right trigger minus left trigger |
 | select left, right, decide | Q, E, W | shoulder buttons, Y |
 
-The game needs its drive board (the platform motor); Remodel answers its
+The game needs its drive board (the platform motor); reModel answers its
 boot check and commands as an idle board at rest (`crates/model2/src/drive.rs`).
 
 ### Sega Water Ski (`segawski`)
@@ -124,7 +124,7 @@ gearbox (MT), which the shift buttons step through.
 | view 1, view 2 | V, B | Y, A |
 
 The wheel's force feedback board is commanded every frame but the game
-never checks its reply; Remodel keeps the commands
+never checks its reply; reModel keeps the commands
 (`crates/model2/src/drive.rs`) for a future gamepad rumble.
 
 ### Wave Runner (`waverunr`)
@@ -307,7 +307,7 @@ screen. A gamepad's sticks move a crosshair drawn over the game: it's player
 | reload | R | right button, or fire off the picture | left trigger, B |
 
 The game's own calibration (test menu, GUN SETTING) works on what
-Remodel reports; with a fresh EEPROM the shots land where the pointer is.
+reModel reports; with a fresh EEPROM the shots land where the pointer is.
 
 ### Behind Enemy Lines (`bel`)
 
@@ -431,7 +431,7 @@ the window, e.g.
 
 ## Files
 
-Run from the Remodel source tree (an `out/` directory in the current
+Run from the reModel source tree (an `out/` directory in the current
 directory), the player keeps its files in `out/`; anywhere else in
 `$XDG_DATA_HOME/remodel` (normally `~/.local/share/remodel`):
 

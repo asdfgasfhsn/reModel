@@ -1,5 +1,8 @@
-# Working on Remodel
+# Working on reModel
 
+- The project is spelled `reModel` in prose, titles and UI text (never
+  "Remodel" or "ReModel"); lowercase `remodel` stays for commands, crates
+  and file names.
 - Use the root `Makefile` for everything: `make help` lists targets. Run
   `make check` before considering a change done.
 - When adding a build, test or tool entry point, add a `make` target with a

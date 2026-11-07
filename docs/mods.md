@@ -1,14 +1,14 @@
 # Mods
 
 Changes to how a game looks or sounds that the original hardware could not
-make. The game's own code keeps running unchanged; Remodel swaps what it
+make. The game's own code keeps running unchanged; reModel swaps what it
 produces at a well-defined point in the hardware model.
 
 ## Custom soundtracks
 
 You can replace any of the game's music tracks with your own audio. The game
 still decides when a track starts, stops and loops, how loud it plays and when
-it fades. Remodel swaps the audio at the MPEG decoder: when the DSB2 firmware
+it fades. reModel swaps the audio at the MPEG decoder: when the DSB2 firmware
 tells the decoder to play a range of MPEG ROM that belongs to a replaced
 track, the decoder streams your file and leaves the ROM alone. Tracks you
 don't replace play the original music, bit for bit.
@@ -87,7 +87,7 @@ Read natively, with no external tools:
   plain or `WAVE_FORMAT_EXTENSIBLE`. Any sample rate. Mono plays on both
   sides; with more than two channels, the first two are used.
 - **MP2**: a raw MPEG-1 Layer II stream at 32, 44.1 or 48 kHz, decoded with
-  Remodel's own decoder (the one that plays the game's ROM). A leading ID3
+  reModel's own decoder (the one that plays the game's ROM). A leading ID3
   tag is skipped.
 
 `soundtrack-import` converts everything else with `ffmpeg` (`-ac 2 -c:a
@@ -128,7 +128,7 @@ The firmware drives the decoder with a few byte commands
 
 Matching: a play is replaced when its start and end addresses equal a
 replaced track's range. Failing that, the start address alone is matched. On
-topskatr every track starts at a different address. Remodel reads the track
+topskatr every track starts at a different address. reModel reads the track
 table from the firmware layout found in topskatr's DSB2 program (pointer at
 `0x8000`, count at `0x800A`, start and end at entry offsets 2 and 6). Other
 DSB2 firmware is untested. If its table isn't recognised, the render says
@@ -155,7 +155,7 @@ track 17 do), unless `loop` says otherwise.
 
 With ffmpeg you can make a test soundtrack from tones and check by ear or by
 analysis that the game's track changes switch files at the right moments.
-This is how Remodel was verified on topskatr's attract-into-race capture:
+This is how reModel was verified on topskatr's attract-into-race capture:
 
 ```sh
 mkdir -p out/st-src

@@ -1,4 +1,4 @@
-Remodel @VERSION@ (@TARGET@)
+reModel @VERSION@ (@TARGET@)
 ===========================
 
 remodel-play runs Sega Model 2 arcade games in a window: the game's own
@@ -146,6 +146,6 @@ Needs a GPU with Vulkan (or GL) drivers and a sound device.
 
 Licence
 -------
-Remodel is MIT licensed (LICENSE). THIRD-PARTY-NOTICES.txt lists the
+reModel is MIT licensed (LICENSE). THIRD-PARTY-NOTICES.txt lists the
 crates built into remodel-play and their licences. Game software and data
 remain the property of their respective owners.

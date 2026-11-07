@@ -1,6 +1,6 @@
 [package]
 name = "remodel"
-description = "Command-line front end for the Remodel toolchain"
+description = "Command-line front end for the reModel toolchain"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

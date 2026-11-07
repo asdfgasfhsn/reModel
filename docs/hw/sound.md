@@ -598,10 +598,10 @@ Interrupts (ROM vectors, H; meanings M):
   1 kHz; Supermodel notes that 1 kHz makes fades time correctly in other
   games, L for the exact rate). It increments a counter at `0xF0100E` and
   pulses latch bit 4 low and back high. Because the 68000's interrupt inputs
-  are level-sensitive, that pulse must be what clears the request; Remodel
+  are level-sensitive, that pulse must be what clears the request; reModel
   models it that way and the firmware runs normally (M). The firmware only
   uses the tick in units of 80 (§3.7), so its rate is not pinned down by
-  the code; Remodel uses 1 kHz (L).
+  the code; reModel uses 1 kHz (L).
 - autovector 3 (`0x6C`) → `0x100`: a stub that resets SP and jumps into the
   L1 handler. Its purpose is unknown (L).
 
@@ -655,7 +655,7 @@ Byte-wide commands. The low bit of each opcode selects MPEG player 0 or 1
   None of the uploaded bytes match the FIFO opcodes, so MAME's
   byte-for-byte parser doesn't misfire on them.
 - **What topskatr's firmware actually sends** (ROM, H; meanings from the
-  firmware's use and Remodel's render, M unless marked):
+  firmware's use and reModel's render, M unless marked):
   - `80`-`87`, then `A0`-`A7` each with `00`, at boot (`0xD2E`);
   - `14 aa aa aa`, `24 aa aa aa`: start and end, **byte addresses into the
     16 MB MPEG space**. Every track range lands on frame boundaries (§3.7);
@@ -669,7 +669,7 @@ Byte-wide commands. The low bit of each opcode selects MPEG player 0 or 1
     mode 1 `A1`/`A5`, mode 2 `A0`/`A5` (table at `0xE1C`). Every topskatr
     track uses mode 2, and the music is stereo, so the best fit is a 2×2
     matrix: `A0` L←L, `A1` L←R, `A4` R←L, `A5` R←R (modes: mono-left,
-    mono-right, stereo). Remodel models it that way with gain = value/255
+    mono-right, stereo). reModel models it that way with gain = value/255
     (L for both the matrix and the linear scale). This is not the
     `A0`/`B1`, `B0`/`A1` layout Supermodel uses for other games;
   - no `B0`-`B7`, no odd (player 1) opcodes.

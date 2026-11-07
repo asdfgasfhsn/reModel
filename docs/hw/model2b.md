@@ -1,6 +1,6 @@
 # Model 2B-CRX: the board as `overrevb` uses it
 
-Status: 2026-11-07. Remodel runs `overrevb` (Over Rev, the 2B version),
+Status: 2026-11-07. reModel runs `overrevb` (Over Rev, the 2B version),
 `sgt24h` (Super GT 24h), `dynabb97` (Dynamite Baseball '97), `doa`
 (Dead or Alive) and `indy500` (Indianapolis 500) from boot
 through attract into play, with both SHARCs running the programs the
@@ -56,16 +56,16 @@ interrupts, buffer RAM and the geometrizer's list ports) is as on 2C:
 | `0x840000-0x8403FF` | geometrizer SHARC's host window, the same way | upload routine (i960 `0x23330`) |
 | `0x980000` bit 31 | set while the i960 programs the copro SHARC (see below) | brackets the copro upload |
 | `0x980008` bit 31 | the same for the geometrizer SHARC | brackets the geometrizer upload |
-| `0x980020` | written 0 right after each bit 31 is set | *unconfirmed* what it does; Remodel ignores it |
+| `0x980020` | written 0 right after each bit 31 is set | *unconfirmed* what it does; reModel ignores it |
 | `0x884000` | with `0x980000` bit 31 set: the copro's EPB0 (the upload's data); otherwise writes feed the copro's command FIFO and reads take its results, as on 2C | upload loop; the boot's FIFO drain (i960 `0x23300`) |
 | `0x880000 + 16·fn` | tagged copro commands, as on 2C: `value & 0x800FFFFF \| fn << 23` | the first command, `0x808` to `0x880080` (fn 8), passes the copro program's check |
 | `0x980004` bit 0 | copro output FIFO empty, as on 2C | the drain loop reads `0x884000` until it is set |
 | `0x804000` | with `0x980008` bit 31 set: the geometrizer's EPB0; otherwise the list data port, as on 2C | upload loop |
 | `0x9C0000` / `0x9C0004` | sound UART (8251 type): data / mode, command and status, one register a 32-bit word, the byte in bits 7-0 (2C: `0x1C80000`, two registers a word) | init writes 0, 0, 0, `0xD0` (internal reset), `0x4E` (mode), `0x37` (command) to `0x9C0004`, then polls its bit 0 (TxRDY); the sound commands go to `0x9C0000` and the 68000 plays them |
 | `0x1C80004` | written (16-bit) with `0x40` and `0x4E` during init: 2C's UART control address | *unconfirmed* what is there on 2B; nothing reads it, and treating it as the UART would only reset it again |
-| `0x980014` | copro status: `indy500`'s T.G.P. TEST (i960 `0xC7B50`) reads it once and shows IC31 BAD if bit 1 is set, IC37 BAD if bit 0 is | Remodel answers as on 2C: all ones until both SHARCs have programs, then 0, and the test shows both GOOD. *Unconfirmed* what the bits are. `fvipers` reads it every frame (i960 `0x11914`) and tests bit 1, with both branches going to the same place |
+| `0x980014` | copro status: `indy500`'s T.G.P. TEST (i960 `0xC7B50`) reads it once and shows IC31 BAD if bit 1 is set, IC37 BAD if bit 0 is | reModel answers as on 2C: all ones until both SHARCs have programs, then 0, and the test shows both GOOD. *Unconfirmed* what the bits are. `fvipers` reads it every frame (i960 `0x11914`) and tests bit 1, with both branches going to the same place |
 | `0x11100000`, `0x11300000` | texture RAM, the upper half of each bank's 2 MB window: `fvipers`, `schamp` and `vstriker` upload their texels there and nowhere else ("Sega's earlier games" below) | the games' texture base pointers (`0x500254`, `0x500258`, set at i960 `0x144`); the memory test |
-| `0x12800000-0x128000FF` | written by `fvipers` and `schamp`: 128 halfwords, the ramp (i + 1) / 2 (0, 1, 1, 2, ... 64) at boot (`fvipers` i960 `0x474`). Otherwise only a test menu writes it: its "TRANS MAP" / "TRANS NUM" items copy one of the seven 128-byte luma tables in ROM (`0x064266E0`, the ones the game copies to luma RAM) there (`fvipers` i960 `0x57544`) | the code; *unconfirmed* what the hardware does with it (a luma-shaped map, perhaps for translucency); Remodel maps nothing, and nothing reads it back |
+| `0x12800000-0x128000FF` | written by `fvipers` and `schamp`: 128 halfwords, the ramp (i + 1) / 2 (0, 1, 1, 2, ... 64) at boot (`fvipers` i960 `0x474`). Otherwise only a test menu writes it: its "TRANS MAP" / "TRANS NUM" items copy one of the seven 128-byte luma tables in ROM (`0x064266E0`, the ones the game copies to luma RAM) there (`fvipers` i960 `0x57544`) | the code; *unconfirmed* what the hardware does with it (a luma-shaped map, perhaps for translucency); reModel maps nothing, and nothing reads it back |
 
 **The upload** (i960 `0x1FEC0` for the copro, `0x23330` for the
 geometrizer): set bit 31, write 0 to `0x980020`, write the DMA channel 6
@@ -92,7 +92,7 @@ clearing it asserted RESET the program the game just loaded would never run
 as the host bus request: *confirmed* that it is not RESET in either sense,
 *unconfirmed* that it drives the HBR pin itself. What resets the SHARCs
 before a second upload isn't known: the game uploads each once per boot.
-Remodel resets a SHARC into host boot mode when its bit 31 rises.
+reModel resets a SHARC into host boot mode when its bit 31 rises.
 
 ## The protection device (`doa`)
 
@@ -208,29 +208,29 @@ words to `0x1400000 +` offset / 4: a fn `0x0B` command (`0x05800B0B`)
 with a 12-word matrix, a fn 1 command (`0x00800101`) with its operands,
 and the words the i960 sent. The list then runs through the hole; with
 nothing there it ran into buffer RAM's fill pattern and the geometrizer
-stopped on a bad command (below). Remodel maps the bank onto buffer RAM,
+stopped on a bad command (below). reModel maps the bank onto buffer RAM,
 128 KB repeating through the bank (*unconfirmed* how many address lines
-it decodes). Earlier Remodel gave `indy500` a separate RAM there, which
+it decodes). Earlier reModel gave `indy500` a separate RAM there, which
 none of its runs touched; that is now buffer RAM too, and nothing about
 `indy500`'s runs changed but its state hash, which no longer hashes the
 unused RAM (`4a1b197bf00149d6`, against `c75add6c2ab149d6` with it).
 
 The data ROM bank is modelled only for sets with copro data ROMs
 (`indy500`, `fvipers`, `schamp`); how many address lines it decodes
-(whether the ROM repeats through its bank) is *unconfirmed*; Remodel
+(whether the ROM repeats through its bank) is *unconfirmed*; reModel
 repeats it. The other 2B programs never address banks 2 and 3, so their
 save states and hashes are unchanged.
 
-The result FIFO's depth is *unconfirmed*; Remodel reports it full at 64
+The result FIFO's depth is *unconfirmed*; reModel reports it full at 64
 words, which the program only ever waits on.
 
 ## The geometrizer SHARC
 
 | SHARC side | What |
 |---|---|
-| external `0x400000`, read | the list FIFO, fed by the list DMA from buffer RAM as on 2C. The program reads it without polling a flag, so the hardware must hold a read until a word is there (*unconfirmed*: Remodel hands it the next list word directly) |
+| external `0x400000`, read | the list FIFO, fed by the list DMA from buffer RAM as on 2C. The program reads it without polling a flag, so the hardware must hold a read until a word is there (*unconfirmed*: reModel hands it the next list word directly) |
 | external `0x410000`, write | the rasteriser FIFO |
-| external `0x420000 + a`, write | polygon RAM word `a` (fn 5 with address bit 24 clear; Remodel maps `a` below `0x10000`) |
+| external `0x420000 + a`, write | polygon RAM word `a` (fn 5 with address bit 24 clear; reModel maps `a` below `0x10000`) |
 | external `0x430000`, write | polygon memory address |
 | external `0x430001`, read | the polygon memory word at that address: the polygon ROM from `0x800000` up (word addressed, as on 2C), polygon RAM below. Every model vertex and attribute word is read this way, one address write per word, the data read after it |
 | external `0x430002`, write | written (any value) at each frame handshake, with FLAG1 set around it; *unconfirmed* what it signals (frame done?) |
@@ -241,7 +241,7 @@ words, which the program only ever waits on.
 | FLAG2 output | pulsed around each command word it reads; toggled forever after a failed command check (a check skipped when MSGR7 holds `0x7378842E`, which the upload writes). *Unconfirmed* what it drives |
 | FLAG3 output | raised by END until the next frame starts (unless a test command ran since the last object); *unconfirmed* what it drives |
 
-**Frame protocol** (*confirmed* from the program; Remodel's geometrizer
+**Frame protocol** (*confirmed* from the program; reModel's geometrizer
 runs it per frame like 2C's, `geo.rs`): at boot it waits for FLAG0 high,
 signals (FLAG1, `0x430002`), waits for it low, and does that twice. Then
 each frame: FLAG0 rises, the program emits NOP and END (the last frame's
@@ -270,7 +270,7 @@ select), data as IEEE singles shifted right 8 (the program's `LSHIFT BY
 -8` before each write), windows repacked as `0x00XXXYYY`, NOP
 `0xFF000000`, END `0xFF00000F`, polygon blocks as tpa, tha, two start
 vertices, then attr, luma word, distance, one or two vertices per polygon.
-So Remodel's renderers (software and GPU) take it unchanged: there is no
+So reModel's renderers (software and GPU) take it unchanged: there is no
 translation step.
 
 *Confirmed* by feeding the same display lists (captured from `overrev` on
@@ -289,7 +289,7 @@ and the 2B one on the SHARC core, and comparing the streams word by word
   The distance word sometimes differs in sign at huge magnitudes. Drawn
   with the same renderer, frame 1700 differs in 4 pixels of 190,464 (1,383
   against 1,384 polygons). Which program's lighting is right for its board
-  can't be told from this, and Remodel doesn't need to: each runs its own.
+  can't be told from this, and reModel doesn't need to: each runs its own.
 
 `overrevb` and `overrev` then render their own lists alike scene by scene
 (attract, menus, races; compared from `make run ... SNAP=300` of both).
@@ -325,7 +325,7 @@ and the i960 code, then by running them):
   of the list is in place it writes a jump to that piece (bit 31 | the
   piece's offset) over the placeholder directly in buffer RAM (`st r13,
   0x900000(r14)`), and it retargets jumps it wrote through the port the
-  same way. Remodel's list DMA followed only jump words written through
+  same way. reModel's list DMA followed only jump words written through
   the port and unchanged since (stcc's copro stores matrices over old jump
   words, so a changed word couldn't stay a jump), so it fed the jump word
   to the geometrizer. Now a word the port wrote as a jump or a fn 0

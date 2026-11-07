@@ -3,7 +3,7 @@
 Status: 2026-11-08. What the display-list programs that the Model 2C games
 upload to their geometrizer MB86235 (the TGP) do, worked out from their
 behaviour and their disassembly (`remodel copro-disasm out/GAME/geo.bin`),
-and how Remodel implements them natively
+and how reModel implements them natively
 (`crates/model2/src/geo_native_2c.rs`, the default in the player and the
 browser). The board side (the geo ports, buffer RAM, the list DMA, the
 frame handshake) is in `geometrizer.md` §1; the stream they produce and
@@ -53,7 +53,7 @@ normalised). For any other program `--geo native` runs the TGP.
   coin-start run) the i960 reads only the write pointer (`0x802008`) and
   read pointer (`0x803008`), which are its own, the frame parity
   (`0x98000C`, vblank's) and the copro's status (`0x980004`, `0x980010`,
-  `0x980014`, `0x980030`): nothing the geometrizer drives. Remodel's board
+  `0x980014`, `0x980030`): nothing the geometrizer drives. reModel's board
   model wires PDR to nothing.
 - **From running it.** With `--geo native` the TGP never runs a frame and
   600M-instruction coin-start runs end with the TGP's state hashes

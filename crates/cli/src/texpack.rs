@@ -93,7 +93,7 @@ impl Packs {
     pub fn finish_snapshot(&mut self) {
         let (Some(dir), true) = (&self.dump, self.index_dirty) else { return };
         let mut text = String::from(
-            "# Remodel texture dump: <name>.png, first frame seen, uses (textures: polygons drawn; tiles: frames\n\
+            "# reModel texture dump: <name>.png, first frame seen, uses (textures: polygons drawn; tiles: frames\n\
              # on screen) over the snapshots, then what produced it. Put edited or upscaled copies, same names,\n\
              # in a directory and pass it to `run --texture-pack DIR` (docs/texture-packs.md).\n",
         );
