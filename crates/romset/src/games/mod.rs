@@ -15,6 +15,7 @@ mod sgt24h;
 mod skisuprg;
 mod stcc;
 mod topskatr;
+mod vstriker;
 mod waverunr;
 
 use crate::{Error, Game};
@@ -33,11 +34,12 @@ pub use sgt24h::SGT24H;
 pub use skisuprg::SKISUPRG;
 pub use stcc::STCC;
 pub use topskatr::TOPSKATR;
+pub use vstriker::VSTRIKER;
 pub use waverunr::WAVERUNR;
 
 pub static ALL: &[&Game] = &[
     &TOPSKATR, &SKISUPRG, &STCC, &SEGAWSKI, &WAVERUNR, &OVERREV, &HOTD, &BEL, &OVERREVB, &SGT24H, &DYNABB97, &DOA,
-    &INDY500, &FVIPERS, &SCHAMP,
+    &INDY500, &FVIPERS, &SCHAMP, &VSTRIKER,
 ];
 
 pub fn find(id: &str) -> Result<&'static Game, Error> {

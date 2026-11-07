@@ -193,9 +193,9 @@ pub struct Game {
     /// Known bad data lines in the set's dump, repaired at load.
     pub dropouts: &'static [Dropout],
     /// Texture RAM banks of 1 MB, each repeating through its 2 MB window
-    /// at `0x11000000` and `0x11200000`: fvipers and schamp upload their
-    /// texels to the upper half of each window, which the rasteriser reads
-    /// as the lower. Other boards keep 2 MB there (overrevb and sgt24h fill
+    /// at `0x11000000` and `0x11200000`: fvipers, schamp and vstriker
+    /// upload their texels to the upper half of each window, which the
+    /// rasteriser reads as the lower. Other boards keep 2 MB there (overrevb and sgt24h fill
     /// both halves with different data), of which the rasteriser reads the
     /// lower (README, "What's known about fvipers").
     pub texture_ram_mirrored: bool,
