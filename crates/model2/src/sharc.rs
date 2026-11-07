@@ -9,8 +9,10 @@
 //! and writes results to external `0xC00000` once FLAG1, the output FIFO's
 //! full flag, is low.
 //!
-//! Boards with copro data ROMs (`indy500`) also give it memory on the rest
-//! of its external bus ([`ExtMem`]).
+//! The rest of its external bus: buffer RAM, the display list the i960
+//! builds, in bank 2 (`fvipers` and `schamp` have the copro write parts of
+//! the list there), and on boards with copro data ROMs (`indy500`,
+//! `fvipers`, `schamp`) those ROMs in bank 3.
 
 use adsp2106x::cpu::{Bus, Fault, Sharc, Step, Width};
 use std::collections::{BTreeMap, VecDeque};
@@ -29,45 +31,17 @@ const OUT_DEPTH: usize = 64;
 const IN_FIFO: u32 = 0x40_0000;
 const OUT_FIFO: u32 = 0xc0_0000;
 /// External memory banks 2 and 3 with the copro's SYSCON MSIZE 10 (banks
-/// of 8M words from `0x400000`, [UM §5.4.1]): RAM, then the data ROMs.
-const RAM_BANK: u32 = 0x140_0000;
+/// of 8M words from `0x400000`, [UM §5.4.1]): buffer RAM, then the data
+/// ROMs (docs/hw/model2b.md, "The copro's external memory"), each
+/// repeating through its bank.
+const BUFFER_BANK: u32 = 0x140_0000;
 const ROM_BANK: u32 = 0x1c0_0000;
 const BANK_END: u32 = 0x240_0000;
-/// The RAM's size in 32-bit words. *Unconfirmed*: the program addresses
-/// it with a 16-bit offset plus up to 127, so this covers what it can
-/// reach.
-const RAM_WORDS: usize = 0x2_0000;
 
-/// The copro's external memory on boards that have copro data ROMs
-/// (docs/hw/model2b.md, "The copro's external memory"): RAM in bank 2 and the data
-/// ROMs (32-bit words, as on 2C) in bank 3, each repeating through its
-/// bank. Other 2B games have no data ROMs and never address these banks.
-#[derive(Clone)]
-pub struct ExtMem {
-    rom: std::sync::Arc<[u32]>,
-    pub ram: Vec<u32>,
-}
-
-impl ExtMem {
-    #[inline]
-    fn read(&self, addr: u32) -> Option<u32> {
-        match addr {
-            RAM_BANK..ROM_BANK => Some(self.ram[(addr - RAM_BANK) as usize % RAM_WORDS]),
-            ROM_BANK..BANK_END => Some(self.rom[(addr - ROM_BANK) as usize % self.rom.len()]),
-            _ => None,
-        }
-    }
-
-    #[inline]
-    fn write(&mut self, addr: u32, v: u32) -> bool {
-        match addr {
-            RAM_BANK..ROM_BANK => {
-                self.ram[(addr - RAM_BANK) as usize % RAM_WORDS] = v;
-                true
-            }
-            _ => false,
-        }
-    }
+/// Buffer RAM word `addr` of bank 2, as a byte offset into `buffer`.
+#[inline]
+fn buffer_offset(buffer: &[u8], addr: u32) -> usize {
+    ((addr - BUFFER_BANK) as usize * 4) & (buffer.len() - 1)
 }
 
 /// The copro SHARC and its FIFOs.
@@ -84,8 +58,9 @@ pub struct Copro {
     /// data` (diagnostics: [`image`] turns them into the program).
     pub program: Vec<u64>,
     pub fault: Option<Fault>,
-    /// RAM and data ROMs on its external bus, on boards with copro data.
-    pub ext: Option<Box<ExtMem>>,
+    /// The copro data ROMs (32-bit words, as on 2C) in bank 3 of its
+    /// external bus, on boards that have them.
+    rom: Option<std::sync::Arc<[u32]>>,
     /// The core is spinning on a flag input with these inputs: stepping
     /// it again can't change anything until they do.
     spin: Option<u8>,
@@ -100,13 +75,17 @@ pub struct Copro {
     pub other: BTreeMap<u32, u64>,
 }
 
-/// The copro SHARC's external bus: its FIFOs.
+/// The copro SHARC's external bus: its FIFOs, buffer RAM and the data ROMs.
 pub struct CoproBus<'a> {
     fifo_in: &'a mut VecDeque<u32>,
     fifo_out: &'a mut VecDeque<u32>,
     empty_reads: &'a mut u64,
     other: &'a mut BTreeMap<u32, u64>,
-    ext: Option<&'a mut ExtMem>,
+    buffer: &'a mut [u8],
+    /// The geometrizer's command words in buffer RAM, which a store ends
+    /// (`Geometrizer::commands`).
+    commands: &'a mut BTreeMap<u32, u32>,
+    rom: Option<&'a [u32]>,
     /// The core's `steps` to stop at.
     end: u64,
     /// The FLAG inputs the current instruction ran with.
@@ -137,17 +116,28 @@ impl Bus for CoproBus<'_> {
                 }
             };
         }
-        if let Some(v) = self.ext.as_deref().and_then(|e| e.read(addr)) {
-            return v as u64;
+        match (addr, self.rom) {
+            (BUFFER_BANK..ROM_BANK, _) => {
+                let o = buffer_offset(self.buffer, addr);
+                return u32::from_le_bytes(self.buffer[o..o + 4].try_into().unwrap()) as u64;
+            }
+            (ROM_BANK..BANK_END, Some(rom)) => return rom[(addr - ROM_BANK) as usize % rom.len()] as u64,
+            _ => {}
         }
         *self.other.entry(addr).or_default() += 1;
         0
     }
     fn write(&mut self, addr: u32, _: Width, v: u64) {
-        if addr == OUT_FIFO {
-            self.fifo_out.push_back(v as u32);
-        } else if !self.ext.as_deref_mut().is_some_and(|e| e.write(addr, v as u32)) {
-            *self.other.entry(addr).or_default() += 1;
+        match addr {
+            OUT_FIFO => self.fifo_out.push_back(v as u32),
+            BUFFER_BANK..ROM_BANK => {
+                let o = buffer_offset(self.buffer, addr);
+                self.buffer[o..o + 4].copy_from_slice(&(v as u32).to_le_bytes());
+                if !self.commands.is_empty() {
+                    self.commands.remove(&(o as u32));
+                }
+            }
+            _ => *self.other.entry(addr).or_default() += 1,
         }
     }
     /// Stop when the program only waits on a FLAG input (it can't do
@@ -194,7 +184,7 @@ impl Copro {
             booted: false,
             program: Vec::new(),
             fault: None,
-            ext: None,
+            rom: None,
             spin: None,
             native: None,
             interpret: false,
@@ -204,11 +194,10 @@ impl Copro {
         }
     }
 
-    /// A copro with `data` (the copro data ROMs as 32-bit words) and RAM
-    /// on its external bus, or neither if `data` is empty.
+    /// A copro with `data` (the copro data ROMs as 32-bit words) on its
+    /// external bus, or none if `data` is empty.
     pub fn with_data(data: &[u32]) -> Self {
-        let ext = (!data.is_empty()).then(|| Box::new(ExtMem { rom: data.into(), ram: vec![0; RAM_WORDS] }));
-        Copro { ext, ..Copro::new() }
+        Copro { rom: (!data.is_empty()).then(|| data.into()), ..Copro::new() }
     }
 
     /// FLAG0: input FIFO empty; FLAG1: output FIFO full (as
@@ -225,8 +214,7 @@ impl Copro {
                 empty_reads: self.empty_reads,
                 host_errors: self.host_errors,
                 interpret: self.interpret,
-                // A reset doesn't touch the memory on the bus.
-                ext: self.ext.take(),
+                rom: self.rom.take(),
                 ..Copro::new()
             };
         }
@@ -276,20 +264,21 @@ impl Copro {
     }
 
     /// Run up to `n` instructions, stopping early when the program waits
-    /// on its FIFOs.
+    /// on its FIFOs. `buffer` is buffer RAM, `commands` the geometrizer's
+    /// command words in it (`Geometrizer::commands`).
     #[inline]
-    pub fn run(&mut self, n: u64) {
+    pub fn run(&mut self, n: u64, buffer: &mut [u8], commands: &mut BTreeMap<u32, u32>) {
         if !self.booted || self.held || self.fault.is_some() {
             return;
         }
         if self.spin == Some(self.flags()) {
             return;
         }
-        self.step(n);
+        self.step(n, buffer, commands);
     }
 
     #[inline(never)]
-    fn step(&mut self, n: u64) {
+    fn step(&mut self, n: u64, buffer: &mut [u8], commands: &mut BTreeMap<u32, u32>) {
         self.spin = None;
         if n == 0 {
             return;
@@ -299,7 +288,9 @@ impl Copro {
             fifo_out: &mut self.fifo_out,
             empty_reads: &mut self.empty_reads,
             other: &mut self.other,
-            ext: self.ext.as_deref_mut(),
+            buffer,
+            commands,
+            rom: self.rom.as_deref(),
             end: self.cpu.steps + n,
             flags: 0,
             spin: &mut self.spin,
@@ -316,12 +307,12 @@ impl Copro {
 
     /// Let the copro run until it has a result for the i960 (which stalls
     /// on an empty output FIFO), or for a bounded time.
-    pub fn run_for_result(&mut self) {
+    pub fn run_for_result(&mut self, buffer: &mut [u8], commands: &mut BTreeMap<u32, u32>) {
         let mut left = STALL_LIMIT;
         while self.fifo_out.is_empty() && left > 0 && self.booted && !self.held && self.fault.is_none() {
             let before = self.cpu.steps;
             self.spin = None;
-            self.step(left.min(4096));
+            self.step(left.min(4096), buffer, commands);
             let ran = self.cpu.steps - before;
             if ran == 0 || self.spin.is_some() {
                 break;
@@ -351,9 +342,8 @@ pub fn hot_spots(cpu: &Sharc, n: usize) -> Vec<(u32, u64)> {
     v
 }
 
-// Save states: the core, the FIFOs, the bus state and the external RAM
-// (on boards with one: other games' states keep their layout). Diagnostics
-// stay.
+// Save states: the core, the FIFOs and the bus state (buffer RAM is the
+// board's). Diagnostics stay.
 impl state::State for Copro {
     fn save(&self, w: &mut state::Writer) {
         self.cpu.save(w);
@@ -361,9 +351,6 @@ impl state::State for Copro {
         self.fifo_out.save(w);
         self.held.save(w);
         self.booted.save(w);
-        if let Some(e) = &self.ext {
-            e.ram.save(w);
-        }
     }
     fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
         self.cpu.load(r)?;
@@ -371,10 +358,6 @@ impl state::State for Copro {
         self.fifo_out.load(r)?;
         self.held.load(r)?;
         self.booted.load(r)?;
-        if let Some(e) = &mut self.ext {
-            e.ram.load(r)?;
-            e.ram.resize(RAM_WORDS, 0);
-        }
         self.fault = None;
         self.spin = None;
         self.attach();
@@ -427,51 +410,67 @@ mod tests {
             0x063e_0002_0083, // JUMP 0x20083
         ]);
         let mut c = Copro::new();
+        let mut buffer = vec![0u8; 0x2_0000];
+        let mut commands = BTreeMap::new();
         upload(&mut c, &p);
         assert_eq!(c.host_errors, 0);
-        c.run(100);
+        c.run(100, &mut buffer, &mut commands);
         assert!(c.spin.is_some(), "waits for a command");
         let steps = c.cpu.steps;
-        c.run(100);
+        c.run(100, &mut buffer, &mut commands);
         assert_eq!(c.cpu.steps, steps, "not stepped while nothing changed");
         c.fifo_in.extend([41, 99]);
-        c.run(100);
+        c.run(100, &mut buffer, &mut commands);
         assert_eq!(c.fifo_out, [42, 100]);
         assert!(c.fifo_in.is_empty() && c.spin.is_some());
         // A full output FIFO holds it at FLAG1 until the i960 reads.
         c.fifo_in.extend(0..OUT_DEPTH as u32 + 3);
-        c.run(10_000);
+        c.run(10_000, &mut buffer, &mut commands);
         assert_eq!(c.fifo_out.len(), OUT_DEPTH);
         c.fifo_out.clear();
-        c.run_for_result();
+        c.run_for_result(&mut buffer, &mut commands);
         assert!(!c.fifo_out.is_empty());
         let bytes = state::to_bytes(&c);
         let mut d = Copro::new();
         state::State::load(&mut d, &mut state::Reader::new(&bytes)).unwrap();
-        c.run(10_000);
-        d.run(10_000);
+        c.run(10_000, &mut buffer, &mut commands);
+        d.run(10_000, &mut buffer, &mut commands);
         assert_eq!(c.fifo_out, d.fifo_out);
     }
 
-    /// The data ROMs in bank 3 and the RAM in bank 2, each repeating
-    /// through its bank; nothing there without data ROMs.
+    /// Buffer RAM in bank 2 (word addressed, repeating through the bank)
+    /// and the data ROMs in bank 3, repeating through theirs; no ROMs
+    /// without data ROMs.
     #[test]
     fn external_memory() {
-        let mut e = ExtMem { rom: vec![10, 11, 12].into(), ram: vec![0; RAM_WORDS] };
-        assert_eq!(e.read(ROM_BANK + 1), Some(11));
-        assert_eq!(e.read(ROM_BANK + 4), Some(11));
-        assert!(!e.write(ROM_BANK, 5));
-        assert!(e.write(RAM_BANK + 7, 99));
-        assert_eq!(e.read(RAM_BANK + 7), Some(99));
-        assert_eq!(e.read(RAM_BANK + RAM_WORDS as u32 + 7), Some(99));
-        assert_eq!(e.read(OUT_FIFO), None);
-        assert!(Copro::with_data(&[]).ext.is_none());
-        // The RAM is in save states.
-        let mut c = Copro::with_data(&[1, 2]);
-        c.ext.as_mut().unwrap().ram[3] = 42;
-        let bytes = state::to_bytes(&c);
-        let mut d = Copro::with_data(&[1, 2]);
-        state::State::load(&mut d, &mut state::Reader::new(&bytes)).unwrap();
-        assert_eq!(d.ext.unwrap().ram[3], 42);
+        let mut buffer = vec![0u8; 0x2_0000];
+        // A command word at buffer word 7, which the store there ends.
+        let mut commands = BTreeMap::from([(28, 0)]);
+        let (mut fifo_in, mut fifo_out, mut empty, mut other, mut spin) =
+            (VecDeque::new(), VecDeque::new(), 0, BTreeMap::new(), None);
+        let rom = [10, 11, 12];
+        let mut bus = CoproBus {
+            fifo_in: &mut fifo_in,
+            fifo_out: &mut fifo_out,
+            empty_reads: &mut empty,
+            other: &mut other,
+            buffer: &mut buffer,
+            commands: &mut commands,
+            rom: Some(&rom),
+            end: 0,
+            flags: 0,
+            spin: &mut spin,
+        };
+        assert_eq!(bus.read(ROM_BANK + 1, Width::Data32), 11);
+        assert_eq!(bus.read(ROM_BANK + 4, Width::Data32), 11);
+        bus.write(BUFFER_BANK + 7, Width::Data32, 0x1234_5678);
+        assert_eq!(bus.read(BUFFER_BANK + 7, Width::Data32), 0x1234_5678);
+        assert_eq!(bus.read(BUFFER_BANK + 0x8000 + 7, Width::Data32), 0x1234_5678);
+        assert_eq!(bus.buffer[28..32], [0x78, 0x56, 0x34, 0x12]);
+        assert!(bus.commands.is_empty());
+        bus.rom = None;
+        assert_eq!(bus.read(ROM_BANK + 1, Width::Data32), 0);
+        assert_eq!(other.len(), 1);
+        assert!(Copro::with_data(&[]).rom.is_none());
     }
 }

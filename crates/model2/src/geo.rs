@@ -152,6 +152,9 @@ impl ListDma<'_> {
     }
 }
 
+/// A command word with this bit set is a jump (`Geometrizer::jumps`).
+const JUMP: u32 = 0x8000_0000;
+
 /// What the list FIFO gives once the frame's cap is reached: END, the
 /// word the games fill buffer RAM with.
 const LIST_END: u32 = 0x0780_0f0f;
@@ -291,14 +294,18 @@ pub struct Geometrizer {
     pub read_ptr: u32,
     /// Command words that failed the `fn | fn << 8` check.
     pub bad_commands: u64,
-    /// Jump words written through the command port: byte offset in buffer
-    /// RAM -> the word. The list DMA follows these and only these: data
-    /// words (negative floats) also have bit 31 set, so the bit alone
-    /// can't mark a jump. One stops being a jump once anything overwrites
-    /// it: the port's own appends drop it at once; writes from elsewhere
-    /// (the i960 or the copro storing into buffer RAM directly, as stcc's
-    /// do) are caught when the frame starts, by the word having changed.
-    /// How the hardware tells them apart is unconfirmed.
+    /// Jump words written through the command port, and fn 0 command
+    /// words that may become one: byte offset in buffer RAM -> the word
+    /// there when the last frame started. The list DMA follows the jumps
+    /// among these (bit 31 set) and only those: data words (negative
+    /// floats) also have bit 31 set, so the bit alone can't mark a jump.
+    /// The i960 writing buffer RAM directly keeps a command word one, with
+    /// the new value: fvipers writes fn 0 placeholders through the port
+    /// and later patches them into jumps, or retargets jumps, that way.
+    /// The port's own appends and the copro's stores into buffer RAM
+    /// (stcc's matrices over old jumps; fvipers' and schamp's list parts)
+    /// end one ([`Geometrizer::commands`]). How the hardware tells them
+    /// apart is unconfirmed.
     jumps: BTreeMap<u32, u32>,
     /// Host time the emulation thread spent waiting for the worker.
     pub waited: std::time::Duration,
@@ -461,8 +468,14 @@ impl Geometrizer {
     pub fn start_frame(&mut self, buffer: &[u8]) {
         let (booted, read_ptr) = (self.booted, self.read_ptr);
         let word = |o: u32| u32::from_le_bytes(buffer[o as usize..o as usize + 4].try_into().unwrap());
-        self.jumps.retain(|&o, w| word(o) == *w);
-        let jumps: Vec<u32> = self.jumps.keys().copied().collect();
+        // The i960's own writes to buffer RAM keep a command word one
+        // (fvipers writes fn 0 placeholders through the port and patches
+        // them into jumps, or retargets jumps, in buffer RAM); a jump is a
+        // command word with bit 31 set.
+        for (&o, w) in self.jumps.iter_mut() {
+            *w = word(o);
+        }
+        let jumps: Vec<u32> = self.jumps.iter().filter(|(_, w)| *w & JUMP != 0).map(|(&o, _)| o).collect();
         if let Some(remote) = &mut self.remote {
             remote(Job::Frame { buffer: buffer.to_vec(), booted, read_ptr, jumps });
             return;
@@ -532,7 +545,7 @@ impl Geometrizer {
                 let at = (self.write_ptr as usize & (buffer.len() - 1) & !3) as u32;
                 let word = (v & keep) | (fnc << 23) | (eye << 29);
                 self.append(buffer, word);
-                if jump {
+                if jump || fnc == 0 {
                     self.jumps.insert(at, word);
                 }
             }
@@ -552,6 +565,12 @@ impl Geometrizer {
             return true;
         }
         false
+    }
+
+    /// The command words the list DMA may follow as jumps, for the copro,
+    /// whose stores into buffer RAM end them.
+    pub fn commands(&mut self) -> &mut BTreeMap<u32, u32> {
+        &mut self.jumps
     }
 
     /// The jump words, for save states (offset, word).
@@ -961,10 +980,17 @@ mod tests {
         g.port_write(0x1008, 0x100, &mut buffer);
         g.port_write(0x4000, 0x1234, &mut buffer);
         assert_eq!(g.jumps(), vec![(0x200, 0x8000_8000)]);
-        // Written directly (as the copro or the i960 can): dropped at the
-        // next frame.
-        buffer[0x200..0x204].copy_from_slice(&0x0580_0b0bu32.to_le_bytes());
+        // A fn 0 placeholder, patched into a jump by the i960 writing buffer
+        // RAM (fvipers), and the other jump retargeted the same way: both
+        // command words, with the values the frame started with.
+        g.port_write(0x1008, 0x300, &mut buffer);
+        g.port_write(0x0000, 0, &mut buffer);
+        buffer[0x300..0x304].copy_from_slice(&0x8000_0400u32.to_le_bytes());
+        buffer[0x200..0x204].copy_from_slice(&0x8000_0500u32.to_le_bytes());
         g.start_frame(&buffer);
-        assert!(g.jumps().is_empty());
+        assert_eq!(g.jumps(), vec![(0x200, 0x8000_0500), (0x300, 0x8000_0400)]);
+        // A store from the copro ends one (stcc's matrices over old jumps).
+        g.commands().remove(&0x200);
+        assert_eq!(g.jumps(), vec![(0x300, 0x8000_0400)]);
     }
 }

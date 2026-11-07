@@ -4,7 +4,8 @@ use crate::{AnalogInput, Board, Controls, DriveBoard, Game, PadAxis, PadButton, 
 /// Indianapolis 500 (Rev A, Twin, the newer revision), Model 2B-CRX: Sega's
 /// own and the earliest 2B game here, uploading its own two SHARC programs.
 /// Its copro program reads the copro data ROMs `.29/.30` on its external
-/// bus (`model2::sharc::ExtMem`), which the other 2B games don't have.
+/// bus (`model2::sharc`), which dynabb97, doa and the Jaleco games don't
+/// have.
 /// Pairs are listed low half-word first: program `.15/.16`; main data
 /// `.11/.12` then `.9/.10`, and the 1 MB `.7/.8` in the second data bank
 /// at `0x6000000`. Polygons `.17/.21` then `.18/.22` and textures
@@ -27,6 +28,7 @@ pub static INDY500: Game = Game {
     backup_ram: &[],
     protection: None,
     dropouts: &[],
+    texture_ram_mirrored: false,
     packed: &[],
     // A coin-start run's `make sound` averages -35 dBFS RMS, with
     // dynabb97's and hotd's (docs/hw/sound.md §6).

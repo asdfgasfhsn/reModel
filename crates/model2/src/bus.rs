@@ -78,6 +78,9 @@ const TGP_STALL_LIMIT: u64 = 2_000_000;
 pub struct TgpExt<'a> {
     buffer: &'a mut [u8],
     data: &'a [u32],
+    /// The geometrizer's command words in buffer RAM, which a store ends
+    /// (`Geometrizer::commands`).
+    commands: &'a mut BTreeMap<u32, u32>,
 }
 
 impl External for TgpExt<'_> {
@@ -97,6 +100,9 @@ impl External for TgpExt<'_> {
         if let 0x40_0000..=0x7f_ffff = addr {
             let o = (addr as usize & 0x7fff) * 4;
             self.buffer[o..o + 4].copy_from_slice(&v.to_le_bytes());
+            if !self.commands.is_empty() {
+                self.commands.remove(&(o as u32));
+            }
         }
     }
 }
@@ -107,6 +113,8 @@ struct Map {
     start: u32,
     end: u32,
     mem: usize,
+    /// Where in the memory `start` is.
+    base: usize,
 }
 
 pub struct Timer {
@@ -243,23 +251,35 @@ impl Model2Bus {
             Mem::zeroed(0x70_0000),
         ];
         let mut map = vec![
-            Map { start: 0x0000_0000, end: 0x001f_ffff, mem: 0 },
-            Map { start: 0x0020_0000, end: 0x0023_ffff, mem: 1 },
-            Map { start: 0x0050_0000, end: 0x005f_ffff, mem: 2 },
-            Map { start: 0x0090_0000, end: 0x0097_ffff, mem: 3 },
-            Map { start: 0x00e0_0000, end: 0x00e0_0037, mem: 4 },
-            Map { start: 0x0100_0000, end: 0x011f_ffff, mem: 5 },
-            Map { start: 0x0180_0000, end: 0x0181_ffff, mem: 6 },
-            Map { start: 0x01a0_0000, end: 0x01a0_3fff, mem: 7 },
-            Map { start: 0x01a1_0000, end: 0x01a1_3fff, mem: 7 },
-            Map { start: 0x01d0_0000, end: 0x01d0_3fff, mem: 8 },
-            Map { start: 0x0200_0000, end: 0x03ff_ffff, mem: 9 },
-            Map { start: 0x1100_0000, end: 0x116f_ffff, mem: 10 },
+            Map { start: 0x0000_0000, end: 0x001f_ffff, mem: 0, base: 0 },
+            Map { start: 0x0020_0000, end: 0x0023_ffff, mem: 1, base: 0 },
+            Map { start: 0x0050_0000, end: 0x005f_ffff, mem: 2, base: 0 },
+            Map { start: 0x0090_0000, end: 0x0097_ffff, mem: 3, base: 0 },
+            Map { start: 0x00e0_0000, end: 0x00e0_0037, mem: 4, base: 0 },
+            Map { start: 0x0100_0000, end: 0x011f_ffff, mem: 5, base: 0 },
+            Map { start: 0x0180_0000, end: 0x0181_ffff, mem: 6, base: 0 },
+            Map { start: 0x01a0_0000, end: 0x01a0_3fff, mem: 7, base: 0 },
+            Map { start: 0x01a1_0000, end: 0x01a1_3fff, mem: 7, base: 0 },
+            Map { start: 0x01d0_0000, end: 0x01d0_3fff, mem: 8, base: 0 },
+            Map { start: 0x0200_0000, end: 0x03ff_ffff, mem: 9, base: 0 },
         ];
+        // Render RAM: the two texture banks, then the luma tables. Some
+        // boards have 1 MB texture banks, each repeating through its 2 MB
+        // window (`Game::texture_ram_mirrored`).
+        if roms.game.texture_ram_mirrored {
+            for (start, base) in
+                [(0x1100_0000, 0), (0x1110_0000, 0), (0x1120_0000, 0x20_0000), (0x1130_0000, 0x20_0000)]
+            {
+                map.push(Map { start, end: start + 0xf_ffff, mem: 10, base });
+            }
+            map.push(Map { start: 0x1140_0000, end: 0x116f_ffff, mem: 10, base: 0x40_0000 });
+        } else {
+            map.push(Map { start: 0x1100_0000, end: 0x116f_ffff, mem: 10, base: 0 });
+        }
         // The second main data bank, mapped only for games with chips in
         // it (segawski, waverunr), so the others keep their memory map unchanged.
         if !main_data_high.is_empty() {
-            map.push(Map { start: 0x0600_0000, end: 0x07ff_ffff, mem: mems.len() });
+            map.push(Map { start: 0x0600_0000, end: 0x07ff_ffff, mem: mems.len(), base: 0 });
             mems.push(Mem::from(main_data_high, false));
         }
         // Two 64 KB RAMs on the video side that only the memory test uses:
@@ -270,7 +290,7 @@ impl Model2Bus {
         // that never touch them (docs/hw/geometrizer.md 1.1).
         let test_rams = mems.len();
         for start in [0x10a0_0000, 0x10c0_0000] {
-            map.push(Map { start, end: start + 0xffff, mem: mems.len() });
+            map.push(Map { start, end: start + 0xffff, mem: mems.len(), base: 0 });
             mems.push(Mem::zeroed(0x1_0000));
         }
         let mut pages = vec![0u8; 0x1_0000];
@@ -348,7 +368,7 @@ impl Model2Bus {
         if addr < m.start || addr > m.end {
             return None;
         }
-        Some((m.mem, (addr - m.start) as usize % self.mems[m.mem].data.len()))
+        Some((m.mem, (m.base + (addr - m.start) as usize) % self.mems[m.mem].data.len()))
     }
 
     /// Run the TGP for up to `n` words, stopping when it waits for input.
@@ -369,7 +389,8 @@ impl Model2Bus {
 
     #[inline(never)]
     fn step_tgp(&mut self, n: u64) {
-        let mut ext = TgpExt { buffer: &mut self.mems[BUFFER_RAM].data, data: &self.copro_data };
+        let mut ext =
+            TgpExt { buffer: &mut self.mems[BUFFER_RAM].data, data: &self.copro_data, commands: self.geo.commands() };
         let r = match crate::recomp::copro(self.tgp.program_hash) {
             Some(step) => (0..n).map(|_| step(&mut self.tgp, &mut ext)).find(|&r| r != Step::Ran).unwrap_or(Step::Ran),
             None => self.tgp.run(&mut ext, n),
@@ -395,7 +416,7 @@ impl Model2Bus {
         // words per i960 instruction at our cycles-per-instruction estimate.
         self.run_tgp(crate::TGP_WORDS_PER_INSN);
         if let Some(c) = &mut self.sharc {
-            c.run(sharc::STEPS_PER_INSN);
+            c.run(sharc::STEPS_PER_INSN, &mut self.mems[BUFFER_RAM].data, self.geo.commands());
         }
         self.now += crate::CYCLES_PER_INSN;
         self.tick_timers();
@@ -463,7 +484,7 @@ impl Model2Bus {
             0x0088_4000..=0x0088_7fff => {
                 // The i960 stalls until a result arrives: let the copro run.
                 if c.fifo_out.is_empty() {
-                    c.run_for_result();
+                    c.run_for_result(&mut self.mems[BUFFER_RAM].data, self.geo.commands());
                 }
                 match c.fifo_out.pop_front() {
                     Some(v) => {
@@ -872,10 +893,6 @@ impl Model2Bus {
         }
         self.geo.engine().stream.iter().for_each(|&w| h.word(w as u64));
         h.word(self.copro_result_hash);
-        // The 2B copro's external RAM, on boards that have it.
-        if let Some(e) = self.sharc.as_ref().and_then(|c| c.ext.as_ref()) {
-            e.ram.iter().for_each(|&w| h.word(w as u64));
-        }
         h.0
     }
 }

@@ -17,6 +17,7 @@ pub static SKISUPRG: Game = Game {
     backup_ram: &[],
     protection: None,
     dropouts: &[],
+    texture_ram_mirrored: false,
     packed: &[],
     volume_db: 0.0,
     files: &[

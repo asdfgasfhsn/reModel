@@ -22,6 +22,7 @@ pub static BEL: Game = Game {
     backup_ram: &[],
     protection: None,
     dropouts: &[],
+    texture_ram_mirrored: false,
     packed: &[Role::MainData, Role::Polygons],
     volume_db: 0.0,
     files: &[

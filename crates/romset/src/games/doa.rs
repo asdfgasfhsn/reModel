@@ -33,6 +33,7 @@ pub static DOA: Game = Game {
     // words that is link bit 9, which drew Kasumi as scattered shards
     // (README, "What's known about doa").
     dropouts: &[Dropout { chip: "mpr-19324.19", bit: 9 }],
+    texture_ram_mirrored: false,
     packed: &[],
     // A coin-start run's `make sound` averages -30 dBFS RMS (peak -11),
     // louder than the games here that play at 0 dB (about -31 to -38):
