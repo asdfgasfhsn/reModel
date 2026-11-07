@@ -176,6 +176,27 @@ below). Player 2's controls are in the manifest but have no default keys.
 | stick | arrow keys | d-pad |
 | hold, punch, kick | Z, X, V | X, A, B |
 
+### Indianapolis 500 (`indy500`)
+
+Model 2B, Sega's own, the Twin cabinet: its sound is the SCSP's. Two
+coins are one credit. On the menus the wheel moves the selection and the
+gas pedal confirms: course (the oval, the street course or the road
+course), then the gearbox (AT or MT; the shift buttons step through MT's
+gears). The two view buttons step the camera in and out through its four
+views. It runs stand-alone (NETWORK TYPE in the test menu's game
+assignments). Like the other 2B games it needs the recompiled build
+(`RECOMP=1`) for full speed; interpreted, a headless coin-start run
+manages about 1.1x real time with slow frames in races.
+
+| Control | Keys | Gamepad |
+|---|---|---|
+| coin | C, 5 | Back |
+| start | Enter | Start |
+| steer (`wheel`) | Left, Right | left stick, d-pad |
+| gas, brake | Up, Down | right trigger, left trigger |
+| shift up, shift down | A, Z | right shoulder or B, left shoulder or X |
+| view in, view out (`view1`, `view2`) | V, B | Y, A |
+
 ### The House of the Dead (`hotd`)
 
 A light-gun game for two. Two coins are one credit. The mouse is player

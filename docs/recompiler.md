@@ -30,7 +30,9 @@ addresses and contents), not the whole upload: `overrevb`, `sgt24h`,
 `dynabb97` and `doa` upload the same geometrizer code with different words
 past it, and the Jaleco games the same copro code, so the four games have
 four SHARC crates between them rather than eight (one geometrizer crate,
-and copro crates for the Jaleco games, `dynabb97` and `doa`).
+and copro crates for the Jaleco games, `dynabb97` and `doa`). `indy500`'s
+geometrizer program is an earlier version of that code and its copro
+program its own, so it shares neither and adds two crates.
 Each holds `program.rs` from the code generator, generic over the machine around the
 processor, and a `lib.rs` that instantiates it for the Model 2 board
 (`Model2Bus`, the TGP's external buses), so its machine code is compiled in

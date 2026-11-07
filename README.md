@@ -63,6 +63,7 @@ music`). There is no live window yet.
 | Tenth game: `sgt24h` (Super GT 24h, 2B, Jaleco) | playable with sound (`make play GAME=sgt24h`): attract, course, car and gearbox select, races to game over. The second 2B game, on the same SHARC code as `overrevb`; needed the i960's local-register cache and its I/O board type set in backup RAM (a manifest default); its link board's Z80 ROM isn't needed. Full speed recompiled; recompiled build identical |
 | Eleventh game: `dynabb97` (Dynamite Baseball '97, 2B, Sega) | playable with sound (`make play GAME=dynabb97`): attract, team and pitcher select, batting with the bat lever, pitching and fielding. The first Sega 2B game: its own copro SHARC program, the same geometrizer SHARC code as Jaleco's games; needed nothing new from the board model. Full speed recompiled; recompiled build identical |
 | Twelfth game: `doa` (Dead or Alive, 2B, Tecmo) | playable with sound (`make play GAME=doa`): attract, character select and fights through rounds, replays and the next opponent. Needed its protection device answered: the game's own check, with the answer it compares against declared in the manifest and read from the ROM (the device's algorithm is unknown); a bad dump of one polygon ROM, which drew Kasumi as shards, is repaired at load. Its geometrizer runs the shared Jaleco/Sega geometrizer crate, its copro program its own. Full speed recompiled; recompiled build identical |
+| Thirteenth game: `indy500` (Indianapolis 500, 2B, Sega) | playable with sound (`make play GAME=indy500`): attract, course and gearbox select, rolling start and races. The earliest 2B game, with its own copro and geometrizer SHARC programs; needed the copro SHARC's external bus (the copro data ROMs and a RAM) and the copro status its test menu reads. Full speed recompiled (4.2x real time natively); recompiled build identical |
 
 ## Quick start
 
@@ -180,7 +181,8 @@ input and both players read them from there. Drive board protocols live
 in `crates/model2/src/drive.rs`, one per kind; the 2C gun interface in
 `crates/model2/src/gun.rs`. `topskatr`, `skisuprg`, `stcc`, `segawski`,
 `waverunr`, `overrev`, `hotd` and `bel` are Model 2C-CRX (MB86235 geometry
-processor); `overrevb` is Model 2B-CRX (ADSP-21062 SHARCs). The manifest's
+processor); `overrevb`, `sgt24h`, `dynabb97`, `doa` and `indy500` are Model
+2B-CRX (ADSP-21062 SHARCs). The manifest's
 `board` picks the board model: `crates/model2` keeps what differs between
 the two (the copro and geometrizer cores, the 2B host windows, the UART
 address) behind it, with nothing keyed on a game's name. A manifest's
@@ -328,6 +330,20 @@ chip but the program pair). Details, addresses and evidence in
   and 5 on return lands it on the wrong frame, and the game never gets as
   far as uploading its SHARC programs. Calls still open 64-byte-aligned
   frames (`i960::cpu::Cpu::ret`).
+- *Confirmed (`indy500`, from its copro program, then by running it):*
+  the copro SHARC's external bus has more than its two FIFOs on a board
+  with copro data ROMs. With SYSCON's MSIZE 10 (every 2B copro program
+  sets it) the SHARC's four external banks are 8M words each from
+  `0x400000` (ADSP-2106x User's Manual §5.4.1): the command FIFO is bank
+  0, the result FIFO bank 1, a RAM bank 2 (`0x1400000`) and the data ROMs
+  `.29/.30` bank 3 (`0x1C00000`), read as 32-bit words as on 2C. The
+  RAM's size and whether either repeats through its bank are
+  *unconfirmed* (a coin-start run never touches the RAM); details in
+  `docs/hw/model2b.md`, "The copro's external memory".
+- *Confirmed (`indy500`, from the code):* its test menu's T.G.P. TEST
+  reads `0x980014` once and shows IC31 (bit 1) and IC37 (bit 0) BAD for
+  a set bit. Answered as on 2C (all ones until the programs are uploaded,
+  then 0) both show GOOD; *unconfirmed* what the bits really report.
 - *Confirmed (`doa`, from the code, then by running it):* Tecmo's game
   checks for a protection device at `0x1D80000-0x1D87FFF` at boot. The
   board model answers it from the manifest (`romset::Protection`,
@@ -1074,6 +1090,70 @@ model as it is, once the i960 returns keep PFP's address bits 4 and 5
   1, so those parts vanished as if the camera had cut them away. It now
   clips to the view volume with a near plane at 10^-6
   (`docs/hw/geometrizer.md`, Remodel status), and they draw whole.
+
+## What's known about `indy500`
+
+Indianapolis 500 (Sega, 1995; the Twin cabinet, Rev A, the newer
+revision), the thirteenth game and the fifth on Model 2B, and the
+earliest 2B game here.
+
+- *Confirmed (ROM, then the memory test):* program `epr-18598a.15/.16`;
+  main data `.11/.12` at `0x2000000` and `.9/.10` at `0x2800000`; the 1
+  MB pair `epr-18596.7/.8` in the second data bank at `0x6000000`, where
+  it repeats through its 8 MB slot (the program reads it at
+  `0x64F4D20`, `0x6488A90` and the like, 4 MB in, so the board decodes
+  only the pair's address lines there; *unconfirmed* which address it
+  really sits at). The test menu's MEMORY TEST shows every ROM (IC 7-16)
+  and RAM GOOD in that layout. Polygons `.17/.21` then `.18/.22` and
+  textures `.27/.25` draw correctly; four sample ROMs `.32-.35`. The copro
+  data ROMs `.29/.30` are read by the copro SHARC (Model 2B above). The
+  zip's other program, `.7/.8` and sound program chips belong to the
+  clones `indy500d` (Deluxe) and `indy500to` (the older Twin revision),
+  which aren't supported.
+- *Confirmed (ROM):* both SHARC programs are its own. The geometrizer's
+  (2,983 words of code) is an earlier version of the code the other 2B
+  games share (its dispatch table and much of its code differ in
+  address), and emits the same rasteriser stream: attract, menus and
+  races draw correctly. The copro program (3,937 words) is the only one
+  that reads its external bus beyond the FIFOs.
+- *Confirmed (from the input test, then by scripted runs):* port
+  `0x1C00002` bit 0 coin 1, 1 coin 2, 2 test, 3 service, 6 start (two
+  coins a credit by default); port `0x1C00004` bit 0 VIEW1 (zoom in), 1
+  VIEW2 (zoom out), 4 shift up, 5 shift down: a sequential shifter, not an
+  H gate. Analog channel 0 is the wheel (lower is left), 1 the gas and 2
+  the brake, both 0 released and `0xFF` fully down (a held `0xFF` gas
+  takes the car to about 250 mph, `0xFF` brake slows it, and a wheel at
+  `0x30` turns it left into the infield; the input test shows the raw
+  values). The gas pedal confirms on the course and
+  transmission screens.
+- *Confirmed (from the code, then by running it):* the game writes a
+  drive board command to I/O register 4 every frame (`0x01` at rest,
+  `0x5x` in a race), and stores what it reads from registers 3 and 4
+  without ever using it; the manifest gives it the wheel drive board
+  model, which takes the commands. The link board registers at
+  `0x1A14000` are written twice at boot and never read; the test menu's
+  NETWORK TYPE defaults to STAND ALONE and the game runs stand-alone.
+  Nothing else in its game assignments needs setting (no
+  `backup_ram`).
+- *Confirmed (by running it):* `make run GAME=indy500 INPUT=coin-start`
+  boots (about 675 frames of black screen and checks), attracts with 3D
+  and the course demos, coins up, picks the oval and AT, plays the
+  rolling start and races with the gas held. `make sound` of that run
+  averages -35 dBFS RMS (peak -16), with `dynabb97`'s and `hotd`'s, so
+  the manifest adds no gain; no CRX_drv version string in its sound
+  program (*unconfirmed* which driver it is). `make
+  state-check GAME=indy500` round-trips, and a coin-start run of 600M
+  instructions gives the state hash `c75add6c2ab149d6` (with an
+  `eeprom.bin` from an earlier run) recompiled and interpreted. `make
+  lockstep GAME=indy500 RECOMP=1 INPUT=coin-start` runs 600M
+  instructions identical (i960 and both SHARCs recompiled). Its SHARC
+  programs share no crate with the other 2B games (two crates of its
+  own, `docs/recompiler.md`).
+- *Speed (by running it):* that run plays at 4.2x real time recompiled
+  natively (the geometrizer on its thread, slowest frame 9.3 ms), and at
+  1.1x interpreted (slowest frame 35 ms).
+- *Unconfirmed:* the dark solid shape under the player's car is drawn as
+  the game sends it (a flat shadow polygon); not compared with hardware.
 
 ## What's known about `hotd`
 
