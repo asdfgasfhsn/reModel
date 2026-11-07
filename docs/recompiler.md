@@ -125,16 +125,22 @@ differs within a few frames.
 
 ## Beyond recompiling: the native geometrizer
 
-Recompiling keeps every instruction of a program. For the 2B geometrizer
-there is also a native implementation of the program's behaviour
-(`model2::geo_native`, `docs/hw/geometrizer-2b.md`), opt-in with `--geo
-native` (`remodel`, `remodel-play`) or `?geo=native` (browser). It finds
-the program by the same code hash this page's SHARC crates are named by
-(`sharc_15393321f266b9cf`, `sharc_1ee99ebc8a458237`), so it needs no
-recompiled build, and gives the same raster stream word for word: `make
-geo-check` runs the SHARC (recompiled with `RECOMP=1`) and the native code
-side by side each frame and compares them, as `make lockstep` does the
-recompiled code with the interpreter. The state hash is the SHARC's.
+Recompiling keeps every instruction of a program. For the geometrizer
+there is also a native implementation of the programs' behaviour, 2B
+(`model2::geo_native`, `docs/hw/geometrizer-2b.md`) and 2C
+(`model2::geo_native_2c`, `docs/hw/geometrizer-2c.md`): the default in
+the player and the browser, `--geo native` for the `remodel` CLI, whose
+default stays the chip (`--geo chip`, `remodel-play --geo chip`,
+`?geo=chip` in the browser). It finds a program by the same hash this
+page's crates are named by (`sharc_15393321f266b9cf` and
+`sharc_1ee99ebc8a458237` on 2B; `tgp_29177553590496aa`,
+`tgp_b850fb3484005f7b`, `tgp_a49bbffc5f8b1d2a` and
+`tgp_c655943137753c1d` on 2C), so it needs no recompiled build, and gives
+the same raster stream word for word: `make geo-check` runs the chip
+(recompiled with `RECOMP=1`) and the native code side by side each frame
+and compares them, as `make lockstep` does the recompiled code with the
+interpreter. The state hash is the chip's. A 2C race frame takes 0.2-0.5
+ms natively, about a twentieth of the recompiled TGP's time.
 
 ## i960 (`crates/i960/src/codegen.rs`)
 

@@ -249,18 +249,20 @@ state made in native mode stores the SHARC with the native state written
 into its memory, in the format the SHARC path saves, so it loads in
 either mode; loaded on the SHARC it repeats the two boot handshakes).
 
-`GeoMode` (`geo.rs`) picks what runs a frame: `Sharc` (the default:
-nothing changes), `Native` (the native code when it implements the
-uploaded program, else the SHARC), `Check` (the SHARC's output, with the
+`GeoMode` (`geo.rs`) picks what runs a frame: `Chip` (the SHARC; the
+`remodel` CLI's default: nothing changes), `Native` (the native code when
+it implements the uploaded program, else the SHARC; the player's and the
+browser's default), `Check` (the SHARC's output, with the
 native one computed beside it from the same buffer RAM copy, its own
 polygon RAM and address latch, and compared word by word; after a
 difference the native side takes the SHARC's state again, so every frame
 is compared from the same start). The engine runs on its worker thread as
 before, or in the browser's geometrizer worker.
 
-Front ends: `remodel --geo sharc|native|check`, `remodel-play --geo
-native`, and the browser's `?geo=native` (the geometrizer worker runs the
-native code; docs/web.md).
+Front ends: `remodel --geo chip|native|check` (`sharc` names the chip
+too), `remodel-play --geo chip`, and the browser's `?geo=chip` for the
+SHARC (the geometrizer worker runs the native code by default;
+docs/web.md). The 2C counterpart is `geometrizer-2c.md`.
 
 ## Verification
 
@@ -339,24 +341,10 @@ build is a heavy one); that it keeps its lead there is *unconfirmed*.
 Remodel runs. Another 2B game with a new geometrizer program would run on
 the SHARC; `make geo-check GAME=...` says so ("no native implementation").
 
-**Model 2C: the TGP programs.** The 2C games upload four different
-geometrizer programs to the MB86235 (`out/GAME/geo.bin`, 4,096 words
-each): `topskatr`'s (with the skinned compact model format, fn 0x11, and a
-second matrix, fn 0x1B/0x1C: `geometrizer.md` §2-3), `stcc`'s,
-`overrev`'s, and one shared by `skisuprg`, `segawski`, `waverunr`, `hotd`
-and `bel`. The same approach applies: recognise each by its program hash
-(`mb86235::cpu::program_hash`, the `tgp_<hash>` crate name), keep the state
-where the program keeps it, model the MB86235's arithmetic through the
-`mb86235` crate (its own float format and rounding, and FRSQ for
-`topskatr`'s normals, are in `mb86235.md`), and check with the same
-`GeoMode::Check` harness (the engine's `process` path for the TGP). The
-command set is the same family (`geometrizer.md` §2), so most of
-`geo_native`'s structure (commands, the vertex transform, lighting,
-link tracking) carries over; the differences are per program and would be
-found the same way, by disassembly and the fuzzer. The recompiled TGP
-takes 5.9 ms a race frame for `overrev` (`model2b.md`, "Speed"), so a
-native 2C geometrizer would pay off as the 2B one does, and the GPU path
-below needs one per program anyway.
+**Model 2C: done.** The four TGP programs the 2C games upload are
+implemented natively the same way (`geometrizer-2c.md`): bit-exact over
+coin-start runs of all eight 2C games, about twenty times the recompiled
+TGP.
 
 **GPU compute (WebGPU too), sketched.** The program's work splits cleanly:
 

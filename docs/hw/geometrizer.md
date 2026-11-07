@@ -259,6 +259,8 @@ print each record with its resolved 3-4 vertices.
    - Specular: s = 2·dotl·n.z − L.z, clamped ≥ 0. It is squared 1-3 times depending on the
      control value (0 = off), then scaled by the specular scale.
    - **M [MAME-only]**; the TS code differs in detail and should be checked by running TSG.
+     Since done: the 2C programs' lighting, back-face test and distance, exactly, are in
+     `geometrizer-2c.md`.
 3. LOD distance = coef[attr >> 27] · |dotp| · lod. **M**
 4. Focus: x ·= fx, y ·= fy (z unchanged), for every vertex. **H** (TSG: FMUL by A[0x33], A[0x34], and z by 1.0)
 5. Output to the rasteriser as **24-bit floats: IEEE bits >> 8** (sign, 8-bit exponent,
@@ -510,7 +512,9 @@ mask → mix (§6).
 
 ## Remodel status (running TSG)
 
-Remodel runs the uploaded geometrizer program on a second MB86235 interpreter (`crates/model2/src/geo.rs`):
+Remodel runs the uploaded geometrizer program on a second MB86235 interpreter (`crates/model2/src/geo.rs`), or by
+default in the player and the browser the native implementation of it (`geometrizer-2c.md`), which gives the same
+stream:
 - The geo ports build the list in buffer RAM. Command words are `(v & 0xFFFFF) | fn << 23 | eye << 29`, and data appends at the write pointer.
 - At each vblank, F0 is pulsed and the list at the read pointer is streamed into the input FIFO, kept full to depth 8, until the program goes idle.
 - Result for a topskatr gameplay frame: a 1,644-word list becomes 33,376 rasteriser words (z-sort, 5 windows and 87 object blocks), with no command-check errors.

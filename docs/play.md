@@ -11,15 +11,17 @@ key, click or gamepad button skips it; `--no-splash` leaves it out. The
 logo (`assets/reModel-logo-1086.png`, half the size of the original) is
 built into the binary and decoded with `remodel-png`.
 
-**Geometrizer.** A Model 2B game's geometrizer runs on the native
-implementation (`docs/hw/geometrizer-2b.md`) instead of its uploaded
-program on the SHARC core, where it implements that program (all the 2B
-games so far); the stream it draws is the same, word for word, and it
-takes under a tenth of the interpreted SHARC's time (a quarter of the
-recompiled one), so 2B games race at full speed without recompiled code.
-`--geo sharc` runs the game's own program instead, for this run only. The
-`remodel` CLI keeps the SHARC as its default, since its oracles
-(`lockstep`, `geo-check`) test that program.
+**Geometrizer.** The geometrizer runs on the native implementation
+(`docs/hw/geometrizer-2b.md` for Model 2B, `docs/hw/geometrizer-2c.md`
+for 2C) instead of the game's uploaded program on its chip (the 2B SHARC,
+the 2C TGP), where it implements that program (every 2B and 2C game so
+far); the stream it draws is the same, word for word, and it takes under
+a tenth of the interpreted chip's time (a quarter of the recompiled SHARC's,
+a twentieth of the recompiled TGP's), so 2B games race at full speed
+without recompiled code. `--geo chip` (or `sharc`, `tgp`) runs the game's
+own program instead, for this run only. The `remodel` CLI keeps the chip
+as its default, since its oracles (`lockstep`, `geo-check`) test that
+program.
 
 ## Keys
 

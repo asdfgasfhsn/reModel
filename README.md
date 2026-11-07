@@ -36,7 +36,8 @@ music`). There is no live window yet.
 | Recompiler: i960 → native | done; opt-in (`make recomp`, then `RECOMP=1`), identical state hash; 96% of the game's instructions become plain Rust, the rest call the interpreter with the instruction pre-decoded; see `docs/recompiler.md` |
 | Recompiler: MB86235 programs → Rust | done; built with the i960 code, geometrizer about 1.5x faster |
 | Recompiler: ADSP-21062 (SHARC) programs → Rust | done (Model 2B); built with the i960 code, each word the interpreter's step specialised for its instruction, straight-line runs compiled as blocks with the pipeline and counters brought up to date at their end, interpreter fallback for anything not compiled or overwritten; crates named after their code, so games uploading the same code share them. Geometrizer per race frame: `overrevb` 3.6 ms native, 4.8 ms in WebAssembly (interpreted 16.8 ms); `sgt24h` 6.1 ms native, 8.1 ms in WebAssembly; identical state hashes and `make lockstep`; see `docs/recompiler.md` |
-| Native 2B geometrizer (the geometrizer programs' behaviour in Rust, `model2::geo_native`) | done, the default in the player and the browser (`--geo sharc`, `?geo=sharc` for the game's own program; the `remodel` CLI keeps the SHARC for its oracles): the two programs every 2B game uploads, found by their code hash; raster streams bit-identical to the SHARC's over 5,000-frame coin-start runs of all seven 2B games and a fuzzer (`make geo-check`, `make geo-fuzz`), same state hashes; a race frame of `sgt24h` 1.5 ms against 5.7 recompiled (22.6 interpreted); see `docs/hw/geometrizer-2b.md` |
+| Native 2B geometrizer (the geometrizer programs' behaviour in Rust, `model2::geo_native`) | done, the default in the player and the browser (`--geo chip`, `?geo=chip` for the game's own program; the `remodel` CLI keeps the SHARC for its oracles): the two programs every 2B game uploads, found by their code hash; raster streams bit-identical to the SHARC's over 5,000-frame coin-start runs of all seven 2B games and a fuzzer (`make geo-check`, `make geo-fuzz`), same state hashes; a race frame of `sgt24h` 1.5 ms against 5.7 recompiled (22.6 interpreted); see `docs/hw/geometrizer-2b.md` |
+| Native 2C geometrizer (`model2::geo_native_2c`) | done, the default in the player and the browser as for 2B (`--geo chip`, `?geo=chip` for the game's own program on the TGP): the four programs the 2C games upload, one family (a shared one, `stcc`'s copy of it, `overrev`'s and `topskatr`'s), found by their program hash; raster streams and the programs' state bit-identical to the TGP's over 5,000-frame coin-start runs of all eight 2C games and a fuzzer, same state hashes, save states load in either mode; a `topskatr` race frame 0.45 ms against 8.2 recompiled (12.0 interpreted); see `docs/hw/geometrizer-2c.md` |
 | 2D tile layer renderer (PNG snapshots) | done; boot, logo, title and attract text render |
 | 3D rasteriser (software) | textured, bilinear-filtered gameplay frames (topskatr uses no mipmaps); the reference, but too slow for live races (15-27 ms a frame at native size) |
 | 3D rasteriser (GPU, wgpu: Vulkan / Metal / DirectX 12) | off-screen preflight: about 3 ms a frame native and 7 ms at 1080p, matching the software renderer on 99.96% of coverage; see `docs/gpu.md` |
@@ -236,6 +237,33 @@ supported unless a game's section says otherwise.
 - *Unconfirmed:* `stcc`'s memory test reports IC29 and IC30 BAD; those are
   its copro data ROMs (`.29/.30`), which the i960 can only reach through
   the TGP. Not investigated.
+- *Confirmed (from the programs, the games' I/O and by running them):*
+  the geometrizer is render-only, as on 2B. Its programs write only the
+  rasteriser FIFO, polygon RAM and status bits (PDR), and the i960 reads
+  none of it (only its own list pointers and the frame parity); with
+  `--geo native` (the TGP runs no frame) 600M-instruction coin-start runs
+  of all eight 2C games end with the TGP's state hashes.
+- *Confirmed (from the disassemblies, then by running them side by
+  side):* the eight 2C games upload four geometrizer programs of one
+  family: one shared by `skisuprg`, `segawski`, `waverunr`, `hotd` and
+  `bel`; `stcc`'s, the same but for one status-port write; `overrev`'s,
+  which lights quads and triangles from the diffuse term clamped at 0,
+  takes the specular term from that clamped value, counts a quad with a
+  zero dot product as a back face, and logs each command's fn in B RAM;
+  and `topskatr`'s, the shared maths with its state elsewhere in memory
+  plus the skinned compact model format and a second matrix. All check
+  every command word (fn in bits 4-0 and 12-8 too) and stop for good on
+  a bad one, an unknown fn, or a polygon RAM write or data push out of
+  range. The specular control indexes a table of squarings that runs on
+  into other state (a control of 15 squares 16,383 times in the shared
+  program); the games' controls stay inside it.
+  `docs/hw/geometrizer-2c.md` has the command set, formats and maths, with
+  the native implementation that reproduces the stream and state word for
+  word.
+- *Unconfirmed:* the TGP's NaN results. Remodel defines them (the first
+  NaN operand quieted, else `0xFFC00000`, `docs/hw/mb86235.md`) so that
+  every build agrees; the 2C games' state hashes are the same with and
+  without the rule.
 
 ## What's known about Model 2B
 

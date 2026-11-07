@@ -140,10 +140,13 @@ Now the game runs at the worker's pace (about half speed for `overrevb`
 in a race) with the polygons at most a few frames behind. If the
 worker fails, the page reloads with `?geo=local`. The geometrizer runs on
 the native implementation where it implements the program the game
-uploads (the 2B games, `docs/hw/geometrizer-2b.md`): the same stream, an
-order of magnitude faster than the interpreted SHARC. `?geo=sharc` (or the
-panel's "game's SHARC program") runs the game's own program in the worker
-instead (on the page's thread, `?geo=local`, it's always the native one); `?geo=native`, the opt-in before it was the default, still works.
+uploads (the 2B and 2C games, `docs/hw/geometrizer-2b.md`,
+`docs/hw/geometrizer-2c.md`): the same stream, an order of magnitude
+faster than the interpreted chip. `?geo=chip` (or the panel's "game's own
+program on its chip") runs the game's own program on the SHARC or TGP in
+the worker instead (on the page's thread, `?geo=local`, it's always the
+native one); `?geo=sharc` and `?geo=tgp` say the same, and `?geo=native`,
+the opt-in before it was the default, still works.
 
 **Toolchain.** It needs the `wasm32-unknown-unknown` target and a
 `wasm-bindgen` CLI matching the version in Cargo.lock (`WASM_CARGO`,
@@ -198,8 +201,8 @@ progress. It offers:
   screens, touch controls on or off and, where an analog follows the left
   stick, tilt steering;
 - **Advanced:** the geometrizer in a worker (the default) or on the
-  page's thread, or, for 2B games, the game's own SHARC program in a
-  worker instead of the native geometrizer.
+  page's thread, or the game's own program on its chip (the 2B SHARC,
+  the 2C TGP) in a worker instead of the native geometrizer.
 
 Play (or Enter, or a gamepad's Start, or A on Play) starts the game; the
 Play tap also starts the audio and, on iOS, asks for the motion
@@ -249,9 +252,9 @@ parameters:
 - `touch` or `touch=1` (on-screen controls on any device), `touch=0`
   (off);
 - `tilt=1` (tilt steering on from the start, where the game steers);
-- `geo=local` (run the geometrizer on the page's thread), or `geo=sharc`
-  (in its worker, on the game's SHARC program even where the native
-  geometrizer has it: Model 2B).
+- `geo=local` (run the geometrizer on the page's thread), or `geo=chip`
+  (in its worker, on the game's own program on its SHARC or TGP even where
+  the native geometrizer has it; `geo=sharc` and `geo=tgp` too).
 
 **Bezels.** With the 4:3 aspect in a window wider than 4:3, the game's
 bezel fills the sides: original cabinet-style artwork, one per game
