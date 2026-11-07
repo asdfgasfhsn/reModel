@@ -282,6 +282,8 @@ impl Model2Bus {
         }
         let timer = || Timer { reload: 0xfffff, started_at: 0, running: false };
         let board = roms.game.board;
+        let copro_data: Vec<u32> =
+            roms.bank(Role::CoproData).as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
         Model2Bus {
             board,
             mems,
@@ -302,8 +304,8 @@ impl Model2Bus {
             copro_upload_half: None,
             copro_booted: false,
             tgp: Tgp::new(),
-            sharc: (board == Board::Model2B).then(|| Box::new(sharc::Copro::new())),
-            copro_data: roms.bank(Role::CoproData).as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect(),
+            sharc: (board == Board::Model2B).then(|| Box::new(sharc::Copro::with_data(&copro_data))),
+            copro_data,
             tgp_fault: None,
             tgp_stalled: false,
             texture_rom: roms.bank(Role::Textures).as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect(),
@@ -476,6 +478,17 @@ impl Model2Bus {
                 }
             }
             0x0098_0004 => c.fifo_out.is_empty() as u32,
+            // Copro status. indy500's T.G.P. test reads it once and calls
+            // the chips IC31 (bit 1) and IC37 (bit 0) bad if their bit is
+            // set. As on 2C, all ones until the programs are uploaded, then
+            // 0 (*unconfirmed*: no other 2B game reads it).
+            0x0098_0014 => {
+                if c.booted && self.geo.booted {
+                    0
+                } else {
+                    u32::MAX
+                }
+            }
             0x008c_0000..=0x008c_03ff => c.host_read((addr - 0x008c_0000) >> 2),
             0x0084_0000..=0x0084_03ff => 0,
             // Sound UART (8251 type): status, then data, a register a word.
@@ -859,6 +872,10 @@ impl Model2Bus {
         }
         self.geo.engine().stream.iter().for_each(|&w| h.word(w as u64));
         h.word(self.copro_result_hash);
+        // The 2B copro's external RAM, on boards that have it.
+        if let Some(e) = self.sharc.as_ref().and_then(|c| c.ext.as_ref()) {
+            e.ram.iter().for_each(|&w| h.word(w as u64));
+        }
         h.0
     }
 }

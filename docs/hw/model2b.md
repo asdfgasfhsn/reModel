@@ -1,8 +1,8 @@
 # Model 2B-CRX: the board as `overrevb` uses it
 
 Status: 2026-11-07. Remodel runs `overrevb` (Over Rev, the 2B version),
-`sgt24h` (Super GT 24h), `dynabb97` (Dynamite Baseball '97) and `doa`
-(Dead or Alive) from boot
+`sgt24h` (Super GT 24h), `dynabb97` (Dynamite Baseball '97), `doa`
+(Dead or Alive) and `indy500` (Indianapolis 500) from boot
 through attract into play, with both SHARCs running the programs the
 games upload. `sgt24h` needed nothing more from the board model: its
 SHARC code is `overrevb`'s (the uploaded images differ only past the
@@ -13,7 +13,12 @@ the command and result FIFOs and FLAG0/FLAG1 described below. `doa`
 (Tecmo) also runs on this model, with the same geometrizer code and a
 copro program of its own (3,261 words); it checks for a protection device at
 `0x1D80000`, answered as described under "The protection device"
-below. This page
+below. `indy500` (Sega, 1995, the earliest) runs a geometrizer program
+of its own (2,983 words, an earlier version of the shared one) and a
+copro program (3,937 words) that also reads data ROMs on its external
+bus, which needed that bus modelled ("The copro's external memory"
+below), and it reads the copro status at `0x980014` in its test menu.
+This page
 is what the board model (`crates/model2`: `bus.rs`, `sharc.rs`, `geo.rs`)
 is built on. The SHARC core itself is
 described in `adsp2106x.md`; the parts 2B shares with 2C in
@@ -48,6 +53,7 @@ interrupts, buffer RAM and the geometrizer's list ports) is as on 2C:
 | `0x804000` | with `0x980008` bit 31 set: the geometrizer's EPB0; otherwise the list data port, as on 2C | upload loop |
 | `0x9C0000` / `0x9C0004` | sound UART (8251 type): data / mode, command and status, one register a 32-bit word, the byte in bits 7-0 (2C: `0x1C80000`, two registers a word) | init writes 0, 0, 0, `0xD0` (internal reset), `0x4E` (mode), `0x37` (command) to `0x9C0004`, then polls its bit 0 (TxRDY); the sound commands go to `0x9C0000` and the 68000 plays them |
 | `0x1C80004` | written (16-bit) with `0x40` and `0x4E` during init: 2C's UART control address | *unconfirmed* what is there on 2B; nothing reads it, and treating it as the UART would only reset it again |
+| `0x980014` | copro status: `indy500`'s T.G.P. TEST (i960 `0xC7B50`) reads it once and shows IC31 BAD if bit 1 is set, IC37 BAD if bit 0 is | Remodel answers as on 2C: all ones until both SHARCs have programs, then 0, and the test shows both GOOD. *Unconfirmed* what the bits are; no other 2B game reads it |
 
 **The upload** (i960 `0x1FEC0` for the copro, `0x23330` for the
 geometrizer): set bit 31, write 0 to `0x980020`, write the DMA channel 6
@@ -155,7 +161,31 @@ routine addresses at DM `0x30000`); the word must have the same value in
 bits 7-0 and 15-8, as the 2C copro checks. After the upload it discards
 words until a fn 8 command, which the i960's boot sends (`0x808` to
 `0x880080`) once it has drained the result FIFO. No other external
-address is used: there are no copro data ROMs on this board.
+address is used by the Jaleco games', `dynabb97`'s or `doa`'s programs:
+those sets have no copro data ROMs.
+
+### The copro's external memory (`indy500`)
+
+`indy500`'s copro program sets SYSCON to `0xA100`, as the others do:
+MSIZE 10, so its four external memory banks are 2^(10+13) = 8M words
+each from `0x400000` [UM §5.4.1, "External Memory Banks": bank 0 starts
+at `0x400000`, banks 1-3 follow; each asserts its own MS*x* select line].
+The command FIFO (`0x400000`) is bank 0 and the result FIFO (`0xC00000`)
+bank 1; `indy500` uses the other two (*confirmed* from its program, then
+by running it):
+
+| SHARC side | What |
+|---|---|
+| `0x1C00000+` (bank 3), read | the copro data ROMs `.29/.30` as 32-bit words, low half from `.29` (1 MB, `0x40000` words, the same interleave as 2C's copro data). fn 13 (`0x20256`) reads six pointers at `0x1C00000 + n + 0x10·k` and adds `0x1C00000` to each; fn 62 (`0x20BCB`) walks a table at `0x1C00000 +` an offset the i960 sends. Before the bus was modelled, 600M instructions of attract mode read it about 5,700 times (zeros) |
+| `0x1400000+` (bank 2), read/write | RAM: fn 54 (`0x206CB`) addresses it as `0x1400000 +` a 16-bit offset from the command plus up to 127, writes `0xFFFFFFFF` there and then reads and writes records through it. Not touched in a coin-start run or the attract mode, so its size and contents are *unconfirmed*; Remodel gives it `0x20000` words, all it can address |
+
+Neither bank is touched past the ROM's size or the RAM's first `0x8000`
+words in those runs, so how many address lines each decodes (whether the
+ROM repeats through its bank) is *unconfirmed*; Remodel repeats both.
+The memory is modelled only for sets with copro data ROMs
+(`model2::sharc::ExtMem`), so the other 2B games' save states and hashes
+are unchanged; their programs never address banks 2 and 3. The RAM is
+in save states and the state hash.
 
 The result FIFO's depth is *unconfirmed*; Remodel reports it full at 64
 words, which the program only ever waits on.
@@ -296,7 +326,9 @@ that run alone, and the run took nearly three times as long).
   `0xB400` geometrizer, both written by the programs) aren't modelled.
 - Sega's 2B games upload their own copro programs and may use more of
   the board than the ones running (`overrevb`, `sgt24h`, `dynabb97`,
-  `doa`) do.
+  `doa`, `indy500`) do.
+- The copro RAM's size, and whether the copro ROM and RAM repeat
+  through their banks (`indy500`); what the bits of `0x980014` are.
 - What the device at `0x1D80000-0x1D87FFF` that `doa` checks for is
   (*unconfirmed* whether it sits on the game board or the ROM board),
   and how it turns the block into its answer (above).

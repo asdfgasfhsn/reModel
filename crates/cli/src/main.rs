@@ -1500,6 +1500,12 @@ fn sharc_lockstep(
     if nc.digest() != rc.digest() || state::to_bytes(nc) != state::to_bytes(rc) {
         return Err(format!("copro SHARC state differs at the frame's end (pc {:#x}, {} steps)", nc.pc, nc.steps));
     }
+    if n.ext.as_ref().map(|e| &e.ram) != r.ext.as_ref().map(|e| &e.ram) {
+        return Err(format!(
+            "copro SHARC external RAM differs at the frame's end (pc {:#x}, {} steps)",
+            nc.pc, nc.steps
+        ));
+    }
     let (ng, rg) = (native.bus.geo.engine(), reference.bus.geo.engine());
     if let (Some(a), Some(b)) = (ng.sharc.as_deref(), rg.sharc.as_deref()) {
         if a.digest() != b.digest() || state::to_bytes(a) != state::to_bytes(b) || ng.stream != rg.stream {
