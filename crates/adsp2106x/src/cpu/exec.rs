@@ -632,14 +632,7 @@ impl Sharc {
                 (None, f)
             }
             FNeg | FAbs | FPass => {
-                let mut u = float::input(x40, m);
-                let sign = u.sign;
-                match op {
-                    FNeg => u.sign = !u.sign,
-                    FAbs => u.sign = false,
-                    _ => {}
-                }
-                let (v, f) = float::pack(u);
+                let (v, f, sign) = float::sign_op(x40, op == FNeg, op == FAbs, m);
                 (Some(v), AluFlags { as_: op == FAbs && sign, ..AluFlags::float(f) })
             }
             FRnd => fres(float::rnd(x40, m)),
@@ -687,40 +680,13 @@ impl Sharc {
             FRecips => fres(float::recips(x40, m)),
             FRsqrts => fres(float::rsqrts(x40, m)),
             FCopysign | FMin | FMax | FClip => {
-                let (a, b) = (float::input(x40, m), float::input(y40, m));
-                if a.class == Class::Nan || b.class == Class::Nan {
-                    return fres(float::nan());
-                }
-                let u = match op {
-                    FCopysign => float::Unpacked { sign: b.sign, ..a },
-                    FMin | FMax if a.class == Class::Zero && b.class == Class::Zero => {
-                        // MIN(+0,-0) is -0, MAX(+0,-0) is +0 (UM B-42, B-43).
-                        let sign = if op == FMin { a.sign || b.sign } else { a.sign && b.sign };
-                        float::Unpacked { sign, ..a }
-                    }
-                    FMin => {
-                        if b.to_f64() < a.to_f64() {
-                            b
-                        } else {
-                            a
-                        }
-                    }
-                    FMax => {
-                        if b.to_f64() > a.to_f64() {
-                            b
-                        } else {
-                            a
-                        }
-                    }
-                    _ => {
-                        if a.to_f64().abs() < b.to_f64().abs() {
-                            a
-                        } else {
-                            float::Unpacked { sign: a.sign, ..b }
-                        }
-                    }
+                let s = match op {
+                    FCopysign => float::Select::Copysign,
+                    FMin => float::Select::Min,
+                    FMax => float::Select::Max,
+                    _ => float::Select::Clip,
                 };
-                fres(float::pack(u))
+                fres(float::select(s, x40, y40, m))
             }
         }
     }

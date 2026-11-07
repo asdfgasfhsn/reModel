@@ -467,6 +467,70 @@ pub fn rsqrts(x: u64, m: Mode) -> (u64, Flags) {
     }
 }
 
+/// `PASS Fx`, `-Fx` (`neg`) or `ABS Fx` (`abs`): the input at the current
+/// precision with its sign kept, flipped or cleared (UM B-29, B-30, B-31),
+/// and whether it was negative (ABS's AS flag).
+#[inline]
+pub fn sign_op(x: u64, neg: bool, abs: bool, m: Mode) -> (u64, Flags, bool) {
+    let mut u = input(x, m);
+    let was = u.sign;
+    if neg {
+        u.sign = !u.sign;
+    }
+    if abs {
+        u.sign = false;
+    }
+    let (v, f) = pack(u);
+    (v, f, was)
+}
+
+/// What [`select`] computes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Select {
+    Copysign,
+    Min,
+    Max,
+    Clip,
+}
+
+/// `COPYSIGN`, `MIN`, `MAX` or `CLIP` of two floats (UM B-41 to B-44).
+pub fn select(op: Select, x: u64, y: u64, m: Mode) -> (u64, Flags) {
+    let (a, b) = (input(x, m), input(y, m));
+    if a.class == Class::Nan || b.class == Class::Nan {
+        return nan();
+    }
+    let u = match op {
+        Select::Copysign => Unpacked { sign: b.sign, ..a },
+        Select::Min | Select::Max if a.class == Class::Zero && b.class == Class::Zero => {
+            // MIN(+0,-0) is -0, MAX(+0,-0) is +0 (UM B-42, B-43).
+            let sign = if op == Select::Min { a.sign || b.sign } else { a.sign && b.sign };
+            Unpacked { sign, ..a }
+        }
+        Select::Min => {
+            if b.to_f64() < a.to_f64() {
+                b
+            } else {
+                a
+            }
+        }
+        Select::Max => {
+            if b.to_f64() > a.to_f64() {
+                b
+            } else {
+                a
+            }
+        }
+        Select::Clip => {
+            if a.to_f64().abs() < b.to_f64().abs() {
+                a
+            } else {
+                Unpacked { sign: a.sign, ..b }
+            }
+        }
+    };
+    pack(u)
+}
+
 /// `FPACK Fx` (UM B-74): the 16-bit float, and whether it overflowed.
 pub fn fpack(x: u64) -> (u32, bool) {
     let v = (x >> 8) as u32;
