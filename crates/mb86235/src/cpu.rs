@@ -11,7 +11,7 @@
 //! - Reading FI while the input FIFO is empty stalls with no side effects.
 //! - Floats are IEEE single; FRCP/FRSQ/FLOG are computed exactly.
 
-use crate::{decode, AluOp, BranchTarget, Control, Insn, Loc, Mem, MulOp, Transfer, PROGRAM_WORDS};
+use crate::{decode, float, AluOp, BranchTarget, Control, Insn, Loc, Mem, MulOp, Transfer, PROGRAM_WORDS};
 use std::collections::VecDeque;
 
 /// The external (24-bit word-addressed) bus.
@@ -424,16 +424,14 @@ impl Tgp {
         let float = a.is_float();
         let x = self.alu_in1(a.in1);
         let y = if matches!(a.op, 0x08 | 0x09 | 0x1c..=0x1f) { a.in2 } else { self.in2(true, a.in2, float) };
-        let (fx, fy) = (f32::from_bits(x), f32::from_bits(y));
-        let fl = |v: f32| v.to_bits();
+        let fx = f32::from_bits(x);
         let mut extra = 0;
-        let clampf = |v: f32, extra: &mut u32| {
-            if v < 0.0 {
+        let clampf = |v: u32, extra: &mut u32| {
+            let (v, clamped) = float::clamp_negative(v);
+            if clamped {
                 *extra |= ZC;
-                0.0
-            } else {
-                v
             }
+            v
         };
         let clampi = |v: u32, extra: &mut u32| {
             if (v as i32) < 0 {
@@ -444,17 +442,17 @@ impl Tgp {
             }
         };
         let r = match a.op {
-            0x00 => fl(fx + fy),
-            0x01 => fl(clampf(fx + fy, &mut extra)),
-            0x02 => fl(fy - fx),
-            0x03 => fl(clampf(fy - fx, &mut extra)),
+            0x00 => float::add(x, y),
+            0x01 => clampf(float::add(x, y), &mut extra),
+            0x02 => float::sub(y, x),
+            0x03 => clampf(float::sub(y, x), &mut extra),
             0x04 => {
-                self.set_alu_flags_f(fy - fx, 0);
+                self.set_alu_flags_f(f32::from_bits(float::sub(y, x)), 0);
                 return None;
             }
-            0x05 => fl(fx.abs()),
+            0x05 => float::abs(x),
             0x06 => {
-                self.set_alu_flags_f(fy.abs() - fx.abs(), 0);
+                self.set_alu_flags_f(f32::from_bits(float::sub(float::abs(y), float::abs(x))), 0);
                 return None;
             }
             0x08 | 0x09 => {
@@ -472,29 +470,29 @@ impl Tgp {
                 if fx == 0.0 {
                     extra |= ZD;
                 }
-                fl(1.0 / fx)
+                float::rcp(x)
             }
             0x0b => {
                 if fx <= 0.0 {
                     extra |= NR;
                 }
-                fl(1.0 / fx.sqrt())
+                float::rsq(x)
             }
             0x0c => {
                 if fx <= 0.0 {
                     extra |= IL;
                 }
-                fl(fx.log2())
+                float::log2(x)
             }
-            0x0d => fl(x as i32 as f32),
-            0x0e => (fx.trunc() as i32) as u32,
+            0x0d => float::cif(x),
+            0x0e => float::cfi(x),
             0x0f => {
                 if fx < 0.0 {
                     extra |= AU;
                 } else if fx > 255.0 {
                     extra |= AV;
                 }
-                fx.clamp(0.0, 255.0) as u32
+                float::cfib(x)
             }
             0x10 => x.wrapping_add(y),
             0x11 => clampi(x.wrapping_add(y), &mut extra),
@@ -557,8 +555,8 @@ impl Tgp {
         let x = self.mul_in1(m.in1);
         let y = self.in2(false, m.in2, m.float);
         let (r, neg, zero) = if m.float {
-            let v = f32::from_bits(x) * f32::from_bits(y);
-            (v.to_bits(), v < 0.0, v == 0.0)
+            let v = float::mul(x, y);
+            (v, float::negative(v), float::zero(v))
         } else {
             let v = (x as i32).wrapping_mul(y as i32);
             (v as u32, v < 0, v == 0)

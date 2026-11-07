@@ -7,6 +7,7 @@
 
 pub mod codegen;
 pub mod cpu;
+pub mod float;
 
 use std::fmt;
 
