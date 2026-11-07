@@ -246,6 +246,24 @@ controls are in the manifest but have no default keys.
 | stick | arrow keys | d-pad |
 | barrier, punch, kick | Z, X, V | X, A, B |
 
+### Virtua Striker (`vstriker`)
+
+Model 2B, Sega's own: its sound is the SCSP's. One coin is one credit.
+The stick picks the team and short pass confirms. In a match the stick
+runs, and the three buttons are short pass (also the sliding tackle when
+defending), long pass and shoot (held, shoot charges a power bar). Like
+the other 2B games it needs the recompiled build (`RECOMP=1`) for full
+speed: a headless coin-start run manages 1.8x real time
+recompiled, but only about 0.7x interpreted. Player 2's controls are in
+the manifest but have no default keys.
+
+| Control | Keys | Gamepad |
+|---|---|---|
+| coin | C, 5 | Back |
+| start (player 1, 2) | Enter or 1, 2 | Start |
+| stick | arrow keys | d-pad |
+| short pass, long pass, shoot | Z, X, V | A, X, B |
+
 ### The House of the Dead (`hotd`)
 
 A light-gun game for two. Two coins are one credit. The mouse is player

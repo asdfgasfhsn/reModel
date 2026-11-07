@@ -34,7 +34,8 @@ and copro crates for the Jaleco games, `dynabb97` and `doa`). `indy500`'s
 geometrizer program is an earlier version of that code and its copro
 program its own, so it shares neither and adds two crates. `fvipers`
 uploads `indy500`'s geometrizer code and `schamp` the shared one, so each
-adds only its copro crate.
+adds only its copro crate. `vstriker`'s geometrizer program is an earlier
+version of `indy500`'s and its copro program its own, so it adds two.
 Each holds `program.rs` from the code generator, generic over the machine around the
 processor, and a `lib.rs` that instantiates it for the Model 2 board
 (`Model2Bus`, the TGP's external buses), so its machine code is compiled in

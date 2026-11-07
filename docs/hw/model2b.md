@@ -23,7 +23,11 @@ below), and it reads the copro status at `0x980014` in its test menu.
 and copro programs of their own (4,267 and 4,870 words) that write parts
 of the display list into buffer RAM, the copro's external bank 2. They
 needed that bank, list jumps the i960 patches in buffer RAM, and texture
-RAM banks of 1 MB ("Sega's earlier games" below).
+RAM banks of 1 MB ("Sega's earlier games" below). `vstriker` (Virtua
+Striker, 1994) runs geometrizer and copro programs of its own (2,910 and
+2,199 words of code), needed nothing new from the board model, and takes
+the 1 MB texture RAM banks too; its main data layout is its own
+("Sega's earlier games" below).
 This page
 is what the board model (`crates/model2`: `bus.rs`, `sharc.rs`, `geo.rs`)
 is built on. The SHARC core itself is
@@ -60,7 +64,7 @@ interrupts, buffer RAM and the geometrizer's list ports) is as on 2C:
 | `0x9C0000` / `0x9C0004` | sound UART (8251 type): data / mode, command and status, one register a 32-bit word, the byte in bits 7-0 (2C: `0x1C80000`, two registers a word) | init writes 0, 0, 0, `0xD0` (internal reset), `0x4E` (mode), `0x37` (command) to `0x9C0004`, then polls its bit 0 (TxRDY); the sound commands go to `0x9C0000` and the 68000 plays them |
 | `0x1C80004` | written (16-bit) with `0x40` and `0x4E` during init: 2C's UART control address | *unconfirmed* what is there on 2B; nothing reads it, and treating it as the UART would only reset it again |
 | `0x980014` | copro status: `indy500`'s T.G.P. TEST (i960 `0xC7B50`) reads it once and shows IC31 BAD if bit 1 is set, IC37 BAD if bit 0 is | Remodel answers as on 2C: all ones until both SHARCs have programs, then 0, and the test shows both GOOD. *Unconfirmed* what the bits are. `fvipers` reads it every frame (i960 `0x11914`) and tests bit 1, with both branches going to the same place |
-| `0x11100000`, `0x11300000` | texture RAM, the upper half of each bank's 2 MB window: `fvipers` and `schamp` upload their texels there and nowhere else ("Sega's earlier games" below) | the games' texture base pointers (`0x500254`, `0x500258`, set at i960 `0x144`); the memory test |
+| `0x11100000`, `0x11300000` | texture RAM, the upper half of each bank's 2 MB window: `fvipers`, `schamp` and `vstriker` upload their texels there and nowhere else ("Sega's earlier games" below) | the games' texture base pointers (`0x500254`, `0x500258`, set at i960 `0x144`); the memory test |
 | `0x12800000-0x128000FF` | written by `fvipers` and `schamp`: 128 halfwords, the ramp (i + 1) / 2 (0, 1, 1, 2, ... 64) at boot (`fvipers` i960 `0x474`). Otherwise only a test menu writes it: its "TRANS MAP" / "TRANS NUM" items copy one of the seven 128-byte luma tables in ROM (`0x064266E0`, the ones the game copies to luma RAM) there (`fvipers` i960 `0x57544`) | the code; *unconfirmed* what the hardware does with it (a luma-shaped map, perhaps for translucency); Remodel maps nothing, and nothing reads it back |
 
 **The upload** (i960 `0x1FEC0` for the copro, `0x23330` for the
@@ -295,7 +299,7 @@ and the native implementation of it that `--geo native` runs (bit for bit
 the SHARC's stream, and render-only: nothing it does reaches the i960) are
 in `geometrizer-2b.md`.
 
-## Sega's earlier games (`fvipers`, `schamp`)
+## Sega's earlier games (`fvipers`, `schamp`, `vstriker`)
 
 Both games stopped with the geometrizer SHARC in its command-check loop:
 the 3D vanished a few seconds into the attract mode and never came back.
@@ -346,6 +350,38 @@ and the i960 code, then by running them):
   revision, a jumper or RAM chips.
 - `schamp`'s copro program writes the reserved IOP register `0x20`
   (`adsp2106x.md`), which faulted the core.
+
+`vstriker` (1994), the earliest of Sega's 2B games here, *confirmed*
+from the i960 code and its programs, then by running it:
+
+- **Main data.** Its 1 MB pair `.7/.8` is the third pair of the first
+  main data bank, packed after the two 4 MB pairs: `.11/.12` at
+  `0x2000000`, `.9/.10` at `0x2400000`, `.7/.8` at `0x2800000`. The copro
+  upload (i960 `0x8270`) reads its DMA header from `0x2825F30` (DMAC6
+  `0xA1`, II6 `0x20000`, IM6 1, at offset `0x25F30` of `.7/.8`) and then
+  the program words after it; the program refers to some 380 addresses in
+  `0x28xxxxx` and none from `0x6000000` up; the memory test shows IC 7-16
+  GOOD. With `.7/.8` in the second bank instead, as the later games have
+  it, the uploads read zeros (II6 0), both SHARCs faulted at `0x25000`
+  and the 3D never started (the i960 sat in a loop at `0x9EF0`).
+- **Its programs.** The geometrizer program is an earlier version of
+  `indy500`'s: 2,896 of its 3,040 uploaded words appear in the same
+  order in `indy500`'s, identical up to `0x20086`. The copro program is
+  closest to the Jaleco games' (2,012 of 2,283 words), with the same
+  loop at `0x2059A` whose end points back into an earlier identical
+  loop (`adsp2106x.md`). Neither reads the copro's external bus beyond
+  the FIFOs (the set has no copro data ROMs). The upload is
+  `fvipers`' kind (32-bit IOP writes, SYSCON `0xA110`/`0x3110` and WAIT
+  first, C6 the length: `0x8ED` and `0xBE0` words) without MSGR7, so the
+  geometrizer checks every command word's tag; no word failed it in
+  coin-start runs through a match.
+- **Texture RAM.** Its texels go only to `0x11100000` and `0x11300000`,
+  the upper halves, as `fvipers`' and `schamp`'s: with 2 MB banks the
+  rasteriser read blank (all index 0) texels and the match drew dark
+  (README, "What's known about vstriker").
+- *Unconfirmed:* at boot it writes a byte 0 to `0x1400000` (i960
+  `0x3B80`), which no other game here touches; the board model ignores it
+  and nothing reads it back.
 
 ## Timing
 
