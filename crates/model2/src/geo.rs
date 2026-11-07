@@ -1041,11 +1041,10 @@ impl Engine {
         // the vertex ring (0x30020-0x300FF) and the edge vertex.
         if let Some(s) = self.sharc.as_deref() {
             let (dm, pm) = n.data();
+            let pm_base = n.program.pm_base();
             let state = (0x20..0x100u32)
                 .map(|i| (0x3_0000 + i, s.mem.read32(0x3_0000 + i), dm[i as usize]))
-                .chain(
-                    (0x10..0x13u32).map(|i| (0x2_1000 + i, (s.mem.read48(0x2_1000 + i) >> 16) as u32, pm[i as usize])),
-                )
+                .chain((0x10..0x13u32).map(|i| (pm_base + i, (s.mem.read48(pm_base + i) >> 16) as u32, pm[i as usize])))
                 .find(|(_, a, b)| a != b);
             if let Some((addr, a, b)) = state {
                 c.state_differing += 1;

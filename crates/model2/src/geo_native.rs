@@ -1,6 +1,7 @@
 //! A native geometrizer: the display-list program that the 2B games
 //! upload to their geometrizer SHARC (`overrevb`, `sgt24h`, `dynabb97`,
-//! `doa`, `schamp`, and an earlier version of it `indy500` and `fvipers`),
+//! `doa`, `schamp`, and earlier versions of it: `indy500` and `fvipers`,
+//! and before that `vstriker`),
 //! implemented in Rust from its behaviour
 //! (docs/hw/geometrizer-2b.md). It takes the same inputs as the SHARC (the
 //! list from buffer RAM, the polygon memory, its own state from earlier
@@ -48,9 +49,8 @@ const RING: usize = 0x40;
 /// Lighting parameters (4 words each) and distance coefficients.
 const PARAMS: usize = 0x60;
 const COEF: usize = 0xe0;
-/// Program-memory data words, from `0x21000`: the first previous-edge
-/// vertex of the computed-normal modes is at `+0x10`.
-const PM_BASE: u32 = 0x2_1000;
+/// Program-memory data words, from [`Program::pm_base`]: the first
+/// previous-edge vertex of the computed-normal modes is at `+0x10`.
 const PM_WORDS: usize = 0x800;
 const P0: usize = 0x10;
 
@@ -84,11 +84,34 @@ pub enum Program {
     /// focal length in the computed-normal modes, and in what it sends at
     /// a frame's start (which the rasteriser never sees).
     Indy500,
+    /// `vstriker`'s code, earlier still: `indy500`'s without the repeated
+    /// stores (which change nothing), and with its program-memory data
+    /// words at `0x20C00` (just past its shorter code).
+    Vstriker,
+}
+
+impl Program {
+    /// Where the program keeps its program-memory data words.
+    pub fn pm_base(self) -> u32 {
+        match self {
+            Program::Vstriker => 0x2_0c00,
+            Program::Shared2B | Program::Indy500 => 0x2_1000,
+        }
+    }
+
+    /// In the computed-normal modes the first vertex's y is scaled by the
+    /// x focal length (a bug the later version fixes).
+    fn y0_by_fx(self) -> bool {
+        matches!(self, Program::Indy500 | Program::Vstriker)
+    }
 }
 
 /// Code hashes of the programs implemented here.
-pub const PROGRAMS: &[(u64, Program)] =
-    &[(0x1539_3321_f266_b9cf, Program::Shared2B), (0x1ee9_9ebc_8a45_8237, Program::Indy500)];
+pub const PROGRAMS: &[(u64, Program)] = &[
+    (0x1539_3321_f266_b9cf, Program::Shared2B),
+    (0x1ee9_9ebc_8a45_8237, Program::Indy500),
+    (0x9b6f_b0e1_100b_f66e, Program::Vstriker),
+];
 
 /// The code hash a program image is recognised by: [`adsp2106x::cpu::code_hash`]
 /// of the words [`adsp2106x::codegen::discover`] finds as code.
@@ -342,8 +365,9 @@ impl Native {
         for (i, w) in self.dm.iter_mut().enumerate() {
             *w = s.mem.read32(0x3_0000 + i as u32);
         }
+        let base = self.program.pm_base();
         for (i, w) in self.pm.iter_mut().enumerate() {
-            *w = (s.mem.read48(PM_BASE + i as u32) >> 16) as u32;
+            *w = (s.mem.read48(base + i as u32) >> 16) as u32;
         }
         self.check = s.iop.get(0xf).copied() != Some(NO_CHECK_KEY);
         self.boot_frames = 2u64.saturating_sub(frames) as u8;
@@ -358,7 +382,7 @@ impl Native {
             s.mem.write32(0x3_0000 + i as u32, w);
         }
         for (i, &w) in self.pm.iter().enumerate() {
-            let a = PM_BASE + i as u32;
+            let a = self.program.pm_base() + i as u32;
             let low = s.mem.read48(a) & 0xffff;
             s.mem.write48(a, (w as u64) << 16 | low);
         }
@@ -727,7 +751,7 @@ impl Native {
         let polygons = if obc == 0 { MAX_POLYGONS } else { obc as u64 };
         let specular = mode & 1 != 0;
         let p0 = c.xform(self.vertex(io, src, 0));
-        if self.program == Program::Indy500 && mode & 2 != 0 {
+        if self.program.y0_by_fx() && mode & 2 != 0 {
             Ctx { fy: c.fx, ..c }.emit(io, p0);
         } else {
             c.emit(io, p0);
