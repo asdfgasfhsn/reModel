@@ -51,7 +51,8 @@ i960 --geo ports--> buffer RAM display list --(list DMA, jumps)--> GEOMETRIZER (
 - **On 2B** the geometrizer is an ADSP-21062 SHARC, also running a program the game uploads,
   fed the same lists through the same ports and frame protocol; its program emits this same
   rasteriser stream (§4.2), so everything from §4 on applies to 2B unchanged. Its external
-  map and the comparison with a 2C program are in `model2b.md`. **H** (`overrevb`)
+  map and the comparison with a 2C program are in `model2b.md`, and what its program does
+  (and Remodel's native implementation of it) in `geometrizer-2b.md`. **H** (`overrevb`)
 - MAME notes that "Top Skater seems to use a slightly different geometry code that has a
   secondary transformation matrix". TSG confirms this and shows what is different (§2.3,
   §3.2). **H**

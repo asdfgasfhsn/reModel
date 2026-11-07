@@ -11,6 +11,14 @@ key, click or gamepad button skips it; `--no-splash` leaves it out. The
 logo (`assets/reModel-logo-1086.png`, half the size of the original) is
 built into the binary and decoded with `remodel-png`.
 
+**Geometrizer.** `--geo native` runs a Model 2B game's geometrizer on the
+native implementation (`docs/hw/geometrizer-2b.md`) instead of its
+uploaded program on the SHARC core, where it implements that program (all
+the 2B games so far); the stream it draws is the same, word for word, and
+it takes under a tenth of the interpreted SHARC's time (a quarter of the
+recompiled one), so 2B games race at full speed without recompiled code.
+It applies to this run only; the default is the SHARC.
+
 ## Keys
 
 The player's own keys are the same for every game:

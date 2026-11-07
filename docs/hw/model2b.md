@@ -290,6 +290,11 @@ and the 2B one on the SHARC core, and comparing the streams word by word
 `overrevb` and `overrev` then render their own lists alike scene by scene
 (attract, menus, races; compared from `make run ... SNAP=300` of both).
 
+**Its program.** What the geometrizer program does, command by command,
+and the native implementation of it that `--geo native` runs (bit for bit
+the SHARC's stream, and render-only: nothing it does reaches the i960) are
+in `geometrizer-2b.md`.
+
 ## Sega's earlier games (`fvipers`, `schamp`)
 
 Both games stopped with the geometrizer SHARC in its command-check loop:

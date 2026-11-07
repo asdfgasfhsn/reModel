@@ -36,7 +36,7 @@ music`). There is no live window yet.
 | Recompiler: i960 → native | done; opt-in (`make recomp`, then `RECOMP=1`), identical state hash; 96% of the game's instructions become plain Rust, the rest call the interpreter with the instruction pre-decoded; see `docs/recompiler.md` |
 | Recompiler: MB86235 programs → Rust | done; built with the i960 code, geometrizer about 1.5x faster |
 | Recompiler: ADSP-21062 (SHARC) programs → Rust | done (Model 2B); built with the i960 code, each word the interpreter's step specialised for its instruction, straight-line runs compiled as blocks with the pipeline and counters brought up to date at their end, interpreter fallback for anything not compiled or overwritten; crates named after their code, so games uploading the same code share them. Geometrizer per race frame: `overrevb` 3.6 ms native, 4.8 ms in WebAssembly (interpreted 16.8 ms); `sgt24h` 6.1 ms native, 8.1 ms in WebAssembly; identical state hashes and `make lockstep`; see `docs/recompiler.md` |
-| Geometry processor fast path (high-level per-command) | planned |
+| Native 2B geometrizer (the geometrizer programs' behaviour in Rust, `model2::geo_native`) | done, opt-in (`--geo native`, `remodel-play --geo native`, `?geo=native`): the two programs every 2B game uploads, found by their code hash; raster streams bit-identical to the SHARC's over 5,000-frame coin-start runs of all seven 2B games and a fuzzer (`make geo-check`, `make geo-fuzz`), same state hashes; a race frame of `sgt24h` 1.5 ms against 5.7 recompiled (22.6 interpreted); see `docs/hw/geometrizer-2b.md` |
 | 2D tile layer renderer (PNG snapshots) | done; boot, logo, title and attract text render |
 | 3D rasteriser (software) | textured, bilinear-filtered gameplay frames (topskatr uses no mipmaps); the reference, but too slow for live races (15-27 ms a frame at native size) |
 | 3D rasteriser (GPU, wgpu: Vulkan / Metal / DirectX 12) | off-screen preflight: about 3 ms a frame native and 7 ms at 1080p, matching the software renderer on 99.96% of coverage; see `docs/gpu.md` |
@@ -375,6 +375,27 @@ chip but the program pair). Details, addresses and evidence in
   half; `overrevb` and `sgt24h` fill both with different data). A
   manifest flag, `texture_ram_mirrored`, maps those banks as 1 MB
   repeating; *unconfirmed* what makes their boards differ.
+- *Confirmed (from the programs, the games' I/O and by running them):*
+  the geometrizer is render-only. Its program writes only the rasteriser
+  FIFO, its polygon RAM and polygon memory address, and a handshake
+  strobe; no 2B game reads its host window (`0x840000`), and with `--geo
+  native` (the SHARC runs no frame) coin-start runs of 600M instructions
+  end with the SHARC's state hashes (`sgt24h` `282c8d6fd5151c21`, `doa`
+  `78f308b4da95cefb`, `schamp` `8d2b7b4cd55d64a0`). Its command set,
+  formats and arithmetic (32-bit floats rounded toward zero, `RSQRTS` and
+  two Newton steps for computed normals) are in
+  `docs/hw/geometrizer-2b.md`, with the native implementation that
+  reproduces its stream word for word. `indy500`'s and `fvipers`'
+  program is the same but for one bug: in the computed-normal modes it
+  scales the first vertex's y by the x focal length.
+- *Confirmed (by fuzzing the program, `make geo-fuzz`):* its code for
+  models in its own memory ("fast" polygon RAM, which no game uses) sends
+  the last word twice when an object ends by its count, and loses track of
+  the previous edge after a computed-normal triangle with link type 0 or
+  2. A board test (fn 0x0E) whose 32 pattern words aren't a walking one
+  runs on through the list: the routine it calls sits in the last
+  instructions of a loop (the ADSP-2106x manual, §3.5.1.1). *Unconfirmed*
+  on hardware: these follow from the SHARC model.
 - *Confirmed (`doa`, from the code, then by running it):* Tecmo's game
   checks for a protection device at `0x1D80000-0x1D87FFF` at boot. The
   board model answers it from the manifest (`romset::Protection`,

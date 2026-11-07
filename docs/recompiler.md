@@ -123,6 +123,19 @@ recompiled build must print the same hash. This is a strong check: one
 wrong flag, one instruction retired at a different time, and the hash
 differs within a few frames.
 
+## Beyond recompiling: the native geometrizer
+
+Recompiling keeps every instruction of a program. For the 2B geometrizer
+there is also a native implementation of the program's behaviour
+(`model2::geo_native`, `docs/hw/geometrizer-2b.md`), opt-in with `--geo
+native` (`remodel`, `remodel-play`) or `?geo=native` (browser). It finds
+the program by the same code hash this page's SHARC crates are named by
+(`sharc_15393321f266b9cf`, `sharc_1ee99ebc8a458237`), so it needs no
+recompiled build, and gives the same raster stream word for word: `make
+geo-check` runs the SHARC (recompiled with `RECOMP=1`) and the native code
+side by side each frame and compares them, as `make lockstep` does the
+recompiled code with the interpreter. The state hash is the SHARC's.
+
 ## i960 (`crates/i960/src/codegen.rs`)
 
 **Which code.** All program code is in ROM, so it can't change at run time.
