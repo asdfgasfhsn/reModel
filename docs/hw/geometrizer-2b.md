@@ -1,6 +1,6 @@
 # The 2B geometrizer program, and a native implementation of it
 
-Status: 2026-11-07. What the display-list program that most Model 2B
+Status: 2026-11-08. What the display-list program that most Model 2B
 games upload to their geometrizer SHARC does, worked out from its
 behaviour and its disassembly (`make sharc-disasm
 FILE=out/overrevb/sharc-geo.bin`), and how Remodel implements it natively
@@ -29,6 +29,7 @@ the program's crate by (`docs/recompiler.md`), so `sharc_<hash>` in
 |---|---|---|
 | `15393321f266b9cf` | `overrevb`, `sgt24h`, `dynabb97`, `doa`, `schamp` (2,987 words of code; the uploads differ only past `0x20C30`, and `schamp`'s upload is shorter) | `Program::Shared2B` |
 | `1ee99ebc8a458237` | `indy500`, `fvipers` (an earlier version: see "The earlier version" below) | `Program::Indy500` |
+| `9b6fb0e1100bf66e` | `vstriker` (earlier still, 2,910 words of code: see "The earliest version" below) | `Program::Vstriker` |
 
 For any other program (none is known on 2B) `--geo native` runs the
 SHARC.
@@ -235,6 +236,34 @@ comparing the two disassemblies with addresses normalised, 3,256 lines):
 `Program::Indy500` is the shared implementation with the first
 difference.
 
+## The earliest version (`vstriker`)
+
+`vstriker`'s upload (3,040 words, 2,910 of them code) is `indy500`'s
+program before two changes (*confirmed*, comparing the two disassemblies
+with addresses normalised; 2,896 of its words appear in order in
+`indy500`'s):
+
+- `indy500`'s writes the last of a run of stores to internal memory three
+  times over (the vertex ring and the edge vertex after each polygon, the
+  transform and light words its commands set, the MSGR1 and MSGR6
+  counts, the "tested" flag); `vstriker`'s writes each once. They are
+  stores of the same value to the same internal address, so they change
+  nothing the program computes; a branch's delay slots move with them. Presumably a
+  workaround for something on the board or the chip (*unconfirmed*: what).
+- its program-memory data words (the matrix's first row, translation and
+  light copies, the computed-normal modes' first edge vertex) start at
+  `0x20C00`, just past its shorter code, rather than `0x21000`. (Its code
+  upload command, fn 0x1D, writes to `0x20C00` too, over those words; no
+  game sends it, and the native code doesn't implement it.)
+- two words of the text strings embedded in the code area differ.
+
+Everything else, including the first vertex's y scaled by fx in the
+computed-normal modes, the frame start without the NOP, the test command
+and the dispatch table, is `indy500`'s. `Program::Vstriker` is
+`Program::Indy500` with its data words at `0x20C00`
+(`Program::pm_base`, which `Native::import`/`export` and `geo-check`'s
+state comparison use).
+
 ## The native implementation
 
 `model2::geo_native::Native` holds the program's state in the SHARC's
@@ -287,10 +316,12 @@ Results (*confirmed*, interpreted SHARC):
 | `schamp` | 5,160 | 137.7M | none |
 | `indy500` | 5,037 | 100.9M | none |
 | `fvipers` | 5,169 | 142.5M | none |
+| `vstriker` | 5,177 | 172.7M | none (interpreted and recompiled SHARC) |
 | fuzz, `overrevb`'s upload | 8,500 (19 seeds) | 8.2M | none |
 | fuzz, `sgt24h`'s, `doa`'s and `dynabb97`'s uploads | 1,000 (3 seeds) | 0.9M | none |
 | fuzz, `schamp`'s upload (command check on) | 1,400 (3 seeds) | 1.1M | none |
 | fuzz, `indy500`'s and `fvipers`' uploads | 1,700 (4 seeds) | 1.7M | none |
+| fuzz, `vstriker`'s upload (command check on) | 5,300 (11 seeds; 3 also on the recompiled SHARC) | 4.4M | none |
 
 The coin-start runs go through attract, menus and into races or fights
 (`geo-check`'s default 750M instructions, 5,177 frames). The fuzzer found
@@ -308,9 +339,12 @@ not the geometrizer SHARC), and the raster stream of every frame. Both
 are the same as the SHARC's: coin-start runs of 600M instructions give
 the same state hash on the SHARC and natively for `sgt24h`
 (`282c8d6fd5151c21`), `doa` (`78f308b4da95cefb`), `schamp`
-(`8d2b7b4cd55d64a0`), `overrevb` and `dynabb97` (with the `eeprom.bin` of
+(`8d2b7b4cd55d64a0`), `vstriker` (`a4af0c62acc656f3`, interpreted and
+recompiled), `overrevb` and `dynabb97` (with the `eeprom.bin` of
 an earlier run), and a run saved at frame 2000 in either mode and resumed
-in either mode ends with the uninterrupted run's hash.
+in either mode ends with the uninterrupted run's hash (for `vstriker`
+too, recompiled: saved natively and resumed on the SHARC, and the
+reverse).
 
 ## Speed
 
@@ -323,6 +357,7 @@ with other builds, so worst cases are noisy):
 | `sgt24h` race (frames 3000-4141, from a save) | 22.6 ms (worst 26.7) | 5.70 ms (worst 8.2) | 1.49 ms (worst 2.7) |
 | `doa` fights (frames 3000-4486, from a save) | 35.1 ms (worst 88.6) | 7.32 ms (worst 11.5) | 1.83 ms (worst 3.0) |
 | all seven games, frames 3000-5177 of a coin-start run | 17.6-37.2 ms | | 0.97-2.29 ms |
+| `vstriker`, frames 3000-5177 of a coin-start run (a match) | 27.7 ms (worst 86.5) | 6.78 ms (worst 12.8) | 1.49-1.53 ms (worst 3.4) |
 
 (The native column is from the recompiled-SHARC runs; with the
 interpreted SHARC beside it, it measured 1.57 and 2.24 ms. Native is about
@@ -331,13 +366,15 @@ exact float functions for every operation, so there is room left.)
 
 The whole machine, interpreted i960, 600M-instruction coin-start runs:
 `sgt24h` runs at 0.80x real time on the SHARC and 2.59x natively, `doa`
-0.81x and 2.03x, `schamp` 0.63x and 1.57x: the 2B games reach full speed
-without recompiled code. Not measured in WebAssembly yet (the browser
+0.81x and 2.03x, `schamp` 0.63x and 1.57x, `vstriker` 0.69x and 1.55x:
+the 2B games reach full speed without recompiled code. Recompiled
+(i960 and copro), `vstriker` runs at 2.73x on the recompiled SHARC and
+3.87x natively (the geometrizer thread busy 24.1 s and 5.6 s of the run). Not measured in WebAssembly yet (the browser
 build is a heavy one); that it keeps its lead there is *unconfirmed*.
 
 ## Next steps (scoping)
 
-**Model 2B: done.** The two native programs cover every 2B game
+**Model 2B: done.** The three native programs cover every 2B game
 Remodel runs. Another 2B game with a new geometrizer program would run on
 the SHARC; `make geo-check GAME=...` says so ("no native implementation").
 

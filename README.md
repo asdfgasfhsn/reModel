@@ -36,7 +36,7 @@ music`). There is no live window yet.
 | Recompiler: i960 → native | done; opt-in (`make recomp`, then `RECOMP=1`), identical state hash; 96% of the game's instructions become plain Rust, the rest call the interpreter with the instruction pre-decoded; see `docs/recompiler.md` |
 | Recompiler: MB86235 programs → Rust | done; built with the i960 code, geometrizer about 1.5x faster |
 | Recompiler: ADSP-21062 (SHARC) programs → Rust | done (Model 2B); built with the i960 code, each word the interpreter's step specialised for its instruction, straight-line runs compiled as blocks with the pipeline and counters brought up to date at their end, interpreter fallback for anything not compiled or overwritten; crates named after their code, so games uploading the same code share them. Geometrizer per race frame: `overrevb` 3.6 ms native, 4.8 ms in WebAssembly (interpreted 16.8 ms); `sgt24h` 6.1 ms native, 8.1 ms in WebAssembly; identical state hashes and `make lockstep`; see `docs/recompiler.md` |
-| Native 2B geometrizer (the geometrizer programs' behaviour in Rust, `model2::geo_native`) | done, the default in the player and the browser (`--geo chip`, `?geo=chip` for the game's own program; the `remodel` CLI keeps the SHARC for its oracles): the two programs every 2B game uploads, found by their code hash; raster streams bit-identical to the SHARC's over 5,000-frame coin-start runs of all seven 2B games and a fuzzer (`make geo-check`, `make geo-fuzz`), same state hashes; a race frame of `sgt24h` 1.5 ms against 5.7 recompiled (22.6 interpreted); see `docs/hw/geometrizer-2b.md` |
+| Native 2B geometrizer (the geometrizer programs' behaviour in Rust, `model2::geo_native`) | done, the default in the player and the browser (`--geo chip`, `?geo=chip` for the game's own program; the `remodel` CLI keeps the SHARC for its oracles): the three programs the 2B games upload (a shared one, `indy500`'s earlier version and `vstriker`'s earlier still), found by their code hash; raster streams bit-identical to the SHARC's over 5,000-frame coin-start runs of all eight 2B games and a fuzzer (`make geo-check`, `make geo-fuzz`), same state hashes; a race frame of `sgt24h` 1.5 ms against 5.7 recompiled (22.6 interpreted); see `docs/hw/geometrizer-2b.md` |
 | Native 2C geometrizer (`model2::geo_native_2c`) | done, the default in the player and the browser as for 2B (`--geo chip`, `?geo=chip` for the game's own program on the TGP): the four programs the 2C games upload, one family (a shared one, `stcc`'s copy of it, `overrev`'s and `topskatr`'s), found by their program hash; raster streams and the programs' state bit-identical to the TGP's over 5,000-frame coin-start runs of all eight 2C games and a fuzzer, same state hashes, save states load in either mode; a `topskatr` race frame 0.45 ms against 8.2 recompiled (12.0 interpreted); see `docs/hw/geometrizer-2c.md` |
 | 2D tile layer renderer (PNG snapshots) | done; boot, logo, title and attract text render |
 | 3D rasteriser (software) | textured, bilinear-filtered gameplay frames (topskatr uses no mipmaps); the reference, but too slow for live races (15-27 ms a frame at native size) |
@@ -67,7 +67,7 @@ music`). There is no live window yet.
 | Thirteenth game: `indy500` (Indianapolis 500, 2B, Sega) | playable with sound (`make play GAME=indy500`): attract, course and gearbox select, rolling start and races. An early 2B game, with its own copro and geometrizer SHARC programs; needed the copro SHARC's external bus (the copro data ROMs, and buffer RAM) and the copro status its test menu reads. Full speed recompiled (4.2x real time natively); recompiled build identical |
 | Fourteenth game: `fvipers` (Fighting Vipers, 2B, Sega) | playable with sound in scripted runs (`make play GAME=fvipers` to play it): attract, character select and fights through rounds. `indy500`'s geometrizer program and a copro program of its own that writes parts of the display list. Needed the copro SHARC's bank 2 as buffer RAM, list jumps the i960 patches in buffer RAM, 1 MB texture RAM banks (a manifest flag) and its polygon ROMs packed. Full speed recompiled (2.8x real time natively); recompiled build identical |
 | Fifteenth game: `schamp` (Sonic Championship, 2B, Sega) | playable with sound in scripted runs (`make play GAME=schamp` to play it): attract, character select and fights through rounds and replays. The shared geometrizer program and a copro program of its own, on the same board work as `fvipers`; needed the SHARC core to ignore a reserved I/O register its copro writes, and the i960 recompiler to drop a block discovery found at an odd address. Full speed recompiled (2.7x real time natively); recompiled build identical |
-| Sixteenth game: `vstriker` (Virtua Striker, 2B, Sega) | playable with sound in scripted runs (`make play GAME=vstriker` to play it): attract, team select and a match through goals, a replay and loss time. Its own geometrizer and copro SHARC programs. Needed its main data packed with the 1 MB `.7/.8` pair after the other two (the SHARC programs are there), its polygon ROMs packed and 1 MB texture RAM banks (a manifest flag; without it the match drew dark). Full speed recompiled (1.8x real time natively); recompiled build identical |
+| Sixteenth game: `vstriker` (Virtua Striker, 2B, Sega) | playable with sound in scripted runs (`make play GAME=vstriker` to play it): attract, team select and a match through goals, a replay and loss time. Its own geometrizer and copro SHARC programs. Needed its main data packed with the 1 MB `.7/.8` pair after the other two (the SHARC programs are there), its polygon ROMs packed and 1 MB texture RAM banks (a manifest flag; without it the match drew dark). Full speed recompiled (2.7x real time natively on the SHARC, 3.9x with the native geometrizer, 1.55x interpreted with it); recompiled build identical |
 
 ## Quick start
 
@@ -416,7 +416,9 @@ chip but the program pair). Details, addresses and evidence in
   `docs/hw/geometrizer-2b.md`, with the native implementation that
   reproduces its stream word for word. `indy500`'s and `fvipers`'
   program is the same but for one bug: in the computed-normal modes it
-  scales the first vertex's y by the x focal length.
+  scales the first vertex's y by the x focal length. `vstriker`'s is
+  `indy500`'s without its repeated stores and with its data words in
+  program memory at `0x20C00`: the same output.
 - *Confirmed (by fuzzing the program, `make geo-fuzz`):* its code for
   models in its own memory ("fast" polygon RAM, which no game uses) sends
   the last word twice when an object ends by its count, and loses track of
@@ -1465,11 +1467,21 @@ suffix), the clone `vstrikro`, which isn't supported.
   GAME=vstriker RECOMP=1 INPUT=coin-start` runs 600M instructions
   identical (i960 and both SHARCs recompiled). Its geometrizer and copro
   programs each have a recompiled crate of their own (`docs/recompiler.md`).
+- *Confirmed (by running it beside the SHARC, `make geo-check
+  GAME=vstriker`, and the fuzzer):* the native geometrizer
+  (`Program::Vstriker`, `docs/hw/geometrizer-2b.md`) gives the SHARC's
+  stream and state word for word over a 5,177-frame coin-start run
+  (172.7M raster words) on the interpreted and the recompiled SHARC, and
+  the 600M-instruction run ends with the same state hash in native mode.
 - *Speed (by running it):* that run plays at 1.8x real time
   recompiled natively (the geometrizer on its thread, slowest frame
   46.0 ms), and at 0.69x interpreted (slowest frame 137 ms). The
   geometrizer is the limit: 36 of the run's 40 s, about 1.9 billion
-  SHARC instructions, against 0.34 billion for the copro.
+  SHARC instructions, against 0.34 billion for the copro. Remeasured on
+  a quieter machine: 2.73x recompiled; with the native geometrizer (the
+  player's default) 3.87x recompiled and 1.55x interpreted, a match
+  frame's geometry 1.5 ms against 6.8 on the recompiled SHARC and 27.7
+  interpreted.
 - *Unconfirmed:* at boot it writes a byte 0 to `0x1400000` (i960
   `0x3B80`), which nothing reads back and the board model ignores.
 
