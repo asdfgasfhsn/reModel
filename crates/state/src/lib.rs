@@ -75,8 +75,13 @@ macro_rules! number {
                 Ok(())
             }
             fn save_all(items: &[Self], w: &mut Writer) {
-                w.buf.reserve(size_of_val(items));
-                items.iter().for_each(|i| w.buf.extend_from_slice(&i.to_le_bytes()));
+                // Sized up front and filled in place rather than pushed
+                // value by value: memory blocks are most of a save state.
+                let start = w.buf.len();
+                w.buf.resize(start + size_of_val(items), 0);
+                for (c, i) in w.buf[start..].chunks_exact_mut(size_of::<$t>()).zip(items) {
+                    c.copy_from_slice(&i.to_le_bytes());
+                }
             }
             fn load_all(items: &mut [Self], r: &mut Reader) -> Result<(), Error> {
                 let b = r.bytes(size_of_val(items))?;
@@ -252,5 +257,11 @@ mod tests {
         assert!(r.done());
         assert_eq!(t, S { cache: 42, ..s });
         assert!(S::default().load(&mut Reader::new(&bytes[..5])).is_err());
+    }
+
+    #[test]
+    fn runs_of_numbers_are_little_endian_in_order() {
+        assert_eq!(to_bytes(&[0x1234u16, 0xabcd]), [0x34, 0x12, 0xcd, 0xab]);
+        assert_eq!(to_bytes(&vec![1.0f32]), [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80, 0x3f]);
     }
 }
