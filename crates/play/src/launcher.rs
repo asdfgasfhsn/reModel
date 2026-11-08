@@ -198,6 +198,12 @@ fn rows(has_own: bool) -> Vec<Row> {
             "in-between frames on displays faster than 60 Hz, a frame later",
             &[("Off", "false"), ("On", "true")],
         ),
+        Row::Choice(
+            "run_ahead",
+            "Run-ahead",
+            "frames shown ahead of the game: that much less input lag, as many frames more work",
+            &[("Off", "0"), ("1", "1"), ("2", "2"), ("3", "3")],
+        ),
         Row::Db("sfx_db", "Effects", -20.0, 20.0),
         Row::Db("music_db", "Music", -30.0, 10.0),
         Row::Choice(

@@ -5,7 +5,7 @@
 //! otherwise under `$XDG_DATA_HOME/remodel` (`~/.local/share/remodel`).
 //!
 //! A game's settings ([`GameSettings`]: sound mix, display, speed, smooth
-//! motion, geometrizer) come in layers, lowest first, as in the browser
+//! motion, run-ahead, geometrizer) come in layers, lowest first, as in the browser
 //! build (`crates/web/settings.js`): the built-in defaults, the defaults for
 //! all games (`play-settings.txt`), the game's own (`<set>/settings.txt`)
 //! and the command line (this run only). A layer keeps only what it sets,
@@ -30,6 +30,8 @@ pub struct GameSettings {
     pub exact: bool,
     /// Smooth motion (`model2::smooth`; the native geometrizer only).
     pub smooth: bool,
+    /// Frames shown ahead of the game (`model2::runahead`), 0 for none.
+    pub run_ahead: u32,
     /// The geometrizer on its chip (the game's own program) rather than
     /// the native implementation. Applies when the game starts.
     pub geo_chip: bool,
@@ -45,13 +47,17 @@ impl Default for GameSettings {
             bezel: true,
             exact: false,
             smooth: false,
+            run_ahead: 0,
             geo_chip: false,
         }
     }
 }
 
 /// Every game setting's key, in the order the panels show them.
-pub const KEYS: [&str; 8] = ["wide", "bezel", "hud_edges", "exact", "smooth", "sfx_db", "music_db", "geo"];
+pub const KEYS: [&str; 9] = ["wide", "bezel", "hud_edges", "exact", "smooth", "run_ahead", "sfx_db", "music_db", "geo"];
+
+/// Most frames the player runs ahead.
+pub const MAX_RUN_AHEAD: u32 = 3;
 
 impl GameSettings {
     /// Setting `key` as text (as the files keep it).
@@ -64,6 +70,7 @@ impl GameSettings {
             "bezel" => self.bezel.to_string(),
             "exact" => self.exact.to_string(),
             "smooth" => self.smooth.to_string(),
+            "run_ahead" => self.run_ahead.to_string(),
             "geo" => if self.geo_chip { "chip" } else { "native" }.to_string(),
             _ => String::new(),
         }
@@ -86,6 +93,7 @@ impl GameSettings {
             "bezel" => flag(v).map(|x| self.bezel = x).is_some(),
             "exact" => flag(v).map(|x| self.exact = x).is_some(),
             "smooth" => flag(v).map(|x| self.smooth = x).is_some(),
+            "run_ahead" => v.parse::<u32>().ok().filter(|n| *n <= MAX_RUN_AHEAD).map(|n| self.run_ahead = n).is_some(),
             "geo" => match model2::geo::GeoMode::parse(v) {
                 Some(model2::geo::GeoMode::Chip) => {
                     self.geo_chip = true;
@@ -481,6 +489,16 @@ mod tests {
         let (v, _) = s.resolve("stcc");
         edit_quietly(&mut s, "stcc", &v);
         assert!(s.cli.contains_key("exact"));
+    }
+
+    #[test]
+    fn run_ahead_is_off_or_up_to_three_frames() {
+        let mut v = GameSettings::default();
+        assert_eq!(v.run_ahead, 0);
+        assert!(v.set("run_ahead", "2") && v.run_ahead == 2);
+        assert_eq!(v.get("run_ahead"), "2");
+        assert!(!v.set("run_ahead", "4") && !v.set("run_ahead", "on"));
+        assert_eq!(v.run_ahead, 2);
     }
 
     /// `edit` without saving (the layers it would touch are given).

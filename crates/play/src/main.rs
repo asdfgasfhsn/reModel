@@ -80,6 +80,11 @@ usage: remodel-play [options]
                      interpolated between the last two game frames (one
                      game frame, about 17 ms, of extra latency; the native
                      geometrizer only; docs/play.md). Default off
+  --run-ahead N      run-ahead: show the game N frames (0 to 3) ahead of
+                     where it is, which takes up to N frames of the game's
+                     own input lag away (each game's is in the README),
+                     for N more emulated frames each frame; dropped if
+                     the machine can't keep up (docs/play.md). Default 0
   --exact            run at the arcade's exact 57.524 frames per second
                      (default: one frame per display refresh when the
                      refresh is 60 or 120 Hz, which is 4.3% fast but smooth)
@@ -100,8 +105,9 @@ usage: remodel-play [options]
                      presses both, @S:H holds them H seconds
 
 The game's settings (mix, HUD, aspect, bezel, speed, smooth motion,
-geometrizer) given here are for this run only, over the defaults for all
-games and the game's own, which the launcher's settings and the menu keep.
+run-ahead, geometrizer) given here are for this run only, over the
+defaults for all games and the game's own, which the launcher's settings
+and the menu keep.
 --rom and --fullscreen are remembered.
 
 keys: Esc menu (pause), F5 quick save, F9 quick load, F11 fullscreen. The
@@ -121,6 +127,9 @@ const PREVIEW_DB: f32 = -9.0;
 /// The preview's sound fades in over this, its picture out over `FADE_OUT`.
 const SOUND_FADE: Duration = Duration::from_millis(1200);
 const FADE_OUT: Duration = Duration::from_millis(200);
+/// Seconds of game the player may run behind before run-ahead is turned
+/// off.
+const RUN_AHEAD_GRACE: f64 = 3.0;
 /// A game started from the launcher fades in from black.
 const GAME_FADE: Duration = Duration::from_millis(400);
 
@@ -253,6 +262,13 @@ fn options(s: &mut Settings) -> Result<Options, String> {
                     cli("geo", if mode == model2::geo::GeoMode::Chip { "chip" } else { "native" });
                 }
             },
+            "--run-ahead" => {
+                let n = value()?;
+                match n.parse::<u32>() {
+                    Ok(n) if n <= settings::MAX_RUN_AHEAD => cli("run_ahead", &n.to_string()),
+                    _ => return Err(format!("--run-ahead wants 0 to {}", settings::MAX_RUN_AHEAD)),
+                };
+            }
             "--no-splash" => o.splash = false,
             "--fullscreen" => fullscreen = true,
             "--exact" => {
@@ -287,6 +303,14 @@ struct Session {
     /// The launcher's attract mode preview: no input, quieter, never saved
     /// (its EEPROM isn't the player's).
     preview: bool,
+    /// Run-ahead, when it's on: what's drawn is its frames ahead of
+    /// `machine`, which stays on the game's real timeline (sound, saves).
+    run_ahead: Option<model2::runahead::RunAhead>,
+    /// Run-ahead was turned off because the machine couldn't keep up.
+    run_ahead_dropped: bool,
+    /// The last frame drawn was run-ahead's (so the renderer's copy of
+    /// video RAM is that machine's).
+    drew_ahead: bool,
 }
 
 /// `set`'s save state folder.
@@ -315,6 +339,43 @@ impl Session {
         if bus.eeprom.dirty && !self.preview {
             let _ = std::fs::create_dir_all(self.dir());
             let _ = std::fs::write(self.dir().join("eeprom.bin"), bus.eeprom.save());
+        }
+    }
+
+    /// Run-ahead of `frames` (0: off; never for the preview) and smooth
+    /// motion `smooth`, where it goes: the machine drawn, the frames run
+    /// ahead while they are. `roms` if at hand, else loaded from `rom`.
+    fn set_run_ahead(&mut self, frames: u32, smooth: bool, roms: Option<&romset::RomSet>, rom: &Path) {
+        if frames == 0 || self.preview {
+            self.run_ahead = None;
+        } else if let Some(ra) = &mut self.run_ahead {
+            ra.set_frames(frames);
+        } else {
+            let loaded = match roms {
+                Some(_) => None,
+                None => match romset::RomSet::load(self.game, rom, false) {
+                    Ok(r) => Some(r),
+                    Err(e) => {
+                        eprintln!("run-ahead: {e}");
+                        return;
+                    }
+                },
+            };
+            let roms = roms.or(loaded.as_ref()).unwrap();
+            self.run_ahead = Some(model2::runahead::RunAhead::new(roms, &mut self.machine, frames));
+        }
+        self.machine.bus.geo.set_smooth(smooth && self.run_ahead.is_none());
+        if let Some(ra) = &mut self.run_ahead {
+            ra.set_smooth(smooth);
+        }
+    }
+
+    /// The machine to draw: run-ahead's frames ahead, while they're of the
+    /// game as it is now, else the game.
+    fn shown(&mut self) -> &mut model2::Machine {
+        match &mut self.run_ahead {
+            Some(ra) => ra.shown(&mut self.machine),
+            None => &mut self.machine,
         }
     }
 
@@ -375,6 +436,10 @@ struct Stats {
     /// Smooth motion: in-betweens drawn, and the host time computing them.
     smooth: u32,
     smoothing: Duration,
+    /// Run-ahead: times it ran (once a redraw with new frames), and the
+    /// host time copying the game and running the frames ahead.
+    ahead: u32,
+    run_ahead: Duration,
 }
 
 impl Stats {
@@ -393,6 +458,8 @@ impl Stats {
             geo_late: 0,
             smooth: 0,
             smoothing: Duration::ZERO,
+            ahead: 0,
+            run_ahead: Duration::ZERO,
         }
     }
 }
@@ -466,6 +533,8 @@ struct Play {
     /// that is too slow to follow the display (then the clock paces).
     frame_cost: f64,
     behind: bool,
+    /// Frames run since `behind` was last clear.
+    behind_frames: u32,
     stats: Stats,
     started: Instant,
 }
@@ -614,7 +683,19 @@ impl Play {
                 sound.as_ref().map_or(String::new(), |s| format!(", audio {} Hz", s.rate))
             );
             let bindings = settings::load_bindings(game);
-            Ok(Session { game, machine, sound, script, bindings, preview: false })
+            let mut s = Session {
+                game,
+                machine,
+                sound,
+                script,
+                bindings,
+                preview: false,
+                run_ahead: None,
+                run_ahead_dropped: false,
+                drew_ahead: false,
+            };
+            s.set_run_ahead(values.run_ahead, values.smooth_on(), Some(&roms), &self.settings.rom);
+            Ok(s)
         });
         match started {
             Ok(s) => {
@@ -694,7 +775,17 @@ impl Play {
         }
         let bindings = settings::load_bindings(game);
         self.epoch = Instant::now() - Duration::from_secs_f64(machine.frames as f64 / FPS);
-        self.session = Some(Session { game, machine, sound, script: None, bindings, preview: true });
+        self.session = Some(Session {
+            game,
+            machine,
+            sound,
+            script: None,
+            bindings,
+            preview: true,
+            run_ahead: None,
+            run_ahead_dropped: false,
+            drew_ahead: false,
+        });
         self.preview.shown = None;
         self.preview.leaving = None;
         self.behind = false;
@@ -766,9 +857,13 @@ impl Play {
                 snd.set_mix(new.sfx_db, new.music_db);
             }
         }
-        if old.smooth_on() != new.smooth_on() {
+        if (old.smooth_on(), old.run_ahead) != (new.smooth_on(), new.run_ahead) {
+            let rom = self.settings.rom.clone();
             if let Some(s) = &mut self.session {
-                s.machine.bus.geo.set_smooth(new.smooth_on());
+                // Setting it again tries again after it was dropped.
+                s.run_ahead_dropped &= old.run_ahead == new.run_ahead;
+                let frames = if s.run_ahead_dropped { 0 } else { new.run_ahead };
+                s.set_run_ahead(frames, new.smooth_on(), None, &rom);
             }
         }
         if old.geo_chip != new.geo_chip {
@@ -834,11 +929,14 @@ impl Play {
             let at = self.bezel_at(&view, origin, w);
             let slots = self.slot_times();
             let (Some(g), Some(s)) = (&mut self.gpu, &mut self.session) else { return Err("no game".into()) };
-            g.renderer.present_bus(&mut s.machine.bus, None, &view, &target, format, origin);
+            g.renderer.forget_ram();
+            g.renderer.present_bus(&mut s.shown().bus, None, &view, &target, format, origin);
+            s.drew_ahead = s.run_ahead.as_ref().is_some_and(|ra| ra.is_ahead_of(&s.machine));
             let (bezel, menu) = (&mut self.bezel, &mut self.menu);
             let mut values = self.values.clone();
             let (mut fullscreen, mut for_all) = (self.settings.fullscreen, self.settings.for_all);
-            let menu_view = menu::View { playing: Some(s.game.title), slots: &slots };
+            let menu_view =
+                menu::View { playing: Some(s.game.title), slots: &slots, input_lag: Some(s.game.input_lag) };
             draw_overlay(g, &target, false, [w, h], Some(ppp), |ctx| {
                 if let (Some(b), Some((rect, pic))) = (bezel.as_mut(), at) {
                     b.paint(ctx, rect, pic, w as f32, ctx.pixels_per_point());
@@ -1080,6 +1178,21 @@ impl Play {
             }
             ran += 1;
         }
+        // Run-ahead: from the newest real frame, the frames shown.
+        if let Some(s) = self.session.as_mut().filter(|_| ran > 0) {
+            if let Some(ra) = &mut s.run_ahead {
+                let t = Instant::now();
+                let r = ra.run(&mut s.machine);
+                self.stats.run_ahead += t.elapsed();
+                self.stats.ahead += 1;
+                if let Err(e) = r {
+                    // The game will stop there itself, that many frames on.
+                    eprintln!("run-ahead stopped: {e:?}");
+                    s.run_ahead = None;
+                    s.machine.bus.geo.set_smooth(self.values.smooth_on());
+                }
+            }
+        }
         // The audio rate for the next frames: the game's speed, scaled by
         // how well it kept it since the last redraw (a geometrizer slower
         // than real time holds it back), so the audio slows with the game
@@ -1158,7 +1271,14 @@ impl Play {
         // after it, at the cost of the polygons lagging a frame.
         let budget = frame_budget(g.refresh, self.values.exact);
         let period = frame_budget(g.refresh, self.values.exact || self.behind).as_secs_f64();
-        let bus = &mut s.machine.bus;
+        // Switching between the game and run-ahead's machine: video RAM
+        // versions are each machine's own.
+        let ahead = s.run_ahead.as_ref().is_some_and(|ra| ra.is_ahead_of(&s.machine));
+        if ahead != s.drew_ahead {
+            s.drew_ahead = ahead;
+            g.renderer.forget_ram();
+        }
+        let bus = &mut s.shown().bus;
         if bus.geo.wait_until(t0 + budget.mul_f64(0.8)) {
             // Smooth motion: the polygons part way from the frame before to
             // this one, by the time since this one was first shown. Only on
@@ -1198,6 +1318,22 @@ impl Play {
                 self.behind = true;
             } else if self.frame_cost < budget * 0.8 {
                 self.behind = false;
+            }
+        }
+        // Run-ahead the machine can't keep up with: off (until it's set
+        // again), rather than the game running slow. Counted in frames
+        // run, so time in the menu doesn't count.
+        self.behind_frames = if self.behind { self.behind_frames + ran } else { 0 };
+        if self.behind_frames as f64 > RUN_AHEAD_GRACE * FPS {
+            if let Some(s) = self.session.as_mut().filter(|s| s.run_ahead.is_some()) {
+                s.run_ahead = None;
+                s.run_ahead_dropped = true;
+                s.machine.bus.geo.set_smooth(self.values.smooth_on());
+                self.frame_cost = 0.0;
+                self.behind = false;
+                self.behind_frames = 0;
+                self.menu.notify("Run-ahead is off: this computer can't keep up with it");
+                println!("run-ahead     off: too slow to keep up");
             }
         }
     }
@@ -1246,7 +1382,11 @@ impl Play {
             || bezel_at.is_some()
             || fade.is_some()
         {
-            let view = menu::View { playing: self.session.as_ref().map(|s| s.game.title), slots: &slots };
+            let view = menu::View {
+                playing: self.session.as_ref().map(|s| s.game.title),
+                slots: &slots,
+                input_lag: self.session.as_ref().map(|s| s.game.input_lag),
+            };
             let navs = std::mem::take(&mut self.navs);
             let (menu, splash, bezel) = (&mut self.menu, &mut self.splash, &mut self.bezel);
             let mut values = self.values.clone();
@@ -1616,6 +1756,16 @@ impl Play {
             )
         } else {
             String::new()
+        } + &match self.session.as_ref().map(|s| (&s.run_ahead, s.run_ahead_dropped)) {
+            // Of the emulate time above: copying the game, and its frames ahead.
+            Some((Some(ra), _)) if st.ahead > 0 => format!(
+                " · run-ahead {} ({:.1} ms of that, copy {:.2} ms)",
+                ra.frames(),
+                st.run_ahead.as_secs_f64() * 1000.0 / st.ahead as f64,
+                ra.stats.copying.as_secs_f64() * 1000.0 / ra.stats.forks.max(1) as f64,
+            ),
+            Some((None, true)) => " · run-ahead off (too slow)".to_string(),
+            _ => String::new(),
         };
         if let Some(g) = &self.gpu {
             let title = match &self.session {
@@ -1995,6 +2145,7 @@ fn main() {
         last_emulate: None,
         frame_cost: 0.0,
         behind: false,
+        behind_frames: 0,
         stats: Stats::new(),
         started: Instant::now(),
     };

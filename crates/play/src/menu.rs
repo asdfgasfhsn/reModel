@@ -62,6 +62,8 @@ pub struct View<'a> {
     pub playing: Option<&'a str>,
     /// When each slot was saved, if it has been.
     pub slots: &'a [Option<SystemTime>],
+    /// The game's own input lag in frames (`romset::Game::input_lag`).
+    pub input_lag: Option<u8>,
 }
 
 fn age(t: SystemTime) -> String {
@@ -233,6 +235,24 @@ impl Menu {
                         &mut settings.smooth,
                         "Smooth motion (in-between frames above 60 Hz, a frame later)",
                     );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Run-ahead:");
+                    focus.radio(ui, "run_ahead", &mut settings.run_ahead, 0, "off");
+                    for n in 1..=crate::settings::MAX_RUN_AHEAD {
+                        let text = if n == 1 { "1 frame".to_string() } else { format!("{n} frames") };
+                        focus.radio(ui, "run_ahead", &mut settings.run_ahead, n, text);
+                    }
+                    // What this game has to hide (more only judders).
+                    ui.weak(match view.input_lag {
+                        Some(0) => "(this game has no lag to hide: best off)".to_string(),
+                        Some(1) => "(this game lags a frame: 1 at most)".to_string(),
+                        Some(n) => format!(
+                            "(this game lags {n} frames: {} at most)",
+                            n.min(crate::settings::MAX_RUN_AHEAD as u8)
+                        ),
+                        None => "(less input lag, more CPU)".to_string(),
+                    });
                 });
                 ui.horizontal(|ui| {
                     ui.label("Geometrizer:");
@@ -481,7 +501,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut actions = Vec::new();
         let slots = [Some(SystemTime::now()), None, None, None, None];
-        let view = View { playing: Some("A game"), slots: &slots };
+        let view = View { playing: Some("A game"), slots: &slots, input_lag: Some(2) };
         let (mut fullscreen, mut for_all) = (false, false);
         for navs in [&[][..]].iter().chain(frames) {
             let input = egui::RawInput {
@@ -582,7 +602,7 @@ mod tests {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0))),
                 ..Default::default()
             };
-            let view = View { playing: Some("A game"), slots: &[] };
+            let view = View { playing: Some("A game"), slots: &[], input_lag: None };
             let mut out = ctx.run_ui(input, |ui| {
                 m.ui(ui.ctx(), &mut s, Prefs { fullscreen: &mut f, for_all: &mut a }, &view, None, navs);
             });
