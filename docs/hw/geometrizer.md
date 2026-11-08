@@ -670,3 +670,17 @@ in-betweens 2-10 ms on the busy machine); recording and matching add
 0.05-0.5 ms a game frame (`fvipers` the most, many transforms of the
 same few models). In-betweens per game frame: one at 120 Hz, about 1.5
 at 144 Hz.
+
+**With run-ahead** (`model2::runahead`, `docs/play.md`): what's shown
+comes from a second machine that copies the game's state after each
+frame and runs N frames ahead; the in-betweens must go from one *shown*
+frame to the next, never from the game's own frame to one run ahead of
+it (when a control changes, those two differ by more than a frame's
+motion). So the second machine records transforms only in the last
+frame of each run (`Geometrizer::set_smooth_shown`; the frames before
+it mark the polygon RAM copy stale instead), and the copy of the game's
+engine leaves its record alone (`Engine::copy_from`): the next shown
+frame is matched with the last shown one. The game's own machine has
+smooth motion off meanwhile. Checked against a plain run (`make
+run-ahead-check`): where the controls held, the in-between shown after
+frame F is the plain run's in-between at frame F + N byte for byte.

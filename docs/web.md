@@ -578,6 +578,21 @@ above, with pause). Still to come:
   generic layout they get now from the pad bindings.
 - Height and aspect changes applied live (reconfiguring the canvas and
   view) instead of on a restart.
+- **Run-ahead** (the native player's, `docs/play.md`; `model2::runahead`).
+  The second machine copies the game's whole state each frame, the
+  geometrizer engine's included, which here lives in the geometry worker
+  (remote mode, which `Geometrizer::copy_from` refuses). Either the game's
+  engine comes back to the main thread while run-ahead is on (the
+  worker then runs only the shadow's frames: post it each run's start
+  state, or run the shadow's geometrizer inline too), or the worker
+  keeps a shadow engine of its own and copies the game's into it on a
+  message after each real frame (`Engine::copy_from` is in-process and
+  cheap), the main thread copying the rest. The shadow's i960 frames run
+  on the main thread, single-threaded: N more frames each frame needs a
+  game with that much headroom in WebAssembly (the 2C games, recompiled).
+  Its sound is never posted; drawing switches to its bus and its smooth
+  motion record, and the settings panel needs the setting (and the
+  game's `input_lag` hint). Copies are memory copies: about 1 ms natively.
 
 Remapping is done (above). Order: save states, then zips from a file,
 then controller art for the touch layout.

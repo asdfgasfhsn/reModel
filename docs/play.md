@@ -51,6 +51,108 @@ At 60 Hz (one game frame per refresh) there is nothing to draw between,
 and none are drawn below 69 Hz or when the game is behind (paced by the
 clock).
 
+**Run-ahead** (a setting, below: off, 1, 2 or 3 frames; `--run-ahead N`
+for one run; off by default). Every game takes some frames from reading
+a control to showing what it does: its own input lag, on top of the
+display's. Run-ahead hides up to N frames of it: after each game frame a
+second machine takes a copy of the game's state and runs N more frames
+with the controls as they are, and that machine's last frame is what's
+drawn (`model2::runahead`; RetroArch's idea, done here from scratch). The
+game itself never runs those frames: its sound, save states, EEPROM and
+state hash are exactly as without (`make run-ahead-check`), and nothing
+the frames ahead do leaves the second machine (their sound commands are
+dropped, its EEPROM and drive board are never read). How much there is
+to hide depends on the game (`make input-lag`, the README's "What's
+known" sections):
+
+| Game | Control | Input lag (frames) | Run-ahead worth setting |
+|---|---|---|---|
+| `topskatr`, `skisuprg`, `segawski`, `waverunr` | curving, swing, lean, handlebar | 0 | off |
+| `overrev`, `overrevb` | wheel | 0 | off |
+| `vstriker` | stick, shoot | 0 | off |
+| `hotd` | trigger | 0 (once 1) | off |
+| `schamp` | stick 0, punch 1 | 0 | off (1 for punches) |
+| `stcc`, `indy500` | wheel | 1 | 1 |
+| `doa` | punch, stick | 1 | 1 |
+| `fvipers` | punch | 1 (8 once, mid-move) | 1 |
+| `dynabb97` | bat, stick | 1 to 6, by the moment | 1 |
+| `bel` | trigger | 3 (one measurement) | up to 3 |
+| `sgt24h` | wheel | 4 | 3 |
+
+Input lag here counts the frames after the first one that reads the
+control, until the picture first differs from a run without it (`remodel
+latency`, which `make input-lag` runs for every game: two machines from
+the same frame of a run in play, one with the control held, their
+renders compared pixel by pixel). 0 means that first frame already shows
+it, which in the player is one frame from input to screen (the display
+adds its own). The fighters were measured with no button already under
+way; a move in progress can hold a control off for many frames (above,
+the "once" values), which no run-ahead hides. Each game's least value is
+in its manifest (`Game::input_lag`); the menu says it beside the setting.
+
+A game whose picture changes in the first frame that reads the control
+(0 above) has nothing to hide: run-ahead then only shows the game N
+frames further on than it is, and whenever a control changes, what's
+shown jumps from the guessed future to the real one (a judder of up to N
+frames). So run-ahead suits the games with lag above, by at most that
+many frames; it stays off unless set, and is a per-game setting like the
+others.
+
+The cost is a copy of the game's state per frame shown and N more frames
+of emulation, so a machine needs about N + 1 times the speed the game
+takes alone (the title bar says what run-ahead takes of the emulate time,
+and its copy). The copy moves only the memory either machine wrote since
+the last one (`Model2Bus::copy_from`; tile RAM and buffer RAM most
+frames, texture RAM when the game uploads) and the chips' state directly,
+no save state in between, keeping what the copro and geometrizer cores
+have decoded:
+
+| Game | Board | A game frame | Geometrizer wait + copy | Run-ahead 1 | Run-ahead 2 | Save + load instead |
+|---|---|---|---|---|---|---|
+| `topskatr` | 2C | 6.1 ms | 0.1 + 0.8 ms | 7.4 ms | 13.0 ms | 3.6 + 4.2 ms |
+| `skisuprg` | 2C | 6.0 ms | 0.2 + 0.7 ms | 7.4 ms | 12.8 ms | 5.3 + 1.8 ms |
+| `stcc` | 2C | 6.5 ms | 0.2 + 0.8 ms | 7.9 ms | 13.9 ms | 3.8 + 1.7 ms |
+| `segawski` | 2C | 5.8 ms | 0.2 + 0.8 ms | 7.2 ms | 12.5 ms | 3.6 + 2.2 ms |
+| `waverunr` | 2C | 6.8 ms | 0.2 + 0.8 ms | 8.4 ms | 14.3 ms | 4.8 + 2.2 ms |
+| `overrev` | 2C | 6.7 ms | 0.2 + 0.7 ms | 8.1 ms | 13.8 ms | 4.9 + 1.8 ms |
+| `hotd` | 2C | 6.7 ms | 0.2 + 0.8 ms | 8.4 ms | 13.9 ms | 3.8 + 2.1 ms |
+| `bel` | 2C | 5.3 ms | 0.2 + 0.8 ms | 6.7 ms | 11.6 ms | 3.9 + 1.9 ms |
+| `overrevb` | 2B | 8.6 ms | 0.8 + 1.2 ms | 12.9 ms | 16.4 ms | 5.0 + 3.0 ms |
+| `sgt24h` | 2B | 7.0 ms | 1.0 + 1.3 ms | 11.7 ms | 14.3 ms | 3.7 + 3.1 ms |
+| `dynabb97` | 2B | 12.1 ms | 0.3 + 1.2 ms | 15.7 ms | 23.2 ms | 3.5 + 3.5 ms |
+| `doa` | 2B | 8.2 ms | 0.9 + 1.2 ms | 12.6 ms | 16.6 ms | 4.3 + 3.7 ms |
+| `indy500` | 2B | 6.1 ms | 0.4 + 1.0 ms | 7.8 ms | 14.1 ms | 4.7 + 3.3 ms |
+| `fvipers` | 2B | 8.6 ms | 0.7 + 1.1 ms | 10.9 ms | 19.9 ms | 5.4 + 3.0 ms |
+| `schamp` | 2B | 9.4 ms | 1.2 + 1.1 ms | 12.1 ms | 22.5 ms | 4.4 + 3.5 ms |
+| `vstriker` | 2B | 9.1 ms | 1.0 + 0.9 ms | 11.1 ms | 21.1 ms | 3.1 + 2.9 ms |
+
+Per shown frame, natively, the i960 interpreted and the native
+geometrizer (`make run-ahead-check`, 2,071 frames of a coin-start run,
+four games at a time on a 16-core desktop; run-ahead 1 with smooth
+motion on, 2 without): a game frame as the game runs it alone (the
+geometrizer on its thread not counted), the wait for the game's
+geometrizer frame and the copy, then everything run-ahead adds to each
+frame. A whole save state and load instead of the copy would cost the
+last column (16 MB each way). Recompiled builds weren't measured:
+run-ahead's frames run the recompiled code too, so they cost what the
+game's frames do there, plus the same copy.
+
+With the chip geometrizer (`--geo chip`) the copy also waits for the
+game's own geometrizer frame, which otherwise runs alongside the next
+frame: about one interpreted SHARC frame on 2B, so run-ahead there
+needs the native geometrizer (the default). If the game falls behind
+(paced by the clock) for 3 s with run-ahead on, the player turns it off
+and says so; setting it again tries again. The second machine takes as
+much memory again as the game's machine (50 MB for `topskatr`, 85 MB
+for `vstriker`, measured). The launcher's previews never run ahead.
+
+With smooth motion on too, the in-betweens blend the frames that are
+*shown*, one run ahead from the last game frame with the next: the
+second machine notes the transforms of the last frame of each run only
+(`Geometrizer::set_smooth_shown`) and keeps them across copies, and the
+game's own machine records none (`docs/hw/geometrizer.md`, "Smooth
+motion"). `make run-ahead-check` compares them with a plain run's.
+
 ## The launcher
 
 The start screen, when no game is given, and from the menu's "Back to
@@ -465,9 +567,9 @@ synthetic and scripted (`--nav`) events only, not yet with a real pad.
   default 8:-8 was set by ear (`docs/hw/sound.md`).
 - **Display**: the aspect (fit the window, the default, drawing the game
   wider than its frame from 4:3 to 32:9; or 4:3, `--aspect 4:3`), the
-  bezel (below), where the HUD goes on wide windows, smooth motion, the
-  geometrizer (on the next start), "Save changes for" this game or all
-  games (as in the launcher), and exact arcade speed
+  bezel (below), where the HUD goes on wide windows, smooth motion,
+  run-ahead (above), the geometrizer (on the next start), "Save changes
+  for" this game or all games (as in the launcher), and exact arcade speed
   (57.524 frames per second) against the default of one game frame per
   display refresh at 60 or 120 Hz, which is 4.3% fast but smooth.
   **Below full speed** (a game frame taking longer than a refresh, as

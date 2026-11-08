@@ -10,7 +10,12 @@
 //!
 //! The real machine never runs a speculative frame, so nothing has to be
 //! restored: its timeline, state hash, sound, EEPROM and save states are
-//! exactly as without run-ahead, whenever a front end looks at them. The
+//! exactly as without run-ahead, whenever a front end looks at them.
+//! (Saving one machine, running it ahead and loading it back would leave
+//! it off its timeline from the frames ahead until the restore, which the
+//! drawing needs to come after; every save, pause and EEPROM write would
+//! have to know. Two machines cost memory instead, and one copy a frame
+//! where that costs a save and a load.) The
 //! shadow's own side effects go nowhere: its sound commands are dropped
 //! after each frame, and nothing else (EEPROM, drive board, coverage)
 //! leaves it, since a front end only draws it. The cost is a copy of the
