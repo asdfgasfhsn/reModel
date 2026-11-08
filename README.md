@@ -32,7 +32,7 @@ music`). There is no live window yet.
 | i960 interpreter (reference and tracer) | done; boots `topskatr` into its interrupt-driven init |
 | Model 2C board model (memory, IRQs, timers, I/O, copro interface) | in progress |
 | MB86235 geometry processor: disassembler and reference interpreter | done; runs the game's uploaded program |
-| Model 2A: `srallyc` (Sega Rally Championship, 2A-CRX; work in progress) | not playable, not in the game lists (`romset::games::IN_PROGRESS`). The board model boots it (`Board::Model2A`) and runs the TGP's uploaded program on an MB86234 interpreter (`crates/mb86234`, `docs/hw/mb86234.md`): every function the game calls, with the matrices it writes into the display list; the attract mode's tile layers run (export warning, credit line, ranking table); sound plays. No 3D: the 2A's fixed-function geometrizer and its polygon ROM format aren't modelled yet (`docs/hw/model2a.md` §7) |
+| Model 2A: `srallyc` (Sega Rally Championship, 2A-CRX; work in progress) | draws its 3D, textured (attract mode and races: `make run GAME=srallyc INPUT=coin-start`), but is **not** in the game lists (`romset::games::IN_PROGRESS`). The board model boots it (`Board::Model2A`) and runs the TGP's uploaded program on an MB86234 interpreter (`crates/mb86234`, `docs/hw/mb86234.md`); the fixed-function 2A geometrizer is the 2C native geometrizer's command handling over the 2A polygon ROM (`docs/hw/model2a.md` §5, §7); sound plays |
 | Geometrizer (second MB86235) running the game's own program | done; gameplay frames produce the rasteriser stream |
 | Recompiler: i960 → native | done; opt-in (`make recomp`, then `RECOMP=1`), identical state hash; 96% of the game's instructions become plain Rust, the rest call the interpreter with the instruction pre-decoded; see `docs/recompiler.md` |
 | Recompiler: MB86235 programs → Rust | done; built with the i960 code, geometrizer about 1.5x faster |
@@ -470,11 +470,11 @@ chip but the program pair). Details, addresses and evidence in
 
 ## What's known about Model 2A
 
-Only `srallyc` is here, and it is work in progress (milestone 3: the TGP
-runs; no 3D yet). The board map, the TGP's interface, the functions of its
-program and what it gives the geometrizer are in `docs/hw/model2a.md`; the
-MB86234's instruction set, as far as it is known and how each part was
-pinned, in `docs/hw/mb86234.md`.
+Only `srallyc` is here, and it is work in progress (milestone 4: the TGP
+runs and the 3D is drawn, textured). The board map, the TGP's interface,
+the functions of its program, the polygon ROM and the geometrizer are in
+`docs/hw/model2a.md`; the MB86234's instruction set, as far as it is known
+and how each part was pinned, in `docs/hw/mb86234.md`.
 
 - *Confirmed (`srallyc`'s code):* the 2A TGP's program is **uploaded by the
   game**, not internal to the chip as general knowledge had it. The loader
@@ -501,14 +501,22 @@ pinned, in `docs/hw/mb86234.md`.
   subtract give full precision); `.58/.59` reciprocal mantissas, `.62/.63`
   inverse square root mantissas for even and odd exponents.
 - *Confirmed (`srallyc`):* no geometrizer program is uploaded; display lists
-  go straight to `0x804000`, in the 2C geometrizer's command set, and the
+  go straight to `0x804000`, in the 2C geometrizer's command set (with only
+  the fn field of the command words set: no check pattern), and the
   TGP writes each object's Matrix command (fn `0x0B`) into the gaps the
   i960 leaves in them, at byte offsets from a table at buffer RAM
-  `0x18000`. The 2A geometrizer is presumably fixed-function
-  (unconfirmed).
-- *Confirmed (`srallyc`):* video RAM at `0x12000000` takes 16-bit values in
-  32-bit words, filled from main data at boot (`docs/hw/model2a.md` §3);
-  that it is texture RAM is unconfirmed.
+  `0x18000`. The 2A geometrizer is fixed-function hardware (no program);
+  reModel runs the 2C native geometrizer's command handling in its place
+  (`Core::Fixed`), and the result is right to the eye (its arithmetic
+  against the chip's is unconfirmed).
+- *Confirmed (`srallyc`, by the pictures):* the **polygon ROM** is the 2C's
+  model format in two banks of 32-bit words at model addresses
+  `0x800000` and `0x900000`, **`.16` + `.20` and `.17` + `.21`** (low half
+  first), not the chips' neighbours; the texture headers and point lists
+  are in `.25` (even words) and `.24` (odd words); the video RAM at
+  `0x12000000` is texture RAM (the 2C's render RAM with 16-bit words in
+  32-bit slots, banks 4 MB apart) and the table at `0x12800000` the luma
+  table (`docs/hw/model2a.md` §3, §5, §7).
 
 ## What's known about `srallyc`
 
@@ -516,23 +524,49 @@ Sega Rally Championship (Sega; revision C; ©SEGA 1994 on the attract
 screens, and the boot warning "used only in Japan"), the seventeenth game
 manifest and the first Model 2A one. `srallyc.zip` also holds the older
 program revision `b` and two chips named `ic12.bin`/`ic13.bin` (the program
-pair again); they aren't used. **Not playable yet**: the manifest is in
-`romset::games::IN_PROGRESS`, which `remodel run` and `make run` use but no
-front end lists.
+pair again); they aren't used. **Not playable yet**: the 3D is drawn and
+a race starts, but the car's physics runs away after the start (below); the
+manifest is in `romset::games::IN_PROGRESS`, which `remodel run` and `make
+run` use but no front end lists.
 
 - *Confirmed (by running it):* `make run GAME=srallyc INPUT=coin-start
-  STEPS=700000000 SNAP=500` boots the i960 program through the memory
+  STEPS=700000000 SNAP=100` boots the i960 program through the memory
   setup, uploads the TGP program at frame 79, passes the load check
-  (the program, running, answers it) and runs the attract mode's tile
-  layers for 4,800 frames: the "WARNING ... used only in Japan" screen (frame 500), the
-  "SEGA RALLY CHAMPIONSHIP 1995" title logo (frame 1,000), a blue screen
-  with `CREDIT 1/2`, `©SEGA 1994` and the logo (frames 1,500 and 2,000: the
-  3D scene that belongs behind it is missing) and the "CHAMPIONSHIP TOP 16"
-  ranking table (frame 3,000) (rank, name, time, car with AT/MT).
-  The coin makes the credit line read `1/2`: the default setting asks for two
-  coins (so `coin-start` doesn't start a game; unconfirmed that this is the
-  setting). The sound board boots from `epr-17890.30` and plays. No 3D:
-  see below.
+  (the program, running, answers it) and runs the attract mode: the
+  "WARNING ... used only in Japan" screen (frame 500), the "SEGA RALLY
+  CHAMPIONSHIP 1995" title logo (frame 1,000), and from frame 1,350 **the
+  3D**: a rally car and its rival jumping a dirt road through a forest
+  with a cloudy sky, a rally car head on over an "INSERT COIN(S)" sign, the
+  same road at a distance with dust at the cars' wheels, all textured and
+  lit, behind `CREDIT 0/2`, `©SEGA 1994` and the logo; then the
+  "CHAMPIONSHIP TOP 16" ranking table (frame 3,000). The default setting
+  asks for **two coins** per credit: `coin-start` pays twice, presses start
+  and gets to the CAR SELECT screen (frame 1,800: "select with the wheel,
+  confirm with the accelerator", four cars, AT or MT), then the course map,
+  the start line (a gate, crowd, banners, "SEGA RALLY CHAMPIONSHIP" boards,
+  the dashboard and a rear-view mirror) and the countdown (frames 1,900 to
+  2,400), all drawn. **The car then runs away**: with the accelerator held
+  the speedometer reaches 250 km/h in five seconds, the car turns off the
+  road, flies and tumbles; released it creeps and veers. The cause isn't
+  found (`docs/hw/model2a.md` §9). The sound board boots from
+  `epr-17890.30` and plays.
+- *Confirmed (by the pictures):* the 2A polygon ROM, texture ROM and
+  texture RAM layouts that make this draw: see "What's known about Model
+  2A" above and `docs/hw/model2a.md` §5, §7. The pictures are the evidence
+  (a wrong pairing gave scattered polygons, a right one the road and the
+  cars); no picture or ROM data is in the repository.
+- *Confirmed (running the race):* the TGP has a **data ROM** on its
+  external bus, from word address `0x800000` (`.29/.28`, `.31/.32`), which
+  the race's collision functions read (the car fell through the road
+  without it); its address registers are 24 bits wide
+  (`docs/hw/model2a.md` §9, `docs/hw/mb86234.md`). One instruction form it
+  needs (`BF 00`, jump if the zero flag is clear) is a hypothesis.
+- *Confirmed (from the game's input test, by holding each bit):* coin 1
+  and 2 are port 0 bits `0x01`, `0x02`, test and service `0x04`, `0x08`, VR
+  (the view button) `0x20` and start `0x40`; SHIFT3 and SHIFT4 are port 1
+  bits `0x10` and `0x20` (SHIFT1 and SHIFT2 answer to no bit); the wheel,
+  accelerator and brake are analog channels 0, 1 and 2. Which way each
+  analog value runs is unconfirmed.
 - *Confirmed:* the ROM chips' layout (`docs/hw/model2a.md` §5): the main
   data pairs are packed 4 MB apart (`.10/.11`, `.8/.9`, `.6/.7`), the
   texels the game copies to `0x12000000` come from `0x2200000`, the
@@ -557,14 +591,14 @@ front end lists.
   of them (`model2::tgp2a_hle`, `--tgp2a hle`) had the rotations' signs
   backwards and `0x5C` wrong, and didn't know `0x54`, `0x55` or the list
   output; `make tgp-check` compares it.
-- *Unconfirmed:* the polygon ROM's format: the objects' model addresses
-  land in the `.20`/`.21` pair, whose chips each hold a stream of 16-bit
-  values in the 2C model layout, not 32-bit floats (`docs/hw/model2a.md`
-  §7); the textures' path from `0x12000000`; the controls (the manifest's
-  coin, start, test and service bits are the other games' layout), the
-  cabinet's drive board and link.
-- *Not done:* a geometrizer for 2A (no 3D is drawn), wheel and pedal
-  inputs.
+- *Unconfirmed:* the 2A geometrizer's own arithmetic, lighting and
+  clipping (the 2C native geometrizer's stands in: the pictures look
+  right); the two bytes of port 1 that SHIFT1 and SHIFT2 should be; the
+  cabinet's drive board (the game writes its command byte; it isn't
+  modelled) and link.
+- *Not done:* the car's physics after the start (above); a poster
+  (the game isn't listed yet); the `.29/.28` and `.31/.32` data beyond what
+  the first block of the race reads.
 
 ## What's known about `topskatr`
 

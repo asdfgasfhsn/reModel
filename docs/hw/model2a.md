@@ -6,18 +6,20 @@ code and from running it on the board model (`model2::bus` with
 `Board::Model2A`, `model2::tgp2a`); where a statement is a guess it says
 so. The 2A's processor, the Fujitsu MB86234, is in `mb86234.md`.
 
-**Status (milestone 3).** The board model boots `srallyc`, passes its
-coprocessor load check and runs the attract mode's tile layers: the export
-warning, the title logo, the credit and (c) line, the ranking table. The
-TGP **runs the uploaded program** on the MB86234 interpreter
-(`crates/mb86234`, `mb86234.md`), its external bus on the geometrizer's
-buffer RAM: every function the game calls runs, the answers are the
-program's own, and the program writes each object's matrix into the
-display list (§7). No 3D is drawn yet: the 2A geometrizer is
-fixed-function hardware with no model here, and its polygon ROM format is
-not the 2C one (§7). `srallyc` is in `romset::games::IN_PROGRESS`, not
-`ALL`, so no front end lists it. `--tgp2a hle` swaps the chip for
-milestone 2's function model (`model2::tgp2a_hle`, §6) for comparison.
+**Status (milestone 4).** The board model boots `srallyc`, passes its
+coprocessor load check, runs its tile layers and **draws its 3D, textured**:
+the attract mode's rally scenes (cars, track, forest, sky) and, with the
+coins in, the game's menus and races. The TGP runs the uploaded program on
+the MB86234 interpreter (`crates/mb86234`, `mb86234.md`), its external bus
+on the geometrizer's buffer RAM: the program writes each object's matrix
+into the display list (§7). The 2A geometrizer is fixed-function hardware
+with no model of its own here: reModel draws with the 2C native
+geometrizer's command handling (`Core::Fixed`, `Program::Fixed` in
+`geo_native_2c.rs`) over the polygon ROM as §5 lays it out, and its texture
+RAM is the video RAM of §3 (*confirmed* by the pictures: §7). `srallyc` is
+in `romset::games::IN_PROGRESS`, not `ALL`, so no front end lists it.
+`--tgp2a hle` swaps the chip for milestone 2's function model
+(`model2::tgp2a_hle`, §6) for comparison.
 
 ## 1. What the 2A shares with 2B and 2C (confirmed by the run)
 
@@ -34,11 +36,10 @@ mix with a peak of about 2,500).
 
 The 2A geometrizer takes no uploaded program: nothing but the TGP's is
 written to the upload ports (*confirmed*), so it is fixed-function
-hardware, unlike 2B's SHARC and 2C's second MB86235. The display lists the
-game builds go to `0x804000` as on 2C, in the 2C geometrizer's command set
-(§7: the 2B and 2C programs reimplement this hardware's interface).
-Nothing here models the geometrizer's output; the model's geometrizer,
-never booted, takes the words and draws nothing.
+hardware, unlike 2B's SHARC and 2C's second MB86235. The display lists
+the game builds go to `0x804000` as on 2C, in the 2C geometrizer's command set
+(§7: the 2B and 2C programs reimplement this hardware's interface). The
+board model runs them through the 2C native geometrizer (§7).
 
 ## 2. Where the 2A differs
 
@@ -74,16 +75,24 @@ values, from main data:
 - Values like `0x1111`, `0x1133`, `0xFFFF`, `0xEEEE`, `0x8888`, `0xAAAA`:
   runs of equal nibbles, as 4-bit texels would be.
 
-*Unconfirmed:* that this is texture RAM (the 2B and 2C games copy their
-texel sheets from main data to `0x11000000` the same way,
-`geometrizer.md` §3), and how the rasteriser addresses it. The 256-word
-table at `0x12800000` holds each value 0..127 twice in a row
-(`0,0,1,1,2,2,...`); the game writes it once and never reads it back
-(function unknown: a luma or fade ramp is a guess).
+*Confirmed (by the pictures, §7):* this is **texture RAM**, the 2C's
+render RAM at `0x11000000` with its 16-bit words spread to 32 bits: the
+rasteriser's sheet addressing (`geometrizer.md` §5.1) reads it unchanged
+once each word `k` of the 2A block is taken as 16-bit word `k` of the 2C
+one. Bank 0 is `0x12000000`, bank 1 `0x12400000` (2C: `0x11000000`,
+`0x11200000`), which is why the game's two copies land where they do (bank
+0 words 0-`0x5FFFF`, bank 1 words `0x60000`-`0x7FFFF`: the 1 MB source is
+one 512K-word run split over the two). The 256-word table at `0x12800000`,
+each value 0..127 twice (`0,0,1,1,2,2,...`), is the **luma table**: the
+2C's render RAM `+0x400000` (table 0, linear), read as the low byte of each
+word (`geometrizer.md` §5.1). Texels, luma and the colour translation
+tables of the palette RAM all behave as on 2C.
 
 The board model maps 8 MB at `0x12000000` and 64 KB at `0x12800000` as
-plain RAM for 2A boards only (`Model2Bus::new`), and `remodel run` dumps
-both to `out/GAME/vram2a-*.bin`.
+plain RAM for 2A boards only (`Model2Bus::new`) and keeps each 16-bit word
+written there also at its 2C place in the render RAM the rasteriser reads
+(`mirror_video_2a`); `remodel run` dumps both blocks to
+`out/GAME/vram2a-*.bin`.
 
 ## 4. The TGP's interface as the i960 uses it
 
@@ -187,8 +196,9 @@ address, the first 200,000 events) and the program as `out/GAME/tgp.bin`.
 | `mpr-17746.10` / `-17747.11` | main data at `0x2000000` (4 MB) | its first word is a count (300) and its next words pointers `0x2000010`, `0x2001C30`, ... into itself, then floats; texel source at `0x2200000` (3) |
 | `mpr-17744.8` / `-17745.9` | main data at `0x2400000` | read in full by the game (1 MB); looks like image data; purpose unconfirmed |
 | `mpr-17884.6` / `-17885.7` | main data at `0x2800000` | the game reads floats here (`0x2860000`-`0x28C0000`, `0x29E0000`): model vertex data |
-| `mpr-17748.16`/`.17`, `.20`/`.21`, `.24`/`.25` | polygon ROM pairs (the geometrizer's) | float-like data in `.20/.21`; order and layout unconfirmed (nothing reads them yet) |
-| `mpr-17754.29`/`.28`, `mpr-17756.31`/`.32` | texture ROM pairs | the first pair starts with the count 300; unconfirmed |
+| `mpr-17748.16` (low) / `-17750.20` (high), `mpr-17749.17` (low) / `-17751.21` (high) | **polygon ROM**: two banks of 1M 32-bit words, at model addresses `0x800000` and `0x900000` | §7: every polygon attribute word parses and the normals are unit length. **The pairs are not the numbers' neighbours**: `.16/.17` are the low halves, `.20/.21` the high halves, of banks 0 and 1 |
+| `mpr-17753.25` (even words) / `-17752.24` (odd words) | **texture ROM**: texture headers and point lists as 16-bit words (2C: `.27/.25`), read at the address the display list's tpa/tha give (bit 23 clear) | §7: headers decode (texture, size, sheet position, luma table, colour), the pictures are right. **`.25` is the even half**, the reverse of the order the chips are numbered in |
+| `mpr-17754.29` (low) / `-17755.28` (high), `mpr-17756.31` / `-17757.32` | **the TGP's data ROM**: two 32-bit banks at addresses `0x800000` and `0x900000` of its external bus | §9: the course data its collision functions read; the first begins with a count (300) |
 | `opr-14742a.45`/`.46`, `.58`/`.59`, `.62`/`.63` | the TGP's lookup tables (a sine table of floats, reciprocal and inverse-square-root mantissas) | numerically, README "What's known about Model 2A" |
 | `epr-17890.30` | 68000 sound program | the sound board runs it |
 | `mpr-17886.36`, `-17887.37` | SCSP samples | the sound plays |
@@ -197,7 +207,8 @@ address, the first 200,000 events) and the program as `out/GAME/tgp.bin`.
 The main data pairs are **packed**, 4 MB each from `0x2000000`
 (`Game::packed`), where 2B's and 2C's are 8 MB slots: the 8 MB layout
 puts the vertex data's pair at `0x3000000`, where the program does not
-read. The zip also holds the older program revision `b`
+read. The polygon and texture ROM are packed too (the bank at `0x900000`
+is 1M words after `0x800000`, not 2M as in a 2C slot). The zip also holds the older program revision `b`
 (`epr-17888b.12`, `epr-17889b.13`) and `ic12.bin`/`ic13.bin`, which are
 the program pair again under other names; they are not used.
 
@@ -254,12 +265,13 @@ times, `0x5C` 15,372: more than with the function model, whose wrong
 answers sent the game down other paths). No unknown word runs, no read
 finds the FIFO empty, no call fails to finish.
 
-## 7. What the TGP gives the geometrizer (milestone 3)
+## 7. The geometrizer (milestone 4)
 
-*Confirmed (by running the program and decoding the frame's list):* the
-TGP's only output to the geometrizer is function 5 (alone or inside `0x55`,
-`0x5D`, `0x5F`): it writes a geometrizer **Matrix command** into the
-display list in buffer RAM, which is the TGP's shared RAM (32K words,
+### What the TGP gives it (milestone 3, *confirmed*)
+
+The TGP's only output to the geometrizer is function 5 (alone or inside
+`0x55`, `0x5D`, `0x5F`): it writes a geometrizer **Matrix command** into
+the display list in buffer RAM, which is the TGP's shared RAM (32K words,
 word addresses). The handshake:
 
 1. The i960 builds the frame's list through the geometrizer ports as on
@@ -276,39 +288,165 @@ word addresses). The handshake:
    held, the calling function's command word when 5 is called alone) and
    the current matrix's 12 words.
 
-The list of one attract frame (2,145 words) then parses cleanly with the
-2C command set: fn 4 (texture point RAM), `0x16` (LOD), 7 (mode), 8 (z-sort
-8.0), 6 (22 lighting entries), 3 (window: (0, 128)-(496, 512), centre (248,
-320)), 9 (focal lengths 350, 350), `0x0A` (light), then 100 matrices from
-the TGP and 109 objects, then END. The matrices are rotations (rows of
-length 1) with translations of a few units.
+The list of one attract frame then parses with the 2C command set: fn 4
+(texture point RAM, 216 words at `0x800100`), `0x16` (LOD), 7 (mode), 8
+(z-sort 8.0), 6 (22 lighting entries), 3 (window: (0, 128)-(496, 512),
+centre (248, 320)), 9 (focal lengths 350, 350), `0x0A` (light), then the
+matrices from the TGP and the objects, then END.
 
-*What a 2A geometrizer model needs*, beyond this command set:
+### The command words (*confirmed*)
 
-- **The polygon ROM's format** (*not known*). The objects' model addresses
-  (oba, from `0x800000`) land in the `mpr-17750.20`/`.21` pair, not the
-  first pair as the 2C bank order puts them, and the data there are not
-  2C models read as 32-bit words: each chip's 16-bit words form a stream
-  of their own that looks like the 2C standard format with every value
-  cut to its top 16 bits (`.21` at oba `0x80334C`: P0 (-328, -10.2, 20.5),
-  P1 (0, 0, 0), attr `0x30A4`, normal (-0.53, -0.71, 0.46), Pa, ...), but
-  the offsets don't always line up with oba (`0x80848B` points at an
-  attribute word with the first edge six words before). How the two chips
-  and the three pairs make up the address space is the next thing to
-  find. Putting the 2C native geometrizer on the 2A lists (tried, not
-  kept) draws a handful of polygons and garbage vertices because of this.
-- **Textures**: the texel data the game copies to `0x12000000` (§3) is
-  presumably what the rasteriser reads (2B/2C: `0x11000000`).
-- The arithmetic, lighting and clipping of the fixed-function chip, which
-  the 2B/2C programs only imitate.
+The i960's command words reach buffer RAM with only the fn field set
+(bits 23-27: it writes 0 to the command port, whose address gives the fn),
+the TGP's matrix words carry whatever its register held in the low
+bits, and the first word of a list is `0x02000000` (fn 4): none has the
+2C's check pattern (fn repeated in bits 8-12 and 0-4). The hardware takes
+the command from bits 23-27 alone, so the 2C native geometrizer's command
+check is off for the 2A (`Program::Fixed`).
 
-## 8. Where milestone 4 starts
+### The polygon ROM (*confirmed*)
 
-- The polygon ROM's layout and value format (above), then a 2A
-  geometrizer: most likely the 2C native geometrizer's command handling
-  with a 2A model reader, fed the lists as they are, then the textures.
-- The TGP's unknowns (`mb86234.md`, "Not known") don't block anything the
-  game calls.
+A model is the 2C's standard format (`geometrizer.md` §3.1): two vertices
+P0, P1, then polygons of attr, normal, Pa, Pb (10 words each, a triangle
+padding Pb with zeros), as IEEE single floats, with the attribute word's
+link bits repeated in bits 23-24. What was missing in milestone 3 was the
+chip pairing. Each chip is 16 bits wide and holds **half** of the 32-bit
+words, but **bank 0 is `.16` (low half) with `.20` (high half) and bank 1
+is `.17` with `.21`**; `.24/.25` are not polygon data (§5). Evidence:
+
+- At the model `oba = 0x80334C` (`obc = 0x279`, 633 polygons) the chips
+  `.16` and `.20` read as one 32-bit word stream give an attribute word
+  that is shaped as one (type in bits 0-1, bits 2-7 clear) in all 633
+  polygons and a unit-length normal in 513 (the rest are polygons with no
+  normal, zero); every other pairing of the six chips scores 0-96 of
+  633 attribute words. Read as 16-bit streams on their own, `.20` and
+  `.21` each show a model with plausible normals (the milestone 3
+  reading): a float cut to its top half is a float with a random low
+  half, and the **low halves are in a different chip**. The other pair
+  of chips at the same word index holds a second, unrelated model, in
+  step with the first because both banks are laid out polygon by polygon.
+- Model addresses from `0x800000` index bank 0 and from `0x900000` bank 1
+  by 32-bit word (`oba = 0x91119F`, `0x92144E` parse the same way in
+  `.17`/`.21`: 316 of 316 and 40 of 40 attribute words).
+- A native geometrizer reading the polygon ROM this way draws the cars,
+  road and trees (below).
+
+### The geometrizer
+
+`Core::Fixed` (`model2::geo`) is a geometrizer with no program: the
+2C native geometrizer's command handling (`geo_native_2c`, in its
+`Program::Fixed` form: the shared program's maths with the squarings
+table set at start and no command check) on the list as buffer RAM
+gives it, with the polygon ROM above. It runs from the first frame with
+whatever `--geo` says. The display list's matrices, windows, focal
+lengths, lighting, mode and light vector are all the 2C commands. The 2A
+chip's own arithmetic, lighting and clipping are *unconfirmed*: this is
+the 2C programs' behaviour, which the pictures agree with (the cars are
+lit from the side, the road and trees shaded by their normals).
+
+### Textures and colour (*confirmed* by the pictures)
+
+- Tpa and tha point at the texture ROM (`.25`/`.24`, 16-bit words,
+  address bit 23 clear) or at texture point RAM (bit 23 set; fn 4 writes
+  it, as on 2C).
+- Texel sheets: the video RAM at `0x12000000` (§3), addressed as the 2C's
+  render RAM.
+- Luma tables: `0x12800000` (§3). Colours: palette RAM `0x1802000`+ and
+  the three colour translation tables from `0x1810000`, as on 2C (the
+  game fills them).
+
+With these the rasteriser draws the attract mode's scenes as pictures
+(headless renders at frames 1,400 to 1,900 of `make run GAME=srallyc`): a
+road through a forest with a blue sky and clouds, rally cars in white and
+red with their shadows, dust, and the game's own overlays; and a
+"INSERT COIN(S)" screen over the same.
+
+## 8. What is left
+
+- The 2A geometrizer's own arithmetic (rounding, the lighting equation's
+  details, specular), clipping and z-sort are the 2C program's, not
+  checked against the 2A hardware.
+- The two unidentified ROM pairs (`.29/.28`, `.31/.32`, §5), and the
+  `0x1A14000` link board, the drive board and the cabinet's other
+  inputs.
 - `out/srallyc/tgp.bin` (`make run GAME=srallyc` writes it; `make
   tgp-disasm GAME=srallyc` lists it, `make tgp-check GAME=srallyc` checks
   it) and the call log (`tgp-calls.txt`).
+
+## 9. The TGP's data ROM and the race (milestone 4)
+
+*Confirmed (by the run):* the TGP's external bus has a **data ROM from
+word address `0x800000`**, in both of the chip's bus modes (the bus
+instructions `63400000`, shared RAM, and `63000000`, the function unit):
+`.29` and `.28` as one 32-bit bank (`.29` the low half) and `.31` and `.32`
+as the next, packed (`0x900000`), as the 2C's TGP has its `CoproData` at
+`0x800000`. The address registers are 24 bits wide: the program makes a
+ROM address by adding `-0x800000` to the pointer it was given and, in the
+function that reads a block, steps through it from there. (Milestone 3 had
+them 16 bits and no ROM: nothing the attract mode calls reads it.)
+
+What the race needs from it, as the i960's code and the TGP's program show:
+the i960 keeps a table (RAM `0x5DCAC0`, 12 bytes an entry: `0xDE30,
+0x1ADA0, 0x2003E00`; `0x272E0, 0x3C110, 0x200BA00`; ...: two word offsets
+and a main-data address) and, four times a frame (each wheel), puts the
+first word into the TGP's list and calls function `7`, which reads the ROM
+word at that offset (`0xDE30`: it holds 300, the count at the start of a
+block of the course data, as the ROM's own first word does), then `0x52` (search the block for the cell under the wheel and store a
+pointer to its record, or a "none" marker, in a table at the TGP's RAM
+word 104), and `0x53` (give the 17 words of the record). **Without the
+ROM, function 7 answered 0, `0x52` was never called, `0x53` answered
+zeros ("no ground") and the car fell through the road at the start of
+every race.** With it the car stands on the start line through the
+countdown (0 km/h).
+
+*Hypothesis:* one instruction form the search loop needs was unknown:
+`BF 00 xxxx`, here after an add that counts the loop's counter up to 0 and
+before the return. Read as **jump if the zero flag is clear** (`BE 00` is
+jump if zero) it makes the search work (the car finds the ground), so
+`mb86234` takes it so; the form is otherwise unconfirmed.
+
+*Not working yet:* once the countdown ends the car does not drive. With
+the accelerator held, the speedometer runs to about 250 km/h within five
+seconds with the camera turning left, and then the world tumbles (the
+screen is sky and sea); with the accelerator released it creeps at
+25 km/h and veers off the road, and later flies over the countryside in
+the picture's aerial view. The start (the course map, the start gate with
+its crowd and banners, the "SEGA RALLY CHAMPIONSHIP" barriers, the
+countdown, the dashboard and rear-view mirror) all draw correctly. The
+cause is not found: the TGP functions the race calls that nothing
+checks numerically (`0x52`, `0x53`, `0x59`, `0x5A`, `0x5B`, `7`, `0x60`) or
+the i960's own use of the analog inputs (below) are the places left.
+
+### Controls (*confirmed* on the game's input test)
+
+The test menu (`test` held, `service` to move, `test` released and
+pressed again to choose) has an INPUT TEST screen listing CHUTE1, CHUTE2,
+SHIFT1-4, VR, START, TEST SW, SERVICE and the values HANDLE, ACCEL, BRAKE
+and HANDLE(DRIVE). Holding each bit of the I/O ports in turn on that
+screen, the game gives:
+
+| Switch | Port, bit |
+|---|---|
+| CHUTE1 (coin 1) | 0, `0x01` |
+| CHUTE2 (coin 2) | 0, `0x02` |
+| TEST SW, SERVICE | 0, `0x04`, `0x08` |
+| VR (the view button) | 0, `0x20` |
+| START | 0, `0x40` |
+| SHIFT3, SHIFT4 | 1, `0x10`, `0x20` |
+
+SHIFT1 and SHIFT2 do not respond to any bit of ports 0-3 (the game reads
+the I/O chip's registers at `0x1C00000`, `0x1C00004`, `0x1C0000C` and the
+analog one at `0x1C0001C`).
+HANDLE, ACCEL and BRAKE are the analog channels 0, 1 and 2 (the screen shows
+the value given: `0x11`, `0x22`, `0x33`); HANDLE(DRIVE) reads `FFH`,
+the drive board's answer, which is not modelled (the game writes
+its command byte at register 4, 4,396 times in a 2,900-frame run). The
+car select screen says "select with the wheel, confirm with the
+accelerator": the accelerator at `0xFF` confirms. The game wants
+**two coins** for a credit by default ("CREDIT 1/2" after the first), so
+`coin-start` pays twice and then presses start: it reaches the car select
+(frame 1,800), the countdown and the start (frame 2,000-2,400). Which
+way the accelerator, brake and wheel values run is unconfirmed (the
+manifest has the pedals at `0x00` released, `0xFF` pressed, and the wheel
+`0x80` centred).
+
