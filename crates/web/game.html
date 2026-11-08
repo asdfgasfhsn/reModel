@@ -114,7 +114,7 @@
   const pkg = new URL(document.querySelector('meta[name="remodel-pkg"]').content, location.href).href;
   const { default: init, start, set_geo_frame, set_touch, set_gun, view_point, stick_cursor, set_audio_level,
     set_paused, set_hud, controls_help, touch_layout, game_title, rom_files, set_bindings, bindings_view,
-    bindings_capture, bindings_edit, set_smooth } =
+    bindings_capture, bindings_edit, set_smooth, set_audio_buffer } =
     await import(pkg + "remodel_web.js");
 
   // Settings (settings.js): built-in defaults < stored for all games <
@@ -130,7 +130,12 @@
   try {
     storage?.setItem("remodel.last", game);
   } catch {}
-  const env = () => ({ innerWidth, innerHeight, devicePixelRatio, touchScreen: touchScreen() });
+  // A phone or tablet (a coarse main pointer, or iOS, where every browser
+  // is WebKit and an iPad may say it's a Mac): a bigger audio buffer by
+  // default (settings.js `audioBuffer`).
+  const phone = matchMedia("(pointer: coarse)").matches || /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const env = () => ({ innerWidth, innerHeight, devicePixelRatio, touchScreen: touchScreen(), phone });
   const base = S.builtin(env());
   const url = S.fromParams(params);
   let store = S.readStore(storage);
@@ -191,7 +196,7 @@
       // Still in the tap or key press: audio and the motion permission.
       if (v.touch && v.tilt && (!run || !run.tilt)) tiltAsk = tiltPermission();
       if (action === "play") {
-        if (v.sound) enableAudio();
+        if (v.sound) enableAudio(v);
       } else if (action === "resume") {
         audio?.resume();
       }
@@ -273,7 +278,7 @@
     node.port.postMessage({ port: channel.port1 }, [channel.port1]);
     worker.postMessage({ type: "port", port: channel.port2 }, [channel.port2]);
   }
-  async function enableAudio() {
+  async function enableAudio(v = run) {
     if (audio) {
       // iOS can suspend or interrupt the context: any later gesture resumes it.
       if (audio.state !== "running" && !panel.open) audio.resume();
@@ -291,6 +296,10 @@
       return;
     }
     node = new AudioWorkletNode(audio, "remodel-sink", { outputChannelCount: [2] });
+    // Its priming and most, for the buffer setting (the game is started
+    // with the same).
+    const { prime, max } = S.audioBuffer((v ?? values).buffer, env());
+    node.port.postMessage({ config: { prime, max } });
     node.connect(audio.destination);
     node.port.onmessage = (e) => {
       const s = e.data;
@@ -300,7 +309,8 @@
       }
       const db = s.played ? (10 * Math.log10(s.energy / s.played)).toFixed(0) : "-inf";
       // For measuring from outside the page (devtools, a test driver).
-      window.remodelAudio = { dropouts: s.dropouts, dry: s.dry, queuedMs: s.queued / 44.1, workerMs, geoMs };
+      window.remodelAudio = { dropouts: s.dropouts, dry: s.dry, queuedMs: s.queued / 44.1, workerMs, geoMs,
+        bufferMs: (run ? S.effective(run, env()).audio.target : S.audioBuffer(values.buffer, env()).target) * 1000 };
       soundLabel.textContent = `sound: ${audio.state}, ${audio.sampleRate} Hz, ` +
         `worker ${workerState} ${workerMs.toFixed(1)} ms/frame, geometry worker ${geoMs.toFixed(1)} ms/frame, ` +
         `playing ${db} dB, ${s.dry} dry, ${s.dropouts} dropouts, ` +
@@ -471,6 +481,7 @@
               [data.buffer, jumps.buffer]);
       }
       set_smooth(opt.smooth);
+      set_audio_buffer(opt.audio.target);
       await start(game, document.getElementById("screen"), status, rom, opt.height, opt.aspect, opt.hudEdges, link, geo);
       started = true;
       startAspect = opt.aspect;

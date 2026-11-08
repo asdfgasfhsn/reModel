@@ -13,45 +13,105 @@ per frame (Chromium, desktop).
 Browsers only start audio after a tap or key press, so the page enables
 it on the first one.
 
-**Pacing.** The page measures the display's refresh rate from its
-animation frames. At about 60 Hz the game runs exactly one frame per
-refresh; at about 120 Hz, one per two. That is 4.3% fast at 60 Hz, but
-every refresh shows a new frame. The sound worker resamples the audio to
-match. At other rates, frames follow a steady 57.524 Hz clock. A frame
-the game couldn't run in its refresh (held back by the geometry worker)
-runs with the next one, at most one late.
+**Pacing.** The page follows the display's refreshes from its
+animation frames (`model2::pacing::Refresh`). At about 60 Hz the game
+runs exactly one frame per refresh; at about 120 Hz, one per two. That is
+4.3% fast at 60 Hz, but every refresh shows a new frame. The sound worker
+resamples the audio to match. At other rates, frames follow a steady
+57.524 Hz clock. The refreshes are counted, not assumed one per animation
+frame: each interval between frames is a whole number of refreshes (exact
+for frames within a quarter of a refresh of theirs, so a late frame and an
+early one after it count two), and the refresh period is the slope of a
+least-squares line through the last 256 frames' times against their
+refresh numbers, exact to well within their jitter. Once following the
+display, the page keeps doing so until the rate is well outside the band
+it started in (92% to 114% of the game's speed, against 95% to 110% to
+start), so a jittery estimate can't flip it between the two. Frames the
+game couldn't run in their refresh (held back by the geometry worker, or
+missed in a stall of up to 100 ms) run with the next ones, at most 6
+late and 3 at a time.
 
-**Audio when the game can't keep up.** The resampler's rate is the
-game's speed times a factor from `model2::audio::Pace`, shared with the
-native window: the frames the game actually ran against those due (two
-150 ms low-pass stages), and a correction from the worklet's queue,
-reported every 23 ms or so and low-passed, towards 70 ms. Near the
-target the correction is at most 0.5% (clock drift); more than 20% off
-it grows, to 20% slower at an empty queue and 3% faster at twice the
-target. While the game keeps up the factor is 1 and nothing is audible;
-when it runs below real time (a geometrizer slower than the refresh,
-`sgt24h` at the start of a race) the audio slows with it, lower in pitch,
-instead of breaking up. The bar counts dropouts (the queue running out
-while playing) since sound started; `window.remodelAudio` holds the same
-numbers for a test driver. The native window paces the same way
-(`--exact` there forces clock pacing).
+**Audio rate.** The resampler's step comes from `model2::audio::Pace`,
+shared with the native window. While the game keeps up it is the speed
+the game is meant to run at (the counted refresh rate following the
+display, or 1 on the clock) times a correction from the worklet's queue of
+at most 1% either way (17 cents: inaudible, and enough for the drift
+between the clocks). Anything more is a gap in the audio, which the
+worklet re-primes from, rather than a bend in its pitch. The step moves at
+most 2% a second plus 4 times the way it has to go, so noise of a few
+cents moves the pitch at most about 35 cents a second.
 
-Before this, the rate was the display's speed with only the 0.5%
-correction, so every frame the game lost to the geometry worker took
-17 ms out of the 70 ms queue for good. Modelled from per-frame costs
-measured in WebAssembly (below), a race from frame 2100 to 6600 at 60 Hz:
+When the game persistently can't keep up (a geometrizer slower than the
+refresh, `sgt24h` at the start of a race), the audio follows the frames
+it actually runs, in slow motion and lower in pitch, instead of breaking
+up: frames run over frames due, each a rate through two low-pass stages,
+at most 1 (catching up never raises the pitch). It starts following once
+that pace has been below 97% for 3 times the queue's target (net, so a
+pace flickering about the threshold still adds up), stops once it has
+been back for as long, and the factor from it is smoothed over 3 times
+the target. Frames a stall leaves past what the page may catch up, in a
+game that was keeping up, are dropped time, not the game falling behind.
 
-| set | speed | dropouts a minute, before | after |
-|---|---|---|---|
-| `sgt24h` | 97% (104% is full speed at 60 Hz) | 61 | 1 |
-| `sgt24h`, costs 20% higher (a slower machine) | 85% | 155 | 1.3 |
-| `overrevb`, `overrev` | 104% | 0 | 0 |
+The queue's target is 70 ms on a desktop and 150 ms on a phone or tablet
+(a coarse main pointer, or iOS, where every browser is WebKit and an iPad
+may say it's a Mac), whose animation frames come less evenly: the
+pace's time constants are multiples of it, so the bigger queue also buys
+more patience. The worklet primes at 6/7 of the target (60 ms, 129 ms)
+and drops audio beyond 250 ms or 8/3 of it (250 ms, 400 ms). The Buffer
+setting (below) or `?buffer=` overrides it.
 
-The model (a script, not kept) replays the measured costs through the
-page's scheduling: animation frames at 60 Hz, the geometry worker's queue
-(`GEO_QUEUE`), the sound worker, and the worklet's 128-frame quanta with
-its 60 ms priming. It can't model a real browser's timer jitter or other
-load, and hasn't been checked against a browser.
+The bar's status line shows the audio rate (100% is the game's own
+speed, 104.3% following a 60 Hz display), how far it is from the speed
+the game is meant to run at and how much it moved in the last second (in
+cents), and the queue against its target; the sound label counts dropouts
+(the queue running out while playing) since sound started.
+`window.remodelAudio` holds the same numbers for a test driver, with the
+buffer in use.
+
+`make pace-sim` (`crates/model2/tests/pace_sim.rs`) models the page:
+the frame loop above, the sound worker's step, and the worklet's
+128-frame quanta draining at the device's clock (0.03% off the page's),
+with level reports every 8 quanta, driven by synthetic animation frames.
+It compares the controller before this (an average of frame intervals for
+the refresh rate, one frame per animation frame, a pace over 150 ms and a
+queue correction of up to 20%, all with the desktop's 70 ms) with the one
+now. Pitch is against its mean over the measured part; movement is over
+100 ms windows:
+
+| scenario | | max ¢ | rms ¢ | max ¢/s | p99 ¢/s | underruns a minute |
+|---|---|---|---|---|---|---|
+| steady 60 Hz | before | 15.7 | 4.6 | 117 | 82 | 0 |
+| | after | 3.9 | 1.5 | 5 | 3 | 0 |
+| phone: frames up to 4 ms early or late, 8% missed, a 50 to 100 ms stall every 2 to 6 s, quanta in fours | before | 914 | 121 | 8834 | 3117 | 5.4 |
+| | after | 4.4 | 1.4 | 19 | 7 | 0 |
+| 30 Hz (low power mode) | before | 46.5 | 22.5 | 727 | 691 | 0 |
+| | after | 2.1 | 0.5 | 2 | 2 | 0 |
+| 85% for a minute (sgt24h-like), desktop | before | 32.2 | 9.5 | 357 | 220 | 0 |
+| | after | 11.7 | 3.5 | 49 | 47 | 1.2 |
+| 80%, 88%, 95% or 100% for 2 to 6 s at a time, desktop | before | 337 | 145 | 1484 | 875 | 0 |
+| | after | 236 | 145 | 573 | 452 | 2.7 |
+| phone, 85% for a minute | before | 710 | 114 | 5446 | 2153 | 7.2 |
+| | after | 158 | 51 | 292 | 271 | 1.2 |
+
+While the game keeps up the pitch now holds within 5 cents and moves
+well under 20 cents a second (the phone's wobble before was the refresh
+average swinging with the jitter, flipping between following the display
+and the clock, and the pace and the queue correction chasing each stall).
+A sustained slowdown is still followed, the rate matching the game's to
+within 1%; the price is a gap or two as it starts, before the audio has
+followed it (the 1.2 a minute above: all at the step down), and on a
+desktop a game whose speed jumps by 20% every few seconds breaks up about
+once at each jump down. The pitch movement in those rows is the game's
+own speed changing. The model can't capture a real browser's audio
+thread or the phone's own scheduling; on a phone, the status line shows
+what it does there.
+
+Before that the rate was the display's speed with only a
+0.5% correction, so every frame the game lost to the geometry worker took
+17 ms out of the 70 ms queue for good: modelled then from per-frame costs
+measured in WebAssembly, a race from frame 2100 to 6600 at 60 Hz ran dry
+61 times a minute in `sgt24h` at 97% speed, and 155 times a minute with
+costs 20% higher (85%); following the game's pace took that to about 1.
 
 ```sh
 make web            # out/web: game list, a page per game, one shared interpreter module
@@ -193,9 +253,11 @@ progress. It offers:
   1080), aspect (fit the window, the default, 4:3 to 21:9; 4:3; 16:9),
   HUD placement in wide views (at the edges, or centred) and the bezel (on,
   the default, or off; below);
-- **Sound:** on or off, and the effects (sound board) and music levels in
+- **Sound:** on or off, the effects (sound board) and music levels in
   dB (defaults +8 and -8, `model2::audio::DEFAULT_MIX`; the game's own
-  level is added to both);
+  level is added to both), and the buffer: the audio queued (auto, the
+  default: 70 ms, or 150 ms on a phone or tablet; 70, 150 or 250 ms;
+  above, "Audio rate");
 - **Controls:** each input with its keys, gamepad bindings (Xbox names)
   and on-screen control, remappable (below, "Remapping"); on touch
   screens, touch controls on or off and, where an analog follows the left
@@ -221,7 +283,7 @@ audio context is suspended, nothing reaches the workers; it resumes from
 the same frame). Resume applies the HUD placement (`set_hud`), the bezel, the mix
 (a `mix` message to the sound worker), the remapped controls
 (`set_bindings`) and touch and tilt at once; render
-height, aspect, sound on or off, the geometrizer and smooth motion need a restart, and
+height, aspect, sound on or off, the sound buffer, the geometrizer and smooth motion need a restart, and
 the panel offers "Restart to apply" when one of them changed (it reloads
 the page with `#play`, skipping the panel once).
 
@@ -250,6 +312,8 @@ parameters:
 - `bezel=0` (no bezel; `bezel=1` on);
 - `sound=0` (don't run the sound boards at all);
 - `sfx=8&music=-8` (the mix in dB);
+- `buffer=150` (the audio queue in ms, 20 to 1000; `buffer=auto` for the
+  device's default);
 - `touch` or `touch=1` (on-screen controls on any device), `touch=0`
   (off);
 - `tilt=1` (tilt steering on from the start, where the game steers);

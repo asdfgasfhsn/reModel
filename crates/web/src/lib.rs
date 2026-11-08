@@ -5,12 +5,12 @@
 //! The page calls [`start`] with a canvas and the URL of the ROM files;
 //! everything after that runs from `requestAnimationFrame`. At a display
 //! refresh near the game's (60 Hz, or 120 Hz at one frame per two) the
-//! machine runs exactly one frame per refresh, measured from the animation
-//! frame times; otherwise it follows a steady 57.524 Hz clock. The sound
-//! worker resamples the audio to match: the game's speed, scaled by the
-//! pace it actually keeps and steered by the worklet's level reports
-//! ([`set_audio_level`]) through `model2::audio::Pace`, so the audio slows
-//! with the game when it can't keep up instead of running dry.
+//! machine runs exactly one frame per refresh, counted from the animation
+//! frame times (`model2::pacing::Refresh`, which also counts the refreshes
+//! a late callback missed); otherwise it follows a steady 57.524 Hz clock.
+//! The sound worker resamples the audio to match: the game's speed, steered
+//! by the worklet's level reports ([`set_audio_level`]) and followed down
+//! when the game persistently can't keep it, through `model2::audio::Pace`.
 //!
 //! The sound and music boards run in a Web Worker (sound-worker.js, using
 //! [`SoundEngine`] from this same module), on another core: each frame the
@@ -43,13 +43,15 @@ use web_sys::{HtmlCanvasElement, KeyboardEvent};
 const FPS: f64 = 57.524;
 /// Most emulated frames run per browser frame before dropping time.
 const MAX_CATCH_UP: u32 = 3;
-/// Audio the worklet should hold (seconds): the rate control
-/// (`model2::audio::Pace`) steers towards it.
+/// Audio the worklet should hold (seconds) unless the page says otherwise
+/// ([`set_audio_buffer`]): the rate control (`model2::audio::Pace`) steers
+/// towards it.
 const AUDIO_TARGET: f64 = 0.07;
 /// Following the display, frames a held-back game may run late (at most
 /// `MAX_CATCH_UP` in one animation frame): one the geometry worker held
-/// back is run with the next, not lost.
-const MAX_OWED: u64 = 2;
+/// back, or the refreshes a stall of up to 100 ms missed, run with the
+/// next ones rather than being lost.
+const MAX_OWED: u64 = 6;
 /// Most frames the geometry worker may have in hand: the game waits for it
 /// beyond that (runs slower) rather than letting the polygons fall ever
 /// further behind the rest of the picture and the inputs.
@@ -94,16 +96,21 @@ struct App {
     audio_level: Option<(f64, f64)>,
     /// Stereo frames sent since that report (after resampling).
     sent_since: f64,
-    /// Average time between animation frames (ms), and the last frame time.
-    refresh_ms: f64,
+    /// The display's refreshes, from the animation frames, and the last
+    /// frame's time (ms).
+    refresh: model2::pacing::Refresh,
     last_t: f64,
     redraws: u64,
     /// Animation frames this status window that showed no new game frame.
     repeats: u32,
-    /// Game samples per output sample for the sound worker's resampler.
+    /// Game samples per output sample for the sound worker's resampler,
+    /// and its lowest and highest this status window.
     ratio: f64,
-    /// The audio rate control: follows the game's actual pace.
+    ratio_range: (f64, f64),
+    /// The audio rate control, and the audio it holds the worklet at
+    /// (seconds).
     pace: model2::audio::Pace,
+    audio_target: f64,
     /// Following the display: frames due and not yet run.
     owed: u64,
     /// Geometrizer in a worker: its newest frame (raster stream, texture
@@ -286,7 +293,7 @@ impl App {
     /// following the display, else the game's.
     fn period(&self) -> f64 {
         match self.per_refresh() {
-            Some(k) => self.refresh_ms / k,
+            Some(k) => self.refresh.ms() / k,
             None => 1000.0 / FPS,
         }
     }
@@ -301,7 +308,7 @@ impl App {
         let t = ((t0 - self.smooth_at) / self.period()).max(0.0);
         let mut own = None;
         // Only on a display faster than the game.
-        if self.smooth && self.geo_frame.is_none() && 1000.0 / self.refresh_ms > FPS * 1.2 {
+        if self.smooth && self.geo_frame.is_none() && 1000.0 / self.refresh.ms() > FPS * 1.2 {
             if let Some(f) = self.machine.bus.geo.engine().smooth_frame() {
                 own = f.render(t as f32).map(|s| (s, f));
                 if own.is_some() {
@@ -366,11 +373,31 @@ impl App {
         (self.link.is_some() && age < AUDIO_STALE_MS).then(|| (level + self.sent_since) / rate - age / 1000.0)
     }
 
-    /// Game frames per animation frame when following the display (1 at
-    /// about 60 Hz, 1/2 at about 120 Hz), or None to follow the clock.
+    /// The status line's audio part: the resampler's rate (100% is the
+    /// game's own speed; following a 60 Hz display, 104.3%), how far it is
+    /// from the speed the game is meant to run at and how much it moved in
+    /// this status window (cents), and the worklet's queue against its
+    /// target.
+    fn audio_status(&self, t: f64) -> String {
+        if self.link.is_none() || self.redraws < 2 {
+            return String::new();
+        }
+        let cents = |r: f64| 1200.0 * r.log2();
+        let off = cents(self.ratio / self.refresh.speed());
+        let (lo, hi) = self.ratio_range;
+        let moved = if hi >= lo { cents(hi / lo) } else { 0.0 };
+        let queued = self.audio_queued(t).map_or("no report".into(), |q| format!("{:.0} ms", q * 1000.0));
+        format!(
+            " · audio {:.1}% ({off:+.0} ¢, moved {moved:.0} ¢), {queued} queued of {:.0}",
+            self.ratio * 100.0,
+            self.audio_target * 1000.0
+        )
+    }
+
+    /// Game frames per refresh when following the display (1 at about
+    /// 60 Hz, 1/2 at about 120 Hz), or None to follow the clock.
     fn per_refresh(&self) -> Option<f64> {
-        let hz = 1000.0 / self.refresh_ms;
-        [1.0, 0.5].into_iter().find(|k| (0.95..=1.1).contains(&(hz * k / FPS)))
+        self.refresh.per_refresh()
     }
 
     fn tick(&mut self, t: f64) {
@@ -387,25 +414,30 @@ impl App {
             self.spent = [0.0; 3];
             return;
         }
-        // Measure the refresh rate (ignoring gaps such as a hidden tab).
+        // The refreshes since the last animation frame (more than one after
+        // missed ones; a gap such as a hidden tab counts one).
         let dt = t - self.last_t;
         self.last_t = t;
-        if dt > 2.0 && dt < 50.0 {
-            self.refresh_ms += (dt - self.refresh_ms) * 0.05;
-        }
+        let refreshes = self.refresh.tick(dt);
         self.redraws += 1;
         if self.smooth {
             // In-betweens the worker draws per game frame: one per refresh
             // the frame lasts (none at 60 Hz), at most 4.
-            self.smooth_steps.set((self.period() / self.refresh_ms).round().clamp(1.0, 4.0) as u32);
+            self.smooth_steps.set((self.period() / self.refresh.ms()).round().clamp(1.0, 4.0) as u32);
         }
-        let (due, speed) = match self.per_refresh() {
-            Some(k) => {
-                let next = (k == 1.0 || self.redraws.is_multiple_of(2)) as u64;
+        // The frames due, the speed they come at, and those of them that
+        // count for the audio's pace.
+        let (due, speed, mut fell_due) = match self.per_refresh() {
+            Some(_) => {
+                let next = self.refresh.frames(refreshes);
+                // Past what may be owed, after a stall of a game that was
+                // keeping up: time dropped, not the game falling behind.
+                let over = (self.owed + next).saturating_sub(MAX_OWED);
+                let counted = if self.owed == 0 { next - over } else { next };
                 self.owed = (self.owed + next).min(MAX_OWED);
-                (self.machine.frames + self.owed, 1000.0 / self.refresh_ms * k / FPS)
+                (self.machine.frames + self.owed, self.refresh.speed(), counted as f64)
             }
-            None => (((t - self.epoch) * FPS / 1000.0) as u64, 1.0),
+            None => (((t - self.epoch) * FPS / 1000.0) as u64, 1.0, dt * FPS / 1000.0),
         };
         let mut ran = 0;
         let t0 = now();
@@ -429,14 +461,19 @@ impl App {
             // On the page's thread the new frame's polygons are ready now.
             self.smooth_at = t;
         }
-        // The audio rate for the next frames: the game's speed, scaled by
-        // how well it's keeping it (held back by the geometry worker, or
-        // its own cost) and steered by the worklet's queue, so the audio
-        // slows with the game instead of running dry.
+        if self.per_refresh().is_none() && self.machine.frames < due && dt > 2000.0 / FPS {
+            // On the clock, frames left due after a long wait are dropped
+            // time too.
+            fell_due = (fell_due - (due - self.machine.frames) as f64).max(ran as f64);
+        }
+        // The audio rate for the next frames: the game's speed, steered by
+        // the worklet's queue, and slowed with the game once it
+        // persistently can't keep up (held back by the geometry worker, or
+        // its own cost) instead of running dry.
         if self.redraws > 1 {
             let queued = self.audio_queued(t);
-            let pace = self.pace.update(dt / 1000.0, ran as f64, dt * FPS * speed / 1000.0, queued, AUDIO_TARGET);
-            self.ratio = speed * pace;
+            self.ratio = self.pace.update(dt / 1000.0, speed, ran as f64, fell_due, queued, self.audio_target);
+            self.ratio_range = (self.ratio_range.0.min(self.ratio), self.ratio_range.1.max(self.ratio));
         }
         if self.per_refresh().is_some() || self.machine.frames < due {
             // Following the display, or too far behind: keep the clock current.
@@ -448,7 +485,7 @@ impl App {
         // A new frame, or the worker's polygons for one already shown (or,
         // with smooth motion on a display faster than the game, every
         // refresh).
-        let smoothing = self.smooth && 1000.0 / self.refresh_ms > FPS * 1.2;
+        let smoothing = self.smooth && 1000.0 / self.refresh.ms() > FPS * 1.2;
         if ran > 0 || std::mem::take(&mut self.geo_new) || smoothing {
             self.draw();
             self.counter.2 += 1;
@@ -461,9 +498,9 @@ impl App {
             set_status(
                 &self.status,
                 &format!(
-                    "{} · {:.0}% speed{} · {:.0} fps drawn ({} repeats) · {}x{} · i960 {} · ms per frame: emulate {:.1}, draw {:.1}{}",
+                    "{} · {:.0}% speed{} · {:.0} fps drawn ({} repeats) · {}x{} · i960 {} · ms per frame: emulate {:.1}, draw {:.1}{}{}",
                     match self.per_refresh() {
-                        Some(_) => format!("synced to {:.0} Hz", 1000.0 / self.refresh_ms),
+                        Some(_) => format!("synced to {:.0} Hz", 1000.0 / self.refresh.ms()),
                         None => "exact speed".into(),
                     },
                     speed,
@@ -480,8 +517,10 @@ impl App {
                         (n, ms) if self.geo_frame.is_none() => format!(" · {n} in-betweens, {:.1} ms each", ms / n as f64),
                         (n, _) => format!(" · {n} in-betweens"),
                     },
+                    self.audio_status(t),
                 ),
             );
+            self.ratio_range = (f64::MAX, 0.0);
             self.smooth_drawn = (0, 0.0);
             self.counter = (t, 0, 0);
             self.spent = [0.0; 3];
@@ -499,6 +538,19 @@ thread_local! {
     static OVERRIDES: RefCell<String> = const { RefCell::new(String::new()) };
     /// Smooth motion for the game `start` starts ([`set_smooth`]).
     static SMOOTH: Cell<bool> = const { Cell::new(false) };
+    /// The audio the game `start` starts holds queued ([`set_audio_buffer`]).
+    static AUDIO_BUFFER: Cell<f64> = const { Cell::new(AUDIO_TARGET) };
+}
+
+/// The audio to hold queued in the worklet (seconds), for the game `start`
+/// starts: more rides out a phone's uneven animation frames without
+/// bending the pitch, at the cost of latency (docs/web.md, "Audio rate").
+/// The worklet's priming and most should be set to suit (audio-worklet.js).
+#[wasm_bindgen]
+pub fn set_audio_buffer(seconds: f64) {
+    if seconds.is_finite() {
+        AUDIO_BUFFER.with(|b| b.set(seconds.clamp(0.02, 1.0)));
+    }
 }
 
 /// Smooth motion (`model2::smooth`, docs/web.md): on a display faster than
@@ -1248,12 +1300,14 @@ pub async fn start(
         samples: 0,
         audio_level: None,
         sent_since: 0.0,
-        refresh_ms: 1000.0 / 60.0,
+        refresh: model2::pacing::Refresh::new(FPS),
         last_t: 0.0,
         redraws: 0,
         repeats: 0,
         ratio: 1.0,
+        ratio_range: (f64::MAX, 0.0),
         pace: Default::default(),
+        audio_target: AUDIO_BUFFER.with(|b| b.get()),
         owed: 0,
         geo_frame: remote_geo.then_some(None),
         geo_in_flight,

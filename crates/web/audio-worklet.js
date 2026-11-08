@@ -2,10 +2,12 @@
 // reports how much is queued every few render quanta: the game paces itself
 // by it. Audio arrives on the node's port, or on a MessagePort passed in as
 // {port} (from the sound worker).
-// Waits for PRIME seconds of audio before starting (and after running dry),
-// and drops the oldest audio beyond MAX seconds: the emulator's clock and
-// the device's audio clock drift apart slowly, and this keeps latency low
-// without constant underruns.
+// Waits for `prime` seconds of audio before starting (and after running
+// dry), and drops the oldest audio beyond `max` seconds: the emulator's clock
+// and the device's audio clock drift apart slowly, and this keeps latency low
+// without constant underruns. The page sets both to suit its buffer setting
+// ({config: {prime, max}}, settings.js `audioBuffer`); these are the
+// desktop's.
 const PRIME = 0.06;
 const MAX = 0.25;
 // Level reports every this many 128-frame quanta (about 23 ms).
@@ -23,16 +25,25 @@ class RemodelSink extends AudioWorkletProcessor {
     // off (ran out while playing) since it started.
     this.stats = { played: 0, energy: 0, dry: 0, quanta: 0 };
     this.dropouts = 0;
+    this.prime = PRIME;
+    this.max = MAX;
     this.port.onmessage = (e) => {
       if (e.data instanceof Float32Array) this.push(e.data);
       else if (e.data.port) e.data.port.onmessage = (m) => this.push(m.data);
+      else if (e.data.config) {
+        const { prime, max } = e.data.config;
+        if (prime > 0 && max >= prime) {
+          this.prime = prime;
+          this.max = max;
+        }
+      }
     };
   }
 
   push(buf) {
     this.queue.push(buf);
     this.frames += buf.length / 2;
-    const max = MAX * sampleRate;
+    const max = this.max * sampleRate;
     while (this.frames > max && this.queue.length > 1) {
       this.frames -= (this.queue[0].length - this.offset) / 2;
       this.queue.shift();
@@ -44,7 +55,7 @@ class RemodelSink extends AudioWorkletProcessor {
     const out = outputs[0];
     const left = out[0];
     const right = out[1] ?? out[0];
-    if (!this.primed && this.frames >= PRIME * sampleRate) this.primed = true;
+    if (!this.primed && this.frames >= this.prime * sampleRate) this.primed = true;
     const st = this.stats;
     if (!this.primed || this.queue.length === 0) st.dry++;
     for (let i = 0; i < left.length; i++) {

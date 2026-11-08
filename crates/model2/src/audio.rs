@@ -217,74 +217,128 @@ impl Resampler {
     }
 }
 
-/// The audio rate control for a front end: the factor by which to scale
-/// the resampler's step (game samples per output sample) on top of the
-/// speed the game is meant to run at, so the output queue neither runs
-/// dry nor overflows when the game can't keep that speed.
+/// The audio rate control for a front end: the resampler's step (game
+/// samples per output sample) that keeps the output queue from running
+/// dry or piling up, without bending the pitch audibly while the game
+/// keeps its speed (docs/web.md, "Audio rate").
 ///
-/// Two parts. The game's measured pace: frames it ran against frames it
-/// should have run, each a rate through two 150 ms low-pass stages. It is
-/// exactly 1 while the game keeps up, and follows the game down when it
-/// can't (a geometrizer slower than real time), so the audio then plays
-/// in slow motion, lower in pitch, instead of breaking up. And a
-/// correction from the queue's level (low-passed over 150 ms): at most
-/// 0.5% near the target, which is the drift between the clocks, and more
-/// once the level is more than 20% off (up to 20% slower when it runs
-/// low, 3% faster when it piles up), which catches what the pace misses
-/// while it settles. Modelled on sgt24h's measured frame costs in
-/// WebAssembly (docs/web.md): 61 dropouts a minute in a race before, 1
-/// after.
+/// The step is the speed the game is meant to run at (1 on the clock,
+/// 60 / 57.524 following a 60 Hz display), times its pace once it is
+/// persistently behind, times a small correction from the queue's level,
+/// and it glides rather than jumps:
+///
+/// - Pace: frames run over frames due, each a rate through two low-pass
+///   stages, at most 1, so catching up never raises the pitch. The audio
+///   follows it (slow motion, lower in pitch, instead of breaking up) only
+///   once it has been below `ON_PACE` for `HOLD`, and stops once it has
+///   been back for as long; a stall the front end catches up from, or
+///   jitter, leaves the pitch alone and the queue absorbs it. The factor
+///   from it is smoothed over `SMOOTH`.
+/// - Queue: the level, low-passed over `LEVEL_TAU`, against the target,
+///   corrects by at most `QUEUE` either way, which is inaudible and enough
+///   for the drift between the clocks. Anything more is a gap in the audio,
+///   which the output re-primes from, rather than a bend in its pitch.
+/// - Glide: the step moves at most `SLEW` plus `FOLLOW` times the way it
+///   has to go each second: noise of a few cents moves it at most about
+///   35 cents a second, a real slowdown within a fraction of a second.
+///
+/// The pace's time constants are multiples of the queue's target, the
+/// slack there is to ride out a stall with: a phone's larger queue buys
+/// more patience. The speed should be steady: a front end following a
+/// display passes its locked refresh rate (`pacing::Refresh`), not a
+/// jittery average. `make pace-sim` (crates/model2/tests/pace_sim.rs)
+/// models a browser page through it; the numbers are in docs/web.md.
+#[derive(Default)]
 pub struct Pace {
-    /// Frames run and frames due per second, after one and two low-pass
-    /// stages.
-    ran: [f64; 2],
-    due: [f64; 2],
+    /// Frames due and frames run per second, after one and two low-pass
+    /// stages; None before the first update.
+    rates: Option<[[f64; 2]; 2]>,
+    /// Following the game's pace, and how long (seconds, net) the pace has
+    /// said otherwise since this was last decided.
+    behind: bool,
+    against: f64,
+    /// The factor from the pace, smoothed (0 before the first update).
+    follow: f64,
     /// The queue level (seconds), low-passed; None without a report.
     level: Option<f64>,
-}
-
-impl Default for Pace {
-    fn default() -> Self {
-        Pace { ran: [60.0; 2], due: [60.0; 2], level: None }
-    }
+    /// The step last returned (0 before the first).
+    step: f64,
 }
 
 impl Pace {
-    /// Time constant of the pace's two stages, and the level's (seconds).
-    const PACE_TAU: f64 = 0.15;
-    const LEVEL_TAU: f64 = 0.15;
-    /// Most correction near the target level (the clock drift).
-    const DRIFT: f64 = 0.005;
-    /// Beyond this fraction off the target, correct harder: up to
-    /// `SLOWER` at an empty queue, `FASTER` at twice the target.
-    const DEADBAND: f64 = 0.2;
-    const SLOWER: f64 = 0.2;
-    const FASTER: f64 = 0.03;
+    /// In multiples of the queue's target: the time constant of the pace's
+    /// two stages, how long it must say the game is behind before the
+    /// audio follows (or keeping up before it stops), and the time
+    /// constant the factor from it is smoothed with.
+    pub const PACE_TAU: f64 = 2.0;
+    pub const HOLD: f64 = 3.0;
+    pub const SMOOTH: f64 = 3.0;
+    /// Pace below which the game is behind.
+    pub const ON_PACE: f64 = 0.97;
+    /// The queue level's time constant (seconds), and the most correction
+    /// from it either way.
+    pub const LEVEL_TAU: f64 = 0.5;
+    pub const QUEUE: f64 = 0.01;
+    /// The glide: relative change a second, plus how much of the way to go
+    /// a second.
+    pub const SLEW: f64 = 0.02;
+    pub const FOLLOW: f64 = 4.0;
+    /// Updates further apart than this (seconds: a hidden tab, a long
+    /// stall) leave everything as it was.
+    pub const GAP: f64 = 0.25;
 
-    /// After `dt` seconds in which the game ran `ran` frames of the `due`
-    /// it should have: the factor for the resampler's step. `queued`: the
-    /// audio queued now (seconds), if known; `target`: what it should be.
-    pub fn update(&mut self, dt: f64, ran: f64, due: f64, queued: Option<f64>, target: f64) -> f64 {
-        // Past a long gap (a hidden tab, a stall) the pace stays as it was.
-        let gap = dt > 0.1;
-        let dt = dt.clamp(0.001, 0.1);
-        let a = (dt / Self::PACE_TAU).min(1.0);
-        if !gap {
-            for (s, n) in [(&mut self.ran, ran), (&mut self.due, due)] {
-                s[0] += (n / dt - s[0]) * a;
-                s[1] += (s[0] - s[1]) * a;
-            }
+    /// The step last returned (1 before the first).
+    pub fn step(&self) -> f64 {
+        if self.step > 0.0 {
+            self.step
+        } else {
+            1.0
         }
-        let pace = if self.due[1] > 0.0 { (self.ran[1] / self.due[1]).clamp(0.25, 1.5) } else { 1.0 };
+    }
+
+    /// After `dt` seconds in which `due` frames fell due and the game ran
+    /// `ran` of them, meant to run at `speed` (over its own rate): the
+    /// resampler's step. `queued`: the audio queued now (seconds), if
+    /// known; `target`: what it should be.
+    pub fn update(&mut self, dt: f64, speed: f64, ran: f64, due: f64, queued: Option<f64>, target: f64) -> f64 {
+        if dt <= 0.0 || dt > Self::GAP {
+            return self.step();
+        }
+        let rates = self.rates.get_or_insert([[due / dt; 2]; 2]);
+        let a = (dt / (Self::PACE_TAU * target)).min(1.0);
+        for (s, n) in rates.iter_mut().zip([due, ran]) {
+            s[0] += (n / dt - s[0]) * a;
+            s[1] += (s[0] - s[1]) * a;
+        }
+        let (due_rate, ran_rate) = (rates[0][1], rates[1][1]);
+        let pace = if due_rate > 0.0 { (ran_rate / due_rate).clamp(0.25, 1.0) } else { 1.0 };
+        // Net time against the current decision, so a pace flickering
+        // about the threshold still adds up.
+        let against = self.behind != (pace < Self::ON_PACE);
+        self.against = (self.against + if against { dt } else { -dt }).max(0.0);
+        if self.against >= Self::HOLD * target {
+            self.behind = !self.behind;
+            self.against = 0.0;
+        }
+        let follow = if self.behind { pace } else { 1.0 };
+        if self.follow == 0.0 {
+            self.follow = 1.0;
+        }
+        self.follow += (follow - self.follow) * (dt / (Self::SMOOTH * target)).min(1.0);
         self.level = queued.map(|q| match self.level {
             Some(l) => l + (q - l) * (dt / Self::LEVEL_TAU).min(1.0),
             None => q,
         });
-        let Some(level) = self.level else { return pace };
-        let e = ((level - target) / target).clamp(-1.0, 1.0);
-        let beyond = (e.abs() - Self::DEADBAND).max(0.0) / (1.0 - Self::DEADBAND);
-        let extra = if e < 0.0 { -beyond * Self::SLOWER } else { beyond * Self::FASTER };
-        pace * (1.0 + e * Self::DRIFT + extra)
+        let correct = self.level.map_or(1.0, |l| 1.0 + ((l - target) / target).clamp(-1.0, 1.0) * Self::QUEUE);
+        let want = speed.clamp(0.1, 4.0) * self.follow * correct;
+        if self.step > 0.0 {
+            let off = (want / self.step).ln();
+            let most = (Self::SLEW + off.abs() * Self::FOLLOW) * dt;
+            self.step *= off.clamp(-most, most).exp();
+        } else {
+            self.step = want;
+        }
+        self.step
     }
 }
 
@@ -339,51 +393,5 @@ mod tests {
             Resampler::default().run(&input, step, &mut out);
             assert!((out.len() as i64 / 2 - expect).abs() <= 1, "step {step}: {} frames", out.len() / 2);
         }
-    }
-
-    /// A 60 Hz display, one game frame per refresh while the game keeps
-    /// up, `speed(second)` of them when it can't: the queue's lowest
-    /// level after the first second, and the last factor.
-    fn pace_run(seconds: f64, speed: impl Fn(f64) -> f64) -> (f64, f64) {
-        let (dt, frame) = (1.0 / 60.0, 1.0 / 57.524);
-        let step = 60.0 / 57.524;
-        let mut pace = Pace::default();
-        let (mut queued, mut lowest, mut credit, mut factor) = (0.07, f64::MAX, 0.0, 1.0);
-        let mut t = 0.0;
-        while t < seconds {
-            credit += speed(t);
-            let ran = if credit >= 1.0 { 1.0 } else { 0.0 };
-            credit -= ran;
-            queued += ran * frame / (step * factor) - dt;
-            if t > 1.0 {
-                lowest = lowest.min(queued);
-            }
-            factor = pace.update(dt, ran, 1.0, Some(queued.max(0.0)), 0.07);
-            t += dt;
-        }
-        (lowest, factor)
-    }
-
-    #[test]
-    fn pace_keeps_audio_flowing() {
-        // Keeping up: no change beyond the drift correction.
-        let (lowest, factor) = pace_run(10.0, |_| 1.0);
-        assert!((factor - 1.0).abs() < 0.001 && lowest > 0.05, "steady: {factor} {lowest}");
-        // Slowing to 80% and then 60% of the display's rate: the audio
-        // slows to match and never runs dry.
-        let (lowest, factor) = pace_run(20.0, |t| {
-            if t < 3.0 {
-                1.0
-            } else if t < 10.0 {
-                0.8
-            } else {
-                0.6
-            }
-        });
-        assert!(lowest > 0.0, "ran dry: {lowest}");
-        assert!((factor - 0.6).abs() < 0.03, "factor {factor}");
-        // And back to full speed without piling up.
-        let (_, factor) = pace_run(20.0, |t| if t < 10.0 { 0.7 } else { 1.0 });
-        assert!((factor - 1.0).abs() < 0.01, "recovered: {factor}");
     }
 }

@@ -130,11 +130,12 @@ impl Sound {
 
     /// Set the game's speed relative to real time (1 = exact), after `dt`
     /// seconds in which it ran `ran` frames of the `due` it should have:
-    /// the audio follows its actual pace, corrected to hold the queue at
-    /// `AUDIO_TARGET` (`model2::audio::Pace`).
+    /// the audio plays at that speed, held at `AUDIO_TARGET` queued and
+    /// slowed with the game once it persistently can't keep it
+    /// (`model2::audio::Pace`).
     pub fn set_speed(&mut self, speed: f64, dt: f64, ran: f64, due: f64) {
-        let pace = self.pace.update(dt, ran, due, Some(self.queued()), AUDIO_TARGET);
-        self.ratio.store((speed * pace).to_bits(), Ordering::Relaxed);
+        let step = self.pace.update(dt, speed, ran, due, Some(self.queued()), AUDIO_TARGET);
+        self.ratio.store(step.to_bits(), Ordering::Relaxed);
     }
 
     /// Seconds of audio queued or still being made.

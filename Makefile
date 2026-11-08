@@ -84,7 +84,7 @@ endif
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm m68k-tests clean recomp recomp-workspace bench latency sound sound-disasm geo-check geo-fuzz smooth-frames
+.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm m68k-tests clean recomp recomp-workspace bench latency sound sound-disasm geo-check geo-fuzz smooth-frames pace-sim
 
 ##@ General
 
@@ -126,6 +126,9 @@ fmt-check: ## Fail if any Rust code is unformatted
 check: fmt-check lint test ## Everything a change must pass before commit
 
 ci: check ## Alias for check
+
+pace-sim: ## The browser's audio rate control on synthetic frame timings (steady, phone jitter, 30 Hz, slowdowns): pitch movement and underruns, before and after (docs/web.md)
+	$(CARGO) test --release -p remodel-model2 --test pace_sim -- --ignored --nocapture
 
 m68k-tests: $(M68K_TESTS)/.done ## Run the 68000 core against the SingleStepTests suite (downloaded to out/ on first use)
 	M68K_TESTS=$(abspath $(M68K_TESTS)) $(CARGO) test --release -p m68k --test singlestep -- --ignored --nocapture

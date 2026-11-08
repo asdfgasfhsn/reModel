@@ -15,8 +15,8 @@
 export const MIX = [8, -8];
 
 /// Every setting, in panel order.
-export const KEYS = ["height", "aspect", "hud", "bezel", "sound", "sfx", "music", "touch", "tilt", "geo", "smooth",
-  "controls"];
+export const KEYS = ["height", "aspect", "hud", "bezel", "sound", "sfx", "music", "buffer", "touch", "tilt", "geo",
+  "smooth", "controls"];
 /// Settings kept per game only, never as the defaults for all games:
 /// `controls` is the game's remapped keys and pad bindings, as the module
 /// keeps them (`romset::bindings`: one `slot = bindings` line per change
@@ -24,13 +24,19 @@ export const KEYS = ["height", "aspect", "hud", "bezel", "sound", "sfx", "music"
 /// it can't, so here it only has to be a string of sensible size.
 export const PER_GAME = ["controls"];
 /// Settings a running game can't change: they apply on a restart.
-export const RESTART = ["height", "aspect", "sound", "geo", "smooth"];
+export const RESTART = ["height", "aspect", "sound", "buffer", "geo", "smooth"];
 
 /// The localStorage key: `{defaults: {...}, games: {set: {...}}, skip:
 /// {set: true}}` (skip: don't show the panel before that game starts).
 export const STORE = "remodel.settings";
 
-/// Built-in defaults. `touch` follows the device (`env.touchScreen`).
+/// The audio queue (ms) by default: the desktop's, and a phone's or
+/// tablet's, whose animation frames come less evenly (docs/web.md, "Audio
+/// rate").
+export const BUFFER = { desktop: 70, phone: 150 };
+
+/// Built-in defaults. `touch` follows the device (`env.touchScreen`);
+/// `buffer` "auto" too, when the game starts (`effective`).
 export function builtin(env = {}) {
   return {
     height: "auto",
@@ -40,6 +46,7 @@ export function builtin(env = {}) {
     sound: true,
     sfx: MIX[0],
     music: MIX[1],
+    buffer: "auto",
     touch: !!env.touchScreen,
     tilt: false,
     geo: "worker",
@@ -79,6 +86,11 @@ export function clean(key, v) {
       const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
       return Number.isFinite(n) ? Math.min(24, Math.max(-40, n)) : undefined;
     }
+    case "buffer": {
+      if (v === "auto") return v;
+      const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
+      return Number.isFinite(n) ? Math.min(1000, Math.max(20, Math.round(n))) : undefined;
+    }
     case "geo":
       // "native" was the opt-in before the native geometrizer became the
       // default; "sharc" the chip's name before 2C had one too.
@@ -105,7 +117,8 @@ function cleanAll(o) {
 
 /// The settings a page's URL parameters give (`?height=1080&sfx=8`...):
 /// `height`, `aspect=16:9`, `hud=center`, `bezel=0`, `sound=0`, `sfx` and
-/// `music` in dB, `touch` (`touch` or `touch=1` on, `touch=0` off), `tilt=1`,
+/// `music` in dB, `buffer=150` (the audio queue in ms, or `auto`), `touch`
+/// (`touch` or `touch=1` on, `touch=0` off), `tilt=1`,
 /// `geo=local` (the geometrizer on the page's thread) or `geo=chip` (in its
 /// worker, but the game's own program on its chip, the 2B SHARC or 2C TGP,
 /// even where the native implementation has it; `geo=sharc` and `geo=tgp`
@@ -121,6 +134,7 @@ export function fromParams(params) {
   if (params.has("sound")) raw.sound = flag("sound");
   if (params.has("sfx")) raw.sfx = params.get("sfx");
   if (params.has("music")) raw.music = params.get("music");
+  if (params.has("buffer")) raw.buffer = params.get("buffer");
   if (params.has("touch")) raw.touch = flag("touch");
   if (params.has("tilt")) raw.tilt = flag("tilt");
   if (params.has("smooth")) raw.smooth = flag("smooth");
@@ -218,10 +232,20 @@ export function windowAspect(env) {
   return Math.min(Math.max(env.innerWidth / env.innerHeight, 4 / 3), 21 / 9);
 }
 
+/// The audio queue (seconds) for the buffer setting `buffer` on this
+/// device (`env.phone`: a phone or tablet), and the worklet's priming and
+/// most to suit: priming a little under the target, as on the desktop
+/// (60 ms for 70), and at most 250 ms or 8/3 of the target.
+export function audioBuffer(buffer, env = {}) {
+  const ms = buffer === "auto" ? (env.phone ? BUFFER.phone : BUFFER.desktop) : buffer;
+  const target = ms / 1000;
+  return { target, prime: (target * 6) / 7, max: Math.max(0.25, (target * 8) / 3) };
+}
+
 /// What the page starts the game with: `{height, aspect (width / height),
-/// hudEdges, bezel, sound, mix: [sfx, music], touch, tilt, geoLocal,
-/// geoNative, smooth}` (smooth motion needs the native geometrizer: off
-/// with the chip).
+/// hudEdges, bezel, sound, mix: [sfx, music], audio: {target, prime, max},
+/// touch, tilt, geoLocal, geoNative, smooth}` (smooth motion needs the
+/// native geometrizer: off with the chip).
 export function effective(values, env) {
   return {
     height: values.height === "auto" ? screenHeight(env) : values.height,
@@ -230,6 +254,7 @@ export function effective(values, env) {
     bezel: values.bezel,
     sound: values.sound,
     mix: [values.sfx, values.music],
+    audio: audioBuffer(values.buffer, env),
     touch: values.touch,
     tilt: values.tilt,
     geoLocal: values.geo === "local",

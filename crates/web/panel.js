@@ -16,7 +16,7 @@
 // `bindings_edit`: the same rules as the native player) and says what it
 // refuses; the panel only finds out what was pressed.
 
-import { RESTART, differ, screenHeight, windowAspect } from "./settings.js";
+import { RESTART, audioBuffer, differ, screenHeight, windowAspect } from "./settings.js";
 
 const el = (tag, props = {}, ...children) => {
   const e = Object.assign(document.createElement(tag), props);
@@ -168,8 +168,12 @@ export function createPanel(opts) {
       [["auto", `Fit window (${fit.toFixed(2)}:1)`], ["4:3", "4:3"], ["16:9", "16:9"]], (v) => v)),
     choice("hud", "HUD", () => [["edges", "At the edges"], ["center", "Centred"]], "in wide views"),
     onOff("bezel", "Bezel", "beside a 4:3 picture in a wider window"));
+  const autoBuffer = audioBuffer("auto", env).target * 1000;
   const sound = el("section", {}, el("h3", { textContent: "Sound" }),
-    onOff("sound", "Sound"), slider("sfx", "Effects"), slider("music", "Music"));
+    onOff("sound", "Sound"), slider("sfx", "Effects"), slider("music", "Music"),
+    choice("buffer", "Buffer", () => withValue("buffer",
+      [["auto", `Auto (${autoBuffer} ms)`], [70, "70 ms"], [150, "150 ms"], [250, "250 ms"]], (v) => `${v} ms`),
+    "more rides out uneven frames without bending the pitch, but lags more"));
   // Controls: filled in once the game's module is loaded (setControls).
   let table = el("p", { className: "hint", textContent: "Loading the game's controls…" });
   const controls = el("section", {}, el("h3", { textContent: "Controls" }), table);
@@ -193,7 +197,8 @@ export function createPanel(opts) {
   const restart = el("button", { type: "button", textContent: "Restart to apply", hidden: true });
   const reset = el("button", { type: "button", textContent: "Defaults" });
   const note = el("p", { className: "hint", hidden: true,
-    textContent: "Render height, aspect, sound on or off, the geometrizer and smooth motion apply on a restart." });
+    textContent: "Render height, aspect, sound on or off, the sound buffer, the geometrizer and smooth motion " +
+      "apply on a restart." });
   const status = el("p", { className: "status" });
   const footer = el("footer", {},
     el("label", { className: "check" }, forAll, "Use these for all games"),
@@ -224,7 +229,7 @@ export function createPanel(opts) {
   }
   function refresh() {
     const off = !values.sound;
-    for (const k of ["sfx", "music"]) rows[k].el.style.opacity = off ? 0.5 : "";
+    for (const k of ["sfx", "music", "buffer"]) rows[k].el.style.opacity = off ? 0.5 : "";
     const needRestart = running && differ(values, running, RESTART).length > 0;
     restart.hidden = !needRestart;
     note.hidden = mode !== "game";

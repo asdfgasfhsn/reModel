@@ -12,9 +12,10 @@
 //! audio is resampled to match. With exact speed, or other refresh rates,
 //! frames follow a steady clock at 57.524 per second instead. Either way
 //! the audio queue corrects the drift between the clocks by stretching the
-//! audio by at most 0.5% (inaudible), never by stalling the game. Below
-//! full speed the audio follows the frames the game actually runs
-//! (`model2::audio::Pace`), so it slows with it instead of running dry.
+//! audio by at most 1% (inaudible), never by stalling the game. When the
+//! game persistently runs below full speed the audio follows the frames it
+//! actually runs (`model2::audio::Pace`), so it slows with it instead of
+//! running dry.
 //!
 //! The logo shows for two seconds at startup, fading out over the game
 //! booting underneath (`splash`). Esc opens the menu (and pauses): save
