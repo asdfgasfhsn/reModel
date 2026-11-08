@@ -1,19 +1,23 @@
 use crate::controls::button;
-use crate::{Board, Controls, Game, PadButton, Role, RomFile};
+use crate::{AnalogInput, Board, Controls, Game, PadAxis, PadButton, Role, RomFile};
 
-/// Sega Rally Championship (revision C), Model 2A-CRX. Work in progress:
-/// the board model runs up to the TGP's program upload; the TGP itself
-/// (an MB86234) is not emulated yet (README, "What's known about
-/// `srallyc`", `docs/hw/model2a.md`).
+/// Sega Rally Championship (revision C), Model 2A-CRX. Work in progress
+/// (README, "What's known about `srallyc`", `docs/hw/model2a.md`).
 ///
 /// Chip pairs are listed low half-word first. Program `17888c.12` and
 /// `17889c.13`; main data pairs `.10/.11`, `.8/.9` and `.6/.7`, **packed** 4
 /// MB apart from `0x2000000` (the game uploads texels from `0x2200000` and
 /// reads model data at `0x2860000`, in the third pair; the 8 MB slots of
-/// the 2B and 2C boards put the pairs elsewhere); polygon
-/// pairs `.16/.17`, `.20/.21`, `.24/.25`; textures `.29/.28` and
-/// `.31/.32`; the six `opr` chips are the TGP's lookup tables (three
-/// pairs, `.45/.46` holding floats). The zip also holds the older program
+/// the 2B and 2C boards put the pairs elsewhere). The polygon ROM is two
+/// 32-bit banks of 1M words, packed from model address `0x800000` and
+/// **not paired as the numbers suggest**: bank 0 is `.16` (low half) with
+/// `.20` (high), bank 1 is `.17` with `.21`. The texture ROM (texture point
+/// lists and headers) is `.24` and `.25`, **`.25` first**: it supplies the
+/// even 16-bit words. `.29/.28` (low half first) and `.31/.32` are the
+/// TGP's data ROM, packed from address `0x800000` on its external bus (the
+/// first holds, under a count of 300, the course data the collision
+/// functions read; the second slowly varying bytes); the six `opr` chips
+/// are the TGP's lookup tables (three pairs, `.45/.46` holding floats). The zip also holds the older program
 /// revision `b` (`epr-17888b.12`, `epr-17889b.13`), `ic12.bin`/`ic13.bin`
 /// (`b`'s program under other names) and `mpr-16310.15`, `-16311.16`,
 /// `-16312.14`, ramps that no program here reads (the rasteriser's own
@@ -33,7 +37,7 @@ pub static SRALLYC: Game = Game {
     protection: None,
     dropouts: &[],
     texture_ram_mirrored: false,
-    packed: &[Role::MainData, Role::CoproData],
+    packed: &[Role::MainData, Role::CoproData, Role::Polygons, Role::Textures, Role::TgpData],
     volume_db: 0.0,
     files: &[
         RomFile {
@@ -91,15 +95,15 @@ pub static SRALLYC: Game = Game {
             role: Role::Polygons,
         },
         RomFile {
-            name: "mpr-17749.17",
-            size: 0x200000,
-            sha1: "704175c8b29e4c989afcb7be42e7e0e096740eaf",
-            role: Role::Polygons,
-        },
-        RomFile {
             name: "mpr-17750.20",
             size: 0x200000,
             sha1: "4d470e71df61298282c356814e2d151fda323fb6",
+            role: Role::Polygons,
+        },
+        RomFile {
+            name: "mpr-17749.17",
+            size: 0x200000,
+            sha1: "704175c8b29e4c989afcb7be42e7e0e096740eaf",
             role: Role::Polygons,
         },
         RomFile {
@@ -109,40 +113,40 @@ pub static SRALLYC: Game = Game {
             role: Role::Polygons,
         },
         RomFile {
-            name: "mpr-17752.24",
-            size: 0x200000,
-            sha1: "1d342f87d1af1e5438d1ae818b1b14268e765897",
-            role: Role::Polygons,
-        },
-        RomFile {
             name: "mpr-17753.25",
             size: 0x200000,
             sha1: "dd5fd3c9592360d3e95623ac2491e6faabe9dbcb",
-            role: Role::Polygons,
+            role: Role::Textures,
+        },
+        RomFile {
+            name: "mpr-17752.24",
+            size: 0x200000,
+            sha1: "1d342f87d1af1e5438d1ae818b1b14268e765897",
+            role: Role::Textures,
         },
         RomFile {
             name: "mpr-17754.29",
             size: 0x200000,
             sha1: "c0a9b690523a529e4015e9af10dc3fb2a1726f08",
-            role: Role::Textures,
+            role: Role::TgpData,
         },
         RomFile {
             name: "mpr-17755.28",
             size: 0x200000,
             sha1: "e60803ae951489fe47d66731d15c32249ca547b4",
-            role: Role::Textures,
+            role: Role::TgpData,
         },
         RomFile {
             name: "mpr-17756.31",
             size: 0x200000,
             sha1: "1f1ee3f19a6bcf57bc5a1c7dd64ee83f8b81f084",
-            role: Role::Textures,
+            role: Role::TgpData,
         },
         RomFile {
             name: "mpr-17757.32",
             size: 0x200000,
             sha1: "1d3a0e441d150ada0535a9d50e2f69dd4b99c584",
-            role: Role::Textures,
+            role: Role::TgpData,
         },
         RomFile {
             name: "mpr-17886.36",
@@ -201,17 +205,63 @@ pub static SRALLYC: Game = Game {
     ],
 };
 
-/// Coin, start, test and service on port 0 as the other games lay them
-/// out (*unconfirmed* for this game: nothing is played yet), and no
-/// wheel, pedals or gear lever until the I/O is read from the code.
+/// The cabinet's controls. The buttons are the bits the game's input test
+/// shows (port 0 bit 0 "CHUTE1", bit 1 "CHUTE2", bit 5 "VR", bit 6 "START",
+/// and the test and service switches; port 1 bits 4 and 5 "SHIFT3" and
+/// "SHIFT4"), each found by holding one bit at a time on that screen; the
+/// input test has "SHIFT1" and "SHIFT2" too, which none of the other
+/// bits of the four ports moves. The wheel, accelerator and brake are the
+/// test's HANDLE, ACCEL and BRAKE: analog channels 0, 1 and 2 (each shows
+/// the value it was given). The game wants two coins for a credit by
+/// default ("CREDIT 1/2" after the first), so the coin and start script
+/// pays twice. Ports read active low. Which way each analog value runs
+/// is *unconfirmed* here.
 const CONTROLS: Controls = Controls {
     buttons: &[
         button("coin1", 0, 0x01, &["KeyC", "Digit5"], &[PadButton::Select]).labelled("Coin"),
+        button("coin2", 0, 0x02, &[], &[]),
         button("test", 0, 0x04, &[], &[]),
         button("service", 0, 0x08, &[], &[]),
-        button("start", 0, 0x10, &["Enter", "Digit1"], &[PadButton::Start]).labelled("Start"),
+        button("start", 0, 0x40, &["Enter", "Digit1"], &[PadButton::Start]).labelled("Start"),
+        button("view", 0, 0x20, &["KeyV"], &[PadButton::North]).labelled("View"),
+        button("shift3", 1, 0x10, &["KeyA"], &[PadButton::RightShoulder, PadButton::East]).labelled("Gear 3"),
+        button("shift4", 1, 0x20, &["KeyZ"], &[PadButton::LeftShoulder, PadButton::West]).labelled("Gear 4"),
     ],
-    analogs: &[],
+    analogs: &[
+        AnalogInput {
+            name: "wheel",
+            channel: 0,
+            centre: 0x80,
+            span: 112,
+            axis: PadAxis::LeftStickX,
+            keys_neg: &["ArrowLeft"],
+            keys_pos: &["ArrowRight"],
+            pad_neg: &[PadButton::DPadLeft],
+            pad_pos: &[PadButton::DPadRight],
+        },
+        AnalogInput {
+            name: "gas",
+            channel: 1,
+            centre: 0x00,
+            span: 255,
+            axis: PadAxis::RightTrigger,
+            keys_neg: &[],
+            keys_pos: &["ArrowUp"],
+            pad_neg: &[],
+            pad_pos: &[],
+        },
+        AnalogInput {
+            name: "brake",
+            channel: 2,
+            centre: 0x00,
+            span: 255,
+            axis: PadAxis::LeftTrigger,
+            keys_neg: &[],
+            keys_pos: &["ArrowDown"],
+            pad_neg: &[],
+            pad_pos: &[],
+        },
+    ],
     guns: &[],
-    coin_start: "coin1@1100-1104,start@1250-1254",
+    coin_start: "coin1@1100-1104,coin1@1150-1154,start@1300-1304",
 };

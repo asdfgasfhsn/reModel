@@ -17,12 +17,16 @@ pub enum Core {
     Tgp,
     /// Model 2B: an ADSP-21062 SHARC, booted through its IOP registers.
     Sharc,
+    /// Model 2A: fixed-function hardware, no program (docs/hw/model2a.md).
+    /// Always the native geometrizer, from the first frame.
+    Fixed,
 }
 
 impl Core {
     pub fn of(board: romset::Board) -> Self {
         match board {
             romset::Board::Model2B => Core::Sharc,
+            romset::Board::Model2A => Core::Fixed,
             _ => Core::Tgp,
         }
     }
@@ -416,6 +420,9 @@ pub struct Engine {
     pub native: Option<Box<crate::geo_native::Native>>,
     /// The 2C native geometrizer, likewise.
     pub native_tgp: Option<Box<crate::geo_native_2c::Native>>,
+    /// Model 2A: the fixed-function geometrizer, which is `native_tgp` in
+    /// its fixed form, whatever the mode.
+    fixed: bool,
     /// List words the TGP's program read in the most recent frame (the
     /// DMA's read-ahead not counted; `GeoMode::Check`).
     list_consumed: usize,
@@ -561,7 +568,7 @@ impl Geometrizer {
             program: Vec::new(),
             uploading: false,
             upload_half: None,
-            booted: false,
+            booted: core == Core::Fixed,
             write_ptr: 0,
             read_ptr: 0,
             bad_commands: 0,
@@ -829,7 +836,9 @@ impl Geometrizer {
 impl Engine {
     /// A fresh engine over the polygon ROM (u32 words).
     pub fn new(poly_rom: Vec<u32>, core: Core) -> Self {
+        let fixed = core == Core::Fixed;
         Engine {
+            fixed,
             tgp: Tgp::new(),
             sharc: (core == Core::Sharc).then(|| Box::new(Sharc::new())),
             poly_latch: 0,
@@ -851,9 +860,9 @@ impl Engine {
             first_error_trace: Vec::new(),
             busy: std::time::Duration::ZERO,
             slowest: std::time::Duration::ZERO,
-            mode: GeoMode::Chip,
+            mode: if fixed { GeoMode::Native } else { GeoMode::Chip },
             native: None,
-            native_tgp: None,
+            native_tgp: fixed.then(|| Box::new(crate::geo_native_2c::Native::fixed())),
             list_consumed: 0,
             check_poly: Vec::new(),
             check_latch: 0,
@@ -878,6 +887,7 @@ impl Engine {
 
     fn placeholder() -> Self {
         Engine {
+            fixed: false,
             tgp: Tgp::new(),
             sharc: None,
             poly_latch: 0,
@@ -914,6 +924,9 @@ impl Engine {
     /// Use `mode` from the next frame. A native geometrizer for the program
     /// the SHARC holds takes over the SHARC's state ([`Engine::attach_native`]).
     pub fn set_mode(&mut self, mode: GeoMode) {
+        if self.fixed {
+            return;
+        }
         if mode == self.mode && (self.native.is_some() || self.native_tgp.is_some()) {
             return;
         }
@@ -938,6 +951,14 @@ impl Engine {
     /// SHARC's state (the frames since the upload are taken to be the
     /// engine's frame count: games upload once).
     pub fn attach_native(&mut self) {
+        if self.fixed {
+            // No program to recognise: its state is in the TGP's, as a
+            // save puts it there.
+            if let Some(n) = self.native_tgp.as_deref_mut() {
+                n.import(&self.tgp, false);
+            }
+            return;
+        }
         self.native = None;
         self.native_tgp = None;
         if let Some(s) = &mut self.smooth {
@@ -1616,7 +1637,7 @@ impl state::State for Engine {
             // The native state, where the program keeps it, so the state
             // loads the same way whichever runs it.
             (GeoMode::Native, Some(n)) => {
-                let mut copy = if crate::geo_native_2c::fresh(&self.tgp) {
+                let mut copy = if crate::geo_native_2c::fresh(&self.tgp) && !self.fixed {
                     crate::geo_native_2c::started(&self.tgp)
                 } else {
                     let mut copy = Tgp::new();

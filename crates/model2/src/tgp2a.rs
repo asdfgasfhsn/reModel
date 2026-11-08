@@ -23,14 +23,22 @@ const RUN_LIMIT: u64 = 1_000_000;
 pub struct Shared<'a> {
     pub buffer: &'a mut [u8],
     pub commands: &'a mut BTreeMap<u32, u32>,
+    /// The data ROM from `0x800000` (`Role::TgpData`, 32-bit words).
+    pub rom: &'a [u32],
 }
 
 impl mb86234::Bus for Shared<'_> {
     fn read(&mut self, addr: u32) -> u32 {
+        if addr >= mb86234::ROM_BASE {
+            return self.rom.get((addr - mb86234::ROM_BASE) as usize).copied().unwrap_or(0);
+        }
         let o = (addr as usize & 0x7fff) * 4;
         u32::from_le_bytes(self.buffer[o..o + 4].try_into().unwrap())
     }
     fn write(&mut self, addr: u32, v: u32) {
+        if addr >= mb86234::ROM_BASE {
+            return;
+        }
         let o = (addr as usize & 0x7fff) * 4;
         self.buffer[o..o + 4].copy_from_slice(&v.to_le_bytes());
         if !self.commands.is_empty() {
@@ -373,7 +381,7 @@ mod tests {
 
     fn with_bus<R>(f: impl FnOnce(&mut Shared) -> R) -> R {
         let (mut ram, mut commands) = (vec![0u8; 0x2_0000], BTreeMap::new());
-        f(&mut Shared { buffer: &mut ram, commands: &mut commands })
+        f(&mut Shared { buffer: &mut ram, commands: &mut commands, rom: &[] })
     }
 
     #[test]
@@ -416,7 +424,7 @@ mod tests {
         ];
         let mut t = Tgp2a::default();
         let (mut ram, mut commands) = (vec![0u8; 0x2_0000], BTreeMap::new());
-        let bus = &mut Shared { buffer: &mut ram, commands: &mut commands };
+        let bus = &mut Shared { buffer: &mut ram, commands: &mut commands, rom: &[] };
         t.control(0, 0x8000_0000);
         for w in program {
             t.data_write(0, w, 0, 0, bus);

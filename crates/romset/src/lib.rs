@@ -128,6 +128,10 @@ pub enum Role {
     CoproData,
     /// Polygon model data read by the geometry engine, interleaved pairs.
     Polygons,
+    /// Data ROM on the external bus of Model 2A's TGP (MB86234), 16-bit
+    /// pairs (low half first) packed from address `0x800000` of that bus:
+    /// the course data its collision functions read.
+    TgpData,
     /// Texture ROM, interleaved pairs.
     Textures,
     /// 68000 sound program (byte-swapped 16-bit).
@@ -527,9 +531,15 @@ mod tests {
     #[test]
     fn manifests_have_program_pairs() {
         for g in games::ALL.iter().chain(games::IN_PROGRESS) {
-            for role in
-                [Role::Program, Role::MainData, Role::MainDataHigh, Role::CoproData, Role::Polygons, Role::Textures]
-            {
+            for role in [
+                Role::Program,
+                Role::MainData,
+                Role::MainDataHigh,
+                Role::CoproData,
+                Role::Polygons,
+                Role::Textures,
+                Role::TgpData,
+            ] {
                 let n = g.files.iter().filter(|f| f.role == role).count();
                 assert!(n % 2 == 0, "{}: {role:?} chips must come in pairs", g.id);
             }

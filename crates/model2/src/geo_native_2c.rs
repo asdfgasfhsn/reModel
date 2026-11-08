@@ -39,6 +39,14 @@ pub enum Program {
     /// memory, plus a skinned compact model format (fn 0x11) and a second
     /// matrix (fn 0x1B, 0x1C).
     TopSkater,
+    /// The Model 2A's fixed-function geometrizer (docs/hw/model2a.md): the
+    /// shared program's maths (*unconfirmed*: the chip is not a program
+    /// here, but its lists parse with the same commands and the lit
+    /// pictures look right), and no command check, since the hardware takes
+    /// the command from the port the word was written to and the TGP's
+    /// matrix words (function 5) carry whatever its register held in the
+    /// low bits.
+    Fixed,
 }
 
 /// Program hashes of the programs implemented here.
@@ -295,6 +303,18 @@ impl Native {
         Native { program, ram: vec![0; 2 * RAM_WORDS], pr: [0; 24], eb: 0, ar3: 0, first: true, stop: None }
     }
 
+    /// The 2A's geometrizer: no program, so the state a program's start-up
+    /// code would set up (the table of squarings per specular control)
+    /// is set here.
+    pub fn fixed() -> Self {
+        let mut n = Native::new(Program::Fixed);
+        for (k, &v) in [1u32, 1, 1, 1, 2, 2, 2, 3].iter().enumerate() {
+            n.ram[SHARED.squarings as usize + k] = v;
+        }
+        n.first = false;
+        n
+    }
+
     fn layout(&self) -> &'static Layout {
         match self.program {
             Program::TopSkater => &TOP_SKATER,
@@ -390,7 +410,7 @@ impl Native {
         loop {
             let w = io.rd();
             let fnc = (w >> 23) & 0x1f;
-            if fnc != (w >> 8) & 0x1f || fnc != w & 0x1f {
+            if self.program != Program::Fixed && (fnc != (w >> 8) & 0x1f || fnc != w & 0x1f) {
                 self.stop = Some(Stop::BadCommand(w));
                 return;
             }
@@ -621,7 +641,7 @@ impl Native {
             self.set(t, 0, 1);
         }
         match self.program {
-            Program::Shared => {
+            Program::Shared | Program::Fixed => {
                 // Each word is compared with a walking one; a mismatch calls
                 // a routine whose flags then keep the loop going whatever
                 // its count.
@@ -1104,6 +1124,23 @@ mod tests {
         assert!(frame(&mut n, &[0x0400_0000, cmd(0x0f)], &[]).is_empty());
         assert_eq!(n.stop, Some(Stop::BadCommand(0x0400_0000)));
         assert!(frame(&mut n, &[cmd(0x08), f(1.0), cmd(0x0f)], &[]).is_empty(), "for good");
+    }
+
+    /// The 2A's geometrizer has no command check: the command is the port
+    /// the word went to, and the TGP's matrix words (and the i960's, when
+    /// it writes zero) carry anything in their low bits.
+    #[test]
+    fn fixed_function_takes_any_low_bits() {
+        let mut n = Native::fixed();
+        let mut list = vec![4 << 23 | 0x1f, 0x10, 2, 0xaa, 0xbb, 0x0b << 23 | 0x6d00];
+        list.extend([f(1.0), 0, 0, 0, f(1.0), 0, 0, 0, f(1.0), 0, 0, 0]);
+        list.push(cmd(0x0f));
+        let out = frame(&mut n, &list, &[]);
+        assert_eq!(out, [0xff00_0004, 0x10, 2, 0xaa, 0xbb], "fn 4 passes its words through");
+        assert_eq!(n.stop, None);
+        assert_eq!(n.pr[0], f(1.0), "the matrix was taken");
+        // The squarings a program's start-up code sets up.
+        assert_eq!(n.ram[SHARED.squarings as usize + 7], 3);
     }
 
     #[test]

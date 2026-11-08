@@ -134,6 +134,10 @@ pub struct Model2Bus {
     mems: Vec<Mem>,
     /// Index in `mems` of the first memory-test-only RAM (the rest follow).
     test_rams: usize,
+    /// Model 2A: index in `mems` of its texture RAM (the luma tables follow).
+    video_2a: Option<usize>,
+    /// Model 2A: the TGP's data ROM on its external bus.
+    tgp_rom: Vec<u32>,
     map: Vec<Map>,
     /// For each 64 KB page, 1 + the index of the map entry in it (0: none).
     pages: Vec<u8>,
@@ -296,7 +300,9 @@ impl Model2Bus {
         // Model 2A's video RAM at 0x12000000 (docs/hw/model2a.md): texture
         // RAM, 8 MB of which the game fills below 0x12180000 and from
         // 0x12580000, and a small block above it.
+        let mut video_2a = None;
         if roms.game.board == Board::Model2A {
+            video_2a = Some(mems.len());
             for (start, size) in [(0x1200_0000u32, 0x80_0000usize), (0x1280_0000, 0x1_0000)] {
                 map.push(Map { start, end: start + size as u32 - 1, mem: mems.len(), base: 0 });
                 mems.push(Mem::zeroed(size));
@@ -328,6 +334,8 @@ impl Model2Bus {
             board,
             mems,
             test_rams,
+            video_2a,
+            tgp_rom: roms.bank(Role::TgpData).as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect(),
             map,
             pages,
             now: 0,
@@ -574,7 +582,8 @@ impl Model2Bus {
     /// Model 2A's registers where they differ from 2C's.
     fn io_read32_2a(&mut self, addr: u32) -> Option<u32> {
         let t = self.tgp2a.as_mut()?;
-        let bus = &mut Shared { buffer: &mut self.mems[BUFFER_RAM].data, commands: self.geo.commands() };
+        let bus =
+            &mut Shared { buffer: &mut self.mems[BUFFER_RAM].data, commands: self.geo.commands(), rom: &self.tgp_rom };
         Some(match addr & !3 {
             0x0088_4000..=0x0088_7fff => t.data_read(self.frames, self.cur_ip, bus),
             0x0098_0004 => t.output_empty() as u32,
@@ -594,7 +603,8 @@ impl Model2Bus {
     /// isn't one.
     fn io_write32_2a(&mut self, addr: u32, v: u32) -> bool {
         let Some(t) = self.tgp2a.as_mut() else { return false };
-        let bus = &mut Shared { buffer: &mut self.mems[BUFFER_RAM].data, commands: self.geo.commands() };
+        let bus =
+            &mut Shared { buffer: &mut self.mems[BUFFER_RAM].data, commands: self.geo.commands(), rom: &self.tgp_rom };
         match addr & !3 {
             0x0088_4000..=0x0088_7fff => t.data_write(addr & 0x3fff, v, self.frames, self.cur_ip, bus),
             0x0088_0000..=0x0088_3fff => t.command_write(addr & 0x3fff, v, self.frames, self.cur_ip, bus),
@@ -839,8 +849,28 @@ impl Model2Bus {
             for i in 0..n {
                 mem.data[(off + i) % len] = (v >> (8 * i)) as u8;
             }
+            if let Some(v2a) = self.video_2a.filter(|&b| m == b || m == b + 1) {
+                self.mirror_video_2a(m - v2a, off & !3);
+            }
         }
         true
+    }
+
+    /// Model 2A's video RAM holds one 16-bit value in each 32-bit word
+    /// (docs/hw/model2a.md, 3); the rasteriser reads the 2C's layout, the
+    /// same values back to back, so the word at byte offset `o` of video
+    /// RAM block `block` (0 texture RAM, 1 the luma tables) is kept there
+    /// too. Texture RAM's banks are 4 MB apart here and 2 MB there.
+    fn mirror_video_2a(&mut self, block: usize, o: usize) {
+        let b = self.video_2a.unwrap_or(0) + block;
+        let w = [self.mems[b].data[o], self.mems[b].data[o + 1]];
+        let k = o / 4;
+        let at = if block == 0 { (k >> 20) * 0x20_0000 + (k & 0xf_ffff) * 2 } else { 0x40_0000 + k * 2 };
+        let render = &mut self.mems[RENDER_RAM];
+        if let Some(d) = render.data.get_mut(at..at + 2) {
+            d.copy_from_slice(&w);
+            render.writes += 1;
+        }
     }
 
     fn unmapped(&mut self, addr: u32, write: Option<u32>) {
@@ -1423,6 +1453,15 @@ mod tests {
         b.write32(0x1200_0004, 0x1133);
         b.write32(0x1280_0000, 5);
         assert_eq!((b.read32(0x1200_0004), b.read32(0x1280_0000)), (0x1133, 5));
+        // The rasteriser's render RAM has the 16-bit words back to back
+        // (texture bank 1 is 2 MB above bank 0 there, 4 MB here; luma
+        // tables from 4 MB).
+        b.write32(0x1240_0008, 0xabcd);
+        b.write32(0x1280_0004, 0x77);
+        let r = b.render_ram();
+        assert_eq!(u16::from_le_bytes([r[2], r[3]]), 0x1133);
+        assert_eq!(u16::from_le_bytes([r[0x20_0004], r[0x20_0005]]), 0xabcd);
+        assert_eq!(r[0x40_0002], 0x77);
         let mut other = bus("topskatr");
         other.write32(0x1200_0004, 0x1133);
         assert_eq!(other.read32(0x1200_0004), 0, "unmapped there");

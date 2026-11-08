@@ -55,6 +55,9 @@ pub mod reg {
 }
 
 /// The board side of the chip's external bus.
+/// Where the board's data ROM starts on the external bus (words).
+pub const ROM_BASE: u32 = 0x80_0000;
+
 pub trait Bus {
     /// A read of the board's shared RAM (on Model 2A the geometrizer's
     /// buffer RAM, in 32-bit words).
@@ -270,6 +273,15 @@ impl Cpu {
                     }
                 }
                 0xbf => match (w >> 16) & 0xff {
+                    // Jump if the zero flag is clear (hypothesis: `BE 00` is
+                    // jump-if-zero, and this closes the course data search's
+                    // loop on its counter, which the ALU word before it
+                    // counts up to 0).
+                    0x00 => {
+                        if !self.zero {
+                            next = w & 0xffff;
+                        }
+                    }
                     0x60 => next = w & 0xffff,
                     0x64 => {
                         self.push(next);
@@ -373,8 +385,9 @@ impl Cpu {
     }
 
     fn ext_read(&mut self, bus: &mut dyn Bus, a: u32) -> u32 {
-        if self.shared_bus {
-            bus.read(a & 0xffff)
+        // The data ROM (from 0x800000) is there in both bus modes.
+        if self.shared_bus || a & 0xff_ffff >= ROM_BASE {
+            bus.read(a & 0xff_ffff)
         } else {
             match self.funcs.read(a & 0xffff) {
                 Some(v) => v,
@@ -387,8 +400,8 @@ impl Cpu {
     }
 
     fn ext_write(&mut self, bus: &mut dyn Bus, a: u32, v: u32) {
-        if self.shared_bus {
-            bus.write(a & 0xffff, v);
+        if self.shared_bus || a & 0xff_ffff >= ROM_BASE {
+            bus.write(a & 0xff_ffff, v);
         } else if !self.funcs.write(a & 0xffff, v) {
             *self.unknown_ext.entry(a & 0xffff).or_default() += 1;
         }
@@ -397,7 +410,7 @@ impl Cpu {
     /// An address register's value, then the signed 5-bit step added to it.
     fn post(&mut self, ar: u8, modifier: u32) -> u32 {
         let a = self.regs[ar as usize];
-        self.regs[ar as usize] = a.wrapping_add(sext(modifier & 0x1f, 5)) & 0xffff;
+        self.regs[ar as usize] = a.wrapping_add(sext(modifier & 0x1f, 5)) & 0xff_ffff;
         a
     }
 
