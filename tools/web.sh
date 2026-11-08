@@ -13,6 +13,20 @@
 # WASM_CARGO (a command, may start with VAR=value), WASM_BINDGEN.
 set -eu
 
+# Built beside the live site (WEB_OUT.next, starting from a copy of it, so
+# screenshots and unchanged files carry over) and swapped in at the end, so
+# a page loaded mid-build never mixes old and new files. The swap is per
+# top-level entry, inside WEB_OUT itself: a server may bind-mount WEB_OUT,
+# and replacing the directory would leave it serving the old one.
+live=$WEB_OUT
+WEB_OUT=$live.next
+rm -rf "$WEB_OUT"
+if [ -d "$live" ]; then
+    cp -a --reflink=auto "$live" "$WEB_OUT"
+else
+    mkdir -p "$WEB_OUT"
+fi
+
 remodel=target/release/remodel
 model2=$WEB_OUT/model2
 target=target/web
@@ -112,4 +126,17 @@ cp assets/bezels/*.webp "$WEB_OUT/bezels/"
 # Left from the single-page layout (before model2/).
 rm -rf "$WEB_OUT/pkg" "$WEB_OUT/audio-worklet.js" "$WEB_OUT/sound-worker.js" "$WEB_OUT/geo-worker.js" "$WEB_OUT/touch.js" "$WEB_OUT/gun.js" "$WEB_OUT/settings.js" "$WEB_OUT/panel.js"
 $remodel --rom "$ROM" web-index "$WEB_OUT" >/dev/null
+# model2/ first: a game page, its module and scripts all live there. rom/
+# stays: it's where a server mounts the ROMs.
+mkdir -p "$live"
+for e in model2 $(ls -A "$WEB_OUT" | grep -vx -e model2 -e rom); do
+    [ -e "$WEB_OUT/$e" ] || continue
+    if [ -e "$live/$e" ] || [ -L "$live/$e" ]; then
+        mv -T --exchange "$WEB_OUT/$e" "$live/$e"
+    else
+        mv -T "$WEB_OUT/$e" "$live/$e"
+    fi
+done
+rm -rf "$WEB_OUT"
+WEB_OUT=$live
 echo "web: built $WEB_OUT in $(($(date +%s) - started)) s: serve it over HTTPS (WebGPU needs a secure page) with $ROM/ at $WEB_OUT/rom/"

@@ -118,6 +118,12 @@ make web            # out/web: game list, a page per game, one shared interprete
 make web RECOMP=1   # each game gets its own module with its recompiled code (after `make recomp GAME=...`)
 ```
 
+**Rebuilding a live site.** The build works in `out/web.next` (starting
+from a copy of `out/web`) and swaps each top-level entry into `out/web` at
+the end, `model2/` first, so a page loaded mid-build never mixes an old
+module with new scripts. It swaps entries rather than the directory because
+a server may bind-mount `out/web` (as below); `rom/` is left alone.
+
 **Layout.** `make web` (`tools/web.sh`) writes:
 
 | URL | file | what |
