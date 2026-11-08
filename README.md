@@ -32,7 +32,7 @@ music`). There is no live window yet.
 | i960 interpreter (reference and tracer) | done; boots `topskatr` into its interrupt-driven init |
 | Model 2C board model (memory, IRQs, timers, I/O, copro interface) | in progress |
 | MB86235 geometry processor: disassembler and reference interpreter | done; runs the game's uploaded program |
-| Model 2A: `srallyc` (Sega Rally Championship, 2A-CRX; work in progress) | draws its 3D, textured (attract mode and races: `make run GAME=srallyc INPUT=coin-start`), but is **not** in the game lists (`romset::games::IN_PROGRESS`). The board model boots it (`Board::Model2A`) and runs the TGP's uploaded program on an MB86234 interpreter (`crates/mb86234`, `docs/hw/mb86234.md`); the fixed-function 2A geometrizer is the 2C native geometrizer's command handling over the 2A polygon ROM (`docs/hw/model2a.md` §5, §7); sound plays |
+| Model 2A: `srallyc` (Sega Rally Championship, 2A-CRX; work in progress) | draws its 3D, textured (attract mode and races: `make run GAME=srallyc INPUT=coin-start`), and the race drives (scripted inputs), but it is **not** in the game lists (`romset::games::IN_PROGRESS`). The board model boots it (`Board::Model2A`) and runs the TGP's uploaded program on an MB86234 interpreter (`crates/mb86234`, `docs/hw/mb86234.md`); the fixed-function 2A geometrizer is the 2C native geometrizer's command handling over the 2A polygon ROM (`docs/hw/model2a.md` §5, §7); sound plays |
 | Geometrizer (second MB86235) running the game's own program | done; gameplay frames produce the rasteriser stream |
 | Recompiler: i960 → native | done; opt-in (`make recomp`, then `RECOMP=1`), identical state hash; 96% of the game's instructions become plain Rust, the rest call the interpreter with the instruction pre-decoded; see `docs/recompiler.md` |
 | Recompiler: MB86235 programs → Rust | done; built with the i960 code, geometrizer about 1.5x faster |
@@ -471,8 +471,8 @@ chip but the program pair). Details, addresses and evidence in
 
 ## What's known about Model 2A
 
-Only `srallyc` is here, and it is work in progress (milestone 4: the TGP
-runs and the 3D is drawn, textured). The board map, the TGP's interface,
+Only `srallyc` is here, and it is work in progress (milestone 5: the TGP
+runs, the 3D is drawn, textured, and the race is drivable). The board map, the TGP's interface,
 the functions of its program, the polygon ROM and the geometrizer are in
 `docs/hw/model2a.md`; the MB86234's instruction set, as far as it is known
 and how each part was pinned, in `docs/hw/mb86234.md`.
@@ -492,9 +492,13 @@ and how each part was pinned, in `docs/hw/mb86234.md`.
   words: an ALU operation in parallel with a transfer (registers, two
   RAMs, the external bus) or with loads of the multiplier's inputs, 24-bit
   immediates, control registers with a repeat count, conditional jumps
-  and loads, calls. The interpreter runs every function the game calls
-  and its library (add to tangent) to the maths for random arguments
-  (`make tgp-check`); a few forms only uncalled code uses remain unknown.
+  and loads, calls, and a loop on a counter register (`BF00`, which the
+  course search closes its loop with; milestone 4's reading of it as a
+  jump on the zero flag made the race's physics run away). The
+  interpreter runs every function the game calls and its library (add to
+  tangent) to the maths for random arguments, and the course search on a
+  made-up course (`make tgp-check`); a few forms only uncalled code uses
+  remain unknown.
 - *Confirmed (numerically):* the shared Model 2/2A chips are maths tables:
   `opr-14742a.45/.46` a quarter-wave sine (65,536 steps a circle, within
   3e-8), an arctangent, and slope and intercept pairs for `1/x` and
@@ -525,10 +529,10 @@ Sega Rally Championship (Sega; revision C; ©SEGA 1994 on the attract
 screens, and the boot warning "used only in Japan"), the seventeenth game
 manifest and the first Model 2A one. `srallyc.zip` also holds the older
 program revision `b` and two chips named `ic12.bin`/`ic13.bin` (the program
-pair again); they aren't used. **Not playable yet**: the 3D is drawn and
-a race starts, but the car's physics runs away after the start (below); the
-manifest is in `romset::games::IN_PROGRESS`, which `remodel run` and `make
-run` use but no front end lists.
+pair again); they aren't used. **The race is drivable** (milestone 5,
+below) but the game is not listed yet: the manifest is in
+`romset::games::IN_PROGRESS`, which `remodel run` and `make run` use but
+no front end lists.
 
 - *Confirmed (by running it):* `make run GAME=srallyc INPUT=coin-start
   STEPS=700000000 SNAP=100` boots the i960 program through the memory
@@ -546,28 +550,50 @@ run` use but no front end lists.
   confirm with the accelerator", four cars, AT or MT), then the course map,
   the start line (a gate, crowd, banners, "SEGA RALLY CHAMPIONSHIP" boards,
   the dashboard and a rear-view mirror) and the countdown (frames 1,900 to
-  2,400), all drawn. **The car then runs away**: with the accelerator held
-  the speedometer reaches 250 km/h in five seconds, the car turns off the
-  road, flies and tumbles; released it creeps and veers. The cause isn't
-  found (`docs/hw/model2a.md` §9). The sound board boots from
-  `epr-17890.30` and plays.
+  2,790), all drawn. **Then the car drives** (milestone 5): released it
+  stays put; held, the accelerator pulls it through the automatic's gears
+  to 214 km/h; the wheel steers it through the town's first right-hand
+  bend at 200 km/h, over the hills and onto the dirt road through a
+  checkpoint (30 s of race with three scripted turns, `docs/hw/model2a.md`
+  §9 has the script); barriers slow and deflect it, a hard turn into one
+  spins it round ("wrong way"), and in the air it falls at 10 m/s². The
+  sound board boots from `epr-17890.30` and plays.
 - *Confirmed (by the pictures):* the 2A polygon ROM, texture ROM and
   texture RAM layouts that make this draw: see "What's known about Model
   2A" above and `docs/hw/model2a.md` §5, §7. The pictures are the evidence
   (a wrong pairing gave scattered polygons, a right one the road and the
   cars); no picture or ROM data is in the repository.
 - *Confirmed (running the race):* the TGP has a **data ROM** on its
-  external bus, from word address `0x800000` (`.29/.28`, `.31/.32`), which
-  the race's collision functions read (the car fell through the road
-  without it); its address registers are 24 bits wide
-  (`docs/hw/model2a.md` §9, `docs/hw/mb86234.md`). One instruction form it
-  needs (`BF 00`, jump if the zero flag is clear) is a hypothesis.
+  external bus, from word address `0x800000` (`.29/.28`, `.31/.32`): the
+  course's ground, as cells of polygons that functions `7`, `0x52` and
+  `0x53` search for the polygon under each wheel (the car fell through the
+  road without it); its address registers are 24 bits wide
+  (`docs/hw/model2a.md` §9, `docs/hw/mb86234.md`).
+- *Confirmed (milestone 5):* why the car ran away after the start in
+  milestone 4: the search's loop word `BF 00` is a **loop on a counter**
+  (register `0x0C`, loaded with the cell's polygon count), not "jump if
+  the zero flag is clear". The old reading ran the search past each
+  cell's polygons into other cells' (16 passes in a cell of 6) and gave
+  the game the ground of other places. The ROM's cells pin the count
+  (their polygons and attribute words lie exactly count x 16 words
+  apart), `make tgp-check` tells the two readings apart on a made-up
+  course, and with the counter the race drives (`docs/hw/mb86234.md`).
 - *Confirmed (from the game's input test, by holding each bit):* coin 1
   and 2 are port 0 bits `0x01`, `0x02`, test and service `0x04`, `0x08`, VR
-  (the view button) `0x20` and start `0x40`; SHIFT3 and SHIFT4 are port 1
-  bits `0x10` and `0x20` (SHIFT1 and SHIFT2 answer to no bit); the wheel,
-  accelerator and brake are analog channels 0, 1 and 2. Which way each
-  analog value runs is unconfirmed.
+  (the view button) `0x20` and start `0x40`; the wheel, accelerator and
+  brake are analog channels 0, 1 and 2.
+- *Confirmed (by driving):* the wheel is centred at `0x80`, lower steers
+  left and higher right; the pedals are `0x00` released and `0xFF`
+  pressed. The default keys are stcc's: arrows to steer, accelerate and
+  brake, Enter to start, C to coin, V for the view.
+- *Confirmed (the game's input polling, and driving a manual car):* the
+  **shift lever** is an H gate, port 1 bits 4-6 read as a code the game
+  turns into a gear with a table: 1st is `0x40`+`0x10`, 2nd `0x40`+`0x20`,
+  3rd `0x10`, 4th `0x20`, anything else neutral. That is why the input
+  test's SHIFT1 and SHIFT2 answered to no single bit. The manifest has
+  them as `gear1`-`gear4` (keys Q, A, W, S; held for as long as the gear
+  is in); they matter only with an MT car, which the wheel picks on the
+  car select screen.
 - *Confirmed:* the ROM chips' layout (`docs/hw/model2a.md` §5): the main
   data pairs are packed 4 MB apart (`.10/.11`, `.8/.9`, `.6/.7`), the
   texels the game copies to `0x12000000` come from `0x2200000`, the
@@ -594,12 +620,15 @@ run` use but no front end lists.
   output; `make tgp-check` compares it.
 - *Unconfirmed:* the 2A geometrizer's own arithmetic, lighting and
   clipping (the 2C native geometrizer's stands in: the pictures look
-  right); the two bytes of port 1 that SHIFT1 and SHIFT2 should be; the
-  cabinet's drive board (the game writes its command byte; it isn't
-  modelled) and link.
-- *Not done:* the car's physics after the start (above); a poster
-  (the game isn't listed yet); the `.29/.28` and `.31/.32` data beyond what
-  the first block of the race reads.
+  right); the cabinet's drive board (the game writes its command byte; it
+  isn't modelled) and link; whether the car's quick acceleration and
+  braking (100 km/h in 1.2 s, 2-3 g) are the cabinet's (the gravity and
+  speedometer agree with the motion, so they are taken to be the game's
+  tuning).
+- *Not done:* trying it in the player (`make play`) and listing it; a
+  poster (the game isn't listed yet); a whole race to the finish and the
+  other courses; the force feedback (drive board); the meaning of the
+  course polygons' attribute words and last four words.
 
 ## What's known about `topskatr`
 

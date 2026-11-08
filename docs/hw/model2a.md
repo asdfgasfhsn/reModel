@@ -6,10 +6,10 @@ code and from running it on the board model (`model2::bus` with
 `Board::Model2A`, `model2::tgp2a`); where a statement is a guess it says
 so. The 2A's processor, the Fujitsu MB86234, is in `mb86234.md`.
 
-**Status (milestone 4).** The board model boots `srallyc`, passes its
+**Status (milestone 5).** The board model boots `srallyc`, passes its
 coprocessor load check, runs its tile layers and **draws its 3D, textured**:
 the attract mode's rally scenes (cars, track, forest, sky) and, with the
-coins in, the game's menus and races. The TGP runs the uploaded program on
+coins in, the game's menus and races, and **the race is drivable** (§9). The TGP runs the uploaded program on
 the MB86234 interpreter (`crates/mb86234`, `mb86234.md`), its external bus
 on the geometrizer's buffer RAM: the program writes each object's matrix
 into the display list (§7). The 2A geometrizer is fixed-function hardware
@@ -182,7 +182,27 @@ answers sent the game down other paths, and the model's ignorance of
 | 0x5F | 5 | 0 | 5,990 | 2,023- | translate, rotate z and x, into the list |
 
 The attract mode's 3D scenes start at frame 1,352; before that only the
-frame calls 2, 3, 4 and 0x23 occur. `remodel run` lists the table (`tgp
+frame calls 2, 3, 4 and 0x23 occur.
+
+The race (milestone 5: a 680 M-instruction coin-start run, 4,693 frames,
+the accelerator held from the car select and the wheel turned at three
+corners; the race starts at frame 2,790) adds these, all from frame 2,375
+(the start line) on:
+
+| F | Args | Reads | Calls | What it is (§6) |
+|---|---|---|---|---|
+| 7 | 0 (1 in the list) | 1 | 9,732 | a word of the data ROM |
+| 0x15 | 1 | 1 | 8,602 | sine (the library's) |
+| 0x50 | 6 | 1 | 581 | distance between two points (frames 4,364-4,394) |
+| 0x51, 0x54 | 3 | 0 | 7, 14 | point along a direction (on the start line) |
+| 0x52 | 0 (9 in the list) | 0 | 9,732 | find the course polygon under a point |
+| 0x53 | 1 | 17 | 9,732 | that polygon's words |
+| 0x59 | 6 | 1 | 2,318 | dot product |
+| 0x5B | 6 | 3 | 3,068 | cross product |
+| 0x60 | 0 | 0 | 14 | the current matrix into shared RAM |
+
+Functions 7 and 0x52 take their arguments from the list in shared RAM
+(below), not the FIFO. `remodel run` lists the table (`tgp
 calls`; headers are recognised by their form, so a float argument could
 be miscounted as a call, though none is known to be), writes
 `out/GAME/tgp-calls.txt` (every call in order, with frame and i960
@@ -240,6 +260,14 @@ The last column says where milestone 2's function model
 | `0x42`-`0x44` | 4 / 0, 1 / 3, 4 / 0 | vector register i: set, read, add | `0x404`.. | agrees |
 | `0x48` | 1 / 0 | transforms vector register i by the current matrix, in place | `0x44C` | not modelled |
 | `0x54` | 3 / 0 | turns the matrix to point along a direction: two rotations after which `v M = (0, 0, \|v\|)` | `0x4B5` | not modelled |
+| `0x51` | 3 / 0 | the same two rotations with the other signs: the matrix's third row becomes `v / \|v\|` | `0x48E` | not modelled |
+| `0x50` | 6 / 1 | the distance from (w0, w1, w2) to (w3, w4, w5) | `0x46C` | not modelled |
+| `0x59` | 6 / 1 | a dot product, `w0 w1 + w2 w3 + w4 w5` | `0x530` | not modelled |
+| `0x5B` | 6 / 3 | a cross product, `u x v` with `u = (w5, w0, w2)`, `v = (w4, w3, w1)` | `0x55F` | not modelled |
+| `7` | list / 1 | the data ROM's word at the offset the next word of the shared-RAM list gives (from `0x800000`) | `0x16D` | not modelled |
+| `0x52` | list / 0 | the course search (§9): from nine words of the list (a point x, y, z, a block of the course data, a word not used, three cells of the block, a slot), the first polygon of the three cells (in the order 7th, 8th, 6th word) that contains the point in x and z; records where it is in a table at RAM0 104 + slot | `0x58A` | not modelled |
+| `0x53` | 1 / 17 | the polygon the search found for a slot: its 16 words and its attribute word | `0x63C` | not modelled |
+| `0x60` | 0 / 0 | copies the current matrix to shared RAM `0x7F00 +` the list's next word | `0x3DB` | not modelled |
 | `0x55` | 10 / 0 | push, translate (3), face a point (4, as `0x5E`), scale (3), function 5, pop: a scaled billboard | `0x66E` | not modelled (milestone 2's table missed it: the model took the call as one with no words) |
 | `0x58` | 6 / 1 | the distance between (w1, w3, w5) and (w0, w2, w4) | `0x51C` | agrees (to 1 ulp) |
 | `0x5C` | 6 / 1 | a 2D cross product of differences, `(w5 - w0)(w4 - w3) - (w2 - w3)(w1 - w0)` | `0x577` | **wrong** (guessed a distance) |
@@ -247,15 +275,19 @@ The last column says where milestone 2's function model
 | `0x5E` | 7 / 0 | translate by (w0, w1, w2), then a rotation about y by the direction (w3 - w4, w5 - w6), normalised (a billboard: the game passes its own x and z again as w4 and w6, and the point to face as w3 and w5) | `0x679` | not modelled |
 | `0x5F` | 5 / 0 | push, translate (3), rotate z then x by 16-bit angles, function 5, pop | `0x67B` | not modelled |
 
-Also in the program, not called by the game: the library at `8`-`0x17`
-(add, subtract, multiply, divide, a residual `x - y (x / y)` at `0x0C`, abs,
-negate, square root, integer/float conversions, sine, cosine, tangent;
-`make tgp-check` checks them), ROM sine and cosine (`0x35`, `0x36`), an
-arctangent through the function unit (`0x3E`), the 3x3 product (`0x24`),
-the stack depth (`0x2D`), more vector-register operations (`0x40`,
-`0x41`, `0x45`-`0x47`), matrix copies to and from shared RAM (`0x60`,
-`0x61`), peeks (`6`, `7`) and others not examined (`0x2E`, `0x50`-`0x53`,
-`0x56`, `0x57`, `0x59`-`0x5B`).
+`make tgp-check` checks every function in this table against its maths
+(the course search on a made-up course, below).
+
+Also in the program, not called by the game: the rest of the library at
+`8`-`0x17` (add, subtract, multiply, divide, a residual `x - y (x / y)` at
+`0x0C`, abs, negate, square root, integer/float conversions, cosine,
+tangent; `make tgp-check` checks them), ROM sine and cosine (`0x35`,
+`0x36`), an arctangent through the function unit (`0x3E`), the 3x3 product
+(`0x24`), the stack depth (`0x2D`), more vector-register operations
+(`0x40`, `0x41`, `0x45`-`0x47`), the matrix copy back from shared RAM
+(`0x61`), a peek (`6`), the cosine of the angle between two vectors
+(`0x5A`: their dot product over the product of their lengths) and others not examined
+(`0x2E`, `0x56`, `0x57`).
 
 ### What the game does with it
 
@@ -366,14 +398,15 @@ red with their shadows, dust, and the game's own overlays; and a
 - The 2A geometrizer's own arithmetic (rounding, the lighting equation's
   details, specular), clipping and z-sort are the 2C program's, not
   checked against the 2A hardware.
-- The two unidentified ROM pairs (`.29/.28`, `.31/.32`, §5), and the
-  `0x1A14000` link board, the drive board and the cabinet's other
-  inputs.
+- The `0x1A14000` link board, the drive board (the wheel's force
+  feedback: the game writes its commands, nothing answers them) and the
+  meaning of the course data's attribute words and of each polygon's last
+  four words.
 - `out/srallyc/tgp.bin` (`make run GAME=srallyc` writes it; `make
   tgp-disasm GAME=srallyc` lists it, `make tgp-check GAME=srallyc` checks
   it) and the call log (`tgp-calls.txt`).
 
-## 9. The TGP's data ROM and the race (milestone 4)
+## 9. The TGP's data ROM and the race (milestones 4 and 5)
 
 *Confirmed (by the run):* the TGP's external bus has a **data ROM from
 word address `0x800000`**, in both of the chip's bus modes (the bus
@@ -385,37 +418,81 @@ ROM address by adding `-0x800000` to the pointer it was given and, in the
 function that reads a block, steps through it from there. (Milestone 3 had
 them 16 bits and no ROM: nothing the attract mode calls reads it.)
 
-What the race needs from it, as the i960's code and the TGP's program show:
-the i960 keeps a table (RAM `0x5DCAC0`, 12 bytes an entry: `0xDE30,
-0x1ADA0, 0x2003E00`; `0x272E0, 0x3C110, 0x200BA00`; ...: two word offsets
-and a main-data address) and, four times a frame (each wheel), puts the
-first word into the TGP's list and calls function `7`, which reads the ROM
-word at that offset (`0xDE30`: it holds 300, the count at the start of a
-block of the course data, as the ROM's own first word does), then `0x52` (search the block for the cell under the wheel and store a
-pointer to its record, or a "none" marker, in a table at the TGP's RAM
-word 104), and `0x53` (give the 17 words of the record). **Without the
-ROM, function 7 answered 0, `0x52` was never called, `0x53` answered
-zeros ("no ground") and the car fell through the road at the start of
-every race.** With it the car stands on the start line through the
-countdown (0 km/h).
+**What the race does with it** (*confirmed*, from the i960's code, the
+TGP's program and the ROM). The i960 keeps a table (RAM `0x5DCAC0`, 12
+bytes an entry: `0xDE30, 0x1ADA0, 0x2003E00`; `0x272E0, 0x3C110,
+0x200BA00`; ...: two word offsets into the data ROM and a main-data
+address) and, four times a frame (once for each wheel of the player's
+car; more when other things touch the ground), puts words into the TGP's
+list in shared RAM (the list function 5 takes its offsets from, §7) and
+calls function `7`, which reads the ROM word at the first offset (`0xDE30`
+holds 300), then `0x52` with nine list words: the wheel's x, y and z, the
+second offset (a **block** of the course data), a word the search doesn't
+use, three **cells** of the block (word offsets into it: the cell under
+the wheel and two neighbours, by the i960's reckoning) and a slot. The
+course data:
 
-*Hypothesis:* one instruction form the search loop needs was unknown:
-`BF 00 xxxx`, here after an add that counts the loop's counter up to 0 and
-before the return. Read as **jump if the zero flag is clear** (`BE 00` is
-jump if zero) it makes the search work (the car finds the ground), so
-`mb86234` takes it so; the form is otherwise unconfirmed.
+- A **cell** is four words: the number of polygons, the byte offsets from
+  the ROM's start of its polygons and of their attribute words, and 0.
+  The polygons (16 words each) are followed directly by the attribute
+  words (one each): the count times 16 is the distance between the two
+  offsets in every cell.
+- A **polygon** is four corners (x, y, z: course units, which are metres
+  as far as the car shows: its wheels are 1.8 apart across and 2.75 along,
+  and it falls at 10 a second squared) and four more words (*unknown*:
+  presumably the plane for the height). Bit 2 of its attribute word says
+  it has four corners (else three, and the fourth is not read); the other
+  bits are *unknown* (the surface?).
 
-*Not working yet:* once the countdown ends the car does not drive. With
-the accelerator held, the speedometer runs to about 250 km/h within five
-seconds with the camera turning left, and then the world tumbles (the
-screen is sky and sea); with the accelerator released it creeps at
-25 km/h and veers off the road, and later flies over the countryside in
-the picture's aerial view. The start (the course map, the start gate with
-its crowd and banners, the "SEGA RALLY CHAMPIONSHIP" barriers, the
-countdown, the dashboard and rear-view mirror) all draw correctly. The
-cause is not found: the TGP functions the race calls that nothing
-checks numerically (`0x52`, `0x53`, `0x59`, `0x5A`, `0x5B`, `7`, `0x60`) or
-the i960's own use of the analog inputs (below) are the places left.
+`0x52` copies each polygon's corners in x and z and tests the point
+against its edges (the cross products `(c_i - p) x (c_i+1 - p)`): all of
+them non-negative (sign bits clear) is a hit, all negative ends that cell,
+mixed goes on to the next polygon; after the cell's last polygon it goes
+on to the next cell (in the order of the 7th, 8th and 6th list words). It
+writes where the hit is (the attribute word's and the polygon's
+addresses, `ROM - 0x800000`) at RAM0 104 + slot, or 104 in both words if
+none of the three cells has one. `0x53` (the slot) gives the polygon's 16
+words and its attribute word. **Without the ROM** (milestone 3), function
+7 answered 0, `0x52` was never called, `0x53` answered zeros and the car
+fell through the road at the start of every race.
+
+**The race drives** (milestone 5, *confirmed* by running it). Milestone 4
+had the search's loop word `BF00` as "jump if the zero flag is clear": the
+car stood on the start line, but the search ran on past a cell's
+polygons into the next cells' (16 passes for a cell of 6 under a rear
+wheel on the start line, 47 for another) and took the first polygon there
+that held the wheel in plan view, so the game got the ground of other
+places. Once the car moved the physics ran away: the speedometer at
+250 km/h within five seconds and the car turning left and tumbling with
+the accelerator held, creeping at 25 km/h and veering off the road with
+it released. `BF00` is a **loop on a counter** that the search loads with
+the cell's polygon count (`mb86234.md` has the evidence). With it, in a
+coin-start race with scripted inputs (`make run GAME=srallyc
+INPUT=coin-start,gas=0xff@2300-6000,wheel=0xa0@3085-3165,wheel=0x70@3360-3420,wheel=0xb0@3590-3640
+STEPS=680000000 SNAP=100`):
+
+- released, the car stays at 0 km/h; held, it pulls away at the start
+  (frame 2,790) through the gears of the automatic, 100 km/h after about
+  1.2 s and 214 km/h, where it levels off, after 4.5 s; braking from
+  207 km/h it is at 37 km/h 1.7 s later. The speedometer agrees with the
+  distance the wheels cover per frame (60 frames a second) in course
+  units, read as metres;
+- with the wheel centred it runs straight down the first street of the
+  course's town, between the "SEGA" and sponsor barriers, and into
+  the barrier where the road bends right; turned right there (`0xA0`) it
+  takes the bend at 200 km/h without touching, then left and right again
+  over the hills onto the dirt road, through a checkpoint (the time
+  extended from 35 to 54 s at 0'26"), past spectators and a lattice tower,
+  hitting a barrier twice where the script steers late;
+- hitting a barrier slows it (214 to 150 km/h) and turns it off the
+  barrier; steered hard into one it spins, ends facing back and the game
+  shows "逆走!" (wrong way); airborne over crests it falls at 10 m/s².
+
+The acceleration and braking (2 to 3 g) are high for a real car but the
+gravity and the speedometer are consistent with the motion, the top speed
+is a flat limit, and the TGP's part is the ROM's data and functions that
+`make tgp-check` checks, so this is taken to be the game's own tuning
+(*unconfirmed* against a cabinet).
 
 ### Controls (*confirmed* on the game's input test)
 
@@ -434,9 +511,30 @@ screen, the game gives:
 | START | 0, `0x40` |
 | SHIFT3, SHIFT4 | 1, `0x10`, `0x20` |
 
-SHIFT1 and SHIFT2 do not respond to any bit of ports 0-3 (the game reads
-the I/O chip's registers at `0x1C00000`, `0x1C00004`, `0x1C0000C` and the
-analog one at `0x1C0001C`).
+SHIFT1 and SHIFT2 do not respond to any single bit, because the **shift
+lever** is an H gate read as a 3-bit code (*confirmed* from the game's
+input polling, and by driving a manual car): the game takes port 1 bits
+4-6 (pressed = 1) as an index into an 8-byte table (`0, 3, 4, 0, 0, 1, 2,
+0`), the gear:
+
+| Gear | Port 1 bits held |
+|---|---|
+| 1 | `0x40` and `0x10` |
+| 2 | `0x40` and `0x20` |
+| 3 | `0x10` |
+| 4 | `0x20` |
+| neutral | none, or any other combination |
+
+(`0x40` is the gate's left column, `0x10`/`0x20` up and down.) With the MT
+Celica (the wheel turned left on the car select screen while the
+accelerator confirms: the wheel's position picks the car) and the gears
+held in turn (`gear1`...`gear4` in the manifest), the dashboard shows 1,
+2, 3 and the car pulls through them. The game also reads port 0 bits 6
+and 7 with port A bit 0 set (the EEPROM's mode, in which the board model
+gives those bits as 1) into a pair of active-high flags with their
+presses and releases, which nothing in the race was seen to need:
+*unknown*.
+
 HANDLE, ACCEL and BRAKE are the analog channels 0, 1 and 2 (the screen shows
 the value given: `0x11`, `0x22`, `0x33`); HANDLE(DRIVE) reads `FFH`,
 the drive board's answer, which is not modelled (the game writes
@@ -445,8 +543,10 @@ car select screen says "select with the wheel, confirm with the
 accelerator": the accelerator at `0xFF` confirms. The game wants
 **two coins** for a credit by default ("CREDIT 1/2" after the first), so
 `coin-start` pays twice and then presses start: it reaches the car select
-(frame 1,800), the countdown and the start (frame 2,000-2,400). Which
-way the accelerator, brake and wheel values run is unconfirmed (the
-manifest has the pedals at `0x00` released, `0xFF` pressed, and the wheel
-`0x80` centred).
+(frame 1,800), the countdown and the start (frame 2,000-2,790).
+*Confirmed by driving:* the wheel at `0x80` runs straight, below it steers
+left and above it right (`0x20` and `0xC0` turn the car within a second;
+on the car select screen left and right pick the two MT cars); the pedals
+are `0x00` released (the car stays still) and `0xFF` pressed (full
+throttle, full braking).
 
