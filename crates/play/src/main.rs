@@ -30,8 +30,10 @@ mod art;
 mod backdrop;
 mod bezel;
 mod controls;
+mod focus;
 mod launcher;
 mod menu;
+mod pad;
 mod preview;
 mod settings;
 mod sound;
@@ -91,9 +93,11 @@ usage: remodel-play [options]
                      window would show it to a PNG
   --shot-size WxH[@S] the --shot window's size in pixels, and its display
                      scaling (e.g. 3840x2160@2)
-  --nav LIST         scripted launcher input, for checking with --shot:
+  --nav LIST         scripted gamepad input, for checking with --shot:
                      NAME@SECONDS, comma separated; names left, right, up,
-                     down, accept, back, settings, prev, next (groups)
+                     down (the d-pad), accept (A), back (B), settings (Y),
+                     prev, next (shoulders), start, select, guide; a+b
+                     presses both, @S:H holds them H seconds
 
 The game's settings (mix, HUD, aspect, bezel, speed, smooth motion,
 geometrizer) given here are for this run only, over the defaults for all
@@ -102,7 +106,8 @@ games and the game's own, which the launcher's settings and the menu keep.
 
 keys: Esc menu (pause), F5 quick save, F9 quick load, F11 fullscreen. The
 game's controls depend on the game (docs/play.md); C coins up and arrows
-steer. Gamepads work too. The menu's Controls page remaps them per game.
+steer. Gamepads work too: Guide, or Start and Select together, opens the
+menu. The menu's Controls page remaps them per game.
 ";
 
 /// Model 2 video frame rate.
@@ -133,29 +138,40 @@ struct Options {
     shot: Option<PathBuf>,
     /// `--shot-size`: pixels and display scaling.
     shot_size: ([u32; 2], f32),
-    /// `--nav`: launcher input at times since the start (seconds), in order.
-    nav: std::collections::VecDeque<(f64, launcher::Nav)>,
+    /// `--nav`: gamepad presses and releases at times since the start
+    /// (seconds), in order.
+    nav: std::collections::VecDeque<(f64, pad::Event)>,
 }
 
-/// `--nav`'s list.
-fn parse_nav(list: &str) -> Result<std::collections::VecDeque<(f64, launcher::Nav)>, String> {
-    use launcher::Nav;
-    let mut out: Vec<(f64, Nav)> = Vec::new();
+/// `--nav`'s list: NAME[+NAME]@SECONDS[:HELD], pad buttons pressed together
+/// at SECONDS and released HELD seconds later (default 0.08).
+fn parse_nav(list: &str) -> Result<std::collections::VecDeque<(f64, pad::Event)>, String> {
+    use gilrs::Button;
+    let mut out: Vec<(f64, pad::Event)> = Vec::new();
     for item in list.split(',').filter(|s| !s.is_empty()) {
-        let (name, at) = item.split_once('@').ok_or("--nav wants NAME@SECONDS")?;
-        let nav = match name {
-            "left" => Nav::Left,
-            "right" => Nav::Right,
-            "up" => Nav::Up,
-            "down" => Nav::Down,
-            "accept" => Nav::Accept,
-            "back" => Nav::Back,
-            "settings" => Nav::Settings,
-            "prev" => Nav::PrevGroup,
-            "next" => Nav::NextGroup,
-            _ => return Err(format!("--nav: unknown {name}")),
-        };
-        out.push((at.parse().map_err(|_| format!("--nav: bad time {at}"))?, nav));
+        let (names, at) = item.split_once('@').ok_or("--nav wants NAME@SECONDS")?;
+        let (at, held) = at.split_once(':').unwrap_or((at, "0.08"));
+        let at: f64 = at.parse().map_err(|_| format!("--nav: bad time {at}"))?;
+        let held: f64 = held.parse().map_err(|_| format!("--nav: bad hold {held}"))?;
+        for name in names.split('+') {
+            let b = match name {
+                "left" => Button::DPadLeft,
+                "right" => Button::DPadRight,
+                "up" => Button::DPadUp,
+                "down" => Button::DPadDown,
+                "accept" => Button::South,
+                "back" => Button::East,
+                "settings" => Button::North,
+                "prev" => Button::LeftTrigger,
+                "next" => Button::RightTrigger,
+                "start" => Button::Start,
+                "select" => Button::Select,
+                "guide" => Button::Mode,
+                _ => return Err(format!("--nav: unknown {name}")),
+            };
+            out.push((at, pad::Event::Pressed(b)));
+            out.push((at + held, pad::Event::Released(b)));
+        }
     }
     out.sort_by(|a, b| a.0.total_cmp(&b.0));
     Ok(out.into())
@@ -422,9 +438,13 @@ struct Play {
     /// The gamepad last used (a button or stick moved): keyboards' media-key
     /// interfaces show up as gamepads too, so wait to see which one plays.
     pad: Option<gilrs::GamepadId>,
-    /// The gamepad driving the launcher, and what it asked for this frame.
-    pad_nav: launcher::PadNav,
+    /// The gamepad driving the launcher or menu, and what it asked for
+    /// this frame.
+    pad_nav: pad::PadNav,
     navs: Vec<launcher::Nav>,
+    /// Between the pad and the game: the menu's buttons, and buttons kept
+    /// from the game.
+    gate: pad::Gate,
     /// Light guns: the mouse (window position, None outside the window;
     /// left and right buttons), once it has moved over the window, aims
     /// player 1; the pad's stick cursor aims player 2 then, else player 1.
@@ -527,8 +547,9 @@ impl Play {
             self.launcher.select_set(set);
         }
         self.launcher.open = true;
-        self.menu.open = false;
-        self.keys.clear();
+        // Left from the pad: the launcher's hints say its buttons.
+        self.launcher.pad_used |= self.menu.pad_used;
+        self.set_menu(false);
         if let Some(g) = &self.gpu {
             g.window.set_cursor(CursorIcon::Default);
         }
@@ -811,12 +832,21 @@ impl Play {
         } else {
             let (view, origin) = self.fit(w, h);
             let at = self.bezel_at(&view, origin, w);
+            let slots = self.slot_times();
             let (Some(g), Some(s)) = (&mut self.gpu, &mut self.session) else { return Err("no game".into()) };
             g.renderer.present_bus(&mut s.machine.bus, None, &view, &target, format, origin);
-            let bezel = &mut self.bezel;
+            let (bezel, menu) = (&mut self.bezel, &mut self.menu);
+            let mut values = self.values.clone();
+            let (mut fullscreen, mut for_all) = (self.settings.fullscreen, self.settings.for_all);
+            let menu_view = menu::View { playing: Some(s.game.title), slots: &slots };
             draw_overlay(g, &target, false, [w, h], Some(ppp), |ctx| {
                 if let (Some(b), Some((rect, pic))) = (bezel.as_mut(), at) {
                     b.paint(ctx, rect, pic, w as f32, ctx.pixels_per_point());
+                }
+                // The menu as it is (drawing it changes nothing).
+                if menu.open {
+                    let prefs = menu::Prefs { fullscreen: &mut fullscreen, for_all: &mut for_all };
+                    menu.ui(ctx, &mut values, prefs, &menu_view, Some(&mut s.bindings), &[]);
                 }
             });
         }
@@ -858,32 +888,82 @@ impl Play {
         [1.0, 0.5].into_iter().find(|k| (0.95..=1.1).contains(&(hz * k / FPS)))
     }
 
-    /// Take the gamepads' events: note the one last used, what the
-    /// launcher should do, and whether a button was pressed.
-    fn poll_pads(&mut self) -> bool {
-        let mut pressed = false;
-        let mut events = Vec::new();
+    /// Take the gamepads' events (the last used one's) and `--nav`'s due
+    /// now: see `pad_event`. Then the held direction's repeat, and Start
+    /// and Select held long enough to open the menu.
+    fn poll_pads(&mut self) {
         let now = Instant::now();
+        let mut events = Vec::new();
         if let Some(g) = &mut self.gilrs {
             while let Some(ev) = g.next_event() {
-                pressed |= matches!(ev.event, gilrs::EventType::ButtonPressed(..));
-                if matches!(ev.event, gilrs::EventType::ButtonPressed(..) | gilrs::EventType::AxisChanged(..)) {
+                if matches!(ev.event, gilrs::EventType::ButtonPressed(..) | gilrs::EventType::AxisChanged(..))
+                    && self.pad != Some(ev.id)
+                {
                     self.pad = Some(ev.id);
+                    self.gate = pad::Gate::default();
                 }
-                if self.menu.capture.is_some() {
-                    events.extend(controls::captured(&ev.event));
-                } else if self.launcher.open && Some(ev.id) == self.pad {
-                    self.navs.extend(self.pad_nav.event(&ev.event, now));
+                if Some(ev.id) == self.pad {
+                    events.extend(pad::Event::from_gilrs(&ev.event).map(|e| (e, false)));
                 }
             }
         }
-        if self.launcher.open && self.menu.capture.is_none() {
+        let secs = (now - self.started).as_secs_f64();
+        while self.opts.nav.front().is_some_and(|n| n.0 <= secs) {
+            events.push((self.opts.nav.pop_front().unwrap().1, true));
+        }
+        for (ev, scripted) in events {
+            self.pad_event(ev, scripted, now);
+        }
+        if (self.launcher.open || self.menu.open) && self.menu.capture.is_none() {
             self.navs.extend(self.pad_nav.repeat(now));
         }
-        for c in events {
-            self.capture(c);
+        if !self.launcher.open && !self.menu.open && self.gate.tick(now) {
+            self.set_menu(true);
+            self.menu.pad_used = true;
         }
-        pressed
+    }
+
+    /// A gamepad event: a press skips the splash (and does nothing else,
+    /// unless `scripted`); else it's for the Controls page waiting for a
+    /// binding (Guide cancels), the launcher, or the game: through the gate
+    /// (`pad::Gate`), which opens and closes the menu, to the menu while
+    /// it's open.
+    fn pad_event(&mut self, ev: pad::Event, scripted: bool, now: Instant) {
+        use pad::Event;
+        if let Event::Released(b) = ev {
+            self.gate.release(b, now);
+        }
+        if let (Event::Pressed(b), true, false) = (ev, self.splash.active(), scripted) {
+            self.gate.keep(b);
+            return self.splash.skip();
+        }
+        if self.menu.capture.is_some() {
+            if let Event::Pressed(b) = ev {
+                self.gate.keep(b);
+                if b == gilrs::Button::Mode {
+                    self.menu.capture = None;
+                    return;
+                }
+            }
+            if let Some(c) = controls::captured(ev) {
+                self.capture(c);
+            }
+            return;
+        }
+        if self.launcher.open {
+            self.navs.extend(self.pad_nav.event(ev, now));
+            return;
+        }
+        if let Event::Pressed(b) = ev {
+            if self.gate.press(b, now, self.menu.open) {
+                self.set_menu(!self.menu.open);
+                self.menu.pad_used = true;
+                return;
+            }
+        }
+        if self.menu.open {
+            self.navs.extend(self.pad_nav.event(ev, now));
+        }
     }
 
     /// Bind what the player pressed or moved into the slot the Controls
@@ -923,7 +1003,7 @@ impl Play {
         match &s.script {
             Some(script) => script.apply(s.machine.frames, &mut s.machine.bus),
             None => {
-                let devices = controls::Devices { keys: &self.keys, pad };
+                let devices = controls::Devices { keys: &self.keys, pad, gate: &self.gate };
                 let bus = &mut s.machine.bus;
                 let b = &s.bindings;
                 model2::input::apply_player(bus, &[(b, &devices)]);
@@ -987,6 +1067,10 @@ impl Play {
         while self.session.as_ref().is_some_and(|s| s.machine.frames < due) && ran < MAX_CATCH_UP {
             if self.session.as_ref().is_some_and(|s| !s.preview) {
                 self.apply_inputs();
+                // The pad opened the menu: pause now.
+                if self.menu.open {
+                    break;
+                }
             }
             let s = self.session.as_mut().unwrap();
             s.machine.run_slice(u64::MAX)?;
@@ -1120,16 +1204,11 @@ impl Play {
 
     /// One redraw: run the game, draw it and the menu, report status.
     fn frame(&mut self, el: &ActiveEventLoop) {
-        if self.splash.active() && self.poll_pads() {
-            self.splash.skip();
-        }
+        // Also while the game isn't reading them (the menu's open, or the
+        // launcher), and before it runs (the pad may open the menu).
+        self.poll_pads();
         if self.launcher.open {
             return self.launcher_frame(el);
-        }
-        // The game isn't reading the pads while the menu is open: the
-        // Controls page may be waiting for one.
-        if self.menu.open {
-            self.poll_pads();
         }
         let t0 = Instant::now();
         let (ran, emulate_time) = self.run_due();
@@ -1168,6 +1247,7 @@ impl Play {
             || fade.is_some()
         {
             let view = menu::View { playing: self.session.as_ref().map(|s| s.game.title), slots: &slots };
+            let navs = std::mem::take(&mut self.navs);
             let (menu, splash, bezel) = (&mut self.menu, &mut self.splash, &mut self.bezel);
             let mut values = self.values.clone();
             let (mut fullscreen, mut for_all) = (self.settings.fullscreen, self.settings.for_all);
@@ -1183,7 +1263,7 @@ impl Play {
                     draw_crosshair(ctx, egui::pos2(x / scale, y / scale));
                 }
                 let prefs = menu::Prefs { fullscreen: &mut fullscreen, for_all: &mut for_all };
-                let actions = menu.ui(ctx, &mut values, prefs, &view, bindings.as_deref_mut());
+                let actions = menu.ui(ctx, &mut values, prefs, &view, bindings.as_deref_mut(), &navs);
                 if let Some(f) = fade {
                     let painter =
                         ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("game fade")));
@@ -1299,13 +1379,7 @@ impl Play {
 
     /// One redraw with the launcher open.
     fn launcher_frame(&mut self, el: &ActiveEventLoop) {
-        self.poll_pads();
         let now = Instant::now();
-        let secs = (now - self.started).as_secs_f64();
-        while self.opts.nav.front().is_some_and(|n| n.0 <= secs) {
-            let (_, nav) = self.opts.nav.pop_front().unwrap();
-            self.navs.push(nav);
-        }
         if let Some(set) = self.launcher.selected().map(|g| g.id) {
             self.use_values(set);
         }
@@ -1478,7 +1552,7 @@ impl Play {
             if launcher.panel == launcher::Panel::Controls {
                 if let Some(b) = bindings.as_mut() {
                     menu.controls = true;
-                    changed |= menu.controls_page(ctx, b, title);
+                    changed |= menu.controls_page(ctx, b, title, &navs);
                     if !menu.controls {
                         launcher.panel = launcher::Panel::Settings;
                     }
@@ -1563,8 +1637,13 @@ impl Play {
     /// Open or close the menu; the game pauses while it's open.
     fn set_menu(&mut self, open: bool) {
         self.menu.open = open;
-        // Keys held when the menu opened would stay pressed otherwise.
+        // Keys held when the menu opened would stay pressed otherwise; the
+        // pad's Start and Select are kept from the game until released.
         self.keys.clear();
+        self.gate.menu_changed();
+        self.pad_nav = pad::PadNav::default();
+        self.navs.clear();
+        self.menu.pad_used = false;
     }
 
     /// Quit if `--seconds` has run out, reporting the run; true if so.
@@ -1902,8 +1981,9 @@ fn main() {
         keys: HashSet::new(),
         gilrs,
         pad: None,
-        pad_nav: launcher::PadNav::default(),
+        pad_nav: pad::PadNav::default(),
         navs: Vec::new(),
+        gate: pad::Gate::default(),
         mouse: None,
         mouse_used: false,
         mouse_buttons: [false; 2],

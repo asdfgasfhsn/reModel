@@ -52,7 +52,7 @@ music`). There is no live window yet.
 | Model 2B-CRX board model | done for `overrevb`: the copro and geometrizer SHARCs booted through their host windows, their FIFOs and flags, the moved sound UART; the geometrizer program's raster stream has 2C's format, so both renderers take it unchanged. Worked out from the game's programs, see `docs/hw/model2b.md` |
 | Enhanced views: any resolution, 16:9 / 21:9 with HUD moved to the edges | done for snapshots (`--height`, `--aspect`, `--hud`) |
 | Custom soundtracks (replace any music track, game logic intact) | done offline: `make music SOUNDTRACK=name`; see `docs/mods.md` |
-| Native window (`make play`) | playable: GPU renderer, live sound (cpal), keyboard and gamepad (gilrs), any window shape from 4:3 to 32:9, or 4:3 with the game's bezel beside it; about 2 ms of CPU per frame recompiled. a launcher (game cards by board, recently played first, each game's attract mode live from a cached save state, settings for all games or one, Continue where you left off), Esc menu (sound mix, display, save slots, remapping keys and pad per game, back to the games), save states; see `docs/play.md` |
+| Native window (`make play`) | playable: GPU renderer, live sound (cpal), keyboard and gamepad (gilrs), any window shape from 4:3 to 32:9, or 4:3 with the game's bezel beside it; about 2 ms of CPU per frame recompiled. a launcher (game cards by board, recently played first, each game's attract mode live from a cached save state, settings for all games or one, Continue where you left off), Esc menu, also from a gamepad (Guide, or Start and Select together; sound mix, display, save slots, remapping keys and pad per game, back to the games), save states; see `docs/play.md` |
 | Browser build (WebAssembly + WebGPU) | playable (`make web`), with sound, keyboard, gamepad and touch, and a settings panel before each game (resolution, aspect, HUD, bezel, mix, remapping keys and pad, touch and tilt; kept in the browser); see `docs/web.md` |
 | Second game: `skisuprg` (Sega Ski Super G, 2C) | playable (`make play GAME=skisuprg`): drive board modelled from the game's code, its own controls and coin-start script from its manifest; save states round-trip |
 | Third game: `stcc` (Sega Touring Car Championship, 2C) | playable with sound effects and music (`make play GAME=stcc`): attract, car and gearbox select, name entry and races; its DSB1 music board (Z80) is modelled from its program. Needed geometrizer list jumps and mirrored ROM slots; recompiled build identical |
@@ -107,7 +107,7 @@ make latency              # frames from a wheel change to the game reacting and 
 make recomp               # recompile the game's i960 code and TGP or SHARC programs (after a `run`; builds only what changed)
 make bench RECOMP=1       # same run on the recompiled build: same hash, about twice as fast
 make play RECOMP=1        # the launcher: pick a game (live attract previews, settings, Continue), then play
-make play GAME=hotd RECOMP=1   # straight into a game (Esc menu, F5/F9 quick save/load, F11 fullscreen)
+make play GAME=hotd RECOMP=1   # straight into a game (Esc or pad Guide or Start+Select menu, F5/F9 quick save/load, F11 fullscreen)
 make play PLAY_ARGS=--smooth   # with in-between frames on a display over 60 Hz (a frame more latency)
 make install-desktop RECOMP=1   # reModel in the desktop's app menu, running this checkout's player
 make smooth-frames GAME=doa    # coin-start run drawing in-between frames beside the real ones -> out/doa/frames

@@ -126,10 +126,17 @@ F5/F9 save format, sound boards included), unless it was a scripted
 game, which starts from power-on as before; the state is replaced the next
 time the game is left.
 
-`--shot FILE --seconds N` draws the launcher too when it's what shows, and
-`--nav` scripts its input for that (`--nav next@1,settings@2,right@3`:
-the Nav name and the second it's given), e.g.
-`remodel-play --no-sound --seconds 6 --shot-size 3840x2160@2 --nav settings@3 --shot out/launcher.png`.
+`--shot FILE --seconds N` draws the launcher too when it's what shows (and
+the menu, when it's open over a game), and `--nav` scripts gamepad input
+for that: `--nav next@1,settings@2,right@3` names a pad button and the
+second it's pressed (left, right, up, down for the d-pad; accept, back,
+settings for A, B, Y; prev, next for the shoulder buttons; start, select,
+guide). It's released 0.08 s later, or after `:H` seconds
+(`down@3.5:2` holds it, repeating); `start+select@3` presses two at once.
+E.g.
+`remodel-play --no-sound --seconds 6 --shot-size 3840x2160@2 --nav settings@3 --shot out/launcher.png`,
+or the menu over a game, left from the pad:
+`remodel-play --game topskatr --no-splash --no-sound --seconds 10 --nav start+select@3,down@3.5:3,left@7,accept@7.5 --shot out/back.png`.
 It's drawn with egui (`crates/play/src/launcher.rs`), its layout and
 navigation tested headless (`cargo test -p remodel-play`).
 
@@ -153,6 +160,19 @@ The player's own keys are the same for every game:
 | Esc | menu (the game pauses while it's open) |
 | F5, F9 | quick save, quick load |
 | F11 | fullscreen |
+
+A gamepad opens and closes the menu too: its Guide button (the logo
+button, often taken by Steam or the system), or Start and Select (Back)
+pressed together, or held together for half a second. Neither reaches
+the game then, and buttons pressed in the menu stay away from the game
+until they're released, so the Start that resumed doesn't also start a
+game. Start or Select alone still goes to the game (the cabinet's start
+button, and the coin on most games' default bindings), 0.1 s late: a
+press waits that long to see whether it's the pair (a tap shorter than
+that reaches the game for 0.1 s afterwards). While one is held, the other
+waits until it's released or the two have been held long enough to open
+the menu. The pad is `crates/play/src/pad.rs` (`Gate`), tested with
+synthetic events.
 
 Each game's controls, and their default keys and gamepad bindings, are in
 its manifest (`crates/romset/src/games/<set>.rs`, `Controls`); the native
@@ -427,6 +447,16 @@ CALIBRATION in the test menu changes that.
 
 ## The menu
 
+From a gamepad: the d-pad or left stick moves between the menu's buttons,
+checkboxes, choices and sliders as they're laid out (repeating while held,
+as in the launcher), A presses or ticks the one that glows cyan, left and
+right move a slider or step through a choice, B or Select closes the menu
+(or leaves the Controls page), and Start resumes. It opens on Resume. Its
+foot shows the pad's buttons while the pad is what's being used.
+`crates/play/src/focus.rs` does it for any egui page; the menu's tests
+(`menu.rs`) drive it with `Nav`s headless. *Unconfirmed:* tested with
+synthetic and scripted (`--nav`) events only, not yet with a real pad.
+
 - **Save states**: a quick slot (F5/F9) and four more. A save holds the
   whole machine, both sound boards included, so loading one resumes the
   sound exactly where it was. The one thing not saved is a replacement
@@ -481,7 +511,9 @@ The menu's Controls page lists every input of the game being played with
 its keys and gamepad bindings. Click a binding, then press the key or
 gamepad button that should replace it; **+** adds one (an input can have
 several), **×** removes one, **reset** puts one input back, and "Reset to
-defaults" all of them. Esc cancels waiting for a key. Analog inputs (a
+defaults" all of them. Esc cancels waiting for a key, as does the pad's
+Guide button, or waiting 10 seconds (a pad's other buttons all bind).
+From the pad, A on a binding waits for the button to put there. Analog inputs (a
 wheel, pedals, a ski angle) have three rows: the axis (click it, then move
 a stick the way that should read as `+`, which binds it inverted if
 that's left or up, or press a trigger; "invert" flips it, × leaves it

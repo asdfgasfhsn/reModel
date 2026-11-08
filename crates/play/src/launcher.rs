@@ -11,7 +11,7 @@
 //!
 //! Keyboard: arrows choose (up and down step through the game's buttons),
 //! Enter plays, Tab the settings, Page Up / Page Down jump between the
-//! groups, Esc goes back. Gamepad (`PadNav`): d-pad or left stick, A, Y,
+//! groups, Esc goes back. Gamepad (`pad::PadNav`): d-pad or left stick, A, Y,
 //! the shoulder buttons, B. Mouse: click a card to select it, again (or a
 //! button) to play; the wheel scrolls the row.
 //!
@@ -50,6 +50,8 @@ pub enum Nav {
     Up,
     Down,
     Accept,
+    /// The pad's Start: plays here, resumes in the menu.
+    Start,
     Back,
     Settings,
     PrevGroup,
@@ -210,116 +212,6 @@ fn rows(has_own: bool) -> Vec<Row> {
         rows.push(Row::Reset);
     }
     rows
-}
-
-/// The gamepad as `Nav`s: buttons, and the d-pad and left stick repeating
-/// while held.
-#[derive(Default)]
-pub struct PadNav {
-    /// The direction held (by the stick or d-pad), since when, and when it
-    /// last repeated.
-    held: Option<(Nav, Instant, Instant)>,
-    stick: (f32, f32),
-    dpad: Option<Nav>,
-}
-
-/// A gamepad event, as `PadNav` reads it.
-enum Pad {
-    Pressed(gilrs::Button),
-    Released(gilrs::Button),
-    Axis(gilrs::Axis, f32),
-}
-
-/// First repeat of a held direction, then every `REPEAT`.
-const REPEAT_DELAY: Duration = Duration::from_millis(380);
-const REPEAT: Duration = Duration::from_millis(110);
-
-impl PadNav {
-    /// What `ev` asks for, if anything (directions also repeat: `repeat`).
-    pub fn event(&mut self, ev: &gilrs::EventType, now: Instant) -> Option<Nav> {
-        use gilrs::EventType;
-        match *ev {
-            EventType::ButtonPressed(b, _) => self.pad(Pad::Pressed(b), now),
-            EventType::ButtonReleased(b, _) => self.pad(Pad::Released(b), now),
-            EventType::AxisChanged(axis, v, _) => self.pad(Pad::Axis(axis, v), now),
-            _ => None,
-        }
-    }
-
-    fn pad(&mut self, ev: Pad, now: Instant) -> Option<Nav> {
-        use gilrs::{Axis, Button};
-        match ev {
-            Pad::Pressed(b) => {
-                let nav = match b {
-                    Button::South | Button::Start => Nav::Accept,
-                    Button::East | Button::Select => Nav::Back,
-                    Button::North => Nav::Settings,
-                    Button::LeftTrigger => Nav::PrevGroup,
-                    Button::RightTrigger => Nav::NextGroup,
-                    Button::DPadLeft => Nav::Left,
-                    Button::DPadRight => Nav::Right,
-                    Button::DPadUp => Nav::Up,
-                    Button::DPadDown => Nav::Down,
-                    _ => return None,
-                };
-                if matches!(nav, Nav::Left | Nav::Right | Nav::Up | Nav::Down) {
-                    self.dpad = Some(nav);
-                    self.held = Some((nav, now, now));
-                }
-                Some(nav)
-            }
-            Pad::Released(b) => {
-                let nav = match b {
-                    Button::DPadLeft => Nav::Left,
-                    Button::DPadRight => Nav::Right,
-                    Button::DPadUp => Nav::Up,
-                    Button::DPadDown => Nav::Down,
-                    _ => return None,
-                };
-                if self.dpad == Some(nav) {
-                    self.dpad = None;
-                    self.held = None;
-                }
-                None
-            }
-            Pad::Axis(axis, v) => {
-                match axis {
-                    Axis::LeftStickX => self.stick.0 = v,
-                    Axis::LeftStickY => self.stick.1 = v,
-                    _ => return None,
-                }
-                let (x, y) = self.stick;
-                // Up is positive in gilrs.
-                let dir = if x.abs() > 0.6 && x.abs() > y.abs() {
-                    Some(if x < 0.0 { Nav::Left } else { Nav::Right })
-                } else if y.abs() > 0.6 {
-                    Some(if y > 0.0 { Nav::Up } else { Nav::Down })
-                } else {
-                    None
-                };
-                let held = self.held.map(|h| h.0);
-                if dir.is_some() && dir != held {
-                    self.held = dir.map(|d| (d, now, now));
-                    return dir;
-                }
-                if dir.is_none() && x.abs() < 0.4 && y.abs() < 0.4 && self.dpad.is_none() {
-                    self.held = None;
-                }
-                None
-            }
-        }
-    }
-
-    /// The held direction again, when it's due to repeat.
-    pub fn repeat(&mut self, now: Instant) -> Option<Nav> {
-        let (nav, since, last) = self.held?;
-        let due = if last == since { since + REPEAT_DELAY } else { last + REPEAT };
-        if now >= due {
-            self.held = Some((nav, since, now));
-            return Some(nav);
-        }
-        None
-    }
 }
 
 pub struct Launcher {
@@ -500,6 +392,7 @@ impl Launcher {
         let Some(game) = self.selected() else {
             return;
         };
+        let nav = if nav == Nav::Start { Nav::Accept } else { nav };
         match self.panel {
             Panel::Controls => {
                 if nav == Nav::Back {
@@ -539,7 +432,7 @@ impl Launcher {
                             _ => {}
                         }
                     }
-                    Nav::PrevGroup | Nav::NextGroup => {}
+                    Nav::PrevGroup | Nav::NextGroup | Nav::Start => {}
                 }
             }
             Panel::Closed => {
@@ -569,7 +462,7 @@ impl Launcher {
                         };
                         self.select(to);
                     }
-                    Nav::Back => {}
+                    Nav::Back | Nav::Start => {}
                 }
             }
         }
@@ -1494,7 +1387,7 @@ fn controls(game: &romset::Game) -> Vec<(Vec<&'static str>, String)> {
 }
 
 /// A keyboard key or pad button's cap with `text` on it.
-fn keycap(p: &Painter, r: Rect, text: &str, font: &FontId, u: f32) {
+pub fn keycap(p: &Painter, r: Rect, text: &str, font: &FontId, u: f32) {
     p.rect_filled(r, 4.0 * u, KEY_BG);
     p.rect_stroke(r, 4.0 * u, Stroke::new(1.0 * u, KEY_LINE), StrokeKind::Inside);
     p.hline(r.x_range().shrink(2.0 * u), r.bottom() - 1.0 * u, Stroke::new(1.5 * u, KEY_LINE));
@@ -1656,25 +1549,6 @@ mod tests {
             let a = l.hero.width() / l.hero.height();
             assert!((a - (w / h).clamp(4.0 / 3.0, 32.0 / 9.0)).abs() < 0.01, "{w}x{h}: {a}");
         }
-    }
-
-    #[test]
-    fn pad_directions_repeat_while_held() {
-        use gilrs::{Axis, Button};
-        let mut p = PadNav::default();
-        let t = Instant::now();
-        assert_eq!(p.pad(Pad::Pressed(Button::DPadRight), t), Some(Nav::Right));
-        assert_eq!(p.repeat(t + Duration::from_millis(100)), None);
-        assert_eq!(p.repeat(t + REPEAT_DELAY), Some(Nav::Right));
-        assert_eq!(p.repeat(t + REPEAT_DELAY + REPEAT), Some(Nav::Right));
-        assert_eq!(p.pad(Pad::Released(Button::DPadRight), t), None);
-        assert_eq!(p.repeat(t + Duration::from_secs(5)), None);
-        // The stick: a direction once past the threshold, none while held.
-        assert_eq!(p.pad(Pad::Axis(Axis::LeftStickX, -0.9), t), Some(Nav::Left));
-        assert_eq!(p.pad(Pad::Axis(Axis::LeftStickX, -1.0), t), None);
-        assert_eq!(p.pad(Pad::Axis(Axis::LeftStickX, 0.0), t), None);
-        assert_eq!(p.pad(Pad::Pressed(Button::South), t), Some(Nav::Accept));
-        assert_eq!(p.pad(Pad::Pressed(Button::RightTrigger), t), Some(Nav::NextGroup));
     }
 
     /// Headless: the launcher lays out at 1080p and 4K (2x), every card

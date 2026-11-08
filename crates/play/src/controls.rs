@@ -15,6 +15,8 @@ const DEAD_ZONE: f32 = 0.15;
 pub struct Devices<'a> {
     pub keys: &'a HashSet<KeyCode>,
     pub pad: Option<gilrs::Gamepad<'a>>,
+    /// Which of the pad's buttons the game sees (not the menu's).
+    pub gate: &'a crate::pad::Gate,
 }
 
 impl model2::input::PlayerInput for Devices<'_> {
@@ -23,7 +25,7 @@ impl model2::input::PlayerInput for Devices<'_> {
     }
 
     fn pad_button(&self, b: PadButton) -> bool {
-        self.pad.as_ref().is_some_and(|p| p.is_pressed(button(b)))
+        self.pad.as_ref().is_some_and(|p| self.gate.passes(button(b), p.is_pressed(button(b))))
     }
 
     fn pad_axis(&self, a: PadAxis) -> f32 {
@@ -109,10 +111,11 @@ keys!(
 /// What a gamepad event gives when capturing a binding: a button pressed,
 /// or a stick moved well off centre (in the manifest's sense: down is
 /// positive).
-pub fn captured(ev: &gilrs::EventType) -> Option<Capture> {
-    match *ev {
-        gilrs::EventType::ButtonPressed(b, _) => pad_button(b).map(Capture::Button),
-        gilrs::EventType::AxisChanged(a, v, _) if v.abs() > 0.6 => {
+pub fn captured(ev: crate::pad::Event) -> Option<Capture> {
+    use crate::pad::Event;
+    match ev {
+        Event::Pressed(b) => pad_button(b).map(Capture::Button),
+        Event::Axis(a, v) if v.abs() > 0.6 => {
             let (axis, v) = match a {
                 Axis::LeftStickX => (PadAxis::LeftStickX, v),
                 Axis::LeftStickY => (PadAxis::LeftStickY, -v),
@@ -148,6 +151,20 @@ mod tests {
                 assert!(key_code(k).is_some(), "{}: key {k}", g.id);
             }
         }
+    }
+
+    /// Remapping from the pad: buttons and sticks bind; Guide isn't a
+    /// game's (it cancels instead).
+    #[test]
+    fn pad_events_capture() {
+        use crate::pad::Event;
+        assert_eq!(captured(Event::Pressed(Button::South)), Some(Capture::Button(PadButton::South)));
+        assert_eq!(captured(Event::Pressed(Button::Start)), Some(Capture::Button(PadButton::Start)));
+        assert_eq!(captured(Event::Pressed(Button::Mode)), None);
+        assert_eq!(captured(Event::Released(Button::South)), None);
+        // gilrs reads up as positive: up is the manifest's negative.
+        assert_eq!(captured(Event::Axis(Axis::LeftStickY, 0.9)), Some(Capture::Axis(PadAxis::LeftStickY, true)));
+        assert_eq!(captured(Event::Axis(Axis::LeftStickX, 0.3)), None);
     }
 
     #[test]
