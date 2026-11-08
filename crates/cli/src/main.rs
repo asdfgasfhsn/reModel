@@ -1,5 +1,6 @@
 mod geo_check;
 mod gpu_check;
+mod mb86234;
 mod music;
 mod recomp_crates;
 mod run_ahead;
@@ -7,6 +8,7 @@ mod sharc;
 mod sound_render;
 mod soundtrack;
 mod texpack;
+mod tgp2a;
 
 use analyze::{explore, read_boot, Image, Trace};
 use romset::{games, RomSet};
@@ -79,6 +81,12 @@ commands:
                        disassemble an ADSP-21062 (Model 2B SHARC) program
                        image (48-bit words, 6 little-endian bytes each,
                        loaded at 0x20000) to OUT (default FILE.lst)
+  tgp-disasm [FILE [OUT]]
+                       a first look at a Model 2A TGP (MB86234) program image
+                       (32-bit little-endian words; default out/GAME/tgp.bin,
+                       which `run` writes): header, dispatch table, function
+                       entry points and opcode counts, to OUT (default FILE.lst).
+                       The instruction set is not known: nothing is decoded
   sharc-check FILE...  for each SHARC image: undefined encodings, code
                        discovery from the vectors, loop sanity, and a host
                        boot and run to the first external access
@@ -328,6 +336,19 @@ fn main() -> ExitCode {
             }
         };
         return match r {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if cmd == "tgp-disasm" {
+        // A 2A game's uploaded TGP program (`run` writes out/GAME/tgp.bin).
+        let file =
+            args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out").join(&game_id).join("tgp.bin"));
+        let out = args.get(2).map(PathBuf::from).unwrap_or_else(|| file.with_extension("lst"));
+        return match mb86234::disasm(&file, &out) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("error: {e}");
@@ -1418,6 +1439,9 @@ fn run(
         }
     }
     let state_hash = m.bus.state_hash();
+    if let Some(t) = m.bus.tgp2a.as_deref_mut() {
+        t.finish();
+    }
     let b = &m.bus;
     let geo = b.geo.engine();
 
@@ -1454,6 +1478,7 @@ fn run(
     println!("geo           {} data words", b.geo_words);
     match &b.sharc {
         Some(c) => report_2b(&dir, c, &b.geo, geo),
+        None if b.tgp2a.is_some() => tgp2a::report(&dir, b),
         None => report_2c(&dir, b, geo),
     }
     let fed: String = geo.fed.iter().map(|w| format!("{w:08x}\n")).collect();

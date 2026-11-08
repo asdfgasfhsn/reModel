@@ -84,7 +84,7 @@ endif
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm m68k-tests clean recomp recomp-workspace bench latency input-lag run-ahead-check sound sound-disasm geo-check geo-fuzz smooth-frames pace-sim install-desktop uninstall-desktop
+.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm tgp-disasm m68k-tests clean recomp recomp-workspace bench latency input-lag run-ahead-check sound sound-disasm geo-check geo-fuzz smooth-frames pace-sim install-desktop uninstall-desktop
 
 ##@ General
 
@@ -334,6 +334,9 @@ bench: release ## Timed fixed run into a race: speed vs real time and the state 
 
 copro-disasm: release ## Disassemble the geometry program captured by `make run`
 	$(RUN) copro-disasm
+
+tgp-disasm: release ## A first look at a Model 2A TGP program (shape only; the instruction set is not known): header, dispatch table, functions, opcode counts, from the upload `make run` captured
+	$(RUN) tgp-disasm
 
 sharc-disasm: release ## Disassemble an ADSP-21062 program image: make sharc-disasm FILE=out/overrevb/sharc-geo.bin (listing to FILE.lst)
 	$(REMODEL) sharc-disasm $(FILE)

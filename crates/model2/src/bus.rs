@@ -15,6 +15,7 @@ use crate::geo::{self, Geometrizer};
 use crate::gun::GunBoard;
 use crate::protection;
 use crate::sharc;
+use crate::tgp2a::Tgp2a;
 use i960::cpu::Bus;
 use mb86235::cpu::{External, Step, Tgp};
 use romset::{Board, Role, RomSet};
@@ -164,6 +165,8 @@ pub struct Model2Bus {
     pub tgp: Tgp,
     /// Model 2B's copro, a SHARC, in place of `tgp`.
     pub sharc: Option<Box<sharc::Copro>>,
+    /// Model 2A's TGP interface and stand-in (`tgp2a`), in place of `tgp`.
+    pub tgp2a: Option<Box<Tgp2a>>,
     /// "copro_data" ROM as 32-bit words, at TGP external address 0x800000.
     copro_data: Vec<u32>,
     /// First instruction the TGP model couldn't execute, if any.
@@ -285,6 +288,15 @@ impl Model2Bus {
             map.push(Map { start: 0x0600_0000, end: 0x07ff_ffff, mem: mems.len(), base: 0 });
             mems.push(Mem::from(main_data_high, false));
         }
+        // Model 2A's video RAM at 0x12000000 (docs/hw/model2a.md): texture
+        // RAM, 8 MB of which the game fills below 0x12180000 and from
+        // 0x12580000, and a small block above it.
+        if roms.game.board == Board::Model2A {
+            for (start, size) in [(0x1200_0000u32, 0x80_0000usize), (0x1280_0000, 0x1_0000)] {
+                map.push(Map { start, end: start + size as u32 - 1, mem: mems.len(), base: 0 });
+                mems.push(Mem::zeroed(size));
+            }
+        }
         // Two 64 KB RAMs on the video side that only the memory test uses:
         // IC55 at 0x10A00000 and IC54 at 0x10C00000 (segawski, skisuprg and
         // waverunr test them byte-wide, comparing the low four bits, with
@@ -328,6 +340,7 @@ impl Model2Bus {
             copro_booted: false,
             tgp: Tgp::new(),
             sharc: (board == Board::Model2B).then(|| Box::new(sharc::Copro::with_data(&copro_data))),
+            tgp2a: (board == Board::Model2A).then(Box::default),
             copro_data,
             tgp_fault: None,
             tgp_stalled: false,
@@ -553,8 +566,42 @@ impl Model2Bus {
         true
     }
 
+    /// Model 2A's registers where they differ from 2C's.
+    fn io_read32_2a(&mut self, addr: u32) -> Option<u32> {
+        let t = self.tgp2a.as_mut()?;
+        Some(match addr & !3 {
+            0x0088_4000..=0x0088_7fff => t.data_read(self.frames, self.cur_ip),
+            0x0098_0004 => t.fifo_out.is_empty() as u32,
+            // As on 2C: all ones while the TGP holds no program.
+            0x0098_0014 => {
+                if t.program.is_empty() {
+                    u32::MAX
+                } else {
+                    0
+                }
+            }
+            _ => return None,
+        })
+    }
+
+    /// Model 2A's registers where they differ from 2C's. False if `addr`
+    /// isn't one.
+    fn io_write32_2a(&mut self, addr: u32, v: u32) -> bool {
+        let Some(t) = self.tgp2a.as_mut() else { return false };
+        match addr & !3 {
+            0x0088_4000..=0x0088_7fff => t.data_write(addr & 0x3fff, v, self.frames, self.cur_ip),
+            0x0088_0000..=0x0088_3fff => t.command_write(addr & 0x3fff, v, self.frames, self.cur_ip),
+            0x0098_0000 => {
+                t.control(self.copro_ctrl, v);
+                self.copro_ctrl = v;
+            }
+            _ => return false,
+        }
+        true
+    }
+
     fn io_read32(&mut self, addr: u32) -> Option<u32> {
-        if let Some(v) = self.io_read32_2b(addr) {
+        if let Some(v) = self.io_read32_2b(addr).or_else(|| self.io_read32_2a(addr)) {
             self.log(addr, None);
             return Some(v);
         }
@@ -672,7 +719,7 @@ impl Model2Bus {
         if let (Some(t), 0x0080_0000..=0x0080_7fff) = (self.geo_trace.as_mut(), addr) {
             t.push((addr, v));
         }
-        if self.io_write32_2b(addr, v) {
+        if self.io_write32_2b(addr, v) || self.io_write32_2a(addr, v) {
             self.log(addr, Some(v));
             return true;
         }
@@ -830,6 +877,11 @@ impl Model2Bus {
             return;
         }
         self.unmapped(addr, Some(v));
+    }
+
+    /// The whole memory `addr` falls in (diagnostics: dumping a region).
+    pub fn memory_at(&self, addr: u32) -> Option<&[u8]> {
+        self.find(addr).map(|(m, _)| self.mems[m].data.as_slice())
     }
 
     /// Backup SRAM at 0x01D00000.
@@ -1085,6 +1137,10 @@ impl Model2Bus {
         if let Some(p) = &self.protection {
             p.save(w);
         }
+        // And on 2A, the TGP interface.
+        if let Some(t) = &self.tgp2a {
+            t.save(w);
+        }
     }
 
     fn load_parts(&mut self, r: &mut state::Reader, parts: Parts) -> Result<(), state::Error> {
@@ -1155,6 +1211,9 @@ impl Model2Bus {
         }
         if let Some(p) = &mut self.protection {
             p.load(r)?;
+        }
+        if let Some(t) = &mut self.tgp2a {
+            t.load(r)?;
         }
         Ok(())
     }
@@ -1269,7 +1328,7 @@ mod tests {
     /// the video RAM versions only grow.
     #[test]
     fn copy_is_a_save_and_load_of_what_changed() {
-        for game in ["topskatr", "overrevb"] {
+        for game in ["topskatr", "overrevb", "srallyc"] {
             let (mut real, mut shadow) = (bus(game), bus(game));
             for (a, v) in [(0x0050_0000, 1), (0x0100_0000, 2), (0x1100_0000, 3), (0x0090_0010, 4), (0x0180_0000, 5)] {
                 real.write32(a, v);
@@ -1301,5 +1360,32 @@ mod tests {
             assert_eq!(marks.copied, 0x2_0000);
             same(&mut real, &mut shadow);
         }
+    }
+
+    /// Model 2A: 32-bit program words to the data port during an upload,
+    /// the ping after it answered with 8, texture RAM at 0x12000000, and
+    /// none of it on the other boards.
+    #[test]
+    fn model_2a_tgp_and_video_ram() {
+        let mut b = bus("srallyc");
+        b.write32(0x0098_0000, 0x8000_0000);
+        for w in [0xbf60_0010u32, 0xbf60_0006, 0x1c00_0001] {
+            b.write32(0x0088_4000, w);
+        }
+        assert_eq!(b.read32(0x0098_0014), 0, "a program is there");
+        b.write32(0x0098_0000, 0);
+        b.write32(0x0088_0080, 0);
+        assert_eq!(b.read32(0x0088_4000), 8);
+        assert_eq!(b.read32(0x0088_4000), 0, "empty: nothing else is answered");
+        let t = b.tgp2a.as_ref().unwrap();
+        assert_eq!(t.program, [0xbf60_0010, 0xbf60_0006, 0x1c00_0001]);
+        assert_eq!(t.empty_reads, 1);
+        b.write32(0x1200_0004, 0x1133);
+        b.write32(0x1280_0000, 5);
+        assert_eq!((b.read32(0x1200_0004), b.read32(0x1280_0000)), (0x1133, 5));
+        let mut other = bus("topskatr");
+        other.write32(0x1200_0004, 0x1133);
+        assert_eq!(other.read32(0x1200_0004), 0, "unmapped there");
+        assert!(other.tgp2a.is_none());
     }
 }
