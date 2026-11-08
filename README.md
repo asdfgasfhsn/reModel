@@ -32,6 +32,7 @@ music`). There is no live window yet.
 | i960 interpreter (reference and tracer) | done; boots `topskatr` into its interrupt-driven init |
 | Model 2C board model (memory, IRQs, timers, I/O, copro interface) | in progress |
 | MB86235 geometry processor: disassembler and reference interpreter | done; runs the game's uploaded program |
+| Model 2A: `srallyc` (Sega Rally Championship, 2A-CRX; work in progress) | not playable, not in the game lists (`romset::games::IN_PROGRESS`). The board model boots it (`Board::Model2A`), takes the TGP's program upload (32-bit words) and answers the load check from a stand-in (`model2::tgp2a`, the program is recorded, never run), and the attract mode's tile layers run: the export warning, credit line, ranking table; sound plays. No 3D: the game's TGP calls (31 functions, logged) go unanswered. Next: an interpreter for the MB86234 (`docs/hw/mb86234.md`); see `docs/hw/model2a.md` |
 | Geometrizer (second MB86235) running the game's own program | done; gameplay frames produce the rasteriser stream |
 | Recompiler: i960 → native | done; opt-in (`make recomp`, then `RECOMP=1`), identical state hash; 96% of the game's instructions become plain Rust, the rest call the interpreter with the instruction pre-decoded; see `docs/recompiler.md` |
 | Recompiler: MB86235 programs → Rust | done; built with the i960 code, geometrizer about 1.5x faster |
@@ -153,7 +154,7 @@ crates/
   romset/    ROM manifests, verification, assembly (Model 2-generic)
     src/games/  one module per supported game
   analyze/   recursive-descent code discovery      (CPU-generic)
-  model2/    board model (2B and 2C): memory map, IRQs, timers, I/O,
+  model2/    board model (2A, 2B and 2C): memory map, IRQs, timers, I/O,
              copro and geometrizer interfaces
   mb86235/   MB86235 (TGPx4) decoder, disassembler and interpreter
   adsp2106x/ ADSP-21062 (SHARC) decoder, disassembler and interpreter
@@ -452,19 +453,23 @@ chip but the program pair). Details, addresses and evidence in
   the length, no MSGR7) and its textures to the upper half of each
   texture RAM bank, so it takes `texture_ram_mirrored` too.
 
-## What's known about Model 2A (scoping, not yet supported)
+## What's known about Model 2A
 
-From a throwaway boot of `srallyc` on the 2C board model, and from the
-ROMs. Nothing here runs yet.
+Only `srallyc` is here, and it is work in progress (milestone 1: the board
+model up to the TGP). The board map, the TGP's interface and the function
+calls the game makes to it are in `docs/hw/model2a.md`; what the TGP
+program's shape shows of the MB86234 is in `docs/hw/mb86234.md`.
 
 - *Confirmed (`srallyc`'s code):* the 2A TGP's program is **uploaded by the
   game**, not internal to the chip as general knowledge had it. The loader
-  holds the copro in reset (`0x980000` bit 31), writes 1,664 32-bit words to
-  `0x884000`, releases it, writes 0 to `0x880080` and requires the copro to
-  answer 8, else "Coprocessor Load Error". `vcop`, `daytona` and `vf2` each
-  carry their own TGP program (a 6-word vector and a dispatch table of 73,
-  73 and 112 entries); the programs differ between games. So the TGP needs
-  an interpreter for its (undocumented) instruction set, not a
+  holds the copro in reset (`0x980000` bit 31), writes **1,665 32-bit
+  words** (one per store; 2C's are 64-bit pairs) to `0x884000`, releases
+  it, writes 0 to `0x880080` and requires the copro to answer 8, else
+  "Coprocessor Load Error". The program is in the game's own program ROM
+  (`0x5AE94`). `vcop`, `daytona` and `vf2` each carry their own TGP
+  program (a 6-word vector and a dispatch table of 73, 73 and 112 entries;
+  from the scoping pass); the programs differ between games. So the TGP
+  needs an interpreter for its (undocumented) instruction set, not a
   function-by-function model.
 - *Confirmed (numerically):* the shared Model 2/2A chips are maths tables:
   `opr-14742a.45/.46` a quarter-wave sine (65,536 steps a circle, within
@@ -472,8 +477,53 @@ ROMs. Nothing here runs yet.
   mantissas for even and odd exponents.
 - *Confirmed (`srallyc`):* no geometrizer program is uploaded; display lists
   go straight to `0x804000`. The 2A geometrizer is presumably fixed-function
-  (unconfirmed). Writes to `0x12000000-0x128xxxxx` look like texture and
-  luma RAM (unconfirmed).
+  (unconfirmed).
+- *Confirmed (`srallyc`):* video RAM at `0x12000000` takes 16-bit values in
+  32-bit words, filled from main data at boot (`docs/hw/model2a.md` §3);
+  that it is texture RAM is unconfirmed.
+
+## What's known about `srallyc`
+
+Sega Rally Championship (Sega; revision C; ©SEGA 1994 on the attract
+screens, and the boot warning "used only in Japan"), the seventeenth game
+manifest and the first Model 2A one. `srallyc.zip` also holds the older
+program revision `b` and two chips named `ic12.bin`/`ic13.bin` (the program
+pair again); they aren't used. **Not playable yet**: the manifest is in
+`romset::games::IN_PROGRESS`, which `remodel run` and `make run` use but no
+front end lists.
+
+- *Confirmed (by running it):* `make run GAME=srallyc INPUT=coin-start
+  STEPS=700000000 SNAP=500` boots the i960 program through the memory
+  setup, uploads the TGP program at frame 79, passes the load check
+  against the stand-in and runs the attract mode's tile layers for 4,800
+  frames: the "WARNING ... used only in Japan" screen (frame 500), the
+  "SEGA RALLY CHAMPIONSHIP 1995" title logo (frame 1,000), a blue screen
+  with `CREDIT 1/2`, `©SEGA 1994` and the logo (frames 1,500 and 2,000: the
+  3D scene that belongs behind it is missing) and the "CHAMPIONSHIP TOP 16"
+  ranking table (frame 3,000) (rank, name, time, car with AT/MT).
+  The coin makes the credit line read `1/2`: the default setting asks for two
+  coins (so `coin-start` doesn't start a game; unconfirmed that this is the
+  setting). The sound board boots from `epr-17890.30` and plays. No 3D:
+  see below.
+- *Confirmed:* the ROM chips' layout (`docs/hw/model2a.md` §5): the main
+  data pairs are packed 4 MB apart (`.10/.11`, `.8/.9`, `.6/.7`), the
+  texels the game copies to `0x12000000` come from `0x2200000`, the
+  vertex data it reads from `0x2860000`.
+- *Confirmed (by running it):* the game calls the TGP with 31 distinct
+  functions (numbers 2 to `0x5F`), each always with the same number of
+  argument and result words; one 3D call sequence is a few hundred
+  words. `docs/hw/model2a.md` §4 lists them with call counts. 3D calls
+  begin at frame 1,352.
+- *Confirmed:* the TGP's program has a 130-entry dispatch table indexed by
+  function number (`docs/hw/mb86234.md`).
+- *Unconfirmed:* what each function does (the list's meaning column is
+  guesses from argument counts), what the `0x12000000` region is for, the
+  polygon and texture ROM pairs' order, the controls (the manifest's coin,
+  start, test and service bits are the other games' layout), the cabinet's
+  drive board and link.
+- *Not done:* the TGP's instruction set (`make tgp-disasm GAME=srallyc`
+  splits the program into its header, dispatch table and functions and
+  decodes nothing), a native geometrizer for 2A, wheel and pedal inputs.
 
 ## What's known about `topskatr`
 
