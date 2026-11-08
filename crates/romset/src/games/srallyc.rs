@@ -1,8 +1,8 @@
 use crate::controls::button;
-use crate::{AnalogInput, Board, Controls, Game, PadAxis, PadButton, Role, RomFile};
+use crate::{AnalogInput, Board, Controls, Game, PadAxis, PadButton, Role, RomFile, Shifter};
 
-/// Sega Rally Championship (revision C), Model 2A-CRX. Work in progress
-/// (README, "What's known about `srallyc`", `docs/hw/model2a.md`).
+/// Sega Rally Championship (revision C), Model 2A-CRX (README, "What's
+/// known about `srallyc`", `docs/hw/model2a.md`).
 ///
 /// Chip pairs are listed low half-word first. Program `17888c.12` and
 /// `17889c.13`; main data pairs `.10/.11`, `.8/.9` and `.6/.7`, **packed** 4
@@ -27,8 +27,8 @@ pub static SRALLYC: Game = Game {
     title: "Sega Rally Championship",
     year: 1995,
     board: Board::Model2A,
-    attract_frame: 0,
-    input_lag: 0,
+    attract_frame: 1500,
+    input_lag: 1,
     hud_windows: &[],
     controls: CONTROLS,
     drive_board: None,
@@ -38,7 +38,7 @@ pub static SRALLYC: Game = Game {
     dropouts: &[],
     texture_ram_mirrored: false,
     packed: &[Role::MainData, Role::CoproData, Role::Polygons, Role::Textures, Role::TgpData],
-    volume_db: 0.0,
+    volume_db: 6.0,
     files: &[
         RomFile {
             name: "epr-17888c.12",
@@ -230,11 +230,16 @@ const CONTROLS: Controls = Controls {
         button("service", 0, 0x08, &[], &[]),
         button("start", 0, 0x40, &["Enter", "Digit1"], &[PadButton::Start]).labelled("Start"),
         button("view", 0, 0x20, &["KeyV"], &[PadButton::North]).labelled("View"),
-        // The H gate (manual cars): held for as long as the gear is in.
+        // The H gate (manual cars), latched by the shifter below: a gear
+        // key puts the lever in that gear until another is chosen.
         button("gear1", 1, 0x50, &["KeyQ"], &[]).labelled("Gear 1"),
-        button("gear2", 1, 0x60, &["KeyA"], &[PadButton::LeftShoulder, PadButton::West]).labelled("Gear 2"),
-        button("gear3", 1, 0x10, &["KeyW"], &[PadButton::RightShoulder, PadButton::East]).labelled("Gear 3"),
-        button("gear4", 1, 0x20, &["KeyS"], &[]).labelled("Gear 4"),
+        button("gear2", 1, 0x60, &["KeyW"], &[]).labelled("Gear 2"),
+        button("gear3", 1, 0x10, &["KeyE"], &[]).labelled("Gear 3"),
+        button("gear4", 1, 0x20, &["KeyR"], &[]).labelled("Gear 4"),
+        // Virtual buttons (no bits): neutral and stepping through the gate.
+        button("neutral", 1, 0x00, &["KeyX"], &[]).labelled("Neutral"),
+        button("shiftup", 1, 0x00, &["KeyA"], &[PadButton::RightShoulder, PadButton::East]).labelled("Gear +"),
+        button("shiftdown", 1, 0x00, &["KeyZ"], &[PadButton::LeftShoulder, PadButton::West]).labelled("Gear −"),
     ],
     analogs: &[
         AnalogInput {
@@ -272,5 +277,11 @@ const CONTROLS: Controls = Controls {
         },
     ],
     guns: &[],
+    shifter: Some(Shifter {
+        gears: &["gear1", "gear2", "gear3", "gear4"],
+        neutral: "neutral",
+        up: "shiftup",
+        down: "shiftdown",
+    }),
     coin_start: "coin1@1100-1104,coin1@1150-1154,start@1300-1304",
 };

@@ -227,5 +227,6 @@ const CONTROLS: Controls = Controls {
     // Two coins, start, the gas pedal to confirm the course (the oval),
     // the gearbox (AT) and skip the intro, then the gas held down through
     // the race.
+    shifter: None,
     coin_start: "coin1@1100-1104,coin1@1120-1124,start@1250-1254,gas=0xff@1400-1410,gas=0xff@1600-1610,gas=0xff@1800-1810,gas=0xff@2000-99999",
 };

@@ -260,5 +260,6 @@ const CONTROLS: Controls = Controls {
     ],
     // One coin and start, then aim at the middle and either side in turn,
     // fire every 8 frames and a missile every 300.
+    shifter: None,
     coin_start: "coin1@1100-1104,start@1250-1254,gun1=248:190@2200-9000,gun1=120:220@2280-9000/120,gun1=380:220@2340-9000/120,trigger1@2260-9000/8,missile1@2500-9000/300",
 };

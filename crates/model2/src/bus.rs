@@ -204,6 +204,9 @@ pub struct Model2Bus {
 
     // 315-5649 I/O: inputs are active low.
     pub inputs: [u8; 4],
+    /// The latched gear lever (`input::apply_player`, for games with a
+    /// `Controls::shifter`). Players' state, not the machine's.
+    pub gear: crate::input::GearLatch,
     io_analog_channel: usize,
     pub analog: [u8; 8],
     /// Diagnostics, not machine state: when each analog channel was last
@@ -371,6 +374,7 @@ impl Model2Bus {
             board_ctrl: 0,
             uart: Uart::default(),
             inputs: [0xff; 4],
+            gear: Default::default(),
             io_analog_channel: 0,
             analog: [0x80; 8],
             analog_reads: [(0, 0); 8],

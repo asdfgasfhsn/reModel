@@ -232,5 +232,6 @@ const CONTROLS: Controls = Controls {
     guns: &[],
     // One coin, start, then button 1 every second (it picks the team and
     // pitcher and moves on), and the bat pulled and let go every 40 frames.
+    shifter: None,
     coin_start: "coin1@1100-1104,start@1250-1254,sw1@1300-99999/60,bat=0xc0@2300-99999/40",
 };

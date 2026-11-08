@@ -193,5 +193,6 @@ const CONTROLS: Controls = Controls {
     guns: &[],
     // One coin, start, then a short pass every half second: that takes the
     // team under the cursor (Denmark) and plays a match against France.
+    shifter: None,
     coin_start: "coin1@1100-1104,start@1250-1254,pass@1400-99999/30",
 };

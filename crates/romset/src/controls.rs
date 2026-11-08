@@ -20,9 +20,31 @@ pub struct Controls {
     pub analogs: &'static [AnalogInput],
     /// Light guns (pointers): where the board reads each player's aim.
     pub guns: &'static [Gun],
+    /// A gear lever the players latch ([`Shifter`]), if the game has one.
+    pub shifter: Option<Shifter>,
     /// Coin up and start a game, in the `--input` script syntax: what
     /// `coin-start` in a script stands for (`make capture`, `make bench`).
     pub coin_start: &'static str,
+}
+
+/// A gear lever that stays where it is put: an H gate (or any lever whose
+/// position the game reads from held bits). Players have keys and buttons,
+/// not a lever, so the lever's position is **latched**: pressing a gear's
+/// button puts the lever in that gear until another is chosen, and
+/// [`up`](Shifter::up) and [`down`](Shifter::down) step through the gate
+/// (neutral, then the gears in order). The game sees the latched gear's
+/// button held (its bits as the manifest gives them; they may be several)
+/// and nothing in neutral. The buttons of `neutral`, `up` and `down` are
+/// virtual: bit mask 0, so they set nothing on the board and exist for
+/// players to bind. Scripted inputs hold the gear buttons directly.
+pub struct Shifter {
+    /// Button names of the gears, lowest first.
+    pub gears: &'static [&'static str],
+    /// Button that puts the lever in neutral.
+    pub neutral: &'static str,
+    /// Buttons that step to the next gear up and down.
+    pub up: &'static str,
+    pub down: &'static str,
 }
 
 /// A light gun: one player's aim and its buttons. Players and scripts give
@@ -393,7 +415,20 @@ mod tests {
             names.dedup();
             assert_eq!(names.len(), n, "{}: duplicate input names", g.id);
             for b in c.buttons {
-                assert!(b.port < 4 && b.bit.count_ones() == 1, "{}: {}", g.id, b.name);
+                let in_shifter = c
+                    .shifter
+                    .as_ref()
+                    .is_some_and(|s| s.gears.contains(&b.name) || [s.neutral, s.up, s.down].contains(&b.name));
+                // A gear's bits may be several; the shifter's virtual buttons have none.
+                assert!(b.port < 4 && (b.bit.count_ones() == 1 || in_shifter), "{}: {}", g.id, b.name);
+            }
+            if let Some(s) = &c.shifter {
+                for n in s.gears.iter().chain([&s.neutral, &s.up, &s.down]) {
+                    assert!(c.button(n).is_some(), "{}: shifter button {n}", g.id);
+                }
+                for n in [s.neutral, s.up, s.down] {
+                    assert_eq!(c.button(n).unwrap().bit, 0, "{}: {n} is virtual", g.id);
+                }
             }
             for a in c.analogs {
                 assert!(a.channel < 8, "{}: {}", g.id, a.name);

@@ -304,9 +304,54 @@ pub fn apply_player(bus: &mut Model2Bus, sources: &[(&Bindings, &dyn PlayerInput
     for (a, v) in controls.analogs.iter().zip(analogs) {
         bus.analog[a.channel as usize] = v;
     }
+    let buttons = latch_gear(&mut bus.gear, controls, buttons);
     for (b, down) in controls.buttons.iter().zip(buttons) {
         set_button(bus, b.name, down);
     }
+}
+
+/// A gear lever's position ([`romset::Shifter`]) and which of its buttons
+/// were down last frame (for their edges).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GearLatch {
+    /// The latched gear's index, `None` in neutral.
+    pub gear: Option<usize>,
+    held: u16,
+}
+
+/// Games with a [`romset::Shifter`]: turn the gear buttons' presses into a
+/// lever that stays put. A gear's press selects it; neutral's goes to
+/// neutral; up and down step (neutral, then the gears in order, and they
+/// stop at the ends). The gear buttons then read down only for the latched
+/// gear, so the game sees the lever held there.
+fn latch_gear(latch: &mut GearLatch, controls: &Controls, mut buttons: Vec<bool>) -> Vec<bool> {
+    let Some(s) = &controls.shifter else { return buttons };
+    let index = |n: &str| controls.buttons.iter().position(|b| b.name == n).unwrap_or(0);
+    let names: Vec<usize> =
+        s.gears.iter().map(|g| index(g)).chain([index(s.neutral), index(s.up), index(s.down)]).collect();
+    let n = s.gears.len();
+    let pressed = |i: usize| buttons[names[i]] && latch.held & (1 << i) == 0;
+    let mut gear = latch.gear;
+    for i in 0..n {
+        if pressed(i) {
+            gear = Some(i);
+        }
+    }
+    if pressed(n) {
+        gear = None;
+    }
+    if pressed(n + 1) {
+        gear = Some(gear.map_or(0, |g| (g + 1).min(n - 1)));
+    }
+    if pressed(n + 2) {
+        gear = gear.and_then(|g| g.checked_sub(1));
+    }
+    latch.held = names.iter().enumerate().fold(0, |m, (i, &b)| m | (buttons[b] as u16) << i);
+    latch.gear = gear;
+    for (i, &b) in names.iter().enumerate().take(n) {
+        buttons[b] = gear == Some(i);
+    }
+    buttons
 }
 
 /// What [`apply_player`] sets: each button's state and each analog's value,
@@ -443,5 +488,38 @@ mod tests {
         let (b, a) = read_player(c, &[(&mine, &none), (&defaults, &touch)]);
         assert!(b[jump]);
         assert_eq!(a[0], c.analogs[0].value(-0.25));
+    }
+
+    #[test]
+    fn the_gear_lever_stays_where_it_is_put() {
+        let c = &romset::games::find("srallyc").unwrap().controls;
+        let defaults = Bindings::defaults(c);
+        let gear_of = |b: &[bool]| {
+            (0..4).find(|&i| b[c.buttons.iter().position(|x| x.name == format!("gear{}", i + 1)).unwrap()])
+        };
+        let mut latch = GearLatch::default();
+        let mut step = |keys: &[&'static str]| {
+            let p = fake(keys, &[], (romset::PadAxis::None, 0.0));
+            let (b, _) = read_player(c, &[(&defaults, &p)]);
+            gear_of(&latch_gear(&mut latch, c, b))
+        };
+        assert_eq!(step(&[]), None);
+        assert_eq!(step(&["KeyW"]), Some(1));
+        assert_eq!(step(&[]), Some(1), "stays after release");
+        assert_eq!(step(&["KeyA"]), Some(2));
+        assert_eq!(step(&["KeyA"]), Some(2), "a held key steps once");
+        assert_eq!(step(&[]), Some(2));
+        assert_eq!(step(&["KeyZ"]), Some(1));
+        assert_eq!(step(&[]), Some(1));
+        assert_eq!(step(&["KeyZ"]), Some(0));
+        assert_eq!(step(&[]), Some(0));
+        assert_eq!(step(&["KeyZ"]), None, "down from first is neutral");
+        assert_eq!(step(&[]), None);
+        assert_eq!(step(&["KeyA"]), Some(0), "up from neutral is first");
+        assert_eq!(step(&[]), Some(0));
+        assert_eq!(step(&["KeyX"]), None);
+        assert_eq!(step(&["KeyR"]), Some(3));
+        assert_eq!(step(&[]), Some(3));
+        assert_eq!(step(&["KeyA"]), Some(3), "stops at the top");
     }
 }

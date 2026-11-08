@@ -223,5 +223,6 @@ const CONTROLS: Controls = Controls {
         pad_pos: &[PadButton::DPadRight],
     }],
     guns: &[],
+    shifter: None,
     coin_start: "coin1@1100-1104,coin1@1120-1124,set@1250-1254",
 };

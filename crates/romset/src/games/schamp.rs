@@ -206,5 +206,6 @@ const CONTROLS: Controls = Controls {
     guns: &[],
     // One coin, start, then punch and kick every half second: that picks
     // the fighter under the cursor (Sonic) and fights.
+    shifter: None,
     coin_start: "coin1@1100-1104,start@1250-1254,punch@1400-99999/30,kick@1415-99999/30",
 };

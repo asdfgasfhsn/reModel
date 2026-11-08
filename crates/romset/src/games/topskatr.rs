@@ -189,5 +189,6 @@ const CONTROLS: Controls = Controls {
         },
     ],
     guns: &[],
+    shifter: None,
     coin_start: "coin1@1100-1104,start@1250-1254",
 };

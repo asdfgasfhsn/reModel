@@ -246,5 +246,6 @@ const CONTROLS: Controls = Controls {
     ],
     // Two coins and start, then aim at the middle and either side in turn,
     // fire every 20 frames and shoot off screen (reload) every seventh shot.
+    shifter: None,
     coin_start: "coin1@1100-1104,coin1@1120-1124,start@1250-1254,gun1=248:170@2200-6400,gun1=140:190@2280-6400/120,gun1=360:190@2340-6400/120,gun1=off@2260-6400/140,trigger1@2260-6400/20",
 };
