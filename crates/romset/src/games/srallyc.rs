@@ -207,15 +207,21 @@ pub static SRALLYC: Game = Game {
 
 /// The cabinet's controls. The buttons are the bits the game's input test
 /// shows (port 0 bit 0 "CHUTE1", bit 1 "CHUTE2", bit 5 "VR", bit 6 "START",
-/// and the test and service switches; port 1 bits 4 and 5 "SHIFT3" and
-/// "SHIFT4"), each found by holding one bit at a time on that screen; the
-/// input test has "SHIFT1" and "SHIFT2" too, which none of the other
-/// bits of the four ports moves. The wheel, accelerator and brake are the
-/// test's HANDLE, ACCEL and BRAKE: analog channels 0, 1 and 2 (each shows
-/// the value it was given). The game wants two coins for a credit by
-/// default ("CREDIT 1/2" after the first), so the coin and start script
-/// pays twice. Ports read active low. Which way each analog value runs
-/// is *unconfirmed* here.
+/// and the test and service switches), each found by holding one bit at a
+/// time on that screen. The **shift lever** is an H gate read as three
+/// bits of port 1, which the game's input polling turns into a gear with
+/// an 8-entry table (*confirmed* from its code): bit 4 alone is 3rd, bit 5
+/// alone 4th, bit 6 with bit 4 is 1st, bit 6 with bit 5 2nd, anything else
+/// neutral; so "SHIFT1" and "SHIFT2" of the input test are two-bit
+/// combinations, which is why holding single bits found only SHIFT3 and
+/// SHIFT4. The lever only matters with a manual (MT) car: the wheel picks
+/// one on the car select screen. The wheel, accelerator and brake are the
+/// test's HANDLE, ACCEL and BRAKE, analog channels 0, 1 and 2: *confirmed*
+/// by driving, the wheel is centred at 0x80 (the car runs straight) and
+/// steers left below it and right above it; the pedals read 0x00 released
+/// (the car stays still) and 0xFF fully down. The game wants two coins
+/// for a credit by default ("CREDIT 1/2" after the first), so the coin and
+/// start script pays twice. Ports read active low.
 const CONTROLS: Controls = Controls {
     buttons: &[
         button("coin1", 0, 0x01, &["KeyC", "Digit5"], &[PadButton::Select]).labelled("Coin"),
@@ -224,8 +230,11 @@ const CONTROLS: Controls = Controls {
         button("service", 0, 0x08, &[], &[]),
         button("start", 0, 0x40, &["Enter", "Digit1"], &[PadButton::Start]).labelled("Start"),
         button("view", 0, 0x20, &["KeyV"], &[PadButton::North]).labelled("View"),
-        button("shift3", 1, 0x10, &["KeyA"], &[PadButton::RightShoulder, PadButton::East]).labelled("Gear 3"),
-        button("shift4", 1, 0x20, &["KeyZ"], &[PadButton::LeftShoulder, PadButton::West]).labelled("Gear 4"),
+        // The H gate (manual cars): held for as long as the gear is in.
+        button("gear1", 1, 0x50, &["KeyQ"], &[]).labelled("Gear 1"),
+        button("gear2", 1, 0x60, &["KeyA"], &[PadButton::LeftShoulder, PadButton::West]).labelled("Gear 2"),
+        button("gear3", 1, 0x10, &["KeyW"], &[PadButton::RightShoulder, PadButton::East]).labelled("Gear 3"),
+        button("gear4", 1, 0x20, &["KeyS"], &[]).labelled("Gear 4"),
     ],
     analogs: &[
         AnalogInput {
