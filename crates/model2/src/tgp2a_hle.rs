@@ -1,12 +1,16 @@
 //! High-level model of the Model 2A TGP's *programs*: what the functions
 //! of `srallyc`'s program do, run natively instead of on the chip.
 //!
-//! **This is a stepping stone, not the chip.** The MB86234's instruction
-//! set is not known (`docs/hw/mb86234.md`), so the program cannot be run;
-//! this module reads the program's *structure and data flow* instead
-//! (function entry points, how many words each takes and gives, which
-//! memory cells each touches) and does what each function was found to
-//! do. Every function says how sure it is (`docs/hw/model2a.md` §6):
+//! **Milestone 2's stepping stone, kept for comparison** (`--tgp2a hle`,
+//! `remodel tgp-check`): since milestone 3 the board runs the program on
+//! the MB86234 interpreter (`crates/mb86234`), which shows where this
+//! model is wrong: its rotations have the opposite sign, `0x5C` is a 2D
+//! cross product, not a distance, and it doesn't know `0x01`, `0x54`,
+//! `0x55` or the matrices function 5 writes into the display list
+//! (`docs/hw/model2a.md` §6). It was written from the program's
+//! *structure and data flow* (function entry points, how many words each
+//! takes and gives, which memory cells each touches) before the
+//! instruction set was known. What it says of each function:
 //!
 //! - **structure** (confirmed from the program): the matrix stack and its
 //!   depth rule, set/read/reset/identity, the command counter, the error
