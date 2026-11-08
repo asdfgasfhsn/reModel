@@ -16,6 +16,7 @@ pub static DOA: Game = Game {
     board: Board::Model2B,
     // The attract demo: two fighters in the ring.
     attract_frame: 2000,
+    input_lag: 1,
     hud_windows: &[],
     controls: CONTROLS,
     drive_board: None,

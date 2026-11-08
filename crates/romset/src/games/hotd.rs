@@ -16,6 +16,7 @@ pub static HOTD: Game = Game {
     board: Board::Model2C,
     // The attract demo: a zombie close up, with the HUD.
     attract_frame: 4080,
+    input_lag: 0,
     hud_windows: &[],
     controls: CONTROLS,
     drive_board: None,

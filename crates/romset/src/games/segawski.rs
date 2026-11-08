@@ -15,6 +15,7 @@ pub static SEGAWSKI: Game = Game {
     board: Board::Model2C,
     hud_windows: &[],
     attract_frame: 2550,
+    input_lag: 0,
     controls: CONTROLS,
     drive_board: None,
     parent: None,

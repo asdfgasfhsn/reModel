@@ -21,6 +21,7 @@ pub static INDY500: Game = Game {
     board: Board::Model2B,
     // The attract demo: the car under the flyover on the street course.
     attract_frame: 1500,
+    input_lag: 1,
     hud_windows: &[],
     controls: CONTROLS,
     drive_board: Some(DriveBoard::Wheel),

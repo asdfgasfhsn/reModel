@@ -17,6 +17,7 @@ pub static DYNABB97: Game = Game {
     board: Board::Model2B,
     // The attract demo: a batter at the plate facing the pitcher.
     attract_frame: 1850,
+    input_lag: 1,
     hud_windows: &[],
     controls: CONTROLS,
     drive_board: None,

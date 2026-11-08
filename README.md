@@ -578,6 +578,13 @@ documentation and hasn't been contradicted yet.
   hot port at `0x00800000` (about 4.9k accesses to 26 addresses, likely the
   geometry processor's input); `0x01C00000` and `0x01D00000` (probably I/O);
   `0x01000000` and `0x01800000` (probably tilemap and palette).
+- *Input lag, measured (`make input-lag`: pictures with and without the
+  control compared pixel by pixel, frames counted after the first that
+  reads it; `docs/play.md`, "Run-ahead"):* curving (from frame 3507 of a
+  coin-start run) shows in the first frame that reads it: input lag 0,
+  nothing for run-ahead to hide. Curving the other way from frame 3907
+  changed nothing on screen for 16 frames (the skater mid-trick,
+  presumably).
 
 ## What's known about `skisuprg`
 
@@ -646,6 +653,11 @@ Second 2C game, added to find what is still `topskatr`-specific.
   didn't reach (named `selright`, `selleft`, `decide`); which switches they
   are on the cabinet is unknown. The test menu uses port bits 2 and 3
   (test, service) and bits 6 and 7 of the second `0x1C00002` read.
+- *Input lag, measured (`make input-lag`: pictures with and without the
+  control compared pixel by pixel, frames counted after the first that
+  reads it; `docs/play.md`, "Run-ahead"):* swinging (frames 3507 and 3907
+  of a coin-start run) shows in the first frame that reads it: input lag
+  0.
 
 ## What's known about `stcc`
 
@@ -740,6 +752,11 @@ Third 2C game: the first with a DSB1 music board, a wheel and a gearbox.
   whose header names Sega part 837-10074; it belongs to another cabinet
   board, most likely the link board (see "What's known about
   `sgt24h`").
+- *Input lag, measured (`make input-lag`: pictures with and without the
+  control compared pixel by pixel, frames counted after the first that
+  reads it; `docs/play.md`, "Run-ahead"):* steering (frames 4507 and 4907,
+  the gas held from 4100 of a coin-start run) shows a frame after the
+  first that reads it: input lag 1.
 
 ## What's known about `segawski`
 
@@ -786,6 +803,11 @@ Aug 22 1997).
   IC55 and IC54 are 64 KB RAMs at `0x10A00000` and `0x10C00000` (see
   "What's known about the Model 2C board"); with them modelled every chip
   in the test reads GOOD.
+- *Input lag, measured (`make input-lag`: pictures with and without the
+  control compared pixel by pixel, frames counted after the first that
+  reads it; `docs/play.md`, "Run-ahead"):* leaning the board (`slide`,
+  frames 3507 and 3907 of a coin-start run) shows in the first frame that
+  reads it: input lag 0.
 
 ## What's known about `waverunr`
 
@@ -861,6 +883,11 @@ Fifth game, 2C: a ride-on personal watercraft cabinet, SCSP sound only.
   every other pixel and the water shows through. *Unconfirmed:* how it
   looks on the hardware's display (a half-tone, or blended by the
   monitor).
+- *Input lag, measured (`make input-lag`: pictures with and without the
+  control compared pixel by pixel, frames counted after the first that
+  reads it; `docs/play.md`, "Run-ahead"):* the handlebar (frames 3507 and
+  3907 of a coin-start run) shows in the first frame that reads it: input
+  lag 0.
 
 ## What's known about `overrev`
 
@@ -925,6 +952,11 @@ driver. A sit-down driving cabinet; no extra boards are needed.
 - *Unconfirmed:* steering, braking and the AI cars' behaviour were only
   checked as far as a scripted run shows; the car stays last when
   nothing steers it.
+- *Input lag, measured (`make input-lag`: pictures with and without the
+  control compared pixel by pixel, frames counted after the first that
+  reads it; `docs/play.md`, "Run-ahead"):* the wheel (frames 3507 and 3907
+  of a coin-start run) shows in the first frame that reads it: input lag
+  0.
 
 ## What's known about `overrevb`
 
@@ -965,6 +997,11 @@ Ninth game and the first Model 2B one: Over Rev's 2B version, a clone of
   at the start of each frame and its display list and polygons follow in
   the same frame, on 2B as on 2C: one frame from input to screen at full
   speed in the native player, two in the browser.
+- *Input lag, measured (`make input-lag`: pictures with and without the
+  control compared pixel by pixel, frames counted after the first that
+  reads it; `docs/play.md`, "Run-ahead"):* the wheel (frames 3507 and 3907
+  of a coin-start run) shows in the first frame that reads it: input lag
+  0, as on 2C.
 
 ## What's known about `sgt24h`
 
@@ -1054,6 +1091,12 @@ below (the register cache and the I/O type).
   car in a race is a set of flat dark-grey polygons (palette colour
   (2, 2, 2)) with the checker bit set (header `80C0`), so they draw as a
   screen-door half-tone over the track, as `waverunr`'s arch shadow does.
+- *Input lag, measured (`make input-lag`: pictures with and without the
+  control compared pixel by pixel, frames counted after the first that
+  reads it; `docs/play.md`, "Run-ahead"):* the wheel (frames 3507 and 3907
+  of a coin-start run) shows four frames after the first that reads it:
+  input lag 4, the most of the sixteen games; run-ahead of 3 frames hides
+  three of them.
 
 ## What's known about `dynabb97`
 
@@ -1099,6 +1142,13 @@ Dynamite Baseball '97, a two-player baseball cabinet with a bat lever.
   natively with the SHARC block compiler (1.86x before it, when the
   geometrizer SHARC was the limit), and at about real time interpreted
   (slowest frame 32 ms).
+- *Input lag, measured (`make input-lag`: pictures with and without the
+  control compared pixel by pixel, frames counted after the first that
+  reads it; `docs/play.md`, "Run-ahead"):* it depends on the moment:
+  pulling the bat (frame 3507 of a coin-start run) shows a frame later
+  (input lag 1), from 3700 six; the stick up or left from 3507 two, right
+  from 4507 six. Button 1 from 3507 showed nothing for 16 frames. The
+  least, 1, is the manifest's.
 
 ## What's known about `doa`
 
@@ -1209,6 +1259,13 @@ model as it is, once the i960 returns keep PFP's address bits 4 and 5
   vstriker's and bel's skies and waverunr's water. Unscrolled rows are
   left alone: on select screens (topskatr, skisuprg, segawski, overrev)
   plane B is a page laid out for the frame and would repeat its titles.
+- *Input lag, measured (`make input-lag`: pictures with and without the
+  control compared pixel by pixel, frames counted after the first that
+  reads it; `docs/play.md`, "Run-ahead"):* a punch, and walking right
+  (frame 3507 of a run whose punches and kicks stop at 3400), show a frame
+  after the first that reads them: input lag 1. While coin-start's punches
+  carry on, walking showed nothing for 16 frames (the moves under way take
+  it).
 
 ## What's known about `indy500`
 
@@ -1283,6 +1340,11 @@ before `vstriker`.
   polygons don't, and the checker bit is clear, so both renderers draw it
   solid, as sent. *Unconfirmed:* how it looks on the hardware (no shadow
   mechanism is visible in the data; `docs/hw/geometrizer.md` §5.4).
+- *Input lag, measured (`make input-lag`: pictures with and without the
+  control compared pixel by pixel, frames counted after the first that
+  reads it; `docs/play.md`, "Run-ahead"):* the wheel (frames 3507 and 3907
+  of a coin-start run) shows a frame after the first that reads it: input
+  lag 1.
 
 ## What's known about `fvipers`
 
@@ -1350,6 +1412,13 @@ Model 2B, with early Sega 2B SHARC programs.
   at its boot value in play. *Unconfirmed* what the hardware does with
   it; the board model has nothing there, and frames look right without
   it.
+- *Input lag, measured (`make input-lag`: pictures with and without the
+  control compared pixel by pixel, frames counted after the first that
+  reads it; `docs/play.md`, "Run-ahead"):* a punch (frame 3707 of a run
+  whose punches and kicks stop at 3400) shows a frame after the first that
+  reads it: input lag 1; from 3307 (they stop at 3000) eight, mid-move.
+  Walking showed nothing for 16 frames while coin-start's punches carried
+  on.
 
 ## What's known about `schamp`
 
@@ -1411,6 +1480,11 @@ the dat names it), which isn't supported.
   ("REVENG...ONIC") because we took the entry as the split point only;
   the tile chip scrolls both maps by it too, as one 1024-pixel plane
   (`docs/hw/tilemap.md`). *Unconfirmed:* not compared with hardware.
+- *Input lag, measured (`make input-lag`: pictures with and without the
+  control compared pixel by pixel, frames counted after the first that
+  reads it; `docs/play.md`, "Run-ahead"):* walking right (frame 3507 of a
+  run whose punches and kicks stop at 3400) shows in the first frame that
+  reads it (input lag 0), a punch a frame later (1, also from 3907).
 
 ## What's known about `vstriker`
 
@@ -1501,6 +1575,11 @@ suffix), the clone `vstrikro`, which isn't supported.
   interpreted.
 - *Unconfirmed:* at boot it writes a byte 0 to `0x1400000` (i960
   `0x3B80`), which nothing reads back and the board model ignores.
+- *Input lag, measured (`make input-lag`: pictures with and without the
+  control compared pixel by pixel, frames counted after the first that
+  reads it; `docs/play.md`, "Run-ahead"):* moving the player (right from
+  frame 3507, left from 3907 of a coin-start run) and shooting show in the
+  first frame that reads them: input lag 0.
 
 ## What's known about `hotd`
 
@@ -1582,6 +1661,13 @@ screen says ©SEGA 1996.
   calibration and how it reloads. Players, the browser and `--input`
   (`gun1=x:y@from-to`, `gun1=off@...`) produce positions; see
   `docs/play.md` and `docs/web.md`.
+- *Input lag, measured (`make input-lag`: pictures with and without the
+  control compared pixel by pixel, frames counted after the first that
+  reads it; `docs/play.md`, "Run-ahead"):* a shot (the trigger from frame
+  3510 of a coin-start run) shows in the first frame that reads it, in the
+  2D layers only (input lag 0); from frame 3907 of a run whose trigger
+  stops at 3400, a frame later (1). From 3910 and 4510 nothing changed for
+  16 frames (between scenes).
 
 ## What's known about `bel`
 
@@ -1638,6 +1724,14 @@ says 1998). The sound program is EPL's (`docs/hw/sound.md` §7).
 - Players aim with the generic gun controls; the right mouse button (or
   the pad's left trigger / B) fires a missile, as the manifest makes the
   missile button stand in for reloading (`Reload::Button`).
+- *Input lag, measured (`make input-lag`: pictures with and without the
+  control compared pixel by pixel, frames counted after the first that
+  reads it; `docs/play.md`, "Run-ahead"):* a shot (the trigger from frame
+  3507 of a run whose shooting stops at 3400) reaches the display list two
+  frames after the first that reads it and the picture three: input lag 3.
+  From 3907 the list changed but nothing visible for 16 frames; the
+  missile button and the aim alone (frames 2810-4010) never showed (the
+  aim shows only through hits). *Unconfirmed* beyond the one frame.
 
 ## License
 

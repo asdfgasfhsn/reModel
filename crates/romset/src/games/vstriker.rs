@@ -17,6 +17,7 @@ pub static VSTRIKER: Game = Game {
     board: Board::Model2B,
     // The attract mode's sweep over the stadium before kick-off.
     attract_frame: 1200,
+    input_lag: 0,
     hud_windows: &[],
     controls: CONTROLS,
     drive_board: None,

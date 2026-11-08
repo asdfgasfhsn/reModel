@@ -16,6 +16,7 @@ pub static WAVERUNR: Game = Game {
     board: Board::Model2C,
     // The attract demo's race, three craft side by side.
     attract_frame: 1800,
+    input_lag: 0,
     hud_windows: &[],
     controls: CONTROLS,
     drive_board: None,

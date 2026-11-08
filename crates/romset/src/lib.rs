@@ -159,6 +159,12 @@ pub struct Game {
     /// the game well: the browser build's game card screenshot
     /// (`remodel shot`).
     pub attract_frame: u64,
+    /// The game's own input lag in play, measured: frames after the first
+    /// that reads a control before the picture shows it (`make input-lag`,
+    /// the README's "What's known"; the least seen, for the control
+    /// measured). Run-ahead of more frames than this only judders, so the
+    /// player suggests up to this much (`docs/play.md`, "Run-ahead").
+    pub input_lag: u8,
     pub files: &'static [RomFile],
     /// Banks whose chip pairs follow each other with no gap, rather than
     /// each in its own [`ROM_SLOT`]: bel's main data and polygon ROMs, of

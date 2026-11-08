@@ -18,6 +18,7 @@ pub static SGT24H: Game = Game {
     board: Board::Model2B,
     // The attract demo: the AUTO MAX car on the grid before the grandstand.
     attract_frame: 1150,
+    input_lag: 4,
     hud_windows: &[],
     controls: CONTROLS,
     drive_board: None,

@@ -15,6 +15,7 @@ pub static OVERREV: Game = Game {
     board: Board::Model2C,
     // The attract demo: two cars drifting past the grandstand.
     attract_frame: 1700,
+    input_lag: 0,
     hud_windows: &[],
     controls: CONTROLS,
     drive_board: None,
