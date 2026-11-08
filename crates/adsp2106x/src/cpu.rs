@@ -1636,6 +1636,23 @@ impl state::State for Sharc {
 
     #[inline(always)]
     fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
+        self.load_fields(r)?;
+        self.redirect = None;
+        self.rebuild = false;
+        self.decoded.iter_mut().for_each(|d| *d = None);
+        // Memory changed under any recompiled code: the host attaches it
+        // again.
+        self.code.clear();
+        self.code_dirty = false;
+        Ok(())
+    }
+}
+
+impl Sharc {
+    /// The saved fields ([`state::State::load`] without resetting what's
+    /// derived from them).
+    fn load_fields(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
+        use state::State as _;
         self.mem.cols[0].load(r)?;
         self.mem.cols[1].load(r)?;
         self.r.load(r)?;
@@ -1688,14 +1705,38 @@ impl state::State for Sharc {
         self.flag_in.load(r)?;
         self.cycles.load(r)?;
         self.steps.load(r)?;
-        self.redirect = None;
-        self.rebuild = false;
-        self.decoded.iter_mut().for_each(|d| *d = None);
-        // Memory changed under any recompiled code: the host attaches it
-        // again.
-        self.code.clear();
-        self.code_dirty = false;
         Ok(())
+    }
+
+    /// Make this core's state `src`'s, as saving `src`'s state and loading
+    /// it here would, but keep what this core has decoded where the
+    /// instruction words are the same (a load forgets all of it), and take
+    /// `src`'s recompiled-code watch with its memory (which a load leaves
+    /// for the host to attach again). `buf` is kept for the state between
+    /// calls. For run-ahead's copy of a machine.
+    pub fn copy_from(&mut self, src: &Sharc, buf: &mut Vec<u8>) {
+        use state::State as _;
+        let words = mem::WORDS48 as usize;
+        for k in 0..2 * words {
+            if self.decoded[k].is_none() {
+                continue;
+            }
+            let (block, o) = (k / words, (k % words) as u32);
+            let addr = if block == 0 { mem::BLOCK0 } else { mem::BLOCK1 } + o;
+            if self.mem.read48(addr) != src.mem.read48(addr) {
+                self.decoded[k] = None;
+            }
+        }
+        let mut w = state::Writer { buf: std::mem::take(buf) };
+        w.buf.clear();
+        src.save(&mut w);
+        self.load_fields(&mut state::Reader::new(&w.buf)).expect("a core's own state loads");
+        *buf = w.buf;
+        self.redirect = src.redirect;
+        self.rebuild = src.rebuild;
+        self.fetch_status = src.fetch_status;
+        self.code.clone_from(&src.code);
+        self.code_dirty = src.code_dirty;
     }
 }
 

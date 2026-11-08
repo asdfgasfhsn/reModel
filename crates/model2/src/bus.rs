@@ -71,6 +71,9 @@ impl Mem {
 
 /// Index of buffer RAM in `mems`; shared with the TGP's external bus.
 const BUFFER_RAM: usize = 3;
+/// Indexes of palette RAM and render RAM in `mems`.
+const PALETTE_RAM: usize = 6;
+const RENDER_RAM: usize = 10;
 /// How far the TGP may run while the i960 waits on an empty output FIFO.
 const TGP_STALL_LIMIT: u64 = 2_000_000;
 
@@ -866,7 +869,7 @@ impl Model2Bus {
     /// Versions of render RAM and palette RAM: they change whenever the
     /// memory does, so a renderer can skip re-uploading it.
     pub fn video_ram_versions(&self) -> (u64, u64) {
-        (self.mems[10].writes, self.mems[6].writes)
+        (self.mems[RENDER_RAM].writes, self.mems[PALETTE_RAM].writes)
     }
 
     /// Hashes of the writable RAM apart from buffer RAM (the game's own
@@ -986,9 +989,45 @@ impl Fnv {
 // EEPROM. ROMs, the memory map and diagnostics stay as they are.
 impl state::State for Model2Bus {
     fn save(&self, w: &mut state::Writer) {
-        for m in self.mems[..self.test_rams].iter().filter(|m| m.writable) {
-            m.data.save(w);
-            m.writes.save(w);
+        self.save_parts(w, Parts::All);
+    }
+    fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
+        self.load_parts(r, Parts::All)
+    }
+}
+
+/// What [`Model2Bus::save_parts`] covers: the whole state, or all of it
+/// but memory, the copro and the geometrizer's engine (which
+/// [`Model2Bus::copy_from`] copies directly).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Parts {
+    All,
+    Small,
+}
+
+/// What the last [`Model2Bus::copy_from`] into a bus copied, so the next
+/// can skip memory neither side has written since; and a buffer kept for
+/// the rest of the state.
+#[derive(Default)]
+pub struct CopyMarks {
+    /// Per memory: (source writes, destination writes) after the copy.
+    mems: Vec<(u64, u64)>,
+    rest: Vec<u8>,
+    /// For the CPU's state (`Machine::copy_from`).
+    pub(crate) cpu: Vec<u8>,
+    /// Bytes of memory the last copy moved (diagnostics).
+    pub copied: usize,
+}
+
+impl Model2Bus {
+    fn save_parts(&self, w: &mut state::Writer, parts: Parts) {
+        use state::State as _;
+        let all = parts == Parts::All;
+        if all {
+            for m in self.mems[..self.test_rams].iter().filter(|m| m.writable) {
+                m.data.save(w);
+                m.writes.save(w);
+            }
         }
         [self.now, self.frames, self.next_vblank].save(w);
         self.irq_request.save(w);
@@ -1000,8 +1039,14 @@ impl state::State for Model2Bus {
         self.copro_program.save(w);
         self.copro_upload_half.save(w);
         self.copro_booted.save(w);
-        self.geo.save(w);
-        self.tgp.save(w);
+        if all {
+            self.geo.save(w);
+        } else {
+            self.geo.save_front(w);
+        }
+        if all {
+            self.tgp.save(w);
+        }
         self.tgp_fault.save(w);
         self.tgp_stalled.save(w);
         self.copro_result_hash.save(w);
@@ -1024,14 +1069,16 @@ impl state::State for Model2Bus {
         // Last, so states from before list jumps were modelled still load.
         self.geo.jumps().save(w);
         // After that, the memory-test RAMs.
-        for m in &self.mems[self.test_rams..] {
-            m.data.save(w);
-            m.writes.save(w);
+        if all {
+            for m in &self.mems[self.test_rams..] {
+                m.data.save(w);
+                m.writes.save(w);
+            }
         }
         // Then the UART's transmitter.
         self.uart.save(w);
         // And on 2B, the copro SHARC.
-        if let Some(c) = &self.sharc {
+        if let Some(c) = self.sharc.as_ref().filter(|_| all) {
             c.save(w);
         }
         // Then the protection device, for games with one.
@@ -1039,10 +1086,14 @@ impl state::State for Model2Bus {
             p.save(w);
         }
     }
-    fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
-        let test_rams = self.test_rams;
-        for m in self.mems[..test_rams].iter_mut().filter(|m| m.writable) {
-            m.load(r)?;
+
+    fn load_parts(&mut self, r: &mut state::Reader, parts: Parts) -> Result<(), state::Error> {
+        use state::State as _;
+        let (all, test_rams) = (parts == Parts::All, self.test_rams);
+        if all {
+            for m in self.mems[..test_rams].iter_mut().filter(|m| m.writable) {
+                m.load(r)?;
+            }
         }
         let mut t = [0u64; 3];
         t.load(r)?;
@@ -1056,8 +1107,14 @@ impl state::State for Model2Bus {
         self.copro_program.load(r)?;
         self.copro_upload_half.load(r)?;
         self.copro_booted.load(r)?;
-        self.geo.load(r)?;
-        self.tgp.load(r)?;
+        if all {
+            self.geo.load(r)?;
+        } else {
+            self.geo.load_front(r)?;
+        }
+        if all {
+            self.tgp.load(r)?;
+        }
         self.tgp_fault.load(r)?;
         self.tgp_stalled.load(r)?;
         self.copro_result_hash.load(r)?;
@@ -1080,24 +1137,71 @@ impl state::State for Model2Bus {
             jumps.load(r)?;
         }
         self.geo.set_jumps(jumps);
-        for m in &mut self.mems[test_rams..] {
-            if r.done() {
-                *m = Mem::zeroed(m.data.len());
-            } else {
-                m.load(r)?;
+        if all {
+            for m in &mut self.mems[test_rams..] {
+                if r.done() {
+                    *m = Mem::zeroed(m.data.len());
+                } else {
+                    m.load(r)?;
+                }
             }
         }
         self.uart = Uart::default();
         if !r.done() {
             self.uart.load(r)?;
         }
-        if let Some(c) = &mut self.sharc {
+        if let Some(c) = self.sharc.as_mut().filter(|_| all) {
             c.load(r)?;
         }
         if let Some(p) = &mut self.protection {
             p.load(r)?;
         }
         Ok(())
+    }
+
+    /// Make this bus's state `src`'s, as saving `src`'s and loading it here
+    /// would (for run-ahead, `crate::runahead`), but faster: memory is
+    /// copied directly, and only where either bus has written it since the
+    /// last copy into this one with the same `marks` (buffer RAM, which the
+    /// copro and TGP write behind the counts, always); the geometrizer's
+    /// engine is copied directly too ([`Geometrizer::copy_from`]). Both
+    /// buses must be for the same ROM set.
+    ///
+    /// `marks` belong to this bus: start with new ones after changing it
+    /// any other way (loading a state). The write counts a renderer's
+    /// versions come from ([`Model2Bus::video_ram_versions`]) only ever
+    /// grow here, past both buses' counts, so a renderer drawing this bus
+    /// re-uploads what a copy changed (and a front end drawing both buses
+    /// must forget what it uploaded when it switches). Otherwise the copy
+    /// is exact: the same state hash.
+    pub fn copy_from(&mut self, src: &mut Model2Bus, marks: &mut CopyMarks) {
+        assert_eq!(self.mems.len(), src.mems.len(), "copy between buses of different games");
+        marks.mems.resize(self.mems.len(), (u64::MAX, u64::MAX));
+        marks.copied = 0;
+        for (i, (d, s)) in self.mems.iter_mut().zip(&src.mems).enumerate() {
+            if !s.writable {
+                continue;
+            }
+            if i == BUFFER_RAM || marks.mems[i] != (s.writes, d.writes) {
+                d.data.copy_from_slice(&s.data);
+                // The counts are also versions for a renderer: render and
+                // palette RAM's only grow here (see above); the others
+                // are the source's, as a load would leave them.
+                d.writes = if matches!(i, PALETTE_RAM | RENDER_RAM) { d.writes.max(s.writes) + 1 } else { s.writes };
+                marks.copied += d.data.len();
+            }
+            marks.mems[i] = (s.writes, d.writes);
+        }
+        self.geo.copy_from(&mut src.geo);
+        self.tgp.copy_from(&src.tgp);
+        if let (Some(d), Some(s)) = (self.sharc.as_deref_mut(), src.sharc.as_deref()) {
+            d.copy_from(s, &mut marks.rest);
+        }
+        let mut w = state::Writer { buf: std::mem::take(&mut marks.rest) };
+        w.buf.clear();
+        src.save_parts(&mut w, Parts::Small);
+        self.load_parts(&mut state::Reader::new(&w.buf), Parts::Small).expect("a bus's own state loads");
+        marks.rest = w.buf;
     }
 }
 
@@ -1146,3 +1250,56 @@ impl Uart {
 }
 
 state::fields!(Uart { expect_mode, tx_enabled, ready_at });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A bus for `game` with no ROM contents (enough for memory and I/O).
+    fn bus(game: &str) -> Model2Bus {
+        let game = romset::games::find(game).unwrap();
+        let roms = RomSet { game, program: vec![0; 0x1000], chips: vec![Vec::new(); game.files.len()] };
+        let mut b = Model2Bus::new(&roms);
+        b.geo.set_threaded(false);
+        b
+    }
+
+    /// `copy_from` leaves the state a load of a save would (the same state
+    /// hash), copying only what either side wrote since the last copy;
+    /// the video RAM versions only grow.
+    #[test]
+    fn copy_is_a_save_and_load_of_what_changed() {
+        for game in ["topskatr", "overrevb"] {
+            let (mut real, mut shadow) = (bus(game), bus(game));
+            for (a, v) in [(0x0050_0000, 1), (0x0100_0000, 2), (0x1100_0000, 3), (0x0090_0010, 4), (0x0180_0000, 5)] {
+                real.write32(a, v);
+            }
+            real.inputs[0] = 0x7f;
+            let mut marks = CopyMarks::default();
+            shadow.copy_from(&mut real, &mut marks);
+            let same = |a: &mut Model2Bus, b: &mut Model2Bus| {
+                assert_eq!(a.state_hash(), b.state_hash());
+                assert_eq!(a.inputs, b.inputs);
+                let mut loaded = bus(game);
+                state::State::load(&mut loaded, &mut state::Reader::new(&state::to_bytes(a))).unwrap();
+                assert_eq!(loaded.state_hash(), b.state_hash());
+            };
+            same(&mut real, &mut shadow);
+            let versions = shadow.video_ram_versions();
+            assert!(versions.0 > real.video_ram_versions().0 && versions.1 > real.video_ram_versions().1);
+            // The shadow runs ahead (writes), the real machine too.
+            shadow.write32(0x0050_0004, 6);
+            shadow.write32(0x1100_0004, 7);
+            real.write32(0x0100_0004, 8);
+            shadow.copy_from(&mut real, &mut marks);
+            same(&mut real, &mut shadow);
+            assert!(shadow.video_ram_versions().0 > versions.0, "render RAM changed: a new version");
+            assert_eq!(shadow.video_ram_versions().1, versions.1, "palette RAM didn't");
+            // Nothing written: only buffer RAM, which the copro writes
+            // behind the counts, is copied.
+            shadow.copy_from(&mut real, &mut marks);
+            assert_eq!(marks.copied, 0x2_0000);
+            same(&mut real, &mut shadow);
+        }
+    }
+}

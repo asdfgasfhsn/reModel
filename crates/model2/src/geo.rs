@@ -426,6 +426,8 @@ pub struct Engine {
     pub check: CheckReport,
     /// Smooth motion (`crate::smooth`), when it's on.
     smooth: Option<Box<Smooth>>,
+    /// Kept for [`Engine::copy_from`]'s SHARC state.
+    copy_buf: Vec<u8>,
 }
 
 /// What smooth motion keeps between frames ([`Engine::set_smooth`]).
@@ -445,6 +447,10 @@ struct Smooth {
     /// Host time spent on it in the frames (copies and matching; not
     /// drawing in-betweens, which the front end does).
     busy: std::time::Duration,
+    /// The frames being run aren't shown: leave the last shown one's
+    /// transforms and in-betweens as they are
+    /// ([`Geometrizer::set_smooth_shown`]).
+    skip: bool,
 }
 
 impl Smooth {
@@ -530,17 +536,17 @@ pub enum Job {
 
 /// Host time measurement that works where `std::time::Instant` doesn't
 /// (WebAssembly in a browser has no clock in std: it measures nothing).
-struct Stopwatch(#[cfg(not(target_arch = "wasm32"))] std::time::Instant);
+pub(crate) struct Stopwatch(#[cfg(not(target_arch = "wasm32"))] std::time::Instant);
 
 impl Stopwatch {
-    fn start() -> Self {
+    pub(crate) fn start() -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         return Stopwatch(std::time::Instant::now());
         #[cfg(target_arch = "wasm32")]
         return Stopwatch();
     }
 
-    fn elapsed(&self) -> std::time::Duration {
+    pub(crate) fn elapsed(&self) -> std::time::Duration {
         #[cfg(not(target_arch = "wasm32"))]
         return self.0.elapsed();
         #[cfg(target_arch = "wasm32")]
@@ -853,6 +859,7 @@ impl Engine {
             check_latch: 0,
             check: CheckReport::default(),
             smooth: None,
+            copy_buf: Vec::new(),
         }
     }
 
@@ -900,6 +907,7 @@ impl Engine {
             check_latch: 0,
             check: CheckReport::default(),
             smooth: None,
+            copy_buf: Vec::new(),
         }
     }
 
@@ -1066,6 +1074,43 @@ impl Engine {
         self.finish_smooth(read_ptr);
     }
 
+    /// Make this engine's state `src`'s ([`Geometrizer::copy_from`]): what
+    /// a save and load would carry over, copied directly, and for the
+    /// native geometrizer its own state (a load imports it from the
+    /// chip's), so no chip state is copied when it runs the frames. Smooth
+    /// motion's record stays this engine's own: its next shown frame
+    /// blends with its last one. Both engines must be in the same mode.
+    fn copy_from(&mut self, src: &Engine) {
+        let native = self.mode == GeoMode::Native && (src.native.is_some() || src.native_tgp.is_some());
+        if !native {
+            self.tgp.copy_from(&src.tgp);
+            if let (Some(to), Some(from)) = (&mut self.sharc, &src.sharc) {
+                to.copy_from(from, &mut self.copy_buf);
+                self.sharc_native = src.sharc_native;
+            }
+        }
+        self.native.clone_from(&src.native);
+        self.native_tgp.clone_from(&src.native_tgp);
+        self.poly_latch = src.poly_latch;
+        self.poly_ram.clone_from(&src.poly_ram);
+        self.buffer.clone_from(&src.buffer);
+        self.jumps.clone_from(&src.jumps);
+        self.stream.clone_from(&src.stream);
+        self.list_words = src.list_words;
+        self.fault = src.fault;
+        self.frames = src.frames;
+        self.texture_point_ram.clone_from(&src.texture_point_ram);
+        self.list_consumed = src.list_consumed;
+        if self.mode == GeoMode::Check {
+            self.check_poly.clone_from(&src.check_poly);
+            self.check_latch = src.check_latch;
+        }
+        if let Some(s) = &mut self.smooth {
+            s.pending = None;
+            s.stale = true;
+        }
+    }
+
     /// Smooth motion (docs/hw/geometrizer.md, "Smooth motion"): from the
     /// next frame, each frame the native geometrizer runs also notes its
     /// transforms and keeps what an in-between of it needs
@@ -1094,7 +1139,7 @@ impl Engine {
     /// Before a frame the native geometrizer runs, with smooth motion on:
     /// polygon RAM's copy brought up to date. Returns a tap to record with.
     fn begin_smooth(&mut self) -> Option<crate::smooth::Tap> {
-        let s = self.smooth.as_deref_mut()?;
+        let s = self.smooth.as_deref_mut().filter(|s| !s.skip)?;
         let t = Stopwatch::start();
         s.begin(&self.poly_ram);
         s.busy += t.elapsed();
@@ -1105,6 +1150,11 @@ impl Engine {
     /// and the frame before's.
     fn finish_smooth(&mut self, read_ptr: u32) {
         let Some(s) = self.smooth.as_deref_mut() else { return };
+        if s.skip {
+            // Not shown: its polygon RAM writes go unrecorded.
+            s.stale = true;
+            return;
+        }
         let t = Stopwatch::start();
         s.frame = None;
         match s.pending.take() {
@@ -1475,6 +1525,22 @@ fn started(s: &Sharc) -> Sharc {
 // lives elsewhere and isn't saved.
 impl state::State for Geometrizer {
     fn save(&self, w: &mut state::Writer) {
+        self.save_front(w);
+        match &self.engine {
+            Slot::Idle(e) => e.save(w),
+            _ => panic!("geometrizer frame still running: call sync() before saving"),
+        }
+    }
+    fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
+        self.load_front(r)?;
+        self.engine_mut().load(r)
+    }
+}
+
+impl Geometrizer {
+    /// The front end's part of the state (without the engine's).
+    pub(crate) fn save_front(&self, w: &mut state::Writer) {
+        use state::State as _;
         self.program.save(w);
         self.uploading.save(w);
         self.upload_half.save(w);
@@ -1482,20 +1548,64 @@ impl state::State for Geometrizer {
         self.write_ptr.save(w);
         self.read_ptr.save(w);
         self.bad_commands.save(w);
-        match &self.engine {
-            Slot::Idle(e) => e.save(w),
-            _ => panic!("geometrizer frame still running: call sync() before saving"),
-        }
     }
-    fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
+
+    pub(crate) fn load_front(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
+        use state::State as _;
         self.program.load(r)?;
         self.uploading.load(r)?;
         self.upload_half.load(r)?;
         self.booted.load(r)?;
         self.write_ptr.load(r)?;
         self.read_ptr.load(r)?;
-        self.bad_commands.load(r)?;
-        self.engine_mut().load(r)
+        self.bad_commands.load(r)
+    }
+
+    /// Make the engine's state `src`'s, as a save and load would, by
+    /// copying it ([`Engine::copy_from`]); after any frames running on
+    /// either finish. The front end's part goes with the bus's state
+    /// (`Model2Bus::copy_from`).
+    pub(crate) fn copy_from(&mut self, src: &mut Geometrizer) {
+        // A remote engine's state is elsewhere: the local one is idle.
+        assert!(
+            self.remote.is_none() && src.remote.is_none(),
+            "a geometrizer whose engine runs elsewhere (set_remote) can't be copied"
+        );
+        self.sync();
+        let Slot::Idle(to) = &mut self.engine else { unreachable!() };
+        to.copy_from(src.engine_mut());
+    }
+
+    /// Run frames the way `src` does: inline or on a thread, keeping the
+    /// last frame or not, the same mode, SHARC interpreter choice and
+    /// smooth motion (`crate::Machine::configure_like`).
+    pub fn configure_like(&mut self, src: &mut Geometrizer) {
+        self.set_threaded(src.threaded);
+        self.keep_last = src.keep_last;
+        let (mode, interpret, smooth) = {
+            let e = src.engine_mut();
+            (e.mode, e.sharc_interpret, e.smooth.is_some())
+        };
+        let e = self.engine_mut();
+        if e.sharc_interpret != interpret {
+            e.sharc_interpret = interpret;
+            e.attach_sharc();
+        }
+        if e.mode != mode {
+            e.set_mode(mode);
+        }
+        e.set_smooth(smooth);
+    }
+
+    /// Smooth motion: whether the frames started from now on are shown
+    /// (the default), so their in-betweens are wanted. A frame that isn't
+    /// (run-ahead's frames before the one it shows) records nothing, and
+    /// the next shown frame blends with the last shown one; see
+    /// `crate::runahead`.
+    pub fn set_smooth_shown(&mut self, shown: bool) {
+        if let Some(s) = self.engine_mut().smooth.as_deref_mut() {
+            s.skip = !shown;
+        }
     }
 }
 

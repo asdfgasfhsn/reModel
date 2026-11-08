@@ -344,6 +344,21 @@ pub fn hot_spots(cpu: &Sharc, n: usize) -> Vec<(u32, u64)> {
 
 // Save states: the core, the FIFOs and the bus state (buffer RAM is the
 // board's). Diagnostics stay.
+impl Copro {
+    /// Make this copro's state `src`'s, as a save and load would, keeping
+    /// what its core has decoded ([`Sharc::copy_from`]) and taking `src`'s
+    /// recompiled code (the same program) instead of looking it up again.
+    pub(crate) fn copy_from(&mut self, src: &Copro, buf: &mut Vec<u8>) {
+        self.cpu.copy_from(&src.cpu, buf);
+        self.fifo_in.clone_from(&src.fifo_in);
+        self.fifo_out.clone_from(&src.fifo_out);
+        (self.held, self.booted) = (src.held, src.booted);
+        self.fault = src.fault;
+        self.spin = src.spin;
+        self.native = src.native;
+    }
+}
+
 impl state::State for Copro {
     fn save(&self, w: &mut state::Writer) {
         self.cpu.save(w);

@@ -121,6 +121,30 @@ fn loop_runs_body_lpc_times() {
     assert_eq!(t.aa[0], 3);
 }
 
+/// `copy_from` gives the state a save and load would, also from a TGP
+/// that ran another program (decoded from the copy's program then).
+#[test]
+fn copy_is_a_save_and_load() {
+    let prog =
+        [ctrl(0x02, 0, 3), alu_ctrl(0x10, 0, 0x19, OUT_AA0, 0, 0, 0), ctrl(0x13, 0, 0xffe), NOP, mov2(AA0, 0x32)];
+    let (mut a, mut e) = boot(&prog);
+    steps(&mut a, &mut e, 4);
+    for other in [&[mov3(7, AA0)][..], &prog] {
+        let (mut b, mut f) = boot(other);
+        steps(&mut b, &mut f, 1);
+        b.copy_from(&a);
+        assert_eq!(state::to_bytes(&a), state::to_bytes(&b));
+        assert_eq!(b.program_hash, a.program_hash);
+        // And runs as a loaded copy does (to the end of the loop).
+        let mut c = Tgp::new();
+        state::State::load(&mut c, &mut state::Reader::new(&state::to_bytes(&a))).unwrap();
+        steps(&mut c, &mut Ext::default(), 6);
+        steps(&mut b, &mut f, 6);
+        assert_eq!((b.pc, b.aa[0]), (4, 3));
+        assert_eq!(state::to_bytes(&c), state::to_bytes(&b));
+    }
+}
+
 #[test]
 fn rep_repeats_next_word() {
     let prog = [ctrl(0x01, 0, 3), alu_ctrl(0x10, 0, 0x19, OUT_AA0, 0, 0, 0), NOP];

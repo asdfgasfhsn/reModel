@@ -1257,6 +1257,35 @@ fn save_state_round_trip() {
     assert_eq!((a.r, a.mr, a.stky()), (b.r, b.mr, b.stky()));
 }
 
+/// `copy_from` gives the state a save and load would, mid-loop, and keeps
+/// decoded words only where they're the same: a core that ran another
+/// program at the same addresses runs the copied one.
+#[test]
+fn copy_is_a_save_and_load_keeping_decodes() {
+    let p = vec![
+        ld(R0, 3),
+        do_lce(5, 2),
+        c(alu(INC, 1, 1, 1)),
+        c(alu(INC, 2, 2, 2)),
+        jump(0x2_0001, T, false, true, false),
+        NOP,
+        NOP,
+    ];
+    let (mut a, mut e) = boot(&p);
+    trace(&mut a, &mut e, 9);
+    // The other core decoded the loop body as something else.
+    let mut q = p.clone();
+    q[2] = c(alu(DEC, 1, 1, 1));
+    let (mut b, mut f) = boot(&q);
+    trace(&mut b, &mut f, 9);
+    let mut buf = Vec::new();
+    b.copy_from(&a, &mut buf);
+    assert_eq!(state::to_bytes(&a), state::to_bytes(&b));
+    assert_eq!(trace(&mut a, &mut e, 40), trace(&mut b, &mut f, 40));
+    assert_eq!((a.r, a.mr, a.astat(), a.stky()), (b.r, b.mr, b.astat(), b.stky()));
+    assert_eq!(state::to_bytes(&a), state::to_bytes(&b));
+}
+
 // --- recompiled code (recomp.rs) ------------------------------------------------
 
 /// What a recompiled program's `step` does (codegen.rs), with each word

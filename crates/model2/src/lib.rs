@@ -23,6 +23,7 @@ pub mod smooth;
 pub mod video;
 
 pub mod recomp;
+pub mod runahead;
 
 pub use bus::Model2Bus;
 use i960::cpu::{Cpu, Stop};
@@ -54,6 +55,9 @@ pub struct Machine {
     pub indirect: BTreeSet<(u32, u32)>,
     /// Execution counts per IP over the most recent frame (hot-spot view).
     frame_profile: Profile,
+    /// States loaded into it so far: a copy from it must start afresh
+    /// after one (`runahead`).
+    loads: u64,
 }
 
 impl Machine {
@@ -80,6 +84,7 @@ impl Machine {
             coverage: Coverage::default(),
             indirect: BTreeSet::new(),
             frame_profile: Profile::default(),
+            loads: 0,
         }
     }
 
@@ -192,6 +197,7 @@ impl Machine {
     /// may be partly loaded: build a new one.
     pub fn load_state(&mut self, data: &[u8]) -> Result<(), String> {
         use state::State as _;
+        self.loads += 1;
         let mut r = state::Reader::new(data);
         if r.bytes(STATE_MAGIC.len()).ok() != Some(STATE_MAGIC) {
             return Err("not a reModel save state (or from another version)".into());
@@ -208,6 +214,43 @@ impl Machine {
         }
         self.frames = self.bus.frames;
         Ok(())
+    }
+
+    /// Make this machine's state `src`'s, as `load_state(&src.save_state())`
+    /// would, but by copying (see [`Model2Bus::copy_from`], whose `marks`
+    /// this takes): run-ahead's fork of the real machine
+    /// ([`runahead::RunAhead`]). Diagnostics (coverage, profiles) stay
+    /// this machine's own. Both must be built from the same ROM set.
+    pub fn copy_from(&mut self, src: &mut Machine, marks: &mut bus::CopyMarks) {
+        use state::State as _;
+        assert_eq!(self.program_hash, src.program_hash, "copy between machines of different games");
+        let mut w = state::Writer { buf: std::mem::take(&mut marks.cpu) };
+        w.buf.clear();
+        src.cpu.save(&mut w);
+        self.cpu.load(&mut state::Reader::new(&w.buf)).expect("a CPU's own state loads");
+        marks.cpu = w.buf;
+        self.bus.copy_from(&mut src.bus, marks);
+        self.frames = src.frames;
+    }
+
+    /// Run the way `src` runs: the interpreter or recompiled code, and the
+    /// geometrizer's settings ([`geo::Geometrizer::configure_like`]).
+    pub fn configure_like(&mut self, src: &mut Machine) {
+        if !src.is_native() {
+            self.disable_native();
+        }
+        if let (Some(c), Some(s)) = (self.bus.sharc.as_deref_mut(), src.bus.sharc.as_deref()) {
+            if c.interpret != s.interpret {
+                c.interpret = s.interpret;
+                c.attach();
+            }
+        }
+        self.bus.geo.configure_like(&mut src.bus.geo);
+    }
+
+    /// How many times a state has been loaded into it (even partly).
+    pub fn loads(&self) -> u64 {
+        self.loads
     }
 
     /// Hottest instruction addresses in the current frame window.

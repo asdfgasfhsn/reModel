@@ -780,6 +780,29 @@ impl Tgp {
     }
 }
 
+impl Tgp {
+    /// Make this TGP's state `src`'s, as saving `src`'s and loading it here
+    /// would, without decoding the program again when it's the same. For
+    /// run-ahead's copy of a machine.
+    pub fn copy_from(&mut self, src: &Tgp) {
+        if self.program != src.program {
+            self.program.clone_from(&src.program);
+            self.decoded.clone_from(&src.decoded);
+        }
+        self.program_hash = src.program_hash;
+        self.aram.clone_from(&src.aram);
+        self.bram.clone_from(&src.bram);
+        (self.aa, self.ab, self.ma, self.mb, self.ar, self.pr) = (src.aa, src.ab, src.ma, src.mb, src.ar, src.pr);
+        (self.prp, self.pwp, self.eb, self.eo, self.sp, self.st) = (src.prp, src.pwp, src.eb, src.eo, src.sp, src.st);
+        (self.md, self.lpc, self.rpc, self.pdr, self.ddr, self.pc) =
+            (src.md, src.lpc, src.rpc, src.pdr, src.ddr, src.pc);
+        (self.pcs, self.pcsp, self.pending) = (src.pcs, src.pcsp, src.pending);
+        self.fifo_in.clone_from(&src.fifo_in);
+        self.fifo_out.clone_from(&src.fifo_out);
+        (self.ext_flags, self.steps) = (src.ext_flags, src.steps);
+    }
+}
+
 /// Save states: everything but the execution counts; the decoded program
 /// and its hash are rebuilt from the program words.
 impl state::State for Tgp {
