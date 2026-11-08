@@ -17,7 +17,9 @@ with no model of its own here: reModel draws with the 2C native
 geometrizer's command handling (`Core::Fixed`, `Program::Fixed` in
 `geo_native_2c.rs`) over the polygon ROM as §5 lays it out, and its texture
 RAM is the video RAM of §3 (*confirmed* by the pictures: §7). `srallyc` is
-in `romset::games::IN_PROGRESS`, not `ALL`, so no front end lists it.
+in `romset::games::ALL` and plays (the launcher's Model 2A group; a race
+through the Desert stage to its finish and on into the next is in the
+README).
 `--tgp2a hle` swaps the chip for milestone 2's function model
 (`model2::tgp2a_hle`, §6) for comparison.
 

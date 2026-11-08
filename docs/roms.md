@@ -95,7 +95,7 @@ board (i960KB on all, gk). Controls and special hardware are gk throughout.
 | `manxtt` | Manx TT Superbike (Rev D, Deluxe) | 1995 | none (`manxttc` is its own set) | SCSP | motorbike: lean steering, throttle, brake | deluxe moving bike; 128 KB `epr-18742.7` on another board (ROM); link | yes |
 | `manxttc` | Manx TT Superbike (Rev C, Twin) | 1995 | none | SCSP | as `manxtt` | twin cabinet; link | yes |
 | `motoraid` | Motor Raid | 1997 | none | SCSP, CRX_drv 3.2.8 | motorbike handlebars | ride-on cabinet | yes |
-| `srallyc` | Sega Rally Championship (revision C) | 1995 | `srallycb`, `srallyp` (prototype-named chips `ic12.bin`, `ic13.bin`) | SCSP | wheel, pedals, shifter | drive board; link | yes; **in progress** (2A board model, TGP stand-in; not playable: `docs/hw/model2a.md`) |
+| `srallyc` | Sega Rally Championship (revision C) | 1995 | `srallycb`, `srallyp` (prototype-named chips `ic12.bin`, `ic13.bin`) | SCSP | wheel, pedals, shifter | drive board; link | yes; supported and playable, with sound (2A; the game's TGP program on an MB86234 interpreter, its data ROM on the TGP's bus, the 2C native geometrizer's command handling for the fixed-function geometrizer; `docs/hw/model2a.md`) |
 | `skytargt` | Sky Target | 1995 | none | SCSP | flight stick with trigger | none known | yes |
 | `vcop2` | Virtua Cop 2 | 1995 | none | SCSP | 2 light guns | none known | yes |
 | `vf2` | Virtua Fighter 2.1 | 1995 | `vf2o`, `vf2a`, `vf2b` | SCSP | stick, 3 buttons | none | yes |

@@ -74,6 +74,7 @@ known" sections):
 | `schamp` | stick 0, punch 1 | 0 | off (1 for punches) |
 | `lastbrnx` | stick 0, punch 1 | 0 | off (1 for punches) |
 | `stcc`, `indy500` | wheel | 1 | 1 |
+| `srallyc` | wheel | 1 | 1, if the machine has 2x the game's speed (12 ms a frame interpreted) to spare |
 | `doa` | punch, stick | 1 | 1 |
 | `fvipers` | punch | 1 (8 once, mid-move) | 1 |
 | `dynabb97` | bat, stick | 1 to 6, by the moment | 1 |
@@ -127,6 +128,7 @@ have decoded:
 | `schamp` | 2B | 9.4 ms | 1.2 + 1.1 ms | 12.1 ms | 22.5 ms | 4.4 + 3.5 ms |
 | `vstriker` | 2B | 9.1 ms | 1.0 + 0.9 ms | 11.1 ms | 21.1 ms | 3.1 + 2.9 ms |
 | `lastbrnx` | 2B | 10.3 ms | 1.0 + 0.9 ms | 10.5 ms | 21.7 ms | 4.0 + 4.4 ms |
+| `srallyc` | 2A | 12.2 ms | 0.2 + 0.6 ms | 12.2 ms | 24.2 ms | 6.7 + 2.9 ms |
 
 Per shown frame, natively, the i960 interpreted and the native
 geometrizer (`make run-ahead-check`, 2,071 frames of a coin-start run,
@@ -527,6 +529,29 @@ keys.
 | start (player 1, 2) | Enter or 1, 2 | Start |
 | stick | arrow keys | d-pad |
 | guard, punch, kick | Z, X, V | X, A, B |
+
+### Sega Rally Championship (`srallyc`)
+
+Model 2A, Sega's own: its sound is the SCSP's. Two coins are one credit
+(the game's default setting; the scripted coin-start pays twice). On the
+menus the wheel moves the selection and the gas pedal confirms; the car
+select offers AT and MT, which the wheel picks. A manual (MT) car has an
+H-gate shift lever, which the player **latches**: a gear key puts the
+lever in that gear and leaves it there, and the shift keys step through
+the gate (neutral, 1, 2, 3, 4; down from first is neutral, up from neutral
+is first). The automatic needs none of them. The game runs at about 1.4x
+real time interpreted, recompiled alike, so it needs no recompiled build.
+
+| Control | Keys | Gamepad |
+|---|---|---|
+| coin | C, 5 | Back |
+| start | Enter, 1 | Start |
+| steer (`wheel`) | Left, Right | left stick, d-pad |
+| gas, brake | Up, Down | right trigger, left trigger |
+| gear 1, 2, 3, 4 (latched) | Q, W, E, R | |
+| neutral | X | |
+| shift up, shift down (latched) | A, Z | right shoulder or B, left shoulder or X |
+| view | V | Y |
 
 ### The House of the Dead (`hotd`)
 

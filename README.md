@@ -32,7 +32,7 @@ music`). There is no live window yet.
 | i960 interpreter (reference and tracer) | done; boots `topskatr` into its interrupt-driven init |
 | Model 2C board model (memory, IRQs, timers, I/O, copro interface) | in progress |
 | MB86235 geometry processor: disassembler and reference interpreter | done; runs the game's uploaded program |
-| Model 2A: `srallyc` (Sega Rally Championship, 2A-CRX; work in progress) | draws its 3D, textured (attract mode and races: `make run GAME=srallyc INPUT=coin-start`), and the race drives (scripted inputs), but it is **not** in the game lists (`romset::games::IN_PROGRESS`). The board model boots it (`Board::Model2A`) and runs the TGP's uploaded program on an MB86234 interpreter (`crates/mb86234`, `docs/hw/mb86234.md`); the fixed-function 2A geometrizer is the 2C native geometrizer's command handling over the 2A polygon ROM (`docs/hw/model2a.md` §5, §7); sound plays |
+| Model 2A: `srallyc` (Sega Rally Championship, 2A-CRX) | playable with sound (`make play GAME=srallyc`; the launcher's Model 2A group): attract, car and course select, and races through the Desert stage to its finish and on into the next. The board model (`Board::Model2A`) runs the TGP's uploaded program on an MB86234 interpreter (`crates/mb86234`, `docs/hw/mb86234.md`); the fixed-function 2A geometrizer is the 2C native geometrizer's command handling over the 2A polygon ROM (`docs/hw/model2a.md` §5, §7); a manual car's gear lever is latched by the players (`romset::Shifter`) |
 | Geometrizer (second MB86235) running the game's own program | done; gameplay frames produce the rasteriser stream |
 | Recompiler: i960 → native | done; opt-in (`make recomp`, then `RECOMP=1`), identical state hash; 96% of the game's instructions become plain Rust, the rest call the interpreter with the instruction pre-decoded; see `docs/recompiler.md` |
 | Recompiler: MB86235 programs → Rust | done; built with the i960 code, geometrizer about 1.5x faster |
@@ -73,6 +73,7 @@ music`). There is no live window yet.
 | Fifteenth game: `schamp` (Sonic Championship, 2B, Sega) | playable with sound in scripted runs (`make play GAME=schamp` to play it): attract, character select and fights through rounds and replays. The shared geometrizer program and a copro program of its own, on the same board work as `fvipers`; needed the SHARC core to ignore a reserved I/O register its copro writes, and the i960 recompiler to drop a block discovery found at an odd address. Full speed recompiled (2.7x real time natively); recompiled build identical |
 | Sixteenth game: `vstriker` (Virtua Striker, 2B, Sega) | playable with sound in scripted runs (`make play GAME=vstriker` to play it): attract, team select and a match through goals, a replay and loss time. Its own geometrizer and copro SHARC programs. Needed its main data packed with the 1 MB `.7/.8` pair after the other two (the SHARC programs are there), its polygon ROMs packed and 1 MB texture RAM banks (a manifest flag; without it the match drew dark). Full speed recompiled (2.7x real time natively on the SHARC, 3.9x with the native geometrizer, 1.55x interpreted with it); recompiled build identical |
 | Seventeenth game: `lastbrnx` (Last Bronx, 2B, Sega) | playable with sound in scripted runs (`make play GAME=lastbrnx` to play it): attract, character select and fights. The shared geometrizer program with three commands of its own and a copro program of its own. Needed four board and core findings, none of them a ROM layout: the SHARC's host DMA taking an index below its memory, MODE1 writes taking effect a cycle late (its copro program multiplies registers as they were before a swap), the interrupt register's second word and tile RAM's 1 MB repeat (the gauges drew empty). Native geometrizer except its fn 0x1B. Full speed recompiled (2.9x real time natively, 3.3x with the native geometrizer); recompiled build identical |
+| Eighteenth game: `srallyc` (Sega Rally Championship, Model 2A, Sega) | playable with sound (`make play GAME=srallyc`): attract, car select and races; the first Model 2A game, with its TGP program run on an MB86234 interpreter and the game's data ROM on that chip's bus. A coin-start race drives the Desert stage to "DESERT STAGE CLEAR!" and into the Forest stage. 1.4x real time (interpreted and recompiled alike: the time isn't in the i960 or the TGP); recompiled build identical |
 
 ## Quick start
 
@@ -471,8 +472,8 @@ chip but the program pair). Details, addresses and evidence in
 
 ## What's known about Model 2A
 
-Only `srallyc` is here, and it is work in progress (milestone 5: the TGP
-runs, the 3D is drawn, textured, and the race is drivable). The board map, the TGP's interface,
+Only `srallyc` is here, and it plays (the TGP runs, the 3D is drawn,
+textured, and races drive to the finish). The board map, the TGP's interface,
 the functions of its program, the polygon ROM and the geometrizer are in
 `docs/hw/model2a.md`; the MB86234's instruction set, as far as it is known
 and how each part was pinned, in `docs/hw/mb86234.md`.
@@ -529,10 +530,9 @@ Sega Rally Championship (Sega; revision C; ©SEGA 1994 on the attract
 screens, and the boot warning "used only in Japan"), the seventeenth game
 manifest and the first Model 2A one. `srallyc.zip` also holds the older
 program revision `b` and two chips named `ic12.bin`/`ic13.bin` (the program
-pair again); they aren't used. **The race is drivable** (milestone 5,
-below) but the game is not listed yet: the manifest is in
-`romset::games::IN_PROGRESS`, which `remodel run` and `make run` use but
-no front end lists.
+pair again); they aren't used. **It plays** (`make play GAME=srallyc`,
+the launcher's Model 2A group, the browser's list when its chips are
+loose in `rom/srallyc/`): attract, car and course select, and races.
 
 - *Confirmed (by running it):* `make run GAME=srallyc INPUT=coin-start
   STEPS=700000000 SNAP=100` boots the i960 program through the memory
@@ -591,9 +591,14 @@ no front end lists.
   turns into a gear with a table: 1st is `0x40`+`0x10`, 2nd `0x40`+`0x20`,
   3rd `0x10`, 4th `0x20`, anything else neutral. That is why the input
   test's SHIFT1 and SHIFT2 answered to no single bit. The manifest has
-  them as `gear1`-`gear4` (keys Q, A, W, S; held for as long as the gear
-  is in); they matter only with an MT car, which the wheel picks on the
-  car select screen.
+  them as `gear1`-`gear4`; they matter only with an MT car, which the
+  wheel picks on the car select screen. A scripted input holds the gear
+  button for as long as the gear is in. The players **latch** the lever
+  (`romset::Shifter`, `model2::input`): a gear key (Q, W, E, R) puts it
+  in that gear until another is chosen, A and Z step up and down through
+  the gate (down from first is neutral, up from neutral first) and X is
+  neutral; the pad's right and left shoulder buttons step. No other
+  game's inputs or hashes change.
 - *Confirmed:* the ROM chips' layout (`docs/hw/model2a.md` §5): the main
   data pairs are packed 4 MB apart (`.10/.11`, `.8/.9`, `.6/.7`), the
   texels the game copies to `0x12000000` come from `0x2200000`, the
@@ -625,10 +630,51 @@ no front end lists.
   braking (100 km/h in 1.2 s, 2-3 g) are the cabinet's (the gravity and
   speedometer agree with the motion, so they are taken to be the game's
   tuning).
-- *Not done:* trying it in the player (`make play`) and listing it; a
-  poster (the game isn't listed yet); a whole race to the finish and the
-  other courses; the force feedback (drive board); the meaning of the
-  course polygons' attribute words and last four words.
+- *Confirmed (a scripted race):* `make run GAME=srallyc INPUT=coin-start,
+  gas=0xff@2300-9000,wheel=0xa0@3085-3165,wheel=0x70@3360-3420,
+  wheel=0xb0@3590-3640,wheel=0xa0@4760-4840 STEPS=1500000000 SNAP=250`
+  (the accelerator held and five scripted turns, steering nothing else:
+  the car crashes about its way) drives the Desert stage from the
+  start line over the town, the hills and the dirt road to the goal:
+  "DESERT STAGE CLEAR! RANK 15th" at 1'13"23, the car shown from behind
+  on the result screen; then the Forest stage on tarmac and pines
+  ("RETIRED" when the time runs out at
+  about frame 9,500, then the stage table "DESERT 1'13"23, FOREST
+  RETIRED"). The pictures hold up throughout: the HUD (time, lap time,
+  position, speed, gear, tachometer, the rear-view mirror, the course
+  bar), the turn-sign boards and the stage
+  results; no drawing glitch was seen. *Not done:* the
+  later stages, the second and third laps of a longer course and the
+  finish of a whole championship, which a person has to steer.
+- *Confirmed (by running it):* the audio of a race (`--audio`) averages
+  -38 dBFS RMS (peak -21) with no gain: the engine and the music play
+  (the boot is silent for 15 s, the attract and race hold -37 to -36
+  dBFS), quieter than the games at 0 dB, so the manifest adds 6 dB
+  (like `overrev` and `sgt24h`), about -32 RMS.
+- *Speed (by running it):* a 600M-instruction coin-start run plays at
+  1.42x real time interpreted and 1.41x with the i960 recompiled
+  (`make recomp GAME=srallyc`, 19,797 distinct instructions covered
+  by the 10,354-frame scripted race that fed it): the recompiled code
+  doesn't make it faster, so the i960 isn't where the time goes
+  (12 ms a frame on the main thread; the i960 spends 18% of its
+  instructions polling the video status register). The TGP interpreter
+  is cheap: 1.2 s for the 4,141 frames (0.3 ms a frame) and 1.6 s for
+  6,212 frames of a race (21,000 TGP words a frame in the race, about
+  0.13 ms), the geometrizer thread 1.3 s of 76. The player needs
+  1.4x to hold 60 Hz and has it; run-ahead of 2 frames costs 24 ms a
+  frame shown (a real frame 12 ms), so it is out of reach on the
+  interpreter but 1 frame (the game's input lag) is not.
+- *Input lag, measured (`make input-lag`):* the wheel, from frame 4007
+  of a coin-start run with the accelerator held, shows after 1 frame
+  (the same from frames 3907 and 4207), as `stcc`'s does.
+- *State hash:* a 600M-instruction coin-start run gives `2108cb7ccade31b3`
+  with `--geo native` (`56b5c12673c631b3` on the run that creates the
+  EEPROM); the save state round trip (`make state-check GAME=srallyc`)
+  and run-ahead (`make run-ahead-check GAME=srallyc`) keep it.
+- *Not done:* the force feedback (drive board); the meaning of the
+  course polygons' attribute words and last four words; the later
+  stages and championship; a browser build tried with the chips loose
+  (`remodel web-index` lists it).
 
 ## What's known about `topskatr`
 

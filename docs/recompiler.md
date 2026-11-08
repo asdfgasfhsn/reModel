@@ -39,6 +39,11 @@ version of `indy500`'s and its copro program its own, so it adds two.
 `lastbrnx`'s geometrizer program is the shared code with three commands
 added (so a crate of its own) and its copro program its own: two more
 SHARC crates (6,566 words of copro code, the largest here).
+`srallyc` (Model 2A) adds one i960 crate and no chip crate: the 2A's TGP
+(an MB86234 uploaded by the game) stays on its interpreter, which costs
+about 0.1 to 0.3 ms a frame, and the recompiled i960 gives no speed-up
+there (a coin-start run is 1.4x real time either way: the time is not in
+the i960, and the cause is not found), with the same state hash.
 Each holds `program.rs` from the code generator, generic over the machine around the
 processor, and a `lib.rs` that instantiates it for the Model 2 board
 (`Model2Bus`, the TGP's external buses), so its machine code is compiled in
