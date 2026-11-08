@@ -72,6 +72,7 @@ known" sections):
 | `vstriker` | stick, shoot | 0 | off |
 | `hotd` | trigger | 0 (once 1) | off |
 | `schamp` | stick 0, punch 1 | 0 | off (1 for punches) |
+| `lastbrnx` | stick 0, punch 1 | 0 | off (1 for punches) |
 | `stcc`, `indy500` | wheel | 1 | 1 |
 | `doa` | punch, stick | 1 | 1 |
 | `fvipers` | punch | 1 (8 once, mid-move) | 1 |
@@ -125,6 +126,7 @@ have decoded:
 | `fvipers` | 2B | 8.6 ms | 0.7 + 1.1 ms | 10.9 ms | 19.9 ms | 5.4 + 3.0 ms |
 | `schamp` | 2B | 9.4 ms | 1.2 + 1.1 ms | 12.1 ms | 22.5 ms | 4.4 + 3.5 ms |
 | `vstriker` | 2B | 9.1 ms | 1.0 + 0.9 ms | 11.1 ms | 21.1 ms | 3.1 + 2.9 ms |
+| `lastbrnx` | 2B | 10.3 ms | 1.0 + 0.9 ms | 10.5 ms | 21.7 ms | 4.0 + 4.4 ms |
 
 Per shown frame, natively, the i960 interpreted and the native
 geometrizer (`make run-ahead-check`, 2,071 frames of a coin-start run,
@@ -506,6 +508,25 @@ the manifest but have no default keys.
 | start (player 1, 2) | Enter or 1, 2 | Start |
 | stick | arrow keys | d-pad |
 | short pass, long pass, shoot | Z, X, V | A, X, B |
+
+### Last Bronx (`lastbrnx`)
+
+Model 2B, Sega's own: its sound is the SCSP's. One coin is one credit.
+The stick picks the fighter and punch confirms. In a fight the three
+buttons are punch, kick and guard (the corner of the screen where a
+second player would join offers "P+K+G start survival mode"). Like the
+other 2B games it needs the
+recompiled build (`RECOMP=1`) for full speed: a headless coin-start run
+manages 2.9x real time recompiled, but only about 0.7x
+interpreted. Player 2's controls are in the manifest but have no default
+keys.
+
+| Control | Keys | Gamepad |
+|---|---|---|
+| coin | C, 5 | Back |
+| start (player 1, 2) | Enter or 1, 2 | Start |
+| stick | arrow keys | d-pad |
+| guard, punch, kick | Z, X, V | X, A, B |
 
 ### The House of the Dead (`hotd`)
 

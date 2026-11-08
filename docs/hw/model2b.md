@@ -1,6 +1,6 @@
 # Model 2B-CRX: the board as `overrevb` uses it
 
-Status: 2026-11-07. reModel runs `overrevb` (Over Rev, the 2B version),
+Status: 2026-11-09. reModel runs `overrevb` (Over Rev, the 2B version),
 `sgt24h` (Super GT 24h), `dynabb97` (Dynamite Baseball '97), `doa`
 (Dead or Alive) and `indy500` (Indianapolis 500) from boot
 through attract into play, with both SHARCs running the programs the
@@ -27,7 +27,11 @@ RAM banks of 1 MB ("Sega's earlier games" below). `vstriker` (Virtua
 Striker, 1994) runs geometrizer and copro programs of its own (2,910 and
 2,199 words of code), needed nothing new from the board model, and takes
 the 1 MB texture RAM banks too; its main data layout is its own
-("Sega's earlier games" below).
+("Sega's earlier games" below). `lastbrnx` (Last Bronx, 1996) runs the
+shared geometrizer code with three commands added and a copro program of
+its own (6,566 words) that depends on the SHARC's MODE1 effect latency;
+it needed the host DMA's low-index alias, the interrupt register's second
+word and tile RAM's 1 MB repeat ("Last Bronx" below).
 This page
 is what the board model (`crates/model2`: `bus.rs`, `sharc.rs`, `geo.rs`)
 is built on. The SHARC core itself is
@@ -383,6 +387,67 @@ from the i960 code and its programs, then by running it:
   `0x3B80`), which no other game here touches; the board model ignores it
   and nothing reads it back.
 
+## Last Bronx (`lastbrnx`)
+
+Sega, 1996, the latest of the 2B games here. Everything that stopped it
+was in the SHARC core or in registers every Model 2 game shares, and
+each was *confirmed* from its code and by running it:
+
+- **Its SHARC programs are in the program ROM.** There is no `.7/.8`
+  pair and no copro data ROM. The geometrizer upload (i960 `0x6BC8`,
+  the program at `0x1B10`) is `fvipers`' kind: SYSCON `0x3100` then
+  `0x3110`, WAIT, MSGR7 untouched, II6 = `0x20000`, IM6 = 1, C6 = 3,442
+  words (`0x2856` halves at `0x1B10`), DMAC6 = `0xA1`, then the halves to
+  EPB0. The copro upload (`0x98D0`) writes the registers as halves like
+  `overrevb`'s, without SYSCON or WAIT: MSGR7 = `0x6716` (written twice,
+  so the register holds `0x67166716`; *unconfirmed* what it is for: no
+  instruction of the copro program addresses MSGR7 directly), DMAC6 = 0, **II6 = 0**, IM6 = 1, C6 =
+  6,566 words, DMAC6 = `0xA1`, then 19,698 halves (the count is the word
+  at `0x133DC`) from `0x99F8`. The program starts with zero words
+  (NOPs) in both.
+- **II6 = 0 loads the program.** The host DMA took the index as it was,
+  below the SHARC's internal memory, and the words went nowhere:
+  the copro faulted at the vector after the DMA and the 3D never ran.
+  The program runs on the real chip, so the DMA's index must be decoded
+  by its low 17 bits (`adsp2106x.md`, "Model 2B: the upload"); the core now
+  takes an index below `0x20000` as `0x20000 +` it.
+- **The interrupt dispatcher reads `0xE80000` as a pair.** Its handler for
+  i960 vector 240 (`0xC30`) loads the pair with `ldl` and services the
+  lowest set bit of the *second* word (`0xE80004`) until it is empty.
+  reModel returned the enable mask there, which stays set: the vblank
+  handler (`0x920`) was entered over and over (20,808 times in the first
+  207 frames, 100 a frame), the interrupt never returned and the main
+  program never ran (3,115 distinct instructions in 600M, a black
+  screen). The word must hold the pending requests; reModel returns the
+  requests that are enabled (`peripherals.md`).
+- **The copro program depends on MODE1's effect latency.** Its
+  collision and distance routine (copro `0x20B4E`) sets SRRFL
+  (`BIT SET MODE1 0x400`, the secondary R0-R7) and in the next
+  instruction multiplies R0 by R7 as they were: with the swap taking
+  effect at once it multiplied the new, stale registers and the result
+  indexed memory with random addresses (703 distinct stray external
+  reads in 300M instructions, none after the fix). A write to MODE1 now
+  takes effect after one more instruction (UM §E.2.1; `adsp2106x.md`).
+  Nothing else's behaviour changed: the 16 other games' state hashes are
+  the same.
+- **Tile RAM repeats through its 2 MB window.** The gauge routine
+  (i960 `0x13520`, `0x139D0`) builds the life gauge's fill patterns as
+  tile `0x8080` and up, the map entries including their priority bit, and
+  writes pattern *n* at `0x1080000 + n * 32`, i.e. at `0x1181000` for the
+  first, then draws tile `0x80`. Only the low 20 address bits reach the
+  RAM (`tilemap.md`), so reModel maps `0x1100000-0x11FFFFF` onto the lower
+  megabyte; before, the gauges drew empty (nothing was ever written at
+  tile `0x80`).
+- **Its geometrizer program** is the shared code (the one `overrevb`,
+  `schamp` and the others upload) with three commands of its own, 0x1A-0x1C
+  (`geometrizer-2b.md`, "Last Bronx's program"). The copro program
+  (6,566 words) uses the FIFOs and buffer RAM only (nothing in a
+  coin-start run touches another external address) and is the heaviest of
+  the 2B copros here: 425M instructions in a 600M-instruction coin-start
+  run (`vstriker`'s: 340M).
+- **Texture RAM** is as `indy500`'s: it uploads to the lower halves
+  (`0x11000000`, `0x11200000`), so the banks stay 2 MB.
+
 ## Timing
 
 The SHARCs are clocked at 40 MHz (general knowledge, *unconfirmed* for
@@ -449,11 +514,15 @@ that run alone, and the run took nearly three times as long).
   `0xB400` geometrizer, both written by the programs) aren't modelled.
 - Sega's 2B games upload their own copro programs and may use more of
   the board than the ones running (`overrevb`, `sgt24h`, `dynabb97`,
-  `doa`, `indy500`, `fvipers`, `schamp`) do.
+  `doa`, `indy500`, `fvipers`, `schamp`, `vstriker`, `lastbrnx`) do.
 - Whether the copro's data ROM and buffer RAM repeat through their
   banks; what the bits of `0x980014` are; what is at `0x12800000`.
 - How the list DMA tells jumps from data words, and what makes the
   texture RAM banks 1 MB on `fvipers`' and `schamp`'s boards.
+- What `lastbrnx` writes to the copro's MSGR7 (`0x6716`) is for, what the
+  interrupt controller's second word really returns, and what the three
+  texture-point commands of its geometrizer program are for (`fn 0x1B`
+  in particular, which no run sends).
 - What the device at `0x1D80000-0x1D87FFF` that `doa` checks for is
   (*unconfirmed* whether it sits on the game board or the ROM board),
   and how it turns the block into its answer (above).

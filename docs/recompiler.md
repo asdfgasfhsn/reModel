@@ -36,6 +36,9 @@ program its own, so it shares neither and adds two crates. `fvipers`
 uploads `indy500`'s geometrizer code and `schamp` the shared one, so each
 adds only its copro crate. `vstriker`'s geometrizer program is an earlier
 version of `indy500`'s and its copro program its own, so it adds two.
+`lastbrnx`'s geometrizer program is the shared code with three commands
+added (so a crate of its own) and its copro program its own: two more
+SHARC crates (6,566 words of copro code, the largest here).
 Each holds `program.rs` from the code generator, generic over the machine around the
 processor, and a `lib.rs` that instantiates it for the Model 2 board
 (`Model2Bus`, the TGP's external buses), so its machine code is compiled in

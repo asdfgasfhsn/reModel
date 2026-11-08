@@ -351,7 +351,8 @@ are the same as the SHARC's: coin-start runs of 600M instructions give
 the same state hash on the SHARC and natively for `sgt24h`
 (`282c8d6fd5151c21`), `doa` (`78f308b4da95cefb`), `schamp`
 (`8d2b7b4cd55d64a0`), `vstriker` (`a4af0c62acc656f3`, interpreted and
-recompiled), `overrevb` and `dynabb97` (with the `eeprom.bin` of
+recompiled), `lastbrnx` (`38e1f20d016dd508`, interpreted and recompiled),
+`overrevb` and `dynabb97` (with the `eeprom.bin` of
 an earlier run), and a run saved at frame 2000 in either mode and resumed
 in either mode ends with the uninterrupted run's hash (for `vstriker`
 too, recompiled: saved natively and resumed on the SHARC, and the
@@ -421,6 +422,7 @@ with other builds, so worst cases are noisy):
 | `doa` fights (frames 3000-4486, from a save) | 35.1 ms (worst 88.6) | 7.32 ms (worst 11.5) | 1.83 ms (worst 3.0) |
 | all seven games, frames 3000-5177 of a coin-start run | 17.6-37.2 ms | | 0.97-2.29 ms |
 | `vstriker`, frames 3000-5177 of a coin-start run (a match) | 27.7 ms (worst 86.5) | 6.78 ms (worst 12.8) | 1.49-1.53 ms (worst 3.4) |
+| `lastbrnx`, all 4,101 frames of a coin-start run (attract and a fight) | 21.4 ms (worst 37.8) | 5.53 ms (worst 10.1) | 1.20 ms (worst 4.5); 1.19 (worst 2.2) beside the recompiled SHARC |
 
 (The native column is from the recompiled-SHARC runs; with the
 interpreted SHARC beside it, it measured 1.57 and 2.24 ms. Native is about
