@@ -2,6 +2,7 @@ mod geo_check;
 mod gpu_check;
 mod music;
 mod recomp_crates;
+mod run_ahead;
 mod sharc;
 mod sound_render;
 mod soundtrack;
@@ -125,7 +126,18 @@ commands:
                        or --load-state), one with CHANGE (an --input item
                        without frames, e.g. wheel=0xF0) held from FRAME;
                        for each frame after, when the game read it and
-                       when its RAM, display list and polygons differ
+                       when its RAM, display list, polygons and picture
+                       differ; the frames to the first picture difference
+                       are the game's input lag (`make input-lag`)
+  run-ahead-check [STEPS] [FRAMES] [EVERY]
+                       run-ahead (docs/play.md): a plain run (default 450M
+                       instructions, with --input, --load-state, --geo,
+                       --smooth) beside one running FRAMES (default 1)
+                       ahead; the real timeline's state hash must be the
+                       same, and every EVERY-th frame (default 50) whose
+                       inputs hold, the frame shown must be the plain run's
+                       FRAMES later (picture, state hash, in-betweens);
+                       times the copy and the frames ahead
   lockstep [STEPS]     run the recompiled i960 code and the interpreter side
                        by side, block by block; report the first difference
                        (Model 2B: also the SHARCs, the copro after every
@@ -848,6 +860,19 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
+        "run-ahead-check" => {
+            let steps = args.get(1).and_then(|s| parse_num(s)).map_or(450_000_000, u64::from);
+            let frames = args.get(2).and_then(|s| parse_num(s)).unwrap_or(1);
+            let every = args.get(3).and_then(|s| parse_num(s)).map_or(50, u64::from).max(1);
+            match run_ahead::check(&roms, steps, frames, every, input.as_deref().unwrap_or(""), interp, single_thread) {
+                Ok(true) => {}
+                Ok(false) => return ExitCode::FAILURE,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
         "latency" => {
             let (Some(at), Some(change)) = (args.get(1).and_then(|s| parse_num(s)), args.get(2)) else {
                 eprint!("{USAGE}");
@@ -1107,6 +1132,14 @@ fn snapshot(m: &mut model2::Machine, path: &std::path::Path) {
 /// Draw the machine's current frame to a PNG at `path`, with `stream` for
 /// its polygons if given, else the geometrizer's last frame's.
 fn draw_png(m: &model2::Machine, stream: Option<&[u32]>, path: &std::path::Path) {
+    let (view, rgb) = render(m, stream, path);
+    let png = png::encode_rgb(view.width, view.height, &rgb);
+    let _ = std::fs::write(path, png);
+}
+
+/// The machine's current frame as `draw_png` draws it (`path` names it
+/// for `REMODEL_PROBE`'s report): the view, and its RGB pixels.
+fn render(m: &model2::Machine, stream: Option<&[u32]>, path: &std::path::Path) -> (model2::video::View, Vec<u8>) {
     let view = VIEW.get().copied().unwrap_or_else(model2::video::View::native);
     let b = &m.bus;
     let geo = b.geo.engine();
@@ -1147,8 +1180,7 @@ fn draw_png(m: &model2::Machine, stream: Option<&[u32]>, path: &std::path::Path)
         }
         None => model2::video::compose(b.tile_ram(), b.palette_ram(), layer3d, &view),
     };
-    let png = png::encode_rgb(view.width, view.height, &rgb);
-    let _ = std::fs::write(path, png);
+    (view, rgb)
 }
 
 /// `latency`: run to frame `at`, then on as two machines, one with
@@ -1204,10 +1236,10 @@ fn latency(
     changed.apply(at, &mut b.bus);
     println!("{} from frame {at}: {change}", roms.game.id);
     println!(
-        "frame  read{}  RAM  list  polygons (words differing)",
+        "frame  read{}  RAM  list  polygons (words differing)  picture (pixels differing)",
         if channel.is_some() { " (at, value)" } else { "" }
     );
-    let (mut first_ram, mut first_list, mut first_poly) = (None, None, None);
+    let (mut first_ram, mut first_list, mut first_poly, mut first_picture) = (None, None, None, None);
     for i in 0..frames {
         let start = b.bus.now;
         a.run_slice(u64::MAX).map_err(|s| format!("stopped: {s:?}"))?;
@@ -1236,11 +1268,15 @@ fn latency(
                 "-"
             }
         };
+        // The whole picture as drawn (tiles and polygons), pixel by pixel.
+        let (pa, pb) = (render(&a, None, Path::new("a")).1, render(&b, None, Path::new("b")).1);
+        let pixels = pa.chunks(3).zip(pb.chunks(3)).filter(|(x, y)| x != y).count();
+        let polygons = format!("{} ({poly})", mark(poly > 0, &mut first_poly));
         println!(
-            "{i:5}{read}  {:>3}  {:>4}  {:>8} ({poly})",
+            "{i:5}{read}  {:>3}  {:>4}  {polygons:>17}  {:>7} ({pixels})",
             mark(ra != rb, &mut first_ram),
             mark(la != lb, &mut first_list),
-            mark(poly > 0, &mut first_poly)
+            mark(pixels > 0, &mut first_picture)
         );
         let f = a.frames;
         base.apply(f, &mut a.bus);
@@ -1248,13 +1284,26 @@ fn latency(
     }
     let show = |f: Option<u64>| f.map_or("not within the run".into(), |f| format!("frame {f}"));
     println!(
-        "first difference: RAM {}, display list {}, polygons {}",
+        "first difference: RAM {}, display list {}, polygons {}, picture {}",
         show(first_ram),
         show(first_list),
-        show(first_poly)
+        show(first_poly),
+        show(first_picture)
     );
     if let Some(f) = first_poly {
         println!("drawn after {} frames from the input (native player; browser: about one more)", f + 1);
+    }
+    match first_picture {
+        Some(f) => println!(
+            "input lag     {f} frame{}: the picture first changes {}; run-ahead of up to {f} hides that many",
+            if f == 1 { "" } else { "s" },
+            if f == 0 {
+                "in the first frame that can read it"
+            } else {
+                "that many frames after the first that can read it"
+            }
+        ),
+        None => println!("input lag     not seen within {frames} frames"),
     }
     Ok(())
 }

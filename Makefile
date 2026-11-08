@@ -84,7 +84,7 @@ endif
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm m68k-tests clean recomp recomp-workspace bench latency sound sound-disasm geo-check geo-fuzz smooth-frames pace-sim install-desktop uninstall-desktop
+.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm m68k-tests clean recomp recomp-workspace bench latency input-lag run-ahead-check sound sound-disasm geo-check geo-fuzz smooth-frames pace-sim install-desktop uninstall-desktop
 
 ##@ General
 
@@ -297,6 +297,37 @@ LATENCY_FRAME  ?= 3100
 LATENCY_CHANGE ?= wheel=0xF0
 latency: release ## Input latency: frames from a held input (LATENCY_CHANGE, from frame LATENCY_FRAME of a coin-start run) to the game's RAM, display list and polygons
 	$(RUN) --input $(BENCH_INPUT) latency $(LATENCY_FRAME) $(LATENCY_CHANGE)
+
+# `make input-lag`: per game, GAME+FRAME+CHANGE[+INPUT]: a frame in play of
+# a run with INPUT (default coin-start), and a control held from there.
+# The fighters' and gun games' runs stop their periodic buttons first, so
+# the control isn't lost in a move already under way. The README's
+# "What's known" sections give what these measured (romset's
+# `Game::input_lag`).
+FIGHT_INPUT := coin1@1100-1104,start@1250-1254,punch@1400-3400/30,kick@1415-3400/30
+INPUT_LAG ?= topskatr+3507+curving=0xF0 skisuprg+3507+swing=0xF0 \
+	stcc+4507+wheel=0xD0+coin-start,gas=0xff@4100-99999 segawski+3507+slide=0xF0 \
+	waverunr+3507+handlebar=0xF0 overrev+3507+wheel=0xF0 hotd+3510+trigger1 \
+	bel+3507+trigger1+coin1@1100-1104,start@1250-1254,gun1=248:190@2200-9000,trigger1@2260-3400/8 \
+	overrevb+3507+wheel=0xF0 sgt24h+3507+wheel=0xF0 dynabb97+3507+bat=0xc0 \
+	doa+3507+punch+$(FIGHT_INPUT) indy500+3507+wheel=0xF0 fvipers+3707+punch+$(FIGHT_INPUT) \
+	schamp+3507+right+$(FIGHT_INPUT) vstriker+3507+right
+input-lag: release ## Each game's input lag (INPUT_LAG, or just GAME='s): frames from a control held in play to the first change in the picture, which is how many run-ahead can take away
+	@for c in $(if $(filter command line,$(origin GAME)),$(filter $(GAME)+%,$(INPUT_LAG)),$(INPUT_LAG)); do \
+		set -- $$(echo $$c | tr + ' '); \
+		printf '%-10s %-16s ' $$1 "$$3 at $$2"; \
+		$(REMODEL) --game $$1 --rom $(ROM) --geo native --input $${4:-coin-start} latency $$2 $$3 16 \
+			| sed -n 's/^input lag *//p'; \
+	done
+
+RUN_AHEAD_GAMES  ?= topskatr stcc hotd overrevb vstriker
+RUN_AHEAD_FRAMES ?= 2
+RUN_AHEAD_STEPS  ?= 300000000
+run-ahead-check: release ## Run-ahead against plain runs (RUN_AHEAD_GAMES, or GAME=): coin-start runs (RUN_AHEAD_STEPS, smooth motion on) RUN_AHEAD_FRAMES ahead keep the real state hash, and the frames shown are the plain run's that many later (pictures, hashes, in-betweens); times the copy
+	@for g in $(if $(filter command line,$(origin GAME)),$(GAME),$(RUN_AHEAD_GAMES)); do \
+		$(REMODEL) --game $$g --rom $(ROM) --geo native --smooth 0.5 --input $(BENCH_INPUT) \
+			run-ahead-check $(RUN_AHEAD_STEPS) $(RUN_AHEAD_FRAMES) 25 || exit 1; \
+	done
 
 bench: release ## Timed fixed run into a race: speed vs real time and the state hash (must not change with speed-ups)
 	$(RUN) --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep -E '^(instructions|emulated|host time|state hash)'
