@@ -1489,6 +1489,15 @@ mod tests {
     }
 
     #[test]
+    fn model_2a_has_its_own_group_before_2b() {
+        let mut l = Launcher::default();
+        l.set_games(&games(&["doa", "srallyc", "topskatr"]), &[]);
+        let names: Vec<&str> = l.groups().iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, ["Model 2A", "Model 2B", "Model 2C"]);
+        assert_eq!(l.selected().unwrap().id, "srallyc");
+    }
+
+    #[test]
     fn navigation() {
         let mut l = Launcher::default();
         l.set_games(&games(&["topskatr", "hotd", "fvipers", "doa", "stcc"]), &[]);

@@ -311,7 +311,8 @@ INPUT_LAG ?= topskatr+3507+curving=0xF0 skisuprg+3507+swing=0xF0 \
 	bel+3507+trigger1+coin1@1100-1104,start@1250-1254,gun1=248:190@2200-9000,trigger1@2260-3400/8 \
 	overrevb+3507+wheel=0xF0 sgt24h+3507+wheel=0xF0 dynabb97+3507+bat=0xc0 \
 	doa+3507+punch+$(FIGHT_INPUT) indy500+3507+wheel=0xF0 fvipers+3707+punch+$(FIGHT_INPUT) \
-	schamp+3507+right+$(FIGHT_INPUT) vstriker+3507+right lastbrnx+3507+right+$(FIGHT_INPUT)
+	schamp+3507+right+$(FIGHT_INPUT) vstriker+3507+right lastbrnx+3507+right+$(FIGHT_INPUT) \
+	srallyc+4007+wheel=0xD0+coin-start,gas=0xff@2300-99999
 input-lag: release ## Each game's input lag (INPUT_LAG, or just GAME='s): frames from a control held in play to the first change in the picture, which is how many run-ahead can take away
 	@for c in $(if $(filter command line,$(origin GAME)),$(filter $(GAME)+%,$(INPUT_LAG)),$(INPUT_LAG)); do \
 		set -- $$(echo $$c | tr + ' '); \
