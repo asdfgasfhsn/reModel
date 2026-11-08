@@ -104,7 +104,8 @@ desktop a game whose speed jumps by 20% every few seconds breaks up about
 once at each jump down. The pitch movement in those rows is the game's
 own speed changing. The model can't capture a real browser's audio
 thread or the phone's own scheduling; on a phone, the status line shows
-what it does there.
+what it does there. Confirmed by ear on an iPhone (Chrome, so WebKit) in
+`topskatr`, which wobbled before: steady after (2026-11-08).
 
 Before that the rate was the display's speed with only a
 0.5% correction, so every frame the game lost to the geometry worker took
