@@ -9,15 +9,21 @@ use mb86234::{Bus, Cpu, Stop};
 use model2::tgp2a_hle::Hle;
 use std::collections::VecDeque;
 
-/// The shared RAM the program writes matrices to.
-struct Ram(Vec<u32>);
+/// The shared RAM the program writes matrices to, and a data ROM from
+/// [`mb86234::ROM_BASE`] (made up by the checks).
+struct Ram(Vec<u32>, Vec<u32>);
 
 impl Bus for Ram {
     fn read(&mut self, a: u32) -> u32 {
-        self.0[(a & 0x7fff) as usize]
+        match a.checked_sub(mb86234::ROM_BASE) {
+            Some(o) => self.1.get(o as usize).copied().unwrap_or(0),
+            None => self.0[(a & 0x7fff) as usize],
+        }
     }
     fn write(&mut self, a: u32, v: u32) {
-        self.0[(a & 0x7fff) as usize] = v;
+        if a < mb86234::ROM_BASE {
+            self.0[(a & 0x7fff) as usize] = v;
+        }
     }
 }
 
@@ -32,7 +38,7 @@ fn header(f: u32) -> u32 {
 
 impl Chip {
     fn new(program: &[u32], tables: Vec<u32>) -> Result<Self, String> {
-        let mut c = Chip { cpu: Cpu::new(program.to_vec(), tables), ram: Ram(vec![0; 0x8000]) };
+        let mut c = Chip { cpu: Cpu::new(program.to_vec(), tables), ram: Ram(vec![0; 0x8000], Vec::new()) };
         // The load check: a word on command port 8 is answered with 8.
         c.cpu.fifo_in.push_back(8 << 23);
         if c.cpu.run(&mut c.ram, 100_000) != Stop::Input || c.cpu.fifo_out.pop_front() != Some(8) {
@@ -136,6 +142,155 @@ fn rot(axis: u32, a: f64) -> [[f64; 3]; 3] {
         1 => [[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]],
         _ => [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]],
     }
+}
+
+/// A made-up course in the data ROM's format (`docs/hw/model2a.md` §9):
+/// a block's table of cells, each four words (a polygon count, the byte
+/// offsets from the ROM's start of its polygons and of their attribute
+/// words, 0). A polygon is 16 words: four corners (x, y, z), then four
+/// more words; its attribute word's bit 2 says it has four corners (else
+/// three). Cell k is the 10 x 10 square at (10 (k mod 4), 10 (k div 4)) in
+/// x and z, cut into strips, each a quad or two triangles. Right after
+/// each cell's polygons (and attribute words) lies a quad covering the
+/// whole course, which a search that ran past the count would find.
+struct Course {
+    rom: Vec<u32>,
+    cells: Vec<Vec<Polygon>>,
+}
+
+/// A polygon of [`Course`]: its corners in x and z, and the ROM word
+/// offsets of its 16 words and of its attribute word.
+struct Polygon {
+    corners: Vec<[f64; 2]>,
+    at: usize,
+    attr: usize,
+}
+
+const BLOCK: u32 = 0x100;
+
+fn course(rng: &mut Rng) -> Course {
+    let mut rom = vec![0u32; 0x200];
+    let mut cells = Vec::new();
+    for k in 0..16u32 {
+        let (x0, z0) = ((k % 4) as f64 * 10.0, (k / 4) as f64 * 10.0);
+        let n = 1 + rng.next() % 4;
+        let mut polys: Vec<Vec<[f64; 2]>> = Vec::new();
+        for j in 0..n {
+            let xa = x0 + 10.0 * j as f64 / n as f64;
+            let xb = x0 + 10.0 * (j + 1) as f64 / n as f64;
+            let (a, b, c, d) = ([xa, z0], [xb, z0], [xb, z0 + 10.0], [xa, z0 + 10.0]);
+            if rng.next() & 1 == 0 {
+                polys.push(vec![a, b, c, d]);
+            } else {
+                polys.push(vec![a, b, c]);
+                polys.push(vec![a, c, d]);
+            }
+        }
+        polys.push(vec![[-1e3, -1e3], [1e3, -1e3], [1e3, 1e3], [-1e3, 1e3]]);
+        let at = rom.len();
+        let attrs = at + 16 * polys.len();
+        let entry = (BLOCK + 4 * k) as usize;
+        rom[entry..entry + 4].copy_from_slice(&[polys.len() as u32 - 1, 4 * at as u32, 4 * attrs as u32, 0]);
+        let mut list = Vec::new();
+        for (i, p) in polys.iter().enumerate() {
+            let mut rec: Vec<u32> = (0..16).map(|_| rng.f(100.0).to_bits()).collect();
+            for (c, xz) in p.iter().enumerate() {
+                rec[3 * c] = (xz[0] as f32).to_bits();
+                rec[3 * c + 2] = (xz[1] as f32).to_bits();
+            }
+            rom.extend(rec);
+            if i + 1 < polys.len() {
+                list.push(Polygon { corners: p.clone(), at: at + 16 * i, attr: attrs + i });
+            }
+        }
+        for p in &polys {
+            rom.push((rng.next() as u32 & !4) | if p.len() == 4 { 4 } else { 0 });
+        }
+        cells.push(list);
+    }
+    Course { rom, cells }
+}
+
+/// The cross products the search tests, `(c_i - p) x (c_i+1 - p)` in x and
+/// z: all positive inside a polygon.
+fn edges(p: [f64; 2], poly: &[[f64; 2]]) -> Vec<f64> {
+    (0..poly.len())
+        .map(|i| {
+            let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+            (a[0] - p[0]) * (b[1] - p[1]) - (b[0] - p[0]) * (a[1] - p[1])
+        })
+        .collect()
+}
+
+/// Functions 7 (a word of the data ROM at the offset the list gives) and
+/// 0x52/0x53 (find the polygon under a point in three cells, then give
+/// its 16 words and attribute word) on [`course`].
+fn course_search(c: &mut Chip, rng: &mut Rng) -> (Worst, Worst) {
+    let course = course(rng);
+    c.ram.1 = course.rom.clone();
+    let (mut w7, mut w) = (Worst::default(), Worst::default());
+    let bad = |w: &mut Worst| w.0 = f64::INFINITY;
+    for _ in 0..200 {
+        let o = (rng.next() % course.rom.len() as u64) as u32;
+        c.call(0x03, &[0]);
+        c.ram.0[0x6000] = o;
+        if c.call(0x07, &[]) != [course.rom[o as usize]] {
+            bad(&mut w7);
+        }
+    }
+    let mut found = 0;
+    for i in 0..500 {
+        let p = [rng.f(20.0) as f64 + 20.0, rng.f(20.0) as f64 + 20.0];
+        let k = (p[0] / 10.0).floor() as usize % 4 + 4 * ((p[1] / 10.0).floor() as usize % 4);
+        let hit = course.cells[k].iter().find(|q| edges(p, &q.corners).iter().all(|&e| e > 0.0));
+        if course.cells[k].iter().any(|q| edges(p, &q.corners).iter().any(|e| e.abs() < 1e-3)) {
+            continue;
+        }
+        // Three cells to search, the one under the point among them in
+        // two cases out of three.
+        let mut cand: Vec<usize> = (0..3).map(|_| (k + 1 + (rng.next() % 15) as usize) % 16).collect();
+        if i % 3 != 2 {
+            cand[(rng.next() % 3) as usize] = k;
+        }
+        let slot = 2 * (rng.next() % 4) as u32;
+        c.call(0x03, &[0]);
+        let words = [
+            (p[0] as f32).to_bits(),
+            rng.f(10.0).to_bits(),
+            (p[1] as f32).to_bits(),
+            BLOCK,
+            0,
+            4 * cand[2] as u32,
+            4 * cand[0] as u32,
+            4 * cand[1] as u32,
+            slot,
+        ];
+        c.ram.0[0x6000..0x6009].copy_from_slice(&words);
+        c.call(0x52, &[]);
+        let table = [c.cpu.ram[104 + slot as usize], c.cpu.ram[105 + slot as usize]];
+        match (cand.contains(&k), hit) {
+            (true, Some(&Polygon { at, attr, .. })) => {
+                found += 1;
+                let mut want = course.rom[at..at + 16].to_vec();
+                want.push(course.rom[attr]);
+                if c.call(0x53, &[slot]) != want {
+                    bad(&mut w);
+                }
+            }
+            (true, None) => bad(&mut w),
+            // No polygon in the three cells: the program marks the slot
+            // with 104 (its table's own address) in both words.
+            (false, _) => {
+                if table != [104, 104] {
+                    bad(&mut w);
+                }
+            }
+        }
+    }
+    if found < 100 {
+        bad(&mut w);
+    }
+    (w7, w)
 }
 
 pub fn check(program: &[u32], tables: Vec<u32>) -> Result<bool, String> {
@@ -332,6 +487,15 @@ pub fn check(program: &[u32], tables: Vec<u32>) -> Result<bool, String> {
         wch.see(&gh, &e);
     }
     row("58 distance", w, 3e-7, Some(wh));
+    // 0x50: the distance from (w0, w1, w2) to (w3, w4, w5), the second
+    // point kept in RAM1 and read through type 0x10's op1 below 0x40.
+    let mut w = Worst::default();
+    for _ in 0..N {
+        let a = rng.v(6, 100.0);
+        let d = |i: usize| (a[i + 3] - a[i]) as f64;
+        w.see(&c.callf(0x50, &a), &[(d(0) * d(0) + d(1) * d(1) + d(2) * d(2)).sqrt()]);
+    }
+    row("50 distance (two points)", w, 3e-7, None);
     row("5C cross product", wc, 1e-5, Some(wch));
     // 0x54: turn the matrix so that the direction maps to +z.
     let mut w = Worst::default();
@@ -345,6 +509,33 @@ pub fn check(program: &[u32], tables: Vec<u32>) -> Result<bool, String> {
         w.see(&got.map(|x| x as f32), &[0.0, 0.0, l]);
     }
     row("54 point along a direction", w, 1e-5, None);
+    // 0x51: the same turn with the other sign convention: the matrix's
+    // third row becomes the direction (normalised).
+    let mut w = Worst::default();
+    for _ in 0..N / 5 {
+        let v = rng.v(3, 10.0);
+        c.callf(0x25, &[]);
+        c.callf(0x51, &v);
+        let m = c.callf(0x26, &[]);
+        let l = v.iter().map(|&x| x as f64 * x as f64).sum::<f64>().sqrt();
+        let e: Vec<f64> = v.iter().map(|&x| x as f64 / l).collect();
+        w.see(&m[6..9], &e);
+    }
+    row("51 point along a direction (z row)", w, 1e-5, None);
+    // 0x59, 0x5B: a dot product and a cross product, of vectors whose
+    // components the game interleaves.
+    let (mut wd, mut wx) = (Worst::default(), Worst::default());
+    for _ in 0..N {
+        let a = rng.v(6, 10.0);
+        let a: Vec<f64> = a.iter().map(|&x| x as f64).collect();
+        let a32: Vec<f32> = a.iter().map(|&x| x as f32).collect();
+        wd.see(&c.callf(0x59, &a32), &[a[0] * a[1] + a[2] * a[3] + a[4] * a[5]]);
+        let (u, v) = ([a[5], a[0], a[2]], [a[4], a[3], a[1]]);
+        let x = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+        wx.see(&c.callf(0x5b, &a32), &x);
+    }
+    row("59 dot product (interleaved)", wd, 1e-5, None);
+    row("5B cross product (interleaved)", wx, 1e-5, None);
     // The composites against the functions they call, and 0x05's matrix
     // in shared RAM at the address the list at 0x6000 gives.
     let mut w = Worst::default();
@@ -369,6 +560,9 @@ pub fn check(program: &[u32], tables: Vec<u32>) -> Result<bool, String> {
         }
     }
     row("05/5D/5E matrix to the display list", w, 0.0, None);
+    let (w7, w52) = course_search(&mut c, &mut rng);
+    row("07 data ROM word", w7, 0.0, None);
+    row("52/53 course search (polygon under)", w52, 0.0, None);
 
     println!("{:<40} {:>12} {:>9}  {:>12}", "function", "worst error", "tolerance", "tgp2a_hle");
     let mut ok = true;

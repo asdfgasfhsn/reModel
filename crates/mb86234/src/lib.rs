@@ -14,8 +14,9 @@
 //! ALU operation and its transfer read their operands at the start of the
 //! word and write at the end. Two RAMs of 512 words (RAM0, RAM1), one
 //! address space for indirect accesses (RAM0 at 0, RAM1 at 0x200), an
-//! input and an output FIFO, a 16-bit external bus that reaches either the
-//! board's shared RAM or the function unit's ports ([`funcs`]).
+//! input and an output FIFO, a 24-bit external bus that reaches either the
+//! board's shared RAM or the function unit's ports ([`funcs`]), and in both
+//! modes the board's data ROM from [`ROM_BASE`].
 
 pub mod disasm;
 pub mod funcs;
@@ -37,6 +38,8 @@ pub mod reg {
     pub const AR0: u8 = 0x00;
     pub const AR2: u8 = 0x02;
     pub const AR3: u8 = 0x03;
+    /// The loop counter `BF00` counts down.
+    pub const LC: u8 = 0x0c;
     /// The multiplier's first input and the ALU's second operand.
     pub const R10: u8 = 0x10;
     /// The multiplier's second input.
@@ -273,12 +276,14 @@ impl Cpu {
                     }
                 }
                 0xbf => match (w >> 16) & 0xff {
-                    // Jump if the zero flag is clear (hypothesis: `BE 00` is
-                    // jump-if-zero, and this closes the course data search's
-                    // loop on its counter, which the ALU word before it
-                    // counts up to 0).
+                    // Loop: count the loop counter (register 0x0C) down and
+                    // jump while it is not zero; the flags are left alone.
+                    // The course data search loads the counter with a
+                    // cell's polygon count and closes its loop with this.
                     0x00 => {
-                        if !self.zero {
+                        let lc = &mut self.regs[reg::LC as usize];
+                        *lc = lc.wrapping_sub(1);
+                        if *lc != 0 {
                             next = w & 0xffff;
                         }
                     }

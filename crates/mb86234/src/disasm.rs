@@ -13,6 +13,7 @@ pub fn reg_name(r: u32) -> String {
     let views = ["r10", "r13", "r16", "acc", "p"];
     match r {
         0x00..=0x03 => format!("ar{r}"),
+        0x0c => "lc".into(),
         0x0f => "null".into(),
         0x10..=0x1e => {
             let (b, part) = ((r - 0x10) / 3, (r - 0x10) % 3);
@@ -154,6 +155,7 @@ pub fn line(w: u32) -> String {
                 }
             }
             0xbf => match (w >> 16) & 0xff {
+                0x00 => format!("loop {:#05x}", w & 0xffff),
                 0x60 => format!("jmp {:#05x}", w & 0xffff),
                 0x64 => format!("call {:#05x}", w & 0xffff),
                 0x66 => format!("call {}", reg_name(w & 0x3f)),
@@ -182,5 +184,7 @@ mod tests {
         assert_eq!(line(0x5a00_007f), "acc.e = #0x7f");
         assert!(line(0x1d3c_4255).starts_with("acc += p, p = r10*r13"));
         assert_eq!(line(0xbe10_026b), "jnn 0x26b");
+        assert_eq!(line(0xbf00_05cf), "loop 0x5cf");
+        assert_eq!(line(0x1c1e_19a1), "lc = ext[ar3]+1");
     }
 }

@@ -219,3 +219,19 @@ fn state_round_trips() {
     assert_eq!((d.pc, d.ram[0x10], d.regs[reg::ACC as usize], d.fifo_in.clone()), (2, 1, 2, [3].into()));
     assert_eq!(state::to_bytes(&d), bytes);
 }
+
+#[test]
+fn loop_counts_down_and_keeps_flags() {
+    // lc = in; acc = #0; r10 = #1; a body adding 1 (integer) closed by
+    // `loop`; a `jz` that must fall through; out = acc. The body runs lc
+    // times, and the loop word leaves the add's flags (not zero) alone.
+    // (`srallyc`'s course search loads lc with a cell's polygon count and
+    // relies on both.)
+    let lc = reg::LC as u32;
+    let p = vec![mov(lc, IN), 0x3b00_0000, 0x3900_0001, alu(26, NOP), 0xbf00_0003, 0xbe00_0007, mov(OUT, ACC), jmp(0)];
+    let mut c = Cpu::new(p, Vec::new());
+    c.fifo_in.extend([5, 1]);
+    assert_eq!(c.run(&mut NoBus, 1000), Stop::Input);
+    assert_eq!(c.fifo_out.drain(..).collect::<Vec<_>>(), [5, 1]);
+    assert_eq!(c.regs[reg::LC as usize], 0);
+}
