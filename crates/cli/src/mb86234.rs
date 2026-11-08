@@ -14,6 +14,8 @@ use std::path::Path;
 /// A word of the leading run is a jump-vector candidate when its top byte
 /// is this (every 2A program starts with such a run; `docs/hw/mb86234.md`).
 const JUMP_TOP: u8 = 0xbf;
+/// The top 16 bits of the return-like word (`BF6A0000`).
+const RETURN: u32 = 0xbf6a;
 /// The shortest run of such words taken as the dispatch table.
 const TABLE_MIN: usize = 32;
 
@@ -31,6 +33,9 @@ pub struct Analysis {
     /// Table slots whose target is 0 (as slot 0 of every 2A program's:
     /// no function there).
     pub zero_slots: usize,
+    /// The word after the table, if it is a return: where every unused
+    /// slot points.
+    pub common_return: Option<usize>,
     /// Distinct targets of the table, ascending: where the functions start.
     pub entries: Vec<usize>,
     /// How many table slots point at each entry.
@@ -68,7 +73,19 @@ pub fn analyse(program: &[u32]) -> Analysis {
         }
     }
     if best.len() >= TABLE_MIN {
+        // The run includes the `BF6A....` (return) word before the first
+        // slot and the common return after the last, which the unused
+        // slots point at: the table is what lies between, slot F being
+        // function F (`docs/hw/mb86234.md`).
+        let ret = |i: usize| program[i] >> 16 == RETURN;
+        if ret(best.start) {
+            best.start += 1;
+        }
+        if ret(best.end - 1) {
+            best.end -= 1;
+        }
         a.table = best;
+        a.common_return = program[a.table.end..].first().is_some_and(|&w| w >> 16 == RETURN).then_some(a.table.end);
     }
     for &w in &program[a.table.clone()] {
         let t = (w & 0xffff) as usize;
@@ -101,15 +118,18 @@ pub fn disasm(file: &Path, out: &Path) -> Result<(), String> {
     println!("words         {} (32 bits each)", a.words);
     println!("header        {}", range(&a.header));
     println!(
-        "dispatch      {}, {} slots with target 0, {} targets out of range",
+        "dispatch      {}, slot = function number; {} slots with target 0, {} targets out of range",
         range(&a.table),
         a.zero_slots,
         a.bad_targets
     );
+    let unused = a.common_return.map_or(0, |r| a.slots.get(&r).copied().unwrap_or(0));
     println!(
-        "functions     {} distinct entry points for {} other slots",
+        "functions     {} distinct entry points for {} slots ({} unused slots point at the common return {})",
         a.entries.len(),
-        a.table.len() - a.zero_slots - a.bad_targets
+        a.table.len() - a.zero_slots - a.bad_targets,
+        unused,
+        a.common_return.map_or("none".to_string(), |r| format!("{r:#x}"))
     );
     println!("opcodes       {} distinct top bytes; the commonest:", a.tops.len());
     let mut by_count: Vec<_> = a.tops.iter().collect();
@@ -128,14 +148,14 @@ pub fn disasm(file: &Path, out: &Path) -> Result<(), String> {
                 .table
                 .clone()
                 .filter(|&s| (program[s] & 0xffff) as usize == i)
-                .map(|s| format!("{}", s - a.table.start))
+                .map(|s| format!("function {:#x}", s - a.table.start))
                 .collect();
-            let _ = writeln!(text, "\nfunc_{i:03x}:  ; dispatch slot(s) {}", slots.join(", "));
+            let _ = writeln!(text, "\nfunc_{i:03x}:  ; dispatch slot(s): {}", slots.join(", "));
         }
         let note = if a.header.contains(&i) {
             format!("header, jump-like, target {:#x}", w & 0xffff)
         } else if a.table.contains(&i) {
-            format!("table slot {}, jump-like, target {:#x}", i - a.table.start, w & 0xffff)
+            format!("table slot (function {:#x}), jump-like, target {:#x}", i - a.table.start, w & 0xffff)
         } else {
             String::new()
         };
@@ -152,20 +172,23 @@ mod tests {
 
     #[test]
     fn finds_header_table_and_entries() {
-        // 2 header words, 4 filler, a 40-slot table pointing at 3 places.
-        let mut p = vec![0xbf60_0006, 0xbf60_0010, 0x1c00_0000, 0x3c00_0000, 0x1c00_0001, 0x7c00_0002];
+        // 2 header words, 4 filler, a return, a 40-slot table pointing at 3
+        // places, the common return.
+        let mut p = vec![0xbf60_0006, 0xbf60_0010, 0x1c00_0000, 0x3c00_0000, 0x1c00_0001, 0x7c00_0002, 0xbf6a_0000];
         let base = p.len();
         for i in 0..40u32 {
-            p.push(0xbf60_0000 | (base as u32 + 40 + (i % 3)));
+            p.push(0xbf60_0000 | (base as u32 + 41 + (i % 3)));
         }
+        p.push(0xbf6a_0000);
         p.extend([0x1c00_0000; 8]);
         let a = analyse(&p);
         assert_eq!(a.header, 0..2);
-        assert_eq!(a.table, base..base + 40);
-        assert_eq!(a.entries, vec![base + 40, base + 41, base + 42]);
+        assert_eq!(a.table, base..base + 40, "the returns around the table aren't slots");
+        assert_eq!(a.common_return, Some(base + 40));
+        assert_eq!(a.entries, vec![base + 41, base + 42, base + 43]);
         assert_eq!(a.bad_targets, 0);
-        assert_eq!(a.slots[&(base + 40)], 14);
-        assert_eq!(a.tops[&0xbf], 42);
+        assert_eq!(a.slots[&(base + 41)], 14);
+        assert_eq!(a.tops[&0xbf], 44);
     }
 
     #[test]

@@ -21,6 +21,7 @@ pub mod raster;
 pub mod sharc;
 pub mod smooth;
 pub mod tgp2a;
+pub mod tgp2a_hle;
 pub mod video;
 
 pub mod recomp;

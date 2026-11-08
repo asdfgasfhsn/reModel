@@ -3,10 +3,14 @@
 //! modelled, the program is *not run*. The stand-in answers the one
 //! request the game's load check makes and records every other call the
 //! game makes, so the TGP's function interface can be read off a run
-//! (`docs/hw/model2a.md`). Nothing here computes what a real TGP would:
-//! games that wait for its answers stall (an empty FIFO reads as 0).
+//! (`docs/hw/model2a.md`). For a program it recognises, the functions are
+//! answered by `tgp2a_hle` (what each was read to do, not the chip);
+//! otherwise games that wait for the TGP's answers stall (an empty FIFO
+//! reads as 0).
 
 use std::collections::{BTreeMap, VecDeque};
+
+use crate::tgp2a_hle::{self, Hle};
 
 /// Raw events kept for a run's log (the rest only count).
 const TRACE_LIMIT: usize = 200_000;
@@ -70,6 +74,10 @@ pub struct Tgp2a {
     pub booted: bool,
     /// What the stand-in answers with.
     pub fifo_out: VecDeque<u32>,
+    /// The model of the program's functions, if the program uploaded is
+    /// one that has one (`tgp2a_hle`); else the stand-in answers only the
+    /// load check.
+    pub hle: Option<Hle>,
 
     // Diagnostics, not machine state.
     pub trace: Vec<Event>,
@@ -106,10 +114,12 @@ impl Tgp2a {
         if is && !was {
             self.uploading = true;
             self.booted = false;
+            self.hle = None;
             self.program.clear();
         } else if was && !is {
             self.uploading = false;
             self.booted = true;
+            self.hle = tgp2a_hle::recognise(&self.program);
         }
     }
 
@@ -120,13 +130,25 @@ impl Tgp2a {
             self.program.push(v);
             return;
         }
-        match header(v) {
+        // A model that knows the program knows how many words each
+        // function takes, so it needs no guess at what is a header.
+        let model_header = match &self.hle {
+            Some(h) => h.expects_header().then(|| header(v)).flatten(),
+            None => header(v),
+        };
+        match model_header {
             Some(f) => {
                 self.begin(f, v, frame);
+                if let Some(h) = &mut self.hle {
+                    h.begin(f, &mut self.fifo_out);
+                }
                 self.log((frame, ip, Kind::Header, offset, v));
             }
             None => {
                 self.open.args += 1;
+                if let Some(h) = &mut self.hle {
+                    h.data(v, &mut self.fifo_out);
+                }
                 self.log((frame, ip, Kind::Data, offset, v));
             }
         }
@@ -157,6 +179,8 @@ impl Tgp2a {
         // load check wants to read back.
         if p == 8 && self.booted {
             self.fifo_out.push_back(8);
+        } else if let Some(h) = &mut self.hle {
+            h.begin(p, &mut self.fifo_out);
         }
     }
 
@@ -208,12 +232,14 @@ impl state::State for Tgp2a {
         self.uploading.save(w);
         self.booted.save(w);
         self.fifo_out.save(w);
+        self.hle.save(w);
     }
     fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
         self.program.load(r)?;
         self.uploading.load(r)?;
         self.booted.load(r)?;
-        self.fifo_out.load(r)
+        self.fifo_out.load(r)?;
+        self.hle.load(r)
     }
 }
 

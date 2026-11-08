@@ -12,8 +12,10 @@ pub fn report(dir: &Path, b: &model2::Model2Bus) {
     let geo_bad = b.geo.bad_commands;
     let Some(t) = b.tgp2a.as_deref() else { return };
     println!(
-        "tgp (2A)      stand-in, program {} words uploaded, booted {}, replies waiting {}, empty reads {}{}",
+        "tgp (2A)      {}, program {} words uploaded (hash {:016x}), booted {}, replies waiting {}, empty reads {}{}",
+        if t.hle.is_some() { "function model (tgp2a_hle: not the chip)" } else { "stand-in" },
         t.program.len(),
+        model2::tgp2a_hle::program_hash(&t.program),
         t.booted,
         t.fifo_out.len(),
         t.empty_reads,
