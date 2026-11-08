@@ -526,7 +526,7 @@ mod tests {
 
     #[test]
     fn manifests_have_program_pairs() {
-        for g in games::ALL {
+        for g in games::ALL.iter().chain(games::IN_PROGRESS) {
             for role in
                 [Role::Program, Role::MainData, Role::MainDataHigh, Role::CoproData, Role::Polygons, Role::Textures]
             {

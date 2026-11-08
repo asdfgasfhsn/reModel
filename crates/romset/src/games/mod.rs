@@ -13,6 +13,7 @@ mod schamp;
 mod segawski;
 mod sgt24h;
 mod skisuprg;
+mod srallyc;
 mod stcc;
 mod topskatr;
 mod vstriker;
@@ -32,6 +33,7 @@ pub use schamp::SCHAMP;
 pub use segawski::SEGAWSKI;
 pub use sgt24h::SGT24H;
 pub use skisuprg::SKISUPRG;
+pub use srallyc::SRALLYC;
 pub use stcc::STCC;
 pub use topskatr::TOPSKATR;
 pub use vstriker::VSTRIKER;
@@ -42,6 +44,17 @@ pub static ALL: &[&Game] = &[
     &INDY500, &FVIPERS, &SCHAMP, &VSTRIKER,
 ];
 
+/// Games whose board model runs but which don't show a game yet. The CLI
+/// can run them (`find`), but every list built from [`ALL`] (the player's
+/// and the browser's game lists, `remodel games`, the posters and
+/// bezels) leaves them out. A game moves to `ALL` when it plays.
+pub static IN_PROGRESS: &[&Game] = &[&SRALLYC];
+
+/// The game `id`, if it is one a front end lists ([`ALL`]).
+pub fn playable(id: &str) -> Option<&'static Game> {
+    ALL.iter().copied().find(|g| g.id == id)
+}
+
 pub fn find(id: &str) -> Result<&'static Game, Error> {
-    ALL.iter().copied().find(|g| g.id == id).ok_or_else(|| Error::UnknownGame(id.to_string()))
+    ALL.iter().chain(IN_PROGRESS).copied().find(|g| g.id == id).ok_or_else(|| Error::UnknownGame(id.to_string()))
 }
