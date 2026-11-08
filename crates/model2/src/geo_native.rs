@@ -1,7 +1,7 @@
 //! A native geometrizer: the display-list program that the 2B games
 //! upload to their geometrizer SHARC (`overrevb`, `sgt24h`, `dynabb97`,
 //! `doa`, `schamp`, and earlier versions of it: `indy500` and `fvipers`,
-//! and before that `vstriker`),
+//! and before that `vstriker`, and `lastbrnx`'s extension of it),
 //! implemented in Rust from its behaviour
 //! (docs/hw/geometrizer-2b.md). It takes the same inputs as the SHARC (the
 //! list from buffer RAM, the polygon memory, its own state from earlier
@@ -53,6 +53,13 @@ const COEF: usize = 0xe0;
 /// Program-memory data words, from [`Program::pm_base`]: the first
 /// previous-edge vertex of the computed-normal modes is at `+0x10`.
 const PM_WORDS: usize = 0x800;
+/// `lastbrnx`'s texture-point ring (words `0x30050-0x30057`): where the
+/// ring starts and its end for the flush; the ring's read pointer (in
+/// words), start and write pointer for the next flush (a flush's start and
+/// end addresses in texture point RAM); and the recording flag.
+const RING_BASE: usize = 0x50;
+const RING_READ: usize = 0x51;
+const RING_FLAG: usize = 0x57;
 const P0: usize = 0x10;
 
 /// Data memory block 1 seen as 32-bit words: `0x28000-0x3FFFF`, the second
@@ -89,6 +96,12 @@ pub enum Program {
     /// stores (which change nothing), and with its program-memory data
     /// words at `0x20C00` (just past its shorter code).
     Vstriker,
+    /// `lastbrnx`'s: the shared program with a table of 32 commands whose
+    /// fn 0x1A-0x1C are its own, the 2D texture-point ring buffer
+    /// ([`Native::ring_flag`], [`Native::ring_flush`]), in place of the
+    /// aliases of 0x0A-0x0C. Its fn 0x1B (a clipped polygon's points into
+    /// the ring) isn't implemented: no run of the game sends it.
+    Lastbrnx,
 }
 
 impl Program {
@@ -96,7 +109,7 @@ impl Program {
     pub fn pm_base(self) -> u32 {
         match self {
             Program::Vstriker => 0x2_0c00,
-            Program::Shared2B | Program::Indy500 => 0x2_1000,
+            Program::Shared2B | Program::Indy500 | Program::Lastbrnx => 0x2_1000,
         }
     }
 
@@ -112,6 +125,7 @@ pub const PROGRAMS: &[(u64, Program)] = &[
     (0x1539_3321_f266_b9cf, Program::Shared2B),
     (0x1ee9_9ebc_8a45_8237, Program::Indy500),
     (0x9b6f_b0e1_100b_f66e, Program::Vstriker),
+    (0x9082_2719_cbee_82cd, Program::Lastbrnx),
 ];
 
 /// The code hash a program image is recognised by: [`adsp2106x::cpu::code_hash`]
@@ -563,6 +577,16 @@ impl Native {
                     io.xform(Kind::Focus, &mut f);
                     self.dm[FOCUS..FOCUS + 2].copy_from_slice(&f);
                 }
+                0x1a if self.program == Program::Lastbrnx => self.ring_flag(io),
+                0x1b if self.program == Program::Lastbrnx => {
+                    self.stop = Some(Stop::Unsupported(fnc));
+                    return;
+                }
+                0x1c if self.program == Program::Lastbrnx => {
+                    if self.ring_flush(io) {
+                        return;
+                    }
+                }
                 0x0a | 0x1a => {
                     for k in 0..3 {
                         let v = io.rd();
@@ -641,6 +665,63 @@ impl Native {
                 }
             }
         }
+    }
+
+    /// `lastbrnx`'s fn 0x1A: switch the ring's recording on (an operand
+    /// other than 0; when it was off, the end for the flush is set to the
+    /// ring's own) or off (the flush's read pointer and start go back to
+    /// the ring's base).
+    fn ring_flag(&mut self, io: &mut Io) {
+        let on = io.rd();
+        let was = self.dm[RING_FLAG];
+        self.dm[RING_FLAG] = on;
+        if on != 0 {
+            if was == 0 {
+                self.dm[0x56] = self.dm[0x55];
+            }
+        } else {
+            self.dm[RING_READ] = self.dm[RING_BASE];
+            self.dm[0x54] = self.dm[0x53];
+        }
+    }
+
+    /// `lastbrnx`'s fn 0x1C: send what the ring holds (16-bit halves, the
+    /// low half of each word first, from `2 * 0x30051` as a short-word
+    /// address) to the rasteriser as a memory write, command 4, address
+    /// `0x30054`'s old value and a count; then restart the ring at the
+    /// operand's address. True if it can't finish.
+    fn ring_flush(&mut self, io: &mut Io) -> bool {
+        let from = self.dm[RING_READ];
+        let start = self.dm[0x54];
+        let n = (self.dm[0x56] as i32).saturating_sub(start as i32) as u32 >> 1;
+        let at = from << 1;
+        let addr = io.rd();
+        let base = self.dm[RING_BASE];
+        self.dm[0x53] = addr;
+        self.dm[0x55] = addr;
+        self.dm[0x54] = addr;
+        self.dm[0x56] = addr;
+        self.dm[RING_READ] = base;
+        self.dm[0x52] = base;
+        self.dm[RING_FLAG] = 0;
+        self.dm[0x5b] = 0;
+        let n = n << 1;
+        if n == 0 {
+            return false;
+        }
+        io.emit(0xff00_0004);
+        io.emit(start);
+        io.emit(n);
+        let n = Self::count(n);
+        if self.unbounded(n, 0x1c) {
+            return true;
+        }
+        for k in 0..n as u32 {
+            let a = at.wrapping_add(k);
+            let word = Self::dm_index(a >> 1).map_or(0, |i| self.dm[i]);
+            io.emit(if a & 1 != 0 { word >> 16 } else { word & 0xffff });
+        }
+        false
     }
 
     /// fn 0x0E, the board test: 32 words of a walking one, then blocks of
@@ -1047,6 +1128,42 @@ mod tests {
         assert_eq!(out[11], v(20.0));
         assert_eq!(out[12..18], [v(2.0), v(3.0), v(10.0), v(0.0), v(3.0), v(10.0)]);
         assert_eq!(out.len(), 18);
+    }
+
+    /// `lastbrnx`'s ring: fn 0x1A switches the recording flag, fn 0x1C sends
+    /// the queued halves (low half of each word first) as a memory write
+    /// and restarts the ring at its operand.
+    #[test]
+    fn ring_flag_and_flush() {
+        let mut n = Native::new(Program::Lastbrnx, NO_CHECK_KEY);
+        assert!(frame(&mut n, &[cmd(0x0f)], &[]).is_empty());
+        for (k, v) in [0x30100, 0x30100, 0x30100, 0x80c000, 0x80c000, 0x80c000, 0x80c000, 0].into_iter().enumerate() {
+            n.dm[RING_BASE + k] = v;
+        }
+        n.dm[0x100..0x102].copy_from_slice(&[0x0002_0001, 0x0004_0003]);
+        // Recording on (it was off: the end follows the start), then the
+        // ring is made to hold two words.
+        assert!(frame(&mut n, &[cmd(0x1a), 1, cmd(0x0f)], &[]).is_empty());
+        assert_eq!(n.dm[RING_FLAG], 1);
+        n.dm[0x56] = 0x80c004;
+        let out = frame(&mut n, &[cmd(0x1c), 0x80c010, cmd(0x0f)], &[]);
+        assert_eq!(out, [0xff00_0004, 0x80c000, 4, 1, 2, 3, 4]);
+        assert_eq!((n.dm[0x53], n.dm[0x54], n.dm[0x55], n.dm[0x56]), [0x80c010; 4].into());
+        assert_eq!((n.dm[RING_READ], n.dm[0x52], n.dm[RING_FLAG]), (0x30100, 0x30100, 0));
+        // An empty ring sends nothing; fn 0x1A with 0 restarts it.
+        assert!(frame(&mut n, &[cmd(0x1c), 0x80c020, cmd(0x0f)], &[]).is_empty());
+        n.dm[RING_READ] = 0x30105;
+        n.dm[0x54] = 0x80c999;
+        assert!(frame(&mut n, &[cmd(0x1a), 0, cmd(0x0f)], &[]).is_empty());
+        assert_eq!((n.dm[RING_READ], n.dm[0x54]), (0x30100, n.dm[0x53]));
+        // fn 0x1B isn't implemented.
+        assert!(frame(&mut n, &[cmd(0x1b), cmd(0x0f)], &[]).is_empty());
+        assert_eq!(n.stop, Some(Stop::Unsupported(0x1b)));
+        // Other programs take 0x1A-0x1C for 0x0A-0x0C.
+        let mut m = Native::new(Program::Shared2B, NO_CHECK_KEY);
+        frame(&mut m, &[cmd(0x0f)], &[]);
+        frame(&mut m, &[cmd(0x1a), f(1.0), f(2.0), f(3.0), cmd(0x0f)], &[]);
+        assert_eq!(m.dm[LIGHT..LIGHT + 3], [f(1.0), f(2.0), f(3.0)]);
     }
 
     /// With the check on (no MSGR7 key), a bad command word stops it.

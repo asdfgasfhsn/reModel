@@ -212,8 +212,11 @@ fn model(g: &mut Gen, n: u32) -> Vec<u32> {
     v
 }
 
-/// A frame's display list of random commands with valid operands.
-fn list(g: &mut Gen, rom_words: u32) -> Vec<u32> {
+/// A frame's display list of random commands with valid operands. `ring`:
+/// the program has `lastbrnx`'s commands 0x1A-0x1C (a texture point ring)
+/// in place of the aliases of 0x0A-0x0C; its fn 0x1B isn't implemented
+/// natively, so the list leaves it out.
+fn list(g: &mut Gen, rom_words: u32, ring: bool) -> Vec<u32> {
     let mut l = Vec::new();
     l.push(command(g, 0x16));
     l.push(g.float(65536.0));
@@ -246,7 +249,7 @@ fn list(g: &mut Gen, rom_words: u32) -> Vec<u32> {
                 }
             }
             4 | 5 => {
-                let f = if g.chance(50) { 0x0b } else { 0x1b };
+                let f = if g.chance(50) || ring { 0x0b } else { 0x1b };
                 l.push(command(g, f));
                 for _ in 0..12 {
                     l.push(g.float(if l.len() % 12 < 9 { 1.5 } else { 2000.0 }));
@@ -352,6 +355,16 @@ fn list(g: &mut Gen, rom_words: u32) -> Vec<u32> {
                 l.push(command(g, 0x10));
                 l.push((g.next() >> 32) as u32);
             }
+            19 if ring => {
+                // The ring's recording flag, and its flush to point RAM.
+                if g.chance(50) {
+                    l.push(command(g, 0x1a));
+                    l.push(g.below(3));
+                } else {
+                    l.push(command(g, 0x1c));
+                    l.push(0x80_0000 | g.below(0x1_0000));
+                }
+            }
             _ => l.push(command(g, 0)),
         }
     }
@@ -392,9 +405,10 @@ pub fn fuzz(roms: &RomSet, frames: u64, seed: u64) -> Result<(), String> {
     if e.native.is_none() {
         return Err("no native implementation of this program".into());
     }
+    let ring = e.native.as_ref().is_some_and(|n| n.program == model2::geo_native::Program::Lastbrnx);
     let mut g = Gen(seed.max(1));
     for _ in 0..frames {
-        let words = list(&mut g, rom_words);
+        let words = list(&mut g, rom_words, ring);
         let mut buffer = vec![0u8; 0x2_0000];
         for (k, w) in words.iter().take(buffer.len() / 4).enumerate() {
             buffer[4 * k..4 * k + 4].copy_from_slice(&w.to_le_bytes());

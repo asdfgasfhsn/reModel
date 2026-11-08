@@ -1,6 +1,6 @@
 # The 2B geometrizer program, and a native implementation of it
 
-Status: 2026-11-08. What the display-list program that most Model 2B
+Status: 2026-11-09. What the display-list program that most Model 2B
 games upload to their geometrizer SHARC does, worked out from its
 behaviour and its disassembly (`make sharc-disasm
 FILE=out/overrevb/sharc-geo.bin`), and how reModel implements it natively
@@ -30,9 +30,11 @@ the program's crate by (`docs/recompiler.md`), so `sharc_<hash>` in
 | `15393321f266b9cf` | `overrevb`, `sgt24h`, `dynabb97`, `doa`, `schamp` (2,987 words of code; the uploads differ only past `0x20C30`, and `schamp`'s upload is shorter) | `Program::Shared2B` |
 | `1ee99ebc8a458237` | `indy500`, `fvipers` (an earlier version: see "The earlier version" below) | `Program::Indy500` |
 | `9b6fb0e1100bf66e` | `vstriker` (earlier still, 2,910 words of code: see "The earliest version" below) | `Program::Vstriker` |
+| `90822719cbee82cd` | `lastbrnx` (3,312 words of code: the shared program with three commands added, see "Last Bronx's program" below) | `Program::Lastbrnx`, except its fn 0x1B |
 
 For any other program (none is known on 2B) `--geo native` runs the
-SHARC.
+SHARC. So does it for `lastbrnx`'s fn 0x1B, the one command not implemented
+(below): the native geometrizer stops there like it does at fn 0x1D.
 
 ## Render-only
 
@@ -355,6 +357,58 @@ in either mode ends with the uninterrupted run's hash (for `vstriker`
 too, recompiled: saved natively and resumed on the SHARC, and the
 reverse).
 
+## Last Bronx's program
+
+*Confirmed* from its disassembly, then by `make geo-check GAME=lastbrnx`
+and the fuzzer. `lastbrnx` (3,442 words uploaded, 3,312 reached as code)
+uploads the shared program (`15393321f266b9cf`) with 325 words added.
+Aligned with `schamp`'s upload word by word, everything is the same except:
+
+- the start-up code writes eight more words of data memory, after the 32
+  command entries: `0x30100` three times, `0x80C000` four times and 0 to
+  `0x30050-0x30057` (nine more words of code with the `I0 = 0x30050`
+  that points at them), which shifts every address after it by 9: the 133
+  other one-word differences are all jump distances and absolute targets
+  that moved (compared with the distances normalised, nothing else
+  differs);
+- three entries of the command table (the other 29 are as in the shared
+  program): fn 0x1A, 0x1B and 0x1C, which the shared program aliases to
+  0x0A-0x0C (light, matrix, translation), are routines of its own, and the
+  code past the shared program's end (`0x20C35` on) is theirs. The code
+  upload (0x1D) and code call (0x1E) are the shared program's, in code
+  that now sits where its scratch area was (`0x20C00`), so fn 0x1D would
+  overwrite the new commands; the game doesn't send it.
+
+What they do: a *ring of 16-bit texture points*, in data memory from
+`0x30100` (the "fast" polygon RAM's place) with its state in
+`0x30050-0x30057`: DM[0x50] the ring's base, DM[0x51] the read pointer
+(a word address), DM[0x52] the write pointer, DM[0x53-0x56] the start and
+end of what is queued in texture point RAM terms (their address, from
+`0x80C000`: bit 23 set is point RAM, `geometrizer.md` §2.1), DM[0x57] a
+recording flag.
+
+| fn | Operands | What it does (*confirmed* by the SHARC and the native code agreeing) |
+|---|---|---|
+| 0x1A | flag | DM[0x57] = flag. With flag set and the old flag clear: DM[0x56] = DM[0x55] (end = start); with flag 0: read pointer = base, DM[0x54] = DM[0x53]. Nothing is sent |
+| 0x1C | an address | Sends what the ring holds as one memory write for the rasteriser: command 4 (`0xFF000004`), DM[0x54]'s old value, a count n = (DM[0x56] - DM[0x54]) rounded down to even, then n 16-bit values read as short words from `2 * DM[0x51]` (the low half of each 32-bit ring word first); then the ring restarts: DM[0x53-0x56] = the operand, read and write pointers = base, flag 0. With nothing queued (n = 0) it only restarts the ring. The operand the game sends is `0x80C000`, once at the end of every frame's list |
+| 0x1B | `R15, R0, R1, R13` and polygon memory | Not implemented natively. It transforms a polygon's vertices through the current matrix into 16-bit (x, y) texture points (fixed point, 9 fraction bits) which it appends to the ring (from DM[0x52]), and then continues into the object code with a polygon block of raster command 1 for them. Its code is the largest of the three (about 170 words). No run of the game sends it |
+
+The rasteriser's cmd 4 write (`apply_raster_writes`) already puts those
+values in texture point RAM. *Unconfirmed* what the points are for: the
+operand `0x80C000` and 0x1B's transform suggest dynamic texture
+coordinates (an effect or a trail), which the 0x1B routine would produce;
+the i960 doesn't send any in the runs seen, so the ring is empty and 0x1A
+and 0x1C change state and emit nothing.
+
+**Check.** `make geo-check GAME=lastbrnx` over a 4,101-frame coin-start run
+(108.7M raster words): 0 frames differ, 0 read the list differently, 0 end
+with other state; the SHARC interpreted took 21.4 ms a frame (worst 37.8),
+native 1.20 ms (worst 4.5), 17.8x. `geo-fuzz` (its lists use 0x0A-0x0C for
+the matrix and leave 0x1B out for this program, and add random 0x1A and
+0x1C) over 4,300 frames of 5 seeds: no difference. The emitting branch of
+0x1C needs a ring only 0x1B fills, so only a unit test covers it
+(`ring_flag_and_flush`).
+
 ## Speed
 
 Per-frame geometrizer time on the worker thread, native build (`make
@@ -383,8 +437,9 @@ build is a heavy one); that it keeps its lead there is *unconfirmed*.
 
 ## Next steps (scoping)
 
-**Model 2B: done.** The three native programs cover every 2B game
-reModel runs. Another 2B game with a new geometrizer program would run on
+**Model 2B: done, with one command missing.** The four native programs
+cover every 2B game reModel runs, all but `lastbrnx`'s fn 0x1B (above), which
+no run sends. Another 2B game with a new geometrizer program would run on
 the SHARC; `make geo-check GAME=...` says so ("no native implementation").
 
 **Model 2C: done.** The four TGP programs the 2C games upload are
