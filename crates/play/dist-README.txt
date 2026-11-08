@@ -23,11 +23,13 @@ the ROM folder:
 
     ~/.local/share/remodel/roms     ($XDG_DATA_HOME/remodel/roms)
 
-or start the player, and in the menu type another folder under "ROM
-folder" and press Scan. With no supported set found the player opens in
-the menu. `remodel-play --rom DIR` sets the folder from the command line.
+or start the player: with no supported set found, its start screen says
+where it looked, and another folder can be typed in there (Scan).
+`remodel-play --rom DIR` sets the folder from the command line.
 
-    ./remodel-play            play the last game (or open the menu)
+    ./remodel-play            the start screen: choose a game (arrows or
+                              d-pad, Enter or A plays, Tab or Y settings)
+    ./remodel-play --game ID  straight into a game
     ./remodel-play --help     all options
 
 Keys
@@ -110,7 +112,8 @@ a credit):
     V, B         view in, view out
 
 All games:
-    Esc          menu (pauses): save slots, sound mix, display, game
+    Esc          menu (pauses): save slots, sound mix, display, back to
+                 the games
     F5, F9       quick save, quick load
     F11          fullscreen
 

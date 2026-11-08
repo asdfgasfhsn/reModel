@@ -5,8 +5,10 @@ builds and runs `remodel-play`: the game in a window, rendered on the GPU
 (`docs/gpu.md`), with both sound boards running live. `remodel-play --help`
 lists its options.
 
-At startup the reModel logo shows for 1.5 s, then fades out over 0.5 s
-while the game boots underneath (or the menu, with no game to start). Any
+With no game given (`make play`, or `remodel-play` alone) it opens the
+launcher (below); `--game ID` (`make play GAME=ID`) starts that game
+straight away. At startup the reModel logo shows for 1.5 s, then fades out
+over 0.5 s over the launcher (or the game booting underneath). Any
 key, click or gamepad button skips it; `--no-splash` leaves it out. The
 logo (`assets/reModel-logo-1086.png`, half the size of the original) is
 built into the binary and decoded with `remodel-png`.
@@ -18,12 +20,14 @@ the 2C TGP), where it implements that program (every 2B and 2C game so
 far); the stream it draws is the same, word for word, and it takes under
 a tenth of the interpreted chip's time (a quarter of the recompiled SHARC's,
 a twentieth of the recompiled TGP's), so 2B games race at full speed
-without recompiled code. `--geo chip` (or `sharc`, `tgp`) runs the game's
-own program instead, for this run only. The `remodel` CLI keeps the chip
+without recompiled code. The Geometrizer setting (or `--geo chip`, also
+`sharc` or `tgp`, for one run) runs the game's own program instead; it
+applies when the game starts. The `remodel` CLI keeps the chip
 as its default, since its oracles (`lockstep`, `geo-check`) test that
 program.
 
-**Smooth motion** (`--smooth`, this run only; off by default). On a
+**Smooth motion** (a setting, below; `--smooth` for one run; off by
+default). On a
 display faster than the game's 57.5 Hz, the refreshes between two game
 frames show the 3D geometry part way from the frame before to the newest
 one, by the time since the newest was first shown, instead of repeating
@@ -46,6 +50,88 @@ itself: it builds and the in-betweens it draws are the ones checked with
 At 60 Hz (one game frame per refresh) there is nothing to draw between,
 and none are drawn below 69 Hz or when the game is behind (paced by the
 clock).
+
+## The launcher
+
+The start screen, when no game is given, and from the menu's "Back to
+games". The games found in the ROM folder are a row of cards along the
+bottom (each game's poster, `assets/posters`, and title), grouped under
+headings: the recently played first, then each board (Model 2B, 2C); the
+groups are also tabs along the top. The selected card's game fills the
+rest: its live attract mode on the left, in the window's shape (what the
+game will look like, bezel included with 4:3), and on the right its board,
+year, title, set name, controls (the manifest's default keys) and buttons:
+Play, or Continue and New game when it was left part way, and Settings.
+Behind everything a neon wireframe grid floor scrolls slowly towards a
+horizon of wireframe mountains (a shader, `crates/play/src/backdrop.wgsl`,
+in the logo's black, cyan and blue), with the selected game's bezel art
+faded in over it. The row slides to keep the selected card in view and
+scales it up; at the ends it stops at the margins. Everything is laid out
+on a 1600x900 design scaled to the window (on top of the display's own
+scaling), so it reads the same at 1080p, a 3440x1440 ultrawide and 4K.
+
+| | Keyboard | Gamepad | Mouse |
+|---|---|---|---|
+| choose a game | Left, Right | d-pad, left stick (repeat while held) | click a card, wheel |
+| choose a button | Up, Down | d-pad, stick | |
+| play (the button chosen) | Enter, Space | A, Start | click the button, or the selected card |
+| settings | Tab | Y | Settings |
+| previous, next group | Page Up, Page Down | shoulder buttons | the tabs |
+| back (close the settings) | Esc, Backspace | B, Back | |
+
+F11 toggles fullscreen, as in a game. *Unconfirmed:* the gamepad
+navigation is tested with synthetic events only, not yet with a pad.
+
+**Live previews.** Once a card has been selected for half a second, its
+game starts in the background and its attract mode shows in place of the
+poster, fading in, its sound fading in 9 dB under the game's mix. It starts
+from a save state at the manifest's `attract_frame` (the frame `remodel
+shot` takes for the browser's game list), so it's live almost at once:
+the chips and the state load on a thread of their own, then the machine is
+built and the state loaded on the main thread (about 100 ms, the one
+pause). The state is made the first time a game is previewed, by running
+it headless from power-on to that frame with its sound boards and a fresh
+EEPROM (never the player's), while the card shows the poster and how far
+it has got; it's kept as `<data dir>/<set>/preview-native.save` (or
+`preview-chip.save` with the chip geometrizer), in the save state format,
+and made again if it no longer loads. Making it takes as long as running
+the game that far as fast as it goes: on an interpreted build about 15 s
+for `doa` (2,000 frames); on the recompiled build a few seconds. One state
+is made at a time, and it carries on if the selection moves to a game
+whose state is ready; selecting another game that needs one stops it. Only
+one preview runs: moving on fades it out over 0.2 s and drops it. A game
+that can't start (chips missing from the ROM folder) keeps its poster and
+says why. The preview never takes input, never saves its EEPROM, and is
+emulated like the game would be (it costs what the game costs).
+
+**Settings** slide out from the right over the preview, which shows what
+they change as they change: aspect (fit the window or 4:3), bezel, HUD at
+the edges or centred, speed (one frame a refresh or exact arcade speed),
+smooth motion, the effects and music levels in dB, the geometrizer (native
+or the game's chip; the preview restarts on it) and the Controls page
+(remapping, below). "Save for" says where changes go: the defaults for all
+games, or this game only (a game's own setting is tagged "this game", and
+"Use the settings for all games" forgets them). The same settings are in
+the Esc menu while playing. They come in layers, lowest first, as in the
+browser build: the built-in defaults, the defaults for all games, the
+game's own, then the command line (`--mix`, `--hud`, `--aspect`, `--bezel`,
+`--exact`, `--smooth`, `--geo`), which applies to that run only and is
+never saved, unless a setting it gave is changed in the launcher or menu
+(that change is then kept as any other). A layer keeps only what it sets.
+
+**Continue.** Leaving a game (quitting, "Back to games", or starting
+another) keeps a resume state, `<data dir>/<set>/saves/resume.save` (the
+F5/F9 save format, sound boards included), unless it was a scripted
+`--input` run. Its card then offers Continue (with how long ago) beside New
+game, which starts from power-on as before; the state is replaced the next
+time the game is left.
+
+`--shot FILE --seconds N` draws the launcher too when it's what shows, and
+`--nav` scripts its input for that (`--nav next@1,settings@2,right@3`:
+the Nav name and the second it's given), e.g.
+`remodel-play --no-sound --seconds 6 --shot-size 3840x2160@2 --nav settings@3 --shot out/launcher.png`.
+It's drawn with egui (`crates/play/src/launcher.rs`), its layout and
+navigation tested headless (`cargo test -p remodel-play`).
 
 ## Keys
 
@@ -338,7 +424,9 @@ CALIBRATION in the test menu changes that.
   default 8:-8 was set by ear (`docs/hw/sound.md`).
 - **Display**: the aspect (fit the window, the default, drawing the game
   wider than its frame from 4:3 to 32:9; or 4:3, `--aspect 4:3`), the
-  bezel (below), where the HUD goes on wide windows, and exact arcade speed
+  bezel (below), where the HUD goes on wide windows, smooth motion, the
+  geometrizer (on the next start), "Save changes for" this game or all
+  games (as in the launcher), and exact arcade speed
   (57.524 frames per second) against the default of one game frame per
   display refresh at 60 or 120 Hz, which is 4.3% fast but smooth.
   **Below full speed** (a game frame taking longer than a refresh, as
@@ -365,14 +453,16 @@ CALIBRATION in the test menu changes that.
   underruns.
 - **Controls** (the button beside Resume): remap the game's keys and
   gamepad bindings, below.
-- **Game**: the ROM folder and the supported sets found in it. Sets are
-  read as MAME keeps them: `<set>.zip` or a `<set>/` folder, and a
-  supported clone is listed after its parent when its chips are in the
-  parent's (`overrevb` in `overrev.zip`). With no ROM
-  folder set up, or the last game missing, the player starts in the menu.
-  The ROM folder defaults to `rom/` in the source tree (or wherever the
-  current directory has a `rom/` folder), else to `roms/` beside the
-  settings (`~/.local/share/remodel/roms`), created on first run.
+- **Back to games**: leave the game for the launcher (keeping a resume
+  state for Continue). The launcher lists the supported sets in the ROM
+  folder, read as MAME keeps them: `<set>.zip` or a `<set>/` folder, and a
+  supported clone is listed beside its parent when its chips are in the
+  parent's (`overrevb` in `overrev.zip`). With none found, it says where
+  it looked and a ROM folder can be typed in. The ROM folder defaults to
+  `rom/` in the source tree (or wherever the current directory has a
+  `rom/` folder), else to `roms/` beside the settings
+  (`~/.local/share/remodel/roms`), created on first run; `--rom` changes
+  it (and is remembered).
 
 ## Remapping
 
@@ -409,12 +499,6 @@ the same code and keeps the same text in its settings. Scripted `--input`
 ignores bindings: it names the cabinet's inputs, so runs, oracles and
 state hashes don't change.
 
-Later, the browser build's game list (`docs/web.md`: a card per game with
-an attract mode screenshot, its year and controls, grouped by board) could
-become the player's start screen in place of the Game page of the menu.
-The cards come from `remodel web-index` and `remodel shot`, which work from
-the manifests alone.
-
 ## Bezels
 
 With the 4:3 aspect in a wider window, the game's bezel fills the sides:
@@ -439,11 +523,17 @@ Run from the reModel source tree (an `out/` directory in the current
 directory), the player keeps its files in `out/`; anywhere else in
 `$XDG_DATA_HOME/remodel` (normally `~/.local/share/remodel`):
 
-- `play-settings.txt`: the settings, as `key = value` lines. Options given
-  on the command line are remembered too; `--game` once that game starts.
+- `play-settings.txt`: the settings, as `key = value` lines: the ROM
+  folder, the games played (most recent first), fullscreen, where the
+  settings panels save, and the game settings set for all games.
+- `<set>/settings.txt`: the game's own settings, only where they differ
+  from those for all games.
 - `<set>/eeprom.bin`: the game's EEPROM (settings, records), written on quit or on switching games.
 - `<set>/saves/quick.save`, `slot1.save` ...: save states, zlib-compressed,
   about 1.2 MB each. They only load into the same program ROMs.
+  `resume.save` is the one Continue loads.
+- `<set>/preview-native.save` (`-chip` with the chip geometrizer): the
+  launcher's attract mode preview state.
 
 ## A copy to hand out
 
@@ -461,4 +551,4 @@ refuses `RECOMP=1`.
 
 Unpacked anywhere outside the source tree, it keeps its files in
 `$XDG_DATA_HOME/remodel` and looks for sets in `roms/` there; with none
-found it opens in the menu, where another ROM folder can be typed in.
+found it opens the launcher, where another ROM folder can be typed in.
