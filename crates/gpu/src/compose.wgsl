@@ -9,7 +9,8 @@ struct Params {
     pad: f32,
     has_3d: u32,
     ext_w: u32,
-    _a: u32,
+    // Columns the base layer has beyond the frame at each side.
+    side: u32,
     // Top-left of the frame in the target (letterboxing), in pixels.
     origin: vec2f,
     backdrop: vec4f,
@@ -37,10 +38,10 @@ fn fs(@builtin(position) frag: vec4f) -> @location(0) vec4f {
         return vec4f(0.0, 0.0, 0.0, 1.0);
     }
     let ex = pos.x / pr.scale.x;
-    let gx = ex - pr.pad;
+    let bx = i32(floor(ex - pr.pad)) + i32(pr.side);
     var c = vec3f(0.0);
-    if gx >= 0.0 && i32(gx) < 496 {
-        c = textureLoad(base, vec2i(i32(gx), gy), 0).rgb;
+    if bx >= 0 && bx < 496 + 2 * i32(pr.side) {
+        c = textureLoad(base, vec2i(bx, gy), 0).rgb;
     } else if pr.has_3d != 0u {
         c = pr.backdrop.rgb;
     }

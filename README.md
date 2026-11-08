@@ -1197,6 +1197,18 @@ model as it is, once the i960 returns keep PFP's address bits 4 and 5
   (untextured) black polygons, header `00C0 0000 0000 0000` (palette
   entry 0), checker bit clear, so they draw solid black, as sent.
   *Unconfirmed:* how they look on the hardware.
+- *Confirmed (from tile RAM; enhancement):* the stage skies (sunset,
+  clouds) are tiles on plane B (map 2), not 3D, so wide views first
+  drew them only across the original 4:3 frame. The map is a 512-pixel
+  panorama the game pans with the camera, streaming new columns in
+  ahead of the scroll (a seam moves across it), and holds a constant
+  vertical scroll (`0x40`). Wide views now carry scrolled plane-B rows
+  on past the frame's edges, round the map, which fills the sides; the
+  sky repeats beyond the 16 columns the game keeps off screen
+  (`model2::video` `widen_base`). The same fills fvipers', dynabb97's,
+  vstriker's and bel's skies and waverunr's water. Unscrolled rows are
+  left alone: on select screens (topskatr, skisuprg, segawski, overrev)
+  plane B is a page laid out for the frame and would repeat its titles.
 
 ## What's known about `indy500`
 

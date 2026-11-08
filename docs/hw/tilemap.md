@@ -227,6 +227,12 @@ If the game has not filled column 0x40 yet, fall back to pal5bit xBGR555.
 With zero scroll, tile column c and row r land at screen (8c, 8r). The visible area
 shows 62 × 48 tiles; columns 62–63 and rows 48–63 are off-screen.
 
+reModel's wide views (an enhancement) extend plane B past the frame's
+sides, round the 512-pixel map, on rows where its map is scrolled and
+3D is on screen; unscrolled rows and plane A stop at the frame. Games
+that pan a backdrop on plane B (doa's skies) scroll it, while select
+screens that lay out a page on it don't (README, `doa`).
+
 ---
 
 ## Biggest uncertainties

@@ -467,11 +467,11 @@ impl Renderer {
         let layer3d = self.kept_texture("3d layer", w, h, usage);
         let layer3d_view = layer3d.create_view(&Default::default());
         self.encode_3d(enc, polys, placed, src, view, &layer3d_view);
-        let base = self.upload("base", &layers.base, WIDTH as u32, HEIGHT as u32);
+        let base = self.upload("base", &layers.base, (WIDTH + 2 * layers.side) as u32, HEIGHT as u32);
         let hud = self.upload("hud", &layers.hud, layers.ext_w as u32, HEIGHT as u32);
         let b = layers.backdrop.map(|c| c as f32 / 255.0);
         let mut params = le([view.sx, view.sy, view.pad].map(f32::to_le_bytes));
-        params.extend(le([!placed.is_empty() as u32, layers.ext_w as u32, 0].map(u32::to_le_bytes)));
+        params.extend(le([!placed.is_empty() as u32, layers.ext_w as u32, layers.side as u32].map(u32::to_le_bytes)));
         params.extend(le([origin.0 as f32, origin.1 as f32].map(f32::to_le_bytes)));
         params.extend(le([b[0], b[1], b[2], 1.0].map(f32::to_le_bytes)));
         let params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

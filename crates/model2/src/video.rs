@@ -180,6 +180,12 @@ impl View {
         }
     }
 
+    /// Whole game pixels covering `pad`: the columns the base layer gains
+    /// at each side.
+    pub fn side(&self) -> usize {
+        self.pad.ceil() as usize
+    }
+
     /// Game-space x of the left edge of the output (negative when widened).
     pub fn x_min(&self) -> f32 {
         -self.pad
@@ -332,11 +338,14 @@ fn place_hud(hud: &[Option<[u8; 3]>], shift: &[usize], view: &View) -> (Vec<Opti
 /// The 2D layers of a frame for a compositor that blends them with the 3D
 /// layer itself (the GPU): output pixel (ox, oy) is at game row
 /// `(oy + 0.5) / sy` and extended column `ex = (ox + 0.5) / sx`; the base
-/// layer is at `ex - pad` (outside it: `backdrop` when there is 3D, else
-/// black), then the 3D layer where drawn, then the HUD at `ex` where opaque.
+/// layer is at `ex - pad`, `side` columns into it (outside it: `backdrop`
+/// when there is 3D, else black), then the 3D layer where drawn, then the
+/// HUD at `ex` where opaque.
 pub struct Layers2d {
-    /// WIDTH x HEIGHT RGBA (alpha 255).
+    /// `WIDTH + 2 * side` x HEIGHT RGBA (alpha 255): the game's frame with
+    /// `side` columns added at each side (see `widen_base`).
     pub base: Vec<u8>,
+    pub side: usize,
     /// `ext_w` x HEIGHT RGBA, alpha 0 where transparent.
     pub hud: Vec<u8>,
     pub ext_w: usize,
@@ -437,6 +446,50 @@ fn tile_planes_fast(tiles: &[u8], palette: &[u8]) -> (Vec<[u8; 3]>, Vec<Option<[
     (base, hud)
 }
 
+/// `base` (WIDTH x HEIGHT) widened by `side` game pixels at each side, for
+/// wide views. With 3D on screen, rows where plane B's map is scrolled
+/// carry its low-priority tiles on past the frame's edges, round the
+/// 512-pixel map as scrolling would: games that pan a backdrop there keep
+/// it a whole map wide (doa's skies stream new columns in ahead of the
+/// scroll), so the first 16 columns beyond the frame are the game's own
+/// and the rest repeat the map. Unscrolled rows don't: there plane B is a
+/// page laid out for the frame (select screens' titles and text), which
+/// would repeat at the sides. Every 3D backdrop seen on plane B (doa,
+/// fvipers, dynabb97, vstriker, waverunr, skisuprg) has a non-zero
+/// vertical scroll, so it doesn't flicker as it pans past zero. Which map
+/// covers a side pixel (window mask, split) is taken from the frame's
+/// nearest column. Elsewhere the sides are the backdrop, or black on a 2D
+/// screen (pillarboxed).
+fn widen_base(tiles: &[u8], palette: &[u8], base: &[[u8; 3]], side: usize, has_3d: bool) -> Vec<[u8; 3]> {
+    let w = WIDTH + 2 * side;
+    let backdrop = rgb(rd16(palette, 0));
+    let mut out = vec![if has_3d { backdrop } else { [0; 3] }; w * HEIGHT];
+    for y in 0..HEIGHT {
+        out[y * w + side..y * w + side + WIDTH].copy_from_slice(&base[y * WIDTH..(y + 1) * WIDTH]);
+        if !has_3d {
+            continue;
+        }
+        for (range, edge) in [(0..side, 0), (side + WIDTH..w, WIDTH - 1)] {
+            let (map, scroll) = map_for(tiles, 1, edge, y);
+            let (h, v) =
+                (hscroll(tiles, scroll, y) as usize & 0x1ff, rd16(tiles, VSCROLL + 2 * scroll) as usize & 0x1ff);
+            if (h, v) == (0, 0) || rd16(tiles, VSCROLL + 2 * map) & 0x8000 != 0 {
+                continue;
+            }
+            let my = (y + v) & 511;
+            for i in range {
+                let mx = (i + 1024 - side - h) & 511;
+                let entry = rd16(tiles, map * 0x2000 + ((my / 8) * 64 + mx / 8) * 2) as usize;
+                if entry & 0x8000 == 0 {
+                    let p = pen(tiles, entry, my & 7, mx & 7) as usize;
+                    out[y * w + i] = rgb(rd16(palette, ((((entry & 0x7f80) >> 3) | p) & 0xfff) * 2));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Pixels where the fast 2D layer path differs from the reference one
 /// (`remodel gpu-check` runs this over captured frames).
 #[doc(hidden)]
@@ -452,8 +505,11 @@ pub fn layers_2d(tiles: &[u8], palette: &[u8], view: &View, has_3d: bool) -> Lay
     let (base, hud) = tile_planes_fast(tiles, palette);
     let shift = hud_shifts(&hud, view, has_3d);
     let (hud_ext, ext_w) = place_hud(&hud, &shift, view);
+    let side = view.side();
+    let base = widen_base(tiles, palette, &base, side, has_3d);
     Layers2d {
         base: base.iter().flat_map(|c| [c[0], c[1], c[2], 255]).collect(),
+        side,
         hud: hud_ext.iter().flat_map(|c| c.map_or([0; 4], |c| [c[0], c[1], c[2], 255])).collect(),
         ext_w,
         backdrop: rgb(rd16(palette, 0)),
@@ -479,10 +535,13 @@ fn compose_impl(
     let shift = hud_shifts(&hud, view, has_3d);
     let (hud_ext, ext_w) = place_hud(&hud, &shift, view);
 
+    let side = view.side();
+    let wide = widen_base(tiles, palette, &base, side, has_3d);
     if let Some(hooks) = hooks {
-        let tl = TileLayers { tiles, palette, backdrop, hits, reps: Vec::new() };
+        let tl = TileLayers { tiles, palette, backdrop, hits, reps: Vec::new(), wide, side };
         return tl.output(hooks, layer3d, view, &hud, &shift, has_3d);
     }
+    let wide_w = WIDTH + 2 * side;
 
     let mut out = vec![0u8; view.width * view.height * 3];
     for oy in 0..view.height {
@@ -493,9 +552,9 @@ fn compose_impl(
         for ox in 0..view.width {
             let o = oy * view.width + ox;
             let ex = (ox as f32 + 0.5) / view.sx;
-            let gx = ex - view.pad;
-            let mut c = if gx >= 0.0 && (gx as usize) < WIDTH {
-                base[gy * WIDTH + gx as usize]
+            let bx = (ex - view.pad).floor() as isize + side as isize;
+            let mut c = if (0..wide_w as isize).contains(&bx) {
+                wide[gy * wide_w + bx as usize]
             } else if has_3d {
                 backdrop
             } else {
@@ -522,6 +581,10 @@ struct TileLayers<'a> {
     backdrop: [u8; 3],
     hits: Vec<[Option<Hit>; 2]>,
     reps: Vec<Arc<Rgba>>,
+    /// The base layer with `side` columns added at each side
+    /// (`widen_base`); the sides draw from it unreplaced.
+    wide: Vec<[u8; 3]>,
+    side: usize,
 }
 
 impl TileLayers<'_> {
@@ -603,6 +666,8 @@ impl TileLayers<'_> {
         shift: &[usize],
         has_3d: bool,
     ) -> Vec<u8> {
+        let side = self.side;
+        let wide_w = WIDTH + 2 * side;
         self.resolve(hooks);
         // Extended HUD layer: the source game x of each placed pixel. Pen-0
         // pixels are kept too (a replacement may cover them) unless a
@@ -632,8 +697,12 @@ impl TileLayers<'_> {
                 let o = oy * view.width + ox;
                 let ex = (ox as f32 + 0.5) / view.sx;
                 let gx = ex - view.pad;
+                let bx = gx.floor() as isize + side as isize;
                 let mut c = if gx >= 0.0 && (gx as usize) < WIDTH {
                     self.base(gx as usize, gy, gx - gx.floor(), fy)
+                } else if (0..wide_w as isize).contains(&bx) {
+                    // The sides: original tile patterns only.
+                    self.wide[gy * wide_w + bx as usize]
                 } else if has_3d {
                     self.backdrop
                 } else {
@@ -818,6 +887,51 @@ mod tests {
         assert_eq!(at(16), Some(2));
         assert_eq!(at(23), Some(2));
         assert_eq!(at(24), None);
+    }
+
+    #[test]
+    fn wide_sides_carry_on_a_scrolled_back_plane() {
+        let mut tiles = vec![0u8; 0x10_0000];
+        let put = |t: &mut [u8], off: usize, v: u16| t[off..off + 2].copy_from_slice(&v.to_le_bytes());
+        // Plane B (map 2, window mask clear) is tile 1 (pen 1) everywhere
+        // except map columns 62-63, tile 2 (pen 2): the 16 pixels past the
+        // frame's right edge when unscrolled. Plane A is disabled.
+        put(&mut tiles, VSCROLL, 0x8000);
+        put(&mut tiles, VSCROLL + 2, 0x8000);
+        for cell in 0..64 * 64 {
+            put(&mut tiles, 2 * 0x2000 + cell * 2, if cell % 64 >= 62 { 2 } else { 1 });
+        }
+        tiles[CHAR_BASE + 32..CHAR_BASE + 64].fill(0x11);
+        tiles[CHAR_BASE + 64..CHAR_BASE + 96].fill(0x22);
+        let mut palette = vec![0u8; 0x2_0000];
+        palette[0..2].copy_from_slice(&0x7c00u16.to_le_bytes()); // backdrop: blue
+        palette[2..4].copy_from_slice(&0x001fu16.to_le_bytes()); // pen 1: red
+        palette[4..6].copy_from_slice(&0x03e0u16.to_le_bytes()); // pen 2: green
+        let (blue, red, green) = ([0, 0, 255], [255, 0, 0], [0, 255, 0]);
+        let side = 40;
+        let w = WIDTH + 2 * side;
+        let widen = |tiles: &[u8], has_3d| {
+            let (base, _) = tile_planes_fast(tiles, &palette);
+            widen_base(tiles, &palette, &base, side, has_3d)
+        };
+        // Unscrolled: a page laid out for the frame; the sides stay backdrop.
+        let out = widen(&tiles, true);
+        assert_eq!(out[side], red);
+        assert_eq!((out[0], out[w - 1]), (blue, blue));
+        // Scrolled down a line: the sides carry on round the map. Right of
+        // the frame, columns 62-63 then column 0 again; left of it, the
+        // same columns going back, then 61.
+        put(&mut tiles, VSCROLL + 4, 1);
+        let out = widen(&tiles, true);
+        assert_eq!(out[side + WIDTH], green);
+        assert_eq!(out[side + WIDTH + 15], green);
+        assert_eq!(out[side + WIDTH + 16], red);
+        assert_eq!(out[side - 1], green);
+        assert_eq!(out[side - 16], green);
+        assert_eq!(out[side - 17], red);
+        // A 2D screen: pillarboxed.
+        let out = widen(&tiles, false);
+        assert_eq!((out[0], out[w - 1], out[side]), ([0; 3], [0; 3], red));
     }
 
     #[test]
