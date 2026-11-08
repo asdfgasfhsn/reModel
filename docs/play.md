@@ -95,8 +95,8 @@ EEPROM (never the player's), while the card shows the poster and how far
 it has got; it's kept as `<data dir>/<set>/preview-native.save` (or
 `preview-chip.save` with the chip geometrizer), in the save state format,
 and made again if it no longer loads. Making it takes as long as running
-the game that far as fast as it goes: on an interpreted build about 15 s
-for `doa` (2,000 frames); on the recompiled build a few seconds. One state
+the game that far as fast as it goes: recompiled, 2-4 s for `stcc`, `sgt24h`
+and `topskatr`, 12 s for `hotd`, 19 s for `fvipers`; interpreted, 12 s for `topskatr` and 15 s for `doa`. Once cached, a preview shows about 0.6 s after its card is selected (the half second, 20-40 ms loading, 75-115 ms starting). One state
 is made at a time, and it carries on if the selection moves to a game
 whose state is ready; selecting another game that needs one stops it. Only
 one preview runs: moving on fades it out over 0.2 s and drops it. A game
