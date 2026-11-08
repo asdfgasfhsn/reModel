@@ -211,6 +211,13 @@ impl Renderer {
         self.versions = Some((render, palette));
     }
 
+    /// Forget the game memory uploaded, so the next frame uploads it whole:
+    /// for another machine, whose RAM versions say nothing about what the
+    /// last one's buffers hold.
+    pub fn forget_ram(&mut self) {
+        self.ram = [None, None];
+    }
+
     /// A storage buffer holding `data` (game memory slot 0: render RAM,
     /// 1: palette RAM), uploaded only if `version` changed.
     fn ram_buffer(&mut self, slot: usize, data: &[u8], version: Option<u64>) -> wgpu::Buffer {

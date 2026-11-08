@@ -1,8 +1,9 @@
 //! The in-game menu (Esc) and short notices, drawn with egui over the game.
-//! Its Controls page remaps the game's keys and gamepad bindings
-//! (`romset::bindings`): click a binding, then press what should replace it.
+//! Its Controls page (also the launcher's) remaps the game's keys and
+//! gamepad bindings (`romset::bindings`): click a binding, then press what
+//! should replace it.
 
-use crate::settings::Settings;
+use crate::settings::GameSettings;
 use romset::bindings::{Accepts, Bindings, Slot, Value};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -13,10 +14,8 @@ pub enum Action {
     Resume,
     Save(u8),
     Load(u8),
-    /// Switch to the game with this set name.
-    Game(String),
-    /// Look for games in the ROM folder in the settings again.
-    Rescan,
+    /// Leave the game for the launcher.
+    Games,
     /// The game's bindings changed (save them).
     Bindings,
     Quit,
@@ -26,8 +25,6 @@ pub enum Action {
 pub struct Menu {
     pub open: bool,
     notice: Option<(String, Instant)>,
-    /// The ROM folder being edited.
-    pub rom_text: String,
     /// On the Controls page.
     pub controls: bool,
     /// Waiting for a key, button or stick to bind into a slot: in place of
@@ -37,14 +34,17 @@ pub struct Menu {
     show_unbound: bool,
 }
 
+/// Player-wide settings the menu changes besides the game's.
+pub struct Prefs<'a> {
+    pub fullscreen: &'a mut bool,
+    /// Changes are kept for all games (else for the one playing).
+    pub for_all: &'a mut bool,
+}
+
 /// What the menu shows besides the settings.
 pub struct View<'a> {
     /// Title of the game running, if any.
     pub playing: Option<&'a str>,
-    /// Playable games in the ROM folder: (set, title).
-    pub games: &'a [(String, &'static str)],
-    /// Sets in the ROM folder reModel doesn't support yet.
-    pub unsupported: usize,
     /// When each slot was saved, if it has been.
     pub slots: &'a [Option<SystemTime>],
 }
@@ -70,31 +70,40 @@ impl Menu {
         self.open || self.notice.as_ref().is_some_and(|n| n.1.elapsed() < Duration::from_millis(2500))
     }
 
+    /// The notice, if one is showing.
+    pub fn notices(&self, ctx: &egui::Context) {
+        if let Some((text, at)) = &self.notice {
+            if at.elapsed() < Duration::from_millis(2500) {
+                egui::Area::new(egui::Id::unique("notice"))
+                    .order(egui::Order::Foreground)
+                    .anchor(egui::Align2::CENTER_TOP, [0.0, 24.0])
+                    .show(ctx, |ui| {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| ui.label(egui::RichText::new(text).size(18.0)));
+                    });
+                ctx.request_repaint();
+            }
+        }
+    }
+
     pub fn ui(
         &mut self,
         ctx: &egui::Context,
-        settings: &mut Settings,
+        settings: &mut GameSettings,
+        prefs: Prefs,
         view: &View,
         bindings: Option<&mut Bindings>,
     ) -> Vec<Action> {
         let mut actions = Vec::new();
-        if let Some((text, at)) = &self.notice {
-            if at.elapsed() < Duration::from_millis(2500) {
-                egui::Area::new(egui::Id::unique("notice")).anchor(egui::Align2::CENTER_TOP, [0.0, 24.0]).show(
-                    ctx,
-                    |ui| {
-                        egui::Frame::popup(ui.style()).show(ui, |ui| ui.label(egui::RichText::new(text).size(18.0)));
-                    },
-                );
-            }
-        }
+        self.notices(ctx);
         if !self.open {
             self.controls = false;
             self.capture = None;
             return actions;
         }
         if let (true, Some(b)) = (self.controls, bindings) {
-            self.controls_page(ctx, b, view.playing.unwrap_or(""), &mut actions);
+            if self.controls_page(ctx, b, view.playing.unwrap_or("")) {
+                actions.push(Action::Bindings);
+            }
             return actions;
         }
         self.controls = false;
@@ -118,7 +127,6 @@ impl Menu {
                     }
                     None => {
                         ui.heading("No game");
-                        ui.label("Choose a ROM folder with a supported set below.");
                     }
                 }
 
@@ -165,41 +173,42 @@ impl Menu {
                     ui.radio_value(&mut settings.hud_edges, false, "centred");
                 });
                 ui.checkbox(&mut settings.exact, "Exact arcade speed (57.5 fps; off: one frame per refresh, smoother)");
-                ui.checkbox(&mut settings.fullscreen, "Fullscreen  (F11)");
+                ui.add_enabled(
+                    !settings.geo_chip,
+                    egui::Checkbox::new(
+                        &mut settings.smooth,
+                        "Smooth motion (in-between frames above 60 Hz, a frame later)",
+                    ),
+                );
+                ui.horizontal(|ui| {
+                    ui.label("Geometrizer:");
+                    ui.radio_value(&mut settings.geo_chip, false, "native");
+                    ui.radio_value(&mut settings.geo_chip, true, "the game's chip");
+                    ui.weak("(on the next start)");
+                });
+                ui.checkbox(prefs.fullscreen, "Fullscreen  (F11)");
+                ui.horizontal(|ui| {
+                    ui.label("Save changes for:");
+                    ui.radio_value(prefs.for_all, false, "this game");
+                    ui.radio_value(prefs.for_all, true, "all games");
+                });
 
                 ui.separator();
-                ui.strong("Game");
                 ui.horizontal(|ui| {
-                    ui.label("ROM folder:");
-                    ui.text_edit_singleline(&mut self.rom_text);
-                    if ui.button("Scan").clicked() {
-                        settings.rom = self.rom_text.trim().into();
-                        actions.push(Action::Rescan);
+                    if ui.button("Back to games").clicked() {
+                        actions.push(Action::Games);
+                    }
+                    if ui.button("Quit").clicked() {
+                        actions.push(Action::Quit);
                     }
                 });
-                if view.games.is_empty() {
-                    ui.label("No supported sets there (MAME zips or folders, e.g. topskatr.zip).");
-                }
-                for (set, title) in view.games {
-                    let current = view.playing.is_some() && *set == settings.game;
-                    if ui.selectable_label(current, format!("{title}  ({set})")).clicked() && !current {
-                        actions.push(Action::Game(set.clone()));
-                    }
-                }
-                if view.unsupported > 0 {
-                    ui.weak(format!("{} other sets found, not supported yet", view.unsupported));
-                }
-
-                ui.separator();
-                if ui.button("Quit").clicked() {
-                    actions.push(Action::Quit);
-                }
             });
         actions
     }
 
-    /// The Controls page: every input with its bindings, to remap.
-    fn controls_page(&mut self, ctx: &egui::Context, b: &mut Bindings, title: &str, actions: &mut Vec<Action>) {
+    /// The Controls page: every input with its bindings, to remap. Returns
+    /// whether they changed (to save them).
+    pub fn controls_page(&mut self, ctx: &egui::Context, b: &mut Bindings, title: &str) -> bool {
         let mut changed = false;
         let max_h = ctx.content_rect().height() * 0.6;
         egui::Window::new("Controls")
@@ -335,8 +344,6 @@ impl Menu {
                     }
                 });
             });
-        if changed {
-            actions.push(Action::Bindings);
-        }
+        changed
     }
 }

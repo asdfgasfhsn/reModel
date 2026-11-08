@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 /// The logo, half the size of `assets/reModel-logo.png`.
-const LOGO: &[u8] = include_bytes!("../../../assets/reModel-logo-1086.png");
+pub const LOGO: &[u8] = include_bytes!("../../../assets/reModel-logo-1086.png");
 /// How long the logo shows, then fades.
 const HOLD: Duration = Duration::from_millis(1500);
 const FADE: Duration = Duration::from_millis(500);

@@ -18,21 +18,29 @@
 //! running dry.
 //!
 //! The logo shows for two seconds at startup, fading out over the game
-//! booting underneath (`splash`). Esc opens the menu (and pauses): save
-//! states, sound mix, display, game and ROM folder. Settings persist (`settings`).
-//! Beside a 4:3 picture in a wider window, the game's bezel (`bezel`).
+//! booting underneath (`splash`). With no game given, the launcher opens
+//! (`launcher`): the games as cards, the selected one's attract mode live
+//! (`preview`) over a wireframe backdrop (`backdrop`), its settings, and
+//! Continue where it was left. Esc opens the menu (and pauses): save
+//! states, sound mix, display, back to the games. Settings persist
+//! (`settings`). Beside a 4:3 picture in a wider window, the game's bezel
+//! (`bezel`).
 
+mod art;
+mod backdrop;
 mod bezel;
 mod controls;
+mod launcher;
 mod menu;
+mod preview;
 mod settings;
 mod sound;
 mod splash;
 
 use gilrs::Gilrs;
-use settings::Settings;
+use settings::{GameSettings, Settings, Source, KEYS};
 use sound::Sound;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -45,7 +53,8 @@ use winit::window::{CursorIcon, Fullscreen, Window, WindowId};
 const USAGE: &str = "\
 usage: remodel-play [options]
 
-  --game ID          set to play (default: the last one played, or topskatr)
+  --game ID          start this set straight away (default: the launcher,
+                     to choose one)
   --rom DIR          ROM folder: MAME sets as zips or folders (default: the
                      last one used; else rom in the reModel source tree,
                      or $XDG_DATA_HOME/remodel/roms anywhere else)
@@ -64,11 +73,11 @@ usage: remodel-play [options]
                      docs/hw/geometrizer-2b.md, geometrizer-2c.md), or the
                      game's program on its chip, the 2B SHARC or 2C TGP
                      (`sharc` and `tgp` name it too)
-  --smooth           smooth motion: on a display faster than the game's
+  --smooth on|off    smooth motion: on a display faster than the game's
                      57.5 Hz, draw in-between frames, the 3D geometry
                      interpolated between the last two game frames (one
                      game frame, about 17 ms, of extra latency; the native
-                     geometrizer only; docs/play.md)
+                     geometrizer only; docs/play.md). Default off
   --exact            run at the arcade's exact 57.524 frames per second
                      (default: one frame per display refresh when the
                      refresh is 60 or 120 Hz, which is 4.3% fast but smooth)
@@ -77,11 +86,19 @@ usage: remodel-play [options]
   --no-splash        don't show the logo at startup
   --input SCRIPT     scripted inputs, as for `remodel run` (for timing runs),
                      e.g. coin-start (the game's own coin-up and start)
-  --shot FILE        with --seconds: at the end, draw the last frame as a
-                     1920x1080 window would show it (bezel included) to a PNG
+  --shot FILE        with --seconds: at the end, draw the last frame (the
+                     game, bezel included, or the launcher) as a 1920x1080
+                     window would show it to a PNG
+  --shot-size WxH[@S] the --shot window's size in pixels, and its display
+                     scaling (e.g. 3840x2160@2)
+  --nav LIST         scripted launcher input, for checking with --shot:
+                     NAME@SECONDS, comma separated; names left, right, up,
+                     down, accept, back, settings, prev, next (groups)
 
-Options given here are remembered (the game once it starts), as are
-changes made in the menu.
+The game's settings (mix, HUD, aspect, bezel, speed, smooth motion,
+geometrizer) given here are for this run only, over the defaults for all
+games and the game's own, which the launcher's settings and the menu keep.
+--rom and --fullscreen are remembered.
 
 keys: Esc menu (pause), F5 quick save, F9 quick load, F11 fullscreen. The
 game's controls depend on the game (docs/play.md); C coins up and arrows
@@ -94,83 +111,154 @@ const FPS: f64 = 57.524;
 const MAX_CATCH_UP: u32 = 3;
 /// Narrowest and widest views; windows beyond are letterboxed.
 const ASPECTS: (f32, f32) = (4.0 / 3.0, 32.0 / 9.0);
+/// The launcher's preview plays this much quieter than the game.
+const PREVIEW_DB: f32 = -9.0;
+/// The preview's sound fades in over this, its picture out over `FADE_OUT`.
+const SOUND_FADE: Duration = Duration::from_millis(1200);
+const FADE_OUT: Duration = Duration::from_millis(200);
+/// A game started from the launcher fades in from black.
+const GAME_FADE: Duration = Duration::from_millis(400);
 
-/// Options for this run only (the rest go into the settings).
+/// Options for this run only (the game settings go into the settings'
+/// command-line layer).
 struct Options {
     sound: bool,
     interp: bool,
-    /// `--geo`: how the geometrizer runs.
-    geo: model2::geo::GeoMode,
-    /// `--smooth`: draw in-between frames (`model2::smooth`).
-    smooth: bool,
     seconds: Option<f64>,
     /// `--input`, parsed against the game's inputs when it starts.
     input: Option<String>,
-    /// `--game`: remembered only once it starts (`Play::start_game`).
+    /// `--game`: start it straight away.
     game: Option<String>,
     splash: bool,
     shot: Option<PathBuf>,
+    /// `--shot-size`: pixels and display scaling.
+    shot_size: ([u32; 2], f32),
+    /// `--nav`: launcher input at times since the start (seconds), in order.
+    nav: std::collections::VecDeque<(f64, launcher::Nav)>,
+}
+
+/// `--nav`'s list.
+fn parse_nav(list: &str) -> Result<std::collections::VecDeque<(f64, launcher::Nav)>, String> {
+    use launcher::Nav;
+    let mut out: Vec<(f64, Nav)> = Vec::new();
+    for item in list.split(',').filter(|s| !s.is_empty()) {
+        let (name, at) = item.split_once('@').ok_or("--nav wants NAME@SECONDS")?;
+        let nav = match name {
+            "left" => Nav::Left,
+            "right" => Nav::Right,
+            "up" => Nav::Up,
+            "down" => Nav::Down,
+            "accept" => Nav::Accept,
+            "back" => Nav::Back,
+            "settings" => Nav::Settings,
+            "prev" => Nav::PrevGroup,
+            "next" => Nav::NextGroup,
+            _ => return Err(format!("--nav: unknown {name}")),
+        };
+        out.push((at.parse().map_err(|_| format!("--nav: bad time {at}"))?, nav));
+    }
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Ok(out.into())
 }
 
 fn options(s: &mut Settings) -> Result<Options, String> {
     let mut o = Options {
         sound: true,
         interp: false,
-        geo: model2::geo::GeoMode::Native,
-        smooth: false,
         seconds: None,
         input: None,
         game: None,
         splash: true,
         shot: None,
+        shot_size: ([1920, 1080], 1.0),
+        nav: Default::default(),
     };
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args().skip(1).peekable();
+    let mut cli = |k: &str, v: &str| s.cli.insert(k.to_string(), v.to_string());
+    let mut rom = None;
+    let mut fullscreen = false;
     while let Some(a) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{a} needs a value"));
         match a.as_str() {
             "--game" => o.game = Some(value()?),
-            "--rom" => s.rom = PathBuf::from(value()?),
+            "--rom" => rom = Some(PathBuf::from(value()?)),
             "--mix" => {
                 let v = value()?;
                 let (x, y) = v.split_once(':').ok_or("--mix wants SFX:MUSIC")?;
-                (s.sfx_db, s.music_db) = (x.parse().map_err(|_| "bad --mix")?, y.parse().map_err(|_| "bad --mix")?);
+                let (x, y): (f32, f32) = (x.parse().map_err(|_| "bad --mix")?, y.parse().map_err(|_| "bad --mix")?);
+                cli("sfx_db", &x.to_string());
+                cli("music_db", &y.to_string());
             }
             "--no-sound" => o.sound = false,
-            "--hud" => s.hud_edges = value()? != "center",
+            "--hud" => {
+                cli("hud_edges", &(value()? != "center").to_string());
+            }
             "--aspect" => {
-                s.wide = match value()?.as_str() {
+                let wide = match value()?.as_str() {
                     "fit" => true,
                     "4:3" => false,
                     _ => return Err("--aspect wants fit or 4:3".into()),
-                }
+                };
+                cli("wide", &wide.to_string());
             }
-            "--bezel" => s.bezel = value()? != "off",
+            "--bezel" => {
+                cli("bezel", &(value()? != "off").to_string());
+            }
             "--shot" => o.shot = Some(value()?.into()),
-            "--interp" => o.interp = true,
-            "--smooth" => o.smooth = true,
-            "--geo" => {
-                o.geo = match model2::geo::GeoMode::parse(&value()?) {
-                    Some(model2::geo::GeoMode::Check) | None => return Err("--geo wants native or chip".into()),
-                    Some(mode) => mode,
-                }
+            "--shot-size" => {
+                let v = value()?;
+                let (size, scale) = v.split_once('@').unwrap_or((&v, "1"));
+                let (w, h) = size.split_once('x').ok_or("--shot-size wants WxH[@S]")?;
+                let px = |n: &str| n.parse::<u32>().ok().filter(|n| (64..=8192).contains(n)).ok_or("bad --shot-size");
+                let scale: f32 =
+                    scale.parse().ok().filter(|s: &f32| (0.5..=4.0).contains(s)).ok_or("bad --shot-size scale")?;
+                o.shot_size = ([px(w)?, px(h)?], scale);
             }
+            "--nav" => o.nav = parse_nav(&value()?)?,
+            "--interp" => o.interp = true,
+            "--smooth" => {
+                // Bare `--smooth` (as before it took a value) turns it on.
+                let on = match args.peek().map(String::as_str) {
+                    Some("on") => {
+                        args.next();
+                        true
+                    }
+                    Some("off") => {
+                        args.next();
+                        false
+                    }
+                    _ => true,
+                };
+                cli("smooth", &on.to_string());
+            }
+            "--geo" => match model2::geo::GeoMode::parse(&value()?) {
+                Some(model2::geo::GeoMode::Check) | None => return Err("--geo wants native or chip".into()),
+                Some(mode) => {
+                    cli("geo", if mode == model2::geo::GeoMode::Chip { "chip" } else { "native" });
+                }
+            },
             "--no-splash" => o.splash = false,
-            "--fullscreen" => s.fullscreen = true,
-            "--exact" => s.exact = true,
+            "--fullscreen" => fullscreen = true,
+            "--exact" => {
+                cli("exact", "true");
+            }
             "--input" => o.input = Some(value()?),
             "--seconds" => o.seconds = Some(value()?.parse().map_err(|_| "bad --seconds")?),
             "-h" | "--help" => return Err(String::new()),
             _ => return Err(format!("unknown option {a}")),
         }
     }
-    if o.smooth && o.geo == model2::geo::GeoMode::Chip {
+    if let Some(rom) = rom {
+        s.rom = rom;
+    }
+    s.fullscreen |= fullscreen;
+    if s.cli.get("smooth").is_some_and(|v| v == "true") && s.cli.get("geo").is_some_and(|v| v == "chip") {
         eprintln!("--smooth: off with --geo chip (in-betweens come from the native geometrizer)");
-        o.smooth = false;
     }
     Ok(o)
 }
 
-/// The game being played.
+/// The game being played, or previewed in the launcher.
 struct Session {
     game: &'static romset::Game,
     machine: model2::Machine,
@@ -180,6 +268,20 @@ struct Session {
     /// The player's bindings: the manifest's, remapped in the menu's
     /// Controls page (`settings::load_bindings`).
     bindings: romset::Bindings,
+    /// The launcher's attract mode preview: no input, quieter, never saved
+    /// (its EEPROM isn't the player's).
+    preview: bool,
+}
+
+/// `set`'s save state folder.
+fn saves_dir(set: &str) -> PathBuf {
+    settings::data_dir().join(set).join("saves")
+}
+
+/// Where a game's resume state goes: written on leaving it, offered by
+/// the launcher as Continue.
+fn resume_path(set: &str) -> PathBuf {
+    saves_dir(set).join("resume.save")
 }
 
 impl Session {
@@ -189,15 +291,21 @@ impl Session {
 
     fn slot_path(&self, slot: u8) -> PathBuf {
         let name = if slot == 0 { "quick.save".to_string() } else { format!("slot{slot}.save") };
-        self.dir().join("saves").join(name)
+        saves_dir(self.game.id).join(name)
     }
 
     fn save_eeprom(&self) {
         let bus = &self.machine.bus;
-        if bus.eeprom.dirty {
+        if bus.eeprom.dirty && !self.preview {
             let _ = std::fs::create_dir_all(self.dir());
             let _ = std::fs::write(self.dir().join("eeprom.bin"), bus.eeprom.save());
         }
+    }
+
+    /// The whole machine, sound boards included, as a save file.
+    fn save_state(&mut self) -> Vec<u8> {
+        let live = self.sound.as_ref().map(|snd| snd.save());
+        model2::save_session_parts(&mut self.machine, live)
     }
 }
 
@@ -206,6 +314,14 @@ struct Overlay {
     ctx: egui::Context,
     state: egui_winit::State,
     renderer: egui_wgpu::Renderer,
+}
+
+/// The launcher's preview: the game drawn into a texture egui shows.
+struct PreviewTarget {
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    id: egui::TextureId,
+    size: [u32; 2],
 }
 
 struct Gpu {
@@ -218,6 +334,8 @@ struct Gpu {
     /// The display's refresh rate (Hz), if known.
     refresh: Option<f64>,
     overlay: Overlay,
+    backdrop: backdrop::Backdrop,
+    preview: Option<PreviewTarget>,
 }
 
 /// Status line counters for the current one-second window.
@@ -226,6 +344,8 @@ struct Stats {
     emulated: u32,
     drawn: u32,
     emulating: Duration,
+    /// Host time drawing (not waiting for vsync).
+    drawing: Duration,
     /// Redraws that showed no new game frame, and the longest time between
     /// new frames.
     repeats: u32,
@@ -236,7 +356,7 @@ struct Stats {
     /// Frames drawn with the previous frame's polygons (the geometrizer
     /// wasn't done in time).
     geo_late: u32,
-    /// `--smooth`: in-betweens drawn, and the host time computing them.
+    /// Smooth motion: in-betweens drawn, and the host time computing them.
     smooth: u32,
     smoothing: Duration,
 }
@@ -248,6 +368,7 @@ impl Stats {
             emulated: 0,
             drawn: 0,
             emulating: Duration::ZERO,
+            drawing: Duration::ZERO,
             repeats: 0,
             longest_gap: Duration::ZERO,
             last_new: Instant::now(),
@@ -260,16 +381,37 @@ impl Stats {
     }
 }
 
+/// The launcher's preview as it runs: when it first showed, and since when
+/// it's fading out (the selection moved).
+#[derive(Default)]
+struct PreviewState {
+    shown: Option<Instant>,
+    leaving: Option<Instant>,
+    /// Games that can't be previewed, and why.
+    failed: HashMap<String, String>,
+    /// The game whose preview is wanted (the selected card's).
+    wanted: Option<String>,
+}
+
 struct Play {
     opts: Options,
     settings: Settings,
-    /// Settings as last applied (to see what the menu changed).
-    applied: Settings,
+    /// The settings of the game playing (or selected in the launcher),
+    /// where each came from, and as last applied to its machine.
+    values: GameSettings,
+    sources: [Source; KEYS.len()],
+    applied: GameSettings,
+    values_for: String,
     session: Option<Session>,
     /// Playable games in the ROM folder, and how many sets aren't supported.
-    games: Vec<(String, &'static str)>,
+    games: Vec<&'static romset::Game>,
     unsupported: usize,
     menu: menu::Menu,
+    launcher: launcher::Launcher,
+    previews: preview::Previews,
+    preview: PreviewState,
+    /// The bindings the launcher's Controls page edits (its game's).
+    launcher_bindings: Option<romset::Bindings>,
     splash: splash::Splash,
     /// The game's bezel art: decoded when the game starts, a texture once
     /// it's first drawn.
@@ -280,6 +422,9 @@ struct Play {
     /// The gamepad last used (a button or stick moved): keyboards' media-key
     /// interfaces show up as gamepads too, so wait to see which one plays.
     pad: Option<gilrs::GamepadId>,
+    /// The gamepad driving the launcher, and what it asked for this frame.
+    pad_nav: launcher::PadNav,
+    navs: Vec<launcher::Nav>,
     /// Light guns: the mouse (window position, None outside the window;
     /// left and right buttons), once it has moved over the window, aims
     /// player 1; the pad's stick cursor aims player 2 then, else player 1.
@@ -289,8 +434,10 @@ struct Play {
     stick: model2::input::StickCursor,
     /// Real time that emulated frame 0 corresponds to.
     epoch: Instant,
-    /// `--smooth`: when the newest game frame was first drawn.
+    /// Smooth motion: when the newest game frame was first drawn.
     smooth_at: Instant,
+    /// A game started from the launcher: since when (fading in).
+    game_fade: Option<Instant>,
     redraws: u64,
     /// When `emulate` last ran (for the audio rate control).
     last_emulate: Option<Instant>,
@@ -335,20 +482,81 @@ fn refresh_hz(window: &Window) -> Option<f64> {
     window.current_monitor()?.refresh_rate_millihertz().map(|m| m as f64 / 1000.0)
 }
 
+/// A gain in dB for a linear fade `f` (0..1).
+fn fade_db(f: f32) -> f32 {
+    20.0 * f.clamp(0.001, 1.0).log10()
+}
+
 impl Play {
     /// Find the playable games in the ROM folder.
     fn scan(&mut self) {
         let sets = romset::sets_with_clones(&self.settings.rom);
-        self.games = sets.iter().filter_map(|s| romset::games::find(s).ok().map(|g| (s.clone(), g.title))).collect();
+        self.games = sets.iter().filter_map(|s| romset::games::find(s).ok()).collect();
         self.unsupported = sets.len() - self.games.len();
-        self.menu.rom_text = self.settings.rom.display().to_string();
+        self.launcher.rom_text = self.settings.rom.display().to_string();
+        self.launcher.set_games(&self.games, &self.settings.recent);
     }
 
-    /// Start `set` from power-on (saving the current game's EEPROM first).
-    fn start_game(&mut self, set: &str) {
-        if let Some(s) = self.session.take() {
-            s.save_eeprom();
+    /// Use `set`'s settings (resolved from the layers) from now on.
+    fn use_values(&mut self, set: &str) {
+        let (v, src) = self.settings.resolve(set);
+        self.values = v;
+        self.sources = src;
+        if self.values_for != set {
+            self.values_for = set.to_string();
+            self.applied = self.values.clone();
         }
+        self.apply_values();
+    }
+
+    /// Keep what the launcher or menu changed in `set`'s settings, and
+    /// apply it.
+    fn edit_values(&mut self, set: &str, v: GameSettings) {
+        if v != self.values {
+            self.settings.edit(set, &v);
+        }
+        self.use_values(set);
+    }
+
+    /// Open the launcher, leaving the game (if any) where it was.
+    fn open_launcher(&mut self) {
+        let set = self.session.as_ref().map(|s| s.game.id);
+        self.leave_game();
+        self.launcher.set_games(&self.games, &self.settings.recent);
+        if let Some(set) = set {
+            self.launcher.select_set(set);
+        }
+        self.launcher.open = true;
+        self.menu.open = false;
+        self.keys.clear();
+        if let Some(g) = &self.gpu {
+            g.window.set_cursor(CursorIcon::Default);
+        }
+    }
+
+    /// Stop the game: keep its EEPROM and a resume state (for Continue),
+    /// unless it's the launcher's preview or a scripted run.
+    fn leave_game(&mut self) {
+        let Some(mut s) = self.session.take() else { return };
+        s.save_eeprom();
+        if s.preview || s.script.is_some() {
+            return;
+        }
+        let data = s.save_state();
+        let path = resume_path(s.game.id);
+        let written = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&path, data));
+        if let Err(e) = written {
+            eprintln!("{}: can't keep the resume state: {e}", path.display());
+        }
+    }
+
+    /// Start `set` from power-on, or from its resume state with `resume`
+    /// (leaving the current game first).
+    fn start_game(&mut self, set: &str, resume: bool) {
+        self.leave_game();
+        self.previews.cancel_all();
+        self.use_values(set);
+        let values = self.values.clone();
         let started = romset::games::find(set).map_err(|e| e.to_string()).and_then(|game| {
             let script = match &self.opts.input {
                 Some(spec) => {
@@ -361,8 +569,8 @@ impl Play {
             if self.opts.interp {
                 machine.disable_native();
             }
-            machine.bus.geo.set_mode(self.opts.geo);
-            machine.bus.geo.set_smooth(self.opts.smooth);
+            machine.bus.geo.set_mode(values.geo_mode());
+            machine.bus.geo.set_smooth(values.smooth_on());
             // Drawing can go ahead with the last frame's polygons when the
             // geometrizer is late (`frame`).
             machine.bus.geo.set_keep_last(true);
@@ -371,7 +579,7 @@ impl Play {
                 machine.bus.eeprom.load(&bytes);
             }
             let sound = if self.opts.sound {
-                Sound::new(&roms, (self.settings.sfx_db, self.settings.music_db))
+                Sound::new(&roms, (values.sfx_db, values.music_db))
                     .inspect_err(|e| eprintln!("{e}; playing without sound"))
                     .ok()
             } else {
@@ -385,35 +593,96 @@ impl Play {
                 sound.as_ref().map_or(String::new(), |s| format!(", audio {} Hz", s.rate))
             );
             let bindings = settings::load_bindings(game);
-            Ok(Session { game, machine, sound, script, bindings })
+            Ok(Session { game, machine, sound, script, bindings, preview: false })
         });
         match started {
             Ok(s) => {
                 self.bezel =
                     bezel::image(s.game).map(|image| Bezel { size: image.size, image: Some(image), texture: None });
-                self.settings.game = set.to_string();
+                self.settings.played(set);
                 self.settings.save();
                 // A crosshair pointer over gun games.
-                if let Some(g) = &self.gpu {
+                if let Some(g) = &mut self.gpu {
                     let gun = !s.game.controls.guns.is_empty();
                     g.window.set_cursor(if gun { CursorIcon::Crosshair } else { CursorIcon::Default });
+                    g.renderer.forget_ram();
                 }
                 self.session = Some(s);
                 self.epoch = Instant::now();
                 self.refit();
+                if resume {
+                    self.load_file(&resume_path(set), "Continued");
+                }
             }
             Err(e) => {
                 eprintln!("{set}: {e}");
                 self.menu.notify(format!("Can't start {set}: {e}"));
-                self.menu.open = true;
+                self.launcher.open = true;
             }
         }
     }
 
+    /// Start the launcher's preview from what a preview job got ready.
+    fn start_preview(&mut self, r: preview::Ready) {
+        let t = Instant::now();
+        let game = r.game;
+        let mut machine = model2::Machine::new(&r.roms);
+        let t_new = t.elapsed();
+        if self.opts.interp {
+            machine.disable_native();
+        }
+        let geo = self.values.geo_mode();
+        machine.bus.geo.set_mode(geo);
+        machine.bus.geo.set_smooth(self.values.smooth_on());
+        machine.bus.geo.set_keep_last(true);
+        let live = match model2::load_session_parts(&mut machine, &r.state) {
+            Ok(live) => live,
+            Err(e) => {
+                // Made by another version, say: make it again.
+                let _ = std::fs::remove_file(preview::cache_path(game.id, geo));
+                if r.made {
+                    self.preview.failed.insert(game.id.to_string(), e);
+                }
+                return;
+            }
+        };
+        let t_machine = t.elapsed();
+        let sound = if self.opts.sound {
+            let mix = (self.values.sfx_db + PREVIEW_DB - 60.0, self.values.music_db + PREVIEW_DB - 60.0);
+            Sound::new(&r.roms, mix).inspect_err(|e| eprintln!("{e}; previews without sound")).ok().and_then(
+                |mut snd| {
+                    snd.load(live, &machine.bus).ok()?;
+                    Some(snd)
+                },
+            )
+        } else {
+            None
+        };
+        println!(
+            "preview       {} ({}): {} in {:.0} ms, started in {:.0} ms (machine {:.0} ms, state {:.0} ms)",
+            game.title,
+            game.id,
+            if r.made { "made the attract state" } else { "loaded" },
+            r.took.as_secs_f64() * 1000.0,
+            t.elapsed().as_secs_f64() * 1000.0,
+            t_new.as_secs_f64() * 1000.0,
+            (t_machine - t_new).as_secs_f64() * 1000.0,
+        );
+        if let Some(g) = &mut self.gpu {
+            g.renderer.forget_ram();
+        }
+        let bindings = settings::load_bindings(game);
+        self.epoch = Instant::now() - Duration::from_secs_f64(machine.frames as f64 / FPS);
+        self.session = Some(Session { game, machine, sound, script: None, bindings, preview: true });
+        self.preview.shown = None;
+        self.preview.leaving = None;
+        self.behind = false;
+        self.frame_cost = 0.0;
+    }
+
     fn save_slot(&mut self, slot: u8) {
-        let Some(s) = &mut self.session else { return };
-        let live = s.sound.as_ref().map(|snd| snd.save());
-        let data = model2::save_session_parts(&mut s.machine, live);
+        let Some(s) = self.session.as_mut().filter(|s| !s.preview) else { return };
+        let data = s.save_state();
         let path = s.slot_path(slot);
         let result = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&path, data));
         let name = if slot == 0 { "Quick save".to_string() } else { format!("Saved to slot {slot}") };
@@ -424,10 +693,20 @@ impl Play {
     }
 
     fn load_slot(&mut self, slot: u8) {
+        let Some(path) = self.session.as_ref().filter(|s| !s.preview).map(|s| s.slot_path(slot)) else { return };
+        if !path.is_file() {
+            return self.menu.notify(if slot == 0 { "No quick save yet" } else { "That slot is empty" });
+        }
+        let done = if slot == 0 { "Quick load".to_string() } else { format!("Loaded slot {slot}") };
+        self.load_file(&path, &done);
+    }
+
+    /// Load the save file at `path` into the game, saying `done` if it did.
+    fn load_file(&mut self, path: &Path, done: &str) {
         let Some(s) = &mut self.session else { return };
-        let data = match std::fs::read(s.slot_path(slot)) {
+        let data = match std::fs::read(path) {
             Ok(d) => d,
-            Err(_) => return self.menu.notify(if slot == 0 { "No quick save yet" } else { "That slot is empty" }),
+            Err(e) => return self.menu.notify(format!("Can't read {}: {e}", path.display())),
         };
         let result = model2::load_session_parts(&mut s.machine, &data).and_then(|live| match &mut s.sound {
             Some(snd) if !live.is_empty() => snd.load(live, &s.machine.bus),
@@ -436,12 +715,13 @@ impl Play {
         match result {
             Ok(()) => {
                 self.epoch = Instant::now() - Duration::from_secs_f64(s.machine.frames as f64 / FPS);
-                self.menu.notify(if slot == 0 { "Quick load".to_string() } else { format!("Loaded slot {slot}") });
+                self.menu.notify(done);
             }
             Err(e) => {
                 // The machine may be half loaded: start the game afresh.
                 let set = s.game.id.to_string();
-                self.start_game(&set);
+                self.session = None;
+                self.start_game(&set, false);
                 self.menu.notify(format!("Load failed: {e}"));
             }
         }
@@ -452,37 +732,46 @@ impl Play {
         (0..menu::SLOTS).map(|n| std::fs::metadata(s.slot_path(n)).and_then(|m| m.modified()).ok()).collect()
     }
 
-    /// Apply what the menu changed in the settings, and remember them.
-    fn apply_settings(&mut self) {
-        if self.settings == self.applied {
+    /// Apply what changed in the game's settings to its machine.
+    fn apply_values(&mut self) {
+        if self.values == self.applied {
             return;
         }
-        let (old, new) = (&self.applied, &self.settings);
-        if (old.sfx_db, old.music_db) != (new.sfx_db, new.music_db) {
+        let (old, new) = (self.applied.clone(), self.values.clone());
+        self.applied = new.clone();
+        let preview = self.session.as_ref().is_some_and(|s| s.preview);
+        if (old.sfx_db, old.music_db) != (new.sfx_db, new.music_db) && !preview {
             if let Some(snd) = self.session.as_ref().and_then(|s| s.sound.as_ref()) {
                 snd.set_mix(new.sfx_db, new.music_db);
             }
         }
-        if old.fullscreen != new.fullscreen {
-            if let Some(g) = &self.gpu {
-                g.window.set_fullscreen(new.fullscreen.then_some(Fullscreen::Borderless(None)));
+        if old.smooth_on() != new.smooth_on() {
+            if let Some(s) = &mut self.session {
+                s.machine.bus.geo.set_smooth(new.smooth_on());
             }
         }
-        let refit = old.hud_edges != new.hud_edges || old.wide != new.wide;
-        self.settings.save();
-        self.applied = self.settings.clone();
-        if refit {
+        if old.geo_chip != new.geo_chip {
+            if preview {
+                // The preview starts again on the other geometrizer.
+                self.session = None;
+                self.preview.wanted = None;
+            } else if self.session.is_some() {
+                self.menu.notify("The geometrizer changes when the game next starts");
+            }
+        }
+        if old.hud_edges != new.hud_edges || old.wide != new.wide {
             self.refit();
         }
     }
 
-    /// Fit a view into the window: full size between `ASPECTS` (just 4:3
-    /// unless `wide`), else letterboxed. Returns it and its top-left corner.
+    /// Fit a view into `w` x `h` pixels: full size between `ASPECTS`
+    /// (just 4:3 unless wide), else letterboxed. Returns it and its
+    /// top-left corner.
     fn fit(&self, w: u32, h: u32) -> (model2::video::View, (u32, u32)) {
         let aspect = w as f32 / h.max(1) as f32;
-        let a = if self.settings.wide { aspect.clamp(ASPECTS.0, ASPECTS.1) } else { ASPECTS.0 };
+        let a = if self.values.wide { aspect.clamp(ASPECTS.0, ASPECTS.1) } else { ASPECTS.0 };
         let vh = if a < aspect { h } else { (w as f32 / a) as u32 };
-        let hud = if self.settings.hud_edges { model2::video::Hud::Edges } else { model2::video::Hud::Center };
+        let hud = if self.values.hud_edges { model2::video::Hud::Edges } else { model2::video::Hud::Center };
         let mut view = model2::video::View::new(vh.max(1) as usize, a, hud);
         view.hud_windows = self.session.as_ref().map_or(0, |s| s.game.hud_windows.iter().fold(0, |m, &w| m | 1 << w));
         let origin = ((w - (view.width as u32).min(w)) / 2, (h - (view.height as u32).min(h)) / 2);
@@ -492,19 +781,19 @@ impl Play {
     /// Where the bezel goes in a window `w` pixels wide showing `view` at
     /// `origin` (None: not shown), and the picture's left and right edges.
     fn bezel_at(&self, view: &model2::video::View, origin: (u32, u32), w: u32) -> Option<([f32; 4], (f32, f32))> {
-        let b = self.bezel.as_ref().filter(|_| self.settings.bezel && self.session.is_some())?;
+        let b =
+            self.bezel.as_ref().filter(|_| self.values.bezel && self.session.as_ref().is_some_and(|s| !s.preview))?;
         let pic = (origin.0, origin.1, view.width as u32, view.height as u32);
         let rect = bezel::layout(w, pic, view.pad, b.size)?;
         Some((rect, (origin.0 as f32, (origin.0 as usize + view.width) as f32)))
     }
 
-    /// `--shot`: the game's current frame as a 1920x1080 window shows it,
-    /// bezel included, to a PNG.
+    /// `--shot`: what the window shows now (the game's current frame,
+    /// bezel included, or the launcher) as a window of `--shot-size` would,
+    /// to a PNG.
     fn shot(&mut self, path: &Path) -> Result<(), String> {
-        let (w, h) = (1920, 1080);
-        let (view, origin) = self.fit(w, h);
-        let at = self.bezel_at(&view, origin, w);
-        let (Some(g), Some(s)) = (&mut self.gpu, &mut self.session) else { return Err("no game in a window".into()) };
+        let ([w, h], ppp) = self.opts.shot_size;
+        let Some(g) = &mut self.gpu else { return Err("no window".into()) };
         let format = g.config.format;
         let texture = g.renderer.device().create_texture(&wgpu::TextureDescriptor {
             label: Some("shot"),
@@ -517,13 +806,21 @@ impl Play {
             view_formats: &[],
         });
         let target = texture.create_view(&Default::default());
-        g.renderer.present_bus(&mut s.machine.bus, None, &view, &target, format, origin);
-        let bezel = &mut self.bezel;
-        draw_overlay(g, &target, false, [w, h], |ctx| {
-            if let (Some(b), Some((rect, pic))) = (bezel.as_mut(), at) {
-                b.paint(ctx, rect, pic, w as f32, ctx.pixels_per_point());
-            }
-        });
+        if self.launcher.open {
+            self.draw_launcher(&target, [w, h], ppp, Instant::now());
+        } else {
+            let (view, origin) = self.fit(w, h);
+            let at = self.bezel_at(&view, origin, w);
+            let (Some(g), Some(s)) = (&mut self.gpu, &mut self.session) else { return Err("no game".into()) };
+            g.renderer.present_bus(&mut s.machine.bus, None, &view, &target, format, origin);
+            let bezel = &mut self.bezel;
+            draw_overlay(g, &target, false, [w, h], Some(ppp), |ctx| {
+                if let (Some(b), Some((rect, pic))) = (bezel.as_mut(), at) {
+                    b.paint(ctx, rect, pic, w as f32, ctx.pixels_per_point());
+                }
+            });
+        }
+        let g = self.gpu.as_ref().unwrap();
         let mut rgba = g.renderer.read_texture(&texture, w, h);
         if format == wgpu::TextureFormat::Bgra8Unorm {
             rgba.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p.swap(0, 2));
@@ -555,17 +852,18 @@ impl Play {
     /// (1 at about 60 Hz, 1/2 at about 120 Hz), or None to follow the clock.
     fn per_refresh(&self) -> Option<f64> {
         let hz = self.gpu.as_ref()?.refresh?;
-        if self.settings.exact || self.behind {
+        if self.values.exact || self.behind {
             return None;
         }
         [1.0, 0.5].into_iter().find(|k| (0.95..=1.1).contains(&(hz * k / FPS)))
     }
 
-    /// Take the gamepads' events: note the one last used, and whether a
-    /// button was pressed.
+    /// Take the gamepads' events: note the one last used, what the
+    /// launcher should do, and whether a button was pressed.
     fn poll_pads(&mut self) -> bool {
         let mut pressed = false;
         let mut events = Vec::new();
+        let now = Instant::now();
         if let Some(g) = &mut self.gilrs {
             while let Some(ev) = g.next_event() {
                 pressed |= matches!(ev.event, gilrs::EventType::ButtonPressed(..));
@@ -574,8 +872,13 @@ impl Play {
                 }
                 if self.menu.capture.is_some() {
                     events.extend(controls::captured(&ev.event));
+                } else if self.launcher.open && Some(ev.id) == self.pad {
+                    self.navs.extend(self.pad_nav.event(&ev.event, now));
                 }
             }
+        }
+        if self.launcher.open && self.menu.capture.is_none() {
+            self.navs.extend(self.pad_nav.repeat(now));
         }
         for c in events {
             self.capture(c);
@@ -586,15 +889,24 @@ impl Play {
     /// Bind what the player pressed or moved into the slot the Controls
     /// page is waiting on, or say why it can't be.
     fn capture(&mut self, c: romset::bindings::Capture) {
-        let (Some((slot, at)), Some(s)) = (self.menu.capture, &mut self.session) else { return };
-        let axis_slot = s.bindings.accepts(slot) == romset::bindings::Accepts::Axis;
+        let Some((slot, at)) = self.menu.capture else { return };
+        let (bindings, game) = if self.launcher.open {
+            (self.launcher_bindings.as_mut(), self.launcher.selected())
+        } else {
+            match &mut self.session {
+                Some(s) => (Some(&mut s.bindings), Some(s.game)),
+                None => (None, None),
+            }
+        };
+        let (Some(b), Some(game)) = (bindings, game) else { return };
+        let axis_slot = b.accepts(slot) == romset::bindings::Accepts::Axis;
         // Sticks resting off centre, or moved on the way to a button.
         if matches!(c, romset::bindings::Capture::Axis(..)) && !axis_slot {
             return;
         }
-        match s.bindings.capture(slot, at, c, romset::bindings::RESERVED_KEYS) {
+        match b.capture(slot, at, c, romset::bindings::RESERVED_KEYS) {
             Ok(()) => {
-                settings::save_bindings(s.game, &s.bindings);
+                settings::save_bindings(game, b);
                 self.menu.capture = None;
             }
             Err(e) => self.menu.notify(e),
@@ -643,7 +955,7 @@ impl Play {
     /// aims a gun in a gun game (the mouse has the system cursor).
     fn stick_crosshair(&self) -> Option<(f32, f32)> {
         let (g, s) = (self.gpu.as_ref()?, self.session.as_ref()?);
-        if s.game.controls.guns.is_empty() || self.pad.is_none() || s.script.is_some() {
+        if s.game.controls.guns.is_empty() || self.pad.is_none() || s.script.is_some() || s.preview {
             return None;
         }
         let (x, y) = self.stick.at;
@@ -673,7 +985,9 @@ impl Play {
         };
         let mut ran = 0;
         while self.session.as_ref().is_some_and(|s| s.machine.frames < due) && ran < MAX_CATCH_UP {
-            self.apply_inputs();
+            if self.session.as_ref().is_some_and(|s| !s.preview) {
+                self.apply_inputs();
+            }
             let s = self.session.as_mut().unwrap();
             s.machine.run_slice(u64::MAX)?;
             match &mut s.sound {
@@ -701,34 +1015,20 @@ impl Play {
         Ok(ran)
     }
 
-    /// One redraw: run the game, draw it and the menu, report status.
-    fn frame(&mut self, el: &ActiveEventLoop) {
-        if self.splash.active() && self.poll_pads() {
-            self.splash.skip();
-        }
-        // The game isn't reading the pads while the menu is open: the
-        // Controls page may be waiting for one.
-        if self.menu.open {
-            self.poll_pads();
-        }
+    /// Emulate what's due and keep the stats; false if the game stopped.
+    fn run_due(&mut self) -> (u32, Duration) {
         let t0 = Instant::now();
-        let mut ran = 0;
         let result = self.emulate();
         if let (Ok(1..), Some(s)) = (&result, &self.session) {
             // When the newest frame was due: on the clock, or now when
             // following the display (which sets the clock to now).
             self.smooth_at = self.epoch + Duration::from_secs_f64(s.machine.frames as f64 / FPS);
         }
-        // A game frame's length in host time: a refresh's (two at about
-        // 120 Hz) when following the display, else the game's.
-        let period =
-            frame_budget(self.gpu.as_ref().and_then(|g| g.refresh), self.settings.exact || self.behind).as_secs_f64();
         let emulate_time = t0.elapsed();
         match result {
-            Ok(n) => {
-                ran = n;
+            Ok(ran) => {
                 let st = &mut self.stats;
-                st.emulating += t0.elapsed();
+                st.emulating += emulate_time;
                 st.emulated += ran;
                 if ran == 0 && !self.menu.open {
                     st.repeats += 1;
@@ -736,13 +1036,105 @@ impl Play {
                     st.longest_gap = st.longest_gap.max(st.last_new.elapsed());
                     st.last_new = Instant::now();
                 }
+                (ran, emulate_time)
             }
             Err(e) => {
                 eprintln!("stopped: {e:?}");
-                self.menu.notify(format!("The game stopped: {e:?}"));
+                let preview = self.session.as_ref().filter(|s| s.preview).map(|s| s.game.id.to_string());
                 self.session = None;
-                self.menu.open = true;
+                match preview {
+                    Some(set) => {
+                        self.preview.failed.insert(set, format!("the game stopped ({e:?})"));
+                    }
+                    None => {
+                        self.menu.notify(format!("The game stopped: {e:?}"));
+                        self.open_launcher();
+                    }
+                }
+                (0, emulate_time)
             }
+        }
+    }
+
+    /// Draw the session's current frame into `target` as `view` at
+    /// `origin`: this frame's polygons if the geometrizer has them in time
+    /// for this refresh (`t0`, when the redraw started), else the previous
+    /// frame's; with smooth motion, an in-between.
+    fn draw_session(
+        &mut self,
+        target: &wgpu::TextureView,
+        view: &model2::video::View,
+        origin: (u32, u32),
+        format: wgpu::TextureFormat,
+        t0: Instant,
+    ) {
+        let (Some(g), Some(s)) = (&mut self.gpu, &mut self.session) else { return };
+        // When the geometrizer is the slowest part, drawing the previous
+        // frame's polygons lets it run alongside the next frame instead of
+        // after it, at the cost of the polygons lagging a frame.
+        let budget = frame_budget(g.refresh, self.values.exact);
+        let period = frame_budget(g.refresh, self.values.exact || self.behind).as_secs_f64();
+        let bus = &mut s.machine.bus;
+        if bus.geo.wait_until(t0 + budget.mul_f64(0.8)) {
+            // Smooth motion: the polygons part way from the frame before to
+            // this one, by the time since this one was first shown. Only on
+            // a display faster than the game, and not when it's already
+            // behind.
+            let t_smooth = Instant::now();
+            let fast = g.refresh.is_none_or(|hz| hz > FPS * 1.2) && !self.behind && !self.menu.open;
+            let between = bus.geo.engine().smooth_frame().filter(|_| fast).and_then(|f| {
+                let t = t_smooth.saturating_duration_since(self.smooth_at).as_secs_f64() / period;
+                f.render(t as f32).map(|stream| (stream, f))
+            });
+            match &between {
+                Some((stream, f)) => {
+                    self.stats.smooth += 1;
+                    self.stats.smoothing += t_smooth.elapsed();
+                    g.renderer.present_bus(bus, Some((stream, &f.points)), view, target, format, origin)
+                }
+                None => g.renderer.present_bus(bus, None, view, target, format, origin),
+            }
+        } else {
+            g.renderer.present_bus_last(bus, view, target, format, origin);
+            self.stats.geo_late += 1;
+        }
+    }
+
+    /// Smooth the frame cost (`ran` frames emulated in `emulate`, drawn in
+    /// `draw`): below full speed when following the display, pace by the
+    /// clock instead, running frames as fast as they can be (dropping to
+    /// half the refresh rate otherwise).
+    fn note_cost(&mut self, ran: u32, emulate: Duration, draw: Duration) {
+        let Some(g) = &self.gpu else { return };
+        if ran > 0 {
+            let cost = (emulate + draw).as_secs_f64() / ran as f64;
+            self.frame_cost += (cost - self.frame_cost) * 0.05;
+            let budget = frame_budget(g.refresh, false).as_secs_f64();
+            if self.frame_cost > budget * 0.95 {
+                self.behind = true;
+            } else if self.frame_cost < budget * 0.8 {
+                self.behind = false;
+            }
+        }
+    }
+
+    /// One redraw: run the game, draw it and the menu, report status.
+    fn frame(&mut self, el: &ActiveEventLoop) {
+        if self.splash.active() && self.poll_pads() {
+            self.splash.skip();
+        }
+        if self.launcher.open {
+            return self.launcher_frame(el);
+        }
+        // The game isn't reading the pads while the menu is open: the
+        // Controls page may be waiting for one.
+        if self.menu.open {
+            self.poll_pads();
+        }
+        let t0 = Instant::now();
+        let (ran, emulate_time) = self.run_due();
+        if self.launcher.open {
+            return;
         }
         let slots = if self.menu.open { self.slot_times() } else { Vec::new() };
         let crosshair = if self.menu.visible() { None } else { self.stick_crosshair() };
@@ -759,93 +1151,60 @@ impl Play {
         };
         let t_draw = Instant::now();
         let target = frame.texture.create_view(&Default::default());
-        if let Some(s) = &mut self.session {
-            // Draw this frame's polygons if the geometrizer has them in time
-            // to make this refresh, else the previous frame's: when it's the
-            // slowest part, it then runs alongside the next frame instead of
-            // after it, at the cost of the polygons lagging a frame.
-            let budget = frame_budget(g.refresh, self.settings.exact);
-            let bus = &mut s.machine.bus;
-            if bus.geo.wait_until(t0 + budget.mul_f64(0.8)) {
-                // `--smooth`: the polygons part way from the frame before
-                // to this one, by the time since this one was first shown.
-                // Only on a display faster than the game, and not when it's
-                // already behind.
-                let t_smooth = Instant::now();
-                let fast = g.refresh.is_none_or(|hz| hz > FPS * 1.2) && !self.behind && !self.menu.open;
-                let between = bus.geo.engine().smooth_frame().filter(|_| fast).and_then(|f| {
-                    let t = t_smooth.saturating_duration_since(self.smooth_at).as_secs_f64() / period;
-                    f.render(t as f32).map(|stream| (stream, f))
-                });
-                match &between {
-                    Some((stream, f)) => {
-                        self.stats.smooth += 1;
-                        self.stats.smoothing += t_smooth.elapsed();
-                        g.renderer.present_bus(
-                            bus,
-                            Some((stream, &f.points)),
-                            &g.view,
-                            &target,
-                            g.config.format,
-                            g.origin,
-                        )
-                    }
-                    None => g.renderer.present_bus(bus, None, &g.view, &target, g.config.format, g.origin),
-                }
-            } else {
-                g.renderer.present_bus_last(bus, &g.view, &target, g.config.format, g.origin);
-                self.stats.geo_late += 1;
-            }
-        }
+        let (view, origin, format) = (g.view, g.origin, g.config.format);
+        self.draw_session(&target, &view, origin, format, t0);
         let mut actions = Vec::new();
+        let fade =
+            self.game_fade.map(|t| 1.0 - t.elapsed().as_secs_f32() / GAME_FADE.as_secs_f32()).filter(|f| *f > 0.0);
+        if fade.is_none() {
+            self.game_fade = None;
+        }
+        let g = self.gpu.as_mut().unwrap();
         if self.menu.visible()
             || self.session.is_none()
             || self.splash.active()
             || crosshair.is_some()
             || bezel_at.is_some()
+            || fade.is_some()
         {
-            let view = menu::View {
-                playing: self.session.as_ref().map(|s| s.game.title),
-                games: &self.games,
-                unsupported: self.unsupported,
-                slots: &slots,
-            };
-            let (menu, settings, splash, bezel) =
-                (&mut self.menu, &mut self.settings, &mut self.splash, &mut self.bezel);
+            let view = menu::View { playing: self.session.as_ref().map(|s| s.game.title), slots: &slots };
+            let (menu, splash, bezel) = (&mut self.menu, &mut self.splash, &mut self.bezel);
+            let mut values = self.values.clone();
+            let (mut fullscreen, mut for_all) = (self.settings.fullscreen, self.settings.for_all);
             let no_game = self.session.is_none();
             let mut bindings = self.session.as_mut().map(|s| &mut s.bindings);
             let scale = g.window.scale_factor() as f32;
             let size = [g.config.width, g.config.height];
-            actions = draw_overlay(g, &target, no_game, size, |ctx| {
+            actions = draw_overlay(g, &target, no_game, size, None, |ctx| {
                 if let (Some(b), Some((rect, pic))) = (bezel.as_mut(), bezel_at) {
                     b.paint(ctx, rect, pic, size[0] as f32, scale);
                 }
                 if let Some((x, y)) = crosshair {
                     draw_crosshair(ctx, egui::pos2(x / scale, y / scale));
                 }
-                let actions = menu.ui(ctx, settings, &view, bindings.as_deref_mut());
+                let prefs = menu::Prefs { fullscreen: &mut fullscreen, for_all: &mut for_all };
+                let actions = menu.ui(ctx, &mut values, prefs, &view, bindings.as_deref_mut());
+                if let Some(f) = fade {
+                    let painter =
+                        ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("game fade")));
+                    painter.rect_filled(ctx.content_rect(), 0.0, egui::Color32::from_black_alpha((f * 255.0) as u8));
+                    ctx.request_repaint();
+                }
                 // Over the game or the menu, fading to show it.
                 splash.ui(ctx);
                 actions
             });
+            self.set_prefs(fullscreen, for_all);
+            if let Some(set) = self.session.as_ref().map(|s| s.game.id) {
+                self.edit_values(set, values);
+            }
         }
         // Not counting `present`, which can wait for vsync.
         let draw_time = t_draw.elapsed();
-        g.renderer.queue().present(frame);
+        self.gpu.as_ref().unwrap().renderer.queue().present(frame);
         self.stats.drawn += 1;
-        if ran > 0 {
-            // Below full speed when following the display, pace by the clock
-            // instead: frames are then run as fast as they can be (dropping
-            // to half the refresh rate otherwise).
-            let cost = (emulate_time + draw_time).as_secs_f64() / ran as f64;
-            self.frame_cost += (cost - self.frame_cost) * 0.05;
-            let budget = frame_budget(g.refresh, false).as_secs_f64();
-            if self.frame_cost > budget * 0.95 {
-                self.behind = true;
-            } else if self.frame_cost < budget * 0.8 {
-                self.behind = false;
-            }
-        }
+        self.stats.drawing += draw_time;
+        self.note_cost(ran, emulate_time, draw_time);
         for action in actions {
             match action {
                 menu::Action::Resume => self.set_menu(false),
@@ -854,11 +1213,7 @@ impl Play {
                     self.load_slot(n);
                     self.set_menu(false);
                 }
-                menu::Action::Game(set) => {
-                    self.start_game(&set);
-                    self.set_menu(self.session.is_none());
-                }
-                menu::Action::Rescan => self.scan(),
+                menu::Action::Games => self.open_launcher(),
                 menu::Action::Bindings => {
                     if let Some(s) = &self.session {
                         settings::save_bindings(s.game, &s.bindings);
@@ -867,8 +1222,287 @@ impl Play {
                 menu::Action::Quit => self.quit(el),
             }
         }
-        self.apply_settings();
         self.status();
+    }
+
+    /// The player-wide settings, as the launcher or menu left them.
+    fn set_prefs(&mut self, fullscreen: bool, for_all: bool) {
+        if (fullscreen, for_all) == (self.settings.fullscreen, self.settings.for_all) {
+            return;
+        }
+        if fullscreen != self.settings.fullscreen {
+            if let Some(g) = &self.gpu {
+                g.window.set_fullscreen(fullscreen.then_some(Fullscreen::Borderless(None)));
+            }
+        }
+        (self.settings.fullscreen, self.settings.for_all) = (fullscreen, for_all);
+        self.settings.save();
+    }
+
+    /// The launcher's preview: drop it when the selection has moved (after
+    /// fading it out), start getting the selected game's ready once it has
+    /// been selected for `launcher::SETTLE`, and start it when it is.
+    fn manage_preview(&mut self, now: Instant) {
+        let selected = self.launcher.selected();
+        let wanted = selected.map(|g| g.id.to_string());
+        if wanted != self.preview.wanted {
+            self.preview.wanted = wanted.clone();
+            self.previews.cancel_loads();
+        }
+        let showing = self.session.as_ref().map(|s| s.game.id);
+        if showing.is_some() && showing != wanted.as_deref() {
+            let since = *self.preview.leaving.get_or_insert(now);
+            if now - since >= FADE_OUT {
+                self.session = None;
+                self.preview.leaving = None;
+            }
+        } else {
+            self.preview.leaving = None;
+        }
+        let settled = now - self.launcher.selected_at >= launcher::SETTLE;
+        if let Some(game) = selected.filter(|g| settled && !self.preview.failed.contains_key(g.id)) {
+            if self.session.is_none() && !self.previews.pending(game.id) {
+                self.previews.request(game, &self.settings.rom, self.values.geo_mode(), self.opts.interp);
+            }
+        }
+        for ev in self.previews.poll() {
+            match ev {
+                preview::Event::Ready(r) => {
+                    if self.session.is_none() && wanted.as_deref() == Some(r.game.id) {
+                        self.start_preview(*r);
+                    } else if r.made {
+                        println!(
+                            "preview       {}: made the attract state in {:.0} ms",
+                            r.game.id,
+                            r.took.as_secs_f64() * 1000.0
+                        );
+                    }
+                }
+                preview::Event::Failed(set, e) => {
+                    eprintln!("preview       {set}: {e}");
+                    self.preview.failed.insert(set, e);
+                }
+            }
+        }
+        // The sound fades in once the preview shows.
+        if let (Some(s), Some(shown)) = (&self.session, self.preview.shown) {
+            let leaving = self.preview.leaving.map(|t| 1.0 - (now - t).as_secs_f32() / FADE_OUT.as_secs_f32());
+            let f = ((now - shown).as_secs_f32() / SOUND_FADE.as_secs_f32()).min(1.0) * leaving.unwrap_or(1.0);
+            if let Some(snd) = &s.sound {
+                if f < 1.0 || leaving.is_some() || self.redraws.is_multiple_of(30) {
+                    let db = PREVIEW_DB + fade_db(f);
+                    snd.set_mix(self.values.sfx_db + db, self.values.music_db + db);
+                }
+            }
+        }
+    }
+
+    /// One redraw with the launcher open.
+    fn launcher_frame(&mut self, el: &ActiveEventLoop) {
+        self.poll_pads();
+        let now = Instant::now();
+        let secs = (now - self.started).as_secs_f64();
+        while self.opts.nav.front().is_some_and(|n| n.0 <= secs) {
+            let (_, nav) = self.opts.nav.pop_front().unwrap();
+            self.navs.push(nav);
+        }
+        if let Some(set) = self.launcher.selected().map(|g| g.id) {
+            self.use_values(set);
+        }
+        self.manage_preview(now);
+        let t0 = Instant::now();
+        let (ran, emulate_time) = self.run_due();
+        let Some(g) = &mut self.gpu else { return };
+        let frame = match g.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+            _ => {
+                g.surface.configure(g.renderer.device(), &g.config);
+                self.stats.surface_misses += 1;
+                return;
+            }
+        };
+        let t_draw = Instant::now();
+        let target = frame.texture.create_view(&Default::default());
+        let size = [g.config.width, g.config.height];
+        let ppp = g.window.scale_factor() as f32;
+        let actions = self.draw_launcher_at(&target, size, ppp, t0);
+        let draw_time = t_draw.elapsed();
+        self.gpu.as_ref().unwrap().renderer.queue().present(frame);
+        self.stats.drawn += 1;
+        self.stats.drawing += draw_time;
+        self.note_cost(ran, emulate_time, draw_time);
+        for action in actions {
+            match action {
+                launcher::Action::Play { set, resume } => {
+                    self.launcher.open = false;
+                    self.launcher_bindings = None;
+                    self.session = None;
+                    self.preview =
+                        PreviewState { failed: std::mem::take(&mut self.preview.failed), ..Default::default() };
+                    self.start_game(&set, resume);
+                    if self.session.is_some() {
+                        self.game_fade = Some(Instant::now());
+                    }
+                }
+                launcher::Action::Rescan(rom) => {
+                    self.settings.rom = rom.into();
+                    self.settings.save();
+                    self.scan();
+                }
+                launcher::Action::ResetGame(set) => {
+                    self.settings.reset_game(&set);
+                    self.use_values(&set);
+                }
+                launcher::Action::Quit => self.quit(el),
+            }
+        }
+        self.status();
+    }
+
+    /// Draw the launcher into `target` (`size` pixels at `ppp` pixels per
+    /// point): the backdrop, the preview, and the launcher over them.
+    fn draw_launcher(&mut self, target: &wgpu::TextureView, size: [u32; 2], ppp: f32, t0: Instant) {
+        self.draw_launcher_at(target, size, ppp, t0);
+    }
+
+    fn draw_launcher_at(
+        &mut self,
+        target: &wgpu::TextureView,
+        size: [u32; 2],
+        ppp: f32,
+        t0: Instant,
+    ) -> Vec<launcher::Action> {
+        let now = Instant::now();
+        let secs = (now - self.started).as_secs_f64();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size[0] as f32, size[1] as f32) / ppp);
+        let l = launcher::layout(screen);
+        // The backdrop's horizon sits behind the cards' tops.
+        let horizon = (l.cards_y - l.card.y * 0.62) / screen.height();
+        let g = self.gpu.as_mut().unwrap();
+        let params = backdrop::Params {
+            size: [size[0] as f32, size[1] as f32],
+            horizon,
+            scale: ppp * l.u,
+            phase: (secs * 0.18).fract() as f32,
+            drift: (secs * 0.004 % 1000.0) as f32,
+            level: 1.0,
+            _pad: 0.0,
+        };
+        g.backdrop.draw(g.renderer.device(), g.renderer.queue(), target, &params);
+        // The preview: the game drawn as the window would show it, at the
+        // preview's size.
+        let hero = l.hero;
+        let pw = (hero.width() * ppp).round().max(16.0) as u32;
+        let ph = (hero.height() * ppp).round().max(16.0) as u32;
+        let mut preview_view = None;
+        if self.session.as_ref().is_some_and(|s| s.preview) {
+            let (view, origin) = self.fit(pw, ph);
+            let g = self.gpu.as_mut().unwrap();
+            let format = g.config.format;
+            if g.preview.as_ref().is_none_or(|p| p.size != [pw, ph]) {
+                let texture = g.renderer.device().create_texture(&wgpu::TextureDescriptor {
+                    label: Some("preview"),
+                    size: wgpu::Extent3d { width: pw, height: ph, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&Default::default());
+                let device = g.renderer.device();
+                let id = match &g.preview {
+                    Some(p) => {
+                        g.overlay.renderer.update_egui_texture_from_wgpu_texture(
+                            device,
+                            &view,
+                            wgpu::FilterMode::Linear,
+                            p.id,
+                        );
+                        p.id
+                    }
+                    None => g.overlay.renderer.register_native_texture(device, &view, wgpu::FilterMode::Linear),
+                };
+                g.preview = Some(PreviewTarget { _texture: texture, view, id, size: [pw, ph] });
+            }
+            let pt = g.preview.as_ref().unwrap();
+            let (pview, id) = (pt.view.clone(), pt.id);
+            self.draw_session(&pview, &view, origin, format, t0);
+            let shown = *self.preview.shown.get_or_insert(now);
+            let fade_in = ((now - shown).as_secs_f32() / launcher::FADE_IN.as_secs_f32()).min(1.0);
+            let fade_out = self.preview.leaving.map_or(1.0, |t| 1.0 - (now - t).as_secs_f32() / FADE_OUT.as_secs_f32());
+            let bezel = self.values.bezel && view.pad < 1.0 && (view.width as u32) + 1 < pw;
+            preview_view = Some(launcher::PreviewView {
+                texture: id,
+                alpha: (fade_in * fade_out).clamp(0.0, 1.0),
+                picture: [
+                    origin.0 as f32 / pw as f32,
+                    origin.1 as f32 / ph as f32,
+                    view.width as f32 / pw as f32,
+                    view.height as f32 / ph as f32,
+                ],
+                bezel,
+            });
+        }
+        let selected = self.launcher.selected();
+        let resume = selected.and_then(|g| std::fs::metadata(resume_path(g.id)).and_then(|m| m.modified()).ok());
+        let progress = selected.and_then(|g| self.previews.progress(g.id));
+        let failed = selected.and_then(|g| self.preview.failed.get(g.id)).cloned();
+        let has_own = selected.is_some_and(|g| self.settings.has_own(g.id));
+        let view = launcher::View {
+            preview: preview_view,
+            progress: progress.filter(|_| preview_view.is_none()),
+            no_preview: failed.as_deref(),
+            resume,
+            unsupported: self.unsupported,
+        };
+        if self.launcher.panel == launcher::Panel::Controls && self.launcher_bindings.is_none() {
+            self.launcher_bindings = selected.map(settings::load_bindings);
+        }
+        if self.launcher.panel != launcher::Panel::Controls {
+            self.launcher_bindings = None;
+        }
+        let navs = std::mem::take(&mut self.navs);
+        let mut values = self.values.clone();
+        let mut for_all = self.settings.for_all;
+        let sources = self.sources;
+        let (launcher, menu, splash) = (&mut self.launcher, &mut self.menu, &mut self.splash);
+        let bindings = &mut self.launcher_bindings;
+        let title = selected.map_or("", |g| g.title);
+        let animating = launcher.animating() || self.session.is_some() || progress.is_some();
+        let g = self.gpu.as_mut().unwrap();
+        let mut changed = false;
+        let actions = draw_overlay(g, target, false, size, Some(ppp), |ctx| {
+            let actions = launcher.ui(ctx, navs.clone(), &view, &mut values, &sources, &mut for_all, has_own);
+            if launcher.panel == launcher::Panel::Controls {
+                if let Some(b) = bindings.as_mut() {
+                    menu.controls = true;
+                    changed |= menu.controls_page(ctx, b, title);
+                    if !menu.controls {
+                        launcher.panel = launcher::Panel::Settings;
+                    }
+                }
+            } else {
+                menu.capture = None;
+            }
+            menu.notices(ctx);
+            splash.ui(ctx);
+            if animating {
+                ctx.request_repaint();
+            }
+            actions
+        });
+        if changed {
+            if let (Some(game), Some(b)) = (selected, &self.launcher_bindings) {
+                settings::save_bindings(game, b);
+            }
+        }
+        self.set_prefs(self.settings.fullscreen, for_all);
+        if let Some(set) = selected.map(|g| g.id) {
+            self.edit_values(set, values);
+        }
+        actions
     }
 
     fn status(&mut self) {
@@ -888,12 +1522,13 @@ impl Play {
             _ => "exact speed".into(),
         };
         let status = format!(
-            "{mode} · {:.0}% speed · {:.0} fps ({} repeats, longest gap {:.0} ms) · emulate {:.1} ms/frame{audio}{}",
+            "{mode} · {:.0}% speed · {:.0} fps ({} repeats, longest gap {:.0} ms) · emulate {:.1} ms/frame · draw {:.2} ms{audio}{}",
             st.emulated as f64 / secs / FPS * 100.0,
             st.drawn as f64 / secs,
             st.repeats,
             st.longest_gap.as_secs_f64() * 1000.0,
             st.emulating.as_secs_f64() * 1000.0 / st.emulated.max(1) as f64,
+            st.drawing.as_secs_f64() * 1000.0 / st.drawn.max(1) as f64,
             if st.surface_misses > 0 { format!(" · {} draws skipped", st.surface_misses) } else { String::new() },
         ) + &if st.geo_late > 0 {
             format!(" · {} drawn with the last frame's polygons", st.geo_late)
@@ -909,12 +1544,17 @@ impl Play {
             String::new()
         };
         if let Some(g) = &self.gpu {
-            let game = self.session.as_ref().map_or("no game", |s| s.game.title);
-            g.window.set_title(&format!("reModel: {game} · {}x{} · {status}", g.view.width, g.view.height));
+            let title = match &self.session {
+                Some(s) if s.preview => format!("reModel · preview: {} · {status}", s.game.title),
+                Some(s) => format!("reModel: {} · {}x{} · {status}", s.game.title, g.view.width, g.view.height),
+                None if self.launcher.open => "reModel".to_string(),
+                None => format!("reModel: no game · {status}"),
+            };
+            g.window.set_title(&title);
         }
         let reports = self.stats.reports + 1;
         if reports.is_multiple_of(5) && !self.menu.open {
-            println!("status        {status}");
+            println!("status        {}{status}", if self.launcher.open { "launcher · " } else { "" });
         }
         let misses = self.stats.surface_misses;
         self.stats = Stats { reports, surface_misses: misses, ..Stats::new() };
@@ -922,7 +1562,7 @@ impl Play {
 
     /// Open or close the menu; the game pauses while it's open.
     fn set_menu(&mut self, open: bool) {
-        self.menu.open = open || self.session.is_none();
+        self.menu.open = open;
         // Keys held when the menu opened would stay pressed otherwise.
         self.keys.clear();
     }
@@ -940,7 +1580,8 @@ impl Play {
         }
         if let Some(s) = &mut self.session {
             let hash = s.machine.bus.state_hash();
-            println!("frames        {}, state hash {hash:016x}", s.machine.frames);
+            let what = if s.preview { "preview" } else { "frames" };
+            println!("{what:<14}{}, state hash {hash:016x}", s.machine.frames);
             if let Some(d) = &s.machine.bus.drive {
                 println!("drive board   {}", d.describe());
             }
@@ -950,9 +1591,8 @@ impl Play {
     }
 
     fn quit(&mut self, el: &ActiveEventLoop) {
-        if let Some(s) = &self.session {
-            s.save_eeprom();
-        }
+        self.previews.cancel_all();
+        self.leave_game();
         self.settings.save();
         el.exit();
     }
@@ -971,19 +1611,43 @@ fn draw_crosshair(ctx: &egui::Context, at: egui::Pos2) {
     }
 }
 
-/// Draw egui over `target` (`size` pixels), building the UI with `ui`;
-/// returns what it returned. `clear` clears to black first (no game under
-/// it).
+/// egui's look in the logo's colours: the menu, the Controls page and the
+/// launcher's widgets.
+fn style(ctx: &egui::Context) {
+    use launcher::{CYAN, FG, LINE, PANEL};
+    ctx.all_styles_mut(|s| {
+        let v = &mut s.visuals;
+        *v = egui::Visuals::dark();
+        v.window_fill = PANEL;
+        v.panel_fill = PANEL;
+        v.window_stroke = egui::Stroke::new(1.0, LINE);
+        v.window_corner_radius = 12.0.into();
+        v.selection.bg_fill = egui::Color32::from_rgba_unmultiplied(47, 230, 239, 90);
+        v.selection.stroke = egui::Stroke::new(1.0, CYAN);
+        v.hyperlink_color = CYAN;
+        v.override_text_color = Some(FG);
+        v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, CYAN);
+        v.widgets.active.bg_stroke = egui::Stroke::new(1.5, CYAN);
+        s.spacing.button_padding = egui::vec2(10.0, 5.0);
+        s.spacing.item_spacing = egui::vec2(10.0, 7.0);
+    });
+}
+
+/// Draw egui over `target` (`size` pixels, at `ppp` pixels per point, else
+/// the window's scaling), building the UI with `ui`; returns what it
+/// returned. `clear` clears to black first (no game under it).
 fn draw_overlay<T: Default>(
     g: &mut Gpu,
     target: &wgpu::TextureView,
     clear: bool,
     size: [u32; 2],
+    ppp: Option<f32>,
     mut ui: impl FnMut(&egui::Context) -> T,
 ) -> T {
     let o = &mut g.overlay;
     let mut raw = o.state.take_egui_input(&g.window);
-    let ppp = g.window.scale_factor() as f32;
+    let ppp = ppp.unwrap_or(g.window.scale_factor() as f32);
+    raw.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(ppp);
     raw.screen_rect =
         Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size[0] as f32, size[1] as f32) / ppp));
     let mut result = T::default();
@@ -1073,6 +1737,7 @@ impl ApplicationHandler for Play {
         surface.configure(&device, &config);
         println!("gpu           {name}");
         let ctx = egui::Context::default();
+        style(&ctx);
         let state = egui_winit::State::new(
             ctx.clone(),
             egui::ViewportId::ROOT,
@@ -1082,13 +1747,15 @@ impl ApplicationHandler for Play {
             Some(device.limits().max_texture_dimension_2d as usize),
         );
         let egui_renderer = egui_wgpu::Renderer::new(&device, config.format, Default::default());
+        let backdrop = backdrop::Backdrop::new(&device, config.format);
         let renderer = gpu::Renderer::from_device(device, queue, name);
         let (view, origin) = self.fit(config.width, config.height);
         // Redraws drive everything; Wayland sends none until asked.
         window.request_redraw();
         let refresh = refresh_hz(&window);
         let overlay = Overlay { ctx, state, renderer: egui_renderer };
-        self.gpu = Some(Gpu { window, surface, config, renderer, view, origin, refresh, overlay });
+        self.gpu =
+            Some(Gpu { window, surface, config, renderer, view, origin, refresh, overlay, backdrop, preview: None });
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
@@ -1134,13 +1801,17 @@ impl ApplicationHandler for Play {
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else { return };
                 let pressed = event.state == ElementState::Pressed;
+                if pressed && !event.repeat && code == KeyCode::F11 {
+                    let fullscreen = !self.settings.fullscreen;
+                    return self.set_prefs(fullscreen, self.settings.for_all);
+                }
+                // The launcher reads its keys from egui.
+                if self.launcher.open {
+                    return;
+                }
                 if pressed && !event.repeat {
                     match code {
                         KeyCode::Escape => return self.set_menu(!self.menu.open),
-                        KeyCode::F11 => {
-                            self.settings.fullscreen = !self.settings.fullscreen;
-                            return;
-                        }
                         KeyCode::F5 => return self.save_slot(0),
                         KeyCode::F9 => return self.load_slot(0),
                         _ => {}
@@ -1160,7 +1831,7 @@ impl ApplicationHandler for Play {
                 self.mouse_used = true;
             }
             WindowEvent::CursorLeft { .. } => self.mouse = None,
-            WindowEvent::MouseInput { state, button, .. } if !self.menu.open && !to_menu => {
+            WindowEvent::MouseInput { state, button, .. } if !self.menu.open && !to_menu && !self.launcher.open => {
                 let i = match button {
                     MouseButton::Left => 0,
                     MouseButton::Right => 1,
@@ -1204,24 +1875,34 @@ fn main() {
     let splash = splash::Splash::new(opts.splash);
     let mut play = Play {
         opts,
-        applied: settings.clone(),
         settings,
+        values: GameSettings::default(),
+        sources: [Source::Default; KEYS.len()],
+        applied: GameSettings::default(),
+        values_for: String::new(),
         session: None,
         games: Vec::new(),
         unsupported: 0,
         menu: menu::Menu::default(),
+        launcher: launcher::Launcher::default(),
+        previews: preview::Previews::default(),
+        preview: PreviewState::default(),
+        launcher_bindings: None,
         splash,
         bezel: None,
         gpu: None,
         keys: HashSet::new(),
         gilrs,
         pad: None,
+        pad_nav: launcher::PadNav::default(),
+        navs: Vec::new(),
         mouse: None,
         mouse_used: false,
         mouse_buttons: [false; 2],
         stick: model2::input::StickCursor::default(),
         epoch: Instant::now(),
         smooth_at: Instant::now(),
+        game_fade: None,
         redraws: 0,
         last_emulate: None,
         frame_cost: 0.0,
@@ -1229,18 +1910,20 @@ fn main() {
         stats: Stats::new(),
         started: Instant::now(),
     };
-    play.scan();
-    // The last game played (or --game), if it's here; else the menu.
-    let set = play.opts.game.clone().unwrap_or_else(|| play.settings.game.clone());
     if play.settings.rom == Settings::default().rom {
         // So there's an obvious place to put sets.
         let _ = std::fs::create_dir_all(&play.settings.rom);
     }
-    if play.games.iter().any(|g| g.0 == set) {
-        play.start_game(&set);
-    } else {
-        println!("no {set} in {}: choose a game in the menu", play.settings.rom.display());
-        play.menu.open = true;
+    play.scan();
+    // `--game`: straight into it; else the launcher.
+    match play.opts.game.clone() {
+        Some(set) if play.games.iter().any(|g| g.id == set) => play.start_game(&set, false),
+        Some(set) => {
+            println!("no {set} in {}: choose a game", play.settings.rom.display());
+            play.menu.notify(format!("No {set} in {}", play.settings.rom.display()));
+            play.launcher.open = true;
+        }
+        None => play.launcher.open = true,
     }
     let event_loop = EventLoop::new().expect("event loop");
     event_loop.run_app(&mut play).expect("event loop");

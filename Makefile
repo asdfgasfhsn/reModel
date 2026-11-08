@@ -209,9 +209,9 @@ dump-textures: release ## Coin-start-race run dumping every 3D texture and tile 
 	rm -rf $(OUT)/texdump
 	$(RUN) $(VIEW) --dump-textures $(OUT)/texdump --input $(BENCH_INPUT) run $(BENCH_STEPS) 60
 
-play: ## Play in a native window: GPU, live sound, gamepads, Esc menu, save states (RECOMP=1: recompiled code; PLAY_ARGS, e.g. --game topskatr)
+play: ## Play in a native window: the launcher (game cards, live attract previews, settings), or straight into GAME= if given; GPU, live sound, gamepads, Esc menu, save states (RECOMP=1: recompiled code; PLAY_ARGS)
 	$(call release_build,remodel-play)
-	$(PLAY) --game $(GAME) --rom $(ROM) $(PLAY_ARGS)
+	$(PLAY) $(if $(filter command line environment,$(origin GAME)),--game $(GAME)) --rom $(ROM) $(PLAY_ARGS)
 
 # `make dist`: interpreter only, so no game-derived recompiled code is
 # linked in; a target dir of its own keeps the stripped profile apart.

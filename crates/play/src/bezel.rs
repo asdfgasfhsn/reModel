@@ -5,19 +5,20 @@
 
 include!(concat!(env!("OUT_DIR"), "/bezels.rs"));
 
-/// The bezel art for `game` (its own, else its parent set's), decoded.
+/// The set whose bezel art `game` shows: its own, else its parent's.
+pub fn art_set(game: &romset::Game) -> Option<&'static str> {
+    std::iter::once(game.id).chain(game.parent).find_map(|s| BEZELS.iter().find(|b| b.0 == s)).map(|b| b.0)
+}
+
+/// The bezel art for `game`, encoded.
+pub fn bytes(game: &romset::Game) -> Option<&'static [u8]> {
+    let set = art_set(game)?;
+    BEZELS.iter().find(|b| b.0 == set).map(|b| b.1)
+}
+
+/// The bezel art for `game`, decoded.
 pub fn image(game: &romset::Game) -> Option<egui::ColorImage> {
-    let bytes = std::iter::once(game.id).chain(game.parent).find_map(|s| BEZELS.iter().find(|b| b.0 == s))?.1;
-    let mut d = image_webp::WebPDecoder::new(std::io::Cursor::new(bytes)).ok()?;
-    let (w, h) = d.dimensions();
-    let mut buf = vec![0; d.output_buffer_size()?];
-    d.read_image(&mut buf).ok()?;
-    let size = [w as usize, h as usize];
-    Some(if d.has_alpha() {
-        egui::ColorImage::from_rgba_unmultiplied(size, &buf)
-    } else {
-        egui::ColorImage::from_rgb(size, &buf)
-    })
+    crate::art::decode(bytes(game)?)
 }
 
 /// Where the bezel goes, in window pixels: its rectangle (x, y, width,
