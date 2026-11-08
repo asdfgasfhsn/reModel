@@ -6,11 +6,16 @@ code and from running it on the board model (`model2::bus` with
 `Board::Model2A`, `model2::tgp2a`); where a statement is a guess it says
 so. The 2A's processor, the Fujitsu MB86234, is in `mb86234.md`.
 
-**Status (milestone 1).** The board model boots `srallyc`, passes its
-coprocessor load check against a **stand-in** (the TGP's program is
-uploaded and recorded, never run), and runs the attract mode's tile
-layers: the export warning, the title logo, the credit and © line, the ranking table. No
-3D is drawn: every 3D call the game makes goes unanswered. `srallyc` is in
+**Status (milestone 2).** The board model boots `srallyc`, passes its
+coprocessor load check and runs the attract mode's tile layers: the export
+warning, the title logo, the credit and (c) line, the ranking table. The
+TGP's program is uploaded and recorded but **not run**: its instruction
+set is only partly known (`mb86234.md`). In its place `model2::tgp2a_hle`
+does what each of the program's functions was *read* to do (§6), so the
+game now gets answers (a matrix it sets reads back, the stack pushes and
+pops, a point transforms) where milestone 1 returned zeros. No 3D is drawn
+yet: the geometrizer model for 2A is missing (§1), and the functions that
+output to it (`0x05`, `0x5D`...) are only counted. `srallyc` is in
 `romset::games::IN_PROGRESS`, not `ALL`, so no front end lists it.
 
 ## 1. What the 2A shares with 2B and 2C (confirmed by the run)
@@ -112,18 +117,21 @@ After the load the game talks to the TGP only through `0x884000`
 - A **reply** is that many reads of `0x884000`, which on the real board
   would wait for the TGP. The game does not poll the status register
   (`0x980004`, read once).
-- The TGP's program has a **dispatch table of 130 entries** (words
-  0xAE-0x12F of the image), indexed by function number: every function the
-  game called (31 of them) has a slot pointing into the program (a jump-like
-  word `0xBF60xxxx`), and slots 0 and 129 point nowhere. See `mb86234.md`.
+- The TGP's program has a **dispatch table of 128 entries** (words
+  0xAF-0x12E of the image), indexed by function number F (word `0xAF + F`):
+  every function the game called (31 of them) has a slot pointing into the
+  program (a jump-like word `0xBF60xxxx`); unused numbers point at a common
+  return. (Milestone 1 read it as 130 entries from `0xAE`, one off: the
+  main loop's `3B0000AF` is the base. See `mb86234.md`.)
 
 ### The functions the game calls
 
 From a 700 M-instruction coin-start run (4,832 frames), calls in the
 attract mode. Args and replies are words per call (constant for each
 function in the whole run). Frames are the first and last the function was
-called. The meaning column is what the argument counts, the ordering of
-calls and the values suggest: **all guesses**, none confirmed.
+called. The meaning column is what milestone 1's argument counts suggested; §6
+has what reading the program's code found for each, with how sure that is
+(it replaces this column where they differ).
 
 | F | Args | Reads | Calls | Frames | What it may be |
 |---|---|---|---|---|---|
@@ -191,13 +199,62 @@ read. The zip also holds the older program revision `b`
 (`epr-17888b.12`, `epr-17889b.13`) and `ic12.bin`/`ic13.bin`, which are
 the program pair again under other names; they are not used.
 
-## 6. What milestone 2 starts from
+## 6. The function model (milestone 2)
 
+`model2::tgp2a_hle` (recognised by the program's hash, so another 2A
+program gets none) models each function by what its code was read to do.
+**It is not the chip**: the program is not run. For each function: how
+sure, and where it is in the program (word address; slot F = word
+`0xAF + F`; `mb86234.md` for the cells).
+
+| F | Takes / gives | What it does | Sure | Code |
+|---|---|---|---|---|
+| 2 | 0 / 1 | the unknown-function error count (cell `0x7C`, written only by the error path) | confirmed | `0x13F` |
+| 3 | 1 / 0 | sets the command counter (cell `0x65`) to the word | confirmed | `0x15E` |
+| 4 | 0 / 1 | reads the command counter; the main loop adds 1 after every command, `3` itself included | confirmed | `0x168` |
+| 5 | 0 / 0 | writes the current matrix (12 words) to an output buffer in external memory (the geometrizer's list?) | structure confirmed, destination unknown | `0x14E` |
+| 0x20 | 0 / 0 | **push**: copy the current matrix to the next stack slot; at depth 7 and over it only counts | confirmed | `0x25B` |
+| 0x21 | 0 / 0 | **pop**: nothing at depth 0; a pop of an uncopied push (depth 8 and over) only counts | confirmed | `0x26F` |
+| 0x22 | 12 / 0 | set the current matrix (3x3 rotation row by row, then the translation) | confirmed | `0x27E` |
+| 0x23 | 0 / 0 | reset: stack pointer to the base, depth 0; the matrix is left as it was | confirmed | `0x282` |
+| 0x25 | 0 / 0 | identity: 12 zeros, then 1.0 at words 0, 4, 8 | confirmed | `0x327` |
+| 0x26 | 0 / 12 | read the current matrix | confirmed | `0x32E` |
+| 0x27 | 3 / 0 | translate: `t += v M` (three chains of three multiplies) | maths read, convention assumed | `0x332` |
+| 0x28 | 3 / 0 | scale (the game sends 40, 1, 40 for a flat disc): each row by its factor | guessed (rows vs columns) | `0x348` |
+| 0x29-0x2B | 1 / 0 | rotate about x, y, z by the angle (radians; the game passes unwrapped angles like -5489): `M = R M`, right-handed, row vectors | **signs and axis order assumed** | `0x363`, `0x384`, `0x3A4` |
+| 0x2C | 3 / 3 | transform a point: `v M + t` (the nine multiplies take elements `3i + j`) | maths confirmed, layout read | `0x3C2` |
+| 0x2F | 3 / 3 | normalise (sum of squares, inverse square root, three multiplies) | confirmed | `0x30E` |
+| 0x42 / 0x43 / 0x44 | 4 / 0, 1 / 3, 4 / 0 | the four vector registers: set `(i, x, y, z)`, read `i`, add `(i, x, y, z)` | confirmed | `0x404`, `0x40C`, `0x414` |
+| 0x58 | 6 / 1 | pairs the words (0, 1), (2, 3), (4, 5), takes each pair's difference, returns the root of the sum of squares: a distance, *if* the pairs are what the code makes them | operation guessed | `0x51C` |
+| 0x5C | 6 / 1 | **guess** (the same as 0x58) | guessed | `0x577` |
+| 0x32-0x34, 0x48, 0x54, 0x5D-0x5F | take words | output to the geometrizer; not modelled (the words are consumed) | | |
+
+Not called by the game and not modelled: the library of two-input and
+one-input float functions at `8`-`0x17`, the 3x3 concatenation `0x24`, and
+the vector operations around `0x40`-`0x48` other than the three above.
+The game's own test menu has no coprocessor test with known answers, so
+nothing here was checked against expected values: the checks are the
+round trips and the identities in `model2::tgp2a_hle`'s tests.
+
+### What the game does with it
+
+With the model the game's per-frame TGP traffic changes (a run of 4,832
+frames: `0x20`/`0x21` 102,913 times, 13,000 more than with zeros; `0x25`
+18,890 times, twice the zeros' 8,432; the geometrizer still counts 518,683
+commands it cannot use): the matrices it reads back are real, so its own
+bookkeeping goes further. The picture is the same blue attract screen: the
+geometrizer has no model for 2A.
+
+## 7. Where milestone 3 starts
+
+- Decode the multiply group and the ALU codes (`mb86234.md`, "Not
+  known") by executing the short functions with known mathematics, then
+  run the program in place of the model; the model's tests then become
+  checks of the interpreter.
+- What the geometrizer takes from the TGP: functions `0x05` and `0x5D` are
+  the heavy traffic (254,190 calls of seven words); the display lists the
+  game sends to `0x804000` are the same traffic as 2C's, but the 2A
+  geometrizer has no uploaded program and no model.
 - `out/srallyc/tgp.bin` (`make run GAME=srallyc` writes it; `make
-  tgp-disasm GAME=srallyc` splits it): 1,665 words, 130-entry dispatch at
-  word 0xAE, 81 distinct entry points.
-- The call log (`tgp-calls.txt`): each call's arguments and, for 3D, the
-  i960 code that makes them, in order; an interpreter's replies can be
-  compared with what the game then does with them (the 3D objects drawn).
-- The reply words the game reads: function 2, 4 (1 each), 0x26 (12),
-  0x2C, 0x2F, 0x43 (3), 0x58, 0x5C (1).
+  tgp-disasm GAME=srallyc` splits it) and the call log
+  (`tgp-calls.txt`).

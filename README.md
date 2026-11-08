@@ -529,16 +529,31 @@ front end lists.
   argument and result words; one 3D call sequence is a few hundred
   words. `docs/hw/model2a.md` §4 lists them with call counts. 3D calls
   begin at frame 1,352.
-- *Confirmed:* the TGP's program has a 130-entry dispatch table indexed by
-  function number (`docs/hw/mb86234.md`).
-- *Unconfirmed:* what each function does (the list's meaning column is
-  guesses from argument counts), what the `0x12000000` region is for, the
+- *Confirmed:* the TGP's program has a 128-entry dispatch table, function
+  F at word `0xAF + F` (`docs/hw/mb86234.md`; the first milestone's notes
+  were one word off), and the part of the instruction set that reading
+  the program shows: moves with an ALU operation in parallel (fields,
+  the FIFO cells `0x21` and `0x22`, address register 3), float immediates
+  built from an exponent word and a mantissa word, block moves with a
+  step, calls and returns, depth-checked conditional jumps.
+- *Confirmed by reading the program (`docs/hw/model2a.md` §6):* the
+  functions for the matrix stack (push at depth under 7, pop, set, read,
+  reset, identity), the two counters (`2`, `3`/`4`), the vector registers
+  (`0x42`-`0x44`) and the point normalise (`0x2F`). *Read but with
+  assumed conventions* (row vectors, right-handed rotations, rotation
+  order): translate, scale, rotate, transform a point. *Guessed:* the two
+  six-word functions `0x58` and `0x5C`. `model2::tgp2a_hle` runs these
+  in place of the chip (not the chip: the program is still not run), and
+  the game goes further with real answers; its own test menu has no
+  coprocessor test with known answers.
+- *Unconfirmed:* what the other functions do (those that output to the
+  geometrizer), what the `0x12000000` region is for, the
   polygon and texture ROM pairs' order, the controls (the manifest's coin,
   start, test and service bits are the other games' layout), the cabinet's
   drive board and link.
-- *Not done:* the TGP's instruction set (`make tgp-disasm GAME=srallyc`
-  splits the program into its header, dispatch table and functions and
-  decodes nothing), a native geometrizer for 2A, wheel and pedal inputs.
+- *Not done:* running the TGP's program (the multiply group's operand
+  encoding and most ALU codes are unknown, `docs/hw/mb86234.md`), a
+  native geometrizer for 2A (no 3D is drawn), wheel and pedal inputs.
 
 ## What's known about `topskatr`
 
