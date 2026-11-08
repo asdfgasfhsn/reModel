@@ -109,6 +109,7 @@ make bench RECOMP=1       # same run on the recompiled build: same hash, about t
 make play RECOMP=1        # the launcher: pick a game (live attract previews, settings, Continue), then play
 make play GAME=hotd RECOMP=1   # straight into a game (Esc menu, F5/F9 quick save/load, F11 fullscreen)
 make play PLAY_ARGS=--smooth   # with in-between frames on a display over 60 Hz (a frame more latency)
+make install-desktop RECOMP=1   # reModel in the desktop's app menu, running this checkout's player
 make smooth-frames GAME=doa    # coin-start run drawing in-between frames beside the real ones -> out/doa/frames
 make web RECOMP=1         # browser build -> out/web: game list, a page and module per game (WebGPU; serve over HTTPS, docs/web.md)
 make dist                 # player to hand out (interpreter only, no ROMs) -> out/dist/remodel-VERSION-TARGET.tar.gz

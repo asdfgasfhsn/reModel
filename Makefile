@@ -84,7 +84,7 @@ endif
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm m68k-tests clean recomp recomp-workspace bench latency sound sound-disasm geo-check geo-fuzz smooth-frames pace-sim
+.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm m68k-tests clean recomp recomp-workspace bench latency sound sound-disasm geo-check geo-fuzz smooth-frames pace-sim install-desktop uninstall-desktop
 
 ##@ General
 
@@ -212,6 +212,26 @@ dump-textures: release ## Coin-start-race run dumping every 3D texture and tile 
 play: ## Play in a native window: the launcher (game cards, live attract previews, settings), or straight into GAME= if given; GPU, live sound, gamepads, Esc menu, save states (RECOMP=1: recompiled code; PLAY_ARGS)
 	$(call release_build,remodel-play)
 	$(PLAY) $(if $(filter command line environment,$(origin GAME)),--game $(GAME)) --rom $(ROM) $(PLAY_ARGS)
+
+# The launcher in the desktop's app menu, running this checkout's player
+# (from the repo, so it finds rom/ and keeps its files in out/).
+APPS_DIR ?= $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/applications
+ICONS_DIR ?= $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/icons/hicolor/512x512/apps
+
+install-desktop: ## Add reModel to the desktop's app menu: builds the player (RECOMP=1: recompiled) and writes a .desktop entry and icon that run it from this checkout
+	$(call release_build,remodel-play)
+	mkdir -p "$(APPS_DIR)" "$(ICONS_DIR)"
+	cp assets/reModel-icon.png "$(ICONS_DIR)/remodel.png"
+	printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=reModel' \
+		'GenericName=Arcade player' 'Comment=Sega Model 2 games, recompiled' \
+		'Exec=$(CURDIR)/$(PLAY) --rom $(abspath $(ROM))' 'Path=$(CURDIR)' \
+		'TryExec=$(CURDIR)/$(PLAY)' 'Icon=remodel' 'Terminal=false' \
+		'Categories=Game;Emulator;' 'StartupWMClass=remodel' 'StartupNotify=true' \
+		> "$(APPS_DIR)/remodel.desktop"
+	@echo "install-desktop: $(APPS_DIR)/remodel.desktop runs $(CURDIR)/$(PLAY)"
+
+uninstall-desktop: ## Remove the app-menu entry and icon that install-desktop wrote
+	rm -f "$(APPS_DIR)/remodel.desktop" "$(ICONS_DIR)/remodel.png"
 
 # `make dist`: interpreter only, so no game-derived recompiled code is
 # linked in; a target dir of its own keeps the stripped profile apart.

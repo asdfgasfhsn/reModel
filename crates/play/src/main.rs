@@ -1706,6 +1706,14 @@ impl ApplicationHandler for Play {
             .with_title("reModel")
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0))
             .with_fullscreen(self.settings.fullscreen.then_some(Fullscreen::Borderless(None)));
+        // The app id (Wayland) and class (X11) the desktop entry names
+        // (`make install-desktop`), so the window gets its icon.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let attrs = {
+            use winit::platform::{wayland::WindowAttributesExtWayland, x11::WindowAttributesExtX11};
+            let attrs = WindowAttributesExtWayland::with_name(attrs, "remodel", "remodel");
+            WindowAttributesExtX11::with_name(attrs, "remodel", "remodel")
+        };
         let window = Arc::new(el.create_window(attrs).expect("create window"));
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(
             el.owned_display_handle(),
