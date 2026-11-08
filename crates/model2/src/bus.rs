@@ -15,7 +15,7 @@ use crate::geo::{self, Geometrizer};
 use crate::gun::GunBoard;
 use crate::protection;
 use crate::sharc;
-use crate::tgp2a::Tgp2a;
+use crate::tgp2a::{Shared, Tgp2a};
 use i960::cpu::Bus;
 use mb86235::cpu::{External, Step, Tgp};
 use romset::{Board, Role, RomSet};
@@ -345,7 +345,7 @@ impl Model2Bus {
             copro_booted: false,
             tgp: Tgp::new(),
             sharc: (board == Board::Model2B).then(|| Box::new(sharc::Copro::with_data(&copro_data))),
-            tgp2a: (board == Board::Model2A).then(Box::default),
+            tgp2a: (board == Board::Model2A).then(|| Box::new(Tgp2a::new(copro_data.clone()))),
             copro_data,
             tgp_fault: None,
             tgp_stalled: false,
@@ -574,9 +574,10 @@ impl Model2Bus {
     /// Model 2A's registers where they differ from 2C's.
     fn io_read32_2a(&mut self, addr: u32) -> Option<u32> {
         let t = self.tgp2a.as_mut()?;
+        let bus = &mut Shared { buffer: &mut self.mems[BUFFER_RAM].data, commands: self.geo.commands() };
         Some(match addr & !3 {
-            0x0088_4000..=0x0088_7fff => t.data_read(self.frames, self.cur_ip),
-            0x0098_0004 => t.fifo_out.is_empty() as u32,
+            0x0088_4000..=0x0088_7fff => t.data_read(self.frames, self.cur_ip, bus),
+            0x0098_0004 => t.output_empty() as u32,
             // As on 2C: all ones while the TGP holds no program.
             0x0098_0014 => {
                 if t.program.is_empty() {
@@ -593,9 +594,10 @@ impl Model2Bus {
     /// isn't one.
     fn io_write32_2a(&mut self, addr: u32, v: u32) -> bool {
         let Some(t) = self.tgp2a.as_mut() else { return false };
+        let bus = &mut Shared { buffer: &mut self.mems[BUFFER_RAM].data, commands: self.geo.commands() };
         match addr & !3 {
-            0x0088_4000..=0x0088_7fff => t.data_write(addr & 0x3fff, v, self.frames, self.cur_ip),
-            0x0088_0000..=0x0088_3fff => t.command_write(addr & 0x3fff, v, self.frames, self.cur_ip),
+            0x0088_4000..=0x0088_7fff => t.data_write(addr & 0x3fff, v, self.frames, self.cur_ip, bus),
+            0x0088_0000..=0x0088_3fff => t.command_write(addr & 0x3fff, v, self.frames, self.cur_ip, bus),
             0x0098_0000 => {
                 t.control(self.copro_ctrl, v);
                 self.copro_ctrl = v;
@@ -1404,6 +1406,8 @@ mod tests {
     #[test]
     fn model_2a_tgp_and_video_ram() {
         let mut b = bus("srallyc");
+        // The stand-in (this program is no program).
+        b.tgp2a.as_mut().unwrap().use_hle = true;
         b.write32(0x0098_0000, 0x8000_0000);
         for w in [0xbf60_0010u32, 0xbf60_0006, 0x1c00_0001] {
             b.write32(0x0088_4000, w);

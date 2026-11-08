@@ -1,6 +1,5 @@
 mod geo_check;
 mod gpu_check;
-mod mb86234;
 mod music;
 mod recomp_crates;
 mod run_ahead;
@@ -9,6 +8,8 @@ mod sound_render;
 mod soundtrack;
 mod texpack;
 mod tgp2a;
+mod tgp_check;
+mod tgp_disasm;
 
 use analyze::{explore, read_boot, Image, Trace};
 use romset::{games, RomSet};
@@ -58,6 +59,9 @@ options:
                        implements the program (docs/hw/geometrizer-2b.md,
                        docs/hw/geometrizer-2c.md), or both, compared frame
                        by frame (see geo-check)
+  --tgp2a chip|hle     Model 2A's TGP: the uploaded program on the MB86234
+                       interpreter (default), or the function model of
+                       srallyc's program it replaced (docs/hw/model2a.md)
   --smooth T,T...      `run` with --geo native: smooth motion's in-between
                        frames (docs/hw/geometrizer.md, Smooth motion); at
                        each snapshot also draw the in-betweens at these
@@ -82,11 +86,15 @@ commands:
                        image (48-bit words, 6 little-endian bytes each,
                        loaded at 0x20000) to OUT (default FILE.lst)
   tgp-disasm [FILE [OUT]]
-                       a first look at a Model 2A TGP (MB86234) program image
-                       (32-bit little-endian words; default out/GAME/tgp.bin,
-                       which `run` writes): header, dispatch table, function
-                       entry points and opcode counts, to OUT (default FILE.lst).
-                       The instruction set is not known: nothing is decoded
+                       list a Model 2A TGP (MB86234) program image (32-bit
+                       little-endian words; default out/GAME/tgp.bin, which
+                       `run` writes) with mnemonics, its header, dispatch
+                       table and function entry points, to OUT (default
+                       FILE.lst)
+  tgp-check [FILE]     run a Model 2A TGP program image's functions on the
+                       MB86234 interpreter with random arguments and compare
+                       them with their maths and with the function model
+                       (docs/hw/mb86234.md); fails on a mismatch
   sharc-check FILE...  for each SHARC image: undefined encodings, code
                        discovery from the vectors, loop sanity, and a host
                        boot and run to the first external access
@@ -276,6 +284,20 @@ fn main() -> ExitCode {
         };
         let _ = GEO_MODE.set(mode);
     }
+    let Ok(tgp2a_mode) = opt("--tgp2a") else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    match tgp2a_mode.as_deref() {
+        None | Some("chip") => {}
+        Some("hle") => {
+            let _ = TGP2A_HLE.set(true);
+        }
+        Some(_) => {
+            eprintln!("error: --tgp2a wants chip or hle");
+            return ExitCode::FAILURE;
+        }
+    }
     let Ok(smooth) = opt("--smooth") else {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
@@ -348,7 +370,7 @@ fn main() -> ExitCode {
         let file =
             args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out").join(&game_id).join("tgp.bin"));
         let out = args.get(2).map(PathBuf::from).unwrap_or_else(|| file.with_extension("lst"));
-        return match mb86234::disasm(&file, &out) {
+        return match tgp_disasm::disasm(&file, &out) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("error: {e}");
@@ -490,6 +512,36 @@ fn main() -> ExitCode {
                     ks.join(", ")
                 };
                 println!("  {a:#08x}  {shown}");
+            }
+        }
+        "tgp-check" => {
+            // A 2A game's uploaded TGP program on the interpreter, with the
+            // board's function ROM.
+            let file =
+                args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out").join(&game_id).join("tgp.bin"));
+            let bytes = match std::fs::read(&file) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("error: {}: {e} (`make run GAME={game_id}` writes it)", file.display());
+                    return ExitCode::FAILURE;
+                }
+            };
+            let program: Vec<u32> = bytes.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
+            let tables: Vec<u32> = roms
+                .bank(romset::Role::CoproData)
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .take(0x1_0000)
+                .map(|c| u32::from_le_bytes(*c))
+                .collect();
+            match tgp_check::check(&program, tables) {
+                Ok(true) => {}
+                Ok(false) => return ExitCode::FAILURE,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::FAILURE;
+                }
             }
         }
         "disasm" => {
@@ -1077,6 +1129,8 @@ fn games_json(games: &[&romset::Game], dir: &Path) -> String {
 static VIEW: std::sync::OnceLock<model2::video::View> = std::sync::OnceLock::new();
 /// `--geo`: how the 2B geometrizer runs.
 static GEO_MODE: std::sync::OnceLock<model2::geo::GeoMode> = std::sync::OnceLock::new();
+/// `--tgp2a hle`: Model 2A's TGP answered by the function model.
+static TGP2A_HLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 /// `--smooth`: the in-betweens to draw at each snapshot.
 static SMOOTH: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
@@ -1088,6 +1142,9 @@ static SMOOTH_TIME: std::sync::Mutex<(u64, f64, f64)> = std::sync::Mutex::new((0
 fn machine(roms: &RomSet) -> model2::Machine {
     let mut m = model2::Machine::new(roms);
     m.bus.geo.set_mode(GEO_MODE.get().copied().unwrap_or_default());
+    if let Some(t) = m.bus.tgp2a.as_deref_mut() {
+        t.use_hle = TGP2A_HLE.get().copied().unwrap_or(false);
+    }
     m.bus.geo.set_smooth(SMOOTH.get().is_some());
     // For the frame before each snapshot (`snapshot`).
     m.bus.geo.set_keep_last(SMOOTH.get().is_some());

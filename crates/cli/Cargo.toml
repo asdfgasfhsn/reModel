@@ -15,6 +15,7 @@ remodel-romset.workspace = true
 remodel-analyze.workspace = true
 remodel-model2.workspace = true
 mb86235.workspace = true
+mb86234.workspace = true
 adsp2106x.workspace = true
 remodel-sound.workspace = true
 m68k.workspace = true

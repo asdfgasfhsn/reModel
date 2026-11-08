@@ -1,16 +1,43 @@
-//! Model 2A's TGP (Fujitsu MB86234) as the i960 sees it, with a **stand-in
-//! for the chip itself**: the program upload and the FIFO ports are
-//! modelled, the program is *not run*. The stand-in answers the one
-//! request the game's load check makes and records every other call the
-//! game makes, so the TGP's function interface can be read off a run
-//! (`docs/hw/model2a.md`). For a program it recognises, the functions are
-//! answered by `tgp2a_hle` (what each was read to do, not the chip);
-//! otherwise games that wait for the TGP's answers stall (an empty FIFO
-//! reads as 0).
+//! Model 2A's TGP (Fujitsu MB86234) as the i960 sees it: the program
+//! upload, the FIFO ports, and the chip itself, the uploaded program run
+//! by the `mb86234` interpreter (`docs/hw/model2a.md`, `mb86234.md`). Its
+//! external bus reaches the geometrizer's buffer RAM, where the program
+//! writes the matrices of the display list.
+//!
+//! [`Tgp2a::use_hle`] swaps the chip for `tgp2a_hle` (what milestone 2
+//! read each function of `srallyc`'s program to do), kept for comparison;
+//! for a program neither knows, only the load check is answered. Every
+//! call is logged either way, so the function interface can be read off a
+//! run.
 
 use std::collections::{BTreeMap, VecDeque};
 
 use crate::tgp2a_hle::{self, Hle};
+
+/// Words the chip may run for one host access before it is taken to be
+/// stuck (no function of `srallyc`'s program takes a thousand).
+const RUN_LIMIT: u64 = 1_000_000;
+
+/// The chip's external bus: the buffer RAM (32K words, mirrored), and the
+/// geometrizer's record of the command words in it, which a store ends.
+pub struct Shared<'a> {
+    pub buffer: &'a mut [u8],
+    pub commands: &'a mut BTreeMap<u32, u32>,
+}
+
+impl mb86234::Bus for Shared<'_> {
+    fn read(&mut self, addr: u32) -> u32 {
+        let o = (addr as usize & 0x7fff) * 4;
+        u32::from_le_bytes(self.buffer[o..o + 4].try_into().unwrap())
+    }
+    fn write(&mut self, addr: u32, v: u32) {
+        let o = (addr as usize & 0x7fff) * 4;
+        self.buffer[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        if !self.commands.is_empty() {
+            self.commands.remove(&(o as u32));
+        }
+    }
+}
 
 /// Raw events kept for a run's log (the rest only count).
 const TRACE_LIMIT: usize = 200_000;
@@ -72,12 +99,19 @@ pub struct Tgp2a {
     pub uploading: bool,
     /// The upload has finished (the control register's bit 31 fell).
     pub booted: bool,
-    /// What the stand-in answers with.
+    /// What the stand-in or the function model answers with (the chip's
+    /// own FIFO is [`mb86234::Cpu::fifo_out`]).
     pub fifo_out: VecDeque<u32>,
-    /// The model of the program's functions, if the program uploaded is
-    /// one that has one (`tgp2a_hle`); else the stand-in answers only the
-    /// load check.
+    /// The chip, running the uploaded program (unless [`Tgp2a::use_hle`]).
+    pub cpu: Option<Box<mb86234::Cpu>>,
+    /// The model of the program's functions, if [`Tgp2a::use_hle`] and the
+    /// program uploaded is one that has one (`tgp2a_hle`).
     pub hle: Option<Hle>,
+    /// Configuration: answer with `tgp2a_hle` instead of running the chip.
+    pub use_hle: bool,
+    /// Configuration: the function unit's lookup ROM (the board's
+    /// `CoproData`, 32-bit words).
+    pub tables: Vec<u32>,
 
     // Diagnostics, not machine state.
     pub trace: Vec<Event>,
@@ -86,6 +120,9 @@ pub struct Tgp2a {
     pub empty_reads: u64,
     /// The frame and instruction address of the first empty read.
     pub first_empty: Option<(u64, u32)>,
+    /// Host accesses after which the chip was still running at
+    /// [`RUN_LIMIT`] words.
+    pub runaways: u64,
 }
 
 /// Command port of a write at `offset` from `0x880000`: the address bits
@@ -107,6 +144,11 @@ pub fn header(w: u32) -> Option<u32> {
 }
 
 impl Tgp2a {
+    /// The interface of a board whose function unit has `tables`.
+    pub fn new(tables: Vec<u32>) -> Self {
+        Tgp2a { tables, ..Tgp2a::default() }
+    }
+
     /// The control register (`0x980000`) was written. Bit 31 rising
     /// starts an upload, falling ends it and "boots" the (absent) chip.
     pub fn control(&mut self, old: u32, new: u32) {
@@ -115,19 +157,61 @@ impl Tgp2a {
             self.uploading = true;
             self.booted = false;
             self.hle = None;
+            self.cpu = None;
             self.program.clear();
         } else if was && !is {
             self.uploading = false;
             self.booted = true;
-            self.hle = tgp2a_hle::recognise(&self.program);
+            if self.use_hle {
+                self.hle = tgp2a_hle::recognise(&self.program);
+            } else {
+                self.cpu = Some(Box::new(mb86234::Cpu::new(self.program.clone(), self.rom())));
+            }
+        }
+    }
+
+    /// The function unit's ROM: the first 64K words of `tables`.
+    fn rom(&self) -> Vec<u32> {
+        self.tables.get(..0x1_0000).unwrap_or(&self.tables).to_vec()
+    }
+
+    /// Run the chip until it waits for input.
+    fn run(&mut self, bus: &mut Shared) {
+        if let Some(c) = &mut self.cpu {
+            if c.run(bus, RUN_LIMIT) == mb86234::Stop::Limit {
+                self.runaways += 1;
+            }
+        }
+    }
+
+    /// Nothing to read (the host's status register).
+    pub fn output_empty(&self) -> bool {
+        match &self.cpu {
+            Some(c) => c.fifo_out.is_empty(),
+            None => self.fifo_out.is_empty(),
         }
     }
 
     /// A store to the data port during an upload is a program word; else
     /// an argument.
-    pub fn data_write(&mut self, offset: u32, v: u32, frame: u64, ip: u32) {
+    pub fn data_write(&mut self, offset: u32, v: u32, frame: u64, ip: u32, bus: &mut Shared) {
         if self.uploading {
             self.program.push(v);
+            return;
+        }
+        if let Some(c) = &mut self.cpu {
+            c.fifo_in.push_back(v);
+            self.run(bus);
+            match header(v) {
+                Some(f) => {
+                    self.begin(f, v, frame);
+                    self.log((frame, ip, Kind::Header, offset, v));
+                }
+                None => {
+                    self.open.args += 1;
+                    self.log((frame, ip, Kind::Data, offset, v));
+                }
+            }
             return;
         }
         // A model that knows the program knows how many words each
@@ -170,10 +254,18 @@ impl Tgp2a {
     }
 
     /// A store to a command port.
-    pub fn command_write(&mut self, offset: u32, v: u32, frame: u64, ip: u32) {
+    pub fn command_write(&mut self, offset: u32, v: u32, frame: u64, ip: u32, bus: &mut Shared) {
         let p = port(offset);
         self.begin(p, v, frame);
         self.log((frame, ip, Kind::Command, offset, v));
+        // The chip reads a command port's word with the port number in
+        // bits 23-30 (its load check looks for 8 there), as 2C's hardware
+        // tags them.
+        if let Some(c) = &mut self.cpu {
+            c.fifo_in.push_back((p << 23) | (v & 0x7f_ffff));
+            self.run(bus);
+            return;
+        }
         // The only request the stand-in answers: port 8 (a write to
         // 0x880080 after the upload) is answered with 8, which the game's
         // load check wants to read back.
@@ -185,8 +277,15 @@ impl Tgp2a {
     }
 
     /// A read of the data port.
-    pub fn data_read(&mut self, frame: u64, ip: u32) -> u32 {
-        match self.fifo_out.pop_front() {
+    pub fn data_read(&mut self, frame: u64, ip: u32, bus: &mut Shared) -> u32 {
+        if self.cpu.as_ref().is_some_and(|c| c.fifo_out.is_empty()) {
+            self.run(bus);
+        }
+        let fifo = match &mut self.cpu {
+            Some(c) => &mut c.fifo_out,
+            None => &mut self.fifo_out,
+        };
+        match fifo.pop_front() {
             Some(v) => {
                 self.open.replies += 1;
                 self.log((frame, ip, Kind::Reply, 0, v));
@@ -233,13 +332,25 @@ impl state::State for Tgp2a {
         self.booted.save(w);
         self.fifo_out.save(w);
         self.hle.save(w);
+        self.cpu.save(w);
     }
     fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
         self.program.load(r)?;
         self.uploading.load(r)?;
         self.booted.load(r)?;
         self.fifo_out.load(r)?;
-        self.hle.load(r)
+        self.hle.load(r)?;
+        // The program and ROM aren't in the state: they come from the
+        // upload and the board.
+        let mut saved: Option<Box<mb86234::Cpu>> = None;
+        saved.load(r)?;
+        let rom = self.rom();
+        self.cpu = saved.map(|mut c| {
+            c.program = self.program.clone();
+            c.funcs.rom = rom;
+            c
+        });
+        Ok(())
     }
 }
 
@@ -260,24 +371,64 @@ mod tests {
         assert_eq!(header(0xbf60_0085), None);
     }
 
+    fn with_bus<R>(f: impl FnOnce(&mut Shared) -> R) -> R {
+        let (mut ram, mut commands) = (vec![0u8; 0x2_0000], BTreeMap::new());
+        f(&mut Shared { buffer: &mut ram, commands: &mut commands })
+    }
+
     #[test]
     fn calls_are_counted_with_their_arguments_and_reads() {
-        let mut t = Tgp2a::default();
-        t.control(0, 0x8000_0000);
-        t.data_write(0, 0x1234_5678, 0, 0);
-        t.control(0x8000_0000, 0);
-        assert_eq!(t.program, [0x1234_5678]);
-        for frame in 0..3 {
-            t.data_write(0, 0x1500_2a2a, frame, 0);
-            t.data_write(0, 0x3f80_0000, frame, 0);
-            t.data_write(0, 0x0100_0202, frame, 0);
-            assert_eq!(t.data_read(frame, 0), 0);
-        }
+        // The stand-in (an unknown program, no chip), which only logs.
+        let mut t = Tgp2a { use_hle: true, ..Tgp2a::default() };
+        with_bus(|bus| {
+            t.control(0, 0x8000_0000);
+            t.data_write(0, 0x1234_5678, 0, 0, bus);
+            t.control(0x8000_0000, 0);
+            assert_eq!(t.program, [0x1234_5678]);
+            for frame in 0..3 {
+                t.data_write(0, 0x1500_2a2a, frame, 0, bus);
+                t.data_write(0, 0x3f80_0000, frame, 0, bus);
+                t.data_write(0, 0x0100_0202, frame, 0, bus);
+                assert_eq!(t.data_read(frame, 0, bus), 0);
+            }
+        });
         t.finish();
         let (f42, f2) = (&t.functions[&0x2a], &t.functions[&2]);
         assert_eq!((f42.calls, f42.args[&1], f42.replies[&0]), (3, 3, 3));
         assert_eq!((f2.calls, f2.args[&0], f2.replies[&1], f2.empty_reads), (3, 3, 3, 3));
         assert_eq!((f42.first_frame, f42.last_frame), (0, 2));
         assert_eq!(t.first_empty, Some((0, 0)));
+    }
+
+    #[test]
+    fn the_chip_runs_the_upload() {
+        // acc = 8; then for each input word: out = acc, and acc += the word
+        // (integers); and a word stored to buffer RAM word 2 on the way.
+        let program = [
+            0x3b00_0008, // acc = 8
+            0x1c1f_2621, // r13 = in
+            0x1c1f_2013, // r10 = r13
+            0x1c1f_4419, // out = acc
+            0x6340_0000, // bus: shared RAM
+            0x4300_0002, // ar3 = 2
+            0x1f5c_a7a0, // acc += r10 | ext[ar3] = r13
+            0xbf60_0001, // jmp 1
+        ];
+        let mut t = Tgp2a::default();
+        let (mut ram, mut commands) = (vec![0u8; 0x2_0000], BTreeMap::new());
+        let bus = &mut Shared { buffer: &mut ram, commands: &mut commands };
+        t.control(0, 0x8000_0000);
+        for w in program {
+            t.data_write(0, w, 0, 0, bus);
+        }
+        t.control(0x8000_0000, 0);
+        t.command_write(0x80, 0, 0, 0, bus);
+        assert_eq!(t.data_read(0, 0, bus), 8);
+        t.data_write(0, 5, 0, 0, bus);
+        assert_eq!(t.data_read(0, 0, bus), 8 + (8 << 23));
+        assert!(t.output_empty());
+        assert_eq!(ram[8..12], 5u32.to_le_bytes());
+        let c = t.cpu.as_ref().unwrap();
+        assert!(c.unknown.is_empty() && t.runaways == 0);
     }
 }

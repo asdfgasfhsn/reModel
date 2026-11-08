@@ -1,11 +1,11 @@
-//! `tgp-disasm`: a first look at a Model 2A TGP (MB86234) program image.
+//! `tgp-disasm`: a Model 2A TGP (MB86234) program image, listed.
 //!
-//! The instruction set is **not known yet**, so this decodes nothing: it
-//! splits the image into the parts its *shape* shows (the header, the
-//! dispatch table, the functions the table points at) and counts opcodes
-//! by the top byte. Everything it calls something is a structural
-//! observation from the programs, listed in `docs/hw/mb86234.md`, not a
-//! mnemonic.
+//! It splits the image into the parts its shape shows (the header, the
+//! dispatch table, the functions the table points at), counts opcodes by
+//! the top byte, and lists every word with the mnemonic of
+//! `mb86234::disasm` (the encodings the interpreter implements;
+//! `docs/hw/mb86234.md` says how sure each is). Words of a form not known
+//! show as `??`.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -138,10 +138,10 @@ pub fn disasm(file: &Path, out: &Path) -> Result<(), String> {
         println!("  {op:02x} {n:>5} {:>5.1}%", **n as f64 * 100.0 / a.words.max(1) as f64);
     }
 
-    // The listing: words with where they are in the structure, nothing
-    // decoded.
+    // The listing: words with where they are in the structure.
     let mut text = String::new();
-    let _ = writeln!(text, "; {} words; top byte = opcode field (hypothesis), nothing decoded", a.words);
+    let _ = writeln!(text, "; {} words; mnemonics: docs/hw/mb86234.md", a.words);
+    let mut unknown = 0;
     for (i, &w) in program.iter().enumerate() {
         if a.entries.contains(&i) {
             let slots: Vec<String> = a
@@ -152,17 +152,19 @@ pub fn disasm(file: &Path, out: &Path) -> Result<(), String> {
                 .collect();
             let _ = writeln!(text, "\nfunc_{i:03x}:  ; dispatch slot(s): {}", slots.join(", "));
         }
+        let line = ::mb86234::disasm::line(w);
+        unknown += line.starts_with("??") as usize;
         let note = if a.header.contains(&i) {
-            format!("header, jump-like, target {:#x}", w & 0xffff)
+            format!("  ; vector {i}")
         } else if a.table.contains(&i) {
-            format!("table slot (function {:#x}), jump-like, target {:#x}", i - a.table.start, w & 0xffff)
+            format!("  ; function {:#x}", i - a.table.start)
         } else {
             String::new()
         };
-        let _ = writeln!(text, "  {i:03x}  {w:08x}  op {:02x}  {note}", w >> 24);
+        let _ = writeln!(text, "  {i:03x}  {w:08x}  {line}{note}");
     }
     std::fs::write(out, text).map_err(|e| format!("{}: {e}", out.display()))?;
-    println!("listing written to {}", out.display());
+    println!("listing written to {} ({unknown} words of unknown form)", out.display());
     Ok(())
 }
 

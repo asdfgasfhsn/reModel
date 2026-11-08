@@ -1426,6 +1426,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 
 [[package]]
+name = "mb86234"
+version = "0.1.0"
+dependencies = [
+ "remodel-state",
+]
+
+[[package]]
 name = "mb86235"
 version = "0.1.0"
 dependencies = [
@@ -2330,6 +2337,7 @@ dependencies = [
  "adsp2106x",
  "i960",
  "m68k",
+ "mb86234",
  "mb86235",
  "remodel-analyze",
  "remodel-dsb",
@@ -2376,6 +2384,7 @@ version = "0.1.0"
 dependencies = [
  "adsp2106x",
  "i960",
+ "mb86234",
  "mb86235",
  "remodel-dsb",
  "remodel-png",

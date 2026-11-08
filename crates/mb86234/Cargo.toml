@@ -1,0 +1,9 @@
+[package]
+name = "mb86234"
+description = "Fujitsu MB86234 (the Model 2A TGP): interpreter and disassembler"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+remodel-state.workspace = true

@@ -13,14 +13,35 @@ pub fn report(dir: &Path, b: &model2::Model2Bus) {
     let Some(t) = b.tgp2a.as_deref() else { return };
     println!(
         "tgp (2A)      {}, program {} words uploaded (hash {:016x}), booted {}, replies waiting {}, empty reads {}{}",
-        if t.hle.is_some() { "function model (tgp2a_hle: not the chip)" } else { "stand-in" },
+        if t.cpu.is_some() {
+            "MB86234 interpreter"
+        } else if t.hle.is_some() {
+            "function model (tgp2a_hle: not the chip)"
+        } else {
+            "stand-in"
+        },
         t.program.len(),
         model2::tgp2a_hle::program_hash(&t.program),
         t.booted,
-        t.fifo_out.len(),
+        t.cpu.as_ref().map_or(t.fifo_out.len(), |c| c.fifo_out.len()),
         t.empty_reads,
         t.first_empty.map_or(String::new(), |(f, ip)| format!(" (first: frame {f}, ip {ip:#x})"))
     );
+    if let Some(c) = &t.cpu {
+        let list = |m: &std::collections::BTreeMap<u32, u64>| {
+            m.iter().take(12).map(|(w, n)| format!("{w:08x}:{n}")).collect::<Vec<_>>().join(" ")
+        };
+        println!(
+            "tgp chip      {} words run, pc {:#05x}, {} stuck accesses; unknown words {} [{}]; unknown external addresses {} [{}]",
+            c.steps,
+            c.pc,
+            t.runaways,
+            c.unknown.len(),
+            list(&c.unknown),
+            c.unknown_ext.len(),
+            list(&c.unknown_ext)
+        );
+    }
     println!("geometrizer   bad commands {geo_bad}");
     if !t.program.is_empty() {
         let bin: Vec<u8> = t.program.iter().flat_map(|w| w.to_le_bytes()).collect();
