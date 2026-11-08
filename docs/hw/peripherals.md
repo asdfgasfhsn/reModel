@@ -267,6 +267,12 @@ In counter mode, reads of port G come from four 16-bit counters. The low 3 bits 
 ### Interrupt controller (MAME-only, M)
 - 0x00E80000: read = pending requests; write = **AND-mask acknowledge**. Write 0 to a bit to clear it.
 - 0x00E80004: enable mask. MAME delays enable writes by about 80 ns because one game needs it.
+  *Reads:* `lastbrnx`'s interrupt dispatcher (i960 `0xC30`, vector 240) loads the pair with
+  `ldl 0xE80000` and services the lowest set bit of the *second* word until none is left, so
+  that word can't be the enable mask (with it the vblank handler ran for ever, the interrupt
+  never returned and the main program never ran; *confirmed*); it holds the requests. reModel
+  returns request & enable there (*unconfirmed* whether the hardware mirrors the request
+  register or masks it); no other game reads it.
 - Mapping from request bits to i960 interrupt lines:
 
 | Request bits | i960 line | Known source |

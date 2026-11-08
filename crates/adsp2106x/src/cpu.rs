@@ -146,6 +146,9 @@ const LSOV: u32 = 1 << 25;
 const LSEM: u32 = 1 << 26;
 const STKY_RO: u32 = 0x3f << 21;
 
+/// Set in a saved MODE1 when a write to it is still to take effect.
+const MODE1_SAVED_PENDING: u32 = 1 << 31;
+
 // MODE1 bits (UM §E.4).
 pub const BR8: u32 = 1 << 0;
 pub const BR0: u32 = 1 << 1;
@@ -278,6 +281,10 @@ pub struct Sharc {
     /// PX: PX2 in bits 47-16, PX1 in 15-0.
     pub px: u64,
     pub mode1: u32,
+    /// A MODE1 write that hasn't taken effect yet (UM §E.2.1: one cycle's
+    /// latency): the value, and whether the instruction after the write is
+    /// still to run with the old one.
+    mode1_pending: Option<(u32, bool)>,
     mode2: u32,
     astat: u32,
     stky: u32,
@@ -379,6 +386,7 @@ impl Sharc {
             mr: [0; 2],
             px: 0,
             mode1: 0,
+            mode1_pending: None,
             mode2: 0,
             astat: 0,
             stky: 0,
@@ -557,6 +565,7 @@ impl Sharc {
     /// Write MODE1, swapping register file, DAG and halves whose
     /// alternate-select bit changed (UM §2.9.1, §4.2.1).
     pub fn set_mode1(&mut self, v: u32) {
+        self.mode1_pending = None;
         let changed = self.mode1 ^ v;
         if changed & SRRFL != 0 {
             for k in 0..8 {
@@ -579,6 +588,18 @@ impl Sharc {
             }
         }
         self.mode1 = v;
+    }
+
+    /// A MODE1 write by an instruction: it takes effect one cycle late, so
+    /// the next instruction still runs with the old register files and
+    /// arithmetic modes (UM §E.2.1).
+    fn write_mode1(&mut self, v: u32) {
+        if v != self.mode1 {
+            self.mode1_pending = Some((v, true));
+        } else {
+            // Back to what is in effect: nothing left to take effect.
+            self.mode1_pending = None;
+        }
     }
 
     #[inline(always)]
@@ -695,7 +716,7 @@ impl Sharc {
                 1 => self.ustat2,
                 9 => self.irptl,
                 10 => self.mode2(),
-                11 => self.mode1,
+                11 => self.mode1_pending.map_or(self.mode1, |p| p.0),
                 12 => self.astat(),
                 13 => self.imask,
                 14 => self.stky,
@@ -760,7 +781,7 @@ impl Sharc {
                 1 => self.ustat2 = v32,
                 9 => self.irptl = v32 & !2,
                 10 => self.mode2 = v32 & 0x0fff_ffff,
-                11 => self.set_mode1(v32),
+                11 => self.write_mode1(v32),
                 12 => self.astat = v32,
                 13 => self.imask = v32,
                 14 => self.stky = (self.stky & STKY_RO) | (v32 & !STKY_RO),
@@ -1234,6 +1255,13 @@ impl Sharc {
     fn begin_cycle(&mut self) {
         self.tick();
         self.cycles += 1;
+        if let Some((v, wait)) = self.mode1_pending {
+            if wait {
+                self.mode1_pending = Some((v, false));
+            } else {
+                self.set_mode1(v);
+            }
+        }
         self.fetch_status = (self.astat(), self.mode1);
     }
 
@@ -1464,7 +1492,10 @@ impl Sharc {
         }
         while self.iop[C6 as usize] & 0xffff != 0 {
             let Some(w) = self.epb0.pop_front() else { break };
+            // Internal memory starts at 0x20000; an index below it addresses
+            // the same word (the low 17 bits select it).
             let addr = self.iop[II6 as usize];
+            let addr = if addr < 0x2_0000 { addr | 0x2_0000 } else { addr };
             if ctl & DTYPE != 0 || self.data48(addr) {
                 self.mem.write48(addr, w);
                 self.invalidate(addr, true);
@@ -1473,7 +1504,7 @@ impl Sharc {
                 self.invalidate(addr, false);
             }
             let step = self.iop[IM6 as usize] as u16 as i16 as i32;
-            self.iop[II6 as usize] = addr.wrapping_add(step as u32) & 0x3_ffff;
+            self.iop[II6 as usize] = self.iop[II6 as usize].wrapping_add(step as u32) & 0x3_ffff;
             self.iop[C6 as usize] = (self.iop[C6 as usize] & 0xffff) - 1;
             if self.iop[C6 as usize] == 0 {
                 self.latch(IRQ_EP0);
@@ -1596,7 +1627,7 @@ impl state::State for Sharc {
         }
         self.px.save(w);
         [
-            self.mode1,
+            self.mode1 | self.mode1_pending.map_or(0, |p| MODE1_SAVED_PENDING | (p.1 as u32) << 30),
             self.mode2,
             self.astat,
             self.stky,
@@ -1612,6 +1643,11 @@ impl state::State for Sharc {
             self.faddr,
         ]
         .save(w);
+        // A pending MODE1 write follows the registers (nothing is saved
+        // when there is none, so earlier saves load unchanged).
+        if let Some((v, _)) = self.mode1_pending {
+            v.save(w);
+        }
         self.pc_stack.save(w);
         self.loop_stack.save(w);
         self.status_stack.save(w);
@@ -1685,6 +1721,14 @@ impl Sharc {
             self.pc,
             self.faddr,
         ] = regs;
+        self.mode1_pending = None;
+        if self.mode1 & MODE1_SAVED_PENDING != 0 {
+            let wait = self.mode1 >> 30 & 1 != 0;
+            self.mode1 &= !(MODE1_SAVED_PENDING | 1 << 30);
+            let mut v = 0u32;
+            v.load(r)?;
+            self.mode1_pending = Some((v, wait));
+        }
         self.pc_stack.load(r)?;
         self.loop_stack.load(r)?;
         self.status_stack.load(r)?;

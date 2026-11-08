@@ -153,10 +153,20 @@ the EPB0 FIFO (`remodel-state`); the decode cache is rebuilt.
   update from the compute; then results land in precedence order: shifter,
   multiplier, ALU, PM, DM/universal register. An explicit ASTAT/STKY write
   supersedes the compute's flags (UM §2.5.3).
-- **Not modelled:** effect latencies of system register writes (UM §E.2.1,
-  one cycle), stall cycles (DAG register loads, PM bus conflicts, cache misses,
-  wait states), the instruction cache, multiprocessing, link ports, SPORTs,
-  DMA other than the host boot channel.
+- **MODE1 writes take effect a cycle late** (UM §E.2.1; *confirmed* by
+  `lastbrnx`'s copro program, below): the instruction after a write to
+  MODE1 (`BIT SET MODE1 0x400`, `MODE1 = x`) still runs with the old
+  register-file selection, DAG halves and arithmetic modes; the one after
+  that runs with the new. The write itself is visible to a read of MODE1
+  in the next cycle. The effect is applied at the start of the second
+  cycle (`mode1_pending`; saved in a save state only while it is pending,
+  so nothing else's state changes), and recompiled blocks don't start
+  while one is pending. Other system registers' latencies aren't
+  modelled.
+- **Not modelled:** the other system registers' effect latencies, stall
+  cycles (DAG register loads, PM bus conflicts, cache misses, wait states),
+  the instruction cache, multiprocessing, link ports, SPORTs, DMA other
+  than the host boot channel.
 
 ## Recompiled code: blocks
 
@@ -326,6 +336,14 @@ GAME=overrevb` writes them from the uploads it sees.
 SYSCON and WAIT before the DMA, and give C6 their program's length
 (`docs/hw/model2b.md`, "The upload"); the core's host interface takes
 both ways.
+
+`lastbrnx`'s copro upload sets II6 = 0, not `0x20000` (its geometrizer's
+sets `0x20000`), and the program loads and runs: the host DMA's internal
+address is decoded by its low 17 bits, so an index below `0x20000`
+addresses the same word of block 0 (*confirmed* by running the program;
+the core takes an index below `0x20000` as `0x20000 +` it; II6 itself keeps
+the value written and counts on from it). Without that its words went
+nowhere and the SHARC faulted at the vector after the DMA.
 
 `make sharc-test` on both images (`remodel sharc-check`):
 

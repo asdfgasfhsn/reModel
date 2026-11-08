@@ -479,7 +479,9 @@ fn multiply_accumulate_round_and_saturate() {
 
 #[test]
 fn srcu_selects_the_foreground_mr() {
-    let s = run(&[ld(R0, 7), ld(R1, 1), c(mulc(0x70 | 4, 0, 0, 1)), ld(MODE1R, SRCU), c(mulc(0x70 | 6, 0, 0, 1))], 5);
+    // (The NOP: a MODE1 write takes effect a cycle late.)
+    let p = [ld(R0, 7), ld(R1, 1), c(mulc(0x70 | 4, 0, 0, 1)), ld(MODE1R, SRCU), NOP, c(mulc(0x70 | 6, 0, 0, 1))];
+    let s = run(&p, 6);
     // The first MRF and the second MRB are the same physical register.
     assert_eq!(s.mr, [7, 0]);
 }
@@ -723,14 +725,14 @@ fn px_transfers() {
 
 #[test]
 fn short_words_and_sign_extension() {
-    let p = |mode: u32| vec![ld(MODE1R, mode), direct(false, false, R1, 0x5_0001)];
+    let p = |mode: u32| vec![ld(MODE1R, mode), NOP, direct(false, false, R1, 0x5_0001)];
     let (mut s, mut e) = boot(&p(0));
     s.mem.write32(0x2_8000, 0x8001_7fff);
-    trace(&mut s, &mut e, 2);
+    trace(&mut s, &mut e, 3);
     assert_eq!(s.rf(1), 0x8001, "MSW, zero-filled");
     let (mut s, mut e) = boot(&p(SSE));
     s.mem.write32(0x2_8000, 0x8001_7fff);
-    trace(&mut s, &mut e, 2);
+    trace(&mut s, &mut e, 3);
     assert_eq!(s.rf(1), 0xffff_8001, "sign-extended with SSE");
 }
 
@@ -1002,12 +1004,48 @@ fn system_register_bit_operations() {
 
 #[test]
 fn alternate_registers() {
-    let p = vec![ld(R0, 1), ld(R2 + 8, 5), bit(SET, 0xb, SRRFL), ld(R0, 2), bit(CLR, 0xb, SRRFL), mv(0x0a, 3, 0)];
-    let s = run(&p, 6);
+    // (A write to MODE1 takes effect a cycle late, the NOPs allow for it:
+    // see the next test.)
+    let p =
+        vec![ld(R0, 1), ld(R2 + 8, 5), bit(SET, 0xb, SRRFL), NOP, ld(R0, 2), bit(CLR, 0xb, SRRFL), NOP, mv(0x0a, 3, 0)];
+    let s = run(&p, 8);
     assert_eq!((s.rf(0), s.r_alt[0] >> 8), (1, 2));
     assert_eq!(s.rf(3), 5, "the upper half did not switch");
-    let s = run(&[ld(I0 + 5, 9), bit(SET, 0xb, SRD1H), ld(I0 + 5, 3), mv(I0 + 5, R1, 0)], 4);
+    let s = run(&[ld(I0 + 5, 9), bit(SET, 0xb, SRD1H), NOP, ld(I0 + 5, 3), mv(I0 + 5, R1, 0)], 5);
     assert_eq!((s.rf(1), s.dag_alt[0][5]), (3, 9));
+}
+
+#[test]
+fn mode1_writes_take_effect_a_cycle_late() {
+    // UM §E.2.1: the instruction after a MODE1 write still runs with the old
+    // register file; the one after that with the new. `lastbrnx`'s copro
+    // program depends on it: it sets SRRFL and uses R0 and R7 as they were
+    // in the next instruction.
+    let p = vec![ld(R0, 1), bit(SET, 0xb, SRRFL), ld(R1, 7), ld(R2, 9), mv(R0, 3, 0)];
+    let (mut s, mut e) = boot(&p);
+    trace(&mut s, &mut e, 2);
+    assert_eq!(s.mode1 & SRRFL, 0, "not in effect yet");
+    assert_eq!((s.ureg_read(MODE1R as u8) >> 8) as u32 & SRRFL, SRRFL, "a read sees the write");
+    trace(&mut s, &mut e, 1);
+    assert_eq!(s.mode1 & SRRFL, 0, "the next instruction used the old file");
+    trace(&mut s, &mut e, 1);
+    assert_eq!(s.mode1 & SRRFL, SRRFL);
+    trace(&mut s, &mut e, 1);
+    // R1 = 7 went to the file in use then (now the alternate), R2 = 9 and
+    // the move's R0 are the new file's.
+    assert_eq!((s.rf(1), s.r_alt[1] >> 8), (0, 7));
+    assert_eq!((s.rf(2), s.rf(3)), (9, 0));
+    // A save in the middle of the latency resumes as one without.
+    let (mut s, mut e) = boot(&p);
+    trace(&mut s, &mut e, 2);
+    let mut w = state::Writer { buf: Vec::new() };
+    s.save(&mut w);
+    let mut t = Sharc::new();
+    <Sharc as State>::load(&mut t, &mut state::Reader::new(&w.buf)).unwrap();
+    for x in [&mut s, &mut t] {
+        trace(x, &mut e, 3);
+    }
+    assert_eq!((t.mode1, t.rf(1), t.r_alt[1]), (s.mode1, s.rf(1), s.r_alt[1]));
 }
 
 #[test]
@@ -1055,6 +1093,7 @@ fn software_interrupt_vectors_and_returns() {
     let mut p = vec![
         ld(IMASKR, 1 << 28),
         ld(MODE1R, IRPTEN),
+        NOP, // a MODE1 write takes effect a cycle late
         ld(IRPTL, 1 << 28),
         c(alu(INC, 1, 1, 1)),
         c(alu(INC, 2, 2, 2)),
@@ -1063,8 +1102,8 @@ fn software_interrupt_vectors_and_returns() {
     p.resize(0x70, NOP);
     p.extend([ld(5, 7), RTI]);
     let (mut s, mut e) = boot(&p);
-    let t = trace(&mut s, &mut e, 6);
-    assert_eq!(t, [0, 1, 2, 0x70, 0x71, 3]);
+    let t = trace(&mut s, &mut e, 7);
+    assert_eq!(t, [0, 1, 2, 3, 0x70, 0x71, 4]);
     assert_eq!((s.rf(5), s.rf(1), s.imaskp, s.irptl), (7, 1, 0, 0));
 }
 
@@ -1168,6 +1207,26 @@ fn host_sets_up_a_longer_boot_like_model_2b() {
         }
     }
     assert_eq!(s.mem.read48(0x2_0fff), 0xfff << 8);
+    assert_ne!(s.irptl & (1 << IRQ_EP0), 0);
+}
+
+#[test]
+fn host_boot_with_an_index_below_block_0() {
+    // `lastbrnx`'s copro upload sets II6 = 0 and runs: the host DMA takes
+    // the index's low 17 bits, so the words land from 0x20000.
+    let mut s = Sharc::new();
+    host32(&mut s, DMAC6, 0);
+    host32(&mut s, II6, 0);
+    host32(&mut s, IM6, 1);
+    host32(&mut s, C6, 4);
+    host32(&mut s, DMAC6, 0xa1);
+    for k in 1..=4u64 {
+        for h in 0..3 {
+            s.host_write(EPB0, ((k << 8) >> (16 * h)) as u32 & 0xffff).unwrap();
+        }
+    }
+    assert_eq!((s.mem.read48(0x2_0000), s.mem.read48(0x2_0003)), (1 << 8, 4 << 8));
+    assert_eq!(s.iop[II6 as usize], 4, "II6 counts on from what was written");
     assert_ne!(s.irptl & (1 << IRQ_EP0), 0);
 }
 

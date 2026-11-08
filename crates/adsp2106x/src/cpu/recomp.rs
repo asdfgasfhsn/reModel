@@ -94,7 +94,12 @@ impl Sharc {
     /// step.
     #[inline(always)]
     pub fn block_start(&self, at: u32, end: u32, budget: u64) -> Option<Block> {
-        if self.code_dirty || self.booting || self.mode1 & IRPTEN != 0 || self.mode2 & TIMEN != 0 {
+        if self.code_dirty
+            || self.booting
+            || self.mode1_pending.is_some()
+            || self.mode1 & IRPTEN != 0
+            || self.mode2 & TIMEN != 0
+        {
             return None;
         }
         let (next, flag) = self.decode_slot?;
@@ -299,6 +304,7 @@ impl Sharc {
         [self.mode1, self.mode2, self.astat, self.stky, self.irptl, self.imask, self.imaskp, self.lcntr, self.pc]
             .save(&mut w);
         [self.ustat1, self.ustat2, self.tperiod, self.tcount, self.faddr].save(&mut w);
+        self.mode1_pending.save(&mut w);
         self.pc_stack.save(&mut w);
         self.loop_stack.save(&mut w);
         self.status_stack.save(&mut w);

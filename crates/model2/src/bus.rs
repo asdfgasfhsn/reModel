@@ -262,7 +262,12 @@ impl Model2Bus {
             Map { start: 0x0050_0000, end: 0x005f_ffff, mem: 2, base: 0 },
             Map { start: 0x0090_0000, end: 0x0097_ffff, mem: 3, base: 0 },
             Map { start: 0x00e0_0000, end: 0x00e0_0037, mem: 4, base: 0 },
-            Map { start: 0x0100_0000, end: 0x011f_ffff, mem: 5, base: 0 },
+            // Tile RAM and character RAM, 1 MB, repeating once through the
+            // 2 MB window: Last Bronx's gauge routine writes its tile
+            // patterns at 0x1181000 and draws them from tile 0x80
+            // (docs/hw/tilemap.md).
+            Map { start: 0x0100_0000, end: 0x010f_ffff, mem: 5, base: 0 },
+            Map { start: 0x0110_0000, end: 0x011f_ffff, mem: 5, base: 0 },
             Map { start: 0x0180_0000, end: 0x0181_ffff, mem: 6, base: 0 },
             Map { start: 0x01a0_0000, end: 0x01a0_3fff, mem: 7, base: 0 },
             Map { start: 0x01a1_0000, end: 0x01a1_3fff, mem: 7, base: 0 },
@@ -641,7 +646,13 @@ impl Model2Bus {
             // Board control byte set during reset; meaning unknown.
             0x00f8_0000 => self.board_ctrl as u32,
             0x00e8_0000 => self.irq_request,
-            0x00e8_0004 => self.irq_enable,
+            // Reads of the second word of the pair: the requests that are
+            // enabled. Last Bronx's interrupt dispatcher loads the pair
+            // (`ldl 0xE80000`) and services the bits of the second word
+            // until none is left, so it can't be the mask it was written as
+            // (README, "What's known about lastbrnx"); *unconfirmed* what the
+            // hardware returns. No other game reads it.
+            0x00e8_0004 => self.irq_request & self.irq_enable,
             0x00f0_0000..=0x00f0_000f => {
                 let t = &self.timers[((addr >> 2) & 3) as usize];
                 if t.running {
@@ -1321,6 +1332,31 @@ mod tests {
         let mut b = Model2Bus::new(&roms);
         b.geo.set_threaded(false);
         b
+    }
+
+    /// Tile RAM is 1 MB, repeating through its 2 MB window (`lastbrnx`'s
+    /// gauge patterns are written at `0x1181000` and drawn from `0x1081000`).
+    #[test]
+    fn tile_ram_repeats_through_its_window() {
+        let mut b = bus("overrevb");
+        b.write32(0x0118_1000, 0x1234_5678);
+        assert_eq!(b.read32(0x0108_1000), 0x1234_5678);
+        b.write32(0x0100_0004, 0x9abc_def0);
+        assert_eq!(b.read32(0x0110_0004), 0x9abc_def0);
+    }
+
+    /// The word after the requests (what `lastbrnx`'s `ldl 0xE80000` takes
+    /// for them) is the enabled requests, and an acknowledge clears them.
+    #[test]
+    fn interrupt_pair_reads_the_requests() {
+        let mut b = bus("overrevb");
+        b.write32(0x00e8_0004, 0x401);
+        b.request_irq(0x401);
+        assert_eq!((b.read32(0x00e8_0000), b.read32(0x00e8_0004)), (0x401, 0x401));
+        b.write32(0x00e8_0000, !1);
+        assert_eq!((b.read32(0x00e8_0000), b.read32(0x00e8_0004)), (0x400, 0x400));
+        b.write32(0x00e8_0004, 1);
+        assert_eq!(b.read32(0x00e8_0004), 0, "a masked request isn't enabled");
     }
 
     /// `copy_from` leaves the state a load of a save would (the same state

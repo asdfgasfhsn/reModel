@@ -57,7 +57,13 @@ Pen 0 is transparent, except on the bottom layer (see §3) (S24, H for System 24
 
 ## 2. Tile ("name table") RAM — i960 0x01000000–0x0100FFFF
 
-64 KiB of 16-bit words. Mirror at 0x01100000 (M2, M). Offsets below are **byte
+64 KiB of 16-bit words. Mirror at 0x01100000 (M2, M); **confirmed** for the whole 1 MB
+(tile RAM, registers and character RAM at +0x80000) by `lastbrnx`: its gauge routine builds the
+fill patterns of the life gauge by tile number `0x8080` and up, the map entry with its priority
+bit, and writes them at `0x01080000 + (entry << 5)` = `0x01181000`; the map entries then draw
+tile `0x80`. Only the low 20 address bits reach the RAM, so the 2 MB window repeats it (reModel
+maps `0x01100000-0x011FFFFF` onto the lower megabyte; with separate RAM there the gauges drew
+empty). Offsets below are **byte
 offsets** from 0x01000000. A 16-bit word at byte offset 2k is word k in MAME.
 
 ### 2.1 Layout
