@@ -14,7 +14,8 @@ struct Poly {
     bank: u32,
     luma_table: u32,
     luma: u32,
-    // 5-bit colour components; w unused.
+    // 5-bit colour components; w: draw order within the window (the depth
+    // buffer's tie-break).
     colour: vec4u,
 }
 
@@ -35,7 +36,9 @@ struct Screen {
 struct VsOut {
     @builtin(position) pos: vec4f,
     // 1/z, u/z, v/z: linear in screen space, as the software fill does.
-    @location(0) @interpolate(linear) attr: vec3f,
+    // Centroid: inside the polygon even where a multisampled pixel is only
+    // partly covered (the same as the pixel centre with one sample).
+    @location(0) @interpolate(linear, centroid) attr: vec3f,
     @location(1) @interpolate(flat) poly: u32,
 }
 
@@ -136,8 +139,7 @@ fn translate(ch: u32, c: u32, lum: u32) -> u32 {
     return palette8(0x10000u + ch * 0x4000u + (c * 256u + lum) * 2u);
 }
 
-@fragment
-fn fs(in: VsOut) -> @location(0) vec4f {
+fn shade(in: VsOut) -> vec4f {
     let p = polys[in.poly];
     let px = floor(in.pos.xy);
     // The software fill's clip: rows cy0 <= y < cy1, pixel centres
@@ -162,4 +164,43 @@ fn fs(in: VsOut) -> @location(0) vec4f {
     }
     let rgb = vec3u(translate(0u, p.colour.x, lum), translate(1u, p.colour.y, lum), translate(2u, p.colour.z, lum));
     return vec4f(vec3f(rgb) / 255.0, 1.0);
+}
+
+@fragment
+fn fs(in: VsOut) -> @location(0) vec4f {
+    return shade(in);
+}
+
+// The depth buffer's value, as model2::raster::depth_value: larger is
+// nearer. Written by the shader because 1/z is the quantity that is
+// linear across the screen.
+const DEPTH_BIAS: f32 = @DEPTH_BIAS@;
+const DEPTH_SCALE: f32 = @DEPTH_SCALE@;
+
+struct DepthOut {
+    @location(0) colour: vec4f,
+    @builtin(frag_depth) depth: f32,
+}
+
+@fragment
+fn fs_depth(in: VsOut) -> DepthOut {
+    var o: DepthOut;
+    o.colour = shade(in);
+    let z = in.attr.x * (1.0 + f32(polys[in.poly].colour.w) * DEPTH_BIAS);
+    o.depth = z / (z + DEPTH_SCALE);
+    return o;
+}
+
+// Empties the depth buffer (to the far value, 0) where a window draws: a
+// triangle over the screen, limited by the scissor rectangle.
+@vertex
+fn vs_clear(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+    let x = f32((i << 1u) & 2u);
+    let y = f32(i & 2u);
+    return vec4f(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
+}
+
+@fragment
+fn fs_clear() -> @location(0) vec4f {
+    return vec4f(0.0);
 }

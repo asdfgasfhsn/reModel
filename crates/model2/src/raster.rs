@@ -80,6 +80,11 @@ pub struct Poly {
     pub checker: bool,
     /// The 4-word texture header, kept for probing.
     pub header: [u16; 4],
+    /// Flat and black: a shadow. The games' shadows are flat black (or
+    /// dithered black) polygons laid on the ground, at depths that don't
+    /// match it (hotd's are screen-parallel slices), so with the depth
+    /// buffer they keep the game's order instead.
+    pub shadow: bool,
 }
 
 /// A polygon placed in a view's output pixels, ready for a rasteriser
@@ -92,6 +97,48 @@ pub struct Placed {
     pub points: Vec<SVtx>,
     /// Clip rectangle (x0, y0, x1, y1) in output pixels.
     pub clip: (f32, f32, f32, f32),
+    /// Position in draw order within the polygon's window (for the depth
+    /// buffer's tie-break, [`depth_value`]).
+    pub rank: u32,
+    /// Polygons the game sorted to within [`GROUP_SPAN`] of one depth
+    /// (including a header's "same depth as the previous polygon") share a
+    /// group number: layers of one object, such as a marker and its outline
+    /// or a jacket over a body, whose order is the game's. With the depth
+    /// buffer they draw in order among themselves and are depth tested as a
+    /// group against what was drawn before.
+    pub group: u32,
+    /// Drawn in the game's order, without the depth test or write, with the
+    /// depth buffer on: sorted behind everything (sort key mode 3, and the
+    /// polygons linked to it: skies), flat black shadows ([`Poly::shadow`]),
+    /// translucent (checkerboard) polygons, whose layering over the scene
+    /// is the game's, and polygons covering a wide range of depth
+    /// ([`PAINTER_SPREAD`]).
+    pub background: bool,
+}
+
+/// Depth buffer. Off by default; the original look is the painter's
+/// algorithm. Polygons carry 1/z per vertex (`SVtx::iz`), linear in screen
+/// space, so each pixel's depth is exact. Per window (HUD windows draw over
+/// the scene) the buffer starts empty. A polygon wins a pixel where its
+/// depth is at least what is there, so equal depths keep the game's order,
+/// and [`depth_value`] lets a later polygon win by up to [`DEPTH_BIAS`] of
+/// its depth for each polygon between, which covers the rounding between a
+/// decal and the surface under it. Polygons sorted together
+/// ([`Placed::group`]) keep the game's order among themselves. What can't be
+/// trusted to depth is drawn in the game's order without testing or writing
+/// ([`Placed::background`]). Alpha-tested texels that aren't drawn don't
+/// write depth.
+pub const DEPTH_BIAS: f32 = 1e-5;
+/// Scale of the depth buffer's mapping of 1/z into [0, 1), [`depth_value`].
+pub const DEPTH_SCALE: f32 = 0.1;
+
+/// The depth buffer's value for a fragment of 1/z `iz` and draw order
+/// `rank` in its window: larger is nearer. Monotonic, and finest where 1/z
+/// is small (far away), so a float buffer keeps about 1e-6 relative
+/// precision over the whole range.
+pub fn depth_value(iz: f32, rank: u32) -> f32 {
+    let z = iz * (1.0 + rank as f32 * DEPTH_BIAS);
+    z / (z + DEPTH_SCALE)
 }
 
 /// Inputs the rasteriser reads besides the stream.
@@ -258,14 +305,20 @@ pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
                                 })
                                 .collect();
                             let c = rd16(src.palette, 0x1000 + ((header[3] >> 6) as usize & 0x3ff)) as u32;
+                            let colour = [c & 31, (c >> 5) & 31, (c >> 10) & 31];
+                            let luma = (luma_word >> 15) & 0xff;
+                            let texture = texture_from_header(header);
+                            let shadow =
+                                texture.is_none() && (0..3).all(|ch| src.translate(ch, colour[ch], luma >> 2) == 0);
                             polys.push(Poly {
                                 points,
                                 key,
                                 window: win,
                                 clip: (w.x0, w.y0, w.x1, w.y1),
-                                texture: texture_from_header(header),
-                                colour: [c & 31, (c >> 5) & 31, (c >> 10) & 31],
-                                luma: (luma_word >> 15) & 0xff,
+                                texture,
+                                colour,
+                                luma,
+                                shadow,
                                 checker: header[0] & (1 << 15) != 0,
                                 header,
                             });
@@ -419,9 +472,11 @@ pub fn probe(polys: &[Poly], src: &Sources, x: f32, y: f32) -> Vec<String> {
                 }
             }
             format!(
-                "window {} key {:.1} header {:04x?} colour {:?} luma {} texel histogram {hist:?}\n    texture {:?} points {:?}",
+                "window {} key {:.1} 1/z {:.5}..{:.5} header {:04x?} colour {:?} luma {} texel histogram {hist:?}\n    texture {:?} points {:?}",
                 p.window,
                 p.key,
+                p.points.iter().map(|v| v.iz).fold(f32::MAX, f32::min),
+                p.points.iter().map(|v| v.iz).fold(f32::MIN, f32::max),
                 p.header,
                 p.colour,
                 p.luma,
@@ -575,14 +630,46 @@ pub fn draw(polys: &mut [Poly], src: &Sources) -> (Vec<u8>, Vec<bool>) {
 /// width are widened to the view's edges, so whatever 3D the game sends
 /// beyond the original frame is drawn.
 pub fn draw_view(polys: &mut [Poly], src: &Sources, view: &View) -> (Vec<u8>, Vec<bool>) {
-    draw_impl(polys, src, view, None)
+    draw_impl(polys, src, view, None, false)
+}
+
+/// `draw_view` with the depth buffer on or off (see [`DEPTH_BIAS`]).
+pub fn draw_view_depth(polys: &mut [Poly], src: &Sources, view: &View, depth: bool) -> (Vec<u8>, Vec<bool>) {
+    draw_impl(polys, src, view, None, depth)
 }
 
 /// `draw_view`, reporting textures to `hooks` and drawing the replacements
 /// it returns (texture dumps and packs).
 pub fn draw_enhanced(polys: &mut [Poly], src: &Sources, view: &View, hooks: &mut dyn Enhance) -> (Vec<u8>, Vec<bool>) {
-    draw_impl(polys, src, view, Some(hooks))
+    draw_impl(polys, src, view, Some(hooks), false)
 }
+
+/// `draw_enhanced` with the depth buffer on or off.
+pub fn draw_enhanced_depth(
+    polys: &mut [Poly],
+    src: &Sources,
+    view: &View,
+    hooks: &mut dyn Enhance,
+    depth: bool,
+) -> (Vec<u8>, Vec<bool>) {
+    draw_impl(polys, src, view, Some(hooks), depth)
+}
+
+/// A polygon whose 1/z ranges over more than this factor (a ground or
+/// floor quad running from the camera to the horizon) keeps the game's
+/// order with the depth buffer, like a background: the game sorts it by
+/// its far edge so that it is drawn first, and where objects stand in or
+/// slightly below it (topskatr's ramp in the sand) they are meant to
+/// show over it.
+pub const PAINTER_SPREAD: f32 = 8.0;
+
+/// How much nearer than a group's first polygon (as a fraction of its
+/// sort key) another can sort and still be of the group: 5%.
+pub const GROUP_SPAN: f32 = 0.05;
+
+/// Sort key from `build` for "behind everything" (the polygon header's
+/// mode 3); keys at or above this are background.
+const BACKGROUND_KEY: f32 = 1e9;
 
 /// Sort `polys` into draw order (windows in order, and within a window from
 /// far to near) and place each in `view`'s output pixels. Viewports
@@ -590,10 +677,22 @@ pub fn draw_enhanced(polys: &mut [Poly], src: &Sources, view: &View, hooks: &mut
 /// HUD polygons move as a unit with the HUD placement.
 pub fn place(polys: &mut [Poly], view: &View) -> Vec<Placed> {
     polys.sort_by(|a, b| a.window.cmp(&b.window).then(b.key.total_cmp(&a.key)));
+    let mut window_start = 0;
+    let mut group = 0;
+    let mut group_key = 0.0;
     polys
         .iter()
         .enumerate()
         .map(|(i, p)| {
+            if i > 0 && polys[i - 1].window != p.window {
+                window_start = i;
+            }
+            // Keys run far to near: a new group when the key is more than
+            // GROUP_SPAN of the group's first below it.
+            if i == 0 || polys[i - 1].window != p.window || group_key - p.key > GROUP_SPAN * group_key.abs() {
+                group += 1;
+                group_key = p.key;
+            }
             let dx = if view.hud_windows & (1 << p.window) != 0 {
                 let (lo, hi) = p.points.iter().fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(v.x), b.max(v.x)));
                 view.hud_shift((lo + hi) / 2.0)
@@ -614,7 +713,17 @@ pub fn place(polys: &mut [Poly], view: &View) -> Vec<Placed> {
             }
             let (cx0, cy0) = view.to_output(x0, y0);
             let (cx1, cy1) = view.to_output(x1, y1);
-            Placed { poly: i, points, clip: (cx0, cy0, cx1, cy1) }
+            Placed {
+                poly: i,
+                points,
+                clip: (cx0, cy0, cx1, cy1),
+                rank: (i - window_start) as u32,
+                group,
+                background: p.key >= BACKGROUND_KEY || p.shadow || p.checker || {
+                    let (lo, hi) = p.points.iter().fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(v.iz), b.max(v.iz)));
+                    hi > lo * PAINTER_SPREAD
+                },
+            }
         })
         .collect()
 }
@@ -624,6 +733,7 @@ fn draw_impl(
     src: &Sources,
     view: &View,
     mut hooks: Option<&mut dyn Enhance>,
+    depth: bool,
 ) -> (Vec<u8>, Vec<bool>) {
     let mut rects = HashMap::new();
     let (w, h) = (view.width, view.height);
@@ -633,9 +743,33 @@ fn draw_impl(
     // Texel-space filtering works per output pixel; the checker pattern
     // stays in game pixels.
     let (gsx, gsy) = (view.sx, view.sy);
+    let mut zbuf = vec![0f32; if depth { w * h } else { 0 }];
+    let mut window = usize::MAX;
+    // Depths a group of polygons writes, applied when it ends.
+    let mut pending: Vec<(usize, f32)> = Vec::new();
+    let mut group = u32::MAX;
     for pl in &placed {
         let p = &polys[pl.poly];
         let (points, clip) = (&pl.points[..], pl.clip);
+        if pl.group != group {
+            group = pl.group;
+            for (o, d) in pending.drain(..) {
+                zbuf[o] = zbuf[o].max(d);
+            }
+        }
+        // Each window starts with an empty depth buffer where it draws.
+        if depth && p.window != window {
+            window = p.window;
+            let (y0, y1) = (clip.1.floor().max(0.0) as usize, (clip.3.ceil().max(0.0) as usize).min(h));
+            let (x0, x1) = (clip.0.floor().max(0.0) as usize, (clip.2.ceil().max(0.0) as usize).min(w));
+            for y in y0..y1 {
+                zbuf[y * w + x0.min(x1)..y * w + x1].fill(0.0);
+            }
+        }
+        let test = depth && !pl.background;
+        // Translucent polygons test but don't write.
+        let write = !p.checker;
+        let rank = pl.rank;
         let hooked = match (hooks.as_deref_mut(), &p.texture) {
             (Some(hk), Some(t)) => tex_info(p, t, src, &mut rects).map(|info| {
                 let img = hk.texture(&info);
@@ -647,9 +781,16 @@ fn draw_impl(
         if let (Some((_, Some(img))), Some(t)) = (&hooked, &p.texture) {
             let light = Light::new(p, src);
             fill(points, clip, w, h, |x, y, iz, uz, vz| {
+                let o = y * w + x;
+                let d = if test { depth_value(iz, rank) } else { 0.0 };
+                if test && d < zbuf[o] {
+                    return;
+                }
                 let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
                 if let Some(c) = shade_replaced(t, p.checker, img, &light, src, gx, gy, uz / iz, vz / iz) {
-                    let o = y * w + x;
+                    if test && write {
+                        pending.push((o, d));
+                    }
                     covered[o] = true;
                     rgb[o * 3..o * 3 + 3].copy_from_slice(&c);
                     pixels += 1;
@@ -657,9 +798,16 @@ fn draw_impl(
             });
         } else {
             fill(points, clip, w, h, |x, y, iz, uz, vz| {
+                let o = y * w + x;
+                let d = if test { depth_value(iz, rank) } else { 0.0 };
+                if test && d < zbuf[o] {
+                    return;
+                }
                 let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
                 if let Some(c) = shade(p, src, gx, gy, uz / iz, vz / iz) {
-                    let o = y * w + x;
+                    if test && write {
+                        pending.push((o, d));
+                    }
                     covered[o] = true;
                     rgb[o * 3..o * 3 + 3].copy_from_slice(&c);
                     pixels += 1;
@@ -762,10 +910,93 @@ mod tests {
             luma: 255,
             checker: true,
             header: [0x80c0, 0, 0, 0],
+            shadow: false,
         };
         assert!(p.texture.is_none());
         assert!(shade(&p, &src, 2, 4, 0.0, 0.0).is_some());
         assert!(shade(&p, &src, 3, 4, 0.0, 0.0).is_none());
+    }
+
+    /// A flat polygon covering the middle of the screen: colour index `c`
+    /// (translated to c * 20), at 1/z `iz`, sort key `key`.
+    fn flat(c: u32, iz: f32, key: f32, window: usize) -> Poly {
+        let v = |x, y| SVtx { x, y, iz, uz: 0.0, vz: 0.0 };
+        Poly {
+            points: vec![v(100.0, 100.0), v(300.0, 100.0), v(300.0, 300.0), v(100.0, 300.0)],
+            key,
+            window,
+            clip: (0.0, 0.0, WIDTH as f32, HEIGHT as f32),
+            texture: None,
+            colour: [c, c, c],
+            luma: 255,
+            checker: false,
+            header: [0; 4],
+            shadow: false,
+        }
+    }
+
+    fn depth_sources(palette: &mut [u8]) {
+        for ch in 0..3 {
+            for c in 1..4u32 {
+                palette[0x1_0000 + ch * 0x4000 + (c as usize * 256 + 63) * 2] = (c * 20) as u8;
+            }
+        }
+    }
+
+    #[test]
+    fn depth_buffer_resolves_what_the_game_sorted_wrong() {
+        let ram = vec![0u8; 0x40_0000 + 0x8000];
+        let mut palette = vec![0u8; 0x1_c000];
+        depth_sources(&mut palette);
+        let src = Sources {
+            texture_rom: &[],
+            texture_point_ram: &[],
+            render_ram: &ram,
+            palette: &palette,
+            xoff: 0.0,
+            yoff: 0.0,
+        };
+        let view = View::native();
+        let at = |rgb: &[u8]| rgb[(200 * WIDTH + 200) * 3];
+        // Sorted far to near by key: the nearer polygon (1/z 0.5, colour
+        // 20) has the larger key, so the game draws it first and the one
+        // behind it (1/z 0.1, colour 40) over it.
+        let polys = || vec![flat(1, 0.5, 5.0, 0), flat(2, 0.1, 1.0, 0)];
+        let off = draw_view_depth(&mut polys(), &src, &view, false);
+        assert_eq!(at(&off.0), 40);
+        let on = draw_view_depth(&mut polys(), &src, &view, true);
+        assert_eq!(at(&on.0), 20);
+        // The same depth, or within the rank tie-break: the game's order.
+        let tie = || vec![flat(1, 0.5, 5.0, 0), flat(2, 0.5, 1.0, 0)];
+        assert_eq!(at(&draw_view_depth(&mut tie(), &src, &view, true).0), 40);
+        // Another window starts with an empty buffer: it draws over.
+        let windows = || vec![flat(1, 0.5, 1.0, 0), flat(2, 0.1, 1.0, 1)];
+        assert_eq!(at(&draw_view_depth(&mut windows(), &src, &view, true).0), 40);
+        // A shadow or a background keeps the game's order too.
+        let background = || vec![flat(1, 0.5, 5.0, 0), flat(2, 0.1, 1e10, 0)];
+        assert_eq!(at(&draw_view_depth(&mut background(), &src, &view, true).0), 20);
+        // Off is the painter's algorithm, whatever the depths.
+        assert_eq!(at(&draw_view(&mut polys(), &src, &view).0), 40);
+    }
+
+    #[test]
+    fn depth_value_grows_toward_the_viewer() {
+        let mut last = 0.0;
+        for k in 0..60 {
+            let d = depth_value(1e-6 * 1.5f32.powi(k), 0);
+            assert!(d > last && d < 1.0, "{k}: {d}");
+            last = d;
+        }
+        // A later polygon of the same depth wins.
+        assert!(depth_value(0.1, 5) > depth_value(0.1, 4));
+    }
+
+    #[test]
+    fn groups_gather_polygons_sorted_together() {
+        let mut polys = vec![flat(1, 0.5, 10.0, 0), flat(2, 0.5, 9.8, 0), flat(3, 0.5, 5.0, 0), flat(1, 0.5, 5.0, 1)];
+        let placed = place(&mut polys, &View::native());
+        assert_eq!(placed.iter().map(|p| p.group - placed[0].group).collect::<Vec<_>>(), [0, 0, 1, 2]);
+        assert_eq!(placed.iter().map(|p| p.rank).collect::<Vec<_>>(), [0, 1, 2, 0]);
     }
 
     #[test]

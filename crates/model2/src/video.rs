@@ -165,6 +165,15 @@ impl View {
         View { width, height, sx, sy, pad, hud, hud_windows: 0 }
     }
 
+    /// This view drawn `k` times larger in each direction (`k` x `k`
+    /// samples per output pixel), for supersampling: render and compose at
+    /// this size, then [`downsample`] by `k`. Everything in game pixels
+    /// (checkerboard, HUD placement, padding) stays where it is.
+    pub fn supersampled(&self, k: usize) -> View {
+        let k = k.max(1);
+        View { width: self.width * k, height: self.height * k, sx: self.sx * k as f32, sy: self.sy * k as f32, ..*self }
+    }
+
     /// Horizontal shift in game pixels for a HUD element centred at game x
     /// `mid`: none when centred, else by the third of the screen it is in.
     pub fn hud_shift(&self, mid: f32) -> f32 {
@@ -205,6 +214,36 @@ impl View {
         let (fx, fy) = (gx / WIDTH as f32, gy / HEIGHT as f32);
         ((0.0..1.0).contains(&fx) && (0.0..1.0).contains(&fy)).then_some((fx, fy))
     }
+}
+
+/// Average RGB pixels in `k` x `k` blocks: a `w` x `h` image to
+/// `w / k` x `h / k` (the second half of supersampling, see
+/// [`View::supersampled`]). Blocks average the stored values, as a GPU's
+/// multisample resolve does.
+pub fn downsample(rgb: &[u8], w: usize, h: usize, k: usize) -> Vec<u8> {
+    if k <= 1 {
+        return rgb.to_vec();
+    }
+    let (ow, oh) = (w / k, h / k);
+    let mut out = vec![0u8; ow * oh * 3];
+    let n = (k * k) as u32;
+    for oy in 0..oh {
+        for ox in 0..ow {
+            let mut sum = [0u32; 3];
+            for sy in 0..k {
+                let row = ((oy * k + sy) * w + ox * k) * 3;
+                for sx in 0..k {
+                    for (c, s) in sum.iter_mut().enumerate() {
+                        *s += rgb[row + sx * 3 + c] as u32;
+                    }
+                }
+            }
+            for (c, s) in sum.iter().enumerate() {
+                out[(oy * ow + ox) * 3 + c] = ((s + n / 2) / n) as u8;
+            }
+        }
+    }
+    out
 }
 
 /// Compose a frame at native resolution (see `compose`).
@@ -790,6 +829,19 @@ fn hud_shifts(hud: &[Option<[u8; 3]>], view: &View, has_3d: bool) -> Vec<usize> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn supersampling_averages_blocks() {
+        let base = View::new(768, 16.0 / 9.0, Hud::Center);
+        let v = base.supersampled(2);
+        assert_eq!((v.width, v.height, v.pad), (base.width * 2, 1536, base.pad));
+        // Two by two blocks of 0, 100, 200 and 255 average to 139 (rounded).
+        let img: Vec<u8> = [0u8, 100, 200, 255].iter().flat_map(|&c| [c; 3]).collect();
+        assert_eq!(downsample(&img, 2, 2, 2), [139, 139, 139]);
+        assert_eq!(downsample(&img, 2, 2, 1), img);
+        let n = View::native().supersampled(3);
+        assert_eq!((n.width, n.height, n.sx, n.pad), (WIDTH * 3, HEIGHT * 3, 3.0, 0.0));
+    }
+
     use super::*;
 
     #[test]

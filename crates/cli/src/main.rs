@@ -1,3 +1,4 @@
+mod depth_check;
 mod geo_check;
 mod gpu_check;
 mod music;
@@ -31,6 +32,14 @@ options:
                        wider than 4:3 shows more of the 3D scene at the sides
   --hud center|edges   wide views: keep the HUD centred, or move each HUD
                        element to the nearest screen edge
+  --aa N               snapshots and gpu-check: anti-aliasing with N samples a
+                       pixel (4, 8, ...; default off). The software renderer
+                       supersamples (draws ceil(sqrt(N)) times larger in each
+                       direction and averages); gpu-check turns on the GPU's
+                       multisampling to match (4 or 8)
+  --depth              snapshots and gpu-check: a depth buffer from each
+                       vertex's 1/z, per window, instead of drawing in the
+                       game's order (model2::raster::depth_value; default off)
   --input SCRIPT       scripted inputs for `run`, by the game's input names
                        (`remodel --game ID inputs` lists them), e.g. for
                        topskatr coin1@1100-1105,start@1300-1305,curving=0x40@1400-1500;
@@ -126,6 +135,13 @@ commands:
   gpu-check [DIR]      draw the frames captured with --capture in DIR
                        (default out/GAME/capture) with the software and GPU
                        rasterisers; time both and report how they differ
+  depth-check [DIR] [OUT]
+                       draw the frames captured in DIR on the GPU with the
+                       depth buffer off and on (default view 1440x1080; with
+                       --height, --aspect, --hud that one; --aa for
+                       multisampling), report where they differ and write
+                       pictures of the differences (off | on | differences)
+                       to OUT (default out/GAME/depth-check)
   geo-check [STEPS] [FROM]
                        run (with --input, --load-state) with the geometrizer
                        chip (SHARC or TGP) and the native geometrizer fed the
@@ -235,6 +251,17 @@ fn main() -> ExitCode {
         }
         let _ = VIEW.set(view);
     }
+    let Ok(aa) = opt("--aa") else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    if let Some(a) = aa {
+        let Some(n) = a.parse::<u32>().ok().filter(|n| (1..=64).contains(n)) else {
+            eprintln!("error: --aa wants a number of samples a pixel, 1 to 64");
+            return ExitCode::FAILURE;
+        };
+        let _ = AA.set(n);
+    }
     let (Ok(dump_textures), Ok(texture_pack)) = (opt("--dump-textures"), opt("--texture-pack")) else {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
@@ -327,6 +354,9 @@ fn main() -> ExitCode {
         None => false,
     };
     let (interp, single_thread) = (flag("--interp"), flag("--single-thread"));
+    if flag("--depth") {
+        let _ = DEPTH.set(true);
+    }
     let Some(cmd) = args.first().cloned() else {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
@@ -824,7 +854,23 @@ fn main() -> ExitCode {
             let default = PathBuf::from("out").join(roms.game.id).join("capture");
             let root = args.get(1).map(PathBuf::from).unwrap_or(default);
             let windows = roms.game.hud_windows.iter().fold(0, |m, &w| m | 1 << w);
-            if let Err(e) = gpu_check::run(&root, windows) {
+            if let Err(e) =
+                gpu_check::run(&root, windows, AA.get().copied().unwrap_or(1), DEPTH.get().copied().unwrap_or(false))
+            {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        "depth-check" => {
+            let default = PathBuf::from("out").join(roms.game.id).join("capture");
+            let root = args.get(1).map(PathBuf::from).unwrap_or(default);
+            let out = args
+                .get(2)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("depth-check"));
+            let windows = roms.game.hud_windows.iter().fold(0, |m, &w| m | 1 << w);
+            if let Err(e) = depth_check::run(&root, windows, VIEW.get().copied(), AA.get().copied().unwrap_or(1), &out)
+            {
                 eprintln!("error: {e}");
                 return ExitCode::FAILURE;
             }
@@ -1127,6 +1173,16 @@ fn games_json(games: &[&romset::Game], dir: &Path) -> String {
 
 /// Output view for snapshots (`--height`, `--aspect`, `--hud`); native when unset.
 static VIEW: std::sync::OnceLock<model2::video::View> = std::sync::OnceLock::new();
+/// `--aa`: samples a pixel for snapshots (supersampled) and gpu-check.
+static AA: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+/// `--depth`: the depth buffer for snapshots and gpu-check.
+static DEPTH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Linear supersampling factor for `samples` a pixel: the smallest k
+/// with k * k >= samples (1 for off).
+fn supersample_factor(samples: u32) -> usize {
+    (1..).find(|k| k * k >= samples.max(1)).unwrap_or(1) as usize
+}
 /// `--geo`: how the 2B geometrizer runs.
 static GEO_MODE: std::sync::OnceLock<model2::geo::GeoMode> = std::sync::OnceLock::new();
 /// `--tgp2a hle`: Model 2A's TGP answered by the function model.
@@ -1218,7 +1274,11 @@ fn draw_png(m: &model2::Machine, stream: Option<&[u32]>, path: &std::path::Path)
 /// The machine's current frame as `draw_png` draws it (`path` names it
 /// for `REMODEL_PROBE`'s report): the view, and its RGB pixels.
 fn render(m: &model2::Machine, stream: Option<&[u32]>, path: &std::path::Path) -> (model2::video::View, Vec<u8>) {
-    let view = VIEW.get().copied().unwrap_or_else(model2::video::View::native);
+    let out_view = VIEW.get().copied().unwrap_or_else(model2::video::View::native);
+    // Anti-aliasing: draw and compose larger, average down at the end.
+    let k = supersample_factor(AA.get().copied().unwrap_or(1));
+    let view = out_view.supersampled(k);
+    let depth = DEPTH.get().copied().unwrap_or(false);
     let b = &m.bus;
     let geo = b.geo.engine();
     let stream = stream.unwrap_or(&geo.stream);
@@ -1236,9 +1296,9 @@ fn render(m: &model2::Machine, stream: Option<&[u32]>, path: &std::path::Path) -
     let (rgb3d, covered) = match packs.as_mut() {
         Some(p) => {
             p.frame = m.frames;
-            model2::raster::draw_enhanced(&mut polys, &src, &view, p)
+            model2::raster::draw_enhanced_depth(&mut polys, &src, &view, p, depth)
         }
-        None => model2::raster::draw_view(&mut polys, &src, &view),
+        None => model2::raster::draw_view_depth(&mut polys, &src, &view, depth),
     };
     if let Some((x, y)) = std::env::var("REMODEL_PROBE").ok().and_then(|v| {
         let (x, y) = v.split_once(',')?;
@@ -1258,7 +1318,7 @@ fn render(m: &model2::Machine, stream: Option<&[u32]>, path: &std::path::Path) -
         }
         None => model2::video::compose(b.tile_ram(), b.palette_ram(), layer3d, &view),
     };
-    (view, rgb)
+    (out_view, model2::video::downsample(&rgb, view.width, view.height, k))
 }
 
 /// `latency`: run to frame `at`, then on as two machines, one with

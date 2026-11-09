@@ -88,7 +88,7 @@ RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 ##@ General
 
-help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, RECOMP, SOUNDTRACK)
+help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, GPU_OPTS, RECOMP, SOUNDTRACK)
 	@awk 'BEGIN {FS = ":.*## "; printf "usage: make <target> [VAR=value]\n"} \
 		/^##@/ {printf "\n%s\n", substr($$0, 5)} \
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -265,8 +265,14 @@ capture: release ## Run into a race saving every 300th frame's renderer inputs t
 	rm -rf $(OUT)/capture
 	$(RUN) --capture $(OUT)/capture --input $(BENCH_INPUT) run 900000000 300 >/dev/null
 
-gpu-check: release ## Draw the captured frames on the software and GPU rasterisers; time and compare them (needs a GPU)
-	$(RUN) gpu-check
+# Options for gpu-check and depth-check: --aa N (multisampling; software
+# supersamples to match), --depth, and for depth-check --height/--aspect/--hud.
+GPU_OPTS ?=
+gpu-check: release ## Draw the captured frames on the software and GPU rasterisers; time and compare them, and what GPU_OPTS="--aa 4 --depth" cost (needs a GPU)
+	$(RUN) $(GPU_OPTS) gpu-check
+
+depth-check: release ## Draw the captured frames on the GPU with the depth buffer off and on, report and picture the differences into OUT/depth-check (GPU_OPTS: --aa N, --height, --aspect; needs a GPU)
+	$(RUN) $(GPU_OPTS) depth-check $(OUT)/capture $(OUT)/depth-check
 
 GEO_CHECK_STEPS ?= 750000000
 GEO_CHECK_FROM  ?= 3000

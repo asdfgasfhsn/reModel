@@ -58,11 +58,89 @@ fn comparison(view: &View, sw: &(Vec<u8>, Vec<bool>), gpu: &(Vec<u8>, Vec<bool>)
     out
 }
 
-pub fn run(root: &Path, hud_windows: u32) -> Result<(), String> {
+/// Software supersampled | GPU multisampled | differences (x8) of whole
+/// frames.
+fn frame_comparison(view: &View, sw: &[u8], gpu: &[u8]) -> Vec<u8> {
+    let (w, h) = (view.width, view.height);
+    let mut out = vec![0u8; w * 3 * h * 3];
+    for y in 0..h {
+        for x in 0..w {
+            let i = (y * w + x) * 3;
+            let row = y * w * 3;
+            out[(row + x) * 3..(row + x) * 3 + 3].copy_from_slice(&sw[i..i + 3]);
+            out[(row + w + x) * 3..(row + w + x) * 3 + 3].copy_from_slice(&gpu[i..i + 3]);
+            let d = [0, 1, 2].map(|c| sw[i + c].abs_diff(gpu[i + c]).saturating_mul(8));
+            out[(row + 2 * w + x) * 3..(row + 2 * w + x) * 3 + 3].copy_from_slice(&d);
+        }
+    }
+    out
+}
+
+/// Mean time of `n` runs of `f`, in ms.
+fn time(n: usize, mut f: impl FnMut()) -> f64 {
+    let t = Instant::now();
+    for _ in 0..n {
+        f();
+    }
+    t.elapsed().as_secs_f64() * 1e3 / n as f64
+}
+
+/// What multisampling and the depth buffer cost the GPU: whole frames
+/// (3D layer, compose, readback) per configuration, mean over the frames.
+fn cost(gpu: &mut gpu::Renderer, root_dirs: &[std::path::PathBuf], texture_rom: &[u16], views: &[(&str, View)]) {
+    let configs = [(1, false), (4, false), (8, false), (1, true), (4, true), (8, true)];
+    let frames: Vec<_> = root_dirs.iter().filter_map(|d| Frame::load(d).ok()).collect();
+    println!("cost          whole frame on the GPU incl. readback, mean over {} frames, ms", frames.len());
+    print!("{:<12}", "");
+    for (m, d) in configs {
+        print!(
+            " {:>10}",
+            format!("{}{}", if m == 1 { "off".to_string() } else { format!("{m}x") }, if d { "+depth" } else { "" })
+        );
+    }
+    println!();
+    for (name, view) in views {
+        print!("{name:<12}");
+        for (msaa, depth) in configs {
+            let q = gpu.set_quality(gpu::Quality { msaa, depth });
+            if q.msaa != msaa {
+                print!(" {:>10}", "n/a");
+                continue;
+            }
+            let mut total = 0.0;
+            for f in &frames {
+                let src = f.sources(texture_rom);
+                let mut polys = raster::build(&f.stream, &src);
+                let placed = raster::place(&mut polys, view);
+                let layers = video::layers_2d(&f.tiles, &f.palette, view, !placed.is_empty());
+                gpu.frame(&polys, &placed, &src, view, &layers);
+                total += time(3, || {
+                    gpu.frame(&polys, &placed, &src, view, &layers);
+                });
+            }
+            print!(" {:>10.2}", total / frames.len().max(1) as f64);
+        }
+        println!();
+    }
+}
+
+pub fn run(root: &Path, hud_windows: u32, aa: u32, depth: bool) -> Result<(), String> {
     let texture_rom = capture::load_texture_rom(root)
         .map_err(|e| format!("{}: {e} (capture with `make capture`)", root.display()))?;
     let mut gpu = gpu::Renderer::new()?;
     println!("gpu           {}", gpu.adapter());
+    let q = gpu.set_quality(gpu::Quality { msaa: aa, depth });
+    println!(
+        "quality       {} samples a pixel on the GPU ({} supersampled in software), depth buffer {}",
+        q.msaa,
+        if aa > 1 {
+            format!("{}x{}", super::supersample_factor(aa), super::supersample_factor(aa))
+        } else {
+            "no".into()
+        },
+        if depth { "on" } else { "off" }
+    );
+    let ss = if aa > 1 { super::supersample_factor(aa) } else { 1 };
     let mut dirs: Vec<_> = std::fs::read_dir(root)
         .map_err(|e| e.to_string())?
         .flatten()
@@ -97,14 +175,14 @@ pub fn run(root: &Path, hud_windows: u32) -> Result<(), String> {
         for (k, (name, view)) in views.iter().enumerate() {
             let mut sw_polys = polys.clone();
             let t = Instant::now();
-            let sw = raster::draw_view(&mut sw_polys, &src, view);
+            let sw = raster::draw_view_depth(&mut sw_polys, &src, view, depth);
             let sw_ms = t.elapsed().as_secs_f64() * 1e3;
             let t = Instant::now();
             let mut gpu_polys = polys.clone();
             let placed = raster::place(&mut gpu_polys, view);
             let g = gpu.draw(&gpu_polys, &placed, &src, view);
             let gpu_ms = t.elapsed().as_secs_f64() * 1e3;
-            let df = diff(&sw, &g);
+            let mut df = diff(&sw, &g);
             // What a live frame costs on the CPU before the GPU: parse the
             // stream, place the polygons, build the 2D layers.
             let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
@@ -124,8 +202,25 @@ pub fn run(root: &Path, hud_windows: u32) -> Result<(), String> {
             let layers_ms = ms(t);
             let gpu_frame = gpu.frame(&gpu_polys, &placed, &src, view, &layers);
             let cpu_frame = video::compose(&f.tiles, &f.palette, Some((&g.0, &g.1)), view);
-            let compose_diff =
+            let mut compose_diff =
                 gpu_frame.as_chunks::<3>().0.iter().zip(cpu_frame.as_chunks::<3>().0).filter(|(a, b)| a != b).count();
+            // Multisampled: the 3D layers no longer match pixel for pixel.
+            // Compare whole frames instead, the GPU's against the software
+            // renderer's supersampled one.
+            let mut frames_png = None;
+            if ss > 1 {
+                let big = view.supersampled(ss);
+                let mut p = polys.clone();
+                let big_layer = raster::draw_view_depth(&mut p, &src, &big, depth);
+                let big_frame = video::compose(&f.tiles, &f.palette, Some((&big_layer.0, &big_layer.1)), &big);
+                let sw_frame = video::downsample(&big_frame, big.width, big.height, ss);
+                let pairs = sw_frame.as_chunks::<3>().0.iter().zip(gpu_frame.as_chunks::<3>().0);
+                df.coverage = 0;
+                df.colour = pairs.clone().filter(|(a, b)| a != b).count();
+                df.large = pairs.filter(|(a, b)| (0..3).any(|c| a[c].abs_diff(b[c]) > 16)).count();
+                compose_diff = 0;
+                frames_png = Some(frame_comparison(view, &sw_frame, &gpu_frame));
+            }
             println!(
                 "{:<8} {:>6}  {name:<11} {sw_ms:>7.1}ms {gpu_ms:>7.1}ms  {:>8.3}% {:>8.3}% {:>8.3}%  {:>8.3}%  {build_ms:>6.2}ms {place_ms:>6.2}ms {layers_ms:>6.2}ms",
                 f.frame,
@@ -139,7 +234,8 @@ pub fn run(root: &Path, hud_windows: u32) -> Result<(), String> {
                 let _ = std::fs::write(d.join("gpu-frame.png"), png::encode_rgb(view.width, view.height, &gpu_frame));
             }
             if k == 0 {
-                let png = png::encode_rgb(view.width * 3, view.height, &comparison(view, &sw, &g));
+                let rgb = frames_png.unwrap_or_else(|| comparison(view, &sw, &g));
+                let png = png::encode_rgb(view.width * 3, view.height, &rgb);
                 let _ = std::fs::write(d.join("gpu-check.png"), png);
             }
             let t = &mut totals[k];
@@ -163,6 +259,10 @@ pub fn run(root: &Path, hud_windows: u32) -> Result<(), String> {
             pct(df.large, df.pixels)
         );
     }
+    if aa > 1 {
+        println!("(multisampled: coverage is 0 and colour/>16 count pixels of the whole frame, the GPU's against the software renderer's supersampled one)");
+    }
+    cost(&mut gpu, &dirs, &texture_rom, &views);
     match tiles_differ.len() {
         0 => println!("2d layers     fast path identical to the reference on all {} frames", dirs.len()),
         n => println!("2d layers     fast path DIFFERS from the reference on {n} frames: {tiles_differ:?}"),

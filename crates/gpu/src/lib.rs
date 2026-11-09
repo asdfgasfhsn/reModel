@@ -8,19 +8,87 @@
 //! video RAM. The software rasteriser stays the reference: `remodel
 //! gpu-check` draws captured frames both ways and compares them.
 //!
-//! Polygons are drawn in order in a single pass with no depth buffer:
-//! GPUs keep primitive order for overlapping pixels, which gives the
-//! painter's algorithm the software renderer uses. [`Renderer::present`]
-//! then blends the 2D tile layers around the 3D layer into the output.
+//! Polygons are drawn in order in a single pass, by default with no depth
+//! buffer: GPUs keep primitive order for overlapping pixels, which gives the
+//! painter's algorithm the software renderer uses. [`Quality`] adds
+//! multisampling and a depth buffer. [`Renderer::present`] then blends the
+//! 2D tile layers around the 3D layer into the output.
 
 use model2::raster::{Placed, Poly, Sources};
 use model2::video::{Layers2d, View, HEIGHT, WIDTH};
+use std::collections::HashMap;
 use wgpu::util::DeviceExt;
+
+/// Image quality options for the 3D layer (docs/enhancements.md). The
+/// default is the original look.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Quality {
+    /// Samples per pixel: 1 (off), 4, or 8 where the GPU has it
+    /// ([`max_msaa`]). Edges blend by the fraction of the pixel covered.
+    pub msaa: u32,
+    /// Depth buffer from 1/z, per window (`model2::raster::depth_value`).
+    pub depth: bool,
+}
+
+impl Default for Quality {
+    fn default() -> Self {
+        Quality { msaa: 1, depth: false }
+    }
+}
+
+/// The depth format; 32-bit float keeps the precision of
+/// `model2::raster::depth_value`.
+const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+/// How a draw of polygons is set up in the raster pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Mode {
+    /// No depth buffer.
+    Plain,
+    /// Depth tested (a polygon wins where its depth is at least what is
+    /// there) and written.
+    Depth,
+    /// Depth tested but not written: translucent polygons, and the colour
+    /// of a group of polygons (see `Placed::group`).
+    Test,
+    /// Depth written where tested, no colour: a group's depth, after its
+    /// colour.
+    DepthWrite,
+    /// With a depth buffer in the pass, but neither tested nor written:
+    /// polygons the game sorted behind everything.
+    Background,
+    /// Empties the depth buffer within the scissor rectangle.
+    Clear,
+}
+
+/// Samples per pixel the GPU can multisample the 3D layer with, at most 8:
+/// 4 everywhere (WebGPU's only count), 8 where the adapter reports it for
+/// both the colour and depth formats. Needs the device created with
+/// [`features`].
+pub fn max_msaa(adapter: &wgpu::Adapter) -> u32 {
+    let ok = |f: wgpu::TextureFormat, n| adapter.get_texture_format_features(f).flags.sample_count_supported(n);
+    if ok(FORMAT, 8) && ok(DEPTH_FORMAT, 8) {
+        8
+    } else {
+        4
+    }
+}
+
+/// Device features to request: the adapter's per-format sample counts
+/// (8x multisampling), where it has them.
+pub fn features(adapter: &wgpu::Adapter) -> wgpu::Features {
+    adapter.features() & wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+}
 
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    raster: wgpu::RenderPipeline,
+    raster_shader: wgpu::ShaderModule,
+    raster_pipeline_layout: wgpu::PipelineLayout,
+    /// Raster pipelines by sample count and mode, made when first needed.
+    raster: HashMap<(u32, Mode), wgpu::RenderPipeline>,
+    quality: Quality,
+    max_msaa: u32,
     raster_layout: wgpu::BindGroupLayout,
     compose_shader: wgpu::ShaderModule,
     compose_layout: wgpu::BindGroupLayout,
@@ -89,6 +157,13 @@ fn le(values: impl IntoIterator<Item = [u8; 4]>) -> Vec<u8> {
     values.into_iter().flatten().collect()
 }
 
+/// The raster shader with the depth buffer's constants filled in.
+fn raster_source() -> String {
+    include_str!("raster.wgsl")
+        .replace("@DEPTH_BIAS@", &format!("{:?}", model2::raster::DEPTH_BIAS))
+        .replace("@DEPTH_SCALE@", &format!("{:?}", model2::raster::DEPTH_SCALE))
+}
+
 /// Limits to ask for: the portable defaults, with storage buffers (render
 /// RAM is 4+ MB) and textures (window and output size) as large as the
 /// adapter allows.
@@ -116,18 +191,23 @@ impl Renderer {
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("remodel"),
             required_limits: limits(&adapter),
+            required_features: features(&adapter),
             ..Default::default()
         }))
         .map_err(|e| format!("{name}: {e}"))?;
-        Ok(Self::from_device(device, queue, name))
+        let mut r = Self::from_device(device, queue, name);
+        r.max_msaa = max_msaa(&adapter);
+        Ok(r)
     }
 
     /// A renderer on a device the caller created (with at least
-    /// [`limits`]).
+    /// [`limits`]). Multisampling is limited to 4x unless the caller says
+    /// otherwise with [`Renderer::set_max_msaa`] (from [`max_msaa`], for a
+    /// device created with [`features`]).
     pub fn from_device(device: wgpu::Device, queue: wgpu::Queue, adapter: String) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("raster"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("raster.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(raster_source().into()),
         });
         let raster_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("raster"),
@@ -137,35 +217,6 @@ impl Renderer {
             label: Some("raster"),
             bind_group_layouts: &[Some(&raster_layout)],
             immediate_size: 0,
-        });
-        let raster = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("raster"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: VERTEX_BYTES,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x3, 2 => Uint32],
-                })],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
         });
         let compose_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("compose"),
@@ -178,7 +229,11 @@ impl Renderer {
         Renderer {
             device,
             queue,
-            raster,
+            raster_shader: shader,
+            raster_pipeline_layout: pipeline_layout,
+            raster: HashMap::new(),
+            quality: Quality::default(),
+            max_msaa: 4,
             raster_layout,
             compose_shader,
             compose_layout,
@@ -193,6 +248,93 @@ impl Renderer {
     /// The GPU in use: name, backend and driver.
     pub fn adapter(&self) -> &str {
         &self.adapter
+    }
+
+    /// The most samples per pixel [`Quality::msaa`] can use here.
+    pub fn max_msaa(&self) -> u32 {
+        self.max_msaa
+    }
+
+    /// Allow up to `n` samples (see [`max_msaa`]).
+    pub fn set_max_msaa(&mut self, n: u32) {
+        self.max_msaa = n.clamp(4, 8);
+    }
+
+    /// Draw the 3D layer with `quality` from the next frame on. The sample
+    /// count is rounded to what exists (1, 4, 8) and limited to the GPU's;
+    /// the result is the quality in effect.
+    pub fn set_quality(&mut self, quality: Quality) -> Quality {
+        let msaa = match quality.msaa {
+            0 | 1 => 1,
+            2..=7 => 4,
+            _ => self.max_msaa.min(8),
+        };
+        self.quality = Quality { msaa, ..quality };
+        self.quality
+    }
+
+    pub fn quality(&self) -> Quality {
+        self.quality
+    }
+
+    /// The raster pipeline for `samples` and `mode`.
+    fn raster_pipeline(&mut self, samples: u32, mode: Mode) -> wgpu::RenderPipeline {
+        if let Some(p) = self.raster.get(&(samples, mode)) {
+            return p.clone();
+        }
+        let (vs, fs) = match mode {
+            Mode::Clear => ("vs_clear", "fs_clear"),
+            Mode::Depth | Mode::Test | Mode::DepthWrite => ("vs", "fs_depth"),
+            _ => ("vs", "fs"),
+        };
+        let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x3, 2 => Uint32];
+        let buffers = [Some(wgpu::VertexBufferLayout {
+            array_stride: VERTEX_BYTES,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &attributes,
+        })];
+        let depth_stencil = (mode != Mode::Plain).then(|| wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(matches!(mode, Mode::Depth | Mode::DepthWrite | Mode::Clear)),
+            depth_compare: Some(if matches!(mode, Mode::Depth | Mode::Test | Mode::DepthWrite) {
+                wgpu::CompareFunction::GreaterEqual
+            } else {
+                wgpu::CompareFunction::Always
+            }),
+            stencil: Default::default(),
+            bias: Default::default(),
+        });
+        let p = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("raster"),
+            layout: Some(&self.raster_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &self.raster_shader,
+                entry_point: Some(vs),
+                compilation_options: Default::default(),
+                buffers: if mode == Mode::Clear { &[] } else { &buffers },
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil,
+            multisample: wgpu::MultisampleState { count: samples, mask: !0, alpha_to_coverage_enabled: false },
+            fragment: Some(wgpu::FragmentState {
+                module: &self.raster_shader,
+                entry_point: Some(fs),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: FORMAT,
+                    blend: None,
+                    write_mask: if matches!(mode, Mode::Clear | Mode::DepthWrite) {
+                        wgpu::ColorWrites::empty()
+                    } else {
+                        wgpu::ColorWrites::ALL
+                    },
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        self.raster.insert((samples, mode), p.clone());
+        p
     }
 
     pub fn device(&self) -> &wgpu::Device {
@@ -256,8 +398,40 @@ impl Renderer {
         t
     }
 
+    /// A render attachment kept between frames: the multisampled colour
+    /// image or the depth buffer.
+    fn kept_attachment(
+        &mut self,
+        label: &'static str,
+        w: u32,
+        h: u32,
+        samples: u32,
+        format: wgpu::TextureFormat,
+    ) -> wgpu::Texture {
+        let same = |t: &wgpu::Texture| {
+            t.width() == w && t.height() == h && t.sample_count() == samples && t.format() == format
+        };
+        if let Some((_, t)) = self.textures.iter().find(|(l, t)| *l == label && same(t)) {
+            return t.clone();
+        }
+        let t = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: samples,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        self.textures.retain(|(l, _)| *l != label);
+        self.textures.push((label, t.clone()));
+        t
+    }
+
     /// Encode the 3D layer of `placed` into `target` (FORMAT, the size of
-    /// `view`; alpha 0 where nothing is drawn).
+    /// `view`; alpha 0 where nothing is drawn, a fraction at multisampled
+    /// edges, with colour premultiplied by it).
     fn encode_3d(
         &mut self,
         enc: &mut wgpu::CommandEncoder,
@@ -270,6 +444,33 @@ impl Renderer {
         let (w, h) = (view.width as u32, view.height as u32);
         let mut verts: Vec<u8> = Vec::new();
         let mut table: Vec<u8> = Vec::new();
+        let q = self.quality;
+        // Draws: runs of polygons in the same window and depth mode.
+        struct Run {
+            vertices: std::ops::Range<u32>,
+            window: usize,
+            mode: Mode,
+            clip: (f32, f32, f32, f32),
+        }
+        let mut runs: Vec<Run> = Vec::new();
+        let push = |runs: &mut Vec<Run>, vertices: std::ops::Range<u32>, window: usize, mode: Mode, clip| match runs
+            .last_mut()
+        {
+            Some(r) if r.window == window && r.mode == mode && r.vertices.end == vertices.start => {
+                r.vertices.end = vertices.end
+            }
+            _ => runs.push(Run { vertices, window, mode, clip }),
+        };
+        // The members of a group (`Placed::group`) of more than one polygon
+        // are drawn tested against the depth before the group, and write
+        // their depth once all are drawn: the depth-only draws to come.
+        let mut group_depth: Vec<Run> = Vec::new();
+        let group_len = |i: usize| {
+            let g = placed[i].group;
+            let before = placed[..i].iter().rev().take_while(|o| o.group == g).count();
+            let after = placed[i..].iter().take_while(|o| o.group == g).count();
+            before + after
+        };
         for (i, pl) in placed.iter().enumerate() {
             let p = &polys[pl.poly];
             let t = p.texture;
@@ -280,13 +481,32 @@ impl Renderer {
             let tex = t.map_or([0; 4], |t| [t.x0, t.y0, t.w, t.h]);
             let (bank, luma_table) = t.map_or((0, 0), |t| (t.bank, t.luma_table));
             table.extend(le([x0, y0, x1, y1].map(f32::to_le_bytes)));
-            let ints = tex.into_iter().chain([flags, bank, luma_table, p.luma]).chain(p.colour).chain([0]);
+            let ints = tex.into_iter().chain([flags, bank, luma_table, p.luma]).chain(p.colour).chain([pl.rank]);
             table.extend(le(ints.map(u32::to_le_bytes)));
+            let first = (verts.len() as u64 / VERTEX_BYTES) as u32;
             // Convex polygon as a triangle fan.
             for k in 1..pl.points.len().saturating_sub(1) {
                 for v in [pl.points[0], pl.points[k], pl.points[k + 1]] {
                     verts.extend(le([v.x, v.y, v.iz, v.uz, v.vz].map(f32::to_le_bytes)));
                     verts.extend((i as u32).to_le_bytes());
+                }
+            }
+            let end = (verts.len() as u64 / VERTEX_BYTES) as u32;
+            let grouped = q.depth && !pl.background && !p.checker && group_len(i) > 1;
+            let mode = match (q.depth, pl.background, p.checker) {
+                (false, ..) => Mode::Plain,
+                (_, true, _) => Mode::Background,
+                (_, _, true) => Mode::Test,
+                _ if grouped => Mode::Test,
+                _ => Mode::Depth,
+            };
+            push(&mut runs, first..end, p.window, mode, pl.clip);
+            if grouped {
+                group_depth.push(Run { vertices: first..end, window: p.window, mode: Mode::DepthWrite, clip: pl.clip });
+            }
+            if placed.get(i + 1).is_none_or(|n| n.group != pl.group) {
+                for r in group_depth.drain(..) {
+                    push(&mut runs, r.vertices, r.window, r.mode, r.clip);
                 }
             }
         }
@@ -314,23 +534,57 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 3, resource: palette.as_entire_binding() },
             ],
         });
+        let samples = q.msaa.max(1);
+        let msaa = (samples > 1).then(|| self.kept_attachment("3d msaa", w, h, samples, FORMAT));
+        let msaa_view = msaa.as_ref().map(|t| t.create_view(&Default::default()));
+        let depth = q.depth.then(|| self.kept_attachment("3d depth", w, h, samples, DEPTH_FORMAT));
+        let depth_view = depth.as_ref().map(|t| t.create_view(&Default::default()));
+        let pipelines: Vec<(Mode, wgpu::RenderPipeline)> = if q.depth {
+            [Mode::Depth, Mode::Test, Mode::DepthWrite, Mode::Background]
+                .map(|m| (m, self.raster_pipeline(samples, m)))
+                .into()
+        } else {
+            vec![(Mode::Plain, self.raster_pipeline(samples, Mode::Plain))]
+        };
+        let clear_pipeline = q.depth.then(|| self.raster_pipeline(samples, Mode::Clear));
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("3d layer"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
+                view: msaa_view.as_ref().unwrap_or(target),
                 depth_slice: None,
-                resolve_target: None,
+                resolve_target: msaa_view.as_ref().map(|_| target),
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Store,
+                    store: if msaa_view.is_some() { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store },
                 },
             })],
+            depth_stencil_attachment: depth_view.as_ref().map(|view| wgpu::RenderPassDepthStencilAttachment {
+                view,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Discard }),
+                stencil_ops: None,
+            }),
             ..Default::default()
         });
-        pass.set_pipeline(&self.raster);
         pass.set_bind_group(0, &bind, &[]);
         pass.set_vertex_buffer(0, vertices.slice(..));
-        pass.draw(0..(verts.len() as u64 / VERTEX_BYTES) as u32, 0..1);
+        for (k, run) in runs.iter().enumerate() {
+            // Each window starts with an empty depth buffer where it draws
+            // (the first has the pass's clear).
+            if let (Some(clear), true) = (&clear_pipeline, k > 0 && runs[k - 1].window != run.window) {
+                let (x0, y0) = (run.clip.0.floor().max(0.0) as u32, run.clip.1.floor().max(0.0) as u32);
+                let (x1, y1) = ((run.clip.2.ceil().max(0.0) as u32).min(w), (run.clip.3.ceil().max(0.0) as u32).min(h));
+                if x1 > x0 && y1 > y0 {
+                    pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
+                    pass.set_pipeline(clear);
+                    pass.draw(0..3, 0..1);
+                    pass.set_scissor_rect(0, 0, w, h);
+                }
+            }
+            if let Some((_, pipeline)) = pipelines.iter().find(|(m, _)| *m == run.mode) {
+                pass.set_pipeline(pipeline);
+            }
+            pass.draw(run.vertices.clone(), 0..1);
+        }
     }
 
     fn texture(&self, label: &str, w: u32, h: u32, usage: wgpu::TextureUsages) -> wgpu::Texture {
@@ -393,7 +647,20 @@ impl Renderer {
         let mut enc = self.device.create_command_encoder(&Default::default());
         self.encode_3d(&mut enc, polys, placed, src, view, &target.create_view(&Default::default()));
         let rgba = self.read_back(enc, &target, w, h);
-        let rgb = rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
+        // Colour is premultiplied by coverage at multisampled edges.
+        let un = |c: u8, a: u8| ((c as u32 * 255 + a as u32 / 2) / a as u32).min(255) as u8;
+        let rgb = rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|p| {
+                if p[3] == 0 || p[3] == 255 {
+                    [p[0], p[1], p[2]]
+                } else {
+                    [un(p[0], p[3]), un(p[1], p[3]), un(p[2], p[3])]
+                }
+            })
+            .collect();
         let covered = rgba.as_chunks::<4>().0.iter().map(|p| p[3] != 0).collect();
         (rgb, covered)
     }
@@ -636,7 +903,7 @@ mod tests {
 
     #[test]
     fn shaders_parse_and_validate() {
-        validate(include_str!("raster.wgsl"));
+        validate(&super::raster_source());
         validate(include_str!("compose.wgsl"));
     }
 }

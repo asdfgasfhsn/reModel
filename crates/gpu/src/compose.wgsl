@@ -45,10 +45,11 @@ fn fs(@builtin(position) frag: vec4f) -> @location(0) vec4f {
     } else if pr.has_3d != 0u {
         c = pr.backdrop.rgb;
     }
+    // The 3D layer is premultiplied: its alpha is the fraction of the
+    // pixel covered (1 or 0 without multisampling), so edges blend with
+    // what is behind them.
     let d = textureLoad(layer3d, vec2i(floor(pos.xy)), 0);
-    if d.a > 0.0 {
-        c = d.rgb;
-    }
+    c = d.rgb + (1.0 - d.a) * c;
     if i32(ex) < i32(pr.ext_w) {
         let h = textureLoad(hud, vec2i(i32(ex), gy), 0);
         if h.a > 0.0 {
