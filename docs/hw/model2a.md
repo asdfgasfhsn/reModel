@@ -109,7 +109,13 @@ written there also at its 2C place in the render RAM the rasteriser reads
    check).
 
 The TGP program is in the game's program ROM at `0x5AE94`, not in a
-separate chip.
+separate chip. *Confirmed (`srallyc`'s code):* the 2A TGP's program is
+**uploaded by the game**, not internal to the chip as general knowledge
+had it. `vcop`, `daytona` and `vf2` each carry their own TGP program (a
+6-word vector and a dispatch table of 73, 73 and 112 entries; from the
+scoping pass); the programs differ between games. So the TGP needs an
+interpreter for its (undocumented) instruction set, not a
+function-by-function model.
 
 ### Function calls
 
@@ -221,7 +227,7 @@ address, the first 200,000 events) and the program as `out/GAME/tgp.bin`.
 | `mpr-17748.16` (low) / `-17750.20` (high), `mpr-17749.17` (low) / `-17751.21` (high) | **polygon ROM**: two banks of 1M 32-bit words, at model addresses `0x800000` and `0x900000` | §7: every polygon attribute word parses and the normals are unit length. **The pairs are not the numbers' neighbours**: `.16/.17` are the low halves, `.20/.21` the high halves, of banks 0 and 1 |
 | `mpr-17753.25` (even words) / `-17752.24` (odd words) | **texture ROM**: texture headers and point lists as 16-bit words (2C: `.27/.25`), read at the address the display list's tpa/tha give (bit 23 clear) | §7: headers decode (texture, size, sheet position, luma table, colour), the pictures are right. **`.25` is the even half**, the reverse of the order the chips are numbered in |
 | `mpr-17754.29` (low) / `-17755.28` (high), `mpr-17756.31` / `-17757.32` | **the TGP's data ROM**: two 32-bit banks at addresses `0x800000` and `0x900000` of its external bus | §9: the course data its collision functions read; the first begins with a count (300) |
-| `opr-14742a.45`/`.46`, `.58`/`.59`, `.62`/`.63` | the TGP's lookup tables (a sine table of floats, reciprocal and inverse-square-root mantissas) | numerically, "Findings" below |
+| `opr-14742a.45`/`.46`, `.58`/`.59`, `.62`/`.63` | the TGP's lookup tables (a sine table of floats, reciprocal and inverse-square-root mantissas) | numerically, see below |
 | `epr-17890.30` | 68000 sound program | the sound board runs it |
 | `mpr-17886.36`, `-17887.37` | SCSP samples | the sound plays |
 | `mpr-16310.15`, `-16311.16`, `-16312.14` | ramps (`00 E0 C0 A0 80 60 40 20`...): unconfirmed what reads them; not used | |
@@ -234,6 +240,13 @@ is 1M words after `0x800000`, not 2M as in a 2C slot). The zip also holds the ol
 (`epr-17888b.12`, `epr-17889b.13`) and `ic12.bin`/`ic13.bin`, which are
 the program pair again under other names; they are not used.
 
+*Confirmed (numerically):* the shared Model 2/2A chips are maths tables:
+`opr-14742a.45/.46` a quarter-wave sine (65,536 steps a circle, within
+3e-8), an arctangent, and slope and intercept pairs for `1/x` and
+`1/sqrt(x)` (the TGP's function unit reads these: one multiply and one
+subtract give full precision); `.58/.59` reciprocal mantissas, `.62/.63`
+inverse square root mantissas for even and odd exponents.
+
 ## 6. The functions (run on the interpreter, milestone 3)
 
 What each function of `srallyc`'s program does, as the interpreter runs
@@ -242,6 +255,18 @@ it; `make tgp-check` checks each against the maths with random arguments
 The last column says where milestone 2's function model
 (`model2::tgp2a_hle`, read from the code without running it, kept behind
 `--tgp2a hle`) agrees.
+
+*Confirmed (running `srallyc`'s program):* the MB86234's instruction
+words: an ALU operation in parallel with a transfer (registers, two
+RAMs, the external bus) or with loads of the multiplier's inputs, 24-bit
+immediates, control registers with a repeat count, conditional jumps
+and loads, calls, and a loop on a counter register (`BF00`, which the
+course search closes its loop with; milestone 4's reading of it as a
+jump on the zero flag made the race's physics run away). The
+interpreter runs every function the game calls and its library (add to
+tangent) to the maths for random arguments, and the course search on a
+made-up course (`make tgp-check`); a few forms only uncalled code uses
+remain unknown.
 
 | F | Takes / gives | What it does | Code | Model |
 |---|---|---|---|---|
@@ -551,63 +576,4 @@ left and above it right (`0x20` and `0xC0` turn the car within a second;
 on the car select screen left and right pick the two MT cars); the pedals
 are `0x00` released (the car stays still) and `0xFF` pressed (full
 throttle, full braking).
-
-
-## Findings
-
-Moved here from the README's former "What's known about Model 2A" section, text unchanged.
-
-## What's known about Model 2A
-
-Only `srallyc` is here, and it plays (the TGP runs, the 3D is drawn,
-textured, and races drive to the finish). The board map, the TGP's interface,
-the functions of its program, the polygon ROM and the geometrizer are in
-`docs/hw/model2a.md`; the MB86234's instruction set, as far as it is known
-and how each part was pinned, in `docs/hw/mb86234.md`.
-
-- *Confirmed (`srallyc`'s code):* the 2A TGP's program is **uploaded by the
-  game**, not internal to the chip as general knowledge had it. The loader
-  holds the copro in reset (`0x980000` bit 31), writes **1,665 32-bit
-  words** (one per store; 2C's are 64-bit pairs) to `0x884000`, releases
-  it, writes 0 to `0x880080` and requires the copro to answer 8, else
-  "Coprocessor Load Error". The program is in the game's own program ROM
-  (`0x5AE94`). `vcop`, `daytona` and `vf2` each carry their own TGP
-  program (a 6-word vector and a dispatch table of 73, 73 and 112 entries;
-  from the scoping pass); the programs differ between games. So the TGP
-  needs an interpreter for its (undocumented) instruction set, not a
-  function-by-function model.
-- *Confirmed (running `srallyc`'s program):* the MB86234's instruction
-  words: an ALU operation in parallel with a transfer (registers, two
-  RAMs, the external bus) or with loads of the multiplier's inputs, 24-bit
-  immediates, control registers with a repeat count, conditional jumps
-  and loads, calls, and a loop on a counter register (`BF00`, which the
-  course search closes its loop with; milestone 4's reading of it as a
-  jump on the zero flag made the race's physics run away). The
-  interpreter runs every function the game calls and its library (add to
-  tangent) to the maths for random arguments, and the course search on a
-  made-up course (`make tgp-check`); a few forms only uncalled code uses
-  remain unknown.
-- *Confirmed (numerically):* the shared Model 2/2A chips are maths tables:
-  `opr-14742a.45/.46` a quarter-wave sine (65,536 steps a circle, within
-  3e-8), an arctangent, and slope and intercept pairs for `1/x` and
-  `1/sqrt(x)` (the TGP's function unit reads these: one multiply and one
-  subtract give full precision); `.58/.59` reciprocal mantissas, `.62/.63`
-  inverse square root mantissas for even and odd exponents.
-- *Confirmed (`srallyc`):* no geometrizer program is uploaded; display lists
-  go straight to `0x804000`, in the 2C geometrizer's command set (with only
-  the fn field of the command words set: no check pattern), and the
-  TGP writes each object's Matrix command (fn `0x0B`) into the gaps the
-  i960 leaves in them, at byte offsets from a table at buffer RAM
-  `0x18000`. The 2A geometrizer is fixed-function hardware (no program);
-  reModel runs the 2C native geometrizer's command handling in its place
-  (`Core::Fixed`), and the result is right to the eye (its arithmetic
-  against the chip's is unconfirmed).
-- *Confirmed (`srallyc`, by the pictures):* the **polygon ROM** is the 2C's
-  model format in two banks of 32-bit words at model addresses
-  `0x800000` and `0x900000`, **`.16` + `.20` and `.17` + `.21`** (low half
-  first), not the chips' neighbours; the texture headers and point lists
-  are in `.25` (even words) and `.24` (odd words); the video RAM at
-  `0x12000000` is texture RAM (the 2C's render RAM with 16-bit words in
-  32-bit slots, banks 4 MB apart) and the table at `0x12800000` the luma
-  table (`docs/hw/model2a.md` §3, §5, §7).
 

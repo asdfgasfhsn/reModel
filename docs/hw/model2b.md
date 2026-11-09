@@ -78,6 +78,23 @@ MSGR7 = `0x7378842E`), then 12,288 halves to EPB0, then clear bit 31. The
 details and the boot that follows are in `adsp2106x.md`, "Model 2B: the
 upload".
 
+*Confirmed (`overrevb`, `sgt24h`, with the ADSP-21062 core):* each SHARC is
+booted as UM §11.6.3 describes for a 16-bit host: a DMA of 4,096 48-bit
+words, sent as 16-bit halves to `0x884000` / `0x804000` while bit 31 of
+`0x980000` (copro) or `0x980008` (geometrizer) is set. The window maps IOP
+register *n* at window + 4*n*, each 32-bit register written as two 16-bit
+halves, low first: DMAC6 = 0, II6 = `0x20000`, IM6 = 1, C6 = `0x1000`,
+DMAC6 = `0xA1` (instruction words, 16-to-48 packing, LSW first), then
+12,288 halves to EPB0. The DMA's end vectors through `0x20040` (`RTI`) to
+`0x20005`, `JUMP 0x20080 (DB)`. The copro program has 2,111 words of code,
+the geometrizer's 2,987, none with an undefined encoding
+(`docs/hw/adsp2106x.md`). Both Jaleco games upload the same two SHARC
+programs: the same code, word for word, but not the same images, since the
+upload always sends 4,096 words and the tails past the code differ (one
+data word in the copro's; in the geometrizer's, from `0x20C31` on,
+whatever follows it in each i960 ROM, in `sgt24h` the i960 program's own
+strings).
+
 `fvipers` and `schamp` upload differently (*confirmed* from the host
 writes, by running them): each IOP register is one 32-bit write, not two
 halves; they write SYSCON (`0xA110` copro, `0x3110` geometrizer) and
@@ -365,8 +382,8 @@ from the i960 code and its programs, then by running it:
   `0xA1`, II6 `0x20000`, IM6 1, at offset `0x25F30` of `.7/.8`) and then
   the program words after it; the program refers to some 380 addresses in
   `0x28xxxxx` and none from `0x6000000` up; the memory test shows IC 7-16
-  GOOD. With `.7/.8` in the second bank instead, as the later games have
-  it, the uploads read zeros (II6 0), both SHARCs faulted at `0x25000`
+  GOOD. With `.7/.8` in the second bank (`0x6000000`) instead, as the later
+  games (`indy500`, `fvipers`, `schamp`) have it, the uploads read zeros (II6 0), both SHARCs faulted at `0x25000`
   and the 3D never started (the i960 sat in a loop at `0x9EF0`).
 - **Its programs.** The geometrizer program is an earlier version of
   `indy500`'s: 2,896 of its 3,040 uploaded words appear in the same
@@ -436,7 +453,8 @@ each was *confirmed* from its code and by running it:
   writes pattern *n* at `0x1080000 + n * 32`, i.e. at `0x1181000` for the
   first, then draws tile `0x80`. Only the low 20 address bits reach the
   RAM (`tilemap.md`), so reModel maps `0x1100000-0x11FFFFF` onto the lower
-  megabyte; before, the gauges drew empty (nothing was ever written at
+  megabyte, for every game, which no other game's behaviour disagrees
+  with; before, the gauges drew empty (nothing was ever written at
   tile `0x80`).
 - **Its geometrizer program** is the shared code (the one `overrevb`,
   `schamp` and the others upload) with three commands of its own, 0x1A-0x1C
@@ -456,7 +474,9 @@ this board) and execute an instruction a cycle; against the i960's
 instructions per i960 instruction (`sharc::STEPS_PER_INSN`), the way the
 2C copro runs 2 TGP words per i960 instruction for its 20 MHz. An i960
 read of an empty result FIFO lets the copro run until it has a result, as
-on 2C. The geometrizer runs a frame at a time on its worker, as on 2C.
+on 2C. The geometrizer runs a frame at a time on its worker, as on 2C. The
+flags the programs drive (copro FLAG2 error, FLAG3 waiting; geometrizer
+FLAG1-3) go nowhere in the model.
 
 Both stop being stepped while their program spins on a flag input
 (`Sharc::spinning`: a `JUMP` to itself or a loop of NOPs ending on a
@@ -527,69 +547,8 @@ that run alone, and the run took nearly three times as long).
   (*unconfirmed* whether it sits on the game board or the ROM board),
   and how it turns the block into its answer (above).
 
-## Findings
+## Other findings
 
-Moved here from the README's former "What's known about Model 2B" section, text unchanged.
-
-## What's known about Model 2B
-
-From `overrevb`'s i960 program and its two SHARC programs, run on the board
-model and compared with `overrev` (the same game on 2C, which shares every
-chip but the program pair). Details, addresses and evidence in
-`docs/hw/model2b.md`.
-
-- *Confirmed (`overrevb`, `sgt24h`):* 2B has **two SHARCs**, the copro and
-  the geometrizer, each programmed by the i960 through its I/O-processor
-  registers (host windows `0x8C0000` and `0x840000`): a DMA of 4,096 48-bit
-  words, sent as 16-bit halves to `0x884000` / `0x804000` while bit 31 of
-  `0x980000` (copro) or `0x980008` (geometrizer) is set. Both Jaleco games
-  upload the same two SHARC programs: the same code, word for word, but
-  not the same images, since the upload always sends 4,096 words and
-  the tails past the code differ (one data word in the copro's; in the
-  geometrizer's, from `0x20C31` on, whatever follows it in each i960 ROM,
-  in `sgt24h` the i960 program's own strings).
-- *Confirmed (`overrevb`, with the ADSP-21062 core):* each SHARC is booted
-  as UM §11.6.3 describes for a 16-bit host. Its window maps IOP register
-  *n* at window + 4*n*, each 32-bit register written as two 16-bit halves,
-  low first: DMAC6 = 0, II6 = `0x20000`, IM6 = 1, C6 = `0x1000`, DMAC6 =
-  `0xA1` (instruction words, 16-to-48 packing, LSW first), then 12,288 halves
-  to EPB0 (the geometrizer first gets MSGR7 = `0x7378842E`). The DMA's end
-  vectors through `0x20040` (`RTI`) to `0x20005`, `JUMP 0x20080 (DB)`. The
-  copro program has 2,111 words of code, the geometrizer's 2,987, none with
-  an undefined encoding (`docs/hw/adsp2106x.md`).
-- *Confirmed (the upload code and UM §11.6.3):* bit 31 of `0x980000` /
-  `0x980008` is not the SHARC's RESET: the i960 programs the SHARC while
-  the bit is set (a SHARC in reset ignores its host) and the program runs
-  once it is cleared. It behaves as the host bus request (HBR);
-  *unconfirmed* that it is that pin, and what resets a SHARC for a second
-  upload (each is uploaded once a boot). `0x980020` is written 0 after
-  each bit 31 is set: *unconfirmed* what for.
-- *Confirmed:* the copro keeps 2C's i960 interface: commands into a FIFO
-  through `0x880000 + 16·fn` (tagged) and `0x884000`, results read from
-  `0x884000`, `0x980004` bit 0 set while there are none. The SHARC reads
-  commands from external `0x400000` (FLAG0: FIFO empty) and writes results
-  to `0xC00000` (FLAG1: FIFO full).
-- *Confirmed:* the geometrizer keeps 2C's display list ports, buffer RAM
-  and frame protocol (FLAG0 is 2C's F0). The SHARC reads the list from
-  external `0x400000`, writes the rasteriser stream to `0x410000`, and
-  reads the polygon ROM through an address register at `0x430000` and a
-  data port at `0x430001`; polygon RAM is written at `0x420000` and its
-  fast part is the SHARC's own internal memory (neither is used by
-  `overrevb`).
-- *Confirmed:* the 2B geometrizer program emits **the same rasteriser
-  stream format as the 2C programs**, so the renderers take it unchanged.
-  Fed the same lists as `overrev`'s 2C geometrizer, it gives the same
-  command words and lengths, vertices within float rounding, and a
-  rendered frame within 4 pixels; the two programs differ in the luma word
-  of back faces (`docs/hw/model2b.md`).
-- *Confirmed:* the sound UART is at `0x9C0000` (data) and `0x9C0004`
-  (mode, command, status), one register a 32-bit word (2C: `0x1C80000`,
-  two a word). The 2B program also writes `0x40` and `0x4E` to `0x1C80004`
-  at boot: *unconfirmed* what is there.
-- *Unconfirmed:* the SHARC clock (40 MHz, general knowledge; reModel runs
-  5 SHARC instructions per i960 instruction), the FIFO depths and the wait
-  states. The copro and geometrizer flags the programs drive (copro FLAG2
-  error, FLAG3 waiting; geometrizer FLAG1-3) go nowhere in the model.
 - *Confirmed (`overrevb`, by running them recompiled):* neither SHARC
   program writes its own code in a coin-start run into a race, and
   everything they execute is reached statically from the vectors and
@@ -609,14 +568,10 @@ chip but the program pair). Details, addresses and evidence in
   ALONE" and "INSERT COIN" on the 2C model with the 2B stubs; without it,
   the return reloads the zeroed frame and faults at IP 0. That it is
   exactly three cached sets is the data sheet's, not tested by the game.
-- *Confirmed (`dynabb97`, ROM and by running it):* Sega's own 2B game
-  uploads its SHARCs the same way. Its geometrizer program is the Jaleco
-  games' code word for word (2,987 words; the images differ only from
-  `0x20C31` on, past the code), so the geometrizer SHARC program looks
+- *Confirmed (`dynabb97`, ROM and by running it):* its copro program
+  differs from the other games' from `0x20099` on; its geometrizer
+  program is the Jaleco games' code word for word, so that program looks
   like the board's standard one (*unconfirmed* beyond these three games).
-  Its copro program is its own (1,956 words of code, different from
-  `0x20099` on) and uses only the two FIFOs and flags; nothing else on
-  the board model needed changing.
 - *Confirmed (`doa`, from the code):* on return the i960 takes the
   caller's frame from PFP with only bits 0-3 (return status and the
   prereturn-trace flag) cleared, not the six low bits the 80960KB manual
@@ -626,49 +581,6 @@ chip but the program pair). Details, addresses and evidence in
   and 5 on return lands it on the wrong frame, and the game never gets as
   far as uploading its SHARC programs. Calls still open 64-byte-aligned
   frames (`i960::cpu::Cpu::ret`).
-- *Confirmed (`indy500`, from its copro program, then by running it):*
-  the copro SHARC's external bus has more than its two FIFOs on a board
-  with copro data ROMs. With SYSCON's MSIZE 10 (every 2B copro program
-  sets it) the SHARC's four external banks are 8M words each from
-  `0x400000` (ADSP-2106x User's Manual §5.4.1): the command FIFO is bank
-  0, the result FIFO bank 1, buffer RAM bank 2 (`0x1400000`; confirmed
-  by `fvipers`, below: `indy500`'s runs never touch it) and the data ROMs
-  `.29/.30` bank 3 (`0x1C00000`), read as 32-bit words as on 2C. Whether
-  either repeats through its bank is *unconfirmed*; details in
-  `docs/hw/model2b.md`, "The copro's external memory".
-- *Confirmed (`indy500`, from the code):* its test menu's T.G.P. TEST
-  reads `0x980014` once and shows IC31 (bit 1) and IC37 (bit 0) BAD for
-  a set bit. Answered as on 2C (all ones until the programs are uploaded,
-  then 0) both show GOOD; *unconfirmed* what the bits really report.
-- *Confirmed (`fvipers`, from its programs and the i960 code, then by
-  running it):* the copro SHARC's bank 2 is **buffer RAM**, the display
-  list, word addressed. The i960 leaves an 18-word hole in the list by
-  moving its write pointer and sends the copro fn `0x78` with the hole's
-  offset; the copro writes a fn `0x0B` matrix and a fn 1 object there.
-  reModel had a separate RAM there for `indy500` (never touched by its
-  runs); with it gone `indy500`'s state hash is `4a1b197bf00149d6`, its
-  runs otherwise unchanged.
-- *Confirmed (`fvipers`, `schamp`, from the programs):* Sega's 1995-96
-  fighting games don't write MSGR7 when uploading the geometrizer, so its
-  program checks the tag of every command word (fn in bits 27-23, 12-8
-  and 4-0) and, on a word that fails, leaves it in MSGR3 and toggles
-  FLAG2 forever: the 3D stops for good. That is where both stopped, on
-  words from the two places above and below. They also upload with
-  32-bit IOP writes, set SYSCON and WAIT through the host window, and
-  send only the program's length.
-- *Confirmed (`fvipers`, from the code):* the i960 writes fn 0
-  placeholders through the command port and later patches them into list
-  jumps, or retargets jumps, by writing buffer RAM directly. The list DMA
-  now follows such words; what tells a jump from a data word on the board
-  is still *unconfirmed* (the rule that fits every game is in
-  `docs/hw/model2b.md`, "Sega's earlier games").
-- *Confirmed (`fvipers`, `schamp`, from the code and the memory test):*
-  they upload textures only to the upper half of each texture RAM bank's
-  2 MB window (`0x11100000`, `0x11300000`), which their boards must read
-  as the 1 MB the rasteriser uses (`indy500` and `doa` use the lower
-  half; `overrevb` and `sgt24h` fill both with different data). A
-  manifest flag, `texture_ram_mirrored`, maps those banks as 1 MB
-  repeating; *unconfirmed* what makes their boards differ.
 - *Confirmed (from the programs, the games' I/O and by running them):*
   the geometrizer is render-only. Its program writes only the rasteriser
   FIFO, its polygon RAM and polygon memory address, and a handshake
@@ -692,33 +604,3 @@ chip but the program pair). Details, addresses and evidence in
   runs on through the list: the routine it calls sits in the last
   instructions of a loop (the ADSP-2106x manual, §3.5.1.1). *Unconfirmed*
   on hardware: these follow from the SHARC model.
-- *Confirmed (`doa`, from the code, then by running it):* Tecmo's game
-  checks for a protection device at `0x1D80000-0x1D87FFF` at boot. The
-  board model answers it from the manifest (`romset::Protection`,
-  `crates/model2/src/protection.rs`); the interface is in
-  `docs/hw/model2b.md`, "The protection device".
-- *Confirmed (`vstriker`, from the code and the memory test):* Sega's
-  1994 game, the earliest 2B code here, keeps its 1 MB pair `.7/.8` in
-  the **first** main data bank, packed after `.11/.12` and `.9/.10`, at
-  `0x2800000`: its SHARC uploads read the programs from there, and its
-  memory test shows every ROM GOOD with that layout. The later Sega games
-  (`indy500`, `fvipers`, `schamp`) put their `.7/.8` in the second bank
-  (`0x6000000`). It uploads its
-  SHARCs as `fvipers` does (32-bit IOP writes, SYSCON and WAIT first, C6
-  the length, no MSGR7) and its textures to the upper half of each
-  texture RAM bank, so it takes `texture_ram_mirrored` too.
-- *Confirmed (`lastbrnx`, from the code, then by running it):* Sega's
-  1996 game keeps both its SHARC programs in the **program ROM** (no
-  `.7/.8`, no copro data ROM), and three things about the board and the
-  SHARC core only it exercised: the host DMA's index is decoded by its
-  low 17 bits (its copro upload sets II6 = 0); a write to MODE1 takes
-  effect one cycle late (its copro program swaps register files and uses
-  the old ones in the next instruction); the interrupt controller's
-  second register word returns the pending requests (its dispatcher
-  loads the pair with one `ldl`). Tile RAM decodes 20 address bits: tile
-  and character RAM repeat once through their 2 MB window (its gauge
-  routine writes patterns at `0x1181000` and draws them from
-  `0x1081000`; `docs/hw/tilemap.md`); reModel repeats it for every
-  game, which no other game's behaviour disagrees with.
-  Details in `docs/hw/model2b.md`, "Last Bronx", and below.
-
