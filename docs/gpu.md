@@ -22,9 +22,25 @@ into draw order and placed in the output view (resolution, widescreen,
 HUD placement).
 
 The GPU draws each convex polygon as a triangle fan. Everything goes in a
-single render pass with no depth buffer: GPUs keep primitive order for
-overlapping pixels, which gives the painter's algorithm the software
-renderer uses.
+single render pass, by default with no depth buffer: GPUs keep primitive
+order for overlapping pixels, which gives the painter's algorithm the
+software renderer uses. Two opt-in options (`gpu::Quality`, decided in
+`docs/enhancements.md`) change that, and with both off the output is
+bit-for-bit what it was:
+
+- **Multisampling** (`msaa` 4, or 8 where the adapter has it): the pass
+  renders into a multisampled image resolved into the 3D layer, whose
+  colour is then premultiplied by coverage; the compose pass blends it
+  over the 2D base by that coverage.
+- **Depth buffer** (`depth`): a 32-bit float depth attachment written
+  from the fragment shader (`fs_depth`: `model2::raster::depth_value` of the
+  interpolated 1/z and the polygon's draw order in its window), compare
+  greater-or-equal. Four pipeline modes: depth tested and written;
+  tested only (the colour pass of a group of polygons sorted together);
+  depth only (that group's depth, after its colour); and none
+  (backgrounds, shadows, translucent and very deep polygons stay in the
+  game's order). A window starts with a scissored full-screen draw that
+  empties the buffer where it draws.
 
 The fragment shader (`crates/gpu/src/raster.wgsl`) is a line-for-line port
 of the software shading. It reads from the game's own render RAM and
@@ -78,6 +94,34 @@ How the GPU output compares with the software renderer:
   that way. The hardware's own interpolation is unknown, so neither result
   is the reference here. Each frame's `gpu-check.png` shows software, GPU
   and the differences side by side.
+
+## Multisampling and depth cost
+
+`make gpu-check GPU_OPTS="--aa 8 --depth"` prints, after the comparison,
+the whole frame on the GPU (3D layer, compose and the readback, which
+dominates at 1080p) for each configuration, the mean over the captured
+frames. RTX 2080 SUPER, Vulkan, 21 frames each (ms; the first column is
+`off`):
+
+| | off | 4x | 8x | depth | 4x+depth | 8x+depth |
+|---|---|---|---|---|---|---|
+| `topskatr` native | 8.94 | 9.11 | 9.09 | 9.56 | 9.70 | 9.88 |
+| `topskatr` 1080p 16:9 | 35.22 | 35.81 | 36.25 | 37.69 | 38.78 | 40.28 |
+| `sgt24h` native | 8.96 | 9.06 | 9.06 | 9.77 | 9.89 | 9.99 |
+| `sgt24h` 1080p 16:9 | 36.13 | 36.86 | 37.16 | 39.30 | 40.27 | 41.67 |
+
+So 4x costs about 0.6 ms at 1080p and 8x about 1, and the depth buffer
+about 1.5-3 (a fragment-shader depth write turns off early depth tests,
+and each window is cleared), well inside a 17 ms frame on this GPU. A
+live player skips the readback that most of these numbers are.
+
+Agreement with the software renderer (`gpu-check --depth`): the same
+as without it: for `topskatr`, 0.04% coverage and 8.9% colour (1.6% over
+16 levels) either way; `hotd` 1.94% against 1.94%; `bel` 5.1%. With
+`--aa 8` (GPU 8x against software 3x3 supersampling, whole frames)
+26-28% of native pixels differ at all and 3-8% by more than 16 levels:
+the texture-coordinate differences described above plus the two
+resolve filters.
 
 ## Next
 

@@ -54,8 +54,8 @@ through DirectX 8/9's fixed-function pipeline.
 | Textures | Texture packs: dump, replace at any size | done (`docs/texture-packs.md`) |
 | Textures | Batch upscaling pipeline (dump → upscale → pack) | planned |
 | Textures | Mipmaps from pack images, anisotropic filtering | planned |
-| Image | Anti-aliasing (MSAA or supersampling) | planned, next |
-| Image | Depth buffer | planned, next |
+| Image | Anti-aliasing: MSAA 4x/8x on the GPU, supersampling in software | done, opt-in (2026-11-09) |
+| Image | Depth buffer | done, opt-in, partial (below) |
 | Image | Temporal upscaler (motion vectors, jitter) | planned |
 | Image | DLSS, optional, native RTX only | idea |
 | Models | Model replacement packs, keyed by ROM address | planned |
@@ -83,32 +83,109 @@ through DirectX 8/9's fixed-function pipeline.
 
 ### Anti-aliasing
 
-At the original resolution polygon edges are the ugliest part of the
-picture. On the GPU, MSAA (4x or 8x) costs little; supersampling
-(render at 2x and filter down) is simpler and also smooths texture
-shimmer. The software renderer can supersample for snapshots. Both must
-keep translucency and the checkerboard (`docs/hw/geometrizer.md` 5.4)
-looking right at subsample level.
+Done, off by default. Settings: the player's `aa` (menu, launcher,
+`--aa off|4|8`, settings files), the browser's `aa` (panel, `?aa=4`),
+`remodel --aa N` for snapshots and `gpu-check`. Render-only: state hashes
+unchanged.
+
+- **GPU: MSAA** on the 3D layer, 4x everywhere (WebGPU has only 4x), 8x
+  where the adapter reports it for both the colour and depth formats
+  (`gpu::max_msaa`; native, the device is asked for
+  `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES`); other requests round down.
+  The layer is resolved before the compose pass, and the resolve is
+  *premultiplied by coverage*: the cleared layer is transparent black and
+  each sample a polygon covers is opaque, so a resolved pixel holds
+  `colour * coverage` and `coverage` in alpha. The compose pass blends
+  `layer + (1 - alpha) * what's behind`, so an edge against a tile sky or
+  the backdrop is a coverage-weighted mix, not covered or uncovered. With
+  one sample alpha is 1 or 0 and the blend is bit-for-bit the old
+  replace (checked: `gpu-check` frames identical to before the change).
+- Texture sampling is still once per pixel, so MSAA smooths silhouettes
+  and intersections, not texture shimmer; attributes are interpolated
+  at the centroid so a partly covered pixel never samples outside its
+  polygon.
+- **The checkerboard** (`docs/hw/geometrizer.md` 5.4) is a per-pixel
+  pattern, by game pixel, decided once for the pixel in the fragment
+  shader: dropped pixels cover none of their samples and kept ones
+  cover whatever the polygon covers. It stays a pattern of whole pixels
+  (it does not average to grey), and the edges of a checker polygon are
+  anti-aliased like any other. The software supersampler gets the same
+  from computing the pattern per game pixel, not per subsample.
+  Cut-out texels (translucent texture, texel 15) are alpha-tested per
+  pixel, so those edges aren't smoothed.
+- **Software: supersampling** for snapshots: `remodel --aa N` draws and
+  composes at `k` times the size in each direction, `k` the smallest with
+  `k * k >= N` (4 gives 2x2, 8 gives 3x3), and averages blocks
+  (`View::supersampled`, `video::downsample`). `gpu-check --aa 4` compares
+  the GPU's multisampled frame with the software's supersampled one.
+- Cost on the GPU (`make gpu-check GPU_OPTS="--aa 8"` prints it):
+  see `docs/gpu.md`.
 
 ### Depth buffer
 
+Done, off by default, and deliberately partial. Settings: the player's
+`depth` (menu, launcher, `--depth on|off`), the browser's `depth` (panel,
+`?depth=1`), `remodel --depth` for snapshots and `gpu-check`; `make
+depth-check` draws captured frames with it off and on and pictures every
+difference. Render-only: state hashes unchanged.
+
 Model 2 draws without one: polygons are sorted far to near
-(`model2::raster::place`) and the GPU keeps primitive order
-(`docs/gpu.md`), the painter's algorithm. Where objects intersect, or a
-large polygon's sort key is wrong for part of it, the wrong one shows.
-A depth buffer from the vertices' depth fixes that without changing what
-the game sends. Points to settle:
+(`model2::raster::place`) and the painter's algorithm shows the wrong one
+where objects intersect, or a polygon's sort key is wrong for part of it.
+With the setting on, each polygon's depth is its interpolated 1/z
+(`SVtx::iz`, linear in screen space, so exact per pixel), tested per pixel
+in a 32-bit float depth buffer (software: the same arithmetic,
+`raster::depth_value`). What was decided, from comparing frames of all 18
+games with it off and on:
 
-- windows drawn in order (HUD windows over the scene): a depth clear
-  per window, or depth only within a window;
-- translucent polygons: draw them after the opaque ones, in sorted order,
-  testing depth but not writing it;
-- coplanar decals (shadows, road markings): a depth bias, or keep the
-  game's order where depths tie;
-- a setting to keep the original order, for comparison.
-
-The depth buffer is also an input to the temporal upscaler, ambient
-occlusion and ray tracing.
+- **Windows:** the buffer is emptied inside each window's clip rectangle
+  when the window starts (a scissored clear on the GPU), so HUD windows
+  and the 3D layers drawn after the scene stay over it, as in the game's
+  order.
+- **Order is kept where depth can't be trusted** (`Placed::background`):
+  polygons sorted behind everything (skies); **flat black shadows**
+  (hotd's are screen-parallel slices at depths unrelated to the floor they
+  look laid on); **translucent (checkerboard) polygons**, whose layering
+  is the game's (skisuprg's whole scene is dithered layers; reordering
+  them after the opaque ones changed it wholesale, and shadows under
+  cars vanished when tested); and **polygons whose 1/z spans more than 8x**
+  (ground and floor quads sorted by their far edge: topskatr's sand
+  quad is above a ramp and a crate that the game shows over it).
+  They draw first-come as before, testing and writing nothing.
+- **Decals and layers:** a later polygon wins a tie and by up to 1e-5 of
+  its depth per polygon between (`DEPTH_BIAS`), which covers rounding between a
+  road marking and the road. Polygons the game sorted within 5% of one
+  depth of the group's first (`GROUP_SPAN`, including the header's "same
+  depth as the previous polygon") form a group (`Placed::group`): a
+  marker and its outline, a jacket over a body. They draw in the game's
+  order among themselves, tested against what came before, and write
+  depth when the group ends (software: pending writes; GPU: a colour
+  draw that tests, then a depth-only draw).
+- **Cut-out texels** that aren't drawn don't write depth.
+- **Original order:** the setting off, the default, is bit-for-bit the
+  old renderers.
+- **Checked** (2026-11-09) by drawing 21 captured frames of a coin-start
+  run (attract to play) of each of the 18 games at 1440x1080 with it off and
+  on (`make depth-check`; 12 to 19 frames of 21 differ per game, by
+  0.04% to 5% of the pixels, the most in `skisuprg`'s dithered scenes)
+  and looking at the pictures of the most different frames of each of
+  `topskatr`, `skisuprg`, `stcc`, `segawski`, `waverunr`, `hotd`, `bel`,
+  `overrevb`, `sgt24h`, `dynabb97`, `indy500`, `schamp`, `lastbrnx` and
+  `srallyc`, and the numbers of the rest (`overrev`, `doa`, `fvipers`,
+  `vstriker`). Seen fixed: characters' limbs and clothes (topskatr's
+  skater's leg, segawski's skier's back, schamp's tangled feet), a ladder
+  and beam crossing and a rock face drawn over its neighbour (bel),
+  overlapping tree billboards (topskatr). Seen as glitches while
+  designing it, each answered by a rule above: a ramp and crate hidden
+  by the sand quad (deep polygons), hotd's black shadows and the dither
+  shadow under `overrevb`'s car vanishing (shadows, translucent),
+  skisuprg's flag fills lost to their outlines and segawski's logo lost
+  to the jacket (groups). Not verified against a real machine: that
+  `sgt24h`'s white bonnet stripe now reaching over the windscreen is
+  right, and the remaining small differences at group and decal
+  borders (a letter of segawski's jersey text is cut by a pixel row).
+  The depth buffer isn't z-fight free: decals not sorted with their
+  surface and not within the rank bias can still lose.
 
 ### Batch texture upscaling
 
@@ -226,8 +303,11 @@ light direction and ambient, nothing physical), which is pack content.
 
 - How packs carry models and materials alongside textures (one pack
   format, versioned).
-- Whether the depth buffer can be on by default once it matches the
-  original in every game (checked by comparing frames).
+- Whether the depth buffer can be on by default: it looks right in
+  the frames compared (see "Depth buffer") but changes pictures
+  in every game, and the games' own layering tricks (large floors,
+  dither, flat shadows) had to be left on the game's order. More
+  games and long plays first.
 - How much of this the browser can have: WebGPU covers everything up to
   the temporal upscaler and per-pixel lighting; ray tracing waits for
   the web platform.

@@ -26,6 +26,17 @@ applies when the game starts. The `remodel` CLI keeps the chip
 as its default, since its oracles (`lockstep`, `geo-check`) test that
 program.
 
+**Anti-aliasing and the depth buffer** (settings, below; `--aa off|4|8`
+and `--depth on|off` for one run; both off by default, the original
+look). Anti-aliasing multisamples the 3D layer (4x, or 8x where the GPU
+has it, else 4x) and blends polygon edges by coverage; the depth buffer
+draws polygons by their depth rather than the game's far-to-near order,
+so crossing and mis-sorted ones come out right, keeping the game's order
+for what depth can't settle (skies, shadows, translucent layers, large
+floors). Neither changes what the game computes: state hashes are the
+same. Costs 0.5-1 and 1.5-3 ms a frame at 1080p on the development GPU
+(`docs/gpu.md`); what the depth buffer does is in `docs/enhancements.md`.
+
 **Smooth motion** (a setting, below; `--smooth` for one run; off by
 default). On a
 display faster than the game's 57.5 Hz, the refreshes between two game
@@ -213,7 +224,7 @@ emulated like the game would be (it costs what the game costs).
 **Settings** slide out from the right over the preview, which shows what
 they change as they change: aspect (fit the window or 4:3), bezel, HUD at
 the edges or centred, speed (one frame a refresh or exact arcade speed),
-smooth motion, the effects and music levels in dB, the geometrizer (native
+smooth motion, anti-aliasing (off, 4x, 8x), the depth buffer, the effects and music levels in dB, the geometrizer (native
 or the game's chip; the preview restarts on it) and the Controls page
 (remapping, below). "Save for" says where changes go: the defaults for all
 games, or this game only (a game's own setting is tagged "this game", and
@@ -221,7 +232,7 @@ games, or this game only (a game's own setting is tagged "this game", and
 the Esc menu while playing. They come in layers, lowest first, as in the
 browser build: the built-in defaults, the defaults for all games, the
 game's own, then the command line (`--mix`, `--hud`, `--aspect`, `--bezel`,
-`--exact`, `--smooth`, `--geo`), which applies to that run only and is
+`--exact`, `--smooth`, `--aa`, `--depth`, `--geo`), which applies to that run only and is
 never saved, unless a setting it gave is changed in the launcher or menu
 (that change is then kept as any other). A layer keeps only what it sets.
 
@@ -614,7 +625,7 @@ synthetic and scripted (`--nav`) events only, not yet with a real pad.
 - **Display**: the aspect (fit the window, the default, drawing the game
   wider than its frame from 4:3 to 32:9; or 4:3, `--aspect 4:3`), the
   bezel (below), where the HUD goes on wide windows, smooth motion,
-  run-ahead (above), the geometrizer (on the next start), "Save changes
+  anti-aliasing and the depth buffer (above), run-ahead (above), the geometrizer (on the next start), "Save changes
   for" this game or all games (as in the launcher), and exact arcade speed
   (57.524 frames per second) against the default of one game frame per
   display refresh at 60 or 120 Hz, which is 4.3% fast but smooth.

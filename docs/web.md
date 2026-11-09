@@ -290,7 +290,7 @@ audio context is suspended, nothing reaches the workers; it resumes from
 the same frame). Resume applies the HUD placement (`set_hud`), the bezel, the mix
 (a `mix` message to the sound worker), the remapped controls
 (`set_bindings`) and touch and tilt at once; render
-height, aspect, sound on or off, the sound buffer, the geometrizer and smooth motion need a restart, and
+height, aspect, sound on or off, the sound buffer, the geometrizer and smooth motion need a restart (anti-aliasing and the depth buffer apply at once, `set_quality`), and
 the panel offers "Restart to apply" when one of them changed (it reloads
 the page with `#play`, skipping the panel once).
 
@@ -327,7 +327,13 @@ parameters:
 - `geo=local` (run the geometrizer on the page's thread), or `geo=chip`
   (in its worker, on the game's own program on its SHARC or TGP even where
   the native geometrizer has it; `geo=sharc` and `geo=tgp` too);
-- `smooth=1` (smooth motion on; `smooth=0` off).
+- `smooth=1` (smooth motion on; `smooth=0` off);
+- `aa=4` (4x multisampling of the 3D layer, the one count WebGPU
+  guarantees; `aa=0` or `aa=off` off) and `depth=1` (a depth buffer: polygons
+  by depth, not the game's order, except skies, shadows, translucent
+  layers and large floors; `docs/enhancements.md`). Both off by default,
+  both in the panel's Display section, both applied live. The module's
+  `set_quality(aa, depth)` takes them before or after `start`.
 
 **Smooth motion.** With the setting on (`?smooth=1`, or Advanced in the
 panel; off by default), a display faster than the game's 57.5 Hz shows
