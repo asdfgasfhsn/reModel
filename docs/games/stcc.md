@@ -1,0 +1,100 @@
+# `stcc`
+
+## What's known about `stcc`
+
+Third 2C game: the first with a DSB1 music board, a wheel and a gearbox.
+
+- *Confirmed:* the set's three program pairs (`epr-19272a/19273a`,
+  `epr-19272b/19273b`, `epr-19570/19571`) are revisions of the same program;
+  the manifest uses `epr-19570.15`/`epr-19571.16` (`.15` low half), the one
+  with the most added. Boot record: PRCB `0xB0`, first IP `0xD00`, interrupt
+  table `0x689E0`, system-procedure table `0x1C0`.
+- *Confirmed:* ROM banks are 8 MB slots and a pair smaller than its slot
+  repeats through it. Main data `.11/.12` (8 MB) is at `0x2000000` and the
+  1 MB `.9/.10` pair at `0x2800000`, but the game reads it at `0x2C4B210`
+  ("Not CGM Data" until it mirrors; a CGM header sits at `0x4B210` of the
+  pair). The 1 MB second polygon pair `.18/.22` is likewise read 4 MB into
+  the second polygon slot (a model in the same format as the first pair's
+  starts there), and the 1 MB second texture pair `.28/.26` at the start of
+  the second texture slot. Byte order within each pair is confirmed by
+  strings and headers, except `.28/.26` (low half `.28` by analogy with
+  `.27/.25`; unconfirmed). Copro data `.29/.30` is 4 MB, repeated through
+  its 8 MB window (unconfirmed whether the program reads past 4 MB).
+- *Confirmed:* `epr-19274.31` is CRX_drv Ver3.2.5 (96 8/1); `make sound
+  GAME=stcc` plays a run's commands, and the 68000 never touches anything
+  outside the sound board.
+- *Confirmed (from the code and by running it):* the geometrizer list uses
+  **jump words**: the game builds each frame's list in pieces (buffer RAM
+  `0x00000`/`0x10000` banks, pieces at `+0x4000`, `+0xC000`, ...) and links
+  them with command-port writes with bit 31 set (`0x80004000`: continue at
+  `0x4000`). The geometrizer program has no jump handling, so the list DMA
+  must follow them. Data words with bit 31 set (negative floats) are not
+  jumps, and the game also overwrites old jump words directly (the copro
+  stores matrices into the list), so reModel follows only jump words written
+  through the command port and not stored over by the copro since
+  (`fvipers` patches jumps in with the i960, which they survive; Model 2B
+  above). *How the hardware tells them apart is unconfirmed.* Without this the
+  geometrizer stops at its command-check error on the first linked list
+  and no 3D is drawn.
+- *Confirmed (from the code):* the wheel board is commanded like
+  `skisuprg`'s drive board (reply read from `0x1C00006`, then a command
+  written to `0x1C00008`, every frame), but the game only stores the reply
+  and never reads it back: no handshake, no fault check, and it runs the
+  same with nothing attached. Commands seen: `0x00` through boot, `0x98`,
+  `0x30` (attract, menus), `0x34` (select screens), `0x38` (racing), and
+  `0x5x`/`0x6x` while racing with steering and collisions. *Unconfirmed:*
+  what each does; presumably force effects. The model (`Drive::Wheel`)
+  replies `0xFF` and keeps the last commands.
+- *Confirmed (from the code):* the link is decided by the settings: the
+  network check runs only if the "LINK TYPE" setting isn't stand-alone
+  (the default). It then reads the link board at `0x1A14000`, bit 0 set
+  meaning "NO COMMUNICATION BOARD". Nothing needs answering for a single
+  cabinet.
+- *Confirmed (from the code):* the DSB1 needs nothing for the game to run.
+  The i960 never reads the sound link's receive register, and its link
+  bytes reach the sound board as in `topskatr`. The Z80 program
+  (`epr-19275.2s`, "MPEG SOUND DRIVER Z80 VERSION 0.26 - 96/08/29") takes
+  each byte in its interrupt handler (mode 1, `0x38`) from UART data port
+  `0xF0`, waits for bit 0 of status port `0xF1` (transmitter ready),
+  echoes the byte out of `0xF0`, and stores it in a 4 KB ring at
+  `0x8000-0x8FFF` (write pointer at `0x9002`). So the DSB1 takes the same
+  link bytes as the sound board and needs no reply path.
+- *Confirmed (from the Z80 program, then by running it):* the DSB1 plays
+  the music (`docs/hw/dsb1.md`). ROM `0000-7FFF` (8 KB used), RAM
+  `8000-FFFF`, no banking. The decoder sits on ports `E0` (play mode: 0
+  stop, 2 play and continue into the next queued segment, 1 play to the
+  end), `E2-E4` start (read back: current address), `E5-E7` end (the
+  last byte; confirmed by all 23 segments ending one frame short of
+  end + 1), `E8` attenuation (`00` loud to `7F` silent). Channel 15
+  commands: `AF 6F n` plays track `n` (0 stops), `AF 01 v` scales later
+  volumes, `AF 02 v` sets the volume, `AF 03 r` fades out. The 17 tracks
+  are lists of segments (start and end in the 8 MB MPEG space) that the
+  program queues one ahead while the decoder plays. A coin-start session
+  plays track 1, then track 11 looping until the race's fade-out.
+  *Unconfirmed:* the Z80 clock (4 MHz used; it sets only the fade speed),
+  the attenuation curve (linear used), and what ports `E9`, `EB` and `E8`
+  values above `7F` set (ignored).
+- *Confirmed (from the input test, then by scripted runs):* port
+  `0x1C00002` bits 0/1 coins (one coin a credit by default), 2 test, 3
+  service, 6 start; port `0x1C00004` bit 0 view 1 (the camera changes),
+  bit 1 view 2 (not tried), bits 4/5 shift up/down; analog channel 0 the
+  wheel (0x30 steers left, 0xD0 right), 1 gas and 2 brake (0x00 released,
+  0xFF down). The gas pedal also confirms on the menus and the wheel moves
+  the selection. Holding the brake while confirming the car picks the
+  manual gearbox (MT), which the shift buttons then step through (1-4 and
+  back in a scripted run).
+- *Confirmed (by running it):* `make capture GAME=stcc` (coin-start)
+  reaches the qualifying lap, where the car waits for gas; with gas held
+  it laps, and the attract demos race in 3D. `make state-check GAME=stcc`
+  round-trips, `make lockstep GAME=stcc` runs 300M instructions identical,
+  and a coin-start run of 600M instructions gives the same state hash
+  (`bbde4ebfb8d918d8`) recompiled and interpreted.
+- *Unconfirmed:* `epr-18643a.7` (also in `sgt24h` and `von`) is Z80 code
+  whose header names Sega part 837-10074; it belongs to another cabinet
+  board, most likely the link board (see `docs/games/sgt24h.md`).
+- *Input lag, measured (`make input-lag`: pictures with and without the
+  control compared pixel by pixel, frames counted after the first that
+  reads it; `docs/play.md`, "Run-ahead"):* steering (frames 4507 and 4907,
+  the gas held from 4100 of a coin-start run) shows a frame after the
+  first that reads it: input lag 1.
+

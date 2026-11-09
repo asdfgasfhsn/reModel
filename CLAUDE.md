@@ -7,14 +7,19 @@
   `make check` before considering a change done.
 - When adding a build, test or tool entry point, add a `make` target with a
   `## description` comment so `make help` stays complete, and update the
-  README's quick start if it's user-facing.
+  README's quick start if it's user-facing (the full command catalogue is
+  `docs/usage.md`).
 - Keep Model 2-generic code (CPU, ROM loading, analysis, sound, renderer)
   separate from game-specific code; per-game data lives in
   `crates/romset/src/games/`.
 - Never commit ROM files, ROM-derived listings, or large excerpts of game
   code. `rom/` and `out/` are git-ignored.
-- Record confirmed hardware or game findings in the README's "What's known"
-  section, and mark anything unconfirmed as such.
+- Record confirmed hardware or game findings in `docs/games/<set>.md` (a
+  game's) or the board docs in `docs/hw/` (`model2a.md`, `model2b.md`,
+  `model2c.md`, ...), and mark anything unconfirmed as such. Game progress
+  goes in the status table in `docs/status.md`. The README stays a short
+  front page: keep findings and tracking out of it, and link new docs from
+  its documentation map.
 - When behaviour contradicts MAME (confirmed from the game, or found in
   MAME's code), add or update an entry in `docs/mame-defects.md` with
   evidence and a way to reproduce it, so it can become an upstream patch.

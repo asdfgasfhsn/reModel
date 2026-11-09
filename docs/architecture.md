@@ -1,0 +1,66 @@
+# Architecture: layout and reuse across Model 2
+
+## Layout
+
+```
+crates/
+  i960/      i960KB decoder and reference interpreter (CPU-generic)
+  romset/    ROM manifests, verification, assembly (Model 2-generic)
+    src/games/  one module per supported game
+  analyze/   recursive-descent code discovery      (CPU-generic)
+  model2/    board model (2A, 2B and 2C): memory map, IRQs, timers, I/O,
+             copro and geometrizer interfaces
+  mb86235/   MB86235 (TGPx4) decoder, disassembler and interpreter
+  adsp2106x/ ADSP-21062 (SHARC) decoder, disassembler and interpreter
+             (Model 2B's geometry DSPs; generic)
+  m68k/      68000 interpreter and disassembler (sound CPUs)
+  z80/       Z80 interpreter (DSB1 music board CPU)   (generic)
+  sound/     SCSP (YMF292) with its DSP, and the sound board (Model 2-generic)
+  mpeg/      MPEG-1 Audio Layer II decoder          (generic)
+  dsb/       DSB2 and DSB1 MPEG music boards: 68000 or Z80, UART,
+             decoder chip model, replacement soundtracks (WAV/MP2
+             reader, resampler)
+  png/       PNG decode/encode with zlib inflate/deflate (generic)
+  cli/       the `remodel` command
+tools/
+  asset-review.py   distinct textures, screens and contact sheets from capture runs (`make assets`)
+```
+
+## Reuse across Model 2
+
+All Model 2 boards share the i960KB main CPU and the 68000/SCSP sound
+system. The geometry processor is what differs between revisions:
+
+| Component | Model 2 | 2A | 2B | 2C |
+|---|---|---|---|---|
+| i960 decoder, interpreter, recompiler | shared | shared | shared | shared |
+| ROM loading, code analysis | shared | shared | shared | shared |
+| Sound (68000 + SCSP) | shared | shared | shared | shared |
+| Geometry processor | Fujitsu TGP (MB86234), program uploaded | as Model 2; fixed-function geometrizer | two ADSP-21062 SHARCs (copro, geometrizer), programs uploaded; core in `crates/adsp2106x`, board in `crates/model2` | Fujitsu TGP (MB86235) |
+| Renderer | shared | shared | shared | shared |
+
+Supporting a new game should mean adding a manifest under
+`crates/romset/src/games/`, plus whatever per-game patches turn out to be
+needed. A manifest holds the chips, the game's controls (input names,
+ports and analog channels, light guns with where the board reads them and
+their calibration, default keys and pad bindings, and its coin-start
+script) and which drive board it needs, if any; the board model, scripted
+input and both players read them from there. Drive board protocols live
+in `crates/model2/src/drive.rs`, one per kind; the 2C gun interface in
+`crates/model2/src/gun.rs`. `topskatr`, `skisuprg`, `stcc`, `segawski`,
+`waverunr`, `overrev`, `hotd` and `bel` are Model 2C-CRX (MB86235 geometry
+processor); `overrevb`, `sgt24h`, `dynabb97`, `doa` and `indy500` are Model
+2B-CRX (ADSP-21062 SHARCs). The manifest's
+`board` picks the board model: `crates/model2` keeps what differs between
+the two (the copro and geometrizer cores, the 2B host windows, the UART
+address) behind it, with nothing keyed on a game's name. A manifest's
+`parent` marks a clone: its chips may sit in the parent set's zip or
+folder, and it shares the parent's poster and bezel.
+
+The board table is from public documentation (largely MAME's driver notes).
+MAME does not run `topskatr` correctly, so its board details are treated as
+**unverified hypotheses**: the game's own code is the ground truth, and the
+board model logs every access it doesn't fully understand. Places where
+MAME is demonstrably wrong are tracked in `docs/mame-defects.md`, written up
+so they can become upstream patches.
+
