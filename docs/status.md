@@ -5,13 +5,10 @@ history. The README has the short version; the findings are in [docs/games/](gam
 
 ## Status
 
-The original program runs on the reference interpreters from boot through
-attract, coin-up, course and skater select into a race, with textured 3D
-frames written as PNG snapshots. The interpreters run the bench (attract into
-a race) at about 2x real time on a desktop CPU, with the geometrizer on its
-own thread. The sound board (68000 + SCSP) and the DSB2 MPEG music board
-render offline from the command bytes a run captures (`make sound`, `make
-music`). There is no live window yet.
+Eighteen games run, from boot through attract and coin-up into play, in a
+native window (`make play`) and in the browser (`make web`), with live sound,
+controls and save states. The table below tracks each part; the first rows
+date from bringing up `topskatr`, the first game.
 
 | Stage | State |
 |---|---|

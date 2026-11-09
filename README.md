@@ -28,7 +28,7 @@ sound in the native player; the details, and what each game needed, are in
 | Game | Set | Board | Status |
 |---|---|---|---|
 | Top Skater | `topskatr` | 2C | plays; the first target, with its DSB2 music board |
-| Sega Ski Super G | `skisuprg` | 2C | plays, with its drive board |
+| Sega Ski Super G | `skisuprg` | 2C | plays (its drive board answered) |
 | Sega Touring Car Championship | `stcc` | 2C | plays, sound and DSB1 music |
 | Sega Water Ski | `segawski` | 2C | plays |
 | Wave Runner | `waverunr` | 2C | plays |
@@ -51,7 +51,7 @@ sound in the native player; the details, and what each game needed, are in
 - **Whole games, not demos:** attract mode, coin-up, menus and full play
   through to game over, with sound and music, controls (keyboard, gamepad,
   touch, light guns), and save states.
-- **Fast:** recompiled builds run most games 2.5x to 4x real time natively;
+- **Fast:** most games run at 2x to 4x real time natively, recompiled;
   native geometrizers replace the geometry programs (see [docs/gpu.md](docs/gpu.md),
   [docs/recompiler.md](docs/recompiler.md)).
 - **Enhancements:** widescreen views, smooth motion, run-ahead, anti-aliasing,
