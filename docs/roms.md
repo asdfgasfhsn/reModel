@@ -14,7 +14,7 @@ sizes and CRCs are metadata.
   descriptions ("Model 2A", "Model 2B", "Model 2C"), the board. It is a third
   party's catalogue: good for names and completeness, unconfirmed for boards.
 - **gk**: general knowledge, mostly MAME's driver. Unconfirmed. MAME does
-  not run `topskatr`, so its board facts are hypotheses (see the README).
+  not run `topskatr`, so its board facts are hypotheses (see `docs/hw/model2c.md` and `docs/architecture.md`).
 
 ## What's in the folder
 
@@ -39,7 +39,7 @@ sizes and CRCs are metadata.
 Every board has the i960KB main CPU, the 68000 + SCSP sound board, the
 same tilemap/2D layers and the same kind of polygon raster stream, so the
 i960 recompiler, ROM loading, the sound board, the GPU renderer and both
-players carry over (gk for the shared parts; the README's reuse table says
+players carry over (gk for the shared parts; `docs/architecture.md`'s reuse table says
 the same). The geometry hardware is what changes:
 
 | Board | Geometry (gk unless marked) | What reModel would need |
@@ -54,7 +54,7 @@ set carries the same nine shared chips, `opr-14742a.45` to `opr-14747.63`
 (6 x 128 KB) and `mpr-16310.15`, `mpr-16311.16`, `mpr-16312.14`
 (3 x 512 KB); no 2B or 2C set does. The 128 KB pairs are maths tables for
 the TGP (confirmed numerically: sine, reciprocal and inverse square root,
-README); the 512 KB three hold 8-bit lookup tables, probably for the
+`docs/hw/model2a.md`); the 512 KB three hold 8-bit lookup tables, probably for the
 rasteriser (unconfirmed). The 2B/2C zips that contain them (`doa`,
 `dynamcop`, `pltkids`, `zerogun`) only do so because of a 2A clone merged
 in.
@@ -108,18 +108,18 @@ board (i960KB on all, gk). Controls and special hardware are gk throughout.
 
 | Set | Title | Year | Clones in zip | Sound | Controls | Special hardware | Complete |
 |---|---|---|---|---|---|---|---|
-| `doa` | Dead or Alive | 1996 | `doaa` (2A) | SCSP | stick, 3 buttons (confirmed, README) | a protection device at `0x1D80000` (confirmed from the code): without it the game stops itself during the first fight; answered by the board model from the manifest (README, "What's known about `doa`") | yes, but `mpr-19324.19` is a bad dump: data line 9 reads some 1s as 0 (confirmed from the data; repaired at load where the polygon format keeps a copy, README); supported and playable, with sound (2B; its own copro program, the shared geometrizer code; full speed recompiled) |
-| `dynabb97` | Dynamite Baseball 97 (Rev A) | 1997 | none | SCSP, CRX_drv 3.2.8 | per player a stick, two buttons and a bat lever (analog channels 0, 1) (confirmed, README) | none needed (confirmed) | yes; supported and playable, with sound (2B; its own copro program, the Jaleco games' geometrizer code) |
-| `fvipers` | Fighting Vipers | 1995 | none | SCSP | per player a stick and punch, kick, guard (confirmed, README) | none needed (confirmed); copro data `.29/.30` (the same chips as `schamp`'s) on the copro SHARC's bus; texture RAM banks of 1 MB (README) | yes; supported and playable, with sound (2B; `indy500`'s geometrizer code, its own copro program; polygon pairs packed every 4 MB) |
+| `doa` | Dead or Alive | 1996 | `doaa` (2A) | SCSP | stick, 3 buttons (confirmed, `docs/games/doa.md`) | a protection device at `0x1D80000` (confirmed from the code): without it the game stops itself during the first fight; answered by the board model from the manifest (docs/games/doa.md) | yes, but `mpr-19324.19` is a bad dump: data line 9 reads some 1s as 0 (confirmed from the data; repaired at load where the polygon format keeps a copy, `docs/games/doa.md`); supported and playable, with sound (2B; its own copro program, the shared geometrizer code; full speed recompiled) |
+| `dynabb97` | Dynamite Baseball 97 (Rev A) | 1997 | none | SCSP, CRX_drv 3.2.8 | per player a stick, two buttons and a bat lever (analog channels 0, 1) (confirmed, `docs/games/dynabb97.md`) | none needed (confirmed) | yes; supported and playable, with sound (2B; its own copro program, the Jaleco games' geometrizer code) |
+| `fvipers` | Fighting Vipers | 1995 | none | SCSP | per player a stick and punch, kick, guard (confirmed, `docs/games/fvipers.md`) | none needed (confirmed); copro data `.29/.30` (the same chips as `schamp`'s) on the copro SHARC's bus; texture RAM banks of 1 MB (`docs/games/fvipers.md`) | yes; supported and playable, with sound (2B; `indy500`'s geometrizer code, its own copro program; polygon pairs packed every 4 MB) |
 | `gunblade` | Gunblade NY | 1995 | none | SCSP | 2 mounted machine guns | none known | yes |
-| `indy500` | Indianapolis 500 (Rev A, Twin, newer revision) | 1995 | `indy500d` (Deluxe), `indy500to` (older Twin revision): own program, `.7/.8` and sound program chips, not supported | SCSP | wheel (ch. 0), gas (1), brake (2), shift up/down, two view buttons (confirmed, README) | copro data ROMs `.29/.30` on the copro SHARC's external bus (confirmed, README); a wheel drive board, commanded but its reply never read (modelled); link (stand-alone by default) | yes; supported and playable, with sound (2B; its own copro and geometrizer programs) |
-| `lastbrnx` | Last Bronx (Export, Rev A) | 1996 | `lastbrnxj` (Japan, Rev A), `lastbrnxu` (USA, Rev A): their own program pairs `epr-19046a/47a` and `epr-19059a/60a`, not supported | SCSP | per player a stick and punch, kick, guard (confirmed, README) | none needed (confirmed); no copro data or `.7/.8` chips: both SHARC programs are in the program ROM (README, "What's known about `lastbrnx`") | yes; supported and playable, with sound (2B; the shared geometrizer code plus three commands of its own, a copro program of its own; tile RAM and SHARC core findings in README) |
-| `overrevb` | Over Rev (2B) | 1997 | clone of 2C `overrev` (in `overrev.zip`; only the program pair `epr-19992b/19993b` is its own) | SCSP, Jaleco's driver (confirmed) | as `overrev` (confirmed) | none needed (confirmed) | yes; supported and playable, with sound (README, "What's known about `overrevb`") |
+| `indy500` | Indianapolis 500 (Rev A, Twin, newer revision) | 1995 | `indy500d` (Deluxe), `indy500to` (older Twin revision): own program, `.7/.8` and sound program chips, not supported | SCSP | wheel (ch. 0), gas (1), brake (2), shift up/down, two view buttons (confirmed, `docs/games/indy500.md`) | copro data ROMs `.29/.30` on the copro SHARC's external bus (confirmed, `docs/games/indy500.md`); a wheel drive board, commanded but its reply never read (modelled); link (stand-alone by default) | yes; supported and playable, with sound (2B; its own copro and geometrizer programs) |
+| `lastbrnx` | Last Bronx (Export, Rev A) | 1996 | `lastbrnxj` (Japan, Rev A), `lastbrnxu` (USA, Rev A): their own program pairs `epr-19046a/47a` and `epr-19059a/60a`, not supported | SCSP | per player a stick and punch, kick, guard (confirmed, `docs/games/lastbrnx.md`) | none needed (confirmed); no copro data or `.7/.8` chips: both SHARC programs are in the program ROM (docs/games/lastbrnx.md) | yes; supported and playable, with sound (2B; the shared geometrizer code plus three commands of its own, a copro program of its own; tile RAM and SHARC core findings in `docs/games/lastbrnx.md`) |
+| `overrevb` | Over Rev (2B) | 1997 | clone of 2C `overrev` (in `overrev.zip`; only the program pair `epr-19992b/19993b` is its own) | SCSP, Jaleco's driver (confirmed) | as `overrev` (confirmed) | none needed (confirmed) | yes; supported and playable, with sound (docs/games/overrevb.md) |
 | `pltkids` | Pilot Kids | 1998 | `pltkidsa` (2A) | SCSP, CRX_drv 3.4.9 | stick, buttons | none | yes (Psikyo chip names: `.pr0`, `.sd0`, `.tp0`...) |
 | `rchase2` | Rail Chase 2 | 1995 | none | SCSP | 2 mounted guns | motion ride | yes |
-| `schamp` | Sonic Championship | 1996 | `sfight` (Sonic the Fighters: own program and `.7/.8` chips, not supported) | SCSP | per player a stick and punch, kick, barrier (confirmed, README) | none needed (confirmed); copro data `.29/.30` (the same chips as `fvipers`'s); texture RAM banks of 1 MB (README) | yes; supported and playable, with sound (2B; the shared geometrizer code, its own copro program) |
-| `sgt24h` | Super GT 24h | 1996 | none | SCSP, Jaleco's own driver (confirmed; the same code as `overrev`'s) | wheel (ch. 0), gas (1), brake (2), shift up/down, view (confirmed, README) | none needed; `epr-18643a.7` is a Z80 program (Sega 837-10074, most likely the link board's; unconfirmed), and the game runs stand-alone without it (README) | yes; supported and playable, with sound (2B, on `overrevb`'s SHARC code) |
-| `vstriker` | Virtua Striker (Rev A) | 1994 | `vstrikro` (the original revision: the chips without the `a` suffix, not supported) | SCSP | per player a stick and short pass, shoot, long pass (confirmed, README) | none needed (confirmed); no copro data ROMs; texture RAM banks of 1 MB (README) | yes (`ep`/`mp` chip names); supported and playable, with sound (2B; its own geometrizer and copro programs; main data, `.7/.8` included, and polygon pairs packed every 4 MB) |
+| `schamp` | Sonic Championship | 1996 | `sfight` (Sonic the Fighters: own program and `.7/.8` chips, not supported) | SCSP | per player a stick and punch, kick, barrier (confirmed, `docs/games/schamp.md`) | none needed (confirmed); copro data `.29/.30` (the same chips as `fvipers`'s); texture RAM banks of 1 MB (`docs/games/schamp.md`) | yes; supported and playable, with sound (2B; the shared geometrizer code, its own copro program) |
+| `sgt24h` | Super GT 24h | 1996 | none | SCSP, Jaleco's own driver (confirmed; the same code as `overrev`'s) | wheel (ch. 0), gas (1), brake (2), shift up/down, view (confirmed, `docs/games/sgt24h.md`) | none needed; `epr-18643a.7` is a Z80 program (Sega 837-10074, most likely the link board's; unconfirmed), and the game runs stand-alone without it (`docs/games/sgt24h.md`) | yes; supported and playable, with sound (2B, on `overrevb`'s SHARC code) |
+| `vstriker` | Virtua Striker (Rev A) | 1994 | `vstrikro` (the original revision: the chips without the `a` suffix, not supported) | SCSP | per player a stick and short pass, shoot, long pass (confirmed, `docs/games/vstriker.md`) | none needed (confirmed); no copro data ROMs; texture RAM banks of 1 MB (`docs/games/vstriker.md`) | yes (`ep`/`mp` chip names); supported and playable, with sound (2B; its own geometrizer and copro programs; main data, `.7/.8` included, and polygon pairs packed every 4 MB) |
 | `von` | Virtual On Cybertroopers (US) | 1996 | `vonj` | SCSP | twin sticks, triggers | link (2 cabinets); `epr-18643a.7` | yes (US program chips named `vo-prog0.usa`) |
 | `zerogun` | Zero Gunner | 1997 | `zerogunj`, `zeroguna`, `zerogunaj` (2A) | SCSP, CRX_drv 3.4.9 | stick, buttons | none | yes |
 | `dynmcopb`, `dyndek2b` | Dynamite Cop / Deka 2 (2B) | 1998 | clones of 2A `dynamcop` | SCSP | stick, 3 buttons | none | yes |
@@ -128,14 +128,14 @@ board (i960KB on all, gk). Controls and special hardware are gk throughout.
 
 | Set | Title | Year | Clones in zip | Sound | Controls | Special hardware | Complete |
 |---|---|---|---|---|---|---|---|
-| `topskatr` | Top Skater | 1997 | `topskatrj`, `topskatru` | SCSP, CRX_drv 3.2.8; **DSB2** | skateboard deck (2 analog channels), jump buttons (confirmed, README) | none | yes; also unpacked in `topskatr/` |
-| `skisuprg` | Sega Ski Super G | 1996 | none | SCSP, CRX_drv 3.2.8 | ski platform (analog channels 0-2: two ski angles, a third unconfirmed), three panel buttons (confirmed, README) | drive board (confirmed: boot checks it; modelled, README) | yes; supported and playable |
-| `segawski` | Sega Water Ski (Japan) | 1997 | none | SCSP, CRX_drv 3.4.8 (confirmed) | slide (ch. 0), pitch left/right switches, select up/down and set buttons (confirmed, README) | none needed (confirmed); a second main data bank at `0x6000000` (README) | yes; supported and playable |
-| `waverunr` | Wave Runner | 1996 | none | SCSP, CRX_drv 3.2.7 (confirmed) | handlebar (ch. 0), throttle (2), body roll (1) and pitch (3), start, view (confirmed, README) | ride-on cabinet board: optional, skipped when absent (README); link not read by default | yes; supported and playable |
-| `hotd` | The House of the Dead | 1996 (title screen; the dat says 1997) | none | SCSP, CRX_drv 3.2.8 | 2 light guns, read through a gun interface on I/O registers 9-13 (confirmed, README) | none needed beyond the gun interface (modelled); a second main data bank at `0x6000000` (README) | yes; supported and playable |
-| `stcc` | Sega Touring Car Championship | 1996 | `stcca`, `stccb` (the zip holds all three program pairs; reModel uses `epr-19570/19571`) | SCSP, CRX_drv 3.2.5 (confirmed); **DSB1 (Z80)**, modelled (`docs/hw/dsb1.md`) | wheel (ch. 0), gas (1), brake (2), shift up/down buttons, two view buttons (confirmed, README) | wheel drive board (commanded every frame, reply never checked; modelled, README); link (skipped by the default settings); `epr-18643a.7` (Z80 code for another board) | yes; supported and playable, with music |
-| `overrev` | Over Rev | 1997 | `overrevb` (2B; the zip holds both program pairs: `overrev` uses the 2C `epr-20124a/20125a`, `overrevb` the 2B `epr-19992b/19993b`, also supported) | SCSP, Jaleco's own driver (confirmed; streams its music, no music board) | wheel (ch. 0), gas (1), brake (2), shift up/down, view (confirmed, README) | none needed; the link board check reads it as absent and runs stand-alone (README) | yes; supported and playable, with sound |
-| `bel` | Behind Enemy Lines | 1997 (title screen; the dat says 1998) (Sega / EPL) | none | SCSP, EPL's driver (confirmed; much of its code shared with Jaleco's, `docs/hw/sound.md` §7) | two mounted guns on ADC channels 0-3 (yaw, pitch), triggers and missile buttons (confirmed, README) | none; needs packed main data and polygon banks and the UART's transmit interrupt (README) | yes; supported and playable, with sound |
+| `topskatr` | Top Skater | 1997 | `topskatrj`, `topskatru` | SCSP, CRX_drv 3.2.8; **DSB2** | skateboard deck (2 analog channels), jump buttons (confirmed, `docs/games/topskatr.md`) | none | yes; also unpacked in `topskatr/` |
+| `skisuprg` | Sega Ski Super G | 1996 | none | SCSP, CRX_drv 3.2.8 | ski platform (analog channels 0-2: two ski angles, a third unconfirmed), three panel buttons (confirmed, `docs/games/skisuprg.md`) | drive board (confirmed: boot checks it; modelled, `docs/games/skisuprg.md`) | yes; supported and playable |
+| `segawski` | Sega Water Ski (Japan) | 1997 | none | SCSP, CRX_drv 3.4.8 (confirmed) | slide (ch. 0), pitch left/right switches, select up/down and set buttons (confirmed, `docs/games/segawski.md`) | none needed (confirmed); a second main data bank at `0x6000000` (`docs/games/segawski.md`) | yes; supported and playable |
+| `waverunr` | Wave Runner | 1996 | none | SCSP, CRX_drv 3.2.7 (confirmed) | handlebar (ch. 0), throttle (2), body roll (1) and pitch (3), start, view (confirmed, `docs/games/waverunr.md`) | ride-on cabinet board: optional, skipped when absent (`docs/games/waverunr.md`); link not read by default | yes; supported and playable |
+| `hotd` | The House of the Dead | 1996 (title screen; the dat says 1997) | none | SCSP, CRX_drv 3.2.8 | 2 light guns, read through a gun interface on I/O registers 9-13 (confirmed, `docs/games/hotd.md`) | none needed beyond the gun interface (modelled); a second main data bank at `0x6000000` (`docs/games/hotd.md`) | yes; supported and playable |
+| `stcc` | Sega Touring Car Championship | 1996 | `stcca`, `stccb` (the zip holds all three program pairs; reModel uses `epr-19570/19571`) | SCSP, CRX_drv 3.2.5 (confirmed); **DSB1 (Z80)**, modelled (`docs/hw/dsb1.md`) | wheel (ch. 0), gas (1), brake (2), shift up/down buttons, two view buttons (confirmed, `docs/games/stcc.md`) | wheel drive board (commanded every frame, reply never checked; modelled, `docs/games/stcc.md`); link (skipped by the default settings); `epr-18643a.7` (Z80 code for another board) | yes; supported and playable, with music |
+| `overrev` | Over Rev | 1997 | `overrevb` (2B; the zip holds both program pairs: `overrev` uses the 2C `epr-20124a/20125a`, `overrevb` the 2B `epr-19992b/19993b`, also supported) | SCSP, Jaleco's own driver (confirmed; streams its music, no music board) | wheel (ch. 0), gas (1), brake (2), shift up/down, view (confirmed, `docs/games/overrev.md`) | none needed; the link board check reads it as absent and runs stand-alone (`docs/games/overrev.md`) | yes; supported and playable, with sound |
+| `bel` | Behind Enemy Lines | 1997 (title screen; the dat says 1998) (Sega / EPL) | none | SCSP, EPL's driver (confirmed; much of its code shared with Jaleco's, `docs/hw/sound.md` §7) | two mounted guns on ADC channels 0-3 (yaw, pitch), triggers and missile buttons (confirmed, `docs/games/bel.md`) | none; needs packed main data and polygon banks and the UART's transmit interrupt (`docs/games/bel.md`) | yes; supported and playable, with sound |
 | `dynmcopc` | Dynamite Cop (2C) | 1998 | clone of 2A `dynamcop` | SCSP, CRX_drv 3.2.8 | stick, 3 buttons | none | yes (2 own chips; the rest comes from the 2A parent) |
 
 Counts, by parent (one zip each): 3 original Model 2, 8 2A, 13 2B, 8 2C.
@@ -157,7 +157,7 @@ games, ranked by how little new work each needs:
    Little-known, but the cheapest proof that the 2C stack generalises.
    *Found:* it does have an extra board: boot handshakes with a drive
    board over two I/O bytes and stops with "DRIVE BOARD TROUBLE" without
-   one (README, "What's known about `skisuprg`"). *Done:* the drive board
+   one (docs/games/skisuprg.md). *Done:* the drive board
    is modelled (`crates/model2/src/drive.rs`) and the controls moved into
    each game's manifest; it plays from coin-up to the results screen.
 2. **`waverunr`, Wave Runner.** Same shape: SCSP only (driver 3.2.7),
@@ -166,7 +166,7 @@ games, ranked by how little new work each needs:
    cabinet board is skipped when absent, the link isn't read), but its
    `.7/.8` data pair is read through a window at `0x06000000`, and it runs
    routines copied to RAM, which the recompiler now leaves to the
-   interpreter (README, "What's known about `waverunr`").
+   interpreter (docs/games/waverunr.md).
 3. **`hotd`, The House of the Dead.** The best-known 2C game, and same
    driver as `topskatr`. New work: light-gun input (mouse or pointer to the
    gun's position, off-screen reload), and how 2C reads a gun is unknown.
@@ -176,7 +176,7 @@ games, ranked by how little new work each needs:
    *Done:* the boot path was the same code reading another address; the
    new work was the gun interface (I/O registers 9-13, a command and
    counter protocol worked out from the code) and generic light-gun
-   controls; it plays (README, "What's known about `hotd`").
+   controls; it plays (docs/games/hotd.md).
 4. **`segawski`, Sega Water Ski.** Like Ski Super G, with more ROM (eight
    polygon and four texture chips) and a newer driver (3.4.8). *Done:* a
    different game from `skisuprg`, not a release of it; it needed only a
@@ -187,7 +187,7 @@ games, ranked by how little new work each needs:
    *Done:* it needed no board model: its every-boot network check takes
    the link board's registers reading all ones as "no board" and goes on
    stand-alone. Jaleco's sound driver runs on the SCSP board model
-   unchanged (README, "What's known about `overrev`"; `docs/hw/sound.md`
+   unchanged (docs/games/overrev.md; `docs/hw/sound.md`
    §6).
 6. **`dynmcopc`, Dynamite Cop (2C).** Simplest controls (digital) and the
    3.2.8 driver, but it's a clone whose data chips were named for the 2A
@@ -205,8 +205,7 @@ games, ranked by how little new work each needs:
    *Done:* its main data and polygon pairs are packed every 4 MB, it
    uploads its copro program only when the copro status says it has none,
    and it sends sound commands from the UART's transmit interrupt; the
-   guns are analog, the driver needed nothing new. It plays (README,
-   "What's known about `bel`").
+   guns are analog, the driver needed nothing new. It plays (`docs/games/bel.md`).
 
 Recommendation: `skisuprg` to shake out what's still `topskatr`-specific
 (done; `stcc` done too), then `hotd` as the game most worth having. `hotd` needs a light
@@ -222,7 +221,7 @@ for it).
   (`desert`, `manxtt`, `sgt24h`, `von`, `stcc`) show another board is
   present, not which. The one `sgt24h`, `stcc` and `von` share,
   `epr-18643a.7`, is a Z80 program headed Sega 837-10074, most likely the
-  link board's (README, "What's known about `sgt24h`").
+  link board's (docs/games/sgt24h.md).
 - The dat's years are sometimes late (see above).
 - That the 2B chips are SHARCs and the 2/2A copro an MB86234 comes from
   public docs (the 2B upload writes 2106x I/O-processor registers, which

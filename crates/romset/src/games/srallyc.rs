@@ -1,8 +1,7 @@
 use crate::controls::button;
 use crate::{AnalogInput, Board, Controls, Game, PadAxis, PadButton, Role, RomFile, Shifter};
 
-/// Sega Rally Championship (revision C), Model 2A-CRX (README, "What's
-/// known about `srallyc`", `docs/hw/model2a.md`).
+/// Sega Rally Championship (revision C), Model 2A-CRX (docs/games/srallyc.md, `docs/hw/model2a.md`).
 ///
 /// Chip pairs are listed low half-word first. Program `17888c.12` and
 /// `17889c.13`; main data pairs `.10/.11`, `.8/.9` and `.6/.7`, **packed** 4

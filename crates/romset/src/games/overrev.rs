@@ -113,7 +113,7 @@ pub static OVERREV: Game = Game {
 
 /// The driving cabinet. Ports read active low. Which bit and channel is
 /// which comes from the game's input test; each one's effect was confirmed
-/// by scripted runs (README, "What's known about overrev"). The input test
+/// by scripted runs (docs/games/overrev.md). The input test
 /// lists a VIEW2 button as unused ("---"). One credit is one coin by default.
 pub(super) const CONTROLS: Controls = Controls {
     buttons: &[

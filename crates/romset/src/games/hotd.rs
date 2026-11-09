@@ -7,8 +7,7 @@ use crate::{Board, Controls, Game, Gun, GunSource, PadButton, Reload, Role, RomF
 /// `0x2800000` (which holds both MB86235 programs), and a second data bank
 /// as in segawski: `.7/.8` at `0x6000000` and the 1 MB `.5/.6` at
 /// `0x6800000`. The memory test passes every ROM in this layout. Two light
-/// guns, read through the 2C gun interface (`model2::gun`; README, "What's
-/// known about hotd"). No drive or music board.
+/// guns, read through the 2C gun interface (`model2::gun`; docs/games/hotd.md). No drive or music board.
 pub static HOTD: Game = Game {
     id: "hotd",
     title: "The House of the Dead",

@@ -9,8 +9,7 @@ use crate::{Board, Controls, Game, PadButton, Role, RomFile};
 /// data bank (the SHARC programs are in `.7/.8`); polygons `.17/.21`,
 /// `.18/.22`, `.19/.23`, 2 MB chips packed every 4 MB; textures `.27/.25`,
 /// `.28/.26` in 8 MB slots; copro data `.29/.30` (`schamp`'s chips). Its
-/// textures go to the upper half of each texture RAM bank (README, "What's
-/// known about fvipers").
+/// textures go to the upper half of each texture RAM bank (docs/games/fvipers.md).
 pub static FVIPERS: Game = Game {
     id: "fvipers",
     title: "Fighting Vipers",
@@ -215,7 +214,7 @@ pub static FVIPERS: Game = Game {
 
 /// Two players, each with an 8-way stick and three buttons (punch, kick,
 /// guard). Ports read active low; which bit is which comes from the game's
-/// input test (README, "What's known about fvipers"). One coin is one
+/// input test (docs/games/fvipers.md). One coin is one
 /// credit.
 const CONTROLS: Controls = Controls {
     buttons: &[

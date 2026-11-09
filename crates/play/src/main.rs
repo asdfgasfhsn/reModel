@@ -82,7 +82,7 @@ usage: remodel-play [options]
                      geometrizer only; docs/play.md). Default off
   --run-ahead N      run-ahead: show the game N frames (0 to 3) ahead of
                      where it is, which takes up to N frames of the game's
-                     own input lag away (each game's is in the README),
+                     own input lag away (each game's is in docs/games/),
                      for N more emulated frames each frame; dropped if
                      the machine can't keep up (docs/play.md). Default 0
   --aa off|4|8       anti-aliasing: multisample the 3D layer (4 or 8 samples

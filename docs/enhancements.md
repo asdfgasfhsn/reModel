@@ -48,7 +48,7 @@ through DirectX 8/9's fixed-function pipeline.
 | Area | Item | Status |
 |---|---|---|
 | Output | Any resolution, 16:9 to 32:9, HUD to the edges | done (`docs/play.md`) |
-| Output | Wide views fill the sides with scrolled tile skies | done (README, `doa`) |
+| Output | Wide views fill the sides with scrolled tile skies | done (docs/games/doa.md) |
 | Output | Smooth motion: in-betweens on displays over 60 Hz | done, opt-in |
 | Output | Run-ahead: less input lag | done (native player), opt-in |
 | Textures | Texture packs: dump, replace at any size | done (`docs/texture-packs.md`) |

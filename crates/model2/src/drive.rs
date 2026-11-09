@@ -68,7 +68,7 @@ impl Drive {
 }
 
 /// Sega Ski Super G's platform drive board. What the game's code shows
-/// (README, "What's known about skisuprg"):
+/// (docs/games/skisuprg.md):
 ///
 /// - Boot: the game sends `0x00` until the reply is `0xCE`, then a byte
 ///   from its settings (the swing channel's calibrated centre) until the
@@ -116,7 +116,7 @@ impl SkiPlatform {
 }
 
 /// A force feedback wheel board (Sega Touring Car Championship's). What
-/// the game's code and runs show (README, "What's known about stcc"):
+/// the game's code and runs show (docs/games/stcc.md):
 ///
 /// - Each frame the I/O routine reads a reply byte from `0x1C00006` and
 ///   writes the frame's command to `0x1C00008`, as `skisuprg` does, but the

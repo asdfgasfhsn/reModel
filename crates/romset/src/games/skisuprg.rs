@@ -141,7 +141,7 @@ pub static SKISUPRG: Game = Game {
 };
 
 /// The ski platform cabinet, as far as the game's code and scripted runs
-/// show (README, "What's known about skisuprg"). Ports read active low.
+/// show (docs/games/skisuprg.md). Ports read active low.
 /// One credit is two coins by default.
 const CONTROLS: Controls = Controls {
     buttons: &[

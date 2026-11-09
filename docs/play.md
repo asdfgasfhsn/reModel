@@ -73,8 +73,7 @@ game itself never runs those frames: its sound, save states, EEPROM and
 state hash are exactly as without (`make run-ahead-check`), and nothing
 the frames ahead do leaves the second machine (their sound commands are
 dropped, its EEPROM and drive board are never read). How much there is
-to hide depends on the game (`make input-lag`, the README's "What's
-known" sections):
+to hide depends on the game (`make input-lag`, each game's `docs/games/<set>.md`):
 
 | Game | Control | Input lag (frames) | Run-ahead worth setting |
 |---|---|---|---|

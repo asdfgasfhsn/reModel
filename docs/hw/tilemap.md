@@ -237,7 +237,7 @@ reModel's wide views (an enhancement) extend plane B past the frame's
 sides, round the 512-pixel map, on rows where its map is scrolled and
 3D is on screen; unscrolled rows and plane A stop at the frame. Games
 that pan a backdrop on plane B (doa's skies) scroll it, while select
-screens that lay out a page on it don't (README, `doa`).
+screens that lay out a page on it don't (docs/games/doa.md).
 
 ---
 

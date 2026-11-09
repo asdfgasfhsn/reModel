@@ -7,7 +7,7 @@ use crate::{AnalogInput, Board, Controls, Game, PadAxis, PadButton, Role, RomFil
 /// at `0x6000000` and the 1 MB pair `.5/.6` at `0x6800000`, repeating in its
 /// slot (the game reads it at `0x6C0xxxx`). The memory test checks the ROMs
 /// in that order (IC15, 16, 11, 12, 9, 10, 7, 8, 5, 6) and passes them all
-/// (README, "What's known about segawski"). No drive board or music board.
+/// (docs/games/segawski.md). No drive board or music board.
 pub static SEGAWSKI: Game = Game {
     id: "segawski",
     title: "Sega Water Ski",

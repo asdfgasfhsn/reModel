@@ -666,7 +666,7 @@ impl Model2Bus {
             // enabled. Last Bronx's interrupt dispatcher loads the pair
             // (`ldl 0xE80000`) and services the bits of the second word
             // until none is left, so it can't be the mask it was written as
-            // (README, "What's known about lastbrnx"); *unconfirmed* what the
+            // (docs/games/lastbrnx.md); *unconfirmed* what the
             // hardware returns. No other game reads it.
             0x00e8_0004 => self.irq_request & self.irq_enable,
             0x00f0_0000..=0x00f0_000f => {
@@ -688,7 +688,7 @@ impl Model2Bus {
             // they read as all ones. Bit 0 of 0x1A14000 set is "no
             // communication board" to stcc's and overrev's network checks,
             // and overrev's stand-alone boot then waits for bit 7 of
-            // 0x1A14002 to be set (README, "What's known about overrev").
+            // 0x1A14002 to be set (docs/games/overrev.md).
             0x01a1_4000 => u32::MAX,
             0x1000_0000..=0x105f_ffff => 0,
             _ => return None,

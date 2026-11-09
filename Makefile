@@ -307,8 +307,8 @@ latency: release ## Input latency: frames from a held input (LATENCY_CHANGE, fro
 # `make input-lag`: per game, GAME+FRAME+CHANGE[+INPUT]: a frame in play of
 # a run with INPUT (default coin-start), and a control held from there.
 # The fighters' and gun games' runs stop their periodic buttons first, so
-# the control isn't lost in a move already under way. The README's
-# "What's known" sections give what these measured (romset's
+# the control isn't lost in a move already under way. Each game's
+# docs/games/<set>.md gives what these measured (romset's
 # `Game::input_lag`).
 FIGHT_INPUT := coin1@1100-1104,start@1250-1254,punch@1400-3400/30,kick@1415-3400/30
 INPUT_LAG ?= topskatr+3507+curving=0xF0 skisuprg+3507+swing=0xF0 \

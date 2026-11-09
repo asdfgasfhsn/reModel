@@ -8,7 +8,7 @@ use crate::{Board, Controls, Dropout, Game, PadButton, Protection, ProtectionRep
 /// four sample ROMs, no copro data, no music board. The Model 2A chips also
 /// in `doa.zip` belong to the 2A clone `doaa`. The game checks for a
 /// protection device at boot and, if it isn't answered, stops itself
-/// during the first fight (README, "What's known about doa").
+/// during the first fight (docs/games/doa.md).
 pub static DOA: Game = Game {
     id: "doa",
     title: "Dead or Alive",
@@ -25,15 +25,14 @@ pub static DOA: Game = Game {
     backup_ram: &[],
     // The boot check (i960 0x5A0): command 6, then the 48 bytes at 0x2810
     // the game compares the reply with. Without them it arms a countdown
-    // when a game starts and stops itself mid-fight (README, "What's known
-    // about doa").
+    // when a game starts and stops itself mid-fight (docs/games/doa.md).
     protection: Some(Protection { replies: &[ProtectionReply { command: 6, rom: 0x2810, len: 0x30 }] }),
     // The dump of mpr-19324.19 (the low half of the third polygon pair,
     // Kasumi's and other fighters' models) reads 60% of the 1s on data line
     // 9 as 0: its last quarter, the same data as the other two pairs' last
     // quarters, differs from them only there, always 1 to 0. In attribute
     // words that is link bit 9, which drew Kasumi as scattered shards
-    // (README, "What's known about doa").
+    // (docs/games/doa.md).
     dropouts: &[Dropout { chip: "mpr-19324.19", bit: 9 }],
     texture_ram_mirrored: false,
     packed: &[],
@@ -185,7 +184,7 @@ pub static DOA: Game = Game {
 
 /// Two players, each with an 8-way stick and three buttons (hold, punch,
 /// kick). Ports read active low; which bit is which comes from the game's
-/// input test (README, "What's known about doa"). One coin is one credit.
+/// input test (docs/games/doa.md). One coin is one credit.
 const CONTROLS: Controls = Controls {
     buttons: &[
         button("coin1", 0, 0x01, &["KeyC", "Digit5"], &[PadButton::Select]).labelled("Coin"),

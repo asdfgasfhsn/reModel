@@ -13,7 +13,7 @@ use crate::{AnalogInput, Board, Controls, DriveBoard, Game, PadAxis, PadButton, 
 /// `indy500to` (the older Twin revision) differ in the program, `.7/.8`
 /// and sound program chips and aren't supported. The game commands a wheel
 /// drive board and never checks its reply; with no link board it runs
-/// stand-alone (README, "What's known about indy500").
+/// stand-alone (docs/games/indy500.md).
 pub static INDY500: Game = Game {
     id: "indy500",
     title: "Indianapolis 500",
@@ -168,8 +168,7 @@ pub static INDY500: Game = Game {
 /// The Twin cabinet: wheel, gas and brake pedals, a sequential shifter
 /// (up and down switches) and two view buttons. Ports read active low;
 /// which bit and channel is which comes from the game's input test, the
-/// pedals' and wheel's directions from scripted races (README, "What's
-/// known about indy500"). Two coins are one credit by default.
+/// pedals' and wheel's directions from scripted races (docs/games/indy500.md). Two coins are one credit by default.
 const CONTROLS: Controls = Controls {
     buttons: &[
         button("coin1", 0, 0x01, &["KeyC", "Digit5"], &[PadButton::Select]).labelled("Coin"),

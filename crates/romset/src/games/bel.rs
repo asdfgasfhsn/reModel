@@ -7,7 +7,7 @@ use crate::{Board, Controls, Game, Gun, GunSource, PadButton, Reload, Role, RomF
 /// 4 MB: main data `.11/.12`, `.9/.10`, `.7/.8`, `.5/.6` from `0x2000000`
 /// (the memory test passes every ROM so); textures keep 8 MB slots. Two
 /// mounted guns on the ADC, EPL's own sound driver (`.31`), no music board
-/// (README, "What's known about bel").
+/// (docs/games/bel.md).
 pub static BEL: Game = Game {
     id: "bel",
     title: "Behind Enemy Lines",

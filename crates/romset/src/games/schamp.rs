@@ -8,8 +8,7 @@ use crate::{Board, Controls, Game, PadButton, Role, RomFile};
 /// the second data bank (with the SHARC programs); polygons `.17/.21`,
 /// `.18/.22`; textures `.27/.25`, `.28/.26`; copro data `.29/.30`
 /// (`fvipers`' chips). The program and `.7/.8` chips of the clone `sfight`
-/// (Sonic the Fighters) in `schamp.zip` aren't supported (README, "What's
-/// known about schamp").
+/// (Sonic the Fighters) in `schamp.zip` aren't supported (docs/games/schamp.md).
 pub static SCHAMP: Game = Game {
     id: "schamp",
     title: "Sonic Championship",
@@ -177,7 +176,7 @@ pub static SCHAMP: Game = Game {
 
 /// Two players, each with an 8-way stick and three buttons (punch, kick,
 /// barrier). Ports read active low; which bit is which comes from the game's
-/// input test (README, "What's known about schamp"). One coin is one
+/// input test (docs/games/schamp.md). One coin is one
 /// credit.
 const CONTROLS: Controls = Controls {
     buttons: &[

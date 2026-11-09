@@ -6,7 +6,7 @@ use crate::{AnalogInput, Board, Controls, Game, PadAxis, PadButton, Role, RomFil
 /// Beyond topskatr's layout: a third polygon pair (`.19/.23`, 1 MB), a
 /// second texture pair (`.28/.26`, 1 MB), a 1 MB copro data pair
 /// (`.29/.30`), and `.7/.8`, data the program reads through the
-/// `0x06000000` window (README, "What's known about waverunr"). No music
+/// `0x06000000` window (docs/games/waverunr.md). No music
 /// board: all sound is the SCSP's. The ride-on cabinet's own board is
 /// optional (the game plays without it).
 pub static WAVERUNR: Game = Game {
@@ -172,8 +172,7 @@ pub static WAVERUNR: Game = Game {
 
 /// The ride-on (personal watercraft) cabinet. Ports read active low. Which
 /// bit and channel is which comes from the game's input test; the effects
-/// were confirmed by scripted runs except where noted (README, "What's
-/// known about waverunr"). One credit is three coins by default.
+/// were confirmed by scripted runs except where noted (docs/games/waverunr.md). One credit is three coins by default.
 const CONTROLS: Controls = Controls {
     buttons: &[
         button("coin1", 0, 0x01, &["KeyC", "Digit5"], &[PadButton::Select]).labelled("Coin"),

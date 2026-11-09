@@ -149,7 +149,7 @@ pub static TOPSKATR: Game = Game {
 
 /// The skateboard cabinet. Ports read active low. Coin, test and service
 /// follow the common Model 2 layout; the game buttons and both analog
-/// channels were confirmed by scripted presses (README, "What's known").
+/// channels were confirmed by scripted presses (docs/games/topskatr.md).
 /// Test and service are not yet checked.
 const CONTROLS: Controls = Controls {
     buttons: &[

@@ -10,7 +10,7 @@ use crate::{AnalogInput, Board, Controls, Game, PadAxis, PadButton, Role, RomFil
 /// (`.31`, the same code as `overrev`'s) streams everything from the one
 /// sample ROM. `epr-18643a.7` is the Z80 program of Sega's communication
 /// (link) board, which the i960 never reads; with no board fitted the game
-/// runs stand-alone (README, "What's known about sgt24h").
+/// runs stand-alone (docs/games/sgt24h.md).
 pub static SGT24H: Game = Game {
     id: "sgt24h",
     title: "Super GT 24h",
@@ -121,7 +121,7 @@ pub static SGT24H: Game = Game {
 
 /// The driving cabinet with I/O type A. Ports read active low. Which bit
 /// and channel is which comes from the game's input test; each one's effect
-/// was confirmed by scripted runs (README, "What's known about sgt24h").
+/// was confirmed by scripted runs (docs/games/sgt24h.md).
 /// One credit is one coin by default.
 const CONTROLS: Controls = Controls {
     buttons: &[

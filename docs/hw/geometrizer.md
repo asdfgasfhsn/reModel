@@ -227,7 +227,7 @@ It is a mantissa LSB, so using the value unmasked costs only 1 ulp.
 | 17 | Double-sided (no backface cull) | M |
 | 0-17 | sent to the rasteriser as is (`& 0x3FFFF`) | H |
 | 18-22 | Lighting parameter index (fn 0x06 entry) | H |
-| 23-24 | A copy of the link bits 8-9: in topskatr's data, and in `doa`'s intact polygon pairs (the second pair: all but 10 of 153,126 words shaped like an attribute word; the first: all but about 3,000 of 121,000, words that only look like one). The 2B geometrizer program doesn't read them (it sends `attr & 0x3FFFF` and links on bits 8-9); reModel uses the copy to repair `doa`'s bad dump of `mpr-19324.19` (README, "What's known about `doa`") | L (observation) |
+| 23-24 | A copy of the link bits 8-9: in topskatr's data, and in `doa`'s intact polygon pairs (the second pair: all but 10 of 153,126 words shaped like an attribute word; the first: all but about 3,000 of 121,000, words that only look like one). The 2B geometrizer program doesn't read them (it sends `attr & 0x3FFFF` and links on bits 8-9); reModel uses the copy to repair `doa`'s bad dump of `mpr-19324.19` (docs/games/doa.md) | L (observation) |
 | 27-31 | Distance-coefficient index (fn 0x06 coef) | H |
 
 ### 3.4 Vertex linking (M2V, M [MAME-only]; the ROM meshes look right with it)

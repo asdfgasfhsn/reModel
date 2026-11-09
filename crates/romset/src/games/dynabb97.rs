@@ -8,8 +8,7 @@ use crate::{AnalogInput, Board, Controls, Game, PadAxis, PadButton, Role, RomFil
 /// `0x2800000`, a second bank `.7/.8` and `.5/.6` at `0x6000000` (as in
 /// hotd). The memory test passes all twelve in this layout. Polygons
 /// `.17/.21` then `.18/.22` and textures `.27/.25` draw correctly. Four
-/// sample ROMs, no copro data, no music board (README, "What's known about
-/// dynabb97").
+/// sample ROMs, no copro data, no music board (docs/games/dynabb97.md).
 pub static DYNABB97: Game = Game {
     id: "dynabb97",
     title: "Dynamite Baseball '97",
@@ -176,7 +175,7 @@ pub static DYNABB97: Game = Game {
 /// Two players, each with an 8-way stick, two buttons and the bat: a lever
 /// on an analog channel that is pulled back and let go to swing. Ports
 /// read active low; which bit and channel is which comes from the game's
-/// input test (README, "What's known about dynabb97"). One coin is one
+/// input test (docs/games/dynabb97.md). One coin is one
 /// credit by default.
 const CONTROLS: Controls = Controls {
     buttons: &[

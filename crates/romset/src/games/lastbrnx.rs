@@ -117,7 +117,7 @@ pub static LASTBRNX: Game = Game {
 
 /// Two players, each with an 8-way stick and three buttons (punch, kick,
 /// guard). Ports read active low; which bit is which comes from the game's
-/// input test (README, "What's known about lastbrnx"). One coin is one
+/// input test (docs/games/lastbrnx.md). One coin is one
 /// credit.
 const CONTROLS: Controls = Controls {
     buttons: &[

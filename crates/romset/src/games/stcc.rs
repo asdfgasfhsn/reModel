@@ -8,7 +8,7 @@ use crate::{AnalogInput, Board, Controls, DriveBoard, Game, PadAxis, PadButton, 
 /// Each bank's pairs fill 8 MB slots, smaller pairs repeating: main data
 /// `.9/.10`, the second polygon pair `.18/.22` and the second texture pair
 /// `.28/.26` are 1 MB, and the game addresses `.9/.10` and `.18/.22` 4 MB
-/// into their slots (README, "What's known about stcc").
+/// into their slots (docs/games/stcc.md).
 ///
 /// Beyond topskatr's layout it has a DSB1 music board (Z80 program `.2s`,
 /// MPEG ROMs `.57s`-`.60s`; no board model yet, and the game runs without
@@ -188,8 +188,7 @@ pub static STCC: Game = Game {
 
 /// The twin/deluxe driving cabinet. Ports read active low. Which bit is
 /// which comes from the game's input test; the effect of each, except the
-/// unchecked ones noted, was confirmed by scripted runs (README, "What's
-/// known about stcc"). One credit is one coin by default.
+/// unchecked ones noted, was confirmed by scripted runs (docs/games/stcc.md). One credit is one coin by default.
 const CONTROLS: Controls = Controls {
     buttons: &[
         button("coin1", 0, 0x01, &["KeyC", "Digit5"], &[PadButton::Select]).labelled("Coin"),

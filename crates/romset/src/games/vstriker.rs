@@ -9,7 +9,7 @@ use crate::{Board, Controls, Game, PadButton, Role, RomFile};
 /// `.18/.22`, packed every 4 MB; textures `.27/.25`. Its textures go to the
 /// upper half of each texture RAM bank, as `fvipers`'. The zip's chips
 /// without the `a` suffix belong to the original revision `vstrikro`,
-/// which isn't supported (README, "What's known about vstriker").
+/// which isn't supported (docs/games/vstriker.md).
 pub static VSTRIKER: Game = Game {
     id: "vstriker",
     title: "Virtua Striker",
@@ -164,7 +164,7 @@ pub static VSTRIKER: Game = Game {
 /// (green on the cabinet, also the sliding tackle when defending), shoot
 /// (magenta; held, it charges a power bar) and long pass (cyan). Ports read
 /// active low; which bit is which comes from the input test and the
-/// attract mode's how-to-play (README, "What's known about vstriker"). One
+/// attract mode's how-to-play (docs/games/vstriker.md). One
 /// coin is one credit.
 const CONTROLS: Controls = Controls {
     buttons: &[

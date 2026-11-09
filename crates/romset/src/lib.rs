@@ -28,11 +28,11 @@ pub use sha1::sha1_hex;
 pub enum DriveBoard {
     /// Sega Ski Super G's platform drive board: one command byte a frame
     /// on I/O `0x1C00008`, one reply byte on `0x1C00006`; boots with a
-    /// `0x00` -> `0xCE` handshake (README, "What's known about skisuprg").
+    /// `0x00` -> `0xCE` handshake (docs/games/skisuprg.md).
     SkiPlatform,
     /// Sega Touring Car Championship's force feedback wheel: one command
     /// byte a frame on `0x1C00008`; the game stores the reply from
-    /// `0x1C00006` but never checks it (README, "What's known about stcc").
+    /// `0x1C00006` but never checks it (docs/games/stcc.md).
     Wheel,
 }
 
@@ -121,7 +121,7 @@ pub enum Role {
     /// The second bank of i960-visible data ROM, 16-bit interleaved pairs
     /// in 8 MB slots from `0x6000000` (a smaller pair repeats in its slot).
     /// segawski and waverunr fill it; their program pointers land on the
-    /// pairs' data there (README, "What's known" for each). How the board
+    /// pairs' data there (docs/games/<set>.md for each). How the board
     /// decodes the rest of `0x4000000-0x7ffffff` is unconfirmed.
     MainDataHigh,
     /// Geometry coprocessor data ROM, 16-bit interleaved pairs.
@@ -165,7 +165,7 @@ pub struct Game {
     pub attract_frame: u64,
     /// The game's own input lag in play, measured: frames after the first
     /// that reads a control before the picture shows it (`make input-lag`,
-    /// the README's "What's known"; the least seen, for the control
+    /// docs/games/<set>.md; the least seen, for the control
     /// measured). Run-ahead of more frames than this only judders, so the
     /// player suggests up to this much (`docs/play.md`, "Run-ahead").
     pub input_lag: u8,
@@ -215,7 +215,7 @@ pub struct Game {
     /// upload their texels to the upper half of each window, which the
     /// rasteriser reads as the lower. Other boards keep 2 MB there (overrevb and sgt24h fill
     /// both halves with different data), of which the rasteriser reads the
-    /// lower (README, "What's known about fvipers").
+    /// lower (docs/games/fvipers.md).
     pub texture_ram_mirrored: bool,
 }
 
