@@ -20,6 +20,7 @@ pub static SGT24H: Game = Game {
     attract_frame: 1150,
     input_lag: 4,
     hud_windows: &[],
+    hud_element_windows: &[],
     controls: CONTROLS,
     drive_board: None,
     parent: None,

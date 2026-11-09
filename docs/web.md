@@ -315,7 +315,8 @@ parameters:
 
 - `height=1080`;
 - `aspect=16:9`;
-- `hud=center` (or `edges`);
+- `hud=center` (or `edges`; at the edges, the 3D parts of a game's HUD move
+  with it, as in `docs/play.md`);
 - `bezel=0` (no bezel; `bezel=1` on);
 - `sound=0` (don't run the sound boards at all);
 - `sfx=8&music=-8` (the mix in dB);

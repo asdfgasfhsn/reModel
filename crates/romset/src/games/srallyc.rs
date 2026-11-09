@@ -30,6 +30,7 @@ pub static SRALLYC: Game = Game {
     attract_frame: 1500,
     input_lag: 1,
     hud_windows: &[],
+    hud_element_windows: &[1],
     controls: CONTROLS,
     drive_board: None,
     parent: None,

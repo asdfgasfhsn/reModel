@@ -13,6 +13,7 @@ pub static TOPSKATR: Game = Game {
     // Window 4 holds the speed gauge and the time-limit ring (confirmed with
     // REMODEL_PROBE); the course is window 2 and the sky window 0.
     hud_windows: &[4],
+    hud_element_windows: &[],
     controls: CONTROLS,
     drive_board: None,
     parent: None,

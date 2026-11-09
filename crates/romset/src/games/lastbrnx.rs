@@ -21,6 +21,7 @@ pub static LASTBRNX: Game = Game {
     attract_frame: 700,
     input_lag: 0,
     hud_windows: &[],
+    hud_element_windows: &[],
     controls: CONTROLS,
     drive_board: None,
     parent: None,

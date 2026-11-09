@@ -19,6 +19,7 @@ pub static SCHAMP: Game = Game {
     attract_frame: 3500,
     input_lag: 0,
     hud_windows: &[],
+    hud_element_windows: &[],
     controls: CONTROLS,
     drive_board: None,
     parent: None,

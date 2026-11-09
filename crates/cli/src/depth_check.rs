@@ -14,6 +14,7 @@ fn draw(gpu: &mut gpu::Renderer, f: &Frame, rom: &[u16], view: &View, depth: boo
     gpu.set_quality(gpu::Quality { msaa, depth });
     let src = f.sources(rom);
     let mut polys = raster::build(&f.stream, &src);
+    video::HudLayout::new(&f.tiles, &f.palette, view).anchor(&mut polys, view);
     let placed = raster::place(&mut polys, view);
     // DEPTH_PROBE=X,Y (output pixel) with DEPTH_PROBE_FRAME=N: the polygons
     // covering it in draw order, with their depth there.
@@ -81,12 +82,18 @@ fn picture(view: &View, off: &[u8], on: &[u8], bbox: (usize, usize, usize, usize
     (w * 3, h, out)
 }
 
-pub fn run(root: &Path, hud_windows: u32, view: Option<View>, msaa: u32, out_dir: &Path) -> Result<(), String> {
+pub fn run(
+    root: &Path,
+    hud_windows: (&[usize], &[usize]),
+    view: Option<View>,
+    msaa: u32,
+    out_dir: &Path,
+) -> Result<(), String> {
     let texture_rom = capture::load_texture_rom(root)
         .map_err(|e| format!("{}: {e} (capture with `make capture`)", root.display()))?;
     let mut gpu = gpu::Renderer::new()?;
     let mut view = view.unwrap_or_else(|| View::new(1080, 4.0 / 3.0, video::Hud::Edges));
-    view.hud_windows = hud_windows;
+    view = view.with_hud_windows(hud_windows.0, hud_windows.1);
     println!("gpu           {}", gpu.adapter());
     println!("view          {}x{}, {} samples a pixel", view.width, view.height, msaa);
     let mut dirs: Vec<_> = std::fs::read_dir(root)

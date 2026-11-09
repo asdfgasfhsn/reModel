@@ -22,6 +22,7 @@ pub static STCC: Game = Game {
     attract_frame: 1050,
     input_lag: 1,
     hud_windows: &[],
+    hud_element_windows: &[],
     controls: CONTROLS,
     drive_board: Some(DriveBoard::Wheel),
     parent: None,

@@ -1272,7 +1272,7 @@ pub async fn start(
 
     let hud = if hud_edges { video::Hud::Edges } else { video::Hud::Center };
     let mut view = video::View::new(height as usize, aspect, hud);
-    view.hud_windows = game.hud_windows.iter().fold(0, |m, &w| m | 1 << w);
+    view = view.with_hud_windows(game.hud_windows, game.hud_element_windows);
     canvas.set_width(view.width as u32);
     canvas.set_height(view.height as u32);
     let mut config = surface

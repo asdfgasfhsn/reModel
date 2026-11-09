@@ -847,6 +847,7 @@ impl Renderer {
             yoff,
         };
         let mut polys = model2::raster::build(stream, &src);
+        model2::video::HudLayout::new(b.tile_ram(), b.palette_ram(), view).anchor(&mut polys, view);
         let placed = model2::raster::place(&mut polys, view);
         let layers = model2::video::layers_2d(b.tile_ram(), b.palette_ram(), view, !placed.is_empty());
         let (render, palette) = b.video_ram_versions();

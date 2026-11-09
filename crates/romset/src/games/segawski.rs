@@ -14,6 +14,7 @@ pub static SEGAWSKI: Game = Game {
     year: 1997,
     board: Board::Model2C,
     hud_windows: &[],
+    hud_element_windows: &[],
     attract_frame: 2550,
     input_lag: 0,
     controls: CONTROLS,

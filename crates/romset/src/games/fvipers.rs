@@ -20,6 +20,7 @@ pub static FVIPERS: Game = Game {
     attract_frame: 3400,
     input_lag: 1,
     hud_windows: &[],
+    hud_element_windows: &[],
     controls: CONTROLS,
     drive_board: None,
     parent: None,

@@ -144,14 +144,27 @@ pub struct View {
     pub pad: f32,
     pub hud: Hud,
     /// 3D windows holding HUD elements (bit n = window n), placed like
-    /// the tile HUD.
+    /// the tile HUD: each polygon by the third of the screen it is in.
     pub hud_windows: u32,
+    /// 3D windows holding HUD parts among other 3D (bit n = window n): a
+    /// polygon moves with the 2D HUD element (`HudLayout`) whose box
+    /// contains its centre, and stays put if none does.
+    pub hud_element_windows: u32,
 }
 
 impl View {
     /// The hardware's own 496x384.
     pub fn native() -> Self {
-        View { width: WIDTH, height: HEIGHT, sx: 1.0, sy: 1.0, pad: 0.0, hud: Hud::Center, hud_windows: 0 }
+        View {
+            width: WIDTH,
+            height: HEIGHT,
+            sx: 1.0,
+            sy: 1.0,
+            pad: 0.0,
+            hud: Hud::Center,
+            hud_windows: 0,
+            hud_element_windows: 0,
+        }
     }
 
     /// An output `height` pixels tall with display aspect `aspect` (e.g.
@@ -162,7 +175,7 @@ impl View {
         let sx = sy * (4.0 / 3.0) / (WIDTH as f32 / HEIGHT as f32);
         let width = (height as f32 * aspect).round() as usize;
         let pad = ((width as f32 / sx - WIDTH as f32) / 2.0).max(0.0);
-        View { width, height, sx, sy, pad, hud, hud_windows: 0 }
+        View { width, height, sx, sy, pad, hud, hud_windows: 0, hud_element_windows: 0 }
     }
 
     /// This view drawn `k` times larger in each direction (`k` x `k`
@@ -172,6 +185,14 @@ impl View {
     pub fn supersampled(&self, k: usize) -> View {
         let k = k.max(1);
         View { width: self.width * k, height: self.height * k, sx: self.sx * k as f32, sy: self.sy * k as f32, ..*self }
+    }
+
+    /// This view with a game's HUD windows (`romset::Game::hud_windows`
+    /// and `hud_element_windows`, as window numbers).
+    pub fn with_hud_windows(mut self, thirds: &[usize], element: &[usize]) -> View {
+        let mask = |w: &[usize]| w.iter().fold(0, |m, &w| m | 1 << w);
+        (self.hud_windows, self.hud_element_windows) = (mask(thirds), mask(element));
+        self
     }
 
     /// Horizontal shift in game pixels for a HUD element centred at game x
@@ -768,17 +789,13 @@ impl TileLayers<'_> {
 const CELLS_X: usize = WIDTH / 8 + 1;
 const CELLS_Y: usize = HEIGHT / 8;
 
-/// Horizontal shift (in game pixels) for each 8x8 HUD cell. Centred: every
-/// cell moves by `pad`. Edges (only with 3D on screen): cells are grouped
-/// into elements (touching cells, allowing a one-cell gap so words stay
-/// together), and each element stays left, moves right by `2 * pad`, or
-/// moves by `pad`, by which third of the screen its centre is in.
-fn hud_shifts(hud: &[Option<[u8; 3]>], view: &View, has_3d: bool) -> Vec<usize> {
+/// The 2D HUD split into elements: groups of touching 8x8 cells (allowing
+/// a one-cell gap so words stay together), each as its cells and its
+/// horizontal shift in the extended layer. Edges (only with 3D on screen):
+/// an element stays left, moves right by `2 * pad`, or moves by `pad`, by
+/// which third of the screen its centre is in.
+fn hud_elements(hud: &[Option<[u8; 3]>], view: &View) -> Vec<(Vec<usize>, usize)> {
     let centre = view.pad.round() as usize;
-    let mut shift = vec![centre; CELLS_X * CELLS_Y];
-    if view.hud != Hud::Edges || !has_3d || view.pad <= 0.0 {
-        return shift;
-    }
     let mut used = vec![false; CELLS_X * CELLS_Y];
     for y in 0..HEIGHT {
         for x in 0..WIDTH {
@@ -788,6 +805,7 @@ fn hud_shifts(hud: &[Option<[u8; 3]>], view: &View, has_3d: bool) -> Vec<usize> 
         }
     }
     let mut label = vec![usize::MAX; CELLS_X * CELLS_Y];
+    let mut elements = Vec::new();
     for start in 0..used.len() {
         if !used[start] || label[start] != usize::MAX {
             continue;
@@ -820,11 +838,88 @@ fn hud_shifts(hud: &[Option<[u8; 3]>], view: &View, has_3d: bool) -> Vec<usize> 
         } else {
             centre
         };
+        elements.push((members, s));
+    }
+    elements
+}
+
+/// Horizontal shift (in game pixels) for each 8x8 HUD cell (see
+/// `hud_elements`; centred: every cell moves by `pad`).
+fn hud_shifts(hud: &[Option<[u8; 3]>], view: &View, has_3d: bool) -> Vec<usize> {
+    let centre = view.pad.round() as usize;
+    let mut shift = vec![centre; CELLS_X * CELLS_Y];
+    if view.hud != Hud::Edges || !has_3d || view.pad <= 0.0 {
+        return shift;
+    }
+    for (members, s) in hud_elements(hud, view) {
         for c in members {
             shift[c] = s;
         }
     }
     shift
+}
+
+/// Where the 2D HUD elements of a frame are and how far each moves in a
+/// wide view with the HUD at the edges, so 3D polygons that belong to an
+/// element (a needle on a dial) can move with it.
+#[derive(Clone, Debug, Default)]
+pub struct HudLayout {
+    /// Element bounding boxes (x0, y0, x1, y1) in game pixels, and the
+    /// element's shift in game pixels from its original position.
+    boxes: Vec<((f32, f32, f32, f32), f32)>,
+}
+
+impl HudLayout {
+    /// The layout of the frame in `tiles` and `palette` for `view`. Empty
+    /// (nothing moves) unless the view puts the HUD at the edges.
+    pub fn new(tiles: &[u8], palette: &[u8], view: &View) -> Self {
+        if view.hud != Hud::Edges || view.pad <= 0.0 || view.hud_element_windows == 0 {
+            return HudLayout::default();
+        }
+        let (_, hud) = tile_planes_fast(tiles, palette);
+        let boxes = hud_elements(&hud, view)
+            .into_iter()
+            .map(|(members, s)| {
+                let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
+                for c in members {
+                    let (cx, cy) = (c % CELLS_X, c / CELLS_X);
+                    (x0, y0, x1, y1) = (x0.min(cx), y0.min(cy), x1.max(cx + 1), y1.max(cy + 1));
+                }
+                // The tile layer puts original x at x + s in the extended
+                // layer, which is game x + pad.
+                ((x0 as f32 * 8.0, y0 as f32 * 8.0, x1 as f32 * 8.0, y1 as f32 * 8.0), s as f32 - view.pad)
+            })
+            .collect();
+        HudLayout { boxes }
+    }
+
+    /// Shift in game pixels for a polygon centred at (`x`, `y`): that of
+    /// the smallest HUD element containing the point, else none.
+    fn shift_at(&self, x: f32, y: f32) -> f32 {
+        let area = |b: &(f32, f32, f32, f32)| (b.2 - b.0) * (b.3 - b.1);
+        self.boxes
+            .iter()
+            .filter(|(b, _)| x >= b.0 && x < b.2 && y >= b.1 && y < b.3)
+            .min_by(|a, b| area(&a.0).total_cmp(&area(&b.0)))
+            .map_or(0.0, |&(_, dx)| dx)
+    }
+
+    /// Move the polygons in `view`'s element HUD windows with the HUD element each
+    /// lies in (a polygon in no element stays), before `raster::place`.
+    pub fn anchor(&self, polys: &mut [crate::raster::Poly], view: &View) {
+        if self.boxes.is_empty() {
+            return;
+        }
+        for p in polys.iter_mut().filter(|p| view.hud_element_windows & (1 << p.window) != 0) {
+            let (x0, x1, y0, y1) = p.points.iter().fold((f32::MAX, f32::MIN, f32::MAX, f32::MIN), |a, v| {
+                (a.0.min(v.x), a.1.max(v.x), a.2.min(v.y), a.3.max(v.y))
+            });
+            let dx = self.shift_at((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+            for v in &mut p.points {
+                v.x += dx;
+            }
+        }
+    }
 }
 
 #[cfg(test)]

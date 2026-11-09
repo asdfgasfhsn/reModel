@@ -236,6 +236,14 @@ game's own, then the command line (`--mix`, `--hud`, `--aspect`, `--bezel`,
 never saved, unless a setting it gave is changed in the launcher or menu
 (that change is then kept as any other). A layer keeps only what it sets.
 
+With the HUD at the edges, 3D parts of the HUD move with it: a game's manifest lists the
+3D windows that hold HUD (`hud_windows`: each polygon moves by its third of the
+screen, `topskatr`'s speed gauge) or HUD among other 3D (`hud_element_windows`: a
+polygon moves with the 2D HUD element whose box contains its centre and stays
+put otherwise, `srallyc`'s rev counter needle, which is a polygon of its own,
+with its dial a tile element, while the same window holds the cars at car
+select).
+
 **Continue.** Leaving a game (quitting, "Back to games", or starting
 another) keeps a resume state, `<data dir>/<set>/saves/resume.save` (the
 F5/F9 save format, sound boards included), unless it was a scripted

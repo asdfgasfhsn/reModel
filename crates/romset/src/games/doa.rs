@@ -18,6 +18,7 @@ pub static DOA: Game = Game {
     attract_frame: 2000,
     input_lag: 1,
     hud_windows: &[],
+    hud_element_windows: &[],
     controls: CONTROLS,
     drive_board: None,
     parent: None,

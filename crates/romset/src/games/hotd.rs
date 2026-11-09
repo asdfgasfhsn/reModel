@@ -18,6 +18,7 @@ pub static HOTD: Game = Game {
     attract_frame: 4080,
     input_lag: 0,
     hud_windows: &[],
+    hud_element_windows: &[],
     controls: CONTROLS,
     drive_board: None,
     parent: None,

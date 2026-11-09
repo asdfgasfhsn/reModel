@@ -179,9 +179,17 @@ pub struct Game {
     /// A listening choice: the ROMs don't set the analog gain.
     pub volume_db: f32,
     /// 3D viewports (window numbers) that hold HUD elements rather than the
-    /// scene. Only enhancements use this (wide views move them with the
-    /// rest of the HUD).
+    /// scene. Only enhancements use this: with the HUD at the edges of a
+    /// wide view, each polygon in one moves by the third of the screen it
+    /// is in, like the 2D HUD elements.
     pub hud_windows: &'static [usize],
+    /// 3D viewports that hold HUD parts among other 3D (a rev counter's
+    /// needle in a window that elsewhere holds cars in panels). Only
+    /// enhancements use this: with the HUD at the edges of a wide view, a
+    /// polygon in one moves with the 2D HUD element whose box contains the
+    /// polygon's centre (a needle with its dial), and stays put if none
+    /// does.
+    pub hud_element_windows: &'static [usize],
     /// The cabinet's controls, where the board reads them, and default
     /// bindings.
     pub controls: Controls,

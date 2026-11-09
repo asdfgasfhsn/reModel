@@ -921,7 +921,9 @@ impl Play {
         let vh = if a < aspect { h } else { (w as f32 / a) as u32 };
         let hud = if self.values.hud_edges { model2::video::Hud::Edges } else { model2::video::Hud::Center };
         let mut view = model2::video::View::new(vh.max(1) as usize, a, hud);
-        view.hud_windows = self.session.as_ref().map_or(0, |s| s.game.hud_windows.iter().fold(0, |m, &w| m | 1 << w));
+        if let Some(s) = &self.session {
+            view = view.with_hud_windows(s.game.hud_windows, s.game.hud_element_windows);
+        }
         let origin = ((w - (view.width as u32).min(w)) / 2, (h - (view.height as u32).min(h)) / 2);
         (view, origin)
     }

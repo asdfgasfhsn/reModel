@@ -111,6 +111,7 @@ fn cost(gpu: &mut gpu::Renderer, root_dirs: &[std::path::PathBuf], texture_rom: 
             for f in &frames {
                 let src = f.sources(texture_rom);
                 let mut polys = raster::build(&f.stream, &src);
+                video::HudLayout::new(&f.tiles, &f.palette, view).anchor(&mut polys, view);
                 let placed = raster::place(&mut polys, view);
                 let layers = video::layers_2d(&f.tiles, &f.palette, view, !placed.is_empty());
                 gpu.frame(&polys, &placed, &src, view, &layers);
@@ -124,7 +125,7 @@ fn cost(gpu: &mut gpu::Renderer, root_dirs: &[std::path::PathBuf], texture_rom: 
     }
 }
 
-pub fn run(root: &Path, hud_windows: u32, aa: u32, depth: bool) -> Result<(), String> {
+pub fn run(root: &Path, hud_windows: (&[usize], &[usize]), aa: u32, depth: bool) -> Result<(), String> {
     let texture_rom = capture::load_texture_rom(root)
         .map_err(|e| format!("{}: {e} (capture with `make capture`)", root.display()))?;
     let mut gpu = gpu::Renderer::new()?;
@@ -149,9 +150,9 @@ pub fn run(root: &Path, hud_windows: u32, aa: u32, depth: bool) -> Result<(), St
         .collect();
     dirs.sort();
     let mut wide = View::new(1080, 16.0 / 9.0, Hud::Edges);
-    wide.hud_windows = hud_windows;
+    wide = wide.with_hud_windows(hud_windows.0, hud_windows.1);
     let mut native = View::native();
-    native.hud_windows = hud_windows;
+    native = native.with_hud_windows(hud_windows.0, hud_windows.1);
     let views = [("native", native), ("1080p 16:9", wide)];
     // Warm up (shader compilation, first allocations) before timing.
     if let Some(d) = dirs.first() {
@@ -173,12 +174,15 @@ pub fn run(root: &Path, hud_windows: u32, aa: u32, depth: bool) -> Result<(), St
         let src = f.sources(&texture_rom);
         let polys = raster::build(&f.stream, &src);
         for (k, (name, view)) in views.iter().enumerate() {
+            let hud = video::HudLayout::new(&f.tiles, &f.palette, view);
             let mut sw_polys = polys.clone();
+            hud.anchor(&mut sw_polys, view);
             let t = Instant::now();
             let sw = raster::draw_view_depth(&mut sw_polys, &src, view, depth);
             let sw_ms = t.elapsed().as_secs_f64() * 1e3;
             let t = Instant::now();
             let mut gpu_polys = polys.clone();
+            hud.anchor(&mut gpu_polys, view);
             let placed = raster::place(&mut gpu_polys, view);
             let g = gpu.draw(&gpu_polys, &placed, &src, view);
             let gpu_ms = t.elapsed().as_secs_f64() * 1e3;
@@ -190,6 +194,7 @@ pub fn run(root: &Path, hud_windows: u32, aa: u32, depth: bool) -> Result<(), St
             let mut prep_polys = raster::build(&f.stream, &src);
             let build_ms = ms(t);
             let t = Instant::now();
+            hud.anchor(&mut prep_polys, view);
             let _ = raster::place(&mut prep_polys, view);
             let place_ms = ms(t);
             // The whole frame: the GPU's compositor against the CPU's, both

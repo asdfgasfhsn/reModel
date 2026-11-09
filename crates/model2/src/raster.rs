@@ -673,8 +673,10 @@ const BACKGROUND_KEY: f32 = 1e9;
 
 /// Sort `polys` into draw order (windows in order, and within a window from
 /// far to near) and place each in `view`'s output pixels. Viewports
-/// spanning the full original width are widened to the view's edges, and
-/// HUD polygons move as a unit with the HUD placement.
+/// spanning the full original width are widened to the view's edges. HUD
+/// polygons in `view.hud_windows` move as a unit with the HUD placement
+/// (those in `hud_element_windows` have already been moved by
+/// `HudLayout::anchor`).
 pub fn place(polys: &mut [Poly], view: &View) -> Vec<Placed> {
     polys.sort_by(|a, b| a.window.cmp(&b.window).then(b.key.total_cmp(&a.key)));
     let mut window_start = 0;

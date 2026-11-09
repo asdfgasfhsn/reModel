@@ -247,7 +247,7 @@ fn main() -> ExitCode {
         let hud = if hud.as_deref() == Some("edges") { model2::video::Hud::Edges } else { model2::video::Hud::Center };
         let mut view = model2::video::View::new(height, aspect, hud);
         if let Ok(g) = games::find(game_id.as_deref().unwrap_or("topskatr")) {
-            view.hud_windows = g.hud_windows.iter().fold(0, |m, &w| m | 1 << w);
+            view = view.with_hud_windows(g.hud_windows, g.hud_element_windows);
         }
         let _ = VIEW.set(view);
     }
@@ -853,7 +853,7 @@ fn main() -> ExitCode {
         "gpu-check" => {
             let default = PathBuf::from("out").join(roms.game.id).join("capture");
             let root = args.get(1).map(PathBuf::from).unwrap_or(default);
-            let windows = roms.game.hud_windows.iter().fold(0, |m, &w| m | 1 << w);
+            let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
             if let Err(e) =
                 gpu_check::run(&root, windows, AA.get().copied().unwrap_or(1), DEPTH.get().copied().unwrap_or(false))
             {
@@ -868,7 +868,7 @@ fn main() -> ExitCode {
                 .get(2)
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("depth-check"));
-            let windows = roms.game.hud_windows.iter().fold(0, |m, &w| m | 1 << w);
+            let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
             if let Err(e) = depth_check::run(&root, windows, VIEW.get().copied(), AA.get().copied().unwrap_or(1), &out)
             {
                 eprintln!("error: {e}");
@@ -1292,6 +1292,7 @@ fn render(m: &model2::Machine, stream: Option<&[u32]>, path: &std::path::Path) -
         yoff,
     };
     let mut polys = model2::raster::build(stream, &src);
+    model2::video::HudLayout::new(b.tile_ram(), b.palette_ram(), &view).anchor(&mut polys, &view);
     let mut packs = texpack::PACKS.lock().unwrap();
     let (rgb3d, covered) = match packs.as_mut() {
         Some(p) => {
