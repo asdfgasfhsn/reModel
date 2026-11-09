@@ -114,7 +114,7 @@
   const pkg = new URL(document.querySelector('meta[name="remodel-pkg"]').content, location.href).href;
   const { default: init, start, set_geo_frame, set_touch, set_gun, view_point, stick_cursor, set_audio_level,
     set_paused, set_hud, controls_help, touch_layout, game_title, rom_files, set_bindings, bindings_view,
-    bindings_capture, bindings_edit, set_smooth, set_audio_buffer } =
+    bindings_capture, bindings_edit, set_smooth, set_audio_buffer, set_quality } =
     await import(pkg + "remodel_web.js");
 
   // Settings (settings.js): built-in defaults < stored for all games <
@@ -240,6 +240,8 @@
     save(r);
     if (r.action === "restart") return restart();
     set_hud(values.hud !== "center");
+    const q = S.effective(values, env());
+    set_quality(q.aa, q.depth);
     set_bindings(values.controls);
     showKeys();
     worker?.postMessage({ type: "mix", mix: [values.sfx, values.music] });
@@ -249,7 +251,7 @@
     }
     if (touch && values.tilt !== before.tilt) touch.tilt(values.tilt, tiltAsk ?? tiltPermission());
     tiltAsk = null;
-    run = { ...run, hud: values.hud, bezel: values.bezel, sfx: values.sfx, music: values.music, touch: values.touch,
+    run = { ...run, hud: values.hud, bezel: values.bezel, aa: values.aa, depth: values.depth, sfx: values.sfx, music: values.music, touch: values.touch,
       tilt: values.tilt, controls: values.controls };
     placeBezel();
     set_paused(false);
@@ -481,6 +483,7 @@
               [data.buffer, jumps.buffer]);
       }
       set_smooth(opt.smooth);
+      set_quality(opt.aa, opt.depth);
       set_audio_buffer(opt.audio.target);
       await start(game, document.getElementById("screen"), status, rom, opt.height, opt.aspect, opt.hudEdges, link, geo);
       started = true;

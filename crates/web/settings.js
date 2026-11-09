@@ -15,8 +15,8 @@
 export const MIX = [8, -8];
 
 /// Every setting, in panel order.
-export const KEYS = ["height", "aspect", "hud", "bezel", "sound", "sfx", "music", "buffer", "touch", "tilt", "geo",
-  "smooth", "controls"];
+export const KEYS = ["height", "aspect", "hud", "bezel", "aa", "depth", "sound", "sfx", "music", "buffer", "touch",
+  "tilt", "geo", "smooth", "controls"];
 /// Settings kept per game only, never as the defaults for all games:
 /// `controls` is the game's remapped keys and pad bindings, as the module
 /// keeps them (`romset::bindings`: one `slot = bindings` line per change
@@ -43,6 +43,8 @@ export function builtin(env = {}) {
     aspect: "auto",
     hud: "edges",
     bezel: true,
+    aa: "off",
+    depth: false,
     sound: true,
     sfx: MIX[0],
     music: MIX[1],
@@ -75,6 +77,10 @@ export function clean(key, v) {
     }
     case "hud":
       return v === "edges" || v === "center" ? v : undefined;
+    // Multisampling: WebGPU guarantees 4x only.
+    case "aa":
+      return v === "off" || v === "4" ? v : v === 0 || v === false ? "off" : v === 4 ? "4" : undefined;
+    case "depth":
     case "bezel":
     case "sound":
     case "touch":
@@ -123,7 +129,9 @@ function cleanAll(o) {
 /// worker, but the game's own program on its chip, the 2B SHARC or 2C TGP,
 /// even where the native implementation has it; `geo=sharc` and `geo=tgp`
 /// say the same; `geo=native` is the default, kept for old links), `smooth=1`
-/// (smooth motion: in-between frames on displays faster than the game).
+/// (smooth motion: in-between frames on displays faster than the game),
+/// `aa=4` (4x multisampling; `aa=0` or `aa=off` off) and `depth=1` (a depth
+/// buffer for the 3D layer).
 export function fromParams(params) {
   const raw = {};
   const flag = (k) => params.get(k) !== "0" && params.get(k) !== "off" && params.get(k) !== "false";
@@ -131,6 +139,8 @@ export function fromParams(params) {
   if (params.has("aspect")) raw.aspect = params.get("aspect");
   if (params.has("hud")) raw.hud = params.get("hud");
   if (params.has("bezel")) raw.bezel = flag("bezel");
+  if (params.has("aa")) raw.aa = flag("aa") ? "4" : "off";
+  if (params.has("depth")) raw.depth = flag("depth");
   if (params.has("sound")) raw.sound = flag("sound");
   if (params.has("sfx")) raw.sfx = params.get("sfx");
   if (params.has("music")) raw.music = params.get("music");
@@ -244,7 +254,8 @@ export function audioBuffer(buffer, env = {}) {
 
 /// What the page starts the game with: `{height, aspect (width / height),
 /// hudEdges, bezel, sound, mix: [sfx, music], audio: {target, prime, max},
-/// touch, tilt, geoLocal, geoNative, smooth}` (smooth motion needs the
+/// touch, tilt, geoLocal, geoNative, smooth, aa (samples, 0 or 4), depth}`
+/// (smooth motion needs the
 /// native geometrizer: off with the chip).
 export function effective(values, env) {
   return {
@@ -260,6 +271,8 @@ export function effective(values, env) {
     geoLocal: values.geo === "local",
     geoNative: values.geo !== "chip",
     smooth: values.smooth && values.geo !== "chip",
+    aa: values.aa === "4" ? 4 : 0,
+    depth: values.depth,
   };
 }
 

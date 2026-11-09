@@ -204,6 +204,18 @@ fn rows(has_own: bool) -> Vec<Row> {
             "frames shown ahead of the game: that much less input lag, as many frames more work",
             &[("Off", "0"), ("1", "1"), ("2", "2"), ("3", "3")],
         ),
+        Row::Choice(
+            "aa",
+            "Anti-aliasing",
+            "smooths polygon edges; 8x needs a GPU that has it, else 4x",
+            &[("Off", "0"), ("4x", "4"), ("8x", "8")],
+        ),
+        Row::Choice(
+            "depth",
+            "Depth buffer",
+            "polygons that cross or are sorted wrong come out right; off draws in the game's order",
+            &[("Off", "false"), ("On", "true")],
+        ),
         Row::Db("sfx_db", "Effects", -20.0, 20.0),
         Row::Db("music_db", "Music", -30.0, 10.0),
         Row::Choice(

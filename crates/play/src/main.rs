@@ -85,6 +85,13 @@ usage: remodel-play [options]
                      own input lag away (each game's is in the README),
                      for N more emulated frames each frame; dropped if
                      the machine can't keep up (docs/play.md). Default 0
+  --aa off|4|8       anti-aliasing: multisample the 3D layer (4 or 8 samples
+                     a pixel, 8 where the GPU has it; docs/enhancements.md).
+                     Default off, the original look
+  --depth on|off     a depth buffer for the 3D layer, from each vertex's
+                     1/z, instead of the game's draw order: intersecting
+                     and mis-sorted polygons come out right (HUD windows
+                     stay on top; docs/enhancements.md). Default off
   --exact            run at the arcade's exact 57.524 frames per second
                      (default: one frame per display refresh when the
                      refresh is 60 or 120 Hz, which is 4.3% fast but smooth)
@@ -105,7 +112,7 @@ usage: remodel-play [options]
                      presses both, @S:H holds them H seconds
 
 The game's settings (mix, HUD, aspect, bezel, speed, smooth motion,
-run-ahead, geometrizer) given here are for this run only, over the
+run-ahead, anti-aliasing, depth buffer, geometrizer) given here are for this run only, over the
 defaults for all games and the game's own, which the launcher's settings
 and the menu keep.
 --rom and --fullscreen are remembered.
@@ -268,6 +275,31 @@ fn options(s: &mut Settings) -> Result<Options, String> {
                     Ok(n) if n <= settings::MAX_RUN_AHEAD => cli("run_ahead", &n.to_string()),
                     _ => return Err(format!("--run-ahead wants 0 to {}", settings::MAX_RUN_AHEAD)),
                 };
+            }
+            "--aa" => {
+                let v = value()?;
+                let n = match v.as_str() {
+                    "off" => Some(0),
+                    "4x" | "4" => Some(4),
+                    "8x" | "8" => Some(8),
+                    _ => None,
+                };
+                let Some(n) = n else { return Err("--aa wants off, 4 or 8".into()) };
+                cli("aa", &n.to_string());
+            }
+            "--depth" => {
+                let on = match args.peek().map(String::as_str) {
+                    Some("on") => {
+                        args.next();
+                        true
+                    }
+                    Some("off") => {
+                        args.next();
+                        false
+                    }
+                    _ => true,
+                };
+                cli("depth", &on.to_string());
             }
             "--no-splash" => o.splash = false,
             "--fullscreen" => fullscreen = true,
@@ -930,6 +962,7 @@ impl Play {
             let slots = self.slot_times();
             let (Some(g), Some(s)) = (&mut self.gpu, &mut self.session) else { return Err("no game".into()) };
             g.renderer.forget_ram();
+            g.renderer.set_quality(gpu::Quality { msaa: self.values.aa, depth: self.values.depth });
             g.renderer.present_bus(&mut s.shown().bus, None, &view, &target, format, origin);
             s.drew_ahead = s.run_ahead.as_ref().is_some_and(|ra| ra.is_ahead_of(&s.machine));
             let (bezel, menu) = (&mut self.bezel, &mut self.menu);
@@ -1278,6 +1311,14 @@ impl Play {
             s.drew_ahead = ahead;
             g.renderer.forget_ram();
         }
+        // Anti-aliasing and the depth buffer: the game's settings, not the
+        // launcher preview's.
+        let q = if s.preview {
+            gpu::Quality::default()
+        } else {
+            gpu::Quality { msaa: self.values.aa, depth: self.values.depth }
+        };
+        g.renderer.set_quality(q);
         let bus = &mut s.shown().bus;
         if bus.geo.wait_until(t0 + budget.mul_f64(0.8)) {
             // Smooth motion: the polygons part way from the frame before to
@@ -1958,9 +1999,11 @@ impl ApplicationHandler for Play {
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("remodel"),
             required_limits: gpu::limits(&adapter),
+            required_features: gpu::features(&adapter),
             ..Default::default()
         }))
         .expect("create device");
+        let max_msaa = gpu::max_msaa(&adapter);
         let size = window.inner_size();
         let mut config =
             surface.get_default_config(&adapter, size.width.max(1), size.height.max(1)).expect("surface config");
@@ -1985,7 +2028,8 @@ impl ApplicationHandler for Play {
         );
         let egui_renderer = egui_wgpu::Renderer::new(&device, config.format, Default::default());
         let backdrop = backdrop::Backdrop::new(&device, config.format);
-        let renderer = gpu::Renderer::from_device(device, queue, name);
+        let mut renderer = gpu::Renderer::from_device(device, queue, name);
+        renderer.set_max_msaa(max_msaa);
         let (view, origin) = self.fit(config.width, config.height);
         // Redraws drive everything; Wayland sends none until asked.
         window.request_redraw();

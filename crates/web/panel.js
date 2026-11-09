@@ -167,7 +167,9 @@ export function createPanel(opts) {
     choice("aspect", "Aspect", () => withValue("aspect",
       [["auto", `Fit window (${fit.toFixed(2)}:1)`], ["4:3", "4:3"], ["16:9", "16:9"]], (v) => v)),
     choice("hud", "HUD", () => [["edges", "At the edges"], ["center", "Centred"]], "in wide views"),
-    onOff("bezel", "Bezel", "beside a 4:3 picture in a wider window"));
+    onOff("bezel", "Bezel", "beside a 4:3 picture in a wider window"),
+    choice("aa", "Anti-aliasing", () => [["off", "Off"], ["4", "4x"]], "smooths polygon edges"),
+    onOff("depth", "Depth buffer", "polygons that cross or are sorted wrong come out right; off draws in the game's order"));
   const autoBuffer = audioBuffer("auto", env).target * 1000;
   const sound = el("section", {}, el("h3", { textContent: "Sound" }),
     onOff("sound", "Sound"), slider("sfx", "Effects"), slider("music", "Music"),

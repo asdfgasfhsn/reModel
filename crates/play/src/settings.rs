@@ -32,6 +32,11 @@ pub struct GameSettings {
     pub smooth: bool,
     /// Frames shown ahead of the game (`model2::runahead`), 0 for none.
     pub run_ahead: u32,
+    /// Anti-aliasing: samples a pixel (multisampling), 0 for none; 4 or 8,
+    /// the GPU's own limit applying (docs/enhancements.md).
+    pub aa: u32,
+    /// Depth buffer for the 3D layer instead of the game's draw order.
+    pub depth: bool,
     /// The geometrizer on its chip (the game's own program) rather than
     /// the native implementation. Applies when the game starts.
     pub geo_chip: bool,
@@ -48,13 +53,19 @@ impl Default for GameSettings {
             exact: false,
             smooth: false,
             run_ahead: 0,
+            aa: 0,
+            depth: false,
             geo_chip: false,
         }
     }
 }
 
 /// Every game setting's key, in the order the panels show them.
-pub const KEYS: [&str; 9] = ["wide", "bezel", "hud_edges", "exact", "smooth", "run_ahead", "sfx_db", "music_db", "geo"];
+pub const KEYS: [&str; 11] =
+    ["wide", "bezel", "hud_edges", "exact", "smooth", "run_ahead", "aa", "depth", "sfx_db", "music_db", "geo"];
+
+/// The anti-aliasing levels (samples a pixel; 0 is off).
+pub const AA_LEVELS: [u32; 3] = [0, 4, 8];
 
 /// Most frames the player runs ahead.
 pub const MAX_RUN_AHEAD: u32 = 3;
@@ -71,6 +82,8 @@ impl GameSettings {
             "exact" => self.exact.to_string(),
             "smooth" => self.smooth.to_string(),
             "run_ahead" => self.run_ahead.to_string(),
+            "aa" => self.aa.to_string(),
+            "depth" => self.depth.to_string(),
             "geo" => if self.geo_chip { "chip" } else { "native" }.to_string(),
             _ => String::new(),
         }
@@ -94,6 +107,8 @@ impl GameSettings {
             "exact" => flag(v).map(|x| self.exact = x).is_some(),
             "smooth" => flag(v).map(|x| self.smooth = x).is_some(),
             "run_ahead" => v.parse::<u32>().ok().filter(|n| *n <= MAX_RUN_AHEAD).map(|n| self.run_ahead = n).is_some(),
+            "aa" => v.parse::<u32>().ok().filter(|n| AA_LEVELS.contains(n)).map(|n| self.aa = n).is_some(),
+            "depth" => flag(v).map(|x| self.depth = x).is_some(),
             "geo" => match model2::geo::GeoMode::parse(v) {
                 Some(model2::geo::GeoMode::Chip) => {
                     self.geo_chip = true;

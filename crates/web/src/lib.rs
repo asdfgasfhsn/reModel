@@ -538,6 +538,8 @@ thread_local! {
     static OVERRIDES: RefCell<String> = const { RefCell::new(String::new()) };
     /// Smooth motion for the game `start` starts ([`set_smooth`]).
     static SMOOTH: Cell<bool> = const { Cell::new(false) };
+    /// Anti-aliasing samples and the depth buffer ([`set_quality`]).
+    static QUALITY: Cell<(u32, bool)> = const { Cell::new((0, false)) };
     /// The audio the game `start` starts holds queued ([`set_audio_buffer`]).
     static AUDIO_BUFFER: Cell<f64> = const { Cell::new(AUDIO_TARGET) };
 }
@@ -562,6 +564,19 @@ pub fn set_audio_buffer(seconds: f64) {
 #[wasm_bindgen]
 pub fn set_smooth(on: bool) {
     SMOOTH.with(|s| s.set(on));
+}
+
+/// Image quality of the 3D layer (docs/enhancements.md): `aa` samples a
+/// pixel (0 for none; WebGPU has 4) and the depth buffer. Before `start`,
+/// for the game it starts; after, from the next frame.
+#[wasm_bindgen]
+pub fn set_quality(aa: u32, depth: bool) {
+    QUALITY.with(|q| q.set((aa, depth)));
+    APP.with(|a| {
+        if let Some(app) = a.borrow().as_ref() {
+            app.borrow_mut().renderer.set_quality(gpu::Quality { msaa: aa, depth });
+        }
+    });
 }
 
 /// Use the player's remapped controls: `overrides` as the settings panel
@@ -1274,7 +1289,9 @@ pub async fn start(
         .or_else(|| formats.iter().copied().find(|f| !f.is_srgb()))
         .unwrap_or(config.format.remove_srgb_suffix());
     surface.configure(&device, &config);
-    let renderer = gpu::Renderer::from_device(device, queue, name.clone());
+    let mut renderer = gpu::Renderer::from_device(device, queue, name.clone());
+    let (aa, depth) = QUALITY.with(|q| q.get());
+    renderer.set_quality(gpu::Quality { msaa: aa, depth });
     web_sys::console::log_1(&format!("remodel: {name}, {}x{}, {:?}", view.width, view.height, config.format).into());
 
     let app = Rc::new(RefCell::new(App {

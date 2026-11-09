@@ -255,6 +255,18 @@ impl Menu {
                     });
                 });
                 ui.horizontal(|ui| {
+                    ui.label("Anti-aliasing:");
+                    focus.radio(ui, "aa", &mut settings.aa, 0, "off");
+                    focus.radio(ui, "aa", &mut settings.aa, 4, "4x");
+                    focus.radio(ui, "aa", &mut settings.aa, 8, "8x");
+                    ui.weak("(8x where the GPU has it)");
+                });
+                focus.checkbox(
+                    ui,
+                    &mut settings.depth,
+                    "Depth buffer (polygons that cross sort right; off: the game's order)",
+                );
+                ui.horizontal(|ui| {
                     ui.label("Geometrizer:");
                     focus.radio(ui, "geo", &mut settings.geo_chip, false, "native");
                     focus.radio(ui, "geo", &mut settings.geo_chip, true, "the game's chip");
