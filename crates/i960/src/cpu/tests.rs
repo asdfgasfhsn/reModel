@@ -95,6 +95,24 @@ fn run(cpu: &mut Cpu, ram: &mut Ram, steps: usize) {
 }
 
 #[test]
+fn code_in_ram_is_decoded_again_when_it_changes() {
+    // Decoded instructions in writable memory are cached; a store that
+    // changes the code (one word, or the second word of a two-word
+    // instruction) must show on the next run.
+    let [load, addr] = mem_abs(0x90, G1, 0x2000);
+    let (mut cpu, mut ram) = setup(&[mov_lit(1, G0), load, addr, RET]);
+    ram.load(0x2000, &[7]);
+    ram.load(0x2004, &[8]);
+    run(&mut cpu, &mut ram, 2);
+    assert_eq!((cpu.r[G0 as usize], cpu.r[G1 as usize]), (1, 7));
+    cpu.ip = 0x1000;
+    ram.write32(0x1000, mov_lit(2, G0));
+    ram.write32(0x1008, 0x2004);
+    run(&mut cpu, &mut ram, 2);
+    assert_eq!((cpu.r[G0 as usize], cpu.r[G1 as usize]), (2, 8));
+}
+
+#[test]
 fn counted_loop() {
     // g0 = 0; g1 = 10; loop: g0 += g1; g1 -= 1; if g1 != 0 goto loop
     let prog = [

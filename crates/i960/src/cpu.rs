@@ -116,7 +116,18 @@ pub struct Cpu {
     /// IAC messages other than the ones handled here, for diagnostics.
     pub unhandled_iac: Vec<[u32; 4]>,
     icache: Vec<Option<Rc<Insn>>>,
+    /// Decoded instructions in writable memory (code the game copied to
+    /// RAM, as `srallyc` runs), in pages of [`RAM_PAGE_SLOTS`] slots. An
+    /// entry keeps the words it was decoded from and is used only while
+    /// memory still holds them.
+    ram_cache: Vec<Option<Box<[RamSlot]>>>,
 }
+
+/// A decoded instruction from writable memory, with its second word.
+type RamSlot = Option<(Rc<Insn>, u32)>;
+const RAM_PAGE_SLOTS: usize = 1024;
+/// Code in writable memory is cached below this address.
+const RAM_CACHE_BYTES: u32 = 0x100_0000;
 
 impl Default for Cpu {
     fn default() -> Self {
@@ -141,6 +152,7 @@ impl Cpu {
             locals: LocalCache::default(),
             unhandled_iac: Vec::new(),
             icache: Vec::new(),
+            ram_cache: Vec::new(),
         }
     }
 
@@ -435,7 +447,33 @@ impl Cpu {
             let slot = &mut self.icache[(ip / 4) as usize];
             return slot.get_or_insert_with(|| Rc::new(decode(ip, |a| bus.fetch(a)))).clone();
         }
+        if ip < RAM_CACHE_BYTES && ip & 3 == 0 {
+            if let Some(insn) = self.fetch_ram_insn(bus) {
+                return insn;
+            }
+        }
         Rc::new(self.decode_at(bus))
+    }
+
+    /// The cached decode of the instruction at `ip` in writable memory,
+    /// made (and kept) if memory holds what it was decoded from.
+    fn fetch_ram_insn(&mut self, bus: &impl Bus) -> Option<Rc<Insn>> {
+        let ip = self.ip;
+        let w0 = bus.fetch(ip)?;
+        let (page, slot) = ((ip / 4) as usize / RAM_PAGE_SLOTS, (ip / 4) as usize % RAM_PAGE_SLOTS);
+        if self.ram_cache.is_empty() {
+            self.ram_cache.resize_with((RAM_CACHE_BYTES / 4) as usize / RAM_PAGE_SLOTS, || None);
+        }
+        let page = self.ram_cache[page].get_or_insert_with(|| vec![None; RAM_PAGE_SLOTS].into_boxed_slice());
+        if let Some((insn, second)) = &page[slot] {
+            // The second word only counts for a two-word instruction.
+            if insn.word == w0 && (insn.size < 8 || bus.fetch(ip + 4).unwrap_or(0) == *second) {
+                return Some(insn.clone());
+            }
+        }
+        let insn = Rc::new(decode(ip, |a| bus.fetch(a)));
+        page[slot] = Some((insn.clone(), bus.fetch(ip + 4).unwrap_or(0)));
+        Some(insn)
     }
 
     /// True if an interrupt is pending at a priority that would be taken now.
