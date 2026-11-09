@@ -17,6 +17,7 @@ mod skisuprg;
 mod srallyc;
 mod stcc;
 mod topskatr;
+mod vf2;
 mod vstriker;
 mod waverunr;
 
@@ -38,6 +39,7 @@ pub use skisuprg::SKISUPRG;
 pub use srallyc::SRALLYC;
 pub use stcc::STCC;
 pub use topskatr::TOPSKATR;
+pub use vf2::VF2;
 pub use vstriker::VSTRIKER;
 pub use waverunr::WAVERUNR;
 
@@ -50,7 +52,7 @@ pub static ALL: &[&Game] = &[
 /// can run them (`find`), but every list built from [`ALL`] (the player's
 /// and the browser's game lists, `remodel games`, the posters and
 /// bezels) leaves them out. A game moves to `ALL` when it plays.
-pub static IN_PROGRESS: &[&Game] = &[];
+pub static IN_PROGRESS: &[&Game] = &[&VF2];
 
 /// The game `id`, if it is one a front end lists ([`ALL`]).
 pub fn playable(id: &str) -> Option<&'static Game> {
