@@ -467,6 +467,41 @@ starts hidden, behind the ⓘ button. Steering is analog: full lock 70 CSS pixel
 finger went down. Tilt steers by turning the device like a wheel (full
 lock at 30 degrees; iOS asks for motion permission).
 
+**Model 2A (`srallyc`).** Its fixed-function geometrizer
+(`geo::Core::Fixed`, docs/hw/model2a.md) needs nothing special in the
+browser: it has no uploaded program, so it is "booted" from its first frame
+(`Geometrizer::booted`, set by `Geometrizer::new` for the core) and the
+worker needs no boot job. The page posts the usual frame jobs, the worker's
+`GeoEngine` is built from the board (`Core::of`) and runs the native
+geometrizer whatever the `native` flag says (`Engine::set_mode` ignores it
+for the fixed core); the TGP (the MB86234 interpreter, `tgp2a`) runs on the
+i960 side, on the page thread, with the 2A memory map, as it does natively.
+The gear lever's latch (`romset::Shifter`) is in the shared input path
+(`model2::input::apply_player`), the settings panel lists the gear buttons
+(Gear 1-4, Neutral, Gear +, Gear -, all bindable; the last two also on
+the pad's shoulder buttons) and the touch layout gives a wheel game's
+steering drag, Gas and Brake triggers, View, Gear + and Gear -. Checked
+headless: the module (`Headless`, Node 26) runs the game from boot to a
+race through the worker's job path with raster streams of up to 35,671
+words from frame 1,500 on; and in Chromium, `geo-worker.js` loads the
+module and `srallyc`'s chips over HTTP, builds the engine and answers
+frame jobs without a boot job. Not checked: a real browser with WebGPU
+drawing the game.
+
+Frames 2800-4000 of a coin-start run (Race: from frame 2637), from boot,
+all interpreted (`srallyc`'s code runs from work RAM, which the
+recompiler doesn't reach, so a recompiled module would give the same;
+docs/recompiler.md), sound boards fed as in the table above:
+
+| set | i960 side (with the TGP) | geometrizer | sound boards |
+|---|---|---|---|
+| `srallyc` | 10.5 ms (worst 13.9) | 0.44 ms (worst 0.6) | 0.95 ms |
+
+Natively the same frames cost 7.3 ms on the i960 side. The page thread has
+the i960 side and the drawing (about 6 ms to spare of a 16.7 ms frame
+before drawing); the decode cache for code in RAM took it from the 1.4x
+real time it had to 2.3x natively.
+
 **Testing headless.** Headless Chromium here can't keep a WebGPU canvas
 alive, even for a plain JavaScript test page: the device is lost with "A
 valid external Instance reference no longer exists". Test the game in a

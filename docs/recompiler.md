@@ -41,9 +41,17 @@ added (so a crate of its own) and its copro program its own: two more
 SHARC crates (6,566 words of copro code, the largest here).
 `srallyc` (Model 2A) adds one i960 crate and no chip crate: the 2A's TGP
 (an MB86234 uploaded by the game) stays on its interpreter, which costs
-about 0.1 to 0.3 ms a frame, and the recompiled i960 gives no speed-up
-there (a coin-start run is 1.4x real time either way: the time is not in
-the i960, and the cause is not found), with the same state hash.
+about 0.1 to 0.3 ms a frame. Its recompiled i960 gives no speed-up (same
+state hash), and the cause is that the recompiler only reaches the program
+ROM: the game copies its code into work RAM (`0x5A0000-0x5FCB3C`) and runs
+it there, so the crate's 839 blocks are all in the ROM bootstrap and cover
+82 of the 14,584 instructions a run executes. The rest runs on the
+interpreter either way. Recompiling code that runs from RAM would need the
+code taken from a run's RAM, a check that the RAM still holds it (a flag
+set by stores into the range, then a compare) and the block table over
+that range; the interpreter now caches the decodes of such code instead
+(checked against memory on every use), which took a coin-start run from
+1.4x to 2.3x real time.
 Each holds `program.rs` from the code generator, generic over the machine around the
 processor, and a `lib.rs` that instantiates it for the Model 2 board
 (`Model2Bus`, the TGP's external buses), so its machine code is compiled in

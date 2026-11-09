@@ -74,7 +74,7 @@ known" sections):
 | `schamp` | stick 0, punch 1 | 0 | off (1 for punches) |
 | `lastbrnx` | stick 0, punch 1 | 0 | off (1 for punches) |
 | `stcc`, `indy500` | wheel | 1 | 1 |
-| `srallyc` | wheel | 1 | 1, if the machine has 2x the game's speed (12 ms a frame interpreted) to spare |
+| `srallyc` | wheel | 1 | 1, if the machine has 2x the game's speed (7 ms a frame interpreted) to spare |
 | `doa` | punch, stick | 1 | 1 |
 | `fvipers` | punch | 1 (8 once, mid-move) | 1 |
 | `dynabb97` | bat, stick | 1 to 6, by the moment | 1 |

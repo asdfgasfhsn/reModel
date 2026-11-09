@@ -73,7 +73,7 @@ music`). There is no live window yet.
 | Fifteenth game: `schamp` (Sonic Championship, 2B, Sega) | playable with sound in scripted runs (`make play GAME=schamp` to play it): attract, character select and fights through rounds and replays. The shared geometrizer program and a copro program of its own, on the same board work as `fvipers`; needed the SHARC core to ignore a reserved I/O register its copro writes, and the i960 recompiler to drop a block discovery found at an odd address. Full speed recompiled (2.7x real time natively); recompiled build identical |
 | Sixteenth game: `vstriker` (Virtua Striker, 2B, Sega) | playable with sound in scripted runs (`make play GAME=vstriker` to play it): attract, team select and a match through goals, a replay and loss time. Its own geometrizer and copro SHARC programs. Needed its main data packed with the 1 MB `.7/.8` pair after the other two (the SHARC programs are there), its polygon ROMs packed and 1 MB texture RAM banks (a manifest flag; without it the match drew dark). Full speed recompiled (2.7x real time natively on the SHARC, 3.9x with the native geometrizer, 1.55x interpreted with it); recompiled build identical |
 | Seventeenth game: `lastbrnx` (Last Bronx, 2B, Sega) | playable with sound in scripted runs (`make play GAME=lastbrnx` to play it): attract, character select and fights. The shared geometrizer program with three commands of its own and a copro program of its own. Needed four board and core findings, none of them a ROM layout: the SHARC's host DMA taking an index below its memory, MODE1 writes taking effect a cycle late (its copro program multiplies registers as they were before a swap), the interrupt register's second word and tile RAM's 1 MB repeat (the gauges drew empty). Native geometrizer except its fn 0x1B. Full speed recompiled (2.9x real time natively, 3.3x with the native geometrizer); recompiled build identical |
-| Eighteenth game: `srallyc` (Sega Rally Championship, Model 2A, Sega) | playable with sound (`make play GAME=srallyc`): attract, car select and races; the first Model 2A game, with its TGP program run on an MB86234 interpreter and the game's data ROM on that chip's bus. A coin-start race drives the Desert stage to "DESERT STAGE CLEAR!" and into the Forest stage. 1.4x real time (interpreted and recompiled alike: the time isn't in the i960 or the TGP); recompiled build identical |
+| Eighteenth game: `srallyc` (Sega Rally Championship, Model 2A, Sega) | playable with sound (`make play GAME=srallyc`): attract, car select and races; the first Model 2A game, with its TGP program run on an MB86234 interpreter and the game's data ROM on that chip's bus. A coin-start race drives the Desert stage to "DESERT STAGE CLEAR!" and into the Forest stage. 2.3x real time interpreted (it was 1.4x until the decode cache covered the work RAM its code runs from); recompiling doesn't help it, because its code isn't in the program ROM (see "What's known about `srallyc`"); recompiled build identical |
 
 ## Quick start
 
@@ -651,19 +651,35 @@ loose in `rom/srallyc/`): attract, car and course select, and races.
   (the boot is silent for 15 s, the attract and race hold -37 to -36
   dBFS), quieter than the games at 0 dB, so the manifest adds 6 dB
   (like `overrev` and `sgt24h`), about -32 RMS.
-- *Speed (by running it):* a 600M-instruction coin-start run plays at
-  1.42x real time interpreted and 1.41x with the i960 recompiled
-  (`make recomp GAME=srallyc`, 19,797 distinct instructions covered
-  by the 10,354-frame scripted race that fed it): the recompiled code
-  doesn't make it faster, so the i960 isn't where the time goes
-  (12 ms a frame on the main thread; the i960 spends 18% of its
-  instructions polling the video status register). The TGP interpreter
-  is cheap: 1.2 s for the 4,141 frames (0.3 ms a frame) and 1.6 s for
-  6,212 frames of a race (21,000 TGP words a frame in the race, about
-  0.13 ms), the geometrizer thread 1.3 s of 76. The player needs
-  1.4x to hold 60 Hz and has it; run-ahead of 2 frames costs 24 ms a
-  frame shown (a real frame 12 ms), so it is out of reach on the
-  interpreter but 1 frame (the game's input lag) is not.
+- *Speed (by running it):* **the game's code runs from work RAM**, not
+  the program ROM: of the 14,584 distinct instructions a coin-start run
+  executes, 14,502 are at `0x5A0000-0x5FCB3C` (put there at boot by the
+  bootstrap in the ROM, `0x420-0x5E4`, which is the 82 others; where
+  from was not traced).
+  Two things follow. (1) The interpreter's decoded-instruction cache
+  covered only the ROM, so every one of those instructions was decoded
+  afresh and its result thrown away (about 290 cycles an instruction
+  against about 90 for `stcc`, measured with the time stamp counter around
+  `Cpu::step`). It now keeps decodes of code in writable memory too,
+  checked against the words in memory on every use (so changed code is
+  decoded again; a test covers it): a 600M-instruction coin-start run
+  went from 1.42x to 2.3x real time, the state hash unchanged (7.3 ms
+  a frame; the TGP interpreter and the geometrizer were not the
+  cost, `--tgp2a hle` makes no difference). (2) The recompiler works
+  from the program ROM image, so the recompiled `srallyc` has 839 blocks,
+  all in that bootstrap, none of the game: recompiling gave the same speed
+  as interpreting (1.41x vs 1.42x) because it covers no more than the
+  82 instructions. Recompiling code that lives in RAM would need the
+  code captured from a run, a guard that the RAM still holds it, and the
+  block table over the RAM range; not done. Meanwhile 18% of the
+  instructions poll the video status register in a five-instruction
+  loop at `0x5A379C`, which an exact idle skip would have to account for
+  (instruction count, bus time, the TGP and timers) to keep the state
+  hash. The TGP interpreter is cheap: 1.2 s for the 4,141 frames (0.3 ms
+  a frame) and 1.6 s for 6,212 frames of a race (21,000 TGP words a frame
+  in the race, about 0.13 ms), the geometrizer thread 0.9 s of 31. The
+  player needs 1.4x to hold 60 Hz and has 2.3x; run-ahead of 2 frames
+  costs two more game frames per frame shown.
 - *Input lag, measured (`make input-lag`):* the wheel, from frame 4007
   of a coin-start run with the accelerator held, shows after 1 frame
   (the same from frames 3907 and 4207), as `stcc`'s does.
