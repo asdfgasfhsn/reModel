@@ -254,9 +254,8 @@
     }
     if (touch && values.tilt !== before.tilt) touch.tilt(values.tilt, tiltAsk ?? tiltPermission());
     tiltAsk = null;
-    run = { ...run, hud: values.hud, bezel: values.bezel, aa: values.aa, depth: values.depth, shading: values.shading,
-      crease: values.crease, pack: values.pack, texfilter: values.texfilter, sfx: values.sfx, music: values.music, touch: values.touch,
-      tilt: values.tilt, controls: values.controls };
+    // Every setting but those that need a restart is now running.
+    run = { ...run, ...Object.fromEntries(S.KEYS.filter((k) => !S.RESTART.includes(k)).map((k) => [k, values[k]])) };
     placeBezel();
     set_paused(false);
   }
