@@ -277,7 +277,6 @@ pub fn run_tiles(
     Ok(())
 }
 
-
 /// A pack of each captured frame's own textures, as `--dump-textures` would
 /// dump them from that frame (`raster::texture_image`): the identity check
 /// without a dump.

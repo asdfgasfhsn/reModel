@@ -848,8 +848,14 @@ impl Frame {
             Some(log) => crate::geo::GeoExt::before(&self.poly, log, &self.rom),
             None => crate::geo::GeoExt::overlay(&self.poly, &mut overlay, &self.rom),
         };
-        let mut io =
-            crate::geo_native::Io { list: &mut list, poly, latch: &mut latch, out: &mut out, tap: Some(&mut tap), light };
+        let mut io = crate::geo_native::Io {
+            list: &mut list,
+            poly,
+            latch: &mut latch,
+            out: &mut out,
+            tap: Some(&mut tap),
+            light,
+        };
         match &mut native {
             Native::B(n) => n.run_frame(&mut io),
             Native::C(n) => n.run_frame(&mut io),
