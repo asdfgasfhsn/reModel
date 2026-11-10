@@ -130,14 +130,15 @@ loose in `rom/srallyc/`): attract, car and course select, and races.
   results; no drawing glitch was seen. *Not done:* the
   later stages, the second and third laps of a longer course and the
   finish of a whole championship, which a person has to steer.
-- *Confirmed (by running it):* the audio of a race (`--audio`) averages
-  -38 dBFS RMS (peak -21) with no gain: the engine and the music play
-  (the boot is silent for 15 s, the attract and race hold -37 to -36
-  dBFS), quieter than the games at 0 dB, so the manifest adds 6 dB
-  (like `overrev` and `sgt24h`), about -32 RMS. Those levels were
-  measured with half the samples missing (next item); with all four
-  sample chips a race mixes at about -23 dBFS RMS (peaks about -7,
-  unclipped), so the 6 dB wants judging again by ear.
+- *Confirmed (by running it):* the audio of a race (`--audio`, the
+  player's mix) was measured at -38 dBFS RMS (peak -21) with no gain while
+  half the samples were missing (next item), so the manifest added 6 dB.
+  With all four sample chips, a race at +6 dB mixes at -28 dBFS RMS, about
+  -26 LUFS, peaks -10 to -11 dBFS, no clipping; the other games' gameplay
+  sits at -16 to -28 LUFS (median about -21.5, measured the same way,
+  coin-start runs), so the manifest now adds **10 dB**: about -22 LUFS,
+  peaks about -7 dBFS. *Pending a listening check* (the 6 dB was tuned on
+  the broken audio; `volume_db: 6.0` is the one to go back to).
 - *Confirmed (by the sound program's own table, the chips' contents and
   running it; by ear, 2026-11-10):* **the samples are four 2 MB chips,
   `.31 .32 .36 .37`, back to back** at the sound 68000's

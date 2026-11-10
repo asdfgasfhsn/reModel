@@ -44,7 +44,7 @@ pub static SRALLYC: Game = Game {
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
     packed: &[Role::MainData, Role::CoproData, Role::Polygons, Role::Textures, Role::TgpData],
-    volume_db: 6.0,
+    volume_db: 10.0,
     files: &[
         RomFile {
             name: "epr-17888c.12",
