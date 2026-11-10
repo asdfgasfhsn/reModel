@@ -78,4 +78,11 @@ before `vstriker`.
   reads it; `docs/play.md`, "Run-ahead"):* the wheel (frames 3507 and 3907
   of a coin-start run) shows a frame after the first that reads it: input
   lag 1.
-
+- *Depth buffer (2026-11-11; captured coin-start frames drawn with it off
+  and on at 1440x1080 and 1920x1080 (`make depth-check`), compared with
+  the build before the 2026-11-10 rules (`docs/enhancements.md`, "Depth
+  buffer")):* 16 of 21 frames differ, by up to 0.3%. The 2026-11-10 rules
+  helped: the lettering on the player car's sidepods, partly lost before,
+  is whole (seen at frame 4200; about 1,000 pixels change in each race
+  frame). Right with it on: the fence rail goes in front of the spectators
+  who stand 25% of 1/z behind it.

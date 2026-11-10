@@ -94,4 +94,9 @@ suffix), the clone `vstrikro`, which isn't supported.
   reads it; `docs/play.md`, "Run-ahead"):* moving the player (right from
   frame 3507, left from 3907 of a coin-start run) and shooting show in the
   first frame that reads them: input lag 0.
-
+- *Depth buffer (2026-11-11; captured coin-start frames drawn with it off
+  and on at 1440x1080 and 1920x1080 (`make depth-check`), compared with
+  the build before the 2026-11-10 rules (`docs/enhancements.md`, "Depth
+  buffer")):* 10 of 21 frames differ, by at most 0.007%; the 2026-11-10
+  rules brought back the edges of the shirt print of the close-up player
+  (frame 5400).

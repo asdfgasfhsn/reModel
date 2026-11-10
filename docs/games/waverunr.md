@@ -79,4 +79,12 @@ Fifth game, 2C: a ride-on personal watercraft cabinet, SCSP sound only.
   reads it; `docs/play.md`, "Run-ahead"):* the handlebar (frames 3507 and
   3907 of a coin-start run) shows in the first frame that reads it: input
   lag 0.
-
+- *Depth buffer (2026-11-11; captured coin-start frames drawn with it off
+  and on at 1440x1080 and 1920x1080 (`make depth-check`), compared with
+  the build before the 2026-11-10 rules (`docs/enhancements.md`, "Depth
+  buffer")):* 15 of 21 frames differ, by up to 1.1%. The 2026-11-10 rules
+  helped: a distant banner's lettering and a tree's branches under its
+  foliage, which the depth buffer had covered, draw in the game's order
+  again. Can't tell: on a cliff-hugging stretch (frame 3300) a tree on the
+  cliff top is hidden by the cliff face, which is 3.3x nearer there; the
+  rider's body parts move by a few pixels (1.5-2% of 1/z).

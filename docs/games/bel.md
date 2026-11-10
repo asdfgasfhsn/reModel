@@ -63,4 +63,10 @@ says 1998). The sound program is EPL's (`docs/hw/sound.md` §7).
   From 3907 the list changed but nothing visible for 16 frames; the
   missile button and the aim alone (frames 2810-4010) never showed (the
   aim shows only through hits). *Unconfirmed* beyond the one frame.
-
+- *Depth buffer (2026-11-11; captured coin-start frames drawn with it off
+  and on at 1440x1080 and 1920x1080 (`make depth-check`), compared with
+  the build before the 2026-11-10 rules (`docs/enhancements.md`, "Depth
+  buffer")):* the 2026-11-10 GPU 1/z brings back the ivy on the cliff that
+  the build before drew the rock face over (frames 5100-6212). Right with
+  it on: a hanging soldier's legs in front of a beam (the beam is 3.6% of
+  1/z behind them).

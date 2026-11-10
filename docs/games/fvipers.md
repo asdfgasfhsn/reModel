@@ -73,4 +73,11 @@ Model 2B, with early Sega 2B SHARC programs.
   reads it: input lag 1; from 3307 (they stop at 3000) eight, mid-move.
   Walking showed nothing for 16 frames while coin-start's punches carried
   on.
-
+- *Depth buffer (2026-11-11; captured coin-start frames drawn with it off
+  and on at 1440x1080 and 1920x1080 (`make depth-check`), compared with
+  the build before the 2026-11-10 rules (`docs/enhancements.md`, "Depth
+  buffer")):* 18 of 21 frames differ, by at most 0.05%: costume layers and
+  limbs of the fighters by a few pixels (1-3% of 1/z), a wall base going
+  under the arena floor (9%). Can't tell which is right; none looks
+  broken. The 2026-11-10 rules changed at most 900 pixels a frame, nearly
+  all back to the game's order.

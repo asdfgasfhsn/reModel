@@ -51,4 +51,13 @@ Dynamite Baseball '97, a two-player baseball cabinet with a bat lever.
   (input lag 1), from 3700 six; the stick up or left from 3507 two, right
   from 4507 six. Button 1 from 3507 showed nothing for 16 frames. The
   least, 1, is the manifest's.
-
+- *Depth buffer (2026-11-11; captured coin-start frames drawn with it off
+  and on at 1440x1080 and 1920x1080 (`make depth-check`), compared with
+  the build before the 2026-11-10 rules (`docs/enhancements.md`, "Depth
+  buffer")):* 13 of 21 frames differ, by up to 0.4%. The 2026-11-10 rules
+  helped: slivers of polygons that showed through clothes and hands are
+  gone. Wrong with it on: in the close-up of a batter the black
+  undershirt's collar shows through the jersey (the jersey is 2.9% of 1/z
+  behind it there; the two are sorted 0.4% apart but fall in different
+  groups). Can't tell: home plate is whole with it on and clipped by the
+  dirt drawn after it with it off (0.9%).
