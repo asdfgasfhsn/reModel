@@ -6,9 +6,10 @@
 //! Polygons are drawn back to front (painter's algorithm on the z-sort key)
 //! with perspective-correct, point-sampled textures (level 0, no mipmaps).
 
-use crate::enhance::{Address, Enhance, Fnv, Rgba, TexInfo};
+use crate::enhance::{sample_trilinear, Address, Enhance, Fnv, Rgba, TexFilter, TexInfo};
 use crate::video::{View, HEIGHT, WIDTH};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// One 24-bit float from the stream (IEEE single with the low 8 bits cut).
 fn f24(w: u32) -> f32 {
@@ -491,14 +492,43 @@ pub fn probe(polys: &[Poly], src: &Sources, x: f32, y: f32) -> Vec<String> {
 /// come from garbage headers.
 const MAX_HOOKED_TEXELS: u32 = 1 << 21;
 
+/// Texel hashes of sheet rectangles (`[bank, x0, y0, w, h]`) for
+/// `tex_info`. A fresh one serves one frame; one kept across frames stays
+/// valid while render RAM is unchanged, which `begin` checks.
+#[derive(Clone, Debug, Default)]
+pub struct TexKeys {
+    version: Option<u64>,
+    rects: HashMap<[u32; 5], u64>,
+}
+
+impl TexKeys {
+    /// Before a frame: keep the hashes if render RAM is still at
+    /// `render_version` (`Model2Bus::video_ram_versions`), else forget them.
+    /// `None` (version unknown) always forgets.
+    pub fn begin(&mut self, render_version: Option<u64>) {
+        if render_version.is_none() || render_version != self.version {
+            self.rects.clear();
+        }
+        self.version = render_version;
+    }
+
+    /// Forget every hash (render RAM changed in a way the version doesn't
+    /// show, such as switching to another machine's RAM).
+    pub fn clear(&mut self) {
+        self.rects.clear();
+        self.version = None;
+    }
+}
+
 /// Identify a polygon's texture for dumps and packs: a hash of its texels
-/// (cached per sheet rectangle in `rects`) and of the header fields and
-/// colour that change its appearance.
-fn tex_info(p: &Poly, t: &Texture, src: &Sources, rects: &mut HashMap<[u32; 5], u64>) -> Option<TexInfo> {
+/// (cached per sheet rectangle in `keys`) and of the header fields and
+/// colour that change its appearance. None for an oversized (garbage)
+/// texture.
+pub fn tex_info(p: &Poly, t: &Texture, src: &Sources, keys: &mut TexKeys) -> Option<TexInfo> {
     if t.w * t.h > MAX_HOOKED_TEXELS {
         return None;
     }
-    let texels = *rects.entry([t.bank, t.x0, t.y0, t.w, t.h]).or_insert_with(|| {
+    let texels = *keys.rects.entry([t.bank, t.x0, t.y0, t.w, t.h]).or_insert_with(|| {
         let mut f = Fnv::default();
         for y in 0..t.h {
             for x in 0..t.w {
@@ -620,6 +650,74 @@ fn shade_replaced(
     Some([0, 1, 2].map(|ch| (rgb[ch] * r[ch]).round().clamp(0.0, 255.0) as u8))
 }
 
+/// A replacement image as the filter wants it.
+enum Replacement {
+    Image(Arc<Rgba>),
+    Mips(Arc<Vec<Rgba>>),
+}
+
+/// Screen-space gradients (d/dx, d/dy) of 1/z, u/z and v/z over a placed
+/// polygon: a plane through the fan triangle of largest area (the three
+/// are affine on screen for a planar polygon).
+struct Gradients {
+    dx: [f32; 3],
+    dy: [f32; 3],
+}
+
+impl Gradients {
+    fn new(pts: &[SVtx]) -> Self {
+        let mut best = (0.0f32, Gradients { dx: [0.0; 3], dy: [0.0; 3] });
+        for k in 1..pts.len().saturating_sub(1) {
+            let (a, b, c) = (pts[0], pts[k], pts[k + 1]);
+            let (x1, y1, x2, y2) = (b.x - a.x, b.y - a.y, c.x - a.x, c.y - a.y);
+            let det = x1 * y2 - x2 * y1;
+            if det.abs() <= best.0 {
+                continue;
+            }
+            let attr = |v: SVtx| [v.iz, v.uz, v.vz];
+            let (fa, fb, fc) = (attr(a), attr(b), attr(c));
+            let dx = [0, 1, 2].map(|i| ((fb[i] - fa[i]) * y2 - (fc[i] - fa[i]) * y1) / det);
+            let dy = [0, 1, 2].map(|i| (x1 * (fc[i] - fa[i]) - x2 * (fb[i] - fa[i])) / det);
+            best = (det.abs(), Gradients { dx, dy });
+        }
+        best.1
+    }
+}
+
+/// Shade one pixel from a replacement's mip chain, trilinearly at the level
+/// of detail of the pixel's footprint (as the GPU's `fs_packf`): None if
+/// transparent.
+#[allow(clippy::too_many_arguments)]
+fn shade_filtered(
+    t: &Texture,
+    checker: bool,
+    chain: &[Rgba],
+    grad: &Gradients,
+    light: &Light,
+    src: &Sources,
+    x: usize,
+    y: usize,
+    (iz, uz, vz): (f32, f32, f32),
+) -> Option<[u8; 3]> {
+    if checker && (x ^ y) & 1 != 0 {
+        return None;
+    }
+    let (u, v) = (uz / iz, vz / iz);
+    // Texels of level 0 per output pixel along x and y.
+    let (sx, sy) = (chain[0].width as f32 / t.w as f32, chain[0].height as f32 / t.h as f32);
+    let d = |g: &[f32; 3]| ((g[1] - u * g[0]) / iz * sx, (g[2] - v * g[0]) / iz * sy);
+    let ((ax, ay), (bx, by)) = (d(&grad.dx), d(&grad.dy));
+    let rho = (ax * ax + ay * ay).max(bx * bx + by * by).sqrt();
+    let mode = |mirror| if mirror { Address::Mirror } else { Address::Repeat };
+    let (rgb, alpha) =
+        sample_trilinear(chain, u / t.w as f32, v / t.h as f32, rho.log2(), mode(t.mirror_x), mode(t.mirror_y));
+    if alpha < 0.5 {
+        return None;
+    }
+    let r = light.ratio(t, src, u, v);
+    Some([0, 1, 2].map(|ch| (rgb[ch] * r[ch]).round().clamp(0.0, 255.0) as u8))
+}
+
 /// Draw polygons into an RGB layer with a coverage mask: windows in order,
 /// and within a window from far (large key) to near.
 pub fn draw(polys: &mut [Poly], src: &Sources) -> (Vec<u8>, Vec<bool>) {
@@ -630,18 +728,18 @@ pub fn draw(polys: &mut [Poly], src: &Sources) -> (Vec<u8>, Vec<bool>) {
 /// width are widened to the view's edges, so whatever 3D the game sends
 /// beyond the original frame is drawn.
 pub fn draw_view(polys: &mut [Poly], src: &Sources, view: &View) -> (Vec<u8>, Vec<bool>) {
-    draw_impl(polys, src, view, None, false)
+    draw_impl(polys, src, view, None, false, TexFilter::Off)
 }
 
 /// `draw_view` with the depth buffer on or off (see [`DEPTH_BIAS`]).
 pub fn draw_view_depth(polys: &mut [Poly], src: &Sources, view: &View, depth: bool) -> (Vec<u8>, Vec<bool>) {
-    draw_impl(polys, src, view, None, depth)
+    draw_impl(polys, src, view, None, depth, TexFilter::Off)
 }
 
 /// `draw_view`, reporting textures to `hooks` and drawing the replacements
 /// it returns (texture dumps and packs).
 pub fn draw_enhanced(polys: &mut [Poly], src: &Sources, view: &View, hooks: &mut dyn Enhance) -> (Vec<u8>, Vec<bool>) {
-    draw_impl(polys, src, view, Some(hooks), false)
+    draw_impl(polys, src, view, Some(hooks), false, TexFilter::Off)
 }
 
 /// `draw_enhanced` with the depth buffer on or off.
@@ -652,7 +750,22 @@ pub fn draw_enhanced_depth(
     hooks: &mut dyn Enhance,
     depth: bool,
 ) -> (Vec<u8>, Vec<bool>) {
-    draw_impl(polys, src, view, Some(hooks), depth)
+    draw_impl(polys, src, view, Some(hooks), depth, TexFilter::Off)
+}
+
+/// `draw_enhanced_depth` with replacement images filtered as `filter` asks:
+/// `Off` is `draw_enhanced_depth`; `Mip` and `Aniso` sample the images'
+/// mip chains trilinearly at each pixel's level of detail (the software
+/// renderer has no anisotropic filtering: `Aniso` draws as `Mip`).
+pub fn draw_enhanced_filtered(
+    polys: &mut [Poly],
+    src: &Sources,
+    view: &View,
+    hooks: &mut dyn Enhance,
+    depth: bool,
+    filter: TexFilter,
+) -> (Vec<u8>, Vec<bool>) {
+    draw_impl(polys, src, view, Some(hooks), depth, filter)
 }
 
 /// A polygon whose 1/z ranges over more than this factor (a ground or
@@ -736,8 +849,9 @@ fn draw_impl(
     view: &View,
     mut hooks: Option<&mut dyn Enhance>,
     depth: bool,
+    filter: TexFilter,
 ) -> (Vec<u8>, Vec<bool>) {
-    let mut rects = HashMap::new();
+    let mut keys = TexKeys::default();
     let (w, h) = (view.width, view.height);
     let mut rgb = vec![0u8; w * h * 3];
     let mut covered = vec![false; w * h];
@@ -773,14 +887,37 @@ fn draw_impl(
         let write = !p.checker;
         let rank = pl.rank;
         let hooked = match (hooks.as_deref_mut(), &p.texture) {
-            (Some(hk), Some(t)) => tex_info(p, t, src, &mut rects).map(|info| {
-                let img = hk.texture(&info);
+            (Some(hk), Some(t)) => tex_info(p, t, src, &mut keys).map(|info| {
+                let img = if filter.mipmapped() {
+                    hk.texture_mips(&info).map(Replacement::Mips)
+                } else {
+                    hk.texture(&info).map(Replacement::Image)
+                };
                 (info, img)
             }),
             _ => None,
         };
         let mut pixels = 0;
-        if let (Some((_, Some(img))), Some(t)) = (&hooked, &p.texture) {
+        if let (Some((_, Some(Replacement::Mips(chain)))), Some(t)) = (&hooked, &p.texture) {
+            let light = Light::new(p, src);
+            let grad = Gradients::new(points);
+            fill(points, clip, w, h, |x, y, iz, uz, vz| {
+                let o = y * w + x;
+                let d = if test { depth_value(iz, rank) } else { 0.0 };
+                if test && d < zbuf[o] {
+                    return;
+                }
+                let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
+                if let Some(c) = shade_filtered(t, p.checker, chain, &grad, &light, src, gx, gy, (iz, uz, vz)) {
+                    if test && write {
+                        pending.push((o, d));
+                    }
+                    covered[o] = true;
+                    rgb[o * 3..o * 3 + 3].copy_from_slice(&c);
+                    pixels += 1;
+                }
+            });
+        } else if let (Some((_, Some(Replacement::Image(img)))), Some(t)) = (&hooked, &p.texture) {
             let light = Light::new(p, src);
             fill(points, clip, w, h, |x, y, iz, uz, vz| {
                 let o = y * w + x;
@@ -875,6 +1012,28 @@ mod tests {
 
     fn sv(x: f32, y: f32) -> SVtx {
         SVtx { x, y, iz: 1.0, uz: 0.0, vz: 0.0 }
+    }
+
+    #[test]
+    fn tex_keys_last_while_render_ram_is_unchanged() {
+        let mut k = TexKeys::default();
+        let held = |k: &TexKeys| !k.rects.is_empty();
+        k.begin(Some(7));
+        k.rects.insert([0; 5], 1);
+        k.begin(Some(7));
+        assert!(held(&k));
+        k.begin(Some(8));
+        assert!(!held(&k));
+        k.rects.insert([0; 5], 1);
+        k.clear();
+        k.begin(Some(8));
+        assert!(!held(&k), "clear forgets the version too");
+        k.rects.insert([0; 5], 1);
+        k.begin(None);
+        assert!(!held(&k));
+        k.rects.insert([0; 5], 1);
+        k.begin(None);
+        assert!(!held(&k), "an unknown version never keeps hashes");
     }
 
     #[test]

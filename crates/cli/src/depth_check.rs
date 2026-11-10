@@ -11,7 +11,7 @@ use std::path::Path;
 
 /// The frame as the GPU draws it with `depth` on or off.
 fn draw(gpu: &mut gpu::Renderer, f: &Frame, rom: &[u16], view: &View, depth: bool, msaa: u32) -> (Vec<u8>, usize) {
-    gpu.set_quality(gpu::Quality { msaa, depth });
+    gpu.set_quality(gpu::Quality { msaa, depth, ..Default::default() });
     let src = f.sources(rom);
     let mut polys = raster::build(&f.stream, &src);
     video::HudLayout::new(&f.tiles, &f.palette, view).anchor(&mut polys, view);

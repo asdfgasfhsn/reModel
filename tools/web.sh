@@ -105,8 +105,8 @@ else
     rm -rf "$model2/pkg"
 fi
 
-cp crates/web/audio-worklet.js crates/web/sound-worker.js crates/web/geo-worker.js crates/web/touch.js crates/web/gun.js \
-    crates/web/settings.js crates/web/panel.js "$model2/"
+cp crates/web/audio-worklet.js crates/web/sound-worker.js crates/web/geo-worker.js crates/web/pack-worker.js \
+    crates/web/touch.js crates/web/gun.js crates/web/settings.js crates/web/panel.js "$model2/"
 cp crates/web/index.html LICENSE "$WEB_OUT/"
 python3 -I tools/notices.py remodel-web wasm32-unknown-unknown "$WEB_OUT/THIRD-PARTY-NOTICES.txt"
 cp assets/reModel-logo-1086.png "$WEB_OUT/reModel-logo.png"
@@ -127,9 +127,10 @@ cp assets/bezels/*.webp "$WEB_OUT/bezels/"
 rm -rf "$WEB_OUT/pkg" "$WEB_OUT/audio-worklet.js" "$WEB_OUT/sound-worker.js" "$WEB_OUT/geo-worker.js" "$WEB_OUT/touch.js" "$WEB_OUT/gun.js" "$WEB_OUT/settings.js" "$WEB_OUT/panel.js"
 $remodel --rom "$ROM" web-index "$WEB_OUT" >/dev/null
 # model2/ first: a game page, its module and scripts all live there. rom/
-# stays: it's where a server mounts the ROMs.
+# and texpack/ stay: they're where a server mounts the ROMs and the texture
+# packs.
 mkdir -p "$live"
-for e in model2 $(ls -A "$WEB_OUT" | grep -vx -e model2 -e rom); do
+for e in model2 $(ls -A "$WEB_OUT" | grep -vx -e model2 -e rom -e texpack); do
     [ -e "$WEB_OUT/$e" ] || continue
     if [ -e "$live/$e" ] || [ -L "$live/$e" ]; then
         mv -T --exchange "$WEB_OUT/$e" "$live/$e"

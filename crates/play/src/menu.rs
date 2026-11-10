@@ -64,6 +64,12 @@ pub struct View<'a> {
     pub slots: &'a [Option<SystemTime>],
     /// The game's own input lag in frames (`romset::Game::input_lag`).
     pub input_lag: Option<u8>,
+    /// Anisotropic filtering the GPU has (`gpu::max_anisotropy`): the
+    /// texture filters offered.
+    pub max_anisotropy: u8,
+    /// How the texture pack is doing (where it is, what it replaced), or
+    /// why there is none, while the setting is on.
+    pub pack: Option<&'a str>,
 }
 
 fn age(t: SystemTime) -> String {
@@ -266,6 +272,19 @@ impl Menu {
                     &mut settings.depth,
                     "Depth buffer (polygons that cross sort right; off: the game's order)",
                 );
+                focus.checkbox(ui, &mut settings.pack, "Texture pack  (replacement textures)");
+                if let (true, Some(text)) = (settings.pack, view.pack) {
+                    ui.weak(text);
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Texture filtering:");
+                    for (label, v) in crate::settings::tex_filters(view.max_anisotropy) {
+                        if let Some(f) = model2::enhance::TexFilter::parse(v) {
+                            focus.radio(ui, "tex_filter", &mut settings.tex_filter, f, *label);
+                        }
+                    }
+                });
+                ui.weak("(of texture pack images: mipmaps stop the shimmer at a distance, anisotropic adds sharpness)");
                 ui.horizontal(|ui| {
                     ui.label("Geometrizer:");
                     focus.radio(ui, "geo", &mut settings.geo_chip, false, "native");
@@ -513,7 +532,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut actions = Vec::new();
         let slots = [Some(SystemTime::now()), None, None, None, None];
-        let view = View { playing: Some("A game"), slots: &slots, input_lag: Some(2) };
+        let view = View { playing: Some("A game"), slots: &slots, input_lag: Some(2), max_anisotropy: 16, pack: None };
         let (mut fullscreen, mut for_all) = (false, false);
         for navs in [&[][..]].iter().chain(frames) {
             let input = egui::RawInput {
@@ -614,7 +633,7 @@ mod tests {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0))),
                 ..Default::default()
             };
-            let view = View { playing: Some("A game"), slots: &[], input_lag: None };
+            let view = View { playing: Some("A game"), slots: &[], input_lag: None, max_anisotropy: 16, pack: None };
             let mut out = ctx.run_ui(input, |ui| {
                 m.ui(ui.ctx(), &mut s, Prefs { fullscreen: &mut f, for_all: &mut a }, &view, None, navs);
             });

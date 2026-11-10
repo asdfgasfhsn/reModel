@@ -9,7 +9,8 @@ struct Poly {
     clip: vec4f,
     // Texture position and size on the sheet, in texels.
     tex: vec4u,
-    // Bit 0 textured, 1 mirror x, 2 mirror y, 3 translucent, 4 checker.
+    // Bit 0 textured, 1 mirror x, 2 mirror y, 3 translucent, 4 checker,
+    // 5 replaced from a texture pack (group 1).
     flags: u32,
     bank: u32,
     luma_table: u32,
@@ -186,6 +187,217 @@ struct DepthOut {
 fn fs_depth(in: VsOut) -> DepthOut {
     var o: DepthOut;
     o.colour = shade(in);
+    let z = in.attr.x * (1.0 + f32(polys[in.poly].colour.w) * DEPTH_BIAS);
+    o.depth = z / (z + DEPTH_SCALE);
+    return o;
+}
+
+// Texture packs (docs/texture-packs.md): a polygon with flag bit 5 (32) is
+// drawn from the replacement image in group 1 instead of its texels, as
+// the software rasteriser's `shade_replaced` does. Only the pack pipelines
+// (`fs_pack`, `fs_pack_depth`) use group 1; `vs`, `fs` and `fs_depth` are
+// the same with or without it.
+
+// The replacement image: Rgba8Unorm, straight alpha, one level.
+@group(1) @binding(0) var pack_tex: texture_2d<f32>;
+
+// enhance::Rgba::sample at (x, y) in image pixels: RGB 0-255 weighted by
+// alpha (transparent texels don't darken edges), alpha 0-1.
+fn pack_sample(p: Poly, x_in: f32, y_in: f32) -> vec4f {
+    let dim = textureDimensions(pack_tex, 0);
+    let x = x_in - 0.5;
+    let y = y_in - 0.5;
+    let fx = x - floor(x);
+    let fy = y - floor(y);
+    let x0 = i32(floor(x));
+    let y0 = i32(floor(y));
+    let mx = (p.flags & 2u) != 0u;
+    let my = (p.flags & 4u) != 0u;
+    var rgb = vec3f(0.0);
+    var alpha = 0.0;
+    for (var k = 0; k < 4; k++) {
+        var w: f32;
+        switch k {
+            case 0: { w = (1.0 - fx) * (1.0 - fy); }
+            case 1: { w = fx * (1.0 - fy); }
+            case 2: { w = (1.0 - fx) * fy; }
+            default: { w = fx * fy; }
+        }
+        let px = wrap(x0 + (k & 1), dim.x, mx);
+        let py = wrap(y0 + (k >> 1), dim.y, my);
+        // Back to the 8-bit values the software reads.
+        let t = round(textureLoad(pack_tex, vec2u(px, py), 0) * 255.0);
+        let wa = w * t.a / 255.0;
+        rgb += wa * t.rgb;
+        alpha += wa;
+    }
+    if alpha > 0.0 {
+        rgb = rgb / alpha;
+    }
+    return vec4f(rgb, alpha);
+}
+
+// raster.rs `Light`: the replacement stands for the texture at full luma,
+// so each channel is scaled by what the original pipeline gives at the
+// polygon's luma over what it gives at full luma, for the original texel.
+fn pack_light(p: Poly, u: f32, v: f32) -> vec3f {
+    if p.luma >= 255u {
+        return vec3f(1.0);
+    }
+    let c = p.colour.xyz;
+    // Fallback where the original texel is transparent or black at full
+    // luma: the ratio for the brightest luma.
+    var fb: vec3f;
+    for (var ch = 0u; ch < 3u; ch++) {
+        let full = translate(ch, c[ch], 63u);
+        if full > 0u {
+            fb[ch] = f32(translate(ch, c[ch], min(64u * p.luma / 256u, 63u))) / f32(full);
+        } else {
+            fb[ch] = f32(p.luma) / 255.0;
+        }
+    }
+    let t8 = filtered_texel(p, u, v);
+    if t8 < 0 {
+        return fb;
+    }
+    let l = luma(p.luma_table, u32(t8) / 2u);
+    let lp = min(l * p.luma / 256u, 63u);
+    let lf = min(l * 255u / 256u, 63u);
+    var r: vec3f;
+    for (var ch = 0u; ch < 3u; ch++) {
+        let full = translate(ch, c[ch], lf);
+        if full == 0u {
+            r[ch] = fb[ch];
+        } else {
+            r[ch] = f32(translate(ch, c[ch], lp)) / f32(full);
+        }
+    }
+    return r;
+}
+
+// `shade`, or for a replaced polygon raster.rs `shade_replaced`.
+fn shade_pack(in: VsOut) -> vec4f {
+    let p = polys[in.poly];
+    if (p.flags & 32u) == 0u {
+        return shade(in);
+    }
+    let px = floor(in.pos.xy);
+    if px.y < p.clip.y || px.y >= p.clip.w || px.x + 0.5 < p.clip.x || px.x + 0.5 >= p.clip.z {
+        discard;
+    }
+    let g = vec2u(floor(px / screen.scale));
+    if (p.flags & 16u) != 0u && ((g.x ^ g.y) & 1u) != 0u {
+        discard;
+    }
+    let iz = in.attr.x;
+    let u = in.attr.y / iz;
+    let v = in.attr.z / iz;
+    let dim = vec2f(textureDimensions(pack_tex, 0));
+    let s = pack_sample(p, u * dim.x / f32(p.tex.z), v * dim.y / f32(p.tex.w));
+    if s.a < 0.5 {
+        discard;
+    }
+    let r = pack_light(p, u, v);
+    // Rust's round() then clamp, as the software (values are never
+    // negative).
+    let rgb = min(floor(s.rgb * r + 0.5), vec3f(255.0));
+    return vec4f(rgb / 255.0, 1.0);
+}
+
+@fragment
+fn fs_pack(in: VsOut) -> @location(0) vec4f {
+    return shade_pack(in);
+}
+
+@fragment
+fn fs_pack_depth(in: VsOut) -> DepthOut {
+    var o: DepthOut;
+    o.colour = shade_pack(in);
+    let z = in.attr.x * (1.0 + f32(polys[in.poly].colour.w) * DEPTH_BIAS);
+    o.depth = z / (z + DEPTH_SCALE);
+    return o;
+}
+
+// Filtered pack images (Quality::tex_filter mip or anisotropic): the
+// image's premultiplied mip chain, sampled through `pack_smp` (linear, mip
+// levels blended, anisotropy as asked; repeat or mirror per axis as the
+// polygon's flags) with the gradients of the texture coordinates, so the
+// GPU picks the level for the pixel's footprint. `vs_pack`, `fs_packf` and
+// `fs_packf_depth` only.
+@group(1) @binding(1) var pack_smp: sampler;
+
+struct VsPackOut {
+    @builtin(position) pos: vec4f,
+    @location(0) @interpolate(linear, centroid) attr: vec3f,
+    @location(1) @interpolate(flat) poly: u32,
+    // The same values at the pixel centre: their screen derivatives are the
+    // triangle's plane gradients, also at partly covered multisampled
+    // pixels.
+    @location(2) @interpolate(linear, center) attr_c: vec3f,
+}
+
+@vertex
+fn vs_pack(@location(0) xy: vec2f, @location(1) attr: vec3f, @location(2) poly: u32) -> VsPackOut {
+    var o: VsPackOut;
+    o.pos = vec4f(xy.x / screen.size.x * 2.0 - 1.0, 1.0 - xy.y / screen.size.y * 2.0, 0.0, 1.0);
+    o.attr = attr;
+    o.poly = poly;
+    o.attr_c = attr;
+    return o;
+}
+
+// `shade`, or for a replaced polygon a filtered sample of its image. `gx`
+// and `gy`: screen derivatives of (1/z, u/z, v/z), taken by the caller
+// before anything can discard.
+fn shade_packf(in: VsPackOut, gx: vec3f, gy: vec3f) -> vec4f {
+    let p = polys[in.poly];
+    if (p.flags & 32u) == 0u {
+        var o: VsOut;
+        o.pos = in.pos;
+        o.attr = in.attr;
+        o.poly = in.poly;
+        return shade(o);
+    }
+    let px = floor(in.pos.xy);
+    if px.y < p.clip.y || px.y >= p.clip.w || px.x + 0.5 < p.clip.x || px.x + 0.5 >= p.clip.z {
+        discard;
+    }
+    let g = vec2u(floor(px / screen.scale));
+    if (p.flags & 16u) != 0u && ((g.x ^ g.y) & 1u) != 0u {
+        discard;
+    }
+    let iz = in.attr.x;
+    let u = in.attr.y / iz;
+    let v = in.attr.z / iz;
+    // Texture coordinates 0-1 over the original's texels; with u = (u/z) /
+    // (1/z), both linear on screen, du/dx = (d(u/z)/dx - u d(1/z)/dx) / (1/z).
+    let size = vec2f(f32(p.tex.z), f32(p.tex.w));
+    let ddx = vec2f(gx.y - u * gx.x, gx.z - v * gx.x) / (iz * size);
+    let ddy = vec2f(gy.y - u * gy.x, gy.z - v * gy.x) / (iz * size);
+    let c = textureSampleGrad(pack_tex, pack_smp, vec2f(u, v) / size, ddx, ddy);
+    // The cut-out after filtering; at least half opaque, so un-premultiplying
+    // at most doubles the 8-bit rounding.
+    if c.a < 0.5 {
+        discard;
+    }
+    let r = pack_light(p, u, v);
+    let rgb = min(floor(c.rgb / c.a * 255.0 * r + 0.5), vec3f(255.0));
+    return vec4f(rgb / 255.0, 1.0);
+}
+
+@fragment
+fn fs_packf(in: VsPackOut) -> @location(0) vec4f {
+    let gx = dpdx(in.attr_c);
+    let gy = dpdy(in.attr_c);
+    return shade_packf(in, gx, gy);
+}
+
+@fragment
+fn fs_packf_depth(in: VsPackOut) -> DepthOut {
+    let gx = dpdx(in.attr_c);
+    let gy = dpdy(in.attr_c);
+    var o: DepthOut;
+    o.colour = shade_packf(in, gx, gy);
     let z = in.attr.x * (1.0 + f32(polys[in.poly].colour.w) * DEPTH_BIAS);
     o.depth = z / (z + DEPTH_SCALE);
     return o;

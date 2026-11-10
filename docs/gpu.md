@@ -42,6 +42,10 @@ bit-for-bit what it was:
   game's order). A window starts with a scissored full-screen draw that
   empties the buffer where it draws.
 
+- **Texture packs** (`Renderer::set_pack`; `Quality::tex_filter`): see
+  "Texture packs" below. With no pack set the pipelines, shaders and output
+  are the ones above, unchanged.
+
 The fragment shader (`crates/gpu/src/raster.wgsl`) is a line-for-line port
 of the software shading. It reads from the game's own render RAM and
 palette RAM, uploaded unchanged as storage buffers:
@@ -123,11 +127,74 @@ as without it: for `topskatr`, 0.04% coverage and 8.9% colour (1.6% over
 the texture-coordinate differences described above plus the two
 resolve filters.
 
+## Texture packs
+
+`set_pack` takes a `model2::enhance::TexturePack` (the player's directory
+pack, the browser's fetched one; `docs/texture-packs.md`). Each frame, for
+every textured polygon the renderer computes the texture's key
+(`raster::tex_info`, as the snapshots do), asks the pack once per key and
+uploads a new image as an `Rgba8Unorm` texture (`Found::Pending`: the
+original is drawn and the pack is asked again next frame; `Found::Missing`:
+remembered, the original). An image larger than the GPU's texture limit is
+refused with one warning.
+
+- **Keys cached.** Hashing the texels of every texture each frame is
+  avoided by keeping the hashes (`raster::TexKeys`) while render RAM's
+  version is unchanged; on `topskatr` render RAM changed on 136 of 4140
+  frames and on `srallyc` 42 of 4140, so the cache holds on about 97% of
+  frames. Hashing everything uncached would cost 0.2-2.2 ms a frame.
+- **Own shaders.** A replaced polygon sets bit 5 of its flags and its image
+  is a second bind group (group 1), bound per run of polygons sharing it.
+  Frames that replace nothing use the original `vs`/`fs`/`fs_depth`
+  pipelines. Frames that do use separate entry points (`fs_pack`,
+  `fs_pack_depth`; `vs_pack`, `fs_packf`, `fs_packf_depth`), so the pack-off
+  pipelines are not touched: with no pack and the filter off, output is
+  bit-for-bit unchanged (state hashes and `gpu-check` frames compared on
+  `topskatr`, `srallyc`, `lastbrnx`, `doa`; `depth-check` also `sgt24h`,
+  `segawski`).
+- **Exact path** (`fs_pack`, filter off): the shader does the software's
+  bilinear sample itself with `textureLoad`, straight alpha weighted by
+  alpha, the original's repeat or mirror per axis, the cut-out at alpha 0.5
+  and the same per-channel lighting ratio from the original texel
+  (`shade_replaced`). On `topskatr`, `gpu-check` with a 1:1 pack: 1.54% of
+  pixels differ by more than 16 levels from the software's, 1.58% with the
+  originals.
+- **Filtered path** (`fs_packf*`, `tex_filter` mip or 2..16): the image is
+  uploaded as its premultiplied mip chain and sampled with `textureSampleGrad`
+  through a linear sampler (anisotropy up to what `max_anisotropy` reports),
+  repeat or mirrored-repeat per axis; four samplers cover the address-mode
+  combinations. The gradients are those of 1/z, u/z and v/z at the pixel
+  centre (a second interpolant, so partly covered multisampled pixels get
+  the plane's gradients), turned into texture-coordinate gradients. Alpha
+  below 0.5 after filtering is cut out; colour is un-premultiplied for the
+  lighting ratio. On `topskatr`, `gpu-check` with a fine-checker 4x test
+  pack, `mip` against software trilinear: 1.85% of pixels differ by more
+  than 16 levels at native size, 2.5% at 1080p (3.4% for the exact path
+  with the same pack).
+- **Draws.** Runs of polygons are split at each change of image, so a full
+  pack makes about 600 draws a frame on `topskatr` (198-1047), where there
+  were 1-4. `PackStats` (`Renderer::pack_stats`) counts polygons looked up
+  and replaced, images drawn, draws, images uploaded and held, and bytes.
+- **Memory.** Images are kept after upload, a mip chain adding about a third,
+  up to a budget (512 MB natively, 192 MB on wasm); over it the least
+  recently drawn are dropped, except this frame's, and uploaded again when
+  next asked for. A change of `tex_filter` rebuilds the images that change
+  form (exact or mipmapped). Large images' first appearance can cost a frame
+  (the browser measured up to 13 ms of draw uploading a 1024x1024 image
+  with mipmaps, against about 3 ms).
+- **Checking filtering.** `make pack-check PACK=DIR`: GPU off, mip and 16x,
+  software trilinear, and a 4x4 supersampled reference, with the mean
+  distance of each from it (`topskatr`: a fine-checker test pack 9.66, 4.70,
+  4.84; realesrgan-x4plus 2.09, 2.06, 1.62).
+
+Not measured: the cost of the filtered path against the exact one per
+pixel, and eviction past the budget.
+
 ## Next
 
 - A window and swapchain (winit) that presents the GPU layer.
 - The 2D tile layer and HUD composition on the GPU. These still run on
   the CPU, after the 3D layer.
 - Persistent buffers with dirty-range uploads of render RAM.
-- Texture packs in the shader: replacements as GPU textures, using the
-  same lighting model as the software path.
+- Tile (2D layer) replacements live: only the 3D textures of a pack are
+  used on the GPU so far.

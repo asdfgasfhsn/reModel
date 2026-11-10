@@ -2,6 +2,7 @@ mod depth_check;
 mod geo_check;
 mod gpu_check;
 mod music;
+mod pack_check;
 mod recomp_crates;
 mod run_ahead;
 mod sharc;
@@ -59,8 +60,15 @@ options:
   --capture DIR        at each `run` snapshot, save what the renderers read
                        (raster stream, video RAMs) to DIR/FRAME/, for
                        `gpu-check`
-  --texture-pack DIR   draw snapshots with the replacement PNGs in DIR (same
-                       names as a dump; any size); see docs/texture-packs.md
+  --texture-pack DIR   draw snapshots and gpu-check with the replacement PNGs
+                       in DIR (same names as a dump; any size); see
+                       docs/texture-packs.md
+  --tex-filter off|mip|2|4|8|16
+                       filtering of texture pack images in snapshots and
+                       gpu-check: off (default; bilinear), mipmaps
+                       (trilinear), or mipmaps with up to N-times
+                       anisotropic filtering (GPU only: software snapshots
+                       draw it as mip)
   --geo chip|native|check
                        the geometrizer: the uploaded program on its chip,
                        the 2B SHARC or 2C TGP (default; `sharc` and `tgp`
@@ -142,6 +150,16 @@ commands:
                        multisampling), report where they differ and write
                        pictures of the differences (off | on | differences)
                        to OUT (default out/GAME/depth-check)
+  pack-check [DIR] [OUT]
+                       with --texture-pack: draw the frames captured in DIR
+                       (default out/GAME/capture) on the GPU with the pack
+                       images unfiltered, mipmapped and 16x anisotropic, in
+                       software trilinear and as a supersampled software
+                       reference (4x4; --aa N: N GPU samples and at least
+                       that many for the reference); write them to OUT
+                       (default out/GAME/pack-check) as FRAME-off, -mip,
+                       -aniso16, -swmip and -ref.png, and report how far each
+                       is from the reference and what they cost
   geo-check [STEPS] [FROM]
                        run (with --input, --load-state) with the geometrizer
                        chip (SHARC or TGP) and the native geometrizer fed the
@@ -266,6 +284,18 @@ fn main() -> ExitCode {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
     };
+    let pack_dir = texture_pack.clone().map(PathBuf::from);
+    let Ok(tex_filter_opt) = opt("--tex-filter") else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    if let Some(f) = tex_filter_opt {
+        let Some(f) = model2::enhance::TexFilter::parse(&f) else {
+            eprintln!("error: --tex-filter wants off, mip, 2, 4, 8 or 16");
+            return ExitCode::FAILURE;
+        };
+        let _ = TEX_FILTER.set(f);
+    }
     if let Err(e) = texpack::configure(dump_textures, texture_pack) {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;
@@ -854,9 +884,26 @@ fn main() -> ExitCode {
             let default = PathBuf::from("out").join(roms.game.id).join("capture");
             let root = args.get(1).map(PathBuf::from).unwrap_or(default);
             let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
-            if let Err(e) =
-                gpu_check::run(&root, windows, AA.get().copied().unwrap_or(1), DEPTH.get().copied().unwrap_or(false))
-            {
+            let (aa, depth) = (AA.get().copied().unwrap_or(1), DEPTH.get().copied().unwrap_or(false));
+            if let Err(e) = gpu_check::run(&root, windows, aa, depth, pack_dir.as_deref(), tex_filter()) {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        "pack-check" => {
+            let Some(pack) = &pack_dir else {
+                eprintln!("error: pack-check needs --texture-pack DIR");
+                return ExitCode::FAILURE;
+            };
+            let default = PathBuf::from("out").join(roms.game.id).join("capture");
+            let root = args.get(1).map(PathBuf::from).unwrap_or(default);
+            let out = args
+                .get(2)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("pack-check"));
+            let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
+            let (aa, depth) = (AA.get().copied().unwrap_or(1), DEPTH.get().copied().unwrap_or(false));
+            if let Err(e) = pack_check::run(&root, windows, VIEW.get().copied(), aa, depth, pack, &out) {
                 eprintln!("error: {e}");
                 return ExitCode::FAILURE;
             }
@@ -1175,6 +1222,13 @@ fn games_json(games: &[&romset::Game], dir: &Path) -> String {
 static VIEW: std::sync::OnceLock<model2::video::View> = std::sync::OnceLock::new();
 /// `--aa`: samples a pixel for snapshots (supersampled) and gpu-check.
 static AA: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+/// `--tex-filter`: filtering of texture pack images.
+static TEX_FILTER: std::sync::OnceLock<model2::enhance::TexFilter> = std::sync::OnceLock::new();
+
+fn tex_filter() -> model2::enhance::TexFilter {
+    TEX_FILTER.get().copied().unwrap_or_default()
+}
+
 /// `--depth`: the depth buffer for snapshots and gpu-check.
 static DEPTH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
@@ -1297,7 +1351,7 @@ fn render(m: &model2::Machine, stream: Option<&[u32]>, path: &std::path::Path) -
     let (rgb3d, covered) = match packs.as_mut() {
         Some(p) => {
             p.frame = m.frames;
-            model2::raster::draw_enhanced_depth(&mut polys, &src, &view, p, depth)
+            model2::raster::draw_enhanced_filtered(&mut polys, &src, &view, p, depth, tex_filter())
         }
         None => model2::raster::draw_view_depth(&mut polys, &src, &view, depth),
     };

@@ -13,7 +13,7 @@ SNAP  ?= 0
 INPUT ?=
 # Snapshot view options for `run`, e.g. VIEW="--height 1080 --aspect 16:9 --hud edges".
 VIEW  ?=
-# Texture pack directory for `run` snapshots (docs/texture-packs.md), e.g. PACK=out/topskatr/texpack.
+# Texture pack directory for `run` snapshots and gpu-check (docs/texture-packs.md), e.g. PACK=out/topskatr/texpack.
 PACK  ?=
 # Fixed run for `make bench`: attract, coin-up, start, into a race.
 # `coin-start` is the game's own coin-up and start script (its manifest's
@@ -88,7 +88,7 @@ RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 ##@ General
 
-help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, GPU_OPTS, RECOMP, SOUNDTRACK)
+help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, PACK_CHECK_OUT, GPU_OPTS, RECOMP, SOUNDTRACK)
 	@awk 'BEGIN {FS = ":.*## "; printf "usage: make <target> [VAR=value]\n"} \
 		/^##@/ {printf "\n%s\n", substr($$0, 5)} \
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -265,11 +265,19 @@ capture: release ## Run into a race saving every 300th frame's renderer inputs t
 	rm -rf $(OUT)/capture
 	$(RUN) --capture $(OUT)/capture --input $(BENCH_INPUT) run 900000000 300 >/dev/null
 
-# Options for gpu-check and depth-check: --aa N (multisampling; software
-# supersamples to match), --depth, and for depth-check --height/--aspect/--hud.
+# Options for gpu-check, depth-check and pack-check: --aa N (multisampling;
+# software supersamples to match), --depth, --tex-filter off|mip|2|4|8|16
+# (gpu-check with PACK), and for depth-check and pack-check
+# --height/--aspect/--hud.
 GPU_OPTS ?=
-gpu-check: release ## Draw the captured frames on the software and GPU rasterisers; time and compare them, and what GPU_OPTS="--aa 4 --depth" cost (needs a GPU)
-	$(RUN) $(GPU_OPTS) gpu-check
+gpu-check: release ## Draw the captured frames on the software and GPU rasterisers; time and compare them, and what GPU_OPTS="--aa 4 --depth" and PACK=DIR (a texture pack, both renderers) cost (needs a GPU)
+	$(RUN) $(GPU_OPTS) $(if $(PACK),--texture-pack $(PACK)) gpu-check
+
+# Where pack-check writes its pictures.
+PACK_CHECK_OUT ?= $(OUT)/pack-check
+pack-check: release ## Draw the captured frames with texture pack PACK= on the GPU unfiltered, mipmapped and 16x anisotropic, in software trilinear and as a supersampled reference; write the pictures to PACK_CHECK_OUT (default OUT/pack-check) and compare them (needs a GPU)
+	$(if $(PACK),,$(error pack-check needs PACK=DIR, a texture pack))
+	$(RUN) $(GPU_OPTS) --texture-pack $(PACK) pack-check $(OUT)/capture $(PACK_CHECK_OUT)
 
 depth-check: release ## Draw the captured frames on the GPU with the depth buffer off and on, report and picture the differences into OUT/depth-check (GPU_OPTS: --aa N, --height, --aspect; needs a GPU)
 	$(RUN) $(GPU_OPTS) depth-check $(OUT)/capture $(OUT)/depth-check

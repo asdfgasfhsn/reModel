@@ -51,9 +51,9 @@ through DirectX 8/9's fixed-function pipeline.
 | Output | Wide views fill the sides with scrolled tile skies | done (docs/games/doa.md) |
 | Output | Smooth motion: in-betweens on displays over 60 Hz | done, opt-in |
 | Output | Run-ahead: less input lag | done (native player), opt-in |
-| Textures | Texture packs: dump, replace at any size | done (`docs/texture-packs.md`) |
+| Textures | Texture packs: dump, replace at any size; live on the GPU in the player and the browser | done (`docs/texture-packs.md`); live display 2026-11-10 (tiles still snapshots only) |
 | Textures | Batch upscaling pipeline (dump → upscale → pack) | planned |
-| Textures | Mipmaps from pack images, anisotropic filtering | planned |
+| Textures | Mipmaps from pack images, anisotropic filtering | done, opt-in (2026-11-10) |
 | Image | Anti-aliasing: MSAA 4x/8x on the GPU, supersampling in software | done, opt-in (2026-11-09) |
 | Image | Depth buffer | done, opt-in, partial (below) |
 | Image | Temporal upscaler (motion vectors, jitter) | planned |
@@ -206,10 +206,58 @@ textures and pixel art); reModel only drives it. Points to settle:
 
 ### Mipmaps and anisotropic filtering
 
-Packs are drawn with the game's bilinear filtering. High-resolution pack
-images on small or distant polygons alias; mipmaps built from them and
-anisotropic filtering on the GPU fix that. The original textures keep
-their exact path.
+Done, opt-in, off by default (2026-11-10), for texture pack images only; the
+original textures keep their exact path. Settings: the player's `tex_filter`
+(`--tex-filter off|mip|2|4|8|16`), the browser's `texfilter`
+(`?texfilter=`), `remodel --tex-filter` for snapshots and `gpu-check`;
+usage in `docs/texture-packs.md`. Render-only.
+
+What exists:
+
+- **Live packs on the GPU** came with it (the filter needs them): pack
+  images are GPU textures, drawn with the software path's replacement and
+  lighting rules (`docs/gpu.md`).
+- **Mipmaps.** Each image's chain is built when it is first drawn:
+  premultiplied by alpha, each level a box filter of the one above
+  (`enhance::Rgba::mip_chain`; odd sizes weight by overlap), averaged in
+  display values, not linear light. Cut-outs are decided after filtering
+  (alpha under 0.5 is transparent).
+- **Anisotropic filtering** is the GPU sampler's, up to 16x where the
+  backend has it (`gpu::max_anisotropy`), driven by gradients of the texture
+  coordinates. The software renderer has trilinear filtering only and
+  draws 2..16 as `mip`.
+
+How it was checked (2026-11-10):
+
+- With no pack and the filter off, output is bit-for-bit unchanged: state
+  hashes, snapshot frames, `gpu-check` and `depth-check` frames identical
+  before and after, for `topskatr`, `srallyc`, `lastbrnx` and `doa`
+  (`depth-check` also `sgt24h`, `segawski`).
+- GPU pack frames match the software pack snapshot about as closely as the
+  originals do: `topskatr` `gpu-check`, pixels differing by more than 16
+  levels 1.58% with the originals, 1.54% with a 1:1 pack. With filtering
+  on, GPU `mip` against software trilinear (a fine-checker 4x test pack):
+  1.85% native, 2.5% at 1080p, against 3.4% for the exact path with the
+  same pack.
+- `make pack-check` against a 4x4 supersampled reference on `topskatr`
+  (mean difference per channel): a harsh fine-checker test pack off 9.66,
+  mip 4.70, 16x 4.84; a realesrgan-x4plus pack off 2.09, mip 2.06, 16x
+  1.62. By eye: off shows moiré on distant ground, mip removes it but
+  blurs, 16x keeps the ground's detail at grazing angles; no halos at
+  cut-out edges.
+- Cached texture keys are reused on about 97% of frames (render RAM changed
+  on 136 of 4140 `topskatr` frames and 42 of 4140 `srallyc` frames); hashing
+  every key uncached would cost 0.2-2.2 ms a frame. A full pack makes about
+  600 draws a frame on `topskatr` (198-1047), where there were 1-4.
+- Native player, scripted run on `topskatr`; browser in headed Chrome on
+  Linux (a 1024x1024 image uploaded with its mipmaps cost a frame up to
+  13 ms of draw against about 3 ms).
+
+*Unconfirmed:* other games and upscalers; other browsers and phones;
+`RECOMP=1` web builds; smooth motion's in-between frames and F5/F9 save
+slots with a pack; the player's decode stutter; eviction past the memory
+budget; a clone's fallback to its parent's pack. Tiles are still replaced
+only in snapshots. Mips average display values, not linear light.
 
 ### Temporal upscaling (and DLSS)
 

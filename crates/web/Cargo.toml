@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 remodel-model2.workspace = true
 remodel-romset.workspace = true
 remodel-gpu.workspace = true
+remodel-png.workspace = true
 remodel-recomp.workspace = true
 wgpu = "30.0.1"
 wasm-bindgen = "0.2.130"

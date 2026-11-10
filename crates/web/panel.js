@@ -169,7 +169,10 @@ export function createPanel(opts) {
     choice("hud", "HUD", () => [["edges", "At the edges"], ["center", "Centred"]], "in wide views"),
     onOff("bezel", "Bezel", "beside a 4:3 picture in a wider window"),
     choice("aa", "Anti-aliasing", () => [["off", "Off"], ["4", "4x"]], "smooths polygon edges"),
-    onOff("depth", "Depth buffer", "polygons that cross or are sorted wrong come out right; off draws in the game's order"));
+    onOff("depth", "Depth buffer", "polygons that cross or are sorted wrong come out right; off draws in the game's order"),
+    onOff("pack", "Texture pack", "replacement textures from the server's texpack folder for this game, if it has one"),
+    choice("texfilter", "Pack filtering", () => [["off", "Off"], ["mip", "Mipmaps"], ["2", "2x"], ["4", "4x"],
+      ["8", "8x"], ["16", "16x"]], "mipmaps, then anisotropic filtering; texture pack images only"));
   const autoBuffer = audioBuffer("auto", env).target * 1000;
   const sound = el("section", {}, el("h3", { textContent: "Sound" }),
     onOff("sound", "Sound"), slider("sfx", "Effects"), slider("music", "Music"),

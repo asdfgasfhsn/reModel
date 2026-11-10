@@ -24,7 +24,8 @@
 //! Continue where it was left. Esc opens the menu (and pauses): save
 //! states, sound mix, display, back to the games. Settings persist
 //! (`settings`). Beside a 4:3 picture in a wider window, the game's bezel
-//! (`bezel`).
+//! (`bezel`). With the texture pack setting on, replacement textures come
+//! from the game's pack directory, decoded in the background (`pack`).
 
 mod art;
 mod backdrop;
@@ -33,6 +34,7 @@ mod controls;
 mod focus;
 mod launcher;
 mod menu;
+mod pack;
 mod pad;
 mod preview;
 mod settings;
@@ -92,6 +94,16 @@ usage: remodel-play [options]
                      1/z, instead of the game's draw order: intersecting
                      and mis-sorted polygons come out right (HUD windows
                      stay on top; docs/enhancements.md). Default off
+  --pack on|off      the game's texture pack: replacement textures from
+                     texpack/ in the game's folder beside its saves (a
+                     version of a game uses its parent's if it has none;
+                     docs/texture-packs.md). Default off
+  --texture-pack DIR use the texture pack in DIR, for every game this run
+                     (turns --pack on)
+  --tex-filter off|mip|2|4|8|16
+                     filtering of texture pack images: off (as they are),
+                     mipmaps, or mipmaps and anisotropic filtering up to 2
+                     to 16 times where the GPU has it. Default off
   --exact            run at the arcade's exact 57.524 frames per second
                      (default: one frame per display refresh when the
                      refresh is 60 or 120 Hz, which is 4.3% fast but smooth)
@@ -112,7 +124,8 @@ usage: remodel-play [options]
                      presses both, @S:H holds them H seconds
 
 The game's settings (mix, HUD, aspect, bezel, speed, smooth motion,
-run-ahead, anti-aliasing, depth buffer, geometrizer) given here are for this run only, over the
+run-ahead, anti-aliasing, depth buffer, texture pack and filtering,
+geometrizer) given here are for this run only, over the
 defaults for all games and the game's own, which the launcher's settings
 and the menu keep.
 --rom and --fullscreen are remembered.
@@ -157,6 +170,9 @@ struct Options {
     /// `--nav`: gamepad presses and releases at times since the start
     /// (seconds), in order.
     nav: std::collections::VecDeque<(f64, pad::Event)>,
+    /// `--texture-pack`: the pack for every game this run, in place of
+    /// each game's own.
+    texture_pack: Option<PathBuf>,
 }
 
 /// `--nav`'s list: NAME[+NAME]@SECONDS[:HELD], pad buttons pressed together
@@ -204,6 +220,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
         shot: None,
         shot_size: ([1920, 1080], 1.0),
         nav: Default::default(),
+        texture_pack: None,
     };
     let mut args = std::env::args().skip(1).peekable();
     let mut cli = |k: &str, v: &str| s.cli.insert(k.to_string(), v.to_string());
@@ -300,6 +317,31 @@ fn options(s: &mut Settings) -> Result<Options, String> {
                     _ => true,
                 };
                 cli("depth", &on.to_string());
+            }
+            "--pack" => {
+                let on = match args.peek().map(String::as_str) {
+                    Some("on") => {
+                        args.next();
+                        true
+                    }
+                    Some("off") => {
+                        args.next();
+                        false
+                    }
+                    _ => true,
+                };
+                cli("pack", &on.to_string());
+            }
+            "--texture-pack" => {
+                o.texture_pack = Some(value()?.into());
+                cli("pack", "true");
+            }
+            "--tex-filter" => {
+                let v = value()?;
+                let Some(f) = model2::enhance::TexFilter::parse(&v) else {
+                    return Err("--tex-filter wants off, mip, 2, 4, 8 or 16".into());
+                };
+                cli("tex_filter", &f.to_string());
             }
             "--no-splash" => o.splash = false,
             "--fullscreen" => fullscreen = true,
@@ -569,6 +611,19 @@ struct Play {
     behind_frames: u32,
     stats: Stats,
     started: Instant,
+    /// The texture pack set on the renderer.
+    pack: PackState,
+    /// Anisotropic filtering the GPU has (`gpu::max_anisotropy`).
+    max_anisotropy: u8,
+}
+
+/// The texture pack the renderer draws with (`Play::sync_pack`).
+#[derive(Default)]
+struct PackState {
+    /// The directory wanted (None: no pack).
+    dir: Option<PathBuf>,
+    /// Images in it, or why it can't be used.
+    loaded: Option<Result<usize, String>>,
 }
 
 struct Bezel {
@@ -959,19 +1014,30 @@ impl Play {
         if self.launcher.open {
             self.draw_launcher(&target, [w, h], ppp, Instant::now());
         } else {
+            self.sync_pack();
             let (view, origin) = self.fit(w, h);
             let at = self.bezel_at(&view, origin, w);
             let slots = self.slot_times();
+            let pack_text = self.pack_text();
             let (Some(g), Some(s)) = (&mut self.gpu, &mut self.session) else { return Err("no game".into()) };
             g.renderer.forget_ram();
-            g.renderer.set_quality(gpu::Quality { msaa: self.values.aa, depth: self.values.depth });
+            g.renderer.set_quality(gpu::Quality {
+                msaa: self.values.aa,
+                depth: self.values.depth,
+                tex_filter: self.values.tex_filter,
+            });
             g.renderer.present_bus(&mut s.shown().bus, None, &view, &target, format, origin);
             s.drew_ahead = s.run_ahead.as_ref().is_some_and(|ra| ra.is_ahead_of(&s.machine));
             let (bezel, menu) = (&mut self.bezel, &mut self.menu);
             let mut values = self.values.clone();
             let (mut fullscreen, mut for_all) = (self.settings.fullscreen, self.settings.for_all);
-            let menu_view =
-                menu::View { playing: Some(s.game.title), slots: &slots, input_lag: Some(s.game.input_lag) };
+            let menu_view = menu::View {
+                playing: Some(s.game.title),
+                slots: &slots,
+                input_lag: Some(s.game.input_lag),
+                max_anisotropy: self.max_anisotropy,
+                pack: pack_text.as_deref(),
+            };
             draw_overlay(g, &target, false, [w, h], Some(ppp), |ctx| {
                 if let (Some(b), Some((rect, pic))) = (bezel.as_mut(), at) {
                     b.paint(ctx, rect, pic, w as f32, ctx.pixels_per_point());
@@ -990,6 +1056,66 @@ impl Play {
         }
         std::fs::write(path, png::encode_rgba(w as usize, h as usize, &rgba))
             .map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// Set the texture pack the settings ask for on the renderer, when
+    /// that changed: the game's (or `--texture-pack`'s) with the setting
+    /// on, none for the launcher's preview.
+    fn sync_pack(&mut self) {
+        let wanted = match &self.session {
+            Some(s) if !s.preview && self.values.pack => {
+                Some(self.opts.texture_pack.clone().unwrap_or_else(|| pack::game_dir(s.game)))
+            }
+            _ => None,
+        };
+        if wanted == self.pack.dir {
+            return;
+        }
+        let Some(g) = &mut self.gpu else { return };
+        self.pack = PackState { dir: wanted.clone(), loaded: None };
+        let Some(dir) = wanted else {
+            g.renderer.set_pack(None);
+            return;
+        };
+        let opened = if dir.is_dir() {
+            pack::DirPack::open(&dir)
+        } else {
+            Err(format!("no texture pack: {} not found", dir.display()))
+        };
+        match opened {
+            Ok(p) => {
+                println!("texture pack  {}: {} images", dir.display(), p.len());
+                self.pack.loaded = Some(Ok(p.len()));
+                g.renderer.set_pack(Some(Box::new(p)));
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                self.menu.notify(format!("{}{}", e[..1].to_uppercase(), &e[1..]));
+                self.pack.loaded = Some(Err(e));
+                g.renderer.set_pack(None);
+            }
+        }
+    }
+
+    /// The menu's line on the texture pack: where it is and what it
+    /// replaced in the last frame, or why there is none.
+    fn pack_text(&self) -> Option<String> {
+        let g = self.gpu.as_ref()?;
+        let dir = self.pack.dir.as_ref()?;
+        Some(match self.pack.loaded.as_ref()? {
+            Ok(images) => {
+                let st = g.renderer.pack_stats();
+                format!(
+                    "{}: {images} images; replacing {} of {} textured polygons ({} images, {} MB held)",
+                    dir.display(),
+                    st.replaced,
+                    st.textured,
+                    st.held,
+                    st.bytes >> 20
+                )
+            }
+            Err(e) => e.clone(),
+        })
     }
 
     fn refit(&mut self) {
@@ -1300,6 +1426,7 @@ impl Play {
         format: wgpu::TextureFormat,
         t0: Instant,
     ) {
+        self.sync_pack();
         let (Some(g), Some(s)) = (&mut self.gpu, &mut self.session) else { return };
         // When the geometrizer is the slowest part, drawing the previous
         // frame's polygons lets it run alongside the next frame instead of
@@ -1318,7 +1445,7 @@ impl Play {
         let q = if s.preview {
             gpu::Quality::default()
         } else {
-            gpu::Quality { msaa: self.values.aa, depth: self.values.depth }
+            gpu::Quality { msaa: self.values.aa, depth: self.values.depth, tex_filter: self.values.tex_filter }
         };
         g.renderer.set_quality(q);
         let bus = &mut s.shown().bus;
@@ -1417,7 +1544,6 @@ impl Play {
         if fade.is_none() {
             self.game_fade = None;
         }
-        let g = self.gpu.as_mut().unwrap();
         if self.menu.visible()
             || self.session.is_none()
             || self.splash.active()
@@ -1425,10 +1551,14 @@ impl Play {
             || bezel_at.is_some()
             || fade.is_some()
         {
+            let pack_text = self.pack_text();
+            let g = self.gpu.as_mut().unwrap();
             let view = menu::View {
                 playing: self.session.as_ref().map(|s| s.game.title),
                 slots: &slots,
                 input_lag: self.session.as_ref().map(|s| s.game.input_lag),
+                max_anisotropy: self.max_anisotropy,
+                pack: pack_text.as_deref(),
             };
             let navs = std::mem::take(&mut self.navs);
             let (menu, splash, bezel) = (&mut self.menu, &mut self.splash, &mut self.bezel);
@@ -2032,6 +2162,9 @@ impl ApplicationHandler for Play {
         let backdrop = backdrop::Backdrop::new(&device, config.format);
         let mut renderer = gpu::Renderer::from_device(device, queue, name);
         renderer.set_max_msaa(max_msaa);
+        self.max_anisotropy = gpu::max_anisotropy(&adapter);
+        renderer.set_max_anisotropy(self.max_anisotropy);
+        self.launcher.max_anisotropy = self.max_anisotropy;
         let (view, origin) = self.fit(config.width, config.height);
         // Redraws drive everything; Wayland sends none until asked.
         window.request_redraw();
@@ -2194,6 +2327,8 @@ fn main() {
         behind_frames: 0,
         stats: Stats::new(),
         started: Instant::now(),
+        pack: PackState::default(),
+        max_anisotropy: 16,
     };
     if play.settings.rom == Settings::default().rom {
         // So there's an obvious place to put sets.

@@ -138,8 +138,9 @@ a server may bind-mount `out/web` (as below); `rom/` is left alone.
 | `/model2/<set>/shot.png` | | its card's screenshot |
 | `/model2/<set>/pkg/` | | its WebAssembly module (`RECOMP=1`) |
 | `/model2/pkg/` | | the interpreter module the games share (without `RECOMP`, or for a game with no recompiled code) |
-| `/model2/*.js` | `crates/web/*.js` | the workers, the audio worklet, the touch controls and the settings panel, shared |
+| `/model2/*.js` | `crates/web/*.js` | the workers (sound, geometry, texture pack), the audio worklet, the touch controls and the settings panel, shared |
 | `/rom/<set>/` | | the ROM files: not written, the server provides them (see Serving). A clone's page fetches from its parent's folder when its chips are there (`overrevb`'s from `rom/overrev/`): `make web` writes that folder into the page's `remodel-rom` meta tag (`remodel --game <set> rom-folder`) |
+| `/texpack/<set>/` | | the game's texture pack, if any: its PNGs and an `index.txt` (see Texture packs). Not written, the server provides it; `make web`'s swap leaves `texpack/` alone as it does `rom/`. A clone's page asks for its own folder only (no parent fallback) |
 
 The game list holds the supported games whose chips are all in
 `rom/<set>/` (or, for a clone, its parent's folder) as loose files (the
@@ -258,8 +259,9 @@ progress. It offers:
 - **Display:** render height (384, the native height; 768; 1080; or the
   screen's, the default: the window's height in device pixels, up to
   1080), aspect (fit the window, the default, 4:3 to 21:9; 4:3; 16:9),
-  HUD placement in wide views (at the edges, or centred) and the bezel (on,
-  the default, or off; below);
+  HUD placement in wide views (at the edges, or centred), the bezel (on,
+  the default, or off; below), anti-aliasing, the depth buffer, the texture
+  pack (off by default; below) and its filtering (off, mipmaps, 2x to 16x);
 - **Sound:** on or off, the effects (sound board) and music levels in
   dB (defaults +8 and -8, `model2::audio::DEFAULT_MIX`; the game's own
   level is added to both), and the buffer: the audio queued (auto, the
@@ -290,7 +292,7 @@ audio context is suspended, nothing reaches the workers; it resumes from
 the same frame). Resume applies the HUD placement (`set_hud`), the bezel, the mix
 (a `mix` message to the sound worker), the remapped controls
 (`set_bindings`) and touch and tilt at once; render
-height, aspect, sound on or off, the sound buffer, the geometrizer and smooth motion need a restart (anti-aliasing and the depth buffer apply at once, `set_quality`), and
+height, aspect, sound on or off, the sound buffer, the geometrizer and smooth motion need a restart (anti-aliasing, the depth buffer, the texture pack and its filtering apply at once: `set_quality`, `set_pack`), and
 the panel offers "Restart to apply" when one of them changed (it reloads
 the page with `#play`, skipping the panel once).
 
@@ -334,7 +336,13 @@ parameters:
   by depth, not the game's order, except skies, shadows, translucent
   layers and large floors; `docs/enhancements.md`). Both off by default,
   both in the panel's Display section, both applied live. The module's
-  `set_quality(aa, depth)` takes them before or after `start`.
+  `set_quality(aa, depth, texfilter)` takes them before or after `start`
+  (`texfilter` is a string: `off`, `mip`, `2`, `4`, `8` or `16`; anything
+  else is off);
+- `pack=1` (the game's texture pack from `/texpack/<set>/`; `pack=0` off) and
+  `texfilter=off|mip|2|4|8|16` (filtering of pack images, as in
+  `docs/texture-packs.md`). Both off by default, both in the panel's Display
+  section, both applied live.
 
 **Smooth motion.** With the setting on (`?smooth=1`, or Advanced in the
 panel; off by default), a display faster than the game's 57.5 Hz shows
@@ -363,6 +371,30 @@ build hasn't been run with it, so its cost there (a pass natively is
 0.2-0.4 ms for 2C games, 1.4-1.8 ms for 2B ones) and how it looks on a
 real 120 or 144 Hz display are untested. `Headless::set_geo_smooth` and
 `Headless::between_len` let Node time an in-between.
+
+**Texture packs.** With `pack` on, the page fetches `/texpack/<set>/index.txt`
+(`../../texpack/<set>/` from the game page): one file name per line (`.png`
+optional), `#` comments and blank lines ignored. A browser can't list a
+folder and asking for every texture the game draws would be a stream of 404s,
+so only names in the index are requested; `(cd DIR && ls *.png > index.txt)`
+writes one. Without it the
+original textures stay, with a console warning. The module asks for an
+image the first time its texture is drawn (`pack_wanted`); the page has the
+pack worker (`pack-worker.js`) fetch and decode it with the module's
+`decode_png`, the decoder the native player uses (at most four requests at
+once; a 1024x1024 PNG takes 10-50 ms), and hands over at most one decoded
+image a frame (`pack_image`; `pack_missing` for one that failed, which then
+keeps its original) so uploads don't pile up in one frame: a frame uploading
+a 1024x1024 image with its mipmaps measured up to 13 ms of draw against about
+3 ms normally. Until an image arrives the original is drawn. The renderer
+keeps images up to 192 MB (the least recently drawn are dropped, and
+fetched again when next drawn, likely from the HTTP cache). The status line shows
+the polygons replaced, the images held and the filter. `set_pack(index)` takes
+the index text (or `undefined` for none) before or after `start`. Only 3D
+textures are replaced (tiles are not live). Details: `docs/texture-packs.md`,
+`docs/gpu.md`. Tested in headed Chrome on Linux (headless Chromium loses the
+WebGPU device, "Testing headless" below). *Not verified:* other browsers,
+phones, `RECOMP=1` builds, eviction past the budget.
 
 **Bezels.** With the 4:3 aspect in a window wider than 4:3, the game's
 bezel fills the sides: original cabinet-style artwork, one per game

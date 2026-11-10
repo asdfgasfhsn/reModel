@@ -1,7 +1,7 @@
 //! Texture dumps and texture packs for `run` snapshots (`--dump-textures`,
 //! `--texture-pack`); docs/texture-packs.md describes the files.
 
-use model2::enhance::{Enhance, Rgba, TexInfo, TileInfo};
+use model2::enhance::{Enhance, Found, Rgba, TexInfo, TexturePack, TileInfo};
 use model2::raster::{texture_image, Sources};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
@@ -29,6 +29,8 @@ pub struct Packs {
     /// Pack images by file stem, loaded on first use (None: not in the
     /// pack, or unreadable).
     cache: HashMap<String, Option<Arc<Rgba>>>,
+    /// Mip chains of the images, by texture key (filtered snapshots).
+    mips: HashMap<u64, Arc<Vec<Rgba>>>,
     index: BTreeMap<String, Entry>,
     index_dirty: bool,
     /// Polygons and tile patterns replaced / looked up, over the run.
@@ -51,6 +53,7 @@ impl Packs {
             pack,
             frame: 0,
             cache: HashMap::new(),
+            mips: HashMap::new(),
             index: BTreeMap::new(),
             index_dirty: false,
             replaced: [0; 2],
@@ -139,6 +142,12 @@ impl Enhance for Packs {
         img
     }
 
+    fn texture_mips(&mut self, info: &TexInfo) -> Option<Arc<Vec<Rgba>>> {
+        let img = self.texture(info)?;
+        let mips = self.mips.entry(info.key).or_insert_with(|| Arc::new(img.mip_chain()));
+        Some(mips.clone())
+    }
+
     fn texture_drawn(&mut self, info: &TexInfo, src: &Sources, pixels: usize) {
         if pixels == 0 {
             return;
@@ -172,6 +181,17 @@ impl Enhance for Packs {
     }
 }
 
+/// Synchronous: images load on first use, so never `Pending` (snapshots and
+/// gpu-check stay deterministic).
+impl TexturePack for Packs {
+    fn find(&mut self, info: &TexInfo) -> Found {
+        match self.texture(info) {
+            Some(img) => Found::Image(img),
+            None => Found::Missing,
+        }
+    }
+}
+
 /// Parse `--dump-textures` / `--texture-pack` into `PACKS`.
 pub fn configure(dump: Option<String>, pack: Option<String>) -> Result<(), String> {
     if dump.is_none() && pack.is_none() {
@@ -202,9 +222,26 @@ mod tests {
         // A 4x replacement is picked up (by a fresh instance: misses are cached).
         let big = Rgba { width: 32, height: 32, data: vec![200; 32 * 32 * 4] };
         std::fs::write(pack.join("tile_0000000000001234.png"), png::encode_rgba(32, 32, &big.data)).unwrap();
-        let mut p = Packs::new(None, Some(pack)).unwrap();
+        let mut p = Packs::new(None, Some(pack.clone())).unwrap();
         assert_eq!(p.tile(&info).as_deref(), Some(&big));
         assert_eq!(png::decode(&dumped).unwrap().width, 8);
+        // Textures through the pack interface: Missing, then the image.
+        let tex = TexInfo {
+            key: 0xabcd,
+            width: 8,
+            height: 8,
+            header: [0; 4],
+            colour: 0,
+            bank: 0,
+            x0: 0,
+            y0: 0,
+            luma_table: 0,
+            translucent: false,
+        };
+        assert!(matches!(p.find(&tex), Found::Missing));
+        std::fs::write(pack.join(format!("{}.png", tex.name())), png::encode_rgba(32, 32, &big.data)).unwrap();
+        let mut p = Packs::new(None, Some(pack)).unwrap();
+        assert!(matches!(p.find(&tex), Found::Image(img) if *img == big));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

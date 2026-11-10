@@ -5,13 +5,15 @@
 //! otherwise under `$XDG_DATA_HOME/remodel` (`~/.local/share/remodel`).
 //!
 //! A game's settings ([`GameSettings`]: sound mix, display, speed, smooth
-//! motion, run-ahead, geometrizer) come in layers, lowest first, as in the browser
+//! motion, run-ahead, anti-aliasing, depth buffer, texture pack and its
+//! filtering, geometrizer) come in layers, lowest first, as in the browser
 //! build (`crates/web/settings.js`): the built-in defaults, the defaults for
 //! all games (`play-settings.txt`), the game's own (`<set>/settings.txt`)
 //! and the command line (this run only). A layer keeps only what it sets,
 //! so changing the defaults for all games reaches every game that hasn't
 //! set its own.
 
+use model2::enhance::TexFilter;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -37,6 +39,12 @@ pub struct GameSettings {
     pub aa: u32,
     /// Depth buffer for the 3D layer instead of the game's draw order.
     pub depth: bool,
+    /// Draw the game's texture pack (`<data dir>/<set>/texpack/`, or
+    /// `--texture-pack`) over its own textures.
+    pub pack: bool,
+    /// Filtering of texture pack images: off, mipmaps, or mipmaps with
+    /// anisotropic filtering (no effect without a pack).
+    pub tex_filter: TexFilter,
     /// The geometrizer on its chip (the game's own program) rather than
     /// the native implementation. Applies when the game starts.
     pub geo_chip: bool,
@@ -55,17 +63,43 @@ impl Default for GameSettings {
             run_ahead: 0,
             aa: 0,
             depth: false,
+            pack: false,
+            tex_filter: TexFilter::Off,
             geo_chip: false,
         }
     }
 }
 
 /// Every game setting's key, in the order the panels show them.
-pub const KEYS: [&str; 11] =
-    ["wide", "bezel", "hud_edges", "exact", "smooth", "run_ahead", "aa", "depth", "sfx_db", "music_db", "geo"];
+pub const KEYS: [&str; 13] = [
+    "wide",
+    "bezel",
+    "hud_edges",
+    "exact",
+    "smooth",
+    "run_ahead",
+    "aa",
+    "depth",
+    "pack",
+    "tex_filter",
+    "sfx_db",
+    "music_db",
+    "geo",
+];
 
 /// The anti-aliasing levels (samples a pixel; 0 is off).
 pub const AA_LEVELS: [u32; 3] = [0, 4, 8];
+
+/// The texture filter settings (label, value), most anisotropy last.
+const TEX_FILTERS: [(&str, &str); 6] =
+    [("Off", "off"), ("Mip", "mip"), ("2x", "2"), ("4x", "4"), ("8x", "8"), ("16x", "16")];
+
+/// The texture filter settings a GPU allowing anisotropic filtering up to
+/// `max_anisotropy` times (`gpu::max_anisotropy`) can use.
+pub fn tex_filters(max_anisotropy: u8) -> &'static [(&'static str, &'static str)] {
+    let n = TEX_FILTERS.iter().take_while(|f| f.1.parse::<u8>().map_or(true, |n| n <= max_anisotropy)).count();
+    &TEX_FILTERS[..n]
+}
 
 /// Most frames the player runs ahead.
 pub const MAX_RUN_AHEAD: u32 = 3;
@@ -84,6 +118,8 @@ impl GameSettings {
             "run_ahead" => self.run_ahead.to_string(),
             "aa" => self.aa.to_string(),
             "depth" => self.depth.to_string(),
+            "pack" => self.pack.to_string(),
+            "tex_filter" => self.tex_filter.to_string(),
             "geo" => if self.geo_chip { "chip" } else { "native" }.to_string(),
             _ => String::new(),
         }
@@ -109,6 +145,8 @@ impl GameSettings {
             "run_ahead" => v.parse::<u32>().ok().filter(|n| *n <= MAX_RUN_AHEAD).map(|n| self.run_ahead = n).is_some(),
             "aa" => v.parse::<u32>().ok().filter(|n| AA_LEVELS.contains(n)).map(|n| self.aa = n).is_some(),
             "depth" => flag(v).map(|x| self.depth = x).is_some(),
+            "pack" => flag(v).map(|x| self.pack = x).is_some(),
+            "tex_filter" => TexFilter::parse(v).map(|f| self.tex_filter = f).is_some(),
             "geo" => match model2::geo::GeoMode::parse(v) {
                 Some(model2::geo::GeoMode::Chip) => {
                     self.geo_chip = true;
@@ -514,6 +552,26 @@ mod tests {
         assert_eq!(v.get("run_ahead"), "2");
         assert!(!v.set("run_ahead", "4") && !v.set("run_ahead", "on"));
         assert_eq!(v.run_ahead, 2);
+    }
+
+    #[test]
+    fn pack_and_filter() {
+        let mut v = GameSettings::default();
+        assert!(!v.pack && v.tex_filter == TexFilter::Off);
+        assert!(v.set("pack", "true") && v.pack);
+        for f in ["off", "mip", "2", "4", "8", "16"] {
+            assert!(v.set("tex_filter", f));
+            assert_eq!(v.get("tex_filter"), f);
+        }
+        assert!(!v.set("tex_filter", "3") && v.tex_filter == TexFilter::Aniso(16));
+        // Through the files.
+        let s = Settings::parse(&with_game(Settings::parse("tex_filter = mip\npack = true\n"), "x", &[]).text());
+        assert_eq!(s.defaults.get("tex_filter").map(String::as_str), Some("mip"));
+        assert_eq!(s.defaults.get("pack").map(String::as_str), Some("true"));
+        // Choices: anisotropy only where the GPU has it.
+        assert_eq!(tex_filters(1).iter().map(|f| f.1).collect::<Vec<_>>(), ["off", "mip"]);
+        assert_eq!(tex_filters(16).len(), 6);
+        assert_eq!(tex_filters(4).last().unwrap().1, "4");
     }
 
     /// `edit` without saving (the layers it would touch are given).

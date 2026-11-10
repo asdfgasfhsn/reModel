@@ -29,12 +29,14 @@
 
 #![cfg(target_arch = "wasm32")]
 
+use model2::enhance::{Found, Rgba, TexInfo, TexturePack};
 use model2::video;
 use romset::bindings::{Bindings, Capture, Slot, Value};
 use romset::{PadAxis, PadButton};
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlCanvasElement, KeyboardEvent};
@@ -378,6 +380,23 @@ impl App {
     /// from the speed the game is meant to run at and how much it moved in
     /// this status window (cents), and the worklet's queue against its
     /// target.
+    /// The status line's texture pack part, with a pack: the last frame's
+    /// textured polygons replaced, and the images on the GPU.
+    fn pack_status(&self) -> String {
+        if !self.renderer.has_pack() {
+            return String::new();
+        }
+        let s = self.renderer.pack_stats();
+        let q = self.renderer.quality().tex_filter;
+        format!(
+            " · pack: {}/{} polygons, {} images ({:.0} MB), filter {q}",
+            s.replaced,
+            s.textured,
+            s.held,
+            s.bytes as f64 / 1048576.0
+        )
+    }
+
     fn audio_status(&self, t: f64) -> String {
         if self.link.is_none() || self.redraws < 2 {
             return String::new();
@@ -498,7 +517,7 @@ impl App {
             set_status(
                 &self.status,
                 &format!(
-                    "{} · {:.0}% speed{} · {:.0} fps drawn ({} repeats) · {}x{} · i960 {} · ms per frame: emulate {:.1}, draw {:.1}{}{}",
+                    "{} · {:.0}% speed{} · {:.0} fps drawn ({} repeats) · {}x{} · i960 {} · ms per frame: emulate {:.1}, draw {:.1}{}{}{}",
                     match self.per_refresh() {
                         Some(_) => format!("synced to {:.0} Hz", 1000.0 / self.refresh.ms()),
                         None => "exact speed".into(),
@@ -517,6 +536,7 @@ impl App {
                         (n, ms) if self.geo_frame.is_none() => format!(" · {n} in-betweens, {:.1} ms each", ms / n as f64),
                         (n, _) => format!(" · {n} in-betweens"),
                     },
+                    self.pack_status(),
                     self.audio_status(t),
                 ),
             );
@@ -538,8 +558,12 @@ thread_local! {
     static OVERRIDES: RefCell<String> = const { RefCell::new(String::new()) };
     /// Smooth motion for the game `start` starts ([`set_smooth`]).
     static SMOOTH: Cell<bool> = const { Cell::new(false) };
-    /// Anti-aliasing samples and the depth buffer ([`set_quality`]).
-    static QUALITY: Cell<(u32, bool)> = const { Cell::new((0, false)) };
+    /// Anti-aliasing samples, the depth buffer and the filtering of texture
+    /// pack images ([`set_quality`]).
+    static QUALITY: Cell<(u32, bool, gpu::TexFilter)> = const { Cell::new((0, false, gpu::TexFilter::Off)) };
+    /// The texture pack the page is filling ([`set_pack`]), for the game
+    /// `start` starts.
+    static PACK: RefCell<Option<Arc<Mutex<PackState>>>> = const { RefCell::new(None) };
     /// The audio the game `start` starts holds queued ([`set_audio_buffer`]).
     static AUDIO_BUFFER: Cell<f64> = const { Cell::new(AUDIO_TARGET) };
 }
@@ -567,16 +591,148 @@ pub fn set_smooth(on: bool) {
 }
 
 /// Image quality of the 3D layer (docs/enhancements.md): `aa` samples a
-/// pixel (0 for none; WebGPU has 4) and the depth buffer. Before `start`,
+/// pixel (0 for none; WebGPU has 4), the depth buffer, and `tex_filter`,
+/// the filtering of texture pack images (`off`, `mip`, `2`, `4`, `8`,
+/// `16`: `gpu::TexFilter::parse`; anything else is off). Before `start`,
 /// for the game it starts; after, from the next frame.
 #[wasm_bindgen]
-pub fn set_quality(aa: u32, depth: bool) {
-    QUALITY.with(|q| q.set((aa, depth)));
+pub fn set_quality(aa: u32, depth: bool, tex_filter: &str) {
+    let tex_filter = gpu::TexFilter::parse(tex_filter).unwrap_or_default();
+    QUALITY.with(|q| q.set((aa, depth, tex_filter)));
     APP.with(|a| {
         if let Some(app) = a.borrow().as_ref() {
-            app.borrow_mut().renderer.set_quality(gpu::Quality { msaa: aa, depth });
+            app.borrow_mut().renderer.set_quality(gpu::Quality { msaa: aa, depth, tex_filter });
         }
     });
+}
+
+/// A texture pack served beside the page (docs/web.md, "Texture packs"):
+/// the names its `index.txt` lists, and the images the page has fetched
+/// and decoded so far. The renderer asks for a texture by name; one in the
+/// index is fetched the first time it is drawn (`Pending` until then),
+/// anything else is `Missing`, so the page never asks the server for a
+/// file that isn't there.
+#[derive(Default)]
+struct PackState {
+    index: HashSet<String>,
+    /// Names asked for and not yet handed to the renderer.
+    asked: HashSet<String>,
+    /// Names for the page to fetch ([`pack_wanted`]).
+    wanted: Vec<String>,
+    /// Decoded images waiting for the renderer ([`pack_image`]).
+    ready: HashMap<String, Arc<Rgba>>,
+    /// Names that couldn't be fetched or decoded ([`pack_missing`]).
+    failed: HashSet<String>,
+}
+
+struct WebPack(Arc<Mutex<PackState>>);
+
+impl TexturePack for WebPack {
+    fn find(&mut self, info: &TexInfo) -> Found {
+        let name = info.name();
+        let mut s = self.0.lock().unwrap();
+        if let Some(img) = s.ready.remove(&name) {
+            // The renderer keeps it now; if it drops it (over its memory
+            // budget), asking again fetches it again (from the HTTP cache).
+            s.asked.remove(&name);
+            return Found::Image(img);
+        }
+        if !s.index.contains(&name) || s.failed.contains(&name) {
+            return Found::Missing;
+        }
+        if s.asked.insert(name.clone()) {
+            s.wanted.push(name);
+        }
+        Found::Pending
+    }
+}
+
+fn with_pack<T>(f: impl FnOnce(&mut PackState) -> T) -> Option<T> {
+    PACK.with(|p| p.borrow().as_ref().map(|p| f(&mut p.lock().unwrap())))
+}
+
+/// Use a texture pack whose `index.txt` is `index` (one file name a line,
+/// `.png` optional; blank lines and `#` comments ignored), or none
+/// (`undefined`, the default: the original textures). Before `start`, for
+/// the game it starts; after, from the next frame. Returns the number of
+/// names in the index. The page then fetches what [`pack_wanted`] names
+/// and hands it over with [`pack_image`] or [`pack_missing`].
+#[wasm_bindgen]
+pub fn set_pack(index: Option<String>) -> u32 {
+    let state = index.map(|text| {
+        let index: HashSet<String> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| l.strip_suffix(".png").unwrap_or(l).to_string())
+            .collect();
+        Arc::new(Mutex::new(PackState { index, ..Default::default() }))
+    });
+    let names = state.as_ref().map_or(0, |s| s.lock().unwrap().index.len() as u32);
+    PACK.with(|p| *p.borrow_mut() = state.clone());
+    APP.with(|a| {
+        if let Some(app) = a.borrow().as_ref() {
+            app.borrow_mut().renderer.set_pack(state.map(|s| Box::new(WebPack(s)) as Box<dyn TexturePack + Send>));
+        }
+    });
+    names
+}
+
+/// The pack images drawn since the last call that the page should fetch
+/// (file stems: `<name>.png` in the pack's folder).
+#[wasm_bindgen]
+pub fn pack_wanted() -> Vec<String> {
+    with_pack(|s| std::mem::take(&mut s.wanted)).unwrap_or_default()
+}
+
+/// A pack image, decoded (straight alpha RGBA, `width` x `height`): the
+/// renderer uploads it the next time it draws its texture.
+#[wasm_bindgen]
+pub fn pack_image(name: String, width: u32, height: u32, rgba: Vec<u8>) {
+    let (w, h) = (width as usize, height as usize);
+    if rgba.len() != w * h * 4 {
+        return pack_missing(name);
+    }
+    with_pack(|s| {
+        if s.asked.contains(&name) {
+            s.ready.insert(name, Arc::new(Rgba { width: w, height: h, data: rgba }));
+        }
+    });
+}
+
+/// A pack image that couldn't be fetched or decoded: its texture keeps its
+/// original from now on.
+#[wasm_bindgen]
+pub fn pack_missing(name: String) {
+    with_pack(|s| {
+        s.asked.remove(&name);
+        s.failed.insert(name);
+    });
+}
+
+/// A decoded PNG file ([`decode_png`]).
+#[wasm_bindgen]
+pub struct Png {
+    pub width: u32,
+    pub height: u32,
+    rgba: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl Png {
+    /// Its pixels, 8-bit RGBA with straight alpha, rows top to bottom.
+    pub fn rgba(self) -> Vec<u8> {
+        self.rgba
+    }
+}
+
+/// Decode a PNG file with the repo's own decoder (`png::decode`, as the
+/// native player and `remodel` read packs), for the pack worker
+/// (pack-worker.js).
+#[wasm_bindgen]
+pub fn decode_png(file: &[u8]) -> Result<Png, JsValue> {
+    let img = png::decode(file).map_err(|e| JsValue::from_str(&e))?;
+    Ok(Png { width: img.width as u32, height: img.height as u32, rgba: img.rgba })
 }
 
 /// Use the player's remapped controls: `overrides` as the settings panel
@@ -1290,8 +1446,11 @@ pub async fn start(
         .unwrap_or(config.format.remove_srgb_suffix());
     surface.configure(&device, &config);
     let mut renderer = gpu::Renderer::from_device(device, queue, name.clone());
-    let (aa, depth) = QUALITY.with(|q| q.get());
-    renderer.set_quality(gpu::Quality { msaa: aa, depth });
+    let (aa, depth, tex_filter) = QUALITY.with(|q| q.get());
+    renderer.set_quality(gpu::Quality { msaa: aa, depth, tex_filter });
+    if let Some(pack) = PACK.with(|p| p.borrow().clone()) {
+        renderer.set_pack(Some(Box::new(WebPack(pack))));
+    }
     web_sys::console::log_1(&format!("remodel: {name}, {}x{}, {:?}", view.width, view.height, config.format).into());
 
     let app = Rc::new(RefCell::new(App {

@@ -1,6 +1,7 @@
 //! `remodel gpu-check`: draw captured frames with the software rasteriser
 //! and the GPU one, time both and compare them.
 
+use crate::texpack::Packs;
 use model2::capture::{self, Frame};
 use model2::raster;
 use model2::video::{self, Hud, View};
@@ -87,7 +88,14 @@ fn time(n: usize, mut f: impl FnMut()) -> f64 {
 
 /// What multisampling and the depth buffer cost the GPU: whole frames
 /// (3D layer, compose, readback) per configuration, mean over the frames.
-fn cost(gpu: &mut gpu::Renderer, root_dirs: &[std::path::PathBuf], texture_rom: &[u16], views: &[(&str, View)]) {
+fn cost(
+    gpu: &mut gpu::Renderer,
+    root_dirs: &[std::path::PathBuf],
+    texture_rom: &[u16],
+    views: &[(&str, View)],
+    pack: Option<&Path>,
+    tex_filter: gpu::TexFilter,
+) -> Result<(), String> {
     let configs = [(1, false), (4, false), (8, false), (1, true), (4, true), (8, true)];
     let frames: Vec<_> = root_dirs.iter().filter_map(|d| Frame::load(d).ok()).collect();
     println!("cost          whole frame on the GPU incl. readback, mean over {} frames, ms", frames.len());
@@ -99,10 +107,21 @@ fn cost(gpu: &mut gpu::Renderer, root_dirs: &[std::path::PathBuf], texture_rom: 
         );
     }
     println!();
-    for (name, view) in views {
-        print!("{name:<12}");
+    // With a pack: each view without it, then with it.
+    let packs: &[Option<&Path>] = if pack.is_some() { &[None, pack] } else { &[None] };
+    for ((name, view), pack) in views.iter().flat_map(|v| packs.iter().map(move |p| (v, *p))) {
+        match pack {
+            Some(dir) => {
+                gpu.set_pack(Some(Box::new(Packs::new(None, Some(dir.to_path_buf()))?)));
+                print!("{:<12}", format!("{name} pack"));
+            }
+            None => {
+                gpu.set_pack(None);
+                print!("{name:<12}");
+            }
+        }
         for (msaa, depth) in configs {
-            let q = gpu.set_quality(gpu::Quality { msaa, depth });
+            let q = gpu.set_quality(gpu::Quality { msaa, depth, tex_filter });
             if q.msaa != msaa {
                 print!(" {:>10}", "n/a");
                 continue;
@@ -123,14 +142,22 @@ fn cost(gpu: &mut gpu::Renderer, root_dirs: &[std::path::PathBuf], texture_rom: 
         }
         println!();
     }
+    Ok(())
 }
 
-pub fn run(root: &Path, hud_windows: (&[usize], &[usize]), aa: u32, depth: bool) -> Result<(), String> {
+pub fn run(
+    root: &Path,
+    hud_windows: (&[usize], &[usize]),
+    aa: u32,
+    depth: bool,
+    pack: Option<&Path>,
+    tex_filter: gpu::TexFilter,
+) -> Result<(), String> {
     let texture_rom = capture::load_texture_rom(root)
         .map_err(|e| format!("{}: {e} (capture with `make capture`)", root.display()))?;
     let mut gpu = gpu::Renderer::new()?;
     println!("gpu           {}", gpu.adapter());
-    let q = gpu.set_quality(gpu::Quality { msaa: aa, depth });
+    let q = gpu.set_quality(gpu::Quality { msaa: aa, depth, tex_filter });
     println!(
         "quality       {} samples a pixel on the GPU ({} supersampled in software), depth buffer {}",
         q.msaa,
@@ -142,6 +169,16 @@ pub fn run(root: &Path, hud_windows: (&[usize], &[usize]), aa: u32, depth: bool)
         if depth { "on" } else { "off" }
     );
     let ss = if aa > 1 { super::supersample_factor(aa) } else { 1 };
+    // A texture pack: the software renderer draws through its hooks, the
+    // GPU through `set_pack`, from separate instances of the same pack.
+    let mut sw_pack = match pack {
+        Some(dir) => {
+            gpu.set_pack(Some(Box::new(Packs::new(None, Some(dir.to_path_buf()))?)));
+            println!("pack          {}, filter {}", dir.display(), q.tex_filter);
+            Some(Packs::new(None, Some(dir.to_path_buf()))?)
+        }
+        None => None,
+    };
     let mut dirs: Vec<_> = std::fs::read_dir(root)
         .map_err(|e| e.to_string())?
         .flatten()
@@ -178,7 +215,10 @@ pub fn run(root: &Path, hud_windows: (&[usize], &[usize]), aa: u32, depth: bool)
             let mut sw_polys = polys.clone();
             hud.anchor(&mut sw_polys, view);
             let t = Instant::now();
-            let sw = raster::draw_view_depth(&mut sw_polys, &src, view, depth);
+            let sw = match &mut sw_pack {
+                Some(p) => raster::draw_enhanced_filtered(&mut sw_polys, &src, view, p, depth, tex_filter),
+                None => raster::draw_view_depth(&mut sw_polys, &src, view, depth),
+            };
             let sw_ms = t.elapsed().as_secs_f64() * 1e3;
             let t = Instant::now();
             let mut gpu_polys = polys.clone();
@@ -186,6 +226,7 @@ pub fn run(root: &Path, hud_windows: (&[usize], &[usize]), aa: u32, depth: bool)
             let placed = raster::place(&mut gpu_polys, view);
             let g = gpu.draw(&gpu_polys, &placed, &src, view);
             let gpu_ms = t.elapsed().as_secs_f64() * 1e3;
+            let stats = gpu.pack_stats();
             let mut df = diff(&sw, &g);
             // What a live frame costs on the CPU before the GPU: parse the
             // stream, place the polygons, build the 2D layers.
@@ -216,7 +257,10 @@ pub fn run(root: &Path, hud_windows: (&[usize], &[usize]), aa: u32, depth: bool)
             if ss > 1 {
                 let big = view.supersampled(ss);
                 let mut p = polys.clone();
-                let big_layer = raster::draw_view_depth(&mut p, &src, &big, depth);
+                let big_layer = match &mut sw_pack {
+                    Some(pk) => raster::draw_enhanced_filtered(&mut p, &src, &big, pk, depth, tex_filter),
+                    None => raster::draw_view_depth(&mut p, &src, &big, depth),
+                };
                 let big_frame = video::compose(&f.tiles, &f.palette, Some((&big_layer.0, &big_layer.1)), &big);
                 let sw_frame = video::downsample(&big_frame, big.width, big.height, ss);
                 let pairs = sw_frame.as_chunks::<3>().0.iter().zip(gpu_frame.as_chunks::<3>().0);
@@ -235,6 +279,30 @@ pub fn run(root: &Path, hud_windows: (&[usize], &[usize]), aa: u32, depth: bool)
                 pct(df.large, df.pixels),
                 pct(compose_diff, df.pixels)
             );
+            if pack.is_some() {
+                // Hashing every texture's texels, as a frame does when
+                // render RAM changed (or its version is unknown).
+                let t = Instant::now();
+                let mut keys = raster::TexKeys::default();
+                let hashed = placed
+                    .iter()
+                    .filter_map(|pl| {
+                        let p = &gpu_polys[pl.poly];
+                        raster::tex_info(p, p.texture.as_ref()?, &src, &mut keys)
+                    })
+                    .count();
+                let keys_ms = ms(t);
+                println!(
+                    "  pack: {} of {} textured polygons replaced, {} images, {} draws, {} uploaded, {} held ({:.1} MB); keys for {hashed} polygons {keys_ms:.2}ms",
+                    stats.replaced,
+                    stats.textured,
+                    stats.images,
+                    stats.draws,
+                    stats.uploaded,
+                    stats.held,
+                    stats.bytes as f64 / (1 << 20) as f64
+                );
+            }
             if k == 1 {
                 let _ = std::fs::write(d.join("gpu-frame.png"), png::encode_rgb(view.width, view.height, &gpu_frame));
             }
@@ -267,7 +335,7 @@ pub fn run(root: &Path, hud_windows: (&[usize], &[usize]), aa: u32, depth: bool)
     if aa > 1 {
         println!("(multisampled: coverage is 0 and colour/>16 count pixels of the whole frame, the GPU's against the software renderer's supersampled one)");
     }
-    cost(&mut gpu, &dirs, &texture_rom, &views);
+    cost(&mut gpu, &dirs, &texture_rom, &views, pack, q.tex_filter)?;
     match tiles_differ.len() {
         0 => println!("2d layers     fast path identical to the reference on all {} frames", dirs.len()),
         n => println!("2d layers     fast path DIFFERS from the reference on {n} frames: {tiles_differ:?}"),

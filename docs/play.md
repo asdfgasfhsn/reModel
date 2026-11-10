@@ -37,6 +37,26 @@ floors). Neither changes what the game computes: state hashes are the
 same. Costs 0.5-1 and 1.5-3 ms a frame at 1080p on the development GPU
 (`docs/gpu.md`); what the depth buffer does is in `docs/enhancements.md`.
 
+**Texture packs** (settings `pack` and `tex_filter`, below; `--pack on|off`,
+`--texture-pack DIR` and `--tex-filter off|mip|2|4|8|16` for one run; both
+off by default). With `pack` on, replacement textures from the game's pack
+(`docs/texture-packs.md`) are drawn on the GPU in place of the originals. The
+pack is the folder `<data dir>/<set>/texpack/` (`out/<set>/texpack` in a
+source tree), and a clone with none uses
+its parent's (*unconfirmed*: not tested). `--texture-pack DIR` names one for
+every game that run and turns `pack` on; `--pack` alone means on. PNGs are
+decoded on background threads when their texture is first drawn and the
+original shows until then. The launcher's previews never use packs. The Esc
+menu's line under the checkbox shows the folder, how many images it holds and
+how many of the last frame's textured polygons were replaced, or why there
+is no pack (a missing folder also gives a notice). `tex_filter` filters pack
+images only: `off` (as they are), `mip` (mipmaps, no shimmer on distant
+ground) or `2`, `4`, `8`, `16` (mipmaps plus anisotropic filtering up to that
+many times, for ground at grazing angles); the menu offers only what the GPU
+has. Neither changes what the game computes. Checked on `topskatr` with a
+scripted run. *Not verified:* smooth motion's in-betweens and F5/F9 save
+slots with a pack, and decode stutter was not measured.
+
 **Smooth motion** (a setting, below; `--smooth` for one run; off by
 default). On a
 display faster than the game's 57.5 Hz, the refreshes between two game
@@ -223,7 +243,7 @@ emulated like the game would be (it costs what the game costs).
 **Settings** slide out from the right over the preview, which shows what
 they change as they change: aspect (fit the window or 4:3), bezel, HUD at
 the edges or centred, speed (one frame a refresh or exact arcade speed),
-smooth motion, anti-aliasing (off, 4x, 8x), the depth buffer, the effects and music levels in dB, the geometrizer (native
+smooth motion, anti-aliasing (off, 4x, 8x), the depth buffer, the texture pack and its filtering (off, mip, 2x to 16x), the effects and music levels in dB, the geometrizer (native
 or the game's chip; the preview restarts on it) and the Controls page
 (remapping, below). "Save for" says where changes go: the defaults for all
 games, or this game only (a game's own setting is tagged "this game", and
@@ -231,7 +251,7 @@ games, or this game only (a game's own setting is tagged "this game", and
 the Esc menu while playing. They come in layers, lowest first, as in the
 browser build: the built-in defaults, the defaults for all games, the
 game's own, then the command line (`--mix`, `--hud`, `--aspect`, `--bezel`,
-`--exact`, `--smooth`, `--aa`, `--depth`, `--geo`), which applies to that run only and is
+`--exact`, `--smooth`, `--aa`, `--depth`, `--pack`, `--texture-pack`, `--tex-filter`, `--geo`), which applies to that run only and is
 never saved, unless a setting it gave is changed in the launcher or menu
 (that change is then kept as any other). A layer keeps only what it sets.
 
@@ -632,7 +652,8 @@ synthetic and scripted (`--nav`) events only, not yet with a real pad.
 - **Display**: the aspect (fit the window, the default, drawing the game
   wider than its frame from 4:3 to 32:9; or 4:3, `--aspect 4:3`), the
   bezel (below), where the HUD goes on wide windows, smooth motion,
-  anti-aliasing and the depth buffer (above), run-ahead (above), the geometrizer (on the next start), "Save changes
+  anti-aliasing and the depth buffer (above), the texture pack and its
+  filtering (above), run-ahead (above), the geometrizer (on the next start), "Save changes
   for" this game or all games (as in the launcher), and exact arcade speed
   (57.524 frames per second) against the default of one game frame per
   display refresh at 60 or 120 Hz, which is 4.3% fast but smooth.
@@ -743,6 +764,8 @@ directory), the player keeps its files in `out/`; anywhere else in
   `resume.save` is the one Continue loads.
 - `<set>/preview-native.save` (`-chip` with the chip geometrizer): the
   launcher's attract mode preview state.
+- `<set>/texpack/`: the game's texture pack, if you make one (PNGs named
+  as a dump's).
 
 ## A copy to hand out
 

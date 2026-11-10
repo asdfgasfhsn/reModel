@@ -179,8 +179,9 @@ enum Row {
     Reset,
 }
 
-/// The settings panel's rows: key, label, hint, and choices (label, value).
-fn rows(has_own: bool) -> Vec<Row> {
+/// The settings panel's rows: key, label, hint, and choices (label, value);
+/// texture filters up to `max_anisotropy` (`gpu::max_anisotropy`).
+fn rows(has_own: bool, max_anisotropy: u8) -> Vec<Row> {
     let mut rows = vec![
         Row::Scope,
         Row::Choice("wide", "Aspect", "", &[("Fit the window", "true"), ("4:3", "false")]),
@@ -215,6 +216,18 @@ fn rows(has_own: bool) -> Vec<Row> {
             "Depth buffer",
             "polygons that cross or are sorted wrong come out right; off draws in the game's order",
             &[("Off", "false"), ("On", "true")],
+        ),
+        Row::Choice(
+            "pack",
+            "Texture pack",
+            "replacement textures from the game's texpack folder",
+            &[("Off", "false"), ("On", "true")],
+        ),
+        Row::Choice(
+            "tex_filter",
+            "Texture filtering",
+            "of pack images: less shimmer far off",
+            crate::settings::tex_filters(max_anisotropy),
         ),
         Row::Db("sfx_db", "Effects", -20.0, 20.0),
         Row::Db("music_db", "Music", -30.0, 10.0),
@@ -264,6 +277,9 @@ pub struct Launcher {
     logo: Option<egui::TextureHandle>,
     /// The ROM folder being edited (no games found).
     pub rom_text: String,
+    /// Anisotropic filtering the GPU has (`gpu::max_anisotropy`): the
+    /// texture filters offered.
+    pub max_anisotropy: u8,
 }
 
 impl Default for Launcher {
@@ -291,6 +307,7 @@ impl Default for Launcher {
             art: None,
             logo: None,
             rom_text: String::new(),
+            max_anisotropy: 16,
         }
     }
 }
@@ -418,7 +435,7 @@ impl Launcher {
                 }
             }
             Panel::Settings => {
-                let rows = rows(has_own);
+                let rows = rows(has_own, self.max_anisotropy);
                 self.row = self.row.min(rows.len() - 1);
                 match nav {
                     Nav::Back | Nav::Settings => self.panel = Panel::Closed,
@@ -1158,7 +1175,7 @@ impl Launcher {
             y += g.size().y + 14.0 * u;
             p.hline(inner.x_range(), y, Stroke::new(1.0 * u, LINE));
             y += 10.0 * u;
-            let rows = rows(has_own);
+            let rows = rows(has_own, self.max_anisotropy);
             self.row = self.row.min(rows.len() - 1);
             let row_h = 66.0 * u;
             // Keep the focused row on screen.

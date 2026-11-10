@@ -75,7 +75,7 @@ make verify                        # check the chips against known-good hashes
 make scan                          # list the sets found in rom/
 make play RECOMP=1                 # the launcher: pick a game, then play
 make play GAME=hotd RECOMP=1       # straight into a game
-make web RECOMP=1                  # browser build -> out/web (serve over HTTPS)
+make web RECOMP=1                  # browser build -> out/web (needs unzipped rom/<set>/ folders; serve over HTTPS)
 ```
 
 `make recomp` builds the recompiled code once a game has been run; `RECOMP=1`

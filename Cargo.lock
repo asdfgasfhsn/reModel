@@ -2457,6 +2457,7 @@ dependencies = [
  "js-sys",
  "remodel-gpu",
  "remodel-model2",
+ "remodel-png",
  "remodel-recomp",
  "remodel-romset",
  "wasm-bindgen",

@@ -15,7 +15,7 @@
 export const MIX = [8, -8];
 
 /// Every setting, in panel order.
-export const KEYS = ["height", "aspect", "hud", "bezel", "aa", "depth", "sound", "sfx", "music", "buffer", "touch",
+export const KEYS = ["height", "aspect", "hud", "bezel", "aa", "depth", "pack", "texfilter", "sound", "sfx", "music", "buffer", "touch",
   "tilt", "geo", "smooth", "controls"];
 /// Settings kept per game only, never as the defaults for all games:
 /// `controls` is the game's remapped keys and pad bindings, as the module
@@ -45,6 +45,8 @@ export function builtin(env = {}) {
     bezel: true,
     aa: "off",
     depth: false,
+    pack: false,
+    texfilter: "off",
     sound: true,
     sfx: MIX[0],
     music: MIX[1],
@@ -80,7 +82,14 @@ export function clean(key, v) {
     // Multisampling: WebGPU guarantees 4x only.
     case "aa":
       return v === "off" || v === "4" ? v : v === 0 || v === false ? "off" : v === 4 ? "4" : undefined;
+    // Filtering of texture pack images: off, mipmaps, or mipmaps with
+    // anisotropic filtering up to 2 to 16 times (gpu::TexFilter).
+    case "texfilter":
+      if (v === 0 || v === false || v === "0") return "off";
+      if (v === 1 || v === "1") return "mip";
+      return ["off", "mip", "2", "4", "8", "16"].includes(String(v)) ? String(v) : undefined;
     case "depth":
+    case "pack":
     case "bezel":
     case "sound":
     case "touch":
@@ -130,8 +139,10 @@ function cleanAll(o) {
 /// even where the native implementation has it; `geo=sharc` and `geo=tgp`
 /// say the same; `geo=native` is the default, kept for old links), `smooth=1`
 /// (smooth motion: in-between frames on displays faster than the game),
-/// `aa=4` (4x multisampling; `aa=0` or `aa=off` off) and `depth=1` (a depth
-/// buffer for the 3D layer).
+/// `aa=4` (4x multisampling; `aa=0` or `aa=off` off), `depth=1` (a depth
+/// buffer for the 3D layer), `pack=1` (the game's texture pack, from
+/// /texpack/<set>/) and `texfilter=off|mip|2|4|8|16` (filtering of pack
+/// images).
 export function fromParams(params) {
   const raw = {};
   const flag = (k) => params.get(k) !== "0" && params.get(k) !== "off" && params.get(k) !== "false";
@@ -141,6 +152,8 @@ export function fromParams(params) {
   if (params.has("bezel")) raw.bezel = flag("bezel");
   if (params.has("aa")) raw.aa = flag("aa") ? "4" : "off";
   if (params.has("depth")) raw.depth = flag("depth");
+  if (params.has("pack")) raw.pack = flag("pack");
+  if (params.has("texfilter")) raw.texfilter = params.get("texfilter");
   if (params.has("sound")) raw.sound = flag("sound");
   if (params.has("sfx")) raw.sfx = params.get("sfx");
   if (params.has("music")) raw.music = params.get("music");
@@ -254,7 +267,8 @@ export function audioBuffer(buffer, env = {}) {
 
 /// What the page starts the game with: `{height, aspect (width / height),
 /// hudEdges, bezel, sound, mix: [sfx, music], audio: {target, prime, max},
-/// touch, tilt, geoLocal, geoNative, smooth, aa (samples, 0 or 4), depth}`
+/// touch, tilt, geoLocal, geoNative, smooth, aa (samples, 0 or 4), depth,
+/// pack, texFilter ("off", "mip", "2" ... "16")}`
 /// (smooth motion needs the
 /// native geometrizer: off with the chip).
 export function effective(values, env) {
@@ -273,6 +287,8 @@ export function effective(values, env) {
     smooth: values.smooth && values.geo !== "chip",
     aa: values.aa === "4" ? 4 : 0,
     depth: values.depth,
+    pack: values.pack,
+    texFilter: values.texfilter,
   };
 }
 
