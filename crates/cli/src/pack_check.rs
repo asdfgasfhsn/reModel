@@ -164,3 +164,110 @@ pub fn run(
     );
     Ok(())
 }
+
+/// `remodel tile-check`: draw captured frames with a texture pack's tile
+/// images live on the GPU (`gpu::Renderer::layers_2d`) and compare them
+/// with the software snapshots' tile replacement (`compose_enhanced`) over
+/// the same 3D layer; write both, and the frame without the pack, as
+/// pictures.
+pub fn run_tiles(
+    root: &Path,
+    hud_windows: (&[usize], &[usize]),
+    view: Option<View>,
+    pack: &Path,
+    out_dir: &Path,
+    light: Option<&model2::light::Options>,
+) -> Result<(), String> {
+    let texture_rom = capture::load_texture_rom(root)
+        .map_err(|e| format!("{}: {e} (capture with `make capture`)", root.display()))?;
+    let mut gpu = gpu::Renderer::new()?;
+    let mut plain = gpu::Renderer::new()?;
+    let mut view = view.unwrap_or_else(|| View::new(1080, 16.0 / 9.0, video::Hud::Edges));
+    view = view.with_hud_windows(hud_windows.0, hud_windows.1);
+    let q = super::gpu_light(light);
+    gpu.set_quality(q);
+    plain.set_quality(q);
+    gpu.set_pack(Some(Box::new(Packs::new(None, Some(pack.to_path_buf()))?)));
+    let mut sw_pack = Packs::new(None, Some(pack.to_path_buf()))?;
+    println!("gpu           {}", gpu.adapter());
+    println!("view          {}x{}", view.width, view.height);
+    println!("pack          {}", pack.display());
+    let mut dirs: Vec<_> = std::fs::read_dir(root)
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.join("meta.txt").exists())
+        .collect();
+    dirs.sort();
+    std::fs::create_dir_all(out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
+    println!(
+        "tiles: patterns replaced; changed: pixels the pack changes; gpu-sw: pixels where the GPU's tiles differ \
+         from the software's (any, > 16); 2d ms: the layers on the CPU, plain and with tiles; frame ms: a whole \
+         GPU frame with readback, the same 3D, plain and with tiles"
+    );
+    println!(
+        "{:<8} {:>6} {:>8}  {:>9} {:>9}  {:>8} {:>8}  {:>8} {:>8}",
+        "frame", "tiles", "changed", "gpu-sw", ">16", "2d ms", "tiles ms", "frame ms", "tiles ms"
+    );
+    let (mut worst, mut n) = (0usize, 0);
+    for d in &dirs {
+        let f = Frame::load(d).map_err(|e| format!("{}: {e}", d.display()))?;
+        let src = f.sources(&texture_rom);
+        let mut polys = raster::build_shaded(&f.stream, &src, light);
+        video::HudLayout::new(&f.tiles, &f.palette, &view).anchor(&mut polys, &view);
+        let placed = raster::place(&mut polys, &view);
+        let has_3d = !placed.is_empty();
+        let name = |s: &str| out_dir.join(format!("{:05}-{s}.png", f.frame));
+        let save = |s: &str, rgb: &[u8]| {
+            let _ = std::fs::write(name(s), png::encode_rgb(view.width, view.height, rgb));
+        };
+        let t = Instant::now();
+        let layers = video::layers_2d(&f.tiles, &f.palette, &view, has_3d);
+        let plain_ms = t.elapsed().as_secs_f64() * 1e3;
+        let original = plain.frame(&polys, &placed, &src, &view, &layers);
+        // Twice: the first looks the patterns up and fills the atlas.
+        gpu.layers_2d(&f.tiles, &f.palette, &view, has_3d);
+        let t = Instant::now();
+        let tiled = gpu.layers_2d(&f.tiles, &f.palette, &view, has_3d);
+        let tiles_ms = t.elapsed().as_secs_f64() * 1e3;
+        let frame = gpu.frame(&polys, &placed, &src, &view, &tiled);
+        let replaced = tiled.tiles.as_ref().map_or(0, |m| m.replaced);
+        let frame_ms = [&layers, &tiled].map(|l| {
+            time(5, || {
+                gpu.frame(&polys, &placed, &src, &view, l);
+            })
+        });
+        // The software's tiles over the GPU's own 3D layer.
+        let layer = gpu.draw(&polys, &placed, &src, &view);
+        let sw = video::compose_enhanced(&f.tiles, &f.palette, Some((&layer.0, &layer.1)), &view, &mut sw_pack);
+        save("orig", &original);
+        save("gpu", &frame);
+        save("sw", &sw);
+        let px = |a: &[u8], b: &[u8], min: u8| {
+            let (a, b) = (a.as_chunks::<3>().0, b.as_chunks::<3>().0);
+            a.iter().zip(b).filter(|(p, q)| (0..3).any(|c| p[c].abs_diff(q[c]) > min)).count()
+        };
+        let total = (view.width * view.height) as f64;
+        let changed = px(&original, &frame, 0);
+        let (any, large) = (px(&frame, &sw, 0), px(&frame, &sw, 16));
+        worst = worst.max(large);
+        println!(
+            "{:<8} {:>6} {:>7.2}%  {:>8.3}% {:>8.3}%  {:>8.2} {:>8.2}  {:>8.2} {:>8.2}",
+            f.frame,
+            replaced,
+            100.0 * changed as f64 / total,
+            100.0 * any as f64 / total,
+            100.0 * large as f64 / total,
+            plain_ms,
+            tiles_ms,
+            frame_ms[0],
+            frame_ms[1]
+        );
+        n += 1;
+    }
+    println!("pictures      {}/FRAME-{{orig,gpu,sw}}.png ({n} frames)", out_dir.display());
+    if worst > 0 {
+        println!("note          some pixels differ by more than 16 between the GPU's tiles and the software's");
+    }
+    Ok(())
+}

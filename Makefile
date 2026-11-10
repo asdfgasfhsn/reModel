@@ -88,7 +88,7 @@ RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 ##@ General
 
-help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, PACK_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, GPU_OPTS, LIGHT_OPTS, LIGHT_CAPTURE, LIGHT_IN, PROBE, AGAINST, SEQ_FROM, SEQ_FRAMES, STATE, TEMPORAL_SEQ, TEMPORAL_OPTS, RECOMP, SOUNDTRACK)
+help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, PACK_CHECK_OUT, TILE_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, GPU_OPTS, LIGHT_OPTS, LIGHT_CAPTURE, LIGHT_IN, PROBE, AGAINST, SEQ_FROM, SEQ_FRAMES, STATE, TEMPORAL_SEQ, TEMPORAL_OPTS, RECOMP, SOUNDTRACK)
 	@awk 'BEGIN {FS = ":.*## "; printf "usage: make <target> [VAR=value]\n"} \
 		/^##@/ {printf "\n%s\n", substr($$0, 5)} \
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -306,6 +306,13 @@ PACK_CHECK_OUT ?= $(OUT)/pack-check
 pack-check: release ## Draw the captured frames with texture pack PACK= on the GPU unfiltered, mipmapped and 16x anisotropic, in software trilinear and as a supersampled reference; write the pictures to PACK_CHECK_OUT (default OUT/pack-check) and compare them (needs a GPU)
 	$(if $(PACK),,$(error pack-check needs PACK=DIR, a texture pack))
 	$(RUN) $(GPU_OPTS) --texture-pack $(PACK) pack-check $(OUT)/capture $(PACK_CHECK_OUT)
+
+# Where tile-check writes its pictures.
+TILE_CHECK_OUT ?= $(OUT)/tile-check
+.PHONY: tile-check
+tile-check: release ## Draw the captured frames with the tile images of texture pack PACK live on the GPU and as the software snapshots replace them; write FRAME-gpu, -sw and -orig.png to TILE_CHECK_OUT (default OUT/tile-check) and compare them (needs a GPU; VIEW= sets the view, default 1080p 16:9)
+	$(if $(PACK),,$(error tile-check needs PACK=DIR, a texture pack))
+	$(RUN) $(VIEW) --texture-pack $(PACK) tile-check $(OUT)/capture $(TILE_CHECK_OUT)
 
 # depth-check: PROBE="X,Y@FRAME ..." follows those output pixels through the
 # depth buffer (only those frames are drawn); AGAINST=DIR compares the

@@ -140,7 +140,7 @@ a server may bind-mount `out/web` (as below); `rom/` is left alone.
 | `/model2/pkg/` | | the interpreter module the games share (without `RECOMP`, or for a game with no recompiled code) |
 | `/model2/*.js` | `crates/web/*.js` | the workers (sound, geometry, texture pack), the audio worklet, the touch controls and the settings panel, shared |
 | `/rom/<set>/` | | the ROM files: not written, the server provides them (see Serving). A clone's page fetches from its parent's folder when its chips are there (`overrevb`'s from `rom/overrev/`): `make web` writes that folder into the page's `remodel-rom` meta tag (`remodel --game <set> rom-folder`) |
-| `/texpack/<set>/` | | the game's texture pack, if any: its PNGs and an `index.txt` (see Texture packs). Not written, the server provides it; `make web`'s swap leaves `texpack/` alone as it does `rom/`. A clone's page asks for its own folder only (no parent fallback) |
+| `/texpack/<set>/` | | the game's texture pack, if any: its PNGs and an `index.txt` (see Texture packs). Not written, the server provides it; `make web`'s swap leaves `texpack/` alone as it does `rom/`. A clone without a folder of its own uses its parent's |
 
 The game list holds the supported games whose chips are all in
 `rom/<set>/` (or, for a clone, its parent's folder) as loose files (the
@@ -444,8 +444,10 @@ real 120 or 144 Hz display are untested. `Headless::set_geo_smooth` and
 `Headless::between_len` let Node time an in-between.
 
 **Texture packs.** With `pack` on, the page fetches `/texpack/<set>/index.txt`
-(`../../texpack/<set>/` from the game page): one file name per line (`.png`
-optional), `#` comments and blank lines ignored. A browser can't list a
+(`../../texpack/<set>/` from the game page), and for a clone whose folder has
+none, its parent's (`/texpack/<parent>/index.txt`; `pack_sets(set)` lists
+the folders in order, as the native player looks for its directories): one
+file name per line (`.png` optional), `#` comments and blank lines ignored. A browser can't list a
 folder and asking for every texture the game draws would be a stream of 404s,
 so only names in the index are requested; `make upscale-textures` writes one,
 or `(cd DIR && ls *.png > index.txt)` for a hand-made pack. Without it the
@@ -460,9 +462,14 @@ a 1024x1024 image with its mipmaps measured up to 13 ms of draw against about
 3 ms normally. Until an image arrives the original is drawn. The renderer
 keeps images up to 192 MB (the least recently drawn are dropped, and
 fetched again when next drawn, likely from the HTTP cache). The status line shows
-the polygons replaced, the images held and the filter. `set_pack(index)` takes
-the index text (or `undefined` for none) before or after `start`. Only 3D
-textures are replaced (tiles are not live). Details: `docs/texture-packs.md`,
+the polygons replaced, the images held and the filter, and with tile images
+in the pack the tile patterns replaced and held. `set_pack(index)` takes
+the index text (or `undefined` for none) before or after `start`. Tile
+images (`tile_<key>.png` in the index) are fetched the same way and drawn
+at the canvas's resolution, as natively (`docs/texture-packs.md`, "Tiles
+live"); checked on `overrevb` (whose pack came from `overrev`'s folder):
+its attract text and logo drawn from 4x tiles, up to 180 patterns a frame,
+no WebGPU errors. Details: `docs/texture-packs.md`,
 `docs/gpu.md`. Tested in headed Chrome on Linux (headless Chromium loses the
 WebGPU device, "Testing headless" below). *Not verified:* other browsers,
 phones, `RECOMP=1` builds, eviction past the budget.

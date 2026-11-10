@@ -153,21 +153,24 @@ faster display).
 **Texture packs** (settings `pack` and `tex_filter`, below; `--pack on|off`,
 `--texture-pack DIR` and `--tex-filter off|mip|2|4|8|16` for one run; both
 off by default). With `pack` on, replacement textures from the game's pack
-(`docs/texture-packs.md`) are drawn on the GPU in place of the originals. The
+(`docs/texture-packs.md`) are drawn on the GPU in place of the originals: 3D
+textures, and tile patterns (HUD, text, 2D backgrounds) at the window's
+resolution when the pack has tile images. The
 pack is the folder `<data dir>/<set>/texpack/` (`out/<set>/texpack` in a
 source tree; `make upscale-textures` makes one), and a clone with none uses
-its parent's (*unconfirmed*: not tested). `--texture-pack DIR` names one for
+its parent's (checked: `overrevb` with only `overrev/texpack`). `--texture-pack DIR` names one for
 every game that run and turns `pack` on; `--pack` alone means on. PNGs are
 decoded on background threads when their texture is first drawn and the
 original shows until then. The launcher's previews never use packs. The Esc
 menu's line under the checkbox shows the folder, how many images it holds and
-how many of the last frame's textured polygons were replaced, or why there
-is no pack (a missing folder also gives a notice). `tex_filter` filters pack
+how many of the last frame's textured polygons (and tile patterns) were
+replaced, or why there is no pack (a missing folder also gives a notice). `tex_filter` filters pack
 images only: `off` (as they are), `mip` (mipmaps, no shimmer on distant
 ground) or `2`, `4`, `8`, `16` (mipmaps plus anisotropic filtering up to that
 many times, for ground at grazing angles); the menu offers only what the GPU
-has. Neither changes what the game computes. Checked on `topskatr` with a
-scripted run. *Not verified:* smooth motion's in-betweens and F5/F9 save
+has (3D textures only; tiles are drawn bilinear). Neither changes what the
+game computes. Checked on `topskatr` with a scripted run (tiles too:
+`--shot` in a race, the HUD drawn from realesrgan-x4plus tiles). *Not verified:* smooth motion's in-betweens and F5/F9 save
 slots with a pack, and decode stutter was not measured.
 
 **Smooth motion** (a setting, below; `--smooth` for one run; off by

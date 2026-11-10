@@ -1,10 +1,11 @@
 # Texture dumps and texture packs
 
 An enhancement in the spirit of Dolphin's custom textures: `remodel run` can
-write out every texture the game draws, and draw its snapshots with edited
-or upscaled replacements; the native player and the browser draw a pack live
-on the GPU (below, "Live display"), optionally with mipmaps and anisotropic
-filtering (below). Nothing here models hardware; with no pack and the filter
+write out every texture and tile pattern the game draws, and draw its
+snapshots with edited or upscaled replacements; the native player and the
+browser draw a pack live on the GPU, 3D textures and tiles (below, "Live
+display"), optionally with mipmaps and anisotropic filtering of the 3D
+textures (below). Nothing here models hardware; with no pack and the filter
 off, rendering is unchanged (`make bench` hash, native snapshots and GPU
 frames are identical; checked 2026-11-10).
 
@@ -116,14 +117,36 @@ alpha (< 0.5 is transparent), with the hardware rules kept: on the opaque
 back plane (plane B, low priority) transparent replacement pixels show the
 original pen, as pen 0 does there; elsewhere they show what is behind. HUD
 placement in wide views (`--hud edges`) works as for the original tiles.
+The columns a wide view adds at the sides (a scrolled tile sky carried on
+past the frame) keep the original patterns. Snapshots, the player and the
+browser draw tiles by these same rules (live: below).
 
 ## Live display
 
 The native player and the browser draw a pack on the GPU
 (`gpu::Renderer::set_pack`, `docs/gpu.md`), with the same replacement and
-lighting rules as the snapshots (3D textures only: see Limitations). A pack
-is a directory of the same `tex_<key>_<w>x<h>.png` files; tiles in it are
-ignored live.
+lighting rules as the snapshots. A pack is a directory of the same
+`tex_<key>_<w>x<h>.png` and `tile_<key>.png` files.
+
+**Tiles live.** Only a pack with tile images touches the 2D layers, and only
+in frames where a pattern on screen has one: otherwise the layers are
+drawn exactly as without a pack. When one does, the CPU works out for each
+game pixel which tile each plane shows there and where in it, and the
+GPU's compositor draws the replaced ones at output resolution
+(`compose.wgsl` `fs_tiles`, `gpu/src/tiles.rs`), so a 4x image is as sharp
+at 1080p or 4K as it is, not baked into the 496x384 layer. The rules are
+the snapshots' (above): bilinear, clamped to each tile's own image, so
+tiles never blend into their neighbours and need no padding; per-line
+scroll, the split and window modes, priority and pen 0 are the game's own,
+and scroll is in whole game pixels, as on the hardware. Keys are the dump's
+(pattern and colours), so a tile drawn mid-fade or in a cycled colour has
+another key and draws as the original for those frames. Images are kept in
+one atlas texture of equal square cells, the size of the first tile image
+(other sizes are scaled to it: keep a pack's tiles one size), 64 x 64 cells
+for 4x images; when it is full the least recently drawn give way, and a
+frame needing more than it holds draws the rest as the original. The
+player's Esc menu and the browser's status line show how many patterns
+were replaced in the last frame.
 
 **Native player** (`docs/play.md`). The setting `pack` (default off; flag
 `--pack on|off`) looks in `<data dir>/<set>/texpack/` (`out/<set>/texpack`
@@ -138,7 +161,8 @@ notice.
 
 **Browser** (`docs/web.md`). `?pack=1` or the panel's Display setting (applied
 live) fetches the pack from `/texpack/<set>/` on the server, beside
-`/rom/`. A browser cannot list a folder, so the directory needs an
+`/rom/`, and for a clone without one from its parent's folder, as the
+native player does (`romset::pack_sets`). A browser cannot list a folder, so the directory needs an
 `index.txt`: one file name per line, `#` comments and blank lines ignored.
 `make upscale-textures` writes one; for a hand-made pack,
 `(cd DIR && ls *.png > index.txt)`. Only names in the index are requested,
@@ -150,7 +174,9 @@ console warning.
 **GPU memory.** Images are uploaded when first drawn and kept; over a budget
 (512 MB natively, 192 MB in the browser) the least recently drawn are
 dropped and loaded again when next needed. With mipmaps on, an image costs
-about a third more.
+about a third more. Tile images are outside that budget: their atlas is
+allocated whole when the first one is drawn, 16 MB for 4x tiles (2048x2048),
+64 MB at most.
 
 **Cost.** A frame that replaces textures draws a batch for each run of
 polygons (in draw order) sharing an image instead of one for the whole frame: about 600 draws a frame
@@ -158,7 +184,16 @@ on topskatr with a full pack (198-1047), where there were 1-4. Frames upload
 and decode new images as they first appear, so a large image's first
 appearance can hitch: in the browser, a frame uploading a 1024x1024 image
 with its mipmaps measured up to 13 ms of draw against about 3 ms normally.
-The player's decoding stutter has not been measured.
+The player's decoding stutter has not been measured. Live tiles add CPU
+work in frames that replace some (the per-pixel tile map: on topskatr's
+captures the 2D layers took 2.7-3.0 ms instead of 1.7-2.1 ms in race
+frames, natively, `make tile-check` on a machine shared with other jobs)
+and an upload of about 2.5 MB a frame at 1080p (the map and the HUD's
+source columns); compose then samples up to four tile images per output
+pixel instead of reading two textures. Whole GPU frames with and without
+tiles were within the run-to-run noise there; the browser drew
+`overrevb`'s attract mode with 4x tiles at 60 fps, 6-7 ms of draw a frame
+(1413x1060).
 
 ## Mipmaps and anisotropic filtering
 
@@ -211,6 +246,15 @@ removes it but blurs, `16` keeps the ground's detail at grazing angles, and
 none shows halos at cut-out edges. The metric is against a supersampled
 render, which is itself an approximation of an ideal filter. Other games and
 other upscalers are untested.
+
+`make tile-check PACK=DIR` draws the captured frames with the pack's tiles
+live on the GPU and as the software snapshots draw them, over the same 3D
+layer, writes both and the frame without the pack (`FRAME-gpu`, `-sw`,
+`-orig.png` in `OUT/tile-check`) and reports where they differ. On
+topskatr (realesrgan-x4plus tiles), srallyc and doa (built-in 4x), 21
+frames each at 1080p 16:9: no pixel differs by more than 16 levels; 0.1-2%
+differ at all, by rounding. `gpu-check` and `pack-check` compose with the
+original tiles (they compare 3D textures).
 
 `make gpu-check PACK=DIR GPU_OPTS="--tex-filter mip"` draws the captured
 frames with the pack on both renderers and compares them: on topskatr the
@@ -342,8 +386,9 @@ Limitations:
 
 ## Limitations
 
-- Tiles (the 2D layer) are replaced only in software snapshots, not in the
-  live GPU display.
+- Tile keys include colours: tiles drawn during a fade or palette cycle
+  show the original (one image per colour would be needed). The sides a
+  wide view adds (scrolled tile skies) keep the original patterns.
 - Dumps happen at snapshots, so short-lived textures can be missed.
 - Live, an image's first appearance can hitch (decode, upload, mip chain);
   the original shows until it is ready. A frame that replaces many textures
@@ -351,8 +396,8 @@ Limitations:
 - Anisotropic filtering is GPU-only (snapshots draw it as `mip`), and
   mipmaps average display values, not linear light.
 - Not verified live: smooth motion's in-between frames with a pack, F5/F9
-  save slots with a pack, a clone's fallback to its parent's pack in the
-  player, other browsers and phones, and eviction past the memory budget.
+  save slots with a pack, other browsers and phones, and eviction past the
+  memory budget or the tile atlas.
 - Textures still being uploaded when a snapshot is taken get transient keys
   (the game copies texture data across several frames).
 - Keys include colours, so a texture or tile drawn in many colours (fades,

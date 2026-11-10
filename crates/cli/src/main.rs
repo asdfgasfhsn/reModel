@@ -240,6 +240,15 @@ commands:
                        (default out/GAME/pack-check) as FRAME-off, -mip,
                        -aniso16, -swmip and -ref.png, and report how far each
                        is from the reference and what they cost
+  tile-check [DIR] [OUT]
+                       with --texture-pack: draw the frames captured in DIR
+                       (default out/GAME/capture) with the pack's tile images
+                       live on the GPU (default view 1080p 16:9, HUD at the
+                       edges; --height, --aspect, --hud) and with the
+                       software snapshots' tile replacement over the same 3D
+                       layer; write FRAME-gpu, -sw and -orig.png (no pack) to
+                       OUT (default out/GAME/tile-check) and report where
+                       they differ and what the 2D layers cost
   lighting-check [DIR] [OUT]
                        smooth shading (model2::light) on the frames
                        captured in DIR (default out/GAME/capture): each
@@ -1261,6 +1270,24 @@ fn main() -> ExitCode {
             let light = light_options(roms.game);
             if let Err(e) = pack_check::run(&root, windows, VIEW.get().copied(), aa, depth, pack, &out, light.as_ref())
             {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        "tile-check" => {
+            let Some(pack) = &pack_dir else {
+                eprintln!("error: tile-check needs --texture-pack DIR");
+                return ExitCode::FAILURE;
+            };
+            let default = PathBuf::from("out").join(roms.game.id).join("capture");
+            let root = args.get(1).map(PathBuf::from).unwrap_or(default);
+            let out = args
+                .get(2)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("tile-check"));
+            let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
+            let light = light_options(roms.game);
+            if let Err(e) = pack_check::run_tiles(&root, windows, VIEW.get().copied(), pack, &out, light.as_ref()) {
                 eprintln!("error: {e}");
                 return ExitCode::FAILURE;
             }
