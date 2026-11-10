@@ -816,7 +816,8 @@ Finer levels (`shading_fine`, `raster::fine_level`) blend only between
 two adjacent columns inside that range. The tables' steps between
 adjacent columns are not even: a colour on `fvipers`' fighters (frame
 1500 of the capture) goes from black straight to (70, 65, 60) in the
-next column, so a blended pixel there can be any shade between.
+next column; a blended pixel would be any shade between, so finer
+levels never blend with a pure black column (`raster::fine_columns`).
 
 **The exact layer** (`--shading vertex`, `pixel`, level L2): a corner is
 lit with its polygon's own record (`light::PixelLight`: `Lamp::eval` plus

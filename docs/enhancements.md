@@ -957,6 +957,16 @@ game's:
 - The blend is centred: column k alone at level k + 0.5, so across a
   gradient the mean column is the game's (the design's "fraction of the
   level", uncentred, would brighten every lit pixel by half a column).
+- Pure black is never blended (`raster::fine_columns`, the GPU's
+  `fine_columns`): where the game's own column for the pixel (or texel)
+  is pure black (all three channels 0) the pixel is that black, and a
+  pair of columns one of which is pure black gives the other column
+  alone. So black ink stays black, and the pixels next to it keep the
+  game's colour instead of a dark fringe blending towards black; the
+  only step there is the game's own. Blending elsewhere is unchanged.
+  Keeping only the black pixels black (the narrower rule) leaves the
+  next column's darker half blending down towards black, a dark ring
+  round the ink.
 
 Only lit pixels change; unlit polygons and everything at crease 0 stay
 the game's. Pack images follow it (their lighting ratio uses the blend).
@@ -965,12 +975,12 @@ linear light.
 
 By eye (review crops of all 18 games): the bands on untextured car
 bodies go (`overrev`'s white car roof, where the 64 levels step visibly
-with `pixel`); on textured surfaces the difference is hard to see. One
-side effect: texels the game draws in column 0 as black ink (the outlines
-on `fvipers`' armour, frame 1500) blend up to half a column towards the
-next one, so they come out dark brown rather than black where that next
-column is far from black. Nothing else looked worse than the game's
-levels.
+with `pixel`); on textured surfaces the difference is hard to see.
+Before pure black was kept, texels the game draws in column 0 as black
+ink (the outlines on `fvipers`' armour, frame 1500, whose next column is
+(70, 65, 60)) blended up to half a column towards that next one and came
+out dark brown; they are black again. Nothing else looked worse than the
+game's levels.
 
 **What it does not do.** Outlines never change (no tessellation).
 Brightness only: no new lights, shadows or materials. Decals floating
@@ -1051,8 +1061,9 @@ median a frame. Side channel: 16 bytes a polygon.
   (no title needs it yet).
 - In-betweens with smooth motion on a display over 60 Hz were not seen
   live (covered by the code path and tests on a 60 Hz display).
-- Finer levels lighten black ink texels a little (above); an option to
-  keep column 0 as it is would be a small change, not made.
+- Finer levels next to a pure black column fall back to the game's step
+  (above); a colour table whose dark end is not quite black (say (1, 1,
+  1)) is blended as any other.
 - Tested on one NVIDIA GPU (Vulkan) and Chrome on Linux.
 
 ### Lighting

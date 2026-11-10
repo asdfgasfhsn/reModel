@@ -415,7 +415,8 @@ newest frame for a test driver: `[median ms, worst ms, polygons, lit]`
 **Finer levels** (`shadefine=1`, the panel's "Blend brightness levels",
 the sixth `set_quality` argument, `gpu::Quality::shading_fine`): a lit
 pixel blends the two of the game's colours around its brightness instead
-of stepping through its 64 levels, so large smooth surfaces don't band;
+of stepping through its 64 levels, so large smooth surfaces don't band
+(pure black, such as ink lines, is never blended);
 the status line then says `shading pixel fine` (docs/enhancements.md,
 "Smooth shading"). Applied live; nothing else changes on the page.
 

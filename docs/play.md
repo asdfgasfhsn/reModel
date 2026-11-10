@@ -148,7 +148,8 @@ surfaces show bands; **Blend brightness levels** (`shading_fine`, the
 menu's checkbox under Shading, the launcher's "Brightness levels") blends
 the two of the game's colours around each lit pixel's brightness
 instead, which removes the bands and never leaves the polygon's colour
-(only lit pixels; the rest stay the game's). *Unconfirmed:* tried on one NVIDIA
+(only lit pixels; the rest stay the game's; pure black, such as ink
+lines, stays black). *Unconfirmed:* tried on one NVIDIA
 GPU (Vulkan) on a 60 Hz display (in-betweens forced, not seen on a
 faster display).
 

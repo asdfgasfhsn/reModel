@@ -1386,6 +1386,44 @@ mod tests {
             let lit = near(&pick(&clamped), fine(pixel(q)));
             assert!(lit <= flat + n / 1000, "fine clamped, depth {depth}: {lit} against {flat} flat of {n}");
         }
+        // Pure black columns (raster.rs `fine_columns`): columns 0-8 and
+        // every fifth black for every colour; the GPU keeps them as the
+        // software does, so its pixels are black exactly where the
+        // software's are (edges aside) and within a step elsewhere.
+        let mut inked = palette.clone();
+        for ch in 0..3 {
+            for c in 0..32 {
+                for lum in (0..64).filter(|&l| l <= 8 || l % 5 == 0) {
+                    let o = 0x10000 + ch * 0x4000 + (c * 256 + lum) * 2;
+                    inked[o] = 0;
+                }
+            }
+        }
+        let isrc = Sources { palette: &inked, ..src };
+        for depth in [false, true] {
+            let q = Quality { depth, ..Default::default() };
+            for (name, v, q) in
+                [("vertex", finer(&varied), fine(vertex(q))), ("pixel", finer(&turning), fine(pixel(q)))]
+            {
+                let polys = pick(&v);
+                let mut g = Renderer::new().unwrap();
+                g.set_quality(q);
+                let (rgb, covered) = g.draw(&polys, &placed, &isrc, &view);
+                let (srgb, scovered) = model2::raster::draw_view_depth(&mut polys.clone(), &isrc, &view, depth);
+                let both = (0..covered.len()).filter(|&i| covered[i] && scovered[i]);
+                let black = |c: &[u8], i: usize| c[i * 3..i * 3 + 3] == [0, 0, 0];
+                let n = both.clone().count();
+                let sblack = both.clone().filter(|&i| black(&srgb, i)).count();
+                let off = both
+                    .filter(|&i| {
+                        black(&rgb, i) != black(&srgb, i)
+                            || (0..3).any(|c| rgb[i * 3 + c].abs_diff(srgb[i * 3 + c]) > 1)
+                    })
+                    .count();
+                assert!(sblack > n / 50, "{name}, depth {depth}: {sblack} black of {n}");
+                assert!(off <= n / 500, "{name}, depth {depth}: {off} of {n} differ");
+            }
+        }
     }
 
     /// The resolve keeps the history finite whatever it reads: the last
