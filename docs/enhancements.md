@@ -265,6 +265,14 @@ games with it off and on:
   showed once: an `overrev` banner 0.02% in front of the wall drawn
   after it is half covered again, as with the buffer off (the build
   before showed it whole).
+- **Off by default** (the project's "original by default"); whether it
+  could be on is an open question, with the evidence so far under
+  "Open questions" below. Measured per game (2026-11-11, 1440x1080, 21
+  frames): frames changed 10-19 of 21, mean share of pixels changed
+  `vstriker` about 0.001%, `fvipers`, `doa`, `srallyc`, `sgt24h`,
+  `stcc` 0.01-0.03%, `dynabb97`, `indy500`, `overrevb`, `overrev`,
+  `lastbrnx` 0.04-0.07%, `schamp`, `topskatr`, `waverunr`, `hotd`,
+  `segawski` 0.1-0.17%, `bel` 0.5%, `skisuprg` 0.7%.
 - **Not verified:** against a real machine, any of it; and the
   trade-off of the tolerance: surfaces that cross within 0.5% of 1/z
   of each other keep the game's order there, so an intersection line
@@ -475,11 +483,22 @@ light direction and ambient, nothing physical), which is pack content.
 
 - How packs carry models and materials alongside textures (one pack
   format, versioned).
-- Whether the depth buffer can be on by default: it looks right in
-  the frames compared (see "Depth buffer") but changes pictures
-  in every game, and the games' own layering tricks (large floors,
-  dither, flat shadows) had to be left on the game's order. More
-  games and long plays first.
+- Whether the depth buffer can be on by default (undecided). The
+  evidence so far (2026-11-11, 21 captured frames per game; "Depth
+  buffer" above): it changes 10-19 of 21 frames in every one of the 18
+  games, a mean of 0.001-0.7% of the pixels a frame (`skisuprg` up to
+  4.8%), mostly crossing geometry the painter's algorithm can't draw.
+  Against it: two regressions (`stcc`'s pennants, `dynabb97`'s collar)
+  and one tradeoff (`overrev`'s banner) that no generic rule found so
+  far handles. Deep floors, dither, flat shadows and skies already keep
+  the game's order. Keeping the game's order inside an object block
+  would fix none of the three (by the probes, they are in different
+  blocks or already in the game's order) and lose fixes that are inside
+  one block (`stcc`'s struts, `indy500`'s fence rail, `overrev`'s tree
+  cards). On by default would also change every default-settings
+  picture check, though not state hashes. Open: long plays (`stcc`'s
+  capture never leaves the grid), timings in the browser and on weak
+  GPUs, and whether players keep it on.
 - How much of this the browser can have: WebGPU covers everything up to
   the temporal upscaler and per-pixel lighting; ray tracing waits for
   the web platform.
