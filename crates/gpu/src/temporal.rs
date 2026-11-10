@@ -1426,6 +1426,138 @@ mod tests {
         }
     }
 
+    /// A texture pack on a lit polygon at finer levels, where both of the
+    /// rules for black hold at once: finer levels never blend with a pure
+    /// black column (raster.rs `fine_columns`), and a channel black at
+    /// full luma adds the original's value (raster.rs `Light::apply`,
+    /// raster.wgsl `pack_lit_l`). A pack of the original texture draws
+    /// the original exactly in software, and the GPU draws what the
+    /// software does.
+    #[test]
+    fn pack_at_finer_levels_next_to_black() {
+        use model2::enhance::{Enhance, Found, Rgba, TexInfo, TexturePack, TileInfo};
+        use std::sync::Arc;
+        let Ok(mut gpu) = Renderer::new() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        struct One(Arc<Rgba>);
+        impl TexturePack for One {
+            fn find(&mut self, _: &TexInfo) -> Found {
+                Found::Image(self.0.clone())
+            }
+        }
+        impl Enhance for One {
+            fn texture(&mut self, _: &TexInfo) -> Option<Arc<Rgba>> {
+                Some(self.0.clone())
+            }
+            fn texture_drawn(&mut self, _: &TexInfo, _: &Sources, _: usize) {}
+            fn tile(&mut self, _: &TileInfo) -> Option<Arc<Rgba>> {
+                None
+            }
+        }
+        // Every texel 0, luma table value 64 (columns 0-63 over lumas
+        // 0-255). Colour 1: columns 0-3 pure black; red rises from 68;
+        // green rises too but is black at column 63, which is the texture
+        // at full luma (a table that is not monotonic, as topskatr's);
+        // blue black throughout.
+        let mut render = vec![0u8; 0x48_0000];
+        render[0x40_0000] = 64;
+        let mut palette = vec![0u8; 0x2_0000];
+        for lum in 4..64usize {
+            palette[0x1_0000 + (256 + lum) * 2] = (60 + 2 * lum) as u8;
+            if lum < 63 {
+                palette[0x1_4000 + (256 + lum) * 2] = (30 + lum) as u8;
+            }
+        }
+        let src = Sources {
+            texture_rom: &[],
+            texture_point_ram: &[],
+            render_ram: &render,
+            palette: &palette,
+            xoff: 0.0,
+            yoff: 0.0,
+        };
+        let t = Texture {
+            x0: 0,
+            y0: 0,
+            w: 32,
+            h: 32,
+            mirror_x: false,
+            mirror_y: false,
+            bank: 0,
+            translucent: false,
+            luma_table: 0,
+        };
+        let v = |x, y| SVtx { x, y, iz: 1.0, uz: 0.0, vz: 0.0 };
+        let p = Poly {
+            points: vec![v(60.0, 100.0), v(440.0, 100.0), v(440.0, 300.0), v(60.0, 300.0)],
+            key: 1.0,
+            window: 0,
+            clip: (0.0, 0.0, WIDTH as f32, HEIGHT as f32),
+            texture: Some(t),
+            colour: [1, 1, 1],
+            luma: 128,
+            checker: false,
+            header: [0; 4],
+            shadow: false,
+            block: 0,
+            at: 0,
+            prev: Vec::new(),
+            // Luma 1 at the left to full at the right: columns 0 to 63.
+            lit: [1.0f32, 255.0, 255.0, 1.0].iter().map(|&l| [l, 0.0, 0.0, 0.0]).collect(),
+            pixel: None,
+            lit_range: [0, 255],
+            fine: true,
+        };
+        let info = model2::raster::tex_info(&p, &t, &src, &mut Default::default()).unwrap();
+        let image = Arc::new(model2::raster::texture_image(&src, &info));
+        assert_eq!(&image.data[..4], &[186, 0, 0, 255], "the texture at full luma: green black");
+        let view = View::native();
+        let (orig, cov) = model2::raster::draw_view(&mut [p.clone()], &src, &view);
+        let (soft, scov) = model2::raster::draw_enhanced(&mut [p.clone()], &src, &view, &mut One(image.clone()));
+        assert_eq!(cov, scov);
+        let n = cov.iter().filter(|&&c| c).count();
+        assert!(n > 50_000, "{n} covered");
+        let px = |rgb: &[u8], i: usize| [rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]];
+        let (mut black, mut green) = (0, 0);
+        for i in (0..cov.len()).filter(|&i| cov[i]) {
+            assert_eq!(px(&soft, i), px(&orig, i), "software pixel {i}: the pack draws the original");
+            let c = px(&soft, i);
+            if c == [0, 0, 0] {
+                black += 1;
+            } else {
+                assert!(c[0] >= 68, "pixel {i}: {c:?} blended toward black");
+            }
+            green += (c[1] > 0) as usize;
+        }
+        assert!(black > n / 50 && green > n / 2, "{black} black, {green} with green, of {n}");
+        let mut placed_polys = vec![p];
+        let placed = place(&mut placed_polys, &view);
+        gpu.set_pack(Some(Box::new(One(image))));
+        for depth in [false, true] {
+            gpu.set_quality(Quality {
+                depth,
+                shading: crate::Shading::Vertex,
+                crease: 40,
+                shading_fine: true,
+                ..Default::default()
+            });
+            let (rgb, covered) = gpu.draw(&placed_polys, &placed, &src, &view);
+            let both = (0..cov.len()).filter(|&i| cov[i] && covered[i]);
+            let m = both.clone().count();
+            let off = both
+                .filter(|&i| {
+                    let (a, b) = (px(&rgb, i), px(&soft, i));
+                    (a == [0, 0, 0]) != (b == [0, 0, 0]) || (0..3).any(|c| a[c].abs_diff(b[c]) > 1)
+                })
+                .count();
+            assert!(m > n * 99 / 100, "depth {depth}: {m} of {n} covered by both");
+            assert!(off <= m / 500, "depth {depth}: {off} of {m} differ");
+            assert_eq!(gpu.pack_stats().replaced, 1, "the pack was drawn");
+        }
+    }
+
     /// The resolve keeps the history finite whatever it reads: the last
     /// history and aux target filled with NaN and infinities, then frames
     /// with motion (also the huge vectors of the near-eye polygon), at
