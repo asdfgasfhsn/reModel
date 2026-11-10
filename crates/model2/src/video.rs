@@ -944,8 +944,10 @@ mod tests {
             checker: false,
             header: [0; 4],
             block: 0,
+            at: 0,
             shadow: false,
             prev: vec![[22.0, 20.0, 2.0], [42.0, 20.0, 2.0], [42.0, 40.0, 2.0]],
+            lit: Vec::new(),
         }];
         let mut view = View::new(768, 16.0 / 9.0, Hud::Center);
         view.hud_element_windows = 1 << 1;

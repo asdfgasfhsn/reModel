@@ -31,6 +31,7 @@ pub static INDY500: Game = Game {
     protection: None,
     dropouts: &[],
     texture_ram_mirrored: false,
+    shading: crate::Shading::DEFAULT,
     packed: &[],
     // A coin-start run's `make sound` averages -35 dBFS RMS, with
     // dynabb97's and hotd's (docs/hw/sound.md §6).

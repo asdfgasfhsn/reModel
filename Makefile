@@ -88,7 +88,7 @@ RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 ##@ General
 
-help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, PACK_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, GPU_OPTS, PROBE, AGAINST, SEQ_FROM, SEQ_FRAMES, STATE, TEMPORAL_SEQ, TEMPORAL_OPTS, RECOMP, SOUNDTRACK)
+help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, PACK_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, GPU_OPTS, LIGHT_OPTS, PROBE, AGAINST, SEQ_FROM, SEQ_FRAMES, STATE, TEMPORAL_SEQ, TEMPORAL_OPTS, RECOMP, SOUNDTRACK)
 	@awk 'BEGIN {FS = ":.*## "; printf "usage: make <target> [VAR=value]\n"} \
 		/^##@/ {printf "\n%s\n", substr($$0, 5)} \
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -295,7 +295,8 @@ capture: release ## Run into a race saving every 300th frame's renderer inputs t
 # Options for gpu-check, depth-check and pack-check: --aa N (multisampling;
 # software supersamples to match), --depth, --tex-filter off|mip|2|4|8|16
 # (gpu-check with PACK), and for depth-check and pack-check
-# --height/--aspect/--hud.
+# --height/--aspect/--hud; --shading flat|vertex and --crease auto|N
+# (smooth shading, model2::light) for all of them.
 GPU_OPTS ?=
 gpu-check: release ## Draw the captured frames on the software and GPU rasterisers; time and compare them, and what GPU_OPTS="--aa 4 --depth" and PACK=DIR (a texture pack, both renderers) cost (needs a GPU)
 	$(RUN) $(GPU_OPTS) $(if $(PACK),--texture-pack $(PACK)) gpu-check
@@ -311,6 +312,14 @@ pack-check: release ## Draw the captured frames with texture pack PACK= on the G
 # depth-on frames with an earlier run's pictures (docs/enhancements.md).
 depth-check: release ## Draw the captured frames on the GPU with the depth buffer off and on, report and picture the differences into OUT/depth-check (GPU_OPTS: --aa N, --height, --aspect; PROBE=X,Y@FRAME, AGAINST=DIR; needs a GPU)
 	$(RUN) $(GPU_OPTS) depth-check $(OUT)/capture $(OUT)/depth-check $(foreach p,$(PROBE),--probe $(p)) $(if $(AGAINST),--against $(AGAINST))
+
+# lighting-check: LIGHT_OPTS for the command, e.g. "--every 5" (pictures of
+# every 5th frame), "--probe X,Y@FRAME" (repeatable), "--bench [N]";
+# GPU_OPTS before it ("--crease N", "--height", "--aspect").
+LIGHT_OPTS ?=
+.PHONY: lighting-check
+lighting-check: release ## Draw the captured frames flat and vertex-shaded (smooth shading from the polygon stream) on the software and GPU renderers; check the invariants (crease 0 is flat, unlit polygons unchanged, brightness, software against GPU), report and pictures into out/scratch/lighting/GAME (LIGHT_OPTS: --every N, --probe X,Y@F, --bench [N]; GPU_OPTS: --crease N, --height/--aspect; needs a GPU)
+	$(RUN) $(GPU_OPTS) lighting-check $(OUT)/capture out/scratch/lighting/$(GAME) $(LIGHT_OPTS)
 
 .PHONY: temporal-probe
 temporal-probe: release ## Draw the captured frames with the GPU's temporal anti-aliasing (GPU_OPTS: --temporal, --stipple, --depth, --height, --aspect): its first frame against the frame with it off, jittered, blend and keep pictures into out/scratch/temporal-probe/GAME (needs a GPU)

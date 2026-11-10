@@ -102,6 +102,7 @@ fn cost(
     views: &[(&str, View)],
     pack: Option<&Path>,
     tex_filter: gpu::TexFilter,
+    light: Option<&model2::light::Options>,
 ) -> Result<(), String> {
     let configs = [(1, false), (4, false), (8, false), (1, true), (4, true), (8, true)];
     let frames: Vec<_> = match root_dirs {
@@ -137,7 +138,7 @@ fn cost(
             }
         }
         for (msaa, depth) in configs {
-            let q = gpu.set_quality(gpu::Quality { msaa, depth, tex_filter, ..Default::default() });
+            let q = gpu.set_quality(gpu::Quality { msaa, depth, tex_filter, ..super::gpu_light(light) });
             if q.msaa != msaa {
                 print!(" {:>10}", "n/a");
                 continue;
@@ -145,7 +146,7 @@ fn cost(
             let mut total = 0.0;
             for f in &frames {
                 let src = f.sources(texture_rom);
-                let mut polys = raster::build(&f.stream, &src);
+                let mut polys = raster::build_shaded(&f.stream, &src, light);
                 video::HudLayout::new(&f.tiles, &f.palette, view).anchor(&mut polys, view);
                 let placed = raster::place(&mut polys, view);
                 let layers = video::layers_2d(&f.tiles, &f.palette, view, !placed.is_empty());
@@ -168,12 +169,16 @@ pub fn run(
     depth: bool,
     pack: Option<&Path>,
     tex_filter: gpu::TexFilter,
+    light: Option<&model2::light::Options>,
 ) -> Result<(), String> {
     let texture_rom = capture::load_texture_rom(root)
         .map_err(|e| format!("{}: {e} (capture with `make capture`)", root.display()))?;
     let mut gpu = gpu::Renderer::new()?;
     println!("gpu           {}", gpu.adapter());
-    let q = gpu.set_quality(gpu::Quality { msaa: aa, depth, tex_filter, ..Default::default() });
+    let q = gpu.set_quality(gpu::Quality { msaa: aa, depth, tex_filter, ..super::gpu_light(light) });
+    if let Some(o) = light {
+        println!("shading       {}, crease {} degrees (model2::light)", o.shading.name(), o.crease);
+    }
     println!(
         "quality       {} samples a pixel on the GPU ({} supersampled in software), depth buffer {}",
         q.msaa,
@@ -219,7 +224,7 @@ pub fn run(
             Frame::load(d).map_err(|e| e.to_string())?
         };
         let src = f.sources(&texture_rom);
-        let mut polys = raster::build(&f.stream, &src);
+        let mut polys = raster::build_shaded(&f.stream, &src, light);
         let placed = raster::place(&mut polys, &native);
         gpu.draw(&polys, &placed, &src, &native);
     }
@@ -237,7 +242,7 @@ pub fn run(
             None => break,
         };
         let src = f.sources(&texture_rom);
-        let polys = raster::build(&f.stream, &src);
+        let polys = raster::build_shaded(&f.stream, &src, light);
         for (k, (name, view)) in views.iter().enumerate() {
             let hud = video::HudLayout::new(&f.tiles, &f.palette, view);
             let mut sw_polys = polys.clone();
@@ -260,7 +265,7 @@ pub fn run(
             // stream, place the polygons, build the 2D layers.
             let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
             let t = Instant::now();
-            let mut prep_polys = raster::build(&f.stream, &src);
+            let mut prep_polys = raster::build_shaded(&f.stream, &src, light);
             let build_ms = ms(t);
             let t = Instant::now();
             hud.anchor(&mut prep_polys, view);
@@ -364,7 +369,7 @@ pub fn run(
         println!("(multisampled: coverage is 0 and colour/>16 count pixels of the whole frame, the GPU's against the software renderer's supersampled one)");
     }
     let cost_frames = if seq { CostFrames::Seq(root) } else { CostFrames::Dirs(&dirs) };
-    cost(&mut gpu, cost_frames, &texture_rom, &views, pack, q.tex_filter)?;
+    cost(&mut gpu, cost_frames, &texture_rom, &views, pack, q.tex_filter, light)?;
     match tiles_differ.len() {
         0 => println!("2d layers     fast path identical to the reference on all {} frames", dirs.len()),
         n => println!("2d layers     fast path DIFFERS from the reference on {n} frames: {tiles_differ:?}"),

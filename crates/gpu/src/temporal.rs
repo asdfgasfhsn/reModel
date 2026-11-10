@@ -878,8 +878,10 @@ mod tests {
             checker: false,
             header: [0; 4],
             block: 0,
+            at: 0,
             prev: Vec::new(),
             shadow: false,
+            lit: Vec::new(),
         }
     }
 
@@ -1009,6 +1011,107 @@ mod tests {
         let i = y as usize * d.width as usize + x as usize;
         assert!(d.aux[i][2] < 0.0 && (d.aux[i][2] + 0.005).abs() < 1e-5, "{:?}", d.aux[i]);
         assert_eq!(d.colour[i * 4 + 3], 255, "blended over the background polygon");
+    }
+
+    /// Smooth shading (`Quality::shading`, raster.wgsl's `_l` entry points): with
+    /// no lit polygon the frame is the off path's byte for byte, with and
+    /// without depth and temporal; corner values ignored with shading
+    /// flat; the lit pipelines draw a lit polygon whose corners all carry
+    /// its own luma (+0.5, as `light` gives them) as the flat one, byte for
+    /// byte; and varying corners agree with the software renderer.
+    #[test]
+    fn shading_off_path_and_lit_pipelines() {
+        let Ok(gpu) = Renderer::new() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        drop(gpu);
+        let mut seed = 0x0bad_cafeu32;
+        let mut bytes = |n: usize| {
+            (0..n)
+                .map(|_| {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    (seed >> 24) as u8
+                })
+                .collect::<Vec<u8>>()
+        };
+        let (render, palette) = (bytes(0x480000), bytes(0x20000));
+        let src = Sources {
+            texture_rom: &[],
+            texture_point_ram: &[],
+            render_ram: &render,
+            palette: &palette,
+            xoff: 0.0,
+            yoff: 0.0,
+        };
+        let view = View::new(768, 4.0 / 3.0, Hud::Center);
+        let base = (0..WIDTH * HEIGHT).flat_map(|i| [(i % 251) as u8, (i % 13 * 19) as u8, 90, 255]).collect();
+        let layers = Layers2d { base, side: 0, hud: vec![0; WIDTH * HEIGHT * 4], ext_w: WIDTH, backdrop: [0, 0, 0] };
+        let mut polys = scene();
+        let placed = place(&mut polys, &view);
+        let frame = |q: Quality, polys: &[Poly]| {
+            let mut g = Renderer::new().unwrap();
+            g.set_quality(q);
+            g.frame(polys, &placed, &src, &view, &layers)
+        };
+        let vertex = |q: Quality| Quality { shading: crate::Shading::Vertex, crease: 40, ..q };
+        // Corners at the polygon's own luma, and varying ones.
+        let with = |f: &dyn Fn(&Poly, usize) -> f32| {
+            polys
+                .iter()
+                .map(|p| Poly { lit: (0..p.points.len()).map(|k| [f(p, k), 0.0, 0.0, 0.0]).collect(), ..p.clone() })
+                .collect::<Vec<_>>()
+        };
+        let own = with(&|p, _| p.luma as f32 + 0.5);
+        let varied = with(&|_, k| 20.0 + 60.0 * k as f32);
+        for (depth, temporal) in [(false, 0), (true, 0), (false, 100), (true, 100), (false, 67)] {
+            let q = Quality { depth, temporal, stipple: Stipple::Keep, ..Default::default() };
+            let off = frame(q, &polys);
+            assert_eq!(frame(vertex(q), &polys), off, "no lit polygon, depth {depth}, temporal {temporal}");
+            assert_eq!(
+                frame(q, &varied),
+                off,
+                "shading flat ignores corner values, depth {depth}, temporal {temporal}"
+            );
+            assert_eq!(frame(vertex(q), &own), off, "lit at their own luma, depth {depth}, temporal {temporal}");
+            if temporal == 0 {
+                assert_ne!(frame(vertex(q), &varied), off, "varying corners show, depth {depth}");
+            }
+        }
+        assert_eq!(
+            model2::raster::draw_view(&mut own.clone(), &src, &view),
+            model2::raster::draw_view(&mut polys.clone(), &src, &view),
+            "software: own lumas"
+        );
+        // Against the software renderer, on the flat-coloured polygons
+        // (every luma level a different colour here): where they differ
+        // drawing flat (edge pixels the two cover differently), and where a
+        // pixel's luma truncates the other way.
+        let plain: Vec<usize> = (0..polys.len()).filter(|&k| polys[k].texture.is_none() && !polys[k].checker).collect();
+        let placed: Vec<Placed> = plain
+            .iter()
+            .enumerate()
+            .map(|(k, &i)| Placed { poly: k, ..placed.iter().find(|pl| pl.poly == i).unwrap().clone() })
+            .collect();
+        let pick = |v: &[Poly]| plain.iter().map(|&k| v[k].clone()).collect::<Vec<_>>();
+        let differ = |polys: &[Poly], q: Quality| {
+            let mut g = Renderer::new().unwrap();
+            g.set_quality(q);
+            let (rgb, covered) = g.draw(polys, &placed, &src, &view);
+            let (srgb, scovered) = model2::raster::draw_view_depth(&mut polys.to_vec(), &src, &view, q.depth);
+            let n = (0..covered.len())
+                .filter(|&i| {
+                    covered[i] != scovered[i] || (covered[i] && rgb[i * 3..i * 3 + 3] != srgb[i * 3..i * 3 + 3])
+                })
+                .count();
+            (n, covered.iter().filter(|&&c| c).count())
+        };
+        for depth in [false, true] {
+            let q = Quality { depth, ..Default::default() };
+            let (flat, n) = differ(&pick(&polys), q);
+            let (lit, _) = differ(&pick(&varied), vertex(q));
+            assert!(n > 10_000 && lit <= flat + n / 1000, "depth {depth}: {lit} lit against {flat} flat of {n}");
+        }
     }
 
     /// The resolve keeps the history finite whatever it reads: the last

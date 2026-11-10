@@ -655,3 +655,277 @@ fn fs_packf_depth_t(in: VsTOut) -> TDepthOut {
     o.depth = depth_t(in);
     return o;
 }
+
+// Smooth shading (Quality::shading, model2::light): the `_l` entry points,
+// for frames with a lit polygon. A lit polygon's outline entry has `lit`
+// (z) set and its points carry luma/z in w; its luma is taken per pixel
+// from those (`lit_luma`), every other polygon's is its own. The shading
+// functions above stay as they were (the frames without a lit polygon draw
+// exactly as before); `shade_l`, `shade_pack_l` and `shade_packf_l` are
+// them with the polygon passed in.
+
+// The two ends of an outline's span on the row at height `yc`: (x, 1/z,
+// luma/z) at each, interpolated along the edges as the software fill does;
+// l.x > r.x where the row misses the outline.
+struct Span {
+    l: vec3f,
+    r: vec3f,
+}
+
+fn outline_span(first: u32, count: u32, yc: f32) -> Span {
+    var s: Span;
+    s.l = vec3f(3.4e38, 0.0, 0.0);
+    s.r = vec3f(-3.4e38, 0.0, 0.0);
+    for (var k = 0u; k < count; k++) {
+        let a = outlines[first + k];
+        let b = outlines[first + (k + 1u) % count];
+        if (a.y <= yc && b.y > yc) || (b.y <= yc && a.y > yc) {
+            let t = (yc - a.y) / (b.y - a.y);
+            let e = vec3f(a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t, a.w + (b.w - a.w) * t);
+            if e.x < s.l.x {
+                s.l = e;
+            }
+            if e.x > s.r.x {
+                s.r = e;
+            }
+        }
+    }
+    return s;
+}
+
+// A lit polygon's luma (0-255, before truncation) at the centre of pixel
+// `px`, as the software renderer's `lit_lumas`: luma/z and 1/z on the
+// outline's edges at the row's centre, then across the span, divided. For
+// a pixel the GPU covers and the software doesn't (at an edge), the row is
+// moved into the outline and the span's t clamped to 0..1. < 0: not lit.
+fn lit_luma(poly: u32, px: vec2f) -> f32 {
+    let d = bitcast<vec4u>(outlines[poly]);
+    if d.z == 0u {
+        return -1.0;
+    }
+    var s = outline_span(d.x, d.y, px.y + 0.5);
+    if s.l.x > s.r.x {
+        var lo = 3.4e38;
+        var hi = -3.4e38;
+        for (var k = 0u; k < d.y; k++) {
+            lo = min(lo, outlines[d.x + k].y);
+            hi = max(hi, outlines[d.x + k].y);
+        }
+        let m = 1e-3 * max(hi - lo, 1e-3);
+        s = outline_span(d.x, d.y, clamp(px.y + 0.5, lo + m, hi - m));
+        if s.l.x > s.r.x {
+            // No span at all (a polygon thinner than that): the corners'.
+            var lz = 0.0;
+            var iz = 0.0;
+            for (var k = 0u; k < d.y; k++) {
+                lz += outlines[d.x + k].w;
+                iz += outlines[d.x + k].z;
+            }
+            return lz / iz;
+        }
+    }
+    let t = clamp(((px.x + 0.5) - s.l.x) / max(s.r.x - s.l.x, 1e-6), 0.0, 1.0);
+    let iz = s.l.y + (s.r.y - s.l.y) * t;
+    let lz = s.l.z + (s.r.z - s.l.z) * t;
+    return lz / iz;
+}
+
+// Polygon `i` as drawn at pixel `px`: `polys[i]`, with a smooth-shaded
+// polygon's luma there (truncated, as light::quantise).
+fn poly_px(i: u32, px: vec2f) -> Poly {
+    var p = polys[i];
+    let l = lit_luma(i, px);
+    if l >= 0.0 {
+        p.luma = u32(clamp(l, 0.0, 255.0));
+    }
+    return p;
+}
+
+// `shade` of polygon `p`.
+fn shade_l(in: VsOut, p: Poly) -> vec4f {
+    let px = floor(in.pos.xy);
+    if px.y < p.clip.y || px.y >= p.clip.w || px.x + 0.5 < p.clip.x || px.x + 0.5 >= p.clip.z {
+        discard;
+    }
+    let g = vec2u(floor(px / screen.scale));
+    if (p.flags & 16u) != 0u && ((g.x ^ g.y) & 1u) != 0u {
+        discard;
+    }
+    var lum: u32;
+    if (p.flags & 1u) != 0u {
+        let iz = in.attr.x;
+        let t8 = filtered_texel(p, in.attr.y / iz, in.attr.z / iz);
+        if t8 < 0 {
+            discard;
+        }
+        lum = min(luma(p.luma_table, u32(t8) / 2u) * p.luma / 256u, 63u);
+    } else {
+        lum = p.luma >> 2u;
+    }
+    let rgb = vec3u(translate(0u, p.colour.x, lum), translate(1u, p.colour.y, lum), translate(2u, p.colour.z, lum));
+    return vec4f(vec3f(rgb) / 255.0, 1.0);
+}
+
+// `shade_pack` of polygon `p`.
+fn shade_pack_l(in: VsOut, p: Poly) -> vec4f {
+    if (p.flags & 32u) == 0u {
+        return shade_l(in, p);
+    }
+    let px = floor(in.pos.xy);
+    if px.y < p.clip.y || px.y >= p.clip.w || px.x + 0.5 < p.clip.x || px.x + 0.5 >= p.clip.z {
+        discard;
+    }
+    let g = vec2u(floor(px / screen.scale));
+    if (p.flags & 16u) != 0u && ((g.x ^ g.y) & 1u) != 0u {
+        discard;
+    }
+    let iz = in.attr.x;
+    let u = in.attr.y / iz;
+    let v = in.attr.z / iz;
+    let dim = vec2f(textureDimensions(pack_tex, 0));
+    let s = pack_sample(p, u * dim.x / f32(p.tex.z), v * dim.y / f32(p.tex.w));
+    if s.a < 0.5 {
+        discard;
+    }
+    let r = pack_light(p, u, v);
+    let rgb = min(floor(s.rgb * r + 0.5), vec3f(255.0));
+    return vec4f(rgb / 255.0, 1.0);
+}
+
+// `shade_packf` of polygon `p`.
+fn shade_packf_l(in: VsPackOut, p: Poly, gx: vec3f, gy: vec3f) -> vec4f {
+    if (p.flags & 32u) == 0u {
+        var o: VsOut;
+        o.pos = in.pos;
+        o.attr = in.attr;
+        o.poly = in.poly;
+        return shade_l(o, p);
+    }
+    let px = floor(in.pos.xy);
+    if px.y < p.clip.y || px.y >= p.clip.w || px.x + 0.5 < p.clip.x || px.x + 0.5 >= p.clip.z {
+        discard;
+    }
+    let g = vec2u(floor(px / screen.scale));
+    if (p.flags & 16u) != 0u && ((g.x ^ g.y) & 1u) != 0u {
+        discard;
+    }
+    let iz = in.attr.x;
+    let u = in.attr.y / iz;
+    let v = in.attr.z / iz;
+    let size = vec2f(f32(p.tex.z), f32(p.tex.w));
+    let ddx = vec2f(gx.y - u * gx.x, gx.z - v * gx.x) / (iz * size);
+    let ddy = vec2f(gy.y - u * gy.x, gy.z - v * gy.x) / (iz * size);
+    let c = textureSampleGrad(pack_tex, pack_smp, vec2f(u, v) / size, ddx, ddy);
+    if c.a < 0.5 {
+        discard;
+    }
+    let r = pack_light(p, u, v);
+    let rgb = min(floor(c.rgb / c.a * 255.0 * r + 0.5), vec3f(255.0));
+    return vec4f(rgb / 255.0, 1.0);
+}
+
+@fragment
+fn fs_l(in: VsOut) -> @location(0) vec4f {
+    return shade_l(in, poly_px(in.poly, floor(in.pos.xy)));
+}
+
+@fragment
+fn fs_depth_l(in: VsOut) -> DepthOut {
+    var o: DepthOut;
+    o.colour = shade_l(in, poly_px(in.poly, floor(in.pos.xy)));
+    o.depth = depth_at(in.poly, in.pos, in.attr.x);
+    return o;
+}
+
+@fragment
+fn fs_pack_l(in: VsOut) -> @location(0) vec4f {
+    return shade_pack_l(in, poly_px(in.poly, floor(in.pos.xy)));
+}
+
+@fragment
+fn fs_pack_depth_l(in: VsOut) -> DepthOut {
+    var o: DepthOut;
+    o.colour = shade_pack_l(in, poly_px(in.poly, floor(in.pos.xy)));
+    o.depth = depth_at(in.poly, in.pos, in.attr.x);
+    return o;
+}
+
+@fragment
+fn fs_packf_l(in: VsPackOut) -> @location(0) vec4f {
+    let gx = dpdx(in.attr_c);
+    let gy = dpdy(in.attr_c);
+    return shade_packf_l(in, poly_px(in.poly, floor(in.pos.xy)), gx, gy);
+}
+
+@fragment
+fn fs_packf_depth_l(in: VsPackOut) -> DepthOut {
+    let gx = dpdx(in.attr_c);
+    let gy = dpdy(in.attr_c);
+    var o: DepthOut;
+    o.colour = shade_packf_l(in, poly_px(in.poly, floor(in.pos.xy)), gx, gy);
+    o.depth = depth_at(in.poly, in.pos, in.attr.x);
+    return o;
+}
+
+// Temporal with smooth shading: the luma at the unjittered sample point.
+
+@fragment
+fn fs_l_t(in: VsTOut) -> TOut {
+    let a = pre_t(in);
+    var o: TOut;
+    o.colour = shade_l(plain_t(in), poly_px(in.poly, sample_t(in.pos) - 0.5)) * a;
+    o.aux = aux_t(in, a < 1.0);
+    return o;
+}
+
+@fragment
+fn fs_depth_l_t(in: VsTOut) -> TDepthOut {
+    let a = pre_t(in);
+    var o: TDepthOut;
+    o.colour = shade_l(plain_t(in), poly_px(in.poly, sample_t(in.pos) - 0.5)) * a;
+    o.aux = aux_t(in, a < 1.0);
+    o.depth = depth_t(in);
+    return o;
+}
+
+@fragment
+fn fs_pack_l_t(in: VsTOut) -> TOut {
+    let a = pre_t(in);
+    var o: TOut;
+    o.colour = shade_pack_l(plain_t(in), poly_px(in.poly, sample_t(in.pos) - 0.5)) * a;
+    o.aux = aux_t(in, a < 1.0);
+    return o;
+}
+
+@fragment
+fn fs_pack_depth_l_t(in: VsTOut) -> TDepthOut {
+    let a = pre_t(in);
+    var o: TDepthOut;
+    o.colour = shade_pack_l(plain_t(in), poly_px(in.poly, sample_t(in.pos) - 0.5)) * a;
+    o.aux = aux_t(in, a < 1.0);
+    o.depth = depth_t(in);
+    return o;
+}
+
+@fragment
+fn fs_packf_l_t(in: VsTOut) -> TOut {
+    let gx = dpdx(in.attr_c) * screen_t.lod;
+    let gy = dpdy(in.attr_c) * screen_t.lod;
+    let a = pre_t(in);
+    var o: TOut;
+    o.colour = shade_packf_l(packf_t(in), poly_px(in.poly, sample_t(in.pos) - 0.5), gx, gy) * a;
+    o.aux = aux_t(in, a < 1.0);
+    return o;
+}
+
+@fragment
+fn fs_packf_depth_l_t(in: VsTOut) -> TDepthOut {
+    let gx = dpdx(in.attr_c) * screen_t.lod;
+    let gy = dpdy(in.attr_c) * screen_t.lod;
+    let a = pre_t(in);
+    var o: TDepthOut;
+    o.colour = shade_packf_l(packf_t(in), poly_px(in.poly, sample_t(in.pos) - 0.5), gx, gy) * a;
+    o.aux = aux_t(in, a < 1.0);
+    o.depth = depth_t(in);
+    return o;
+}

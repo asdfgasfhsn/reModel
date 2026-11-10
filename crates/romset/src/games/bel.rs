@@ -25,6 +25,7 @@ pub static BEL: Game = Game {
     protection: None,
     dropouts: &[],
     texture_ram_mirrored: false,
+    shading: crate::Shading::DEFAULT,
     packed: &[Role::MainData, Role::Polygons],
     volume_db: 0.0,
     files: &[

@@ -18,6 +18,7 @@ mod temporal;
 
 pub use model2::enhance::TexFilter;
 use model2::enhance::{Found, Rgba, TexturePack};
+pub use model2::light::{Shading, CREASE_AUTO};
 use model2::raster::{tex_info, Placed, Poly, Sources, TexKeys};
 use model2::video::{Layers2d, View, HEIGHT, WIDTH};
 use std::collections::HashMap;
@@ -50,11 +51,31 @@ pub struct Quality {
     pub temporal: u8,
     /// Checkerboard translucency with `temporal` on (ignored without).
     pub stipple: Stipple,
+    /// Smooth shading (`model2::light`): `Flat` (the default, the
+    /// original), or brightness varying across polygons, from vertex
+    /// values derived from the polygon stream. `Pixel` needs the exact
+    /// layer, not built yet: it draws as `Vertex`. Polygons passed in
+    /// ([`Renderer::draw`], [`Renderer::frame`], [`Renderer::present`])
+    /// are drawn with whatever `Poly::lit` holds unless this is `Flat`;
+    /// the `present_bus*` calls shade the stream themselves
+    /// ([`Renderer::set_light_rules`]).
+    pub shading: Shading,
+    /// The crease angle for `shading`, degrees (0: nothing smoothed), or
+    /// [`CREASE_AUTO`] (the default): the game's (`romset::Shading`).
+    pub crease: u8,
 }
 
 impl Default for Quality {
     fn default() -> Self {
-        Quality { msaa: 1, depth: false, tex_filter: TexFilter::Off, temporal: 0, stipple: Stipple::Blend }
+        Quality {
+            msaa: 1,
+            depth: false,
+            tex_filter: TexFilter::Off,
+            temporal: 0,
+            stipple: Stipple::Blend,
+            shading: Shading::Flat,
+            crease: CREASE_AUTO,
+        }
     }
 }
 
@@ -207,9 +228,16 @@ pub struct Renderer {
     queue: wgpu::Queue,
     raster_shader: wgpu::ShaderModule,
     raster_pipeline_layout: wgpu::PipelineLayout,
-    /// Raster pipelines by sample count, mode, variant and temporal (the
-    /// `_t` entry points, two targets), made when first needed.
-    raster: HashMap<(u32, Mode, Variant, bool), wgpu::RenderPipeline>,
+    /// Raster pipelines by sample count, mode, variant, temporal (the
+    /// `_t` entry points, two targets) and shading (1: the `_l` entry
+    /// points, for frames with a smooth-shaded polygon), made when first
+    /// needed.
+    raster: HashMap<(u32, Mode, Variant, bool, u8), wgpu::RenderPipeline>,
+    /// Smooth shading's rules for the `present_bus*` calls: the game's,
+    /// and its HUD windows (a bit each).
+    light_rules: (&'static romset::Shading, u64),
+    /// The last frame's `light::shade` counts (None: not shaded).
+    light_stats: Option<model2::light::Stats>,
     /// Group 0 of the temporal pipelines (`raster_layout` and binding 5),
     /// and their pipeline layouts by variant.
     raster_layout_t: wgpu::BindGroupLayout,
@@ -333,6 +361,16 @@ fn le(values: impl IntoIterator<Item = [u8; 4]>) -> Vec<u8> {
     values.into_iter().flatten().collect()
 }
 
+/// A fragment entry point's smooth-shading twin when `lit`: `fs` ->
+/// `fs_l`, `fs_t` -> `fs_l_t` (raster.wgsl).
+fn lit_entry(fs: &str, lit: bool) -> String {
+    match (lit, fs.strip_suffix("_t")) {
+        (false, _) => fs.to_string(),
+        (true, Some(base)) => format!("{base}_l_t"),
+        (true, None) => format!("{fs}_l"),
+    }
+}
+
 /// The raster shader with the depth buffer's constants filled in.
 fn raster_source() -> String {
     include_str!("raster.wgsl")
@@ -446,6 +484,8 @@ impl Renderer {
             raster_shader: shader,
             raster_pipeline_layout: pipeline_layout,
             raster: HashMap::new(),
+            light_rules: (&romset::Shading::DEFAULT, 0),
+            light_stats: None,
             raster_layout_t,
             pipeline_layouts_t,
             temporal,
@@ -620,15 +660,71 @@ impl Renderer {
         self.pack_stats
     }
 
+    /// Smooth shading's rules for the frames `present_bus*` shades from
+    /// the stream (with [`Quality::shading`] on): the game's
+    /// (`romset::Game::shading`) and its HUD windows
+    /// (`romset::Game::hud_windows`, a bit each), never shaded. Default:
+    /// `romset::Shading::DEFAULT`, none.
+    pub fn set_light_rules(&mut self, rules: &'static romset::Shading, hud_windows: u64) {
+        self.light_rules = (rules, hud_windows);
+    }
+
+    /// `light::shade`'s counts for the last frame `present_bus*` drew with
+    /// shading on (None otherwise).
+    pub fn light_stats(&self) -> Option<model2::light::Stats> {
+        self.light_stats
+    }
+
+    /// The options `present_bus*` shades the stream with (None: shading
+    /// off).
+    pub fn light_options(&self) -> Option<model2::light::Options> {
+        let q = self.quality;
+        let o = model2::light::Options::with_mask(q.shading, q.crease, self.light_rules.0, self.light_rules.1);
+        o.on().then_some(o)
+    }
+
+    /// The polygons of `stream` as `present_bus*` draws them: with motion
+    /// data `m`, and smooth-shaded when [`Quality::shading`] is on.
+    fn build_polys(
+        &mut self,
+        stream: &[u32],
+        src: &Sources,
+        m: Option<&model2::raster::MotionIn>,
+    ) -> (Vec<Poly>, Vec<model2::raster::Centres>) {
+        let opts = self.light_options();
+        let shaded = opts.map(|o| model2::light::shade(stream, &o));
+        self.light_stats = shaded.as_ref().map(|s| s.stats);
+        let input = model2::raster::BuildIn {
+            motion: m,
+            lit: shaded.as_ref(),
+            skip_checker: opts.is_some_and(|o| o.skip_checker),
+        };
+        model2::raster::build_with(stream, src, &input)
+    }
+
     /// The raster pipeline for `samples`, `mode` and `variant`, and
-    /// `temporal`: the `_t` entry points, with the aux target.
-    fn raster_pipeline(&mut self, samples: u32, mode: Mode, variant: Variant, temporal: bool) -> wgpu::RenderPipeline {
-        if let Some(p) = self.raster.get(&(samples, mode, variant, temporal)) {
+    /// `temporal`: the `_t` entry points, with the aux target; `shading`
+    /// 1: the smooth-shading (`_l`) fragment entry points.
+    fn raster_pipeline(
+        &mut self,
+        samples: u32,
+        mode: Mode,
+        variant: Variant,
+        temporal: bool,
+        shading: u8,
+    ) -> wgpu::RenderPipeline {
+        let key = (samples, mode, variant, temporal, shading);
+        if let Some(p) = self.raster.get(&key) {
             return p.clone();
         }
+        // The test is in favour of the game's order (raster::depth_test_value).
+        let mut constants = Vec::new();
+        if mode == Mode::Test {
+            constants.push(("DEPTH_FACTOR", f64::from(1.0 + model2::raster::DEPTH_TOLERANCE)));
+        }
         if temporal {
-            let p = self.raster_pipeline_t(mode, variant);
-            self.raster.insert((samples, mode, variant, temporal), p.clone());
+            let p = self.raster_pipeline_t(mode, variant, &constants, shading != 0);
+            self.raster.insert(key, p.clone());
             return p;
         }
         let (vs, fs) = match (mode, variant) {
@@ -640,6 +736,7 @@ impl Renderer {
             (Mode::Test | Mode::DepthWrite, Variant::PackFiltered) => ("vs_pack", "fs_packf_depth"),
             (_, Variant::PackFiltered) => ("vs_pack", "fs_packf"),
         };
+        let fs = lit_entry(fs, shading != 0 && mode != Mode::Clear);
         let layout = match variant {
             Variant::Original => &self.raster_pipeline_layout,
             Variant::Pack => &self.pack_pipeline_layout,
@@ -662,12 +759,7 @@ impl Renderer {
             stencil: Default::default(),
             bias: Default::default(),
         });
-        // The test is in favour of the game's order (raster::depth_test_value).
-        let test_factor = [("DEPTH_FACTOR", f64::from(1.0 + model2::raster::DEPTH_TOLERANCE))];
-        let fs_options = wgpu::PipelineCompilationOptions {
-            constants: if mode == Mode::Test { &test_factor } else { &[] },
-            ..Default::default()
-        };
+        let fs_options = wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() };
         let p = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("raster"),
             layout: Some(layout),
@@ -682,7 +774,7 @@ impl Renderer {
             multisample: wgpu::MultisampleState { count: samples, mask: !0, alpha_to_coverage_enabled: false },
             fragment: Some(wgpu::FragmentState {
                 module: &self.raster_shader,
-                entry_point: Some(fs),
+                entry_point: Some(&fs),
                 compilation_options: fs_options,
                 targets: &[Some(wgpu::ColorTargetState {
                     format: FORMAT,
@@ -697,14 +789,20 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
-        self.raster.insert((samples, mode, variant, temporal), p.clone());
+        self.raster.insert(key, p.clone());
         p
     }
 
     /// A temporal raster pipeline (one sample): `vs_t` and the `_t`
     /// fragment entry points, 36-byte vertices, the colour target with
     /// premultiplied blending (for blended stipple) and the aux target.
-    fn raster_pipeline_t(&mut self, mode: Mode, variant: Variant) -> wgpu::RenderPipeline {
+    fn raster_pipeline_t(
+        &mut self,
+        mode: Mode,
+        variant: Variant,
+        constants: &[(&str, f64)],
+        lit: bool,
+    ) -> wgpu::RenderPipeline {
         let depth = matches!(mode, Mode::Test | Mode::DepthWrite);
         let (vs, fs) = match (mode, variant) {
             (Mode::Clear, _) => ("vs_clear", "fs_clear"),
@@ -712,6 +810,7 @@ impl Renderer {
             (_, Variant::Pack) => ("vs_t", if depth { "fs_pack_depth_t" } else { "fs_pack_t" }),
             (_, Variant::PackFiltered) => ("vs_t", if depth { "fs_packf_depth_t" } else { "fs_packf_t" }),
         };
+        let fs = lit_entry(fs, lit && mode != Mode::Clear);
         let layout = &self.pipeline_layouts_t[match variant {
             Variant::Original => 0,
             Variant::Pack => 1,
@@ -734,11 +833,7 @@ impl Renderer {
             stencil: Default::default(),
             bias: Default::default(),
         });
-        let test_factor = [("DEPTH_FACTOR", f64::from(1.0 + model2::raster::DEPTH_TOLERANCE))];
-        let fs_options = wgpu::PipelineCompilationOptions {
-            constants: if mode == Mode::Test { &test_factor } else { &[] },
-            ..Default::default()
-        };
+        let fs_options = wgpu::PipelineCompilationOptions { constants, ..Default::default() };
         let writes = if matches!(mode, Mode::Clear | Mode::DepthWrite) {
             wgpu::ColorWrites::empty()
         } else {
@@ -766,7 +861,7 @@ impl Renderer {
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &self.raster_shader,
-                entry_point: Some(fs),
+                entry_point: Some(&fs),
                 compilation_options: fs_options,
                 targets: &targets,
             }),
@@ -1000,6 +1095,9 @@ impl Renderer {
         // Temporal: each polygon's real clip rectangle (`clip_t`).
         let mut table_t: Vec<u8> = Vec::new();
         let q = self.quality;
+        // Smooth shading: the lit pipelines only for frames with a lit
+        // polygon.
+        let lit_frame = q.shading != Shading::Flat && placed.iter().any(|pl| !polys[pl.poly].lit.is_empty());
         let versions = self.versions.take();
         let (slots, pack_groups) = self.pack_slots(polys, placed, src, versions.map(|v| v.0));
         // Draws: runs of polygons in the same window and depth mode, and
@@ -1034,8 +1132,9 @@ impl Renderer {
         // drawn: the depth-only draws to come. (A test and a write of
         // different values: raster::depth_test_value.)
         let mut group_depth: Vec<Run> = Vec::new();
-        // Outlines for the shader's 1/z (`outline_iz`): a directory of
-        // (first, count) per polygon, then the points.
+        // Outlines for the shader's 1/z (`outline_iz`) and lit polygons'
+        // lumas (`lit_luma`): a directory of (first, count, lit, 0) per
+        // polygon, then the points (x, y, 1/z, luma/z).
         let mut outline_dir: Vec<u8> = Vec::new();
         let mut outline_points: Vec<u8> = Vec::new();
         for (i, pl) in placed.iter().enumerate() {
@@ -1079,12 +1178,16 @@ impl Renderer {
                 }
             }
             let end = (verts.len() as u64 / vertex_bytes) as u32;
-            if q.depth {
+            let lit = lit_frame && !p.lit.is_empty();
+            if q.depth || lit {
                 let first = placed.len() + outline_points.len() / 16;
-                outline_dir.extend(le([first as u32, pl.points.len() as u32, 0, 0].map(u32::to_le_bytes)));
-                for v in &pl.points {
-                    outline_points.extend(le([v.x, v.y, v.iz, 0.0].map(f32::to_le_bytes)));
+                outline_dir.extend(le([first as u32, pl.points.len() as u32, lit as u32, 0].map(u32::to_le_bytes)));
+                for (k, v) in pl.points.iter().enumerate() {
+                    let lz = if lit { p.lit[k][0] * v.iz } else { 0.0 };
+                    outline_points.extend(le([v.x, v.y, v.iz, lz].map(f32::to_le_bytes)));
                 }
+            } else if lit_frame {
+                outline_dir.extend([0; 16]);
             }
             // Translucent (checkerboard) polygons are background.
             let grouped = q.depth && !pl.background;
@@ -1164,14 +1267,16 @@ impl Renderer {
             (false, false) => Variant::Pack,
             (false, true) => Variant::PackFiltered,
         };
+        // Depth-only draws need no luma: never lit.
+        let shading = |m: Mode| (lit_frame && m != Mode::DepthWrite) as u8;
         let pipelines: Vec<(Mode, wgpu::RenderPipeline)> = if q.depth {
             [Mode::Test, Mode::DepthWrite, Mode::Background]
-                .map(|m| (m, self.raster_pipeline(samples, m, variant, is_t)))
+                .map(|m| (m, self.raster_pipeline(samples, m, variant, is_t, shading(m))))
                 .into()
         } else {
-            vec![(Mode::Plain, self.raster_pipeline(samples, Mode::Plain, variant, is_t))]
+            vec![(Mode::Plain, self.raster_pipeline(samples, Mode::Plain, variant, is_t, shading(Mode::Plain)))]
         };
-        let clear_pipeline = q.depth.then(|| self.raster_pipeline(samples, Mode::Clear, variant, is_t));
+        let clear_pipeline = q.depth.then(|| self.raster_pipeline(samples, Mode::Clear, variant, is_t, 0));
         let dummy = (variant != Variant::Original).then(|| self.pack_dummy(variant == Variant::PackFiltered));
         self.pack_stats.draws = runs.len() as u32;
         let colour = Some(wgpu::RenderPassColorAttachment {
@@ -1576,6 +1681,7 @@ impl Renderer {
         origin: (u32, u32),
     ) {
         let step = motion.map_or(Step::NoMotion, |m| self.temporal_step(m.tag, m.cut));
+        let prev_centres = self.temporal.centres.clone();
         let (mut polys, centres) = {
             let m_in = match (step, motion) {
                 (Step::Blend { tp }, Some(m)) if !m.s0.is_empty() => Some(model2::raster::MotionIn {
@@ -1583,11 +1689,11 @@ impl Renderer {
                     s1: m.s1.unwrap_or(s1),
                     tp,
                     valid: m.valid,
-                    prev_centres: &self.temporal.centres,
+                    prev_centres: &prev_centres,
                 }),
                 _ => None,
             };
-            model2::raster::build_motion(stream, src, m_in.as_ref())
+            self.build_polys(stream, src, m_in.as_ref())
         };
         model2::video::HudLayout::new(b.tile_ram(), b.palette_ram(), view).anchor(&mut polys, view);
         let placed = model2::raster::place(&mut polys, view);
@@ -1619,7 +1725,7 @@ impl Renderer {
             xoff,
             yoff,
         };
-        let mut polys = model2::raster::build(stream, &src);
+        let (mut polys, _) = self.build_polys(stream, &src, None);
         model2::video::HudLayout::new(b.tile_ram(), b.palette_ram(), view).anchor(&mut polys, view);
         let placed = model2::raster::place(&mut polys, view);
         let layers = model2::video::layers_2d(b.tile_ram(), b.palette_ram(), view, !placed.is_empty());
@@ -1790,6 +1896,14 @@ mod tests {
             "fs_packf_t",
             "fs_packf_depth_t",
         ] {
+            assert!(names.contains(&name), "raster.wgsl has no entry point {name}");
+            // Each fragment entry point has its smooth-shading twin.
+            if name.starts_with("fs_") && name != "fs_clear" {
+                let lit = super::lit_entry(name, true);
+                assert!(names.contains(&lit.as_str()), "raster.wgsl has no entry point {lit}");
+            }
+        }
+        for name in ["fs", "fs_t"] {
             assert!(names.contains(&name), "raster.wgsl has no entry point {name}");
         }
         validate(include_str!("compose.wgsl"));

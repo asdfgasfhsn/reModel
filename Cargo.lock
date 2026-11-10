@@ -2375,6 +2375,7 @@ dependencies = [
  "naga",
  "pollster",
  "remodel-model2",
+ "remodel-romset",
  "wgpu",
 ]
 

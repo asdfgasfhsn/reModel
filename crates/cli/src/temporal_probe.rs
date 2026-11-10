@@ -31,6 +31,7 @@ pub fn captures(
     view: Option<View>,
     quality: gpu::Quality,
     out: &Path,
+    light: Option<&model2::light::Options>,
 ) -> Result<(), String> {
     let texture_rom = capture::load_texture_rom(root)
         .map_err(|e| format!("{}: {e} (capture with `make capture`)", root.display()))?;
@@ -60,11 +61,11 @@ pub fn captures(
     for d in &dirs {
         let f = Frame::load(d).map_err(|e| format!("{}: {e}", d.display()))?;
         let src = f.sources(&texture_rom);
-        let mut polys = raster::build(&f.stream, &src);
+        let mut polys = raster::build_shaded(&f.stream, &src, light);
         video::HudLayout::new(&f.tiles, &f.palette, &view).anchor(&mut polys, &view);
         let placed = raster::place(&mut polys, &view);
         let layers = video::layers_2d(&f.tiles, &f.palette, &view, !placed.is_empty());
-        let off_q = gpu::Quality { depth: quality.depth, ..Default::default() };
+        let off_q = gpu::Quality { depth: quality.depth, ..super::gpu_light(light) };
         let keep_q = gpu::Quality { temporal: 100, stipple: gpu::Stipple::Keep, ..off_q };
         let blend_q = gpu::Quality { stipple: gpu::Stipple::Blend, ..keep_q };
         gpu.set_quality(off_q);

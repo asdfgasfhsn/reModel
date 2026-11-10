@@ -47,6 +47,7 @@ pub fn run(
     depth: bool,
     pack: &Path,
     out_dir: &Path,
+    light: Option<&model2::light::Options>,
 ) -> Result<(), String> {
     let texture_rom = capture::load_texture_rom(root)
         .map_err(|e| format!("{}: {e} (capture with `make capture`)", root.display()))?;
@@ -56,7 +57,7 @@ pub fn run(
     view = view.with_hud_windows(hud_windows.0, hud_windows.1);
     // The reference supersamples at least 4x4.
     let ss = super::supersample_factor(aa.max(16));
-    let q = gpu::Quality { msaa: aa, depth, tex_filter: TexFilter::Off, ..Default::default() };
+    let q = gpu::Quality { msaa: aa, depth, tex_filter: TexFilter::Off, ..super::gpu_light(light) };
     let msaa = plain.set_quality(q).msaa;
     gpu.set_pack(Some(Box::new(Packs::new(None, Some(pack.to_path_buf()))?)));
     let mut sw_pack = Packs::new(None, Some(pack.to_path_buf()))?;
@@ -86,7 +87,7 @@ pub fn run(
     for d in &dirs {
         let f = Frame::load(d).map_err(|e| format!("{}: {e}", d.display()))?;
         let src = f.sources(&texture_rom);
-        let mut polys = raster::build(&f.stream, &src);
+        let mut polys = raster::build_shaded(&f.stream, &src, light);
         if polys.is_empty() {
             continue;
         }

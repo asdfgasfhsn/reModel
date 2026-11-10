@@ -217,6 +217,49 @@ pub struct Game {
     /// both halves with different data), of which the rasteriser reads the
     /// lower (docs/games/fvipers.md).
     pub texture_ram_mirrored: bool,
+    /// Rules for smooth shading (an enhancement, off by default:
+    /// `model2::light`); [`Shading::DEFAULT`] unless the game's pictures
+    /// asked for something else.
+    pub shading: Shading,
+}
+
+/// Per-game rules for smooth shading (`model2::light`, an enhancement):
+/// which polygons it may smooth and how sharp an edge stays sharp.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shading {
+    /// Faces meeting at more than this many degrees keep a hard edge.
+    pub crease: u8,
+    /// 3D windows never smooth-shaded (besides [`Game::hud_windows`]).
+    pub skip_windows: &'static [usize],
+    /// Models never smooth-shaded: address ranges (first, last). Needs the
+    /// lighting side channel (not built yet): ignored without it.
+    pub skip_models: &'static [(u32, u32)],
+    /// Models with a crease angle of their own: (first, last, degrees).
+    /// Needs the side channel, as `skip_models`.
+    pub model_crease: &'static [(u32, u32, u8)],
+    /// Checkerboard (screen door) polygons stay flat.
+    pub skip_checker: bool,
+    /// Welding tolerance, relative to the position (0: exact bits).
+    /// Reserved: only exact welding is implemented.
+    pub weld_eps: f32,
+    /// Reserved: models whose consecutive object blocks are welded
+    /// together. Not implemented.
+    pub weld_models: &'static [(u32, u32)],
+}
+
+impl Shading {
+    /// What every game uses until its pictures say otherwise: a 40 degree
+    /// crease (boxes, 8-sided wheels and limbs stay faceted; bodies and
+    /// 10+-sided cylinders smooth), nothing else excluded.
+    pub const DEFAULT: Shading = Shading {
+        crease: 40,
+        skip_windows: &[],
+        skip_models: &[],
+        model_crease: &[],
+        skip_checker: false,
+        weld_eps: 0.0,
+        weld_models: &[],
+    };
 }
 
 #[derive(Debug)]

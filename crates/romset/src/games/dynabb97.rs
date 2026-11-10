@@ -26,6 +26,7 @@ pub static DYNABB97: Game = Game {
     protection: None,
     dropouts: &[],
     texture_ram_mirrored: false,
+    shading: crate::Shading::DEFAULT,
     packed: &[],
     // CRX_drv 3.2.8, as hotd and skisuprg: a coin-start run's `make sound`
     // averages -34 dBFS RMS, between theirs (docs/hw/sound.md §6).

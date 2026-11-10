@@ -1,6 +1,7 @@
 mod depth_check;
 mod geo_check;
 mod gpu_check;
+mod lighting_check;
 mod music;
 mod pack_check;
 mod recomp_crates;
@@ -83,6 +84,15 @@ options:
                        ignore it)
   --stipple blend|keep with --temporal: checkerboard translucency as a 50%
                        blend (default) or the pattern kept
+  --shading flat|vertex|pixel
+                       smooth shading (model2::light; docs/enhancements.md)
+                       for snapshots, gpu-check, depth-check, pack-check
+                       and temporal-probe: flat (default, the original) or
+                       brightness interpolated across polygons from vertex
+                       values derived from the polygon stream (pixel draws
+                       as vertex for now)
+  --crease auto|N      the crease angle for --shading in degrees, 0 to 180
+                       (0: nothing smoothed; auto, the default: the game's)
   --geo chip|native|check
                        the geometrizer: the uploaded program on its chip,
                        the 2B SHARC or 2C TGP (default; `sharc` and `tgp`
@@ -214,6 +224,23 @@ commands:
                        (default out/GAME/pack-check) as FRAME-off, -mip,
                        -aniso16, -swmip and -ref.png, and report how far each
                        is from the reference and what they cost
+  lighting-check [DIR] [OUT]
+                       smooth shading (model2::light) on the frames
+                       captured in DIR (default out/GAME/capture): each
+                       drawn flat and vertex-shaded (--crease, default the
+                       game's) on the software and GPU renderers (default
+                       view 1440x1080; --height, --aspect, --hud that one);
+                       checks that crease 0 draws the flat frame exactly,
+                       that polygons left flat draw as flat, the brightness
+                       of lit polygons and software against GPU; report.txt
+                       and pictures (flat | vertex | differences, false-
+                       colour layers) in OUT (default
+                       out/scratch/lighting/GAME). --probe X,Y@FRAME
+                       (repeatable): the polygons at that output pixel with
+                       their corner values; --every N: pictures of every
+                       Nth frame only; --bench [N]: GPU frame times flat
+                       and vertex at 1080p and 4K over N frames (default
+                       8). Fails if an invariant does
   temporal-probe [DIR] [OUT]
                        the GPU's temporal path (--temporal, default taa;
                        --stipple, --depth, --height, --aspect) on the frames
@@ -395,6 +422,22 @@ fn main() -> ExitCode {
         };
         let _ = STIPPLE.set(s);
     }
+    let (Ok(shading), Ok(crease)) = (opt("--shading"), opt("--crease")) else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    if shading.is_some() || crease.is_some() {
+        let Some(s) = model2::light::Shading::parse(shading.as_deref().unwrap_or("vertex")) else {
+            eprintln!("error: --shading wants flat, vertex or pixel");
+            return ExitCode::FAILURE;
+        };
+        let Some(c) = model2::light::parse_crease(crease.as_deref().unwrap_or("auto")) else {
+            eprintln!("error: --crease wants auto or degrees from 0 to 180");
+            return ExitCode::FAILURE;
+        };
+        let _ = SHADING.set((if shading.is_some() { s } else { model2::light::Shading::Flat }, c));
+    }
+    let _ = GAME_ID.set(game_id.clone().unwrap_or_else(|| "topskatr".into()));
     if let Err(e) = texpack::configure(dump_textures, texture_pack) {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;
@@ -1113,7 +1156,9 @@ fn main() -> ExitCode {
             let root = args.get(1).map(PathBuf::from).unwrap_or(default);
             let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
             let (aa, depth) = (AA.get().copied().unwrap_or(1), DEPTH.get().copied().unwrap_or(false));
-            if let Err(e) = gpu_check::run(&root, windows, aa, depth, pack_dir.as_deref(), tex_filter()) {
+            let light = light_options(roms.game);
+            if let Err(e) = gpu_check::run(&root, windows, aa, depth, pack_dir.as_deref(), tex_filter(), light.as_ref())
+            {
                 eprintln!("error: {e}");
                 return ExitCode::FAILURE;
             }
@@ -1155,7 +1200,9 @@ fn main() -> ExitCode {
                 let default = PathBuf::from("out").join(roms.game.id).join("capture");
                 let root = args.get(1).map(PathBuf::from).unwrap_or(default);
                 let out = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out/scratch/temporal-probe"));
-                temporal_probe::captures(&root, windows, view, quality, &out)
+                let light = light_options(roms.game);
+                let quality = gpu::Quality { shading: gpu_light(light.as_ref()).shading, ..quality };
+                temporal_probe::captures(&root, windows, view, quality, &out, light.as_ref())
             };
             if let Err(e) = result {
                 eprintln!("error: {e}");
@@ -1175,7 +1222,9 @@ fn main() -> ExitCode {
                 .unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("pack-check"));
             let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
             let (aa, depth) = (AA.get().copied().unwrap_or(1), DEPTH.get().copied().unwrap_or(false));
-            if let Err(e) = pack_check::run(&root, windows, VIEW.get().copied(), aa, depth, pack, &out) {
+            let light = light_options(roms.game);
+            if let Err(e) = pack_check::run(&root, windows, VIEW.get().copied(), aa, depth, pack, &out, light.as_ref())
+            {
                 eprintln!("error: {e}");
                 return ExitCode::FAILURE;
             }
@@ -1203,9 +1252,67 @@ fn main() -> ExitCode {
                 .unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("depth-check"));
             let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
             let (aa, against) = (AA.get().copied().unwrap_or(1), against.as_deref());
-            if let Err(e) = depth_check::run(&root, windows, VIEW.get().copied(), aa, &out, &probes, against) {
+            let light = light_options(roms.game);
+            if let Err(e) =
+                depth_check::run(&root, windows, VIEW.get().copied(), aa, &out, &probes, against, light.as_ref())
+            {
                 eprintln!("error: {e}");
                 return ExitCode::FAILURE;
+            }
+        }
+        "lighting-check" => {
+            let mut args = args.clone();
+            let mut probes = Vec::new();
+            while let Some(i) = args.iter().position(|a| a == "--probe") {
+                let Some(p) = args.get(i + 1).and_then(|v| depth_check::Probe::parse(v)) else {
+                    eprintln!("error: --probe wants X,Y@FRAME (output pixel, captured frame)");
+                    return ExitCode::FAILURE;
+                };
+                probes.push(p);
+                args.drain(i..i + 2);
+            }
+            let bench = match args.iter().position(|a| a == "--bench") {
+                Some(i) => {
+                    let n = args.get(i + 1).and_then(|v| v.parse::<usize>().ok());
+                    args.drain(i..i + 1 + n.is_some() as usize);
+                    Some(n.unwrap_or(8))
+                }
+                None => None,
+            };
+            let every = match args.iter().position(|a| a == "--every") {
+                Some(i) => match args.get(i + 1).and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0) {
+                    Some(n) => {
+                        args.drain(i..i + 2);
+                        n
+                    }
+                    None => {
+                        eprintln!("error: --every wants a number of frames");
+                        return ExitCode::FAILURE;
+                    }
+                },
+                None => 1,
+            };
+            let default = PathBuf::from("out").join(roms.game.id).join("capture");
+            let root = args.get(1).map(PathBuf::from).unwrap_or(default);
+            let out = args
+                .get(2)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("out/scratch/lighting").join(roms.game.id));
+            let crease = SHADING.get().map_or(model2::light::CREASE_AUTO, |s| s.1);
+            let opts = model2::light::Options::new(
+                model2::light::Shading::Vertex,
+                crease,
+                &roms.game.shading,
+                roms.game.hud_windows,
+            );
+            let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
+            match lighting_check::run(&root, windows, VIEW.get().copied(), opts, &out, &probes, bench, every) {
+                Ok(true) => {}
+                Ok(false) => return ExitCode::FAILURE,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::FAILURE;
+                }
             }
         }
         // Debug: run recompiled and interpreted i960s side by side, one
@@ -1517,6 +1624,29 @@ fn tex_filter() -> model2::enhance::TexFilter {
 
 /// `--depth`: the depth buffer for snapshots and gpu-check.
 static DEPTH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+/// `--shading`, `--crease`: smooth shading for snapshots and the GPU
+/// tools (shading, crease in degrees or `light::CREASE_AUTO`).
+static SHADING: std::sync::OnceLock<(model2::light::Shading, u8)> = std::sync::OnceLock::new();
+/// `--game`, for snapshots' shading rules.
+static GAME_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Smooth shading's options for `game` from `--shading` and `--crease`
+/// (None: off).
+fn light_options(game: &romset::Game) -> Option<model2::light::Options> {
+    let &(shading, crease) = SHADING.get()?;
+    let o = model2::light::Options::new(shading, crease, &game.shading, game.hud_windows);
+    o.on().then_some(o)
+}
+
+/// The GPU's quality for drawing polygons built with `light`: shading on
+/// (whatever `Poly::lit` holds is drawn) or off.
+fn gpu_light(light: Option<&model2::light::Options>) -> gpu::Quality {
+    match light {
+        Some(o) => gpu::Quality { shading: o.shading, crease: o.crease, ..Default::default() },
+        None => gpu::Quality::default(),
+    }
+}
+
 /// `--temporal`, `--stipple`: temporal anti-aliasing on the GPU.
 static TEMPORAL: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
 static STIPPLE: std::sync::OnceLock<gpu::Stipple> = std::sync::OnceLock::new();
@@ -1653,7 +1783,8 @@ fn render(m: &model2::Machine, stream: Option<&[u32]>, path: &std::path::Path) -
         xoff,
         yoff,
     };
-    let mut polys = model2::raster::build(stream, &src);
+    let light = games::find(GAME_ID.get().map_or("topskatr", |s| s.as_str())).ok().and_then(light_options);
+    let mut polys = model2::raster::build_shaded(stream, &src, light.as_ref());
     model2::video::HudLayout::new(b.tile_ram(), b.palette_ram(), &view).anchor(&mut polys, &view);
     let mut packs = texpack::PACKS.lock().unwrap();
     let (rgb3d, covered) = match packs.as_mut() {

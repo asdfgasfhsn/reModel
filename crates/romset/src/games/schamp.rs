@@ -27,6 +27,7 @@ pub static SCHAMP: Game = Game {
     dropouts: &[],
     // It uploads its textures to 0x11100000 and 0x11300000 only.
     texture_ram_mirrored: true,
+    shading: crate::Shading::DEFAULT,
     packed: &[],
     // A coin-start run's `make sound` averages -28 dBFS RMS (peak -8), louder
     // than the games here that play at 0 dB (about -31 to -38): brought

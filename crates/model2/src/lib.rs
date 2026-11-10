@@ -15,6 +15,7 @@ pub mod geo_native;
 pub mod geo_native_2c;
 pub mod gun;
 pub mod input;
+pub mod light;
 pub mod pacing;
 pub mod protection;
 pub mod raster;

@@ -28,6 +28,7 @@ pub static FVIPERS: Game = Game {
     dropouts: &[],
     // It uploads its textures to 0x11100000 and 0x11300000 only.
     texture_ram_mirrored: true,
+    shading: crate::Shading::DEFAULT,
     // In 8 MB slots the second and third polygon pairs' fighters draw as
     // shards; packed textures draw Bahn's coat wrong.
     packed: &[Role::Polygons],

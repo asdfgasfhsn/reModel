@@ -219,6 +219,7 @@ impl GameSettings {
             tex_filter: self.tex_filter,
             temporal: if self.temporal_on() && supported { self.temporal } else { 0 },
             stipple: if self.stipple_keep { gpu::Stipple::Keep } else { gpu::Stipple::Blend },
+            ..Default::default()
         }
     }
 }

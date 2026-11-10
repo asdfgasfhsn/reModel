@@ -16,8 +16,10 @@ fn f24(w: u32) -> f32 {
     f32::from_bits(w << 8)
 }
 
-/// View-space vertex with texture coordinates (texels), and with motion
-/// data ([`build_motion`]) its previous view-space position (zero without).
+/// View-space vertex with texture coordinates (texels), with motion data
+/// ([`build_motion`]) its previous view-space position (zero without), and
+/// with smooth shading ([`build_with`]) its corner values (`[luma, nx, ny,
+/// nz]`, `crate::light::Shaded::corners`; zero without).
 #[derive(Clone, Copy, Debug, Default)]
 struct Vtx {
     x: f32,
@@ -28,6 +30,7 @@ struct Vtx {
     px: f32,
     py: f32,
     pz: f32,
+    lit: [f32; 4],
 }
 
 /// Screen-space vertex with perspective-divided attributes.
@@ -111,6 +114,9 @@ pub struct Poly {
     /// The object block (the stream's `0x1` command, counted from 0 in the
     /// frame) the polygon came in: one model's polygon list. For probing.
     pub block: u32,
+    /// The stream index of its attribute word: what smooth shading's
+    /// results are keyed by (`crate::light::Shaded::at`). For probing.
+    pub at: u32,
     /// Motion data ([`build_motion`]): per point, where it was in the
     /// previous displayed image, in homogeneous screen pixels `[X, Y, W]`
     /// (the position is `(X / W, Y / W)`; its 1/z was `iz / W`), linear in
@@ -123,6 +129,13 @@ pub struct Poly {
     /// match it (hotd's are screen-parallel slices), so with the depth
     /// buffer they keep the game's order instead.
     pub shadow: bool,
+    /// Smooth shading ([`build_with`], `crate::light`): per point, its
+    /// corner values `[luma, nx, ny, nz]` (luma a float 0-255 before
+    /// truncation; the normal zero where there is none), linear in view
+    /// space, so `luma * iz` is linear in screen space like
+    /// [`SVtx::uz`]. Empty: the polygon is drawn with [`Poly::luma`] (no
+    /// smooth shading, not lit, or a shadow).
+    pub lit: Vec<[f32; 4]>,
 }
 
 /// A polygon placed in a view's output pixels, ready for a rasteriser
@@ -276,7 +289,39 @@ fn texture_from_header(h: [u16; 4]) -> Option<Texture> {
 
 /// Parse a frame's raster stream into screen-space polygons.
 pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
-    build_impl(stream, src, None).0
+    build_impl(stream, src, &BuildIn::default()).0
+}
+
+/// What [`build_with`] adds to the polygons: motion data (as
+/// [`build_motion`]) and smooth shading's corner values.
+#[derive(Default)]
+pub struct BuildIn<'a> {
+    pub motion: Option<&'a MotionIn<'a>>,
+    /// `crate::light::shade`'s result for the stream: each lit polygon
+    /// gets [`Poly::lit`] (shadows excepted, and checkerboard polygons
+    /// when `skip_checker`).
+    pub lit: Option<&'a crate::light::Shaded>,
+    /// Checkerboard polygons stay flat (`light::Options::skip_checker`).
+    pub skip_checker: bool,
+}
+
+/// [`build`], smooth-shaded with `opts` (`crate::light::shade`) when given
+/// and on.
+pub fn build_shaded(stream: &[u32], src: &Sources, opts: Option<&crate::light::Options>) -> Vec<Poly> {
+    match opts.filter(|o| o.on()) {
+        Some(o) => {
+            let sh = crate::light::shade(stream, o);
+            build_with(stream, src, &BuildIn { lit: Some(&sh), skip_checker: o.skip_checker, ..Default::default() }).0
+        }
+        None => build(stream, src),
+    }
+}
+
+/// [`build_motion`] with smooth shading too. The polygons are [`build`]'s
+/// exactly, apart from [`Poly::prev`] and [`Poly::lit`].
+pub fn build_with(stream: &[u32], src: &Sources, b: &BuildIn) -> (Vec<Poly>, Vec<Centres>) {
+    let (polys, windows) = build_impl(stream, src, b);
+    (polys, windows.iter().map(|w| w.centres).collect())
 }
 
 /// [`build`], and with motion data `m` each polygon's previous position
@@ -292,11 +337,15 @@ pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
 /// frame (`m` None, or the streams not all the same length or not agreeing
 /// on the command words), every `prev` is empty.
 pub fn build_motion(stream: &[u32], src: &Sources, m: Option<&MotionIn>) -> (Vec<Poly>, Vec<Centres>) {
-    let (polys, windows) = build_impl(stream, src, m);
-    (polys, windows.iter().map(|w| w.centres).collect())
+    build_with(stream, src, &BuildIn { motion: m, ..Default::default() })
 }
 
-fn build_impl(stream: &[u32], src: &Sources, m: Option<&MotionIn>) -> (Vec<Poly>, Vec<Window>) {
+fn build_impl(stream: &[u32], src: &Sources, input: &BuildIn) -> (Vec<Poly>, Vec<Window>) {
+    let m = input.motion;
+    // Smooth shading: the lit polygons by the stream index of their
+    // attribute word, ascending, walked with the stream.
+    let lit = input.lit.filter(|l| !l.at.is_empty());
+    let mut lit_next = 0;
     let mut polys = Vec::new();
     let mut windows: Vec<Window> = Vec::new();
     let mut block = 0;
@@ -354,7 +403,7 @@ fn build_impl(stream: &[u32], src: &Sources, m: Option<&MotionIn>) -> (Vec<Poly>
                     match m {
                         Some(m) if k + 2 < stream.len() => {
                             let (px, py, pz) = (prev_at(m, k), prev_at(m, k + 1), prev_at(m, k + 2));
-                            Vtx { x, y, z, u: 0.0, v: 0.0, px, py, pz }
+                            Vtx { x, y, z, u: 0.0, v: 0.0, px, py, pz, lit: [0.0; 4] }
                         }
                         _ => Vtx { x, y, z, ..Default::default() },
                     }
@@ -371,6 +420,13 @@ fn build_impl(stream: &[u32], src: &Sources, m: Option<&MotionIn>) -> (Vec<Poly>
                     }
                     let quad = attr & 1 != 0;
                     let luma_word = rd(i + 1);
+                    let at = i as u32;
+                    let corners = lit.and_then(|l| {
+                        while l.at.get(lit_next).is_some_and(|&a| (a as usize) < i) {
+                            lit_next += 1;
+                        }
+                        (l.at.get(lit_next) == Some(&(i as u32))).then(|| &l.corners[lit_next])
+                    });
                     let pa = pos(i + 3);
                     let pb = if quad { pos(i + 6) } else { pa };
                     i += if quad { 9 } else { 6 };
@@ -380,6 +436,9 @@ fn build_impl(stream: &[u32], src: &Sources, m: Option<&MotionIn>) -> (Vec<Poly>
                     for (k, vtx) in verts.iter_mut().enumerate() {
                         vtx.v = src.point_word(tpa + 2 * k as u32) as f32 / 8.0;
                         vtx.u = src.point_word(tpa + 2 * k as u32 + 1) as f32 / 8.0;
+                        if let Some(c) = corners {
+                            vtx.lit = c[k];
+                        }
                     }
                     tpa += 2 * verts.len() as u32;
 
@@ -425,6 +484,13 @@ fn build_impl(stream: &[u32], src: &Sources, m: Option<&MotionIn>) -> (Vec<Poly>
                             let texture = texture_from_header(header);
                             let shadow =
                                 texture.is_none() && (0..3).all(|ch| src.translate(ch, colour[ch], luma >> 2) == 0);
+                            let checker = header[0] & (1 << 15) != 0;
+                            let lit = match corners {
+                                Some(_) if !shadow && !(checker && input.skip_checker) => {
+                                    clipped.iter().map(|v| v.lit).collect()
+                                }
+                                _ => Vec::new(),
+                            };
                             polys.push(Poly {
                                 points,
                                 key,
@@ -434,10 +500,12 @@ fn build_impl(stream: &[u32], src: &Sources, m: Option<&MotionIn>) -> (Vec<Poly>
                                 colour,
                                 luma,
                                 shadow,
-                                checker: header[0] & (1 << 15) != 0,
+                                checker,
                                 header,
                                 block: block - 1,
+                                at,
                                 prev,
+                                lit,
                             });
                         }
                     }
@@ -547,6 +615,7 @@ fn clip_plane(v: &[Vtx], dist: impl Fn(&Vtx) -> f32) -> Vec<Vtx> {
                 px: l(a.px, b.px),
                 py: l(a.py, b.py),
                 pz: l(a.pz, b.pz),
+                lit: [0, 1, 2, 3].map(|c| l(a.lit[c], b.lit[c])),
             });
         }
     }
@@ -593,15 +662,20 @@ fn filtered_texel(t: &Texture, src: &Sources, u: f32, v: f32) -> Option<u32> {
 
 /// Shade one pixel; None if it is transparent.
 fn shade(p: &Poly, src: &Sources, x: usize, y: usize, u: f32, v: f32) -> Option<[u8; 3]> {
+    shade_luma(p, p.luma, src, x, y, u, v)
+}
+
+/// [`shade`] with the polygon's luma given (a smooth-shaded pixel's).
+fn shade_luma(p: &Poly, luma: u32, src: &Sources, x: usize, y: usize, u: f32, v: f32) -> Option<[u8; 3]> {
     if p.checker && (x ^ y) & 1 != 0 {
         return None;
     }
     let lum = match p.texture {
         Some(t) => {
             let t8 = filtered_texel(&t, src, u, v)?;
-            (src.luma(t.luma_table, t8 / 2) * p.luma / 256).min(63)
+            (src.luma(t.luma_table, t8 / 2) * luma / 256).min(63)
         }
-        None => p.luma >> 2,
+        None => luma >> 2,
     };
     Some([0, 1, 2].map(|ch| src.translate(ch, p.colour[ch], lum)))
 }
@@ -750,16 +824,18 @@ struct Light {
 }
 
 impl Light {
-    fn new(p: &Poly, src: &Sources) -> Self {
+    /// For polygon `p` drawn at `luma` (its own, or a smooth-shaded
+    /// pixel's).
+    fn new(p: &Poly, luma: u32, src: &Sources) -> Self {
         let poly = [0, 1, 2].map(|ch| {
             let full = src.translate(ch, p.colour[ch], 63) as f32;
             if full > 0.0 {
-                src.translate(ch, p.colour[ch], (64 * p.luma / 256).min(63)) as f32 / full
+                src.translate(ch, p.colour[ch], (64 * luma / 256).min(63)) as f32 / full
             } else {
-                p.luma as f32 / FULL_LUMA as f32
+                luma as f32 / FULL_LUMA as f32
             }
         });
-        Light { full: p.luma >= FULL_LUMA, luma: p.luma, colour: p.colour, poly }
+        Light { full: luma >= FULL_LUMA, luma, colour: p.colour, poly }
     }
 
     fn ratio(&self, t: &Texture, src: &Sources, u: f32, v: f32) -> [f32; 3] {
@@ -1212,16 +1288,32 @@ fn draw_impl(
             _ => None,
         };
         let mut pixels = 0;
+        // Smooth shading: each pixel's luma, in the order `fill` visits
+        // them (None: the polygon's own).
+        let lumas = (!p.lit.is_empty()).then(|| lit_lumas(points, &p.lit, clip, w, h));
+        let mut n = 0;
+        let mut luma_at = || {
+            n += 1;
+            lumas.as_ref().map_or(p.luma, |l| l[n - 1])
+        };
         if let (Some((_, Some(Replacement::Mips(chain)))), Some(t)) = (&hooked, &p.texture) {
-            let light = Light::new(p, src);
+            let light0 = Light::new(p, p.luma, src);
             let grad = Gradients::new(points);
             fill(points, clip, w, h, |x, y, iz, uz, vz| {
+                let luma = luma_at();
                 let o = y * w + x;
                 if test && depth_test_value(iz, rank) < zbuf[o] {
                     return;
                 }
+                let lit;
+                let light = if luma == p.luma {
+                    &light0
+                } else {
+                    lit = Light::new(p, luma, src);
+                    &lit
+                };
                 let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
-                if let Some(c) = shade_filtered(t, p.checker, chain, &grad, &light, src, gx, gy, (iz, uz, vz)) {
+                if let Some(c) = shade_filtered(t, p.checker, chain, &grad, light, src, gx, gy, (iz, uz, vz)) {
                     if test {
                         pending.push((o, depth_value(iz, rank)));
                     }
@@ -1231,14 +1323,22 @@ fn draw_impl(
                 }
             });
         } else if let (Some((_, Some(Replacement::Image(img)))), Some(t)) = (&hooked, &p.texture) {
-            let light = Light::new(p, src);
+            let light0 = Light::new(p, p.luma, src);
             fill(points, clip, w, h, |x, y, iz, uz, vz| {
+                let luma = luma_at();
                 let o = y * w + x;
                 if test && depth_test_value(iz, rank) < zbuf[o] {
                     return;
                 }
+                let lit;
+                let light = if luma == p.luma {
+                    &light0
+                } else {
+                    lit = Light::new(p, luma, src);
+                    &lit
+                };
                 let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
-                if let Some(c) = shade_replaced(t, p.checker, img, &light, src, gx, gy, uz / iz, vz / iz) {
+                if let Some(c) = shade_replaced(t, p.checker, img, light, src, gx, gy, uz / iz, vz / iz) {
                     if test {
                         pending.push((o, depth_value(iz, rank)));
                     }
@@ -1249,12 +1349,13 @@ fn draw_impl(
             });
         } else {
             fill(points, clip, w, h, |x, y, iz, uz, vz| {
+                let luma = luma_at();
                 let o = y * w + x;
                 if test && depth_test_value(iz, rank) < zbuf[o] {
                     return;
                 }
                 let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
-                if let Some(c) = shade(p, src, gx, gy, uz / iz, vz / iz) {
+                if let Some(c) = shade_luma(p, luma, src, gx, gy, uz / iz, vz / iz) {
                     if test {
                         pending.push((o, depth_value(iz, rank)));
                     }
@@ -1269,6 +1370,17 @@ fn draw_impl(
         }
     }
     (rgb, covered)
+}
+
+/// A smooth-shaded polygon's luma at each pixel `fill` visits, in that
+/// order: its corner lumas times 1/z, interpolated as `fill` interpolates
+/// (perspective-correct), divided by the pixel's 1/z and truncated
+/// (`light::quantise`).
+fn lit_lumas(points: &[SVtx], lit: &[[f32; 4]], clip: (f32, f32, f32, f32), w: usize, h: usize) -> Vec<u32> {
+    let pts: Vec<SVtx> = points.iter().zip(lit).map(|(v, l)| SVtx { uz: l[0] * v.iz, ..*v }).collect();
+    let mut out = Vec::new();
+    fill(&pts, clip, w, h, |_, _, iz, lz, _| out.push(crate::light::quantise(lz / iz)));
+    out
 }
 
 /// Scanline fill of a convex polygon with pixel-centre sampling, limited to
@@ -1384,7 +1496,9 @@ mod tests {
             header: [0x80c0, 0, 0, 0],
             shadow: false,
             block: 0,
+            at: 0,
             prev: Vec::new(),
+            lit: Vec::new(),
         };
         assert!(p.texture.is_none());
         assert!(shade(&p, &src, 2, 4, 0.0, 0.0).is_some());
@@ -1407,7 +1521,9 @@ mod tests {
             header: [0; 4],
             shadow: false,
             block: 0,
+            at: 0,
             prev: Vec::new(),
+            lit: Vec::new(),
         }
     }
 
@@ -1734,6 +1850,98 @@ mod tests {
         assert_eq!(with(&[], &s0[1..]), [false; 3]);
         // Without motion data, nothing.
         assert!(build_motion(&s1, &src, None).0.iter().all(|p| p.prev.is_empty()));
+    }
+
+    /// Smooth shading's corner values through `build_with`: crease 0 gives
+    /// `build`'s polygons exactly; lit polygons carry their corners per
+    /// point, and a point made by clipping (here at the near plane) has
+    /// the value interpolated along its edge (linear in view space, as the
+    /// position); shadows get none; drawn with each corner at the
+    /// polygon's own luma (+0.5) the picture is the flat one.
+    #[test]
+    fn corner_values_through_build_and_clipping() {
+        use crate::light::{self, test_stream};
+        let f = 495.0;
+        let sp = |p: [f32; 3]| [p[0] * f, p[1] * f, p[2]];
+        // A strip bent by 20 degrees about x = 0.5; the second quad runs
+        // from z 4 to behind the eye.
+        let bend = 20f32.to_radians();
+        let a = [[-0.5, -0.3, 4.0], [0.5, -0.3, 4.0], [0.5, 0.3, 4.0], [-0.5, 0.3, 4.0]];
+        let (c, s) = (bend.cos(), bend.sin());
+        let b = [
+            [0.5, -0.3, 4.0],
+            [0.5 + 15.0 * c, -0.3, 4.0 - 15.0 * s],
+            [0.5 + 15.0 * c, 0.3, 4.0 - 15.0 * s],
+            [0.5, 0.3, 4.0],
+        ];
+        let (s1, _) =
+            test_stream::stream(&[vec![test_stream::tpoly(&a.map(sp), 100), test_stream::tpoly(&b.map(sp), 140)]]);
+        let mut palette = vec![0u8; 0x1_c000];
+        palette[0x1_0000..].fill(1);
+        for ch in 0..3 {
+            for lum in 0..64 {
+                palette[0x1_0000 + ch * 0x4000 + lum * 2] = (lum * 4 + 1) as u8;
+            }
+        }
+        let src = motion_sources(&palette);
+        let opts = |crease| light::Options { shading: light::Shading::Vertex, crease, ..Default::default() };
+        let plain = build(&s1, &src);
+        let at = |crease| {
+            let sh = light::shade(&s1, &opts(crease));
+            let (p, _) = build_with(&s1, &src, &BuildIn { lit: Some(&sh), ..Default::default() });
+            (p, sh)
+        };
+        let (zero, sh0) = at(0);
+        assert!(sh0.at.is_empty());
+        assert_eq!(format!("{zero:?}"), format!("{plain:?}"));
+        let (lit, sh) = at(40);
+        assert_eq!(sh.at.len(), 2);
+        assert_eq!(lit.len(), 2);
+        // The view-space points of the polygons' corners and values.
+        let view = |v: &SVtx| [(v.x - 248.0) / v.iz / f, (192.0 - v.y) / v.iz / f, 1.0 / v.iz];
+        let corner = |x: [f32; 3]| b.iter().any(|c| (0..3).all(|k| (c[k] - x[k]).abs() < 1e-3));
+        assert!(lit[1].points.iter().any(|v| !corner(view(v))), "clipped");
+        for (p, (q, corners)) in lit.iter().zip([(a, sh.corners[0]), (b, sh.corners[1])]) {
+            assert_eq!(p.lit.len(), p.points.len());
+            assert_eq!(
+                format!("{:?}", Poly { lit: Vec::new(), ..p.clone() }),
+                format!("{:?}", plain[lit.iter().position(|x| std::ptr::eq(x, p)).unwrap()])
+            );
+            for (v, l) in p.points.iter().zip(&p.lit) {
+                let x = view(v);
+                // On which edge of the original quad, and where.
+                let (k, t) = (0..4)
+                    .map(|k| {
+                        let (e0, e1) = (q[k], q[(k + 1) % 4]);
+                        let d = [0, 1, 2].map(|c| e1[c] - e0[c]);
+                        let t = (0..3).map(|c| (x[c] - e0[c]) * d[c]).sum::<f32>()
+                            / (0..3).map(|c| d[c] * d[c]).sum::<f32>();
+                        let off = (0..3).map(|c| (e0[c] + d[c] * t - x[c]).powi(2)).sum::<f32>();
+                        (off, k, t)
+                    })
+                    .min_by(|a, b| a.0.total_cmp(&b.0))
+                    .map(|(_, k, t)| (k, t.clamp(0.0, 1.0)))
+                    .unwrap();
+                let want = corners[k][0] + (corners[(k + 1) % 4][0] - corners[k][0]) * t;
+                assert!((l[0] - want).abs() < 1e-2, "{l:?} vs {want} on edge {k} at {t}");
+            }
+        }
+        // The corners at the shared edge are the mean, the others their own.
+        assert!((sh.corners[0][1][0] - 120.5).abs() < 1e-3 && sh.corners[0][0][0] == 100.5);
+        // Shadows (flat black at their luma) get none.
+        let black = vec![0u8; 0x1_c000];
+        let sh = light::shade(&s1, &opts(40));
+        let (dark, _) = build_with(&s1, &motion_sources(&black), &BuildIn { lit: Some(&sh), ..Default::default() });
+        assert!(dark.iter().all(|p| p.shadow && p.lit.is_empty()));
+        // Every corner at the polygon's own luma: the flat picture.
+        let own: Vec<Poly> = plain
+            .iter()
+            .map(|p| Poly { lit: vec![[p.luma as f32 + 0.5, 0.0, 0.0, 0.0]; p.points.len()], ..p.clone() })
+            .collect();
+        let v = View::native();
+        assert_eq!(draw_view(&mut own.clone(), &src, &v), draw_view(&mut plain.clone(), &src, &v));
+        // And with the bend lit, the picture changes.
+        assert!(draw_view(&mut lit.clone(), &src, &v) != draw_view(&mut plain.clone(), &src, &v));
     }
 
     /// `place` maps the previous positions as it maps the points.
