@@ -882,6 +882,10 @@ directory), the player keeps its files in `out/`; anywhere else in
   settings panels save, and the game settings set for all games.
 - `<set>/settings.txt`: the game's own settings, only where they differ
   from those for all games.
+
+  A game setting whose value doesn't parse, in either file, is ignored
+  with a warning on the terminal (the setting falls back to the next
+  layer down, or its default).
 - `<set>/controls.txt`: the game's remapped controls, only what differs
   from its manifest (above, "Remapping").
 - `<set>/eeprom.bin`: the game's EEPROM (settings, records), written on quit or on switching games.
