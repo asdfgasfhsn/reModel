@@ -6,7 +6,8 @@
 //!
 //! A game's settings ([`GameSettings`]: sound mix, display, speed, smooth
 //! motion, run-ahead, anti-aliasing, temporal anti-aliasing and its
-//! stipple, depth buffer, smooth shading and its crease angle, texture
+//! stipple, depth buffer, smooth shading, its crease angle and finer
+//! levels, texture
 //! pack and its filtering, geometrizer) come in layers, lowest first, as
 //! in the browser build (`crates/web/settings.js`): the built-in defaults, the defaults for
 //! all games (`play-settings.txt`), the game's own (`<set>/settings.txt`)
@@ -57,6 +58,10 @@ pub struct GameSettings {
     /// keep a hard edge; 0: nothing smoothed), or `gpu::CREASE_AUTO`: the
     /// game's own (`romset::Shading::crease`). By flag or file only.
     pub crease: u8,
+    /// Smooth shading's finer levels (`gpu::Quality::shading_fine`): a lit
+    /// pixel blends the two colour columns around its brightness instead
+    /// of the game's 64 levels (no banding on large smooth surfaces).
+    pub shading_fine: bool,
     /// Draw the game's texture pack (`<data dir>/<set>/texpack/`, or
     /// `--texture-pack`) over its own textures.
     pub pack: bool,
@@ -85,6 +90,7 @@ impl Default for GameSettings {
             depth: false,
             shading: gpu::Shading::Flat,
             crease: gpu::CREASE_AUTO,
+            shading_fine: false,
             pack: false,
             tex_filter: TexFilter::Off,
             geo_chip: false,
@@ -93,7 +99,7 @@ impl Default for GameSettings {
 }
 
 /// Every game setting's key, in the order the panels show them.
-pub const KEYS: [&str; 17] = [
+pub const KEYS: [&str; 18] = [
     "wide",
     "bezel",
     "hud_edges",
@@ -106,6 +112,7 @@ pub const KEYS: [&str; 17] = [
     "depth",
     "shading",
     "crease",
+    "shading_fine",
     "pack",
     "tex_filter",
     "sfx_db",
@@ -155,6 +162,7 @@ impl GameSettings {
                 gpu::CREASE_AUTO => "auto".to_string(),
                 n => n.to_string(),
             },
+            "shading_fine" => self.shading_fine.to_string(),
             "pack" => self.pack.to_string(),
             "tex_filter" => self.tex_filter.to_string(),
             "geo" => if self.geo_chip { "chip" } else { "native" }.to_string(),
@@ -186,6 +194,7 @@ impl GameSettings {
             "depth" => flag(v).map(|x| self.depth = x).is_some(),
             "shading" => gpu::Shading::parse(v).map(|x| self.shading = x).is_some(),
             "crease" => model2::light::parse_crease(v).map(|n| self.crease = n).is_some(),
+            "shading_fine" => flag(v).map(|x| self.shading_fine = x).is_some(),
             "pack" => flag(v).map(|x| self.pack = x).is_some(),
             "tex_filter" => TexFilter::parse(v).map(|f| self.tex_filter = f).is_some(),
             "geo" => match model2::geo::GeoMode::parse(v) {
@@ -249,6 +258,7 @@ impl GameSettings {
             stipple: if self.stipple_keep { gpu::Stipple::Keep } else { gpu::Stipple::Blend },
             shading: self.shading,
             crease: self.crease,
+            shading_fine: self.shading_fine,
         }
     }
 }
@@ -730,6 +740,14 @@ mod tests {
         (v.shading, v.crease) = (gpu::Shading::Flat, gpu::CREASE_AUTO);
         edit_quietly(&mut s, "x", &v);
         assert!(!s.defaults.contains_key("shading") && !s.defaults.contains_key("crease"));
+        // Finer levels: off by default, a flag, into the quality.
+        let mut v = GameSettings::default();
+        assert_eq!(v.get("shading_fine"), "false");
+        assert!(v.set("shading_fine", "true") && v.shading_fine && v.quality(true).shading_fine);
+        assert!(!v.set("shading_fine", "on") && v.shading_fine);
+        let s = Settings::parse("shading = vertex\nshading_fine = true\n");
+        let (v, _) = with_game(Settings::parse(&s.text()), "x", &[]).resolve("x");
+        assert!(v.shading_fine && v.shading == gpu::Shading::Vertex);
     }
 
     /// `edit` without saving (the layers it would touch are given).

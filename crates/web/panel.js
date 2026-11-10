@@ -179,6 +179,8 @@ export function createPanel(opts) {
     choice("crease", "Crease angle", () => withValue("crease",
       [["auto", gameCrease === null ? "The game's" : `The game's (${gameCrease}°)`], [30, "30°"], [40, "40°"], [60, "60°"]],
       (v) => `${v}°`), "with smooth shading: faces meeting at a sharper angle keep a hard edge"),
+    onOff("shadefine", "Blend brightness levels",
+      "with smooth shading: no banding on large smooth surfaces; off keeps the game's 64 levels"),
     onOff("pack", "Texture pack", "replacement textures from the server's texpack folder for this game, if it has one"),
     choice("texfilter", "Pack filtering", () => [["off", "Off"], ["mip", "Mipmaps"], ["2", "2x"], ["4", "4x"],
       ["8", "8x"], ["16", "16x"]], "mipmaps, then anisotropic filtering; texture pack images only"));
@@ -252,6 +254,7 @@ export function createPanel(opts) {
     rows.smooth.el.style.opacity = values.geo === "chip" ? 0.5 : "";
     // The crease angle only matters with smooth shading.
     rows.crease.el.style.opacity = values.shading === "flat" ? 0.5 : "";
+    rows.shadefine.el.style.opacity = values.shading === "flat" ? 0.5 : "";
   }
   reset.addEventListener("click", () => {
     for (const k of Object.keys(opts.base)) {

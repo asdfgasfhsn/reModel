@@ -884,6 +884,7 @@ mod tests {
             lit: Vec::new(),
             pixel: None,
             lit_range: [0, 255],
+            fine: false,
         }
     }
 
@@ -1186,6 +1187,44 @@ mod tests {
             g.set_quality(vertex(q));
             let as_vertex = g.draw(&pick(&turning), &placed, &src, &view);
             assert_eq!(as_vertex, g.draw(&pick(&corners_only), &placed, &src, &view), "`Vertex` ignores `pixel`");
+        }
+        // Finer levels (`Quality::shading_fine`, `Poly::fine`): no lit
+        // polygon, the off frame; lit, the software's blend of two columns
+        // (every level a random colour here, so the blend is far from
+        // either column), within a step of rounding where the
+        // interpolated luma differs in the last bits.
+        let fine = |q: Quality| Quality { shading_fine: true, ..q };
+        let finer = |v: &[Poly]| v.iter().map(|p| Poly { fine: true, ..p.clone() }).collect::<Vec<_>>();
+        for (depth, temporal) in [(false, 0), (true, 0), (false, 100), (true, 67)] {
+            let q = Quality { depth, temporal, stipple: Stipple::Keep, ..Default::default() };
+            let off = frame(q, &polys);
+            assert_eq!(frame(fine(vertex(q)), &polys), off, "fine, no lit polygon, depth {depth}, temporal {temporal}");
+            if temporal == 0 {
+                assert_ne!(frame(fine(vertex(q)), &finer(&varied)), frame(vertex(q), &varied), "fine shows");
+            }
+        }
+        let near = |polys: &[Poly], q: Quality| {
+            let mut g = Renderer::new().unwrap();
+            g.set_quality(q);
+            let (rgb, covered) = g.draw(polys, &placed, &src, &view);
+            let (srgb, scovered) = model2::raster::draw_view_depth(&mut polys.to_vec(), &src, &view, q.depth);
+            (0..covered.len())
+                .filter(|&i| {
+                    covered[i] != scovered[i]
+                        || (covered[i] && (0..3).any(|c| rgb[i * 3 + c].abs_diff(srgb[i * 3 + c]) > 1))
+                })
+                .count()
+        };
+        for depth in [false, true] {
+            let q = Quality { depth, ..Default::default() };
+            let (flat, n) = differ(&pick(&polys), q);
+            let lit = near(&pick(&finer(&varied)), fine(vertex(q)));
+            assert!(lit <= flat + n / 1000, "fine vertex, depth {depth}: {lit} against {flat} flat of {n}");
+            let lit = near(&pick(&finer(&turning)), fine(pixel(q)));
+            assert!(lit <= flat + n / 1000, "fine pixel, depth {depth}: {lit} against {flat} flat of {n}");
+            let clamped = finer(&with_normals(&tilt, [40, 120]));
+            let lit = near(&pick(&clamped), fine(pixel(q)));
+            assert!(lit <= flat + n / 1000, "fine clamped, depth {depth}: {lit} against {flat} flat of {n}");
         }
     }
 

@@ -429,7 +429,7 @@ impl App {
             (s, _) => s.name(),
         };
         let lit = self.renderer.light_stats().map_or(String::new(), |s| format!(", {}/{} polygons", s.lit, s.polys));
-        format!(" · shading {level} {}°{lit}", o.crease)
+        format!(" · shading {level}{} {}°{lit}", if o.fine { " fine" } else { "" }, o.crease)
     }
 
     fn audio_status(&self, t: f64) -> String {
@@ -635,6 +635,7 @@ struct Quality {
     tex_filter: gpu::TexFilter,
     shading: gpu::Shading,
     crease: u8,
+    shading_fine: bool,
 }
 
 impl Quality {
@@ -644,11 +645,12 @@ impl Quality {
         tex_filter: gpu::TexFilter::Off,
         shading: gpu::Shading::Flat,
         crease: gpu::CREASE_AUTO,
+        shading_fine: false,
     };
 
     fn gpu(self) -> gpu::Quality {
-        let Quality { aa, depth, tex_filter, shading, crease } = self;
-        gpu::Quality { msaa: aa, depth, tex_filter, shading, crease, ..Default::default() }
+        let Quality { aa, depth, tex_filter, shading, crease, shading_fine } = self;
+        gpu::Quality { msaa: aa, depth, tex_filter, shading, crease, shading_fine, ..Default::default() }
     }
 
     /// Smooth shading wants the geometrizer's side channel.
@@ -665,13 +667,22 @@ impl Quality {
 /// `vertex` or `pixel` (per pixel needs the native geometrizer's side
 /// channel; with the chip it draws as `vertex`), with faces meeting at
 /// more than `crease` degrees (0 to 180) kept hard; left out (or 255) is
-/// the game's own angle (`romset::Shading`). The shading is done on this
-/// page, from the polygon stream and the side channel the geometrizer
-/// recorded (`geo=local`: turned on here; with the worker the page asks it
-/// for it, geo-worker.js `light`). Before `start`, for the game it
-/// starts; after, from the next frame.
+/// the game's own angle (`romset::Shading`), and `fine` true for finer
+/// levels (`gpu::Quality::shading_fine`: lit pixels blend two colour
+/// columns instead of the game's 64 levels; left out is off). The shading
+/// is done on this page, from the polygon stream and the side channel the
+/// geometrizer recorded (`geo=local`: turned on here; with the worker the
+/// page asks it for it, geo-worker.js `light`). Before `start`, for the
+/// game it starts; after, from the next frame.
 #[wasm_bindgen]
-pub fn set_quality(aa: u32, depth: bool, tex_filter: &str, shading: Option<String>, crease: Option<u32>) {
+pub fn set_quality(
+    aa: u32,
+    depth: bool,
+    tex_filter: &str,
+    shading: Option<String>,
+    crease: Option<u32>,
+    fine: Option<bool>,
+) {
     let q = Quality {
         aa,
         depth,
@@ -681,6 +692,7 @@ pub fn set_quality(aa: u32, depth: bool, tex_filter: &str, shading: Option<Strin
             Some(n) if n <= 180 => n as u8,
             _ => gpu::CREASE_AUTO,
         },
+        shading_fine: fine.unwrap_or(false),
     };
     QUALITY.with(|c| c.set(q));
     APP.with(|a| {

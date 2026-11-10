@@ -155,6 +155,11 @@ pub struct Options {
     /// ranges, known from level L1 up.
     pub skip_models: &'static [(u32, u32)],
     pub model_crease: &'static [(u32, u32, u8)],
+    /// Finer levels (`shading_fine`): a lit pixel's colour blends the two
+    /// colour table columns around its brightness instead of taking the
+    /// one the game's 64 levels give (`raster::fine_level`). Not used by
+    /// [`shade`]; applied by `raster::build_with` (`Poly::fine`).
+    pub fine: bool,
 }
 
 impl Default for Options {
@@ -167,6 +172,7 @@ impl Default for Options {
             diagnose: false,
             skip_models: &[],
             model_crease: &[],
+            fine: false,
         }
     }
 }
@@ -192,7 +198,13 @@ impl Options {
             diagnose: false,
             skip_models: rules.skip_models,
             model_crease: rules.model_crease,
+            fine: false,
         }
+    }
+
+    /// These options with finer levels on or off ([`Options::fine`]).
+    pub fn with_fine(self, fine: bool) -> Self {
+        Options { fine, ..self }
     }
 
     /// Whether [`shade`] can light anything.

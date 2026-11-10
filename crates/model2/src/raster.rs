@@ -145,6 +145,11 @@ pub struct Poly {
     /// those over which the game's colour tables keep the polygon's hue
     /// ([`hue_range`]); `[0, 255]` when not lit.
     pub lit_range: [u8; 2],
+    /// Smooth shading's finer levels (`light::Options::fine`): a lit
+    /// pixel blends the two colour columns around its brightness
+    /// ([`fine_level`]) instead of taking the game's level. False when not
+    /// lit.
+    pub fine: bool,
 }
 
 /// A polygon placed in a view's output pixels, ready for a rasteriser
@@ -442,6 +447,8 @@ pub struct BuildIn<'a> {
     pub lit: Option<&'a crate::light::Shaded>,
     /// Checkerboard polygons stay flat (`light::Options::skip_checker`).
     pub skip_checker: bool,
+    /// Lit polygons get [`Poly::fine`] (`light::Options::fine`).
+    pub fine: bool,
 }
 
 /// [`build`], smooth-shaded with `opts` (`crate::light::shade`) when given
@@ -461,7 +468,8 @@ pub fn build_shaded_with(
     match opts.filter(|o| o.on()) {
         Some(o) => {
             let sh = crate::light::shade_with(stream, side, o);
-            build_with(stream, src, &BuildIn { lit: Some(&sh), skip_checker: o.skip_checker, ..Default::default() }).0
+            let b = BuildIn { lit: Some(&sh), skip_checker: o.skip_checker, fine: o.fine, ..Default::default() };
+            build_with(stream, src, &b).0
         }
         None => build(stream, src),
     }
@@ -678,9 +686,9 @@ fn build_impl(stream: &[u32], src: &Sources, input: &BuildIn) -> (Vec<Poly>, Vec
                                     }
                                     (range[0] != range[1]).then_some((px, range))
                                 });
-                            let (lit, pixel, lit_range) = match lit_at {
-                                Some((px, range)) => (clipped.iter().map(|v| v.lit).collect(), px, range),
-                                None => (Vec::new(), None, [0, 255]),
+                            let (lit, pixel, lit_range, fine) = match lit_at {
+                                Some((px, range)) => (clipped.iter().map(|v| v.lit).collect(), px, range, input.fine),
+                                None => (Vec::new(), None, [0, 255], false),
                             };
                             polys.push(Poly {
                                 points,
@@ -699,6 +707,7 @@ fn build_impl(stream: &[u32], src: &Sources, input: &BuildIn) -> (Vec<Poly>, Vec
                                 lit,
                                 pixel,
                                 lit_range,
+                                fine,
                             });
                         }
                     }
@@ -855,21 +864,80 @@ fn filtered_texel(t: &Texture, src: &Sources, u: f32, v: f32) -> Option<u32> {
 
 /// Shade one pixel; None if it is transparent.
 fn shade(p: &Poly, src: &Sources, x: usize, y: usize, u: f32, v: f32) -> Option<[u8; 3]> {
-    shade_luma(p, p.luma, src, x, y, u, v)
+    shade_luma(p, PxLuma::own(p), src, x, y, u, v)
 }
 
-/// [`shade`] with the polygon's luma given (a smooth-shaded pixel's).
-fn shade_luma(p: &Poly, luma: u32, src: &Sources, x: usize, y: usize, u: f32, v: f32) -> Option<[u8; 3]> {
+/// A pixel's brightness as its polygon is drawn there: the luma the game's
+/// levels take (the polygon's own, or a smooth-shaded pixel's), and with
+/// finer levels ([`Poly::fine`]) that pixel's luma before truncation.
+#[derive(Clone, Copy, PartialEq)]
+struct PxLuma {
+    luma: u32,
+    fine: Option<f32>,
+}
+
+impl PxLuma {
+    fn own(p: &Poly) -> Self {
+        PxLuma { luma: p.luma, fine: None }
+    }
+}
+
+/// Smooth shading's finer levels (`shading_fine`): for a lit pixel whose
+/// luma before truncation is `luma`, of a polygon whose pixels are clamped
+/// to the lumas `range` ([`Poly::lit_range`]), the two adjacent colour
+/// columns to blend `(k, k1)` and the weight of `k1`. `table`: the luma
+/// table's value at the pixel's texel (textured), or None (untextured).
+///
+/// The game's column at luma `l` is `level(l)` truncated, with `level(l) =
+/// table * l / 256` (at most 63) or `l / 4`. A column stands for the levels
+/// from k to k + 1, so a level `y` is drawn as the blend of the columns
+/// around `y - 0.5` (column k alone at k + 0.5): across a gradient the
+/// mean column is the game's, nothing gets brighter or darker. Both
+/// columns are among those the polygon shows with the game's levels at the
+/// lumas in `range`, which keep its hue: the blend is between two of the
+/// game's own colours of that hue, and never leaves it.
+pub fn fine_level(table: Option<u32>, luma: f32, range: [u8; 2]) -> (u32, u32, f32) {
+    let level = |l: u32| match table {
+        Some(v) => (v * l / 256).min(63),
+        None => (l >> 2).min(63),
+    };
+    let (a, b) = (level(range[0] as u32), level(range[1] as u32));
+    let l = if luma.is_nan() { 0.0 } else { luma };
+    let y = match table {
+        Some(v) => v as f32 * l / 256.0,
+        None => l / 4.0,
+    } - 0.5;
+    let x = y.clamp(a as f32, b as f32);
+    let k = (x.floor() as u32).min(b);
+    (k, (k + 1).min(b), x - k as f32)
+}
+
+/// Channel `ch` of colour component `c` blended between the columns
+/// [`fine_level`] gives, before rounding.
+fn fine_translate(src: &Sources, ch: usize, c: u32, (k, k1, f): (u32, u32, f32)) -> f32 {
+    let (a, b) = (src.translate(ch, c, k) as f32, src.translate(ch, c, k1) as f32);
+    a + (b - a) * f
+}
+
+/// [`shade`] at a given brightness (a smooth-shaded pixel's).
+fn shade_luma(p: &Poly, px: PxLuma, src: &Sources, x: usize, y: usize, u: f32, v: f32) -> Option<[u8; 3]> {
     if p.checker && (x ^ y) & 1 != 0 {
         return None;
     }
-    let lum = match p.texture {
+    let luma = px.luma;
+    let (lum, table) = match p.texture {
         Some(t) => {
             let t8 = filtered_texel(&t, src, u, v)?;
-            (src.luma(t.luma_table, t8 / 2) * luma / 256).min(63)
+            let value = src.luma(t.luma_table, t8 / 2);
+            ((value * luma / 256).min(63), Some(value))
         }
-        None => luma >> 2,
+        None => (luma >> 2, None),
     };
+    if let Some(l) = px.fine {
+        let k = fine_level(table, l, p.lit_range);
+        // Rust's round(): half away from zero (never negative here).
+        return Some([0, 1, 2].map(|ch| fine_translate(src, ch, p.colour[ch], k).round() as u8));
+    }
     Some([0, 1, 2].map(|ch| src.translate(ch, p.colour[ch], lum)))
 }
 
@@ -1014,21 +1082,35 @@ struct Light {
     /// Fallback ratio where the original texel is transparent or black at
     /// full luma: the ratio for the brightest luma.
     poly: [f32; 3],
+    /// Finer levels ([`PxLuma::fine`]): the luma before truncation and the
+    /// polygon's [`Poly::lit_range`].
+    fine: Option<(f32, [u8; 2])>,
 }
 
 impl Light {
-    /// For polygon `p` drawn at `luma` (its own, or a smooth-shaded
+    /// For polygon `p` drawn at `px` (its own luma, or a smooth-shaded
     /// pixel's).
-    fn new(p: &Poly, luma: u32, src: &Sources) -> Self {
+    fn new(p: &Poly, px: PxLuma, src: &Sources) -> Self {
+        let luma = px.luma;
+        let fine = px.fine.map(|l| (l, p.lit_range));
         let poly = [0, 1, 2].map(|ch| {
             let full = src.translate(ch, p.colour[ch], 63) as f32;
             if full > 0.0 {
-                src.translate(ch, p.colour[ch], (64 * luma / 256).min(63)) as f32 / full
+                Self::at(src, p.colour, fine, luma, ch, 64) / full
             } else {
                 luma as f32 / FULL_LUMA as f32
             }
         });
-        Light { full: luma >= FULL_LUMA, luma, colour: p.colour, poly }
+        Light { full: fine.is_none() && luma >= FULL_LUMA, luma, colour: p.colour, poly, fine }
+    }
+
+    /// Channel `ch` of `colour` at luma table value `value`: the game's
+    /// level, or with finer levels the blend of two.
+    fn at(src: &Sources, colour: [u32; 3], fine: Option<(f32, [u8; 2])>, luma: u32, ch: usize, value: u32) -> f32 {
+        match fine {
+            Some((l, range)) => fine_translate(src, ch, colour[ch], fine_level(Some(value), l, range)),
+            None => src.translate(ch, colour[ch], (value * luma / 256).min(63)) as f32,
+        }
     }
 
     fn ratio(&self, t: &Texture, src: &Sources, u: f32, v: f32) -> [f32; 3] {
@@ -1037,13 +1119,13 @@ impl Light {
         }
         let Some(t8) = filtered_texel(t, src, u, v) else { return self.poly };
         let l = src.luma(t.luma_table, t8 / 2);
-        let (lp, lf) = ((l * self.luma / 256).min(63), (l * FULL_LUMA / 256).min(63));
+        let lf = (l * FULL_LUMA / 256).min(63);
         [0, 1, 2].map(|ch| {
             let full = src.translate(ch, self.colour[ch], lf);
             if full == 0 {
                 self.poly[ch]
             } else {
-                src.translate(ch, self.colour[ch], lp) as f32 / full as f32
+                Self::at(src, self.colour, self.fine, self.luma, ch, l) / full as f32
             }
         })
     }
@@ -1483,14 +1565,19 @@ fn draw_impl(
         let mut pixels = 0;
         // Smooth shading: each pixel's luma, in the order `fill` visits
         // them (None: the polygon's own).
-        let lumas = (!p.lit.is_empty()).then(|| lit_lumas(points, p, clip, w, h));
+        let lumas = (!p.lit.is_empty()).then(|| lit_values(points, p, clip, w, h));
+        let [lo, hi] = p.lit_range.map(u32::from);
+        let own = PxLuma::own(p);
         let mut n = 0;
         let mut luma_at = || {
             n += 1;
-            lumas.as_ref().map_or(p.luma, |l| l[n - 1])
+            lumas.as_ref().map_or(own, |l| {
+                let v = l[n - 1];
+                PxLuma { luma: crate::light::quantise(v).clamp(lo, hi), fine: p.fine.then_some(v) }
+            })
         };
         if let (Some((_, Some(Replacement::Mips(chain)))), Some(t)) = (&hooked, &p.texture) {
-            let light0 = Light::new(p, p.luma, src);
+            let light0 = Light::new(p, own, src);
             let grad = Gradients::new(points);
             fill(points, clip, w, h, |x, y, iz, uz, vz| {
                 let luma = luma_at();
@@ -1499,7 +1586,7 @@ fn draw_impl(
                     return;
                 }
                 let lit;
-                let light = if luma == p.luma {
+                let light = if luma == own {
                     &light0
                 } else {
                     lit = Light::new(p, luma, src);
@@ -1516,7 +1603,7 @@ fn draw_impl(
                 }
             });
         } else if let (Some((_, Some(Replacement::Image(img)))), Some(t)) = (&hooked, &p.texture) {
-            let light0 = Light::new(p, p.luma, src);
+            let light0 = Light::new(p, own, src);
             fill(points, clip, w, h, |x, y, iz, uz, vz| {
                 let luma = luma_at();
                 let o = y * w + x;
@@ -1524,7 +1611,7 @@ fn draw_impl(
                     return;
                 }
                 let lit;
-                let light = if luma == p.luma {
+                let light = if luma == own {
                     &light0
                 } else {
                     lit = Light::new(p, luma, src);
@@ -1566,19 +1653,18 @@ fn draw_impl(
 }
 
 /// A smooth-shaded polygon's luma at each pixel `fill` visits, in that
-/// order: its corner lumas times 1/z, interpolated as `fill` interpolates
-/// (perspective-correct), divided by the pixel's 1/z and truncated
-/// (`light::quantise`). Per pixel ([`Poly::pixel`]): the corner normals
-/// likewise, normalised, and the polygon's lighting for that normal (the
-/// interpolated luma where the normals cancel out). Clamped to
-/// [`Poly::lit_range`].
-fn lit_lumas(points: &[SVtx], p: &Poly, clip: (f32, f32, f32, f32), w: usize, h: usize) -> Vec<u32> {
-    let [lo, hi] = p.lit_range.map(u32::from);
+/// order, before truncation: its corner lumas times 1/z, interpolated as
+/// `fill` interpolates (perspective-correct), divided by the pixel's 1/z.
+/// Per pixel ([`Poly::pixel`]): the corner normals likewise, normalised,
+/// and the polygon's lighting for that normal (the interpolated luma where
+/// the normals cancel out). Drawn truncated (`light::quantise`) and clamped
+/// to [`Poly::lit_range`], or with finer levels as [`fine_level`] says.
+fn lit_values(points: &[SVtx], p: &Poly, clip: (f32, f32, f32, f32), w: usize, h: usize) -> Vec<f32> {
     let lit = &p.lit;
     let pts: Vec<SVtx> = points.iter().zip(lit).map(|(v, l)| SVtx { uz: l[0] * v.iz, vz: l[1] * v.iz, ..*v }).collect();
     let mut out = Vec::new();
     match &p.pixel {
-        None => fill(&pts, clip, w, h, |_, _, iz, lz, _| out.push(crate::light::quantise(lz / iz).clamp(lo, hi))),
+        None => fill(&pts, clip, w, h, |_, _, iz, lz, _| out.push(lz / iz)),
         Some(pl) => {
             // Two passes over the same pixels: (luma, nx), then (ny, nz).
             let mut first = Vec::new();
@@ -1589,7 +1675,7 @@ fn lit_lumas(points: &[SVtx], p: &Poly, clip: (f32, f32, f32, f32), w: usize, h:
             fill(&pts2, clip, w, h, |_, _, _, nyz, nzz| {
                 let (iz, lz, nxz) = first[k];
                 k += 1;
-                out.push(crate::light::quantise(pixel_luma(pl, lz / iz, [nxz / iz, nyz / iz, nzz / iz])).clamp(lo, hi));
+                out.push(pixel_luma(pl, lz / iz, [nxz / iz, nyz / iz, nzz / iz]));
             });
         }
     }
@@ -1597,12 +1683,15 @@ fn lit_lumas(points: &[SVtx], p: &Poly, clip: (f32, f32, f32, f32), w: usize, h:
 }
 
 /// A placed smooth-shaded polygon's luma at each pixel it covers (as drawn,
-/// before anything hides it; for tools). Empty when it isn't lit.
+/// before anything hides it, truncated and clamped as the game's levels
+/// draw it; for tools). Empty when it isn't lit.
 pub fn lit_pixel_lumas(p: &Poly, pl: &Placed, view: &View) -> Vec<u32> {
     if p.lit.is_empty() {
         return Vec::new();
     }
-    lit_lumas(&pl.points, p, pl.clip, view.width, view.height)
+    let [lo, hi] = p.lit_range.map(u32::from);
+    let v = lit_values(&pl.points, p, pl.clip, view.width, view.height);
+    v.into_iter().map(|l| crate::light::quantise(l).clamp(lo, hi)).collect()
 }
 
 /// A per-pixel lit polygon's luma (before truncation) at a pixel whose
@@ -1735,6 +1824,7 @@ mod tests {
             lit: Vec::new(),
             pixel: None,
             lit_range: [0, 255],
+            fine: false,
         };
         assert!(p.texture.is_none());
         assert!(shade(&p, &src, 2, 4, 0.0, 0.0).is_some());
@@ -1762,6 +1852,7 @@ mod tests {
             lit: Vec::new(),
             pixel: None,
             lit_range: [0, 255],
+            fine: false,
         }
     }
 
@@ -2286,6 +2377,114 @@ mod tests {
         let (low, _) = draw_view(&mut [with(normals, pl, [0, 60])], &src, &v);
         assert!(low.chunks(3).all(|c| c[0] <= 60));
         assert!(pixel_luma(&pl, 77.0, [0.0; 3]) == 77.0, "no normal: the interpolated luma");
+    }
+
+    /// Finer levels (`fine_level`): the columns around the level less half
+    /// a column, so column k alone at k + 0.5 and the mean over a gradient
+    /// the game's; never outside the levels of the polygon's luma range;
+    /// textured by the luma table's value.
+    #[test]
+    fn fine_levels_blend_adjacent_columns() {
+        let all = [0u8, 255];
+        assert_eq!(fine_level(None, 2.0, all), (0, 1, 0.0));
+        assert_eq!(fine_level(None, 6.0, all), (1, 2, 0.0));
+        assert_eq!(fine_level(None, 4.0, all), (0, 1, 0.5));
+        assert_eq!(fine_level(None, 0.0, all), (0, 1, 0.0), "clamped at column 0");
+        assert_eq!(fine_level(None, 255.9, all), (63, 63, 0.0), "clamped at column 63");
+        assert_eq!(fine_level(None, f32::NAN, all), (0, 1, 0.0));
+        // The range of a polygon whose colour changes hue above level 29.
+        assert_eq!(fine_level(None, 200.0, [0, 119]), (29, 29, 0.0));
+        assert_eq!(fine_level(None, 20.0, [120, 255]), (30, 31, 0.0));
+        // Textured: level = value * luma / 256.
+        assert_eq!(fine_level(Some(128), 100.0, all), (49, 50, 0.5));
+        assert_eq!(fine_level(Some(0), 100.0, all), (0, 0, 0.0));
+        // Over a gradient the mean column is the game's (ends aside).
+        let (mut game, mut fine, mut n) = (0f64, 0f64, 0);
+        for i in 0..24000 {
+            let l = 8.0 + i as f32 * 0.01;
+            let (k, _, f) = fine_level(None, l, all);
+            game += (crate::light::quantise(l) >> 2) as f64;
+            fine += k as f64 + f as f64;
+            n += 1;
+        }
+        assert!(((fine - game) / n as f64).abs() < 0.01, "{} vs {}", fine / n as f64, game / n as f64);
+        // Both columns within the range's levels, adjacent, weight in 0..1.
+        let mut seed = 0x2468_ace1u32;
+        let mut next = |m: u32| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) % m
+        };
+        for _ in 0..20000 {
+            let (a, b) = (next(256), next(256));
+            let range = [a.min(b) as u8, a.max(b) as u8];
+            let table = if next(2) == 0 { None } else { Some(next(256)) };
+            let l = next(300_000) as f32 / 1000.0 - 20.0;
+            let level = |l: u8| match table {
+                Some(v) => (v * l as u32 / 256).min(63),
+                None => l as u32 >> 2,
+            };
+            let (k, k1, f) = fine_level(table, l, range);
+            assert!(level(range[0]) <= k && k1 <= level(range[1]), "{table:?} {l} {range:?}: {k} {k1}");
+            assert!(k1 == k || k1 == k + 1);
+            assert!((0.0..1.0).contains(&f) && (k1 > k || f == 0.0), "{f}");
+        }
+    }
+
+    /// A lit polygon with finer levels: each pixel between the two columns
+    /// around the game's level (a column's step at most from it), more
+    /// distinct colours than the game's levels give, nothing for a polygon
+    /// that isn't lit, and no hue change where the tables turn red.
+    #[test]
+    fn fine_levels_draw_between_columns() {
+        use crate::light::test_stream;
+        let q = [[-0.4f32, -0.3, 2.0], [0.4, -0.3, 2.0], [0.4, 0.3, 2.0], [-0.4, 0.3, 2.0]];
+        let f = 495.0;
+        let (s, _) = test_stream::stream(&[vec![test_stream::tpoly(&q.map(|p| [p[0] * f, p[1] * f, p[2]]), 100)]]);
+        let mut palette = vec![0u8; 0x1_c000];
+        palette[0x1_0000..].fill(1);
+        for ch in 0..3 {
+            for lum in 0..64 {
+                palette[0x1_0000 + ch * 0x4000 + lum * 2] = (lum * 4) as u8;
+            }
+        }
+        let src = motion_sources(&palette);
+        let plain = build(&s, &src);
+        let lit = |fine: bool, range: [u8; 2]| {
+            let mut p = plain[0].clone();
+            p.lit = [40.0f32, 200.0, 200.0, 40.0].iter().map(|&l| [l, 0.0, 0.0, 0.0]).collect();
+            p.lit_range = range;
+            p.fine = fine;
+            p
+        };
+        let v = View::native();
+        let (levels, cov) = draw_view(&mut [lit(false, [0, 255])], &src, &v);
+        let (fine, _) = draw_view(&mut [lit(true, [0, 255])], &src, &v);
+        let mut shown = (std::collections::HashSet::new(), std::collections::HashSet::new());
+        for i in 0..cov.len() {
+            if !cov[i] {
+                continue;
+            }
+            let (a, b) = (levels[i * 3], fine[i * 3]);
+            assert!(a % 4 == 0 && a.abs_diff(b) <= 4, "pixel {i}: levels {a}, fine {b}");
+            shown.0.insert(a);
+            shown.1.insert(b);
+        }
+        assert!(shown.1.len() > 3 * shown.0.len(), "{} against {}", shown.1.len(), shown.0.len());
+        // Not lit: `fine` changes nothing.
+        let unlit = Poly { fine: true, ..plain[0].clone() };
+        assert_eq!(draw_view(&mut [unlit], &src, &v), draw_view(&mut plain.clone(), &src, &v));
+        // A table that turns red from level 30 up, the polygon clamped below.
+        let mut red = palette.clone();
+        for ch in 1..3 {
+            for lum in 30..64 {
+                red[0x1_0000 + ch * 0x4000 + lum * 2] = 0;
+            }
+        }
+        let rsrc = motion_sources(&red);
+        let (flat, _) = draw_view(&mut plain.clone(), &rsrc, &v);
+        let (fine, _) = draw_view(&mut [lit(true, [0, 119])], &rsrc, &v);
+        assert!(flat.chunks(3).zip(fine.chunks(3)).all(|(a, b)| same_hue([a[0], a[1], a[2]], [b[0], b[1], b[2]])));
+        assert!(fine.chunks(3).all(|c| c[0] <= 29 * 4), "never past the range's top column");
     }
 
     /// `place` maps the previous positions as it maps the points.

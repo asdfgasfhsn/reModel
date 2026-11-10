@@ -18,7 +18,11 @@
 //! - F (likewise): the stream-only pass (L0) against the one with the side
 //!   channel: hard-edge decisions that agree, pixels that differ;
 //! - J: shading changes a pixel's level within its colour ramp, never its
-//!   hue (`raster::same_hue`);
+//!   hue (`raster::same_hue`; with finer levels too);
+//! - K (`--shading-fine on`): finer levels against the game's levels on
+//!   the same corners: how many lit pixels change, the mean colour shift
+//!   (a bias), and the steps between neighbouring pixels of untextured lit
+//!   polygons (banding: few large steps; finer levels: many small ones);
 //! - G: the pass is deterministic (run again, the same corners); that a
 //!   polygon whose vertex normals are its face's is drawn flat is A here
 //!   and unit tests (`light`, `raster`, `gpu`);
@@ -310,9 +314,17 @@ pub fn run(
     let zero = Options { crease: 0, ..opts };
     let flat_q = gpu::Quality::default();
     let lit_q = super::gpu_light(Some(&opts));
-    // Pictures and the report by the level: vertex keeps the plain names.
-    let level = opts.shading.name();
-    let tag = |s: &str| if opts.shading == light::Shading::Pixel { format!("pixel-{s}") } else { s.to_string() };
+    // Pictures and the report by the level: vertex keeps the plain names;
+    // finer levels add `-fine`.
+    let level = if opts.fine { format!("{}-fine", opts.shading.name()) } else { opts.shading.name().to_string() };
+    let level = level.as_str();
+    let prefix = match (opts.shading == light::Shading::Pixel, opts.fine) {
+        (true, true) => "pixel-fine-",
+        (true, false) => "pixel-",
+        (false, true) => "fine-",
+        (false, false) => "",
+    };
+    let tag = |s: &str| format!("{prefix}{s}");
     std::fs::create_dir_all(out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
     let mut rep = String::new();
     let _ = writeln!(rep, "gpu           {}", gpu.adapter());
@@ -378,6 +390,8 @@ pub fn run(
     let mut hue_px = 0usize;
     let mut hue_flat = 0usize;
     let mut hue_clamped = 0usize;
+    // K (finer levels): against the same frame at the game's levels.
+    let mut k = FineCheck::default();
     let wanted = |f: &Frame| probes.is_empty() || probes.iter().any(|p| p.frame == f.frame);
     for (n, item) in frames.filter(|r| r.as_ref().map_or(true, |(_, f)| wanted(f))).enumerate() {
         let (_, f) = item.map_err(|e| format!("{}: {e}", root.display()))?;
@@ -408,7 +422,7 @@ pub fn run(
         let lit_polys = raster::build_with(
             &f.stream,
             &src,
-            &raster::BuildIn { lit: Some(&sh), skip_checker: opts.skip_checker, ..Default::default() },
+            &raster::BuildIn { lit: Some(&sh), skip_checker: opts.skip_checker, fine: opts.fine, ..Default::default() },
         )
         .0;
         // What shading adds to building the polygons (the hue ranges).
@@ -443,7 +457,12 @@ pub fn run(
             let polys0 = raster::build_with(
                 &f.stream,
                 &src,
-                &raster::BuildIn { lit: Some(&l0), skip_checker: opts.skip_checker, ..Default::default() },
+                &raster::BuildIn {
+                    lit: Some(&l0),
+                    skip_checker: opts.skip_checker,
+                    fine: opts.fine,
+                    ..Default::default()
+                },
             )
             .0;
             let (p0, _) = placed(polys0, &f, &view);
@@ -451,7 +470,12 @@ pub fn run(
                 raster::build_with(
                     &f.stream,
                     &src,
-                    &raster::BuildIn { lit: Some(&sh), skip_checker: opts.skip_checker, ..Default::default() },
+                    &raster::BuildIn {
+                        lit: Some(&sh),
+                        skip_checker: opts.skip_checker,
+                        fine: opts.fine,
+                        ..Default::default()
+                    },
                 )
                 .0,
                 &f,
@@ -585,6 +609,36 @@ pub fn run(
         hue_px += hue;
         if hue > px / 5000 {
             failures.push(format!("J: frame {}: {hue} pixels change hue, not only level", f.frame));
+        }
+        // K: finer levels against the game's levels, the same corners.
+        if opts.fine {
+            let levels = raster::build_with(
+                &f.stream,
+                &src,
+                &raster::BuildIn { lit: Some(&sh), skip_checker: opts.skip_checker, ..Default::default() },
+            )
+            .0;
+            let (kp, _) = placed(levels, &f, &view);
+            let sw_levels = soft(&kp, &src, &view);
+            let lit_px: Vec<bool> =
+                vis.owner.iter().map(|&o| o != u32::MAX && !lp[lpl[o as usize].poly].lit.is_empty()).collect();
+            // Steps only over untextured polygons: where banding shows (a
+            // texture's own detail would swamp it).
+            let plain: Vec<bool> =
+                (0..px).map(|i| lit_px[i] && lp[lpl[vis.owner[i] as usize].poly].texture.is_none()).collect();
+            // Reported, not failed: a pixel is at most a column's step from
+            // the game's level, and some tables step far (fvipers' skin
+            // from black straight to (70, 65, 60)); that each lies between
+            // two adjacent columns of its hue is `raster`'s unit tests, the
+            // hue J above.
+            k.add(&sw_levels.0, &sw_lit.0, (&lit_px, &plain), &vis.owner, view.width);
+            if n % every.max(1) == 0 && probes.is_empty() {
+                let rgb = video::compose(&f.tiles, &f.palette, Some((&sw_levels.0, &sw_levels.1)), &view);
+                let _ = std::fs::write(
+                    out_dir.join(format!("{:06}-{}.png", f.frame, opts.shading.name())),
+                    png::encode_rgb(view.width, view.height, &rgb),
+                );
+            }
         }
         let pct = |x: usize| 100.0 * x as f64 / px as f64;
         let _ = writeln!(
@@ -781,6 +835,27 @@ pub fn run(
     if c_share < 99.0 {
         warnings.push(format!("C: {c_share:.2}% of lit polygons within 8 levels (initial target 99%)"));
     }
+    if opts.fine {
+        let lit = k.lit.max(1) as f64;
+        let mean = k.shift.map(|s| s / lit);
+        let _ = writeln!(
+            tail,
+            "K             finer levels against the game's levels over {} lit pixels: {:.2}% differ, {} by more than 16; mean RGB shift {:+.3} {:+.3} {:+.3}; steps between neighbouring pixels of one lit untextured polygon: levels {} averaging {:.2}, fine {} averaging {:.2} (largest channel)",
+            k.lit,
+            100.0 * k.differ as f64 / lit,
+            k.far,
+            mean[0],
+            mean[1],
+            mean[2],
+            k.steps[0],
+            k.step_sum[0] / k.steps[0].max(1) as f64,
+            k.steps[1],
+            k.step_sum[1] / k.steps[1].max(1) as f64,
+        );
+        if mean.iter().any(|m| m.abs() > 1.0) {
+            warnings.push(format!("K: finer levels moved the mean colour of lit pixels by {mean:+.3?}"));
+        }
+    }
     if let Some(n) = bench_frames {
         let frames: Vec<Frame> = loaded.into_iter().take(n).collect();
         bench(&mut gpu, &frames, &texture_rom, &opts, hud_windows, &mut tail);
@@ -801,9 +876,63 @@ pub fn run(
     );
     print!("{tail}");
     rep.push_str(&tail);
-    let report = if opts.shading == light::Shading::Pixel { "report-pixel.txt" } else { "report.txt" };
+    let report = if prefix.is_empty() {
+        "report.txt".to_string()
+    } else {
+        format!("report-{}.txt", &prefix[..prefix.len() - 1])
+    };
     let _ = std::fs::write(out_dir.join(report), rep);
     Ok(failures.is_empty())
+}
+
+/// K: finer levels against the game's levels on the same lit pixels.
+#[derive(Default)]
+struct FineCheck {
+    lit: usize,
+    differ: usize,
+    far: usize,
+    /// Per channel, the sum of (fine - levels).
+    shift: [f64; 3],
+    /// Steps between horizontally neighbouring pixels of one lit untextured
+    /// polygon (levels, fine): how many, and the sum of their sizes (the largest
+    /// channel difference). Banding is few large steps; finer levels make
+    /// them many and small.
+    steps: [usize; 2],
+    step_sum: [f64; 2],
+}
+
+impl FineCheck {
+    /// Adds a frame: `levels` and `fine` 3D layers, `lit` the pixels whose
+    /// visible polygon is lit (`plain`: and untextured), `owner` that
+    /// polygon.
+    fn add(&mut self, levels: &[u8], fine: &[u8], (lit, plain): (&[bool], &[bool]), owner: &[u32], width: usize) {
+        for i in 0..lit.len() {
+            if !lit[i] {
+                continue;
+            }
+            self.lit += 1;
+            let m = diff_at(levels, fine, i);
+            self.differ += (m > 0) as usize;
+            self.far += (m > 16) as usize;
+            for c in 0..3 {
+                self.shift[c] += fine[i * 3 + c] as f64 - levels[i * 3 + c] as f64;
+            }
+            if plain[i] && i % width + 1 < width && plain[i + 1] && owner[i + 1] == owner[i] {
+                for (k, img) in [levels, fine].into_iter().enumerate() {
+                    let d = diff_at(img, &img[3..], i);
+                    if d > 0 {
+                        self.steps[k] += 1;
+                        self.step_sum[k] += d as f64;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The largest channel difference of pixel `i` between two RGB images.
+fn diff_at(a: &[u8], b: &[u8], i: usize) -> u8 {
+    (0..3).map(|c| a[i * 3 + c].abs_diff(b[i * 3 + c])).max().unwrap_or(0)
 }
 
 /// B: one frame's list scan (`scan.bin`) against the native geometrizer's

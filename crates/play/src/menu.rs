@@ -325,6 +325,13 @@ impl Menu {
                     }
                     ui.weak(shading_hint(settings));
                 });
+                ui.add_enabled_ui(settings.shading != gpu::Shading::Flat, |ui| {
+                    focus.checkbox(
+                        ui,
+                        &mut settings.shading_fine,
+                        "Blend brightness levels  (no banding on smooth surfaces; else the game's 64 levels)",
+                    );
+                });
                 focus.checkbox(ui, &mut settings.pack, "Texture pack  (replacement textures)");
                 if let (true, Some(text)) = (settings.pack, view.pack) {
                     ui.weak(text);

@@ -66,6 +66,12 @@ pub struct Quality {
     /// The crease angle for `shading`, degrees (0: nothing smoothed), or
     /// [`CREASE_AUTO`] (the default): the game's (`romset::Shading`).
     pub crease: u8,
+    /// Finer levels for `shading` (default off): a lit pixel's colour
+    /// blends the two colour table columns around its brightness
+    /// (`model2::raster::fine_level`) instead of taking one of the game's
+    /// 64 levels, so large smooth surfaces don't band. Only lit pixels;
+    /// never outside the polygon's hue.
+    pub shading_fine: bool,
 }
 
 impl Default for Quality {
@@ -78,6 +84,7 @@ impl Default for Quality {
             stipple: Stipple::Blend,
             shading: Shading::Flat,
             crease: CREASE_AUTO,
+            shading_fine: false,
         }
     }
 }
@@ -708,7 +715,8 @@ impl Renderer {
     /// off).
     pub fn light_options(&self) -> Option<model2::light::Options> {
         let q = self.quality;
-        let o = model2::light::Options::with_mask(q.shading, q.crease, self.light_rules.0, self.light_rules.1);
+        let o = model2::light::Options::with_mask(q.shading, q.crease, self.light_rules.0, self.light_rules.1)
+            .with_fine(q.shading_fine);
         o.on().then_some(o)
     }
 
@@ -751,6 +759,7 @@ impl Renderer {
             motion: m,
             lit: shaded.as_deref(),
             skip_checker: opts.is_some_and(|o| o.skip_checker),
+            fine: opts.is_some_and(|o| o.fine),
         };
         model2::raster::build_with(stream, src, &input)
     }
@@ -1243,10 +1252,15 @@ impl Renderer {
             if q.depth || lit {
                 let first = placed.len() + outline_points.len() / 16;
                 let count = pl.points.len();
-                // Lit: bit 0, per pixel bit 1, the luma range above.
+                // Lit: bit 0, per pixel bit 1, finer levels bit 2, the
+                // luma range above.
                 let pixel = lit && q.shading == Shading::Pixel && p.pixel.is_some();
+                let fine = lit && q.shading_fine;
                 let flags = if lit {
-                    1 | (pixel as u32) << 1 | (p.lit_range[0] as u32) << 8 | (p.lit_range[1] as u32) << 16
+                    1 | (pixel as u32) << 1
+                        | (fine as u32) << 2
+                        | (p.lit_range[0] as u32) << 8
+                        | (p.lit_range[1] as u32) << 16
                 } else {
                     0
                 };

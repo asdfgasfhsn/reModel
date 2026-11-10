@@ -250,7 +250,13 @@ pub struct Shading {
 impl Shading {
     /// What every game uses until its pictures say otherwise: a 40 degree
     /// crease (boxes, 8-sided wheels and limbs stay faceted; bodies and
-    /// 10+-sided cylinders smooth), nothing else excluded.
+    /// 10+-sided cylinders smooth), nothing else excluded. Checked on all
+    /// 18 working games' frames (docs/enhancements.md, "Smooth shading");
+    /// a new game starts with it and needs nothing else: the generic code
+    /// reads only these fields, never a game's identity. To give a game
+    /// its own, write `shading: crate::Shading { crease: N,
+    /// ..crate::Shading::DEFAULT }` in its manifest with a one-line reason,
+    /// and the pictures behind it in `docs/games/<set>.md`.
     pub const DEFAULT: Shading = Shading {
         crease: 40,
         skip_windows: &[],

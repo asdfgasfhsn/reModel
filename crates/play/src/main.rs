@@ -117,8 +117,13 @@ usage: remodel-play [options]
                      chip: drawn as vertex; docs/play.md). Default flat
   --crease auto|N    smooth shading's crease angle in degrees, 0 to 180
                      (0: nothing smoothed); auto is the game's own
-                     (40 for every game so far). Default auto
-  --pack on|off      the game's texture pack: replacement textures from
+                     (40 unless its rules say otherwise). Default auto
+  --shading-fine on|off
+                     with --shading: blend the two colour levels around
+                     each lit pixel's brightness instead of the game's 64
+                     levels, so large smooth surfaces don't band (never
+                     outside the polygon's colour). Default off
+  --pack on|off     the game's texture pack: replacement textures from
                      texpack/ in the game's folder beside its saves (a
                      version of a game uses its parent's if it has none;
                      docs/texture-packs.md). Default off
@@ -149,7 +154,7 @@ usage: remodel-play [options]
 
 The game's settings (mix, HUD, aspect, bezel, speed, smooth motion,
 run-ahead, anti-aliasing, temporal anti-aliasing and stipple, depth buffer,
-shading and crease, texture pack and filtering, geometrizer) given here are for this run only, over the
+shading, crease and finer levels, texture pack and filtering, geometrizer) given here are for this run only, over the
 defaults for all games and the game's own, which the launcher's settings
 and the menu keep.
 --rom and --fullscreen are remembered.
@@ -374,6 +379,20 @@ fn options(s: &mut Settings) -> Result<Options, String> {
                     return Err("--crease wants auto or degrees from 0 to 180".into());
                 }
                 cli("crease", &v);
+            }
+            "--shading-fine" => {
+                let on = match args.peek().map(String::as_str) {
+                    Some("on") => {
+                        args.next();
+                        true
+                    }
+                    Some("off") => {
+                        args.next();
+                        false
+                    }
+                    _ => true,
+                };
+                cli("shading_fine", &on.to_string());
             }
             "--pack" => {
                 let on = match args.peek().map(String::as_str) {
@@ -2086,8 +2105,9 @@ impl Play {
             String::new()
         } + &match st.shading_as {
             Some((level, lit, polys)) => format!(
-                " · shading {}, {lit}/{polys} polygons lit, {:.2} ms a draw",
+                " · shading {}{}, {lit}/{polys} polygons lit, {:.2} ms a draw",
                 level.name(),
+                if self.applied.shading_fine { " fine" } else { "" },
                 st.shading.as_secs_f64() * 1000.0 / st.shaded.max(1) as f64
             ),
             None => String::new(),

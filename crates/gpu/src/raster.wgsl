@@ -823,11 +823,87 @@ fn lit_luma(poly: u32, px: vec2f) -> f32 {
 fn poly_px(i: u32, px: vec2f) -> Poly {
     var p = polys[i];
     let l = lit_luma(i, px);
+    lit_fine = -1.0;
     if l >= 0.0 {
         let flags = bitcast<u32>(outlines[i].z);
-        p.luma = clamp(u32(clamp(l, 0.0, 255.0)), (flags >> 8u) & 255u, (flags >> 16u) & 255u);
+        lit_range = vec2u((flags >> 8u) & 255u, (flags >> 16u) & 255u);
+        p.luma = clamp(u32(clamp(l, 0.0, 255.0)), lit_range.x, lit_range.y);
+        if (flags & 4u) != 0u {
+            lit_fine = max(l, 0.0);
+        }
     }
     return p;
+}
+
+// Finer levels (outline flags bit 2; raster.rs `fine_level`): the pixel's
+// luma before truncation, or < 0 (the game's levels), and its polygon's
+// luma range. Set by `poly_px`.
+var<private> lit_fine: f32 = -1.0;
+var<private> lit_range: vec2u = vec2u(0u, 255u);
+
+// raster.rs `fine_level`: the columns k, k1 to blend (in x, y) and the
+// weight of k1 (in z, as bits) for luma table value `v` (textured) or the
+// luma alone (untextured), at `lit_fine` within `lit_range`.
+fn fine_level(textured: bool, v: u32) -> vec3u {
+    var a: u32;
+    var b: u32;
+    var y: f32;
+    if textured {
+        a = min(v * lit_range.x / 256u, 63u);
+        b = min(v * lit_range.y / 256u, 63u);
+        y = f32(v) * lit_fine / 256.0 - 0.5;
+    } else {
+        a = min(lit_range.x >> 2u, 63u);
+        b = min(lit_range.y >> 2u, 63u);
+        y = lit_fine / 4.0 - 0.5;
+    }
+    let x = clamp(y, f32(a), f32(b));
+    let k = min(u32(floor(x)), b);
+    return vec3u(k, min(k + 1u, b), bitcast<u32>(x - f32(k)));
+}
+
+// raster.rs `fine_translate`: channel `ch` of component `c` blended
+// between the columns of `k` (`fine_level`), before rounding.
+fn fine_translate(ch: u32, c: u32, k: vec3u) -> f32 {
+    let a = f32(translate(ch, c, k.x));
+    let b = f32(translate(ch, c, k.y));
+    return a + (b - a) * bitcast<f32>(k.z);
+}
+
+// `pack_light` of a lit pixel: with finer levels the original pipeline's
+// colour at the pixel's luma is the blend of two columns (raster.rs
+// `Light::at`).
+fn pack_light_l(p: Poly, u: f32, v: f32) -> vec3f {
+    if lit_fine < 0.0 {
+        return pack_light(p, u, v);
+    }
+    let c = p.colour.xyz;
+    var fb: vec3f;
+    for (var ch = 0u; ch < 3u; ch++) {
+        let full = translate(ch, c[ch], 63u);
+        if full > 0u {
+            fb[ch] = fine_translate(ch, c[ch], fine_level(true, 64u)) / f32(full);
+        } else {
+            fb[ch] = f32(p.luma) / 255.0;
+        }
+    }
+    let t8 = filtered_texel(p, u, v);
+    if t8 < 0 {
+        return fb;
+    }
+    let l = luma(p.luma_table, u32(t8) / 2u);
+    let lf = min(l * 255u / 256u, 63u);
+    let k = fine_level(true, l);
+    var r: vec3f;
+    for (var ch = 0u; ch < 3u; ch++) {
+        let full = translate(ch, c[ch], lf);
+        if full == 0u {
+            r[ch] = fb[ch];
+        } else {
+            r[ch] = fine_translate(ch, c[ch], k) / f32(full);
+        }
+    }
+    return r;
 }
 
 // `shade` of polygon `p`.
@@ -841,15 +917,25 @@ fn shade_l(in: VsOut, p: Poly) -> vec4f {
         discard;
     }
     var lum: u32;
-    if (p.flags & 1u) != 0u {
+    var v = 0u;
+    let textured = (p.flags & 1u) != 0u;
+    if textured {
         let iz = in.attr.x;
         let t8 = filtered_texel(p, in.attr.y / iz, in.attr.z / iz);
         if t8 < 0 {
             discard;
         }
-        lum = min(luma(p.luma_table, u32(t8) / 2u) * p.luma / 256u, 63u);
+        v = luma(p.luma_table, u32(t8) / 2u);
+        lum = min(v * p.luma / 256u, 63u);
     } else {
         lum = p.luma >> 2u;
+    }
+    if lit_fine >= 0.0 {
+        // Finer levels: the blend, rounded as the software (Rust's round(),
+        // never negative here).
+        let k = fine_level(textured, v);
+        let f = vec3f(fine_translate(0u, p.colour.x, k), fine_translate(1u, p.colour.y, k), fine_translate(2u, p.colour.z, k));
+        return vec4f(floor(f + 0.5) / 255.0, 1.0);
     }
     let rgb = vec3u(translate(0u, p.colour.x, lum), translate(1u, p.colour.y, lum), translate(2u, p.colour.z, lum));
     return vec4f(vec3f(rgb) / 255.0, 1.0);
@@ -876,7 +962,7 @@ fn shade_pack_l(in: VsOut, p: Poly) -> vec4f {
     if s.a < 0.5 {
         discard;
     }
-    let r = pack_light(p, u, v);
+    let r = pack_light_l(p, u, v);
     let rgb = min(floor(s.rgb * r + 0.5), vec3f(255.0));
     return vec4f(rgb / 255.0, 1.0);
 }
@@ -908,7 +994,7 @@ fn shade_packf_l(in: VsPackOut, p: Poly, gx: vec3f, gy: vec3f) -> vec4f {
     if c.a < 0.5 {
         discard;
     }
-    let r = pack_light(p, u, v);
+    let r = pack_light_l(p, u, v);
     let rgb = min(floor(c.rgb / c.a * 255.0 * r + 0.5), vec3f(255.0));
     return vec4f(rgb / 255.0, 1.0);
 }

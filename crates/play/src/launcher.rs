@@ -236,6 +236,12 @@ fn rows(has_own: bool, max_anisotropy: u8) -> Vec<Row> {
             &[("Flat", "flat"), ("Vertex", "vertex"), ("Pixel", "pixel")],
         ),
         Row::Choice(
+            "shading_fine",
+            "Brightness levels",
+            "with shading: blended, so smooth surfaces don't band; or the game's 64",
+            &[("Game's", "false"), ("Blended", "true")],
+        ),
+        Row::Choice(
             "pack",
             "Texture pack",
             "replacement textures from the game's texpack folder",
@@ -318,6 +324,7 @@ fn overridden(key: &str, v: &GameSettings, temporal_supported: bool) -> Option<&
         "shading" if v.shading == gpu::Shading::Pixel && v.geo_chip => {
             Some("drawn as vertex with the chip: per pixel needs the native geometrizer")
         }
+        "shading_fine" if v.shading_fine && !v.light_on() => Some("only with shading on"),
         _ => None,
     }
 }

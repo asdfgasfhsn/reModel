@@ -87,13 +87,21 @@ options:
                        blend (default) or the pattern kept
   --shading flat|vertex|pixel
                        smooth shading (model2::light; docs/enhancements.md)
-                       for snapshots, gpu-check, depth-check, pack-check
-                       and temporal-probe: flat (default, the original) or
-                       brightness interpolated across polygons from vertex
-                       values derived from the polygon stream (pixel draws
-                       as vertex for now)
+                       for snapshots, gpu-check, depth-check, pack-check,
+                       temporal-probe and lighting-check: flat (default, the
+                       original), vertex (brightness interpolated from
+                       values at the corners: the game's formula with
+                       smoothed normals where the side channel allows, else
+                       means of the stream's lumas) or pixel (the game's
+                       formula per pixel where the side channel allows,
+                       else drawn as vertex)
   --crease auto|N      the crease angle for --shading in degrees, 0 to 180
                        (0: nothing smoothed; auto, the default: the game's)
+  --shading-fine on|off
+                       with --shading: blend the two colour columns around
+                       a lit pixel's brightness instead of the game's 64
+                       levels (no banding on large smooth surfaces; never
+                       outside the polygon's hue). Default off
   --light              record smooth shading's side channel each frame (the
                        native geometrizer's light hooks, or a scan of the
                        list on the chip): snapshots shade with it, `run`
@@ -250,7 +258,10 @@ commands:
                        their corner values; --every N: pictures of every
                        Nth frame only; --bench [N]: GPU frame times flat
                        and vertex at 1080p and 4K over N frames (default
-                       8). Fails if an invariant does
+                       8). --shading pixel checks the per-pixel level;
+                       --shading-fine on adds finer levels (pictures
+                       -fine, -pixel-fine; K: against the game's levels).
+                       Fails if an invariant does
   temporal-probe [DIR] [OUT]
                        the GPU's temporal path (--temporal, default taa;
                        --stipple, --depth, --height, --aspect) on the frames
@@ -432,10 +443,19 @@ fn main() -> ExitCode {
         };
         let _ = STIPPLE.set(s);
     }
-    let (Ok(shading), Ok(crease)) = (opt("--shading"), opt("--crease")) else {
+    let (Ok(shading), Ok(crease), Ok(fine)) = (opt("--shading"), opt("--crease"), opt("--shading-fine")) else {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
     };
+    let fine = match fine.as_deref() {
+        None | Some("off") => false,
+        Some("on") => true,
+        Some(_) => {
+            eprintln!("error: --shading-fine wants on or off");
+            return ExitCode::FAILURE;
+        }
+    };
+    let _ = SHADING_FINE.set(fine);
     if shading.is_some() || crease.is_some() {
         let Some(s) = model2::light::Shading::parse(shading.as_deref().unwrap_or("vertex")) else {
             eprintln!("error: --shading wants flat, vertex or pixel");
@@ -1214,7 +1234,8 @@ fn main() -> ExitCode {
                 let root = args.get(1).map(PathBuf::from).unwrap_or(default);
                 let out = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out/scratch/temporal-probe"));
                 let light = light_options(roms.game);
-                let quality = gpu::Quality { shading: gpu_light(light.as_ref()).shading, ..quality };
+                let lq = gpu_light(light.as_ref());
+                let quality = gpu::Quality { shading: lq.shading, shading_fine: lq.shading_fine, ..quality };
                 temporal_probe::captures(&root, windows, view, quality, &out, light.as_ref())
             };
             if let Err(e) = result {
@@ -1324,7 +1345,8 @@ fn main() -> ExitCode {
                 Some((model2::light::Shading::Pixel, _)) => model2::light::Shading::Pixel,
                 _ => model2::light::Shading::Vertex,
             };
-            let opts = model2::light::Options::new(level, crease, &roms.game.shading, roms.game.hud_windows);
+            let opts = model2::light::Options::new(level, crease, &roms.game.shading, roms.game.hud_windows)
+                .with_fine(SHADING_FINE.get().copied().unwrap_or(false));
             let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
             match lighting_check::run(&root, windows, VIEW.get().copied(), opts, &out, &probes, bench, every, side) {
                 Ok(true) => {}
@@ -1648,6 +1670,8 @@ static DEPTH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 /// `--shading`, `--crease`: smooth shading for snapshots and the GPU
 /// tools (shading, crease in degrees or `light::CREASE_AUTO`).
 static SHADING: std::sync::OnceLock<(model2::light::Shading, u8)> = std::sync::OnceLock::new();
+/// `--shading-fine`: finer levels for `--shading`.
+static SHADING_FINE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 /// `--game`, for snapshots' shading rules.
 static GAME_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 /// `--light` (or a capture): record smooth shading's side channel.
@@ -1657,7 +1681,8 @@ static LIGHT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 /// (None: off).
 fn light_options(game: &romset::Game) -> Option<model2::light::Options> {
     let &(shading, crease) = SHADING.get()?;
-    let o = model2::light::Options::new(shading, crease, &game.shading, game.hud_windows);
+    let o = model2::light::Options::new(shading, crease, &game.shading, game.hud_windows)
+        .with_fine(SHADING_FINE.get().copied().unwrap_or(false));
     o.on().then_some(o)
 }
 
@@ -1665,7 +1690,7 @@ fn light_options(game: &romset::Game) -> Option<model2::light::Options> {
 /// (whatever `Poly::lit` holds is drawn) or off.
 fn gpu_light(light: Option<&model2::light::Options>) -> gpu::Quality {
     match light {
-        Some(o) => gpu::Quality { shading: o.shading, crease: o.crease, ..Default::default() },
+        Some(o) => gpu::Quality { shading: o.shading, crease: o.crease, shading_fine: o.fine, ..Default::default() },
         None => gpu::Quality::default(),
     }
 }

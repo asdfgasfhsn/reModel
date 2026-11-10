@@ -318,7 +318,7 @@ depth-check: release ## Draw the captured frames on the GPU with the depth buffe
 # GPU_OPTS before it ("--crease N", "--height", "--aspect").
 LIGHT_OPTS ?=
 .PHONY: lighting-check
-lighting-check: release ## Draw the captured frames flat and smooth-shaded (vertex, or GPU_OPTS="--shading pixel" for per pixel) on the software and GPU renderers; check the invariants (crease 0 is flat, unlit polygons unchanged, brightness of corners and pixels, software against GPU, hue kept, determinism; with LIGHT_IN=a lighting-capture: the side channel's self-check and list scan, L0 against it), report and pictures into out/scratch/lighting/GAME (LIGHT_OPTS: --every N, --probe X,Y@F, --bench [N], --no-side; GPU_OPTS: --crease N, --height/--aspect; needs a GPU)
+lighting-check: release ## Draw the captured frames flat and smooth-shaded (vertex, or GPU_OPTS="--shading pixel" for per pixel; "--shading-fine on" adds finer levels and K, against the game's levels) on the software and GPU renderers; check the invariants (crease 0 is flat, unlit polygons unchanged, brightness of corners and pixels, software against GPU, hue kept, determinism; with LIGHT_IN=a lighting-capture: the side channel's self-check and list scan, L0 against it), report and pictures into out/scratch/lighting/GAME (LIGHT_OPTS: --every N, --probe X,Y@F, --bench [N], --no-side; GPU_OPTS: --crease N, --height/--aspect; needs a GPU)
 	$(RUN) $(GPU_OPTS) lighting-check $(or $(LIGHT_IN),$(OUT)/capture) out/scratch/lighting/$(GAME) $(LIGHT_OPTS)
 
 # Where lighting-capture saves (a directory of its own: the regression
