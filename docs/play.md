@@ -129,9 +129,10 @@ polygons when the geometrizer is late use that frame's, and run-ahead's
 machine records it too, so every image is shaded at the same level and
 shading doesn't alternate between images; a frame drawn again reuses its
 shading. The launcher's previews are always flat. Nothing the game
-computes changes. On the CPU it costs about 1 ms each time a new frame
-is drawn (up to about 2.5 ms on busy frames; repeats cost nothing), on
-the GPU within the noise at 1080p and a little at 4K with `pixel`; with
+computes changes. On the CPU it costs about 1-2 ms each time a new frame
+is drawn (up to 6 ms on busy frames on a loaded machine), and building
+the lit polygons 0.1-2 ms more; repeats cost nothing. On the GPU it is
+within the noise at 1080p and a little at 4K with `pixel`; with
 `flat` (or a crease of 0) none of it runs.
 
 What to expect (from the review pictures): clearly better on
