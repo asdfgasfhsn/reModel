@@ -221,8 +221,9 @@ commands:
                        skip the CPU checks; --inspect: the error above the
                        plain frame's by the resolve's rule, with
                        FRAME-COL-rules.png and -excess.png; --dump
-                       X,Y,W,H: the resolve's decisions at those pixels on
-                       every frame, into OUT/dump.txt; --depth before the
+                       X,Y,W,H[,SCALE]: the resolve's decisions at those
+                       pixels on every frame, into OUT/dump.txt (TAA, or
+                       the 67/50 column); --depth before the
                        command: the depth buffer in every column). Fails if the
                        motion data misses its marks or temporal scores worse
                        than the plain frame / naive upscale.
@@ -667,9 +668,10 @@ fn main() -> ExitCode {
         {
             None => None,
             Some(v) => match v[..] {
-                [x, y, w, h] => Some((x, y, w, h)),
+                [x, y, w, h] => Some((x, y, w, h, 100)),
+                [x, y, w, h, s @ (100 | 67 | 50)] => Some((x, y, w, h, s)),
                 _ => {
-                    eprintln!("error: --dump wants X,Y,W,H in output pixels");
+                    eprintln!("error: --dump wants X,Y,W,H[,SCALE] in output pixels (scale 100, 67 or 50)");
                     return ExitCode::FAILURE;
                 }
             },

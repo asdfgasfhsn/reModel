@@ -117,8 +117,11 @@ pub struct TemporalDebug {
     /// - `[2]`: 1/z of the surface drawn, 6.2e-5 to 6.0e4, negative for
     ///   a blended stipple polygon; 0 where nothing is drawn;
     /// - `[3]`: the 1/z that point had in the previous image (same range),
-    ///   or 0: no motion data.
+    ///   or 0: no motion data. (The target holds it negative where the
+    ///   polygon is thin: that is `thin`.)
     pub aux: Vec<[f32; 4]>,
+    /// Per pixel: the surface drawn is a thin polygon ([`Tuning::thin`]).
+    pub thin: Vec<bool>,
     /// The jitter in internal pixels: pixel (i, j) holds the sample at
     /// `(i + 0.5 - jitter.0, j + 0.5 - jitter.1)` internal pixels.
     pub jitter: (f32, f32),
@@ -204,6 +207,116 @@ pub(crate) struct TemporalPass<'a> {
     pub lod: f32,
     pub keep: bool,
     pub motion: Motion3d,
+    /// Which polygons are thin ([`Tuning::thin`], `thin_len`, internal
+    /// px); None: none.
+    pub thin: Option<(f32, f32)>,
+    /// Thin polygons are widened to this many internal px, drawn at
+    /// their coverage ([`Tuning::cover`]; 0: not widened).
+    pub cover: f32,
+    /// Only polygons whose long edges are their own ([`Tuning::isolated`]).
+    pub isolated: bool,
+}
+
+/// A thin polygon ([`thin`]): how narrow it is, and how to widen it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Thin {
+    /// Its width across, internal px.
+    pub width: f32,
+    /// The direction across (unit, internal px) and its middle along it.
+    pub normal: (f32, f32),
+    pub mid: f32,
+}
+
+impl Thin {
+    /// The polygon's coverage once widened to `to` internal px (`widen`).
+    pub(crate) fn coverage(&self, to: f32) -> f32 {
+        (self.width / to).clamp(0.0, 1.0)
+    }
+
+    /// Point (x, y) (output px) moved so the polygon is `to` internal px
+    /// wide across, about its middle line: the offset in output px.
+    pub(crate) fn widen(&self, (x, y): (f32, f32), rs: (f32, f32), to: f32) -> (f32, f32) {
+        let (qx, qy) = (x * rs.0, y * rs.1);
+        let d = qx * self.normal.0 + qy * self.normal.1 - self.mid;
+        let k = d * (to / self.width.max(0.01) - 1.0);
+        (k * self.normal.0 / rs.0, k * self.normal.1 / rs.1)
+    }
+}
+
+/// The frame's polygon edges, to tell a thin feature (a wire, a rail: its
+/// long edges its own) from a sliver of a mesh (a distant terrain or road
+/// strip seen edge-on, whose long edges its neighbours share and which the
+/// mesh around it already covers).
+pub(crate) struct Edges(std::collections::HashMap<[i32; 4], u32>);
+
+impl Edges {
+    fn key(a: (f32, f32), b: (f32, f32)) -> [i32; 4] {
+        let q = |v: f32| (v * 8.0).round() as i32;
+        let (a, b) = ((q(a.0), q(a.1)), (q(b.0), q(b.1)));
+        let (a, b) = if a <= b { (a, b) } else { (b, a) };
+        [a.0, a.1, b.0, b.1]
+    }
+
+    /// Every edge of every polygon (points in output px).
+    pub(crate) fn new<'a>(polys: impl Iterator<Item = &'a [model2::raster::SVtx]>) -> Self {
+        let mut m = std::collections::HashMap::new();
+        for p in polys {
+            for k in 0..p.len() {
+                let (a, b) = (&p[k], &p[(k + 1) % p.len()]);
+                *m.entry(Self::key((a.x, a.y), (b.x, b.y))).or_insert(0) += 1;
+            }
+        }
+        Edges(m)
+    }
+
+    /// Whether a long edge of a polygon (points in output px; at least
+    /// half as long as its longest) is another polygon's too.
+    pub(crate) fn long_edge_shared(&self, points: &[(f32, f32)]) -> bool {
+        let n = points.len();
+        let len = |k: usize| {
+            let (a, b) = (points[k], points[(k + 1) % n]);
+            (a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)
+        };
+        let longest = (0..n).map(len).fold(0.0f32, f32::max);
+        (0..n).any(|k| {
+            len(k) >= 0.25 * longest && self.0.get(&Self::key(points[k], points[(k + 1) % n])).is_some_and(|&c| c > 1)
+        })
+    }
+}
+
+/// Whether a convex polygon (points in output px) is thin at internal
+/// over output size `rs`: narrower than `width` internal pixels across
+/// (the least, over its edges, of the farthest point from the edge's
+/// line: a convex polygon's width) and at least `len` long (so a mesh of
+/// small polygons far away is not a thin feature). Such a polygon is hit
+/// by some jitter phases' samples and missed by others.
+pub(crate) fn thin(points: &[(f32, f32)], rs: (f32, f32), (width, len): (f32, f32)) -> Option<Thin> {
+    let p: Vec<(f32, f32)> = points.iter().map(|&(x, y)| (x * rs.0, y * rs.1)).collect();
+    let n = p.len();
+    if n < 3 {
+        return None;
+    }
+    let mut best: Option<Thin> = None;
+    let mut longest = 0.0f32;
+    for k in 0..n {
+        let (a, b) = (p[k], p[(k + 1) % n]);
+        let (ex, ey) = (b.0 - a.0, b.1 - a.1);
+        let l = (ex * ex + ey * ey).sqrt();
+        for q in &p {
+            longest = longest.max(((q.0 - a.0).powi(2) + (q.1 - a.1).powi(2)).sqrt());
+        }
+        if l.is_nan() || l <= 1e-6 {
+            continue;
+        }
+        let normal = (-ey / l, ex / l);
+        let along = |q: &(f32, f32)| q.0 * normal.0 + q.1 * normal.1;
+        let (lo, hi) =
+            p.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), q| (lo.min(along(q)), hi.max(along(q))));
+        if best.is_none_or(|t| hi - lo < t.width) {
+            best = Some(Thin { width: hi - lo, normal, mid: (lo + hi) / 2.0 });
+        }
+    }
+    best.filter(|t| t.width < width && longest >= len && t.width.is_finite())
 }
 
 impl TemporalPass<'_> {
@@ -295,6 +408,22 @@ pub struct Tuning {
     /// The history's resampling: Keys' cubic with this C (0.5:
     /// Catmull-Rom; more is sharper).
     pub cubic: f32,
+    /// Thin features: a polygon narrower than this many internal pixels
+    /// (and at least `thin_len` long) is thin (0: none are; the handling
+    /// is off).
+    pub thin: f32,
+    pub thin_len: f32,
+    /// Thin polygons are drawn widened to this many internal pixels at
+    /// their coverage (over what is behind), so every jitter phase's
+    /// samples hit them; 0: drawn as they are.
+    pub cover: f32,
+    /// Only a polygon none of whose long edges (half its longest or more)
+    /// another polygon shares is thin (1), or any (0): a sliver of a mesh
+    /// seen edge-on is not a thin feature, the mesh around it covers it.
+    pub isolated: f32,
+    /// A thin polygon's motion carries the pixels around it (1) or not
+    /// (0).
+    pub thin_motion: f32,
 }
 
 impl Default for Tuning {
@@ -313,6 +442,11 @@ impl Default for Tuning {
             depth_tol: 0.1,
             sharpen: 0.0,
             cubic: 0.75,
+            thin: 1.0,
+            thin_len: 2.0,
+            cover: 1.0,
+            isolated: 1.0,
+            thin_motion: 1.0,
         }
     }
 }
@@ -341,6 +475,11 @@ impl Tuning {
                 "depth_tol" => t.depth_tol = v,
                 "sharpen" => t.sharpen = v,
                 "cubic" => t.cubic = v,
+                "thin" => t.thin = v,
+                "thin_len" => t.thin_len = v,
+                "cover" => t.cover = v,
+                "isolated" => t.isolated = v,
+                "thin_motion" => t.thin_motion = v,
                 _ => return Err(format!("{k}: no such tuning constant")),
             }
         }
@@ -364,7 +503,7 @@ impl Tuning {
             self.kernel.1,
             self.sharpen,
             self.cubic,
-            0.0,
+            (self.thin > 0.0 && self.thin_motion > 0.0) as u8 as f32,
         ]
     }
 }
@@ -472,13 +611,16 @@ impl Renderer {
         let (w, h) = l.size;
         let colour = self.read_back_bpp(self.device.create_command_encoder(&Default::default()), &l.colour, w, h, 4);
         let raw = self.read_back_bpp(self.device.create_command_encoder(&Default::default()), &l.aux, w, h, 8);
-        let aux = raw
+        let (aux, thin) = raw
             .as_chunks::<8>()
             .0
             .iter()
-            .map(|p| [0, 2, 4, 6].map(|k| f16_to_f32(u16::from_le_bytes([p[k], p[k + 1]]))))
-            .collect();
-        Some(TemporalDebug { width: w, height: h, colour, aux, jitter: l.jitter, rs: l.rs, step: l.step })
+            .map(|p| {
+                let a = [0, 2, 4, 6].map(|k| f16_to_f32(u16::from_le_bytes([p[k], p[k + 1]])));
+                ([a[0], a[1], a[2], a[3].abs()], a[3] < 0.0)
+            })
+            .unzip();
+        Some(TemporalDebug { width: w, height: h, colour, aux, thin, jitter: l.jitter, rs: l.rs, step: l.step })
     }
 
     /// The history the last temporal frame wrote (output size,
@@ -617,6 +759,10 @@ impl Renderer {
             lod: rs.0.min(rs.1),
             keep,
             motion,
+            thin: (self.temporal.tuning.thin > 0.0)
+                .then_some((self.temporal.tuning.thin, self.temporal.tuning.thin_len)),
+            cover: self.temporal.tuning.cover,
+            isolated: self.temporal.tuning.isolated > 0.0,
         };
         self.encode_3d(enc, polys, placed, src, view, &colour_view, Some(&pass));
         let history_view = history.create_view(&Default::default());
@@ -1525,6 +1671,262 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The thin-line scenes: a dark background, a light line `thick` game
+    /// px thick from (60, y) to (440, y + 25) that moved `dy` down since
+    /// the last frame (none: `y` None), and an occluder in front of it,
+    /// all with motion data.
+    fn line_scene(y: Option<f32>, thick: f32, dy: f32, occluder: bool) -> Vec<Poly> {
+        let still = |p: &mut Poly| p.prev = p.points.iter().map(|v| [v.x, v.y, 1.0]).collect();
+        let mut back = quad(-20.0, -10.0, 520.0, 400.0, 0.001, 900.0, 0);
+        back.colour = [20, 2, 2];
+        still(&mut back);
+        let mut p = vec![back];
+        if let Some(y) = y {
+            let mut l = quad(0.0, 0.0, 1.0, 1.0, 0.01, 100.0, 0);
+            let v = |x, y| SVtx { x, y, iz: 0.01, uz: 0.0, vz: 0.0 };
+            l.points = vec![v(60.0, y), v(440.0, y + 25.0), v(440.0, y + 25.0 + thick), v(60.0, y + thick)];
+            l.colour = [31, 31, 0];
+            l.prev = l.points.iter().map(|v| [v.x, v.y - dy, 1.0]).collect();
+            p.push(l);
+        }
+        if occluder {
+            let mut o = quad(200.0, 100.0, 300.0, 250.0, 0.05, 50.0, 0);
+            o.colour = [2, 20, 31];
+            still(&mut o);
+            p.push(o);
+        }
+        p
+    }
+
+    /// Renderers, sources and layers for the thin-line tests.
+    struct LineRig {
+        render: Vec<u8>,
+        palette: Vec<u8>,
+        view: View,
+        layers: Layers2d,
+    }
+
+    impl LineRig {
+        fn new() -> Self {
+            LineRig {
+                render: vec![0x5au8; 0x480000],
+                palette: (0..0x20000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8).collect(),
+                view: View::new(480, 4.0 / 3.0, Hud::Center),
+                layers: Layers2d {
+                    base: vec![40; WIDTH * HEIGHT * 4],
+                    side: 0,
+                    hud: vec![0; WIDTH * HEIGHT * 4],
+                    ext_w: WIDTH,
+                    backdrop: [0, 0, 0],
+                },
+            }
+        }
+
+        /// Frame `k` of `polys` (the first after a reset).
+        fn frame(&self, g: &mut Renderer, k: u64, mut polys: Vec<Poly>) -> Vec<u8> {
+            let src = Sources {
+                texture_rom: &[],
+                texture_point_ram: &[],
+                render_ram: &self.render,
+                palette: &self.palette,
+                xoff: 0.0,
+                yoff: 0.0,
+            };
+            let placed = place(&mut polys, &self.view);
+            let step = if k == 0 { Step::NoMotion } else { Step::Blend { tp: 0.0 } };
+            g.set_temporal_frame(FrameTag::game(k), step, Vec::new());
+            g.frame(&polys, &placed, &src, &self.view, &self.layers)
+        }
+
+        /// RGB at game point (x, y).
+        fn at(&self, img: &[u8], x: f32, y: f32) -> [u8; 3] {
+            let (x, y) = self.view.to_output(x, y);
+            let i = (y as usize * self.view.width + x as usize) * 3;
+            [img[i], img[i + 1], img[i + 2]]
+        }
+
+        /// Along the line at `y` (`line_scene`), per output column, the
+        /// most any pixel within 4 rows of it differs from the background
+        /// `bg` (summed |RGB|).
+        fn profile(&self, img: &[u8], y: f32, thick: f32, bg: [u8; 3]) -> Vec<u32> {
+            let mut out = Vec::new();
+            let (x0, _) = self.view.to_output(80.0, 0.0);
+            let (x1, _) = self.view.to_output(420.0, 0.0);
+            for ox in x0 as usize..x1 as usize {
+                let gx = (ox as f32 + 0.5) / self.view.sx;
+                let gy = y + 25.0 * (gx - 60.0) / 380.0 + thick / 2.0;
+                let (_, oy) = self.view.to_output(gx, gy);
+                let peak = (oy as usize - 4..=oy as usize + 4)
+                    .map(|r| {
+                        let i = (r * self.view.width + ox) * 3;
+                        (0..3).map(|c| img[i + c].abs_diff(bg[c]) as u32).sum::<u32>()
+                    })
+                    .max()
+                    .unwrap();
+                out.push(peak);
+            }
+            out
+        }
+    }
+
+    /// A line half an output pixel thick (a quarter of an internal pixel
+    /// at 50%) under jitter stays whole when upscaling: every column along
+    /// it shows it, every frame, where without the thin-feature handling it
+    /// breaks into dashes (some jitter phases miss it and the clip throws
+    /// its history away).
+    #[test]
+    fn thin_line_stays_whole_when_upscaled() {
+        let Ok(mut on) = Renderer::new() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let rig = LineRig::new();
+        let mut off = Renderer::new().unwrap();
+        off.set_temporal_tuning(Tuning { thin: 0.0, ..Tuning::default() });
+        // The line's and the background's colours, from a thick line.
+        let mut plain = Renderer::new().unwrap();
+        let thick = rig.frame(&mut plain, 0, line_scene(Some(150.0), 12.0, 0.0, false));
+        let (bg, fg) = (rig.at(&thick, 30.0, 30.0), rig.at(&thick, 250.0, 168.0));
+        let contrast: u32 = (0..3).map(|c| fg[c].abs_diff(bg[c]) as u32).sum();
+        assert!(contrast > 200, "{fg:?} {bg:?}");
+        let thin = 0.4;
+        for scale in [50, 67] {
+            let mut least = [u32::MAX; 2];
+            for (n, g) in [&mut on, &mut off].into_iter().enumerate() {
+                g.set_quality(Quality { temporal: scale, ..Default::default() });
+                for k in 0..40u64 {
+                    let out = rig.frame(g, k, line_scene(Some(150.0), thin, 0.0, false));
+                    if k >= 24 {
+                        let p = rig.profile(&out, 150.0, thin, bg);
+                        least[n] = least[n].min(*p.iter().min().unwrap());
+                    }
+                }
+            }
+            // The line covers about half of its pixels: at least a sixth
+            // of the contrast everywhere along it.
+            assert!(
+                least[0] * 6 >= contrast,
+                "scale {scale}: the line fades to {} of {contrast} somewhere (without: {})",
+                least[0],
+                least[1]
+            );
+            assert!(least[0] > least[1], "scale {scale}: {} not above {} without", least[0], least[1]);
+        }
+    }
+
+    /// A smooth-shaded thin line (the `_l_t` entry points) is widened and
+    /// drawn at its coverage as a flat one is: lit at its own luma, it
+    /// gives the flat line's pictures, frame by frame, at 67% and 50%.
+    #[test]
+    fn thin_lit_line_as_flat() {
+        let Ok(mut flat) = Renderer::new() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let rig = LineRig::new();
+        let mut lit = Renderer::new().unwrap();
+        let own = |polys: Vec<Poly>| {
+            polys
+                .into_iter()
+                .map(|p| Poly { lit: (0..p.points.len()).map(|_| [p.luma as f32 + 0.5, 0.0, 0.0, 0.0]).collect(), ..p })
+                .collect::<Vec<_>>()
+        };
+        for scale in [50, 67] {
+            for shading in [crate::Shading::Vertex, crate::Shading::Pixel] {
+                flat.set_quality(Quality { temporal: 0, ..Default::default() });
+                flat.set_quality(Quality { temporal: scale, ..Default::default() });
+                lit.set_quality(Quality { temporal: 0, ..Default::default() });
+                lit.set_quality(Quality { temporal: scale, shading, crease: 40, ..Default::default() });
+                for k in 0..12u64 {
+                    let a = rig.frame(&mut flat, k, line_scene(Some(150.0), 0.4, 0.0, false));
+                    let b = rig.frame(&mut lit, k, own(line_scene(Some(150.0), 0.4, 0.0, false)));
+                    assert!(a == b, "scale {scale}, {shading:?}, frame {k}: lit thin line differs from flat");
+                }
+            }
+        }
+    }
+
+    /// The thin-line handling leaves nothing behind: once a thin line is
+    /// gone, has jumped away, or an opaque polygon passes in front of it,
+    /// the picture there is the background (or the occluder) within a few
+    /// frames, at 50% and 100%.
+    #[test]
+    fn thin_line_leaves_no_trail() {
+        let Ok(mut g) = Renderer::new() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let rig = LineRig::new();
+        let thin = 0.4;
+        for scale in [50, 100] {
+            for case in 0..3 {
+                g.set_quality(Quality { temporal: 0, ..Default::default() });
+                g.set_quality(Quality { temporal: scale, ..Default::default() });
+                for k in 0..30u64 {
+                    rig.frame(&mut g, k, line_scene(Some(150.0), thin, 0.0, false));
+                }
+                let mut last = Vec::new();
+                for k in 30..36u64 {
+                    let polys = match case {
+                        0 => line_scene(None, thin, 0.0, false),
+                        1 => line_scene(Some(220.0), thin, if k == 30 { 70.0 } else { 0.0 }, false),
+                        _ => line_scene(Some(150.0), thin, 0.0, true),
+                    };
+                    last = rig.frame(&mut g, k, polys);
+                }
+                let bg = rig.at(&last, 30.0, 30.0);
+                let occ = rig.at(&last, 250.0, 120.0);
+                // Where the line was, away from its new place and the
+                // occluder's edges.
+                for gx in (90..410).step_by(3) {
+                    let gx = gx as f32;
+                    let gy = 150.0 + 25.0 * (gx - 60.0) / 380.0 + thin / 2.0;
+                    let inside = case == 2 && (204.0..296.0).contains(&gx);
+                    if case == 2 && !inside {
+                        continue;
+                    }
+                    let want = if inside { occ } else { bg };
+                    for dy in [-1.5f32, -0.75, 0.0, 0.75, 1.5] {
+                        let px = rig.at(&last, gx, gy + dy);
+                        let d = (0..3).map(|c| px[c].abs_diff(want[c])).max().unwrap();
+                        assert!(d <= 3, "scale {scale} case {case} at ({gx}, {}): {px:?} not {want:?}", gy + dy);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn thin_polygons() {
+        // A sliver half an internal pixel across at 50%, long: thin; its
+        // widening makes it 1 internal px across.
+        let pts = [(10.0, 10.0), (200.0, 30.0), (200.0, 31.0), (10.0, 11.0)];
+        let t = thin(&pts, (0.5, 0.5), (1.0, 2.0)).expect("thin");
+        assert!((t.width - 0.497).abs() < 0.01, "{t:?}");
+        let w: Vec<(f32, f32)> = pts
+            .iter()
+            .map(|&p| {
+                let d = t.widen(p, (0.5, 0.5), 1.0);
+                (p.0 + d.0, p.1 + d.1)
+            })
+            .collect();
+        let t2 = thin(&w, (0.5, 0.5), (2.0, 2.0)).expect("still thin at 2");
+        assert!((t2.width - 1.0).abs() < 1e-3, "{t2:?}");
+        assert!((t.coverage(1.0) - t.width).abs() < 1e-6);
+        // Wide, or thin but short (a speck): not thin.
+        assert_eq!(thin(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)], (1.0, 1.0), (1.0, 2.0)), None);
+        assert_eq!(thin(&[(0.0, 0.0), (1.0, 0.0), (1.0, 0.5)], (1.0, 1.0), (1.0, 2.0)), None);
+        // Two slivers of a strip share their long edge; a wire has its own.
+        let v = |x, y| SVtx { x, y, iz: 1.0, uz: 0.0, vz: 0.0 };
+        let a = [v(0.0, 0.0), v(100.0, 0.0), v(100.0, 0.5), v(0.0, 0.5)];
+        let b = [v(0.0, 0.5), v(100.0, 0.5), v(100.0, 1.0), v(0.0, 1.0)];
+        let wire = [v(0.0, 9.0), v(100.0, 9.0), v(100.0, 9.5), v(0.0, 9.5)];
+        let e = Edges::new([&a[..], &b[..], &wire[..]].into_iter());
+        let pts = |p: &[SVtx]| p.iter().map(|v| (v.x, v.y)).collect::<Vec<_>>();
+        assert!(e.long_edge_shared(&pts(&a)) && e.long_edge_shared(&pts(&b)));
+        assert!(!e.long_edge_shared(&pts(&wire)));
     }
 
     #[test]
