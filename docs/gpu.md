@@ -237,7 +237,10 @@ sits in the renderer (`crates/gpu/src/temporal.rs`, `temporal.wgsl`, the
   0.5 would be Catmull-Rom) in 5 bilinear taps, and clipped to the
   neighbourhood's box widened by `CLIP_SLACK` (0.5/255, a WGSL constant)
   on every side, so half-float rounding in the history can't trip the
-  clip in a channel whose box has no width (`docs/enhancements.md`). Two
+  clip in a channel whose box has no width (`docs/enhancements.md`).
+  Where a thin polygon's sample (aux a < 0) is among the 3x3 and at least
+  as near as the pixel's own surface, its motion is the one used
+  (`TemporalTuning::thin_motion`, k3.w in the uniform). Two
   passes run only when asked for: with `TemporalTuning::sharpen` above 0,
   `fs_sharpen` draws the new history sharpened into `3d sharpened`, which
   compose reads instead (the history itself stays unsharpened); with
@@ -260,6 +263,23 @@ sits in the renderer (`crates/gpu/src/temporal.rs`, `temporal.wgsl`, the
   rectangle to ±3e38 and clears its checker bit, so those tests inside
   `shade*` never fire, and sets bit 6 (checker) and bit 7 (has motion).
   `fs_packf*_t` scale the texture derivatives by `min(rs)`.
+- **Thin polygons** (`temporal::thin`, in `encode_3d`'s temporal branch
+  only): a polygon whose width across (the least, over its edges, of the
+  farthest point from the edge's line) is under `TemporalTuning::thin`
+  (1) internal pixel and whose longest extent is at least `thin_len` (2)
+  internal pixels, and none of whose long edges (half its longest or
+  more) another polygon of the frame shares (`temporal::Edges`, edge
+  ends rounded to 1/8 px; a mesh's slivers share theirs), gets flag bit
+  8, and its points are moved apart across
+  its middle line (`Thin::widen`; `prev` by the same offset times W) until
+  it is `cover` (1) internal pixel wide. Bits 16-23 hold its coverage,
+  width over widened width (255 = 1); `cover_t` multiplies the `_t`
+  fragment's colour by it, and the colour target's premultiplied blending
+  lays it over what is behind. So every sample row or column across the
+  polygon hits it once whatever the jitter, at its share of the colour,
+  where unwidened it was hit by some jitter phases and missed by others.
+  The aux target is written as usual (blending is on the colour target
+  only), with the thin mark.
 - **Vertex format**: 36 bytes, `xy` (`Float32x2`), `(iz, uz, vz)`
   (`Float32x3`), the polygon index (`Uint32`) and `prev` (`Float32x3`,
   location 3): `Placed::prev[k]`, the previous position in output pixels
@@ -276,7 +296,10 @@ sits in the renderer (`crates/gpu/src/temporal.rs`, `temporal.wgsl`, the
   position minus `q`), clamped to ±16384; b the fan-interpolated 1/z,
   clamped to [6.2e-5, 6.0e4], negated for a blended checker fragment, 0
   where nothing was drawn; a the expected previous 1/z (1/z over W), 0
-  without motion data. Every value is finite: the CPU drops a polygon's
+  without motion data, negated on a thin polygon (flag bit 8; readers take
+  its magnitude, `TemporalDebug` splits it into `aux[3]` and `thin`; a
+  thin polygon without motion data isn't marked, which costs only its
+  motion dilation). Every value is finite: the CPU drops a polygon's
   `prev` with a non-finite value, W ≤ 0 or the wrong length, and the
   shader rejects W ≤ 1e-6.
 - **Jitter** (`temporal::jitter`): Halton(2,3) − 0.5 in internal pixels,
@@ -318,7 +341,16 @@ sits in the renderer (`crates/gpu/src/temporal.rs`, `temporal.wgsl`, the
   `rounding_in_the_history_is_not_clipped` (every opaque history texel's
   alpha set one half-float step below 1 before the last frame: the
   picture within one level of the unpoisoned one; fails without
-  `CLIP_SLACK`), `sharpening_stays_within_the_neighbourhood`; and
+  `CLIP_SLACK`), `sharpening_stays_within_the_neighbourhood`,
+  `thin_polygons` (classification and widening),
+  `thin_line_stays_whole_when_upscaled` (a line half an output pixel
+  thick under jitter at 50% and 67%: every column along it shows at least
+  a sixth of its contrast on every frame from 24 to 40; without the
+  thin-polygon handling some column drops to nothing) and
+  `thin_line_leaves_no_trail` (at 50% and 100%, six frames after the line
+  is gone, has jumped away, or an opaque polygon came in front, the
+  picture where it was is the background or the occluder within 3
+  levels); and
   `only_temporal_entry_points_use_binding_5` beside
   `shaders_parse_and_validate`, which validates `temporal.wgsl` too. The
   GPU tests print "skipped" and pass without an adapter.

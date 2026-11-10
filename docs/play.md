@@ -74,9 +74,11 @@ smoothing, and on `vstriker`'s crowd a still picture shimmers slightly.
 Fast driving softened distant scenery in earlier tests; not checked since
 the fixes to the history's clip and resampling. At 67% and 50% the 3D
 layer costs about the same as off, or less, and looks better than simply
-enlarging a smaller picture, but thin things (wires, poles) break into
-dotted, speckled lines and edges in fast motion look as coarse as the
-smaller picture; 50% shows it more. Shadows and other checkerboard
+enlarging a smaller picture. Thin things (overhead wires, rails, distant
+poles) stay whole lines, a little softer than at `taa`, where they used
+to break into dotted, speckled lines; at 50% close-set wires still show
+some grain. Edges in fast motion look as coarse as the smaller
+picture; 50% shows it more. Shadows and other checkerboard
 polygons look like smooth see-through with `blend`, not the original
 screen door. Something the game flickers on purpose (`topskatr`'s FINISH
 sign) flickers the same, not averaged. The first frame after a camera cut,

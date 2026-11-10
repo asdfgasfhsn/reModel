@@ -64,7 +64,8 @@ pub struct Options {
     pub inspect: bool,
     /// Print the resolve's decisions for TAA's pixels in this rectangle
     /// (x, y, w, h) on every frame, into OUT/dump.txt.
-    pub dump: Option<(usize, usize, usize, usize)>,
+    /// The fifth number is the column's render scale (100: TAA, 67, 50).
+    pub dump: Option<(usize, usize, usize, usize, usize)>,
 }
 
 /// What a frame has to take motion from.
@@ -1460,6 +1461,9 @@ pub struct Gpu {
     mv: gpu::Renderer,
     tuning: Option<gpu::TemporalTuning>,
     crops: Vec<(usize, usize, usize, usize)>,
+    /// Per crop: summed mean |difference| a channel against gref inside it,
+    /// for off msaa4 taa up67 up50 naive67 naive50, and frames.
+    crop_score: Vec<([f64; 7], u64)>,
     /// Sampled frames scored, and the GPU naive upscales' summed scores.
     scored: u64,
     naive: [[f64; 4]; 2],
@@ -1495,7 +1499,7 @@ pub struct Gpu {
     inspect: bool,
     budget: Vec<(&'static str, Budget)>,
     /// `--dump`: the rectangle, and the text so far.
-    dump: Option<(usize, usize, usize, usize)>,
+    dump: Option<(usize, usize, usize, usize, usize)>,
     dump_text: String,
 }
 
@@ -1514,6 +1518,7 @@ impl Gpu {
             mv,
             tuning: opts.tuning,
             crops: opts.crops.clone(),
+            crop_score: vec![([0.0; 7], 0); opts.crops.len()],
             scored: 0,
             naive: [[0.0; 4]; 2],
             gnaive: [[0.0; 4]; 2],
@@ -1673,7 +1678,7 @@ fn dump_rect(
     if let Some(t) = &dbg {
         let _ = write!(s, " jitter {:.3},{:.3} step {:?}", t.jitter.0, t.jitter.1, t.step);
     }
-    s += "\n  x    y    st0 st dil shr load fin | share  clip   trust-by  |mv|  | taa         off         gref        | sample: rgb         mv              1/z        prev 1/z\n";
+    s += "\n  x    y    st0 st dil shr load fin thn | share  clip   trust-by  |mv|  | taa         off         gref        | sample: rgb         mv              1/z        prev 1/z\n";
     let rgb = |img: &[u8], o: usize| format!("{:3},{:3},{:3}", img[o * 3], img[o * 3 + 1], img[o * 3 + 2]);
     for y in y0..y0 + h {
         for x in x0..x0 + w {
@@ -1683,13 +1688,14 @@ fn dump_rect(
             let why = ["base", "reset", "fast", "change", "stipple", "nodata"].get(v[3] as usize & 7).unwrap_or(&"?");
             let _ = write!(
                 s,
-                "  {x:<4} {y:<4} {:<3} {:<2} {:<3} {:<3} {:<4} {:<3} | {:.3}  {:.3}  {:<8} {:>5.2} | {} {} {} |",
+                "  {x:<4} {y:<4} {:<3} {:<2} {:<3} {:<3} {:<4} {:<3} {:<3} | {:.3}  {:.3}  {:<8} {:>5.2} | {} {} {} |",
                 r & 3,
                 (r >> 2) & 3,
                 (r >> 4) & 1,
                 (r >> 6) & 1,
                 (r >> 7) & 1,
                 (r >> 8) & 1,
+                (r >> 10) & 1,
                 v[1],
                 v[2],
                 why,
@@ -1702,14 +1708,24 @@ fn dump_rect(
                 let _ = write!(s, " hist {:.6},{:.6},{:.6},{:.6} |", hv[0], hv[1], hv[2], hv[3]);
             }
             if let Some(t) = &dbg {
-                let i = (((x as f32 + t.jitter.0 + 0.5).floor() as usize).min(t.width as usize - 1))
-                    + ((y as f32 + t.jitter.1 + 0.5).floor() as usize).min(t.height as usize - 1) * t.width as usize;
+                // The sample nearest the pixel: floor((P + 0.5) rs + jitter).
+                let i = ((((x as f32 + 0.5) * t.rs.0 + t.jitter.0).floor() as usize).min(t.width as usize - 1))
+                    + (((y as f32 + 0.5) * t.rs.1 + t.jitter.1).floor() as usize).min(t.height as usize - 1)
+                        * t.width as usize;
                 let c = &t.colour[i * 4..i * 4 + 4];
                 let a = t.aux[i];
                 let _ = write!(
                     s,
-                    " {:3},{:3},{:3},{:3} {:+7.3},{:+7.3} {:.6} {:.6}",
-                    c[0], c[1], c[2], c[3], a[0], a[1], a[2], a[3]
+                    " {:3},{:3},{:3},{:3} {:+7.3},{:+7.3} {:.6} {:.6}{}",
+                    c[0],
+                    c[1],
+                    c[2],
+                    c[3],
+                    a[0],
+                    a[1],
+                    a[2],
+                    a[3],
+                    if t.thin[i] { " thin" } else { "" }
                 );
             }
             s += "\n";
@@ -1720,6 +1736,23 @@ fn dump_rect(
 
 fn name_of(cx: &Cx, s: &str) -> PathBuf {
     cx.out.join(format!("{:06}-{s}.png", cx.f.frame.frame))
+}
+
+/// Mean |difference| a channel between two RGB pictures (width `w`)
+/// inside a crop.
+fn crop_error(a: &[u8], b: &[u8], w: usize, (x0, y0, cw, ch): (usize, usize, usize, usize)) -> f64 {
+    let (mut sum, mut n) = (0u64, 0u64);
+    for y in y0..y0 + ch {
+        for x in x0..(x0 + cw).min(w) {
+            let o = (y * w + x) * 3;
+            if o + 3 > a.len() {
+                continue;
+            }
+            sum += (0..3).map(|i| a[o + i].abs_diff(b[o + i]) as u64).sum::<u64>();
+            n += 3;
+        }
+    }
+    sum as f64 / n.max(1) as f64
 }
 
 /// A crop of an RGB picture enlarged `CROP_ZOOM` times, into a tile grid.
@@ -1777,13 +1810,14 @@ impl Section for Gpu {
         let mut inspected = Vec::new();
         for c in &mut self.cols {
             let temporal = c.quality.temporal > 0;
-            let dumping = self.dump.is_some() && c.name == "taa";
+            let dumping = self.dump.is_some_and(|d| c.quality.temporal as usize == d.4);
             let inspect = temporal && ((self.inspect && cx.refs.is_some()) || dumping);
             c.r.set_temporal_inspect(inspect);
             c.r.set_temporal_frame(tag, step_of(cx.kind), Vec::new());
             let rgb = c.r.frame(cx.polys, cx.placed, cx.src, view, &layers);
             let insp = if inspect { c.r.temporal_inspect().map(|t| t.2) } else { None };
-            if let (true, Some(rect), Some(d)) = (dumping, self.dump, &insp) {
+            if let (true, Some((x, y, w, h, _)), Some(d)) = (dumping, self.dump, &insp) {
+                let rect = (x, y, w, h);
                 let hist = c.r.temporal_history().map(|t| t.2);
                 self.dump_text +=
                     &dump_rect(cx, rect, d, (&rgb, &outs[0]), c.r.temporal_debug(), hist.as_deref(), gref.as_deref());
@@ -1904,11 +1938,14 @@ impl Section for Gpu {
             let (tw, th) = (crop.2 * CROP_ZOOM, crop.3 * CROP_ZOOM);
             let (gw, gh) = (tw * 4 + 3 * 4, th * 2 + 4);
             let mut grid = vec![255u8; gw * gh * 3];
-            let tiles: [&[u8]; 8] =
-                [&refs.reference, &outs[0], &outs[1], &outs[2], &outs[3], &outs[4], &naive[0], &naive[1]];
+            let tiles: [&[u8]; 8] = [&gref, &outs[0], &outs[1], &outs[2], &outs[3], &outs[4], &naive[0], &naive[1]];
             for (i, img) in tiles.iter().enumerate() {
                 paste(&mut grid, gw, ((i % 4) * (tw + 4), (i / 4) * (th + 4)), img, view.width, crop);
+                if i > 0 {
+                    self.crop_score[k].0[i - 1] += crop_error(img, &gref, view.width, crop);
+                }
             }
+            self.crop_score[k].1 += 1;
             let _ = std::fs::write(name(&format!("crop{k}")), png::encode_rgb(gw, gh, &grid));
         }
         if self.still_frame.is_none() && cx.kind == Kind::Motion {
@@ -1999,6 +2036,24 @@ impl Section for Gpu {
                     r.line(format!("    {rn:<20} {} | {}", cells[0], cells[1]));
                 }
             }
+        }
+        for (k, (s, frames)) in self.crop_score.iter().enumerate() {
+            let c = self.crops[k];
+            let m = |i: usize| s[i] / (*frames).max(1) as f64;
+            r.line(format!(
+                "  crop{k} {},{},{},{} against gref ({frames} frames): off {:.2} msaa4 {:.2} taa {:.2} up67 {:.2} up50 {:.2} naive67 {:.2} naive50 {:.2}",
+                c.0,
+                c.1,
+                c.2,
+                c.3,
+                m(0),
+                m(1),
+                m(2),
+                m(3),
+                m(4),
+                m(5),
+                m(6)
+            ));
         }
         r.line(format!(
             "  inside polygons (texture interiors: softening), against gref; detail (mean |Laplacian| of luma) over gref's {:.3}:",

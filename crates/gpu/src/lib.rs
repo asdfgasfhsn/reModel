@@ -1038,6 +1038,10 @@ impl Renderer {
         // (first, count) per polygon, then the points.
         let mut outline_dir: Vec<u8> = Vec::new();
         let mut outline_points: Vec<u8> = Vec::new();
+        // Temporal: the polygons' edges, for the thin-polygon test.
+        let edges = temporal
+            .filter(|tp| tp.thin.is_some() && tp.isolated)
+            .map(|_| temporal::Edges::new(placed.iter().map(|pl| &pl.points[..])));
         for (i, pl) in placed.iter().enumerate() {
             let p = &polys[pl.poly];
             let t = p.texture;
@@ -1048,6 +1052,8 @@ impl Renderer {
             let (mut x0, mut y0, mut x1, mut y1) = pl.clip;
             // Temporal: the motion of each point, if known.
             let mut motion = None;
+            // Temporal: each point's offset widening a thin polygon.
+            let mut widen: Vec<(f32, f32)> = Vec::new();
             if let Some(tp) = temporal {
                 // The `_t` entry points clip and draw the checkerboard
                 // themselves, at the jittered sample point: the shared
@@ -1056,7 +1062,27 @@ impl Renderer {
                 table_t.extend(le([x0, y0, x1, y1].map(f32::to_le_bytes)));
                 (x0, y0, x1, y1) = (-3e38, -3e38, 3e38, 3e38);
                 motion = tp.motion.of(pl);
-                flags = (flags & !16) | (p.checker as u32) << 6 | (motion.is_some() as u32) << 7;
+                // Thin polygons (temporal.rs, `thin`): bit 8, marked in
+                // the aux target; widened to `tp.cover` internal px so every
+                // jitter phase's samples hit them, drawn at their coverage
+                // (bits 16-23, 255 = 1) over what is behind.
+                // A sliver of a mesh (a long edge shared) is not one.
+                let thin = tp.thin.and_then(|t| {
+                    let pts: Vec<(f32, f32)> = pl.points.iter().map(|v| (v.x, v.y)).collect();
+                    temporal::thin(&pts, tp.rs, t).filter(|_| !edges.as_ref().is_some_and(|e| e.long_edge_shared(&pts)))
+                });
+                let mut cov = 255;
+                if let Some(t) = thin.filter(|_| tp.cover > 0.0) {
+                    let to = tp.cover.max(t.width);
+                    widen = pl.points.iter().map(|v| t.widen((v.x, v.y), tp.rs, to)).collect();
+                    cov = (t.coverage(to) * 255.0).round().clamp(1.0, 255.0) as u32;
+                }
+                let thin = thin.is_some();
+                flags = (flags & !16)
+                    | (p.checker as u32) << 6
+                    | (motion.is_some() as u32) << 7
+                    | (thin as u32) << 8
+                    | cov << 16;
             }
             let tex = t.map_or([0; 4], |t| [t.x0, t.y0, t.w, t.h]);
             let (bank, luma_table) = t.map_or((0, 0), |t| (t.bank, t.luma_table));
@@ -1068,12 +1094,15 @@ impl Renderer {
             for k in 1..pl.points.len().saturating_sub(1) {
                 for j in [0, k, k + 1] {
                     let v = pl.points[j];
-                    verts.extend(le([v.x, v.y, v.iz, v.uz, v.vz].map(f32::to_le_bytes)));
+                    let (dx, dy) = widen.get(j).copied().unwrap_or((0.0, 0.0));
+                    verts.extend(le([v.x + dx, v.y + dy, v.iz, v.uz, v.vz].map(f32::to_le_bytes)));
                     verts.extend((i as u32).to_le_bytes());
                     if temporal.is_some() {
-                        // Where it was; without motion data where it is.
+                        // Where it was; without motion data where it is
+                        // (homogeneous: a widened point moved as much).
                         let prev = motion
                             .map_or([v.x, v.y, 1.0], |m: &[[f32; 3]]| m.get(j).copied().unwrap_or([v.x, v.y, 1.0]));
+                        let prev = [prev[0] + dx * prev[2], prev[1] + dy * prev[2], prev[2]];
                         verts.extend(le(prev.map(f32::to_le_bytes)));
                     }
                 }

@@ -470,7 +470,8 @@ fn fs_clear() -> @location(0) vec4f {
 // bit (4): clipping and the checkerboard are done here, at the unjittered
 // sample point in output pixels. The real clip rectangle is in `outlines`
 // after the outlines (`clip_t`), the checker bit is flag bit 6 (64), and bit 7 (128) says the polygon has
-// motion data (vertex attribute 3).
+// motion data (vertex attribute 3). Bit 8 (256): the polygon is thin (narrower than an
+// internal pixel or so: `temporal::is_thin`), marked in the aux target.
 
 struct ScreenT {
     // Internal size over output size, per axis.
@@ -545,7 +546,9 @@ fn pre_t(in: VsTOut) -> f32 {
 
 // The aux target: motion in output pixels (previous position less the
 // sample point), 1/z (negative: blended checkerboard), the expected
-// previous 1/z (0: no motion data). Clamped so it stays finite in 16 bits.
+// previous 1/z (0: no motion data; negative: the polygon is thin, flag
+// bit 8, for the resolve's thin-feature lock). Clamped so it stays finite
+// in 16 bits.
 fn aux_t(in: VsTOut, sheer: bool) -> vec4f {
     var b = clamp(in.attr.x, 6.2e-5, 6.0e4);
     if sheer {
@@ -557,7 +560,18 @@ fn aux_t(in: VsTOut, sheer: bool) -> vec4f {
     }
     let mv = clamp(in.prev.xy / w - sample_t(in.pos), vec2f(-16384.0), vec2f(16384.0));
     let e = clamp(in.attr.x / w, 6.2e-5, 6.0e4);
-    return vec4f(mv, b, e);
+    return vec4f(mv, b, select(e, -e, (polys[in.poly].flags & 256u) != 0u));
+}
+
+// A thin polygon's coverage (flag bits 16-23, 255 = 1): the CPU widened
+// it to an internal pixel or so (temporal.rs, `thin`), so it is drawn at
+// this share over what is behind (the colour target blends premultiplied).
+fn cover_t(poly: u32) -> f32 {
+    let f = polys[poly].flags;
+    if (f & 256u) == 0u {
+        return 1.0;
+    }
+    return f32((f >> 16u) & 255u) / 255.0;
 }
 
 fn plain_t(in: VsTOut) -> VsOut {
@@ -590,7 +604,7 @@ struct TDepthOut {
 fn fs_t(in: VsTOut) -> TOut {
     let a = pre_t(in);
     var o: TOut;
-    o.colour = shade(plain_t(in)) * a;
+    o.colour = shade(plain_t(in)) * (a * cover_t(in.poly));
     o.aux = aux_t(in, a < 1.0);
     return o;
 }
@@ -599,7 +613,7 @@ fn fs_t(in: VsTOut) -> TOut {
 fn fs_depth_t(in: VsTOut) -> TDepthOut {
     let a = pre_t(in);
     var o: TDepthOut;
-    o.colour = shade(plain_t(in)) * a;
+    o.colour = shade(plain_t(in)) * (a * cover_t(in.poly));
     o.aux = aux_t(in, a < 1.0);
     o.depth = depth_t(in);
     return o;
@@ -609,7 +623,7 @@ fn fs_depth_t(in: VsTOut) -> TDepthOut {
 fn fs_pack_t(in: VsTOut) -> TOut {
     let a = pre_t(in);
     var o: TOut;
-    o.colour = shade_pack(plain_t(in)) * a;
+    o.colour = shade_pack(plain_t(in)) * (a * cover_t(in.poly));
     o.aux = aux_t(in, a < 1.0);
     return o;
 }
@@ -618,7 +632,7 @@ fn fs_pack_t(in: VsTOut) -> TOut {
 fn fs_pack_depth_t(in: VsTOut) -> TDepthOut {
     let a = pre_t(in);
     var o: TDepthOut;
-    o.colour = shade_pack(plain_t(in)) * a;
+    o.colour = shade_pack(plain_t(in)) * (a * cover_t(in.poly));
     o.aux = aux_t(in, a < 1.0);
     o.depth = depth_t(in);
     return o;
@@ -639,7 +653,7 @@ fn fs_packf_t(in: VsTOut) -> TOut {
     let gy = dpdy(in.attr_c) * screen_t.lod;
     let a = pre_t(in);
     var o: TOut;
-    o.colour = shade_packf(packf_t(in), gx, gy) * a;
+    o.colour = shade_packf(packf_t(in), gx, gy) * (a * cover_t(in.poly));
     o.aux = aux_t(in, a < 1.0);
     return o;
 }
@@ -650,7 +664,7 @@ fn fs_packf_depth_t(in: VsTOut) -> TDepthOut {
     let gy = dpdy(in.attr_c) * screen_t.lod;
     let a = pre_t(in);
     var o: TDepthOut;
-    o.colour = shade_packf(packf_t(in), gx, gy) * a;
+    o.colour = shade_packf(packf_t(in), gx, gy) * (a * cover_t(in.poly));
     o.aux = aux_t(in, a < 1.0);
     o.depth = depth_t(in);
     return o;

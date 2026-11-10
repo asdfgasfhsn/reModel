@@ -56,7 +56,7 @@ through DirectX 8/9's fixed-function pipeline.
 | Textures | Mipmaps from pack images, anisotropic filtering | done, opt-in (2026-11-10) |
 | Image | Anti-aliasing: MSAA 4x/8x on the GPU, supersampling in software | done, opt-in (2026-11-09) |
 | Image | Depth buffer | done, opt-in, partial (below) |
-| Image | Temporal anti-aliasing and upscaling (motion vectors, jitter) | done, opt-in, native player only (2026-11-10): needs the native geometrizer, replaces MSAA; thin detail speckles at 67% and 50%, animated objects without motion data look soft (below) |
+| Image | Temporal anti-aliasing and upscaling (motion vectors, jitter) | done, opt-in, native player only (2026-11-10): needs the native geometrizer, replaces MSAA; thin polygons (wires) stay whole at 67% and 50% (2026-11-11), animated objects without motion data look soft (below) |
 | Image | FSR 2 or DLSS in place of the built-in resolve, native only | idea (not started) |
 | Models | Model replacement packs, keyed by ROM address | planned |
 | Models | Automatic smoothing (vertex normals, curved surfaces) | idea |
@@ -406,7 +406,49 @@ couldn't; at full size the same machinery is anti-aliasing.
   writes both targets, as for colour. Against the CPU's own vectors
   (`raster::visible`) the GPU's agree within 0.25 px on 99.48-99.999% of
   pixels showing the same surface, and within 0.05 px (or half-float
-  precision) on 97.7-99.995%.
+  precision) on 97.7-99.995%. Its a channel is negated on a thin polygon
+  (next item); readers take its magnitude.
+- **Thin polygons.** A polygon narrower than an internal pixel (wires,
+  rails, poles far off) is hit by the samples of some jitter phases and
+  missed by others. Measured on `topskatr`'s overhead wires at 50% (each
+  wire two flat crossed quads, 0.25-1 output px wide): the clip hardly
+  moved the history on the wire's pixels; what broke the lines was that
+  this frame's share there is tiny when upscaling (0.003-0.08: the nearest
+  sample is up to an output pixel away), so the picture is nearly all
+  history, and that history was carried by the motion of the sky behind
+  (the nearest sample's), 0.6 px a frame off the wire's own: the wire's
+  accumulated colour drifted off it and smeared into broken bands 4-6 px
+  thick. reModel projects on the CPU, so it knows which polygons are thin:
+  in the temporal pass (`temporal::thin`), a polygon whose width across
+  (the least, over its edges, of the farthest point from the edge's line)
+  is under 1 internal pixel, at least 2 internal pixels long, and none of
+  whose long edges (half its longest or more) another polygon shares is
+  thin. That last test keeps out slivers of meshes seen edge-on, which
+  the mesh around them already covers: `srallyc` draws tens of thousands
+  of them a frame in its distant road and terrain, and treating them as
+  thin cost it 0.01-0.03 (TAA 1.67, 67% 2.10, 50% 2.53 against 1.66,
+  2.08, 2.50); with the test its scores are as before. A thin polygon
+  is
+  - drawn widened across its middle line to 1 internal pixel at its
+    coverage (its width over 1, blended over what is behind), so every
+    sample row or column across it hits it exactly once whatever the
+    jitter, with its share of the colour: nothing is ever missed, the clip
+    box always holds it, and the line converges like any edge;
+  - marked in the aux target (the expected previous 1/z negated), and
+    where such a sample is among the 3x3, at least as near as the pixel's
+    own surface, the resolve takes its motion for the pixel, so the history
+    around a wire moves with the wire.
+  Only this frame's samples count, so nothing outlives the polygon: a
+  thin-feature lock that kept the history of pixels where a thin polygon
+  had been seen (unclipped, for up to 16 frames) was built and measured
+  first, and dropped. It barely helped on its own (the clip wasn't the
+  cause), it can't tell a polygon missed this frame from one that is gone,
+  so a line that vanished or jumped left a fading copy behind, and with the
+  widening it only cost (wires crop, 50%, 10.25 with it against 10.03
+  without). No extra targets or memory; on the CPU a hash of the frame's
+  polygon edges in the temporal pass. Off with `TemporalTuning::thin` 0
+  (`--tune thin=0`; `cover`, `thin_len`, `isolated` and `thin_motion` are
+  its parts).
 - **The resolve** (`crates/gpu/src/temporal.wgsl`, `fs_resolve`), per
   output pixel:
   - this frame's estimate, a Gaussian reconstruction from the 3x3 internal
@@ -536,19 +578,22 @@ in brackets the share of pixels over 16 levels). `naive` is the plain
 frame drawn at that scale and enlarged bilinearly. The last column is the
 frame-to-frame change of still 3D pixels (reprojected, outside blended
 checkerboard, over every frame), off against TAA; lower is steadier. GPU: the RTX A2000. Measured with the clip slack and the
-C = 0.75 cubic; `topskatr`'s attract sequence was captured again for
+C = 0.75 cubic, and again with the thin-polygon handling (2026-11-11:
+`topskatr`'s race gained 0.03-0.06, TAA's still-pixel change there rose
+1.33 to 1.37, the other sequences moved by at most 0.01; `topskatr`
+4520-4619 was not measured again); `topskatr`'s attract sequence was captured again for
 this, so its numbers differ from an earlier capture of the same frames
 (off 1.07 there, 1.23 here).
 
 | Sequence (frames) | off | MSAA 4x | TAA | 67% | naive 67% | 50% | naive 50% | still-pixel change, off / TAA |
 |---|---|---|---|---|---|---|---|---|
-| `topskatr` attract 1000-1119 (3 cuts, 135 px pans) | 1.23 (2.65) | 1.10 (2.26) | **1.09** (2.29) | 1.60 (3.52) | 1.63 (3.62) | 2.09 (4.73) | 2.22 (5.05) | 1.00 / 1.40 |
-| `topskatr` race 3500-3619 | 2.98 (6.12) | 2.69 (5.57) | **2.21** (5.37) | 3.10 (7.27) | 3.46 (7.57) | 3.93 (8.91) | 4.48 (9.60) | 1.89 / 1.33 |
+| `topskatr` attract 1000-1119 (3 cuts, 135 px pans) | 1.23 (2.65) | 1.10 (2.26) | **1.09** (2.29) | 1.59 (3.52) | 1.63 (3.62) | 2.09 (4.73) | 2.22 (5.05) | 1.00 / 1.40 |
+| `topskatr` race 3500-3619 (overhead wires) | 2.98 (6.12) | 2.69 (5.57) | **2.18** (5.37) | 3.04 (7.27) | 3.46 (7.57) | 3.87 (8.96) | 4.48 (9.60) | 1.89 / 1.37 |
 | `topskatr` 4520-4619 (shadow, grass) | 1.21 (2.41) | **1.08** (2.04) | 1.17 (2.38) | 1.51 (3.10) | 1.52 (3.19) | 1.87 (3.84) | 2.01 (4.18) | 2.59 / 1.24 |
 | `srallyc` driving 3450-3569 | 1.95 (3.15) | 1.87 (2.81) | **1.66** (2.35) | 2.08 (3.07) | 2.25 (3.60) | 2.50 (3.94) | 2.86 (4.72) | 3.19 / 2.72 |
-| `sgt24h` race 2850-2969 | 4.33 (11.64) | 4.11 (10.98) | **3.61** (10.07) | 4.63 (13.12) | 4.93 (13.54) | 5.54 (15.65) | 6.12 (16.93) | 1.35 / 0.70 |
-| `vstriker` attract 470-549 | 2.78 (7.62) | 2.61 (7.04) | **2.31** (5.07) | 3.10 (7.67) | 3.39 (9.09) | 3.87 (10.69) | 4.27 (12.84) | 3.85 / 2.18 |
-| `vstriker` match 3300-3419 | 3.76 (12.50) | 3.38 (11.31) | **2.99** (7.26) | 4.20 (11.59) | 4.63 (13.98) | 5.26 (15.27) | 6.05 (19.55) | 4.84 / 3.01 |
+| `sgt24h` race 2850-2969 | 4.33 (11.64) | 4.11 (10.98) | **3.61** (10.07) | 4.63 (13.12) | 4.93 (13.54) | 5.53 (15.65) | 6.12 (16.93) | 1.35 / 0.70 |
+| `vstriker` attract 470-549 | 2.78 (7.62) | 2.61 (7.04) | **2.31** (5.07) | 3.11 (7.69) | 3.39 (9.09) | 3.86 (10.71) | 4.27 (12.84) | 3.85 / 2.18 |
+| `vstriker` match 3300-3419 | 3.76 (12.50) | 3.38 (11.31) | **2.98** (7.26) | 4.19 (11.59) | 4.63 (13.98) | 5.26 (15.28) | 6.05 (19.55) | 4.84 / 3.01 |
 
 - In motion, TAA beats off on all seven sequences (by 3-26%) and MSAA 4x
   on five; it ties MSAA 4x on `topskatr`'s attract (1.09 against 1.10)
@@ -586,13 +631,16 @@ By eye (crops of the sequences above against `gref`):
   softened grass, rock and distant trees visibly before the clip slack and
   the sharper cubic; not looked at again since.
 - **67%.** Edges clean on roads, and still frames better than MSAA 4x.
-  Thin geometry (wires, poles) breaks into speckled, dotted lines, and in
-  fast motion edges fall back to the interpolated, internal-resolution
-  look (by design, rather than smear). Animated players without motion
-  data look as blocky as naive.
-- **50%.** The same, more so: the speckle on thin geometry is the main
-  defect, fast pans are blocky. About MSAA 4x's quality when still, at
-  less than plain rendering's cost.
+  Thin geometry (`topskatr`'s overhead wires, rails) is drawn as whole,
+  even lines, a little softer and darker-edged than the reference; it
+  used to break into speckled, dotted bands. In fast motion edges fall
+  back to the interpolated, internal-resolution look (by design, rather
+  than smear). Animated players without motion data look as blocky as
+  naive.
+- **50%.** The same, more so: wires are whole lines but visibly softer,
+  and where several wires run close together the lower ones still show
+  some grain; fast pans are blocky. About MSAA 4x's quality when still,
+  at less than plain rendering's cost.
 
 **`topskatr`'s FINISH sign**, whose colour the game toggles every frame
 (`docs/games/topskatr.md`), flickers exactly as the game draws it: in the
@@ -621,6 +669,26 @@ washed-out fade and a cut; not investigated.
   rest the Catmull-Rom resampling of the history, compounded frame after
   frame (now Keys' cubic with C = 0.75). Together they took TAA on
   `topskatr` 4520-4619 from 1.32 to 1.17 (off 1.21).
+- Thin geometry speckling at 67% and 50% (`topskatr`'s overhead wires):
+  the thin-polygon handling above (2026-11-11). On `topskatr`'s race
+  3500-3619, in a crop of the wires (600,330 240x100, the sampled frames
+  and 3556, against `gref`): TAA 6.57 to 6.19 (MSAA 4x 6.54), 67% 9.17
+  to 8.25 (naive 9.82), 50% 10.59 to 10.01 (naive 12.46); a crop of a
+  pole and its wires and railings (330,250 160x110): 7.28 to 7.04, 10.63
+  to 10.21, 13.62 to 13.24. The whole sequence: TAA 2.21 to 2.18, 67%
+  3.10 to 3.04, 50% 3.93 to 3.87, and the still frame steadier when
+  upscaling (change 0.130 to 0.115 at 67%, 0.155 to 0.105 at 50%); the
+  one cost, TAA's still-pixel change over the moving frames, 1.33 to
+  1.37 (off 1.89). The same gains with the depth buffer on. At 100% the
+  wires, slightly grey and doubled before, now match the reference. The
+  two parts measured apart: widening alone 67% 8.97, 50% 10.65 on the
+  wires crop; the dropped lock with the thin polygon's motion and no
+  widening 8.60 and 10.94, with a bright fringe beside the wires (the
+  unclipped history's cubic overshoot building up) that needed an extra
+  clamp. Two GPU unit tests: a line half an output pixel thick at
+  50% and 67% stays whole on every frame (without the handling some
+  column of it drops to nothing), and nothing is left behind when it
+  goes, jumps away or is covered.
 
 **Open problems.**
 
@@ -632,10 +700,16 @@ washed-out fade and a cut; not investigated.
   anti-aliasing there. Telling shake from disocclusion needs more than the
   last aux target.
 - Animated objects without motion data look soft (above).
-- Thin geometry speckles at 67% and 50% (`topskatr`'s wires and poles). It
-  needs a thin-feature lock (as FSR 2 has) or a luminance-stable
-  accumulation; a wider kernel didn't help. Left for a possible FSR 2
-  integration (below).
+- Thin features built from several polygons that share their long edges
+  (a pole or rail modelled as a box, a fence of strips) are not thin by
+  the test above, so they get none of the thin-polygon handling and break
+  up at 67% and 50% as before. Probably the case of the grandstand's
+  railings on `topskatr`'s race (frame 3596: faint and broken at 50%,
+  unchanged by the handling; how they are modelled is not confirmed).
+  Telling such features from mesh slivers needs more than edge sharing
+  (the width of the connected group).
+- A thin polygon without motion data isn't marked in the aux target (the
+  sign lives in the expected-1/z channel, 0 there); it is still widened.
 - `lastbrnx`: 3% of position words in blocks the plan calls valid don't
   match frame N-1's (96.9% agree; every other sequence 100%), though on
   screen only 0.2% of pixels' vectors are more than 1 px off.
@@ -669,7 +743,7 @@ would be resolved separately. An idea, not started.
 | Licence | ours | open source (MIT); a C++ SDK to build | proprietary SDK; an optional extra, kept apart |
 | wgpu | WGSL, native | native only, through `as_hal` (unsafe) | native only, through `as_hal` (unsafe) |
 | Browser | no (decided) | no | no |
-| Quality | simple: no thin-feature locks | thin-feature locks, reactive masks | best; Ray Reconstruction also denoises ray tracing |
+| Quality | simple: thin polygons drawn widened at their coverage, no locks | thin-feature locks, reactive masks | best; Ray Reconstruction also denoises ray tracing |
 
 Either costs a C++ SDK as a build dependency and an unsafe interop layer.
 (The development machine's RTX 2080 Super supports DLSS upscaling and Ray

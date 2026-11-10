@@ -18,6 +18,10 @@
 //    windows have depth scales of their own, so "nearer" is not "on top"
 //    across them, e.g. a HUD line over the scene). Hidden: `fallback` (the
 //    samples interpolated bilinearly).
+// 2b. Thin polygons (aux w < 0: narrower than about an internal pixel,
+//    drawn widened at their coverage, so every frame's samples hold them):
+//    where one is among the 3x3 samples, at least as near as the nearest
+//    sample's surface, its motion carries the pixel.
 // 3. History at P + mv: a Keys cubic (5 bilinear taps), or the texel as is
 //    when the pixel hasn't moved.
 // 4. History clipped (towards the mean) into the neighbourhood: min/max
@@ -59,7 +63,8 @@ struct Resolve {
     k2: vec4f,
     // x: kernel at 50% and below, y: sharpening after the resolve (0 off,
     // 1 the most; `fs_sharpen`), z: the history resampling cubic's C (Keys; 0.5
-    // Catmull-Rom).
+    // Catmull-Rom), w: thin polygons' motion carries the pixels around them
+    // (1) or not (0).
     k3: vec4f,
 }
 
@@ -165,7 +170,8 @@ const SEEN: u32 = 2u;
 // neighbourhood (a receding surface's tolerance).
 fn status(a: vec4f, p: vec2f, rs: vec2f, zrange: f32) -> u32 {
     let z = abs(a.z);
-    let e = a.w;
+    // (Negative: the same, on a thin polygon.)
+    let e = abs(a.w);
     if !(e > 0.0) || !(z > 0.0) {
         return NO_DATA;
     }
@@ -196,7 +202,7 @@ fn status(a: vec4f, p: vec2f, rs: vec2f, zrange: f32) -> u32 {
 // - x: rules: the nearest sample's status (0 no data, 1 hidden, 2 seen) +
 //   4 x the status used + 16 if dilated + 32 on a reset + 64 on blended
 //   stipple + 128 if the history was loaded without resampling + 256 if a
-//   value was not finite;
+//   value was not finite + 1024 if a thin polygon's motion was taken;
 // - y: this frame's share in the result (1: the fallback alone);
 // - z: how far the clip moved the history (largest of RGBA);
 // - w: which blend factor set the trust (0 the base, 1 after a reset, 2
@@ -257,6 +263,9 @@ fn resolve(p: vec2f) -> Res {
     var near = vec4f(0.0);
     var centre = vec4f(0.0);
     var bestz = -1.0;
+    // The thin sample (aux w < 0) nearest P, and its weight.
+    var thin_a = vec4f(0.0);
+    var thin_w = 0.0;
     var zmin = 1e9;
     var zmax = 0.0;
     for (var dy = -1; dy <= 1; dy++) {
@@ -280,6 +289,10 @@ fn resolve(p: vec2f) -> Res {
             }
             if dx == 0 && dy == 0 {
                 centre = a;
+            }
+            if a.w < 0.0 && w > thin_w {
+                thin_w = w;
+                thin_a = a;
             }
             if z > 0.0 {
                 zmin = min(zmin, z);
@@ -315,6 +328,17 @@ fn resolve(p: vec2f) -> Res {
     var mv = best.xy;
     if nodata {
         mv = vec2f(0.0);
+    }
+
+    // A thin polygon (aux w < 0) among the samples, at least as near as
+    // the nearest sample's surface: its motion carries the pixel. Around
+    // a wire the history is mostly the wire's, and taken at the motion of
+    // what is behind (a sky moving otherwise) it drifts off the wire and
+    // smears it. Only this frame's samples count (the polygon is widened
+    // so that every frame's samples hold it), so nothing outlives it.
+    if rv.k3.w > 0.5 && !nodata && thin_w > 0.0 && abs(thin_a.z) >= abs(best.z) {
+        mv = thin_a.xy;
+        rules += 1024.0;
     }
     let len = length(mv);
 
