@@ -266,7 +266,7 @@ progress. It offers:
   the depth buffer (off by default), shading (flat, the default; smooth;
   per pixel) and its crease angle (the game's, the default; 30°, 40°,
   60°; below, "Smooth shading"), blended brightness levels (off by
-  default), the texture pack (off by default; below) and its filtering
+  default), the brightness balance (on by default), the texture pack (off by default; below) and its filtering
   (off, the default; mipmaps; 2x to 16x);
 - **Sound:** on or off, the effects (sound board) and music levels in
   dB (sliders from -24 to +24; defaults +8 and -8,
@@ -303,8 +303,10 @@ the same frame). Resume (or Esc, a gamepad's B, or a tap outside the
 panel) applies the HUD placement (`set_hud`), the bezel, the mix (a `mix`
 message to the sound worker), the remapped controls (`set_bindings`),
 touch and tilt, anti-aliasing, the depth buffer, shading, its crease
-angle and brightness levels (`set_quality`), and the texture pack and its
-filtering (`set_pack`, `set_quality`) at once. Render height, aspect,
+angle, brightness levels and brightness balance (`set_quality`), and the
+texture pack and its filtering (`set_pack`, `set_quality`) at once, and
+records all of them as running (every `settings.js` `KEYS` entry not in
+`RESTART`). Render height, aspect,
 sound on or off, the sound buffer, the geometrizer and smooth motion
 need a restart (`settings.js` `RESTART`), and the panel offers "Restart
 to apply" when one of them changed (it reloads the page with `#play`,

@@ -347,7 +347,7 @@ unfiltered (GPU / software):
 With the fix, srallyc's race frames are 0.13-0.83% off; what is left is the
 fade (frame 2700, above) and, with the default dump run (shorter than the
 capture's), textures it saw only in the fade (frame 5700's start banner and
-boards, 8%); sgt24h's are frames 2400-3000 (about 2%, tint) and 6212 (16%,
+boards, 8%); sgt24h's are frames 2400-3000 (about 2%, as much as with each frame's own textures: the filter order, above) and 6212 (16%,
 past the dump run). Mipmapped, every pack is 3-11% off at native size:
 distant textures average.
 

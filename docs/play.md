@@ -374,7 +374,7 @@ the preview draws without; they show in the game): aspect (fit the window
 or 4:3), bezel, HUD at the edges or centred, speed (one frame a refresh or
 exact arcade speed), smooth motion, run-ahead (off, 1, 2, 3), anti-aliasing (off, 4x, 8x), temporal anti-aliasing (off,
 TAA, 75%, 67%, 50%) and its checkerboard see-through (blend or keep), the depth buffer, shading (flat,
-vertex, pixel; with the chip geometrizer pixel says it draws as vertex) and its brightness levels (the game's or blended), the texture pack and its filtering (off, mip, 2x to 16x), the effects and music levels in dB, the geometrizer (native
+vertex, pixel; with the chip geometrizer pixel says it draws as vertex), its brightness levels (the game's or blended) and its brightness balance (on or off), the texture pack and its filtering (off, mip, 2x to 16x), the effects and music levels in dB, the geometrizer (native
 or the game's chip; the preview restarts on it) and the Controls page
 (remapping, below). "Save for" says where changes go: the defaults for all
 games, or this game only (a game's own setting is tagged "this game", and
