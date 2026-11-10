@@ -8,7 +8,8 @@ use crate::{Board, Controls, Game, PadButton, Role, RomFile};
 /// (older revisions `17568/17569.12/13` with `17562/17563.14/15`, in
 /// letter variants, are in the zip and unused); main data pairs
 /// `.10/.11 .8/.9 .6/.7 .4/.5`, polygons `.16/.20 .17/.21 .18/.22`,
-/// textures `.25/.24 .27/.26`, TGP data `.31/.32` (unconfirmed order).
+/// textures `.25/.24 .27/.26`, samples `.31 .32 .36 .37` (as MAME;
+/// srallyc's layout, docs/games/srallyc.md).
 pub static VF2: Game = Game {
     id: "vf2",
     title: "Virtua Fighter 2",
@@ -164,13 +165,13 @@ pub static VF2: Game = Game {
             name: "mpr-17573.31",
             size: 0x200000,
             sha1: "4c61a135819862df02347c118dc4d88a0adac273",
-            role: Role::TgpData,
+            role: Role::Samples,
         },
         RomFile {
             name: "mpr-17572.32",
             size: 0x200000,
             sha1: "9683ea9bedfc5cd7b4a28e9a68792c0dc549d911",
-            role: Role::TgpData,
+            role: Role::Samples,
         },
         RomFile {
             name: "mpr-17571.36",

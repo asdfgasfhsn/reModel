@@ -12,10 +12,13 @@ use crate::{AnalogInput, Board, Controls, Game, PadAxis, PadButton, Role, RomFil
 /// **not paired as the numbers suggest**: bank 0 is `.16` (low half) with
 /// `.20` (high), bank 1 is `.17` with `.21`. The texture ROM (texture point
 /// lists and headers) is `.24` and `.25`, **`.25` first**: it supplies the
-/// even 16-bit words. `.29/.28` (low half first) and `.31/.32` are the
-/// TGP's data ROM, packed from address `0x800000` on its external bus (the
-/// first holds, under a count of 300, the course data the collision
-/// functions read; the second slowly varying bytes); the six `opr` chips
+/// even 16-bit words. `.29/.28` (low half first) are the TGP's data ROM,
+/// from address `0x800000` on its external bus (under a count of 300, the
+/// course data the collision functions read). The sound board's 8 MB of
+/// samples are `.31`, `.32`, `.36`, `.37` in that order, back to back from
+/// the 68000's `0x800000`, as MAME loads them (`.31/.32` were taken for
+/// TGP data until the sound driver's reads showed otherwise,
+/// docs/games/srallyc.md); the six `opr` chips
 /// are the TGP's lookup tables (three pairs, `.45/.46` holding floats). The zip also holds the older program
 /// revision `b` (`epr-17888b.12`, `epr-17889b.13`), `ic12.bin`/`ic13.bin`
 /// (`b`'s program under other names) and `mpr-16310.15`, `-16311.16`,
@@ -140,13 +143,13 @@ pub static SRALLYC: Game = Game {
             name: "mpr-17756.31",
             size: 0x200000,
             sha1: "1f1ee3f19a6bcf57bc5a1c7dd64ee83f8b81f084",
-            role: Role::TgpData,
+            role: Role::Samples,
         },
         RomFile {
             name: "mpr-17757.32",
             size: 0x200000,
             sha1: "1d3a0e441d150ada0535a9d50e2f69dd4b99c584",
-            role: Role::TgpData,
+            role: Role::Samples,
         },
         RomFile {
             name: "mpr-17886.36",

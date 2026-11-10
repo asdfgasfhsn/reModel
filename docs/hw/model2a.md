@@ -226,10 +226,10 @@ address, the first 200,000 events) and the program as `out/GAME/tgp.bin`.
 | `mpr-17884.6` / `-17885.7` | main data at `0x2800000` | the game reads floats here (`0x2860000`-`0x28C0000`, `0x29E0000`): model vertex data |
 | `mpr-17748.16` (low) / `-17750.20` (high), `mpr-17749.17` (low) / `-17751.21` (high) | **polygon ROM**: two banks of 1M 32-bit words, at model addresses `0x800000` and `0x900000` | §7: every polygon attribute word parses and the normals are unit length. **The pairs are not the numbers' neighbours**: `.16/.17` are the low halves, `.20/.21` the high halves, of banks 0 and 1 |
 | `mpr-17753.25` (even words) / `-17752.24` (odd words) | **texture ROM**: texture headers and point lists as 16-bit words (2C: `.27/.25`), read at the address the display list's tpa/tha give (bit 23 clear) | §7: headers decode (texture, size, sheet position, luma table, colour), the pictures are right. **`.25` is the even half**, the reverse of the order the chips are numbered in |
-| `mpr-17754.29` (low) / `-17755.28` (high), `mpr-17756.31` / `-17757.32` | **the TGP's data ROM**: two 32-bit banks at addresses `0x800000` and `0x900000` of its external bus | §9: the course data its collision functions read; the first begins with a count (300) |
+| `mpr-17754.29` (low) / `-17755.28` (high) | **the TGP's data ROM**: a 32-bit bank at address `0x800000` of its external bus | §9: the course data its collision functions read; the first begins with a count (300) |
 | `opr-14742a.45`/`.46`, `.58`/`.59`, `.62`/`.63` | the TGP's lookup tables (a sine table of floats, reciprocal and inverse-square-root mantissas) | numerically, see below |
 | `epr-17890.30` | 68000 sound program | the sound board runs it |
-| `mpr-17886.36`, `-17887.37` | SCSP samples | the sound plays |
+| `mpr-17756.31`, `-17757.32`, `-17886.36`, `-17887.37` | SCSP samples, 8 MB back to back at the sound 68000's `0x800000` (MAME's order) | the sound driver streams from all four (docs/games/srallyc.md); `.31/.32` were once taken for a second TGP data bank, which no run read |
 | `mpr-16310.15`, `-16311.16`, `-16312.14` | ramps (`00 E0 C0 A0 80 60 40 20`...): unconfirmed what reads them; not used | |
 
 The main data pairs are **packed**, 4 MB each from `0x2000000`
@@ -438,9 +438,10 @@ red with their shadows, dust, and the game's own overlays; and a
 *Confirmed (by the run):* the TGP's external bus has a **data ROM from
 word address `0x800000`**, in both of the chip's bus modes (the bus
 instructions `63400000`, shared RAM, and `63000000`, the function unit):
-`.29` and `.28` as one 32-bit bank (`.29` the low half) and `.31` and `.32`
-as the next, packed (`0x900000`), as the 2C's TGP has its `CoproData` at
-`0x800000`. The address registers are 24 bits wide: the program makes a
+`.29` and `.28` as one 32-bit bank (`.29` the low half), as the 2C's TGP
+has its `CoproData` at `0x800000`. (`.31` and `.32`, once taken as a second
+bank at `0x900000`, are sample ROMs: no run read them through the TGP, and
+the state hash of a coin-start race is the same without them.) The address registers are 24 bits wide: the program makes a
 ROM address by adding `-0x800000` to the pointer it was given and, in the
 function that reads a block, steps through it from there. (Milestone 3 had
 them 16 bits and no ROM: nothing the attract mode calls reads it.)

@@ -40,7 +40,7 @@ loose in `rom/srallyc/`): attract, car and course select, and races.
   (a wrong pairing gave scattered polygons, a right one the road and the
   cars); no picture or ROM data is in the repository.
 - *Confirmed (running the race):* the TGP has a **data ROM** on its
-  external bus, from word address `0x800000` (`.29/.28`, `.31/.32`): the
+  external bus, from word address `0x800000` (`.29/.28`): the
   course's ground, as cells of polygons that functions `7`, `0x52` and
   `0x53` search for the polygon under each wheel (the car fell through the
   road without it); its address registers are 24 bits wide
@@ -126,7 +126,24 @@ loose in `rom/srallyc/`): attract, car and course select, and races.
   -38 dBFS RMS (peak -21) with no gain: the engine and the music play
   (the boot is silent for 15 s, the attract and race hold -37 to -36
   dBFS), quieter than the games at 0 dB, so the manifest adds 6 dB
-  (like `overrev` and `sgt24h`), about -32 RMS.
+  (like `overrev` and `sgt24h`), about -32 RMS. Those levels were
+  measured with half the samples missing (next item); with all four
+  sample chips a race mixes at about -23 dBFS RMS (peaks about -7,
+  unclipped), so the 6 dB wants judging again by ear.
+- *Confirmed (by running it, the ROM data and MAME's driver):* **the
+  samples are four 2 MB chips, `.31 .32 .36 .37`, back to back** at the
+  sound 68000's `0x800000-0xFFFFFF` (MAME: `ROM_REGION16_BE 0x800000
+  "samples"`, the same order). `.31/.32` had been taken for a second
+  bank of the TGP's data ROM, which no run reads (the state hash of a
+  coin-start race is unchanged without it). With only `.36/.37`, 72% of
+  the bytes the sound driver streamed in that race were the open bus's
+  `0xFF` (everything from `0xC00000`) and the rest came from the wrong
+  chips: most instruments and much of the music played silence, a DC
+  level or other samples' data (wrong notes). The driver uses no FM, no
+  LFO depth and no DSP effects (its DSP program is all zeros, no EFSDL),
+  only 8-bit PCM voices with loop modes 0 and 1 streamed through 8 KB
+  buffers, which refill in time (0.07% of buffer reads overrun). *Not yet
+  confirmed by ear against the cabinet.*
 - *Speed (by running it):* **the game's code runs from work RAM**, not
   the program ROM: of the 14,584 distinct instructions a coin-start run
   executes, 14,502 are at `0x5A0000-0x5FCB3C` (put there at boot by the

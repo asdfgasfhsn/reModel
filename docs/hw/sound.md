@@ -34,7 +34,7 @@ Sources (short tags used below):
 | SCSPs on 2C | **one** Sega 315-5687 (YMF292-F) at 22.5792 MHz, so 44.1 kHz output | M (MAME 2C PCB note lists one 315-5687; Model 3 has two) |
 | Sound RAM | 512 KB at 68k `0x000000`, the SCSP's whole memory | M (MAME); ROM sets MEM4MB=1 |
 | Sound program | `mpr-19759.31`, 512 KB, at 68k `0x600000` | H (ROM: reset PC `0x600120`) |
-| Sample ROM | `mpr-19745.32` + `mpr-19746.34`, 8 MB, at 68k `0x800000–0xFFFFFF`, **68k-only** | M |
+| Sample ROM | `mpr-19745.32` + `mpr-19746.34`, 8 MB, at 68k `0x800000–0xFFFFFF`, **68k-only**. Model 2A `srallyc` (and `vf2`): four 2 MB chips `.31 .32 .36 .37` back to back, as MAME (docs/games/srallyc.md) | M (srallyc: H, by running it) |
 | SCSP regs | 68k `0x100000–0x100EE3` | H (SCSP) + ROM (`lea $100000,a5`) |
 | Board latch | 68k `0x400001` (byte): bits 3-0 look like LEDs; bank bits unused by topskatr | ROM + L |
 | Sound driver | ASCII string "Ver3.2.8\|96 10/28\|CRX_drv\|byHiroF" at ROM `0x600100` | H (ROM) |

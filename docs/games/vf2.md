@@ -9,7 +9,7 @@ Status: **in progress** (`romset::games::IN_PROGRESS`); not playable yet.
   counter. No fighters or other 3D models appear (frames 1000, 2000).
 - *Unconfirmed:* chip roles are by analogy with `srallyc` (main data
   `.10/.11 .8/.9 .6/.7 .4/.5`, polygons `.16/.20 .17/.21 .18/.22`, textures
-  `.25/.24 .27/.26`, TGP data `.31/.32`); controls copied from `fvipers`.
+  `.25/.24 .27/.26`, samples `.31 .32 .36 .37` as MAME and `srallyc`); controls copied from `fvipers`.
 - *Blocker:* the TGP runs words the interpreter does not know:
   `bf624019` (word 0x03E, the dispatch-table entry for function 0, which the
   game calls as an idle/main loop: 2.7 million executions in 300M

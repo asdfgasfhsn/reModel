@@ -537,6 +537,16 @@ mod tests {
     }
 
     #[test]
+    fn srallyc_samples_fill_the_sound_board_window() {
+        // The driver streams from all of 0x800000-0xFFFFFF (docs/games/srallyc.md).
+        for g in games::ALL.iter().chain(games::IN_PROGRESS).filter(|g| ["srallyc", "vf2"].contains(&g.id)) {
+            let s: Vec<_> = g.files.iter().filter(|f| f.role == Role::Samples).collect();
+            assert_eq!(s.iter().map(|f| f.size).sum::<usize>(), 0x80_0000, "{}", g.id);
+            assert!(s[0].name.ends_with(".31") && s[3].name.ends_with(".37"), "{}", g.id);
+        }
+    }
+
+    #[test]
     fn manifests_have_program_pairs() {
         for g in games::ALL.iter().chain(games::IN_PROGRESS) {
             for role in [
