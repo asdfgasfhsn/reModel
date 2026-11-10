@@ -211,7 +211,8 @@ throwaway probe, not in the tree) and looked at:
    reaches the microtexture alone: `hotd`'s close-up floors and walls gain
    their tile reliefs, the water its ripples, `topskatr`'s flat floors a
    wood or sand grain, and its magnified black stain (`topskatr`'s
-   attract, about 75 s in) becomes asphalt. The best candidate; the
+   attract, about 75 s in: texel 0 of a floor texture, black as sent,
+   `docs/games/topskatr.md`) becomes asphalt. The best candidate; the
    weight's ceiling and the fade's width are open.
 2. *Base plus the microtexture's deviation from its own mean.* Keeps
    brightness, but leaves the base's black areas black with holes (`topskatr`),

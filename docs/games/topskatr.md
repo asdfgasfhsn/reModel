@@ -155,10 +155,13 @@ documentation and hasn't been contradicted yet.
   `docs/hw/geometrizer.md` 5.4.
 - *Unconfirmed:* whether the hardware draws that stripe this dark. The
   polygon sets microtexture (h0 bit 12, the microtexture at (0, 128) in
-  bank 0, texels 0-7) and reModel draws neither microtextures nor mipmaps.
-  If close-up pixels blend in the microtexture, as `docs/hw/geometrizer.md`
-  5.3 describes (low confidence), the magnified stripe would not be solid
-  black; mipmaps would grey it in the distance.
+  bank 0, texels 0-7: the asphalt slot) and reModel doesn't draw
+  microtextures. What the games send for level of detail, and the
+  candidate blends, are in `docs/hw/texture-lod.md`: with the likeliest
+  one (a linear blend of the two filtered texels below level 0) the
+  magnified stripe becomes asphalt, not solid black. Mipmaps don't come
+  into it: topskatr uploads none. That page lists the footage that would
+  settle it (this scene, about 75 s after power-on).
 
 ## Lighting (smooth shading's side channel)
 
