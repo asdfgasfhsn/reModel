@@ -90,7 +90,8 @@ struct App {
     /// CPU, and encoding and submitting them to the GPU.
     spent: [f64; 3],
     /// Called with the sound link bytes sent since the last call: (cycles
-    /// Float64Array, bytes Uint8Array, render-until cycle). None: no sound.
+    /// Float64Array, bytes Uint8Array, render-until cycle, the resampler's
+    /// ratio). None: no sound.
     link: Option<js_sys::Function>,
     /// Audio the link calls asked for so far, in output samples.
     samples: u64,
@@ -396,11 +397,6 @@ impl App {
         (self.link.is_some() && age < AUDIO_STALE_MS).then(|| (level + self.sent_since) / rate - age / 1000.0)
     }
 
-    /// The status line's audio part: the resampler's rate (100% is the
-    /// game's own speed; following a 60 Hz display, 104.3%), how far it is
-    /// from the speed the game is meant to run at and how much it moved in
-    /// this status window (cents), and the worklet's queue against its
-    /// target.
     /// The status line's texture pack part, with a pack: the last frame's
     /// textured polygons replaced, the images on the GPU, and tile
     /// patterns replaced when the pack has tile images.
@@ -435,6 +431,11 @@ impl App {
         format!(" · shading {level}{} {}°{lit}", if o.fine { " fine" } else { "" }, o.crease)
     }
 
+    /// The status line's audio part: the resampler's rate (100% is the
+    /// game's own speed; following a 60 Hz display, 104.3%), how far it is
+    /// from the speed the game is meant to run at and how much it moved in
+    /// this status window (cents), and the worklet's queue against its
+    /// target.
     fn audio_status(&self, t: f64) -> String {
         if self.link.is_none() || self.redraws < 2 {
             return String::new();
@@ -1559,7 +1560,8 @@ pub fn set_audio_level(queued: f64) {
 /// receives the sound link bytes each frame (see `App::send_link`) for the
 /// sound worker; leave it out for no sound. `geo`, if given, receives the
 /// geometrizer's jobs for a worker: ("boot", Uint32Array of (low, high)
-/// word pairs) or ("frame", Uint8Array buffer RAM, booted, read pointer).
+/// word pairs) or ("frame", Uint8Array buffer RAM, booted, read pointer,
+/// Uint32Array jump word offsets, smooth motion's steps).
 #[wasm_bindgen]
 pub async fn start(
     game: String,
