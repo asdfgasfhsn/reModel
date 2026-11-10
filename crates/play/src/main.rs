@@ -280,7 +280,12 @@ fn options(s: &mut Settings) -> Result<Options, String> {
             }
             "--no-sound" => o.sound = false,
             "--hud" => {
-                cli("hud_edges", &(value()? != "center").to_string());
+                let edges = match value()?.as_str() {
+                    "center" => false,
+                    "edges" => true,
+                    v => return Err(format!("--hud wants center or edges, not {v}")),
+                };
+                cli("hud_edges", &edges.to_string());
             }
             "--aspect" => {
                 let wide = match value()?.as_str() {
@@ -291,7 +296,12 @@ fn options(s: &mut Settings) -> Result<Options, String> {
                 cli("wide", &wide.to_string());
             }
             "--bezel" => {
-                cli("bezel", &(value()? != "off").to_string());
+                let on = match value()?.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    v => return Err(format!("--bezel wants on or off, not {v}")),
+                };
+                cli("bezel", &on.to_string());
             }
             "--shot" => o.shot = Some(value()?.into()),
             "--shot-size" => {

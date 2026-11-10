@@ -438,7 +438,9 @@ messages, at full speed with the worker; switching live with
 The grouping pass on the page took 1.0-1.5 ms a frame (median of 30-50
 passes, 2,700-3,900 polygons of which 230-530 shaded), 2.7-4.9 ms with
 the page thread loaded (`geo=local`, or the chip slowing the game); the
-status line's draw time went from 4.3-5.4 ms flat to 5.3-6.3 ms.
+status line's draw time went from 4.3-5.4 ms flat to 5.3-6.3 ms. (That
+was the first browser build, `vertex` only; the final one, with `pixel`
+and finer levels, measured 1.1-1.5 ms: `docs/enhancements.md`.)
 
 **Smooth motion.** With the setting on (`?smooth=1`, or Advanced in the
 panel; off by default), a display faster than the game's 57.5 Hz shows

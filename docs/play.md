@@ -130,9 +130,10 @@ polygons when the geometrizer is late use that frame's, and run-ahead's
 machine records it too, so every image is shaded at the same level and
 shading doesn't alternate between images; a frame drawn again reuses its
 shading. The launcher's previews are always flat. Nothing the game
-computes changes. On the CPU it costs about 1 ms each time a new frame
-is drawn (up to about 2.5 ms on busy frames; repeats cost nothing), on
-the GPU within the noise at 1080p and a little at 4K with `pixel`; with
+computes changes. On the CPU it costs about 1-2 ms each time a new frame
+is drawn (up to 6 ms on busy frames on a loaded machine), and building
+the lit polygons 0.1-2 ms more; repeats cost nothing. On the GPU it is
+within the noise at 1080p and a little at 4K with `pixel`; with
 `flat` (or a crease of 0) none of it runs.
 
 What to expect (from the review pictures): clearly better on
@@ -890,6 +891,10 @@ directory), the player keeps its files in `out/`; anywhere else in
   settings panels save, and the game settings set for all games.
 - `<set>/settings.txt`: the game's own settings, only where they differ
   from those for all games.
+
+  A game setting whose value doesn't parse, in either file, is ignored
+  with a warning on the terminal (the setting falls back to the next
+  layer down, or its default).
 - `<set>/controls.txt`: the game's remapped controls, only what differs
   from its manifest (above, "Remapping").
 - `<set>/eeprom.bin`: the game's EEPROM (settings, records), written on quit or on switching games.

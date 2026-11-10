@@ -57,7 +57,7 @@ through DirectX 8/9's fixed-function pipeline.
 | Image | Anti-aliasing: MSAA 4x/8x on the GPU, supersampling in software | done, opt-in (2026-11-09); 8x native only, where the GPU has it (the browser has 4x) |
 | Image | Depth buffer | done, opt-in, partial (below), player and browser; current rules checked on all 18 games 2026-11-11 |
 | Image | Temporal anti-aliasing and upscaling (motion vectors, jitter) | done, opt-in, native player only (2026-11-10): needs the native geometrizer, replaces MSAA; thin polygons (wires) stay whole at 67% and 50% (2026-11-11), animated objects without motion data look soft (below) |
-| Image | FSR 2 or DLSS in place of the built-in resolve, native only | idea (not started) |
+| Image | FSR 2 or DLSS in place of the built-in resolve, native only | idea; FSR checked and parked (2026-11-11, below) |
 | Models | Model replacement packs, keyed by ROM address | planned |
 | Models | Automatic smoothing (vertex normals, curved surfaces) | vertex normals done (smooth shading, below); curved-surface tessellation an idea |
 | Models | Level of detail and draw distance overrides | idea (optional patch) |
@@ -516,7 +516,8 @@ couldn't; at full size the same machinery is anti-aliasing.
   cause), it can't tell a polygon missed this frame from one that is gone,
   so a line that vanished or jumped left a fading copy behind, and with the
   widening it only cost (wires crop, 50%, 10.25 with it against 10.03
-  without). No extra targets or memory; on the CPU a hash of the frame's
+  without, before thin polygons were limited to those with no long shared
+  edge; the final handling gives 10.01, below). No extra targets or memory; on the CPU a hash of the frame's
   polygon edges in the temporal pass. Off with `TemporalTuning::thin` 0
   (`--tune thin=0`; `cover`, `thin_len`, `isolated` and `thin_motion` are
   its parts).
@@ -824,6 +825,23 @@ would be resolved separately. An idea, not started.
 | Quality | simple: thin polygons drawn widened at their coverage, no locks | thin-feature locks, reactive masks | best; Ray Reconstruction also denoises ray tracing |
 
 Either costs a C++ SDK as a build dependency and an unsafe interop layer.
+
+*FSR: checked 2026-11-11, parked by decision.* Feasible on Vulkan only,
+through AMD's official library (the FSR 3.1 upscaler of the FidelityFX
+SDK, MIT; no hand port): wgpu 30's `as_hal` gives the raw device, images
+and command buffers, but raw and wgpu commands can't share an encoder, so
+the frame would split into three command buffers, with the image layouts
+FSR leaves restored by hand. No backend exists for Metal, GL or WebGPU,
+so it would be native only, behind an optional cargo feature with the
+built-in resolve kept as the fallback; DX12 would need a second interop
+layer. Whether the SDK builds on Linux at all is undocumented and the
+largest risk. Estimated at 3-4.5 weeks (a 1-3 day build spike first),
+plus 0.5-2 days a wgpu major. Parked because it would mainly fix thin
+features, which the resolve's own thin-polygon handling addresses, and
+it fits the output poorly: no coverage alpha, colours from the games'
+lookup tables rather than linear light, and several 3D windows with no
+single camera.
+
 (The development machine's RTX 2080 Super supports DLSS upscaling and Ray
 Reconstruction, not frame generation, which needs a 40-series card.)
 
@@ -1071,8 +1089,8 @@ building the lit polygons 0.1-2 ms more; a repeated frame costs nothing.
 GPU: within the noise at 1080p (lastbrnx 39.0 / 39.1 / 39.9 ms whole
 frame with readback, flat / vertex / pixel) and at 4K; per lit fragment a
 loop over the polygon's 3-9 outline points. Finer levels add two colour
-lookups per lit pixel. Browser: the shading runs on the page, 1.2-1.5 ms
-median a frame. Side channel: 16 bytes a polygon.
+lookups per lit pixel. Browser: the shading runs on the page, 1.1-1.5 ms
+median a frame (the final build, finer levels on). Side channel: 16 bytes a polygon.
 
 **Limitations and open points.**
 

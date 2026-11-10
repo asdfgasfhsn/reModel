@@ -102,6 +102,14 @@ make music SOUNDTRACK=my-mix      # same, with your tracks -> out/topskatr/music
 Custom soundtracks, their `tracks.txt` format and how the game still drives
 them are described in `docs/mods.md`.
 
+One debugging command has no `make` target and isn't in the CLI's usage:
+`remodel --game ID geo-trace-words WORD...` boots the Model 2C geometrizer
+program the last `run` captured (`out/GAME/geo.bin`) on the MB86235
+interpreter, raises and drops its flag 0, feeds the hex WORDs into its
+input FIFO, and prints the next 60 instructions with the AA0, AA1, AA3,
+AR0 and AR1 registers and the FIFO's length after each, to follow how the
+program reads a command.
+
 `make bench` prints a hash of all RAM and the last rasteriser stream. A change
 meant only to make things faster must leave it unchanged. The hash depends on
 `out/GAME/eeprom.bin`, which `run` creates on first boot: a run in a

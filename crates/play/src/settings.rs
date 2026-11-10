@@ -361,12 +361,16 @@ fn lines(text: &str) -> impl Iterator<Item = (&str, &str)> {
         .map(|(k, v)| (k.trim(), v.trim()))
 }
 
-/// The game settings among `lines` that parse.
-fn layer<'a>(lines: impl Iterator<Item = (&'a str, &'a str)>) -> Layer {
+/// The game settings among `lines` (read from `file`) that parse. A
+/// setting whose value doesn't is left out, so it takes its default, with
+/// a warning.
+fn layer<'a>(file: &Path, lines: impl Iterator<Item = (&'a str, &'a str)>) -> Layer {
     let mut out = Layer::new();
     for (k, v) in lines {
         if GameSettings::default().set(k, v) {
             out.insert(k.to_string(), v.to_string());
+        } else if KEYS.contains(&k) {
+            eprintln!("warning: {}: `{k} = {v}` is not a value {k} takes; ignored", file.display());
         }
     }
     out
@@ -401,7 +405,7 @@ impl Settings {
         }
         // Game settings at the top level are the defaults for all games
         // (as every setting was before games had their own).
-        s.defaults = layer(lines(text));
+        s.defaults = layer(&path(), lines(text));
         s
     }
 
@@ -438,9 +442,9 @@ impl Settings {
 
     /// `set`'s own settings layer (read from its file the first time).
     fn game_layer(&mut self, set: &str) -> &mut Layer {
-        self.games
-            .entry(set.to_string())
-            .or_insert_with(|| layer(lines(&std::fs::read_to_string(game_path(set)).unwrap_or_default())))
+        self.games.entry(set.to_string()).or_insert_with(|| {
+            layer(&game_path(set), lines(&std::fs::read_to_string(game_path(set)).unwrap_or_default()))
+        })
     }
 
     /// Whether `set` has settings of its own.

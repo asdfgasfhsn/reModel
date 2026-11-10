@@ -391,6 +391,14 @@ fn parse_num(s: &str) -> Option<u32> {
 fn main() -> ExitCode {
     recomp::register();
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        print!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    if args.is_empty() {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    }
     let mut opt = |flag: &str| -> Result<Option<String>, ()> {
         let Some(i) = args.iter().position(|a| a == flag) else { return Ok(None) };
         if i + 1 >= args.len() {
