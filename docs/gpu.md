@@ -33,14 +33,20 @@ bit-for-bit what it was:
   colour is then premultiplied by coverage; the compose pass blends it
   over the 2D base by that coverage.
 - **Depth buffer** (`depth`): a 32-bit float depth attachment written
-  from the fragment shader (`fs_depth`: `model2::raster::depth_value` of the
-  interpolated 1/z and the polygon's draw order in its window), compare
-  greater-or-equal. Four pipeline modes: depth tested and written;
-  tested only (the colour pass of a group of polygons sorted together);
-  depth only (that group's depth, after its colour); and none
-  (backgrounds, shadows, translucent and very deep polygons stay in the
-  game's order). A window starts with a scissored full-screen draw that
-  empties the buffer where it draws.
+  from the fragment shader (`depth_at`: `model2::raster::depth_value` of
+  1/z and the polygon's draw order in its window), compare
+  greater-or-equal. 1/z is not the triangle fan's interpolation but the
+  software fill's (`outline_iz`: along the polygon's edges at the row's
+  centre, then across the span, from an `outlines` buffer of each
+  polygon's points): for a quad that isn't flat the fan's value depends
+  on its diagonal, and a decal sent as the same quad from another corner
+  lost to its surface between the two diagonals (`sgt24h`'s windscreen).
+  Three pipeline modes: tested only (a polygon's colour, its depth raised
+  by `DEPTH_TOLERANCE` through the `DEPTH_FACTOR` override,
+  `raster::depth_test_value`); depth only (its depth, after the colour of
+  its whole group); and none (backgrounds, shadows, translucent and very
+  deep polygons stay in the game's order). A window starts with a
+  scissored full-screen draw that empties the buffer where it draws.
 
 - **Texture packs** (`Renderer::set_pack`; `Quality::tex_filter`): see
   "Texture packs" below. With no pack set the pipelines, shaders and output

@@ -33,6 +33,10 @@ struct Screen {
 @group(0) @binding(2) var<storage, read> render_ram: array<u32>;
 // Palette RAM, with the colour translation tables at +0x10000.
 @group(0) @binding(3) var<storage, read> palette: array<u32>;
+// Each polygon's outline for the depth buffer: entry i is (first, count)
+// as bit patterns, and entries first..first + count are its points (x, y
+// in output pixels, 1/z).
+@group(0) @binding(4) var<storage, read> outlines: array<vec4f>;
 
 struct VsOut {
     @builtin(position) pos: vec4f,
@@ -178,17 +182,60 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 const DEPTH_BIAS: f32 = @DEPTH_BIAS@;
 const DEPTH_SCALE: f32 = @DEPTH_SCALE@;
 
+// 1 when writing, 1 + DEPTH_TOLERANCE when testing (the Test pipeline):
+// model2::raster::depth_test_value.
+override DEPTH_FACTOR: f32 = 1.0;
+
 struct DepthOut {
     @location(0) colour: vec4f,
     @builtin(frag_depth) depth: f32,
+}
+
+// 1/z at the centre of pixel `px` as the software fill has it: on the
+// polygon's edges at the row's centre, then across the span. Not from the
+// triangle fan's interpolation, which for a quad that isn't flat depends
+// on the diagonal, so that two copies of one quad starting at different
+// corners (a decal on its surface) would get different depths. `iz` where
+// the row misses the outline (an edge pixel the GPU covers and the
+// software doesn't).
+fn outline_iz(poly: u32, px: vec2f, iz: f32) -> f32 {
+    let r = bitcast<vec2u>(outlines[poly].xy);
+    let yc = px.y + 0.5;
+    var l = vec2f(3.4e38, 0.0);
+    var rt = vec2f(-3.4e38, 0.0);
+    for (var k = 0u; k < r.y; k++) {
+        let a = outlines[r.x + k];
+        let b = outlines[r.x + (k + 1u) % r.y];
+        if (a.y <= yc && b.y > yc) || (b.y <= yc && a.y > yc) {
+            let t = (yc - a.y) / (b.y - a.y);
+            let e = vec2f(a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t);
+            if e.x < l.x {
+                l = e;
+            }
+            if e.x > rt.x {
+                rt = e;
+            }
+        }
+    }
+    if l.x > rt.x {
+        return iz;
+    }
+    let t = ((px.x + 0.5) - l.x) / max(rt.x - l.x, 1e-6);
+    return l.y + (rt.y - l.y) * t;
+}
+
+// The depth of polygon `poly` at fragment position `pos`, as
+// model2::raster::depth_value (times DEPTH_FACTOR).
+fn depth_at(poly: u32, pos: vec4f, iz: f32) -> f32 {
+    let z = outline_iz(poly, floor(pos.xy), iz) * (1.0 + f32(polys[poly].colour.w) * DEPTH_BIAS) * DEPTH_FACTOR;
+    return z / (z + DEPTH_SCALE);
 }
 
 @fragment
 fn fs_depth(in: VsOut) -> DepthOut {
     var o: DepthOut;
     o.colour = shade(in);
-    let z = in.attr.x * (1.0 + f32(polys[in.poly].colour.w) * DEPTH_BIAS);
-    o.depth = z / (z + DEPTH_SCALE);
+    o.depth = depth_at(in.poly, in.pos, in.attr.x);
     return o;
 }
 
@@ -313,8 +360,7 @@ fn fs_pack(in: VsOut) -> @location(0) vec4f {
 fn fs_pack_depth(in: VsOut) -> DepthOut {
     var o: DepthOut;
     o.colour = shade_pack(in);
-    let z = in.attr.x * (1.0 + f32(polys[in.poly].colour.w) * DEPTH_BIAS);
-    o.depth = z / (z + DEPTH_SCALE);
+    o.depth = depth_at(in.poly, in.pos, in.attr.x);
     return o;
 }
 
@@ -398,8 +444,7 @@ fn fs_packf_depth(in: VsPackOut) -> DepthOut {
     let gy = dpdy(in.attr_c);
     var o: DepthOut;
     o.colour = shade_packf(in, gx, gy);
-    let z = in.attr.x * (1.0 + f32(polys[in.poly].colour.w) * DEPTH_BIAS);
-    o.depth = z / (z + DEPTH_SCALE);
+    o.depth = depth_at(in.poly, in.pos, in.attr.x);
     return o;
 }
 

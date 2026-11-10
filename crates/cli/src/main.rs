@@ -150,7 +150,14 @@ commands:
                        --height, --aspect, --hud that one; --aa for
                        multisampling), report where they differ and write
                        pictures of the differences (off | on | differences)
-                       to OUT (default out/GAME/depth-check)
+                       to OUT (default out/GAME/depth-check), and each
+                       changed frame's depth-on picture (depth-FRAME-on.png).
+                       --probe X,Y@FRAME (repeatable; only those frames):
+                       every polygon at that pixel with its draw order,
+                       group, object block, 1/z, depth and pass or fail
+                       (docs/enhancements.md, Depth buffer); --against
+                       DIR: compare the depth-on frames with an earlier
+                       run's OUT, pictures in against-FRAME.png
   pack-check [DIR] [OUT]
                        with --texture-pack: draw the frames captured in DIR
                        (default out/GAME/capture) on the GPU with the pack
@@ -932,6 +939,20 @@ fn main() -> ExitCode {
             }
         }
         "depth-check" => {
+            let (mut probes, mut against) = (Vec::new(), None);
+            while let Some(i) = args.iter().position(|a| a == "--probe" || a == "--against") {
+                let (Some(v), true) = (args.get(i + 1).cloned(), args[i] == "--probe") else {
+                    against = args.get(i + 1).map(PathBuf::from);
+                    args.drain(i..(i + 2).min(args.len()));
+                    continue;
+                };
+                let Some(p) = depth_check::Probe::parse(&v) else {
+                    eprintln!("error: --probe wants X,Y@FRAME (output pixel, captured frame)");
+                    return ExitCode::FAILURE;
+                };
+                probes.push(p);
+                args.drain(i..i + 2);
+            }
             let default = PathBuf::from("out").join(roms.game.id).join("capture");
             let root = args.get(1).map(PathBuf::from).unwrap_or(default);
             let out = args
@@ -939,8 +960,8 @@ fn main() -> ExitCode {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("depth-check"));
             let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
-            if let Err(e) = depth_check::run(&root, windows, VIEW.get().copied(), AA.get().copied().unwrap_or(1), &out)
-            {
+            let (aa, against) = (AA.get().copied().unwrap_or(1), against.as_deref());
+            if let Err(e) = depth_check::run(&root, windows, VIEW.get().copied(), aa, &out, &probes, against) {
                 eprintln!("error: {e}");
                 return ExitCode::FAILURE;
             }

@@ -53,17 +53,16 @@ const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 enum Mode {
     /// No depth buffer.
     Plain,
-    /// Depth tested (a polygon wins where its depth is at least what is
-    /// there) and written.
-    Depth,
-    /// Depth tested but not written: translucent polygons, and the colour
-    /// of a group of polygons (see `Placed::group`).
+    /// Depth tested but not written (a polygon wins where its depth, raised
+    /// by `DEPTH_TOLERANCE`, is at least what is there): the colour of the
+    /// polygons of a group (see `Placed::group`).
     Test,
     /// Depth written where tested, no colour: a group's depth, after its
     /// colour.
     DepthWrite,
     /// With a depth buffer in the pass, but neither tested nor written:
-    /// polygons the game sorted behind everything.
+    /// `Placed::background` polygons (skies, shadows, translucent ones and
+    /// those spanning a wide range of depth).
     Background,
     /// Empties the depth buffer within the scissor rectangle.
     Clear,
@@ -329,7 +328,7 @@ impl Renderer {
         });
         let raster_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("raster"),
-            entries: &[uniform(0, wgpu::ShaderStages::VERTEX_FRAGMENT), storage(1), storage(2), storage(3)],
+            entries: &[uniform(0, wgpu::ShaderStages::VERTEX_FRAGMENT), storage(1), storage(2), storage(3), storage(4)],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("raster"),
@@ -474,11 +473,11 @@ impl Renderer {
         }
         let (vs, fs) = match (mode, variant) {
             (Mode::Clear, _) => ("vs_clear", "fs_clear"),
-            (Mode::Depth | Mode::Test | Mode::DepthWrite, Variant::Original) => ("vs", "fs_depth"),
+            (Mode::Test | Mode::DepthWrite, Variant::Original) => ("vs", "fs_depth"),
             (_, Variant::Original) => ("vs", "fs"),
-            (Mode::Depth | Mode::Test | Mode::DepthWrite, Variant::Pack) => ("vs", "fs_pack_depth"),
+            (Mode::Test | Mode::DepthWrite, Variant::Pack) => ("vs", "fs_pack_depth"),
             (_, Variant::Pack) => ("vs", "fs_pack"),
-            (Mode::Depth | Mode::Test | Mode::DepthWrite, Variant::PackFiltered) => ("vs_pack", "fs_packf_depth"),
+            (Mode::Test | Mode::DepthWrite, Variant::PackFiltered) => ("vs_pack", "fs_packf_depth"),
             (_, Variant::PackFiltered) => ("vs_pack", "fs_packf"),
         };
         let layout = match variant {
@@ -494,8 +493,8 @@ impl Renderer {
         })];
         let depth_stencil = (mode != Mode::Plain).then(|| wgpu::DepthStencilState {
             format: DEPTH_FORMAT,
-            depth_write_enabled: Some(matches!(mode, Mode::Depth | Mode::DepthWrite | Mode::Clear)),
-            depth_compare: Some(if matches!(mode, Mode::Depth | Mode::Test | Mode::DepthWrite) {
+            depth_write_enabled: Some(matches!(mode, Mode::DepthWrite | Mode::Clear)),
+            depth_compare: Some(if matches!(mode, Mode::Test | Mode::DepthWrite) {
                 wgpu::CompareFunction::GreaterEqual
             } else {
                 wgpu::CompareFunction::Always
@@ -503,6 +502,12 @@ impl Renderer {
             stencil: Default::default(),
             bias: Default::default(),
         });
+        // The test is in favour of the game's order (raster::depth_test_value).
+        let test_factor = [("DEPTH_FACTOR", f64::from(1.0 + model2::raster::DEPTH_TOLERANCE))];
+        let fs_options = wgpu::PipelineCompilationOptions {
+            constants: if mode == Mode::Test { &test_factor } else { &[] },
+            ..Default::default()
+        };
         let p = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("raster"),
             layout: Some(layout),
@@ -518,7 +523,7 @@ impl Renderer {
             fragment: Some(wgpu::FragmentState {
                 module: &self.raster_shader,
                 entry_point: Some(fs),
-                compilation_options: Default::default(),
+                compilation_options: fs_options,
                 targets: &[Some(wgpu::ColorTargetState {
                     format: FORMAT,
                     blend: None,
@@ -783,16 +788,15 @@ impl Renderer {
                 _ => runs.push(Run { vertices, window, mode, clip, slot }),
             }
         };
-        // The members of a group (`Placed::group`) of more than one polygon
-        // are drawn tested against the depth before the group, and write
-        // their depth once all are drawn: the depth-only draws to come.
+        // The members of a group (`Placed::group`) are drawn tested against
+        // the depth before the group, and write their depth once all are
+        // drawn: the depth-only draws to come. (A test and a write of
+        // different values: raster::depth_test_value.)
         let mut group_depth: Vec<Run> = Vec::new();
-        let group_len = |i: usize| {
-            let g = placed[i].group;
-            let before = placed[..i].iter().rev().take_while(|o| o.group == g).count();
-            let after = placed[i..].iter().take_while(|o| o.group == g).count();
-            before + after
-        };
+        // Outlines for the shader's 1/z (`outline_iz`): a directory of
+        // (first, count) per polygon, then the points.
+        let mut outline_dir: Vec<u8> = Vec::new();
+        let mut outline_points: Vec<u8> = Vec::new();
         for (i, pl) in placed.iter().enumerate() {
             let p = &polys[pl.poly];
             let t = p.texture;
@@ -815,13 +819,19 @@ impl Renderer {
                 }
             }
             let end = (verts.len() as u64 / VERTEX_BYTES) as u32;
-            let grouped = q.depth && !pl.background && !p.checker && group_len(i) > 1;
-            let mode = match (q.depth, pl.background, p.checker) {
-                (false, ..) => Mode::Plain,
-                (_, true, _) => Mode::Background,
-                (_, _, true) => Mode::Test,
-                _ if grouped => Mode::Test,
-                _ => Mode::Depth,
+            if q.depth {
+                let first = placed.len() + outline_points.len() / 16;
+                outline_dir.extend(le([first as u32, pl.points.len() as u32, 0, 0].map(u32::to_le_bytes)));
+                for v in &pl.points {
+                    outline_points.extend(le([v.x, v.y, v.iz, 0.0].map(f32::to_le_bytes)));
+                }
+            }
+            // Translucent (checkerboard) polygons are background.
+            let grouped = q.depth && !pl.background;
+            let mode = match (q.depth, pl.background) {
+                (false, _) => Mode::Plain,
+                (_, true) => Mode::Background,
+                _ => Mode::Test,
             };
             push(&mut runs, first..end, p.window, mode, pl.clip, slots[i]);
             // The depth-only draw repeats a replaced polygon's cut-out.
@@ -853,6 +863,11 @@ impl Renderer {
         let screen = buffer("screen", &screen, wgpu::BufferUsages::UNIFORM);
         let table = buffer("polys", &table, wgpu::BufferUsages::STORAGE);
         let vertices = buffer("vertices", &words(&verts), wgpu::BufferUsages::VERTEX);
+        outline_dir.extend(outline_points);
+        if outline_dir.is_empty() {
+            outline_dir.resize(16, 0);
+        }
+        let outlines = buffer("outlines", &outline_dir, wgpu::BufferUsages::STORAGE);
         let bind = d.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("raster"),
             layout: &self.raster_layout,
@@ -861,6 +876,7 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 1, resource: table.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: render.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: palette.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: outlines.as_entire_binding() },
             ],
         });
         let samples = q.msaa.max(1);
@@ -875,7 +891,7 @@ impl Renderer {
             (false, true) => Variant::PackFiltered,
         };
         let pipelines: Vec<(Mode, wgpu::RenderPipeline)> = if q.depth {
-            [Mode::Depth, Mode::Test, Mode::DepthWrite, Mode::Background]
+            [Mode::Test, Mode::DepthWrite, Mode::Background]
                 .map(|m| (m, self.raster_pipeline(samples, m, variant)))
                 .into()
         } else {

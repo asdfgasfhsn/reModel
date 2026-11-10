@@ -152,15 +152,28 @@ games with it off and on:
   (ground and floor quads sorted by their far edge: topskatr's sand
   quad is above a ramp and a crate that the game shows over it).
   They draw first-come as before, testing and writing nothing.
-- **Decals and layers:** a later polygon wins a tie and by up to 1e-5 of
-  its depth per polygon between (`DEPTH_BIAS`), which covers rounding between a
-  road marking and the road. Polygons the game sorted within 5% of one
-  depth of the group's first (`GROUP_SPAN`, including the header's "same
-  depth as the previous polygon") form a group (`Placed::group`): a
-  marker and its outline, a jacket over a body. They draw in the game's
-  order among themselves, tested against what came before, and write
-  depth when the group ends (software: pending writes; GPU: a colour
-  draw that tests, then a depth-only draw).
+- **Decals and layers:** a later polygon wins a tie, and by up to 1e-5
+  of its depth per polygon between (`DEPTH_BIAS`), which covers rounding
+  between a road marking and the road; and it is *tested* with its 1/z
+  raised by 0.5% (`DEPTH_TOLERANCE`, `raster::depth_test_value`) while
+  it *writes* its own depth. That keeps the game's order for a decal
+  laid on a faceted surface of its model, which can lie a little behind
+  the facets (measured: segawski's jersey text and logo 0.03-0.27%
+  behind the jersey, lastbrnx's "109" sign 0.41% behind its tower, with
+  5-78 polygons between, a rank allowance of 5e-5 to 7.8e-4). Polygons
+  the game sorted within 5% of one depth of the group's first
+  (`GROUP_SPAN`, including the header's "same depth as the previous
+  polygon") form a group (`Placed::group`): a marker and its outline, a
+  jacket over a body. They draw in the game's order among themselves,
+  tested against what came before, and write depth when the group ends
+  (software: pending writes; GPU: a colour draw that tests, then a
+  depth-only draw; every tested polygon is drawn that way, since the
+  test and the write differ).
+- **1/z per pixel** is the software fill's: along the polygon's edges at
+  the row's centre, then across the span. The GPU computes the same in
+  the fragment shader (`docs/gpu.md`) instead of interpolating over its
+  triangle fan, whose value on a quad that isn't flat depends on the
+  diagonal.
 - **Cut-out texels** that aren't drawn don't write depth.
 - **Original order:** the setting off, the default, is bit-for-bit the
   old renderers.
@@ -174,18 +187,68 @@ games with it off and on:
   `srallyc`, and the numbers of the rest (`overrev`, `doa`, `fvipers`,
   `vstriker`). Seen fixed: characters' limbs and clothes (topskatr's
   skater's leg, segawski's skier's back, schamp's tangled feet), a ladder
-  and beam crossing and a rock face drawn over its neighbour (bel),
-  overlapping tree billboards (topskatr). Seen as glitches while
-  designing it, each answered by a rule above: a ramp and crate hidden
-  by the sand quad (deep polygons), hotd's black shadows and the dither
-  shadow under `overrevb`'s car vanishing (shadows, translucent),
-  skisuprg's flag fills lost to their outlines and segawski's logo lost
-  to the jacket (groups). Not verified against a real machine: that
-  `sgt24h`'s white bonnet stripe now reaching over the windscreen is
-  right, and the remaining small differences at group and decal
-  borders (a letter of segawski's jersey text is cut by a pixel row).
-  The depth buffer isn't z-fight free: decals not sorted with their
-  surface and not within the rank bias can still lose.
+  and beam crossing (bel), overlapping tree billboards (topskatr). Seen
+  as glitches while designing it, each answered by a rule above: a ramp
+  and crate hidden by the sand quad (deep polygons), hotd's black shadows
+  and the dither shadow under `overrevb`'s car vanishing (shadows,
+  translucent), skisuprg's flag fills lost to their outlines and
+  segawski's logo lost to the jacket (groups).
+- **Loose ends found and fixed** (2026-11-10, `depth-check --probe`):
+  - `sgt24h`'s grey band on the windscreen (and rear window) was the
+    GPU's alone: the glass is the body's quad sent again from the next
+    corner, so the fan split the two along different diagonals, and the
+    body won by up to 0.6% of 1/z between them (a rank allowance of
+    5.9e-4). The software drew the glass. Fixed by the GPU's 1/z above.
+  - segawski's jersey text and the bottom edge of its logo lost whole
+    rows to the jersey (both renderers): they are later quads of the
+    same object block, 0.03-0.27% behind the jersey's facets, in the
+    next group. Fixed by `DEPTH_TOLERANCE`. The "darkened logo" was this
+    and nothing else: the logo's own pixels were the same off and on.
+  - The same rule brings back decals the depth buffer had hidden:
+    lastbrnx's "109" sign, hotd's building windows and a zombie's eye,
+    segawski's logo on the skier's back and a roof lattice, banners in
+    overrevb; and the GPU's 1/z brings back bel's ivy over its cliff,
+    which only the GPU had hidden (the ivy is 1.85x nearer than the
+    rock there). The "rock face drawn over its neighbour" recorded as a
+    fix on 2026-11-09 was probably that GPU artefact (unconfirmed).
+  - Checked on 2026-11-10 by drawing the captures of `topskatr`,
+    `srallyc`, `lastbrnx`, `doa`, `sgt24h`, `segawski`, `bel`, `hotd`,
+    `overrevb`, `schamp` and `skisuprg` against the earlier depth-on
+    frames (`depth-check --against`) and looking at the most changed
+    frames of each: the skater's leg, the tree billboards, the skier,
+    schamp's feet and bel's vehicle in its hill stay fixed, with
+    one-pixel shifts along intersection lines; the background rules are
+    unchanged. Depth off is unchanged (state hashes, snapshots and
+    `gpu-check` of `topskatr`, `srallyc`, `lastbrnx` and `doa` identical
+    to before), and the software and GPU agree as well or better with it
+    on (`gpu-check --depth`, native, pixels over 16 levels: `bel` 2.00% to
+    1.95%, `sgt24h` 1.64% to 1.54%, `hotd`, `topskatr`, `lastbrnx`,
+    `segawski`, `schamp`, `skisuprg`, `overrevb` within 0.01%).
+- **Not verified:** against a real machine, any of it; the 7 games not
+  re-checked on 2026-11-10 (`stcc`, `waverunr`, `dynabb97`, `indy500`,
+  `overrev`, `fvipers`, `vstriker`); and the trade-off of the tolerance:
+  surfaces that cross within 0.5% of 1/z of each other keep the game's
+  order there, so an intersection line can move by a pixel or two.
+  The depth buffer isn't z-fight free: a decal more than 0.5% behind its
+  surface, not sorted with it, still loses.
+
+**Probing a pixel.** `make depth-check PROBE="X,Y@FRAME ..."` (`remodel
+depth-check --probe X,Y@FRAME`, repeatable; output pixels of the
+1440x1080 pictures, captured frame numbers; only those frames are drawn)
+prints, for each polygon covering the pixel centre (after its clip
+rectangle, the checkerboard and cut-out texels, each polygon once): its
+place in draw order, window, rank, group, object block (the stream's
+`0x1` command: one model's polygon list), sort key, why it keeps the
+game's order if it does (`sky`, `shadow`, `checker`, `spread`), 1/z, its
+depth, the buffer it is tested against and which polygon wrote it, and
+pass or fail; then which polygon shows with the buffer off and on, the
+GPU's and the software's colours there, and for a polygon the game drew
+that lost, how much nearer the winner was against the rank allowance.
+It follows `raster::probe_depth`, the software's rules with the original
+textures. `AGAINST=DIR` (`--against`) compares each depth-on frame with
+an earlier run's `depth-FRAME-on.png` in DIR (a frame without one was
+drawn the same as depth off) and writes `against-FRAME.png` (before |
+now | differences): what a change of the rules did.
 
 ### Batch texture upscaling
 

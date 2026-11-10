@@ -81,6 +81,9 @@ pub struct Poly {
     pub checker: bool,
     /// The 4-word texture header, kept for probing.
     pub header: [u16; 4],
+    /// The object block (the stream's `0x1` command, counted from 0 in the
+    /// frame) the polygon came in: one model's polygon list. For probing.
+    pub block: u32,
     /// Flat and black: a shadow. The games' shadows are flat black (or
     /// dithered black) polygons laid on the ground, at depths that don't
     /// match it (hotd's are screen-parallel slices), so with the depth
@@ -132,13 +135,30 @@ pub struct Placed {
 pub const DEPTH_BIAS: f32 = 1e-5;
 /// Scale of the depth buffer's mapping of 1/z into [0, 1), [`depth_value`].
 pub const DEPTH_SCALE: f32 = 0.1;
+/// How far (as a fraction of 1/z) behind what is drawn a later polygon may
+/// be and still win the test ([`depth_test_value`]), whatever the number of
+/// polygons between: the game's order is kept for a decal laid on a
+/// faceted surface of its model (segawski's jersey text and logo lie up to
+/// 0.3% behind the jersey's facets). What is written is the polygon's own
+/// depth.
+pub const DEPTH_TOLERANCE: f32 = 0.005;
 
 /// The depth buffer's value for a fragment of 1/z `iz` and draw order
 /// `rank` in its window: larger is nearer. Monotonic, and finest where 1/z
 /// is small (far away), so a float buffer keeps about 1e-6 relative
 /// precision over the whole range.
 pub fn depth_value(iz: f32, rank: u32) -> f32 {
-    let z = iz * (1.0 + rank as f32 * DEPTH_BIAS);
+    depth_scaled(iz, rank, 1.0)
+}
+
+/// The value a fragment is tested with: [`depth_value`] with 1/z raised by
+/// [`DEPTH_TOLERANCE`].
+pub fn depth_test_value(iz: f32, rank: u32) -> f32 {
+    depth_scaled(iz, rank, 1.0 + DEPTH_TOLERANCE)
+}
+
+fn depth_scaled(iz: f32, rank: u32, factor: f32) -> f32 {
+    let z = iz * (1.0 + rank as f32 * DEPTH_BIAS) * factor;
     z / (z + DEPTH_SCALE)
 }
 
@@ -221,6 +241,7 @@ fn texture_from_header(h: [u16; 4]) -> Option<Texture> {
 pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
     let mut polys = Vec::new();
     let mut windows: Vec<Window> = Vec::new();
+    let mut block = 0;
     let mut i = 0;
     let rd = |i: usize| stream.get(i).copied().unwrap_or(0xff00_000f);
     while i < stream.len() {
@@ -258,6 +279,7 @@ pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
                 let mut p1 = pos(i + 5);
                 i += 8;
                 let mut prev_z = 1e10f32;
+                block += 1;
                 loop {
                     let attr = rd(i);
                     if attr >> 24 == 0xff || attr & 3 == 0 {
@@ -322,6 +344,7 @@ pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
                                 shadow,
                                 checker: header[0] & (1 << 15) != 0,
                                 header,
+                                block: block - 1,
                             });
                         }
                     }
@@ -834,13 +857,122 @@ pub fn place(polys: &mut [Poly], view: &View) -> Vec<Placed> {
                 clip: (cx0, cy0, cx1, cy1),
                 rank: (i - window_start) as u32,
                 group,
-                background: p.key >= BACKGROUND_KEY || p.shadow || p.checker || {
-                    let (lo, hi) = p.points.iter().fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(v.iz), b.max(v.iz)));
-                    hi > lo * PAINTER_SPREAD
-                },
+                background: background_reason(p).is_some(),
             }
         })
         .collect()
+}
+
+/// Why a polygon is drawn in the game's order with the depth buffer on
+/// ([`Placed::background`]), or None if it is depth tested.
+pub fn background_reason(p: &Poly) -> Option<&'static str> {
+    let (lo, hi) = p.points.iter().fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(v.iz), b.max(v.iz)));
+    if p.key >= BACKGROUND_KEY {
+        Some("sky")
+    } else if p.shadow {
+        Some("shadow")
+    } else if p.checker {
+        Some("checker")
+    } else if hi > lo * PAINTER_SPREAD {
+        Some("spread")
+    } else {
+        None
+    }
+}
+
+/// Output pixels (x0, x1, y0, y1) where a window whose first polygon has
+/// clip rectangle `clip` empties the depth buffer.
+fn clear_rect(clip: (f32, f32, f32, f32), w: usize, h: usize) -> (usize, usize, usize, usize) {
+    let (y0, y1) = (clip.1.floor().max(0.0) as usize, (clip.3.ceil().max(0.0) as usize).min(h));
+    let (x0, x1) = (clip.0.floor().max(0.0) as usize, (clip.2.ceil().max(0.0) as usize).min(w));
+    (x0.min(x1), x1, y0, y1)
+}
+
+/// One polygon covering a probed pixel ([`probe_depth`]).
+#[derive(Clone, Debug)]
+pub struct DepthHit {
+    /// Index in draw order (the `placed` slice).
+    pub index: usize,
+    /// Why it is drawn untested ([`background_reason`]), if it is.
+    pub background: Option<&'static str>,
+    /// 1/z at the pixel centre, and its depth value ([`depth_value`]; it
+    /// is tested with [`depth_test_value`]).
+    pub iz: f32,
+    pub depth: f32,
+    /// The buffer it is tested against (for a group's members, the depth
+    /// from before the group), and the hit that wrote it (None: empty).
+    pub buffer: f32,
+    pub buffer_from: Option<usize>,
+    /// Passed the test (always, for a background polygon).
+    pub passed: bool,
+    /// Its colour there, None where it draws nothing (checkerboard parity
+    /// or a cut-out texel).
+    pub colour: Option<[u8; 3]>,
+}
+
+/// What the software rasteriser does at one output pixel with the depth
+/// buffer on, and what it would do with it off.
+#[derive(Clone, Debug, Default)]
+pub struct DepthProbe {
+    /// The polygons covering the pixel centre, in draw order, each once.
+    pub hits: Vec<DepthHit>,
+    /// Hits (indices into `hits`) whose colour shows with the depth buffer
+    /// off and on.
+    pub winner_off: Option<usize>,
+    pub winner_on: Option<usize>,
+}
+
+/// Follow output pixel (x, y) of `view` through the depth buffer as
+/// `draw_view_depth` draws `placed` (from [`place`]) with it on: the
+/// coverage of the pixel centre, clip rectangles, window clears, groups,
+/// the checkerboard and cut-out texels as the rasteriser has them (original
+/// textures, not packs).
+pub fn probe_depth(polys: &[Poly], placed: &[Placed], src: &Sources, view: &View, x: usize, y: usize) -> DepthProbe {
+    let (w, h) = (view.width, view.height);
+    let mut out = DepthProbe::default();
+    let (mut zbuf, mut owner) = (0f32, None);
+    let mut pending: Vec<(f32, usize)> = Vec::new();
+    let (mut window, mut group) = (usize::MAX, u32::MAX);
+    for (index, pl) in placed.iter().enumerate() {
+        let p = &polys[pl.poly];
+        if pl.group != group {
+            group = pl.group;
+            for (d, k) in pending.drain(..) {
+                if d > zbuf {
+                    (zbuf, owner) = (d, Some(k));
+                }
+            }
+        }
+        if p.window != window {
+            window = p.window;
+            let (x0, x1, y0, y1) = clear_rect(pl.clip, w, h);
+            if (x0..x1).contains(&x) && (y0..y1).contains(&y) {
+                (zbuf, owner) = (0.0, None);
+            }
+        }
+        let (px, py) = (x as f32, y as f32);
+        let clip = (pl.clip.0.max(px), pl.clip.1.max(py), pl.clip.2.min(px + 1.0), pl.clip.3.min(py + 1.0));
+        let mut at = None;
+        fill(&pl.points, clip, w, h, |_, _, iz, uz, vz| at = Some((iz, uz, vz)));
+        let Some((iz, uz, vz)) = at else { continue };
+        let background = background_reason(p);
+        let depth = depth_value(iz, pl.rank);
+        let passed = background.is_some() || depth_test_value(iz, pl.rank) >= zbuf;
+        let (gx, gy) = ((px / view.sx) as usize, (py / view.sy) as usize);
+        let colour = shade(p, src, gx, gy, uz / iz, vz / iz);
+        let k = out.hits.len();
+        if colour.is_some() {
+            out.winner_off = Some(k);
+            if passed {
+                out.winner_on = Some(k);
+                if background.is_none() {
+                    pending.push((depth, k));
+                }
+            }
+        }
+        out.hits.push(DepthHit { index, background, iz, depth, buffer: zbuf, buffer_from: owner, passed, colour });
+    }
+    out
 }
 
 fn draw_impl(
@@ -876,15 +1008,12 @@ fn draw_impl(
         // Each window starts with an empty depth buffer where it draws.
         if depth && p.window != window {
             window = p.window;
-            let (y0, y1) = (clip.1.floor().max(0.0) as usize, (clip.3.ceil().max(0.0) as usize).min(h));
-            let (x0, x1) = (clip.0.floor().max(0.0) as usize, (clip.2.ceil().max(0.0) as usize).min(w));
+            let (x0, x1, y0, y1) = clear_rect(clip, w, h);
             for y in y0..y1 {
-                zbuf[y * w + x0.min(x1)..y * w + x1].fill(0.0);
+                zbuf[y * w + x0..y * w + x1].fill(0.0);
             }
         }
         let test = depth && !pl.background;
-        // Translucent polygons test but don't write.
-        let write = !p.checker;
         let rank = pl.rank;
         let hooked = match (hooks.as_deref_mut(), &p.texture) {
             (Some(hk), Some(t)) => tex_info(p, t, src, &mut keys).map(|info| {
@@ -903,14 +1032,13 @@ fn draw_impl(
             let grad = Gradients::new(points);
             fill(points, clip, w, h, |x, y, iz, uz, vz| {
                 let o = y * w + x;
-                let d = if test { depth_value(iz, rank) } else { 0.0 };
-                if test && d < zbuf[o] {
+                if test && depth_test_value(iz, rank) < zbuf[o] {
                     return;
                 }
                 let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
                 if let Some(c) = shade_filtered(t, p.checker, chain, &grad, &light, src, gx, gy, (iz, uz, vz)) {
-                    if test && write {
-                        pending.push((o, d));
+                    if test {
+                        pending.push((o, depth_value(iz, rank)));
                     }
                     covered[o] = true;
                     rgb[o * 3..o * 3 + 3].copy_from_slice(&c);
@@ -921,14 +1049,13 @@ fn draw_impl(
             let light = Light::new(p, src);
             fill(points, clip, w, h, |x, y, iz, uz, vz| {
                 let o = y * w + x;
-                let d = if test { depth_value(iz, rank) } else { 0.0 };
-                if test && d < zbuf[o] {
+                if test && depth_test_value(iz, rank) < zbuf[o] {
                     return;
                 }
                 let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
                 if let Some(c) = shade_replaced(t, p.checker, img, &light, src, gx, gy, uz / iz, vz / iz) {
-                    if test && write {
-                        pending.push((o, d));
+                    if test {
+                        pending.push((o, depth_value(iz, rank)));
                     }
                     covered[o] = true;
                     rgb[o * 3..o * 3 + 3].copy_from_slice(&c);
@@ -938,14 +1065,13 @@ fn draw_impl(
         } else {
             fill(points, clip, w, h, |x, y, iz, uz, vz| {
                 let o = y * w + x;
-                let d = if test { depth_value(iz, rank) } else { 0.0 };
-                if test && d < zbuf[o] {
+                if test && depth_test_value(iz, rank) < zbuf[o] {
                     return;
                 }
                 let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
                 if let Some(c) = shade(p, src, gx, gy, uz / iz, vz / iz) {
-                    if test && write {
-                        pending.push((o, d));
+                    if test {
+                        pending.push((o, depth_value(iz, rank)));
                     }
                     covered[o] = true;
                     rgb[o * 3..o * 3 + 3].copy_from_slice(&c);
@@ -1072,6 +1198,7 @@ mod tests {
             checker: true,
             header: [0x80c0, 0, 0, 0],
             shadow: false,
+            block: 0,
         };
         assert!(p.texture.is_none());
         assert!(shade(&p, &src, 2, 4, 0.0, 0.0).is_some());
@@ -1093,6 +1220,7 @@ mod tests {
             checker: false,
             header: [0; 4],
             shadow: false,
+            block: 0,
         }
     }
 
@@ -1138,6 +1266,38 @@ mod tests {
         assert_eq!(at(&draw_view_depth(&mut background(), &src, &view, true).0), 20);
         // Off is the painter's algorithm, whatever the depths.
         assert_eq!(at(&draw_view(&mut polys(), &src, &view).0), 40);
+        // A decal a little behind its surface (within DEPTH_TOLERANCE) is
+        // drawn in the game's order; one well behind it is hidden.
+        let decal = |iz| vec![flat(1, 0.5, 5.0, 0), flat(2, iz, 1.0, 0)];
+        assert_eq!(at(&draw_view_depth(&mut decal(0.5 * (1.0 - 0.6 * DEPTH_TOLERANCE)), &src, &view, true).0), 40);
+        assert_eq!(at(&draw_view_depth(&mut decal(0.5 * (1.0 - 2.0 * DEPTH_TOLERANCE)), &src, &view, true).0), 20);
+    }
+
+    #[test]
+    fn probe_follows_the_depth_buffer() {
+        let ram = vec![0u8; 0x40_0000 + 0x8000];
+        let mut palette = vec![0u8; 0x1_c000];
+        depth_sources(&mut palette);
+        let src = Sources {
+            texture_rom: &[],
+            texture_point_ram: &[],
+            render_ram: &ram,
+            palette: &palette,
+            xoff: 0.0,
+            yoff: 0.0,
+        };
+        let view = View::native();
+        let mut polys = vec![flat(1, 0.5, 5.0, 0), flat(2, 0.1, 1.0, 0), flat(3, 0.1, 1e10, 0)];
+        let placed = place(&mut polys, &view);
+        let r = probe_depth(&polys, &placed, &src, &view, 200, 200);
+        assert_eq!(r.hits.len(), 3);
+        // Sorted: the sky (colour 3) first, then 1, then 2, which fails.
+        assert_eq!(r.hits[0].background, Some("sky"));
+        assert!(r.hits[1].passed && !r.hits[2].passed);
+        assert_eq!(r.hits[2].buffer_from, Some(1));
+        assert_eq!((r.winner_off, r.winner_on), (Some(2), Some(1)));
+        // Outside every polygon: nothing.
+        assert!(probe_depth(&polys, &placed, &src, &view, 10, 10).hits.is_empty());
     }
 
     #[test]

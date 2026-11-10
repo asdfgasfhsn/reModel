@@ -2,59 +2,134 @@
 //! buffer off and on, report where they differ and write the differences
 //! as pictures to look at (docs/enhancements.md: every difference should be
 //! a fix, such as intersecting polygons or a mis-sorted one, and not a new
-//! glitch).
+//! glitch). `--probe X,Y@FRAME` follows one pixel through the depth
+//! buffer (`raster::probe_depth`); `--against DIR` compares the depth-on
+//! frames with an earlier run's, to see what a change of the rules did.
 
 use model2::capture::{self, Frame};
 use model2::raster;
 use model2::video::{self, View};
 use std::path::Path;
 
-/// The frame as the GPU draws it with `depth` on or off.
-fn draw(gpu: &mut gpu::Renderer, f: &Frame, rom: &[u16], view: &View, depth: bool, msaa: u32) -> (Vec<u8>, usize) {
-    gpu.set_quality(gpu::Quality { msaa, depth, ..Default::default() });
-    let src = f.sources(rom);
-    let mut polys = raster::build(&f.stream, &src);
+/// A pixel to follow through the depth buffer: `--probe X,Y@FRAME`.
+#[derive(Clone, Copy, Debug)]
+pub struct Probe {
+    pub x: usize,
+    pub y: usize,
+    pub frame: u64,
+}
+
+impl Probe {
+    /// `X,Y@FRAME`, X and Y in output pixels (as the -on pictures).
+    pub fn parse(s: &str) -> Option<Probe> {
+        let (xy, frame) = s.split_once('@')?;
+        let (x, y) = xy.split_once(',')?;
+        Some(Probe { x: x.trim().parse().ok()?, y: y.trim().parse().ok()?, frame: frame.trim().parse().ok()? })
+    }
+}
+
+/// The frame's polygons, sorted and placed in `view`.
+fn prepare(f: &Frame, src: &raster::Sources, view: &View) -> (Vec<raster::Poly>, Vec<raster::Placed>) {
+    let mut polys = raster::build(&f.stream, src);
     video::HudLayout::new(&f.tiles, &f.palette, view).anchor(&mut polys, view);
     let placed = raster::place(&mut polys, view);
-    // DEPTH_PROBE=X,Y (output pixel) with DEPTH_PROBE_FRAME=N: the polygons
-    // covering it in draw order, with their depth there.
-    if let Some((x, y)) = std::env::var("DEPTH_PROBE").ok().and_then(|v| {
-        let (x, y) = v.split_once(',')?;
-        Some((x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?))
-    }) {
-        if depth && std::env::var("DEPTH_PROBE_FRAME").is_ok_and(|n| n == f.frame.to_string()) {
-            println!("polygons at pixel {x},{y} in draw order:");
-            for pl in &placed {
-                let q = &pl.points;
-                for k in 1..q.len().saturating_sub(1) {
-                    let (a, b, c) = (q[0], q[k], q[k + 1]);
-                    let d = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
-                    let l1 = ((b.y - c.y) * (x - c.x) + (c.x - b.x) * (y - c.y)) / d;
-                    let l2 = ((c.y - a.y) * (x - c.x) + (a.x - c.x) * (y - c.y)) / d;
-                    let l3 = 1.0 - l1 - l2;
-                    if l1 >= 0.0 && l2 >= 0.0 && l3 >= 0.0 {
-                        let p = &polys[pl.poly];
-                        println!(
-                            "  window {} rank {} group {} key {:.1} 1/z {:.6}{}{}  colour {:?} luma {} header {:04x?}{}",
-                            p.window,
-                            pl.rank,
-                            pl.group,
-                            p.key,
-                            l1 * a.iz + l2 * b.iz + l3 * c.iz,
-                            if pl.background { " background" } else { "" },
-                            if p.checker { " checker" } else { "" },
-                            p.colour,
-                            p.luma,
-                            p.header,
-                            if p.texture.is_some() { " textured" } else { "" }
-                        );
-                    }
-                }
-            }
+    (polys, placed)
+}
+
+/// The frame as the GPU draws it with `depth` on or off.
+#[allow(clippy::too_many_arguments)]
+fn draw(
+    gpu: &mut gpu::Renderer,
+    f: &Frame,
+    src: &raster::Sources,
+    polys: &[raster::Poly],
+    placed: &[raster::Placed],
+    view: &View,
+    depth: bool,
+    msaa: u32,
+) -> Vec<u8> {
+    gpu.set_quality(gpu::Quality { msaa, depth, ..Default::default() });
+    let layers = video::layers_2d(&f.tiles, &f.palette, view, !placed.is_empty());
+    gpu.frame(polys, placed, src, view, &layers)
+}
+
+/// Print what `raster::probe_depth` finds at a probed pixel, with the GPU's
+/// colours there.
+fn report_probe(
+    pr: &Probe,
+    polys: &[raster::Poly],
+    placed: &[raster::Placed],
+    src: &raster::Sources,
+    view: &View,
+    (off, on): (&[u8], &[u8]),
+) {
+    if pr.x >= view.width || pr.y >= view.height {
+        println!("probe {},{}@{}: outside the {}x{} view", pr.x, pr.y, pr.frame, view.width, view.height);
+        return;
+    }
+    let r = raster::probe_depth(polys, placed, src, view, pr.x, pr.y);
+    let i = (pr.y * view.width + pr.x) * 3;
+    // The software rasteriser's 3D layer there, depth off and on.
+    let soft = |depth| {
+        let (rgb, covered) = raster::draw_view_depth(&mut polys.to_vec(), src, view, depth);
+        covered[i / 3].then(|| [rgb[i], rgb[i + 1], rgb[i + 2]])
+    };
+    println!(
+        "probe {},{}@{}: GPU off {:?}, on {:?}; software off {:?}, on {:?}; {} polygons cover it, in draw order",
+        pr.x,
+        pr.y,
+        pr.frame,
+        &off[i..i + 3],
+        &on[i..i + 3],
+        soft(false),
+        soft(true),
+        r.hits.len()
+    );
+    println!(
+        "  {:>3} {:>5} {:>3} {:>5} {:>6} {:>5} {:>11} {:<8} {:>10} {:>10} {:>10} {:>4} result",
+        "hit", "draw", "win", "rank", "group", "block", "key", "kept", "1/z", "depth", "buffer", "from"
+    );
+    for (k, hit) in r.hits.iter().enumerate() {
+        let (pl, p) = (&placed[hit.index], &polys[placed[hit.index].poly]);
+        let result = match (hit.background, hit.passed, hit.colour) {
+            (_, _, None) => "draws nothing (checker or cut-out)".to_string(),
+            (Some(_), _, Some(c)) => format!("drawn untested {c:?}"),
+            (None, true, Some(c)) => format!("pass {c:?}"),
+            (None, false, Some(c)) => format!("FAIL (would be {c:?})"),
+        };
+        println!(
+            "  {k:>3} {:>5} {:>3} {:>5} {:>6} {:>5} {:>11.4} {:<8} {:>10.6} {:>10.8} {:>10.8} {:>4} {result}",
+            hit.index,
+            p.window,
+            pl.rank,
+            pl.group,
+            p.block,
+            p.key,
+            hit.background.unwrap_or("-"),
+            hit.iz,
+            hit.depth,
+            hit.buffer,
+            hit.buffer_from.map_or("-".to_string(), |b| b.to_string()),
+        );
+    }
+    let name = |w: Option<usize>| {
+        w.map_or("none".to_string(), |k| format!("hit {k} (block {})", polys[placed[r.hits[k].index].poly].block))
+    };
+    println!("  shows: depth off {}, depth on {}", name(r.winner_off), name(r.winner_on));
+    // Where the painter's polygon lost: by how much nearer the polygon that
+    // beat it was, against the rank tolerance.
+    for (k, hit) in r.hits.iter().enumerate() {
+        if let (false, Some(_), Some(e)) = (hit.passed, hit.colour, hit.buffer_from) {
+            let he = &r.hits[e];
+            let (rl, re) = (placed[hit.index].rank, placed[he.index].rank);
+            println!(
+                "  hit {k} lost to hit {e}: 1/z {:.3e} nearer (iz_E/iz_L - 1), rank tolerance {:.3e} ({} polygons between)",
+                he.iz / hit.iz - 1.0,
+                (rl as f32 - re as f32) * raster::DEPTH_BIAS,
+                rl as i64 - re as i64
+            );
         }
     }
-    let layers = video::layers_2d(&f.tiles, &f.palette, view, !placed.is_empty());
-    (gpu.frame(&polys, &placed, &src, view, &layers), polys.len())
 }
 
 /// Off | on | differences (the on picture dimmed, differing pixels bright
@@ -82,12 +157,31 @@ fn picture(view: &View, off: &[u8], on: &[u8], bbox: (usize, usize, usize, usize
     (w * 3, h, out)
 }
 
+/// Pixels where `a` and `b` differ, where by more than 16 in a channel,
+/// and their bounding box (x0, y0, x1, y1).
+fn compare(view: &View, a: &[u8], b: &[u8]) -> (usize, usize, (usize, usize, usize, usize)) {
+    let (mut differ, mut large) = (0, 0);
+    let (mut x0, mut y0, mut x1, mut y1) = (view.width, view.height, 0, 0);
+    for i in 0..view.width * view.height {
+        let m = (0..3).map(|c| a[i * 3 + c].abs_diff(b[i * 3 + c])).max().unwrap_or(0);
+        if m > 0 {
+            differ += 1;
+            large += (m > 16) as usize;
+            let (x, y) = (i % view.width, i / view.width);
+            (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1));
+        }
+    }
+    (differ, large, (x0, y0, x1, y1))
+}
+
 pub fn run(
     root: &Path,
     hud_windows: (&[usize], &[usize]),
     view: Option<View>,
     msaa: u32,
     out_dir: &Path,
+    probes: &[Probe],
+    against: Option<&Path>,
 ) -> Result<(), String> {
     let texture_rom = capture::load_texture_rom(root)
         .map_err(|e| format!("{}: {e} (capture with `make capture`)", root.display()))?;
@@ -103,60 +197,95 @@ pub fn run(
         .filter(|p| p.join("meta.txt").exists())
         .collect();
     dirs.sort();
+    // With probes, only the probed frames.
+    if !probes.is_empty() {
+        let frame = |d: &std::path::PathBuf| d.file_name()?.to_str()?.parse::<u64>().ok();
+        dirs.retain(|d| frame(d).is_none_or(|n| probes.iter().any(|p| p.frame == n)));
+    }
     std::fs::create_dir_all(out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
     println!("{:<8} {:>6} {:>9} {:>9}  bounding box", "frame", "polys", "differ", ">16");
-    let mut changed = 0;
+    let (mut changed, mut moved_total) = (0, 0);
     for d in &dirs {
         let f = Frame::load(d).map_err(|e| format!("{}: {e}", d.display()))?;
-        let (off, n) = draw(&mut gpu, &f, &texture_rom, &view, false, msaa);
-        let (on, _) = draw(&mut gpu, &f, &texture_rom, &view, true, msaa);
-        let (mut differ, mut large) = (0, 0);
-        let (mut x0, mut y0, mut x1, mut y1) = (view.width, view.height, 0, 0);
-        for i in 0..view.width * view.height {
-            let m = (0..3).map(|c| off[i * 3 + c].abs_diff(on[i * 3 + c])).max().unwrap_or(0);
-            if m > 0 {
-                differ += 1;
-                large += (m > 16) as usize;
-                let (x, y) = (i % view.width, i / view.width);
-                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1));
-            }
-        }
-        // DEPTH_DARK_FRAME=N: where the picture goes from dark to light
-        // with the depth buffer on (a polygon that went missing).
-        if std::env::var("DEPTH_DARK_FRAME").is_ok_and(|n| n == f.frame.to_string()) {
-            let sum = |v: &[u8], i: usize| v[i * 3] as u32 + v[i * 3 + 1] as u32 + v[i * 3 + 2] as u32;
-            let hits: Vec<usize> =
-                (0..view.width * view.height).filter(|&i| sum(&off, i) < 40 && sum(&on, i) > 200).collect();
-            if let Some(&i) = hits.get(hits.len() / 2) {
-                println!("dark to light: {} pixels, e.g. {},{}", hits.len(), i % view.width, i / view.width);
-            }
-            let hits: Vec<usize> =
-                (0..view.width * view.height).filter(|&i| sum(&on, i) < 150 && sum(&off, i) > 350).collect();
-            if let Some(&i) = hits.get(hits.len() / 2) {
-                println!("light to dark: {} pixels, e.g. {},{}", hits.len(), i % view.width, i / view.width);
-            }
-        }
+        let src = f.sources(&texture_rom);
+        let (polys, placed) = prepare(&f, &src, &view);
+        let n = polys.len();
+        let off = draw(&mut gpu, &f, &src, &polys, &placed, &view, false, msaa);
+        let on = draw(&mut gpu, &f, &src, &polys, &placed, &view, true, msaa);
+        let (differ, large, bbox) = compare(&view, &off, &on);
+        let (x0, y0, x1, y1) = bbox;
         let pct = |n: usize| 100.0 * n as f64 / (view.width * view.height) as f64;
         if differ == 0 {
             println!("{:<8} {n:>6} {:>8.3}% {:>8.3}%", f.frame, 0.0, 0.0);
+        } else {
+            println!("{:<8} {n:>6} {:>8.3}% {:>8.3}%  ({x0},{y0})-({x1},{y1})", f.frame, pct(differ), pct(large));
+        }
+        for pr in probes.iter().filter(|p| p.frame == f.frame) {
+            report_probe(pr, &polys, &placed, &src, &view, (&off, &on));
+        }
+        if let Some(dir) = against {
+            // The earlier run's depth-on frame; where it has none, its
+            // depth-on frame was its depth-off one (unchanged here).
+            let before = match std::fs::read(dir.join(format!("depth-{:05}-on.png", f.frame))) {
+                Ok(file) => {
+                    let img = png::decode(&file)?;
+                    if (img.width, img.height) != (view.width, view.height) {
+                        return Err(format!(
+                            "{}: frame {} is not {}x{}",
+                            dir.display(),
+                            f.frame,
+                            view.width,
+                            view.height
+                        ));
+                    }
+                    img.rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect()
+                }
+                Err(_) => off.clone(),
+            };
+            let (moved, moved_large, b) = compare(&view, &before, &on);
+            let _ = std::fs::remove_file(out_dir.join(format!("against-{:05}.png", f.frame)));
+            if moved > 0 {
+                println!(
+                    "  against  {:>8} pixels changed, {:>8} by >16  ({},{})-({},{})",
+                    moved, moved_large, b.0, b.1, b.2, b.3
+                );
+                let crop = (
+                    b.0.saturating_sub(48),
+                    b.1.saturating_sub(48),
+                    (b.2 + 48).min(view.width),
+                    (b.3 + 48).min(view.height),
+                );
+                let (w, h, rgb) = picture(&view, &before, &on, crop);
+                let _ =
+                    std::fs::write(out_dir.join(format!("against-{:05}.png", f.frame)), png::encode_rgb(w, h, &rgb));
+            }
+            moved_total += moved;
+        }
+        let name = |s: &str| out_dir.join(format!("depth-{:05}{s}.png", f.frame));
+        if differ == 0 {
+            // No pictures, and none left from an earlier run.
+            let _ = std::fs::remove_file(name(""));
+            let _ = std::fs::remove_file(name("-on"));
             continue;
         }
         changed += 1;
-        println!("{:<8} {n:>6} {:>8.3}% {:>8.3}%  ({x0},{y0})-({x1},{y1})", f.frame, pct(differ), pct(large));
         // A margin round the differences, at least a window of context.
         let (cx0, cy0) = (x0.saturating_sub(48), y0.saturating_sub(48));
         let (cx1, cy1) = ((x1 + 48).min(view.width), (y1 + 48).min(view.height));
         let (w, h, rgb) = picture(&view, &off, &on, (cx0, cy0, cx1, cy1));
-        let _ = std::fs::write(out_dir.join(format!("depth-{:05}.png", f.frame)), png::encode_rgb(w, h, &rgb));
-        let _ = std::fs::write(
-            out_dir.join(format!("depth-{:05}-on.png", f.frame)),
-            png::encode_rgb(view.width, view.height, &on),
-        );
+        let _ = std::fs::write(name(""), png::encode_rgb(w, h, &rgb));
+        let _ = std::fs::write(name("-on"), png::encode_rgb(view.width, view.height, &on));
     }
     println!(
         "changed       {changed} of {} frames; pictures (off | on | differences) in {}",
         dirs.len(),
         out_dir.display()
     );
+    if let Some(dir) = against {
+        println!(
+            "against       {moved_total} pixels of the depth-on frames differ from {} (pictures: before | now | differences, against-FRAME.png)",
+            dir.display()
+        );
+    }
     Ok(())
 }
