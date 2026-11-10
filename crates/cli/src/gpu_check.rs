@@ -88,16 +88,33 @@ fn time(n: usize, mut f: impl FnMut()) -> f64 {
 
 /// What multisampling and the depth buffer cost the GPU: whole frames
 /// (3D layer, compose, readback) per configuration, mean over the frames.
+/// The frames `cost` times: a `--capture`'s frame directories, or a
+/// sequence's root (`--capture-seq`).
+enum CostFrames<'a> {
+    Dirs(&'a [std::path::PathBuf]),
+    Seq(&'a Path),
+}
+
 fn cost(
     gpu: &mut gpu::Renderer,
-    root_dirs: &[std::path::PathBuf],
+    root_dirs: CostFrames,
     texture_rom: &[u16],
     views: &[(&str, View)],
     pack: Option<&Path>,
     tex_filter: gpu::TexFilter,
+    light: Option<&model2::light::Options>,
 ) -> Result<(), String> {
     let configs = [(1, false), (4, false), (8, false), (1, true), (4, true), (8, true)];
-    let frames: Vec<_> = root_dirs.iter().filter_map(|d| Frame::load(d).ok()).collect();
+    let frames: Vec<_> = match root_dirs {
+        CostFrames::Dirs(dirs) => dirs.iter().filter_map(|d| Frame::load(d).ok()).collect(),
+        // A sequence: its first frames with 3D (each needs the ones before).
+        CostFrames::Seq(root) => capture::frames(root)
+            .map_err(|e| e.to_string())?
+            .filter_map(|f| f.ok().map(|f| f.1))
+            .filter(|f| !f.stream.is_empty())
+            .take(16)
+            .collect(),
+    };
     println!("cost          whole frame on the GPU incl. readback, mean over {} frames, ms", frames.len());
     print!("{:<12}", "");
     for (m, d) in configs {
@@ -121,7 +138,7 @@ fn cost(
             }
         }
         for (msaa, depth) in configs {
-            let q = gpu.set_quality(gpu::Quality { msaa, depth, tex_filter });
+            let q = gpu.set_quality(gpu::Quality { msaa, depth, tex_filter, ..super::gpu_light(light) });
             if q.msaa != msaa {
                 print!(" {:>10}", "n/a");
                 continue;
@@ -129,7 +146,7 @@ fn cost(
             let mut total = 0.0;
             for f in &frames {
                 let src = f.sources(texture_rom);
-                let mut polys = raster::build(&f.stream, &src);
+                let mut polys = raster::build_shaded(&f.stream, &src, light);
                 video::HudLayout::new(&f.tiles, &f.palette, view).anchor(&mut polys, view);
                 let placed = raster::place(&mut polys, view);
                 let layers = video::layers_2d(&f.tiles, &f.palette, view, !placed.is_empty());
@@ -152,12 +169,16 @@ pub fn run(
     depth: bool,
     pack: Option<&Path>,
     tex_filter: gpu::TexFilter,
+    light: Option<&model2::light::Options>,
 ) -> Result<(), String> {
     let texture_rom = capture::load_texture_rom(root)
         .map_err(|e| format!("{}: {e} (capture with `make capture`)", root.display()))?;
     let mut gpu = gpu::Renderer::new()?;
     println!("gpu           {}", gpu.adapter());
-    let q = gpu.set_quality(gpu::Quality { msaa: aa, depth, tex_filter });
+    let q = gpu.set_quality(gpu::Quality { msaa: aa, depth, tex_filter, ..super::gpu_light(light) });
+    if let Some(o) = light {
+        println!("shading       {}, crease {} degrees (model2::light)", o.shading.name(), o.crease);
+    }
     println!(
         "quality       {} samples a pixel on the GPU ({} supersampled in software), depth buffer {}",
         q.msaa,
@@ -186,6 +207,9 @@ pub fn run(
         .filter(|p| p.join("meta.txt").exists())
         .collect();
     dirs.sort();
+    // A sequence (`--capture-seq`) is read in order, frame after frame.
+    let seq = capture::Seq::is_seq(root);
+    let mut frames = capture::frames(root).map_err(|e| e.to_string())?;
     let mut wide = View::new(1080, 16.0 / 9.0, Hud::Edges);
     wide = wide.with_hud_windows(hud_windows.0, hud_windows.1);
     let mut native = View::native();
@@ -193,9 +217,14 @@ pub fn run(
     let views = [("native", native), ("1080p 16:9", wide)];
     // Warm up (shader compilation, first allocations) before timing.
     if let Some(d) = dirs.first() {
-        let f = Frame::load(d).map_err(|e| e.to_string())?;
+        let f = if seq {
+            let first = capture::frames(root).map_err(|e| e.to_string())?.next().ok_or("empty sequence")?;
+            first.map_err(|e| e.to_string())?.1
+        } else {
+            Frame::load(d).map_err(|e| e.to_string())?
+        };
         let src = f.sources(&texture_rom);
-        let mut polys = raster::build(&f.stream, &src);
+        let mut polys = raster::build_shaded(&f.stream, &src, light);
         let placed = raster::place(&mut polys, &native);
         gpu.draw(&polys, &placed, &src, &native);
     }
@@ -207,9 +236,13 @@ pub fn run(
     // Frames where the fast 2D layer path differs from the reference one.
     let mut tiles_differ = Vec::new();
     for d in &dirs {
-        let f = Frame::load(d).map_err(|e| format!("{}: {e}", d.display()))?;
+        let f = match frames.next() {
+            Some(Ok((_, f))) => f,
+            Some(Err(e)) => return Err(format!("{}: {e}", d.display())),
+            None => break,
+        };
         let src = f.sources(&texture_rom);
-        let polys = raster::build(&f.stream, &src);
+        let polys = raster::build_shaded(&f.stream, &src, light);
         for (k, (name, view)) in views.iter().enumerate() {
             let hud = video::HudLayout::new(&f.tiles, &f.palette, view);
             let mut sw_polys = polys.clone();
@@ -232,7 +265,7 @@ pub fn run(
             // stream, place the polygons, build the 2D layers.
             let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
             let t = Instant::now();
-            let mut prep_polys = raster::build(&f.stream, &src);
+            let mut prep_polys = raster::build_shaded(&f.stream, &src, light);
             let build_ms = ms(t);
             let t = Instant::now();
             hud.anchor(&mut prep_polys, view);
@@ -335,7 +368,8 @@ pub fn run(
     if aa > 1 {
         println!("(multisampled: coverage is 0 and colour/>16 count pixels of the whole frame, the GPU's against the software renderer's supersampled one)");
     }
-    cost(&mut gpu, &dirs, &texture_rom, &views, pack, q.tex_filter)?;
+    let cost_frames = if seq { CostFrames::Seq(root) } else { CostFrames::Dirs(&dirs) };
+    cost(&mut gpu, cost_frames, &texture_rom, &views, pack, q.tex_filter, light)?;
     match tiles_differ.len() {
         0 => println!("2d layers     fast path identical to the reference on all {} frames", dirs.len()),
         n => println!("2d layers     fast path DIFFERS from the reference on {n} frames: {tiles_differ:?}"),

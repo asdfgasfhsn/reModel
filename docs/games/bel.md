@@ -63,4 +63,21 @@ says 1998). The sound program is EPL's (`docs/hw/sound.md` §7).
   From 3907 the list changed but nothing visible for 16 frames; the
   missile button and the aim alone (frames 2810-4010) never showed (the
   aim shows only through hits). *Unconfirmed* beyond the one frame.
+- *Depth buffer (2026-11-11; captured coin-start frames drawn with it off
+  and on at 1440x1080 and 1920x1080 (`make depth-check`), compared with
+  the build before the 2026-11-10 rules (`docs/enhancements.md`, "Depth
+  buffer")):* the 2026-11-10 GPU 1/z brings back the ivy on the cliff that
+  the build before drew the rock face over (frames 5100-6212). Right with
+  it on: a hanging soldier's legs in front of a beam (the beam is 3.6% of
+  1/z behind them).
 
+## Lighting (smooth shading's side channel)
+
+Measured with `remodel --geo native --light --input coin-start run 900000000` (6155 frames; `make lighting-capture` runs the same), reModel's smooth-shading side channel (docs/hw/geometrizer.md, "Lighting side channel"):
+
+- Self-check: of 16,248,589 polygon records, the flat luma recomputed from the side channel is the stream's for 16,248,589 (100.00%), one level off for 0 and further off for 0.
+- specular on in 100.00% of object blocks, 36.17% of polygons lit with a specular term; normals computed from the vertices in 0.00% of blocks; zero (unlit) normals on 18.18% of polygons.
+- no models drawn from polygon RAM; no direct data.
+- the light vector changes within a frame in 4204 of 6155 frames (up to 2 vectors a frame); lighting entries not changed within a frame.
+- True focal length over the window width: median 0.664 (range 0.664-0.805); the stream-only layer guesses 1.0.
+- The list scan's block facts equal the native geometrizer's on 312,574 blocks, differ on 0.

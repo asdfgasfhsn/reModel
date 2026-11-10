@@ -29,6 +29,7 @@ pub static VSTRIKER: Game = Game {
     // It uploads its textures to 0x11100000 and 0x11300000 only: in 2 MB
     // banks the pitch, kits and stands drew black.
     texture_ram_mirrored: true,
+    shading: crate::Shading::DEFAULT,
     // In 8 MB slots the copro and geometrizer uploads read zeros (the
     // program fetches them from 0x2825F30) and the stands, boards and pitch
     // lines (polygon models from 0x900000 on) were missing.

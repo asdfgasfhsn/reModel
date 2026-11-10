@@ -1,10 +1,11 @@
 # Texture dumps and texture packs
 
 An enhancement in the spirit of Dolphin's custom textures: `remodel run` can
-write out every texture the game draws, and draw its snapshots with edited
-or upscaled replacements; the native player and the browser draw a pack live
-on the GPU (below, "Live display"), optionally with mipmaps and anisotropic
-filtering (below). Nothing here models hardware; with no pack and the filter
+write out every texture and tile pattern the game draws, and draw its
+snapshots with edited or upscaled replacements; the native player and the
+browser draw a pack live on the GPU, 3D textures and tiles (below, "Live
+display"), optionally with mipmaps and anisotropic filtering of the 3D
+textures (below). Nothing here models hardware; with no pack and the filter
 off, rendering is unchanged (`make bench` hash, native snapshots and GPU
 frames are identical; checked 2026-11-10).
 
@@ -43,6 +44,23 @@ The same texels drawn in another colour are therefore separate dumps.
 Mirroring, wrap and the checker (screen-door) flag do not change the key;
 they apply to the replacement as they do to the original.
 
+**Looks.** The key does not include the luma table's and colour translation
+tables' contents, which games rewrite: srallyc fades into the race from
+white through the translation tables, and sgt24h tints its sky during the
+race (`docs/games/srallyc.md`). The same key can therefore be drawn in
+several looks (the 16 colours its texel values map to at full luma). The
+dump shows the look drawn most (polygons, over the snapshots so far),
+rewriting the image when another look overtakes it; the index marks such
+textures `looks=N`. Until 2026-11-11 the first look seen was kept: srallyc's
+race textures were dumped in the fade, near white, and a pack made from
+them drew the race washed out (and sgt24h's sky without its tint). **Dumps
+of srallyc and sgt24h made before then are wrong: dump again and remake
+the packs.** topskatr's race textures have one look (its dumps and packs are
+unchanged); other games are unchecked (`make pack-identity`, below, tells).
+A texture drawn only in a fade during the dump run keeps that look, so dump
+with a run that also sees it in its usual look (srallyc: `make
+dump-textures BENCH_STEPS=900000000` covers the race captures).
+
 **Tiles** (the 2D layer: HUD, menus, text). One 8x8 PNG per distinct tile
 pattern on screen, `tile_<16 hex>.png`, keyed by the 64 pens plus the
 palette colours of the pens it uses. Pen 0 has alpha 0 but keeps its palette
@@ -53,7 +71,8 @@ for the faded colours, which then draw as the original (no replacement).
 polygons drawn, over all snapshots; tiles: frames on screen), and what
 produced it (texture header words, colour, bank and sheet position, luma
 table, translucent, all from the first use; tile number and palette bank).
-Textures end with `wrap=`: every way the texture was drawn, one pair per
+Textures then have `wrap=` (and after it `looks=N`, above, where there is
+more than one look): every way the texture was drawn, one pair per
 way, u then v, `r` repeat or `m` mirror (`wrap=rr,mr`: repeated, and also
 mirrored in u). The mirror bits are not part of the key, so one dump can be
 drawn several ways; `make upscale-textures` pads by this field. Indexes
@@ -97,12 +116,25 @@ gives at this polygon's luma over what it gives at full luma:
 with `L` the luma table, `xlat` the colour translation table and `c` the
 polygon colour component. That keeps the game's lighting curve, including
 the cap at 63 (bright texels saturate before dark ones) and per-channel
-tinting from the translation tables. Where the original texel is transparent
-or black at full luma, the ratio for the brightest luma is used instead. At
-full polygon luma the replacement is drawn as is. Because the ratio follows
+tinting from the translation tables. Where the original texel is transparent,
+the ratio for the brightest luma is used instead. Where it is black at full
+luma in a channel, nothing scales up from black, so that channel is
+`replacement * (ratio for the brightest luma) + xlat(c, min(63, L(t) * luma
+/ 256))`: it adds what the original gives at this luma. That matters for
+translation tables that are not monotonic: topskatr draws one texel pure
+red at level 63 but brown at lower levels (a skater's collar), which a
+pack drew red until 2026-11-11. At full polygon luma the replacement is
+drawn as is. Because the ratio follows
 the original texels, a replacement that changes the picture a lot (rather
 than refining it) can show faint traces of the original's shading where the
 original saturates.
+
+Both sides of the ratio use the tables as they are now, so the replacement
+follows the polygon's luma but not a change of the tables themselves: while
+srallyc fades in from white, replaced textures show their usual look
+(capture frame 2700: 88% of the frame's pixels off by more than 16 levels
+from the original). Following that would need the look the image was made
+from at draw time (not done).
 
 ### Tiles
 
@@ -116,14 +148,36 @@ alpha (< 0.5 is transparent), with the hardware rules kept: on the opaque
 back plane (plane B, low priority) transparent replacement pixels show the
 original pen, as pen 0 does there; elsewhere they show what is behind. HUD
 placement in wide views (`--hud edges`) works as for the original tiles.
+The columns a wide view adds at the sides (a scrolled tile sky carried on
+past the frame) keep the original patterns. Snapshots, the player and the
+browser draw tiles by these same rules (live: below).
 
 ## Live display
 
 The native player and the browser draw a pack on the GPU
 (`gpu::Renderer::set_pack`, `docs/gpu.md`), with the same replacement and
-lighting rules as the snapshots (3D textures only: see Limitations). A pack
-is a directory of the same `tex_<key>_<w>x<h>.png` files; tiles in it are
-ignored live.
+lighting rules as the snapshots. A pack is a directory of the same
+`tex_<key>_<w>x<h>.png` and `tile_<key>.png` files.
+
+**Tiles live.** Only a pack with tile images touches the 2D layers, and only
+in frames where a pattern on screen has one: otherwise the layers are
+drawn exactly as without a pack. When one does, the CPU works out for each
+game pixel which tile each plane shows there and where in it, and the
+GPU's compositor draws the replaced ones at output resolution
+(`compose.wgsl` `fs_tiles`, `gpu/src/tiles.rs`), so a 4x image is as sharp
+at 1080p or 4K as it is, not baked into the 496x384 layer. The rules are
+the snapshots' (above): bilinear, clamped to each tile's own image, so
+tiles never blend into their neighbours and need no padding; per-line
+scroll, the split and window modes, priority and pen 0 are the game's own,
+and scroll is in whole game pixels, as on the hardware. Keys are the dump's
+(pattern and colours), so a tile drawn mid-fade or in a cycled colour has
+another key and draws as the original for those frames. Images are kept in
+one atlas texture of equal square cells, the size of the first tile image
+(other sizes are scaled to it: keep a pack's tiles one size), 64 x 64 cells
+for 4x images; when it is full the least recently drawn give way, and a
+frame needing more than it holds draws the rest as the original. The
+player's Esc menu and the browser's status line show how many patterns
+were replaced in the last frame.
 
 **Native player** (`docs/play.md`). The setting `pack` (default off; flag
 `--pack on|off`) looks in `<data dir>/<set>/texpack/` (`out/<set>/texpack`
@@ -138,7 +192,8 @@ notice.
 
 **Browser** (`docs/web.md`). `?pack=1` or the panel's Display setting (applied
 live) fetches the pack from `/texpack/<set>/` on the server, beside
-`/rom/`. A browser cannot list a folder, so the directory needs an
+`/rom/`, and for a clone without one from its parent's folder, as the
+native player does (`romset::pack_sets`). A browser cannot list a folder, so the directory needs an
 `index.txt`: one file name per line, `#` comments and blank lines ignored.
 `make upscale-textures` writes one; for a hand-made pack,
 `(cd DIR && ls *.png > index.txt)`. Only names in the index are requested,
@@ -150,7 +205,9 @@ console warning.
 **GPU memory.** Images are uploaded when first drawn and kept; over a budget
 (512 MB natively, 192 MB in the browser) the least recently drawn are
 dropped and loaded again when next needed. With mipmaps on, an image costs
-about a third more.
+about a third more. Tile images are outside that budget: their atlas is
+allocated whole when the first one is drawn, 16 MB for 4x tiles (2048x2048),
+64 MB at most.
 
 **Cost.** A frame that replaces textures draws a batch for each run of
 polygons (in draw order) sharing an image instead of one for the whole frame: about 600 draws a frame
@@ -158,7 +215,16 @@ on topskatr with a full pack (198-1047), where there were 1-4. Frames upload
 and decode new images as they first appear, so a large image's first
 appearance can hitch: in the browser, a frame uploading a 1024x1024 image
 with its mipmaps measured up to 13 ms of draw against about 3 ms normally.
-The player's decoding stutter has not been measured.
+The player's decoding stutter has not been measured. Live tiles add CPU
+work in frames that replace some (the per-pixel tile map: on topskatr's
+captures the 2D layers took 2.7-3.0 ms instead of 1.7-2.1 ms in race
+frames, natively, `make tile-check` on a machine shared with other jobs)
+and an upload of about 2.5 MB a frame at 1080p (the map and the HUD's
+source columns); compose then samples up to four tile images per output
+pixel instead of reading two textures. Whole GPU frames with and without
+tiles were within the run-to-run noise there; the browser drew
+`overrevb`'s attract mode with 4x tiles at 60 fps, 6-7 ms of draw a frame
+(1413x1060).
 
 ## Mipmaps and anisotropic filtering
 
@@ -211,6 +277,79 @@ removes it but blurs, `16` keeps the ground's detail at grazing angles, and
 none shows halos at cut-out edges. The metric is against a supersampled
 render, which is itself an approximation of an ideal filter. Other games and
 other upscalers are untested.
+
+`make tile-check PACK=DIR` draws the captured frames with the pack's tiles
+live on the GPU and as the software snapshots draw them, over the same 3D
+layer, writes both and the frame without the pack (`FRAME-gpu`, `-sw`,
+`-orig.png` in `OUT/tile-check`) and reports where they differ. On
+topskatr (realesrgan-x4plus tiles), srallyc and doa (built-in 4x), 21
+frames each at 1080p 16:9: no pixel differs by more than 16 levels; 0.1-2%
+differ at all, by rounding. `gpu-check` and `pack-check` compose with the
+original tiles (they compare 3D textures).
+
+**Identity.** `make pack-identity PACK=DIR` (`remodel pack-check --identity`)
+checks that a pack stands for the textures as the captured frames draw
+them: with `PACK` the dump itself (`OUT/texdump`), or with no `PACK` each
+frame's own textures, it draws every captured frame on the GPU unfiltered
+and mipmapped and in software exact and trilinear, against the same
+renderer without a pack, and writes the pictures to `OUT/pack-identity`. It
+fails (exits non-zero, naming the frames) if any single frame has more
+than 1% of its pixels off by more than 16 levels unfiltered, on the GPU or
+in software (`IDENTITY_TOLERANCE`; the pack's colours are filtered where
+the original filters texel values and looks them up, so they are not
+identical); the means in the table below are reported, not held to the
+limit, and mipmapped drawing is a different filter and is only reported.
+The last column splits the software's differing 3D pixels by cause, as
+shares of the frame: the texels under the bilinear filter hold different
+values (*filter order*: the original filters texel values and then looks
+the result up, the pack filters the looked-up colours), one of them is a
+cut-out (texel 15 of a translucent texture), they hold one value (*same*:
+a pack standing for the texture must match there, so these are real gaps:
+a wrong look, lighting the replacement can't express), or another polygon
+is on top in one of the two (a cut-out edge decided differently).
+
+*Open item: `make pack-identity` exits non-zero on topskatr (frames 3300,
+3600: 1.7%, 2.6%) and sgt24h (2400, 2700, 3000, 6212: 1.9-2.1%) with each
+frame's own textures*, and on topskatr with its dump (same frames). It is
+the filter order, not the dump or the pack (2026-11-11): in those frames
+99.6-100% of the differing pixels are filter order, 0.0-0.4% cut-out edges,
+none *same* and almost none another polygon; and drawing the original with
+its colours filtered instead of its texel values gives what the pack draws
+in 98-100% of them (the rest: lighting at luma below 255, also between
+texels). Own-frame packs rule out looks, textures rewritten after a dump
+and textures never dumped. The frames over the limit are those with
+stadium crowds and sponsor boards in view, drawn small (91-98% of the
+differing pixels are minified, the texture's texels smaller than a
+pixel): crowds use the translation tables as a palette, texel value to an
+unrelated colour, so the original's in-between values show colours of
+neither neighbour (24-42% of the differing pixels are between texels
+whose colours don't rise or fall with the value), and lettering edges
+fall on the tables' non-linear curve. Neither filter is wrong for a pack
+(the hardware's own filter is unconfirmed, docs/hw/geometrizer.md 5.4),
+and a pack cannot filter texel values it doesn't have. *Proposed rule
+(not applied, the user's decision):* hold the per-frame 1% to the
+*same* and *other* columns, which are 0.000-0.001% on every frame of the
+three games now, and keep the filter order as reported; or keep the rule
+and accept these frames as known. The one gap the split found (topskatr,
+*same*: 0.004-0.007% of frames 2100-2700, a texel black at full luma in a
+channel but not below it) is fixed: see "Lighting" above.
+
+Measured 2026-11-11 at native size, mean share over the captures,
+unfiltered (GPU / software):
+
+| pack | srallyc | topskatr | sgt24h |
+|---|---|---|---|
+| each frame's own textures | 0.30% / 0.31% | 0.50% / 0.50% | 0.71% / 0.71% |
+| dump, first look kept (before the fix) | 59.4% / 59.4% | 0.49% / 0.49% | 13.1% / 13.2% |
+| dump, most used look (`make dump-textures`) | 5.6% / 5.6% | 0.49% / 0.49% | 1.6% / 1.6% |
+| dump, `BENCH_STEPS=900000000` | 5.2% / 5.2% | | |
+
+With the fix, srallyc's race frames are 0.13-0.83% off; what is left is the
+fade (frame 2700, above) and, with the default dump run (shorter than the
+capture's), textures it saw only in the fade (frame 5700's start banner and
+boards, 8%); sgt24h's are frames 2400-3000 (about 2%, as much as with each frame's own textures: the filter order, above) and 6212 (16%,
+past the dump run). Mipmapped, every pack is 3-11% off at native size:
+distant textures average.
 
 `make gpu-check PACK=DIR GPU_OPTS="--tex-filter mip"` draws the captured
 frames with the pack on both renderers and compares them: on topskatr the
@@ -342,8 +481,9 @@ Limitations:
 
 ## Limitations
 
-- Tiles (the 2D layer) are replaced only in software snapshots, not in the
-  live GPU display.
+- Tile keys include colours: tiles drawn during a fade or palette cycle
+  show the original (one image per colour would be needed). The sides a
+  wide view adds (scrolled tile skies) keep the original patterns.
 - Dumps happen at snapshots, so short-lived textures can be missed.
 - Live, an image's first appearance can hitch (decode, upload, mip chain);
   the original shows until it is ready. A frame that replaces many textures
@@ -351,9 +491,12 @@ Limitations:
 - Anisotropic filtering is GPU-only (snapshots draw it as `mip`), and
   mipmaps average display values, not linear light.
 - Not verified live: smooth motion's in-between frames with a pack, F5/F9
-  save slots with a pack, a clone's fallback to its parent's pack in the
-  player, other browsers and phones, and eviction past the memory budget.
+  save slots with a pack, other browsers and phones, and eviction past the
+  memory budget or the tile atlas.
 - Textures still being uploaded when a snapshot is taken get transient keys
   (the game copies texture data across several frames).
 - Keys include colours, so a texture or tile drawn in many colours (fades,
-  flashing text) needs one replacement per colour.
+  flashing text) needs one replacement per colour. Textures change colour
+  without changing key when the game rewrites the translation tables
+  (`looks=` above): the replacement stands for the look drawn most, and
+  fades and tints of the tables do not show on it.

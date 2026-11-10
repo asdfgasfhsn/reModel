@@ -110,4 +110,42 @@ which aren't supported as sets of their own.
   the same data, but the manifest lists the Export pair. Which of the two
   halves of a gauge is which player's, and the details of the survival
   mode, haven't been looked at.
+- *Confirmed (by running it: `make temporal-check` on frames 3300-3599 of
+  a run with coin, start and punches and kicks to 3400, and the
+  geometrizer's polygon RAM accesses counted, 2026-11-11):* part of each
+  fighter is a model in **polygon RAM that the list rewrites every
+  frame**. Every frame's list writes 2,707 words of polygon RAM (fn
+  0x05, addresses `0x0`-`0x24EF`), each once and before any object reads
+  it; about 70 of the frame's ~190 object blocks draw models from there
+  (`0x0`-`0x588` and `0x2000`-`0x23C7`, small models of 1 to 7
+  polygons), several under one transform shared with others (the same
+  matrix words), and their vertices move from frame to frame under it.
+  On screen they are pieces at the fighters' joints (shoulders, upper
+  arms, Tommy's sleeves: frame 3393 drawn with only those blocks marked
+  as having no motion data). That is why smooth motion's motion data
+  missed there (`docs/hw/geometrizer.md`, "Motion vectors"): frame N's
+  model posed with frame N-1's transform. Every one of the 144,753 words
+  that disagreed (in 15,137 blocks the plan called valid, 96.93%
+  agreement) was in such a block; the 4.46M words of models in ROM all
+  agreed. Off by 0.35 native pixels at the median, 4.9 at p90 and up to
+  27 (frames 3391-3395, a kick). The motion replay now reads polygon RAM
+  as frame N-1 left it: 100.00%, no block lost.
+  *Unconfirmed:* what the game computes for those vertices (skinning
+  between the limbs' transforms, presumably), and which range is which
+  fighter's.
 
+## Lighting (smooth shading's side channel)
+
+Measured with `remodel --geo native --light --input coin-start run 900000000` (6173 frames; `make lighting-capture` runs the same), reModel's smooth-shading side channel (docs/hw/geometrizer.md, "Lighting side channel"):
+
+- Self-check: of 19,573,461 polygon records, the flat luma recomputed from the side channel is the stream's for 19,573,415 (100.00%), one level off for 46 and further off for 0 (the SHARC rounds toward zero).
+- specular on in 99.51% of object blocks, 90.64% of polygons lit with a specular term; normals computed from the vertices in 64.15% of blocks; zero (unlit) normals on 9.29% of polygons.
+- models drawn from polygon RAM in 356,492 blocks (1,209,732 polygons, 37.07% of blocks); 4,699 blocks of direct data (0.49%).
+- the light vector changes within a frame in 186 of 6173 frames (up to 2 vectors a frame); lighting entries not changed within a frame.
+- True focal length over the window width: median 1.017 (range 1.002-4.303); the stream-only layer guesses 1.0.
+- The list scan's block facts equal the native geometrizer's on 961,794 blocks, differ on 0 (3 before the list first set the focal lengths).
+- Smooth shading: about 58% of the lit polygons in the 21 captured frames are shaded only within the levels of their own hue (the colour tables change hue at some levels).
+- Over a third of its object blocks draw models from polygon RAM (the
+  fighters' joint pieces the list rewrites every frame): smooth shading
+  derives everything per frame from the frame's own polygons and keeps no
+  per-model data.

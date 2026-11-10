@@ -84,11 +84,11 @@ endif
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm tgp-disasm tgp-check m68k-tests clean recomp recomp-workspace bench latency input-lag run-ahead-check sound sound-disasm geo-check geo-fuzz smooth-frames pace-sim install-desktop uninstall-desktop
+.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm tgp-disasm tgp-check m68k-tests clean recomp recomp-workspace bench latency input-lag run-ahead-check sound sound-disasm geo-check geo-fuzz smooth-frames temporal-capture temporal-check pace-sim install-desktop uninstall-desktop
 
 ##@ General
 
-help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, PACK_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, GPU_OPTS, PROBE, AGAINST, RECOMP, SOUNDTRACK)
+help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, PACK_CHECK_OUT, TILE_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, GPU_OPTS, LIGHT_OPTS, LIGHT_CAPTURE, LIGHT_IN, PROBE, AGAINST, SEQ_FROM, SEQ_FRAMES, STATE, TEMPORAL_SEQ, TEMPORAL_OPTS, RECOMP, PLAY_ARGS, FILE, SECONDS, SOUNDTRACK, SRC)
 	@awk 'BEGIN {FS = ":.*## "; printf "usage: make <target> [VAR=value]\n"} \
 		/^##@/ {printf "\n%s\n", substr($$0, 5)} \
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -295,7 +295,8 @@ capture: release ## Run into a race saving every 300th frame's renderer inputs t
 # Options for gpu-check, depth-check and pack-check: --aa N (multisampling;
 # software supersamples to match), --depth, --tex-filter off|mip|2|4|8|16
 # (gpu-check with PACK), and for depth-check and pack-check
-# --height/--aspect/--hud.
+# --height/--aspect/--hud; --shading flat|vertex|pixel, --crease auto|N and
+# --shading-fine on|off (smooth shading, model2::light) for all of them.
 GPU_OPTS ?=
 gpu-check: release ## Draw the captured frames on the software and GPU rasterisers; time and compare them, and what GPU_OPTS="--aa 4 --depth" and PACK=DIR (a texture pack, both renderers) cost (needs a GPU)
 	$(RUN) $(GPU_OPTS) $(if $(PACK),--texture-pack $(PACK)) gpu-check
@@ -306,11 +307,60 @@ pack-check: release ## Draw the captured frames with texture pack PACK= on the G
 	$(if $(PACK),,$(error pack-check needs PACK=DIR, a texture pack))
 	$(RUN) $(GPU_OPTS) --texture-pack $(PACK) pack-check $(OUT)/capture $(PACK_CHECK_OUT)
 
+# Where tile-check writes its pictures.
+TILE_CHECK_OUT ?= $(OUT)/tile-check
+.PHONY: tile-check
+tile-check: release ## Draw the captured frames with the tile images of texture pack PACK live on the GPU and as the software snapshots replace them; write FRAME-gpu, -sw and -orig.png to TILE_CHECK_OUT (default OUT/tile-check) and compare them (needs a GPU; VIEW= sets the view, default 1080p 16:9)
+	$(if $(PACK),,$(error tile-check needs PACK=DIR, a texture pack))
+	$(RUN) $(VIEW) --texture-pack $(PACK) tile-check $(OUT)/capture $(TILE_CHECK_OUT)
+
+pack-identity: release ## Draw the captured frames with a pack standing for the original textures (PACK=DIR, normally the dump itself; empty: each frame's own textures) on the GPU and in software, unfiltered and mipmapped, against no pack; fails if they differ beyond the tolerance (needs a GPU)
+	$(RUN) $(GPU_OPTS) $(if $(PACK),--texture-pack $(PACK)) pack-check --identity $(OUT)/capture $(OUT)/pack-identity
+
 # depth-check: PROBE="X,Y@FRAME ..." follows those output pixels through the
 # depth buffer (only those frames are drawn); AGAINST=DIR compares the
 # depth-on frames with an earlier run's pictures (docs/enhancements.md).
 depth-check: release ## Draw the captured frames on the GPU with the depth buffer off and on, report and picture the differences into OUT/depth-check (GPU_OPTS: --aa N, --height, --aspect; PROBE=X,Y@FRAME, AGAINST=DIR; needs a GPU)
 	$(RUN) $(GPU_OPTS) depth-check $(OUT)/capture $(OUT)/depth-check $(foreach p,$(PROBE),--probe $(p)) $(if $(AGAINST),--against $(AGAINST))
+
+# lighting-check: LIGHT_OPTS for the command, e.g. "--every 5" (pictures of
+# every 5th frame), "--probe X,Y@FRAME" (repeatable), "--bench [N]";
+# GPU_OPTS before it ("--crease N", "--height", "--aspect").
+LIGHT_OPTS ?=
+.PHONY: lighting-check
+lighting-check: release ## Draw the captured frames flat and smooth-shaded (vertex, or GPU_OPTS="--shading pixel" for per pixel; "--shading-fine on" adds finer levels and K, against the game's levels; "--shading-balance off" checks without the brightness balance, -nobal pictures and reports, its mean brightness C report-only) on the software and GPU renderers; check the invariants (crease 0 is flat, unlit polygons unchanged, brightness of corners and pixels, software against GPU, hue kept, determinism; with LIGHT_IN=a lighting-capture: the side channel's self-check and list scan, L0 against it), report and pictures into out/scratch/lighting/GAME (LIGHT_OPTS: --every N, --probe X,Y@F, --bench [N], --no-side; GPU_OPTS: --crease N, --height/--aspect; needs a GPU)
+	$(RUN) $(GPU_OPTS) lighting-check $(or $(LIGHT_IN),$(OUT)/capture) out/scratch/lighting/$(GAME) $(LIGHT_OPTS)
+
+# Where lighting-capture saves (a directory of its own: the regression
+# baseline hashes out/GAME/capture).
+LIGHT_CAPTURE ?= out/scratch/lighting/$(GAME)/capture
+.PHONY: lighting-capture
+lighting-capture: release ## Save every 300th frame of a coin-start run with its lighting side channel (native geometrizer; light.bin, scan.bin) to LIGHT_CAPTURE (default out/scratch/lighting/GAME/capture), for lighting-check; prints the side channel's self-check over every frame of the run
+	rm -rf $(LIGHT_CAPTURE)
+	$(RUN) --geo native --light --capture $(LIGHT_CAPTURE) --input $(BENCH_INPUT) run 900000000 300 | grep -E '^light'
+
+.PHONY: temporal-probe
+temporal-probe: release ## Draw the captured frames with the GPU's temporal anti-aliasing (GPU_OPTS: --temporal, --stipple, --depth, --height, --aspect): its first frame against the frame with it off, jittered, blend and keep pictures into out/scratch/temporal-probe/GAME (needs a GPU)
+	$(RUN) $(GPU_OPTS) temporal-probe $(OUT)/capture out/scratch/temporal-probe/$(GAME)
+
+# Temporal anti-aliasing's test sequences: SEQ_FRAMES consecutive frames
+# from frame SEQ_FROM of a run with INPUT (default coin-start; STATE=FILE
+# starts from a save state), kept in TEMPORAL_SEQ (git-ignored scratch,
+# about 0.3 MB a frame). TEMPORAL_OPTS for temporal-check: --every N,
+# --gpu-only, --no-gpu, --crop X,Y,W,H, --at F,.., --tune K=V,.., --ref-cache DIR,
+# --bench [N], --inspect (error by resolve rule), --dump X,Y,W,H (the
+# resolve's decisions per pixel), --depth (before the command),
+# --height/--aspect/--hud.
+SEQ_FROM      ?= 3500
+SEQ_FRAMES    ?= 300
+STATE         ?=
+TEMPORAL_SEQ  ?= out/scratch/temporal/$(GAME)/seq
+TEMPORAL_OPTS ?=
+temporal-capture: release ## Save SEQ_FRAMES consecutive frames from SEQ_FROM (INPUT, STATE) with their motion data to TEMPORAL_SEQ, for temporal-check (native geometrizer)
+	$(RUN) --geo native --capture-seq $(TEMPORAL_SEQ) --seq $(SEQ_FROM),$(SEQ_FRAMES) $(if $(STATE),--load-state $(STATE)) --input $(or $(INPUT),$(BENCH_INPUT)) run 4000000000 0 >/dev/null
+
+temporal-check: release ## Check TEMPORAL_SEQ's motion vectors (pose agreement, reprojection, the GPU's velocity target) and score plain, MSAA 4x, TAA and 67%/50% upscaled GPU frames against supersampled references over the sequence; report and pictures in TEMPORAL_SEQ/check (TEMPORAL_OPTS: --every N, --at F,.., --gpu-only, --no-gpu, --crop, --tune, --ref-cache DIR, --inspect, --dump X,Y,W,H, --depth, --bench [N]; needs a GPU)
+	$(RUN) temporal-check $(TEMPORAL_SEQ) $(TEMPORAL_OPTS)
 
 GEO_CHECK_STEPS ?= 750000000
 GEO_CHECK_FROM  ?= 3000

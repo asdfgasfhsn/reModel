@@ -73,3 +73,14 @@ Second 2C game, added to find what is still `topskatr`-specific.
   of a coin-start run) shows in the first frame that reads it: input lag
   0.
 
+## Lighting (smooth shading's side channel)
+
+Measured with `remodel --geo native --light --input coin-start run 900000000` (6166 frames; `make lighting-capture` runs the same), reModel's smooth-shading side channel (docs/hw/geometrizer.md, "Lighting side channel"):
+
+- Self-check: of 18,711,622 polygon records, the flat luma recomputed from the side channel is the stream's for 18,711,622 (100.00%), one level off for 0 and further off for 0.
+- specular on in 6.98% of object blocks, 0.00% of polygons lit with a specular term; normals computed from the vertices in 6.98% of blocks; zero (unlit) normals on 12.89% of polygons.
+- models drawn from polygon RAM in 38,656 blocks (444,557 polygons, 7.16% of blocks); no direct data.
+- one light vector per frame; lighting entries not changed within a frame.
+- True focal length over the window width: median 0.500 (range 0.500-248.000); the stream-only layer guesses 1.0.
+- The list scan's block facts equal the native geometrizer's on 539,604 blocks, differ on 0.
+- Smooth shading: the snow terrain's faces scatter around the light (bumpy), so the normalised mean normals at its corners face the light more squarely than the faces the game lit: without the exact layer's per-surface brightness correction its lit pixels came out 23.6 levels brighter on average (docs/hw/geometrizer.md, "The exact layer").

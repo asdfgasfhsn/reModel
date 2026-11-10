@@ -12,8 +12,8 @@ original behaviour intact. There is a native player (`make play`) and a
 browser build (WebAssembly and WebGPU, `make web`). On top of the faithful
 picture it can add what the hardware never had: any resolution and widescreen
 views with the HUD moved to the edges, smooth motion for fast displays,
-run-ahead to cut input lag, anti-aliasing and an optional depth buffer, texture
-packs, and custom soundtracks. Everything that is not specific to one game is
+run-ahead to cut input lag, anti-aliasing and an optional depth buffer, smooth
+shading, texture packs, and custom soundtracks. Everything that is not specific to one game is
 built to be reused across the Model 2 family.
 
 > **Bring your own ROMs.** reModel contains no game code or data. See
@@ -54,8 +54,10 @@ sound in the native player; the details, and what each game needed, are in
 - **Fast:** most games run at 2x to 4x real time natively, recompiled;
   native geometrizers replace the geometry programs (see [docs/gpu.md](docs/gpu.md),
   [docs/recompiler.md](docs/recompiler.md)).
-- **Enhancements:** widescreen views, smooth motion, run-ahead, anti-aliasing,
-  bezels, texture packs and soundtrack mods ([docs/enhancements.md](docs/enhancements.md),
+- **Enhancements:** widescreen views, smooth motion, run-ahead, anti-aliasing
+  (multisampled, or temporal with upscaling in the native player), a depth
+  buffer, smooth shading, bezels, texture packs and soundtrack mods
+  ([docs/enhancements.md](docs/enhancements.md),
   [docs/mods.md](docs/mods.md)).
 - **In the browser:** the same games on WebGPU, with a settings panel, gamepad
   and touch controls ([docs/web.md](docs/web.md)).
@@ -107,6 +109,7 @@ Hardware notes ([docs/hw/](docs/hw/)):
 - [model2a.md](docs/hw/model2a.md), [model2b.md](docs/hw/model2b.md), [model2c.md](docs/hw/model2c.md): the three boards.
 - [peripherals.md](docs/hw/peripherals.md): the 2C board's I/O and peripherals.
 - [geometrizer.md](docs/hw/geometrizer.md): the geometrizer and 3D rasteriser; [geometrizer-2c.md](docs/hw/geometrizer-2c.md) and [geometrizer-2b.md](docs/hw/geometrizer-2b.md): the native geometrizers.
+- [texture-lod.md](docs/hw/texture-lod.md): mipmaps, the log table and microtextures, as the games send them.
 - [mb86235.md](docs/hw/mb86235.md) (2C geometry chip), [mb86234.md](docs/hw/mb86234.md) (2A), [adsp2106x.md](docs/hw/adsp2106x.md) (2B SHARC).
 - [tilemap.md](docs/hw/tilemap.md): the 2D tile layer.
 - [sound.md](docs/hw/sound.md): 68000 + SCSP and the DSB2 music board; [dsb1.md](docs/hw/dsb1.md): the DSB1; [z80.md](docs/hw/z80.md): the Z80 core.

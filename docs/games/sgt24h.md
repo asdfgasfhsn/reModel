@@ -21,6 +21,12 @@ below (the register cache and the I/O type).
   unchanged; a coin-start race's `make sound` averages -37.7 dBFS RMS
   (peak -19.1), as `overrev`'s does, so the manifest gives it the same
   +6 dB.
+- *Seen in captures (2026-11-11):* the game rewrites part of its colour
+  translation tables during the race: 384 of the 6144 entries the renderer
+  reads differ in the coin-start captures from frame 2400 to 5400 against
+  frames 600-2100 and 5700-6212, and the sky is drawn warmer then. What it stands for (a time of
+  day, a lighting change) is *unconfirmed*. It is why texture dumps keep the
+  most drawn look (`docs/texture-packs.md`, "Looks").
 - *Confirmed (by running it):* the i960 uploads the copro and geometrizer
   SHARC programs exactly as `overrevb` does, and they reach the same code
   (2,111 and 2,987 words, `remodel sharc-check` on both games' images). The
@@ -95,3 +101,13 @@ below (the register cache and the I/O type).
   input lag 4, the most of the sixteen games; run-ahead of 3 frames hides
   three of them.
 
+## Lighting (smooth shading's side channel)
+
+Measured with `remodel --geo native --light --input coin-start run 900000000` (6163 frames; `make lighting-capture` runs the same), reModel's smooth-shading side channel (docs/hw/geometrizer.md, "Lighting side channel"):
+
+- Self-check: of 16,714,724 polygon records, the flat luma recomputed from the side channel is the stream's for 16,714,087 (100.00%), one level off for 637 and further off for 0 (the SHARC rounds toward zero).
+- no specular lighting; normals computed from the vertices in 0.00% of blocks; zero (unlit) normals on 17.91% of polygons.
+- no models drawn from polygon RAM; no direct data.
+- the light vector changes within a frame in 139 of 6163 frames (up to 3 vectors a frame); lighting entries not changed within a frame.
+- True focal length over the window width: median 0.605 (range 0.605-1.210); the stream-only layer guesses 1.0.
+- The list scan's block facts equal the native geometrizer's on 279,408 blocks, differ on 0.

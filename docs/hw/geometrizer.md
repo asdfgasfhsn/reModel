@@ -356,25 +356,32 @@ vertices [P1', P0', Pa, Pb] in that order. **M**
 | h0 | 0-2 / 3-5 | width = 32 << n, height = 32 << n | M |
 | h0 | 6 / 7 | smooth wrap X / Y (only affects filtering at the seam; coordinates always repeat because sizes are powers of two) | M |
 | h0 | 8 / 9 | mirror X / Y (mirrored repeat) | M |
-| h0 | 10-11 / 12 | microtexture min-LOD / microtexture enable | L |
+| h0 | 10-11 / 12 | microtexture min-LOD (L; values 0-2 with bit 12, and 1 on plain polygons of three games: meaning unconfirmed) / microtexture enable (**H** as a flag naming a second texture: `hotd`, `segawski`, `topskatr`, `waverunr`; see `texture-lod.md`) | L / H |
 | h0 | 13 | translucent (texel 15 = transparent) | M |
 | h0 | 14 | textured (else flat) | M |
 | h0 | 15 | checker: draw every other pixel (x ^ y parity), used as a screen-door translucency. Applies to flat polygons too: waverunr's arch shadow is a flat checker polygon over the water (**H**, from the stream; drawn solid it hides the water); sgt24h's car shadow is flat checker polygons too (**H**, from the stream) | M |
 | h1 | 0-7 | luma table number (× 128 bytes) | M |
 | h2 | 0-5 / 6-10 | X / 32, Y / 32 position in the sheet | M |
 | h2 | 12 | swap banks (level 0 from bank 1) | M |
-| h2 | 13 / 14-15 | microtexture X (×128) / Y (×128), 128×128 in the other bank | L |
+| h2 | 11 | set on every textured polygon of all 18 games; purpose unknown | — |
+| h2 | 13 / 14-15 | microtexture X (×128) / Y (×128), 128×128 in the other bank | **H** (by content, `texture-lod.md`) |
 | h3 | 6-15 | colour: palette entry 0x1000 + n | M |
-| h1 8-15, h2 11, h3 0-5 | | unknown | — |
+| h1 8-15, h3 0-5 | | unknown | — |
 
 **Mipmaps.** Level k sits at ((x − 2048) >> k) & 2047, ((y − 1024) >> k) & 1023, in bank
 (k & 1) (bank-swapped if h2 bit 12). Level 1 is therefore at (1024 + x/2, 512 + y/2) in
-the other bank, and so on down to 2×2.
+the other bank, and so on down to 2×2. **H** for levels 1 and 2: 16 of the 18 games' texture
+RAM holds them there (`texture-lod.md`).
 
 **LOD per pixel.** The polygon's lod = 128·(exponent of distance − 127) + logram[the 15
 mantissa bits]. The log table is uploaded by fn 0x14. The pixel's mip value is
 2·log2(z)·128 − lod; the level is that >> 7, with fractional blending between levels.
 Negative values blend in the microtexture. **L** (MAME derived this itself)
+
+Since checked against the games (`texture-lod.md`): the log table is `128·log2(1 + i/32768)`
+(exactly, in three games; a straight-line stand-in in most), and the games author the
+distance word as the per-polygon half of `2·log2(z) − log2(distance)` (**H**). The constant
+in the level, the filtering between levels and the microtexture's blend stay unconfirmed.
 
 ### 5.4 Pixel colour
 - **Textured:**
@@ -534,7 +541,8 @@ Rasteriser checks (reModel `crates/model2/src/raster.rs`, gameplay frame 4555), 
   sampling and looks like Model 2 footage.
 - topskatr uploads no mipmaps: both texture banks hold only full-size textures (the
   first 1 MB of each bank is used), and the level-1 positions of its textures are empty
-  or hold other textures. So LOD selection can't matter for this game.
+  or hold other textures. So mip selection can't matter for this game; its microtextured
+  floors, roads and walls are another matter (`texture-lod.md`: not drawn yet).
 - Clipping (§4.3): reModel clips each polygon in view space against four side planes through
   the eye and a near plane at z = 10^-6, which only keeps 1/z finite. The side planes bound a
   guard band 992 pixels (twice the screen width) beyond each screen edge, not the window, so
@@ -547,7 +555,7 @@ Rasteriser checks (reModel `crates/model2/src/raster.rs`, gameplay frame 4555), 
   whole. What the hardware does with geometry this close is *unconfirmed*; dropping the near
   plane altogether (z near 0 with x, y unbounded) gives projected coordinates too large for f32
   spans (floor polygons running under the camera smeared), which the side planes prevent.
-- Not yet checked: mipmaps/LOD, microtexture, translucency/checker details, and the z-sort key format (reModel sorts on float z).
+- Not drawn: mip levels and microtextures (what the games send is in `texture-lod.md`). Not yet checked: translucency/checker details, and the z-sort key format (reModel sorts on float z).
 
 ## Smooth motion (reModel's in-between frames)
 
@@ -659,9 +667,53 @@ frames all), where matching by key and order alone had left up to 24 of
 the first in-between: models that change with the animation (a pose that
 is a model of its own, `vstriker`'s waving flags), and the windows (fn
 0x03), whose centres the games move by whole pixels (`topskatr`'s camera
-bob), which can't be split. No cuts came up in these runs; the cut test
-is checked by unit tests only, *unconfirmed* on a game's real camera
-cuts (replays, attract mode).
+bob), which can't be split. No cuts came up in these runs. Since then
+(2026-11-10, `make temporal-check` sequences) the cut test has flagged
+real camera cuts: `topskatr`'s attract montage every 27 frames (each a
+different shot, *confirmed* by looking), and `vstriker`'s ball trail
+restarting every 8 frames; no missed cut showed in the frames looked at
+(`topskatr`, `srallyc`, `lastbrnx`, `vstriker`).
+
+A third thing stays on frame N's (2026-11-11, measured): the vertices of
+models the list rewrites in polygon RAM every frame under an unchanged
+transform (`lastbrnx`'s fighters' joint pieces, `docs/games/lastbrnx.md`).
+They are drawn under the blended transforms, so they lead the limbs
+around them by (1 - t) of their own motion: on `lastbrnx`'s frames
+3300-3599 that motion is 0.35 native pixels at the median, 4.9 at p90
+and up to 27 on a kick (frames 3391-3395). Looked at on frame
+3393 (t = 0.25, 0.5, 0.75): thin slivers of the sleeve pieces at
+Yusaku's elbow, seen at 4x zoom; nothing torn off.
+
+**Motion vectors** (temporal anti-aliasing, `docs/enhancements.md`):
+`Frame::motion` replays frame N's list once with frame N-1's matched
+transforms, giving each vertex's previous position. For that, a
+transform matched under another key (a model swapped in with a pose:
+`vstriker`'s players and ball trail) counts as unknown, like one not
+matched (`Plan::unknown`; focal lengths, matched across keys by order,
+don't count), so its object has no motion data. In-betweens are
+unchanged by this.
+
+The motion replay also reads polygon RAM **as frame N-1 left it**,
+whatever frame N's list writes there (`GeoExt::before`). A game can
+animate a model by rewriting its vertices through the list (fn 0x05)
+every frame and drawing it under an unchanged transform: `lastbrnx`'s
+fighters' joint pieces (`docs/games/lastbrnx.md`). Replayed with frame
+N's vertices, such a model was frame N's shape under frame N-1's
+transform, not where frame N-1 drew it: 3% of `lastbrnx`'s position
+words in valid blocks (96.93% agreement in `make temporal-check`; up to
+27 native pixels off on a kick). Only the list writes polygon RAM, so a
+word the list writes once in a frame, before anything reads it, holds
+before frame N what frame N-1's objects read, if frame N-1's list wrote
+it the same way. An object that reads a word frame N's list writes more
+than once, or before writing it, gets no motion data
+(`smooth::unsure_blocks`; frame N's pattern stands in for frame N-1's).
+*Confirmed* by running it: `lastbrnx` 3300-3599 100.00% with no block
+lost (its list writes 2,707 words a frame, each once, before they are
+read); the sequences of `topskatr`, `srallyc`, `sgt24h`, `doa` and
+`vstriker` write no polygon RAM through the list and their motion data
+is byte for byte what it was. In-betweens still read the list's writes
+back (frame N's vertices under blended transforms), so they are
+unchanged too; see "Seeing it" for what that leaves on `lastbrnx`.
 
 **Cost** (natively, an in-between drawn after every frame of those runs,
 six runs sharing a 16-core desktop): about 0.2 ms (`stcc`) and 0.4 ms
@@ -684,3 +736,107 @@ frame is matched with the last shown one. The game's own machine has
 smooth motion off meanwhile. Checked against a plain run (`make
 run-ahead-check`): where the controls held, the in-between shown after
 frame F is the plain run's in-between at frame F + N byte for byte.
+
+## Lighting side channel (reModel's smooth shading)
+
+Not hardware: what smooth shading (`model2::light`, `--shading`, off by
+default) gets from the geometrizer beside the raster stream, which carries
+only each polygon's luma. Code: `crates/model2/src/light/side.rs` (the
+record, the formula, the self-check), `light/scan.rs` (the list scan), the
+two hooks per program in `geo_native.rs` / `geo_native_2c.rs`
+(`Io::light`), `Engine::set_light` / `light_frame` in `geo.rs`, `light.bin`
+and `scan.bin` in captures.
+
+- **Per object block** (each raster `0x1` command, object data or direct
+  data): model address, the focal lengths and light vector in effect, and
+  flags: direct data, normals computed, specular on, compact model, and the
+  program's two lighting conventions as generic facts: *back faces sent
+  unlit* (2C: a single-sided back face gets luma 0) and *truncating
+  arithmetic* (2B: results rounded toward zero).
+- **Per polygon record** (native geometrizers only): the view-space normal
+  the program lit it with (a culled 2C back face in computed mode never
+  has its normal normalised: the raw cross product, normalised in f32),
+  the program's facing, the specular base (`d`; `max(d, 0)` for a 2C
+  given-normal front triangle and everything `overrev` lights; `n·L` on
+  2B), the lighting entry and its ambient, diffuse, specular scale and
+  number of squarings as resolved for that polygon, and a *flip* flag: on
+  2B the diffuse factor follows the sign of the product `n·L × n·P`, so a
+  polygon edge-on to the eye (`n·P = -0`, a front face by the back-face
+  test) is lit from the other side than it faces.
+- **The list scan** (`--geo chip`): a table of operand counts walks the
+  words the chip was fed and tracks fn 0x07, 0x09 and 0x0A, giving the
+  block facts without the faces. It knows the shared command set, the 2B
+  aliases 0x11-0x1C and `topskatr`'s and `lastbrnx`'s own commands; any
+  other command gives up (the frame is shaded from the stream alone).
+
+**Self-check, all 18 games** (`remodel --light run`, every frame of a
+900M-instruction coin-start run with the native geometrizer; 6,000-6,200
+frames and 9-25 million polygon records a game): each polygon's flat luma
+recomputed in IEEE single precision from its record (`light::Lamp::eval`,
+`quantise`) against the stream's.
+
+| Board | Programs | Exact | Within one level | Off further |
+|---|---|---|---|---|
+| 2C | shared, `stcc`, `overrev`, `topskatr` (8 games) | 100% | 0 | 0 |
+| 2B | shared, `indy500`/`fvipers`, `vstriker`, `lastbrnx` (9 games) | 99.996-100% | 0.0000-0.0038% (581 of `sgt24h`'s 637 on back faces) | 0 |
+| 2A | `Program::Fixed` (`srallyc`) | 100% | 0 | 0 |
+
+- 2C: the side channel and the formula reproduce the TGP programs' lumas
+  bit for bit (*confirmed*, and the native code is bit-exact against the
+  TGP, `geometrizer-2c.md`).
+- 2B: reading the SHARC's 32-bit values as IEEE singles is *confirmed*:
+  apart from the polygons one level off, which the SHARC's rounding toward
+  zero explains (an IEEE round-to-nearest product or sum lands on the
+  other side of an integer), every luma is the IEEE recomputation's. The
+  edge-on rule above was found by this check (`sgt24h` and `doa`: 259
+  polygons off by 75-230 levels before it), and agrees with the program's
+  description in `geometrizer-2b.md` ("the sign of the product: −0
+  counts").
+- 2A: the check only shows that the side channel matches reModel's model
+  of the fixed-function geometrizer, which *is* the 2C program's maths.
+  Whether the 2A hardware lights that way stays *unconfirmed*: no 2A
+  stream other than reModel's own exists to compare with.
+
+**The list scan against the native hooks**: equal block facts on every
+block whose focal lengths the scan knew, in every frame of all 18 games'
+runs (native path, the list scanned beside the hooks: 9.95 million
+blocks; `lastbrnx`'s first 3 came before its list first set the focal
+lengths), and on the chip path (`geo-check --light`: the chip's list
+scanned, the native hooks beside it; `topskatr`, `stcc`, `lastbrnx`, 2,700
+frames each): none differing.
+
+**Colour tables are not always brightness ramps.** A game's colour
+translation tables may map a colour's levels to other hues: `topskatr`'s
+ramp boards (colour component 11) hold unrelated colours in columns 40-63
+(white at 45-47, then a pink, a red, black), so the polygon's luma in
+effect picks its colour and the board is white at luma 255 and red a few
+levels below. Interpolating such a luma paints the other colour across the
+polygon. `raster::build_with` therefore clamps a lit pixel's luma to the
+levels around the polygon's own over which its colour keeps its hue, for
+every level its texels can reach (the luma table between its darkest and
+brightest opaque texel; bilinear filtering blends between them), and
+`lighting-check` fails a frame whose shaded pixels change hue (J). It is
+common: of the lit polygons in the 21 captured frames per game, `lastbrnx`
+clamps about 58%, `dynabb97` over 90% (its players' tables hold coloured
+entries in the dark columns below a grey ramp), `doa` 35%, `schamp` 34%,
+`vstriker` 29%, `bel` 36%, `topskatr` 15%; `sgt24h` and `indy500` none.
+Finer levels (`shading_fine`, `raster::fine_level`) blend only between
+two adjacent columns inside that range. The tables' steps between
+adjacent columns are not even: a colour on `fvipers`' fighters (frame
+1500 of the capture) goes from black straight to (70, 65, 60) in the
+next column; a blended pixel would be any shade between, so finer
+levels never blend with a pure black column (`raster::fine_columns`).
+
+**The exact layer** (`--shading vertex`, `pixel`, level L2): a corner is
+lit with its polygon's own record (`light::PixelLight`: `Lamp::eval` plus
+an offset that is 0 where the recomputation is exact and makes a 2B
+polygon one level off give its own luma) for the normalised,
+angle-weighted mean of the game normals around it; `pixel` evaluates it
+per pixel for the interpolated normal (raster.wgsl `lamp_eval` is the
+same formula). Where a surface's normals scatter around the light (bumpy
+terrain: `skisuprg`'s snow), normalised mean normals face the light more
+squarely than the facets the game lit, so each smooth surface (faces
+joined through shared smooth corners: one material, no crease) is moved
+back by one offset to the brightness the game gave it, area-weighted
+(without it `skisuprg`'s lit pixels came out 23.6 levels brighter on
+average, with it within one level on every game).

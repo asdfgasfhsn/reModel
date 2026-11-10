@@ -306,6 +306,13 @@ state with the transforms replaced.
 
 ## Verification
 
+The values the program computes with are IEEE singles in its 32-bit
+registers (*confirmed* by smooth shading's self-check, `geometrizer.md`,
+"Lighting side channel": each polygon's luma recomputed in IEEE single
+precision from the normal, light and lighting entry the native code used
+is the program's for 99.996-100% of polygons in all nine 2B games, the
+rest one level off by the rounding toward zero).
+
 `make geo-check GAME=...` runs a coin-start run (`geo-check STEPS FROM`:
 750M instructions, past 5,000 frames, by default) in `Check` mode and
 reports the frames compared, the first difference with the words around
@@ -328,6 +335,7 @@ Results (*confirmed*, interpreted SHARC):
 | `indy500` | 5,037 | 100.9M | none |
 | `fvipers` | 5,169 | 142.5M | none |
 | `vstriker` | 5,177 | 172.7M | none (interpreted and recompiled SHARC) |
+| `lastbrnx` | 4,101 | 108.7M | none (its fn 0x1B not implemented, never sent; `docs/games/lastbrnx.md`) |
 | fuzz, `overrevb`'s upload | 8,500 (19 seeds) | 8.2M | none |
 | fuzz, `sgt24h`'s, `doa`'s and `dynabb97`'s uploads | 1,000 (3 seeds) | 0.9M | none |
 | fuzz, `schamp`'s upload (command check on) | 1,400 (3 seeds) | 1.1M | none |

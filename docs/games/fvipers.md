@@ -73,4 +73,22 @@ Model 2B, with early Sega 2B SHARC programs.
   reads it: input lag 1; from 3307 (they stop at 3000) eight, mid-move.
   Walking showed nothing for 16 frames while coin-start's punches carried
   on.
+- *Depth buffer (2026-11-11; captured coin-start frames drawn with it off
+  and on at 1440x1080 and 1920x1080 (`make depth-check`), compared with
+  the build before the 2026-11-10 rules (`docs/enhancements.md`, "Depth
+  buffer")):* 18 of 21 frames differ, by at most 0.05%: costume layers and
+  limbs of the fighters by a few pixels (1-3% of 1/z), a wall base going
+  under the arena floor (9%). Can't tell which is right; none looks
+  broken. The 2026-11-10 rules changed at most 900 pixels a frame, nearly
+  all back to the game's order.
 
+## Lighting (smooth shading's side channel)
+
+Measured with `remodel --geo native --light --input coin-start run 900000000` (6205 frames; `make lighting-capture` runs the same), reModel's smooth-shading side channel (docs/hw/geometrizer.md, "Lighting side channel"):
+
+- Self-check: of 19,948,488 polygon records, the flat luma recomputed from the side channel is the stream's for 19,948,391 (100.00%), one level off for 97 and further off for 0 (the SHARC rounds toward zero).
+- specular on in 72.27% of object blocks, 64.17% of polygons lit with a specular term; normals computed from the vertices in 29.63% of blocks; zero (unlit) normals on 9.20% of polygons.
+- models drawn from polygon RAM in 9,450 blocks (179,550 polygons, 1.90% of blocks); no direct data.
+- the light vector changes within a frame in 109 of 6205 frames (up to 2 vectors a frame); lighting entries not changed within a frame.
+- True focal length over the window width: median 0.968 (range 0.968-0.968); the stream-only layer guesses 1.0.
+- The list scan's block facts equal the native geometrizer's on 496,220 blocks, differ on 0.

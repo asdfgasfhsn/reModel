@@ -87,3 +87,13 @@ screen says ©SEGA 1996.
   stops at 3400, a frame later (1). From 3910 and 4510 nothing changed for
   16 frames (between scenes).
 
+## Lighting (smooth shading's side channel)
+
+Measured with `remodel --geo native --light --input coin-start run 900000000` (6129 frames; `make lighting-capture` runs the same), reModel's smooth-shading side channel (docs/hw/geometrizer.md, "Lighting side channel"):
+
+- Self-check: of 9,359,810 polygon records, the flat luma recomputed from the side channel is the stream's for 9,359,810 (100.00%), one level off for 0 and further off for 0.
+- no specular lighting; normals computed from the vertices in 100.00% of blocks; zero (unlit) normals on 0.00% of polygons.
+- models drawn from polygon RAM in 6,322 blocks (95,438 polygons, 1.58% of blocks); no direct data.
+- the light vector changes within a frame in 3157 of 6129 frames (up to 3 vectors a frame); lighting entries not changed within a frame.
+- True focal length over the window width: median 1.000 (range 1.000-1.000); the stream-only layer guesses 1.0.
+- The list scan's block facts equal the native geometrizer's on 399,028 blocks, differ on 0.

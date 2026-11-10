@@ -11,7 +11,9 @@ straight away. At startup the reModel logo shows for 1.5 s, then fades out
 over 0.5 s over the launcher (or the game booting underneath). Any
 key, click or gamepad button skips it; `--no-splash` leaves it out. The
 logo (`assets/reModel-logo-1086.png`, half the size of the original) is
-built into the binary and decoded with `remodel-png`.
+built into the binary and decoded with `remodel-png`. `--fullscreen`
+starts fullscreen (remembered, as `--rom` is), and `--interp` runs the
+i960 on the interpreter in a build with recompiled code.
 
 **Geometrizer.** The geometrizer runs on the native implementation
 (`docs/hw/geometrizer-2b.md` for Model 2B, `docs/hw/geometrizer-2c.md`
@@ -37,28 +39,153 @@ floors). Neither changes what the game computes: state hashes are the
 same. Costs 0.5-1 and 1.5-3 ms a frame at 1080p on the development GPU
 (`docs/gpu.md`); what the depth buffer does is in `docs/enhancements.md`.
 
+**Temporal anti-aliasing** (settings `temporal` and `stipple`, below;
+`--temporal off|taa|75|67|50` and `--stipple blend|keep` for one run; off
+and blend by default). Each frame's 3D layer is drawn at a slightly
+different sub-pixel offset and blended into the picture so far, moved
+along each polygon's motion; `taa` draws it at full size, a percentage
+draws it that much smaller and upscales (50 to 100; the menu offers 75,
+67 and 50). The motion comes from smooth motion's recording, so turning
+temporal on turns that recording on (0.05-0.5 ms a game frame, plus one
+geometrizer replay: 0.2-0.4 ms on 2C, 1.4-1.8 ms on 2B) whether or not
+smooth motion's in-betweens are on; with them on, each in-between is
+blended with its own motion. It needs the native geometrizer (with the
+chip it is off, and the menu and launcher say so), and it replaces
+multisampling: `aa` is kept but off while temporal is on (the menu's
+anti-aliasing choices are greyed out, the launcher's row says why). A GPU
+without 16-bit float render targets (the OpenGL fallback, say) can't, and
+says so. The games' checkerboard (screen door) see-through polygons are
+drawn as an even 50% blend with `stipple = blend`, which stays steady at
+any scale; `keep` keeps the pattern, where the 3D layer has at least 1.5
+pixels a game pixel (else it blends anyway). The accumulation starts
+again on a camera cut, a save state load, a game start, a resize, a
+change of quality settings and a switch between run-ahead's machine and
+the game's. The launcher's previews never use it. Nothing the game
+computes changes. How it works and what was measured are in
+`docs/enhancements.md`; the browser build doesn't have it.
+
+What to expect. At `taa`, polygon edges are smooth whether the picture
+moves or not, a still picture is cleaner than with 4x multisampling,
+textures look about as sharp as a supersampled picture (the hard edges of
+magnified texels, such as a skater's cut-out shadow, are kept), and it
+costs about 1 ms a frame more than off at 1080p (4 at 4K) on the
+development GPU. It is not perfect: objects animated without motion data
+(waving flags; `vstriker`'s players, whose pose models change) look soft,
+nearer the plain picture, a car bouncing with the camera loses some of its
+smoothing, and on `vstriker`'s crowd a still picture shimmers slightly.
+Fast driving softened distant scenery in earlier tests; not checked since
+the fixes to the history's clip and resampling. At 67% and 50% the 3D
+layer costs about the same as off, or less, and looks better than simply
+enlarging a smaller picture. Thin things (overhead wires, rails, distant
+poles) stay whole lines, a little softer than at `taa`, where they used
+to break into dotted, speckled lines; at 50% close-set wires still show
+some grain. Edges in fast motion look as coarse as the smaller
+picture; 50% shows it more. Shadows and other checkerboard
+polygons look like smooth see-through with `blend`, not the original
+screen door. Something the game flickers on purpose (`topskatr`'s FINISH
+sign) flickers the same, not averaged. The first frame after a camera cut,
+a load or a resize is the plain picture, sharpening over the next few
+frames. On the CPU it adds smooth motion's recording and a replay a game
+frame (above), which an interpreted 2B game running ahead may not have to
+spare (`sgt24h` with run-ahead 1 fell behind and the player dropped
+run-ahead). Prefer 4x multisampling where the original's screen door
+matters, with `--geo chip`, or when the CPU has no time to spare.
+*Unconfirmed:* tried on one NVIDIA GPU (Vulkan) on a 60 Hz display;
+in-betweens with it on were only forced there, not seen on a faster
+display.
+
+**Smooth shading** (opt-in; settings `shading`, `shading_fine` and
+`shading_balance`, below, and `crease` in the settings file only;
+`--shading flat|vertex|pixel`, `--crease auto|N`, `--shading-fine
+on|off` and `--shading-balance on|off` for one run; `flat`, `auto`, fine
+off and balance on by default; docs/enhancements.md, "Smooth
+shading"). The games
+light each polygon with one brightness, so curved surfaces show their
+facets. `vertex` lights each polygon corner with the game's own lighting
+for the mean of the normals of the faces around it that belong to the
+same smooth surface, and blends it across the polygon; `pixel` works the
+game's lighting out for every pixel, for the normal blended across the
+polygon, so highlights (the games that use specular light: `topskatr`,
+`srallyc`, `stcc`, `bel`, `lastbrnx`, `fvipers`, `schamp`) sit where the
+surface faces them instead of being spread between corners. Faces
+meeting at more than the crease angle keep a hard edge (`auto` is the
+game's own angle: 40 degrees, 25 for `schamp`; 0 smooths nothing, the
+original picture). The normals and lighting come from what the
+native geometrizer recorded about each polygon (its side channel, on
+whenever shading is); with the chip (`--geo chip`, not turned off by it)
+only block facts are known, so `vertex` blends the polygons' own
+brightnesses instead and `pixel` is drawn as `vertex` (the menu and
+launcher say so, and the window title says what was drawn: `shading
+pixel` or `shading vertex`). It works with temporal anti-aliasing (its
+first frame after a reset is the shaded frame), multisampling, the depth
+buffer and texture packs (a pack image's lighting follows the shaded
+brightness). A pixel never changes hue, only brightness: where a game's
+colour tables turn a colour into another one at other brightnesses
+(`topskatr`'s ramp boards, `dynabb97`'s players, `lastbrnx`), the shading
+stays within the brightnesses of the polygon's own colour. HUD windows,
+shadows and polygons whose corners all keep their own normal are left as
+the game drew them, pixel for pixel. Smooth motion's in-betweens are
+replayed with their own side channel, frames drawn with the last frame's
+polygons when the geometrizer is late use that frame's, and run-ahead's
+machine records it too, so every image is shaded at the same level and
+shading doesn't alternate between images; a frame drawn again reuses its
+shading. The launcher's previews are always flat. Nothing the game
+computes changes. On the CPU it costs about 1-2 ms each time a new frame
+is drawn (up to 6 ms on busy frames on a loaded machine), and building
+the lit polygons 0.1-2 ms more; repeats cost nothing. On the GPU it is
+within the noise at 1080p and a little at 4K with `pixel`; with
+`flat` (or a crease of 0) none of it runs.
+
+What to expect (from the review pictures): clearly better on
+fighters and curved bodies (`lastbrnx`'s and `fvipers`' fighters,
+`doa`'s, `topskatr`'s skaters, `stcc`'s cars, `segawski`'s life vest);
+little or no change on mostly flat cars and scenery (`sgt24h`, `srallyc`,
+roads, buildings; `indy500` lights its cars evenly); worse on art drawn
+to be faceted: `schamp`'s Sonic quills and Knuckles' dreadlocks melted
+together at 40 degrees, so `schamp` uses 25, which keeps their ridges;
+`vstriker`'s small low-poly players look a little rounder, not worse, at
+40. Each limb of a fighter is shaded on its own, so joints keep a seam.
+Gradients step through the game's 64 brightness levels, so large smooth
+surfaces show bands; **Blend brightness levels** (`shading_fine`, the
+menu's checkbox under Shading, the launcher's "Brightness levels") blends
+the two of the game's colours around each lit pixel's brightness
+instead, which removes the bands and never leaves the polygon's colour
+(only lit pixels; the rest stay the game's; pure black, such as ink
+lines, stays black). **Balance brightness** (`shading_balance`, on by
+default; the menu's checkbox under Shading, the launcher's "Brightness
+balance") keeps each smooth surface as bright overall as the game drew
+it; off, the game's lighting is worked out at the smoothed normals with
+no correction, so bumpy surfaces (`skisuprg`'s snow) come out brighter
+(on screen a small change). The window title says `unbalanced` when it
+is off. *Unconfirmed:* tried on one NVIDIA
+GPU (Vulkan) on a 60 Hz display (in-betweens forced, not seen on a
+faster display).
+
 **Texture packs** (settings `pack` and `tex_filter`, below; `--pack on|off`,
 `--texture-pack DIR` and `--tex-filter off|mip|2|4|8|16` for one run; both
 off by default). With `pack` on, replacement textures from the game's pack
-(`docs/texture-packs.md`) are drawn on the GPU in place of the originals. The
+(`docs/texture-packs.md`) are drawn on the GPU in place of the originals: 3D
+textures, and tile patterns (HUD, text, 2D backgrounds) at the window's
+resolution when the pack has tile images. The
 pack is the folder `<data dir>/<set>/texpack/` (`out/<set>/texpack` in a
 source tree; `make upscale-textures` makes one), and a clone with none uses
-its parent's (*unconfirmed*: not tested). `--texture-pack DIR` names one for
+its parent's (checked: `overrevb` with only `overrev/texpack`). `--texture-pack DIR` names one for
 every game that run and turns `pack` on; `--pack` alone means on. PNGs are
 decoded on background threads when their texture is first drawn and the
 original shows until then. The launcher's previews never use packs. The Esc
 menu's line under the checkbox shows the folder, how many images it holds and
-how many of the last frame's textured polygons were replaced, or why there
-is no pack (a missing folder also gives a notice). `tex_filter` filters pack
+how many of the last frame's textured polygons (and tile patterns) were
+replaced, or why there is no pack (a missing folder also gives a notice). `tex_filter` filters pack
 images only: `off` (as they are), `mip` (mipmaps, no shimmer on distant
 ground) or `2`, `4`, `8`, `16` (mipmaps plus anisotropic filtering up to that
 many times, for ground at grazing angles); the menu offers only what the GPU
-has. Neither changes what the game computes. Checked on `topskatr` with a
-scripted run. *Not verified:* smooth motion's in-betweens and F5/F9 save
+has (3D textures only; tiles are drawn bilinear). Neither changes what the
+game computes. Checked on `topskatr` with a scripted run (tiles too:
+`--shot` in a race, the HUD drawn from realesrgan-x4plus tiles). *Not verified:* smooth motion's in-betweens and F5/F9 save
 slots with a pack, and decode stutter was not measured.
 
-**Smooth motion** (a setting, below; `--smooth` for one run; off by
-default). On a
+**Smooth motion** (a setting, below; `--smooth on|off` for one run, a
+bare `--smooth` meaning on; off by default). On a
 display faster than the game's 57.5 Hz, the refreshes between two game
 frames show the 3D geometry part way from the frame before to the newest
 one, by the time since the newest was first shown, instead of repeating
@@ -241,9 +368,13 @@ says why. The preview never takes input, never saves its EEPROM, and is
 emulated like the game would be (it costs what the game costs).
 
 **Settings** slide out from the right over the preview, which shows what
-they change as they change: aspect (fit the window or 4:3), bezel, HUD at
-the edges or centred, speed (one frame a refresh or exact arcade speed),
-smooth motion, anti-aliasing (off, 4x, 8x), the depth buffer, the texture pack and its filtering (off, mip, 2x to 16x), the effects and music levels in dB, the geometrizer (native
+they change as they change (except anti-aliasing, temporal anti-aliasing,
+the depth buffer, shading and the texture pack and its filtering, which
+the preview draws without; they show in the game): aspect (fit the window
+or 4:3), bezel, HUD at the edges or centred, speed (one frame a refresh or
+exact arcade speed), smooth motion, run-ahead (off, 1, 2, 3), anti-aliasing (off, 4x, 8x), temporal anti-aliasing (off,
+TAA, 75%, 67%, 50%) and its checkerboard see-through (blend or keep), the depth buffer, shading (flat,
+vertex, pixel; with the chip geometrizer pixel says it draws as vertex), its brightness levels (the game's or blended) and its brightness balance (on or off), the texture pack and its filtering (off, mip, 2x to 16x), the effects and music levels in dB, the geometrizer (native
 or the game's chip; the preview restarts on it) and the Controls page
 (remapping, below). "Save for" says where changes go: the defaults for all
 games, or this game only (a game's own setting is tagged "this game", and
@@ -251,7 +382,7 @@ games, or this game only (a game's own setting is tagged "this game", and
 the Esc menu while playing. They come in layers, lowest first, as in the
 browser build: the built-in defaults, the defaults for all games, the
 game's own, then the command line (`--mix`, `--hud`, `--aspect`, `--bezel`,
-`--exact`, `--smooth`, `--aa`, `--depth`, `--pack`, `--texture-pack`, `--tex-filter`, `--geo`), which applies to that run only and is
+`--exact`, `--smooth`, `--run-ahead`, `--aa`, `--temporal`, `--stipple`, `--depth`, `--shading`, `--crease`, `--shading-fine`, `--shading-balance`, `--pack`, `--texture-pack`, `--tex-filter`, `--geo`), which applies to that run only and is
 never saved, unless a setting it gave is changed in the launcher or menu
 (that change is then kept as any other). A layer keeps only what it sets.
 
@@ -652,9 +783,11 @@ synthetic and scripted (`--nav`) events only, not yet with a real pad.
 - **Display**: the aspect (fit the window, the default, drawing the game
   wider than its frame from 4:3 to 32:9; or 4:3, `--aspect 4:3`), the
   bezel (below), where the HUD goes on wide windows, smooth motion,
-  anti-aliasing and the depth buffer (above), the texture pack and its
-  filtering (above), run-ahead (above), the geometrizer (on the next start), "Save changes
-  for" this game or all games (as in the launcher), and exact arcade speed
+  anti-aliasing, temporal anti-aliasing and the checkerboard pattern, and
+  the depth buffer, shading and its blended brightness levels (above; the crease angle is the settings
+  file's or `--crease`'s), the texture pack and its
+  filtering (above), run-ahead (above), the geometrizer (on the next start),
+  fullscreen (as F11), "Save changes for" this game or all games (as in the launcher), and exact arcade speed
   (57.524 frames per second) against the default of one game frame per
   display refresh at 60 or 120 Hz, which is 4.3% fast but smooth.
   **Below full speed** (a game frame taking longer than a refresh, as
@@ -758,6 +891,12 @@ directory), the player keeps its files in `out/`; anywhere else in
   settings panels save, and the game settings set for all games.
 - `<set>/settings.txt`: the game's own settings, only where they differ
   from those for all games.
+
+  A game setting whose value doesn't parse, in either file, is ignored
+  with a warning on the terminal (the setting falls back to the next
+  layer down, or its default).
+- `<set>/controls.txt`: the game's remapped controls, only what differs
+  from its manifest (above, "Remapping").
 - `<set>/eeprom.bin`: the game's EEPROM (settings, records), written on quit or on switching games.
 - `<set>/saves/quick.save`, `slot1.save` ...: save states, zlib-compressed,
   about 1.2 MB each. They only load into the same program ROMs.

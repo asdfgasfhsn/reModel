@@ -217,6 +217,55 @@ pub struct Game {
     /// both halves with different data), of which the rasteriser reads the
     /// lower (docs/games/fvipers.md).
     pub texture_ram_mirrored: bool,
+    /// Rules for smooth shading (an enhancement, off by default:
+    /// `model2::light`); [`Shading::DEFAULT`] unless the game's pictures
+    /// asked for something else.
+    pub shading: Shading,
+}
+
+/// Per-game rules for smooth shading (`model2::light`, an enhancement):
+/// which polygons it may smooth and how sharp an edge stays sharp.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shading {
+    /// Faces meeting at more than this many degrees keep a hard edge.
+    pub crease: u8,
+    /// 3D windows never smooth-shaded (besides [`Game::hud_windows`]).
+    pub skip_windows: &'static [usize],
+    /// Models never smooth-shaded: address ranges (first, last). Needs the
+    /// lighting side channel (not built yet): ignored without it.
+    pub skip_models: &'static [(u32, u32)],
+    /// Models with a crease angle of their own: (first, last, degrees).
+    /// Needs the side channel, as `skip_models`.
+    pub model_crease: &'static [(u32, u32, u8)],
+    /// Checkerboard (screen door) polygons stay flat.
+    pub skip_checker: bool,
+    /// Welding tolerance, relative to the position (0: exact bits).
+    /// Reserved: only exact welding is implemented.
+    pub weld_eps: f32,
+    /// Reserved: models whose consecutive object blocks are welded
+    /// together. Not implemented.
+    pub weld_models: &'static [(u32, u32)],
+}
+
+impl Shading {
+    /// What every game uses until its pictures say otherwise: a 40 degree
+    /// crease (boxes, 8-sided wheels and limbs stay faceted; bodies and
+    /// 10+-sided cylinders smooth), nothing else excluded. Checked on all
+    /// 18 working games' frames (docs/enhancements.md, "Smooth shading");
+    /// a new game starts with it and needs nothing else: the generic code
+    /// reads only these fields, never a game's identity. To give a game
+    /// its own, write `shading: crate::Shading { crease: N,
+    /// ..crate::Shading::DEFAULT }` in its manifest with a one-line reason,
+    /// and the pictures behind it in `docs/games/<set>.md`.
+    pub const DEFAULT: Shading = Shading {
+        crease: 40,
+        skip_windows: &[],
+        skip_models: &[],
+        model_crease: &[],
+        skip_checker: false,
+        weld_eps: 0.0,
+        weld_models: &[],
+    };
 }
 
 #[derive(Debug)]
@@ -397,6 +446,15 @@ pub fn rom_folder(game: &Game, root: &Path) -> Option<&'static str> {
     })
 }
 
+/// The sets whose texture pack serves `game`, in the order to look for one
+/// (docs/texture-packs.md): its own, then for a clone its parent's. Pack
+/// keys are the textures' content, so a parent's images serve every
+/// version. The native player looks for `<set>/texpack/` directories in
+/// this order, the browser for `/texpack/<set>/index.txt`.
+pub fn pack_sets(game: &Game) -> impl Iterator<Item = &'static str> {
+    std::iter::once(game.id).chain(game.parent)
+}
+
 /// Set names in ROM directory `root`: `<set>.zip` files and directories.
 pub fn sets_in(root: &Path) -> Vec<String> {
     let mut sets: Vec<String> = fs::read_dir(root)
@@ -491,6 +549,13 @@ pub fn interleave16(lo: &[u8], hi: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clones_fall_back_to_the_parents_pack() {
+        let sets = |id| pack_sets(games::find(id).unwrap()).collect::<Vec<_>>();
+        assert_eq!(sets("overrevb"), ["overrevb", "overrev"]);
+        assert_eq!(sets("topskatr"), ["topskatr"]);
+    }
 
     #[test]
     fn interleave_order() {

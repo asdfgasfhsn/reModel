@@ -27,6 +27,10 @@ pub static SCHAMP: Game = Game {
     dropouts: &[],
     // It uploads its textures to 0x11100000 and 0x11300000 only.
     texture_ram_mirrored: true,
+    // Sonic's quills and Knuckles' dreadlocks are faceted spikes whose
+    // ridges meet at 25-40 degrees: at 40 they melt together, at 25 they
+    // keep their ridges (docs/games/schamp.md, "Smooth shading").
+    shading: crate::Shading { crease: 25, ..crate::Shading::DEFAULT },
     packed: &[],
     // A coin-start run's `make sound` averages -28 dBFS RMS (peak -8), louder
     // than the games here that play at 0 dB (about -31 to -38): brought

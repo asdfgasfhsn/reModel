@@ -28,9 +28,15 @@ impl Probe {
     }
 }
 
-/// The frame's polygons, sorted and placed in `view`.
-fn prepare(f: &Frame, src: &raster::Sources, view: &View) -> (Vec<raster::Poly>, Vec<raster::Placed>) {
-    let mut polys = raster::build(&f.stream, src);
+/// The frame's polygons (smooth-shaded with `light`), sorted and placed
+/// in `view`.
+fn prepare(
+    f: &Frame,
+    src: &raster::Sources,
+    view: &View,
+    light: Option<&model2::light::Options>,
+) -> (Vec<raster::Poly>, Vec<raster::Placed>) {
+    let mut polys = raster::build_shaded(&f.stream, src, light);
     video::HudLayout::new(&f.tiles, &f.palette, view).anchor(&mut polys, view);
     let placed = raster::place(&mut polys, view);
     (polys, placed)
@@ -47,8 +53,9 @@ fn draw(
     view: &View,
     depth: bool,
     msaa: u32,
+    light: Option<&model2::light::Options>,
 ) -> Vec<u8> {
-    gpu.set_quality(gpu::Quality { msaa, depth, ..Default::default() });
+    gpu.set_quality(gpu::Quality { msaa, depth, ..super::gpu_light(light) });
     let layers = video::layers_2d(&f.tiles, &f.palette, view, !placed.is_empty());
     gpu.frame(polys, placed, src, view, &layers)
 }
@@ -97,8 +104,13 @@ fn report_probe(
             (None, true, Some(c)) => format!("pass {c:?}"),
             (None, false, Some(c)) => format!("FAIL (would be {c:?})"),
         };
+        let lumas = if p.lit.is_empty() {
+            String::new()
+        } else {
+            format!(" lumas {:?}", p.lit.iter().map(|l| (l[0] * 10.0).round() / 10.0).collect::<Vec<_>>())
+        };
         println!(
-            "  {k:>3} {:>5} {:>3} {:>5} {:>6} {:>5} {:>11.4} {:<8} {:>10.6} {:>10.8} {:>10.8} {:>4} {result}",
+            "  {k:>3} {:>5} {:>3} {:>5} {:>6} {:>5} {:>11.4} {:<8} {:>10.6} {:>10.8} {:>10.8} {:>4} {result}{lumas}",
             hit.index,
             p.window,
             pl.rank,
@@ -174,6 +186,7 @@ fn compare(view: &View, a: &[u8], b: &[u8]) -> (usize, usize, (usize, usize, usi
     (differ, large, (x0, y0, x1, y1))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     root: &Path,
     hud_windows: (&[usize], &[usize]),
@@ -182,6 +195,7 @@ pub fn run(
     out_dir: &Path,
     probes: &[Probe],
     against: Option<&Path>,
+    light: Option<&model2::light::Options>,
 ) -> Result<(), String> {
     let texture_rom = capture::load_texture_rom(root)
         .map_err(|e| format!("{}: {e} (capture with `make capture`)", root.display()))?;
@@ -208,10 +222,10 @@ pub fn run(
     for d in &dirs {
         let f = Frame::load(d).map_err(|e| format!("{}: {e}", d.display()))?;
         let src = f.sources(&texture_rom);
-        let (polys, placed) = prepare(&f, &src, &view);
+        let (polys, placed) = prepare(&f, &src, &view, light);
         let n = polys.len();
-        let off = draw(&mut gpu, &f, &src, &polys, &placed, &view, false, msaa);
-        let on = draw(&mut gpu, &f, &src, &polys, &placed, &view, true, msaa);
+        let off = draw(&mut gpu, &f, &src, &polys, &placed, &view, false, msaa, light);
+        let on = draw(&mut gpu, &f, &src, &polys, &placed, &view, true, msaa, light);
         let (differ, large, bbox) = compare(&view, &off, &on);
         let (x0, y0, x1, y1) = bbox;
         let pct = |n: usize| 100.0 * n as f64 / (view.width * view.height) as f64;

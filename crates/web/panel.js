@@ -159,6 +159,9 @@ export function createPanel(opts) {
   const withValue = (key, list, label) =>
     list.some(([v]) => v === values[key]) ? list : [...list, [values[key], label(values[key])]];
 
+  // The game's own crease angle for smooth shading, once the module says
+  // (setGameCrease).
+  let gameCrease = null;
   const height = screenHeight(env);
   const fit = windowAspect(env);
   const display = el("section", {}, el("h3", { textContent: "Display" }),
@@ -170,6 +173,16 @@ export function createPanel(opts) {
     onOff("bezel", "Bezel", "beside a 4:3 picture in a wider window"),
     choice("aa", "Anti-aliasing", () => [["off", "Off"], ["4", "4x"]], "smooths polygon edges"),
     onOff("depth", "Depth buffer", "polygons that cross or are sorted wrong come out right; off draws in the game's order"),
+    choice("shading", "Shading", () => [["flat", "Flat"], ["vertex", "Smooth"], ["pixel", "Per pixel"]],
+      "flat is the original; smooth blends the game's own lighting across curved surfaces, worked out at each " +
+      "corner; per pixel works it out for every pixel (with the chip geometrizer it draws as smooth)"),
+    choice("crease", "Crease angle", () => withValue("crease",
+      [["auto", gameCrease === null ? "The game's" : `The game's (${gameCrease}°)`], [30, "30°"], [40, "40°"], [60, "60°"]],
+      (v) => `${v}°`), "with smooth shading: faces meeting at a sharper angle keep a hard edge"),
+    onOff("shadefine", "Blend brightness levels",
+      "with smooth shading: no banding on large smooth surfaces; off keeps the game's 64 levels"),
+    onOff("shadebalance", "Balance brightness",
+      "with smooth shading: each smooth surface as bright as the game's; off, bumpy ones come out brighter"),
     onOff("pack", "Texture pack", "replacement textures from the server's texpack folder for this game, if it has one"),
     choice("texfilter", "Pack filtering", () => [["off", "Off"], ["mip", "Mipmaps"], ["2", "2x"], ["4", "4x"],
       ["8", "8x"], ["16", "16x"]], "mipmaps, then anisotropic filtering; texture pack images only"));
@@ -241,6 +254,10 @@ export function createPanel(opts) {
     if (rows.tilt) rows.tilt.el.hidden = !values.touch;
     // Smooth motion needs the native geometrizer.
     rows.smooth.el.style.opacity = values.geo === "chip" ? 0.5 : "";
+    // The crease angle only matters with smooth shading.
+    rows.crease.el.style.opacity = values.shading === "flat" ? 0.5 : "";
+    rows.shadefine.el.style.opacity = values.shading === "flat" ? 0.5 : "";
+    rows.shadebalance.el.style.opacity = values.shading === "flat" ? 0.5 : "";
   }
   reset.addEventListener("click", () => {
     for (const k of Object.keys(opts.base)) {
@@ -574,6 +591,12 @@ export function createPanel(opts) {
         touchRows.append(onOff("tilt", "Tilt steering", "turn the device like a wheel"));
         refresh();
       }
+    },
+    /// The game's own crease angle (degrees, the module's `game_crease`),
+    /// for the crease row's first option.
+    setGameCrease(degrees) {
+      gameCrease = degrees;
+      rows.crease.draw();
     },
     /// A line under the buttons (loading progress, errors).
     setStatus(text, error = false) {

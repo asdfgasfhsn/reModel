@@ -26,6 +26,7 @@ pub static WAVERUNR: Game = Game {
     protection: None,
     dropouts: &[],
     texture_ram_mirrored: false,
+    shading: crate::Shading::DEFAULT,
     packed: &[],
     volume_db: 0.0,
     files: &[

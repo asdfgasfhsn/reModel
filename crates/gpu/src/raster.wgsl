@@ -284,12 +284,15 @@ fn pack_sample(p: Poly, x_in: f32, y_in: f32) -> vec4f {
     return vec4f(rgb, alpha);
 }
 
-// raster.rs `Light`: the replacement stands for the texture at full luma,
-// so each channel is scaled by what the original pipeline gives at the
-// polygon's luma over what it gives at full luma, for the original texel.
-fn pack_light(p: Poly, u: f32, v: f32) -> vec3f {
+// raster.rs `Light::apply`: the replacement colour `rgb` (0-255) stands for
+// the texture at full luma, so each channel is scaled by what the original
+// pipeline gives at the polygon's luma over what it gives at full luma, for
+// the original texel; where that texel is black at full luma in a channel
+// but not at this luma, the channel adds the original's value (nothing
+// scales up from black). Before rounding.
+fn pack_lit(p: Poly, rgb: vec3f, u: f32, v: f32) -> vec3f {
     if p.luma >= 255u {
-        return vec3f(1.0);
+        return rgb;
     }
     let c = p.colour.xyz;
     // Fallback where the original texel is transparent or black at full
@@ -305,7 +308,7 @@ fn pack_light(p: Poly, u: f32, v: f32) -> vec3f {
     }
     let t8 = filtered_texel(p, u, v);
     if t8 < 0 {
-        return fb;
+        return rgb * fb;
     }
     let l = luma(p.luma_table, u32(t8) / 2u);
     let lp = min(l * p.luma / 256u, 63u);
@@ -313,10 +316,11 @@ fn pack_light(p: Poly, u: f32, v: f32) -> vec3f {
     var r: vec3f;
     for (var ch = 0u; ch < 3u; ch++) {
         let full = translate(ch, c[ch], lf);
+        let here = f32(translate(ch, c[ch], lp));
         if full == 0u {
-            r[ch] = fb[ch];
+            r[ch] = rgb[ch] * fb[ch] + here;
         } else {
-            r[ch] = f32(translate(ch, c[ch], lp)) / f32(full);
+            r[ch] = rgb[ch] * (here / f32(full));
         }
     }
     return r;
@@ -344,10 +348,9 @@ fn shade_pack(in: VsOut) -> vec4f {
     if s.a < 0.5 {
         discard;
     }
-    let r = pack_light(p, u, v);
     // Rust's round() then clamp, as the software (values are never
     // negative).
-    let rgb = min(floor(s.rgb * r + 0.5), vec3f(255.0));
+    let rgb = min(floor(pack_lit(p, s.rgb, u, v) + 0.5), vec3f(255.0));
     return vec4f(rgb / 255.0, 1.0);
 }
 
@@ -426,8 +429,7 @@ fn shade_packf(in: VsPackOut, gx: vec3f, gy: vec3f) -> vec4f {
     if c.a < 0.5 {
         discard;
     }
-    let r = pack_light(p, u, v);
-    let rgb = min(floor(c.rgb / c.a * 255.0 * r + 0.5), vec3f(255.0));
+    let rgb = min(floor(pack_lit(p, c.rgb / c.a * 255.0, u, v) + 0.5), vec3f(255.0));
     return vec4f(rgb / 255.0, 1.0);
 }
 
@@ -460,4 +462,682 @@ fn vs_clear(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
 @fragment
 fn fs_clear() -> @location(0) vec4f {
     return vec4f(0.0);
+}
+
+// Temporal anti-aliasing (Quality::temporal, temporal.rs): the 3D layer is
+// drawn at an internal size with a sub-pixel jitter, into the colour target
+// and an aux target of motion and depth. The `_t` entry points below; the
+// ones above are untouched. For a temporal frame the CPU gives the shared
+// shading functions a clip rectangle that never discards and no checker
+// bit (4): clipping and the checkerboard are done here, at the unjittered
+// sample point in output pixels. The real clip rectangle is in `outlines`
+// after the outlines (`clip_t`), the checker bit is flag bit 6 (64), and bit 7 (128) says the polygon has
+// motion data (vertex attribute 3). Bit 8 (256): the polygon is thin (narrower than an
+// internal pixel or so: `temporal::is_thin`), marked in the aux target.
+
+struct ScreenT {
+    // Internal size over output size, per axis.
+    rs: vec2f,
+    // The jitter in output pixels.
+    jitter_d: vec2f,
+    // Scale of texture derivatives for filtered pack images: rs, so they
+    // are per output pixel (a LOD bias when upscaling).
+    lod: f32,
+    // Bit 0: keep the checkerboard (Stipple::Keep); else blend it at 50%.
+    flags: u32,
+    // Where the polygons' clip rectangles start in `outlines`.
+    clip_base: u32,
+}
+
+@group(0) @binding(5) var<uniform> screen_t: ScreenT;
+
+// Polygon `poly`'s clip rectangle x0, y0, x1, y1 in output pixels.
+fn clip_t(poly: u32) -> vec4f {
+    return outlines[screen_t.clip_base + poly];
+}
+
+struct VsTOut {
+    @builtin(position) pos: vec4f,
+    @location(0) @interpolate(linear, centroid) attr: vec3f,
+    @location(1) @interpolate(flat) poly: u32,
+    // As VsPackOut's, for the filtered pack images' derivatives.
+    @location(2) @interpolate(linear, center) attr_c: vec3f,
+    // The previous position, homogeneous (X, Y, W) in output pixels:
+    // linear in screen space, like attr.
+    @location(3) @interpolate(linear, center) prev: vec3f,
+}
+
+@vertex
+fn vs_t(@location(0) xy: vec2f, @location(1) attr: vec3f, @location(2) poly: u32, @location(3) prev: vec3f) -> VsTOut {
+    var o: VsTOut;
+    let s = xy + screen_t.jitter_d;
+    o.pos = vec4f(s.x / screen.size.x * 2.0 - 1.0, 1.0 - s.y / screen.size.y * 2.0, 0.0, 1.0);
+    o.attr = attr;
+    o.poly = poly;
+    o.attr_c = attr;
+    o.prev = prev;
+    return o;
+}
+
+// The fragment's sample point without the jitter, in output pixels (the
+// pixel centre at 100% without jitter).
+fn sample_t(pos: vec4f) -> vec2f {
+    return pos.xy / screen_t.rs - screen_t.jitter_d;
+}
+
+// `shade`'s clip and checkerboard at the sample point (as there, `px` is
+// the sample less half a pixel: the pixel's corner at 100% unjittered).
+// The coverage: 1, or 0.5 for a checkerboard polygon blended.
+fn pre_t(in: VsTOut) -> f32 {
+    let px = sample_t(in.pos) - 0.5;
+    let c = clip_t(in.poly);
+    if px.y < c.y || px.y >= c.w || px.x + 0.5 < c.x || px.x + 0.5 >= c.z {
+        discard;
+    }
+    if (polys[in.poly].flags & 64u) != 0u {
+        if (screen_t.flags & 1u) == 0u {
+            return 0.5;
+        }
+        let g = vec2i(floor(px / screen.scale));
+        if ((g.x ^ g.y) & 1) != 0 {
+            discard;
+        }
+    }
+    return 1.0;
+}
+
+// The aux target: motion in output pixels (previous position less the
+// sample point), 1/z (negative: blended checkerboard), the expected
+// previous 1/z (0: no motion data; negative: the polygon is thin, flag
+// bit 8, for the resolve's thin-feature lock). Clamped so it stays finite
+// in 16 bits.
+fn aux_t(in: VsTOut, sheer: bool) -> vec4f {
+    var b = clamp(in.attr.x, 6.2e-5, 6.0e4);
+    if sheer {
+        b = -b;
+    }
+    let w = in.prev.z;
+    if (polys[in.poly].flags & 128u) == 0u || !(w > 1e-6) {
+        return vec4f(0.0, 0.0, b, 0.0);
+    }
+    let mv = clamp(in.prev.xy / w - sample_t(in.pos), vec2f(-16384.0), vec2f(16384.0));
+    let e = clamp(in.attr.x / w, 6.2e-5, 6.0e4);
+    return vec4f(mv, b, select(e, -e, (polys[in.poly].flags & 256u) != 0u));
+}
+
+// A thin polygon's coverage (flag bits 16-23, 255 = 1): the CPU widened
+// it to an internal pixel or so (temporal.rs, `thin`), so it is drawn at
+// this share over what is behind (the colour target blends premultiplied).
+fn cover_t(poly: u32) -> f32 {
+    let f = polys[poly].flags;
+    if (f & 256u) == 0u {
+        return 1.0;
+    }
+    return f32((f >> 16u) & 255u) / 255.0;
+}
+
+fn plain_t(in: VsTOut) -> VsOut {
+    var o: VsOut;
+    o.pos = in.pos;
+    o.attr = in.attr;
+    o.poly = in.poly;
+    return o;
+}
+
+// depth_at at the sample point.
+fn depth_t(in: VsTOut) -> f32 {
+    let z = outline_iz(in.poly, sample_t(in.pos) - 0.5, in.attr.x) * (1.0 + f32(polys[in.poly].colour.w) * DEPTH_BIAS)
+        * DEPTH_FACTOR;
+    return z / (z + DEPTH_SCALE);
+}
+
+struct TOut {
+    @location(0) colour: vec4f,
+    @location(1) aux: vec4f,
+}
+
+struct TDepthOut {
+    @location(0) colour: vec4f,
+    @location(1) aux: vec4f,
+    @builtin(frag_depth) depth: f32,
+}
+
+@fragment
+fn fs_t(in: VsTOut) -> TOut {
+    let a = pre_t(in);
+    var o: TOut;
+    o.colour = shade(plain_t(in)) * (a * cover_t(in.poly));
+    o.aux = aux_t(in, a < 1.0);
+    return o;
+}
+
+@fragment
+fn fs_depth_t(in: VsTOut) -> TDepthOut {
+    let a = pre_t(in);
+    var o: TDepthOut;
+    o.colour = shade(plain_t(in)) * (a * cover_t(in.poly));
+    o.aux = aux_t(in, a < 1.0);
+    o.depth = depth_t(in);
+    return o;
+}
+
+@fragment
+fn fs_pack_t(in: VsTOut) -> TOut {
+    let a = pre_t(in);
+    var o: TOut;
+    o.colour = shade_pack(plain_t(in)) * (a * cover_t(in.poly));
+    o.aux = aux_t(in, a < 1.0);
+    return o;
+}
+
+@fragment
+fn fs_pack_depth_t(in: VsTOut) -> TDepthOut {
+    let a = pre_t(in);
+    var o: TDepthOut;
+    o.colour = shade_pack(plain_t(in)) * (a * cover_t(in.poly));
+    o.aux = aux_t(in, a < 1.0);
+    o.depth = depth_t(in);
+    return o;
+}
+
+fn packf_t(in: VsTOut) -> VsPackOut {
+    var o: VsPackOut;
+    o.pos = in.pos;
+    o.attr = in.attr;
+    o.poly = in.poly;
+    o.attr_c = in.attr_c;
+    return o;
+}
+
+@fragment
+fn fs_packf_t(in: VsTOut) -> TOut {
+    let gx = dpdx(in.attr_c) * screen_t.lod;
+    let gy = dpdy(in.attr_c) * screen_t.lod;
+    let a = pre_t(in);
+    var o: TOut;
+    o.colour = shade_packf(packf_t(in), gx, gy) * (a * cover_t(in.poly));
+    o.aux = aux_t(in, a < 1.0);
+    return o;
+}
+
+@fragment
+fn fs_packf_depth_t(in: VsTOut) -> TDepthOut {
+    let gx = dpdx(in.attr_c) * screen_t.lod;
+    let gy = dpdy(in.attr_c) * screen_t.lod;
+    let a = pre_t(in);
+    var o: TDepthOut;
+    o.colour = shade_packf(packf_t(in), gx, gy) * (a * cover_t(in.poly));
+    o.aux = aux_t(in, a < 1.0);
+    o.depth = depth_t(in);
+    return o;
+}
+
+// Smooth shading (Quality::shading, model2::light): the `_l` entry points,
+// for frames with a lit polygon. A lit polygon's outline entry is (first,
+// count, flags, normals): flags bit 0 lit, bit 1 lit per pixel, bits 8-15
+// and 16-23 the lumas a pixel is clamped to (raster.rs `Poly::lit_range`);
+// its points carry luma/z in w. Per pixel, `normals` is the index of
+// `count` entries (nx/z, ny/z, nz/z, 0), one per point, then its lighting
+// in two (`lamp_eval`). Its luma is taken per pixel from those
+// (`lit_luma`), every other polygon's is its own. The shading functions
+// above stay as they were (the frames without a lit polygon draw exactly
+// as before); `shade_l`, `shade_pack_l` and `shade_packf_l` are them with
+// the polygon passed in.
+
+// Where the row at height `yc` crosses an outline: the edges (from point
+// la to lb at lt, and ra to rb at rt; indices from the first point) at the
+// span's two ends, and their x. ok false where the row misses the outline.
+struct Cross {
+    la: u32,
+    lb: u32,
+    lt: f32,
+    lx: f32,
+    ra: u32,
+    rb: u32,
+    rt: f32,
+    rx: f32,
+    ok: bool,
+}
+
+fn outline_cross(first: u32, count: u32, yc: f32) -> Cross {
+    var c: Cross;
+    c.lx = 3.4e38;
+    c.rx = -3.4e38;
+    for (var k = 0u; k < count; k++) {
+        let k1 = (k + 1u) % count;
+        let a = outlines[first + k];
+        let b = outlines[first + k1];
+        if (a.y <= yc && b.y > yc) || (b.y <= yc && a.y > yc) {
+            let t = (yc - a.y) / (b.y - a.y);
+            let x = a.x + (b.x - a.x) * t;
+            if x < c.lx {
+                c.lx = x;
+                c.la = k;
+                c.lb = k1;
+                c.lt = t;
+            }
+            if x > c.rx {
+                c.rx = x;
+                c.ra = k;
+                c.rb = k1;
+                c.rt = t;
+            }
+        }
+    }
+    c.ok = c.lx <= c.rx;
+    return c;
+}
+
+fn lerp4(a: vec4f, b: vec4f, t: f32) -> vec4f {
+    return a + (b - a) * t;
+}
+
+// An attribute of the outline's points (entries `base`..), interpolated
+// along the edges of `c`, then across the span at `s`, as the software
+// fill does.
+fn cross_at(base: u32, c: Cross, s: f32) -> vec4f {
+    let l = lerp4(outlines[base + c.la], outlines[base + c.lb], c.lt);
+    let r = lerp4(outlines[base + c.ra], outlines[base + c.rb], c.rt);
+    return lerp4(l, r, s);
+}
+
+// model2::light::Lamp::eval plus PixelLight's offset: lamp entries `i`
+// (L, flags: bit 0 front, bits 1-2 the specular base (0 d, 1 max(d, 0),
+// 2 n·L), bits 8-15 squarings, 255 none) and `i + 1` (ambient, diffuse,
+// specular scale, offset), for unit normal `n`.
+fn lamp_eval(i: u32, n: vec3f) -> f32 {
+    let a = outlines[i];
+    let m = outlines[i + 1u];
+    let bits = bitcast<u32>(a.w);
+    let l = a.xyz;
+    let dotl = (n.x * l.x + n.y * l.y) + n.z * l.z;
+    var d = dotl;
+    if (bits & 1u) == 0u {
+        d = -dotl;
+    }
+    let s0 = max(d + 0.0, 0.0);
+    var lum = s0 * m.y + m.x;
+    let squarings = (bits >> 8u) & 255u;
+    if squarings != 255u {
+        var b = d;
+        let base = (bits >> 1u) & 3u;
+        if base == 1u {
+            b = s0;
+        } else if base == 2u {
+            b = dotl;
+        }
+        var sp = max((b * 2.0) * n.z - l.z, 0.0);
+        for (var k = 0u; k < squarings; k++) {
+            sp = sp * sp;
+        }
+        lum += sp * m.z;
+    }
+    return lum + m.w;
+}
+
+// raster.rs `pixel_luma`: the lighting of the normalised normal `n`, or
+// the interpolated luma `luma` where `n` is (nearly) zero.
+fn pixel_luma(i: u32, luma: f32, n: vec3f) -> f32 {
+    let len = sqrt(dot(n, n));
+    if !(len >= 1e-6) {
+        return luma;
+    }
+    return lamp_eval(i, n / len);
+}
+
+// A lit polygon's luma (0-255, before truncation) at the centre of pixel
+// `px`, as the software renderer's `lit_lumas`: luma/z and 1/z (and per
+// pixel the normal/z) on the outline's edges at the row's centre, then
+// across the span, divided. For a pixel the GPU covers and the software
+// doesn't (at an edge), the row is moved into the outline and the span's t
+// clamped to 0..1. < 0: not lit.
+fn lit_luma(poly: u32, px: vec2f) -> f32 {
+    let d = bitcast<vec4u>(outlines[poly]);
+    if d.z == 0u {
+        return -1.0;
+    }
+    let pixel = (d.z & 2u) != 0u;
+    let lamp = d.w + d.y;
+    var c = outline_cross(d.x, d.y, px.y + 0.5);
+    if !c.ok {
+        var lo = 3.4e38;
+        var hi = -3.4e38;
+        for (var k = 0u; k < d.y; k++) {
+            lo = min(lo, outlines[d.x + k].y);
+            hi = max(hi, outlines[d.x + k].y);
+        }
+        let m = 1e-3 * max(hi - lo, 1e-3);
+        c = outline_cross(d.x, d.y, clamp(px.y + 0.5, lo + m, hi - m));
+        if !c.ok {
+            // No span at all (a polygon thinner than that): the corners'.
+            var p = vec4f(0.0);
+            var n = vec4f(0.0);
+            for (var k = 0u; k < d.y; k++) {
+                p += outlines[d.x + k];
+                if pixel {
+                    n += outlines[d.w + k];
+                }
+            }
+            if pixel {
+                return pixel_luma(lamp, p.w / p.z, n.xyz / p.z);
+            }
+            return p.w / p.z;
+        }
+    }
+    let s = clamp(((px.x + 0.5) - c.lx) / max(c.rx - c.lx, 1e-6), 0.0, 1.0);
+    let p = cross_at(d.x, c, s);
+    if pixel {
+        let n = cross_at(d.w, c, s);
+        return pixel_luma(lamp, p.w / p.z, n.xyz / p.z);
+    }
+    return p.w / p.z;
+}
+
+// Polygon `i` as drawn at pixel `px`: `polys[i]`, with a smooth-shaded
+// polygon's luma there (truncated, as light::quantise, then clamped to its
+// range).
+fn poly_px(i: u32, px: vec2f) -> Poly {
+    var p = polys[i];
+    let l = lit_luma(i, px);
+    lit_fine = -1.0;
+    if l >= 0.0 {
+        let flags = bitcast<u32>(outlines[i].z);
+        lit_range = vec2u((flags >> 8u) & 255u, (flags >> 16u) & 255u);
+        p.luma = clamp(u32(clamp(l, 0.0, 255.0)), lit_range.x, lit_range.y);
+        if (flags & 4u) != 0u {
+            lit_fine = max(l, 0.0);
+        }
+    }
+    return p;
+}
+
+// Finer levels (outline flags bit 2; raster.rs `fine_level`): the pixel's
+// luma before truncation, or < 0 (the game's levels), and its polygon's
+// luma range. Set by `poly_px`.
+var<private> lit_fine: f32 = -1.0;
+var<private> lit_range: vec2u = vec2u(0u, 255u);
+
+// raster.rs `fine_level`: the columns k, k1 to blend (in x, y) and the
+// weight of k1 (in z, as bits) for luma table value `v` (textured) or the
+// luma alone (untextured), at `lit_fine` within `lit_range`.
+fn fine_level(textured: bool, v: u32) -> vec3u {
+    var a: u32;
+    var b: u32;
+    var y: f32;
+    if textured {
+        a = min(v * lit_range.x / 256u, 63u);
+        b = min(v * lit_range.y / 256u, 63u);
+        y = f32(v) * lit_fine / 256.0 - 0.5;
+    } else {
+        a = min(lit_range.x >> 2u, 63u);
+        b = min(lit_range.y >> 2u, 63u);
+        y = lit_fine / 4.0 - 0.5;
+    }
+    let x = clamp(y, f32(a), f32(b));
+    let k = min(u32(floor(x)), b);
+    return vec3u(k, min(k + 1u, b), bitcast<u32>(x - f32(k)));
+}
+
+// raster.rs `fine_columns`: the columns `k` (`fine_level`) kept off pure
+// black for colour `c`, whose game's column is `game`.
+fn fine_columns(c: vec3u, game: u32, k: vec3u) -> vec3u {
+    if fine_black(c, game) {
+        return vec3u(game, game, 0u);
+    }
+    if fine_black(c, k.x) {
+        return vec3u(k.y, k.y, 0u);
+    }
+    if fine_black(c, k.y) {
+        return vec3u(k.x, k.x, 0u);
+    }
+    return k;
+}
+
+// Whether column `k` of colour `c` is pure black.
+fn fine_black(c: vec3u, k: u32) -> bool {
+    return translate(0u, c.x, k) == 0u && translate(1u, c.y, k) == 0u && translate(2u, c.z, k) == 0u;
+}
+
+// raster.rs `fine_translate`: channel `ch` of component `c` blended
+// between the columns of `k` (`fine_level`), before rounding.
+fn fine_translate(ch: u32, c: u32, k: vec3u) -> f32 {
+    let a = f32(translate(ch, c, k.x));
+    let b = f32(translate(ch, c, k.y));
+    return a + (b - a) * bitcast<f32>(k.z);
+}
+
+// `pack_lit` of a lit pixel: with finer levels the original pipeline's
+// colour at the pixel's luma is the blend of two columns (raster.rs
+// `Light::at`).
+fn pack_lit_l(p: Poly, rgb: vec3f, u: f32, v: f32) -> vec3f {
+    if lit_fine < 0.0 {
+        return pack_lit(p, rgb, u, v);
+    }
+    let c = p.colour.xyz;
+    var fb: vec3f;
+    for (var ch = 0u; ch < 3u; ch++) {
+        let full = translate(ch, c[ch], 63u);
+        if full > 0u {
+            fb[ch] = fine_translate(ch, c[ch], fine_columns(c, min(64u * p.luma / 256u, 63u), fine_level(true, 64u))) / f32(full);
+        } else {
+            fb[ch] = f32(p.luma) / 255.0;
+        }
+    }
+    let t8 = filtered_texel(p, u, v);
+    if t8 < 0 {
+        return rgb * fb;
+    }
+    let l = luma(p.luma_table, u32(t8) / 2u);
+    let lf = min(l * 255u / 256u, 63u);
+    let k = fine_columns(c, min(l * p.luma / 256u, 63u), fine_level(true, l));
+    var r: vec3f;
+    for (var ch = 0u; ch < 3u; ch++) {
+        let full = translate(ch, c[ch], lf);
+        let here = fine_translate(ch, c[ch], k);
+        if full == 0u {
+            r[ch] = rgb[ch] * fb[ch] + here;
+        } else {
+            r[ch] = rgb[ch] * (here / f32(full));
+        }
+    }
+    return r;
+}
+
+// `shade` of polygon `p`.
+fn shade_l(in: VsOut, p: Poly) -> vec4f {
+    let px = floor(in.pos.xy);
+    if px.y < p.clip.y || px.y >= p.clip.w || px.x + 0.5 < p.clip.x || px.x + 0.5 >= p.clip.z {
+        discard;
+    }
+    let g = vec2u(floor(px / screen.scale));
+    if (p.flags & 16u) != 0u && ((g.x ^ g.y) & 1u) != 0u {
+        discard;
+    }
+    var lum: u32;
+    var v = 0u;
+    let textured = (p.flags & 1u) != 0u;
+    if textured {
+        let iz = in.attr.x;
+        let t8 = filtered_texel(p, in.attr.y / iz, in.attr.z / iz);
+        if t8 < 0 {
+            discard;
+        }
+        v = luma(p.luma_table, u32(t8) / 2u);
+        lum = min(v * p.luma / 256u, 63u);
+    } else {
+        lum = p.luma >> 2u;
+    }
+    if lit_fine >= 0.0 {
+        // Finer levels: the blend, rounded as the software (Rust's round(),
+        // never negative here).
+        let k = fine_columns(p.colour.xyz, lum, fine_level(textured, v));
+        let f = vec3f(fine_translate(0u, p.colour.x, k), fine_translate(1u, p.colour.y, k), fine_translate(2u, p.colour.z, k));
+        return vec4f(floor(f + 0.5) / 255.0, 1.0);
+    }
+    let rgb = vec3u(translate(0u, p.colour.x, lum), translate(1u, p.colour.y, lum), translate(2u, p.colour.z, lum));
+    return vec4f(vec3f(rgb) / 255.0, 1.0);
+}
+
+// `shade_pack` of polygon `p`.
+fn shade_pack_l(in: VsOut, p: Poly) -> vec4f {
+    if (p.flags & 32u) == 0u {
+        return shade_l(in, p);
+    }
+    let px = floor(in.pos.xy);
+    if px.y < p.clip.y || px.y >= p.clip.w || px.x + 0.5 < p.clip.x || px.x + 0.5 >= p.clip.z {
+        discard;
+    }
+    let g = vec2u(floor(px / screen.scale));
+    if (p.flags & 16u) != 0u && ((g.x ^ g.y) & 1u) != 0u {
+        discard;
+    }
+    let iz = in.attr.x;
+    let u = in.attr.y / iz;
+    let v = in.attr.z / iz;
+    let dim = vec2f(textureDimensions(pack_tex, 0));
+    let s = pack_sample(p, u * dim.x / f32(p.tex.z), v * dim.y / f32(p.tex.w));
+    if s.a < 0.5 {
+        discard;
+    }
+    let rgb = min(floor(pack_lit_l(p, s.rgb, u, v) + 0.5), vec3f(255.0));
+    return vec4f(rgb / 255.0, 1.0);
+}
+
+// `shade_packf` of polygon `p`.
+fn shade_packf_l(in: VsPackOut, p: Poly, gx: vec3f, gy: vec3f) -> vec4f {
+    if (p.flags & 32u) == 0u {
+        var o: VsOut;
+        o.pos = in.pos;
+        o.attr = in.attr;
+        o.poly = in.poly;
+        return shade_l(o, p);
+    }
+    let px = floor(in.pos.xy);
+    if px.y < p.clip.y || px.y >= p.clip.w || px.x + 0.5 < p.clip.x || px.x + 0.5 >= p.clip.z {
+        discard;
+    }
+    let g = vec2u(floor(px / screen.scale));
+    if (p.flags & 16u) != 0u && ((g.x ^ g.y) & 1u) != 0u {
+        discard;
+    }
+    let iz = in.attr.x;
+    let u = in.attr.y / iz;
+    let v = in.attr.z / iz;
+    let size = vec2f(f32(p.tex.z), f32(p.tex.w));
+    let ddx = vec2f(gx.y - u * gx.x, gx.z - v * gx.x) / (iz * size);
+    let ddy = vec2f(gy.y - u * gy.x, gy.z - v * gy.x) / (iz * size);
+    let c = textureSampleGrad(pack_tex, pack_smp, vec2f(u, v) / size, ddx, ddy);
+    if c.a < 0.5 {
+        discard;
+    }
+    let rgb = min(floor(pack_lit_l(p, c.rgb / c.a * 255.0, u, v) + 0.5), vec3f(255.0));
+    return vec4f(rgb / 255.0, 1.0);
+}
+
+@fragment
+fn fs_l(in: VsOut) -> @location(0) vec4f {
+    return shade_l(in, poly_px(in.poly, floor(in.pos.xy)));
+}
+
+@fragment
+fn fs_depth_l(in: VsOut) -> DepthOut {
+    var o: DepthOut;
+    o.colour = shade_l(in, poly_px(in.poly, floor(in.pos.xy)));
+    o.depth = depth_at(in.poly, in.pos, in.attr.x);
+    return o;
+}
+
+@fragment
+fn fs_pack_l(in: VsOut) -> @location(0) vec4f {
+    return shade_pack_l(in, poly_px(in.poly, floor(in.pos.xy)));
+}
+
+@fragment
+fn fs_pack_depth_l(in: VsOut) -> DepthOut {
+    var o: DepthOut;
+    o.colour = shade_pack_l(in, poly_px(in.poly, floor(in.pos.xy)));
+    o.depth = depth_at(in.poly, in.pos, in.attr.x);
+    return o;
+}
+
+@fragment
+fn fs_packf_l(in: VsPackOut) -> @location(0) vec4f {
+    let gx = dpdx(in.attr_c);
+    let gy = dpdy(in.attr_c);
+    return shade_packf_l(in, poly_px(in.poly, floor(in.pos.xy)), gx, gy);
+}
+
+@fragment
+fn fs_packf_depth_l(in: VsPackOut) -> DepthOut {
+    let gx = dpdx(in.attr_c);
+    let gy = dpdy(in.attr_c);
+    var o: DepthOut;
+    o.colour = shade_packf_l(in, poly_px(in.poly, floor(in.pos.xy)), gx, gy);
+    o.depth = depth_at(in.poly, in.pos, in.attr.x);
+    return o;
+}
+
+// Temporal with smooth shading: the luma at the unjittered sample point
+// (a widened thin polygon's pixels outside it take its edge's), drawn at a
+// thin polygon's coverage as `fs_t` is.
+
+@fragment
+fn fs_l_t(in: VsTOut) -> TOut {
+    let a = pre_t(in);
+    var o: TOut;
+    o.colour = shade_l(plain_t(in), poly_px(in.poly, sample_t(in.pos) - 0.5)) * (a * cover_t(in.poly));
+    o.aux = aux_t(in, a < 1.0);
+    return o;
+}
+
+@fragment
+fn fs_depth_l_t(in: VsTOut) -> TDepthOut {
+    let a = pre_t(in);
+    var o: TDepthOut;
+    o.colour = shade_l(plain_t(in), poly_px(in.poly, sample_t(in.pos) - 0.5)) * (a * cover_t(in.poly));
+    o.aux = aux_t(in, a < 1.0);
+    o.depth = depth_t(in);
+    return o;
+}
+
+@fragment
+fn fs_pack_l_t(in: VsTOut) -> TOut {
+    let a = pre_t(in);
+    var o: TOut;
+    o.colour = shade_pack_l(plain_t(in), poly_px(in.poly, sample_t(in.pos) - 0.5)) * (a * cover_t(in.poly));
+    o.aux = aux_t(in, a < 1.0);
+    return o;
+}
+
+@fragment
+fn fs_pack_depth_l_t(in: VsTOut) -> TDepthOut {
+    let a = pre_t(in);
+    var o: TDepthOut;
+    o.colour = shade_pack_l(plain_t(in), poly_px(in.poly, sample_t(in.pos) - 0.5)) * (a * cover_t(in.poly));
+    o.aux = aux_t(in, a < 1.0);
+    o.depth = depth_t(in);
+    return o;
+}
+
+@fragment
+fn fs_packf_l_t(in: VsTOut) -> TOut {
+    let gx = dpdx(in.attr_c) * screen_t.lod;
+    let gy = dpdy(in.attr_c) * screen_t.lod;
+    let a = pre_t(in);
+    var o: TOut;
+    o.colour = shade_packf_l(packf_t(in), poly_px(in.poly, sample_t(in.pos) - 0.5), gx, gy) * (a * cover_t(in.poly));
+    o.aux = aux_t(in, a < 1.0);
+    return o;
+}
+
+@fragment
+fn fs_packf_depth_l_t(in: VsTOut) -> TDepthOut {
+    let gx = dpdx(in.attr_c) * screen_t.lod;
+    let gy = dpdy(in.attr_c) * screen_t.lod;
+    let a = pre_t(in);
+    var o: TDepthOut;
+    o.colour = shade_packf_l(packf_t(in), poly_px(in.poly, sample_t(in.pos) - 0.5), gx, gy) * (a * cover_t(in.poly));
+    o.aux = aux_t(in, a < 1.0);
+    o.depth = depth_t(in);
+    return o;
 }

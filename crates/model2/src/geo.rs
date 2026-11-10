@@ -118,6 +118,33 @@ pub struct CheckReport {
     pub times: Vec<(f32, f32)>,
     /// List words the two read differently (frames).
     pub list_differing: u64,
+    /// With smooth shading's side channel on ([`Engine::set_light`]): the
+    /// list scan (the chip path's side channel) against the native
+    /// geometrizer's block facts, in `GeoMode::Check` and on every frame a
+    /// native geometrizer runs.
+    pub light: LightCheck,
+}
+
+/// The list scan's block facts (`crate::light::scan_list`, the chip path)
+/// against the native geometrizer's (its light tap) for the same list,
+/// frame by frame.
+#[derive(Clone, Debug, Default)]
+pub struct LightCheck {
+    /// Frames compared; of them, those the scan gave up on, and those
+    /// with another number of blocks.
+    pub frames: u64,
+    pub scan_failed: u64,
+    pub count_differing: u64,
+    /// Blocks compared: all facts equal (model address, direct data,
+    /// computed normals, specular, focal lengths, light vector); equal
+    /// where the scan knew them (the list hadn't set the light or the mode
+    /// yet); focal lengths not known yet; differing.
+    pub equal: u64,
+    pub partial: u64,
+    pub unknown: u64,
+    pub differing: u64,
+    /// The first differing block: frame, block, native's, scan's.
+    pub first: Option<(u64, usize, crate::light::Block, crate::light::Block)>,
 }
 
 /// The polygon memory address register, as `CheckReport::first_state`
@@ -172,10 +199,12 @@ pub struct GeoExt<'a> {
 
 /// Polygon RAM as a [`GeoExt`] sees it: its own, or (for smooth motion's
 /// in-betweens, `crate::smooth`) a copy read through an overlay that
-/// takes the writes, leaving the copy as it was.
+/// takes the writes, leaving the copy as it was, or (for its motion data)
+/// a copy read as it is whatever is written, the accesses noted.
 enum PolyRam<'a> {
     Own(&'a mut [u32]),
     Overlay(&'a [u32], &'a mut HashMap<u32, u32>),
+    Before(&'a [u32], &'a mut Vec<crate::smooth::Access>),
 }
 
 impl<'a> GeoExt<'a> {
@@ -189,6 +218,22 @@ impl<'a> GeoExt<'a> {
         let rom_mask = (rom.len().next_power_of_two().max(1) - 1) as u32;
         GeoExt { ram: PolyRam::Overlay(ram, overlay), rom, rom_mask, wrote: false }
     }
+
+    /// Polygon RAM `ram`, read as it is whatever is written (the RAM the
+    /// frame before left): reads and writes, and each object or direct
+    /// data block begun ([`GeoExt::block`]), are noted in `log`.
+    pub(crate) fn before(ram: &'a [u32], log: &'a mut Vec<crate::smooth::Access>, rom: &'a [u32]) -> Self {
+        let rom_mask = (rom.len().next_power_of_two().max(1) - 1) as u32;
+        GeoExt { ram: PolyRam::Before(ram, log), rom, rom_mask, wrote: false }
+    }
+
+    /// An object or direct data block begins (noted by [`GeoExt::before`]).
+    #[inline]
+    pub(crate) fn block(&mut self) {
+        if let PolyRam::Before(_, log) = &mut self.ram {
+            log.push(crate::smooth::Access::Block);
+        }
+    }
 }
 
 impl External for GeoExt<'_> {
@@ -197,11 +242,16 @@ impl External for GeoExt<'_> {
         if addr >= 0x80_0000 {
             self.rom.get((addr & self.rom_mask) as usize).copied().unwrap_or(0)
         } else {
-            match &self.ram {
+            match &mut self.ram {
                 PolyRam::Own(ram) => ram[addr as usize % ram.len()],
                 PolyRam::Overlay(ram, o) => {
                     let i = addr as usize % ram.len();
                     o.get(&(i as u32)).copied().unwrap_or(ram[i])
+                }
+                PolyRam::Before(ram, log) => {
+                    let i = addr as usize % ram.len();
+                    log.push(crate::smooth::Access::Read(i as u32));
+                    ram[i]
                 }
             }
         }
@@ -218,6 +268,7 @@ impl External for GeoExt<'_> {
                 PolyRam::Overlay(ram, o) => {
                     o.insert((addr as usize % ram.len()) as u32, v);
                 }
+                PolyRam::Before(ram, log) => log.push(crate::smooth::Access::Write((addr as usize % ram.len()) as u32)),
             }
         }
     }
@@ -433,6 +484,8 @@ pub struct Engine {
     pub check: CheckReport,
     /// Smooth motion (`crate::smooth`), when it's on.
     smooth: Option<Box<Smooth>>,
+    /// Smooth shading's side channel (`crate::light`), when it's on.
+    light: Option<Box<LightSide>>,
     /// Kept for [`Engine::copy_from`]'s SHARC state.
     copy_buf: Vec<u8>,
 }
@@ -485,6 +538,19 @@ impl Smooth {
     }
 }
 
+/// What smooth shading's side channel keeps ([`Engine::set_light`]).
+#[derive(Default)]
+struct LightSide {
+    /// The last frame's.
+    frame: Option<Arc<crate::light::Frame>>,
+    /// The chip path's list scan: the state it carries between frames,
+    /// and the program it reads lists for (worked out once an upload).
+    scan: crate::light::ScanState,
+    program: Option<crate::light::ScanProgram>,
+    /// The last frame's list scan.
+    scanned: Option<Arc<crate::light::Frame>>,
+}
+
 enum Slot {
     Idle(Box<Engine>),
     Running(std::thread::JoinHandle<Box<Engine>>),
@@ -527,6 +593,11 @@ pub struct Geometrizer {
     /// ([`Geometrizer::last_frame`]).
     keep_last: bool,
     last: (Vec<u32>, Vec<u16>),
+    /// That frame's smooth motion data, if it had any (render-only, not
+    /// saved).
+    last_smooth: Option<Arc<crate::smooth::Frame>>,
+    /// That frame's lighting side channel, likewise.
+    last_light: Option<Arc<crate::light::Frame>>,
     /// Remote mode: jobs go here instead of to the local engine.
     remote: Option<Box<dyn FnMut(Job)>>,
 }
@@ -578,6 +649,8 @@ impl Geometrizer {
             threaded: cfg!(not(target_arch = "wasm32")),
             keep_last: false,
             last: (Vec::new(), Vec::new()),
+            last_smooth: None,
+            last_light: None,
             remote: None,
             engine: Slot::Idle(Box::new(Engine::new(poly_rom, core))),
         }
@@ -622,6 +695,19 @@ impl Geometrizer {
     /// [`Geometrizer::set_keep_last`]; empty otherwise).
     pub fn last_frame(&self) -> (&[u32], &[u16]) {
         (&self.last.0, &self.last.1)
+    }
+
+    /// The smooth motion data of [`Geometrizer::last_frame`]'s frame
+    /// ([`crate::smooth::Frame`], for its motion vectors), if smooth motion
+    /// was on and the native geometrizer ran it.
+    pub fn last_smooth(&self) -> Option<&Arc<crate::smooth::Frame>> {
+        self.last_smooth.as_ref()
+    }
+
+    /// The lighting side channel of [`Geometrizer::last_frame`]'s frame
+    /// ([`Engine::light_frame`]), if it was on.
+    pub fn last_light(&self) -> Option<&Arc<crate::light::Frame>> {
+        self.last_light.as_ref()
     }
 
     /// Wait for a frame running on the worker until `deadline`: true if
@@ -686,6 +772,12 @@ impl Geometrizer {
         self.engine_mut().set_smooth(on);
     }
 
+    /// Smooth shading's side channel on or off ([`Engine::set_light`]; the
+    /// local engine).
+    pub fn set_light(&mut self, on: bool) {
+        self.engine_mut().set_light(on);
+    }
+
     /// Start a frame on the worker thread from the list at the read
     /// pointer. Runs in the background until the next `sync`.
     pub fn start_frame(&mut self, buffer: &[u8]) {
@@ -709,6 +801,8 @@ impl Geometrizer {
             self.last.0.extend_from_slice(&e.stream);
             self.last.1.clear();
             self.last.1.extend_from_slice(&e.texture_point_ram);
+            self.last_smooth = e.smooth_frame();
+            self.last_light = e.light_frame();
         }
         e.buffer.clear();
         e.buffer.extend_from_slice(buffer);
@@ -868,6 +962,7 @@ impl Engine {
             check_latch: 0,
             check: CheckReport::default(),
             smooth: None,
+            light: None,
             copy_buf: Vec::new(),
         }
     }
@@ -917,6 +1012,7 @@ impl Engine {
             check_latch: 0,
             check: CheckReport::default(),
             smooth: None,
+            light: None,
             copy_buf: Vec::new(),
         }
     }
@@ -1007,6 +1103,9 @@ impl Engine {
 
     /// Load an uploaded program ([`Geometrizer::program`]).
     pub fn boot(&mut self, program: &[u64]) {
+        if let Some(l) = self.light.as_deref_mut() {
+            *l = LightSide::default();
+        }
         match &mut self.sharc {
             None => {
                 self.tgp.boot(program);
@@ -1075,6 +1174,10 @@ impl Engine {
         self.stream.clear();
         self.fed.clear();
         self.list_words = 0;
+        if let Some(l) = self.light.as_deref_mut() {
+            l.frame = None;
+            l.scanned = None;
+        }
         if !booted || self.fault.is_some() {
             return;
         }
@@ -1146,6 +1249,147 @@ impl Engine {
         }
     }
 
+    /// Smooth shading's side channel (`crate::light::Frame`): from the next
+    /// frame, each frame also records what its geometrizer knew about its
+    /// lighting ([`Engine::light_frame`]): a native geometrizer every
+    /// block's facts and every polygon's normal and lighting (its light
+    /// hooks), the chip a scan of the list for the block facts. Render-only:
+    /// the frames' output and the state are the same either way; off, the
+    /// hooks do nothing.
+    pub fn set_light(&mut self, on: bool) {
+        match (on, self.light.is_some()) {
+            (true, false) => self.light = Some(Box::default()),
+            (false, true) => self.light = None,
+            _ => {}
+        }
+    }
+
+    /// Whether the side channel is on ([`Engine::set_light`]).
+    pub fn light_on(&self) -> bool {
+        self.light.is_some()
+    }
+
+    /// The last frame's lighting side channel, if it is on and the frame
+    /// had one (None: none, or the list scan gave up).
+    pub fn light_frame(&self) -> Option<Arc<crate::light::Frame>> {
+        self.light.as_ref()?.frame.clone()
+    }
+
+    /// A tap for a frame a native geometrizer runs, if the side channel is
+    /// on.
+    fn light_tap(&self) -> Option<crate::light::Tap> {
+        self.light.is_some().then(crate::light::Tap::new)
+    }
+
+    /// The program the chip path's list scan reads lists for.
+    fn scan_program(&mut self) -> Option<crate::light::ScanProgram> {
+        use crate::light::{ScanBoard, ScanProgram, ScanVariant};
+        if let Some(p) = self.light.as_ref()?.program {
+            return Some(p);
+        }
+        let p = if self.fixed {
+            ScanProgram { board: ScanBoard::A, variant: ScanVariant::Shared }
+        } else if let Some(s) = self.sharc.as_deref() {
+            let lastbrnx = crate::geo_native::recognise(&adsp2106x::cpu::program_image(s))
+                == Some(crate::geo_native::Program::Lastbrnx);
+            ScanProgram {
+                board: ScanBoard::B,
+                variant: if lastbrnx { ScanVariant::Lastbrnx } else { ScanVariant::Shared },
+            }
+        } else {
+            use crate::geo_native_2c::Program;
+            let variant = match crate::geo_native_2c::recognise(self.tgp.program_hash) {
+                Some(Program::Overrev) => ScanVariant::Overrev,
+                Some(Program::TopSkater) => ScanVariant::TopSkater,
+                _ => ScanVariant::Shared,
+            };
+            ScanProgram { board: ScanBoard::C, variant }
+        };
+        self.light.as_deref_mut()?.program = Some(p);
+        Some(p)
+    }
+
+    /// The list scan of the frame's list (the words fed), if it knows
+    /// every command.
+    fn scan_fed(&mut self) -> Option<crate::light::Frame> {
+        let program = self.scan_program()?;
+        let l = self.light.as_deref_mut()?;
+        let blocks = crate::light::scan_list(&self.fed, program, &mut l.scan)?;
+        Some(crate::light::Frame { frame: self.frames, blocks, ..Default::default() })
+    }
+
+    /// After a frame the chip ran, with the side channel on: the block
+    /// facts from a scan of the list it was fed.
+    fn scan_light(&mut self) {
+        let scan = self.scan_fed().map(Arc::new);
+        if let Some(l) = self.light.as_deref_mut() {
+            l.frame = scan.clone();
+            l.scanned = scan;
+        }
+    }
+
+    /// After a frame a native geometrizer ran, with the side channel on:
+    /// what its tap recorded is the frame's; the list is scanned too, and
+    /// the scan's block facts compared with the hooks' ([`LightCheck`]).
+    fn finish_light(&mut self, tap: Option<crate::light::Tap>) {
+        let Some(tap) = tap else { return };
+        let native = tap.finish(self.frames);
+        let scan = self.scan_fed();
+        self.compare_light(&native, scan.as_ref());
+        if let Some(l) = self.light.as_deref_mut() {
+            l.frame = Some(Arc::new(native));
+            l.scanned = scan.map(Arc::new);
+        }
+    }
+
+    /// `GeoMode::Check`, side channel on: the scan's block facts (the
+    /// chip's frame, already scanned) against those the native
+    /// geometrizer recorded beside it.
+    fn check_light(&mut self, tap: Option<crate::light::Tap>) {
+        let Some(tap) = tap else { return };
+        let native = tap.finish(self.frames);
+        let scan = self.light.as_ref().and_then(|l| l.frame.clone());
+        self.compare_light(&native, scan.as_deref());
+    }
+
+    /// Count how the list scan's block facts agree with a native
+    /// geometrizer's for one frame ([`CheckReport::light`]).
+    fn compare_light(&mut self, native: &crate::light::Frame, scan: Option<&crate::light::Frame>) {
+        use crate::light::Block;
+        let c = &mut self.check.light;
+        c.frames += 1;
+        let Some(scan) = scan else {
+            c.scan_failed += 1;
+            return;
+        };
+        if scan.blocks.len() != native.blocks.len() {
+            c.count_differing += 1;
+        }
+        for (k, (n, s)) in native.blocks.iter().zip(&scan.blocks).enumerate() {
+            let (nf, sf) = (n.facts(), s.facts());
+            if s.flags & Block::UNKNOWN != 0 {
+                c.unknown += 1;
+            } else if nf == sf {
+                c.equal += 1;
+            } else if s.flags & Block::PARTIAL != 0
+                && (nf.0, nf.2) == (sf.0, sf.2)
+                && n.flags & Block::DIRECT == s.flags & Block::DIRECT
+            {
+                c.partial += 1;
+            } else {
+                c.differing += 1;
+                c.first.get_or_insert((self.frames, k, *n, *s));
+            }
+        }
+    }
+
+    /// The last frame's list scan (block facts only), if the side channel
+    /// is on and the scan knew the list: the chip path's side channel, or
+    /// beside a native geometrizer's for comparison.
+    pub fn light_scan_frame(&self) -> Option<Arc<crate::light::Frame>> {
+        self.light.as_ref()?.scanned.clone()
+    }
+
     /// The last frame's in-betweens ([`crate::smooth::Frame::render`]),
     /// if smooth motion is on and the native geometrizer ran it.
     pub fn smooth_frame(&self) -> Option<Arc<crate::smooth::Frame>> {
@@ -1214,6 +1458,7 @@ impl Engine {
             return;
         }
         let mut tap = self.begin_smooth();
+        let mut light = self.light_tap();
         let Some(n) = self.native.as_deref_mut() else { return };
         let before = tap.is_some().then(|| (crate::smooth::Native::B(Box::new(n.clone())), self.poly_latch));
         let mut out = Vec::new();
@@ -1224,10 +1469,12 @@ impl Engine {
             latch: &mut self.poly_latch,
             out: &mut out,
             tap: tap.as_mut(),
+            light: light.as_mut(),
         };
         n.run_frame(&mut io);
         let wrote = io.poly.wrote;
         self.stream.extend(out.into_iter().filter(|&w| w != RASTER_NOP));
+        self.finish_light(light);
         if let (Some(s), Some((native, latch)), Some(tap)) = (self.smooth.as_deref_mut(), before, tap) {
             s.pending = Some((native, latch, tap.into_list(), wrote));
         }
@@ -1241,6 +1488,7 @@ impl Engine {
         let t = Stopwatch::start();
         self.process_sharc(buffer, read_ptr);
         let sharc_ms = t.elapsed().as_secs_f32() * 1e3;
+        let mut light = self.light_tap();
         let Some(n) = self.native.as_deref_mut() else { return };
         let t = Stopwatch::start();
         let (mut out, mut words, mut fed) = (Vec::new(), 0, Vec::new());
@@ -1251,6 +1499,7 @@ impl Engine {
             latch: &mut self.check_latch,
             out: &mut out,
             tap: None,
+            light: light.as_mut(),
         };
         n.run_frame(&mut io);
         let native: Vec<u32> = out.into_iter().filter(|&w| w != RASTER_NOP).collect();
@@ -1298,6 +1547,7 @@ impl Engine {
             self.check_poly.clone_from(&self.poly_ram);
             self.check_latch = self.poly_latch;
         }
+        self.check_light(light);
     }
 
     /// [`Engine::process`] by the 2C native geometrizer: the same list,
@@ -1308,6 +1558,7 @@ impl Engine {
             return;
         }
         let mut tap = self.begin_smooth();
+        let mut light = self.light_tap();
         let Some(n) = self.native_tgp.as_deref_mut() else { return };
         let before = tap.is_some().then(|| crate::smooth::Native::C(Box::new(n.clone())));
         let (mut out, mut latch) = (Vec::new(), 0);
@@ -1318,10 +1569,12 @@ impl Engine {
             latch: &mut latch,
             out: &mut out,
             tap: tap.as_mut(),
+            light: light.as_mut(),
         };
         n.run_frame(&mut io);
         let wrote = io.poly.wrote;
         self.stream.extend(out.into_iter().filter(|&w| w != RASTER_NOP));
+        self.finish_light(light);
         if let (Some(s), Some(native), Some(tap)) = (self.smooth.as_deref_mut(), before, tap) {
             s.pending = Some((native, 0, tap.into_list(), wrote));
         }
@@ -1335,6 +1588,7 @@ impl Engine {
         let t = Stopwatch::start();
         self.process(buffer, read_ptr);
         let chip_ms = t.elapsed().as_secs_f32() * 1e3;
+        let mut light = self.light_tap();
         let Some(n) = self.native_tgp.as_deref_mut() else { return };
         let t = Stopwatch::start();
         let (mut out, mut words, mut fed, mut latch) = (Vec::new(), 0, Vec::new(), 0);
@@ -1345,6 +1599,7 @@ impl Engine {
             latch: &mut latch,
             out: &mut out,
             tap: None,
+            light: light.as_mut(),
         };
         n.run_frame(&mut io);
         let native: Vec<u32> = out.into_iter().filter(|&w| w != RASTER_NOP).collect();
@@ -1380,6 +1635,7 @@ impl Engine {
             n.import(&self.tgp, false);
             self.check_poly.clone_from(&self.poly_ram);
         }
+        self.check_light(light);
     }
 
     fn process(&mut self, buffer: &[u8], read_ptr: u32) {
@@ -1452,6 +1708,7 @@ impl Engine {
         // The DMA stops at END; words read ahead of it are not consumed.
         self.list_consumed = self.fed.len() - self.tgp.fifo_in.len();
         self.tgp.fifo_in.clear();
+        self.scan_light();
     }
 }
 
@@ -1514,6 +1771,7 @@ impl Engine {
             });
         }
         self.stream.extend(out.into_iter().filter(|&w| w != RASTER_NOP));
+        self.scan_light();
     }
 }
 
@@ -1598,14 +1856,14 @@ impl Geometrizer {
     }
 
     /// Run frames the way `src` does: inline or on a thread, keeping the
-    /// last frame or not, the same mode, SHARC interpreter choice and
-    /// smooth motion (`crate::Machine::configure_like`).
+    /// last frame or not, the same mode, SHARC interpreter choice, smooth
+    /// motion and lighting side channel (`crate::Machine::configure_like`).
     pub fn configure_like(&mut self, src: &mut Geometrizer) {
         self.set_threaded(src.threaded);
         self.keep_last = src.keep_last;
-        let (mode, interpret, smooth) = {
+        let (mode, interpret, smooth, light) = {
             let e = src.engine_mut();
-            (e.mode, e.sharc_interpret, e.smooth.is_some())
+            (e.mode, e.sharc_interpret, e.smooth.is_some(), e.light.is_some())
         };
         let e = self.engine_mut();
         if e.sharc_interpret != interpret {
@@ -1616,6 +1874,7 @@ impl Geometrizer {
             e.set_mode(mode);
         }
         e.set_smooth(smooth);
+        e.set_light(light);
     }
 
     /// Smooth motion: whether the frames started from now on are shown

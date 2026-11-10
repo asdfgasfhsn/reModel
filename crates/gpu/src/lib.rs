@@ -11,14 +11,24 @@
 //! Polygons are drawn in order in a single pass, by default with no depth
 //! buffer: GPUs keep primitive order for overlapping pixels, which gives the
 //! painter's algorithm the software renderer uses. [`Quality`] adds
-//! multisampling and a depth buffer. [`Renderer::present`] then blends the
+//! multisampling, a depth buffer, filtering of texture pack images,
+//! temporal anti-aliasing and upscaling, and smooth shading (all off by
+//! default). [`Renderer::present`] then blends the
 //! 2D tile layers around the 3D layer into the output.
+
+mod temporal;
+mod tiles;
 
 pub use model2::enhance::TexFilter;
 use model2::enhance::{Found, Rgba, TexturePack};
+pub use model2::light::{Shading, CREASE_AUTO};
 use model2::raster::{tex_info, Placed, Poly, Sources, TexKeys};
 use model2::video::{Layers2d, View, HEIGHT, WIDTH};
 use std::collections::HashMap;
+pub use temporal::{step, temporal_supported, BusMotion, FrameTag, Step, TemporalDebug, Tuning as TemporalTuning};
+use temporal::{Temporal, TemporalPass};
+/// The wgpu this crate is built with (for callers that make their own targets).
+pub use wgpu;
 use wgpu::util::DeviceExt;
 
 /// Image quality options for the 3D layer (docs/enhancements.md). The
@@ -36,11 +46,92 @@ pub struct Quality {
     /// less). No effect without a pack: original textures are never
     /// filtered this way.
     pub tex_filter: TexFilter,
+    /// Temporal anti-aliasing: the render scale of the 3D layer in percent
+    /// (0: off, the default; 100: anti-aliasing at the output size; 50 to
+    /// 99: drawn smaller and upscaled). The 3D layer is drawn with a
+    /// sub-pixel jitter and accumulated over frames, following motion
+    /// ([`Renderer::present_bus_motion`]). Excludes `msaa` (set to 1).
+    pub temporal: u8,
+    /// Checkerboard translucency with `temporal` on (ignored without).
+    pub stipple: Stipple,
+    /// Smooth shading (`model2::light`): `Flat` (the default, the
+    /// original), or brightness varying across polygons: `Vertex` from
+    /// corner values (the game's formula per corner where the side
+    /// channel allows, else means of the stream's lumas), `Pixel` the
+    /// game's formula per pixel for the interpolated normal where the side
+    /// channel allows, `Vertex` elsewhere ([`Renderer::light_effective`]).
+    /// Polygons passed in ([`Renderer::draw`], [`Renderer::frame`],
+    /// [`Renderer::present`]) are drawn with whatever `Poly::lit` (and,
+    /// with `Pixel`, `Poly::pixel`) holds unless this is `Flat`; the
+    /// `present_bus*` calls shade the stream themselves
+    /// ([`Renderer::set_light_rules`], [`Renderer::set_light_frame`]).
+    pub shading: Shading,
+    /// The crease angle for `shading`, degrees (0: nothing smoothed), or
+    /// [`CREASE_AUTO`] (the default): the game's (`romset::Shading`).
+    pub crease: u8,
+    /// Finer levels for `shading` (default off): a lit pixel's colour
+    /// blends the two colour table columns around its brightness
+    /// (`model2::raster::fine_level`) instead of taking one of the game's
+    /// 64 levels, so large smooth surfaces don't band. Only lit pixels;
+    /// never outside the polygon's hue.
+    pub shading_fine: bool,
+    /// Brightness balance for `shading` (default on,
+    /// `model2::light::Options::balance`): one brightness offset per
+    /// smooth surface keeps its mean the game's. Off: the game's formula
+    /// at the smoothed normals alone (bumpy surfaces come out brighter).
+    pub shading_balance: bool,
 }
 
 impl Default for Quality {
     fn default() -> Self {
-        Quality { msaa: 1, depth: false, tex_filter: TexFilter::Off }
+        Quality {
+            msaa: 1,
+            depth: false,
+            tex_filter: TexFilter::Off,
+            temporal: 0,
+            stipple: Stipple::Blend,
+            shading: Shading::Flat,
+            crease: CREASE_AUTO,
+            shading_fine: false,
+            shading_balance: true,
+        }
+    }
+}
+
+impl Quality {
+    /// A `temporal` setting by name: `off`, `taa` (100) or a render scale
+    /// in percent, 50 to 100.
+    pub fn parse_temporal(s: &str) -> Option<u8> {
+        match s {
+            "off" | "0" => Some(0),
+            "taa" | "on" => Some(100),
+            n => n.parse::<u8>().ok().filter(|n| (50..=100).contains(n)),
+        }
+    }
+}
+
+/// How checkerboard (screen door) translucency is drawn with temporal
+/// anti-aliasing on (docs/enhancements.md).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Stipple {
+    /// As an even 50% blend: what the pattern averages to, stable at any
+    /// render scale.
+    #[default]
+    Blend,
+    /// The pattern, by game pixel at the jittered sample point. Falls back
+    /// to `Blend` where the 3D layer has under 1.5 pixels a game pixel,
+    /// where the pattern can't be reconstructed.
+    Keep,
+}
+
+impl Stipple {
+    /// `blend` or `keep`.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "blend" => Some(Stipple::Blend),
+            "keep" => Some(Stipple::Keep),
+            _ => None,
+        }
     }
 }
 
@@ -110,6 +201,12 @@ pub struct PackStats {
     pub uploaded: u32,
     pub held: u32,
     pub bytes: u64,
+    /// Tile patterns (map entries) drawn replaced in the last frame
+    /// composed, tile images held, and the tile atlas's bytes (allocated
+    /// whole when the first tile image is drawn).
+    pub tiles: u32,
+    pub tiles_held: u32,
+    pub tile_bytes: u64,
 }
 
 /// GPU memory pack images may hold before the least recently drawn are
@@ -151,14 +248,41 @@ pub fn features(adapter: &wgpu::Adapter) -> wgpu::Features {
     adapter.features() & wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
 }
 
+/// `light::shade`'s result for a stream, side channel and options (a
+/// repeated draw of one game frame shades once).
+struct LightCache {
+    stream: Vec<u32>,
+    side: Option<std::sync::Arc<model2::light::Frame>>,
+    opts: model2::light::Options,
+    shaded: std::sync::Arc<model2::light::Shaded>,
+}
+
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     raster_shader: wgpu::ShaderModule,
     raster_pipeline_layout: wgpu::PipelineLayout,
-    /// Raster pipelines by sample count, mode and variant, made when first
+    /// Raster pipelines by sample count, mode, variant, temporal (the
+    /// `_t` entry points, two targets) and shading (1: the `_l` entry
+    /// points, for frames with a smooth-shaded polygon), made when first
     /// needed.
-    raster: HashMap<(u32, Mode, Variant), wgpu::RenderPipeline>,
+    raster: HashMap<(u32, Mode, Variant, bool, u8), wgpu::RenderPipeline>,
+    /// Smooth shading's rules for the `present_bus*` calls: the game's,
+    /// and its HUD windows (a bit each).
+    light_rules: (&'static romset::Shading, u64),
+    /// The last frame's `light::shade` counts (None: not shaded).
+    light_stats: Option<model2::light::Stats>,
+    /// The lighting side channel for the next frame `build_polys` shades
+    /// ([`Renderer::set_light_frame`], or the engine's in `present_bus*`).
+    light_side: Option<std::sync::Arc<model2::light::Frame>>,
+    /// The last frame's shading, kept for a repeat of the same frame.
+    light_cache: Option<LightCache>,
+    /// Group 0 of the temporal pipelines (`raster_layout` and binding 5),
+    /// and their pipeline layouts by variant.
+    raster_layout_t: wgpu::BindGroupLayout,
+    pipeline_layouts_t: [wgpu::PipelineLayout; 3],
+    /// Temporal anti-aliasing state (`Quality::temporal`).
+    temporal: Temporal,
     quality: Quality,
     max_msaa: u32,
     raster_layout: wgpu::BindGroupLayout,
@@ -195,10 +319,15 @@ pub struct Renderer {
     frame: u64,
     /// An image was too large for the GPU (warned once).
     pack_warned: bool,
+    /// The pack's tile replacements (tiles.rs).
+    tiles: tiles::Tiles,
 }
 
 /// Bytes per vertex: x, y, 1/z, u/z, v/z, polygon index.
 const VERTEX_BYTES: u64 = 24;
+/// Bytes per vertex of the temporal pipelines: the same, then the previous
+/// position (`Placed::prev`, homogeneous X, Y, W).
+const VERTEX_BYTES_T: u64 = 36;
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 fn storage(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -273,6 +402,16 @@ fn le(values: impl IntoIterator<Item = [u8; 4]>) -> Vec<u8> {
     values.into_iter().flatten().collect()
 }
 
+/// A fragment entry point's smooth-shading twin when `lit`: `fs` ->
+/// `fs_l`, `fs_t` -> `fs_l_t` (raster.wgsl).
+fn lit_entry(fs: &str, lit: bool) -> String {
+    match (lit, fs.strip_suffix("_t")) {
+        (false, _) => fs.to_string(),
+        (true, Some(base)) => format!("{base}_l_t"),
+        (true, None) => format!("{fs}_l"),
+    }
+}
+
 /// The raster shader with the depth buffer's constants filled in.
 fn raster_source() -> String {
     include_str!("raster.wgsl")
@@ -314,6 +453,7 @@ impl Renderer {
         let mut r = Self::from_device(device, queue, name);
         r.max_msaa = max_msaa(&adapter);
         r.max_anisotropy = max_anisotropy(&adapter);
+        r.temporal.supported = temporal_supported(&adapter);
         Ok(r)
     }
 
@@ -351,6 +491,26 @@ impl Renderer {
             bind_group_layouts: &[Some(&raster_layout), Some(&pack_filtered_layout)],
             immediate_size: 0,
         });
+        let raster_layout_t = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("raster t"),
+            entries: &[
+                uniform(0, wgpu::ShaderStages::VERTEX_FRAGMENT),
+                storage(1),
+                storage(2),
+                storage(3),
+                storage(4),
+                uniform(5, wgpu::ShaderStages::VERTEX_FRAGMENT),
+            ],
+        });
+        let pipeline_layouts_t = [None, Some(&pack_layout), Some(&pack_filtered_layout)].map(|g1| {
+            let groups = [Some(&raster_layout_t), g1];
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("raster t"),
+                bind_group_layouts: if g1.is_some() { &groups } else { &groups[..1] },
+                immediate_size: 0,
+            })
+        });
+        let temporal = Temporal::new(&device);
         let compose_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("compose"),
             source: wgpu::ShaderSource::Wgsl(include_str!("compose.wgsl").into()),
@@ -359,12 +519,20 @@ impl Renderer {
             label: Some("compose"),
             entries: &[uniform(0, wgpu::ShaderStages::FRAGMENT), texture(1), texture(2), texture(3)],
         });
+        let tiles = tiles::Tiles::new(&device);
         Renderer {
             device,
             queue,
             raster_shader: shader,
             raster_pipeline_layout: pipeline_layout,
             raster: HashMap::new(),
+            light_rules: (&romset::Shading::DEFAULT, 0),
+            light_stats: None,
+            light_side: None,
+            light_cache: None,
+            raster_layout_t,
+            pipeline_layouts_t,
+            temporal,
             quality: Quality::default(),
             max_msaa: 4,
             raster_layout,
@@ -388,6 +556,7 @@ impl Renderer {
             pack_stats: PackStats::default(),
             frame: 0,
             pack_warned: false,
+            tiles,
         }
     }
 
@@ -415,9 +584,17 @@ impl Renderer {
     /// Draw the 3D layer with `quality` from the next frame on. The sample
     /// count is rounded to what exists (1, 4, 8) and limited to the GPU's,
     /// anisotropy likewise (2, 4, 8, 16; mipmaps alone where the GPU has
-    /// none); the result is the quality in effect.
+    /// none); the result is the quality in effect. `temporal` is clamped to
+    /// 50..=100 (0 where the GPU can't, [`temporal_supported`]) and turns
+    /// multisampling off; any change starts temporal accumulation again.
     pub fn set_quality(&mut self, quality: Quality) -> Quality {
+        let temporal = match quality.temporal {
+            _ if !self.temporal.supported => 0,
+            0 => 0,
+            n => n.clamp(50, 100),
+        };
         let msaa = match quality.msaa {
+            _ if temporal > 0 => 1,
             0 | 1 => 1,
             2..=7 => 4,
             _ => self.max_msaa.min(8),
@@ -438,8 +615,70 @@ impl Renderer {
                 t.groups = Default::default();
             }
         }
-        self.quality = Quality { msaa, tex_filter, ..quality };
+        let q = Quality { msaa, tex_filter, temporal, ..quality };
+        if q != self.quality {
+            self.temporal.reset();
+        }
+        self.quality = q;
         self.quality
+    }
+
+    /// Whether [`Quality::temporal`] can be used (from
+    /// [`temporal_supported`] for the device's adapter; assumed for a
+    /// device from [`Renderer::from_device`], as on WebGPU).
+    pub fn set_temporal_supported(&mut self, ok: bool) {
+        self.temporal.supported = ok;
+        if !ok && self.quality.temporal > 0 {
+            self.set_quality(Quality { temporal: 0, ..self.quality });
+        }
+    }
+
+    /// Start temporal accumulation again from the next frame (a jump in
+    /// the picture the motion data doesn't know of: a state load, another
+    /// machine shown, a game start).
+    pub fn reset_history(&mut self) {
+        self.temporal.reset();
+    }
+
+    /// How a frame tagged `tag` follows the last one drawn with temporal
+    /// on ([`step`]); `cut` from its motion data (`smooth::Motion::cut`).
+    pub fn temporal_step(&self, tag: FrameTag, cut: bool) -> Step {
+        step(self.temporal.last, tag, cut)
+    }
+
+    /// The window centres of the last frame drawn with temporal on, for
+    /// `model2::raster::MotionIn::prev_centres`.
+    pub fn temporal_centres(&self) -> &[model2::raster::Centres] {
+        &self.temporal.centres
+    }
+
+    /// For the next [`Renderer::present`] or [`Renderer::frame`] with
+    /// temporal on (one-shot, like `set_ram_versions`): the frame's tag,
+    /// its step ([`Renderer::temporal_step`]; with `Step::Blend { tp }`
+    /// the caller has built the polygons with `raster::build_motion` at
+    /// that `tp` and these centres as the previous ones), and its window
+    /// centres (from `build_motion`). Without it a frame has no motion
+    /// data (`Step::NoMotion`).
+    pub fn set_temporal_frame(&mut self, tag: FrameTag, step: Step, centres: Vec<model2::raster::Centres>) {
+        self.temporal.pending = Some((Some(tag), step, centres));
+    }
+
+    /// Test hook: jitter on (the default) or off (every frame drawn at the
+    /// pixel centres, as the first frame after a reset is).
+    pub fn set_temporal_jitter(&mut self, on: bool) {
+        self.temporal.jitter = on;
+    }
+
+    /// Test hook: the resolve copies each output pixel's nearest internal
+    /// sample and ignores the history (stage 3's pass-through), when on.
+    pub fn set_temporal_passthrough(&mut self, on: bool) {
+        self.temporal.passthrough = on;
+    }
+
+    /// The resolve's constants (for tuning; the defaults are the settled
+    /// ones).
+    pub fn set_temporal_tuning(&mut self, t: TemporalTuning) {
+        self.temporal.tuning = t;
     }
 
     pub fn quality(&self) -> Quality {
@@ -453,7 +692,23 @@ impl Renderer {
         self.pack = pack;
         self.pack_tex.clear();
         self.keys.clear();
+        self.tiles.reset();
         self.pack_stats = PackStats::default();
+    }
+
+    /// The 2D layers of a frame (`model2::video::layers_2d`), with the
+    /// pack's tile images (`tile_<key>.png`) in place of the patterns they
+    /// replace when it has any: those are then drawn at output resolution
+    /// by `present`, `frame` and the `present_bus*` calls (which use this
+    /// themselves). Without a pack, or with one that has no tile images,
+    /// exactly `layers_2d`.
+    pub fn layers_2d(&mut self, tiles: &[u8], palette: &[u8], view: &View, has_3d: bool) -> Layers2d {
+        match self.pack.as_mut() {
+            Some(pack) if pack.has_tiles() => {
+                self.tiles.layers(&self.device, &self.queue, pack.as_mut(), tiles, palette, view, has_3d)
+            }
+            _ => model2::video::layers_2d(tiles, palette, view, has_3d),
+        }
     }
 
     /// Whether a texture pack is set.
@@ -466,10 +721,117 @@ impl Renderer {
         self.pack_stats
     }
 
-    /// The raster pipeline for `samples`, `mode` and `variant`.
-    fn raster_pipeline(&mut self, samples: u32, mode: Mode, variant: Variant) -> wgpu::RenderPipeline {
-        if let Some(p) = self.raster.get(&(samples, mode, variant)) {
+    /// Smooth shading's rules for the frames `present_bus*` shades from
+    /// the stream (with [`Quality::shading`] on): the game's
+    /// (`romset::Game::shading`) and its HUD windows
+    /// (`romset::Game::hud_windows`, a bit each), never shaded. Default:
+    /// `romset::Shading::DEFAULT`, none.
+    pub fn set_light_rules(&mut self, rules: &'static romset::Shading, hud_windows: u64) {
+        self.light_rules = (rules, hud_windows);
+    }
+
+    /// `light::shade`'s counts for the last frame `present_bus*` drew with
+    /// shading on (None otherwise).
+    pub fn light_stats(&self) -> Option<model2::light::Stats> {
+        self.light_stats
+    }
+
+    /// The lighting side channel (`model2::light::Frame`) of the geometry
+    /// the next `present_bus*` call draws, when it is passed in (an
+    /// in-between); used once. Without it the engine's own frame takes the
+    /// engine's (`Engine::light_frame`, with `Geometrizer::set_light` on),
+    /// other geometry none. A side channel that doesn't line up with the
+    /// stream is dropped by `light::shade_with`'s check.
+    pub fn set_light_frame(&mut self, side: Option<std::sync::Arc<model2::light::Frame>>) {
+        self.light_side = side;
+    }
+
+    /// The options `present_bus*` shades the stream with (None: shading
+    /// off).
+    pub fn light_options(&self) -> Option<model2::light::Options> {
+        let q = self.quality;
+        let o = model2::light::Options::with_mask(q.shading, q.crease, self.light_rules.0, self.light_rules.1)
+            .with_fine(q.shading_fine)
+            .with_balance(q.shading_balance);
+        o.on().then_some(o)
+    }
+
+    /// The polygons of `stream` as `present_bus*` draws them: with motion
+    /// data `m`, and smooth-shaded when [`Quality::shading`] is on.
+    fn build_polys(
+        &mut self,
+        stream: &[u32],
+        src: &Sources,
+        m: Option<&model2::raster::MotionIn>,
+    ) -> (Vec<Poly>, Vec<model2::raster::Centres>) {
+        let opts = self.light_options();
+        let side = self.light_side.take();
+        let shaded = opts.map(|o| {
+            // The same stream, side channel and options as the last frame
+            // (a repeat): its shading again, not worked out again.
+            let same = |c: &LightCache| {
+                c.opts == o
+                    && match (&c.side, &side) {
+                        (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+                        (None, None) => true,
+                        _ => false,
+                    }
+                    && c.stream[..] == *stream
+            };
+            match &self.light_cache {
+                Some(c) if same(c) => (c.shaded.clone(), true),
+                _ => {
+                    let s = std::sync::Arc::new(model2::light::shade_with(stream, side.as_deref(), &o));
+                    self.light_cache = Some(LightCache { stream: stream.to_vec(), side, opts: o, shaded: s.clone() });
+                    (s, false)
+                }
+            }
+        });
+        // A repeat cost nothing.
+        self.light_stats =
+            shaded.as_ref().map(|(s, hit)| model2::light::Stats { ms: if *hit { 0.0 } else { s.stats.ms }, ..s.stats });
+        let shaded = shaded.map(|s| s.0);
+        let input = model2::raster::BuildIn {
+            motion: m,
+            lit: shaded.as_deref(),
+            skip_checker: opts.is_some_and(|o| o.skip_checker),
+            fine: opts.is_some_and(|o| o.fine),
+        };
+        model2::raster::build_with(stream, src, &input)
+    }
+
+    /// What the last frame drawn with shading on was drawn as
+    /// ([`model2::light::Stats::effective`]): `Pixel` asked for but no
+    /// polygon lit per pixel (the chip, no side channel) is `Vertex`. None:
+    /// shading off.
+    pub fn light_effective(&self) -> Option<Shading> {
+        Some(self.light_stats?.effective(self.light_options()?.shading))
+    }
+
+    /// The raster pipeline for `samples`, `mode` and `variant`, and
+    /// `temporal`: the `_t` entry points, with the aux target; `shading`
+    /// 1: the smooth-shading (`_l`) fragment entry points.
+    fn raster_pipeline(
+        &mut self,
+        samples: u32,
+        mode: Mode,
+        variant: Variant,
+        temporal: bool,
+        shading: u8,
+    ) -> wgpu::RenderPipeline {
+        let key = (samples, mode, variant, temporal, shading);
+        if let Some(p) = self.raster.get(&key) {
             return p.clone();
+        }
+        // The test is in favour of the game's order (raster::depth_test_value).
+        let mut constants = Vec::new();
+        if mode == Mode::Test {
+            constants.push(("DEPTH_FACTOR", f64::from(1.0 + model2::raster::DEPTH_TOLERANCE)));
+        }
+        if temporal {
+            let p = self.raster_pipeline_t(mode, variant, &constants, shading != 0);
+            self.raster.insert(key, p.clone());
+            return p;
         }
         let (vs, fs) = match (mode, variant) {
             (Mode::Clear, _) => ("vs_clear", "fs_clear"),
@@ -480,6 +842,7 @@ impl Renderer {
             (Mode::Test | Mode::DepthWrite, Variant::PackFiltered) => ("vs_pack", "fs_packf_depth"),
             (_, Variant::PackFiltered) => ("vs_pack", "fs_packf"),
         };
+        let fs = lit_entry(fs, shading != 0 && mode != Mode::Clear);
         let layout = match variant {
             Variant::Original => &self.raster_pipeline_layout,
             Variant::Pack => &self.pack_pipeline_layout,
@@ -502,12 +865,7 @@ impl Renderer {
             stencil: Default::default(),
             bias: Default::default(),
         });
-        // The test is in favour of the game's order (raster::depth_test_value).
-        let test_factor = [("DEPTH_FACTOR", f64::from(1.0 + model2::raster::DEPTH_TOLERANCE))];
-        let fs_options = wgpu::PipelineCompilationOptions {
-            constants: if mode == Mode::Test { &test_factor } else { &[] },
-            ..Default::default()
-        };
+        let fs_options = wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() };
         let p = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("raster"),
             layout: Some(layout),
@@ -522,7 +880,7 @@ impl Renderer {
             multisample: wgpu::MultisampleState { count: samples, mask: !0, alpha_to_coverage_enabled: false },
             fragment: Some(wgpu::FragmentState {
                 module: &self.raster_shader,
-                entry_point: Some(fs),
+                entry_point: Some(&fs),
                 compilation_options: fs_options,
                 targets: &[Some(wgpu::ColorTargetState {
                     format: FORMAT,
@@ -537,8 +895,85 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
-        self.raster.insert((samples, mode, variant), p.clone());
+        self.raster.insert(key, p.clone());
         p
+    }
+
+    /// A temporal raster pipeline (one sample): `vs_t` and the `_t`
+    /// fragment entry points, 36-byte vertices, the colour target with
+    /// premultiplied blending (for blended stipple) and the aux target.
+    fn raster_pipeline_t(
+        &mut self,
+        mode: Mode,
+        variant: Variant,
+        constants: &[(&str, f64)],
+        lit: bool,
+    ) -> wgpu::RenderPipeline {
+        let depth = matches!(mode, Mode::Test | Mode::DepthWrite);
+        let (vs, fs) = match (mode, variant) {
+            (Mode::Clear, _) => ("vs_clear", "fs_clear"),
+            (_, Variant::Original) => ("vs_t", if depth { "fs_depth_t" } else { "fs_t" }),
+            (_, Variant::Pack) => ("vs_t", if depth { "fs_pack_depth_t" } else { "fs_pack_t" }),
+            (_, Variant::PackFiltered) => ("vs_t", if depth { "fs_packf_depth_t" } else { "fs_packf_t" }),
+        };
+        let fs = lit_entry(fs, lit && mode != Mode::Clear);
+        let layout = &self.pipeline_layouts_t[match variant {
+            Variant::Original => 0,
+            Variant::Pack => 1,
+            Variant::PackFiltered => 2,
+        }];
+        let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x3, 2 => Uint32, 3 => Float32x3];
+        let buffers = [Some(wgpu::VertexBufferLayout {
+            array_stride: VERTEX_BYTES_T,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &attributes,
+        })];
+        let depth_stencil = (mode != Mode::Plain).then(|| wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(matches!(mode, Mode::DepthWrite | Mode::Clear)),
+            depth_compare: Some(if depth {
+                wgpu::CompareFunction::GreaterEqual
+            } else {
+                wgpu::CompareFunction::Always
+            }),
+            stencil: Default::default(),
+            bias: Default::default(),
+        });
+        let fs_options = wgpu::PipelineCompilationOptions { constants, ..Default::default() };
+        let writes = if matches!(mode, Mode::Clear | Mode::DepthWrite) {
+            wgpu::ColorWrites::empty()
+        } else {
+            wgpu::ColorWrites::ALL
+        };
+        let targets = [
+            Some(wgpu::ColorTargetState {
+                format: FORMAT,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: writes,
+            }),
+            Some(wgpu::ColorTargetState { format: temporal::AUX_FORMAT, blend: None, write_mask: writes }),
+        ];
+        self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("raster t"),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module: &self.raster_shader,
+                entry_point: Some(vs),
+                compilation_options: Default::default(),
+                buffers: if mode == Mode::Clear { &[] } else { &buffers },
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &self.raster_shader,
+                entry_point: Some(&fs),
+                compilation_options: fs_options,
+                targets: &targets,
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
     }
 
     pub fn device(&self) -> &wgpu::Device {
@@ -745,7 +1180,10 @@ impl Renderer {
 
     /// Encode the 3D layer of `placed` into `target` (FORMAT, the size of
     /// `view`; alpha 0 where nothing is drawn, a fraction at multisampled
-    /// edges, with colour premultiplied by it).
+    /// edges, with colour premultiplied by it). With `temporal`, the
+    /// temporal pass: `target` and its `aux` are its internal size, drawn jittered with
+    /// the `_t` entry points (one sample).
+    #[allow(clippy::too_many_arguments)]
     fn encode_3d(
         &mut self,
         enc: &mut wgpu::CommandEncoder,
@@ -754,11 +1192,18 @@ impl Renderer {
         src: &Sources,
         view: &View,
         target: &wgpu::TextureView,
+        temporal: Option<&TemporalPass>,
     ) {
-        let (w, h) = (view.width as u32, view.height as u32);
+        let (w, h) = temporal.map_or((view.width as u32, view.height as u32), |t| t.size);
+        let vertex_bytes = if temporal.is_some() { VERTEX_BYTES_T } else { VERTEX_BYTES };
         let mut verts: Vec<u8> = Vec::new();
         let mut table: Vec<u8> = Vec::new();
+        // Temporal: each polygon's real clip rectangle (`clip_t`).
+        let mut table_t: Vec<u8> = Vec::new();
         let q = self.quality;
+        // Smooth shading: the lit pipelines only for frames with a lit
+        // polygon.
+        let lit_frame = q.shading != Shading::Flat && placed.iter().any(|pl| !polys[pl.poly].lit.is_empty());
         let versions = self.versions.take();
         let (slots, pack_groups) = self.pack_slots(polys, placed, src, versions.map(|v| v.0));
         // Draws: runs of polygons in the same window and depth mode, and
@@ -793,38 +1238,122 @@ impl Renderer {
         // drawn: the depth-only draws to come. (A test and a write of
         // different values: raster::depth_test_value.)
         let mut group_depth: Vec<Run> = Vec::new();
-        // Outlines for the shader's 1/z (`outline_iz`): a directory of
-        // (first, count) per polygon, then the points.
+        // Outlines for the shader's 1/z (`outline_iz`) and lit polygons'
+        // lumas (`lit_luma`): a directory of (first, count, lit, 0) per
+        // polygon, then the points (x, y, 1/z, luma/z).
         let mut outline_dir: Vec<u8> = Vec::new();
         let mut outline_points: Vec<u8> = Vec::new();
+        // Temporal: the polygons' edges, for the thin-polygon test.
+        let edges = temporal
+            .filter(|tp| tp.thin.is_some() && tp.isolated)
+            .map(|_| temporal::Edges::new(placed.iter().map(|pl| &pl.points[..])));
         for (i, pl) in placed.iter().enumerate() {
             let p = &polys[pl.poly];
             let t = p.texture;
-            let flags = t
+            let mut flags = t
                 .map_or(0, |t| 1 | (t.mirror_x as u32) << 1 | (t.mirror_y as u32) << 2 | (t.translucent as u32) << 3)
                 | (p.checker as u32) << 4
                 | ((slots[i] != NO_SLOT) as u32) << 5;
-            let (x0, y0, x1, y1) = pl.clip;
+            let (mut x0, mut y0, mut x1, mut y1) = pl.clip;
+            // Temporal: the motion of each point, if known.
+            let mut motion = None;
+            // Temporal: each point's offset widening a thin polygon.
+            let mut widen: Vec<(f32, f32)> = Vec::new();
+            if let Some(tp) = temporal {
+                // The `_t` entry points clip and draw the checkerboard
+                // themselves, at the jittered sample point: the shared
+                // shading functions get a clip that never discards and no
+                // checker bit (raster.wgsl, `pre_t`).
+                table_t.extend(le([x0, y0, x1, y1].map(f32::to_le_bytes)));
+                (x0, y0, x1, y1) = (-3e38, -3e38, 3e38, 3e38);
+                motion = tp.motion.of(pl);
+                // Thin polygons (temporal.rs, `thin`): bit 8, marked in
+                // the aux target; widened to `tp.cover` internal px so every
+                // jitter phase's samples hit them, drawn at their coverage
+                // (bits 16-23, 255 = 1) over what is behind.
+                // A sliver of a mesh (a long edge shared) is not one.
+                let thin = tp.thin.and_then(|t| {
+                    let pts: Vec<(f32, f32)> = pl.points.iter().map(|v| (v.x, v.y)).collect();
+                    temporal::thin(&pts, tp.rs, t).filter(|_| !edges.as_ref().is_some_and(|e| e.long_edge_shared(&pts)))
+                });
+                let mut cov = 255;
+                if let Some(t) = thin.filter(|_| tp.cover > 0.0) {
+                    let to = tp.cover.max(t.width);
+                    widen = pl.points.iter().map(|v| t.widen((v.x, v.y), tp.rs, to)).collect();
+                    cov = (t.coverage(to) * 255.0).round().clamp(1.0, 255.0) as u32;
+                }
+                let thin = thin.is_some();
+                flags = (flags & !16)
+                    | (p.checker as u32) << 6
+                    | (motion.is_some() as u32) << 7
+                    | (thin as u32) << 8
+                    | cov << 16;
+            }
             let tex = t.map_or([0; 4], |t| [t.x0, t.y0, t.w, t.h]);
             let (bank, luma_table) = t.map_or((0, 0), |t| (t.bank, t.luma_table));
             table.extend(le([x0, y0, x1, y1].map(f32::to_le_bytes)));
             let ints = tex.into_iter().chain([flags, bank, luma_table, p.luma]).chain(p.colour).chain([pl.rank]);
             table.extend(le(ints.map(u32::to_le_bytes)));
-            let first = (verts.len() as u64 / VERTEX_BYTES) as u32;
+            let first = (verts.len() as u64 / vertex_bytes) as u32;
             // Convex polygon as a triangle fan.
             for k in 1..pl.points.len().saturating_sub(1) {
-                for v in [pl.points[0], pl.points[k], pl.points[k + 1]] {
-                    verts.extend(le([v.x, v.y, v.iz, v.uz, v.vz].map(f32::to_le_bytes)));
+                for j in [0, k, k + 1] {
+                    let v = pl.points[j];
+                    let (dx, dy) = widen.get(j).copied().unwrap_or((0.0, 0.0));
+                    verts.extend(le([v.x + dx, v.y + dy, v.iz, v.uz, v.vz].map(f32::to_le_bytes)));
                     verts.extend((i as u32).to_le_bytes());
+                    if temporal.is_some() {
+                        // Where it was; without motion data where it is
+                        // (homogeneous: a widened point moved as much).
+                        let prev = motion
+                            .map_or([v.x, v.y, 1.0], |m: &[[f32; 3]]| m.get(j).copied().unwrap_or([v.x, v.y, 1.0]));
+                        let prev = [prev[0] + dx * prev[2], prev[1] + dy * prev[2], prev[2]];
+                        verts.extend(le(prev.map(f32::to_le_bytes)));
+                    }
                 }
             }
-            let end = (verts.len() as u64 / VERTEX_BYTES) as u32;
-            if q.depth {
+            let end = (verts.len() as u64 / vertex_bytes) as u32;
+            let lit = lit_frame && !p.lit.is_empty();
+            if q.depth || lit {
                 let first = placed.len() + outline_points.len() / 16;
-                outline_dir.extend(le([first as u32, pl.points.len() as u32, 0, 0].map(u32::to_le_bytes)));
-                for v in &pl.points {
-                    outline_points.extend(le([v.x, v.y, v.iz, 0.0].map(f32::to_le_bytes)));
+                let count = pl.points.len();
+                // Lit: bit 0, per pixel bit 1, finer levels bit 2, the
+                // luma range above.
+                let pixel = lit && q.shading == Shading::Pixel && p.pixel.is_some();
+                let fine = lit && q.shading_fine;
+                let flags = if lit {
+                    1 | (pixel as u32) << 1
+                        | (fine as u32) << 2
+                        | (p.lit_range[0] as u32) << 8
+                        | (p.lit_range[1] as u32) << 16
+                } else {
+                    0
+                };
+                let normals = if pixel { (first + count) as u32 } else { 0 };
+                outline_dir.extend(le([first as u32, count as u32, flags, normals].map(u32::to_le_bytes)));
+                for (k, v) in pl.points.iter().enumerate() {
+                    let lz = if lit { p.lit[k][0] * v.iz } else { 0.0 };
+                    outline_points.extend(le([v.x, v.y, v.iz, lz].map(f32::to_le_bytes)));
                 }
+                if let (true, Some(px)) = (pixel, &p.pixel) {
+                    // The normals/z per point, then the lighting
+                    // (raster.wgsl `lamp_eval`).
+                    for (k, v) in pl.points.iter().enumerate() {
+                        let n = p.lit[k];
+                        outline_points.extend(le([n[1] * v.iz, n[2] * v.iz, n[3] * v.iz, 0.0].map(f32::to_le_bytes)));
+                    }
+                    let l = &px.lamp;
+                    let base = match l.base {
+                        model2::light::Base::D => 0,
+                        model2::light::Base::S0 => 1,
+                        model2::light::Base::Dotl => 2,
+                    };
+                    let bits = l.front as u32 | base << 1 | l.squarings.min(255) << 8;
+                    outline_points.extend(le([l.l[0], l.l[1], l.l[2], f32::from_bits(bits)].map(f32::to_le_bytes)));
+                    outline_points.extend(le([l.ambient, l.diffuse, l.spec_scale, px.offset].map(f32::to_le_bytes)));
+                }
+            } else if lit_frame {
+                outline_dir.extend([0; 16]);
             }
             // Translucent (checkerboard) polygons are background.
             let grouped = q.depth && !pl.background;
@@ -859,58 +1388,83 @@ impl Renderer {
         let buffer = |label, contents: &[u8], usage| {
             d.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage })
         };
-        let screen = le([w as f32, h as f32, view.sx, view.sy].map(f32::to_le_bytes));
+        // The output size (also for the temporal pass, which is placed in
+        // output pixels and drawn at its own size through the viewport).
+        let screen = le([view.width as f32, view.height as f32, view.sx, view.sy].map(f32::to_le_bytes));
         let screen = buffer("screen", &screen, wgpu::BufferUsages::UNIFORM);
         let table = buffer("polys", &table, wgpu::BufferUsages::STORAGE);
         let vertices = buffer("vertices", &words(&verts), wgpu::BufferUsages::VERTEX);
         outline_dir.extend(outline_points);
+        // Temporal: the real clip rectangles after the outlines (`clip_t`;
+        // a buffer of their own would be a fifth storage buffer, more than
+        // the portable limits have).
+        let clip_base = (outline_dir.len() / 16) as u32;
+        outline_dir.extend(table_t);
         if outline_dir.is_empty() {
             outline_dir.resize(16, 0);
         }
         let outlines = buffer("outlines", &outline_dir, wgpu::BufferUsages::STORAGE);
+        let mut entries = vec![
+            wgpu::BindGroupEntry { binding: 0, resource: screen.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: table.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 2, resource: render.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 3, resource: palette.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 4, resource: outlines.as_entire_binding() },
+        ];
+        let screen_t = temporal.map(|tp| buffer("screen t", &tp.screen_t(clip_base), wgpu::BufferUsages::UNIFORM));
+        if let Some(screen_t) = &screen_t {
+            entries.push(wgpu::BindGroupEntry { binding: 5, resource: screen_t.as_entire_binding() });
+        }
         let bind = d.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("raster"),
-            layout: &self.raster_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: screen.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: table.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: render.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: palette.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: outlines.as_entire_binding() },
-            ],
+            layout: if temporal.is_some() { &self.raster_layout_t } else { &self.raster_layout },
+            entries: &entries,
         });
-        let samples = q.msaa.max(1);
+        let samples = if temporal.is_some() { 1 } else { q.msaa.max(1) };
         let msaa = (samples > 1).then(|| self.kept_attachment("3d msaa", w, h, samples, FORMAT));
         let msaa_view = msaa.as_ref().map(|t| t.create_view(&Default::default()));
-        let depth = q.depth.then(|| self.kept_attachment("3d depth", w, h, samples, DEPTH_FORMAT));
+        let depth_label = if temporal.is_some() { "3d depth t" } else { "3d depth" };
+        let depth = q.depth.then(|| self.kept_attachment(depth_label, w, h, samples, DEPTH_FORMAT));
         let depth_view = depth.as_ref().map(|t| t.create_view(&Default::default()));
+        let is_t = temporal.is_some();
         // The pack shaders only for frames that replace a texture.
         let variant = match (pack_groups.is_empty(), q.tex_filter.mipmapped()) {
             (true, _) => Variant::Original,
             (false, false) => Variant::Pack,
             (false, true) => Variant::PackFiltered,
         };
+        // Depth-only draws need no luma: never lit.
+        let shading = |m: Mode| (lit_frame && m != Mode::DepthWrite) as u8;
         let pipelines: Vec<(Mode, wgpu::RenderPipeline)> = if q.depth {
             [Mode::Test, Mode::DepthWrite, Mode::Background]
-                .map(|m| (m, self.raster_pipeline(samples, m, variant)))
+                .map(|m| (m, self.raster_pipeline(samples, m, variant, is_t, shading(m))))
                 .into()
         } else {
-            vec![(Mode::Plain, self.raster_pipeline(samples, Mode::Plain, variant))]
+            vec![(Mode::Plain, self.raster_pipeline(samples, Mode::Plain, variant, is_t, shading(Mode::Plain)))]
         };
-        let clear_pipeline = q.depth.then(|| self.raster_pipeline(samples, Mode::Clear, variant));
+        let clear_pipeline = q.depth.then(|| self.raster_pipeline(samples, Mode::Clear, variant, is_t, 0));
         let dummy = (variant != Variant::Original).then(|| self.pack_dummy(variant == Variant::PackFiltered));
         self.pack_stats.draws = runs.len() as u32;
+        let colour = Some(wgpu::RenderPassColorAttachment {
+            view: msaa_view.as_ref().unwrap_or(target),
+            depth_slice: None,
+            resolve_target: msaa_view.as_ref().map(|_| target),
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                store: if msaa_view.is_some() { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store },
+            },
+        });
+        // Temporal: the aux target too, cleared to 0 (nothing drawn).
+        let aux = temporal.map(|tp| wgpu::RenderPassColorAttachment {
+            view: tp.aux,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+        });
+        let attachments = [colour, aux];
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("3d layer"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: msaa_view.as_ref().unwrap_or(target),
-                depth_slice: None,
-                resolve_target: msaa_view.as_ref().map(|_| target),
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: if msaa_view.is_some() { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store },
-                },
-            })],
+            color_attachments: if is_t { &attachments } else { &attachments[..1] },
             depth_stencil_attachment: depth_view.as_ref().map(|view| wgpu::RenderPassDepthStencilAttachment {
                 view,
                 depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Discard }),
@@ -928,8 +1482,14 @@ impl Renderer {
             // Each window starts with an empty depth buffer where it draws
             // (the first has the pass's clear).
             if let (Some(clear), true) = (&clear_pipeline, k > 0 && runs[k - 1].window != run.window) {
-                let (x0, y0) = (run.clip.0.floor().max(0.0) as u32, run.clip.1.floor().max(0.0) as u32);
-                let (x1, y1) = ((run.clip.2.ceil().max(0.0) as u32).min(w), (run.clip.3.ceil().max(0.0) as u32).min(h));
+                // Temporal: the rectangle in internal pixels, one more each
+                // side for the jitter.
+                let clip = temporal.map_or(run.clip, |tp| {
+                    let (sx, sy) = tp.rs;
+                    (run.clip.0 * sx - 1.0, run.clip.1 * sy - 1.0, run.clip.2 * sx + 1.0, run.clip.3 * sy + 1.0)
+                });
+                let (x0, y0) = (clip.0.floor().max(0.0) as u32, clip.1.floor().max(0.0) as u32);
+                let (x1, y1) = ((clip.2.ceil().max(0.0) as u32).min(w), (clip.3.ceil().max(0.0) as u32).min(h));
                 if x1 > x0 && y1 > y0 {
                     pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
                     pass.set_pipeline(clear);
@@ -963,8 +1523,20 @@ impl Renderer {
 
     /// Submit `enc` after copying `texture` (FORMAT, w x h) out, and return
     /// its RGBA pixels. Blocks: native only.
-    fn read_back(&self, mut enc: wgpu::CommandEncoder, texture: &wgpu::Texture, w: u32, h: u32) -> Vec<u8> {
-        let row = (w * 4).div_ceil(256) * 256;
+    fn read_back(&self, enc: wgpu::CommandEncoder, texture: &wgpu::Texture, w: u32, h: u32) -> Vec<u8> {
+        self.read_back_bpp(enc, texture, w, h, 4)
+    }
+
+    /// `read_back` of a texture of `bpp` bytes a pixel.
+    fn read_back_bpp(
+        &self,
+        mut enc: wgpu::CommandEncoder,
+        texture: &wgpu::Texture,
+        w: u32,
+        h: u32,
+        bpp: u32,
+    ) -> Vec<u8> {
+        let row = (w * bpp).div_ceil(256) * 256;
         let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("readback"),
             size: (row * h) as u64,
@@ -989,7 +1561,8 @@ impl Renderer {
         slice.map_async(wgpu::MapMode::Read, |_| {});
         let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
         let data = slice.get_mapped_range().expect("readback buffer is mapped");
-        (0..h as usize).flat_map(|y| data[y * row as usize..y * row as usize + w as usize * 4].to_vec()).collect()
+        let n = (w * bpp) as usize;
+        (0..h as usize).flat_map(|y| data[y * row as usize..y * row as usize + n].to_vec()).collect()
     }
 
     /// Read back a `w`x`h` texture with `COPY_SRC` usage (4 bytes a pixel,
@@ -1006,7 +1579,7 @@ impl Renderer {
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
         let target = self.texture("3d layer", w, h, usage);
         let mut enc = self.device.create_command_encoder(&Default::default());
-        self.encode_3d(&mut enc, polys, placed, src, view, &target.create_view(&Default::default()));
+        self.encode_3d(&mut enc, polys, placed, src, view, &target.create_view(&Default::default()), None);
         let rgba = self.read_back(enc, &target, w, h);
         // Colour is premultiplied by coverage at multisampled edges.
         let un = |c: u8, a: u8| ((c as u32 * 255 + a as u32 / 2) / a as u32).min(255) as u8;
@@ -1091,10 +1664,23 @@ impl Renderer {
         origin: (u32, u32),
     ) {
         let (w, h) = (view.width as u32, view.height as u32);
-        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-        let layer3d = self.kept_texture("3d layer", w, h, usage);
-        let layer3d_view = layer3d.create_view(&Default::default());
-        self.encode_3d(enc, polys, placed, src, view, &layer3d_view);
+        let layer3d_view = if self.quality.temporal > 0 {
+            // The accumulated picture, output size.
+            self.encode_temporal(enc, polys, placed, src, view)
+        } else {
+            let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+            let layer3d = self.kept_texture("3d layer", w, h, usage);
+            let layer3d_view = layer3d.create_view(&Default::default());
+            self.encode_3d(enc, polys, placed, src, view, &layer3d_view, None);
+            layer3d_view
+        };
+        let tile_group =
+            layers.tiles.as_ref().and_then(|m| self.tiles.bind(&self.device, &self.queue, m, layers.ext_w));
+        if self.pack.is_some() {
+            let (held, bytes) = self.tiles.held();
+            let replaced = layers.tiles.as_ref().map_or(0, |m| m.replaced);
+            (self.pack_stats.tiles, self.pack_stats.tiles_held, self.pack_stats.tile_bytes) = (replaced, held, bytes);
+        }
         let base = self.upload("base", &layers.base, (WIDTH + 2 * layers.side) as u32, HEIGHT as u32);
         let hud = self.upload("hud", &layers.hud, layers.ext_w as u32, HEIGHT as u32);
         let b = layers.backdrop.map(|c| c as f32 / 255.0);
@@ -1118,7 +1704,10 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&views[1]) },
             ],
         });
-        let pipeline = self.compose_pipeline(format);
+        let pipeline = match tile_group {
+            Some(_) => self.tiles.pipeline(&self.device, &self.compose_shader, &self.compose_layout, format),
+            None => self.compose_pipeline(format),
+        };
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("compose"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1132,6 +1721,9 @@ impl Renderer {
         pass.set_viewport(origin.0 as f32, origin.1 as f32, w as f32, h as f32, 0.0, 1.0);
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(0, &bind, &[]);
+        if let Some(g) = &tile_group {
+            pass.set_bind_group(1, g, &[]);
+        }
         pass.draw(0..3, 0..1);
     }
 
@@ -1155,7 +1747,10 @@ impl Renderer {
     /// Draw the Model 2 board's current frame into `target` at `origin`
     /// (the rest of `target` is cleared to black) and submit. `geo` is the
     /// geometrizer output to draw (raster stream, texture point RAM), or
-    /// None for the bus's own engine.
+    /// None for the bus's own engine. With temporal on, the engine's frame
+    /// is drawn with its smooth motion data (`Engine::smooth_frame`) when
+    /// it has some, as [`Renderer::present_bus_motion`]; other geometry
+    /// without motion data.
     #[allow(clippy::too_many_arguments)]
     pub fn present_bus(
         &mut self,
@@ -1166,8 +1761,22 @@ impl Renderer {
         format: wgpu::TextureFormat,
         origin: (u32, u32),
     ) {
+        if self.quality.temporal > 0 {
+            let frame = match geo {
+                None => {
+                    bus.geo.sync();
+                    bus.geo.engine().smooth_frame()
+                }
+                Some(_) => None,
+            };
+            let motion = frame.as_deref().map(|f| BusMotion::of(f, FrameTag::game(f.frame), None));
+            return self.present_bus_motion(bus, geo, motion.as_ref(), view, target, format, origin);
+        }
         if geo.is_none() {
             bus.geo.sync();
+            if self.light_side.is_none() {
+                self.light_side = bus.geo.engine().light_frame();
+            }
         }
         let b = &*bus;
         let geo = geo.unwrap_or_else(|| (&b.geo.engine().stream, &b.geo.engine().texture_point_ram));
@@ -1185,7 +1794,104 @@ impl Renderer {
         format: wgpu::TextureFormat,
         origin: (u32, u32),
     ) {
+        if self.light_side.is_none() {
+            self.light_side = bus.geo.last_light().cloned();
+        }
+        if self.quality.temporal > 0 {
+            let (stream, points) = bus.geo.last_frame();
+            let frame = bus.geo.last_smooth();
+            let motion = frame.map(|f| BusMotion::of(f, FrameTag::game(f.frame), Some(stream)));
+            let src = Self::bus_sources(bus, points);
+            self.draw_bus_t(bus, stream, &src, stream, motion.as_ref(), view, target, format, origin);
+            return;
+        }
         self.draw_bus(bus, bus.geo.last_frame(), view, target, format, origin);
+    }
+
+    /// [`Renderer::present_bus`] with motion data for temporal
+    /// anti-aliasing: `geo` as there (an in-between, say), `motion` the
+    /// frame's (`smooth::Frame::motion`, with its tag; `s1` None: the
+    /// engine's stream). The step from the last frame is worked out here
+    /// ([`step`]), and the previous frame's window centres kept. Without
+    /// temporal on, the same as `present_bus`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn present_bus_motion(
+        &mut self,
+        bus: &mut model2::Model2Bus,
+        geo: Option<(&[u32], &[u16])>,
+        motion: Option<&BusMotion>,
+        view: &View,
+        target: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        origin: (u32, u32),
+    ) {
+        if self.quality.temporal == 0 {
+            return self.present_bus(bus, geo, view, target, format, origin);
+        }
+        if geo.is_none() || motion.is_some_and(|m| m.s1.is_none()) {
+            bus.geo.sync();
+        }
+        if geo.is_none() && self.light_side.is_none() {
+            self.light_side = bus.geo.engine().light_frame();
+        }
+        let b = &*bus;
+        let engine = (&b.geo.engine().stream[..], &b.geo.engine().texture_point_ram[..]);
+        let (stream, points) = geo.unwrap_or(engine);
+        let src = Self::bus_sources(b, points);
+        self.draw_bus_t(b, stream, &src, engine.0, motion, view, target, format, origin);
+    }
+
+    fn bus_sources<'a>(b: &'a model2::Model2Bus, points: &'a [u16]) -> Sources<'a> {
+        let (xoff, yoff) = b.sync_offsets();
+        Sources {
+            texture_rom: &b.texture_rom,
+            texture_point_ram: points,
+            render_ram: b.render_ram(),
+            palette: b.palette_ram(),
+            xoff,
+            yoff,
+        }
+    }
+
+    /// `draw_bus` with temporal on: `stream` drawn with motion data
+    /// against `s1` (list N at its own pose, unless `motion.s1` says).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_bus_t(
+        &mut self,
+        b: &model2::Model2Bus,
+        stream: &[u32],
+        src: &Sources,
+        s1: &[u32],
+        motion: Option<&BusMotion>,
+        view: &View,
+        target: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        origin: (u32, u32),
+    ) {
+        let step = motion.map_or(Step::NoMotion, |m| self.temporal_step(m.tag, m.cut));
+        let prev_centres = self.temporal.centres.clone();
+        let (mut polys, centres) = {
+            let m_in = match (step, motion) {
+                (Step::Blend { tp }, Some(m)) if !m.s0.is_empty() => Some(model2::raster::MotionIn {
+                    s0: m.s0,
+                    s1: m.s1.unwrap_or(s1),
+                    tp,
+                    valid: m.valid,
+                    prev_centres: &prev_centres,
+                }),
+                _ => None,
+            };
+            self.build_polys(stream, src, m_in.as_ref())
+        };
+        model2::video::HudLayout::new(b.tile_ram(), b.palette_ram(), view).anchor(&mut polys, view);
+        let placed = model2::raster::place(&mut polys, view);
+        let layers = self.layers_2d(b.tile_ram(), b.palette_ram(), view, !placed.is_empty());
+        let (render, palette) = b.video_ram_versions();
+        self.set_ram_versions(render, palette);
+        self.temporal.pending = Some((motion.map(|m| m.tag), step, centres));
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        self.encode_frame(&mut enc, &polys, &placed, src, view, &layers, target, format, origin);
+        self.queue.submit([enc.finish()]);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1207,10 +1913,10 @@ impl Renderer {
             xoff,
             yoff,
         };
-        let mut polys = model2::raster::build(stream, &src);
+        let (mut polys, _) = self.build_polys(stream, &src, None);
         model2::video::HudLayout::new(b.tile_ram(), b.palette_ram(), view).anchor(&mut polys, view);
         let placed = model2::raster::place(&mut polys, view);
-        let layers = model2::video::layers_2d(b.tile_ram(), b.palette_ram(), view, !placed.is_empty());
+        let layers = self.layers_2d(b.tile_ram(), b.palette_ram(), view, !placed.is_empty());
         let (render, palette) = b.video_ram_versions();
         self.set_ram_versions(render, palette);
         let mut enc = self.device.create_command_encoder(&Default::default());
@@ -1244,6 +1950,18 @@ impl Renderer {
             (0, 0),
         );
         let rgba = self.read_back(enc, &out, w, h);
+        rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect()
+    }
+
+    /// [`Renderer::present_bus`] with the bus's own engine into an
+    /// offscreen texture, read back as RGB (for tools). Blocks: native
+    /// only.
+    pub fn frame_bus(&mut self, bus: &mut model2::Model2Bus, view: &View) -> Vec<u8> {
+        let (w, h) = (view.width as u32, view.height as u32);
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
+        let out = self.texture("frame", w, h, usage);
+        self.present_bus(bus, None, view, &out.create_view(&Default::default()), FORMAT, (0, 0));
+        let rgba = self.read_texture(&out, w, h);
         rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect()
     }
 }
@@ -1358,10 +2076,56 @@ mod tests {
             "fs_packf_depth",
             "vs_clear",
             "fs_clear",
+            "vs_t",
+            "fs_t",
+            "fs_depth_t",
+            "fs_pack_t",
+            "fs_pack_depth_t",
+            "fs_packf_t",
+            "fs_packf_depth_t",
         ] {
+            assert!(names.contains(&name), "raster.wgsl has no entry point {name}");
+            // Each fragment entry point has its smooth-shading twin.
+            if name.starts_with("fs_") && name != "fs_clear" {
+                let lit = super::lit_entry(name, true);
+                assert!(names.contains(&lit.as_str()), "raster.wgsl has no entry point {lit}");
+            }
+        }
+        for name in ["fs", "fs_t"] {
             assert!(names.contains(&name), "raster.wgsl has no entry point {name}");
         }
         validate(include_str!("compose.wgsl"));
+        let temporal = validate(include_str!("temporal.wgsl"));
+        assert!(temporal.entry_points.iter().any(|e| e.name == "fs_resolve"));
+    }
+
+    /// Only the temporal (`_t`) entry points use group 0's binding 5, so
+    /// the others keep the five-binding layout; and every temporal
+    /// fragment entry point writes the aux target.
+    #[test]
+    fn only_temporal_entry_points_use_binding_5() {
+        let module = naga::front::wgsl::parse_str(&super::raster_source()).unwrap();
+        let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), Default::default())
+            .validate(&module)
+            .unwrap();
+        for (k, ep) in module.entry_points.iter().enumerate() {
+            let fi = info.get_entry_point(k);
+            let uses = module
+                .global_variables
+                .iter()
+                .any(|(h, v)| v.binding.as_ref().is_some_and(|b| b.group == 0 && b.binding >= 5) && !fi[h].is_empty());
+            let temporal = ep.name.ends_with("_t");
+            assert_eq!(uses, temporal, "{}", ep.name);
+            if temporal && ep.stage == naga::ShaderStage::Fragment {
+                let ty = ep.function.result.as_ref().map(|r| &module.types[r.ty].inner);
+                let Some(naga::TypeInner::Struct { members, .. }) = ty else { panic!("{}: no struct output", ep.name) };
+                assert!(
+                    members.iter().any(|m| matches!(m.binding, Some(naga::Binding::Location { location: 1, .. }))),
+                    "{}: no aux output",
+                    ep.name
+                );
+            }
+        }
     }
 
     /// The original entry points use group 0 only, so their pipelines keep

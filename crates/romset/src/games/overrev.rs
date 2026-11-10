@@ -25,6 +25,7 @@ pub static OVERREV: Game = Game {
     protection: None,
     dropouts: &[],
     texture_ram_mirrored: false,
+    shading: crate::Shading::DEFAULT,
     packed: &[],
     // Its voices mostly play at DISDL 3: the sound board averages about
     // 5.5 dB below the other SCSP-only games (docs/hw/sound.md §6).

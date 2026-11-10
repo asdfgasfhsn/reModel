@@ -35,6 +35,7 @@ pub static DOA: Game = Game {
     // (docs/games/doa.md).
     dropouts: &[Dropout { chip: "mpr-19324.19", bit: 9 }],
     texture_ram_mirrored: false,
+    shading: crate::Shading::DEFAULT,
     packed: &[],
     // A coin-start run's `make sound` averages -30 dBFS RMS (peak -11),
     // louder than the games here that play at 0 dB (about -31 to -38):

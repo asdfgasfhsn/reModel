@@ -68,4 +68,23 @@ driver. A sit-down driving cabinet; no extra boards are needed.
   reads it; `docs/play.md`, "Run-ahead"):* the wheel (frames 3507 and 3907
   of a coin-start run) shows in the first frame that reads it: input lag
   0.
+- *Depth buffer (2026-11-11; captured coin-start frames drawn with it off
+  and on at 1440x1080 and 1920x1080 (`make depth-check`), compared with
+  the build before the 2026-11-10 rules (`docs/enhancements.md`, "Depth
+  buffer")):* 18 of 21 frames differ, by up to 0.46%. Right with it on:
+  crossed tree cards intersect. Can't tell: glass walkways against the
+  building faces (11-52% of 1/z, frame 5700). The 2026-11-10 tolerance put
+  one banner back to the game's look: a sponsor banner 0.02% in front of
+  the wall drawn after it is half covered, as with the buffer off (the
+  build before showed it whole).
 
+## Lighting (smooth shading's side channel)
+
+Measured with `remodel --geo native --light --input coin-start run 900000000` (6077 frames; `make lighting-capture` runs the same), reModel's smooth-shading side channel (docs/hw/geometrizer.md, "Lighting side channel"):
+
+- Self-check: of 12,002,343 polygon records, the flat luma recomputed from the side channel is the stream's for 12,002,343 (100.00%), one level off for 0 and further off for 0.
+- no specular lighting; normals computed from the vertices in 0.00% of blocks; zero (unlit) normals on 22.54% of polygons.
+- no models drawn from polygon RAM; no direct data.
+- the light vector changes within a frame in 4207 of 6077 frames (up to 3 vectors a frame); lighting entries not changed within a frame.
+- True focal length over the window width: median 1.442 (range 0.706-2.734); the stream-only layer guesses 1.0.
+- The list scan's block facts equal the native geometrizer's on 388,760 blocks, differ on 0.

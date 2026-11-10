@@ -21,6 +21,13 @@
 //! polygon RAM writes in an overlay of its own, and its stream goes only
 //! to the renderer.
 //!
+//! Motion vectors ([`Frame::motion`]) replay frame N's list once more with
+//! frame N-1's transforms, and with polygon RAM as frame N-1 left it: a
+//! model the list itself rewrites every frame (`lastbrnx`'s fighters'
+//! models in polygon RAM, whose vertices move between frames under one
+//! transform) is then frame N-1's model too, not frame N's posed with
+//! frame N-1's transform.
+//!
 //! Generic over the programs: any native program that calls
 //! [`crate::geo_native::Io::xform`] and [`crate::geo_native::Io::object`]
 //! where it takes a transform and an object gets in-betweens.
@@ -56,6 +63,17 @@ impl Kind {
     fn rigid(self) -> bool {
         matches!(self, Kind::Matrix | Kind::Matrix2)
     }
+
+    /// The kinds of value a command of this kind sets, as bits for
+    /// [`Tap::Replay`]'s `snapped`: a matrix sets the translation too.
+    fn sets(self) -> u8 {
+        match self {
+            Kind::Matrix => 1 | 4,
+            Kind::Matrix2 => 2,
+            Kind::Translation => 4,
+            Kind::Focus => 8,
+        }
+    }
 }
 
 /// A transform as a frame's list set it: its words (IEEE single
@@ -70,6 +88,51 @@ pub struct Xform {
 
 /// [`Xform::key`] of a transform no object followed.
 pub const NO_KEY: u32 = u32::MAX;
+
+/// A polygon RAM access by a motion replay (word addresses), and each
+/// object or direct data block begun, in order ([`unsure_blocks`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Access {
+    Block,
+    Read(u32),
+    Write(u32),
+}
+
+/// The blocks whose model data, read from polygon RAM as frame N-1 left
+/// it, may not be what frame N-1's object read: they read a word frame
+/// N's list writes more than once, or before the list writes it. (A word
+/// the list writes once, before it is read, holds frame N-1's value of it
+/// before frame N, if frame N-1's list did the same: only the list writes
+/// polygon RAM.)
+pub fn unsure_blocks(log: &[Access]) -> Vec<usize> {
+    let mut writes: HashMap<u32, u32> = HashMap::new();
+    for a in log {
+        if let Access::Write(x) = a {
+            *writes.entry(*x).or_default() += 1;
+        }
+    }
+    if writes.is_empty() {
+        return Vec::new();
+    }
+    let (mut done, mut block, mut out) = (std::collections::HashSet::new(), None, Vec::new());
+    for a in log {
+        match *a {
+            Access::Block => block = Some(block.map_or(0, |b| b + 1)),
+            Access::Write(x) => {
+                done.insert(x);
+            }
+            Access::Read(x) => {
+                let sure = writes.get(&x).is_none_or(|&n| n == 1 && done.contains(&x));
+                if let (false, Some(b)) = (sure, block) {
+                    if out.last() != Some(&b) {
+                        out.push(b);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
 
 impl Xform {
     pub fn new(kind: Kind, w: &[u32]) -> Self {
@@ -97,7 +160,15 @@ pub enum Tap {
     /// An in-between: give the transforms these values, in order. Once a
     /// command doesn't match the next value (the list isn't the one
     /// recorded) the rest go through unchanged.
-    Replay { values: Vec<Xform>, next: usize, lost: bool },
+    ///
+    /// For motion vectors it also notes, per object block of the output
+    /// (each raster `0x1` command, in order), whether every transform in
+    /// effect was matched and blended: `snap` says which values are frame
+    /// N's whatever `t` ([`Plan::snaps`]; empty: none), `snapped` has a bit
+    /// per kind of value now in effect that is ([`Kind::sets`]), and
+    /// `blocks` gets one entry per object ([`Tap::object`]) or direct data
+    /// block ([`Tap::direct`]).
+    Replay { values: Vec<Xform>, next: usize, lost: bool, snap: Vec<bool>, snapped: u8, blocks: Vec<bool> },
 }
 
 impl Tap {
@@ -105,15 +176,25 @@ impl Tap {
         Tap::Record { list: Vec::new(), keyed: 0 }
     }
 
+    /// A replay giving the transforms `values`, every one blended.
+    pub fn replay(values: Vec<Xform>) -> Self {
+        Tap::Replay { values, next: 0, lost: false, snap: Vec::new(), snapped: 0, blocks: Vec::new() }
+    }
+
     /// A transform command's words, as read from the list: noted, or
     /// replaced by the blended values.
     pub fn xform(&mut self, kind: Kind, w: &mut [u32]) {
         match self {
             Tap::Record { list, .. } => list.push(Xform::new(kind, w)),
-            Tap::Replay { values, next, lost } => {
+            Tap::Replay { values, next, lost, snap, snapped, .. } => {
                 match values.get(*next) {
                     Some(v) if !*lost && v.kind == kind => w.copy_from_slice(&v.words[..w.len()]),
                     _ => *lost = true,
+                }
+                if snap.get(*next).copied().unwrap_or(false) {
+                    *snapped |= kind.sets();
+                } else {
+                    *snapped &= !kind.sets();
                 }
                 *next += 1;
             }
@@ -122,11 +203,22 @@ impl Tap {
 
     /// An object (model at `oba`): the key of the transforms since the last.
     pub fn object(&mut self, oba: u32) {
-        if let Tap::Record { list, keyed } = self {
-            for x in &mut list[*keyed..] {
-                x.key = oba;
+        match self {
+            Tap::Record { list, keyed } => {
+                for x in &mut list[*keyed..] {
+                    x.key = oba;
+                }
+                *keyed = list.len();
             }
-            *keyed = list.len();
+            Tap::Replay { lost, snapped, blocks, .. } => blocks.push(*snapped == 0 && !*lost),
+        }
+    }
+
+    /// A block of direct data (polygons given in view space): no motion
+    /// known for it.
+    pub fn direct(&mut self) {
+        if let Tap::Replay { blocks, .. } = self {
+            blocks.push(false);
         }
     }
 
@@ -208,6 +300,13 @@ fn rebuild(q: [f32; 4], s: [f32; 3], flip: bool) -> [f32; 9] {
 pub struct Plan {
     cur: Vec<Xform>,
     pairs: Vec<Pair>,
+    /// Per transform (empty: none so far, or none at all): matched with
+    /// one of frame N-1's that placed another model (key), so the model
+    /// posed with frame N-1's transform is not where frame N-1 drew its
+    /// points (a pose model swapped in; vstriker's players). Focal lengths
+    /// apply to everything and never count. Only for [`Plan::unknown`]:
+    /// the in-betweens blend these as any other.
+    rekeyed: Vec<bool>,
     /// A camera cut: nothing is blended.
     pub cut: bool,
     /// Transforms matched with one of frame N-1's, and of those, drawn at
@@ -560,6 +659,11 @@ impl Plan {
         if rigid_matched > 0 && cuts as f32 >= limits::CUT_SHARE * rigid_matched as f32 {
             plan.cut = true;
         }
+        plan.rekeyed = cur
+            .iter()
+            .zip(&matched)
+            .map(|(x, m)| m.is_some_and(|j| prev[j].key != x.key && x.kind != Kind::Focus))
+            .collect();
         plan.cur = cur;
         plan
     }
@@ -567,6 +671,24 @@ impl Plan {
     /// Frame N's transforms, as recorded.
     pub fn transforms(&self) -> &[Xform] {
         &self.cur
+    }
+
+    /// Per transform, in frame N's order: drawn at frame N's values
+    /// whatever `t` (unmatched, or too far apart to blend).
+    pub fn snaps(&self) -> Vec<bool> {
+        self.pairs.iter().map(|p| *p == Pair::Snap).collect()
+    }
+
+    /// Per transform, in frame N's order: where the objects it places
+    /// were in frame N-1 is unknown, so they get no motion vectors
+    /// ([`Motion::valid`]): snapped ([`Plan::snaps`]), or matched with a
+    /// transform that placed another model.
+    pub fn unknown(&self) -> Vec<bool> {
+        let mut s = self.snaps();
+        for (s, r) in s.iter_mut().zip(&self.rekeyed) {
+            *s |= r;
+        }
+        s
     }
 
     /// Nothing to blend: draw frame N as it is.
@@ -614,6 +736,28 @@ pub struct Frame {
     pub plan: Plan,
     /// The game frame (the engine's count) this is frame N of.
     pub frame: u64,
+    /// [`Frame::motion`], made on first use.
+    motion: std::sync::OnceLock<Motion>,
+}
+
+/// What motion vectors need from a frame's plan: frame N's list posed
+/// with frame N-1's transforms, which has frame N's stream's layout word
+/// for word (the native geometrizers emit every polygon of every object,
+/// whatever the transforms), so a vertex's previous view-space position is
+/// at the same place in `s0` as its current one in the real stream.
+#[derive(Clone, Debug, Default)]
+pub struct Motion {
+    /// The frame's list posed with the frame before's transforms (and
+    /// polygon RAM as the frame before left it); empty on a cut.
+    pub s0: Vec<u32>,
+    /// Per object block of the stream (each raster `0x1` command, in
+    /// order): every transform in effect was matched and blended (not
+    /// snapped to frame N's) with one that placed the same model
+    /// ([`Plan::unknown`]), and its model data is frame N-1's
+    /// ([`unsure_blocks`]), so its motion is known. Direct data: false.
+    pub valid: Vec<bool>,
+    /// A camera cut ([`Plan::cut`]): nothing to take motion from.
+    pub cut: bool,
 }
 
 impl Frame {
@@ -630,7 +774,7 @@ impl Frame {
         plan: Plan,
         frame: u64,
     ) -> Self {
-        Frame { native, buffer, jumps, read_ptr, latch, poly, rom, points, plan, frame }
+        Frame { native, buffer, jumps, read_ptr, latch, poly, rom, points, plan, frame, motion: Default::default() }
     }
 
     /// The raster stream between frame N-1 and frame N at `t` (0 to 1),
@@ -643,26 +787,82 @@ impl Frame {
         Some(self.render_values(self.plan.values(t)))
     }
 
+    /// [`Frame::render`] with the in-between's lighting side channel
+    /// (`crate::light::Frame`, numbered as frame N): the replay records it
+    /// as the engine records a game frame's with `Engine::set_light` on,
+    /// so smooth shading draws in-betweens at the level of the game
+    /// frames around them, not from the stream alone.
+    pub fn render_lit(&self, t: f32) -> Option<(Vec<u32>, crate::light::Frame)> {
+        if t >= 1.0 || self.plan.still() {
+            return None;
+        }
+        let mut tap = crate::light::Tap::new();
+        let (stream, _) = self.replay(self.plan.values(t), Vec::new(), None, Some(&mut tap));
+        Some((stream, tap.finish(self.frame)))
+    }
+
+    /// Motion data for this frame ([`Motion`]): one replay at `t` = 0,
+    /// with polygon RAM as frame N-1 left it, made on first use and kept.
+    /// On a cut there is no replay (`s0` empty); when nothing matched the
+    /// replay still runs, every block invalid.
+    pub fn motion(&self) -> &Motion {
+        self.motion.get_or_init(|| {
+            if self.plan.cut {
+                return Motion { cut: true, ..Default::default() };
+            }
+            let mut log = Vec::new();
+            let (s0, mut valid) = self.replay(self.plan.values(0.0), self.plan.unknown(), Some(&mut log), None);
+            for b in unsure_blocks(&log) {
+                if let Some(v) = valid.get_mut(b) {
+                    *v = false;
+                }
+            }
+            Motion { s0, valid, cut: false }
+        })
+    }
+
     /// Frame N's list again with these transforms.
     pub(crate) fn render_values(&self, values: Vec<Xform>) -> Vec<u32> {
+        self.replay(values, Vec::new(), None, None).0
+    }
+
+    /// Frame N's list again with these transforms (`snap`: those that are
+    /// frame N's whatever `t`), and per object block whether all its
+    /// transforms were blended. With `log`, polygon RAM is read as it was
+    /// before frame N whatever the list writes, the accesses noted there;
+    /// without, the list's writes are read back, as in frame N. `light`:
+    /// record its lighting side channel.
+    fn replay(
+        &self,
+        values: Vec<Xform>,
+        snap: Vec<bool>,
+        log: Option<&mut Vec<Access>>,
+        light: Option<&mut crate::light::Tap>,
+    ) -> (Vec<u32>, Vec<bool>) {
         let mut native = self.native.clone();
         let (mut words, mut fed, mut out, mut latch) = (0, Vec::new(), Vec::new(), self.latch);
         let mut overlay = HashMap::new();
-        let mut tap = Tap::Replay { values, next: 0, lost: false };
+        let mut tap = Tap::Replay { values, next: 0, lost: false, snap, snapped: 0, blocks: Vec::new() };
         let mut list = crate::geo::ListDma::new(&self.buffer, &self.jumps, self.read_ptr, &mut words, &mut fed);
+        let poly = match log {
+            Some(log) => crate::geo::GeoExt::before(&self.poly, log, &self.rom),
+            None => crate::geo::GeoExt::overlay(&self.poly, &mut overlay, &self.rom),
+        };
         let mut io = crate::geo_native::Io {
             list: &mut list,
-            poly: crate::geo::GeoExt::overlay(&self.poly, &mut overlay, &self.rom),
+            poly,
             latch: &mut latch,
             out: &mut out,
             tap: Some(&mut tap),
+            light,
         };
         match &mut native {
             Native::B(n) => n.run_frame(&mut io),
             Native::C(n) => n.run_frame(&mut io),
         }
         out.retain(|&w| w != crate::geo::RASTER_NOP);
-        out
+        let Tap::Replay { blocks, .. } = tap else { unreachable!() };
+        (out, blocks)
     }
 }
 
@@ -687,6 +887,31 @@ mod tests {
 
     fn close(a: &[f32], b: &[f32]) -> bool {
         a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4)
+    }
+
+    /// A transform matched with one that placed another model blends like
+    /// any other, but its motion is unknown; focal lengths never are.
+    #[test]
+    fn another_model_in_its_place_has_unknown_motion() {
+        let focus = |f: f32, key| Xform { key, ..Xform::new(Kind::Focus, &[f.to_bits(), f.to_bits()]) };
+        let prev = [
+            focus(400.0, 1),
+            matrix(rot_z(0.1, 1.0), [0.0, 0.0, 100.0], 7),
+            matrix(rot_z(0.0, 1.0), [5.0, 0.0, 100.0], 8),
+        ];
+        // The first object is drawn again; the second's place is taken by
+        // another model (a new pose), the focal lengths keyed differently.
+        let cur = vec![
+            focus(400.0, 2),
+            matrix(rot_z(0.12, 1.0), [0.5, 0.0, 100.0], 7),
+            matrix(rot_z(0.02, 1.0), [5.5, 0.0, 100.0], 9),
+        ];
+        let plan = Plan::new(&prev, cur);
+        assert_eq!(plan.matched, 3);
+        assert_eq!(plan.snaps(), [false, false, false]);
+        assert_eq!(plan.unknown(), [false, false, true]);
+        // The in-between still blends it.
+        assert!(!close(&f(&plan.values(0.5)[2].words), &f(&plan.values(1.0)[2].words)));
     }
 
     #[test]
@@ -816,7 +1041,7 @@ mod tests {
         let list = tap.into_list();
         assert_eq!(list.iter().map(|x| x.key).collect::<Vec<_>>(), [0x80_1234, 0x80_1234, NO_KEY]);
         // A replay that meets a different command passes the rest through.
-        let mut tap = Tap::Replay { values: list, next: 0, lost: false };
+        let mut tap = Tap::replay(list);
         let mut w = [9, 9];
         tap.xform(Kind::Focus, &mut w);
         assert_eq!(w, [1, 2]);
@@ -857,6 +1082,7 @@ mod tests {
                 latch: &mut latch,
                 out: &mut out,
                 tap,
+                light: None,
             };
             n.run_frame(&mut io);
             out.retain(|&w| w != crate::geo::RASTER_NOP);
@@ -886,7 +1112,240 @@ mod tests {
         // P0 at the translation, x times fx: 2 · 1 halfway, 2 · 2 in frame N.
         assert_eq!(mid[3], f(2.0) >> 8);
         assert_eq!(real[3], f(4.0) >> 8);
+        // With its lighting side channel: the same stream, one block with
+        // its face (the stream's one object block; no window here, so
+        // nothing to check its lumas against).
+        let (lit, side) = frame.render_lit(0.5).unwrap();
+        assert_eq!(lit, mid);
+        assert_eq!((side.frame, side.blocks.len(), side.faces.len()), (3, 1, 1));
+        assert_eq!(side.faces[0].n, [0.0, 0.0, 1.0]);
+        assert_eq!(crate::light::self_check(&lit, &side).stats.misaligned_frames, 0);
+        assert!(frame.render_lit(1.0).is_none());
         assert!(poly.iter().all(|&w| w == 0), "polygon RAM untouched");
         assert_eq!(ram[0x10], 0xabcd, "the real frame's write");
+    }
+
+    #[test]
+    fn unsure_blocks_read_words_written_twice_or_late() {
+        use Access::*;
+        // Block 0 reads a word written once before (sure) and one never
+        // written; block 1 reads a word written again later; block 2 one
+        // written after it is read; block 3 reads after the second write.
+        let log = [
+            Write(1),
+            Write(2),
+            Block,
+            Read(1),
+            Read(9),
+            Block,
+            Read(2),
+            Read(3),
+            Write(3),
+            Write(2),
+            Block,
+            Read(1),
+            Block,
+            Read(2),
+        ];
+        assert_eq!(unsure_blocks(&log), [1, 3]);
+        assert!(unsure_blocks(&[Block, Read(1), Block, Read(1)]).is_empty(), "no writes: nothing to doubt");
+    }
+
+    /// A model the list writes into polygon RAM every frame (`lastbrnx`'s
+    /// fighters), its vertices moved under the same transform: the motion
+    /// replay draws frame N-1's model with frame N-1's transform, word for
+    /// word frame N-1's block, while the in-between at t = 0 still draws
+    /// frame N's model. Drawn before the list writes it, or written
+    /// twice, it gets no motion data.
+    #[test]
+    fn motion_of_a_model_the_list_rewrites() {
+        use crate::geo_native::{Native as N2b, Program};
+        let f = |v: f32| v.to_bits();
+        let cmd = |fnc: u32| fnc << 23 | fnc << 8 | fnc;
+        // P0, P1 (its x given), a double-sided quad facing +z, the
+        // terminator: 17 words at polygon RAM 0x100.
+        let model = |x: f32| {
+            let mut m = vec![f(0.0), f(0.0), f(0.0), f(x), f(0.0), f(0.0)];
+            m.extend([1 | 1 << 8 | 1 << 17 | 1 << 18 | 1 << 27, f(0.0), f(0.0), f(1.0)]);
+            m.extend([f(1.0), f(1.0), f(0.0), f(0.0), f(1.0), f(0.0)]);
+            m.push(0);
+            m
+        };
+        let write = |x: f32| {
+            let mut l = vec![cmd(0x05), 0x100, 17];
+            l.extend(model(x));
+            l
+        };
+        // The model written with each x of `before`, drawn at translation
+        // `tx`, then written with each of `after`.
+        let list = |before: &[f32], tx: f32, after: &[f32]| {
+            let mut l = vec![cmd(0x09), f(2.0), f(3.0)];
+            l.extend(before.iter().flat_map(|&x| write(x)));
+            l.push(cmd(0x0b));
+            l.extend([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, tx, 0.0, 10.0].map(f));
+            l.extend([cmd(0x01), 0, 0, 0x100, 0]);
+            l.extend(after.iter().flat_map(|&x| write(x)));
+            l.push(cmd(0x0f));
+            l.iter().flat_map(|w| w.to_le_bytes()).chain(std::iter::repeat(0)).take(0x2_0000).collect::<Vec<u8>>()
+        };
+        let rom = Arc::new(vec![0]);
+        let run = |n: &mut N2b, buffer: &[u8], tap: &mut Tap, ram: &mut Vec<u32>| {
+            let (mut words, mut fed, mut out, mut latch) = (0, Vec::new(), Vec::new(), 0);
+            let mut list = crate::geo::ListDma::new(buffer, &[], 0, &mut words, &mut fed);
+            let mut io = crate::geo_native::Io {
+                list: &mut list,
+                poly: crate::geo::GeoExt::new(ram, &rom),
+                latch: &mut latch,
+                out: &mut out,
+                tap: Some(tap),
+                light: None,
+            };
+            n.run_frame(&mut io);
+            out.retain(|&w| w != crate::geo::RASTER_NOP);
+            out
+        };
+        // Frames N-1 and N with these lists (before them, the model holds
+        // P1 at x = 9): frame N-1's stream, frame N's, its smooth frame.
+        let frames = |prev: &[u8], now: &[u8]| {
+            let (mut n, mut ram) = (N2b::new(Program::Shared2B, 0x7378_842e), vec![0; 0x1_0000]);
+            ram[0x100..0x111].copy_from_slice(&model(9.0));
+            // A frame first, as in `motion_through_the_native_geometrizer`.
+            let empty: Vec<u8> =
+                cmd(0x0f).to_le_bytes().into_iter().chain(std::iter::repeat(0)).take(0x2_0000).collect();
+            run(&mut n, &empty, &mut Tap::record(), &mut ram);
+            let mut tap = Tap::record();
+            let prev_stream = run(&mut n, prev, &mut tap, &mut ram);
+            let prev = tap.into_list();
+            let (before, poly) = (n.clone(), Arc::new(ram.clone()));
+            let mut tap = Tap::record();
+            let real = run(&mut n, now, &mut tap, &mut ram);
+            let plan = Plan::new(&prev, tap.into_list());
+            let native = Native::B(Box::new(before));
+            let frame = Frame::new(native, now.to_vec(), Vec::new(), 0, 0, poly, rom.clone(), vec![], plan, 3);
+            (prev_stream, real, frame)
+        };
+        // P1 moves from x = 1 to x = 2 in the model, the object from 0 to
+        // 0.5: frame N-1's block exactly, valid.
+        let (prev_stream, real, frame) = frames(&list(&[1.0], 0.0, &[]), &list(&[2.0], 0.5, &[]));
+        let m = frame.motion();
+        assert_eq!(m.valid, [true]);
+        assert_eq!(m.s0, prev_stream);
+        assert_ne!(real, prev_stream);
+        // The in-between at t = 0 keeps frame N's model (P1 at 2 + 0 = 2,
+        // times fx 2), as before.
+        let t0 = frame.render_values(frame.plan.values(0.0));
+        assert_eq!(t0[6], f(4.0) >> 8);
+        assert_eq!(m.s0[6], f(2.0) >> 8);
+        // Written after it is drawn (the next frame's model), or twice:
+        // no motion data.
+        let (_, _, frame) = frames(&list(&[], 0.0, &[1.0]), &list(&[], 0.5, &[2.0]));
+        assert_eq!(frame.motion().valid, [false]);
+        let (_, _, frame) = frames(&list(&[5.0, 1.0], 0.0, &[]), &list(&[5.0, 2.0], 0.5, &[]));
+        assert_eq!(frame.motion().valid, [false]);
+    }
+
+    /// Motion data through the 2B native geometrizer: the replay at t = 0
+    /// has the real stream's layout, frame N-1's pose, and a validity entry
+    /// per object block of the stream (objects whose transforms all
+    /// blended, not new ones or direct data); a cut has none.
+    #[test]
+    fn motion_through_the_native_geometrizer() {
+        use crate::geo_native::{Native as N2b, Program};
+        let f = |v: f32| v.to_bits();
+        let cmd = |fnc: u32| fnc << 23 | fnc << 8 | fnc;
+        // Two copies of a model: P0, P1, a double-sided quad facing +z, the
+        // terminator.
+        let mut rom = Vec::new();
+        for _ in 0..2 {
+            rom.extend([f(0.0), f(0.0), f(0.0), f(1.0), f(0.0), f(0.0)]);
+            rom.extend([1 | 1 << 8 | 1 << 17 | 1 << 18 | 1 << 27, f(0.0), f(0.0), f(1.0)]);
+            rom.extend([f(1.0), f(1.0), f(0.0), f(0.0), f(1.0), f(0.0)]);
+            rom.push(0);
+        }
+        let (a, b) = (0x80_0000, 0x80_0000 + 17);
+        // Objects as (x, model), then direct data (a triangle).
+        let list = |fx: f32, objects: &[(f32, u32)]| {
+            let mut l = vec![cmd(0x09), f(fx), f(3.0)];
+            for &(x, oba) in objects {
+                l.push(cmd(0x0b));
+                l.extend([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, x, 0.0, 10.0].map(f));
+                l.extend([cmd(0x01), 0, 0, oba, 0]);
+            }
+            l.extend([cmd(0x02), 0, 0]);
+            l.extend([0.0, 0.0, 10.0, 1.0, 0.0, 10.0].map(f));
+            l.extend([2 | 1 << 8, 0, 0, f(1.0), f(1.0), f(10.0), 0, cmd(0x0f)]);
+            l.iter().flat_map(|w| w.to_le_bytes()).chain(std::iter::repeat(0)).take(0x2_0000).collect::<Vec<u8>>()
+        };
+        let rom = Arc::new(rom);
+        let run = |n: &mut N2b, buffer: &[u8], tap: &mut Tap| {
+            let (mut words, mut fed, mut out, mut latch) = (0, Vec::new(), Vec::new(), 0);
+            let mut ram = vec![0; 0x1_0000];
+            let mut list = crate::geo::ListDma::new(buffer, &[], 0, &mut words, &mut fed);
+            let mut io = crate::geo_native::Io {
+                list: &mut list,
+                poly: crate::geo::GeoExt::new(&mut ram, &rom),
+                latch: &mut latch,
+                out: &mut out,
+                tap: Some(tap),
+                light: None,
+            };
+            n.run_frame(&mut io);
+            out.retain(|&w| w != crate::geo::RASTER_NOP);
+            out
+        };
+        // Frame N-1 draws model a at x = 0; frame N at x = 2, and model b
+        // (new: nothing to match) far away.
+        let frames = |fx_now: f32| {
+            let mut n = N2b::new(Program::Shared2B, 0x7378_842e);
+            run(&mut n, &list(2.0, &[]), &mut Tap::record());
+            let mut tap = Tap::record();
+            let prev_stream = run(&mut n, &list(2.0, &[(0.0, a)]), &mut tap);
+            let prev = tap.into_list();
+            let before = n.clone();
+            let mut tap = Tap::record();
+            let now = list(fx_now, &[(2.0, a), (500.0, b)]);
+            let real = run(&mut n, &now, &mut tap);
+            let plan = Plan::new(&prev, tap.into_list());
+            let poly = Arc::new(vec![0; 0x1_0000]);
+            let frame =
+                Frame::new(Native::B(Box::new(before)), now, Vec::new(), 0, 0, poly, rom.clone(), vec![], plan, 3);
+            (prev_stream, real, frame)
+        };
+        let (prev_stream, real, frame) = frames(2.0);
+        assert!(!frame.plan.cut);
+        let m = frame.motion();
+        assert!(!m.cut);
+        assert_eq!(m.s0.len(), real.len(), "the real stream's layout");
+        let blocks = real.iter().filter(|&&w| w >> 24 == 0xff && w & 0xf == 1).count();
+        assert_eq!(blocks, 3);
+        assert_eq!(m.valid, [true, false, false]);
+        assert!(std::ptr::eq(m, frame.motion()), "made once");
+        // Model a's block is frame N-1's, word for word.
+        let block = |s: &[u32]| s.iter().position(|&w| w >> 24 == 0xff && w & 0xf == 1).unwrap();
+        let (i, j) = (block(&m.s0), block(&prev_stream));
+        assert_eq!(m.s0[i..i + 16], prev_stream[j..j + 16]);
+        assert_ne!(real[i..i + 16], prev_stream[j..j + 16]);
+        // Through raster::build_motion: polygon for polygon.
+        let palette = vec![0u8; 0x1_c000];
+        let src = crate::raster::Sources {
+            texture_rom: &[],
+            texture_point_ram: &[],
+            render_ram: &[],
+            palette: &palette,
+            xoff: 0.0,
+            yoff: 0.0,
+        };
+        // A window first, as the games send.
+        let window = [0xff00_0003, 0, 0x1ef17f, 0xf80c0, 0xf80c0, 0xf80c0, 0xf80c0];
+        let with_window = |s: &[u32]| window.iter().chain(s).copied().collect::<Vec<u32>>();
+        let (s0, s1) = (with_window(&m.s0), with_window(&real));
+        let mi = crate::raster::MotionIn { s0: &s0, s1: &s1, tp: 0.0, valid: &m.valid, prev_centres: &[] };
+        let (polys, _) = crate::raster::build_motion(&s1, &src, Some(&mi));
+        assert_eq!(polys.iter().map(|p| !p.prev.is_empty()).collect::<Vec<_>>(), [true, false, false]);
+        // A zoom: a cut, no replay.
+        let (_, _, frame) = frames(4.0);
+        assert!(frame.plan.cut);
+        let m = frame.motion();
+        assert!(m.cut && m.s0.is_empty() && m.valid.is_empty());
     }
 }

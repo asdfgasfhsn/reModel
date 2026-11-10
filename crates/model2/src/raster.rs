@@ -16,7 +16,10 @@ fn f24(w: u32) -> f32 {
     f32::from_bits(w << 8)
 }
 
-/// View-space vertex with texture coordinates (texels).
+/// View-space vertex with texture coordinates (texels), with motion data
+/// ([`build_motion`]) its previous view-space position (zero without), and
+/// with smooth shading ([`build_with`]) its corner values (`[luma, nx, ny,
+/// nz]`, `crate::light::Shaded::corners`; zero without).
 #[derive(Clone, Copy, Debug, Default)]
 struct Vtx {
     x: f32,
@@ -24,6 +27,10 @@ struct Vtx {
     z: f32,
     u: f32,
     v: f32,
+    px: f32,
+    py: f32,
+    pz: f32,
+    lit: [f32; 4],
 }
 
 /// Screen-space vertex with perspective-divided attributes.
@@ -43,7 +50,30 @@ struct Window {
     y0: f32,
     x1: f32,
     y1: f32,
-    centres: [(f32, f32); 4],
+    centres: Centres,
+}
+
+/// A window's four centres in screen pixels (sync offsets applied).
+pub type Centres = [(f32, f32); 4];
+
+/// What [`build_motion`] needs to give each polygon its previous screen
+/// position: the frame's stream posed two ways, word for word in the
+/// layout of the stream being drawn (`crate::smooth::Motion`).
+pub struct MotionIn<'a> {
+    /// Frame N's list posed with frame N-1's transforms (`Motion::s0`).
+    pub s0: &'a [u32],
+    /// Frame N's list posed with its own (the engine's stream).
+    pub s1: &'a [u32],
+    /// When the previous image was, on the axis from `s0` (0) to `s1` (1):
+    /// a vertex was at `s0 + tp * (s1 - s0)` in view space. May lie
+    /// outside 0..1 (extrapolated).
+    pub tp: f32,
+    /// Per object block (`Motion::valid`); ignored (all valid) when its
+    /// length isn't the stream's number of blocks.
+    pub valid: &'a [bool],
+    /// The previous displayed frame's centres by window index (a window
+    /// missing here: this frame's).
+    pub prev_centres: &'a [Centres],
 }
 
 /// Texture parameters from a polygon's 4-word header (section 5.3).
@@ -84,11 +114,42 @@ pub struct Poly {
     /// The object block (the stream's `0x1` command, counted from 0 in the
     /// frame) the polygon came in: one model's polygon list. For probing.
     pub block: u32,
+    /// The stream index of its attribute word: what smooth shading's
+    /// results are keyed by (`crate::light::Shaded::at`). For probing.
+    pub at: u32,
+    /// Motion data ([`build_motion`]): per point, where it was in the
+    /// previous displayed image, in homogeneous screen pixels `[X, Y, W]`
+    /// (the position is `(X / W, Y / W)`; its 1/z was `iz / W`), linear in
+    /// screen space like [`SVtx::uz`]. Empty when there is none: no
+    /// motion data, the object's motion unknown, or a previous position
+    /// behind the eye.
+    pub prev: Vec<[f32; 3]>,
     /// Flat and black: a shadow. The games' shadows are flat black (or
     /// dithered black) polygons laid on the ground, at depths that don't
     /// match it (hotd's are screen-parallel slices), so with the depth
     /// buffer they keep the game's order instead.
     pub shadow: bool,
+    /// Smooth shading ([`build_with`], `crate::light`): per point, its
+    /// corner values `[luma, nx, ny, nz]` (luma a float 0-255 before
+    /// truncation; the normal zero where there is none), linear in view
+    /// space, so `luma * iz` is linear in screen space like
+    /// [`SVtx::uz`]. Empty: the polygon is drawn with [`Poly::luma`] (no
+    /// smooth shading, not lit, or a shadow).
+    pub lit: Vec<[f32; 4]>,
+    /// Smooth shading per pixel (`crate::light::Shading::Pixel` at level
+    /// L2): the polygon's lighting, evaluated for the normal (`lit`'s
+    /// `nx, ny, nz`) interpolated to each pixel. None: the interpolated
+    /// luma.
+    pub pixel: Option<crate::light::PixelLight>,
+    /// Smooth shading: the lumas (inclusive) a lit pixel is clamped to,
+    /// those over which the game's colour tables keep the polygon's hue
+    /// ([`hue_range`]); `[0, 255]` when not lit.
+    pub lit_range: [u8; 2],
+    /// Smooth shading's finer levels (`light::Options::fine`): a lit
+    /// pixel blends the two colour columns around its brightness
+    /// ([`fine_level`]) instead of taking the game's level. False when not
+    /// lit.
+    pub fine: bool,
 }
 
 /// A polygon placed in a view's output pixels, ready for a rasteriser
@@ -118,6 +179,9 @@ pub struct Placed {
     /// is the game's, and polygons covering a wide range of depth
     /// ([`PAINTER_SPREAD`]).
     pub background: bool,
+    /// [`Poly::prev`] in output pixels (homogeneous, `[X, Y, W]`); empty
+    /// without.
+    pub prev: Vec<[f32; 3]>,
 }
 
 /// Depth buffer. Off by default; the original look is the painter's
@@ -211,6 +275,136 @@ impl Sources<'_> {
     }
 }
 
+/// Whether two colours have the same hue, i.e. differ only in level: each
+/// channel as a share of the brightest is within a quarter. Colours near
+/// black (every channel below 32) have no reliable hue and match anything.
+pub fn same_hue(a: [u8; 3], b: [u8; 3]) -> bool {
+    let (ma, mb) = (*a.iter().max().unwrap(), *b.iter().max().unwrap());
+    if ma < 32 || mb < 32 {
+        return true;
+    }
+    (0..3).all(|k| (a[k] as f32 / ma as f32 - b[k] as f32 / mb as f32).abs() <= 0.25)
+}
+
+/// Smooth shading (`Poly::lit`): the lumas `[lo, hi]` (inclusive, around
+/// the polygon's own `luma`) over which its colour keeps its hue. The
+/// colour translation tables are the game's and need not be brightness
+/// ramps: a game may map the top levels of a colour to another hue
+/// (topskatr's ramp boards: white at luma 255, red a few levels below), so
+/// that the polygon's luma in effect picks its colour. A lit pixel's luma
+/// is clamped into this range, so shading changes a pixel's level, never
+/// its hue (`lighting-check` J). Untextured: the columns (`luma / 4`)
+/// around its own whose colour has the hue of its own. Textured: the same
+/// for each level a texel can take (a value of its luma table, at indices
+/// `index` (inclusive): those its texels can reach), intersected.
+pub fn hue_range(src: &Sources, colour: [u32; 3], texture: Option<&Texture>, luma: u32, index: (u32, u32)) -> [u8; 2] {
+    hue_range_with(&mut HueCache::default(), src, colour, texture, luma, index)
+}
+
+/// What [`hue_range`] works out that many polygons of a frame share: per
+/// colour, the span of columns of its own hue around each column; per luma
+/// table and indices, the distinct levels.
+#[derive(Default)]
+pub struct HueCache {
+    spans: HashMap<[u32; 3], [Option<(u32, u32)>; 64]>,
+    levels: HashMap<(u32, u32, u32), Vec<u32>>,
+}
+
+/// [`hue_range`] with what it works out kept in `cache` (one frame's
+/// sources).
+pub fn hue_range_with(
+    cache: &mut HueCache,
+    src: &Sources,
+    colour: [u32; 3],
+    texture: Option<&Texture>,
+    luma: u32,
+    index: (u32, u32),
+) -> [u8; 2] {
+    let spans = cache.spans.entry(colour).or_insert([None; 64]);
+    let col = |k: u32| [0, 1, 2].map(|ch| src.translate(ch, colour[ch], k));
+    // The columns around `own` (up to `top`) whose colour has its hue.
+    let mut span = |own: u32, top: u32| {
+        let (lo, hi) = *spans[own as usize].get_or_insert_with(|| {
+            let c = col(own);
+            let mut lo = own;
+            while lo > 0 && same_hue(c, col(lo - 1)) {
+                lo -= 1;
+            }
+            let mut hi = own;
+            while hi < 63 && same_hue(c, col(hi + 1)) {
+                hi += 1;
+            }
+            (lo, hi)
+        });
+        (lo, hi.min(top))
+    };
+    match texture {
+        None => {
+            let (lo, hi) = span(luma >> 2, 63);
+            [(lo * 4) as u8, (hi * 4 + 3).min(255) as u8]
+        }
+        Some(t) => {
+            let levels = cache.levels.entry((t.luma_table, index.0, index.1)).or_insert_with(|| {
+                let mut seen = [false; 256];
+                // Level 0 is column 0 at every luma: no limit.
+                (index.0..=index.1.min(127))
+                    .map(|i| src.luma(t.luma_table, i))
+                    .filter(|&v| v != 0 && !std::mem::replace(&mut seen[v as usize], true))
+                    .collect()
+            });
+            let (mut lo, mut hi) = (0u32, 255u32);
+            for &v in levels.iter() {
+                let c = |l: u32| (v * l / 256).min(63);
+                let (top, own) = (c(255), c(luma));
+                let (clo, chi) = span(own, top);
+                // The lumas whose column is clo or more, chi or less.
+                if clo > 0 {
+                    lo = lo.max((clo * 256).div_ceil(v));
+                }
+                if chi < top {
+                    hi = hi.min(((chi + 1) * 256 - 1) / v);
+                }
+            }
+            [lo.min(luma) as u8, hi.max(luma) as u8]
+        }
+    }
+}
+
+/// The luma table indices a textured polygon's pixels can read: from its
+/// darkest opaque texel to its brightest (bilinear filtering blends
+/// neighbours, so anything between), `texel * 17 / 2`. All 128 when it has
+/// no opaque texel.
+pub fn texel_indices(src: &Sources, t: &Texture) -> (u32, u32) {
+    let (mut lo, mut hi) = (15u32, 0u32);
+    // A 16-bit word holds a 2x2 block of texels, and textures sit on
+    // 32-texel boundaries: a word at a time (as `Sources::texel` reads).
+    'rows: for y in (t.y0..t.y0 + t.h).step_by(2) {
+        for x in (t.x0..t.x0 + t.w).step_by(2) {
+            let (x, y) = if x >= 1024 { (x - 1024, y ^ 1024) } else { (x, y) };
+            let word = ((y & 2047) / 2) * 512 + (x & 1023) / 2;
+            let o = (t.bank as usize & 1) * 0x20_0000 + word as usize * 2;
+            let (Some(&a), Some(&b)) = (src.render_ram.get(o), src.render_ram.get(o + 1)) else { continue };
+            let w = u16::from_le_bytes([a, b]) as u32;
+            for k in 0..4 {
+                let v = (w >> (4 * k)) & 15;
+                if t.translucent && v == 15 {
+                    continue;
+                }
+                lo = lo.min(v);
+                hi = hi.max(v);
+            }
+            if lo == 0 && hi == 15 {
+                break 'rows;
+            }
+        }
+    }
+    if lo > hi {
+        (0, 127)
+    } else {
+        (lo * 17 / 2, hi * 17 / 2)
+    }
+}
+
 fn s12(v: u32) -> f32 {
     (((v & 0xfff) << 20) as i32 >> 20) as f32
 }
@@ -239,16 +433,112 @@ fn texture_from_header(h: [u16; 4]) -> Option<Texture> {
 
 /// Parse a frame's raster stream into screen-space polygons.
 pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
+    build_impl(stream, src, &BuildIn::default()).0
+}
+
+/// What [`build_with`] adds to the polygons: motion data (as
+/// [`build_motion`]) and smooth shading's corner values.
+#[derive(Default)]
+pub struct BuildIn<'a> {
+    pub motion: Option<&'a MotionIn<'a>>,
+    /// `crate::light::shade`'s result for the stream: each lit polygon
+    /// gets [`Poly::lit`] (shadows excepted, and checkerboard polygons
+    /// when `skip_checker`).
+    pub lit: Option<&'a crate::light::Shaded>,
+    /// Checkerboard polygons stay flat (`light::Options::skip_checker`).
+    pub skip_checker: bool,
+    /// Lit polygons get [`Poly::fine`] (`light::Options::fine`).
+    pub fine: bool,
+}
+
+/// [`build`], smooth-shaded with `opts` (`crate::light::shade`) when given
+/// and on.
+pub fn build_shaded(stream: &[u32], src: &Sources, opts: Option<&crate::light::Options>) -> Vec<Poly> {
+    build_shaded_with(stream, src, None, opts)
+}
+
+/// [`build_shaded`] with the stream's lighting side channel, if any
+/// (`crate::light::shade_with`).
+pub fn build_shaded_with(
+    stream: &[u32],
+    src: &Sources,
+    side: Option<&crate::light::Frame>,
+    opts: Option<&crate::light::Options>,
+) -> Vec<Poly> {
+    match opts.filter(|o| o.on()) {
+        Some(o) => {
+            let sh = crate::light::shade_with(stream, side, o);
+            let b = BuildIn { lit: Some(&sh), skip_checker: o.skip_checker, fine: o.fine, ..Default::default() };
+            build_with(stream, src, &b).0
+        }
+        None => build(stream, src),
+    }
+}
+
+/// [`build_motion`] with smooth shading too. The polygons are [`build`]'s
+/// exactly, apart from [`Poly::prev`] and [`Poly::lit`].
+pub fn build_with(stream: &[u32], src: &Sources, b: &BuildIn) -> (Vec<Poly>, Vec<Centres>) {
+    let (polys, windows) = build_impl(stream, src, b);
+    (polys, windows.iter().map(|w| w.centres).collect())
+}
+
+/// [`build`], and with motion data `m` each polygon's previous position
+/// ([`Poly::prev`]); also the windows' centres, by window index (to pass
+/// as the next frame's [`MotionIn::prev_centres`]). The polygons are
+/// [`build`]'s exactly, apart from `prev`.
+///
+/// The streams are read in lockstep: a vertex's previous view-space
+/// position is the words at its place in `s0` and `s1`, blended at `tp`.
+/// It is carried through clipping (decided by the current position only)
+/// like the texture coordinates, so it is exact for motion that is an
+/// affine map of view space (rigid motion, scale). Without motion for the
+/// frame (`m` None, or the streams not all the same length or not agreeing
+/// on the command words), every `prev` is empty.
+pub fn build_motion(stream: &[u32], src: &Sources, m: Option<&MotionIn>) -> (Vec<Poly>, Vec<Centres>) {
+    build_with(stream, src, &BuildIn { motion: m, ..Default::default() })
+}
+
+fn build_impl(stream: &[u32], src: &Sources, input: &BuildIn) -> (Vec<Poly>, Vec<Window>) {
+    let m = input.motion;
+    // Smooth shading: the lit polygons by the stream index of their
+    // attribute word, ascending, walked with the stream.
+    let lit = input.lit.filter(|l| !l.at.is_empty());
+    let mut lit_next = 0;
+    // The luma table indices each texture's texels reach (`texel_indices`),
+    // worked out once a frame.
+    #[allow(clippy::type_complexity)]
+    let mut texels: HashMap<(u32, u32, u32, u32, u32, bool), (u32, u32)> = HashMap::new();
+    // `hue_range` by colour, luma table, luma and indices, likewise.
+    #[allow(clippy::type_complexity)]
+    let mut hues: HashMap<([u32; 3], Option<u32>, u32, (u32, u32)), [u8; 2]> = HashMap::new();
+    let mut hue_cache = HueCache::default();
     let mut polys = Vec::new();
     let mut windows: Vec<Window> = Vec::new();
     let mut block = 0;
     let mut i = 0;
     let rd = |i: usize| stream.get(i).copied().unwrap_or(0xff00_000f);
+    let given = m.is_some();
+    let mut m = m.filter(|m| m.s0.len() == stream.len() && m.s1.len() == stream.len());
+    // With motion: the stream's `0x1` commands so far (what `valid` is
+    // indexed by; `block` only counts those after a window), and the one
+    // each polygon came in.
+    let (mut blocks, mut from) = (0usize, Vec::new());
+    let prev_at = |m: &MotionIn, k: usize| {
+        let (a, b) = (f24(m.s0[k]), f24(m.s1[k]));
+        a + (b - a) * m.tp
+    };
     while i < stream.len() {
         let w = stream[i];
         i += 1;
         if w >> 24 != 0xff {
             continue; // stray data word: resynchronise on the next command
+        }
+        if let Some(mm) = m {
+            if mm.s0[i - 1] != w || mm.s1[i - 1] != w {
+                m = None; // not the same layout: no motion for the frame
+            } else if w & 0xf == 0x1 {
+                blocks += 1;
+            }
         }
         let centre = ((w >> 6) & 3) as usize;
         match w & 0xf {
@@ -274,7 +564,16 @@ pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
                 let Some(win) = windows.len().checked_sub(1) else { continue };
                 let mut tpa = rd(i) & 0xff_ffff;
                 let mut tha = rd(i + 1) & 0xff_ffff;
-                let pos = |k: usize| Vtx { x: f24(rd(k)), y: f24(rd(k + 1)), z: f24(rd(k + 2)), u: 0.0, v: 0.0 };
+                let pos = |k: usize| {
+                    let (x, y, z) = (f24(rd(k)), f24(rd(k + 1)), f24(rd(k + 2)));
+                    match m {
+                        Some(m) if k + 2 < stream.len() => {
+                            let (px, py, pz) = (prev_at(m, k), prev_at(m, k + 1), prev_at(m, k + 2));
+                            Vtx { x, y, z, u: 0.0, v: 0.0, px, py, pz, lit: [0.0; 4] }
+                        }
+                        _ => Vtx { x, y, z, ..Default::default() },
+                    }
+                };
                 let mut p0 = pos(i + 2);
                 let mut p1 = pos(i + 5);
                 i += 8;
@@ -287,6 +586,14 @@ pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
                     }
                     let quad = attr & 1 != 0;
                     let luma_word = rd(i + 1);
+                    let at = i as u32;
+                    let corners = lit.and_then(|l| {
+                        while l.at.get(lit_next).is_some_and(|&a| (a as usize) < i) {
+                            lit_next += 1;
+                        }
+                        (l.at.get(lit_next) == Some(&(i as u32)))
+                            .then(|| (&l.corners[lit_next], l.pixel.get(lit_next).copied().flatten()))
+                    });
                     let pa = pos(i + 3);
                     let pb = if quad { pos(i + 6) } else { pa };
                     i += if quad { 9 } else { 6 };
@@ -296,6 +603,9 @@ pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
                     for (k, vtx) in verts.iter_mut().enumerate() {
                         vtx.v = src.point_word(tpa + 2 * k as u32) as f32 / 8.0;
                         vtx.u = src.point_word(tpa + 2 * k as u32 + 1) as f32 / 8.0;
+                        if let Some((c, _)) = corners {
+                            vtx.lit = c[k];
+                        }
                     }
                     tpa += 2 * verts.len() as u32;
 
@@ -320,6 +630,14 @@ pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
                         let (cx, cy) = w.centres[centre];
                         let clipped = clip_view(&verts, cx, cy);
                         if clipped.len() >= 3 {
+                            let prev = match m {
+                                Some(m) => {
+                                    let (pcx, pcy) = m.prev_centres.get(win).map_or((cx, cy), |c| c[centre]);
+                                    from.push(blocks - 1);
+                                    previous(&clipped, pcx, pcy)
+                                }
+                                None => Vec::new(),
+                            };
                             let points = clipped
                                 .iter()
                                 .map(|p| {
@@ -333,6 +651,45 @@ pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
                             let texture = texture_from_header(header);
                             let shadow =
                                 texture.is_none() && (0..3).all(|ch| src.translate(ch, colour[ch], luma >> 2) == 0);
+                            let checker = header[0] & (1 << 15) != 0;
+                            // Lit: clamped to the lumas that keep its hue;
+                            // none besides its own: flat.
+                            let lit_at =
+                                corners.filter(|_| !shadow && !(checker && input.skip_checker)).and_then(|(cs, px)| {
+                                    let table = texture.map(|t| t.luma_table);
+                                    let mut range = *hues.entry((colour, table, luma, (0, 127))).or_insert_with(|| {
+                                        hue_range_with(&mut hue_cache, src, colour, texture.as_ref(), luma, (0, 127))
+                                    });
+                                    // Corner lumas inside the range need no more (an
+                                    // interpolated luma lies between them); per pixel
+                                    // the range must be the widest that is safe.
+                                    let inside = px.is_none() && {
+                                        let q = |k: usize| crate::light::quantise(cs[k][0]);
+                                        (0..verts.len()).all(|k| (range[0] as u32..=range[1] as u32).contains(&q(k)))
+                                    };
+                                    if let (Some(t), true) = (&texture, range != [0, 255] && !inside) {
+                                        // Only the levels its texels can take.
+                                        let key = (t.bank, t.x0, t.y0, t.w, t.h, t.translucent);
+                                        let index = *texels.entry(key).or_insert_with(|| texel_indices(src, t));
+                                        if index != (0, 127) {
+                                            range = *hues.entry((colour, table, luma, index)).or_insert_with(|| {
+                                                hue_range_with(
+                                                    &mut hue_cache,
+                                                    src,
+                                                    colour,
+                                                    texture.as_ref(),
+                                                    luma,
+                                                    index,
+                                                )
+                                            });
+                                        }
+                                    }
+                                    (range[0] != range[1]).then_some((px, range))
+                                });
+                            let (lit, pixel, lit_range, fine) = match lit_at {
+                                Some((px, range)) => (clipped.iter().map(|v| v.lit).collect(), px, range, input.fine),
+                                None => (Vec::new(), None, [0, 255], false),
+                            };
                             polys.push(Poly {
                                 points,
                                 key,
@@ -342,9 +699,15 @@ pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
                                 colour,
                                 luma,
                                 shadow,
-                                checker: header[0] & (1 << 15) != 0,
+                                checker,
                                 header,
                                 block: block - 1,
+                                at,
+                                prev,
+                                lit,
+                                pixel,
+                                lit_range,
+                                fine,
                             });
                         }
                     }
@@ -360,7 +723,39 @@ pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
             _ => {}
         }
     }
-    polys
+    match m {
+        // Objects whose motion is unknown: no previous position.
+        Some(m) if m.valid.len() == blocks => {
+            for (p, &b) in polys.iter_mut().zip(&from) {
+                if !m.valid[b] {
+                    p.prev = Vec::new();
+                }
+            }
+        }
+        Some(_) => {}
+        // Motion lost on the way (the streams' layouts differ): none.
+        None if given => polys.iter_mut().for_each(|p| p.prev = Vec::new()),
+        None => {}
+    }
+    (polys, windows)
+}
+
+/// A clipped polygon's previous positions ([`Poly::prev`]) for previous
+/// window centre (cx', cy'): per point `[(cx' z' + x') / z, (cy' z' - y') /
+/// z, z' / z]` for its depth `z` and previous view-space position (x', y',
+/// z'), so the first two over the third are the previous screen position
+/// `(cx' + x'/z', cy' - y'/z')`. Empty if any previous position is behind
+/// the eye.
+fn previous(v: &[Vtx], cx: f32, cy: f32) -> Vec<[f32; 3]> {
+    if !v.iter().all(|p| p.pz > NEAR) {
+        return Vec::new();
+    }
+    v.iter()
+        .map(|p| {
+            let iz = 1.0 / p.z;
+            [(cx * p.pz + p.px) * iz, (cy * p.pz - p.py) * iz, p.pz * iz]
+        })
+        .collect()
 }
 
 /// Nearest view-space z kept by [`clip_view`]: only there to keep 1/z
@@ -413,7 +808,17 @@ fn clip_plane(v: &[Vtx], dist: impl Fn(&Vtx) -> f32) -> Vec<Vtx> {
         if (da >= 0.0) != (db >= 0.0) {
             let t = da / (da - db);
             let l = |p: f32, q: f32| p + (q - p) * t;
-            out.push(Vtx { x: l(a.x, b.x), y: l(a.y, b.y), z: l(a.z, b.z), u: l(a.u, b.u), v: l(a.v, b.v) });
+            out.push(Vtx {
+                x: l(a.x, b.x),
+                y: l(a.y, b.y),
+                z: l(a.z, b.z),
+                u: l(a.u, b.u),
+                v: l(a.v, b.v),
+                px: l(a.px, b.px),
+                py: l(a.py, b.py),
+                pz: l(a.pz, b.pz),
+                lit: [0, 1, 2, 3].map(|c| l(a.lit[c], b.lit[c])),
+            });
         }
     }
     out
@@ -459,16 +864,100 @@ fn filtered_texel(t: &Texture, src: &Sources, u: f32, v: f32) -> Option<u32> {
 
 /// Shade one pixel; None if it is transparent.
 fn shade(p: &Poly, src: &Sources, x: usize, y: usize, u: f32, v: f32) -> Option<[u8; 3]> {
+    shade_luma(p, PxLuma::own(p), src, x, y, u, v)
+}
+
+/// A pixel's brightness as its polygon is drawn there: the luma the game's
+/// levels take (the polygon's own, or a smooth-shaded pixel's), and with
+/// finer levels ([`Poly::fine`]) that pixel's luma before truncation.
+#[derive(Clone, Copy, PartialEq)]
+struct PxLuma {
+    luma: u32,
+    fine: Option<f32>,
+}
+
+impl PxLuma {
+    fn own(p: &Poly) -> Self {
+        PxLuma { luma: p.luma, fine: None }
+    }
+}
+
+/// Smooth shading's finer levels (`shading_fine`): for a lit pixel whose
+/// luma before truncation is `luma`, of a polygon whose pixels are clamped
+/// to the lumas `range` ([`Poly::lit_range`]), the two adjacent colour
+/// columns to blend `(k, k1)` and the weight of `k1`. `table`: the luma
+/// table's value at the pixel's texel (textured), or None (untextured).
+///
+/// The game's column at luma `l` is `level(l)` truncated, with `level(l) =
+/// table * l / 256` (at most 63) or `l / 4`. A column stands for the levels
+/// from k to k + 1, so a level `y` is drawn as the blend of the columns
+/// around `y - 0.5` (column k alone at k + 0.5): across a gradient the
+/// mean column is the game's, nothing gets brighter or darker. Both
+/// columns are among those the polygon shows with the game's levels at the
+/// lumas in `range`, which keep its hue: the blend is between two of the
+/// game's own colours of that hue, and never leaves it.
+pub fn fine_level(table: Option<u32>, luma: f32, range: [u8; 2]) -> (u32, u32, f32) {
+    let level = |l: u32| match table {
+        Some(v) => (v * l / 256).min(63),
+        None => (l >> 2).min(63),
+    };
+    let (a, b) = (level(range[0] as u32), level(range[1] as u32));
+    let l = if luma.is_nan() { 0.0 } else { luma };
+    let y = match table {
+        Some(v) => v as f32 * l / 256.0,
+        None => l / 4.0,
+    } - 0.5;
+    let x = y.clamp(a as f32, b as f32);
+    let k = (x.floor() as u32).min(b);
+    (k, (k + 1).min(b), x - k as f32)
+}
+
+/// The columns finer levels blend for a pixel of colour `colour`
+/// ([`fine_level`]'s `(k, k1, weight)`), kept off black: where the game's
+/// own column there, `game`, is pure black (all three channels 0) the pixel
+/// is that column alone, and a pair with one pure black column takes the
+/// other alone. Black ink (outlines, eyes, seams) stays black and its
+/// neighbours keep the game's colour next to it, with no dark fringe
+/// blending toward it; elsewhere the blend is unchanged.
+fn fine_columns(src: &Sources, colour: [u32; 3], game: u32, k: (u32, u32, f32)) -> (u32, u32, f32) {
+    let black = |k: u32| (0..3).all(|ch| src.translate(ch, colour[ch], k) == 0);
+    if black(game) {
+        (game, game, 0.0)
+    } else if black(k.0) {
+        (k.1, k.1, 0.0)
+    } else if black(k.1) {
+        (k.0, k.0, 0.0)
+    } else {
+        k
+    }
+}
+
+/// Channel `ch` of colour component `c` blended between the columns
+/// [`fine_level`] gives, before rounding.
+fn fine_translate(src: &Sources, ch: usize, c: u32, (k, k1, f): (u32, u32, f32)) -> f32 {
+    let (a, b) = (src.translate(ch, c, k) as f32, src.translate(ch, c, k1) as f32);
+    a + (b - a) * f
+}
+
+/// [`shade`] at a given brightness (a smooth-shaded pixel's).
+fn shade_luma(p: &Poly, px: PxLuma, src: &Sources, x: usize, y: usize, u: f32, v: f32) -> Option<[u8; 3]> {
     if p.checker && (x ^ y) & 1 != 0 {
         return None;
     }
-    let lum = match p.texture {
+    let luma = px.luma;
+    let (lum, table) = match p.texture {
         Some(t) => {
             let t8 = filtered_texel(&t, src, u, v)?;
-            (src.luma(t.luma_table, t8 / 2) * p.luma / 256).min(63)
+            let value = src.luma(t.luma_table, t8 / 2);
+            ((value * luma / 256).min(63), Some(value))
         }
-        None => p.luma >> 2,
+        None => (luma >> 2, None),
     };
+    if let Some(l) = px.fine {
+        let k = fine_columns(src, p.colour, lum, fine_level(table, l, p.lit_range));
+        // Rust's round(): half away from zero (never negative here).
+        return Some([0, 1, 2].map(|ch| fine_translate(src, ch, p.colour[ch], k).round() as u8));
+    }
     Some([0, 1, 2].map(|ch| src.translate(ch, p.colour[ch], lum)))
 }
 
@@ -587,24 +1076,39 @@ const FULL_LUMA: u32 = 255;
 /// pixel per texel (unfiltered); texel 15 of a translucent texture has
 /// alpha 0. This is what dumps contain and packs replace.
 pub fn texture_image(src: &Sources, info: &TexInfo) -> Rgba {
-    let c = [info.colour as u32 & 31, (info.colour as u32 >> 5) & 31, (info.colour as u32 >> 10) & 31];
+    let look = texture_look(src, info);
     let mut data = Vec::with_capacity((info.width * info.height * 4) as usize);
     for y in 0..info.height {
         for x in 0..info.width {
-            let t = src.texel(info.bank, info.x0 + x, info.y0 + y);
-            let lum = (src.luma(info.luma_table, t * 17 / 2) * FULL_LUMA / 256).min(63);
-            let rgb = [0, 1, 2].map(|ch| src.translate(ch, c[ch], lum));
+            let t = src.texel(info.bank, info.x0 + x, info.y0 + y) as usize;
+            let rgb = look[t];
             data.extend_from_slice(&[rgb[0], rgb[1], rgb[2], if info.translucent && t == 15 { 0 } else { 255 }]);
         }
     }
     Rgba { width: info.width as usize, height: info.height as usize, data }
 }
 
+/// The colour each texel value (0-15) of a texture is drawn in at full
+/// polygon luma: what `texture_image` maps texels through. It depends on
+/// the luma table and colour translation tables as they are now, which
+/// the texture's key does not include: a game rewriting the translation
+/// tables (srallyc's fade from white into the race, sgt24h's sky tint)
+/// draws the same key in another look.
+pub fn texture_look(src: &Sources, info: &TexInfo) -> [[u8; 3]; 16] {
+    let c = [info.colour as u32 & 31, (info.colour as u32 >> 5) & 31, (info.colour as u32 >> 10) & 31];
+    std::array::from_fn(|t| {
+        let lum = (src.luma(info.luma_table, t as u32 * 17 / 2) * FULL_LUMA / 256).min(63);
+        [0, 1, 2].map(|ch| src.translate(ch, c[ch], lum))
+    })
+}
+
 /// Lighting for a replaced texture: the replacement stands for the texture
 /// at full luma, so each pixel is scaled per channel by what the original
 /// pipeline gives at this polygon's luma over what it gives at full luma,
 /// for the original (filtered) texel under the pixel. That keeps the
-/// game's luma table, cap at 63 and colour translation curves.
+/// game's luma table, cap at 63 and colour translation curves. Where that
+/// texel is black at full luma in a channel, the channel adds the
+/// original's value instead ([`Light::apply`]).
 struct Light {
     /// Polygon luma is full: nothing to scale.
     full: bool,
@@ -613,35 +1117,59 @@ struct Light {
     /// Fallback ratio where the original texel is transparent or black at
     /// full luma: the ratio for the brightest luma.
     poly: [f32; 3],
+    /// Finer levels ([`PxLuma::fine`]): the luma before truncation and the
+    /// polygon's [`Poly::lit_range`].
+    fine: Option<(f32, [u8; 2])>,
 }
 
 impl Light {
-    fn new(p: &Poly, src: &Sources) -> Self {
+    /// For polygon `p` drawn at `px` (its own luma, or a smooth-shaded
+    /// pixel's).
+    fn new(p: &Poly, px: PxLuma, src: &Sources) -> Self {
+        let luma = px.luma;
+        let fine = px.fine.map(|l| (l, p.lit_range));
         let poly = [0, 1, 2].map(|ch| {
             let full = src.translate(ch, p.colour[ch], 63) as f32;
             if full > 0.0 {
-                src.translate(ch, p.colour[ch], (64 * p.luma / 256).min(63)) as f32 / full
+                Self::at(src, p.colour, fine, luma, ch, 64) / full
             } else {
-                p.luma as f32 / FULL_LUMA as f32
+                luma as f32 / FULL_LUMA as f32
             }
         });
-        Light { full: p.luma >= FULL_LUMA, luma: p.luma, colour: p.colour, poly }
+        Light { full: fine.is_none() && luma >= FULL_LUMA, luma, colour: p.colour, poly, fine }
     }
 
-    fn ratio(&self, t: &Texture, src: &Sources, u: f32, v: f32) -> [f32; 3] {
-        if self.full {
-            return [1.0; 3];
+    /// Channel `ch` of `colour` at luma table value `value`: the game's
+    /// level, or with finer levels the blend of two.
+    fn at(src: &Sources, colour: [u32; 3], fine: Option<(f32, [u8; 2])>, luma: u32, ch: usize, value: u32) -> f32 {
+        match fine {
+            Some((l, range)) => {
+                let game = (value * luma / 256).min(63);
+                fine_translate(src, ch, colour[ch], fine_columns(src, colour, game, fine_level(Some(value), l, range)))
+            }
+            None => src.translate(ch, colour[ch], (value * luma / 256).min(63)) as f32,
         }
-        let Some(t8) = filtered_texel(t, src, u, v) else { return self.poly };
+    }
+
+    /// Per channel, the scale and the offset that take the replacement's
+    /// colour to the lit one (`replacement * scale + offset`). The offset
+    /// is zero except where the original texel is black at full luma in
+    /// that channel but not at this luma (a translation table that is not
+    /// monotonic, such as topskatr's red at level 63 over a brown at lower
+    /// levels): nothing scales up from black, so that channel adds the
+    /// original's own value at this luma.
+    fn apply(&self, t: &Texture, src: &Sources, u: f32, v: f32, rgb: [f32; 3]) -> [u8; 3] {
+        let px = |c: f32| c.round().clamp(0.0, 255.0) as u8;
+        if self.full {
+            return rgb.map(px);
+        }
+        let Some(t8) = filtered_texel(t, src, u, v) else { return [0, 1, 2].map(|ch| px(rgb[ch] * self.poly[ch])) };
         let l = src.luma(t.luma_table, t8 / 2);
-        let (lp, lf) = ((l * self.luma / 256).min(63), (l * FULL_LUMA / 256).min(63));
+        let lf = (l * FULL_LUMA / 256).min(63);
         [0, 1, 2].map(|ch| {
             let full = src.translate(ch, self.colour[ch], lf);
-            if full == 0 {
-                self.poly[ch]
-            } else {
-                src.translate(ch, self.colour[ch], lp) as f32 / full as f32
-            }
+            let here = Self::at(src, self.colour, self.fine, self.luma, ch, l);
+            px(if full == 0 { rgb[ch] * self.poly[ch] + here } else { rgb[ch] * (here / full as f32) })
         })
     }
 }
@@ -669,8 +1197,7 @@ fn shade_replaced(
     if alpha < 0.5 {
         return None;
     }
-    let r = light.ratio(t, src, u, v);
-    Some([0, 1, 2].map(|ch| (rgb[ch] * r[ch]).round().clamp(0.0, 255.0) as u8))
+    Some(light.apply(t, src, u, v, rgb))
 }
 
 /// A replacement image as the filter wants it.
@@ -737,8 +1264,7 @@ fn shade_filtered(
     if alpha < 0.5 {
         return None;
     }
-    let r = light.ratio(t, src, u, v);
-    Some([0, 1, 2].map(|ch| (rgb[ch] * r[ch]).round().clamp(0.0, 255.0) as u8))
+    Some(light.apply(t, src, u, v, rgb))
 }
 
 /// Draw polygons into an RGB layer with a coverage mask: windows in order,
@@ -845,6 +1371,8 @@ pub fn place(polys: &mut [Poly], view: &View) -> Vec<Placed> {
                     SVtx { x, y, ..*v }
                 })
                 .collect();
+            // view.to_output, homogeneous.
+            let prev = p.prev.iter().map(|&[x, y, w]| [(x + (dx + view.pad) * w) * view.sx, y * view.sy, w]).collect();
             let (mut x0, y0, mut x1, y1) = p.clip;
             if view.pad > 0.0 && x0 <= 1.0 && x1 >= WIDTH as f32 - 1.0 {
                 (x0, x1) = (view.x_min(), WIDTH as f32 + view.pad);
@@ -858,6 +1386,7 @@ pub fn place(polys: &mut [Poly], view: &View) -> Vec<Placed> {
                 rank: (i - window_start) as u32,
                 group,
                 background: background_reason(p).is_some(),
+                prev,
             }
         })
         .collect()
@@ -975,6 +1504,54 @@ pub fn probe_depth(polys: &[Poly], placed: &[Placed], src: &Sources, view: &View
     out
 }
 
+/// What [`draw_view`] shows at each output pixel ([`visible`]).
+#[derive(Clone, Debug, Default)]
+pub struct Visible {
+    /// The polygon whose colour shows (index into `placed`), or `u32::MAX`.
+    pub owner: Vec<u32>,
+    /// Its 1/z at the pixel centre (0 where none).
+    pub iz: Vec<f32>,
+    /// Its previous position there ([`Placed::prev`] interpolated across
+    /// the polygon, homogeneous output pixels `[X, Y, W]`), `W` 0 where it
+    /// has none.
+    pub prev: Vec<[f32; 3]>,
+}
+
+/// Per output pixel of `view`, the polygon [`draw_view`] shows (the depth
+/// buffer off, original textures: the game's order, the checkerboard and
+/// cut-out texels as drawn), its 1/z and its motion data: the motion
+/// vector a temporal renderer would write there. `placed` is
+/// [`place`]'s for `polys`.
+pub fn visible(polys: &[Poly], placed: &[Placed], src: &Sources, view: &View) -> Visible {
+    let (w, h) = (view.width, view.height);
+    let mut out = Visible { owner: vec![u32::MAX; w * h], iz: vec![0.0; w * h], prev: vec![[0.0; 3]; w * h] };
+    let (gsx, gsy) = (view.sx, view.sy);
+    for (k, pl) in placed.iter().enumerate() {
+        let p = &polys[pl.poly];
+        let mut hits = Vec::new();
+        fill(&pl.points, pl.clip, w, h, |x, y, iz, uz, vz| {
+            let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
+            hits.push((y * w + x, iz, shade(p, src, gx, gy, uz / iz, vz / iz).is_some()));
+        });
+        // The same fill visits the same pixels in the same order whatever
+        // the attributes: carry [X, Y, W] as (u/z, v/z, 1/z).
+        let mut prev = Vec::with_capacity(if pl.prev.is_empty() { 0 } else { hits.len() });
+        if !pl.prev.is_empty() {
+            let pts: Vec<SVtx> =
+                pl.points.iter().zip(&pl.prev).map(|(v, q)| SVtx { iz: q[2], uz: q[0], vz: q[1], ..*v }).collect();
+            fill(&pts, pl.clip, w, h, |_, _, ww, xx, yy| prev.push([xx, yy, ww]));
+        }
+        for (i, &(o, iz, shown)) in hits.iter().enumerate() {
+            if shown {
+                out.owner[o] = k as u32;
+                out.iz[o] = iz;
+                out.prev[o] = prev.get(i).copied().unwrap_or([0.0; 3]);
+            }
+        }
+    }
+    out
+}
+
 fn draw_impl(
     polys: &mut [Poly],
     src: &Sources,
@@ -1027,16 +1604,37 @@ fn draw_impl(
             _ => None,
         };
         let mut pixels = 0;
+        // Smooth shading: each pixel's luma, in the order `fill` visits
+        // them (None: the polygon's own).
+        let lumas = (!p.lit.is_empty()).then(|| lit_values(points, p, clip, w, h));
+        let [lo, hi] = p.lit_range.map(u32::from);
+        let own = PxLuma::own(p);
+        let mut n = 0;
+        let mut luma_at = || {
+            n += 1;
+            lumas.as_ref().map_or(own, |l| {
+                let v = l[n - 1];
+                PxLuma { luma: crate::light::quantise(v).clamp(lo, hi), fine: p.fine.then_some(v) }
+            })
+        };
         if let (Some((_, Some(Replacement::Mips(chain)))), Some(t)) = (&hooked, &p.texture) {
-            let light = Light::new(p, src);
+            let light0 = Light::new(p, own, src);
             let grad = Gradients::new(points);
             fill(points, clip, w, h, |x, y, iz, uz, vz| {
+                let luma = luma_at();
                 let o = y * w + x;
                 if test && depth_test_value(iz, rank) < zbuf[o] {
                     return;
                 }
+                let lit;
+                let light = if luma == own {
+                    &light0
+                } else {
+                    lit = Light::new(p, luma, src);
+                    &lit
+                };
                 let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
-                if let Some(c) = shade_filtered(t, p.checker, chain, &grad, &light, src, gx, gy, (iz, uz, vz)) {
+                if let Some(c) = shade_filtered(t, p.checker, chain, &grad, light, src, gx, gy, (iz, uz, vz)) {
                     if test {
                         pending.push((o, depth_value(iz, rank)));
                     }
@@ -1046,14 +1644,22 @@ fn draw_impl(
                 }
             });
         } else if let (Some((_, Some(Replacement::Image(img)))), Some(t)) = (&hooked, &p.texture) {
-            let light = Light::new(p, src);
+            let light0 = Light::new(p, own, src);
             fill(points, clip, w, h, |x, y, iz, uz, vz| {
+                let luma = luma_at();
                 let o = y * w + x;
                 if test && depth_test_value(iz, rank) < zbuf[o] {
                     return;
                 }
+                let lit;
+                let light = if luma == own {
+                    &light0
+                } else {
+                    lit = Light::new(p, luma, src);
+                    &lit
+                };
                 let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
-                if let Some(c) = shade_replaced(t, p.checker, img, &light, src, gx, gy, uz / iz, vz / iz) {
+                if let Some(c) = shade_replaced(t, p.checker, img, light, src, gx, gy, uz / iz, vz / iz) {
                     if test {
                         pending.push((o, depth_value(iz, rank)));
                     }
@@ -1064,12 +1670,13 @@ fn draw_impl(
             });
         } else {
             fill(points, clip, w, h, |x, y, iz, uz, vz| {
+                let luma = luma_at();
                 let o = y * w + x;
                 if test && depth_test_value(iz, rank) < zbuf[o] {
                     return;
                 }
                 let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
-                if let Some(c) = shade(p, src, gx, gy, uz / iz, vz / iz) {
+                if let Some(c) = shade_luma(p, luma, src, gx, gy, uz / iz, vz / iz) {
                     if test {
                         pending.push((o, depth_value(iz, rank)));
                     }
@@ -1084,6 +1691,60 @@ fn draw_impl(
         }
     }
     (rgb, covered)
+}
+
+/// A smooth-shaded polygon's luma at each pixel `fill` visits, in that
+/// order, before truncation: its corner lumas times 1/z, interpolated as
+/// `fill` interpolates (perspective-correct), divided by the pixel's 1/z.
+/// Per pixel ([`Poly::pixel`]): the corner normals likewise, normalised,
+/// and the polygon's lighting for that normal (the interpolated luma where
+/// the normals cancel out). Drawn truncated (`light::quantise`) and clamped
+/// to [`Poly::lit_range`], or with finer levels as [`fine_level`] says.
+fn lit_values(points: &[SVtx], p: &Poly, clip: (f32, f32, f32, f32), w: usize, h: usize) -> Vec<f32> {
+    let lit = &p.lit;
+    let pts: Vec<SVtx> = points.iter().zip(lit).map(|(v, l)| SVtx { uz: l[0] * v.iz, vz: l[1] * v.iz, ..*v }).collect();
+    let mut out = Vec::new();
+    match &p.pixel {
+        None => fill(&pts, clip, w, h, |_, _, iz, lz, _| out.push(lz / iz)),
+        Some(pl) => {
+            // Two passes over the same pixels: (luma, nx), then (ny, nz).
+            let mut first = Vec::new();
+            fill(&pts, clip, w, h, |_, _, iz, lz, nxz| first.push((iz, lz, nxz)));
+            let pts2: Vec<SVtx> =
+                points.iter().zip(lit).map(|(v, l)| SVtx { uz: l[2] * v.iz, vz: l[3] * v.iz, ..*v }).collect();
+            let mut k = 0;
+            fill(&pts2, clip, w, h, |_, _, _, nyz, nzz| {
+                let (iz, lz, nxz) = first[k];
+                k += 1;
+                out.push(pixel_luma(pl, lz / iz, [nxz / iz, nyz / iz, nzz / iz]));
+            });
+        }
+    }
+    out
+}
+
+/// A placed smooth-shaded polygon's luma at each pixel it covers (as drawn,
+/// before anything hides it, truncated and clamped as the game's levels
+/// draw it; for tools). Empty when it isn't lit.
+pub fn lit_pixel_lumas(p: &Poly, pl: &Placed, view: &View) -> Vec<u32> {
+    if p.lit.is_empty() {
+        return Vec::new();
+    }
+    let [lo, hi] = p.lit_range.map(u32::from);
+    let v = lit_values(&pl.points, p, pl.clip, view.width, view.height);
+    v.into_iter().map(|l| crate::light::quantise(l).clamp(lo, hi)).collect()
+}
+
+/// A per-pixel lit polygon's luma (before truncation) at a pixel whose
+/// interpolated corner luma is `luma` and normal `n` (not unit): the
+/// lighting for `n` normalised, or `luma` where `n` is (nearly) zero. The
+/// GPU's `pixel_luma` (raster.wgsl) is the same.
+pub fn pixel_luma(pl: &crate::light::PixelLight, luma: f32, n: [f32; 3]) -> f32 {
+    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    if len.is_nan() || len < 1e-6 {
+        return luma;
+    }
+    pl.luma(n.map(|x| x / len))
 }
 
 /// Scanline fill of a convex polygon with pixel-centre sampling, limited to
@@ -1130,6 +1791,97 @@ fn fill(
             plot(x as usize, y as usize, e(l.1, r.1), e(l.2, r.2), e(l.3, r.3));
         }
     }
+}
+
+/// Where a pack standing for the original textures (`pack-check
+/// --identity`) draws a frame differently from the original: pixels off by
+/// more than 16 levels in a channel, by cause, for the software renderer
+/// drawing unfiltered and without the depth buffer.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct IdentitySplit {
+    /// The bilinear filter's texels under the pixel hold different values:
+    /// the original filters texel values and looks the result up, the
+    /// pack filters colours, and the two differ wherever the look is not
+    /// linear in the texel value (a palette-like look, such as crowds).
+    pub texels_differ: usize,
+    /// One of those texels is a cut-out (texel 15 of a translucent
+    /// texture).
+    pub cut_out: usize,
+    /// One texel value under the pixel (or no texture): a pack standing
+    /// for the texture must draw it as the original does, so these are
+    /// gaps (a wrong look, lighting the replacement can't express).
+    pub same_texel: usize,
+    /// Another polygon drawn on top in one of the two (a cut-out decided
+    /// differently at the edge).
+    pub other_polygon: usize,
+}
+
+/// [`IdentitySplit`] of a frame's (unlit) polygons drawn with the
+/// replacements `hooks` gives against without.
+pub fn identity_split(polys: &mut [Poly], src: &Sources, view: &View, hooks: &mut dyn Enhance) -> IdentitySplit {
+    let (w, h) = (view.width, view.height);
+    let placed = place(polys, view);
+    let mut keys = TexKeys::default();
+    // Per pixel, the placed polygon on top, its (u, v) and colour.
+    let none = (usize::MAX, 0.0f32, 0.0f32, [0u8; 3]);
+    let (mut orig, mut pack) = (vec![none; w * h], vec![none; w * h]);
+    let (gsx, gsy) = (view.sx, view.sy);
+    for (k, pl) in placed.iter().enumerate() {
+        let p = &polys[pl.poly];
+        let own = PxLuma::own(p);
+        let img = p.texture.as_ref().and_then(|t| tex_info(p, t, src, &mut keys)).and_then(|i| hooks.texture(&i));
+        let light = Light::new(p, own, src);
+        fill(&pl.points, pl.clip, w, h, |x, y, iz, uz, vz| {
+            let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
+            let (u, v) = (uz / iz, vz / iz);
+            let o = y * w + x;
+            let plain = shade_luma(p, own, src, gx, gy, u, v);
+            if let Some(c) = plain {
+                orig[o] = (k, u, v, c);
+            }
+            let c = match (&img, &p.texture) {
+                (Some(img), Some(t)) => shade_replaced(t, p.checker, img, &light, src, gx, gy, u, v),
+                _ => plain,
+            };
+            if let Some(c) = c {
+                pack[o] = (k, u, v, c);
+            }
+        });
+    }
+    let mut split = IdentitySplit::default();
+    for (a, b) in orig.iter().zip(&pack) {
+        if (0..3).all(|c| a.3[c].abs_diff(b.3[c]) <= 16) {
+            continue;
+        }
+        if a.0 != b.0 {
+            split.other_polygon += 1;
+            continue;
+        }
+        let Some(t) = polys[placed[a.0].poly].texture else {
+            split.same_texel += 1;
+            continue;
+        };
+        // The texels `filtered_texel` weighs.
+        let (u, v) = (a.1 - 0.5, a.2 - 0.5);
+        let (fu, fv) = (u - u.floor(), v - v.floor());
+        let (u0, v0) = (u.floor() as i32, v.floor() as i32);
+        let texels: Vec<u32> =
+            [(0, 0, (1.0 - fu) * (1.0 - fv)), (1, 0, fu * (1.0 - fv)), (0, 1, (1.0 - fu) * fv), (1, 1, fu * fv)]
+                .into_iter()
+                .filter(|&(_, _, wt)| wt > 0.0)
+                .map(|(du, dv, _)| {
+                    src.texel(t.bank, t.x0 + wrap(u0 + du, t.w, t.mirror_x), t.y0 + wrap(v0 + dv, t.h, t.mirror_y))
+                })
+                .collect();
+        if t.translucent && texels.contains(&15) {
+            split.cut_out += 1;
+        } else if texels.iter().all(|&x| x == texels[0]) {
+            split.same_texel += 1;
+        } else {
+            split.texels_differ += 1;
+        }
+    }
+    split
 }
 
 #[cfg(test)]
@@ -1199,6 +1951,12 @@ mod tests {
             header: [0x80c0, 0, 0, 0],
             shadow: false,
             block: 0,
+            at: 0,
+            prev: Vec::new(),
+            lit: Vec::new(),
+            pixel: None,
+            lit_range: [0, 255],
+            fine: false,
         };
         assert!(p.texture.is_none());
         assert!(shade(&p, &src, 2, 4, 0.0, 0.0).is_some());
@@ -1221,6 +1979,12 @@ mod tests {
             header: [0; 4],
             shadow: false,
             block: 0,
+            at: 0,
+            prev: Vec::new(),
+            lit: Vec::new(),
+            pixel: None,
+            lit_range: [0, 255],
+            fine: false,
         }
     }
 
@@ -1322,7 +2086,7 @@ mod tests {
 
     #[test]
     fn close_geometry_is_clipped_not_dropped() {
-        let v = |x, y, z| Vtx { x, y, z, u: x, v: 0.0 };
+        let v = |x, y, z| Vtx { x, y, z, u: x, ..Default::default() };
         // A triangle in front of the eye, nearer than one unit: kept whole.
         let c = clip_view(&[v(-0.1, 0.0, 0.5), v(0.1, 0.0, 0.5), v(0.0, 0.1, 0.4)], 248.0, 192.0);
         assert_eq!(c.len(), 3);
@@ -1363,10 +2127,651 @@ mod tests {
         assert_eq!(filtered_texel(&t, &src, 1.1, 0.5), None);
     }
 
+    /// A pack of one fixed image for every texture.
+    struct OneImage(Arc<Rgba>);
+
+    impl Enhance for OneImage {
+        fn texture(&mut self, _: &TexInfo) -> Option<Arc<Rgba>> {
+            Some(self.0.clone())
+        }
+        fn texture_drawn(&mut self, _: &TexInfo, _: &Sources, _: usize) {}
+        fn tile(&mut self, _: &crate::enhance::TileInfo) -> Option<Arc<Rgba>> {
+            None
+        }
+    }
+
+    #[test]
+    fn identity_pack_where_full_luma_is_black_in_a_channel() {
+        // Texel 0 (all of render RAM) has luma table value 64: level 63 at
+        // full polygon luma, 32 at luma 128. Colour 1's green is black at
+        // level 63 but not at 32 (a translation table that is not
+        // monotonic, like topskatr's red over brown); red scales.
+        let mut ram = vec![0u8; 0x40_0000 + 0x8000];
+        ram[0x40_0000] = 64;
+        let mut palette = vec![0u8; 0x1_c000];
+        let tr = |ch: usize, lum: usize| 0x1_0000 + ch * 0x4000 + (256 + lum) * 2;
+        palette[tr(0, 63)] = 200;
+        palette[tr(0, 32)] = 100;
+        palette[tr(1, 32)] = 50;
+        let src = Sources {
+            texture_rom: &[],
+            texture_point_ram: &[],
+            render_ram: &ram,
+            palette: &palette,
+            xoff: 0.0,
+            yoff: 0.0,
+        };
+        let t = Texture {
+            x0: 0,
+            y0: 0,
+            w: 32,
+            h: 32,
+            mirror_x: false,
+            mirror_y: false,
+            bank: 0,
+            translucent: false,
+            luma_table: 0,
+        };
+        let mut p = flat(1, 1.0, 1.0, 0);
+        p.texture = Some(t);
+        p.luma = 128;
+        let info = tex_info(&p, &t, &src, &mut TexKeys::default()).unwrap();
+        let image = Arc::new(texture_image(&src, &info));
+        assert_eq!(&image.data[..4], &[200, 0, 0, 255]);
+        let view = View::native();
+        let at = |rgb: &[u8]| rgb[(200 * WIDTH + 200) * 3..][..3].to_vec();
+        let plain = draw_view(&mut [p.clone()], &src, &view).0;
+        assert_eq!(at(&plain), [100, 50, 0]);
+        // The replacement scales red by 100 / 200 and adds green's own
+        // value: the original's colour.
+        let packed = draw_enhanced(&mut [p.clone()], &src, &view, &mut OneImage(image.clone())).0;
+        assert_eq!(at(&packed), [100, 50, 0]);
+        assert_eq!(identity_split(&mut [p.clone()], &src, &view, &mut OneImage(image)), IdentitySplit::default());
+        // An image in another colour is a gap at every pixel of one texel
+        // value.
+        let wrong = Rgba { width: 1, height: 1, data: vec![0, 0, 200, 255] };
+        let s = identity_split(&mut [p], &src, &view, &mut OneImage(Arc::new(wrong)));
+        assert_eq!((s.texels_differ, s.cut_out, s.other_polygon), (0, 0, 0));
+        assert_eq!(s.same_texel, 200 * 200);
+    }
+
     #[test]
     fn wrap_repeat_and_mirror() {
         assert_eq!(wrap(-1, 32, false), 31);
         assert_eq!(wrap(32, 32, true), 31);
         assert_eq!(wrap(-1, 32, true), 0);
+    }
+
+    /// A raster stream: one window (centre 0 at (cx, cy) in window
+    /// coordinates, Y up) and an object block of double-sided quads given
+    /// as view-space points (the first two are the block's P0 and P1, then
+    /// two per quad), the positions through `f`.
+    fn motion_stream(cx: i32, cy: i32, quads: &[[[f32; 3]; 4]], f: impl Fn([f32; 3]) -> [f32; 3]) -> Vec<u32> {
+        let xy = |x: i32, y: i32| ((x as u32 & 0xfff) << 12) | (y as u32 & 0xfff);
+        let mut s = vec![0xff00_0003, xy(0, 0), xy(495, 383), xy(cx, cy), xy(cx, cy), xy(cx, cy), xy(cx, cy)];
+        let put = |s: &mut Vec<u32>, p: [f32; 3]| s.extend(f(p).map(|v| v.to_bits() >> 8));
+        for q in quads {
+            s.extend([0xff00_0001, 0, 0]);
+            // P0 and P1 are the quad's second and first points.
+            put(&mut s, q[1]);
+            put(&mut s, q[0]);
+            s.extend([1 | 1 << 8 | 1 << 10 | 1 << 17, 0, 0]);
+            put(&mut s, q[2]);
+            put(&mut s, q[3]);
+        }
+        s.push(0xff00_000f);
+        s
+    }
+
+    fn motion_sources(palette: &[u8]) -> Sources<'_> {
+        Sources { texture_rom: &[], texture_point_ram: &[], render_ram: &[], palette, xoff: 0.0, yoff: 0.0 }
+    }
+
+    /// An affine map of view space (positions are times the focal
+    /// lengths, so x and y are large beside z): a turn about x, a stretch
+    /// across and a move.
+    fn moved(p: [f32; 3]) -> [f32; 3] {
+        let (c, s) = (0.01f32.cos(), 0.01f32.sin());
+        [1.02 * p[0] + 0.7, c * p[1] - s * p[2] - 0.4, s * p[1] + c * p[2] + 6.0]
+    }
+
+    /// Quads: one in front of the eye, one crossing the near plane, one
+    /// running far past the side of the screen (clipped by the guard
+    /// band).
+    const QUADS: [[[f32; 3]; 4]; 3] = [
+        [[-300.0, -200.0, 10.0], [300.0, -200.0, 10.0], [300.0, 200.0, 12.0], [-300.0, 200.0, 12.0]],
+        [[-50.0, -30.0, -4.0], [50.0, -30.0, -4.0], [50.0, 30.0, 9.0], [-50.0, 30.0, 9.0]],
+        [[-100.0, -50.0, 5.0], [90000.0, -50.0, 5.0], [90000.0, 50.0, 5.0], [-100.0, 50.0, 5.0]],
+    ];
+
+    fn plain(p: &Poly) -> String {
+        format!("{:?}", Poly { prev: Vec::new(), ..p.clone() })
+    }
+
+    /// The previous position of a polygon's points is the projection of
+    /// the moved view-space point, through clipping, with the previous
+    /// frame's window centre, and stays exact between points when
+    /// interpolated linearly in screen space and divided.
+    #[test]
+    fn motion_gives_the_exact_previous_projection() {
+        let palette = vec![0u8; 0x1_c000];
+        let src = motion_sources(&palette);
+        let s1 = motion_stream(248, 192, &QUADS, |p| p);
+        let s0 = motion_stream(248, 192, &QUADS, moved);
+        let prev_centres = [[(251.0, 190.0); 4]];
+        let m = MotionIn { s0: &s0, s1: &s1, tp: 0.0, valid: &[true; 3], prev_centres: &prev_centres };
+        let (polys, centres) = build_motion(&s1, &src, Some(&m));
+        assert_eq!(centres, vec![[(248.0, 192.0); 4]]);
+        // Exactly build's polygons, apart from prev.
+        let plain_polys: Vec<String> = build(&s1, &src).iter().map(plain).collect();
+        assert_eq!(polys.iter().map(plain).collect::<Vec<_>>(), plain_polys);
+        assert_eq!(polys.len(), 3);
+        assert!(polys[1].points.len() > 4 || polys[1].points.iter().any(|p| p.iz > 1.0), "clipped at the eye");
+        assert!(polys[2].points.iter().all(|p| p.x < 3000.0), "clipped by the guard band");
+        // The view-space point a screen point shows (current centre).
+        let (cx, cy) = (248.0, 192.0);
+        let view = |x: f32, y: f32, iz: f32| [(x - cx) / iz, (cy - y) / iz, 1.0 / iz];
+        let project = |p: [f32; 3]| (251.0 + p[0] / p[2], 190.0 - p[1] / p[2]);
+        let close = |a: (f32, f32), b: (f32, f32), what: &str| {
+            let tol = 2e-3 * (1.0 + b.0.abs().max(b.1.abs()) / 100.0);
+            assert!((a.0 - b.0).abs() < tol && (a.1 - b.1).abs() < tol, "{what}: {a:?} vs {b:?}");
+        };
+        for (n, p) in polys.iter().enumerate() {
+            assert_eq!(p.prev.len(), p.points.len());
+            for (k, (v, h)) in p.points.iter().zip(&p.prev).enumerate() {
+                close((h[0] / h[2], h[1] / h[2]), project(moved(view(v.x, v.y, v.iz))), &format!("{n}.{k}"));
+                // Previous 1/z.
+                let want = 1.0 / moved(view(v.x, v.y, v.iz))[2];
+                assert!((v.iz / h[2] - want).abs() < 1e-4 * want, "{n}.{k}");
+            }
+            // Between two points, a third of the way across the screen.
+            let (a, b) = (0, p.points.len() / 2);
+            let s = 1.0 / 3.0;
+            let l = |x: f32, y: f32| x + (y - x) * s;
+            let (va, vb) = (p.points[a], p.points[b]);
+            let (sx, sy, iz) = (l(va.x, vb.x), l(va.y, vb.y), l(va.iz, vb.iz));
+            let h: [f32; 3] = std::array::from_fn(|c| l(p.prev[a][c], p.prev[b][c]));
+            close((h[0] / h[2], h[1] / h[2]), project(moved(view(sx, sy, iz))), &format!("{n} between"));
+        }
+    }
+
+    #[test]
+    fn visible_matches_the_drawing_and_carries_motion() {
+        let palette = vec![0u8; 0x1_c000];
+        let src = motion_sources(&palette);
+        let s1 = motion_stream(248, 192, &QUADS, |p| p);
+        let s0 = motion_stream(248, 192, &QUADS, moved);
+        let m = MotionIn { s0: &s0, s1: &s1, tp: 0.0, valid: &[], prev_centres: &[] };
+        let view = View::new(240, 16.0 / 9.0, crate::video::Hud::Center);
+        let (mut polys, _) = build_motion(&s1, &src, Some(&m));
+        let placed = place(&mut polys, &view);
+        let vis = visible(&polys, &placed, &src, &view);
+        let (_, covered) = draw_view(&mut polys.clone(), &src, &view);
+        let shown: Vec<bool> = vis.owner.iter().map(|&o| o != u32::MAX).collect();
+        assert_eq!(shown, covered);
+        assert!(covered.iter().any(|&c| c));
+        // Pixels of a polygon with motion data have a previous position
+        // inside the hull of its points' previous positions; others none.
+        for (o, _) in shown.iter().enumerate().filter(|(_, s)| **s) {
+            let [x, y, w] = vis.prev[o];
+            let pl = &placed[vis.owner[o] as usize];
+            if pl.prev.is_empty() {
+                assert_eq!(w, 0.0);
+                continue;
+            }
+            let (px, py) = (x / w, y / w);
+            let lo = |k: usize| pl.prev.iter().map(|q| q[k] / q[2]).fold(f32::MAX, f32::min) - 1e-2;
+            let hi = |k: usize| pl.prev.iter().map(|q| q[k] / q[2]).fold(f32::MIN, f32::max) + 1e-2;
+            assert!(w > 0.0 && (lo(0)..=hi(0)).contains(&px) && (lo(1)..=hi(1)).contains(&py), "{px} {py}");
+        }
+        // Without motion: no previous positions.
+        let mut plain = build(&s1, &src);
+        let placed = place(&mut plain, &view);
+        assert!(visible(&plain, &placed, &src, &view).prev.iter().all(|p| p[2] == 0.0));
+    }
+
+    #[test]
+    fn motion_identity_and_validity() {
+        let palette = vec![0u8; 0x1_c000];
+        let src = motion_sources(&palette);
+        let s1 = motion_stream(248, 192, &QUADS, |p| p);
+        // The same pose twice: the previous position is the current one.
+        let m = MotionIn { s0: &s1, s1: &s1, tp: 0.0, valid: &[], prev_centres: &[] };
+        let (polys, _) = build_motion(&s1, &src, Some(&m));
+        for p in &polys {
+            for (v, h) in p.points.iter().zip(&p.prev) {
+                assert!((h[0] / h[2] - v.x).abs() < 1e-3 && (h[1] / h[2] - v.y).abs() < 1e-3, "{v:?} {h:?}");
+                assert!((h[2] - 1.0).abs() < 1e-6);
+            }
+            assert!(!p.prev.is_empty());
+        }
+        // tp blends: halfway between the poses.
+        let s0 = motion_stream(248, 192, &QUADS, moved);
+        let half = motion_stream(248, 192, &QUADS, |p| {
+            let q = moved(p);
+            std::array::from_fn(|c| (p[c] + q[c]) / 2.0)
+        });
+        let at = |s0: &[u32], tp: f32| {
+            let m = MotionIn { s0, s1: &s1, tp, valid: &[], prev_centres: &[] };
+            build_motion(&s1, &src, Some(&m)).0
+        };
+        let (a, b) = (at(&s0, 0.5), at(&half, 0.0));
+        for (p, q) in a.iter().zip(&b) {
+            for (h, g) in p.prev.iter().zip(&q.prev) {
+                assert!((h[0] / h[2] - g[0] / g[2]).abs() < 2e-2, "{h:?} {g:?}");
+            }
+        }
+        let with = |valid: &[bool], s0: &[u32]| {
+            let m = MotionIn { s0, s1: &s1, tp: 0.0, valid, prev_centres: &[] };
+            build_motion(&s1, &src, Some(&m)).0.iter().map(|p| !p.prev.is_empty()).collect::<Vec<_>>()
+        };
+        // Blocks whose motion isn't known have none.
+        assert_eq!(with(&[true, false, true], &s0), [true, false, true]);
+        // Validity of the wrong length is ignored.
+        assert_eq!(with(&[false], &s0), [true; 3]);
+        // A previous position behind the eye: none for that polygon.
+        let behind = motion_stream(248, 192, &QUADS, |p| if p[1] > 0.0 { [p[0], p[1], -p[2]] } else { p });
+        assert_eq!(with(&[], &behind), [false; 3]);
+        // Streams that don't line up: no motion at all.
+        let mut other = s0.clone();
+        other[0] = 0xff00_0008;
+        assert_eq!(with(&[], &other), [false; 3]);
+        assert_eq!(with(&[], &s0[1..]), [false; 3]);
+        // Without motion data, nothing.
+        assert!(build_motion(&s1, &src, None).0.iter().all(|p| p.prev.is_empty()));
+    }
+
+    /// Smooth shading's corner values through `build_with`: crease 0 gives
+    /// `build`'s polygons exactly; lit polygons carry their corners per
+    /// point, and a point made by clipping (here at the near plane) has
+    /// the value interpolated along its edge (linear in view space, as the
+    /// position); shadows get none; drawn with each corner at the
+    /// polygon's own luma (+0.5) the picture is the flat one.
+    #[test]
+    fn corner_values_through_build_and_clipping() {
+        use crate::light::{self, test_stream};
+        let f = 495.0;
+        let sp = |p: [f32; 3]| [p[0] * f, p[1] * f, p[2]];
+        // A strip bent by 20 degrees about x = 0.5; the second quad runs
+        // from z 4 to behind the eye.
+        let bend = 20f32.to_radians();
+        let a = [[-0.5, -0.3, 4.0], [0.5, -0.3, 4.0], [0.5, 0.3, 4.0], [-0.5, 0.3, 4.0]];
+        let (c, s) = (bend.cos(), bend.sin());
+        let b = [
+            [0.5, -0.3, 4.0],
+            [0.5 + 15.0 * c, -0.3, 4.0 - 15.0 * s],
+            [0.5 + 15.0 * c, 0.3, 4.0 - 15.0 * s],
+            [0.5, 0.3, 4.0],
+        ];
+        let (s1, _) =
+            test_stream::stream(&[vec![test_stream::tpoly(&a.map(sp), 100), test_stream::tpoly(&b.map(sp), 140)]]);
+        let mut palette = vec![0u8; 0x1_c000];
+        palette[0x1_0000..].fill(1);
+        for ch in 0..3 {
+            for lum in 0..64 {
+                palette[0x1_0000 + ch * 0x4000 + lum * 2] = (lum * 4 + 1) as u8;
+            }
+        }
+        let src = motion_sources(&palette);
+        let opts = |crease| light::Options { shading: light::Shading::Vertex, crease, ..Default::default() };
+        let plain = build(&s1, &src);
+        let at = |crease| {
+            let sh = light::shade(&s1, &opts(crease));
+            let (p, _) = build_with(&s1, &src, &BuildIn { lit: Some(&sh), ..Default::default() });
+            (p, sh)
+        };
+        let (zero, sh0) = at(0);
+        assert!(sh0.at.is_empty());
+        assert_eq!(format!("{zero:?}"), format!("{plain:?}"));
+        let (lit, sh) = at(40);
+        assert_eq!(sh.at.len(), 2);
+        assert_eq!(lit.len(), 2);
+        // The view-space points of the polygons' corners and values.
+        let view = |v: &SVtx| [(v.x - 248.0) / v.iz / f, (192.0 - v.y) / v.iz / f, 1.0 / v.iz];
+        let corner = |x: [f32; 3]| b.iter().any(|c| (0..3).all(|k| (c[k] - x[k]).abs() < 1e-3));
+        assert!(lit[1].points.iter().any(|v| !corner(view(v))), "clipped");
+        for (p, (q, corners)) in lit.iter().zip([(a, sh.corners[0]), (b, sh.corners[1])]) {
+            assert_eq!(p.lit.len(), p.points.len());
+            assert_eq!(
+                format!("{:?}", Poly { lit: Vec::new(), ..p.clone() }),
+                format!("{:?}", plain[lit.iter().position(|x| std::ptr::eq(x, p)).unwrap()])
+            );
+            for (v, l) in p.points.iter().zip(&p.lit) {
+                let x = view(v);
+                // On which edge of the original quad, and where.
+                let (k, t) = (0..4)
+                    .map(|k| {
+                        let (e0, e1) = (q[k], q[(k + 1) % 4]);
+                        let d = [0, 1, 2].map(|c| e1[c] - e0[c]);
+                        let t = (0..3).map(|c| (x[c] - e0[c]) * d[c]).sum::<f32>()
+                            / (0..3).map(|c| d[c] * d[c]).sum::<f32>();
+                        let off = (0..3).map(|c| (e0[c] + d[c] * t - x[c]).powi(2)).sum::<f32>();
+                        (off, k, t)
+                    })
+                    .min_by(|a, b| a.0.total_cmp(&b.0))
+                    .map(|(_, k, t)| (k, t.clamp(0.0, 1.0)))
+                    .unwrap();
+                let want = corners[k][0] + (corners[(k + 1) % 4][0] - corners[k][0]) * t;
+                assert!((l[0] - want).abs() < 1e-2, "{l:?} vs {want} on edge {k} at {t}");
+            }
+        }
+        // The corners at the shared edge are the mean, the others their own.
+        assert!((sh.corners[0][1][0] - 120.5).abs() < 1e-3 && sh.corners[0][0][0] == 100.5);
+        // Colour tables that turn the colour red from level 30 up (a
+        // game's palette by level, topskatr's boards): interpolating the
+        // luma would change the hue, so each polygon's lumas are clamped
+        // to the levels of its own hue. A ramp of one hue (any curve)
+        // leaves them all.
+        let mut red = palette.clone();
+        for ch in 1..3 {
+            for lum in 30..64 {
+                red[0x1_0000 + ch * 0x4000 + lum * 2] = 0;
+            }
+        }
+        let sh = light::shade(&s1, &opts(40));
+        let (p, _) = build_with(&s1, &motion_sources(&red), &BuildIn { lit: Some(&sh), ..Default::default() });
+        // The first quad (lumas 100 to 120, levels 25 to 30) would cross
+        // into red: kept below level 30; the second (120 to 140) is red
+        // throughout.
+        assert!(!p[0].lit.is_empty() && !p[1].lit.is_empty());
+        assert_eq!((p[0].lit_range, p[1].lit_range), ([0, 119], [120, 255]));
+        let v = View::native();
+        let (flat_red, _) = draw_view(&mut plain.clone(), &motion_sources(&red), &v);
+        let (lit_red, _) = draw_view(&mut p.clone(), &motion_sources(&red), &v);
+        assert!(flat_red != lit_red, "still shaded");
+        assert!(
+            flat_red.chunks(3).zip(lit_red.chunks(3)).all(|(a, b)| same_hue([a[0], a[1], a[2]], [b[0], b[1], b[2]])),
+            "no pixel changes hue"
+        );
+        let mut curve = palette.clone();
+        for ch in 0..3 {
+            for lum in 0..64 {
+                curve[0x1_0000 + ch * 0x4000 + lum * 2] = ((lum * lum) / 16 + 1) as u8;
+            }
+        }
+        let (p, _) = build_with(&s1, &motion_sources(&curve), &BuildIn { lit: Some(&sh), ..Default::default() });
+        assert!(p.iter().all(|p| !p.lit.is_empty() && p.lit_range == [0, 255]), "a curve of one hue: lit");
+        assert!(same_hue([255, 255, 255], [120, 121, 119]) && !same_hue([255, 255, 255], [255, 0, 0]));
+        assert!(same_hue([10, 0, 0], [0, 20, 0]), "near black has no hue");
+        // Shadows (flat black at their luma) get none.
+        let black = vec![0u8; 0x1_c000];
+        let sh = light::shade(&s1, &opts(40));
+        let (dark, _) = build_with(&s1, &motion_sources(&black), &BuildIn { lit: Some(&sh), ..Default::default() });
+        assert!(dark.iter().all(|p| p.shadow && p.lit.is_empty()));
+        // Every corner at the polygon's own luma: the flat picture.
+        let own: Vec<Poly> = plain
+            .iter()
+            .map(|p| Poly { lit: vec![[p.luma as f32 + 0.5, 0.0, 0.0, 0.0]; p.points.len()], ..p.clone() })
+            .collect();
+        assert_eq!(draw_view(&mut own.clone(), &src, &v), draw_view(&mut plain.clone(), &src, &v));
+        // And with the bend lit, the picture changes.
+        assert!(draw_view(&mut lit.clone(), &src, &v) != draw_view(&mut plain.clone(), &src, &v));
+    }
+
+    /// Per-pixel lighting (`Poly::pixel`): with every corner's normal the
+    /// face's own, the flat picture exactly; with normals turning across
+    /// the quad, a highlight between the corners that no interpolation of
+    /// their lumas gives; truncation as `light::quantise`; the hue clamp.
+    #[test]
+    fn per_pixel_lighting_and_rounding() {
+        use crate::light::{test_stream, Lamp, PixelLight};
+        let q = [[-0.4f32, -0.3, 2.0], [0.4, -0.3, 2.0], [0.4, 0.3, 2.0], [-0.4, 0.3, 2.0]];
+        let f = 495.0;
+        let (s, _) = test_stream::stream(&[vec![test_stream::tpoly(&q.map(|p| [p[0] * f, p[1] * f, p[2]]), 100)]]);
+        let mut palette = vec![0u8; 0x1_c000];
+        for ch in 0..3 {
+            for lum in 0..64 {
+                palette[0x1_0000 + ch * 0x4000 + lum * 2] = (lum * 4) as u8;
+            }
+        }
+        let src = motion_sources(&palette);
+        let plain = build(&s, &src);
+        assert_eq!(plain.len(), 1);
+        // Light along the view axis, a material with a sharp highlight.
+        let lamp = Lamp {
+            l: [0.0, 0.0, 1.0],
+            ambient: 20.0,
+            diffuse: 60.0,
+            spec_scale: 150.0,
+            squarings: 4,
+            front: true,
+            base: crate::light::Base::D,
+        };
+        let n0 = [0.0f32, 0.0, 1.0];
+        let own = lamp.eval(n0);
+        let pl = PixelLight { lamp, offset: 0.0 };
+        let with = |normals: [[f32; 3]; 4], pl: PixelLight, range: [u8; 2]| {
+            let mut p = plain[0].clone();
+            p.luma = crate::light::quantise(own);
+            p.lit = normals.iter().map(|n| [crate::light::clamp_corner(pl.luma(*n)), n[0], n[1], n[2]]).collect();
+            p.pixel = Some(pl);
+            p.lit_range = range;
+            p
+        };
+        let v = View::native();
+        let mut flat = plain[0].clone();
+        flat.luma = crate::light::quantise(own);
+        let (want, _) = draw_view(&mut [flat.clone()], &src, &v);
+        let (got, _) = draw_view(&mut [with([n0; 4], pl, [0, 255])], &src, &v);
+        assert_eq!(got, want, "the face's own normal everywhere: flat");
+        // Corner normals tilted 30 degrees outward: the centre faces the
+        // light, the corners don't.
+        let tilt = |x: f32, y: f32| {
+            let n = [x * 0.5, y * 0.5, 0.75f32.sqrt()];
+            let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            n.map(|c| c / l)
+        };
+        let normals = [tilt(-1.0, -1.0), tilt(1.0, -1.0), tilt(1.0, 1.0), tilt(-1.0, 1.0)];
+        let (got, _) = draw_view(&mut [with(normals, pl, [0, 255])], &src, &v);
+        let at = |img: &[u8], x: usize, y: usize| img[(y * v.width + x) * 3];
+        let corner = crate::light::quantise(pl.luma(normals[0]));
+        // The centre: the normals' mean is the face's (the highlight's peak).
+        assert!(at(&got, 248, 192) + 8 >= (crate::light::quantise(own) >> 2) as u8 * 4);
+        assert!(corner + 40 < crate::light::quantise(own), "{corner} vs {own}");
+        // Brightest at the centre, darker toward every corner.
+        assert!(
+            at(&got, 248, 192) > at(&got, 248 - 60, 192 - 45)
+                && at(&got, 248 - 60, 192 - 45) > at(&got, 248 - 95, 192 - 70)
+        );
+        // Clamped into the lumas that keep the hue.
+        let (low, _) = draw_view(&mut [with(normals, pl, [0, 60])], &src, &v);
+        assert!(low.chunks(3).all(|c| c[0] <= 60));
+        assert!(pixel_luma(&pl, 77.0, [0.0; 3]) == 77.0, "no normal: the interpolated luma");
+    }
+
+    /// Finer levels (`fine_level`): the columns around the level less half
+    /// a column, so column k alone at k + 0.5 and the mean over a gradient
+    /// the game's; never outside the levels of the polygon's luma range;
+    /// textured by the luma table's value.
+    #[test]
+    fn fine_levels_blend_adjacent_columns() {
+        let all = [0u8, 255];
+        assert_eq!(fine_level(None, 2.0, all), (0, 1, 0.0));
+        assert_eq!(fine_level(None, 6.0, all), (1, 2, 0.0));
+        assert_eq!(fine_level(None, 4.0, all), (0, 1, 0.5));
+        assert_eq!(fine_level(None, 0.0, all), (0, 1, 0.0), "clamped at column 0");
+        assert_eq!(fine_level(None, 255.9, all), (63, 63, 0.0), "clamped at column 63");
+        assert_eq!(fine_level(None, f32::NAN, all), (0, 1, 0.0));
+        // The range of a polygon whose colour changes hue above level 29.
+        assert_eq!(fine_level(None, 200.0, [0, 119]), (29, 29, 0.0));
+        assert_eq!(fine_level(None, 20.0, [120, 255]), (30, 31, 0.0));
+        // Textured: level = value * luma / 256.
+        assert_eq!(fine_level(Some(128), 100.0, all), (49, 50, 0.5));
+        assert_eq!(fine_level(Some(0), 100.0, all), (0, 0, 0.0));
+        // Over a gradient the mean column is the game's (ends aside).
+        let (mut game, mut fine, mut n) = (0f64, 0f64, 0);
+        for i in 0..24000 {
+            let l = 8.0 + i as f32 * 0.01;
+            let (k, _, f) = fine_level(None, l, all);
+            game += (crate::light::quantise(l) >> 2) as f64;
+            fine += k as f64 + f as f64;
+            n += 1;
+        }
+        assert!(((fine - game) / n as f64).abs() < 0.01, "{} vs {}", fine / n as f64, game / n as f64);
+        // Both columns within the range's levels, adjacent, weight in 0..1.
+        let mut seed = 0x2468_ace1u32;
+        let mut next = |m: u32| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) % m
+        };
+        for _ in 0..20000 {
+            let (a, b) = (next(256), next(256));
+            let range = [a.min(b) as u8, a.max(b) as u8];
+            let table = if next(2) == 0 { None } else { Some(next(256)) };
+            let l = next(300_000) as f32 / 1000.0 - 20.0;
+            let level = |l: u8| match table {
+                Some(v) => (v * l as u32 / 256).min(63),
+                None => l as u32 >> 2,
+            };
+            let (k, k1, f) = fine_level(table, l, range);
+            assert!(level(range[0]) <= k && k1 <= level(range[1]), "{table:?} {l} {range:?}: {k} {k1}");
+            assert!(k1 == k || k1 == k + 1);
+            assert!((0.0..1.0).contains(&f) && (k1 > k || f == 0.0), "{f}");
+        }
+    }
+
+    /// A lit polygon with finer levels: each pixel between the two columns
+    /// around the game's level (a column's step at most from it), more
+    /// distinct colours than the game's levels give, nothing for a polygon
+    /// that isn't lit, and no hue change where the tables turn red.
+    #[test]
+    fn fine_levels_draw_between_columns() {
+        use crate::light::test_stream;
+        let q = [[-0.4f32, -0.3, 2.0], [0.4, -0.3, 2.0], [0.4, 0.3, 2.0], [-0.4, 0.3, 2.0]];
+        let f = 495.0;
+        let (s, _) = test_stream::stream(&[vec![test_stream::tpoly(&q.map(|p| [p[0] * f, p[1] * f, p[2]]), 100)]]);
+        let mut palette = vec![0u8; 0x1_c000];
+        palette[0x1_0000..].fill(1);
+        for ch in 0..3 {
+            for lum in 0..64 {
+                palette[0x1_0000 + ch * 0x4000 + lum * 2] = (lum * 4) as u8;
+            }
+        }
+        let src = motion_sources(&palette);
+        let plain = build(&s, &src);
+        let lit = |fine: bool, range: [u8; 2]| {
+            let mut p = plain[0].clone();
+            p.lit = [40.0f32, 200.0, 200.0, 40.0].iter().map(|&l| [l, 0.0, 0.0, 0.0]).collect();
+            p.lit_range = range;
+            p.fine = fine;
+            p
+        };
+        let v = View::native();
+        let (levels, cov) = draw_view(&mut [lit(false, [0, 255])], &src, &v);
+        let (fine, _) = draw_view(&mut [lit(true, [0, 255])], &src, &v);
+        let mut shown = (std::collections::HashSet::new(), std::collections::HashSet::new());
+        for i in 0..cov.len() {
+            if !cov[i] {
+                continue;
+            }
+            let (a, b) = (levels[i * 3], fine[i * 3]);
+            assert!(a % 4 == 0 && a.abs_diff(b) <= 4, "pixel {i}: levels {a}, fine {b}");
+            shown.0.insert(a);
+            shown.1.insert(b);
+        }
+        assert!(shown.1.len() > 3 * shown.0.len(), "{} against {}", shown.1.len(), shown.0.len());
+        // Not lit: `fine` changes nothing.
+        let unlit = Poly { fine: true, ..plain[0].clone() };
+        assert_eq!(draw_view(&mut [unlit], &src, &v), draw_view(&mut plain.clone(), &src, &v));
+        // A table that turns red from level 30 up, the polygon clamped below.
+        let mut red = palette.clone();
+        for ch in 1..3 {
+            for lum in 30..64 {
+                red[0x1_0000 + ch * 0x4000 + lum * 2] = 0;
+            }
+        }
+        let rsrc = motion_sources(&red);
+        let (flat, _) = draw_view(&mut plain.clone(), &rsrc, &v);
+        let (fine, _) = draw_view(&mut [lit(true, [0, 119])], &rsrc, &v);
+        assert!(flat.chunks(3).zip(fine.chunks(3)).all(|(a, b)| same_hue([a[0], a[1], a[2]], [b[0], b[1], b[2]])));
+        assert!(fine.chunks(3).all(|c| c[0] <= 29 * 4), "never past the range's top column");
+    }
+
+    /// Finer levels next to pure black (`fine_columns`): where the game's
+    /// column is black the pixel is black, a pair with a black column takes
+    /// the other alone, and other pairs blend as before. Drawn, black ink
+    /// stays where the game's levels put it and nothing lies between black
+    /// and the first lit column (no dark fringe).
+    #[test]
+    fn fine_levels_keep_pure_black() {
+        // Column 0 black, then (70, 65, 60) rising by 3 a column (fvipers'
+        // ink tables step like this); colour component 0 only.
+        let mut palette = vec![0u8; 0x1_c000];
+        for ch in 0..3 {
+            for lum in 1..64 {
+                palette[0x1_0000 + ch * 0x4000 + lum * 2] = (70 - 5 * ch + 3 * (lum - 1)) as u8;
+            }
+        }
+        let src = motion_sources(&palette);
+        let c = [0u32; 3];
+        assert_eq!(fine_columns(&src, c, 0, (0, 1, 0.4)), (0, 0, 0.0), "the game's column black");
+        assert_eq!(fine_columns(&src, c, 1, (0, 1, 0.4)), (1, 1, 0.0), "pair with black: the other");
+        assert_eq!(fine_columns(&src, c, 1, (1, 2, 0.4)), (1, 2, 0.4), "no black: unchanged");
+        // A table black at the top as well (not seen in games).
+        let mut top = palette.clone();
+        for ch in 0..3 {
+            top[0x1_0000 + ch * 0x4000 + 9 * 2] = 0;
+        }
+        assert_eq!(fine_columns(&motion_sources(&top), c, 8, (8, 9, 0.7)), (8, 8, 0.0));
+        // Textured, through the luma table's value: the game's column is
+        // the texel's, black where it is (dark texel), whatever the blend.
+        let (game, k) = (40 * 20 / 256u32, fine_level(Some(40), 20.7, [0, 255]));
+        assert_eq!((game, k.0), (3, 2));
+        assert_eq!(fine_columns(&src, c, game, k), k);
+        let (game, k) = (10 * 20 / 256u32, fine_level(Some(10), 20.7, [0, 255]));
+        assert_eq!((game, fine_columns(&src, c, game, k)), (0, (0, 0, 0.0)));
+
+        // Drawn: a polygon lit from luma 0 to 30 (columns 0 to 7).
+        use crate::light::test_stream;
+        let q = [[-0.4f32, -0.3, 2.0], [0.4, -0.3, 2.0], [0.4, 0.3, 2.0], [-0.4, 0.3, 2.0]];
+        let f = 495.0;
+        let (s, _) = test_stream::stream(&[vec![test_stream::tpoly(&q.map(|p| [p[0] * f, p[1] * f, p[2]]), 100)]]);
+        let plain = build(&s, &src);
+        let lit = |fine: bool| {
+            let mut p = plain[0].clone();
+            p.colour = c;
+            p.lit = [0.2f32, 30.0, 30.0, 0.2].iter().map(|&l| [l, 0.0, 0.0, 0.0]).collect();
+            p.lit_range = [0, 255];
+            p.fine = fine;
+            p
+        };
+        let v = View::native();
+        let (levels, cov) = draw_view(&mut [lit(false)], &src, &v);
+        let (fine, _) = draw_view(&mut [lit(true)], &src, &v);
+        let (mut black, mut blended) = (0, 0);
+        for i in (0..cov.len()).filter(|&i| cov[i]) {
+            let (a, b) = (&levels[i * 3..i * 3 + 3], &fine[i * 3..i * 3 + 3]);
+            assert_eq!(a == [0, 0, 0], b == [0, 0, 0], "pixel {i}: levels {a:?}, fine {b:?}");
+            if b == [0, 0, 0] {
+                black += 1;
+            } else {
+                assert!(b[0] >= 70 && b[1] >= 65 && b[2] >= 60, "pixel {i}: fine {b:?} below the first lit column");
+            }
+            blended += (b[0] % 3 != 70 % 3) as usize;
+        }
+        assert!(black > 100 && blended > 100, "{black} black, {blended} blended");
+    }
+
+    /// `place` maps the previous positions as it maps the points.
+    #[test]
+    fn placed_motion_is_in_output_pixels() {
+        let palette = vec![0u8; 0x1_c000];
+        let src = motion_sources(&palette);
+        let s1 = motion_stream(248, 192, &QUADS[..1], |p| p);
+        let s0 = motion_stream(248, 192, &QUADS[..1], moved);
+        let m = MotionIn { s0: &s0, s1: &s1, tp: 0.0, valid: &[], prev_centres: &[] };
+        let mut polys = build_motion(&s1, &src, Some(&m)).0;
+        let screen: Vec<(f32, f32)> = polys[0].prev.iter().map(|h| (h[0] / h[2], h[1] / h[2])).collect();
+        let mut view = View::new(768, 16.0 / 9.0, crate::video::Hud::Center);
+        view.hud_windows = 0;
+        assert!(view.pad > 0.0);
+        let placed = place(&mut polys, &view);
+        for (h, &(x, y)) in placed[0].prev.iter().zip(&screen) {
+            let (ox, oy) = view.to_output(x, y);
+            assert!((h[0] / h[2] - ox).abs() < 1e-3 && (h[1] / h[2] - oy).abs() < 1e-3);
+        }
+        assert_eq!(placed[0].prev.len(), placed[0].points.len());
+        // Without motion, nothing.
+        assert!(place(&mut build(&s1, &src), &view)[0].prev.is_empty());
     }
 }

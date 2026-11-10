@@ -34,6 +34,14 @@ loose in `rom/srallyc/`): attract, car and course select, and races.
   §9 has the script); barriers slow and deflect it, a hard turn into one
   spins it round ("wrong way"), and in the air it falls at 10 m/s². The
   sound board boots from `epr-17890.30` and plays.
+- *Confirmed (captures, 2026-11-11):* the race **fades in from white
+  through the colour translation tables** (`0x1810000`), not the polygons'
+  luma: in a coin-start capture, 6061 of the 6144 entries the renderer
+  reads (3 channels x 32 components x 64 lumas) differ at frame 2700 from
+  every other captured frame, which all agree. Texture keys do not include
+  those tables, so the race textures were dumped in the fade, near white,
+  until the dump kept the most drawn look (`docs/texture-packs.md`,
+  "Looks").
 - *Confirmed (by the pictures):* the 2A polygon ROM, texture ROM and
   texture RAM layouts that make this draw: see `docs/hw/model2a.md`, "Findings", and
   its §5, §7. The pictures are the evidence
@@ -122,14 +130,15 @@ loose in `rom/srallyc/`): attract, car and course select, and races.
   results; no drawing glitch was seen. *Not done:* the
   later stages, the second and third laps of a longer course and the
   finish of a whole championship, which a person has to steer.
-- *Confirmed (by running it):* the audio of a race (`--audio`) averages
-  -38 dBFS RMS (peak -21) with no gain: the engine and the music play
-  (the boot is silent for 15 s, the attract and race hold -37 to -36
-  dBFS), quieter than the games at 0 dB, so the manifest adds 6 dB
-  (like `overrev` and `sgt24h`), about -32 RMS. Those levels were
-  measured with half the samples missing (next item); with all four
-  sample chips a race mixes at about -23 dBFS RMS (peaks about -7,
-  unclipped), so the 6 dB wants judging again by ear.
+- *Confirmed (by running it):* the audio of a race (`--audio`, the
+  player's mix) was measured at -38 dBFS RMS (peak -21) with no gain while
+  half the samples were missing (next item), so the manifest added 6 dB.
+  With all four sample chips, a race at +6 dB mixes at -28 dBFS RMS, about
+  -26 LUFS, peaks -10 to -11 dBFS, no clipping; the other games' gameplay
+  sits at -16 to -28 LUFS (median about -21.5, measured the same way,
+  coin-start runs), so the manifest now adds **10 dB**: about -22 LUFS,
+  peaks about -7 dBFS. *Pending a listening check* (the 6 dB was tuned on
+  the broken audio; `volume_db: 6.0` is the one to go back to).
 - *Confirmed (by the sound program's own table, the chips' contents and
   running it; by ear, 2026-11-10):* **the samples are four 2 MB chips,
   `.31 .32 .36 .37`, back to back** at the sound 68000's
@@ -176,6 +185,27 @@ loose in `rom/srallyc/`): attract, car and course select, and races.
     program is all zeros, no EFSDL), only 8-bit PCM voices with loop
     modes 0 and 1 streamed through 8 KB buffers, which refill in time
     (0.07% of buffer reads overrun).
+- *Confirmed (by running it, 2026-11-11; the cause is a sound chip
+  fault, not this game's data):* **the co-driver's corner calls
+  stuttered** (reported by ear) because the SCSP model restarted
+  finished one-shot slots. A call is one table sample (e.g. entry 157,
+  `0xC3DA24`, 12,806 bytes, 0.58 s at 22.05 kHz) streamed through an 8 KB
+  buffer: LPCTL 1 and LEA `0x1FFF` while it streams, then LPCTL 0 with LEA
+  at the sample's end in the buffer for the last part. The driver leaves
+  KYONB set when the call ends and keys the slot off about 0.5-1 s later;
+  in between, any other slot's KYONEX made the model key it on again, so
+  it replayed from the buffer's start to that LEA: the call's last
+  stretch (0.21 s for entry 157, 51 ms for entry 151, 2 to 10 times).
+  Over a 108 s race with three scripted turns, all 20 complete calls
+  were replayed (94 restarts); with key-on as an edge of the latched key
+  (`docs/hw/sound.md` §2.1) there are none, and a soloed call's slot
+  matches the ROM sample sample for sample to its end and then stays
+  silent. Reproduce: `make run GAME=srallyc STEPS=900000000
+  INPUT=coin-start,gas=0xff@2300-6000,wheel=0xa0@3085-3165,wheel=0x70@3360-3420,wheel=0xb0@3590-3640`,
+  then `remodel --game srallyc sound-render` with `REMODEL_SOUND_TRACE=1`:
+  the key trace lists each restart as a second `on` for a slot with no
+  `off` between. *Not confirmed:* which syllable a listener hears
+  repeated (the restarts replay each call's end), and a check by ear.
 - *Speed (by running it):* **the game's code runs from work RAM**, not
   the program ROM: of the 14,584 distinct instructions a coin-start run
   executes, 14,502 are at `0x5A0000-0x5FCB3C` (put there at boot by the
@@ -217,3 +247,16 @@ loose in `rom/srallyc/`): attract, car and course select, and races.
   stages and championship; a browser build tried with the chips loose
   (`remodel web-index` lists it).
 
+## Lighting (smooth shading's side channel)
+
+Measured with `remodel --geo native --light --input coin-start run 900000000` (6212 frames; `make lighting-capture` runs the same), reModel's smooth-shading side channel (docs/hw/geometrizer.md, "Lighting side channel"):
+
+- Self-check: of 16,786,826 polygon records, the flat luma recomputed from the side channel is the stream's for 16,786,826 (100.00%), one level off for 0 and further off for 0.
+- specular on in 100.00% of object blocks, 71.42% of polygons lit with a specular term; normals computed from the vertices in 0.00% of blocks; zero (unlit) normals on 15.89% of polygons.
+- models drawn from polygon RAM in 27,173 blocks (1,393,987 polygons, 3.86% of blocks); no direct data.
+- the light vector changes within a frame in 1653 of 6212 frames (up to 2 vectors a frame); lighting entries not changed within a frame.
+- True focal length over the window width: median 0.625 (range 0.258-1.032); the stream-only layer guesses 1.0.
+- The list scan's block facts equal the native geometrizer's on 703,322 blocks, differ on 0.
+- The exact match is reModel's 2A model against itself (`Program::Fixed`,
+  the 2C shared program's maths): it confirms the side channel, not the 2A
+  hardware's lighting, which stays *unconfirmed*.

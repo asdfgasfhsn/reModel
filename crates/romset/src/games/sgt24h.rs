@@ -33,6 +33,7 @@ pub static SGT24H: Game = Game {
     protection: None,
     dropouts: &[],
     texture_ram_mirrored: false,
+    shading: crate::Shading::DEFAULT,
     packed: &[],
     // Jaleco's driver plays its voices at DISDL 3 as on overrev: a race
     // averages about -38 dBFS RMS, as overrev's does (docs/hw/sound.md §6).

@@ -10,6 +10,7 @@ name = "gpu"
 
 [dependencies]
 remodel-model2.workspace = true
+remodel-romset.workspace = true
 wgpu = "30.0.1"
 pollster = "1.0.1"
 

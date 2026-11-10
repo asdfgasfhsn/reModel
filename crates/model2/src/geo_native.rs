@@ -20,6 +20,7 @@
 //! and handed back ([`Native::export`]).
 
 use crate::geo::{GeoExt, ListDma, LIST_END};
+use crate::light::{Base, Block, Material};
 use crate::smooth::Kind;
 use adsp2106x::float::{self, Flags, Mode, Select, ToInt};
 use mb86235::cpu::External;
@@ -187,6 +188,10 @@ pub struct Io<'a, 'b> {
     /// Smooth motion's hook (`crate::smooth`): the transforms a real frame
     /// sets are noted, an in-between's replaced. None: nothing happens.
     pub tap: Option<&'a mut crate::smooth::Tap>,
+    /// Smooth shading's side channel (`crate::light`): each object block's
+    /// facts and each polygon's normal and lighting, as the program used
+    /// them. None: nothing is recorded (and nothing computed for it).
+    pub light: Option<&'a mut crate::light::Tap>,
 }
 
 impl Io<'_, '_> {
@@ -202,6 +207,16 @@ impl Io<'_, '_> {
     pub(crate) fn object(&mut self, oba: u32) {
         if let Some(t) = self.tap.as_deref_mut() {
             t.object(oba);
+            self.poly.block();
+        }
+    }
+    /// A block of direct data (fn 2), which a replay notes as having no
+    /// known motion.
+    #[inline]
+    pub(crate) fn direct(&mut self) {
+        if let Some(t) = self.tap.as_deref_mut() {
+            t.direct();
+            self.poly.block();
         }
     }
     #[inline]
@@ -381,6 +396,16 @@ fn specular_power(mut s: u32, control: u32) -> u32 {
         s = mul(s, s);
     }
     s
+}
+
+/// For the side channel: how many times [`specular_power`] squares the
+/// term for `control` ([`Material::NO_SPEC`]: no term; control 0 makes it
+/// zero).
+fn light_squarings(specular: bool, control: u32) -> u32 {
+    if !specular || control == 0 {
+        return Material::NO_SPEC;
+    }
+    (control >> 1 != 0) as u32 + (control >> 2 != 0) as u32 + (sat_add(control, 1) >> 3 != 0) as u32
 }
 
 impl Native {
@@ -773,6 +798,11 @@ impl Native {
     /// fn 2, direct data: polygons given in view space, passed through
     /// with the raster command of object data.
     fn direct(&mut self, io: &mut Io, cmd: u32) {
+        io.direct();
+        if let Some(t) = io.light.as_deref_mut() {
+            let l = [self.dm[LIGHT], self.dm[LIGHT + 1], self.dm[LIGHT + 2]];
+            t.block(0, Block::DIRECT | Block::TRUNCATE, self.dm[FOCUS], self.dm[FOCUS + 1], l);
+        }
         let tpa = io.rd();
         let tha = io.rd();
         io.emit(cmd.wrapping_sub(1));
@@ -853,6 +883,17 @@ impl Native {
         };
         let polygons = if obc == 0 { MAX_POLYGONS } else { obc as u64 };
         let specular = mode & 1 != 0;
+        if let Some(t) = io.light.as_deref_mut() {
+            // Back faces lit, arithmetic rounding toward zero.
+            let mut flags = Block::TRUNCATE;
+            if mode & 2 != 0 {
+                flags |= Block::COMPUTED;
+            }
+            if specular {
+                flags |= Block::SPECULAR;
+            }
+            t.block(oba, flags, c.fx, c.fy, c.l);
+        }
         let p0 = c.xform(self.vertex(io, src, 0));
         if self.program.y0_by_fx() && mode & 2 != 0 {
             Ctx { fy: c.fx, ..c }.emit(io, p0);
@@ -899,6 +940,15 @@ impl Native {
             let dotp = dot(n, pa);
             let back = if lt(pass_flags(dotp)) { 0x100 } else { 0 };
             let ([diffuse, ambient, control, scale], coef) = self.params(attr);
+            if let Some(t) = io.light.as_deref_mut() {
+                let sq = light_squarings(specular, control);
+                t.face(n, false, back == 0, Base::Dotl, attr, [ambient, diffuse, scale], sq);
+                // The diffuse factor follows the sign of n·L times n·P, not
+                // the facing: edge-on (n·P = ±0) it is |n·L|.
+                if ((dotl >> 31 != 0) == mul_neg(dotl, dotp).1) != (back == 0) {
+                    t.flip_last();
+                }
+            }
             let mut lum = add(mul(diffuse_term(dotl, dotp), diffuse), ambient);
             if specular {
                 let s = max(sub(mul(add(dotl, dotl), n[2]), c.l[2]), 0);
@@ -976,6 +1026,15 @@ impl Native {
             let (dotp, f) = add_flags(add(mul(n[0], e[0]), mul(n[1], e[1])), mul(n[2], e[2]));
             let back = if lt(f) { 0x100 } else { 0 };
             let ([diffuse, ambient, control, scale], coef) = self.params(attr);
+            if let Some(t) = io.light.as_deref_mut() {
+                let sq = light_squarings(specular, control);
+                t.face(n, false, back == 0, Base::Dotl, attr, [ambient, diffuse, scale], sq);
+                // The diffuse factor follows the sign of n·L times n·P, not
+                // the facing: edge-on (n·P = ±0) it is |n·L|.
+                if ((dotl >> 31 != 0) == mul_neg(dotl, dotp).1) != (back == 0) {
+                    t.flip_last();
+                }
+            }
             let mut lum = add(mul(diffuse_term(dotl, dotp), diffuse), ambient);
             if specular {
                 let s = max(sub(mul(n[2], add(dotl, dotl)), c.l[2]), 0);
@@ -1065,14 +1124,94 @@ mod tests {
         let (mut words, mut fed, mut out, mut latch) = (0, Vec::new(), Vec::new(), 0);
         let mut ram = vec![0; 0x1_0000];
         let mut list = ListDma::new(&buffer, &[], 0, &mut words, &mut fed);
-        let mut io =
-            Io { list: &mut list, poly: GeoExt::new(&mut ram, rom), latch: &mut latch, out: &mut out, tap: None };
+        let mut io = Io {
+            list: &mut list,
+            poly: GeoExt::new(&mut ram, rom),
+            latch: &mut latch,
+            out: &mut out,
+            tap: None,
+            light: None,
+        };
         n.run_frame(&mut io);
         out
     }
 
     fn cmd(fnc: u32) -> u32 {
         fnc << 23 | fnc << 8 | fnc
+    }
+
+    /// [`frame`] with the lighting side channel's tap.
+    fn frame_lit(n: &mut Native, list: &[u32], rom: &[u32]) -> (Vec<u32>, crate::light::Frame) {
+        let buffer: Vec<u8> =
+            list.iter().flat_map(|w| w.to_le_bytes()).chain(std::iter::repeat(0)).take(0x2_0000).collect();
+        let (mut words, mut fed, mut out, mut latch) = (0, Vec::new(), Vec::new(), 0);
+        let mut ram = vec![0; 0x1_0000];
+        let mut list = ListDma::new(&buffer, &[], 0, &mut words, &mut fed);
+        let mut tap = crate::light::Tap::new();
+        let mut io = Io {
+            list: &mut list,
+            poly: GeoExt::new(&mut ram, rom),
+            latch: &mut latch,
+            out: &mut out,
+            tap: None,
+            light: Some(&mut tap),
+        };
+        n.run_frame(&mut io);
+        (out, tap.finish(1))
+    }
+
+    /// The light hooks record each block's facts and each polygon's
+    /// normal, facing and lighting; the luma recomputed from them in IEEE
+    /// singles is the program's (within one level: it rounds toward zero)
+    /// for every polygon; the list scan finds the same block facts; the
+    /// stream is the same with the hooks on.
+    #[test]
+    fn light_hooks() {
+        use crate::light::{self, test_scene, Block, Face, ScanBoard, ScanProgram, ScanState, ScanVariant};
+        for mode in [0, 1, 2, 3] {
+            let boot = || {
+                let mut n = Native::new(Program::Shared2B, NO_CHECK_KEY);
+                assert!(frame(&mut n, &[cmd(0x0f)], &[]).is_empty());
+                n
+            };
+            let (list, rom) = (test_scene::list(mode), test_scene::rom(20));
+            let (out, side) = frame_lit(&mut boot(), &list, &rom);
+            assert_eq!(frame(&mut boot(), &list, &rom), out, "mode {mode}: the hooks only observe");
+            assert_eq!(side.blocks.len(), 3);
+            let (a, b, d) = (side.blocks[0], side.blocks[1], side.blocks[2]);
+            assert_eq!((a.oba, a.fx, a.fy, a.light), (0x80_0000, 500.0, 480.0, [0.3, -0.5, 0.81]));
+            assert_eq!(a.flags, Block::TRUNCATE | Block::HAS_FACES);
+            assert_eq!((a.count, b.first, b.count), (20, 20, 12));
+            assert_eq!(b.light, [-0.6, 0.2, 0.77]);
+            let computed = if mode & 2 != 0 { Block::COMPUTED } else { 0 };
+            let specular = if mode & 1 != 0 { Block::SPECULAR } else { 0 };
+            assert_eq!(b.flags, Block::TRUNCATE | Block::HAS_FACES | computed | specular);
+            assert_eq!((d.oba, d.flags, d.count), (0, Block::DIRECT | Block::TRUNCATE, 0));
+            let faces = &side.faces;
+            assert_eq!(faces[3].flags & (Face::ZERO | Face::NONE), Face::ZERO | Face::NONE, "a zero normal");
+            assert!(faces.iter().all(|f| f.base() == light::Base::Dotl));
+            assert_eq!((faces[1].entry(), faces[2].entry(), faces[22].entry()), (1, 2, 2));
+            assert_ne!(faces[2].mat, faces[22].mat, "entry 2 changed between the objects");
+            assert_eq!(side.facts().entry_changes, 1);
+            let chk = light::self_check(&out, &side);
+            let s = chk.stats;
+            assert_eq!((s.misaligned_frames, s.misaligned_blocks, s.mismatch), (0, 0, 0), "mode {mode}: {s:?}");
+            assert_eq!((s.l2, s.l1, s.l0, s.demoted), (2, 1, 0, 0));
+            // Computed normals: a polygon of no area has none (NaN).
+            let none = side.faces.iter().filter(|f| f.flags & (Face::NONE | Face::ZERO) == Face::NONE).count();
+            assert_eq!((s.compared() + s.skipped, s.skipped as usize), (32, none));
+            assert!(s.exact >= 28, "{s:?}");
+            // The scan's facts are the hooks'.
+            let p = ScanProgram { board: ScanBoard::B, variant: ScanVariant::Shared };
+            let scan = light::scan_list(&list, p, &mut ScanState::default()).unwrap();
+            let facts = |v: &[Block]| v.iter().map(|b| b.facts()).collect::<Vec<_>>();
+            assert_eq!(facts(&scan), facts(&side.blocks));
+            // A wrong light vector: the block is demoted, the other kept.
+            let mut bad = side.clone();
+            bad.blocks[0].light = [-0.3, 0.5, -0.81];
+            let s = light::self_check(&out, &bad).stats;
+            assert_eq!((s.l2, s.l1, s.demoted), (1, 2, 1), "{s:?}");
+        }
     }
 
     #[test]

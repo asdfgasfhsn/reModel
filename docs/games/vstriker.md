@@ -94,4 +94,35 @@ suffix), the clone `vstrikro`, which isn't supported.
   reads it; `docs/play.md`, "Run-ahead"):* moving the player (right from
   frame 3507, left from 3907 of a coin-start run) and shooting show in the
   first frame that reads them: input lag 0.
+- *Confirmed (`make temporal-check` on captured sequences, 2026-11-10):*
+  two things defeat smooth motion's pairing for motion vectors. The
+  players' bodies are pose models that change with the animation, and the
+  ball intro (from about frame 1044 of a coin-start run) draws a trail of
+  four balls, each copy a different model, that restarts every 8 frames
+  (each restart is a camera cut to the cut test). The plan pairs these
+  transforms across models; for in-betweens that is harmless, but frame
+  N's model posed with frame N-1's transform gave wrong motion vectors on
+  about 1% of 3D pixels (limbs, the front ball, up to 128 game pixels).
+  Transforms paired across models now give no motion data: 1.7% of 3D
+  pixels in a match, which temporal anti-aliasing draws nearer the plain
+  frame (`docs/enhancements.md`). Its crowd textures also keep a still
+  frame changing under temporal's jitter: 0.21 levels a frame in the
+  attract sequence (frames 470-549) and 0.34 in a match (3300-3419),
+  the one result over `temporal-check`'s 0.25 limit.
+- *Depth buffer (2026-11-11; captured coin-start frames drawn with it off
+  and on at 1440x1080 and 1920x1080 (`make depth-check`), compared with
+  the build before the 2026-11-10 rules (`docs/enhancements.md`, "Depth
+  buffer")):* 10 of 21 frames differ, by at most 0.007%; the 2026-11-10
+  rules brought back the edges of the shirt print of the close-up player
+  (frame 5400).
 
+## Lighting (smooth shading's side channel)
+
+Measured with `remodel --geo native --light --input coin-start run 900000000` (6212 frames; `make lighting-capture` runs the same), reModel's smooth-shading side channel (docs/hw/geometrizer.md, "Lighting side channel"):
+
+- Self-check: of 25,234,925 polygon records, the flat luma recomputed from the side channel is the stream's for 25,234,849 (100.00%), one level off for 76 and further off for 0 (the SHARC rounds toward zero).
+- no specular lighting; normals computed from the vertices in 0.00% of blocks; zero (unlit) normals on 13.85% of polygons.
+- no models drawn from polygon RAM; no direct data.
+- the light vector changes within a frame in 4749 of 6212 frames (up to 2 vectors a frame); lighting entries not changed within a frame.
+- True focal length over the window width: median 2.018 (range 1.859-2.430); the stream-only layer guesses 1.0.
+- The list scan's block facts equal the native geometrizer's on 748,040 blocks, differ on 0.

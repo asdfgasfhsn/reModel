@@ -1,6 +1,8 @@
 mod depth_check;
 mod geo_check;
 mod gpu_check;
+mod light_report;
+mod lighting_check;
 mod music;
 mod pack_check;
 mod recomp_crates;
@@ -8,6 +10,8 @@ mod run_ahead;
 mod sharc;
 mod sound_render;
 mod soundtrack;
+mod temporal_check;
+mod temporal_probe;
 mod texpack;
 mod texpack_upscale;
 mod tgp2a;
@@ -34,12 +38,14 @@ options:
                        wider than 4:3 shows more of the 3D scene at the sides
   --hud center|edges   wide views: keep the HUD centred, or move each HUD
                        element to the nearest screen edge
-  --aa N               snapshots and gpu-check: anti-aliasing with N samples a
+  --aa N               snapshots and the GPU checks (gpu-check, depth-check,
+                       pack-check): anti-aliasing with N samples a
                        pixel (4, 8, ...; default off). The software renderer
                        supersamples (draws ceil(sqrt(N)) times larger in each
                        direction and averages); gpu-check turns on the GPU's
                        multisampling to match (4 or 8)
-  --depth              snapshots and gpu-check: a depth buffer from each
+  --depth              snapshots, gpu-check, pack-check, temporal-probe,
+                       temporal-check: a depth buffer from each
                        vertex's 1/z, per window, instead of drawing in the
                        game's order (model2::raster::depth_value; default off)
   --input SCRIPT       scripted inputs for `run`, by the game's input names
@@ -61,6 +67,11 @@ options:
   --capture DIR        at each `run` snapshot, save what the renderers read
                        (raster stream, video RAMs) to DIR/FRAME/, for
                        `gpu-check`
+  --capture-seq DIR    `run` with --geo native: save consecutive frames
+                       (--seq FROM,COUNT: COUNT frames from FROM, default
+                       0,300) with their motion data to DIR, as a sequence
+                       for `temporal-check` (and `gpu-check`); the run stops
+                       after the last
   --texture-pack DIR   draw snapshots and gpu-check with the replacement PNGs
                        in DIR (same names as a dump; any size); see
                        docs/texture-packs.md
@@ -70,6 +81,40 @@ options:
                        (trilinear), or mipmaps with up to N-times
                        anisotropic filtering (GPU only: software snapshots
                        draw it as mip)
+  --temporal off|taa|N temporal-probe: temporal anti-aliasing (taa) or
+                       upscaling from N% (50 to 99) for the GPU's 3D layer
+                       (gpu::Quality::temporal; snapshots are software and
+                       ignore it)
+  --stipple blend|keep with --temporal: checkerboard translucency as a 50%
+                       blend (default) or the pattern kept
+  --shading flat|vertex|pixel
+                       smooth shading (model2::light; docs/enhancements.md)
+                       for snapshots, gpu-check, depth-check, pack-check,
+                       temporal-probe and lighting-check: flat (default, the
+                       original), vertex (brightness interpolated from
+                       values at the corners: the game's formula with
+                       smoothed normals where the side channel allows, else
+                       means of the stream's lumas) or pixel (the game's
+                       formula per pixel where the side channel allows,
+                       else drawn as vertex)
+  --crease auto|N      the crease angle for --shading in degrees, 0 to 180
+                       (0: nothing smoothed; auto, the default: the game's)
+  --shading-fine on|off
+                       with --shading: blend the two colour columns around
+                       a lit pixel's brightness instead of the game's 64
+                       levels (no banding on large smooth surfaces; never
+                       outside the polygon's hue). Default off
+  --shading-balance on|off
+                       with --shading: one brightness offset per smooth
+                       surface keeps its mean the game's (default on); off
+                       leaves the formula at the smoothed normals alone, so
+                       bumpy surfaces come out brighter
+  --light              record smooth shading's side channel each frame (the
+                       native geometrizer's light hooks, or a scan of the
+                       list on the chip): snapshots shade with it, `run`
+                       reports its self-check over every frame, geo-check
+                       compares the list scan with the native hooks; on
+                       with --capture and --capture-seq (light.bin)
   --geo chip|native|check
                        the geometrizer: the uploaded program on its chip,
                        the 2B SHARC or 2C TGP (default; `sharc` and `tgp`
@@ -141,7 +186,8 @@ commands:
                        write DIR/games.json for its landing page
   rom-folder           the set folder in ROM with all the game's chips
                        loose: its own, or for a clone its parent's
-  gpu-check [DIR]      draw the frames captured with --capture in DIR
+  gpu-check [DIR]      draw the frames captured with --capture (or a
+                       --capture-seq sequence) in DIR
                        (default out/GAME/capture) with the software and GPU
                        rasterisers; time both and report how they differ
   depth-check [DIR] [OUT]
@@ -158,6 +204,39 @@ commands:
                        (docs/enhancements.md, Depth buffer); --against
                        DIR: compare the depth-on frames with an earlier
                        run's OUT, pictures in against-FRAME.png
+  temporal-check SEQ [OUT]
+                       check the motion data of a sequence from --capture-seq
+                       without the GPU: whether frame N's list posed with
+                       frame N-1's transforms gives frame N-1's positions,
+                       and per pixel whether the motion vectors point at the
+                       same surface in frame N-1's picture (software
+                       renderer); draws a supersampled reference and the
+                       baselines temporal anti-aliasing and upscaling are
+                       measured against (default view 1080p 16:9; --height,
+                       --aspect, --hud that one) every --every N frames
+                       (default 10), pictures and report.txt to OUT (default
+                       SEQ/check). With the GPU (unless --no-gpu): its
+                       velocity target against those vectors, and the plain,
+                       MSAA 4x, temporal (taa) and upscaled (67%, 50%)
+                       frames drawn through the sequence, scored against the
+                       reference with their frame-to-frame change, plus one
+                       frame repeated (--tune NAME=V,..: the resolve's
+                       constants, gpu::TemporalTuning::parse; --crop
+                       X,Y,W,H: enlarged crops of every column; --ref-cache
+                       DIR: keep the references between runs; --at F,..:
+                       sample those frames too; --gpu-only:
+                       skip the CPU checks; --inspect: the error above the
+                       plain frame's by the resolve's rule, with
+                       FRAME-COL-rules.png and -excess.png; --dump
+                       X,Y,W,H[,SCALE]: the resolve's decisions at those
+                       pixels on every frame, into OUT/dump.txt (TAA, or
+                       the 67/50 column); --depth before the
+                       command: the depth buffer in every column). Fails if the
+                       motion data misses its marks or temporal scores worse
+                       than the plain frame / naive upscale.
+                       --bench [N]: time the GPU instead (plain, MSAA 4x,
+                       taa, 67, 50) on the first N frames with 3D (default
+                       30), and the temporal targets' memory
   pack-check [DIR] [OUT]
                        with --texture-pack: draw the frames captured in DIR
                        (default out/GAME/capture) on the GPU with the pack
@@ -167,7 +246,61 @@ commands:
                        that many for the reference); write them to OUT
                        (default out/GAME/pack-check) as FRAME-off, -mip,
                        -aniso16, -swmip and -ref.png, and report how far each
-                       is from the reference and what they cost
+                       is from the reference and what they cost.
+                       --identity (no --texture-pack needed): a pack
+                       standing for the original textures (--texture-pack
+                       DIR, normally the dump itself; none: each frame's own
+                       textures) drawn on the GPU and in software, unfiltered
+                       and mipmapped, against no pack, to OUT (default
+                       out/GAME/pack-identity); fails beyond the tolerance
+  tile-check [DIR] [OUT]
+                       with --texture-pack: draw the frames captured in DIR
+                       (default out/GAME/capture) with the pack's tile images
+                       live on the GPU (default view 1080p 16:9, HUD at the
+                       edges; --height, --aspect, --hud) and with the
+                       software snapshots' tile replacement over the same 3D
+                       layer; write FRAME-gpu, -sw and -orig.png (no pack) to
+                       OUT (default out/GAME/tile-check) and report where
+                       they differ and what the 2D layers cost
+  lighting-check [DIR] [OUT]
+                       smooth shading (model2::light) on the frames
+                       captured in DIR (default out/GAME/capture): each
+                       drawn flat and vertex-shaded (--crease, default the
+                       game's) on the software and GPU renderers (default
+                       view 1440x1080; --height, --aspect, --hud that one);
+                       checks that crease 0 draws the flat frame exactly,
+                       that polygons left flat draw as flat, the brightness
+                       of lit polygons and software against GPU, and with
+                       a side channel (light.bin: `make lighting-capture`)
+                       its self-check and the L0 pass against it
+                       (--no-side: the stream alone); report.txt
+                       and pictures (flat | vertex | differences, false-
+                       colour layers) in OUT (default
+                       out/scratch/lighting/GAME). --probe X,Y@FRAME
+                       (repeatable): the polygons at that output pixel with
+                       their corner values; --every N: pictures of every
+                       Nth frame only; --bench [N]: GPU frame times flat
+                       and vertex at 1080p and 4K over N frames (default
+                       8). --shading pixel checks the per-pixel level;
+                       --shading-fine on adds finer levels (pictures
+                       -fine, -pixel-fine; K: against the game's levels);
+                       --shading-balance off checks without the brightness
+                       balance (pictures and reports -nobal; C report-only).
+                       Fails if an invariant does
+  temporal-probe [DIR] [OUT]
+                       the GPU's temporal path (--temporal, default taa;
+                       --stipple, --depth, --height, --aspect) on the frames
+                       captured in DIR (default out/GAME/capture): the first
+                       frame at 100% with the pattern kept must be the frame
+                       without, byte for byte; writes off, jittered, blend
+                       and keep pictures to OUT (default
+                       out/scratch/temporal-probe)
+  temporal-probe live FROM COUNT OUT
+                       run (with --input) to frame FROM with the native
+                       geometrizer and smooth motion's recording, then draw
+                       COUNT frames with temporal on: the picture, a picture
+                       of the motion vectors and the aux target's statistics
+                       per frame, in OUT
   geo-check [STEPS] [FROM]
                        run (with --input, --load-state) with the geometrizer
                        chip (SHARC or TGP) and the native geometrizer fed the
@@ -258,6 +391,14 @@ fn parse_num(s: &str) -> Option<u32> {
 fn main() -> ExitCode {
     recomp::register();
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        print!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    if args.is_empty() {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    }
     let mut opt = |flag: &str| -> Result<Option<String>, ()> {
         let Some(i) = args.iter().position(|a| a == flag) else { return Ok(None) };
         if i + 1 >= args.len() {
@@ -317,6 +458,60 @@ fn main() -> ExitCode {
         };
         let _ = TEX_FILTER.set(f);
     }
+    let (Ok(temporal), Ok(stipple)) = (opt("--temporal"), opt("--stipple")) else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    if let Some(t) = temporal {
+        let Some(t) = gpu::Quality::parse_temporal(&t) else {
+            eprintln!("error: --temporal wants off, taa or a render scale from 50 to 100");
+            return ExitCode::FAILURE;
+        };
+        let _ = TEMPORAL.set(t);
+    }
+    if let Some(s) = stipple {
+        let Some(s) = gpu::Stipple::parse(&s) else {
+            eprintln!("error: --stipple wants blend or keep");
+            return ExitCode::FAILURE;
+        };
+        let _ = STIPPLE.set(s);
+    }
+    let (Ok(shading), Ok(crease), Ok(fine), Ok(balance)) =
+        (opt("--shading"), opt("--crease"), opt("--shading-fine"), opt("--shading-balance"))
+    else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    let fine = match fine.as_deref() {
+        None | Some("off") => false,
+        Some("on") => true,
+        Some(_) => {
+            eprintln!("error: --shading-fine wants on or off");
+            return ExitCode::FAILURE;
+        }
+    };
+    let _ = SHADING_FINE.set(fine);
+    let balance = match balance.as_deref() {
+        None | Some("on") => true,
+        Some("off") => false,
+        Some(_) => {
+            eprintln!("error: --shading-balance wants on or off");
+            return ExitCode::FAILURE;
+        }
+    };
+    let _ = SHADING_BALANCE.set(balance);
+    if shading.is_some() || crease.is_some() {
+        let Some(s) = model2::light::Shading::parse(shading.as_deref().unwrap_or("vertex")) else {
+            eprintln!("error: --shading wants flat, vertex or pixel");
+            return ExitCode::FAILURE;
+        };
+        let Some(c) = model2::light::parse_crease(crease.as_deref().unwrap_or("auto")) else {
+            eprintln!("error: --crease wants auto or degrees from 0 to 180");
+            return ExitCode::FAILURE;
+        };
+        let _ = SHADING.set((if shading.is_some() { s } else { model2::light::Shading::Flat }, c));
+    }
+    let _ = GAME_ID.set(game_id.clone().unwrap_or_else(|| "topskatr".into()));
     if let Err(e) = texpack::configure(dump_textures, texture_pack) {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;
@@ -350,6 +545,21 @@ fn main() -> ExitCode {
     };
     if let Some(c) = capture {
         let _ = CAPTURE.set(PathBuf::from(c));
+    }
+    let (Ok(capture_seq), Ok(seq)) = (opt("--capture-seq"), opt("--seq")) else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    if let Some(c) = capture_seq {
+        let range = match seq.as_deref().map(|v| v.split_once(',').map(|(a, b)| (a.parse::<u64>(), b.parse::<u64>()))) {
+            None => (0, 300),
+            Some(Some((Ok(a), Ok(b)))) => (a, b),
+            _ => {
+                eprintln!("error: --seq wants FROM,COUNT (frames)");
+                return ExitCode::FAILURE;
+            }
+        };
+        let _ = CAPTURE_SEQ.set((PathBuf::from(c), range.0, range.1));
     }
     let Ok(geo_mode) = opt("--geo") else {
         eprint!("{USAGE}");
@@ -393,6 +603,10 @@ fn main() -> ExitCode {
         }
         let _ = SMOOTH.set(ts);
     }
+    if CAPTURE_SEQ.get().is_some() && GEO_MODE.get() != Some(&model2::geo::GeoMode::Native) {
+        eprintln!("error: --capture-seq needs --geo native (motion data comes from the native geometrizer)");
+        return ExitCode::FAILURE;
+    }
     let Ok(soundtrack) = opt("--soundtrack") else {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
@@ -407,6 +621,9 @@ fn main() -> ExitCode {
     let (interp, single_thread) = (flag("--interp"), flag("--single-thread"));
     if flag("--depth") {
         let _ = DEPTH.set(true);
+    }
+    if flag("--light") || CAPTURE.get().is_some() || CAPTURE_SEQ.get().is_some() {
+        let _ = LIGHT.set(true);
     }
     let Some(cmd) = args.first().cloned() else {
         eprint!("{USAGE}");
@@ -449,6 +666,108 @@ fn main() -> ExitCode {
         };
         return match r {
             Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if cmd == "temporal-check" {
+        let Some(root) = args.get(1).map(PathBuf::from) else {
+            eprint!("{USAGE}");
+            return ExitCode::FAILURE;
+        };
+        let every = match args.iter().position(|a| a == "--every") {
+            Some(i) => match args.get(i + 1).and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0) {
+                Some(n) => {
+                    args.drain(i..i + 2);
+                    n
+                }
+                None => {
+                    eprintln!("error: --every wants a number of frames");
+                    return ExitCode::FAILURE;
+                }
+            },
+            None => 10,
+        };
+        // Flags: --no-gpu, --gpu-only, --bench [FRAMES], --tune K=V,..., --crop X,Y,W,H
+        // (repeatable), --ref-cache DIR.
+        let mut take = |name: &str| -> Option<Option<String>> {
+            let i = args.iter().position(|a| a == name)?;
+            let v = args.get(i + 1).filter(|v| !v.starts_with("--")).cloned();
+            args.drain(i..i + 1 + v.is_some() as usize);
+            Some(v)
+        };
+        let no_gpu = take("--no-gpu").is_some();
+        let gpu_only = take("--gpu-only").is_some();
+        let bench = take("--bench");
+        let tune = take("--tune").flatten();
+        let ref_cache = take("--ref-cache").flatten().map(PathBuf::from);
+        let at: Vec<u64> =
+            take("--at").flatten().unwrap_or_default().split(',').filter_map(|x| x.parse().ok()).collect();
+        let inspect = take("--inspect").is_some();
+        let dump = match take("--dump")
+            .map(|d| d.unwrap_or_default().split(',').filter_map(|x| x.parse().ok()).collect::<Vec<usize>>())
+        {
+            None => None,
+            Some(v) => match v[..] {
+                [x, y, w, h] => Some((x, y, w, h, 100)),
+                [x, y, w, h, s @ (100 | 67 | 50)] => Some((x, y, w, h, s)),
+                _ => {
+                    eprintln!("error: --dump wants X,Y,W,H[,SCALE] in output pixels (scale 100, 67 or 50)");
+                    return ExitCode::FAILURE;
+                }
+            },
+        };
+        let mut crops = Vec::new();
+        while let Some(c) = take("--crop") {
+            let v: Vec<usize> = c.unwrap_or_default().split(',').filter_map(|x| x.parse().ok()).collect();
+            let [x, y, w, h] = v[..] else {
+                eprintln!("error: --crop wants X,Y,W,H in output pixels");
+                return ExitCode::FAILURE;
+            };
+            crops.push((x, y, w, h));
+        }
+        let tuning = match tune.map(|t| gpu::TemporalTuning::parse(&t)).transpose() {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("error: --tune: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let out = args.get(2).map(PathBuf::from).unwrap_or_else(|| root.join("check"));
+        let view = VIEW
+            .get()
+            .copied()
+            .unwrap_or_else(|| model2::video::View::new(1080, 16.0 / 9.0, model2::video::Hud::Edges));
+        if let Some(n) = bench {
+            let frames = n.and_then(|n| n.parse().ok()).unwrap_or(30);
+            return match temporal_check::bench(&root, &view, frames, 8) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        let depth = DEPTH.get().copied().unwrap_or(false);
+        let opts = temporal_check::Options {
+            view,
+            every,
+            out,
+            gpu: !no_gpu,
+            gpu_only,
+            tuning,
+            crops,
+            ref_cache,
+            at,
+            depth,
+            inspect,
+            dump,
+        };
+        return match temporal_check::run(&root, &opts) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
             Err(e) => {
                 eprintln!("error: {e}");
                 ExitCode::FAILURE
@@ -915,7 +1234,78 @@ fn main() -> ExitCode {
             let root = args.get(1).map(PathBuf::from).unwrap_or(default);
             let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
             let (aa, depth) = (AA.get().copied().unwrap_or(1), DEPTH.get().copied().unwrap_or(false));
-            if let Err(e) = gpu_check::run(&root, windows, aa, depth, pack_dir.as_deref(), tex_filter()) {
+            let light = light_options(roms.game);
+            if let Err(e) = gpu_check::run(&root, windows, aa, depth, pack_dir.as_deref(), tex_filter(), light.as_ref())
+            {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        "temporal-probe" => {
+            let quality = gpu::Quality {
+                depth: DEPTH.get().copied().unwrap_or(false),
+                temporal: TEMPORAL.get().copied().unwrap_or(100),
+                stipple: STIPPLE.get().copied().unwrap_or_default(),
+                ..Default::default()
+            };
+            let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
+            let view = VIEW.get().copied();
+            let result = if args.get(1).map(String::as_str) == Some("live") {
+                let (Some(from), Some(count), Some(out)) =
+                    (args.get(2).and_then(|s| parse_num(s)), args.get(3).and_then(|s| parse_num(s)), args.get(4))
+                else {
+                    eprint!("{USAGE}");
+                    return ExitCode::FAILURE;
+                };
+                match model2::input::InputScript::parse(input.as_deref().unwrap_or(""), &roms.game.controls) {
+                    Ok(script) => {
+                        let mut m = machine(&roms);
+                        m.bus.geo.set_threaded(!single_thread);
+                        temporal_probe::live(
+                            &mut m,
+                            &script,
+                            from.into(),
+                            count.into(),
+                            windows,
+                            view,
+                            quality,
+                            Path::new(out),
+                        )
+                    }
+                    Err(e) => Err(format!("--input: {e}")),
+                }
+            } else {
+                let default = PathBuf::from("out").join(roms.game.id).join("capture");
+                let root = args.get(1).map(PathBuf::from).unwrap_or(default);
+                let out = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out/scratch/temporal-probe"));
+                let light = light_options(roms.game);
+                let lq = gpu_light(light.as_ref());
+                let quality = gpu::Quality {
+                    shading: lq.shading,
+                    shading_fine: lq.shading_fine,
+                    shading_balance: lq.shading_balance,
+                    ..quality
+                };
+                temporal_probe::captures(&root, windows, view, quality, &out, light.as_ref())
+            };
+            if let Err(e) = result {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        "pack-check" if args.iter().any(|a| a == "--identity") => {
+            args.retain(|a| a != "--identity");
+            let default = PathBuf::from("out").join(roms.game.id).join("capture");
+            let root = args.get(1).map(PathBuf::from).unwrap_or(default);
+            let out = args
+                .get(2)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("pack-identity"));
+            let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
+            let (aa, depth) = (AA.get().copied().unwrap_or(1), DEPTH.get().copied().unwrap_or(false));
+            if let Err(e) =
+                pack_check::identity(&root, windows, VIEW.get().copied(), aa, depth, pack_dir.as_deref(), &out)
+            {
                 eprintln!("error: {e}");
                 return ExitCode::FAILURE;
             }
@@ -933,7 +1323,27 @@ fn main() -> ExitCode {
                 .unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("pack-check"));
             let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
             let (aa, depth) = (AA.get().copied().unwrap_or(1), DEPTH.get().copied().unwrap_or(false));
-            if let Err(e) = pack_check::run(&root, windows, VIEW.get().copied(), aa, depth, pack, &out) {
+            let light = light_options(roms.game);
+            if let Err(e) = pack_check::run(&root, windows, VIEW.get().copied(), aa, depth, pack, &out, light.as_ref())
+            {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        "tile-check" => {
+            let Some(pack) = &pack_dir else {
+                eprintln!("error: tile-check needs --texture-pack DIR");
+                return ExitCode::FAILURE;
+            };
+            let default = PathBuf::from("out").join(roms.game.id).join("capture");
+            let root = args.get(1).map(PathBuf::from).unwrap_or(default);
+            let out = args
+                .get(2)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("tile-check"));
+            let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
+            let light = light_options(roms.game);
+            if let Err(e) = pack_check::run_tiles(&root, windows, VIEW.get().copied(), pack, &out, light.as_ref()) {
                 eprintln!("error: {e}");
                 return ExitCode::FAILURE;
             }
@@ -961,9 +1371,76 @@ fn main() -> ExitCode {
                 .unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("depth-check"));
             let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
             let (aa, against) = (AA.get().copied().unwrap_or(1), against.as_deref());
-            if let Err(e) = depth_check::run(&root, windows, VIEW.get().copied(), aa, &out, &probes, against) {
+            let light = light_options(roms.game);
+            if let Err(e) =
+                depth_check::run(&root, windows, VIEW.get().copied(), aa, &out, &probes, against, light.as_ref())
+            {
                 eprintln!("error: {e}");
                 return ExitCode::FAILURE;
+            }
+        }
+        "lighting-check" => {
+            let mut args = args.clone();
+            let mut probes = Vec::new();
+            while let Some(i) = args.iter().position(|a| a == "--probe") {
+                let Some(p) = args.get(i + 1).and_then(|v| depth_check::Probe::parse(v)) else {
+                    eprintln!("error: --probe wants X,Y@FRAME (output pixel, captured frame)");
+                    return ExitCode::FAILURE;
+                };
+                probes.push(p);
+                args.drain(i..i + 2);
+            }
+            let bench = match args.iter().position(|a| a == "--bench") {
+                Some(i) => {
+                    let n = args.get(i + 1).and_then(|v| v.parse::<usize>().ok());
+                    args.drain(i..i + 1 + n.is_some() as usize);
+                    Some(n.unwrap_or(8))
+                }
+                None => None,
+            };
+            let every = match args.iter().position(|a| a == "--every") {
+                Some(i) => match args.get(i + 1).and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0) {
+                    Some(n) => {
+                        args.drain(i..i + 2);
+                        n
+                    }
+                    None => {
+                        eprintln!("error: --every wants a number of frames");
+                        return ExitCode::FAILURE;
+                    }
+                },
+                None => 1,
+            };
+            let side = match args.iter().position(|a| a == "--no-side") {
+                Some(i) => {
+                    args.remove(i);
+                    false
+                }
+                None => true,
+            };
+            let default = PathBuf::from("out").join(roms.game.id).join("capture");
+            let root = args.get(1).map(PathBuf::from).unwrap_or(default);
+            let out = args
+                .get(2)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("out/scratch/lighting").join(roms.game.id));
+            let crease = SHADING.get().map_or(model2::light::CREASE_AUTO, |s| s.1);
+            // `--shading pixel` checks the per-pixel level; anything else vertex.
+            let level = match SHADING.get() {
+                Some((model2::light::Shading::Pixel, _)) => model2::light::Shading::Pixel,
+                _ => model2::light::Shading::Vertex,
+            };
+            let opts = model2::light::Options::new(level, crease, &roms.game.shading, roms.game.hud_windows)
+                .with_fine(SHADING_FINE.get().copied().unwrap_or(false))
+                .with_balance(SHADING_BALANCE.get().copied().unwrap_or(true));
+            let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
+            match lighting_check::run(&root, windows, VIEW.get().copied(), opts, &out, &probes, bench, every, side) {
+                Ok(true) => {}
+                Ok(false) => return ExitCode::FAILURE,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::FAILURE;
+                }
             }
         }
         // Debug: run recompiled and interpreted i960s side by side, one
@@ -1057,6 +1534,7 @@ fn main() -> ExitCode {
             }
             m.bus.geo.set_threaded(!single_thread);
             m.bus.geo.set_mode(model2::geo::GeoMode::Check);
+            m.bus.geo.set_light(LIGHT.get().is_some());
             if let Err(e) = geo_check::run(&mut m, &roms, steps, from, &script, LOAD_STATE.get()) {
                 eprintln!("error: {e}");
                 return ExitCode::FAILURE;
@@ -1275,6 +1753,46 @@ fn tex_filter() -> model2::enhance::TexFilter {
 
 /// `--depth`: the depth buffer for snapshots and gpu-check.
 static DEPTH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+/// `--shading`, `--crease`: smooth shading for snapshots and the GPU
+/// tools (shading, crease in degrees or `light::CREASE_AUTO`).
+static SHADING: std::sync::OnceLock<(model2::light::Shading, u8)> = std::sync::OnceLock::new();
+/// `--shading-fine`: finer levels for `--shading`.
+static SHADING_FINE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+/// `--shading-balance`: the brightness balance for `--shading`.
+static SHADING_BALANCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+/// `--game`, for snapshots' shading rules.
+static GAME_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// `--light` (or a capture): record smooth shading's side channel.
+static LIGHT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Smooth shading's options for `game` from `--shading` and `--crease`
+/// (None: off).
+fn light_options(game: &romset::Game) -> Option<model2::light::Options> {
+    let &(shading, crease) = SHADING.get()?;
+    let o = model2::light::Options::new(shading, crease, &game.shading, game.hud_windows)
+        .with_fine(SHADING_FINE.get().copied().unwrap_or(false))
+        .with_balance(SHADING_BALANCE.get().copied().unwrap_or(true));
+    o.on().then_some(o)
+}
+
+/// The GPU's quality for drawing polygons built with `light`: shading on
+/// (whatever `Poly::lit` holds is drawn) or off.
+fn gpu_light(light: Option<&model2::light::Options>) -> gpu::Quality {
+    match light {
+        Some(o) => gpu::Quality {
+            shading: o.shading,
+            crease: o.crease,
+            shading_fine: o.fine,
+            shading_balance: o.balance,
+            ..Default::default()
+        },
+        None => gpu::Quality::default(),
+    }
+}
+
+/// `--temporal`, `--stipple`: temporal anti-aliasing on the GPU.
+static TEMPORAL: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+static STIPPLE: std::sync::OnceLock<gpu::Stipple> = std::sync::OnceLock::new();
 
 /// Linear supersampling factor for `samples` a pixel: the smallest k
 /// with k * k >= samples (1 for off).
@@ -1299,7 +1817,8 @@ fn machine(roms: &RomSet) -> model2::Machine {
     if let Some(t) = m.bus.tgp2a.as_deref_mut() {
         t.use_hle = TGP2A_HLE.get().copied().unwrap_or(false);
     }
-    m.bus.geo.set_smooth(SMOOTH.get().is_some());
+    m.bus.geo.set_smooth(SMOOTH.get().is_some() || CAPTURE_SEQ.get().is_some());
+    m.bus.geo.set_light(LIGHT.get().is_some());
     // For the frame before each snapshot (`snapshot`).
     m.bus.geo.set_keep_last(SMOOTH.get().is_some());
     m
@@ -1327,6 +1846,9 @@ static LOAD_STATE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 static AUDIO: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 /// Where `--capture` saves snapshot frames.
 static CAPTURE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+/// `--capture-seq DIR` with `--seq FROM,COUNT`: where to save a sequence,
+/// its first frame and how many.
+static CAPTURE_SEQ: std::sync::OnceLock<(PathBuf, u64, u64)> = std::sync::OnceLock::new();
 
 fn snapshot(m: &mut model2::Machine, path: &std::path::Path) {
     m.bus.geo.sync();
@@ -1361,6 +1883,22 @@ fn snapshot(m: &mut model2::Machine, path: &std::path::Path) {
     draw_png(m, Some(&prev), &path.with_file_name(format!("{stem}-prev.png")));
 }
 
+/// `--capture-seq`: add the machine's current frame and its motion data
+/// to the sequence (started on first use).
+fn capture_seq(
+    m: &mut model2::Machine,
+    seq: &mut Option<model2::capture::SeqWriter>,
+    root: &Path,
+    game: &str,
+) -> std::io::Result<()> {
+    let frame = model2::capture::Frame::grab(&mut m.bus);
+    if seq.is_none() {
+        *seq = Some(model2::capture::SeqWriter::new(root, game, &m.bus.texture_rom)?);
+    }
+    let smooth = m.bus.geo.engine().smooth_frame();
+    seq.as_mut().unwrap().push(&frame, smooth.as_deref())
+}
+
 /// Draw the machine's current frame to a PNG at `path`, with `stream` for
 /// its polygons if given, else the geometrizer's last frame's.
 fn draw_png(m: &model2::Machine, stream: Option<&[u32]>, path: &std::path::Path) {
@@ -1389,7 +1927,10 @@ fn render(m: &model2::Machine, stream: Option<&[u32]>, path: &std::path::Path) -
         xoff,
         yoff,
     };
-    let mut polys = model2::raster::build(stream, &src);
+    let light = games::find(GAME_ID.get().map_or("topskatr", |s| s.as_str())).ok().and_then(light_options);
+    // The side channel goes with the engine's own stream.
+    let side = if std::ptr::eq(stream, &geo.stream[..]) { geo.light_frame() } else { None };
+    let mut polys = model2::raster::build_shaded_with(stream, &src, side.as_deref(), light.as_ref());
     model2::video::HudLayout::new(b.tile_ram(), b.palette_ram(), &view).anchor(&mut polys, &view);
     let mut packs = texpack::PACKS.lock().unwrap();
     let (rgb3d, covered) = match packs.as_mut() {
@@ -1595,6 +2136,8 @@ fn run(
     let started = std::time::Instant::now();
     let mut stop = None;
     let mut last_frame = 0;
+    let mut seq = None;
+    let mut light = light_report::Acc::default();
     while m.cpu.icount < steps {
         if let Err(s) = m.run_slice(steps - m.cpu.icount) {
             stop = Some(s);
@@ -1608,6 +2151,9 @@ fn run(
             audio_secs += t.elapsed().as_secs_f64();
         }
         if m.frames != last_frame {
+            if LIGHT.get().is_some() {
+                light.frame(&mut m);
+            }
             if let Some((path, frame)) = SAVE_STATE.get().filter(|s| s.1 == m.frames) {
                 let data = model2::save_session(&mut m, live.as_ref());
                 match std::fs::write(path, &data) {
@@ -1627,6 +2173,16 @@ fn run(
                 println!("geo trace     frame {}: {} writes", m.frames - 1, t.len());
             }
         }
+        if let Some((root, from, count)) = CAPTURE_SEQ.get().filter(|s| m.frames != last_frame && m.frames >= s.1) {
+            if m.frames >= from + count {
+                println!("sequence      {count} frames from {from} -> {}", root.display());
+                break;
+            }
+            if let Err(e) = capture_seq(&mut m, &mut seq, root, roms.game.id) {
+                eprintln!("error: --capture-seq: {}: {e}", root.display());
+                return;
+            }
+        }
         if snap > 0 && m.frames != last_frame && m.frames.is_multiple_of(snap) {
             let path = frames_dir.join(format!("{:06}.png", m.frames));
             snapshot(&mut m, &path);
@@ -1638,6 +2194,11 @@ fn run(
         last_frame = m.frames;
     }
     snapshot(&mut m, &frames_dir.join("final.png"));
+    if LIGHT.get().is_some() {
+        print!("{}", light.report());
+        m.bus.geo.sync();
+        print!("{}", light_report::scan_report(&m.bus.geo.engine().check.light));
+    }
     if let Some(p) = texpack::PACKS.lock().unwrap().as_ref() {
         println!("textures      {}", p.summary());
     }

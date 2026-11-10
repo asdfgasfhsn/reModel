@@ -29,6 +29,7 @@ pub static LASTBRNX: Game = Game {
     protection: None,
     dropouts: &[],
     texture_ram_mirrored: false,
+    shading: crate::Shading::DEFAULT,
     packed: &[],
     // A coin-start run's audio averages -32.7 dBFS RMS (peak -13), with the
     // games here that play at 0 dB (docs/hw/sound.md §6).

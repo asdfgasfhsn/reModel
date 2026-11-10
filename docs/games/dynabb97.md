@@ -51,4 +51,25 @@ Dynamite Baseball '97, a two-player baseball cabinet with a bat lever.
   (input lag 1), from 3700 six; the stick up or left from 3507 two, right
   from 4507 six. Button 1 from 3507 showed nothing for 16 frames. The
   least, 1, is the manifest's.
+- *Depth buffer (2026-11-11; captured coin-start frames drawn with it off
+  and on at 1440x1080 and 1920x1080 (`make depth-check`), compared with
+  the build before the 2026-11-10 rules (`docs/enhancements.md`, "Depth
+  buffer")):* 13 of 21 frames differ, by up to 0.4%. The 2026-11-10 rules
+  helped: slivers of polygons that showed through clothes and hands are
+  gone. Wrong with it on: in the close-up of a batter the black
+  undershirt's collar shows through the jersey (the jersey is 2.9% of 1/z
+  behind it there; the two are sorted 0.4% apart but fall in different
+  groups). Can't tell: home plate is whole with it on and clipped by the
+  dirt drawn after it with it off (0.9%).
 
+## Lighting (smooth shading's side channel)
+
+Measured with `remodel --geo native --light --input coin-start run 900000000` (6191 frames; `make lighting-capture` runs the same), reModel's smooth-shading side channel (docs/hw/geometrizer.md, "Lighting side channel"):
+
+- Self-check: of 10,713,176 polygon records, the flat luma recomputed from the side channel is the stream's for 10,713,135 (100.00%), one level off for 41 and further off for 0 (the SHARC rounds toward zero).
+- no specular lighting; normals computed from the vertices in 1.78% of blocks; zero (unlit) normals on 11.54% of polygons.
+- models drawn from polygon RAM in 9,086 blocks (145,094 polygons, 1.78% of blocks); no direct data.
+- the light vector changes within a frame in 1244 of 6191 frames (up to 3 vectors a frame); lighting entries not changed within a frame.
+- True focal length over the window width: median 4.032 (range 0.414-12.097); the stream-only layer guesses 1.0.
+- The list scan's block facts equal the native geometrizer's on 510,023 blocks, differ on 0.
+- Smooth shading: the players' colour translation tables hold coloured entries in the dark columns (0-11) below a grey ramp, so most lit polygons (over 90% in the 21 captured frames) are shaded only within the levels of their own hue (docs/hw/geometrizer.md, "Colour tables are not always brightness ramps"); before that refinement 2,234 of 3,758 lit polygons were left flat.

@@ -30,6 +30,13 @@ Status: **in progress** (`romset::games::IN_PROGRESS`); not playable yet.
   that run (it runs into unknown words, below), so its side is not yet
   checked: the role rests on the sound program's table and the chips'
   contents.
+- *Confirmed (by running it; not yet by ear):* the manifest adds no gain
+  (`volume_db: 0.0`). The 6 dB it had before clipped: a 1.5G-step
+  coin-start run with `--audio` (the player's mix) measured about -13
+  LUFS after 30 s, peaks at 0 dBFS and 3265 clipped samples. With no gain
+  the same run gives -19.0 LUFS, peaks -1.4 dBFS and nothing clipped,
+  inside the other games' gameplay range (-16 to -28 LUFS, median about
+  -21.5; `srallyc.md`).
 - *Blocker:* the TGP runs words the interpreter does not know:
   `bf624019` (word 0x03E, the dispatch-table entry for function 0, which the
   game calls as an idle/main loop: 2.7 million executions in 300M

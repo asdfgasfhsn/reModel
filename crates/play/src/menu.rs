@@ -67,9 +67,29 @@ pub struct View<'a> {
     /// Anisotropic filtering the GPU has (`gpu::max_anisotropy`): the
     /// texture filters offered.
     pub max_anisotropy: u8,
+    /// The GPU can do temporal anti-aliasing (`gpu::temporal_supported`).
+    pub temporal_supported: bool,
     /// How the texture pack is doing (where it is, what it replaced), or
     /// why there is none, while the setting is on.
     pub pack: Option<&'a str>,
+}
+
+/// Temporal anti-aliasing's choices: render scale in percent, label.
+const TEMPORAL: [(u8, &str); 5] = [(0, "off"), (100, "TAA"), (75, "75%"), (67, "67%"), (50, "50%")];
+
+/// Smooth shading's choices.
+const SHADING: [(gpu::Shading, &str); 3] =
+    [(gpu::Shading::Flat, "flat"), (gpu::Shading::Vertex, "vertex"), (gpu::Shading::Pixel, "pixel")];
+
+/// What the shading setting does as set (said beside its choices).
+fn shading_hint(v: &GameSettings) -> &'static str {
+    match v.shading {
+        _ if v.shading != gpu::Shading::Flat && v.crease == 0 => "(crease 0: nothing is smoothed)",
+        gpu::Shading::Flat => "(the game's own: one brightness a polygon)",
+        gpu::Shading::Vertex => "(brightness blended across curved surfaces)",
+        gpu::Shading::Pixel if v.geo_chip => "(with the chip: drawn as vertex; per pixel needs the native geometrizer)",
+        gpu::Shading::Pixel => "(the game's lighting worked out for every pixel)",
+    }
 }
 
 fn age(t: SystemTime) -> String {
@@ -260,18 +280,63 @@ impl Menu {
                         None => "(less input lag, more CPU)".to_string(),
                     });
                 });
+                // Temporal anti-aliasing replaces multisampling while it's on.
+                let temporal = settings.temporal_on() && view.temporal_supported;
                 ui.horizontal(|ui| {
                     ui.label("Anti-aliasing:");
-                    focus.radio(ui, "aa", &mut settings.aa, 0, "off");
-                    focus.radio(ui, "aa", &mut settings.aa, 4, "4x");
-                    focus.radio(ui, "aa", &mut settings.aa, 8, "8x");
-                    ui.weak("(8x where the GPU has it)");
+                    ui.add_enabled_ui(!temporal, |ui| {
+                        focus.radio(ui, "aa", &mut settings.aa, 0, "off");
+                        focus.radio(ui, "aa", &mut settings.aa, 4, "4x");
+                        focus.radio(ui, "aa", &mut settings.aa, 8, "8x");
+                    });
+                    ui.weak(if temporal { "(off while temporal is on)" } else { "(8x where the GPU has it)" });
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Temporal:");
+                    ui.add_enabled_ui(!settings.geo_chip && view.temporal_supported, |ui| {
+                        for (n, text) in TEMPORAL {
+                            focus.radio(ui, "temporal", &mut settings.temporal, n, text);
+                        }
+                    });
+                    ui.weak(if !view.temporal_supported {
+                        "(this GPU can't: off)"
+                    } else if settings.geo_chip {
+                        "(off: needs the native geometrizer)"
+                    } else {
+                        "(a % draws smaller and upscales)"
+                    });
+                });
+                ui.add_enabled_ui(temporal, |ui| {
+                    focus.checkbox(
+                        ui,
+                        &mut settings.stipple_keep,
+                        "Keep the checkerboard pattern  (else see-through as an even 50% blend)",
+                    );
                 });
                 focus.checkbox(
                     ui,
                     &mut settings.depth,
                     "Depth buffer (polygons that cross sort right; off: the game's order)",
                 );
+                ui.horizontal(|ui| {
+                    ui.label("Shading:");
+                    for (s, text) in SHADING {
+                        focus.radio(ui, "shading", &mut settings.shading, s, text);
+                    }
+                    ui.weak(shading_hint(settings));
+                });
+                ui.add_enabled_ui(settings.shading != gpu::Shading::Flat, |ui| {
+                    focus.checkbox(
+                        ui,
+                        &mut settings.shading_fine,
+                        "Blend brightness levels  (no banding on smooth surfaces; else the game's 64 levels)",
+                    );
+                    focus.checkbox(
+                        ui,
+                        &mut settings.shading_balance,
+                        "Balance brightness  (each smooth surface as bright as the game's; off: bumpy ones brighter)",
+                    );
+                });
                 focus.checkbox(ui, &mut settings.pack, "Texture pack  (replacement textures)");
                 if let (true, Some(text)) = (settings.pack, view.pack) {
                     ui.weak(text);
@@ -532,7 +597,14 @@ mod tests {
         let ctx = egui::Context::default();
         let mut actions = Vec::new();
         let slots = [Some(SystemTime::now()), None, None, None, None];
-        let view = View { playing: Some("A game"), slots: &slots, input_lag: Some(2), max_anisotropy: 16, pack: None };
+        let view = View {
+            playing: Some("A game"),
+            slots: &slots,
+            input_lag: Some(2),
+            max_anisotropy: 16,
+            temporal_supported: true,
+            pack: None,
+        };
         let (mut fullscreen, mut for_all) = (false, false);
         for navs in [&[][..]].iter().chain(frames) {
             let input = egui::RawInput {
@@ -624,6 +696,50 @@ mod tests {
     }
 
     #[test]
+    fn temporal_turns_multisampling_off() {
+        // From the effects slider down past the display rows to run-ahead;
+        // with temporal on the anti-aliasing radios are off (skipped), so
+        // the next is temporal's: right to 50%; then keep the stipple.
+        let (mut m, mut s, mut b) = setup();
+        s.temporal = 67;
+        let mut frames: Vec<&[Nav]> = vec![&[Nav::Down]; 6 + 7];
+        frames.extend([&[Nav::Down][..], &[Nav::Right], &[Nav::Down], &[Nav::Accept]]);
+        run(&mut m, &mut s, &mut b, &frames);
+        assert_eq!((s.aa, s.temporal, s.stipple_keep), (0, 50, true));
+        // With the chip temporal can't run: its radios are off instead (and
+        // smooth motion's checkbox, one row less).
+        let (mut m, mut s, mut b) = setup();
+        (s.temporal, s.geo_chip) = (67, true);
+        let mut frames: Vec<&[Nav]> = vec![&[Nav::Down]; 6 + 6];
+        frames.extend([&[Nav::Down][..], &[Nav::Right], &[Nav::Down], &[Nav::Right]]);
+        run(&mut m, &mut s, &mut b, &frames);
+        assert_eq!((s.aa, s.temporal, s.stipple_keep), (4, 67, false));
+    }
+
+    #[test]
+    fn shading_row() {
+        // From the effects slider down to run-ahead, then anti-aliasing,
+        // temporal, (the stipple checkbox off without temporal) the depth
+        // buffer and shading: right to vertex, right again to pixel.
+        let (mut m, mut s, mut b) = setup();
+        let mut frames: Vec<&[Nav]> = vec![&[Nav::Down]; 6 + 7 + 4];
+        frames.push(&[Nav::Right]);
+        run(&mut m, &mut s, &mut b, &frames);
+        assert_eq!((s.shading, s.depth, s.aa, s.temporal), (gpu::Shading::Vertex, false, 0, 0));
+        let (mut m, mut s, mut b) = setup();
+        frames.push(&[Nav::Right]);
+        run(&mut m, &mut s, &mut b, &frames);
+        assert_eq!(s.shading, gpu::Shading::Pixel);
+        // Pixel is per pixel with the native geometrizer; the chip doesn't
+        // turn it off, but draws it as vertex and says so.
+        assert!(!shading_hint(&s).contains("as vertex"));
+        s.geo_chip = true;
+        assert!(shading_hint(&s).contains("as vertex"));
+        s.crease = 0;
+        assert!(shading_hint(&s).contains("nothing"));
+    }
+
+    #[test]
     fn focus_glows_for_the_pad_only() {
         let ctx = egui::Context::default();
         let (mut m, mut s, _) = setup();
@@ -633,7 +749,14 @@ mod tests {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0))),
                 ..Default::default()
             };
-            let view = View { playing: Some("A game"), slots: &[], input_lag: None, max_anisotropy: 16, pack: None };
+            let view = View {
+                playing: Some("A game"),
+                slots: &[],
+                input_lag: None,
+                max_anisotropy: 16,
+                temporal_supported: true,
+                pack: None,
+            };
             let mut out = ctx.run_ui(input, |ui| {
                 m.ui(ui.ctx(), &mut s, Prefs { fullscreen: &mut f, for_all: &mut a }, &view, None, navs);
             });

@@ -114,4 +114,62 @@ documentation and hasn't been contradicted yet.
   nothing for run-ahead to hide. Curving the other way from frame 3907
   changed nothing on screen for 16 frames (the skater mid-trick,
   presumably).
+- *Confirmed (by looking at the frames, 2026-11-10):* the attract
+  montage switches shots every 27 frames (frames 1037, 1064 and 1091 of a
+  coin-start run: each a different shot from the frame before), and smooth
+  motion's cut test flags each as a camera cut, rightly; temporal
+  anti-aliasing starts its history again there.
+- *Confirmed (by looking at the frames):* a coin-start run with the
+  default input (no steering) never reaches the FINISH gantry: the race
+  ends TIME UP at about frame 9000. Palette 0x1009 toggles every frame
+  during the race (from at least frame 4600 to 7600), but the gantry isn't
+  on screen. It is on screen in the attract demo that follows (stadium
+  course), frames about 19590-19607 of the same run (a camera cut at
+  19608), with 0x1009 alternating 0xD3FF and 0x8000: `remodel --game
+  topskatr --geo native --capture-seq DIR --seq 19540,100 --input
+  coin-start run 4200000000 0`.
+- *Confirmed (temporal anti-aliasing, by looking at the frames):* on those
+  frames the sign flickers with temporal on exactly as the game draws it:
+  at TAA and 67% the word shows on even frames and the empty board on odd
+  ones, like the plain frames, with no averaging to a mid colour and no
+  ghost of the letters on the empty frames (`docs/enhancements.md`). The
+  waving chequered flags beside it, which have no motion data, look soft.
+- *Confirmed (probing the frames, 2026-11-11):* the large solid-black floor
+  areas in the attract demo's street course (frames about 4400-4490 of a
+  run with no input, about 75 s; also around 4240-4300) are texel 0 of a
+  floor texture the game draws, not a lost polygon. The floor there is one
+  big near-clipped polygon, header `5409 0000 5f10 3140`: a 64x64 texture
+  at (512, 896) in bank 1 that uses only texels 0-3, mostly 2, with a
+  jagged vertical stripe of 0 (a crack or stain), luma table 0 (a ramp,
+  0 at index 0), palette colour (31, 31, 26). Texel 0 gives level 0, and
+  the game's colour tables map level 0 of every ramp to black (level 1 is
+  already 76 of 255 for component 31), so the stripe is black as sent;
+  with the camera low on the road the polygon is magnified and the stripe
+  fills half the screen. Software and GPU renderers, chip and native
+  geometrizer, threaded and single-threaded runs all draw the same frame,
+  so nothing in the path loses or misreads data. Rewriting that texture's
+  texel 0 as 1 in a capture turns every black pixel of frame 4440 grey.
+  Black blobs in the stadium montage (frames about 1050-1530) are the
+  skater's shadow instead: a translucent texture of texels 14/15 in
+  palette black, drawn solid like the other shadows in
+  `docs/hw/geometrizer.md` 5.4.
+- *Unconfirmed:* whether the hardware draws that stripe this dark. The
+  polygon sets microtexture (h0 bit 12, the microtexture at (0, 128) in
+  bank 0, texels 0-7: the asphalt slot) and reModel doesn't draw
+  microtextures. What the games send for level of detail, and the
+  candidate blends, are in `docs/hw/texture-lod.md`: with the likeliest
+  one (a linear blend of the two filtered texels below level 0) the
+  magnified stripe becomes asphalt, not solid black. Mipmaps don't come
+  into it: topskatr uploads none. That page lists the footage that would
+  settle it (this scene, about 75 s after power-on).
 
+## Lighting (smooth shading's side channel)
+
+Measured with `remodel --geo native --light --input coin-start run 900000000` (6209 frames; `make lighting-capture` runs the same), reModel's smooth-shading side channel (docs/hw/geometrizer.md, "Lighting side channel"):
+
+- Self-check: of 14,125,713 polygon records, the flat luma recomputed from the side channel is the stream's for 14,125,713 (100.00%), one level off for 0 and further off for 0.
+- specular on in 100.00% of object blocks, 67.06% of polygons lit with a specular term; normals computed from the vertices in 100.00% of blocks; zero (unlit) normals on 0.00% of polygons.
+- no models drawn from polygon RAM; no direct data.
+- the light vector changes within a frame in 3321 of 6209 frames (up to 3 vectors a frame); lighting entries not changed within a frame.
+- True focal length over the window width: median 1.210 (range 0.502-1.210); the stream-only layer guesses 1.0.
+- The list scan's block facts equal the native geometrizer's on 303,700 blocks, differ on 0.

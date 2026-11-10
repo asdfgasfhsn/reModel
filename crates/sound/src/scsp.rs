@@ -49,6 +49,10 @@ const EG_SILENT: u16 = 0x3c0;
 #[derive(Clone, Copy, Default)]
 pub struct Slot {
     pub regs: [u16; 16],
+    /// The key as the last KYONEX latched it from KYONB. Key-on and key-off
+    /// happen on its edges only, so a slot that played a loop-off sample to
+    /// its end stays keyed on (silent) until the program keys it off.
+    pub keyed: bool,
     /// Generating output (key-on until release fades or loop-off ends).
     pub active: bool,
     pub phase: Phase,
@@ -574,17 +578,23 @@ impl Scsp {
         }
     }
 
-    /// KYONEX: key on every slot whose KYONB is set and that isn't already
-    /// sounding, key off every sounding slot whose KYONB is clear.
+    /// KYONEX: latch every slot's KYONB as its key. A slot keys on when its
+    /// key goes from off to on and releases when it goes from on to off; a
+    /// slot whose key stays on is left alone, even if its loop-off sample
+    /// has ended. (Re-keying ended slots on every KYONEX replayed srallyc's
+    /// streamed voices from stale buffer data: `docs/hw/sound.md` §2.1.)
     fn key_on_execute(&mut self) {
         for (n, s) in self.slots.iter_mut().enumerate() {
-            let held = s.active && s.phase != Phase::Release;
-            let on = s.kyonb() && !held;
+            let on = s.kyonb();
+            if on == s.keyed {
+                continue;
+            }
+            s.keyed = on;
             if on {
                 s.key_on();
                 self.stats.key_ons += 1;
                 self.stats.slot_key_ons[n] += 1;
-            } else if !s.kyonb() && held {
+            } else if s.active {
                 s.phase = Phase::Release;
             } else {
                 continue;
@@ -873,7 +883,7 @@ state::fields!(Scsp {
     samples,
     lfsr
 });
-state::fields!(Slot { regs, active, phase, eg, pos, frac, backward, lfo, lfo_div });
+state::fields!(Slot { regs, keyed, active, phase, eg, pos, frac, backward, lfo, lfo_div });
 state::fields!(Timer { ctl, count });
 
 impl state::State for Phase {
@@ -958,6 +968,33 @@ mod tests {
         }
         assert!(!c.slots[3].active);
         assert_eq!(c.sample(), (0, 0));
+    }
+
+    /// Key-on is an edge of the latched key: a KYONEX for another slot
+    /// leaves a slot whose loop-off sample ended (KYONB still set) silent,
+    /// and only a key-off then a key-on plays it again.
+    #[test]
+    fn ended_slot_stays_keyed() {
+        let mut c = Scsp::new();
+        setup(&mut c, 3, 0, 0, 40);
+        key(&mut c, 3, true);
+        for _ in 0..50 {
+            c.sample();
+        }
+        assert!(!c.slots[3].active);
+        setup(&mut c, 5, 1, 0, 40);
+        key(&mut c, 5, true);
+        assert!(!c.slots[3].active, "another slot's KYONEX re-keyed an ended slot");
+        assert!(c.slots[5].active);
+        assert_eq!(c.stats.key_ons, 2);
+        // Keying slot 5 on again while its key is on changes nothing.
+        key(&mut c, 5, true);
+        assert_eq!(c.stats.key_ons, 2);
+        key(&mut c, 3, false);
+        key(&mut c, 3, true);
+        assert!(c.slots[3].active);
+        assert_eq!(c.slots[3].pos, 0);
+        assert_eq!(c.stats.key_ons, 3);
     }
 
     #[test]

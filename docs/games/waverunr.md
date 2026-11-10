@@ -79,4 +79,23 @@ Fifth game, 2C: a ride-on personal watercraft cabinet, SCSP sound only.
   reads it; `docs/play.md`, "Run-ahead"):* the handlebar (frames 3507 and
   3907 of a coin-start run) shows in the first frame that reads it: input
   lag 0.
+- *Depth buffer (2026-11-11; captured coin-start frames drawn with it off
+  and on at 1440x1080 and 1920x1080 (`make depth-check`), compared with
+  the build before the 2026-11-10 rules (`docs/enhancements.md`, "Depth
+  buffer")):* 15 of 21 frames differ, by up to 1.1%. The 2026-11-10 rules
+  helped: a distant banner's lettering and a tree's branches under its
+  foliage, which the depth buffer had covered, draw in the game's order
+  again. Can't tell: on a cliff-hugging stretch (frame 3300) a tree on the
+  cliff top is hidden by the cliff face, which is 3.3x nearer there; the
+  rider's body parts move by a few pixels (1.5-2% of 1/z).
 
+## Lighting (smooth shading's side channel)
+
+Measured with `remodel --geo native --light --input coin-start run 900000000` (6067 frames; `make lighting-capture` runs the same), reModel's smooth-shading side channel (docs/hw/geometrizer.md, "Lighting side channel"):
+
+- Self-check: of 17,257,546 polygon records, the flat luma recomputed from the side channel is the stream's for 17,257,546 (100.00%), one level off for 0 and further off for 0.
+- no specular lighting; normals computed from the vertices in 92.04% of blocks; zero (unlit) normals on 0.00% of polygons.
+- models drawn from polygon RAM in 37,069 blocks (2,224,140 polygons, 7.77% of blocks); 37,973 blocks of direct data (7.96%).
+- one light vector per frame; a lighting entry's values change between objects in 103 frames (206 polygons).
+- True focal length over the window width: median 0.602 (range 0.000-0.886); the stream-only layer guesses 1.0.
+- The list scan's block facts equal the native geometrizer's on 477,012 blocks, differ on 0.

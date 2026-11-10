@@ -97,4 +97,24 @@ Third 2C game: the first with a DSB1 music board, a wheel and a gearbox.
   reads it; `docs/play.md`, "Run-ahead"):* steering (frames 4507 and 4907,
   the gas held from 4100 of a coin-start run) shows a frame after the
   first that reads it: input lag 1.
+- *Depth buffer (2026-11-11; captured coin-start frames drawn with it off
+  and on at 1440x1080 and 1920x1080 (`make depth-check`), compared with
+  the build before the 2026-11-10 rules (`docs/enhancements.md`, "Depth
+  buffer")):* 12 of 21 frames differ, by up to 0.08% of the pixels. Right
+  with it on: the roof struts go behind a sign's pillar
+  (they are 73-84% of 1/z behind it; the game draws them over it). Wrong
+  with it on: the pennants in the grandstands stand in the crowd's flat
+  card, 7.5% of 1/z behind it at the pixel probed, and lose their lower
+  halves (the game shows them whole); no generic fix. The 2026-11-10 rules
+  changed only edge pixels here.
 
+## Lighting (smooth shading's side channel)
+
+Measured with `remodel --geo native --light --input coin-start run 900000000` (6209 frames; `make lighting-capture` runs the same), reModel's smooth-shading side channel (docs/hw/geometrizer.md, "Lighting side channel"):
+
+- Self-check: of 10,683,455 polygon records, the flat luma recomputed from the side channel is the stream's for 10,683,455 (100.00%), one level off for 0 and further off for 0.
+- specular on in 100.00% of object blocks, 39.22% of polygons lit with a specular term; normals computed from the vertices in 0.00% of blocks; zero (unlit) normals on 10.59% of polygons.
+- no models drawn from polygon RAM; no direct data.
+- the light vector changes within a frame in 2633 of 6209 frames (up to 2 vectors a frame); lighting entries not changed within a frame.
+- True focal length over the window width: median 0.806 (range 0.484-6.667); the stream-only layer guesses 1.0.
+- The list scan's block facts equal the native geometrizer's on 682,939 blocks, differ on 0.
