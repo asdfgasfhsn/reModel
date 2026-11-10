@@ -130,20 +130,52 @@ loose in `rom/srallyc/`): attract, car and course select, and races.
   measured with half the samples missing (next item); with all four
   sample chips a race mixes at about -23 dBFS RMS (peaks about -7,
   unclipped), so the 6 dB wants judging again by ear.
-- *Confirmed (by running it, the ROM data and MAME's driver):* **the
-  samples are four 2 MB chips, `.31 .32 .36 .37`, back to back** at the
-  sound 68000's `0x800000-0xFFFFFF` (MAME: `ROM_REGION16_BE 0x800000
-  "samples"`, the same order). `.31/.32` had been taken for a second
-  bank of the TGP's data ROM, which no run reads (the state hash of a
-  coin-start race is unchanged without it). With only `.36/.37`, 72% of
-  the bytes the sound driver streamed in that race were the open bus's
-  `0xFF` (everything from `0xC00000`) and the rest came from the wrong
-  chips: most instruments and much of the music played silence, a DC
-  level or other samples' data (wrong notes). The driver uses no FM, no
-  LFO depth and no DSP effects (its DSP program is all zeros, no EFSDL),
-  only 8-bit PCM voices with loop modes 0 and 1 streamed through 8 KB
-  buffers, which refill in time (0.07% of buffer reads overrun). *Not yet
-  confirmed by ear against the cabinet.*
+- *Confirmed (by the sound program's own table, the chips' contents and
+  running it; by ear, 2026-11-10):* **the samples are four 2 MB chips,
+  `.31 .32 .36 .37`, back to back** at the sound 68000's
+  `0x800000-0xFFFFFF`, each 16-bit chip word byte-swapped as the 68000
+  sees it. The evidence, reproducible from the ROMs:
+  - The sound program `epr-17890.30` has a **sample table** at 68000
+    `0x609C26`: 20-byte entries (start, length, loop start, loop length,
+    an envelope word), 304 samples. Every slot of the window begins a
+    sample at its first byte and no sample crosses a 2 MB boundary: four
+    separately packed chips. A coin-start run's driver (180 s captured,
+    135 s rendered with `sound-render`) read 48.3 MB of sample ROM, all
+    inside table entries (38.4 MB from `0x800000`, 2.6 MB from
+    `0xA00000`, 0.4 MB from `0xC00000`, 7.0 MB from `0xE00000`), and read
+    the same addresses whatever the chips held (logged with every order
+    below and with all four blank): the addresses come from the table,
+    the chips only supply data.
+  - The driver streams in 512-byte copies and wraps a loop only after
+    copying the whole 512 bytes, so the ROM must repeat each loop's start
+    after its end. Of 110 looped samples, 78 carry that exact 512-byte
+    repeat, all of them with `.31` in the first slot, `.32` the second,
+    `.36` the third and `.37` the fourth, and **none** with any chip in
+    any other slot (the other 32 repeat in no chip). Over the 24 orders,
+    the next best explains 57.
+  - Each chip's data (up to its trailing `0xFF` fill) ends where its
+    slot's last sample does: `.31` 512 bytes after (that sample's loop
+    repeat), `.32` 5 bytes before, `.36` and `.37` 1 byte after; every
+    other chip and slot pair misses by 0x70B bytes to 61 KB.
+  - The four chips are 8-bit PCM by their statistics (4-7% `0xFF`, mean
+    step between bytes 5-8 in the 68000's byte order against 8-12
+    swapped), unlike the TGP's `.29/.28` (53% `0xFF`, step 35 either way,
+    both halves ending at the same offset, as one 32-bit bus).
+  - `.31/.32` had been taken for a second bank of the TGP's data ROM (at
+    its `0x900000`). The TGP never reads there: over a coin-start race
+    (1.5G instructions) it reads only `0x800000-0x81FFFF` (2.5 million
+    reads), and none in the attract mode, and the race's state hash is
+    the same with either labelling. With only `.36/.37` (the old layout),
+    174 of the 304 table samples were blank (18.9% of the bytes this run
+    streams; 72% in an earlier, shorter capture), and the rest came from
+    the wrong chips: most instruments and much of the music played
+    silence, a DC level or other samples' data (wrong notes). With all
+    four the music sounds right (by ear, 2026-11-10; not compared with a
+    cabinet).
+  - The driver uses no FM, no LFO depth and no DSP effects (its DSP
+    program is all zeros, no EFSDL), only 8-bit PCM voices with loop
+    modes 0 and 1 streamed through 8 KB buffers, which refill in time
+    (0.07% of buffer reads overrun).
 - *Speed (by running it):* **the game's code runs from work RAM**, not
   the program ROM: of the 14,584 distinct instructions a coin-start run
   executes, 14,502 are at `0x5A0000-0x5FCB3C` (put there at boot by the

@@ -16,8 +16,10 @@ use crate::{AnalogInput, Board, Controls, Game, PadAxis, PadButton, Role, RomFil
 /// from address `0x800000` on its external bus (under a count of 300, the
 /// course data the collision functions read). The sound board's 8 MB of
 /// samples are `.31`, `.32`, `.36`, `.37` in that order, back to back from
-/// the 68000's `0x800000`, as MAME loads them (`.31/.32` were taken for
-/// TGP data until the sound driver's reads showed otherwise,
+/// the 68000's `0x800000`: the sound program's sample table puts samples
+/// in all four 2 MB slots, and only this order makes each chip's data end
+/// where its slot's last sample does and the loops repeat after their ends
+/// (`.31/.32` were taken for TGP data, which the TGP never reads there;
 /// docs/games/srallyc.md); the six `opr` chips
 /// are the TGP's lookup tables (three pairs, `.45/.46` holding floats). The zip also holds the older program
 /// revision `b` (`epr-17888b.12`, `epr-17889b.13`), `ic12.bin`/`ic13.bin`

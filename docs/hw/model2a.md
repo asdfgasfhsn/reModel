@@ -229,7 +229,7 @@ address, the first 200,000 events) and the program as `out/GAME/tgp.bin`.
 | `mpr-17754.29` (low) / `-17755.28` (high) | **the TGP's data ROM**: a 32-bit bank at address `0x800000` of its external bus | §9: the course data its collision functions read; the first begins with a count (300) |
 | `opr-14742a.45`/`.46`, `.58`/`.59`, `.62`/`.63` | the TGP's lookup tables (a sine table of floats, reciprocal and inverse-square-root mantissas) | numerically, see below |
 | `epr-17890.30` | 68000 sound program | the sound board runs it |
-| `mpr-17756.31`, `-17757.32`, `-17886.36`, `-17887.37` | SCSP samples, 8 MB back to back at the sound 68000's `0x800000` (MAME's order) | the sound driver streams from all four (docs/games/srallyc.md); `.31/.32` were once taken for a second TGP data bank, which no run read |
+| `mpr-17756.31`, `-17757.32`, `-17886.36`, `-17887.37` | SCSP samples, 8 MB back to back at the sound 68000's `0x800000`, in this order | the sound program's sample table (`0x609C26`) fills all four slots, and only this order puts each loop's repeat after its end and each chip's data end at its slot's last sample (docs/games/srallyc.md); `.31/.32` were once taken for a second TGP data bank, at `0x900000`, which the TGP never reads |
 | `mpr-16310.15`, `-16311.16`, `-16312.14` | ramps (`00 E0 C0 A0 80 60 40 20`...): unconfirmed what reads them; not used | |
 
 The main data pairs are **packed**, 4 MB each from `0x2000000`
@@ -440,8 +440,9 @@ word address `0x800000`**, in both of the chip's bus modes (the bus
 instructions `63400000`, shared RAM, and `63000000`, the function unit):
 `.29` and `.28` as one 32-bit bank (`.29` the low half), as the 2C's TGP
 has its `CoproData` at `0x800000`. (`.31` and `.32`, once taken as a second
-bank at `0x900000`, are sample ROMs: no run read them through the TGP, and
-the state hash of a coin-start race is the same without them.) The address registers are 24 bits wide: the program makes a
+bank at `0x900000`, are sample ROMs: over a coin-start race the TGP reads
+only `0x800000-0x81FFFF`, in the attract mode nothing from the ROM, and the
+race's state hash is the same either way; docs/games/srallyc.md.) The address registers are 24 bits wide: the program makes a
 ROM address by adding `-0x800000` to the pointer it was given and, in the
 function that reads a block, steps through it from there. (Milestone 3 had
 them 16 bits and no ROM: nothing the attract mode calls reads it.)

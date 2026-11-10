@@ -8,8 +8,10 @@ use crate::{Board, Controls, Game, PadButton, Role, RomFile};
 /// (older revisions `17568/17569.12/13` with `17562/17563.14/15`, in
 /// letter variants, are in the zip and unused); main data pairs
 /// `.10/.11 .8/.9 .6/.7 .4/.5`, polygons `.16/.20 .17/.21 .18/.22`,
-/// textures `.25/.24 .27/.26`, samples `.31 .32 .36 .37` (as MAME;
-/// srallyc's layout, docs/games/srallyc.md).
+/// textures `.25/.24 .27/.26`. The samples, `.31 .32 .36 .37` back to back
+/// from the sound 68000's `0x800000` as in `srallyc`, are checked against
+/// the sound program's own sample table the same way (docs/games/vf2.md),
+/// not yet by ear.
 pub static VF2: Game = Game {
     id: "vf2",
     title: "Virtua Fighter 2",

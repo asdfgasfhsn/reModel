@@ -538,7 +538,8 @@ mod tests {
 
     #[test]
     fn srallyc_samples_fill_the_sound_board_window() {
-        // The driver streams from all of 0x800000-0xFFFFFF (docs/games/srallyc.md).
+        // The sound programs' sample tables fill 0x800000-0xFFFFFF, `.31` first
+        // and `.37` last (docs/games/srallyc.md, vf2.md).
         for g in games::ALL.iter().chain(games::IN_PROGRESS).filter(|g| ["srallyc", "vf2"].contains(&g.id)) {
             let s: Vec<_> = g.files.iter().filter(|f| f.role == Role::Samples).collect();
             assert_eq!(s.iter().map(|f| f.size).sum::<usize>(), 0x80_0000, "{}", g.id);
