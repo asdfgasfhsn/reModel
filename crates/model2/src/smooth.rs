@@ -21,6 +21,13 @@
 //! polygon RAM writes in an overlay of its own, and its stream goes only
 //! to the renderer.
 //!
+//! Motion vectors ([`Frame::motion`]) replay frame N's list once more with
+//! frame N-1's transforms, and with polygon RAM as frame N-1 left it: a
+//! model the list itself rewrites every frame (`lastbrnx`'s fighters'
+//! models in polygon RAM, whose vertices move between frames under one
+//! transform) is then frame N-1's model too, not frame N's posed with
+//! frame N-1's transform.
+//!
 //! Generic over the programs: any native program that calls
 //! [`crate::geo_native::Io::xform`] and [`crate::geo_native::Io::object`]
 //! where it takes a transform and an object gets in-betweens.
@@ -81,6 +88,51 @@ pub struct Xform {
 
 /// [`Xform::key`] of a transform no object followed.
 pub const NO_KEY: u32 = u32::MAX;
+
+/// A polygon RAM access by a motion replay (word addresses), and each
+/// object or direct data block begun, in order ([`unsure_blocks`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Access {
+    Block,
+    Read(u32),
+    Write(u32),
+}
+
+/// The blocks whose model data, read from polygon RAM as frame N-1 left
+/// it, may not be what frame N-1's object read: they read a word frame
+/// N's list writes more than once, or before the list writes it. (A word
+/// the list writes once, before it is read, holds frame N-1's value of it
+/// before frame N, if frame N-1's list did the same: only the list writes
+/// polygon RAM.)
+pub fn unsure_blocks(log: &[Access]) -> Vec<usize> {
+    let mut writes: HashMap<u32, u32> = HashMap::new();
+    for a in log {
+        if let Access::Write(x) = a {
+            *writes.entry(*x).or_default() += 1;
+        }
+    }
+    if writes.is_empty() {
+        return Vec::new();
+    }
+    let (mut done, mut block, mut out) = (std::collections::HashSet::new(), None, Vec::new());
+    for a in log {
+        match *a {
+            Access::Block => block = Some(block.map_or(0, |b| b + 1)),
+            Access::Write(x) => {
+                done.insert(x);
+            }
+            Access::Read(x) => {
+                let sure = writes.get(&x).is_none_or(|&n| n == 1 && done.contains(&x));
+                if let (false, Some(b)) = (sure, block) {
+                    if out.last() != Some(&b) {
+                        out.push(b);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
 
 impl Xform {
     pub fn new(kind: Kind, w: &[u32]) -> Self {
@@ -695,13 +747,14 @@ pub struct Frame {
 /// at the same place in `s0` as its current one in the real stream.
 #[derive(Clone, Debug, Default)]
 pub struct Motion {
-    /// The frame's list posed with the frame before's transforms; empty on
-    /// a cut.
+    /// The frame's list posed with the frame before's transforms (and
+    /// polygon RAM as the frame before left it); empty on a cut.
     pub s0: Vec<u32>,
     /// Per object block of the stream (each raster `0x1` command, in
     /// order): every transform in effect was matched and blended (not
     /// snapped to frame N's) with one that placed the same model
-    /// ([`Plan::unknown`]), so its motion is known. Direct data: false.
+    /// ([`Plan::unknown`]), and its model data is frame N-1's
+    /// ([`unsure_blocks`]), so its motion is known. Direct data: false.
     pub valid: Vec<bool>,
     /// A camera cut ([`Plan::cut`]): nothing to take motion from.
     pub cut: bool,
@@ -744,36 +797,46 @@ impl Frame {
             return None;
         }
         let mut tap = crate::light::Tap::new();
-        let (stream, _) = self.replay(self.plan.values(t), Vec::new(), Some(&mut tap));
+        let (stream, _) = self.replay(self.plan.values(t), Vec::new(), None, Some(&mut tap));
         Some((stream, tap.finish(self.frame)))
     }
 
     /// Motion data for this frame ([`Motion`]): one replay at `t` = 0,
-    /// made on first use and kept. On a cut there is no replay (`s0`
-    /// empty); when nothing matched the replay still runs, every block
-    /// invalid.
+    /// with polygon RAM as frame N-1 left it, made on first use and kept.
+    /// On a cut there is no replay (`s0` empty); when nothing matched the
+    /// replay still runs, every block invalid.
     pub fn motion(&self) -> &Motion {
         self.motion.get_or_init(|| {
             if self.plan.cut {
                 return Motion { cut: true, ..Default::default() };
             }
-            let (s0, valid) = self.replay(self.plan.values(0.0), self.plan.unknown(), None);
+            let mut log = Vec::new();
+            let (s0, mut valid) = self.replay(self.plan.values(0.0), self.plan.unknown(), Some(&mut log), None);
+            for b in unsure_blocks(&log) {
+                if let Some(v) = valid.get_mut(b) {
+                    *v = false;
+                }
+            }
             Motion { s0, valid, cut: false }
         })
     }
 
     /// Frame N's list again with these transforms.
     pub(crate) fn render_values(&self, values: Vec<Xform>) -> Vec<u32> {
-        self.replay(values, Vec::new(), None).0
+        self.replay(values, Vec::new(), None, None).0
     }
 
     /// Frame N's list again with these transforms (`snap`: those that are
     /// frame N's whatever `t`), and per object block whether all its
-    /// transforms were blended; `light`: record its lighting side channel.
+    /// transforms were blended. With `log`, polygon RAM is read as it was
+    /// before frame N whatever the list writes, the accesses noted there;
+    /// without, the list's writes are read back, as in frame N. `light`:
+    /// record its lighting side channel.
     fn replay(
         &self,
         values: Vec<Xform>,
         snap: Vec<bool>,
+        log: Option<&mut Vec<Access>>,
         light: Option<&mut crate::light::Tap>,
     ) -> (Vec<u32>, Vec<bool>) {
         let mut native = self.native.clone();
@@ -781,14 +844,12 @@ impl Frame {
         let mut overlay = HashMap::new();
         let mut tap = Tap::Replay { values, next: 0, lost: false, snap, snapped: 0, blocks: Vec::new() };
         let mut list = crate::geo::ListDma::new(&self.buffer, &self.jumps, self.read_ptr, &mut words, &mut fed);
-        let mut io = crate::geo_native::Io {
-            list: &mut list,
-            poly: crate::geo::GeoExt::overlay(&self.poly, &mut overlay, &self.rom),
-            latch: &mut latch,
-            out: &mut out,
-            tap: Some(&mut tap),
-            light,
+        let poly = match log {
+            Some(log) => crate::geo::GeoExt::before(&self.poly, log, &self.rom),
+            None => crate::geo::GeoExt::overlay(&self.poly, &mut overlay, &self.rom),
         };
+        let mut io =
+            crate::geo_native::Io { list: &mut list, poly, latch: &mut latch, out: &mut out, tap: Some(&mut tap), light };
         match &mut native {
             Native::B(n) => n.run_frame(&mut io),
             Native::C(n) => n.run_frame(&mut io),
@@ -1056,6 +1117,125 @@ mod tests {
         assert!(frame.render_lit(1.0).is_none());
         assert!(poly.iter().all(|&w| w == 0), "polygon RAM untouched");
         assert_eq!(ram[0x10], 0xabcd, "the real frame's write");
+    }
+
+    #[test]
+    fn unsure_blocks_read_words_written_twice_or_late() {
+        use Access::*;
+        // Block 0 reads a word written once before (sure) and one never
+        // written; block 1 reads a word written again later; block 2 one
+        // written after it is read; block 3 reads after the second write.
+        let log = [
+            Write(1),
+            Write(2),
+            Block,
+            Read(1),
+            Read(9),
+            Block,
+            Read(2),
+            Read(3),
+            Write(3),
+            Write(2),
+            Block,
+            Read(1),
+            Block,
+            Read(2),
+        ];
+        assert_eq!(unsure_blocks(&log), [1, 3]);
+        assert!(unsure_blocks(&[Block, Read(1), Block, Read(1)]).is_empty(), "no writes: nothing to doubt");
+    }
+
+    /// A model the list writes into polygon RAM every frame (`lastbrnx`'s
+    /// fighters), its vertices moved under the same transform: the motion
+    /// replay draws frame N-1's model with frame N-1's transform, word for
+    /// word frame N-1's block, while the in-between at t = 0 still draws
+    /// frame N's model. Drawn before the list writes it, or written
+    /// twice, it gets no motion data.
+    #[test]
+    fn motion_of_a_model_the_list_rewrites() {
+        use crate::geo_native::{Native as N2b, Program};
+        let f = |v: f32| v.to_bits();
+        let cmd = |fnc: u32| fnc << 23 | fnc << 8 | fnc;
+        // P0, P1 (its x given), a double-sided quad facing +z, the
+        // terminator: 17 words at polygon RAM 0x100.
+        let model = |x: f32| {
+            let mut m = vec![f(0.0), f(0.0), f(0.0), f(x), f(0.0), f(0.0)];
+            m.extend([1 | 1 << 8 | 1 << 17 | 1 << 18 | 1 << 27, f(0.0), f(0.0), f(1.0)]);
+            m.extend([f(1.0), f(1.0), f(0.0), f(0.0), f(1.0), f(0.0)]);
+            m.push(0);
+            m
+        };
+        let write = |x: f32| {
+            let mut l = vec![cmd(0x05), 0x100, 17];
+            l.extend(model(x));
+            l
+        };
+        // The model written with each x of `before`, drawn at translation
+        // `tx`, then written with each of `after`.
+        let list = |before: &[f32], tx: f32, after: &[f32]| {
+            let mut l = vec![cmd(0x09), f(2.0), f(3.0)];
+            l.extend(before.iter().flat_map(|&x| write(x)));
+            l.push(cmd(0x0b));
+            l.extend([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, tx, 0.0, 10.0].map(f));
+            l.extend([cmd(0x01), 0, 0, 0x100, 0]);
+            l.extend(after.iter().flat_map(|&x| write(x)));
+            l.push(cmd(0x0f));
+            l.iter().flat_map(|w| w.to_le_bytes()).chain(std::iter::repeat(0)).take(0x2_0000).collect::<Vec<u8>>()
+        };
+        let rom = Arc::new(vec![0]);
+        let run = |n: &mut N2b, buffer: &[u8], tap: &mut Tap, ram: &mut Vec<u32>| {
+            let (mut words, mut fed, mut out, mut latch) = (0, Vec::new(), Vec::new(), 0);
+            let mut list = crate::geo::ListDma::new(buffer, &[], 0, &mut words, &mut fed);
+            let mut io = crate::geo_native::Io {
+                list: &mut list,
+                poly: crate::geo::GeoExt::new(ram, &rom),
+                latch: &mut latch,
+                out: &mut out,
+                tap: Some(tap),
+                light: None,
+            };
+            n.run_frame(&mut io);
+            out.retain(|&w| w != crate::geo::RASTER_NOP);
+            out
+        };
+        // Frames N-1 and N with these lists (before them, the model holds
+        // P1 at x = 9): frame N-1's stream, frame N's, its smooth frame.
+        let frames = |prev: &[u8], now: &[u8]| {
+            let (mut n, mut ram) = (N2b::new(Program::Shared2B, 0x7378_842e), vec![0; 0x1_0000]);
+            ram[0x100..0x111].copy_from_slice(&model(9.0));
+            // A frame first, as in `motion_through_the_native_geometrizer`.
+            let empty: Vec<u8> =
+                cmd(0x0f).to_le_bytes().into_iter().chain(std::iter::repeat(0)).take(0x2_0000).collect();
+            run(&mut n, &empty, &mut Tap::record(), &mut ram);
+            let mut tap = Tap::record();
+            let prev_stream = run(&mut n, prev, &mut tap, &mut ram);
+            let prev = tap.into_list();
+            let (before, poly) = (n.clone(), Arc::new(ram.clone()));
+            let mut tap = Tap::record();
+            let real = run(&mut n, now, &mut tap, &mut ram);
+            let plan = Plan::new(&prev, tap.into_list());
+            let native = Native::B(Box::new(before));
+            let frame = Frame::new(native, now.to_vec(), Vec::new(), 0, 0, poly, rom.clone(), vec![], plan, 3);
+            (prev_stream, real, frame)
+        };
+        // P1 moves from x = 1 to x = 2 in the model, the object from 0 to
+        // 0.5: frame N-1's block exactly, valid.
+        let (prev_stream, real, frame) = frames(&list(&[1.0], 0.0, &[]), &list(&[2.0], 0.5, &[]));
+        let m = frame.motion();
+        assert_eq!(m.valid, [true]);
+        assert_eq!(m.s0, prev_stream);
+        assert_ne!(real, prev_stream);
+        // The in-between at t = 0 keeps frame N's model (P1 at 2 + 0 = 2,
+        // times fx 2), as before.
+        let t0 = frame.render_values(frame.plan.values(0.0));
+        assert_eq!(t0[6], f(4.0) >> 8);
+        assert_eq!(m.s0[6], f(2.0) >> 8);
+        // Written after it is drawn (the next frame's model), or twice:
+        // no motion data.
+        let (_, _, frame) = frames(&list(&[], 0.0, &[1.0]), &list(&[], 0.5, &[2.0]));
+        assert_eq!(frame.motion().valid, [false]);
+        let (_, _, frame) = frames(&list(&[5.0, 1.0], 0.0, &[]), &list(&[5.0, 2.0], 0.5, &[]));
+        assert_eq!(frame.motion().valid, [false]);
     }
 
     /// Motion data through the 2B native geometrizer: the replay at t = 0

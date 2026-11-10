@@ -666,6 +666,16 @@ different shot, *confirmed* by looking), and `vstriker`'s ball trail
 restarting every 8 frames; no missed cut showed in the frames looked at
 (`topskatr`, `srallyc`, `lastbrnx`, `vstriker`).
 
+A third thing stays on frame N's (2026-11-11, measured): the vertices of
+models the list rewrites in polygon RAM every frame under an unchanged
+transform (`lastbrnx`'s fighters' joint pieces, `docs/games/lastbrnx.md`).
+They are drawn under the blended transforms, so they lead the limbs
+around them by (1 - t) of their own motion: on `lastbrnx`'s frames
+3300-3599 that motion is 0.35 native pixels at the median, 4.9 at p90
+and up to 27 on a kick (frames 3391-3395). Looked at on frame
+3393 (t = 0.25, 0.5, 0.75): thin slivers of the sleeve pieces at
+Yusaku's elbow, seen at 4x zoom; nothing torn off.
+
 **Motion vectors** (temporal anti-aliasing, `docs/enhancements.md`):
 `Frame::motion` replays frame N's list once with frame N-1's matched
 transforms, giving each vertex's previous position. For that, a
@@ -674,6 +684,28 @@ transform matched under another key (a model swapped in with a pose:
 matched (`Plan::unknown`; focal lengths, matched across keys by order,
 don't count), so its object has no motion data. In-betweens are
 unchanged by this.
+
+The motion replay also reads polygon RAM **as frame N-1 left it**,
+whatever frame N's list writes there (`GeoExt::before`). A game can
+animate a model by rewriting its vertices through the list (fn 0x05)
+every frame and drawing it under an unchanged transform: `lastbrnx`'s
+fighters' joint pieces (`docs/games/lastbrnx.md`). Replayed with frame
+N's vertices, such a model was frame N's shape under frame N-1's
+transform, not where frame N-1 drew it: 3% of `lastbrnx`'s position
+words in valid blocks (96.93% agreement in `make temporal-check`; up to
+27 native pixels off on a kick). Only the list writes polygon RAM, so a
+word the list writes once in a frame, before anything reads it, holds
+before frame N what frame N-1's objects read, if frame N-1's list wrote
+it the same way. An object that reads a word frame N's list writes more
+than once, or before writing it, gets no motion data
+(`smooth::unsure_blocks`; frame N's pattern stands in for frame N-1's).
+*Confirmed* by running it: `lastbrnx` 3300-3599 100.00% with no block
+lost (its list writes 2,707 words a frame, each once, before they are
+read); the sequences of `topskatr`, `srallyc`, `sgt24h`, `doa` and
+`vstriker` write no polygon RAM through the list and their motion data
+is byte for byte what it was. In-betweens still read the list's writes
+back (frame N's vertices under blended transforms), so they are
+unchanged too; see "Seeing it" for what that leaves on `lastbrnx`.
 
 **Cost** (natively, an in-between drawn after every frame of those runs,
 six runs sharing a 16-core desktop): about 0.2 ms (`stcc`) and 0.4 ms

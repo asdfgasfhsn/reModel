@@ -199,10 +199,12 @@ pub struct GeoExt<'a> {
 
 /// Polygon RAM as a [`GeoExt`] sees it: its own, or (for smooth motion's
 /// in-betweens, `crate::smooth`) a copy read through an overlay that
-/// takes the writes, leaving the copy as it was.
+/// takes the writes, leaving the copy as it was, or (for its motion data)
+/// a copy read as it is whatever is written, the accesses noted.
 enum PolyRam<'a> {
     Own(&'a mut [u32]),
     Overlay(&'a [u32], &'a mut HashMap<u32, u32>),
+    Before(&'a [u32], &'a mut Vec<crate::smooth::Access>),
 }
 
 impl<'a> GeoExt<'a> {
@@ -216,6 +218,22 @@ impl<'a> GeoExt<'a> {
         let rom_mask = (rom.len().next_power_of_two().max(1) - 1) as u32;
         GeoExt { ram: PolyRam::Overlay(ram, overlay), rom, rom_mask, wrote: false }
     }
+
+    /// Polygon RAM `ram`, read as it is whatever is written (the RAM the
+    /// frame before left): reads and writes, and each object or direct
+    /// data block begun ([`GeoExt::block`]), are noted in `log`.
+    pub(crate) fn before(ram: &'a [u32], log: &'a mut Vec<crate::smooth::Access>, rom: &'a [u32]) -> Self {
+        let rom_mask = (rom.len().next_power_of_two().max(1) - 1) as u32;
+        GeoExt { ram: PolyRam::Before(ram, log), rom, rom_mask, wrote: false }
+    }
+
+    /// An object or direct data block begins (noted by [`GeoExt::before`]).
+    #[inline]
+    pub(crate) fn block(&mut self) {
+        if let PolyRam::Before(_, log) = &mut self.ram {
+            log.push(crate::smooth::Access::Block);
+        }
+    }
 }
 
 impl External for GeoExt<'_> {
@@ -224,11 +242,16 @@ impl External for GeoExt<'_> {
         if addr >= 0x80_0000 {
             self.rom.get((addr & self.rom_mask) as usize).copied().unwrap_or(0)
         } else {
-            match &self.ram {
+            match &mut self.ram {
                 PolyRam::Own(ram) => ram[addr as usize % ram.len()],
                 PolyRam::Overlay(ram, o) => {
                     let i = addr as usize % ram.len();
                     o.get(&(i as u32)).copied().unwrap_or(ram[i])
+                }
+                PolyRam::Before(ram, log) => {
+                    let i = addr as usize % ram.len();
+                    log.push(crate::smooth::Access::Read(i as u32));
+                    ram[i]
                 }
             }
         }
@@ -245,6 +268,7 @@ impl External for GeoExt<'_> {
                 PolyRam::Overlay(ram, o) => {
                     o.insert((addr as usize % ram.len()) as u32, v);
                 }
+                PolyRam::Before(ram, log) => log.push(crate::smooth::Access::Write((addr as usize % ram.len()) as u32)),
             }
         }
     }

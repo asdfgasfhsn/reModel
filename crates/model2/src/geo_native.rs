@@ -207,6 +207,7 @@ impl Io<'_, '_> {
     pub(crate) fn object(&mut self, oba: u32) {
         if let Some(t) = self.tap.as_deref_mut() {
             t.object(oba);
+            self.poly.block();
         }
     }
     /// A block of direct data (fn 2), which a replay notes as having no
@@ -215,6 +216,7 @@ impl Io<'_, '_> {
     pub(crate) fn direct(&mut self) {
         if let Some(t) = self.tap.as_deref_mut() {
             t.direct();
+            self.poly.block();
         }
     }
     #[inline]
