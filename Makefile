@@ -360,7 +360,7 @@ temporal-capture: release ## Save SEQ_FRAMES consecutive frames from SEQ_FROM (I
 	$(RUN) --geo native --capture-seq $(TEMPORAL_SEQ) --seq $(SEQ_FROM),$(SEQ_FRAMES) $(if $(STATE),--load-state $(STATE)) --input $(or $(INPUT),$(BENCH_INPUT)) run 4000000000 0 >/dev/null
 
 temporal-check: release ## Check TEMPORAL_SEQ's motion vectors (pose agreement, reprojection, the GPU's velocity target) and score plain, MSAA 4x, TAA and 67%/50% upscaled GPU frames against supersampled references over the sequence; report and pictures in TEMPORAL_SEQ/check (TEMPORAL_OPTS: --every N, --at F,.., --gpu-only, --no-gpu, --crop, --tune, --ref-cache DIR, --inspect, --dump X,Y,W,H, --depth, --bench [N]; needs a GPU)
-	$(RUN) $(TEMPORAL_OPTS) temporal-check $(TEMPORAL_SEQ)
+	$(RUN) temporal-check $(TEMPORAL_SEQ) $(TEMPORAL_OPTS)
 
 GEO_CHECK_STEPS ?= 750000000
 GEO_CHECK_FROM  ?= 3000
