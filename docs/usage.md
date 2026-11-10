@@ -31,6 +31,10 @@ make sound-disasm ADDR=0x6004ea   # disassemble the sound 68000 program
 make run STEPS=485000000 INPUT=coin1@1100-1104,start@1250-1254 \
     VIEW="--height 1080 --aspect 21:9 --hud edges"   # enhanced snapshot
 make dump-textures        # race run: every 3D texture and tile drawn -> out/topskatr/texdump/
+make upscale-textures     # dump -> texture pack out/topskatr/texpack-4x (built-in resampler; only new dumps)
+make upscale-textures UPSCALER='realesrgan-ncnn-vulkan -i {in} -o {out} -s {scale} -n realesrgan-x4plus -g 1 -f png' \
+    TEXPACK=out/topskatr/texpack-esrgan   # through an external upscaler (docs/texture-packs.md, Batch upscaling);
+                                          # its colour drift is matched back to the dump (COLOUR=keep: off)
 make run STEPS=600000000 INPUT=coin1@1100-1104,start@1250-1254 \
     PACK=out/topskatr/texpack VIEW="--height 1080"   # snapshots with a texture pack (docs/texture-packs.md)
 make run STEPS=600000000 INPUT=coin1@1100-1104,start@1250-1254 PACK=out/topskatr/texpack \
@@ -53,8 +57,8 @@ make web RECOMP=1         # browser build -> out/web: game list, a page and modu
 make dist                 # player to hand out (interpreter only, no ROMs) -> out/dist/remodel-VERSION-TARGET.tar.gz
 make capture              # save renderer inputs from a run into a race -> out/topskatr/capture
 make gpu-check            # draw them on the software and GPU rasterisers, time and compare (GPU_OPTS="--aa 4 --depth": with them on)
-make gpu-check PACK=out/topskatr/texpack GPU_OPTS="--tex-filter mip"   # the same with a texture pack on both renderers (docs/texture-packs.md)
-make pack-check PACK=out/topskatr/texpack   # draw them with the pack on the GPU unfiltered, mipmapped and 16x, in software and as a supersampled reference; compare -> out/topskatr/pack-check
+make gpu-check PACK=out/topskatr/texpack-4x GPU_OPTS="--tex-filter mip"   # the same with a texture pack on both renderers (docs/texture-packs.md)
+make pack-check PACK=out/topskatr/texpack-4x   # draw them with the pack on the GPU unfiltered, mipmapped and 16x, in software and as a supersampled reference; compare -> out/topskatr/pack-check
 make depth-check          # draw them on the GPU with the depth buffer off and on, picture the differences -> out/topskatr/depth-check
 make lockstep RECOMP=1    # recompiled vs interpreted i960 (and 2B SHARCs), block by block, until they differ
 make music                # after a `run` into a race: the music board's music -> out/topskatr/music.wav (GAME=stcc too)

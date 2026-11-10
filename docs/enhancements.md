@@ -52,7 +52,7 @@ through DirectX 8/9's fixed-function pipeline.
 | Output | Smooth motion: in-betweens on displays over 60 Hz | done, opt-in |
 | Output | Run-ahead: less input lag | done (native player), opt-in |
 | Textures | Texture packs: dump, replace at any size; live on the GPU in the player and the browser | done (`docs/texture-packs.md`); live display 2026-11-10 (tiles still snapshots only) |
-| Textures | Batch upscaling pipeline (dump → upscale → pack) | planned |
+| Textures | Batch upscaling pipeline (dump → upscale → pack) | done (2026-11-10, `docs/texture-packs.md`) |
 | Textures | Mipmaps from pack images, anisotropic filtering | done, opt-in (2026-11-10) |
 | Image | Anti-aliasing: MSAA 4x/8x on the GPU, supersampling in software | done, opt-in (2026-11-09) |
 | Image | Depth buffer | done, opt-in, partial (below) |
@@ -189,20 +189,41 @@ games with it off and on:
 
 ### Batch texture upscaling
 
-`make dump-textures` already writes every 3D texture and 2D tile a game
-draws; a pack of replacements at any size is drawn in their place,
-matched by content (`docs/texture-packs.md`). A target that runs a
-game's dumps through an upscaler and writes a pack makes this one
-command. The upscaler is an external tool (ESRGAN-style models suit
-textures and pixel art); reModel only drives it. Points to settle:
+Done (2026-11-10). `make upscale-textures` turns a game's
+`make dump-textures` output into a pack in one command: `remodel
+texpack-upscale` (no ROM needed) prepares every dump, runs an external
+upscaler once over the directory (`UPSCALER=`, a command template; ESRGAN
+models through `realesrgan-ncnn-vulkan` are the tested example) or a
+built-in bicubic resampler, and puts the results together. reModel only
+drives the tool. Usage, options and limitations: `docs/texture-packs.md`,
+"Batch upscaling". How the three open points were settled:
 
-- 4-bit indexed textures go through luma tables and colour translation:
-  upscale the rendered texture at full luma (as dumped) and let the
-  pack's existing per-channel mapping (`docs/texture-packs.md`) apply
-  luma;
-- translucent texel 15 becomes alpha; the upscaler must keep hard alpha
-  edges;
-- tiles that tile seamlessly (road, wallpaper) need wrap-aware upscaling.
+- **Luma.** The full-luma dump is upscaled and the renderer's existing
+  per-channel lighting ratio applies luma, unchanged. That ratio assumes
+  the replacement stands for the full-luma texture, so by default
+  (`COLOUR=match`) the tool puts the dump's low-frequency colour back:
+  lowpass(dump) - lowpass(result) added to each pixel, an opacity-weighted
+  Gaussian of 2 source texels with the texture's addressing, which keeps
+  the upscaler's detail and tiling. It reports images whose mean colour
+  moved by more than `--drift` (6/255 per channel), before and after, in
+  the pack's `drift.txt`. On topskatr realesrgan-x4plus moves 30 of 241
+  textures (up to 14/255: it denoises speckled textures, which darkens or
+  flattens them) and 909 of 5030 tiles; after matching, no textures and 2
+  tiles (6.2/255). The built-in resampler moves none either way. Matching
+  does not bring back what the model denoised away (the road's grain).
+- **Alpha.** The upscaler never sees alpha: transparent pixels (texel 15,
+  tiles' pen 0) get the colour of their opaque neighbours first, so no
+  halo of their meaningless colour reaches the edge, and the image goes
+  out as opaque RGB. Alpha is scaled here, bilinearly with the texture's
+  addressing, and cut at 0.5: the rule the renderer uses for original
+  translucent texels and pack images, so cut-outs keep their shape and
+  stay hard-edged. Tiles' transparent pixels get pen 0's colour back.
+- **Seamless tiling.** Each texture is padded by 16 texels with the
+  renderer's own addressing (`enhance::address`), repeated or mirrored per
+  axis as it is drawn, upscaled, and cropped. The dump index now records
+  every way a texture is drawn (`wrap=`), not only the first; an axis drawn
+  both ways, or unknown, is padded mirrored. Tiles are clamped (their
+  neighbours vary), so art spanning several tiles can still show seams.
 
 ### Mipmaps and anisotropic filtering
 

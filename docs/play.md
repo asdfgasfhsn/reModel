@@ -42,7 +42,7 @@ same. Costs 0.5-1 and 1.5-3 ms a frame at 1080p on the development GPU
 off by default). With `pack` on, replacement textures from the game's pack
 (`docs/texture-packs.md`) are drawn on the GPU in place of the originals. The
 pack is the folder `<data dir>/<set>/texpack/` (`out/<set>/texpack` in a
-source tree), and a clone with none uses
+source tree; `make upscale-textures` makes one), and a clone with none uses
 its parent's (*unconfirmed*: not tested). `--texture-pack DIR` names one for
 every game that run and turns `pack` on; `--pack` alone means on. PNGs are
 decoded on background threads when their texture is first drawn and the

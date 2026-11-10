@@ -19,6 +19,16 @@ struct Entry {
     /// Polygons drawn with it (textures) or frames it was on screen
     /// (tiles), over all snapshots.
     uses: u64,
+    /// Textures: the ways it was drawn, bit `mirror_u | mirror_v << 1`
+    /// set for each (0 for tiles).
+    wraps: u8,
+}
+
+/// The `wrap=` field of a texture's index line: each way it was drawn, u
+/// then v, `r` repeat or `m` mirror (`rr,mr`: repeated, and mirrored in u).
+fn wrap_field(wraps: u8) -> String {
+    let ways: Vec<&str> = (0..4).filter(|b| wraps & 1 << b != 0).map(|b| ["rr", "mr", "rm", "mm"][b]).collect();
+    format!("\twrap={}", ways.join(","))
 }
 
 pub struct Packs {
@@ -80,15 +90,17 @@ impl Packs {
     }
 
     /// Count a use of `name`, writing its dump image the first time.
-    fn record(&mut self, name: String, about: impl FnOnce() -> String, image: impl FnOnce() -> Rgba) {
+    /// `wrap`: for a texture, bit `mirror_u | mirror_v << 1` of this use.
+    fn record(&mut self, name: String, wrap: u8, about: impl FnOnce() -> String, image: impl FnOnce() -> Rgba) {
         let Some(dir) = &self.dump else { return };
         let frame = self.frame;
         let e = self.index.entry(name).or_insert_with_key(|name| {
             let img = image();
             let _ = std::fs::write(dir.join(format!("{name}.png")), png::encode_rgba(img.width, img.height, &img.data));
-            Entry { about: about(), first_frame: frame, uses: 0 }
+            Entry { about: about(), first_frame: frame, uses: 0, wraps: 0 }
         });
         e.uses += 1;
+        e.wraps |= wrap;
         self.index_dirty = true;
     }
 
@@ -97,11 +109,13 @@ impl Packs {
         let (Some(dir), true) = (&self.dump, self.index_dirty) else { return };
         let mut text = String::from(
             "# reModel texture dump: <name>.png, first frame seen, uses (textures: polygons drawn; tiles: frames\n\
-             # on screen) over the snapshots, then what produced it. Put edited or upscaled copies, same names,\n\
-             # in a directory and pass it to `run --texture-pack DIR` (docs/texture-packs.md).\n",
+             # on screen) over the snapshots, then what produced it (textures: header and the rest of the first\n\
+             # use, then wrap= every way it was drawn, u then v, r repeat or m mirror). Put edited or upscaled\n\
+             # copies, same names, in a directory and pass it to `run --texture-pack DIR` (docs/texture-packs.md).\n",
         );
         for (name, e) in &self.index {
-            let _ = writeln!(text, "{name}\tframe={}\tuses={}\t{}", e.first_frame, e.uses, e.about);
+            let wrap = if e.wraps != 0 { wrap_field(e.wraps) } else { String::new() };
+            let _ = writeln!(text, "{name}\tframe={}\tuses={}\t{}{wrap}", e.first_frame, e.uses, e.about);
         }
         let _ = std::fs::write(dir.join("index.txt"), text);
         self.index_dirty = false;
@@ -167,12 +181,13 @@ impl Enhance for Packs {
                 info.translucent as u8
             )
         };
-        self.record(info.name(), about, || texture_image(src, info));
+        let wrap = 1 << ((info.header[0] >> 8) & 3);
+        self.record(info.name(), wrap, about, || texture_image(src, info));
     }
 
     fn tile(&mut self, info: &TileInfo) -> Option<Arc<Rgba>> {
         let about = || format!("tile={:#06x}\tpalette_bank={:#04x}", info.tile, info.bank);
-        self.record(info.name(), about, || info.image());
+        self.record(info.name(), 0, about, || info.image());
         self.pack.as_ref()?;
         let img = self.load(&info.name());
         self.looked_up[1] += 1;
@@ -205,6 +220,12 @@ pub fn configure(dump: Option<String>, pack: Option<String>) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn index_lists_every_way_a_texture_is_drawn() {
+        assert_eq!(wrap_field(0b0001), "\twrap=rr");
+        assert_eq!(wrap_field(0b1011), "\twrap=rr,mr,mm");
+    }
 
     #[test]
     fn dumps_once_and_loads_replacements() {

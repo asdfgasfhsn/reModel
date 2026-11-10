@@ -88,7 +88,7 @@ RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 ##@ General
 
-help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, PACK_CHECK_OUT, GPU_OPTS, RECOMP, SOUNDTRACK)
+help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, PACK_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, GPU_OPTS, RECOMP, SOUNDTRACK)
 	@awk 'BEGIN {FS = ":.*## "; printf "usage: make <target> [VAR=value]\n"} \
 		/^##@/ {printf "\n%s\n", substr($$0, 5)} \
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -208,6 +208,33 @@ assets: release ## Extract topskatr's art for review: capture sessions, then dis
 dump-textures: release ## Coin-start-race run dumping every 3D texture and tile pattern drawn (each 60 frames) to OUT/texdump
 	rm -rf $(OUT)/texdump
 	$(RUN) $(VIEW) --dump-textures $(OUT)/texdump --input $(BENCH_INPUT) run $(BENCH_STEPS) 60
+
+# Batch upscaling of OUT/texdump into a texture pack (docs/texture-packs.md,
+# "Batch upscaling"). UPSCALER: an external tool's command with {in}, {out}
+# and {scale} filled in, run once over the directory (empty: built-in
+# bicubic), e.g.
+#   UPSCALER='realesrgan-ncnn-vulkan -i {in} -o {out} -s {scale} -n realesrgan-x4plus -g 1 -f png'
+# TILES: model | builtin | nearest | skip (how 8x8 tiles are scaled);
+# COLOUR: match (put the dump's low-frequency colour back, keeping the
+# upscaler's detail) | keep (the upscaler's colours as they come);
+# MIN_USES: leave out dumps drawn fewer times; MAX_SIDE: largest pack image
+# side; FORCE=1: redo everything (after changing settings).
+SCALE    ?= 4
+UPSCALER ?=
+TILES    ?= model
+COLOUR   ?= match
+MIN_USES ?= 1
+MAX_SIDE ?= 4096
+FORCE    ?=
+TEXDUMP  ?= $(OUT)/texdump
+TEXPACK  ?= $(OUT)/texpack-$(SCALE)x
+.PHONY: upscale-textures
+# Through the environment, so the template's quotes reach the tool as written.
+upscale-textures: export UPSCALER_CMD = $(UPSCALER)
+upscale-textures: release ## Upscale TEXDUMP (default OUT/texdump, from dump-textures) into texture pack TEXPACK (OUT/texpack-SCALEx) with UPSCALER= (empty: built-in); wrap-aware padding, colour matched to the dump (COLOUR=keep: off), hard alpha, only new or changed dumps
+	$(REMODEL) --game $(GAME) texpack-upscale $(TEXDUMP) $(TEXPACK) --scale $(SCALE) --tiles $(TILES) --colour $(COLOUR) \
+		--min-uses $(MIN_USES) --max-side $(MAX_SIDE) --work out/scratch/texpack-upscale-$(GAME) \
+		$(if $(UPSCALER),--upscaler "$$UPSCALER_CMD") $(if $(FORCE),--force)
 
 play: ## Play in a native window: the launcher (game cards, live attract previews, settings), or straight into GAME= if given; GPU, live sound, gamepads, Esc menu, save states (RECOMP=1: recompiled code; PLAY_ARGS)
 	$(call release_build,remodel-play)

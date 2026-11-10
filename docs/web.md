@@ -376,8 +376,8 @@ real 120 or 144 Hz display are untested. `Headless::set_geo_smooth` and
 (`../../texpack/<set>/` from the game page): one file name per line (`.png`
 optional), `#` comments and blank lines ignored. A browser can't list a
 folder and asking for every texture the game draws would be a stream of 404s,
-so only names in the index are requested; `(cd DIR && ls *.png > index.txt)`
-writes one. Without it the
+so only names in the index are requested; `make upscale-textures` writes one,
+or `(cd DIR && ls *.png > index.txt)` for a hand-made pack. Without it the
 original textures stay, with a console warning. The module asks for an
 image the first time its texture is drawn (`pack_wanted`); the page has the
 pack worker (`pack-worker.js`) fetch and decode it with the module's

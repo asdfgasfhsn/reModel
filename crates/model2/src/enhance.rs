@@ -65,7 +65,8 @@ pub enum Address {
     Clamp,
 }
 
-fn address(c: i32, size: usize, mode: Address) -> usize {
+/// The pixel `c` (any integer) samples on an axis of `size` pixels.
+pub fn address(c: i32, size: usize, mode: Address) -> usize {
     let s = size as i32;
     (match mode {
         Address::Repeat => c.rem_euclid(s),

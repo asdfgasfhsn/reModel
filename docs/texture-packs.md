@@ -10,9 +10,10 @@ frames are identical; checked 2026-11-10).
 
 ```sh
 make dump-textures                       # race run -> out/topskatr/texdump/
-# edit / upscale the PNGs you care about into a directory, same names, then:
+make upscale-textures                    # all of it, 4x -> out/topskatr/texpack-4x (below)
+# or edit / upscale the PNGs you care about into a directory, same names, then:
 make run STEPS=600000000 SNAP=60 INPUT=coin1@1100-1104,start@1250-1254 \
-    PACK=out/topskatr/texpack VIEW="--height 1080 --aspect 16:9 --hud edges"
+    PACK=out/topskatr/texpack-4x VIEW="--height 1080 --aspect 16:9 --hud edges"
 ```
 
 `remodel run` options: `--dump-textures DIR` and `--texture-pack DIR` (and
@@ -51,8 +52,13 @@ for the faded colours, which then draw as the original (no replacement).
 `DIR/index.txt` lists every dump: name, first frame seen, uses (textures:
 polygons drawn, over all snapshots; tiles: frames on screen), and what
 produced it (texture header words, colour, bank and sheet position, luma
-table, translucent; tile number and palette bank). Sorting it by `uses` is a
-quick way to find the textures worth replacing first.
+table, translucent, all from the first use; tile number and palette bank).
+Textures end with `wrap=`: every way the texture was drawn, one pair per
+way, u then v, `r` repeat or `m` mirror (`wrap=rr,mr`: repeated, and also
+mirrored in u). The mirror bits are not part of the key, so one dump can be
+drawn several ways; `make upscale-textures` pads by this field. Indexes
+written before it have no `wrap=`. Sorting the index by `uses` is a quick
+way to find the textures worth replacing first.
 
 ## Making a pack
 
@@ -134,7 +140,8 @@ notice.
 live) fetches the pack from `/texpack/<set>/` on the server, beside
 `/rom/`. A browser cannot list a folder, so the directory needs an
 `index.txt`: one file name per line, `#` comments and blank lines ignored.
-`(cd DIR && ls *.png > index.txt)` writes one. Only names in the index are requested,
+`make upscale-textures` writes one; for a hand-made pack,
+`(cd DIR && ls *.png > index.txt)`. Only names in the index are requested,
 and only when their texture is first drawn; a worker fetches and decodes
 them (a 1024x1024 PNG takes 10-50 ms) and the page hands over at most one
 image a frame. Without an `index.txt` the original textures stay, with a
@@ -210,6 +217,128 @@ frames with the pack on both renderers and compares them: on topskatr the
 pixels differing by more than 16 levels were 1.58% with the original
 textures and 1.54% with a 1:1 pack, so the GPU's pack path matches the
 software's about as closely as the originals do.
+
+## Batch upscaling
+
+`make upscale-textures` makes a pack from a whole dump in one go (`remodel
+texpack-upscale SRC DEST`, no ROM needed):
+
+```sh
+make dump-textures GAME=topskatr
+make upscale-textures GAME=topskatr                 # built-in bicubic, 4x
+make upscale-textures GAME=topskatr TEXPACK=out/topskatr/texpack-esrgan \
+    UPSCALER='realesrgan-ncnn-vulkan -i {in} -o {out} -s {scale} -n realesrgan-x4plus -g 1 -f png'
+```
+
+Variables: `TEXDUMP` (default `OUT/texdump`), `TEXPACK` (default
+`OUT/texpack-SCALEx`), `SCALE` (4), `UPSCALER`, `TILES`, `COLOUR`, `MIN_USES` (1: dumps
+drawn fewer times, often transient keys, are left out), `MAX_SIDE` (4096: a
+larger result is scaled down to the largest whole factor that fits; a 4x
+2048x1024 texture would be 128 MiB in memory, and packs stay loaded for the
+run), `FORCE=1`. It ends by printing the `make run ... PACK=` and `make
+pack-check ... PACK=` commands that show the result.
+
+**The upscaler** is an external tool, run once over a directory, never part
+of reModel: `UPSCALER` is its command with `{in}` (a directory of PNGs),
+`{out}` (where it must write PNGs of the same names) and `{scale}` filled in,
+run with `sh -c`. Empty, a built-in bicubic (Catmull-Rom) resampler is used,
+which needs nothing installed. Its output must be exactly `SCALE` times its
+input: models with a fixed scale (realesrgan-x4plus and -x4plus-anime are
+4x only; realesr-animevideov3 has 2x, 3x and 4x) need the matching `SCALE`,
+and any other size is reported per image as a failure. With
+`realesrgan-ncnn-vulkan`, `-g` picks the GPU from the list it prints at
+start: on a laptop with an integrated GPU as well, that is often `-g 1`
+(the development laptop: 0 is the Intel Iris Xe, 1 the NVIDIA RTX A2000).
+Check the list on your machine; without `-g` it may run on the slow one.
+Small inputs: ncnn ESRGAN models give garbage below about 8 pixels a side
+and smear edges up to 12, so every image handed to the upscaler is at least
+16 pixels a side (padding, below, already makes tiles 24).
+
+**Tiles** (`TILES=`): `model` (default) sends them through the upscaler
+like textures; `builtin`, `nearest` (pixel copies, as sharp as the
+original) or `skip` (left out, drawn as the original). On topskatr the
+5030 tile dumps are most of the run time; realesrgan-x4plus gave crisper
+text and outlines than the built-in.
+
+What it does to each dump:
+
+- **Alpha.** Transparent pixels (texel 15 of a translucent texture, tiles'
+  pen 0) get the colour of their opaque neighbours, filled outwards, so the
+  meaningless colour under them cannot bleed into edge pixels. The
+  upscaler only ever sees opaque RGB. Alpha is scaled here: bilinear with
+  the texture's addressing, cut at 0.5 (the renderer's own rule), so pack
+  images have only alpha 0 or 255 and cut-outs keep the original's shape
+  at the finer resolution, without halos. A tile's transparent pixels get
+  pen 0's colour back, as in the dump. Fully transparent dumps are left out.
+- **Seamless tiling.** Textures are padded by 16 texels on each side with
+  the renderer's own addressing, repeated or mirrored per axis as `wrap=`
+  says they are drawn, upscaled with that context and cropped, so a
+  repeated texture's edges meet without a seam. An axis drawn both ways (or
+  with no `wrap=`: older indexes give the first use's header) is padded
+  mirrored: exact where it is mirrored, and where it repeats it still
+  continues the texture's own edge instead of bringing in the far side's.
+  The summary counts those. Tiles are padded by clamping (their neighbours
+  differ from one place to the next).
+- **Luma.** The full-luma dump is what gets upscaled; lighting is then the
+  usual per-channel ratio (above), which assumes the image stands for the
+  full-luma texture.
+- **Colour** (`COLOUR=match`, the default; `--colour` on `remodel
+  texpack-upscale`). The dump's low-frequency colour is put back and the
+  upscaler's detail kept: each pixel gets lowpass(dump) - lowpass(result)
+  added, both a Gaussian of 2 source texels, weighted by opacity so
+  transparent pixels pull nothing, with the texture's addressing so the
+  correction tiles like the texture (tiles: nothing past the edge). It is
+  smooth (no halos or edges of its own); a flat shift comes back exactly.
+  `COLOUR=keep` leaves the upscaler's colours. Images whose mean colour
+  moved by more than 6/255 in a channel (`--drift N`) are reported, before
+  and after matching, and listed in the pack's `drift.txt`. Matching fixes
+  colour, not texture: a denoising model's lost grain stays lost (the
+  road is still smooth, only its tint is back), and detail it smeared
+  between colours (thin red/black tile art) stays smeared. The built-in
+  resampler hardly changes (mean 0.05/255 a pixel).
+- **Checks.** Every result must be exactly `SCALE` times the padded input;
+  a missing or wrong-sized output fails that image and the run (the work
+  directory, `out/scratch/texpack-upscale-GAME`, is then kept to look at,
+  with the tool's output in `upscaler.log`). An upscaler that writes no file
+  for 5 minutes (`--stall SECONDS`) is stopped; what it did write goes into
+  the pack and a rerun retries the rest. realesrgan-ncnn-vulkan 0.2.0 once
+  hung here on the last image of a run, spinning a core with the GPU idle.
+
+**Incremental.** The pack's `upscale.txt` records the settings and, per
+image, its dump's hash and the file's size and time. A rerun only does new
+or changed dumps, keeps images edited or added by hand (anything not
+matching the record), and refuses to mix settings: change `TEXPACK` or pass
+`FORCE=1` to redo all. Images are written under a temporary name and renamed,
+so an interrupted run never leaves a half-written file. The pack's
+`index.txt` lists its image files, one name a line (`#` lines are comments).
+
+On topskatr (coin-start race dump: 241 textures, 5030 tiles, an RTX A2000
+laptop): built-in 1.3 s, 47 MiB; realesrgan-x4plus 2.5 minutes, 86 MiB
+(textures alone, `TILES=skip`: 59 s).
+What to expect from realesrgan-x4plus: crisper HUD text and outlines and
+cleaner foliage, no seams on repeated ground and no halos on cut-outs, but
+it is a denoising model: grainy textures (the snow-like road) come out
+smooth and flat and the grass gains invented blades. Without matching
+(`COLOUR=keep`) clouds turn whiter and 30 textures and 909 tiles drift in
+colour (14/255 at most for a texture); with it none of the textures and 2
+tiles do (6.2/255 at most), the clouds keep their blue-grey shading, and
+the frames' low-frequency colour error against the original drops by a
+quarter to a half (`pack-check` captures). Try `TILES=` and other
+models per game; the built-in result is close to the original, only
+softer.
+
+Limitations:
+
+- Art spanning several tiles (logos, big fonts) can show seams between
+  tiles, since each tile is upscaled alone; on the opaque back plane the
+  pen-0 area of an upscaled tile still draws the original pen, per game
+  pixel.
+- Textures drawn only between snapshots are not in the dump, so they stay
+  original (topskatr: 57 of 4293 textured polygons in a coin-start run).
+- Models that redraw a texture rather than refine it can show the
+  original's shading traces under lighting (above); colour matching
+  restores the mean colour over a few texels but not finer structure, and
+  `drift.txt` lists what still drifts.
 
 ## Limitations
 

@@ -9,6 +9,7 @@ mod sharc;
 mod sound_render;
 mod soundtrack;
 mod texpack;
+mod texpack_upscale;
 mod tgp2a;
 mod tgp_check;
 mod tgp_disasm;
@@ -217,6 +218,19 @@ commands:
                        (NAME with a `/` is used as a path), converting
                        anything but WAV and MP2 to WAV with ffmpeg, and
                        write a tracks.txt numbered from the file names
+  texpack-upscale SRC DEST [--scale N] [--upscaler CMD] [--tiles MODE]
+                  [--colour match|keep] [--min-uses N] [--max-side N]
+                  [--drift N] [--work DIR] [--force] [--keep-work]
+                       make texture pack DEST from dump SRC (from
+                       --dump-textures; no ROM needed): transparent pixels
+                       filled, borders padded as the texture wraps, run
+                       through CMD (`{in}`, `{out}`, `{scale}` filled in;
+                       default: built-in bicubic), cropped, the dump's
+                       low-frequency colour put back (--colour keep: off),
+                       alpha cut at 0.5.
+                       Tiles (MODE): model, builtin, nearest or skip. Only
+                       new or changed dumps; DEST/index.txt lists the pack
+                       (docs/texture-packs.md)
   mpeg-dump ADDR [SECONDS]
                        decode MPEG ROM frames from ADDR directly to
                        out/GAME/mpeg-ADDR.{wav,f32,mp2} (default 10 s)
@@ -398,6 +412,15 @@ fn main() -> ExitCode {
         };
         let dest = if name.contains('/') { PathBuf::from(name) } else { PathBuf::from("soundtracks").join(name) };
         return match soundtrack::import(Path::new(src), &dest) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if cmd == "texpack-upscale" {
+        return match texpack_upscale::main(&args[1..], &game_id) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("error: {e}");
