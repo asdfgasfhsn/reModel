@@ -356,25 +356,32 @@ vertices [P1', P0', Pa, Pb] in that order. **M**
 | h0 | 0-2 / 3-5 | width = 32 << n, height = 32 << n | M |
 | h0 | 6 / 7 | smooth wrap X / Y (only affects filtering at the seam; coordinates always repeat because sizes are powers of two) | M |
 | h0 | 8 / 9 | mirror X / Y (mirrored repeat) | M |
-| h0 | 10-11 / 12 | microtexture min-LOD / microtexture enable | L |
+| h0 | 10-11 / 12 | microtexture min-LOD (L; values 0-2 with bit 12, and 1 on plain polygons of three games: meaning unconfirmed) / microtexture enable (**H** as a flag naming a second texture: `hotd`, `segawski`, `topskatr`, `waverunr`; see `texture-lod.md`) | L / H |
 | h0 | 13 | translucent (texel 15 = transparent) | M |
 | h0 | 14 | textured (else flat) | M |
 | h0 | 15 | checker: draw every other pixel (x ^ y parity), used as a screen-door translucency. Applies to flat polygons too: waverunr's arch shadow is a flat checker polygon over the water (**H**, from the stream; drawn solid it hides the water); sgt24h's car shadow is flat checker polygons too (**H**, from the stream) | M |
 | h1 | 0-7 | luma table number (× 128 bytes) | M |
 | h2 | 0-5 / 6-10 | X / 32, Y / 32 position in the sheet | M |
 | h2 | 12 | swap banks (level 0 from bank 1) | M |
-| h2 | 13 / 14-15 | microtexture X (×128) / Y (×128), 128×128 in the other bank | L |
+| h2 | 11 | set on every textured polygon of all 18 games; purpose unknown | — |
+| h2 | 13 / 14-15 | microtexture X (×128) / Y (×128), 128×128 in the other bank | **H** (by content, `texture-lod.md`) |
 | h3 | 6-15 | colour: palette entry 0x1000 + n | M |
-| h1 8-15, h2 11, h3 0-5 | | unknown | — |
+| h1 8-15, h3 0-5 | | unknown | — |
 
 **Mipmaps.** Level k sits at ((x − 2048) >> k) & 2047, ((y − 1024) >> k) & 1023, in bank
 (k & 1) (bank-swapped if h2 bit 12). Level 1 is therefore at (1024 + x/2, 512 + y/2) in
-the other bank, and so on down to 2×2.
+the other bank, and so on down to 2×2. **H** for levels 1 and 2: 16 of the 18 games' texture
+RAM holds them there (`texture-lod.md`).
 
 **LOD per pixel.** The polygon's lod = 128·(exponent of distance − 127) + logram[the 15
 mantissa bits]. The log table is uploaded by fn 0x14. The pixel's mip value is
 2·log2(z)·128 − lod; the level is that >> 7, with fractional blending between levels.
 Negative values blend in the microtexture. **L** (MAME derived this itself)
+
+Since checked against the games (`texture-lod.md`): the log table is `128·log2(1 + i/32768)`
+(exactly, in three games; a straight-line stand-in in most), and the games author the
+distance word as the per-polygon half of `2·log2(z) − log2(distance)` (**H**). The constant
+in the level, the filtering between levels and the microtexture's blend stay unconfirmed.
 
 ### 5.4 Pixel colour
 - **Textured:**
@@ -534,7 +541,8 @@ Rasteriser checks (reModel `crates/model2/src/raster.rs`, gameplay frame 4555), 
   sampling and looks like Model 2 footage.
 - topskatr uploads no mipmaps: both texture banks hold only full-size textures (the
   first 1 MB of each bank is used), and the level-1 positions of its textures are empty
-  or hold other textures. So LOD selection can't matter for this game.
+  or hold other textures. So mip selection can't matter for this game; its microtextured
+  floors, roads and walls are another matter (`texture-lod.md`: not drawn yet).
 - Clipping (§4.3): reModel clips each polygon in view space against four side planes through
   the eye and a near plane at z = 10^-6, which only keeps 1/z finite. The side planes bound a
   guard band 992 pixels (twice the screen width) beyond each screen edge, not the window, so
@@ -547,7 +555,7 @@ Rasteriser checks (reModel `crates/model2/src/raster.rs`, gameplay frame 4555), 
   whole. What the hardware does with geometry this close is *unconfirmed*; dropping the near
   plane altogether (z near 0 with x, y unbounded) gives projected coordinates too large for f32
   spans (floor polygons running under the camera smeared), which the side planes prevent.
-- Not yet checked: mipmaps/LOD, microtexture, translucency/checker details, and the z-sort key format (reModel sorts on float z).
+- Not drawn: mip levels and microtextures (what the games send is in `texture-lod.md`). Not yet checked: translucency/checker details, and the z-sort key format (reModel sorts on float z).
 
 ## Smooth motion (reModel's in-between frames)
 
