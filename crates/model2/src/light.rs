@@ -56,7 +56,7 @@ impl Hasher for WeldHasher {
         self.write_u32(v as u32);
     }
 }
-use std::time::Instant;
+use crate::geo::Stopwatch;
 
 /// How polygons are shaded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -407,7 +407,8 @@ pub fn shade(stream: &[u32], opts: &Options) -> Shaded {
     if !opts.on() {
         return Shaded::default();
     }
-    let t = Instant::now();
+    // Not std's Instant: it panics in WebAssembly (the browser shades too).
+    let t = Stopwatch::start();
     let mut s = shade_mesh(&mesh_from_stream(stream), opts);
     s.stats.ms = t.elapsed().as_secs_f32() * 1e3;
     s

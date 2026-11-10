@@ -260,7 +260,9 @@ progress. It offers:
   screen's, the default: the window's height in device pixels, up to
   1080), aspect (fit the window, the default, 4:3 to 21:9; 4:3; 16:9),
   HUD placement in wide views (at the edges, or centred), the bezel (on,
-  the default, or off; below), anti-aliasing, the depth buffer, the texture
+  the default, or off; below), anti-aliasing, the depth buffer, shading
+  (flat, the default; smooth; per pixel) and its crease angle (the game's,
+  the default; 30°, 40°, 60°; below, "Smooth shading"), the texture
   pack (off by default; below) and its filtering (off, mipmaps, 2x to 16x);
 - **Sound:** on or off, the effects (sound board) and music levels in
   dB (defaults +8 and -8, `model2::audio::DEFAULT_MIX`; the game's own
@@ -292,7 +294,7 @@ audio context is suspended, nothing reaches the workers; it resumes from
 the same frame). Resume applies the HUD placement (`set_hud`), the bezel, the mix
 (a `mix` message to the sound worker), the remapped controls
 (`set_bindings`) and touch and tilt at once; render
-height, aspect, sound on or off, the sound buffer, the geometrizer and smooth motion need a restart (anti-aliasing, the depth buffer, the texture pack and its filtering apply at once: `set_quality`, `set_pack`), and
+height, aspect, sound on or off, the sound buffer, the geometrizer and smooth motion need a restart (anti-aliasing, the depth buffer, shading and its crease angle, the texture pack and its filtering apply at once: `set_quality`, `set_pack`), and
 the panel offers "Restart to apply" when one of them changed (it reloads
 the page with `#play`, skipping the panel once).
 
@@ -336,14 +338,76 @@ parameters:
   by depth, not the game's order, except skies, shadows, translucent
   layers and large floors; `docs/enhancements.md`). Both off by default,
   both in the panel's Display section, both applied live. The module's
-  `set_quality(aa, depth, texfilter)` takes them before or after `start`
-  (`texfilter` is a string: `off`, `mip`, `2`, `4`, `8` or `16`; anything
-  else is off). Temporal anti-aliasing and upscaling are the native
-  player's only (`docs/play.md`); the browser has no setting for them;
+  `set_quality(aa, depth, texfilter, shading, crease)` takes them before
+  or after `start` (`texfilter` is a string: `off`, `mip`, `2`, `4`, `8` or
+  `16`; anything else is off; `shading` and `crease` as below, and may be
+  left out: flat, the game's angle). Temporal anti-aliasing and upscaling
+  are the native player's only (`docs/play.md`); the browser has no
+  setting for them;
+- `shading=vertex` (smooth shading; `shading=flat` or `off`, the default,
+  the original; `shading=pixel`, accepted, draws as `vertex` for now) and
+  `crease=40` (degrees, 0 to 180: faces meeting at a sharper angle keep a
+  hard edge; 0 smooths nothing; `crease=auto`, the default, is the game's
+  own, `romset::Shading`). Both in the panel's Display section, both
+  applied live (below, "Smooth shading");
 - `pack=1` (the game's texture pack from `/texpack/<set>/`; `pack=0` off) and
   `texfilter=off|mip|2|4|8|16` (filtering of pack images, as in
   `docs/texture-packs.md`). Both off by default, both in the panel's Display
   section, both applied live.
+
+**Smooth shading.** With `shading=vertex` (or Shading: Smooth in the
+panel), brightness varies across curved surfaces instead of stepping from
+polygon to polygon: the layer `model2::light` computes from the polygon
+stream alone (`docs/usage.md`, `--shading`; `docs/play.md`). It runs on
+the page, in the renderer's `present_bus` (`Renderer::set_light_rules`
+gives it the game's crease angle and HUD windows at `start`), on whatever
+stream it draws: the worker's, the page thread's (`geo=local`), the
+chip's (`geo=chip`) and smooth motion's in-betweens alike, so the
+geometry worker and its messages are unchanged. It combines with
+anti-aliasing, the depth buffer and texture packs; WebGPU needs nothing
+it didn't already have. With shading on, the status line says the level,
+the crease angle and how many of the last frame's polygons were shaded
+(`shading vertex 40°, 812/4127 polygons`). `shading_cost(runs)` (in the
+page as `remodelShadingCost(runs)`) times the grouping pass on the newest
+frame for a test driver: `[median ms, worst ms, polygons, lit]`.
+
+What isn't there yet:
+
+- **Per pixel** (`shading=pixel`) needs the exact layer: the normals and
+  lighting the game used, which only the native geometrizer knows. The
+  page accepts it, keeps it, and draws it as smooth; the panel and the
+  status line say so (`shading pixel (as vertex)`).
+- **The game's own lighting data.** In the native player the geometrizer
+  will also record, per object and polygon, the light vector, focal
+  lengths and normals it lit with (the side channel), which makes smooth
+  shading exact. In the browser the geometrizer runs in the worker, so
+  the worker will post those words with each frame for the page to
+  shade with. Until that exists, the page shades from the stream with a
+  guessed focal length, as the native player does today. The planned
+  change: the `init` message gains `light` (and a `{type: "set", light}`
+  message switches it live), which calls a `GeoEngine::set_light`; each
+  `frame` reply gains `light` (a transferred `Uint32Array`, the frame's
+  side channel words, `model2::light::Frame::to_words`, about 16 bytes a
+  polygon) and, with smooth motion, `betweenLight` (one per in-between);
+  `set_geo_frame(stream, points, between, light, between_light)` takes
+  them as optional trailing arguments (old pages keep working) and hands
+  them to the renderer with the stream it draws. On the page's thread
+  (`geo=local`) the renderer reads them from the engine directly.
+- **Finer levels** (`shading_fine`, blending the game's 64 brightness
+  levels): not built; it will be a sixth, optional `set_quality` argument
+  and `?shadefine=1`.
+
+*Measured* (Chrome 157 on Linux, Vulkan, RTX A2000, interpreter build,
+1413x1060, the machine shared with other work): `lastbrnx` and
+`topskatr` attract mode with `shading=vertex`, alone and with `aa=4`,
+`depth=1`, `pack=1&texfilter=mip`, `geo=chip` (`pixel`) and `geo=local`
+(`crease=20`), draw without console errors or WebGPU validation
+messages, at full speed with the worker; switching live with
+`set_quality` works, and the old three-argument call turns shading off.
+The grouping pass on the page took 1.0-1.5 ms a frame (median of 30-50
+passes, 2,700-3,900 polygons of which 230-530 shaded), 2.7-4.9 ms with
+the page thread loaded (`geo=local`, or the chip slowing the game); the
+status line's draw time went from 4.3-5.4 ms flat to 5.3-6.3 ms.
 
 **Smooth motion.** With the setting on (`?smooth=1`, or Advanced in the
 panel; off by default), a display faster than the game's 57.5 Hz shows

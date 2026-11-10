@@ -397,6 +397,18 @@ impl App {
         )
     }
 
+    /// The status line's smooth shading part, with it on: the level, and
+    /// the last frame's polygons shaded of those drawn.
+    fn light_status(&self) -> String {
+        let Some(o) = self.renderer.light_options() else { return String::new() };
+        let level = match o.shading {
+            gpu::Shading::Pixel => "pixel (as vertex)",
+            s => s.name(),
+        };
+        let lit = self.renderer.light_stats().map_or(String::new(), |s| format!(", {}/{} polygons", s.lit, s.polys));
+        format!(" · shading {level} {}°{lit}", o.crease)
+    }
+
     fn audio_status(&self, t: f64) -> String {
         if self.link.is_none() || self.redraws < 2 {
             return String::new();
@@ -517,7 +529,7 @@ impl App {
             set_status(
                 &self.status,
                 &format!(
-                    "{} · {:.0}% speed{} · {:.0} fps drawn ({} repeats) · {}x{} · i960 {} · ms per frame: emulate {:.1}, draw {:.1}{}{}{}",
+                    "{} · {:.0}% speed{} · {:.0} fps drawn ({} repeats) · {}x{} · i960 {} · ms per frame: emulate {:.1}, draw {:.1}{}{}{}{}",
                     match self.per_refresh() {
                         Some(_) => format!("synced to {:.0} Hz", 1000.0 / self.refresh.ms()),
                         None => "exact speed".into(),
@@ -537,6 +549,7 @@ impl App {
                         (n, _) => format!(" · {n} in-betweens"),
                     },
                     self.pack_status(),
+                    self.light_status(),
                     self.audio_status(t),
                 ),
             );
@@ -558,9 +571,10 @@ thread_local! {
     static OVERRIDES: RefCell<String> = const { RefCell::new(String::new()) };
     /// Smooth motion for the game `start` starts ([`set_smooth`]).
     static SMOOTH: Cell<bool> = const { Cell::new(false) };
-    /// Anti-aliasing samples, the depth buffer and the filtering of texture
-    /// pack images ([`set_quality`]).
-    static QUALITY: Cell<(u32, bool, gpu::TexFilter)> = const { Cell::new((0, false, gpu::TexFilter::Off)) };
+    /// Anti-aliasing samples, the depth buffer, the filtering of texture
+    /// pack images, and smooth shading with its crease angle
+    /// ([`set_quality`]).
+    static QUALITY: Cell<Quality> = const { Cell::new(Quality::OFF) };
     /// The texture pack the page is filling ([`set_pack`]), for the game
     /// `start` starts.
     static PACK: RefCell<Option<Arc<Mutex<PackState>>>> = const { RefCell::new(None) };
@@ -590,20 +604,100 @@ pub fn set_smooth(on: bool) {
     SMOOTH.with(|s| s.set(on));
 }
 
+/// The page's choice of image quality ([`set_quality`]).
+#[derive(Clone, Copy)]
+struct Quality {
+    aa: u32,
+    depth: bool,
+    tex_filter: gpu::TexFilter,
+    shading: gpu::Shading,
+    crease: u8,
+}
+
+impl Quality {
+    const OFF: Quality = Quality {
+        aa: 0,
+        depth: false,
+        tex_filter: gpu::TexFilter::Off,
+        shading: gpu::Shading::Flat,
+        crease: gpu::CREASE_AUTO,
+    };
+
+    fn gpu(self) -> gpu::Quality {
+        let Quality { aa, depth, tex_filter, shading, crease } = self;
+        gpu::Quality { msaa: aa, depth, tex_filter, shading, crease, ..Default::default() }
+    }
+}
+
 /// Image quality of the 3D layer (docs/enhancements.md): `aa` samples a
-/// pixel (0 for none; WebGPU has 4), the depth buffer, and `tex_filter`,
-/// the filtering of texture pack images (`off`, `mip`, `2`, `4`, `8`,
-/// `16`: `gpu::TexFilter::parse`; anything else is off). Before `start`,
-/// for the game it starts; after, from the next frame.
+/// pixel (0 for none; WebGPU has 4), the depth buffer, `tex_filter`, the
+/// filtering of texture pack images (`off`, `mip`, `2`, `4`, `8`, `16`:
+/// `gpu::TexFilter::parse`; anything else is off), and smooth shading
+/// (`model2::light`): `shading` `flat` (or left out: the original),
+/// `vertex` or `pixel` (drawn as `vertex` until the exact layer exists),
+/// with faces meeting at more than `crease` degrees (0 to 180) kept hard;
+/// left out (or 255) is the game's own angle (`romset::Shading`). The
+/// shading is done on this page, from the polygon stream, whichever
+/// thread ran the geometrizer. Before `start`, for the game it starts;
+/// after, from the next frame.
 #[wasm_bindgen]
-pub fn set_quality(aa: u32, depth: bool, tex_filter: &str) {
-    let tex_filter = gpu::TexFilter::parse(tex_filter).unwrap_or_default();
-    QUALITY.with(|q| q.set((aa, depth, tex_filter)));
+pub fn set_quality(aa: u32, depth: bool, tex_filter: &str, shading: Option<String>, crease: Option<u32>) {
+    let q = Quality {
+        aa,
+        depth,
+        tex_filter: gpu::TexFilter::parse(tex_filter).unwrap_or_default(),
+        shading: shading.as_deref().and_then(gpu::Shading::parse).unwrap_or_default(),
+        crease: match crease {
+            Some(n) if n <= 180 => n as u8,
+            _ => gpu::CREASE_AUTO,
+        },
+    };
+    QUALITY.with(|c| c.set(q));
     APP.with(|a| {
         if let Some(app) = a.borrow().as_ref() {
-            app.borrow_mut().renderer.set_quality(gpu::Quality { msaa: aa, depth, tex_filter, ..Default::default() });
+            app.borrow_mut().renderer.set_quality(q.gpu());
         }
     });
+}
+
+/// The crease angle (degrees) smooth shading uses for `game` by default
+/// (`romset::Shading::crease`), for the settings panel's "Auto".
+#[wasm_bindgen]
+pub fn game_crease(game: &str) -> u32 {
+    romset::games::find(game).map_or(romset::Shading::DEFAULT.crease, |g| g.shading.crease) as u32
+}
+
+/// Time smooth shading's grouping pass (`model2::light::shade`) on this
+/// page: `runs` passes over the newest polygon stream with the running
+/// game's options (for a test driver; docs/web.md, "Smooth shading").
+/// Returns `[median ms, worst ms, polygons, lit polygons]`, or empty with
+/// shading off or before a frame.
+#[wasm_bindgen]
+pub fn shading_cost(runs: u32) -> Vec<f64> {
+    APP.with(|a| {
+        let app = a.borrow();
+        let Some(app) = app.as_ref() else { return Vec::new() };
+        let mut app = app.borrow_mut();
+        let app = &mut *app;
+        let Some(opts) = app.renderer.light_options() else { return Vec::new() };
+        let stream = match &app.geo_frame {
+            Some(Some((s, _))) => s.clone(),
+            Some(None) => return Vec::new(),
+            None => {
+                app.machine.bus.geo.sync();
+                app.machine.bus.geo.engine().stream.clone()
+            }
+        };
+        let mut times = Vec::new();
+        let mut stats = model2::light::Stats::default();
+        for _ in 0..runs.max(1) {
+            let t = now();
+            stats = model2::light::shade(&stream, &opts).stats;
+            times.push(now() - t);
+        }
+        times.sort_by(f64::total_cmp);
+        vec![times[times.len() / 2], times[times.len() - 1], stats.polys as f64, stats.lit as f64]
+    })
 }
 
 /// A texture pack served beside the page (docs/web.md, "Texture packs"):
@@ -1446,8 +1540,10 @@ pub async fn start(
         .unwrap_or(config.format.remove_srgb_suffix());
     surface.configure(&device, &config);
     let mut renderer = gpu::Renderer::from_device(device, queue, name.clone());
-    let (aa, depth, tex_filter) = QUALITY.with(|q| q.get());
-    renderer.set_quality(gpu::Quality { msaa: aa, depth, tex_filter, ..Default::default() });
+    renderer.set_quality(QUALITY.with(|q| q.get()).gpu());
+    // Smooth shading's per-game rules (crease angle, windows left flat).
+    let hud = game.hud_windows.iter().filter(|&&w| w < 64).fold(0u64, |m, &w| m | 1 << w);
+    renderer.set_light_rules(&game.shading, hud);
     if let Some(pack) = PACK.with(|p| p.borrow().clone()) {
         renderer.set_pack(Some(Box::new(WebPack(pack))));
     }

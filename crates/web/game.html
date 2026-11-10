@@ -115,7 +115,7 @@
   const { default: init, start, set_geo_frame, set_touch, set_gun, view_point, stick_cursor, set_audio_level,
     set_paused, set_hud, controls_help, touch_layout, game_title, rom_files, set_bindings, bindings_view,
     bindings_capture, bindings_edit, set_smooth, set_audio_buffer, set_quality, set_pack, pack_wanted, pack_image,
-    pack_missing } =
+    pack_missing, game_crease, shading_cost } =
     await import(pkg + "remodel_web.js");
 
   // Settings (settings.js): built-in defaults < stored for all games <
@@ -242,7 +242,7 @@
     if (r.action === "restart") return restart();
     set_hud(values.hud !== "center");
     const q = S.effective(values, env());
-    set_quality(q.aa, q.depth, q.texFilter);
+    set_quality(q.aa, q.depth, q.texFilter, q.shading, q.crease);
     if (values.pack !== before.pack) usePack(values.pack);
     set_bindings(values.controls);
     showKeys();
@@ -253,8 +253,8 @@
     }
     if (touch && values.tilt !== before.tilt) touch.tilt(values.tilt, tiltAsk ?? tiltPermission());
     tiltAsk = null;
-    run = { ...run, hud: values.hud, bezel: values.bezel, aa: values.aa, depth: values.depth, pack: values.pack,
-      texfilter: values.texfilter, sfx: values.sfx, music: values.music, touch: values.touch,
+    run = { ...run, hud: values.hud, bezel: values.bezel, aa: values.aa, depth: values.depth, shading: values.shading,
+      crease: values.crease, pack: values.pack, texfilter: values.texfilter, sfx: values.sfx, music: values.music, touch: values.touch,
       tilt: values.tilt, controls: values.controls };
     placeBezel();
     set_paused(false);
@@ -481,6 +481,7 @@
       await init({ module_or_path: module });
       packModule = module;
       const layout = JSON.parse(touch_layout(game));
+      panel.setGameCrease(game_crease(game));
       // The panel remaps through the module (romset::bindings), which keeps
       // the player's changes as text in the settings (`controls`).
       panel.setControls({
@@ -572,7 +573,7 @@
               [data.buffer, jumps.buffer]);
       }
       set_smooth(opt.smooth);
-      set_quality(opt.aa, opt.depth, opt.texFilter);
+      set_quality(opt.aa, opt.depth, opt.texFilter, opt.shading, opt.crease);
       if (opt.pack) await usePack(true);
       set_audio_buffer(opt.audio.target);
       await start(game, document.getElementById("screen"), status, rom, opt.height, opt.aspect, opt.hudEdges, link, geo);
@@ -581,6 +582,9 @@
       placeBezel();
       // For a test driver: what the game started with.
       window.remodelSettings = { values: run, start: opt };
+      // Smooth shading's grouping pass timed on this page: [median ms,
+      // worst ms, polygons, lit] over `runs` passes on the newest frame.
+      window.remodelShadingCost = (runs = 20) => Array.from(shading_cost(runs));
       // Fade the logo once it's been up for 1.5 s.
       const splash = document.getElementById("splash");
       setTimeout(() => splash.classList.add("gone"), Math.max(0, 1500 - performance.now()));

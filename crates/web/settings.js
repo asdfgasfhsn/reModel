@@ -15,8 +15,8 @@
 export const MIX = [8, -8];
 
 /// Every setting, in panel order.
-export const KEYS = ["height", "aspect", "hud", "bezel", "aa", "depth", "pack", "texfilter", "sound", "sfx", "music", "buffer", "touch",
-  "tilt", "geo", "smooth", "controls"];
+export const KEYS = ["height", "aspect", "hud", "bezel", "aa", "depth", "shading", "crease", "pack", "texfilter", "sound", "sfx",
+  "music", "buffer", "touch", "tilt", "geo", "smooth", "controls"];
 /// Settings kept per game only, never as the defaults for all games:
 /// `controls` is the game's remapped keys and pad bindings, as the module
 /// keeps them (`romset::bindings`: one `slot = bindings` line per change
@@ -45,6 +45,8 @@ export function builtin(env = {}) {
     bezel: true,
     aa: "off",
     depth: false,
+    shading: "flat",
+    crease: "auto",
     pack: false,
     texfilter: "off",
     sound: true,
@@ -88,6 +90,17 @@ export function clean(key, v) {
       if (v === 0 || v === false || v === "0") return "off";
       if (v === 1 || v === "1") return "mip";
       return ["off", "mip", "2", "4", "8", "16"].includes(String(v)) ? String(v) : undefined;
+    // Smooth shading (model2::light): flat (the original), per vertex, or
+    // per pixel (drawn per vertex until the exact layer exists).
+    case "shading":
+      if (v === "off" || v === false || v === "0") return "flat";
+      return ["flat", "vertex", "pixel"].includes(v) ? v : undefined;
+    // Its crease angle in degrees, or "auto": the game's own.
+    case "crease": {
+      if (v === "auto") return v;
+      const n = typeof v === "number" ? v : typeof v === "string" && /^\d+$/.test(v.trim()) ? Number(v) : NaN;
+      return Number.isInteger(n) && n >= 0 && n <= 180 ? n : undefined;
+    }
     case "depth":
     case "pack":
     case "bezel":
@@ -140,9 +153,10 @@ function cleanAll(o) {
 /// say the same; `geo=native` is the default, kept for old links), `smooth=1`
 /// (smooth motion: in-between frames on displays faster than the game),
 /// `aa=4` (4x multisampling; `aa=0` or `aa=off` off), `depth=1` (a depth
-/// buffer for the 3D layer), `pack=1` (the game's texture pack, from
-/// /texpack/<set>/) and `texfilter=off|mip|2|4|8|16` (filtering of pack
-/// images).
+/// buffer for the 3D layer), `shading=flat|vertex|pixel` (smooth shading;
+/// `pixel` draws as `vertex` for now) with `crease=auto|DEGREES`, `pack=1`
+/// (the game's texture pack, from /texpack/<set>/) and
+/// `texfilter=off|mip|2|4|8|16` (filtering of pack images).
 export function fromParams(params) {
   const raw = {};
   const flag = (k) => params.get(k) !== "0" && params.get(k) !== "off" && params.get(k) !== "false";
@@ -152,6 +166,8 @@ export function fromParams(params) {
   if (params.has("bezel")) raw.bezel = flag("bezel");
   if (params.has("aa")) raw.aa = flag("aa") ? "4" : "off";
   if (params.has("depth")) raw.depth = flag("depth");
+  if (params.has("shading")) raw.shading = params.get("shading");
+  if (params.has("crease")) raw.crease = params.get("crease");
   if (params.has("pack")) raw.pack = flag("pack");
   if (params.has("texfilter")) raw.texfilter = params.get("texfilter");
   if (params.has("sound")) raw.sound = flag("sound");
@@ -268,7 +284,8 @@ export function audioBuffer(buffer, env = {}) {
 /// What the page starts the game with: `{height, aspect (width / height),
 /// hudEdges, bezel, sound, mix: [sfx, music], audio: {target, prime, max},
 /// touch, tilt, geoLocal, geoNative, smooth, aa (samples, 0 or 4), depth,
-/// pack, texFilter ("off", "mip", "2" ... "16")}`
+/// shading ("flat", "vertex", "pixel"), crease (degrees, or undefined: the
+/// game's), pack, texFilter ("off", "mip", "2" ... "16")}`
 /// (smooth motion needs the
 /// native geometrizer: off with the chip).
 export function effective(values, env) {
@@ -287,6 +304,8 @@ export function effective(values, env) {
     smooth: values.smooth && values.geo !== "chip",
     aa: values.aa === "4" ? 4 : 0,
     depth: values.depth,
+    shading: values.shading,
+    crease: values.crease === "auto" ? undefined : values.crease,
     pack: values.pack,
     texFilter: values.texfilter,
   };
