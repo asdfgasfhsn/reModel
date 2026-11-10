@@ -105,7 +105,7 @@ impl TexturePack for DirPack {
 /// images serve every version).
 pub fn game_dir(game: &romset::Game) -> PathBuf {
     let dir = |set: &str| crate::settings::data_dir().join(set).join("texpack");
-    std::iter::once(game.id).chain(game.parent).map(dir).find(|d| d.is_dir()).unwrap_or_else(|| dir(game.id))
+    romset::pack_sets(game).map(dir).find(|d| d.is_dir()).unwrap_or_else(|| dir(game.id))
 }
 
 #[cfg(test)]

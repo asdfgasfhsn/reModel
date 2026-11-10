@@ -138,7 +138,8 @@ notice.
 
 **Browser** (`docs/web.md`). `?pack=1` or the panel's Display setting (applied
 live) fetches the pack from `/texpack/<set>/` on the server, beside
-`/rom/`. A browser cannot list a folder, so the directory needs an
+`/rom/`, and for a clone without one from its parent's folder, as the
+native player does (`romset::pack_sets`). A browser cannot list a folder, so the directory needs an
 `index.txt`: one file name per line, `#` comments and blank lines ignored.
 `make upscale-textures` writes one; for a hand-made pack,
 `(cd DIR && ls *.png > index.txt)`. Only names in the index are requested,

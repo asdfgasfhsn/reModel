@@ -440,6 +440,15 @@ pub fn rom_folder(game: &Game, root: &Path) -> Option<&'static str> {
     })
 }
 
+/// The sets whose texture pack serves `game`, in the order to look for one
+/// (docs/texture-packs.md): its own, then for a clone its parent's. Pack
+/// keys are the textures' content, so a parent's images serve every
+/// version. The native player looks for `<set>/texpack/` directories in
+/// this order, the browser for `/texpack/<set>/index.txt`.
+pub fn pack_sets(game: &Game) -> impl Iterator<Item = &'static str> {
+    std::iter::once(game.id).chain(game.parent)
+}
+
 /// Set names in ROM directory `root`: `<set>.zip` files and directories.
 pub fn sets_in(root: &Path) -> Vec<String> {
     let mut sets: Vec<String> = fs::read_dir(root)
@@ -534,6 +543,13 @@ pub fn interleave16(lo: &[u8], hi: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clones_fall_back_to_the_parents_pack() {
+        let sets = |id| pack_sets(games::find(id).unwrap()).collect::<Vec<_>>();
+        assert_eq!(sets("overrevb"), ["overrevb", "overrev"]);
+        assert_eq!(sets("topskatr"), ["topskatr"]);
+    }
 
     #[test]
     fn interleave_order() {

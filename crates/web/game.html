@@ -115,7 +115,7 @@
   const { default: init, start, set_geo_frame, set_touch, set_gun, view_point, stick_cursor, set_audio_level,
     set_paused, set_hud, controls_help, touch_layout, game_title, rom_files, set_bindings, bindings_view,
     bindings_capture, bindings_edit, set_smooth, set_audio_buffer, set_quality, set_pack, pack_wanted, pack_image,
-    pack_missing, game_crease, shading_cost } =
+    pack_missing, pack_sets, game_crease, shading_cost } =
     await import(pkg + "remodel_web.js");
 
   // Settings (settings.js): built-in defaults < stored for all games <
@@ -375,11 +375,16 @@
   // The texture pack (docs/web.md, "Texture packs"): /texpack/<set>/,
   // beside /rom/, with an index.txt naming its files (a browser can't list a
   // folder, and asking for every texture the game draws would be a stream
-  // of 404s). The module asks for an image the first time its texture is
-  // drawn (pack_wanted); a worker fetches and decodes it (pack-worker.js),
-  // at most PACK_AHEAD at a time, and the page hands over one a frame, so
-  // the renderer's upload of a large image doesn't pile up with others.
-  const packUrl = new URL(`../../texpack/${game}/`, location.href).href;
+  // of 404s); for a clone without one, its parent's (pack_sets: the keys are
+  // the textures' content, so the parent's images serve every version). The
+  // module asks for an image the first time its texture is drawn
+  // (pack_wanted); a worker fetches and decodes it (pack-worker.js), at most
+  // PACK_AHEAD at a time, and the page hands over one a frame, so the
+  // renderer's upload of a large image doesn't pile up with others.
+  const packFolder = (set) => new URL(`../../texpack/${set}/`, location.href).href;
+  // The folder the pack in use came from (set by usePack, once the module
+  // is initialised).
+  let packUrl = packFolder(game);
   const PACK_AHEAD = 4;
   // Bumped by each usePack: an older loop (packTick) stops.
   let packGen = 0;
@@ -387,8 +392,9 @@
   let packQueue = [];
   let packDecoded = [];
   let packBusy = 0;
-  // For a test driver: decode and hand-over times (ms), images and failures.
-  window.remodelPack = { images: 0, missing: 0, decodeMs: [], handMs: [] };
+  // For a test driver: decode and hand-over times (ms), images and failures,
+  // and the folder the pack came from.
+  window.remodelPack = { images: 0, missing: 0, decodeMs: [], handMs: [], url: null };
   function packTick(gen) {
     if (gen !== packGen) return;
     if (started) {
@@ -420,17 +426,25 @@
       return;
     }
     let index;
-    try {
-      const r = await fetch(packUrl + "index.txt");
-      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-      index = await r.text();
-      if (gen !== packGen) return;
-    } catch (e) {
-      if (gen !== packGen) return;
-      console.warn(`texture pack: no ${packUrl}index.txt (${e.message ?? e}): original textures`);
+    const tried = [];
+    for (const url of pack_sets(game).map(packFolder)) {
+      try {
+        const r = await fetch(url + "index.txt");
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+        index = await r.text();
+        packUrl = url;
+        break;
+      } catch (e) {
+        tried.push(`${url}index.txt (${e.message ?? e})`);
+      }
+    }
+    if (gen !== packGen) return;
+    if (index === undefined) {
+      console.warn(`texture pack: no ${tried.join(", no ")}: original textures`);
       set_pack(undefined);
       return;
     }
+    remodelPack.url = packUrl;
     const names = set_pack(index);
     console.log(`texture pack: ${names} images listed in ${packUrl}index.txt`);
     packWorker?.terminate();

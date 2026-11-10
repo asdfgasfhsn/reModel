@@ -700,6 +700,17 @@ pub fn shading_cost(runs: u32) -> Vec<f64> {
     })
 }
 
+/// The folders under `/texpack/` to look for `game`'s pack in, in order
+/// (`romset::pack_sets`): its own, then for a clone its parent's. The page
+/// uses the first whose `index.txt` it can fetch.
+#[wasm_bindgen]
+pub fn pack_sets(game: &str) -> Vec<String> {
+    match romset::games::find(game) {
+        Ok(g) => romset::pack_sets(g).map(str::to_string).collect(),
+        Err(_) => vec![game.to_string()],
+    }
+}
+
 /// A texture pack served beside the page (docs/web.md, "Texture packs"):
 /// the names its `index.txt` lists, and the images the page has fetched
 /// and decoded so far. The renderer asks for a texture by name; one in the
