@@ -15,7 +15,7 @@
 export const MIX = [8, -8];
 
 /// Every setting, in panel order.
-export const KEYS = ["height", "aspect", "hud", "bezel", "aa", "depth", "shading", "crease", "shadefine", "pack", "texfilter", "sound", "sfx",
+export const KEYS = ["height", "aspect", "hud", "bezel", "aa", "depth", "shading", "crease", "shadefine", "shadebalance", "pack", "texfilter", "sound", "sfx",
   "music", "buffer", "touch", "tilt", "geo", "smooth", "controls"];
 /// Settings kept per game only, never as the defaults for all games:
 /// `controls` is the game's remapped keys and pad bindings, as the module
@@ -48,6 +48,7 @@ export function builtin(env = {}) {
     shading: "flat",
     crease: "auto",
     shadefine: false,
+    shadebalance: true,
     pack: false,
     texfilter: "off",
     sound: true,
@@ -105,6 +106,9 @@ export function clean(key, v) {
     // Smooth shading's finer levels (gpu::Quality::shading_fine): lit
     // pixels blend two colour columns instead of the game's 64 levels.
     case "shadefine":
+    // Smooth shading's brightness balance (gpu::Quality::shading_balance):
+    // each smooth surface as bright as the game's; off, bumpy ones brighter.
+    case "shadebalance":
     case "depth":
     case "pack":
     case "bezel":
@@ -159,7 +163,8 @@ function cleanAll(o) {
 /// `aa=4` (4x multisampling; `aa=0` or `aa=off` off), `depth=1` (a depth
 /// buffer for the 3D layer), `shading=flat|vertex|pixel` (smooth shading;
 /// `pixel` draws as `vertex` with `geo=chip`) with `crease=auto|DEGREES`
-/// and `shadefine=1` (finer levels: no banding on smooth surfaces), `pack=1`
+/// and `shadefine=1` (finer levels: no banding on smooth surfaces) and
+/// `shadebalance=0` (no brightness balance per smooth surface), `pack=1`
 /// (the game's texture pack, from /texpack/<set>/) and
 /// `texfilter=off|mip|2|4|8|16` (filtering of pack images).
 export function fromParams(params) {
@@ -174,6 +179,7 @@ export function fromParams(params) {
   if (params.has("shading")) raw.shading = params.get("shading");
   if (params.has("crease")) raw.crease = params.get("crease");
   if (params.has("shadefine")) raw.shadefine = flag("shadefine");
+  if (params.has("shadebalance")) raw.shadebalance = flag("shadebalance");
   if (params.has("pack")) raw.pack = flag("pack");
   if (params.has("texfilter")) raw.texfilter = params.get("texfilter");
   if (params.has("sound")) raw.sound = flag("sound");
@@ -291,7 +297,7 @@ export function audioBuffer(buffer, env = {}) {
 /// hudEdges, bezel, sound, mix: [sfx, music], audio: {target, prime, max},
 /// touch, tilt, geoLocal, geoNative, smooth, aa (samples, 0 or 4), depth,
 /// shading ("flat", "vertex", "pixel"), crease (degrees, or undefined: the
-/// game's), shadingFine, pack, texFilter ("off", "mip", "2" ... "16")}`
+/// game's), shadingFine, shadingBalance, pack, texFilter ("off", "mip", "2" ... "16")}`
 /// (smooth motion needs the
 /// native geometrizer: off with the chip).
 export function effective(values, env) {
@@ -313,6 +319,7 @@ export function effective(values, env) {
     shading: values.shading,
     crease: values.crease === "auto" ? undefined : values.crease,
     shadingFine: values.shadefine,
+    shadingBalance: values.shadebalance,
     pack: values.pack,
     texFilter: values.texfilter,
   };

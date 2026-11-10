@@ -352,10 +352,10 @@ parameters:
   by depth, not the game's order, except skies, shadows, translucent
   layers and large floors; `docs/enhancements.md`). Both off by default,
   both in the panel's Display section, both applied live. The module's
-  `set_quality(aa, depth, texfilter, shading, crease, fine)` takes them before
+  `set_quality(aa, depth, texfilter, shading, crease, fine, balance)` takes them before
   or after `start` (`texfilter` is a string: `off`, `mip`, `2`, `4`, `8` or
-  `16`; anything else is off; `shading`, `crease` and `fine` as below, and may be
-  left out: flat, the game's angle, off). Temporal anti-aliasing and upscaling
+  `16`; anything else is off; `shading`, `crease`, `fine` and `balance` as below, and may be
+  left out: flat, the game's angle, off, on). Temporal anti-aliasing and upscaling
   are the native player's only (`docs/play.md`); the browser has no
   setting for them and keeps multisampling (`set_quality` never turns
   them on);
@@ -363,7 +363,8 @@ parameters:
   the original; `shading=pixel`, the game's lighting per pixel) and
   `crease=40` (degrees, 0 to 180: faces meeting at a sharper angle keep a
   hard edge; 0 smooths nothing; `crease=auto`, the default, is the game's
-  own, `romset::Shading`), and `shadefine=1` (finer levels, off by
+  own, `romset::Shading`), `shadefine=1` (finer levels, off by
+  default) and `shadebalance=0` (no brightness balance, on by
   default). All in the panel's Display section, all applied live (below,
   "Smooth shading");
 - `pack=1` (the game's texture pack from `/texpack/<set>/`; `pack=0` off) and
@@ -415,9 +416,17 @@ newest frame for a test driver: `[median ms, worst ms, polygons, lit]`
 **Finer levels** (`shadefine=1`, the panel's "Blend brightness levels",
 the sixth `set_quality` argument, `gpu::Quality::shading_fine`): a lit
 pixel blends the two of the game's colours around its brightness instead
-of stepping through its 64 levels, so large smooth surfaces don't band;
+of stepping through its 64 levels, so large smooth surfaces don't band
+(pure black, such as ink lines, is never blended);
 the status line then says `shading pixel fine` (docs/enhancements.md,
 "Smooth shading"). Applied live; nothing else changes on the page.
+
+**Brightness balance** (`shadebalance`, on by default; `shadebalance=0`,
+the panel's "Balance brightness", the seventh `set_quality` argument,
+`gpu::Quality::shading_balance`): each smooth surface keeps the game's
+overall brightness (one offset per surface); off, bumpy surfaces come out
+brighter, and the status line says `unbalanced` (docs/enhancements.md,
+"Smooth shading").
 
 *Measured* (Chrome 157 on Linux, Vulkan, RTX A2000, interpreter build,
 1413x1060, the machine shared with other work): `lastbrnx` and

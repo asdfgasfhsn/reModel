@@ -876,6 +876,26 @@ fn fine_level(textured: bool, v: u32) -> vec3u {
     return vec3u(k, min(k + 1u, b), bitcast<u32>(x - f32(k)));
 }
 
+// raster.rs `fine_columns`: the columns `k` (`fine_level`) kept off pure
+// black for colour `c`, whose game's column is `game`.
+fn fine_columns(c: vec3u, game: u32, k: vec3u) -> vec3u {
+    if fine_black(c, game) {
+        return vec3u(game, game, 0u);
+    }
+    if fine_black(c, k.x) {
+        return vec3u(k.y, k.y, 0u);
+    }
+    if fine_black(c, k.y) {
+        return vec3u(k.x, k.x, 0u);
+    }
+    return k;
+}
+
+// Whether column `k` of colour `c` is pure black.
+fn fine_black(c: vec3u, k: u32) -> bool {
+    return translate(0u, c.x, k) == 0u && translate(1u, c.y, k) == 0u && translate(2u, c.z, k) == 0u;
+}
+
 // raster.rs `fine_translate`: channel `ch` of component `c` blended
 // between the columns of `k` (`fine_level`), before rounding.
 fn fine_translate(ch: u32, c: u32, k: vec3u) -> f32 {
@@ -896,7 +916,7 @@ fn pack_light_l(p: Poly, u: f32, v: f32) -> vec3f {
     for (var ch = 0u; ch < 3u; ch++) {
         let full = translate(ch, c[ch], 63u);
         if full > 0u {
-            fb[ch] = fine_translate(ch, c[ch], fine_level(true, 64u)) / f32(full);
+            fb[ch] = fine_translate(ch, c[ch], fine_columns(c, min(64u * p.luma / 256u, 63u), fine_level(true, 64u))) / f32(full);
         } else {
             fb[ch] = f32(p.luma) / 255.0;
         }
@@ -907,7 +927,7 @@ fn pack_light_l(p: Poly, u: f32, v: f32) -> vec3f {
     }
     let l = luma(p.luma_table, u32(t8) / 2u);
     let lf = min(l * 255u / 256u, 63u);
-    let k = fine_level(true, l);
+    let k = fine_columns(c, min(l * p.luma / 256u, 63u), fine_level(true, l));
     var r: vec3f;
     for (var ch = 0u; ch < 3u; ch++) {
         let full = translate(ch, c[ch], lf);
@@ -947,7 +967,7 @@ fn shade_l(in: VsOut, p: Poly) -> vec4f {
     if lit_fine >= 0.0 {
         // Finer levels: the blend, rounded as the software (Rust's round(),
         // never negative here).
-        let k = fine_level(textured, v);
+        let k = fine_columns(p.colour.xyz, lum, fine_level(textured, v));
         let f = vec3f(fine_translate(0u, p.colour.x, k), fine_translate(1u, p.colour.y, k), fine_translate(2u, p.colour.z, k));
         return vec4f(floor(f + 0.5) / 255.0, 1.0);
     }

@@ -94,10 +94,11 @@ matters, with `--geo chip`, or when the CPU has no time to spare.
 in-betweens with it on were only forced there, not seen on a faster
 display.
 
-**Smooth shading** (opt-in; settings `shading` and `shading_fine`,
-below, and `crease` in the settings file only; `--shading
-flat|vertex|pixel`, `--crease auto|N` and `--shading-fine on|off` for one
-run; `flat`, `auto` and off by default; docs/enhancements.md, "Smooth
+**Smooth shading** (opt-in; settings `shading`, `shading_fine` and
+`shading_balance`, below, and `crease` in the settings file only;
+`--shading flat|vertex|pixel`, `--crease auto|N`, `--shading-fine
+on|off` and `--shading-balance on|off` for one run; `flat`, `auto`, fine
+off and balance on by default; docs/enhancements.md, "Smooth
 shading"). The games
 light each polygon with one brightness, so curved surfaces show their
 facets. `vertex` lights each polygon corner with the game's own lighting
@@ -148,7 +149,14 @@ surfaces show bands; **Blend brightness levels** (`shading_fine`, the
 menu's checkbox under Shading, the launcher's "Brightness levels") blends
 the two of the game's colours around each lit pixel's brightness
 instead, which removes the bands and never leaves the polygon's colour
-(only lit pixels; the rest stay the game's). *Unconfirmed:* tried on one NVIDIA
+(only lit pixels; the rest stay the game's; pure black, such as ink
+lines, stays black). **Balance brightness** (`shading_balance`, on by
+default; the menu's checkbox under Shading, the launcher's "Brightness
+balance") keeps each smooth surface as bright overall as the game drew
+it; off, the game's lighting is worked out at the smoothed normals with
+no correction, so bumpy surfaces (`skisuprg`'s snow) come out brighter
+(on screen a small change). The window title says `unbalanced` when it
+is off. *Unconfirmed:* tried on one NVIDIA
 GPU (Vulkan) on a 60 Hz display (in-betweens forced, not seen on a
 faster display).
 
@@ -373,7 +381,7 @@ games, or this game only (a game's own setting is tagged "this game", and
 the Esc menu while playing. They come in layers, lowest first, as in the
 browser build: the built-in defaults, the defaults for all games, the
 game's own, then the command line (`--mix`, `--hud`, `--aspect`, `--bezel`,
-`--exact`, `--smooth`, `--run-ahead`, `--aa`, `--temporal`, `--stipple`, `--depth`, `--shading`, `--crease`, `--shading-fine`, `--pack`, `--texture-pack`, `--tex-filter`, `--geo`), which applies to that run only and is
+`--exact`, `--smooth`, `--run-ahead`, `--aa`, `--temporal`, `--stipple`, `--depth`, `--shading`, `--crease`, `--shading-fine`, `--shading-balance`, `--pack`, `--texture-pack`, `--tex-filter`, `--geo`), which applies to that run only and is
 never saved, unless a setting it gave is changed in the launcher or menu
 (that change is then kept as any other). A layer keeps only what it sets.
 

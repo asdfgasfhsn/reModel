@@ -331,6 +331,11 @@ impl Menu {
                         &mut settings.shading_fine,
                         "Blend brightness levels  (no banding on smooth surfaces; else the game's 64 levels)",
                     );
+                    focus.checkbox(
+                        ui,
+                        &mut settings.shading_balance,
+                        "Balance brightness  (each smooth surface as bright as the game's; off: bumpy ones brighter)",
+                    );
                 });
                 focus.checkbox(ui, &mut settings.pack, "Texture pack  (replacement textures)");
                 if let (true, Some(text)) = (settings.pack, view.pack) {

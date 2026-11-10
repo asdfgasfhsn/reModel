@@ -912,6 +912,26 @@ pub fn fine_level(table: Option<u32>, luma: f32, range: [u8; 2]) -> (u32, u32, f
     (k, (k + 1).min(b), x - k as f32)
 }
 
+/// The columns finer levels blend for a pixel of colour `colour`
+/// ([`fine_level`]'s `(k, k1, weight)`), kept off black: where the game's
+/// own column there, `game`, is pure black (all three channels 0) the pixel
+/// is that column alone, and a pair with one pure black column takes the
+/// other alone. Black ink (outlines, eyes, seams) stays black and its
+/// neighbours keep the game's colour next to it, with no dark fringe
+/// blending toward it; elsewhere the blend is unchanged.
+fn fine_columns(src: &Sources, colour: [u32; 3], game: u32, k: (u32, u32, f32)) -> (u32, u32, f32) {
+    let black = |k: u32| (0..3).all(|ch| src.translate(ch, colour[ch], k) == 0);
+    if black(game) {
+        (game, game, 0.0)
+    } else if black(k.0) {
+        (k.1, k.1, 0.0)
+    } else if black(k.1) {
+        (k.0, k.0, 0.0)
+    } else {
+        k
+    }
+}
+
 /// Channel `ch` of colour component `c` blended between the columns
 /// [`fine_level`] gives, before rounding.
 fn fine_translate(src: &Sources, ch: usize, c: u32, (k, k1, f): (u32, u32, f32)) -> f32 {
@@ -934,7 +954,7 @@ fn shade_luma(p: &Poly, px: PxLuma, src: &Sources, x: usize, y: usize, u: f32, v
         None => (luma >> 2, None),
     };
     if let Some(l) = px.fine {
-        let k = fine_level(table, l, p.lit_range);
+        let k = fine_columns(src, p.colour, lum, fine_level(table, l, p.lit_range));
         // Rust's round(): half away from zero (never negative here).
         return Some([0, 1, 2].map(|ch| fine_translate(src, ch, p.colour[ch], k).round() as u8));
     }
@@ -1121,7 +1141,10 @@ impl Light {
     /// level, or with finer levels the blend of two.
     fn at(src: &Sources, colour: [u32; 3], fine: Option<(f32, [u8; 2])>, luma: u32, ch: usize, value: u32) -> f32 {
         match fine {
-            Some((l, range)) => fine_translate(src, ch, colour[ch], fine_level(Some(value), l, range)),
+            Some((l, range)) => {
+                let game = (value * luma / 256).min(63);
+                fine_translate(src, ch, colour[ch], fine_columns(src, colour, game, fine_level(Some(value), l, range)))
+            }
             None => src.translate(ch, colour[ch], (value * luma / 256).min(63)) as f32,
         }
     }
@@ -2498,6 +2521,71 @@ mod tests {
         let (fine, _) = draw_view(&mut [lit(true, [0, 119])], &rsrc, &v);
         assert!(flat.chunks(3).zip(fine.chunks(3)).all(|(a, b)| same_hue([a[0], a[1], a[2]], [b[0], b[1], b[2]])));
         assert!(fine.chunks(3).all(|c| c[0] <= 29 * 4), "never past the range's top column");
+    }
+
+    /// Finer levels next to pure black (`fine_columns`): where the game's
+    /// column is black the pixel is black, a pair with a black column takes
+    /// the other alone, and other pairs blend as before. Drawn, black ink
+    /// stays where the game's levels put it and nothing lies between black
+    /// and the first lit column (no dark fringe).
+    #[test]
+    fn fine_levels_keep_pure_black() {
+        // Column 0 black, then (70, 65, 60) rising by 3 a column (fvipers'
+        // ink tables step like this); colour component 0 only.
+        let mut palette = vec![0u8; 0x1_c000];
+        for ch in 0..3 {
+            for lum in 1..64 {
+                palette[0x1_0000 + ch * 0x4000 + lum * 2] = (70 - 5 * ch + 3 * (lum - 1)) as u8;
+            }
+        }
+        let src = motion_sources(&palette);
+        let c = [0u32; 3];
+        assert_eq!(fine_columns(&src, c, 0, (0, 1, 0.4)), (0, 0, 0.0), "the game's column black");
+        assert_eq!(fine_columns(&src, c, 1, (0, 1, 0.4)), (1, 1, 0.0), "pair with black: the other");
+        assert_eq!(fine_columns(&src, c, 1, (1, 2, 0.4)), (1, 2, 0.4), "no black: unchanged");
+        // A table black at the top as well (not seen in games).
+        let mut top = palette.clone();
+        for ch in 0..3 {
+            top[0x1_0000 + ch * 0x4000 + 9 * 2] = 0;
+        }
+        assert_eq!(fine_columns(&motion_sources(&top), c, 8, (8, 9, 0.7)), (8, 8, 0.0));
+        // Textured, through the luma table's value: the game's column is
+        // the texel's, black where it is (dark texel), whatever the blend.
+        let (game, k) = (40 * 20 / 256u32, fine_level(Some(40), 20.7, [0, 255]));
+        assert_eq!((game, k.0), (3, 2));
+        assert_eq!(fine_columns(&src, c, game, k), k);
+        let (game, k) = (10 * 20 / 256u32, fine_level(Some(10), 20.7, [0, 255]));
+        assert_eq!((game, fine_columns(&src, c, game, k)), (0, (0, 0, 0.0)));
+
+        // Drawn: a polygon lit from luma 0 to 30 (columns 0 to 7).
+        use crate::light::test_stream;
+        let q = [[-0.4f32, -0.3, 2.0], [0.4, -0.3, 2.0], [0.4, 0.3, 2.0], [-0.4, 0.3, 2.0]];
+        let f = 495.0;
+        let (s, _) = test_stream::stream(&[vec![test_stream::tpoly(&q.map(|p| [p[0] * f, p[1] * f, p[2]]), 100)]]);
+        let plain = build(&s, &src);
+        let lit = |fine: bool| {
+            let mut p = plain[0].clone();
+            p.colour = c;
+            p.lit = [0.2f32, 30.0, 30.0, 0.2].iter().map(|&l| [l, 0.0, 0.0, 0.0]).collect();
+            p.lit_range = [0, 255];
+            p.fine = fine;
+            p
+        };
+        let v = View::native();
+        let (levels, cov) = draw_view(&mut [lit(false)], &src, &v);
+        let (fine, _) = draw_view(&mut [lit(true)], &src, &v);
+        let (mut black, mut blended) = (0, 0);
+        for i in (0..cov.len()).filter(|&i| cov[i]) {
+            let (a, b) = (&levels[i * 3..i * 3 + 3], &fine[i * 3..i * 3 + 3]);
+            assert_eq!(a == [0, 0, 0], b == [0, 0, 0], "pixel {i}: levels {a:?}, fine {b:?}");
+            if b == [0, 0, 0] {
+                black += 1;
+            } else {
+                assert!(b[0] >= 70 && b[1] >= 65 && b[2] >= 60, "pixel {i}: fine {b:?} below the first lit column");
+            }
+            blended += (b[0] % 3 != 70 % 3) as usize;
+        }
+        assert!(black > 100 && blended > 100, "{black} black, {blended} blended");
     }
 
     /// `place` maps the previous positions as it maps the points.

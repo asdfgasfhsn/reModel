@@ -416,8 +416,9 @@ drawn with whatever `Poly::lit` and `Poly::pixel` hold.
 - **Finer levels** (bit 2): `poly_px` also keeps the luma before
   truncation (`lit_fine`, `lit_range`, private variables), and `shade_l`
   and `pack_light_l` blend the two colour columns `fine_level` picks
-  (`raster::fine_level`, the same arithmetic in f32), rounded as the
-  software rounds.
+  (`raster::fine_level`, the same arithmetic in f32), kept off pure black
+  by `fine_columns` (`raster::fine_columns`), rounded as the software
+  rounds.
 - **Tests** (`temporal.rs`, `shading_off_path_and_lit_pipelines`): no lit
   polygon gives the off frame byte for byte with and without depth and
   temporal, finer levels on or off; corners at the polygon's own luma or

@@ -23,6 +23,9 @@
 //!   the same corners: how many lit pixels change, the mean colour shift
 //!   (a bias), and the steps between neighbouring pixels of untextured lit
 //!   polygons (banding: few large steps; finer levels: many small ones);
+//! - with `--shading-balance off` (no brightness offset per smooth
+//!   surface) the same checks, C report-only (it measures what the
+//!   balance corrects: bumpy surfaces come out brighter);
 //! - G: the pass is deterministic (run again, the same corners); that a
 //!   polygon whose vertex normals are its face's is drawn flat is A here
 //!   and unit tests (`light`, `raster`, `gpu`);
@@ -315,8 +318,10 @@ pub fn run(
     let flat_q = gpu::Quality::default();
     let lit_q = super::gpu_light(Some(&opts));
     // Pictures and the report by the level: vertex keeps the plain names;
-    // finer levels add `-fine`.
-    let level = if opts.fine { format!("{}-fine", opts.shading.name()) } else { opts.shading.name().to_string() };
+    // finer levels add `-fine`, the balance off `-nobal`.
+    let nobal = if opts.balance { "" } else { "-nobal" };
+    let fine = if opts.fine { "-fine" } else { "" };
+    let level = format!("{}{fine}{nobal}", opts.shading.name());
     let level = level.as_str();
     let prefix = match (opts.shading == light::Shading::Pixel, opts.fine) {
         (true, true) => "pixel-fine-",
@@ -324,6 +329,8 @@ pub fn run(
         (false, true) => "fine-",
         (false, false) => "",
     };
+    let prefix = if opts.balance { prefix.to_string() } else { format!("{prefix}nobal-") };
+    let prefix = prefix.as_str();
     let tag = |s: &str| format!("{prefix}{s}");
     std::fs::create_dir_all(out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
     let mut rep = String::new();
@@ -331,8 +338,9 @@ pub fn run(
     let _ = writeln!(rep, "view          {}x{}", view.width, view.height);
     let _ = writeln!(
         rep,
-        "shading       {level}, crease {} degrees, focal guess {} x window width (L0); side channel {}",
+        "shading       {level}, crease {} degrees, brightness balance {}, focal guess {} x window width (L0); side channel {}",
         opts.crease,
+        if opts.balance { "on" } else { "off" },
         light::FOCAL_GUESS,
         if use_side { "used where captured (light.bin)" } else { "not used (--no-side)" }
     );
@@ -635,7 +643,7 @@ pub fn run(
             if n % every.max(1) == 0 && probes.is_empty() {
                 let rgb = video::compose(&f.tiles, &f.palette, Some((&sw_levels.0, &sw_levels.1)), &view);
                 let _ = std::fs::write(
-                    out_dir.join(format!("{:06}-{}.png", f.frame, opts.shading.name())),
+                    out_dir.join(format!("{:06}-{}{nobal}.png", f.frame, opts.shading.name())),
                     png::encode_rgb(view.width, view.height, &rgb),
                 );
             }
@@ -669,7 +677,7 @@ pub fn run(
             failures
                 .push(format!("D: frame {}: {d_sw} software, {d_gpu} GPU pixels of polygons not lit differ", f.frame));
         }
-        if dmean.abs() > 1.0 {
+        if dmean.abs() > 1.0 && opts.balance {
             warnings.push(format!("C: frame {}: mean colour moved {dmean:+.3} levels (initial target 1.0)", f.frame));
         }
         if el > ef + px / 1000 + ef / 20 {
@@ -832,7 +840,9 @@ pub fn run(
         hue_flat,
         hue_clamped
     );
-    if c_share < 99.0 {
+    if !opts.balance {
+        let _ = writeln!(tail, "C             report-only: the brightness balance is off");
+    } else if c_share < 99.0 {
         warnings.push(format!("C: {c_share:.2}% of lit polygons within 8 levels (initial target 99%)"));
     }
     if opts.fine {

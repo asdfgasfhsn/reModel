@@ -875,8 +875,11 @@ translation tables, so colours stay the game's.
 | Level | `shading = flat \| vertex \| pixel` (menu, launcher, `--shading`) | `shading` (panel: Flat, Smooth, Per pixel; `?shading=`) | `--shading` (snapshots, `gpu-check`, `depth-check`, `pack-check`, `temporal-probe`, `lighting-check`) |
 | Crease | `crease = auto \| 0-180` (settings file, `--crease`) | `crease` (panel: the game's, 30, 40, 60; `?crease=`) | `--crease` |
 | Finer levels | `shading_fine = true \| false` (menu checkbox "Blend brightness levels", launcher "Brightness levels", `--shading-fine on\|off`) | `shadefine` (panel, `?shadefine=1`) | `--shading-fine on\|off` |
+| Brightness balance | `shading_balance = true \| false` (menu checkbox "Balance brightness", launcher "Brightness balance", `--shading-balance on\|off`) | `shadebalance` (panel "Balance brightness", `?shadebalance=0`) | `--shading-balance on\|off` |
 
-All apply live; `gpu::Quality::{shading, crease, shading_fine}` underneath.
+All apply live; `gpu::Quality::{shading, crease, shading_fine,
+shading_balance}` underneath. The balance is on by default (the picture
+is unchanged from before it was an option).
 
 **The three levels.**
 
@@ -957,6 +960,16 @@ game's:
 - The blend is centred: column k alone at level k + 0.5, so across a
   gradient the mean column is the game's (the design's "fraction of the
   level", uncentred, would brighten every lit pixel by half a column).
+- Pure black is never blended (`raster::fine_columns`, the GPU's
+  `fine_columns`): where the game's own column for the pixel (or texel)
+  is pure black (all three channels 0) the pixel is that black, and a
+  pair of columns one of which is pure black gives the other column
+  alone. So black ink stays black, and the pixels next to it keep the
+  game's colour instead of a dark fringe blending towards black; the
+  only step there is the game's own. Blending elsewhere is unchanged.
+  Keeping only the black pixels black (the narrower rule) leaves the
+  next column's darker half blending down towards black, a dark ring
+  round the ink.
 
 Only lit pixels change; unlit polygons and everything at crease 0 stay
 the game's. Pack images follow it (their lighting ratio uses the blend).
@@ -965,12 +978,12 @@ linear light.
 
 By eye (review crops of all 18 games): the bands on untextured car
 bodies go (`overrev`'s white car roof, where the 64 levels step visibly
-with `pixel`); on textured surfaces the difference is hard to see. One
-side effect: texels the game draws in column 0 as black ink (the outlines
-on `fvipers`' armour, frame 1500) blend up to half a column towards the
-next one, so they come out dark brown rather than black where that next
-column is far from black. Nothing else looked worse than the game's
-levels.
+with `pixel`); on textured surfaces the difference is hard to see.
+Before pure black was kept, texels the game draws in column 0 as black
+ink (the outlines on `fvipers`' armour, frame 1500, whose next column is
+(70, 65, 60)) blended up to half a column towards that next one and came
+out dark brown; they are black again. Nothing else looked worse than the
+game's levels.
 
 **What it does not do.** Outlines never change (no tessellation).
 Brightness only: no new lights, shadows or materials. Decals floating
@@ -987,7 +1000,28 @@ the game gave it (a departure from design decision 6, which accepted the
 normalised mean normal's brightening: on bumpy surfaces lit at a grazing
 angle, `skisuprg`'s snow, it made lit pixels 23.6 levels brighter on
 average). Per-pixel results over all lit pixels of each game's capture:
-mean luma shift between -0.8 and +1.7 levels (stage 4).
+mean luma shift between -0.8 and +1.7 levels (stage 4). The offset is
+the **brightness balance** (`shading_balance`, `light::Options::balance`,
+on by default): with it off, each corner (and per pixel, the lamp's
+offset) takes the game's formula at the smoothed normal alone, so a
+surface whose facets scatter round the light comes out brighter than the
+game drew it (others a little darker); the shape of the shading is the
+same, only its level moves (one offset per surface, the unit test
+`exact_layer_keeps_a_surface_s_brightness`). It
+is computed once on the CPU, so the software and GPU renderers agree
+either way. `make lighting-check GPU_OPTS="--shading-balance off"`
+checks that mode (pictures and reports `-nobal`; the mean-brightness
+figures C are reported, not warned about, as they measure exactly what
+the balance corrects; everything else must pass).
+*Measured* with it off (18 games' captures, 21 frames each, mean luma
+shift over all lit pixels against their own): `skisuprg` +23.6 levels
+with `vertex`, +13.9 with `pixel`; `schamp` -4.9 and -3.1; every other
+game within -1.0 to +2.1 (with the balance on, every game -1.2 to +1.7).
+On screen the difference is small even in `skisuprg`: only frames 4500
+and 6000 of its capture change visibly (the snow round the skier, a few
+levels lighter or darker in patches; review crops by eye); most of that
+luma is clamped away by the snow's colour range, and much of the snow is
+drawn as dithered layers.
 
 **How it is verified.** `make lighting-capture` (every 300th frame of a
 coin-start run with the side channel) and `make lighting-check`
@@ -1051,8 +1085,9 @@ median a frame. Side channel: 16 bytes a polygon.
   (no title needs it yet).
 - In-betweens with smooth motion on a display over 60 Hz were not seen
   live (covered by the code path and tests on a 60 Hz display).
-- Finer levels lighten black ink texels a little (above); an option to
-  keep column 0 as it is would be a small change, not made.
+- Finer levels next to a pure black column fall back to the game's step
+  (above); a colour table whose dark end is not quite black (say (1, 1,
+  1)) is blended as any other.
 - Tested on one NVIDIA GPU (Vulkan) and Chrome on Linux.
 
 ### Lighting
