@@ -80,8 +80,10 @@ pub enum Shading {
     Flat,
     /// Per-vertex brightness, interpolated across the polygon.
     Vertex,
-    /// Per-pixel lighting with interpolated normals. Needs the exact layer
-    /// (not built yet): drawn as `Vertex`.
+    /// Per-pixel lighting: the game's formula for the normal interpolated
+    /// across the polygon. Needs the exact layer (level L2, the native
+    /// geometrizer's side channel); elsewhere drawn as `Vertex`
+    /// ([`Stats::effective`]).
     Pixel,
 }
 
@@ -406,6 +408,10 @@ pub struct Stats {
     pub edges: u32,
     pub crease_edges: u32,
     pub material_splits: u32,
+    /// Of the lit polygons: lit with the game's formula per corner (the
+    /// exact layer, level L2), and of those per pixel ([`Shading::Pixel`]).
+    pub exact: u32,
+    pub pixel: u32,
     /// Time [`shade`] took, ms.
     pub ms: f32,
     /// The side channel's self-check, and the blocks by level
@@ -427,8 +433,34 @@ impl Stats {
         self.edges += o.edges;
         self.crease_edges += o.crease_edges;
         self.material_splits += o.material_splits;
+        self.exact += o.exact;
+        self.pixel += o.pixel;
         self.ms += o.ms;
         self.check.add(&o.check);
+    }
+
+    /// What a frame shaded at `requested` was drawn as, for a status line
+    /// or menu: `Pixel` only where some polygon was lit per pixel (the
+    /// exact layer exists: the native geometrizer's side channel); without
+    /// it (the chip, old captures, every block demoted) `Pixel` is drawn as
+    /// `Vertex`. A frame with nothing lit says what was asked.
+    pub fn effective(&self, requested: Shading) -> Shading {
+        match requested {
+            Shading::Pixel if self.pixel == 0 && self.lit > 0 => Shading::Vertex,
+            s => s,
+        }
+    }
+
+    /// The highest level a block of the frame was shaded at (L2: the
+    /// game's formula; L1: block facts; L0: the stream alone).
+    pub fn level(&self) -> Level {
+        if self.check.l2 > 0 {
+            Level::L2
+        } else if self.check.l1 > 0 {
+            Level::L1
+        } else {
+            Level::L0
+        }
     }
 }
 
@@ -438,9 +470,13 @@ pub struct Shaded {
     /// Stream index of the attribute word of each lit polygon, ascending.
     pub at: Vec<u32>,
     /// Per lit polygon, in ring order (P1', P0', Pa, Pb): `[luma, nx, ny,
-    /// nz]`, luma as a float 0-255 before truncation; the normal is zero
-    /// (none) at this level.
+    /// nz]`, luma as a float 0-255 before truncation; the normal (the
+    /// exact layer's vertex normal, in the face's own convention) is zero
+    /// where there is none (levels L0 and L1).
     pub corners: Vec<[[f32; 4]; 4]>,
+    /// Per lit polygon: its lighting for per-pixel evaluation
+    /// ([`Shading::Pixel`] at level L2); None: drawn from the corner lumas.
+    pub pixel: Vec<Option<PixelLight>>,
     pub stats: Stats,
     /// Every polygon record, with [`Options::diagnose`]; else empty.
     pub info: Vec<Info>,
@@ -451,6 +487,12 @@ impl Shaded {
     /// index `at`, if it is lit.
     pub fn get(&self, at: u32) -> Option<&[[f32; 4]; 4]> {
         self.at.binary_search(&at).ok().map(|k| &self.corners[k])
+    }
+
+    /// The per-pixel lighting of the polygon at stream index `at`, if it
+    /// is lit per pixel.
+    pub fn pixel_light(&self, at: u32) -> Option<&PixelLight> {
+        self.at.binary_search(&at).ok().and_then(|k| self.pixel.get(k)?.as_ref())
     }
 }
 
@@ -480,7 +522,7 @@ pub fn shade_with(stream: &[u32], side: Option<&Frame>, opts: &Options) -> Shade
                     si.map(|si| {
                         let block = fr.blocks[si];
                         let faces = if level == Level::L2 { fr.faces_of(&block) } else { &[] };
-                        BlockSide { level, block, faces }
+                        BlockSide { level, block, faces, materials: &fr.materials }
                     })
                 })
                 .collect();
@@ -506,6 +548,8 @@ pub struct BlockSide<'a> {
     /// Its faces, one per polygon record of the block (level L2 only;
     /// empty otherwise).
     pub faces: &'a [Face],
+    /// The frame's materials ([`Frame::materials`]; level L2).
+    pub materials: &'a [Material],
 }
 
 type V3 = [f32; 3];
@@ -548,7 +592,64 @@ struct Part {
     /// facing; else `u32::MAX`, and the stream's.
     mat: u32,
     front: bool,
+    /// Level L2: the normal as the program lit with it (`n` is it, or it
+    /// negated to the geometric side: `flip`), and its lighting.
+    raw: V3,
+    flip: bool,
+    light: Option<PixelLight>,
 }
+
+/// One polygon's lighting as the game computes it, for a normal other than
+/// its own (the exact layer, level L2): [`Lamp::eval`] plus an offset that
+/// makes the polygon's own normal give its own luma (the stream's) exactly.
+/// The offset is 0 where the formula reproduces the stream's luma (every
+/// 2C and 2A polygon); a 2B polygon whose recomputation is a level off
+/// (the SHARC rounds toward zero) gets `F + 0.5 - eval(n)`, so that no
+/// polygon brightens or darkens by a level just for being smoothed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PixelLight {
+    pub lamp: Lamp,
+    pub offset: f32,
+}
+
+impl PixelLight {
+    /// The luma (before truncation) for unit normal `n`, in the face's own
+    /// convention (as [`Face::n`]).
+    pub fn luma(&self, n: [f32; 3]) -> f32 {
+        self.lamp.eval(n) + self.offset
+    }
+
+    /// A polygon's lighting from its face, material and the stream's luma
+    /// `luma` (0-255).
+    pub fn of(block: &Block, face: &Face, m: &Material, luma: u8) -> PixelLight {
+        let lamp = Lamp::of(block, face, m);
+        let v = lamp.eval(face.n);
+        let offset = if quantise(v) == luma as u32 || !v.is_finite() { 0.0 } else { luma as f32 + 0.5 - v };
+        PixelLight { lamp, offset }
+    }
+
+    /// Whether the luma depends on the normal at all (a material with no
+    /// diffuse and no specular term is its ambient everywhere).
+    pub fn varies(&self) -> bool {
+        self.lamp.diffuse != 0.0 || (self.lamp.squarings != Material::NO_SPEC && self.lamp.spec_scale != 0.0)
+    }
+}
+
+/// A corner value of the exact layer: the hardware clamps a lighting
+/// result into 0-255 before it truncates, so a corner is clamped (to just
+/// under 256, which still truncates to 255) before it is interpolated.
+pub fn clamp_corner(v: f32) -> f32 {
+    if v.is_nan() {
+        0.0
+    } else {
+        v.clamp(0.0, 255.996)
+    }
+}
+
+/// Vertex normals within this of the face's own (dot product above 1 -
+/// this, about 0.08 degrees) are taken as the face's: float noise between
+/// coplanar faces' normals never lights a polygon.
+pub const NORMAL_EPS: f32 = 1e-6;
 
 /// [`shade`] on a mesh (no timing), at level L0.
 pub fn shade_mesh(mesh: &Mesh, opts: &Options) -> Shaded {
@@ -572,6 +673,7 @@ pub fn shade_mesh_with(mesh: &Mesh, sides: Option<&[Option<BlockSide>]>, opts: &
     let mut members: Vec<(u32, u32)> = Vec::new();
     let mut hard: Vec<(u8, u8)> = Vec::new();
     let mut group_value: Vec<Option<f32>> = Vec::new();
+    let mut group_normal: Vec<Option<V3>> = Vec::new();
     for (bi, b) in mesh.blocks.iter().enumerate() {
         let side = sides.and_then(|s| s.get(bi).copied().flatten()).filter(|s| s.level != Level::L0);
         let level = side.map_or(Level::L0, |s| s.level);
@@ -618,19 +720,22 @@ pub fn shade_mesh_with(mesh: &Mesh, sides: Option<&[Option<BlockSide>]>, opts: &
                         // Level L2: the normal the game lit with (on the
                         // same side as the geometric one), its material
                         // and facing.
-                        let (n, mat, front) = match game_faces {
-                            Some(gf) => {
+                        let (n, mat, front, raw, flip, light) = match (game_faces, side) {
+                            (Some(gf), Some(sd)) => {
                                 let f = &gf[k];
                                 let len = dot(f.n, f.n).sqrt();
                                 let mut n = f.n.map(|x| x / len);
-                                if dot(n, g) < 0.0 {
+                                let flip = dot(n, g) < 0.0;
+                                if flip {
                                     n = n.map(|x| -x);
                                 }
-                                (n, f.mat as u32, f.front())
+                                let light =
+                                    sd.materials.get(f.mat as usize).map(|m| PixelLight::of(&sd.block, f, m, p.luma));
+                                (n, f.mat as u32, f.front(), f.n, flip, light)
                             }
-                            None => (g, u32::MAX, !p.back),
+                            _ => (g, u32::MAX, !p.back, g, false, None),
                         };
-                        faces.push(Part { poly: pi, n, corner: 0, mat, front });
+                        faces.push(Part { poly: pi, n, corner: 0, mat, front, raw, flip, light });
                         Class::Flat
                     }
                     None => Class::Degenerate,
@@ -747,13 +852,31 @@ pub fn shade_mesh_with(mesh: &Mesh, sides: Option<&[Option<BlockSide>]>, opts: &
         // vertex) count once.
         members.sort_unstable();
         members.dedup();
+        // Level L2, the exact layer: each corner lit with the game's
+        // formula for its group's normal.
+        let exact = game_faces.is_some();
+        if exact {
+            exact_corners(
+                mesh,
+                &faces,
+                &members,
+                &mut parent,
+                &weight,
+                &mut group_normal,
+                opts,
+                &mut out,
+                &mut classes,
+                b,
+                &pos,
+            );
+        }
         // Per root: the mean (or None where nothing varies); per (root,
         // face) of a duplicate face, its offset from that mean.
         group_value.clear();
         group_value.resize(nc as usize, None);
         let mut offsets: HashMap<(u32, u32), f32> = HashMap::new();
         let mut g = 0;
-        while g < members.len() {
+        while !exact && g < members.len() {
             let root = members[g].0;
             let mut e = g + 1;
             while e < members.len() && members[e].0 == root {
@@ -809,7 +932,7 @@ pub fn shade_mesh_with(mesh: &Mesh, sides: Option<&[Option<BlockSide>]>, opts: &
             group_value[root as usize] = value;
             g = e;
         }
-        for (fi, f) in faces.iter().enumerate() {
+        for (fi, f) in faces.iter().enumerate().filter(|_| !exact) {
             let p = &mesh.polys[f.poly];
             let n = p.corners as usize;
             let mut vals = [None; 4];
@@ -830,6 +953,7 @@ pub fn shade_mesh_with(mesh: &Mesh, sides: Option<&[Option<BlockSide>]>, opts: &
                 }
                 out.at.push(p.at);
                 out.corners.push(corners);
+                out.pixel.push(None);
                 classes[k] = Class::Lit;
             }
         }
@@ -865,8 +989,199 @@ pub fn shade_mesh_with(mesh: &Mesh, sides: Option<&[Option<BlockSide>]>, opts: &
         order.sort_by_key(|&k| out.at[k]);
         out.at = order.iter().map(|&k| out.at[k]).collect();
         out.corners = order.iter().map(|&k| out.corners[k]).collect();
+        out.pixel = order.iter().map(|&k| out.pixel[k]).collect();
     }
     out
+}
+
+/// Faces of one surface sent again over the same vertices (a decal, glass)
+/// count once in a group: whether face `f` of `group` (members (root,
+/// face)) repeats an earlier member's vertex set.
+fn repeats(mesh: &Mesh, faces: &[Part], group: &[(u32, u32)], k: usize) -> bool {
+    let ids = |f: u32| {
+        let p = &mesh.polys[faces[f as usize].poly];
+        let mut ids = p.ring;
+        ids[..p.corners as usize].sort_unstable();
+        (p.corners, ids)
+    };
+    let me = ids(group[k].1);
+    group[..k].iter().any(|&(_, o)| ids(o) == me)
+}
+
+/// The exact layer (level L2) for one block: per group of corners (as
+/// [`shade_mesh_with`] built them), the angle-weighted mean of the faces'
+/// game normals, normalised; each face's corner lit with its own lighting
+/// entry ([`PixelLight`]) for that normal. A polygon is lit only where a
+/// corner's truncated luma differs from its own (`Vertex`), or a corner's
+/// normal from its own (`Pixel`, which then lights it per pixel): a
+/// polygon whose corners all keep the face's normal is drawn by the
+/// integer path, whatever the float arithmetic would give.
+#[allow(clippy::too_many_arguments)]
+fn exact_corners(
+    mesh: &Mesh,
+    faces: &[Part],
+    members: &[(u32, u32)],
+    parent: &mut [u32],
+    weight: &[f32],
+    group_normal: &mut Vec<Option<V3>>,
+    opts: &Options,
+    out: &mut Shaded,
+    classes: &mut [Class],
+    b: &MeshBlock,
+    pos: &dyn Fn(u32) -> V3,
+) {
+    group_normal.clear();
+    group_normal.resize(parent.len(), None);
+    let bits = |n: V3| n.map(f32::to_bits);
+    let mut g = 0;
+    while g < members.len() {
+        let root = members[g].0;
+        let mut e = g + 1;
+        while e < members.len() && members[e].0 == root {
+            e += 1;
+        }
+        let group = &members[g..e];
+        let first = bits(faces[group[0].1 as usize].n);
+        if group.iter().any(|&(_, f)| bits(faces[f as usize].n) != first) {
+            let mut s = [0.0f64; 3];
+            for (k, &(_, f)) in group.iter().enumerate() {
+                if repeats(mesh, faces, group, k) {
+                    continue;
+                }
+                let face = &faces[f as usize];
+                let p = &mesh.polys[face.poly];
+                let w: f32 = (0..p.corners as u32)
+                    .filter(|&j| find(parent, face.corner + j) == root)
+                    .map(|j| weight[(face.corner + j) as usize])
+                    .sum();
+                // No angle anywhere (degenerate corners): equal weights.
+                let w = if w > 0.0 { w as f64 } else { 1e-6 };
+                for (c, n) in s.iter_mut().zip(face.n) {
+                    *c += w * n as f64;
+                }
+            }
+            let len = (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt();
+            if len.is_finite() && len > 1e-12 {
+                group_normal[root as usize] = Some(s.map(|x| (x / len) as f32));
+            }
+        }
+        g = e;
+    }
+    let pixel = opts.shading == Shading::Pixel;
+    // Each face's corners (value, normal), whether a corner's normal
+    // moved, its own value and its mean as drawn (estimated).
+    struct Lit {
+        corners: [[f32; 4]; 4],
+        moved: bool,
+        own: f32,
+        mean: f32,
+    }
+    let mut lits: Vec<Option<Lit>> = Vec::with_capacity(faces.len());
+    for f in faces {
+        let Some(light) = f.light else {
+            lits.push(None);
+            continue;
+        };
+        let p = &mesh.polys[f.poly];
+        let n = p.corners as usize;
+        let mut corners = [[0.0f32; 4]; 4];
+        let mut moved = false;
+        let mut sum = [0.0f32; 3];
+        for (k, c) in corners.iter_mut().enumerate().take(n) {
+            let root = find(parent, f.corner + k as u32);
+            let nv = match group_normal[root as usize] {
+                Some(v) if dot(v, f.n) < 1.0 - NORMAL_EPS => {
+                    moved = true;
+                    if f.flip {
+                        v.map(|x| -x)
+                    } else {
+                        v
+                    }
+                }
+                // The face's own normal, bit for bit as the game lit it.
+                _ => f.raw,
+            };
+            *c = [clamp_corner(light.luma(nv)), nv[0], nv[1], nv[2]];
+            for i in 0..3 {
+                sum[i] += nv[i];
+            }
+        }
+        if n == 3 {
+            corners[3] = corners[2];
+        }
+        let own = clamp_corner(light.luma(f.raw));
+        let corner_mean = corners[..n].iter().map(|c| c[0]).sum::<f32>() / n as f32;
+        // Per pixel the middle of the polygon has the corners' mean
+        // normal, not their mean value: half of each.
+        let len = dot(sum, sum).sqrt();
+        let mean = if pixel && moved && len > 1e-6 {
+            0.5 * (corner_mean + clamp_corner(light.luma(sum.map(|x| x / len))))
+        } else {
+            corner_mean
+        };
+        lits.push(Some(Lit { corners, moved, own, mean }));
+    }
+    // Each smooth surface (faces joined through corner groups: one
+    // material, no crease between) keeps its overall brightness: the
+    // normalised mean normals of faces whose normals scatter around the
+    // light are brighter than the faces themselves (the corners of a bumpy
+    // or noisy surface face the light more squarely than its facets), so
+    // the surface's area-weighted mean as drawn is moved back to its mean
+    // as the game lit it, by one offset for the whole surface (no seams,
+    // and the shape within it, highlights included, kept).
+    let mut region: Vec<u32> = (0..faces.len() as u32).collect();
+    let mut g = 0;
+    while g < members.len() {
+        let mut e = g + 1;
+        while e < members.len() && members[e].0 == members[g].0 {
+            e += 1;
+        }
+        for m in &members[g + 1..e] {
+            union(&mut region, members[g].1, m.1);
+        }
+        g = e;
+    }
+    let mut acc: Vec<(f64, f64, bool)> = vec![(0.0, 0.0, false); faces.len()];
+    for (fi, (f, l)) in faces.iter().zip(&lits).enumerate() {
+        let Some(l) = l else { continue };
+        let p = &mesh.polys[f.poly];
+        let ring: Vec<V3> = p.ring[..p.corners as usize].iter().map(|&v| pos(v)).collect();
+        let mut area = [0.0f32; 3];
+        for k in 1..ring.len().saturating_sub(1) {
+            let c = cross(sub(ring[k], ring[0]), sub(ring[k + 1], ring[0]));
+            for i in 0..3 {
+                area[i] += c[i];
+            }
+        }
+        let a = dot(area, area).sqrt() as f64;
+        let a = if a.is_finite() { a } else { 0.0 };
+        let r = &mut acc[find(&mut region, fi as u32) as usize];
+        r.0 += a * (l.own - l.mean) as f64;
+        r.1 += a;
+        r.2 |= l.moved;
+    }
+    for (fi, (f, l)) in faces.iter().zip(&lits).enumerate() {
+        let (Some(l), Some(light)) = (l, f.light) else { continue };
+        let p = &mesh.polys[f.poly];
+        let r = acc[find(&mut region, fi as u32) as usize];
+        let shift = if r.2 && r.1 > 0.0 { (r.0 / r.1) as f32 } else { 0.0 };
+        let mut corners = l.corners;
+        let mut differs = false;
+        for c in corners.iter_mut() {
+            c[0] = clamp_corner(c[0] + shift);
+            differs |= quantise(c[0]) != p.luma as u32;
+        }
+        let light = PixelLight { offset: light.offset + shift, ..light };
+        let lit = if pixel { (l.moved && light.varies()) || differs } else { differs };
+        if lit {
+            out.at.push(p.at);
+            out.corners.push(corners);
+            out.pixel.push(pixel.then_some(light));
+            out.stats.exact += 1;
+            out.stats.pixel += pixel as u32;
+            classes[f.poly - b.polys.start] = Class::Lit;
+        }
+    }
 }
 
 /// A polygon's unit face normal in unscaled view space, oriented by the
@@ -1569,5 +1884,199 @@ mod tests {
         short.faces.pop();
         let s = self_check(&s, &short).stats;
         assert_eq!((s.misaligned_blocks, s.l0), (1, 1));
+    }
+
+    fn pixel(crease: u8) -> Options {
+        Options { shading: Shading::Pixel, ..opts(crease) }
+    }
+
+    /// The exact layer (L2): each corner is the game's formula for the
+    /// normalised, angle-weighted mean of its group's normals; `Pixel`
+    /// keeps the lighting for per-pixel evaluation, `Vertex` doesn't.
+    #[test]
+    fn exact_corners_are_the_formula_of_the_mean_normal() {
+        let m = Material { ambient: 30.0, diffuse: 180.0, spec_scale: 0.0, squarings: Material::NO_SPEC };
+        let one = lit_cylinder(F, &[m], |_| 0);
+        let (s, ats) = stream(&[one.iter().map(|p| p.0.clone()).collect()]);
+        let mut tap = Tap::new();
+        side_block(&mut tap, F, &one, &[m]);
+        let side = tap.finish(1);
+        let sh = shade_with(&s, Some(&side), &opts(40));
+        assert!(sh.at.len() >= 8, "{:?}", sh.stats);
+        assert_eq!((sh.stats.exact, sh.stats.pixel), (sh.at.len() as u32, 0));
+        assert!(sh.pixel.iter().all(Option::is_none));
+        assert_eq!(sh.stats.effective(Shading::Vertex), Shading::Vertex);
+        // Side k's corners at angle k/16 and (k+1)/16 of the turn: the
+        // mean of two neighbours' normals (equal weights), normalised.
+        let k = (0..16).find(|&k| !one[k].0.back && !one[(k + 1) % 16].0.back && !one[(k + 15) % 16].0.back).unwrap();
+        let c = sh.get(ats[0][k]).expect("lit");
+        let lamp =
+            Lamp::of(&Block { light: L, ..Default::default() }, &Face { flags: Face::FRONT, ..Default::default() }, &m);
+        // Up to one offset for the whole surface (its brightness kept).
+        let n0 = |a: f32| {
+            let a = a / 16.0 * std::f32::consts::TAU;
+            [a.cos(), 0.0, a.sin()]
+        };
+        let shift = c[0][0] - clamp_corner(lamp.eval(n0(k as f32)));
+        assert!(shift.abs() < 1.0, "{shift}");
+        for (corner, a) in [(0usize, k as f32), (1, k as f32 + 1.0), (2, k as f32 + 1.0), (3, k as f32)] {
+            let n = n0(a);
+            let want = clamp_corner(lamp.eval(n)) + shift;
+            assert!((c[corner][0] - want).abs() < 0.05, "corner {corner}: {} vs {want}", c[corner][0]);
+            assert!(dot([c[corner][1], c[corner][2], c[corner][3]], n) > 0.9999, "{c:?}");
+        }
+        // Per pixel: the same corners, the lighting kept.
+        let px = shade_with(&s, Some(&side), &pixel(40));
+        assert_eq!(px.stats.pixel, px.at.len() as u32);
+        assert!(px.at.len() >= sh.at.len());
+        let pl = px.pixel_light(ats[0][k]).expect("per pixel");
+        assert_eq!(pl.lamp, lamp);
+        // The same corner normals; values within the surfaces' offsets.
+        let pc = px.get(ats[0][k]).unwrap();
+        for j in 0..4 {
+            assert_eq!(pc[j][1..], c[j][1..]);
+            assert!((pc[j][0] - c[j][0]).abs() < 1.0);
+        }
+        assert_eq!(px.stats.effective(Shading::Pixel), Shading::Pixel);
+        // Without the side channel `Pixel` has nothing to light per pixel.
+        let l0 = shade(&s, &pixel(40));
+        assert!(!l0.at.is_empty() && l0.stats.pixel == 0);
+        assert_eq!(l0.stats.effective(Shading::Pixel), Shading::Vertex);
+        // Crease 0: nothing, at either level.
+        assert!(shade_with(&s, Some(&side), &pixel(0)).at.is_empty());
+    }
+
+    /// Where every vertex normal is its face's normal (a planar region, a
+    /// box at 40 degrees) the exact layer lights nothing, `Vertex` or
+    /// `Pixel`: those polygons take the flat integer path.
+    #[test]
+    fn exact_layer_is_flat_where_normals_are_the_faces() {
+        let m = Material { ambient: 40.0, diffuse: 150.0, spec_scale: 80.0, squarings: 2 };
+        let face_luma = |n: [f32; 3], front: bool| {
+            let f = Face { n, flags: front as u16, ..Default::default() };
+            quantise(Lamp::of(&Block { light: L, ..Default::default() }, &f, &m).eval(n)) as u8
+        };
+        // A grid of coplanar quads, every normal the same.
+        let n = [0.0f32, 0.0, -1.0];
+        let mut polys = Vec::new();
+        for j in 0..3 {
+            for i in 0..3 {
+                let (x, y) = (i as f32 * 0.5 - 1.0, j as f32 * 0.5 - 1.0);
+                let q = [[x, y, 10.0], [x + 0.5, y, 10.0], [x + 0.5, y + 0.5, 10.0], [x, y + 0.5, 10.0]];
+                let mut p = tpoly(&q.map(sp), 0);
+                p.back = dot(n, q[0]) < 0.0;
+                p.double_sided = true;
+                p.luma = face_luma(n, !p.back);
+                polys.push((p, n, 0));
+            }
+        }
+        // And a box, all of whose edges are creases at 40 degrees.
+        let cube: Vec<_> = cube([0.0, 0.0, 14.0], 1.0)
+            .into_iter()
+            .zip([
+                [0.0, 0.0, -1.0],
+                [0.0, 0.0, 1.0],
+                [-1.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, -1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ])
+            .map(|(mut p, n)| {
+                p.luma = face_luma(n, !p.back);
+                (p, n, 0)
+            })
+            .collect();
+        for block in [polys, cube] {
+            let (s, _) = stream(&[block.iter().map(|p| p.0.clone()).collect()]);
+            let mut tap = Tap::new();
+            side_block(&mut tap, F, &block, &[m]);
+            let side = tap.finish(1);
+            assert_eq!(self_check(&s, &side).stats.l2, 1);
+            for o in [opts(40), pixel(40), opts(180), pixel(180)] {
+                let sh = shade_with(&s, Some(&side), &o);
+                if o.crease == 40 || block.len() == 9 {
+                    assert!(sh.at.is_empty(), "{:?} {:?}", o.shading, sh.stats);
+                }
+            }
+        }
+    }
+
+    /// A bumpy surface (faces whose normals scatter around the light):
+    /// the normalised mean normals at its corners face the light more
+    /// squarely than the faces do, but the surface as drawn keeps the
+    /// brightness the game gave it (one offset for the surface).
+    #[test]
+    fn exact_layer_keeps_a_surface_s_brightness() {
+        let m = Material { ambient: 20.0, diffuse: 200.0, spec_scale: 0.0, squarings: Material::NO_SPEC };
+        let l = [0.0f32, 0.0, 1.0];
+        let mut seed = 7u32;
+        let mut rnd = move || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) as f32 / (1 << 24) as f32 - 0.5
+        };
+        // A 6x6 grid facing the eye, heights scattered.
+        let h: Vec<f32> = (0..49).map(|_| rnd() * 0.25).collect();
+        let at = |i: usize, j: usize| [i as f32 * 0.3 - 0.9, j as f32 * 0.3 - 0.9, 8.0 + h[j * 7 + i]];
+        let mut block = Vec::new();
+        for j in 0..6 {
+            for i in 0..6 {
+                let q = [at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)];
+                let e1 = sub(q[0], q[1]);
+                let e2 = sub(q[2], q[1]);
+                let mut n = cross(e1, e2);
+                let len = dot(n, n).sqrt();
+                n = n.map(|x| x / len);
+                if dot(n, q[2]) > 0.0 {
+                    n = n.map(|x| -x);
+                }
+                // Faces the eye: a back face by the programs' test (n·P < 0), lit from the front side.
+                let mut p = tpoly(&q.map(sp), 0);
+                p.back = true;
+                p.double_sided = true;
+                let f = Face { n, flags: 0, ..Default::default() };
+                p.luma = quantise(Lamp::of(&Block { light: l, ..Default::default() }, &f, &m).eval(n)) as u8;
+                block.push((p, n, 0));
+            }
+        }
+        let (s, ats) = stream(&[block.iter().map(|p| p.0.clone()).collect()]);
+        let mut tap = Tap::new();
+        tap.block(0x80_0000, Block::TRUNCATE, F.to_bits(), F.to_bits(), l.map(f32::to_bits));
+        let bits = |m: &Material| [m.ambient.to_bits(), m.diffuse.to_bits(), m.spec_scale.to_bits()];
+        for (p, n, _) in &block {
+            tap.face([0; 3], false, true, Base::D, 0, [0; 3], Material::NO_SPEC);
+            tap.face(n.map(f32::to_bits), false, !p.back, Base::D, 0, bits(&m), m.squarings);
+        }
+        let side = tap.finish(1);
+        assert_eq!(self_check(&s, &side).stats.l2, 1, "{:?}", self_check(&s, &side).stats);
+        let sh = shade_with(&s, Some(&side), &opts(60));
+        assert!(sh.at.len() > 20, "{:?}", sh.stats);
+        // Mean of the corner values against the faces' own (+0.5).
+        let (mut drawn, mut own) = (0.0f32, 0.0f32);
+        for ((p, _, _), at) in block.iter().zip(&ats[0]) {
+            own += p.luma as f32 + 0.5;
+            drawn += sh.get(*at).map_or(p.luma as f32 + 0.5, |c| c.iter().map(|v| v[0]).sum::<f32>() / 4.0);
+        }
+        let n = block.len() as f32;
+        assert!((drawn / n - own / n).abs() < 1.0, "drawn {} against {}", drawn / n, own / n);
+    }
+
+    /// A 2B polygon whose recomputed luma is a level off the stream's
+    /// (the SHARC truncates) is offset so its own normal gives its own
+    /// luma: smoothing never moves it by a level by itself.
+    #[test]
+    fn exact_layer_offsets_a_level_off_polygon_to_its_own_luma() {
+        let m = Material { ambient: 30.0, diffuse: 180.0, spec_scale: 0.0, squarings: Material::NO_SPEC };
+        let face = Face { n: [0.6, 0.0, -0.8], flags: Face::FRONT, ..Default::default() };
+        let b = Block { light: L, ..Default::default() };
+        let v = Lamp::of(&b, &face, &m).eval(face.n);
+        let exact = PixelLight::of(&b, &face, &m, quantise(v) as u8);
+        assert_eq!(exact.offset, 0.0);
+        let off = PixelLight::of(&b, &face, &m, quantise(v) as u8 + 1);
+        assert_eq!(quantise(off.luma(face.n)), quantise(v) + 1);
+        assert!((off.luma(face.n) - (quantise(v) as f32 + 1.5)).abs() < 1e-3);
+        let ambient = Material { diffuse: 0.0, ..m };
+        assert!(!PixelLight::of(&b, &face, &ambient, 30).varies());
+        assert!(PixelLight::of(&b, &face, &Material { diffuse: 0.0, squarings: 1, spec_scale: 9.0, ..m }, 30).varies());
+        assert_eq!((clamp_corner(-3.0), clamp_corner(300.0) as u32, clamp_corner(f32::NAN)), (0.0, 255, 0.0));
     }
 }

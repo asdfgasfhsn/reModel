@@ -1319,12 +1319,12 @@ fn main() -> ExitCode {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("out/scratch/lighting").join(roms.game.id));
             let crease = SHADING.get().map_or(model2::light::CREASE_AUTO, |s| s.1);
-            let opts = model2::light::Options::new(
-                model2::light::Shading::Vertex,
-                crease,
-                &roms.game.shading,
-                roms.game.hud_windows,
-            );
+            // `--shading pixel` checks the per-pixel level; anything else vertex.
+            let level = match SHADING.get() {
+                Some((model2::light::Shading::Pixel, _)) => model2::light::Shading::Pixel,
+                _ => model2::light::Shading::Vertex,
+            };
+            let opts = model2::light::Options::new(level, crease, &roms.game.shading, roms.game.hud_windows);
             let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
             match lighting_check::run(&root, windows, VIEW.get().copied(), opts, &out, &probes, bench, every, side) {
                 Ok(true) => {}

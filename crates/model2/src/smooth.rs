@@ -734,6 +734,20 @@ impl Frame {
         Some(self.render_values(self.plan.values(t)))
     }
 
+    /// [`Frame::render`] with the in-between's lighting side channel
+    /// (`crate::light::Frame`, numbered as frame N): the replay records it
+    /// as the engine records a game frame's with `Engine::set_light` on,
+    /// so smooth shading draws in-betweens at the level of the game
+    /// frames around them, not from the stream alone.
+    pub fn render_lit(&self, t: f32) -> Option<(Vec<u32>, crate::light::Frame)> {
+        if t >= 1.0 || self.plan.still() {
+            return None;
+        }
+        let mut tap = crate::light::Tap::new();
+        let (stream, _) = self.replay(self.plan.values(t), Vec::new(), Some(&mut tap));
+        Some((stream, tap.finish(self.frame)))
+    }
+
     /// Motion data for this frame ([`Motion`]): one replay at `t` = 0,
     /// made on first use and kept. On a cut there is no replay (`s0`
     /// empty); when nothing matched the replay still runs, every block
@@ -743,20 +757,25 @@ impl Frame {
             if self.plan.cut {
                 return Motion { cut: true, ..Default::default() };
             }
-            let (s0, valid) = self.replay(self.plan.values(0.0), self.plan.unknown());
+            let (s0, valid) = self.replay(self.plan.values(0.0), self.plan.unknown(), None);
             Motion { s0, valid, cut: false }
         })
     }
 
     /// Frame N's list again with these transforms.
     pub(crate) fn render_values(&self, values: Vec<Xform>) -> Vec<u32> {
-        self.replay(values, Vec::new()).0
+        self.replay(values, Vec::new(), None).0
     }
 
     /// Frame N's list again with these transforms (`snap`: those that are
     /// frame N's whatever `t`), and per object block whether all its
-    /// transforms were blended.
-    fn replay(&self, values: Vec<Xform>, snap: Vec<bool>) -> (Vec<u32>, Vec<bool>) {
+    /// transforms were blended; `light`: record its lighting side channel.
+    fn replay(
+        &self,
+        values: Vec<Xform>,
+        snap: Vec<bool>,
+        light: Option<&mut crate::light::Tap>,
+    ) -> (Vec<u32>, Vec<bool>) {
         let mut native = self.native.clone();
         let (mut words, mut fed, mut out, mut latch) = (0, Vec::new(), Vec::new(), self.latch);
         let mut overlay = HashMap::new();
@@ -768,7 +787,7 @@ impl Frame {
             latch: &mut latch,
             out: &mut out,
             tap: Some(&mut tap),
-            light: None,
+            light,
         };
         match &mut native {
             Native::B(n) => n.run_frame(&mut io),
@@ -1026,6 +1045,15 @@ mod tests {
         // P0 at the translation, x times fx: 2 · 1 halfway, 2 · 2 in frame N.
         assert_eq!(mid[3], f(2.0) >> 8);
         assert_eq!(real[3], f(4.0) >> 8);
+        // With its lighting side channel: the same stream, one block with
+        // its face (the stream's one object block; no window here, so
+        // nothing to check its lumas against).
+        let (lit, side) = frame.render_lit(0.5).unwrap();
+        assert_eq!(lit, mid);
+        assert_eq!((side.frame, side.blocks.len(), side.faces.len()), (3, 1, 1));
+        assert_eq!(side.faces[0].n, [0.0, 0.0, 1.0]);
+        assert_eq!(crate::light::self_check(&lit, &side).stats.misaligned_frames, 0);
+        assert!(frame.render_lit(1.0).is_none());
         assert!(poly.iter().all(|&w| w == 0), "polygon RAM untouched");
         assert_eq!(ram[0x10], 0xabcd, "the real frame's write");
     }

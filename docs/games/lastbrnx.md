@@ -128,6 +128,7 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 - the light vector changes within a frame in 186 of 6173 frames (up to 2 vectors a frame); lighting entries not changed within a frame.
 - True focal length over the window width: median 1.017 (range 1.002-4.303); the stream-only layer guesses 1.0.
 - The list scan's block facts equal the native geometrizer's on 961,794 blocks, differ on 0 (3 before the list first set the focal lengths).
+- Smooth shading: about 58% of the lit polygons in the 21 captured frames are shaded only within the levels of their own hue (the colour tables change hue at some levels).
 - Over a third of its object blocks draw models from polygon RAM (the
   fighters' joint pieces the list rewrites every frame): smooth shading
   derives everything per frame from the frame's own polygons and keeps no

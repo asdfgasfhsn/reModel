@@ -1,15 +1,16 @@
-//! `remodel lighting-check`: smooth shading (`model2::light`, the
-//! stream-level layer) on captured frames. Each frame is drawn flat and
-//! vertex-shaded on the software and GPU renderers, and the invariants
-//! that need no ground truth are checked:
+//! `remodel lighting-check`: smooth shading (`model2::light`) on captured
+//! frames. Each frame is drawn flat and shaded (`--shading vertex`, the
+//! default, or `pixel`) on the software and GPU renderers, and the
+//! invariants that need no ground truth are checked:
 //!
 //! - A: at crease 0 nothing is lit, and both renderers draw the flat frame
 //!   byte for byte (with the GPU's shading option on);
-//! - C: brightness: a lit polygon's corners average close to its own luma,
-//!   and the frame's mean colour barely moves;
+//! - C: brightness: a lit polygon's corners, and its pixels as drawn,
+//!   average close to its own luma, and the frame's mean colour barely
+//!   moves;
 //! - D: every pixel whose visible polygon isn't lit is the flat frame's,
 //!   on both renderers;
-//! - E: software and GPU agree vertex-shaded about as well as flat;
+//! - E: software and GPU agree shaded about as well as flat;
 //! - B (frames captured with a side channel, `light.bin`): it lines up
 //!   with the stream on every frame, the flat luma recomputed from it is
 //!   the stream's (`light::check_mesh`), and the list scan's block facts
@@ -18,11 +19,14 @@
 //!   channel: hard-edge decisions that agree, pixels that differ;
 //! - J: shading changes a pixel's level within its colour ramp, never its
 //!   hue (`raster::same_hue`);
+//! - G: the pass is deterministic (run again, the same corners); that a
+//!   polygon whose vertex normals are its face's is drawn flat is A here
+//!   and unit tests (`light`, `raster`, `gpu`);
 //! - H, I: what the pass costs and what it did (lit, flat, excluded,
 //!   crease edges, material splits, blocks by level).
 //!
-//! Pictures per frame: flat and vertex (software, whole frames), their
-//! differences, and the polygons' classes in false colour. `--probe`
+//! Pictures per frame: flat and vertex or pixel (software, whole frames),
+//! their differences, and the polygons' classes in false colour. `--probe`
 //! lists the polygons at a pixel with their corner values.
 
 use crate::depth_check::Probe;
@@ -246,23 +250,24 @@ fn bench(
     hud: (&[usize], &[usize]),
     out: &mut String,
 ) {
-    let _ =
-        writeln!(out, "bench         GPU whole frame incl. compose and readback, mean ms over {} frames", frames.len());
+    let _ = writeln!(
+        out,
+        "bench         GPU whole frame incl. compose and readback, mean ms over {} frames (with the side channel where captured)",
+        frames.len()
+    );
+    let levels = [None, Some(light::Shading::Vertex), Some(light::Shading::Pixel)];
     for (name, height) in [("1080p", 1080), ("4K", 2160)] {
         let view = View::new(height, 16.0 / 9.0, video::Hud::Edges).with_hud_windows(hud.0, hud.1);
-        let mut t = [0.0f64; 2];
+        let mut t = [0.0f64; 3];
         for f in frames {
             let src = f.sources(texture_rom);
             let layers = video::layers_2d(&f.tiles, &f.palette, &view, true);
-            for (k, lit) in [false, true].into_iter().enumerate() {
-                let built = if lit {
-                    raster::build_shaded(&f.stream, &src, Some(opts))
-                } else {
-                    raster::build(&f.stream, &src)
-                };
+            let side = f.light_frame();
+            for (k, level) in levels.into_iter().enumerate() {
+                let o = level.map(|s| Options { shading: s, ..*opts });
+                let built = raster::build_shaded_with(&f.stream, &src, side.as_ref(), o.as_ref());
                 let (polys, placed) = placed(built, f, &view);
-                let q = if lit { super::gpu_light(Some(opts)) } else { gpu::Quality::default() };
-                gpu.set_quality(q);
+                gpu.set_quality(super::gpu_light(o.as_ref()));
                 gpu.frame(&polys, &placed, &src, &view, &layers);
                 let s = Instant::now();
                 for _ in 0..3 {
@@ -274,10 +279,12 @@ fn bench(
         let n = frames.len().max(1) as f64;
         let _ = writeln!(
             out,
-            "  {name:<6} flat {:>7.2} ms   vertex {:>7.2} ms   (+{:.2} ms)",
+            "  {name:<6} flat {:>7.2} ms   vertex {:>7.2} ms (+{:.2})   pixel {:>7.2} ms (+{:.2})",
             t[0] / n,
             t[1] / n,
-            (t[1] - t[0]) / n
+            (t[1] - t[0]) / n,
+            t[2] / n,
+            (t[2] - t[0]) / n
         );
     }
 }
@@ -303,28 +310,23 @@ pub fn run(
     let zero = Options { crease: 0, ..opts };
     let flat_q = gpu::Quality::default();
     let lit_q = super::gpu_light(Some(&opts));
+    // Pictures and the report by the level: vertex keeps the plain names.
+    let level = opts.shading.name();
+    let tag = |s: &str| if opts.shading == light::Shading::Pixel { format!("pixel-{s}") } else { s.to_string() };
     std::fs::create_dir_all(out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
     let mut rep = String::new();
     let _ = writeln!(rep, "gpu           {}", gpu.adapter());
     let _ = writeln!(rep, "view          {}x{}", view.width, view.height);
     let _ = writeln!(
         rep,
-        "shading       vertex, crease {} degrees, focal guess {} x window width (L0); side channel {}",
+        "shading       {level}, crease {} degrees, focal guess {} x window width (L0); side channel {}",
         opts.crease,
         light::FOCAL_GUESS,
         if use_side { "used where captured (light.bin)" } else { "not used (--no-side)" }
     );
-    let mut dirs: Vec<_> = std::fs::read_dir(root)
-        .map_err(|e| e.to_string())?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.join("meta.txt").exists())
-        .collect();
-    dirs.sort();
-    if !probes.is_empty() {
-        let frame = |d: &std::path::PathBuf| d.file_name()?.to_str()?.parse::<u64>().ok();
-        dirs.retain(|d| frame(d).is_none_or(|n| probes.iter().any(|p| p.frame == n)));
-    }
+    // A `--capture` (a directory a frame) or a `--capture-seq` sequence
+    // (consecutive frames: shimmer in motion), in order.
+    let frames = capture::frames(root).map_err(|e| format!("{}: {e}", root.display()))?;
     let _ = writeln!(
         rep,
         "{:<7} {:>6} {:>6} {:>6} {:>5} {:>6} {:>6} {:>5} {:>8}  {:>3} {:>9} {:>14} {:>9} {:>17} {:>17}",
@@ -352,7 +354,17 @@ pub fn run(
     let mut warnings: Vec<String> = Vec::new();
     let mut total = light::Stats::default();
     let mut shade_ms = Vec::new();
+    let mut build_ms: Vec<f32> = Vec::new();
     let (mut c_ok, mut c_all) = (0usize, 0usize);
+    // C over the pixels as drawn: per lit polygon the mean of its pixels'
+    // lumas against its own; and over all lit pixels the mean difference
+    // (a bias: smoothing must not brighten or darken surfaces overall).
+    let (mut cp_ok, mut cp_all, mut cp_hist) = (0usize, 0usize, [0usize; 4]);
+    let (mut bias_sum, mut bias_px) = (0f64, 0usize);
+    // The polygons moving the most light: (sum of luma moved, frame, at,
+    // own luma, pixels, block).
+    let mut heavy: Vec<(f64, u64, u32, u32, usize, u32)> = Vec::new();
+    let (mut g_ok, mut g_all) = (0usize, 0usize);
     let mut dev_hist = [0usize; 4];
     #[allow(clippy::type_complexity)]
     let mut worst: Vec<(f32, u64, u32, u32, Vec<f32>, (f32, f32))> = Vec::new();
@@ -365,8 +377,10 @@ pub fn run(
     let (mut f_lit0, mut f_lit) = (0usize, 0usize);
     let mut hue_px = 0usize;
     let mut hue_flat = 0usize;
-    for (n, d) in dirs.iter().enumerate() {
-        let f = Frame::load(d).map_err(|e| format!("{}: {e}", d.display()))?;
+    let mut hue_clamped = 0usize;
+    let wanted = |f: &Frame| probes.is_empty() || probes.iter().any(|p| p.frame == f.frame);
+    for (n, item) in frames.filter(|r| r.as_ref().map_or(true, |(_, f)| wanted(f))).enumerate() {
+        let (_, f) = item.map_err(|e| format!("{}: {e}", root.display()))?;
         let src = f.sources(&texture_rom);
         let mut line = String::new();
         let side = if use_side { f.light_frame() } else { None };
@@ -379,16 +393,26 @@ pub fn run(
             }
         }
         shade_ms.push(sh.stats.ms);
+        // G: the same again.
+        let again = light::shade_with(&f.stream, side.as_ref(), &opts);
+        let bits = |s: &light::Shaded| s.corners.iter().flatten().flatten().map(|v| v.to_bits()).collect::<Vec<_>>();
+        g_all += 1;
+        g_ok += (again.at == sh.at && bits(&again) == bits(&sh) && again.pixel == sh.pixel) as usize;
         let st = sh.stats;
         total.add(&st);
         let info: std::collections::HashMap<u32, light::Info> = sh.info.iter().map(|i| (i.at, *i)).collect();
+        let t = Instant::now();
         let flat_polys = raster::build(&f.stream, &src);
+        let t_flat = t.elapsed().as_secs_f32() * 1e3;
+        let t = Instant::now();
         let lit_polys = raster::build_with(
             &f.stream,
             &src,
             &raster::BuildIn { lit: Some(&sh), skip_checker: opts.skip_checker, ..Default::default() },
         )
         .0;
+        // What shading adds to building the polygons (the hue ranges).
+        build_ms.push(t.elapsed().as_secs_f32() * 1e3 - t_flat);
         // B: the side channel lines up and agrees with the stream (counted
         // in `sh.stats.check`); the list scan's facts are the hooks'.
         if let Some(sd) = &side {
@@ -472,6 +496,7 @@ pub fn run(
             .iter()
             .filter(|p| p.lit.is_empty() && !p.shadow && !(p.checker && opts.skip_checker) && sh.get(p.at).is_some())
             .count();
+        hue_clamped += lp.iter().filter(|p| !p.lit.is_empty() && p.lit_range != [0, 255]).count();
         let mut near = 0;
         for p in &lit_list {
             let c = sh.get(p.at).unwrap();
@@ -493,6 +518,26 @@ pub fn run(
         }
         c_ok += near;
         c_all += lit_list.len();
+        for pl in &lpl {
+            let p = &lp[pl.poly];
+            let px = raster::lit_pixel_lumas(p, pl, &view);
+            if px.is_empty() {
+                continue;
+            }
+            let d: f64 = px.iter().map(|&l| l as f64 - p.luma as f64).sum();
+            bias_sum += d;
+            heavy.push((d, f.frame, p.at, p.luma, px.len(), p.block));
+            bias_px += px.len();
+            let dev = (d / px.len() as f64).abs();
+            cp_all += 1;
+            cp_ok += (dev <= 8.0) as usize;
+            cp_hist[match dev {
+                d if d <= 8.0 => 0,
+                d if d <= 16.0 => 1,
+                d if d <= 32.0 => 2,
+                _ => 3,
+            }] += 1;
+        }
         let mean = |l: &(Vec<u8>, Vec<bool>)| {
             let mut s = [0f64; 3];
             let n = l.1.iter().filter(|&&c| c).count().max(1) as f64;
@@ -594,9 +639,9 @@ pub fn run(
                 let _ = std::fs::write(name(s), png::encode_rgb(view.width, view.height, rgb));
             };
             save("flat", &fl);
-            save("vertex", &li);
-            save("diff", &diff_picture(&fl, &li));
-            save("layers", &layers_picture(&lp, &lpl, &src, &view, &sw_flat.0, &info));
+            save(level, &li);
+            save(&tag("diff"), &diff_picture(&fl, &li));
+            save(&tag("layers"), &layers_picture(&lp, &lpl, &src, &view, &sw_flat.0, &info));
         }
         print!("{line}");
         rep.push_str(&line);
@@ -671,9 +716,10 @@ pub fn run(
     let slowest = shade_ms.iter().copied().fold(0.0f32, f32::max);
     let _ = writeln!(
         tail,
-        "cost          light::shade median {:.3} ms, worst {:.3} ms a frame (best of 3 runs each)",
+        "cost          light::shade median {:.3} ms, worst {:.3} ms a frame (best of 3 runs each); building the polygons lit costs {:.3} ms more (median)",
         median(&mut shade_ms),
-        slowest
+        slowest,
+        median(&mut build_ms)
     );
     let c_share = if c_all == 0 { 100.0 } else { 100.0 * c_ok as f64 / c_all as f64 };
     let _ = writeln!(
@@ -681,6 +727,35 @@ pub fn run(
         "C             {c_share:.2}% of {c_all} lit polygons have corners averaging within 8 of their own luma (initial target 99%); within 16: {}, 32: {}, more: {}",
         dev_hist[1], dev_hist[2], dev_hist[3]
     );
+    let _ = writeln!(
+        tail,
+        "C pixels      {:.2}% of {cp_all} lit polygons drawn average within 8 of their own luma; within 16: {}, 32: {}, more: {}; over all {bias_px} lit pixels the luma moved {:+.3} levels on average",
+        if cp_all == 0 { 100.0 } else { 100.0 * cp_ok as f64 / cp_all as f64 },
+        cp_hist[1],
+        cp_hist[2],
+        cp_hist[3],
+        bias_sum / bias_px.max(1) as f64
+    );
+    heavy.sort_by(|a, b| b.0.abs().total_cmp(&a.0.abs()));
+    for (d, frame, at, luma, n, block) in heavy.iter().take(6) {
+        let _ = writeln!(
+            tail,
+            "  moved {d:>+10.0}: frame {frame} at {at} (block {block}) luma {luma}, {n} pixels averaging {:+.1}",
+            d / *n as f64
+        );
+    }
+    let _ = writeln!(
+        tail,
+        "I level       {} lit polygons: {} with the game's formula per corner (L2), {} per pixel; drawn as {}",
+        total.lit,
+        total.exact,
+        total.pixel,
+        total.effective(opts.shading).name()
+    );
+    let _ = writeln!(tail, "G             {g_ok} of {g_all} frames shaded the same twice");
+    if g_ok != g_all {
+        failures.push(format!("G: {} frames shaded differently when run again", g_all - g_ok));
+    }
     worst.sort_by(|a, b| b.0.total_cmp(&a.0));
     for (dev, frame, at, luma, corners, (x, y)) in worst.iter().take(8) {
         let _ = writeln!(
@@ -691,16 +766,17 @@ pub fn run(
     }
     let _ = writeln!(
         tail,
-        "E             software against GPU, pixels over 16 levels: flat {:.3}%, vertex {:.3}%",
+        "E             software against GPU, pixels over 16 levels: flat {:.3}%, {level} {:.3}%",
         100.0 * e_flat as f64 / e_px.max(1) as f64,
         100.0 * e_lit as f64 / e_px.max(1) as f64
     );
     let _ = writeln!(
         tail,
-        "J             pixels whose hue (not only level) shading changed: {} = {:.4}% (fails over 0.02% in a frame); {} polygons kept flat because their colour tables change hue over their corners' lumas",
+        "J             pixels whose hue (not only level) shading changed: {} = {:.4}% (fails over 0.02% in a frame); {} polygons kept flat because their colour tables keep their hue at no other luma; {} lit polygons clamped to the lumas of their hue",
         hue_px,
         100.0 * hue_px as f64 / e_px.max(1) as f64,
-        hue_flat
+        hue_flat,
+        hue_clamped
     );
     if c_share < 99.0 {
         warnings.push(format!("C: {c_share:.2}% of lit polygons within 8 levels (initial target 99%)"));
@@ -717,13 +793,16 @@ pub fn run(
     }
     let _ = writeln!(
         tail,
-        "{}  pictures (FRAME-flat, -vertex, -vertex-l0 (stream only, with a side channel), -diff, -layers: lit L0 orange, L1 yellow, L2 green, grey flat, blue excluded, brown direct data, white zero normal, dark blue lit but a shadow, red crease, magenta material edges) in {}",
+        "{}  pictures (FRAME-flat, -{level}, -vertex-l0 (stream only, with a side channel), -{}, -{}: lit L0 orange, L1 yellow, L2 green, grey flat, blue excluded, brown direct data, white zero normal, dark blue lit but a shadow, red crease, magenta material edges) in {}",
         if failures.is_empty() { "PASS        " } else { "FAILED      " },
+        tag("diff"),
+        tag("layers"),
         out_dir.display()
     );
     print!("{tail}");
     rep.push_str(&tail);
-    let _ = std::fs::write(out_dir.join("report.txt"), rep);
+    let report = if opts.shading == light::Shading::Pixel { "report-pixel.txt" } else { "report.txt" };
+    let _ = std::fs::write(out_dir.join(report), rep);
     Ok(failures.is_empty())
 }
 

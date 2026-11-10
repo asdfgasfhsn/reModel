@@ -62,3 +62,4 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 - the light vector changes within a frame in 1244 of 6191 frames (up to 3 vectors a frame); lighting entries not changed within a frame.
 - True focal length over the window width: median 4.032 (range 0.414-12.097); the stream-only layer guesses 1.0.
 - The list scan's block facts equal the native geometrizer's on 510,023 blocks, differ on 0.
+- Smooth shading: the players' colour translation tables hold coloured entries in the dark columns (0-11) below a grey ramp, so most lit polygons (over 90% in the 21 captured frames) are shaded only within the levels of their own hue (docs/hw/geometrizer.md, "Colour tables are not always brightness ramps"); before that refinement 2,234 of 3,758 lit polygons were left flat.

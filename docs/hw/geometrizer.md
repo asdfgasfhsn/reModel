@@ -771,7 +771,26 @@ ramp boards (colour component 11) hold unrelated colours in columns 40-63
 (white at 45-47, then a pink, a red, black), so the polygon's luma in
 effect picks its colour and the board is white at luma 255 and red a few
 levels below. Interpolating such a luma paints the other colour across the
-polygon; `raster::build_with` keeps a polygon flat when its colour changes
-hue anywhere in the range of levels its corners span (per luma-table value
-for a textured one), and `lighting-check` fails a frame whose shaded
-pixels change hue (J).
+polygon. `raster::build_with` therefore clamps a lit pixel's luma to the
+levels around the polygon's own over which its colour keeps its hue, for
+every level its texels can reach (the luma table between its darkest and
+brightest opaque texel; bilinear filtering blends between them), and
+`lighting-check` fails a frame whose shaded pixels change hue (J). It is
+common: of the lit polygons in the 21 captured frames per game, `lastbrnx`
+clamps about 58%, `dynabb97` over 90% (its players' tables hold coloured
+entries in the dark columns below a grey ramp), `doa` 35%, `schamp` 34%,
+`vstriker` 29%, `bel` 36%, `topskatr` 15%; `sgt24h` and `indy500` none.
+
+**The exact layer** (`--shading vertex`, `pixel`, level L2): a corner is
+lit with its polygon's own record (`light::PixelLight`: `Lamp::eval` plus
+an offset that is 0 where the recomputation is exact and makes a 2B
+polygon one level off give its own luma) for the normalised,
+angle-weighted mean of the game normals around it; `pixel` evaluates it
+per pixel for the interpolated normal (raster.wgsl `lamp_eval` is the
+same formula). Where a surface's normals scatter around the light (bumpy
+terrain: `skisuprg`'s snow), normalised mean normals face the light more
+squarely than the facets the game lit, so each smooth surface (faces
+joined through shared smooth corners: one material, no crease) is moved
+back by one offset to the brightness the game gave it, area-weighted
+(without it `skisuprg`'s lit pixels came out 23.6 levels brighter on
+average, with it within one level on every game).

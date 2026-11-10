@@ -657,54 +657,133 @@ fn fs_packf_depth_t(in: VsTOut) -> TDepthOut {
 }
 
 // Smooth shading (Quality::shading, model2::light): the `_l` entry points,
-// for frames with a lit polygon. A lit polygon's outline entry has `lit`
-// (z) set and its points carry luma/z in w; its luma is taken per pixel
-// from those (`lit_luma`), every other polygon's is its own. The shading
-// functions above stay as they were (the frames without a lit polygon draw
-// exactly as before); `shade_l`, `shade_pack_l` and `shade_packf_l` are
-// them with the polygon passed in.
+// for frames with a lit polygon. A lit polygon's outline entry is (first,
+// count, flags, normals): flags bit 0 lit, bit 1 lit per pixel, bits 8-15
+// and 16-23 the lumas a pixel is clamped to (raster.rs `Poly::lit_range`);
+// its points carry luma/z in w. Per pixel, `normals` is the index of
+// `count` entries (nx/z, ny/z, nz/z, 0), one per point, then its lighting
+// in two (`lamp_eval`). Its luma is taken per pixel from those
+// (`lit_luma`), every other polygon's is its own. The shading functions
+// above stay as they were (the frames without a lit polygon draw exactly
+// as before); `shade_l`, `shade_pack_l` and `shade_packf_l` are them with
+// the polygon passed in.
 
-// The two ends of an outline's span on the row at height `yc`: (x, 1/z,
-// luma/z) at each, interpolated along the edges as the software fill does;
-// l.x > r.x where the row misses the outline.
-struct Span {
-    l: vec3f,
-    r: vec3f,
+// Where the row at height `yc` crosses an outline: the edges (from point
+// la to lb at lt, and ra to rb at rt; indices from the first point) at the
+// span's two ends, and their x. ok false where the row misses the outline.
+struct Cross {
+    la: u32,
+    lb: u32,
+    lt: f32,
+    lx: f32,
+    ra: u32,
+    rb: u32,
+    rt: f32,
+    rx: f32,
+    ok: bool,
 }
 
-fn outline_span(first: u32, count: u32, yc: f32) -> Span {
-    var s: Span;
-    s.l = vec3f(3.4e38, 0.0, 0.0);
-    s.r = vec3f(-3.4e38, 0.0, 0.0);
+fn outline_cross(first: u32, count: u32, yc: f32) -> Cross {
+    var c: Cross;
+    c.lx = 3.4e38;
+    c.rx = -3.4e38;
     for (var k = 0u; k < count; k++) {
+        let k1 = (k + 1u) % count;
         let a = outlines[first + k];
-        let b = outlines[first + (k + 1u) % count];
+        let b = outlines[first + k1];
         if (a.y <= yc && b.y > yc) || (b.y <= yc && a.y > yc) {
             let t = (yc - a.y) / (b.y - a.y);
-            let e = vec3f(a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t, a.w + (b.w - a.w) * t);
-            if e.x < s.l.x {
-                s.l = e;
+            let x = a.x + (b.x - a.x) * t;
+            if x < c.lx {
+                c.lx = x;
+                c.la = k;
+                c.lb = k1;
+                c.lt = t;
             }
-            if e.x > s.r.x {
-                s.r = e;
+            if x > c.rx {
+                c.rx = x;
+                c.ra = k;
+                c.rb = k1;
+                c.rt = t;
             }
         }
     }
-    return s;
+    c.ok = c.lx <= c.rx;
+    return c;
+}
+
+fn lerp4(a: vec4f, b: vec4f, t: f32) -> vec4f {
+    return a + (b - a) * t;
+}
+
+// An attribute of the outline's points (entries `base`..), interpolated
+// along the edges of `c`, then across the span at `s`, as the software
+// fill does.
+fn cross_at(base: u32, c: Cross, s: f32) -> vec4f {
+    let l = lerp4(outlines[base + c.la], outlines[base + c.lb], c.lt);
+    let r = lerp4(outlines[base + c.ra], outlines[base + c.rb], c.rt);
+    return lerp4(l, r, s);
+}
+
+// model2::light::Lamp::eval plus PixelLight's offset: lamp entries `i`
+// (L, flags: bit 0 front, bits 1-2 the specular base (0 d, 1 max(d, 0),
+// 2 n·L), bits 8-15 squarings, 255 none) and `i + 1` (ambient, diffuse,
+// specular scale, offset), for unit normal `n`.
+fn lamp_eval(i: u32, n: vec3f) -> f32 {
+    let a = outlines[i];
+    let m = outlines[i + 1u];
+    let bits = bitcast<u32>(a.w);
+    let l = a.xyz;
+    let dotl = (n.x * l.x + n.y * l.y) + n.z * l.z;
+    var d = dotl;
+    if (bits & 1u) == 0u {
+        d = -dotl;
+    }
+    let s0 = max(d + 0.0, 0.0);
+    var lum = s0 * m.y + m.x;
+    let squarings = (bits >> 8u) & 255u;
+    if squarings != 255u {
+        var b = d;
+        let base = (bits >> 1u) & 3u;
+        if base == 1u {
+            b = s0;
+        } else if base == 2u {
+            b = dotl;
+        }
+        var sp = max((b * 2.0) * n.z - l.z, 0.0);
+        for (var k = 0u; k < squarings; k++) {
+            sp = sp * sp;
+        }
+        lum += sp * m.z;
+    }
+    return lum + m.w;
+}
+
+// raster.rs `pixel_luma`: the lighting of the normalised normal `n`, or
+// the interpolated luma `luma` where `n` is (nearly) zero.
+fn pixel_luma(i: u32, luma: f32, n: vec3f) -> f32 {
+    let len = sqrt(dot(n, n));
+    if !(len >= 1e-6) {
+        return luma;
+    }
+    return lamp_eval(i, n / len);
 }
 
 // A lit polygon's luma (0-255, before truncation) at the centre of pixel
-// `px`, as the software renderer's `lit_lumas`: luma/z and 1/z on the
-// outline's edges at the row's centre, then across the span, divided. For
-// a pixel the GPU covers and the software doesn't (at an edge), the row is
-// moved into the outline and the span's t clamped to 0..1. < 0: not lit.
+// `px`, as the software renderer's `lit_lumas`: luma/z and 1/z (and per
+// pixel the normal/z) on the outline's edges at the row's centre, then
+// across the span, divided. For a pixel the GPU covers and the software
+// doesn't (at an edge), the row is moved into the outline and the span's t
+// clamped to 0..1. < 0: not lit.
 fn lit_luma(poly: u32, px: vec2f) -> f32 {
     let d = bitcast<vec4u>(outlines[poly]);
     if d.z == 0u {
         return -1.0;
     }
-    var s = outline_span(d.x, d.y, px.y + 0.5);
-    if s.l.x > s.r.x {
+    let pixel = (d.z & 2u) != 0u;
+    let lamp = d.w + d.y;
+    var c = outline_cross(d.x, d.y, px.y + 0.5);
+    if !c.ok {
         var lo = 3.4e38;
         var hi = -3.4e38;
         for (var k = 0u; k < d.y; k++) {
@@ -712,31 +791,41 @@ fn lit_luma(poly: u32, px: vec2f) -> f32 {
             hi = max(hi, outlines[d.x + k].y);
         }
         let m = 1e-3 * max(hi - lo, 1e-3);
-        s = outline_span(d.x, d.y, clamp(px.y + 0.5, lo + m, hi - m));
-        if s.l.x > s.r.x {
+        c = outline_cross(d.x, d.y, clamp(px.y + 0.5, lo + m, hi - m));
+        if !c.ok {
             // No span at all (a polygon thinner than that): the corners'.
-            var lz = 0.0;
-            var iz = 0.0;
+            var p = vec4f(0.0);
+            var n = vec4f(0.0);
             for (var k = 0u; k < d.y; k++) {
-                lz += outlines[d.x + k].w;
-                iz += outlines[d.x + k].z;
+                p += outlines[d.x + k];
+                if pixel {
+                    n += outlines[d.w + k];
+                }
             }
-            return lz / iz;
+            if pixel {
+                return pixel_luma(lamp, p.w / p.z, n.xyz / p.z);
+            }
+            return p.w / p.z;
         }
     }
-    let t = clamp(((px.x + 0.5) - s.l.x) / max(s.r.x - s.l.x, 1e-6), 0.0, 1.0);
-    let iz = s.l.y + (s.r.y - s.l.y) * t;
-    let lz = s.l.z + (s.r.z - s.l.z) * t;
-    return lz / iz;
+    let s = clamp(((px.x + 0.5) - c.lx) / max(c.rx - c.lx, 1e-6), 0.0, 1.0);
+    let p = cross_at(d.x, c, s);
+    if pixel {
+        let n = cross_at(d.w, c, s);
+        return pixel_luma(lamp, p.w / p.z, n.xyz / p.z);
+    }
+    return p.w / p.z;
 }
 
 // Polygon `i` as drawn at pixel `px`: `polys[i]`, with a smooth-shaded
-// polygon's luma there (truncated, as light::quantise).
+// polygon's luma there (truncated, as light::quantise, then clamped to its
+// range).
 fn poly_px(i: u32, px: vec2f) -> Poly {
     var p = polys[i];
     let l = lit_luma(i, px);
     if l >= 0.0 {
-        p.luma = u32(clamp(l, 0.0, 255.0));
+        let flags = bitcast<u32>(outlines[i].z);
+        p.luma = clamp(u32(clamp(l, 0.0, 255.0)), (flags >> 8u) & 255u, (flags >> 16u) & 255u);
     }
     return p;
 }

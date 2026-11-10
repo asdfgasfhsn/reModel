@@ -136,6 +136,15 @@ pub struct Poly {
     /// [`SVtx::uz`]. Empty: the polygon is drawn with [`Poly::luma`] (no
     /// smooth shading, not lit, or a shadow).
     pub lit: Vec<[f32; 4]>,
+    /// Smooth shading per pixel (`crate::light::Shading::Pixel` at level
+    /// L2): the polygon's lighting, evaluated for the normal (`lit`'s
+    /// `nx, ny, nz`) interpolated to each pixel. None: the interpolated
+    /// luma.
+    pub pixel: Option<crate::light::PixelLight>,
+    /// Smooth shading: the lumas (inclusive) a lit pixel is clamped to,
+    /// those over which the game's colour tables keep the polygon's hue
+    /// ([`hue_range`]); `[0, 255]` when not lit.
+    pub lit_range: [u8; 2],
 }
 
 /// A polygon placed in a view's output pixels, ready for a rasteriser
@@ -272,41 +281,122 @@ pub fn same_hue(a: [u8; 3], b: [u8; 3]) -> bool {
     (0..3).all(|k| (a[k] as f32 / ma as f32 - b[k] as f32 / mb as f32).abs() <= 0.25)
 }
 
-/// Smooth shading (`Poly::lit`): whether the polygon's colour stays the
-/// same hue for every luma its corners span (`corners`' values, 0-255,
-/// against its flat `luma`). The colour translation tables are the game's
-/// and need not be brightness ramps: a game may map the top levels of a
-/// colour to another hue (topskatr's ramp boards: white at luma 255, red a
-/// few levels below), so that the polygon's luma in effect picks its
-/// colour. Interpolating such a luma paints the other colour over the
-/// polygon; such polygons stay flat. Textured: for each value of its luma
-/// table (the levels a texel can take), the columns its corners reach.
-fn ramp_keeps_hue(src: &Sources, colour: [u32; 3], texture: Option<&Texture>, luma: u32, corners: &[[f32; 4]]) -> bool {
-    let (lo, hi) = corners.iter().fold((255u32, 0u32), |(lo, hi), c| {
-        let l = crate::light::quantise(c[0]);
-        (lo.min(l), hi.max(l))
-    });
-    let (lo, hi) = (lo.min(luma), hi.max(luma));
-    if lo == hi {
-        return true;
-    }
-    let mut cache = [None; 64];
-    let mut col =
-        |k: u32| *cache[k as usize].get_or_insert_with(|| [0, 1, 2].map(|ch| src.translate(ch, colour[ch], k)));
-    let mut sweep = |own: u32, a: u32, b: u32| (a..=b).all(|k| k == own || same_hue(col(own), col(k)));
+/// Smooth shading (`Poly::lit`): the lumas `[lo, hi]` (inclusive, around
+/// the polygon's own `luma`) over which its colour keeps its hue. The
+/// colour translation tables are the game's and need not be brightness
+/// ramps: a game may map the top levels of a colour to another hue
+/// (topskatr's ramp boards: white at luma 255, red a few levels below), so
+/// that the polygon's luma in effect picks its colour. A lit pixel's luma
+/// is clamped into this range, so shading changes a pixel's level, never
+/// its hue (`lighting-check` J). Untextured: the columns (`luma / 4`)
+/// around its own whose colour has the hue of its own. Textured: the same
+/// for each level a texel can take (a value of its luma table, at indices
+/// `index` (inclusive): those its texels can reach), intersected.
+pub fn hue_range(src: &Sources, colour: [u32; 3], texture: Option<&Texture>, luma: u32, index: (u32, u32)) -> [u8; 2] {
+    hue_range_with(&mut HueCache::default(), src, colour, texture, luma, index)
+}
+
+/// What [`hue_range`] works out that many polygons of a frame share: per
+/// colour, the span of columns of its own hue around each column; per luma
+/// table and indices, the distinct levels.
+#[derive(Default)]
+pub struct HueCache {
+    spans: HashMap<[u32; 3], [Option<(u32, u32)>; 64]>,
+    levels: HashMap<(u32, u32, u32), Vec<u32>>,
+}
+
+/// [`hue_range`] with what it works out kept in `cache` (one frame's
+/// sources).
+pub fn hue_range_with(
+    cache: &mut HueCache,
+    src: &Sources,
+    colour: [u32; 3],
+    texture: Option<&Texture>,
+    luma: u32,
+    index: (u32, u32),
+) -> [u8; 2] {
+    let spans = cache.spans.entry(colour).or_insert([None; 64]);
+    let col = |k: u32| [0, 1, 2].map(|ch| src.translate(ch, colour[ch], k));
+    // The columns around `own` (up to `top`) whose colour has its hue.
+    let mut span = |own: u32, top: u32| {
+        let (lo, hi) = *spans[own as usize].get_or_insert_with(|| {
+            let c = col(own);
+            let mut lo = own;
+            while lo > 0 && same_hue(c, col(lo - 1)) {
+                lo -= 1;
+            }
+            let mut hi = own;
+            while hi < 63 && same_hue(c, col(hi + 1)) {
+                hi += 1;
+            }
+            (lo, hi)
+        });
+        (lo, hi.min(top))
+    };
     match texture {
-        None => sweep(luma >> 2, lo >> 2, hi >> 2),
-        Some(t) => {
-            let mut seen = [false; 256];
-            (0..128).all(|i| {
-                let v = src.luma(t.luma_table, i) as usize;
-                if std::mem::replace(&mut seen[v], true) {
-                    return true;
-                }
-                let c = |l: u32| (v as u32 * l / 256).min(63);
-                sweep(c(luma), c(lo), c(hi))
-            })
+        None => {
+            let (lo, hi) = span(luma >> 2, 63);
+            [(lo * 4) as u8, (hi * 4 + 3).min(255) as u8]
         }
+        Some(t) => {
+            let levels = cache.levels.entry((t.luma_table, index.0, index.1)).or_insert_with(|| {
+                let mut seen = [false; 256];
+                // Level 0 is column 0 at every luma: no limit.
+                (index.0..=index.1.min(127))
+                    .map(|i| src.luma(t.luma_table, i))
+                    .filter(|&v| v != 0 && !std::mem::replace(&mut seen[v as usize], true))
+                    .collect()
+            });
+            let (mut lo, mut hi) = (0u32, 255u32);
+            for &v in levels.iter() {
+                let c = |l: u32| (v * l / 256).min(63);
+                let (top, own) = (c(255), c(luma));
+                let (clo, chi) = span(own, top);
+                // The lumas whose column is clo or more, chi or less.
+                if clo > 0 {
+                    lo = lo.max((clo * 256).div_ceil(v));
+                }
+                if chi < top {
+                    hi = hi.min(((chi + 1) * 256 - 1) / v);
+                }
+            }
+            [lo.min(luma) as u8, hi.max(luma) as u8]
+        }
+    }
+}
+
+/// The luma table indices a textured polygon's pixels can read: from its
+/// darkest opaque texel to its brightest (bilinear filtering blends
+/// neighbours, so anything between), `texel * 17 / 2`. All 128 when it has
+/// no opaque texel.
+pub fn texel_indices(src: &Sources, t: &Texture) -> (u32, u32) {
+    let (mut lo, mut hi) = (15u32, 0u32);
+    // A 16-bit word holds a 2x2 block of texels, and textures sit on
+    // 32-texel boundaries: a word at a time (as `Sources::texel` reads).
+    'rows: for y in (t.y0..t.y0 + t.h).step_by(2) {
+        for x in (t.x0..t.x0 + t.w).step_by(2) {
+            let (x, y) = if x >= 1024 { (x - 1024, y ^ 1024) } else { (x, y) };
+            let word = ((y & 2047) / 2) * 512 + (x & 1023) / 2;
+            let o = (t.bank as usize & 1) * 0x20_0000 + word as usize * 2;
+            let (Some(&a), Some(&b)) = (src.render_ram.get(o), src.render_ram.get(o + 1)) else { continue };
+            let w = u16::from_le_bytes([a, b]) as u32;
+            for k in 0..4 {
+                let v = (w >> (4 * k)) & 15;
+                if t.translucent && v == 15 {
+                    continue;
+                }
+                lo = lo.min(v);
+                hi = hi.max(v);
+            }
+            if lo == 0 && hi == 15 {
+                break 'rows;
+            }
+        }
+    }
+    if lo > hi {
+        (0, 127)
+    } else {
+        (lo * 17 / 2, hi * 17 / 2)
     }
 }
 
@@ -406,6 +496,14 @@ fn build_impl(stream: &[u32], src: &Sources, input: &BuildIn) -> (Vec<Poly>, Vec
     // attribute word, ascending, walked with the stream.
     let lit = input.lit.filter(|l| !l.at.is_empty());
     let mut lit_next = 0;
+    // The luma table indices each texture's texels reach (`texel_indices`),
+    // worked out once a frame.
+    #[allow(clippy::type_complexity)]
+    let mut texels: HashMap<(u32, u32, u32, u32, u32, bool), (u32, u32)> = HashMap::new();
+    // `hue_range` by colour, luma table, luma and indices, likewise.
+    #[allow(clippy::type_complexity)]
+    let mut hues: HashMap<([u32; 3], Option<u32>, u32, (u32, u32)), [u8; 2]> = HashMap::new();
+    let mut hue_cache = HueCache::default();
     let mut polys = Vec::new();
     let mut windows: Vec<Window> = Vec::new();
     let mut block = 0;
@@ -485,7 +583,8 @@ fn build_impl(stream: &[u32], src: &Sources, input: &BuildIn) -> (Vec<Poly>, Vec
                         while l.at.get(lit_next).is_some_and(|&a| (a as usize) < i) {
                             lit_next += 1;
                         }
-                        (l.at.get(lit_next) == Some(&(i as u32))).then(|| &l.corners[lit_next])
+                        (l.at.get(lit_next) == Some(&(i as u32)))
+                            .then(|| (&l.corners[lit_next], l.pixel.get(lit_next).copied().flatten()))
                     });
                     let pa = pos(i + 3);
                     let pb = if quad { pos(i + 6) } else { pa };
@@ -496,7 +595,7 @@ fn build_impl(stream: &[u32], src: &Sources, input: &BuildIn) -> (Vec<Poly>, Vec
                     for (k, vtx) in verts.iter_mut().enumerate() {
                         vtx.v = src.point_word(tpa + 2 * k as u32) as f32 / 8.0;
                         vtx.u = src.point_word(tpa + 2 * k as u32 + 1) as f32 / 8.0;
-                        if let Some(c) = corners {
+                        if let Some((c, _)) = corners {
                             vtx.lit = c[k];
                         }
                     }
@@ -545,15 +644,43 @@ fn build_impl(stream: &[u32], src: &Sources, input: &BuildIn) -> (Vec<Poly>, Vec
                             let shadow =
                                 texture.is_none() && (0..3).all(|ch| src.translate(ch, colour[ch], luma >> 2) == 0);
                             let checker = header[0] & (1 << 15) != 0;
-                            let lit = match corners {
-                                Some(c)
-                                    if !shadow
-                                        && !(checker && input.skip_checker)
-                                        && ramp_keeps_hue(src, colour, texture.as_ref(), luma, &c[..verts.len()]) =>
-                                {
-                                    clipped.iter().map(|v| v.lit).collect()
-                                }
-                                _ => Vec::new(),
+                            // Lit: clamped to the lumas that keep its hue;
+                            // none besides its own: flat.
+                            let lit_at =
+                                corners.filter(|_| !shadow && !(checker && input.skip_checker)).and_then(|(cs, px)| {
+                                    let table = texture.map(|t| t.luma_table);
+                                    let mut range = *hues.entry((colour, table, luma, (0, 127))).or_insert_with(|| {
+                                        hue_range_with(&mut hue_cache, src, colour, texture.as_ref(), luma, (0, 127))
+                                    });
+                                    // Corner lumas inside the range need no more (an
+                                    // interpolated luma lies between them); per pixel
+                                    // the range must be the widest that is safe.
+                                    let inside = px.is_none() && {
+                                        let q = |k: usize| crate::light::quantise(cs[k][0]);
+                                        (0..verts.len()).all(|k| (range[0] as u32..=range[1] as u32).contains(&q(k)))
+                                    };
+                                    if let (Some(t), true) = (&texture, range != [0, 255] && !inside) {
+                                        // Only the levels its texels can take.
+                                        let key = (t.bank, t.x0, t.y0, t.w, t.h, t.translucent);
+                                        let index = *texels.entry(key).or_insert_with(|| texel_indices(src, t));
+                                        if index != (0, 127) {
+                                            range = *hues.entry((colour, table, luma, index)).or_insert_with(|| {
+                                                hue_range_with(
+                                                    &mut hue_cache,
+                                                    src,
+                                                    colour,
+                                                    texture.as_ref(),
+                                                    luma,
+                                                    index,
+                                                )
+                                            });
+                                        }
+                                    }
+                                    (range[0] != range[1]).then_some((px, range))
+                                });
+                            let (lit, pixel, lit_range) = match lit_at {
+                                Some((px, range)) => (clipped.iter().map(|v| v.lit).collect(), px, range),
+                                None => (Vec::new(), None, [0, 255]),
                             };
                             polys.push(Poly {
                                 points,
@@ -570,6 +697,8 @@ fn build_impl(stream: &[u32], src: &Sources, input: &BuildIn) -> (Vec<Poly>, Vec
                                 at,
                                 prev,
                                 lit,
+                                pixel,
+                                lit_range,
                             });
                         }
                     }
@@ -1354,7 +1483,7 @@ fn draw_impl(
         let mut pixels = 0;
         // Smooth shading: each pixel's luma, in the order `fill` visits
         // them (None: the polygon's own).
-        let lumas = (!p.lit.is_empty()).then(|| lit_lumas(points, &p.lit, clip, w, h));
+        let lumas = (!p.lit.is_empty()).then(|| lit_lumas(points, p, clip, w, h));
         let mut n = 0;
         let mut luma_at = || {
             n += 1;
@@ -1439,12 +1568,53 @@ fn draw_impl(
 /// A smooth-shaded polygon's luma at each pixel `fill` visits, in that
 /// order: its corner lumas times 1/z, interpolated as `fill` interpolates
 /// (perspective-correct), divided by the pixel's 1/z and truncated
-/// (`light::quantise`).
-fn lit_lumas(points: &[SVtx], lit: &[[f32; 4]], clip: (f32, f32, f32, f32), w: usize, h: usize) -> Vec<u32> {
-    let pts: Vec<SVtx> = points.iter().zip(lit).map(|(v, l)| SVtx { uz: l[0] * v.iz, ..*v }).collect();
+/// (`light::quantise`). Per pixel ([`Poly::pixel`]): the corner normals
+/// likewise, normalised, and the polygon's lighting for that normal (the
+/// interpolated luma where the normals cancel out). Clamped to
+/// [`Poly::lit_range`].
+fn lit_lumas(points: &[SVtx], p: &Poly, clip: (f32, f32, f32, f32), w: usize, h: usize) -> Vec<u32> {
+    let [lo, hi] = p.lit_range.map(u32::from);
+    let lit = &p.lit;
+    let pts: Vec<SVtx> = points.iter().zip(lit).map(|(v, l)| SVtx { uz: l[0] * v.iz, vz: l[1] * v.iz, ..*v }).collect();
     let mut out = Vec::new();
-    fill(&pts, clip, w, h, |_, _, iz, lz, _| out.push(crate::light::quantise(lz / iz)));
+    match &p.pixel {
+        None => fill(&pts, clip, w, h, |_, _, iz, lz, _| out.push(crate::light::quantise(lz / iz).clamp(lo, hi))),
+        Some(pl) => {
+            // Two passes over the same pixels: (luma, nx), then (ny, nz).
+            let mut first = Vec::new();
+            fill(&pts, clip, w, h, |_, _, iz, lz, nxz| first.push((iz, lz, nxz)));
+            let pts2: Vec<SVtx> =
+                points.iter().zip(lit).map(|(v, l)| SVtx { uz: l[2] * v.iz, vz: l[3] * v.iz, ..*v }).collect();
+            let mut k = 0;
+            fill(&pts2, clip, w, h, |_, _, _, nyz, nzz| {
+                let (iz, lz, nxz) = first[k];
+                k += 1;
+                out.push(crate::light::quantise(pixel_luma(pl, lz / iz, [nxz / iz, nyz / iz, nzz / iz])).clamp(lo, hi));
+            });
+        }
+    }
     out
+}
+
+/// A placed smooth-shaded polygon's luma at each pixel it covers (as drawn,
+/// before anything hides it; for tools). Empty when it isn't lit.
+pub fn lit_pixel_lumas(p: &Poly, pl: &Placed, view: &View) -> Vec<u32> {
+    if p.lit.is_empty() {
+        return Vec::new();
+    }
+    lit_lumas(&pl.points, p, pl.clip, view.width, view.height)
+}
+
+/// A per-pixel lit polygon's luma (before truncation) at a pixel whose
+/// interpolated corner luma is `luma` and normal `n` (not unit): the
+/// lighting for `n` normalised, or `luma` where `n` is (nearly) zero. The
+/// GPU's `pixel_luma` (raster.wgsl) is the same.
+pub fn pixel_luma(pl: &crate::light::PixelLight, luma: f32, n: [f32; 3]) -> f32 {
+    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    if len.is_nan() || len < 1e-6 {
+        return luma;
+    }
+    pl.luma(n.map(|x| x / len))
 }
 
 /// Scanline fill of a convex polygon with pixel-centre sampling, limited to
@@ -1563,6 +1733,8 @@ mod tests {
             at: 0,
             prev: Vec::new(),
             lit: Vec::new(),
+            pixel: None,
+            lit_range: [0, 255],
         };
         assert!(p.texture.is_none());
         assert!(shade(&p, &src, 2, 4, 0.0, 0.0).is_some());
@@ -1588,6 +1760,8 @@ mod tests {
             at: 0,
             prev: Vec::new(),
             lit: Vec::new(),
+            pixel: None,
+            lit_range: [0, 255],
         }
     }
 
@@ -1994,8 +2168,9 @@ mod tests {
         assert!((sh.corners[0][1][0] - 120.5).abs() < 1e-3 && sh.corners[0][0][0] == 100.5);
         // Colour tables that turn the colour red from level 30 up (a
         // game's palette by level, topskatr's boards): interpolating the
-        // luma would change the hue, so the polygons stay flat. A ramp of
-        // one hue (any curve) keeps them lit.
+        // luma would change the hue, so each polygon's lumas are clamped
+        // to the levels of its own hue. A ramp of one hue (any curve)
+        // leaves them all.
         let mut red = palette.clone();
         for ch in 1..3 {
             for lum in 30..64 {
@@ -2004,9 +2179,19 @@ mod tests {
         }
         let sh = light::shade(&s1, &opts(40));
         let (p, _) = build_with(&s1, &motion_sources(&red), &BuildIn { lit: Some(&sh), ..Default::default() });
-        // The first quad (lumas 100 to 120, levels 25 to 30) crosses into
-        // red: flat; the second (120 to 140) is red throughout: lit.
-        assert!(p[0].lit.is_empty() && !p[1].lit.is_empty(), "hue changes: flat");
+        // The first quad (lumas 100 to 120, levels 25 to 30) would cross
+        // into red: kept below level 30; the second (120 to 140) is red
+        // throughout.
+        assert!(!p[0].lit.is_empty() && !p[1].lit.is_empty());
+        assert_eq!((p[0].lit_range, p[1].lit_range), ([0, 119], [120, 255]));
+        let v = View::native();
+        let (flat_red, _) = draw_view(&mut plain.clone(), &motion_sources(&red), &v);
+        let (lit_red, _) = draw_view(&mut p.clone(), &motion_sources(&red), &v);
+        assert!(flat_red != lit_red, "still shaded");
+        assert!(
+            flat_red.chunks(3).zip(lit_red.chunks(3)).all(|(a, b)| same_hue([a[0], a[1], a[2]], [b[0], b[1], b[2]])),
+            "no pixel changes hue"
+        );
         let mut curve = palette.clone();
         for ch in 0..3 {
             for lum in 0..64 {
@@ -2014,7 +2199,7 @@ mod tests {
             }
         }
         let (p, _) = build_with(&s1, &motion_sources(&curve), &BuildIn { lit: Some(&sh), ..Default::default() });
-        assert!(p.iter().all(|p| !p.lit.is_empty()), "a curve of one hue: lit");
+        assert!(p.iter().all(|p| !p.lit.is_empty() && p.lit_range == [0, 255]), "a curve of one hue: lit");
         assert!(same_hue([255, 255, 255], [120, 121, 119]) && !same_hue([255, 255, 255], [255, 0, 0]));
         assert!(same_hue([10, 0, 0], [0, 20, 0]), "near black has no hue");
         // Shadows (flat black at their luma) get none.
@@ -2027,10 +2212,80 @@ mod tests {
             .iter()
             .map(|p| Poly { lit: vec![[p.luma as f32 + 0.5, 0.0, 0.0, 0.0]; p.points.len()], ..p.clone() })
             .collect();
-        let v = View::native();
         assert_eq!(draw_view(&mut own.clone(), &src, &v), draw_view(&mut plain.clone(), &src, &v));
         // And with the bend lit, the picture changes.
         assert!(draw_view(&mut lit.clone(), &src, &v) != draw_view(&mut plain.clone(), &src, &v));
+    }
+
+    /// Per-pixel lighting (`Poly::pixel`): with every corner's normal the
+    /// face's own, the flat picture exactly; with normals turning across
+    /// the quad, a highlight between the corners that no interpolation of
+    /// their lumas gives; truncation as `light::quantise`; the hue clamp.
+    #[test]
+    fn per_pixel_lighting_and_rounding() {
+        use crate::light::{test_stream, Lamp, PixelLight};
+        let q = [[-0.4f32, -0.3, 2.0], [0.4, -0.3, 2.0], [0.4, 0.3, 2.0], [-0.4, 0.3, 2.0]];
+        let f = 495.0;
+        let (s, _) = test_stream::stream(&[vec![test_stream::tpoly(&q.map(|p| [p[0] * f, p[1] * f, p[2]]), 100)]]);
+        let mut palette = vec![0u8; 0x1_c000];
+        for ch in 0..3 {
+            for lum in 0..64 {
+                palette[0x1_0000 + ch * 0x4000 + lum * 2] = (lum * 4) as u8;
+            }
+        }
+        let src = motion_sources(&palette);
+        let plain = build(&s, &src);
+        assert_eq!(plain.len(), 1);
+        // Light along the view axis, a material with a sharp highlight.
+        let lamp = Lamp {
+            l: [0.0, 0.0, 1.0],
+            ambient: 20.0,
+            diffuse: 60.0,
+            spec_scale: 150.0,
+            squarings: 4,
+            front: true,
+            base: crate::light::Base::D,
+        };
+        let n0 = [0.0f32, 0.0, 1.0];
+        let own = lamp.eval(n0);
+        let pl = PixelLight { lamp, offset: 0.0 };
+        let with = |normals: [[f32; 3]; 4], pl: PixelLight, range: [u8; 2]| {
+            let mut p = plain[0].clone();
+            p.luma = crate::light::quantise(own);
+            p.lit = normals.iter().map(|n| [crate::light::clamp_corner(pl.luma(*n)), n[0], n[1], n[2]]).collect();
+            p.pixel = Some(pl);
+            p.lit_range = range;
+            p
+        };
+        let v = View::native();
+        let mut flat = plain[0].clone();
+        flat.luma = crate::light::quantise(own);
+        let (want, _) = draw_view(&mut [flat.clone()], &src, &v);
+        let (got, _) = draw_view(&mut [with([n0; 4], pl, [0, 255])], &src, &v);
+        assert_eq!(got, want, "the face's own normal everywhere: flat");
+        // Corner normals tilted 30 degrees outward: the centre faces the
+        // light, the corners don't.
+        let tilt = |x: f32, y: f32| {
+            let n = [x * 0.5, y * 0.5, 0.75f32.sqrt()];
+            let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            n.map(|c| c / l)
+        };
+        let normals = [tilt(-1.0, -1.0), tilt(1.0, -1.0), tilt(1.0, 1.0), tilt(-1.0, 1.0)];
+        let (got, _) = draw_view(&mut [with(normals, pl, [0, 255])], &src, &v);
+        let at = |img: &[u8], x: usize, y: usize| img[(y * v.width + x) * 3];
+        let corner = crate::light::quantise(pl.luma(normals[0]));
+        // The centre: the normals' mean is the face's (the highlight's peak).
+        assert!(at(&got, 248, 192) + 8 >= (crate::light::quantise(own) >> 2) as u8 * 4);
+        assert!(corner + 40 < crate::light::quantise(own), "{corner} vs {own}");
+        // Brightest at the centre, darker toward every corner.
+        assert!(
+            at(&got, 248, 192) > at(&got, 248 - 60, 192 - 45)
+                && at(&got, 248 - 60, 192 - 45) > at(&got, 248 - 95, 192 - 70)
+        );
+        // Clamped into the lumas that keep the hue.
+        let (low, _) = draw_view(&mut [with(normals, pl, [0, 60])], &src, &v);
+        assert!(low.chunks(3).all(|c| c[0] <= 60));
+        assert!(pixel_luma(&pl, 77.0, [0.0; 3]) == 77.0, "no normal: the interpolated luma");
     }
 
     /// `place` maps the previous positions as it maps the points.

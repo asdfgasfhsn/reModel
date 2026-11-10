@@ -52,13 +52,16 @@ pub struct Quality {
     /// Checkerboard translucency with `temporal` on (ignored without).
     pub stipple: Stipple,
     /// Smooth shading (`model2::light`): `Flat` (the default, the
-    /// original), or brightness varying across polygons, from vertex
-    /// values derived from the polygon stream. `Pixel` needs the exact
-    /// layer, not built yet: it draws as `Vertex`. Polygons passed in
-    /// ([`Renderer::draw`], [`Renderer::frame`], [`Renderer::present`])
-    /// are drawn with whatever `Poly::lit` holds unless this is `Flat`;
-    /// the `present_bus*` calls shade the stream themselves
-    /// ([`Renderer::set_light_rules`]).
+    /// original), or brightness varying across polygons: `Vertex` from
+    /// corner values (the game's formula per corner where the side
+    /// channel allows, else means of the stream's lumas), `Pixel` the
+    /// game's formula per pixel for the interpolated normal where the side
+    /// channel allows, `Vertex` elsewhere ([`Renderer::light_effective`]).
+    /// Polygons passed in ([`Renderer::draw`], [`Renderer::frame`],
+    /// [`Renderer::present`]) are drawn with whatever `Poly::lit` (and,
+    /// with `Pixel`, `Poly::pixel`) holds unless this is `Flat`; the
+    /// `present_bus*` calls shade the stream themselves
+    /// ([`Renderer::set_light_rules`], [`Renderer::set_light_frame`]).
     pub shading: Shading,
     /// The crease angle for `shading`, degrees (0: nothing smoothed), or
     /// [`CREASE_AUTO`] (the default): the game's (`romset::Shading`).
@@ -223,6 +226,15 @@ pub fn features(adapter: &wgpu::Adapter) -> wgpu::Features {
     adapter.features() & wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
 }
 
+/// `light::shade`'s result for a stream, side channel and options (a
+/// repeated draw of one game frame shades once).
+struct LightCache {
+    stream: Vec<u32>,
+    side: Option<std::sync::Arc<model2::light::Frame>>,
+    opts: model2::light::Options,
+    shaded: std::sync::Arc<model2::light::Shaded>,
+}
+
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -241,6 +253,8 @@ pub struct Renderer {
     /// The lighting side channel for the next frame `build_polys` shades
     /// ([`Renderer::set_light_frame`], or the engine's in `present_bus*`).
     light_side: Option<std::sync::Arc<model2::light::Frame>>,
+    /// The last frame's shading, kept for a repeat of the same frame.
+    light_cache: Option<LightCache>,
     /// Group 0 of the temporal pipelines (`raster_layout` and binding 5),
     /// and their pipeline layouts by variant.
     raster_layout_t: wgpu::BindGroupLayout,
@@ -490,6 +504,7 @@ impl Renderer {
             light_rules: (&romset::Shading::DEFAULT, 0),
             light_stats: None,
             light_side: None,
+            light_cache: None,
             raster_layout_t,
             pipeline_layouts_t,
             temporal,
@@ -707,14 +722,45 @@ impl Renderer {
     ) -> (Vec<Poly>, Vec<model2::raster::Centres>) {
         let opts = self.light_options();
         let side = self.light_side.take();
-        let shaded = opts.map(|o| model2::light::shade_with(stream, side.as_deref(), &o));
-        self.light_stats = shaded.as_ref().map(|s| s.stats);
+        let shaded = opts.map(|o| {
+            // The same stream, side channel and options as the last frame
+            // (a repeat): its shading again, not worked out again.
+            let same = |c: &LightCache| {
+                c.opts == o
+                    && match (&c.side, &side) {
+                        (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+                        (None, None) => true,
+                        _ => false,
+                    }
+                    && c.stream[..] == *stream
+            };
+            match &self.light_cache {
+                Some(c) if same(c) => (c.shaded.clone(), true),
+                _ => {
+                    let s = std::sync::Arc::new(model2::light::shade_with(stream, side.as_deref(), &o));
+                    self.light_cache = Some(LightCache { stream: stream.to_vec(), side, opts: o, shaded: s.clone() });
+                    (s, false)
+                }
+            }
+        });
+        // A repeat cost nothing.
+        self.light_stats =
+            shaded.as_ref().map(|(s, hit)| model2::light::Stats { ms: if *hit { 0.0 } else { s.stats.ms }, ..s.stats });
+        let shaded = shaded.map(|s| s.0);
         let input = model2::raster::BuildIn {
             motion: m,
-            lit: shaded.as_ref(),
+            lit: shaded.as_deref(),
             skip_checker: opts.is_some_and(|o| o.skip_checker),
         };
         model2::raster::build_with(stream, src, &input)
+    }
+
+    /// What the last frame drawn with shading on was drawn as
+    /// ([`model2::light::Stats::effective`]): `Pixel` asked for but no
+    /// polygon lit per pixel (the chip, no side channel) is `Vertex`. None:
+    /// shading off.
+    pub fn light_effective(&self) -> Option<Shading> {
+        Some(self.light_stats?.effective(self.light_options()?.shading))
     }
 
     /// The raster pipeline for `samples`, `mode` and `variant`, and
@@ -1196,10 +1242,36 @@ impl Renderer {
             let lit = lit_frame && !p.lit.is_empty();
             if q.depth || lit {
                 let first = placed.len() + outline_points.len() / 16;
-                outline_dir.extend(le([first as u32, pl.points.len() as u32, lit as u32, 0].map(u32::to_le_bytes)));
+                let count = pl.points.len();
+                // Lit: bit 0, per pixel bit 1, the luma range above.
+                let pixel = lit && q.shading == Shading::Pixel && p.pixel.is_some();
+                let flags = if lit {
+                    1 | (pixel as u32) << 1 | (p.lit_range[0] as u32) << 8 | (p.lit_range[1] as u32) << 16
+                } else {
+                    0
+                };
+                let normals = if pixel { (first + count) as u32 } else { 0 };
+                outline_dir.extend(le([first as u32, count as u32, flags, normals].map(u32::to_le_bytes)));
                 for (k, v) in pl.points.iter().enumerate() {
                     let lz = if lit { p.lit[k][0] * v.iz } else { 0.0 };
                     outline_points.extend(le([v.x, v.y, v.iz, lz].map(f32::to_le_bytes)));
+                }
+                if let (true, Some(px)) = (pixel, &p.pixel) {
+                    // The normals/z per point, then the lighting
+                    // (raster.wgsl `lamp_eval`).
+                    for (k, v) in pl.points.iter().enumerate() {
+                        let n = p.lit[k];
+                        outline_points.extend(le([n[1] * v.iz, n[2] * v.iz, n[3] * v.iz, 0.0].map(f32::to_le_bytes)));
+                    }
+                    let l = &px.lamp;
+                    let base = match l.base {
+                        model2::light::Base::D => 0,
+                        model2::light::Base::S0 => 1,
+                        model2::light::Base::Dotl => 2,
+                    };
+                    let bits = l.front as u32 | base << 1 | l.squarings.min(255) << 8;
+                    outline_points.extend(le([l.l[0], l.l[1], l.l[2], f32::from_bits(bits)].map(f32::to_le_bytes)));
+                    outline_points.extend(le([l.ambient, l.diffuse, l.spec_scale, px.offset].map(f32::to_le_bytes)));
                 }
             } else if lit_frame {
                 outline_dir.extend([0; 16]);

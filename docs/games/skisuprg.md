@@ -83,3 +83,4 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 - one light vector per frame; lighting entries not changed within a frame.
 - True focal length over the window width: median 0.500 (range 0.500-248.000); the stream-only layer guesses 1.0.
 - The list scan's block facts equal the native geometrizer's on 539,604 blocks, differ on 0.
+- Smooth shading: the snow terrain's faces scatter around the light (bumpy), so the normalised mean normals at its corners face the light more squarely than the faces the game lit: without the exact layer's per-surface brightness correction its lit pixels came out 23.6 levels brighter on average (docs/hw/geometrizer.md, "The exact layer").

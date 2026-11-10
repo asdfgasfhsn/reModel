@@ -882,6 +882,8 @@ mod tests {
             prev: Vec::new(),
             shadow: false,
             lit: Vec::new(),
+            pixel: None,
+            lit_range: [0, 255],
         }
     }
 
@@ -1111,6 +1113,79 @@ mod tests {
             let (flat, n) = differ(&pick(&polys), q);
             let (lit, _) = differ(&pick(&varied), vertex(q));
             assert!(n > 10_000 && lit <= flat + n / 1000, "depth {depth}: {lit} lit against {flat} flat of {n}");
+        }
+        // Per pixel (`Poly::pixel`): a lamp whose value at the face's
+        // normal is the polygon's own luma (+0.5), every corner with that
+        // normal: the off frame byte for byte. Normals turning across the
+        // polygons (a highlight) agree with the software renderer as well
+        // as flat does; so does the clamp to `lit_range`.
+        let pixel = |q: Quality| Quality { shading: crate::Shading::Pixel, crease: 40, ..q };
+        let lamp = |p: &Poly| model2::light::PixelLight {
+            lamp: model2::light::Lamp {
+                l: [0.0, 0.0, 1.0],
+                ambient: p.luma as f32 + 0.5 - 100.0,
+                diffuse: 60.0,
+                spec_scale: 40.0,
+                squarings: 2,
+                front: true,
+                base: model2::light::Base::D,
+            },
+            offset: 0.0,
+        };
+        let with_normals = |f: &dyn Fn(usize) -> [f32; 3], range: [u8; 2]| {
+            polys
+                .iter()
+                .map(|p| {
+                    let pl = lamp(p);
+                    let lit = (0..p.points.len())
+                        .map(|k| {
+                            let n = f(k);
+                            [model2::light::clamp_corner(pl.luma(n)), n[0], n[1], n[2]]
+                        })
+                        .collect();
+                    Poly { lit, pixel: Some(pl), lit_range: range, ..p.clone() }
+                })
+                .collect::<Vec<_>>()
+        };
+        let own_px = with_normals(&|_| [0.0, 0.0, 1.0], [0, 255]);
+        let tilt = |k: usize| {
+            let a = k as f32 * 1.7;
+            let n = [0.45 * a.cos(), 0.45 * a.sin(), 0.8];
+            let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            n.map(|c| c / l)
+        };
+        let turning = with_normals(&tilt, [0, 255]);
+        for (depth, temporal) in [(false, 0), (true, 0), (false, 100), (true, 100), (false, 67)] {
+            let q = Quality { depth, temporal, stipple: Stipple::Keep, ..Default::default() };
+            let off = frame(q, &polys);
+            assert_eq!(
+                frame(pixel(q), &own_px),
+                off,
+                "per pixel at their own normal, depth {depth}, temporal {temporal}"
+            );
+            if temporal == 0 {
+                assert_ne!(frame(pixel(q), &turning), off, "turning normals show, depth {depth}");
+            }
+        }
+        assert_eq!(
+            model2::raster::draw_view(&mut own_px.clone(), &src, &view),
+            model2::raster::draw_view(&mut polys.clone(), &src, &view),
+            "software: own normals"
+        );
+        for depth in [false, true] {
+            let q = Quality { depth, ..Default::default() };
+            let (flat, n) = differ(&pick(&polys), q);
+            let (lit, _) = differ(&pick(&turning), pixel(q));
+            assert!(lit <= flat + n / 1000, "per pixel, depth {depth}: {lit} lit against {flat} flat of {n}");
+            let clamped = with_normals(&tilt, [40, 120]);
+            let (lit, _) = differ(&pick(&clamped), pixel(q));
+            assert!(lit <= flat + n / 1000, "clamped, depth {depth}: {lit} lit against {flat} flat of {n}");
+            // With `Vertex` the GPU draws the corner lumas only.
+            let corners_only: Vec<Poly> = turning.iter().map(|p| Poly { pixel: None, ..p.clone() }).collect();
+            let mut g = Renderer::new().unwrap();
+            g.set_quality(vertex(q));
+            let as_vertex = g.draw(&pick(&turning), &placed, &src, &view);
+            assert_eq!(as_vertex, g.draw(&pick(&corners_only), &placed, &src, &view), "`Vertex` ignores `pixel`");
         }
     }
 
