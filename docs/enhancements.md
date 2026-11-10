@@ -397,7 +397,12 @@ couldn't; at full size the same machinery is anti-aliasing.
   swapped in, `vstriker`'s players and its ball trail: posed with the old
   transform, they gave wrong vectors on about 1% of its 3D pixels before
   this rule); direct polygon data; a polygon with a vertex whose previous
-  position was behind the eye; and frames with a camera cut.
+  position was behind the eye; and frames with a camera cut. The replay
+  reads polygon RAM as frame N-1 left it, so a model the list rewrites
+  every frame (`lastbrnx`'s fighters' joint pieces) is frame N-1's shape
+  too; one whose words the list writes twice in a frame, or after
+  reading them, gets no motion data (`docs/hw/geometrizer.md`, "Motion
+  vectors").
 - **The aux target.** The 3D pass writes a second colour target,
   `Rgba16Float` at the internal size: the motion in output pixels (r, g),
   the visible surface's 1/z (b; negative for a blended checkerboard
@@ -636,9 +641,16 @@ washed-out fade and a cut; not investigated.
   needs a thin-feature lock (as FSR 2 has) or a luminance-stable
   accumulation; a wider kernel didn't help. Left for a possible FSR 2
   integration (below).
-- `lastbrnx`: 3% of position words in blocks the plan calls valid don't
-  match frame N-1's (96.9% agree; every other sequence 100%), though on
-  screen only 0.2% of pixels' vectors are more than 1 px off.
+- (Fixed 2026-11-11) `lastbrnx`: 3% of position words in blocks the plan
+  called valid didn't match frame N-1's (96.9%): models the list rewrites
+  in polygon RAM every frame, replayed with frame N's vertices. The
+  replay now reads polygon RAM as frame N-1 left it: 100.00%, no
+  coverage lost, the other sequences' motion data byte for byte the same.
+- Smooth motion's in-betweens still draw those `lastbrnx` models with
+  frame N's vertices under the blended transforms, so between frames
+  they lead the limbs around them by (1 - t) of their own motion (see
+  `docs/hw/geometrizer.md`, "Seeing it"). Blending the list's polygon RAM
+  words as well would need pairing them between frames.
 - Objects re-paired to another model's transform get no motion data:
   0.1-1.7% of 3D pixels (`sgt24h` 0.1%, `doa` 1.1%, `topskatr` race 1.3%,
   `vstriker` 1.7%). They fall back towards this frame's samples, blocky
