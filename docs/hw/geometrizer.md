@@ -780,6 +780,11 @@ common: of the lit polygons in the 21 captured frames per game, `lastbrnx`
 clamps about 58%, `dynabb97` over 90% (its players' tables hold coloured
 entries in the dark columns below a grey ramp), `doa` 35%, `schamp` 34%,
 `vstriker` 29%, `bel` 36%, `topskatr` 15%; `sgt24h` and `indy500` none.
+Finer levels (`shading_fine`, `raster::fine_level`) blend only between
+two adjacent columns inside that range. The tables' steps between
+adjacent columns are not even: a colour on `fvipers`' fighters (frame
+1500 of the capture) goes from black straight to (70, 65, 60) in the
+next column, so a blended pixel there can be any shade between.
 
 **The exact layer** (`--shading vertex`, `pixel`, level L2): a corner is
 lit with its polygon's own record (`light::PixelLight`: `Lamp::eval` plus

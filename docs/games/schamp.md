@@ -76,3 +76,16 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 - the light vector changes within a frame in 258 of 6196 frames (up to 2 vectors a frame); lighting entries not changed within a frame.
 - True focal length over the window width: median 0.565 (range 0.565-2.667); the stream-only layer guesses 1.0.
 - The list scan's block facts equal the native geometrizer's on 530,910 blocks, differ on 0.
+
+## Smooth shading
+
+The manifest sets a crease angle of 25 degrees instead of the default 40
+(`romset::Shading`; docs/enhancements.md, "Smooth shading"). Evidence
+(*observed* in reModel's own pictures, `lighting-check --shading pixel
+--crease 20/25/30/40/50` on frames 1200 and 2400 of a coin-start capture,
+1440x1080): Sonic's quills and Knuckles' dreadlocks are spikes of a few
+faces whose ridges meet at roughly 25-40 degrees. At 40 the ridges are
+smoothed away and each spike reads as one blob of blue or red; at 30 the
+larger ridges start to go; at 25 the ridges stay while the heads, cheeks,
+gloves and shoes still shade smoothly; at 20 the faces look nearly flat
+again. The angle is a choice by eye, not a property of the data.

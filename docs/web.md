@@ -262,7 +262,7 @@ progress. It offers:
   HUD placement in wide views (at the edges, or centred), the bezel (on,
   the default, or off; below), anti-aliasing, the depth buffer, shading
   (flat, the default; smooth; per pixel) and its crease angle (the game's,
-  the default; 30°, 40°, 60°; below, "Smooth shading"), the texture
+  the default; 30°, 40°, 60°; below, "Smooth shading"), blended brightness levels (off by default), the texture
   pack (off by default; below) and its filtering (off, mipmaps, 2x to 16x);
 - **Sound:** on or off, the effects (sound board) and music levels in
   dB (defaults +8 and -8, `model2::audio::DEFAULT_MIX`; the game's own
@@ -294,7 +294,7 @@ audio context is suspended, nothing reaches the workers; it resumes from
 the same frame). Resume applies the HUD placement (`set_hud`), the bezel, the mix
 (a `mix` message to the sound worker), the remapped controls
 (`set_bindings`) and touch and tilt at once; render
-height, aspect, sound on or off, the sound buffer, the geometrizer and smooth motion need a restart (anti-aliasing, the depth buffer, shading and its crease angle, the texture pack and its filtering apply at once: `set_quality`, `set_pack`), and
+height, aspect, sound on or off, the sound buffer, the geometrizer and smooth motion need a restart (anti-aliasing, the depth buffer, shading, its crease angle and brightness levels, the texture pack and its filtering apply at once: `set_quality`, `set_pack`), and
 the panel offers "Restart to apply" when one of them changed (it reloads
 the page with `#play`, skipping the panel once).
 
@@ -338,18 +338,19 @@ parameters:
   by depth, not the game's order, except skies, shadows, translucent
   layers and large floors; `docs/enhancements.md`). Both off by default,
   both in the panel's Display section, both applied live. The module's
-  `set_quality(aa, depth, texfilter, shading, crease)` takes them before
+  `set_quality(aa, depth, texfilter, shading, crease, fine)` takes them before
   or after `start` (`texfilter` is a string: `off`, `mip`, `2`, `4`, `8` or
-  `16`; anything else is off; `shading` and `crease` as below, and may be
-  left out: flat, the game's angle). Temporal anti-aliasing and upscaling
+  `16`; anything else is off; `shading`, `crease` and `fine` as below, and may be
+  left out: flat, the game's angle, off). Temporal anti-aliasing and upscaling
   are the native player's only (`docs/play.md`); the browser has no
   setting for them;
 - `shading=vertex` (smooth shading; `shading=flat` or `off`, the default,
   the original; `shading=pixel`, the game's lighting per pixel) and
   `crease=40` (degrees, 0 to 180: faces meeting at a sharper angle keep a
   hard edge; 0 smooths nothing; `crease=auto`, the default, is the game's
-  own, `romset::Shading`). Both in the panel's Display section, both
-  applied live (below, "Smooth shading");
+  own, `romset::Shading`), and `shadefine=1` (finer levels, off by
+  default). All in the panel's Display section, all applied live (below,
+  "Smooth shading");
 - `pack=1` (the game's texture pack from `/texpack/<set>/`; `pack=0` off) and
   `texfilter=off|mip|2|4|8|16` (filtering of pack images, as in
   `docs/texture-packs.md`). Both off by default, both in the panel's Display
@@ -395,9 +396,12 @@ the page as `remodelShadingCost(runs)`) times the grouping pass on the
 newest frame for a test driver: `[median ms, worst ms, polygons, lit]`
 (the stream alone: a lower bound).
 
-Not there yet: **finer levels** (`shading_fine`, blending the game's 64
-brightness levels): it will be a sixth, optional `set_quality` argument
-and `?shadefine=1`.
+**Finer levels** (`shadefine=1`, the panel's "Blend brightness levels",
+the sixth `set_quality` argument, `gpu::Quality::shading_fine`): a lit
+pixel blends the two of the game's colours around its brightness instead
+of stepping through its 64 levels, so large smooth surfaces don't band;
+the status line then says `shading pixel fine` (docs/enhancements.md,
+"Smooth shading"). Applied live; nothing else changes on the page.
 
 *Measured* (Chrome 157 on Linux, Vulkan, RTX A2000, interpreter build,
 1413x1060, the machine shared with other work): `lastbrnx` and

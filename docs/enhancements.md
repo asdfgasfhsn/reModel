@@ -59,9 +59,9 @@ through DirectX 8/9's fixed-function pipeline.
 | Image | Temporal anti-aliasing and upscaling (motion vectors, jitter) | done, opt-in, native player only (2026-11-10): needs the native geometrizer, replaces MSAA; thin detail speckles at 67% and 50%, animated objects without motion data look soft (below) |
 | Image | FSR 2 or DLSS in place of the built-in resolve, native only | idea (not started) |
 | Models | Model replacement packs, keyed by ROM address | planned |
-| Models | Automatic smoothing (vertex normals, curved surfaces) | idea |
+| Models | Automatic smoothing (vertex normals, curved surfaces) | vertex normals done (smooth shading, below); curved-surface tessellation an idea |
 | Models | Level of detail and draw distance overrides | idea (optional patch) |
-| Lighting | Per-vertex, then per-pixel lighting | planned |
+| Lighting | Smooth shading: per-vertex and per-pixel lighting with the game's own formula, finer brightness levels | done, opt-in (2026-11-11), player and browser; 2A formula unconfirmed (below) |
 | Lighting | Material maps in packs (normal, specular, roughness) | planned |
 | Lighting | Shadows, bloom, HDR tonemapping, better fog | idea |
 | Lighting | Hybrid ray tracing (shadows, reflections, AO) | idea |
@@ -77,7 +77,7 @@ through DirectX 8/9's fixed-function pipeline.
 3. **A temporal upscaler** (done as temporal anti-aliasing with a render
    scale; its open problems are below). Its inputs (jitter, motion
    vectors, depth, render scale) are what FSR 2 or DLSS would take.
-4. **Smooth shading and material maps.**
+4. **Smooth shading** (done) **and material maps.**
 5. **Model replacement.**
 6. **Hybrid ray tracing**, then path tracing.
 
@@ -690,9 +690,10 @@ or clips).
 
 Model 2 models carry a normal per polygon. Averaging the normals of
 polygons that share a vertex (within an angle threshold, to keep hard
-edges) gives vertex normals, enough for smooth shading. With them,
-curved-surface tessellation (PN triangles and similar) can round off
-silhouettes of cars and characters with no artist work. Suits some
+edges) gives vertex normals: done, per frame, for smooth shading (below).
+With them, curved-surface tessellation (PN triangles and similar) could
+round off silhouettes of cars and characters with no artist work (an
+idea; smooth shading changes brightness only, never outlines). Suits some
 models better than others; per-pack opt-out.
 
 ### Level of detail and draw distance
@@ -703,16 +704,212 @@ finest model always, or further away, to remove pop-in. Because it
 changes what a player can see, it is an optional per-game patch, off by
 default.
 
+### Smooth shading
+
+Done, opt-in, off by default (2026-11-11), in the native player, the
+browser and the CLI's snapshots and tools. Render-only: nothing the game
+computes changes (state hashes equal with it on), and with it off the
+renderers take the old code (the regression baseline is identical).
+
+The hardware lights each polygon with one luma, so curved surfaces show
+their facets. Smooth shading gives each polygon corner its own value and
+blends it across the polygon, through the same luma tables and colour
+translation tables, so colours stay the game's.
+
+**Settings.**
+
+| | Player | Browser | CLI |
+|---|---|---|---|
+| Level | `shading = flat \| vertex \| pixel` (menu, launcher, `--shading`) | `shading` (panel: Flat, Smooth, Per pixel; `?shading=`) | `--shading` (snapshots, `gpu-check`, `depth-check`, `pack-check`, `temporal-probe`, `lighting-check`) |
+| Crease | `crease = auto \| 0-180` (settings file, `--crease`) | `crease` (panel: the game's, 30, 40, 60; `?crease=`) | `--crease` |
+| Finer levels | `shading_fine = true \| false` (menu checkbox "Blend brightness levels", launcher "Brightness levels", `--shading-fine on\|off`) | `shadefine` (panel, `?shadefine=1`) | `--shading-fine on\|off` |
+
+All apply live; `gpu::Quality::{shading, crease, shading_fine}` underneath.
+
+**The three levels.**
+
+- `flat`: the game's picture (the default).
+- `vertex`: each corner is lit with the game's own formula for the
+  normalised, angle-weighted mean of the normals of the faces around it
+  that belong to the same smooth surface, and the value is blended across
+  the polygon (perspective-correct, along its edges and across each span,
+  as the software fill interpolates), then truncated as the hardware
+  truncates.
+- `pixel`: the game's formula is worked out at every pixel for the
+  normal blended across the polygon, so highlights (the games with
+  specular light: `topskatr`, `srallyc`, `stcc`, `bel`, `lastbrnx`,
+  `fvipers`, `schamp`) sit where the surface faces them instead of being
+  smeared between corners.
+
+What the corners are lit with depends on what is known (`model2::light`;
+the record and its self-check in `docs/hw/geometrizer.md`, "Lighting
+side channel"):
+
+| Level | Source | Used for |
+|---|---|---|
+| L2 | the native geometrizer's side channel: per polygon the normal and lighting entry it was lit with, per block the light and focal lengths | the exact layer: `vertex` and `pixel` as above. Every block is checked each frame: its polygons' flat lumas recomputed from the side channel must be the stream's (within one level), else the block falls to L1 |
+| L1 | block facts only (the chip path's scan of the display list) | `vertex` from means of the stream's lumas around each corner, with the true focal lengths; `pixel` drawn as `vertex` |
+| L0 | the polygon stream alone (old captures; a list the scan doesn't know) | as L1 with a guessed focal length |
+
+So `--geo chip` (and the browser's `geo=chip`) gets `vertex`, never
+`pixel`: the menu, launcher, panel and status line say "drawn as
+vertex"/"pixel (as vertex)". A failed self-check falls back the same way,
+block by block, and is counted (`lighting-check` B). A game with no
+native geometrizer (none so far) would get L1 or L0 with nothing written
+for it.
+
+**Crease.** Faces meeting at more than the crease angle keep a hard
+edge; `auto` is the game's own (`romset::Shading::crease`), 0 smooths
+nothing (the original picture, byte for byte). The default is 40 degrees:
+boxes, 8-sided wheels and limbs stay faceted, bodies and 10+-sided
+cylinders smooth. Separately modelled pieces (a fighter's limbs, a car's
+panels) are never welded together, so joints keep their seams.
+
+Per-game table, from a survey of all 18 working games (pixel at creases
+20, 30, 40 and 50, and vertex at 40, on the two frames with the most lit
+polygons of each game's capture, looked at in crops):
+
+| Game | Crease | Why |
+|---|---|---|
+| `schamp` | 25 | Sonic's quills and Knuckles' dreadlocks lose their ridges at 30 and above (`docs/games/schamp.md`) |
+| the other 17 | 40 (default) | no frame looked worse at 40 than at 30 or 50: fighters (`lastbrnx`, `doa`, `fvipers`), cars (`sgt24h`, `stcc`, `overrev`, `srallyc`, `indy500`), `dynabb97`'s octagonal bats (smooth at 40, faceted at 30), `vstriker`'s small players (a little rounder at 40, not worse; stage 4's "rubbery" was not seen again at 1440x1080), `topskatr`'s skaters, `segawski`, `skisuprg`, `hotd`, `bel`, `waverunr` |
+
+A game without an entry, including any title not yet working, gets
+`Shading::DEFAULT` (40 degrees, nothing excluded); the generic code reads
+only the table's fields, never a game's identity, and the renderers'
+default rules are `DEFAULT` until a front end sets the game's. To give a
+game its own, write `shading: crate::Shading { crease: N,
+..crate::Shading::DEFAULT }` in its manifest (`crates/romset/src/games/`)
+with a one-line reason, put the pictures behind it in its
+`docs/games/<set>.md`, and check it with `make lighting-check
+GAME=<set> GPU_OPTS="--crease N"`. The table also has `skip_windows`,
+`skip_models`, `model_crease` and `skip_checker` (no game uses them yet)
+and reserves `weld_eps` and `weld_models` (not implemented).
+
+**Finer levels** (`shading_fine`). Brightness reaches the screen through
+64 columns of the game's colour tables, so a gradient across a large
+smooth surface steps in visible bands. With finer levels on, a lit pixel
+takes the blend of the two columns around its brightness instead of one
+(`model2::raster::fine_level`; the GPU's `fine_level` is the same). Two
+choices were open in the design; both were taken to keep colours the
+game's:
+
+- The two columns are always adjacent ones the polygon itself shows with
+  the game's levels at the lumas that keep its hue (`Poly::lit_range`), so
+  a blended pixel lies between two of the game's own colours of that hue
+  and can't leave it (the alternative, blending past the end of that
+  range, could mix in a colour of another hue on tables that change
+  colour by brightness).
+- The blend is centred: column k alone at level k + 0.5, so across a
+  gradient the mean column is the game's (the design's "fraction of the
+  level", uncentred, would brighten every lit pixel by half a column).
+
+Only lit pixels change; unlit polygons and everything at crease 0 stay
+the game's. Pack images follow it (their lighting ratio uses the blend).
+No dither. Blending is done on the colour values as displayed, not in
+linear light.
+
+By eye (review crops of all 18 games): the bands on untextured car
+bodies go (`overrev`'s white car roof, where the 64 levels step visibly
+with `pixel`); on textured surfaces the difference is hard to see. One
+side effect: texels the game draws in column 0 as black ink (the outlines
+on `fvipers`' armour, frame 1500) blend up to half a column towards the
+next one, so they come out dark brown rather than black where that next
+column is far from black. Nothing else looked worse than the game's
+levels.
+
+**What it does not do.** Outlines never change (no tessellation).
+Brightness only: no new lights, shadows or materials. Decals floating
+inside a larger smoothed polygon stay flat (counted, not fixed). HUD
+windows, shadows, direct polygon data, zero-normal (unlit) and
+ambient-only polygons are left flat.
+
+**Brightness and colour.** A lit pixel's luma is clamped to the lumas
+over which its colour tables keep the polygon's hue (some games' tables
+pick other colours at other levels: `topskatr`'s ramp boards,
+`dynabb97`'s players, `lastbrnx`): smooth shading changes level, never
+hue. Each smooth surface is moved back by one offset to the brightness
+the game gave it (a departure from design decision 6, which accepted the
+normalised mean normal's brightening: on bumpy surfaces lit at a grazing
+angle, `skisuprg`'s snow, it made lit pixels 23.6 levels brighter on
+average). Per-pixel results over all lit pixels of each game's capture:
+mean luma shift between -0.8 and +1.7 levels (stage 4).
+
+**How it is verified.** `make lighting-capture` (every 300th frame of a
+coin-start run with the side channel) and `make lighting-check`
+(software and GPU, 1440x1080; `GPU_OPTS="--shading pixel"`,
+`"--shading-fine on"`, `"--crease N"`): A crease 0 is the flat frame byte
+for byte on both renderers; B the side channel lines up with the stream
+and its recomputed lumas match (mismatch at most 0.1%); C brightness of
+corners and pixels against the polygon's own luma (reported); D pixels of
+polygons not lit are the flat frame's; E software against GPU no worse
+than flat; F the stream-only layer against the side channel; G
+determinism; J no pixel changes hue; K (finer levels) against the game's
+levels: pixels changed, mean shift and the steps between neighbouring
+pixels of untextured lit polygons; H, I cost and counts. Unit tests
+without ROMs in `model2::light`, `model2::raster` (including
+`fine_levels_blend_adjacent_columns`, `fine_levels_draw_between_columns`)
+and the GPU's `shading_off_path_and_lit_pipelines`. Results of the last
+run (2026-11-11, all 18 games, 21 frames each, RTX A2000 Laptop):
+
+- `vertex`, `pixel`, `vertex` with finer levels and `pixel` with finer
+  levels: 72 of 72 runs pass (A, B, D, E, G, J; J 0 pixels everywhere).
+- E (software against GPU, pixels over 16 levels) with `pixel` and finer
+  levels: within 0.01 points of the flat frames' (0.14-2.9%, the same
+  edge pixels) on every game; `schamp` 1.11% against 1.16% flat.
+- C pixels (`pixel`): over all lit pixels the luma moves -0.95
+  (`schamp`) to +1.68 (`skisuprg`) levels on average, most within ±0.6.
+- K (finer levels against the game's levels, `pixel`): 2-65% of lit
+  pixels change (`srallyc` 2%, most 15-65%); the mean colour of lit
+  pixels moves by at most 0.37 of 255 a channel (`dynabb97` -0.35, the
+  rest within ±0.21). On untextured lit polygons, steps between
+  neighbouring pixels become about three times as many and a quarter to a
+  third the size (`sgt24h` 16,509 steps of 3.8 levels against 43,756 of
+  1.4; `overrev` 914 of 3.9 against 4,911 of 1.0; `waverunr` 15,454 of
+  3.3 against 44,271 of 1.2): the bands are gone. Some lit pixels end
+  more than 16 levels from the game's level where a colour table steps
+  far between two columns (`fvipers`: black to (70, 65, 60)); that is
+  reported, not failed.
+- State hashes after 600M coin-start instructions with `--light
+  --shading pixel --shading-fine on --crease 180` (fresh EEPROM):
+  `topskatr` 7f0275251269648e, `srallyc` 56b5c12673c631b3, `lastbrnx`
+  700e5666e46dd508, `doa` f136114af6b8a55c, the same as with it off.
+- The regression baseline (gpu-check, depth-check, pack-check, state, four
+  games) is identical with the option off.
+
+**Costs.** CPU: the shading pass (with the side channel's check) about
+1-2 ms a new frame, up to 6 ms on busy frames on a loaded machine;
+building the lit polygons 0.1-2 ms more; a repeated frame costs nothing.
+GPU: within the noise at 1080p (lastbrnx 39.0 / 39.1 / 39.9 ms whole
+frame with readback, flat / vertex / pixel) and at 4K; per lit fragment a
+loop over the polygon's 3-9 outline points. Finer levels add two colour
+lookups per lit pixel. Browser: the shading runs on the page, 1.2-1.5 ms
+median a frame. Side channel: 16 bytes a polygon.
+
+**Limitations and open points.**
+
+- The 2A (`srallyc`) lighting formula is *unconfirmed*: it is the 2C
+  program's maths, which reModel's 2A model uses; no 2A stream from
+  hardware exists to compare with.
+- Per-pixel lighting needs the native geometrizer; the chip path is
+  vertex-only (L1). The shadow run of a native program beside the chip,
+  for exact lighting of a chip-only program, is designed and not built
+  (no title needs it yet).
+- In-betweens with smooth motion on a display over 60 Hz were not seen
+  live (covered by the code path and tests on a 60 Hz display).
+- Finer levels lighten black ink texels a little (above); an option to
+  keep column 0 as it is would be a small change, not made.
+- Tested on one NVIDIA GPU (Vulkan) and Chrome on Linux.
+
 ### Lighting
 
 The hardware lights each polygon with one luma value, through its luma
 table: flat shading. Steps:
 
-1. **Per-vertex lighting** from smoothed vertex normals and the game's
-   own light direction and ambient, mapped through the same luma tables
-   so colours stay the game's.
-2. **Per-pixel lighting**, with **material maps** carried in packs
-   (normal, specular, roughness).
+1. **Per-vertex and per-pixel lighting** from smoothed vertex normals
+   and the game's own lights and materials: done ("Smooth shading",
+   above).
+2. **Material maps** carried in packs (normal, specular, roughness).
 3. **Shadows** (shadow maps from the game's light), **bloom**, **HDR**
    with tonemapping, **fog** with depth.
 

@@ -331,6 +331,44 @@ at 1080p and 4.4 ms at 4K, 67% about the same as off, 50% less; 71 MB of
 targets at 1080p and 100%. Measured before `CLIP_SLACK` and the C = 0.75
 cubic, not since; neither adds work (the same 5 taps).
 
+## Smooth shading
+
+`Quality::shading` (`Flat`, `Vertex`, `Pixel`), `crease` and
+`shading_fine` (docs/enhancements.md, "Smooth shading"). The
+`present_bus*` calls shade the stream themselves (`build_polys`:
+`light::shade_with` with the game's rules from `set_light_rules` and the
+side channel from the engine or `set_light_frame`, then
+`raster::build_with`); a repeat of the same stream, side channel and
+options reuses the last result (`LightCache`). Polygons passed in are
+drawn with whatever `Poly::lit` and `Poly::pixel` hold.
+
+- **Data, no new bindings.** A lit polygon's corner values ride in the
+  `outlines` storage buffer (binding 4) that the depth buffer uses:
+  directory entry `(first, count, flags, normals)` with flags bit 0 lit,
+  bit 1 per pixel, bit 2 finer levels, bits 8-15 and 16-23 the luma range
+  that keeps the polygon's hue (`Poly::lit_range`); its points carry
+  luma/z in w; per pixel, `count` normal/z entries and two lamp entries
+  (`lamp_eval`). Vertices, vertex entry points and bind group layouts are
+  unchanged.
+- **Entry points.** Frames with a lit polygon draw with the `_l` twins of
+  every fragment entry point (`lit_entry`; plain, depth, pack, filtered
+  pack, and each `_t` for temporal); every other frame, and shading off,
+  takes the old pipelines and shader text, so the off path is bit for bit
+  what it was (the regression baseline). `poly_px` interpolates the luma
+  (or normal) along the outline's edges at the row's centre and across the
+  span, as the software fill does (`lit_luma`), truncates and clamps it.
+- **Finer levels** (bit 2): `poly_px` also keeps the luma before
+  truncation (`lit_fine`, `lit_range`, private variables), and `shade_l`
+  and `pack_light_l` blend the two colour columns `fine_level` picks
+  (`raster::fine_level`, the same arithmetic in f32), rounded as the
+  software rounds.
+- **Tests** (`temporal.rs`, `shading_off_path_and_lit_pipelines`): no lit
+  polygon gives the off frame byte for byte with and without depth and
+  temporal, finer levels on or off; corners at the polygon's own luma or
+  normal give the off frame; varying corners, per-pixel normals, the hue
+  clamp and finer levels agree with the software renderer as well as flat
+  drawing does (finer levels within one step of rounding).
+
 ## Next
 
 - The 2D tile layers and HUD on the GPU: they are drawn on the CPU and

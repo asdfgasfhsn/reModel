@@ -90,9 +90,11 @@ matters, with `--geo chip`, or when the CPU has no time to spare.
 in-betweens with it on were only forced there, not seen on a faster
 display.
 
-**Smooth shading** (*in progress*; setting `shading`, below, and
-`crease` in the settings file only; `--shading flat|vertex|pixel` and
-`--crease auto|N` for one run; `flat` and `auto` by default). The games
+**Smooth shading** (opt-in; settings `shading` and `shading_fine`,
+below, and `crease` in the settings file only; `--shading
+flat|vertex|pixel`, `--crease auto|N` and `--shading-fine on|off` for one
+run; `flat`, `auto` and off by default; docs/enhancements.md, "Smooth
+shading"). The games
 light each polygon with one brightness, so curved surfaces show their
 facets. `vertex` lights each polygon corner with the game's own lighting
 for the mean of the normals of the faces around it that belong to the
@@ -102,8 +104,8 @@ polygon, so highlights (the games that use specular light: `topskatr`,
 `srallyc`, `stcc`, `bel`, `lastbrnx`, `fvipers`, `schamp`) sit where the
 surface faces them instead of being spread between corners. Faces
 meeting at more than the crease angle keep a hard edge (`auto` is the
-game's own angle, 40 degrees for every game so far; 0 smooths nothing,
-the original picture). The normals and lighting come from what the
+game's own angle: 40 degrees, 25 for `schamp`; 0 smooths nothing, the
+original picture). The normals and lighting come from what the
 native geometrizer recorded about each polygon (its side channel, on
 whenever shading is); with the chip (`--geo chip`, not turned off by it)
 only block facts are known, so `vertex` blends the polygons' own
@@ -133,12 +135,16 @@ fighters and curved bodies (`lastbrnx`'s and `fvipers`' fighters,
 `doa`'s, `topskatr`'s skaters, `stcc`'s cars, `segawski`'s life vest);
 little or no change on mostly flat cars and scenery (`sgt24h`, `srallyc`,
 roads, buildings; `indy500` lights its cars evenly); worse on art drawn
-to be faceted, such as `schamp`'s Sonic quills and `vstriker`'s low-poly
-limbs, which lose their definition or look rubbery until those games get
-their own crease angle (meanwhile `--crease 25` or so keeps more of
-them). Each limb of a fighter is shaded on its own, so joints keep a
-seam. Gradients step through the game's 64 brightness levels, so large
-smooth surfaces show visible bands. *Unconfirmed:* tried on one NVIDIA
+to be faceted: `schamp`'s Sonic quills and Knuckles' dreadlocks melted
+together at 40 degrees, so `schamp` uses 25, which keeps their ridges;
+`vstriker`'s small low-poly players look a little rounder, not worse, at
+40. Each limb of a fighter is shaded on its own, so joints keep a seam.
+Gradients step through the game's 64 brightness levels, so large smooth
+surfaces show bands; **Blend brightness levels** (`shading_fine`, the
+menu's checkbox under Shading, the launcher's "Brightness levels") blends
+the two of the game's colours around each lit pixel's brightness
+instead, which removes the bands and never leaves the polygon's colour
+(only lit pixels; the rest stay the game's). *Unconfirmed:* tried on one NVIDIA
 GPU (Vulkan) on a 60 Hz display (in-betweens forced, not seen on a
 faster display).
 
@@ -350,7 +356,7 @@ they change as they change: aspect (fit the window or 4:3), bezel, HUD at
 the edges or centred, speed (one frame a refresh or exact arcade speed),
 smooth motion, anti-aliasing (off, 4x, 8x), temporal anti-aliasing (off,
 TAA, 75%, 67%, 50%) and its checkerboard see-through (blend or keep), the depth buffer, shading (flat,
-vertex, pixel; with the chip geometrizer pixel says it draws as vertex), the texture pack and its filtering (off, mip, 2x to 16x), the effects and music levels in dB, the geometrizer (native
+vertex, pixel; with the chip geometrizer pixel says it draws as vertex) and its brightness levels (the game's or blended), the texture pack and its filtering (off, mip, 2x to 16x), the effects and music levels in dB, the geometrizer (native
 or the game's chip; the preview restarts on it) and the Controls page
 (remapping, below). "Save for" says where changes go: the defaults for all
 games, or this game only (a game's own setting is tagged "this game", and
@@ -358,7 +364,7 @@ games, or this game only (a game's own setting is tagged "this game", and
 the Esc menu while playing. They come in layers, lowest first, as in the
 browser build: the built-in defaults, the defaults for all games, the
 game's own, then the command line (`--mix`, `--hud`, `--aspect`, `--bezel`,
-`--exact`, `--smooth`, `--aa`, `--temporal`, `--stipple`, `--depth`, `--shading`, `--crease`, `--pack`, `--texture-pack`, `--tex-filter`, `--geo`), which applies to that run only and is
+`--exact`, `--smooth`, `--aa`, `--temporal`, `--stipple`, `--depth`, `--shading`, `--crease`, `--shading-fine`, `--pack`, `--texture-pack`, `--tex-filter`, `--geo`), which applies to that run only and is
 never saved, unless a setting it gave is changed in the launcher or menu
 (that change is then kept as any other). A layer keeps only what it sets.
 
@@ -760,7 +766,7 @@ synthetic and scripted (`--nav`) events only, not yet with a real pad.
   wider than its frame from 4:3 to 32:9; or 4:3, `--aspect 4:3`), the
   bezel (below), where the HUD goes on wide windows, smooth motion,
   anti-aliasing, temporal anti-aliasing and the checkerboard pattern, and
-  the depth buffer and shading (above; the crease angle is the settings
+  the depth buffer, shading and its blended brightness levels (above; the crease angle is the settings
   file's or `--crease`'s), the texture pack and its
   filtering (above), run-ahead (above), the geometrizer (on the next start), "Save changes
   for" this game or all games (as in the launcher), and exact arcade speed
