@@ -109,6 +109,7 @@ Hardware notes ([docs/hw/](docs/hw/)):
 - [model2a.md](docs/hw/model2a.md), [model2b.md](docs/hw/model2b.md), [model2c.md](docs/hw/model2c.md): the three boards.
 - [peripherals.md](docs/hw/peripherals.md): the 2C board's I/O and peripherals.
 - [geometrizer.md](docs/hw/geometrizer.md): the geometrizer and 3D rasteriser; [geometrizer-2c.md](docs/hw/geometrizer-2c.md) and [geometrizer-2b.md](docs/hw/geometrizer-2b.md): the native geometrizers.
+- [texture-lod.md](docs/hw/texture-lod.md): mipmaps, the log table and microtextures, as the games send them.
 - [mb86235.md](docs/hw/mb86235.md) (2C geometry chip), [mb86234.md](docs/hw/mb86234.md) (2A), [adsp2106x.md](docs/hw/adsp2106x.md) (2B SHARC).
 - [tilemap.md](docs/hw/tilemap.md): the 2D tile layer.
 - [sound.md](docs/hw/sound.md): 68000 + SCSP and the DSB2 music board; [dsb1.md](docs/hw/dsb1.md): the DSB1; [z80.md](docs/hw/z80.md): the Z80 core.
