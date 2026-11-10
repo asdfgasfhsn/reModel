@@ -90,6 +90,19 @@ usage: remodel-play [options]
   --aa off|4|8       anti-aliasing: multisample the 3D layer (4 or 8 samples
                      a pixel, 8 where the GPU has it; docs/enhancements.md).
                      Default off, the original look
+  --temporal off|taa|75|67|50
+                     temporal anti-aliasing: each frame's 3D layer drawn
+                     at a slightly different sub-pixel offset and blended
+                     with the frames before along the motion; taa at full
+                     size, a percentage to draw it smaller and upscale (50
+                     to 100). Turns multisampling (--aa) off and smooth
+                     motion's recording on (not its in-betweens); the
+                     native geometrizer only (docs/play.md). Default off
+  --stipple blend|keep
+                     with --temporal: draw the games' checkerboard (screen
+                     door) translucency as an even 50% blend, or keep the
+                     pattern (where the picture is big enough to hold it).
+                     Default blend
   --depth on|off     a depth buffer for the 3D layer, from each vertex's
                      1/z, instead of the game's draw order: intersecting
                      and mis-sorted polygons come out right (HUD windows
@@ -124,8 +137,8 @@ usage: remodel-play [options]
                      presses both, @S:H holds them H seconds
 
 The game's settings (mix, HUD, aspect, bezel, speed, smooth motion,
-run-ahead, anti-aliasing, depth buffer, texture pack and filtering,
-geometrizer) given here are for this run only, over the
+run-ahead, anti-aliasing, temporal anti-aliasing and stipple, depth buffer,
+texture pack and filtering, geometrizer) given here are for this run only, over the
 defaults for all games and the game's own, which the launcher's settings
 and the menu keep.
 --rom and --fullscreen are remembered.
@@ -304,6 +317,20 @@ fn options(s: &mut Settings) -> Result<Options, String> {
                 let Some(n) = n else { return Err("--aa wants off, 4 or 8".into()) };
                 cli("aa", &n.to_string());
             }
+            "--temporal" => {
+                let v = value()?;
+                if gpu::Quality::parse_temporal(&v).is_none() {
+                    return Err("--temporal wants off, taa or a percentage from 50 to 100 (75, 67, 50)".into());
+                }
+                cli("temporal", &v);
+            }
+            "--stipple" => {
+                let v = value()?;
+                if gpu::Stipple::parse(&v).is_none() {
+                    return Err("--stipple wants blend or keep".into());
+                }
+                cli("stipple", &v);
+            }
             "--depth" => {
                 let on = match args.peek().map(String::as_str) {
                     Some("on") => {
@@ -361,6 +388,11 @@ fn options(s: &mut Settings) -> Result<Options, String> {
     if s.cli.get("smooth").is_some_and(|v| v == "true") && s.cli.get("geo").is_some_and(|v| v == "chip") {
         eprintln!("--smooth: off with --geo chip (in-betweens come from the native geometrizer)");
     }
+    if s.cli.get("temporal").is_some_and(|v| gpu::Quality::parse_temporal(v) != Some(0))
+        && s.cli.get("geo").is_some_and(|v| v == "chip")
+    {
+        eprintln!("--temporal: off with --geo chip (its motion data comes from the native geometrizer)");
+    }
     Ok(o)
 }
 
@@ -417,7 +449,8 @@ impl Session {
     }
 
     /// Run-ahead of `frames` (0: off; never for the preview) and smooth
-    /// motion `smooth`, where it goes: the machine drawn, the frames run
+    /// motion's recording `smooth` (for in-betweens or temporal
+    /// anti-aliasing), where it goes: the machine drawn, the frames run
     /// ahead while they are. `roms` if at hand, else loaded from `rom`.
     fn set_run_ahead(&mut self, frames: u32, smooth: bool, roms: Option<&romset::RomSet>, rom: &Path) {
         if frames == 0 || self.preview {
@@ -615,6 +648,8 @@ struct Play {
     pack: PackState,
     /// Anisotropic filtering the GPU has (`gpu::max_anisotropy`).
     max_anisotropy: u8,
+    /// The GPU can do temporal anti-aliasing (`gpu::temporal_supported`).
+    temporal_supported: bool,
 }
 
 /// The texture pack the renderer draws with (`Play::sync_pack`).
@@ -747,7 +782,7 @@ impl Play {
                 machine.disable_native();
             }
             machine.bus.geo.set_mode(values.geo_mode());
-            machine.bus.geo.set_smooth(values.smooth_on());
+            machine.bus.geo.set_smooth(values.motion_on());
             // Drawing can go ahead with the last frame's polygons when the
             // geometrizer is late (`frame`).
             machine.bus.geo.set_keep_last(true);
@@ -781,7 +816,7 @@ impl Play {
                 run_ahead_dropped: false,
                 drew_ahead: false,
             };
-            s.set_run_ahead(values.run_ahead, values.smooth_on(), Some(&roms), &self.settings.rom);
+            s.set_run_ahead(values.run_ahead, values.motion_on(), Some(&roms), &self.settings.rom);
             Ok(s)
         });
         match started {
@@ -795,6 +830,7 @@ impl Play {
                     let gun = !s.game.controls.guns.is_empty();
                     g.window.set_cursor(if gun { CursorIcon::Crosshair } else { CursorIcon::Default });
                     g.renderer.forget_ram();
+                    g.renderer.reset_history();
                 }
                 self.session = Some(s);
                 self.epoch = Instant::now();
@@ -822,6 +858,7 @@ impl Play {
         }
         let geo = self.values.geo_mode();
         machine.bus.geo.set_mode(geo);
+        // Previews draw without temporal anti-aliasing: in-betweens only.
         machine.bus.geo.set_smooth(self.values.smooth_on());
         machine.bus.geo.set_keep_last(true);
         let live = match model2::load_session_parts(&mut machine, &r.state) {
@@ -859,6 +896,7 @@ impl Play {
         );
         if let Some(g) = &mut self.gpu {
             g.renderer.forget_ram();
+            g.renderer.reset_history();
         }
         let bindings = settings::load_bindings(game);
         self.epoch = Instant::now() - Duration::from_secs_f64(machine.frames as f64 / FPS);
@@ -914,6 +952,10 @@ impl Play {
         match result {
             Ok(()) => {
                 self.epoch = Instant::now() - Duration::from_secs_f64(s.machine.frames as f64 / FPS);
+                // A jump the motion data doesn't know of.
+                if let Some(g) = &mut self.gpu {
+                    g.renderer.reset_history();
+                }
                 self.menu.notify(done);
             }
             Err(e) => {
@@ -944,13 +986,15 @@ impl Play {
                 snd.set_mix(new.sfx_db, new.music_db);
             }
         }
-        if (old.smooth_on(), old.run_ahead) != (new.smooth_on(), new.run_ahead) {
+        // Smooth motion's recording: previews draw without temporal.
+        let motion = |v: &GameSettings| if preview { v.smooth_on() } else { v.motion_on() };
+        if (motion(&old), old.run_ahead) != (motion(&new), new.run_ahead) {
             let rom = self.settings.rom.clone();
             if let Some(s) = &mut self.session {
                 // Setting it again tries again after it was dropped.
                 s.run_ahead_dropped &= old.run_ahead == new.run_ahead;
                 let frames = if s.run_ahead_dropped { 0 } else { new.run_ahead };
-                s.set_run_ahead(frames, new.smooth_on(), None, &rom);
+                s.set_run_ahead(frames, motion(&new), None, &rom);
             }
         }
         if old.geo_chip != new.geo_chip {
@@ -1021,11 +1065,9 @@ impl Play {
             let pack_text = self.pack_text();
             let (Some(g), Some(s)) = (&mut self.gpu, &mut self.session) else { return Err("no game".into()) };
             g.renderer.forget_ram();
-            g.renderer.set_quality(gpu::Quality {
-                msaa: self.values.aa,
-                depth: self.values.depth,
-                tex_filter: self.values.tex_filter,
-            });
+            // A one-off frame: with temporal on, the plain (unjittered) one.
+            g.renderer.reset_history();
+            g.renderer.set_quality(self.values.quality(self.temporal_supported));
             g.renderer.present_bus(&mut s.shown().bus, None, &view, &target, format, origin);
             s.drew_ahead = s.run_ahead.as_ref().is_some_and(|ra| ra.is_ahead_of(&s.machine));
             let (bezel, menu) = (&mut self.bezel, &mut self.menu);
@@ -1036,6 +1078,7 @@ impl Play {
                 slots: &slots,
                 input_lag: Some(s.game.input_lag),
                 max_anisotropy: self.max_anisotropy,
+                temporal_supported: self.temporal_supported,
                 pack: pack_text.as_deref(),
             };
             draw_overlay(g, &target, false, [w, h], Some(ppp), |ctx| {
@@ -1133,6 +1176,8 @@ impl Play {
             g.surface.configure(g.renderer.device(), &g.config);
             // A resize can mean the window moved to another monitor.
             g.refresh = refresh_hz(&g.window);
+            // The temporal targets are made again at the new size.
+            g.renderer.reset_history();
         }
         self.refit();
     }
@@ -1350,7 +1395,7 @@ impl Play {
                     // The game will stop there itself, that many frames on.
                     eprintln!("run-ahead stopped: {e:?}");
                     s.run_ahead = None;
-                    s.machine.bus.geo.set_smooth(self.values.smooth_on());
+                    s.machine.bus.geo.set_smooth(self.values.motion_on());
                 }
             }
         }
@@ -1418,6 +1463,13 @@ impl Play {
     /// `origin`: this frame's polygons if the geometrizer has them in time
     /// for this refresh (`t0`, when the redraw started), else the previous
     /// frame's; with smooth motion, an in-between.
+    ///
+    /// With temporal anti-aliasing each image is tagged for the renderer
+    /// (`gpu::FrameTag`): the game's frame N as (N, 1) by `present_bus`
+    /// itself (drawn again: a repeat), an in-between at t as (N, t)
+    /// through `present_bus_motion`, the previous frame's polygons as
+    /// that frame by `present_bus_last`. A switch of the machine shown
+    /// (run-ahead) starts the accumulation again.
     fn draw_session(
         &mut self,
         target: &wgpu::TextureView,
@@ -1439,15 +1491,13 @@ impl Play {
         if ahead != s.drew_ahead {
             s.drew_ahead = ahead;
             g.renderer.forget_ram();
+            // The other machine's frames: their tags don't follow on.
+            g.renderer.reset_history();
         }
         // Anti-aliasing and the depth buffer: the game's settings, not the
         // launcher preview's.
-        let q = if s.preview {
-            gpu::Quality::default()
-        } else {
-            gpu::Quality { msaa: self.values.aa, depth: self.values.depth, tex_filter: self.values.tex_filter }
-        };
-        g.renderer.set_quality(q);
+        let q = if s.preview { gpu::Quality::default() } else { self.values.quality(self.temporal_supported) };
+        let temporal = g.renderer.set_quality(q).temporal > 0;
         let bus = &mut s.shown().bus;
         if bus.geo.wait_until(t0 + budget.mul_f64(0.8)) {
             // Smooth motion: the polygons part way from the frame before to
@@ -1455,20 +1505,46 @@ impl Play {
             // a display faster than the game, and not when it's already
             // behind.
             let t_smooth = Instant::now();
-            let fast = g.refresh.is_none_or(|hz| hz > FPS * 1.2) && !self.behind && !self.menu.open;
+            // Smooth motion's setting, not just its recording (which
+            // temporal anti-aliasing turns on too).
+            let fast =
+                g.refresh.is_none_or(|hz| hz > FPS * 1.2) && !self.behind && !self.menu.open && self.values.smooth_on();
             let between = bus.geo.engine().smooth_frame().filter(|_| fast).and_then(|f| {
-                let t = t_smooth.saturating_duration_since(self.smooth_at).as_secs_f64() / period;
-                f.render(t as f32).map(|stream| (stream, f))
+                let t = (t_smooth.saturating_duration_since(self.smooth_at).as_secs_f64() / period) as f32;
+                f.render(t).map(|stream| (stream, f, t))
             });
             match &between {
-                Some((stream, f)) => {
+                Some((stream, f, t)) if temporal => {
+                    // Tagged (N, t): the renderer works out the motion
+                    // since the image before. t = 0 is the frame before's
+                    // pose, which follows that frame's own image (N-1, 1)
+                    // as a step forward, not a repeat.
+                    let tag = gpu::FrameTag { frame: f.frame, t: t.max(1e-4) };
+                    let m = gpu::BusMotion::of(f, tag, None);
+                    g.renderer.present_bus_motion(
+                        bus,
+                        Some((stream, &f.points)),
+                        Some(&m),
+                        view,
+                        target,
+                        format,
+                        origin,
+                    );
+                    self.stats.smooth += 1;
+                    self.stats.smoothing += t_smooth.elapsed();
+                }
+                Some((stream, f, _)) => {
                     self.stats.smooth += 1;
                     self.stats.smoothing += t_smooth.elapsed();
                     g.renderer.present_bus(bus, Some((stream, &f.points)), view, target, format, origin)
                 }
+                // With temporal on, tagged (N, 1) from the engine's smooth
+                // frame (a repeat when drawn again).
                 None => g.renderer.present_bus(bus, None, view, target, format, origin),
             }
         } else {
+            // With temporal on, tagged as the frame these polygons are
+            // (`Geometrizer::last_smooth`, kept with `set_keep_last`).
             g.renderer.present_bus_last(bus, view, target, format, origin);
             self.stats.geo_late += 1;
         }
@@ -1498,7 +1574,7 @@ impl Play {
             if let Some(s) = self.session.as_mut().filter(|s| s.run_ahead.is_some()) {
                 s.run_ahead = None;
                 s.run_ahead_dropped = true;
-                s.machine.bus.geo.set_smooth(self.values.smooth_on());
+                s.machine.bus.geo.set_smooth(self.values.motion_on());
                 self.frame_cost = 0.0;
                 self.behind = false;
                 self.behind_frames = 0;
@@ -1558,6 +1634,7 @@ impl Play {
                 slots: &slots,
                 input_lag: self.session.as_ref().map(|s| s.game.input_lag),
                 max_anisotropy: self.max_anisotropy,
+                temporal_supported: self.temporal_supported,
                 pack: pack_text.as_deref(),
             };
             let navs = std::mem::take(&mut self.navs);
@@ -2165,6 +2242,13 @@ impl ApplicationHandler for Play {
         self.max_anisotropy = gpu::max_anisotropy(&adapter);
         renderer.set_max_anisotropy(self.max_anisotropy);
         self.launcher.max_anisotropy = self.max_anisotropy;
+        // `from_device` assumes it; the GL fallback may not have it.
+        self.temporal_supported = gpu::temporal_supported(&adapter);
+        renderer.set_temporal_supported(self.temporal_supported);
+        self.launcher.temporal_supported = self.temporal_supported;
+        if !self.temporal_supported {
+            println!("temporal AA   not on this GPU (no 16-bit float targets)");
+        }
         let (view, origin) = self.fit(config.width, config.height);
         // Redraws drive everything; Wayland sends none until asked.
         window.request_redraw();
@@ -2329,6 +2413,7 @@ fn main() {
         started: Instant::now(),
         pack: PackState::default(),
         max_anisotropy: 16,
+        temporal_supported: true,
     };
     if play.settings.rom == Settings::default().rom {
         // So there's an obvious place to put sets.

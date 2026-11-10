@@ -84,11 +84,11 @@ endif
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm tgp-disasm tgp-check m68k-tests clean recomp recomp-workspace bench latency input-lag run-ahead-check sound sound-disasm geo-check geo-fuzz smooth-frames pace-sim install-desktop uninstall-desktop
+.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm tgp-disasm tgp-check m68k-tests clean recomp recomp-workspace bench latency input-lag run-ahead-check sound sound-disasm geo-check geo-fuzz smooth-frames temporal-capture temporal-check pace-sim install-desktop uninstall-desktop
 
 ##@ General
 
-help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, PACK_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, GPU_OPTS, PROBE, AGAINST, RECOMP, SOUNDTRACK)
+help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, PACK_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, GPU_OPTS, PROBE, AGAINST, SEQ_FROM, SEQ_FRAMES, STATE, TEMPORAL_SEQ, TEMPORAL_OPTS, RECOMP, SOUNDTRACK)
 	@awk 'BEGIN {FS = ":.*## "; printf "usage: make <target> [VAR=value]\n"} \
 		/^##@/ {printf "\n%s\n", substr($$0, 5)} \
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -311,6 +311,29 @@ pack-check: release ## Draw the captured frames with texture pack PACK= on the G
 # depth-on frames with an earlier run's pictures (docs/enhancements.md).
 depth-check: release ## Draw the captured frames on the GPU with the depth buffer off and on, report and picture the differences into OUT/depth-check (GPU_OPTS: --aa N, --height, --aspect; PROBE=X,Y@FRAME, AGAINST=DIR; needs a GPU)
 	$(RUN) $(GPU_OPTS) depth-check $(OUT)/capture $(OUT)/depth-check $(foreach p,$(PROBE),--probe $(p)) $(if $(AGAINST),--against $(AGAINST))
+
+.PHONY: temporal-probe
+temporal-probe: release ## Draw the captured frames with the GPU's temporal anti-aliasing (GPU_OPTS: --temporal, --stipple, --depth, --height, --aspect): its first frame against the frame with it off, jittered, blend and keep pictures into out/scratch/temporal-probe/GAME (needs a GPU)
+	$(RUN) $(GPU_OPTS) temporal-probe $(OUT)/capture out/scratch/temporal-probe/$(GAME)
+
+# Temporal anti-aliasing's test sequences: SEQ_FRAMES consecutive frames
+# from frame SEQ_FROM of a run with INPUT (default coin-start; STATE=FILE
+# starts from a save state), kept in TEMPORAL_SEQ (git-ignored scratch,
+# about 0.3 MB a frame). TEMPORAL_OPTS for temporal-check: --every N,
+# --gpu-only, --no-gpu, --crop X,Y,W,H, --at F,.., --tune K=V,.., --ref-cache DIR,
+# --bench [N], --inspect (error by resolve rule), --dump X,Y,W,H (the
+# resolve's decisions per pixel), --depth (before the command),
+# --height/--aspect/--hud.
+SEQ_FROM      ?= 3500
+SEQ_FRAMES    ?= 300
+STATE         ?=
+TEMPORAL_SEQ  ?= out/scratch/temporal/$(GAME)/seq
+TEMPORAL_OPTS ?=
+temporal-capture: release ## Save SEQ_FRAMES consecutive frames from SEQ_FROM (INPUT, STATE) with their motion data to TEMPORAL_SEQ, for temporal-check (native geometrizer)
+	$(RUN) --geo native --capture-seq $(TEMPORAL_SEQ) --seq $(SEQ_FROM),$(SEQ_FRAMES) $(if $(STATE),--load-state $(STATE)) --input $(or $(INPUT),$(BENCH_INPUT)) run 4000000000 0 >/dev/null
+
+temporal-check: release ## Check TEMPORAL_SEQ's motion vectors (pose agreement, reprojection, the GPU's velocity target) and score plain, MSAA 4x, TAA and 67%/50% upscaled GPU frames against supersampled references over the sequence; report and pictures in TEMPORAL_SEQ/check (TEMPORAL_OPTS: --every N, --at F,.., --gpu-only, --no-gpu, --crop, --tune, --ref-cache DIR, --inspect, --dump X,Y,W,H, --depth, --bench [N]; needs a GPU)
+	$(RUN) $(TEMPORAL_OPTS) temporal-check $(TEMPORAL_SEQ)
 
 GEO_CHECK_STEPS ?= 750000000
 GEO_CHECK_FROM  ?= 3000

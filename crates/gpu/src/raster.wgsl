@@ -461,3 +461,197 @@ fn vs_clear(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
 fn fs_clear() -> @location(0) vec4f {
     return vec4f(0.0);
 }
+
+// Temporal anti-aliasing (Quality::temporal, temporal.rs): the 3D layer is
+// drawn at an internal size with a sub-pixel jitter, into the colour target
+// and an aux target of motion and depth. The `_t` entry points below; the
+// ones above are untouched. For a temporal frame the CPU gives the shared
+// shading functions a clip rectangle that never discards and no checker
+// bit (4): clipping and the checkerboard are done here, at the unjittered
+// sample point in output pixels. The real clip rectangle is in `outlines`
+// after the outlines (`clip_t`), the checker bit is flag bit 6 (64), and bit 7 (128) says the polygon has
+// motion data (vertex attribute 3).
+
+struct ScreenT {
+    // Internal size over output size, per axis.
+    rs: vec2f,
+    // The jitter in output pixels.
+    jitter_d: vec2f,
+    // Scale of texture derivatives for filtered pack images: rs, so they
+    // are per output pixel (a LOD bias when upscaling).
+    lod: f32,
+    // Bit 0: keep the checkerboard (Stipple::Keep); else blend it at 50%.
+    flags: u32,
+    // Where the polygons' clip rectangles start in `outlines`.
+    clip_base: u32,
+}
+
+@group(0) @binding(5) var<uniform> screen_t: ScreenT;
+
+// Polygon `poly`'s clip rectangle x0, y0, x1, y1 in output pixels.
+fn clip_t(poly: u32) -> vec4f {
+    return outlines[screen_t.clip_base + poly];
+}
+
+struct VsTOut {
+    @builtin(position) pos: vec4f,
+    @location(0) @interpolate(linear, centroid) attr: vec3f,
+    @location(1) @interpolate(flat) poly: u32,
+    // As VsPackOut's, for the filtered pack images' derivatives.
+    @location(2) @interpolate(linear, center) attr_c: vec3f,
+    // The previous position, homogeneous (X, Y, W) in output pixels:
+    // linear in screen space, like attr.
+    @location(3) @interpolate(linear, center) prev: vec3f,
+}
+
+@vertex
+fn vs_t(@location(0) xy: vec2f, @location(1) attr: vec3f, @location(2) poly: u32, @location(3) prev: vec3f) -> VsTOut {
+    var o: VsTOut;
+    let s = xy + screen_t.jitter_d;
+    o.pos = vec4f(s.x / screen.size.x * 2.0 - 1.0, 1.0 - s.y / screen.size.y * 2.0, 0.0, 1.0);
+    o.attr = attr;
+    o.poly = poly;
+    o.attr_c = attr;
+    o.prev = prev;
+    return o;
+}
+
+// The fragment's sample point without the jitter, in output pixels (the
+// pixel centre at 100% without jitter).
+fn sample_t(pos: vec4f) -> vec2f {
+    return pos.xy / screen_t.rs - screen_t.jitter_d;
+}
+
+// `shade`'s clip and checkerboard at the sample point (as there, `px` is
+// the sample less half a pixel: the pixel's corner at 100% unjittered).
+// The coverage: 1, or 0.5 for a checkerboard polygon blended.
+fn pre_t(in: VsTOut) -> f32 {
+    let px = sample_t(in.pos) - 0.5;
+    let c = clip_t(in.poly);
+    if px.y < c.y || px.y >= c.w || px.x + 0.5 < c.x || px.x + 0.5 >= c.z {
+        discard;
+    }
+    if (polys[in.poly].flags & 64u) != 0u {
+        if (screen_t.flags & 1u) == 0u {
+            return 0.5;
+        }
+        let g = vec2i(floor(px / screen.scale));
+        if ((g.x ^ g.y) & 1) != 0 {
+            discard;
+        }
+    }
+    return 1.0;
+}
+
+// The aux target: motion in output pixels (previous position less the
+// sample point), 1/z (negative: blended checkerboard), the expected
+// previous 1/z (0: no motion data). Clamped so it stays finite in 16 bits.
+fn aux_t(in: VsTOut, sheer: bool) -> vec4f {
+    var b = clamp(in.attr.x, 6.2e-5, 6.0e4);
+    if sheer {
+        b = -b;
+    }
+    let w = in.prev.z;
+    if (polys[in.poly].flags & 128u) == 0u || !(w > 1e-6) {
+        return vec4f(0.0, 0.0, b, 0.0);
+    }
+    let mv = clamp(in.prev.xy / w - sample_t(in.pos), vec2f(-16384.0), vec2f(16384.0));
+    let e = clamp(in.attr.x / w, 6.2e-5, 6.0e4);
+    return vec4f(mv, b, e);
+}
+
+fn plain_t(in: VsTOut) -> VsOut {
+    var o: VsOut;
+    o.pos = in.pos;
+    o.attr = in.attr;
+    o.poly = in.poly;
+    return o;
+}
+
+// depth_at at the sample point.
+fn depth_t(in: VsTOut) -> f32 {
+    let z = outline_iz(in.poly, sample_t(in.pos) - 0.5, in.attr.x) * (1.0 + f32(polys[in.poly].colour.w) * DEPTH_BIAS)
+        * DEPTH_FACTOR;
+    return z / (z + DEPTH_SCALE);
+}
+
+struct TOut {
+    @location(0) colour: vec4f,
+    @location(1) aux: vec4f,
+}
+
+struct TDepthOut {
+    @location(0) colour: vec4f,
+    @location(1) aux: vec4f,
+    @builtin(frag_depth) depth: f32,
+}
+
+@fragment
+fn fs_t(in: VsTOut) -> TOut {
+    let a = pre_t(in);
+    var o: TOut;
+    o.colour = shade(plain_t(in)) * a;
+    o.aux = aux_t(in, a < 1.0);
+    return o;
+}
+
+@fragment
+fn fs_depth_t(in: VsTOut) -> TDepthOut {
+    let a = pre_t(in);
+    var o: TDepthOut;
+    o.colour = shade(plain_t(in)) * a;
+    o.aux = aux_t(in, a < 1.0);
+    o.depth = depth_t(in);
+    return o;
+}
+
+@fragment
+fn fs_pack_t(in: VsTOut) -> TOut {
+    let a = pre_t(in);
+    var o: TOut;
+    o.colour = shade_pack(plain_t(in)) * a;
+    o.aux = aux_t(in, a < 1.0);
+    return o;
+}
+
+@fragment
+fn fs_pack_depth_t(in: VsTOut) -> TDepthOut {
+    let a = pre_t(in);
+    var o: TDepthOut;
+    o.colour = shade_pack(plain_t(in)) * a;
+    o.aux = aux_t(in, a < 1.0);
+    o.depth = depth_t(in);
+    return o;
+}
+
+fn packf_t(in: VsTOut) -> VsPackOut {
+    var o: VsPackOut;
+    o.pos = in.pos;
+    o.attr = in.attr;
+    o.poly = in.poly;
+    o.attr_c = in.attr_c;
+    return o;
+}
+
+@fragment
+fn fs_packf_t(in: VsTOut) -> TOut {
+    let gx = dpdx(in.attr_c) * screen_t.lod;
+    let gy = dpdy(in.attr_c) * screen_t.lod;
+    let a = pre_t(in);
+    var o: TOut;
+    o.colour = shade_packf(packf_t(in), gx, gy) * a;
+    o.aux = aux_t(in, a < 1.0);
+    return o;
+}
+
+@fragment
+fn fs_packf_depth_t(in: VsTOut) -> TDepthOut {
+    let gx = dpdx(in.attr_c) * screen_t.lod;
+    let gy = dpdy(in.attr_c) * screen_t.lod;
+    let a = pre_t(in);
+    var o: TDepthOut;
+    o.colour = shade_packf(packf_t(in), gx, gy) * a;
+    o.aux = aux_t(in, a < 1.0);
+    o.depth = depth_t(in);
+    return o;
+}

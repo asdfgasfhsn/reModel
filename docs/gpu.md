@@ -5,9 +5,12 @@
 iOS, DirectX 12 on Windows, and OpenGL as a fallback. The same code and
 shader run on all of them.
 
-This is a preflight. The renderer works off-screen and is checked against
-the software rasteriser, but nothing displays it yet: the live window
-comes next.
+It is what the native player (`docs/play.md`) and the browser build
+(`docs/web.md`) display: both present each frame through
+`Renderer::present_bus`, which draws the 3D layer and composes it with the
+2D tile layers and HUD (drawn on the CPU, `video::layers_2d`) into the
+window's surface. It is checked against the software rasteriser, which
+stays the reference, off-screen.
 
 ```sh
 make capture      # run into a race, saving every 300th frame's renderer inputs
@@ -51,6 +54,9 @@ bit-for-bit what it was:
 - **Texture packs** (`Renderer::set_pack`; `Quality::tex_filter`): see
   "Texture packs" below. With no pack set the pipelines, shaders and output
   are the ones above, unchanged.
+- **Temporal anti-aliasing and upscaling** (`Quality::temporal`,
+  `Quality::stipple`): see "Temporal path" below. Off (0, the default) the
+  pipelines, shaders and output are the ones above, unchanged.
 
 The fragment shader (`crates/gpu/src/raster.wgsl`) is a line-for-line port
 of the software shading. It reads from the game's own render RAM and
@@ -196,11 +202,139 @@ refused with one warning.
 Not measured: the cost of the filtered path against the exact one per
 pixel, and eviction past the budget.
 
+## Temporal path
+
+`Quality::temporal` (0 off; 100 TAA; 50-99 a render scale in percent;
+`set_quality` clamps it to 50..=100, or 0 without `temporal_supported`)
+and `Quality::stipple` (`Blend` or `Keep`). What it is for, the resolve's
+rules and what was measured are in `docs/enhancements.md`; here, how it
+sits in the renderer (`crates/gpu/src/temporal.rs`, `temporal.wgsl`, the
+`_t` entry points at the end of `raster.wgsl`).
+
+- **Targets**, kept between frames by label; any re-creation (a new size
+  or scale) resets the history:
+
+  | Target | Format | Size |
+  |---|---|---|
+  | `3d layer t` | `Rgba8Unorm`, premultiplied | internal |
+  | `3d aux a`, `3d aux b` (this frame's and the last's) | `Rgba16Float` | internal |
+  | `3d depth t` (with `depth` only) | `Depth32Float` | internal |
+  | `history a`, `history b` | `Rgba16Float`, premultiplied | output |
+  | `3d sharpened` (with sharpening only) | `Rgba16Float`, premultiplied | output |
+  | `resolve inspect` (with inspection only) | `Rgba32Float` | output |
+
+  Internal size is the output size at 100%, else `max(1, round(w * s))`
+  by `max(1, round(h * s))`, with `rs` the exact ratios per axis.
+- **Pass order** (`encode_temporal`): the 3D pass (`encode_3d` with a
+  `TemporalPass`) draws into the colour and this frame's aux target with
+  one sample (MSAA is forced off), jittered; the resolve pass
+  (`encode_resolve`, a fullscreen `fs_resolve`) reads the colour, both aux
+  targets and the last history through a linear clamp sampler and writes
+  the other history; compose, unchanged, binds the history view in place
+  of the 3D layer (an `Rgba16Float` texture is valid there: it is read
+  with `textureLoad`, one to one). The history is read back at the
+  previous position with Keys' cubic (`TemporalTuning::cubic`, C = 0.75;
+  0.5 would be Catmull-Rom) in 5 bilinear taps, and clipped to the
+  neighbourhood's box widened by `CLIP_SLACK` (0.5/255, a WGSL constant)
+  on every side, so half-float rounding in the history can't trip the
+  clip in a channel whose box has no width (`docs/enhancements.md`). Two
+  passes run only when asked for: with `TemporalTuning::sharpen` above 0,
+  `fs_sharpen` draws the new history sharpened into `3d sharpened`, which
+  compose reads instead (the history itself stays unsharpened); with
+  `set_temporal_inspect`, a second resolve (`fs_inspect`, the same
+  `resolve()` function) writes what it decided per pixel into `resolve
+  inspect`, leaving the picture and the history alone. `ResolveIo` is the
+  pass boundary: the only code that knows the algorithm, and what a
+  library upscaler would take instead.
+- **Pipelines.** Cached by `(samples, Mode, Variant, temporal)`; the
+  temporal ones come from `raster_pipeline_t` (one sample, two colour
+  targets, premultiplied-alpha blending on the colour for the blended
+  checkerboard), so the off path's construction is the old code. Entry
+  points: `vs_t`, `fs_t`, `fs_depth_t`, `fs_pack_t`, `fs_pack_depth_t`,
+  `fs_packf_t`, `fs_packf_depth_t`; the window clear reuses
+  `vs_clear`/`fs_clear` with both write masks empty. Each `_t` fragment
+  shader works out the unjittered sample point `q = pos / rs - jitter`,
+  tests the clip rectangle and (with Keep) the checkerboard there, then
+  calls the existing `shade*` functions; no existing WGSL function was
+  changed. For a temporal frame the CPU sets each polygon's own clip
+  rectangle to ±3e38 and clears its checker bit, so those tests inside
+  `shade*` never fire, and sets bit 6 (checker) and bit 7 (has motion).
+  `fs_packf*_t` scale the texture derivatives by `min(rs)`.
+- **Vertex format**: 36 bytes, `xy` (`Float32x2`), `(iz, uz, vz)`
+  (`Float32x3`), the polygon index (`Uint32`) and `prev` (`Float32x3`,
+  location 3): `Placed::prev[k]`, the previous position in output pixels
+  as homogeneous [X, Y, W], or `(x, y, 1)` on a repeated frame or without
+  data. The off path keeps 24 bytes.
+- **Bindings.** `raster_layout_t` is the five bindings of `raster_layout`
+  plus a uniform `ScreenT` at binding 5 (`rs`, the jitter in output
+  pixels, the derivative scale, flags bit 0 Keep, and `clip_base`). The
+  real clip rectangles ride in the `outlines` storage buffer (binding 4),
+  after the outline data, from `clip_base`: a fifth storage buffer in the
+  fragment stage is over `Limits::downlevel_defaults`'s four per stage,
+  which `gpu::limits` asks for.
+- **Aux target encoding**: r, g the motion in output pixels (previous
+  position minus `q`), clamped to ±16384; b the fan-interpolated 1/z,
+  clamped to [6.2e-5, 6.0e4], negated for a blended checker fragment, 0
+  where nothing was drawn; a the expected previous 1/z (1/z over W), 0
+  without motion data. Every value is finite: the CPU drops a polygon's
+  `prev` with a non-finite value, W ≤ 0 or the wrong length, and the
+  shader rejects W ≤ 1e-6.
+- **Jitter** (`temporal::jitter`): Halton(2,3) − 0.5 in internal pixels,
+  index `1 + count % L`, `L = clamp(round(8 / s²), 8, 32)`; (0, 0) when
+  `count` (frames resolved since the last reset) is 0. `vs_t` adds it in
+  output pixels (`jitter / rs`).
+- **Frame identity.** `FrameTag { frame, t }` (the smooth frame's number;
+  `t` 1 for the game's own frame, less for an in-between) and
+  `Step { Reset, Repeat, Blend { tp }, NoMotion }` from `step(last, now,
+  cut)`: no last tag gives NoMotion; a cut on a new frame Reset; the same
+  tag Repeat; else `tp = (last.frame - now.frame) + last.t` (the previous
+  image's time on this frame's plan), Reset outside [-2, now.t).
+  - `present_bus(bus, None, ..)` with temporal on takes the engine's
+    `smooth_frame()` and its `motion()`, tagged `(frame, 1)`;
+    `present_bus_last` the geometrizer's `last_smooth()` (filled only
+    with `set_keep_last`); `present_bus_motion(.., Some(&BusMotion))`
+    an in-between at its own tag (`BusMotion::of`); `present` and `frame`
+    with explicit polygons whatever `set_temporal_frame` set, else
+    NoMotion. `draw` (gpu-check's 3D read-back) always takes the off path.
+  - `reset_history` (front ends call it on a state load, a game start, a
+    machine switch); `set_quality` resets on any change of the normalised
+    quality. Keep falls back to Blend per frame in `encode_temporal` when
+    `view.sy * rs.y < 1.5`, so the returned quality still says Keep.
+  - Tools and tests: `temporal_debug` (internal colour and aux read back),
+    `temporal_history`, `set_temporal_jitter`, `set_temporal_passthrough`
+    (a nearest copy instead of the resolve), `set_temporal_tuning`
+    (`TemporalTuning`), `set_temporal_sharpen` (0 to 1; off by default,
+    not offered by the player), `set_temporal_inspect` with
+    `temporal_inspect` (per pixel: the rules that fired, this frame's
+    share, the clip distance, the trust term), `frame_bus` (`present_bus`
+    off-screen with an RGB read-back).
+- **Tests.** `temporal::tests`: `steps`, `jitter_sequence`, `halves`,
+  `identity_at_100_without_jitter` (the first temporal frame through the
+  resolve equals the off frame byte for byte, depth off and on; Repeat and
+  Blend frames with the pass-through too; exact aux values; the off path
+  after temporal frames equals a fresh renderer's), `history_stays_finite`
+  (NaN and infinities planted in both histories and aux targets),
+  `still_scene_converges`, `alternating_colour_is_not_averaged`,
+  `rounding_in_the_history_is_not_clipped` (every opaque history texel's
+  alpha set one half-float step below 1 before the last frame: the
+  picture within one level of the unpoisoned one; fails without
+  `CLIP_SLACK`), `sharpening_stays_within_the_neighbourhood`; and
+  `only_temporal_entry_points_use_binding_5` beside
+  `shaders_parse_and_validate`, which validates `temporal.wgsl` too. The
+  GPU tests print "skipped" and pass without an adapter.
+  `remodel temporal-probe` and `make temporal-check` are the tools on
+  captured frames (`docs/usage.md`).
+
+Cost and memory (`temporal-check --bench`) are tabled in
+`docs/enhancements.md`: on an RTX A2000 Laptop, TAA about 1.1 ms over off
+at 1080p and 4.4 ms at 4K, 67% about the same as off, 50% less; 71 MB of
+targets at 1080p and 100%. Measured before `CLIP_SLACK` and the C = 0.75
+cubic, not since; neither adds work (the same 5 taps).
+
 ## Next
 
-- A window and swapchain (winit) that presents the GPU layer.
-- The 2D tile layer and HUD composition on the GPU. These still run on
-  the CPU, after the 3D layer.
+- The 2D tile layers and HUD on the GPU: they are drawn on the CPU and
+  only composed on the GPU.
 - Persistent buffers with dirty-range uploads of render RAM.
 - Tile (2D layer) replacements live: only the 3D textures of a pack are
   used on the GPU so far.

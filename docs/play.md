@@ -37,6 +37,59 @@ floors). Neither changes what the game computes: state hashes are the
 same. Costs 0.5-1 and 1.5-3 ms a frame at 1080p on the development GPU
 (`docs/gpu.md`); what the depth buffer does is in `docs/enhancements.md`.
 
+**Temporal anti-aliasing** (settings `temporal` and `stipple`, below;
+`--temporal off|taa|75|67|50` and `--stipple blend|keep` for one run; off
+and blend by default). Each frame's 3D layer is drawn at a slightly
+different sub-pixel offset and blended into the picture so far, moved
+along each polygon's motion; `taa` draws it at full size, a percentage
+draws it that much smaller and upscales (50 to 100; the menu offers 75,
+67 and 50). The motion comes from smooth motion's recording, so turning
+temporal on turns that recording on (0.05-0.5 ms a game frame, plus one
+geometrizer replay: 0.2-0.4 ms on 2C, 1.4-1.8 ms on 2B) whether or not
+smooth motion's in-betweens are on; with them on, each in-between is
+blended with its own motion. It needs the native geometrizer (with the
+chip it is off, and the menu and launcher say so), and it replaces
+multisampling: `aa` is kept but off while temporal is on (the menu's
+anti-aliasing choices are greyed out, the launcher's row says why). A GPU
+without 16-bit float render targets (the OpenGL fallback, say) can't, and
+says so. The games' checkerboard (screen door) see-through polygons are
+drawn as an even 50% blend with `stipple = blend`, which stays steady at
+any scale; `keep` keeps the pattern, where the 3D layer has at least 1.5
+pixels a game pixel (else it blends anyway). The accumulation starts
+again on a camera cut, a save state load, a game start, a resize, a
+change of quality settings and a switch between run-ahead's machine and
+the game's. The launcher's previews never use it. Nothing the game
+computes changes. How it works and what was measured are in
+`docs/enhancements.md`; the browser build doesn't have it.
+
+What to expect. At `taa`, polygon edges are smooth whether the picture
+moves or not, a still picture is cleaner than with 4x multisampling,
+textures look about as sharp as a supersampled picture (the hard edges of
+magnified texels, such as a skater's cut-out shadow, are kept), and it
+costs about 1 ms a frame more than off at 1080p (4 at 4K) on the
+development GPU. It is not perfect: objects animated without motion data
+(waving flags; `vstriker`'s players, whose pose models change) look soft,
+nearer the plain picture, a car bouncing with the camera loses some of its
+smoothing, and on `vstriker`'s crowd a still picture shimmers slightly.
+Fast driving softened distant scenery in earlier tests; not checked since
+the fixes to the history's clip and resampling. At 67% and 50% the 3D
+layer costs about the same as off, or less, and looks better than simply
+enlarging a smaller picture, but thin things (wires, poles) break into
+dotted, speckled lines and edges in fast motion look as coarse as the
+smaller picture; 50% shows it more. Shadows and other checkerboard
+polygons look like smooth see-through with `blend`, not the original
+screen door. Something the game flickers on purpose (`topskatr`'s FINISH
+sign) flickers the same, not averaged. The first frame after a camera cut,
+a load or a resize is the plain picture, sharpening over the next few
+frames. On the CPU it adds smooth motion's recording and a replay a game
+frame (above), which an interpreted 2B game running ahead may not have to
+spare (`sgt24h` with run-ahead 1 fell behind and the player dropped
+run-ahead). Prefer 4x multisampling where the original's screen door
+matters, with `--geo chip`, or when the CPU has no time to spare.
+*Unconfirmed:* tried on one NVIDIA GPU (Vulkan) on a 60 Hz display;
+in-betweens with it on were only forced there, not seen on a faster
+display.
+
 **Texture packs** (settings `pack` and `tex_filter`, below; `--pack on|off`,
 `--texture-pack DIR` and `--tex-filter off|mip|2|4|8|16` for one run; both
 off by default). With `pack` on, replacement textures from the game's pack
@@ -243,7 +296,8 @@ emulated like the game would be (it costs what the game costs).
 **Settings** slide out from the right over the preview, which shows what
 they change as they change: aspect (fit the window or 4:3), bezel, HUD at
 the edges or centred, speed (one frame a refresh or exact arcade speed),
-smooth motion, anti-aliasing (off, 4x, 8x), the depth buffer, the texture pack and its filtering (off, mip, 2x to 16x), the effects and music levels in dB, the geometrizer (native
+smooth motion, anti-aliasing (off, 4x, 8x), temporal anti-aliasing (off,
+TAA, 75%, 67%, 50%) and its checkerboard see-through (blend or keep), the depth buffer, the texture pack and its filtering (off, mip, 2x to 16x), the effects and music levels in dB, the geometrizer (native
 or the game's chip; the preview restarts on it) and the Controls page
 (remapping, below). "Save for" says where changes go: the defaults for all
 games, or this game only (a game's own setting is tagged "this game", and
@@ -251,7 +305,7 @@ games, or this game only (a game's own setting is tagged "this game", and
 the Esc menu while playing. They come in layers, lowest first, as in the
 browser build: the built-in defaults, the defaults for all games, the
 game's own, then the command line (`--mix`, `--hud`, `--aspect`, `--bezel`,
-`--exact`, `--smooth`, `--aa`, `--depth`, `--pack`, `--texture-pack`, `--tex-filter`, `--geo`), which applies to that run only and is
+`--exact`, `--smooth`, `--aa`, `--temporal`, `--stipple`, `--depth`, `--pack`, `--texture-pack`, `--tex-filter`, `--geo`), which applies to that run only and is
 never saved, unless a setting it gave is changed in the launcher or menu
 (that change is then kept as any other). A layer keeps only what it sets.
 
@@ -652,7 +706,8 @@ synthetic and scripted (`--nav`) events only, not yet with a real pad.
 - **Display**: the aspect (fit the window, the default, drawing the game
   wider than its frame from 4:3 to 32:9; or 4:3, `--aspect 4:3`), the
   bezel (below), where the HUD goes on wide windows, smooth motion,
-  anti-aliasing and the depth buffer (above), the texture pack and its
+  anti-aliasing, temporal anti-aliasing and the checkerboard pattern, and
+  the depth buffer (above), the texture pack and its
   filtering (above), run-ahead (above), the geometrizer (on the next start), "Save changes
   for" this game or all games (as in the launcher), and exact arcade speed
   (57.524 frames per second) against the default of one game frame per

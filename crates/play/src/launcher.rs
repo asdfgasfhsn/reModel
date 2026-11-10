@@ -212,6 +212,18 @@ fn rows(has_own: bool, max_anisotropy: u8) -> Vec<Row> {
             &[("Off", "0"), ("4x", "4"), ("8x", "8")],
         ),
         Row::Choice(
+            "temporal",
+            "Temporal AA",
+            "edges smoothed over frames; a % draws smaller, then upscales",
+            &[("Off", "off"), ("TAA", "taa"), ("75%", "75"), ("67%", "67"), ("50%", "50")],
+        ),
+        Row::Choice(
+            "stipple",
+            "Checkerboard see-through",
+            "with temporal: the games' screen-door translucency as an even blend, or the pattern kept",
+            &[("Blend", "blend"), ("Keep", "keep")],
+        ),
+        Row::Choice(
             "depth",
             "Depth buffer",
             "polygons that cross or are sorted wrong come out right; off draws in the game's order",
@@ -280,6 +292,22 @@ pub struct Launcher {
     /// Anisotropic filtering the GPU has (`gpu::max_anisotropy`): the
     /// texture filters offered.
     pub max_anisotropy: u8,
+    /// The GPU can do temporal anti-aliasing (`gpu::temporal_supported`).
+    pub temporal_supported: bool,
+}
+
+/// Why setting `key` doesn't apply as set (said in place of its hint):
+/// temporal anti-aliasing needs the native geometrizer and a GPU that has
+/// it, and turns multisampling off.
+fn overridden(key: &str, v: &GameSettings, temporal_supported: bool) -> Option<&'static str> {
+    let temporal = v.temporal_on() && temporal_supported;
+    match key {
+        "aa" if temporal && v.aa > 0 => Some("off while temporal anti-aliasing is on"),
+        "temporal" if v.temporal > 0 && !temporal_supported => Some("off: this GPU can't"),
+        "temporal" if v.temporal > 0 && v.geo_chip => Some("off: it needs the native geometrizer"),
+        "stipple" if v.stipple_keep && !temporal => Some("only with temporal anti-aliasing on"),
+        _ => None,
+    }
 }
 
 impl Default for Launcher {
@@ -308,6 +336,7 @@ impl Default for Launcher {
             logo: None,
             rom_text: String::new(),
             max_anisotropy: 16,
+            temporal_supported: true,
         }
     }
 }
@@ -1219,14 +1248,19 @@ impl Launcher {
                     Row::Controls | Row::Reset => 30.0 * u,
                 };
                 let wrap = (r.right() - 12.0 * u - control_w - 18.0 * u - lx).max(80.0 * u);
-                let hint_g =
-                    (!hint.is_empty()).then(|| p.layout(hint.to_string(), FontId::proportional(11.5 * u), DIM, wrap));
+                // A setting another overrides says so in place of its hint.
+                let (hint, hint_c) = match key.and_then(|k| overridden(k, values, self.temporal_supported)) {
+                    Some(why) => (why, AMBER),
+                    None => (hint, DIM),
+                };
+                let hint_g = (!hint.is_empty())
+                    .then(|| p.layout(hint.to_string(), FontId::proportional(11.5 * u), hint_c, wrap));
                 let label_h = 20.0 * u;
                 let block = label_h + hint_g.as_ref().map_or(0.0, |g| g.size().y + 2.0 * u);
                 let label_y = r.center().y - block / 2.0 + label_h / 2.0;
                 let lr = p.text(pos2(lx, label_y), Align2::LEFT_CENTER, label, FontId::proportional(16.5 * u), FG);
                 if let Some(g) = hint_g {
-                    p.galley(pos2(lx, label_y + label_h / 2.0 + 2.0 * u), g, DIM);
+                    p.galley(pos2(lx, label_y + label_h / 2.0 + 2.0 * u), g, hint_c);
                 }
                 if let Some(k) = key {
                     let src = sources[KEYS.iter().position(|x| *x == k).unwrap_or(0)];
@@ -1524,6 +1558,31 @@ mod tests {
         let names: Vec<&str> = l.groups().iter().map(|g| g.name.as_str()).collect();
         assert_eq!(names, ["Model 2A", "Model 2B", "Model 2C"]);
         assert_eq!(l.selected().unwrap().id, "srallyc");
+    }
+
+    #[test]
+    fn settings_temporal_overrides() {
+        let mut v = GameSettings { aa: 4, ..Default::default() };
+        assert!(["aa", "temporal", "stipple"].iter().all(|k| overridden(k, &v, true).is_none()));
+        v.temporal = 100;
+        assert!(overridden("aa", &v, true).is_some() && overridden("temporal", &v, true).is_none());
+        assert!(overridden("aa", &v, false).is_none() && overridden("temporal", &v, false).is_some());
+        v.geo_chip = true;
+        v.stipple_keep = true;
+        assert!(overridden("aa", &v, true).is_none());
+        assert!(overridden("temporal", &v, true).is_some() && overridden("stipple", &v, true).is_some());
+        // The rows hold every value the settings take for them.
+        for key in ["temporal", "stipple"] {
+            let Some(Row::Choice(_, _, _, options)) =
+                rows(false, 16).into_iter().find(|r| matches!(r, Row::Choice(k, ..) if *k == key))
+            else {
+                panic!("no {key} row")
+            };
+            for (_, value) in options {
+                let mut v = GameSettings::default();
+                assert!(v.set(key, value) && v.get(key) == *value, "{key} = {value}");
+            }
+        }
     }
 
     #[test]

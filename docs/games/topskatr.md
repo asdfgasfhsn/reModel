@@ -114,4 +114,24 @@ documentation and hasn't been contradicted yet.
   nothing for run-ahead to hide. Curving the other way from frame 3907
   changed nothing on screen for 16 frames (the skater mid-trick,
   presumably).
+- *Confirmed (by looking at the frames, 2026-11-10):* the attract
+  montage switches shots every 27 frames (frames 1037, 1064 and 1091 of a
+  coin-start run: each a different shot from the frame before), and smooth
+  motion's cut test flags each as a camera cut, rightly; temporal
+  anti-aliasing starts its history again there.
+- *Confirmed (by looking at the frames):* a coin-start run with the
+  default input (no steering) never reaches the FINISH gantry: the race
+  ends TIME UP at about frame 9000. Palette 0x1009 toggles every frame
+  during the race (from at least frame 4600 to 7600), but the gantry isn't
+  on screen. It is on screen in the attract demo that follows (stadium
+  course), frames about 19590-19607 of the same run (a camera cut at
+  19608), with 0x1009 alternating 0xD3FF and 0x8000: `remodel --game
+  topskatr --geo native --capture-seq DIR --seq 19540,100 --input
+  coin-start run 4200000000 0`.
+- *Confirmed (temporal anti-aliasing, by looking at the frames):* on those
+  frames the sign flickers with temporal on exactly as the game draws it:
+  at TAA and 67% the word shows on even frames and the empty board on odd
+  ones, like the plain frames, with no averaging to a mid colour and no
+  ghost of the letters on the empty frames (`docs/enhancements.md`). The
+  waving chequered flags beside it, which have no motion data, look soft.
 

@@ -56,7 +56,7 @@ pub fn run(
     view = view.with_hud_windows(hud_windows.0, hud_windows.1);
     // The reference supersamples at least 4x4.
     let ss = super::supersample_factor(aa.max(16));
-    let q = gpu::Quality { msaa: aa, depth, tex_filter: TexFilter::Off };
+    let q = gpu::Quality { msaa: aa, depth, tex_filter: TexFilter::Off, ..Default::default() };
     let msaa = plain.set_quality(q).msaa;
     gpu.set_pack(Some(Box::new(Packs::new(None, Some(pack.to_path_buf()))?)));
     let mut sw_pack = Packs::new(None, Some(pack.to_path_buf()))?;

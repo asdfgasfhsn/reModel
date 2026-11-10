@@ -16,7 +16,8 @@ fn f24(w: u32) -> f32 {
     f32::from_bits(w << 8)
 }
 
-/// View-space vertex with texture coordinates (texels).
+/// View-space vertex with texture coordinates (texels), and with motion
+/// data ([`build_motion`]) its previous view-space position (zero without).
 #[derive(Clone, Copy, Debug, Default)]
 struct Vtx {
     x: f32,
@@ -24,6 +25,9 @@ struct Vtx {
     z: f32,
     u: f32,
     v: f32,
+    px: f32,
+    py: f32,
+    pz: f32,
 }
 
 /// Screen-space vertex with perspective-divided attributes.
@@ -43,7 +47,30 @@ struct Window {
     y0: f32,
     x1: f32,
     y1: f32,
-    centres: [(f32, f32); 4],
+    centres: Centres,
+}
+
+/// A window's four centres in screen pixels (sync offsets applied).
+pub type Centres = [(f32, f32); 4];
+
+/// What [`build_motion`] needs to give each polygon its previous screen
+/// position: the frame's stream posed two ways, word for word in the
+/// layout of the stream being drawn (`crate::smooth::Motion`).
+pub struct MotionIn<'a> {
+    /// Frame N's list posed with frame N-1's transforms (`Motion::s0`).
+    pub s0: &'a [u32],
+    /// Frame N's list posed with its own (the engine's stream).
+    pub s1: &'a [u32],
+    /// When the previous image was, on the axis from `s0` (0) to `s1` (1):
+    /// a vertex was at `s0 + tp * (s1 - s0)` in view space. May lie
+    /// outside 0..1 (extrapolated).
+    pub tp: f32,
+    /// Per object block (`Motion::valid`); ignored (all valid) when its
+    /// length isn't the stream's number of blocks.
+    pub valid: &'a [bool],
+    /// The previous displayed frame's centres by window index (a window
+    /// missing here: this frame's).
+    pub prev_centres: &'a [Centres],
 }
 
 /// Texture parameters from a polygon's 4-word header (section 5.3).
@@ -84,6 +111,13 @@ pub struct Poly {
     /// The object block (the stream's `0x1` command, counted from 0 in the
     /// frame) the polygon came in: one model's polygon list. For probing.
     pub block: u32,
+    /// Motion data ([`build_motion`]): per point, where it was in the
+    /// previous displayed image, in homogeneous screen pixels `[X, Y, W]`
+    /// (the position is `(X / W, Y / W)`; its 1/z was `iz / W`), linear in
+    /// screen space like [`SVtx::uz`]. Empty when there is none: no
+    /// motion data, the object's motion unknown, or a previous position
+    /// behind the eye.
+    pub prev: Vec<[f32; 3]>,
     /// Flat and black: a shadow. The games' shadows are flat black (or
     /// dithered black) polygons laid on the ground, at depths that don't
     /// match it (hotd's are screen-parallel slices), so with the depth
@@ -118,6 +152,9 @@ pub struct Placed {
     /// is the game's, and polygons covering a wide range of depth
     /// ([`PAINTER_SPREAD`]).
     pub background: bool,
+    /// [`Poly::prev`] in output pixels (homogeneous, `[X, Y, W]`); empty
+    /// without.
+    pub prev: Vec<[f32; 3]>,
 }
 
 /// Depth buffer. Off by default; the original look is the painter's
@@ -239,16 +276,54 @@ fn texture_from_header(h: [u16; 4]) -> Option<Texture> {
 
 /// Parse a frame's raster stream into screen-space polygons.
 pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
+    build_impl(stream, src, None).0
+}
+
+/// [`build`], and with motion data `m` each polygon's previous position
+/// ([`Poly::prev`]); also the windows' centres, by window index (to pass
+/// as the next frame's [`MotionIn::prev_centres`]). The polygons are
+/// [`build`]'s exactly, apart from `prev`.
+///
+/// The streams are read in lockstep: a vertex's previous view-space
+/// position is the words at its place in `s0` and `s1`, blended at `tp`.
+/// It is carried through clipping (decided by the current position only)
+/// like the texture coordinates, so it is exact for motion that is an
+/// affine map of view space (rigid motion, scale). Without motion for the
+/// frame (`m` None, or the streams not all the same length or not agreeing
+/// on the command words), every `prev` is empty.
+pub fn build_motion(stream: &[u32], src: &Sources, m: Option<&MotionIn>) -> (Vec<Poly>, Vec<Centres>) {
+    let (polys, windows) = build_impl(stream, src, m);
+    (polys, windows.iter().map(|w| w.centres).collect())
+}
+
+fn build_impl(stream: &[u32], src: &Sources, m: Option<&MotionIn>) -> (Vec<Poly>, Vec<Window>) {
     let mut polys = Vec::new();
     let mut windows: Vec<Window> = Vec::new();
     let mut block = 0;
     let mut i = 0;
     let rd = |i: usize| stream.get(i).copied().unwrap_or(0xff00_000f);
+    let given = m.is_some();
+    let mut m = m.filter(|m| m.s0.len() == stream.len() && m.s1.len() == stream.len());
+    // With motion: the stream's `0x1` commands so far (what `valid` is
+    // indexed by; `block` only counts those after a window), and the one
+    // each polygon came in.
+    let (mut blocks, mut from) = (0usize, Vec::new());
+    let prev_at = |m: &MotionIn, k: usize| {
+        let (a, b) = (f24(m.s0[k]), f24(m.s1[k]));
+        a + (b - a) * m.tp
+    };
     while i < stream.len() {
         let w = stream[i];
         i += 1;
         if w >> 24 != 0xff {
             continue; // stray data word: resynchronise on the next command
+        }
+        if let Some(mm) = m {
+            if mm.s0[i - 1] != w || mm.s1[i - 1] != w {
+                m = None; // not the same layout: no motion for the frame
+            } else if w & 0xf == 0x1 {
+                blocks += 1;
+            }
         }
         let centre = ((w >> 6) & 3) as usize;
         match w & 0xf {
@@ -274,7 +349,16 @@ pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
                 let Some(win) = windows.len().checked_sub(1) else { continue };
                 let mut tpa = rd(i) & 0xff_ffff;
                 let mut tha = rd(i + 1) & 0xff_ffff;
-                let pos = |k: usize| Vtx { x: f24(rd(k)), y: f24(rd(k + 1)), z: f24(rd(k + 2)), u: 0.0, v: 0.0 };
+                let pos = |k: usize| {
+                    let (x, y, z) = (f24(rd(k)), f24(rd(k + 1)), f24(rd(k + 2)));
+                    match m {
+                        Some(m) if k + 2 < stream.len() => {
+                            let (px, py, pz) = (prev_at(m, k), prev_at(m, k + 1), prev_at(m, k + 2));
+                            Vtx { x, y, z, u: 0.0, v: 0.0, px, py, pz }
+                        }
+                        _ => Vtx { x, y, z, ..Default::default() },
+                    }
+                };
                 let mut p0 = pos(i + 2);
                 let mut p1 = pos(i + 5);
                 i += 8;
@@ -320,6 +404,14 @@ pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
                         let (cx, cy) = w.centres[centre];
                         let clipped = clip_view(&verts, cx, cy);
                         if clipped.len() >= 3 {
+                            let prev = match m {
+                                Some(m) => {
+                                    let (pcx, pcy) = m.prev_centres.get(win).map_or((cx, cy), |c| c[centre]);
+                                    from.push(blocks - 1);
+                                    previous(&clipped, pcx, pcy)
+                                }
+                                None => Vec::new(),
+                            };
                             let points = clipped
                                 .iter()
                                 .map(|p| {
@@ -345,6 +437,7 @@ pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
                                 checker: header[0] & (1 << 15) != 0,
                                 header,
                                 block: block - 1,
+                                prev,
                             });
                         }
                     }
@@ -360,7 +453,39 @@ pub fn build(stream: &[u32], src: &Sources) -> Vec<Poly> {
             _ => {}
         }
     }
-    polys
+    match m {
+        // Objects whose motion is unknown: no previous position.
+        Some(m) if m.valid.len() == blocks => {
+            for (p, &b) in polys.iter_mut().zip(&from) {
+                if !m.valid[b] {
+                    p.prev = Vec::new();
+                }
+            }
+        }
+        Some(_) => {}
+        // Motion lost on the way (the streams' layouts differ): none.
+        None if given => polys.iter_mut().for_each(|p| p.prev = Vec::new()),
+        None => {}
+    }
+    (polys, windows)
+}
+
+/// A clipped polygon's previous positions ([`Poly::prev`]) for previous
+/// window centre (cx', cy'): per point `[(cx' z' + x') / z, (cy' z' - y') /
+/// z, z' / z]` for its depth `z` and previous view-space position (x', y',
+/// z'), so the first two over the third are the previous screen position
+/// `(cx' + x'/z', cy' - y'/z')`. Empty if any previous position is behind
+/// the eye.
+fn previous(v: &[Vtx], cx: f32, cy: f32) -> Vec<[f32; 3]> {
+    if !v.iter().all(|p| p.pz > NEAR) {
+        return Vec::new();
+    }
+    v.iter()
+        .map(|p| {
+            let iz = 1.0 / p.z;
+            [(cx * p.pz + p.px) * iz, (cy * p.pz - p.py) * iz, p.pz * iz]
+        })
+        .collect()
 }
 
 /// Nearest view-space z kept by [`clip_view`]: only there to keep 1/z
@@ -413,7 +538,16 @@ fn clip_plane(v: &[Vtx], dist: impl Fn(&Vtx) -> f32) -> Vec<Vtx> {
         if (da >= 0.0) != (db >= 0.0) {
             let t = da / (da - db);
             let l = |p: f32, q: f32| p + (q - p) * t;
-            out.push(Vtx { x: l(a.x, b.x), y: l(a.y, b.y), z: l(a.z, b.z), u: l(a.u, b.u), v: l(a.v, b.v) });
+            out.push(Vtx {
+                x: l(a.x, b.x),
+                y: l(a.y, b.y),
+                z: l(a.z, b.z),
+                u: l(a.u, b.u),
+                v: l(a.v, b.v),
+                px: l(a.px, b.px),
+                py: l(a.py, b.py),
+                pz: l(a.pz, b.pz),
+            });
         }
     }
     out
@@ -845,6 +979,8 @@ pub fn place(polys: &mut [Poly], view: &View) -> Vec<Placed> {
                     SVtx { x, y, ..*v }
                 })
                 .collect();
+            // view.to_output, homogeneous.
+            let prev = p.prev.iter().map(|&[x, y, w]| [(x + (dx + view.pad) * w) * view.sx, y * view.sy, w]).collect();
             let (mut x0, y0, mut x1, y1) = p.clip;
             if view.pad > 0.0 && x0 <= 1.0 && x1 >= WIDTH as f32 - 1.0 {
                 (x0, x1) = (view.x_min(), WIDTH as f32 + view.pad);
@@ -858,6 +994,7 @@ pub fn place(polys: &mut [Poly], view: &View) -> Vec<Placed> {
                 rank: (i - window_start) as u32,
                 group,
                 background: background_reason(p).is_some(),
+                prev,
             }
         })
         .collect()
@@ -971,6 +1108,54 @@ pub fn probe_depth(polys: &[Poly], placed: &[Placed], src: &Sources, view: &View
             }
         }
         out.hits.push(DepthHit { index, background, iz, depth, buffer: zbuf, buffer_from: owner, passed, colour });
+    }
+    out
+}
+
+/// What [`draw_view`] shows at each output pixel ([`visible`]).
+#[derive(Clone, Debug, Default)]
+pub struct Visible {
+    /// The polygon whose colour shows (index into `placed`), or `u32::MAX`.
+    pub owner: Vec<u32>,
+    /// Its 1/z at the pixel centre (0 where none).
+    pub iz: Vec<f32>,
+    /// Its previous position there ([`Placed::prev`] interpolated across
+    /// the polygon, homogeneous output pixels `[X, Y, W]`), `W` 0 where it
+    /// has none.
+    pub prev: Vec<[f32; 3]>,
+}
+
+/// Per output pixel of `view`, the polygon [`draw_view`] shows (the depth
+/// buffer off, original textures: the game's order, the checkerboard and
+/// cut-out texels as drawn), its 1/z and its motion data: the motion
+/// vector a temporal renderer would write there. `placed` is
+/// [`place`]'s for `polys`.
+pub fn visible(polys: &[Poly], placed: &[Placed], src: &Sources, view: &View) -> Visible {
+    let (w, h) = (view.width, view.height);
+    let mut out = Visible { owner: vec![u32::MAX; w * h], iz: vec![0.0; w * h], prev: vec![[0.0; 3]; w * h] };
+    let (gsx, gsy) = (view.sx, view.sy);
+    for (k, pl) in placed.iter().enumerate() {
+        let p = &polys[pl.poly];
+        let mut hits = Vec::new();
+        fill(&pl.points, pl.clip, w, h, |x, y, iz, uz, vz| {
+            let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
+            hits.push((y * w + x, iz, shade(p, src, gx, gy, uz / iz, vz / iz).is_some()));
+        });
+        // The same fill visits the same pixels in the same order whatever
+        // the attributes: carry [X, Y, W] as (u/z, v/z, 1/z).
+        let mut prev = Vec::with_capacity(if pl.prev.is_empty() { 0 } else { hits.len() });
+        if !pl.prev.is_empty() {
+            let pts: Vec<SVtx> =
+                pl.points.iter().zip(&pl.prev).map(|(v, q)| SVtx { iz: q[2], uz: q[0], vz: q[1], ..*v }).collect();
+            fill(&pts, pl.clip, w, h, |_, _, ww, xx, yy| prev.push([xx, yy, ww]));
+        }
+        for (i, &(o, iz, shown)) in hits.iter().enumerate() {
+            if shown {
+                out.owner[o] = k as u32;
+                out.iz[o] = iz;
+                out.prev[o] = prev.get(i).copied().unwrap_or([0.0; 3]);
+            }
+        }
     }
     out
 }
@@ -1199,6 +1384,7 @@ mod tests {
             header: [0x80c0, 0, 0, 0],
             shadow: false,
             block: 0,
+            prev: Vec::new(),
         };
         assert!(p.texture.is_none());
         assert!(shade(&p, &src, 2, 4, 0.0, 0.0).is_some());
@@ -1221,6 +1407,7 @@ mod tests {
             header: [0; 4],
             shadow: false,
             block: 0,
+            prev: Vec::new(),
         }
     }
 
@@ -1322,7 +1509,7 @@ mod tests {
 
     #[test]
     fn close_geometry_is_clipped_not_dropped() {
-        let v = |x, y, z| Vtx { x, y, z, u: x, v: 0.0 };
+        let v = |x, y, z| Vtx { x, y, z, u: x, ..Default::default() };
         // A triangle in front of the eye, nearer than one unit: kept whole.
         let c = clip_view(&[v(-0.1, 0.0, 0.5), v(0.1, 0.0, 0.5), v(0.0, 0.1, 0.4)], 248.0, 192.0);
         assert_eq!(c.len(), 3);
@@ -1368,5 +1555,207 @@ mod tests {
         assert_eq!(wrap(-1, 32, false), 31);
         assert_eq!(wrap(32, 32, true), 31);
         assert_eq!(wrap(-1, 32, true), 0);
+    }
+
+    /// A raster stream: one window (centre 0 at (cx, cy) in window
+    /// coordinates, Y up) and an object block of double-sided quads given
+    /// as view-space points (the first two are the block's P0 and P1, then
+    /// two per quad), the positions through `f`.
+    fn motion_stream(cx: i32, cy: i32, quads: &[[[f32; 3]; 4]], f: impl Fn([f32; 3]) -> [f32; 3]) -> Vec<u32> {
+        let xy = |x: i32, y: i32| ((x as u32 & 0xfff) << 12) | (y as u32 & 0xfff);
+        let mut s = vec![0xff00_0003, xy(0, 0), xy(495, 383), xy(cx, cy), xy(cx, cy), xy(cx, cy), xy(cx, cy)];
+        let put = |s: &mut Vec<u32>, p: [f32; 3]| s.extend(f(p).map(|v| v.to_bits() >> 8));
+        for q in quads {
+            s.extend([0xff00_0001, 0, 0]);
+            // P0 and P1 are the quad's second and first points.
+            put(&mut s, q[1]);
+            put(&mut s, q[0]);
+            s.extend([1 | 1 << 8 | 1 << 10 | 1 << 17, 0, 0]);
+            put(&mut s, q[2]);
+            put(&mut s, q[3]);
+        }
+        s.push(0xff00_000f);
+        s
+    }
+
+    fn motion_sources(palette: &[u8]) -> Sources<'_> {
+        Sources { texture_rom: &[], texture_point_ram: &[], render_ram: &[], palette, xoff: 0.0, yoff: 0.0 }
+    }
+
+    /// An affine map of view space (positions are times the focal
+    /// lengths, so x and y are large beside z): a turn about x, a stretch
+    /// across and a move.
+    fn moved(p: [f32; 3]) -> [f32; 3] {
+        let (c, s) = (0.01f32.cos(), 0.01f32.sin());
+        [1.02 * p[0] + 0.7, c * p[1] - s * p[2] - 0.4, s * p[1] + c * p[2] + 6.0]
+    }
+
+    /// Quads: one in front of the eye, one crossing the near plane, one
+    /// running far past the side of the screen (clipped by the guard
+    /// band).
+    const QUADS: [[[f32; 3]; 4]; 3] = [
+        [[-300.0, -200.0, 10.0], [300.0, -200.0, 10.0], [300.0, 200.0, 12.0], [-300.0, 200.0, 12.0]],
+        [[-50.0, -30.0, -4.0], [50.0, -30.0, -4.0], [50.0, 30.0, 9.0], [-50.0, 30.0, 9.0]],
+        [[-100.0, -50.0, 5.0], [90000.0, -50.0, 5.0], [90000.0, 50.0, 5.0], [-100.0, 50.0, 5.0]],
+    ];
+
+    fn plain(p: &Poly) -> String {
+        format!("{:?}", Poly { prev: Vec::new(), ..p.clone() })
+    }
+
+    /// The previous position of a polygon's points is the projection of
+    /// the moved view-space point, through clipping, with the previous
+    /// frame's window centre, and stays exact between points when
+    /// interpolated linearly in screen space and divided.
+    #[test]
+    fn motion_gives_the_exact_previous_projection() {
+        let palette = vec![0u8; 0x1_c000];
+        let src = motion_sources(&palette);
+        let s1 = motion_stream(248, 192, &QUADS, |p| p);
+        let s0 = motion_stream(248, 192, &QUADS, moved);
+        let prev_centres = [[(251.0, 190.0); 4]];
+        let m = MotionIn { s0: &s0, s1: &s1, tp: 0.0, valid: &[true; 3], prev_centres: &prev_centres };
+        let (polys, centres) = build_motion(&s1, &src, Some(&m));
+        assert_eq!(centres, vec![[(248.0, 192.0); 4]]);
+        // Exactly build's polygons, apart from prev.
+        let plain_polys: Vec<String> = build(&s1, &src).iter().map(plain).collect();
+        assert_eq!(polys.iter().map(plain).collect::<Vec<_>>(), plain_polys);
+        assert_eq!(polys.len(), 3);
+        assert!(polys[1].points.len() > 4 || polys[1].points.iter().any(|p| p.iz > 1.0), "clipped at the eye");
+        assert!(polys[2].points.iter().all(|p| p.x < 3000.0), "clipped by the guard band");
+        // The view-space point a screen point shows (current centre).
+        let (cx, cy) = (248.0, 192.0);
+        let view = |x: f32, y: f32, iz: f32| [(x - cx) / iz, (cy - y) / iz, 1.0 / iz];
+        let project = |p: [f32; 3]| (251.0 + p[0] / p[2], 190.0 - p[1] / p[2]);
+        let close = |a: (f32, f32), b: (f32, f32), what: &str| {
+            let tol = 2e-3 * (1.0 + b.0.abs().max(b.1.abs()) / 100.0);
+            assert!((a.0 - b.0).abs() < tol && (a.1 - b.1).abs() < tol, "{what}: {a:?} vs {b:?}");
+        };
+        for (n, p) in polys.iter().enumerate() {
+            assert_eq!(p.prev.len(), p.points.len());
+            for (k, (v, h)) in p.points.iter().zip(&p.prev).enumerate() {
+                close((h[0] / h[2], h[1] / h[2]), project(moved(view(v.x, v.y, v.iz))), &format!("{n}.{k}"));
+                // Previous 1/z.
+                let want = 1.0 / moved(view(v.x, v.y, v.iz))[2];
+                assert!((v.iz / h[2] - want).abs() < 1e-4 * want, "{n}.{k}");
+            }
+            // Between two points, a third of the way across the screen.
+            let (a, b) = (0, p.points.len() / 2);
+            let s = 1.0 / 3.0;
+            let l = |x: f32, y: f32| x + (y - x) * s;
+            let (va, vb) = (p.points[a], p.points[b]);
+            let (sx, sy, iz) = (l(va.x, vb.x), l(va.y, vb.y), l(va.iz, vb.iz));
+            let h: [f32; 3] = std::array::from_fn(|c| l(p.prev[a][c], p.prev[b][c]));
+            close((h[0] / h[2], h[1] / h[2]), project(moved(view(sx, sy, iz))), &format!("{n} between"));
+        }
+    }
+
+    #[test]
+    fn visible_matches_the_drawing_and_carries_motion() {
+        let palette = vec![0u8; 0x1_c000];
+        let src = motion_sources(&palette);
+        let s1 = motion_stream(248, 192, &QUADS, |p| p);
+        let s0 = motion_stream(248, 192, &QUADS, moved);
+        let m = MotionIn { s0: &s0, s1: &s1, tp: 0.0, valid: &[], prev_centres: &[] };
+        let view = View::new(240, 16.0 / 9.0, crate::video::Hud::Center);
+        let (mut polys, _) = build_motion(&s1, &src, Some(&m));
+        let placed = place(&mut polys, &view);
+        let vis = visible(&polys, &placed, &src, &view);
+        let (_, covered) = draw_view(&mut polys.clone(), &src, &view);
+        let shown: Vec<bool> = vis.owner.iter().map(|&o| o != u32::MAX).collect();
+        assert_eq!(shown, covered);
+        assert!(covered.iter().any(|&c| c));
+        // Pixels of a polygon with motion data have a previous position
+        // inside the hull of its points' previous positions; others none.
+        for (o, _) in shown.iter().enumerate().filter(|(_, s)| **s) {
+            let [x, y, w] = vis.prev[o];
+            let pl = &placed[vis.owner[o] as usize];
+            if pl.prev.is_empty() {
+                assert_eq!(w, 0.0);
+                continue;
+            }
+            let (px, py) = (x / w, y / w);
+            let lo = |k: usize| pl.prev.iter().map(|q| q[k] / q[2]).fold(f32::MAX, f32::min) - 1e-2;
+            let hi = |k: usize| pl.prev.iter().map(|q| q[k] / q[2]).fold(f32::MIN, f32::max) + 1e-2;
+            assert!(w > 0.0 && (lo(0)..=hi(0)).contains(&px) && (lo(1)..=hi(1)).contains(&py), "{px} {py}");
+        }
+        // Without motion: no previous positions.
+        let mut plain = build(&s1, &src);
+        let placed = place(&mut plain, &view);
+        assert!(visible(&plain, &placed, &src, &view).prev.iter().all(|p| p[2] == 0.0));
+    }
+
+    #[test]
+    fn motion_identity_and_validity() {
+        let palette = vec![0u8; 0x1_c000];
+        let src = motion_sources(&palette);
+        let s1 = motion_stream(248, 192, &QUADS, |p| p);
+        // The same pose twice: the previous position is the current one.
+        let m = MotionIn { s0: &s1, s1: &s1, tp: 0.0, valid: &[], prev_centres: &[] };
+        let (polys, _) = build_motion(&s1, &src, Some(&m));
+        for p in &polys {
+            for (v, h) in p.points.iter().zip(&p.prev) {
+                assert!((h[0] / h[2] - v.x).abs() < 1e-3 && (h[1] / h[2] - v.y).abs() < 1e-3, "{v:?} {h:?}");
+                assert!((h[2] - 1.0).abs() < 1e-6);
+            }
+            assert!(!p.prev.is_empty());
+        }
+        // tp blends: halfway between the poses.
+        let s0 = motion_stream(248, 192, &QUADS, moved);
+        let half = motion_stream(248, 192, &QUADS, |p| {
+            let q = moved(p);
+            std::array::from_fn(|c| (p[c] + q[c]) / 2.0)
+        });
+        let at = |s0: &[u32], tp: f32| {
+            let m = MotionIn { s0, s1: &s1, tp, valid: &[], prev_centres: &[] };
+            build_motion(&s1, &src, Some(&m)).0
+        };
+        let (a, b) = (at(&s0, 0.5), at(&half, 0.0));
+        for (p, q) in a.iter().zip(&b) {
+            for (h, g) in p.prev.iter().zip(&q.prev) {
+                assert!((h[0] / h[2] - g[0] / g[2]).abs() < 2e-2, "{h:?} {g:?}");
+            }
+        }
+        let with = |valid: &[bool], s0: &[u32]| {
+            let m = MotionIn { s0, s1: &s1, tp: 0.0, valid, prev_centres: &[] };
+            build_motion(&s1, &src, Some(&m)).0.iter().map(|p| !p.prev.is_empty()).collect::<Vec<_>>()
+        };
+        // Blocks whose motion isn't known have none.
+        assert_eq!(with(&[true, false, true], &s0), [true, false, true]);
+        // Validity of the wrong length is ignored.
+        assert_eq!(with(&[false], &s0), [true; 3]);
+        // A previous position behind the eye: none for that polygon.
+        let behind = motion_stream(248, 192, &QUADS, |p| if p[1] > 0.0 { [p[0], p[1], -p[2]] } else { p });
+        assert_eq!(with(&[], &behind), [false; 3]);
+        // Streams that don't line up: no motion at all.
+        let mut other = s0.clone();
+        other[0] = 0xff00_0008;
+        assert_eq!(with(&[], &other), [false; 3]);
+        assert_eq!(with(&[], &s0[1..]), [false; 3]);
+        // Without motion data, nothing.
+        assert!(build_motion(&s1, &src, None).0.iter().all(|p| p.prev.is_empty()));
+    }
+
+    /// `place` maps the previous positions as it maps the points.
+    #[test]
+    fn placed_motion_is_in_output_pixels() {
+        let palette = vec![0u8; 0x1_c000];
+        let src = motion_sources(&palette);
+        let s1 = motion_stream(248, 192, &QUADS[..1], |p| p);
+        let s0 = motion_stream(248, 192, &QUADS[..1], moved);
+        let m = MotionIn { s0: &s0, s1: &s1, tp: 0.0, valid: &[], prev_centres: &[] };
+        let mut polys = build_motion(&s1, &src, Some(&m)).0;
+        let screen: Vec<(f32, f32)> = polys[0].prev.iter().map(|h| (h[0] / h[2], h[1] / h[2])).collect();
+        let mut view = View::new(768, 16.0 / 9.0, crate::video::Hud::Center);
+        view.hud_windows = 0;
+        assert!(view.pad > 0.0);
+        let placed = place(&mut polys, &view);
+        for (h, &(x, y)) in placed[0].prev.iter().zip(&screen) {
+            let (ox, oy) = view.to_output(x, y);
+            assert!((h[0] / h[2] - ox).abs() < 1e-3 && (h[1] / h[2] - oy).abs() < 1e-3);
+        }
+        assert_eq!(placed[0].prev.len(), placed[0].points.len());
+        // Without motion, nothing.
+        assert!(place(&mut build(&s1, &src), &view)[0].prev.is_empty());
     }
 }

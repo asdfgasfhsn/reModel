@@ -5,8 +5,8 @@
 //! otherwise under `$XDG_DATA_HOME/remodel` (`~/.local/share/remodel`).
 //!
 //! A game's settings ([`GameSettings`]: sound mix, display, speed, smooth
-//! motion, run-ahead, anti-aliasing, depth buffer, texture pack and its
-//! filtering, geometrizer) come in layers, lowest first, as in the browser
+//! motion, run-ahead, anti-aliasing, temporal anti-aliasing and its
+//! stipple, depth buffer, texture pack and its filtering, geometrizer) come in layers, lowest first, as in the browser
 //! build (`crates/web/settings.js`): the built-in defaults, the defaults for
 //! all games (`play-settings.txt`), the game's own (`<set>/settings.txt`)
 //! and the command line (this run only). A layer keeps only what it sets,
@@ -37,6 +37,14 @@ pub struct GameSettings {
     /// Anti-aliasing: samples a pixel (multisampling), 0 for none; 4 or 8,
     /// the GPU's own limit applying (docs/enhancements.md).
     pub aa: u32,
+    /// Temporal anti-aliasing (`gpu::Quality::temporal`): the 3D layer's
+    /// render scale in percent, 100 for TAA alone, 50 to 99 to upscale; 0
+    /// for none. Needs the native geometrizer (motion data comes from
+    /// smooth motion's recording); multisampling is off while it's on.
+    pub temporal: u8,
+    /// With temporal on: keep the games' checkerboard (screen door)
+    /// translucency as a pattern, rather than an even 50% blend.
+    pub stipple_keep: bool,
     /// Depth buffer for the 3D layer instead of the game's draw order.
     pub depth: bool,
     /// Draw the game's texture pack (`<data dir>/<set>/texpack/`, or
@@ -62,6 +70,8 @@ impl Default for GameSettings {
             smooth: false,
             run_ahead: 0,
             aa: 0,
+            temporal: 0,
+            stipple_keep: false,
             depth: false,
             pack: false,
             tex_filter: TexFilter::Off,
@@ -71,7 +81,7 @@ impl Default for GameSettings {
 }
 
 /// Every game setting's key, in the order the panels show them.
-pub const KEYS: [&str; 13] = [
+pub const KEYS: [&str; 15] = [
     "wide",
     "bezel",
     "hud_edges",
@@ -79,6 +89,8 @@ pub const KEYS: [&str; 13] = [
     "smooth",
     "run_ahead",
     "aa",
+    "temporal",
+    "stipple",
     "depth",
     "pack",
     "tex_filter",
@@ -117,6 +129,12 @@ impl GameSettings {
             "smooth" => self.smooth.to_string(),
             "run_ahead" => self.run_ahead.to_string(),
             "aa" => self.aa.to_string(),
+            "temporal" => match self.temporal {
+                0 => "off".to_string(),
+                100 => "taa".to_string(),
+                n => n.to_string(),
+            },
+            "stipple" => if self.stipple_keep { "keep" } else { "blend" }.to_string(),
             "depth" => self.depth.to_string(),
             "pack" => self.pack.to_string(),
             "tex_filter" => self.tex_filter.to_string(),
@@ -144,6 +162,8 @@ impl GameSettings {
             "smooth" => flag(v).map(|x| self.smooth = x).is_some(),
             "run_ahead" => v.parse::<u32>().ok().filter(|n| *n <= MAX_RUN_AHEAD).map(|n| self.run_ahead = n).is_some(),
             "aa" => v.parse::<u32>().ok().filter(|n| AA_LEVELS.contains(n)).map(|n| self.aa = n).is_some(),
+            "temporal" => gpu::Quality::parse_temporal(v).map(|n| self.temporal = n).is_some(),
+            "stipple" => gpu::Stipple::parse(v).map(|s| self.stipple_keep = s == gpu::Stipple::Keep).is_some(),
             "depth" => flag(v).map(|x| self.depth = x).is_some(),
             "pack" => flag(v).map(|x| self.pack = x).is_some(),
             "tex_filter" => TexFilter::parse(v).map(|f| self.tex_filter = f).is_some(),
@@ -173,6 +193,33 @@ impl GameSettings {
     /// Smooth motion as it runs: it needs the native geometrizer.
     pub fn smooth_on(&self) -> bool {
         self.smooth && !self.geo_chip
+    }
+
+    /// Temporal anti-aliasing as it runs: it needs the native geometrizer
+    /// (its motion data is smooth motion's). The GPU may still not have it
+    /// (`gpu::temporal_supported`).
+    pub fn temporal_on(&self) -> bool {
+        self.temporal > 0 && !self.geo_chip
+    }
+
+    /// Smooth motion's recording: for its in-betweens, or for temporal
+    /// anti-aliasing's motion data (in-betweens are drawn only with
+    /// `smooth_on`).
+    pub fn motion_on(&self) -> bool {
+        self.smooth_on() || self.temporal_on()
+    }
+
+    /// The renderer's quality for these settings (`supported`: the GPU
+    /// has temporal anti-aliasing). Multisampling is asked for as set; the
+    /// renderer turns it off while temporal is on.
+    pub fn quality(&self, supported: bool) -> gpu::Quality {
+        gpu::Quality {
+            msaa: self.aa,
+            depth: self.depth,
+            tex_filter: self.tex_filter,
+            temporal: if self.temporal_on() && supported { self.temporal } else { 0 },
+            stipple: if self.stipple_keep { gpu::Stipple::Keep } else { gpu::Stipple::Blend },
+        }
     }
 }
 
@@ -572,6 +619,41 @@ mod tests {
         assert_eq!(tex_filters(1).iter().map(|f| f.1).collect::<Vec<_>>(), ["off", "mip"]);
         assert_eq!(tex_filters(16).len(), 6);
         assert_eq!(tex_filters(4).last().unwrap().1, "4");
+    }
+
+    #[test]
+    fn temporal_and_stipple() {
+        let mut v = GameSettings::default();
+        assert_eq!((v.temporal, v.stipple_keep), (0, false));
+        assert_eq!((v.get("temporal").as_str(), v.get("stipple").as_str()), ("off", "blend"));
+        // Off: the quality is what it was before temporal existed.
+        let q = v.quality(true);
+        assert_eq!(q, gpu::Quality { msaa: 0, depth: false, tex_filter: TexFilter::Off, ..Default::default() });
+        assert!(!v.motion_on());
+        for (text, n) in [("taa", 100), ("75", 75), ("67", 67), ("50", 50), ("off", 0)] {
+            assert!(v.set("temporal", text));
+            assert_eq!((v.temporal, v.get("temporal")), (n, text.to_string()));
+        }
+        assert!(!v.set("temporal", "49") && !v.set("temporal", "101") && !v.set("temporal", "x"));
+        assert!(v.set("stipple", "keep") && v.stipple_keep && v.get("stipple") == "keep");
+        assert!(!v.set("stipple", "on") && v.stipple_keep);
+        // On: smooth motion's recording too, not its in-betweens.
+        v.set("temporal", "67");
+        assert!(v.temporal_on() && v.motion_on() && !v.smooth_on());
+        assert_eq!(v.quality(true).temporal, 67);
+        assert_eq!(v.quality(true).stipple, gpu::Stipple::Keep);
+        assert_eq!(v.quality(false).temporal, 0);
+        // Not with the chip.
+        v.geo_chip = true;
+        assert!(!v.temporal_on() && !v.motion_on());
+        assert_eq!(v.quality(true).temporal, 0);
+        // Through the files; unset, nothing is written.
+        assert!(Settings::default().text().find("temporal").is_none());
+        let s = Settings::parse("temporal = 67\nstipple = keep\n");
+        assert_eq!(s.defaults.get("temporal").map(String::as_str), Some("67"));
+        let s = Settings::parse(&s.text());
+        let (v, _) = with_game(s, "x", &[]).resolve("x");
+        assert_eq!((v.temporal, v.stipple_keep), (67, true));
     }
 
     /// `edit` without saving (the layers it would touch are given).

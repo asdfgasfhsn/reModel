@@ -110,4 +110,11 @@ which aren't supported as sets of their own.
   the same data, but the manifest lists the Export pair. Which of the two
   halves of a gauge is which player's, and the details of the survival
   mode, haven't been looked at.
+- *Unconfirmed (`make temporal-check`, frames 3300-3599 of a coin-start
+  run, 2026-11-10):* in blocks that smooth motion's plan matched, 3% of
+  the position words of frame N's list posed with frame N-1's transforms
+  don't agree with frame N-1's own (96.9%; 100% on the other games
+  checked), some moved as a whole and some reshaped. On screen only 0.2%
+  of pixels' motion vectors are more than a pixel off. Probably limb parts
+  paired with a different transform; not looked into.
 

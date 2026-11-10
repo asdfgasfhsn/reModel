@@ -716,6 +716,7 @@ impl Native {
     /// fn 2, direct data: polygons given in view space, passed through
     /// under raster command 1.
     fn direct(&mut self, io: &mut Io, cmd: u32) {
+        io.direct();
         io.emit((cmd & 0xff00_001c) | 1);
         let tpa = io.rd();
         let tha = io.rd();

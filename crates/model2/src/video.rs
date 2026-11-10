@@ -918,12 +918,42 @@ impl HudLayout {
             for v in &mut p.points {
                 v.x += dx;
             }
+            // Motion: as if the shift was the same in the previous image.
+            for h in &mut p.prev {
+                h[0] += dx * h[2];
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    /// An anchored HUD polygon's previous position moves with it.
+    #[test]
+    fn anchor_moves_motion_too() {
+        use crate::raster::{Poly, SVtx};
+        let v = |x, y| SVtx { x, y, iz: 0.5, uz: 0.0, vz: 0.0 };
+        let mut p = vec![Poly {
+            points: vec![v(10.0, 10.0), v(20.0, 10.0), v(20.0, 20.0)],
+            key: 1.0,
+            window: 1,
+            clip: (0.0, 0.0, 496.0, 384.0),
+            texture: None,
+            colour: [0; 3],
+            luma: 0,
+            checker: false,
+            header: [0; 4],
+            block: 0,
+            shadow: false,
+            prev: vec![[22.0, 20.0, 2.0], [42.0, 20.0, 2.0], [42.0, 40.0, 2.0]],
+        }];
+        let mut view = View::new(768, 16.0 / 9.0, Hud::Center);
+        view.hud_element_windows = 1 << 1;
+        HudLayout { boxes: vec![((0.0, 0.0, 100.0, 100.0), -7.0)] }.anchor(&mut p, &view);
+        assert_eq!(p[0].points[0].x, 3.0);
+        assert_eq!(p[0].prev.iter().map(|h| h[0] / h[2]).collect::<Vec<_>>(), [4.0, 14.0, 14.0]);
+    }
+
     #[test]
     fn supersampling_averages_blocks() {
         let base = View::new(768, 16.0 / 9.0, Hud::Center);

@@ -659,9 +659,21 @@ frames all), where matching by key and order alone had left up to 24 of
 the first in-between: models that change with the animation (a pose that
 is a model of its own, `vstriker`'s waving flags), and the windows (fn
 0x03), whose centres the games move by whole pixels (`topskatr`'s camera
-bob), which can't be split. No cuts came up in these runs; the cut test
-is checked by unit tests only, *unconfirmed* on a game's real camera
-cuts (replays, attract mode).
+bob), which can't be split. No cuts came up in these runs. Since then
+(2026-11-10, `make temporal-check` sequences) the cut test has flagged
+real camera cuts: `topskatr`'s attract montage every 27 frames (each a
+different shot, *confirmed* by looking), and `vstriker`'s ball trail
+restarting every 8 frames; no missed cut showed in the frames looked at
+(`topskatr`, `srallyc`, `lastbrnx`, `vstriker`).
+
+**Motion vectors** (temporal anti-aliasing, `docs/enhancements.md`):
+`Frame::motion` replays frame N's list once with frame N-1's matched
+transforms, giving each vertex's previous position. For that, a
+transform matched under another key (a model swapped in with a pose:
+`vstriker`'s players and ball trail) counts as unknown, like one not
+matched (`Plan::unknown`; focal lengths, matched across keys by order,
+don't count), so its object has no motion data. In-betweens are
+unchanged by this.
 
 **Cost** (natively, an in-between drawn after every frame of those runs,
 six runs sharing a 16-core desktop): about 0.2 ms (`stcc`) and 0.4 ms

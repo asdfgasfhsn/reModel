@@ -338,7 +338,8 @@ parameters:
   both in the panel's Display section, both applied live. The module's
   `set_quality(aa, depth, texfilter)` takes them before or after `start`
   (`texfilter` is a string: `off`, `mip`, `2`, `4`, `8` or `16`; anything
-  else is off);
+  else is off). Temporal anti-aliasing and upscaling are the native
+  player's only (`docs/play.md`); the browser has no setting for them;
 - `pack=1` (the game's texture pack from `/texpack/<set>/`; `pack=0` off) and
   `texfilter=off|mip|2|4|8|16` (filtering of pack images, as in
   `docs/texture-packs.md`). Both off by default, both in the panel's Display

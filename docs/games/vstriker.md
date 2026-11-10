@@ -94,4 +94,19 @@ suffix), the clone `vstrikro`, which isn't supported.
   reads it; `docs/play.md`, "Run-ahead"):* moving the player (right from
   frame 3507, left from 3907 of a coin-start run) and shooting show in the
   first frame that reads them: input lag 0.
+- *Confirmed (`make temporal-check` on captured sequences, 2026-11-10):*
+  two things defeat smooth motion's pairing for motion vectors. The
+  players' bodies are pose models that change with the animation, and the
+  ball intro (from about frame 1044 of a coin-start run) draws a trail of
+  four balls, each copy a different model, that restarts every 8 frames
+  (each restart is a camera cut to the cut test). The plan pairs these
+  transforms across models; for in-betweens that is harmless, but frame
+  N's model posed with frame N-1's transform gave wrong motion vectors on
+  about 1% of 3D pixels (limbs, the front ball, up to 128 game pixels).
+  Transforms paired across models now give no motion data: 1.7% of 3D
+  pixels in a match, which temporal anti-aliasing draws nearer the plain
+  frame (`docs/enhancements.md`). Its crowd textures also keep a still
+  frame changing under temporal's jitter: 0.21 levels a frame in the
+  attract sequence (frames 470-549) and 0.34 in a match (3300-3419),
+  the one result over `temporal-check`'s 0.25 limit.
 

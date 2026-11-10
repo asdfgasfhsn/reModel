@@ -56,8 +56,8 @@ through DirectX 8/9's fixed-function pipeline.
 | Textures | Mipmaps from pack images, anisotropic filtering | done, opt-in (2026-11-10) |
 | Image | Anti-aliasing: MSAA 4x/8x on the GPU, supersampling in software | done, opt-in (2026-11-09) |
 | Image | Depth buffer | done, opt-in, partial (below) |
-| Image | Temporal upscaler (motion vectors, jitter) | planned |
-| Image | DLSS, optional, native RTX only | idea |
+| Image | Temporal anti-aliasing and upscaling (motion vectors, jitter) | done, opt-in, native player only (2026-11-10): needs the native geometrizer, replaces MSAA; thin detail speckles at 67% and 50%, animated objects without motion data look soft (below) |
+| Image | FSR 2 or DLSS in place of the built-in resolve, native only | idea (not started) |
 | Models | Model replacement packs, keyed by ROM address | planned |
 | Models | Automatic smoothing (vertex normals, curved surfaces) | idea |
 | Models | Level of detail and draw distance overrides | idea (optional patch) |
@@ -70,11 +70,13 @@ through DirectX 8/9's fixed-function pipeline.
 
 ## Order of work
 
-1. **Anti-aliasing and a depth buffer.** Cheap, universal and
+1. **Anti-aliasing and a depth buffer** (done). Cheap, universal and
    groundwork for what follows.
-2. **Batch texture upscaling.** The biggest visible gain for the least
-   work.
-3. **A temporal upscaler.** Shares the depth buffer and motion vectors.
+2. **Batch texture upscaling** (done). The biggest visible gain for the
+   least work.
+3. **A temporal upscaler** (done as temporal anti-aliasing with a render
+   scale; its open problems are below). Its inputs (jitter, motion
+   vectors, depth, render scale) are what FSR 2 or DLSS would take.
 4. **Smooth shading and material maps.**
 5. **Model replacement.**
 6. **Hybrid ray tracing**, then path tracing.
@@ -120,6 +122,7 @@ unchanged.
   the GPU's multisampled frame with the software's supersampled one.
 - Cost on the GPU (`make gpu-check GPU_OPTS="--aa 8"` prints it):
   see `docs/gpu.md`.
+- With temporal anti-aliasing on (below), multisampling is off.
 
 ### Depth buffer
 
@@ -343,32 +346,333 @@ slots with a pack; the player's decode stutter; eviction past the memory
 budget; a clone's fallback to its parent's pack. Tiles are still replaced
 only in snapshots. Mips average display values, not linear light.
 
-### Temporal upscaling (and DLSS)
+### Temporal anti-aliasing and upscaling
+
+Done, opt-in, off by default (2026-11-10), in the native player only.
+Settings: the player's `temporal` (`off`, `taa` for full size, or a render
+scale from 50 to 100; the menu and launcher offer off, TAA, 75%, 67% and
+50%; `--temporal`) and `stipple` (`blend` or `keep`, below; `--stipple`);
+usage in `docs/play.md`. Tools: `remodel temporal-probe` and `make
+temporal-capture` / `temporal-check` (`docs/usage.md`). Render-only: state
+hashes unchanged. With it off the renderer takes the old code, pipelines
+and 24-byte vertices, and its output is bit-for-bit what it was (state
+hashes, `gpu-check` default, `--aa 4`, `--depth` and `--aa 8 --depth`, pack
+`gpu-check` off/mip/16x, `depth-check` and `pack-check` frames of four
+games identical to before, checked after the raster side and again after
+the resolve went in). The
+browser does not get it (decided); it keeps MSAA.
 
 Rendering at a lower resolution and reconstructing at the display's
-lets the expensive items (ray tracing) run where they otherwise
-couldn't. A temporal upscaler needs:
+lets expensive items (ray tracing, later) run where they otherwise
+couldn't; at full size the same machinery is anti-aliasing.
 
-- **depth**, from the depth buffer;
-- **motion vectors per pixel**: exact for us, since smooth motion
-  already matches each object's matrices between consecutive frames;
-  each vertex's previous position is its model point through the
-  previous frame's matrix;
-- **a jittered projection**: a sub-pixel offset per frame, easy since we
-  own the projection.
+**How it works.**
 
-Choices:
+- **Jitter.** Each frame the 3D layer is drawn offset by a sub-pixel
+  amount, a Halton(2,3) sequence in internal pixels whose length grows as
+  the scale drops (`round(8 / s²)`, 8 to 32 positions: 8 at 100%, 32 at
+  50%). Only the 3D pass's vertex shader moves; tiles, the 2D HUD and
+  compose aren't jittered, and the clip rectangles, the checkerboard and the
+  depth buffer's 1/z are evaluated at the unjittered sample point. The first
+  frame after a reset isn't jittered, so a one-off frame (`--shot`, the
+  frame after a cut) is the plain picture: at 100% it equals the frame with
+  temporal off, byte for byte (a GPU unit test through the resolve;
+  `temporal-probe` checks it on captures).
+- **Motion vectors, exact per vertex.** Smooth motion's plan
+  (`model2::smooth`, `docs/hw/geometrizer.md`, "Smooth motion") already
+  matches each of frame N's transforms with frame N-1's. Running frame N's
+  list once more through the native geometrizer with the matched previous
+  transforms (`smooth::Frame::motion`, once per game frame, cached) gives
+  the same list in the previous pose: a stream with the same layout, word
+  for word except positions (checked on every non-cut frame of 4,142-frame
+  runs of `topskatr`, `srallyc`, `sgt24h` and `vstriker`). Each vertex's
+  previous position is its position in that stream (for an in-between, a
+  mix of the two streams by its time), projected with the previous frame's
+  window centres, so `topskatr`'s camera bob is exact.
+  `raster::build_motion` carries it through clipping as a homogeneous
+  [X, Y, W] per point (`Poly::prev`, `Placed::prev`), which interpolates
+  perspective-correctly across the polygon. No motion data (and the
+  resolve's no-data path) for: objects the plan didn't match or snapped;
+  objects matched with a transform keyed by another model (a pose model
+  swapped in, `vstriker`'s players and its ball trail: posed with the old
+  transform, they gave wrong vectors on about 1% of its 3D pixels before
+  this rule); direct polygon data; a polygon with a vertex whose previous
+  position was behind the eye; and frames with a camera cut.
+- **The aux target.** The 3D pass writes a second colour target,
+  `Rgba16Float` at the internal size: the motion in output pixels (r, g),
+  the visible surface's 1/z (b; negative for a blended checkerboard
+  fragment, 0 where nothing was drawn) and the 1/z it had in the previous
+  frame (a; 0 without motion data). The last polygon drawn at a pixel
+  writes both targets, as for colour. Against the CPU's own vectors
+  (`raster::visible`) the GPU's agree within 0.25 px on 99.48-99.999% of
+  pixels showing the same surface, and within 0.05 px (or half-float
+  precision) on 97.7-99.995%.
+- **The resolve** (`crates/gpu/src/temporal.wgsl`, `fs_resolve`), per
+  output pixel:
+  - this frame's estimate, a Gaussian reconstruction from the 3x3 internal
+    samples around the pixel, with their minimum, maximum, mean and
+    deviation;
+  - the nearest sample's motion, classed as *no data* (none; previous over
+    current 1/z outside [0.5, 2]; or longer than half the output's width:
+    zero motion, clip only, this frame weighted 0.8), *hidden* (the
+    previous position off the picture, or no texel of the last aux target
+    around it within 10% of the expected 1/z: the history is dropped for
+    this frame's samples, interpolated) or *seen*. Only when it isn't seen
+    is a surface at least 1.1x nearer among the 3x3 tried: windows have
+    depth scales of their own, so "nearer" isn't "on top" across them, and
+    always taking the nearest pulled the pitch's motion into `vstriker`'s
+    3D minimap and eroded it;
+  - the history read at the previous position (Keys' cubic with C = 0.75,
+    5 bilinear taps; the texel as it is when the pixel hasn't moved), then
+    clipped towards the mean into the neighbourhood: the min/max box for a
+    still pixel, the mean ± 1.25 deviations (2.0 at 50%) within it for a
+    moving one, each widened by half a level (`CLIP_SLACK`, 0.5/255) on
+    every side. Without the slack, a channel whose box has no width (alpha
+    on opaque samples, blue on a red and yellow decal) and a history one
+    half-float rounding step outside it gave a clip factor of 0, so the
+    whole RGBA history was replaced by the 3x3 mean: dots along
+    high-contrast edges wherever rounding had left alpha at 0.9995, and
+    blur at random pixels inside textures. Catmull-Rom (C = 0.5), used
+    first, softened slow motion, where the history is resampled every frame
+    and the blend factor is low; sharper kernels for this frame's
+    reconstruction scored worse (jitter noise);
+  - the blend: this frame's weight is 0.12 at rest, raised by fast
+    motion (to 0.6 at 8 output px a frame), by a change of motion since
+    the last frame (to 0.8; catches disocclusion and objects resting on
+    surfaces), by blended checkerboard (0.25), without motion data (0.8),
+    and to a running mean after a reset; scaled by how near the sample is.
+    When upscaling with the history trusted less than usual, the estimate
+    leans to the interpolated samples instead of the nearest one.
+  - Non-finite values are caught by their bit pattern and the history is
+    clamped to [0, 1], so nothing can poison it (a test fills both
+    histories and aux targets with NaN and infinities).
+  - Optional sharpening (`fs_sharpen`): a contrast-adaptive cross filter on
+    the resolved 3D layer before compose, clamped to the cross's minimum
+    and maximum (no halos or ringing); the history itself is not
+    sharpened. Off by default: at 0.3 it gained at most 0.01 on
+    `topskatr` 4520-4619, lost 0.02 on `srallyc` and made still frames
+    less steady. Reachable only as `Renderer::set_temporal_sharpen` and
+    `temporal-check --tune sharpen=`; the player has no setting for it.
+  The constants are `gpu::TemporalTuning` (`temporal-check --tune`;
+  `cubic` and `sharpen` among them). The design's (0.25 at 32 px for fast
+  motion, 0.3 without data) were worse than no anti-aliasing in fast
+  motion (repeated resampling blur) and smeared `vstriker`'s animated
+  players.
+- **History.** Two `Rgba16Float` targets at the output size, ping-pong,
+  premultiplied RGBA with alpha accumulated like colour; compose reads the
+  history in place of the 3D layer, so 3D edges stay anti-aliased against
+  tile skies that scroll on their own.
+- **Frames and resets.** Each image is tagged with its game frame and its
+  time (1 for the game's own, less for an in-between). A redraw of the same
+  frame (the menu open, a repeat) adds a new jitter sample with zero
+  motion and converges further; an in-between or a skipped frame
+  reprojects by the matching fraction (up to two frames back,
+  extrapolated). The history starts again on a camera cut (smooth
+  motion's cut test), a save state load, a game start, a resize, any change
+  of the quality settings and a switch between run-ahead's machine and the
+  game's; the frame after is the plain one and the next average in.
+- **Render scale.** At a percentage the 3D pass's targets (colour, aux,
+  depth) are that much smaller in each direction; history, compose, tiles
+  and the 2D HUD stay at the output size. Filtered pack images (`tex_filter`
+  mip or anisotropic) choose their mip level as at the output size (a
+  bias of log2 of the scale); the original textures have no mips.
+- **The checkerboard** (`stipple`). Accumulated with exact jitter, the
+  games' screen-door translucency does not melt into a blend: at two or
+  more output pixels per game pixel the result is an anti-aliased checker
+  pattern, and when upscaling it can't be reconstructed in motion (moiré,
+  uneven melting). So there are two choices. `blend`, the default: a
+  checker polygon is drawn as an even 50% blend, steady at every scale.
+  That changes the look (smooth see-through instead of a screen door), and
+  two stacked checker layers give 75% where the original shows the top
+  one only. `keep`: the pattern as the game draws it, decided at the
+  unjittered sample point; only while the 3D layer has at least 1.5
+  internal pixels per game pixel vertically (at 1080p: 100%, 75% and 67%,
+  not 50%; at the native 384 lines never), else that frame blends.
+- **MSAA is off** while temporal is on (`set_quality` forces one sample):
+  jittered accumulation does its work, and a multisampled aux target would
+  resolve to averaged motion and depth at exactly the edges where they
+  matter. The depth buffer, texture packs and their filtering combine with
+  it.
+- **Needs the native geometrizer** (the motion data): with `--geo chip`
+  the player turns it off and says so. And 16-bit float targets that
+  render and filter (`gpu::temporal_supported`; WebGPU and Vulkan have
+  them, the OpenGL fallback may not).
 
-| | DLSS (NVIDIA) | FSR 2/3 (AMD) | Our own |
+**What it costs.** GPU time per frame (`temporal-check SEQ --bench 30`:
+30 frames with 3D, each drawn 8 times, wall time of a `present` into an
+offscreen target, waited for; medians in ms; NVIDIA RTX A2000 Laptop,
+Vulkan). Measured before the clip slack and the C = 0.75 cubic went in
+and not measured again since; neither adds work to the default path (the
+cubic uses the same 5 taps, and the sharpening and inspection passes run
+only when asked for):
+
+| | off | MSAA 4x | TAA | 67% | 50% |
+|---|---|---|---|---|---|
+| `sgt24h` 1080p | 2.81 | 3.00 | 3.95 | 2.84 | 2.42 |
+| `srallyc` 1080p | 2.88 | 3.06 | 4.05 | 2.96 | 2.54 |
+| `sgt24h` 4K | 8.60 | 9.14 | 13.03 | 8.59 | 6.87 |
+| `srallyc` 4K | 8.57 | 9.10 | 13.13 | 8.60 | 6.92 |
+
+TAA costs about 1.1 ms over off at 1080p and 4.4 ms at 4K (the second
+target, 36-byte vertices, the resolve); 67% about pays for itself and 50%
+is cheaper than off. Memory for the temporal targets (colour 4 bytes and
+two aux targets 8 each per internal pixel, two histories 8 each per output
+pixel; the depth target is 4 more per internal pixel with `depth`):
+
+| | 100% | 67% | 50% |
 |---|---|---|---|
-| Hardware | RTX GPUs only | any | any |
-| Licence | proprietary SDK; an optional native extra, kept apart | open source (MIT) | ours |
-| wgpu / browser | native only, via Vulkan interop (wgpu doesn't expose it) | compute shaders: portable to WGSL, native and browser | yes |
-| Quality | best; Ray Reconstruction also denoises ray tracing | good | simpler |
+| 1080p | 71 MB | 49 MB | 42 MB |
+| 4K | 285 MB | 198 MB | 166 MB |
 
-Plan: an FSR-style upscaler in WGSL as the base, everywhere; DLSS as an
-optional native extra for RTX owners if the interop is worth it. (The
-development machine's RTX 2080 Super supports DLSS upscaling and Ray
+On the CPU, temporal turns smooth motion's recording on (0.05-0.5 ms a
+game frame) and adds the replay for the previous pose, once per game
+frame: 0.2-0.4 ms on 2C, 1.4-1.8 ms on 2B (smooth motion's in-between
+costs, `docs/hw/geometrizer.md`), whether or not in-betweens are shown.
+
+**How good it is.** `make temporal-check` on sequences of 80-120 frames
+at 1080p 16:9, every 20th frame against `gref`, the GPU's own 4x4
+supersampled plain frame (mean difference per channel; lower is better;
+in brackets the share of pixels over 16 levels). `naive` is the plain
+frame drawn at that scale and enlarged bilinearly. The last column is the
+frame-to-frame change of still 3D pixels (reprojected, outside blended
+checkerboard, over every frame), off against TAA; lower is steadier. GPU: the RTX A2000. Measured with the clip slack and the
+C = 0.75 cubic; `topskatr`'s attract sequence was captured again for
+this, so its numbers differ from an earlier capture of the same frames
+(off 1.07 there, 1.23 here).
+
+| Sequence (frames) | off | MSAA 4x | TAA | 67% | naive 67% | 50% | naive 50% | still-pixel change, off / TAA |
+|---|---|---|---|---|---|---|---|---|
+| `topskatr` attract 1000-1119 (3 cuts, 135 px pans) | 1.23 (2.65) | 1.10 (2.26) | **1.09** (2.29) | 1.60 (3.52) | 1.63 (3.62) | 2.09 (4.73) | 2.22 (5.05) | 1.00 / 1.40 |
+| `topskatr` race 3500-3619 | 2.98 (6.12) | 2.69 (5.57) | **2.21** (5.37) | 3.10 (7.27) | 3.46 (7.57) | 3.93 (8.91) | 4.48 (9.60) | 1.89 / 1.33 |
+| `topskatr` 4520-4619 (shadow, grass) | 1.21 (2.41) | **1.08** (2.04) | 1.17 (2.38) | 1.51 (3.10) | 1.52 (3.19) | 1.87 (3.84) | 2.01 (4.18) | 2.59 / 1.24 |
+| `srallyc` driving 3450-3569 | 1.95 (3.15) | 1.87 (2.81) | **1.66** (2.35) | 2.08 (3.07) | 2.25 (3.60) | 2.50 (3.94) | 2.86 (4.72) | 3.19 / 2.72 |
+| `sgt24h` race 2850-2969 | 4.33 (11.64) | 4.11 (10.98) | **3.61** (10.07) | 4.63 (13.12) | 4.93 (13.54) | 5.54 (15.65) | 6.12 (16.93) | 1.35 / 0.70 |
+| `vstriker` attract 470-549 | 2.78 (7.62) | 2.61 (7.04) | **2.31** (5.07) | 3.10 (7.67) | 3.39 (9.09) | 3.87 (10.69) | 4.27 (12.84) | 3.85 / 2.18 |
+| `vstriker` match 3300-3419 | 3.76 (12.50) | 3.38 (11.31) | **2.99** (7.26) | 4.20 (11.59) | 4.63 (13.98) | 5.26 (15.27) | 6.05 (19.55) | 4.84 / 3.01 |
+
+- In motion, TAA beats off on all seven sequences (by 3-26%) and MSAA 4x
+  on five; it ties MSAA 4x on `topskatr`'s attract (1.09 against 1.10)
+  and loses to it on `topskatr` 4520-4619 (1.17 against 1.08).
+- Upscaling beats the naive enlargement on all seven, at 67% and at 50%;
+  on `topskatr` 4520-4619 at 67% only just (1.51 against 1.52).
+- Still (the first sampled frame drawn 40 times, against `gref`): TAA
+  beats MSAA 4x by 20-40% on every sequence (`sgt24h` 2.58 against 3.99,
+  `srallyc` 1.40 against 1.79, `vstriker` match 2.11 against 3.45).
+- Stability: TAA is steadier than off on every sequence but `topskatr`'s
+  attract, whose frames right after its three cuts restart from jittered
+  samples (1.40 against 1.00); on its sampled frames alone (those paired
+  with the reference's) TAA is 0.44 against off's 0.57.
+- Sharpness inside polygons (mean |Laplacian| of luma where a pixel's 3x3
+  shows one polygon, over `gref`'s): plain frames are 1.38-1.61 times the
+  reference's (point samples of the games' bilinear textures, and texture
+  aliasing), TAA 0.96-1.14: about as sharp as the supersampled reference
+  without the aliasing. 67% is 0.76-1.03, 50% 0.63-0.97.
+- `temporal-check`'s pass criteria (TAA no worse than off, upscaled no
+  worse than naive, a still frame no worse than 1.1 times MSAA 4x and its
+  change under 0.25 levels) pass on six of the seven sequences. The one
+  failure is `vstriker`'s match: the still frame's change is 0.338
+  (high-frequency crowd textures under jitter). The criteria are kept as
+  set, not loosened.
+
+By eye (crops of the sequences above against `gref`):
+
+- **100% (TAA).** Moving silhouettes and road edges match the reference
+  closely; still frames are the cleanest of any setting; cuts start clean
+  (the frame after shows no trace of the previous shot); blended shadows are
+  a steady 50%; the 3D HUD stays solid. Hard texel edges the game leaves
+  (the skater's cut-out shadow, laces, a shirt print on `topskatr`) are
+  kept. Animated objects without motion data (`topskatr`'s waving
+  chequered flags, `vstriker`'s players' limbs) look soft. Fast driving
+  softened grass, rock and distant trees visibly before the clip slack and
+  the sharper cubic; not looked at again since.
+- **67%.** Edges clean on roads, and still frames better than MSAA 4x.
+  Thin geometry (wires, poles) breaks into speckled, dotted lines, and in
+  fast motion edges fall back to the interpolated, internal-resolution
+  look (by design, rather than smear). Animated players without motion
+  data look as blocky as naive.
+- **50%.** The same, more so: the speckle on thin geometry is the main
+  defect, fast pans are blocky. About MSAA 4x's quality when still, at
+  less than plain rendering's cost.
+
+**`topskatr`'s FINISH sign**, whose colour the game toggles every frame
+(`docs/games/topskatr.md`), flickers exactly as the game draws it: in the
+attract demo, frames about 19590-19607 of a coin-start run, TAA and 67%
+show the word on even frames and the empty board on odd ones like the
+plain frames, with no averaging to a mid colour and no ghost of the
+letters on the empty frames (the clip holds the inside of the sign to
+this frame's colour; a GPU unit test checks the same synthetically). That
+sequence (frames 19540-19639) fails other `temporal-check` checks: 97.15%
+of the GPU's vectors within 0.25 px of the CPU's (the limit is 99%), TAA
+2.73 against off's 2.28 in motion, 67% 3.14 against naive's 2.95, and the
+still frame 4.97 against MSAA 4x's 3.81. It is an attract scene with a
+washed-out fade and a cut; not investigated.
+
+**Fixed.**
+
+- Dots along high-contrast edges at 100% (a 1-pixel orange and red row on
+  the top edge of the yellow label on `sgt24h`'s car) and random blurred
+  pixels inside textures: half-float rounding in the history against a
+  clip box with no width in one channel (above). Fixed by `CLIP_SLACK`;
+  a GPU unit test sets every opaque history texel's alpha one step below
+  1 and fails without it. It was also half of TAA's loss on `topskatr`
+  4520-4619 (1.32 before, worse than off).
+- Softness in slow motion and on magnified texels (the skater's cut-out
+  shadow on `topskatr` rounded off): mostly the clip collapse above, the
+  rest the Catmull-Rom resampling of the history, compounded frame after
+  frame (now Keys' cubic with C = 0.75). Together they took TAA on
+  `topskatr` 4520-4619 from 1.32 to 1.17 (off 1.21).
+
+**Open problems.**
+
+- `vstriker`'s match: a still frame's change 0.338 against the 0.25
+  limit (crowd textures under jitter).
+- The motion-change rule fires on legitimate camera shake: `sgt24h`'s car
+  bounces about 2 px up and down on alternate frames, which drops the
+  history's weight on the car (this frame's share 0.43-0.6) and costs
+  anti-aliasing there. Telling shake from disocclusion needs more than the
+  last aux target.
+- Animated objects without motion data look soft (above).
+- Thin geometry speckles at 67% and 50% (`topskatr`'s wires and poles). It
+  needs a thin-feature lock (as FSR 2 has) or a luminance-stable
+  accumulation; a wider kernel didn't help. Left for a possible FSR 2
+  integration (below).
+- `lastbrnx`: 3% of position words in blocks the plan calls valid don't
+  match frame N-1's (96.9% agree; every other sequence 100%), though on
+  screen only 0.2% of pixels' vectors are more than 1 px off.
+- Objects re-paired to another model's transform get no motion data:
+  0.1-1.7% of 3D pixels (`sgt24h` 0.1%, `doa` 1.1%, `topskatr` race 1.3%,
+  `vstriker` 1.7%). They fall back towards this frame's samples, blocky
+  when upscaling.
+- GPU cost not measured again after the fixes above (the table is from
+  before them).
+- In-betweens were driven only by forcing them on a 60 Hz display (every
+  aux read-back finite, the steps as expected); not yet seen on a display
+  over 60 Hz.
+- Measured on one NVIDIA GPU; the Intel GPU in the same machine, and an
+  adapter without 16-bit float targets, are untested.
+
+### FSR 2 and DLSS
+
+reModel does not port FSR 2 by hand; the resolve above is its own, small
+one. The real FSR 2 library, or DLSS, could later replace that resolve in
+the native player only: wgpu's `as_hal` gives unsafe access to the raw
+Vulkan device, images and command buffers, so a library can record into
+the same frame. The inputs they take now exist: the jitter, per-pixel
+motion vectors, depth (the aux target's 1/z) and the render scale; the
+sign of the aux 1/z could serve as a reactive mask. Their output has no
+coverage alpha, which compose needs for 3D edges over tiles, so alpha
+would be resolved separately. An idea, not started.
+
+| | The built-in resolve | FSR 2 (AMD) | DLSS (NVIDIA) |
+|---|---|---|---|
+| Hardware | any with 16-bit float targets | any | RTX GPUs only |
+| Licence | ours | open source (MIT); a C++ SDK to build | proprietary SDK; an optional extra, kept apart |
+| wgpu | WGSL, native | native only, through `as_hal` (unsafe) | native only, through `as_hal` (unsafe) |
+| Browser | no (decided) | no | no |
+| Quality | simple: no thin-feature locks | thin-feature locks, reactive masks | best; Ray Reconstruction also denoises ray tracing |
+
+Either costs a C++ SDK as a build dependency and an unsafe interop layer.
+(The development machine's RTX 2080 Super supports DLSS upscaling and Ray
 Reconstruction, not frame generation, which needs a 40-series card.)
 
 ### Model replacement
@@ -440,6 +744,7 @@ light direction and ambient, nothing physical), which is pack content.
   in every game, and the games' own layering tricks (large floors,
   dither, flat shadows) had to be left on the game's order. More
   games and long plays first.
-- How much of this the browser can have: WebGPU covers everything up to
-  the temporal upscaler and per-pixel lighting; ray tracing waits for
-  the web platform.
+- How much of this the browser can have: WebGPU could cover per-pixel
+  lighting; ray tracing waits for the web platform. Temporal
+  anti-aliasing and upscaling stay native-only (decided), and so would
+  FSR 2 or DLSS.

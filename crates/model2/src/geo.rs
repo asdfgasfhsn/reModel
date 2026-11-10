@@ -527,6 +527,9 @@ pub struct Geometrizer {
     /// ([`Geometrizer::last_frame`]).
     keep_last: bool,
     last: (Vec<u32>, Vec<u16>),
+    /// That frame's smooth motion data, if it had any (render-only, not
+    /// saved).
+    last_smooth: Option<Arc<crate::smooth::Frame>>,
     /// Remote mode: jobs go here instead of to the local engine.
     remote: Option<Box<dyn FnMut(Job)>>,
 }
@@ -578,6 +581,7 @@ impl Geometrizer {
             threaded: cfg!(not(target_arch = "wasm32")),
             keep_last: false,
             last: (Vec::new(), Vec::new()),
+            last_smooth: None,
             remote: None,
             engine: Slot::Idle(Box::new(Engine::new(poly_rom, core))),
         }
@@ -622,6 +626,13 @@ impl Geometrizer {
     /// [`Geometrizer::set_keep_last`]; empty otherwise).
     pub fn last_frame(&self) -> (&[u32], &[u16]) {
         (&self.last.0, &self.last.1)
+    }
+
+    /// The smooth motion data of [`Geometrizer::last_frame`]'s frame
+    /// ([`crate::smooth::Frame`], for its motion vectors), if smooth motion
+    /// was on and the native geometrizer ran it.
+    pub fn last_smooth(&self) -> Option<&Arc<crate::smooth::Frame>> {
+        self.last_smooth.as_ref()
     }
 
     /// Wait for a frame running on the worker until `deadline`: true if
@@ -709,6 +720,7 @@ impl Geometrizer {
             self.last.0.extend_from_slice(&e.stream);
             self.last.1.clear();
             self.last.1.extend_from_slice(&e.texture_point_ram);
+            self.last_smooth = e.smooth_frame();
         }
         e.buffer.clear();
         e.buffer.extend_from_slice(buffer);

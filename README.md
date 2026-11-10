@@ -54,8 +54,8 @@ sound in the native player; the details, and what each game needed, are in
 - **Fast:** most games run at 2x to 4x real time natively, recompiled;
   native geometrizers replace the geometry programs (see [docs/gpu.md](docs/gpu.md),
   [docs/recompiler.md](docs/recompiler.md)).
-- **Enhancements:** widescreen views, smooth motion, run-ahead, anti-aliasing,
-  bezels, texture packs and soundtrack mods ([docs/enhancements.md](docs/enhancements.md),
+- **Enhancements:** widescreen views, smooth motion, run-ahead, anti-aliasing
+  (multisampled, or temporal with upscaling in the native player), bezels, texture packs and soundtrack mods ([docs/enhancements.md](docs/enhancements.md),
   [docs/mods.md](docs/mods.md)).
 - **In the browser:** the same games on WebGPU, with a settings panel, gamepad
   and touch controls ([docs/web.md](docs/web.md)).

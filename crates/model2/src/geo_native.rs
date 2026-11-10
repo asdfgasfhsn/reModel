@@ -204,6 +204,14 @@ impl Io<'_, '_> {
             t.object(oba);
         }
     }
+    /// A block of direct data (fn 2), which a replay notes as having no
+    /// known motion.
+    #[inline]
+    pub(crate) fn direct(&mut self) {
+        if let Some(t) = self.tap.as_deref_mut() {
+            t.direct();
+        }
+    }
     #[inline]
     pub(crate) fn rd(&mut self) -> u32 {
         self.list.next().unwrap_or(LIST_END)
@@ -773,6 +781,7 @@ impl Native {
     /// fn 2, direct data: polygons given in view space, passed through
     /// with the raster command of object data.
     fn direct(&mut self, io: &mut Io, cmd: u32) {
+        io.direct();
         let tpa = io.rd();
         let tha = io.rd();
         io.emit(cmd.wrapping_sub(1));

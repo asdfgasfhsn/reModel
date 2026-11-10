@@ -49,6 +49,7 @@ make play RECOMP=1        # the launcher: pick a game (live attract previews, se
 make play GAME=hotd RECOMP=1   # straight into a game (Esc or pad Guide or Start+Select menu, F5/F9 quick save/load, F11 fullscreen)
 make play PLAY_ARGS=--smooth   # with in-between frames on a display over 60 Hz (a frame more latency)
 make play GAME=sgt24h PLAY_ARGS="--run-ahead 3"   # show the game 3 frames ahead: less input lag, 4x the emulation
+make play PLAY_ARGS="--temporal 67"   # temporal anti-aliasing, 3D drawn at 67% and upscaled (taa: full size; --stipple keep; docs/play.md)
 make input-lag            # each game's own input lag: frames from a control to the picture changing
 make run-ahead-check      # run-ahead keeps the real state hash and shows the plain run's later frames
 make install-desktop RECOMP=1   # reModel in the desktop's app menu, running this checkout's player
@@ -61,6 +62,15 @@ make gpu-check PACK=out/topskatr/texpack-4x GPU_OPTS="--tex-filter mip"   # the 
 make pack-check PACK=out/topskatr/texpack-4x   # draw them with the pack on the GPU unfiltered, mipmapped and 16x, in software and as a supersampled reference; compare -> out/topskatr/pack-check
 make depth-check          # draw them on the GPU with the depth buffer off and on, picture the differences -> out/topskatr/depth-check
 make depth-check PROBE="672,666@3600" AGAINST=DIR   # follow a pixel through the depth buffer; compare depth-on with an earlier run's (docs/enhancements.md)
+make temporal-probe GPU_OPTS="--temporal 67"   # the GPU's temporal path on the captured frames: the first frame at 100% (stipple keep) must equal the frame with it off, byte for byte; jittered, blend and keep pictures -> out/scratch/temporal-probe/topskatr (default --temporal taa)
+./target/release/remodel --game sgt24h --input coin-start temporal-probe live 3000 6 DIR   # live run: the motion vectors from smooth motion, per frame
+make temporal-capture GAME=sgt24h SEQ_FROM=2850   # SEQ_FRAMES (300) consecutive frames with their motion data -> out/scratch/temporal/sgt24h/seq (TEMPORAL_SEQ; native geometrizer; INPUT, default coin-start; STATE=FILE to start from a save state; about 0.3 MB a frame)
+make temporal-check GAME=sgt24h   # motion vectors (CPU and the GPU's velocity target), then plain, MSAA 4x, TAA and 67%/50% upscaled frames through the sequence against supersampled references (software and the GPU's own), with frame-to-frame change and a still frame -> SEQ/check (report.txt, pictures); fails if the vectors miss or temporal loses to plain/naive (default 1080p 16:9, every 10th frame sampled after a 16-frame warm-up)
+make temporal-check GAME=sgt24h TEMPORAL_OPTS="--every 20 --gpu-only --crop 800,400,200,120 --at 3001,3002 --ref-cache DIR --tune fast=0.5"   # every 20th frame; GPU columns only; enlarged crops; frames 3001 and 3002 sampled too; references kept between runs; resolve constants (gpu::TemporalTuning) for tuning (--no-gpu: CPU half only; --height/--aspect/--hud: another view)
+make temporal-check GAME=sgt24h TEMPORAL_OPTS="--inspect --tune cubic=0.5,sharpen=0.3"   # also the error above the plain frame (TAA) or naive (67%/50%) split by the resolve's rule and by whether the clip moved the history, with FRAME-COL-rules.png and FRAME-COL-excess.png (red worse, green better); here with Catmull-Rom history resampling and the optional sharpening (both off the defaults). The report also scores texture interiors ("inside polygons") and their sharpness ("detail": 1 as sharp as the reference, below 1 softer)
+make temporal-check GAME=sgt24h TEMPORAL_OPTS="--dump 770,842,16,4"   # the resolve's decisions per pixel in that rectangle on every frame (rules, this frame's share, clip, trust, motion, the colours and the history written) -> SEQ/check/dump.txt
+./target/release/remodel --game sgt24h --depth temporal-check SEQ   # with the depth buffer in every GPU column and the reference (--depth goes before the command)
+./target/release/remodel --game sgt24h [--height 2160] temporal-check SEQ --bench 30   # GPU time a frame: plain, MSAA 4x, TAA, 67%, 50%, and the temporal targets' memory
 make lockstep RECOMP=1    # recompiled vs interpreted i960 (and 2B SHARCs), block by block, until they differ
 make music                # after a `run` into a race: the music board's music -> out/topskatr/music.wav (GAME=stcc too)
 make soundtrack-import SRC=~/my-mix SOUNDTRACK=my-mix   # your own music (ffmpeg converts)

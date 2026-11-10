@@ -601,7 +601,7 @@ pub fn set_quality(aa: u32, depth: bool, tex_filter: &str) {
     QUALITY.with(|q| q.set((aa, depth, tex_filter)));
     APP.with(|a| {
         if let Some(app) = a.borrow().as_ref() {
-            app.borrow_mut().renderer.set_quality(gpu::Quality { msaa: aa, depth, tex_filter });
+            app.borrow_mut().renderer.set_quality(gpu::Quality { msaa: aa, depth, tex_filter, ..Default::default() });
         }
     });
 }
@@ -1447,7 +1447,7 @@ pub async fn start(
     surface.configure(&device, &config);
     let mut renderer = gpu::Renderer::from_device(device, queue, name.clone());
     let (aa, depth, tex_filter) = QUALITY.with(|q| q.get());
-    renderer.set_quality(gpu::Quality { msaa: aa, depth, tex_filter });
+    renderer.set_quality(gpu::Quality { msaa: aa, depth, tex_filter, ..Default::default() });
     if let Some(pack) = PACK.with(|p| p.borrow().clone()) {
         renderer.set_pack(Some(Box::new(WebPack(pack))));
     }
