@@ -134,6 +134,31 @@ documentation and hasn't been contradicted yet.
   ones, like the plain frames, with no averaging to a mid colour and no
   ghost of the letters on the empty frames (`docs/enhancements.md`). The
   waving chequered flags beside it, which have no motion data, look soft.
+- *Confirmed (probing the frames, 2026-11-11):* the large solid-black floor
+  areas in the attract demo's street course (frames about 4400-4490 of a
+  run with no input, about 75 s; also around 4240-4300) are texel 0 of a
+  floor texture the game draws, not a lost polygon. The floor there is one
+  big near-clipped polygon, header `5409 0000 5f10 3140`: a 64x64 texture
+  at (512, 896) in bank 1 that uses only texels 0-3, mostly 2, with a
+  jagged vertical stripe of 0 (a crack or stain), luma table 0 (a ramp,
+  0 at index 0), palette colour (31, 31, 26). Texel 0 gives level 0, and
+  the game's colour tables map level 0 of every ramp to black (level 1 is
+  already 76 of 255 for component 31), so the stripe is black as sent;
+  with the camera low on the road the polygon is magnified and the stripe
+  fills half the screen. Software and GPU renderers, chip and native
+  geometrizer, threaded and single-threaded runs all draw the same frame,
+  so nothing in the path loses or misreads data. Rewriting that texture's
+  texel 0 as 1 in a capture turns every black pixel of frame 4440 grey.
+  Black blobs in the stadium montage (frames about 1050-1530) are the
+  skater's shadow instead: a translucent texture of texels 14/15 in
+  palette black, drawn solid like the other shadows in
+  `docs/hw/geometrizer.md` 5.4.
+- *Unconfirmed:* whether the hardware draws that stripe this dark. The
+  polygon sets microtexture (h0 bit 12, the microtexture at (0, 128) in
+  bank 0, texels 0-7) and reModel draws neither microtextures nor mipmaps.
+  If close-up pixels blend in the microtexture, as `docs/hw/geometrizer.md`
+  5.3 describes (low confidence), the magnified stripe would not be solid
+  black; mipmaps would grey it in the distance.
 
 ## Lighting (smooth shading's side channel)
 
