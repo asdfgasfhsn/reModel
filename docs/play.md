@@ -94,29 +94,41 @@ display.
 `crease` in the settings file only; `--shading flat|vertex|pixel` and
 `--crease auto|N` for one run; `flat` and `auto` by default). The games
 light each polygon with one brightness, so curved surfaces show their
-facets. `vertex` gives each polygon corner the mean brightness of the
-faces around it that belong to the same smooth surface, and blends it
-across the polygon: faces meeting at more than the crease angle keep a
-hard edge (`auto` is the game's own angle, 40 degrees for every game so
-far; 0 smooths nothing, the original picture). It is worked out from the
-polygons the geometrizer sends, so it works with the native geometrizer
-and with the chip alike (it is not turned off with `--geo chip`), with
-temporal anti-aliasing (its first frame after a reset is the shaded
-frame), multisampling, the depth buffer and texture packs (a pack image's
-lighting follows the blended brightness). HUD windows, shadows and
-polygons whose neighbours are lit alike are left as the game drew them,
-pixel for pixel. Smooth motion's in-betweens, frames drawn with the last
-frame's polygons when the geometrizer is late, and run-ahead's frames are
-shaded the same way, from the polygons each one draws, so shading doesn't
-flicker on and off between them. `pixel` (lighting worked out per pixel
-from the game's own lighting values) isn't in yet: it draws as `vertex`,
-and the menu and launcher say so. The launcher's previews are always
-flat. Nothing the game computes changes. On the CPU it costs about 0.4 to
-1.5 ms each time a frame is drawn (up to about 2.4 ms on busy frames; on
-a display faster than 60 Hz that is every refresh), on the GPU within
-the noise; with `flat` (or a crease of 0) none of it runs.
+facets. `vertex` lights each polygon corner with the game's own lighting
+for the mean of the normals of the faces around it that belong to the
+same smooth surface, and blends it across the polygon; `pixel` works the
+game's lighting out for every pixel, for the normal blended across the
+polygon, so highlights (the games that use specular light: `topskatr`,
+`srallyc`, `stcc`, `bel`, `lastbrnx`, `fvipers`, `schamp`) sit where the
+surface faces them instead of being spread between corners. Faces
+meeting at more than the crease angle keep a hard edge (`auto` is the
+game's own angle, 40 degrees for every game so far; 0 smooths nothing,
+the original picture). The normals and lighting come from what the
+native geometrizer recorded about each polygon (its side channel, on
+whenever shading is); with the chip (`--geo chip`, not turned off by it)
+only block facts are known, so `vertex` blends the polygons' own
+brightnesses instead and `pixel` is drawn as `vertex` (the menu and
+launcher say so, and the window title says what was drawn: `shading
+pixel` or `shading vertex`). It works with temporal anti-aliasing (its
+first frame after a reset is the shaded frame), multisampling, the depth
+buffer and texture packs (a pack image's lighting follows the shaded
+brightness). A pixel never changes hue, only brightness: where a game's
+colour tables turn a colour into another one at other brightnesses
+(`topskatr`'s ramp boards, `dynabb97`'s players, `lastbrnx`), the shading
+stays within the brightnesses of the polygon's own colour. HUD windows,
+shadows and polygons whose corners all keep their own normal are left as
+the game drew them, pixel for pixel. Smooth motion's in-betweens are
+replayed with their own side channel, frames drawn with the last frame's
+polygons when the geometrizer is late use that frame's, and run-ahead's
+machine records it too, so every image is shaded at the same level and
+shading doesn't alternate between images; a frame drawn again reuses its
+shading. The launcher's previews are always flat. Nothing the game
+computes changes. On the CPU it costs about 1 ms each time a new frame
+is drawn (up to about 2.5 ms on busy frames; repeats cost nothing), on
+the GPU within the noise at 1080p and a little at 4K with `pixel`; with
+`flat` (or a crease of 0) none of it runs.
 
-What to expect (from the stage 1 review pictures): clearly better on
+What to expect (from the review pictures): clearly better on
 fighters and curved bodies (`lastbrnx`'s and `fvipers`' fighters,
 `doa`'s, `topskatr`'s skaters, `stcc`'s cars, `segawski`'s life vest);
 little or no change on mostly flat cars and scenery (`sgt24h`, `srallyc`,
@@ -338,7 +350,7 @@ they change as they change: aspect (fit the window or 4:3), bezel, HUD at
 the edges or centred, speed (one frame a refresh or exact arcade speed),
 smooth motion, anti-aliasing (off, 4x, 8x), temporal anti-aliasing (off,
 TAA, 75%, 67%, 50%) and its checkerboard see-through (blend or keep), the depth buffer, shading (flat,
-vertex, pixel; pixel says it draws as vertex for now), the texture pack and its filtering (off, mip, 2x to 16x), the effects and music levels in dB, the geometrizer (native
+vertex, pixel; with the chip geometrizer pixel says it draws as vertex), the texture pack and its filtering (off, mip, 2x to 16x), the effects and music levels in dB, the geometrizer (native
 or the game's chip; the preview restarts on it) and the Controls page
 (remapping, below). "Save for" says where changes go: the defaults for all
 games, or this game only (a game's own setting is tagged "this game", and

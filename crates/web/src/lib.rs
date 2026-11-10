@@ -134,6 +134,12 @@ struct App {
     smooth: bool,
     smooth_steps: Rc<Cell<u32>>,
     geo_between: Vec<Vec<u32>>,
+    /// Smooth shading's side channel (`model2::light::Frame`) for the
+    /// worker's newest frame and each of its in-betweens, when the worker
+    /// records it (its `light` flag; docs/web.md); None: shaded from the
+    /// stream alone.
+    geo_light: Option<Arc<model2::light::Frame>>,
+    geo_between_light: Vec<Option<Arc<model2::light::Frame>>>,
     smooth_at: f64,
     smooth_drawn: (u32, f64),
     status: web_sys::Element,
@@ -311,8 +317,18 @@ impl App {
         let mut own = None;
         // Only on a display faster than the game.
         if self.smooth && self.geo_frame.is_none() && 1000.0 / self.refresh.ms() > FPS * 1.2 {
-            if let Some(f) = self.machine.bus.geo.engine().smooth_frame() {
-                own = f.render(t as f32).map(|s| (s, f));
+            let engine = self.machine.bus.geo.engine();
+            if let Some(f) = engine.smooth_frame() {
+                // With smooth shading's side channel on, the in-between's
+                // own (shaded at the level of the frames around it).
+                own = if engine.light_on() && self.renderer.light_options().is_some() {
+                    f.render_lit(t as f32).map(|(s, side)| {
+                        self.renderer.set_light_frame(Some(Arc::new(side)));
+                        (s, f)
+                    })
+                } else {
+                    f.render(t as f32).map(|s| (s, f))
+                };
                 if own.is_some() {
                     self.smooth_drawn.0 += 1;
                     self.smooth_drawn.1 += now() - t0;
@@ -323,12 +339,17 @@ impl App {
         let geo = match &self.geo_frame {
             // The worker's newest frame (nothing to draw before the first),
             // or the in-between it sent nearest this refresh.
+            // The matching side channel goes with either.
             Some(Some((s, p))) => match self.geo_between.get(between).filter(|b| !b.is_empty()) {
                 Some(b) => {
                     self.smooth_drawn.0 += 1;
+                    self.renderer.set_light_frame(self.geo_between_light.get(between).cloned().flatten());
                     Some((&b[..], &p[..]))
                 }
-                None => Some((&s[..], &p[..])),
+                None => {
+                    self.renderer.set_light_frame(self.geo_light.clone());
+                    Some((&s[..], &p[..]))
+                }
             },
             Some(None) => Some((&[][..], &[][..])),
             None => own.as_ref().map(|(s, f)| (&s[..], &f.points[..])),
@@ -397,13 +418,15 @@ impl App {
         )
     }
 
-    /// The status line's smooth shading part, with it on: the level, and
-    /// the last frame's polygons shaded of those drawn.
+    /// The status line's smooth shading part, with it on: the level as
+    /// drawn (`pixel` needs the native geometrizer's side channel: else
+    /// drawn as vertex, and said so), and the last frame's polygons shaded
+    /// of those drawn.
     fn light_status(&self) -> String {
         let Some(o) = self.renderer.light_options() else { return String::new() };
-        let level = match o.shading {
-            gpu::Shading::Pixel => "pixel (as vertex)",
-            s => s.name(),
+        let level = match (o.shading, self.renderer.light_effective()) {
+            (gpu::Shading::Pixel, Some(gpu::Shading::Vertex)) => "pixel (as vertex)",
+            (s, _) => s.name(),
         };
         let lit = self.renderer.light_stats().map_or(String::new(), |s| format!(", {}/{} polygons", s.lit, s.polys));
         format!(" · shading {level} {}°{lit}", o.crease)
@@ -627,6 +650,11 @@ impl Quality {
         let Quality { aa, depth, tex_filter, shading, crease } = self;
         gpu::Quality { msaa: aa, depth, tex_filter, shading, crease, ..Default::default() }
     }
+
+    /// Smooth shading wants the geometrizer's side channel.
+    fn light_on(self) -> bool {
+        self.shading != gpu::Shading::Flat && self.crease != 0
+    }
 }
 
 /// Image quality of the 3D layer (docs/enhancements.md): `aa` samples a
@@ -634,12 +662,14 @@ impl Quality {
 /// filtering of texture pack images (`off`, `mip`, `2`, `4`, `8`, `16`:
 /// `gpu::TexFilter::parse`; anything else is off), and smooth shading
 /// (`model2::light`): `shading` `flat` (or left out: the original),
-/// `vertex` or `pixel` (drawn as `vertex` until the exact layer exists),
-/// with faces meeting at more than `crease` degrees (0 to 180) kept hard;
-/// left out (or 255) is the game's own angle (`romset::Shading`). The
-/// shading is done on this page, from the polygon stream, whichever
-/// thread ran the geometrizer. Before `start`, for the game it starts;
-/// after, from the next frame.
+/// `vertex` or `pixel` (per pixel needs the native geometrizer's side
+/// channel; with the chip it draws as `vertex`), with faces meeting at
+/// more than `crease` degrees (0 to 180) kept hard; left out (or 255) is
+/// the game's own angle (`romset::Shading`). The shading is done on this
+/// page, from the polygon stream and the side channel the geometrizer
+/// recorded (`geo=local`: turned on here; with the worker the page asks it
+/// for it, geo-worker.js `light`). Before `start`, for the game it
+/// starts; after, from the next frame.
 #[wasm_bindgen]
 pub fn set_quality(aa: u32, depth: bool, tex_filter: &str, shading: Option<String>, crease: Option<u32>) {
     let q = Quality {
@@ -655,7 +685,13 @@ pub fn set_quality(aa: u32, depth: bool, tex_filter: &str, shading: Option<Strin
     QUALITY.with(|c| c.set(q));
     APP.with(|a| {
         if let Some(app) = a.borrow().as_ref() {
-            app.borrow_mut().renderer.set_quality(q.gpu());
+            let mut app = app.borrow_mut();
+            app.renderer.set_quality(q.gpu());
+            // The local engine's side channel (the worker's is the page's
+            // `set` message).
+            if app.geo_frame.is_none() {
+                app.machine.bus.geo.set_light(q.light_on());
+            }
         }
     });
 }
@@ -1010,8 +1046,18 @@ fn json_str(s: &str) -> String {
 /// point RAM, or neither for a frame it skipped posting (overtaken by
 /// newer ones while it caught up). Called once per frame job. `between`:
 /// with smooth motion, the frame's in-betweens ([`GeoEngine::between`]).
+/// `light`, `between_light`: with smooth shading's side channel on in the
+/// worker, the frame's and each in-between's (`model2::light::Frame`
+/// words, [`GeoEngine::light`], [`GeoEngine::between_light`]; empty or
+/// left out: none).
 #[wasm_bindgen]
-pub fn set_geo_frame(stream: Option<Vec<u32>>, points: Option<Vec<u16>>, between: Option<js_sys::Array>) {
+pub fn set_geo_frame(
+    stream: Option<Vec<u32>>,
+    points: Option<Vec<u16>>,
+    between: Option<js_sys::Array>,
+    light: Option<Vec<u32>>,
+    between_light: Option<js_sys::Array>,
+) {
     APP.with(|a| {
         if let Some(app) = a.borrow().as_ref() {
             let mut app = app.borrow_mut();
@@ -1021,6 +1067,10 @@ pub fn set_geo_frame(stream: Option<Vec<u32>>, points: Option<Vec<u16>>, between
                 app.geo_new = true;
                 app.geo_between =
                     between.map_or(Vec::new(), |b| b.iter().map(|s| js_sys::Uint32Array::new(&s).to_vec()).collect());
+                let side = |w: &[u32]| model2::light::Frame::from_words(w).map(Arc::new);
+                app.geo_light = light.as_deref().and_then(side);
+                app.geo_between_light = between_light
+                    .map_or(Vec::new(), |b| b.iter().map(|w| side(&js_sys::Uint32Array::new(&w).to_vec())).collect());
                 app.smooth_at = now();
             }
         }
@@ -1032,6 +1082,8 @@ pub fn set_geo_frame(stream: Option<Vec<u32>>, points: Option<Vec<u16>>, between
 #[wasm_bindgen]
 pub struct GeoEngine {
     engine: model2::geo::Engine,
+    /// The side channels of the in-betweens the last `between` drew.
+    between_light: Vec<Vec<u32>>,
 }
 
 #[wasm_bindgen]
@@ -1047,7 +1099,10 @@ impl GeoEngine {
         let chips = chips.iter().map(|c| js_sys::Uint8Array::new(&c).to_vec()).collect();
         let roms = romset::RomSet::from_chips(game, chips, false).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let core = model2::geo::Core::of(game.board);
-        Ok(GeoEngine { engine: model2::geo::Engine::new(model2::bus::polygon_rom(&roms), core) })
+        Ok(GeoEngine {
+            engine: model2::geo::Engine::new(model2::bus::polygon_rom(&roms), core),
+            between_light: Vec::new(),
+        })
     }
 
     /// Run frames on the native geometrizer when it implements the
@@ -1063,20 +1118,49 @@ impl GeoEngine {
         self.engine.set_smooth(on);
     }
 
+    /// Smooth shading's side channel (`model2::light`): record what the
+    /// geometrizer knew about each frame's lighting, for the page to shade
+    /// with ([`GeoEngine::light`]). From the next frame.
+    pub fn set_light(&mut self, on: bool) {
+        self.engine.set_light(on);
+    }
+
+    /// The last frame's side channel as words (`model2::light::Frame::
+    /// to_words`); empty when it is off or the frame had none.
+    pub fn light(&self) -> Vec<u32> {
+        self.engine.light_frame().map_or(Vec::new(), |f| f.to_words())
+    }
+
     /// The last frame's in-betweens at t = k / `steps` for k from 0 to
     /// `steps` - 1, from the frame before towards it: Uint32Arrays, empty
     /// where the frame's own stream shows (a cut, nothing to blend). Empty
     /// without smooth motion, or for a frame the native geometrizer didn't
-    /// run.
-    pub fn between(&self, steps: u32) -> js_sys::Array {
+    /// run. With the side channel on, each one's is kept for
+    /// [`GeoEngine::between_light`].
+    pub fn between(&mut self, steps: u32) -> js_sys::Array {
         let out = js_sys::Array::new();
+        self.between_light.clear();
+        let lit = self.engine.light_on();
         if let Some(f) = self.engine.smooth_frame() {
             for k in 0..steps {
-                let s = f.render(k as f32 / steps as f32).unwrap_or_default();
+                let t = k as f32 / steps as f32;
+                let (s, l) = if lit {
+                    f.render_lit(t).map_or((Vec::new(), Vec::new()), |(s, side)| (s, side.to_words()))
+                } else {
+                    (f.render(t).unwrap_or_default(), Vec::new())
+                };
                 out.push(&js_sys::Uint32Array::from(&s[..]));
+                self.between_light.push(l);
             }
         }
         out
+    }
+
+    /// The side channels of the in-betweens the last [`GeoEngine::between`]
+    /// drew, in order: Uint32Arrays (`model2::light::Frame::to_words`),
+    /// empty where there is none.
+    pub fn between_light(&self) -> js_sys::Array {
+        self.between_light.iter().map(|w| js_sys::Uint32Array::from(&w[..])).collect()
     }
 
     /// Boot the uploaded program: 64-bit words as (low, high) u32 pairs.
@@ -1463,6 +1547,8 @@ pub async fn start(
         // the program (`?geo=chip` is for the worker).
         machine.bus.geo.set_mode(model2::geo::GeoMode::Native);
         machine.bus.geo.set_smooth(smooth);
+        // Smooth shading lights from what the geometrizer knew.
+        machine.bus.geo.set_light(QUALITY.with(|q| q.get()).light_on());
     }
     let geo_in_flight = Rc::new(Cell::new(0));
     let smooth_steps = Rc::new(Cell::new(0));
@@ -1588,6 +1674,8 @@ pub async fn start(
         smooth,
         smooth_steps,
         geo_between: Vec::new(),
+        geo_light: None,
+        geo_between_light: Vec::new(),
         smooth_at: 0.0,
         smooth_drawn: (0, 0.0),
         _gpu: (instance, adapter),

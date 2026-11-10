@@ -87,7 +87,8 @@ fn shading_hint(v: &GameSettings) -> &'static str {
         _ if v.shading != gpu::Shading::Flat && v.crease == 0 => "(crease 0: nothing is smoothed)",
         gpu::Shading::Flat => "(the game's own: one brightness a polygon)",
         gpu::Shading::Vertex => "(brightness blended across curved surfaces)",
-        gpu::Shading::Pixel => "(drawn as vertex for now: per-pixel lighting isn't in yet)",
+        gpu::Shading::Pixel if v.geo_chip => "(with the chip: drawn as vertex; per pixel needs the native geometrizer)",
+        gpu::Shading::Pixel => "(the game's lighting worked out for every pixel)",
     }
 }
 
@@ -717,7 +718,9 @@ mod tests {
         frames.push(&[Nav::Right]);
         run(&mut m, &mut s, &mut b, &frames);
         assert_eq!(s.shading, gpu::Shading::Pixel);
-        // The chip doesn't turn it off; pixel says it's drawn as vertex.
+        // Pixel is per pixel with the native geometrizer; the chip doesn't
+        // turn it off, but draws it as vertex and says so.
+        assert!(!shading_hint(&s).contains("as vertex"));
         s.geo_chip = true;
         assert!(shading_hint(&s).contains("as vertex"));
         s.crease = 0;

@@ -243,6 +243,7 @@
     set_hud(values.hud !== "center");
     const q = S.effective(values, env());
     set_quality(q.aa, q.depth, q.texFilter, q.shading, q.crease);
+    geoWorker?.postMessage({ type: "set", light: wantsLight(q) });
     if (values.pack !== before.pack) usePack(values.pack);
     set_bindings(values.controls);
     showKeys();
@@ -275,6 +276,10 @@
   let workerMs = 0;
   let workerState = "loading";
   let geoMs = 0;
+  // The geometry worker, when the geometrizer runs in one: told whether to
+  // record smooth shading's side channel (its `light` flag).
+  let geoWorker = null;
+  const wantsLight = (q) => !!q.shading && q.shading !== "flat" && q.crease !== 0;
   // The worklet and the worker, joined once both exist.
   function connectAudio() {
     if (connected || !node || !worker) return;
@@ -547,8 +552,10 @@
         const gw = new Worker("../geo-worker.js", { type: "module" });
         gw.onmessage = (e) => {
           const m = e.data;
-          // Undefined for a skipped frame; `between`: smooth motion's in-betweens.
-          if (m.type === "frame") set_geo_frame(m.stream, m.points, m.between);
+          // Undefined for a skipped frame; `between`: smooth motion's
+          // in-betweens; `light`, `betweenLight`: smooth shading's side
+          // channel for the frame and each in-between.
+          if (m.type === "frame") set_geo_frame(m.stream, m.points, m.between, m.light, m.betweenLight);
           else if (m.type === "stats") geoMs = m.msPerFrame;
           else if (m.type === "error") {
             // The game waits for this worker: without it, run the
@@ -560,11 +567,13 @@
         };
         const native = opt.geoNative;
         const smooth = opt.smooth;
+        const light = wantsLight(opt);
         try {
-          gw.postMessage({ type: "init", pkg, module, game, rom, native, smooth });
+          gw.postMessage({ type: "init", pkg, module, game, rom, native, smooth, light });
         } catch {
-          gw.postMessage({ type: "init", pkg, game, rom, native, smooth });
+          gw.postMessage({ type: "init", pkg, game, rom, native, smooth, light });
         }
+        geoWorker = gw;
         // `steps`: the in-betweens smooth motion wants per frame.
         geo = (kind, data, booted, readPtr, jumps, steps) =>
           kind === "boot"

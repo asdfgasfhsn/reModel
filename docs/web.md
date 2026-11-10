@@ -345,7 +345,7 @@ parameters:
   are the native player's only (`docs/play.md`); the browser has no
   setting for them;
 - `shading=vertex` (smooth shading; `shading=flat` or `off`, the default,
-  the original; `shading=pixel`, accepted, draws as `vertex` for now) and
+  the original; `shading=pixel`, the game's lighting per pixel) and
   `crease=40` (degrees, 0 to 180: faces meeting at a sharper angle keep a
   hard edge; 0 smooths nothing; `crease=auto`, the default, is the game's
   own, `romset::Shading`). Both in the panel's Display section, both
@@ -357,45 +357,47 @@ parameters:
 
 **Smooth shading.** With `shading=vertex` (or Shading: Smooth in the
 panel), brightness varies across curved surfaces instead of stepping from
-polygon to polygon: the layer `model2::light` computes from the polygon
-stream alone (`docs/usage.md`, `--shading`; `docs/play.md`). It runs on
-the page, in the renderer's `present_bus` (`Renderer::set_light_rules`
-gives it the game's crease angle and HUD windows at `start`), on whatever
-stream it draws: the worker's, the page thread's (`geo=local`), the
-chip's (`geo=chip`) and smooth motion's in-betweens alike, so the
-geometry worker and its messages are unchanged. It combines with
-anti-aliasing, the depth buffer and texture packs; WebGPU needs nothing
-it didn't already have. With shading on, the status line says the level,
-the crease angle and how many of the last frame's polygons were shaded
-(`shading vertex 40°, 812/4127 polygons`). `shading_cost(runs)` (in the
-page as `remodelShadingCost(runs)`) times the grouping pass on the newest
-frame for a test driver: `[median ms, worst ms, polygons, lit]`.
+polygon to polygon (`model2::light`; `docs/usage.md`, `--shading`;
+`docs/play.md`): each polygon corner is lit with the game's own formula
+for the mean of the normals around it, from the side channel the
+geometrizer records (the normal and lighting entry it lit each polygon
+with); `shading=pixel` (Per pixel) evaluates that formula at every pixel
+for the interpolated normal, specular highlights included. Where the side
+channel doesn't exist (`geo=chip`: block facts from a scan of the list
+only) or a block fails its check, the corners are means of the stream's
+lumas and `pixel` draws as smooth; the status line says what was drawn
+(`shading pixel 40°, 2210/4127 polygons`, or `shading pixel (as vertex)`).
+The shading itself runs on the page, in the renderer's `present_bus`
+(`Renderer::set_light_rules` gives it the game's crease angle and HUD
+windows at `start`), on whatever stream it draws: the worker's, the page
+thread's (`geo=local`) and smooth motion's in-betweens alike.
 
-What isn't there yet:
+The geometry worker records the side channel when shading wants it: its
+`init` message has `light` (shading not flat and the crease not 0), and a
+`{type: "set", light}` message switches it when the panel changes shading
+(the page sends one on Resume). Each `frame` reply then has `light`, the
+frame's side channel as words (`GeoEngine::light`,
+`model2::light::Frame::to_words`, a transferred `Uint32Array`, about 16
+bytes a polygon), and with smooth motion `betweenLight`, one per
+in-between (`GeoEngine::between` replays each with the side channel,
+`smooth::Frame::render_lit`; `GeoEngine::between_light`).
+`set_geo_frame(stream, points, between, light, between_light)` takes them
+as optional trailing arguments and hands the one that goes with the
+stream drawn to the renderer (`Renderer::set_light_frame`), so the
+in-betweens are shaded at the level of the frames around them. With
+`geo=local` the page turns the side channel on in its own engine
+(`set_quality` switches it live) and replays its in-betweens with it. The
+renderer keeps the last frame's shading, so a frame drawn again costs
+nothing. It combines with anti-aliasing, the depth buffer and texture
+packs; WebGPU needs nothing it didn't already have (per-pixel data rides
+in the outline buffer the depth buffer uses). `shading_cost(runs)` (in
+the page as `remodelShadingCost(runs)`) times the grouping pass on the
+newest frame for a test driver: `[median ms, worst ms, polygons, lit]`
+(the stream alone: a lower bound).
 
-- **Per pixel** (`shading=pixel`) needs the exact layer: the normals and
-  lighting the game used, which only the native geometrizer knows. The
-  page accepts it, keeps it, and draws it as smooth; the panel and the
-  status line say so (`shading pixel (as vertex)`).
-- **The game's own lighting data.** In the native player the geometrizer
-  will also record, per object and polygon, the light vector, focal
-  lengths and normals it lit with (the side channel), which makes smooth
-  shading exact. In the browser the geometrizer runs in the worker, so
-  the worker will post those words with each frame for the page to
-  shade with. Until that exists, the page shades from the stream with a
-  guessed focal length, as the native player does today. The planned
-  change: the `init` message gains `light` (and a `{type: "set", light}`
-  message switches it live), which calls a `GeoEngine::set_light`; each
-  `frame` reply gains `light` (a transferred `Uint32Array`, the frame's
-  side channel words, `model2::light::Frame::to_words`, about 16 bytes a
-  polygon) and, with smooth motion, `betweenLight` (one per in-between);
-  `set_geo_frame(stream, points, between, light, between_light)` takes
-  them as optional trailing arguments (old pages keep working) and hands
-  them to the renderer with the stream it draws. On the page's thread
-  (`geo=local`) the renderer reads them from the engine directly.
-- **Finer levels** (`shading_fine`, blending the game's 64 brightness
-  levels): not built; it will be a sixth, optional `set_quality` argument
-  and `?shadefine=1`.
+Not there yet: **finer levels** (`shading_fine`, blending the game's 64
+brightness levels): it will be a sixth, optional `set_quality` argument
+and `?shadefine=1`.
 
 *Measured* (Chrome 157 on Linux, Vulkan, RTX A2000, interpreter build,
 1413x1060, the machine shared with other work): `lastbrnx` and

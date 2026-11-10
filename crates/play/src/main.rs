@@ -110,10 +110,11 @@ usage: remodel-play [options]
   --shading flat|vertex|pixel
                      smooth shading: flat is the game's own, one
                      brightness a polygon; vertex blends brightness across
-                     curved surfaces (vertex values worked out from the
-                     polygons, faces meeting at more than the crease
-                     angle keep their edge); pixel is drawn as vertex for
-                     now (docs/play.md). Default flat
+                     curved surfaces (the game's own lighting worked out
+                     at each corner, faces meeting at more than the
+                     crease angle keep their edge); pixel works the
+                     game's lighting out for every pixel (with --geo
+                     chip: drawn as vertex; docs/play.md). Default flat
   --crease auto|N    smooth shading's crease angle in degrees, 0 to 180
                      (0: nothing smoothed); auto is the game's own
                      (40 for every game so far). Default auto
@@ -506,6 +507,16 @@ impl Session {
         }
     }
 
+    /// Smooth shading's side channel on or off, for the game and
+    /// run-ahead's machine alike (the frames drawn from either are shaded
+    /// at the same level).
+    fn set_light(&mut self, on: bool) {
+        self.machine.bus.geo.set_light(on);
+        if let Some(ra) = &mut self.run_ahead {
+            ra.shadow().bus.geo.set_light(on);
+        }
+    }
+
     /// The machine to draw: run-ahead's frames ahead, while they're of the
     /// game as it is now, else the game.
     fn shown(&mut self) -> &mut model2::Machine {
@@ -576,6 +587,11 @@ struct Stats {
     /// host time copying the game and running the frames ahead.
     ahead: u32,
     run_ahead: Duration,
+    /// Smooth shading: draws shaded, the host time it took (repeats
+    /// none), and the last one's level as drawn, lit and drawn polygons.
+    shaded: u32,
+    shading: Duration,
+    shading_as: Option<(gpu::Shading, u32, u32)>,
 }
 
 impl Stats {
@@ -596,6 +612,9 @@ impl Stats {
             smoothing: Duration::ZERO,
             ahead: 0,
             run_ahead: Duration::ZERO,
+            shaded: 0,
+            shading: Duration::ZERO,
+            shading_as: None,
         }
     }
 }
@@ -812,6 +831,9 @@ impl Play {
             }
             machine.bus.geo.set_mode(values.geo_mode());
             machine.bus.geo.set_smooth(values.motion_on());
+            // Smooth shading lights from what the geometrizer knew (run-ahead's
+            // machine is made like this one).
+            machine.bus.geo.set_light(values.light_on());
             // Drawing can go ahead with the last frame's polygons when the
             // geometrizer is late (`frame`).
             machine.bus.geo.set_keep_last(true);
@@ -1024,6 +1046,11 @@ impl Play {
                 s.run_ahead_dropped &= old.run_ahead == new.run_ahead;
                 let frames = if s.run_ahead_dropped { 0 } else { new.run_ahead };
                 s.set_run_ahead(frames, motion(&new), None, &rom);
+            }
+        }
+        if old.light_on() != new.light_on() && !preview {
+            if let Some(s) = &mut self.session {
+                s.set_light(new.light_on());
             }
         }
         if old.geo_chip != new.geo_chip {
@@ -1542,12 +1569,23 @@ impl Play {
             // temporal anti-aliasing turns on too).
             let fast =
                 g.refresh.is_none_or(|hz| hz > FPS * 1.2) && !self.behind && !self.menu.open && self.values.smooth_on();
+            // With smooth shading, the in-between's own lighting side
+            // channel (its replay records it as the game frame's was), so
+            // it is shaded at the level of the frames around it.
+            let lit = q.shading != gpu::Shading::Flat && bus.geo.engine().light_on();
             let between = bus.geo.engine().smooth_frame().filter(|_| fast).and_then(|f| {
                 let t = (t_smooth.saturating_duration_since(self.smooth_at).as_secs_f64() / period) as f32;
-                f.render(t).map(|stream| (stream, f, t))
+                if lit {
+                    f.render_lit(t).map(|(stream, side)| (stream, Some(std::sync::Arc::new(side)), f, t))
+                } else {
+                    f.render(t).map(|stream| (stream, None, f, t))
+                }
             });
+            if let Some((_, side, _, _)) = &between {
+                g.renderer.set_light_frame(side.clone());
+            }
             match &between {
-                Some((stream, f, t)) if temporal => {
+                Some((stream, _, f, t)) if temporal => {
                     // Tagged (N, t): the renderer works out the motion
                     // since the image before. t = 0 is the frame before's
                     // pose, which follows that frame's own image (N-1, 1)
@@ -1566,7 +1604,7 @@ impl Play {
                     self.stats.smooth += 1;
                     self.stats.smoothing += t_smooth.elapsed();
                 }
-                Some((stream, f, _)) => {
+                Some((stream, _, f, _)) => {
                     self.stats.smooth += 1;
                     self.stats.smoothing += t_smooth.elapsed();
                     g.renderer.present_bus(bus, Some((stream, &f.points)), view, target, format, origin)
@@ -1580,6 +1618,13 @@ impl Play {
             // (`Geometrizer::last_smooth`, kept with `set_keep_last`).
             g.renderer.present_bus_last(bus, view, target, format, origin);
             self.stats.geo_late += 1;
+        }
+        // Smooth shading: what the frame was drawn as, and its cost (a
+        // repeat of a frame costs nothing: the renderer keeps its shading).
+        if let (Some(st), Some(eff)) = (g.renderer.light_stats(), g.renderer.light_effective()) {
+            self.stats.shaded += 1;
+            self.stats.shading += Duration::from_secs_f32(st.ms.max(0.0) / 1000.0);
+            self.stats.shading_as = Some((eff, st.lit, st.polys - st.hidden));
         }
     }
 
@@ -2039,6 +2084,13 @@ impl Play {
             )
         } else {
             String::new()
+        } + &match st.shading_as {
+            Some((level, lit, polys)) => format!(
+                " · shading {}, {lit}/{polys} polygons lit, {:.2} ms a draw",
+                level.name(),
+                st.shading.as_secs_f64() * 1000.0 / st.shaded.max(1) as f64
+            ),
+            None => String::new(),
         } + &match self.session.as_ref().map(|s| (&s.run_ahead, s.run_ahead_dropped)) {
             // Of the emulate time above: copying the game, and its frames ahead.
             Some((Some(ra), _)) if st.ahead > 0 => format!(

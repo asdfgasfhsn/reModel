@@ -304,8 +304,9 @@ pub struct Launcher {
 
 /// Why setting `key` doesn't apply as set (said in place of its hint):
 /// temporal anti-aliasing needs the native geometrizer and a GPU that has
-/// it, and turns multisampling off; per-pixel shading isn't in yet, and a
-/// crease angle of 0 smooths nothing.
+/// it, and turns multisampling off; per-pixel shading needs the native
+/// geometrizer (the chip draws it as vertex), and a crease angle of 0
+/// smooths nothing.
 fn overridden(key: &str, v: &GameSettings, temporal_supported: bool) -> Option<&'static str> {
     let temporal = v.temporal_on() && temporal_supported;
     match key {
@@ -314,8 +315,8 @@ fn overridden(key: &str, v: &GameSettings, temporal_supported: bool) -> Option<&
         "temporal" if v.temporal > 0 && v.geo_chip => Some("off: it needs the native geometrizer"),
         "stipple" if v.stipple_keep && !temporal => Some("only with temporal anti-aliasing on"),
         "shading" if v.shading != gpu::Shading::Flat && v.crease == 0 => Some("crease 0: nothing is smoothed"),
-        "shading" if v.shading == gpu::Shading::Pixel => {
-            Some("drawn as vertex for now: per-pixel lighting isn't in yet")
+        "shading" if v.shading == gpu::Shading::Pixel && v.geo_chip => {
+            Some("drawn as vertex with the chip: per pixel needs the native geometrizer")
         }
         _ => None,
     }
@@ -1582,12 +1583,13 @@ mod tests {
         v.stipple_keep = true;
         assert!(overridden("aa", &v, true).is_none());
         assert!(overridden("temporal", &v, true).is_some() && overridden("stipple", &v, true).is_some());
-        // Shading: pixel is drawn as vertex, and says so; the chip doesn't
-        // turn it off.
+        // Shading: the chip doesn't turn it off; pixel is drawn as vertex
+        // with it, and says so (per pixel with the native geometrizer).
         let mut v = GameSettings { geo_chip: true, shading: gpu::Shading::Vertex, ..Default::default() };
         assert!(overridden("shading", &v, true).is_none());
         v.shading = gpu::Shading::Pixel;
         assert!(overridden("shading", &v, true).is_some_and(|s| s.contains("as vertex")));
+        assert!(overridden("shading", &GameSettings { geo_chip: false, ..v.clone() }, true).is_none());
         v.crease = 0;
         assert!(overridden("shading", &v, true).is_some_and(|s| s.contains("nothing")));
         // The rows hold every value the settings take for them.

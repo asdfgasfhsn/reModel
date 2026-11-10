@@ -174,8 +174,8 @@ export function createPanel(opts) {
     choice("aa", "Anti-aliasing", () => [["off", "Off"], ["4", "4x"]], "smooths polygon edges"),
     onOff("depth", "Depth buffer", "polygons that cross or are sorted wrong come out right; off draws in the game's order"),
     choice("shading", "Shading", () => [["flat", "Flat"], ["vertex", "Smooth"], ["pixel", "Per pixel"]],
-      "flat is the original; smooth blends the game's own shades across curved surfaces; per pixel isn't built yet " +
-      "and draws as smooth"),
+      "flat is the original; smooth blends the game's own lighting across curved surfaces, worked out at each " +
+      "corner; per pixel works it out for every pixel (with the chip geometrizer it draws as smooth)"),
     choice("crease", "Crease angle", () => withValue("crease",
       [["auto", gameCrease === null ? "The game's" : `The game's (${gameCrease}°)`], [30, "30°"], [40, "40°"], [60, "60°"]],
       (v) => `${v}°`), "with smooth shading: faces meeting at a sharper angle keep a hard edge"),

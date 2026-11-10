@@ -230,6 +230,13 @@ impl GameSettings {
         self.smooth_on() || self.temporal_on()
     }
 
+    /// Smooth shading's side channel (`Geometrizer::set_light`): wanted
+    /// whenever shading can light anything (the game's own lighting per
+    /// polygon for the exact layer, block facts with the chip).
+    pub fn light_on(&self) -> bool {
+        self.shading != gpu::Shading::Flat && self.crease != 0
+    }
+
     /// The renderer's quality for these settings (`supported`: the GPU
     /// has temporal anti-aliasing). Multisampling is asked for as set; the
     /// renderer turns it off while temporal is on.
