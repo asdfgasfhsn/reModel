@@ -34,6 +34,14 @@ loose in `rom/srallyc/`): attract, car and course select, and races.
   §9 has the script); barriers slow and deflect it, a hard turn into one
   spins it round ("wrong way"), and in the air it falls at 10 m/s². The
   sound board boots from `epr-17890.30` and plays.
+- *Confirmed (captures, 2026-11-11):* the race **fades in from white
+  through the colour translation tables** (`0x1810000`), not the polygons'
+  luma: in a coin-start capture, 6061 of the 6144 entries the renderer
+  reads (3 channels x 32 components x 64 lumas) differ at frame 2700 from
+  every other captured frame, which all agree. Texture keys do not include
+  those tables, so the race textures were dumped in the fade, near white,
+  until the dump kept the most drawn look (`docs/texture-packs.md`,
+  "Looks").
 - *Confirmed (by the pictures):* the 2A polygon ROM, texture ROM and
   texture RAM layouts that make this draw: see `docs/hw/model2a.md`, "Findings", and
   its §5, §7. The pictures are the evidence

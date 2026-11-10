@@ -1,8 +1,8 @@
 //! Texture dumps and texture packs for `run` snapshots (`--dump-textures`,
 //! `--texture-pack`); docs/texture-packs.md describes the files.
 
-use model2::enhance::{Enhance, Found, Rgba, TexInfo, TexturePack, TileInfo};
-use model2::raster::{texture_image, Sources};
+use model2::enhance::{Enhance, Fnv, Found, Rgba, TexInfo, TexturePack, TileInfo};
+use model2::raster::{texture_image, texture_look, Sources};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -22,6 +22,11 @@ struct Entry {
     /// Textures: the ways it was drawn, bit `mirror_u | mirror_v << 1`
     /// set for each (0 for tiles).
     wraps: u8,
+    /// Uses by look (`raster::texture_look`, hashed; tiles have one, as
+    /// their key holds their colours), and the look the dump image shows:
+    /// the most used one so far.
+    looks: HashMap<u64, u64>,
+    look: u64,
 }
 
 /// The `wrap=` field of a texture's index line: each way it was drawn, u
@@ -89,16 +94,41 @@ impl Packs {
             .clone()
     }
 
-    /// Count a use of `name`, writing its dump image the first time.
-    /// `wrap`: for a texture, bit `mirror_u | mirror_v << 1` of this use.
-    fn record(&mut self, name: String, wrap: u8, about: impl FnOnce() -> String, image: impl FnOnce() -> Rgba) {
+    /// Count a use of `name` drawn in `look` (see `Entry::looks`), writing
+    /// its dump image the first time and again whenever another look has
+    /// become the most used: a key's texels can be drawn in several looks
+    /// (fades and tints in the colour translation tables), and the one the
+    /// game shows most is what a replacement should stand for, not
+    /// whichever came first (srallyc's race textures first appear in its
+    /// fade from white). `wrap`: for a texture, bit `mirror_u | mirror_v <<
+    /// 1` of this use.
+    fn record(
+        &mut self,
+        name: String,
+        wrap: u8,
+        look: impl FnOnce() -> u64,
+        about: impl FnOnce() -> String,
+        image: impl FnOnce() -> Rgba,
+    ) {
         let Some(dir) = &self.dump else { return };
         let frame = self.frame;
-        let e = self.index.entry(name).or_insert_with_key(|name| {
+        let look = look();
+        let e = self.index.entry(name.clone()).or_insert_with(|| Entry {
+            about: about(),
+            first_frame: frame,
+            uses: 0,
+            wraps: 0,
+            looks: HashMap::new(),
+            look,
+        });
+        let n = e.looks.entry(look).or_insert(0);
+        *n += 1;
+        let n = *n;
+        if e.uses == 0 || (look != e.look && n > e.looks[&e.look]) {
             let img = image();
             let _ = std::fs::write(dir.join(format!("{name}.png")), png::encode_rgba(img.width, img.height, &img.data));
-            Entry { about: about(), first_frame: frame, uses: 0, wraps: 0 }
-        });
+            e.look = look;
+        }
         e.uses += 1;
         e.wraps |= wrap;
         self.index_dirty = true;
@@ -115,7 +145,8 @@ impl Packs {
         );
         for (name, e) in &self.index {
             let wrap = if e.wraps != 0 { wrap_field(e.wraps) } else { String::new() };
-            let _ = writeln!(text, "{name}\tframe={}\tuses={}\t{}{wrap}", e.first_frame, e.uses, e.about);
+            let looks = if e.looks.len() > 1 { format!("\tlooks={}", e.looks.len()) } else { String::new() };
+            let _ = writeln!(text, "{name}\tframe={}\tuses={}\t{}{wrap}{looks}", e.first_frame, e.uses, e.about);
         }
         let _ = std::fs::write(dir.join("index.txt"), text);
         self.index_dirty = false;
@@ -128,6 +159,10 @@ impl Packs {
         let mut s = String::new();
         if let Some(d) = &self.dump {
             let _ = write!(s, "dumped {tex} textures and {tiles} tile patterns to {}", d.display());
+            let looks = self.index.values().filter(|e| e.looks.len() > 1).count();
+            if looks > 0 {
+                let _ = write!(s, " ({looks} textures drawn in several looks: each dump shows its most used)");
+            }
         }
         if let Some(p) = &self.pack {
             if !s.is_empty() {
@@ -182,12 +217,17 @@ impl Enhance for Packs {
             )
         };
         let wrap = 1 << ((info.header[0] >> 8) & 3);
-        self.record(info.name(), wrap, about, || texture_image(src, info));
+        let look = || {
+            let mut f = Fnv::default();
+            f.bytes(texture_look(src, info).as_flattened());
+            f.0
+        };
+        self.record(info.name(), wrap, look, about, || texture_image(src, info));
     }
 
     fn tile(&mut self, info: &TileInfo) -> Option<Arc<Rgba>> {
         let about = || format!("tile={:#06x}\tpalette_bank={:#04x}", info.tile, info.bank);
-        self.record(info.name(), 0, about, || info.image());
+        self.record(info.name(), 0, || 0, about, || info.image());
         self.pack.as_ref()?;
         let img = self.load(&info.name());
         self.looked_up[1] += 1;
@@ -263,6 +303,60 @@ mod tests {
         std::fs::write(pack.join(format!("{}.png", tex.name())), png::encode_rgba(32, 32, &big.data)).unwrap();
         let mut p = Packs::new(None, Some(pack)).unwrap();
         assert!(matches!(p.find(&tex), Found::Image(img) if *img == big));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dumps_the_most_used_look() {
+        // One 32x32 texture of texel 0 in colour (1, 1, 1), luma table 0
+        // entry 0 = 0, so it maps through the translation tables at luma 0.
+        let dir = std::env::temp_dir().join(format!("remodel-texpack-look-{}", std::process::id()));
+        let mut p = Packs::new(Some(dir.clone()), None).unwrap();
+        let ram = vec![0u8; 0x40_0000 + 0x8000];
+        let tex = TexInfo {
+            key: 0x77,
+            width: 32,
+            height: 32,
+            header: [0x4000, 0, 0, 0],
+            colour: 1 | 1 << 5 | 1 << 10,
+            bank: 0,
+            x0: 0,
+            y0: 0,
+            luma_table: 0,
+            translucent: false,
+        };
+        let palette = |v: u8| {
+            let mut pal = vec![0u8; 0x1_c000];
+            for ch in 0..3 {
+                pal[0x1_0000 + ch * 0x4000 + 256 * 2] = v;
+            }
+            pal
+        };
+        let (faded, normal) = (palette(255), palette(90));
+        let draw = |p: &mut Packs, pal: &[u8], n: usize| {
+            let src = Sources {
+                texture_rom: &[],
+                texture_point_ram: &[],
+                render_ram: &ram,
+                palette: pal,
+                xoff: 0.0,
+                yoff: 0.0,
+            };
+            for _ in 0..n {
+                p.texture_drawn(&tex, &src, 10);
+            }
+            p.finish_snapshot();
+        };
+        let dumped = || png::decode(&std::fs::read(dir.join(format!("{}.png", tex.name()))).unwrap()).unwrap().rgba;
+        // First seen in a fade: dumped as it looks then...
+        draw(&mut p, &faded, 2);
+        assert_eq!(dumped()[..4], [255, 255, 255, 255]);
+        // ...then drawn more in its usual look: that is the dump.
+        draw(&mut p, &normal, 3);
+        assert_eq!(dumped()[..4], [90, 90, 90, 255]);
+        let index = std::fs::read_to_string(dir.join("index.txt")).unwrap();
+        assert!(index.contains("uses=5\t") && index.contains("\tlooks=2\n"), "{index}");
+        assert!(p.summary().contains("1 textures drawn in several looks"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

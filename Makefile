@@ -306,6 +306,9 @@ pack-check: release ## Draw the captured frames with texture pack PACK= on the G
 	$(if $(PACK),,$(error pack-check needs PACK=DIR, a texture pack))
 	$(RUN) $(GPU_OPTS) --texture-pack $(PACK) pack-check $(OUT)/capture $(PACK_CHECK_OUT)
 
+pack-identity: release ## Draw the captured frames with a pack standing for the original textures (PACK=DIR, normally the dump itself; empty: each frame's own textures) on the GPU and in software, unfiltered and mipmapped, against no pack; fails if they differ beyond the tolerance (needs a GPU)
+	$(RUN) $(GPU_OPTS) $(if $(PACK),--texture-pack $(PACK)) pack-check --identity $(OUT)/capture $(OUT)/pack-identity
+
 # depth-check: PROBE="X,Y@FRAME ..." follows those output pixels through the
 # depth buffer (only those frames are drawn); AGAINST=DIR compares the
 # depth-on frames with an earlier run's pictures (docs/enhancements.md).

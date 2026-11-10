@@ -587,17 +587,30 @@ const FULL_LUMA: u32 = 255;
 /// pixel per texel (unfiltered); texel 15 of a translucent texture has
 /// alpha 0. This is what dumps contain and packs replace.
 pub fn texture_image(src: &Sources, info: &TexInfo) -> Rgba {
-    let c = [info.colour as u32 & 31, (info.colour as u32 >> 5) & 31, (info.colour as u32 >> 10) & 31];
+    let look = texture_look(src, info);
     let mut data = Vec::with_capacity((info.width * info.height * 4) as usize);
     for y in 0..info.height {
         for x in 0..info.width {
-            let t = src.texel(info.bank, info.x0 + x, info.y0 + y);
-            let lum = (src.luma(info.luma_table, t * 17 / 2) * FULL_LUMA / 256).min(63);
-            let rgb = [0, 1, 2].map(|ch| src.translate(ch, c[ch], lum));
+            let t = src.texel(info.bank, info.x0 + x, info.y0 + y) as usize;
+            let rgb = look[t];
             data.extend_from_slice(&[rgb[0], rgb[1], rgb[2], if info.translucent && t == 15 { 0 } else { 255 }]);
         }
     }
     Rgba { width: info.width as usize, height: info.height as usize, data }
+}
+
+/// The colour each texel value (0-15) of a texture is drawn in at full
+/// polygon luma: what `texture_image` maps texels through. It depends on
+/// the luma table and colour translation tables as they are now, which
+/// the texture's key does not include: a game rewriting the translation
+/// tables (srallyc's fade from white into the race, sgt24h's sky tint)
+/// draws the same key in another look.
+pub fn texture_look(src: &Sources, info: &TexInfo) -> [[u8; 3]; 16] {
+    let c = [info.colour as u32 & 31, (info.colour as u32 >> 5) & 31, (info.colour as u32 >> 10) & 31];
+    std::array::from_fn(|t| {
+        let lum = (src.luma(info.luma_table, t as u32 * 17 / 2) * FULL_LUMA / 256).min(63);
+        [0, 1, 2].map(|ch| src.translate(ch, c[ch], lum))
+    })
 }
 
 /// Lighting for a replaced texture: the replacement stands for the texture

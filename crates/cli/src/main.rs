@@ -920,6 +920,23 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
+        "pack-check" if args.iter().any(|a| a == "--identity") => {
+            args.retain(|a| a != "--identity");
+            let default = PathBuf::from("out").join(roms.game.id).join("capture");
+            let root = args.get(1).map(PathBuf::from).unwrap_or(default);
+            let out = args
+                .get(2)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("pack-identity"));
+            let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
+            let (aa, depth) = (AA.get().copied().unwrap_or(1), DEPTH.get().copied().unwrap_or(false));
+            if let Err(e) =
+                pack_check::identity(&root, windows, VIEW.get().copied(), aa, depth, pack_dir.as_deref(), &out)
+            {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
         "pack-check" => {
             let Some(pack) = &pack_dir else {
                 eprintln!("error: pack-check needs --texture-pack DIR");

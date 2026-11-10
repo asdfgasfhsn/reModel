@@ -43,6 +43,23 @@ The same texels drawn in another colour are therefore separate dumps.
 Mirroring, wrap and the checker (screen-door) flag do not change the key;
 they apply to the replacement as they do to the original.
 
+**Looks.** The key does not include the luma table's and colour translation
+tables' contents, which games rewrite: srallyc fades into the race from
+white through the translation tables, and sgt24h tints its sky during the
+race (`docs/games/srallyc.md`). The same key can therefore be drawn in
+several looks (the 16 colours its texel values map to at full luma). The
+dump shows the look drawn most (polygons, over the snapshots so far),
+rewriting the image when another look overtakes it; the index marks such
+textures `looks=N`. Until 2026-11-11 the first look seen was kept: srallyc's
+race textures were dumped in the fade, near white, and a pack made from
+them drew the race washed out (and sgt24h's sky without its tint). **Dumps
+of srallyc and sgt24h made before then are wrong: dump again and remake
+the packs.** topskatr's race textures have one look (its dumps and packs are
+unchanged); other games are unchecked (`make pack-identity`, below, tells).
+A texture drawn only in a fade during the dump run keeps that look, so dump
+with a run that also sees it in its usual look (srallyc: `make
+dump-textures BENCH_STEPS=900000000` covers the race captures).
+
 **Tiles** (the 2D layer: HUD, menus, text). One 8x8 PNG per distinct tile
 pattern on screen, `tile_<16 hex>.png`, keyed by the 64 pens plus the
 palette colours of the pens it uses. Pen 0 has alpha 0 but keeps its palette
@@ -103,6 +120,13 @@ full polygon luma the replacement is drawn as is. Because the ratio follows
 the original texels, a replacement that changes the picture a lot (rather
 than refining it) can show faint traces of the original's shading where the
 original saturates.
+
+Both sides of the ratio use the tables as they are now, so the replacement
+follows the polygon's luma but not a change of the tables themselves: while
+srallyc fades in from white, replaced textures show their usual look
+(capture frame 2700: 88% of the frame's pixels off by more than 16 levels
+from the original). Following that would need the look the image was made
+from at draw time (not done).
 
 ### Tiles
 
@@ -211,6 +235,33 @@ removes it but blurs, `16` keeps the ground's detail at grazing angles, and
 none shows halos at cut-out edges. The metric is against a supersampled
 render, which is itself an approximation of an ideal filter. Other games and
 other upscalers are untested.
+
+**Identity.** `make pack-identity PACK=DIR` (`remodel pack-check --identity`)
+checks that a pack stands for the textures as the captured frames draw
+them: with `PACK` the dump itself (`OUT/texdump`), or with no `PACK` each
+frame's own textures, it draws every captured frame on the GPU unfiltered
+and mipmapped and in software exact and trilinear, against the same
+renderer without a pack, and writes the pictures to `OUT/pack-identity`. It
+fails if any frame has more than 1% of its pixels off by more than 16
+levels unfiltered (the pack's colours are filtered where the original
+filters texel values and looks them up, so they are not identical);
+mipmapped drawing is a different filter and is only reported. Measured
+2026-11-11 at native size, mean share over the captures, unfiltered (GPU /
+software):
+
+| pack | srallyc | topskatr | sgt24h |
+|---|---|---|---|
+| each frame's own textures | 0.30% / 0.31% | 0.50% / 0.50% | 0.71% / 0.71% |
+| dump, first look kept (before the fix) | 59.4% / 59.4% | 0.49% / 0.49% | 13.1% / 13.2% |
+| dump, most used look (`make dump-textures`) | 5.6% / 5.6% | 0.49% / 0.49% | 1.6% / 1.6% |
+| dump, `BENCH_STEPS=900000000` | 5.2% / 5.2% | | |
+
+With the fix, srallyc's race frames are 0.13-0.83% off; what is left is the
+fade (frame 2700, above) and, with the default dump run (shorter than the
+capture's), textures it saw only in the fade (frame 5700's start banner and
+boards, 8%); sgt24h's are frames 2400-3000 (about 2%, tint) and 6212 (16%,
+past the dump run). Mipmapped, every pack is 3-11% off at native size:
+distant textures average.
 
 `make gpu-check PACK=DIR GPU_OPTS="--tex-filter mip"` draws the captured
 frames with the pack on both renderers and compares them: on topskatr the
@@ -356,4 +407,7 @@ Limitations:
 - Textures still being uploaded when a snapshot is taken get transient keys
   (the game copies texture data across several frames).
 - Keys include colours, so a texture or tile drawn in many colours (fades,
-  flashing text) needs one replacement per colour.
+  flashing text) needs one replacement per colour. Textures change colour
+  without changing key when the game rewrites the translation tables
+  (`looks=` above): the replacement stands for the look drawn most, and
+  fades and tints of the tables do not show on it.
