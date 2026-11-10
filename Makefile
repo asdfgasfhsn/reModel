@@ -88,7 +88,7 @@ RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 ##@ General
 
-help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, PACK_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, GPU_OPTS, LIGHT_OPTS, PROBE, AGAINST, SEQ_FROM, SEQ_FRAMES, STATE, TEMPORAL_SEQ, TEMPORAL_OPTS, RECOMP, SOUNDTRACK)
+help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, PACK_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, GPU_OPTS, LIGHT_OPTS, LIGHT_CAPTURE, LIGHT_IN, PROBE, AGAINST, SEQ_FROM, SEQ_FRAMES, STATE, TEMPORAL_SEQ, TEMPORAL_OPTS, RECOMP, SOUNDTRACK)
 	@awk 'BEGIN {FS = ":.*## "; printf "usage: make <target> [VAR=value]\n"} \
 		/^##@/ {printf "\n%s\n", substr($$0, 5)} \
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -318,8 +318,16 @@ depth-check: release ## Draw the captured frames on the GPU with the depth buffe
 # GPU_OPTS before it ("--crease N", "--height", "--aspect").
 LIGHT_OPTS ?=
 .PHONY: lighting-check
-lighting-check: release ## Draw the captured frames flat and vertex-shaded (smooth shading from the polygon stream) on the software and GPU renderers; check the invariants (crease 0 is flat, unlit polygons unchanged, brightness, software against GPU), report and pictures into out/scratch/lighting/GAME (LIGHT_OPTS: --every N, --probe X,Y@F, --bench [N]; GPU_OPTS: --crease N, --height/--aspect; needs a GPU)
-	$(RUN) $(GPU_OPTS) lighting-check $(OUT)/capture out/scratch/lighting/$(GAME) $(LIGHT_OPTS)
+lighting-check: release ## Draw the captured frames flat and vertex-shaded (smooth shading from the polygon stream) on the software and GPU renderers; check the invariants (crease 0 is flat, unlit polygons unchanged, brightness, software against GPU, hue kept; with LIGHT_IN=a lighting-capture: the side channel's self-check and list scan, L0 against it), report and pictures into out/scratch/lighting/GAME (LIGHT_OPTS: --every N, --probe X,Y@F, --bench [N], --no-side; GPU_OPTS: --crease N, --height/--aspect; needs a GPU)
+	$(RUN) $(GPU_OPTS) lighting-check $(or $(LIGHT_IN),$(OUT)/capture) out/scratch/lighting/$(GAME) $(LIGHT_OPTS)
+
+# Where lighting-capture saves (a directory of its own: the regression
+# baseline hashes out/GAME/capture).
+LIGHT_CAPTURE ?= out/scratch/lighting/$(GAME)/capture
+.PHONY: lighting-capture
+lighting-capture: release ## Save every 300th frame of a coin-start run with its lighting side channel (native geometrizer; light.bin, scan.bin) to LIGHT_CAPTURE (default out/scratch/lighting/GAME/capture), for lighting-check; prints the side channel's self-check over every frame of the run
+	rm -rf $(LIGHT_CAPTURE)
+	$(RUN) --geo native --light --capture $(LIGHT_CAPTURE) --input $(BENCH_INPUT) run 900000000 300 | grep -E '^light'
 
 .PHONY: temporal-probe
 temporal-probe: release ## Draw the captured frames with the GPU's temporal anti-aliasing (GPU_OPTS: --temporal, --stipple, --depth, --height, --aspect): its first frame against the frame with it off, jittered, blend and keep pictures into out/scratch/temporal-probe/GAME (needs a GPU)

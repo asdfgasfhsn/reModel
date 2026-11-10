@@ -80,3 +80,13 @@ Fifth game, 2C: a ride-on personal watercraft cabinet, SCSP sound only.
   3907 of a coin-start run) shows in the first frame that reads it: input
   lag 0.
 
+## Lighting (smooth shading's side channel)
+
+Measured with `remodel --geo native --light --input coin-start run 900000000` (6067 frames; `make lighting-capture` runs the same), reModel's smooth-shading side channel (docs/hw/geometrizer.md, "Lighting side channel"):
+
+- Self-check: of 17,257,546 polygon records, the flat luma recomputed from the side channel is the stream's for 17,257,546 (100.00%), one level off for 0 and further off for 0.
+- no specular lighting; normals computed from the vertices in 92.04% of blocks; zero (unlit) normals on 0.00% of polygons.
+- models drawn from polygon RAM in 37,069 blocks (2,224,140 polygons, 7.77% of blocks); 37,973 blocks of direct data (7.96%).
+- one light vector per frame; a lighting entry's values change between objects in 103 frames (206 polygons).
+- True focal length over the window width: median 0.602 (range 0.000-0.886); the stream-only layer guesses 1.0.
+- The list scan's block facts equal the native geometrizer's on 477,012 blocks, differ on 0.

@@ -696,3 +696,82 @@ frame is matched with the last shown one. The game's own machine has
 smooth motion off meanwhile. Checked against a plain run (`make
 run-ahead-check`): where the controls held, the in-between shown after
 frame F is the plain run's in-between at frame F + N byte for byte.
+
+## Lighting side channel (reModel's smooth shading)
+
+Not hardware: what smooth shading (`model2::light`, `--shading`, off by
+default) gets from the geometrizer beside the raster stream, which carries
+only each polygon's luma. Code: `crates/model2/src/light/side.rs` (the
+record, the formula, the self-check), `light/scan.rs` (the list scan), the
+two hooks per program in `geo_native.rs` / `geo_native_2c.rs`
+(`Io::light`), `Engine::set_light` / `light_frame` in `geo.rs`, `light.bin`
+and `scan.bin` in captures.
+
+- **Per object block** (each raster `0x1` command, object data or direct
+  data): model address, the focal lengths and light vector in effect, and
+  flags: direct data, normals computed, specular on, compact model, and the
+  program's two lighting conventions as generic facts: *back faces sent
+  unlit* (2C: a single-sided back face gets luma 0) and *truncating
+  arithmetic* (2B: results rounded toward zero).
+- **Per polygon record** (native geometrizers only): the view-space normal
+  the program lit it with (a culled 2C back face in computed mode never
+  has its normal normalised: the raw cross product, normalised in f32),
+  the program's facing, the specular base (`d`; `max(d, 0)` for a 2C
+  given-normal front triangle and everything `overrev` lights; `n·L` on
+  2B), the lighting entry and its ambient, diffuse, specular scale and
+  number of squarings as resolved for that polygon, and a *flip* flag: on
+  2B the diffuse factor follows the sign of the product `n·L × n·P`, so a
+  polygon edge-on to the eye (`n·P = -0`, a front face by the back-face
+  test) is lit from the other side than it faces.
+- **The list scan** (`--geo chip`): a table of operand counts walks the
+  words the chip was fed and tracks fn 0x07, 0x09 and 0x0A, giving the
+  block facts without the faces. It knows the shared command set, the 2B
+  aliases 0x11-0x1C and `topskatr`'s and `lastbrnx`'s own commands; any
+  other command gives up (the frame is shaded from the stream alone).
+
+**Self-check, all 18 games** (`remodel --light run`, every frame of a
+900M-instruction coin-start run with the native geometrizer; 6,000-6,200
+frames and 9-25 million polygon records a game): each polygon's flat luma
+recomputed in IEEE single precision from its record (`light::Lamp::eval`,
+`quantise`) against the stream's.
+
+| Board | Programs | Exact | Within one level | Off further |
+|---|---|---|---|---|
+| 2C | shared, `stcc`, `overrev`, `topskatr` (8 games) | 100% | 0 | 0 |
+| 2B | shared, `indy500`/`fvipers`, `vstriker`, `lastbrnx` (9 games) | 99.996-100% | 0.0000-0.0038% (581 of `sgt24h`'s 637 on back faces) | 0 |
+| 2A | `Program::Fixed` (`srallyc`) | 100% | 0 | 0 |
+
+- 2C: the side channel and the formula reproduce the TGP programs' lumas
+  bit for bit (*confirmed*, and the native code is bit-exact against the
+  TGP, `geometrizer-2c.md`).
+- 2B: reading the SHARC's 32-bit values as IEEE singles is *confirmed*:
+  apart from the polygons one level off, which the SHARC's rounding toward
+  zero explains (an IEEE round-to-nearest product or sum lands on the
+  other side of an integer), every luma is the IEEE recomputation's. The
+  edge-on rule above was found by this check (`sgt24h` and `doa`: 259
+  polygons off by 75-230 levels before it), and agrees with the program's
+  description in `geometrizer-2b.md` ("the sign of the product: −0
+  counts").
+- 2A: the check only shows that the side channel matches reModel's model
+  of the fixed-function geometrizer, which *is* the 2C program's maths.
+  Whether the 2A hardware lights that way stays *unconfirmed*: no 2A
+  stream other than reModel's own exists to compare with.
+
+**The list scan against the native hooks**: equal block facts on every
+block whose focal lengths the scan knew, in every frame of all 18 games'
+runs (native path, the list scanned beside the hooks: 9.95 million
+blocks; `lastbrnx`'s first 3 came before its list first set the focal
+lengths), and on the chip path (`geo-check --light`: the chip's list
+scanned, the native hooks beside it; `topskatr`, `stcc`, `lastbrnx`, 2,700
+frames each): none differing.
+
+**Colour tables are not always brightness ramps.** A game's colour
+translation tables may map a colour's levels to other hues: `topskatr`'s
+ramp boards (colour component 11) hold unrelated colours in columns 40-63
+(white at 45-47, then a pink, a red, black), so the polygon's luma in
+effect picks its colour and the board is white at luma 255 and red a few
+levels below. Interpolating such a luma paints the other colour across the
+polygon; `raster::build_with` keeps a polygon flat when its colour changes
+hue anywhere in the range of levels its corners span (per luma-table value
+for a textured one), and `lighting-check` fails a frame whose shaded
+pixels change hue (J).

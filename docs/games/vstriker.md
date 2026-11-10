@@ -110,3 +110,13 @@ suffix), the clone `vstrikro`, which isn't supported.
   attract sequence (frames 470-549) and 0.34 in a match (3300-3419),
   the one result over `temporal-check`'s 0.25 limit.
 
+## Lighting (smooth shading's side channel)
+
+Measured with `remodel --geo native --light --input coin-start run 900000000` (6212 frames; `make lighting-capture` runs the same), reModel's smooth-shading side channel (docs/hw/geometrizer.md, "Lighting side channel"):
+
+- Self-check: of 25,234,925 polygon records, the flat luma recomputed from the side channel is the stream's for 25,234,849 (100.00%), one level off for 76 and further off for 0 (the SHARC rounds toward zero).
+- no specular lighting; normals computed from the vertices in 0.00% of blocks; zero (unlit) normals on 13.85% of polygons.
+- no models drawn from polygon RAM; no direct data.
+- the light vector changes within a frame in 4749 of 6212 frames (up to 2 vectors a frame); lighting entries not changed within a frame.
+- True focal length over the window width: median 2.018 (range 1.859-2.430); the stream-only layer guesses 1.0.
+- The list scan's block facts equal the native geometrizer's on 748,040 blocks, differ on 0.

@@ -24,10 +24,25 @@
 //! stream needs only its own [`Mesh`] adapter. Per-game rules come from
 //! `romset::Shading` ([`Options::new`]).
 //!
-//! Later layers (the design's stages 2 and 4) add a side channel from the
-//! native geometrizers (true focal lengths, the game's own normals and
-//! lighting entries) and the game's lighting formula per vertex and per
-//! pixel; this layer is what every title gets without them.
+//! A side channel ([`Frame`], `side.rs`) makes it better where it exists:
+//! the native geometrizers record per block the true focal lengths, the
+//! model address and whether it is direct data (level L1), and per polygon
+//! the normal and lighting entry the game lit it with (L2); on the chip
+//! path a scan of the display list gives the block facts (`scan.rs`).
+//! [`shade_with`] checks it against the stream first ([`check_mesh`]) and
+//! uses what passes: L1 the focal lengths (no guess), direct data and the
+//! game's model rules; L2 also the game's normals for the crease test and
+//! its lighting entries as the material boundaries. The game's formula per
+//! vertex and per pixel (the design's stage 4) builds on the same data.
+
+mod scan;
+mod side;
+
+pub use scan::{scan_list, ScanBoard, ScanProgram, ScanState, ScanVariant};
+pub use side::{
+    check_face, check_mesh, self_check, Base, Block, Cause, CheckStats, Checked, Face, Facts, Frame, Lamp, Level,
+    Material, Tap, Verdict,
+};
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -56,7 +71,6 @@ impl Hasher for WeldHasher {
         self.write_u32(v as u32);
     }
 }
-use crate::geo::Stopwatch;
 
 /// How polygons are shaded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -94,9 +108,9 @@ impl Shading {
 /// A crease angle meaning "the game's own" (`romset::Shading::crease`).
 pub const CREASE_AUTO: u8 = 255;
 
-/// Without the true focal lengths (the side channel, not built yet), the
-/// guess: `fx = fy = FOCAL_GUESS * window width`. Only the crease test and
-/// the angle weights depend on it.
+/// Without the true focal lengths (no side channel: level L0), the guess:
+/// `fx = fy = FOCAL_GUESS * window width`. Only the crease test and the
+/// angle weights depend on it.
 pub const FOCAL_GUESS: f32 = 1.0;
 
 /// The material stand-in (the lighting entry isn't in the stream): two
@@ -134,11 +148,24 @@ pub struct Options {
     pub skip_checker: bool,
     /// Fill [`Shaded::info`] (for tools).
     pub diagnose: bool,
+    /// Models never shaded, and models with a crease angle of their own
+    /// (`romset::Shading::skip_models`, `model_crease`): model address
+    /// ranges, known from level L1 up.
+    pub skip_models: &'static [(u32, u32)],
+    pub model_crease: &'static [(u32, u32, u8)],
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { shading: Shading::Flat, crease: 0, skip_windows: 0, skip_checker: false, diagnose: false }
+        Options {
+            shading: Shading::Flat,
+            crease: 0,
+            skip_windows: 0,
+            skip_checker: false,
+            diagnose: false,
+            skip_models: &[],
+            model_crease: &[],
+        }
     }
 }
 
@@ -161,6 +188,8 @@ impl Options {
             skip_windows: hud_windows | window_mask(rules.skip_windows),
             skip_checker: rules.skip_checker,
             diagnose: false,
+            skip_models: rules.skip_models,
+            model_crease: rules.model_crease,
         }
     }
 
@@ -175,8 +204,12 @@ impl Options {
 pub struct MeshBlock {
     /// The window (viewport) it is drawn in, counted from 0 in the frame.
     pub window: usize,
-    /// Focal lengths (x, y): positions are view space times these.
+    /// Focal lengths (x, y): positions are view space times these (a guess,
+    /// [`FOCAL_GUESS`], unless a side channel gives them).
     pub focal: (f32, f32),
+    /// Which `0x1` command of the stream it is, counted from 0 (blocks
+    /// before the first window are counted but not kept).
+    pub cmd: u32,
     /// Its polygons in [`Mesh::polys`] and vertices in [`Mesh::verts`].
     pub polys: std::ops::Range<usize>,
     pub verts: std::ops::Range<usize>,
@@ -211,6 +244,8 @@ pub struct Mesh {
     /// Positions as the stream has them: view space times the focal
     /// lengths (x, y), z.
     pub verts: Vec<[f32; 3]>,
+    /// The stream's `0x1` commands (object blocks), kept or not.
+    pub commands: u32,
 }
 
 fn f24(w: u32) -> f32 {
@@ -250,6 +285,7 @@ pub fn mesh_from_stream(stream: &[u32]) -> Mesh {
                 i += 2 + count;
             }
             0x1 => {
+                mesh.commands += 1;
                 let Some(win) = widths.len().checked_sub(1) else { continue };
                 ids.clear();
                 let vstart = mesh.verts.len();
@@ -302,6 +338,7 @@ pub fn mesh_from_stream(stream: &[u32]) -> Mesh {
                 mesh.blocks.push(MeshBlock {
                     window: win,
                     focal: (f, f),
+                    cmd: mesh.commands - 1,
                     polys: pstart..mesh.polys.len(),
                     verts: vstart..mesh.verts.len(),
                 });
@@ -325,8 +362,14 @@ pub enum Class {
     Culled,
     /// No usable face normal (zero area).
     Degenerate,
-    /// In a window that is never shaded (HUD).
+    /// In a window that is never shaded (HUD), or a model the game's rules
+    /// exclude.
     Excluded,
+    /// Direct data (level L1 and up): polygons given with their luma.
+    Direct,
+    /// No usable normal by the side channel (level L2): a zero normal, the
+    /// models' unlit marker.
+    Unlit,
 }
 
 /// Per polygon record, with [`Options::diagnose`].
@@ -342,6 +385,8 @@ pub struct Info {
     /// of material (`material`).
     pub crease: u8,
     pub material: u8,
+    /// Its block's level.
+    pub level: Level,
 }
 
 /// Counts for one frame.
@@ -354,6 +399,8 @@ pub struct Stats {
     pub culled: u32,
     pub degenerate: u32,
     pub excluded: u32,
+    pub direct: u32,
+    pub unlit: u32,
     /// Shared edges (between two faces taking part), and of them kept hard
     /// by the crease angle and by the material rule.
     pub edges: u32,
@@ -361,6 +408,9 @@ pub struct Stats {
     pub material_splits: u32,
     /// Time [`shade`] took, ms.
     pub ms: f32,
+    /// The side channel's self-check, and the blocks by level
+    /// ([`check_mesh`]; without a side channel every block is L0).
+    pub check: CheckStats,
 }
 
 impl Stats {
@@ -372,10 +422,13 @@ impl Stats {
         self.culled += o.culled;
         self.degenerate += o.degenerate;
         self.excluded += o.excluded;
+        self.direct += o.direct;
+        self.unlit += o.unlit;
         self.edges += o.edges;
         self.crease_edges += o.crease_edges;
         self.material_splits += o.material_splits;
         self.ms += o.ms;
+        self.check.add(&o.check);
     }
 }
 
@@ -402,16 +455,57 @@ impl Shaded {
 }
 
 /// Smooth-shade a frame's raster stream: per polygon drawn lit, its corner
-/// values. Empty when `opts` shades nothing ([`Options::on`]).
+/// values. Empty when `opts` shades nothing ([`Options::on`]). From the
+/// stream alone (level L0): [`shade_with`] without a side channel.
 pub fn shade(stream: &[u32], opts: &Options) -> Shaded {
+    shade_with(stream, None, opts)
+}
+
+/// [`shade`] with the frame's side channel, if there is one: it is checked
+/// against the stream ([`check_mesh`]) and each block shaded at the level
+/// it passes (counted in [`Stats::check`]).
+pub fn shade_with(stream: &[u32], side: Option<&Frame>, opts: &Options) -> Shaded {
     if !opts.on() {
         return Shaded::default();
     }
-    // Not std's Instant: it panics in WebAssembly (the browser shades too).
-    let t = Stopwatch::start();
-    let mut s = shade_mesh(&mesh_from_stream(stream), opts);
+    let t = crate::geo::Stopwatch::start();
+    let mesh = mesh_from_stream(stream);
+    let mut s = match side {
+        Some(fr) => {
+            let checked = check_mesh(&mesh, fr);
+            let sides: Vec<Option<BlockSide>> = checked
+                .blocks
+                .iter()
+                .map(|&(level, si)| {
+                    si.map(|si| {
+                        let block = fr.blocks[si];
+                        let faces = if level == Level::L2 { fr.faces_of(&block) } else { &[] };
+                        BlockSide { level, block, faces }
+                    })
+                })
+                .collect();
+            let mut s = shade_mesh_with(&mesh, Some(&sides), opts);
+            s.stats.check = checked.stats;
+            s
+        }
+        None => {
+            let mut s = shade_mesh(&mesh, opts);
+            s.stats.check.l0 = mesh.blocks.len() as u32;
+            s
+        }
+    };
     s.stats.ms = t.elapsed().as_secs_f32() * 1e3;
     s
+}
+
+/// One mesh block's side channel as [`shade_mesh_with`] takes it.
+#[derive(Clone, Copy, Debug)]
+pub struct BlockSide<'a> {
+    pub level: Level,
+    pub block: Block,
+    /// Its faces, one per polygon record of the block (level L2 only;
+    /// empty otherwise).
+    pub faces: &'a [Face],
 }
 
 type V3 = [f32; 3];
@@ -445,22 +539,32 @@ fn union(parent: &mut [u32], a: u32, b: u32) {
 }
 
 /// A face taking part, within its block.
-struct Face {
+struct Part {
     poly: usize,
     n: V3,
     /// Its first corner in the block's corner arrays.
     corner: u32,
+    /// Level L2: its material (lighting entry's values) and the program's
+    /// facing; else `u32::MAX`, and the stream's.
+    mat: u32,
+    front: bool,
 }
 
-/// [`shade`] on a mesh (no timing).
+/// [`shade`] on a mesh (no timing), at level L0.
 pub fn shade_mesh(mesh: &Mesh, opts: &Options) -> Shaded {
+    shade_mesh_with(mesh, None, opts)
+}
+
+/// [`shade_mesh`] with a side channel per block (`sides[k]` for
+/// `mesh.blocks[k]`; None: L0).
+pub fn shade_mesh_with(mesh: &Mesh, sides: Option<&[Option<BlockSide>]>, opts: &Options) -> Shaded {
     let mut out = Shaded::default();
     if !opts.on() {
         return out;
     }
-    let c = (opts.crease as f32).to_radians().cos();
+    let crease_cos = (opts.crease as f32).to_radians().cos();
     // Reused per block.
-    let mut faces: Vec<Face> = Vec::new();
+    let mut faces: Vec<Part> = Vec::new();
     let mut face_of: Vec<u32> = Vec::new();
     let mut edges: Vec<(u32, u32, u32, u8)> = Vec::new();
     let mut parent: Vec<u32> = Vec::new();
@@ -469,15 +573,27 @@ pub fn shade_mesh(mesh: &Mesh, opts: &Options) -> Shaded {
     let mut hard: Vec<(u8, u8)> = Vec::new();
     let mut group_value: Vec<Option<f32>> = Vec::new();
     for (bi, b) in mesh.blocks.iter().enumerate() {
+        let side = sides.and_then(|s| s.get(bi).copied().flatten()).filter(|s| s.level != Level::L0);
+        let level = side.map_or(Level::L0, |s| s.level);
+        let focal = side.and_then(|s| s.block.focal()).unwrap_or(b.focal);
         let (fx, fy) = (
-            if b.focal.0.is_finite() && b.focal.0 != 0.0 { b.focal.0 } else { 1.0 },
-            if b.focal.1.is_finite() && b.focal.1 != 0.0 { b.focal.1 } else { 1.0 },
+            if focal.0.is_finite() && focal.0 != 0.0 { focal.0 } else { 1.0 },
+            if focal.1.is_finite() && focal.1 != 0.0 { focal.1 } else { 1.0 },
         );
+        let direct = side.is_some_and(|s| s.block.flags & Block::DIRECT != 0);
+        let oba = side.map(|s| s.block.oba);
+        let in_range = |lo: u32, hi: u32| oba.is_some_and(|a| (lo..=hi).contains(&a));
+        let skip_model = opts.skip_models.iter().any(|&(lo, hi)| in_range(lo, hi));
+        let c = match opts.model_crease.iter().find(|&&(lo, hi, _)| in_range(lo, hi)) {
+            Some(&(_, _, deg)) => (deg.min(180) as f32).to_radians().cos(),
+            None => crease_cos,
+        };
+        let game_faces = side.filter(|s| s.level == Level::L2 && s.faces.len() == b.polys.len()).map(|s| s.faces);
         let pos = |v: u32| {
             let p = mesh.verts[v as usize];
             [p[0] / fx, p[1] / fy, p[2]]
         };
-        let skipped = b.window < 64 && opts.skip_windows & (1 << b.window) != 0;
+        let skipped = (b.window < 64 && opts.skip_windows & (1 << b.window) != 0) || skip_model;
         faces.clear();
         face_of.clear();
         face_of.resize(b.polys.len(), u32::MAX);
@@ -491,11 +607,30 @@ pub fn shade_mesh(mesh: &Mesh, opts: &Options) -> Shaded {
                 Class::Culled
             } else if skipped {
                 Class::Excluded
+            } else if direct {
+                Class::Direct
+            } else if game_faces.is_some_and(|gf| gf[k].flags & Face::NONE != 0) {
+                Class::Unlit
             } else {
                 match face_normal(p, &pos) {
-                    Some(n) => {
+                    Some(g) => {
                         face_of[k] = faces.len() as u32;
-                        faces.push(Face { poly: pi, n, corner: 0 });
+                        // Level L2: the normal the game lit with (on the
+                        // same side as the geometric one), its material
+                        // and facing.
+                        let (n, mat, front) = match game_faces {
+                            Some(gf) => {
+                                let f = &gf[k];
+                                let len = dot(f.n, f.n).sqrt();
+                                let mut n = f.n.map(|x| x / len);
+                                if dot(n, g) < 0.0 {
+                                    n = n.map(|x| -x);
+                                }
+                                (n, f.mat as u32, f.front())
+                            }
+                            None => (g, u32::MAX, !p.back),
+                        };
+                        faces.push(Part { poly: pi, n, corner: 0, mat, front });
                         Class::Flat
                     }
                     None => Class::Degenerate,
@@ -571,9 +706,17 @@ pub fn shade_mesh(mesh: &Mesh, opts: &Options) -> Shaded {
                         hard[fb].0 |= 1 << kb;
                         continue;
                     }
-                    let d = sub(na, nb);
-                    let slack = MATERIAL_SLACK + MATERIAL_SLOPE * 255.0 * dot(d, d).sqrt();
-                    if pa.back != pb.back || (pa.luma as f32 - pb.luma as f32).abs() > slack {
+                    // One material: at L2 the same lighting entry values
+                    // and facing; else the same facing and lumas no
+                    // further apart than a light could make them.
+                    let other = if game_faces.is_some() {
+                        faces[fa].mat != faces[fb].mat || faces[fa].front != faces[fb].front
+                    } else {
+                        let d = sub(na, nb);
+                        let slack = MATERIAL_SLACK + MATERIAL_SLOPE * 255.0 * dot(d, d).sqrt();
+                        pa.back != pb.back || (pa.luma as f32 - pb.luma as f32).abs() > slack
+                    };
+                    if other {
                         out.stats.material_splits += 1;
                         hard[fa].1 |= 1 << ka;
                         hard[fb].1 |= 1 << kb;
@@ -698,6 +841,8 @@ pub fn shade_mesh(mesh: &Mesh, opts: &Options) -> Shaded {
                 Class::Culled => out.stats.culled += 1,
                 Class::Degenerate => out.stats.degenerate += 1,
                 Class::Excluded => out.stats.excluded += 1,
+                Class::Direct => out.stats.direct += 1,
+                Class::Unlit => out.stats.unlit += 1,
             }
             if opts.diagnose {
                 let fi = face_of[k];
@@ -708,6 +853,7 @@ pub fn shade_mesh(mesh: &Mesh, opts: &Options) -> Shaded {
                     block: bi as u32,
                     crease,
                     material,
+                    level,
                 });
             }
         }
@@ -766,6 +912,82 @@ pub fn quantise(lum: f32) -> u32 {
         0
     } else {
         lum.clamp(0.0, 255.0) as u32
+    }
+}
+
+/// A display list and polygon ROM for the native geometrizers' light hooks
+/// and the list scan (tests in `geo_native`, `geo_native_2c` and here):
+/// a window, the transform, focal lengths, a light, four lighting entries
+/// (one with specular), then an object with given normals (random, some
+/// zero, some double-sided), a new light vector and entry, the same model
+/// with normals computed (`mode`'s bit 1 set) and specular on, and a block
+/// of direct data.
+#[cfg(test)]
+pub(crate) mod test_scene {
+    pub fn f(v: f32) -> u32 {
+        v.to_bits()
+    }
+
+    pub fn cmd(fnc: u32) -> u32 {
+        fnc << 23 | fnc << 8 | fnc
+    }
+
+    /// The model at polygon ROM `0x800000`: P0, P1 and `n` polygons.
+    pub fn rom(n: usize) -> Vec<u32> {
+        let mut seed = 0x1234_5678u32;
+        let mut rnd = move || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) as f32 / (1 << 24) as f32 * 2.0 - 1.0
+        };
+        let mut rom = vec![f(0.0), f(0.0), f(0.0), f(1.0), f(0.0), f(0.0)];
+        for k in 0..n {
+            let quad = k % 3 != 2;
+            let link = [2u32, 1, 3, 2][k % 4];
+            let attr = (if quad { 1 } else { 2 })
+                | link << 8
+                | ((k % 5 == 0) as u32) << 17
+                | ((k % 4) as u32) << 18
+                | ((k % 2) as u32) << 27;
+            let mut nv = [rnd(), rnd(), rnd()];
+            let len = (nv[0] * nv[0] + nv[1] * nv[1] + nv[2] * nv[2]).sqrt();
+            nv = nv.map(|x| x / len);
+            if k % 7 == 3 {
+                nv = [0.0; 3];
+            }
+            rom.push(attr);
+            rom.extend(nv.map(f));
+            for _ in 0..2 {
+                rom.extend([f(rnd()), f(rnd()), f(rnd() * 0.5)]);
+            }
+        }
+        rom.push(0);
+        rom
+    }
+
+    /// The list (with `mode` for the second object: bit 1 computed normals,
+    /// bit 0 specular).
+    pub fn list(mode: u32) -> Vec<u32> {
+        let mut l = vec![cmd(0x03)];
+        l.extend([0, 495 << 16 | 383, 248 << 16 | 192, 248 << 16 | 192, 248 << 16 | 192, 248 << 16 | 192]);
+        l.push(cmd(0x0b));
+        l.extend([0.9, 0.1, 0.0, -0.1, 0.9, 0.2, 0.0, -0.2, 0.95, 0.1, -0.2, 10.0].map(f));
+        l.extend([cmd(0x09), f(500.0), f(480.0), cmd(0x0a), f(0.3), f(-0.5), f(0.81), cmd(0x16), f(1.0)]);
+        // Entries 0-3: diffuse, ambient, specular scale, control.
+        l.extend([cmd(0x06), 0, 4]);
+        for (d, a, s, c) in [(100u32, 20u32, 0u32, 0u32), (180, 40, 60, 2), (0, 90, 0, 0), (200, 10, 120, 5)] {
+            l.extend([d | a << 8 | s << 16 | c << 24, f(0.5)]);
+        }
+        l.extend([cmd(0x07), 0, cmd(0x01), 0x12_3456, 0x0065_4321, 0x80_0000, 0]);
+        // A new light and entry 2's values, then the model again.
+        l.extend([cmd(0x0a), f(-0.6), f(0.2), f(0.77), cmd(0x06), 2, 1, 150 | 30 << 8 | 80 << 16 | 1 << 24, f(0.25)]);
+        l.extend([cmd(0x07), mode, cmd(0x01), 0x12_3456, 0x0065_4321, 0x80_0000, 12]);
+        // Direct data: P0, P1, a triangle and a quad.
+        l.extend([cmd(0x02), 0x11, 0x22]);
+        l.extend([1.0, 2.0, 12.0, 3.0, 2.0, 12.0].map(f));
+        l.extend([2 | 2 << 8, 99 << 23, f(0.0), f(1.0), f(3.0), f(12.0)]);
+        l.extend([1 | 2 << 8, 50 << 23, f(0.0), f(2.0), f(4.0), f(12.0), f(5.0), f(4.0), f(12.0)]);
+        l.extend([0, cmd(0x0f)]);
+        l
     }
 }
 
@@ -1148,5 +1370,204 @@ mod tests {
         assert_eq!(quantise(f32::NAN), 0);
         assert_eq!(quantise(300.0), 255);
         assert_eq!(quantise(17.99), 17);
+    }
+
+    /// Side-channel words: written and read back; anything malformed is
+    /// refused.
+    #[test]
+    fn side_channel_words() {
+        let mut tap = Tap::new();
+        tap.block(0x80_1000, Block::BACK_UNLIT, 500f32.to_bits(), 480f32.to_bits(), [1, 2, 3]);
+        let m = [20f32.to_bits(), 100f32.to_bits(), 0];
+        tap.face([0, 0, 1f32.to_bits()], false, true, Base::D, 3 << 18, m, Material::NO_SPEC);
+        // Raw: normalised here. The same material again: shared.
+        tap.face([3f32.to_bits(), 0, 4f32.to_bits()], true, false, Base::S0, 3 << 18, m, Material::NO_SPEC);
+        tap.face([0, 0x8000_0000, 0], false, true, Base::Dotl, 0, m, 2);
+        tap.face([f32::NAN.to_bits(), 0, 0], false, true, Base::D, 0, m, 99);
+        tap.block(0, Block::DIRECT, 0, 0, [0; 3]);
+        let fr = tap.finish(1 << 40 | 5);
+        assert_eq!(fr.blocks[0].flags, Block::BACK_UNLIT | Block::HAS_FACES);
+        assert_eq!((fr.blocks[0].first, fr.blocks[0].count, fr.blocks[1].first, fr.blocks[1].count), (0, 4, 4, 0));
+        let f = &fr.faces;
+        assert_eq!((f[0].mat, f[1].mat, f[2].mat, f[3].mat), (0, 0, 1, 2), "deduplicated with the squarings");
+        assert_eq!(f[1].n, [0.6, 0.0, 0.8]);
+        assert_eq!(f[1].flags, Face::RAW | Face::BASE_S0 | 3 << Face::ENTRY_SHIFT);
+        assert_eq!((f[1].entry(), f[1].front(), f[0].front()), (3, false, true));
+        assert_eq!(f[2].flags & (Face::ZERO | Face::NONE), Face::ZERO | Face::NONE, "-0 is zero");
+        assert_eq!(f[3].flags & (Face::ZERO | Face::NONE), Face::NONE);
+        assert_eq!(fr.materials[1].squarings, 2);
+        let w = fr.to_words();
+        assert_eq!(w.len(), 6 + 2 * 9 + 4 * 4 + 3 * 4);
+        let back = Frame::from_words(&w).unwrap();
+        assert_eq!((back.frame, &back.blocks, back.materials.len()), (1 << 40 | 5, &fr.blocks, 3));
+        assert!(back.faces.iter().zip(&fr.faces).all(|(a, b)| a.flags == b.flags && a.mat == b.mat));
+        assert!(Frame::from_words(&w[..w.len() - 1]).is_none());
+        assert!(Frame::from_words(&[]).is_none());
+        let mut bad = w.clone();
+        bad[6 + 7] = 3; // the first block's faces from 3: past the end
+        assert!(Frame::from_words(&bad).is_none());
+        let mut bad = w;
+        bad[0] ^= 1;
+        assert!(Frame::from_words(&bad).is_none());
+    }
+
+    /// The formula, against hand-worked values.
+    #[test]
+    fn lamp() {
+        let m = Material { ambient: 20.0, diffuse: 100.0, spec_scale: 50.0, squarings: Material::NO_SPEC };
+        let b = Block { light: [0.0, 0.6, 0.8], ..Default::default() };
+        let face = |front: bool, base: u16| Face { n: [0.0, 0.0, 1.0], mat: 0, flags: front as u16 | base };
+        let n = [0.0, 0.0, 1.0];
+        assert_eq!(Lamp::of(&b, &face(true, 0), &m).eval(n), 100.0);
+        assert_eq!(Lamp::of(&b, &face(false, 0), &m).eval(n), 20.0, "a back face: -n·L, clamped");
+        // Specular from d = 0.8: 2·0.8·1 − 0.8 = 0.8, squared twice.
+        let s = Material { squarings: 2, ..m };
+        assert!((Lamp::of(&b, &face(true, 0), &s).eval(n) - (100.0 + 0.4096 * 50.0)).abs() < 1e-4);
+        // Back face: base D = −0.8 gives none; base n·L gives the front's.
+        assert_eq!(Lamp::of(&b, &face(false, 0), &s).eval(n), 20.0);
+        assert!((Lamp::of(&b, &face(false, Face::BASE_DOTL), &s).eval(n) - (20.0 + 0.4096 * 50.0)).abs() < 1e-4);
+        let none = Material { squarings: 0, ..m };
+        assert!((Lamp::of(&b, &face(true, Face::BASE_S0), &none).eval(n) - 140.0).abs() < 1e-4);
+    }
+
+    /// A side channel for one of `test_stream`'s blocks: per drawn polygon
+    /// its normal, facing (by the stream's back-face bit) and material
+    /// (index into `mats`), as a 2B program sends them (a lit back face
+    /// carries the back-face bit); the link-0 polygons before each get a zero
+    /// normal and material `mats.len()` (all zero: luma 0).
+    fn side_block(tap: &mut Tap, focal: f32, polys: &[(TPoly, [f32; 3], usize)], mats: &[Material]) {
+        tap.block(0x80_0000, Block::TRUNCATE, focal.to_bits(), focal.to_bits(), L.map(f32::to_bits));
+        let bits = |m: &Material| [m.ambient.to_bits(), m.diffuse.to_bits(), m.spec_scale.to_bits()];
+        for (p, n, k) in polys {
+            tap.face([0; 3], false, true, Base::D, 0, [0; 3], Material::NO_SPEC);
+            let m = &mats[*k];
+            tap.face(n.map(f32::to_bits), false, !p.back, Base::D, (*k as u32) << 18, bits(m), m.squarings);
+        }
+    }
+
+    const L: [f32; 3] = [0.3, -0.5, 0.81];
+
+    /// The cylinder with lumas from the formula (material `mat(k)` for side
+    /// k), and its normals.
+    fn lit_cylinder(focal: f32, mats: &[Material], mat: impl Fn(usize) -> usize) -> Vec<(TPoly, [f32; 3], usize)> {
+        cylinder([0.0, -0.5, 12.0], 1.0, 1.0, 16)
+            .into_iter()
+            .enumerate()
+            .map(|(k, mut p)| {
+                let mid = (k as f32 + 0.5) / 16.0 * std::f32::consts::TAU;
+                let n = [mid.cos(), 0.0, mid.sin()];
+                let b = Block { light: L, ..Default::default() };
+                let face = Face { n, mat: 0, flags: !p.back as u16 };
+                p.luma = quantise(Lamp::of(&b, &face, &mats[mat(k)]).eval(n)) as u8;
+                for c in p.corners.iter_mut() {
+                    c[0] *= focal / F;
+                    c[1] *= focal / F;
+                }
+                (p, n, mat(k))
+            })
+            .collect()
+    }
+
+    /// Level L1 uses the true focal lengths: a cylinder drawn with a focal
+    /// length far from the guess shades as it does at the guess's (L0);
+    /// direct data stays flat; a frame whose blocks don't line up is L0.
+    #[test]
+    fn l1_focal_lengths_and_direct_data() {
+        let mats = [Material { ambient: 30.0, diffuse: 180.0, spec_scale: 0.0, squarings: Material::NO_SPEC }];
+        let at_guess = lit_cylinder(F, &mats, |_| 0);
+        let (s0, _) = stream(&[at_guess.iter().map(|p| p.0.clone()).collect()]);
+        let want = shade(&s0, &opts(40));
+        assert!(want.at.len() >= 8);
+        let far = lit_cylinder(6.0 * F, &mats, |_| 0);
+        let (s, _) = stream(&[far.iter().map(|p| p.0.clone()).collect()]);
+        // L0 guesses the focal length from the window: the sides look
+        // further apart than they are and stay faceted.
+        assert!(shade(&s, &opts(40)).at.len() < want.at.len());
+        let mut tap = Tap::new();
+        tap.block(0x80_0000, Block::BACK_UNLIT, (6.0 * F).to_bits(), (6.0 * F).to_bits(), [0; 3]);
+        let side = tap.finish(1);
+        let sh = shade_with(&s, Some(&side), &opts(40));
+        assert_eq!((sh.stats.check.l1, sh.stats.check.l0), (1, 0));
+        assert_eq!(sh.at.len(), want.at.len());
+        for (a, b) in sh.corners.iter().zip(&want.corners) {
+            for k in 0..4 {
+                assert!((a[k][0] - b[k][0]).abs() < 0.05, "{a:?} {b:?}");
+            }
+        }
+        // As direct data: nothing lit.
+        let mut tap = Tap::new();
+        tap.block(0, Block::DIRECT | Block::BACK_UNLIT, 0, 0, [0; 3]);
+        let sh = shade_with(&s, Some(&tap.finish(1)), &opts(40));
+        assert!(sh.at.is_empty());
+        assert_eq!(sh.stats.direct, 16);
+        // Another number of blocks than the stream's: L0, as without.
+        let two = Frame { blocks: vec![side.blocks[0]; 2], ..side.clone() };
+        let sh = shade_with(&s, Some(&two), &opts(40));
+        assert_eq!((sh.stats.check.misaligned_frames, sh.stats.check.l0), (1, 1));
+        assert_eq!(sh.at, shade(&s, &opts(40)).at);
+        // Model rules by address (known from L1).
+        let skip = Options { skip_models: &[(0x80_0000, 0x80_00ff)], ..opts(40) };
+        let sh = shade_with(&s, Some(&side), &skip);
+        assert!(sh.at.is_empty());
+        assert_eq!(sh.stats.excluded, 16);
+        let sharp = Options { model_crease: &[(0x80_0000, 0x80_0000, 10)], ..opts(40) };
+        assert!(shade_with(&s, Some(&side), &sharp).at.is_empty());
+    }
+
+    /// Level L2: faces whose recomputed luma is the stream's are used with
+    /// the game's normals and materials (lighting entries) in place of the
+    /// luma rule; a zero normal stays flat; a block that fails the check is
+    /// L1 and shades as without faces.
+    #[test]
+    fn l2_materials_and_demotion() {
+        let a = Material { ambient: 30.0, diffuse: 180.0, spec_scale: 0.0, squarings: Material::NO_SPEC };
+        let b = Material { ambient: 31.0, ..a };
+        let mats = [a, b, Material::default()];
+        // Alternating materials of nearly equal lumas: one surface at
+        // L0/L1 (the luma rule), every edge a material change at L2.
+        let polys = lit_cylinder(F, &mats, |k| k % 2);
+        let (s, _) = stream(&[polys.iter().map(|p| p.0.clone()).collect()]);
+        let l0 = shade(&s, &opts(40));
+        assert!(l0.at.len() >= 8);
+        let mut tap = Tap::new();
+        side_block(&mut tap, F, &polys, &mats);
+        let side = tap.finish(1);
+        let chk = self_check(&s, &side);
+        assert_eq!((chk.stats.l2, chk.stats.mismatch, chk.stats.exact), (1, 0, 32), "{:?}", chk.stats);
+        let sh = shade_with(&s, Some(&side), &opts(40));
+        assert!(sh.at.is_empty(), "no two neighbours share a material");
+        assert!(sh.info.iter().all(|i| i.level == Level::L2));
+        // One material: smooth again, with the game's normals.
+        let one = lit_cylinder(F, &mats, |_| 0);
+        let (s1, _) = stream(&[one.iter().map(|p| p.0.clone()).collect()]);
+        let mut tap = Tap::new();
+        side_block(&mut tap, F, &one, &mats);
+        let side1 = tap.finish(1);
+        let sh = shade_with(&s1, Some(&side1), &opts(40));
+        assert_eq!(sh.at.len(), shade(&s1, &opts(40)).at.len());
+        // A zero normal (the unlit marker) takes no part.
+        let mut zero = side1.clone();
+        zero.faces[1].n = [0.0; 3];
+        zero.faces[1].flags |= Face::ZERO | Face::NONE;
+        let s_zero = {
+            let mut p = one.clone();
+            p[0].0.luma = 30; // ambient alone
+            stream(&[p.iter().map(|p| p.0.clone()).collect()]).0
+        };
+        let sh = shade_with(&s_zero, Some(&zero), &opts(40));
+        assert_eq!((sh.stats.check.l2, sh.stats.unlit), (1, 1), "{:?}", sh.stats.check);
+        // The wrong light: demoted to L1, shaded as by the stream (with
+        // the true focal length, here the guess).
+        let mut wrong = side.clone();
+        wrong.blocks[0].light = [-0.3, 0.5, -0.81];
+        let sh = shade_with(&s, Some(&wrong), &opts(40));
+        assert_eq!((sh.stats.check.l1, sh.stats.check.demoted, sh.stats.check.l2), (1, 1, 0));
+        assert_eq!(sh.at, l0.at);
+        // Faces not lining up with the polygons: L0.
+        let mut short = side.clone();
+        short.blocks[0].count -= 1;
+        short.faces.pop();
+        let s = self_check(&s, &short).stats;
+        assert_eq!((s.misaligned_blocks, s.l0), (1, 1));
     }
 }

@@ -768,6 +768,7 @@ impl Frame {
             latch: &mut latch,
             out: &mut out,
             tap: Some(&mut tap),
+            light: None,
         };
         match &mut native {
             Native::B(n) => n.run_frame(&mut io),
@@ -995,6 +996,7 @@ mod tests {
                 latch: &mut latch,
                 out: &mut out,
                 tap,
+                light: None,
             };
             n.run_frame(&mut io);
             out.retain(|&w| w != crate::geo::RASTER_NOP);
@@ -1071,6 +1073,7 @@ mod tests {
                 latch: &mut latch,
                 out: &mut out,
                 tap: Some(tap),
+                light: None,
             };
             n.run_frame(&mut io);
             out.retain(|&w| w != crate::geo::RASTER_NOP);

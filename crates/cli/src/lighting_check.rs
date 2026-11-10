@@ -10,8 +10,16 @@
 //! - D: every pixel whose visible polygon isn't lit is the flat frame's,
 //!   on both renderers;
 //! - E: software and GPU agree vertex-shaded about as well as flat;
+//! - B (frames captured with a side channel, `light.bin`): it lines up
+//!   with the stream on every frame, the flat luma recomputed from it is
+//!   the stream's (`light::check_mesh`), and the list scan's block facts
+//!   (`scan.bin`) are the native geometrizer's;
+//! - F (likewise): the stream-only pass (L0) against the one with the side
+//!   channel: hard-edge decisions that agree, pixels that differ;
+//! - J: shading changes a pixel's level within its colour ramp, never its
+//!   hue (`raster::same_hue`);
 //! - H, I: what the pass costs and what it did (lit, flat, excluded,
-//!   crease edges, material splits).
+//!   crease edges, material splits, blocks by level).
 //!
 //! Pictures per frame: flat and vertex (software, whole frames), their
 //! differences, and the polygons' classes in false colour. `--probe`
@@ -69,11 +77,20 @@ fn placed(mut polys: Vec<Poly>, f: &Frame, view: &View) -> (Vec<Poly>, Vec<Place
 
 /// False colour of a polygon's class (scaled by the flat frame's
 /// brightness where drawn).
-fn class_colour(p: &Poly, class: Option<Class>) -> [f32; 3] {
+fn class_colour(p: &Poly, info: Option<&light::Info>) -> [f32; 3] {
+    let class = info.map(|i| i.class);
     match class {
-        _ if !p.lit.is_empty() => [1.0, 0.55, 0.1], // lit (stream level, L0): orange
-        Some(Class::Lit) => [0.2, 0.3, 0.9],        // lit but dropped: a shadow or checker
-        Some(Class::Excluded) => [0.3, 0.5, 1.0],   // excluded (HUD windows): blue
+        // Lit: L0 (stream only) orange, L1 (block facts) yellow, L2 (the
+        // game's normals and materials) green.
+        _ if !p.lit.is_empty() => match info.map(|i| i.level) {
+            Some(light::Level::L2) => [0.2, 0.85, 0.25],
+            Some(light::Level::L1) => [0.95, 0.85, 0.1],
+            _ => [1.0, 0.55, 0.1],
+        },
+        Some(Class::Lit) => [0.2, 0.3, 0.9], // lit but dropped: a shadow or checker
+        Some(Class::Excluded) => [0.3, 0.5, 1.0], // excluded (HUD windows): blue
+        Some(Class::Direct) => [0.55, 0.35, 0.15], // direct data: brown
+        Some(Class::Unlit) => [0.95, 0.95, 0.95], // zero normal (L2): white
         Some(Class::Degenerate) => [0.7, 0.3, 0.9], // no area: purple
         Some(Class::Flat) | None => [0.62, 0.62, 0.62], // took part, nothing varies: grey
         Some(Class::Hidden | Class::Culled) => [0.0, 0.8, 0.8],
@@ -102,7 +119,7 @@ fn layers_picture(
             continue;
         }
         let p = &polys[placed[k as usize].poly];
-        let c = class_colour(p, info.get(&p.at).map(|i| i.class));
+        let c = class_colour(p, info.get(&p.at));
         let l =
             (flat3d[o * 3] as f32 * 0.3 + flat3d[o * 3 + 1] as f32 * 0.59 + flat3d[o * 3 + 2] as f32 * 0.11) / 255.0;
         let s = 0.35 + 0.65 * l;
@@ -202,12 +219,13 @@ fn report_probe(
         let inf = info.get(&p.at);
         let _ = writeln!(
             out,
-            "  draw {:>5} window {} block {:>4} at {:>7} class {:<10} luma {:>3} colour {:?} textured {} corners {:?} hard edges crease {:04b} material {:04b}",
+            "  draw {:>5} window {} block {:>4} at {:>7} class {:<10} {:?} luma {:>3} colour {:?} textured {} corners {:?} hard edges crease {:04b} material {:04b}",
             hit.index,
             p.window,
             p.block,
             p.at,
             inf.map_or("-".to_string(), |i| format!("{:?}", i.class)),
+            inf.map_or(light::Level::L0, |i| i.level),
             p.luma,
             p.colour,
             p.texture.is_some(),
@@ -274,6 +292,7 @@ pub fn run(
     probes: &[Probe],
     bench_frames: Option<usize>,
     every: usize,
+    use_side: bool,
 ) -> Result<bool, String> {
     let texture_rom = capture::load_texture_rom(root)
         .map_err(|e| format!("{}: {e} (capture with `make capture`)", root.display()))?;
@@ -290,9 +309,10 @@ pub fn run(
     let _ = writeln!(rep, "view          {}x{}", view.width, view.height);
     let _ = writeln!(
         rep,
-        "shading       vertex (stream level), crease {} degrees, focal guess {} x window width",
+        "shading       vertex, crease {} degrees, focal guess {} x window width (L0); side channel {}",
         opts.crease,
-        light::FOCAL_GUESS
+        light::FOCAL_GUESS,
+        if use_side { "used where captured (light.bin)" } else { "not used (--no-side)" }
     );
     let mut dirs: Vec<_> = std::fs::read_dir(root)
         .map_err(|e| e.to_string())?
@@ -338,14 +358,22 @@ pub fn run(
     let mut worst: Vec<(f32, u64, u32, u32, Vec<f32>, (f32, f32))> = Vec::new();
     let (mut e_flat, mut e_lit, mut e_px) = (0usize, 0usize, 0usize);
     let mut loaded = Vec::new();
+    // B and F, over the frames with a side channel.
+    let mut side_frames = 0usize;
+    let mut scan = model2::geo::LightCheck::default();
+    let (mut f_agree, mut f_edges, mut f_px, mut f_all) = (0usize, 0usize, 0usize, 0usize);
+    let (mut f_lit0, mut f_lit) = (0usize, 0usize);
+    let mut hue_px = 0usize;
+    let mut hue_flat = 0usize;
     for (n, d) in dirs.iter().enumerate() {
         let f = Frame::load(d).map_err(|e| format!("{}: {e}", d.display()))?;
         let src = f.sources(&texture_rom);
         let mut line = String::new();
+        let side = if use_side { f.light_frame() } else { None };
         // The pass, timed alone (best of 3: the machine is shared).
-        let mut sh = light::shade(&f.stream, &opts);
+        let mut sh = light::shade_with(&f.stream, side.as_ref(), &opts);
         for _ in 0..2 {
-            let again = light::shade(&f.stream, &opts);
+            let again = light::shade_with(&f.stream, side.as_ref(), &opts);
             if again.stats.ms < sh.stats.ms {
                 sh = again;
             }
@@ -361,8 +389,64 @@ pub fn run(
             &raster::BuildIn { lit: Some(&sh), skip_checker: opts.skip_checker, ..Default::default() },
         )
         .0;
+        // B: the side channel lines up and agrees with the stream (counted
+        // in `sh.stats.check`); the list scan's facts are the hooks'.
+        if let Some(sd) = &side {
+            side_frames += 1;
+            let c = sh.stats.check;
+            if c.misaligned_frames > 0 {
+                failures.push(format!("B: frame {}: the side channel's blocks don't line up with the stream", f.frame));
+            }
+            if let Some(sc) = f.scan_frame() {
+                compare_scan(&mut scan, f.frame, sd, &sc);
+            }
+        }
+        // F: the stream alone (L0) against the side channel.
+        if side.is_some() {
+            let l0 = light::shade(&f.stream, &opts);
+            let hard = |s: &light::Shaded| -> std::collections::HashMap<u32, (u8, bool)> {
+                s.info.iter().map(|i| (i.at, (i.crease | i.material, i.class == Class::Lit))).collect()
+            };
+            let (h0, h1) = (hard(&l0), hard(&sh));
+            for (at, (e1, _)) in &h1 {
+                if let Some((e0, _)) = h0.get(at) {
+                    f_edges += 4;
+                    f_agree += 4 - (e0 ^ e1).count_ones() as usize;
+                }
+            }
+            f_lit0 += l0.at.len();
+            f_lit += sh.at.len();
+            let polys0 = raster::build_with(
+                &f.stream,
+                &src,
+                &raster::BuildIn { lit: Some(&l0), skip_checker: opts.skip_checker, ..Default::default() },
+            )
+            .0;
+            let (p0, _) = placed(polys0, &f, &view);
+            let (pl, _) = placed(
+                raster::build_with(
+                    &f.stream,
+                    &src,
+                    &raster::BuildIn { lit: Some(&sh), skip_checker: opts.skip_checker, ..Default::default() },
+                )
+                .0,
+                &f,
+                &view,
+            );
+            f_px += compare(&soft(&p0, &src, &view).0, &soft(&pl, &src, &view).0, None).0;
+            f_all += view.width * view.height;
+            if n % every.max(1) == 0 && probes.is_empty() {
+                // The L0 picture, to compare with -vertex.
+                let sw0 = soft(&p0, &src, &view);
+                let rgb = video::compose(&f.tiles, &f.palette, Some((&sw0.0, &sw0.1)), &view);
+                let _ = std::fs::write(
+                    out_dir.join(format!("{:06}-vertex-l0.png", f.frame)),
+                    png::encode_rgb(view.width, view.height, &rgb),
+                );
+            }
+        }
         // A: crease 0.
-        let sh0 = light::shade(&f.stream, &zero);
+        let sh0 = light::shade_with(&f.stream, side.as_ref(), &zero);
         let polys0 = raster::build_with(&f.stream, &src, &raster::BuildIn { lit: Some(&sh0), ..Default::default() }).0;
         let (fp, fpl) = placed(flat_polys, &f, &view);
         let (lp, lpl) = placed(lit_polys, &f, &view);
@@ -381,6 +465,13 @@ pub fn run(
         // C: brightness. Per lit polygon, its corners' mean against its
         // own luma (+0.5); the frame's mean colour, 3D layer.
         let lit_list: Vec<&Poly> = lp.iter().filter(|p| !p.lit.is_empty()).collect();
+        // Lit by the pass but drawn flat because their colour would change
+        // hue (`raster::build_with`; shadows and skipped checkerboards
+        // aside).
+        hue_flat += lp
+            .iter()
+            .filter(|p| p.lit.is_empty() && !p.shadow && !(p.checker && opts.skip_checker) && sh.get(p.at).is_some())
+            .count();
         let mut near = 0;
         for p in &lit_list {
             let c = sh.get(p.at).unwrap();
@@ -438,6 +529,18 @@ pub fn run(
         e_lit += el;
         e_px += px;
         let changed = compare(&sw_flat.0, &sw_lit.0, None).0;
+        // J: shading changes a pixel's level, never its hue (the colour
+        // tables may map levels to other hues: such polygons stay flat).
+        let hue = (0..px)
+            .filter(|&i| {
+                let (a, b) = (&sw_flat.0[i * 3..i * 3 + 3], &sw_lit.0[i * 3..i * 3 + 3]);
+                a != b && !raster::same_hue([a[0], a[1], a[2]], [b[0], b[1], b[2]])
+            })
+            .count();
+        hue_px += hue;
+        if hue > px / 5000 {
+            failures.push(format!("J: frame {}: {hue} pixels change hue, not only level", f.frame));
+        }
         let pct = |x: usize| 100.0 * x as f64 / px as f64;
         let _ = writeln!(
             line,
@@ -515,6 +618,56 @@ pub fn run(
         total.crease_edges,
         total.material_splits
     );
+    if side_frames > 0 {
+        let c = &total.check;
+        let n = c.compared().max(1) as f64;
+        let blocks = (c.l0 + c.l1 + c.l2).max(1) as f64;
+        let _ = writeln!(
+            tail,
+            "B             {side_frames} frames with a side channel: {} misaligned; blocks L2 {:.2}%, L1 {:.2}%, L0 {:.2}%, {} demoted; polygons {}: exact {:.3}%, within 1 {:.3}%, mismatching {:.3}%, {} without a normal",
+            c.misaligned_frames,
+            100.0 * c.l2 as f64 / blocks,
+            100.0 * c.l1 as f64 / blocks,
+            100.0 * c.l0 as f64 / blocks,
+            c.demoted,
+            c.compared(),
+            100.0 * c.exact as f64 / n,
+            100.0 * c.near as f64 / n,
+            100.0 * c.mismatch as f64 / n,
+            c.skipped
+        );
+        let causes = |v: &[u32; 6]| {
+            light::Cause::ALL.iter().map(|k| format!("{} {}", k.name(), v[*k as usize])).collect::<Vec<_>>().join(", ")
+        };
+        let _ =
+            writeln!(tail, "B causes      mismatching: {}; within 1: {}", causes(&c.causes), causes(&c.near_causes));
+        let _ = writeln!(
+            tail,
+            "B scan        {} frames: blocks equal {}, equal where known {}, focal not known {}, differ {}; {} the scan gave up on, {} with another block count",
+            scan.frames, scan.equal, scan.partial, scan.unknown, scan.differing, scan.scan_failed, scan.count_differing
+        );
+        if c.mismatch as f64 > 0.001 * n {
+            failures.push(format!(
+                "B: {} of {} polygons' flat lumas mismatch the side channel (over 0.1%)",
+                c.mismatch,
+                c.compared()
+            ));
+        }
+        if scan.differing > 0 || scan.count_differing > 0 {
+            failures.push(format!(
+                "B: the list scan's block facts differ from the native geometrizer's ({} blocks, {} frames' counts; first {:?})",
+                scan.differing, scan.count_differing, scan.first
+            ));
+        }
+        let _ = writeln!(
+            tail,
+            "F             L0 (stream only) against the side channel: {:.2}% of shared ring edges decided alike (initial target 95%); lit polygons {} -> {}; {:.3}% of pixels differ",
+            100.0 * f_agree as f64 / f_edges.max(1) as f64,
+            f_lit0,
+            f_lit,
+            100.0 * f_px as f64 / f_all.max(1) as f64
+        );
+    }
     let slowest = shade_ms.iter().copied().fold(0.0f32, f32::max);
     let _ = writeln!(
         tail,
@@ -542,6 +695,13 @@ pub fn run(
         100.0 * e_flat as f64 / e_px.max(1) as f64,
         100.0 * e_lit as f64 / e_px.max(1) as f64
     );
+    let _ = writeln!(
+        tail,
+        "J             pixels whose hue (not only level) shading changed: {} = {:.4}% (fails over 0.02% in a frame); {} polygons kept flat because their colour tables change hue over their corners' lumas",
+        hue_px,
+        100.0 * hue_px as f64 / e_px.max(1) as f64,
+        hue_flat
+    );
     if c_share < 99.0 {
         warnings.push(format!("C: {c_share:.2}% of lit polygons within 8 levels (initial target 99%)"));
     }
@@ -557,7 +717,7 @@ pub fn run(
     }
     let _ = writeln!(
         tail,
-        "{}  pictures (FRAME-flat, -vertex, -diff, -layers: orange lit, grey flat, blue excluded, dark blue lit but a shadow, red crease, magenta material edges) in {}",
+        "{}  pictures (FRAME-flat, -vertex, -vertex-l0 (stream only, with a side channel), -diff, -layers: lit L0 orange, L1 yellow, L2 green, grey flat, blue excluded, brown direct data, white zero normal, dark blue lit but a shadow, red crease, magenta material edges) in {}",
         if failures.is_empty() { "PASS        " } else { "FAILED      " },
         out_dir.display()
     );
@@ -565,4 +725,27 @@ pub fn run(
     rep.push_str(&tail);
     let _ = std::fs::write(out_dir.join("report.txt"), rep);
     Ok(failures.is_empty())
+}
+
+/// B: one frame's list scan (`scan.bin`) against the native geometrizer's
+/// block facts (`light.bin`), as the engine counts them.
+fn compare_scan(c: &mut model2::geo::LightCheck, frame: u64, native: &light::Frame, scan: &light::Frame) {
+    use light::Block;
+    c.frames += 1;
+    if scan.blocks.len() != native.blocks.len() {
+        c.count_differing += 1;
+    }
+    for (k, (n, s)) in native.blocks.iter().zip(&scan.blocks).enumerate() {
+        let (nf, sf) = (n.facts(), s.facts());
+        if s.flags & Block::UNKNOWN != 0 {
+            c.unknown += 1;
+        } else if nf == sf {
+            c.equal += 1;
+        } else if s.flags & Block::PARTIAL != 0 && (nf.0, nf.2) == (sf.0, sf.2) {
+            c.partial += 1;
+        } else {
+            c.differing += 1;
+            c.first.get_or_insert((frame, k, *n, *s));
+        }
+    }
 }

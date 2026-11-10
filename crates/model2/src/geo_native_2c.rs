@@ -20,6 +20,7 @@
 //! and handed back ([`Native::export`]).
 
 use crate::geo_native::Io;
+use crate::light::{Base, Block, Material};
 use crate::smooth::Kind;
 use mb86235::cpu::{External, Tgp};
 use mb86235::float::{abs, add, addz, cfib, cif, clamp_negative, mul, negative, rsq, sub, subz};
@@ -717,6 +718,14 @@ impl Native {
     /// under raster command 1.
     fn direct(&mut self, io: &mut Io, cmd: u32) {
         io.direct();
+        if io.light.is_some() {
+            let l = self.layout();
+            let (fx, fy) = (self.get(l.focus, 0), self.get(l.focus, 1));
+            let lv = [self.get(l.light, 0), self.get(l.light, 1), self.get(l.light, 2)];
+            if let Some(t) = io.light.as_deref_mut() {
+                t.block(0, Block::DIRECT | Block::BACK_UNLIT, fx, fy, lv);
+            }
+        }
         io.emit((cmd & 0xff00_001c) | 1);
         let tpa = io.rd();
         let tha = io.rd();
@@ -778,6 +787,44 @@ impl Native {
         cfib(lum) << 15
     }
 
+    /// For the side channel: a polygon record lit (`lit`: else sent as an
+    /// unlit back face) with normal `n` (`raw`: the un-normalised cross
+    /// product) and parameters `p`, recorded with how the lighting routine
+    /// treats it: the specular base and the number of squarings
+    /// ([`Native::luma`]'s, read the same way).
+    #[allow(clippy::too_many_arguments)]
+    fn light_face(
+        &self,
+        io: &mut Io,
+        n: [u32; 3],
+        raw: bool,
+        front: bool,
+        given: bool,
+        quad: bool,
+        attr: u32,
+        p: [u32; 4],
+    ) {
+        let l = self.layout();
+        let control = p[3];
+        let lit = front || attr & 0x2_0000 != 0;
+        let squarings = if lit && control & self.get(l.specular, 0) != 0 {
+            if control == 1 {
+                0
+            } else {
+                (self.read_at(io, Ram::A, l.squarings + (control & 0x3fff)) & 0x3fff).max(1)
+            }
+        } else {
+            Material::NO_SPEC
+        };
+        // The specular term starts from the clamped term where the dot
+        // product reaching the routine was clamped (`given_dotl`) or the
+        // program clamps it itself (`overrev`).
+        let base = if self.program == Program::Overrev || (given && front && !quad) { Base::S0 } else { Base::D };
+        if let Some(t) = io.light.as_deref_mut() {
+            t.face(n, raw, front, base, attr, [p[0], p[1], p[2]], squarings);
+        }
+    }
+
     /// The lit luma word of a polygon facing the eye (`front`) or of a
     /// double-sided one facing away, from the diffuse dot product.
     #[inline(always)]
@@ -835,6 +882,20 @@ impl Native {
         let v1 = w.vertex(io);
         let p1 = c.xform(sel(v1), v1);
         c.emit(io, p1);
+        if io.light.is_some() {
+            let mut flags = Block::BACK_UNLIT;
+            if compact {
+                flags |= Block::COMPACT | Block::COMPUTED;
+            } else if self.get(l.computed, 0) & 1 != 0 {
+                flags |= Block::COMPUTED;
+            }
+            if self.get(l.specular, 0) != 0 {
+                flags |= Block::SPECULAR;
+            }
+            if let Some(t) = io.light.as_deref_mut() {
+                t.block(oba, flags, c.fx, c.fy, c.l);
+            }
+        }
         if compact || self.get(l.computed, 0) & 1 != 0 {
             for k in 0..3 {
                 self.set(l.edge0, k, p0[k as usize]);
@@ -903,6 +964,9 @@ impl Native {
             } else {
                 BACK_FACE
             };
+            if io.light.is_some() {
+                self.light_face(io, n, false, front, true, quad, attr, p);
+            }
             Self::send(io, c, attr, luma, dist, pa, pb);
             if self.counted() {
                 return;
@@ -993,8 +1057,15 @@ impl Native {
                 let n = [mul(cx, y), mul(cy, y), mul(cz, y)];
                 let dotp = dot(pa, n);
                 let dotl = dot(n, c.l);
+                if io.light.is_some() {
+                    self.light_face(io, n, false, front, false, quad, attr, p);
+                }
                 (self.lit(io, front, dotl, n[2], c.l[2], p), mul(coef_lod, abs(dotp)))
             } else {
+                if io.light.is_some() {
+                    // Never normalised: the side channel normalises it.
+                    self.light_face(io, [cx, cy, cz], true, front, false, quad, attr, p);
+                }
                 (BACK_FACE, coef_lod)
             };
             Self::send(io, c, attr, luma, dist, pa, pb);
@@ -1077,10 +1148,100 @@ mod tests {
         let (mut words, mut fed, mut out, mut latch) = (0, Vec::new(), Vec::new(), 0);
         let mut ram = vec![0; 0x1_0000];
         let mut list = ListDma::new(&buffer, &[], 0, &mut words, &mut fed);
-        let mut io =
-            Io { list: &mut list, poly: GeoExt::new(&mut ram, rom), latch: &mut latch, out: &mut out, tap: None };
+        let mut io = Io {
+            list: &mut list,
+            poly: GeoExt::new(&mut ram, rom),
+            latch: &mut latch,
+            out: &mut out,
+            tap: None,
+            light: None,
+        };
         n.run_frame(&mut io);
         out
+    }
+
+    /// [`frame`] with the lighting side channel's tap.
+    fn frame_lit(n: &mut Native, list: &[u32], rom: &[u32]) -> (Vec<u32>, crate::light::Frame) {
+        let buffer: Vec<u8> =
+            list.iter().flat_map(|w| w.to_le_bytes()).chain(std::iter::repeat(0)).take(0x2_0000).collect();
+        let (mut words, mut fed, mut out, mut latch) = (0, Vec::new(), Vec::new(), 0);
+        let mut ram = vec![0; 0x1_0000];
+        let mut list = ListDma::new(&buffer, &[], 0, &mut words, &mut fed);
+        let mut tap = crate::light::Tap::new();
+        let mut io = Io {
+            list: &mut list,
+            poly: GeoExt::new(&mut ram, rom),
+            latch: &mut latch,
+            out: &mut out,
+            tap: None,
+            light: Some(&mut tap),
+        };
+        n.run_frame(&mut io);
+        (out, tap.finish(1))
+    }
+
+    /// The light hooks of the 2C programs (and the 2A's): each block's
+    /// facts, each polygon's normal, facing and lighting, from which the
+    /// program's luma is recomputed exactly for every polygon (single-sided
+    /// back faces: sent with luma 0); the list scan finds the same block
+    /// facts; the stream is the same with the hooks on.
+    #[test]
+    fn light_hooks() {
+        use crate::light::{self, test_scene, Base, Block, Face, ScanBoard, ScanProgram, ScanState, ScanVariant};
+        let programs = [
+            (Program::Shared, ScanBoard::C, ScanVariant::Shared),
+            (Program::Overrev, ScanBoard::C, ScanVariant::Overrev),
+            (Program::Fixed, ScanBoard::A, ScanVariant::Shared),
+        ];
+        for (program, board, variant) in programs {
+            for mode in [0, 1, 2, 3] {
+                let new = || if program == Program::Fixed { Native::fixed() } else { Native::new(program) };
+                let (list, rom) = (test_scene::list(mode), test_scene::rom(20));
+                let (out, side) = frame_lit(&mut new(), &list, &rom);
+                assert_eq!(frame(&mut new(), &list, &rom), out, "{program:?} mode {mode}: the hooks only observe");
+                assert_eq!(side.blocks.len(), 3);
+                let (a, b, d) = (side.blocks[0], side.blocks[1], side.blocks[2]);
+                assert_eq!((a.oba, a.fx, a.fy, a.light), (0x80_0000, 500.0, 480.0, [0.3, -0.5, 0.81]));
+                assert_eq!(a.flags, Block::BACK_UNLIT | Block::HAS_FACES);
+                assert_eq!((a.count, b.first, b.count), (20, 20, 12));
+                let computed = if mode & 2 != 0 { Block::COMPUTED } else { 0 };
+                let specular = if mode & 1 != 0 { Block::SPECULAR } else { 0 };
+                assert_eq!(b.flags, Block::BACK_UNLIT | Block::HAS_FACES | computed | specular);
+                assert_eq!((d.oba, d.flags, d.count), (0, Block::DIRECT | Block::BACK_UNLIT, 0));
+                let faces = &side.faces;
+                assert_ne!(faces[3].flags & Face::ZERO, 0, "a zero normal");
+                // Given normals: a front triangle's term is clamped first.
+                let tri = faces.iter().take(20).enumerate().filter(|(k, f)| k % 3 == 2 && f.front()).count();
+                let s0 = faces.iter().take(20).filter(|f| f.base() == Base::S0).count();
+                assert_eq!(s0, if program == Program::Overrev { 20 } else { tri });
+                if mode & 2 != 0 {
+                    // Culled back faces' normals were never normalised.
+                    assert!(faces[20..].iter().any(|f| f.flags & Face::RAW != 0));
+                }
+                let s = light::self_check(&out, &side).stats;
+                assert_eq!((s.misaligned_frames, s.misaligned_blocks), (0, 0));
+                assert_eq!((s.mismatch, s.near), (0, 0), "{program:?} mode {mode}: {s:?}");
+                assert_eq!((s.l2, s.l1, s.l0, s.demoted), (2, 1, 0, 0));
+                // Computed normals: a polygon of no area has none (NaN).
+                let none = side.faces.iter().filter(|f| f.flags & (Face::NONE | Face::ZERO) == Face::NONE).count();
+                assert_eq!((s.compared() + s.skipped, s.skipped as usize), (32, none));
+                assert!(s.unlit_back > 0);
+                let p = ScanProgram { board, variant };
+                let scan = light::scan_list(&list, p, &mut ScanState::default()).unwrap();
+                let facts = |v: &[Block]| v.iter().map(|b| b.facts()).collect::<Vec<_>>();
+                assert_eq!(facts(&scan), facts(&side.blocks));
+                // The wrong specular squarings: demoted (where specular
+                // lit something).
+                if mode & 1 != 0 {
+                    let mut bad = side.clone();
+                    for m in bad.materials.iter_mut().filter(|m| m.squarings != light::Material::NO_SPEC) {
+                        m.squarings += 3;
+                    }
+                    let s = light::self_check(&out, &bad).stats;
+                    assert!(s.demoted >= 1 && s.causes[light::Cause::Specular as usize] > 0, "{s:?}");
+                }
+            }
+        }
     }
 
     #[test]

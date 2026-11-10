@@ -135,3 +135,13 @@ documentation and hasn't been contradicted yet.
   ghost of the letters on the empty frames (`docs/enhancements.md`). The
   waving chequered flags beside it, which have no motion data, look soft.
 
+## Lighting (smooth shading's side channel)
+
+Measured with `remodel --geo native --light --input coin-start run 900000000` (6209 frames; `make lighting-capture` runs the same), reModel's smooth-shading side channel (docs/hw/geometrizer.md, "Lighting side channel"):
+
+- Self-check: of 14,125,713 polygon records, the flat luma recomputed from the side channel is the stream's for 14,125,713 (100.00%), one level off for 0 and further off for 0.
+- specular on in 100.00% of object blocks, 67.06% of polygons lit with a specular term; normals computed from the vertices in 100.00% of blocks; zero (unlit) normals on 0.00% of polygons.
+- no models drawn from polygon RAM; no direct data.
+- the light vector changes within a frame in 3321 of 6209 frames (up to 3 vectors a frame); lighting entries not changed within a frame.
+- True focal length over the window width: median 1.210 (range 0.502-1.210); the stream-only layer guesses 1.0.
+- The list scan's block facts equal the native geometrizer's on 303,700 blocks, differ on 0.

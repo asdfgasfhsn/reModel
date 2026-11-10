@@ -401,7 +401,11 @@ whatever `--geo` says. The display list's matrices, windows, focal
 lengths, lighting, mode and light vector are all the 2C commands. The 2A
 chip's own arithmetic, lighting and clipping are *unconfirmed*: this is
 the 2C programs' behaviour, which the pictures agree with (the cars are
-lit from the side, the road and trees shaded by their normals).
+lit from the side, the road and trees shaded by their normals). (Smooth
+shading's self-check recomputes every polygon's luma from the side
+channel exactly, 100% of 16.8 million in a run, but against reModel's own
+model of the chip: `geometrizer.md`, "Lighting side channel"; it says
+nothing about the hardware.)
 
 ### Textures and colour (*confirmed* by the pictures)
 

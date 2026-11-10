@@ -52,3 +52,13 @@ Dynamite Baseball '97, a two-player baseball cabinet with a bat lever.
   from 4507 six. Button 1 from 3507 showed nothing for 16 frames. The
   least, 1, is the manifest's.
 
+## Lighting (smooth shading's side channel)
+
+Measured with `remodel --geo native --light --input coin-start run 900000000` (6191 frames; `make lighting-capture` runs the same), reModel's smooth-shading side channel (docs/hw/geometrizer.md, "Lighting side channel"):
+
+- Self-check: of 10,713,176 polygon records, the flat luma recomputed from the side channel is the stream's for 10,713,135 (100.00%), one level off for 41 and further off for 0 (the SHARC rounds toward zero).
+- no specular lighting; normals computed from the vertices in 1.78% of blocks; zero (unlit) normals on 11.54% of polygons.
+- models drawn from polygon RAM in 9,086 blocks (145,094 polygons, 1.78% of blocks); no direct data.
+- the light vector changes within a frame in 1244 of 6191 frames (up to 3 vectors a frame); lighting entries not changed within a frame.
+- True focal length over the window width: median 4.032 (range 0.414-12.097); the stream-only layer guesses 1.0.
+- The list scan's block facts equal the native geometrizer's on 510,023 blocks, differ on 0.

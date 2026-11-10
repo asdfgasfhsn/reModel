@@ -238,6 +238,9 @@ pub struct Renderer {
     light_rules: (&'static romset::Shading, u64),
     /// The last frame's `light::shade` counts (None: not shaded).
     light_stats: Option<model2::light::Stats>,
+    /// The lighting side channel for the next frame `build_polys` shades
+    /// ([`Renderer::set_light_frame`], or the engine's in `present_bus*`).
+    light_side: Option<std::sync::Arc<model2::light::Frame>>,
     /// Group 0 of the temporal pipelines (`raster_layout` and binding 5),
     /// and their pipeline layouts by variant.
     raster_layout_t: wgpu::BindGroupLayout,
@@ -486,6 +489,7 @@ impl Renderer {
             raster: HashMap::new(),
             light_rules: (&romset::Shading::DEFAULT, 0),
             light_stats: None,
+            light_side: None,
             raster_layout_t,
             pipeline_layouts_t,
             temporal,
@@ -675,6 +679,16 @@ impl Renderer {
         self.light_stats
     }
 
+    /// The lighting side channel (`model2::light::Frame`) of the geometry
+    /// the next `present_bus*` call draws, when it is passed in (an
+    /// in-between); used once. Without it the engine's own frame takes the
+    /// engine's (`Engine::light_frame`, with `Geometrizer::set_light` on),
+    /// other geometry none. A side channel that doesn't line up with the
+    /// stream is dropped by `light::shade_with`'s check.
+    pub fn set_light_frame(&mut self, side: Option<std::sync::Arc<model2::light::Frame>>) {
+        self.light_side = side;
+    }
+
     /// The options `present_bus*` shades the stream with (None: shading
     /// off).
     pub fn light_options(&self) -> Option<model2::light::Options> {
@@ -692,7 +706,8 @@ impl Renderer {
         m: Option<&model2::raster::MotionIn>,
     ) -> (Vec<Poly>, Vec<model2::raster::Centres>) {
         let opts = self.light_options();
-        let shaded = opts.map(|o| model2::light::shade(stream, &o));
+        let side = self.light_side.take();
+        let shaded = opts.map(|o| model2::light::shade_with(stream, side.as_deref(), &o));
         self.light_stats = shaded.as_ref().map(|s| s.stats);
         let input = model2::raster::BuildIn {
             motion: m,
@@ -1595,6 +1610,9 @@ impl Renderer {
         }
         if geo.is_none() {
             bus.geo.sync();
+            if self.light_side.is_none() {
+                self.light_side = bus.geo.engine().light_frame();
+            }
         }
         let b = &*bus;
         let geo = geo.unwrap_or_else(|| (&b.geo.engine().stream, &b.geo.engine().texture_point_ram));
@@ -1612,6 +1630,9 @@ impl Renderer {
         format: wgpu::TextureFormat,
         origin: (u32, u32),
     ) {
+        if self.light_side.is_none() {
+            self.light_side = bus.geo.last_light().cloned();
+        }
         if self.quality.temporal > 0 {
             let (stream, points) = bus.geo.last_frame();
             let frame = bus.geo.last_smooth();
@@ -1645,6 +1666,9 @@ impl Renderer {
         }
         if geo.is_none() || motion.is_some_and(|m| m.s1.is_none()) {
             bus.geo.sync();
+        }
+        if geo.is_none() && self.light_side.is_none() {
+            self.light_side = bus.geo.engine().light_frame();
         }
         let b = &*bus;
         let engine = (&b.geo.engine().stream[..], &b.geo.engine().texture_point_ram[..]);

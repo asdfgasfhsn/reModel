@@ -70,6 +70,10 @@ pub fn run(
     if let Some((frame, addr, a, b)) = c.first_state {
         println!("first state   frame {frame}: word {addr:#x} chip {a:08x}, native {b:08x}");
     }
+    if c.light.frames > 0 {
+        // --light: the chip path's list scan against the native hooks.
+        print!("{}", crate::light_report::scan_report(&c.light));
+    }
     let chip = if e.sharc.is_some() { "SHARC" } else { "TGP" };
     let summary = |label: &str, t: &[(f32, f32)]| {
         if t.is_empty() {

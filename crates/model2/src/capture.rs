@@ -4,11 +4,16 @@
 //!
 //! A capture directory holds `texture-rom.bin` (the texture ROM, shared by
 //! every frame) and one subdirectory per frame with the raster stream, the
-//! video RAMs and the sync offsets, all little-endian. Derived from the
-//! game: keep captures under `out/`.
+//! video RAMs and the sync offsets, all little-endian, and `light.bin` when
+//! the geometrizer recorded smooth shading's side channel for it
+//! (`crate::light::Frame::to_words`; older captures have none and shade
+//! from the stream alone), with `scan.bin` the list scan's block facts
+//! when a native geometrizer recorded it (for `lighting-check` to compare). Derived from the game: keep captures under
+//! `out/`.
 
 use crate::raster::Sources;
 use std::path::Path;
+use std::sync::Arc;
 
 pub struct Frame {
     pub frame: u64,
@@ -20,6 +25,11 @@ pub struct Frame {
     pub tiles: Vec<u8>,
     pub xoff: f32,
     pub yoff: f32,
+    /// The lighting side channel's words, if it was on
+    /// ([`crate::light::Frame::to_words`]), and the list scan's beside a
+    /// native geometrizer's.
+    pub light: Option<Vec<u32>>,
+    pub scan: Option<Vec<u32>>,
 }
 
 fn words16(b: &[u8]) -> Vec<u16> {
@@ -45,7 +55,22 @@ impl Frame {
             tiles: bus.tile_ram().to_vec(),
             xoff,
             yoff,
+            light: geo.light_frame().map(|f| f.to_words()),
+            scan: geo
+                .light_scan_frame()
+                .filter(|s| !geo.light_frame().is_some_and(|l| Arc::ptr_eq(&l, s)))
+                .map(|f| f.to_words()),
         }
+    }
+
+    /// The lighting side channel, if the frame has one that reads back.
+    pub fn light_frame(&self) -> Option<crate::light::Frame> {
+        crate::light::Frame::from_words(self.light.as_ref()?)
+    }
+
+    /// The list scan beside a native geometrizer's side channel, if saved.
+    pub fn scan_frame(&self) -> Option<crate::light::Frame> {
+        crate::light::Frame::from_words(self.scan.as_ref()?)
     }
 
     /// The renderer's view of this frame.
@@ -75,6 +100,12 @@ impl Frame {
         std::fs::write(dir.join("render.bin"), &self.render_ram)?;
         std::fs::write(dir.join("palette.bin"), &self.palette)?;
         std::fs::write(dir.join("tiles.bin"), &self.tiles)?;
+        if let Some(l) = &self.light {
+            std::fs::write(dir.join("light.bin"), bytes32(l))?;
+        }
+        if let Some(l) = &self.scan {
+            std::fs::write(dir.join("scan.bin"), bytes32(l))?;
+        }
         std::fs::write(dir.join("meta.txt"), format!("frame {}\nxoff {}\nyoff {}\n", self.frame, self.xoff, self.yoff))
     }
 
@@ -93,6 +124,8 @@ impl Frame {
             tiles: read("tiles.bin")?,
             xoff: field("xoff ") as f32,
             yoff: field("yoff ") as f32,
+            light: read("light.bin").ok().map(|b| words32(&b)),
+            scan: read("scan.bin").ok().map(|b| words32(&b)),
         })
     }
 }
@@ -204,6 +237,12 @@ impl SeqWriter {
         let dir = self.root.join(format!("{:06}", f.frame));
         std::fs::create_dir_all(&dir)?;
         std::fs::write(dir.join("stream.bin"), bytes32(&f.stream))?;
+        if let Some(l) = &f.light {
+            std::fs::write(dir.join("light.bin"), bytes32(l))?;
+        }
+        if let Some(l) = &f.scan {
+            std::fs::write(dir.join("scan.bin"), bytes32(l))?;
+        }
         let motion = match smooth {
             None => "none".to_string(),
             Some(s) => {
@@ -293,6 +332,8 @@ impl Seq {
             tiles: self.rams[2].clone(),
             xoff: num("xoff ") as f32,
             yoff: num("yoff ") as f32,
+            light: read("light.bin").ok().map(|b| words32(&b)),
+            scan: read("scan.bin").ok().map(|b| words32(&b)),
         };
         Ok(SeqFrame { dir, frame, motion, smooth_frame })
     }
@@ -338,10 +379,23 @@ mod tests {
             tiles: vec![5; 2],
             xoff: 84.0,
             yoff: 130.5,
+            light: None,
+            scan: None,
         };
         f.save(&root, &[9, 10]).unwrap();
         let g = Frame::load(&root.join("000042")).unwrap();
         assert_eq!((g.frame, &g.stream, g.xoff, g.yoff), (42, &f.stream, 84.0, 130.5));
+        assert!(g.light.is_none() && g.light_frame().is_none());
+        // With a side channel: light.bin, read back.
+        let side = crate::light::Frame {
+            frame: 43,
+            blocks: vec![crate::light::Block { oba: 0x80_1234, fx: 2.0, fy: 3.0, ..Default::default() }],
+            ..Default::default()
+        };
+        let f = Frame { frame: 43, light: Some(side.to_words()), ..f };
+        f.save(&root, &[9, 10]).unwrap();
+        let g = Frame::load(&root.join("000043")).unwrap();
+        assert_eq!(g.light_frame(), Some(side));
         assert_eq!(load_texture_rom(&root).unwrap(), [9, 10]);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -379,6 +433,8 @@ mod tests {
             tiles: vec![5; 300],
             xoff: 1.0,
             yoff: 2.0,
+            light: None,
+            scan: None,
         };
         let mut w = SeqWriter::new(&root, "topskatr", &[9]).unwrap();
         w.push(&f, None).unwrap();
@@ -386,6 +442,7 @@ mod tests {
         f.render_ram[599] = 1;
         f.tiles.truncate(10);
         f.texture_point_ram[0] = 0x1234;
+        f.light = Some(crate::light::Frame { frame: 8, ..Default::default() }.to_words());
         w.push(&f, None).unwrap();
         let mut s = Seq::open(&root).unwrap();
         assert_eq!((s.game.as_str(), s.len(), &s.texture_rom[..]), ("topskatr", 2, &[9u16][..]));
@@ -394,6 +451,7 @@ mod tests {
         let b = s.next().unwrap().unwrap();
         assert_eq!((b.frame.frame, b.frame.render_ram[599], b.frame.tiles.len()), (8, 1, 10));
         assert_eq!((b.frame.texture_point_ram[0], &b.frame.stream, b.frame.yoff), (0x1234, &f.stream, 2.0));
+        assert_eq!((a.frame.light.is_none(), b.frame.light_frame().map(|l| l.frame)), (true, Some(8)));
         assert!(s.next().is_none());
         let _ = std::fs::remove_dir_all(root);
     }

@@ -261,6 +261,55 @@ impl Sources<'_> {
     }
 }
 
+/// Whether two colours have the same hue, i.e. differ only in level: each
+/// channel as a share of the brightest is within a quarter. Colours near
+/// black (every channel below 32) have no reliable hue and match anything.
+pub fn same_hue(a: [u8; 3], b: [u8; 3]) -> bool {
+    let (ma, mb) = (*a.iter().max().unwrap(), *b.iter().max().unwrap());
+    if ma < 32 || mb < 32 {
+        return true;
+    }
+    (0..3).all(|k| (a[k] as f32 / ma as f32 - b[k] as f32 / mb as f32).abs() <= 0.25)
+}
+
+/// Smooth shading (`Poly::lit`): whether the polygon's colour stays the
+/// same hue for every luma its corners span (`corners`' values, 0-255,
+/// against its flat `luma`). The colour translation tables are the game's
+/// and need not be brightness ramps: a game may map the top levels of a
+/// colour to another hue (topskatr's ramp boards: white at luma 255, red a
+/// few levels below), so that the polygon's luma in effect picks its
+/// colour. Interpolating such a luma paints the other colour over the
+/// polygon; such polygons stay flat. Textured: for each value of its luma
+/// table (the levels a texel can take), the columns its corners reach.
+fn ramp_keeps_hue(src: &Sources, colour: [u32; 3], texture: Option<&Texture>, luma: u32, corners: &[[f32; 4]]) -> bool {
+    let (lo, hi) = corners.iter().fold((255u32, 0u32), |(lo, hi), c| {
+        let l = crate::light::quantise(c[0]);
+        (lo.min(l), hi.max(l))
+    });
+    let (lo, hi) = (lo.min(luma), hi.max(luma));
+    if lo == hi {
+        return true;
+    }
+    let mut cache = [None; 64];
+    let mut col =
+        |k: u32| *cache[k as usize].get_or_insert_with(|| [0, 1, 2].map(|ch| src.translate(ch, colour[ch], k)));
+    let mut sweep = |own: u32, a: u32, b: u32| (a..=b).all(|k| k == own || same_hue(col(own), col(k)));
+    match texture {
+        None => sweep(luma >> 2, lo >> 2, hi >> 2),
+        Some(t) => {
+            let mut seen = [false; 256];
+            (0..128).all(|i| {
+                let v = src.luma(t.luma_table, i) as usize;
+                if std::mem::replace(&mut seen[v], true) {
+                    return true;
+                }
+                let c = |l: u32| (v as u32 * l / 256).min(63);
+                sweep(c(luma), c(lo), c(hi))
+            })
+        }
+    }
+}
+
 fn s12(v: u32) -> f32 {
     (((v & 0xfff) << 20) as i32 >> 20) as f32
 }
@@ -308,9 +357,20 @@ pub struct BuildIn<'a> {
 /// [`build`], smooth-shaded with `opts` (`crate::light::shade`) when given
 /// and on.
 pub fn build_shaded(stream: &[u32], src: &Sources, opts: Option<&crate::light::Options>) -> Vec<Poly> {
+    build_shaded_with(stream, src, None, opts)
+}
+
+/// [`build_shaded`] with the stream's lighting side channel, if any
+/// (`crate::light::shade_with`).
+pub fn build_shaded_with(
+    stream: &[u32],
+    src: &Sources,
+    side: Option<&crate::light::Frame>,
+    opts: Option<&crate::light::Options>,
+) -> Vec<Poly> {
     match opts.filter(|o| o.on()) {
         Some(o) => {
-            let sh = crate::light::shade(stream, o);
+            let sh = crate::light::shade_with(stream, side, o);
             build_with(stream, src, &BuildIn { lit: Some(&sh), skip_checker: o.skip_checker, ..Default::default() }).0
         }
         None => build(stream, src),
@@ -486,7 +546,11 @@ fn build_impl(stream: &[u32], src: &Sources, input: &BuildIn) -> (Vec<Poly>, Vec
                                 texture.is_none() && (0..3).all(|ch| src.translate(ch, colour[ch], luma >> 2) == 0);
                             let checker = header[0] & (1 << 15) != 0;
                             let lit = match corners {
-                                Some(_) if !shadow && !(checker && input.skip_checker) => {
+                                Some(c)
+                                    if !shadow
+                                        && !(checker && input.skip_checker)
+                                        && ramp_keeps_hue(src, colour, texture.as_ref(), luma, &c[..verts.len()]) =>
+                                {
                                     clipped.iter().map(|v| v.lit).collect()
                                 }
                                 _ => Vec::new(),
@@ -1928,6 +1992,31 @@ mod tests {
         }
         // The corners at the shared edge are the mean, the others their own.
         assert!((sh.corners[0][1][0] - 120.5).abs() < 1e-3 && sh.corners[0][0][0] == 100.5);
+        // Colour tables that turn the colour red from level 30 up (a
+        // game's palette by level, topskatr's boards): interpolating the
+        // luma would change the hue, so the polygons stay flat. A ramp of
+        // one hue (any curve) keeps them lit.
+        let mut red = palette.clone();
+        for ch in 1..3 {
+            for lum in 30..64 {
+                red[0x1_0000 + ch * 0x4000 + lum * 2] = 0;
+            }
+        }
+        let sh = light::shade(&s1, &opts(40));
+        let (p, _) = build_with(&s1, &motion_sources(&red), &BuildIn { lit: Some(&sh), ..Default::default() });
+        // The first quad (lumas 100 to 120, levels 25 to 30) crosses into
+        // red: flat; the second (120 to 140) is red throughout: lit.
+        assert!(p[0].lit.is_empty() && !p[1].lit.is_empty(), "hue changes: flat");
+        let mut curve = palette.clone();
+        for ch in 0..3 {
+            for lum in 0..64 {
+                curve[0x1_0000 + ch * 0x4000 + lum * 2] = ((lum * lum) / 16 + 1) as u8;
+            }
+        }
+        let (p, _) = build_with(&s1, &motion_sources(&curve), &BuildIn { lit: Some(&sh), ..Default::default() });
+        assert!(p.iter().all(|p| !p.lit.is_empty()), "a curve of one hue: lit");
+        assert!(same_hue([255, 255, 255], [120, 121, 119]) && !same_hue([255, 255, 255], [255, 0, 0]));
+        assert!(same_hue([10, 0, 0], [0, 20, 0]), "near black has no hue");
         // Shadows (flat black at their luma) get none.
         let black = vec![0u8; 0x1_c000];
         let sh = light::shade(&s1, &opts(40));

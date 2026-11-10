@@ -69,3 +69,13 @@ driver. A sit-down driving cabinet; no extra boards are needed.
   of a coin-start run) shows in the first frame that reads it: input lag
   0.
 
+## Lighting (smooth shading's side channel)
+
+Measured with `remodel --geo native --light --input coin-start run 900000000` (6077 frames; `make lighting-capture` runs the same), reModel's smooth-shading side channel (docs/hw/geometrizer.md, "Lighting side channel"):
+
+- Self-check: of 12,002,343 polygon records, the flat luma recomputed from the side channel is the stream's for 12,002,343 (100.00%), one level off for 0 and further off for 0.
+- no specular lighting; normals computed from the vertices in 0.00% of blocks; zero (unlit) normals on 22.54% of polygons.
+- no models drawn from polygon RAM; no direct data.
+- the light vector changes within a frame in 4207 of 6077 frames (up to 3 vectors a frame); lighting entries not changed within a frame.
+- True focal length over the window width: median 1.442 (range 0.706-2.734); the stream-only layer guesses 1.0.
+- The list scan's block facts equal the native geometrizer's on 388,760 blocks, differ on 0.

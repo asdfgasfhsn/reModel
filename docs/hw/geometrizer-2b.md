@@ -306,6 +306,13 @@ state with the transforms replaced.
 
 ## Verification
 
+The values the program computes with are IEEE singles in its 32-bit
+registers (*confirmed* by smooth shading's self-check, `geometrizer.md`,
+"Lighting side channel": each polygon's luma recomputed in IEEE single
+precision from the normal, light and lighting entry the native code used
+is the program's for 99.996-100% of polygons in all nine 2B games, the
+rest one level off by the rounding toward zero).
+
 `make geo-check GAME=...` runs a coin-start run (`geo-check STEPS FROM`:
 750M instructions, past 5,000 frames, by default) in `Check` mode and
 reports the frames compared, the first difference with the words around

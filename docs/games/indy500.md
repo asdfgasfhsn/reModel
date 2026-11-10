@@ -79,3 +79,13 @@ before `vstriker`.
   of a coin-start run) shows a frame after the first that reads it: input
   lag 1.
 
+## Lighting (smooth shading's side channel)
+
+Measured with `remodel --geo native --light --input coin-start run 900000000` (6073 frames; `make lighting-capture` runs the same), reModel's smooth-shading side channel (docs/hw/geometrizer.md, "Lighting side channel"):
+
+- Self-check: of 14,207,273 polygon records, the flat luma recomputed from the side channel is the stream's for 14,207,273 (100.00%), one level off for 0 and further off for 0.
+- no specular lighting; normals computed from the vertices in 0.00% of blocks; zero (unlit) normals on 21.40% of polygons.
+- models drawn from polygon RAM in 8,958 blocks (143,215 polygons, 2.50% of blocks); no direct data.
+- the light vector changes within a frame in 229 of 6073 frames (up to 2 vectors a frame); lighting entries not changed within a frame.
+- True focal length over the window width: median 0.402 (range 0.341-200.000); the stream-only layer guesses 1.0.
+- The list scan's block facts equal the native geometrizer's on 358,611 blocks, differ on 0.

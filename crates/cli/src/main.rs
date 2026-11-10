@@ -1,6 +1,7 @@
 mod depth_check;
 mod geo_check;
 mod gpu_check;
+mod light_report;
 mod lighting_check;
 mod music;
 mod pack_check;
@@ -93,6 +94,12 @@ options:
                        as vertex for now)
   --crease auto|N      the crease angle for --shading in degrees, 0 to 180
                        (0: nothing smoothed; auto, the default: the game's)
+  --light              record smooth shading's side channel each frame (the
+                       native geometrizer's light hooks, or a scan of the
+                       list on the chip): snapshots shade with it, `run`
+                       reports its self-check over every frame, geo-check
+                       compares the list scan with the native hooks; on
+                       with --capture and --capture-seq (light.bin)
   --geo chip|native|check
                        the geometrizer: the uploaded program on its chip,
                        the 2B SHARC or 2C TGP (default; `sharc` and `tgp`
@@ -232,7 +239,10 @@ commands:
                        view 1440x1080; --height, --aspect, --hud that one);
                        checks that crease 0 draws the flat frame exactly,
                        that polygons left flat draw as flat, the brightness
-                       of lit polygons and software against GPU; report.txt
+                       of lit polygons and software against GPU, and with
+                       a side channel (light.bin: `make lighting-capture`)
+                       its self-check and the L0 pass against it
+                       (--no-side: the stream alone); report.txt
                        and pictures (flat | vertex | differences, false-
                        colour layers) in OUT (default
                        out/scratch/lighting/GAME). --probe X,Y@FRAME
@@ -547,6 +557,9 @@ fn main() -> ExitCode {
     let (interp, single_thread) = (flag("--interp"), flag("--single-thread"));
     if flag("--depth") {
         let _ = DEPTH.set(true);
+    }
+    if flag("--light") || CAPTURE.get().is_some() || CAPTURE_SEQ.get().is_some() {
+        let _ = LIGHT.set(true);
     }
     let Some(cmd) = args.first().cloned() else {
         eprint!("{USAGE}");
@@ -1292,6 +1305,13 @@ fn main() -> ExitCode {
                 },
                 None => 1,
             };
+            let side = match args.iter().position(|a| a == "--no-side") {
+                Some(i) => {
+                    args.remove(i);
+                    false
+                }
+                None => true,
+            };
             let default = PathBuf::from("out").join(roms.game.id).join("capture");
             let root = args.get(1).map(PathBuf::from).unwrap_or(default);
             let out = args
@@ -1306,7 +1326,7 @@ fn main() -> ExitCode {
                 roms.game.hud_windows,
             );
             let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
-            match lighting_check::run(&root, windows, VIEW.get().copied(), opts, &out, &probes, bench, every) {
+            match lighting_check::run(&root, windows, VIEW.get().copied(), opts, &out, &probes, bench, every, side) {
                 Ok(true) => {}
                 Ok(false) => return ExitCode::FAILURE,
                 Err(e) => {
@@ -1406,6 +1426,7 @@ fn main() -> ExitCode {
             }
             m.bus.geo.set_threaded(!single_thread);
             m.bus.geo.set_mode(model2::geo::GeoMode::Check);
+            m.bus.geo.set_light(LIGHT.get().is_some());
             if let Err(e) = geo_check::run(&mut m, &roms, steps, from, &script, LOAD_STATE.get()) {
                 eprintln!("error: {e}");
                 return ExitCode::FAILURE;
@@ -1629,6 +1650,8 @@ static DEPTH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 static SHADING: std::sync::OnceLock<(model2::light::Shading, u8)> = std::sync::OnceLock::new();
 /// `--game`, for snapshots' shading rules.
 static GAME_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// `--light` (or a capture): record smooth shading's side channel.
+static LIGHT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 /// Smooth shading's options for `game` from `--shading` and `--crease`
 /// (None: off).
@@ -1675,6 +1698,7 @@ fn machine(roms: &RomSet) -> model2::Machine {
         t.use_hle = TGP2A_HLE.get().copied().unwrap_or(false);
     }
     m.bus.geo.set_smooth(SMOOTH.get().is_some() || CAPTURE_SEQ.get().is_some());
+    m.bus.geo.set_light(LIGHT.get().is_some());
     // For the frame before each snapshot (`snapshot`).
     m.bus.geo.set_keep_last(SMOOTH.get().is_some());
     m
@@ -1784,7 +1808,9 @@ fn render(m: &model2::Machine, stream: Option<&[u32]>, path: &std::path::Path) -
         yoff,
     };
     let light = games::find(GAME_ID.get().map_or("topskatr", |s| s.as_str())).ok().and_then(light_options);
-    let mut polys = model2::raster::build_shaded(stream, &src, light.as_ref());
+    // The side channel goes with the engine's own stream.
+    let side = if std::ptr::eq(stream, &geo.stream[..]) { geo.light_frame() } else { None };
+    let mut polys = model2::raster::build_shaded_with(stream, &src, side.as_deref(), light.as_ref());
     model2::video::HudLayout::new(b.tile_ram(), b.palette_ram(), &view).anchor(&mut polys, &view);
     let mut packs = texpack::PACKS.lock().unwrap();
     let (rgb3d, covered) = match packs.as_mut() {
@@ -1991,6 +2017,7 @@ fn run(
     let mut stop = None;
     let mut last_frame = 0;
     let mut seq = None;
+    let mut light = light_report::Acc::default();
     while m.cpu.icount < steps {
         if let Err(s) = m.run_slice(steps - m.cpu.icount) {
             stop = Some(s);
@@ -2004,6 +2031,9 @@ fn run(
             audio_secs += t.elapsed().as_secs_f64();
         }
         if m.frames != last_frame {
+            if LIGHT.get().is_some() {
+                light.frame(&mut m);
+            }
             if let Some((path, frame)) = SAVE_STATE.get().filter(|s| s.1 == m.frames) {
                 let data = model2::save_session(&mut m, live.as_ref());
                 match std::fs::write(path, &data) {
@@ -2044,6 +2074,11 @@ fn run(
         last_frame = m.frames;
     }
     snapshot(&mut m, &frames_dir.join("final.png"));
+    if LIGHT.get().is_some() {
+        print!("{}", light.report());
+        m.bus.geo.sync();
+        print!("{}", light_report::scan_report(&m.bus.geo.engine().check.light));
+    }
     if let Some(p) = texpack::PACKS.lock().unwrap().as_ref() {
         println!("textures      {}", p.summary());
     }
