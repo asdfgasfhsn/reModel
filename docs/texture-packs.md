@@ -116,9 +116,15 @@ gives at this polygon's luma over what it gives at full luma:
 with `L` the luma table, `xlat` the colour translation table and `c` the
 polygon colour component. That keeps the game's lighting curve, including
 the cap at 63 (bright texels saturate before dark ones) and per-channel
-tinting from the translation tables. Where the original texel is transparent
-or black at full luma, the ratio for the brightest luma is used instead. At
-full polygon luma the replacement is drawn as is. Because the ratio follows
+tinting from the translation tables. Where the original texel is transparent,
+the ratio for the brightest luma is used instead. Where it is black at full
+luma in a channel, nothing scales up from black, so that channel is
+`replacement * (ratio for the brightest luma) + xlat(c, min(63, L(t) * luma
+/ 256))`: it adds what the original gives at this luma. That matters for
+translation tables that are not monotonic: topskatr draws one texel pure
+red at level 63 but brown at lower levels (a skater's collar), which a
+pack drew red until 2026-11-11. At full polygon luma the replacement is
+drawn as is. Because the ratio follows
 the original texels, a replacement that changes the picture a lot (rather
 than refining it) can show faint traces of the original's shading where the
 original saturates.
@@ -293,11 +299,43 @@ in software (`IDENTITY_TOLERANCE`; the pack's colours are filtered where
 the original filters texel values and looks them up, so they are not
 identical); the means in the table below are reported, not held to the
 limit, and mipmapped drawing is a different filter and is only reported.
-*Known open item:* `make pack-identity` currently exits non-zero on
-topskatr and sgt24h, because individual frames go over the 1% per-frame
-limit although the means are within it. Measured
-2026-11-11 at native size, mean share over the captures, unfiltered (GPU /
-software):
+The last column splits the software's differing 3D pixels by cause, as
+shares of the frame: the texels under the bilinear filter hold different
+values (*filter order*: the original filters texel values and then looks
+the result up, the pack filters the looked-up colours), one of them is a
+cut-out (texel 15 of a translucent texture), they hold one value (*same*:
+a pack standing for the texture must match there, so these are real gaps:
+a wrong look, lighting the replacement can't express), or another polygon
+is on top in one of the two (a cut-out edge decided differently).
+
+*Open item: `make pack-identity` exits non-zero on topskatr (frames 3300,
+3600: 1.7%, 2.6%) and sgt24h (2400, 2700, 3000, 6212: 1.9-2.1%) with each
+frame's own textures*, and on topskatr with its dump (same frames). It is
+the filter order, not the dump or the pack (2026-11-11): in those frames
+99.6-100% of the differing pixels are filter order, 0.0-0.4% cut-out edges,
+none *same* and almost none another polygon; and drawing the original with
+its colours filtered instead of its texel values gives what the pack draws
+in 98-100% of them (the rest: lighting at luma below 255, also between
+texels). Own-frame packs rule out looks, textures rewritten after a dump
+and textures never dumped. The frames over the limit are those with
+stadium crowds and sponsor boards in view, drawn small (91-98% of the
+differing pixels are minified, the texture's texels smaller than a
+pixel): crowds use the translation tables as a palette, texel value to an
+unrelated colour, so the original's in-between values show colours of
+neither neighbour (24-42% of the differing pixels are between texels
+whose colours don't rise or fall with the value), and lettering edges
+fall on the tables' non-linear curve. Neither filter is wrong for a pack
+(the hardware's own filter is unconfirmed, docs/hw/geometrizer.md 5.4),
+and a pack cannot filter texel values it doesn't have. *Proposed rule
+(not applied, the user's decision):* hold the per-frame 1% to the
+*same* and *other* columns, which are 0.000-0.001% on every frame of the
+three games now, and keep the filter order as reported; or keep the rule
+and accept these frames as known. The one gap the split found (topskatr,
+*same*: 0.004-0.007% of frames 2100-2700, a texel black at full luma in a
+channel but not below it) is fixed: see "Lighting" above.
+
+Measured 2026-11-11 at native size, mean share over the captures,
+unfiltered (GPU / software):
 
 | pack | srallyc | topskatr | sgt24h |
 |---|---|---|---|

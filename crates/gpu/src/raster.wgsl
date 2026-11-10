@@ -284,12 +284,15 @@ fn pack_sample(p: Poly, x_in: f32, y_in: f32) -> vec4f {
     return vec4f(rgb, alpha);
 }
 
-// raster.rs `Light`: the replacement stands for the texture at full luma,
-// so each channel is scaled by what the original pipeline gives at the
-// polygon's luma over what it gives at full luma, for the original texel.
-fn pack_light(p: Poly, u: f32, v: f32) -> vec3f {
+// raster.rs `Light::apply`: the replacement colour `rgb` (0-255) stands for
+// the texture at full luma, so each channel is scaled by what the original
+// pipeline gives at the polygon's luma over what it gives at full luma, for
+// the original texel; where that texel is black at full luma in a channel
+// but not at this luma, the channel adds the original's value (nothing
+// scales up from black). Before rounding.
+fn pack_lit(p: Poly, rgb: vec3f, u: f32, v: f32) -> vec3f {
     if p.luma >= 255u {
-        return vec3f(1.0);
+        return rgb;
     }
     let c = p.colour.xyz;
     // Fallback where the original texel is transparent or black at full
@@ -305,7 +308,7 @@ fn pack_light(p: Poly, u: f32, v: f32) -> vec3f {
     }
     let t8 = filtered_texel(p, u, v);
     if t8 < 0 {
-        return fb;
+        return rgb * fb;
     }
     let l = luma(p.luma_table, u32(t8) / 2u);
     let lp = min(l * p.luma / 256u, 63u);
@@ -313,10 +316,11 @@ fn pack_light(p: Poly, u: f32, v: f32) -> vec3f {
     var r: vec3f;
     for (var ch = 0u; ch < 3u; ch++) {
         let full = translate(ch, c[ch], lf);
+        let here = f32(translate(ch, c[ch], lp));
         if full == 0u {
-            r[ch] = fb[ch];
+            r[ch] = rgb[ch] * fb[ch] + here;
         } else {
-            r[ch] = f32(translate(ch, c[ch], lp)) / f32(full);
+            r[ch] = rgb[ch] * (here / f32(full));
         }
     }
     return r;
@@ -344,10 +348,9 @@ fn shade_pack(in: VsOut) -> vec4f {
     if s.a < 0.5 {
         discard;
     }
-    let r = pack_light(p, u, v);
     // Rust's round() then clamp, as the software (values are never
     // negative).
-    let rgb = min(floor(s.rgb * r + 0.5), vec3f(255.0));
+    let rgb = min(floor(pack_lit(p, s.rgb, u, v) + 0.5), vec3f(255.0));
     return vec4f(rgb / 255.0, 1.0);
 }
 
@@ -426,8 +429,7 @@ fn shade_packf(in: VsPackOut, gx: vec3f, gy: vec3f) -> vec4f {
     if c.a < 0.5 {
         discard;
     }
-    let r = pack_light(p, u, v);
-    let rgb = min(floor(c.rgb / c.a * 255.0 * r + 0.5), vec3f(255.0));
+    let rgb = min(floor(pack_lit(p, c.rgb / c.a * 255.0, u, v) + 0.5), vec3f(255.0));
     return vec4f(rgb / 255.0, 1.0);
 }
 
@@ -904,12 +906,12 @@ fn fine_translate(ch: u32, c: u32, k: vec3u) -> f32 {
     return a + (b - a) * bitcast<f32>(k.z);
 }
 
-// `pack_light` of a lit pixel: with finer levels the original pipeline's
+// `pack_lit` of a lit pixel: with finer levels the original pipeline's
 // colour at the pixel's luma is the blend of two columns (raster.rs
 // `Light::at`).
-fn pack_light_l(p: Poly, u: f32, v: f32) -> vec3f {
+fn pack_lit_l(p: Poly, rgb: vec3f, u: f32, v: f32) -> vec3f {
     if lit_fine < 0.0 {
-        return pack_light(p, u, v);
+        return pack_lit(p, rgb, u, v);
     }
     let c = p.colour.xyz;
     var fb: vec3f;
@@ -923,7 +925,7 @@ fn pack_light_l(p: Poly, u: f32, v: f32) -> vec3f {
     }
     let t8 = filtered_texel(p, u, v);
     if t8 < 0 {
-        return fb;
+        return rgb * fb;
     }
     let l = luma(p.luma_table, u32(t8) / 2u);
     let lf = min(l * 255u / 256u, 63u);
@@ -931,10 +933,11 @@ fn pack_light_l(p: Poly, u: f32, v: f32) -> vec3f {
     var r: vec3f;
     for (var ch = 0u; ch < 3u; ch++) {
         let full = translate(ch, c[ch], lf);
+        let here = fine_translate(ch, c[ch], k);
         if full == 0u {
-            r[ch] = fb[ch];
+            r[ch] = rgb[ch] * fb[ch] + here;
         } else {
-            r[ch] = fine_translate(ch, c[ch], k) / f32(full);
+            r[ch] = rgb[ch] * (here / f32(full));
         }
     }
     return r;
@@ -996,8 +999,7 @@ fn shade_pack_l(in: VsOut, p: Poly) -> vec4f {
     if s.a < 0.5 {
         discard;
     }
-    let r = pack_light_l(p, u, v);
-    let rgb = min(floor(s.rgb * r + 0.5), vec3f(255.0));
+    let rgb = min(floor(pack_lit_l(p, s.rgb, u, v) + 0.5), vec3f(255.0));
     return vec4f(rgb / 255.0, 1.0);
 }
 
@@ -1028,8 +1030,7 @@ fn shade_packf_l(in: VsPackOut, p: Poly, gx: vec3f, gy: vec3f) -> vec4f {
     if c.a < 0.5 {
         discard;
     }
-    let r = pack_light_l(p, u, v);
-    let rgb = min(floor(c.rgb / c.a * 255.0 * r + 0.5), vec3f(255.0));
+    let rgb = min(floor(pack_lit_l(p, c.rgb / c.a * 255.0, u, v) + 0.5), vec3f(255.0));
     return vec4f(rgb / 255.0, 1.0);
 }
 

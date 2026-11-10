@@ -1106,7 +1106,9 @@ pub fn texture_look(src: &Sources, info: &TexInfo) -> [[u8; 3]; 16] {
 /// at full luma, so each pixel is scaled per channel by what the original
 /// pipeline gives at this polygon's luma over what it gives at full luma,
 /// for the original (filtered) texel under the pixel. That keeps the
-/// game's luma table, cap at 63 and colour translation curves.
+/// game's luma table, cap at 63 and colour translation curves. Where that
+/// texel is black at full luma in a channel, the channel adds the
+/// original's value instead ([`Light::apply`]).
 struct Light {
     /// Polygon luma is full: nothing to scale.
     full: bool,
@@ -1149,20 +1151,25 @@ impl Light {
         }
     }
 
-    fn ratio(&self, t: &Texture, src: &Sources, u: f32, v: f32) -> [f32; 3] {
+    /// Per channel, the scale and the offset that take the replacement's
+    /// colour to the lit one (`replacement * scale + offset`). The offset
+    /// is zero except where the original texel is black at full luma in
+    /// that channel but not at this luma (a translation table that is not
+    /// monotonic, such as topskatr's red at level 63 over a brown at lower
+    /// levels): nothing scales up from black, so that channel adds the
+    /// original's own value at this luma.
+    fn apply(&self, t: &Texture, src: &Sources, u: f32, v: f32, rgb: [f32; 3]) -> [u8; 3] {
+        let px = |c: f32| c.round().clamp(0.0, 255.0) as u8;
         if self.full {
-            return [1.0; 3];
+            return rgb.map(px);
         }
-        let Some(t8) = filtered_texel(t, src, u, v) else { return self.poly };
+        let Some(t8) = filtered_texel(t, src, u, v) else { return [0, 1, 2].map(|ch| px(rgb[ch] * self.poly[ch])) };
         let l = src.luma(t.luma_table, t8 / 2);
         let lf = (l * FULL_LUMA / 256).min(63);
         [0, 1, 2].map(|ch| {
             let full = src.translate(ch, self.colour[ch], lf);
-            if full == 0 {
-                self.poly[ch]
-            } else {
-                Self::at(src, self.colour, self.fine, self.luma, ch, l) / full as f32
-            }
+            let here = Self::at(src, self.colour, self.fine, self.luma, ch, l);
+            px(if full == 0 { rgb[ch] * self.poly[ch] + here } else { rgb[ch] * (here / full as f32) })
         })
     }
 }
@@ -1190,8 +1197,7 @@ fn shade_replaced(
     if alpha < 0.5 {
         return None;
     }
-    let r = light.ratio(t, src, u, v);
-    Some([0, 1, 2].map(|ch| (rgb[ch] * r[ch]).round().clamp(0.0, 255.0) as u8))
+    Some(light.apply(t, src, u, v, rgb))
 }
 
 /// A replacement image as the filter wants it.
@@ -1258,8 +1264,7 @@ fn shade_filtered(
     if alpha < 0.5 {
         return None;
     }
-    let r = light.ratio(t, src, u, v);
-    Some([0, 1, 2].map(|ch| (rgb[ch] * r[ch]).round().clamp(0.0, 255.0) as u8))
+    Some(light.apply(t, src, u, v, rgb))
 }
 
 /// Draw polygons into an RGB layer with a coverage mask: windows in order,
@@ -1788,6 +1793,97 @@ fn fill(
     }
 }
 
+/// Where a pack standing for the original textures (`pack-check
+/// --identity`) draws a frame differently from the original: pixels off by
+/// more than 16 levels in a channel, by cause, for the software renderer
+/// drawing unfiltered and without the depth buffer.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct IdentitySplit {
+    /// The bilinear filter's texels under the pixel hold different values:
+    /// the original filters texel values and looks the result up, the
+    /// pack filters colours, and the two differ wherever the look is not
+    /// linear in the texel value (a palette-like look, such as crowds).
+    pub texels_differ: usize,
+    /// One of those texels is a cut-out (texel 15 of a translucent
+    /// texture).
+    pub cut_out: usize,
+    /// One texel value under the pixel (or no texture): a pack standing
+    /// for the texture must draw it as the original does, so these are
+    /// gaps (a wrong look, lighting the replacement can't express).
+    pub same_texel: usize,
+    /// Another polygon drawn on top in one of the two (a cut-out decided
+    /// differently at the edge).
+    pub other_polygon: usize,
+}
+
+/// [`IdentitySplit`] of a frame's (unlit) polygons drawn with the
+/// replacements `hooks` gives against without.
+pub fn identity_split(polys: &mut [Poly], src: &Sources, view: &View, hooks: &mut dyn Enhance) -> IdentitySplit {
+    let (w, h) = (view.width, view.height);
+    let placed = place(polys, view);
+    let mut keys = TexKeys::default();
+    // Per pixel, the placed polygon on top, its (u, v) and colour.
+    let none = (usize::MAX, 0.0f32, 0.0f32, [0u8; 3]);
+    let (mut orig, mut pack) = (vec![none; w * h], vec![none; w * h]);
+    let (gsx, gsy) = (view.sx, view.sy);
+    for (k, pl) in placed.iter().enumerate() {
+        let p = &polys[pl.poly];
+        let own = PxLuma::own(p);
+        let img = p.texture.as_ref().and_then(|t| tex_info(p, t, src, &mut keys)).and_then(|i| hooks.texture(&i));
+        let light = Light::new(p, own, src);
+        fill(&pl.points, pl.clip, w, h, |x, y, iz, uz, vz| {
+            let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
+            let (u, v) = (uz / iz, vz / iz);
+            let o = y * w + x;
+            let plain = shade_luma(p, own, src, gx, gy, u, v);
+            if let Some(c) = plain {
+                orig[o] = (k, u, v, c);
+            }
+            let c = match (&img, &p.texture) {
+                (Some(img), Some(t)) => shade_replaced(t, p.checker, img, &light, src, gx, gy, u, v),
+                _ => plain,
+            };
+            if let Some(c) = c {
+                pack[o] = (k, u, v, c);
+            }
+        });
+    }
+    let mut split = IdentitySplit::default();
+    for (a, b) in orig.iter().zip(&pack) {
+        if (0..3).all(|c| a.3[c].abs_diff(b.3[c]) <= 16) {
+            continue;
+        }
+        if a.0 != b.0 {
+            split.other_polygon += 1;
+            continue;
+        }
+        let Some(t) = polys[placed[a.0].poly].texture else {
+            split.same_texel += 1;
+            continue;
+        };
+        // The texels `filtered_texel` weighs.
+        let (u, v) = (a.1 - 0.5, a.2 - 0.5);
+        let (fu, fv) = (u - u.floor(), v - v.floor());
+        let (u0, v0) = (u.floor() as i32, v.floor() as i32);
+        let texels: Vec<u32> =
+            [(0, 0, (1.0 - fu) * (1.0 - fv)), (1, 0, fu * (1.0 - fv)), (0, 1, (1.0 - fu) * fv), (1, 1, fu * fv)]
+                .into_iter()
+                .filter(|&(_, _, wt)| wt > 0.0)
+                .map(|(du, dv, _)| {
+                    src.texel(t.bank, t.x0 + wrap(u0 + du, t.w, t.mirror_x), t.y0 + wrap(v0 + dv, t.h, t.mirror_y))
+                })
+                .collect();
+        if t.translucent && texels.contains(&15) {
+            split.cut_out += 1;
+        } else if texels.iter().all(|&x| x == texels[0]) {
+            split.same_texel += 1;
+        } else {
+            split.texels_differ += 1;
+        }
+    }
+    split
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2029,6 +2125,74 @@ mod tests {
         // mostly-transparent ones are dropped.
         assert_eq!(filtered_texel(&t, &src, 0.9, 0.5), Some(0));
         assert_eq!(filtered_texel(&t, &src, 1.1, 0.5), None);
+    }
+
+    /// A pack of one fixed image for every texture.
+    struct OneImage(Arc<Rgba>);
+
+    impl Enhance for OneImage {
+        fn texture(&mut self, _: &TexInfo) -> Option<Arc<Rgba>> {
+            Some(self.0.clone())
+        }
+        fn texture_drawn(&mut self, _: &TexInfo, _: &Sources, _: usize) {}
+        fn tile(&mut self, _: &crate::enhance::TileInfo) -> Option<Arc<Rgba>> {
+            None
+        }
+    }
+
+    #[test]
+    fn identity_pack_where_full_luma_is_black_in_a_channel() {
+        // Texel 0 (all of render RAM) has luma table value 64: level 63 at
+        // full polygon luma, 32 at luma 128. Colour 1's green is black at
+        // level 63 but not at 32 (a translation table that is not
+        // monotonic, like topskatr's red over brown); red scales.
+        let mut ram = vec![0u8; 0x40_0000 + 0x8000];
+        ram[0x40_0000] = 64;
+        let mut palette = vec![0u8; 0x1_c000];
+        let tr = |ch: usize, lum: usize| 0x1_0000 + ch * 0x4000 + (256 + lum) * 2;
+        palette[tr(0, 63)] = 200;
+        palette[tr(0, 32)] = 100;
+        palette[tr(1, 32)] = 50;
+        let src = Sources {
+            texture_rom: &[],
+            texture_point_ram: &[],
+            render_ram: &ram,
+            palette: &palette,
+            xoff: 0.0,
+            yoff: 0.0,
+        };
+        let t = Texture {
+            x0: 0,
+            y0: 0,
+            w: 32,
+            h: 32,
+            mirror_x: false,
+            mirror_y: false,
+            bank: 0,
+            translucent: false,
+            luma_table: 0,
+        };
+        let mut p = flat(1, 1.0, 1.0, 0);
+        p.texture = Some(t);
+        p.luma = 128;
+        let info = tex_info(&p, &t, &src, &mut TexKeys::default()).unwrap();
+        let image = Arc::new(texture_image(&src, &info));
+        assert_eq!(&image.data[..4], &[200, 0, 0, 255]);
+        let view = View::native();
+        let at = |rgb: &[u8]| rgb[(200 * WIDTH + 200) * 3..][..3].to_vec();
+        let plain = draw_view(&mut [p.clone()], &src, &view).0;
+        assert_eq!(at(&plain), [100, 50, 0]);
+        // The replacement scales red by 100 / 200 and adds green's own
+        // value: the original's colour.
+        let packed = draw_enhanced(&mut [p.clone()], &src, &view, &mut OneImage(image.clone())).0;
+        assert_eq!(at(&packed), [100, 50, 0]);
+        assert_eq!(identity_split(&mut [p.clone()], &src, &view, &mut OneImage(image)), IdentitySplit::default());
+        // An image in another colour is a gap at every pixel of one texel
+        // value.
+        let wrong = Rgba { width: 1, height: 1, data: vec![0, 0, 200, 255] };
+        let s = identity_split(&mut [p], &src, &view, &mut OneImage(Arc::new(wrong)));
+        assert_eq!((s.texels_differ, s.cut_out, s.other_polygon), (0, 0, 0));
+        assert_eq!(s.same_texel, 200 * 200);
     }
 
     #[test]

@@ -328,8 +328,10 @@ impl TexturePack for FramePack {
 /// filters texel indices and looks the result up (the luma and translation
 /// tables are not linear), and rounds. Measured 2026-11-11 with each
 /// frame's own textures: 0.30% (srallyc), 0.50% (topskatr), 0.71% (sgt24h)
-/// on average. Mipmapped drawing is a different filter (distant textures
-/// average), so it is reported but not held to this.
+/// on average, but up to 2.6% on frames with crowds drawn small, all of it
+/// that filter order (`raster::IdentitySplit`; docs/texture-packs.md).
+/// Mipmapped drawing is a different filter (distant textures average), so
+/// it is reported but not held to this.
 pub const IDENTITY_TOLERANCE: f64 = 1.0;
 
 /// `pack-check --identity`: draw the captured frames with a pack that
@@ -340,8 +342,10 @@ pub const IDENTITY_TOLERANCE: f64 = 1.0;
 /// own images must draw the original frame; Err if, in any frame, either
 /// unfiltered renderer's share of pixels off by more than 16 levels exceeds
 /// `IDENTITY_TOLERANCE` (frame by frame, not the mean: topskatr and sgt24h
-/// fail this on single frames while their means are within it, a known
-/// open item, docs/texture-packs.md).
+/// fail this on single frames while their means are within it, by filter
+/// order alone, an open item, docs/texture-packs.md). Each frame's line
+/// also splits the software's differing pixels by cause
+/// (`raster::identity_split`, without the depth buffer).
 pub fn identity(
     root: &Path,
     hud_windows: (&[usize], &[usize]),
@@ -378,9 +382,15 @@ pub fn identity(
     dirs.sort();
     std::fs::create_dir_all(out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
     println!("identity: the frame with the pack against without, per renderer: mean absolute difference (0-255 a");
-    println!("channel) over the frame / share of its pixels off by more than 16 levels");
-    println!("{:<8} {:>16} {:>16} {:>16} {:>16}", "frame", "gpu off", "gpu mip", "sw exact", "sw mip");
+    println!("channel) over the frame / share of its pixels off by more than 16 levels; sw exact's 3D pixels off by");
+    println!("more than 16 by cause, share of the frame: texels differ under the filter (filter order), a cut-out");
+    println!("texel among them, one texel value (a gap), another polygon on top (no depth buffer only)");
+    println!(
+        "{:<8} {:>16} {:>16} {:>16} {:>16}  {:>28}",
+        "frame", "gpu off", "gpu mip", "sw exact", "sw mip", "texels/cut-out/same/other"
+    );
     let mut totals = [0.0f64; 8];
+    let mut split_totals = [0.0f64; 4];
     let mut n = 0;
     let mut over = Vec::new();
     for d in &dirs {
@@ -431,9 +441,25 @@ pub fn identity(
             }
             results.push(whole(&rgb, &sw_orig));
         }
+        // Why the software's pixels differ (without the depth buffer only).
+        let causes = if depth {
+            "-".to_string()
+        } else {
+            let hooks: &mut dyn Enhance = match &mut dump_pack {
+                Some(p) => p,
+                None => &mut frame_pack,
+            };
+            let s = raster::identity_split(&mut sw_polys.clone(), &src, &view, hooks);
+            let px = (view.width * view.height) as f64 / 100.0;
+            let share = [s.texels_differ, s.cut_out, s.same_texel, s.other_polygon].map(|c| c as f64 / px);
+            for (t, v) in split_totals.iter_mut().zip(share) {
+                *t += v;
+            }
+            format!("{:.3} {:.3} {:.3} {:.3}%", share[0], share[1], share[2], share[3])
+        };
         let cell = |(m, l): (f64, f64)| format!("{m:.2} / {l:.3}%");
         println!(
-            "{:<8} {:>16} {:>16} {:>16} {:>16}",
+            "{:<8} {:>16} {:>16} {:>16} {:>16}  {causes:>28}",
             f.frame,
             cell(results[0]),
             cell(results[1]),
@@ -451,7 +477,9 @@ pub fn identity(
     }
     let m: Vec<f64> = totals.iter().map(|t| t / n.max(1) as f64).collect();
     let cell = |k: usize| format!("{:.2} / {:.3}%", m[2 * k], m[2 * k + 1]);
-    println!("{:<8} {:>16} {:>16} {:>16} {:>16}", "mean", cell(0), cell(1), cell(2), cell(3));
+    let s = split_totals.map(|t| t / n.max(1) as f64);
+    let causes = if depth { "-".to_string() } else { format!("{:.3} {:.3} {:.3} {:.3}%", s[0], s[1], s[2], s[3]) };
+    println!("{:<8} {:>16} {:>16} {:>16} {:>16}  {causes:>28}", "mean", cell(0), cell(1), cell(2), cell(3));
     println!(
         "pictures      {}/FRAME-orig.png (GPU, no pack), -off.png, -mip.png (GPU, pack), -sw.png (software, pack)",
         out_dir.display()
