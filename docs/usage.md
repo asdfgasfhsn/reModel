@@ -86,7 +86,15 @@ them are described in `docs/mods.md`.
 
 `make bench` prints a hash of all RAM and the last rasteriser stream. A change
 meant only to make things faster must leave it unchanged. The hash depends on
-`out/GAME/eeprom.bin`, which `run` creates on first boot.
+`out/GAME/eeprom.bin`, which `run` creates on first boot: a run in a
+directory where an earlier run left one loads it (`eeprom loaded` in the
+output) and boots differently, so compare runs from the same starting
+EEPROM (an empty working directory for a fresh one). For example a
+600M-step `topskatr` coin-start run gives `7f0275251269648e` (ip 0x48210)
+from a fresh EEPROM and `400275251269648e` (ip 0x48218) when repeated in the
+same directory. The geometrizer's thread doesn't change the hash: it runs
+each frame on its own copy of the inputs and nothing reads its results
+before `sync()`, so the default run and `--single-thread` agree.
 
 Every target takes `GAME=skisuprg` for Sega Ski Super G, `GAME=stcc` for
 Sega Touring Car Championship, `GAME=segawski` for Sega Water Ski,
