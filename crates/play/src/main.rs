@@ -107,6 +107,16 @@ usage: remodel-play [options]
                      1/z, instead of the game's draw order: intersecting
                      and mis-sorted polygons come out right (HUD windows
                      stay on top; docs/enhancements.md). Default off
+  --shading flat|vertex|pixel
+                     smooth shading: flat is the game's own, one
+                     brightness a polygon; vertex blends brightness across
+                     curved surfaces (vertex values worked out from the
+                     polygons, faces meeting at more than the crease
+                     angle keep their edge); pixel is drawn as vertex for
+                     now (docs/play.md). Default flat
+  --crease auto|N    smooth shading's crease angle in degrees, 0 to 180
+                     (0: nothing smoothed); auto is the game's own
+                     (40 for every game so far). Default auto
   --pack on|off      the game's texture pack: replacement textures from
                      texpack/ in the game's folder beside its saves (a
                      version of a game uses its parent's if it has none;
@@ -138,7 +148,7 @@ usage: remodel-play [options]
 
 The game's settings (mix, HUD, aspect, bezel, speed, smooth motion,
 run-ahead, anti-aliasing, temporal anti-aliasing and stipple, depth buffer,
-texture pack and filtering, geometrizer) given here are for this run only, over the
+shading and crease, texture pack and filtering, geometrizer) given here are for this run only, over the
 defaults for all games and the game's own, which the launcher's settings
 and the menu keep.
 --rom and --fullscreen are remembered.
@@ -148,6 +158,12 @@ game's controls depend on the game (docs/play.md); C coins up and arrows
 steer. Gamepads work too: Guide, or Start and Select together, opens the
 menu. The menu's Controls page remaps them per game.
 ";
+
+/// The game's HUD windows, a bit each: smooth shading leaves them flat
+/// (`gpu::Renderer::set_light_rules`).
+fn hud_mask(game: &romset::Game) -> u64 {
+    game.hud_windows.iter().filter(|&&w| w < 64).fold(0, |m, &w| m | 1 << w)
+}
 
 /// Model 2 video frame rate.
 const FPS: f64 = 57.524;
@@ -344,6 +360,19 @@ fn options(s: &mut Settings) -> Result<Options, String> {
                     _ => true,
                 };
                 cli("depth", &on.to_string());
+            }
+            "--shading" => {
+                let Some(shading) = gpu::Shading::parse(&value()?) else {
+                    return Err("--shading wants flat, vertex or pixel".into());
+                };
+                cli("shading", shading.name());
+            }
+            "--crease" => {
+                let v = value()?;
+                if model2::light::parse_crease(&v).is_none() {
+                    return Err("--crease wants auto or degrees from 0 to 180".into());
+                }
+                cli("crease", &v);
             }
             "--pack" => {
                 let on = match args.peek().map(String::as_str) {
@@ -1067,6 +1096,7 @@ impl Play {
             g.renderer.forget_ram();
             // A one-off frame: with temporal on, the plain (unjittered) one.
             g.renderer.reset_history();
+            g.renderer.set_light_rules(&s.game.shading, hud_mask(s.game));
             g.renderer.set_quality(self.values.quality(self.temporal_supported));
             g.renderer.present_bus(&mut s.shown().bus, None, &view, &target, format, origin);
             s.drew_ahead = s.run_ahead.as_ref().is_some_and(|ra| ra.is_ahead_of(&s.machine));
@@ -1494,9 +1524,12 @@ impl Play {
             // The other machine's frames: their tags don't follow on.
             g.renderer.reset_history();
         }
-        // Anti-aliasing and the depth buffer: the game's settings, not the
-        // launcher preview's.
+        // Anti-aliasing, the depth buffer and smooth shading (by the game's
+        // rules): the game's settings, not the launcher preview's (flat).
+        // Every image below (game frame, in-between, late, run-ahead) is
+        // shaded by the renderer from the polygons it draws.
         let q = if s.preview { gpu::Quality::default() } else { self.values.quality(self.temporal_supported) };
+        g.renderer.set_light_rules(&s.game.shading, hud_mask(s.game));
         let temporal = g.renderer.set_quality(q).temporal > 0;
         let bus = &mut s.shown().bus;
         if bus.geo.wait_until(t0 + budget.mul_f64(0.8)) {

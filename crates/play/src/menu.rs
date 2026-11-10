@@ -77,6 +77,20 @@ pub struct View<'a> {
 /// Temporal anti-aliasing's choices: render scale in percent, label.
 const TEMPORAL: [(u8, &str); 5] = [(0, "off"), (100, "TAA"), (75, "75%"), (67, "67%"), (50, "50%")];
 
+/// Smooth shading's choices.
+const SHADING: [(gpu::Shading, &str); 3] =
+    [(gpu::Shading::Flat, "flat"), (gpu::Shading::Vertex, "vertex"), (gpu::Shading::Pixel, "pixel")];
+
+/// What the shading setting does as set (said beside its choices).
+fn shading_hint(v: &GameSettings) -> &'static str {
+    match v.shading {
+        _ if v.shading != gpu::Shading::Flat && v.crease == 0 => "(crease 0: nothing is smoothed)",
+        gpu::Shading::Flat => "(the game's own: one brightness a polygon)",
+        gpu::Shading::Vertex => "(brightness blended across curved surfaces)",
+        gpu::Shading::Pixel => "(drawn as vertex for now: per-pixel lighting isn't in yet)",
+    }
+}
+
 fn age(t: SystemTime) -> String {
     let s = t.elapsed().unwrap_or_default().as_secs();
     match s {
@@ -303,6 +317,13 @@ impl Menu {
                     &mut settings.depth,
                     "Depth buffer (polygons that cross sort right; off: the game's order)",
                 );
+                ui.horizontal(|ui| {
+                    ui.label("Shading:");
+                    for (s, text) in SHADING {
+                        focus.radio(ui, "shading", &mut settings.shading, s, text);
+                    }
+                    ui.weak(shading_hint(settings));
+                });
                 focus.checkbox(ui, &mut settings.pack, "Texture pack  (replacement textures)");
                 if let (true, Some(text)) = (settings.pack, view.pack) {
                     ui.weak(text);
@@ -680,6 +701,27 @@ mod tests {
         frames.extend([&[Nav::Down][..], &[Nav::Right], &[Nav::Down], &[Nav::Right]]);
         run(&mut m, &mut s, &mut b, &frames);
         assert_eq!((s.aa, s.temporal, s.stipple_keep), (4, 67, false));
+    }
+
+    #[test]
+    fn shading_row() {
+        // From the effects slider down to run-ahead, then anti-aliasing,
+        // temporal, (the stipple checkbox off without temporal) the depth
+        // buffer and shading: right to vertex, right again to pixel.
+        let (mut m, mut s, mut b) = setup();
+        let mut frames: Vec<&[Nav]> = vec![&[Nav::Down]; 6 + 7 + 4];
+        frames.push(&[Nav::Right]);
+        run(&mut m, &mut s, &mut b, &frames);
+        assert_eq!((s.shading, s.depth, s.aa, s.temporal), (gpu::Shading::Vertex, false, 0, 0));
+        let (mut m, mut s, mut b) = setup();
+        frames.push(&[Nav::Right]);
+        run(&mut m, &mut s, &mut b, &frames);
+        assert_eq!(s.shading, gpu::Shading::Pixel);
+        // The chip doesn't turn it off; pixel says it's drawn as vertex.
+        s.geo_chip = true;
+        assert!(shading_hint(&s).contains("as vertex"));
+        s.crease = 0;
+        assert!(shading_hint(&s).contains("nothing"));
     }
 
     #[test]

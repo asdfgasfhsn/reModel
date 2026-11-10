@@ -6,8 +6,9 @@
 //!
 //! A game's settings ([`GameSettings`]: sound mix, display, speed, smooth
 //! motion, run-ahead, anti-aliasing, temporal anti-aliasing and its
-//! stipple, depth buffer, texture pack and its filtering, geometrizer) come in layers, lowest first, as in the browser
-//! build (`crates/web/settings.js`): the built-in defaults, the defaults for
+//! stipple, depth buffer, smooth shading and its crease angle, texture
+//! pack and its filtering, geometrizer) come in layers, lowest first, as
+//! in the browser build (`crates/web/settings.js`): the built-in defaults, the defaults for
 //! all games (`play-settings.txt`), the game's own (`<set>/settings.txt`)
 //! and the command line (this run only). A layer keeps only what it sets,
 //! so changing the defaults for all games reaches every game that hasn't
@@ -47,6 +48,15 @@ pub struct GameSettings {
     pub stipple_keep: bool,
     /// Depth buffer for the 3D layer instead of the game's draw order.
     pub depth: bool,
+    /// Smooth shading (`gpu::Quality::shading`, `model2::light`): flat
+    /// (the game's own, one brightness a polygon), vertex or pixel (drawn
+    /// as vertex until the exact lighting exists). Not forced off by the
+    /// chip: it works from the polygon stream alone.
+    pub shading: gpu::Shading,
+    /// Smooth shading's crease angle in degrees (faces meeting at more
+    /// keep a hard edge; 0: nothing smoothed), or `gpu::CREASE_AUTO`: the
+    /// game's own (`romset::Shading::crease`). By flag or file only.
+    pub crease: u8,
     /// Draw the game's texture pack (`<data dir>/<set>/texpack/`, or
     /// `--texture-pack`) over its own textures.
     pub pack: bool,
@@ -73,6 +83,8 @@ impl Default for GameSettings {
             temporal: 0,
             stipple_keep: false,
             depth: false,
+            shading: gpu::Shading::Flat,
+            crease: gpu::CREASE_AUTO,
             pack: false,
             tex_filter: TexFilter::Off,
             geo_chip: false,
@@ -81,7 +93,7 @@ impl Default for GameSettings {
 }
 
 /// Every game setting's key, in the order the panels show them.
-pub const KEYS: [&str; 15] = [
+pub const KEYS: [&str; 17] = [
     "wide",
     "bezel",
     "hud_edges",
@@ -92,6 +104,8 @@ pub const KEYS: [&str; 15] = [
     "temporal",
     "stipple",
     "depth",
+    "shading",
+    "crease",
     "pack",
     "tex_filter",
     "sfx_db",
@@ -136,6 +150,11 @@ impl GameSettings {
             },
             "stipple" => if self.stipple_keep { "keep" } else { "blend" }.to_string(),
             "depth" => self.depth.to_string(),
+            "shading" => self.shading.name().to_string(),
+            "crease" => match self.crease {
+                gpu::CREASE_AUTO => "auto".to_string(),
+                n => n.to_string(),
+            },
             "pack" => self.pack.to_string(),
             "tex_filter" => self.tex_filter.to_string(),
             "geo" => if self.geo_chip { "chip" } else { "native" }.to_string(),
@@ -165,6 +184,8 @@ impl GameSettings {
             "temporal" => gpu::Quality::parse_temporal(v).map(|n| self.temporal = n).is_some(),
             "stipple" => gpu::Stipple::parse(v).map(|s| self.stipple_keep = s == gpu::Stipple::Keep).is_some(),
             "depth" => flag(v).map(|x| self.depth = x).is_some(),
+            "shading" => gpu::Shading::parse(v).map(|x| self.shading = x).is_some(),
+            "crease" => model2::light::parse_crease(v).map(|n| self.crease = n).is_some(),
             "pack" => flag(v).map(|x| self.pack = x).is_some(),
             "tex_filter" => TexFilter::parse(v).map(|f| self.tex_filter = f).is_some(),
             "geo" => match model2::geo::GeoMode::parse(v) {
@@ -219,7 +240,8 @@ impl GameSettings {
             tex_filter: self.tex_filter,
             temporal: if self.temporal_on() && supported { self.temporal } else { 0 },
             stipple: if self.stipple_keep { gpu::Stipple::Keep } else { gpu::Stipple::Blend },
-            ..Default::default()
+            shading: self.shading,
+            crease: self.crease,
         }
     }
 }
@@ -655,6 +677,52 @@ mod tests {
         let s = Settings::parse(&s.text());
         let (v, _) = with_game(s, "x", &[]).resolve("x");
         assert_eq!((v.temporal, v.stipple_keep), (67, true));
+    }
+
+    #[test]
+    fn shading_and_crease() {
+        let mut v = GameSettings::default();
+        assert_eq!((v.shading, v.crease), (gpu::Shading::Flat, gpu::CREASE_AUTO));
+        assert_eq!((v.get("shading").as_str(), v.get("crease").as_str()), ("flat", "auto"));
+        // Flat: the quality is what it was before shading existed (the
+        // renderer then never runs `light::shade`).
+        let q = v.quality(true);
+        assert_eq!(q, gpu::Quality { msaa: 0, depth: false, tex_filter: TexFilter::Off, ..Default::default() });
+        for s in ["vertex", "pixel", "flat"] {
+            assert!(v.set("shading", s) && v.get("shading") == s);
+        }
+        assert!(v.set("shading", "off") && v.shading == gpu::Shading::Flat && v.get("shading") == "flat");
+        assert!(!v.set("shading", "smooth") && !v.set("shading", "on"));
+        for (text, n) in [("0", 0), ("40", 40), ("180", 180), ("auto", gpu::CREASE_AUTO)] {
+            assert!(v.set("crease", text));
+            assert_eq!((v.crease, v.get("crease")), (n, text.to_string()));
+        }
+        assert!(!v.set("crease", "181") && !v.set("crease", "-1") && !v.set("crease", "x"));
+        assert_eq!(v.crease, gpu::CREASE_AUTO);
+        // Into the renderer's quality, the chip included (not forced off),
+        // and alongside temporal.
+        v.set("shading", "vertex");
+        v.set("crease", "30");
+        v.set("temporal", "taa");
+        v.geo_chip = true;
+        let q = v.quality(true);
+        assert_eq!((q.shading, q.crease, q.temporal), (gpu::Shading::Vertex, 30, 0));
+        v.geo_chip = false;
+        assert_eq!(v.quality(true).temporal, 100);
+        assert_eq!(v.quality(true).shading, gpu::Shading::Vertex);
+        // Through the files; unset, nothing is written.
+        assert!(Settings::default().text().find("shading").is_none());
+        let s = Settings::parse("shading = pixel\ncrease = 25\n");
+        assert_eq!(s.defaults.get("shading").map(String::as_str), Some("pixel"));
+        let s = Settings::parse(&s.text());
+        let (v, _) = with_game(s, "x", &[("crease", "auto")]).resolve("x");
+        assert_eq!((v.shading, v.crease), (gpu::Shading::Pixel, gpu::CREASE_AUTO));
+        // Back to the defaults: nothing stored.
+        let mut s = with_game(Settings::parse("shading = vertex\ncrease = 25\n"), "x", &[]);
+        let (mut v, _) = s.resolve("x");
+        (v.shading, v.crease) = (gpu::Shading::Flat, gpu::CREASE_AUTO);
+        edit_quietly(&mut s, "x", &v);
+        assert!(!s.defaults.contains_key("shading") && !s.defaults.contains_key("crease"));
     }
 
     /// `edit` without saving (the layers it would touch are given).

@@ -90,6 +90,46 @@ matters, with `--geo chip`, or when the CPU has no time to spare.
 in-betweens with it on were only forced there, not seen on a faster
 display.
 
+**Smooth shading** (*in progress*; setting `shading`, below, and
+`crease` in the settings file only; `--shading flat|vertex|pixel` and
+`--crease auto|N` for one run; `flat` and `auto` by default). The games
+light each polygon with one brightness, so curved surfaces show their
+facets. `vertex` gives each polygon corner the mean brightness of the
+faces around it that belong to the same smooth surface, and blends it
+across the polygon: faces meeting at more than the crease angle keep a
+hard edge (`auto` is the game's own angle, 40 degrees for every game so
+far; 0 smooths nothing, the original picture). It is worked out from the
+polygons the geometrizer sends, so it works with the native geometrizer
+and with the chip alike (it is not turned off with `--geo chip`), with
+temporal anti-aliasing (its first frame after a reset is the shaded
+frame), multisampling, the depth buffer and texture packs (a pack image's
+lighting follows the blended brightness). HUD windows, shadows and
+polygons whose neighbours are lit alike are left as the game drew them,
+pixel for pixel. Smooth motion's in-betweens, frames drawn with the last
+frame's polygons when the geometrizer is late, and run-ahead's frames are
+shaded the same way, from the polygons each one draws, so shading doesn't
+flicker on and off between them. `pixel` (lighting worked out per pixel
+from the game's own lighting values) isn't in yet: it draws as `vertex`,
+and the menu and launcher say so. The launcher's previews are always
+flat. Nothing the game computes changes. On the CPU it costs about 0.4 to
+1.5 ms each time a frame is drawn (up to about 2.4 ms on busy frames; on
+a display faster than 60 Hz that is every refresh), on the GPU within
+the noise; with `flat` (or a crease of 0) none of it runs.
+
+What to expect (from the stage 1 review pictures): clearly better on
+fighters and curved bodies (`lastbrnx`'s and `fvipers`' fighters,
+`doa`'s, `topskatr`'s skaters, `stcc`'s cars, `segawski`'s life vest);
+little or no change on mostly flat cars and scenery (`sgt24h`, `srallyc`,
+roads, buildings; `indy500` lights its cars evenly); worse on art drawn
+to be faceted, such as `schamp`'s Sonic quills and `vstriker`'s low-poly
+limbs, which lose their definition or look rubbery until those games get
+their own crease angle (meanwhile `--crease 25` or so keeps more of
+them). Each limb of a fighter is shaded on its own, so joints keep a
+seam. Gradients step through the game's 64 brightness levels, so large
+smooth surfaces show visible bands. *Unconfirmed:* tried on one NVIDIA
+GPU (Vulkan) on a 60 Hz display (in-betweens forced, not seen on a
+faster display).
+
 **Texture packs** (settings `pack` and `tex_filter`, below; `--pack on|off`,
 `--texture-pack DIR` and `--tex-filter off|mip|2|4|8|16` for one run; both
 off by default). With `pack` on, replacement textures from the game's pack
@@ -297,7 +337,8 @@ emulated like the game would be (it costs what the game costs).
 they change as they change: aspect (fit the window or 4:3), bezel, HUD at
 the edges or centred, speed (one frame a refresh or exact arcade speed),
 smooth motion, anti-aliasing (off, 4x, 8x), temporal anti-aliasing (off,
-TAA, 75%, 67%, 50%) and its checkerboard see-through (blend or keep), the depth buffer, the texture pack and its filtering (off, mip, 2x to 16x), the effects and music levels in dB, the geometrizer (native
+TAA, 75%, 67%, 50%) and its checkerboard see-through (blend or keep), the depth buffer, shading (flat,
+vertex, pixel; pixel says it draws as vertex for now), the texture pack and its filtering (off, mip, 2x to 16x), the effects and music levels in dB, the geometrizer (native
 or the game's chip; the preview restarts on it) and the Controls page
 (remapping, below). "Save for" says where changes go: the defaults for all
 games, or this game only (a game's own setting is tagged "this game", and
@@ -305,7 +346,7 @@ games, or this game only (a game's own setting is tagged "this game", and
 the Esc menu while playing. They come in layers, lowest first, as in the
 browser build: the built-in defaults, the defaults for all games, the
 game's own, then the command line (`--mix`, `--hud`, `--aspect`, `--bezel`,
-`--exact`, `--smooth`, `--aa`, `--temporal`, `--stipple`, `--depth`, `--pack`, `--texture-pack`, `--tex-filter`, `--geo`), which applies to that run only and is
+`--exact`, `--smooth`, `--aa`, `--temporal`, `--stipple`, `--depth`, `--shading`, `--crease`, `--pack`, `--texture-pack`, `--tex-filter`, `--geo`), which applies to that run only and is
 never saved, unless a setting it gave is changed in the launcher or menu
 (that change is then kept as any other). A layer keeps only what it sets.
 
@@ -707,7 +748,8 @@ synthetic and scripted (`--nav`) events only, not yet with a real pad.
   wider than its frame from 4:3 to 32:9; or 4:3, `--aspect 4:3`), the
   bezel (below), where the HUD goes on wide windows, smooth motion,
   anti-aliasing, temporal anti-aliasing and the checkerboard pattern, and
-  the depth buffer (above), the texture pack and its
+  the depth buffer and shading (above; the crease angle is the settings
+  file's or `--crease`'s), the texture pack and its
   filtering (above), run-ahead (above), the geometrizer (on the next start), "Save changes
   for" this game or all games (as in the launcher), and exact arcade speed
   (57.524 frames per second) against the default of one game frame per
