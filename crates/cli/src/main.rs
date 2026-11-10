@@ -38,12 +38,14 @@ options:
                        wider than 4:3 shows more of the 3D scene at the sides
   --hud center|edges   wide views: keep the HUD centred, or move each HUD
                        element to the nearest screen edge
-  --aa N               snapshots and gpu-check: anti-aliasing with N samples a
+  --aa N               snapshots and the GPU checks (gpu-check, depth-check,
+                       pack-check): anti-aliasing with N samples a
                        pixel (4, 8, ...; default off). The software renderer
                        supersamples (draws ceil(sqrt(N)) times larger in each
                        direction and averages); gpu-check turns on the GPU's
                        multisampling to match (4 or 8)
-  --depth              snapshots, gpu-check, temporal-check: a depth buffer from each
+  --depth              snapshots, gpu-check, pack-check, temporal-probe,
+                       temporal-check: a depth buffer from each
                        vertex's 1/z, per window, instead of drawing in the
                        game's order (model2::raster::depth_value; default off)
   --input SCRIPT       scripted inputs for `run`, by the game's input names
@@ -66,7 +68,7 @@ options:
                        (raster stream, video RAMs) to DIR/FRAME/, for
                        `gpu-check`
   --capture-seq DIR    `run` with --geo native: save consecutive frames
-                       (--seq FROM,COUNT: COUNT frames from FRAME, default
+                       (--seq FROM,COUNT: COUNT frames from FROM, default
                        0,300) with their motion data to DIR, as a sequence
                        for `temporal-check` (and `gpu-check`); the run stops
                        after the last
@@ -239,7 +241,13 @@ commands:
                        that many for the reference); write them to OUT
                        (default out/GAME/pack-check) as FRAME-off, -mip,
                        -aniso16, -swmip and -ref.png, and report how far each
-                       is from the reference and what they cost
+                       is from the reference and what they cost.
+                       --identity (no --texture-pack needed): a pack
+                       standing for the original textures (--texture-pack
+                       DIR, normally the dump itself; none: each frame's own
+                       textures) drawn on the GPU and in software, unfiltered
+                       and mipmapped, against no pack, to OUT (default
+                       out/GAME/pack-identity); fails beyond the tolerance
   tile-check [DIR] [OUT]
                        with --texture-pack: draw the frames captured in DIR
                        (default out/GAME/capture) with the pack's tile images

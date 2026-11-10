@@ -11,7 +11,9 @@ straight away. At startup the reModel logo shows for 1.5 s, then fades out
 over 0.5 s over the launcher (or the game booting underneath). Any
 key, click or gamepad button skips it; `--no-splash` leaves it out. The
 logo (`assets/reModel-logo-1086.png`, half the size of the original) is
-built into the binary and decoded with `remodel-png`.
+built into the binary and decoded with `remodel-png`. `--fullscreen`
+starts fullscreen (remembered, as `--rom` is), and `--interp` runs the
+i960 on the interpreter in a build with recompiled code.
 
 **Geometrizer.** The geometrizer runs on the native implementation
 (`docs/hw/geometrizer-2b.md` for Model 2B, `docs/hw/geometrizer-2c.md`
@@ -173,8 +175,8 @@ game computes. Checked on `topskatr` with a scripted run (tiles too:
 `--shot` in a race, the HUD drawn from realesrgan-x4plus tiles). *Not verified:* smooth motion's in-betweens and F5/F9 save
 slots with a pack, and decode stutter was not measured.
 
-**Smooth motion** (a setting, below; `--smooth` for one run; off by
-default). On a
+**Smooth motion** (a setting, below; `--smooth on|off` for one run, a
+bare `--smooth` meaning on; off by default). On a
 display faster than the game's 57.5 Hz, the refreshes between two game
 frames show the 3D geometry part way from the frame before to the newest
 one, by the time since the newest was first shown, instead of repeating
@@ -357,9 +359,11 @@ says why. The preview never takes input, never saves its EEPROM, and is
 emulated like the game would be (it costs what the game costs).
 
 **Settings** slide out from the right over the preview, which shows what
-they change as they change: aspect (fit the window or 4:3), bezel, HUD at
-the edges or centred, speed (one frame a refresh or exact arcade speed),
-smooth motion, anti-aliasing (off, 4x, 8x), temporal anti-aliasing (off,
+they change as they change (except anti-aliasing, temporal anti-aliasing,
+the depth buffer, shading and the texture pack and its filtering, which
+the preview draws without; they show in the game): aspect (fit the window
+or 4:3), bezel, HUD at the edges or centred, speed (one frame a refresh or
+exact arcade speed), smooth motion, run-ahead (off, 1, 2, 3), anti-aliasing (off, 4x, 8x), temporal anti-aliasing (off,
 TAA, 75%, 67%, 50%) and its checkerboard see-through (blend or keep), the depth buffer, shading (flat,
 vertex, pixel; with the chip geometrizer pixel says it draws as vertex) and its brightness levels (the game's or blended), the texture pack and its filtering (off, mip, 2x to 16x), the effects and music levels in dB, the geometrizer (native
 or the game's chip; the preview restarts on it) and the Controls page
@@ -369,7 +373,7 @@ games, or this game only (a game's own setting is tagged "this game", and
 the Esc menu while playing. They come in layers, lowest first, as in the
 browser build: the built-in defaults, the defaults for all games, the
 game's own, then the command line (`--mix`, `--hud`, `--aspect`, `--bezel`,
-`--exact`, `--smooth`, `--aa`, `--temporal`, `--stipple`, `--depth`, `--shading`, `--crease`, `--shading-fine`, `--pack`, `--texture-pack`, `--tex-filter`, `--geo`), which applies to that run only and is
+`--exact`, `--smooth`, `--run-ahead`, `--aa`, `--temporal`, `--stipple`, `--depth`, `--shading`, `--crease`, `--shading-fine`, `--pack`, `--texture-pack`, `--tex-filter`, `--geo`), which applies to that run only and is
 never saved, unless a setting it gave is changed in the launcher or menu
 (that change is then kept as any other). A layer keeps only what it sets.
 
@@ -773,8 +777,8 @@ synthetic and scripted (`--nav`) events only, not yet with a real pad.
   anti-aliasing, temporal anti-aliasing and the checkerboard pattern, and
   the depth buffer, shading and its blended brightness levels (above; the crease angle is the settings
   file's or `--crease`'s), the texture pack and its
-  filtering (above), run-ahead (above), the geometrizer (on the next start), "Save changes
-  for" this game or all games (as in the launcher), and exact arcade speed
+  filtering (above), run-ahead (above), the geometrizer (on the next start),
+  fullscreen (as F11), "Save changes for" this game or all games (as in the launcher), and exact arcade speed
   (57.524 frames per second) against the default of one game frame per
   display refresh at 60 or 120 Hz, which is 4.3% fast but smooth.
   **Below full speed** (a game frame taking longer than a refresh, as
@@ -878,6 +882,8 @@ directory), the player keeps its files in `out/`; anywhere else in
   settings panels save, and the game settings set for all games.
 - `<set>/settings.txt`: the game's own settings, only where they differ
   from those for all games.
+- `<set>/controls.txt`: the game's remapped controls, only what differs
+  from its manifest (above, "Remapping").
 - `<set>/eeprom.bin`: the game's EEPROM (settings, records), written on quit or on switching games.
 - `<set>/saves/quick.save`, `slot1.save` ...: save states, zlib-compressed,
   about 1.2 MB each. They only load into the same program ROMs.

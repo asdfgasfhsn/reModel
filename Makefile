@@ -88,7 +88,7 @@ RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 ##@ General
 
-help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, PACK_CHECK_OUT, TILE_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, GPU_OPTS, LIGHT_OPTS, LIGHT_CAPTURE, LIGHT_IN, PROBE, AGAINST, SEQ_FROM, SEQ_FRAMES, STATE, TEMPORAL_SEQ, TEMPORAL_OPTS, RECOMP, SOUNDTRACK)
+help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, PACK_CHECK_OUT, TILE_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, GPU_OPTS, LIGHT_OPTS, LIGHT_CAPTURE, LIGHT_IN, PROBE, AGAINST, SEQ_FROM, SEQ_FRAMES, STATE, TEMPORAL_SEQ, TEMPORAL_OPTS, RECOMP, PLAY_ARGS, FILE, SECONDS, SOUNDTRACK, SRC)
 	@awk 'BEGIN {FS = ":.*## "; printf "usage: make <target> [VAR=value]\n"} \
 		/^##@/ {printf "\n%s\n", substr($$0, 5)} \
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -295,8 +295,8 @@ capture: release ## Run into a race saving every 300th frame's renderer inputs t
 # Options for gpu-check, depth-check and pack-check: --aa N (multisampling;
 # software supersamples to match), --depth, --tex-filter off|mip|2|4|8|16
 # (gpu-check with PACK), and for depth-check and pack-check
-# --height/--aspect/--hud; --shading flat|vertex and --crease auto|N
-# (smooth shading, model2::light) for all of them.
+# --height/--aspect/--hud; --shading flat|vertex|pixel, --crease auto|N and
+# --shading-fine on|off (smooth shading, model2::light) for all of them.
 GPU_OPTS ?=
 gpu-check: release ## Draw the captured frames on the software and GPU rasterisers; time and compare them, and what GPU_OPTS="--aa 4 --depth" and PACK=DIR (a texture pack, both renderers) cost (needs a GPU)
 	$(RUN) $(GPU_OPTS) $(if $(PACK),--texture-pack $(PACK)) gpu-check

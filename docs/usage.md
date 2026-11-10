@@ -8,12 +8,18 @@ Requires a Rust toolchain (stable) and `make`.
 
 ```sh
 make                  # list every target
-make check            # format check, clippy, unit tests (no ROMs needed)
+make check            # format check, clippy, unit tests (no ROMs needed); `make ci` is the same
+make build            # debug build of the whole workspace
+make release          # optimised build of the remodel CLI (RECOMP=1: with the recompiled code)
+make test             # unit tests only; make lint (clippy, warnings are errors); make fmt / make fmt-check
+make pace-sim         # the browser's audio rate control on synthetic frame timings (docs/web.md)
+make clean            # remove build output and everything in out/ (scratch included)
 make m68k-tests       # 68000 core vs the SingleStepTests suite (fetches ~200 MB, 1.1 GB unpacked, into out/)
 make z80-test         # Z80 core vs the zexdoc/zexall exercisers in out/z80-tests (docs/hw/z80.md)
 make sharc-test       # ADSP-21062 (SHARC) tests, plus the 2B programs if captured (docs/hw/adsp2106x.md)
 
 # With ROM sets in ./rom, as MAME keeps them (rom/topskatr.zip, or unpacked in rom/topskatr/):
+make games            # the games with manifests
 make verify           # check every chip
 make scan             # list the sets in rom/ (MAME zips or folders) and check the supported ones
 make boot             # boot record and system-table entry points
@@ -27,6 +33,12 @@ make inputs               # the game's input names for INPUT=, and their keys an
                           # name@from-to/n holds an input for 2 frames every n (e.g. trigger1@2000-3000/20)
 make sound                # render the sound commands of the last run -> out/topskatr/sound.wav
 make sound-disasm ADDR=0x6004ea   # disassemble the sound 68000 program
+make copro-disasm         # disassemble the geometry program the last `run` captured (MB86235)
+make tgp-disasm GAME=srallyc   # Model 2A: the TGP (MB86234) program the last `run` captured -> out/srallyc/tgp.lst
+make tgp-check GAME=srallyc    # its functions on the MB86234 interpreter with random arguments, against their maths
+make sharc-disasm FILE=out/overrevb/sharc-geo.bin   # Model 2B: an ADSP-21062 program image -> FILE.lst
+make mpeg-dump ADDR=0x11000 SECONDS=10   # decode MPEG ROM frames directly -> out/topskatr/mpeg-ADDR.wav
+make mpeg-test            # MPEG decoder test against the MPEG ROMs in rom/
                           # coin up, start, and play into a race
 make run STEPS=485000000 INPUT=coin1@1100-1104,start@1250-1254 \
     VIEW="--height 1080 --aspect 21:9 --hud edges"   # enhanced snapshot
@@ -44,7 +56,11 @@ make assets               # extract the game's art for review -> out/topskatr/as
 make bench                # timed run into a race: speed and state hash
 make latency              # frames from a wheel change to the game reacting and its polygons (LATENCY_CHANGE, LATENCY_FRAME)
 make recomp               # recompile the game's i960 code and TGP or SHARC programs (after a `run`; builds only what changed)
+make recomp-workspace     # rewrite out/recomp's Cargo workspace and crate manifests (after updating reModel or moving the checkout)
 make bench RECOMP=1       # same run on the recompiled build: same hash, about twice as fast
+make state-check          # save state round trip: saved at frame 2000 and resumed must match an uninterrupted run (state hash and audio)
+make geo-check GAME=sgt24h   # native geometrizer beside the chip (2B SHARC, 2C TGP) on a coin-start run, raster streams compared each frame, both timed
+make geo-fuzz GAME=sgt24h    # random display lists through the chip's program and the native geometrizer, compared (FUZZ_FRAMES, FUZZ_SEED)
 make play RECOMP=1        # the launcher: pick a game (live attract previews, settings, Continue), then play
 make play GAME=hotd RECOMP=1   # straight into a game (Esc or pad Guide or Start+Select menu, F5/F9 quick save/load, F11 fullscreen)
 make play PLAY_ARGS=--smooth   # with in-between frames on a display over 60 Hz (a frame more latency)
@@ -53,6 +69,7 @@ make play PLAY_ARGS="--temporal 67"   # temporal anti-aliasing, 3D drawn at 67% 
 make input-lag            # each game's own input lag: frames from a control to the picture changing
 make run-ahead-check      # run-ahead keeps the real state hash and shows the plain run's later frames
 make install-desktop RECOMP=1   # reModel in the desktop's app menu, running this checkout's player
+make uninstall-desktop    # remove that app-menu entry and its icon
 make smooth-frames GAME=doa    # coin-start run drawing in-between frames beside the real ones -> out/doa/frames
 make web RECOMP=1         # browser build -> out/web: game list, a page and module per game (WebGPU; serve over HTTPS, docs/web.md)
 make dist                 # player to hand out (interpreter only, no ROMs) -> out/dist/remodel-VERSION-TARGET.tar.gz
@@ -62,6 +79,7 @@ make gpu-check PACK=out/topskatr/texpack-4x GPU_OPTS="--tex-filter mip"   # the 
 make pack-check PACK=out/topskatr/texpack-4x   # draw them with the pack on the GPU unfiltered, mipmapped and 16x, in software and as a supersampled reference; compare -> out/topskatr/pack-check
 make tile-check PACK=out/topskatr/texpack-4x   # the pack's tile images live on the GPU against the software snapshots' (1080p 16:9) -> out/topskatr/tile-check
 make pack-identity PACK=out/topskatr/texdump   # a pack of the dump itself must draw the captured frames as without one (no PACK: each frame's own textures) -> out/topskatr/pack-identity
+                          # known open item: it exits non-zero on topskatr and sgt24h, where single frames go over the 1% per-frame limit though the means are within it
 make depth-check          # draw them on the GPU with the depth buffer off and on, picture the differences -> out/topskatr/depth-check
 make depth-check PROBE="672,666@3600" AGAINST=DIR   # follow a pixel through the depth buffer; compare depth-on with an earlier run's (docs/enhancements.md)
 make lighting-check       # smooth shading (vertex; GPU_OPTS="--shading pixel": per pixel; add "--shading-fine on" for finer levels, K) on the captured frames: invariants, flat | vertex or pixel | differences and layer pictures -> out/scratch/lighting/topskatr (LIGHT_OPTS="--crease 30 --probe X,Y@F --bench"; GPU_OPTS="--shading vertex" turns it on in gpu-check, depth-check, pack-check; LIGHT_IN=DIR: a lighting-capture, checked with its side channel)
@@ -96,16 +114,18 @@ same directory. The geometrizer's thread doesn't change the hash: it runs
 each frame on its own copy of the inputs and nothing reads its results
 before `sync()`, so the default run and `--single-thread` agree.
 
-Every target takes `GAME=skisuprg` for Sega Ski Super G, `GAME=stcc` for
-Sega Touring Car Championship, `GAME=segawski` for Sega Water Ski,
-`GAME=waverunr` for Wave Runner, `GAME=overrev` for Over Rev,
-`GAME=overrevb` for its Model 2B version (its chips in `overrev.zip`, as
-MAME merges them), `GAME=hotd`
-for The House of the Dead or `GAME=bel` for Behind Enemy Lines (`make play GAME=stcc`, `make capture
-GAME=skisuprg`, ...), except `make assets`, which is `topskatr`'s, and
-`make music`, which needs a music board (`topskatr`'s DSB2 or `stcc`'s DSB1).
+Every target takes `GAME=<set>` for any of the eighteen games (`make games`
+lists them; the sets are in the README's table and [games/](games/README.md)),
+e.g. `make play GAME=stcc`, `make capture GAME=skisuprg`. `GAME=overrevb` is
+Over Rev's Model 2B version, its chips in `overrev.zip` as MAME merges them.
+The exceptions: `make assets` is `topskatr`'s; `make music` needs a music
+board (`topskatr`'s DSB2 or `stcc`'s DSB1); `make tgp-disasm` and
+`make tgp-check` are for the Model 2A game (`srallyc`), `make geo-check` and
+`make geo-fuzz` for the 2B and 2C games with a native geometrizer.
 
 Variables: `GAME` (manifest id, default `topskatr`), `ROM` (chip directory,
-default `rom`), `OUT`, `ADDR`, `COUNT`, `STEPS`. The `Makefile` is the supported
-interface for humans and agents alike; `make help` is always current.
+default `rom`), `OUT` (default `out/GAME`), `ADDR`, `COUNT`, `STEPS`, and the
+per-target ones `make help` lists (`VIEW`, `PACK`, `GPU_OPTS`, `PLAY_ARGS`,
+...). The `Makefile` is the supported interface for humans and agents alike;
+`make help` is always current.
 

@@ -10,6 +10,7 @@ crates/
   analyze/   recursive-descent code discovery      (CPU-generic)
   model2/    board model (2A, 2B and 2C): memory map, IRQs, timers, I/O,
              copro and geometrizer interfaces
+  mb86234/   MB86234 (Model 2A TGP) interpreter and disassembler
   mb86235/   MB86235 (TGPx4) decoder, disassembler and interpreter
   adsp2106x/ ADSP-21062 (SHARC) decoder, disassembler and interpreter
              (Model 2B's geometry DSPs; generic)
@@ -21,9 +22,17 @@ crates/
              decoder chip model, replacement soundtracks (WAV/MP2
              reader, resampler)
   png/       PNG decode/encode with zlib inflate/deflate (generic)
+  state/     save states: a small binary serialisation   (generic)
+  gpu/       3D rasteriser on the GPU (wgpu) and the 2D layers' composition
+  recomp/    registry of recompiled programs (a stub; `make recomp` builds
+             the real one in out/recomp/)
   cli/       the `remodel` command
+  play/      the native player, `remodel-play`
+  web/       the browser build (WebAssembly and WebGPU, `make web`)
 tools/
   asset-review.py   distinct textures, screens and contact sheets from capture runs (`make assets`)
+  notices.py        THIRD-PARTY-NOTICES.txt for `make dist` and `make web`
+  web.sh            the browser build (`make web`)
 ```
 
 ## Reuse across Model 2
@@ -49,10 +58,11 @@ input and both players read them from there. Drive board protocols live
 in `crates/model2/src/drive.rs`, one per kind; the 2C gun interface in
 `crates/model2/src/gun.rs`. `topskatr`, `skisuprg`, `stcc`, `segawski`,
 `waverunr`, `overrev`, `hotd` and `bel` are Model 2C-CRX (MB86235 geometry
-processor); `overrevb`, `sgt24h`, `dynabb97`, `doa` and `indy500` are Model
-2B-CRX (ADSP-21062 SHARCs). The manifest's
+processor); `overrevb`, `sgt24h`, `dynabb97`, `doa`, `indy500`, `fvipers`,
+`schamp`, `vstriker` and `lastbrnx` are Model 2B-CRX (ADSP-21062 SHARCs);
+`srallyc` is Model 2A-CRX (MB86234 TGP). The manifest's
 `board` picks the board model: `crates/model2` keeps what differs between
-the two (the copro and geometrizer cores, the 2B host windows, the UART
+the boards (the copro and geometrizer cores, the 2B host windows, the UART
 address) behind it, with nothing keyed on a game's name. A manifest's
 `parent` marks a clone: its chips may sit in the parent set's zip or
 folder, and it shares the parent's poster and bezel.

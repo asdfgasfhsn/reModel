@@ -51,8 +51,8 @@ pub struct GameSettings {
     pub depth: bool,
     /// Smooth shading (`gpu::Quality::shading`, `model2::light`): flat
     /// (the game's own, one brightness a polygon), vertex or pixel (drawn
-    /// as vertex until the exact lighting exists). Not forced off by the
-    /// chip: it works from the polygon stream alone.
+    /// as vertex with the chip geometrizer). Not forced off by the chip:
+    /// it works from the polygon stream alone.
     pub shading: gpu::Shading,
     /// Smooth shading's crease angle in degrees (faces meeting at more
     /// keep a hard edge; 0: nothing smoothed), or `gpu::CREASE_AUTO`: the

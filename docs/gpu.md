@@ -27,9 +27,9 @@ HUD placement).
 The GPU draws each convex polygon as a triangle fan. Everything goes in a
 single render pass, by default with no depth buffer: GPUs keep primitive
 order for overlapping pixels, which gives the painter's algorithm the
-software renderer uses. Two opt-in options (`gpu::Quality`, decided in
-`docs/enhancements.md`) change that, and with both off the output is
-bit-for-bit what it was:
+software renderer uses. Opt-in options (`gpu::Quality`, decided in
+`docs/enhancements.md`) change that, and with all of them off the output
+is bit-for-bit what it was:
 
 - **Multisampling** (`msaa` 4, or 8 where the adapter has it): the pass
   renders into a multisampled image resolved into the 3D layer, whose
@@ -50,13 +50,15 @@ bit-for-bit what it was:
   its whole group); and none (backgrounds, shadows, translucent and very
   deep polygons stay in the game's order). A window starts with a
   scissored full-screen draw that empties the buffer where it draws.
-
 - **Texture packs** (`Renderer::set_pack`; `Quality::tex_filter`): see
   "Texture packs" below. With no pack set the pipelines, shaders and output
   are the ones above, unchanged.
 - **Temporal anti-aliasing and upscaling** (`Quality::temporal`,
   `Quality::stipple`): see "Temporal path" below. Off (0, the default) the
   pipelines, shaders and output are the ones above, unchanged.
+- **Smooth shading** (`Quality::shading`, `crease`, `shading_fine`): see
+  "Smooth shading" below. Flat (the default) takes the old pipelines and
+  shader text.
 
 The fragment shader (`crates/gpu/src/raster.wgsl`) is a line-for-line port
 of the software shading. It reads from the game's own render RAM and
@@ -94,9 +96,10 @@ the game, so they live under `out/`.
 
 A frame is 17.4 ms, so the software rasteriser can't draw races live even
 at native size. The GPU times include rebuilding every buffer, uploading
-the 4 MB render RAM and reading the image back each frame. A live
-renderer keeps buffers, uploads only what changed and presents without a
-readback, so it will be faster.
+the 4 MB render RAM and reading the image back each frame. The live
+renderer (`present_bus*`) keeps the RAM buffers, uploads render and palette
+RAM only when their versions changed and presents without a readback, so
+it does less work a frame.
 
 How the GPU output compares with the software renderer:
 
@@ -198,7 +201,6 @@ refused with one warning.
   software trilinear, and a 4x4 supersampled reference, with the mean
   distance of each from it (`topskatr`: a fine-checker test pack 9.66, 4.70,
   4.84; realesrgan-x4plus 2.09, 2.06, 1.62).
-
 - **Tiles** (`gpu/src/tiles.rs`, compose.wgsl `fs_tiles`). Only when the
   pack has tile images (`TexturePack::has_tiles`), `Renderer::layers_2d`
   (which `present_bus*` use; tools call it before `frame`) builds the 2D
@@ -270,7 +272,8 @@ sits in the renderer (`crates/gpu/src/temporal.rs`, `temporal.wgsl`, the
   inspect`, leaving the picture and the history alone. `ResolveIo` is the
   pass boundary: the only code that knows the algorithm, and what a
   library upscaler would take instead.
-- **Pipelines.** Cached by `(samples, Mode, Variant, temporal)`; the
+- **Pipelines.** Cached by `(samples, Mode, Variant, temporal, shading)`
+  (shading 1: the `_l` entry points, "Smooth shading" below); the
   temporal ones come from `raster_pipeline_t` (one sample, two colour
   targets, premultiplied-alpha blending on the colour for the blended
   checkerboard), so the off path's construction is the old code. Entry
@@ -426,6 +429,8 @@ drawn with whatever `Poly::lit` and `Poly::pixel` hold.
 
 - The 2D tile layers and HUD on the GPU: they are drawn on the CPU and
   only composed on the GPU.
-- Persistent buffers with dirty-range uploads of render RAM.
+- Dirty-range uploads of render RAM: the buffers persist and the
+  `present_bus*` calls skip uploading render or palette RAM whose version
+  is unchanged (`set_ram_versions`), but a changed one is uploaded whole.
 - Tile replacements for the columns a wide view adds at the sides (scrolled
   tile skies): they draw the original patterns (`docs/texture-packs.md`).

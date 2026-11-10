@@ -123,7 +123,8 @@ make web RECOMP=1   # each game gets its own module with its recompiled code (af
 from a copy of `out/web`) and swaps each top-level entry into `out/web` at
 the end, `model2/` first, so a page loaded mid-build never mixes an old
 module with new scripts. It swaps entries rather than the directory because
-a server may bind-mount `out/web` (as below); `rom/` is left alone.
+a server may bind-mount `out/web` (as below); `rom/` and `texpack/` are
+left alone.
 
 **Layout.** `make web` (`tools/web.sh`) writes:
 
@@ -138,7 +139,7 @@ a server may bind-mount `out/web` (as below); `rom/` is left alone.
 | `/model2/<set>/shot.png` | | its card's screenshot |
 | `/model2/<set>/pkg/` | | its WebAssembly module (`RECOMP=1`) |
 | `/model2/pkg/` | | the interpreter module the games share (without `RECOMP`, or for a game with no recompiled code) |
-| `/model2/*.js` | `crates/web/*.js` | the workers (sound, geometry, texture pack), the audio worklet, the touch controls and the settings panel, shared |
+| `/model2/*.js` | `crates/web/*.js` | the workers (sound, geometry, texture pack), the audio worklet, the touch controls, the light guns and the settings panel, shared |
 | `/rom/<set>/` | | the ROM files: not written, the server provides them (see Serving). A clone's page fetches from its parent's folder when its chips are there (`overrevb`'s from `rom/overrev/`): `make web` writes that folder into the page's `remodel-rom` meta tag (`remodel --game <set> rom-folder`) |
 | `/texpack/<set>/` | | the game's texture pack, if any: its PNGs and an `index.txt` (see Texture packs). Not written, the server provides it; `make web`'s swap leaves `texpack/` alone as it does `rom/`. A clone without a folder of its own uses its parent's |
 
@@ -182,8 +183,8 @@ in `crates/romset/src/games/` (with its `year` and `attract_frame`), its
 chips in `rom/<set>/`, and `make web` lists it. Make its poster too,
 `assets/posters/<set>.webp` (600x900, see `assets/posters/README.md`);
 without one the card gets the placeholder and `make web` warns. And its
-bezel, `assets/bezels/<set>.webp` (see `assets/bezels/README.md`). For recompiled code, `make
-run GAME=<set>` and `make recomp GAME=<set>` first. The touch controls,
+bezel, `assets/bezels/<set>.webp` (see `assets/bezels/README.md`). For
+recompiled code, `make run GAME=<set>` and `make recomp GAME=<set>` first. The touch controls,
 help bar and card come from the manifest's controls: buttons can carry a
 short `labelled(...)` name for the on-screen buttons and the card.
 
@@ -232,7 +233,8 @@ RUSTC=$(~/.local/share/rustup-wasm/bin/rustup which rustc) $(~/.local/share/rust
 ```
 
 **Serving.** WebGPU only works on secure pages (HTTPS, or localhost), so
-serve over HTTPS. A game page loads its ROM files from `/rom/<set>/` at the
+serve over HTTPS. Without WebGPU the game page says so (on the splash, the
+panel and the bar) and doesn't download or start the game. A game page loads its ROM files from `/rom/<set>/` at the
 site root (`../../rom/<set>/` from the page), one file per chip, as in the
 repo's `rom/topskatr/`. They are your dump: keep the server private to
 your network. One setup is a file server
@@ -260,12 +262,15 @@ progress. It offers:
   screen's, the default: the window's height in device pixels, up to
   1080), aspect (fit the window, the default, 4:3 to 21:9; 4:3; 16:9),
   HUD placement in wide views (at the edges, or centred), the bezel (on,
-  the default, or off; below), anti-aliasing, the depth buffer, shading
-  (flat, the default; smooth; per pixel) and its crease angle (the game's,
-  the default; 30°, 40°, 60°; below, "Smooth shading"), blended brightness levels (off by default), the texture
-  pack (off by default; below) and its filtering (off, mipmaps, 2x to 16x);
+  the default, or off; below), anti-aliasing (off, the default, or 4x),
+  the depth buffer (off by default), shading (flat, the default; smooth;
+  per pixel) and its crease angle (the game's, the default; 30°, 40°,
+  60°; below, "Smooth shading"), blended brightness levels (off by
+  default), the texture pack (off by default; below) and its filtering
+  (off, the default; mipmaps; 2x to 16x);
 - **Sound:** on or off, the effects (sound board) and music levels in
-  dB (defaults +8 and -8, `model2::audio::DEFAULT_MIX`; the game's own
+  dB (sliders from -24 to +24; defaults +8 and -8,
+  `model2::audio::DEFAULT_MIX`; the game's own
   level is added to both), and the buffer: the audio queued (auto, the
   default: 70 ms, or 150 ms on a phone or tablet; 70, 150 or 250 ms;
   above, "Audio rate");
@@ -278,12 +283,15 @@ progress. It offers:
   the 2C TGP) in a worker instead of the native geometrizer; and smooth
   motion (off by default; below).
 
-Play (or Enter, or a gamepad's Start, or A on Play) starts the game; the
+Play (or Enter, or a gamepad's Start, or A anywhere but on another button
+or a checkbox) starts the game; the
 Play tap also starts the audio and, on iOS, asks for the motion
 permission tilt needs (a gamepad press isn't a user gesture, so after a
 pad's Start the audio waits for a tap or key). On a gamepad the d-pad or
 left stick moves through the panel and changes values. While the panel is
-open, keys go to it, not the game. "Don't show this again for this game"
+open, keys go to it, not the game. Defaults puts every setting back to
+the built-in defaults except the touch controls and the remapped
+controls. "Don't show this again for this game"
 boots that game straight away from then on; the ⚙ button on its card in
 the game list (`model2/<set>/#settings`), or on the page before it starts,
 brings the panel back.
@@ -291,12 +299,16 @@ brings the panel back.
 In game, ⚙ in the bar (or on touch screens beside ⓘ), or Esc, opens the
 panel and pauses the game (`set_paused`: no frames run or drawn, the
 audio context is suspended, nothing reaches the workers; it resumes from
-the same frame). Resume applies the HUD placement (`set_hud`), the bezel, the mix
-(a `mix` message to the sound worker), the remapped controls
-(`set_bindings`) and touch and tilt at once; render
-height, aspect, sound on or off, the sound buffer, the geometrizer and smooth motion need a restart (anti-aliasing, the depth buffer, shading, its crease angle and brightness levels, the texture pack and its filtering apply at once: `set_quality`, `set_pack`), and
-the panel offers "Restart to apply" when one of them changed (it reloads
-the page with `#play`, skipping the panel once).
+the same frame). Resume (or Esc, a gamepad's B, or a tap outside the
+panel) applies the HUD placement (`set_hud`), the bezel, the mix (a `mix`
+message to the sound worker), the remapped controls (`set_bindings`),
+touch and tilt, anti-aliasing, the depth buffer, shading, its crease
+angle and brightness levels (`set_quality`), and the texture pack and its
+filtering (`set_pack`, `set_quality`) at once. Render height, aspect,
+sound on or off, the sound buffer, the geometrizer and smooth motion
+need a restart (`settings.js` `RESTART`), and the panel offers "Restart
+to apply" when one of them changed (it reloads the page with `#play`,
+skipping the panel once).
 
 Settings are kept in `localStorage` (`remodel.settings`): defaults for
 all games, and each game's own, which hold only what differs from those
@@ -317,13 +329,15 @@ shared link doesn't change anyone's settings; changing it in the panel
 drops the parameter from the address and saves the new value. The URL
 parameters:
 
-- `height=1080`;
-- `aspect=16:9`;
+- `height=1080` (rounded to even, 96 to 4320; `height=auto` the
+  screen's);
+- `aspect=16:9` (a ratio from 0.5 to 4; `aspect=auto` fits the window);
 - `hud=center` (or `edges`; at the edges, the 3D parts of a game's HUD move
   with it, as in `docs/play.md`);
 - `bezel=0` (no bezel; `bezel=1` on);
 - `sound=0` (don't run the sound boards at all);
-- `sfx=8&music=-8` (the mix in dB);
+- `sfx=8&music=-8` (the mix in dB, -40 to +24; the panel's sliders go
+  from -24);
 - `buffer=150` (the audio queue in ms, 20 to 1000; `buffer=auto` for the
   device's default);
 - `touch` or `touch=1` (on-screen controls on any device), `touch=0`
@@ -343,7 +357,8 @@ parameters:
   `16`; anything else is off; `shading`, `crease` and `fine` as below, and may be
   left out: flat, the game's angle, off). Temporal anti-aliasing and upscaling
   are the native player's only (`docs/play.md`); the browser has no
-  setting for them;
+  setting for them and keeps multisampling (`set_quality` never turns
+  them on);
 - `shading=vertex` (smooth shading; `shading=flat` or `off`, the default,
   the original; `shading=pixel`, the game's lighting per pixel) and
   `crease=40` (degrees, 0 to 180: faces meeting at a sharper angle keep a
@@ -353,7 +368,8 @@ parameters:
   "Smooth shading");
 - `pack=1` (the game's texture pack from `/texpack/<set>/`; `pack=0` off) and
   `texfilter=off|mip|2|4|8|16` (filtering of pack images, as in
-  `docs/texture-packs.md`). Both off by default, both in the panel's Display
+  `docs/texture-packs.md`; `0` and `1` mean `off` and `mip`). Both off by
+  default, both in the panel's Display
   section, both applied live.
 
 **Smooth shading.** With `shading=vertex` (or Shading: Smooth in the
@@ -490,9 +506,12 @@ Resume. Checked headless against a stub module (the layout at several
 window sizes, the setting live, stored and from the URL; WebGPU isn't
 available there), not yet with a game in a real browser.
 
-The bar shows the speed, frames drawn per second, and milliseconds per
-frame spent emulating, preparing the frame on the CPU, and submitting it
-to the GPU. The sound label adds the worker's time per frame.
+The bar shows the speed, frames drawn per second, the render size,
+whether the i960 code is interpreted or recompiled, and milliseconds per
+frame spent emulating and drawing (preparing the frame on the CPU and
+submitting it to the GPU, one call now), then the in-betweens, texture
+pack, shading and audio parts where they apply. The sound label adds the
+sound and geometry workers' time per frame.
 
 **Controls.** Each game's default keys and gamepad bindings come from its
 manifest, as in the native player (`docs/play.md`), and the bar lists them
@@ -561,8 +580,8 @@ right button reloads, and moving off the picture points off the screen
 tapped, and the touch layout is just coin, start and a Reload pill. A
 gamepad's sticks move a drawn crosshair for the first gun the page isn't
 aiming (player 1 until the mouse or a touch aims it, then player 2); the
-right trigger or A fires, the left trigger or B reloads, R reloads from
-the keyboard.
+right trigger or A fires, the left trigger or B reloads, and in `hotd`
+R reloads from the keyboard.
 
 Every source reports through one export, `set_gun(player, x, y,
 onscreen, buttons)`: x and y are fractions (0 to 1) across and down the

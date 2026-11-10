@@ -1,7 +1,8 @@
 # Game-card posters
 
-Poster art for the browser landing page's game cards, one per ROM set, plus
-`placeholder.webp` for games without one.
+Poster art for the game cards of the native player's launcher (built in,
+`crates/play/src/art.rs`) and the browser landing page, one per ROM set,
+plus `placeholder.webp` for games without one.
 
 **Art direction.** One series look that matches `assets/reModel-logo.png`:
 black background; bold white, blue and red; cyan neon wireframe grid and

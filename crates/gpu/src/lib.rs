@@ -11,7 +11,9 @@
 //! Polygons are drawn in order in a single pass, by default with no depth
 //! buffer: GPUs keep primitive order for overlapping pixels, which gives the
 //! painter's algorithm the software renderer uses. [`Quality`] adds
-//! multisampling and a depth buffer. [`Renderer::present`] then blends the
+//! multisampling, a depth buffer, filtering of texture pack images,
+//! temporal anti-aliasing and upscaling, and smooth shading (all off by
+//! default). [`Renderer::present`] then blends the
 //! 2D tile layers around the 3D layer into the output.
 
 mod temporal;

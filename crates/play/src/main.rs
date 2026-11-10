@@ -123,7 +123,7 @@ usage: remodel-play [options]
                      each lit pixel's brightness instead of the game's 64
                      levels, so large smooth surfaces don't band (never
                      outside the polygon's colour). Default off
-  --pack on|off     the game's texture pack: replacement textures from
+  --pack on|off      the game's texture pack: replacement textures from
                      texpack/ in the game's folder beside its saves (a
                      version of a game uses its parent's if it has none;
                      docs/texture-packs.md). Default off

@@ -71,7 +71,8 @@ for the faded colours, which then draw as the original (no replacement).
 polygons drawn, over all snapshots; tiles: frames on screen), and what
 produced it (texture header words, colour, bank and sheet position, luma
 table, translucent, all from the first use; tile number and palette bank).
-Textures end with `wrap=`: every way the texture was drawn, one pair per
+Textures then have `wrap=` (and after it `looks=N`, above, where there is
+more than one look): every way the texture was drawn, one pair per
 way, u then v, `r` repeat or `m` mirror (`wrap=rr,mr`: repeated, and also
 mirrored in u). The mirror bits are not part of the key, so one dump can be
 drawn several ways; `make upscale-textures` pads by this field. Indexes
@@ -286,10 +287,15 @@ them: with `PACK` the dump itself (`OUT/texdump`), or with no `PACK` each
 frame's own textures, it draws every captured frame on the GPU unfiltered
 and mipmapped and in software exact and trilinear, against the same
 renderer without a pack, and writes the pictures to `OUT/pack-identity`. It
-fails if any frame has more than 1% of its pixels off by more than 16
-levels unfiltered (the pack's colours are filtered where the original
-filters texel values and looks them up, so they are not identical);
-mipmapped drawing is a different filter and is only reported. Measured
+fails (exits non-zero, naming the frames) if any single frame has more
+than 1% of its pixels off by more than 16 levels unfiltered, on the GPU or
+in software (`IDENTITY_TOLERANCE`; the pack's colours are filtered where
+the original filters texel values and looks them up, so they are not
+identical); the means in the table below are reported, not held to the
+limit, and mipmapped drawing is a different filter and is only reported.
+*Known open item:* `make pack-identity` currently exits non-zero on
+topskatr and sgt24h, because individual frames go over the 1% per-frame
+limit although the means are within it. Measured
 2026-11-11 at native size, mean share over the captures, unfiltered (GPU /
 software):
 

@@ -335,6 +335,7 @@ Results (*confirmed*, interpreted SHARC):
 | `indy500` | 5,037 | 100.9M | none |
 | `fvipers` | 5,169 | 142.5M | none |
 | `vstriker` | 5,177 | 172.7M | none (interpreted and recompiled SHARC) |
+| `lastbrnx` | 4,101 | 108.7M | none (its fn 0x1B not implemented, never sent; `docs/games/lastbrnx.md`) |
 | fuzz, `overrevb`'s upload | 8,500 (19 seeds) | 8.2M | none |
 | fuzz, `sgt24h`'s, `doa`'s and `dynabb97`'s uploads | 1,000 (3 seeds) | 0.9M | none |
 | fuzz, `schamp`'s upload (command check on) | 1,400 (3 seeds) | 1.1M | none |

@@ -337,9 +337,11 @@ pub const IDENTITY_TOLERANCE: f64 = 1.0;
 /// `--dump-textures`, or with None each frame's own textures) and compare
 /// them with the frames drawn without one, on each renderer: GPU unfiltered
 /// and mipmapped, software exact and trilinear. A pack made of the dump's
-/// own images must draw the original frame; Err if either unfiltered
-/// renderer's mean share of pixels off by more than 16 levels exceeds
-/// `IDENTITY_TOLERANCE`.
+/// own images must draw the original frame; Err if, in any frame, either
+/// unfiltered renderer's share of pixels off by more than 16 levels exceeds
+/// `IDENTITY_TOLERANCE` (frame by frame, not the mean: topskatr and sgt24h
+/// fail this on single frames while their means are within it, a known
+/// open item, docs/texture-packs.md).
 pub fn identity(
     root: &Path,
     hud_windows: (&[usize], &[usize]),

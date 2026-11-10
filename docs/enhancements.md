@@ -2,9 +2,9 @@
 
 How reModel could make the games look better than the hardware did:
 sharper edges, higher-resolution textures, better models, and modern
-lighting up to ray tracing. This is a plan to track, not a description of
-what exists. Each item says whether it is done, planned or an idea.
-Written 2026-11-09.
+lighting up to ray tracing. A plan to track: each item says whether it is
+done, planned or an idea, and the done ones are described as built.
+Started 2026-11-09.
 
 ## Principles
 
@@ -53,9 +53,9 @@ through DirectX 8/9's fixed-function pipeline.
 | Output | Run-ahead: less input lag | done (native player), opt-in |
 | Textures | Texture packs: dump, replace at any size; live on the GPU in the player and the browser | done (`docs/texture-packs.md`); live display 2026-11-10, live tiles 2026-11-11 (wide views' added sides keep original tiles) |
 | Textures | Batch upscaling pipeline (dump → upscale → pack) | done (2026-11-10, `docs/texture-packs.md`) |
-| Textures | Mipmaps from pack images, anisotropic filtering | done, opt-in (2026-11-10) |
-| Image | Anti-aliasing: MSAA 4x/8x on the GPU, supersampling in software | done, opt-in (2026-11-09) |
-| Image | Depth buffer | done, opt-in, partial (below); current rules checked on all 18 games 2026-11-11 |
+| Textures | Mipmaps from pack images, anisotropic filtering | done, opt-in (2026-11-10), player and browser; anisotropic GPU only (snapshots draw it as mipmaps) |
+| Image | Anti-aliasing: MSAA 4x/8x on the GPU, supersampling in software | done, opt-in (2026-11-09); 8x native only, where the GPU has it (the browser has 4x) |
+| Image | Depth buffer | done, opt-in, partial (below), player and browser; current rules checked on all 18 games 2026-11-11 |
 | Image | Temporal anti-aliasing and upscaling (motion vectors, jitter) | done, opt-in, native player only (2026-11-10): needs the native geometrizer, replaces MSAA; thin polygons (wires) stay whole at 67% and 50% (2026-11-11), animated objects without motion data look soft (below) |
 | Image | FSR 2 or DLSS in place of the built-in resolve, native only | idea (not started) |
 | Models | Model replacement packs, keyed by ROM address | planned |
@@ -499,8 +499,7 @@ couldn't; at full size the same machinery is anti-aliasing.
   the mesh around them already covers: `srallyc` draws tens of thousands
   of them a frame in its distant road and terrain, and treating them as
   thin cost it 0.01-0.03 (TAA 1.67, 67% 2.10, 50% 2.53 against 1.66,
-  2.08, 2.50); with the test its scores are as before. A thin polygon
-  is
+  2.08, 2.50); with the test its scores are as before. A thin polygon is
   - drawn widened across its middle line to 1 internal pixel at its
     coverage (its width over 1, blended over what is behind), so every
     sample row or column across it hits it exactly once whatever the
@@ -667,7 +666,7 @@ this, so its numbers differ from an earlier capture of the same frames
 | `vstriker` attract 470-549 | 2.78 (7.62) | 2.61 (7.04) | **2.31** (5.07) | 3.11 (7.69) | 3.39 (9.09) | 3.86 (10.71) | 4.27 (12.84) | 3.85 / 2.18 |
 | `vstriker` match 3300-3419 | 3.76 (12.50) | 3.38 (11.31) | **2.98** (7.26) | 4.19 (11.59) | 4.63 (13.98) | 5.26 (15.28) | 6.05 (19.55) | 4.84 / 3.01 |
 
-- In motion, TAA beats off on all seven sequences (by 3-26%) and MSAA 4x
+- In motion, TAA beats off on all seven sequences (by 3-27%) and MSAA 4x
   on five; it ties MSAA 4x on `topskatr`'s attract (1.09 against 1.10)
   and loses to it on `topskatr` 4520-4619 (1.17 against 1.08).
 - Upscaling beats the naive enlargement on all seven, at 67% and at 50%;
@@ -761,6 +760,11 @@ washed-out fade and a cut; not investigated.
   50% and 67% stays whole on every frame (without the handling some
   column of it drops to nothing), and nothing is left behind when it
   goes, jumps away or is covered.
+- `lastbrnx`'s motion data (2026-11-11): 3% of position words in blocks
+  the plan called valid didn't match frame N-1's (96.9%): models the list
+  rewrites in polygon RAM every frame, replayed with frame N's vertices.
+  The replay now reads polygon RAM as frame N-1 left it: 100.00%, no
+  coverage lost, the other sequences' motion data byte for byte the same.
 
 **Open problems.**
 
@@ -782,11 +786,6 @@ washed-out fade and a cut; not investigated.
   (the width of the connected group).
 - A thin polygon without motion data isn't marked in the aux target (the
   sign lives in the expected-1/z channel, 0 there); it is still widened.
-- (Fixed 2026-11-11) `lastbrnx`: 3% of position words in blocks the plan
-  called valid didn't match frame N-1's (96.9%): models the list rewrites
-  in polygon RAM every frame, replayed with frame N's vertices. The
-  replay now reads polygon RAM as frame N-1 left it: 100.00%, no
-  coverage lost, the other sequences' motion data byte for byte the same.
 - Smooth motion's in-betweens still draw those `lastbrnx` models with
   frame N's vertices under the blended transforms, so between frames
   they lead the limbs around them by (1 - t) of their own motion (see
@@ -882,7 +881,8 @@ All apply live; `gpu::Quality::{shading, crease, shading_fine}` underneath.
 **The three levels.**
 
 - `flat`: the game's picture (the default).
-- `vertex`: each corner is lit with the game's own formula for the
+- `vertex`: each corner is lit with the game's own formula (on 2A,
+  `srallyc`, unconfirmed: "Limitations" below) for the
   normalised, angle-weighted mean of the normals of the faces around it
   that belong to the same smooth surface, and the value is blended across
   the polygon (perspective-correct, along its edges and across each span,
@@ -912,10 +912,11 @@ native geometrizer (none so far) would get L1 or L0 with nothing written
 for it.
 
 **Crease.** Faces meeting at more than the crease angle keep a hard
-edge; `auto` is the game's own (`romset::Shading::crease`), 0 smooths
-nothing (the original picture, byte for byte). The default is 40 degrees:
-boxes, 8-sided wheels and limbs stay faceted, bodies and 10+-sided
-cylinders smooth. Separately modelled pieces (a fighter's limbs, a car's
+edge; `auto` (the setting's default) is the game's own
+(`romset::Shading::crease`), 0 smooths nothing (the original picture, byte
+for byte). A game's own angle is 40 degrees unless its manifest says
+otherwise (`schamp`: 25, below): at 40 boxes, 8-sided wheels and limbs
+stay faceted, bodies and 10+-sided cylinders smooth. Separately modelled pieces (a fighter's limbs, a car's
 panels) are never welded together, so joints keep their seams.
 
 Per-game table, from a survey of all 18 working games (pixel at creases
