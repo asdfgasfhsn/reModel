@@ -340,6 +340,15 @@ pub enum Found {
 /// pixel counts.
 pub trait TexturePack {
     fn find(&mut self, info: &TexInfo) -> Found;
+    /// Whether the pack has any tile images (`tile_<key>.png`): without,
+    /// the renderer leaves the 2D layers alone.
+    fn has_tiles(&self) -> bool {
+        false
+    }
+    /// A tile pattern's replacement, as `find` for textures.
+    fn find_tile(&mut self, _info: &TileInfo) -> Found {
+        Found::Missing
+    }
 }
 
 #[cfg(test)]

@@ -15,6 +15,7 @@
 //! 2D tile layers around the 3D layer into the output.
 
 mod temporal;
+mod tiles;
 
 pub use model2::enhance::TexFilter;
 use model2::enhance::{Found, Rgba, TexturePack};
@@ -182,6 +183,12 @@ pub struct PackStats {
     pub uploaded: u32,
     pub held: u32,
     pub bytes: u64,
+    /// Tile patterns (map entries) drawn replaced in the last frame
+    /// composed, tile images held, and the tile atlas's bytes (allocated
+    /// whole when the first tile image is drawn).
+    pub tiles: u32,
+    pub tiles_held: u32,
+    pub tile_bytes: u64,
 }
 
 /// GPU memory pack images may hold before the least recently drawn are
@@ -280,6 +287,8 @@ pub struct Renderer {
     frame: u64,
     /// An image was too large for the GPU (warned once).
     pack_warned: bool,
+    /// The pack's tile replacements (tiles.rs).
+    tiles: tiles::Tiles,
 }
 
 /// Bytes per vertex: x, y, 1/z, u/z, v/z, polygon index.
@@ -478,6 +487,7 @@ impl Renderer {
             label: Some("compose"),
             entries: &[uniform(0, wgpu::ShaderStages::FRAGMENT), texture(1), texture(2), texture(3)],
         });
+        let tiles = tiles::Tiles::new(&device);
         Renderer {
             device,
             queue,
@@ -512,6 +522,7 @@ impl Renderer {
             pack_stats: PackStats::default(),
             frame: 0,
             pack_warned: false,
+            tiles,
         }
     }
 
@@ -647,7 +658,23 @@ impl Renderer {
         self.pack = pack;
         self.pack_tex.clear();
         self.keys.clear();
+        self.tiles.reset();
         self.pack_stats = PackStats::default();
+    }
+
+    /// The 2D layers of a frame (`model2::video::layers_2d`), with the
+    /// pack's tile images (`tile_<key>.png`) in place of the patterns they
+    /// replace when it has any: those are then drawn at output resolution
+    /// by `present`, `frame` and the `present_bus*` calls (which use this
+    /// themselves). Without a pack, or with one that has no tile images,
+    /// exactly `layers_2d`.
+    pub fn layers_2d(&mut self, tiles: &[u8], palette: &[u8], view: &View, has_3d: bool) -> Layers2d {
+        match self.pack.as_mut() {
+            Some(pack) if pack.has_tiles() => {
+                self.tiles.layers(&self.device, &self.queue, pack.as_mut(), tiles, palette, view, has_3d)
+            }
+            _ => model2::video::layers_2d(tiles, palette, view, has_3d),
+        }
     }
 
     /// Whether a texture pack is set.
@@ -1508,6 +1535,13 @@ impl Renderer {
             self.encode_3d(enc, polys, placed, src, view, &layer3d_view, None);
             layer3d_view
         };
+        let tile_group =
+            layers.tiles.as_ref().and_then(|m| self.tiles.bind(&self.device, &self.queue, m, layers.ext_w));
+        if self.pack.is_some() {
+            let (held, bytes) = self.tiles.held();
+            let replaced = layers.tiles.as_ref().map_or(0, |m| m.replaced);
+            (self.pack_stats.tiles, self.pack_stats.tiles_held, self.pack_stats.tile_bytes) = (replaced, held, bytes);
+        }
         let base = self.upload("base", &layers.base, (WIDTH + 2 * layers.side) as u32, HEIGHT as u32);
         let hud = self.upload("hud", &layers.hud, layers.ext_w as u32, HEIGHT as u32);
         let b = layers.backdrop.map(|c| c as f32 / 255.0);
@@ -1531,7 +1565,10 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&views[1]) },
             ],
         });
-        let pipeline = self.compose_pipeline(format);
+        let pipeline = match tile_group {
+            Some(_) => self.tiles.pipeline(&self.device, &self.compose_shader, &self.compose_layout, format),
+            None => self.compose_pipeline(format),
+        };
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("compose"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1545,6 +1582,9 @@ impl Renderer {
         pass.set_viewport(origin.0 as f32, origin.1 as f32, w as f32, h as f32, 0.0, 1.0);
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(0, &bind, &[]);
+        if let Some(g) = &tile_group {
+            pass.set_bind_group(1, g, &[]);
+        }
         pass.draw(0..3, 0..1);
     }
 
@@ -1697,7 +1737,7 @@ impl Renderer {
         };
         model2::video::HudLayout::new(b.tile_ram(), b.palette_ram(), view).anchor(&mut polys, view);
         let placed = model2::raster::place(&mut polys, view);
-        let layers = model2::video::layers_2d(b.tile_ram(), b.palette_ram(), view, !placed.is_empty());
+        let layers = self.layers_2d(b.tile_ram(), b.palette_ram(), view, !placed.is_empty());
         let (render, palette) = b.video_ram_versions();
         self.set_ram_versions(render, palette);
         self.temporal.pending = Some((motion.map(|m| m.tag), step, centres));
@@ -1728,7 +1768,7 @@ impl Renderer {
         let (mut polys, _) = self.build_polys(stream, &src, None);
         model2::video::HudLayout::new(b.tile_ram(), b.palette_ram(), view).anchor(&mut polys, view);
         let placed = model2::raster::place(&mut polys, view);
-        let layers = model2::video::layers_2d(b.tile_ram(), b.palette_ram(), view, !placed.is_empty());
+        let layers = self.layers_2d(b.tile_ram(), b.palette_ram(), view, !placed.is_empty());
         let (render, palette) = b.video_ram_versions();
         self.set_ram_versions(render, palette);
         let mut enc = self.device.create_command_encoder(&Default::default());

@@ -29,7 +29,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use model2::enhance::{Found, Rgba, TexInfo, TexturePack};
+use model2::enhance::{Found, Rgba, TexInfo, TexturePack, TileInfo};
 use model2::video;
 use romset::bindings::{Bindings, Capture, Slot, Value};
 use romset::{PadAxis, PadButton};
@@ -381,15 +381,18 @@ impl App {
     /// this status window (cents), and the worklet's queue against its
     /// target.
     /// The status line's texture pack part, with a pack: the last frame's
-    /// textured polygons replaced, and the images on the GPU.
+    /// textured polygons replaced, the images on the GPU, and tile
+    /// patterns replaced when the pack has tile images.
     fn pack_status(&self) -> String {
         if !self.renderer.has_pack() {
             return String::new();
         }
         let s = self.renderer.pack_stats();
         let q = self.renderer.quality().tex_filter;
+        let tiles =
+            if s.tiles_held > 0 { format!(", {} tiles ({} held)", s.tiles, s.tiles_held) } else { String::new() };
         format!(
-            " · pack: {}/{} polygons, {} images ({:.0} MB), filter {q}",
+            " · pack: {}/{} polygons, {} images ({:.0} MB){tiles}, filter {q}",
             s.replaced,
             s.textured,
             s.held,
@@ -728,13 +731,15 @@ struct PackState {
     ready: HashMap<String, Arc<Rgba>>,
     /// Names that couldn't be fetched or decoded ([`pack_missing`]).
     failed: HashSet<String>,
+    /// The index names tile images (`tile_<key>`).
+    tiles: bool,
 }
 
 struct WebPack(Arc<Mutex<PackState>>);
 
-impl TexturePack for WebPack {
-    fn find(&mut self, info: &TexInfo) -> Found {
-        let name = info.name();
+impl WebPack {
+    /// The image named `name` (a file stem): see `TexturePack::find`.
+    fn get(&mut self, name: String) -> Found {
         let mut s = self.0.lock().unwrap();
         if let Some(img) = s.ready.remove(&name) {
             // The renderer keeps it now; if it drops it (over its memory
@@ -749,6 +754,20 @@ impl TexturePack for WebPack {
             s.wanted.push(name);
         }
         Found::Pending
+    }
+}
+
+impl TexturePack for WebPack {
+    fn find(&mut self, info: &TexInfo) -> Found {
+        self.get(info.name())
+    }
+
+    fn has_tiles(&self) -> bool {
+        self.0.lock().unwrap().tiles
+    }
+
+    fn find_tile(&mut self, info: &TileInfo) -> Found {
+        self.get(info.name())
     }
 }
 
@@ -771,7 +790,8 @@ pub fn set_pack(index: Option<String>) -> u32 {
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
             .map(|l| l.strip_suffix(".png").unwrap_or(l).to_string())
             .collect();
-        Arc::new(Mutex::new(PackState { index, ..Default::default() }))
+        let tiles = index.iter().any(|n| n.starts_with("tile_"));
+        Arc::new(Mutex::new(PackState { index, tiles, ..Default::default() }))
     });
     let names = state.as_ref().map_or(0, |s| s.lock().unwrap().index.len() as u32);
     PACK.with(|p| *p.borrow_mut() = state.clone());

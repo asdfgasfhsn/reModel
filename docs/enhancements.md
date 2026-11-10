@@ -51,7 +51,7 @@ through DirectX 8/9's fixed-function pipeline.
 | Output | Wide views fill the sides with scrolled tile skies | done (docs/games/doa.md) |
 | Output | Smooth motion: in-betweens on displays over 60 Hz | done, opt-in |
 | Output | Run-ahead: less input lag | done (native player), opt-in |
-| Textures | Texture packs: dump, replace at any size; live on the GPU in the player and the browser | done (`docs/texture-packs.md`); live display 2026-11-10 (tiles still snapshots only) |
+| Textures | Texture packs: dump, replace at any size; live on the GPU in the player and the browser | done (`docs/texture-packs.md`); live display 2026-11-10, live tiles 2026-11-11 (wide views' added sides keep original tiles) |
 | Textures | Batch upscaling pipeline (dump → upscale → pack) | done (2026-11-10, `docs/texture-packs.md`) |
 | Textures | Mipmaps from pack images, anisotropic filtering | done, opt-in (2026-11-10) |
 | Image | Anti-aliasing: MSAA 4x/8x on the GPU, supersampling in software | done, opt-in (2026-11-09) |
@@ -343,8 +343,27 @@ How it was checked (2026-11-10):
 *Unconfirmed:* other games and upscalers; other browsers and phones;
 `RECOMP=1` web builds; smooth motion's in-between frames and F5/F9 save
 slots with a pack; the player's decode stutter; eviction past the memory
-budget; a clone's fallback to its parent's pack. Tiles are still replaced
-only in snapshots. Mips average display values, not linear light.
+budget. Mips average display values, not linear light. A clone's fallback
+to its parent's pack: checked in the player and the browser (`overrevb`).
+
+**Live tiles** (2026-11-11). A pack's `tile_<key>.png` images are drawn live
+too, at output resolution, by the snapshots' rules (`docs/texture-packs.md`,
+"Tiles live"; `docs/gpu.md`). Decided:
+
+- Keys stay the dump's (pattern and the colours of the pens it uses), so
+  dumps, packs and `make upscale-textures`' `TILES=` modes (which upscale
+  the coloured image) are unchanged; a fade or palette cycle draws the
+  original for those frames. Keying on the pattern alone and colouring an
+  indexed image would survive fades but needs another image format.
+- The GPU composes the replaced tiles itself from a per-pixel tile map and
+  an atlas; the 496x384 CPU layers stay as they were for everything else,
+  so packs without tile images, and frames with nothing replaced, compose
+  exactly as before.
+- Sampling is per tile (clamped, no padding, no bleeding); seams can only
+  come from the images (art spanning tiles upscaled tile by tile).
+- The sides a wide view adds keep the original patterns, as in snapshots.
+- The software renderer already did this in snapshots; the player and the
+  browser are GPU only, so nothing more was needed there.
 
 ### Temporal anti-aliasing and upscaling
 

@@ -46,6 +46,8 @@ pub struct Packs {
     /// Polygons and tile patterns replaced / looked up, over the run.
     replaced: [u64; 2],
     looked_up: [u64; 2],
+    /// The pack has tile images (`TexturePack::has_tiles`).
+    has_tiles: bool,
 }
 
 impl Packs {
@@ -58,6 +60,13 @@ impl Packs {
                 return Err(format!("{}: texture pack directory not found", p.display()));
             }
         }
+        let has_tiles = pack.as_ref().is_some_and(|p| {
+            std::fs::read_dir(p).into_iter().flatten().flatten().any(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with("tile_") && name.ends_with(".png")
+            })
+        });
         Ok(Packs {
             dump,
             pack,
@@ -68,6 +77,7 @@ impl Packs {
             index_dirty: false,
             replaced: [0; 2],
             looked_up: [0; 2],
+            has_tiles,
         })
     }
 
@@ -201,6 +211,17 @@ impl Enhance for Packs {
 impl TexturePack for Packs {
     fn find(&mut self, info: &TexInfo) -> Found {
         match self.texture(info) {
+            Some(img) => Found::Image(img),
+            None => Found::Missing,
+        }
+    }
+
+    fn has_tiles(&self) -> bool {
+        self.has_tiles
+    }
+
+    fn find_tile(&mut self, info: &TileInfo) -> Found {
+        match self.load(&info.name()) {
             Some(img) => Found::Image(img),
             None => Found::Missing,
         }

@@ -1178,8 +1178,13 @@ impl Play {
         Some(match self.pack.loaded.as_ref()? {
             Ok(images) => {
                 let st = g.renderer.pack_stats();
+                let tiles = if st.tiles_held > 0 {
+                    format!("; {} tile patterns ({} held)", st.tiles, st.tiles_held)
+                } else {
+                    String::new()
+                };
                 format!(
-                    "{}: {images} images; replacing {} of {} textured polygons ({} images, {} MB held)",
+                    "{}: {images} images; replacing {} of {} textured polygons ({} images, {} MB held){tiles}",
                     dir.display(),
                     st.replaced,
                     st.textured,

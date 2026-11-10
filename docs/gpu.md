@@ -199,6 +199,27 @@ refused with one warning.
   distance of each from it (`topskatr`: a fine-checker test pack 9.66, 4.70,
   4.84; realesrgan-x4plus 2.09, 2.06, 1.62).
 
+- **Tiles** (`gpu/src/tiles.rs`, compose.wgsl `fs_tiles`). Only when the
+  pack has tile images (`TexturePack::has_tiles`), `Renderer::layers_2d`
+  (which `present_bus*` use; tools call it before `frame`) builds the 2D
+  layers with `video::layers_2d_replaced`: the usual layers plus, when a
+  pattern on screen has a replacement, a `TileMap` (per game pixel and
+  plane a 32-bit word: palette index, atlas cell, row and column in the
+  tile, priority, map enabled; the HUD's source column per extended
+  column; the palette as RGBA8). Patterns are looked up once per key
+  (`find_tile`, `Pending` asked again next frame) and uploaded into one
+  `Rgba8Unorm` atlas of square cells (the first image's size; 64 x 64 for
+  4x tiles, 16 MB), least recently drawn given way when full. Compose then
+  uses `fs_tiles` with a second bind group (the map as `Rg32Uint` and
+  `R32Uint` textures, the atlas, the palette as a storage buffer), which
+  evaluates both planes per output pixel as `video::compose_enhanced` does,
+  with the same bilinear sample clamped to each tile; frames without a
+  replaced pattern use the original `fs`. `make tile-check PACK=DIR`
+  compares it with the software: no pixel over 16 levels on topskatr,
+  srallyc and doa captures at 1080p (`docs/texture-packs.md`). A CPU twin of
+  the shader in `video`'s tests checks the map against `compose_enhanced`
+  exactly.
+
 Not measured: the cost of the filtered path against the exact one per
 pixel, and eviction past the budget.
 
@@ -336,5 +357,5 @@ cubic, not since; neither adds work (the same 5 taps).
 - The 2D tile layers and HUD on the GPU: they are drawn on the CPU and
   only composed on the GPU.
 - Persistent buffers with dirty-range uploads of render RAM.
-- Tile (2D layer) replacements live: only the 3D textures of a pack are
-  used on the GPU so far.
+- Tile replacements for the columns a wide view adds at the sides (scrolled
+  tile skies): they draw the original patterns (`docs/texture-packs.md`).

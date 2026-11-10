@@ -1,5 +1,6 @@
 //! A texture pack directory for the GPU renderer (`gpu::Renderer::set_pack`):
-//! PNGs named `tex_<key>_<w>x<h>.png` (docs/texture-packs.md), decoded on
+//! PNGs named `tex_<key>_<w>x<h>.png` and `tile_<key>.png`
+//! (docs/texture-packs.md), decoded on
 //! background threads so a new texture never holds up a frame. Until its
 //! image is ready a texture is drawn from the original (`Found::Pending`).
 //!
@@ -7,7 +8,7 @@
 //! and not kept here; one the renderer drops (over its memory budget, or the
 //! filter setting changed) is decoded again when next asked for.
 
-use model2::enhance::{Found, Rgba, TexInfo, TexturePack};
+use model2::enhance::{Found, Rgba, TexInfo, TexturePack, TileInfo};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -27,13 +28,13 @@ pub struct DirPack {
     from_workers: Receiver<(String, Option<Arc<Rgba>>)>,
 }
 
-/// The texture PNGs in `dir` by file stem.
+/// The texture and tile PNGs in `dir` by file stem.
 fn list(dir: &Path) -> std::io::Result<HashSet<String>> {
     let mut names = HashSet::new();
     for e in std::fs::read_dir(dir)? {
         let name = e?.file_name();
         let Some(stem) = name.to_str().and_then(|n| n.strip_suffix(".png")) else { continue };
-        if stem.starts_with("tex_") {
+        if stem.starts_with("tex_") || stem.starts_with("tile_") {
             names.insert(stem.to_string());
         }
     }
@@ -77,11 +78,9 @@ impl DirPack {
     pub fn len(&self) -> usize {
         self.names.len()
     }
-}
 
-impl TexturePack for DirPack {
-    fn find(&mut self, info: &TexInfo) -> Found {
-        let name = info.name();
+    /// The image named `name` (a file stem): see `TexturePack::find`.
+    fn get(&mut self, name: String) -> Found {
         if !self.names.contains(&name) {
             return Found::Missing;
         }
@@ -97,6 +96,20 @@ impl TexturePack for DirPack {
             self.asked.insert(name);
         }
         Found::Pending
+    }
+}
+
+impl TexturePack for DirPack {
+    fn find(&mut self, info: &TexInfo) -> Found {
+        self.get(info.name())
+    }
+
+    fn has_tiles(&self) -> bool {
+        self.names.iter().any(|n| n.starts_with("tile_"))
+    }
+
+    fn find_tile(&mut self, info: &TileInfo) -> Found {
+        self.get(info.name())
     }
 }
 

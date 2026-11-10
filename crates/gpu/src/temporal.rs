@@ -957,7 +957,14 @@ mod tests {
         // Two output pixels a game pixel: Keep stays on.
         let view = View::new(768, 4.0 / 3.0, Hud::Center);
         let base = (0..WIDTH * HEIGHT).flat_map(|i| [(i % 251) as u8, (i % 13 * 19) as u8, 90, 255]).collect();
-        let layers = Layers2d { base, side: 0, hud: vec![0; WIDTH * HEIGHT * 4], ext_w: WIDTH, backdrop: [0, 0, 0] };
+        let layers = Layers2d {
+            base,
+            side: 0,
+            hud: vec![0; WIDTH * HEIGHT * 4],
+            ext_w: WIDTH,
+            backdrop: [0, 0, 0],
+            tiles: None,
+        };
         let mut polys = scene();
         let placed = place(&mut polys, &view);
         let fresh = |depth| {
@@ -1046,7 +1053,14 @@ mod tests {
         };
         let view = View::new(768, 4.0 / 3.0, Hud::Center);
         let base = (0..WIDTH * HEIGHT).flat_map(|i| [(i % 251) as u8, (i % 13 * 19) as u8, 90, 255]).collect();
-        let layers = Layers2d { base, side: 0, hud: vec![0; WIDTH * HEIGHT * 4], ext_w: WIDTH, backdrop: [0, 0, 0] };
+        let layers = Layers2d {
+            base,
+            side: 0,
+            hud: vec![0; WIDTH * HEIGHT * 4],
+            ext_w: WIDTH,
+            backdrop: [0, 0, 0],
+            tiles: None,
+        };
         let mut polys = scene();
         let placed = place(&mut polys, &view);
         let frame = |q: Quality, polys: &[Poly]| {
@@ -1140,6 +1154,7 @@ mod tests {
             hud: vec![0; WIDTH * HEIGHT * 4],
             ext_w: WIDTH,
             backdrop: [0, 0, 0],
+            tiles: None,
         };
         let mut polys = scene();
         let placed = place(&mut polys, &view);
@@ -1203,6 +1218,7 @@ mod tests {
             hud: vec![0; WIDTH * HEIGHT * 4],
             ext_w: WIDTH,
             backdrop: [0, 0, 0],
+            tiles: None,
         };
         let mut polys = scene();
         let placed = place(&mut polys, &view);
@@ -1250,6 +1266,7 @@ mod tests {
             hud: vec![0; WIDTH * HEIGHT * 4],
             ext_w: WIDTH,
             backdrop: [0, 0, 0],
+            tiles: None,
         };
         let mut plain_gpu = Renderer::new().unwrap();
         for (scale, step) in
@@ -1314,6 +1331,7 @@ mod tests {
             hud: vec![0; WIDTH * HEIGHT * 4],
             ext_w: WIDTH,
             backdrop: [0, 0, 0],
+            tiles: None,
         };
         // A light quad on a dark one, its edges between pixel centres.
         let mut back = quad(-20.0, -10.0, 520.0, 400.0, 0.001, 900.0, 0);
@@ -1381,6 +1399,7 @@ mod tests {
             hud: vec![0; WIDTH * HEIGHT * 4],
             ext_w: WIDTH,
             backdrop: [0, 0, 0],
+            tiles: None,
         };
         let mut polys = scene();
         let placed = place(&mut polys, &view);

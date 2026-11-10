@@ -456,9 +456,14 @@ a 1024x1024 image with its mipmaps measured up to 13 ms of draw against about
 3 ms normally. Until an image arrives the original is drawn. The renderer
 keeps images up to 192 MB (the least recently drawn are dropped, and
 fetched again when next drawn, likely from the HTTP cache). The status line shows
-the polygons replaced, the images held and the filter. `set_pack(index)` takes
-the index text (or `undefined` for none) before or after `start`. Only 3D
-textures are replaced (tiles are not live). Details: `docs/texture-packs.md`,
+the polygons replaced, the images held and the filter, and with tile images
+in the pack the tile patterns replaced and held. `set_pack(index)` takes
+the index text (or `undefined` for none) before or after `start`. Tile
+images (`tile_<key>.png` in the index) are fetched the same way and drawn
+at the canvas's resolution, as natively (`docs/texture-packs.md`, "Tiles
+live"); checked on `overrevb` (whose pack came from `overrev`'s folder):
+its attract text and logo drawn from 4x tiles, up to 180 patterns a frame,
+no WebGPU errors. Details: `docs/texture-packs.md`,
 `docs/gpu.md`. Tested in headed Chrome on Linux (headless Chromium loses the
 WebGPU device, "Testing headless" below). *Not verified:* other browsers,
 phones, `RECOMP=1` builds, eviction past the budget.
