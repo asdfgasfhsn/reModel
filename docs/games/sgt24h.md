@@ -21,6 +21,12 @@ below (the register cache and the I/O type).
   unchanged; a coin-start race's `make sound` averages -37.7 dBFS RMS
   (peak -19.1), as `overrev`'s does, so the manifest gives it the same
   +6 dB.
+- *Seen in captures (2026-11-11):* the game rewrites part of its colour
+  translation tables during the race: 384 of the 6144 entries the renderer
+  reads differ in the coin-start captures from frame 2400 to 5400 against
+  frames 600-2100 and 5700-6212, and the sky is drawn warmer then. What it stands for (a time of
+  day, a lighting change) is *unconfirmed*. It is why texture dumps keep the
+  most drawn look (`docs/texture-packs.md`, "Looks").
 - *Confirmed (by running it):* the i960 uploads the copro and geometrizer
   SHARC programs exactly as `overrevb` does, and they reach the same code
   (2,111 and 2,987 words, `remodel sharc-check` on both games' images). The
