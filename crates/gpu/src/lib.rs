@@ -75,6 +75,11 @@ pub struct Quality {
     /// 64 levels, so large smooth surfaces don't band. Only lit pixels;
     /// never outside the polygon's hue.
     pub shading_fine: bool,
+    /// Brightness balance for `shading` (default on,
+    /// `model2::light::Options::balance`): one brightness offset per
+    /// smooth surface keeps its mean the game's. Off: the game's formula
+    /// at the smoothed normals alone (bumpy surfaces come out brighter).
+    pub shading_balance: bool,
 }
 
 impl Default for Quality {
@@ -88,6 +93,7 @@ impl Default for Quality {
             shading: Shading::Flat,
             crease: CREASE_AUTO,
             shading_fine: false,
+            shading_balance: true,
         }
     }
 }
@@ -745,7 +751,8 @@ impl Renderer {
     pub fn light_options(&self) -> Option<model2::light::Options> {
         let q = self.quality;
         let o = model2::light::Options::with_mask(q.shading, q.crease, self.light_rules.0, self.light_rules.1)
-            .with_fine(q.shading_fine);
+            .with_fine(q.shading_fine)
+            .with_balance(q.shading_balance);
         o.on().then_some(o)
     }
 

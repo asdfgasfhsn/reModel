@@ -123,6 +123,11 @@ usage: remodel-play [options]
                      each lit pixel's brightness instead of the game's 64
                      levels, so large smooth surfaces don't band (never
                      outside the polygon's colour). Default off
+  --shading-balance on|off
+                     with --shading: keep each smooth surface's mean
+                     brightness the game's (one offset per surface); off
+                     uses the game's formula at the smoothed normals
+                     alone, so bumpy surfaces come out brighter. Default on
   --pack on|off      the game's texture pack: replacement textures from
                      texpack/ in the game's folder beside its saves (a
                      version of a game uses its parent's if it has none;
@@ -393,6 +398,20 @@ fn options(s: &mut Settings) -> Result<Options, String> {
                     _ => true,
                 };
                 cli("shading_fine", &on.to_string());
+            }
+            "--shading-balance" => {
+                let on = match args.peek().map(String::as_str) {
+                    Some("on") => {
+                        args.next();
+                        true
+                    }
+                    Some("off") => {
+                        args.next();
+                        false
+                    }
+                    _ => true,
+                };
+                cli("shading_balance", &on.to_string());
             }
             "--pack" => {
                 let on = match args.peek().map(String::as_str) {
@@ -2110,9 +2129,10 @@ impl Play {
             String::new()
         } + &match st.shading_as {
             Some((level, lit, polys)) => format!(
-                " · shading {}{}, {lit}/{polys} polygons lit, {:.2} ms a draw",
+                " · shading {}{}{}, {lit}/{polys} polygons lit, {:.2} ms a draw",
                 level.name(),
                 if self.applied.shading_fine { " fine" } else { "" },
+                if self.applied.shading_balance { "" } else { " unbalanced" },
                 st.shading.as_secs_f64() * 1000.0 / st.shaded.max(1) as f64
             ),
             None => String::new(),

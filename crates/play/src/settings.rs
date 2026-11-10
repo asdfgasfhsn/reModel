@@ -62,6 +62,10 @@ pub struct GameSettings {
     /// pixel blends the two colour columns around its brightness instead
     /// of the game's 64 levels (no banding on large smooth surfaces).
     pub shading_fine: bool,
+    /// Smooth shading's brightness balance (`gpu::Quality::shading_balance`,
+    /// on by default): one brightness offset per smooth surface keeps its
+    /// mean the game's; off, bumpy surfaces come out brighter.
+    pub shading_balance: bool,
     /// Draw the game's texture pack (`<data dir>/<set>/texpack/`, or
     /// `--texture-pack`) over its own textures.
     pub pack: bool,
@@ -91,6 +95,7 @@ impl Default for GameSettings {
             shading: gpu::Shading::Flat,
             crease: gpu::CREASE_AUTO,
             shading_fine: false,
+            shading_balance: true,
             pack: false,
             tex_filter: TexFilter::Off,
             geo_chip: false,
@@ -99,7 +104,7 @@ impl Default for GameSettings {
 }
 
 /// Every game setting's key, in the order the panels show them.
-pub const KEYS: [&str; 18] = [
+pub const KEYS: [&str; 19] = [
     "wide",
     "bezel",
     "hud_edges",
@@ -113,6 +118,7 @@ pub const KEYS: [&str; 18] = [
     "shading",
     "crease",
     "shading_fine",
+    "shading_balance",
     "pack",
     "tex_filter",
     "sfx_db",
@@ -163,6 +169,7 @@ impl GameSettings {
                 n => n.to_string(),
             },
             "shading_fine" => self.shading_fine.to_string(),
+            "shading_balance" => self.shading_balance.to_string(),
             "pack" => self.pack.to_string(),
             "tex_filter" => self.tex_filter.to_string(),
             "geo" => if self.geo_chip { "chip" } else { "native" }.to_string(),
@@ -195,6 +202,7 @@ impl GameSettings {
             "shading" => gpu::Shading::parse(v).map(|x| self.shading = x).is_some(),
             "crease" => model2::light::parse_crease(v).map(|n| self.crease = n).is_some(),
             "shading_fine" => flag(v).map(|x| self.shading_fine = x).is_some(),
+            "shading_balance" => flag(v).map(|x| self.shading_balance = x).is_some(),
             "pack" => flag(v).map(|x| self.pack = x).is_some(),
             "tex_filter" => TexFilter::parse(v).map(|f| self.tex_filter = f).is_some(),
             "geo" => match model2::geo::GeoMode::parse(v) {
@@ -259,6 +267,7 @@ impl GameSettings {
             shading: self.shading,
             crease: self.crease,
             shading_fine: self.shading_fine,
+            shading_balance: self.shading_balance,
         }
     }
 }
@@ -748,6 +757,15 @@ mod tests {
         let s = Settings::parse("shading = vertex\nshading_fine = true\n");
         let (v, _) = with_game(Settings::parse(&s.text()), "x", &[]).resolve("x");
         assert!(v.shading_fine && v.shading == gpu::Shading::Vertex);
+        // The brightness balance: on by default, a flag, into the quality.
+        let mut v = GameSettings::default();
+        assert_eq!(v.get("shading_balance"), "true");
+        assert!(v.quality(true).shading_balance);
+        assert!(v.set("shading_balance", "false") && !v.shading_balance && !v.quality(true).shading_balance);
+        assert!(!v.set("shading_balance", "off") && !v.shading_balance);
+        let s = Settings::parse("shading = pixel\nshading_balance = false\n");
+        let (v, _) = with_game(Settings::parse(&s.text()), "x", &[]).resolve("x");
+        assert!(!v.shading_balance && v.shading == gpu::Shading::Pixel);
     }
 
     /// `edit` without saving (the layers it would touch are given).

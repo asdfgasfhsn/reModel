@@ -104,6 +104,11 @@ options:
                        a lit pixel's brightness instead of the game's 64
                        levels (no banding on large smooth surfaces; never
                        outside the polygon's hue). Default off
+  --shading-balance on|off
+                       with --shading: one brightness offset per smooth
+                       surface keeps its mean the game's (default on); off
+                       leaves the formula at the smoothed normals alone, so
+                       bumpy surfaces come out brighter
   --light              record smooth shading's side channel each frame (the
                        native geometrizer's light hooks, or a scan of the
                        list on the chip): snapshots shade with it, `run`
@@ -278,7 +283,9 @@ commands:
                        and vertex at 1080p and 4K over N frames (default
                        8). --shading pixel checks the per-pixel level;
                        --shading-fine on adds finer levels (pictures
-                       -fine, -pixel-fine; K: against the game's levels).
+                       -fine, -pixel-fine; K: against the game's levels);
+                       --shading-balance off checks without the brightness
+                       balance (pictures and reports -nobal; C report-only).
                        Fails if an invariant does
   temporal-probe [DIR] [OUT]
                        the GPU's temporal path (--temporal, default taa;
@@ -461,7 +468,9 @@ fn main() -> ExitCode {
         };
         let _ = STIPPLE.set(s);
     }
-    let (Ok(shading), Ok(crease), Ok(fine)) = (opt("--shading"), opt("--crease"), opt("--shading-fine")) else {
+    let (Ok(shading), Ok(crease), Ok(fine), Ok(balance)) =
+        (opt("--shading"), opt("--crease"), opt("--shading-fine"), opt("--shading-balance"))
+    else {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
     };
@@ -474,6 +483,15 @@ fn main() -> ExitCode {
         }
     };
     let _ = SHADING_FINE.set(fine);
+    let balance = match balance.as_deref() {
+        None | Some("on") => true,
+        Some("off") => false,
+        Some(_) => {
+            eprintln!("error: --shading-balance wants on or off");
+            return ExitCode::FAILURE;
+        }
+    };
+    let _ = SHADING_BALANCE.set(balance);
     if shading.is_some() || crease.is_some() {
         let Some(s) = model2::light::Shading::parse(shading.as_deref().unwrap_or("vertex")) else {
             eprintln!("error: --shading wants flat, vertex or pixel");
@@ -1254,7 +1272,12 @@ fn main() -> ExitCode {
                 let out = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out/scratch/temporal-probe"));
                 let light = light_options(roms.game);
                 let lq = gpu_light(light.as_ref());
-                let quality = gpu::Quality { shading: lq.shading, shading_fine: lq.shading_fine, ..quality };
+                let quality = gpu::Quality {
+                    shading: lq.shading,
+                    shading_fine: lq.shading_fine,
+                    shading_balance: lq.shading_balance,
+                    ..quality
+                };
                 temporal_probe::captures(&root, windows, view, quality, &out, light.as_ref())
             };
             if let Err(e) = result {
@@ -1400,7 +1423,8 @@ fn main() -> ExitCode {
                 _ => model2::light::Shading::Vertex,
             };
             let opts = model2::light::Options::new(level, crease, &roms.game.shading, roms.game.hud_windows)
-                .with_fine(SHADING_FINE.get().copied().unwrap_or(false));
+                .with_fine(SHADING_FINE.get().copied().unwrap_or(false))
+                .with_balance(SHADING_BALANCE.get().copied().unwrap_or(true));
             let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
             match lighting_check::run(&root, windows, VIEW.get().copied(), opts, &out, &probes, bench, every, side) {
                 Ok(true) => {}
@@ -1726,6 +1750,8 @@ static DEPTH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 static SHADING: std::sync::OnceLock<(model2::light::Shading, u8)> = std::sync::OnceLock::new();
 /// `--shading-fine`: finer levels for `--shading`.
 static SHADING_FINE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+/// `--shading-balance`: the brightness balance for `--shading`.
+static SHADING_BALANCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 /// `--game`, for snapshots' shading rules.
 static GAME_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 /// `--light` (or a capture): record smooth shading's side channel.
@@ -1736,7 +1762,8 @@ static LIGHT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 fn light_options(game: &romset::Game) -> Option<model2::light::Options> {
     let &(shading, crease) = SHADING.get()?;
     let o = model2::light::Options::new(shading, crease, &game.shading, game.hud_windows)
-        .with_fine(SHADING_FINE.get().copied().unwrap_or(false));
+        .with_fine(SHADING_FINE.get().copied().unwrap_or(false))
+        .with_balance(SHADING_BALANCE.get().copied().unwrap_or(true));
     o.on().then_some(o)
 }
 
@@ -1744,7 +1771,13 @@ fn light_options(game: &romset::Game) -> Option<model2::light::Options> {
 /// (whatever `Poly::lit` holds is drawn) or off.
 fn gpu_light(light: Option<&model2::light::Options>) -> gpu::Quality {
     match light {
-        Some(o) => gpu::Quality { shading: o.shading, crease: o.crease, shading_fine: o.fine, ..Default::default() },
+        Some(o) => gpu::Quality {
+            shading: o.shading,
+            crease: o.crease,
+            shading_fine: o.fine,
+            shading_balance: o.balance,
+            ..Default::default()
+        },
         None => gpu::Quality::default(),
     }
 }

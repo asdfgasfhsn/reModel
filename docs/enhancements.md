@@ -875,8 +875,11 @@ translation tables, so colours stay the game's.
 | Level | `shading = flat \| vertex \| pixel` (menu, launcher, `--shading`) | `shading` (panel: Flat, Smooth, Per pixel; `?shading=`) | `--shading` (snapshots, `gpu-check`, `depth-check`, `pack-check`, `temporal-probe`, `lighting-check`) |
 | Crease | `crease = auto \| 0-180` (settings file, `--crease`) | `crease` (panel: the game's, 30, 40, 60; `?crease=`) | `--crease` |
 | Finer levels | `shading_fine = true \| false` (menu checkbox "Blend brightness levels", launcher "Brightness levels", `--shading-fine on\|off`) | `shadefine` (panel, `?shadefine=1`) | `--shading-fine on\|off` |
+| Brightness balance | `shading_balance = true \| false` (menu checkbox "Balance brightness", launcher "Brightness balance", `--shading-balance on\|off`) | `shadebalance` (panel "Balance brightness", `?shadebalance=0`) | `--shading-balance on\|off` |
 
-All apply live; `gpu::Quality::{shading, crease, shading_fine}` underneath.
+All apply live; `gpu::Quality::{shading, crease, shading_fine,
+shading_balance}` underneath. The balance is on by default (the picture
+is unchanged from before it was an option).
 
 **The three levels.**
 
@@ -997,7 +1000,28 @@ the game gave it (a departure from design decision 6, which accepted the
 normalised mean normal's brightening: on bumpy surfaces lit at a grazing
 angle, `skisuprg`'s snow, it made lit pixels 23.6 levels brighter on
 average). Per-pixel results over all lit pixels of each game's capture:
-mean luma shift between -0.8 and +1.7 levels (stage 4).
+mean luma shift between -0.8 and +1.7 levels (stage 4). The offset is
+the **brightness balance** (`shading_balance`, `light::Options::balance`,
+on by default): with it off, each corner (and per pixel, the lamp's
+offset) takes the game's formula at the smoothed normal alone, so a
+surface whose facets scatter round the light comes out brighter than the
+game drew it (others a little darker); the shape of the shading is the
+same, only its level moves (one offset per surface, the unit test
+`exact_layer_keeps_a_surface_s_brightness`). It
+is computed once on the CPU, so the software and GPU renderers agree
+either way. `make lighting-check GPU_OPTS="--shading-balance off"`
+checks that mode (pictures and reports `-nobal`; the mean-brightness
+figures C are reported, not warned about, as they measure exactly what
+the balance corrects; everything else must pass).
+*Measured* with it off (18 games' captures, 21 frames each, mean luma
+shift over all lit pixels against their own): `skisuprg` +23.6 levels
+with `vertex`, +13.9 with `pixel`; `schamp` -4.9 and -3.1; every other
+game within -1.0 to +2.1 (with the balance on, every game -1.2 to +1.7).
+On screen the difference is small even in `skisuprg`: only frames 4500
+and 6000 of its capture change visibly (the snow round the skier, a few
+levels lighter or darker in patches; review crops by eye); most of that
+luma is clamped away by the snow's colour range, and much of the snow is
+drawn as dithered layers.
 
 **How it is verified.** `make lighting-capture` (every 300th frame of a
 coin-start run with the side channel) and `make lighting-check`

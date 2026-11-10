@@ -160,6 +160,12 @@ pub struct Options {
     /// one the game's 64 levels give (`raster::fine_level`). Not used by
     /// [`shade`]; applied by `raster::build_with` (`Poly::fine`).
     pub fine: bool,
+    /// Brightness balance (`shading_balance`, on by default): each smooth
+    /// surface of the exact layer gets one brightness offset so that its
+    /// area-weighted mean as drawn is the game's (averaged normals would
+    /// otherwise brighten bumpy surfaces: `skisuprg`'s snow by about 24
+    /// levels). Off: no offset, the formula at the smoothed normals alone.
+    pub balance: bool,
 }
 
 impl Default for Options {
@@ -173,6 +179,7 @@ impl Default for Options {
             skip_models: &[],
             model_crease: &[],
             fine: false,
+            balance: true,
         }
     }
 }
@@ -199,12 +206,19 @@ impl Options {
             skip_models: rules.skip_models,
             model_crease: rules.model_crease,
             fine: false,
+            balance: true,
         }
     }
 
     /// These options with finer levels on or off ([`Options::fine`]).
     pub fn with_fine(self, fine: bool) -> Self {
         Options { fine, ..self }
+    }
+
+    /// These options with the brightness balance on or off
+    /// ([`Options::balance`]).
+    pub fn with_balance(self, balance: bool) -> Self {
+        Options { balance, ..self }
     }
 
     /// Whether [`shade`] can light anything.
@@ -1140,7 +1154,8 @@ fn exact_corners(
     // or noisy surface face the light more squarely than its facets), so
     // the surface's area-weighted mean as drawn is moved back to its mean
     // as the game lit it, by one offset for the whole surface (no seams,
-    // and the shape within it, highlights included, kept).
+    // and the shape within it, highlights included, kept). Not with
+    // `Options::balance` off.
     let mut region: Vec<u32> = (0..faces.len() as u32).collect();
     let mut g = 0;
     while g < members.len() {
@@ -1176,7 +1191,7 @@ fn exact_corners(
         let (Some(l), Some(light)) = (l, f.light) else { continue };
         let p = &mesh.polys[f.poly];
         let r = acc[find(&mut region, fi as u32) as usize];
-        let shift = if r.2 && r.1 > 0.0 { (r.0 / r.1) as f32 } else { 0.0 };
+        let shift = if opts.balance && r.2 && r.1 > 0.0 { (r.0 / r.1) as f32 } else { 0.0 };
         let mut corners = l.corners;
         let mut differs = false;
         for c in corners.iter_mut() {
@@ -2070,6 +2085,34 @@ mod tests {
         }
         let n = block.len() as f32;
         assert!((drawn / n - own / n).abs() < 1.0, "drawn {} against {}", drawn / n, own / n);
+        // Balance off (`Options::balance`): every corner, and per pixel
+        // every lamp's offset, moved by the one offset the balance added
+        // (the surface is one region), nothing else; the surface then
+        // comes out brighter than the game's.
+        for shading in [Shading::Vertex, Shading::Pixel] {
+            let on_o = Options { shading, ..opts(60) };
+            let on = shade_with(&s, Some(&side), &on_o);
+            let off = shade_with(&s, Some(&side), &on_o.with_balance(false));
+            assert_eq!(on.at, off.at, "{shading:?}: the same polygons lit");
+            let k = on.at[0];
+            let d = off.get(k).unwrap()[0][0] - on.get(k).unwrap()[0][0];
+            assert!(d > 1.0, "{shading:?}: off brighter by the balance's offset, {d}");
+            for &at in &on.at {
+                let (a, b) = (on.get(at).unwrap(), off.get(at).unwrap());
+                for c in 0..4 {
+                    assert!((b[c][0] - a[c][0] - d).abs() < 1e-3, "{shading:?} {at}: {a:?} {b:?}");
+                    assert_eq!(a[c][1..], b[c][1..], "normals unchanged");
+                }
+                match (on.pixel_light(at), off.pixel_light(at)) {
+                    (Some(a), Some(b)) => {
+                        assert!((b.offset - a.offset - d).abs() < 1e-3);
+                        assert_eq!(PixelLight { offset: 0.0, ..*a }, PixelLight { offset: 0.0, ..*b });
+                    }
+                    (None, None) => assert_eq!(shading, Shading::Vertex),
+                    _ => panic!("{shading:?} {at}: per pixel in one only"),
+                }
+            }
+        }
     }
 
     /// A 2B polygon whose recomputed luma is a level off the stream's

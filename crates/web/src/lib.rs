@@ -432,7 +432,12 @@ impl App {
             (s, _) => s.name(),
         };
         let lit = self.renderer.light_stats().map_or(String::new(), |s| format!(", {}/{} polygons", s.lit, s.polys));
-        format!(" · shading {level}{} {}°{lit}", if o.fine { " fine" } else { "" }, o.crease)
+        format!(
+            " · shading {level}{}{} {}°{lit}",
+            if o.fine { " fine" } else { "" },
+            if o.balance { "" } else { " unbalanced" },
+            o.crease
+        )
     }
 
     fn audio_status(&self, t: f64) -> String {
@@ -639,6 +644,7 @@ struct Quality {
     shading: gpu::Shading,
     crease: u8,
     shading_fine: bool,
+    shading_balance: bool,
 }
 
 impl Quality {
@@ -649,11 +655,21 @@ impl Quality {
         shading: gpu::Shading::Flat,
         crease: gpu::CREASE_AUTO,
         shading_fine: false,
+        shading_balance: true,
     };
 
     fn gpu(self) -> gpu::Quality {
-        let Quality { aa, depth, tex_filter, shading, crease, shading_fine } = self;
-        gpu::Quality { msaa: aa, depth, tex_filter, shading, crease, shading_fine, ..Default::default() }
+        let Quality { aa, depth, tex_filter, shading, crease, shading_fine, shading_balance } = self;
+        gpu::Quality {
+            msaa: aa,
+            depth,
+            tex_filter,
+            shading,
+            crease,
+            shading_fine,
+            shading_balance,
+            ..Default::default()
+        }
     }
 
     /// Smooth shading wants the geometrizer's side channel.
@@ -672,7 +688,10 @@ impl Quality {
 /// more than `crease` degrees (0 to 180) kept hard; left out (or 255) is
 /// the game's own angle (`romset::Shading`), and `fine` true for finer
 /// levels (`gpu::Quality::shading_fine`: lit pixels blend two colour
-/// columns instead of the game's 64 levels; left out is off). The shading
+/// columns instead of the game's 64 levels; left out is off), and
+/// `balance` false to drop the brightness balance
+/// (`gpu::Quality::shading_balance`: one offset per smooth surface keeps
+/// its mean the game's; left out is on). The shading
 /// is done on this page, from the polygon stream and the side channel the
 /// geometrizer recorded (`geo=local`: turned on here; with the worker the
 /// page asks it for it, geo-worker.js `light`). Before `start`, for the
@@ -685,6 +704,7 @@ pub fn set_quality(
     shading: Option<String>,
     crease: Option<u32>,
     fine: Option<bool>,
+    balance: Option<bool>,
 ) {
     let q = Quality {
         aa,
@@ -696,6 +716,7 @@ pub fn set_quality(
             _ => gpu::CREASE_AUTO,
         },
         shading_fine: fine.unwrap_or(false),
+        shading_balance: balance.unwrap_or(true),
     };
     QUALITY.with(|c| c.set(q));
     APP.with(|a| {
