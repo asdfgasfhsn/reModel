@@ -322,30 +322,92 @@ impl TexturePack for FramePack {
     }
 }
 
-/// Share of a frame's pixels (percent) off by more than 16 levels in a
-/// channel that an identity pack may differ from the original by, drawn
-/// unfiltered: the pack is sampled bilinearly in colour where the original
-/// filters texel indices and looks the result up (the luma and translation
-/// tables are not linear), and rounds. Measured 2026-11-11 with each
-/// frame's own textures: 0.30% (srallyc), 0.50% (topskatr), 0.71% (sgt24h)
-/// on average, but up to 2.6% on frames with crowds drawn small, all of it
-/// that filter order (`raster::IdentitySplit`; docs/texture-packs.md).
-/// Mipmapped drawing is a different filter (distant textures average), so
-/// it is reported but not held to this.
+/// Per-frame limits of `pack-check --identity`, as shares of the frame's
+/// pixels (percent) off by more than 16 levels in a channel, drawn
+/// unfiltered. An identity pack is not pixel-identical to the original: the
+/// pack is sampled bilinearly in colour where the original filters texel
+/// values and looks the result up (the luma and translation tables are not
+/// linear), so the two differ between texels of different values (*filter
+/// order*, `raster::IdentitySplit`, docs/texture-packs.md). Measured
+/// 2026-11-11 at native size with each frame's own textures: 0.30%
+/// (srallyc), 0.50% (topskatr), 0.71% (sgt24h) on average and up to 2.6% on
+/// frames with crowds drawn small, all of it filter order and cut-out
+/// edges; the classes that mean a fault, one texel value under the pixel
+/// (*same*) and another polygon on top (*other*), were 0.000% and at most
+/// 0.001% on every frame. Mipmapped drawing is a different filter (distant
+/// textures average): reported, not held to these.
+///
+/// The limit on *same* + *other* in the software's split: what a wrong
+/// look, a wrong key or lighting the pack can't express produces. The one
+/// such gap found (a skater's collar, topskatr, since fixed) was 0.004% of
+/// frames 2100 and 2400 and 0.007% of 2700 (7-13 pixels at 496x384), and
+/// 0.003% of 5100 (with the fix reverted, 2026-11-11); 0.005% would catch it
+/// on 2700 alone. This is three times the most measured without a fault
+/// (0.001%, 2 pixels), and at 496x384 allows 5 pixels.
+pub const IDENTITY_FAULT_LIMIT: f64 = 0.003;
+/// A sanity ceiling on each unfiltered renderer's whole share and on the
+/// split's filter order (texels differ + cut-out), which are otherwise only
+/// reported: about twice the worst frame measured (2.6%, topskatr 3600), so
+/// a pack that looks wrong across much of a frame fails even where the
+/// split would put it down to filter order.
+pub const IDENTITY_CEILING: f64 = 5.0;
+/// How far the GPU's unfiltered share may be from the software's in a
+/// frame (percentage points): the split is the software's, so the GPU is
+/// held to agreeing with it. Measured at most 0.025 (sgt24h 2400).
+pub const IDENTITY_GPU_SW: f64 = 0.1;
+/// With the depth buffer the split isn't computed (`raster::identity_split`
+/// draws without it), so no pixel can be put down to filter order: each
+/// unfiltered renderer's whole share is held to this instead, which frames
+/// with crowds drawn small fail by filter order alone (strict, not silent).
 pub const IDENTITY_TOLERANCE: f64 = 1.0;
+
+/// One frame's unfiltered shares (percent of the frame off by more than 16
+/// levels): GPU, software, and the software's split by cause (texels
+/// differ, cut-out, same, other) when it was computed.
+#[derive(Clone, Copy, Debug)]
+struct IdentityShares {
+    gpu_off: f64,
+    sw_exact: f64,
+    split: Option<[f64; 4]>,
+}
+
+/// Why a frame fails the identity limits (empty: it passes).
+fn identity_faults(s: &IdentityShares) -> Vec<String> {
+    let mut why = Vec::new();
+    let worst = s.gpu_off.max(s.sw_exact);
+    let Some([texels, cut_out, same, other]) = s.split else {
+        if worst > IDENTITY_TOLERANCE {
+            why.push(format!("{worst:.3}% off, no split (depth buffer): over {IDENTITY_TOLERANCE}%"));
+        }
+        return why;
+    };
+    if same + other > IDENTITY_FAULT_LIMIT {
+        why.push(format!("same + other {:.4}%: over {IDENTITY_FAULT_LIMIT}%", same + other));
+    }
+    if texels + cut_out > IDENTITY_CEILING {
+        why.push(format!("filter order {:.3}%: over the {IDENTITY_CEILING}% ceiling", texels + cut_out));
+    }
+    if worst > IDENTITY_CEILING {
+        why.push(format!("{worst:.3}% off: over the {IDENTITY_CEILING}% ceiling"));
+    }
+    if (s.gpu_off - s.sw_exact).abs() > IDENTITY_GPU_SW {
+        why.push(format!("GPU {:.3}%, software {:.3}%: more than {IDENTITY_GPU_SW} apart", s.gpu_off, s.sw_exact));
+    }
+    why
+}
 
 /// `pack-check --identity`: draw the captured frames with a pack that
 /// stands for the original textures (`pack`, normally a dump made with
 /// `--dump-textures`, or with None each frame's own textures) and compare
 /// them with the frames drawn without one, on each renderer: GPU unfiltered
 /// and mipmapped, software exact and trilinear. A pack made of the dump's
-/// own images must draw the original frame; Err if, in any frame, either
-/// unfiltered renderer's share of pixels off by more than 16 levels exceeds
-/// `IDENTITY_TOLERANCE` (frame by frame, not the mean: topskatr and sgt24h
-/// fail this on single frames while their means are within it, by filter
-/// order alone, an open item, docs/texture-packs.md). Each frame's line
-/// also splits the software's differing pixels by cause
-/// (`raster::identity_split`, without the depth buffer).
+/// own images must draw the original frame. Each frame's line splits the
+/// software's differing pixels by cause (`raster::identity_split`, without
+/// the depth buffer); Err if any frame fails `identity_faults` (frame by
+/// frame, not the mean): the fault classes over `IDENTITY_FAULT_LIMIT`,
+/// filter order or a renderer's whole share over `IDENTITY_CEILING`, the
+/// GPU more than `IDENTITY_GPU_SW` from the software, or, with the depth
+/// buffer (no split), a renderer's whole share over `IDENTITY_TOLERANCE`.
 pub fn identity(
     root: &Path,
     hud_windows: (&[usize], &[usize]),
@@ -442,6 +504,7 @@ pub fn identity(
             results.push(whole(&rgb, &sw_orig));
         }
         // Why the software's pixels differ (without the depth buffer only).
+        let mut split = None;
         let causes = if depth {
             "-".to_string()
         } else {
@@ -455,6 +518,7 @@ pub fn identity(
             for (t, v) in split_totals.iter_mut().zip(share) {
                 *t += v;
             }
+            split = Some(share);
             format!("{:.3} {:.3} {:.3} {:.3}%", share[0], share[1], share[2], share[3])
         };
         let cell = |(m, l): (f64, f64)| format!("{m:.2} / {l:.3}%");
@@ -466,8 +530,9 @@ pub fn identity(
             cell(results[2]),
             cell(results[3])
         );
-        if results[0].1.max(results[2].1) > IDENTITY_TOLERANCE {
-            over.push(f.frame.to_string());
+        let why = identity_faults(&IdentityShares { gpu_off: results[0].1, sw_exact: results[2].1, split });
+        if !why.is_empty() {
+            over.push(format!("{} ({})", f.frame, why.join("; ")));
         }
         for (k, (m, l)) in results.into_iter().enumerate() {
             totals[2 * k] += m;
@@ -487,17 +552,80 @@ pub fn identity(
     // Unfiltered (GPU off and software exact), frame by frame.
     if !over.is_empty() {
         return Err(format!(
-            "identity pack: {} of {n} frames ({}) have more than {IDENTITY_TOLERANCE}% of pixels off by more than \
-             16 levels unfiltered: the pack does not stand for the textures as these frames draw them",
+            "identity pack: {} of {n} frames fail unfiltered, the pack does not stand for the textures as these \
+             frames draw them: {}",
             over.len(),
             over.join(", ")
         ));
     }
-    println!("identity      ok (unfiltered: tolerance {IDENTITY_TOLERANCE}% of pixels off by more than 16 levels)");
+    if depth {
+        println!(
+            "identity      ok (unfiltered, depth buffer, no split: at most {IDENTITY_TOLERANCE}% of pixels off by more \
+             than 16 levels)"
+        );
+    } else {
+        println!(
+            "identity      ok (unfiltered: same + other at most {IDENTITY_FAULT_LIMIT}%, filter order and whole frame \
+             at most {IDENTITY_CEILING}%, GPU within {IDENTITY_GPU_SW} of software)"
+        );
+    }
     Ok(())
 }
 
 /// `compare` over the whole frame.
 fn whole(a: &[u8], b: &[u8]) -> (f64, f64) {
     compare(a, b, &vec![true; a.len() / 3])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shares(gpu_off: f64, sw_exact: f64, split: Option<[f64; 4]>) -> IdentityShares {
+        IdentityShares { gpu_off, sw_exact, split }
+    }
+
+    #[test]
+    fn identity_passes_filter_order() {
+        // topskatr 3600 and sgt24h 2400, each frame's own textures: over
+        // 1% by filter order alone.
+        assert!(identity_faults(&shares(2.560, 2.556, Some([2.574, 0.001, 0.0, 0.0]))).is_empty());
+        assert!(identity_faults(&shares(2.040, 2.065, Some([2.301, 0.007, 0.0, 0.0]))).is_empty());
+        // 0.001% another polygon (topskatr 6212).
+        assert!(identity_faults(&shares(0.327, 0.326, Some([0.371, 0.002, 0.0, 0.001]))).is_empty());
+    }
+
+    #[test]
+    fn identity_fails_gaps() {
+        // The collar before its fix: 0.007% and 0.004% one texel value
+        // (topskatr 2700, 2400).
+        assert_eq!(identity_faults(&shares(0.108, 0.104, Some([0.089, 0.008, 0.007, 0.0]))).len(), 1);
+        assert_eq!(identity_faults(&shares(0.076, 0.076, Some([0.070, 0.002, 0.004, 0.0]))).len(), 1);
+        // Cut-out edges decided differently.
+        assert_eq!(identity_faults(&shares(0.2, 0.2, Some([0.1, 0.0, 0.0, 0.01]))).len(), 1);
+    }
+
+    #[test]
+    fn identity_fails_a_wrong_look() {
+        // A texture drawn with another look: its flat areas differ too.
+        assert!(!identity_faults(&shares(12.0, 12.0, Some([1.0, 0.0, 11.0, 0.0]))).is_empty());
+        // Even one the split puts down to filter order (a palette-like
+        // texture with the wrong table) fails at the ceiling.
+        assert!(!identity_faults(&shares(5.5, 5.5, Some([5.5, 0.0, 0.0, 0.0]))).is_empty());
+        // As do differences outside the split.
+        assert_eq!(identity_faults(&shares(6.0, 6.0, Some([0.5, 0.0, 0.0, 0.0]))).len(), 1);
+    }
+
+    #[test]
+    fn identity_holds_the_gpu_to_the_software() {
+        assert_eq!(identity_faults(&shares(0.9, 0.3, Some([0.3, 0.0, 0.0, 0.0]))).len(), 1);
+    }
+
+    #[test]
+    fn identity_without_split_is_strict() {
+        // With the depth buffer there's no split, so filter order can't be
+        // told apart: the whole share is held to 1%.
+        assert_eq!(identity_faults(&shares(2.560, 2.556, None)).len(), 1);
+        assert!(identity_faults(&shares(0.5, 0.5, None)).is_empty());
+    }
 }

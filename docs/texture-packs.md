@@ -292,47 +292,65 @@ checks that a pack stands for the textures as the captured frames draw
 them: with `PACK` the dump itself (`OUT/texdump`), or with no `PACK` each
 frame's own textures, it draws every captured frame on the GPU unfiltered
 and mipmapped and in software exact and trilinear, against the same
-renderer without a pack, and writes the pictures to `OUT/pack-identity`. It
-fails (exits non-zero, naming the frames) if any single frame has more
-than 1% of its pixels off by more than 16 levels unfiltered, on the GPU or
-in software (`IDENTITY_TOLERANCE`; the pack's colours are filtered where
-the original filters texel values and looks them up, so they are not
-identical); the means in the table below are reported, not held to the
-limit, and mipmapped drawing is a different filter and is only reported.
-The last column splits the software's differing 3D pixels by cause, as
-shares of the frame: the texels under the bilinear filter hold different
-values (*filter order*: the original filters texel values and then looks
-the result up, the pack filters the looked-up colours), one of them is a
-cut-out (texel 15 of a translucent texture), they hold one value (*same*:
-a pack standing for the texture must match there, so these are real gaps:
-a wrong look, lighting the replacement can't express), or another polygon
-is on top in one of the two (a cut-out edge decided differently).
+renderer without a pack, and writes the pictures to `OUT/pack-identity`.
+The pack is not pixel-identical to the original: its colours are filtered
+where the original filters texel values and looks them up. The last column
+splits the software's differing 3D pixels (off by more than 16 levels) by
+cause, as shares of the frame: the texels under the bilinear filter hold
+different values (*filter order*: the original filters texel values and
+then looks the result up, the pack filters the looked-up colours), one of
+them is a cut-out (texel 15 of a translucent texture), they hold one value
+(*same*: a pack standing for the texture must match there, so these are
+real gaps: a wrong look, lighting the replacement can't express), or
+another polygon is on top in one of the two (*other*: a cut-out edge
+decided differently).
 
-*Open item: `make pack-identity` exits non-zero on topskatr (frames 3300,
-3600: 1.7%, 2.6%) and sgt24h (2400, 2700, 3000, 6212: 1.9-2.1%) with each
-frame's own textures*, and on topskatr with its dump (same frames). It is
-the filter order, not the dump or the pack (2026-11-11): in those frames
-99.6-100% of the differing pixels are filter order, 0.0-0.4% cut-out edges,
+It fails (exits non-zero, naming each frame and why) if any single frame,
+unfiltered (`identity_faults` in `crates/cli/src/pack_check.rs`):
+
+- has more than **0.003%** of its pixels *same* + *other*
+  (`IDENTITY_FAULT_LIMIT`; 5 pixels at 496x384). Without a fault these were
+  at most 0.001% on every frame of srallyc, topskatr and sgt24h; the collar
+  gap below, with its fix reverted, is 0.003-0.007% of topskatr's frames
+  2100, 2400, 2700 and 5100, and fails four frames (0.005% would have
+  caught it on 2700 alone);
+- has more than **5%** of its pixels off on the GPU or in software, or 5% of
+  them filter order + cut-out (`IDENTITY_CEILING`, about twice the worst
+  frame, topskatr 3600 at 2.6%): a sanity ceiling, so a pack that looks
+  wrong across much of a frame fails even where the split puts it down to
+  filter order;
+- has the GPU's share more than **0.1** percentage points from the
+  software's (`IDENTITY_GPU_SW`; at most 0.025 measured): the split is the
+  software's, so the GPU is held to agreeing with it.
+
+Below these, filter order and cut-out pixels are reported, not held to a
+limit, as are the means and mipmapped drawing (a different filter). With
+the depth buffer (`GPU_OPTS=--depth`) the split isn't computed, so no
+pixel can be put down to filter order and the check falls back to holding
+each renderer's whole share to 1% a frame (`IDENTITY_TOLERANCE`), which
+topskatr 3300 and 3600 fail by filter order alone: strict, not silent.
+
+Why filter order is not a fault (2026-11-11): the frames where it is over
+1% (topskatr 3300, 3600: 1.7%, 2.6%; sgt24h 2400, 2700, 3000, 6212:
+1.9-2.1%, with each frame's own textures or topskatr's dump) have
+99.6-100% of their differing pixels filter order, 0.0-0.4% cut-out edges,
 none *same* and almost none another polygon; and drawing the original with
 its colours filtered instead of its texel values gives what the pack draws
 in 98-100% of them (the rest: lighting at luma below 255, also between
 texels). Own-frame packs rule out looks, textures rewritten after a dump
-and textures never dumped. The frames over the limit are those with
-stadium crowds and sponsor boards in view, drawn small (91-98% of the
-differing pixels are minified, the texture's texels smaller than a
-pixel): crowds use the translation tables as a palette, texel value to an
-unrelated colour, so the original's in-between values show colours of
-neither neighbour (24-42% of the differing pixels are between texels
-whose colours don't rise or fall with the value), and lettering edges
-fall on the tables' non-linear curve. Neither filter is wrong for a pack
-(the hardware's own filter is unconfirmed, docs/hw/geometrizer.md 5.4),
-and a pack cannot filter texel values it doesn't have. *Proposed rule
-(not applied, the user's decision):* hold the per-frame 1% to the
-*same* and *other* columns, which are 0.000-0.001% on every frame of the
-three games now, and keep the filter order as reported; or keep the rule
-and accept these frames as known. The one gap the split found (topskatr,
-*same*: 0.004-0.007% of frames 2100-2700, a texel black at full luma in a
-channel but not below it) is fixed: see "Lighting" above.
+and textures never dumped. They are the frames with stadium crowds and
+sponsor boards in view, drawn small (91-98% of the differing pixels are
+minified, the texture's texels smaller than a pixel): crowds use the
+translation tables as a palette, texel value to an unrelated colour, so
+the original's in-between values show colours of neither neighbour (24-42%
+of the differing pixels are between texels whose colours don't rise or
+fall with the value), and lettering edges fall on the tables' non-linear
+curve. Neither filter is wrong for a pack (the hardware's own filter is
+unconfirmed, docs/hw/geometrizer.md 5.4), and a pack cannot filter texel
+values it doesn't have. The one gap the split found (topskatr, *same*, a
+texel black at full luma in a channel but not below it) is fixed: see
+"Lighting" above. `make pack-identity` passes on srallyc, topskatr and
+sgt24h with each frame's own textures, and on topskatr with its dump.
 
 Measured 2026-11-11 at native size, mean share over the captures,
 unfiltered (GPU / software):

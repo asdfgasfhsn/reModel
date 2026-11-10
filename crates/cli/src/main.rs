@@ -252,7 +252,10 @@ commands:
                        DIR, normally the dump itself; none: each frame's own
                        textures) drawn on the GPU and in software, unfiltered
                        and mipmapped, against no pack, to OUT (default
-                       out/GAME/pack-identity); fails beyond the tolerance
+                       out/GAME/pack-identity); splits the software's
+                       differing pixels by cause and fails a frame on the
+                       ones that mean a fault (one texel value, another
+                       polygon), not on filter order (up to a ceiling)
   tile-check [DIR] [OUT]
                        with --texture-pack: draw the frames captured in DIR
                        (default out/GAME/capture) with the pack's tile images

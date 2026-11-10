@@ -314,7 +314,7 @@ tile-check: release ## Draw the captured frames with the tile images of texture 
 	$(if $(PACK),,$(error tile-check needs PACK=DIR, a texture pack))
 	$(RUN) $(VIEW) --texture-pack $(PACK) tile-check $(OUT)/capture $(TILE_CHECK_OUT)
 
-pack-identity: release ## Draw the captured frames with a pack standing for the original textures (PACK=DIR, normally the dump itself; empty: each frame's own textures) on the GPU and in software, unfiltered and mipmapped, against no pack; fails if they differ beyond the tolerance (needs a GPU)
+pack-identity: release ## Draw the captured frames with a pack standing for the original textures (PACK=DIR, normally the dump itself; empty: each frame's own textures) on the GPU and in software, unfiltered and mipmapped, against no pack; fails a frame on the differences that mean a fault (one texel value, another polygon), not on filter order up to a ceiling (needs a GPU)
 	$(RUN) $(GPU_OPTS) $(if $(PACK),--texture-pack $(PACK)) pack-check --identity $(OUT)/capture $(OUT)/pack-identity
 
 # depth-check: PROBE="X,Y@FRAME ..." follows those output pixels through the
