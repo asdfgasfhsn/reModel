@@ -213,6 +213,32 @@ Field semantics (SCSP p04_21..p04_27, H unless noted):
 - **KYONEX** (write-only, per slot but global in effect): writing 1 to it in
   *any* slot executes key-on/off for *all* slots according to their KYONB.
   It doesn't need to be cleared. **KYONB**: 1 = key on, 0 = key off.
+  - *Confirmed from the game's behaviour (srallyc, 2026-11-11; not
+    measured on hardware):* key-on and key-off are **edges** of the key
+    each KYONEX latches from KYONB. A slot whose key was already on is not
+    restarted, **even when its loop-off sample has ended** (the slot is
+    silent but still keyed); it plays again only after a KYONEX with its
+    KYONB clear and then one with it set. `crates/sound` keeps the latched
+    key per slot (`Slot::keyed`). It used to re-key every *silent* slot
+    whose KYONB was set, so any other slot's KYONEX restarted ended
+    one-shots: in a 108 s srallyc race 2,163 of 5,856 key-ons (37%) were
+    such restarts, and every co-driver call replayed its last stretch 2 to
+    10 times (`docs/games/srallyc.md`). The driver itself always writes a
+    key-off (KYONEX, KYONB clear) before each key-on, leaves KYONB set on a
+    finished one-shot until it frees the slot about 0.5-1 s later, and
+    does not refill a stream's buffer after it ends, so the restarts could
+    only replay stale data. With the edges the run's key-ons are 3,717,
+    exactly its KYONEX writes with KYONB set.
+  - Every driver agrees (coin-start runs, 600M steps, `sound-render`, all
+    18 sets): **none** ever writes KYONEX with KYONB set to a slot whose
+    key is still latched on, so the edges never drop a key-on a program
+    asked for; they only remove the restarts. Key-ons before and after:
+    bel 4446/1245, doa 3797/1920, fvipers 2743/1171, indy500 3492/1312,
+    overrev 2246/495, overrevb 2265/502, schamp 6296/3281, sgt24h
+    3414/1914, vstriker 2127/1137, srallyc 3456/2073, segawski 2599/2527,
+    skisuprg 1555/1548, lastbrnx 2265/2261, hotd 916/914; dynabb97, stcc,
+    topskatr and waverunr are unchanged (in those runs no ended slot was
+    still keyed when another slot keyed on).
 - **SBCTL**: bit 0 inverts all non-sign bits of the sample (XOR `0x7FFF`);
   bit 1 inverts the sign bit (XOR `0x8000`).
 - **SSCTL**: 0 = sound RAM, 1 = noise (the LFSR shared with the LFO), 2 = all

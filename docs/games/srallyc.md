@@ -185,6 +185,27 @@ loose in `rom/srallyc/`): attract, car and course select, and races.
     program is all zeros, no EFSDL), only 8-bit PCM voices with loop
     modes 0 and 1 streamed through 8 KB buffers, which refill in time
     (0.07% of buffer reads overrun).
+- *Confirmed (by running it, 2026-11-11; the cause is a sound chip
+  fault, not this game's data):* **the co-driver's corner calls
+  stuttered** (reported by ear) because the SCSP model restarted
+  finished one-shot slots. A call is one table sample (e.g. entry 157,
+  `0xC3DA24`, 12,806 bytes, 0.58 s at 22.05 kHz) streamed through an 8 KB
+  buffer: LPCTL 1 and LEA `0x1FFF` while it streams, then LPCTL 0 with LEA
+  at the sample's end in the buffer for the last part. The driver leaves
+  KYONB set when the call ends and keys the slot off about 0.5-1 s later;
+  in between, any other slot's KYONEX made the model key it on again, so
+  it replayed from the buffer's start to that LEA: the call's last
+  stretch (0.21 s for entry 157, 51 ms for entry 151, 2 to 10 times).
+  Over a 108 s race with three scripted turns, all 20 complete calls
+  were replayed (94 restarts); with key-on as an edge of the latched key
+  (`docs/hw/sound.md` §2.1) there are none, and a soloed call's slot
+  matches the ROM sample sample for sample to its end and then stays
+  silent. Reproduce: `make run GAME=srallyc STEPS=900000000
+  INPUT=coin-start,gas=0xff@2300-6000,wheel=0xa0@3085-3165,wheel=0x70@3360-3420,wheel=0xb0@3590-3640`,
+  then `remodel --game srallyc sound-render` with `REMODEL_SOUND_TRACE=1`:
+  the key trace lists each restart as a second `on` for a slot with no
+  `off` between. *Not confirmed:* which syllable a listener hears
+  repeated (the restarts replay each call's end), and a check by ear.
 - *Speed (by running it):* **the game's code runs from work RAM**, not
   the program ROM: of the 14,584 distinct instructions a coin-start run
   executes, 14,502 are at `0x5A0000-0x5FCB3C` (put there at boot by the
