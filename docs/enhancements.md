@@ -55,7 +55,7 @@ through DirectX 8/9's fixed-function pipeline.
 | Textures | Batch upscaling pipeline (dump → upscale → pack) | done (2026-11-10, `docs/texture-packs.md`) |
 | Textures | Mipmaps from pack images, anisotropic filtering | done, opt-in (2026-11-10) |
 | Image | Anti-aliasing: MSAA 4x/8x on the GPU, supersampling in software | done, opt-in (2026-11-09) |
-| Image | Depth buffer | done, opt-in, partial (below) |
+| Image | Depth buffer | done, opt-in, partial (below); current rules checked on all 18 games 2026-11-11 |
 | Image | Temporal anti-aliasing and upscaling (motion vectors, jitter) | done, opt-in, native player only (2026-11-10): needs the native geometrizer, replaces MSAA; thin polygons (wires) stay whole at 67% and 50% (2026-11-11), animated objects without motion data look soft (below) |
 | Image | FSR 2 or DLSS in place of the built-in resolve, native only | idea (not started) |
 | Models | Model replacement packs, keyed by ROM address | planned |
@@ -212,8 +212,13 @@ games with it off and on:
     segawski's logo on the skier's back and a roof lattice, banners in
     overrevb; and the GPU's 1/z brings back bel's ivy over its cliff,
     which only the GPU had hidden (the ivy is 1.85x nearer than the
-    rock there). The "rock face drawn over its neighbour" recorded as a
-    fix on 2026-11-09 was probably that GPU artefact (unconfirmed).
+    rock there). Confirmed on 2026-11-11 (`depth-check --against` a
+    build of the commit before): that build's GPU drew the rock face
+    over its ivy in frames 5100-6212 of a `bel` capture (up to 22,000
+    pixels a frame), and now the ivy shows as with the buffer off. That
+    the "rock face drawn over its neighbour" recorded as a fix on
+    2026-11-09 was this artefact is likely but unconfirmed (no frame was
+    recorded).
   - Checked on 2026-11-10 by drawing the captures of `topskatr`,
     `srallyc`, `lastbrnx`, `doa`, `sgt24h`, `segawski`, `bel`, `hotd`,
     `overrevb`, `schamp` and `skisuprg` against the earlier depth-on
@@ -227,13 +232,56 @@ games with it off and on:
     on (`gpu-check --depth`, native, pixels over 16 levels: `bel` 2.00% to
     1.95%, `sgt24h` 1.64% to 1.54%, `hotd`, `topskatr`, `lastbrnx`,
     `segawski`, `schamp`, `skisuprg`, `overrevb` within 0.01%).
-- **Not verified:** against a real machine, any of it; the 7 games not
-  re-checked on 2026-11-10 (`stcc`, `waverunr`, `dynabb97`, `indy500`,
-  `overrev`, `fvipers`, `vstriker`); and the trade-off of the tolerance:
-  surfaces that cross within 0.5% of 1/z of each other keep the game's
-  order there, so an intersection line can move by a pixel or two.
-  The depth buffer isn't z-fight free: a decal more than 0.5% behind its
-  surface, not sorted with it, still loses.
+- **Checked on all 18 games** (2026-11-11): a coin-start capture of
+  each (21 frames; `stcc` sits on the starting grid from frame 3600),
+  `depth-check` at 1440x1080 and at 1920x1080 16:9, depth-on frames
+  compared with a build of the commit before the 2026-11-10 changes
+  (`--against`), the most changed frames of `stcc`, `waverunr`,
+  `dynabb97`, `indy500`, `overrev`, `fvipers`, `vstriker` and `bel`
+  looked at, the differences probed. The 2026-11-10 changes moved
+  depth-on towards the game's picture in every game: of the pixels
+  they changed, 96-100% per game now equal depth off (`skisuprg` 92%)
+  (decals and layers back: `indy500`'s sidepod lettering, `vstriker`'s
+  shirt print, a `waverunr` banner and tree branches under their
+  foliage, slivers through `dynabb97`'s clothes and hands, `bel`'s
+  ivy). Those that moved away from depth off, where probed (`waverunr`),
+  are cut-out foliage whose GPU colours differ off and on while the
+  software's agree (unconfirmed for the other games). The 16:9
+  view changes the same frames, give or take three (`vstriker`), and
+  where looked at (`stcc`) shows the same kinds of difference in the
+  wider sides. Seen as fixes with it on (the hidden polygon is 3-84% of 1/z
+  behind, so not a matter of rounding): `stcc`'s roof struts behind
+  a sign's pillar, `indy500`'s fence rail in front of the spectators,
+  `overrev`'s crossed tree cards, `bel`'s soldier's legs in front of a
+  beam (3.6%). Can't tell: `waverunr`'s tree on a cliff top hidden by
+  the cliff face (3.3x nearer), `overrev`'s glass walkways against its
+  building faces, `fvipers`' wall bases under the arena floor (9%) and
+  costume layers (1-3%), `dynabb97`'s home plate (whole with it on,
+  clipped by the dirt with it off; 0.9%).
+- **Seen wrong with it on** (2026-11-11), none of them from the
+  tolerance and none with a small generic fix: `stcc`'s pennants in
+  the grandstands are planted in the crowd's flat card, 7.5% of
+  1/z behind it, so the card cuts them in half (the game shows them
+  whole); `dynabb97`'s close-up batter shows his black undershirt's
+  collar through the jersey (the jersey 2.9% behind there; the two are sorted 0.4%
+  apart but fall in different groups). The tolerance's trade-off
+  showed once: an `overrev` banner 0.02% in front of the wall drawn
+  after it is half covered again, as with the buffer off (the build
+  before showed it whole).
+- **Off by default** (the project's "original by default"); whether it
+  could be on is an open question, with the evidence so far under
+  "Open questions" below. Measured per game (2026-11-11, 1440x1080, 21
+  frames): frames changed 10-19 of 21, mean share of pixels changed
+  `vstriker` about 0.001%, `fvipers`, `doa`, `srallyc`, `sgt24h`,
+  `stcc` 0.01-0.03%, `dynabb97`, `indy500`, `overrevb`, `overrev`,
+  `lastbrnx` 0.04-0.07%, `schamp`, `topskatr`, `waverunr`, `hotd`,
+  `segawski` 0.1-0.17%, `bel` 0.5%, `skisuprg` 0.7%.
+- **Not verified:** against a real machine, any of it; and the
+  trade-off of the tolerance: surfaces that cross within 0.5% of 1/z
+  of each other keep the game's order there, so an intersection line
+  can move by a pixel or two. The depth buffer isn't z-fight free: a
+  decal more than 0.5% behind its surface, not sorted with it, still
+  loses.
 
 **Probing a pixel.** `make depth-check PROBE="X,Y@FRAME ..."` (`remodel
 depth-check --probe X,Y@FRAME`, repeatable; output pixels of the
@@ -1041,12 +1089,23 @@ light direction and ambient, nothing physical), which is pack content.
 
 - How packs carry models and materials alongside textures (one pack
   format, versioned).
-- Whether the depth buffer can be on by default: it looks right in
-  the frames compared (see "Depth buffer") but changes pictures
-  in every game, and the games' own layering tricks (large floors,
-  dither, flat shadows) had to be left on the game's order. More
-  games and long plays first.
-- How much of this the browser can have: WebGPU could cover per-pixel
-  lighting; ray tracing waits for the web platform. Temporal
+- Whether the depth buffer can be on by default (undecided). The
+  evidence so far (2026-11-11, 21 captured frames per game; "Depth
+  buffer" above): it changes 10-19 of 21 frames in every one of the 18
+  games, a mean of 0.001-0.7% of the pixels a frame (`skisuprg` up to
+  4.8%), mostly crossing geometry the painter's algorithm can't draw.
+  Against it: two regressions (`stcc`'s pennants, `dynabb97`'s collar)
+  and one tradeoff (`overrev`'s banner) that no generic rule found so
+  far handles. Deep floors, dither, flat shadows and skies already keep
+  the game's order. Keeping the game's order inside an object block
+  would fix none of the three (by the probes, they are in different
+  blocks or already in the game's order) and lose fixes that are inside
+  one block (`stcc`'s struts, `indy500`'s fence rail, `overrev`'s tree
+  cards). On by default would also change every default-settings
+  picture check, though not state hashes. Open: long plays (`stcc`'s
+  capture never leaves the grid), timings in the browser and on weak
+  GPUs, and whether players keep it on.
+- How much of this the browser can have: WebGPU covers per-pixel
+  lighting (done); ray tracing waits for the web platform. Temporal
   anti-aliasing and upscaling stay native-only (decided), and so would
   FSR 2 or DLSS.

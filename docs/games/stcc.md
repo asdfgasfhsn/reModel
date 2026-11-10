@@ -97,6 +97,16 @@ Third 2C game: the first with a DSB1 music board, a wheel and a gearbox.
   reads it; `docs/play.md`, "Run-ahead"):* steering (frames 4507 and 4907,
   the gas held from 4100 of a coin-start run) shows a frame after the
   first that reads it: input lag 1.
+- *Depth buffer (2026-11-11; captured coin-start frames drawn with it off
+  and on at 1440x1080 and 1920x1080 (`make depth-check`), compared with
+  the build before the 2026-11-10 rules (`docs/enhancements.md`, "Depth
+  buffer")):* 12 of 21 frames differ, by up to 0.08% of the pixels. Right
+  with it on: the roof struts go behind a sign's pillar
+  (they are 73-84% of 1/z behind it; the game draws them over it). Wrong
+  with it on: the pennants in the grandstands stand in the crowd's flat
+  card, 7.5% of 1/z behind it at the pixel probed, and lose their lower
+  halves (the game shows them whole); no generic fix. The 2026-11-10 rules
+  changed only edge pixels here.
 
 ## Lighting (smooth shading's side channel)
 

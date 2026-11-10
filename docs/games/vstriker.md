@@ -109,6 +109,12 @@ suffix), the clone `vstrikro`, which isn't supported.
   frame changing under temporal's jitter: 0.21 levels a frame in the
   attract sequence (frames 470-549) and 0.34 in a match (3300-3419),
   the one result over `temporal-check`'s 0.25 limit.
+- *Depth buffer (2026-11-11; captured coin-start frames drawn with it off
+  and on at 1440x1080 and 1920x1080 (`make depth-check`), compared with
+  the build before the 2026-11-10 rules (`docs/enhancements.md`, "Depth
+  buffer")):* 10 of 21 frames differ, by at most 0.007%; the 2026-11-10
+  rules brought back the edges of the shirt print of the close-up player
+  (frame 5400).
 
 ## Lighting (smooth shading's side channel)
 

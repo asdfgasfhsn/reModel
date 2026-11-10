@@ -68,6 +68,15 @@ driver. A sit-down driving cabinet; no extra boards are needed.
   reads it; `docs/play.md`, "Run-ahead"):* the wheel (frames 3507 and 3907
   of a coin-start run) shows in the first frame that reads it: input lag
   0.
+- *Depth buffer (2026-11-11; captured coin-start frames drawn with it off
+  and on at 1440x1080 and 1920x1080 (`make depth-check`), compared with
+  the build before the 2026-11-10 rules (`docs/enhancements.md`, "Depth
+  buffer")):* 18 of 21 frames differ, by up to 0.46%. Right with it on:
+  crossed tree cards intersect. Can't tell: glass walkways against the
+  building faces (11-52% of 1/z, frame 5700). The 2026-11-10 tolerance put
+  one banner back to the game's look: a sponsor banner 0.02% in front of
+  the wall drawn after it is half covered, as with the buffer off (the
+  build before showed it whole).
 
 ## Lighting (smooth shading's side channel)
 
