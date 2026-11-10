@@ -159,7 +159,8 @@ usage: remodel-play [options]
 
 The game's settings (mix, HUD, aspect, bezel, speed, smooth motion,
 run-ahead, anti-aliasing, temporal anti-aliasing and stipple, depth buffer,
-shading, crease and finer levels, texture pack and filtering, geometrizer) given here are for this run only, over the
+shading, crease, finer levels and brightness balance, texture pack and
+filtering, geometrizer) given here are for this run only, over the
 defaults for all games and the game's own, which the launcher's settings
 and the menu keep.
 --rom and --fullscreen are remembered.
