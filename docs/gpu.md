@@ -193,7 +193,12 @@ refused with one warning.
 - **Memory.** Images are kept after upload, a mip chain adding about a third,
   up to a budget (512 MB natively, 192 MB on wasm); over it the least
   recently drawn are dropped, except this frame's, and uploaded again when
-  next asked for. A change of `tex_filter` rebuilds the images that change
+  next asked for. With `Quality::materials` (default off), a pack's material
+  maps (`TexturePack::material`, docs/texture-packs.md) are uploaded beside
+  the images, one `Rgba8Unorm` texture per material (`gpu/src/materials.rs`;
+  mip levels with renormalised normals when `tex_filter` has them), under
+  the same budget and in the same least-recently-drawn order; not bound or
+  sampled yet. A change of `tex_filter` rebuilds the images that change
   form (exact or mipmapped). Large images' first appearance can cost a frame
   (the browser measured up to 13 ms of draw uploading a 1024x1024 image
   with mipmaps, against about 3 ms).

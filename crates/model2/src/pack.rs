@@ -26,7 +26,8 @@ pub const KEYS: u32 = 1;
 /// (material maps), and reserved `models` and `selflit`.
 pub const FEATURES: [&str; 3] = ["materials", "models", "selflit"];
 /// The features this build's readers show. A pack that `needs` any other is
-/// refused whole. None yet: no reader draws material maps.
+/// refused whole. None yet: readers load material maps but none draws them,
+/// and `needs` means the pack must not be shown without them.
 pub const SHOWN: [&str; 0] = [];
 /// Largest pack-wide or per-material strength (`normal_scale`, `spec_scale`,
 /// `normal=`, `spec=`).
@@ -75,6 +76,9 @@ pub struct Manifest {
     /// Lines with a keyword this build doesn't know, as written: ignored.
     pub unknown: Vec<String>,
 }
+
+/// `Manifest::NONE` as a static, for references to it.
+pub static NO_MANIFEST: Manifest = Manifest::NONE;
 
 impl Default for Manifest {
     fn default() -> Self {
@@ -302,6 +306,14 @@ impl Manifest {
         }
     }
 
+    /// Whether readers load the pack's material maps: only from a pack with
+    /// a manifest of format 2 or later. A pack without `pack.txt` is format 1
+    /// and is read exactly as before materials existed, whatever files it
+    /// holds.
+    pub fn reads_maps(&self) -> bool {
+        self.format >= 2
+    }
+
     /// One line for the reader to print about what it ignores, if anything.
     pub fn notice(&self) -> Option<String> {
         let first = self.unknown.first()?;
@@ -338,6 +350,12 @@ impl MapKind {
 
     pub fn from_suffix(s: &str) -> Option<MapKind> {
         MapKind::ALL.into_iter().find(|k| k.suffix() == s)
+    }
+
+    /// The kind's bit in `enhance::Material::has`: normal 1, specular 2,
+    /// gloss 4.
+    pub fn bit(self) -> u8 {
+        1 << self as u8
     }
 }
 
@@ -427,6 +445,13 @@ pub fn map_stem(base: &str, kind: MapKind) -> String {
 /// colour (`surf_..`).
 pub fn map_candidates(info: &TexInfo, kind: MapKind) -> [String; 2] {
     [map_stem(&info.name(), kind), map_stem(&info.surface_name(), kind)]
+}
+
+/// The stems of `info`'s normal, specular and gloss maps among the files
+/// `exists` says the pack has (None: no map of that kind), each by the
+/// order of `map_candidates`: the image's own map wins over the surface's.
+pub fn resolve_maps(info: &TexInfo, exists: impl Fn(&str) -> bool) -> [Option<String>; 3] {
+    MapKind::ALL.map(|k| map_candidates(info, k).into_iter().find(|s| exists(s)))
 }
 
 #[cfg(test)]
@@ -583,5 +608,44 @@ mod tests {
             parse_name(&shared),
             Ok(FileKind::Map { surface: true, key: 0xff, width: 128, height: 8, kind: MapKind::Spec })
         );
+    }
+
+    #[test]
+    fn maps_resolve_by_image_key_then_surface_key() {
+        let info = TexInfo {
+            key: 0xfedc_ba98_7654_3210,
+            surface: 0xff,
+            width: 8,
+            height: 8,
+            header: [0; 4],
+            colour: 0,
+            bank: 0,
+            x0: 0,
+            y0: 0,
+            luma_table: 0,
+            translucent: false,
+        };
+        // Per kind: the image's own normal map wins over the surface's; the
+        // specular map exists only by surface; no gloss map.
+        let files = [
+            "tex_fedcba9876543210_8x8.n",
+            "surf_00000000000000ff_8x8.n",
+            "surf_00000000000000ff_8x8.s",
+            "tex_0000000000000001_8x8.g",
+        ];
+        let got = resolve_maps(&info, |s| files.contains(&s));
+        assert_eq!(
+            got,
+            [Some("tex_fedcba9876543210_8x8.n".to_string()), Some("surf_00000000000000ff_8x8.s".to_string()), None]
+        );
+        assert_eq!(resolve_maps(&info, |_| false), [None, None, None]);
+        // Another colour of the same texels (another image key) gets the
+        // surface's maps.
+        let other = TexInfo { key: 1, ..info };
+        assert_eq!(resolve_maps(&other, |s| files.contains(&s))[0].as_deref(), Some("surf_00000000000000ff_8x8.n"));
+        assert_eq!([MapKind::Normal, MapKind::Spec, MapKind::Gloss].map(MapKind::bit), [1, 2, 4]);
+        // Maps are read from format 2 packs only.
+        assert!(!Manifest::NONE.reads_maps() && Manifest::parse("format 2\n").unwrap().reads_maps());
+        assert!(!Manifest::parse("format 1\n").unwrap().reads_maps());
     }
 }

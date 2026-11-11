@@ -301,7 +301,7 @@ capture: release ## Run into a race saving every 300th frame's renderer inputs t
 
 # Options for gpu-check, depth-check and pack-check: --aa N (multisampling;
 # software supersamples to match), --depth, --tex-filter off|mip|2|4|8|16
-# (gpu-check with PACK), and for depth-check and pack-check
+# (gpu-check with PACK), --materials (the pack's material maps loaded), and for depth-check and pack-check
 # --height/--aspect/--hud; --shading flat|vertex|pixel, --crease auto|N and
 # --shading-fine on|off (smooth shading, model2::light) for all of them.
 GPU_OPTS ?=

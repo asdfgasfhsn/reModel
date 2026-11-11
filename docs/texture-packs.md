@@ -165,9 +165,9 @@ board and game (names are content keys the renderers compute; nothing in a
 pack names a board). `model2::pack` implements it: the manifest, the
 compatibility rules and the file-name grammar, used by the CLI, the player
 and the browser. **Status (2026-11-11):** the format, the surface key and
-`make pack-lint` exist; material maps are named and checked but no reader
-loads or draws them yet, so a pack's pictures are what the images alone
-give.
+`make pack-lint` exist; material maps are named, checked and loaded (below,
+"Loading material maps") but not drawn yet, so a pack's pictures are what
+the images alone give.
 
 **Format 1** is everything above: `tex_<key>_<w>x<h>.png`,
 `tile_<key>.png`, any subset, `index.txt` for the browser, and tool records
@@ -271,8 +271,9 @@ twice, a value out of range) refuses the pack, with the line it is on.
    them), unknown kinds of file and unknown names in `uses`. A pack that
    must not be shown without a feature puts it in `needs`, and a reader
    that can't show it refuses the whole pack. No reader draws material
-   maps yet, so today `needs materials` refuses the pack everywhere and
-   `uses materials` is ignored.
+   maps yet, so today `needs materials` refuses the pack everywhere (they
+   load, but showing the pack without them is what `needs` forbids) and
+   `uses materials` is informative.
 4. Tools write `pack.txt` only when the pack holds something format 1
    can't say; a plain upscaled pack gets none (`make upscale-textures`
    writes none) and stays readable by older builds, which show its images
@@ -281,6 +282,33 @@ twice, a value out of range) refuses the pack, with the line it is on.
 Where a refused pack shows: `run` and the checks print the reason and draw
 without the pack; the player's Esc menu shows it as it does a missing
 directory; the browser logs it to the console and keeps the originals.
+
+**Loading material maps.** Only a pack with a manifest of format 2 has
+material maps: without `pack.txt` (format 1) its `.n`, `.s` and `.g` files
+are never opened, so an older pack behaves as before whatever it holds.
+Readers find a texture's map of each kind by image name, then surface name
+(`pack::resolve_maps`); the files found make one material
+(`enhance::Material::assemble`), whether or not the texture has a
+replacement image. It is one RGBA8 image, the size of the normal map (else
+the specular's, else the gloss's; the others are resampled to it
+bilinearly with repeat addressing): red and green the normal's x and y,
+encoded as in the file, with y turned to point along increasing v under
+`normal_y up` and any x, y longer than 1 scaled back to 1; blue the
+specular scale; alpha the gloss; 128 where the pack has no map of that
+kind. The pack-wide strengths times the `material` line of the stem each
+map was found under go with it. Mip levels are made at load, never read
+from a pack: normals averaged as unit vectors and renormalised, the rest
+box-averaged with the images' weights. The CLI (`--texture-pack`) loads a
+material on first use; the player decodes and assembles it on its pack
+threads; the browser fetches its files like images (`pack_wanted`) and
+assembles them when all have arrived. The GPU renderer asks for a texture's
+material only with `gpu::Quality::materials` on (default off; nothing in
+the player or the browser turns it on yet; `remodel --materials` does for
+`gpu-check`, `depth-check` and `pack-check`), uploads it as one
+`Rgba8Unorm` texture (with mips when `tex_filter` has them) and keeps it
+under the same budget as the images (below). Nothing samples it yet: frames
+are identical with materials on or off (checked 2026-11-11 with a synthetic
+pack on `topskatr`'s captures, `gpu-check` unfiltered, mipmapped and 16x).
 
 **Models.** Replacement models are not built; the format only reserves
 their names. They will key by content (a hash of the model's polygon data
@@ -360,7 +388,10 @@ console warning.
 **GPU memory.** Images are uploaded when first drawn and kept; over a budget
 (512 MB natively, 192 MB in the browser) the least recently drawn are
 dropped and loaded again when next needed. With mipmaps on, an image costs
-about a third more. Tile images are outside that budget: their atlas is
+about a third more. Material maps, when loaded, share that budget and that
+order with the images (a material is dropped on its own; one the size of
+its image doubles that texture's cost), and `PackStats` counts them apart
+(`materials`, `material_held`, `material_bytes`). Tile images are outside that budget: their atlas is
 allocated whole when the first one is drawn, 16 MB for 4x tiles (2048x2048),
 64 MB at most.
 

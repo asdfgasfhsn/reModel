@@ -16,6 +16,7 @@
 //! default). [`Renderer::present`] then blends the
 //! 2D tile layers around the 3D layer into the output.
 
+mod materials;
 mod temporal;
 mod tiles;
 
@@ -80,6 +81,12 @@ pub struct Quality {
     /// smooth surface keeps its mean the game's. Off: the game's formula
     /// at the smoothed normals alone (bumpy surfaces come out brighter).
     pub shading_balance: bool,
+    /// Material maps of the texture pack (default off): with a pack that
+    /// has them (`TexturePack::has_materials`), each drawn texture's maps
+    /// are looked up, uploaded and kept under the pack's memory budget
+    /// ([`PackStats`]). Not drawn yet: pictures are the same either way.
+    /// Off, nothing of them is asked for, decoded or uploaded.
+    pub materials: bool,
 }
 
 impl Default for Quality {
@@ -94,6 +101,7 @@ impl Default for Quality {
             crease: CREASE_AUTO,
             shading_fine: false,
             shading_balance: true,
+            materials: false,
         }
     }
 }
@@ -207,6 +215,13 @@ pub struct PackStats {
     pub tiles: u32,
     pub tiles_held: u32,
     pub tile_bytes: u64,
+    /// With [`Quality::materials`]: distinct materials drawn, uploaded this
+    /// frame, and held on the GPU with their bytes (inside the same budget
+    /// as the images, `bytes` not included).
+    pub materials: u32,
+    pub material_uploaded: u32,
+    pub material_held: u32,
+    pub material_bytes: u64,
 }
 
 /// GPU memory pack images may hold before the least recently drawn are
@@ -319,6 +334,11 @@ pub struct Renderer {
     frame: u64,
     /// An image was too large for the GPU (warned once).
     pack_warned: bool,
+    /// The pack's material maps on the GPU (`Quality::materials`).
+    materials: materials::Materials,
+    /// GPU memory pack images and materials may hold together
+    /// (`PACK_BUDGET`; smaller in tests).
+    pack_budget: u64,
     /// The pack's tile replacements (tiles.rs).
     tiles: tiles::Tiles,
 }
@@ -556,6 +576,8 @@ impl Renderer {
             pack_stats: PackStats::default(),
             frame: 0,
             pack_warned: false,
+            materials: Default::default(),
+            pack_budget: PACK_BUDGET,
             tiles,
         }
     }
@@ -614,6 +636,10 @@ impl Renderer {
             for t in self.pack_tex.values_mut().flatten() {
                 t.groups = Default::default();
             }
+            self.materials.retain_form(mip);
+        }
+        if !quality.materials {
+            self.materials.clear();
         }
         let q = Quality { msaa, tex_filter, temporal, ..quality };
         if q != self.quality {
@@ -691,6 +717,7 @@ impl Renderer {
     pub fn set_pack(&mut self, pack: Option<Box<dyn TexturePack + Send>>) {
         self.pack = pack;
         self.pack_tex.clear();
+        self.materials.clear();
         self.keys.clear();
         self.tiles.reset();
         self.pack_stats = PackStats::default();
@@ -1025,6 +1052,9 @@ impl Renderer {
         let frame = self.frame;
         let max = self.device.limits().max_texture_dimension_2d as usize;
         let mut stats = PackStats::default();
+        // Material maps: only asked for when on and the pack has some.
+        let materials = self.quality.materials && pack.has_materials();
+        self.materials.begin();
         // Slots by texture key and address modes, this frame.
         let mut slot_of: HashMap<(u64, usize), u32> = HashMap::new();
         for (i, pl) in placed.iter().enumerate() {
@@ -1032,6 +1062,9 @@ impl Renderer {
             let Some(t) = &p.texture else { continue };
             stats.textured += 1;
             let Some(info) = tex_info(p, t, src, &mut self.keys) else { continue };
+            if materials {
+                self.materials.draw(pack.as_mut(), &info, &self.device, &self.queue, mip, frame, max);
+            }
             let entry = match self.pack_tex.entry(info.key) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => match pack.find(&info) {
@@ -1070,23 +1103,35 @@ impl Renderer {
                 groups.len() as u32 - 1
             });
         }
-        // Over budget: drop the images drawn longest ago (not this frame's).
+        // Over budget: drop the images and materials drawn longest ago (not
+        // this frame's), in one order.
         let mut bytes: u64 = self.pack_tex.values().flatten().map(|t| t.bytes).sum();
-        if bytes > PACK_BUDGET {
-            let mut old: Vec<(u64, u64, u64)> =
-                self.pack_tex.iter().filter_map(|(k, t)| t.as_ref().map(|t| (t.used, t.bytes, *k))).collect();
+        let mut mat_bytes = self.materials.bytes();
+        if bytes + mat_bytes > self.pack_budget {
+            let images = self.pack_tex.iter().filter_map(|(k, t)| t.as_ref().map(|t| (t.used, t.bytes, *k, false)));
+            let mats = self.materials.tex.iter().map(|(id, t)| (t.used, t.bytes, *id, true));
+            let mut old: Vec<(u64, u64, u64, bool)> = images.chain(mats).collect();
             old.sort_unstable();
-            for (used, size, key) in old {
-                if bytes <= PACK_BUDGET || used == frame {
+            for (used, size, key, material) in old {
+                if bytes + mat_bytes <= self.pack_budget || used == frame {
                     break;
                 }
-                self.pack_tex.remove(&key);
-                bytes -= size;
+                if material {
+                    self.materials.tex.remove(&key);
+                    mat_bytes -= size;
+                } else {
+                    self.pack_tex.remove(&key);
+                    bytes -= size;
+                }
             }
         }
         stats.images = groups.len() as u32;
         stats.held = self.pack_tex.values().flatten().count() as u32;
         stats.bytes = bytes;
+        stats.materials = self.materials.drawn();
+        stats.material_uploaded = self.materials.uploaded;
+        stats.material_held = self.materials.tex.len() as u32;
+        stats.material_bytes = mat_bytes;
         self.pack_stats = stats;
         (slots, groups)
     }
@@ -1976,9 +2021,28 @@ fn upload_pack(device: &wgpu::Device, queue: &wgpu::Queue, img: &Rgba, mipmapped
     } else {
         std::slice::from_ref(img)
     };
+    let (view, bytes) = upload_levels(
+        device,
+        queue,
+        "pack image",
+        levels.iter().map(|l| (l.width as u32, l.height as u32, &l.data[..])),
+    );
+    PackTex { view, mipmapped, groups: Default::default(), bytes, used: 0 }
+}
+
+/// A sampled `FORMAT` texture (`Rgba8Unorm`, never sRGB) of `levels`
+/// (width, height, RGBA8 rows top to bottom), level 0 first: its view and
+/// its bytes.
+fn upload_levels<'a>(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &str,
+    levels: impl Iterator<Item = (u32, u32, &'a [u8])>,
+) -> (wgpu::TextureView, u64) {
+    let levels: Vec<_> = levels.collect();
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("pack image"),
-        size: wgpu::Extent3d { width: img.width as u32, height: img.height as u32, depth_or_array_layers: 1 },
+        label: Some(label),
+        size: wgpu::Extent3d { width: levels[0].0, height: levels[0].1, depth_or_array_layers: 1 },
         mip_level_count: levels.len() as u32,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -1987,8 +2051,7 @@ fn upload_pack(device: &wgpu::Device, queue: &wgpu::Queue, img: &Rgba, mipmapped
         view_formats: &[],
     });
     let mut bytes = 0;
-    for (k, l) in levels.iter().enumerate() {
-        let (w, h) = (l.width as u32, l.height as u32);
+    for (k, &(w, h, data)) in levels.iter().enumerate() {
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &texture,
@@ -1996,14 +2059,13 @@ fn upload_pack(device: &wgpu::Device, queue: &wgpu::Queue, img: &Rgba, mipmapped
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &l.data,
+            data,
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: None },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
-        bytes += l.data.len() as u64;
+        bytes += data.len() as u64;
     }
-    let view = texture.create_view(&Default::default());
-    PackTex { view, mipmapped, groups: Default::default(), bytes, used: 0 }
+    (texture.create_view(&Default::default()), bytes)
 }
 
 /// Group 1 for a pack image: the image, and for the filtered pipelines its

@@ -82,6 +82,10 @@ options:
                        (trilinear), or mipmaps with up to N-times
                        anisotropic filtering (GPU only: software snapshots
                        draw it as mip)
+  --materials          gpu-check, depth-check, pack-check: load the texture
+                       pack's material maps onto the GPU (format 2 packs;
+                       gpu::Quality::materials). Not drawn yet: pictures
+                       are unchanged, gpu-check reports what they hold
   --temporal off|taa|N temporal-probe: temporal anti-aliasing (taa) or
                        upscaling from N% (50 to 99) for the GPU's 3D layer
                        (gpu::Quality::temporal; snapshots are software and
@@ -633,6 +637,9 @@ fn main() -> ExitCode {
     let (interp, single_thread) = (flag("--interp"), flag("--single-thread"));
     if flag("--depth") {
         let _ = DEPTH.set(true);
+    }
+    if flag("--materials") {
+        let _ = MATERIALS.set(true);
     }
     if flag("--light") || CAPTURE.get().is_some() || CAPTURE_SEQ.get().is_some() {
         let _ = LIGHT.set(true);
@@ -1773,6 +1780,9 @@ fn tex_filter() -> model2::enhance::TexFilter {
     TEX_FILTER.get().copied().unwrap_or_default()
 }
 
+/// `--materials`: the texture pack's material maps on the GPU.
+static MATERIALS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
 /// `--depth`: the depth buffer for snapshots and gpu-check.
 static DEPTH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 /// `--shading`, `--crease`: smooth shading for snapshots and the GPU
@@ -1798,9 +1808,10 @@ fn light_options(game: &romset::Game) -> Option<model2::light::Options> {
 }
 
 /// The GPU's quality for drawing polygons built with `light`: shading on
-/// (whatever `Poly::lit` holds is drawn) or off.
+/// (whatever `Poly::lit` holds is drawn) or off; and `--materials`.
 fn gpu_light(light: Option<&model2::light::Options>) -> gpu::Quality {
-    match light {
+    let materials = MATERIALS.get().copied().unwrap_or(false);
+    let q = match light {
         Some(o) => gpu::Quality {
             shading: o.shading,
             crease: o.crease,
@@ -1809,7 +1820,8 @@ fn gpu_light(light: Option<&model2::light::Options>) -> gpu::Quality {
             ..Default::default()
         },
         None => gpu::Quality::default(),
-    }
+    };
+    gpu::Quality { materials, ..q }
 }
 
 /// `--temporal`, `--stipple`: temporal anti-aliasing on the GPU.

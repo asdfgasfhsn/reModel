@@ -29,7 +29,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use model2::enhance::{Found, Rgba, TexInfo, TexturePack, TileInfo};
+use model2::enhance::{Found, FoundMaterial, Rgba, TexInfo, TexturePack, TileInfo};
 use model2::video;
 use romset::bindings::{Bindings, Capture, Slot, Value};
 use romset::{PadAxis, PadButton};
@@ -803,11 +803,21 @@ struct PackState {
     failed: HashSet<String>,
     /// The index names tile images (`tile_<key>`).
     tiles: bool,
+    /// The pack's manifest, and whether the index names material maps it
+    /// reads (`Manifest::reads_maps`).
+    manifest: Arc<model2::pack::Manifest>,
+    maps: bool,
 }
 
-struct WebPack(Arc<Mutex<PackState>>);
+/// The pack, and its manifest (also in the state) for `TexturePack::manifest`.
+struct WebPack(Arc<Mutex<PackState>>, Arc<model2::pack::Manifest>);
 
 impl WebPack {
+    fn new(state: Arc<Mutex<PackState>>) -> WebPack {
+        let manifest = state.lock().unwrap().manifest.clone();
+        WebPack(state, manifest)
+    }
+
     /// The image named `name` (a file stem): see `TexturePack::find`.
     fn get(&mut self, name: String) -> Found {
         let mut s = self.0.lock().unwrap();
@@ -839,6 +849,48 @@ impl TexturePack for WebPack {
     fn find_tile(&mut self, info: &TileInfo) -> Found {
         self.get(info.name())
     }
+
+    fn has_materials(&self) -> bool {
+        self.0.lock().unwrap().maps
+    }
+
+    /// Each map file is fetched like an image (`pack_wanted`); once all of a
+    /// material's have arrived (or failed), they are assembled here and
+    /// handed over.
+    fn material(&mut self, info: &TexInfo) -> FoundMaterial {
+        let mut s = self.0.lock().unwrap();
+        if !s.maps {
+            return FoundMaterial::Missing;
+        }
+        model2::enhance::gather_material(&mut *s, info, &self.1)
+    }
+
+    fn manifest(&self) -> &model2::pack::Manifest {
+        &self.1
+    }
+}
+
+/// Map files come as the page fetches them: in the index and not failed,
+/// fetched once asked for (`pack_wanted`), handed over by `pack_image`.
+impl model2::enhance::MapSource for PackState {
+    fn has(&self, stem: &str) -> bool {
+        self.index.contains(stem) && !self.failed.contains(stem)
+    }
+
+    fn arrived(&self, stem: &str) -> bool {
+        self.ready.contains_key(stem)
+    }
+
+    fn ask(&mut self, stem: &str) {
+        if self.asked.insert(stem.to_string()) {
+            self.wanted.push(stem.to_string());
+        }
+    }
+
+    fn take(&mut self, stem: &str) -> Option<Arc<Rgba>> {
+        self.asked.remove(stem);
+        self.ready.remove(stem)
+    }
 }
 
 fn with_pack<T>(f: impl FnOnce(&mut PackState) -> T) -> Option<T> {
@@ -859,15 +911,15 @@ fn with_pack<T>(f: impl FnOnce(&mut PackState) -> T) -> Option<T> {
 pub fn set_pack(index: Option<String>, manifest: Option<String>) -> Result<u32, JsValue> {
     use model2::pack::{parse_name, FileKind, Manifest};
     // A pack this build can't show: none, and the page says why.
-    let refused = match index.is_some().then(|| Manifest::accept(manifest.as_deref())) {
+    let (manifest, refused) = match index.is_some().then(|| Manifest::accept(manifest.as_deref())) {
         Some(Ok(m)) => {
             if let Some(n) = m.notice() {
                 web_sys::console::log_1(&format!("texture pack: {n}").into());
             }
-            None
+            (m, None)
         }
-        Some(Err(e)) => Some(e),
-        None => None,
+        Some(Err(e)) => (Manifest::NONE, Some(e)),
+        None => (Manifest::NONE, None),
     };
     let state = index.filter(|_| refused.is_none()).map(|text| {
         let index: HashSet<String> = text
@@ -877,7 +929,9 @@ pub fn set_pack(index: Option<String>, manifest: Option<String>) -> Result<u32, 
             .map(|l| l.strip_suffix(".png").unwrap_or(l).to_string())
             .collect();
         let tiles = index.iter().any(|n| matches!(parse_name(n), Ok(FileKind::Tile { .. })));
-        Arc::new(Mutex::new(PackState { index, tiles, ..Default::default() }))
+        let maps = manifest.reads_maps() && index.iter().any(|n| matches!(parse_name(n), Ok(FileKind::Map { .. })));
+        let manifest = Arc::new(manifest);
+        Arc::new(Mutex::new(PackState { index, tiles, manifest, maps, ..Default::default() }))
     });
     let names = state.as_ref().map_or(0, |s| {
         let image = |n: &&String| matches!(parse_name(n), Ok(FileKind::Image { .. } | FileKind::Tile { .. }));
@@ -886,7 +940,7 @@ pub fn set_pack(index: Option<String>, manifest: Option<String>) -> Result<u32, 
     PACK.with(|p| *p.borrow_mut() = state.clone());
     APP.with(|a| {
         if let Some(app) = a.borrow().as_ref() {
-            app.borrow_mut().renderer.set_pack(state.map(|s| Box::new(WebPack(s)) as Box<dyn TexturePack + Send>));
+            app.borrow_mut().renderer.set_pack(state.map(|s| Box::new(WebPack::new(s)) as Box<dyn TexturePack + Send>));
         }
     });
     match refused {
@@ -1719,7 +1773,7 @@ pub async fn start(
     let hud = game.hud_windows.iter().filter(|&&w| w < 64).fold(0u64, |m, &w| m | 1 << w);
     renderer.set_light_rules(&game.shading, hud);
     if let Some(pack) = PACK.with(|p| p.borrow().clone()) {
-        renderer.set_pack(Some(Box::new(WebPack(pack))));
+        renderer.set_pack(Some(Box::new(WebPack::new(pack))));
     }
     web_sys::console::log_1(&format!("remodel: {name}, {}x{}, {:?}", view.width, view.height, config.format).into());
 

@@ -268,6 +268,8 @@ impl GameSettings {
             crease: self.crease,
             shading_fine: self.shading_fine,
             shading_balance: self.shading_balance,
+            // Material maps aren't drawn yet, so the player doesn't load them.
+            materials: false,
         }
     }
 }

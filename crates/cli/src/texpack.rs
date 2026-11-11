@@ -1,10 +1,10 @@
 //! Texture dumps and texture packs for `run` snapshots (`--dump-textures`,
 //! `--texture-pack`); docs/texture-packs.md describes the files.
 
-use model2::enhance::{Enhance, Fnv, Found, Rgba, TexInfo, TexturePack, TileInfo};
-use model2::pack::{parse_name, FileKind, Manifest};
+use model2::enhance::{Enhance, Fnv, Found, FoundMaterial, Material, Rgba, TexInfo, TexturePack, TileInfo};
+use model2::pack::{parse_name, resolve_maps, FileKind, Manifest};
 use model2::raster::{texture_image, texture_look, Sources};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -56,6 +56,13 @@ pub struct Packs {
     has_tiles: bool,
     /// Why the pack given isn't drawn (`accept`).
     refused: Option<String>,
+    /// The pack's manifest (`Manifest::NONE` without one).
+    manifest: Manifest,
+    /// Stems of the material maps in the pack (none unless the manifest
+    /// `reads_maps`).
+    maps: HashSet<String>,
+    /// Materials assembled, by id (None: no file of it decoded).
+    materials: HashMap<u64, Option<Arc<Material>>>,
 }
 
 /// Whether the pack in `dir` may be drawn (`pack::Manifest::for_dir`),
@@ -81,27 +88,38 @@ impl Packs {
         if let Some(d) = &dump {
             std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
         }
-        let refused = match &pack {
+        let (manifest, refused) = match &pack {
             Some(p) => {
                 if !p.is_dir() {
                     return Err(format!("{}: texture pack directory not found", p.display()));
                 }
-                accept(p).err()
+                match accept(p) {
+                    Ok(m) => (m, None),
+                    Err(e) => (Manifest::NONE, Some(e)),
+                }
             }
-            None => None,
+            None => (Manifest::NONE, None),
         };
         let pack = pack.filter(|_| refused.is_none());
-        let has_tiles = pack.as_ref().is_some_and(|p| {
-            std::fs::read_dir(p).into_iter().flatten().flatten().any(|e| {
-                let name = e.file_name();
-                let name = name.to_string_lossy();
-                name.strip_suffix(".png").is_some_and(|stem| matches!(parse_name(stem), Ok(FileKind::Tile { .. })))
-            })
-        });
+        let (mut has_tiles, mut maps) = (false, HashSet::new());
+        for e in pack.iter().flat_map(std::fs::read_dir).flatten().flatten() {
+            let name = e.file_name();
+            let Some(stem) = name.to_str().and_then(|n| n.strip_suffix(".png")) else { continue };
+            match parse_name(stem) {
+                Ok(FileKind::Tile { .. }) => has_tiles = true,
+                Ok(FileKind::Map { .. }) if manifest.reads_maps() => {
+                    maps.insert(stem.to_string());
+                }
+                _ => {}
+            }
+        }
         Ok(Packs {
             dump,
             pack,
             refused,
+            manifest,
+            maps,
+            materials: HashMap::new(),
             frame: 0,
             cache: HashMap::new(),
             mips: HashMap::new(),
@@ -115,20 +133,12 @@ impl Packs {
 
     fn load(&mut self, name: &str) -> Option<Arc<Rgba>> {
         let dir = self.pack.as_ref()?;
-        self.cache
-            .entry(name.to_string())
-            .or_insert_with(|| {
-                let path = dir.join(format!("{name}.png"));
-                let bytes = std::fs::read(&path).ok()?;
-                match png::decode(&bytes) {
-                    Ok(img) => Some(Arc::new(Rgba { width: img.width, height: img.height, data: img.rgba })),
-                    Err(e) => {
-                        eprintln!("texture pack: {}: {e}; using the original", path.display());
-                        None
-                    }
-                }
-            })
-            .clone()
+        self.cache.entry(name.to_string()).or_insert_with(|| decode(&dir.join(format!("{name}.png")))).clone()
+    }
+
+    /// Material maps of the pack (`TexturePack::has_materials`).
+    pub fn material_maps(&self) -> usize {
+        self.maps.len()
     }
 
     /// Count a use of `name` drawn in `look` (see `Entry::looks`), writing
@@ -301,6 +311,45 @@ impl TexturePack for Packs {
             None => Found::Missing,
         }
     }
+
+    fn has_materials(&self) -> bool {
+        !self.maps.is_empty()
+    }
+
+    /// Loaded on first use and kept, like the images (never `Pending`).
+    fn material(&mut self, info: &TexInfo) -> FoundMaterial {
+        let Some(dir) = &self.pack else { return FoundMaterial::Missing };
+        let stems = resolve_maps(info, |s| self.maps.contains(s));
+        if stems.iter().all(Option::is_none) {
+            return FoundMaterial::Missing;
+        }
+        let stems = stems.each_ref().map(Option::as_deref);
+        let id = model2::enhance::material_id(stems);
+        let m = self.materials.entry(id).or_insert_with(|| {
+            let files = stems.map(|s| s.and_then(|s| decode(&dir.join(format!("{s}.png")))));
+            files
+                .iter()
+                .any(Option::is_some)
+                .then(|| Arc::new(Material::assemble(files.each_ref().map(Option::as_deref), &self.manifest, stems)))
+        });
+        m.clone().map_or(FoundMaterial::Missing, FoundMaterial::Maps)
+    }
+
+    fn manifest(&self) -> &Manifest {
+        &self.manifest
+    }
+}
+
+/// A pack image or map file (None: missing, or unreadable, said once).
+fn decode(path: &Path) -> Option<Arc<Rgba>> {
+    let bytes = std::fs::read(path).ok()?;
+    match png::decode(&bytes) {
+        Ok(img) => Some(Arc::new(Rgba { width: img.width, height: img.height, data: img.rgba })),
+        Err(e) => {
+            eprintln!("texture pack: {}: {e}; using the original", path.display());
+            None
+        }
+    }
 }
 
 /// Parse `--dump-textures` / `--texture-pack` into `PACKS`.
@@ -371,6 +420,56 @@ mod tests {
             assert!(p.tile(&info).is_none());
             assert!(p.summary().contains("refused"), "{}", p.summary());
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn loads_material_maps_from_format_2_packs() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("../../out/scratch/remodel-texpack-mat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let tex = TexInfo {
+            key: 0xabcd,
+            surface: 0x1234,
+            width: 8,
+            height: 8,
+            header: [0; 4],
+            colour: 0,
+            bank: 0,
+            x0: 0,
+            y0: 0,
+            luma_table: 0,
+            translucent: false,
+        };
+        let px = |v: [u8; 4], n| v.repeat(n);
+        // A normal map by image key, a 2x2 specular map by surface key.
+        std::fs::write(
+            dir.join(format!("{}.n.png", tex.name())),
+            png::encode_rgba(4, 4, &px([140, 128, 255, 255], 16)),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(format!("{}.s.png", tex.surface_name())),
+            png::encode_rgba(2, 2, &px([64, 0, 0, 255], 4)),
+        )
+        .unwrap();
+        // No manifest: a format 1 pack, maps not read.
+        let mut p = Packs::new(None, Some(dir.clone())).unwrap();
+        assert!(!p.has_materials() && matches!(p.material(&tex), FoundMaterial::Missing));
+        std::fs::write(dir.join("pack.txt"), "format 2\nuses materials\nspec_scale 2\n").unwrap();
+        let mut p = Packs::new(None, Some(dir.clone())).unwrap();
+        assert_eq!(p.material_maps(), 2);
+        let FoundMaterial::Maps(m) = p.material(&tex) else { panic!("no material") };
+        assert_eq!((m.width, m.height, m.has, m.spec_scale), (4, 4, 3, 2.0));
+        assert!(m.data.chunks(4).all(|t| t == [140, 128, 64, 128]));
+        // Another colour of the texels: the surface's specular map alone.
+        let FoundMaterial::Maps(m) = p.material(&TexInfo { key: 1, ..tex.clone() }) else { panic!("no material") };
+        assert_eq!((m.width, m.height, m.has), (2, 2, 2));
+        // No replacement image is needed, and none is found.
+        assert!(matches!(p.find(&tex), Found::Missing));
+        assert!(matches!(p.material(&TexInfo { surface: 9, ..tex.clone() }), FoundMaterial::Maps(_)));
+        assert!(matches!(p.material(&TexInfo { key: 2, surface: 9, ..tex.clone() }), FoundMaterial::Missing));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

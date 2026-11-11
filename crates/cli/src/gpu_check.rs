@@ -194,8 +194,14 @@ pub fn run(
     // GPU through `set_pack`, from separate instances of the same pack.
     let mut sw_pack = match pack {
         Some(dir) => {
-            gpu.set_pack(Some(Box::new(Packs::new(None, Some(dir.to_path_buf()))?)));
+            let pack = Packs::new(None, Some(dir.to_path_buf()))?;
+            let maps = pack.material_maps();
+            gpu.set_pack(Some(Box::new(pack)));
             println!("pack          {}, filter {}", dir.display(), q.tex_filter);
+            if maps > 0 {
+                let on = if q.materials { "loaded (not drawn yet)" } else { "not loaded (--materials)" };
+                println!("materials     {maps} map files, {on}");
+            }
             Some(Packs::new(None, Some(dir.to_path_buf()))?)
         }
         None => None,
@@ -335,6 +341,16 @@ pub fn run(
                     stats.held,
                     stats.bytes as f64 / (1 << 20) as f64
                 );
+                if q.materials {
+                    println!(
+                        "  materials: {} drawn, {} uploaded, {} held ({:.1} MB); images and materials {:.1} MB",
+                        stats.materials,
+                        stats.material_uploaded,
+                        stats.material_held,
+                        stats.material_bytes as f64 / (1 << 20) as f64,
+                        (stats.bytes + stats.material_bytes) as f64 / (1 << 20) as f64
+                    );
+                }
             }
             if k == 1 {
                 let _ = std::fs::write(d.join("gpu-frame.png"), png::encode_rgb(view.width, view.height, &gpu_frame));
