@@ -182,3 +182,121 @@ as the 1-5 s loop repeats; the 900 Hz tail never plays. It fades out left,
 then right, from 48.0 s to 49.7 s. Track 7 plays 880 Hz from 54.7 s, looping
 every 8 s. The parts of the render not replaced are sample-identical to a
 render without the soundtrack.
+
+## Planned: live soundtracks
+
+*Not started; recorded 2026-11-12.* The custom soundtracks above replace a
+game's music with fixed files. The plan is to let a music service supply it
+instead, so a long session isn't the same handful of tracks on repeat, and to
+make it look native: the song's title in the game's own pop-up and its album
+art on the game's billboards. Everything is render-only and opt-in. The game's
+code, save states and state hashes are unaffected, and with it off the game
+plays its own music, bit for bit.
+
+It works on games whose music has its own board: the DSB2 (`topskatr` and
+others) and `stcc`'s DSB1. There, the music can be muted while the sound
+effects keep playing, and the board's play, stop and fade commands (above)
+say when the game changes track. Games that play music on the main SCSP can't
+separate it cleanly.
+
+### 1. Where the music comes from
+
+In order of how native it feels:
+
+- **A Spotify Connect receiver (native player only).** While a game runs,
+  reModel appears as a Connect device ("reModel: Top Skater") in the Spotify
+  app on your phone or desktop. You pick it and play to it, as you would to a
+  console or a speaker. The audio goes into reModel's own mixer, under the
+  game's fade and gain commands like a soundtrack file, with ducking under
+  callouts. Track changes, title, artist and album art come with it. It needs
+  Spotify Premium.
+  - Spotify's official receiver SDK is only for licensed hardware partners.
+    The way open to us is librespot, an open-source Connect receiver written
+    in Rust (MIT), which is what spotifyd and Raspotify use.
+  - librespot is reverse-engineered and not sanctioned by Spotify. Spotify
+    has broken it before, and using it is outside Spotify's developer terms.
+    So it would be an optional build feature, off by default and kept apart
+    from the rest, like DLSS in `docs/enhancements.md`. That needs revisiting
+    before any open-source release.
+  - The browser build can't do this: a web page can't announce itself on the
+    network.
+- **An AirPlay receiver**, the equivalent for Apple Music. The open
+  receivers, such as shairport-sync, are separate programs. reModel would
+  take their audio and metadata as a stream, not link them in. Unconfirmed;
+  needs a look.
+- **Remote control of a player you already run.** On Linux this goes through
+  MPRIS, the desktop's media-control interface: Spotify's desktop app,
+  browsers, mpv and others support it. No accounts, keys or unofficial
+  clients. reModel mutes the game's music and sends play, pause and next to
+  the player. The music plays through the player, not reModel's mixer, so
+  the game's fades only become pause and play. This is the simplest version
+  and the fallback for the others.
+- **Local files.** The existing soundtrack packs, with titles and art taken
+  from the files' tags.
+
+Behaviour, for all of them (settings per game, as the others are):
+
+- On a new game track: skip to the next song, or keep playing.
+- Pause the music when the game is paused, in attract mode, or at game over.
+- Duck under the game's announcer callouts.
+- With no source, or if the source stops, fall back to the game's own music
+  and say so.
+
+### 2. In the player's interface
+
+- Settings: Music (Game, Soundtrack pack, Spotify Connect, External player),
+  the player to control, and the behaviour switches above.
+- A small now-playing notice (title, artist, art) for a few seconds when a
+  song starts, drawn over the bezel or wide-screen side area, never over
+  the play field. It can be turned off.
+- Next, previous and play/pause on keyboard keys and a gamepad
+  combination, and a "Now playing" line in the Esc menu.
+
+### 3. The game's own track-title pop-up
+
+`topskatr` shows each song's title when it starts. The plan is to put the
+playing song's title in that pop-up, in the game's own font and animation:
+
+- Find how the game draws it. Unknown so far: it is likely text on the 2D
+  tile layer, but could be polygons. Which code shows it and when, where the
+  text goes, which characters the font has, and how wide the box is all need
+  finding.
+- At render time, draw our title with the game's glyphs in place of the
+  game's text, as the wide-screen HUD placement does, without writing to
+  game memory. The font is read from the game's ROM at run time.
+- When a song changes and the game didn't change its track, play the
+  pop-up's animation ourselves.
+- Arcade fonts usually have only capitals, digits and some punctuation, so
+  accents become plain letters. Missing characters, such as Japanese, fall
+  back to the now-playing notice. Long titles scroll or are cut short.
+- The pop-up's location, font and timing go in the game's manifest, so the
+  mechanism stays generic. Games without a pop-up use the notice.
+
+### 4. Album art on billboards
+
+`topskatr`'s billboards carry a band's logo. A live texture-pack entry would
+show the playing song's album art there instead:
+
+- Texture packs already replace any texture, matched by content, and draw
+  with mipmaps on the GPU (`docs/texture-packs.md`). New is an entry whose
+  image is "the current album art", updated on the GPU when the song
+  changes. Every billboard using that texture follows, lit and fogged as
+  the game draws it.
+- Find the logo's textures with `make dump-textures`. There may be several,
+  at different sizes. If the logo shares a texture sheet with other
+  graphics, the entry needs a sub-rectangle, which is a small addition to the
+  pack format.
+- Album art is square and billboards may not be: the entry says whether to
+  fit it with a border, crop it, or fill around it with a colour taken from
+  the art.
+- The entry lives in the user's own pack, never in the repo. With no music
+  playing, the original texture shows. It works for any game with
+  billboards or screens.
+
+### Order of work
+
+1. Investigate `topskatr`'s title pop-up and logo textures.
+2. Remote control over MPRIS, with the settings and the notice.
+3. Live album-art texture slots.
+4. The in-game title pop-up, first with local soundtrack packs.
+5. A Spotify Connect receiver as an optional feature, then AirPlay.
