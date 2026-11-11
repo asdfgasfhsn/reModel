@@ -220,10 +220,30 @@ In order of how native it feels:
     before any open-source release.
   - The browser build can't do this: a web page can't announce itself on the
     network.
-- **An AirPlay receiver**, the equivalent for Apple Music. The open
-  receivers, such as shairport-sync, are separate programs. reModel would
-  take their audio and metadata as a stream, not link them in. Unconfirmed;
-  needs a look.
+- **An AirPlay receiver**, the equivalent for Apple Music, and for anything
+  else an iPhone, iPad or Mac can play. reModel would appear in the AirPlay
+  menu as a speaker while a game runs. It works the same way as Connect:
+  audio into reModel's mixer, with title, artist, album and art. It is
+  native only, for the same reason. Two ways to get it (checked
+  2026-11-12; licences not yet read):
+  - **Embedded, in Rust.** `openairplay2` is a receiver library: it takes
+    the network side and hands the host decoded PCM and now-playing events
+    (title, artist, album, cover art, volume), which is exactly the shape
+    reModel needs. As described in its README (v0.5), it supports one
+    sender and one stream, AAC at 44.1 kHz only (no ALAC, no realtime
+    streams), and no persistent pairing: senders pair again each session.
+    It needs no PTP clock daemon for a single output. `shairplay` is another
+    Rust receiver, LGPL-3.0, with AirPlay 2 behind a feature flag, pre-1.0.
+    Both are young.
+  - **Alongside, as a separate program.** Shairport Sync is the mature
+    receiver. It writes audio to a pipe or stdout and metadata with cover
+    art to a pipe, UDP, MQTT, D-Bus or MPRIS. AirPlay 2 needs its companion
+    clock daemon, NQPTP. reModel would read the audio pipe and the metadata
+    rather than link it in, so its licence and C code stay apart. More to
+    set up, but proven.
+  - AirPlay, like Connect, is reverse-engineered and not sanctioned by
+    Apple, so the same rule applies: an optional feature, off by default,
+    kept apart.
 - **Remote control of a player you already run.** On Linux this goes through
   MPRIS, the desktop's media-control interface: Spotify's desktop app,
   browsers, mpv and others support it. No accounts, keys or unofficial
@@ -236,7 +256,18 @@ In order of how native it feels:
 
 Behaviour, for all of them (settings per game, as the others are):
 
-- On a new game track: skip to the next song, or keep playing.
+- **The streamed music is independent of the game's track changes by
+  default.** It plays song after song, as the service sends them, and the
+  game's music stays muted. `topskatr` plays a few tracks a game, and they
+  appear to be cut and edited to fit the game's sections: a menu loop, a run,
+  the results (unconfirmed; its tracks 4, 6, 10 and 11 play once, the rest
+  loop). A streamed song can't match those cuts. Skipping to a new song at
+  every game track change would cut songs off mid-way.
+- Optional: **follow the game.** Skip to the next song when the game starts
+  a new track.
+- Optional: **let the game's cues through.** The game's short one-shot
+  tracks, such as a results or game-over sting, play over the stream with
+  the stream ducked, so the game's punctuation stays.
 - Pause the music when the game is paused, in attract mode, or at game over.
 - Duck under the game's announcer callouts.
 - With no source, or if the source stops, fall back to the game's own music
@@ -299,4 +330,5 @@ show the playing song's album art there instead:
 2. Remote control over MPRIS, with the settings and the notice.
 3. Live album-art texture slots.
 4. The in-game title pop-up, first with local soundtrack packs.
-5. A Spotify Connect receiver as an optional feature, then AirPlay.
+5. Spotify Connect and AirPlay receivers as optional features. Try
+   `openairplay2` embedded first, with Shairport Sync as the fallback.
