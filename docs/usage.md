@@ -79,6 +79,7 @@ make capture              # save renderer inputs from a run into a race -> out/t
 make gpu-check            # draw them on the software and GPU rasterisers, time and compare (GPU_OPTS="--aa 4 --depth": with them on)
 make gpu-check PACK=out/topskatr/texpack-4x GPU_OPTS="--tex-filter mip"   # the same with a texture pack on both renderers (docs/texture-packs.md)
 make gpu-check PACK=DIR GPU_OPTS="--materials"   # also load the pack's material maps onto the GPU (not drawn yet): counts and memory per frame
+# `run --texture-pack DIR --materials --geo native` snapshots draw its normal maps in software (a line per snapshot: polygons with a lamp, with a material, pixels changed); `pack-check --materials` adds FRAME-mat-off/-mat-sw/-mat-diff.png on captures made with --light
 make pack-check PACK=out/topskatr/texpack-4x   # draw them with the pack on the GPU unfiltered, mipmapped and 16x, in software and as a supersampled reference; compare -> out/topskatr/pack-check
 make tile-check PACK=out/topskatr/texpack-4x   # the pack's tile images live on the GPU against the software snapshots' (1080p 16:9) -> out/topskatr/tile-check
 make pack-identity PACK=out/topskatr/texdump   # a pack of the dump itself must draw the captured frames as without one (no PACK: each frame's own textures); splits the differing pixels by cause and fails a frame over 0.003% one-texel/other-polygon pixels, not on filter order (up to 5%) -> out/topskatr/pack-identity

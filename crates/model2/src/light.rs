@@ -166,6 +166,12 @@ pub struct Options {
     /// otherwise brighten bumpy surfaces: `skisuprg`'s snow by about 24
     /// levels). Off: no offset, the formula at the smoothed normals alone.
     pub balance: bool,
+    /// Material maps (`materials`, docs/texture-packs.md): [`shade`] also
+    /// hands over the lamp of every polygon of a verified L2 block that
+    /// has a usable normal and a lamp that depends on the normal, whatever
+    /// `shading` and `crease` are ([`Shaded::lamps`]; entries only for this
+    /// are [`Shaded::flat`]). Off (the default): [`shade`] is unchanged.
+    pub lamps: bool,
 }
 
 impl Default for Options {
@@ -180,6 +186,7 @@ impl Default for Options {
             model_crease: &[],
             fine: false,
             balance: true,
+            lamps: false,
         }
     }
 }
@@ -207,6 +214,7 @@ impl Options {
             model_crease: rules.model_crease,
             fine: false,
             balance: true,
+            lamps: false,
         }
     }
 
@@ -221,9 +229,23 @@ impl Options {
         Options { balance, ..self }
     }
 
+    /// These options handing over lamps for material maps or not
+    /// ([`Options::lamps`]).
+    pub fn with_lamps(self, lamps: bool) -> Self {
+        Options { lamps, ..self }
+    }
+
     /// Whether [`shade`] can light anything.
     pub fn on(&self) -> bool {
         self.shading != Shading::Flat && self.crease > 0
+    }
+
+    /// Whether [`shade`] has anything to do: it lights polygons ([`on`])
+    /// or hands over lamps ([`Options::lamps`]).
+    ///
+    /// [`on`]: Options::on
+    pub fn runs(&self) -> bool {
+        self.on() || self.lamps
     }
 }
 
@@ -438,6 +460,10 @@ pub struct Stats {
     /// exact layer, level L2), and of those per pixel ([`Shading::Pixel`]).
     pub exact: u32,
     pub pixel: u32,
+    /// With [`Options::lamps`]: polygons handed over with a lamp (lit ones
+    /// and [`Shaded::flat`] ones), and of them those only for materials.
+    pub lamps: u32,
+    pub lamps_flat: u32,
     /// Time [`shade`] took, ms.
     pub ms: f32,
     /// The side channel's self-check, and the blocks by level
@@ -461,6 +487,8 @@ impl Stats {
         self.material_splits += o.material_splits;
         self.exact += o.exact;
         self.pixel += o.pixel;
+        self.lamps += o.lamps;
+        self.lamps_flat += o.lamps_flat;
         self.ms += o.ms;
         self.check.add(&o.check);
     }
@@ -503,9 +531,31 @@ pub struct Shaded {
     /// Per lit polygon: its lighting for per-pixel evaluation
     /// ([`Shading::Pixel`] at level L2); None: drawn from the corner lumas.
     pub pixel: Vec<Option<PixelLight>>,
+    /// With [`Options::lamps`] (else empty), per entry: whether it is there
+    /// only for material maps (not lit: drawn with the stream's luma unless
+    /// a material changes a pixel; its corners hold the stream's luma + 0.5
+    /// and the face's normal), and its lamp ([`Lamped`]; None below level
+    /// L2).
+    pub flat: Vec<bool>,
+    pub lamps: Vec<Option<Lamped>>,
     pub stats: Stats,
     /// Every polygon record, with [`Options::diagnose`]; else empty.
     pub info: Vec<Info>,
+}
+
+/// A polygon's lighting handed over for material maps ([`Options::lamps`]):
+/// what the game lit it with and the block facts the tangent frame needs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Lamped {
+    /// Its lamp (and the offset of [`PixelLight::of`]; a material's change
+    /// is a difference of two evaluations, so the offset cancels).
+    pub light: PixelLight,
+    /// The normal the game lit it with (`Face::n`), unit, in the face's
+    /// own convention (as `Lamp::eval` takes it).
+    pub n: [f32; 3],
+    /// Its block's focal lengths (x, y): stream positions over these are
+    /// unscaled view space.
+    pub focal: [f32; 2],
 }
 
 impl Shaded {
@@ -520,6 +570,33 @@ impl Shaded {
     pub fn pixel_light(&self, at: u32) -> Option<&PixelLight> {
         self.at.binary_search(&at).ok().and_then(|k| self.pixel.get(k)?.as_ref())
     }
+
+    /// The lamp handed over for material maps of the polygon at stream
+    /// index `at` ([`Options::lamps`]), and whether its entry is only for
+    /// them ([`Shaded::flat`]).
+    pub fn lamp(&self, at: u32) -> Option<(&Lamped, bool)> {
+        let k = self.at.binary_search(&at).ok()?;
+        Some((self.lamps.get(k)?.as_ref()?, self.flat.get(k).copied().unwrap_or(false)))
+    }
+
+    /// Add an entry; `extra` (flat, lamp) only with [`Options::lamps`].
+    fn push(
+        &mut self,
+        at: u32,
+        corners: [[f32; 4]; 4],
+        pixel: Option<PixelLight>,
+        extra: Option<(bool, Option<Lamped>)>,
+    ) {
+        self.at.push(at);
+        self.corners.push(corners);
+        self.pixel.push(pixel);
+        if let Some((flat, lamp)) = extra {
+            self.flat.push(flat);
+            self.lamps.push(lamp);
+            self.stats.lamps += lamp.is_some() as u32;
+            self.stats.lamps_flat += flat as u32;
+        }
+    }
 }
 
 /// Smooth-shade a frame's raster stream: per polygon drawn lit, its corner
@@ -533,7 +610,7 @@ pub fn shade(stream: &[u32], opts: &Options) -> Shaded {
 /// against the stream ([`check_mesh`]) and each block shaded at the level
 /// it passes (counted in [`Stats::check`]).
 pub fn shade_with(stream: &[u32], side: Option<&Frame>, opts: &Options) -> Shaded {
-    if !opts.on() {
+    if !opts.runs() {
         return Shaded::default();
     }
     let t = crate::geo::Stopwatch::start();
@@ -686,7 +763,7 @@ pub fn shade_mesh(mesh: &Mesh, opts: &Options) -> Shaded {
 /// `mesh.blocks[k]`; None: L0).
 pub fn shade_mesh_with(mesh: &Mesh, sides: Option<&[Option<BlockSide>]>, opts: &Options) -> Shaded {
     let mut out = Shaded::default();
-    if !opts.on() {
+    if !opts.runs() {
         return out;
     }
     let crease_cos = (opts.crease as f32).to_radians().cos();
@@ -768,219 +845,241 @@ pub fn shade_mesh_with(mesh: &Mesh, sides: Option<&[Option<BlockSide>]>, opts: &
                 }
             };
         }
-        // Corners, their weights (the ring's interior angle there).
-        let mut nc = 0u32;
-        weight.clear();
-        for f in faces.iter_mut() {
-            f.corner = nc;
-            let p = &mesh.polys[f.poly];
-            let n = p.corners as usize;
-            for k in 0..n {
-                let v = pos(p.ring[k]);
-                let a = sub(pos(p.ring[(k + n - 1) % n]), v);
-                let e = sub(pos(p.ring[(k + 1) % n]), v);
-                let s = cross(a, e);
-                let w = dot(s, s).sqrt().atan2(dot(a, e));
-                weight.push(if w.is_finite() { w } else { 0.0 });
+        'lit: {
+            if !opts.on() {
+                break 'lit;
             }
-            nc += n as u32;
-        }
-        parent.clear();
-        parent.extend(0..nc);
-        // A repeated vertex in one ring is one corner.
-        for f in &faces {
-            let p = &mesh.polys[f.poly];
-            let n = p.corners as usize;
-            for k in 0..n {
-                for j in k + 1..n {
-                    if p.ring[k] == p.ring[j] {
-                        union(&mut parent, f.corner + k as u32, f.corner + j as u32);
-                    }
+            // Corners, their weights (the ring's interior angle there).
+            let mut nc = 0u32;
+            weight.clear();
+            for f in faces.iter_mut() {
+                f.corner = nc;
+                let p = &mesh.polys[f.poly];
+                let n = p.corners as usize;
+                for k in 0..n {
+                    let v = pos(p.ring[k]);
+                    let a = sub(pos(p.ring[(k + n - 1) % n]), v);
+                    let e = sub(pos(p.ring[(k + 1) % n]), v);
+                    let s = cross(a, e);
+                    let w = dot(s, s).sqrt().atan2(dot(a, e));
+                    weight.push(if w.is_finite() { w } else { 0.0 });
                 }
+                nc += n as u32;
             }
-        }
-        // Shared edges: (lower id, higher id, face, corner k of the edge
-        // k -> k + 1).
-        edges.clear();
-        for (fi, f) in faces.iter().enumerate() {
-            let p = &mesh.polys[f.poly];
-            let n = p.corners as usize;
-            for k in 0..n {
-                let (a, e) = (p.ring[k], p.ring[(k + 1) % n]);
-                if a != e {
-                    edges.push((a.min(e), a.max(e), fi as u32, k as u8));
-                }
-            }
-        }
-        edges.sort_unstable();
-        hard.clear();
-        hard.resize(faces.len(), (0, 0));
-        let mut r = 0;
-        while r < edges.len() {
-            let mut e = r + 1;
-            while e < edges.len() && (edges[e].0, edges[e].1) == (edges[r].0, edges[r].1) {
-                e += 1;
-            }
-            for x in r..e {
-                for y in x + 1..e {
-                    let (fa, ka) = (edges[x].2 as usize, edges[x].3 as usize);
-                    let (fb, kb) = (edges[y].2 as usize, edges[y].3 as usize);
-                    if fa == fb {
-                        continue;
-                    }
-                    let (pa, pb) = (&mesh.polys[faces[fa].poly], &mesh.polys[faces[fb].poly]);
-                    out.stats.edges += 1;
-                    let (na, nb) = (faces[fa].n, faces[fb].n);
-                    if dot(na, nb) < c {
-                        out.stats.crease_edges += 1;
-                        hard[fa].0 |= 1 << ka;
-                        hard[fb].0 |= 1 << kb;
-                        continue;
-                    }
-                    // One material: at L2 the same lighting entry values
-                    // and facing; else the same facing and lumas no
-                    // further apart than a light could make them.
-                    let other = if game_faces.is_some() {
-                        faces[fa].mat != faces[fb].mat || faces[fa].front != faces[fb].front
-                    } else {
-                        let d = sub(na, nb);
-                        let slack = MATERIAL_SLACK + MATERIAL_SLOPE * 255.0 * dot(d, d).sqrt();
-                        pa.back != pb.back || (pa.luma as f32 - pb.luma as f32).abs() > slack
-                    };
-                    if other {
-                        out.stats.material_splits += 1;
-                        hard[fa].1 |= 1 << ka;
-                        hard[fb].1 |= 1 << kb;
-                        continue;
-                    }
-                    // The same two vertices in both: unite the corners at each.
-                    let corner = |f: usize, v: u32| {
-                        let p = &mesh.polys[faces[f].poly];
-                        let k = p.ring[..p.corners as usize].iter().position(|&x| x == v).unwrap_or(0);
-                        faces[f].corner + k as u32
-                    };
-                    for v in [edges[r].0, edges[r].1] {
-                        union(&mut parent, corner(fa, v), corner(fb, v));
-                    }
-                }
-            }
-            r = e;
-        }
-        // Groups: the corners sharing a root, with their faces.
-        members.clear();
-        for (fi, f) in faces.iter().enumerate() {
-            let n = mesh.polys[f.poly].corners as u32;
-            for k in 0..n {
-                members.push((find(&mut parent, f.corner + k), fi as u32));
-            }
-        }
-        // (root, face) pairs: corners of one face in one group (a repeated
-        // vertex) count once.
-        members.sort_unstable();
-        members.dedup();
-        // Level L2, the exact layer: each corner lit with the game's
-        // formula for its group's normal.
-        let exact = game_faces.is_some();
-        if exact {
-            exact_corners(
-                mesh,
-                &faces,
-                &members,
-                &mut parent,
-                &weight,
-                &mut group_normal,
-                opts,
-                &mut out,
-                &mut classes,
-                b,
-                &pos,
-            );
-        }
-        // Per root: the mean (or None where nothing varies); per (root,
-        // face) of a duplicate face, its offset from that mean.
-        group_value.clear();
-        group_value.resize(nc as usize, None);
-        let mut offsets: HashMap<(u32, u32), f32> = HashMap::new();
-        let mut g = 0;
-        while !exact && g < members.len() {
-            let root = members[g].0;
-            let mut e = g + 1;
-            while e < members.len() && members[e].0 == root {
-                e += 1;
-            }
-            let group = &members[g..e];
-            let (lo, hi) = group.iter().fold((u8::MAX, 0u8), |(lo, hi), &(_, f)| {
-                let l = mesh.polys[faces[f as usize].poly].luma;
-                (lo.min(l), hi.max(l))
-            });
-            let value = (lo != hi).then(|| {
-                let (mut sum, mut wsum) = (0.0f64, 0.0f64);
-                for (k, &(_, f)) in group.iter().enumerate() {
-                    let face = &faces[f as usize];
-                    let p = &mesh.polys[face.poly];
-                    // A face sent again over the same vertices (a decal,
-                    // glass) counts once.
-                    let mut ids = p.ring;
-                    ids[..p.corners as usize].sort_unstable();
-                    let dup = group[..k].iter().find(|&&(_, o)| {
-                        let q = &mesh.polys[faces[o as usize].poly];
-                        let mut qi = q.ring;
-                        qi[..q.corners as usize].sort_unstable();
-                        q.corners == p.corners && qi == ids
-                    });
-                    if let Some(&(_, o)) = dup {
-                        // It takes the surface's values, offset by the
-                        // difference of their lumas: a darker decal stays
-                        // darker by as much.
-                        let q = &mesh.polys[faces[o as usize].poly];
-                        if q.luma != p.luma {
-                            offsets.insert((root, f), p.luma as f32 - q.luma as f32);
+            parent.clear();
+            parent.extend(0..nc);
+            // A repeated vertex in one ring is one corner.
+            for f in &faces {
+                let p = &mesh.polys[f.poly];
+                let n = p.corners as usize;
+                for k in 0..n {
+                    for j in k + 1..n {
+                        if p.ring[k] == p.ring[j] {
+                            union(&mut parent, f.corner + k as u32, f.corner + j as u32);
                         }
-                        continue;
                     }
-                    // This face's weight at the group's vertex: the sum of
-                    // its corners in the group (one, unless repeated).
-                    let w: f32 = (0..p.corners as u32)
-                        .filter(|&j| find(&mut parent, face.corner + j) == root)
-                        .map(|j| weight[(face.corner + j) as usize])
-                        .sum();
-                    sum += w as f64 * (p.luma as f64 + 0.5);
-                    wsum += w as f64;
                 }
-                if wsum > 0.0 {
-                    (sum / wsum) as f32
-                } else {
-                    // No angle anywhere (all corners degenerate): the plain mean.
-                    group.iter().map(|&(_, f)| mesh.polys[faces[f as usize].poly].luma as f32 + 0.5).sum::<f32>()
-                        / group.len() as f32
-                }
-            });
-            group_value[root as usize] = value;
-            g = e;
-        }
-        for (fi, f) in faces.iter().enumerate().filter(|_| !exact) {
-            let p = &mesh.polys[f.poly];
-            let n = p.corners as usize;
-            let mut vals = [None; 4];
-            for (k, v) in vals.iter_mut().enumerate().take(n) {
-                let root = find(&mut parent, f.corner + k as u32);
-                let off = offsets.get(&(root, fi as u32)).copied().unwrap_or(0.0);
-                *v = group_value[root as usize].map(|v| v + off);
             }
-            let k = f.poly - b.polys.start;
-            if vals.iter().any(|v| v.is_some()) {
-                let own = p.luma as f32 + 0.5;
-                let mut corners = [[0.0f32; 4]; 4];
-                for (j, v) in vals.iter().enumerate() {
-                    corners[j][0] = v.unwrap_or(own);
+            // Shared edges: (lower id, higher id, face, corner k of the edge
+            // k -> k + 1).
+            edges.clear();
+            for (fi, f) in faces.iter().enumerate() {
+                let p = &mesh.polys[f.poly];
+                let n = p.corners as usize;
+                for k in 0..n {
+                    let (a, e) = (p.ring[k], p.ring[(k + 1) % n]);
+                    if a != e {
+                        edges.push((a.min(e), a.max(e), fi as u32, k as u8));
+                    }
                 }
-                if n == 3 {
-                    corners[3] = corners[2];
+            }
+            edges.sort_unstable();
+            hard.clear();
+            hard.resize(faces.len(), (0, 0));
+            let mut r = 0;
+            while r < edges.len() {
+                let mut e = r + 1;
+                while e < edges.len() && (edges[e].0, edges[e].1) == (edges[r].0, edges[r].1) {
+                    e += 1;
                 }
-                out.at.push(p.at);
-                out.corners.push(corners);
-                out.pixel.push(None);
-                classes[k] = Class::Lit;
+                for x in r..e {
+                    for y in x + 1..e {
+                        let (fa, ka) = (edges[x].2 as usize, edges[x].3 as usize);
+                        let (fb, kb) = (edges[y].2 as usize, edges[y].3 as usize);
+                        if fa == fb {
+                            continue;
+                        }
+                        let (pa, pb) = (&mesh.polys[faces[fa].poly], &mesh.polys[faces[fb].poly]);
+                        out.stats.edges += 1;
+                        let (na, nb) = (faces[fa].n, faces[fb].n);
+                        if dot(na, nb) < c {
+                            out.stats.crease_edges += 1;
+                            hard[fa].0 |= 1 << ka;
+                            hard[fb].0 |= 1 << kb;
+                            continue;
+                        }
+                        // One material: at L2 the same lighting entry values
+                        // and facing; else the same facing and lumas no
+                        // further apart than a light could make them.
+                        let other = if game_faces.is_some() {
+                            faces[fa].mat != faces[fb].mat || faces[fa].front != faces[fb].front
+                        } else {
+                            let d = sub(na, nb);
+                            let slack = MATERIAL_SLACK + MATERIAL_SLOPE * 255.0 * dot(d, d).sqrt();
+                            pa.back != pb.back || (pa.luma as f32 - pb.luma as f32).abs() > slack
+                        };
+                        if other {
+                            out.stats.material_splits += 1;
+                            hard[fa].1 |= 1 << ka;
+                            hard[fb].1 |= 1 << kb;
+                            continue;
+                        }
+                        // The same two vertices in both: unite the corners at each.
+                        let corner = |f: usize, v: u32| {
+                            let p = &mesh.polys[faces[f].poly];
+                            let k = p.ring[..p.corners as usize].iter().position(|&x| x == v).unwrap_or(0);
+                            faces[f].corner + k as u32
+                        };
+                        for v in [edges[r].0, edges[r].1] {
+                            union(&mut parent, corner(fa, v), corner(fb, v));
+                        }
+                    }
+                }
+                r = e;
+            }
+            // Groups: the corners sharing a root, with their faces.
+            members.clear();
+            for (fi, f) in faces.iter().enumerate() {
+                let n = mesh.polys[f.poly].corners as u32;
+                for k in 0..n {
+                    members.push((find(&mut parent, f.corner + k), fi as u32));
+                }
+            }
+            // (root, face) pairs: corners of one face in one group (a repeated
+            // vertex) count once.
+            members.sort_unstable();
+            members.dedup();
+            // Level L2, the exact layer: each corner lit with the game's
+            // formula for its group's normal.
+            let exact = game_faces.is_some();
+            if exact {
+                exact_corners(
+                    mesh,
+                    &faces,
+                    &members,
+                    &mut parent,
+                    &weight,
+                    &mut group_normal,
+                    opts,
+                    &mut out,
+                    &mut classes,
+                    b,
+                    &pos,
+                    [fx, fy],
+                );
+            }
+            // Per root: the mean (or None where nothing varies); per (root,
+            // face) of a duplicate face, its offset from that mean.
+            group_value.clear();
+            group_value.resize(nc as usize, None);
+            let mut offsets: HashMap<(u32, u32), f32> = HashMap::new();
+            let mut g = 0;
+            while !exact && g < members.len() {
+                let root = members[g].0;
+                let mut e = g + 1;
+                while e < members.len() && members[e].0 == root {
+                    e += 1;
+                }
+                let group = &members[g..e];
+                let (lo, hi) = group.iter().fold((u8::MAX, 0u8), |(lo, hi), &(_, f)| {
+                    let l = mesh.polys[faces[f as usize].poly].luma;
+                    (lo.min(l), hi.max(l))
+                });
+                let value = (lo != hi).then(|| {
+                    let (mut sum, mut wsum) = (0.0f64, 0.0f64);
+                    for (k, &(_, f)) in group.iter().enumerate() {
+                        let face = &faces[f as usize];
+                        let p = &mesh.polys[face.poly];
+                        // A face sent again over the same vertices (a decal,
+                        // glass) counts once.
+                        let mut ids = p.ring;
+                        ids[..p.corners as usize].sort_unstable();
+                        let dup = group[..k].iter().find(|&&(_, o)| {
+                            let q = &mesh.polys[faces[o as usize].poly];
+                            let mut qi = q.ring;
+                            qi[..q.corners as usize].sort_unstable();
+                            q.corners == p.corners && qi == ids
+                        });
+                        if let Some(&(_, o)) = dup {
+                            // It takes the surface's values, offset by the
+                            // difference of their lumas: a darker decal stays
+                            // darker by as much.
+                            let q = &mesh.polys[faces[o as usize].poly];
+                            if q.luma != p.luma {
+                                offsets.insert((root, f), p.luma as f32 - q.luma as f32);
+                            }
+                            continue;
+                        }
+                        // This face's weight at the group's vertex: the sum of
+                        // its corners in the group (one, unless repeated).
+                        let w: f32 = (0..p.corners as u32)
+                            .filter(|&j| find(&mut parent, face.corner + j) == root)
+                            .map(|j| weight[(face.corner + j) as usize])
+                            .sum();
+                        sum += w as f64 * (p.luma as f64 + 0.5);
+                        wsum += w as f64;
+                    }
+                    if wsum > 0.0 {
+                        (sum / wsum) as f32
+                    } else {
+                        // No angle anywhere (all corners degenerate): the plain mean.
+                        group.iter().map(|&(_, f)| mesh.polys[faces[f as usize].poly].luma as f32 + 0.5).sum::<f32>()
+                            / group.len() as f32
+                    }
+                });
+                group_value[root as usize] = value;
+                g = e;
+            }
+            for (fi, f) in faces.iter().enumerate().filter(|_| !exact) {
+                let p = &mesh.polys[f.poly];
+                let n = p.corners as usize;
+                let mut vals = [None; 4];
+                for (k, v) in vals.iter_mut().enumerate().take(n) {
+                    let root = find(&mut parent, f.corner + k as u32);
+                    let off = offsets.get(&(root, fi as u32)).copied().unwrap_or(0.0);
+                    *v = group_value[root as usize].map(|v| v + off);
+                }
+                let k = f.poly - b.polys.start;
+                if vals.iter().any(|v| v.is_some()) {
+                    let own = p.luma as f32 + 0.5;
+                    let mut corners = [[0.0f32; 4]; 4];
+                    for (j, v) in vals.iter().enumerate() {
+                        corners[j][0] = v.unwrap_or(own);
+                    }
+                    if n == 3 {
+                        corners[3] = corners[2];
+                    }
+                    // Lit from the stream alone: no lamp for materials.
+                    out.push(p.at, corners, None, opts.lamps.then_some((false, None)));
+                    classes[k] = Class::Lit;
+                }
+            }
+        }
+        // Material maps: the lamp of every L2 polygon not lit above whose
+        // lighting depends on its normal (an ambient-only lamp can't show a
+        // map), as an entry of its own.
+        if opts.lamps {
+            for f in &faces {
+                let Some(light) = f.light.filter(PixelLight::varies) else { continue };
+                let k = f.poly - b.polys.start;
+                if classes[k] == Class::Lit {
+                    continue;
+                }
+                let p = &mesh.polys[f.poly];
+                let n = if f.flip { f.n.map(|x| -x) } else { f.n };
+                let corner = [p.luma as f32 + 0.5, n[0], n[1], n[2]];
+                let lamp = Lamped { light, n, focal: [fx, fy] };
+                out.push(p.at, [corner; 4], None, Some((true, Some(lamp))));
             }
         }
         for (k, cl) in classes.iter().enumerate() {
@@ -996,7 +1095,8 @@ pub fn shade_mesh_with(mesh: &Mesh, sides: Option<&[Option<BlockSide>]>, opts: &
             }
             if opts.diagnose {
                 let fi = face_of[k];
-                let (crease, material) = if fi == u32::MAX { (0, 0) } else { hard[fi as usize] };
+                // (No edges are looked at with lamps alone.)
+                let (crease, material) = if fi == u32::MAX || !opts.on() { (0, 0) } else { hard[fi as usize] };
                 out.info.push(Info {
                     at: mesh.polys[b.polys.start + k].at,
                     class: *cl,
@@ -1016,6 +1116,10 @@ pub fn shade_mesh_with(mesh: &Mesh, sides: Option<&[Option<BlockSide>]>, opts: &
         out.at = order.iter().map(|&k| out.at[k]).collect();
         out.corners = order.iter().map(|&k| out.corners[k]).collect();
         out.pixel = order.iter().map(|&k| out.pixel[k]).collect();
+        if !out.flat.is_empty() {
+            out.flat = order.iter().map(|&k| out.flat[k]).collect();
+            out.lamps = order.iter().map(|&k| out.lamps[k]).collect();
+        }
     }
     out
 }
@@ -1055,6 +1159,7 @@ fn exact_corners(
     classes: &mut [Class],
     b: &MeshBlock,
     pos: &dyn Fn(u32) -> V3,
+    focal: [f32; 2],
 ) {
     group_normal.clear();
     group_normal.resize(parent.len(), None);
@@ -1201,9 +1306,11 @@ fn exact_corners(
         let light = PixelLight { offset: light.offset + shift, ..light };
         let lit = if pixel { (l.moved && light.varies()) || differs } else { differs };
         if lit {
-            out.at.push(p.at);
-            out.corners.push(corners);
-            out.pixel.push(pixel.then_some(light));
+            let lamp = opts.lamps.then(|| {
+                let n = if f.flip { f.n.map(|x| -x) } else { f.n };
+                (false, Some(Lamped { light, n, focal }))
+            });
+            out.push(p.at, corners, pixel.then_some(light), lamp);
             out.stats.exact += 1;
             out.stats.pixel += pixel as u32;
             classes[f.poly - b.polys.start] = Class::Lit;
@@ -2133,5 +2240,74 @@ mod tests {
         assert!(!PixelLight::of(&b, &face, &ambient, 30).varies());
         assert!(PixelLight::of(&b, &face, &Material { diffuse: 0.0, squarings: 1, spec_scale: 9.0, ..m }, 30).varies());
         assert_eq!((clamp_corner(-3.0), clamp_corner(300.0) as u32, clamp_corner(f32::NAN)), (0.0, 255, 0.0));
+    }
+
+    /// `Options::lamps`: every L2 polygon whose lamp depends on its normal
+    /// is handed over with its lamp, lit or not, whatever the shading;
+    /// the lit entries (and every other result) are exactly those without;
+    /// ambient-only lamps and blocks below L2 give none; without `lamps`
+    /// nothing is added.
+    #[test]
+    fn lamps_for_materials() {
+        let m = Material { ambient: 30.0, diffuse: 180.0, spec_scale: 0.0, squarings: Material::NO_SPEC };
+        let ambient = Material { diffuse: 0.0, ..m };
+        // Block 0 lit; block 1 ambient only (entry 1).
+        let one = lit_cylinder(F, &[m], |_| 0);
+        let two: Vec<_> = lit_cylinder(F, &[ambient], |_| 0)
+            .into_iter()
+            .map(|(mut p, n, _)| {
+                for c in p.corners.iter_mut() {
+                    c[2] += 10.0;
+                }
+                (p, n, 1)
+            })
+            .collect();
+        let (s, ats) = stream(&[one.iter().map(|p| p.0.clone()).collect(), two.iter().map(|p| p.0.clone()).collect()]);
+        let mut tap = Tap::new();
+        side_block(&mut tap, F, &one, &[m, ambient]);
+        side_block(&mut tap, F, &two, &[m, ambient]);
+        let side = tap.finish(1);
+        assert_eq!(self_check(&s, &side).stats.l2, 2);
+        let drawn = one.iter().filter(|p| !p.0.back || p.0.double_sided).count() as u32;
+        for o in [opts(40), pixel(40), Options { shading: Shading::Flat, ..opts(40) }, opts(0)] {
+            let off = shade_with(&s, Some(&side), &o);
+            assert!(off.flat.is_empty() && off.lamps.is_empty() && off.stats.lamps == 0);
+            let on = shade_with(&s, Some(&side), &o.with_lamps(true));
+            // The lit entries, exactly.
+            let lit: Vec<usize> = (0..on.at.len()).filter(|&k| !on.flat[k]).collect();
+            assert_eq!(lit.iter().map(|&k| on.at[k]).collect::<Vec<_>>(), off.at);
+            assert_eq!(
+                format!("{:?}", lit.iter().map(|&k| on.corners[k]).collect::<Vec<_>>()),
+                format!("{:?}", off.corners)
+            );
+            assert_eq!(lit.iter().map(|&k| on.pixel[k]).collect::<Vec<_>>(), off.pixel);
+            // (Shading off, `shade` didn't run: no counts to compare.)
+            if o.on() {
+                assert_eq!(Stats { lamps: 0, lamps_flat: 0, ms: 0.0, ..on.stats }, Stats { ms: 0.0, ..off.stats });
+            }
+            assert!(on.at.windows(2).all(|w| w[0] < w[1]));
+            // Every drawn polygon of block 0 has its lamp; none of block 1.
+            assert_eq!(on.stats.lamps, drawn, "{:?}", o.shading);
+            for (k, at) in ats[0].iter().enumerate() {
+                let Some((l, flat)) = on.lamp(*at) else {
+                    assert!(one[k].0.back && !one[k].0.double_sided);
+                    continue;
+                };
+                assert_eq!(flat, off.get(*at).is_none());
+                assert_eq!(l.focal, [F, F]);
+                assert!((dot(l.n, one[k].1) - 1.0).abs() < 1e-6, "the game's normal");
+                if flat {
+                    let c = on.get(*at).unwrap();
+                    assert_eq!(c[0][0], one[k].0.luma as f32 + 0.5);
+                }
+            }
+            assert!(ats[1].iter().all(|at| on.lamp(*at).is_none()), "ambient only");
+            // Without the side channel (L0): no lamps.
+            let l0 = shade(&s, &o.with_lamps(true));
+            assert!(l0.lamps.iter().all(Option::is_none) && l0.stats.lamps == 0);
+        }
+        // Only lamps (shading off): `runs`, not `on`.
+        let only = Options { shading: Shading::Flat, ..opts(40) }.with_lamps(true);
+        assert!(only.runs() && !only.on() && !opts(40).with_lamps(false).with_fine(true).lamps);
     }
 }

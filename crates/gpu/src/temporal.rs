@@ -1031,6 +1031,7 @@ mod tests {
             pixel: None,
             lit_range: [0, 255],
             fine: false,
+            lamp: None,
         }
     }
 
@@ -1509,6 +1510,7 @@ mod tests {
             pixel: None,
             lit_range: [0, 255],
             fine: true,
+            lamp: None,
         };
         let info = model2::raster::tex_info(&p, &t, &src, &mut Default::default()).unwrap();
         let image = Arc::new(model2::raster::texture_image(&src, &info));

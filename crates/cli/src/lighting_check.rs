@@ -263,6 +263,47 @@ fn bench(
         frames.len()
     );
     let levels = [None, Some(light::Shading::Vertex), Some(light::Shading::Pixel)];
+    // CPU: `light::shade` and building the polygons, without and with the
+    // lamps material maps need (`Options::lamps`), best of 3 per frame.
+    let best = |f: &mut dyn FnMut()| {
+        (0..3)
+            .map(|_| {
+                let s = Instant::now();
+                f();
+                s.elapsed().as_secs_f64() * 1e3
+            })
+            .fold(f64::MAX, f64::min)
+    };
+    let mut cpu = [[0.0f64; 4]; 3];
+    for f in frames {
+        let src = f.sources(texture_rom);
+        let side = f.light_frame();
+        for (k, s) in [light::Shading::Flat, light::Shading::Vertex, light::Shading::Pixel].into_iter().enumerate() {
+            for (j, lamps) in [false, true].into_iter().enumerate() {
+                let o = Options { shading: s, ..*opts }.with_lamps(lamps);
+                cpu[k][j] += best(&mut || {
+                    std::hint::black_box(light::shade_with(&f.stream, side.as_ref(), &o));
+                });
+                cpu[k][2 + j] += best(&mut || {
+                    std::hint::black_box(raster::build_shaded_with(&f.stream, &src, side.as_ref(), Some(&o)));
+                });
+            }
+        }
+    }
+    let n = frames.len().max(1) as f64;
+    for (k, s) in ["flat", "vertex", "pixel"].iter().enumerate() {
+        let c = cpu[k].map(|v| v / n);
+        let _ = writeln!(
+            out,
+            "  CPU {s:<6} shade {:.2} ms, with lamps {:.2} ms (+{:.2}); build {:.2} ms, with lamps {:.2} ms (+{:.2})",
+            c[0],
+            c[1],
+            c[1] - c[0],
+            c[2],
+            c[3],
+            c[3] - c[2]
+        );
+    }
     for (name, height) in [("1080p", 1080), ("4K", 2160)] {
         let view = View::new(height, 16.0 / 9.0, video::Hud::Edges).with_hud_windows(hud.0, hud.1);
         let mut t = [0.0f64; 3];

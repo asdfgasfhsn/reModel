@@ -201,6 +201,7 @@ mod tests {
             pixel: None,
             lit_range: [0, 255],
             fine: false,
+            lamp: None,
         }
     }
 

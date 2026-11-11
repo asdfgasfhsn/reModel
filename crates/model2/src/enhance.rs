@@ -371,6 +371,29 @@ impl Material {
     }
 }
 
+impl Material {
+    /// The normal at (x, y) in texels of this level (texel centres at +0.5),
+    /// sampled bilinearly with addressing `ax`, `ay`: (x, y) components, each
+    /// `(v - 128) / 127` of the filtered bytes (z is not stored). A flat
+    /// texel (128) gives exactly 0.
+    pub fn sample_normal(&self, x: f32, y: f32, ax: Address, ay: Address) -> (f32, f32) {
+        let (x, y) = (x - 0.5, y - 0.5);
+        let (fx, fy) = (x - x.floor(), y - y.floor());
+        let (x0, y0) = (x.floor() as i32, y.floor() as i32);
+        let (mut nx, mut ny) = (0.0f32, 0.0f32);
+        for (dx, dy, w) in
+            [(0, 0, (1.0 - fx) * (1.0 - fy)), (1, 0, fx * (1.0 - fy)), (0, 1, (1.0 - fx) * fy), (1, 1, fx * fy)]
+        {
+            let px = address(x0 + dx, self.width, ax);
+            let py = address(y0 + dy, self.height, ay);
+            let o = (py * self.width + px) * 4;
+            nx += w * (self.data[o] as f32 - 128.0);
+            ny += w * (self.data[o + 1] as f32 - 128.0);
+        }
+        ((nx / 127.0).clamp(-1.0, 1.0), (ny / 127.0).clamp(-1.0, 1.0))
+    }
+}
+
 impl Rgba {
     /// Bilinear sample of the red channel alone at (x, y) in pixels (pixel
     /// centres at +0.5), repeat addressing, rounded: how a map of another
@@ -559,6 +582,20 @@ pub trait Enhance {
     /// A tile pattern is on screen this frame: its replacement, if any
     /// (any multiple of 8x8, sampled at output resolution).
     fn tile(&mut self, info: &TileInfo) -> Option<Arc<Rgba>>;
+    /// A textured polygon with a lamp (`light::Options::lamps`, materials
+    /// on) is about to be drawn: its material maps, if the pack has them.
+    /// Never asked for otherwise.
+    fn texture_material(&mut self, _info: &TexInfo) -> Option<Arc<Material>> {
+        None
+    }
+    /// `texture_material` as a mip chain (`Material::mip_chain`), for filtered
+    /// drawing. The default builds it every time; implementations keep it.
+    fn texture_material_mips(&mut self, info: &TexInfo) -> Option<Arc<Vec<Material>>> {
+        self.texture_material(info).map(|m| Arc::new(m.mip_chain()))
+    }
+    /// A polygon with a material was drawn; the material changed the luma
+    /// of `changed` of its pixels.
+    fn material_drawn(&mut self, _info: &TexInfo, _changed: usize) {}
 }
 
 /// A texture pack's answer for one texture.

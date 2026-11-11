@@ -83,10 +83,15 @@ options:
                        (trilinear), or mipmaps with up to N-times
                        anisotropic filtering (GPU only: software snapshots
                        draw it as mip)
-  --materials          gpu-check, depth-check, pack-check: load the texture
-                       pack's material maps onto the GPU (format 2 packs;
-                       gpu::Quality::materials). Not drawn yet: pictures
-                       are unchanged, gpu-check reports what they hold
+  --materials          the texture pack's material maps (format 2 packs;
+                       docs/texture-packs.md): `run` snapshots draw normal
+                       maps in software where the exact lighting layer is
+                       (records the side channel, as --light; reports per
+                       snapshot what had a lamp and a material), pack-check
+                       adds software pictures without and with them;
+                       gpu-check, depth-check, pack-check load them onto
+                       the GPU (gpu::Quality::materials), which doesn't draw
+                       them yet
   --temporal off|taa|N temporal-probe: temporal anti-aliasing (taa) or
                        upscaling from N% (50 to 99) for the GPU's 3D layer
                        (gpu::Quality::temporal; snapshots are software and
@@ -1375,8 +1380,19 @@ fn main() -> ExitCode {
             let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
             let (aa, depth) = (AA.get().copied().unwrap_or(1), DEPTH.get().copied().unwrap_or(false));
             let light = light_options(roms.game);
-            if let Err(e) = pack_check::run(&root, windows, VIEW.get().copied(), aa, depth, pack, &out, light.as_ref())
-            {
+            let materials = light_options_lamps(roms.game, materials_on());
+            let materials = materials.filter(|o| o.lamps);
+            if let Err(e) = pack_check::run(
+                &root,
+                windows,
+                VIEW.get().copied(),
+                aa,
+                depth,
+                pack,
+                &out,
+                light.as_ref(),
+                materials.as_ref(),
+            ) {
                 eprintln!("error: {e}");
                 return ExitCode::FAILURE;
             }
@@ -1822,11 +1838,26 @@ static LIGHT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 /// Smooth shading's options for `game` from `--shading` and `--crease`
 /// (None: off).
 fn light_options(game: &romset::Game) -> Option<model2::light::Options> {
-    let &(shading, crease) = SHADING.get()?;
+    light_options_lamps(game, false)
+}
+
+/// [`light_options`], also handing over lamps for material maps when
+/// `lamps` (`--materials` with a pack that has maps: the software
+/// renderer draws them), then Some whatever the shading.
+fn light_options_lamps(game: &romset::Game, lamps: bool) -> Option<model2::light::Options> {
+    let (shading, crease) =
+        SHADING.get().copied().unwrap_or((model2::light::Shading::Flat, model2::light::CREASE_AUTO));
     let o = model2::light::Options::new(shading, crease, &game.shading, game.hud_windows)
         .with_fine(SHADING_FINE.get().copied().unwrap_or(false))
-        .with_balance(SHADING_BALANCE.get().copied().unwrap_or(true));
-    o.on().then_some(o)
+        .with_balance(SHADING_BALANCE.get().copied().unwrap_or(true))
+        .with_lamps(lamps);
+    (SHADING.get().is_some() && o.on() || o.lamps).then_some(o)
+}
+
+/// `--materials` given: material maps drawn by the software renderer
+/// (snapshots, pack-check) where the exact lighting layer is.
+fn materials_on() -> bool {
+    MATERIALS.get().copied().unwrap_or(false)
 }
 
 /// The GPU's quality for drawing polygons built with `light`: shading on
@@ -1874,7 +1905,8 @@ fn machine(roms: &RomSet) -> model2::Machine {
         t.use_hle = TGP2A_HLE.get().copied().unwrap_or(false);
     }
     m.bus.geo.set_smooth(SMOOTH.get().is_some() || CAPTURE_SEQ.get().is_some());
-    m.bus.geo.set_light(LIGHT.get().is_some());
+    // Material maps need the side channel (the exact lighting layer).
+    m.bus.geo.set_light(LIGHT.get().is_some() || materials_on());
     // For the frame before each snapshot (`snapshot`).
     m.bus.geo.set_keep_last(SMOOTH.get().is_some());
     m
@@ -1983,12 +2015,14 @@ fn render(m: &model2::Machine, stream: Option<&[u32]>, path: &std::path::Path) -
         xoff,
         yoff,
     };
-    let light = games::find(GAME_ID.get().map_or("topskatr", |s| s.as_str())).ok().and_then(light_options);
+    let mut packs = texpack::PACKS.lock().unwrap();
+    let lamps = materials_on() && packs.as_ref().is_some_and(model2::enhance::TexturePack::has_materials);
+    let game = games::find(GAME_ID.get().map_or("topskatr", |s| s.as_str())).ok();
+    let light = game.and_then(|g| light_options_lamps(g, lamps));
     // The side channel goes with the engine's own stream.
     let side = if std::ptr::eq(stream, &geo.stream[..]) { geo.light_frame() } else { None };
     let mut polys = model2::raster::build_shaded_with(stream, &src, side.as_deref(), light.as_ref());
     model2::video::HudLayout::new(b.tile_ram(), b.palette_ram(), &view).anchor(&mut polys, &view);
-    let mut packs = texpack::PACKS.lock().unwrap();
     let (rgb3d, covered) = match packs.as_mut() {
         Some(p) => {
             p.frame = m.frames;
@@ -1996,6 +2030,21 @@ fn render(m: &model2::Machine, stream: Option<&[u32]>, path: &std::path::Path) -
         }
         None => model2::raster::draw_view_depth(&mut polys, &src, &view, depth),
     };
+    if lamps {
+        let [drawn, changed] = packs.as_mut().map_or([0; 2], |p| p.take_material_counts());
+        let textured = polys.iter().filter(|p| p.texture.is_some()).count();
+        let lamped = polys.iter().filter(|p| p.lamp.is_some()).count();
+        let framed = polys.iter().filter(|p| p.lamp.as_ref().is_some_and(|l| l.tangent.is_some())).count();
+        // Lit to full luma whatever the normal (ambient alone 255 or more):
+        // no map can change them.
+        let saturated = polys.iter().filter(|p| p.lamp.as_ref().is_some_and(|l| l.light.lamp.ambient >= 255.0)).count();
+        println!(
+            "materials     {}: {} polygons, {textured} textured, {lamped} of them with a lamp ({framed} with a tangent frame, {saturated} saturated: ambient 255), {drawn} drawn with a material, {changed} pixels changed{}",
+            path.display(),
+            polys.len(),
+            if side.is_none() { " (no side channel: nothing to light)" } else { "" }
+        );
+    }
     if let Some((x, y)) = std::env::var("REMODEL_PROBE").ok().and_then(|v| {
         let (x, y) = v.split_once(',')?;
         Some((x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?))

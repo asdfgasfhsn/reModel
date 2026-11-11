@@ -6,7 +6,7 @@
 //! Polygons are drawn back to front (painter's algorithm on the z-sort key)
 //! with perspective-correct, point-sampled textures (level 0, no mipmaps).
 
-use crate::enhance::{sample_trilinear, Address, Enhance, Fnv, Rgba, TexFilter, TexInfo};
+use crate::enhance::{sample_trilinear, Address, Enhance, Fnv, Material, Rgba, TexFilter, TexInfo};
 use crate::video::{View, HEIGHT, WIDTH};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -150,6 +150,119 @@ pub struct Poly {
     /// ([`fine_level`]) instead of taking the game's level. False when not
     /// lit.
     pub fine: bool,
+    /// Material maps (`light::Options::lamps`): the lighting a material's
+    /// normal map perturbs, for a textured polygon of the exact layer
+    /// (level L2) whose lamp depends on its normal. None otherwise, and
+    /// always without `lamps`.
+    pub lamp: Option<Box<PolyLamp>>,
+}
+
+/// What a polygon's material maps need of its lighting ([`Poly::lamp`]),
+/// worked out per polygon when it is built (docs/texture-packs.md, "How
+/// material maps light").
+#[derive(Clone, Debug, PartialEq)]
+pub struct PolyLamp {
+    /// The lamp the game lit it with (`light::Lamped::light`).
+    pub light: crate::light::PixelLight,
+    /// The normal the game lit it with, unit, in the face's convention.
+    pub n: [f32; 3],
+    /// +1 or -1: `out * n` points out of the side the eye sees (toward
+    /// the eye), the side a material's normals stand out of.
+    pub out: f32,
+    /// Its tangent frame; None where its texture coordinates are
+    /// degenerate (then a normal map does nothing).
+    pub tangent: Option<Tangent>,
+    /// The lumas (inclusive) a pixel changed by a material is clamped to,
+    /// those over which the polygon keeps its hue (as [`Poly::lit_range`]).
+    pub range: [u8; 2],
+}
+
+/// A polygon's tangent frame for normal maps: the unit direction of
+/// increasing u on the surface in unscaled view space, and the handedness
+/// `h` (+1 or -1) that puts `h * (o x T)` on the side of increasing v, for
+/// `o` the polygon's normal toward the eye. Constant over the polygon (its
+/// texture mapping is affine over its plane).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tangent {
+    pub t: [f32; 3],
+    pub h: f32,
+}
+
+/// The tangent frame of a polygon from its corners (unscaled view space)
+/// and texture coordinates (texels): the least-squares solution of `p_i -
+/// p_0 = T (u_i - u_0) + B (v_i - v_0)` (exact for a triangle), `T`
+/// normalised and the handedness from `o`, the normal toward the eye. None
+/// where the coordinates are degenerate (all on one line in (u, v)) or the
+/// result isn't finite.
+pub fn tangent_frame(ring: &[([f32; 3], [f32; 2])], o: [f32; 3]) -> Option<Tangent> {
+    let (p0, uv0) = *ring.first()?;
+    let (mut a, mut b, mut d) = (0.0f64, 0.0f64, 0.0f64);
+    let (mut su, mut sv) = ([0.0f64; 3], [0.0f64; 3]);
+    for &(p, uv) in &ring[1..] {
+        let (du, dv) = ((uv[0] - uv0[0]) as f64, (uv[1] - uv0[1]) as f64);
+        a += du * du;
+        b += du * dv;
+        d += dv * dv;
+        for c in 0..3 {
+            let dp = (p[c] - p0[c]) as f64;
+            su[c] += du * dp;
+            sv[c] += dv * dp;
+        }
+    }
+    let det = a * d - b * b;
+    if det.is_nan() || det <= 1e-6 * a * d {
+        return None;
+    }
+    let t = [0, 1, 2].map(|c| (su[c] * d - sv[c] * b) / det);
+    let bv = [0, 1, 2].map(|c| (sv[c] * a - su[c] * b) / det);
+    let len = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
+    let blen = (bv[0] * bv[0] + bv[1] * bv[1] + bv[2] * bv[2]).sqrt();
+    if !(len.is_finite() && blen.is_finite() && len > 1e-12 && blen > 1e-12) {
+        return None;
+    }
+    let t = t.map(|x| x / len);
+    let o = o.map(|x| x as f64);
+    let c = [o[1] * t[2] - o[2] * t[1], o[2] * t[0] - o[0] * t[2], o[0] * t[1] - o[1] * t[0]];
+    let side = c[0] * bv[0] + c[1] * bv[1] + c[2] * bv[2];
+    if side.is_nan() || side.abs() <= 1e-9 * blen {
+        return None;
+    }
+    Some(Tangent { t: t.map(|x| x as f32), h: side.signum() as f32 })
+}
+
+/// A material's normal-map luma for one pixel (docs/texture-packs.md, "How
+/// material maps light"): `base` is the pixel's luma before truncation
+/// without the material, `n` its normal as drawn (the interpolated corner
+/// normals, or the face's; any length, face convention), `(x, y)` the
+/// map's normal there (unit components along increasing u and v, mirror
+/// signs applied) and `scale` the pack's strength. `base + E1 - E0`, with
+/// `E0`, `E1` the lamp at `n` and at `n` tilted by the map (each clamped to
+/// 0-255); None where the map changes nothing (a flat texel, no frame, no
+/// normal, the same value), so such a pixel takes the path without
+/// materials bit for bit.
+pub fn material_luma(l: &PolyLamp, n: [f32; 3], base: f32, (x, y): (f32, f32), scale: f32) -> Option<f32> {
+    let tg = l.tangent?;
+    let (kx, ky) = (scale * x, scale * y);
+    if kx == 0.0 && ky == 0.0 {
+        return None;
+    }
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let unit = |v: [f32; 3]| {
+        let len = dot(v, v).sqrt();
+        (len >= 1e-6).then(|| v.map(|c| c / len))
+    };
+    let n = unit(n)?;
+    let z = (1.0 - x * x - y * y).max(0.0).sqrt();
+    let t = unit([kx, ky, z])?;
+    let o = n.map(|c| c * l.out);
+    let ot = dot(o, tg.t);
+    let tp = unit([0, 1, 2].map(|c| tg.t[c] - o[c] * ot))?;
+    let bp = [o[1] * tp[2] - o[2] * tp[1], o[2] * tp[0] - o[0] * tp[2], o[0] * tp[1] - o[1] * tp[0]].map(|c| c * tg.h);
+    let o2 = unit([0, 1, 2].map(|c| t[2] * o[c] + t[0] * tp[c] + t[1] * bp[c]))?;
+    let n2 = o2.map(|c| c * l.out);
+    let lamp = &l.light.lamp;
+    let (e0, e1) = (lamp.eval(n).clamp(0.0, 255.0), lamp.eval(n2).clamp(0.0, 255.0));
+    (e0.is_finite() && e1.is_finite() && e1 != e0).then_some(base + (e1 - e0))
 }
 
 /// A polygon placed in a view's output pixels, ready for a rasteriser
@@ -465,7 +578,7 @@ pub fn build_shaded_with(
     side: Option<&crate::light::Frame>,
     opts: Option<&crate::light::Options>,
 ) -> Vec<Poly> {
-    match opts.filter(|o| o.on()) {
+    match opts.filter(|o| o.runs()) {
         Some(o) => {
             let sh = crate::light::shade_with(stream, side, o);
             let b = BuildIn { lit: Some(&sh), skip_checker: o.skip_checker, fine: o.fine, ..Default::default() };
@@ -587,13 +700,21 @@ fn build_impl(stream: &[u32], src: &Sources, input: &BuildIn) -> (Vec<Poly>, Vec
                     let quad = attr & 1 != 0;
                     let luma_word = rd(i + 1);
                     let at = i as u32;
-                    let corners = lit.and_then(|l| {
-                        while l.at.get(lit_next).is_some_and(|&a| (a as usize) < i) {
-                            lit_next += 1;
-                        }
-                        (l.at.get(lit_next) == Some(&(i as u32)))
-                            .then(|| (&l.corners[lit_next], l.pixel.get(lit_next).copied().flatten()))
-                    });
+                    let mut lamped = None;
+                    let corners = lit
+                        .and_then(|l| {
+                            while l.at.get(lit_next).is_some_and(|&a| (a as usize) < i) {
+                                lit_next += 1;
+                            }
+                            (l.at.get(lit_next) == Some(&(i as u32))).then(|| {
+                                lamped = l.lamps.get(lit_next).copied().flatten();
+                                let flat = l.flat.get(lit_next).copied().unwrap_or(false);
+                                (&l.corners[lit_next], l.pixel.get(lit_next).copied().flatten(), flat)
+                            })
+                        })
+                        // Entries only for materials aren't lit.
+                        .filter(|c| !c.2)
+                        .map(|(c, px, _)| (c, px));
                     let pa = pos(i + 3);
                     let pb = if quad { pos(i + 6) } else { pa };
                     i += if quad { 9 } else { 6 };
@@ -690,6 +811,38 @@ fn build_impl(stream: &[u32], src: &Sources, input: &BuildIn) -> (Vec<Poly>, Vec
                                 Some((px, range)) => (clipped.iter().map(|v| v.lit).collect(), px, range, input.fine),
                                 None => (Vec::new(), None, [0, 255], false),
                             };
+                            // Material maps: textured polygons with a lamp.
+                            let lamp = match (lamped, &texture) {
+                                (Some(lm), Some(t)) if !shadow => {
+                                    let range = if lit.is_empty() {
+                                        // The widest range that keeps the hue (as per
+                                        // pixel lighting).
+                                        let table = Some(t.luma_table);
+                                        let key = (t.bank, t.x0, t.y0, t.w, t.h, t.translucent);
+                                        let index = *texels.entry(key).or_insert_with(|| texel_indices(src, t));
+                                        *hues.entry((colour, table, luma, index)).or_insert_with(|| {
+                                            hue_range_with(&mut hue_cache, src, colour, Some(t), luma, index)
+                                        })
+                                    } else {
+                                        lit_range
+                                    };
+                                    let [fx, fy] = lm.focal;
+                                    let ring: Vec<([f32; 3], [f32; 2])> =
+                                        verts.iter().map(|v| ([v.x / fx, v.y / fy, v.z], [v.u, v.v])).collect();
+                                    // The side the eye sees: the face's plane
+                                    // offset `n . p` is negative where `n` points
+                                    // toward the eye (at the origin).
+                                    let mid = ring
+                                        .iter()
+                                        .fold([0.0f32; 3], |a, (p, _)| [a[0] + p[0], a[1] + p[1], a[2] + p[2]]);
+                                    let n = lm.n;
+                                    let out =
+                                        if n[0] * mid[0] + n[1] * mid[1] + n[2] * mid[2] >= 0.0 { -1.0 } else { 1.0 };
+                                    let tangent = tangent_frame(&ring, n.map(|c| c * out));
+                                    Some(Box::new(PolyLamp { light: lm.light, n, out, tangent, range }))
+                                }
+                                _ => None,
+                            };
                             polys.push(Poly {
                                 points,
                                 key,
@@ -708,6 +861,7 @@ fn build_impl(stream: &[u32], src: &Sources, input: &BuildIn) -> (Vec<Poly>, Vec
                                 pixel,
                                 lit_range,
                                 fine,
+                                lamp,
                             });
                         }
                     }
@@ -869,11 +1023,13 @@ fn shade(p: &Poly, src: &Sources, x: usize, y: usize, u: f32, v: f32) -> Option<
 
 /// A pixel's brightness as its polygon is drawn there: the luma the game's
 /// levels take (the polygon's own, or a smooth-shaded pixel's), and with
-/// finer levels ([`Poly::fine`]) that pixel's luma before truncation.
+/// finer levels ([`Poly::fine`], and every pixel a material changes) that
+/// pixel's luma before truncation with the lumas it is clamped to
+/// ([`Poly::lit_range`], [`PolyLamp::range`]).
 #[derive(Clone, Copy, PartialEq)]
 struct PxLuma {
     luma: u32,
-    fine: Option<f32>,
+    fine: Option<(f32, [u8; 2])>,
 }
 
 impl PxLuma {
@@ -953,8 +1109,8 @@ fn shade_luma(p: &Poly, px: PxLuma, src: &Sources, x: usize, y: usize, u: f32, v
         }
         None => (luma >> 2, None),
     };
-    if let Some(l) = px.fine {
-        let k = fine_columns(src, p.colour, lum, fine_level(table, l, p.lit_range));
+    if let Some((l, range)) = px.fine {
+        let k = fine_columns(src, p.colour, lum, fine_level(table, l, range));
         // Rust's round(): half away from zero (never negative here).
         return Some([0, 1, 2].map(|ch| fine_translate(src, ch, p.colour[ch], k).round() as u8));
     }
@@ -995,7 +1151,18 @@ pub fn probe(polys: &[Poly], src: &Sources, x: f32, y: f32) -> Vec<String> {
                 p.luma,
                 p.texture,
                 p.points.iter().map(|v| (v.x as i32, v.y as i32)).collect::<Vec<_>>()
-            )
+            ) + &p.lamp.as_ref().map_or(String::new(), |l| {
+                format!(
+                    "\n    material lamp {:?} offset {} n {:?} out {} tangent {:?} range {:?}; at n {:.2}",
+                    l.light.lamp,
+                    l.light.offset,
+                    l.n,
+                    l.out,
+                    l.tangent,
+                    l.range,
+                    l.light.lamp.eval(l.n)
+                )
+            })
         })
         .collect()
 }
@@ -1135,7 +1302,7 @@ impl Light {
     /// pixel's).
     fn new(p: &Poly, px: PxLuma, src: &Sources) -> Self {
         let luma = px.luma;
-        let fine = px.fine.map(|l| (l, p.lit_range));
+        let fine = px.fine;
         let poly = [0, 1, 2].map(|ch| {
             let full = src.translate(ch, p.colour[ch], 63) as f32;
             if full > 0.0 {
@@ -1611,18 +1778,42 @@ fn draw_impl(
             }),
             _ => None,
         };
+        // Material maps: asked for only for a polygon with a lamp and a
+        // tangent frame (`light::Options::lamps`).
+        let material = match (hooks.as_deref_mut(), &hooked, p.lamp.as_deref(), &p.texture) {
+            (Some(hk), Some((info, _)), Some(l), Some(t)) if l.tangent.is_some() => {
+                let chain = if filter.mipmapped() {
+                    hk.texture_material_mips(info).map(MatLevels::Mips)
+                } else {
+                    hk.texture_material(info).map(MatLevels::One)
+                };
+                chain.map(|c| (l, t, c))
+            }
+            _ => None,
+        };
         let mut pixels = 0;
         // Smooth shading: each pixel's luma, in the order `fill` visits
         // them (None: the polygon's own).
         let lumas = (!p.lit.is_empty()).then(|| lit_values(points, p, clip, w, h));
+        // Material maps: each pixel's luma where the material changes it.
+        let mat_lumas = material.as_ref().map(|(l, t, c)| {
+            material_values(points, p, l, t, c.levels(), filter.mipmapped(), lumas.as_deref(), clip, w, h)
+        });
+        let mat_range = p.lamp.as_ref().map_or([0, 255], |l| l.range);
         let [lo, hi] = p.lit_range.map(u32::from);
         let own = PxLuma::own(p);
         let mut n = 0;
+        let mut changed = 0;
         let mut luma_at = || {
             n += 1;
+            if let Some(Some(v)) = mat_lumas.as_ref().map(|m| m[n - 1]) {
+                changed += 1;
+                let [lo, hi] = mat_range.map(u32::from);
+                return PxLuma { luma: crate::light::quantise(v).clamp(lo, hi), fine: Some((v, mat_range)) };
+            }
             lumas.as_ref().map_or(own, |l| {
                 let v = l[n - 1];
-                PxLuma { luma: crate::light::quantise(v).clamp(lo, hi), fine: p.fine.then_some(v) }
+                PxLuma { luma: crate::light::quantise(v).clamp(lo, hi), fine: p.fine.then_some((v, p.lit_range)) }
             })
         };
         if let (Some((_, Some(Replacement::Mips(chain)))), Some(t)) = (&hooked, &p.texture) {
@@ -1696,6 +1887,9 @@ fn draw_impl(
         }
         if let (Some(hk), Some((info, _))) = (hooks.as_deref_mut(), &hooked) {
             hk.texture_drawn(info, src, pixels);
+            if material.is_some() {
+                hk.material_drawn(info, changed);
+            }
         }
     }
     (rgb, covered)
@@ -1729,6 +1923,110 @@ fn lit_values(points: &[SVtx], p: &Poly, clip: (f32, f32, f32, f32), w: usize, h
         }
     }
     out
+}
+
+/// A polygon's material as the filter wants it: level 0 alone (`tex_filter
+/// off`) or its mip chain.
+enum MatLevels {
+    One(Arc<Material>),
+    Mips(Arc<Vec<Material>>),
+}
+
+impl MatLevels {
+    fn levels(&self) -> &[Material] {
+        match self {
+            MatLevels::One(m) => std::slice::from_ref(&**m),
+            MatLevels::Mips(c) => c,
+        }
+    }
+}
+
+/// A material's normal at texture coordinates (u, v) (texels) of texture
+/// `t`: (x, y) along increasing u and v, sampled bilinearly from `chain`
+/// at level of detail `lod` (log2 of level 0's texels per pixel; trilinear
+/// between the two levels around it when `lod` is above 0 and the chain has
+/// them), with the polygon's addressing per axis; on a mirrored axis the
+/// component changes sign in every second repeat, where the image runs
+/// backwards.
+pub fn material_normal(chain: &[Material], t: &Texture, u: f32, v: f32, lod: f32) -> (f32, f32) {
+    let mode = |mirror| if mirror { Address::Mirror } else { Address::Repeat };
+    let (s, tt) = (u / t.w as f32, v / t.h as f32);
+    let top = chain.len().saturating_sub(1) as f32;
+    let lod = if lod.is_nan() { 0.0 } else { lod.clamp(0.0, top) };
+    let l0 = lod.floor() as usize;
+    let f = lod - l0 as f32;
+    let at =
+        |m: &Material| m.sample_normal(s * m.width as f32, tt * m.height as f32, mode(t.mirror_x), mode(t.mirror_y));
+    let (mut x, mut y) = at(&chain[l0]);
+    if f > 0.0 && l0 + 1 < chain.len() {
+        let (x1, y1) = at(&chain[l0 + 1]);
+        x += (x1 - x) * f;
+        y += (y1 - y) * f;
+    }
+    let odd = |c: f32| c.floor().rem_euclid(2.0) == 1.0;
+    if t.mirror_x && odd(s) {
+        x = -x;
+    }
+    if t.mirror_y && odd(tt) {
+        y = -y;
+    }
+    (x, y)
+}
+
+/// A polygon's luma with its material at each pixel `fill` visits, in that
+/// order: Some where the material changes it ([`material_luma`]; the base is
+/// the smooth-shaded luma `lumas` gives, or the polygon's own + 0.5), None
+/// where the pixel is drawn as without materials.
+#[allow(clippy::too_many_arguments)]
+fn material_values(
+    points: &[SVtx],
+    p: &Poly,
+    l: &PolyLamp,
+    t: &Texture,
+    chain: &[Material],
+    mipmapped: bool,
+    lumas: Option<&[f32]>,
+    clip: (f32, f32, f32, f32),
+    w: usize,
+    h: usize,
+) -> Vec<Option<f32>> {
+    // Per pixel: 1/z, u/z, v/z.
+    let mut px = Vec::new();
+    fill(points, clip, w, h, |_, _, iz, uz, vz| px.push((iz, uz, vz)));
+    // Smooth-shaded with normals (the exact layer): the normal interpolated
+    // like the luma; else the face's.
+    let lit_normals = p.lit.len() == points.len() && p.lit.iter().any(|c| c[1] != 0.0 || c[2] != 0.0 || c[3] != 0.0);
+    let mut normals = Vec::new();
+    if lit_normals {
+        let pts: Vec<SVtx> =
+            points.iter().zip(&p.lit).map(|(v, c)| SVtx { uz: c[1] * v.iz, vz: c[2] * v.iz, ..*v }).collect();
+        fill(&pts, clip, w, h, |_, _, iz, a, b| normals.push([a / iz, b / iz, 0.0]));
+        let pts: Vec<SVtx> = points.iter().zip(&p.lit).map(|(v, c)| SVtx { uz: c[3] * v.iz, ..*v }).collect();
+        let mut k = 0;
+        fill(&pts, clip, w, h, |_, _, iz, c, _| {
+            normals[k][2] = c / iz;
+            k += 1;
+        });
+    }
+    let grad = mipmapped.then(|| Gradients::new(points));
+    let (sx, sy) = (chain[0].width as f32 / t.w as f32, chain[0].height as f32 / t.h as f32);
+    let own = p.luma as f32 + 0.5;
+    let scale = chain[0].normal_scale;
+    px.iter()
+        .enumerate()
+        .map(|(k, &(iz, uz, vz))| {
+            let (u, v) = (uz / iz, vz / iz);
+            let lod = grad.as_ref().map_or(0.0, |g| {
+                let d = |g: &[f32; 3]| ((g[1] - u * g[0]) / iz * sx, (g[2] - v * g[0]) / iz * sy);
+                let ((ax, ay), (bx, by)) = (d(&g.dx), d(&g.dy));
+                (ax * ax + ay * ay).max(bx * bx + by * by).sqrt().log2()
+            });
+            let xy = material_normal(chain, t, u, v, lod);
+            let n = if lit_normals { normals[k] } else { l.n };
+            let base = lumas.and_then(|b| b.get(k).copied()).unwrap_or(own);
+            material_luma(l, n, base, xy, scale)
+        })
+        .collect()
 }
 
 /// A placed smooth-shaded polygon's luma at each pixel it covers (as drawn,
@@ -1965,6 +2263,7 @@ mod tests {
             pixel: None,
             lit_range: [0, 255],
             fine: false,
+            lamp: None,
         };
         assert!(p.texture.is_none());
         assert!(shade(&p, &src, 2, 4, 0.0, 0.0).is_some());
@@ -1993,6 +2292,7 @@ mod tests {
             pixel: None,
             lit_range: [0, 255],
             fine: false,
+            lamp: None,
         }
     }
 
@@ -2850,5 +3150,440 @@ mod tests {
         assert_eq!(placed[0].prev.len(), placed[0].points.len());
         // Without motion, nothing.
         assert!(place(&mut build(&s1, &src), &view)[0].prev.is_empty());
+    }
+    /// Material maps (`Poly::lamp`): scenes of textured quads with a side
+    /// channel (level L2), drawn with a material.
+    mod materials {
+        use super::*;
+        use crate::light::{self, Base, Lamp, Shading, Tap};
+
+        /// Focal length the scenes are made with (the 495-pixel window's).
+        const F: f32 = 495.0;
+        /// Toward the light (the light vector is its opposite): up, right
+        /// and from the eye's side.
+        const S: [f32; 3] = [0.6, 0.4, -0.7];
+        const LIT: light::Material = light::Material { ambient: 40.0, diffuse: 150.0, spec_scale: 0.0, squarings: 255 };
+
+        fn unit(v: [f32; 3]) -> [f32; 3] {
+            let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            v.map(|c| c / l)
+        }
+
+        fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+            a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+        }
+
+        /// One quad: view-space corners (ring order P1', P0', Pa, Pb),
+        /// texture coordinates (texels) per corner, the normal the game
+        /// lit it with, the back-face bit, double-sided.
+        #[derive(Clone)]
+        struct Quad {
+            p: [[f32; 3]; 4],
+            uv: [[f32; 2]; 4],
+            n: [f32; 3],
+            back: bool,
+        }
+
+        /// A quad of view-space size 2 around `c` with edges `e1`, `e2`
+        /// (unit), u along e1 and v along e2 from 0 to `w` and `h`, lit by
+        /// the game with normal `n` (its own sign).
+        fn quad(c: [f32; 3], e1: [f32; 3], e2: [f32; 3], wh: [f32; 2], n: [f32; 3]) -> Quad {
+            let at = |a: f32, b: f32| [0, 1, 2].map(|k| c[k] + a * e1[k] + b * e2[k]);
+            let back = dot(n, c) < 0.0;
+            Quad {
+                p: [at(-1.0, -1.0), at(1.0, -1.0), at(1.0, 1.0), at(-1.0, 1.0)],
+                uv: [[0.0, 0.0], [wh[0], 0.0], [wh[0], wh[1]], [0.0, wh[1]]],
+                n,
+                back,
+            }
+        }
+
+        /// The texture's header word 0: 64x64, textured, mirror bits.
+        fn header0(mirror_u: bool, mirror_v: bool) -> u16 {
+            0x4000 | 1 | 1 << 3 | (mirror_u as u16) << 8 | (mirror_v as u16) << 9
+        }
+
+        /// A stream of `blocks` (each one object block of quads, in the
+        /// layout of `light::test_stream`: a link-0 record before each),
+        /// the texture point RAM (header, then each record's points) and the
+        /// side channel for lighting entry `mat` and light vector `-S`. Each
+        /// quad's luma is the game's (`Lamp::eval` of its normal).
+        fn scene(blocks: &[Vec<Quad>], h0: u16, mat: light::Material) -> (Vec<u32>, Vec<u16>, light::Frame) {
+            let l = unit(S).map(|c| -c);
+            let xy = |x: i32, y: i32| ((x as u32 & 0xfff) << 12) | (y as u32 & 0xfff);
+            let mut s =
+                vec![0xff00_0003, xy(0, 0), xy(495, 383), xy(248, 192), xy(248, 192), xy(248, 192), xy(248, 192)];
+            let put = |s: &mut Vec<u32>, p: [f32; 3]| s.extend([p[0] * F, p[1] * F, p[2]].map(|v| v.to_bits() >> 8));
+            let mut ram = vec![h0, 0, 0, 0];
+            let mut tap = Tap::new();
+            let bits = [mat.ambient.to_bits(), mat.diffuse.to_bits(), mat.spec_scale.to_bits()];
+            for b in blocks {
+                s.extend([0xff00_0001, 0x80_0000 | ram.len() as u32, 0x80_0000]);
+                tap.block(0x80_0000, light::Block::TRUNCATE, F.to_bits(), F.to_bits(), l.map(f32::to_bits));
+                put(&mut s, b[0].p[1]);
+                put(&mut s, b[0].p[0]);
+                for q in b {
+                    // Link 0: the next edge is (P0', P1') of the quad.
+                    s.extend([1, 0, 0]);
+                    put(&mut s, q.p[1]);
+                    put(&mut s, q.p[0]);
+                    ram.extend([0u16; 8]);
+                    tap.face([0; 3], false, true, Base::D, 0, [0; 3], light::Material::NO_SPEC);
+                    let face = light::Face { n: q.n, mat: 0, flags: !q.back as u16 };
+                    let block = light::Block { light: l, ..Default::default() };
+                    let luma = light::quantise(Lamp::of(&block, &face, &mat).eval(q.n));
+                    s.extend([1 | 2 | 2 << 8 | 1 << 10 | 1 << 17, luma << 15 | (q.back as u32) << 23, 0]);
+                    put(&mut s, q.p[2]);
+                    put(&mut s, q.p[3]);
+                    for uv in q.uv {
+                        ram.extend([(uv[1] * 8.0) as u16, (uv[0] * 8.0) as u16]);
+                    }
+                    tap.face(q.n.map(f32::to_bits), false, !q.back, Base::D, 0, bits, mat.squarings);
+                }
+            }
+            s.push(0xff00_000f);
+            (s, ram, tap.finish(1))
+        }
+
+        /// Render RAM: every texel 8 (luma table 0 index 68: value 64).
+        fn render_ram() -> Vec<u8> {
+            let mut ram = vec![0x88u8; 0x40_0000 + 0x8000];
+            ram[0x40_0000..].fill(0);
+            for i in 0..128 {
+                ram[0x40_0000 + i * 2] = 64;
+            }
+            ram
+        }
+
+        /// Palette: colour 0's translation a grey ramp (column k: 4k).
+        fn palette() -> Vec<u8> {
+            let mut p = vec![0u8; 0x1_c000];
+            for ch in 0..3 {
+                for lum in 0..64 {
+                    p[0x1_0000 + ch * 0x4000 + lum * 2] = (lum * 4) as u8;
+                }
+            }
+            p
+        }
+
+        /// A 64x64 material: a dome of radius 20 texels around (32, 32)
+        /// (normals leaning out from its centre, x along u, y along v), flat
+        /// elsewhere; or flat everywhere.
+        fn dome(flat: bool) -> Material {
+            let mut data = Vec::with_capacity(64 * 64 * 4);
+            for y in 0..64 {
+                for x in 0..64 {
+                    let (dx, dy) = (x as f32 + 0.5 - 32.0, y as f32 + 0.5 - 32.0);
+                    let r = (dx * dx + dy * dy).sqrt();
+                    let (nx, ny) = if flat || r >= 20.0 { (0.0, 0.0) } else { (0.6 * dx / 20.0, 0.6 * dy / 20.0) };
+                    let enc = |v: f32| (128.0 + 127.0 * v).round() as u8;
+                    data.extend([enc(nx), enc(ny), 128, 128]);
+                }
+            }
+            Material { width: 64, height: 64, data, has: 1, normal_scale: 1.0, spec_scale: 1.0, id: 1 }
+        }
+
+        /// A pack: maybe one image for every texture, maybe one material.
+        struct Maps {
+            image: Option<Arc<Rgba>>,
+            material: Option<Arc<Material>>,
+            asked: usize,
+        }
+
+        impl Enhance for Maps {
+            fn texture(&mut self, _: &TexInfo) -> Option<Arc<Rgba>> {
+                self.image.clone()
+            }
+            fn texture_drawn(&mut self, _: &TexInfo, _: &Sources, _: usize) {}
+            fn tile(&mut self, _: &crate::enhance::TileInfo) -> Option<Arc<Rgba>> {
+                None
+            }
+            fn texture_material(&mut self, _: &TexInfo) -> Option<Arc<Material>> {
+                self.asked += 1;
+                self.material.clone()
+            }
+        }
+
+        fn maps(image: bool, material: Option<Material>) -> Maps {
+            let image = image.then(|| {
+                // A replacement image: a soft grey gradient.
+                let data = (0..64 * 64).flat_map(|i| [100 + (i % 64) as u8, 120, 140, 255]).collect();
+                Arc::new(Rgba { width: 64, height: 64, data })
+            });
+            Maps { image, material: material.map(Arc::new), asked: 0 }
+        }
+
+        /// Draw `stream` built with `opts` (lamps or not, side channel or
+        /// not) through `pack` with `filter`.
+        fn draw(
+            stream: &[u32],
+            ram: &[u16],
+            side: Option<&light::Frame>,
+            opts: &light::Options,
+            pack: &mut Maps,
+            filter: TexFilter,
+        ) -> (Vec<u8>, Vec<Poly>) {
+            let (rr, pal) = (render_ram(), palette());
+            let src = Sources {
+                texture_rom: &[],
+                texture_point_ram: ram,
+                render_ram: &rr,
+                palette: &pal,
+                xoff: 0.0,
+                yoff: 0.0,
+            };
+            let polys = build_shaded_with(stream, &src, side, Some(opts));
+            let mut drawn = polys.clone();
+            (draw_enhanced_filtered(&mut drawn, &src, &View::native(), pack, false, filter).0, polys)
+        }
+
+        fn opts(shading: Shading, lamps: bool) -> light::Options {
+            light::Options { shading, crease: 40, ..Default::default() }.with_lamps(lamps)
+        }
+
+        /// The red channel's mean over 3x3 pixels around the screen point
+        /// of view-space `p`.
+        fn bright(img: &[u8], p: [f32; 3]) -> f32 {
+            let (x, y) = ((248.0 + p[0] * F / p[2]) as usize, (192.0 - p[1] * F / p[2]) as usize);
+            let mut s = 0.0;
+            for dy in 0..3 {
+                for dx in 0..3 {
+                    s += img[((y + dy - 1) * WIDTH + x + dx - 1) * 3] as f32;
+                }
+            }
+            s / 9.0
+        }
+
+        /// The view-space point of quad `q` at texture coordinates (u, v)
+        /// (its mapping is affine: bilinear over a parallelogram).
+        fn point(q: &Quad, u: f32, v: f32) -> [f32; 3] {
+            let (a, b) = ((u - q.uv[0][0]) / (q.uv[1][0] - q.uv[0][0]), (v - q.uv[0][1]) / (q.uv[3][1] - q.uv[0][1]));
+            [0, 1, 2].map(|k| q.p[0][k] + a * (q.p[1][k] - q.p[0][k]) + b * (q.p[3][k] - q.p[0][k]))
+        }
+
+        /// The dome under the game's light is brighter on the slopes that
+        /// face the light, whatever the orientation: checked along each
+        /// edge direction of the quad through the dome's centre at (cu, cv)
+        /// (`e1`, `e2` in view space), against the direction to the light,
+        /// independent of the renderer's frame.
+        fn assert_dome(img: &[u8], q: &Quad, (cu, cv): (f32, f32), what: &str) {
+            let c = point(q, cu, cv);
+            for (du, dv) in [(12.0, 0.0), (0.0, 12.0)] {
+                let (a, b) = (point(q, cu + du, cv + dv), point(q, cu - du, cv - dv));
+                let e = [0, 1, 2].map(|k| a[k] - c[k]);
+                let toward = dot(e, unit(S));
+                let (ba, bb) = (bright(img, a), bright(img, b));
+                assert!(toward.abs() > 0.05, "{what}: a test direction across the light");
+                assert!(
+                    (ba - bb) * toward.signum() > 8.0,
+                    "{what}: along ({du}, {dv}) toward the light {toward:.2}: {ba} vs {bb}"
+                );
+            }
+        }
+
+        /// A quad facing the eye (front face), seen from behind (a
+        /// double-sided back face), with its texture drawn reversed, and
+        /// under a mirroring model matrix; in each, a dome lit from a known
+        /// side is bright on that side, in every shading mode.
+        #[test]
+        fn dome_is_lit_from_the_light_s_side() {
+            let tilt = -25f32.to_radians();
+            let (e1, e2) = ([tilt.cos(), 0.0, tilt.sin()], [0.0, 1.0, 0.0]);
+            // The normal by the game's convention: away from the eye.
+            let n = unit([-tilt.sin(), 0.0, tilt.cos()]);
+            let front = quad([0.0, 0.0, 4.0], e1, e2, [64.0, 64.0], n);
+            assert!(!front.back);
+            // Seen from behind: the game's normal points at the eye.
+            let back = Quad { back: true, n: n.map(|c| -c), ..front.clone() };
+            // The texture drawn right to left.
+            let flipped = Quad { uv: [[64.0, 0.0], [0.0, 0.0], [0.0, 64.0], [64.0, 64.0]], ..front.clone() };
+            // A model mirrored in x: positions and normal mirrored.
+            let mx = |p: [f32; 3]| [-p[0], p[1], p[2]];
+            let mirrored = Quad { p: front.p.map(mx), n: mx(n), ..front.clone() };
+            for (q, what) in
+                [(&front, "front"), (&back, "double-sided back"), (&flipped, "flipped"), (&mirrored, "mirrored")]
+            {
+                let (s, ram, side) = scene(&[vec![q.clone()]], header0(false, false), LIT);
+                assert_eq!(light::self_check(&s, &side).stats.l2, 1, "{what}");
+                for shading in [Shading::Flat, Shading::Vertex, Shading::Pixel] {
+                    for filter in [TexFilter::Off, TexFilter::Mip] {
+                        let o = opts(shading, true);
+                        let (img, polys) = draw(&s, &ram, Some(&side), &o, &mut maps(false, Some(dome(false))), filter);
+                        let l = polys[0].lamp.as_ref().expect("a lamp");
+                        assert!(l.tangent.is_some(), "{what}");
+                        assert_dome(&img, q, (32.0, 32.0), &format!("{what} {shading:?} {filter}"));
+                        // Off: none of it.
+                        let (plain, _) = draw(
+                            &s,
+                            &ram,
+                            Some(&side),
+                            &opts(shading, false),
+                            &mut maps(false, Some(dome(false))),
+                            filter,
+                        );
+                        assert!(plain != img, "{what}");
+                    }
+                }
+            }
+        }
+
+        /// A texture repeated mirrored across the quad: in the second
+        /// repeat the image runs backwards and the normals' component along
+        /// that axis changes sign, so each repeat's dome is lit the same.
+        #[test]
+        fn mirrored_repeat_keeps_the_relief() {
+            let q = quad([0.0, 0.0, 4.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [128.0, 128.0], [0.0, 0.0, 1.0]);
+            for (mu, mv) in [(true, false), (false, true), (true, true)] {
+                let (s, ram, side) = scene(&[vec![q.clone()]], header0(mu, mv), LIT);
+                let (img, _) = draw(
+                    &s,
+                    &ram,
+                    Some(&side),
+                    &opts(Shading::Flat, true),
+                    &mut maps(false, Some(dome(false))),
+                    TexFilter::Off,
+                );
+                for c in [(32.0, 32.0), (96.0, 32.0), (32.0, 96.0), (96.0, 96.0)] {
+                    assert_dome(&img, &q, c, &format!("mirror {mu} {mv} at {c:?}"));
+                }
+            }
+            // Repeated (not mirrored): every copy the same, no sign change.
+            let (s, ram, side) = scene(&[vec![q.clone()]], header0(false, false), LIT);
+            let (img, _) = draw(
+                &s,
+                &ram,
+                Some(&side),
+                &opts(Shading::Flat, true),
+                &mut maps(false, Some(dome(false))),
+                TexFilter::Off,
+            );
+            assert_dome(&img, &q, (96.0, 96.0), "repeat");
+        }
+
+        /// A pack whose maps are all flat draws byte for byte what the
+        /// same pack draws without materials (original texels or a
+        /// replacement image, filtered or not, in every shading mode, and
+        /// with finer levels); so does a polygon with an ambient-only lamp
+        /// or no lamp (no side channel), whatever its map; and with lamps
+        /// but no material nothing changes either.
+        #[test]
+        fn flat_maps_ambient_only_and_no_lamp_change_nothing() {
+            // A strip bent by 30 degrees (smoothed at crease 40) and a
+            // double-sided back face, each mapped once.
+            let bend = 30f32.to_radians();
+            let a = quad([-1.0, 0.0, 5.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [64.0, 64.0], [0.0, 0.0, 1.0]);
+            let e1 = [bend.cos(), 0.0, -bend.sin()];
+            let mut b = quad([0.0, 0.0, 5.0], e1, [0.0, 1.0, 0.0], [64.0, 64.0], unit([bend.sin(), 0.0, bend.cos()]));
+            // Share the edge: b's left edge is a's right edge.
+            let shift = [0, 1, 2].map(|k| a.p[1][k] - b.p[0][k]);
+            b.p = b.p.map(|p| [p[0] + shift[0], p[1] + shift[1], p[2] + shift[2]]);
+            (b.p[0], b.p[3]) = (a.p[1], a.p[2]);
+            let back = quad([0.5, -1.5, 6.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [64.0, 64.0], [0.0, 0.0, -1.0]);
+            assert!(back.back);
+            let (s, ram, side) = scene(&[vec![a, b], vec![back]], header0(false, false), LIT);
+            assert_eq!(light::self_check(&s, &side).stats.l2, 2);
+            for shading in [Shading::Flat, Shading::Vertex, Shading::Pixel] {
+                for fine in [false, true] {
+                    for image in [false, true] {
+                        for filter in [TexFilter::Off, TexFilter::Mip] {
+                            let o = opts(shading, true).with_fine(fine);
+                            let off = opts(shading, false).with_fine(fine);
+                            let what = format!("{shading:?} fine {fine} image {image} {filter}");
+                            let (want, _) = draw(&s, &ram, Some(&side), &off, &mut maps(image, None), filter);
+                            let mut flat = maps(image, Some(dome(true)));
+                            let (got, polys) = draw(&s, &ram, Some(&side), &o, &mut flat, filter);
+                            assert!(flat.asked > 0 && polys.iter().all(|p| p.lamp.is_some()), "{what}");
+                            assert!(got == want, "flat maps: {what}");
+                            // Lamps but no material: the same.
+                            let (none, _) = draw(&s, &ram, Some(&side), &o, &mut maps(image, None), filter);
+                            assert!(none == want, "no material: {what}");
+                            // The dome does change it.
+                            let (dome, _) =
+                                draw(&s, &ram, Some(&side), &o, &mut maps(image, Some(dome(false))), filter);
+                            assert!(dome != want, "{what}");
+                            // Smooth shading lights the strip (the test's point).
+                            if shading != Shading::Flat {
+                                assert!(polys.iter().any(|p| !p.lit.is_empty()), "{what}");
+                            }
+                        }
+                    }
+                }
+            }
+            // An ambient-only lamp: no map can show (no entry for it).
+            let ambient = light::Material { diffuse: 0.0, ..LIT };
+            let (s2, ram2, side2) = scene(&[vec![back_like()]], header0(false, false), ambient);
+            for shading in [Shading::Flat, Shading::Vertex, Shading::Pixel] {
+                let o = opts(shading, true);
+                let (want, _) =
+                    draw(&s2, &ram2, Some(&side2), &opts(shading, false), &mut maps(false, None), TexFilter::Off);
+                let mut m = maps(false, Some(dome(false)));
+                let (got, polys) = draw(&s2, &ram2, Some(&side2), &o, &mut m, TexFilter::Off);
+                assert!(got == want && polys.iter().all(|p| p.lamp.is_none()) && m.asked == 0, "ambient {shading:?}");
+            }
+            // No side channel (level L0): no lamp, nothing asked, the same.
+            for shading in [Shading::Flat, Shading::Vertex, Shading::Pixel] {
+                let (want, _) = draw(&s, &ram, None, &opts(shading, false), &mut maps(false, None), TexFilter::Off);
+                let mut m = maps(false, Some(dome(false)));
+                let (got, polys) = draw(&s, &ram, None, &opts(shading, true), &mut m, TexFilter::Off);
+                assert!(got == want && polys.iter().all(|p| p.lamp.is_none()) && m.asked == 0, "L0 {shading:?}");
+            }
+        }
+
+        fn back_like() -> Quad {
+            quad([0.0, 0.0, 4.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [64.0, 64.0], [0.0, 0.0, 1.0])
+        }
+
+        /// Texture coordinates squeezed to a line (every corner at one u):
+        /// no tangent frame, no change, nothing not finite.
+        #[test]
+        fn degenerate_coordinates_change_nothing() {
+            let mut q = back_like();
+            q.uv = [[5.0, 0.0], [5.0, 0.0], [5.0, 64.0], [5.0, 64.0]];
+            let (s, ram, side) = scene(&[vec![q.clone()]], header0(false, false), LIT);
+            for shading in [Shading::Flat, Shading::Pixel] {
+                let (want, _) =
+                    draw(&s, &ram, Some(&side), &opts(shading, false), &mut maps(false, None), TexFilter::Off);
+                let mut m = maps(false, Some(dome(false)));
+                let (got, polys) = draw(&s, &ram, Some(&side), &opts(shading, true), &mut m, TexFilter::Off);
+                let l = polys[0].lamp.as_ref().expect("a lamp");
+                assert!(l.tangent.is_none() && m.asked == 0 && got == want, "{shading:?}");
+            }
+            // The frame and the luma never give anything but a finite
+            // value or None, whatever goes in.
+            let ring =
+                |uv: [[f32; 2]; 3]| [([0.0, 0.0, 1.0], uv[0]), ([1.0, 0.0, 1.0], uv[1]), ([0.0, 1.0, 1.0], uv[2])];
+            assert!(
+                tangent_frame(&ring([[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]]), [0.0, 0.0, -1.0]).is_none(),
+                "on a line"
+            );
+            assert!(tangent_frame(&ring([[0.0, 0.0], [f32::NAN, 1.0], [0.0, 2.0]]), [0.0, 0.0, -1.0]).is_none());
+            let t = tangent_frame(&ring([[0.0, 0.0], [4.0, 0.0], [0.0, 4.0]]), [0.0, 0.0, -1.0]).unwrap();
+            assert_eq!(t.t, [1.0, 0.0, 0.0]);
+            let lamp = Lamp {
+                l: [0.0, 0.0, 1.0],
+                ambient: 10.0,
+                diffuse: 100.0,
+                spec_scale: 0.0,
+                squarings: 255,
+                front: true,
+                base: Base::D,
+            };
+            let pl = PolyLamp {
+                light: light::PixelLight { lamp, offset: 0.0 },
+                n: [0.0, 0.0, 1.0],
+                out: -1.0,
+                tangent: Some(t),
+                range: [0, 255],
+            };
+            for n in [[0.0; 3], [f32::NAN, 0.0, 1.0], [f32::INFINITY, 0.0, 0.0], [1e-30, 0.0, 0.0]] {
+                assert_eq!(material_luma(&pl, n, 50.5, (0.3, 0.2), 1.0), None, "{n:?}");
+            }
+            for xy in [(f32::NAN, 0.0), (0.0, 0.0)] {
+                assert_eq!(material_luma(&pl, [0.0, 0.0, 1.0], 50.5, xy, 1.0), None, "{xy:?}");
+            }
+            assert_eq!(material_luma(&pl, [0.0, 0.0, 1.0], 50.5, (0.3, 0.2), 0.0), None, "scale 0");
+            let v = material_luma(&pl, [0.0, 0.0, 1.0], 50.5, (0.3, 0.2), 4.0).unwrap();
+            assert!(v.is_finite() && v < 50.5, "tilted away from a light on the axis: darker");
+        }
     }
 }

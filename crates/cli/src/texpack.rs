@@ -63,6 +63,12 @@ pub struct Packs {
     maps: HashSet<String>,
     /// Materials assembled, by id (None: no file of it decoded).
     materials: HashMap<u64, Option<Arc<Material>>>,
+    /// Their mip chains, by id (filtered snapshots).
+    material_mips: HashMap<u64, Arc<Vec<Material>>>,
+    /// Software drawing with materials (`Enhance::texture_material`) since
+    /// the last `take_material_counts`: polygons drawn with a material and
+    /// pixels it changed.
+    material_counts: [u64; 2],
 }
 
 /// Whether the pack in `dir` may be drawn (`pack::Manifest::for_dir`),
@@ -120,6 +126,8 @@ impl Packs {
             manifest,
             maps,
             materials: HashMap::new(),
+            material_mips: HashMap::new(),
+            material_counts: [0; 2],
             frame: 0,
             cache: HashMap::new(),
             mips: HashMap::new(),
@@ -200,6 +208,12 @@ impl Packs {
         self.index_dirty = false;
     }
 
+    /// Polygons drawn with a material and the pixels materials changed
+    /// since the last call (software snapshots).
+    pub fn take_material_counts(&mut self) -> [u64; 2] {
+        std::mem::take(&mut self.material_counts)
+    }
+
     /// One line for the end-of-run report.
     pub fn summary(&self) -> String {
         let (tex, tiles) =
@@ -278,6 +292,23 @@ impl Enhance for Packs {
             f.0
         };
         self.record(info.name(), wrap, look, about, || texture_image(src, info));
+    }
+
+    fn texture_material(&mut self, info: &TexInfo) -> Option<Arc<Material>> {
+        match TexturePack::material(self, info) {
+            FoundMaterial::Maps(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    fn texture_material_mips(&mut self, info: &TexInfo) -> Option<Arc<Vec<Material>>> {
+        let m = self.texture_material(info)?;
+        Some(self.material_mips.entry(m.id).or_insert_with(|| Arc::new(m.mip_chain())).clone())
+    }
+
+    fn material_drawn(&mut self, _info: &TexInfo, changed: usize) {
+        self.material_counts[0] += 1;
+        self.material_counts[1] += changed as u64;
     }
 
     fn tile(&mut self, info: &TileInfo) -> Option<Arc<Rgba>> {

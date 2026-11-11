@@ -53,6 +53,7 @@ pub fn run(
     pack: &Path,
     out_dir: &Path,
     light: Option<&model2::light::Options>,
+    materials: Option<&model2::light::Options>,
 ) -> Result<(), String> {
     let texture_rom = capture::load_texture_rom(root)
         .map_err(|e| format!("{}: {e} (capture with `make capture`)", root.display()))?;
@@ -150,6 +151,9 @@ pub fn run(
             *t += v;
         }
         n += 1;
+        if let Some(mo) = materials {
+            material_pictures(&f, &src, &view, depth, mo, &mut sw_pack, &name);
+        }
     }
     let m = |v: f64| v / n.max(1) as f64;
     println!(
@@ -167,7 +171,73 @@ pub fn run(
         "pictures      {}/FRAME-{{off,mip,aniso16}}.png (GPU), -swmip.png (software trilinear), -ref.png (reference)",
         out_dir.display()
     );
+    if materials.is_some() {
+        println!(
+            "materials     {}/FRAME-mat-off.png, -mat-sw.png (software, the pack without and with its material maps), -mat-diff.png (off | on | difference x8)",
+            out_dir.display()
+        );
+    }
     Ok(())
+}
+
+/// `pack-check --materials`: the frame drawn in software (unfiltered) with
+/// the pack without and with its material maps, under the frame's own
+/// light (`light.bin`), saved as `-mat-off`, `-mat-sw` and `-mat-diff`
+/// (both and their difference times 8, side by side), with a line of
+/// counts.
+fn material_pictures(
+    f: &Frame,
+    src: &raster::Sources,
+    view: &View,
+    depth: bool,
+    opts: &model2::light::Options,
+    pack: &mut Packs,
+    name: &dyn Fn(&str) -> std::path::PathBuf,
+) {
+    let Some(side) = f.light_frame() else {
+        println!("  materials: frame {} has no light.bin (capture with --light): material maps can't show", f.frame);
+        return;
+    };
+    let mut draw = |o: &model2::light::Options| {
+        let mut polys = raster::build_shaded_with(&f.stream, src, Some(&side), Some(o));
+        video::HudLayout::new(&f.tiles, &f.palette, view).anchor(&mut polys, view);
+        let built = polys.clone();
+        let layer = raster::draw_enhanced_depth(&mut polys, src, view, pack, depth);
+        (video::compose(&f.tiles, &f.palette, Some((&layer.0, &layer.1)), view), built)
+    };
+    let (off, _) = draw(&opts.with_lamps(false));
+    let (on, polys) = draw(opts);
+    let [drawn, changed] = pack.take_material_counts();
+    let lamped = polys.iter().filter(|p| p.lamp.is_some()).count();
+    let textured = polys.iter().filter(|p| p.texture.is_some()).count();
+    let mean = |img: &[u8]| img.iter().map(|&v| v as f64).sum::<f64>() / img.len().max(1) as f64;
+    let differ = off.as_chunks::<3>().0.iter().zip(on.as_chunks::<3>().0).filter(|(a, b)| a != b).count();
+    println!(
+        "  materials: frame {}: {} polygons, {textured} textured, {lamped} with a lamp, {drawn} drawn with a material; {changed} pixels lit by it, {differ} differ ({:.2}%), mean level {:+.3}",
+        f.frame,
+        polys.len(),
+        100.0 * differ as f64 / (off.len() / 3).max(1) as f64,
+        mean(&on) - mean(&off)
+    );
+    let (w, h) = (view.width, view.height);
+    let png = |s: &str, rgb: &[u8], w: usize| {
+        let _ = std::fs::write(name(s), png::encode_rgb(w, h, rgb));
+    };
+    png("mat-off", &off, w);
+    png("mat-sw", &on, w);
+    // Off | on | |on - off| x 8.
+    let mut wide = vec![0u8; w * 3 * h * 3];
+    for y in 0..h {
+        for x in 0..w {
+            let (o, row) = ((y * w + x) * 3, y * w * 9);
+            for c in 0..3 {
+                wide[row + x * 3 + c] = off[o + c];
+                wide[row + (w + x) * 3 + c] = on[o + c];
+                wide[row + (2 * w + x) * 3 + c] = (off[o + c].abs_diff(on[o + c]) as u32 * 8).min(255) as u8;
+            }
+        }
+    }
+    png("mat-diff", &wide, w * 3);
 }
 
 /// `remodel tile-check`: draw captured frames with a texture pack's tile

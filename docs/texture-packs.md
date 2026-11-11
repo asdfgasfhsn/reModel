@@ -167,8 +167,10 @@ compatibility rules and the file-name grammar, used by the CLI, the player
 and the browser. **Status (2026-11-11):** the format, the surface key,
 `make pack-lint` and `make pack-materials` (below, "Material maps") exist;
 material maps are named, made, checked and loaded (below, "Loading material
-maps") but not drawn yet, so a pack's pictures are what the images alone
-give.
+maps"); normal maps are drawn by the software renderer (`run` snapshots and
+`pack-check` with `--materials`; below, "How material maps light"), not
+yet by the GPU, the player or the browser; specular and gloss maps are
+loaded but not drawn.
 
 **Format 1** is everything above: `tex_<key>_<w>x<h>.png`,
 `tile_<key>.png`, any subset, `index.txt` for the browser, and tool records
@@ -271,10 +273,10 @@ twice, a value out of range) refuses the pack, with the line it is on.
    keywords (the player prints one line about them, `pack-lint` lists
    them), unknown kinds of file and unknown names in `uses`. A pack that
    must not be shown without a feature puts it in `needs`, and a reader
-   that can't show it refuses the whole pack. No reader draws material
-   maps yet, so today `needs materials` refuses the pack everywhere (they
-   load, but showing the pack without them is what `needs` forbids) and
-   `uses materials` is informative.
+   that can't show it refuses the whole pack. The player, the browser and
+   the GPU don't draw material maps yet, so today `needs materials`
+   refuses the pack everywhere (they load, but showing the pack without
+   them is what `needs` forbids) and `uses materials` is informative.
 4. Tools write `pack.txt` only when the pack holds something format 1
    can't say; a plain upscaled pack gets none (`make upscale-textures`
    writes none) and stays readable by older builds, which show its images
@@ -310,6 +312,34 @@ the player or the browser turns it on yet; `remodel --materials` does for
 under the same budget as the images (below). Nothing samples it yet: frames
 are identical with materials on or off (checked 2026-11-11 with a synthetic
 pack on `topskatr`'s captures, `gpu-check` unfiltered, mipmapped and 16x).
+
+**How material maps light** (software renderer, 2026-11-11; the GPU
+follows it). A map changes a pixel's luma and nothing else: the colour
+still comes from the game's luma table and colour tables. Only polygons
+with the exact lighting layer have a lamp to perturb (`--materials`
+records the side channel, as `--light`; the native geometrizer; a block
+the self-check demoted, the chip path or a capture without `light.bin` get
+none, and draw exactly as without materials). With materials on, the
+lighting pass hands over the lamp of every such textured polygon whose
+lighting depends on its normal (`light::Options::lamps`), lit or not and
+whatever `shading` is; per polygon the renderer works out a tangent frame
+from its corners and texture coordinates (least squares, so constant over
+the polygon; none where the coordinates are degenerate). Per pixel, with N
+the normal as drawn (the interpolated corner normals of a smooth-shaded
+polygon, else the face's) and t the map's normal there (times the pack's
+strength; its x component negated in every second repeat of a mirrored
+axis), N is tilted by t in that frame about the side the eye sees, and the
+luma becomes `base + E1 - E0`: base what the pixel has without materials
+(the stream's luma + 0.5 for a polygon that isn't lit), `E0` and `E1` the
+game's formula at N and at the tilted normal, each clamped to 0-255. A
+flat texel gives `E1 == E0` and the pixel takes the path without materials
+bit for bit, so a pack of flat maps draws exactly the pack without them, in
+every shading mode. A changed pixel always blends the two colour columns
+around its luma (the arithmetic of `shading_fine`, within the polygon's
+hue, pure black kept), whatever `shading_fine` says. A map can only change
+the light the game casts: a polygon lit to full luma whatever its normal
+(`topskatr` lights much of its scenery with ambient 255) or with an
+ambient-only lighting entry shows nothing of it.
 
 **Models.** Replacement models are not built; the format only reserves
 their names. They will key by content (a hash of the model's polygon data
