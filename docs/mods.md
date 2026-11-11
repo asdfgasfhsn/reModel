@@ -235,12 +235,11 @@ In order of how native it feels:
     It needs no PTP clock daemon for a single output. `shairplay` is another
     Rust receiver, LGPL-3.0, with AirPlay 2 behind a feature flag, pre-1.0.
     Both are young.
-  - **Alongside, as a separate program.** Shairport Sync is the mature
-    receiver. It writes audio to a pipe or stdout and metadata with cover
-    art to a pipe, UDP, MQTT, D-Bus or MPRIS. AirPlay 2 needs its companion
-    clock daemon, NQPTP. reModel would read the audio pipe and the metadata
-    rather than link it in, so its licence and C code stay apart. More to
-    set up, but proven.
+  - **Decided (2026-11-12): receivers run inside reModel**, not as
+    separate programs. Shairport Sync, the mature receiver that runs
+    alongside (audio and metadata through pipes, with its NQPTP clock
+    daemon), stays only as a reference point if the Rust libraries fall
+    short.
   - AirPlay, like Connect, is reverse-engineered and not sanctioned by
     Apple, so the same rule applies: an optional feature, off by default,
     kept apart.
@@ -330,5 +329,5 @@ show the playing song's album art there instead:
 2. Remote control over MPRIS, with the settings and the notice.
 3. Live album-art texture slots.
 4. The in-game title pop-up, first with local soundtrack packs.
-5. Spotify Connect and AirPlay receivers as optional features. Try
-   `openairplay2` embedded first, with Shairport Sync as the fallback.
+5. Spotify Connect (librespot) and AirPlay (`openairplay2`, else
+   `shairplay`) receivers built into reModel, as optional features.
