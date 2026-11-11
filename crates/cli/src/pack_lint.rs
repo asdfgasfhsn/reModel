@@ -9,7 +9,7 @@
 //! never drawn, j (with a dump) maps under both an image and a surface key,
 //! k GPU memory against the budgets.
 
-use crate::texpack_materials::{edge_line, edge_modes, read_normal, tiles};
+use crate::texpack_materials::{self, edge_line, edge_modes, read_normal, tiles, Exclude};
 use crate::texpack_upscale;
 use model2::enhance::{address, Address, Rgba};
 use model2::pack::{self, parse_name, FileKind, Manifest, MapKind};
@@ -17,7 +17,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 /// Tool records and the like that readers ignore.
-const RECORDS: [&str; 5] = [pack::MANIFEST, pack::INDEX, "upscale.txt", "drift.txt", "materials.txt"];
+const RECORDS: [&str; 6] =
+    [pack::MANIFEST, pack::INDEX, "upscale.txt", "drift.txt", "materials.txt", texpack_materials::EXCLUDE];
 /// Files named per finding before "and N more".
 const SHOWN: usize = 8;
 
@@ -586,6 +587,31 @@ fn lint_report(dir: &Path, dump: Option<&Path>, max_side: usize) -> Result<Repor
     let y_up = manifest.as_ref().is_none_or(|m| m.normal_y_up);
     check_normal_maps(&mut r, dir, &files, &stems, dump_info.as_ref(), y_up);
 
+    // l: the exclude list names textures that exist.
+    let exclude = Exclude::read(dir);
+    for (n, text, why) in &exclude.bad {
+        r.add(Level::Warning, 'l', format!("{}: {why}", texpack_materials::EXCLUDE), format!("line {n}: {text}"));
+    }
+    if !exclude.stems.is_empty() {
+        let mut known = texpack_materials::pack_bases(dir);
+        if let Some(d) = &dump_info {
+            known.extend(d.names.iter().cloned());
+            known.extend(d.surf.iter().map(|(n, s)| format!("surf_{s}_{}", n.rsplit('_').next().unwrap_or(""))));
+        }
+        for stem in exclude.stems.iter().filter(|s| !known.contains(*s)) {
+            r.add(
+                Level::Warning,
+                'l',
+                format!(
+                    "{}: names no texture or surface in the pack{}",
+                    texpack_materials::EXCLUDE,
+                    if dump_info.is_some() { " or the dump" } else { " (no TEXDUMP: only the pack's files are known)" }
+                ),
+                stem.clone(),
+            );
+        }
+    }
+
     // i, j: against a dump.
     match &dump_info {
         Some(d) => {
@@ -791,6 +817,34 @@ mod tests {
         assert!(has('j', &format!("{key}.n over surf_00000000000000ff_8x8.n")));
         assert!(has('b', "tile_0123456789abcdef.n") && has('c', "gone") && has('e', key));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_exclude_list_must_name_something() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../out/scratch/pack-lint-exclude-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let dump = dir.join("dump");
+        std::fs::create_dir_all(&dump).unwrap();
+        let a = "tex_00000000000000aa_16x16";
+        std::fs::write(dump.join("index.txt"), format!("{a}\tuses=1\tsurf=0000000000000011\twrap=rr\n")).unwrap();
+        std::fs::write(dir.join("pack.txt"), "format 2\n").unwrap();
+        let list = format!(
+            "# c\n{a}\nsurf_0000000000000011_16x16\ntex_00000000000000bb_16x16\nsurf_0000000000000099_16x16\nrubbish\n"
+        );
+        std::fs::write(dir.join(texpack_materials::EXCLUDE), list).unwrap();
+        let items = |r: &Report| -> Vec<String> {
+            r.found.iter().filter(|(k, _)| k.1 == 'l').flat_map(|(_, v)| v.clone()).collect()
+        };
+        let r = lint_report(&dir, Some(&dump), 8192).unwrap();
+        let mut got = items(&r);
+        got.sort();
+        assert_eq!(got, ["line 6: rubbish", "surf_0000000000000099_16x16", "tex_00000000000000bb_16x16"]);
+        assert!(r.found.keys().filter(|k| k.1 == 'l').all(|k| k.0 == Level::Warning));
+        assert!(!r.found.keys().any(|k| k.1 == 'b'), "the list is a known pack file");
+        // Without a dump the names are the pack's files only: `a` has none.
+        let r = lint_report(&dir, None, 8192).unwrap();
+        assert!(items(&r).contains(&a.to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

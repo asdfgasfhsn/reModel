@@ -249,7 +249,7 @@ STRENGTH  ?=
 DETAIL    ?=
 .PHONY: pack-materials
 pack-materials: export NORMALGEN_CMD = $(NORMALGEN)
-pack-materials: release ## Make normal maps for texture pack TEXPACK from its images (or TEXDUMP's where it has none) with NORMALGEN= (empty: built-in, from luminance); STRENGTH, DETAIL, MIN_USES, FORCE; wrap-aware, neutral under cut-outs, one per surface, keeps hand-made and edited maps; a starting point to edit by hand
+pack-materials: release ## Make normal maps for texture pack TEXPACK from its images (or TEXDUMP's where it has none) with NORMALGEN= (empty: built-in, from luminance); STRENGTH, DETAIL, MIN_USES, FORCE; wrap-aware, neutral under cut-outs, one per surface, keeps hand-made and edited maps, skips the textures listed in the pack's materials-exclude.txt; a starting point to edit by hand
 	$(REMODEL) --game $(GAME) texpack-materials $(TEXPACK) $(if $(TEXDUMP),--dump $(TEXDUMP)) \
 		--min-uses $(MIN_USES) --work out/scratch/texpack-materials-$(GAME) \
 		$(if $(STRENGTH),--strength $(STRENGTH)) $(if $(DETAIL),--detail $(DETAIL)) \

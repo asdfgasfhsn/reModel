@@ -186,6 +186,7 @@ unchanged). **Format 2** adds, all optional:
 | `tex_<key>_<w>x<h>.n.png`, `.s.png`, `.g.png` | material maps for that image in that colour: normal, specular scale, gloss |
 | `surf_<skey>_<w>x<h>.n.png`, `.s.png`, `.g.png` | the same maps keyed by surface, serving every colour the texels are drawn in |
 | `materials.txt` | tool record of `make pack-materials` |
+| `materials-exclude.txt` | the author's list of textures `make pack-materials` makes no map for (below, "Material maps") |
 
 Keys are 16 lowercase hex digits and sizes plain decimals, exactly as the
 renderers write them; any other spelling is never opened. Tiles have no
@@ -363,6 +364,7 @@ non-zero on errors:
 | normal map texels under the image's transparent texels (the pack image's alpha, or the dump's) near the mean of their opaque neighbours (they show in mip levels and at cut-out edges) | warning |
 | with `TEXDUMP=DIR`: on an axis the texture is drawn mirrored (`wrap=`), the normal's component across the edge near 0 there; on an axis drawn only repeated, no jump from the last texels to the first larger than the steps beside it (not checked where the image itself doesn't tile or has a line along the edge) | warning |
 | with `TEXDUMP=DIR`: files whose key the dump never drew; a map for an image whose surface also has one (the image's would win) | note |
+| `materials-exclude.txt` entries that aren't a `tex_`/`surf_` stem, or name nothing in the pack or the dump (without `TEXDUMP=` only the pack's own files are known) | warning |
 | GPU memory with everything drawn, images and materials, plain and mipmapped, against the 512 MB native and 192 MB browser budgets | note |
 
 On the 4x ESRGAN pack of `topskatr` (241 images, 5,030 tiles): clean, one
@@ -788,6 +790,38 @@ no lighting):
   line changes); a pack without one gets `format 2`, `keys 1`, `game` and
   `uses materials`. Maps are written in the manifest's `normal_y`
   direction. `index.txt` is rewritten to list every file.
+
+**Leaving textures out: `materials-exclude.txt`.** Put this file in the
+pack (an author's file, never written by a tool: `materials.txt` is the
+tool's record and is rewritten) with one texture per line, by the stem
+the dump and the pack name it, `tex_<key>_<w>x<h>` (that image, in that
+colour) or `surf_<key>_<w>x<h>` (the texels in every colour); `#` starts a
+comment, blank lines are skipped:
+
+```
+# signs and faces: printed paint is not relief
+tex_01612c313cc7bfdb_128x128   # a sign
+surf_15014456e2d5d506_128x128  # a face, every colour
+```
+
+An excluded texture gets no generated map. If an earlier run made one, the
+rerun removes it, but a map the tool didn't make (hand-made, edited) is
+never deleted: the run reports it as kept and says the exclusion has no
+effect on it. With `surf=` in the dump one map serves all the colours of
+a surface, so a `tex_` entry excludes the map only when every colour of
+that surface is listed; otherwise the run warns and still makes it
+(`material <tex stem> normal=0` in `pack.txt` switches one colour's
+normal map off in the reader). Entries that name nothing in the pack or
+the dump, and lines that aren't stems, are warned about by the tool and
+by `pack-lint` (check l).
+
+**Finding a texture's stem.** The dump (`make dump-textures`) writes each
+texture as `<stem>.png`, so look at the dump's pictures (or the pack's
+`tex_*.png`) for the sign or face; the file name is its `tex_` stem, and
+that texture's `surf=` field in the dump's `index.txt` (and the tool's
+`surf_<surf>_<w>x<h>`) gives the surface stem. Its `frame=` says when it
+was first seen. The tool prints `excluded <stem>` per entry that did
+something.
 
 **Incremental.** `materials.txt` records the settings and, per map, its
 source's hash (with how it wraps) and the map file's size and time. A
