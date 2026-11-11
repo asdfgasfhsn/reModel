@@ -88,7 +88,7 @@ RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 ##@ General
 
-help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, PACK_CHECK_OUT, TILE_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, GPU_OPTS, LIGHT_OPTS, LIGHT_CAPTURE, LIGHT_IN, PROBE, AGAINST, SEQ_FROM, SEQ_FRAMES, STATE, TEMPORAL_SEQ, TEMPORAL_OPTS, RECOMP, PLAY_ARGS, FILE, SECONDS, SOUNDTRACK, SRC)
+help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, PACK_CHECK_OUT, TILE_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, NORMALGEN, NORMAL_Y, STRENGTH, DETAIL, GPU_OPTS, LIGHT_OPTS, LIGHT_CAPTURE, LIGHT_IN, PROBE, AGAINST, SEQ_FROM, SEQ_FRAMES, STATE, TEMPORAL_SEQ, TEMPORAL_OPTS, RECOMP, PLAY_ARGS, FILE, SECONDS, SOUNDTRACK, SRC)
 	@awk 'BEGIN {FS = ":.*## "; printf "usage: make <target> [VAR=value]\n"} \
 		/^##@/ {printf "\n%s\n", substr($$0, 5)} \
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -236,9 +236,28 @@ upscale-textures: release ## Upscale TEXDUMP (default OUT/texdump, from dump-tex
 		--min-uses $(MIN_USES) --max-side $(MAX_SIDE) --work out/scratch/texpack-upscale-$(GAME) \
 		$(if $(UPSCALER),--upscaler "$$UPSCALER_CMD") $(if $(FORCE),--force)
 
+# Normal maps for texture pack TEXPACK (docs/texture-packs.md, "Material
+# maps"). NORMALGEN: an external tool's command with {in} and {out} filled
+# in, run once over the directory (empty: built-in, from luminance);
+# NORMAL_Y: which way its green points (up|down); STRENGTH, DETAIL: the
+# built-in's slope gain and the width in texels of brightness changes kept
+# out of the relief (empty: the tool's defaults). TEXDUMP= (empty: the
+# pack's own images) gives wrap=, surf= and uses=.
+NORMALGEN ?=
+NORMAL_Y  ?= up
+STRENGTH  ?=
+DETAIL    ?=
+.PHONY: pack-materials
+pack-materials: export NORMALGEN_CMD = $(NORMALGEN)
+pack-materials: release ## Make normal maps for texture pack TEXPACK from its images (or TEXDUMP's where it has none) with NORMALGEN= (empty: built-in, from luminance); STRENGTH, DETAIL, MIN_USES, FORCE; wrap-aware, neutral under cut-outs, one per surface, keeps hand-made and edited maps; a starting point to edit by hand
+	$(REMODEL) --game $(GAME) texpack-materials $(TEXPACK) $(if $(TEXDUMP),--dump $(TEXDUMP)) \
+		--min-uses $(MIN_USES) --work out/scratch/texpack-materials-$(GAME) \
+		$(if $(STRENGTH),--strength $(STRENGTH)) $(if $(DETAIL),--detail $(DETAIL)) \
+		$(if $(NORMALGEN),--normalgen "$$NORMALGEN_CMD" --normal-y $(NORMAL_Y)) $(if $(FORCE),--force)
+
 # pack-lint checks against a dump only when TEXDUMP is given.
 .PHONY: pack-lint
-pack-lint: release ## Check texture pack PACK= against the pack format, no ROM or GPU: pack.txt, file names, index.txt, every PNG decodes within MAX_SIDE, image and map proportions, GPU memory against the budgets (TEXDUMP= adds the never-drawn and image-or-surface checks); fails on errors
+pack-lint: release ## Check texture pack PACK= against the pack format, no ROM or GPU: pack.txt, file names, index.txt, every PNG decodes within MAX_SIDE, image and map proportions, unit normals, maps under cut-outs, GPU memory against the budgets (TEXDUMP= adds mirror and repeat seams, never-drawn and image-or-surface checks); fails on errors
 	$(if $(PACK),,$(error pack-lint needs PACK=DIR, a texture pack))
 	$(REMODEL) pack-lint $(PACK) --max-side $(MAX_SIDE) \
 		$(if $(filter command line environment,$(origin TEXDUMP)),--dump $(TEXDUMP))

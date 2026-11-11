@@ -130,16 +130,19 @@ impl Options {
 
 /// One dump from the index.
 #[derive(Debug, PartialEq)]
-struct Dump {
-    name: String,
-    uses: u64,
+pub(crate) struct Dump {
+    pub(crate) name: String,
+    pub(crate) uses: u64,
     /// Addressing per axis (u, v) for padding and alpha: textures wrap or
     /// mirror, tiles clamp.
-    modes: [Address; 2],
+    pub(crate) modes: [Address; 2],
     /// A texture drawn both repeated and mirrored on an axis (padded
     /// mirrored there).
-    mixed: bool,
-    tile: bool,
+    pub(crate) mixed: bool,
+    pub(crate) tile: bool,
+    /// The texture's surface key (`surf=`, 16 hex digits), in indexes that
+    /// have it.
+    pub(crate) surf: Option<String>,
 }
 
 /// The dumps listed in a dump's index.txt. A texture's padding comes from
@@ -148,7 +151,7 @@ struct Dump {
 /// only repeated pads repeated; mirrored, unknown or both pads mirrored:
 /// that is exact at a mirrored edge, and at a repeated one still continues
 /// the texture's own edge rather than bringing in the opposite side.
-fn parse_index(text: &str) -> Vec<Dump> {
+pub(crate) fn parse_index(text: &str) -> Vec<Dump> {
     let mut out = vec![];
     for line in text.lines() {
         if line.starts_with('#') || line.trim().is_empty() {
@@ -180,12 +183,13 @@ fn parse_index(text: &str) -> Vec<Dump> {
         let mode = |s: [bool; 2]| if s == [true, false] { Address::Repeat } else { Address::Mirror };
         let modes = if tile { [Address::Clamp; 2] } else { [mode(seen[0]), mode(seen[1])] };
         let mixed = !tile && seen.iter().any(|s| s[0] && s[1]);
-        out.push(Dump { name, uses, modes, mixed, tile });
+        let surf = kv.get("surf").map(|s| s.to_string());
+        out.push(Dump { name, uses, modes, mixed, tile, surf });
     }
     out
 }
 
-fn fnv(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3))
 }
 
@@ -208,7 +212,7 @@ fn neighbours(img: &Rgba, i: usize, modes: [Address; 2]) -> impl Iterator<Item =
 /// already known neighbours. The upscaler then never sees the meaningless
 /// colour under them (texel 15, pen 0), so it cannot bleed into the edge
 /// pixels that stay opaque. False if nothing is opaque.
-fn fill_transparent(img: &mut Rgba, modes: [Address; 2]) -> bool {
+pub(crate) fn fill_transparent(img: &mut Rgba, modes: [Address; 2]) -> bool {
     let n = img.width * img.height;
     let mut known: Vec<bool> = (0..n).map(|i| opaque(img, i)).collect();
     if !known.contains(&true) {
@@ -254,7 +258,7 @@ fn fill_transparent(img: &mut Rgba, modes: [Address; 2]) -> bool {
 
 /// `img` with `pad[axis]` pixels added on both sides of each axis, taken
 /// with the renderer's own addressing (`enhance::address`).
-fn pad(img: &Rgba, pad: [usize; 2], modes: [Address; 2]) -> Rgba {
+pub(crate) fn pad(img: &Rgba, pad: [usize; 2], modes: [Address; 2]) -> Rgba {
     let (w, h) = (img.width + 2 * pad[0], img.height + 2 * pad[1]);
     let mut data = Vec::with_capacity(w * h * 4);
     for y in 0..h {
@@ -268,7 +272,7 @@ fn pad(img: &Rgba, pad: [usize; 2], modes: [Address; 2]) -> Rgba {
     Rgba { width: w, height: h, data }
 }
 
-fn crop(img: &Rgba, x0: usize, y0: usize, w: usize, h: usize) -> Rgba {
+pub(crate) fn crop(img: &Rgba, x0: usize, y0: usize, w: usize, h: usize) -> Rgba {
     let mut data = Vec::with_capacity(w * h * 4);
     for y in y0..y0 + h {
         let o = (y * img.width + x0) * 4;
@@ -576,7 +580,7 @@ fn put_alpha(src: &Rgba, out: &mut Rgba, dump: &Dump, s: usize) {
     }
 }
 
-fn decode(path: &Path) -> Result<Rgba, String> {
+pub(crate) fn decode(path: &Path) -> Result<Rgba, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let img = png::decode(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(Rgba { width: img.width, height: img.height, data: img.rgba })
@@ -584,7 +588,7 @@ fn decode(path: &Path) -> Result<Rgba, String> {
 
 /// Write through a temporary name and rename, so an interrupted run never
 /// leaves a half-written file that looks finished.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let tmp = path.with_file_name(format!(".{name}.tmp"));
     std::fs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
@@ -592,14 +596,14 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 /// Size and modification time of a pack file, to see it is still ours.
-fn stamp(path: &Path) -> Option<String> {
+pub(crate) fn stamp(path: &Path) -> Option<String> {
     let m = std::fs::metadata(path).ok()?;
     let t = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
     Some(format!("{},{}", m.len(), t.as_nanos()))
 }
 
 /// Run `f` over `items` on every core.
-fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+pub(crate) fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let next = AtomicUsize::new(0);
     let out: Mutex<Vec<Option<R>>> = Mutex::new((0..items.len()).map(|_| None).collect());
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(items.len().max(1));
@@ -619,19 +623,19 @@ fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> 
 /// Run `cmd` with `sh -c`, its output to `log`. Stopped (with what it
 /// started) when no new file has appeared in `out` for `stall` seconds:
 /// realesrgan-ncnn-vulkan was seen to spin forever on its last image.
-fn run_watched(cmd: &str, log: &Path, out: &Path, stall: u64) -> Result<(), String> {
+pub(crate) fn run_watched(tool: &str, cmd: &str, log: &Path, out: &Path, stall: u64) -> Result<(), String> {
     let file = std::fs::File::create(log).map_err(|e| format!("{}: {e}", log.display()))?;
     let err = file.try_clone().map_err(|e| e.to_string())?;
     let mut c = Command::new("sh");
     c.arg("-c").arg(cmd).stdout(file).stderr(err);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut c, 0);
-    let mut child = c.spawn().map_err(|e| format!("upscaler: {e}"))?;
+    let mut child = c.spawn().map_err(|e| format!("{tool}: {e}"))?;
     let count = || std::fs::read_dir(out).map_or(0, |d| d.count());
     let (mut seen, mut since) = (count(), Instant::now());
     loop {
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-            return if status.success() { Ok(()) } else { Err(format!("upscaler exited with {status}")) };
+            return if status.success() { Ok(()) } else { Err(format!("{tool} exited with {status}")) };
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
         let n = count();
@@ -642,13 +646,13 @@ fn run_watched(cmd: &str, log: &Path, out: &Path, stall: u64) -> Result<(), Stri
             let _ = Command::new("kill").arg("-KILL").arg(format!("-{}", child.id())).status();
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!("upscaler wrote nothing for {stall} s: stopped (rerun to retry what is missing)"));
+            return Err(format!("{tool} wrote nothing for {stall} s: stopped (rerun to retry what is missing)"));
         }
     }
 }
 
 /// `template` with `{in}`, `{out}` (shell-quoted) and `{scale}` filled in.
-fn expand(template: &str, input: &Path, output: &Path, scale: usize) -> String {
+pub(crate) fn expand(template: &str, input: &Path, output: &Path, scale: usize) -> String {
     let q = |p: &Path| format!("'{}'", p.display().to_string().replace('\'', r"'\''"));
     template.replace("{in}", &q(input)).replace("{out}", &q(output)).replace("{scale}", &scale.to_string())
 }
@@ -691,7 +695,7 @@ fn write_record(dest: &Path, settings: &str, images: &BTreeMap<String, (u64, Str
 
 /// The pack's index.txt: every image's file name, one a line (`#` lines
 /// are comments). The browser build reads it to know which files exist.
-fn write_pack_index(dest: &Path) -> Result<usize, String> {
+pub(crate) fn write_pack_index(dest: &Path) -> Result<usize, String> {
     let mut names: Vec<String> = std::fs::read_dir(dest)
         .map_err(|e| format!("{}: {e}", dest.display()))?
         .filter_map(|e| e.ok()?.file_name().into_string().ok())
@@ -882,7 +886,7 @@ pub fn run(src: &Path, dest: &Path, o: &Options, game: &str) -> Result<(), Strin
         let cmd = expand(template, &work_in, &work_out, o.scale);
         println!("upscaling {queued} images: {cmd}");
         let log_path = o.work.join("upscaler.log");
-        if let Err(e) = run_watched(&cmd, &log_path, &work_out, o.stall) {
+        if let Err(e) = run_watched("upscaler", &cmd, &log_path, &work_out, o.stall) {
             let text = std::fs::read_to_string(&log_path).unwrap_or_default();
             let tail: Vec<&str> = text.lines().rev().take(15).collect();
             for l in tail.iter().rev() {
@@ -1168,7 +1172,7 @@ mod tests {
     #[test]
     fn checks_the_upscaler_output_size_and_keeps_tile_pen_0() {
         let src = img(8, 8, |x, _| if x < 4 { [10, 20, 30, 255] } else { [200, 0, 0, 0] });
-        let dump = Dump { name: "tile_1".into(), uses: 1, modes: [Clamp; 2], mixed: false, tile: true };
+        let dump = Dump { name: "tile_1".into(), uses: 1, modes: [Clamp; 2], mixed: false, tile: true, surf: None };
         let p = padding(8, 8, true, How::External);
         assert_eq!(p, [8, 8]);
         let padded = pad(&src, p, dump.modes);
