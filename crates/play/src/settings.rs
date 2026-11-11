@@ -8,7 +8,7 @@
 //! motion, run-ahead, anti-aliasing, temporal anti-aliasing and its
 //! stipple, depth buffer, smooth shading, its crease angle and finer
 //! levels, texture
-//! pack and its filtering, geometrizer) come in layers, lowest first, as
+//! pack and its filtering, material maps and their rule, geometrizer) come in layers, lowest first, as
 //! in the browser build (`crates/web/settings.js`): the built-in defaults, the defaults for
 //! all games (`play-settings.txt`), the game's own (`<set>/settings.txt`)
 //! and the command line (this run only). A layer keeps only what it sets,
@@ -72,6 +72,14 @@ pub struct GameSettings {
     /// Filtering of texture pack images: off, mipmaps, or mipmaps with
     /// anisotropic filtering (no effect without a pack).
     pub tex_filter: TexFilter,
+    /// Material maps (`gpu::Quality::materials`, off by default): the
+    /// pack's normal maps change the brightness of surfaces the game lit
+    /// with the exact lighting layer. Needs the texture pack on (and one
+    /// with maps) and the native geometrizer; independent of `shading`.
+    pub materials: bool,
+    /// How material maps change brightness (`gpu::Relief`): relief at a
+    /// strength (2 by default), or the faithful rule (`off`).
+    pub materials_relief: gpu::Relief,
     /// The geometrizer on its chip (the game's own program) rather than
     /// the native implementation. Applies when the game starts.
     pub geo_chip: bool,
@@ -98,13 +106,15 @@ impl Default for GameSettings {
             shading_balance: true,
             pack: false,
             tex_filter: TexFilter::Off,
+            materials: false,
+            materials_relief: gpu::Relief::default(),
             geo_chip: false,
         }
     }
 }
 
 /// Every game setting's key, in the order the panels show them.
-pub const KEYS: [&str; 19] = [
+pub const KEYS: [&str; 21] = [
     "wide",
     "bezel",
     "hud_edges",
@@ -121,6 +131,8 @@ pub const KEYS: [&str; 19] = [
     "shading_balance",
     "pack",
     "tex_filter",
+    "materials",
+    "materials_relief",
     "sfx_db",
     "music_db",
     "geo",
@@ -172,6 +184,8 @@ impl GameSettings {
             "shading_balance" => self.shading_balance.to_string(),
             "pack" => self.pack.to_string(),
             "tex_filter" => self.tex_filter.to_string(),
+            "materials" => self.materials.to_string(),
+            "materials_relief" => self.materials_relief.name(),
             "geo" => if self.geo_chip { "chip" } else { "native" }.to_string(),
             _ => String::new(),
         }
@@ -205,6 +219,8 @@ impl GameSettings {
             "shading_balance" => flag(v).map(|x| self.shading_balance = x).is_some(),
             "pack" => flag(v).map(|x| self.pack = x).is_some(),
             "tex_filter" => TexFilter::parse(v).map(|f| self.tex_filter = f).is_some(),
+            "materials" => flag(v).map(|x| self.materials = x).is_some(),
+            "materials_relief" => gpu::Relief::parse(v).map(|r| self.materials_relief = r).is_some(),
             "geo" => match model2::geo::GeoMode::parse(v) {
                 Some(model2::geo::GeoMode::Chip) => {
                     self.geo_chip = true;
@@ -254,6 +270,21 @@ impl GameSettings {
         self.shading != gpu::Shading::Flat && self.crease != 0
     }
 
+    /// Material maps as asked for: on, with the texture pack on. Whether
+    /// they show depends on the pack having maps and on the exact
+    /// lighting layer (the native geometrizer), which the renderer finds
+    /// out frame by frame (`gpu::PackStats::lamped`).
+    pub fn materials_on(&self) -> bool {
+        self.materials && self.pack
+    }
+
+    /// The geometrizer's lighting side channel (`Geometrizer::set_light`):
+    /// for smooth shading, or for material maps (their lamps come from it,
+    /// with shading flat too).
+    pub fn side_channel_on(&self) -> bool {
+        self.light_on() || self.materials_on()
+    }
+
     /// The renderer's quality for these settings (`supported`: the GPU
     /// has temporal anti-aliasing). Multisampling is asked for as set; the
     /// renderer turns it off while temporal is on.
@@ -268,9 +299,8 @@ impl GameSettings {
             crease: self.crease,
             shading_fine: self.shading_fine,
             shading_balance: self.shading_balance,
-            // Material maps aren't drawn yet, so the player doesn't load them.
-            materials: false,
-            materials_relief: gpu::Relief::default(),
+            materials: self.materials_on(),
+            materials_relief: self.materials_relief,
         }
     }
 }
@@ -773,6 +803,44 @@ mod tests {
         let s = Settings::parse("shading = pixel\nshading_balance = false\n");
         let (v, _) = with_game(Settings::parse(&s.text()), "x", &[]).resolve("x");
         assert!(!v.shading_balance && v.shading == gpu::Shading::Pixel);
+    }
+
+    #[test]
+    fn materials_and_relief() {
+        let mut v = GameSettings::default();
+        // Off by default: the quality is what it was before materials.
+        assert_eq!((v.get("materials").as_str(), v.get("materials_relief").as_str()), ("false", "2"));
+        assert!(!v.quality(true).materials && !v.side_channel_on());
+        assert_eq!(v.quality(true), gpu::Quality { msaa: 0, ..Default::default() });
+        // On, but no pack: nothing asked of the renderer.
+        assert!(v.set("materials", "true") && v.materials && !v.materials_on() && !v.quality(true).materials);
+        v.pack = true;
+        assert!(v.materials_on() && v.quality(true).materials && v.side_channel_on() && !v.light_on());
+        assert!(!v.set("materials", "on") && v.materials);
+        // The rule: a strength from 0.1 to 8, or off (faithful).
+        for (text, r) in [
+            ("off", gpu::Relief::Faithful),
+            ("1", gpu::Relief::Diffuse { tenths: 10 }),
+            ("0.5", gpu::Relief::Diffuse { tenths: 5 }),
+            ("8", gpu::Relief::Diffuse { tenths: 80 }),
+            ("2", gpu::Relief::default()),
+        ] {
+            assert!(v.set("materials_relief", text));
+            assert_eq!((v.materials_relief, v.get("materials_relief")), (r, text.to_string()));
+            assert_eq!(v.quality(true).materials_relief, r);
+        }
+        assert!(!v.set("materials_relief", "9") && !v.set("materials_relief", "0") && !v.set("materials_relief", "x"));
+        // Through the files; unset, nothing is written.
+        assert!(Settings::default().text().find("materials").is_none());
+        let s = Settings::parse("pack = true\nmaterials = true\nmaterials_relief = off\n");
+        let (v, _) = with_game(Settings::parse(&s.text()), "x", &[]).resolve("x");
+        assert!(v.materials_on() && v.materials_relief == gpu::Relief::Faithful);
+        // Back to the defaults: nothing stored.
+        let mut s = with_game(s, "x", &[]);
+        let (mut v, _) = s.resolve("x");
+        (v.materials, v.materials_relief) = (false, gpu::Relief::default());
+        edit_quietly(&mut s, "x", &v);
+        assert!(!s.defaults.contains_key("materials") && !s.defaults.contains_key("materials_relief"));
     }
 
     /// `edit` without saving (the layers it would touch are given).

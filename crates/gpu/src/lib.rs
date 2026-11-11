@@ -257,6 +257,14 @@ pub struct PackStats {
     pub material_uploaded: u32,
     pub material_held: u32,
     pub material_bytes: u64,
+    /// With [`Quality::materials`] and a pack that has maps: textured
+    /// polygons the game lit with the exact lighting layer (a lamp and a
+    /// tangent frame: the only ones a material can change), and of them
+    /// those drawn with a material. 0 lamped while `textured` isn't: no
+    /// polygon had the exact layer (the chip, no side channel, every block
+    /// demoted by the self-check).
+    pub lamped: u32,
+    pub material_polys: u32,
 }
 
 /// GPU memory pack images may hold before the least recently drawn are
@@ -1195,10 +1203,12 @@ impl Renderer {
             // As the software renderer: only a polygon with a lamp and a
             // tangent frame has a material to draw.
             let material = if materials && p.lamp.as_ref().is_some_and(|l| l.tangent.is_some()) {
+                stats.lamped += 1;
                 self.materials.draw(pack.as_mut(), &info, &self.device, &self.queue, mip, frame, max)
             } else {
                 None
             };
+            stats.material_polys += material.is_some() as u32;
             let entry = match self.pack_tex.entry(info.key) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut().as_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => match pack.find(&info) {

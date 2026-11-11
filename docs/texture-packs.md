@@ -170,9 +170,9 @@ material maps are named, made, checked and loaded (below, "Loading material
 maps"); normal maps are drawn by the software renderer (`run` snapshots and
 `pack-check` with `--materials`; below, "How material maps light") and by
 the GPU renderer (`gpu::Quality::materials`; `gpu-check --materials`;
-docs/gpu.md, "Material maps"), not yet in the player or the browser, which
-have no setting for them; specular and gloss maps are loaded but not
-drawn.
+docs/gpu.md, "Material maps"), which the player and the browser use behind
+their `materials` setting (off by default; below, "Trying material maps");
+specular and gloss maps are loaded but not drawn.
 
 **Format 1** is everything above: `tex_<key>_<w>x<h>.png`,
 `tile_<key>.png`, any subset, `index.txt` for the browser, and tool records
@@ -276,10 +276,11 @@ twice, a value out of range) refuses the pack, with the line it is on.
    keywords (the player prints one line about them, `pack-lint` lists
    them), unknown kinds of file and unknown names in `uses`. A pack that
    must not be shown without a feature puts it in `needs`, and a reader
-   that can't show it refuses the whole pack. The player and the browser
-   don't draw material maps yet (the GPU renderer can, but they have no
-   setting to turn it on), so today `needs materials` refuses the pack
-   everywhere and `uses materials` is informative.
+   that can't show it refuses the whole pack. Every reader (the CLI, the
+   player, the browser) draws material maps, so `needs materials` is
+   accepted everywhere (`model2::pack::SHOWN`); whether the maps are drawn
+   stays the user's `materials` setting, and with it off such a pack shows
+   its images without the maps. `uses materials` is informative.
 4. Tools write `pack.txt` only when the pack holds something format 1
    can't say; a plain upscaled pack gets none (`make upscale-textures`
    writes none) and stays readable by older builds, which show its images
@@ -308,9 +309,9 @@ box-averaged with the images' weights. The CLI (`--texture-pack`) loads a
 material on first use; the player decodes and assembles it on its pack
 threads; the browser fetches its files like images (`pack_wanted`) and
 assembles them when all have arrived. The GPU renderer asks for a texture's
-material only with `gpu::Quality::materials` on (default off; nothing in
-the player or the browser turns it on yet; `remodel --materials` does for
-`gpu-check`, `depth-check` and `pack-check`), uploads it as one
+material only with `gpu::Quality::materials` on (default off; the player's
+and the browser's `materials` setting turns it on, `remodel --materials`
+for `gpu-check`, `depth-check` and `pack-check`), uploads it as one
 `Rgba8Unorm` texture (with mips when `tex_filter` has them) and keeps it
 under the same budget as the images (below), for polygons that have a lamp
 (as the software renderer asks). It draws them as the software renderer
@@ -868,7 +869,81 @@ hand-made and edited ones (delete a map to have it remade).
 On topskatr's 4x ESRGAN pack with a coin-start dump (241 textures, 194
 surfaces): 186 maps (8 flat colours left out) in 4.3 s on 20 cores, 37 MiB
 on disk, 116 MB of GPU memory if all were drawn (154 MB mipmapped);
-`pack-lint` clean on the result. Nothing draws the maps yet.
+`pack-lint` clean on the result. With the older dump in `out/topskatr/texdump`
+(no `surf=`), one map per image: 234 maps (7 flat left out) in 8 s, 73 MiB.
+
+### Trying material maps
+
+Make the maps into a copy of a pack (the tool writes into `TEXPACK`; keep
+the pack you made by hand or upscaled as it is), check it, then play with
+them on:
+
+```sh
+cp -r out/topskatr/texpack-esrgan-match out/scratch/materials/topskatr-pack
+make pack-materials GAME=topskatr TEXPACK=out/scratch/materials/topskatr-pack TEXDUMP=out/topskatr/texdump
+make pack-lint PACK=out/scratch/materials/topskatr-pack TEXDUMP=out/topskatr/texdump
+make play GAME=topskatr PLAY_ARGS="--texture-pack out/scratch/materials/topskatr-pack --materials --shading pixel"
+```
+
+A pack needs no images for maps to show: made from a dump into an empty
+folder (`TEXPACK=` a new folder, `TEXDUMP=` the dump), it holds only maps,
+and the game's own textures are drawn with them.
+
+**The settings** (docs/play.md, docs/web.md): `materials` (off by default;
+player `--materials on|off`, the menu's and launcher's "Material maps";
+browser `?materials=1`) needs the texture pack on and is independent of
+`shading`: with `shading = flat` the faces stay flat but carry the maps'
+detail; with `pixel` the maps tilt the interpolated normal. Its rule,
+`materials_relief` (player `--materials-relief off|S`, menu and launcher
+"Material relief" 1, 2, 4, 8 or faithful; browser `?relief=off|S`): relief
+at strength 2 by default, 0.1 to 8 in the settings file and on the command
+line, or `off`, the faithful rule ("How material maps light" above).
+
+**Where they have no effect,** and the player's menu line and window
+title, the launcher's hint and the browser's status line say so: no texture
+pack, a pack without maps (or without a format 2 `pack.txt`), the chip
+geometrizer (`--geo chip`, `?geo=chip`: no exact lighting layer), and
+polygons without a lamp in the frame (unlit, HUD windows, shadows, blocks
+the side channel's self-check demoted; "no polygon had the game's exact
+lighting" when that is the whole frame). The launcher's previews draw
+without them.
+
+**What to expect** (topskatr, srallyc, lastbrnx review, 2026-11-11):
+
+- Brick, stone, paving, wood planks and road get grooves and pits; the
+  wood floor and brick walls of topskatr's courses show it best.
+- The maps are made from brightness, so painted detail becomes bumps:
+  lettering looks engraved, logos and signs embossed, faces get contour
+  lines. List such textures in `materials-exclude.txt` (above) and rerun,
+  or edit the maps.
+- Scenes darken slightly: relief mostly darkens the slopes facing away
+  from the light (0.5 to 3 levels of 255 on average in the review frames).
+- Relief needs lit surfaces: a polygon the game lights with ambient only,
+  or one no light reaches, shows nothing; under the faithful rule neither
+  does scenery lit to full brightness (much of topskatr's), which is why
+  relief is the default.
+- Small dark notches can show where a curved object's polygons meet (each
+  polygon has its own tangent frame).
+
+**Preview without playing:** with captures that carry the lighting side
+channel (`make lighting-capture GAME=topskatr` saves them with `light.bin`
+into `out/scratch/lighting/topskatr/capture`), `make pack-check GAME=topskatr
+PACK=DIR LIGHT_IN=out/scratch/lighting/topskatr/capture GPU_OPTS="--materials
+--shading pixel"` (add `--materials-relief off` for the faithful rule)
+draws each frame with the pack's images without and with its maps on the
+GPU and in software: `FRAME-mat-off.png` and `-mat-on.png` (GPU),
+`-mat-sw.png` (software), `-mat-diff.png` (GPU off | on | difference x8)
+and `-mat-cover.png` (green: a material the exact lighting layer lit;
+orange: a material but no lamp; red: a lamp but a degenerate texture
+frame; grey: no material; it follows the polygon on top in draw order, so
+2D layers and cut-out texels over a material show the colour of what is
+under them). Per frame it reports the share of textured pixels with a
+material and of those with a lamp, the mean and largest brightness
+change, the frame's mean change (flagged over 2 levels: a normal map
+should move it little), the GPU against the software where materials
+apply, GPU ms off and on, and the material memory held. `PROBE=X,Y@FRAME`
+explains one pixel: texture and map files, lamp, normal, tangent frame,
+the map's normal there, base and resulting luma.
 
 ## Limitations
 

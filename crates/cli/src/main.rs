@@ -88,7 +88,8 @@ options:
                        maps in software where the exact lighting layer is
                        (records the side channel, as --light; reports per
                        snapshot what had a lamp and a material), pack-check
-                       adds software pictures without and with them;
+                       adds GPU and software pictures without and with
+                       them, where they apply and a report (--probe);
                        gpu-check draws them on the GPU and in software
                        from each capture's light.bin (captures made with
                        --geo native); depth-check and pack-check load them
@@ -268,6 +269,22 @@ commands:
                        (default out/GAME/pack-check) as FRAME-off, -mip,
                        -aniso16, -swmip and -ref.png, and report how far each
                        is from the reference and what they cost.
+                       --materials (captures with light.bin, made with
+                       --geo native): also, per frame, the pack without and
+                       with its material maps under the frame's own light
+                       at the given --shading, unfiltered: -mat-off and
+                       -mat-on.png (GPU), -mat-sw.png (software),
+                       -mat-diff.png (GPU off | on | difference x8),
+                       -mat-cover.png (green: a material the exact layer
+                       lit; orange: a material, no lamp; red: a lamp,
+                       degenerate texture frame; grey: none); reports the
+                       share of textured pixels with a material and of
+                       those with a lamp, the brightness change (the
+                       frame's mean over 2 levels is flagged), GPU against
+                       software where applied, GPU ms off and on, and the
+                       material memory held. --probe X,Y@FRAME (repeatable):
+                       for that output pixel the texture, its map files,
+                       lamp, N, T, h, base luma, sampled normal and luma out
                        --identity (no --texture-pack needed): a pack
                        standing for the original textures (--texture-pack
                        DIR, normally the dump itself; none: each frame's own
@@ -1401,6 +1418,19 @@ fn main() -> ExitCode {
                 eprintln!("error: pack-check needs --texture-pack DIR");
                 return ExitCode::FAILURE;
             };
+            let mut probes = Vec::new();
+            while let Some(i) = args.iter().position(|a| a == "--probe") {
+                let Some(p) = args.get(i + 1).and_then(|v| depth_check::Probe::parse(v)) else {
+                    eprintln!("error: --probe wants X,Y@FRAME (output pixel, captured frame)");
+                    return ExitCode::FAILURE;
+                };
+                probes.push(p);
+                args.drain(i..i + 2);
+            }
+            if !probes.is_empty() && !materials_on() {
+                eprintln!("error: pack-check --probe is for --materials");
+                return ExitCode::FAILURE;
+            }
             let default = PathBuf::from("out").join(roms.game.id).join("capture");
             let root = args.get(1).map(PathBuf::from).unwrap_or(default);
             let out = args
@@ -1422,6 +1452,7 @@ fn main() -> ExitCode {
                 &out,
                 light.as_ref(),
                 materials.as_ref(),
+                &probes,
             ) {
                 eprintln!("error: {e}");
                 return ExitCode::FAILURE;

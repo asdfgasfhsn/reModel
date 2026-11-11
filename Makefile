@@ -330,9 +330,9 @@ gpu-check: release ## Draw the captured frames on the software and GPU rasterise
 
 # Where pack-check writes its pictures.
 PACK_CHECK_OUT ?= $(OUT)/pack-check
-pack-check: release ## Draw the captured frames with texture pack PACK= on the GPU unfiltered, mipmapped and 16x anisotropic, in software trilinear and as a supersampled reference; write the pictures to PACK_CHECK_OUT (default OUT/pack-check) and compare them (needs a GPU)
+pack-check: release ## Draw the captured frames with texture pack PACK= on the GPU unfiltered, mipmapped and 16x anisotropic, in software trilinear and as a supersampled reference; write the pictures to PACK_CHECK_OUT (default OUT/pack-check) and compare them; GPU_OPTS="--materials --shading pixel" with LIGHT_IN= captures that have light.bin (make lighting-capture) adds the pack without and with its material maps on the GPU and in software, where they apply and a report, PROBE=X,Y@FRAME what a material does at a pixel (needs a GPU)
 	$(if $(PACK),,$(error pack-check needs PACK=DIR, a texture pack))
-	$(RUN) $(GPU_OPTS) --texture-pack $(PACK) pack-check $(OUT)/capture $(PACK_CHECK_OUT)
+	$(RUN) $(GPU_OPTS) --texture-pack $(PACK) pack-check $(or $(LIGHT_IN),$(OUT)/capture) $(PACK_CHECK_OUT) $(foreach p,$(PROBE),--probe $(p))
 
 # Where tile-check writes its pictures.
 TILE_CHECK_OUT ?= $(OUT)/tile-check

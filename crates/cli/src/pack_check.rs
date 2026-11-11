@@ -54,6 +54,7 @@ pub fn run(
     out_dir: &Path,
     light: Option<&model2::light::Options>,
     materials: Option<&model2::light::Options>,
+    probes: &[crate::depth_check::Probe],
 ) -> Result<(), String> {
     let texture_rom = capture::load_texture_rom(root)
         .map_err(|e| format!("{}: {e} (capture with `make capture`)", root.display()))?;
@@ -152,7 +153,9 @@ pub fn run(
         }
         n += 1;
         if let Some(mo) = materials {
-            material_pictures(&f, &src, &view, depth, mo, &mut sw_pack, &name);
+            let probes: Vec<_> = probes.iter().filter(|p| p.frame == f.frame).collect();
+            let mut m = MatRun { gpu: &mut gpu, q, pack, sw_pack: &mut sw_pack };
+            material_pictures(&f, &src, &view, depth, mo, &mut m, &name, &probes);
         }
     }
     let m = |v: f64| v / n.max(1) as f64;
@@ -173,58 +176,239 @@ pub fn run(
     );
     if materials.is_some() {
         println!(
-            "materials     {}/FRAME-mat-off.png, -mat-sw.png (software, the pack without and with its material maps), -mat-diff.png (off | on | difference x8)",
+            "materials     {}/FRAME-mat-off.png, -mat-on.png (GPU, unfiltered, the pack without and with its material maps), -mat-sw.png (software, with them), -mat-diff.png (GPU off | on | difference x8), -mat-cover.png (green: a material and a lamp from the exact layer; orange: a material, no lamp; red: a lamp, degenerate texture frame; grey: no material)",
             out_dir.display()
         );
     }
     Ok(())
 }
 
-/// `pack-check --materials`: the frame drawn in software (unfiltered) with
-/// the pack without and with its material maps, under the frame's own
-/// light (`light.bin`), saved as `-mat-off`, `-mat-sw` and `-mat-diff`
-/// (both and their difference times 8, side by side), with a line of
-/// counts.
+/// What `pack-check --materials` draws with: the GPU renderer with the
+/// pack (and the run's quality), the pack's folder, and the software's pack.
+struct MatRun<'a> {
+    gpu: &'a mut gpu::Renderer,
+    q: gpu::Quality,
+    pack: &'a Path,
+    sw_pack: &'a mut Packs,
+}
+
+/// What is on top at an output pixel in `-mat-cover.png`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Cover {
+    /// No 3D polygon.
+    None,
+    /// A polygon without a material (untextured, or no map in the pack).
+    Plain,
+    /// A material and a lamp with a tangent frame: the map applies.
+    Applied,
+    /// A material, no lamp (the exact lighting layer didn't light it).
+    NoLamp,
+    /// A material and a lamp, but degenerate texture coordinates.
+    Degenerate,
+}
+
+impl Cover {
+    fn colour(self) -> [u8; 3] {
+        match self {
+            Cover::None | Cover::Plain => [128, 128, 128],
+            Cover::Applied => [40, 220, 60],
+            Cover::NoLamp => [255, 150, 20],
+            Cover::Degenerate => [230, 30, 30],
+        }
+    }
+
+    fn material(self) -> bool {
+        matches!(self, Cover::Applied | Cover::NoLamp | Cover::Degenerate)
+    }
+}
+
+/// Whether output pixel centre (x, y) is inside the convex polygon `pts`.
+fn inside(pts: &[raster::SVtx], x: f32, y: f32) -> bool {
+    let n = pts.len();
+    let side = |i: usize| {
+        let (a, b) = (pts[i], pts[(i + 1) % n]);
+        (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x)
+    };
+    n >= 3 && ((0..n).all(|i| side(i) >= 0.0) || (0..n).all(|i| side(i) <= 0.0))
+}
+
+/// Whether `pl` covers output pixel centre (x, y), inside its clip.
+fn covers(pl: &raster::Placed, x: f32, y: f32) -> bool {
+    x >= pl.clip.0 && x < pl.clip.2 && y >= pl.clip.1 && y < pl.clip.3 && inside(&pl.points, x, y)
+}
+
+/// The polygon (index into the placed polygons' slice) on top at each
+/// output pixel: the last in draw order whose outline covers the pixel
+/// centre inside its clip rectangle. An approximation of the rasteriser:
+/// cut-out texels, the checkerboard, the depth buffer and the 2D layers
+/// over the 3D are not followed.
+fn owners(placed: &[raster::Placed], view: &View) -> Vec<Option<usize>> {
+    let (w, h) = (view.width, view.height);
+    let mut out = vec![None; w * h];
+    for pl in placed {
+        let xs = pl.points.iter().map(|v| v.x);
+        let ys = pl.points.iter().map(|v| v.y);
+        let x0 = pl.clip.0.max(xs.clone().fold(f32::MAX, f32::min));
+        let x1 = pl.clip.2.min(xs.fold(f32::MIN, f32::max));
+        let y0 = pl.clip.1.max(ys.clone().fold(f32::MAX, f32::min));
+        let y1 = pl.clip.3.min(ys.fold(f32::MIN, f32::max));
+        if !(x0 < x1 && y0 < y1) {
+            continue;
+        }
+        let cx = |v: f32| (v.max(0.0) as usize).min(w);
+        let cy = |v: f32| (v.max(0.0) as usize).min(h);
+        for y in cy(y0 - 0.5)..cy(y1 + 0.5) {
+            for x in cx(x0 - 0.5)..cx(x1 + 0.5) {
+                if covers(pl, x as f32 + 0.5, y as f32 + 0.5) {
+                    out[y * w + x] = Some(pl.poly);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Perspective-correct weights of the corners of convex polygon `pts` at
+/// (x, y) (a fan of triangles from corner 0), for interpolating a corner
+/// value `a` as `sum w_k a_k`; None outside.
+fn corner_weights(pts: &[raster::SVtx], x: f32, y: f32) -> Option<Vec<f32>> {
+    for i in 1..pts.len().saturating_sub(1) {
+        let (a, b, c) = (pts[0], pts[i], pts[i + 1]);
+        let d = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+        if d.abs() < 1e-9 {
+            continue;
+        }
+        let l0 = ((b.y - c.y) * (x - c.x) + (c.x - b.x) * (y - c.y)) / d;
+        let l1 = ((c.y - a.y) * (x - c.x) + (a.x - c.x) * (y - c.y)) / d;
+        let l2 = 1.0 - l0 - l1;
+        if l0 < -1e-4 || l1 < -1e-4 || l2 < -1e-4 {
+            continue;
+        }
+        let iz = l0 * a.iz + l1 * b.iz + l2 * c.iz;
+        let mut w = vec![0.0; pts.len()];
+        w[0] = l0 * a.iz / iz;
+        w[i] = l1 * b.iz / iz;
+        w[i + 1] = l2 * c.iz / iz;
+        return Some(w);
+    }
+    None
+}
+
+/// Brightness of an RGB pixel (Rec. 601 weights), 0-255.
+fn brightness(p: &[u8; 3]) -> f64 {
+    0.299 * p[0] as f64 + 0.587 * p[1] as f64 + 0.114 * p[2] as f64
+}
+
+/// `pack-check --materials`: the frame with the pack without and with its
+/// material maps, under the frame's own light (`light.bin`): on the GPU
+/// unfiltered (`-mat-off`, `-mat-on`), in software (`-mat-sw`), the GPU's
+/// two and their difference times 8 side by side (`-mat-diff`) and where
+/// the materials are (`-mat-cover`), with the frame's report and `probes`.
+#[allow(clippy::too_many_arguments)]
 fn material_pictures(
     f: &Frame,
     src: &raster::Sources,
     view: &View,
     depth: bool,
     opts: &model2::light::Options,
-    pack: &mut Packs,
+    m: &mut MatRun,
     name: &dyn Fn(&str) -> std::path::PathBuf,
+    probes: &[&crate::depth_check::Probe],
 ) {
     let Some(side) = f.light_frame() else {
         println!("  materials: frame {} has no light.bin (capture with --light): material maps can't show", f.frame);
         return;
     };
-    let mut draw = |o: &model2::light::Options| {
+    let build = |o: &model2::light::Options| {
         let mut polys = raster::build_shaded_with(&f.stream, src, Some(&side), Some(o));
         video::HudLayout::new(&f.tiles, &f.palette, view).anchor(&mut polys, view);
-        let built = polys.clone();
-        let layer = raster::draw_enhanced_depth(&mut polys, src, view, pack, depth);
-        (video::compose(&f.tiles, &f.palette, Some((&layer.0, &layer.1)), view), built)
+        polys
     };
-    let (off, _) = draw(&opts.with_lamps(false));
-    let (on, polys) = draw(opts);
-    let [drawn, changed] = pack.take_material_counts();
-    let lamped = polys.iter().filter(|p| p.lamp.is_some()).count();
-    let textured = polys.iter().filter(|p| p.texture.is_some()).count();
-    let mean = |img: &[u8]| img.iter().map(|&v| v as f64).sum::<f64>() / img.len().max(1) as f64;
-    let differ = off.as_chunks::<3>().0.iter().zip(on.as_chunks::<3>().0).filter(|(a, b)| a != b).count();
+    let off_polys = build(&opts.with_lamps(false));
+    let on_polys = build(opts);
+    let sw_on = {
+        let mut p = on_polys.clone();
+        let layer = raster::draw_enhanced_depth(&mut p, src, view, m.sw_pack, depth);
+        video::compose(&f.tiles, &f.palette, Some((&layer.0, &layer.1)), view)
+    };
+    let [drawn, lit_px] = m.sw_pack.take_material_counts();
+    // The GPU, unfiltered, without and with the materials.
+    let q = gpu::Quality { tex_filter: TexFilter::Off, ..m.q };
+    let gpu = &mut *m.gpu;
+    let mut gpu_frame = |polys: &[raster::Poly], materials: bool| {
+        let mut polys = polys.to_vec();
+        let placed = raster::place(&mut polys, view);
+        let layers = video::layers_2d(&f.tiles, &f.palette, view, !placed.is_empty());
+        gpu.set_quality(gpu::Quality { materials, ..q });
+        let rgb = gpu.frame(&polys, &placed, src, view, &layers);
+        let stats = gpu.pack_stats();
+        let ms = time(3, || {
+            gpu.frame(&polys, &placed, src, view, &layers);
+        });
+        (rgb, ms, stats, polys, placed)
+    };
+    let (off, off_ms, _, _, _) = gpu_frame(&off_polys, false);
+    let (on, on_ms, st, on_sorted, placed) = gpu_frame(&on_polys, true);
+    // Where the materials are, by the polygon on top.
+    let owner = owners(&placed, view);
+    let mut keys = raster::TexKeys::default();
+    let mut has: HashMap<u64, bool> = HashMap::new();
+    let classes: Vec<Cover> = on_sorted
+        .iter()
+        .map(|p| {
+            let Some(t) = &p.texture else { return Cover::Plain };
+            let Some(info) = raster::tex_info(p, t, src, &mut keys) else { return Cover::Plain };
+            let material = *has.entry(info.key).or_insert_with(|| {
+                !matches!(TexturePack::material(m.sw_pack, &info), model2::enhance::FoundMaterial::Missing)
+            });
+            match (&p.lamp, material) {
+                (_, false) => Cover::Plain,
+                (None, true) => Cover::NoLamp,
+                (Some(l), true) if l.tangent.is_none() => Cover::Degenerate,
+                (Some(_), true) => Cover::Applied,
+            }
+        })
+        .collect();
+    let cover: Vec<Cover> = owner.iter().map(|o| o.map_or(Cover::None, |i| classes[i])).collect();
+    let textured = owner.iter().filter(|o| o.is_some_and(|i| on_sorted[i].texture.is_some())).count();
+    let with_material = cover.iter().filter(|c| c.material()).count();
+    let with_lamp = cover.iter().filter(|c| matches!(c, Cover::Applied | Cover::Degenerate)).count();
+    let (op, np, sp) = (off.as_chunks::<3>().0, on.as_chunks::<3>().0, sw_on.as_chunks::<3>().0);
+    let deltas: Vec<f64> = op.iter().zip(np).map(|(a, b)| brightness(b) - brightness(a)).collect();
+    let changed: Vec<f64> = deltas.iter().copied().filter(|d| *d != 0.0).collect();
+    let mean_change = changed.iter().map(|d| d.abs()).sum::<f64>() / changed.len().max(1) as f64;
+    let largest = changed.iter().fold(0.0f64, |m, d| m.max(d.abs()));
+    let frame_mean = deltas.iter().sum::<f64>() / deltas.len().max(1) as f64;
+    let mask: Vec<bool> = cover.iter().map(|c| *c == Cover::Applied).collect();
+    let (gs_mean, gs_large) = compare(&on, &sw_on, &mask);
+    let pct = |a: usize, b: usize| 100.0 * a as f64 / b.max(1) as f64;
     println!(
-        "  materials: frame {}: {} polygons, {textured} textured, {lamped} with a lamp, {drawn} drawn with a material; {changed} pixels lit by it, {differ} differ ({:.2}%), mean level {:+.3}",
+        "  materials: frame {}: {:.1}% of textured pixels with a material, {:.1}% of those with a lamp; {} pixels \
+         changed ({:.2}%), brightness change mean {mean_change:.2}, largest {largest:.1}; frame mean {frame_mean:+.3}{}",
         f.frame,
-        polys.len(),
-        100.0 * differ as f64 / (off.len() / 3).max(1) as f64,
-        mean(&on) - mean(&off)
+        pct(with_material, textured),
+        pct(with_lamp, with_material),
+        changed.len(),
+        pct(changed.len(), deltas.len()),
+        if frame_mean.abs() > 2.0 { " (over 2 levels: flagged)" } else { "" }
+    );
+    println!(
+        "             GPU against software where applied {gs_mean:.2} mean, {gs_large:.3}% >16; GPU ms off \
+         {off_ms:.1} on {on_ms:.1}; {} polygons with a lamp, {} drawn with a material ({} materials, {} held, {:.1} \
+         MB); software {drawn} drawn with a material, {lit_px} pixel writes changed by one",
+        st.lamped,
+        st.material_polys,
+        st.materials,
+        st.material_held,
+        st.material_bytes as f64 / (1 << 20) as f64
     );
     let (w, h) = (view.width, view.height);
     let png = |s: &str, rgb: &[u8], w: usize| {
         let _ = std::fs::write(name(s), png::encode_rgb(w, h, rgb));
     };
     png("mat-off", &off, w);
-    png("mat-sw", &on, w);
+    png("mat-on", &on, w);
+    png("mat-sw", &sw_on, w);
     // Off | on | |on - off| x 8.
     let mut wide = vec![0u8; w * 3 * h * 3];
     for y in 0..h {
@@ -238,6 +422,124 @@ fn material_pictures(
         }
     }
     png("mat-diff", &wide, w * 3);
+    // False colour shaded by the frame's brightness (no 3D: dimmed).
+    let mut cov = vec![0u8; w * h * 3];
+    for (i, c) in cover.iter().enumerate() {
+        let b = brightness(&np[i]) / 255.0;
+        let k = c.colour();
+        for ch in 0..3 {
+            cov[i * 3 + ch] = match c {
+                Cover::None => (b * 70.0) as u8,
+                _ => (k[ch] as f64 * (0.45 + 0.55 * b)) as u8,
+            };
+        }
+    }
+    png("mat-cover", &cov, w);
+    for p in probes {
+        probe(p, f, src, view, m, &on_sorted, &placed, [op, np, sp]);
+    }
+}
+
+/// `pack-check --materials --probe X,Y@F`: what the material does at one
+/// output pixel of frame F, for the polygon on top as `-mat-cover` finds it
+/// (worked out again in software: unfiltered, level 0 of the map).
+#[allow(clippy::too_many_arguments)]
+fn probe(
+    pr: &crate::depth_check::Probe,
+    f: &Frame,
+    src: &raster::Sources,
+    view: &View,
+    m: &mut MatRun,
+    polys: &[raster::Poly],
+    placed: &[raster::Placed],
+    pixels: [&[[u8; 3]]; 3],
+) {
+    let (x, y) = (pr.x, pr.y);
+    println!("  probe {x},{y}@{}:", f.frame);
+    if x >= view.width || y >= view.height {
+        println!("    outside the {}x{} view", view.width, view.height);
+        return;
+    }
+    let i = y * view.width + x;
+    println!("    GPU off {:?}, GPU on {:?}, software on {:?}", pixels[0][i], pixels[1][i], pixels[2][i]);
+    let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+    let Some(pl) = placed.iter().rev().find(|pl| covers(pl, fx, fy)) else {
+        println!("    no 3D polygon");
+        return;
+    };
+    let p = &polys[pl.poly];
+    println!("    polygon {} (window {}), flat luma {}, colour {:?}", pl.poly, p.window, p.luma, p.colour);
+    let Some(t) = &p.texture else {
+        println!("    untextured: no material");
+        return;
+    };
+    let mut keys = raster::TexKeys::default();
+    let Some(info) = raster::tex_info(p, t, src, &mut keys) else {
+        println!("    texture without a key: no material");
+        return;
+    };
+    let stems = model2::pack::resolve_maps(&info, |s| m.pack.join(format!("{s}.png")).is_file());
+    let files: Vec<String> = stems.iter().flatten().map(|s| format!("{s}.png")).collect();
+    println!(
+        "    texture {} (image {}); maps {}",
+        info.name(),
+        if m.pack.join(format!("{}.png", info.name())).is_file() { "from the pack" } else { "the original" },
+        if files.is_empty() { "none".to_string() } else { files.join(", ") }
+    );
+    let Some(w) = corner_weights(&pl.points, fx, fy) else {
+        println!("    the pixel centre is in no corner triangle");
+        return;
+    };
+    let lerp = |g: &dyn Fn(usize) -> f32| w.iter().enumerate().map(|(k, w)| w * g(k)).sum::<f32>();
+    let (u, v) = (lerp(&|k| pl.points[k].uz / pl.points[k].iz), lerp(&|k| pl.points[k].vz / pl.points[k].iz));
+    let Some(l) = &p.lamp else {
+        println!("    u {u:.2} v {v:.2}; no lamp (not lit by the exact layer): the material changes nothing");
+        return;
+    };
+    let corners = p.lit.len() == pl.points.len();
+    let lit_normals = corners && p.lit.iter().any(|c| c[1] != 0.0 || c[2] != 0.0 || c[3] != 0.0);
+    let n = if lit_normals { [1, 2, 3].map(|c| lerp(&|k| p.lit[k][c])) } else { l.n };
+    let base = match (&p.pixel, corners) {
+        (Some(px), true) => raster::pixel_luma(px, lerp(&|k| p.lit[k][0]), n),
+        (None, true) => lerp(&|k| p.lit[k][0]),
+        _ => p.luma as f32 + 0.5,
+    };
+    println!(
+        "    lamp {:?} offset {:.2}; N {:.3?} out {:+}; normal at the pixel {:.3?} ({}); range {:?}; rule {}",
+        l.light.lamp,
+        l.light.offset,
+        l.n,
+        l.out,
+        n,
+        if lit_normals { "interpolated corners" } else { "the face's" },
+        l.range,
+        match l.relief.strength() {
+            Some(s) => format!("relief {s}"),
+            None => "faithful".into(),
+        }
+    );
+    match l.tangent {
+        Some(tg) => println!("    T {:.3?} h {:+} (B = h (out N x T'))", tg.t, tg.h),
+        None => println!("    no tangent frame (degenerate texture coordinates): the material changes nothing"),
+    }
+    let mat = match TexturePack::material(m.sw_pack, &info) {
+        model2::enhance::FoundMaterial::Maps(mat) => mat,
+        _ => {
+            println!("    u {u:.2} v {v:.2}; base luma {base:.2}; no material in the pack");
+            return;
+        }
+    };
+    let (sx, sy) = raster::material_normal(std::slice::from_ref(&*mat), t, u, v, 0.0);
+    let out = raster::material_luma(l, n, base, (sx, sy), mat.normal_scale);
+    println!(
+        "    u {u:.2} v {v:.2}; sampled t ({sx:+.3}, {sy:+.3}) (level 0, bilinear), normal scale {}; base luma {base:.2} -> {}",
+        mat.normal_scale,
+        match out {
+            None => "unchanged".to_string(),
+            Some((l, None)) => format!("luma {l:.2} (faithful)"),
+            Some((l, Some(k))) => format!("luma {l:.2} times {k:.3}, texel by texel (relief)"),
+        }
+    );
 }
 
 /// `remodel tile-check`: draw captured frames with a texture pack's tile

@@ -184,6 +184,29 @@ game computes. Checked on `topskatr` with a scripted run (tiles too:
 `--shot` in a race, the HUD drawn from realesrgan-x4plus tiles). *Not verified:* smooth motion's in-betweens and F5/F9 save
 slots with a pack, and decode stutter was not measured.
 
+**Material maps** (settings `materials` and `materials_relief`, below;
+`--materials on|off` and `--materials-relief off|S` for one run; off, and
+relief 2, by default; docs/texture-packs.md, "Trying material maps"). With
+`materials` on and a texture pack whose `pack.txt` says format 2 and that
+holds normal maps (`make pack-materials` makes them), the maps tilt each
+pixel's normal and the game's own lights shade the bumps: grooves in wood
+and brick, rougher road. It needs the texture pack on and works with any
+`shading` (with `flat` the polygons stay flat but carry the maps' detail;
+the player then records the geometrizer's lighting side channel, as
+shading does, for the lamps). `materials_relief` is the rule: relief at a
+strength (the menu and launcher offer 1, 2, 4 and 8; the settings file and
+command line 0.1 to 8), how strongly the bumps' light change scales the
+surface's brightness, or `off`, the faithful rule (the map's normal in the
+game's own lighting sum: subtler, and nothing where the game lights a
+surface to full brightness). The menu's line under the checkbox (and the
+window title) says what the last frame did, e.g. `relief 2: maps on 1477
+of 1534 lit textured polygons (93 materials drawn, 93 held, 62 MB; 234
+map files)`, or why they have no effect: no texture pack, a pack without
+maps, the chip geometrizer (`--geo chip`: no exact lighting layer, the
+picture is as with them off), or no polygon in the frame lit by the exact
+layer. The launcher's previews draw without them. Maps share the pack's
+GPU memory budget with its images. Nothing the game computes changes.
+
 **Smooth motion** (a setting, below; `--smooth on|off` for one run, a
 bare `--smooth` meaning on; off by default). On a
 display faster than the game's 57.5 Hz, the refreshes between two game
@@ -369,12 +392,12 @@ emulated like the game would be (it costs what the game costs).
 
 **Settings** slide out from the right over the preview, which shows what
 they change as they change (except anti-aliasing, temporal anti-aliasing,
-the depth buffer, shading and the texture pack and its filtering, which
-the preview draws without; they show in the game): aspect (fit the window
+the depth buffer, shading, the texture pack and its filtering and
+material maps, which the preview draws without; they show in the game): aspect (fit the window
 or 4:3), bezel, HUD at the edges or centred, speed (one frame a refresh or
 exact arcade speed), smooth motion, run-ahead (off, 1, 2, 3), anti-aliasing (off, 4x, 8x), temporal anti-aliasing (off,
 TAA, 75%, 67%, 50%) and its checkerboard see-through (blend or keep), the depth buffer, shading (flat,
-vertex, pixel; with the chip geometrizer pixel says it draws as vertex), its brightness levels (the game's or blended) and its brightness balance (on or off), the texture pack and its filtering (off, mip, 2x to 16x), the effects and music levels in dB, the geometrizer (native
+vertex, pixel; with the chip geometrizer pixel says it draws as vertex), its brightness levels (the game's or blended) and its brightness balance (on or off), the texture pack and its filtering (off, mip, 2x to 16x), material maps (off or on; no effect without the pack or with the chip, said in place of the hint) and their relief (1, 2, 4, 8 or faithful), the effects and music levels in dB, the geometrizer (native
 or the game's chip; the preview restarts on it) and the Controls page
 (remapping, below). "Save for" says where changes go: the defaults for all
 games, or this game only (a game's own setting is tagged "this game", and
@@ -382,7 +405,7 @@ games, or this game only (a game's own setting is tagged "this game", and
 the Esc menu while playing. They come in layers, lowest first, as in the
 browser build: the built-in defaults, the defaults for all games, the
 game's own, then the command line (`--mix`, `--hud`, `--aspect`, `--bezel`,
-`--exact`, `--smooth`, `--run-ahead`, `--aa`, `--temporal`, `--stipple`, `--depth`, `--shading`, `--crease`, `--shading-fine`, `--shading-balance`, `--pack`, `--texture-pack`, `--tex-filter`, `--geo`), which applies to that run only and is
+`--exact`, `--smooth`, `--run-ahead`, `--aa`, `--temporal`, `--stipple`, `--depth`, `--shading`, `--crease`, `--shading-fine`, `--shading-balance`, `--pack`, `--texture-pack`, `--tex-filter`, `--materials`, `--materials-relief`, `--geo`), which applies to that run only and is
 never saved, unless a setting it gave is changed in the launcher or menu
 (that change is then kept as any other). A layer keeps only what it sets.
 
@@ -412,6 +435,9 @@ E.g.
 `remodel-play --no-sound --seconds 6 --shot-size 3840x2160@2 --nav settings@3 --shot out/launcher.png`,
 or the menu over a game, left from the pad:
 `remodel-play --game topskatr --no-splash --no-sound --seconds 10 --nav start+select@3,down@3.5:3,left@7,accept@7.5 --shot out/back.png`.
+`--frames N` ends the run when the game reaches frame N (it stops there),
+so `--shot` pictures that frame: with `--input coin-start` the same frame
+the CLI's `--capture` saves, for `gpu-check` to draw beside it.
 It's drawn with egui (`crates/play/src/launcher.rs`), its layout and
 navigation tested headless (`cargo test -p remodel-play`).
 
@@ -786,7 +812,8 @@ synthetic and scripted (`--nav`) events only, not yet with a real pad.
   anti-aliasing, temporal anti-aliasing and the checkerboard pattern, and
   the depth buffer, shading and its blended brightness levels (above; the crease angle is the settings
   file's or `--crease`'s), the texture pack and its
-  filtering (above), run-ahead (above), the geometrizer (on the next start),
+  filtering, material maps and their relief, with a line on what they did
+  or why they have no effect (above), run-ahead (above), the geometrizer (on the next start),
   fullscreen (as F11), "Save changes for" this game or all games (as in the launcher), and exact arcade speed
   (57.524 frames per second) against the default of one game frame per
   display refresh at 60 or 120 Hz, which is 4.3% fast but smooth.

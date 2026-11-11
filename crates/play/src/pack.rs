@@ -162,6 +162,12 @@ impl DirPack {
         self.names.len()
     }
 
+    /// Material map files in it (0 unless its manifest is format 2 or
+    /// later).
+    pub fn maps(&self) -> usize {
+        self.maps.len()
+    }
+
     /// The image named `name` (a file stem): see `TexturePack::find`.
     fn get(&mut self, name: String) -> Found {
         if !self.names.contains(&name) {
@@ -299,9 +305,14 @@ mod tests {
         std::fs::remove_file(dir.join("pack.txt")).unwrap();
         let mut plain = DirPack::open(&dir).unwrap();
         assert!(!plain.has_materials() && matches!(plain.material(&info), FoundMaterial::Missing));
+        // A pack that needs material maps is shown (with the maps when the
+        // player's setting is on).
+        std::fs::write(dir.join("pack.txt"), "format 2\nneeds materials\n").unwrap();
+        let needs = DirPack::open(&dir).unwrap();
+        assert!(needs.has_materials() && needs.maps() == 1 && needs.len() == 1);
         // A pack of a newer format, or one needing what this build can't
         // show, is refused (the player then draws the originals).
-        for m in ["format 3\n", "format 2\nneeds materials\n"] {
+        for m in ["format 3\n", "format 2\nneeds models\n"] {
             std::fs::write(dir.join("pack.txt"), m).unwrap();
             let e = DirPack::open(&dir).err().unwrap();
             assert!(e.contains("can't show") || e.contains("newer reModel"), "{e}");

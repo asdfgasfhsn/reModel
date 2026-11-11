@@ -72,6 +72,9 @@ pub struct View<'a> {
     /// How the texture pack is doing (where it is, what it replaced), or
     /// why there is none, while the setting is on.
     pub pack: Option<&'a str>,
+    /// What material maps did in the last frame, or why they have no
+    /// effect, while the setting is on.
+    pub materials: Option<&'a str>,
 }
 
 /// Temporal anti-aliasing's choices: render scale in percent, label.
@@ -80,6 +83,9 @@ const TEMPORAL: [(u8, &str); 5] = [(0, "off"), (100, "TAA"), (75, "75%"), (67, "
 /// Smooth shading's choices.
 const SHADING: [(gpu::Shading, &str); 3] =
     [(gpu::Shading::Flat, "flat"), (gpu::Shading::Vertex, "vertex"), (gpu::Shading::Pixel, "pixel")];
+
+/// Material maps' rules: relief strengths and the faithful rule (`off`).
+pub const RELIEF: [(&str, &str); 5] = [("1", "1"), ("2", "2"), ("4", "4"), ("8", "8"), ("faithful", "off")];
 
 /// What the shading setting does as set (said beside its choices).
 fn shading_hint(v: &GameSettings) -> &'static str {
@@ -350,6 +356,27 @@ impl Menu {
                     }
                 });
                 ui.weak("(of texture pack images: mipmaps stop the shimmer at a distance, anisotropic adds sharpness)");
+                ui.add_enabled_ui(settings.pack, |ui| {
+                    focus.checkbox(
+                        ui,
+                        &mut settings.materials,
+                        "Material maps  (the pack's normal maps: bumps lit by the game's lights)",
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Material relief:");
+                    ui.add_enabled_ui(settings.materials_on(), |ui| {
+                        for (text, v) in RELIEF {
+                            if let Some(r) = gpu::Relief::parse(v) {
+                                focus.radio(ui, "materials_relief", &mut settings.materials_relief, r, text);
+                            }
+                        }
+                    });
+                    ui.weak("(strength, 2 by default; faithful: the game's own lighting sum, subtler)");
+                });
+                if let (true, Some(text)) = (settings.materials, view.materials) {
+                    ui.weak(text);
+                }
                 ui.horizontal(|ui| {
                     ui.label("Geometrizer:");
                     focus.radio(ui, "geo", &mut settings.geo_chip, false, "native");
@@ -604,6 +631,7 @@ mod tests {
             max_anisotropy: 16,
             temporal_supported: true,
             pack: None,
+            materials: None,
         };
         let (mut fullscreen, mut for_all) = (false, false);
         for navs in [&[][..]].iter().chain(frames) {
@@ -756,6 +784,7 @@ mod tests {
                 max_anisotropy: 16,
                 temporal_supported: true,
                 pack: None,
+                materials: None,
             };
             let mut out = ctx.run_ui(input, |ui| {
                 m.ui(ui.ctx(), &mut s, Prefs { fullscreen: &mut f, for_all: &mut a }, &view, None, navs);

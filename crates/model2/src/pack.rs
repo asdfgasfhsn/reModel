@@ -26,9 +26,12 @@ pub const KEYS: u32 = 1;
 /// (material maps), and reserved `models` and `selflit`.
 pub const FEATURES: [&str; 3] = ["materials", "models", "selflit"];
 /// The features this build's readers show. A pack that `needs` any other is
-/// refused whole. None yet: readers load material maps but none draws them,
-/// and `needs` means the pack must not be shown without them.
-pub const SHOWN: [&str; 0] = [];
+/// refused whole. `materials`: the CLI, the player and the browser draw
+/// material maps (`gpu::Quality::materials`, the software renderer's
+/// `--materials`); with the user's setting off such a pack still shows its
+/// images, without the maps (the setting is the user's choice, not the
+/// pack's).
+pub const SHOWN: [&str; 1] = ["materials"];
 /// Largest pack-wide or per-material strength (`normal_scale`, `spec_scale`,
 /// `normal=`, `spec=`).
 pub const SCALE_MAX: f32 = 4.0;
@@ -517,8 +520,9 @@ mod tests {
         assert!(Manifest::accept(Some("format 2\nkeys 2\n")).unwrap_err().contains("key scheme 2"));
         let e = Manifest::accept(Some("format 2\nneeds\tteleport\n")).unwrap_err();
         assert!(e.contains("needs teleport"), "{e}");
-        // No reader draws material maps yet: a pack that needs them is refused.
-        assert!(Manifest::accept(Some("format 2\nneeds materials\n")).is_err());
+        // Every reader draws material maps: a pack that needs them is shown.
+        assert!(Manifest::accept(Some("format 2\nneeds materials\n")).is_ok());
+        assert!(Manifest::accept(Some("format 2\nneeds materials, models\n")).unwrap_err().contains("needs models"));
         assert!(Manifest::accept(Some("format 2\nuses materials\n")).is_ok());
     }
 

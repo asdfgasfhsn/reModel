@@ -138,11 +138,26 @@ usage: remodel-play [options]
                      filtering of texture pack images: off (as they are),
                      mipmaps, or mipmaps and anisotropic filtering up to 2
                      to 16 times where the GPU has it. Default off
+  --materials on|off the texture pack's material maps (normal maps): the
+                     surfaces' bumps and grooves lit by the game's own
+                     lights. Needs --pack, a pack with maps and the native
+                     geometrizer (no effect with --geo chip); works with
+                     any --shading (docs/texture-packs.md). Default off
+  --materials-relief off|S
+                     with --materials: relief at strength S (0.1 to 8),
+                     the bumps' light change relative to the surface's
+                     brightness (shows on fully lit scenery too), or off
+                     for the faithful rule (the map's normal in the game's
+                     own lighting sum: little shows where the game lights
+                     to full). Default 2
   --exact            run at the arcade's exact 57.524 frames per second
                      (default: one frame per display refresh when the
                      refresh is 60 or 120 Hz, which is 4.3% fast but smooth)
   --fullscreen       start fullscreen
   --seconds N        quit after N seconds (for timing runs)
+  --frames N         quit when the game reaches frame N (the game stops
+                     there; with --shot, a picture of that frame, to set
+                     beside the CLI's of the same frame)
   --no-splash        don't show the logo at startup
   --input SCRIPT     scripted inputs, as for `remodel run` (for timing runs),
                      e.g. coin-start (the game's own coin-up and start)
@@ -160,7 +175,7 @@ usage: remodel-play [options]
 The game's settings (mix, HUD, aspect, bezel, speed, smooth motion,
 run-ahead, anti-aliasing, temporal anti-aliasing and stipple, depth buffer,
 shading, crease, finer levels and brightness balance, texture pack and
-filtering, geometrizer) given here are for this run only, over the
+filtering, material maps and their rule, geometrizer) given here are for this run only, over the
 defaults for all games and the game's own, which the launcher's settings
 and the menu keep.
 --rom and --fullscreen are remembered.
@@ -200,6 +215,8 @@ struct Options {
     sound: bool,
     interp: bool,
     seconds: Option<f64>,
+    /// `--frames`: quit at this game frame.
+    frames: Option<u64>,
     /// `--input`, parsed against the game's inputs when it starts.
     input: Option<String>,
     /// `--game`: start it straight away.
@@ -255,6 +272,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
         sound: true,
         interp: false,
         seconds: None,
+        frames: None,
         input: None,
         game: None,
         splash: true,
@@ -449,6 +467,26 @@ fn options(s: &mut Settings) -> Result<Options, String> {
                 };
                 cli("tex_filter", &f.to_string());
             }
+            "--materials" => {
+                let on = match args.peek().map(String::as_str) {
+                    Some("on") => {
+                        args.next();
+                        true
+                    }
+                    Some("off") => {
+                        args.next();
+                        false
+                    }
+                    _ => true,
+                };
+                cli("materials", &on.to_string());
+            }
+            "--materials-relief" => {
+                let Some(r) = gpu::Relief::parse(&value()?) else {
+                    return Err("--materials-relief wants off or a strength from 0.1 to 8".into());
+                };
+                cli("materials_relief", &r.name());
+            }
             "--no-splash" => o.splash = false,
             "--fullscreen" => fullscreen = true,
             "--exact" => {
@@ -456,6 +494,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
             }
             "--input" => o.input = Some(value()?),
             "--seconds" => o.seconds = Some(value()?.parse().map_err(|_| "bad --seconds")?),
+            "--frames" => o.frames = Some(value()?.parse().map_err(|_| "bad --frames")?),
             "-h" | "--help" => return Err(String::new()),
             _ => return Err(format!("unknown option {a}")),
         }
@@ -471,6 +510,9 @@ fn options(s: &mut Settings) -> Result<Options, String> {
         && s.cli.get("geo").is_some_and(|v| v == "chip")
     {
         eprintln!("--temporal: off with --geo chip (its motion data comes from the native geometrizer)");
+    }
+    if s.cli.get("materials").is_some_and(|v| v == "true") && s.cli.get("geo").is_some_and(|v| v == "chip") {
+        eprintln!("--materials: no effect with --geo chip (the lighting they need comes from the native geometrizer)");
     }
     Ok(o)
 }
@@ -496,6 +538,8 @@ struct Session {
     /// The last frame drawn was run-ahead's (so the renderer's copy of
     /// video RAM is that machine's).
     drew_ahead: bool,
+    /// Started on the geometrizer's chip (the setting applies on starting).
+    geo_chip: bool,
 }
 
 /// `set`'s save state folder.
@@ -754,8 +798,8 @@ struct Play {
 struct PackState {
     /// The directory wanted (None: no pack).
     dir: Option<PathBuf>,
-    /// Images in it, or why it can't be used.
-    loaded: Option<Result<usize, String>>,
+    /// Images and material map files in it, or why it can't be used.
+    loaded: Option<Result<(usize, usize), String>>,
 }
 
 struct Bezel {
@@ -880,9 +924,9 @@ impl Play {
             }
             machine.bus.geo.set_mode(values.geo_mode());
             machine.bus.geo.set_smooth(values.motion_on());
-            // Smooth shading lights from what the geometrizer knew (run-ahead's
-            // machine is made like this one).
-            machine.bus.geo.set_light(values.light_on());
+            // Smooth shading and material maps light from what the
+            // geometrizer knew (run-ahead's machine is made like this one).
+            machine.bus.geo.set_light(values.side_channel_on());
             // Drawing can go ahead with the last frame's polygons when the
             // geometrizer is late (`frame`).
             machine.bus.geo.set_keep_last(true);
@@ -915,6 +959,7 @@ impl Play {
                 run_ahead: None,
                 run_ahead_dropped: false,
                 drew_ahead: false,
+                geo_chip: values.geo_chip,
             };
             s.set_run_ahead(values.run_ahead, values.motion_on(), Some(&roms), &self.settings.rom);
             Ok(s)
@@ -1010,6 +1055,7 @@ impl Play {
             run_ahead: None,
             run_ahead_dropped: false,
             drew_ahead: false,
+            geo_chip: self.values.geo_chip,
         });
         self.preview.shown = None;
         self.preview.leaving = None;
@@ -1097,9 +1143,9 @@ impl Play {
                 s.set_run_ahead(frames, motion(&new), None, &rom);
             }
         }
-        if old.light_on() != new.light_on() && !preview {
+        if old.side_channel_on() != new.side_channel_on() && !preview {
             if let Some(s) = &mut self.session {
-                s.set_light(new.light_on());
+                s.set_light(new.side_channel_on());
             }
         }
         if old.geo_chip != new.geo_chip {
@@ -1168,6 +1214,7 @@ impl Play {
             let at = self.bezel_at(&view, origin, w);
             let slots = self.slot_times();
             let pack_text = self.pack_text();
+            let materials_text = self.materials_text();
             let (Some(g), Some(s)) = (&mut self.gpu, &mut self.session) else { return Err("no game".into()) };
             g.renderer.forget_ram();
             // A one-off frame: with temporal on, the plain (unjittered) one.
@@ -1186,6 +1233,7 @@ impl Play {
                 max_anisotropy: self.max_anisotropy,
                 temporal_supported: self.temporal_supported,
                 pack: pack_text.as_deref(),
+                materials: materials_text.as_deref(),
             };
             draw_overlay(g, &target, false, [w, h], Some(ppp), |ctx| {
                 if let (Some(b), Some((rect, pic))) = (bezel.as_mut(), at) {
@@ -1233,8 +1281,9 @@ impl Play {
         };
         match opened {
             Ok(p) => {
-                println!("texture pack  {}: {} images", dir.display(), p.len());
-                self.pack.loaded = Some(Ok(p.len()));
+                let maps = if p.maps() > 0 { format!(", {} material maps", p.maps()) } else { String::new() };
+                println!("texture pack  {}: {} images{maps}", dir.display(), p.len());
+                self.pack.loaded = Some(Ok((p.len(), p.maps())));
                 g.renderer.set_pack(Some(Box::new(p)));
             }
             Err(e) => {
@@ -1252,7 +1301,7 @@ impl Play {
         let g = self.gpu.as_ref()?;
         let dir = self.pack.dir.as_ref()?;
         Some(match self.pack.loaded.as_ref()? {
-            Ok(images) => {
+            Ok((images, _)) => {
                 let st = g.renderer.pack_stats();
                 let tiles = if st.tiles_held > 0 {
                     format!("; {} tile patterns ({} held)", st.tiles, st.tiles_held)
@@ -1269,6 +1318,51 @@ impl Play {
                 )
             }
             Err(e) => e.clone(),
+        })
+    }
+
+    /// The menu's line on material maps while the setting is on: what they
+    /// changed in the last frame, or why they have no effect (no pack, a
+    /// pack without maps, the chip, no polygon lit by the exact layer).
+    fn materials_text(&self) -> Option<String> {
+        let v = &self.values;
+        if !v.materials {
+            return None;
+        }
+        let s = self.session.as_ref()?;
+        if s.preview {
+            return None;
+        }
+        let rule = match v.materials_relief.strength() {
+            Some(_) => format!("relief {}", v.materials_relief.name()),
+            None => "faithful".to_string(),
+        };
+        Some(match (&self.pack.loaded, &self.gpu) {
+            _ if !v.pack => "No effect: needs the texture pack on".to_string(),
+            (Some(Err(_)), _) | (None, _) => "No effect: no texture pack loaded".to_string(),
+            (Some(Ok((_, 0))), _) => "No effect: this texture pack has no material maps".to_string(),
+            _ if s.geo_chip => {
+                "No effect with the game's chip: material maps need the native geometrizer's lighting".to_string()
+            }
+            (Some(Ok((_, maps))), Some(g)) => {
+                let st = g.renderer.pack_stats();
+                if st.textured > 0 && st.lamped == 0 {
+                    "No effect in this frame: no textured polygon had the game's exact lighting \
+                     (unlit, or the lighting check fell back)"
+                        .to_string()
+                } else {
+                    format!(
+                        "{rule}: maps on {} of {} lit textured polygons ({} materials drawn, {} held, {} MB; \
+                         {maps} map files)",
+                        st.material_polys,
+                        st.lamped,
+                        st.materials,
+                        st.material_held,
+                        st.material_bytes >> 20
+                    )
+                }
+            }
+            _ => return None,
         })
     }
 
@@ -1478,6 +1572,9 @@ impl Play {
             }
             None => (((now - self.epoch).as_secs_f64() * FPS) as u64, 1.0),
         };
+        // `--frames`: the game stops at that frame.
+        let due =
+            self.opts.frames.filter(|_| self.session.as_ref().is_some_and(|s| !s.preview)).map_or(due, |n| due.min(n));
         let mut ran = 0;
         while self.session.as_ref().is_some_and(|s| s.machine.frames < due) && ran < MAX_CATCH_UP {
             if self.session.as_ref().is_some_and(|s| !s.preview) {
@@ -1623,10 +1720,11 @@ impl Play {
             // temporal anti-aliasing turns on too).
             let fast =
                 g.refresh.is_none_or(|hz| hz > FPS * 1.2) && !self.behind && !self.menu.open && self.values.smooth_on();
-            // With smooth shading, the in-between's own lighting side
-            // channel (its replay records it as the game frame's was), so
-            // it is shaded at the level of the frames around it.
-            let lit = q.shading != gpu::Shading::Flat && bus.geo.engine().light_on();
+            // With smooth shading or material maps, the in-between's own
+            // lighting side channel (its replay records it as the game
+            // frame's was), so it is shaded at the level of the frames
+            // around it.
+            let lit = (q.shading != gpu::Shading::Flat || q.materials) && bus.geo.engine().light_on();
             let between = bus.geo.engine().smooth_frame().filter(|_| fast).and_then(|f| {
                 let t = (t_smooth.saturating_duration_since(self.smooth_at).as_secs_f64() / period) as f32;
                 if lit {
@@ -1760,6 +1858,7 @@ impl Play {
             || fade.is_some()
         {
             let pack_text = self.pack_text();
+            let materials_text = self.materials_text();
             let g = self.gpu.as_mut().unwrap();
             let view = menu::View {
                 playing: self.session.as_ref().map(|s| s.game.title),
@@ -1768,6 +1867,7 @@ impl Play {
                 max_anisotropy: self.max_anisotropy,
                 temporal_supported: self.temporal_supported,
                 pack: pack_text.as_deref(),
+                materials: materials_text.as_deref(),
             };
             let navs = std::mem::take(&mut self.navs);
             let (menu, splash, bezel) = (&mut self.menu, &mut self.splash, &mut self.bezel);
@@ -2106,6 +2206,7 @@ impl Play {
         if secs < 1.0 {
             return;
         }
+        let materials = self.materials_text().map_or(String::new(), |t| format!(" · material maps: {t}"));
         let st = &self.stats;
         let snd = self.session.as_ref().and_then(|s| s.sound.as_ref());
         let audio = snd.map_or(String::new(), |s| {
@@ -2147,7 +2248,8 @@ impl Play {
                 st.shading.as_secs_f64() * 1000.0 / st.shaded.max(1) as f64
             ),
             None => String::new(),
-        } + &match self.session.as_ref().map(|s| (&s.run_ahead, s.run_ahead_dropped)) {
+        } + &materials
+            + &match self.session.as_ref().map(|s| (&s.run_ahead, s.run_ahead_dropped)) {
             // Of the emulate time above: copying the game, and its frames ahead.
             Some((Some(ra), _)) if st.ahead > 0 => format!(
                 " · run-ahead {} ({:.1} ms of that, copy {:.2} ms)",
@@ -2189,7 +2291,11 @@ impl Play {
 
     /// Quit if `--seconds` has run out, reporting the run; true if so.
     fn time_up(&mut self, el: &ActiveEventLoop) -> bool {
-        if !self.opts.seconds.is_some_and(|s| self.started.elapsed().as_secs_f64() >= s) {
+        let at_frame = self
+            .opts
+            .frames
+            .is_some_and(|n| self.session.as_ref().is_some_and(|s| !s.preview && s.machine.frames >= n));
+        if !at_frame && !self.opts.seconds.is_some_and(|s| self.started.elapsed().as_secs_f64() >= s) {
             return false;
         }
         if let Some(path) = self.opts.shot.clone() {

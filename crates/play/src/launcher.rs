@@ -259,6 +259,18 @@ fn rows(has_own: bool, max_anisotropy: u8) -> Vec<Row> {
             "of pack images: less shimmer far off",
             crate::settings::tex_filters(max_anisotropy),
         ),
+        Row::Choice(
+            "materials",
+            "Material maps",
+            "the pack's normal maps: bumps and grooves lit by the game's own lights",
+            &[("Off", "false"), ("On", "true")],
+        ),
+        Row::Choice(
+            "materials_relief",
+            "Material relief",
+            "how strongly maps shade (2 by default); faithful keeps the game's own lighting sum, subtler",
+            &[("1", "1"), ("2", "2"), ("4", "4"), ("8", "8"), ("Faithful", "off")],
+        ),
         Row::Db("sfx_db", "Effects", -20.0, 20.0),
         Row::Db("music_db", "Music", -30.0, 10.0),
         Row::Choice(
@@ -318,7 +330,8 @@ pub struct Launcher {
 /// temporal anti-aliasing needs the native geometrizer and a GPU that has
 /// it, and turns multisampling off; per-pixel shading needs the native
 /// geometrizer (the chip draws it as vertex), and a crease angle of 0
-/// smooths nothing.
+/// smooths nothing; material maps need the texture pack and the native
+/// geometrizer.
 fn overridden(key: &str, v: &GameSettings, temporal_supported: bool) -> Option<&'static str> {
     let temporal = v.temporal_on() && temporal_supported;
     match key {
@@ -332,6 +345,11 @@ fn overridden(key: &str, v: &GameSettings, temporal_supported: bool) -> Option<&
         }
         "shading_fine" if v.shading_fine && !v.light_on() => Some("only with shading on"),
         "shading_balance" if !v.shading_balance && !v.light_on() => Some("only with shading on"),
+        "materials" if v.materials && !v.pack => Some("no effect without the texture pack on"),
+        "materials" if v.materials && v.geo_chip => Some("no effect with the chip: needs the native geometrizer"),
+        "materials_relief" if v.materials_relief != gpu::Relief::default() && !v.materials_on() => {
+            Some("only with material maps on")
+        }
         _ => None,
     }
 }
@@ -1606,8 +1624,18 @@ mod tests {
         assert!(overridden("shading", &GameSettings { geo_chip: false, ..v.clone() }, true).is_none());
         v.crease = 0;
         assert!(overridden("shading", &v, true).is_some_and(|s| s.contains("nothing")));
+        // Material maps: no effect without the pack or with the chip.
+        let mut v = GameSettings { materials: true, ..Default::default() };
+        assert!(overridden("materials", &v, true).is_some_and(|s| s.contains("texture pack")));
+        v.pack = true;
+        assert!(overridden("materials", &v, true).is_none());
+        v.geo_chip = true;
+        assert!(overridden("materials", &v, true).is_some_and(|s| s.contains("native")));
+        let v = GameSettings { materials_relief: gpu::Relief::Faithful, ..Default::default() };
+        assert!(overridden("materials_relief", &v, true).is_some());
+        assert!(overridden("materials_relief", &GameSettings { materials: true, pack: true, ..v }, true).is_none());
         // The rows hold every value the settings take for them.
-        for key in ["temporal", "stipple", "shading"] {
+        for key in ["temporal", "stipple", "shading", "materials", "materials_relief"] {
             let Some(Row::Choice(_, _, _, options)) =
                 rows(false, 16).into_iter().find(|r| matches!(r, Row::Choice(k, ..) if *k == key))
             else {

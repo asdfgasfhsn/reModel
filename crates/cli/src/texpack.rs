@@ -442,9 +442,11 @@ mod tests {
         assert!(matches!(p.find(&tex), Found::Image(img) if *img == big));
         // A manifest this build reads changes nothing; one it can't (a newer
         // format, a feature it needs and can't show) draws the originals.
-        std::fs::write(pack.join("pack.txt"), "format 2\nuses materials\n").unwrap();
-        assert!(matches!(Packs::new(None, Some(pack.clone())).unwrap().find(&tex), Found::Image(_)));
-        for m in ["format 3\n", "format 2\nneeds materials\n", "not a manifest\n"] {
+        for m in ["format 2\nuses materials\n", "format 2\nneeds materials\n"] {
+            std::fs::write(pack.join("pack.txt"), m).unwrap();
+            assert!(matches!(Packs::new(None, Some(pack.clone())).unwrap().find(&tex), Found::Image(_)), "{m}");
+        }
+        for m in ["format 3\n", "format 2\nneeds models\n", "not a manifest\n"] {
             std::fs::write(pack.join("pack.txt"), m).unwrap();
             let mut p = Packs::new(None, Some(pack.clone())).unwrap();
             assert!(matches!(p.find(&tex), Found::Missing) && !p.has_tiles(), "{m}");
