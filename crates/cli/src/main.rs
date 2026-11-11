@@ -14,6 +14,7 @@ mod soundtrack;
 mod temporal_check;
 mod temporal_probe;
 mod texpack;
+mod texpack_materials;
 mod texpack_upscale;
 mod tgp2a;
 mod tgp_check;
@@ -379,6 +380,18 @@ commands:
                        Tiles (MODE): model, builtin, nearest or skip. Only
                        new or changed dumps; DEST/index.txt lists the pack
                        (docs/texture-packs.md)
+  texpack-materials PACK [--dump DIR] [--normalgen CMD] [--normal-y up|down]
+                  [--strength X] [--detail X] [--min-uses N] [--work DIR]
+                  [--force] [--keep-work]
+                       make normal maps (.n) for texture pack PACK from its
+                       images, or dump DIR's where it has none (no ROM
+                       needed): per surface (surf=) or image, wrap-aware,
+                       neutral under cut-outs; built-in from luminance
+                       (strength, detail in texels) or CMD (`{in}`, `{out}`
+                       filled in; --normal-y: its green). Only new or
+                       changed sources; hand-made or edited maps are kept.
+                       A starting point to edit by hand
+                       (docs/texture-packs.md, Material maps)
   pack-lint PACK [--dump DIR] [--max-side N]
                        check texture pack PACK against the pack format (no
                        ROM, no GPU): pack.txt, file names, index.txt, that
@@ -664,6 +677,15 @@ fn main() -> ExitCode {
     }
     if cmd == "texpack-upscale" {
         return match texpack_upscale::main(&args[1..], &game_id) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if cmd == "texpack-materials" {
+        return match texpack_materials::main(&args[1..], &game_id) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("error: {e}");

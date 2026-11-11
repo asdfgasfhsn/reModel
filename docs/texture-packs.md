@@ -164,10 +164,11 @@ A pack is a directory; this section is its definition, the same for every
 board and game (names are content keys the renderers compute; nothing in a
 pack names a board). `model2::pack` implements it: the manifest, the
 compatibility rules and the file-name grammar, used by the CLI, the player
-and the browser. **Status (2026-11-11):** the format, the surface key and
-`make pack-lint` exist; material maps are named, checked and loaded (below,
-"Loading material maps") but not drawn yet, so a pack's pictures are what
-the images alone give.
+and the browser. **Status (2026-11-11):** the format, the surface key,
+`make pack-lint` and `make pack-materials` (below, "Material maps") exist;
+material maps are named, made, checked and loaded (below, "Loading material
+maps") but not drawn yet, so a pack's pictures are what the images alone
+give.
 
 **Format 1** is everything above: `tex_<key>_<w>x<h>.png`,
 `tile_<key>.png`, any subset, `index.txt` for the browser, and tool records
@@ -182,7 +183,7 @@ unchanged). **Format 2** adds, all optional:
 | `pack.txt` | the manifest (below) |
 | `tex_<key>_<w>x<h>.n.png`, `.s.png`, `.g.png` | material maps for that image in that colour: normal, specular scale, gloss |
 | `surf_<skey>_<w>x<h>.n.png`, `.s.png`, `.g.png` | the same maps keyed by surface, serving every colour the texels are drawn in |
-| `materials.txt` | tool record (reserved for a map-making tool) |
+| `materials.txt` | tool record of `make pack-materials` |
 
 Keys are 16 lowercase hex digits and sizes plain decimals, exactly as the
 renderers write them; any other spelling is never opened. Tiles have no
@@ -328,6 +329,9 @@ non-zero on errors:
 | `index.txt` lists every file and nothing missing (the browser needs it) | warning |
 | every PNG decodes (not interlaced) and is within `MAX_SIDE` pixels a side (default 4096, as `upscale-textures`) | error |
 | images and maps have the proportions of their texture's `w` x `h` (within a pixel); tile images are square multiples of 8; a map is its image's size and all maps of one stem agree | warning |
+| normal maps: red, green and blue a unit vector (0.9 to 1.1 long) on 99% of texels where blue is used at all; x² + y² at most 1 on 99%; blue not under 128 (pointing into the surface); a map that is entirely flat | warning |
+| normal map texels under the image's transparent texels (the pack image's alpha, or the dump's) near the mean of their opaque neighbours (they show in mip levels and at cut-out edges) | warning |
+| with `TEXDUMP=DIR`: on an axis the texture is drawn mirrored (`wrap=`), the normal's component across the edge near 0 there; on an axis drawn only repeated, no jump from the last texels to the first larger than the steps beside it (not checked where the image itself doesn't tile or has a line along the edge) | warning |
 | with `TEXDUMP=DIR`: files whose key the dump never drew; a map for an image whose surface also has one (the image's would win) | note |
 | GPU memory with everything drawn, images and materials, plain and mipmapped, against the 512 MB native and 192 MB browser budgets | note |
 
@@ -682,6 +686,91 @@ Limitations:
   original's shading traces under lighting (above); colour matching
   restores the mean colour over a few texels but not finer structure, and
   `drift.txt` lists what still drifts.
+
+## Material maps
+
+`make pack-materials` makes normal maps (`.n`, "Pack format" above) for a
+pack from its images (`remodel texpack-materials PACK`, no ROM needed):
+
+```sh
+make pack-materials GAME=topskatr TEXPACK=out/topskatr/texpack-esrgan TEXDUMP=out/topskatr/texdump
+make pack-lint PACK=out/topskatr/texpack-esrgan TEXDUMP=out/topskatr/texdump
+```
+
+**The result is a starting point to edit by hand.** The built-in generator
+reads relief from brightness, and brightness is not height: dark paint
+reads as a groove, a light one as a ridge, and shading painted into the
+texture as slopes. Lettering and logos come out engraved, a face's painted
+shading bands as contour lines, the shadows painted beside raised ridges
+(a tread plate) as grooves. It does well on brick, stone, paving, bark,
+foliage and concrete, where light and dark do follow the relief. Edit or
+replace the maps where it is wrong, or delete those that do harm: reruns
+keep every map it didn't make (below).
+
+Variables: `TEXPACK` (the pack, written into), `TEXDUMP` (the dump the
+pack was made from, default `OUT/texdump`: which textures, `wrap=`, `surf=`,
+`uses=`; empty: the pack's own `tex_` images, one map each, padded
+mirrored), `NORMALGEN`, `NORMAL_Y`, `STRENGTH`, `DETAIL`, `MIN_USES`,
+`FORCE=1`. Per texture in the dump's index (tiles never: the 2D layer has
+no lighting):
+
+- **Source:** the pack's image, else the dump's; the map is the source's
+  size. With `surf=` in the index one map serves every colour of the
+  texels (`surf_<key>_<w>x<h>.n.png`), made from the colour that has a
+  pack image and is drawn most; without, one per image (`tex_..n.png`).
+- **Cut-outs:** transparent texels get their opaque neighbours' colour
+  first, so an outline makes no slope; afterwards the map texels under
+  them get the mean of their opaque neighbours' normals (never drawn at
+  full size, but they enter the mip levels).
+- **Edges:** relief is computed as the texture wraps: on a repeated axis
+  the far edge is the neighbour (no seam where it repeats), on a mirrored
+  one (or drawn both ways, or unknown) the image is reflected about its
+  edge texels, so the normal's component across the mirror line is exactly
+  0 and the mirrored copy meets it without a crease. Many textures are
+  marked repeated but never drawn past their edge (signs, faces, panels);
+  where an image's far edges don't meet (the brightness step across them
+  is over twice the mean step inside, plus 2%), the axis is taken as
+  mirrored, so the border gets no ridge (topskatr: 76 axes).
+- **Built-in maths:** height = luminance (0.299 R + 0.587 G + 0.114 B, 0
+  to 1) minus its Gaussian blur of `DETAIL` texels (so broad shading and
+  colour areas don't tilt the surface; 0: off); slopes by a 3x3 Sobel
+  operator, scaled to slope per texel of the texture (a 4x image gets the
+  same relief as the original, only sharper); normal = normalise(-STRENGTH
+  dh/dx, -STRENGTH dh/dy, 1) with y pointing up; stored as `128 + 127 v`,
+  so a flat source gives exactly (128, 128, 255). Maps with no relief at
+  all (a flat colour) are left out. Defaults `STRENGTH=1`, `DETAIL=4`,
+  deliberately mild: on topskatr's brick wall half the texels lean
+  under 5 degrees, one in twenty over 19, the steepest 42 (mortar
+  edges). `STRENGTH=2 DETAIL=8` gives brick and stone more depth, and
+  painted detail more false relief too.
+- **`NORMALGEN`:** an external tool's command with `{in}` (a directory of
+  the prepared images: filled, opaque RGB, padded by 16 texels with the
+  same edge rule) and `{out}` (where it writes normal maps of the same
+  names and sizes), run once with `sh -c`, its output in
+  `out/scratch/texpack-materials-GAME/normalgen.log`, stopped if it writes
+  nothing for 5 minutes. `NORMAL_Y=up|down` says which way its green
+  points. Its maps are cropped, read as the renderer reads them (x and y
+  from red and green, scaled back to length 1, blue ignored), given the
+  cut-out rule above, and written in the pack's convention. reModel only
+  drives the tool; none is named or shipped. Without `NORMALGEN` no work
+  directory is used.
+- **The manifest:** `uses materials` is added to `pack.txt` (only that
+  line changes); a pack without one gets `format 2`, `keys 1`, `game` and
+  `uses materials`. Maps are written in the manifest's `normal_y`
+  direction. `index.txt` is rewritten to list every file.
+
+**Incremental.** `materials.txt` records the settings and, per map, its
+source's hash (with how it wraps) and the map file's size and time. A
+rerun makes only maps that are missing or whose source changed, and
+**keeps every map that doesn't match the record**: made or edited by hand.
+A deleted map is made again. Other settings are refused; `FORCE=1` remakes
+all the maps the tool made with the new ones and still keeps the
+hand-made and edited ones (delete a map to have it remade).
+
+On topskatr's 4x ESRGAN pack with a coin-start dump (241 textures, 194
+surfaces): 186 maps (8 flat colours left out) in 4.3 s on 20 cores, 37 MiB
+on disk, 116 MB of GPU memory if all were drawn (154 MB mipmapped);
+`pack-lint` clean on the result. Nothing draws the maps yet.
 
 ## Limitations
 

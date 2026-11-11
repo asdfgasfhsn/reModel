@@ -51,7 +51,8 @@ make run STEPS=600000000 INPUT=coin1@1100-1104,start@1250-1254 \
     PACK=out/topskatr/texpack VIEW="--height 1080"   # snapshots with a texture pack (docs/texture-packs.md)
 make run STEPS=600000000 INPUT=coin1@1100-1104,start@1250-1254 PACK=out/topskatr/texpack \
     VIEW="--height 1080 --tex-filter mip"   # mipmapped pack images (--tex-filter off|mip|2|4|8|16; snapshots draw 2..16 as mip)
-make pack-lint PACK=out/topskatr/texpack-4x   # check a pack against the pack format, no ROM or GPU: pack.txt, names, index.txt, decoding, sizes, memory (TEXDUMP=DIR: also against a dump; docs/texture-packs.md, Pack format)
+make pack-materials TEXPACK=out/topskatr/texpack-4x   # normal maps for a pack from its images, built-in from brightness or NORMALGEN=CMD; a starting point to edit by hand, edits kept on reruns (docs/texture-packs.md, Material maps)
+make pack-lint PACK=out/topskatr/texpack-4x   # check a pack against the pack format, no ROM or GPU: pack.txt, names, index.txt, decoding, sizes, normal maps, memory (TEXDUMP=DIR: also against a dump; docs/texture-packs.md, Pack format)
 make play PLAY_ARGS="--pack on --tex-filter 16"   # live in the player: pack from out/GAME/texpack (the browser: ?pack=1&texfilter=16, docs/web.md)
 make assets               # extract the game's art for review -> out/topskatr/assets (needs ImageMagick)
 make bench                # timed run into a race: speed and state hash
