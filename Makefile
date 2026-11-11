@@ -343,6 +343,15 @@ tile-check: release ## Draw the captured frames with the tile images of texture 
 pack-identity: release ## Draw the captured frames with a pack standing for the original textures (PACK=DIR, normally the dump itself; empty: each frame's own textures) on the GPU and in software, unfiltered and mipmapped, against no pack; fails a frame on the differences that mean a fault (one texel value, another polygon), not on filter order up to a ceiling (needs a GPU)
 	$(RUN) $(GPU_OPTS) $(if $(PACK),--texture-pack $(PACK)) pack-check --identity $(OUT)/capture $(OUT)/pack-identity
 
+# materials-identity: the coin-start run's length and snapshot interval.
+MAT_STEPS ?= 900000000
+MAT_SNAP  ?= 300
+.PHONY: materials-identity
+materials-identity: release ## Check that texture pack PACK with all its normal maps made flat draws with --materials exactly as with --light and no materials (the comparison to make: --materials records the side channel), in flat, vertex, pixel and mipmapped pixel shading, from coin-start run snapshots (MAT_STEPS, MAT_SNAP; scratch in out/scratch/materials-identity/GAME, deleted when it passes)
+	@test -n "$(PACK)" || { echo "materials-identity wants PACK=DIR (a pack with normal maps)"; exit 1; }
+	REMODEL=$(REMODEL) GAME=$(GAME) ROM=$(ROM) PACK=$(PACK) WORK=out/scratch/materials-identity/$(GAME) \
+		STEPS=$(MAT_STEPS) SNAP=$(MAT_SNAP) sh tools/materials-identity.sh
+
 # depth-check: PROBE="X,Y@FRAME ..." follows those output pixels through the
 # depth buffer (only those frames are drawn); AGAINST=DIR compares the
 # depth-on frames with an earlier run's pictures (docs/enhancements.md).

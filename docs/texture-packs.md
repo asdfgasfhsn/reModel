@@ -335,7 +335,16 @@ luma becomes `base + E1 - E0`: base what the pixel has without materials
 game's formula at N and at the tilted normal, each clamped to 0-255. A
 flat texel gives `E1 == E0` and the pixel takes the path without materials
 bit for bit, so a pack of flat maps draws exactly the pack without them, in
-every shading mode. A changed pixel always blends the two colour columns
+every shading mode, given the same side channel: the run to compare with
+is the one with `--light` in place of `--materials`. Without either, `run`
+records no side channel, and vertex and pixel shading fall back to the
+stream's lumas; that picture differs from the one with the side channel
+whatever the pack holds (`topskatr`, 900M coin-start, every 300th frame,
+`--shading pixel`: 15 of 21 snapshots, frame 4800 8% of pixels, mean +0.28;
+flat shading identical). `make materials-identity PACK=DIR` makes the
+pack's maps flat and checks this comparison (2026-11-11, `topskatr`: flat,
+vertex, pixel and mipmapped pixel, 21 snapshots each identical, 14348
+polygons drawn with a material and no pixel changed). A changed pixel always blends the two colour columns
 around its luma (the arithmetic of `shading_fine`, within the polygon's
 hue, pure black kept), whatever `shading_fine` says. A map can only change
 the light the game casts: a polygon lit to full luma whatever its normal
