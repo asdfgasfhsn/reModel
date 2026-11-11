@@ -92,15 +92,14 @@ options:
                        gpu-check, depth-check, pack-check load them onto
                        the GPU (gpu::Quality::materials), which doesn't draw
                        them yet
-  --materials-relief sum|ratio|ratio-dark|diff:S|diff-dark:S|slope:S
-                       experimental: how a normal map changes the software
-                       renderer's brightness: sum (default; the map's normal
-                       in the game's lighting sum), or relative to how the
-                       flat surface is drawn (even at full brightness):
-                       ratio (times the lit ratio, mapped over flat),
-                       diff:S (times 1 + S x the diffuse change), slope:S
-                       (diff without its second-order loss: keeps the mean);
-                       -dark: never brighter
+  --materials-relief off|S
+                       with --materials, how a normal map changes
+                       brightness: relief at strength S (default 2; 0.1 to
+                       8): the brightness drawn times 1 + S x the change in
+                       diffuse light, so it shows on fully lit scenery too;
+                       or off: the faithful rule, the map's normal in the
+                       game's own lighting sum (nothing shows where the game
+                       lights a surface fully)
   --temporal off|taa|N temporal-probe: temporal anti-aliasing (taa) or
                        upscaling from N% (50 to 99) for the GPU's 3D layer
                        (gpu::Quality::temporal; snapshots are software and
@@ -525,9 +524,7 @@ fn main() -> ExitCode {
     };
     if let Some(r) = relief {
         let Some(r) = model2::raster::Relief::parse(&r) else {
-            eprintln!(
-                "error: --materials-relief wants sum, ratio, ratio-dark, diff:S, diff-dark:S or slope:S (S 0 to 16)"
-            );
+            eprintln!("error: --materials-relief wants off or a strength from 0.1 to 8");
             return ExitCode::FAILURE;
         };
         let _ = MATERIALS_RELIEF.set(r);
@@ -1843,7 +1840,8 @@ fn tex_filter() -> model2::enhance::TexFilter {
 /// `--materials`: the texture pack's material maps on the GPU.
 static MATERIALS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
-/// `--materials-relief`: the experimental material relief rule.
+/// `--materials-relief`: how material maps change brightness (default:
+/// relief at strength 2).
 static MATERIALS_RELIEF: std::sync::OnceLock<model2::raster::Relief> = std::sync::OnceLock::new();
 
 /// `--depth`: the depth buffer for snapshots and gpu-check.
@@ -1900,7 +1898,7 @@ fn gpu_light(light: Option<&model2::light::Options>) -> gpu::Quality {
         },
         None => gpu::Quality::default(),
     };
-    gpu::Quality { materials, ..q }
+    gpu::Quality { materials, materials_relief: MATERIALS_RELIEF.get().copied().unwrap_or_default(), ..q }
 }
 
 /// `--temporal`, `--stipple`: temporal anti-aliasing on the GPU.

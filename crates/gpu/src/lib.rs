@@ -23,6 +23,7 @@ mod tiles;
 pub use model2::enhance::TexFilter;
 use model2::enhance::{Found, Rgba, TexturePack};
 pub use model2::light::{Shading, CREASE_AUTO};
+pub use model2::raster::Relief;
 use model2::raster::{tex_info, Placed, Poly, Sources, TexKeys};
 use model2::video::{Layers2d, View, HEIGHT, WIDTH};
 use std::collections::HashMap;
@@ -87,6 +88,9 @@ pub struct Quality {
     /// ([`PackStats`]). Not drawn yet: pictures are the same either way.
     /// Off, nothing of them is asked for, decoded or uploaded.
     pub materials: bool,
+    /// How material maps change brightness ([`Relief`]): relief at
+    /// strength 2 (the default), another strength, or the faithful rule.
+    pub materials_relief: Relief,
 }
 
 impl Default for Quality {
@@ -102,6 +106,7 @@ impl Default for Quality {
             shading_fine: false,
             shading_balance: true,
             materials: false,
+            materials_relief: Relief::default(),
         }
     }
 }

@@ -175,14 +175,14 @@ pub struct PolyLamp {
     /// The lumas (inclusive) a pixel changed by a material is clamped to,
     /// those over which the polygon keeps its hue (as [`Poly::lit_range`]).
     pub range: [u8; 2],
-    /// How the material's normal changes the luma (experimental).
+    /// How the material's normal changes the luma.
     pub relief: Relief,
 }
 
-/// The largest factor a relative relief rule brightens by.
+/// The largest factor the relief rule ([`Relief::Diffuse`]) brightens by.
 const RELIEF_MAX: f32 = 4.0;
 
-/// The luma a pixel of a relative relief rule ([`Relief`]) is drawn at for
+/// The luma a pixel of the relief rule ([`Relief::Diffuse`]) is drawn at for
 /// a texel whose luma table value is `table` (None: untextured), its luma
 /// clamped to at most `hi`: its flat luma `l` lowered to where that
 /// texel's brightness stops rising (the top column [`fine_level`] reaches,
@@ -203,52 +203,67 @@ pub fn relieved(l: f32, table: Option<u32>, hi: u8, f: f32) -> f32 {
     (l.min(top).min(255.0) * f).clamp(0.0, 255.0)
 }
 
-/// Experimental (`--materials-relief`): how a material's normal map changes
-/// a pixel's luma ([`material_luma`]). With `d` the game's facing-signed
-/// `N . L` at the drawn normal and `d'` at the mapped one, `B` the
-/// brightness the flat surface is drawn at (per texel, after the game's
-/// caps: [`relieved`]), `a`, `k` the lamp's ambient and diffuse. The
-/// relative rules' factor is at most [`RELIEF_MAX`]; pure black stays
-/// black.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// How a material's normal map changes a pixel's luma ([`material_luma`]):
+/// the `materials_relief` setting (`gpu::Quality::materials_relief`, the
+/// CLI's `--materials-relief off|S`). With `d` the game's facing-signed
+/// `N . L` at the drawn normal and `d'` at the mapped one, and `B` the
+/// brightness the flat surface is drawn at. Pure black stays black under
+/// both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Relief {
-    /// `B + clamp(eval(N')) - clamp(eval(N))`: the map's normal substituted
-    /// in the game's own sum (specular included). A surface lit to 255 at
-    /// every normal can't show relief. The default.
-    #[default]
-    Sum,
-    /// `B (a + k max(d', 0)) / (a + k max(d, 0))`: the lit ratio, unclamped
-    /// sums, no specular; none where the flat sum is 0. `dark`: never
-    /// brighter than `B`.
-    Ratio { dark: bool },
-    /// `B (1 + s (max(d', 0) - max(d, 0)))`: the diffuse change, ambient
-    /// ignored. `dark`: never brighter than `B`.
-    Diffuse { s: f32, dark: bool },
-    /// `B (1 + s (d' - t.z d))`, where `d > 0`: the diffuse change without
-    /// its second-order part (the map's normal is `t.z N + t.x T' + t.y
-    /// B'`, so this is how much the bump leans toward the light along the
-    /// surface). A tilt never costs light by itself, so relief that averages
-    /// flat leaves the mean brightness where it was, and a surface lit
-    /// head-on shows none (as diffuse light gives none).
-    Slope { s: f32 },
+    /// Faithful: `B + clamp(eval(N')) - clamp(eval(N))`, the map's normal
+    /// substituted in the game's own sum (specular included), `B` the
+    /// pixel's luma. A surface lit to 255 at every normal (much of the
+    /// scenery) shows no relief.
+    Faithful,
+    /// Relief: `B (1 + s (max(d', 0) - max(d, 0)))`, the diffuse change
+    /// relative to the brightness drawn (per texel, after the game's caps:
+    /// [`relieved`]), ambient ignored, so it shows on fully lit scenery
+    /// too. `tenths`: the strength `s` in tenths (20: 2). The factor is at
+    /// most [`RELIEF_MAX`]; no relief where no light reaches (Lambert's
+    /// clamp) or the lamp has no diffuse term.
+    Diffuse { tenths: u8 },
+}
+
+impl Default for Relief {
+    /// Relief at strength 2 ([`Relief::DEFAULT_TENTHS`]).
+    fn default() -> Self {
+        Relief::Diffuse { tenths: Relief::DEFAULT_TENTHS }
+    }
 }
 
 impl Relief {
-    /// `sum`, `ratio`, `ratio-dark`, `diff:S`, `diff-dark:S`, `slope:S` (S
-    /// from 0 to 16).
+    /// The relief rule's strength by default, in tenths: 2.
+    pub const DEFAULT_TENTHS: u8 = 20;
+    /// The strongest relief, in tenths: 8.
+    pub const MAX_TENTHS: u8 = 80;
+
+    /// `off` (the faithful rule) or a relief strength from 0.1 to 8 (to a
+    /// tenth).
     pub fn parse(s: &str) -> Option<Relief> {
-        let strength = |v: &str| v.parse::<f32>().ok().filter(|s| (0.0..=16.0).contains(s));
-        Some(match s {
-            "sum" => Relief::Sum,
-            "ratio" => Relief::Ratio { dark: false },
-            "ratio-dark" => Relief::Ratio { dark: true },
-            _ => match s.split_once(':')? {
-                ("diff", v) => Relief::Diffuse { s: strength(v)?, dark: false },
-                ("diff-dark", v) => Relief::Diffuse { s: strength(v)?, dark: true },
-                ("slope", v) => Relief::Slope { s: strength(v)? },
-                _ => return None,
-            },
-        })
+        if s == "off" {
+            return Some(Relief::Faithful);
+        }
+        let tenths = (s.parse::<f32>().ok()? * 10.0).round();
+        (1.0..=Relief::MAX_TENTHS as f32).contains(&tenths).then_some(Relief::Diffuse { tenths: tenths as u8 })
+    }
+
+    /// The name [`Relief::parse`] reads: `off`, or the strength (`2`,
+    /// `1.5`).
+    pub fn name(self) -> String {
+        match self {
+            Relief::Faithful => "off".into(),
+            Relief::Diffuse { tenths } if tenths % 10 == 0 => format!("{}", tenths / 10),
+            Relief::Diffuse { tenths } => format!("{}.{}", tenths / 10, tenths % 10),
+        }
+    }
+
+    /// The relief rule's strength; None for the faithful rule.
+    pub fn strength(self) -> Option<f32> {
+        match self {
+            Relief::Faithful => None,
+            Relief::Diffuse { tenths } => Some(tenths as f32 / 10.0),
+        }
     }
 }
 
@@ -310,9 +325,9 @@ pub fn tangent_frame(ring: &[([f32; 3], [f32; 2])], o: [f32; 3]) -> Option<Tange
 /// without the material, `n` its normal as drawn (the interpolated corner
 /// normals, or the face's; any length, face convention), `(x, y)` the
 /// map's normal there (unit components along increasing u and v, mirror
-/// signs applied) and `scale` the pack's strength. With [`Relief::Sum`]
+/// signs applied) and `scale` the pack's strength. With [`Relief::Faithful`]
 /// `(base + E1 - E0, None)`, with `E0`, `E1` the lamp at `n` and at `n`
-/// tilted by the map (each clamped to 0-255); with the relative rules
+/// tilted by the map (each clamped to 0-255); with [`Relief::Diffuse`]
 /// `(base, Some(f))`: the pixel is drawn at `f` times the brightness the
 /// flat surface is drawn at, texel by texel ([`relieved`]). None where the
 /// map changes nothing (a flat texel, no frame, no normal, the same
@@ -352,27 +367,12 @@ pub fn material_luma(
             -d
         }
     };
-    // The factor `f`: none where it is 1 (after `dark`).
-    let relative = |b: f32, f: f32, dark: bool| {
-        let f = if dark { f.min(1.0) } else { f };
-        (f.is_finite() && f != 1.0).then_some((b, Some(f.min(RELIEF_MAX))))
-    };
     match l.relief {
-        Relief::Sum => {
+        Relief::Faithful => {
             let (e0, e1) = (lamp.eval(n).clamp(0.0, 255.0), lamp.eval(n2).clamp(0.0, 255.0));
             (e0.is_finite() && e1.is_finite() && e1 != e0).then_some((base + (e1 - e0), None))
         }
-        Relief::Ratio { dark } => {
-            let lit = |d: f32| lamp.ambient + lamp.diffuse * d.max(0.0);
-            let (e0, e1) = (lit(facing(n)), lit(facing(n2)));
-            // Unlit at the flat normal (no ambient, facing away): nothing
-            // to scale.
-            if e0.is_nan() || e0 <= 1e-3 || e1 == e0 {
-                return None;
-            }
-            relative(base, e1 / e0, dark)
-        }
-        Relief::Diffuse { s, dark } => {
+        Relief::Diffuse { tenths } => {
             if lamp.diffuse == 0.0 {
                 return None;
             }
@@ -381,15 +381,9 @@ pub fn material_luma(
             if dd == 0.0 {
                 return None;
             }
-            relative(base, (1.0 + s * dd).max(0.0), dark)
-        }
-        Relief::Slope { s } => {
-            let d = facing(n);
-            if lamp.diffuse == 0.0 || d.is_nan() || d <= 0.0 {
-                return None;
-            }
-            let lean = facing(n2) - t[2] * d;
-            relative(base, (1.0 + s * lean).max(0.0), false)
+            // None where the factor is 1.
+            let f = (1.0 + tenths as f32 / 10.0 * dd).max(0.0);
+            (f.is_finite() && f != 1.0).then_some((base, Some(f.min(RELIEF_MAX))))
         }
     }
 }
@@ -1175,7 +1169,7 @@ fn shade(p: &Poly, src: &Sources, x: usize, y: usize, u: f32, v: f32) -> Option<
 struct PxLuma {
     luma: u32,
     fine: Option<(f32, [u8; 2])>,
-    /// A relative relief rule's factor ([`relieved`]); `fine` is then the
+    /// The relief rule's factor ([`relieved`]); `fine` is then the
     /// flat luma.
     rel: Option<f32>,
 }
@@ -1452,7 +1446,7 @@ struct Light {
     poly: [f32; 3],
     /// The pixel's brightness: its luma, with finer levels
     /// ([`PxLuma::fine`]) the luma before truncation and the range it is
-    /// clamped to, and a relative relief rule's factor (applied per texel).
+    /// clamped to, and the relief rule's factor (applied per texel).
     px: PxLuma,
 }
 
@@ -3330,15 +3324,8 @@ mod tests {
         /// Scenery lit to 255 at every normal (ambient 255).
         const SATURATED: light::Material =
             light::Material { ambient: 255.0, diffuse: 255.0, spec_scale: 0.0, squarings: 255 };
-        /// Every relief rule (`--materials-relief`).
-        const RELIEFS: [Relief; 6] = [
-            Relief::Sum,
-            Relief::Ratio { dark: false },
-            Relief::Ratio { dark: true },
-            Relief::Diffuse { s: 2.0, dark: false },
-            Relief::Diffuse { s: 2.0, dark: true },
-            Relief::Slope { s: 2.0 },
-        ];
+        /// Both rules (`--materials-relief off`, and relief at strength 2).
+        const RELIEFS: [Relief; 2] = [Relief::Faithful, Relief::Diffuse { tenths: 20 }];
 
         fn unit(v: [f32; 3]) -> [f32; 3] {
             let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
@@ -3709,10 +3696,10 @@ mod tests {
             }
         }
 
-        /// A surface lit to 255 at every normal: the game's sum can't show
-        /// a map; the relative rules darken the slopes facing away from the
-        /// light (the dome still lit from the light's side), and the
-        /// darken-only ones never brighten a pixel.
+        /// A surface lit to 255 at every normal: the game's sum (the
+        /// faithful rule) can't show a map; the relief rule darkens the
+        /// slopes facing away from the light (the dome still lit from the
+        /// light's side).
         #[test]
         fn saturated_surface_shows_relative_relief() {
             let q = back_like();
@@ -3724,21 +3711,18 @@ mod tests {
                     let o = opts(shading, true).with_relief(relief);
                     let (img, _) = draw(&s, &ram, Some(&side), &o, &mut maps(false, Some(dome(false))), TexFilter::Off);
                     let what = format!("{shading:?} {relief:?}");
-                    if relief == Relief::Sum {
+                    if relief == Relief::Faithful {
                         assert!(img == want, "{what}: saturated, no relief");
                         continue;
                     }
                     assert_dome(&img, &q, (32.0, 32.0), &what);
-                    if matches!(relief, Relief::Ratio { dark: true } | Relief::Diffuse { dark: true, .. }) {
-                        assert!(img.iter().zip(&want).all(|(a, b)| a <= b), "{what}: never brighter");
-                    }
                 }
             }
         }
 
-        /// The relative rules per pixel: a factor (finite, 0 to
-        /// [`RELIEF_MAX`], under 1 for the darken-only ones) with the base
-        /// passed through, none where nothing lights the flat normal; and
+        /// The relief rule per pixel: a factor (finite, 0 to [`RELIEF_MAX`])
+        /// with the base passed through, none where nothing lights the flat
+        /// normal; and
         /// [`relieved`]: pure black stays black, a saturated texel is
         /// scaled from where it saturates, results in 0-255.
         #[test]
@@ -3761,23 +3745,18 @@ mod tests {
                 out: -1.0,
                 tangent: Some(t),
                 range: [0, 255],
-                relief: Relief::Sum,
+                relief: Relief::Faithful,
             };
             let n = [0.0, 0.0, 1.0];
             for relief in RELIEFS.into_iter().skip(1) {
                 let with = |a: f32, l: [f32; 3]| PolyLamp { relief, ..lamp(a, l) };
-                let dark = matches!(relief, Relief::Ratio { dark: true } | Relief::Diffuse { dark: true, .. });
                 let ok = |v: Option<(f32, Option<f32>)>, base: f32| {
                     v.is_none_or(|(b, f)| {
-                        b == base
-                            && f.is_some_and(|f| {
-                                f.is_finite() && (0.0..=RELIEF_MAX).contains(&f) && !(dark && f >= 1.0)
-                            })
+                        b == base && f.is_some_and(|f| f.is_finite() && (0.0..=RELIEF_MAX).contains(&f))
                     })
                 };
-                // Lit edge-on at the flat normal, no ambient: nothing to scale
-                // (the ratio) and no light on either side of the bump that
-                // faces away (the diffuse change).
+                // Lit edge-on at the flat normal: no light on the side of
+                // the bump that faces away.
                 let edge = with(0.0, [1.0, 0.0, 0.0]);
                 for xy in [(0.3, 0.0), (-0.3, 0.0)] {
                     let v = material_luma(&edge, n, 80.0, xy, 1.0);
@@ -3809,20 +3788,18 @@ mod tests {
             assert_eq!(relieved(500.0, Some(9), 255, 0.5), 256.0 * 8.5 / 9.0 * 0.5);
             // Its range ends at luma 120: column 4, reached at 256 * 4.5 / 9 = 128.
             assert_eq!(relieved(500.0, Some(9), 120, 0.5), 64.0);
-            assert_eq!(Relief::parse("diff-dark:2"), Some(Relief::Diffuse { s: 2.0, dark: true }));
-            assert_eq!(Relief::parse("ratio"), Some(Relief::Ratio { dark: false }));
-            assert_eq!(Relief::parse("diff:17"), None);
-            assert_eq!(Relief::parse("diff"), None);
-            assert_eq!(Relief::parse("slope:2"), Some(Relief::Slope { s: 2.0 }));
-            // Slope: opposite tilts brighten and darken by the same amount
-            // (the mean stays), and a surface lit head-on shows nothing.
-            let slope = |l: [f32; 3]| PolyLamp { relief: Relief::Slope { s: 2.0 }, ..lamp(60.0, l) };
-            let f = |pl: &PolyLamp, xy| material_luma(pl, n, 100.0, xy, 1.0).and_then(|(_, f)| f);
-            let side = slope(unit([0.6, 0.0, 0.8]));
-            let (a, b) = (f(&side, (0.3, 0.0)).unwrap(), f(&side, (-0.3, 0.0)).unwrap());
-            assert!((a - 1.0 + (b - 1.0)).abs() < 1e-5 && (a - 1.0).abs() > 0.1, "{a} {b}");
-            let head_on = slope([0.0, 0.0, 1.0]);
-            assert!(f(&head_on, (0.3, 0.0)).is_none_or(|f| (f - 1.0).abs() < 1e-6));
+            assert_eq!(Relief::parse("off"), Some(Relief::Faithful));
+            assert_eq!(Relief::parse("2"), Some(Relief::Diffuse { tenths: 20 }));
+            assert_eq!(Relief::parse("1.5"), Some(Relief::Diffuse { tenths: 15 }));
+            assert_eq!(Relief::parse("8"), Some(Relief::Diffuse { tenths: 80 }));
+            for bad in ["0", "0.04", "8.1", "-1", "sum", "diff:2", "", "nan"] {
+                assert_eq!(Relief::parse(bad), None, "{bad}");
+            }
+            for r in [Relief::Faithful, Relief::Diffuse { tenths: 20 }, Relief::Diffuse { tenths: 15 }] {
+                assert_eq!(Relief::parse(&r.name()), Some(r));
+            }
+            assert_eq!(Relief::default(), Relief::Diffuse { tenths: Relief::DEFAULT_TENTHS });
+            assert_eq!(light::Options::default().relief, Relief::default());
         }
 
         fn back_like() -> Quad {
@@ -3870,7 +3847,7 @@ mod tests {
                 out: -1.0,
                 tangent: Some(t),
                 range: [0, 255],
-                relief: Relief::Sum,
+                relief: Relief::Faithful,
             };
             for n in [[0.0; 3], [f32::NAN, 0.0, 1.0], [f32::INFINITY, 0.0, 0.0], [1e-30, 0.0, 0.0]] {
                 assert_eq!(material_luma(&pl, n, 50.5, (0.3, 0.2), 1.0), None, "{n:?}");

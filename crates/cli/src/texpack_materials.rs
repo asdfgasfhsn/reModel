@@ -35,8 +35,8 @@ pub const EXCLUDE: &str = "materials-exclude.txt";
 /// Defaults: the slope gain, and the width (Gaussian sigma, in the
 /// texture's own texels) of the brightness changes taken as shading or
 /// colour areas rather than relief.
-pub const STRENGTH: f32 = 1.0;
-pub const DETAIL: f32 = 4.0;
+pub const STRENGTH: f32 = 2.0;
+pub const DETAIL: f32 = 8.0;
 /// Source texels of context on each side of an image handed to an
 /// external generator, and its smallest side.
 const PAD_TEXELS: usize = 16;
@@ -1238,7 +1238,7 @@ mod tests {
         run(&pack, &o, "topskatr").unwrap();
         assert_ne!(std::fs::read(&own).unwrap(), made);
         // Other settings: refused; forced, ours remade, the edit still kept.
-        o.strength = 2.0;
+        o.strength = STRENGTH + 1.0;
         assert!(run(&pack, &o, "topskatr").unwrap_err().contains("other settings"));
         o.force = true;
         let before = std::fs::read(&own).unwrap();

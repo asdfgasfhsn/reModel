@@ -329,13 +329,30 @@ the polygon; none where the coordinates are degenerate). Per pixel, with N
 the normal as drawn (the interpolated corner normals of a smooth-shaded
 polygon, else the face's) and t the map's normal there (times the pack's
 strength; its x component negated in every second repeat of a mirrored
-axis), N is tilted by t in that frame about the side the eye sees, and the
-luma becomes `base + E1 - E0`: base what the pixel has without materials
-(the stream's luma + 0.5 for a polygon that isn't lit), `E0` and `E1` the
-game's formula at N and at the tilted normal, each clamped to 0-255. A
-flat texel gives `E1 == E0` and the pixel takes the path without materials
-bit for bit, so a pack of flat maps draws exactly the pack without them, in
-every shading mode, given the same side channel: the run to compare with
+axis), N is tilted by t in that frame about the side the eye sees. Then
+one of two rules (`gpu::Quality::materials_relief`, the CLI's
+`--materials-relief off|S`):
+
+- **Relief** (the default, strength S = 2; 0.1 to 8): the pixel is drawn
+  at `1 + S (max(d', 0) - max(d, 0))` times the brightness the flat
+  surface is drawn at, `d` and `d'` the game's facing-signed `N . L` at N
+  and at the tilted normal (ambient and specular left out; at most 4
+  times). The factor is applied per texel, to the luma lowered to where
+  that texel's top colour column starts (`raster::relieved`), so a surface
+  the game lights to full luma, or past where its texels stop brightening,
+  still shows relief, mostly as darkening on the slopes facing away from
+  the light (the mean brightness drops a little: 0.5 to 3 levels of 255 in
+  the review frames, more on the strongest maps). Nothing where no
+  light reaches the flat normal or the lamp has no diffuse term.
+- **Faithful** (`off`): the luma becomes `base + E1 - E0`, base what the
+  pixel has without materials (the stream's luma + 0.5 for a polygon that
+  isn't lit), `E0` and `E1` the game's formula at N and at the tilted
+  normal, each clamped to 0-255: the map's normal in the game's own sum.
+  A polygon lit to full luma whatever its normal (below) shows nothing.
+
+Either way a flat texel changes nothing and the pixel takes the path
+without materials bit for bit, so a pack of flat maps draws exactly the
+pack without them, in every shading mode, given the same side channel: the run to compare with
 is the one with `--light` in place of `--materials`. Without either, `run`
 records no side channel, and vertex and pixel shading fall back to the
 stream's lumas; that picture differs from the one with the side channel
@@ -347,9 +364,10 @@ vertex, pixel and mipmapped pixel, 21 snapshots each identical, 14348
 polygons drawn with a material and no pixel changed). A changed pixel always blends the two colour columns
 around its luma (the arithmetic of `shading_fine`, within the polygon's
 hue, pure black kept), whatever `shading_fine` says. A map can only change
-the light the game casts: a polygon lit to full luma whatever its normal
-(`topskatr` lights much of its scenery with ambient 255) or with an
-ambient-only lighting entry shows nothing of it.
+the light the game casts: a polygon with an ambient-only lighting entry
+shows nothing of it, and under the faithful rule neither does one lit to
+full luma whatever its normal (`topskatr` lights much of its scenery with
+ambient 255), which is why relief is the default.
 
 **Models.** Replacement models are not built; the format only reserves
 their names. They will key by content (a hash of the model's polygon data
@@ -779,11 +797,13 @@ no lighting):
   same relief as the original, only sharper); normal = normalise(-STRENGTH
   dh/dx, -STRENGTH dh/dy, 1) with y pointing up; stored as `128 + 127 v`,
   so a flat source gives exactly (128, 128, 255). Maps with no relief at
-  all (a flat colour) are left out. Defaults `STRENGTH=1`, `DETAIL=4`,
-  deliberately mild: on topskatr's brick wall half the texels lean
-  under 5 degrees, one in twenty over 19, the steepest 42 (mortar
-  edges). `STRENGTH=2 DETAIL=8` gives brick and stone more depth, and
-  painted detail more false relief too.
+  all (a flat colour) are left out. Defaults `STRENGTH=2`, `DETAIL=8`
+  (chosen 2026-11-11 by eye with the relief rule at strength 2, below
+  "How material maps light": median per-map mean tilt about 5 degrees on
+  topskatr and srallyc). `STRENGTH=1 DETAIL=4` is milder (on topskatr's
+  brick wall half the texels lean under 5 degrees, one in twenty over 19,
+  the steepest 42: mortar edges); stronger maps give brick and stone more
+  depth, and painted detail more false relief too.
 - **`NORMALGEN`:** an external tool's command with `{in}` (a directory of
   the prepared images: filled, opaque RGB, padded by 16 texels with the
   same edge rule) and `{out}` (where it writes normal maps of the same

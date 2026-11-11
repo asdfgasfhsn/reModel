@@ -241,7 +241,7 @@ upscale-textures: release ## Upscale TEXDUMP (default OUT/texdump, from dump-tex
 # in, run once over the directory (empty: built-in, from luminance);
 # NORMAL_Y: which way its green points (up|down); STRENGTH, DETAIL: the
 # built-in's slope gain and the width in texels of brightness changes kept
-# out of the relief (empty: the tool's defaults). TEXDUMP= (empty: the
+# out of the relief (empty: the tool's defaults, 2 and 8). TEXDUMP= (empty: the
 # pack's own images) gives wrap=, surf= and uses=.
 NORMALGEN ?=
 NORMAL_Y  ?= up
@@ -249,7 +249,7 @@ STRENGTH  ?=
 DETAIL    ?=
 .PHONY: pack-materials
 pack-materials: export NORMALGEN_CMD = $(NORMALGEN)
-pack-materials: release ## Make normal maps for texture pack TEXPACK from its images (or TEXDUMP's where it has none) with NORMALGEN= (empty: built-in, from luminance); STRENGTH, DETAIL, MIN_USES, FORCE; wrap-aware, neutral under cut-outs, one per surface, keeps hand-made and edited maps, skips the textures listed in the pack's materials-exclude.txt; a starting point to edit by hand
+pack-materials: release ## Make normal maps for texture pack TEXPACK from its images (or TEXDUMP's where it has none) with NORMALGEN= (empty: built-in, from luminance); STRENGTH (default 2), DETAIL (default 8), MIN_USES, FORCE; wrap-aware, neutral under cut-outs, one per surface, keeps hand-made and edited maps, skips the textures listed in the pack's materials-exclude.txt; a starting point to edit by hand
 	$(REMODEL) --game $(GAME) texpack-materials $(TEXPACK) $(if $(TEXDUMP),--dump $(TEXDUMP)) \
 		--min-uses $(MIN_USES) --work out/scratch/texpack-materials-$(GAME) \
 		$(if $(STRENGTH),--strength $(STRENGTH)) $(if $(DETAIL),--detail $(DETAIL)) \
@@ -347,7 +347,7 @@ pack-identity: release ## Draw the captured frames with a pack standing for the 
 MAT_STEPS ?= 900000000
 MAT_SNAP  ?= 300
 .PHONY: materials-identity
-materials-identity: release ## Check that texture pack PACK with all its normal maps made flat draws with --materials exactly as with --light and no materials (the comparison to make: --materials records the side channel), in flat, vertex, pixel and mipmapped pixel shading, from coin-start run snapshots (MAT_STEPS, MAT_SNAP; scratch in out/scratch/materials-identity/GAME, deleted when it passes)
+materials-identity: release ## Check that texture pack PACK with all its normal maps made flat draws with --materials exactly as with --light and no materials (the comparison to make: --materials records the side channel), under both rules (relief and --materials-relief off), in flat, vertex, pixel and mipmapped pixel shading, from coin-start run snapshots (MAT_STEPS, MAT_SNAP; scratch in out/scratch/materials-identity/GAME, deleted when it passes)
 	@test -n "$(PACK)" || { echo "materials-identity wants PACK=DIR (a pack with normal maps)"; exit 1; }
 	REMODEL=$(REMODEL) GAME=$(GAME) ROM=$(ROM) PACK=$(PACK) WORK=out/scratch/materials-identity/$(GAME) \
 		STEPS=$(MAT_STEPS) SNAP=$(MAT_SNAP) sh tools/materials-identity.sh

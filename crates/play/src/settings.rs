@@ -270,6 +270,7 @@ impl GameSettings {
             shading_balance: self.shading_balance,
             // Material maps aren't drawn yet, so the player doesn't load them.
             materials: false,
+            materials_relief: gpu::Relief::default(),
         }
     }
 }

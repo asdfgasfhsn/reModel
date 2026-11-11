@@ -172,9 +172,9 @@ pub struct Options {
     /// `shading` and `crease` are ([`Shaded::lamps`]; entries only for this
     /// are [`Shaded::flat`]). Off (the default): [`shade`] is unchanged.
     pub lamps: bool,
-    /// Experimental: how a material's normal map changes a pixel's luma
+    /// How a material's normal map changes a pixel's luma
     /// (`raster::Relief`; applied by `raster::build_with`). Default: the
-    /// map's normal substituted in the game's own sum.
+    /// relief rule at strength 2 (`raster::Relief::default`).
     pub relief: crate::raster::Relief,
 }
 
@@ -191,7 +191,7 @@ impl Default for Options {
             fine: false,
             balance: true,
             lamps: false,
-            relief: crate::raster::Relief::Sum,
+            relief: crate::raster::Relief::Diffuse { tenths: crate::raster::Relief::DEFAULT_TENTHS },
         }
     }
 }
@@ -220,7 +220,7 @@ impl Options {
             fine: false,
             balance: true,
             lamps: false,
-            relief: crate::raster::Relief::Sum,
+            relief: crate::raster::Relief::Diffuse { tenths: crate::raster::Relief::DEFAULT_TENTHS },
         }
     }
 
