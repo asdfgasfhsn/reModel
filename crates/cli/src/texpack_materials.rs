@@ -19,7 +19,7 @@
 use crate::texpack_upscale::{self as up, Dump};
 use model2::enhance::{address, Address, Rgba};
 use model2::pack::{self, FileKind, Manifest, MapKind};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -29,6 +29,9 @@ use std::time::Instant;
 /// Bumped when the output for the same settings changes.
 const VERSION: u32 = 1;
 const RECORD: &str = "materials.txt";
+/// The author's list of textures that get no generated map. A file of its
+/// own, because `materials.txt` is the tool's record and is rewritten.
+pub const EXCLUDE: &str = "materials-exclude.txt";
 /// Defaults: the slope gain, and the width (Gaussian sigma, in the
 /// texture's own texels) of the brightness changes taken as shading or
 /// colour areas rather than relief.
@@ -377,6 +380,8 @@ struct Target {
     tex: [u32; 2],
     modes: [Address; 2],
     uses: u64,
+    /// The image names (`tex_..`) this map serves: one per colour of a surface.
+    names: Vec<String>,
 }
 
 fn tex_size(name: &str) -> Option<[u32; 2]> {
@@ -389,7 +394,12 @@ fn tex_size(name: &str) -> Option<[u32; 2]> {
 /// The maps to make: per surface (or per image, without `surf=`), from
 /// the member with a pack image and the most uses. Also counts textures
 /// with neither a pack nor a dump image.
-fn targets(pack: &Path, dump: Option<&Path>) -> Result<(Vec<Target>, usize, usize), String> {
+/// Also adds every texture and surface name it saw (made or not) to `known`.
+fn targets(
+    pack: &Path,
+    dump: Option<&Path>,
+    known: &mut BTreeSet<String>,
+) -> Result<(Vec<Target>, usize, usize), String> {
     let Some(dump) = dump else {
         // The pack's own images: nothing known about wrapping.
         let mut out = vec![];
@@ -397,12 +407,14 @@ fn targets(pack: &Path, dump: Option<&Path>) -> Result<(Vec<Target>, usize, usiz
             let name = e.map_err(|e| e.to_string())?.file_name().to_string_lossy().into_owned();
             let Some(stem) = name.strip_suffix(".png") else { continue };
             if let Some(tex) = tex_size(stem) {
+                known.insert(stem.to_string());
                 out.push(Target {
                     stem: pack::map_stem(stem, MapKind::Normal),
                     source: pack.join(&name),
                     tex,
                     modes: [Address::Mirror; 2],
                     uses: u64::MAX,
+                    names: vec![stem.to_string()],
                 });
             }
         }
@@ -423,6 +435,8 @@ fn targets(pack: &Path, dump: Option<&Path>) -> Result<(Vec<Target>, usize, usiz
             Some(s) => format!("surf_{s}_{}x{}", tex[0], tex[1]),
             None => d.name.clone(),
         };
+        known.insert(d.name.clone());
+        known.insert(base.clone());
         groups.entry(base).or_default().push((d, tex));
     }
     let (mut out, mut missing) = (vec![], 0);
@@ -444,9 +458,62 @@ fn targets(pack: &Path, dump: Option<&Path>) -> Result<(Vec<Target>, usize, usiz
             missing += 1;
             continue;
         };
-        out.push(Target { stem: pack::map_stem(&base, MapKind::Normal), source, tex: *tex, modes, uses });
+        let names = members.iter().map(|(d, _)| d.name.clone()).collect();
+        out.push(Target { stem: pack::map_stem(&base, MapKind::Normal), source, tex: *tex, modes, uses, names });
     }
     Ok((out, textures, missing))
+}
+
+/// The exclude list: the stems named, and the lines that name nothing valid.
+#[derive(Default)]
+pub(crate) struct Exclude {
+    pub stems: BTreeSet<String>,
+    /// (line number, text, why) of lines that are not a `tex_`/`surf_` stem.
+    pub bad: Vec<(usize, String, String)>,
+}
+
+impl Exclude {
+    pub(crate) fn parse(text: &str) -> Exclude {
+        let mut e = Exclude::default();
+        for (i, line) in text.lines().enumerate() {
+            let line = line.split('#').next().unwrap_or("").trim();
+            if line.is_empty() {
+                continue;
+            }
+            let ok = if line.starts_with("surf_") {
+                // A surface stem on its own is not a file name: parse it as its normal map.
+                matches!(pack::parse_name(&format!("{line}.n")), Ok(FileKind::Map { surface: true, .. }))
+            } else {
+                line.starts_with("tex_") && matches!(pack::parse_name(line), Ok(FileKind::Image { .. }))
+            };
+            if ok {
+                e.stems.insert(line.to_string());
+            } else {
+                e.bad.push((i + 1, line.to_string(), "not tex_<key>_<w>x<h> or surf_<key>_<w>x<h>".into()));
+            }
+        }
+        e
+    }
+
+    /// `dir`'s `materials-exclude.txt` (empty if there is none).
+    pub(crate) fn read(dir: &Path) -> Exclude {
+        std::fs::read_to_string(dir.join(EXCLUDE)).map(|t| Exclude::parse(&t)).unwrap_or_default()
+    }
+}
+
+/// The texture and surface names a pack's files carry (`tex_..`, `surf_..`
+/// with any map suffix removed).
+pub(crate) fn pack_bases(dir: &Path) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(stem) = name.strip_suffix(".png") else { continue };
+        let base = stem.split('.').next().unwrap_or("");
+        if base.starts_with("tex_") || base.starts_with("surf_") {
+            out.insert(base.to_string());
+        }
+    }
+    out
 }
 
 /// The pack's record: settings, then a line per map made, with its
@@ -577,7 +644,15 @@ pub fn run(dest: &Path, o: &Options, game: &str) -> Result<(), String> {
             record.settings.unwrap_or_default().replace('\t', " ")
         ));
     }
-    let (targets, textures, missing) = targets(dest, o.dump.as_deref())?;
+    let exclude = Exclude::read(dest);
+    let mut known = pack_bases(dest);
+    let (targets, textures, missing) = targets(dest, o.dump.as_deref(), &mut known)?;
+    for (n, text, why) in &exclude.bad {
+        println!("warning: {EXCLUDE} line {n}: {text}: {why}");
+    }
+    for stem in exclude.stems.iter().filter(|s| !known.contains(*s)) {
+        println!("warning: {EXCLUDE}: {stem} matches no texture or surface in the dump or the pack");
+    }
     let surfaces = targets.iter().filter(|t| t.stem.starts_with("surf_")).count();
     println!(
         "texpack-materials: {} ({}), generator: {}, maps in normal_y {}",
@@ -594,8 +669,38 @@ pub fn run(dest: &Path, o: &Options, game: &str) -> Result<(), String> {
     );
 
     let (mut below, mut current, mut kept) = (0, 0, 0);
+    let (mut excluded, mut removed) = (0, 0);
     let mut jobs = vec![];
     for t in targets {
+        let base = t.stem.trim_end_matches(".n");
+        let named = t.names.iter().filter(|n| exclude.stems.contains(*n)).count();
+        if exclude.stems.contains(base) || named == t.names.len() {
+            excluded += 1;
+            let out = dest.join(format!("{}.png", t.stem));
+            if out.exists() {
+                let ours = record.maps.get(&t.stem).is_some_and(|(_, st)| Some(st) == up::stamp(&out).as_ref());
+                if ours && std::fs::remove_file(&out).is_ok() {
+                    removed += 1;
+                    println!("excluded {base}: removed its generated map");
+                } else {
+                    println!(
+                        "excluded {base}: its map {} is hand-made or edited, kept; the exclusion has no effect on it \
+                         (delete the file to drop it)",
+                        out.display()
+                    );
+                }
+            }
+            continue;
+        }
+        if named > 0 {
+            println!(
+                "warning: {EXCLUDE}: {} of the {} colours of {base} are listed: their map is shared with the \
+                 others, so it is still made (list {base} to exclude all, or `material <tex stem> normal=0` in \
+                 pack.txt switches one off when drawn)",
+                named,
+                t.names.len()
+            );
+        }
         if t.uses < o.min_uses {
             below += 1;
             continue;
@@ -622,7 +727,8 @@ pub fn run(dest: &Path, o: &Options, game: &str) -> Result<(), String> {
     }
     println!(
         "{textures} textures -> {} maps ({surfaces} per surface, the rest per image): {current} up to date, \
-         {kept} kept (made or edited by hand), {below} below MIN_USES, {missing} without an image; {} to do",
+         {kept} kept (made or edited by hand), {below} below MIN_USES, {missing} without an image, \
+         {excluded} excluded ({removed} maps removed); {} to do",
         jobs.len() + current + kept + below,
         jobs.len()
     );
@@ -1146,6 +1252,90 @@ mod tests {
         let text = std::fs::read_to_string(pack.join("pack.txt")).unwrap();
         assert_eq!(text, "# mine\nformat 2\nname my pack\nuses\tmaterials\nnormal_y down\n");
         assert!(std::fs::read_to_string(pack.join(RECORD)).unwrap().contains("normal_y=down"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_exclude_list_reads_stems_and_comments() {
+        let e = Exclude::parse(
+            "# signs\n\n  tex_00000000000000aa_16x16  # a sign\nsurf_0000000000000011_16x16\n\
+             tex_00000000000000aa_16x16\nsurf_0000000000000011_16x16.n\nnonsense\ntex_AA_1x1\n",
+        );
+        let stems: Vec<&str> = e.stems.iter().map(String::as_str).collect();
+        assert_eq!(stems, ["surf_0000000000000011_16x16", "tex_00000000000000aa_16x16"]);
+        let bad: Vec<(usize, &str)> = e.bad.iter().map(|(n, t, _)| (*n, t.as_str())).collect();
+        assert_eq!(bad, [(6, "surf_0000000000000011_16x16.n"), (7, "nonsense"), (8, "tex_AA_1x1")]);
+    }
+
+    #[test]
+    fn excluded_textures_get_no_map_and_hand_made_ones_stay() {
+        let dir = scratch("texpack-materials-exclude-test");
+        let (dump, pack) = (dir.join("dump"), dir.join("pack"));
+        std::fs::create_dir_all(&dump).unwrap();
+        std::fs::create_dir_all(&pack).unwrap();
+        // a, b: two colours of surface 11; c: no surf=; d: surface 22; e: no surf=.
+        let names = ["aa", "bb", "cc", "dd", "ee"].map(|k| format!("tex_00000000000000{k}_16x16"));
+        for (i, n) in names.iter().enumerate() {
+            put(&dump, n, &noise(16, 16, 3 + i as u32));
+        }
+        let [a, b, c, d, e] = &names;
+        std::fs::write(
+            dump.join("index.txt"),
+            format!(
+                "# x\n{a}\tuses=2\tsurf=0000000000000011\twrap=rr\n{b}\tuses=9\tsurf=0000000000000011\twrap=rr\n\
+                 {c}\tuses=3\twrap=rr\n{d}\tuses=1\tsurf=0000000000000022\twrap=rr\n{e}\tuses=1\twrap=rr\n"
+            ),
+        )
+        .unwrap();
+        let o = options(&dump, dir.join("work"));
+        run(&pack, &o, "topskatr").unwrap();
+        let maps = |p: &Path| {
+            let mut v: Vec<String> = std::fs::read_dir(p)
+                .unwrap()
+                .filter_map(|e| e.ok()?.file_name().to_str().map(String::from))
+                .filter(|n| n.ends_with(".n.png"))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(maps(&pack).len(), 4, "{:?}", maps(&pack));
+        let s11 = pack.join("surf_0000000000000011_16x16.n.png");
+        let s22 = pack.join("surf_0000000000000022_16x16.n.png");
+        let (own_c, own_e) = (pack.join(format!("{c}.n.png")), pack.join(format!("{e}.n.png")));
+        let kept_e = std::fs::read(&own_e).unwrap();
+        // Exclude by image stem (c), by surface stem (11, every colour), and
+        // an entry that matches nothing; the earlier generated maps go.
+        let list =
+            format!("# keep these flat\n{c}\nsurf_0000000000000011_16x16 # both colours\ntex_00000000000000ff_16x16\n");
+        std::fs::write(pack.join(EXCLUDE), &list).unwrap();
+        run(&pack, &o, "topskatr").unwrap();
+        assert!(!s11.exists() && !own_c.exists(), "generated maps removed on the rerun");
+        assert!(s22.exists() && own_e.exists(), "the others stay");
+        assert_eq!(std::fs::read(&own_e).unwrap(), kept_e);
+        assert!(!std::fs::read_to_string(pack.join(RECORD)).unwrap().contains("surf_0000000000000011"));
+        // Excluded from the start: never made. (A fresh pack.)
+        let fresh = dir.join("fresh");
+        std::fs::create_dir_all(&fresh).unwrap();
+        std::fs::write(fresh.join(EXCLUDE), &list).unwrap();
+        run(&fresh, &o, "topskatr").unwrap();
+        assert_eq!(maps(&fresh), maps(&pack));
+        // Only one colour of a surface listed: the shared map is still made.
+        std::fs::write(fresh.join(EXCLUDE), format!("{a}\n")).unwrap();
+        run(&fresh, &o, "topskatr").unwrap();
+        assert!(fresh.join("surf_0000000000000011_16x16.n.png").exists());
+        // A hand-edited map is never deleted by an exclusion; neither is a
+        // hand-made one (no record).
+        let edited = png::encode_rgb(16, 16, &[128, 140, 250].repeat(256));
+        std::fs::write(&s22, &edited).unwrap();
+        std::fs::write(&own_e, &edited).unwrap();
+        std::fs::write(pack.join(EXCLUDE), format!("surf_0000000000000022_16x16\n{e}\n")).unwrap();
+        run(&pack, &o, "topskatr").unwrap();
+        assert_eq!(std::fs::read(&s22).unwrap(), edited);
+        assert_eq!(std::fs::read(&own_e).unwrap(), edited);
+        // Without the list the excluded maps are made again.
+        std::fs::remove_file(pack.join(EXCLUDE)).unwrap();
+        run(&pack, &o, "topskatr").unwrap();
+        assert!(s11.exists() && own_c.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
