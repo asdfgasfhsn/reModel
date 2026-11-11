@@ -354,10 +354,10 @@ parameters:
   by depth, not the game's order, except skies, shadows, translucent
   layers and large floors; `docs/enhancements.md`). Both off by default,
   both in the panel's Display section, both applied live. The module's
-  `set_quality(aa, depth, texfilter, shading, crease, fine, balance)` takes them before
+  `set_quality(aa, depth, texfilter, shading, crease, fine, balance, materials, relief)` takes them before
   or after `start` (`texfilter` is a string: `off`, `mip`, `2`, `4`, `8` or
-  `16`; anything else is off; `shading`, `crease`, `fine` and `balance` as below, and may be
-  left out: flat, the game's angle, off, on). Temporal anti-aliasing and upscaling
+  `16`; anything else is off; `shading`, `crease`, `fine`, `balance`, `materials` and `relief` as below, and may be
+  left out: flat, the game's angle, off, on, off, 2). Temporal anti-aliasing and upscaling
   are the native player's only (`docs/play.md`); the browser has no
   setting for them and keeps multisampling (`set_quality` never turns
   them on);
@@ -373,7 +373,12 @@ parameters:
   `texfilter=off|mip|2|4|8|16` (filtering of pack images, as in
   `docs/texture-packs.md`; `0` and `1` mean `off` and `mip`). Both off by
   default, both in the panel's Display
-  section, both applied live.
+  section, both applied live;
+- `materials=1` (the texture pack's material maps, off by default; below,
+  "Material maps") and `relief=off|S` (their rule: relief at strength S,
+  0.1 to 8, by default 2, or `off` for the faithful rule). Both in the
+  panel's Display section ("Material maps", "Material relief": 1, 2, 4, 8
+  or Faithful), both applied live; `materials` needs `pack`.
 
 **Smooth shading.** With `shading=vertex` (or Shading: Smooth in the
 panel), brightness varies across curved surfaces instead of stepping from
@@ -507,6 +512,23 @@ no WebGPU errors. Details: `docs/texture-packs.md`,
 `docs/gpu.md`. Tested in headed Chrome on Linux (headless Chromium loses the
 WebGPU device, "Testing headless" below). *Not verified:* other browsers,
 phones, `RECOMP=1` builds, eviction past the budget.
+
+**Material maps.** With `materials=1` and a texture pack whose `pack.txt`
+says format 2 and whose index lists normal maps (`*.n.png`; `make
+pack-materials` makes them, docs/texture-packs.md, "Trying material
+maps"), the maps' bumps are lit by the game's own lights, as in the native
+player (`gpu::Quality::materials`, the eighth and ninth `set_quality`
+arguments). The page then has the geometrizer record its lighting side
+channel (the worker's `light` flag, `wantsLight`), with `shading=flat`
+too. A map's files are fetched like images, when its texture is first
+drawn with a lamp, and assembled when all have arrived, so a material
+appears a little after its image; they share the 192 MB budget. The status
+line says `materials relief 2: N/M lit polygons, K maps (X MB)` (`N` of
+the `M` textured polygons the game lit with the exact lighting layer were
+drawn with a map), or why they have no effect: no texture pack, the pack
+has no material maps, or no polygon had the game's exact lighting (the
+chip, `geo=chip`; `RECOMP=1` builds; unlit scenes). A pack whose
+`pack.txt` `needs materials` is shown, with or without the maps.
 
 **Bezels.** With the 4:3 aspect in a window wider than 4:3, the game's
 bezel fills the sides: original cabinet-style artwork, one per game

@@ -15,7 +15,8 @@
 export const MIX = [8, -8];
 
 /// Every setting, in panel order.
-export const KEYS = ["height", "aspect", "hud", "bezel", "aa", "depth", "shading", "crease", "shadefine", "shadebalance", "pack", "texfilter", "sound", "sfx",
+export const KEYS = ["height", "aspect", "hud", "bezel", "aa", "depth", "shading", "crease", "shadefine", "shadebalance", "pack", "texfilter",
+  "materials", "relief", "sound", "sfx",
   "music", "buffer", "touch", "tilt", "geo", "smooth", "controls"];
 /// Settings kept per game only, never as the defaults for all games:
 /// `controls` is the game's remapped keys and pad bindings, as the module
@@ -51,6 +52,8 @@ export function builtin(env = {}) {
     shadebalance: true,
     pack: false,
     texfilter: "off",
+    materials: false,
+    relief: "2",
     sound: true,
     sfx: MIX[0],
     music: MIX[1],
@@ -109,6 +112,8 @@ export function clean(key, v) {
     // Smooth shading's brightness balance (gpu::Quality::shading_balance):
     // each smooth surface as bright as the game's; off, bumpy ones brighter.
     case "shadebalance":
+    // The texture pack's material maps (gpu::Quality::materials).
+    case "materials":
     case "depth":
     case "pack":
     case "bezel":
@@ -117,6 +122,14 @@ export function clean(key, v) {
     case "tilt":
     case "smooth":
       return typeof v === "boolean" ? v : undefined;
+    // Material maps' rule (gpu::Relief): a relief strength from 0.1 to 8 (to
+    // a tenth), or "off" for the faithful rule.
+    case "relief": {
+      if (v === "off" || v === false) return "off";
+      const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
+      const t = Math.round(n * 10);
+      return Number.isFinite(t) && t >= 1 && t <= 80 ? String(t / 10) : undefined;
+    }
     case "sfx":
     case "music": {
       const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
@@ -166,7 +179,9 @@ function cleanAll(o) {
 /// and `shadefine=1` (finer levels: no banding on smooth surfaces) and
 /// `shadebalance=0` (no brightness balance per smooth surface), `pack=1`
 /// (the game's texture pack, from /texpack/<set>/) and
-/// `texfilter=off|mip|2|4|8|16` (filtering of pack images).
+/// `texfilter=off|mip|2|4|8|16` (filtering of pack images), `materials=1`
+/// (the pack's material maps) with `relief=off|S` (their rule: a relief
+/// strength from 0.1 to 8, or off for the faithful rule).
 export function fromParams(params) {
   const raw = {};
   const flag = (k) => params.get(k) !== "0" && params.get(k) !== "off" && params.get(k) !== "false";
@@ -182,6 +197,8 @@ export function fromParams(params) {
   if (params.has("shadebalance")) raw.shadebalance = flag("shadebalance");
   if (params.has("pack")) raw.pack = flag("pack");
   if (params.has("texfilter")) raw.texfilter = params.get("texfilter");
+  if (params.has("materials")) raw.materials = flag("materials");
+  if (params.has("relief")) raw.relief = params.get("relief");
   if (params.has("sound")) raw.sound = flag("sound");
   if (params.has("sfx")) raw.sfx = params.get("sfx");
   if (params.has("music")) raw.music = params.get("music");
@@ -297,7 +314,8 @@ export function audioBuffer(buffer, env = {}) {
 /// hudEdges, bezel, sound, mix: [sfx, music], audio: {target, prime, max},
 /// touch, tilt, geoLocal, geoNative, smooth, aa (samples, 0 or 4), depth,
 /// shading ("flat", "vertex", "pixel"), crease (degrees, or undefined: the
-/// game's), shadingFine, shadingBalance, pack, texFilter ("off", "mip", "2" ... "16")}`
+/// game's), shadingFine, shadingBalance, pack, texFilter ("off", "mip", "2" ... "16"),
+/// materials (with the pack only), relief ("off" or a strength)}`
 /// (smooth motion needs the
 /// native geometrizer: off with the chip).
 export function effective(values, env) {
@@ -322,6 +340,8 @@ export function effective(values, env) {
     shadingBalance: values.shadebalance,
     pack: values.pack,
     texFilter: values.texfilter,
+    materials: values.materials && values.pack,
+    relief: values.relief,
   };
 }
 

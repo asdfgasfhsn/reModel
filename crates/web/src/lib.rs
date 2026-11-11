@@ -322,7 +322,9 @@ impl App {
             if let Some(f) = engine.smooth_frame() {
                 // With smooth shading's side channel on, the in-between's
                 // own (shaded at the level of the frames around it).
-                own = if engine.light_on() && self.renderer.light_options().is_some() {
+                own = if engine.light_on()
+                    && (self.renderer.light_options().is_some() || self.renderer.quality().materials)
+                {
                     f.render_lit(t as f32).map(|(s, side)| {
                         self.renderer.set_light_frame(Some(Arc::new(side)));
                         (s, f)
@@ -433,6 +435,39 @@ impl App {
             if o.fine { " fine" } else { "" },
             if o.balance { "" } else { " unbalanced" },
             o.crease
+        )
+    }
+
+    /// The status line's material maps part, with them on: what they
+    /// changed in the last frame, or why they have no effect (no pack, a
+    /// pack without maps, no polygon lit by the exact layer: the chip
+    /// geometrizer, a build without the native one).
+    fn materials_status(&self) -> String {
+        let q = self.renderer.quality();
+        if !q.materials {
+            return String::new();
+        }
+        let rule = match q.materials_relief.strength() {
+            Some(_) => format!("relief {}", q.materials_relief.name()),
+            None => "faithful".to_string(),
+        };
+        if !self.renderer.has_pack() {
+            return " · materials: no effect (no texture pack)".into();
+        }
+        if !with_pack(|s| s.maps).unwrap_or(false) {
+            return " · materials: no effect (the pack has no material maps)".into();
+        }
+        let s = self.renderer.pack_stats();
+        if s.textured > 0 && s.lamped == 0 {
+            return " · materials: no effect (no polygon had the game's exact lighting: needs the native geometrizer)"
+                .into();
+        }
+        format!(
+            " · materials {rule}: {}/{} lit polygons, {} maps ({:.0} MB)",
+            s.material_polys,
+            s.lamped,
+            s.material_held,
+            s.material_bytes as f64 / 1048576.0
         )
     }
 
@@ -561,7 +596,7 @@ impl App {
             set_status(
                 &self.status,
                 &format!(
-                    "{} · {:.0}% speed{} · {:.0} fps drawn ({} repeats) · {}x{} · i960 {} · ms per frame: emulate {:.1}, draw {:.1}{}{}{}{}",
+                    "{} · {:.0}% speed{} · {:.0} fps drawn ({} repeats) · {}x{} · i960 {} · ms per frame: emulate {:.1}, draw {:.1}{}{}{}{}{}",
                     match self.per_refresh() {
                         Some(_) => format!("synced to {:.0} Hz", 1000.0 / self.refresh.ms()),
                         None => "exact speed".into(),
@@ -582,6 +617,7 @@ impl App {
                     },
                     self.pack_status(),
                     self.light_status(),
+                    self.materials_status(),
                     self.audio_status(t),
                 ),
             );
@@ -646,6 +682,8 @@ struct Quality {
     crease: u8,
     shading_fine: bool,
     shading_balance: bool,
+    materials: bool,
+    materials_relief: gpu::Relief,
 }
 
 impl Quality {
@@ -657,10 +695,22 @@ impl Quality {
         crease: gpu::CREASE_AUTO,
         shading_fine: false,
         shading_balance: true,
+        materials: false,
+        materials_relief: gpu::Relief::Diffuse { tenths: gpu::Relief::DEFAULT_TENTHS },
     };
 
     fn gpu(self) -> gpu::Quality {
-        let Quality { aa, depth, tex_filter, shading, crease, shading_fine, shading_balance } = self;
+        let Quality {
+            aa,
+            depth,
+            tex_filter,
+            shading,
+            crease,
+            shading_fine,
+            shading_balance,
+            materials,
+            materials_relief,
+        } = self;
         gpu::Quality {
             msaa: aa,
             depth,
@@ -669,13 +719,16 @@ impl Quality {
             crease,
             shading_fine,
             shading_balance,
+            materials,
+            materials_relief,
             ..Default::default()
         }
     }
 
-    /// Smooth shading wants the geometrizer's side channel.
+    /// Smooth shading or material maps want the geometrizer's side
+    /// channel (material maps' lamps come from it, with shading flat too).
     fn light_on(self) -> bool {
-        self.shading != gpu::Shading::Flat && self.crease != 0
+        (self.shading != gpu::Shading::Flat && self.crease != 0) || self.materials
     }
 }
 
@@ -692,7 +745,12 @@ impl Quality {
 /// columns instead of the game's 64 levels; left out is off), and
 /// `balance` false to drop the brightness balance
 /// (`gpu::Quality::shading_balance`: one offset per smooth surface keeps
-/// its mean the game's; left out is on). The shading
+/// its mean the game's; left out is on), and `materials` true for the
+/// texture pack's material maps (`gpu::Quality::materials`: normal maps
+/// change the brightness of surfaces the game lit with the exact lighting
+/// layer, the native geometrizer's side channel; left out is off) with
+/// `relief` their rule (`gpu::Relief::parse`: a strength from 0.1 to 8, or
+/// `off` for the faithful rule; left out or unreadable is 2). The shading
 /// is done on this page, from the polygon stream and the side channel the
 /// geometrizer recorded (`geo=local`: turned on here; with the worker the
 /// page asks it for it, geo-worker.js `light`). Before `start`, for the
@@ -706,6 +764,8 @@ pub fn set_quality(
     crease: Option<u32>,
     fine: Option<bool>,
     balance: Option<bool>,
+    materials: Option<bool>,
+    relief: Option<String>,
 ) {
     let q = Quality {
         aa,
@@ -718,6 +778,8 @@ pub fn set_quality(
         },
         shading_fine: fine.unwrap_or(false),
         shading_balance: balance.unwrap_or(true),
+        materials: materials.unwrap_or(false),
+        materials_relief: relief.as_deref().and_then(gpu::Relief::parse).unwrap_or_default(),
     };
     QUALITY.with(|c| c.set(q));
     APP.with(|a| {

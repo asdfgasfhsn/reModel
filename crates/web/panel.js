@@ -185,7 +185,13 @@ export function createPanel(opts) {
       "with smooth shading: each smooth surface as bright as the game's; off, bumpy ones come out brighter"),
     onOff("pack", "Texture pack", "replacement textures from the server's texpack folder for this game, if it has one"),
     choice("texfilter", "Pack filtering", () => [["off", "Off"], ["mip", "Mipmaps"], ["2", "2x"], ["4", "4x"],
-      ["8", "8x"], ["16", "16x"]], "mipmaps, then anisotropic filtering; texture pack images only"));
+      ["8", "8x"], ["16", "16x"]], "mipmaps, then anisotropic filtering; texture pack images only"),
+    onOff("materials", "Material maps",
+      "with the texture pack: its normal maps, bumps and grooves lit by the game's own lights (needs the " +
+      "native geometrizer; no effect with the chip)"),
+    choice("relief", "Material relief", () => withValue("relief",
+      [["1", "1"], ["2", "2"], ["4", "4"], ["8", "8"], ["off", "Faithful"]], (v) => v),
+      "with material maps: how strongly they shade (2 by default); faithful keeps the game's own lighting sum, subtler"));
   const autoBuffer = audioBuffer("auto", env).target * 1000;
   const sound = el("section", {}, el("h3", { textContent: "Sound" }),
     onOff("sound", "Sound"), slider("sfx", "Effects"), slider("music", "Music"),
@@ -258,6 +264,9 @@ export function createPanel(opts) {
     rows.crease.el.style.opacity = values.shading === "flat" ? 0.5 : "";
     rows.shadefine.el.style.opacity = values.shading === "flat" ? 0.5 : "";
     rows.shadebalance.el.style.opacity = values.shading === "flat" ? 0.5 : "";
+    // Material maps need the texture pack (and the native geometrizer).
+    rows.materials.el.style.opacity = !values.pack || values.geo === "chip" ? 0.5 : "";
+    rows.relief.el.style.opacity = !values.materials || !values.pack || values.geo === "chip" ? 0.5 : "";
   }
   reset.addEventListener("click", () => {
     for (const k of Object.keys(opts.base)) {
