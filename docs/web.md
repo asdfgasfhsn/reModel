@@ -492,8 +492,13 @@ a 1024x1024 image with its mipmaps measured up to 13 ms of draw against about
 keeps images up to 192 MB (the least recently drawn are dropped, and
 fetched again when next drawn, likely from the HTTP cache). The status line shows
 the polygons replaced, the images held and the filter, and with tile images
-in the pack the tile patterns replaced and held. `set_pack(index)` takes
-the index text (or `undefined` for none) before or after `start`. Tile
+in the pack the tile patterns replaced and held. `set_pack(index, manifest)`
+takes the index text (or `undefined` for none) and the pack's `pack.txt`
+(fetched from the same folder after the index; a 404 is a pack without
+one, read as always) before or after `start`; it throws, leaving no pack,
+when the manifest says this build can't show the pack (a newer format, or
+a feature it `needs`), and the page then logs why and keeps the original
+textures (`docs/texture-packs.md`, "Pack format"). Tile
 images (`tile_<key>.png` in the index) are fetched the same way and drawn
 at the canvas's resolution, as natively (`docs/texture-packs.md`, "Tiles
 live"); checked on `overrevb` (whose pack came from `overrev`'s folder):

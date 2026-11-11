@@ -448,8 +448,26 @@
       set_pack(undefined);
       return;
     }
+    // Its manifest, if it has one (docs/texture-packs.md, "Pack format"):
+    // a 404 is a pack without one, read as always.
+    let manifest;
+    try {
+      const r = await fetch(packUrl + "pack.txt");
+      if (r.ok) manifest = await r.text();
+    } catch (e) {
+      // Unreachable: as no manifest.
+    }
+    if (gen !== packGen) return;
     remodelPack.url = packUrl;
-    const names = set_pack(index);
+    let names;
+    try {
+      names = set_pack(index, manifest);
+    } catch (e) {
+      // A pack this build can't show (a newer format, or a feature it needs).
+      console.warn(`texture pack ${packUrl}: ${e.message ?? e}; original textures`);
+      remodelPack.refused = String(e.message ?? e);
+      return;
+    }
     console.log(`texture pack: ${names} images listed in ${packUrl}index.txt`);
     packWorker?.terminate();
     packWorker = new Worker("../pack-worker.js", { type: "module" });

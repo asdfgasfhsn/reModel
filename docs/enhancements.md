@@ -62,7 +62,9 @@ through DirectX 8/9's fixed-function pipeline.
 | Models | Automatic smoothing (vertex normals, curved surfaces) | vertex normals done (smooth shading, below); curved-surface tessellation an idea |
 | Models | Level of detail and draw distance overrides | idea (optional patch) |
 | Lighting | Smooth shading: per-vertex and per-pixel lighting with the game's own formula, finer brightness levels | done, opt-in (2026-11-11), player and browser; 2A formula unconfirmed (below) |
-| Lighting | Material maps in packs (normal, specular, roughness) | planned |
+| Lighting | Material maps in packs (normal, specular, gloss) | planned; pack format with manifest, surface keys, map names and `make pack-lint` done (2026-11-11, `docs/texture-packs.md`, "Pack format"), loading and drawing not built |
+| Lighting | Pack-declared highlights where the game casts none | idea, deferred (2026-11-11): maps only scale the game's own specular; manifest keys reserved (below) |
+| Lighting | Light data on the chip geometry path (materials and smooth shading there) | idea, not investigated (below) |
 | Lighting | Shadows, bloom, HDR tonemapping, better fog | idea |
 | Lighting | Hybrid ray tracing (shadows, reflections, AO) | idea |
 | Lighting | Path tracing with denoising | idea (research) |
@@ -1141,8 +1143,24 @@ light direction and ambient, nothing physical), which is pack content.
 
 ## Open questions
 
-- How packs carry models and materials alongside textures (one pack
-  format, versioned).
+- How packs carry models and materials alongside textures: one pack
+  format, versioned (decided 2026-11-11, `docs/texture-packs.md`, "Pack
+  format"): an optional manifest, material maps as suffix files keyed by
+  image or surface, model names reserved. The mesh format for models is
+  still open.
+- Pack-declared highlights (deferred 2026-11-11). Material maps will scale
+  the specular highlight a game's lighting entry already has; a polygon
+  whose entry casts none gets none, however shiny its pack paints it.
+  Letting a pack add one (`spec_base=`, `spec_power=` on a `material`
+  line, reserved in the manifest so it needs no new format) invents light
+  the game doesn't cast. First measure how many polygons have a highlight
+  at all, per game; then decide.
+- Whether light data can be recovered on the chip geometry path (not
+  investigated, unconfirmed either way). Material maps and the exact
+  lighting layer need the native geometrizer's per-polygon light data;
+  the chip path (`--geo chip`, recompiled browser builds) has none, so
+  materials will do nothing there. Captures made without light data
+  don't need recovering: record them again with it.
 - Whether the depth buffer can be on by default (undecided). The
   evidence so far (2026-11-11, 21 captured frames per game; "Depth
   buffer" above): it changes 10-19 of 21 frames in every one of the 18

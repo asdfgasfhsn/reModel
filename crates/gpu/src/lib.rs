@@ -212,9 +212,9 @@ pub struct PackStats {
 /// GPU memory pack images may hold before the least recently drawn are
 /// dropped.
 #[cfg(not(target_arch = "wasm32"))]
-const PACK_BUDGET: u64 = 512 << 20;
+const PACK_BUDGET: u64 = model2::pack::BUDGET_NATIVE;
 #[cfg(target_arch = "wasm32")]
-const PACK_BUDGET: u64 = 192 << 20;
+const PACK_BUDGET: u64 = model2::pack::BUDGET_WASM;
 
 /// No pack image: a polygon drawn from its own texels.
 const NO_SLOT: u32 = u32::MAX;

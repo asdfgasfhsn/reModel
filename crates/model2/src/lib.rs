@@ -17,6 +17,7 @@ pub mod gun;
 pub mod input;
 pub mod light;
 pub mod pacing;
+pub mod pack;
 pub mod protection;
 pub mod raster;
 pub mod sharc;

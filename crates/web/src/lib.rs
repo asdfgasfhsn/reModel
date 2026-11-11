@@ -846,31 +846,53 @@ fn with_pack<T>(f: impl FnOnce(&mut PackState) -> T) -> Option<T> {
 }
 
 /// Use a texture pack whose `index.txt` is `index` (one file name a line,
-/// `.png` optional; blank lines and `#` comments ignored), or none
-/// (`undefined`, the default: the original textures). Before `start`, for
-/// the game it starts; after, from the next frame. Returns the number of
-/// names in the index. The page then fetches what [`pack_wanted`] names
-/// and hands it over with [`pack_image`] or [`pack_missing`].
+/// `.png` optional; blank lines and `#` comments ignored) and whose
+/// manifest `pack.txt` is `manifest` (`undefined`: it has none), or no pack
+/// (`index` `undefined`, the default: the original textures). Before
+/// `start`, for the game it starts; after, from the next frame. Returns the
+/// number of images (textures and tiles) in the index; throws, with no pack
+/// set, when the manifest says this build can't show the pack
+/// (docs/texture-packs.md, "Pack format"). The page then fetches what
+/// [`pack_wanted`] names and hands it over with [`pack_image`] or
+/// [`pack_missing`].
 #[wasm_bindgen]
-pub fn set_pack(index: Option<String>) -> u32 {
-    let state = index.map(|text| {
+pub fn set_pack(index: Option<String>, manifest: Option<String>) -> Result<u32, JsValue> {
+    use model2::pack::{parse_name, FileKind, Manifest};
+    // A pack this build can't show: none, and the page says why.
+    let refused = match index.is_some().then(|| Manifest::accept(manifest.as_deref())) {
+        Some(Ok(m)) => {
+            if let Some(n) = m.notice() {
+                web_sys::console::log_1(&format!("texture pack: {n}").into());
+            }
+            None
+        }
+        Some(Err(e)) => Some(e),
+        None => None,
+    };
+    let state = index.filter(|_| refused.is_none()).map(|text| {
         let index: HashSet<String> = text
             .lines()
             .map(str::trim)
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
             .map(|l| l.strip_suffix(".png").unwrap_or(l).to_string())
             .collect();
-        let tiles = index.iter().any(|n| n.starts_with("tile_"));
+        let tiles = index.iter().any(|n| matches!(parse_name(n), Ok(FileKind::Tile { .. })));
         Arc::new(Mutex::new(PackState { index, tiles, ..Default::default() }))
     });
-    let names = state.as_ref().map_or(0, |s| s.lock().unwrap().index.len() as u32);
+    let names = state.as_ref().map_or(0, |s| {
+        let image = |n: &&String| matches!(parse_name(n), Ok(FileKind::Image { .. } | FileKind::Tile { .. }));
+        s.lock().unwrap().index.iter().filter(image).count() as u32
+    });
     PACK.with(|p| *p.borrow_mut() = state.clone());
     APP.with(|a| {
         if let Some(app) = a.borrow().as_ref() {
             app.borrow_mut().renderer.set_pack(state.map(|s| Box::new(WebPack(s)) as Box<dyn TexturePack + Send>));
         }
     });
-    names
+    match refused {
+        Some(e) => Err(JsValue::from_str(&e)),
+        None => Ok(names),
+    }
 }
 
 /// The pack images drawn since the last call that the page should fetch

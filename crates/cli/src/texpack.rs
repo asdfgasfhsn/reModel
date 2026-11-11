@@ -2,10 +2,11 @@
 //! `--texture-pack`); docs/texture-packs.md describes the files.
 
 use model2::enhance::{Enhance, Fnv, Found, Rgba, TexInfo, TexturePack, TileInfo};
+use model2::pack::{parse_name, FileKind, Manifest};
 use model2::raster::{texture_image, texture_look, Sources};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// Set by `main` when either option is given; snapshots then render
@@ -53,6 +54,26 @@ pub struct Packs {
     looked_up: [u64; 2],
     /// The pack has tile images (`TexturePack::has_tiles`).
     has_tiles: bool,
+    /// Why the pack given isn't drawn (`accept`).
+    refused: Option<String>,
+}
+
+/// Whether the pack in `dir` may be drawn (`pack::Manifest::for_dir`),
+/// printing what its manifest ignores or why it is refused: a refused pack
+/// draws the original textures (docs/texture-packs.md, "Pack format").
+pub fn accept(dir: &Path) -> Result<Manifest, String> {
+    match Manifest::for_dir(dir) {
+        Ok(m) => {
+            if let Some(n) = m.notice() {
+                eprintln!("texture pack {}: {n}", dir.display());
+            }
+            Ok(m)
+        }
+        Err(e) => {
+            eprintln!("texture pack {}: {e}; drawing the original textures", dir.display());
+            Err(e)
+        }
+    }
 }
 
 impl Packs {
@@ -60,21 +81,27 @@ impl Packs {
         if let Some(d) = &dump {
             std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
         }
-        if let Some(p) = &pack {
-            if !p.is_dir() {
-                return Err(format!("{}: texture pack directory not found", p.display()));
+        let refused = match &pack {
+            Some(p) => {
+                if !p.is_dir() {
+                    return Err(format!("{}: texture pack directory not found", p.display()));
+                }
+                accept(p).err()
             }
-        }
+            None => None,
+        };
+        let pack = pack.filter(|_| refused.is_none());
         let has_tiles = pack.as_ref().is_some_and(|p| {
             std::fs::read_dir(p).into_iter().flatten().flatten().any(|e| {
                 let name = e.file_name();
                 let name = name.to_string_lossy();
-                name.starts_with("tile_") && name.ends_with(".png")
+                name.strip_suffix(".png").is_some_and(|stem| matches!(parse_name(stem), Ok(FileKind::Tile { .. })))
             })
         });
         Ok(Packs {
             dump,
             pack,
+            refused,
             frame: 0,
             cache: HashMap::new(),
             mips: HashMap::new(),
@@ -150,8 +177,9 @@ impl Packs {
         let mut text = String::from(
             "# reModel texture dump: <name>.png, first frame seen, uses (textures: polygons drawn; tiles: frames\n\
              # on screen) over the snapshots, then what produced it (textures: header and the rest of the first\n\
-             # use, then wrap= every way it was drawn, u then v, r repeat or m mirror). Put edited or upscaled\n\
-             # copies, same names, in a directory and pass it to `run --texture-pack DIR` (docs/texture-packs.md).\n",
+             # use, surf= the surface key that material maps may be named by, then wrap= every way it was drawn,\n\
+             # u then v, r repeat or m mirror). Put edited or upscaled copies, same names, in a directory and pass\n\
+             # it to `run --texture-pack DIR` (docs/texture-packs.md).\n",
         );
         for (name, e) in &self.index {
             let wrap = if e.wraps != 0 { wrap_field(e.wraps) } else { String::new() };
@@ -173,6 +201,12 @@ impl Packs {
             if looks > 0 {
                 let _ = write!(s, " ({looks} textures drawn in several looks: each dump shows its most used)");
             }
+        }
+        if let Some(e) = &self.refused {
+            if !s.is_empty() {
+                s += "; ";
+            }
+            let _ = write!(s, "texture pack refused ({e}): original textures drawn");
         }
         if let Some(p) = &self.pack {
             if !s.is_empty() {
@@ -213,7 +247,7 @@ impl Enhance for Packs {
         }
         let about = || {
             format!(
-                "header={:04x},{:04x},{:04x},{:04x}\tcolour={:#06x}\tbank={}\tat={},{}\tluma_table={}\ttranslucent={}",
+                "header={:04x},{:04x},{:04x},{:04x}\tcolour={:#06x}\tbank={}\tat={},{}\tluma_table={}\ttranslucent={}\tsurf={:016x}",
                 info.header[0],
                 info.header[1],
                 info.header[2],
@@ -223,7 +257,8 @@ impl Enhance for Packs {
                 info.x0,
                 info.y0,
                 info.luma_table,
-                info.translucent as u8
+                info.translucent as u8,
+                info.surface
             )
         };
         let wrap = 1 << ((info.header[0] >> 8) & 3);
@@ -310,6 +345,7 @@ mod tests {
         // Textures through the pack interface: Missing, then the image.
         let tex = TexInfo {
             key: 0xabcd,
+            surface: 0,
             width: 8,
             height: 8,
             header: [0; 4],
@@ -322,8 +358,19 @@ mod tests {
         };
         assert!(matches!(p.find(&tex), Found::Missing));
         std::fs::write(pack.join(format!("{}.png", tex.name())), png::encode_rgba(32, 32, &big.data)).unwrap();
-        let mut p = Packs::new(None, Some(pack)).unwrap();
+        let mut p = Packs::new(None, Some(pack.clone())).unwrap();
         assert!(matches!(p.find(&tex), Found::Image(img) if *img == big));
+        // A manifest this build reads changes nothing; one it can't (a newer
+        // format, a feature it needs and can't show) draws the originals.
+        std::fs::write(pack.join("pack.txt"), "format 2\nuses materials\n").unwrap();
+        assert!(matches!(Packs::new(None, Some(pack.clone())).unwrap().find(&tex), Found::Image(_)));
+        for m in ["format 3\n", "format 2\nneeds materials\n", "not a manifest\n"] {
+            std::fs::write(pack.join("pack.txt"), m).unwrap();
+            let mut p = Packs::new(None, Some(pack.clone())).unwrap();
+            assert!(matches!(p.find(&tex), Found::Missing) && !p.has_tiles(), "{m}");
+            assert!(p.tile(&info).is_none());
+            assert!(p.summary().contains("refused"), "{}", p.summary());
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -336,6 +383,7 @@ mod tests {
         let ram = vec![0u8; 0x40_0000 + 0x8000];
         let tex = TexInfo {
             key: 0x77,
+            surface: 0,
             width: 32,
             height: 32,
             header: [0x4000, 0, 0, 0],
@@ -377,6 +425,8 @@ mod tests {
         assert_eq!(dumped()[..4], [90, 90, 90, 255]);
         let index = std::fs::read_to_string(dir.join("index.txt")).unwrap();
         assert!(index.contains("uses=5\t") && index.contains("\tlooks=2\n"), "{index}");
+        // The surface key, before wrap=: what parse_index-style readers find by k=v.
+        assert!(index.contains("\ttranslucent=0\tsurf=0000000000000000\twrap=rr\t"), "{index}");
         assert!(p.summary().contains("1 textures drawn in several looks"));
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -1,6 +1,6 @@
 //! A texture pack directory for the GPU renderer (`gpu::Renderer::set_pack`):
-//! PNGs named `tex_<key>_<w>x<h>.png` and `tile_<key>.png`
-//! (docs/texture-packs.md), decoded on
+//! PNGs named `tex_<key>_<w>x<h>.png` and `tile_<key>.png`, and an optional
+//! manifest `pack.txt` (docs/texture-packs.md, "Pack format"), decoded on
 //! background threads so a new texture never holds up a frame. Until its
 //! image is ready a texture is drawn from the original (`Found::Pending`).
 //!
@@ -9,6 +9,7 @@
 //! filter setting changed) is decoded again when next asked for.
 
 use model2::enhance::{Found, Rgba, TexInfo, TexturePack, TileInfo};
+use model2::pack::{parse_name, FileKind, Manifest};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -28,13 +29,14 @@ pub struct DirPack {
     from_workers: Receiver<(String, Option<Arc<Rgba>>)>,
 }
 
-/// The texture and tile PNGs in `dir` by file stem.
+/// The texture and tile images in `dir` by file stem (material maps and
+/// other files are left alone).
 fn list(dir: &Path) -> std::io::Result<HashSet<String>> {
     let mut names = HashSet::new();
     for e in std::fs::read_dir(dir)? {
         let name = e?.file_name();
         let Some(stem) = name.to_str().and_then(|n| n.strip_suffix(".png")) else { continue };
-        if stem.starts_with("tex_") || stem.starts_with("tile_") {
+        if matches!(parse_name(stem), Ok(FileKind::Image { .. } | FileKind::Tile { .. })) {
             names.insert(stem.to_string());
         }
     }
@@ -53,8 +55,14 @@ fn decode(path: &Path) -> Option<Arc<Rgba>> {
 }
 
 impl DirPack {
-    /// The pack in `dir`: an error if it can't be read.
+    /// The pack in `dir`: an error if it can't be read, or if its manifest
+    /// says this build can't show it (the original textures are drawn).
     pub fn open(dir: &Path) -> Result<DirPack, String> {
+        let manifest = Manifest::for_dir(dir)
+            .map_err(|e| format!("texture pack {}: {e}; drawing the original textures", dir.display()))?;
+        if let Some(n) = manifest.notice() {
+            println!("texture pack  {}: {n}", dir.display());
+        }
         let names = list(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let (to_workers, jobs) = channel::<String>();
         let (done, from_workers) = channel();
@@ -132,6 +140,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let info = TexInfo {
             key: 0x1234,
+            surface: 0,
             width: 2,
             height: 1,
             header: [0; 4],
@@ -144,6 +153,9 @@ mod tests {
         };
         let data = [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 9, 9, 9, 255];
         std::fs::write(dir.join(format!("{}.png", info.name())), png::encode_rgba(4, 1, &data)).unwrap();
+        // Material maps aren't images; a manifest of this format is read.
+        std::fs::write(dir.join(format!("{}.n.png", info.name())), png::encode_rgba(4, 1, &data)).unwrap();
+        std::fs::write(dir.join("pack.txt"), "format 2\nuses materials\n").unwrap();
         let mut pack = DirPack::open(&dir).unwrap();
         assert_eq!(pack.len(), 1);
         assert!(matches!(pack.find(&TexInfo { key: 1, ..info.clone() }), Found::Missing));
@@ -160,6 +172,13 @@ mod tests {
         assert_eq!(&img.data[..], &data[..]);
         // Handed over once: asked again, it's decoded again.
         assert!(matches!(pack.find(&info), Found::Pending));
+        // A pack of a newer format, or one needing what this build can't
+        // show, is refused (the player then draws the originals).
+        for m in ["format 3\n", "format 2\nneeds materials\n"] {
+            std::fs::write(dir.join("pack.txt"), m).unwrap();
+            let e = DirPack::open(&dir).err().unwrap();
+            assert!(e.contains("can't show") || e.contains("newer reModel"), "{e}");
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

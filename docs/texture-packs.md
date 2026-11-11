@@ -71,7 +71,9 @@ for the faded colours, which then draw as the original (no replacement).
 polygons drawn, over all snapshots; tiles: frames on screen), and what
 produced it (texture header words, colour, bank and sheet position, luma
 table, translucent, all from the first use; tile number and palette bank).
-Textures then have `wrap=` (and after it `looks=N`, above, where there is
+Textures then have `surf=`, the texture's surface key (16 hex digits; below,
+"Pack format": what material maps can be named by to serve every colour of
+the texture; dumps made before 2026-11-11 have none), and `wrap=` (and after it `looks=N`, above, where there is
 more than one look): every way the texture was drawn, one pair per
 way, u then v, `r` repeat or `m` mirror (`wrap=rr,mr`: repeated, and also
 mirrored in u). The mirror bits are not part of the key, so one dump can be
@@ -92,6 +94,10 @@ mkdir -p out/topskatr/texpack
 cd out/topskatr/texdump
 magick mogrify -path ../texpack -filter Lanczos -resize 400% tex_*.png tile_*.png
 ```
+
+`make pack-lint PACK=out/topskatr/texpack` checks the result (names, the
+index, that every file loads; below, "Pack format", which also defines
+the optional manifest `pack.txt` and material maps).
 
 Images are loaded the first time their key is drawn and cached for the run
 (live, see below, they are decoded in the background and the original shows
@@ -151,6 +157,155 @@ placement in wide views (`--hud edges`) works as for the original tiles.
 The columns a wide view adds at the sides (a scrolled tile sky carried on
 past the frame) keep the original patterns. Snapshots, the player and the
 browser draw tiles by these same rules (live: below).
+
+## Pack format
+
+A pack is a directory; this section is its definition, the same for every
+board and game (names are content keys the renderers compute; nothing in a
+pack names a board). `model2::pack` implements it: the manifest, the
+compatibility rules and the file-name grammar, used by the CLI, the player
+and the browser. **Status (2026-11-11):** the format, the surface key and
+`make pack-lint` exist; material maps are named and checked but no reader
+loads or draws them yet, so a pack's pictures are what the images alone
+give.
+
+**Format 1** is everything above: `tex_<key>_<w>x<h>.png`,
+`tile_<key>.png`, any subset, `index.txt` for the browser, and tool records
+(`upscale.txt`, `drift.txt`) that readers ignore. It has no manifest, and
+**a pack without a manifest is read exactly as before manifests existed**
+(same lookups, same pictures; checked 2026-11-11 by `make pack-identity`,
+`make tile-check`, `gpu-check` and `pack-check` with a pack, all
+unchanged). **Format 2** adds, all optional:
+
+| File | What |
+|---|---|
+| `pack.txt` | the manifest (below) |
+| `tex_<key>_<w>x<h>.n.png`, `.s.png`, `.g.png` | material maps for that image in that colour: normal, specular scale, gloss |
+| `surf_<skey>_<w>x<h>.n.png`, `.s.png`, `.g.png` | the same maps keyed by surface, serving every colour the texels are drawn in |
+| `materials.txt` | tool record (reserved for a map-making tool) |
+
+Keys are 16 lowercase hex digits and sizes plain decimals, exactly as the
+renderers write them; any other spelling is never opened. Tiles have no
+material maps (the 2D layer has no lighting): `tile_<key>.n.png` is not a
+pack name. Reserved, not to be used for anything else: map suffixes `.e`
+(self-lit) and `.m` (maps packed in one file), file prefixes `mdl_`
+(replacement models) and `img_` (pack-own images), the directory
+`models/`, the manifest keyword `model` and the features `models` and
+`selflit`. Readers only open names they construct, so files of a kind
+they don't know are never touched, and an `index.txt` line may name any
+file (`models/...` included); the browser fetches only image names.
+
+**Surface key.** The image key (above) covers the polygon colour, luma table
+and translucent flag, so one set of texels drawn in five colours is five
+images. A material map describes shape, which is the texels', so it can
+also be named by the surface key: the same 64-bit FNV-1a stream as the
+image key, stopped after the texels and the size. Exactly, with all
+numbers little-endian:
+
+    texels  = FNV-1a 64 over the rectangle's texel values (0-15), one byte each, rows top to bottom
+    surface = FNV-1a 64 over texels (8 bytes), w (4 bytes), h (4 bytes)
+    key     = the same stream continued over luma table, translucent (0 or 1), colour (4 bytes each)
+
+so mirroring, colour, luma table and translucency never change it, and the
+image key is unchanged by its arrival. The dump's index gives it per
+texture (`surf=`). A reader will look for a texture's map of each kind as
+`<image name>.<k>.png` first (this image in this colour), then
+`<surface name>.<k>.png` (these texels in any colour); a material needs no
+replacement image (a normal map on the original texels is valid).
+
+**Maps** are data, not colour: 8-bit values as stored, no gamma, any
+non-interlaced PNG, alpha ignored. `.n`: x and y in red and green,
+`(v - 128) / 127`, so 128 is 0 and the flat normal is (128, 128, 255); x
+points to the image's right, y to its top with `normal_y up` (the
+default) or its bottom with `normal_y down`; blue is not used by the
+renderer (z is reconstructed). `.s`: specular scale from red, `R / 128`
+(128 is the game's own highlight, 0 none). `.g`: gloss from red, the
+game's specular exponent times `2^((R - 128) / 32)`. A map covers the
+texture's `w` x `h` texels like an image, at any size; the tools expect the
+size of the pack image. Maps modulate the game's own lighting, which only
+the native geometrizer's exact lighting data carries: where that is
+missing (the chip path, recompiled browser builds, captures without
+lighting data), a material will have no effect.
+
+**The manifest, `pack.txt`.** Line-based UTF-8 text: a keyword, a tab (or
+spaces), its value; `#` comments and blank lines skipped; `format` first.
+
+```
+# reModel pack
+format	2
+keys	1
+name	topskatr 4x, hand-tuned materials
+game	topskatr
+uses	materials
+normal_y	up
+normal_scale	1.0
+spec_scale	1.0
+material	tex_0123456789abcdef_64x64	normal=0.5	spec=1.5
+material	surf_fedcba9876543210_64x64	normal=0
+```
+
+| Keyword | Meaning | Default |
+|---|---|---|
+| `format N` | the format's major number; the first line | no manifest: 1 |
+| `keys N` | the key scheme of the file names: 1 is the image, tile and surface keys defined here | 1 |
+| `name`, `game` | free text: what the pack is, the set it was made from; never used for lookup | none |
+| `uses a,b` | optional features the pack contains (`materials`); names a reader doesn't know are ignored | none |
+| `needs a,b` | features without which the pack must not be shown at all | none |
+| `normal_y up\|down` | green direction of every normal map | `up` |
+| `normal_scale X`, `spec_scale X` | pack-wide strength of normal and specular maps, 0 to 4 | 1 |
+| `material STEM k=v ...` | per material (`tex_..` or `surf_..` stem, no suffix): `normal=X`, `spec=X` multiply the pack-wide strengths; other keys are ignored (reserved: `spec_base`, `spec_power`, `selflit`) | none |
+| `model ...` | reserved for replacement models | |
+
+A malformed manifest (a missing or misplaced `format`, a keyword given
+twice, a value out of range) refuses the pack, with the line it is on.
+
+**Compatibility.**
+
+1. No manifest is format 1, readable forever.
+2. `format` rises only when the meaning of something a reader already
+   understands changes. A reader refuses a pack whose `format` is higher
+   than it knows: it draws the original textures and says the pack needs
+   a newer reModel. It never guesses. The same for a higher `keys`.
+3. Everything else is added without a new format: readers ignore unknown
+   keywords (the player prints one line about them, `pack-lint` lists
+   them), unknown kinds of file and unknown names in `uses`. A pack that
+   must not be shown without a feature puts it in `needs`, and a reader
+   that can't show it refuses the whole pack. No reader draws material
+   maps yet, so today `needs materials` refuses the pack everywhere and
+   `uses materials` is ignored.
+4. Tools write `pack.txt` only when the pack holds something format 1
+   can't say; a plain upscaled pack gets none (`make upscale-textures`
+   writes none) and stays readable by older builds, which show its images
+   and nothing of the rest.
+
+Where a refused pack shows: `run` and the checks print the reason and draw
+without the pack; the player's Esc menu shows it as it does a missing
+directory; the browser logs it to the console and keeps the originals.
+
+**Models.** Replacement models are not built; the format only reserves
+their names. They will key by content (a hash of the model's polygon data
+as the geometrizer reads it), not address. Models a game rewrites every
+frame cannot be replaced by a static mesh: `lastbrnx` rewrites its
+fighters' joint models in polygon RAM each frame, so their content never
+repeats, and direct data has no model. They keep the game's polygons.
+
+**`make pack-lint PACK=DIR`** (`remodel pack-lint DIR [--dump DIR]
+[--max-side N]`, no ROM, no GPU) checks a pack against all this and exits
+non-zero on errors:
+
+| Check | Level |
+|---|---|
+| `pack.txt` parses; its `format` and `keys` are known and its `needs` shown (else readers refuse it); unknown keywords and features, reserved ones, `material` lines whose stem has no files, a `game` reModel doesn't know | error / warning / note |
+| every PNG's name parses as a pack name (a reserved name is a note) | warning |
+| `index.txt` lists every file and nothing missing (the browser needs it) | warning |
+| every PNG decodes (not interlaced) and is within `MAX_SIDE` pixels a side (default 4096, as `upscale-textures`) | error |
+| images and maps have the proportions of their texture's `w` x `h` (within a pixel); tile images are square multiples of 8; a map is its image's size and all maps of one stem agree | warning |
+| with `TEXDUMP=DIR`: files whose key the dump never drew; a map for an image whose surface also has one (the image's would win) | note |
+| GPU memory with everything drawn, images and materials, plain and mipmapped, against the 512 MB native and 192 MB browser budgets | note |
+
+On the 4x ESRGAN pack of `topskatr` (241 images, 5,030 tiles): clean, one
+note (182 MB of images, 242 MB mipmapped: past the browser's budget, so
+the browser re-fetches the least recently drawn).
 
 ## Live display
 

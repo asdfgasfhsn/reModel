@@ -5,6 +5,7 @@ mod light_report;
 mod lighting_check;
 mod music;
 mod pack_check;
+mod pack_lint;
 mod recomp_crates;
 mod run_ahead;
 mod sharc;
@@ -374,6 +375,14 @@ commands:
                        Tiles (MODE): model, builtin, nearest or skip. Only
                        new or changed dumps; DEST/index.txt lists the pack
                        (docs/texture-packs.md)
+  pack-lint PACK [--dump DIR] [--max-side N]
+                       check texture pack PACK against the pack format (no
+                       ROM, no GPU): pack.txt, file names, index.txt, that
+                       every PNG decodes within N pixels a side (default
+                       8192), proportions of images and material maps, GPU
+                       memory against the budgets; with --dump, files whose
+                       key the dump never drew. Exits non-zero on errors
+                       (docs/texture-packs.md, Pack format)
   mpeg-dump ADDR [SECONDS]
                        decode MPEG ROM frames from ADDR directly to
                        out/GAME/mpeg-ADDR.{wav,f32,mp2} (default 10 s)
@@ -649,6 +658,16 @@ fn main() -> ExitCode {
     if cmd == "texpack-upscale" {
         return match texpack_upscale::main(&args[1..], &game_id) {
             Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if cmd == "pack-lint" {
+        return match pack_lint::main(&args[1..]) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
             Err(e) => {
                 eprintln!("error: {e}");
                 ExitCode::FAILURE

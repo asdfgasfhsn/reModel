@@ -236,6 +236,13 @@ upscale-textures: release ## Upscale TEXDUMP (default OUT/texdump, from dump-tex
 		--min-uses $(MIN_USES) --max-side $(MAX_SIDE) --work out/scratch/texpack-upscale-$(GAME) \
 		$(if $(UPSCALER),--upscaler "$$UPSCALER_CMD") $(if $(FORCE),--force)
 
+# pack-lint checks against a dump only when TEXDUMP is given.
+.PHONY: pack-lint
+pack-lint: release ## Check texture pack PACK= against the pack format, no ROM or GPU: pack.txt, file names, index.txt, every PNG decodes within MAX_SIDE, image and map proportions, GPU memory against the budgets (TEXDUMP= adds the never-drawn and image-or-surface checks); fails on errors
+	$(if $(PACK),,$(error pack-lint needs PACK=DIR, a texture pack))
+	$(REMODEL) pack-lint $(PACK) --max-side $(MAX_SIDE) \
+		$(if $(filter command line environment,$(origin TEXDUMP)),--dump $(TEXDUMP))
+
 play: ## Play in a native window: the launcher (game cards, live attract previews, settings), or straight into GAME= if given; GPU, live sound, gamepads, Esc menu, save states (RECOMP=1: recompiled code; PLAY_ARGS)
 	$(call release_build,remodel-play)
 	$(PLAY) $(if $(filter command line environment,$(origin GAME)),--game $(GAME)) --rom $(ROM) $(PLAY_ARGS)

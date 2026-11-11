@@ -1050,13 +1050,21 @@ pub fn tex_info(p: &Poly, t: &Texture, src: &Sources, keys: &mut TexKeys) -> Opt
         f.0
     });
     let colour = (p.colour[0] | p.colour[1] << 5 | p.colour[2] << 10) as u16;
+    // One FNV-1a stream: the surface key is its state after the texels and
+    // the size, the image key goes on through the fields that change the
+    // texture's look (docs/texture-packs.md).
     let mut f = Fnv::default();
     f.bytes(&texels.to_le_bytes());
-    for v in [t.w, t.h, t.luma_table, t.translucent as u32, colour as u32] {
+    for v in [t.w, t.h] {
+        f.bytes(&v.to_le_bytes());
+    }
+    let surface = f.0;
+    for v in [t.luma_table, t.translucent as u32, colour as u32] {
         f.bytes(&v.to_le_bytes());
     }
     Some(TexInfo {
         key: f.0,
+        surface,
         width: t.w,
         height: t.h,
         header: p.header,
@@ -2193,6 +2201,75 @@ mod tests {
         let s = identity_split(&mut [p], &src, &view, &mut OneImage(Arc::new(wrong)));
         assert_eq!((s.texels_differ, s.cut_out, s.other_polygon), (0, 0, 0));
         assert_eq!(s.same_texel, 200 * 200);
+    }
+
+    /// The surface key: texels and size only, the same in every colour,
+    /// luma table and translucency; the image key unchanged by it (both are
+    /// pack file names, so neither may ever change for keys 1).
+    #[test]
+    fn surface_key_is_colour_independent_and_stable() {
+        let mut ram = vec![0u8; 0x40_0000 + 0x8000];
+        for (i, b) in ram[..0x2000].iter_mut().enumerate() {
+            *b = (i * 7 % 251) as u8;
+        }
+        let palette = vec![0u8; 0x1_c000];
+        let src = Sources {
+            texture_rom: &[],
+            texture_point_ram: &[],
+            render_ram: &ram,
+            palette: &palette,
+            xoff: 0.0,
+            yoff: 0.0,
+        };
+        let t = Texture {
+            x0: 0,
+            y0: 0,
+            w: 32,
+            h: 16,
+            mirror_x: false,
+            mirror_y: false,
+            bank: 0,
+            translucent: false,
+            luma_table: 0,
+        };
+        let info = |p: &Poly, t: &Texture| tex_info(p, t, &src, &mut TexKeys::default()).unwrap();
+        let base = info(&flat(1, 1.0, 1.0, 0), &t);
+        // The documented definitions, spelled out.
+        let mut f = Fnv::default();
+        for y in 0..16 {
+            for x in 0..32 {
+                f.byte(src.texel(0, x, y) as u8);
+            }
+        }
+        let texels = f.0;
+        let mut s = Fnv::default();
+        s.bytes(&texels.to_le_bytes());
+        s.bytes(&32u32.to_le_bytes());
+        s.bytes(&16u32.to_le_bytes());
+        assert_eq!(base.surface, s.0);
+        let colour = (1 | 1 << 5 | 1 << 10) as u32;
+        for v in [0, 0, colour] {
+            s.bytes(&v.to_le_bytes());
+        }
+        assert_eq!(base.key, s.0);
+        // Pinned: a change here renames every pack file.
+        assert_eq!((base.key, base.surface), (0x60c2_e035_3d1e_03b8, 0x4c59_2423_467f_3b65));
+        assert_eq!(base.surface_name(), "surf_4c592423467f3b65_32x16");
+        // Another colour, luma table, translucency or mirroring: another
+        // image, the same surface.
+        let mut lit = t;
+        lit.luma_table = 3;
+        lit.translucent = true;
+        lit.mirror_x = true;
+        for (p, t) in [(flat(9, 1.0, 1.0, 0), t), (flat(1, 1.0, 1.0, 0), lit)] {
+            let i = info(&p, &t);
+            assert_eq!(i.surface, base.surface);
+            assert_ne!(i.key, base.key);
+        }
+        // Other texels or another size: another surface.
+        for t in [Texture { x0: 32, ..t }, Texture { h: 32, ..t }] {
+            assert_ne!(info(&flat(1, 1.0, 1.0, 0), &t).surface, base.surface);
+        }
     }
 
     #[test]

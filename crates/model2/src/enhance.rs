@@ -251,6 +251,10 @@ impl Fnv {
 pub struct TexInfo {
     /// Hash of the texels plus the header fields that change how they look.
     pub key: u64,
+    /// Hash of the texels and the size only (the surface key): the same
+    /// texels drawn in any colour, luma table or translucency share it.
+    /// Material maps key by it (`pack`); images never do.
+    pub surface: u64,
     pub width: u32,
     pub height: u32,
     /// The polygon's 4-word texture header (docs/hw/geometrizer.md 5.3).
@@ -268,6 +272,12 @@ impl TexInfo {
     /// File stem in dumps and packs.
     pub fn name(&self) -> String {
         format!("tex_{:016x}_{}x{}", self.key, self.width, self.height)
+    }
+
+    /// File stem of material maps shared by every colour of these texels
+    /// (`surf_<surface>_<w>x<h>`, with a map suffix in a pack).
+    pub fn surface_name(&self) -> String {
+        format!("surf_{:016x}_{}x{}", self.surface, self.width, self.height)
     }
 }
 
