@@ -92,6 +92,15 @@ options:
                        gpu-check, depth-check, pack-check load them onto
                        the GPU (gpu::Quality::materials), which doesn't draw
                        them yet
+  --materials-relief sum|ratio|ratio-dark|diff:S|diff-dark:S|slope:S
+                       experimental: how a normal map changes the software
+                       renderer's brightness: sum (default; the map's normal
+                       in the game's lighting sum), or relative to how the
+                       flat surface is drawn (even at full brightness):
+                       ratio (times the lit ratio, mapped over flat),
+                       diff:S (times 1 + S x the diffuse change), slope:S
+                       (diff without its second-order loss: keeps the mean);
+                       -dark: never brighter
   --temporal off|taa|N temporal-probe: temporal anti-aliasing (taa) or
                        upscaling from N% (50 to 99) for the GPU's 3D layer
                        (gpu::Quality::temporal; snapshots are software and
@@ -509,6 +518,19 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         };
         let _ = STIPPLE.set(s);
+    }
+    let Ok(relief) = opt("--materials-relief") else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    if let Some(r) = relief {
+        let Some(r) = model2::raster::Relief::parse(&r) else {
+            eprintln!(
+                "error: --materials-relief wants sum, ratio, ratio-dark, diff:S, diff-dark:S or slope:S (S 0 to 16)"
+            );
+            return ExitCode::FAILURE;
+        };
+        let _ = MATERIALS_RELIEF.set(r);
     }
     let (Ok(shading), Ok(crease), Ok(fine), Ok(balance)) =
         (opt("--shading"), opt("--crease"), opt("--shading-fine"), opt("--shading-balance"))
@@ -1821,6 +1843,9 @@ fn tex_filter() -> model2::enhance::TexFilter {
 /// `--materials`: the texture pack's material maps on the GPU.
 static MATERIALS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
+/// `--materials-relief`: the experimental material relief rule.
+static MATERIALS_RELIEF: std::sync::OnceLock<model2::raster::Relief> = std::sync::OnceLock::new();
+
 /// `--depth`: the depth buffer for snapshots and gpu-check.
 static DEPTH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 /// `--shading`, `--crease`: smooth shading for snapshots and the GPU
@@ -1850,7 +1875,8 @@ fn light_options_lamps(game: &romset::Game, lamps: bool) -> Option<model2::light
     let o = model2::light::Options::new(shading, crease, &game.shading, game.hud_windows)
         .with_fine(SHADING_FINE.get().copied().unwrap_or(false))
         .with_balance(SHADING_BALANCE.get().copied().unwrap_or(true))
-        .with_lamps(lamps);
+        .with_lamps(lamps)
+        .with_relief(MATERIALS_RELIEF.get().copied().unwrap_or_default());
     (SHADING.get().is_some() && o.on() || o.lamps).then_some(o)
 }
 

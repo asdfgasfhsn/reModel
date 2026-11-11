@@ -172,6 +172,10 @@ pub struct Options {
     /// `shading` and `crease` are ([`Shaded::lamps`]; entries only for this
     /// are [`Shaded::flat`]). Off (the default): [`shade`] is unchanged.
     pub lamps: bool,
+    /// Experimental: how a material's normal map changes a pixel's luma
+    /// (`raster::Relief`; applied by `raster::build_with`). Default: the
+    /// map's normal substituted in the game's own sum.
+    pub relief: crate::raster::Relief,
 }
 
 impl Default for Options {
@@ -187,6 +191,7 @@ impl Default for Options {
             fine: false,
             balance: true,
             lamps: false,
+            relief: crate::raster::Relief::Sum,
         }
     }
 }
@@ -215,6 +220,7 @@ impl Options {
             fine: false,
             balance: true,
             lamps: false,
+            relief: crate::raster::Relief::Sum,
         }
     }
 
@@ -233,6 +239,11 @@ impl Options {
     /// ([`Options::lamps`]).
     pub fn with_lamps(self, lamps: bool) -> Self {
         Options { lamps, ..self }
+    }
+
+    /// These options with a material relief rule ([`Options::relief`]).
+    pub fn with_relief(self, relief: crate::raster::Relief) -> Self {
+        Options { relief, ..self }
     }
 
     /// Whether [`shade`] can light anything.

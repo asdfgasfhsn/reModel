@@ -823,6 +823,8 @@ impl Renderer {
             lit: shaded.as_deref(),
             skip_checker: opts.is_some_and(|o| o.skip_checker),
             fine: opts.is_some_and(|o| o.fine),
+            // The GPU doesn't draw materials yet.
+            relief: Default::default(),
         };
         model2::raster::build_with(stream, src, &input)
     }

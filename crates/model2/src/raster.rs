@@ -175,6 +175,81 @@ pub struct PolyLamp {
     /// The lumas (inclusive) a pixel changed by a material is clamped to,
     /// those over which the polygon keeps its hue (as [`Poly::lit_range`]).
     pub range: [u8; 2],
+    /// How the material's normal changes the luma (experimental).
+    pub relief: Relief,
+}
+
+/// The largest factor a relative relief rule brightens by.
+const RELIEF_MAX: f32 = 4.0;
+
+/// The luma a pixel of a relative relief rule ([`Relief`]) is drawn at for
+/// a texel whose luma table value is `table` (None: untextured), its luma
+/// clamped to at most `hi`: its flat luma `l` lowered to where that
+/// texel's brightness stops rising (the top column [`fine_level`] reaches,
+/// the game's level at `hi`, capped at 63; scenery lit to luma 255 is
+/// usually there or past it), then times `f`. So `f` scales the brightness
+/// the flat surface is drawn at, whatever saturated it: the lamp's sum,
+/// the texel or the cap. Pure black (a luma under 1, a zero table value)
+/// stays black.
+pub fn relieved(l: f32, table: Option<u32>, hi: u8, f: f32) -> f32 {
+    let top = match table {
+        Some(0) => return l,
+        Some(v) => 256.0 * ((v * hi as u32 / 256).min(63) as f32 + 0.5) / v as f32,
+        None => 4.0 * ((hi as u32 >> 2).min(63) as f32 + 0.5),
+    };
+    if l.is_nan() || l < 1.0 {
+        return l;
+    }
+    (l.min(top).min(255.0) * f).clamp(0.0, 255.0)
+}
+
+/// Experimental (`--materials-relief`): how a material's normal map changes
+/// a pixel's luma ([`material_luma`]). With `d` the game's facing-signed
+/// `N . L` at the drawn normal and `d'` at the mapped one, `B` the
+/// brightness the flat surface is drawn at (per texel, after the game's
+/// caps: [`relieved`]), `a`, `k` the lamp's ambient and diffuse. The
+/// relative rules' factor is at most [`RELIEF_MAX`]; pure black stays
+/// black.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Relief {
+    /// `B + clamp(eval(N')) - clamp(eval(N))`: the map's normal substituted
+    /// in the game's own sum (specular included). A surface lit to 255 at
+    /// every normal can't show relief. The default.
+    #[default]
+    Sum,
+    /// `B (a + k max(d', 0)) / (a + k max(d, 0))`: the lit ratio, unclamped
+    /// sums, no specular; none where the flat sum is 0. `dark`: never
+    /// brighter than `B`.
+    Ratio { dark: bool },
+    /// `B (1 + s (max(d', 0) - max(d, 0)))`: the diffuse change, ambient
+    /// ignored. `dark`: never brighter than `B`.
+    Diffuse { s: f32, dark: bool },
+    /// `B (1 + s (d' - t.z d))`, where `d > 0`: the diffuse change without
+    /// its second-order part (the map's normal is `t.z N + t.x T' + t.y
+    /// B'`, so this is how much the bump leans toward the light along the
+    /// surface). A tilt never costs light by itself, so relief that averages
+    /// flat leaves the mean brightness where it was, and a surface lit
+    /// head-on shows none (as diffuse light gives none).
+    Slope { s: f32 },
+}
+
+impl Relief {
+    /// `sum`, `ratio`, `ratio-dark`, `diff:S`, `diff-dark:S`, `slope:S` (S
+    /// from 0 to 16).
+    pub fn parse(s: &str) -> Option<Relief> {
+        let strength = |v: &str| v.parse::<f32>().ok().filter(|s| (0.0..=16.0).contains(s));
+        Some(match s {
+            "sum" => Relief::Sum,
+            "ratio" => Relief::Ratio { dark: false },
+            "ratio-dark" => Relief::Ratio { dark: true },
+            _ => match s.split_once(':')? {
+                ("diff", v) => Relief::Diffuse { s: strength(v)?, dark: false },
+                ("diff-dark", v) => Relief::Diffuse { s: strength(v)?, dark: true },
+                ("slope", v) => Relief::Slope { s: strength(v)? },
+                _ => return None,
+            },
+        })
+    }
 }
 
 /// A polygon's tangent frame for normal maps: the unit direction of
@@ -235,12 +310,20 @@ pub fn tangent_frame(ring: &[([f32; 3], [f32; 2])], o: [f32; 3]) -> Option<Tange
 /// without the material, `n` its normal as drawn (the interpolated corner
 /// normals, or the face's; any length, face convention), `(x, y)` the
 /// map's normal there (unit components along increasing u and v, mirror
-/// signs applied) and `scale` the pack's strength. `base + E1 - E0`, with
-/// `E0`, `E1` the lamp at `n` and at `n` tilted by the map (each clamped to
-/// 0-255); None where the map changes nothing (a flat texel, no frame, no
-/// normal, the same value), so such a pixel takes the path without
-/// materials bit for bit.
-pub fn material_luma(l: &PolyLamp, n: [f32; 3], base: f32, (x, y): (f32, f32), scale: f32) -> Option<f32> {
+/// signs applied) and `scale` the pack's strength. With [`Relief::Sum`]
+/// `(base + E1 - E0, None)`, with `E0`, `E1` the lamp at `n` and at `n`
+/// tilted by the map (each clamped to 0-255); with the relative rules
+/// `(base, Some(f))`: the pixel is drawn at `f` times the brightness the
+/// flat surface is drawn at, texel by texel ([`relieved`]). None where the
+/// map changes nothing (a flat texel, no frame, no normal, the same
+/// value), so such a pixel takes the path without materials bit for bit.
+pub fn material_luma(
+    l: &PolyLamp,
+    n: [f32; 3],
+    base: f32,
+    (x, y): (f32, f32),
+    scale: f32,
+) -> Option<(f32, Option<f32>)> {
     let tg = l.tangent?;
     let (kx, ky) = (scale * x, scale * y);
     if kx == 0.0 && ky == 0.0 {
@@ -261,8 +344,54 @@ pub fn material_luma(l: &PolyLamp, n: [f32; 3], base: f32, (x, y): (f32, f32), s
     let o2 = unit([0, 1, 2].map(|c| t[2] * o[c] + t[0] * tp[c] + t[1] * bp[c]))?;
     let n2 = o2.map(|c| c * l.out);
     let lamp = &l.light.lamp;
-    let (e0, e1) = (lamp.eval(n).clamp(0.0, 255.0), lamp.eval(n2).clamp(0.0, 255.0));
-    (e0.is_finite() && e1.is_finite() && e1 != e0).then_some(base + (e1 - e0))
+    let facing = |n: [f32; 3]| {
+        let d = (n[0] * lamp.l[0] + n[1] * lamp.l[1]) + n[2] * lamp.l[2];
+        if lamp.front {
+            d
+        } else {
+            -d
+        }
+    };
+    // The factor `f`: none where it is 1 (after `dark`).
+    let relative = |b: f32, f: f32, dark: bool| {
+        let f = if dark { f.min(1.0) } else { f };
+        (f.is_finite() && f != 1.0).then_some((b, Some(f.min(RELIEF_MAX))))
+    };
+    match l.relief {
+        Relief::Sum => {
+            let (e0, e1) = (lamp.eval(n).clamp(0.0, 255.0), lamp.eval(n2).clamp(0.0, 255.0));
+            (e0.is_finite() && e1.is_finite() && e1 != e0).then_some((base + (e1 - e0), None))
+        }
+        Relief::Ratio { dark } => {
+            let lit = |d: f32| lamp.ambient + lamp.diffuse * d.max(0.0);
+            let (e0, e1) = (lit(facing(n)), lit(facing(n2)));
+            // Unlit at the flat normal (no ambient, facing away): nothing
+            // to scale.
+            if e0.is_nan() || e0 <= 1e-3 || e1 == e0 {
+                return None;
+            }
+            relative(base, e1 / e0, dark)
+        }
+        Relief::Diffuse { s, dark } => {
+            if lamp.diffuse == 0.0 {
+                return None;
+            }
+            // Lambert: no relief where no light reaches (facing away).
+            let dd = facing(n2).max(0.0) - facing(n).max(0.0);
+            if dd == 0.0 {
+                return None;
+            }
+            relative(base, (1.0 + s * dd).max(0.0), dark)
+        }
+        Relief::Slope { s } => {
+            let d = facing(n);
+            if lamp.diffuse == 0.0 || d.is_nan() || d <= 0.0 {
+                return None;
+            }
+            let lean = facing(n2) - t[2] * d;
+            relative(base, (1.0 + s * lean).max(0.0), false)
+        }
+    }
 }
 
 /// A polygon placed in a view's output pixels, ready for a rasteriser
@@ -562,6 +691,9 @@ pub struct BuildIn<'a> {
     pub skip_checker: bool,
     /// Lit polygons get [`Poly::fine`] (`light::Options::fine`).
     pub fine: bool,
+    /// Material relief rule for [`PolyLamp::relief`]
+    /// (`light::Options::relief`).
+    pub relief: Relief,
 }
 
 /// [`build`], smooth-shaded with `opts` (`crate::light::shade`) when given
@@ -581,7 +713,13 @@ pub fn build_shaded_with(
     match opts.filter(|o| o.runs()) {
         Some(o) => {
             let sh = crate::light::shade_with(stream, side, o);
-            let b = BuildIn { lit: Some(&sh), skip_checker: o.skip_checker, fine: o.fine, ..Default::default() };
+            let b = BuildIn {
+                lit: Some(&sh),
+                skip_checker: o.skip_checker,
+                fine: o.fine,
+                relief: o.relief,
+                ..Default::default()
+            };
             build_with(stream, src, &b).0
         }
         None => build(stream, src),
@@ -839,7 +977,14 @@ fn build_impl(stream: &[u32], src: &Sources, input: &BuildIn) -> (Vec<Poly>, Vec
                                     let out =
                                         if n[0] * mid[0] + n[1] * mid[1] + n[2] * mid[2] >= 0.0 { -1.0 } else { 1.0 };
                                     let tangent = tangent_frame(&ring, n.map(|c| c * out));
-                                    Some(Box::new(PolyLamp { light: lm.light, n, out, tangent, range }))
+                                    Some(Box::new(PolyLamp {
+                                        light: lm.light,
+                                        n,
+                                        out,
+                                        tangent,
+                                        range,
+                                        relief: input.relief,
+                                    }))
                                 }
                                 _ => None,
                             };
@@ -1030,11 +1175,25 @@ fn shade(p: &Poly, src: &Sources, x: usize, y: usize, u: f32, v: f32) -> Option<
 struct PxLuma {
     luma: u32,
     fine: Option<(f32, [u8; 2])>,
+    /// A relative relief rule's factor ([`relieved`]); `fine` is then the
+    /// flat luma.
+    rel: Option<f32>,
 }
 
 impl PxLuma {
     fn own(p: &Poly) -> Self {
-        PxLuma { luma: p.luma, fine: None }
+        PxLuma { luma: p.luma, fine: None, rel: None }
+    }
+
+    /// The luma and finer levels for a texel of luma table value `table`.
+    fn at(self, table: Option<u32>) -> (u32, Option<(f32, [u8; 2])>) {
+        match (self.fine, self.rel) {
+            (Some((l, range)), Some(f)) => {
+                let l = relieved(l, table, range[1], f);
+                (crate::light::quantise(l).clamp(range[0] as u32, range[1] as u32), Some((l, range)))
+            }
+            _ => (self.luma, self.fine),
+        }
     }
 }
 
@@ -1100,16 +1259,16 @@ fn shade_luma(p: &Poly, px: PxLuma, src: &Sources, x: usize, y: usize, u: f32, v
     if p.checker && (x ^ y) & 1 != 0 {
         return None;
     }
-    let luma = px.luma;
-    let (lum, table) = match p.texture {
-        Some(t) => {
-            let t8 = filtered_texel(&t, src, u, v)?;
-            let value = src.luma(t.luma_table, t8 / 2);
-            ((value * luma / 256).min(63), Some(value))
-        }
-        None => (luma >> 2, None),
+    let table = match p.texture {
+        Some(t) => Some(src.luma(t.luma_table, filtered_texel(&t, src, u, v)? / 2)),
+        None => None,
     };
-    if let Some((l, range)) = px.fine {
+    let (luma, fine) = px.at(table);
+    let lum = match table {
+        Some(value) => (value * luma / 256).min(63),
+        None => luma >> 2,
+    };
+    if let Some((l, range)) = fine {
         let k = fine_columns(src, p.colour, lum, fine_level(table, l, range));
         // Rust's round(): half away from zero (never negative here).
         return Some([0, 1, 2].map(|ch| fine_translate(src, ch, p.colour[ch], k).round() as u8));
@@ -1287,14 +1446,14 @@ pub fn texture_look(src: &Sources, info: &TexInfo) -> [[u8; 3]; 16] {
 struct Light {
     /// Polygon luma is full: nothing to scale.
     full: bool,
-    luma: u32,
     colour: [u32; 3],
     /// Fallback ratio where the original texel is transparent or black at
     /// full luma: the ratio for the brightest luma.
     poly: [f32; 3],
-    /// Finer levels ([`PxLuma::fine`]): the luma before truncation and the
-    /// polygon's [`Poly::lit_range`].
-    fine: Option<(f32, [u8; 2])>,
+    /// The pixel's brightness: its luma, with finer levels
+    /// ([`PxLuma::fine`]) the luma before truncation and the range it is
+    /// clamped to, and a relative relief rule's factor (applied per texel).
+    px: PxLuma,
 }
 
 impl Light {
@@ -1306,17 +1465,18 @@ impl Light {
         let poly = [0, 1, 2].map(|ch| {
             let full = src.translate(ch, p.colour[ch], 63) as f32;
             if full > 0.0 {
-                Self::at(src, p.colour, fine, luma, ch, 64) / full
+                Self::at(src, p.colour, px, ch, 64) / full
             } else {
                 luma as f32 / FULL_LUMA as f32
             }
         });
-        Light { full: fine.is_none() && luma >= FULL_LUMA, luma, colour: p.colour, poly, fine }
+        Light { full: fine.is_none() && luma >= FULL_LUMA, colour: p.colour, poly, px }
     }
 
     /// Channel `ch` of `colour` at luma table value `value`: the game's
     /// level, or with finer levels the blend of two.
-    fn at(src: &Sources, colour: [u32; 3], fine: Option<(f32, [u8; 2])>, luma: u32, ch: usize, value: u32) -> f32 {
+    fn at(src: &Sources, colour: [u32; 3], px: PxLuma, ch: usize, value: u32) -> f32 {
+        let (luma, fine) = px.at(Some(value));
         match fine {
             Some((l, range)) => {
                 let game = (value * luma / 256).min(63);
@@ -1343,7 +1503,7 @@ impl Light {
         let lf = (l * FULL_LUMA / 256).min(63);
         [0, 1, 2].map(|ch| {
             let full = src.translate(ch, self.colour[ch], lf);
-            let here = Self::at(src, self.colour, self.fine, self.luma, ch, l);
+            let here = Self::at(src, self.colour, self.px, ch, l);
             px(if full == 0 { rgb[ch] * self.poly[ch] + here } else { rgb[ch] * (here / full as f32) })
         })
     }
@@ -1806,14 +1966,18 @@ fn draw_impl(
         let mut changed = 0;
         let mut luma_at = || {
             n += 1;
-            if let Some(Some(v)) = mat_lumas.as_ref().map(|m| m[n - 1]) {
+            if let Some(Some((v, rel))) = mat_lumas.as_ref().map(|m| m[n - 1]) {
                 changed += 1;
                 let [lo, hi] = mat_range.map(u32::from);
-                return PxLuma { luma: crate::light::quantise(v).clamp(lo, hi), fine: Some((v, mat_range)) };
+                return PxLuma { luma: crate::light::quantise(v).clamp(lo, hi), fine: Some((v, mat_range)), rel };
             }
             lumas.as_ref().map_or(own, |l| {
                 let v = l[n - 1];
-                PxLuma { luma: crate::light::quantise(v).clamp(lo, hi), fine: p.fine.then_some((v, p.lit_range)) }
+                PxLuma {
+                    luma: crate::light::quantise(v).clamp(lo, hi),
+                    fine: p.fine.then_some((v, p.lit_range)),
+                    rel: None,
+                }
             })
         };
         if let (Some((_, Some(Replacement::Mips(chain)))), Some(t)) = (&hooked, &p.texture) {
@@ -1989,7 +2153,7 @@ fn material_values(
     clip: (f32, f32, f32, f32),
     w: usize,
     h: usize,
-) -> Vec<Option<f32>> {
+) -> Vec<Option<(f32, Option<f32>)>> {
     // Per pixel: 1/z, u/z, v/z.
     let mut px = Vec::new();
     fill(points, clip, w, h, |_, _, iz, uz, vz| px.push((iz, uz, vz)));
@@ -3163,6 +3327,18 @@ mod tests {
         /// and from the eye's side.
         const S: [f32; 3] = [0.6, 0.4, -0.7];
         const LIT: light::Material = light::Material { ambient: 40.0, diffuse: 150.0, spec_scale: 0.0, squarings: 255 };
+        /// Scenery lit to 255 at every normal (ambient 255).
+        const SATURATED: light::Material =
+            light::Material { ambient: 255.0, diffuse: 255.0, spec_scale: 0.0, squarings: 255 };
+        /// Every relief rule (`--materials-relief`).
+        const RELIEFS: [Relief; 6] = [
+            Relief::Sum,
+            Relief::Ratio { dark: false },
+            Relief::Ratio { dark: true },
+            Relief::Diffuse { s: 2.0, dark: false },
+            Relief::Diffuse { s: 2.0, dark: true },
+            Relief::Slope { s: 2.0 },
+        ];
 
         fn unit(v: [f32; 3]) -> [f32; 3] {
             let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
@@ -3405,13 +3581,15 @@ mod tests {
             {
                 let (s, ram, side) = scene(&[vec![q.clone()]], header0(false, false), LIT);
                 assert_eq!(light::self_check(&s, &side).stats.l2, 1, "{what}");
-                for shading in [Shading::Flat, Shading::Vertex, Shading::Pixel] {
+                for (shading, relief) in
+                    [Shading::Flat, Shading::Vertex, Shading::Pixel].into_iter().flat_map(|s| RELIEFS.map(|r| (s, r)))
+                {
                     for filter in [TexFilter::Off, TexFilter::Mip] {
-                        let o = opts(shading, true);
+                        let o = opts(shading, true).with_relief(relief);
                         let (img, polys) = draw(&s, &ram, Some(&side), &o, &mut maps(false, Some(dome(false))), filter);
                         let l = polys[0].lamp.as_ref().expect("a lamp");
                         assert!(l.tangent.is_some(), "{what}");
-                        assert_dome(&img, q, (32.0, 32.0), &format!("{what} {shading:?} {filter}"));
+                        assert_dome(&img, q, (32.0, 32.0), &format!("{what} {shading:?} {filter} {relief:?}"));
                         // Off: none of it.
                         let (plain, _) = draw(
                             &s,
@@ -3485,10 +3663,12 @@ mod tests {
             for shading in [Shading::Flat, Shading::Vertex, Shading::Pixel] {
                 for fine in [false, true] {
                     for image in [false, true] {
-                        for filter in [TexFilter::Off, TexFilter::Mip] {
-                            let o = opts(shading, true).with_fine(fine);
+                        for (filter, relief) in
+                            [TexFilter::Off, TexFilter::Mip].into_iter().flat_map(|f| RELIEFS.map(|r| (f, r)))
+                        {
+                            let o = opts(shading, true).with_fine(fine).with_relief(relief);
                             let off = opts(shading, false).with_fine(fine);
-                            let what = format!("{shading:?} fine {fine} image {image} {filter}");
+                            let what = format!("{shading:?} fine {fine} image {image} {filter} {relief:?}");
                             let (want, _) = draw(&s, &ram, Some(&side), &off, &mut maps(image, None), filter);
                             let mut flat = maps(image, Some(dome(true)));
                             let (got, polys) = draw(&s, &ram, Some(&side), &o, &mut flat, filter);
@@ -3527,6 +3707,122 @@ mod tests {
                 let (got, polys) = draw(&s, &ram, None, &opts(shading, true), &mut m, TexFilter::Off);
                 assert!(got == want && polys.iter().all(|p| p.lamp.is_none()) && m.asked == 0, "L0 {shading:?}");
             }
+        }
+
+        /// A surface lit to 255 at every normal: the game's sum can't show
+        /// a map; the relative rules darken the slopes facing away from the
+        /// light (the dome still lit from the light's side), and the
+        /// darken-only ones never brighten a pixel.
+        #[test]
+        fn saturated_surface_shows_relative_relief() {
+            let q = back_like();
+            let (s, ram, side) = scene(&[vec![q.clone()]], header0(false, false), SATURATED);
+            for shading in [Shading::Flat, Shading::Pixel] {
+                let (want, _) =
+                    draw(&s, &ram, Some(&side), &opts(shading, false), &mut maps(false, None), TexFilter::Off);
+                for relief in RELIEFS {
+                    let o = opts(shading, true).with_relief(relief);
+                    let (img, _) = draw(&s, &ram, Some(&side), &o, &mut maps(false, Some(dome(false))), TexFilter::Off);
+                    let what = format!("{shading:?} {relief:?}");
+                    if relief == Relief::Sum {
+                        assert!(img == want, "{what}: saturated, no relief");
+                        continue;
+                    }
+                    assert_dome(&img, &q, (32.0, 32.0), &what);
+                    if matches!(relief, Relief::Ratio { dark: true } | Relief::Diffuse { dark: true, .. }) {
+                        assert!(img.iter().zip(&want).all(|(a, b)| a <= b), "{what}: never brighter");
+                    }
+                }
+            }
+        }
+
+        /// The relative rules per pixel: a factor (finite, 0 to
+        /// [`RELIEF_MAX`], under 1 for the darken-only ones) with the base
+        /// passed through, none where nothing lights the flat normal; and
+        /// [`relieved`]: pure black stays black, a saturated texel is
+        /// scaled from where it saturates, results in 0-255.
+        #[test]
+        fn relative_relief_edges() {
+            let t = Tangent { t: [1.0, 0.0, 0.0], h: 1.0 };
+            let lamp = |ambient: f32, l: [f32; 3]| PolyLamp {
+                light: light::PixelLight {
+                    lamp: Lamp {
+                        l,
+                        ambient,
+                        diffuse: 200.0,
+                        spec_scale: 0.0,
+                        squarings: 255,
+                        front: true,
+                        base: Base::D,
+                    },
+                    offset: 0.0,
+                },
+                n: [0.0, 0.0, 1.0],
+                out: -1.0,
+                tangent: Some(t),
+                range: [0, 255],
+                relief: Relief::Sum,
+            };
+            let n = [0.0, 0.0, 1.0];
+            for relief in RELIEFS.into_iter().skip(1) {
+                let with = |a: f32, l: [f32; 3]| PolyLamp { relief, ..lamp(a, l) };
+                let dark = matches!(relief, Relief::Ratio { dark: true } | Relief::Diffuse { dark: true, .. });
+                let ok = |v: Option<(f32, Option<f32>)>, base: f32| {
+                    v.is_none_or(|(b, f)| {
+                        b == base
+                            && f.is_some_and(|f| {
+                                f.is_finite() && (0.0..=RELIEF_MAX).contains(&f) && !(dark && f >= 1.0)
+                            })
+                    })
+                };
+                // Lit edge-on at the flat normal, no ambient: nothing to scale
+                // (the ratio) and no light on either side of the bump that
+                // faces away (the diffuse change).
+                let edge = with(0.0, [1.0, 0.0, 0.0]);
+                for xy in [(0.3, 0.0), (-0.3, 0.0)] {
+                    let v = material_luma(&edge, n, 80.0, xy, 1.0);
+                    assert!(ok(v, 80.0), "{relief:?} {v:?}");
+                }
+                // Facing away from the light, the bump too: nothing.
+                let away = with(0.0, [0.0, 0.0, 1.0]);
+                assert_eq!(material_luma(&away, [0.0, 0.0, -1.0], 80.0, (0.3, 0.0), 1.0), None, "{relief:?}");
+                let mut some = 0;
+                for (xy, base) in [((0.5, 0.4), 300.0), ((-0.5, 0.1), 120.0), ((0.9, 0.0), 255.0)] {
+                    for l in [[0.0, 0.0, 1.0], unit([0.6, 0.0, 0.8]), unit([-0.6, 0.3, 0.7])] {
+                        let v = material_luma(&with(60.0, l), n, base, xy, 4.0);
+                        some += v.is_some() as u32;
+                        assert!(ok(v, base), "{relief:?} {v:?}");
+                    }
+                }
+                assert!(some > 0, "{relief:?}");
+            }
+            // Pure black, a zero table value: unchanged.
+            assert_eq!(relieved(0.5, Some(200), 255, 0.5), 0.5);
+            assert_eq!(relieved(100.0, Some(0), 255, 0.5), 100.0);
+            assert!(relieved(f32::NAN, Some(10), 255, 0.5).is_nan());
+            // A texel saturating at luma 81.28 (table value 200): scaled from there.
+            assert_eq!(relieved(255.0, Some(200), 255, 0.5), 63.5 * 256.0 / 200.0 * 0.5);
+            assert_eq!(relieved(40.0, Some(200), 255, 0.5), 20.0);
+            assert_eq!(relieved(200.0, None, 255, 2.0), 255.0);
+            // A dim texel (table value 9): its top column is 8 (9 * 255 /
+            // 256), which the finer levels reach at luma 256 * 8.5 / 9.
+            assert_eq!(relieved(500.0, Some(9), 255, 0.5), 256.0 * 8.5 / 9.0 * 0.5);
+            // Its range ends at luma 120: column 4, reached at 256 * 4.5 / 9 = 128.
+            assert_eq!(relieved(500.0, Some(9), 120, 0.5), 64.0);
+            assert_eq!(Relief::parse("diff-dark:2"), Some(Relief::Diffuse { s: 2.0, dark: true }));
+            assert_eq!(Relief::parse("ratio"), Some(Relief::Ratio { dark: false }));
+            assert_eq!(Relief::parse("diff:17"), None);
+            assert_eq!(Relief::parse("diff"), None);
+            assert_eq!(Relief::parse("slope:2"), Some(Relief::Slope { s: 2.0 }));
+            // Slope: opposite tilts brighten and darken by the same amount
+            // (the mean stays), and a surface lit head-on shows nothing.
+            let slope = |l: [f32; 3]| PolyLamp { relief: Relief::Slope { s: 2.0 }, ..lamp(60.0, l) };
+            let f = |pl: &PolyLamp, xy| material_luma(pl, n, 100.0, xy, 1.0).and_then(|(_, f)| f);
+            let side = slope(unit([0.6, 0.0, 0.8]));
+            let (a, b) = (f(&side, (0.3, 0.0)).unwrap(), f(&side, (-0.3, 0.0)).unwrap());
+            assert!((a - 1.0 + (b - 1.0)).abs() < 1e-5 && (a - 1.0).abs() > 0.1, "{a} {b}");
+            let head_on = slope([0.0, 0.0, 1.0]);
+            assert!(f(&head_on, (0.3, 0.0)).is_none_or(|f| (f - 1.0).abs() < 1e-6));
         }
 
         fn back_like() -> Quad {
@@ -3574,6 +3870,7 @@ mod tests {
                 out: -1.0,
                 tangent: Some(t),
                 range: [0, 255],
+                relief: Relief::Sum,
             };
             for n in [[0.0; 3], [f32::NAN, 0.0, 1.0], [f32::INFINITY, 0.0, 0.0], [1e-30, 0.0, 0.0]] {
                 assert_eq!(material_luma(&pl, n, 50.5, (0.3, 0.2), 1.0), None, "{n:?}");
@@ -3582,7 +3879,7 @@ mod tests {
                 assert_eq!(material_luma(&pl, [0.0, 0.0, 1.0], 50.5, xy, 1.0), None, "{xy:?}");
             }
             assert_eq!(material_luma(&pl, [0.0, 0.0, 1.0], 50.5, (0.3, 0.2), 0.0), None, "scale 0");
-            let v = material_luma(&pl, [0.0, 0.0, 1.0], 50.5, (0.3, 0.2), 4.0).unwrap();
+            let (v, _) = material_luma(&pl, [0.0, 0.0, 1.0], 50.5, (0.3, 0.2), 4.0).unwrap();
             assert!(v.is_finite() && v < 50.5, "tilted away from a light on the axis: darker");
         }
     }
