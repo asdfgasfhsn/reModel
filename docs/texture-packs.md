@@ -168,9 +168,11 @@ and the browser. **Status (2026-11-11):** the format, the surface key,
 `make pack-lint` and `make pack-materials` (below, "Material maps") exist;
 material maps are named, made, checked and loaded (below, "Loading material
 maps"); normal maps are drawn by the software renderer (`run` snapshots and
-`pack-check` with `--materials`; below, "How material maps light"), not
-yet by the GPU, the player or the browser; specular and gloss maps are
-loaded but not drawn.
+`pack-check` with `--materials`; below, "How material maps light") and by
+the GPU renderer (`gpu::Quality::materials`; `gpu-check --materials`;
+docs/gpu.md, "Material maps"), not yet in the player or the browser, which
+have no setting for them; specular and gloss maps are loaded but not
+drawn.
 
 **Format 1** is everything above: `tex_<key>_<w>x<h>.png`,
 `tile_<key>.png`, any subset, `index.txt` for the browser, and tool records
@@ -274,10 +276,10 @@ twice, a value out of range) refuses the pack, with the line it is on.
    keywords (the player prints one line about them, `pack-lint` lists
    them), unknown kinds of file and unknown names in `uses`. A pack that
    must not be shown without a feature puts it in `needs`, and a reader
-   that can't show it refuses the whole pack. The player, the browser and
-   the GPU don't draw material maps yet, so today `needs materials`
-   refuses the pack everywhere (they load, but showing the pack without
-   them is what `needs` forbids) and `uses materials` is informative.
+   that can't show it refuses the whole pack. The player and the browser
+   don't draw material maps yet (the GPU renderer can, but they have no
+   setting to turn it on), so today `needs materials` refuses the pack
+   everywhere and `uses materials` is informative.
 4. Tools write `pack.txt` only when the pack holds something format 1
    can't say; a plain upscaled pack gets none (`make upscale-textures`
    writes none) and stays readable by older builds, which show its images
@@ -310,12 +312,12 @@ material only with `gpu::Quality::materials` on (default off; nothing in
 the player or the browser turns it on yet; `remodel --materials` does for
 `gpu-check`, `depth-check` and `pack-check`), uploads it as one
 `Rgba8Unorm` texture (with mips when `tex_filter` has them) and keeps it
-under the same budget as the images (below). Nothing samples it yet: frames
-are identical with materials on or off (checked 2026-11-11 with a synthetic
-pack on `topskatr`'s captures, `gpu-check` unfiltered, mipmapped and 16x).
+under the same budget as the images (below), for polygons that have a lamp
+(as the software renderer asks). It draws them as the software renderer
+does (next paragraph; docs/gpu.md, "Material maps").
 
 **How material maps light** (software renderer, 2026-11-11; the GPU
-follows it). A map changes a pixel's luma and nothing else: the colour
+renderer draws the same). A map changes a pixel's luma and nothing else: the colour
 still comes from the game's luma table and colour tables. Only polygons
 with the exact lighting layer have a lamp to perturb (`--materials`
 records the side channel, as `--light`; the native geometrizer; a block
@@ -359,9 +361,12 @@ stream's lumas; that picture differs from the one with the side channel
 whatever the pack holds (`topskatr`, 900M coin-start, every 300th frame,
 `--shading pixel`: 15 of 21 snapshots, frame 4800 8% of pixels, mean +0.28;
 flat shading identical). `make materials-identity PACK=DIR` makes the
-pack's maps flat and checks this comparison (2026-11-11, `topskatr`: flat,
-vertex, pixel and mipmapped pixel, 21 snapshots each identical, 14348
-polygons drawn with a material and no pixel changed). A changed pixel always blends the two colour columns
+pack's maps flat and checks this comparison, in software and on the GPU
+(2026-11-11, `topskatr`, both rules: flat, vertex, pixel and mipmapped
+pixel, 21 snapshots each identical, 14334 polygons drawn with a material
+and no pixel changed; `gpu-check` of 7 captures identical in vertex and
+pixel shading, mip, 16x, 4x MSAA with depth and temporal; with shading
+off a handful of pixels one level apart, docs/gpu.md, "Material maps"). A changed pixel always blends the two colour columns
 around its luma (the arithmetic of `shading_fine`, within the polygon's
 hue, pure black kept), whatever `shading_fine` says. A map can only change
 the light the game casts: a polygon with an ambient-only lighting entry

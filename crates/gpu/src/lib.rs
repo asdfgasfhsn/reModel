@@ -83,10 +83,16 @@ pub struct Quality {
     /// at the smoothed normals alone (bumpy surfaces come out brighter).
     pub shading_balance: bool,
     /// Material maps of the texture pack (default off): with a pack that
-    /// has them (`TexturePack::has_materials`), each drawn texture's maps
-    /// are looked up, uploaded and kept under the pack's memory budget
-    /// ([`PackStats`]). Not drawn yet: pictures are the same either way.
-    /// Off, nothing of them is asked for, decoded or uploaded.
+    /// has them (`TexturePack::has_materials`), the normal maps of drawn
+    /// textures change the brightness of polygons the game lit with the
+    /// exact lighting layer (`Poly::lamp`: the native geometrizer's side
+    /// channel; `model2::raster::material_luma`), as `materials_relief`
+    /// says. Their maps are looked up, uploaded and kept under the pack's
+    /// memory budget ([`PackStats`]). Polygons passed in are drawn with
+    /// whatever `Poly::lamp` holds; the `present_bus*` calls ask the
+    /// lighting pass for lamps themselves. Where there is no lamp (the
+    /// chip, no side channel) nothing changes. Off, nothing of them is
+    /// asked for, decoded or uploaded.
     pub materials: bool,
     /// How material maps change brightness ([`Relief`]): relief at
     /// strength 2 (the default), another strength, or the faithful rule.
@@ -183,6 +189,30 @@ enum Variant {
     /// With texture pack mip chains and a sampler in group 1 (`vs_pack`,
     /// `fs_packf`, `fs_packf_depth`): the same, with `tex_filter` on.
     PackFiltered,
+    /// With material maps (`fs_mat`, `fs_mat_depth`; group 1: the image or
+    /// a stand-in, and the material): only for frames where a polygon with
+    /// a lamp has a material. Lit polygons too (no `_l` twin).
+    Mat,
+    /// The same filtered (`vs_pack`, `fs_matf`, `fs_matf_depth`; group 1
+    /// adds the sampler).
+    MatFiltered,
+}
+
+impl Variant {
+    /// Index into the temporal pipeline layouts.
+    fn index(self) -> usize {
+        match self {
+            Variant::Original => 0,
+            Variant::Pack => 1,
+            Variant::PackFiltered => 2,
+            Variant::Mat => 3,
+            Variant::MatFiltered => 4,
+        }
+    }
+
+    fn material(self) -> bool {
+        matches!(self, Variant::Mat | Variant::MatFiltered)
+    }
 }
 
 /// A texture pack image on the GPU.
@@ -220,9 +250,9 @@ pub struct PackStats {
     pub tiles: u32,
     pub tiles_held: u32,
     pub tile_bytes: u64,
-    /// With [`Quality::materials`]: distinct materials drawn, uploaded this
-    /// frame, and held on the GPU with their bytes (inside the same budget
-    /// as the images, `bytes` not included).
+    /// With [`Quality::materials`]: distinct materials drawn (on polygons
+    /// with a lamp), uploaded this frame, and held on the GPU with their
+    /// bytes (inside the same budget as the images, `bytes` not included).
     pub materials: u32,
     pub material_uploaded: u32,
     pub material_held: u32,
@@ -238,6 +268,31 @@ const PACK_BUDGET: u64 = model2::pack::BUDGET_WASM;
 
 /// No pack image: a polygon drawn from its own texels.
 const NO_SLOT: u32 = u32::MAX;
+
+/// What a polygon binds in group 1: its image's texture key, its material's
+/// id (None: none, a stand-in) and the address modes of a filtered image.
+type SlotKey = (Option<u64>, Option<u64>, usize);
+
+/// What a frame's polygons bind in group 1 (`Renderer::pack_slots`).
+struct Slots {
+    /// Per placed polygon: the slot of its bind group in `groups`
+    /// (NO_SLOT: none, drawn from its own texels without a material),
+    /// whether it is drawn from a pack image, and its material's normal
+    /// scale when one is bound (the material pipelines only).
+    slot: Vec<u32>,
+    image: Vec<bool>,
+    material: Vec<Option<f32>>,
+    groups: Vec<wgpu::BindGroup>,
+    /// Per slot: a material's (the material pipelines' group 1), else an
+    /// image's (the pack pipelines').
+    mat_slot: Vec<bool>,
+    /// The pipelines of polygons without a material: what the frame would
+    /// use with materials off (Original, Pack, PackFiltered).
+    variant: Variant,
+    /// The pipelines of polygons with a material (Mat, MatFiltered), when
+    /// the frame has any.
+    mat_variant: Option<Variant>,
+}
 
 /// Samples per pixel the GPU can multisample the 3D layer with, at most 8:
 /// 4 everywhere (WebGPU's only count), 8 where the adapter reports it for
@@ -300,7 +355,7 @@ pub struct Renderer {
     /// Group 0 of the temporal pipelines (`raster_layout` and binding 5),
     /// and their pipeline layouts by variant.
     raster_layout_t: wgpu::BindGroupLayout,
-    pipeline_layouts_t: [wgpu::PipelineLayout; 3],
+    pipeline_layouts_t: [wgpu::PipelineLayout; 5],
     /// Temporal anti-aliasing state (`Quality::temporal`).
     temporal: Temporal,
     quality: Quality,
@@ -327,6 +382,15 @@ pub struct Renderer {
     pack_pipeline_layout: wgpu::PipelineLayout,
     pack_filtered_layout: wgpu::BindGroupLayout,
     pack_filtered_pipeline_layout: wgpu::PipelineLayout,
+    /// Group 1 of the material pipelines (`Variant::Mat`, `MatFiltered`):
+    /// the image, the sampler (filtered only), the material.
+    mat_layout: wgpu::BindGroupLayout,
+    mat_pipeline_layout: wgpu::PipelineLayout,
+    mat_filtered_layout: wgpu::BindGroupLayout,
+    mat_filtered_pipeline_layout: wgpu::PipelineLayout,
+    /// The luma table indices of textures (`raster::texel_indices`), kept
+    /// across frames while render RAM is unchanged.
+    texels: std::cell::RefCell<model2::raster::TexelCache>,
     /// Samplers for filtered pack images by address modes (see
     /// `PackTex::groups`), for the current `tex_filter`.
     samplers: Option<[wgpu::Sampler; 4]>,
@@ -516,6 +580,25 @@ impl Renderer {
             bind_group_layouts: &[Some(&raster_layout), Some(&pack_filtered_layout)],
             immediate_size: 0,
         });
+        let mat_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("material"),
+            entries: &[texture(0), texture(2)],
+        });
+        let mat_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("raster material"),
+            bind_group_layouts: &[Some(&raster_layout), Some(&mat_layout)],
+            immediate_size: 0,
+        });
+        let [f0, f1] = filtered_entries();
+        let mat_filtered_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("material filtered"),
+            entries: &[f0, f1, wgpu::BindGroupLayoutEntry { binding: 2, ..f0 }],
+        });
+        let mat_filtered_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("raster material filtered"),
+            bind_group_layouts: &[Some(&raster_layout), Some(&mat_filtered_layout)],
+            immediate_size: 0,
+        });
         let raster_layout_t = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("raster t"),
             entries: &[
@@ -527,14 +610,17 @@ impl Renderer {
                 uniform(5, wgpu::ShaderStages::VERTEX_FRAGMENT),
             ],
         });
-        let pipeline_layouts_t = [None, Some(&pack_layout), Some(&pack_filtered_layout)].map(|g1| {
-            let groups = [Some(&raster_layout_t), g1];
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("raster t"),
-                bind_group_layouts: if g1.is_some() { &groups } else { &groups[..1] },
-                immediate_size: 0,
-            })
-        });
+        let pipeline_layouts_t =
+            [None, Some(&pack_layout), Some(&pack_filtered_layout), Some(&mat_layout), Some(&mat_filtered_layout)].map(
+                |g1| {
+                    let groups = [Some(&raster_layout_t), g1];
+                    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("raster t"),
+                        bind_group_layouts: if g1.is_some() { &groups } else { &groups[..1] },
+                        immediate_size: 0,
+                    })
+                },
+            );
         let temporal = Temporal::new(&device);
         let compose_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("compose"),
@@ -575,6 +661,11 @@ impl Renderer {
             pack_pipeline_layout,
             pack_filtered_layout,
             pack_filtered_pipeline_layout,
+            mat_layout,
+            mat_pipeline_layout,
+            mat_filtered_layout,
+            mat_filtered_pipeline_layout,
+            texels: Default::default(),
             samplers: None,
             max_anisotropy: 16,
             pack_dummy: [None, None],
@@ -788,15 +879,32 @@ impl Renderer {
         o.on().then_some(o)
     }
 
+    /// The options `build_polys` shades with: [`Renderer::light_options`],
+    /// asking for lamps when material maps are on and the pack has some
+    /// (then also with shading off).
+    fn shade_options(&self) -> Option<model2::light::Options> {
+        let q = self.quality;
+        let lamps = q.materials && self.pack.as_ref().is_some_and(|p| p.has_materials());
+        let o = model2::light::Options::with_mask(q.shading, q.crease, self.light_rules.0, self.light_rules.1)
+            .with_fine(q.shading_fine)
+            .with_balance(q.shading_balance)
+            .with_lamps(lamps)
+            .with_relief(q.materials_relief);
+        (o.on() || lamps).then_some(o)
+    }
+
     /// The polygons of `stream` as `present_bus*` draws them: with motion
-    /// data `m`, and smooth-shaded when [`Quality::shading`] is on.
+    /// data `m`, smooth-shaded when [`Quality::shading`] is on, with lamps
+    /// for material maps when [`Quality::materials`] is; `render_version`
+    /// keeps what is worked out from render RAM across frames.
     fn build_polys(
         &mut self,
         stream: &[u32],
         src: &Sources,
         m: Option<&model2::raster::MotionIn>,
+        render_version: Option<u64>,
     ) -> (Vec<Poly>, Vec<model2::raster::Centres>) {
-        let opts = self.light_options();
+        let opts = self.shade_options();
         let side = self.light_side.take();
         let shaded = opts.map(|o| {
             // The same stream, side channel and options as the last frame
@@ -819,17 +927,20 @@ impl Renderer {
                 }
             }
         });
-        // A repeat cost nothing.
-        self.light_stats =
-            shaded.as_ref().map(|(s, hit)| model2::light::Stats { ms: if *hit { 0.0 } else { s.stats.ms }, ..s.stats });
+        // A repeat cost nothing. Counted with shading on only.
+        self.light_stats = shaded
+            .as_ref()
+            .filter(|_| self.light_options().is_some())
+            .map(|(s, hit)| model2::light::Stats { ms: if *hit { 0.0 } else { s.stats.ms }, ..s.stats });
         let shaded = shaded.map(|s| s.0);
+        self.texels.get_mut().begin(render_version);
         let input = model2::raster::BuildIn {
             motion: m,
             lit: shaded.as_deref(),
             skip_checker: opts.is_some_and(|o| o.skip_checker),
             fine: opts.is_some_and(|o| o.fine),
-            // The GPU doesn't draw materials yet.
-            relief: Default::default(),
+            relief: self.quality.materials_relief,
+            texels: Some(&self.texels),
         };
         model2::raster::build_with(stream, src, &input)
     }
@@ -853,6 +964,8 @@ impl Renderer {
         temporal: bool,
         shading: u8,
     ) -> wgpu::RenderPipeline {
+        // The material entry points are the same lit or not.
+        let shading = if variant.material() { 0 } else { shading };
         let key = (samples, mode, variant, temporal, shading);
         if let Some(p) = self.raster.get(&key) {
             return p.clone();
@@ -875,12 +988,19 @@ impl Renderer {
             (_, Variant::Pack) => ("vs", "fs_pack"),
             (Mode::Test | Mode::DepthWrite, Variant::PackFiltered) => ("vs_pack", "fs_packf_depth"),
             (_, Variant::PackFiltered) => ("vs_pack", "fs_packf"),
+            (Mode::Test | Mode::DepthWrite, Variant::Mat) => ("vs", "fs_mat_depth"),
+            (_, Variant::Mat) => ("vs", "fs_mat"),
+            (Mode::Test | Mode::DepthWrite, Variant::MatFiltered) => ("vs_pack", "fs_matf_depth"),
+            (_, Variant::MatFiltered) => ("vs_pack", "fs_matf"),
         };
-        let fs = lit_entry(fs, shading != 0 && mode != Mode::Clear);
+        // The material entry points light lit polygons themselves.
+        let fs = lit_entry(fs, shading != 0 && mode != Mode::Clear && !variant.material());
         let layout = match variant {
             Variant::Original => &self.raster_pipeline_layout,
             Variant::Pack => &self.pack_pipeline_layout,
             Variant::PackFiltered => &self.pack_filtered_pipeline_layout,
+            Variant::Mat => &self.mat_pipeline_layout,
+            Variant::MatFiltered => &self.mat_filtered_pipeline_layout,
         };
         let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x3, 2 => Uint32];
         let buffers = [Some(wgpu::VertexBufferLayout {
@@ -949,13 +1069,11 @@ impl Renderer {
             (_, Variant::Original) => ("vs_t", if depth { "fs_depth_t" } else { "fs_t" }),
             (_, Variant::Pack) => ("vs_t", if depth { "fs_pack_depth_t" } else { "fs_pack_t" }),
             (_, Variant::PackFiltered) => ("vs_t", if depth { "fs_packf_depth_t" } else { "fs_packf_t" }),
+            (_, Variant::Mat) => ("vs_t", if depth { "fs_mat_depth_t" } else { "fs_mat_t" }),
+            (_, Variant::MatFiltered) => ("vs_t", if depth { "fs_matf_depth_t" } else { "fs_matf_t" }),
         };
-        let fs = lit_entry(fs, lit && mode != Mode::Clear);
-        let layout = &self.pipeline_layouts_t[match variant {
-            Variant::Original => 0,
-            Variant::Pack => 1,
-            Variant::PackFiltered => 2,
-        }];
+        let fs = lit_entry(fs, lit && mode != Mode::Clear && !variant.material());
+        let layout = &self.pipeline_layouts_t[variant.index()];
         let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x3, 2 => Uint32, 3 => Float32x3];
         let buffers = [Some(wgpu::VertexBufferLayout {
             array_stride: VERTEX_BYTES_T,
@@ -1034,26 +1152,30 @@ impl Renderer {
         self.keys.clear();
     }
 
-    /// For each of `placed`, the slot of its pack image in the returned
-    /// bind groups, or NO_SLOT to draw its own texels. Looks textures up in
-    /// the pack (once per key), uploads new images and counts `pack_stats`.
-    fn pack_slots(
-        &mut self,
-        polys: &[Poly],
-        placed: &[Placed],
-        src: &Sources,
-        render_version: Option<u64>,
-    ) -> (Vec<u32>, Vec<wgpu::BindGroup>) {
-        let mut slots = vec![NO_SLOT; placed.len()];
-        let mut groups = Vec::new();
+    /// What each of `placed` binds in group 1 ([`Slots`]): looks textures up
+    /// in the pack (once per key) and, with [`Quality::materials`], the
+    /// materials of polygons with a lamp; uploads new images and materials,
+    /// drops the least recently drawn over the budget and counts
+    /// `pack_stats`.
+    fn pack_slots(&mut self, polys: &[Poly], placed: &[Placed], src: &Sources, render_version: Option<u64>) -> Slots {
+        let n = placed.len();
+        let mut out = Slots {
+            slot: vec![NO_SLOT; n],
+            image: vec![false; n],
+            material: vec![None; n],
+            groups: Vec::new(),
+            mat_slot: Vec::new(),
+            variant: Variant::Original,
+            mat_variant: None,
+        };
         if self.pack.is_none() {
-            return (slots, groups);
+            return out;
         }
         let mip = self.quality.tex_filter.mipmapped();
         if mip && self.samplers.is_none() {
             self.samplers = Some(pack_samplers(&self.device, self.quality.tex_filter));
         }
-        let Some(pack) = self.pack.as_mut() else { return (slots, groups) };
+        let Some(pack) = self.pack.as_mut() else { return out };
         self.keys.begin(render_version);
         self.frame += 1;
         let frame = self.frame;
@@ -1062,21 +1184,26 @@ impl Renderer {
         // Material maps: only asked for when on and the pack has some.
         let materials = self.quality.materials && pack.has_materials();
         self.materials.begin();
-        // Slots by texture key and address modes, this frame.
-        let mut slot_of: HashMap<(u64, usize), u32> = HashMap::new();
+        // Per polygon: its image's key, its material's id, its address
+        // modes (filtered images only).
+        let mut picks: Vec<Option<SlotKey>> = vec![None; n];
         for (i, pl) in placed.iter().enumerate() {
             let p = &polys[pl.poly];
             let Some(t) = &p.texture else { continue };
             stats.textured += 1;
             let Some(info) = tex_info(p, t, src, &mut self.keys) else { continue };
-            if materials {
-                self.materials.draw(pack.as_mut(), &info, &self.device, &self.queue, mip, frame, max);
-            }
+            // As the software renderer: only a polygon with a lamp and a
+            // tangent frame has a material to draw.
+            let material = if materials && p.lamp.as_ref().is_some_and(|l| l.tangent.is_some()) {
+                self.materials.draw(pack.as_mut(), &info, &self.device, &self.queue, mip, frame, max)
+            } else {
+                None
+            };
             let entry = match self.pack_tex.entry(info.key) {
-                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut().as_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => match pack.find(&info) {
-                    Found::Pending => continue,
-                    Found::Missing => e.insert(None),
+                    Found::Pending => None,
+                    Found::Missing => e.insert(None).as_mut(),
                     Found::Image(img) => {
                         let tex = if img.width == 0 || img.height == 0 || img.width > max || img.height > max {
                             if !self.pack_warned {
@@ -1093,25 +1220,22 @@ impl Renderer {
                             stats.uploaded += 1;
                             Some(upload_pack(&self.device, &self.queue, &img, mip))
                         };
-                        e.insert(tex)
+                        e.insert(tex).as_mut()
                     }
                 },
             };
-            let Some(pt) = entry else { continue };
-            pt.used = frame;
-            stats.replaced += 1;
-            let addr = if mip { t.mirror_x as usize | (t.mirror_y as usize) << 1 } else { 0 };
-            slots[i] = *slot_of.entry((info.key, addr)).or_insert_with(|| {
-                let group = pt.groups[addr].get_or_insert_with(|| match &self.samplers {
-                    Some(smp) if mip => bind_pack(&self.device, &self.pack_filtered_layout, &pt.view, Some(&smp[addr])),
-                    _ => bind_pack(&self.device, &self.pack_layout, &pt.view, None),
-                });
-                groups.push(group.clone());
-                groups.len() as u32 - 1
+            let image = entry.map(|pt| {
+                pt.used = frame;
+                stats.replaced += 1;
+                info.key
             });
+            if image.is_some() || material.is_some() {
+                let addr = if mip { t.mirror_x as usize | (t.mirror_y as usize) << 1 } else { 0 };
+                picks[i] = Some((image, material, addr));
+            }
         }
         // Over budget: drop the images and materials drawn longest ago (not
-        // this frame's), in one order.
+        // this frame's), in one order, and their bind groups.
         let mut bytes: u64 = self.pack_tex.values().flatten().map(|t| t.bytes).sum();
         let mut mat_bytes = self.materials.bytes();
         if bytes + mat_bytes > self.pack_budget {
@@ -1124,15 +1248,70 @@ impl Renderer {
                     break;
                 }
                 if material {
-                    self.materials.tex.remove(&key);
+                    self.materials.forget_material(key);
                     mat_bytes -= size;
                 } else {
                     self.pack_tex.remove(&key);
+                    self.materials.forget_image(key);
                     bytes -= size;
                 }
             }
         }
-        stats.images = groups.len() as u32;
+        // Polygons with a material are drawn by the material pipelines;
+        // all others by the pipelines and bind groups they have with
+        // materials off (the image pipelines if the frame replaces any
+        // image), so that they draw exactly as there.
+        let with_material = picks.iter().flatten().any(|p| p.1.is_some());
+        out.variant = match (picks.iter().flatten().any(|p| p.0.is_some()), mip) {
+            (false, _) => Variant::Original,
+            (true, false) => Variant::Pack,
+            (true, true) => Variant::PackFiltered,
+        };
+        out.mat_variant = with_material.then_some(if mip { Variant::MatFiltered } else { Variant::Mat });
+        let dummies = with_material.then(|| self.materials.dummies(&self.device, &self.queue));
+        let mut slot_of: HashMap<SlotKey, u32> = HashMap::new();
+        let mut images = std::collections::HashSet::new();
+        for (i, pick) in picks.iter().enumerate() {
+            let Some((image, material, addr)) = *pick else { continue };
+            out.image[i] = image.is_some();
+            out.material[i] = material.and_then(|id| self.materials.tex.get(&id)).map(|t| t.normal_scale);
+            if let Some(key) = image {
+                images.insert((key, addr));
+            }
+            out.slot[i] = *slot_of.entry((image, material, addr)).or_insert_with(|| {
+                let group = match (&dummies, material) {
+                    (Some(dummy), Some(_)) => self
+                        .materials
+                        .groups
+                        .entry((image, material, addr))
+                        .or_insert_with(|| {
+                            let view =
+                                image.and_then(|k| self.pack_tex.get(&k)?.as_ref()).map_or(&dummy[0], |t| &t.view);
+                            let mat =
+                                material.and_then(|id| self.materials.tex.get(&id)).map_or(&dummy[1], |t| &t.view);
+                            let smp = self.samplers.as_ref().filter(|_| mip).map(|s| &s[addr]);
+                            let layout = if mip { &self.mat_filtered_layout } else { &self.mat_layout };
+                            bind_mat(&self.device, layout, view, smp, mat)
+                        })
+                        .clone(),
+                    _ => {
+                        let pt = image.and_then(|k| self.pack_tex.get_mut(&k)?.as_mut()).expect("an image");
+                        pt.groups[addr]
+                            .get_or_insert_with(|| match &self.samplers {
+                                Some(smp) if mip => {
+                                    bind_pack(&self.device, &self.pack_filtered_layout, &pt.view, Some(&smp[addr]))
+                                }
+                                _ => bind_pack(&self.device, &self.pack_layout, &pt.view, None),
+                            })
+                            .clone()
+                    }
+                };
+                out.groups.push(group);
+                out.mat_slot.push(material.is_some());
+                out.groups.len() as u32 - 1
+            });
+        }
+        stats.images = images.len() as u32;
         stats.held = self.pack_tex.values().flatten().count() as u32;
         stats.bytes = bytes;
         stats.materials = self.materials.drawn();
@@ -1140,13 +1319,14 @@ impl Renderer {
         stats.material_held = self.materials.tex.len() as u32;
         stats.material_bytes = mat_bytes;
         self.pack_stats = stats;
-        (slots, groups)
+        out
     }
 
     /// The 1x1 bind group for group 1 before a replaced polygon is drawn
     /// (for the filtered pipelines once the samplers exist; any sampler
     /// will do, it is never sampled).
-    fn pack_dummy(&mut self, filtered: bool) -> wgpu::BindGroup {
+    fn pack_dummy(&mut self, variant: Variant) -> wgpu::BindGroup {
+        let filtered = variant == Variant::PackFiltered;
         let k = filtered as usize;
         if let Some(g) = &self.pack_dummy[k] {
             return g.clone();
@@ -1257,10 +1437,17 @@ impl Renderer {
         // polygon.
         let lit_frame = q.shading != Shading::Flat && placed.iter().any(|pl| !polys[pl.poly].lit.is_empty());
         let versions = self.versions.take();
-        let (slots, pack_groups) = self.pack_slots(polys, placed, src, versions.map(|v| v.0));
+        let slots = self.pack_slots(polys, placed, src, versions.map(|v| v.0));
+        // Material maps: their pipelines for the polygons with a material
+        // (`Slots::mat_variant`); every polygon of such a frame has an
+        // outline entry.
+        let variant = slots.variant;
+        let mat_frame = slots.mat_variant.is_some();
+        let mat_slot = |s: u32| s != NO_SLOT && slots.mat_slot[s as usize];
         // Draws: runs of polygons in the same window and depth mode, and
         // with the same pack image (`slot`; NO_SLOT: any, as a polygon not
-        // replaced reads no image).
+        // replaced reads no image), and material (a polygon with one is
+        // never in a run without).
         struct Run {
             vertices: std::ops::Range<u32>,
             window: usize,
@@ -1275,7 +1462,8 @@ impl Renderer {
                     if r.window == window
                         && r.mode == mode
                         && r.vertices.end == vertices.start
-                        && (r.slot == slot || r.slot == NO_SLOT || slot == NO_SLOT) =>
+                        && (r.slot == slot
+                            || ((r.slot == NO_SLOT || slot == NO_SLOT) && !mat_slot(r.slot) && !mat_slot(slot))) =>
                 {
                     r.vertices.end = vertices.end;
                     if r.slot == NO_SLOT {
@@ -1305,7 +1493,17 @@ impl Renderer {
             let mut flags = t
                 .map_or(0, |t| 1 | (t.mirror_x as u32) << 1 | (t.mirror_y as u32) << 2 | (t.translucent as u32) << 3)
                 | (p.checker as u32) << 4
-                | ((slots[i] != NO_SLOT) as u32) << 5;
+                | (slots.image[i] as u32) << 5;
+            // A material: bit 9, and bit 10 where its normal is the corners'
+            // interpolated (smooth-shaded with normals, raster.rs
+            // `material_values`).
+            let lit_normals = slots.material[i].is_some()
+                && lit_frame
+                && p.lit.len() == pl.points.len()
+                && p.lit.iter().any(|c| c[1] != 0.0 || c[2] != 0.0 || c[3] != 0.0);
+            if slots.material[i].is_some() {
+                flags |= 512 | (lit_normals as u32) << 10;
+            }
             let (mut x0, mut y0, mut x1, mut y1) = pl.clip;
             // Temporal: the motion of each point, if known.
             let mut motion = None;
@@ -1366,7 +1564,8 @@ impl Renderer {
             }
             let end = (verts.len() as u64 / vertex_bytes) as u32;
             let lit = lit_frame && !p.lit.is_empty();
-            if q.depth || lit {
+            let mat = slots.material[i];
+            if q.depth || lit || mat.is_some() {
                 let first = placed.len() + outline_points.len() / 16;
                 let count = pl.points.len();
                 // Lit: bit 0, per pixel bit 1, finer levels bit 2, the
@@ -1381,30 +1580,47 @@ impl Renderer {
                 } else {
                     0
                 };
-                let normals = if pixel { (first + count) as u32 } else { 0 };
+                let normals = if pixel || mat.is_some() { (first + count) as u32 } else { 0 };
                 outline_dir.extend(le([first as u32, count as u32, flags, normals].map(u32::to_le_bytes)));
                 for (k, v) in pl.points.iter().enumerate() {
                     let lz = if lit { p.lit[k][0] * v.iz } else { 0.0 };
                     outline_points.extend(le([v.x, v.y, v.iz, lz].map(f32::to_le_bytes)));
                 }
-                if let (true, Some(px)) = (pixel, &p.pixel) {
-                    // The normals/z per point, then the lighting
-                    // (raster.wgsl `lamp_eval`).
-                    for (k, v) in pl.points.iter().enumerate() {
-                        let n = p.lit[k];
-                        outline_points.extend(le([n[1] * v.iz, n[2] * v.iz, n[3] * v.iz, 0.0].map(f32::to_le_bytes)));
-                    }
-                    let l = &px.lamp;
+                // The lighting (raster.wgsl `lamp_eval`), offset in .w.
+                let lamp = |l: &model2::light::Lamp, offset: f32| {
                     let base = match l.base {
                         model2::light::Base::D => 0,
                         model2::light::Base::S0 => 1,
                         model2::light::Base::Dotl => 2,
                     };
                     let bits = l.front as u32 | base << 1 | l.squarings.min(255) << 8;
-                    outline_points.extend(le([l.l[0], l.l[1], l.l[2], f32::from_bits(bits)].map(f32::to_le_bytes)));
-                    outline_points.extend(le([l.ambient, l.diffuse, l.spec_scale, px.offset].map(f32::to_le_bytes)));
+                    let mut e = le([l.l[0], l.l[1], l.l[2], f32::from_bits(bits)].map(f32::to_le_bytes));
+                    e.extend(le([l.ambient, l.diffuse, l.spec_scale, offset].map(f32::to_le_bytes)));
+                    e
+                };
+                if pixel || lit_normals {
+                    // The normals/z per point.
+                    for (k, v) in pl.points.iter().enumerate() {
+                        let n = p.lit[k];
+                        outline_points.extend(le([n[1] * v.iz, n[2] * v.iz, n[3] * v.iz, 0.0].map(f32::to_le_bytes)));
+                    }
                 }
-            } else if lit_frame {
+                if let (true, Some(px)) = (pixel, &p.pixel) {
+                    outline_points.extend(lamp(&px.lamp, px.offset));
+                }
+                if let (Some(scale), Some(l)) = (mat, p.lamp.as_deref()) {
+                    // The material's block (raster.wgsl `mat_luma`): the
+                    // face's normal and the side the eye sees, the tangent
+                    // frame, the lamp alone, the strengths and the range.
+                    let t = l.tangent.unwrap_or(model2::raster::Tangent { t: [0.0; 3], h: 0.0 });
+                    outline_points.extend(le([l.n[0], l.n[1], l.n[2], l.out].map(f32::to_le_bytes)));
+                    outline_points.extend(le([t.t[0], t.t[1], t.t[2], t.h].map(f32::to_le_bytes)));
+                    outline_points.extend(lamp(&l.light.lamp, 0.0));
+                    let range = f32::from_bits(l.range[0] as u32 | (l.range[1] as u32) << 8);
+                    let strength = l.relief.strength().unwrap_or(0.0);
+                    outline_points.extend(le([scale, strength, range, 0.0].map(f32::to_le_bytes)));
+                }
+            } else if lit_frame || mat_frame {
                 outline_dir.extend([0; 16]);
             }
             // Translucent (checkerboard) polygons are background.
@@ -1414,7 +1630,7 @@ impl Renderer {
                 (_, true) => Mode::Background,
                 _ => Mode::Test,
             };
-            push(&mut runs, first..end, p.window, mode, pl.clip, slots[i]);
+            push(&mut runs, first..end, p.window, mode, pl.clip, slots.slot[i]);
             // The depth-only draw repeats a replaced polygon's cut-out.
             if grouped {
                 group_depth.push(Run {
@@ -1422,7 +1638,7 @@ impl Renderer {
                     window: p.window,
                     mode: Mode::DepthWrite,
                     clip: pl.clip,
-                    slot: slots[i],
+                    slot: slots.slot[i],
                 });
             }
             if placed.get(i + 1).is_none_or(|n| n.group != pl.group) {
@@ -1479,12 +1695,6 @@ impl Renderer {
         let depth = q.depth.then(|| self.kept_attachment(depth_label, w, h, samples, DEPTH_FORMAT));
         let depth_view = depth.as_ref().map(|t| t.create_view(&Default::default()));
         let is_t = temporal.is_some();
-        // The pack shaders only for frames that replace a texture.
-        let variant = match (pack_groups.is_empty(), q.tex_filter.mipmapped()) {
-            (true, _) => Variant::Original,
-            (false, false) => Variant::Pack,
-            (false, true) => Variant::PackFiltered,
-        };
         // Depth-only draws need no luma: never lit.
         let shading = |m: Mode| (lit_frame && m != Mode::DepthWrite) as u8;
         let pipelines: Vec<(Mode, wgpu::RenderPipeline)> = if q.depth {
@@ -1494,8 +1704,13 @@ impl Renderer {
         } else {
             vec![(Mode::Plain, self.raster_pipeline(samples, Mode::Plain, variant, is_t, shading(Mode::Plain)))]
         };
+        // The material pipelines, for the runs with a material.
+        let mat_pipelines: Vec<(Mode, wgpu::RenderPipeline)> = match slots.mat_variant {
+            Some(v) => pipelines.iter().map(|(m, _)| (*m, self.raster_pipeline(samples, *m, v, is_t, 0))).collect(),
+            None => Vec::new(),
+        };
         let clear_pipeline = q.depth.then(|| self.raster_pipeline(samples, Mode::Clear, variant, is_t, 0));
-        let dummy = (variant != Variant::Original).then(|| self.pack_dummy(variant == Variant::PackFiltered));
+        let dummy = (variant != Variant::Original).then(|| self.pack_dummy(variant));
         self.pack_stats.draws = runs.len() as u32;
         let colour = Some(wgpu::RenderPassColorAttachment {
             view: msaa_view.as_ref().unwrap_or(target),
@@ -1529,6 +1744,18 @@ impl Renderer {
             pass.set_bind_group(1, dummy, &[]);
         }
         let mut bound = NO_SLOT;
+        // Group 1 holds a material's bind group (the material pipelines'
+        // layout): the image pipelines need theirs back first.
+        let mut bound_mat = false;
+        let unbind_mat = |pass: &mut wgpu::RenderPass, bound: &mut u32, bound_mat: &mut bool| {
+            if *bound_mat {
+                *bound_mat = false;
+                *bound = NO_SLOT;
+                if let Some(dummy) = &dummy {
+                    pass.set_bind_group(1, dummy, &[]);
+                }
+            }
+        };
         pass.set_vertex_buffer(0, vertices.slice(..));
         for (k, run) in runs.iter().enumerate() {
             // Each window starts with an empty depth buffer where it draws
@@ -1543,18 +1770,25 @@ impl Renderer {
                 let (x0, y0) = (clip.0.floor().max(0.0) as u32, clip.1.floor().max(0.0) as u32);
                 let (x1, y1) = ((clip.2.ceil().max(0.0) as u32).min(w), (clip.3.ceil().max(0.0) as u32).min(h));
                 if x1 > x0 && y1 > y0 {
+                    unbind_mat(&mut pass, &mut bound, &mut bound_mat);
                     pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
                     pass.set_pipeline(clear);
                     pass.draw(0..3, 0..1);
                     pass.set_scissor_rect(0, 0, w, h);
                 }
             }
-            if let Some((_, pipeline)) = pipelines.iter().find(|(m, _)| *m == run.mode) {
+            let with_mat = mat_slot(run.slot);
+            if !with_mat {
+                unbind_mat(&mut pass, &mut bound, &mut bound_mat);
+            }
+            let list = if with_mat { &mat_pipelines } else { &pipelines };
+            if let Some((_, pipeline)) = list.iter().find(|(m, _)| *m == run.mode) {
                 pass.set_pipeline(pipeline);
             }
             if run.slot != NO_SLOT && run.slot != bound {
                 bound = run.slot;
-                pass.set_bind_group(1, &pack_groups[run.slot as usize], &[]);
+                bound_mat = with_mat;
+                pass.set_bind_group(1, &slots.groups[run.slot as usize], &[]);
             }
             pass.draw(run.vertices.clone(), 0..1);
         }
@@ -1933,7 +2167,7 @@ impl Renderer {
                 }),
                 _ => None,
             };
-            self.build_polys(stream, src, m_in.as_ref())
+            self.build_polys(stream, src, m_in.as_ref(), Some(b.video_ram_versions().0))
         };
         model2::video::HudLayout::new(b.tile_ram(), b.palette_ram(), view).anchor(&mut polys, view);
         let placed = model2::raster::place(&mut polys, view);
@@ -1965,7 +2199,7 @@ impl Renderer {
             xoff,
             yoff,
         };
-        let (mut polys, _) = self.build_polys(stream, &src, None);
+        let (mut polys, _) = self.build_polys(stream, &src, None, Some(b.video_ram_versions().0));
         model2::video::HudLayout::new(b.tile_ram(), b.palette_ram(), view).anchor(&mut polys, view);
         let placed = model2::raster::place(&mut polys, view);
         let layers = self.layers_2d(b.tile_ram(), b.palette_ram(), view, !placed.is_empty());
@@ -2090,6 +2324,25 @@ fn bind_pack(
     device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("pack image"), layout, entries: &entries })
 }
 
+/// Group 1 of the material pipelines: the image (or a stand-in), the
+/// sampler (filtered only), the material (or a stand-in).
+fn bind_mat(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    image: &wgpu::TextureView,
+    sampler: Option<&wgpu::Sampler>,
+    material: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    let mut entries = vec![
+        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(image) },
+        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(material) },
+    ];
+    if let Some(s) = sampler {
+        entries.push(wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(s) });
+    }
+    device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("pack material"), layout, entries: &entries })
+}
+
 /// Samplers for filtered pack images, by address modes (mirror x | mirror
 /// y << 1; the hardware's mirrored repeat is the software's `Mirror`):
 /// trilinear, with `filter`'s anisotropy (wgpu wants all three filters
@@ -2152,10 +2405,19 @@ mod tests {
             "fs_pack_depth_t",
             "fs_packf_t",
             "fs_packf_depth_t",
+            "fs_mat",
+            "fs_mat_depth",
+            "fs_matf",
+            "fs_matf_depth",
+            "fs_mat_t",
+            "fs_mat_depth_t",
+            "fs_matf_t",
+            "fs_matf_depth_t",
         ] {
             assert!(names.contains(&name), "raster.wgsl has no entry point {name}");
             // Each fragment entry point has its smooth-shading twin.
-            if name.starts_with("fs_") && name != "fs_clear" {
+            // (The material ones light lit polygons themselves.)
+            if name.starts_with("fs_") && name != "fs_clear" && !name.starts_with("fs_mat") {
                 let lit = super::lit_entry(name, true);
                 assert!(names.contains(&lit.as_str()), "raster.wgsl has no entry point {lit}");
             }
@@ -2198,7 +2460,9 @@ mod tests {
     }
 
     /// The original entry points use group 0 only, so their pipelines keep
-    /// the one-group layout; the pack ones add the image in group 1.
+    /// the one-group layout; the pack ones add the image in group 1, the
+    /// material ones the material too (binding 2), which nothing else
+    /// reads.
     #[test]
     fn only_pack_entry_points_use_group_1() {
         let module = naga::front::wgsl::parse_str(&super::raster_source()).unwrap();
@@ -2211,11 +2475,17 @@ mod tests {
                 .global_variables
                 .iter()
                 .any(|(h, v)| v.binding.as_ref().is_some_and(|b| b.group == 1) && !fi[h].is_empty());
-            assert_eq!(uses_group_1, ep.name.starts_with("fs_pack"), "{}", ep.name);
+            let material = ep.name.starts_with("fs_mat");
+            assert_eq!(uses_group_1, ep.name.starts_with("fs_pack") || material, "{}", ep.name);
+            let uses_binding_2 = module
+                .global_variables
+                .iter()
+                .any(|(h, v)| v.binding.as_ref().is_some_and(|b| b.group == 1 && b.binding == 2) && !fi[h].is_empty());
+            assert_eq!(uses_binding_2, material, "{}", ep.name);
             // Only the filtered ones sample (derivatives, a sampler).
             let samples =
                 module.global_variables.iter().any(|(h, v)| v.name.as_deref() == Some("pack_smp") && !fi[h].is_empty());
-            assert_eq!(samples, ep.name.starts_with("fs_packf"), "{}", ep.name);
+            assert_eq!(samples, ep.name.starts_with("fs_packf") || ep.name.starts_with("fs_matf"), "{}", ep.name);
         }
     }
 }

@@ -688,6 +688,48 @@ pub struct BuildIn<'a> {
     /// Material relief rule for [`PolyLamp::relief`]
     /// (`light::Options::relief`).
     pub relief: Relief,
+    /// The luma table indices textures' texels reach ([`texel_indices`]),
+    /// kept across frames while render RAM is unchanged (None: worked out
+    /// for this frame alone).
+    pub texels: Option<&'a std::cell::RefCell<TexelCache>>,
+}
+
+/// [`texel_indices`] by texture rectangle (bank, x0, y0, w, h,
+/// translucent), kept across frames: valid while render RAM is unchanged,
+/// which [`TexelCache::begin`] checks (as [`TexKeys`]).
+#[derive(Clone, Debug, Default)]
+pub struct TexelCache {
+    version: Option<u64>,
+    #[allow(clippy::type_complexity)]
+    indices: HashMap<(u32, u32, u32, u32, u32, bool), (u32, u32)>,
+}
+
+impl TexelCache {
+    /// Before a frame: keep what is known if render RAM is still at
+    /// `render_version`, else forget it. `None` (version unknown) always
+    /// forgets.
+    pub fn begin(&mut self, render_version: Option<u64>) {
+        if render_version.is_none() || render_version != self.version {
+            self.indices.clear();
+        }
+        self.version = render_version;
+    }
+
+    /// Forget everything.
+    pub fn clear(&mut self) {
+        self.indices.clear();
+        self.version = None;
+    }
+
+    /// Textures known.
+    pub fn len(&self) -> usize {
+        self.indices.len()
+    }
+
+    /// Whether no texture is known.
+    pub fn is_empty(&self) -> bool {
+        self.indices.is_empty()
+    }
 }
 
 /// [`build`], smooth-shaded with `opts` (`crate::light::shade`) when given
@@ -750,9 +792,14 @@ fn build_impl(stream: &[u32], src: &Sources, input: &BuildIn) -> (Vec<Poly>, Vec
     let lit = input.lit.filter(|l| !l.at.is_empty());
     let mut lit_next = 0;
     // The luma table indices each texture's texels reach (`texel_indices`),
-    // worked out once a frame.
+    // worked out once a frame, or kept across frames by the caller.
     #[allow(clippy::type_complexity)]
-    let mut texels: HashMap<(u32, u32, u32, u32, u32, bool), (u32, u32)> = HashMap::new();
+    let mut own_texels: HashMap<(u32, u32, u32, u32, u32, bool), (u32, u32)> = HashMap::new();
+    let mut kept = input.texels.map(|c| c.borrow_mut());
+    let texels = match kept.as_deref_mut() {
+        Some(c) => &mut c.indices,
+        None => &mut own_texels,
+    };
     // `hue_range` by colour, luma table, luma and indices, likewise.
     #[allow(clippy::type_complexity)]
     let mut hues: HashMap<([u32; 3], Option<u32>, u32, (u32, u32)), [u8; 2]> = HashMap::new();

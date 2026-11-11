@@ -197,8 +197,8 @@ refused with one warning.
   maps (`TexturePack::material`, docs/texture-packs.md) are uploaded beside
   the images, one `Rgba8Unorm` texture per material (`gpu/src/materials.rs`;
   mip levels with renormalised normals when `tex_filter` has them), under
-  the same budget and in the same least-recently-drawn order; not bound or
-  sampled yet. A change of `tex_filter` rebuilds the images that change
+  the same budget and in the same least-recently-drawn order (below,
+  "Material maps"). A change of `tex_filter` rebuilds the images that change
   form (exact or mipmapped). Large images' first appearance can cost a frame
   (the browser measured up to 13 ms of draw uploading a 1024x1024 image
   with mipmaps, against about 3 ms).
@@ -430,6 +430,85 @@ drawn with whatever `Poly::lit` and `Poly::pixel` hold.
   normal give the off frame; varying corners, per-pixel normals, the hue
   clamp and finer levels agree with the software renderer as well as flat
   drawing does (finer levels within one step of rounding).
+
+## Material maps
+
+`Quality::materials` (default off) and `Quality::materials_relief` (relief
+at strength 2 by default, or the faithful rule; docs/texture-packs.md,
+"How material maps light"). The GPU draws a pack's normal maps exactly as
+the software renderer's `material_luma` does, on polygons that carry a
+lamp (`Poly::lamp`, from `light::Options::lamps`; the `present_bus*`
+calls ask for lamps themselves when materials are on and the pack has
+maps, whatever `shading` is). Where there is no lamp (the chip path, no
+side channel, a demoted block) nothing changes.
+
+- **Pipelines.** `Variant::Mat` (`vs`, `fs_mat`, `fs_mat_depth`) and
+  `Variant::MatFiltered` (`vs_pack`, `fs_matf`, `fs_matf_depth`), and their
+  `_t` twins for temporal, draw the runs of polygons with a material (a
+  lamp, a tangent frame and a material resolved); they also light lit
+  polygons (no `_l` twin: `mat_px` is `poly_px`, then the material). Every
+  other polygon, in every frame, is drawn by the pipeline, bind group and
+  shader text it has with materials off; group 1 is rebound when a run
+  switches between the two. Group 1 of the material pipelines
+  (`mat_layout`, `mat_filtered_layout`): the image or a 1x1 stand-in
+  (binding 0), the image's sampler (binding 1, filtered only), the
+  material or a stand-in (binding 2). No new storage buffer or group 0
+  binding.
+- **Slots and bind groups.** A polygon's slot is (image key, material id,
+  address modes) (`Slots`, `pack_slots`); runs split where it changes, so a
+  material-only polygon (original texels, a material) is a draw of its own.
+  Bind groups are cached by slot (`Materials::groups`) and dropped with
+  either texture when the budget evicts it, and all of them when
+  `tex_filter` changes.
+- **Per-polygon data** in `outlines` (every polygon of such a frame has a
+  directory entry): flags bit 9 a material bound, bit 10 its normal
+  interpolated from the corners (smooth-shaded with normals: `count`
+  normal/z entries at the directory's `normals`, shared with per-pixel
+  lighting); then a block of five entries: the face normal and the side
+  the eye sees, the tangent frame (T, h), the lamp with offset 0, and (the
+  material's normal scale, the relief strength or 0 for faithful, the hue
+  range).
+- **Per pixel** (`mat_luma`): the map's normal sampled at the pixel
+  (unfiltered: the software's bilinear over the stored bytes with
+  `textureLoad`, the polygon's repeat or mirror; filtered: `textureSampleGrad`
+  through the image's sampler and gradients, the bytes kept to 1/256 of a
+  step so a flat map stays exactly flat), its sign flipped in every second
+  repeat of a mirrored axis; the drawn normal tilted in the tangent frame;
+  faithful: `base + E1 - E0`; relief: the factor, applied per texel
+  (`mat_at`, `mat_relieved`: the luma lowered to where that texel's top
+  column starts, then scaled). A changed pixel always blends the two
+  colour columns (`fine_level_at`), clamped to its hue range; one its
+  material leaves alone is drawn by the very functions the entry points
+  without materials call (`mat_state`). The compiled entry points still
+  differ: with smooth shading off, where the frame without materials draws
+  a material polygon with `fs_pack`, a handful of its unchanged pixels
+  round the other way in `fs_mat` (topskatr, flat maps: up to 112 pixels
+  of a 1080p frame, one level in one channel; vertex and pixel shading,
+  where both are against the `_l` entry points, exact; temporal's first
+  mipmapped frame, one pixel).
+- **Temporal, MSAA, depth.** The material is evaluated at the unjittered
+  sample point, as the luma is; filtered maps take the derivatives scaled
+  to output pixels (`screen_t.lod`). Depth, coverage, the aux target and
+  the checkerboard are untouched.
+- **Texel scan kept.** The hue range of a polygon with a lamp needs the
+  luma table indices its texels reach (`raster::texel_indices`, a scan of
+  the texture); `raster::TexelCache` keeps them across frames while render
+  RAM's version is unchanged (`build_polys`).
+- **Checks.** `make materials-identity PACK=DIR` (flat maps against
+  `--light`, also on the GPU through `gpu-check` and `temporal-probe`), and
+  `gpu-check --materials` against the software renderer (numbers in the
+  stage's notes; at the originals' floor unfiltered, a little above it
+  mipmapped and anisotropic, where the GPU's sampler and the software's
+  trilinear differ).
+- **Tests** (`materials.rs`): on a scene with random video RAM, a pack of
+  flat maps draws the frame without materials byte for byte with and
+  without images, unfiltered, mip and 16x, with depth, 4x MSAA and
+  temporal (100% and 67%), under both rules; a dome map changes it;
+  temporal's first frame equals the plain pipelines'; with ramp colour
+  tables the GPU is within one step of the software renderer on as many
+  pixels as without materials (relief 2, 8 and faithful, vertex and pixel,
+  with and without images, unfiltered and mip, depth on and off); bind
+  groups never outlive an evicted texture.
 
 ## Next
 

@@ -274,7 +274,7 @@ fn bench(
             })
             .fold(f64::MAX, f64::min)
     };
-    let mut cpu = [[0.0f64; 4]; 3];
+    let mut cpu = [[0.0f64; 5]; 3];
     for f in frames {
         let src = f.sources(texture_rom);
         let side = f.light_frame();
@@ -288,6 +288,26 @@ fn bench(
                     std::hint::black_box(raster::build_shaded_with(&f.stream, &src, side.as_ref(), Some(&o)));
                 });
             }
+            // With lamps, the textures' texel scan kept from the frame
+            // before (`raster::TexelCache`, render RAM unchanged: as the
+            // renderer's `present_bus*` keep it).
+            let o = Options { shading: s, ..*opts }.with_lamps(true);
+            let cache = std::cell::RefCell::new(raster::TexelCache::default());
+            cache.borrow_mut().begin(Some(1));
+            let mut build = || {
+                let sh = light::shade_with(&f.stream, side.as_ref(), &o);
+                let b = raster::BuildIn {
+                    lit: Some(&sh),
+                    skip_checker: o.skip_checker,
+                    fine: o.fine,
+                    relief: o.relief,
+                    texels: Some(&cache),
+                    ..Default::default()
+                };
+                std::hint::black_box(raster::build_with(&f.stream, &src, &b));
+            };
+            build();
+            cpu[k][4] += best(&mut build);
         }
     }
     let n = frames.len().max(1) as f64;
@@ -295,13 +315,16 @@ fn bench(
         let c = cpu[k].map(|v| v / n);
         let _ = writeln!(
             out,
-            "  CPU {s:<6} shade {:.2} ms, with lamps {:.2} ms (+{:.2}); build {:.2} ms, with lamps {:.2} ms (+{:.2})",
+            "  CPU {s:<6} shade {:.2} ms, with lamps {:.2} ms (+{:.2}); build {:.2} ms, with lamps {:.2} ms (+{:.2}), \
+             and the texel scan kept across frames {:.2} ms (+{:.2})",
             c[0],
             c[1],
             c[1] - c[0],
             c[2],
             c[3],
-            c[3] - c[2]
+            c[3] - c[2],
+            c[4],
+            c[4] - c[2]
         );
     }
     for (name, height) in [("1080p", 1080), ("4K", 2160)] {

@@ -320,7 +320,8 @@ capture: release ## Run into a race saving every 300th frame's renderer inputs t
 
 # Options for gpu-check, depth-check and pack-check: --aa N (multisampling;
 # software supersamples to match), --depth, --tex-filter off|mip|2|4|8|16
-# (gpu-check with PACK), --materials (the pack's material maps loaded), and for depth-check and pack-check
+# (gpu-check with PACK), --materials (the pack's material maps: gpu-check draws them from captures with light.bin;
+# --materials-relief off|S), --light (gpu-check: shade with light.bin), and for depth-check and pack-check
 # --height/--aspect/--hud; --shading flat|vertex|pixel, --crease auto|N and
 # --shading-fine on|off (smooth shading, model2::light) for all of them.
 GPU_OPTS ?=
@@ -343,14 +344,16 @@ tile-check: release ## Draw the captured frames with the tile images of texture 
 pack-identity: release ## Draw the captured frames with a pack standing for the original textures (PACK=DIR, normally the dump itself; empty: each frame's own textures) on the GPU and in software, unfiltered and mipmapped, against no pack; fails a frame on the differences that mean a fault (one texel value, another polygon), not on filter order up to a ceiling (needs a GPU)
 	$(RUN) $(GPU_OPTS) $(if $(PACK),--texture-pack $(PACK)) pack-check --identity $(OUT)/capture $(OUT)/pack-identity
 
-# materials-identity: the coin-start run's length and snapshot interval.
-MAT_STEPS ?= 900000000
-MAT_SNAP  ?= 300
+# materials-identity: the coin-start run's length and snapshot interval,
+# and the interval of its captures for the GPU checks.
+MAT_STEPS    ?= 900000000
+MAT_SNAP     ?= 300
+MAT_GPU_SNAP ?= 900
 .PHONY: materials-identity
-materials-identity: release ## Check that texture pack PACK with all its normal maps made flat draws with --materials exactly as with --light and no materials (the comparison to make: --materials records the side channel), under both rules (relief and --materials-relief off), in flat, vertex, pixel and mipmapped pixel shading, from coin-start run snapshots (MAT_STEPS, MAT_SNAP; scratch in out/scratch/materials-identity/GAME, deleted when it passes)
+materials-identity: release ## Check that texture pack PACK with all its normal maps made flat draws with --materials exactly as with --light and no materials (the comparison to make: --materials records the side channel), under both rules (relief and --materials-relief off), in flat, vertex, pixel and mipmapped pixel shading, from coin-start run snapshots; and the same on the GPU (gpu-check of captures, unfiltered, mip, 16x and --aa 4 --depth; temporal-probe) (MAT_STEPS, MAT_SNAP, MAT_GPU_SNAP; needs a GPU; scratch in out/scratch/materials-identity/GAME, deleted when it passes)
 	@test -n "$(PACK)" || { echo "materials-identity wants PACK=DIR (a pack with normal maps)"; exit 1; }
 	REMODEL=$(REMODEL) GAME=$(GAME) ROM=$(ROM) PACK=$(PACK) WORK=out/scratch/materials-identity/$(GAME) \
-		STEPS=$(MAT_STEPS) SNAP=$(MAT_SNAP) sh tools/materials-identity.sh
+		STEPS=$(MAT_STEPS) SNAP=$(MAT_SNAP) GPU_SNAP=$(MAT_GPU_SNAP) sh tools/materials-identity.sh
 
 # depth-check: PROBE="X,Y@FRAME ..." follows those output pixels through the
 # depth buffer (only those frames are drawn); AGAINST=DIR compares the

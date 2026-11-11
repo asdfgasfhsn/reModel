@@ -33,6 +33,14 @@ fn diff(a: &(Vec<u8>, Vec<bool>), b: &(Vec<u8>, Vec<bool>)) -> Diff {
     d
 }
 
+/// A captured frame's polygons, shaded with `light`; with `side`, with its
+/// lighting side channel (`light.bin`: the exact layer, and lamps for
+/// material maps when `light` asks for them).
+fn build(f: &Frame, src: &raster::Sources, light: Option<&model2::light::Options>, side: bool) -> Vec<raster::Poly> {
+    let frame = if side { f.light_frame() } else { None };
+    raster::build_shaded_with(&f.stream, src, frame.as_ref(), light)
+}
+
 fn pct(n: usize, of: usize) -> f64 {
     100.0 * n as f64 / of.max(1) as f64
 }
@@ -95,6 +103,7 @@ enum CostFrames<'a> {
     Seq(&'a Path),
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cost(
     gpu: &mut gpu::Renderer,
     root_dirs: CostFrames,
@@ -103,6 +112,7 @@ fn cost(
     pack: Option<&Path>,
     tex_filter: gpu::TexFilter,
     light: Option<&model2::light::Options>,
+    side: bool,
 ) -> Result<(), String> {
     let configs = [(1, false), (4, false), (8, false), (1, true), (4, true), (8, true)];
     let frames: Vec<_> = match root_dirs {
@@ -146,7 +156,7 @@ fn cost(
             let mut total = 0.0;
             for f in &frames {
                 let src = f.sources(texture_rom);
-                let mut polys = raster::build_shaded(&f.stream, &src, light);
+                let mut polys = build(f, &src, light, side);
                 video::HudLayout::new(&f.tiles, &f.palette, view).anchor(&mut polys, view);
                 let placed = raster::place(&mut polys, view);
                 let layers = video::layers_2d(&f.tiles, &f.palette, view, !placed.is_empty());
@@ -162,6 +172,7 @@ fn cost(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     root: &Path,
     hud_windows: (&[usize], &[usize]),
@@ -170,6 +181,7 @@ pub fn run(
     pack: Option<&Path>,
     tex_filter: gpu::TexFilter,
     light: Option<&model2::light::Options>,
+    side: bool,
 ) -> Result<(), String> {
     let texture_rom = capture::load_texture_rom(root)
         .map_err(|e| format!("{}: {e} (capture with `make capture`)", root.display()))?;
@@ -178,6 +190,9 @@ pub fn run(
     let q = gpu.set_quality(gpu::Quality { msaa: aa, depth, tex_filter, ..super::gpu_light(light) });
     if let Some(o) = light {
         println!("shading       {}, crease {} degrees (model2::light)", o.shading.name(), o.crease);
+    }
+    if side {
+        println!("lighting      each capture's side channel (light.bin; without: the stream's lumas alone)");
     }
     println!(
         "quality       {} samples a pixel on the GPU ({} supersampled in software), depth buffer {}",
@@ -199,7 +214,10 @@ pub fn run(
             gpu.set_pack(Some(Box::new(pack)));
             println!("pack          {}, filter {}", dir.display(), q.tex_filter);
             if maps > 0 {
-                let on = if q.materials { "loaded (not drawn yet)" } else { "not loaded (--materials)" };
+                let on = match q.materials {
+                    true => format!("drawn, relief {}", q.materials_relief.name()),
+                    false => "not drawn (--materials)".into(),
+                };
                 println!("materials     {maps} map files, {on}");
             }
             Some(Packs::new(None, Some(dir.to_path_buf()))?)
@@ -230,7 +248,7 @@ pub fn run(
             Frame::load(d).map_err(|e| e.to_string())?
         };
         let src = f.sources(&texture_rom);
-        let mut polys = raster::build_shaded(&f.stream, &src, light);
+        let mut polys = build(&f, &src, light, side);
         let placed = raster::place(&mut polys, &native);
         gpu.draw(&polys, &placed, &src, &native);
     }
@@ -248,7 +266,7 @@ pub fn run(
             None => break,
         };
         let src = f.sources(&texture_rom);
-        let polys = raster::build_shaded(&f.stream, &src, light);
+        let polys = build(&f, &src, light, side);
         for (k, (name, view)) in views.iter().enumerate() {
             let hud = video::HudLayout::new(&f.tiles, &f.palette, view);
             let mut sw_polys = polys.clone();
@@ -271,7 +289,7 @@ pub fn run(
             // stream, place the polygons, build the 2D layers.
             let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
             let t = Instant::now();
-            let mut prep_polys = raster::build_shaded(&f.stream, &src, light);
+            let mut prep_polys = build(&f, &src, light, side);
             let build_ms = ms(t);
             let t = Instant::now();
             hud.anchor(&mut prep_polys, view);
@@ -385,7 +403,7 @@ pub fn run(
         println!("(multisampled: coverage is 0 and colour/>16 count pixels of the whole frame, the GPU's against the software renderer's supersampled one)");
     }
     let cost_frames = if seq { CostFrames::Seq(root) } else { CostFrames::Dirs(&dirs) };
-    cost(&mut gpu, cost_frames, &texture_rom, &views, pack, q.tex_filter, light)?;
+    cost(&mut gpu, cost_frames, &texture_rom, &views, pack, q.tex_filter, light, side)?;
     match tiles_differ.len() {
         0 => println!("2d layers     fast path identical to the reference on all {} frames", dirs.len()),
         n => println!("2d layers     fast path DIFFERS from the reference on {n} frames: {tiles_differ:?}"),

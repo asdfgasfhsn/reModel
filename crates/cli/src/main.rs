@@ -89,9 +89,10 @@ options:
                        (records the side channel, as --light; reports per
                        snapshot what had a lamp and a material), pack-check
                        adds software pictures without and with them;
-                       gpu-check, depth-check, pack-check load them onto
-                       the GPU (gpu::Quality::materials), which doesn't draw
-                       them yet
+                       gpu-check draws them on the GPU and in software
+                       from each capture's light.bin (captures made with
+                       --geo native); depth-check and pack-check load them
+                       onto the GPU (gpu::Quality::materials)
   --materials-relief off|S
                        with --materials, how a normal map changes
                        brightness: relief at strength S (default 2; 0.1 to
@@ -133,7 +134,8 @@ options:
                        list on the chip): snapshots shade with it, `run`
                        reports its self-check over every frame, geo-check
                        compares the list scan with the native hooks; on
-                       with --capture and --capture-seq (light.bin)
+                       with --capture and --capture-seq (light.bin);
+                       gpu-check shades captures with their light.bin
   --geo chip|native|check
                        the geometrizer: the uploaded program on its chip,
                        the 2B SHARC or 2C TGP (default; `sharc` and `tgp`
@@ -1309,9 +1311,13 @@ fn main() -> ExitCode {
             let root = args.get(1).map(PathBuf::from).unwrap_or(default);
             let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
             let (aa, depth) = (AA.get().copied().unwrap_or(1), DEPTH.get().copied().unwrap_or(false));
-            let light = light_options(roms.game);
-            if let Err(e) = gpu_check::run(&root, windows, aa, depth, pack_dir.as_deref(), tex_filter(), light.as_ref())
-            {
+            // With --materials: lamps for the pack's maps, from each
+            // capture's side channel (also with --light, for the frame to
+            // compare with).
+            let light = light_options_lamps(roms.game, materials_on() && pack_dir.is_some());
+            let side = LIGHT.get().is_some() || materials_on();
+            let pack = pack_dir.as_deref();
+            if let Err(e) = gpu_check::run(&root, windows, aa, depth, pack, tex_filter(), light.as_ref(), side) {
                 eprintln!("error: {e}");
                 return ExitCode::FAILURE;
             }
@@ -1353,15 +1359,20 @@ fn main() -> ExitCode {
                 let default = PathBuf::from("out").join(roms.game.id).join("capture");
                 let root = args.get(1).map(PathBuf::from).unwrap_or(default);
                 let out = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out/scratch/temporal-probe"));
-                let light = light_options(roms.game);
+                // With a pack and --materials: its maps, lit from each
+                // capture's side channel (also with --light).
+                let light = light_options_lamps(roms.game, materials_on() && pack_dir.is_some());
+                let side = LIGHT.get().is_some() || materials_on();
                 let lq = gpu_light(light.as_ref());
                 let quality = gpu::Quality {
                     shading: lq.shading,
                     shading_fine: lq.shading_fine,
                     shading_balance: lq.shading_balance,
+                    tex_filter: tex_filter(),
                     ..quality
                 };
-                temporal_probe::captures(&root, windows, view, quality, &out, light.as_ref())
+                let pack = pack_dir.as_deref();
+                temporal_probe::captures(&root, windows, view, quality, &out, light.as_ref(), pack, side)
             };
             if let Err(e) = result {
                 eprintln!("error: {e}");
