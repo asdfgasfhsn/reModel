@@ -140,6 +140,10 @@ fn rom() -> Vec<u32> {
     for (i, w) in r[..0x4000].iter_mut().enumerate() {
         *w = ((i as f64 * std::f64::consts::TAU / 65536.0).sin() as f32).to_bits();
     }
+    for (i, w) in r[0x4000..0x8000].iter_mut().enumerate() {
+        let n = ((i as f64 / 16384.0).atan() * 32768.0 / std::f64::consts::PI).round() as u32;
+        *w = n | (n.wrapping_neg() << 16);
+    }
     for k in 0..8192 {
         let m0 = 1.0 + (k as f64 + 0.5) / 8192.0;
         r[0x8000 + 2 * k] = ((-1.0 / (m0 * m0)) as f32).to_bits();
@@ -234,4 +238,145 @@ fn loop_counts_down_and_keeps_flags() {
     assert_eq!(c.run(&mut NoBus, 1000), Stop::Input);
     assert_eq!(c.fifo_out.drain(..).collect::<Vec<_>>(), [5, 1]);
     assert_eq!(c.regs[reg::LC as usize], 0);
+}
+
+#[test]
+fn dispatch_through_a_table_of_jumps() {
+    // `vf2`'s main loop: r13 = in; lc = r13 (8 bits: the function number of
+    // `F << 23 | F << 8 | F`); acc = lc + 6; jump to acc, into a table of
+    // jumps at 6.
+    let lc = reg::LC as u32;
+    let p = vec![
+        mov(R13, IN),
+        mov(lc, R13),
+        mov(ACC, lc),
+        0x3900_0006,
+        alu(26, NOP),
+        0xbf62_4019,
+        jmp(8),
+        jmp(10),
+        mov(OUT, lc),
+        jmp(0),
+        0x3b00_0007,
+        mov(OUT, ACC),
+        jmp(0),
+    ];
+    let mut c = Cpu::new(p, Vec::new());
+    c.fifo_in.extend([0x0080_0101, 0]);
+    assert_eq!(c.run(&mut NoBus, 1000), Stop::Input);
+    assert_eq!(c.fifo_out.drain(..).collect::<Vec<_>>(), [7, 0]);
+    assert!(c.unknown.is_empty());
+}
+
+#[test]
+fn conditional_call() {
+    // acc = 1 - 1 (zero): `call!z` falls through; acc + 1 (not zero): it
+    // calls 8, which sets acc = 9 and returns.
+    let p = vec![
+        0x3b00_0001,
+        0x3900_0001,
+        alu(27, NOP),
+        0xfe04_0008,
+        alu(26, NOP),
+        0xfe04_0008,
+        mov(OUT, ACC),
+        mov(ACC, IN),
+        0x3b00_0009,
+        RET,
+    ];
+    let mut c = Cpu::new(p, Vec::new());
+    assert_eq!(c.run(&mut NoBus, 100), Stop::Input);
+    assert_eq!(c.fifo_out.drain(..).collect::<Vec<_>>(), [9]);
+    assert_eq!((c.pc, c.stack.len()), (7, 0));
+}
+
+#[test]
+fn register_immediates() {
+    // lc = #0x103 keeps 8 bits; `50` sets R10's low 16 bits only; R10 =
+    // 0x400000 moved to the bus register selects the shared RAM.
+    let lc = reg::LC as u32;
+    let p = vec![
+        0x4c00_0103,
+        mov(OUT, lc),
+        0x3901_2345,
+        0x5000_0007,
+        mov(OUT, R10),
+        0x3940_0000,
+        mov(reg::BUS as u32, R10),
+        mov(ACC, IN),
+    ];
+    let mut c = Cpu::new(p, Vec::new());
+    assert_eq!(c.run(&mut NoBus, 100), Stop::Input);
+    assert_eq!(c.fifo_out.drain(..).collect::<Vec<_>>(), [3, 0x1_0007]);
+    assert!(c.shared_bus);
+}
+
+#[test]
+fn indexed_operands_ram_groups_and_program_reads() {
+    let p = vec![
+        0x4200_0010, // ar2 = 0x10
+        0x4000_0100, // ar0 = 0x100
+        0x4300_0005, // ar3 = 5
+        0x4100_0200, // ar1 = 0x200
+        // Group 4: RAM0[0x20] = RAM1[(ar0 + ar2) & 0x1ff] (bit 5 clear: indexed).
+        0x1c10_0000 | (0x20 << 9) | 0x180,
+        // Group 3, op1 relative: RAM1[(ar1 + ar3 + 2) & 0x1ff] = RAM0[0x20].
+        0x1c0d_0000 | (2 << 9) | 0x20,
+        // R10 = program word 9 (`1E` with op1 bit 6).
+        0x1c1e_0000 | ((0x40 | R10) << 9) | 9,
+        mov(OUT, R10),
+        mov(ACC, IN),
+        0x1234_5678,
+    ];
+    let mut c = Cpu::new(p, Vec::new());
+    c.ram[0x310] = 42;
+    assert_eq!(c.run(&mut NoBus, 100), Stop::Input);
+    assert_eq!((c.ram[0x20], c.ram[0x207]), (42, 42));
+    assert_eq!(c.fifo_out.drain(..).collect::<Vec<_>>(), [0x1234_5678]);
+    assert_eq!(c.regs[reg::AR2 as usize], 0x10);
+}
+
+#[test]
+fn multiplier_loads_take_one_operand_from_each_ram() {
+    // Group 4 (`10`): R13 = RAM0[op1], R10 = RAM1[c9]; group 3 (`0C`):
+    // R13 = RAM1[op1], R10 = RAM0[c9]; out = r10*r13 after each.
+    let p = vec![
+        0x0010_0000 | (3 << 9) | 3,
+        alu(8, NOP),
+        mov(OUT, P),
+        0x000c_0000 | (3 << 9) | 4,
+        alu(8, NOP),
+        mov(OUT, P),
+        mov(ACC, IN),
+    ];
+    let mut c = Cpu::new(p, Vec::new());
+    c.ram[3] = 2.0f32.to_bits();
+    c.ram[4] = 3.0f32.to_bits();
+    c.ram[0x203] = 5.0f32.to_bits();
+    assert_eq!(run(&mut c, &[]), [10.0, 15.0]);
+}
+
+#[test]
+fn second_loop_counter() {
+    // r0d = 3; acc = 0; r10 = 1; acc += 1 closed by `BF10` (on r0d).
+    let p = vec![0x4d00_0003, 0x3b00_0000, 0x3900_0001, alu(26, NOP), 0xbf10_0003, mov(OUT, ACC), mov(ACC, IN)];
+    let mut c = Cpu::new(p, Vec::new());
+    assert_eq!(c.run(&mut NoBus, 100), Stop::Input);
+    assert_eq!(c.fifo_out.drain(..).collect::<Vec<_>>(), [3]);
+}
+
+#[test]
+fn arctangent() {
+    // As `vf2` uses it: x to 0x24, y to 0x25, the smaller over the larger
+    // to 0x27 (`A0` tells which), atan2(y, x) back from 0x27.
+    let mut u = Funcs::new(rom());
+    for (x, y) in [(1.0f32, 0.0f32), (1.0, 1.0), (-1.0, 1.0), (1.0, -2.0), (-3.0, -1.0), (0.2, 5.0), (-0.5, 0.1)] {
+        u.write(0x24, x.to_bits());
+        u.write(0x25, y.to_bits());
+        let t = if u.atan_steep() { x / y } else { y / x };
+        u.write(0x27, t.to_bits());
+        let got = u.read(0x27).unwrap() as i32;
+        let want = (y as f64).atan2(x as f64) * 32768.0 / std::f64::consts::PI;
+        assert!((got as f64 - want).abs() <= 2.0, "atan2({y}, {x}) = {got}, want {want}");
+    }
 }

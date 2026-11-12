@@ -20,13 +20,16 @@
 //!   for `m` = `x` with its exponent set to 0x7F;
 //! - write `0x2A`, a positive float; read `0x2A` and `0x2B` the same for
 //!   `1/sqrt(x)`;
-//! - `0x24`-`0x27` (the arctangent's, by the program's use) are not
-//!   modelled.
+//! - write `0x24` x and `0x25` y (floats); then `0x27` the ratio of the
+//!   smaller to the larger (y/x, or x/y when |x| < |y|, which the jump
+//!   condition `A0` tells the program); read `0x27` atan2(y, x), 65,536 a
+//!   turn, from the ROM's arctangent table (16,384 entries over [0, 1]).
 
 /// Where the tables are in the ROM, in words.
 const SINE: usize = 0x0000;
 const RECIP: usize = 0x8000;
 const RSQRT: usize = 0xc000;
+const ATAN: usize = 0x4000;
 
 #[derive(Clone, Default)]
 pub struct Funcs {
@@ -36,6 +39,10 @@ pub struct Funcs {
     pub angle: u32,
     pub recip: u32,
     pub rsqrt: u32,
+    /// The arctangent's x, y and ratio (ports `0x24`, `0x25`, `0x27`).
+    pub atan_x: u32,
+    pub atan_y: u32,
+    pub atan_t: u32,
 }
 
 impl Funcs {
@@ -92,6 +99,28 @@ impl Funcs {
         self.linear(RSQRT, k, scale, false)
     }
 
+    /// Is |x| < |y| for the arctangent (the jump condition `A0`)?
+    pub fn atan_steep(&self) -> bool {
+        f32::from_bits(self.atan_x).abs() < f32::from_bits(self.atan_y).abs()
+    }
+
+    /// atan2(y, x) in 65,536ths of a turn (signed), the octant's angle
+    /// looked up for the ratio written to `0x27`.
+    pub fn atan(&self) -> u32 {
+        let (x, y) = (f32::from_bits(self.atan_x), f32::from_bits(self.atan_y));
+        let t = f32::from_bits(self.atan_t).abs().min(1.0);
+        let i = ((t * 16384.0).round() as usize).min(0x3fff);
+        let n = (self.rom(ATAN + i) & 0xffff) as i32;
+        let a = match (self.atan_steep(), x < 0.0) {
+            (false, false) => n,
+            (false, true) => 0x8000 - n,
+            (true, false) => 0x4000 - n,
+            (true, true) => 0x4000 + n,
+        };
+        let a = if y < 0.0 { -a } else { a };
+        (a as i16) as i32 as u32
+    }
+
     /// A read of the external bus at `a`, if a port is there.
     pub fn read(&self, a: u32) -> Option<u32> {
         Some(match a {
@@ -101,6 +130,7 @@ impl Funcs {
             0x29 => self.recip_pair().1,
             0x2a => self.rsqrt_pair().0,
             0x2b => self.rsqrt_pair().1,
+            0x27 => self.atan(),
             _ => return None,
         })
     }
@@ -111,10 +141,13 @@ impl Funcs {
             0x20 => self.angle = v,
             0x28 => self.recip = v,
             0x2a => self.rsqrt = v,
+            0x24 => self.atan_x = v,
+            0x25 => self.atan_y = v,
+            0x27 => self.atan_t = v,
             _ => return false,
         }
         true
     }
 }
 
-state::fields!(Funcs { angle, recip, rsqrt });
+state::fields!(Funcs { angle, recip, rsqrt, atan_x, atan_y, atan_t });

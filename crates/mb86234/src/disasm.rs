@@ -14,6 +14,7 @@ pub fn reg_name(r: u32) -> String {
     match r {
         0x00..=0x03 => format!("ar{r}"),
         0x0c => "lc".into(),
+        0x23 => "bus".into(),
         0x0f => "null".into(),
         0x10..=0x1e => {
             let (b, part) = ((r - 0x10) / 3, (r - 0x10) % 3);
@@ -33,6 +34,7 @@ pub fn alu_name(c: u32) -> String {
         0 => String::new(),
         1 => "acc &= r10".into(),
         2 => "acc |= r10".into(),
+        4 => "acc = ~acc".into(),
         5 => "fcmp acc, r10".into(),
         6 => "acc += r10".into(),
         7 => "acc -= r10".into(),
@@ -46,6 +48,7 @@ pub fn alu_name(c: u32) -> String {
         15 => "acc = int(acc)".into(),
         16 => "acc /= r10".into(),
         17 => "acc = -acc".into(),
+        19 => "acc = r13 + r10".into(),
         20 => "acc = r13 - r10".into(),
         22 => "acc >>= sh".into(),
         23 => "acc <<= sh".into(),
@@ -64,12 +67,22 @@ fn step(m: u32) -> String {
     }
 }
 
+/// An indirect operand through `ar`: bit 5 set, the register itself;
+/// clear, indexed: AR0 + AR2 or AR1 + AR3.
+fn indirect(m: u32, ar: u32) -> String {
+    match (m & 0x20 != 0, ar) {
+        (true, _) => format!("[ar{ar}]{}", step(m)),
+        (false, 2) => format!("[ar0+ar2]{}", step(m)),
+        (false, _) => format!("[ar1+ar3]{}", step(m)),
+    }
+}
+
 /// A 9-bit operand: `ar` names the register an indirect one goes through.
 fn operand(c9: u32, ar: u32) -> String {
     if c9 & 0x100 != 0 {
-        format!("[ar{ar}]{}", step(c9))
+        indirect(c9, ar)
     } else if c9 & 0x80 != 0 {
-        format!("[ar2+{}]", c9 & 0x7f)
+        format!("[ar{}+ar{ar}+{}]", ar & 1, c9 & 0x7f)
     } else {
         format!("[{:#04x}]", c9 & 0x7f)
     }
@@ -80,34 +93,42 @@ fn transfer(w: u32) -> Option<String> {
     let op1 = (w >> 9) & 0x7f;
     let c9 = w & 0x1ff;
     let r = |v: u32| reg_name(v);
-    Some(if w >> 26 == 0 {
-        let b = operand(c9, if kind == 0x0f { 2 } else { 3 });
-        let a = match kind {
-            0x0c => format!("ram1[{op1:#04x}]"),
-            0x0f => format!("[ar3]{}", step(op1)),
-            0x10 if op1 & 0x40 != 0 => format!("[{op1:#04x}]"),
-            0x10 => format!("ram1[{op1:#04x}]"),
-            _ => return None,
-        };
-        format!("r13 = {a}, r10 = {b}")
-    } else {
-        match kind {
+    let mult = w >> 26 == 0;
+    if !mult && kind >= 0x1c {
+        return Some(match kind {
             0x1c if op1 & 0x40 != 0 => format!("ext{} = {}", operand(c9, 3), r(op1)),
             0x1c => format!("{} = {}", operand(c9, 3), r(op1)),
             0x1d => format!("{} = {}", r(op1), operand(c9, 3)),
-            0x1e => format!("{} = ext{}", r(op1), operand(c9, if op1 & 0x40 != 0 { 2 } else { 3 })),
+            0x1e if op1 & 0x40 != 0 => format!("{} = prog{}", r(op1), operand(c9, 2)),
+            0x1e => format!("{} = ext{}", r(op1), operand(c9, 3)),
             0x1f if op1 == 0x0f => String::new(),
-            0x1f => format!("{} = {}", r(op1), r(c9)),
-            0x0c => format!("ram1[{op1:#04x}] = {}", operand(c9, 3)),
-            0x10 => format!("[{op1:#04x}] = {}", operand(c9, 3)),
-            0x08 => format!("[{op1:#04x}] = ext{}", operand(c9, 3)),
-            0x03 => format!("ext[ar3]{} = {}", step(op1), operand(c9, 2)),
-            0x07 => format!("ext[ar3]{} = alt{}", step(op1), operand(c9, 2)),
-            0x0b => format!("[ar3]{} = ext{}", step(op1), operand(c9, 2)),
-            0x0f | 0x13 => format!("[ar3]{} = {}", step(op1), operand(c9, 2)),
-            _ => return None,
-        }
-    })
+            _ => format!("{} = {}", r(op1), r(c9)),
+        });
+    }
+    // Group (bits 2-4): the spaces of op1 and c9; bits 0-1: op1's mode.
+    let group = kind >> 2;
+    let (s1, s9) = match group {
+        0 | 1 => ("ext", ""),
+        2 => ("", "ext"),
+        3 | 4 => ("", ""),
+        5 => ("", "prog"),
+        _ => return None,
+    };
+    // Group 3 reads and writes op1 in RAM1 and c9 in RAM0, group 4 the
+    // other way round.
+    let (s1, s9) = match group {
+        3 => ("ram1", s9),
+        4 => (s1, "ram1"),
+        _ => (s1, s9),
+    };
+    let a = match kind & 3 {
+        0 => format!("{s1}[{op1:#04x}]"),
+        1 => format!("{s1}[ar1+ar3+{op1}]"),
+        3 => format!("{s1}{}", indirect(op1, 3)),
+        _ => return None,
+    };
+    let b = format!("{s9}{}", operand(c9, 2));
+    Some(if mult { format!("r13 = {a}, r10 = {b}") } else { format!("{a} = {b}") })
 }
 
 /// One word in words, or `??` and the form when it isn't known.
@@ -128,27 +149,29 @@ pub fn line(w: u32) -> String {
         _ => match top {
             0x36 => format!("mode {:#x} = {:#x}", (w >> 16) & 0xf, w & 0xffff),
             0x39 => format!("r10 = #{}", sext(w, 24)),
+            0x3a => format!("r13 = #{}", sext(w, 24)),
             0x3b => format!("acc = #{}", sext(w, 24)),
             0x3c | 0x3d => {
                 let c = (w >> 16) & 0xf;
                 let t = if c == 4 { format!("repeat {}", w & 0xffff) } else { format!("ctrl {c} = {:#x}", w & 0xffff) };
                 both(alu_name((w >> 20) & 0x1f), t)
             }
-            0x40..=0x43 => format!("ar{} = #{imm24:#x}", top & 3),
-            0x50..=0x5f => format!("{} = #{imm24:#x}", reg_name(0x10 + (top & 0xf))),
             0x63 if w & 0x0040_0000 != 0 => "bus shared RAM".into(),
             0x63 => "bus function unit".into(),
-            0x7c => "?? 7c (no-op)".into(),
+            0x40..=0x7f => format!("{} = #{imm24:#x}", reg_name(top & 0x3f)),
             0xbe | 0xfe => {
                 let c = (w >> 16) & 0xff;
                 let name = match c & !0x0c {
                     0x00 => "z",
                     0x10 => "nn",
                     0x20 => "le",
+                    0xa0 => "steep",
                     _ => return format!("?? condition {c:02x}"),
                 };
                 let neg = if top == 0xfe { "!" } else { "" };
-                if c & 0x0c != 0 {
+                if c & 0x0c == 0x04 {
+                    format!("call{neg}{name} {:#05x}", w & 0xffff)
+                } else if c & 0x0c != 0 {
                     format!("if {neg}{name}: {} = [{:#04x}]", reg_name((w >> 9) & 0x3f), w & 0xff)
                 } else {
                     format!("j{neg}{name} {:#05x}", w & 0xffff)
@@ -156,8 +179,10 @@ pub fn line(w: u32) -> String {
             }
             0xbf => match (w >> 16) & 0xff {
                 0x00 => format!("loop {:#05x}", w & 0xffff),
+                0x10 => format!("loop r0d {:#05x}", w & 0xffff),
                 0x60 => format!("jmp {:#05x}", w & 0xffff),
                 0x64 => format!("call {:#05x}", w & 0xffff),
+                0x62 => format!("jmp {}", reg_name(w & 0x3f)),
                 0x66 => format!("call {}", reg_name(w & 0x3f)),
                 0x6a => "ret".into(),
                 0x6e => "reti".into(),
@@ -179,7 +204,13 @@ mod tests {
         assert_eq!(line(0x1c1f_4419), "out = acc");
         assert_eq!(line(0x1d1f_1e10), "p = r10*r13");
         assert_eq!(line(0x3c04_000c), "repeat 12");
-        assert_eq!(line(0x1c1c_4381), "[ar3]+1 = in");
+        assert_eq!(line(0x1c1c_4381), "[ar1+ar3]+1 = in");
+        assert_eq!(line(0x1c1c_43a1), "[ar3]+1 = in");
+        assert_eq!(line(0xbf62_4019), "jmp acc");
+        assert_eq!(line(0xfe04_01af), "call!z 0x1af");
+        assert_eq!(line(0x4c00_001e), "lc = #0x1e");
+        assert_eq!(line(0x1c1e_b380), "acc = prog[ar0+ar2]");
+        assert_eq!(line(0x0010_0680), "r13 = [0x03], r10 = ram1[ar0+ar2+0]");
         assert_eq!(line(0xbf6a_0000), "ret");
         assert_eq!(line(0x5a00_007f), "acc.e = #0x7f");
         assert!(line(0x1d3c_4255).starts_with("acc += p, p = r10*r13"));

@@ -131,6 +131,8 @@ pub struct Tgp2a {
     /// Host accesses after which the chip was still running at
     /// [`RUN_LIMIT`] words.
     pub runaways: u64,
+    /// The function open and the chip's pc at the first of them.
+    pub first_runaway: Option<(Option<u32>, u32)>,
 }
 
 /// Command port of a write at `offset` from `0x880000`: the address bits
@@ -188,6 +190,7 @@ impl Tgp2a {
         if let Some(c) = &mut self.cpu {
             if c.run(bus, RUN_LIMIT) == mb86234::Stop::Limit {
                 self.runaways += 1;
+                self.first_runaway.get_or_insert((self.open.port, c.pc));
             }
         }
     }

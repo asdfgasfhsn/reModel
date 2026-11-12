@@ -3,17 +3,19 @@
 //! disassembler.
 //!
 //! No manual for the chip is public and nothing here comes from an
-//! emulator: the encodings were read from the one program reModel has
-//! (`srallyc`'s, uploaded by the game) and pinned by running its routines
-//! and checking the mathematics they compute (`docs/hw/mb86234.md` lists
-//! every encoding with how sure it is). Where an encoding is a hypothesis
+//! emulator: the encodings were read from the programs the games upload
+//! (`srallyc`'s, then `vf2`'s) and pinned by running their routines and
+//! checking the mathematics they compute and what their callers expect
+//! (`docs/hw/mb86234.md` lists every encoding with how sure it is). Where an encoding is a hypothesis
 //! the code says so; words of a form never seen are counted in
 //! [`Cpu::unknown`] and executed as no-ops.
 //!
 //! The model: one word a step (no delay slots, no cycle timing); a word's
 //! ALU operation and its transfer read their operands at the start of the
 //! word and write at the end. Two RAMs of 512 words (RAM0, RAM1), one
-//! address space for indirect accesses (RAM0 at 0, RAM1 at 0x200), an
+//! address space for indirect accesses (RAM0 at 0, RAM1 at 0x200) except
+//! where the transfer type fixes the RAM, program memory readable as
+//! tables, an
 //! input and an output FIFO, a 24-bit external bus that reaches either the
 //! board's shared RAM or the function unit's ports ([`funcs`]), and in both
 //! modes the board's data ROM from [`ROM_BASE`].
@@ -36,10 +38,13 @@ pub const STACK_DEPTH: usize = 16;
 /// Register numbers of the transfer fields (`docs/hw/mb86234.md`).
 pub mod reg {
     pub const AR0: u8 = 0x00;
+    pub const AR1: u8 = 0x01;
     pub const AR2: u8 = 0x02;
     pub const AR3: u8 = 0x03;
-    /// The loop counter `BF00` counts down.
+    /// The loop counter `BF00` counts down (8 bits).
     pub const LC: u8 = 0x0c;
+    /// A second loop counter, which `BF10` counts down.
+    pub const LC2: u8 = 0x0d;
     /// The multiplier's first input and the ALU's second operand.
     pub const R10: u8 = 0x10;
     /// The multiplier's second input.
@@ -55,6 +60,9 @@ pub mod reg {
     pub const FIFO_IN: u8 = 0x21;
     /// Writing gives the host a word.
     pub const FIFO_OUT: u8 = 0x22;
+    /// The external bus's mode: bit 22 set reaches the shared RAM, clear
+    /// the function unit (`63400000` / `63000000` set it).
+    pub const BUS: u8 = 0x23;
 }
 
 /// The board side of the chip's external bus.
@@ -90,6 +98,26 @@ pub enum Stop {
 fn sext(v: u32, bits: u32) -> u32 {
     let s = 32 - bits;
     (((v << s) as i32) >> s) as u32
+}
+
+/// An operand's address: an index and the base added to it (0 unless the
+/// operand is indexed).
+#[derive(Clone, Copy)]
+struct Ea {
+    index: u32,
+    base: u32,
+}
+
+impl Ea {
+    /// The address in space `s`: the 24-bit sum (internally, 10 bits:
+    /// RAM0 then RAM1).
+    fn at(self, s: Space) -> u32 {
+        let sum = self.index.wrapping_add(self.base);
+        match s {
+            Space::Int => sum & 0x3ff,
+            _ => sum & 0xff_ffff,
+        }
+    }
 }
 
 fn f(v: u32) -> f32 {
@@ -171,6 +199,17 @@ impl Writes {
     }
 }
 
+/// Where an operand of a transfer or multiplier load is.
+#[derive(Clone, Copy)]
+enum Space {
+    /// Internal RAM (RAM0, then RAM1 from 0x200).
+    Int,
+    /// The external bus.
+    Ext,
+    /// Program memory (read only: tables).
+    Prog,
+}
+
 /// What an ALU operation produced.
 #[derive(Default)]
 struct AluOut {
@@ -231,6 +270,9 @@ impl Cpu {
             _ => match top {
                 0x36 => self.mode[((w >> 16) & 0xf) as usize] = w & 0xffff,
                 0x39 => self.write_regs(&[(reg::R10, sext(w, 24))], None),
+                // R13 = sign-extended imm (hypothesis: `vf2` loads an
+                // all-ones mask into R13 this way and stores R13 next).
+                0x3a => self.write_regs(&[(reg::R13, sext(w, 24))], None),
                 0x3b => self.write_regs(&[(reg::ACC, sext(w, 24))], None),
                 0x3c | 0x3d => {
                     let alu = ((w >> 20) & 0x1f) as u8;
@@ -245,23 +287,41 @@ impl Cpu {
                         self.repeat_armed = true;
                     }
                 }
-                0x40..=0x43 => self.regs[(top & 3) as usize] = w & 0xffff,
-                0x50..=0x5f => self.write_regs(&[((0x10 + (top & 0xf)) as u8, w & 0xff_ffff)], None),
-                0x63 => self.shared_bus = w & 0x0040_0000 != 0,
-                0x7c => {}
+                // Register (top bits 0-5) = imm24: AR0-AR3 (`40`-`43`), LC
+                // (`4C`), the float views (`5r`), the bus register (`63`).
+                0x40..=0x7f => {
+                    let r = (top & 0x3f) as u8;
+                    let v = match view_base(r) {
+                        // A whole float register (R10, R13, R16, ACC, P):
+                        // only its low 16 bits (hypothesis: `vf2` compares
+                        // a counter of 0x400000 + i with `R10 = 3` after
+                        // loading R10 with the counter).
+                        Some((_, 0)) => (self.regs[r as usize] & 0xffff_0000) | (w & 0xffff),
+                        _ => w & 0xff_ffff,
+                    };
+                    self.write_regs(&[(r, v)], None)
+                }
                 0xbe | 0xfe => {
                     let cond = (w >> 16) & 0xff;
                     let taken = match cond & !0x0c {
                         0x00 => Some(self.zero),
                         0x10 => Some(!self.negative),
                         0x20 => Some(self.negative || self.zero),
+                        // The function unit's arctangent: |x| < |y|.
+                        0xa0 => Some(self.funcs.atan_steep()),
                         _ => None,
                     };
                     match taken {
                         None => self.unknown_word(w),
                         Some(t) => {
                             let t = t != (top == 0xfe);
-                            if cond & 0x0c != 0 {
+                            if cond & 0x0c == 0x04 {
+                                // A conditional call.
+                                if t {
+                                    self.push(next);
+                                    next = w & 0xffff;
+                                }
+                            } else if cond & 0x0c != 0 {
                                 // A conditional transfer instead of a jump: a
                                 // load of RAM0 into a register.
                                 if t {
@@ -280,10 +340,14 @@ impl Cpu {
                     // jump while it is not zero; the flags are left alone.
                     // The course data search loads the counter with a
                     // cell's polygon count and closes its loop with this.
-                    0x00 => {
-                        let lc = &mut self.regs[reg::LC as usize];
-                        *lc = lc.wrapping_sub(1);
-                        if *lc != 0 {
+                    // `BF10`: the same on register 0x0D (`vf2` nests it
+                    // outside an LC loop).
+                    0x00 | 0x10 => {
+                        let r = if w & 0x0010_0000 != 0 { reg::LC2 } else { reg::LC };
+                        let mask = if r == reg::LC { 0xff } else { u32::MAX };
+                        let c = &mut self.regs[r as usize];
+                        *c = c.wrapping_sub(1) & mask;
+                        if *c != 0 {
                             next = w & 0xffff;
                         }
                     }
@@ -292,6 +356,9 @@ impl Cpu {
                         self.push(next);
                         next = w & 0xffff;
                     }
+                    // Jump to the address in register r (`BF62 4019`: the
+                    // dispatch through a table of jumps).
+                    0x62 => next = self.read_reg((w & 0x3f) as u8) & 0xffff,
                     0x66 => {
                         self.push(next);
                         next = self.read_reg((w & 0x3f) as u8) & 0xffff;
@@ -359,6 +426,17 @@ impl Cpu {
                 2 => (old & 0x7f80_0000) | (v & 0x7f_ffff) | (((v >> 23) & 1) << 31),
                 _ => v,
             };
+            let new = match base {
+                // 8 bits: `vf2`'s dispatch moves a command word
+                // (`F << 23 | F << 8 | F`) here and reads back F.
+                reg::LC => new & 0xff,
+                reg::AR0..=reg::AR3 => new & 0xff_ffff,
+                reg::BUS => {
+                    self.shared_bus = new & 0x0040_0000 != 0;
+                    new
+                }
+                _ => new,
+            };
             if base == reg::ACC {
                 moved_acc = true;
                 self.acc_in = new;
@@ -412,24 +490,39 @@ impl Cpu {
         }
     }
 
-    /// An address register's value, then the signed 5-bit step added to it.
-    fn post(&mut self, ar: u8, modifier: u32) -> u32 {
+    /// An indirect operand through `ar` (AR2 or AR3), whose field `m`
+    /// holds the signed 5-bit step in bits 0-4 and the mode in bit 5; the
+    /// register is stepped after. Bit 5 set: the register's value; clear
+    /// (`docs/hw/mb86234.md`): indexed, the register plus its base (AR0 for
+    /// AR2, AR1 for AR3).
+    fn post(&mut self, ar: u8, m: u32) -> Ea {
         let a = self.regs[ar as usize];
-        self.regs[ar as usize] = a.wrapping_add(sext(modifier & 0x1f, 5)) & 0xff_ffff;
-        a
+        self.regs[ar as usize] = a.wrapping_add(sext(m & 0x1f, 5)) & 0xff_ffff;
+        let base = if m & 0x20 == 0 { self.base(ar) } else { 0 };
+        Ea { index: a, base }
     }
 
-    /// The internal address of a 9-bit operand field: direct (`0x00-0x7F`),
-    /// relative to AR2 (`0x80-0xFF`, hypothesis outside type 0x10) or
-    /// indirect (`0x100` set) through `ar` with a post-step.
-    fn c9(&mut self, c9: u32, ar: u8) -> u32 {
+    /// The base register of `ar`: AR0 for AR2, AR1 for AR3.
+    fn base(&self, ar: u8) -> u32 {
+        self.regs[(ar & 1) as usize]
+    }
+
+    /// A 9-bit operand field: direct (`0x00-0x7F`), relative to `ar` and
+    /// its base (`0x80-0xFF`) or indirect (`0x100` set) through `ar`
+    /// ([`Cpu::post`]).
+    fn c9(&mut self, c9: u32, ar: u8) -> Ea {
         if c9 & 0x100 != 0 {
             self.post(ar, c9)
         } else if c9 & 0x80 != 0 {
-            self.regs[reg::AR2 as usize].wrapping_add(c9 & 0x7f)
+            self.relative(ar, c9 & 0x7f)
         } else {
-            c9
+            Ea { index: c9, base: 0 }
         }
+    }
+
+    /// `ar` and its base, plus `n`.
+    fn relative(&self, ar: u8, n: u32) -> Ea {
+        Ea { index: self.regs[ar as usize].wrapping_add(n), base: self.base(ar) }
     }
 
     // ---- the ALU + transfer words
@@ -442,98 +535,122 @@ impl Cpu {
         // The ALU reads its operands before the transfer changes them.
         let out = self.alu(w, alu);
         let mut wr = Writes::new();
-        if w >> 26 == 0 {
-            // Multiplier loads: R13 from the first operand, R10 from the second.
-            let (a, b) = match kind {
-                0x0c => {
-                    let b = self.c9(c9, reg::AR3);
-                    (self.ram_read(0x200 + op1), self.ram_read(b))
+        if w >> 26 == 0x07 && kind >= 0x1c {
+            // The single-address transfers: a register and an operand
+            // through AR3 (`1E` with op1 bit 6: through AR2, from the
+            // program).
+            let mut store: Option<(Space, u32, u32)> = None;
+            match kind {
+                // Register to RAM (or the external bus when op1 bit 6 is set).
+                0x1c => {
+                    let v = self.read_reg(op1 as u8);
+                    let s = if op1 & 0x40 != 0 { Space::Ext } else { Space::Int };
+                    let a = self.c9(c9, reg::AR3).at(s);
+                    store = Some((s, a, v));
                 }
-                0x0f => {
-                    let a = self.post(reg::AR3, op1);
-                    let b = self.c9(c9, reg::AR2);
-                    (self.ram_read(a), self.ram_read(b))
+                // Internal RAM to register.
+                0x1d => {
+                    let a = self.c9(c9, reg::AR3).at(Space::Int);
+                    wr.push(op1 as u8, self.ram_read(a));
                 }
-                0x10 => {
-                    let a = if op1 & 0x40 != 0 { op1 } else { 0x200 + op1 };
-                    let b = self.c9(c9, reg::AR3);
-                    (self.ram_read(a), self.ram_read(b))
+                // External bus (op1 bit 6: program memory) to register.
+                0x1e => {
+                    let v = if op1 & 0x40 != 0 {
+                        let a = self.c9(c9, reg::AR2).at(Space::Prog);
+                        self.prog_read(a)
+                    } else {
+                        let a = self.c9(c9, reg::AR3).at(Space::Ext);
+                        self.ext_read(bus, a)
+                    };
+                    wr.push(op1 as u8, v);
                 }
+                // Register to register.
                 _ => {
-                    self.unknown_word(w);
-                    self.commit(&wr, out);
-                    return;
+                    let v = self.read_reg(c9 as u8);
+                    wr.push(op1 as u8, v);
                 }
-            };
-            wr.push(reg::R13, a);
-            wr.push(reg::R10, b);
+            }
+            self.commit(&wr, out);
+            if let Some((s, a, v)) = store {
+                self.store(bus, s, a, v);
+            }
+            return;
+        }
+        // The two-operand forms: kind = group (bits 2-4) and op1's mode
+        // (bits 0-1). The group gives the spaces: op1's (the destination of
+        // a transfer, R13 of a multiplier load) and c9's (the source, R10).
+        let group = kind >> 2;
+        let (s1, s9) = match group {
+            0 | 1 => (Space::Ext, Space::Int),
+            2 => (Space::Int, Space::Ext),
+            3 | 4 => (Space::Int, Space::Int),
+            5 => (Space::Int, Space::Prog),
+            _ => {
+                self.unknown_word(w);
+                self.commit(&wr, out);
+                return;
+            }
+        };
+        let is_mult = w >> 26 == 0;
+        // op1's address: direct, relative to AR3 and AR1, or through AR3.
+        let a1 = match kind & 3 {
+            0 => op1,
+            1 => self.relative(reg::AR3, op1).at(s1),
+            3 => self.post(reg::AR3, op1).at(s1),
+            _ => {
+                self.unknown_word(w);
+                self.commit(&wr, out);
+                return;
+            }
+        };
+        // c9's: direct, relative to AR2 and AR0, or through AR2.
+        let mut a9 = self.c9(c9, reg::AR2).at(s9);
+        // Groups 3 and 4 fix the RAM of each operand, direct or not:
+        // op1's is RAM1 and c9's RAM0 in group 3, the other way round in
+        // group 4. A multiplier load reads both in one word, one from each
+        // RAM; both games keep their matrix stack in RAM1 and copy it
+        // through RAM0 with these (`docs/hw/mb86234.md`).
+        let mut a1 = a1;
+        match group {
+            3 => {
+                a1 = 0x200 | (a1 & 0x1ff);
+                a9 &= 0x1ff;
+            }
+            4 => {
+                a1 &= 0x1ff;
+                a9 = 0x200 | (a9 & 0x1ff);
+            }
+            _ => {}
+        }
+        let v9 = self.load(bus, s9, a9);
+        if is_mult {
+            let v1 = self.load(bus, s1, a1);
+            wr.push(reg::R13, v1);
+            wr.push(reg::R10, v9);
             self.commit(&wr, out);
             return;
         }
-        let mut store: Option<(bool, u32, u32)> = None; // (external, address, value)
-        match kind {
-            // Register to RAM0/RAM (or the external bus when op1 bit 6 is set).
-            0x1c => {
-                let v = self.read_reg(op1 as u8);
-                let a = self.c9(c9, reg::AR3);
-                store = Some((op1 & 0x40 != 0, a, v));
-            }
-            // Internal RAM to register.
-            0x1d => {
-                let a = self.c9(c9, reg::AR3);
-                wr.push(op1 as u8, self.ram_read(a));
-            }
-            // External bus to register.
-            0x1e => {
-                let ar = if op1 & 0x40 != 0 { reg::AR2 } else { reg::AR3 };
-                let a = self.c9(c9, ar);
-                let v = self.ext_read(bus, a);
-                wr.push(op1 as u8, v);
-            }
-            // Register to register.
-            0x1f => {
-                let v = self.read_reg(c9 as u8);
-                wr.push(op1 as u8, v);
-            }
-            // RAM0 to RAM1.
-            0x0c => {
-                let a = self.c9(c9, reg::AR3);
-                store = Some((false, 0x200 + op1, self.ram_read(a)));
-            }
-            // RAM0 to RAM0.
-            0x10 => {
-                let a = self.c9(c9, reg::AR3);
-                store = Some((false, op1, self.ram_read(a)));
-            }
-            // External to RAM0.
-            0x08 => {
-                let a = self.c9(c9, reg::AR3);
-                store = Some((false, op1, self.ext_read(bus, a)));
-            }
-            // Two-address transfers: to [AR3] (op1's step), from the second
-            // operand ([AR2] when indirect).
-            0x03 | 0x07 | 0x0b | 0x0f | 0x13 => {
-                let s = self.c9(c9, reg::AR2);
-                let v = match kind {
-                    // The source of 0x07 sees RAM0 at 0x200 (hypothesis: the
-                    // other bus's view; the program adds 0x200 to a RAM0
-                    // address for it).
-                    0x07 => self.ram_read(s ^ 0x200),
-                    0x0b => self.ext_read(bus, s),
-                    _ => self.ram_read(s),
-                };
-                let d = self.post(reg::AR3, op1);
-                store = Some((matches!(kind, 0x03 | 0x07), d, v));
-            }
-            _ => self.unknown_word(w),
-        }
         self.commit(&wr, out);
-        if let Some((ext, a, v)) = store {
-            if ext {
-                self.ext_write(bus, a, v);
-            } else {
-                self.ram[(a as usize) & (RAM_WORDS - 1)] = v;
-            }
+        self.store(bus, s1, a1, v9);
+    }
+
+    fn prog_read(&self, a: u32) -> u32 {
+        self.program.get((a & 0xffff) as usize).copied().unwrap_or(0)
+    }
+
+    fn load(&mut self, bus: &mut dyn Bus, s: Space, a: u32) -> u32 {
+        match s {
+            Space::Int => self.ram_read(a),
+            Space::Ext => self.ext_read(bus, a),
+            Space::Prog => self.prog_read(a),
+        }
+    }
+
+    fn store(&mut self, bus: &mut dyn Bus, s: Space, a: u32, v: u32) {
+        match s {
+            Space::Int => self.ram[(a as usize) & (RAM_WORDS - 1)] = v,
+            Space::Ext => self.ext_write(bus, a, v),
+            Space::Prog => {}
         }
     }
 
@@ -569,6 +686,8 @@ impl Cpu {
             0 => AluOut::default(),
             1 => AluOut { acc: int(self, a & r10), product: None },
             2 => AluOut { acc: int(self, a | r10), product: None },
+            // NOT (hypothesis: `vf2` clears a mask's bit with it and 1).
+            4 => AluOut { acc: int(self, !a), product: None },
             5 => {
                 self.set_flags_f((f(a) - f(r10)).to_bits());
                 AluOut::default()
@@ -592,6 +711,9 @@ impl Cpu {
             }
             16 => AluOut { acc: fl(self, f(a) / f(r10)), product: None },
             17 => AluOut { acc: fl(self, -f(a)), product: None },
+            // R13 + R10 (hypothesis: `vf2` pairs it with 20 to widen a
+            // range, centre - r and centre + r).
+            19 => AluOut { acc: fl(self, f(r13) + f(r10)), product: None },
             20 => AluOut { acc: fl(self, f(r13) - f(r10)), product: None },
             22 => AluOut { acc: int(self, a >> sh), product: None },
             23 => AluOut { acc: int(self, a << sh), product: None },

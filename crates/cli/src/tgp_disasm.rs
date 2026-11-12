@@ -16,6 +16,8 @@ use std::path::Path;
 const JUMP_TOP: u8 = 0xbf;
 /// The top 16 bits of the return-like word (`BF6A0000`).
 const RETURN: u32 = 0xbf6a;
+/// The top 16 bits of the jump to a register's address (`BF62`).
+const JUMP_REG: u32 = 0xbf62;
 /// The shortest run of such words taken as the dispatch table.
 const TABLE_MIN: usize = 32;
 
@@ -73,12 +75,13 @@ pub fn analyse(program: &[u32]) -> Analysis {
         }
     }
     if best.len() >= TABLE_MIN {
-        // The run includes the `BF6A....` (return) word before the first
-        // slot and the common return after the last, which the unused
+        // The run includes the word before the first slot (`srallyc`'s
+        // `BF6A....` return; `vf2`'s main loop's `BF62` jump through the
+        // table) and the common return after the last, which the unused
         // slots point at: the table is what lies between, slot F being
         // function F (`docs/hw/mb86234.md`).
         let ret = |i: usize| program[i] >> 16 == RETURN;
-        if ret(best.start) {
+        if ret(best.start) || program[best.start] >> 16 == JUMP_REG {
             best.start += 1;
         }
         if ret(best.end - 1) {

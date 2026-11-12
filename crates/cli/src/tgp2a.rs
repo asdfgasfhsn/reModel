@@ -32,10 +32,11 @@ pub fn report(dir: &Path, b: &model2::Model2Bus) {
             m.iter().take(12).map(|(w, n)| format!("{w:08x}:{n}")).collect::<Vec<_>>().join(" ")
         };
         println!(
-            "tgp chip      {} words run, pc {:#05x}, {} stuck accesses; unknown words {} [{}]; unknown external addresses {} [{}]",
+            "tgp chip      {} words run, pc {:#05x}, {} stuck accesses{}; unknown words {} [{}]; unknown external addresses {} [{}]",
             c.steps,
             c.pc,
             t.runaways,
+            t.first_runaway.map_or(String::new(), |(f, pc)| format!(" (first: function {f:?}, pc {pc:#05x})")),
             c.unknown.len(),
             list(&c.unknown),
             c.unknown_ext.len(),
