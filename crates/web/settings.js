@@ -15,7 +15,7 @@
 export const MIX = [8, -8];
 
 /// Every setting, in panel order.
-export const KEYS = ["height", "aspect", "hud", "bezel", "aa", "depth", "shading", "crease", "shadefine", "shadebalance", "pack", "texfilter",
+export const KEYS = ["preset", "height", "aspect", "hud", "bezel", "aa", "depth", "shading", "crease", "shadefine", "shadebalance", "pack", "texfilter",
   "materials", "relief", "sound", "sfx",
   "music", "buffer", "touch", "tilt", "geo", "smooth", "controls"];
 /// Settings kept per game only, never as the defaults for all games:
@@ -36,10 +36,48 @@ export const STORE = "remodel.settings";
 /// rate").
 export const BUFFER = { desktop: 70, phone: 150 };
 
+/// The picture presets (docs/web.md, "Picture presets"): the rows that
+/// change how the game looks, which a preset sets and only Custom lists.
+export const PRESETS = ["original", "sharp", "enhanced", "custom"];
+export const PICTURE = ["aa", "depth", "shading", "crease", "shadefine", "shadebalance", "pack", "texfilter", "materials",
+  "relief"];
+/// What "Enhanced" turns on for a game that has no say (the module's
+/// `game_recommended` gives the game's own).
+export const RECOMMENDED = { depth: false, shading: false };
+
+/// The rows preset `preset` sets, for a game whose manifest recommends
+/// `rec` (`{depth, shading}`): all of the picture's, and smooth motion.
+/// Custom sets none.
+export function presetValues(preset, rec = RECOMMENDED) {
+  if (preset === "custom") return {};
+  const b = builtin();
+  const out = Object.fromEntries(PICTURE.map((k) => [k, b[k]]));
+  out.smooth = false;
+  if (preset !== "original") {
+    out.aa = "4";
+    out.texfilter = "mip";
+  }
+  if (preset === "enhanced") {
+    out.depth = !!rec.depth;
+    out.shading = rec.shading ? "vertex" : "flat";
+    out.smooth = true;
+  }
+  return out;
+}
+
+/// `values` with a preset whose picture rows no longer all match changed
+/// to Custom (the rows win).
+export function settle(values, rec = RECOMMENDED) {
+  if (values.preset === "custom") return values;
+  const want = presetValues(values.preset, rec);
+  return PICTURE.every((k) => values[k] === want[k]) ? values : { ...values, preset: "custom" };
+}
+
 /// Built-in defaults. `touch` follows the device (`env.touchScreen`);
 /// `buffer` "auto" too, when the game starts (`effective`).
 export function builtin(env = {}) {
   return {
+    preset: "original",
     height: "auto",
     aspect: "auto",
     hud: "edges",
@@ -74,6 +112,8 @@ const ratio = (s) => {
 /// `v` as a valid value for setting `key`, or undefined.
 export function clean(key, v) {
   switch (key) {
+    case "preset":
+      return PRESETS.includes(v) ? v : undefined;
     case "height": {
       if (v === "auto") return v;
       const n = Math.round(Number(v) / 2) * 2;
@@ -165,7 +205,8 @@ function cleanAll(o) {
 }
 
 /// The settings a page's URL parameters give (`?height=1080&sfx=8`...):
-/// `height`, `aspect=16:9`, `hud=center`, `bezel=0`, `sound=0`, `sfx` and
+/// `preset=original|sharp|enhanced|custom` (the picture rows follow the
+/// preset; rows given beside it win and make it Custom), `height`, `aspect=16:9`, `hud=center`, `bezel=0`, `sound=0`, `sfx` and
 /// `music` in dB, `buffer=150` (the audio queue in ms, or `auto`), `touch`
 /// (`touch` or `touch=1` on, `touch=0` off), `tilt=1`,
 /// `geo=local` (the geometrizer on the page's thread) or `geo=chip` (in its
@@ -185,6 +226,7 @@ function cleanAll(o) {
 export function fromParams(params) {
   const raw = {};
   const flag = (k) => params.get(k) !== "0" && params.get(k) !== "off" && params.get(k) !== "false";
+  if (params.has("preset")) raw.preset = params.get("preset");
   if (params.has("height")) raw.height = params.get("height");
   if (params.has("aspect")) raw.aspect = params.get("aspect");
   if (params.has("hud")) raw.hud = params.get("hud");
@@ -241,26 +283,37 @@ export function writeStore(storage, store) {
 
 /// The settings for `game`: `{values, source}`, `source[key]` saying where
 /// each came from: "default", "all" (the stored defaults), "game" or
-/// "link" (the URL).
-export function resolve(base, store, game, url = {}) {
+/// "link" (the URL). A layer's preset sets the rows it describes (for a game
+/// whose manifest recommends `rec`) before the layer's own settings, so a
+/// row given beside it wins; a preset whose rows then don't all match is
+/// Custom.
+export function resolve(base, store, game, url = {}, rec = RECOMMENDED) {
   const values = { ...base };
   const source = Object.fromEntries(KEYS.map((k) => [k, "default"]));
   for (const [layer, name] of [[store.defaults, "all"], [store.games[game] ?? {}, "game"], [url, "link"]]) {
+    if ("preset" in layer) {
+      Object.assign(values, presetValues(layer.preset, rec));
+      values.preset = layer.preset;
+      for (const k of layer.preset === "custom" ? ["preset"] : ["preset", "smooth", ...PICTURE]) source[k] = name;
+    }
     for (const k of KEYS) {
-      if (k in layer) {
+      if (k !== "preset" && k in layer) {
         values[k] = layer[k];
         source[k] = name;
       }
     }
   }
-  return { values, source };
+  return { values: settle(values, rec), source };
 }
 
 /// The store after the panel's Play (or Resume): `values` saved for `game`,
 /// or as the defaults for all games with `forAll` (removing this game's own
 /// copies of them); the keys in `keep` (URL overrides left as they were)
 /// aren't saved. `skip`: don't show the panel before this game again.
-/// Returns a new store; `store` is unchanged.
+/// A preset other than Custom is saved as itself: the rows it sets follow
+/// from it, per game (only smooth motion, changed after choosing it, is kept
+/// as well); Custom keeps its rows, each where it differs from the settings
+/// under it. Returns a new store; `store` is unchanged.
 export function commit(base, store, game, values, { forAll = false, skip = false, keep = [] } = {}) {
   const out = {
     defaults: { ...store.defaults },
@@ -268,17 +321,20 @@ export function commit(base, store, game, values, { forAll = false, skip = false
     skip: { ...store.skip },
   };
   const own = out.games[game] ?? {};
+  const under = forAll ? base : resolve(base, { defaults: out.defaults, games: {}, skip: {} }, game).values;
+  const derived = values.preset === "custom" ? null : presetValues(values.preset);
   for (const k of KEYS) {
     if (keep.includes(k)) continue;
     const v = clean(k, values[k]);
     if (v === undefined) continue;
+    // The rows a preset sets are not kept: the preset is.
+    const baseline = derived && k in derived ? (PICTURE.includes(k) ? v : derived[k]) : under[k];
     if (forAll && !PER_GAME.includes(k)) {
-      if (v === base[k]) delete out.defaults[k];
+      if (v === baseline) delete out.defaults[k];
       else out.defaults[k] = v;
       delete own[k];
     } else {
-      const under = k in out.defaults ? out.defaults[k] : base[k];
-      if (v === under) delete own[k];
+      if (v === baseline) delete own[k];
       else own[k] = v;
     }
   }

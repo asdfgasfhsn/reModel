@@ -802,6 +802,15 @@ pub fn game_crease(game: &str) -> u32 {
     romset::games::find(game).map_or(romset::Shading::DEFAULT.crease, |g| g.shading.crease) as u32
 }
 
+/// What the settings panel's Enhanced preset turns on for `game`
+/// (`romset::Recommended`; the browser has no temporal anti-aliasing or
+/// run-ahead): JSON `{"depth": bool, "shading": bool}`.
+#[wasm_bindgen]
+pub fn game_recommended(game: &str) -> String {
+    let rec = romset::games::find(game).map_or(romset::Recommended::DEFAULT, |g| g.recommended);
+    format!("{{\"depth\":{},\"shading\":{}}}", rec.depth, rec.shading)
+}
+
 /// Time smooth shading's grouping pass (`model2::light::shade`) on this
 /// page: `runs` passes over the newest polygon stream with the running
 /// game's options (for a test driver; docs/web.md, "Smooth shading").

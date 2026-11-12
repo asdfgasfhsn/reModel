@@ -1,22 +1,32 @@
 // The settings panel (docs/web.md, "Settings"): an HTML overlay shown
 // before a game starts, and from the gear button (or Esc) while it runs.
 // settings.js says what the settings are and how they're stored; this draws
-// them, from the game's manifest data (the module's `bindings_view` and
-// `touch_layout`) and nothing game-specific.
+// them, from the game's manifest data (the module's `bindings_view`,
+// `touch_layout` and `game_recommended`) and nothing game-specific.
 //
-// Keyboard: Tab and the arrow keys move and change, Enter plays (or
-// resumes), Esc resumes in game. Gamepad: d-pad or left stick up and down
-// moves, left and right changes, A presses the focused button or toggles
-// a box (else plays), Start plays, B resumes in game. Keys pressed while
-// the panel is open don't reach the game.
+// The settings come in tabs (Display, Picture, Motion, Sound, Controls,
+// More), each row "label ◂ value ▸". The Picture tab starts with the preset
+// (Original, Sharp, Enhanced, Custom); only Custom lists the picture rows.
+// Rows that do nothing as things are set are left out, not greyed. One help
+// line at the foot says what the row in focus (or under the pointer) does,
+// and "Applies to" there says where the changes are kept.
 //
-// Remapping (the Controls section): click or tap a binding (or +), then
+// Keyboard: Tab moves between controls, the arrow keys move (up and down)
+// and change (left and right) a row, Space steps on, Q and E switch tabs,
+// Enter plays (or resumes), Esc resumes in game. Gamepad: d-pad or left
+// stick up and down moves, left and right changes, LB and RB switch tabs, A
+// steps a row on, presses the focused button or toggles a box (else plays),
+// Start plays, B resumes in game. Keys pressed while the panel is open
+// don't reach the game.
+//
+// Remapping (the Controls tab): click or tap a binding (or +), then
 // press a key or gamepad button, or for an axis move a stick or press a
 // trigger; Esc cancels. The module does the binding (`bindings_capture`,
 // `bindings_edit`: the same rules as the native player) and says what it
 // refuses; the panel only finds out what was pressed.
 
-import { RESTART, audioBuffer, differ, screenHeight, windowAspect } from "./settings.js";
+import { PICTURE, PRESETS, RECOMMENDED, RESTART, audioBuffer, differ, presetValues, screenHeight, settle,
+  windowAspect } from "./settings.js";
 
 const el = (tag, props = {}, ...children) => {
   const e = Object.assign(document.createElement(tag), props);
@@ -24,13 +34,19 @@ const el = (tag, props = {}, ...children) => {
   return e;
 };
 
+/// The settings tabs: [id, label].
+const TABS = [["display", "Display"], ["picture", "Picture"], ["motion", "Motion"], ["sound", "Sound"],
+  ["controls", "Controls"], ["more", "More"]];
+
+const PRESET_LABELS = { original: "Original", sharp: "Sharp", enhanced: "Enhanced", custom: "Custom" };
+
 const STYLE = `
 #settings { position: fixed; inset: 0; z-index: 10; display: flex; justify-content: center; align-items: flex-start;
   overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; touch-action: pan-y;
   background: rgba(0, 0, 0, 0.72); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
   padding: max(12px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
     max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); box-sizing: border-box; }
-#settings[hidden] { display: none; }
+#settings [hidden] { display: none !important; }
 #settings * { box-sizing: border-box; }
 #settings .card { width: 100%; max-width: 560px; margin: auto 0; background: #070b12; color: #f2f4f8;
   border: 1px solid #163a44; border-radius: 12px; box-shadow: 0 0 24px rgba(47, 230, 239, 0.18);
@@ -41,23 +57,25 @@ const STYLE = `
 #settings .back:focus-visible { outline: 2px solid #fff; }
 #settings h2 { margin: 0; font-size: 19px; font-weight: 800; font-style: italic; }
 #settings header p { margin: 2px 0 0; color: #8b93a3; font-size: 13px; }
-#settings section { padding: 10px 16px 4px; }
-#settings h3 { margin: 4px 0 8px; font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; color: #2fe6ef; }
-#settings .row { margin: 0 0 12px; border: 0; padding: 0; min-width: 0; }
-#settings .row > legend, #settings .row > .name { display: block; padding: 0; margin: 0 0 6px; font-weight: 600; font-size: 14px; }
+#settings .tabs { display: flex; gap: 2px; padding: 8px 12px 0; border-bottom: 1px solid #142230; overflow-x: auto; }
+#settings button.tab { flex: none; min-height: 40px; padding: 0 14px; border: 0; border-bottom: 3px solid transparent;
+  border-radius: 8px 8px 0 0; background: none; color: #8b93a3; font: 600 14px system-ui, sans-serif; cursor: pointer; }
+#settings button.tab[aria-selected=true] { color: #fff; border-bottom-color: #2fe6ef; background: rgba(47, 230, 239, 0.08); }
+#settings button.tab:focus-visible { outline: 2px solid #fff; outline-offset: -2px; }
+#settings .pane { padding: 10px 16px 4px; min-height: 210px; }
+#settings .row { margin: 0 0 4px; border: 0; padding: 0; min-width: 0; }
+#settings .step { display: flex; align-items: center; gap: 4px; min-height: 44px; padding: 0 4px 0 8px; border-radius: 8px;
+  cursor: pointer; }
+#settings .step:hover { background: rgba(255, 255, 255, 0.05); }
+#settings .step:focus-visible { outline: 2px solid #2fe6ef; outline-offset: -2px; background: rgba(47, 230, 239, 0.08); }
+#settings .step .name { flex: 1; font-weight: 600; font-size: 14px; }
+#settings .step .value { min-width: 9.5em; text-align: center; font-size: 14px; font-variant-numeric: tabular-nums; }
+#settings .step button.arrow { flex: none; min-height: 40px; width: 36px; padding: 0; border: 0; border-radius: 8px;
+  background: none; color: #2fe6ef; font: 700 16px system-ui, sans-serif; cursor: pointer; }
+#settings .step button.arrow:disabled { color: #3a4656; cursor: default; }
 #settings .hint { color: #8b93a3; font-size: 12px; font-weight: 400; }
 #settings .link { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 8px; background: #3a2a05;
   color: #ffd479; font-size: 11px; font-weight: 700; vertical-align: 1px; }
-#settings .pills { display: flex; flex-wrap: wrap; gap: 8px; }
-#settings .pills label { position: relative; }
-#settings .pills input { position: absolute; opacity: 0; inset: 0; margin: 0; }
-#settings .pills span { display: grid; place-items: center; min-height: 44px; padding: 6px 14px; border-radius: 22px;
-  border: 2px solid #2c3a48; background: #0d141d; color: #c9d0dc; font-weight: 600; font-size: 14px; cursor: pointer; }
-#settings .pills input:checked + span { border-color: #2fe6ef; background: rgba(47, 230, 239, 0.15); color: #fff; }
-#settings .pills input:focus-visible + span { outline: 2px solid #fff; outline-offset: 2px; }
-#settings .slider { display: flex; align-items: center; gap: 12px; }
-#settings input[type=range] { flex: 1; min-width: 0; height: 44px; accent-color: #2fe6ef; margin: 0; }
-#settings output { min-width: 4.5em; text-align: right; font-variant-numeric: tabular-nums; }
 #settings .check { display: flex; align-items: center; gap: 10px; min-height: 44px; cursor: pointer; }
 #settings .check input { width: 22px; height: 22px; margin: 0; accent-color: #2fe6ef; flex: none; }
 #settings table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 12px; }
@@ -82,18 +100,18 @@ const STYLE = `
 #settings .ctl-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 #settings .ctl-actions button { min-height: 40px; font-size: 14px; padding: 0 14px; }
 #settings footer { padding: 6px 16px 8px; border-top: 1px solid #142230; }
+#settings .helpline { min-height: 3.9em; margin: 4px 8px 6px; color: #8b93a3; font-size: 13px; }
 /* Play stays in reach on a small screen. */
 #settings .actions { position: sticky; bottom: calc(-1 * max(16px, env(safe-area-inset-bottom)));
   padding: 10px 16px calc(14px + max(16px, env(safe-area-inset-bottom)));
   margin-bottom: calc(-1 * max(16px, env(safe-area-inset-bottom))); background: #070b12;
   border-top: 1px solid #142230; border-radius: 0 0 12px 12px; }
 #settings .buttons { display: flex; flex-wrap: wrap; gap: 10px; }
-#settings button { min-height: 48px; padding: 0 20px; border-radius: 24px; font: 700 16px system-ui, sans-serif; cursor: pointer;
+#settings button.big { min-height: 48px; padding: 0 20px; border-radius: 24px; font: 700 16px system-ui, sans-serif; cursor: pointer;
   border: 2px solid #2c3a48; background: #0d141d; color: #f2f4f8; }
 #settings button.primary { flex: 1; border-color: #2fe6ef; background: rgba(47, 230, 239, 0.18);
   box-shadow: 0 0 12px rgba(47, 230, 239, 0.35); }
 #settings button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
-#settings button[hidden] { display: none; }
 #settings .status { min-height: 1.4em; margin: 6px 0 0; color: #9ab; font-size: 13px; font-variant-numeric: tabular-nums; }
 `;
 
@@ -109,52 +127,69 @@ export function createPanel(opts) {
   const source = { ...opts.source };
   // URL overrides the player has since changed in the panel.
   const changed = new Set();
+  // What the game's manifest recommends for Enhanced (setRecommended).
+  let rec = RECOMMENDED;
+  // Where Play keeps the changes: all games, or this one.
+  let forAllValue = !!opts.forAll;
   const root = el("div", { id: "settings", hidden: true });
   root.setAttribute("role", "dialog");
   root.setAttribute("aria-modal", "true");
   root.setAttribute("aria-label", "Settings");
   const rows = {};
   const badge = (key) => (source[key] === "link" ? el("span", { className: "link", textContent: "from link" }) : "");
+  // The one help line, for the row in focus or under the pointer.
+  const helpLine = el("p", { className: "helpline" });
+  helpLine.setAttribute("aria-live", "polite");
+  const showHelp = (row) => (helpLine.textContent = row?.dataset?.help ?? "");
 
-  // A row of pills, one per option ([value, label]).
-  const choice = (key, label, options, hint) => {
-    const set = el("fieldset", { className: "row" });
-    const legend = el("legend", {}, label, badge(key));
-    if (hint) legend.append(" ", el("span", { className: "hint", textContent: hint }));
-    const pills = el("div", { className: "pills" });
-    set.append(legend, pills);
-    const draw = () => {
-      pills.replaceChildren();
-      for (const [v, text] of options()) {
-        const input = el("input", { type: "radio", name: `s-${key}`, checked: v === values[key] });
-        input.addEventListener("change", () => update(key, v));
-        pills.append(el("label", {}, input, el("span", { textContent: text })));
-      }
+  // A "label ◂ value ▸" row. `options()` lists [value, text]; `get` and `set`
+  // read and change the value (the setting `key`'s by default). Left and
+  // right step to the previous and next choice; a click on the name or the
+  // value, Space or A steps on, round to the first after the last.
+  const step = (key, label, options, help, { get = () => values[key], set = (v) => update(key, v) } = {}) => {
+    const row = el("div", { className: "row step", tabIndex: 0 });
+    row.setAttribute("role", "spinbutton");
+    row.setAttribute("aria-label", label);
+    row.dataset.help = help ?? "";
+    const prev = el("button", { type: "button", className: "arrow", textContent: "◂", tabIndex: -1 });
+    const next = el("button", { type: "button", className: "arrow", textContent: "▸", tabIndex: -1 });
+    prev.setAttribute("aria-label", `${label}: previous`);
+    next.setAttribute("aria-label", `${label}: next`);
+    const value = el("span", { className: "value" });
+    row.append(el("span", { className: "name" }, label, badge(key)), prev, value, next);
+    const index = () => Math.max(0, options().findIndex(([v]) => v === get()));
+    const move = (d, wrap = false) => {
+      const list = options();
+      const i = index();
+      const j = wrap ? (i + d + list.length) % list.length : Math.min(list.length - 1, Math.max(0, i + d));
+      if (j !== i) set(list[j][0]);
     };
-    draw();
-    rows[key] = { el: set, draw, legend };
-    return set;
-  };
-  const onOff = (key, label, hint) => choice(key, label, () => [[true, "On"], [false, "Off"]], hint);
-  const slider = (key, label) => {
-    const out = el("output");
-    const input = el("input", { type: "range", min: -24, max: 24, step: 1 });
-    input.setAttribute("aria-label", label);
-    const show = () => (out.textContent = `${values[key] > 0 ? "+" : ""}${values[key]} dB`);
-    input.addEventListener("input", () => {
-      update(key, Number(input.value));
-      show();
+    prev.addEventListener("click", (e) => {
+      e.stopPropagation();
+      move(-1);
     });
-    const set = el("div", { className: "row" }, el("div", { className: "name" }, label, badge(key)),
-      el("div", { className: "slider" }, input, out));
+    next.addEventListener("click", (e) => {
+      e.stopPropagation();
+      move(1);
+    });
+    row.addEventListener("click", () => move(1, true));
+    row._move = move;
     const draw = () => {
-      input.value = values[key];
-      show();
+      const list = options();
+      const i = index();
+      value.textContent = list[i]?.[1] ?? String(get());
+      row.setAttribute("aria-valuetext", value.textContent);
+      prev.disabled = i <= 0;
+      next.disabled = i >= list.length - 1;
     };
     draw();
-    rows[key] = { el: set, draw };
-    return set;
+    rows[key] = { el: row, draw };
+    return row;
   };
+  const onOff = (key, label, help) => step(key, label, () => [[false, "Off"], [true, "On"]], help);
+  const db = (key, label, help) => step(key, label, () => withValue(key,
+    Array.from({ length: 49 }, (_, i) => [i - 24, `${i - 24 > 0 ? "+" : ""}${i - 24} dB`]),
+    (v) => `${v > 0 ? "+" : ""}${v} dB`), help);
   // An option for a value the URL gave that the panel doesn't list.
   const withValue = (key, list, label) =>
     list.some(([v]) => v === values[key]) ? list : [...list, [values[key], label(values[key])]];
@@ -164,116 +199,175 @@ export function createPanel(opts) {
   let gameCrease = null;
   const height = screenHeight(env);
   const fit = windowAspect(env);
-  const display = el("section", {}, el("h3", { textContent: "Display" }),
-    choice("height", "Render height", () => withValue("height",
-      [[384, "384 (native)"], [768, "768"], [1080, "1080"], ["auto", `Screen's (${height})`]], (v) => String(v))),
-    choice("aspect", "Aspect", () => withValue("aspect",
-      [["auto", `Fit window (${fit.toFixed(2)}:1)`], ["4:3", "4:3"], ["16:9", "16:9"]], (v) => v)),
-    choice("hud", "HUD", () => [["edges", "At the edges"], ["center", "Centred"]], "in wide views"),
-    onOff("bezel", "Bezel", "beside a 4:3 picture in a wider window"),
-    choice("aa", "Anti-aliasing", () => [["off", "Off"], ["4", "4x"]], "smooths polygon edges"),
-    onOff("depth", "Depth buffer", "polygons that cross or are sorted wrong come out right; off draws in the game's order"),
-    choice("shading", "Shading", () => [["flat", "Flat"], ["vertex", "Smooth"], ["pixel", "Per pixel"]],
-      "flat is the original; smooth blends the game's own lighting across curved surfaces, worked out at each " +
-      "corner; per pixel works it out for every pixel (with the chip geometrizer it draws as smooth)"),
-    choice("crease", "Crease angle", () => withValue("crease",
-      [["auto", gameCrease === null ? "The game's" : `The game's (${gameCrease}°)`], [30, "30°"], [40, "40°"], [60, "60°"]],
-      (v) => `${v}°`), "with smooth shading: faces meeting at a sharper angle keep a hard edge"),
+  const pane = (...rowsOfPane) => el("section", { className: "pane", role: "tabpanel" }, ...rowsOfPane);
+  const display = pane(
+    step("height", "Render height", () => withValue("height",
+      [[384, "384 (native)"], [768, "768"], [1080, "1080"], ["auto", `Screen's (${height})`]], (v) => String(v)),
+    "How many lines the game is drawn with. More is sharper and costs more; applies on a restart."),
+    step("aspect", "Aspect", () => withValue("aspect",
+      [["auto", `Fit window (${fit.toFixed(2)}:1)`], ["4:3", "4:3"], ["16:9", "16:9"]], (v) => v),
+    "Fit window draws the game wider than its 4:3 frame to fill the window. 4:3 keeps the original shape, with " +
+      "the bezel beside it in a wider window. Applies on a restart."),
+    step("hud", "HUD position", () => [["edges", "At the edges"], ["center", "Centred"]],
+      "In wide views: out at the edges, or together in the middle as in the original."),
+    onOff("bezel", "Bezel", "The cabinet's artwork beside a 4:3 picture in a wider window."));
+  const picture = pane(
+    step("preset", "Preset", () => PRESETS.map((p) => [p, PRESET_LABELS[p]]),
+      "Original: the arcade look. Sharp: 4x anti-aliasing and mipmapped filtering. Enhanced: what suits this game, " +
+      "with smooth motion. Custom: choose each setting."),
+    step("aa", "Anti-aliasing", () => [["off", "Off"], ["4", "4x"]], "Smooths polygon edges."),
+    onOff("depth", "Depth buffer", "Polygons that cross sort right. Off draws them in the game's order."),
+    step("shading", "Shading", () => [["flat", "Flat"], ["vertex", "Smooth"], ["pixel", "Per pixel"]],
+      "Flat is the original. Smooth blends the game's own lighting across curved surfaces, worked out at each " +
+      "corner; per pixel works it out for every pixel (with the chip geometrizer it draws as smooth)."),
+    step("crease", "Crease angle", () => withValue("crease",
+      [["auto", gameCrease === null ? "The game's" : `The game's (${gameCrease}°)`], [30, "30°"], [40, "40°"],
+        [60, "60°"]], (v) => `${v}°`),
+    "Faces meeting at a sharper angle than this keep a hard edge: boxes and limbs stay faceted, bodies smooth."),
     onOff("shadefine", "Blend brightness levels",
-      "with smooth shading: no banding on large smooth surfaces; off keeps the game's 64 levels"),
-    onOff("shadebalance", "Balance brightness",
-      "with smooth shading: each smooth surface as bright as the game's; off, bumpy ones come out brighter"),
-    onOff("pack", "Texture pack", "replacement textures from the server's texpack folder for this game, if it has one"),
-    choice("texfilter", "Pack filtering", () => [["off", "Off"], ["mip", "Mipmaps"], ["2", "2x"], ["4", "4x"],
-      ["8", "8x"], ["16", "16x"]], "mipmaps, then anisotropic filtering; texture pack images only"),
+      "No banding on large smooth surfaces. Off keeps the game's 64 levels."),
+    onOff("shadebalance", "Brightness balance",
+      "Each smooth surface as bright as the game's. Off, bumpy ones come out brighter."),
+    onOff("pack", "Texture pack", "Replacement textures from the server's texpack folder for this game, if it has one."),
     onOff("materials", "Material maps",
-      "with the texture pack: its normal maps, bumps and grooves lit by the game's own lights (needs the " +
-      "native geometrizer; no effect with the chip)"),
-    choice("relief", "Material relief", () => withValue("relief",
+      "The pack's normal maps: bumps and grooves lit by the game's own lights. Needs the native geometrizer."),
+    step("relief", "Material relief", () => withValue("relief",
       [["1", "1"], ["2", "2"], ["4", "4"], ["8", "8"], ["off", "Faithful"]], (v) => `Custom (${v})`),
-      "with material maps: how strongly they shade (2 by default); faithful keeps the game's own lighting sum, subtler"));
-  const autoBuffer = audioBuffer("auto", env).target * 1000;
-  const sound = el("section", {}, el("h3", { textContent: "Sound" }),
-    onOff("sound", "Sound"), slider("sfx", "Effects"), slider("music", "Music"),
-    choice("buffer", "Buffer", () => withValue("buffer",
-      [["auto", `Auto (${autoBuffer} ms)`], [70, "70 ms"], [150, "150 ms"], [250, "250 ms"]], (v) => `${v} ms`),
-    "more rides out uneven frames without bending the pitch, but lags more"));
+    "How strongly the bumps shade, 2 by default. Faithful keeps the game's own lighting sum: subtler."));
+  const motion = pane(
+    onOff("smooth", "Smooth motion", "Draws in-between frames on displays faster than 60 Hz, a frame later."),
+    el("p", { className: "hint", textContent: "Exact arcade speed and run-ahead are the native player's " +
+      "(docs/play.md)." }));
+  const sound = pane(
+    onOff("sound", "Sound", "Off starts the game without sound; applies on a restart."),
+    db("sfx", "Effects", "The level of the sound board: effects and announcer."),
+    db("music", "Music", "The level of the music board."));
   // Controls: filled in once the game's module is loaded (setControls).
   let table = el("p", { className: "hint", textContent: "Loading the game's controls…" });
-  const controls = el("section", {}, el("h3", { textContent: "Controls" }), table);
   const touchRows = el("div");
   if (env.touchScreen || source.touch === "link") {
-    touchRows.append(onOff("touch", "Touch controls"));
+    touchRows.append(onOff("touch", "Touch controls", "On-screen buttons and sticks for the game's controls."));
   }
-  controls.append(touchRows);
-  const advanced = el("section", {}, el("h3", { textContent: "Advanced" }),
-    choice("geo", "Geometrizer", () => [
+  const controls = pane(table, touchRows);
+  const autoBuffer = audioBuffer("auto", env).target * 1000;
+  const more = pane(
+    step("buffer", "Sound buffer", () => withValue("buffer",
+      [["auto", `Auto (${autoBuffer} ms)`], [70, "70 ms"], [150, "150 ms"], [250, "250 ms"]], (v) => `${v} ms`),
+    "More rides out uneven frames without bending the pitch, but lags more. Applies on a restart."),
+    step("geo", "Geometrizer", () => [
       ["worker", "In a worker"],
       ["local", "On the page's thread"],
-      ["chip", "In a worker, on the game's own program on its chip (the reference)"],
-    ]),
-    onOff("smooth", "Smooth motion",
-      "in-between frames on displays faster than 60 Hz, a frame later; not with the chip"));
+      ["chip", "The game's own chip (the reference)"],
+    ], "Where the game's 3D geometry is worked out. The chip runs the game's own program, slowly, and has no " +
+      "smooth motion or lighting options. Applies on a restart."),
+    step("texfilter", "Texture filtering", () => [["off", "Off"], ["mip", "Mipmaps"], ["2", "2x"], ["4", "4x"],
+      ["8", "8x"], ["16", "16x"]], "Of the texture pack's images: mipmaps, then anisotropic filtering."));
+  const panes = { display, picture, motion, sound, controls, more };
 
-  const forAll = el("input", { type: "checkbox", checked: !!opts.forAll });
+  const tabButtons = {};
+  const tabs = el("div", { className: "tabs" });
+  tabs.setAttribute("role", "tablist");
+  for (const [id, label] of TABS) {
+    const b = el("button", { type: "button", className: "tab", textContent: label });
+    b.setAttribute("role", "tab");
+    b.addEventListener("click", () => selectTab(id));
+    tabButtons[id] = b;
+    tabs.append(b);
+  }
+  let tab = "display";
+  function selectTab(id) {
+    tab = id;
+    for (const [k] of TABS) {
+      panes[k].hidden = k !== id;
+      tabButtons[k].setAttribute("aria-selected", String(k === id));
+    }
+    showHelp(null);
+  }
+  const tabBy = (d) => selectTab(TABS[(TABS.findIndex(([k]) => k === tab) + d + TABS.length) % TABS.length][0]);
+
   const skip = el("input", { type: "checkbox", checked: !!opts.skip });
-  const play = el("button", { type: "button", className: "primary", textContent: "Play" });
-  const restart = el("button", { type: "button", textContent: "Restart to apply", hidden: true });
-  const reset = el("button", { type: "button", textContent: "Defaults" });
+  const play = el("button", { type: "button", className: "big primary", textContent: "Play" });
+  const restart = el("button", { type: "button", className: "big", textContent: "Restart to apply", hidden: true });
+  const reset = el("button", { type: "button", className: "big", textContent: "Defaults" });
   const note = el("p", { className: "hint", hidden: true,
     textContent: "Render height, aspect, sound on or off, the sound buffer, the geometrizer and smooth motion " +
       "apply on a restart." });
   const status = el("p", { className: "status" });
-  const footer = el("footer", {},
-    el("label", { className: "check" }, forAll, "Use these for all games"),
-    el("label", { className: "check" }, skip, "Don't show this again for this game"),
-    note);
+  const applies = step("forAll", "Applies to", () => [[false, "This game"], [true, "All games"]],
+    "Where changes on these tabs are kept in this browser: for this game only, or as the settings of every game " +
+      "that has none of its own.", { get: () => forAllValue, set: (v) => { forAllValue = v; rows.forAll.draw(); } });
+  const footer = el("footer", {}, applies, helpLine,
+    el("label", { className: "check" }, skip, "Don't show this again for this game"), note);
   const actions = el("div", { className: "actions" }, el("div", { className: "buttons" }, reset, restart, play), status);
   const subtitle = el("p", { textContent: "Settings are kept in this browser. The ⚙︎ button opens them again." });
   const card = el("div", { className: "card" },
     el("header", {}, el("a", { className: "back", href: opts.back, textContent: "← Games" }),
       el("h2", { textContent: opts.title }), subtitle),
-    display, sound, controls, advanced, footer, actions);
+    tabs, display, picture, motion, sound, controls, more, footer, actions);
   root.append(card);
   document.body.append(root);
+  selectTab(tab);
+  // The help line follows the focus and the pointer.
+  const rowOf = (e) => e.target?.closest?.(".step, .check");
+  card.addEventListener("focusin", (e) => showHelp(rowOf(e)));
+  card.addEventListener("pointerover", (e) => rowOf(e) && showHelp(rowOf(e)));
 
   // In game: the settings the running game started with.
   let running = null;
   let resolveShow = null;
   let mode = "start";
 
-  function update(key, v) {
-    values[key] = v;
+  // A URL override changed in the panel is the player's from then on.
+  function touch(key) {
     if (source[key] === "link") {
       changed.add(key);
       source[key] = "panel";
       rows[key]?.el.querySelector(".link")?.remove();
     }
+  }
+  function update(key, v) {
+    values[key] = v;
+    touch(key);
+    if (key === "preset") {
+      // Choosing a preset sets its rows.
+      const set = presetValues(v, rec);
+      Object.assign(values, set);
+      for (const k of Object.keys(set)) touch(k);
+    } else if (PICTURE.includes(key)) {
+      // Changing a picture row makes a preset Custom, with the rows as they are.
+      values = settle(values, rec);
+      touch("preset");
+    }
     refresh();
   }
+  // Show the rows that apply to what's set, and redraw them all.
   function refresh() {
-    const off = !values.sound;
-    for (const k of ["sfx", "music", "buffer"]) rows[k].el.style.opacity = off ? 0.5 : "";
+    const show = (k, on) => rows[k] && (rows[k].el.hidden = !on);
+    const custom = values.preset === "custom";
+    const chip = values.geo === "chip";
+    const shaded = values.shading !== "flat";
+    for (const k of ["aa", "depth", "shading", "pack"]) show(k, custom);
+    show("crease", custom && shaded);
+    show("shadefine", custom && shaded && values.crease !== 0);
+    show("shadebalance", custom && shaded && values.crease !== 0);
+    show("materials", custom && values.pack && !chip);
+    show("relief", custom && values.pack && values.materials && !chip);
+    show("texfilter", values.pack);
+    show("smooth", !chip);
+    for (const k of ["sfx", "music", "buffer"]) show(k, values.sound);
+    show("hud", values.aspect !== "4:3");
+    show("bezel", values.aspect === "4:3");
+    show("tilt", values.touch);
+    for (const r of Object.values(rows)) r.draw();
     const needRestart = running && differ(values, running, RESTART).length > 0;
     restart.hidden = !needRestart;
     note.hidden = mode !== "game";
-    if (rows.tilt) rows.tilt.el.hidden = !values.touch;
-    // Smooth motion needs the native geometrizer.
-    rows.smooth.el.style.opacity = values.geo === "chip" ? 0.5 : "";
-    // The crease angle only matters with smooth shading.
-    rows.crease.el.style.opacity = values.shading === "flat" ? 0.5 : "";
-    rows.shadefine.el.style.opacity = values.shading === "flat" ? 0.5 : "";
-    rows.shadebalance.el.style.opacity = values.shading === "flat" ? 0.5 : "";
-    // Material maps need the texture pack (and the native geometrizer).
-    rows.materials.el.style.opacity = !values.pack || values.geo === "chip" ? 0.5 : "";
-    rows.relief.el.style.opacity = !values.materials || !values.pack || values.geo === "chip" ? 0.5 : "";
   }
   reset.addEventListener("click", () => {
     for (const k of Object.keys(opts.base)) {
       if (k === "touch") continue; // the device's choice; Defaults shouldn't hide the controls
       if (k === "controls") continue; // the Controls section has its own reset
       update(k, opts.base[k]);
-      rows[k]?.draw();
     }
   });
 
@@ -287,7 +381,7 @@ export function createPanel(opts) {
     // Still in the tap or key press (when there was one): what needs a
     // gesture (audio, iOS motion permission) is asked for here.
     opts.onGesture?.(action, { ...values });
-    r({ action, values: { ...values }, changed: new Set(changed), forAll: forAll.checked, skip: skip.checked });
+    r({ action, values: { ...values }, changed: new Set(changed), forAll: forAllValue, skip: skip.checked });
   };
   play.addEventListener("click", () => finish(mode === "game" ? "resume" : "play"));
   restart.addEventListener("click", () => finish("restart"));
@@ -308,24 +402,36 @@ export function createPanel(opts) {
       else captured("key", e.code);
       return;
     }
+    const a = document.activeElement;
+    const onRow = a?.classList?.contains("step") && card.contains(a);
+    const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
     if (e.key === "Enter") {
       // The focused button (Defaults, Restart, Play), else Play.
       e.preventDefault();
-      const f = document.activeElement;
-      (f instanceof HTMLButtonElement && card.contains(f) ? f : play).click();
+      (a instanceof HTMLButtonElement && card.contains(a) ? a : play).click();
     } else if (e.key === "Escape" && mode === "game") {
       e.preventDefault();
       finish("resume");
+    } else if (onRow && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+      e.preventDefault();
+      a._move(e.key === "ArrowLeft" ? -1 : 1);
+    } else if (onRow && e.key === " ") {
+      e.preventDefault();
+      a._move(1, true);
+    } else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && card.contains(a)) {
+      e.preventDefault();
+      moveFocus(e.key === "ArrowUp" ? -1 : 1);
+    } else if (plain && !e.shiftKey && (e.key === "q" || e.key === "e") && !capture) {
+      e.preventDefault();
+      tabBy(e.key === "q" ? -1 : 1);
     }
   }
 
   // Gamepad: polled while open; a button counts when pressed after the
   // panel opened (one held then must be released first).
-  const focusables = () => [...card.querySelectorAll("input, button")].filter((e) => {
-    if (e.closest("[hidden]") || e.hidden) return false;
-    // One stop per row of pills: its checked one.
-    return e.type !== "radio" || e.checked;
-  });
+  const focusables = () => [...card.querySelectorAll(".step, button, input")].filter((e) =>
+    !e.closest("[hidden]") && !e.hidden && !e.disabled && !e.classList.contains("arrow") &&
+    e.getAttribute("role") !== "tab");
   const moveFocus = (d) => {
     const list = focusables();
     const i = list.indexOf(document.activeElement);
@@ -333,19 +439,7 @@ export function createPanel(opts) {
     next?.focus();
     next?.scrollIntoView({ block: "nearest" });
   };
-  const change = (d) => {
-    const a = document.activeElement;
-    if (a?.type === "radio") {
-      const group = [...card.querySelectorAll(`input[name="${a.name}"]`)];
-      const next = group[(group.indexOf(a) + d + group.length) % group.length];
-      next.checked = true;
-      next.dispatchEvent(new Event("change"));
-      next.focus();
-    } else if (a?.type === "range") {
-      a.value = Number(a.value) + d;
-      a.dispatchEvent(new Event("input"));
-    }
-  };
+  const change = (d) => document.activeElement?._move?.(d);
   let held = null;
   let repeatAt = 0;
   function poll(t) {
@@ -362,7 +456,7 @@ export function createPanel(opts) {
     const x = pad.axes[0] ?? 0;
     const y = pad.axes[1] ?? 0;
     const now = {
-      a: b(0), b: b(1), start: b(9),
+      a: b(0), b: b(1), start: b(9), lb: b(4), rb: b(5),
       up: b(12) || y < -0.6, down: b(13) || y > 0.6, left: b(14) || x < -0.6, right: b(15) || x > 0.6,
     };
     if (held === null) held = now;
@@ -371,9 +465,12 @@ export function createPanel(opts) {
     const repeat = (k) => pressed(k) || (now[k] && t >= repeatAt);
     if (pressed("start")) play.click();
     else if (pressed("b") && mode === "game") finish("resume");
+    else if (pressed("lb")) tabBy(-1);
+    else if (pressed("rb")) tabBy(1);
     else if (pressed("a")) {
       const f = document.activeElement;
-      if (f instanceof HTMLButtonElement && card.contains(f)) f.click();
+      if (f?.classList?.contains("step")) f._move(1, true);
+      else if (f instanceof HTMLButtonElement && card.contains(f)) f.click();
       else if (f?.type === "checkbox") f.click();
       else play.click();
     } else {
@@ -576,7 +673,6 @@ export function createPanel(opts) {
       mode = m;
       running = current;
       play.textContent = m === "game" ? "Resume" : "Play";
-      for (const r of Object.values(rows)) r.draw();
       refresh();
       root.hidden = false;
       addEventListener("keydown", onKey, true);
@@ -601,11 +697,29 @@ export function createPanel(opts) {
         refresh();
       }
     },
+    /// The settings as they stand in the panel (a copy).
+    values() {
+      return { ...values };
+    },
     /// The game's own crease angle (degrees, the module's `game_crease`),
     /// for the crease row's first option.
     setGameCrease(degrees) {
       gameCrease = degrees;
       rows.crease.draw();
+    },
+    /// What the game's manifest recommends for the Enhanced preset (the
+    /// module's `game_recommended`, `{depth, shading}`). Rows still as the
+    /// preset set them for the default follow, and a preset whose rows no
+    /// longer match is Custom.
+    setRecommended(r) {
+      const was = presetValues(values.preset, rec);
+      rec = r;
+      const now = presetValues(values.preset, rec);
+      for (const k of Object.keys(now)) {
+        if (values[k] === was[k]) values[k] = now[k];
+      }
+      values = settle(values, rec);
+      refresh();
     },
     /// A line under the buttons (loading progress, errors).
     setStatus(text, error = false) {

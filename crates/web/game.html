@@ -115,7 +115,7 @@
   const { default: init, start, set_geo_frame, set_touch, set_gun, view_point, stick_cursor, set_audio_level,
     set_paused, set_hud, controls_help, touch_layout, game_title, rom_files, set_bindings, bindings_view,
     bindings_capture, bindings_edit, set_smooth, set_audio_buffer, set_quality, set_pack, pack_wanted, pack_image,
-    pack_missing, pack_sets, game_crease, shading_cost } =
+    pack_missing, pack_sets, game_crease, game_recommended, shading_cost } =
     await import(pkg + "remodel_web.js");
 
   // Settings (settings.js): built-in defaults < stored for all games <
@@ -520,6 +520,10 @@
       packModule = module;
       const layout = JSON.parse(touch_layout(game));
       panel.setGameCrease(game_crease(game));
+      // What Enhanced turns on for this game; rows still as the preset set
+      // them follow, here and in what the game starts with.
+      panel.setRecommended(JSON.parse(game_recommended(game)));
+      values = panel.values();
       // The panel remaps through the module (romset::bindings), which keeps
       // the player's changes as text in the settings (`controls`).
       panel.setControls({
