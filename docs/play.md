@@ -199,13 +199,23 @@ command line 0.1 to 8), how strongly the bumps' light change scales the
 surface's brightness, or `off`, the faithful rule (the map's normal in the
 game's own lighting sum: subtler, and nothing where the game lights a
 surface to full brightness). The menu's line under the checkbox (and the
-window title) says what the last frame did, e.g. `relief 2: maps on 1477
-of 1534 lit textured polygons (93 materials drawn, 93 held, 62 MB; 234
-map files)`, or why they have no effect: no texture pack, a pack without
+window title) says what the last frame did, e.g. `relief 2: maps on 594 of 633
+lit textured polygons (74 materials drawn, 194 held, 145 MB; 234 map
+files)`, or why they have no effect: no texture pack, a pack without
 maps, the chip geometrizer (`--geo chip`: no exact lighting layer, the
 picture is as with them off), or no polygon in the frame lit by the exact
 layer. The launcher's previews draw without them. Maps share the pack's
 GPU memory budget with its images. Nothing the game computes changes.
+Checked 2026-11-12 on `topskatr` (234 generated maps on the ESRGAN pack,
+`--frames 3300` shots at 1920x1080): the player's frame with maps on,
+relief or faithful, flat or pixel shading, changes exactly the pixels
+`gpu-check` changes for the same captured frame (538,345 of 2,073,600 for
+relief 2, pixel shading; the two pictures otherwise differ only where the
+player draws the pack's tile images); turning them on in the menu gives
+the same picture as `--materials` and is saved; with `--geo chip` the
+picture is identical to materials off and the title says why; temporal's
+plain frame changes the same pixels. *Not verified:* in-betweens on a
+display over 60 Hz, run-ahead with maps.
 
 **Smooth motion** (a setting, below; `--smooth on|off` for one run, a
 bare `--smooth` meaning on; off by default). On a

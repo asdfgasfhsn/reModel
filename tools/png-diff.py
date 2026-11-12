@@ -6,7 +6,7 @@ channel differs, and the largest difference in a channel). With PANELS
 and KEEP, the pictures are PANELS panels side by side of which only the
 first KEEP are compared (gpu-check.png: software | GPU | differences). For the
 8-bit, non-interlaced RGB or RGBA pictures reModel writes. Standard
-library only.
+library only. An RGB and an RGBA picture are compared in colour only.
 """
 import struct
 import sys
@@ -56,11 +56,22 @@ def decode(path):
     return w, h, bpp, bytes(out)
 
 
+def rgb(img):
+    """An image's pixels without alpha."""
+    if img[2] == 3:
+        return img[3]
+    d = img[3]
+    return bytes(d[i] for i in range(len(d)) if i % 4 != 3)
+
+
 def main():
     a, b = decode(sys.argv[1]), decode(sys.argv[2])
-    if a[:3] != b[:3]:
+    if a[:2] != b[:2]:
         print(f"{a[0] * a[1]} {a[0] * a[1]} 255")
         return
+    # RGB against RGBA (a player's --shot): the colour channels only.
+    if a[2] != b[2]:
+        a, b = (a[0], a[1], 3, rgb(a)), (b[0], b[1], 3, rgb(b))
     w, h, bpp, da = a
     db = b[3]
     cols = w

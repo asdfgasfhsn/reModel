@@ -500,6 +500,14 @@ side channel, a demoted block) nothing changes.
   stage's notes; at the originals' floor unfiltered, a little above it
   mipmapped and anisotropic, where the GPU's sampler and the software's
   trilinear differ).
+- **Front ends.** The player and the browser set `materials` and
+  `materials_relief` from their settings; with materials on they record
+  the geometrizer's side channel with shading flat too, and their status
+  lines use `PackStats::lamped` (textured polygons with a lamp and a
+  tangent frame) and `PackStats::material_polys` (of them, drawn with a
+  material) to say what the maps did, or that no polygon had the exact
+  layer. The player's `present_bus` path draws them as `gpu-check` does
+  for the same captured frame (docs/play.md, "Material maps").
 - **Tests** (`materials.rs`): on a scene with random video RAM, a pack of
   flat maps draws the frame without materials byte for byte with and
   without images, unfiltered, mip and 16x, with depth, 4x MSAA and
