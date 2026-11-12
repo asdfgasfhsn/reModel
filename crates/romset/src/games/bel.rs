@@ -16,6 +16,7 @@ pub static BEL: Game = Game {
     // The attract demo: the vehicle driving up a forest track.
     attract_frame: 3900,
     input_lag: 3,
+    run_ahead_max: 3,
     hud_windows: &[],
     hud_element_windows: &[],
     controls: CONTROLS,
@@ -26,6 +27,7 @@ pub static BEL: Game = Game {
     dropouts: &[],
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
+    recommended: crate::Recommended { depth: true, ..crate::Recommended::DEFAULT },
     packed: &[Role::MainData, Role::Polygons],
     volume_db: 0.0,
     files: &[

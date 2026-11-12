@@ -22,6 +22,7 @@ pub static INDY500: Game = Game {
     // The attract demo: the car under the flyover on the street course.
     attract_frame: 1500,
     input_lag: 1,
+    run_ahead_max: 1,
     hud_windows: &[],
     hud_element_windows: &[],
     controls: CONTROLS,
@@ -32,6 +33,7 @@ pub static INDY500: Game = Game {
     dropouts: &[],
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
+    recommended: crate::Recommended { depth: true, ..crate::Recommended::DEFAULT },
     packed: &[],
     // A coin-start run's `make sound` averages -35 dBFS RMS, with
     // dynabb97's and hotd's (docs/hw/sound.md §6).

@@ -19,6 +19,7 @@ pub static SGT24H: Game = Game {
     // The attract demo: the AUTO MAX car on the grid before the grandstand.
     attract_frame: 1150,
     input_lag: 4,
+    run_ahead_max: 3,
     hud_windows: &[],
     hud_element_windows: &[],
     controls: CONTROLS,
@@ -34,6 +35,7 @@ pub static SGT24H: Game = Game {
     dropouts: &[],
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
+    recommended: crate::Recommended::DEFAULT,
     packed: &[],
     // Jaleco's driver plays its voices at DISDL 3 as on overrev: a race
     // averages about -38 dBFS RMS, as overrev's does (docs/hw/sound.md §6).

@@ -14,6 +14,7 @@ pub static OVERREVB: Game = Game {
     // runs a few frames behind overrev's).
     attract_frame: 1720,
     input_lag: 0,
+    run_ahead_max: 0,
     hud_windows: &[],
     hud_element_windows: &[],
     controls: super::overrev::CONTROLS,
@@ -25,6 +26,7 @@ pub static OVERREVB: Game = Game {
     dropouts: &[],
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
+    recommended: crate::Recommended::DEFAULT,
     packed: &[],
     // Its voices mostly play at DISDL 3: the sound board averages about
     // 5.5 dB below the other SCSP-only games (docs/hw/sound.md §6).

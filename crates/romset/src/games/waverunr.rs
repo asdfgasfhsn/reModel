@@ -17,6 +17,7 @@ pub static WAVERUNR: Game = Game {
     // The attract demo's race, three craft side by side.
     attract_frame: 1800,
     input_lag: 0,
+    run_ahead_max: 0,
     hud_windows: &[],
     hud_element_windows: &[],
     controls: CONTROLS,
@@ -27,6 +28,7 @@ pub static WAVERUNR: Game = Game {
     dropouts: &[],
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
+    recommended: crate::Recommended::DEFAULT,
     packed: &[],
     volume_db: 0.0,
     files: &[

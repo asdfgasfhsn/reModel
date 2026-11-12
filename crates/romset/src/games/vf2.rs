@@ -19,6 +19,7 @@ pub static VF2: Game = Game {
     board: Board::Model2A,
     attract_frame: 1500,
     input_lag: 1,
+    run_ahead_max: 1,
     hud_windows: &[],
     hud_element_windows: &[1],
     controls: CONTROLS,
@@ -29,6 +30,7 @@ pub static VF2: Game = Game {
     dropouts: &[],
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
+    recommended: crate::Recommended::DEFAULT,
     packed: &[Role::MainData, Role::CoproData, Role::Polygons, Role::Textures, Role::TgpData],
     volume_db: 0.0,
     files: &[

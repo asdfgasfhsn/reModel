@@ -16,6 +16,7 @@ pub static HOTD: Game = Game {
     // The attract demo: a zombie close up, with the HUD.
     attract_frame: 4080,
     input_lag: 0,
+    run_ahead_max: 0,
     hud_windows: &[],
     hud_element_windows: &[],
     controls: CONTROLS,
@@ -26,6 +27,7 @@ pub static HOTD: Game = Game {
     dropouts: &[],
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
+    recommended: crate::Recommended::DEFAULT,
     packed: &[],
     volume_db: 0.0,
     files: &[

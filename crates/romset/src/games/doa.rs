@@ -17,6 +17,7 @@ pub static DOA: Game = Game {
     // The attract demo: two fighters in the ring.
     attract_frame: 2000,
     input_lag: 1,
+    run_ahead_max: 1,
     hud_windows: &[],
     hud_element_windows: &[],
     controls: CONTROLS,
@@ -36,6 +37,7 @@ pub static DOA: Game = Game {
     dropouts: &[Dropout { chip: "mpr-19324.19", bit: 9 }],
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
+    recommended: crate::Recommended { shading: true, ..crate::Recommended::DEFAULT },
     packed: &[],
     // A coin-start run's `make sound` averages -30 dBFS RMS (peak -11),
     // louder than the games here that play at 0 dB (about -31 to -38):

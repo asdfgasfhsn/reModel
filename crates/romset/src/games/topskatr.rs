@@ -10,6 +10,7 @@ pub static TOPSKATR: Game = Game {
     board: Board::Model2C,
     attract_frame: 1650,
     input_lag: 0,
+    run_ahead_max: 0,
     // Window 4 holds the speed gauge and the time-limit ring (confirmed with
     // REMODEL_PROBE); the course is window 2 and the sky window 0.
     hud_windows: &[4],
@@ -22,6 +23,7 @@ pub static TOPSKATR: Game = Game {
     dropouts: &[],
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
+    recommended: crate::Recommended { depth: true, shading: true, ..crate::Recommended::DEFAULT },
     packed: &[],
     volume_db: 0.0,
     files: &[

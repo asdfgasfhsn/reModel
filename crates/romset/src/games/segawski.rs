@@ -17,6 +17,7 @@ pub static SEGAWSKI: Game = Game {
     hud_element_windows: &[],
     attract_frame: 2550,
     input_lag: 0,
+    run_ahead_max: 0,
     controls: CONTROLS,
     drive_board: None,
     parent: None,
@@ -25,6 +26,7 @@ pub static SEGAWSKI: Game = Game {
     dropouts: &[],
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
+    recommended: crate::Recommended { depth: true, shading: true, ..crate::Recommended::DEFAULT },
     packed: &[],
     volume_db: 0.0,
     files: &[

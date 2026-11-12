@@ -17,6 +17,7 @@ pub static DYNABB97: Game = Game {
     // The attract demo: a batter at the plate facing the pitcher.
     attract_frame: 1850,
     input_lag: 1,
+    run_ahead_max: 1,
     hud_windows: &[],
     hud_element_windows: &[],
     controls: CONTROLS,
@@ -27,6 +28,7 @@ pub static DYNABB97: Game = Game {
     dropouts: &[],
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
+    recommended: crate::Recommended::DEFAULT,
     packed: &[],
     // CRX_drv 3.2.8, as hotd and skisuprg: a coin-start run's `make sound`
     // averages -34 dBFS RMS, between theirs (docs/hw/sound.md §6).

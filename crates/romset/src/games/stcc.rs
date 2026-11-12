@@ -21,6 +21,7 @@ pub static STCC: Game = Game {
     board: Board::Model2C,
     attract_frame: 1050,
     input_lag: 1,
+    run_ahead_max: 1,
     hud_windows: &[],
     hud_element_windows: &[],
     controls: CONTROLS,
@@ -31,6 +32,7 @@ pub static STCC: Game = Game {
     dropouts: &[],
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
+    recommended: crate::Recommended { shading: true, ..crate::Recommended::DEFAULT },
     packed: &[],
     volume_db: 0.0,
     files: &[

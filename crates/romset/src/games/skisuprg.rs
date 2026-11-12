@@ -11,6 +11,7 @@ pub static SKISUPRG: Game = Game {
     board: Board::Model2C,
     attract_frame: 3750,
     input_lag: 0,
+    run_ahead_max: 0,
     hud_windows: &[],
     hud_element_windows: &[],
     controls: CONTROLS,
@@ -21,6 +22,7 @@ pub static SKISUPRG: Game = Game {
     dropouts: &[],
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
+    recommended: crate::Recommended::DEFAULT,
     packed: &[],
     volume_db: 0.0,
     files: &[

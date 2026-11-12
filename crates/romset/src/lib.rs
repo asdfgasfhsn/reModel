@@ -169,6 +169,12 @@ pub struct Game {
     /// measured). Run-ahead of more frames than this only judders, so the
     /// player suggests up to this much (`docs/play.md`, "Run-ahead").
     pub input_lag: u8,
+    /// The most frames of run-ahead worth offering: [`Game::input_lag`]
+    /// at most 3, or more where one control has lag and the main one has
+    /// none (`schamp`, `lastbrnx`: punches 1, the stick 0, which judders).
+    /// 0: nothing to hide, so the player offers no run-ahead
+    /// (`docs/play.md`, "Run-ahead").
+    pub run_ahead_max: u8,
     pub files: &'static [RomFile],
     /// Banks whose chip pairs follow each other with no gap, rather than
     /// each in its own [`ROM_SLOT`]: bel's main data and polygon ROMs, of
@@ -221,6 +227,41 @@ pub struct Game {
     /// `model2::light`); [`Shading::DEFAULT`] unless the game's pictures
     /// asked for something else.
     pub shading: Shading,
+    /// What the player's "Enhanced" picture preset turns on for this game
+    /// ([`Recommended::DEFAULT`] unless the game's pictures said
+    /// otherwise; the evidence in `docs/games/<set>.md`).
+    pub recommended: Recommended,
+}
+
+impl Game {
+    /// Frames of run-ahead the "Enhanced" preset sets: the game's own
+    /// input lag, within [`Game::run_ahead_max`]. A game whose main
+    /// control has no lag gets none, however much a button has.
+    pub fn run_ahead_recommended(&self) -> u8 {
+        self.input_lag.min(self.run_ahead_max)
+    }
+}
+
+/// Per-game choices of the player's "Enhanced" picture preset (smooth
+/// motion and run-ahead aside: those follow [`Game::input_lag`]). Each is
+/// on only where the game's own documentation says it is right for it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Recommended {
+    /// The depth buffer: seen fixing pictures in the game's frames and
+    /// breaking none (`docs/enhancements.md`, "Depth buffer").
+    pub depth: bool,
+    /// Smooth shading (vertex) with the game's crease: curved bodies and
+    /// fighters look better (`docs/enhancements.md`, "Smooth shading").
+    pub shading: bool,
+    /// Temporal anti-aliasing at full size; false: 4x multisampling
+    /// instead, where temporal misbehaves (`vstriker`).
+    pub temporal: bool,
+}
+
+impl Recommended {
+    /// What a game without evidence gets: temporal anti-aliasing, nothing
+    /// else that changes what the game draws.
+    pub const DEFAULT: Recommended = Recommended { depth: false, shading: false, temporal: true };
 }
 
 /// Per-game rules for smooth shading (`model2::light`, an enhancement):
@@ -549,6 +590,23 @@ pub fn interleave16(lo: &[u8], hi: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_ahead_is_offered_up_to_three_frames() {
+        for g in games::ALL {
+            assert!(g.run_ahead_max <= 3, "{}", g.id);
+            // Never past what the game's lag gives, except where a button
+            // has some and the main control none.
+            assert!(g.run_ahead_max <= g.input_lag.max(1) || g.run_ahead_max == 0, "{}", g.id);
+            assert!(g.run_ahead_recommended() <= g.run_ahead_max);
+        }
+        let ra = |id| games::find(id).ok().map(|g| (g.run_ahead_max, g.run_ahead_recommended()));
+        assert_eq!(ra("sgt24h"), Some((3, 3)));
+        assert_eq!(ra("schamp"), Some((1, 0)));
+        assert_eq!(ra("lastbrnx"), Some((1, 0)));
+        assert_eq!(ra("topskatr"), Some((0, 0)));
+        assert_eq!(ra("stcc"), Some((1, 1)));
+    }
 
     #[test]
     fn clones_fall_back_to_the_parents_pack() {

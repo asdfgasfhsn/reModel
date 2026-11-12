@@ -18,6 +18,7 @@ pub static FVIPERS: Game = Game {
     // The attract demo: Bahn squaring up to Honey on the rooftop.
     attract_frame: 3400,
     input_lag: 1,
+    run_ahead_max: 1,
     hud_windows: &[],
     hud_element_windows: &[],
     controls: CONTROLS,
@@ -29,6 +30,7 @@ pub static FVIPERS: Game = Game {
     // It uploads its textures to 0x11100000 and 0x11300000 only.
     texture_ram_mirrored: true,
     shading: crate::Shading::DEFAULT,
+    recommended: crate::Recommended { shading: true, ..crate::Recommended::DEFAULT },
     // In 8 MB slots the second and third polygon pairs' fighters draw as
     // shards; packed textures draw Bahn's coat wrong.
     packed: &[Role::Polygons],

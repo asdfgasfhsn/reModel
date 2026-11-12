@@ -20,6 +20,7 @@ pub static LASTBRNX: Game = Game {
     // The attract mode's fight in the Cross Street stage.
     attract_frame: 700,
     input_lag: 0,
+    run_ahead_max: 1,
     hud_windows: &[],
     hud_element_windows: &[],
     controls: CONTROLS,
@@ -30,6 +31,7 @@ pub static LASTBRNX: Game = Game {
     dropouts: &[],
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
+    recommended: crate::Recommended { shading: true, ..crate::Recommended::DEFAULT },
     packed: &[],
     // A coin-start run's audio averages -32.7 dBFS RMS (peak -13), with the
     // games here that play at 0 dB (docs/hw/sound.md §6).

@@ -17,6 +17,7 @@ pub static SCHAMP: Game = Game {
     // The attract demo: two fighters in the desert ring.
     attract_frame: 3500,
     input_lag: 0,
+    run_ahead_max: 1,
     hud_windows: &[],
     hud_element_windows: &[],
     controls: CONTROLS,
@@ -31,6 +32,7 @@ pub static SCHAMP: Game = Game {
     // ridges meet at 25-40 degrees: at 40 they melt together, at 25 they
     // keep their ridges (docs/games/schamp.md, "Smooth shading").
     shading: crate::Shading { crease: 25, ..crate::Shading::DEFAULT },
+    recommended: crate::Recommended { depth: true, shading: true, ..crate::Recommended::DEFAULT },
     packed: &[],
     // A coin-start run's `make sound` averages -28 dBFS RMS (peak -8), louder
     // than the games here that play at 0 dB (about -31 to -38): brought

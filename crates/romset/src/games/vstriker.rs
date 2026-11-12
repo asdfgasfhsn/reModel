@@ -18,6 +18,7 @@ pub static VSTRIKER: Game = Game {
     // The attract mode's sweep over the stadium before kick-off.
     attract_frame: 1200,
     input_lag: 0,
+    run_ahead_max: 0,
     hud_windows: &[],
     hud_element_windows: &[],
     controls: CONTROLS,
@@ -30,6 +31,7 @@ pub static VSTRIKER: Game = Game {
     // banks the pitch, kits and stands drew black.
     texture_ram_mirrored: true,
     shading: crate::Shading::DEFAULT,
+    recommended: crate::Recommended { temporal: false, ..crate::Recommended::DEFAULT },
     // In 8 MB slots the copro and geometrizer uploads read zeros (the
     // program fetches them from 0x2825F30) and the stands, boards and pitch
     // lines (polygon models from 0x900000 on) were missing.
