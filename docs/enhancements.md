@@ -71,6 +71,7 @@ through DirectX 8/9's fixed-function pipeline.
 | Lighting | Hybrid ray tracing (shadows, reflections, AO) | idea |
 | Lighting | Path tracing with denoising | idea (research) |
 | Audio | Replacement soundtracks | done (`docs/mods.md`) |
+| Audio | Live soundtracks: streaming services, in-game titles, album art on billboards | planned (`docs/mods.md`) |
 
 ## Order of work
 
