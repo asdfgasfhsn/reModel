@@ -87,6 +87,12 @@ const SHADING: [(gpu::Shading, &str); 3] =
 /// Material maps' rules: relief strengths and the faithful rule (`off`).
 pub const RELIEF: [(&str, &str); 5] = [("1", "1"), ("2", "2"), ("4", "4"), ("8", "8"), ("faithful", "off")];
 
+/// The label of one more relief choice when `r` is none of [`RELIEF`]'s
+/// ("custom (1.5)"), so the menu shows the strength in effect.
+fn custom_relief(r: gpu::Relief) -> Option<String> {
+    (!RELIEF.iter().any(|(_, v)| gpu::Relief::parse(v) == Some(r))).then(|| format!("custom ({})", r.name()))
+}
+
 /// What the shading setting does as set (said beside its choices).
 fn shading_hint(v: &GameSettings) -> &'static str {
     match v.shading {
@@ -371,6 +377,12 @@ impl Menu {
                                 focus.radio(ui, "materials_relief", &mut settings.materials_relief, r, text);
                             }
                         }
+                        // A strength off the list (1.5 from the settings
+                        // file or the command line) shows as selected.
+                        if let Some(text) = custom_relief(settings.materials_relief) {
+                            let r = settings.materials_relief;
+                            focus.radio(ui, "materials_relief", &mut settings.materials_relief, r, text);
+                        }
                     });
                     ui.weak("(strength, 2 by default; faithful: the game's own lighting sum, subtler)");
                 });
@@ -617,6 +629,14 @@ fn hints(ui: &mut egui::Ui, hints: &[(&str, &str)]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_relief_off_the_list_is_a_custom_choice() {
+        assert_eq!(custom_relief(gpu::Relief::default()), None);
+        assert_eq!(custom_relief(gpu::Relief::Faithful), None);
+        let r = gpu::Relief::parse("1.5").unwrap();
+        assert_eq!(custom_relief(r).as_deref(), Some("custom (1.5)"));
+    }
 
     /// The menu over a game, headless: a frame per `frames` entry (the
     /// pad's `Nav`s that frame), after one to lay it out; the actions taken.

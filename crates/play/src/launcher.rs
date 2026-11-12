@@ -523,10 +523,14 @@ impl Launcher {
                         match rows[self.row] {
                             Row::Scope => *for_all = if step == 0 { !*for_all } else { step > 0 },
                             Row::Choice(key, _, _, options) => {
-                                let at = options.iter().position(|o| o.1 == values.get(key)).unwrap_or(0) as i32;
-                                let n = options.len() as i32;
+                                // A value off the list is one more choice
+                                // after the others: staying on it keeps it.
+                                let (labels, at) = choice_labels(options, &values.get(key));
+                                let (at, n) = (at as i32, labels.len() as i32);
                                 let to = if step == 0 { (at + 1) % n } else { (at + step).clamp(0, n - 1) };
-                                values.set(key, options[to as usize].1);
+                                if let Some(o) = options.get(to as usize) {
+                                    values.set(key, o.1);
+                                }
                             }
                             Row::Db(key, _, min, max) => {
                                 let v: f32 = values.get(key).parse().unwrap_or(0.0);
@@ -1285,8 +1289,9 @@ impl Launcher {
                 // label and hint are centred on the row together.
                 let control_w = match row {
                     Row::Scope => pills_width(&p, &["This game", "All games"], u),
-                    Row::Choice(_, _, _, options) => {
-                        pills_width(&p, &options.iter().map(|o| o.0).collect::<Vec<_>>(), u)
+                    Row::Choice(k, _, _, options) => {
+                        let labels = choice_labels(options, &values.get(k)).0;
+                        pills_width(&p, &labels.iter().map(String::as_str).collect::<Vec<_>>(), u)
                     }
                     Row::Db(..) => 330.0 * u,
                     Row::Controls | Row::Reset => 30.0 * u,
@@ -1342,10 +1347,12 @@ impl Launcher {
                         }
                     }
                     Row::Choice(k, _, _, options) => {
-                        let at = options.iter().position(|o| o.1 == values.get(k)).unwrap_or(0);
-                        let labels: Vec<&str> = options.iter().map(|o| o.0).collect();
+                        let (labels, at) = choice_labels(options, &values.get(k));
+                        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
                         if let Some(v) = pills(ui, &p, right, r.center().y, &labels, at, u, ("choice", i)) {
-                            values.set(k, options[v].1);
+                            if let Some(o) = options.get(v) {
+                                values.set(k, o.1);
+                            }
                             self.row = i;
                         }
                     }
@@ -1507,6 +1514,19 @@ pub fn keycap(p: &Painter, r: Rect, text: &str, font: &FontId, u: f32) {
     p.text(r.center() - vec2(0.0, 1.0 * u), Align2::CENTER_CENTER, text, font.clone(), FG);
 }
 
+/// A choice row's pill labels and the selected one: a value off the list
+/// (a `materials_relief` of 1.5 from the settings file or the command line)
+/// gets a pill of its own after the others, "Custom (1.5)", so the row
+/// shows what is in effect instead of highlighting the first choice.
+fn choice_labels(options: &[(&str, &str)], value: &str) -> (Vec<String>, usize) {
+    let mut labels: Vec<String> = options.iter().map(|o| o.0.to_string()).collect();
+    let at = options.iter().position(|o| o.1 == value).unwrap_or_else(|| {
+        labels.push(format!("Custom ({value})"));
+        options.len()
+    });
+    (labels, at)
+}
+
 /// How wide `pills` draws `labels`.
 fn pills_width(p: &Painter, labels: &[&str], u: f32) -> f32 {
     let font = FontId::proportional(14.0 * u);
@@ -1646,6 +1666,21 @@ mod tests {
                 assert!(v.set(key, value) && v.get(key) == *value, "{key} = {value}");
             }
         }
+    }
+
+    #[test]
+    fn a_value_off_the_list_shows_as_custom() {
+        let Some(Row::Choice(_, _, _, options)) =
+            rows(false, 16).into_iter().find(|r| matches!(r, Row::Choice("materials_relief", ..)))
+        else {
+            panic!("no materials_relief row")
+        };
+        let (labels, at) = choice_labels(options, "2");
+        assert_eq!((labels.len(), labels[at].as_str()), (options.len(), "2"));
+        let mut v = GameSettings::default();
+        assert!(v.set("materials_relief", "1.5"));
+        let (labels, at) = choice_labels(options, &v.get("materials_relief"));
+        assert_eq!((labels.len(), at, labels[at].as_str()), (options.len() + 1, options.len(), "Custom (1.5)"));
     }
 
     #[test]

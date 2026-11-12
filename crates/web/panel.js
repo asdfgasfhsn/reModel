@@ -190,7 +190,7 @@ export function createPanel(opts) {
       "with the texture pack: its normal maps, bumps and grooves lit by the game's own lights (needs the " +
       "native geometrizer; no effect with the chip)"),
     choice("relief", "Material relief", () => withValue("relief",
-      [["1", "1"], ["2", "2"], ["4", "4"], ["8", "8"], ["off", "Faithful"]], (v) => v),
+      [["1", "1"], ["2", "2"], ["4", "4"], ["8", "8"], ["off", "Faithful"]], (v) => `Custom (${v})`),
       "with material maps: how strongly they shade (2 by default); faithful keeps the game's own lighting sum, subtler"));
   const autoBuffer = audioBuffer("auto", env).target * 1000;
   const sound = el("section", {}, el("h3", { textContent: "Sound" }),
