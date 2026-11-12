@@ -360,8 +360,8 @@ are the same as the SHARC's: coin-start runs of 600M instructions gave
 games that read the timers, `docs/hw/peripherals.md`)
 the same state hash on the SHARC and natively for `sgt24h`
 (`282c8d6fd5151c21`), `doa` (`78f308b4da95cefb`), `schamp`
-(`8d2b7b4cd55d64a0`), `vstriker` (`a4af0c62acc656f3`, interpreted and
-recompiled), `lastbrnx` (`38e1f20d016dd508`, interpreted and recompiled),
+(`0dd9ca5f3388771f`), `vstriker` (`a4af0c62acc656f3`, interpreted and
+recompiled), `lastbrnx` (`c3ec82727bacd608`, interpreted and recompiled),
 `overrevb` and `dynabb97` (with the `eeprom.bin` of
 an earlier run), and a run saved at frame 2000 in either mode and resumed
 in either mode ends with the uninterrupted run's hash (for `vstriker`

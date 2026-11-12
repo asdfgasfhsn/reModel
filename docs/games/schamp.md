@@ -34,7 +34,7 @@ the dat names it), which isn't supported.
   with sound. `make sound` of that run averages -28 dBFS RMS (peak -8),
   louder than the games at 0 dB, so the manifest takes 4 dB off. A
   coin-start run of 600M instructions gives the state hash
-  `8d2b7b4cd55d64a0` recompiled and interpreted (the game never writes
+  `0dd9ca5f3388771f` (`8d2b7b4cd55d64a0` before the timers' counts were read a word higher, 2026-11-13, `docs/hw/peripherals.md`) recompiled and interpreted (the game never writes
   its EEPROM in it).
   `make state-check GAME=schamp` round-trips, and `make lockstep
   GAME=schamp RECOMP=1 INPUT=coin-start` runs 600M instructions identical

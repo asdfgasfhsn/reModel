@@ -317,9 +317,9 @@ inside both.
 **State hashes.** 600M-instruction coin-start runs (with the EEPROM a
 first run writes) give the same state hash on the TGP and natively:
 `topskatr` `400275251269648e`, `skisuprg` `188a5a44fb547532`, `stcc`
-`bbde4ebfb8d918d8`, `segawski` `505a972b9e8a3c89`, `waverunr`
+`b42ea11201ac75c4`, `segawski` `505a972b9e8a3c89`, `waverunr`
 `97d498bed77503a6`, `overrev` `d41686f041683f4c`, `hotd`
-`0473295c9891af45`, `bel` `25f923c57d7362eb`. Runs of `topskatr`,
+`38c08a3e3591af45`, `bel` `a634c029241973eb`. Runs of `topskatr`,
 `overrev` and `segawski` saved at frame 2000 in either mode and resumed in
 either mode end with the uninterrupted run's hash.
 

@@ -39,12 +39,19 @@ Model 2B, with early Sega 2B SHARC programs.
   takes Grace at the character select and fights Bahn in the first stage
   through rounds with sound. `make sound` of that run averages -32 dBFS
   RMS (peak -12), so the manifest adds no gain. A coin-start run of 600M
-  instructions gives the state hash `96bd74a28b0455b6` recompiled and
+  instructions gives the state hash `f2da97d89774d706` (`96bd74a28b0455b6` before the timers' counts were read a word higher, 2026-11-13, `docs/hw/peripherals.md`) recompiled and
   interpreted (the game never writes its EEPROM in it). `make
   state-check GAME=fvipers` round-trips, and `make lockstep GAME=fvipers
   RECOMP=1 INPUT=coin-start` runs 600M instructions identical (i960 and
   both SHARCs recompiled). Its geometrizer runs `indy500`'s crate, its
   copro program a crate of its own.
+- *Confirmed (by running it, 2026-11-13):* Grace's ponytail flickered
+  before the timers' counts were read a word higher
+  (`docs/hw/peripherals.md`, "Timers"): in consecutive frames of a
+  coin-start run (1,700-1,709) it was missing or short in most and whole in
+  a few, and now it is whole in every frame, as `vf2`'s hair was
+  (`docs/games/vf2.md`). Same time-budget skip, misreading the frame's
+  elapsed time.
 - *Speed (by running it):* that run plays at 2.83x real time recompiled
   natively (the geometrizer on its thread, slowest frame 10.1 ms), and at
   0.82x interpreted (slowest frame 34.7 ms).

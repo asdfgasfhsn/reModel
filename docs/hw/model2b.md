@@ -587,7 +587,7 @@ that run alone, and the run took nearly three times as long).
   strobe; no 2B game reads its host window (`0x840000`), and with `--geo
   native` (the SHARC runs no frame) coin-start runs of 600M instructions
   end with the SHARC's state hashes (`sgt24h` `282c8d6fd5151c21`, `doa`
-  `78f308b4da95cefb`, `schamp` `8d2b7b4cd55d64a0`). Its command set,
+  `78f308b4da95cefb`, `schamp` `0dd9ca5f3388771f`). Its command set,
   formats and arithmetic (32-bit floats rounded toward zero, `RSQRTS` and
   two Newton steps for computed normals) are in
   `docs/hw/geometrizer-2b.md`, with the native implementation that

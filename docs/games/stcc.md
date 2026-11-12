@@ -88,7 +88,7 @@ Third 2C game: the first with a DSB1 music board, a wheel and a gearbox.
   it laps, and the attract demos race in 3D. `make state-check GAME=stcc`
   round-trips, `make lockstep GAME=stcc` runs 300M instructions identical,
   and a coin-start run of 600M instructions gives the same state hash
-  (`bbde4ebfb8d918d8`) recompiled and interpreted.
+  (`b42ea11201ac75c4`; `bbde4ebfb8d918d8` before the timers' counts were read a word higher, 2026-11-13, `docs/hw/peripherals.md`) recompiled and interpreted.
 - *Unconfirmed:* `epr-18643a.7` (also in `sgt24h` and `von`) is Z80 code
   whose header names Sega part 837-10074; it belongs to another cabinet
   board, most likely the link board (see `docs/games/sgt24h.md`).

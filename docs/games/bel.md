@@ -50,7 +50,7 @@ says 1998). The sound program is EPL's (`docs/hw/sound.md` §7).
   the commands with music throughout. `make state-check GAME=bel`
   round-trips, `make lockstep GAME=bel` runs 300M instructions identical,
   and a coin-start run of 600M instructions gives the same state hash
-  (`25f923c57d7362eb`, with an `eeprom.bin` from an earlier run)
+  (`a634c029241973eb`, with an `eeprom.bin` from an earlier run; `25f923c57d7362eb` before the timers' counts were read a word higher, 2026-11-13, `docs/hw/peripherals.md`)
   recompiled and interpreted.
 - Players aim with the generic gun controls; the right mouse button (or
   the pad's left trigger / B) fires a missile, as the manifest makes the

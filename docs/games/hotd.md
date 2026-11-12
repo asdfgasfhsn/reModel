@@ -71,7 +71,7 @@ screen says ©SEGA 1996.
   areas before the game over. `make state-check GAME=hotd` round-trips,
   `make lockstep GAME=hotd` runs 300M instructions identical, and a
   coin-start run of 600M instructions gives the same state hash
-  (`0473295c9891af45`, with an `eeprom.bin` from an earlier run)
+  (`38c08a3e3591af45`, with an `eeprom.bin` from an earlier run; `0473295c9891af45` before the timers' counts were read a word higher, 2026-11-13, `docs/hw/peripherals.md`)
   recompiled and interpreted.
 - Light gun input is generic (`romset::Gun`): a gun is a position in the
   view (or off screen) plus a trigger button; the manifest says where the
