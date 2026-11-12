@@ -2744,9 +2744,14 @@ fn main() {
         let _ = std::fs::create_dir_all(&play.settings.rom);
     }
     play.scan();
-    // `--game`: straight into it; else the launcher.
+    // `--game`: straight into it (an in-progress game too, which the
+    // launcher doesn't list); else the launcher.
+    let in_progress = |set: &str| {
+        romset::games::IN_PROGRESS.iter().any(|g| g.id == set)
+            && romset::sets_with_clones(&play.settings.rom).iter().any(|s| s == set)
+    };
     match play.opts.game.clone() {
-        Some(set) if play.games.iter().any(|g| g.id == set) => play.start_game(&set, false),
+        Some(set) if play.games.iter().any(|g| g.id == set) || in_progress(&set) => play.start_game(&set, false),
         Some(set) => {
             println!("no {set} in {}: choose a game", play.settings.rom.display());
             play.menu.notify(format!("No {set} in {}", play.settings.rom.display()));
