@@ -923,7 +923,16 @@ events only, not yet with a real pad.
   queue) it slows with it, lower in pitch, instead of running dry; while
   it keeps up only the queue's drift correction (at most 1%, inaudible)
   moves the pitch, so a frame dropped now and then is absorbed by the
-  queue rather than heard. Before,
+  queue rather than heard. Two things keep a game that sits near its
+  frame budget from bending the pitch (found on `vf2` with the Enhanced
+  picture settings, whose draw alone takes 9-12 ms in a fight on top of
+  7 ms of emulation, `docs/games/vf2.md`): the queue's target grows from
+  50 ms to at most 150 ms (1.25 times the longest gap between redraws in
+  the last 8 s) when redraws come unevenly, and the rate control's
+  patience grows with it; and a gap longer than 0.1 s between redraws is
+  a hitch, a pause rather than a slow game, so it isn't counted as
+  frames missed (a 0.2 s hitch used to count as 3 frames run of 11 due
+  and pulled the pitch down by up to 40% for seconds). Before,
   only a 0.5% drift correction steered the 50 ms queue, so `sgt24h`'s race
   start (its geometrizer at 18.7 ms a frame natively then, before the
   SHARC blocks; 6.8 ms now) would run it dry

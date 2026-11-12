@@ -5,8 +5,22 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
-/// Audio the queue should hold (seconds); output starts once it does.
+/// Audio the queue should hold (seconds) while the game's frames come
+/// steadily; output starts once it does.
 pub const AUDIO_TARGET: f64 = 0.05;
+/// The most it grows to when frames come unevenly (seconds), and how much
+/// longer than the longest recent gap between redraws it holds, so a
+/// frame that takes two or three refreshes drains the queue without
+/// emptying it, and without the pitch bending to match.
+const AUDIO_TARGET_MAX: f64 = 0.15;
+const GAP_HEADROOM: f64 = 1.25;
+/// Seconds the longest recent gap is remembered for.
+const GAP_MEMORY: f64 = 8.0;
+/// A gap between redraws longer than this (seconds) is a hitch, not a
+/// slow game.
+const STALL: f64 = 0.1;
+/// Seconds the target takes to follow it.
+const TARGET_TAU: f64 = 0.5;
 /// Most audio queued before the oldest is dropped (seconds).
 const AUDIO_MAX: f64 = 0.25;
 
@@ -34,6 +48,8 @@ pub struct Queue {
     primed: bool,
     /// Samples per second (per channel) at the device.
     rate: f64,
+    /// Seconds queued before playing (again) after running dry.
+    target: f64,
 }
 
 pub struct Sound {
@@ -51,6 +67,10 @@ pub struct Sound {
     /// The rate control: follows the game's actual pace, holds the queue
     /// at `AUDIO_TARGET`.
     pace: model2::audio::Pace,
+    /// The longest recent gap between redraws (seconds, decaying), and the
+    /// queue target it sets.
+    gap: f64,
+    target: f64,
 }
 
 impl Sound {
@@ -61,7 +81,7 @@ impl Sound {
         let rate = supported.sample_rate();
         let channels = supported.channels() as usize;
         let config = supported.config();
-        let queue = Arc::new(Mutex::new(Queue { rate: rate as f64, ..Queue::default() }));
+        let queue = Arc::new(Mutex::new(Queue { rate: rate as f64, target: AUDIO_TARGET, ..Queue::default() }));
         let q = queue.clone();
         let stream = match supported.sample_format() {
             cpal::SampleFormat::F32 => device.build_output_stream(
@@ -125,16 +145,44 @@ impl Sound {
                 }
             })
             .map_err(|e| e.to_string())?;
-        Ok(Sound { _stream: stream, queue, commands, asked: 0, made, rate, ratio, pace: Default::default() })
+        Ok(Sound {
+            _stream: stream,
+            queue,
+            commands,
+            asked: 0,
+            made,
+            rate,
+            ratio,
+            pace: Default::default(),
+            gap: 0.0,
+            target: AUDIO_TARGET,
+        })
     }
 
     /// Set the game's speed relative to real time (1 = exact), after `dt`
     /// seconds in which it ran `ran` frames of the `due` it should have:
-    /// the audio plays at that speed, held at `AUDIO_TARGET` queued and
+    /// the audio plays at that speed, held at the queue target (`AUDIO_TARGET`,
+    /// deeper while redraws come unevenly) and
     /// slowed with the game once it persistently can't keep it
     /// (`model2::audio::Pace`).
     pub fn set_speed(&mut self, speed: f64, dt: f64, ran: f64, due: f64) {
-        let step = self.pace.update(dt, speed, ran, due, Some(self.queued()), AUDIO_TARGET);
+        // Redraws that come further apart than usual (a slow draw, a frame
+        // that takes several refreshes) need a deeper queue; the rate control's
+        // patience scales with it.
+        if dt > 0.0 && dt <= model2::audio::Pace::GAP {
+            self.gap = (self.gap * (-dt / GAP_MEMORY).exp()).max(dt);
+            let goal = (self.gap * GAP_HEADROOM).clamp(AUDIO_TARGET, AUDIO_TARGET_MAX);
+            self.target += (goal - self.target) * (dt / TARGET_TAU).min(1.0);
+            self.queue.lock().unwrap().target = self.target;
+        }
+        // A hitch (a driver or window-system stall) is a pause in the game,
+        // not the game running slow: it would show to the rate control as a
+        // few frames run of many due and drag the pitch down for seconds
+        // after, so it is left to the queue.
+        if dt > STALL {
+            return;
+        }
+        let step = self.pace.update(dt, speed, ran, due, Some(self.queued()), self.target);
         self.ratio.store(step.to_bits(), Ordering::Relaxed);
     }
 
@@ -174,7 +222,7 @@ impl Sound {
 /// Copy queued audio into a device buffer of `channels` channels.
 fn fill<T: Copy>(q: &Mutex<Queue>, out: &mut [T], channels: usize, conv: impl Fn(f32) -> T) {
     let mut q = q.lock().unwrap();
-    if !q.primed && q.samples.len() as f64 >= AUDIO_TARGET * q.rate * 2.0 {
+    if !q.primed && q.samples.len() as f64 >= q.target * q.rate * 2.0 {
         q.primed = true;
     }
     if !q.primed {

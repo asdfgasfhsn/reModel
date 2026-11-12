@@ -119,6 +119,38 @@ round after round.
   the same run gives -19.0 LUFS, peaks -1.4 dBFS and nothing clipped,
   inside the other games' gameplay range (-16 to -28 LUFS, median about
   -21.5; `srallyc.md`).
+- *Confirmed (by measurement; the pitch complaint, 2026-11-13):* "odd
+  slow downs that sound like pitch changes" in the native player are the
+  live playback pacing, not the emulated sound. The emulated sound is
+  fixed in emulated time (the live path feeds each host byte at its exact
+  sample, so host speed can't move it): in a 70 s coin-start run (fight
+  included) the 68000's timer A interrupt, the driver's tempo clock, came
+  every 49 samples (the manual's `0xFF - 0xCE`) 60,361 times of 60,886,
+  50 to 52 samples 24 times, and the rest were the driver's boot, before
+  3 s; timer B every 504 samples likewise. None of the 1,808 key-ons use
+  the pitch LFO, FM or a non-looping/reverse mode (OCT -3 to 0 only), so
+  no modulation can bend a note. In the player, on a quiet machine at
+  default settings, the audio step stays within 0.5% of the display's
+  (1.043 on a 60 Hz display) for a minute (0 underruns). With the
+  settings the author's `out/play-settings.txt` has (8x MSAA, pixel
+  shading, temporal 50%, smooth motion, run-ahead 1) a fight's draw alone
+  takes 9-12 ms (3 ms in attract) on an RTX 2080 SUPER, and with about
+  7 ms of emulation (the i960 interpreter, the most of any game here)
+  that is the 16.7 ms a refresh gives: the player drops from "synced to
+  60 Hz" (104% speed) to "paced by the clock" (100%), a 70-cent slide,
+  and frames come in bursts of two and three refreshes. The rate control
+  (`model2::audio::Pace`) then bent the pitch by up to 100 cents over a
+  second with the game's true speed unchanged, and a single 0.2 s hitch
+  (2 per 110 s here) pulled it down by up to 40% for seconds, since the
+  clock's 11 frames due against 3 run read as a slow game. Fixed in the
+  player (`docs/play.md`): hitches over 0.1 s aren't counted as slowness,
+  and the queue's target deepens to 150 ms while redraws are uneven. On a
+  replay of the measured frame timings that cut underruns (12 to 3 in
+  one trace) and the worst pitch dip (1491 to 529 cents in another);
+  steady slides from the player changing mode and a game truly below
+  full speed are still followed, by design. What would help most is
+  cheaper frames: `make play RECOMP=1` takes the i960 interpreter out,
+  and the draw settings are the other half. Not confirmed by ear.
 
 - *Confirmed (by the game's input test, driven by `make run` scripts):*
   the test menu (hold `test`; `service` moves the cursor, a fresh `test`

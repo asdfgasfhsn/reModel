@@ -162,6 +162,12 @@ stored **little-endian per 16-bit word**. Swap each byte pair to get the
   in §2.6): timer A every (`0x100−0xCE`) = 50 samples ≈ **882 Hz**. Timer B
   every 58 × 8 = 464 samples ≈ **95 Hz**.
 
+- Measured on `vf2` (H, by running it, 2026-11-13): its driver's timer
+  A fires every 49 samples (`0xFF - 0xCE`, 50 to 52 now and then when an
+  interrupt waits behind the 68000's other work) and timer B every 504,
+  steady over a 70 s coin-start run with a fight, so the 68000 is never
+  starved and the tempo clock doesn't move with host load.
+
 ### Clocks (MAME, M)
 - The 45.1584 MHz crystal is on the 2C board (PCB note: "OSC ... 45.158MHz").
   SCSP = 22.5792 MHz. Output rate = SCSP clock / 512 = **44.1 kHz** (32
