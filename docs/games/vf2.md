@@ -1,7 +1,8 @@
 # Virtua Fighter 2 (`vf2`, Model 2A-CRX, 1995)
 
 Status: **in progress** (`romset::games::IN_PROGRESS`); a game starts and
-fights, but not playably yet.
+its fights play out round after round; the player-select fighter is
+missing.
 
 - *Confirmed:* the manifest verifies (33 chips, program set 2.1:
   `epr-18385..18388`). The i960 boots and uploads a 3,802-word TGP program
@@ -19,15 +20,22 @@ fights, but not playably yet.
   rotations, transforming points, distances, normalising. Its function
   numbers dispatch through a table at `0x3F` + F; the argument and reply
   counts of every function the game calls match its code.
-- *Blocker:* in the fight a fighter falls through the ring within two
-  seconds, with no input, and the round ends "RING OUT" (the replay shows
-  him dropping below the floor among the stage's buildings). The floor
-  and collision work is in TGP functions `0x4A` (the object list: transform
-  each object's points, test them against planes, push them out, write
-  them back into shared RAM) and `0x3A`/`0x3B`/`0x3E` (sphere collision
-  tables); their geometry is unconfirmed, and so is anything the i960
-  does with the results. Next: a `tgp-check` for `vf2` and a trace of
-  function `0x4A`'s inputs and outputs around the fall.
+- *Confirmed (by running it):* fights play out. A coin-start run of
+  1.5G instructions (10,354 frames) plays round 1 against Lau to a K.O.
+  (frame ~2,700), "WINNER", then the next opponents (Sarah, then Shun)
+  through rounds 2 and 3, with no ring-out. Before, a fighter fell
+  through the ring 1.7 s into round 1 ("RING OUT"). The cause was the
+  TGP's functions `0x6C`-`0x6F`, which read the skeleton's rotation
+  angles and translations from a 64-word ring the i960 fills in shared
+  RAM at `0x3800` (buffer RAM `0x90E000`-`0x90E0FF`): the MB86234 steps
+  their pointer round the ring (a circular operand,
+  `docs/hw/mb86234.md`), and the interpreter let it run on past the ring
+  into other data, so the bone matrices filled with denormals and NaNs
+  (from frame 979, in attract too) and the game's floor and ring-edge
+  tests, which use the bones, saw a fighter outside the ring. Unconfirmed
+  for the floor work itself: functions `0x4A`, `0x3A`/`0x3B`/`0x3E` were
+  not changed and now give finite results throughout (they had passed
+  the NaNs on).
 - *Confirmed (by the pictures):* the stages and fighters are textured
   (stone towers, trees, brick floor, clothes and faces). The grey was
   not the chip roles, the polygons' attributes or the renderer: the
@@ -64,8 +72,15 @@ fights, but not playably yet.
   coin-start run), and `vf2`'s set has no chip for it. Re-sending the
   previous frame's window for a list with none was tried and changes
   nothing (the polygons are then culled for their depth), so it is not
-  kept. Next: trace `0x34`/`0x35` and the function that should leave a
-  translation in the matrix on this screen.
+  kept. Still so with the ring fix (`docs/hw/mb86234.md`, circular
+  operands). In that frame the i960's calls are: push, identity (`0x03`),
+  `0x6F`, `0x6C`-`0x6E` (translate and rotate from the ring), a push and
+  pop around `0x29`, then `0x34` twice (byte offsets `0x18050`,
+  `0x18098`, from i960 code at `0x7C84`), which copies the current
+  matrix, RAM1 at `[0x3F]`, into the list. So the identity means the
+  ring held zeros for those reads, or the i960 and the TGP disagree about
+  where in the ring they are on this screen (unconfirmed; next: compare
+  the i960's ring write position with the TGP's RAM0 `0x3D`).
 - *Unconfirmed:* chip roles are by analogy with `srallyc` (main data
   `.10/.11 .8/.9 .6/.7 .4/.5`, polygons `.16/.20 .17/.21 .18/.22`, textures
   `.25/.24 .27/.26`); controls copied from `fvipers`.
