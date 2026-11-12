@@ -128,7 +128,8 @@ round after round.
   joining mid-game (two coins, start 2) gets the challenger's player
   select, a "CHAMPION 1 WIN"/"CHALLENGER" fight and "WINNER", then
   "TRY NEXT STAGE" and the first player's next stage. The player-select
-  fighter is still missing in each (the TGP result above).
+  fighter was missing in each (the window, above; with the window
+  carried over it is checked on the one-player screen only).
 - *Unconfirmed (looks like a camera or shadow draw, not checked against
   the game):* in the close "REPLAY" views and the stage-4 ring-out camera
   large black polygons cross the floor (shadows seen from too close or
