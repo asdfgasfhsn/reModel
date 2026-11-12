@@ -30,7 +30,7 @@ pub static VF2: Game = Game {
     dropouts: &[],
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
-    recommended: crate::Recommended::DEFAULT,
+    recommended: crate::Recommended { shading: true, ..crate::Recommended::DEFAULT },
     packed: &[Role::MainData, Role::CoproData, Role::Polygons, Role::Textures, Role::TgpData],
     volume_db: 0.0,
     files: &[
@@ -235,7 +235,8 @@ pub static VF2: Game = Game {
     ],
 };
 
-/// Stick and punch, kick, guard, as `fvipers`: unconfirmed for this game.
+/// Stick and punch, kick, guard, as `fvipers`: confirmed on the game's own
+/// input test (docs/games/vf2.md), every switch of both players.
 const CONTROLS: Controls = Controls {
     buttons: &[
         button("coin1", 0, 0x01, &["KeyC", "Digit5"], &[PadButton::Select]).labelled("Coin"),

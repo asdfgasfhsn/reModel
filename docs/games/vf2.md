@@ -83,7 +83,7 @@ missing.
   the i960's ring write position with the TGP's RAM0 `0x3D`).
 - *Unconfirmed:* chip roles are by analogy with `srallyc` (main data
   `.10/.11 .8/.9 .6/.7 .4/.5`, polygons `.16/.20 .17/.21 .18/.22`, textures
-  `.25/.24 .27/.26`); controls copied from `fvipers`.
+  `.25/.24 .27/.26`).
 - *Confirmed (from the ROM data and the sound driver; not yet by ear):*
   the samples are `.31 .32 .36 .37`, 2 MB each, back to back at the sound
   68000's `0x800000-0xFFFFFF`, tested as for `srallyc`
@@ -110,10 +110,55 @@ missing.
   inside the other games' gameplay range (-16 to -28 LUFS, median about
   -21.5; `srallyc.md`).
 
+- *Confirmed (by the game's input test, driven by `make run` scripts):*
+  the test menu (hold `test`; `service` moves the cursor, a fresh `test`
+  press selects) lists "INPUT TEST" with every switch of both players.
+  Each of the 19 inputs, held one at a time, lit exactly its own line:
+  port `0x1C00002` bit 0 coin 1, 1 coin 2, 2 test, 3 service, 4 start 1,
+  5 start 2; ports `0x1C00004` and `0x1C00006` (players 1 and 2): bit 0
+  punch, 1 kick, 2 guard, 4 down, 5 up, 6 right, 7 left. The manifest's
+  controls match (the same layout as `fvipers`; Z guard, X punch, V kick).
+  The DIP-like settings (two coins a credit, "CREDIT 1/2") are the game's
+  backup RAM defaults, not DIP switches; nothing needs setting.
+- *Confirmed (by running it, 2026-11-13: a coin-start run of 3.5G
+  instructions, 24,160 frames):* the whole game loop with no hang, crash
+  or garbage frame: rounds against Lau, Sarah, Shun and Pai (stages 1-4,
+  "SET 1"/"SET 2", K.O., "REPLAY", "WINNER", "TRY NEXT STAGE"), then the
+  scripted player loses to Pai: "YOU LOSE", "CONTINUE?" counting down,
+  "GAME OVER", the SEGA logo, and back to attract (fighters in 3D, title,
+  the ranking screens, "INSERT COIN(S)"). From a save state at the
+  continue screen, two coins and start continue into round 4 again with
+  "CREDIT 0/2". With four coins, start and start 2 together: two-player
+  "PLAYER SELECT" (Akira against Lion, picked by the scripted buttons)
+  and a versus round in which both sides' buttons act. A second player
+  joining mid-game (two coins, start 2) gets the challenger's player
+  select, a "CHAMPION 1 WIN"/"CHALLENGER" fight and "WINNER", then
+  "TRY NEXT STAGE" and the first player's next stage. The player-select
+  fighter is still missing in each (the TGP result above).
+- *Unconfirmed (looks like a camera or shadow draw, not checked against
+  the game):* in the close "REPLAY" views and the stage-4 ring-out camera
+  large black polygons cross the floor (shadows seen from too close or
+  the ring's edge); the ordinary views draw clean.
+- *Input lag, measured (`make input-lag GAME=vf2`: frame 3707 of a
+  two-coin coin-start run whose punches and kicks stop at 3400; earlier
+  frames of that run are K.O. and round transitions that show nothing):*
+  a punch shows a frame after the first that reads it: input lag 1;
+  walking right shows in the first frame: 0 (as `lastbrnx`).
+  `run_ahead_max` is 1.
+- *Depth buffer (2026-11-13; 21 captured coin-start frames, 1440x1080,
+  `make depth-check GAME=vf2`):* 15 differ, by at most 0.028% of the
+  picture (a few pixels of limb and costume layers); nothing looks
+  broken either way, so no depth buffer.
+- *Lighting (`make lighting-capture lighting-check GAME=vf2`, 21
+  frames):* the side channel is exact on all 63,029 polygons (L2 100%,
+  no mismatch, hue kept, software and GPU the same); about 54% of the
+  drawn polygons are lit. Smooth shading makes the fighters rounder with
+  no seams (review pictures), so the Enhanced preset turns it on.
+
 ## Enhanced preset
 
 What the player's Enhanced picture preset (`romset::Recommended` in the
 manifest, `run_ahead_max` for run-ahead) turns on for `vf2`, and why:
-Not playable yet, so the defaults: temporal at full size, no depth buffer
-or smooth shading, nothing recorded either way; run-ahead from its input lag
-once it plays.
+Temporal at full size; smooth shading on (the fighters are rounder, the
+side channel is exact); no depth buffer (nothing recorded as fixed);
+smooth motion; run-ahead up to 1 (punches lag a frame, the stick none).
