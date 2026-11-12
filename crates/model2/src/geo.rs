@@ -176,6 +176,53 @@ const TS_COMMAND_ERROR_PC: u32 = 0x34d;
 /// Rasteriser NOP. The idle loop's delay slot emits one per pass, which the
 /// rasteriser discards.
 pub(crate) const RASTER_NOP: u32 = 0xff00_0000;
+
+/// A raster stream's commands as the rasteriser reads them: (index,
+/// command word), skipping the operands of the window (`0x3`), `0x8` and
+/// memory write (`0x4`) commands, and data words between commands.
+fn raster_commands(stream: &[u32]) -> impl Iterator<Item = (usize, u32)> + '_ {
+    let mut i = 0;
+    std::iter::from_fn(move || {
+        while i < stream.len() {
+            let (at, w) = (i, stream[i]);
+            i += 1;
+            if w >> 24 != 0xff {
+                continue;
+            }
+            i += match w & 0xf {
+                0x3 => 6,
+                0x8 => 1,
+                0x4 => 2 + stream.get(i + 1).map_or(0, |&n| n as usize),
+                _ => 0,
+            };
+            return Some((at, w));
+        }
+        None
+    })
+}
+
+/// The last window command in a raster stream (its command word and six
+/// operands): the window the rasteriser is left with after it.
+pub(crate) fn last_window(stream: &[u32]) -> Option<[u32; 7]> {
+    let (at, _) = raster_commands(stream).filter(|&(_, w)| w & 0xf == 0x3).last()?;
+    stream.get(at..at + 7).map(|s| s.try_into().unwrap())
+}
+
+/// The rasteriser keeps its window from frame to frame: a frame whose
+/// stream draws an object before it sets any window draws it in the
+/// window the frame before was left with (`vf2`'s player-select screen
+/// sends no window command; docs/games/vf2.md). The renderers take each
+/// frame's stream on its own, so that window is put at the start of a
+/// stream that doesn't begin with its own, which also carries it through
+/// frames that set none.
+pub(crate) fn carry_window(stream: &mut Vec<u32>, window: Option<[u32; 7]>) {
+    let Some(window) = window else { return };
+    let first = raster_commands(stream).map(|(_, w)| w & 0xf).find(|&c| c == 0x3 || c == 0x1);
+    if first != Some(0x3) {
+        stream.splice(0..0, window);
+    }
+}
+
 /// Steps with no input consumed and no output produced after which the
 /// program is taken to be idle (finished the list, waiting for F0).
 const IDLE_STEPS: u64 = 4096;
@@ -1171,6 +1218,7 @@ impl Engine {
     /// Run one frame: stream the list at the read pointer into the
     /// geometrizer until it emits END, collecting its output.
     fn run_frame(&mut self, booted: bool, read_ptr: u32) {
+        let window = last_window(&self.stream);
         self.stream.clear();
         self.fed.clear();
         self.list_words = 0;
@@ -1194,8 +1242,9 @@ impl Engine {
         self.busy += t.elapsed();
         self.slowest = self.slowest.max(t.elapsed());
         self.buffer = buffer;
+        carry_window(&mut self.stream, window);
         self.apply_raster_writes();
-        self.finish_smooth(read_ptr);
+        self.finish_smooth(read_ptr, window);
     }
 
     /// Make this engine's state `src`'s ([`Geometrizer::copy_from`]): what
@@ -1413,7 +1462,7 @@ impl Engine {
 
     /// After a frame: its in-betweens' plan, from what the frame recorded
     /// and the frame before's.
-    fn finish_smooth(&mut self, read_ptr: u32) {
+    fn finish_smooth(&mut self, read_ptr: u32, window: Option<[u32; 7]>) {
         let Some(s) = self.smooth.as_deref_mut() else { return };
         if s.skip {
             // Not shown: its polygon RAM writes go unrecorded.
@@ -1437,6 +1486,7 @@ impl Engine {
                     self.texture_point_ram.clone(),
                     plan,
                     self.frames,
+                    window,
                 )));
                 s.stale |= wrote;
             }
@@ -1957,6 +2007,35 @@ impl state::State for Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A frame that draws before it sets a window gets the last window of
+    /// the frame before, and so does one that sets none; one that sets
+    /// its own first is left alone.
+    #[test]
+    fn the_window_carries_over() {
+        let win = |x: u32| [0xff00_0003, x, 1, 2, 3, 4, 5];
+        let object = [0xff00_0001, 0x10, 0x20];
+        // Operands that look like commands are skipped: a memory write's
+        // data, and the window's own.
+        let mut first = vec![0xff00_0004, 0x80_0000, 1, 0xff00_0003];
+        first.extend(win(7));
+        first.extend(object);
+        first.extend(win(8));
+        assert_eq!(last_window(&first), Some(win(8)));
+        let mut none: Vec<u32> = object.to_vec();
+        carry_window(&mut none, last_window(&first));
+        assert_eq!(none[..7], win(8));
+        assert_eq!(none[7..], object);
+        let mut empty = vec![0xff00_0008, 0];
+        carry_window(&mut empty, Some(win(9)));
+        assert_eq!(last_window(&empty), Some(win(9)));
+        let mut own = first.clone();
+        carry_window(&mut own, Some(win(9)));
+        assert_eq!(own, first);
+        let mut nothing = object.to_vec();
+        carry_window(&mut nothing, None);
+        assert_eq!(nothing, object);
+    }
 
     /// Jump words come only from the command port, and stop being jumps
     /// once overwritten: by the data port at once, by anything else when

@@ -736,6 +736,9 @@ pub struct Frame {
     pub plan: Plan,
     /// The game frame (the engine's count) this is frame N of.
     pub frame: u64,
+    /// The window the rasteriser had from the frame before, which a
+    /// replay's stream is given as frame N's was (`geo::carry_window`).
+    window: Option<[u32; 7]>,
     /// [`Frame::motion`], made on first use.
     motion: std::sync::OnceLock<Motion>,
 }
@@ -773,8 +776,22 @@ impl Frame {
         points: Vec<u16>,
         plan: Plan,
         frame: u64,
+        window: Option<[u32; 7]>,
     ) -> Self {
-        Frame { native, buffer, jumps, read_ptr, latch, poly, rom, points, plan, frame, motion: Default::default() }
+        Frame {
+            native,
+            buffer,
+            jumps,
+            read_ptr,
+            latch,
+            poly,
+            rom,
+            points,
+            plan,
+            frame,
+            window,
+            motion: Default::default(),
+        }
     }
 
     /// The raster stream between frame N-1 and frame N at `t` (0 to 1),
@@ -861,6 +878,7 @@ impl Frame {
             Native::C(n) => n.run_frame(&mut io),
         }
         out.retain(|&w| w != crate::geo::RASTER_NOP);
+        crate::geo::carry_window(&mut out, self.window);
         let Tap::Replay { blocks, .. } = tap else { unreachable!() };
         (out, blocks)
     }
@@ -1104,7 +1122,8 @@ mod tests {
         let plan = Plan::new(&prev, tap.into_list());
         assert_eq!(plan.matched, 2);
         let native = Native::B(Box::new(before));
-        let frame = Frame::new(native, list(2.0), Vec::new(), 0, 0, poly.clone(), rom.clone(), Vec::new(), plan, 3);
+        let frame =
+            Frame::new(native, list(2.0), Vec::new(), 0, 0, poly.clone(), rom.clone(), Vec::new(), plan, 3, None);
         assert_eq!(frame.render_values(frame.plan.values(1.0)), real);
         assert!(frame.render(1.0).is_none());
         let mid = frame.render(0.5).unwrap();
@@ -1221,7 +1240,7 @@ mod tests {
             let real = run(&mut n, now, &mut tap, &mut ram);
             let plan = Plan::new(&prev, tap.into_list());
             let native = Native::B(Box::new(before));
-            let frame = Frame::new(native, now.to_vec(), Vec::new(), 0, 0, poly, rom.clone(), vec![], plan, 3);
+            let frame = Frame::new(native, now.to_vec(), Vec::new(), 0, 0, poly, rom.clone(), vec![], plan, 3, None);
             (prev_stream, real, frame)
         };
         // P1 moves from x = 1 to x = 2 in the model, the object from 0 to
@@ -1307,8 +1326,19 @@ mod tests {
             let real = run(&mut n, &now, &mut tap);
             let plan = Plan::new(&prev, tap.into_list());
             let poly = Arc::new(vec![0; 0x1_0000]);
-            let frame =
-                Frame::new(Native::B(Box::new(before)), now, Vec::new(), 0, 0, poly, rom.clone(), vec![], plan, 3);
+            let frame = Frame::new(
+                Native::B(Box::new(before)),
+                now,
+                Vec::new(),
+                0,
+                0,
+                poly,
+                rom.clone(),
+                vec![],
+                plan,
+                3,
+                None,
+            );
             (prev_stream, real, frame)
         };
         let (prev_stream, real, frame) = frames(2.0);

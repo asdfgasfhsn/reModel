@@ -278,7 +278,11 @@ print each record with its resolved 3-4 vertices.
   terminator** (it returns to dispatch silently), so our rasteriser must also end on a
   command word (top byte 0xFF). **M** (inferred from TSG)
 - **Window** (cmd 3): 6 words `0x00XXXYYY` with 12-bit signed fields: viewport start,
-  viewport end, centres 0-3. Each window command **increments the window number**. **H** for the format
+  viewport end, centres 0-3. Each window command **increments the window number**. **H** for the format.
+  The window is kept from frame to frame: `vf2`'s player-select lists set none, and their
+  objects draw in the window of the last frame that set one (`model2::geo::carry_window`
+  puts it at the start of such a frame's stream). **M** (`vf2`: the fighter draws in its box; `docs/games/vf2.md`;
+  how the hardware keeps it, registers or otherwise, is not known)
 - cmd 4: addr, count, data. addr bit 23 → texture point RAM (u16[64K]), else log RAM
   (u8[32K]). cmd 8: z-adjust. cmd 0 / END: no-op / end of frame.
 

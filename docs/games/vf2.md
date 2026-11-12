@@ -1,8 +1,8 @@
 # Virtua Fighter 2 (`vf2`, Model 2A-CRX, 1995)
 
-Status: **in progress** (`romset::games::IN_PROGRESS`); a game starts and
-its fights play out round after round; the player-select fighter is
-missing.
+Status: **in progress** (`romset::games::IN_PROGRESS`); a game starts,
+the player-select screen draws its fighter, and its fights play out
+round after round.
 
 - *Confirmed:* the manifest verifies (33 chips, program set 2.1:
   `epr-18385..18388`). The i960 boots and uploads a 3,802-word TGP program
@@ -53,34 +53,28 @@ missing.
   differently is not told apart (both draw the same). Unconfirmed: the
   second texture pair `.27/.26` (nothing in the first seconds reads
   past the first pair's headers that was checked).
-- *Unconfirmed (a TGP result, not drawing):* the 3D fighter on the
-  player-select screen. The list at that screen (frame ~1,440) has no
-  window command (the window of the frame before is the full screen, 7
-  window commands a frame elsewhere), carries only two objects (a
-  323-polygon one and a 14-polygon one), each under an identity matrix
-  with zero translation, so every vertex lands at depth about 0 (z
-  between -0.3 and 0.05, where the fight's same 323-polygon object sits
-  at z 1.8-2.1) and is culled. The TGP calls in that frame are few (48:
-  functions `0x01`, `0x02`, `0x03`, `0x06`, `0x0E` called with zeros,
-  `0x16`, `0x24`, `0x26`, `0x29`, `0x2C`, `0x2F`, `0x32`, `0x34`,
-  `0x35`, `0x5E`, `0x6C`-`0x6F`) and the matrices come out identity:
-  the translation the game expects (and the other fighter parts) is
-  most likely produced by functions the select screen calls that return
-  zero or nothing here, `0x34`/`0x35` (the arguments are `0x8050`,
-  `0x8098`; the reply of `0x34` is 0 each time). The TGP never reads its
-  external data ROM (`0x800000` up) in `vf2` (checked: no reads in a
-  coin-start run), and `vf2`'s set has no chip for it. Re-sending the
-  previous frame's window for a list with none was tried and changes
-  nothing (the polygons are then culled for their depth), so it is not
-  kept. Still so with the ring fix (`docs/hw/mb86234.md`, circular
-  operands). In that frame the i960's calls are: push, identity (`0x03`),
-  `0x6F`, `0x6C`-`0x6E` (translate and rotate from the ring), a push and
-  pop around `0x29`, then `0x34` twice (byte offsets `0x18050`,
-  `0x18098`, from i960 code at `0x7C84`), which copies the current
-  matrix, RAM1 at `[0x3F]`, into the list. So the identity means the
-  ring held zeros for those reads, or the i960 and the TGP disagree about
-  where in the ring they are on this screen (unconfirmed; next: compare
-  the i960's ring write position with the TGP's RAM0 `0x3D`).
+- *Confirmed (by running it):* the player-select screen draws its 3D
+  fighter (the chosen fighter's head turning in the box on the left).
+  Its lists (frames ~1,265-1,463 of a coin-start run) have no window
+  command at all, only objects, so the renderers, which took each
+  frame's raster stream on its own, had no window for them and dropped
+  every polygon (none was built from the 2,837-word stream). The
+  rasteriser keeps its window from frame to frame, so these objects draw
+  in the window the last frame that set one left it with (the full
+  screen); `model2::geo::carry_window` puts that window at the start of
+  a stream that doesn't begin with its own (*hypothesis* for the
+  hardware: that the rasteriser's window registers are simply kept;
+  the picture is what the screen is for). It was not the TGP: the
+  i960's ring writes and the TGP's ring pointer agree on every frame of
+  a coin-start run (the first slot the i960 writes in a frame is RAM0
+  `0x3D` at the frame's first `0x6C`-`0x6F` call, 2,632 frames, select
+  screen included), the ring holds the pose (translation about
+  (-0.22, -0.07, 1.01), then the angles), and function `0x34` copies
+  the posed matrix, RAM1 at `[0x3F]` after a push/pop around `0x29`, to
+  the list (byte offsets `0x18050`/`0x18098`, `0x50`/`0x98`, ...; the
+  lists rotate round four 32 KB buffers at `0x900000`, and the i960
+  leaves 12 words for it after each `0xB` command). Earlier notes here
+  that the matrices came out identity were wrong.
 - *Unconfirmed:* chip roles are by analogy with `srallyc` (main data
   `.10/.11 .8/.9 .6/.7 .4/.5`, polygons `.16/.20 .17/.21 .18/.22`, textures
   `.25/.24 .27/.26`).
