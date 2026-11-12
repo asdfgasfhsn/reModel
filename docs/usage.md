@@ -71,6 +71,7 @@ make play GAME=sgt24h PLAY_ARGS="--run-ahead 3"   # show the game 3 frames ahead
 make play PLAY_ARGS="--temporal 67"   # temporal anti-aliasing, 3D drawn at 67% and upscaled (taa: full size; --stipple keep; docs/play.md)
 make input-lag            # each game's own input lag: frames from a control to the picture changing
 make run-ahead-check      # run-ahead keeps the real state hash and shows the plain run's later frames
+make run-ahead-profile GAME=srallyc RUN_AHEAD_FRAMES=1   # host time per shown frame: real frame, copy, frames ahead
 make install-desktop RECOMP=1   # reModel in the desktop's app menu, running this checkout's player
 make uninstall-desktop    # remove that app-menu entry and its icon
 make smooth-frames GAME=doa    # coin-start run drawing in-between frames beside the real ones -> out/doa/frames

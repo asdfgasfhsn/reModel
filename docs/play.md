@@ -370,6 +370,101 @@ second machine notes the transforms of the last frame of each run only
 game's own machine records none (`docs/hw/geometrizer.md`, "Smooth
 motion"). `make run-ahead-check` compares them with a plain run's.
 
+### Run-ahead cost
+
+Measured with `make run-ahead-profile GAME=g RUN_AHEAD_FRAMES=n` (the
+CLI's `run-ahead-profile`: the player's loop headless, 1,000 frames after
+3,000 of a coin-start run, interpreted i960, native geometrizer on its
+thread, 16-core desktop, each figure the mean of two runs; run-to-run
+noise is about 10%, more for `lastbrnx`). Milliseconds per shown
+frame:
+
+| Game | Run-ahead | Real frame | Geometrizer wait | Copy | Frames ahead | Total |
+|---|---|---|---|---|---|---|
+| `srallyc` (2A) | 0 | 8.2 | 0 | 0 | 0 | 8.2 |
+| | 1 | 8.4 | 0.5 | 0.9 | 8.6 | 18.4 |
+| | 2 | 8.4 | 0.5 | 0.9 | 17.3 | 27.1 |
+| `lastbrnx` (2B) | 0 | 14 | 0 | 0 | 0 | 14 |
+| | 1 | 14.2 | 1.7 | 1.0 | 14.5 | 31.4 |
+| | 2 | 14.3 | 1.7 | 1.0 | 30.7 | 47.7 |
+| `vf2` (2A) | 0 | 6.8 | 0 | 0 | 0 | 6.8 |
+| | 1 | 7.0 | 0.5 | 0.8 | 7.2 | 15.5 |
+| | 2 | 6.8 | 0.5 | 0.8 | 14.3 | 22.4 |
+
+Drawing is extra, once per shown frame whatever the run-ahead: 2 to 4.6
+ms (Original, the three games) and 8 to 10.5 ms (4 to 8 sample
+anti-aliasing 8, temporal anti-aliasing and fine pixel shading), on the
+same thread as the emulation (a `--run-ahead 0` player run on an RTX
+2080 Super, default window; the figure includes waiting for
+the GPU). With the heavy settings `srallyc` needs 7.7 + 8 ms before
+run-ahead adds anything, which is why the player drops run-ahead there.
+
+What the numbers say:
+
+- **Run-ahead N costs N + 1 game frames plus the copy.** Copy and waits
+  are 1.3 to 2.7 ms of it (3 to 9% at run-ahead 1); the frames dominate.
+- **Nothing is thrown away except the frames themselves.** The shadow's
+  frames are never drawn (only the last is), its sound commands are
+  dropped before any board runs (the sound boards belong to the player and
+  are fed from the real machine only) and the real machine's frames are
+  not drawn. What the shadow does repeat is the geometrizer (worker busy
+  0.4 ms `srallyc`/`vf2`, 1.6 ms `lastbrnx` per frame, on its thread; it
+  shows as the wait columns).
+- **The copy is already dirty-tracked** (per memory, `CopyMarks`): it
+  moves 3.4 to 3.6 MB of a 24.3 MB (2A) or 16.5 MB (2B) save state, the
+  same every frame (the buffer and tile RAMs the game rewrites each
+  frame), in 0.8 to 1.0 ms. A save and load would be 6 to 9 ms and 2 to
+  4 ms.
+- **Most of a game frame is the i960 waiting.** The poll loops the games
+  wait for the next frame in (`srallyc` 0x5A379C, five instructions;
+  `lastbrnx` 0x73F4, four; `vf2` 0x10F98, two) were 105 to 126 thousand of
+  each frame's 145 thousand i960 instructions over the 3,500 frames run
+  (72 to 87%; a hot-spot sample of one frame says the same) and, timed
+  per pass of the loop, 6.1 ms of `srallyc`'s 8.2 ms frame, 3.6 of
+  `vf2`'s 6.7 and 4.6 of `lastbrnx`'s 13 (the 2B runs its SHARC per
+  instruction in the loop too, so less of it is saved there).
+  `docs/games/srallyc.md` says 18%: that was not what this build does in
+  attract mode or a scripted race (frames 4,000 to 5,000).
+- **Inputs change rarely, for digital controls.** The coin-start fighter
+  script (a punch and kick pulse every 30 frames) changes the inputs on
+  13.4% of frames (`lastbrnx`, `vf2`). A person at a fighter presses
+  and releases a few buttons a second, so 7 to 15% is a fair estimate (not
+  measured). The keyboard's wheel is a full-lock switch, so it changes
+  only on presses; a gamepad's analogue stick changes on most frames while
+  steering (estimate), where an unchanged-input path would not hold.
+
+Ranking, by expected saving:
+
+1. **Idle skip** (option 4): 35 to 75% of every frame, run-ahead's or
+   not, for all three games, and it multiplies with everything below (the
+   shadow's N + 1 frames shrink too). It must keep the instruction count,
+   bus time, timers, the TGP and, on 2B, the SHARC running through the skipped
+   passes to keep the state hash, so it is per loop, to the poll's own
+   exit (vblank status). Expect `srallyc` run-ahead 1 from 18 ms to about
+   7 and `vf2` from 15.5 to about 8; `lastbrnx` from 31 to about 20.
+2. **Unchanged-input fast path on two threads** (option 1): with the
+   inputs as the last frame's the shadow runs one frame and the real
+   machine runs its own frame at the same time, so a frame costs about
+   one game frame of wall time (and no copy) instead of N + 1. At 13%
+   changes, run-ahead 1 on a fighter goes from 2.1 frames to about 1.2,
+   run-ahead 2 from 3.1 to about 1.4. On analogue steering it saves
+   nothing. Worth it for the fighters (the games that offer run-ahead 1
+   with typically digital controls); needs two free cores, and a
+   determinism test.
+3. **Overlap drawing with the next emulated frame** (not on the list):
+   2 to 10 ms a frame on the main thread, which the heavier presets make
+   as large as the emulation; the GPU work of frame n can run alongside
+   frame n + 1's emulation. Saves up to the draw time.
+4. **Skip work in the ahead frames** (option 2): drawing and sound are
+   already skipped. The geometrizer can't be skipped without diverging
+   the shadow (its output feeds polygon RAM and the lists), so what's left
+   is the wait columns, 0.5 ms (1.7 on `lastbrnx`), by starting the copy
+   earlier or keeping the geometrizer's frame off the copy's path: 3 to
+   6% of run-ahead 1.
+5. **Cheaper save and restore** (option 3): the copy is 0.8 to 1.0 ms of
+   15 to 31, 3 to 5%, and already moves a seventh of the state. Not worth
+   more.
+
 ## The launcher
 
 The start screen, when no game is given, and from the menu's "Back to

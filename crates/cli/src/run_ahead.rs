@@ -182,3 +182,113 @@ pub fn check(
     );
     Ok(ha == hb && checked > 0 && pictures == checked && hashes == checked && betweens == between_checks)
 }
+
+/// `run-ahead-profile`: what run-ahead of `ahead` frames (0: none) costs
+/// per shown frame, as the player runs it (the real machine's frames,
+/// then the shadow's), over `frames` frames after `warmup` of the `spec`
+/// inputs. Reports host time per frame for the real frame, the copy, the
+/// frames ahead (and the shadow geometrizer's share of them), the memory
+/// each copy moved, and how often the inputs changed.
+pub fn profile(
+    roms: &RomSet,
+    warmup: u64,
+    frames: u64,
+    ahead: u32,
+    spec: &str,
+    interp: bool,
+    single_thread: bool,
+) -> Result<(), String> {
+    let script = model2::input::InputScript::parse(spec, &roms.game.controls).map_err(|e| format!("--input: {e}"))?;
+    let mut m = crate::machine(roms);
+    if interp {
+        m.disable_native();
+    }
+    m.bus.geo.set_threaded(!single_thread);
+    if let Ok(bytes) = std::fs::read(Path::new("out").join(roms.game.id).join("eeprom.bin")) {
+        m.bus.eeprom.load(bytes.as_slice());
+    }
+    let mut ra = (ahead > 0).then(|| RunAhead::new(roms, &mut m, ahead));
+    if ra.is_some() {
+        m.bus.geo.set_smooth(false);
+    }
+    script.apply(m.frames, &mut m.bus);
+    let (mut real, mut changed, mut copied_sum, mut copied_max) = (Duration::ZERO, 0u64, 0usize, 0usize);
+    let mut last = inputs(&m);
+    let mut base = None;
+    let mut n = 0u64;
+    let mut insts = 0u64;
+    while n < frames {
+        let used = inputs(&m);
+        let measuring = m.frames >= warmup;
+        if measuring && base.is_none() {
+            m.bus.geo.sync();
+            let shadow_busy = ra.as_mut().map(|r| {
+                let g = &mut r.shadow().bus.geo;
+                g.sync();
+                (g.engine().busy, g.waited)
+            });
+            base = Some((ra.as_ref().map(|r| r.stats), m.bus.geo.engine().busy, m.bus.geo.waited, shadow_busy));
+            insts = m.cpu.icount;
+            last = used;
+        }
+        let t = Instant::now();
+        m.run_slice(u64::MAX).map_err(|s| format!("stopped: {s:?}"))?;
+        let dt = t.elapsed();
+        if let Some(ra) = &mut ra {
+            ra.run(&mut m).map_err(|s| format!("stopped ahead: {s:?}"))?;
+        }
+        if measuring {
+            n += 1;
+            real += dt;
+            changed += (used != last) as u64;
+            last = used;
+            if let Some(ra) = &ra {
+                copied_sum += ra.stats.copied;
+                copied_max = copied_max.max(ra.stats.copied);
+            }
+        }
+        script.apply(m.frames, &mut m.bus);
+    }
+    let insts = m.cpu.icount - insts;
+    m.bus.geo.sync();
+    let (st0, busy0, waited0, shadow0) = base.unwrap();
+    let per = |d: Duration| d.as_secs_f64() * 1e3 / n as f64;
+    println!(
+        "profile       {} run-ahead {ahead}, i960 {}, {n} frames after {warmup}: {:.0} i960 instructions a frame",
+        roms.game.id,
+        if m.is_native() { "recompiled" } else { "interpreted" },
+        insts as f64 / n as f64
+    );
+    println!(
+        "  real frame {:.2} ms (of that the real geometrizer's wait {:.2} ms; its worker busy {:.2} ms a frame)",
+        per(real),
+        per(m.bus.geo.waited - waited0),
+        per(m.bus.geo.engine().busy - busy0)
+    );
+    if let Some(ra) = &mut ra {
+        let (s0, st) = (st0.unwrap(), ra.stats);
+        let g = &mut ra.shadow().bus.geo;
+        g.sync();
+        let (sb0, sw0) = shadow0.unwrap();
+        println!(
+            "  run-ahead  wait {:.2} ms, copy {:.2} ms, {ahead} frames ahead {:.2} ms ({:.2} each; shadow geometrizer wait {:.2} ms, \
+             worker busy {:.2} ms for the {ahead})",
+            per(st.waiting - s0.waiting),
+            per(st.copying - s0.copying),
+            per(st.running - s0.running),
+            per(st.running - s0.running) / ahead as f64,
+            per(g.waited - sw0),
+            per(g.engine().busy - sb0),
+        );
+        println!(
+            "  copy moved {:.2} MB a frame on average, {:.2} MB at most",
+            copied_sum as f64 / n as f64 / 1e6,
+            copied_max as f64 / 1e6
+        );
+    }
+    let t = Instant::now();
+    let state = m.save_state();
+    println!("  save state {:.1} MB in {:.2} ms", state.len() as f64 / 1e6, t.elapsed().as_secs_f64() * 1e3);
+    println!("  inputs changed on {changed} of {n} frames ({:.1}%)", changed as f64 * 100.0 / n as f64);
+    Ok(())
+}

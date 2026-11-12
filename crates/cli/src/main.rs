@@ -367,6 +367,10 @@ commands:
                        when its RAM, display list, polygons and picture
                        differ; the frames to the first picture difference
                        are the game's input lag (`make input-lag`)
+  run-ahead-profile [WARMUP] [FRAMES] [AHEAD]
+                      host time per shown frame with run-ahead AHEAD (0: off):
+                      the real frame, copy, frames ahead, memory copied,
+                      how often the inputs change (docs/run-ahead.md)
   run-ahead-check [STEPS] [FRAMES] [EVERY]
                        run-ahead (docs/play.md): a plain run (default 450M
                        instructions, with --input, --load-state, --geo,
@@ -1705,6 +1709,17 @@ fn main() -> ExitCode {
                     eprintln!("error: {e}");
                     return ExitCode::FAILURE;
                 }
+            }
+        }
+        "run-ahead-profile" => {
+            let warmup = args.get(1).and_then(|s| parse_num(s)).map_or(1500, u64::from);
+            let frames = args.get(2).and_then(|s| parse_num(s)).map_or(1500, u64::from);
+            let ahead = args.get(3).and_then(|s| parse_num(s)).unwrap_or(1);
+            if let Err(e) =
+                run_ahead::profile(&roms, warmup, frames, ahead, input.as_deref().unwrap_or(""), interp, single_thread)
+            {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
             }
         }
         "latency" => {
