@@ -262,8 +262,9 @@ const CONTROLS: Controls = Controls {
     ],
     analogs: &[],
     guns: &[],
-    // One coin, start, then punch and kick every half second: that picks
-    // the fighter under the cursor (Grace) and fights.
     shifter: None,
-    coin_start: "coin1@1100-1104,start@1250-1254,punch@1400-99999/30,kick@1415-99999/30",
+    // Two coins (the default setting is two a credit: "CREDIT 1/2" after
+    // one), start, then punch and kick every half second: that picks the
+    // fighter under the cursor (Akira) and fights.
+    coin_start: "coin1@1100-1104,coin1@1130-1134,start@1250-1254,punch@1400-99999/30,kick@1415-99999/30",
 };
