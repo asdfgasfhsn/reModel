@@ -483,6 +483,12 @@ fn lint_report(dir: &Path, dump: Option<&Path>, max_side: usize) -> Result<Repor
             Ok(FileKind::Reserved) => {
                 r.add(Level::Note, 'b', "name reserved by the format, ignored by readers", &f.stem)
             }
+            Ok(FileKind::Map { kind: MapKind::Spec | MapKind::Gloss, .. }) => r.add(
+                Level::Note,
+                'b',
+                "specular or gloss map: accepted and loaded, but it has no effect yet (only normal maps are drawn)",
+                &f.stem,
+            ),
             Ok(_) => {}
         }
     }
@@ -816,6 +822,11 @@ mod tests {
         assert!(!has('i', "surf_00000000000000ff_8x8.n"), "the surface is in the dump");
         assert!(has('j', &format!("{key}.n over surf_00000000000000ff_8x8.n")));
         assert!(has('b', "tile_0123456789abcdef.n") && has('c', "gone") && has('e', key));
+        // A specular map is a note: loaded, no effect yet.
+        assert!(r.found.iter().any(|(k, v)| k.0 == Level::Note
+            && k.1 == 'b'
+            && k.2.contains("no effect yet")
+            && v.iter().any(|i| i == &format!("{key}.s"))));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
