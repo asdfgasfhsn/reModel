@@ -291,6 +291,20 @@ warns above the game's maximum. The help line says what the row does for
 the game, and, when the player switched run-ahead off because the machine
 could not keep up (below), that it did.
 
+Once the game has run for a couple of seconds the help line also says how
+much run-ahead this computer has time for: the player times the game's own
+frames and the drawing (without run-ahead, so the figure doesn't change
+when it is turned on), and run-ahead N costs about N+1 emulated frames for
+each one shown, so it counts how many fit in 85% of the display's frame
+time, up to 3 ("this computer has time for about 2", or "this computer is
+too slow for run-ahead"). A choice above that is warned of ("3 is more
+than it can keep up with, and is switched off if the game falls behind";
+the launcher's hint turns amber): it still works, and the 3 s rule below
+stays as the safety net. Before the game has been measured (just started,
+or the launcher showing another game) the line says nothing extra. The
+figure is an estimate: the first seconds of a game, a heavy scene or the
+launcher's own drawing (it measures the preview there) can move it.
+
 A game whose picture changes in the first frame that reads the control
 (0 above) has nothing to hide: run-ahead then only shows the game N
 frames further on than it is, and whenever a control changes, what's
@@ -422,8 +436,19 @@ or the game's chip; the preview restarts on it) and the Controls page
 games, or this game only (a game's own setting is tagged "this game", and
 "Use the settings for all games" forgets them). The same settings are in
 the Esc menu while playing, in tabs and behind a picture preset (below,
-"The menu"); the launcher keeps listing the individual rows, and a row
-changed there under a preset makes it Custom. They come in layers, lowest first, as in the
+"The menu"). The launcher lists them as one scrolling list in the menu's
+order (display, picture, motion, sound, more) and with the menu's rules,
+sharing its code (`hints.rs`): a **Preset** row (Original, Sharp,
+Enhanced, Custom, with the menu's help line for the game) comes first of
+the picture rows, which only Custom lists; rows that do nothing as set
+(anti-aliasing under temporal, the lighting rows with flat shading, the
+chip's, the bezel in a wide window or for a game without art, texture
+filtering without the pack) are left out; the run-ahead row stops at the
+game's maximum and is gone for a game with no lag; and its hint says what
+this computer has time for (above). Choosing a preset sets its rows and a
+picture row changed afterwards makes it Custom, the same as in the menu, and
+what is saved from either place is identical (`preset = enhanced` and so
+on). The crease angle is only in the menu. They come in layers, lowest first, as in the
 browser build: the built-in defaults, the defaults for all games, the
 game's own, then the command line (`--mix`, `--hud`, `--aspect`, `--bezel`,
 `--exact`, `--smooth`, `--run-ahead`, `--aa`, `--temporal`, `--stipple`, `--depth`, `--shading`, `--crease`, `--shading-fine`, `--shading-balance`, `--pack`, `--texture-pack`, `--tex-filter`, `--materials`, `--materials-relief`, `--geo`), which applies to that run only and is

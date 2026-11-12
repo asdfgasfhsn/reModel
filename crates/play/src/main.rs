@@ -32,6 +32,7 @@ mod backdrop;
 mod bezel;
 mod controls;
 mod focus;
+mod hints;
 mod launcher;
 mod menu;
 mod pack;
@@ -206,6 +207,10 @@ const FADE_OUT: Duration = Duration::from_millis(200);
 /// Seconds of game the player may run behind before run-ahead is turned
 /// off.
 const RUN_AHEAD_GRACE: f64 = 3.0;
+
+/// Redraws of the game to measure before saying how much run-ahead the
+/// computer has time for.
+const COST_FRAMES: u32 = 120;
 /// A game started from the launcher fades in from black.
 const GAME_FADE: Duration = Duration::from_millis(400);
 
@@ -788,6 +793,15 @@ struct Play {
     behind: bool,
     /// Frames run since `behind` was last clear.
     behind_frames: u32,
+    /// What a displayed frame costs without run-ahead, smoothed: emulating
+    /// a frame and drawing, in seconds, and the redraws they come from (for
+    /// `run_ahead_room`).
+    emulate_cost: f64,
+    draw_cost: f64,
+    cost_frames: u32,
+    /// The host time the last `emulate` spent on the game's own frames,
+    /// not the run-ahead.
+    real_emulate: Duration,
     stats: Stats,
     started: Instant,
     /// The texture pack set on the renderer.
@@ -980,6 +994,7 @@ impl Play {
         });
         match started {
             Ok(s) => {
+                self.reset_cost();
                 self.bezel =
                     bezel::image(s.game).map(|image| Bezel { size: image.size, image: Some(image), texture: None });
                 self.settings.played(set);
@@ -1075,6 +1090,7 @@ impl Play {
         self.preview.leaving = None;
         self.behind = false;
         self.frame_cost = 0.0;
+        self.reset_cost();
     }
 
     fn save_slot(&mut self, slot: u8) {
@@ -1230,6 +1246,7 @@ impl Play {
             let pack_text = self.pack_text();
             let materials_text = self.materials_text();
             let has_bezel = self.bezel.is_some();
+            let room = self.session.as_ref().and_then(|s| self.run_ahead_room(s.game.id));
             let (Some(g), Some(s)) = (&mut self.gpu, &mut self.session) else { return Err("no game".into()) };
             g.renderer.forget_ram();
             // A one-off frame: with temporal on, the plain (unjittered) one.
@@ -1247,6 +1264,7 @@ impl Play {
                 game: Some(s.game),
                 has_bezel,
                 run_ahead_dropped: s.run_ahead_dropped,
+                run_ahead_room: room,
                 max_anisotropy: self.max_anisotropy,
                 temporal_supported: self.temporal_supported,
                 pack: pack_text.as_deref(),
@@ -1593,6 +1611,7 @@ impl Play {
         let due =
             self.opts.frames.filter(|_| self.session.as_ref().is_some_and(|s| !s.preview)).map_or(due, |n| due.min(n));
         let mut ran = 0;
+        let t_real = Instant::now();
         while self.session.as_ref().is_some_and(|s| s.machine.frames < due) && ran < MAX_CATCH_UP {
             if self.session.as_ref().is_some_and(|s| !s.preview) {
                 self.apply_inputs();
@@ -1609,6 +1628,7 @@ impl Play {
             }
             ran += 1;
         }
+        self.real_emulate = t_real.elapsed();
         // Run-ahead: from the newest real frame, the frames shown.
         if let Some(s) = self.session.as_mut().filter(|_| ran > 0) {
             if let Some(ra) = &mut s.run_ahead {
@@ -1804,6 +1824,13 @@ impl Play {
     fn note_cost(&mut self, ran: u32, emulate: Duration, draw: Duration) {
         let Some(g) = &self.gpu else { return };
         if ran > 0 {
+            // What run-ahead would add to: the game's own frames, and the
+            // drawing, as measured with or without it.
+            let (e, d) = (self.real_emulate.as_secs_f64() / ran as f64, draw.as_secs_f64());
+            let k = if self.cost_frames == 0 { 1.0 } else { 0.05 };
+            self.emulate_cost += (e - self.emulate_cost) * k;
+            self.draw_cost += (d - self.draw_cost) * k;
+            self.cost_frames = self.cost_frames.saturating_add(1);
             let cost = (emulate + draw).as_secs_f64() / ran as f64;
             self.frame_cost += (cost - self.frame_cost) * 0.05;
             let budget = frame_budget(g.refresh, false).as_secs_f64();
@@ -1829,6 +1856,27 @@ impl Play {
                 println!("run-ahead     off: too slow to keep up");
             }
         }
+    }
+
+    /// Forget the frame costs (a new game is running).
+    fn reset_cost(&mut self) {
+        (self.emulate_cost, self.draw_cost, self.cost_frames) = (0.0, 0.0, 0);
+    }
+
+    /// The frames of run-ahead this computer has time for, once the game
+    /// has run long enough to tell (`hints::FrameCost`); None for a game
+    /// other than `set`.
+    fn run_ahead_room(&self, set: &str) -> Option<u32> {
+        let (g, s) = (self.gpu.as_ref()?, self.session.as_ref()?);
+        if s.game.id != set || self.cost_frames < COST_FRAMES {
+            return None;
+        }
+        let cost = hints::FrameCost {
+            emulate: self.emulate_cost,
+            draw: self.draw_cost,
+            budget: frame_budget(g.refresh, false).as_secs_f64(),
+        };
+        Some(cost.run_ahead_room())
     }
 
     /// One redraw: run the game, draw it and the menu, report status.
@@ -1877,6 +1925,7 @@ impl Play {
             let pack_text = self.pack_text();
             let materials_text = self.materials_text();
             let has_bezel = self.bezel.is_some();
+            let room = self.session.as_ref().and_then(|s| self.run_ahead_room(s.game.id));
             let g = self.gpu.as_mut().unwrap();
             let view = menu::View {
                 playing: self.session.as_ref().map(|s| s.game.title),
@@ -1884,6 +1933,7 @@ impl Play {
                 game: self.session.as_ref().map(|s| s.game),
                 has_bezel,
                 run_ahead_dropped: self.session.as_ref().is_some_and(|s| s.run_ahead_dropped),
+                run_ahead_room: room,
                 max_anisotropy: self.max_anisotropy,
                 temporal_supported: self.temporal_supported,
                 pack: pack_text.as_deref(),
@@ -2172,6 +2222,9 @@ impl Play {
             no_preview: failed.as_deref(),
             resume,
             unsupported: self.unsupported,
+            run_ahead_room: selected.and_then(|g| self.run_ahead_room(g.id)),
+            run_ahead_dropped: selected
+                .is_some_and(|g| self.session.as_ref().is_some_and(|s| s.game.id == g.id && s.run_ahead_dropped)),
         };
         if self.launcher.panel == launcher::Panel::Controls && self.launcher_bindings.is_none() {
             self.launcher_bindings = selected.map(settings::load_bindings);
@@ -2676,6 +2729,10 @@ fn main() {
         frame_cost: 0.0,
         behind: false,
         behind_frames: 0,
+        emulate_cost: 0.0,
+        draw_cost: 0.0,
+        cost_frames: 0,
+        real_emulate: Duration::ZERO,
         stats: Stats::new(),
         started: Instant::now(),
         pack: PackState::default(),

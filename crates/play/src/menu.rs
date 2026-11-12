@@ -21,6 +21,7 @@
 //! Tab and Shift+Tab) for tabs, Backspace to go back; Esc closes the menu.
 
 use crate::focus::Focus;
+use crate::hints::{preset_help, run_ahead_help, run_ahead_max, run_ahead_shown, PRESETS, RUN_AHEAD};
 use crate::launcher::{keycap, Nav, CYAN, DIM, FG};
 use crate::settings::{GameSettings, Preset};
 use egui::{pos2, vec2, Align2, Color32, FontId, Rect, Sense, Shape};
@@ -136,6 +137,9 @@ pub struct View<'a> {
     pub has_bezel: bool,
     /// Run-ahead was switched off because the machine could not keep up.
     pub run_ahead_dropped: bool,
+    /// The frames of run-ahead this computer has time for, once measured
+    /// (`hints::FrameCost::run_ahead_room`).
+    pub run_ahead_room: Option<u32>,
     /// How the texture pack is doing (where it is, what it replaced), or
     /// why there is none, while the setting is on.
     pub pack: Option<&'a str>,
@@ -181,77 +185,6 @@ fn age(t: SystemTime) -> String {
         60..3600 => format!("{} min ago", s / 60),
         3600..86400 => format!("{} h ago", s / 3600),
         _ => format!("{} days ago", s / 86400),
-    }
-}
-
-/// The frames of run-ahead worth offering for `game` (none: the most any
-/// game takes), and the most the row lists.
-fn run_ahead_max(game: Option<&romset::Game>) -> u32 {
-    game.map_or(crate::settings::MAX_RUN_AHEAD, |g| g.run_ahead_max as u32)
-}
-
-/// The help line of the run-ahead row.
-fn run_ahead_help(game: Option<&romset::Game>, dropped: bool) -> String {
-    let mut text = match game {
-        None => "Hides input lag at the cost of CPU time.".to_string(),
-        Some(g) if g.run_ahead_max > g.input_lag => format!(
-            "Hides a frame of lag from the punches, and makes the stick judder: the stick has none to hide. \
-             Costs about {}x the game's CPU time.",
-            g.run_ahead_max + 1
-        ),
-        Some(g) => format!(
-            "Hides {} of this game's {} of input lag, at the cost of CPU time (about {}x the game's); more only \
-             judders.",
-            frames(g.run_ahead_max as u32),
-            frames(g.input_lag as u32),
-            g.run_ahead_max + 1
-        ),
-    };
-    if dropped {
-        text += " Switched off: this machine could not keep up. Choosing it again tries again.";
-    }
-    text
-}
-
-fn frames(n: u32) -> String {
-    if n == 1 {
-        "1 frame".into()
-    } else {
-        format!("{n} frames")
-    }
-}
-
-/// What a preset does for `game`, as the help line of the preset row.
-fn preset_help(p: Preset, view: &View, geo_chip: bool) -> String {
-    match p {
-        Preset::Original => "The arcade look: nothing that changes the picture.".into(),
-        Preset::Sharp => "4x anti-aliasing and mipmapped texture filtering, nothing else.".into(),
-        Preset::Custom => "Choose each picture setting yourself.".into(),
-        Preset::Enhanced => {
-            let mut d = GameSettings::default();
-            d.apply_preset(Preset::Enhanced, view.game);
-            let mut parts = Vec::new();
-            parts.push(match d.temporal {
-                _ if d.temporal > 0 && geo_chip => "4x anti-aliasing (temporal needs the native geometrizer)",
-                _ if d.temporal > 0 && !view.temporal_supported => "4x anti-aliasing (this GPU can't do temporal)",
-                0 => "4x anti-aliasing",
-                _ => "temporal anti-aliasing",
-            });
-            if d.depth {
-                parts.push("the depth buffer");
-            }
-            if d.shading != gpu::Shading::Flat {
-                parts.push("smooth shading");
-            }
-            if !geo_chip {
-                parts.push("smooth motion");
-            }
-            let mut text = format!("For this game: {}", parts.join(", "));
-            if d.run_ahead > 0 {
-                text += &format!(", run-ahead {}", d.run_ahead);
-            }
-            text + "."
-        }
     }
 }
 
@@ -926,19 +859,8 @@ fn display_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings, prefs:
 
 fn picture_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings, view: &View) {
     let mut p = s.preset;
-    let help = preset_help(p, view, s.geo_chip);
-    if rows.choose(
-        ui,
-        "Preset",
-        &mut p,
-        &[
-            (Preset::Original, "Original"),
-            (Preset::Sharp, "Sharp"),
-            (Preset::Enhanced, "Enhanced"),
-            (Preset::Custom, "Custom"),
-        ],
-        &help,
-    ) {
+    let help = preset_help(p, view.game, view.temporal_supported, s.geo_chip);
+    if rows.choose(ui, "Preset", &mut p, &PRESETS, &help) {
         s.apply_preset(p, view.game);
     }
     if s.preset != Preset::Custom {
@@ -1063,13 +985,11 @@ fn motion_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings, view: &
         );
     }
     let max = run_ahead_max(view.game);
-    if max > 0 || s.run_ahead > 0 {
-        const LABELS: [&str; 4] = ["Off", "1 frame", "2 frames", "3 frames"];
-        let mut list: Vec<(u32, &str)> = (0..=max).map(|n| (n, LABELS[n as usize])).collect();
-        if s.run_ahead > max {
-            list.push((s.run_ahead, LABELS[s.run_ahead as usize]));
-        }
-        let help = run_ahead_help(view.game, view.run_ahead_dropped);
+    if run_ahead_shown(view.game, s.run_ahead) {
+        // What the game takes, and a setting past that (to turn it off).
+        let list: Vec<(u32, &str)> =
+            RUN_AHEAD.iter().copied().filter(|(n, _)| *n <= max || *n == s.run_ahead).collect();
+        let help = run_ahead_help(view.game, view.run_ahead_dropped, view.run_ahead_room, s.run_ahead);
         rows.choose(ui, "Run-ahead", &mut s.run_ahead, &list, &help);
     }
 }
@@ -1163,6 +1083,7 @@ mod tests {
                 temporal_supported: true,
                 has_bezel: true,
                 run_ahead_dropped: self.dropped,
+                run_ahead_room: None,
                 pack: None,
                 materials: None,
             };
@@ -1515,46 +1436,6 @@ mod tests {
     }
 
     #[test]
-    fn run_ahead_help_says_what_it_does_for_the_game() {
-        let help = |id: &str, dropped| run_ahead_help(romset::games::playable(id), dropped);
-        let h = help("sgt24h", false);
-        assert!(h.contains("3 frames") && h.contains("4 frames"), "{h}");
-        let h = help("stcc", false);
-        assert!(h.contains("1 frame") && !h.contains("1 frames"), "{h}");
-        for id in ["schamp", "lastbrnx"] {
-            let h = help(id, false);
-            assert!(h.contains("punches") && h.contains("judder"), "{id}: {h}");
-        }
-        assert!(!help("stcc", false).contains("too slow") && !help("stcc", false).contains("could not keep up"));
-        assert!(help("stcc", true).contains("could not keep up"));
-        assert!(run_ahead_help(None, false).contains("input lag"));
-        assert_eq!(run_ahead_max(romset::games::playable("sgt24h")), 3);
-        assert_eq!(run_ahead_max(romset::games::playable("hotd")), 0);
-    }
-
-    #[test]
-    fn the_help_line_says_what_the_preset_does() {
-        // The text the preset row's help line shows, per game.
-        let view = View {
-            playing: Some("A game"),
-            game: romset::games::playable("stcc"),
-            slots: &[],
-            max_anisotropy: 16,
-            temporal_supported: true,
-            has_bezel: true,
-            run_ahead_dropped: false,
-            pack: None,
-            materials: None,
-        };
-        assert!(preset_help(Preset::Enhanced, &view, false).contains("smooth shading"));
-        assert!(!preset_help(Preset::Enhanced, &view, false).contains("depth buffer"));
-        assert!(preset_help(Preset::Enhanced, &view, false).contains("run-ahead 1"));
-        assert!(preset_help(Preset::Enhanced, &view, true).contains("native geometrizer"));
-        let bel = View { game: romset::games::playable("bel"), ..view };
-        assert!(preset_help(Preset::Enhanced, &bel, false).contains("depth buffer"));
-    }
-
-    #[test]
     fn shading_row() {
         let mut s = GameSettings { shading: gpu::Shading::Pixel, ..Default::default() };
         // Pixel is per pixel with the native geometrizer; the chip doesn't
@@ -1580,6 +1461,7 @@ mod tests {
                 temporal_supported: true,
                 has_bezel: false,
                 run_ahead_dropped: false,
+                run_ahead_room: None,
                 pack: None,
                 materials: None,
             };

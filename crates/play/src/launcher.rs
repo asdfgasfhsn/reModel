@@ -19,7 +19,8 @@
 //! design scaled to fit, on top of the display's own scaling, so it reads
 //! the same at 1080p, 1440p ultrawide and 4K.
 
-use crate::settings::{GameSettings, Source, KEYS};
+use crate::hints;
+use crate::settings::{GameSettings, Preset, Source, KEYS};
 use egui::{pos2, vec2, Align2, Color32, FontId, Id, Painter, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime};
@@ -154,6 +155,11 @@ pub struct View<'a> {
     pub resume: Option<SystemTime>,
     /// Sets in the ROM folder reModel doesn't support yet.
     pub unsupported: usize,
+    /// The frames of run-ahead this computer has time for, once measured
+    /// (`hints::FrameCost::run_ahead_room`), and the selected game's
+    /// run-ahead was switched off as too slow.
+    pub run_ahead_room: Option<u32>,
+    pub run_ahead_dropped: bool,
 }
 
 /// The preview as a texture, and where the game's picture is in it.
@@ -179,6 +185,67 @@ enum Row {
     Reset,
 }
 
+/// The run-ahead row's choices (label, value), as many as the game offers.
+static RUN_AHEAD_OPTIONS: [(&str, &str); 4] = [("Off", "0"), ("1", "1"), ("2", "2"), ("3", "3")];
+
+/// What the settings list shows of a game besides its settings.
+struct Shown<'a> {
+    game: &'static romset::Game,
+    values: &'a GameSettings,
+    has_own: bool,
+    max_anisotropy: u8,
+    temporal_supported: bool,
+}
+
+/// The rows that apply to the game as set, as the in-game menu lists them
+/// (`menu::settings_page`): the preset first among the picture rows, the
+/// rest of the picture only under Custom, and rows with nothing to do (the
+/// chip's, a run-ahead the game has no lag for) left out.
+fn shown_rows(c: &Shown) -> Vec<Row> {
+    let v = c.values;
+    let temporal = v.temporal_on() && c.temporal_supported;
+    let custom = v.preset == Preset::Custom;
+    let max = hints::run_ahead_max(Some(c.game));
+    rows(c.has_own, c.max_anisotropy)
+        .into_iter()
+        .filter_map(|row| {
+            let Row::Choice(key, label, hint, options) = row else { return Some(row) };
+            let show = match key {
+                "hud_edges" => v.wide,
+                "bezel" => !v.wide && crate::bezel::art_set(c.game).is_some(),
+                "aa" => custom && !temporal,
+                "temporal" => custom && !v.geo_chip && c.temporal_supported,
+                "stipple" => custom && temporal,
+                "depth" | "shading" | "pack" => custom,
+                "shading_fine" | "shading_balance" => custom && v.light_on(),
+                "materials" => custom && v.pack && !v.geo_chip,
+                "materials_relief" => custom && v.materials_on() && !v.geo_chip,
+                "smooth" => !v.geo_chip,
+                "run_ahead" => hints::run_ahead_shown(Some(c.game), v.run_ahead),
+                "tex_filter" => v.pack,
+                _ => true,
+            };
+            let options = if key == "run_ahead" { &RUN_AHEAD_OPTIONS[..=(max as usize).min(3)] } else { options };
+            show.then_some(Row::Choice(key, label, hint, options))
+        })
+        .collect()
+}
+
+/// Change setting `key`: a preset sets the rows it describes.
+fn change(values: &mut GameSettings, key: &str, value: &str, game: &'static romset::Game) {
+    match (key, Preset::parse(value)) {
+        ("preset", Some(p)) => values.apply_preset(p, Some(game)),
+        _ => {
+            values.set(key, value);
+        }
+    }
+}
+
+/// `values` with a preset whose rows no longer all match made Custom.
+fn settle(values: &mut GameSettings, game: &'static romset::Game) {
+    *values = std::mem::take(values).settled(Some(game));
+}
+
 /// The settings panel's rows: key, label, hint, and choices (label, value);
 /// texture filters up to `max_anisotropy` (`gpu::max_anisotropy`).
 fn rows(has_own: bool, max_anisotropy: u8) -> Vec<Row> {
@@ -188,22 +255,10 @@ fn rows(has_own: bool, max_anisotropy: u8) -> Vec<Row> {
         Row::Choice("bezel", "Bezel", "beside a 4:3 picture in a wider window", &[("On", "true"), ("Off", "false")]),
         Row::Choice("hud_edges", "HUD", "in wide views", &[("At the edges", "true"), ("Centred", "false")]),
         Row::Choice(
-            "exact",
-            "Speed",
-            "exact is 57.5 frames a second; else one a 60 or 120 Hz refresh, 4.3% fast",
-            &[("One frame a refresh", "false"), ("Exact arcade", "true")],
-        ),
-        Row::Choice(
-            "smooth",
-            "Smooth motion",
-            "in-between frames on displays faster than 60 Hz, a frame later",
-            &[("Off", "false"), ("On", "true")],
-        ),
-        Row::Choice(
-            "run_ahead",
-            "Run-ahead",
-            "frames shown ahead of the game: that much less input lag, as many frames more work",
-            &[("Off", "0"), ("1", "1"), ("2", "2"), ("3", "3")],
+            "preset",
+            "Preset",
+            "",
+            &[("Original", "original"), ("Sharp", "sharp"), ("Enhanced", "enhanced"), ("Custom", "custom")],
         ),
         Row::Choice(
             "aa",
@@ -254,12 +309,6 @@ fn rows(has_own: bool, max_anisotropy: u8) -> Vec<Row> {
             &[("Off", "false"), ("On", "true")],
         ),
         Row::Choice(
-            "tex_filter",
-            "Texture filtering",
-            "of pack images: less shimmer far off",
-            crate::settings::tex_filters(max_anisotropy),
-        ),
-        Row::Choice(
             "materials",
             "Material maps",
             "the pack's normal maps: bumps and grooves lit by the game's own lights",
@@ -271,6 +320,24 @@ fn rows(has_own: bool, max_anisotropy: u8) -> Vec<Row> {
             "how strongly maps shade (2 by default); faithful keeps the game's own lighting sum, subtler",
             &[("1", "1"), ("2", "2"), ("4", "4"), ("8", "8"), ("Faithful", "off")],
         ),
+        Row::Choice(
+            "exact",
+            "Speed",
+            "exact is 57.5 frames a second; else one a 60 or 120 Hz refresh, 4.3% fast",
+            &[("One frame a refresh", "false"), ("Exact arcade", "true")],
+        ),
+        Row::Choice(
+            "smooth",
+            "Smooth motion",
+            "in-between frames on displays faster than 60 Hz, a frame later",
+            &[("Off", "false"), ("On", "true")],
+        ),
+        Row::Choice(
+            "run_ahead",
+            "Run-ahead",
+            "frames shown ahead of the game: less input lag for that much more work",
+            &RUN_AHEAD_OPTIONS,
+        ),
         Row::Db("sfx_db", "Effects", -20.0, 20.0),
         Row::Db("music_db", "Music", -30.0, 10.0),
         Row::Choice(
@@ -278,6 +345,12 @@ fn rows(has_own: bool, max_anisotropy: u8) -> Vec<Row> {
             "Geometrizer",
             "the chip runs the game's own program (the reference); applies on starting",
             &[("Native", "native"), ("The game's chip", "chip")],
+        ),
+        Row::Choice(
+            "tex_filter",
+            "Texture filtering",
+            "of pack images: less shimmer far off",
+            crate::settings::tex_filters(max_anisotropy),
         ),
         Row::Controls,
     ];
@@ -324,6 +397,21 @@ pub struct Launcher {
     pub max_anisotropy: u8,
     /// The GPU can do temporal anti-aliasing (`gpu::temporal_supported`).
     pub temporal_supported: bool,
+}
+
+/// The hint of the run-ahead row: `hint`, what this computer has time for
+/// (amber when `chosen` is more), and whether it was switched off.
+fn run_ahead_hint(hint: &str, chosen: u32, game: &romset::Game, view: &View) -> (String, Color32) {
+    let max = hints::run_ahead_max(Some(game));
+    let mut text = hint.to_string();
+    if let Some(note) = hints::run_ahead_note(view.run_ahead_room, max, chosen) {
+        text += &format!(". {note}");
+    }
+    if view.run_ahead_dropped {
+        text += ". Switched off: too slow. Choosing it again tries again.";
+    }
+    let warn = hints::run_ahead_warns(view.run_ahead_room, max, chosen) || view.run_ahead_dropped;
+    (text, if warn { AMBER } else { DIM })
 }
 
 /// Why setting `key` doesn't apply as set (said in place of its hint):
@@ -508,7 +596,13 @@ impl Launcher {
                 }
             }
             Panel::Settings => {
-                let rows = rows(has_own, self.max_anisotropy);
+                let rows = shown_rows(&Shown {
+                    game,
+                    values,
+                    has_own,
+                    max_anisotropy: self.max_anisotropy,
+                    temporal_supported: self.temporal_supported,
+                });
                 self.row = self.row.min(rows.len() - 1);
                 match nav {
                     Nav::Back | Nav::Settings => self.panel = Panel::Closed,
@@ -529,7 +623,7 @@ impl Launcher {
                                 let (at, n) = (at as i32, labels.len() as i32);
                                 let to = if step == 0 { (at + 1) % n } else { (at + step).clamp(0, n - 1) };
                                 if let Some(o) = options.get(to as usize) {
-                                    values.set(key, o.1);
+                                    change(values, key, o.1, game);
                                 }
                             }
                             Row::Db(key, _, min, max) => {
@@ -543,6 +637,7 @@ impl Launcher {
                             }
                             _ => {}
                         }
+                        settle(values, game);
                     }
                     Nav::PrevGroup | Nav::NextGroup | Nav::Start => {}
                 }
@@ -720,7 +815,7 @@ impl Launcher {
             self.paint_hints(&painter, &l);
         });
         if self.panel_t > 0.0 {
-            self.paint_panel(ctx, &l, values, sources, for_all, has_own, &mut actions);
+            self.paint_panel(ctx, &l, view, values, sources, for_all, has_own, &mut actions);
         }
         actions
     }
@@ -1223,6 +1318,7 @@ impl Launcher {
         &mut self,
         ctx: &egui::Context,
         l: &Layout,
+        view: &View,
         values: &mut GameSettings,
         sources: &[Source; KEYS.len()],
         for_all: &mut bool,
@@ -1252,7 +1348,13 @@ impl Launcher {
             y += g.size().y + 14.0 * u;
             p.hline(inner.x_range(), y, Stroke::new(1.0 * u, LINE));
             y += 10.0 * u;
-            let rows = rows(has_own, self.max_anisotropy);
+            let rows = shown_rows(&Shown {
+                game,
+                values,
+                has_own,
+                max_anisotropy: self.max_anisotropy,
+                temporal_supported: self.temporal_supported,
+            });
             self.row = self.row.min(rows.len() - 1);
             let row_h = 66.0 * u;
             // Keep the focused row on screen.
@@ -1299,8 +1401,15 @@ impl Launcher {
                 let wrap = (r.right() - 12.0 * u - control_w - 18.0 * u - lx).max(80.0 * u);
                 // A setting another overrides says so in place of its hint.
                 let (hint, hint_c) = match key.and_then(|k| overridden(k, values, self.temporal_supported)) {
-                    Some(why) => (why, AMBER),
-                    None => (hint, DIM),
+                    Some(why) => (why.to_string(), AMBER),
+                    None => match key {
+                        Some("preset") => (
+                            hints::preset_help(values.preset, Some(game), self.temporal_supported, values.geo_chip),
+                            DIM,
+                        ),
+                        Some("run_ahead") => run_ahead_hint(hint, values.run_ahead, game, view),
+                        _ => (hint.to_string(), DIM),
+                    },
                 };
                 let hint_g = (!hint.is_empty())
                     .then(|| p.layout(hint.to_string(), FontId::proportional(11.5 * u), hint_c, wrap));
@@ -1351,7 +1460,7 @@ impl Launcher {
                         let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
                         if let Some(v) = pills(ui, &p, right, r.center().y, &labels, at, u, ("choice", i)) {
                             if let Some(o) = options.get(v) {
-                                values.set(k, o.1);
+                                change(values, k, o.1, game);
                             }
                             self.row = i;
                         }
@@ -1407,6 +1516,7 @@ impl Launcher {
                     }
                 }
             }
+            settle(values, game);
             // Close, at the foot.
             let p = ui.painter().clone();
             let foot = pos2(inner.left(), rect.bottom() - 28.0 * u);
@@ -1761,7 +1871,15 @@ mod tests {
         let ctx = egui::Context::default();
         let (mut v, mut all) = (GameSettings::default(), true);
         let sources = [Source::Default; KEYS.len()];
-        let view = View { preview: None, progress: Some(0.4), no_preview: None, resume: None, unsupported: 0 };
+        let view = View {
+            preview: None,
+            progress: Some(0.4),
+            no_preview: None,
+            resume: None,
+            unsupported: 0,
+            run_ahead_room: None,
+            run_ahead_dropped: false,
+        };
         for (size, ppp) in [(vec2(1920.0, 1080.0), 1.0), (vec2(1920.0, 1080.0), 2.0), (vec2(3440.0, 1440.0), 1.0)] {
             for key in [None, Some(egui::Key::ArrowRight), Some(egui::Key::Tab), Some(egui::Key::Escape)] {
                 let before = l.selection();
@@ -1812,5 +1930,112 @@ mod tests {
             }
         }
         assert_eq!(l.panel, Panel::Closed);
+    }
+
+    fn shown(id: &str, v: &GameSettings) -> Vec<Row> {
+        let game = romset::games::find(id).unwrap();
+        shown_rows(&Shown { game, values: v, has_own: false, max_anisotropy: 16, temporal_supported: true })
+    }
+
+    fn keys(rows: &[Row]) -> Vec<&'static str> {
+        rows.iter().filter_map(|r| if let Row::Choice(k, ..) = r { Some(*k) } else { None }).collect()
+    }
+
+    #[test]
+    fn the_list_follows_the_preset_like_the_menu() {
+        let mut v = GameSettings::default();
+        let k = keys(&shown("topskatr", &v));
+        assert!(k.contains(&"preset") && k.contains(&"exact") && k.contains(&"smooth"));
+        assert!(!k.iter().any(|k| ["aa", "temporal", "depth", "shading", "pack"].contains(k)), "{k:?}");
+        // The preset comes before the rest of the picture, which Custom adds.
+        v.preset = Preset::Custom;
+        let k = keys(&shown("topskatr", &v));
+        let at = |key| k.iter().position(|x| *x == key).unwrap();
+        assert!(at("preset") < at("aa") && at("aa") < at("temporal") && at("depth") < at("shading"), "{k:?}");
+        assert!(at("shading") < at("exact"), "picture before motion");
+        // Rows with nothing to do are left out, as in the menu: no
+        // anti-aliasing under temporal, no lighting rows with flat shading,
+        // none of the native geometrizer's with the chip.
+        v.temporal = 100;
+        let k = keys(&shown("topskatr", &v));
+        assert!(!k.contains(&"aa") && k.contains(&"stipple") && !k.contains(&"shading_fine"), "{k:?}");
+        v.shading = gpu::Shading::Vertex;
+        assert!(keys(&shown("topskatr", &v)).contains(&"shading_fine"));
+        v.geo_chip = true;
+        let k = keys(&shown("topskatr", &v));
+        assert!(!k.contains(&"temporal") && !k.contains(&"smooth") && !k.contains(&"stipple") && k.contains(&"aa"));
+        // The wide view has the HUD row, a 4:3 one the bezel.
+        let v = GameSettings { wide: true, ..Default::default() };
+        let k = keys(&shown("topskatr", &v));
+        assert!(k.contains(&"hud_edges") && !k.contains(&"bezel"));
+        let k = keys(&shown("topskatr", &GameSettings { wide: false, ..Default::default() }));
+        assert!(!k.contains(&"hud_edges"));
+    }
+
+    #[test]
+    fn run_ahead_is_capped_per_game() {
+        let options = |id: &str, v: &GameSettings| {
+            shown(id, v).into_iter().find_map(|r| match r {
+                Row::Choice("run_ahead", _, _, o) => Some(o.len()),
+                _ => None,
+            })
+        };
+        let v = GameSettings::default();
+        assert_eq!(options("sgt24h", &v), Some(4));
+        assert_eq!(options("stcc", &v), Some(2));
+        assert_eq!(options("hotd", &v), None, "a zero-lag game has no row");
+        // Set anyway, it can be turned off.
+        assert_eq!(options("hotd", &GameSettings { run_ahead: 1, ..v }), Some(1));
+    }
+
+    #[test]
+    fn choosing_in_the_list_is_choosing_in_the_menu() {
+        let game = romset::games::find("stcc").unwrap();
+        let mut v = GameSettings::default();
+        change(&mut v, "preset", "enhanced", game);
+        let mut menu = GameSettings::default();
+        menu.apply_preset(Preset::Enhanced, Some(game));
+        assert_eq!(v, menu);
+        assert_eq!(v.get("preset"), "enhanced");
+        // Smooth motion and run-ahead don't count against the preset...
+        change(&mut v, "run_ahead", "0", game);
+        settle(&mut v, game);
+        assert_eq!(v.preset, Preset::Enhanced);
+        // ...a picture row does.
+        change(&mut v, "aa", "8", game);
+        settle(&mut v, game);
+        assert_eq!((v.preset, v.aa), (Preset::Custom, 8));
+        // The preset row offers what the menu does, by the files' names.
+        let rows = shown("stcc", &v);
+        let Some(Row::Choice(_, _, _, options)) = rows.iter().find(|r| keys(&[**r]) == ["preset"]) else {
+            panic!("no preset row")
+        };
+        let names: Vec<_> = options.iter().map(|o| o.1).collect();
+        assert_eq!(names, hints::PRESETS.map(|(p, _)| p.name()));
+        assert_eq!(options.iter().map(|o| o.0).collect::<Vec<_>>(), hints::PRESETS.map(|(_, l)| l));
+    }
+
+    #[test]
+    fn the_run_ahead_hint_says_what_the_computer_can_do() {
+        let game = romset::games::find("sgt24h").unwrap();
+        let view = |room, dropped| View {
+            preview: None,
+            progress: None,
+            no_preview: None,
+            resume: None,
+            unsupported: 0,
+            run_ahead_room: room,
+            run_ahead_dropped: dropped,
+        };
+        let base = "base";
+        assert_eq!(run_ahead_hint(base, 2, game, &view(None, false)), ("base".to_string(), DIM), "unmeasured: as is");
+        let (t, c) = run_ahead_hint(base, 1, game, &view(Some(2), false));
+        assert!(t.contains("about 2") && c == DIM, "{t}");
+        let (t, c) = run_ahead_hint(base, 3, game, &view(Some(1), false));
+        assert!(t.contains("3 is more") && c == AMBER, "{t}");
+        let (t, _) = run_ahead_hint(base, 0, game, &view(Some(0), false));
+        assert!(t.contains("too slow for run-ahead"), "{t}");
+        let (t, c) = run_ahead_hint(base, 0, game, &view(None, true));
+        assert!(t.contains("Switched off") && c == AMBER);
     }
 }
