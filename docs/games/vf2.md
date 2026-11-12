@@ -50,9 +50,25 @@ round after round.
   kept the upper half at an address the rasteriser never reads.
   `model2::bus::mirror_video_2a` now folds each bank's words to its 512K.
   Whether the hardware repeats the window or `vf2` addresses the bank
-  differently is not told apart (both draw the same). Unconfirmed: the
-  second texture pair `.27/.26` (nothing in the first seconds reads
-  past the first pair's headers that was checked).
+  differently is not told apart (both draw the same).
+- *Confirmed (by the pictures, 2026-11-13):* the second texture pair
+  `.27` (even words) / `.26` (odd) sits in its own 8 MB slot, at 16-bit
+  word `0x400000` of the texture ROM, not straight after the first pair:
+  the manifest no longer lists `Role::Textures` as packed. The display
+  lists address texture points and headers at `0`-`0x1FFFFF` and
+  `0x400000`-`0x5FFFFF` and nowhere between (`docs/hw/model2a.md` §5).
+  Packed, the bank ended at `0x3FFFFF` and every read of the second pair
+  gave 0. That was the "odd 3D on faces, hair and things attached to
+  fighters": a fighter's head is one model drawn with the textures of
+  its expression, and the base expression's points are in the first
+  pair but the blinking and shouting ones in the second, so in those
+  frames every face polygon sampled texel (0, 0) of its sheet (a flat
+  skin colour where the face should be, flickering as the expression
+  changed; the polygons, matrices and sort order were the same in good
+  and bad frames). Lau's vest embroidery and sash, Akira's chest, the
+  floor beyond the ring and the shadows' headers were flat or missing
+  the same way. With the slot, faces animate (blinks, open mouths) and
+  those surfaces are textured.
 - *Confirmed (by running it):* the player-select screen draws its 3D
   fighter (the chosen fighter's head turning in the box on the left).
   Its lists (frames ~1,265-1,463 of a coin-start run) have no window
@@ -130,10 +146,14 @@ round after round.
   "TRY NEXT STAGE" and the first player's next stage. The player-select
   fighter was missing in each (the window, above; with the window
   carried over it is checked on the one-player screen only).
-- *Unconfirmed (looks like a camera or shadow draw, not checked against
-  the game):* in the close "REPLAY" views and the stage-4 ring-out camera
-  large black polygons cross the floor (shadows seen from too close or
-  the ring's edge); the ordinary views draw clean.
+- *Unconfirmed (not checked against the game):* in the close "REPLAY"
+  views large black shapes lie on the floor near the camera. With the
+  second texture pair read (above) they are the fighters' own shadows:
+  their silhouettes (limbs, a falling fighter), drawn with a shadow
+  matrix that flattens each body part onto the floor (the display list's
+  matrices for those objects have determinant 0), large because the
+  camera is low. The flat grey areas that crossed the floor beyond the
+  ring in those views were second-pair textures and are now textured.
 - *Input lag, measured (`make input-lag GAME=vf2`: frame 3707 of a
   two-coin coin-start run whose punches and kicks stop at 3400; earlier
   frames of that run are K.O. and round transitions that show nothing):*

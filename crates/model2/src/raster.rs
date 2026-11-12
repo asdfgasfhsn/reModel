@@ -1413,8 +1413,10 @@ pub fn probe(polys: &[Poly], src: &Sources, x: f32, y: f32) -> Vec<String> {
                 }
             }
             format!(
-                "window {} key {:.1} 1/z {:.5}..{:.5} header {:04x?} colour {:?} luma {} texel histogram {hist:?}\n    texture {:?} points {:?}",
+                "window {} block {} at {} key {:.3} 1/z {:.5}..{:.5} header {:04x?} colour {:?} luma {} texel histogram {hist:?}\n    texture {:?} points {:?}",
                 p.window,
+                p.block,
+                p.at,
                 p.key,
                 p.points.iter().map(|v| v.iz).fold(f32::MAX, f32::min),
                 p.points.iter().map(|v| v.iz).fold(f32::MIN, f32::max),

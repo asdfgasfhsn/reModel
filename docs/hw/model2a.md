@@ -242,7 +242,16 @@ The main data pairs are **packed**, 4 MB each from `0x2000000`
 (`Game::packed`), where 2B's and 2C's are 8 MB slots: the 8 MB layout
 puts the vertex data's pair at `0x3000000`, where the program does not
 read. The polygon and texture ROM are packed too (the bank at `0x900000`
-is 1M words after `0x800000`, not 2M as in a 2C slot). The zip also holds the older program revision `b`
+is 1M words after `0x800000`, not 2M as in a 2C slot). That `srallyc`'s
+texture ROM is packed was never tested: it has one pair, so packed and
+slotted read the same. *Confirmed (`vf2`, by the pictures):* the texture
+ROM is **not** packed. `vf2`'s second pair (`.27` even, `.26` odd) is
+read at 16-bit word `0x400000` (tpa and tha `0x400000`-`0x5FFFFF`: its
+heads' expression variants, Lau's embroidery, body textures), the start
+of a second 8 MB slot as on 2B/2C, with nothing addressed at
+`0x200000`-`0x3FFFFF` or past `0x5FFFFF`; packed, those reads fell past
+the bank and gave zeros (every point (0, 0), header 0). Its polygon ROM
+stays packed (three pairs at `0x800000`, `0x900000`, `0xA00000`). The zip also holds the older program revision `b`
 (`epr-17888b.12`, `epr-17889b.13`) and `ic12.bin`/`ic13.bin`, which are
 the program pair again under other names; they are not used.
 

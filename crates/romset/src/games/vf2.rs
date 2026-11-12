@@ -8,8 +8,10 @@ use crate::{Board, Controls, Game, PadButton, Role, RomFile};
 /// (older revisions `17568/17569.12/13` with `17562/17563.14/15`, in
 /// letter variants, are in the zip and unused); main data pairs
 /// `.10/.11 .8/.9 .6/.7 .4/.5`, polygons `.16/.20 .17/.21 .18/.22`,
-/// textures `.25/.24 .27/.26`. The samples, `.31 .32 .36 .37` back to back
-/// from the sound 68000's `0x800000` as in `srallyc`, are checked against
+/// textures `.25/.24 .27/.26` (the second texture pair in its own 8 MB
+/// slot, at 16-bit word `0x400000`: `Role::Textures` is not packed). The
+/// samples, `.31 .32 .36 .37` back to back from the sound 68000's
+/// `0x800000` as in `srallyc`, are checked against
 /// the sound program's own sample table the same way (docs/games/vf2.md),
 /// not yet by ear.
 pub static VF2: Game = Game {
@@ -31,7 +33,7 @@ pub static VF2: Game = Game {
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
     recommended: crate::Recommended { shading: true, ..crate::Recommended::DEFAULT },
-    packed: &[Role::MainData, Role::CoproData, Role::Polygons, Role::Textures, Role::TgpData],
+    packed: &[Role::MainData, Role::CoproData, Role::Polygons, Role::TgpData],
     volume_db: 0.0,
     files: &[
         RomFile {
