@@ -864,12 +864,15 @@ impl Model2Bus {
     /// (docs/hw/model2a.md, 3); the rasteriser reads the 2C's layout, the
     /// same values back to back, so the word at byte offset `o` of video
     /// RAM block `block` (0 texture RAM, 1 the luma tables) is kept there
-    /// too. Texture RAM's banks are 4 MB apart here and 2 MB there.
+    /// too. Texture RAM's banks are 4 MB apart here and 2 MB there, and a
+    /// bank holds 512K words (the sheet's 1 MB): the 2 MB of 32-bit words
+    /// in its window repeat (`vf2` fills only the window's upper half,
+    /// words 0x80000 up; docs/hw/model2a.md, 3).
     fn mirror_video_2a(&mut self, block: usize, o: usize) {
         let b = self.video_2a.unwrap_or(0) + block;
         let w = [self.mems[b].data[o], self.mems[b].data[o + 1]];
         let k = o / 4;
-        let at = if block == 0 { (k >> 20) * 0x20_0000 + (k & 0xf_ffff) * 2 } else { 0x40_0000 + k * 2 };
+        let at = if block == 0 { (k >> 20) * 0x20_0000 + (k & 0x7_ffff) * 2 } else { 0x40_0000 + k * 2 };
         let render = &mut self.mems[RENDER_RAM];
         if let Some(d) = render.data.get_mut(at..at + 2) {
             d.copy_from_slice(&w);

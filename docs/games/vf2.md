@@ -28,11 +28,44 @@ fights, but not playably yet.
   tables); their geometry is unconfirmed, and so is anything the i960
   does with the results. Next: a `tgp-check` for `vf2` and a trace of
   function `0x4A`'s inputs and outputs around the fall.
-- *Unconfirmed:* the picture: fighters and stages draw untextured or flat
-  grey and black (the stage's buildings as black slabs), so either the
-  texture roles below or the 2A renderer's handling of this game's
-  polygons is wrong; the 3D fighter on the player-select screen does not
-  appear.
+- *Confirmed (by the pictures):* the stages and fighters are textured
+  (stone towers, trees, brick floor, clothes and faces). The grey was
+  not the chip roles, the polygons' attributes or the renderer: the
+  texture headers and point lists (the `.25/.24` pair) decoded all
+  along, and the polygons drew as textured with sensible headers (5,700
+  distinct textures in a 200M-instruction run), but their texel sheets
+  were empty. The game's boot copy fills Model 2A's video RAM only in
+  the upper half of each bank's window (bank 0 words `0x80000`-`0xFFFFF`
+  from `0x12200000`, bank 1 the same from `0x12600000`), where
+  `srallyc` fills the lower half. A bank is 512K words (the sheet's
+  1 MB), so its window's 2 MB of 32-bit words repeat, and the board model
+  kept the upper half at an address the rasteriser never reads.
+  `model2::bus::mirror_video_2a` now folds each bank's words to its 512K.
+  Whether the hardware repeats the window or `vf2` addresses the bank
+  differently is not told apart (both draw the same). Unconfirmed: the
+  second texture pair `.27/.26` (nothing in the first seconds reads
+  past the first pair's headers that was checked).
+- *Unconfirmed (a TGP result, not drawing):* the 3D fighter on the
+  player-select screen. The list at that screen (frame ~1,440) has no
+  window command (the window of the frame before is the full screen, 7
+  window commands a frame elsewhere), carries only two objects (a
+  323-polygon one and a 14-polygon one), each under an identity matrix
+  with zero translation, so every vertex lands at depth about 0 (z
+  between -0.3 and 0.05, where the fight's same 323-polygon object sits
+  at z 1.8-2.1) and is culled. The TGP calls in that frame are few (48:
+  functions `0x01`, `0x02`, `0x03`, `0x06`, `0x0E` called with zeros,
+  `0x16`, `0x24`, `0x26`, `0x29`, `0x2C`, `0x2F`, `0x32`, `0x34`,
+  `0x35`, `0x5E`, `0x6C`-`0x6F`) and the matrices come out identity:
+  the translation the game expects (and the other fighter parts) is
+  most likely produced by functions the select screen calls that return
+  zero or nothing here, `0x34`/`0x35` (the arguments are `0x8050`,
+  `0x8098`; the reply of `0x34` is 0 each time). The TGP never reads its
+  external data ROM (`0x800000` up) in `vf2` (checked: no reads in a
+  coin-start run), and `vf2`'s set has no chip for it. Re-sending the
+  previous frame's window for a list with none was tried and changes
+  nothing (the polygons are then culled for their depth), so it is not
+  kept. Next: trace `0x34`/`0x35` and the function that should leave a
+  translation in the matrix on this screen.
 - *Unconfirmed:* chip roles are by analogy with `srallyc` (main data
   `.10/.11 .8/.9 .6/.7 .4/.5`, polygons `.16/.20 .17/.21 .18/.22`, textures
   `.25/.24 .27/.26`); controls copied from `fvipers`.

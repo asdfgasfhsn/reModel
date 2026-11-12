@@ -90,6 +90,12 @@ each value 0..127 twice (`0,0,1,1,2,2,...`), is the **luma table**: the
 word (`geometrizer.md` §5.1). Texels, luma and the colour translation
 tables of the palette RAM all behave as on 2C.
 
+*Confirmed (`vf2`, by the pictures):* a bank is 512K words, so the 2 MB of
+32-bit words in each bank's window repeat. `srallyc` fills the lower half
+of each window; `vf2` fills only the upper half (bank 0 words
+`0x80000`-`0xFFFFF`) and its textures draw right once the model reads
+them at word `& 0x7FFFF` (`mirror_video_2a`).
+
 The board model maps 8 MB at `0x12000000` and 64 KB at `0x12800000` as
 plain RAM for 2A boards only (`Model2Bus::new`) and keeps each 16-bit word
 written there also at its 2C place in the render RAM the rasteriser reads
