@@ -568,7 +568,7 @@ impl Menu {
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 ui.set_min_width(340.0);
-                if ui.button("← Back").clicked() {
+                if ui.button("< Back").clicked() {
                     back = true;
                 }
                 ui.add_space(4.0);
@@ -630,7 +630,7 @@ impl Menu {
             .show(ctx, |ui| {
                 ui.set_min_width(520.0);
                 ui.horizontal(|ui| {
-                    if ui.button("← Back").clicked() {
+                    if ui.button("< Back").clicked() {
                         back = true;
                     }
                     ui.add_space(8.0);
@@ -642,7 +642,7 @@ impl Menu {
                 });
                 ui.separator();
                 egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
-                    ui.set_min_height(max_h.min(8.0 * 30.0));
+                    ui.set_min_height(max_h.min(6.0 * 30.0));
                     match tab {
                         Tab::Display => display_rows(ui, &mut rows, settings, &mut prefs, view),
                         Tab::Picture => picture_rows(ui, &mut rows, settings, view),
@@ -676,7 +676,7 @@ impl Menu {
                         ui,
                         &[
                             ("D-pad", "choose"),
-                            ("← →", "change"),
+                            ("Left Right", "change"),
                             ("LB RB", "tabs"),
                             ("B", "back"),
                             ("Start", "resume"),
@@ -735,7 +735,7 @@ impl Menu {
             .show(ctx, |ui| {
                 ui.set_min_width(520.0);
                 ui.horizontal(|ui| {
-                    if focus.button(ui, |ui| ui.button("← Back")) {
+                    if focus.button(ui, |ui| ui.button("< Back")) {
                         back = true;
                     }
                     ui.heading(title);
