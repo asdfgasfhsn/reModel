@@ -1356,7 +1356,8 @@ fn mat_luma(i: u32, px: vec2f, xy: vec2f) -> vec3f {
     if dd == 0.0 {
         return none;
     }
-    let f = max(1.0 + m4.y * dd, 0.0);
+    // At least a quarter (model2::raster::RELIEF_MIN), at most fourfold.
+    let f = max(1.0 + m4.y * dd, 0.25);
     if f == 1.0 {
         return none;
     }

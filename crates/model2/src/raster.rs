@@ -181,6 +181,10 @@ pub struct PolyLamp {
 
 /// The largest factor the relief rule ([`Relief::Diffuse`]) brightens by.
 const RELIEF_MAX: f32 = 4.0;
+/// The smallest factor it darkens by (a quarter, as it brightens at most
+/// fourfold): a normal tilted far from the light (a generated map's
+/// steepest texels, at painted edges) leaves a lit surface dark, not black.
+pub const RELIEF_MIN: f32 = 0.25;
 
 /// The luma a pixel of the relief rule ([`Relief::Diffuse`]) is drawn at for
 /// a texel whose luma table value is `table` (None: untextured), its luma
@@ -220,8 +224,8 @@ pub enum Relief {
     /// relative to the brightness drawn (per texel, after the game's caps:
     /// [`relieved`]), ambient ignored, so it shows on fully lit scenery
     /// too. `tenths`: the strength `s` in tenths (20: 2). The factor is at
-    /// most [`RELIEF_MAX`]; no relief where no light reaches (Lambert's
-    /// clamp) or the lamp has no diffuse term.
+    /// most [`RELIEF_MAX`] and at least [`RELIEF_MIN`]; no relief where no
+    /// light reaches (Lambert's clamp) or the lamp has no diffuse term.
     Diffuse { tenths: u8 },
 }
 
@@ -382,7 +386,7 @@ pub fn material_luma(
                 return None;
             }
             // None where the factor is 1.
-            let f = (1.0 + tenths as f32 / 10.0 * dd).max(0.0);
+            let f = (1.0 + tenths as f32 / 10.0 * dd).max(RELIEF_MIN);
             (f.is_finite() && f != 1.0).then_some((base, Some(f.min(RELIEF_MAX))))
         }
     }
@@ -544,6 +548,9 @@ pub fn hue_range(src: &Sources, colour: [u32; 3], texture: Option<&Texture>, lum
 pub struct HueCache {
     spans: HashMap<[u32; 3], [Option<(u32, u32)>; 64]>,
     levels: HashMap<(u32, u32, u32), Vec<u32>>,
+    /// [`ramp_range_with`]'s: per colour, the columns around each that
+    /// brighten with the level.
+    ramps: HashMap<[u32; 3], [Option<(u32, u32)>; 64]>,
 }
 
 /// [`hue_range`] with what it works out kept in `cache` (one frame's
@@ -604,6 +611,63 @@ pub fn hue_range_with(
             [lo.min(luma) as u8, hi.max(luma) as u8]
         }
     }
+}
+
+/// Material maps ([`PolyLamp::range`]): the lumas `[lo, hi]` (inclusive,
+/// around textured polygon `t`'s own `luma`) over which, for every level its
+/// texels at luma table indices `index` take, the colour's columns get no
+/// brighter as the luma falls and no darker as it rises. [`hue_range`]
+/// alone lets a near-black column pass as any hue, so where a game paints
+/// with a colour's top column black over grey ones (topskatr's signs: the
+/// lettering is the top column of a grey), a relief that darkens would pick
+/// the grey and draw the lettering's texels bright. Intersected with the
+/// hue range, a material moves a pixel's brightness only the way its
+/// normal says.
+pub fn ramp_range_with(
+    cache: &mut HueCache,
+    src: &Sources,
+    colour: [u32; 3],
+    t: &Texture,
+    luma: u32,
+    index: (u32, u32),
+) -> [u8; 2] {
+    let ramps = cache.ramps.entry(colour).or_insert([None; 64]);
+    let bright = |k: u32| (0..3).map(|ch| src.translate(ch, colour[ch], k) as u32).sum::<u32>();
+    // The columns around `own` (up to `top`) brightening with the level.
+    let mut ramp = |own: u32, top: u32| {
+        let (lo, hi) = *ramps[own as usize].get_or_insert_with(|| {
+            let mut lo = own;
+            while lo > 0 && bright(lo - 1) <= bright(lo) {
+                lo -= 1;
+            }
+            let mut hi = own;
+            while hi < 63 && bright(hi + 1) >= bright(hi) {
+                hi += 1;
+            }
+            (lo, hi)
+        });
+        (lo, hi.min(top))
+    };
+    let levels = cache.levels.entry((t.luma_table, index.0, index.1)).or_insert_with(|| {
+        let mut seen = [false; 256];
+        (index.0..=index.1.min(127))
+            .map(|i| src.luma(t.luma_table, i))
+            .filter(|&v| v != 0 && !std::mem::replace(&mut seen[v as usize], true))
+            .collect()
+    });
+    let (mut lo, mut hi) = (0u32, 255u32);
+    for &v in levels.iter() {
+        let c = |l: u32| (v * l / 256).min(63);
+        let (top, own) = (c(255), c(luma));
+        let (clo, chi) = ramp(own, top);
+        if clo > 0 {
+            lo = lo.max((clo * 256).div_ceil(v));
+        }
+        if chi < top {
+            hi = hi.min(((chi + 1) * 256 - 1) / v);
+        }
+    }
+    [lo.min(luma) as u8, hi.max(luma) as u8]
 }
 
 /// The luma table indices a textured polygon's pixels can read: from its
@@ -803,6 +867,9 @@ fn build_impl(stream: &[u32], src: &Sources, input: &BuildIn) -> (Vec<Poly>, Vec
     // `hue_range` by colour, luma table, luma and indices, likewise.
     #[allow(clippy::type_complexity)]
     let mut hues: HashMap<([u32; 3], Option<u32>, u32, (u32, u32)), [u8; 2]> = HashMap::new();
+    // `ramp_range` (material maps) likewise.
+    #[allow(clippy::type_complexity)]
+    let mut ramps: HashMap<([u32; 3], u32, u32, (u32, u32)), [u8; 2]> = HashMap::new();
     let mut hue_cache = HueCache::default();
     let mut polys = Vec::new();
     let mut windows: Vec<Window> = Vec::new();
@@ -993,18 +1060,23 @@ fn build_impl(stream: &[u32], src: &Sources, input: &BuildIn) -> (Vec<Poly>, Vec
                             // Material maps: textured polygons with a lamp.
                             let lamp = match (lamped, &texture) {
                                 (Some(lm), Some(t)) if !shadow => {
-                                    let range = if lit.is_empty() {
+                                    let table = Some(t.luma_table);
+                                    let key = (t.bank, t.x0, t.y0, t.w, t.h, t.translucent);
+                                    let index = *texels.entry(key).or_insert_with(|| texel_indices(src, t));
+                                    let hue = if lit.is_empty() {
                                         // The widest range that keeps the hue (as per
                                         // pixel lighting).
-                                        let table = Some(t.luma_table);
-                                        let key = (t.bank, t.x0, t.y0, t.w, t.h, t.translucent);
-                                        let index = *texels.entry(key).or_insert_with(|| texel_indices(src, t));
                                         *hues.entry((colour, table, luma, index)).or_insert_with(|| {
                                             hue_range_with(&mut hue_cache, src, colour, Some(t), luma, index)
                                         })
                                     } else {
                                         lit_range
                                     };
+                                    // ... over which brightness follows the luma.
+                                    let ramp = *ramps.entry((colour, t.luma_table, luma, index)).or_insert_with(|| {
+                                        ramp_range_with(&mut hue_cache, src, colour, t, luma, index)
+                                    });
+                                    let range = [hue[0].max(ramp[0]), hue[1].min(ramp[1])];
                                     let [fx, fy] = lm.focal;
                                     let ring: Vec<([f32; 3], [f32; 2])> =
                                         verts.iter().map(|v| ([v.x / fx, v.y / fy, v.z], [v.u, v.v])).collect();
@@ -2685,6 +2757,50 @@ mod tests {
         }
     }
 
+    /// A colour whose top column is near black over grey ones (topskatr's
+    /// sign lettering, drawn by the top column): the hue range lets the
+    /// near-black pass as any hue, the ramp range keeps a material's pixels
+    /// to the top column, so a relief that darkens can't draw it grey.
+    #[test]
+    fn material_range_never_brightens_as_the_luma_falls() {
+        // Every texel: luma table value 64 (column = luma / 4).
+        let mut ram = vec![0u8; 0x40_0000 + 0x8000];
+        ram[0x40_0000..0x40_0000 + 256].fill(64);
+        let mut palette = vec![0u8; 0x1_c000];
+        let tr = |ch: usize, lum: usize| 0x1_0000 + ch * 0x4000 + (9 * 256 + lum) * 2;
+        for ch in 0..3 {
+            for lum in 0..63 {
+                palette[tr(ch, lum)] = 100 + lum as u8;
+            }
+            palette[tr(ch, 63)] = 5;
+        }
+        let src = Sources {
+            texture_rom: &[],
+            texture_point_ram: &[],
+            render_ram: &ram,
+            palette: &palette,
+            xoff: 0.0,
+            yoff: 0.0,
+        };
+        let t = Texture {
+            x0: 0,
+            y0: 0,
+            w: 32,
+            h: 32,
+            mirror_x: false,
+            mirror_y: false,
+            bank: 0,
+            translucent: false,
+            luma_table: 0,
+        };
+        let c = [9; 3];
+        let mut cache = HueCache::default();
+        assert_eq!(hue_range_with(&mut cache, &src, c, Some(&t), 255, (0, 127)), [0, 255]);
+        assert_eq!(ramp_range_with(&mut cache, &src, c, &t, 255, (0, 127)), [252, 255]);
+        // Lower down the grey ramp: everything below, nothing past column 62.
+        assert_eq!(ramp_range_with(&mut cache, &src, c, &t, 128, (0, 127)), [0, 251]);
+    }
+
     #[test]
     fn identity_pack_where_full_luma_is_black_in_a_channel() {
         // Texel 0 (all of render RAM) has luma table value 64: level 63 at
@@ -3799,7 +3915,7 @@ mod tests {
             }
         }
 
-        /// The relief rule per pixel: a factor (finite, 0 to [`RELIEF_MAX`])
+        /// The relief rule per pixel: a factor (finite, [`RELIEF_MIN`] to [`RELIEF_MAX`])
         /// with the base passed through, none where nothing lights the flat
         /// normal; and
         /// [`relieved`]: pure black stays black, a saturated texel is
@@ -3831,7 +3947,7 @@ mod tests {
                 let with = |a: f32, l: [f32; 3]| PolyLamp { relief, ..lamp(a, l) };
                 let ok = |v: Option<(f32, Option<f32>)>, base: f32| {
                     v.is_none_or(|(b, f)| {
-                        b == base && f.is_some_and(|f| f.is_finite() && (0.0..=RELIEF_MAX).contains(&f))
+                        b == base && f.is_some_and(|f| f.is_finite() && (RELIEF_MIN..=RELIEF_MAX).contains(&f))
                     })
                 };
                 // Lit edge-on at the flat normal: no light on the side of
@@ -3854,6 +3970,10 @@ mod tests {
                 }
                 assert!(some > 0, "{relief:?}");
             }
+            // A normal tilted far from the light, at strength 8: darkened
+            // to a quarter, not to black.
+            let strong = PolyLamp { relief: Relief::Diffuse { tenths: 80 }, ..lamp(60.0, [0.0, 0.0, 1.0]) };
+            assert_eq!(material_luma(&strong, n, 200.0, (0.9, 0.0), 1.0), Some((200.0, Some(RELIEF_MIN))));
             // Pure black, a zero table value: unchanged.
             assert_eq!(relieved(0.5, Some(200), 255, 0.5), 0.5);
             assert_eq!(relieved(100.0, Some(0), 255, 0.5), 100.0);
