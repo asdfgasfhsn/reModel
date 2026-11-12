@@ -1,6 +1,6 @@
 //! Gamepad focus over a page of egui widgets (the menu's): the d-pad moves
 //! it between them as they're laid out on screen, A activates the focused
-//! one, left and right change a slider or step through a radio group, and
+//! one, left and right change a stepper row ("label ◂ value ▸"), and
 //! the focused one glows. Widgets register as they're drawn
 //! (`Focus::button` and so on); the moves apply to where they were the
 //! frame before.
@@ -11,8 +11,8 @@ use egui::{Color32, Id, Rect, Response, Stroke, StrokeKind};
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Kind {
     Button,
-    Slider,
-    Radio { group: &'static str, selected: bool },
+    /// A "label ◂ value ▸" row: left and right change it, A steps on.
+    Stepper,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -78,20 +78,7 @@ impl Focus {
                 Nav::Left | Nav::Right => {
                     let d = if nav == Nav::Left { -1 } else { 1 };
                     match item.kind {
-                        Kind::Slider if item.enabled => self.step.push((item.id, d)),
-                        Kind::Radio { group, .. } => {
-                            let radios: Vec<usize> = (0..self.last.len())
-                                .filter(|&i| {
-                                    matches!(self.last[i].kind, Kind::Radio { group: g, .. } if g == group)
-                                        && self.last[i].enabled
-                                })
-                                .collect();
-                            let pos = radios.iter().position(|&i| i == at).unwrap_or(0) as i32;
-                            if let Some(&to) = usize::try_from(pos + d).ok().and_then(|i| radios.get(i)) {
-                                self.go(to);
-                                self.click.push(self.last[to].id);
-                            }
-                        }
+                        Kind::Stepper if item.enabled => self.step.push((item.id, d)),
                         _ => {
                             if let Some(to) = self.across(at, d as f32) {
                                 self.go(to);
@@ -128,7 +115,7 @@ impl Focus {
     }
 
     /// The widget on the nearest line above (`d` -1) or below `at`: the one
-    /// most in line with it (a radio group's chosen one).
+    /// most in line with it.
     fn vertical(&self, at: usize, d: f32) -> Option<usize> {
         let c = self.last[at].rect;
         let cands: Vec<usize> = (0..self.last.len())
@@ -147,10 +134,6 @@ impl Focus {
             (x_gap(r, c), (r.left() - c.left()).abs())
         };
         let best = *row.iter().min_by(|&&a, &&b| key(a).partial_cmp(&key(b)).unwrap())?;
-        if let Kind::Radio { group, .. } = self.last[best].kind {
-            let chosen = row.iter().copied().find(|&i| self.last[i].kind == Kind::Radio { group, selected: true });
-            return chosen.or(Some(best));
-        }
         Some(best)
     }
 
@@ -185,26 +168,11 @@ impl Focus {
         r.changed()
     }
 
-    /// One of radio group `group`'s buttons, setting `value` to `alt`.
-    pub fn radio<T: PartialEq + Copy>(
-        &mut self,
-        ui: &mut egui::Ui,
-        group: &'static str,
-        value: &mut T,
-        alt: T,
-        text: impl Into<egui::WidgetText>,
-    ) {
-        let selected = *value == alt;
-        let r = ui.radio_value(value, alt, text);
-        if self.item(ui, &r, Kind::Radio { group, selected }) {
-            *value = alt;
-        }
-    }
-
-    /// A slider: how many steps the pad moved it this frame.
-    pub fn slider(&mut self, ui: &egui::Ui, r: &Response) -> i32 {
-        self.item(ui, r, Kind::Slider);
-        self.step.iter().filter(|s| s.0 == r.id).map(|s| s.1).sum()
+    /// A stepper row: how many steps the pad moved it this frame (left
+    /// and right), and whether A was pressed on it.
+    pub fn stepper(&mut self, ui: &egui::Ui, r: &Response) -> (i32, bool) {
+        let accepted = self.item(ui, r, Kind::Stepper);
+        (self.step.iter().filter(|s| s.0 == r.id).map(|s| s.1).sum(), accepted)
     }
 
     /// End the frame: focus the first widget if none is (the page just

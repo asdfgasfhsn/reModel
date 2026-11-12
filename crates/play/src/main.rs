@@ -359,7 +359,12 @@ fn options(s: &mut Settings) -> Result<Options, String> {
                 let n = value()?;
                 match n.parse::<u32>() {
                     Ok(n) if n <= settings::MAX_RUN_AHEAD => cli("run_ahead", &n.to_string()),
-                    _ => return Err(format!("--run-ahead wants 0 to {}", settings::MAX_RUN_AHEAD)),
+                    _ => {
+                        return Err(format!(
+                            "--run-ahead wants 0 to {} (a game may take fewer: it warns above its own)",
+                            settings::MAX_RUN_AHEAD
+                        ))
+                    }
                 };
             }
             "--aa" => {
@@ -961,6 +966,15 @@ impl Play {
                 drew_ahead: false,
                 geo_chip: values.geo_chip,
             };
+            // A run-ahead the command line asked for beyond what the game's
+            // lag can use only judders: it's kept, and said.
+            if self.settings.cli.contains_key("run_ahead") && values.run_ahead > game.run_ahead_max as u32 {
+                eprintln!(
+                    "warning: --run-ahead {} is more than {} can use (at most {}: docs/play.md, \"Run-ahead\"); \
+                     more only judders",
+                    values.run_ahead, game.id, game.run_ahead_max
+                );
+            }
             s.set_run_ahead(values.run_ahead, values.motion_on(), Some(&roms), &self.settings.rom);
             Ok(s)
         });
@@ -1215,6 +1229,7 @@ impl Play {
             let slots = self.slot_times();
             let pack_text = self.pack_text();
             let materials_text = self.materials_text();
+            let has_bezel = self.bezel.is_some();
             let (Some(g), Some(s)) = (&mut self.gpu, &mut self.session) else { return Err("no game".into()) };
             g.renderer.forget_ram();
             // A one-off frame: with temporal on, the plain (unjittered) one.
@@ -1229,7 +1244,9 @@ impl Play {
             let menu_view = menu::View {
                 playing: Some(s.game.title),
                 slots: &slots,
-                input_lag: Some(s.game.input_lag),
+                game: Some(s.game),
+                has_bezel,
+                run_ahead_dropped: s.run_ahead_dropped,
                 max_anisotropy: self.max_anisotropy,
                 temporal_supported: self.temporal_supported,
                 pack: pack_text.as_deref(),
@@ -1859,11 +1876,14 @@ impl Play {
         {
             let pack_text = self.pack_text();
             let materials_text = self.materials_text();
+            let has_bezel = self.bezel.is_some();
             let g = self.gpu.as_mut().unwrap();
             let view = menu::View {
                 playing: self.session.as_ref().map(|s| s.game.title),
                 slots: &slots,
-                input_lag: self.session.as_ref().map(|s| s.game.input_lag),
+                game: self.session.as_ref().map(|s| s.game),
+                has_bezel,
+                run_ahead_dropped: self.session.as_ref().is_some_and(|s| s.run_ahead_dropped),
                 max_anisotropy: self.max_anisotropy,
                 temporal_supported: self.temporal_supported,
                 pack: pack_text.as_deref(),

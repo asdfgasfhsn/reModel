@@ -8,7 +8,8 @@
 //! motion, run-ahead, anti-aliasing, temporal anti-aliasing and its
 //! stipple, depth buffer, smooth shading, its crease angle and finer
 //! levels, texture
-//! pack and its filtering, material maps and their rule, geometrizer) come in layers, lowest first, as
+//! pack and its filtering, material maps and their rule, geometrizer, and
+//! the picture preset that sets many of them) come in layers, lowest first, as
 //! in the browser build (`crates/web/settings.js`): the built-in defaults, the defaults for
 //! all games (`play-settings.txt`), the game's own (`<set>/settings.txt`)
 //! and the command line (this run only). A layer keeps only what it sets,
@@ -19,9 +20,82 @@ use model2::enhance::TexFilter;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// The picture presets: a choice of the rows that change how the game
+/// looks (and, with Enhanced, moves). Custom is any other combination.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Preset {
+    /// Everything that changes the picture off: the arcade look.
+    #[default]
+    Original,
+    /// 4x multisampling and mipmapped texture filtering only.
+    Sharp,
+    /// Per game (`romset::Recommended`): what its documentation says is
+    /// right for it, with smooth motion and run-ahead.
+    Enhanced,
+    Custom,
+}
+
+impl Preset {
+    /// Every preset, in the order the menu offers them.
+    pub const ALL: [Preset; 4] = [Preset::Original, Preset::Sharp, Preset::Enhanced, Preset::Custom];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Preset::Original => "original",
+            Preset::Sharp => "sharp",
+            Preset::Enhanced => "enhanced",
+            Preset::Custom => "custom",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Preset> {
+        Preset::ALL.into_iter().find(|p| p.name() == s)
+    }
+}
+
+/// The rows a preset describes the picture by: a preset matches when all
+/// of them are what it sets. Changing one of them under a preset makes it
+/// Custom.
+pub const PICTURE_KEYS: [&str; 12] = [
+    "aa",
+    "temporal",
+    "stipple",
+    "depth",
+    "shading",
+    "crease",
+    "shading_fine",
+    "shading_balance",
+    "pack",
+    "tex_filter",
+    "materials",
+    "materials_relief",
+];
+
+/// The rows choosing a preset sets: the picture's, smooth motion and
+/// run-ahead (the last two don't count against a preset matching).
+const PRESET_KEYS: [&str; 14] = [
+    "aa",
+    "temporal",
+    "stipple",
+    "depth",
+    "shading",
+    "crease",
+    "shading_fine",
+    "shading_balance",
+    "pack",
+    "tex_filter",
+    "materials",
+    "materials_relief",
+    "smooth",
+    "run_ahead",
+];
+
 /// The settings a game is played with.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GameSettings {
+    /// The picture preset. The rows it sets are kept in the fields below;
+    /// a preset is stored as itself, not as its rows (`Settings::edit`).
+    pub preset: Preset,
     /// Mix in dB: sound board (effects, announcer), music board.
     pub sfx_db: f32,
     pub music_db: f32,
@@ -88,6 +162,7 @@ pub struct GameSettings {
 impl Default for GameSettings {
     fn default() -> Self {
         GameSettings {
+            preset: Preset::Original,
             sfx_db: model2::audio::DEFAULT_MIX.0,
             music_db: model2::audio::DEFAULT_MIX.1,
             hud_edges: true,
@@ -114,7 +189,8 @@ impl Default for GameSettings {
 }
 
 /// Every game setting's key, in the order the panels show them.
-pub const KEYS: [&str; 21] = [
+pub const KEYS: [&str; 22] = [
+    "preset",
     "wide",
     "bezel",
     "hud_edges",
@@ -159,6 +235,7 @@ impl GameSettings {
     /// Setting `key` as text (as the files keep it).
     pub fn get(&self, key: &str) -> String {
         match key {
+            "preset" => self.preset.name().to_string(),
             "sfx_db" => self.sfx_db.to_string(),
             "music_db" => self.music_db.to_string(),
             "hud_edges" => self.hud_edges.to_string(),
@@ -201,6 +278,7 @@ impl GameSettings {
         };
         let db = |v: &str| v.parse::<f32>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(-40.0, 24.0));
         match key {
+            "preset" => Preset::parse(v).map(|p| self.preset = p).is_some(),
             "sfx_db" => db(v).map(|x| self.sfx_db = x).is_some(),
             "music_db" => db(v).map(|x| self.music_db = x).is_some(),
             "hud_edges" => flag(v).map(|x| self.hud_edges = x).is_some(),
@@ -234,6 +312,49 @@ impl GameSettings {
             },
             _ => false,
         }
+    }
+
+    /// Choose preset `p`: set the rows it describes (all of them, smooth
+    /// motion and run-ahead too) for `game` (Enhanced is per game). Custom
+    /// keeps the rows as they are.
+    pub fn apply_preset(&mut self, p: Preset, game: Option<&romset::Game>) {
+        self.preset = p;
+        if p == Preset::Custom {
+            return;
+        }
+        let base = GameSettings::default();
+        for k in PRESET_KEYS {
+            self.set(k, &base.get(k));
+        }
+        if p == Preset::Original {
+            return;
+        }
+        self.aa = 4;
+        self.tex_filter = TexFilter::Mip;
+        if p == Preset::Enhanced {
+            let rec = game.map_or(romset::Recommended::DEFAULT, |g| g.recommended);
+            self.temporal = if rec.temporal { 100 } else { 0 };
+            self.depth = rec.depth;
+            self.shading = if rec.shading { gpu::Shading::Vertex } else { gpu::Shading::Flat };
+            self.smooth = true;
+            self.run_ahead = game.map_or(0, |g| g.run_ahead_recommended() as u32);
+        }
+    }
+
+    /// Whether the picture rows are what preset `p` sets for `game`.
+    pub fn picture_is(&self, p: Preset, game: Option<&romset::Game>) -> bool {
+        let mut want = self.clone();
+        want.apply_preset(p, game);
+        PICTURE_KEYS.iter().all(|k| want.get(k) == self.get(k))
+    }
+
+    /// These settings, with a preset whose rows no longer all match
+    /// changed to Custom (the rows win).
+    pub fn settled(mut self, game: Option<&romset::Game>) -> GameSettings {
+        if self.preset != Preset::Custom && !self.picture_is(self.preset, game) {
+            self.preset = Preset::Custom;
+        }
+        self
     }
 
     pub fn geo_mode(&self) -> model2::geo::GeoMode {
@@ -488,21 +609,36 @@ impl Settings {
     /// The settings `set` plays with, and where each came from (by
     /// `KEYS` order).
     pub fn resolve(&mut self, set: &str) -> (GameSettings, [Source; KEYS.len()]) {
+        let own = self.game_layer(set).clone();
+        Self::stack(&[(&self.defaults, Source::AllGames), (&own, Source::Game), (&self.cli, Source::CommandLine)], set)
+    }
+
+    /// `layers` (lowest first) over the built-in defaults. A layer's
+    /// preset sets the rows it describes before the layer's own settings
+    /// apply, so a row given beside it wins; a preset whose rows then
+    /// don't all match becomes Custom.
+    fn stack(layers: &[(&Layer, Source)], set: &str) -> (GameSettings, [Source; KEYS.len()]) {
+        let game = romset::games::find(set).ok();
         let mut v = GameSettings::default();
         let mut source = [Source::Default; KEYS.len()];
-        let own = self.game_layer(set).clone();
-        for (layer, name) in
-            [(&self.defaults, Source::AllGames), (&own, Source::Game), (&self.cli, Source::CommandLine)]
-        {
+        for (layer, name) in layers {
+            if let Some(p) = layer.get("preset").and_then(|p| Preset::parse(p)) {
+                v.apply_preset(p, game);
+                for (i, k) in KEYS.iter().enumerate() {
+                    if *k == "preset" || (p != Preset::Custom && PRESET_KEYS.contains(k)) {
+                        source[i] = *name;
+                    }
+                }
+            }
             for (i, k) in KEYS.iter().enumerate() {
-                if let Some(x) = layer.get(*k) {
+                if let Some(x) = layer.get(*k).filter(|_| *k != "preset") {
                     if v.set(k, x) {
-                        source[i] = name;
+                        source[i] = *name;
                     }
                 }
             }
         }
-        (v, source)
+        (v.settled(game), source)
     }
 
     /// Keep what changed from what `set` resolves to in `new`: for all
@@ -521,36 +657,52 @@ impl Settings {
 
     /// [`Settings::edit`] without saving: whether the defaults for all
     /// games and the game's own changed.
+    ///
+    /// A preset other than Custom is kept as itself: the rows it sets are
+    /// stored only where they differ from what it sets (smooth motion and
+    /// run-ahead changed after choosing it). Custom keeps its rows, each
+    /// where it differs from the layers below.
     fn apply_edit(&mut self, set: &str, new: &GameSettings) -> (bool, bool) {
+        let game = romset::games::find(set).ok();
+        let new = new.clone().settled(game);
         let (old, _) = self.resolve(set);
-        let base = GameSettings::default();
-        let (mut all_changed, mut game_changed) = (false, false);
+        let under = if self.for_all {
+            GameSettings::default()
+        } else {
+            let all = self.defaults.clone();
+            Self::stack(&[(&all, Source::AllGames)], set).0
+        };
+        let mut derived = GameSettings::default();
+        derived.apply_preset(new.preset, game);
+        let changed_preset = new.preset != old.preset;
+        let (all_before, own_before) = (self.defaults.clone(), self.game_layer(set).clone());
         for k in KEYS {
+            // A new preset sets its rows again, whatever they were.
+            let forced = changed_preset && (k == "preset" || PRESET_KEYS.contains(&k));
             let v = new.get(k);
-            if v == old.get(k) {
+            if v == old.get(k) && !forced {
                 continue;
             }
             self.cli.remove(k);
+            let baseline =
+                if new.preset != Preset::Custom && PRESET_KEYS.contains(&k) { derived.get(k) } else { under.get(k) };
             if self.for_all {
-                if v == base.get(k) {
+                if v == baseline {
                     self.defaults.remove(k);
                 } else {
                     self.defaults.insert(k.to_string(), v);
                 }
-                all_changed = true;
-                game_changed |= self.game_layer(set).remove(k).is_some();
+                self.game_layer(set).remove(k);
             } else {
-                let under = self.defaults.get(k).cloned().unwrap_or_else(|| base.get(k));
                 let own = self.game_layer(set);
-                if v == under {
+                if v == baseline {
                     own.remove(k);
                 } else {
                     own.insert(k.to_string(), v);
                 }
-                game_changed = true;
             }
         }
-        (all_changed, game_changed)
+        (self.defaults != all_before, *self.game_layer(set) != own_before)
     }
 
     /// Drop `set`'s own settings: it plays with the defaults for all games.
@@ -841,6 +993,96 @@ mod tests {
         (v.materials, v.materials_relief) = (false, gpu::Relief::default());
         edit_quietly(&mut s, "x", &v);
         assert!(!s.defaults.contains_key("materials") && !s.defaults.contains_key("materials_relief"));
+    }
+
+    #[test]
+    fn presets_round_trip_through_the_files() {
+        // Unset: Original, nothing written.
+        assert_eq!(GameSettings::default().preset, Preset::Original);
+        assert!(!Settings::default().text().contains("preset"));
+        let mut v = GameSettings::default();
+        for p in Preset::ALL {
+            assert!(v.set("preset", p.name()) && v.get("preset") == p.name());
+        }
+        assert!(!v.set("preset", "extra") && v.preset == Preset::Custom);
+        // A preset is stored as itself; its rows follow from it per game.
+        let mut s = with_game(Settings::parse("preset = enhanced\n"), "topskatr", &[]);
+        s.games.insert("vstriker".into(), Layer::new());
+        let (v, src) = s.resolve("topskatr");
+        assert_eq!((v.preset, v.temporal, v.depth, v.shading), (Preset::Enhanced, 100, true, gpu::Shading::Vertex));
+        assert!(v.smooth);
+        assert_eq!(src[KEYS.iter().position(|k| *k == "depth").unwrap()], Source::AllGames);
+        let (v, _) = s.resolve("vstriker");
+        assert_eq!((v.preset, v.aa, v.temporal, v.depth), (Preset::Enhanced, 4, 0, false));
+        // Through the text.
+        let again = Settings::parse(&s.text());
+        assert_eq!(again.defaults.get("preset").map(String::as_str), Some("enhanced"));
+        // The game's own preset wins over the defaults for all games.
+        let mut s = with_game(s, "topskatr", &[("preset", "sharp")]);
+        let (v, _) = s.resolve("topskatr");
+        assert_eq!((v.preset, v.aa, v.temporal, v.depth, v.smooth), (Preset::Sharp, 4, 0, false, false));
+        // A row given beside a preset (the command line's) wins, and the
+        // preset is then Custom with the rows as they are.
+        s.cli.insert("aa".into(), "8".into());
+        let (v, _) = s.resolve("topskatr");
+        assert_eq!((v.preset, v.aa), (Preset::Custom, 8));
+        // Settings files from before presets have rows and no preset: Custom.
+        let mut old = with_game(Settings::parse("aa = 4\ndepth = true\n"), "x", &[]);
+        let (v, _) = old.resolve("x");
+        assert_eq!((v.preset, v.aa, v.depth), (Preset::Custom, 4, true));
+        let mut none = with_game(Settings::parse("sfx_db = 3\n"), "x", &[]);
+        assert_eq!(none.resolve("x").0.preset, Preset::Original);
+    }
+
+    #[test]
+    fn editing_a_preset_keeps_the_preset_not_its_rows() {
+        let mut s = with_game(Settings::default(), "topskatr", &[]);
+        s.for_all = false;
+        let (mut v, _) = s.resolve("topskatr");
+        v.apply_preset(Preset::Enhanced, romset::games::find("topskatr").ok());
+        edit_quietly(&mut s, "topskatr", &v);
+        assert_eq!(s.games["topskatr"].get("preset").map(String::as_str), Some("enhanced"));
+        assert_eq!(s.games["topskatr"].len(), 1, "{:?}", s.games["topskatr"]);
+        assert!(s.defaults.is_empty());
+        assert_eq!(s.resolve("topskatr").0, v);
+        // Smooth motion off after it: kept, as the one row that differs.
+        let (mut w, _) = s.resolve("topskatr");
+        w.smooth = false;
+        edit_quietly(&mut s, "topskatr", &w);
+        assert_eq!(s.games["topskatr"].get("smooth").map(String::as_str), Some("false"));
+        let (back, _) = s.resolve("topskatr");
+        assert_eq!((back.preset, back.smooth, back.depth), (Preset::Enhanced, false, true));
+        // Back to Original: nothing stored at all.
+        let mut o = back.clone();
+        o.apply_preset(Preset::Original, romset::games::find("topskatr").ok());
+        edit_quietly(&mut s, "topskatr", &o);
+        assert!(s.games["topskatr"].is_empty(), "{:?}", s.games["topskatr"]);
+        assert_eq!(s.resolve("topskatr").0, GameSettings::default());
+        // Custom keeps its rows, each where it differs from the layers below.
+        let mut c = GameSettings::default();
+        c.apply_preset(Preset::Custom, None);
+        (c.aa, c.depth) = (8, true);
+        edit_quietly(&mut s, "topskatr", &c);
+        let (got, _) = s.resolve("topskatr");
+        assert_eq!((got.preset, got.aa, got.depth, got.temporal), (Preset::Custom, 8, true, 0));
+        assert_eq!(s.games["topskatr"].get("preset").map(String::as_str), Some("custom"));
+        // For all games: another game follows, with its own Enhanced.
+        let mut s = with_game(Settings::default(), "vstriker", &[]);
+        s.games.insert("topskatr".into(), Layer::new());
+        s.for_all = true;
+        let (mut v, _) = s.resolve("topskatr");
+        v.apply_preset(Preset::Enhanced, romset::games::find("topskatr").ok());
+        edit_quietly(&mut s, "topskatr", &v);
+        assert_eq!(s.defaults.len(), 1, "{:?}", s.defaults);
+        let (other, _) = s.resolve("vstriker");
+        assert_eq!((other.preset, other.temporal, other.aa, other.depth), (Preset::Enhanced, 0, 4, false));
+        // A row changed under a preset (as the launcher does) makes it
+        // Custom with that row.
+        let (mut v, _) = s.resolve("topskatr");
+        v.aa = 8;
+        edit_quietly(&mut s, "topskatr", &v);
+        let (v, _) = s.resolve("topskatr");
+        assert_eq!((v.preset, v.aa, v.temporal, v.depth), (Preset::Custom, 8, 100, true));
     }
 
     /// `edit` without saving (the layers it would touch are given).
