@@ -380,3 +380,29 @@ fn arctangent() {
         assert!((got as f64 - want).abs() <= 2.0, "atan2({y}, {x}) = {got}, want {want}");
     }
 }
+
+#[test]
+fn circular_indexed_operand_wraps_its_pointer() {
+    struct Ram(Vec<u32>);
+    impl Bus for Ram {
+        fn read(&mut self, a: u32) -> u32 {
+            self.0[a as usize & 0xff]
+        }
+        fn write(&mut self, _: u32, _: u32) {}
+    }
+    // `vf2`'s ring reader: ar3 = 0x3e, ar1 = 0x80 (the ring's base);
+    // out = ext[ar1 + ar3], ar3 += 1 (c9 `1C1`: indexed and circular) four
+    // times: the pointer goes 0x3e, 0x3f, 0, 1, and is 2 after.
+    let read = 0x1c1e_0000 | ((OUT) << 9) | 0x1c1;
+    let p = vec![0x6340_0000, 0x4300_003e, 0x4100_0080, read, read, read, read, mov(ACC, IN)];
+    let mut c = Cpu::new(p, Vec::new());
+    let mut ram = Ram((0..0x100).collect());
+    assert_eq!(c.run(&mut ram, 100), Stop::Input);
+    assert_eq!(c.fifo_out.drain(..).collect::<Vec<_>>(), [0xbe, 0xbf, 0x80, 0x81]);
+    assert_eq!(c.regs[reg::AR3 as usize], 2);
+    // Plain indexed (`181`) does not wrap.
+    let p = vec![0x6340_0000, 0x4300_003f, 0x4100_0080, read & !0x40, read & !0x40, mov(ACC, IN)];
+    let mut c = Cpu::new(p, Vec::new());
+    assert_eq!(c.run(&mut ram, 100), Stop::Input);
+    assert_eq!(c.fifo_out.drain(..).collect::<Vec<_>>(), [0xbf, 0xc0]);
+}

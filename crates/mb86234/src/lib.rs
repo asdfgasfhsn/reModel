@@ -32,6 +32,10 @@ pub const RAM_WORDS: usize = 0x400;
 /// Program memory: the largest program the 16-bit jump targets reach is
 /// more than any board loads; `srallyc`'s is 1,665 words.
 pub const PROGRAM_WORDS: usize = 0x1000;
+/// The length of a circular indirect operand's ring, in words (`vf2`'s
+/// ring in shared RAM is 64 words: the i960 wraps its writes there; what
+/// sets the length on the chip, if anything, is unknown).
+pub const RING: u32 = 64;
 /// Return addresses kept (calls nest at most three deep in `srallyc`).
 pub const STACK_DEPTH: usize = 16;
 
@@ -491,13 +495,18 @@ impl Cpu {
     }
 
     /// An indirect operand through `ar` (AR2 or AR3), whose field `m`
-    /// holds the signed 5-bit step in bits 0-4 and the mode in bit 5; the
-    /// register is stepped after. Bit 5 set: the register's value; clear
-    /// (`docs/hw/mb86234.md`): indexed, the register plus its base (AR0 for
-    /// AR2, AR1 for AR3).
+    /// holds the signed 5-bit step in bits 0-4 and the mode in bits 5-6;
+    /// the register is stepped after. Bit 5 set: the register's value;
+    /// clear (`docs/hw/mb86234.md`): indexed, the register plus its base
+    /// (AR0 for AR2, AR1 for AR3), and with bit 6 also set, **circular**:
+    /// the step wraps within [`RING`] words, so the index counts round a
+    /// ring (`vf2` reads a 64-word ring the i960 fills in shared RAM this
+    /// way).
     fn post(&mut self, ar: u8, m: u32) -> Ea {
         let a = self.regs[ar as usize];
-        self.regs[ar as usize] = a.wrapping_add(sext(m & 0x1f, 5)) & 0xff_ffff;
+        let next = a.wrapping_add(sext(m & 0x1f, 5));
+        self.regs[ar as usize] =
+            if m & 0x60 == 0x40 { (a & !(RING - 1)) | (next & (RING - 1)) } else { next } & 0xff_ffff;
         let base = if m & 0x20 == 0 { self.base(ar) } else { 0 };
         Ea { index: a, base }
     }

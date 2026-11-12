@@ -68,12 +68,14 @@ fn step(m: u32) -> String {
 }
 
 /// An indirect operand through `ar`: bit 5 set, the register itself;
-/// clear, indexed: AR0 + AR2 or AR1 + AR3.
+/// clear, indexed: AR0 + AR2 or AR1 + AR3, and with bit 6 also set
+/// circular (the step wraps round a ring, shown `%`).
 fn indirect(m: u32, ar: u32) -> String {
+    let ring = if m & 0x60 == 0x40 { "%" } else { "" };
     match (m & 0x20 != 0, ar) {
         (true, _) => format!("[ar{ar}]{}", step(m)),
-        (false, 2) => format!("[ar0+ar2]{}", step(m)),
-        (false, _) => format!("[ar1+ar3]{}", step(m)),
+        (false, 2) => format!("[ar0+ar2]{ring}{}", step(m)),
+        (false, _) => format!("[ar1+ar3]{ring}{}", step(m)),
     }
 }
 
