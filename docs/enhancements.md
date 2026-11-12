@@ -1154,7 +1154,19 @@ light direction and ambient, nothing physical), which is pack content.
   Letting a pack add one (`spec_base=`, `spec_power=` on a `material`
   line, reserved in the manifest so it needs no new format) invents light
   the game doesn't cast. First measure how many polygons have a highlight
-  at all, per game; then decide.
+  at all, per game; then decide. Measured 2026-11-12 (`make spec-stats`,
+  21 frames of a coin-start `make lighting-capture` per game, pixels as
+  shown, 960x720): the game's specular term brightens 4-6% of the
+  textured pixels by 4 levels or more in `stcc` (cars' bodywork), `bel`
+  (props and vehicles), `fvipers` and `schamp` (the fighters), and
+  essentially none in the other fourteen: `topskatr` and `srallyc` light
+  many polygons with a term that is under a level or lands on surfaces
+  already at 255, `lastbrnx`'s entries have a specular control with a
+  zero scale, and the rest (`doa`, `vstriker`, `sgt24h`, `indy500`,
+  `dynabb97`, `overrev`, `overrevb`, `skisuprg`, `segawski`, `waverunr`,
+  `hotd`) have no term on any textured polygon shown. Doubling the term
+  (a specular map's most) reaches little more outside those four. Per
+  game in `docs/games/`.
 - Whether light data can be recovered on the chip geometry path (not
   investigated, unconfirmed either way). Material maps and the exact
   lighting layer need the native geometrizer's per-polygon light data;

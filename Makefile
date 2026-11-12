@@ -369,6 +369,10 @@ LIGHT_OPTS ?=
 lighting-check: release ## Draw the captured frames flat and smooth-shaded (vertex, or GPU_OPTS="--shading pixel" for per pixel; "--shading-fine on" adds finer levels and K, against the game's levels; "--shading-balance off" checks without the brightness balance, -nobal pictures and reports, its mean brightness C report-only) on the software and GPU renderers; check the invariants (crease 0 is flat, unlit polygons unchanged, brightness of corners and pixels, software against GPU, hue kept, determinism; with LIGHT_IN=a lighting-capture: the side channel's self-check and list scan, L0 against it), report and pictures into out/scratch/lighting/GAME (LIGHT_OPTS: --every N, --probe X,Y@F, --bench [N], --no-side; GPU_OPTS: --crease N, --height/--aspect; needs a GPU)
 	$(RUN) $(GPU_OPTS) lighting-check $(or $(LIGHT_IN),$(OUT)/capture) out/scratch/lighting/$(GAME) $(LIGHT_OPTS)
 
+.PHONY: spec-stats
+spec-stats: release ## Count the game's own specular highlights on a lighting-capture (LIGHT_IN, default LIGHT_CAPTURE): textured polygons with a specular term, the pixels it brightens by 1 and 4 levels or more (face and smooth normals); spec-stats.txt and frame | flat term | smooth term pictures into out/scratch/lighting/GAME/spec (LIGHT_OPTS: --every N; GPU_OPTS: --height/--aspect; no GPU needed)
+	$(RUN) $(GPU_OPTS) lighting-check $(or $(LIGHT_IN),$(LIGHT_CAPTURE)) out/scratch/lighting/$(GAME)/spec --spec-stats $(LIGHT_OPTS)
+
 # Where lighting-capture saves (a directory of its own: the regression
 # baseline hashes out/GAME/capture).
 LIGHT_CAPTURE ?= out/scratch/lighting/$(GAME)/capture

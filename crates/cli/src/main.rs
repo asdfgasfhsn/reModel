@@ -11,6 +11,7 @@ mod run_ahead;
 mod sharc;
 mod sound_render;
 mod soundtrack;
+mod spec_stats;
 mod temporal_check;
 mod temporal_probe;
 mod texpack;
@@ -327,7 +328,12 @@ commands:
                        -fine, -pixel-fine; K: against the game's levels);
                        --shading-balance off checks without the brightness
                        balance (pictures and reports -nobal; C report-only).
-                       Fails if an invariant does
+                       Fails if an invariant does. --spec-stats instead
+                       counts the game's own specular highlights (no GPU;
+                       needs light.bin): textured polygons with a specular
+                       term, the pixels it brightens by 1 and 4 levels or
+                       more (face and smooth normals), spec-stats.txt and
+                       FRAME-spec.png pictures (default view 960x720)
   temporal-probe [DIR] [OUT]
                        the GPU's temporal path (--temporal, default taa;
                        --stipple, --depth, --height, --aspect) on the frames
@@ -1546,6 +1552,13 @@ fn main() -> ExitCode {
                 }
                 None => true,
             };
+            let spec = match args.iter().position(|a| a == "--spec-stats") {
+                Some(i) => {
+                    args.remove(i);
+                    true
+                }
+                None => false,
+            };
             let default = PathBuf::from("out").join(roms.game.id).join("capture");
             let root = args.get(1).map(PathBuf::from).unwrap_or(default);
             let out = args
@@ -1562,7 +1575,12 @@ fn main() -> ExitCode {
                 .with_fine(SHADING_FINE.get().copied().unwrap_or(false))
                 .with_balance(SHADING_BALANCE.get().copied().unwrap_or(true));
             let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
-            match lighting_check::run(&root, windows, VIEW.get().copied(), opts, &out, &probes, bench, every, side) {
+            let result = if spec {
+                spec_stats::run(&root, windows, VIEW.get().copied(), opts, &out, every)
+            } else {
+                lighting_check::run(&root, windows, VIEW.get().copied(), opts, &out, &probes, bench, every, side)
+            };
+            match result {
                 Ok(true) => {}
                 Ok(false) => return ExitCode::FAILURE,
                 Err(e) => {

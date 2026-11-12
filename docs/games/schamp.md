@@ -72,6 +72,7 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 
 - Self-check: of 19,574,803 polygon records, the flat luma recomputed from the side channel is the stream's for 19,574,684 (100.00%), one level off for 119 and further off for 0 (the SHARC rounds toward zero).
 - specular on in 71.28% of object blocks, 53.64% of polygons lit with a specular term; normals computed from the vertices in 62.65% of blocks; zero (unlit) normals on 5.21% of polygons.
+- Specular highlights as drawn (`make spec-stats`, the 21 frames of a `make lighting-capture`, 960x720, 2026-11-12): 48% of the textured polygons shown have a specular term (scales 96, 255, 144, squared one to three times), 17% of the textured pixels; it brightens 5.8% of the textured pixels by a level or more and 4.5% by 4 or more, 28 levels on average, up to 199: the fighters (heads, chests, gloves, shoes) and, in attract, the mecha and the space station's hull.
 - models drawn from polygon RAM in 2,798 blocks (62,927 polygons, 0.53% of blocks); no direct data.
 - the light vector changes within a frame in 258 of 6196 frames (up to 2 vectors a frame); lighting entries not changed within a frame.
 - True focal length over the window width: median 0.565 (range 0.565-2.667); the stream-only layer guesses 1.0.

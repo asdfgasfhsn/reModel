@@ -77,6 +77,7 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 
 - Self-check: of 16,248,589 polygon records, the flat luma recomputed from the side channel is the stream's for 16,248,589 (100.00%), one level off for 0 and further off for 0.
 - specular on in 100.00% of object blocks, 36.17% of polygons lit with a specular term; normals computed from the vertices in 0.00% of blocks; zero (unlit) normals on 18.18% of polygons.
+- Specular highlights as drawn (`make spec-stats`, the 21 frames of a `make lighting-capture`, 960x720, 2026-11-12): 30% of the textured polygons shown have a specular term (scales 255, 43, 16, not squared), 21% of the textured pixels; it brightens 6.1% of the textured pixels by a level or more and 5.9% by 4 or more, 25 levels on average, up to 111: large faces of props and vehicles (a boxcar's side, a gun turret), each face brightened evenly as the game lights per polygon.
 - no models drawn from polygon RAM; no direct data.
 - the light vector changes within a frame in 4204 of 6155 frames (up to 2 vectors a frame); lighting entries not changed within a frame.
 - True focal length over the window width: median 0.664 (range 0.664-0.805); the stream-only layer guesses 1.0.

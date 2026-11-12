@@ -2246,6 +2246,38 @@ pub fn lit_pixel_lumas(p: &Poly, pl: &Placed, view: &View) -> Vec<u32> {
     v.into_iter().map(|l| crate::light::quantise(l).clamp(lo, hi)).collect()
 }
 
+/// A placed polygon's lamp ([`Poly::lamp`]) at each pixel it covers (before
+/// anything hides it; for tools): the output pixel's index and the unit
+/// normal material maps light it with there, the smooth-shaded normals
+/// interpolated where it has them (as [`material_values`]), else the face's.
+/// Empty without a lamp.
+pub fn lamp_pixel_normals(p: &Poly, pl: &Placed, view: &View) -> Vec<(usize, [f32; 3])> {
+    let Some(l) = &p.lamp else { return Vec::new() };
+    let (w, h, pts, clip) = (view.width, view.height, &pl.points, pl.clip);
+    let mut out = Vec::new();
+    fill(pts, clip, w, h, |x, y, _, _, _| out.push((y * w + x, l.n)));
+    let lit_normals = p.lit.len() == pts.len() && p.lit.iter().any(|c| c[1] != 0.0 || c[2] != 0.0 || c[3] != 0.0);
+    if lit_normals {
+        let a: Vec<SVtx> =
+            pts.iter().zip(&p.lit).map(|(v, c)| SVtx { uz: c[1] * v.iz, vz: c[2] * v.iz, ..*v }).collect();
+        let mut k = 0;
+        fill(&a, clip, w, h, |_, _, iz, x, y| {
+            out[k].1 = [x / iz, y / iz, 0.0];
+            k += 1;
+        });
+        let b: Vec<SVtx> = pts.iter().zip(&p.lit).map(|(v, c)| SVtx { uz: c[3] * v.iz, ..*v }).collect();
+        let mut k = 0;
+        fill(&b, clip, w, h, |_, _, iz, z, _| {
+            let n = &mut out[k].1;
+            n[2] = z / iz;
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            *n = if len.is_finite() && len >= 1e-6 { n.map(|c| c / len) } else { l.n };
+            k += 1;
+        });
+    }
+    out
+}
+
 /// A per-pixel lit polygon's luma (before truncation) at a pixel whose
 /// interpolated corner luma is `luma` and normal `n` (not unit): the
 /// lighting for `n` normalised, or `luma` where `n` is (nearly) zero. The

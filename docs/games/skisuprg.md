@@ -79,6 +79,7 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 
 - Self-check: of 18,711,622 polygon records, the flat luma recomputed from the side channel is the stream's for 18,711,622 (100.00%), one level off for 0 and further off for 0.
 - specular on in 6.98% of object blocks, 0.00% of polygons lit with a specular term; normals computed from the vertices in 6.98% of blocks; zero (unlit) normals on 12.89% of polygons.
+- Specular highlights as drawn (`make spec-stats`, the 21 frames of a `make lighting-capture`, 960x720, 2026-11-12): no textured polygon shown has a specular term.
 - models drawn from polygon RAM in 38,656 blocks (444,557 polygons, 7.16% of blocks); no direct data.
 - one light vector per frame; lighting entries not changed within a frame.
 - True focal length over the window width: median 0.500 (range 0.500-248.000); the stream-only layer guesses 1.0.
