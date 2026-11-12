@@ -282,27 +282,30 @@ Behaviour, for all of them (settings per game, as the others are):
 - Next, previous and play/pause on keyboard keys and a gamepad
   combination, and a "Now playing" line in the Esc menu.
 
-### 3. The game's own track-title pop-up
+### 3. The game's own track-title bar
 
-*Investigated: see "Track-title pop-up and billboard logo" in `docs/games/topskatr.md`. It is a standing 2D HUD bar of pre-rendered bitmaps, not text, and the game changes its title mid-track.*
+*Investigated: see "Track-title pop-up and billboard logo" in
+`docs/games/topskatr.md`.*
 
-`topskatr` shows each song's title when it starts. The plan is to put the
-playing song's title in that pop-up, in the game's own font and animation:
+`topskatr` doesn't use a pop-up. During a race it shows a standing bar on
+the 2D tile layer: a play or pause icon, the song's title and "by"
+the artist. There's no font: each title and the artist are pre-rendered
+bitmaps in ROM, and the bar has no animation, cutting in and out with the
+race. The game also changes the title partway through a music track,
+because a track holds several songs back to back. The plan, revised to
+match:
 
-- Find how the game draws it. Unknown so far: it is likely text on the 2D
-  tile layer, but could be polygons. Which code shows it and when, where the
-  text goes, which characters the font has, and how wide the box is all need
-  finding.
-- At render time, draw our title with the game's glyphs in place of the
-  game's text, as the wide-screen HUD placement does, without writing to
-  game memory. The font is read from the game's ROM at run time.
-- When a song changes and the game didn't change its track, play the
-  pop-up's animation ourselves.
-- Arcade fonts usually have only capitals, digits and some punctuation, so
-  accents become plain letters. Missing characters, such as Japanese, fall
-  back to the now-playing notice. Long titles scroll or are cut short.
-- The pop-up's location, font and timing go in the game's manifest, so the
-  mechanism stays generic. Games without a pop-up use the notice.
+- At render time, draw our own images over the bar's two fixed rectangles:
+  the title (168x16 game pixels) and the artist (128x16). Don't write to game
+  memory. The text is drawn in a font of ours, styled to match: the game's
+  title uses dark letters on its green bar, and the artist white on black.
+  Since we supply the font, any characters work, accents included.
+- Keep the game's own icon, so play and pause still follow the race.
+- Change the title whenever our song changes; the bar is redrawn each frame
+  anyway. Long titles scroll or are shrunk to fit.
+- The bar's rectangles, and the style, go in the game's manifest, so the
+  mechanism stays generic. Games without a title bar use the now-playing
+  notice.
 
 ### 4. Album art on billboards
 
