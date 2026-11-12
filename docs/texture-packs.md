@@ -164,15 +164,15 @@ A pack is a directory; this section is its definition, the same for every
 board and game (names are content keys the renderers compute; nothing in a
 pack names a board). `model2::pack` implements it: the manifest, the
 compatibility rules and the file-name grammar, used by the CLI, the player
-and the browser. **Status (2026-11-11):** the format, the surface key,
-`make pack-lint` and `make pack-materials` (below, "Material maps") exist;
-material maps are named, made, checked and loaded (below, "Loading material
-maps"); normal maps are drawn by the software renderer (`run` snapshots and
-`pack-check` with `--materials`; below, "How material maps light") and by
-the GPU renderer (`gpu::Quality::materials`; `gpu-check --materials`;
-docs/gpu.md, "Material maps"), which the player and the browser use behind
-their `materials` setting (off by default; below, "Trying material maps");
-specular and gloss maps are loaded but not drawn.
+and the browser. `make pack-materials` makes normal maps and `make
+pack-lint` checks a pack (below). Normal maps are drawn by the software
+renderer (`run` snapshots, `pack-check --materials`; below, "How material
+maps light") and the GPU renderer (docs/gpu.md, "Material maps"), which
+the player and the browser use behind their `materials` setting (off by
+default; below, "Trying material maps"; docs/enhancements.md, "Material
+maps"). Specular (`.s`) and gloss (`.g`) maps are part of the format and
+are loaded, but have no effect yet (`pack-lint` notes them; the roadmap is
+in docs/enhancements.md).
 
 **Format 1** is everything above: `tex_<key>_<w>x<h>.png`,
 `tile_<key>.png`, any subset, `index.txt` for the browser, and tool records
@@ -226,7 +226,9 @@ points to the image's right, y to its top with `normal_y up` (the
 default) or its bottom with `normal_y down`; blue is not used by the
 renderer (z is reconstructed). `.s`: specular scale from red, `R / 128`
 (128 is the game's own highlight, 0 none). `.g`: gloss from red, the
-game's specular exponent times `2^((R - 128) / 32)`. A map covers the
+game's specular exponent times `2^((R - 128) / 32)`. Readers accept and
+load `.s` and `.g` maps, but nothing draws them yet: they have no effect.
+A map covers the
 texture's `w` x `h` texels like an image, at any size; the tools expect the
 size of the pack image. Maps modulate the game's own lighting, which only
 the native geometrizer's exact lighting data carries: where that is
@@ -317,8 +319,8 @@ under the same budget as the images (below), for polygons that have a lamp
 (as the software renderer asks). It draws them as the software renderer
 does (next paragraph; docs/gpu.md, "Material maps").
 
-**How material maps light** (software renderer, 2026-11-11; the GPU
-renderer draws the same). A map changes a pixel's luma and nothing else: the colour
+**How material maps light** (the software renderer; the GPU renderer
+draws the same). A map changes a pixel's luma and nothing else: the colour
 still comes from the game's luma table and colour tables. Only polygons
 with the exact lighting layer have a lamp to perturb (`--materials`
 records the side channel, as `--light`; the native geometrizer; a block
@@ -339,13 +341,14 @@ one of two rules (`gpu::Quality::materials_relief`, the CLI's
 - **Relief** (the default, strength S = 2; 0.1 to 8): the pixel is drawn
   at `1 + S (max(d', 0) - max(d, 0))` times the brightness the flat
   surface is drawn at, `d` and `d'` the game's facing-signed `N . L` at N
-  and at the tilted normal (ambient and specular left out; at most 4
-  times). The factor is applied per texel, to the luma lowered to where
+  and at the tilted normal (ambient and specular left out; the factor is
+  at least a quarter and at most 4, so a map's steepest texels leave a lit
+  surface dark, not black). The factor is applied per texel, to the luma lowered to where
   that texel's top colour column starts (`raster::relieved`), so a surface
   the game lights to full luma, or past where its texels stop brightening,
   still shows relief, mostly as darkening on the slopes facing away from
-  the light (the mean brightness drops a little: 0.5 to 3 levels of 255 in
-  the review frames, more on the strongest maps). Nothing where no
+  the light (the mean brightness drops a level or two: 0.5 to 3 levels of
+  255 in the review frames, more on the strongest maps). Nothing where no
   light reaches the flat normal or the lamp has no diffuse term.
 - **Faithful** (`off`): the luma becomes `base + E1 - E0`, base what the
   pixel has without materials (the stream's luma + 0.5 for a polygon that
@@ -363,13 +366,18 @@ whatever the pack holds (`topskatr`, 900M coin-start, every 300th frame,
 `--shading pixel`: 15 of 21 snapshots, frame 4800 8% of pixels, mean +0.28;
 flat shading identical). `make materials-identity PACK=DIR` makes the
 pack's maps flat and checks this comparison, in software and on the GPU
-(2026-11-11, `topskatr`, both rules: flat, vertex, pixel and mipmapped
+(`topskatr`, both rules: flat, vertex, pixel and mipmapped
 pixel, 21 snapshots each identical, 14334 polygons drawn with a material
 and no pixel changed; `gpu-check` of 7 captures identical in vertex and
 pixel shading, mip, 16x, 4x MSAA with depth and temporal; with shading
-off a handful of pixels one level apart, docs/gpu.md, "Material maps"). A changed pixel always blends the two colour columns
-around its luma (the arithmetic of `shading_fine`, within the polygon's
-hue, pure black kept), whatever `shading_fine` says. A map can only change
+off a handful of pixels one level apart, docs/gpu.md, "Material maps").
+A changed pixel always blends the two colour columns around its luma (the
+arithmetic of `shading_fine`, pure black kept), whatever `shading_fine`
+says, and its luma is clamped to the lumas over which the polygon keeps
+its hue and its texels' columns get brighter with the luma
+(`raster::ramp_range_with`): a game may paint with a colour's top column
+(`topskatr`'s sign lettering is the black top column of a grey), and a
+relief that darkens must not pick the grey below it. A map can only change
 the light the game casts: a polygon with an ambient-only lighting entry
 shows nothing of it, and under the faithful rule neither does one lit to
 full luma whatever its normal (`topskatr` lights much of its scenery with
@@ -390,6 +398,7 @@ non-zero on errors:
 |---|---|
 | `pack.txt` parses; its `format` and `keys` are known and its `needs` shown (else readers refuse it); unknown keywords and features, reserved ones, `material` lines whose stem has no files, a `game` reModel doesn't know | error / warning / note |
 | every PNG's name parses as a pack name (a reserved name is a note) | warning |
+| specular (`.s`) and gloss (`.g`) maps: loaded, but no effect yet | note |
 | `index.txt` lists every file and nothing missing (the browser needs it) | warning |
 | every PNG decodes (not interlaced) and is within `MAX_SIDE` pixels a side (default 4096, as `upscale-textures`) | error |
 | images and maps have the proportions of their texture's `w` x `h` (within a pixel); tile images are square multiples of 8; a map is its image's size and all maps of one stem agree | warning |
@@ -804,7 +813,7 @@ no lighting):
   dh/dx, -STRENGTH dh/dy, 1) with y pointing up; stored as `128 + 127 v`,
   so a flat source gives exactly (128, 128, 255). Maps with no relief at
   all (a flat colour) are left out. Defaults `STRENGTH=2`, `DETAIL=8`
-  (chosen 2026-11-11 by eye with the relief rule at strength 2, below
+  (chosen by eye with the relief rule at strength 2, below
   "How material maps light": median per-map mean tilt about 5 degrees on
   topskatr and srallyc). `STRENGTH=1 DETAIL=4` is milder (on topskatr's
   brick wall half the texels lean under 5 degrees, one in twenty over 19,
@@ -876,18 +885,34 @@ on disk, 116 MB of GPU memory if all were drawn (154 MB mipmapped);
 
 Make the maps into a copy of a pack (the tool writes into `TEXPACK`; keep
 the pack you made by hand or upscaled as it is), check it, then play with
-them on:
+them on (about 10 s for `topskatr`'s 234 maps):
 
 ```sh
-cp -r out/topskatr/texpack-esrgan-match out/scratch/materials/topskatr-pack
-make pack-materials GAME=topskatr TEXPACK=out/scratch/materials/topskatr-pack TEXDUMP=out/topskatr/texdump
-make pack-lint PACK=out/scratch/materials/topskatr-pack TEXDUMP=out/topskatr/texdump
-make play GAME=topskatr PLAY_ARGS="--texture-pack out/scratch/materials/topskatr-pack --materials --shading pixel"
+cp -r out/topskatr/texpack-4x out/topskatr/texpack-maps
+make pack-materials GAME=topskatr TEXPACK=out/topskatr/texpack-maps TEXDUMP=out/topskatr/texdump
+make pack-lint PACK=out/topskatr/texpack-maps TEXDUMP=out/topskatr/texdump
+make play GAME=topskatr PLAY_ARGS="--texture-pack out/topskatr/texpack-maps --materials --shading pixel"
 ```
 
-A pack needs no images for maps to show: made from a dump into an empty
-folder (`TEXPACK=` a new folder, `TEXDUMP=` the dump), it holds only maps,
-and the game's own textures are drawn with them.
+A pack needs no images for maps to show. For a game without a pack, dump
+its textures and make the maps into an empty folder; the game's own
+textures are drawn with them:
+
+```sh
+make dump-textures GAME=srallyc
+mkdir -p out/srallyc/texpack-maps
+make pack-materials GAME=srallyc TEXPACK=out/srallyc/texpack-maps TEXDUMP=out/srallyc/texdump
+make play GAME=srallyc PLAY_ARGS="--texture-pack out/srallyc/texpack-maps --materials --shading pixel"
+```
+
+`PLAY_ARGS` hold for that run only. To compare, press **Esc**: under
+Display, tick or untick **Material maps** and pick a **Material relief**
+(1, 2, 4, 8 or faithful); they apply at once on the paused frame, and the
+line under them says what the last frame did. Menu changes are saved, as
+all are. Try `Shading: flat` with the maps on too: faces stay flat but
+keep the maps' detail. Copying a pack resets file times, so
+`pack-materials` takes every map in a copy as hand-edited: delete the
+`.n.png` files and `materials.txt` in the copy to have them remade.
 
 **The settings** (docs/play.md, docs/web.md): `materials` (off by default;
 player `--materials on|off`, the menu's and launcher's "Material maps";
@@ -897,7 +922,9 @@ detail; with `pixel` the maps tilt the interpolated normal. Its rule,
 `materials_relief` (player `--materials-relief off|S`, menu and launcher
 "Material relief" 1, 2, 4, 8 or faithful; browser `?relief=off|S`): relief
 at strength 2 by default, 0.1 to 8 in the settings file and on the command
-line, or `off`, the faithful rule ("How material maps light" above).
+line, or `off`, the faithful rule ("How material maps light" above). A
+strength off the list (1.5) shows as one more choice, "custom (1.5)" in
+the menu, "Custom (1.5)" in the launcher and the browser's panel.
 
 **Where they have no effect,** and the player's menu line and window
 title, the launcher's hint and the browser's status line say so: no texture
@@ -908,7 +935,7 @@ the side channel's self-check demoted; "no polygon had the game's exact
 lighting" when that is the whole frame). The launcher's previews draw
 without them.
 
-**What to expect** (topskatr, srallyc, lastbrnx review, 2026-11-11):
+**What to expect** (`topskatr`, `srallyc`, `lastbrnx`):
 
 - Brick, stone, paving, wood planks and road get grooves and pits; the
   wood floor and brick walls of topskatr's courses show it best.
@@ -916,8 +943,11 @@ without them.
   lettering looks engraved, logos and signs embossed, faces get contour
   lines. List such textures in `materials-exclude.txt` (above) and rerun,
   or edit the maps.
-- Scenes darken slightly: relief mostly darkens the slopes facing away
-  from the light (0.5 to 3 levels of 255 on average in the review frames).
+- Scenes darken by a level or two: relief mostly darkens the slopes
+  facing away from the light (0.5 to 3 levels of 255 on average in the
+  review frames).
+- Good results need hand-made or edited maps: the generated ones are a
+  starting point.
 - Relief needs lit surfaces: a polygon the game lights with ambient only,
   or one no light reaches, shows nothing; under the faithful rule neither
   does scenery lit to full brightness (much of topskatr's), which is why

@@ -474,10 +474,13 @@ side channel, a demoted block) nothing changes.
   through the image's sampler and gradients, the bytes kept to 1/256 of a
   step so a flat map stays exactly flat), its sign flipped in every second
   repeat of a mirrored axis; the drawn normal tilted in the tangent frame;
-  faithful: `base + E1 - E0`; relief: the factor, applied per texel
-  (`mat_at`, `mat_relieved`: the luma lowered to where that texel's top
-  column starts, then scaled). A changed pixel always blends the two
-  colour columns (`fine_level_at`), clamped to its hue range; one its
+  faithful: `base + E1 - E0`; relief: the factor (a quarter to 4, as
+  `raster::RELIEF_MIN` and `RELIEF_MAX`), applied per texel (`mat_at`,
+  `mat_relieved`: the luma lowered to where that texel's top column
+  starts, then scaled). A changed pixel always blends the two colour
+  columns (`fine_level_at`), clamped to the polygon's material range (its
+  hue range, narrowed to the columns that brighten with the luma; worked
+  out on the CPU, `raster::ramp_range_with`, and passed in the block); one its
   material leaves alone is drawn by the very functions the entry points
   without materials call (`mat_state`). The compiled entry points still
   differ: with smooth shading off, where the frame without materials draws
@@ -496,8 +499,8 @@ side channel, a demoted block) nothing changes.
   RAM's version is unchanged (`build_polys`).
 - **Checks.** `make materials-identity PACK=DIR` (flat maps against
   `--light`, also on the GPU through `gpu-check` and `temporal-probe`), and
-  `gpu-check --materials` against the software renderer (numbers in the
-  stage's notes; at the originals' floor unfiltered, a little above it
+  `gpu-check --materials` against the software renderer (at the
+  originals' floor unfiltered, a little above it
   mipmapped and anisotropic, where the GPU's sampler and the software's
   trilinear differ).
 - **Front ends.** The player and the browser set `materials` and

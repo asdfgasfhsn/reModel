@@ -91,7 +91,7 @@ RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 ##@ General
 
-help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, PACK_CHECK_OUT, TILE_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, NORMALGEN, NORMAL_Y, STRENGTH, DETAIL, GPU_OPTS, LIGHT_OPTS, LIGHT_CAPTURE, LIGHT_IN, PROBE, AGAINST, SEQ_FROM, SEQ_FRAMES, STATE, TEMPORAL_SEQ, TEMPORAL_OPTS, RECOMP, PLAY_ARGS, FILE, SECONDS, SOUNDTRACK, SRC)
+help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, JOBS, PACK_CHECK_OUT, TILE_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, NORMALGEN, NORMAL_Y, STRENGTH, DETAIL, MAT_STEPS, MAT_SNAP, MAT_GPU_SNAP, GPU_OPTS, LIGHT_OPTS, LIGHT_CAPTURE, LIGHT_IN, PROBE, AGAINST, SEQ_FROM, SEQ_FRAMES, STATE, TEMPORAL_SEQ, TEMPORAL_OPTS, RECOMP, PLAY_ARGS, FILE, SECONDS, SOUNDTRACK, SRC)
 	@awk 'BEGIN {FS = ":.*## "; printf "usage: make <target> [VAR=value]\n"} \
 		/^##@/ {printf "\n%s\n", substr($$0, 5)} \
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -260,7 +260,7 @@ pack-materials: release ## Make normal maps for texture pack TEXPACK from its im
 
 # pack-lint checks against a dump only when TEXDUMP is given.
 .PHONY: pack-lint
-pack-lint: release ## Check texture pack PACK= against the pack format, no ROM or GPU: pack.txt, file names, index.txt, every PNG decodes within MAX_SIDE, image and map proportions, unit normals, maps under cut-outs, GPU memory against the budgets (TEXDUMP= adds mirror and repeat seams, never-drawn and image-or-surface checks); fails on errors
+pack-lint: release ## Check texture pack PACK= against the pack format, no ROM or GPU: pack.txt, file names, index.txt, every PNG decodes within MAX_SIDE, image and map proportions, unit normals, maps under cut-outs, materials-exclude.txt entries, specular and gloss maps (a note: loaded, no effect yet), GPU memory against the budgets (TEXDUMP= adds mirror and repeat seams, never-drawn and image-or-surface checks); fails on errors
 	$(if $(PACK),,$(error pack-lint needs PACK=DIR, a texture pack))
 	$(REMODEL) pack-lint $(PACK) --max-side $(MAX_SIDE) \
 		$(if $(filter command line environment,$(origin TEXDUMP)),--dump $(TEXDUMP))
@@ -381,7 +381,7 @@ spec-stats: release ## Count the game's own specular highlights on a lighting-ca
 # baseline hashes out/GAME/capture).
 LIGHT_CAPTURE ?= out/scratch/lighting/$(GAME)/capture
 .PHONY: lighting-capture
-lighting-capture: release ## Save every 300th frame of a coin-start run with its lighting side channel (native geometrizer; light.bin, scan.bin) to LIGHT_CAPTURE (default out/scratch/lighting/GAME/capture), for lighting-check; prints the side channel's self-check over every frame of the run
+lighting-capture: release ## Save every 300th frame of a coin-start run with its lighting side channel (native geometrizer; light.bin, scan.bin) to LIGHT_CAPTURE (default out/scratch/lighting/GAME/capture), for lighting-check, spec-stats and pack-check with material maps (LIGHT_IN=); prints the side channel's self-check over every frame of the run
 	rm -rf $(LIGHT_CAPTURE)
 	$(RUN) --geo native --light --capture $(LIGHT_CAPTURE) --input $(BENCH_INPUT) run 900000000 300 | grep -E '^light'
 

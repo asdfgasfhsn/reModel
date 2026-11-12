@@ -62,8 +62,10 @@ through DirectX 8/9's fixed-function pipeline.
 | Models | Automatic smoothing (vertex normals, curved surfaces) | vertex normals done (smooth shading, below); curved-surface tessellation an idea |
 | Models | Level of detail and draw distance overrides | idea (optional patch) |
 | Lighting | Smooth shading: per-vertex and per-pixel lighting with the game's own formula, finer brightness levels | done, opt-in (2026-11-11), player and browser; 2A formula unconfirmed (below) |
-| Lighting | Material maps in packs (normal, specular, gloss) | planned; pack format with manifest, surface keys, map names and `make pack-lint` done (2026-11-11, `docs/texture-packs.md`, "Pack format"); loading onto the GPU (shared budget, `--materials`) done; normal maps drawn by the software renderer (`run` snapshots, `pack-check --materials`) and by the GPU renderer (`gpu::Quality::materials`, `gpu-check --materials`; two rules, relief at strength 2 by default and faithful, `--materials-relief`) done; player and browser settings (`materials`, `materials_relief`; browser `materials`, `relief`; off by default) and `pack-check --materials` with the GPU and `--probe` done; specular and gloss not built |
-| Lighting | Pack-declared highlights where the game casts none | idea, deferred (2026-11-11): maps only scale the game's own specular; manifest keys reserved (below) |
+| Lighting | Material maps: normal maps in packs, lit by the game's own lights | done, opt-in, player, browser and CLI (`docs/texture-packs.md`, "Material maps"; below): two rules, relief (strength 2, the default) and faithful; maps made by `make pack-materials` |
+| Lighting | Specular and gloss maps | idea, low priority: the pack format names them and readers load them, but they have no effect; only four games cast a highlight a map could scale (below) |
+| Lighting | Hand-made reference maps for a few key textures (road, wood, stone) | idea (below, "Material maps") |
+| Lighting | Pack-declared highlights where the game casts none | idea, deferred: a map can only scale the game's own specular; manifest keys reserved (below) |
 | Lighting | Light data on the chip geometry path (materials and smooth shading there) | idea, not investigated (below) |
 | Lighting | Shadows, bloom, HDR tonemapping, better fog | idea |
 | Lighting | Hybrid ray tracing (shadows, reflections, AO) | idea |
@@ -79,7 +81,7 @@ through DirectX 8/9's fixed-function pipeline.
 3. **A temporal upscaler** (done as temporal anti-aliasing with a render
    scale; its open problems are below). Its inputs (jitter, motion
    vectors, depth, render scale) are what FSR 2 or DLSS would take.
-4. **Smooth shading** (done) **and material maps.**
+4. **Smooth shading and material maps** (done; specular maps on the roadmap).
 5. **Model replacement.**
 6. **Hybrid ray tracing**, then path tracing.
 
@@ -1110,6 +1112,154 @@ median a frame (the final build, finer levels on). Side channel: 16 bytes a poly
   1)) is blended as any other.
 - Tested on one NVIDIA GPU (Vulkan) and Chrome on Linux.
 
+### Material maps
+
+Done, opt-in, off by default, in the native player, the browser and the
+CLI's snapshots and checks. Render-only (state hashes equal with them on),
+and with them off the renderers take the old code (the regression
+baseline is identical). The format, the tools and the formulas in detail:
+`docs/texture-packs.md` ("Pack format", "How material maps light",
+"Material maps", "Trying material maps"); the GPU side: `docs/gpu.md`,
+"Material maps".
+
+**What they are.** A texture pack (format 2, `pack.txt`) can hold a
+normal map beside a texture's image (`tex_<key>_<w>x<h>.n.png`, or by
+surface, `surf_..n.png`, for every colour of the same texels). With
+material maps on, each pixel's normal is tilted by the map in the
+polygon's tangent frame and lit again with the game's own lamp for that
+polygon (the native geometrizer's exact lighting layer, the one smooth
+shading uses), so bricks, paving, wood and road get grooves, pits and
+grain lit from the game's light direction. A map changes a pixel's luma
+only: the colour still comes from the game's luma and colour tables,
+within the lumas over which the polygon keeps its hue and its columns get
+brighter with the luma. A pack needs no images for this: maps alone are
+drawn on the game's own textures. A flat map changes nothing, bit for bit.
+
+**Two rules** (`materials_relief`):
+
+- **Relief** (the default, strength 2; 0.1 to 8): the pixel is drawn at
+  `f = 1 + S (max(d', 0) - max(d, 0))` times the brightness the flat
+  surface is drawn at, `d` and `d'` the game's `N . L` at the drawn and
+  the mapped normal; `f` between a quarter and 4. It is applied per
+  texel from where that texel stops brightening, so it shows on surfaces
+  the game lights to full brightness.
+- **Faithful** (`off`): the mapped normal substituted in the game's own
+  sum, `base + E1 - E0`, each term clamped to 0-255 as the game clamps.
+
+Why relief exists: much of the games' scenery is lit to the maximum
+(`topskatr` lights most of it with ambient 255 and diffuse 255), so the
+game's sum is past 255 at every normal and the faithful rule shows
+nothing there. Relief is relative to what is drawn, ambient left out:
+not physical, but it gives saturated scenery depth.
+
+**Settings.**
+
+| | Player | Browser | CLI |
+|---|---|---|---|
+| On/off | `materials = true \| false` (menu checkbox "Material maps", launcher "Material maps", `--materials on\|off`) | `materials` (panel "Material maps", `?materials=1`) | `--materials` (`run` snapshots, `gpu-check`, `depth-check`, `pack-check`, `temporal-probe`) |
+| Rule | `materials_relief = off \| 0.1-8` (menu and launcher "Material relief": 1, 2, 4, 8, faithful; `--materials-relief off\|S`) | `relief` (panel "Material relief", `?relief=off\|S`) | `--materials-relief off\|S` |
+
+Both apply live and need the texture pack on; they are independent of
+`shading` (flat faces keep the maps' detail). A strength off the menu's
+list (1.5 from the settings file or the command line) shows as one more
+choice, "custom (1.5)", and is kept until another is picked. The player's
+menu line and window title, the launcher's hint and the browser's status
+line say what the last frame did ("relief 2: maps on 594 of 633 lit
+textured polygons ...") or why the maps have no effect.
+
+**Making maps.** `make pack-materials TEXPACK=DIR TEXDUMP=DIR` generates
+normal maps from the pack's images (or the dump's) from their brightness
+(`STRENGTH` 2 and `DETAIL` 8 by default; `NORMALGEN=` runs an external
+tool instead), wrap-aware, neutral under cut-outs, keeping every map it
+didn't make (hand-made or edited). `materials-exclude.txt` in the pack
+lists textures that get no generated map (signs, faces). `make pack-lint`
+checks the maps; `make pack-check` with `LIGHT_IN=` (captures from `make
+lighting-capture`) and `GPU_OPTS="--materials --shading pixel"` draws each
+captured frame without and with them (GPU and software, a coverage
+picture, a report), and `PROBE=X,Y@FRAME` explains one pixel. `make
+materials-identity PACK=DIR` checks that the pack with its maps made flat
+draws exactly as without materials (software and GPU; its 12 runs go
+`JOBS` at a time, 3 by default).
+
+**Checks.** State hashes after 600M coin-start instructions with
+`--materials --shading pixel`, with relief and with faithful, the same as
+with materials off (`topskatr` 7f0275251269648e, `srallyc`
+56b5c12673c631b3, `lastbrnx` 700e5666e46dd508, `doa` f136114af6b8a55c);
+the regression baseline identical with them off; flat maps identical to
+no maps in software in every shading mode and on the GPU in vertex and
+pixel shading, filtered, multisampled and temporal (flat shading: below);
+the GPU against the software renderer within the floor the images
+already have; the player's frame against `gpu-check` of the same captured
+frame, pixel for pixel outside the HUD.
+
+**Costs.** GPU: within the noise at 1080p (`topskatr`, whole frame with
+readback); every run of polygons with a material is a draw of its own
+(`topskatr` 430 to 533 draws a frame, maps-only packs 3 to 550-860).
+Memory: one RGBA8 texture per material under the pack's budget
+(`topskatr`'s 234 maps: 80 MB held beside 131 MB of images). CPU: the
+lamps cost about 0-2 ms a new frame with the texel scan kept across
+frames.
+
+**Limitations.**
+
+- Generated maps read height from brightness, so painted detail becomes
+  bumps: lettering looks engraved, logos embossed, faces get contour
+  lines, and relief mostly adds local contrast where the paint has no
+  real height. Good results need hand-made (or edited) maps; exclude or
+  delete the worst.
+- Scenes darken by a level or two on average (0.5 to 3 levels of 255 in
+  the review frames): on saturated surfaces only the darkening half of
+  any relief can show.
+- No effect on the chip geometry path (`--geo chip`, recompiled browser
+  builds: no light data), on unlit and ambient-only polygons, shadows and
+  HUD windows, nor on polygons whose texture coordinates are degenerate.
+- With smooth shading off (flat), the GPU draws a handful of the pixels a
+  material leaves unchanged one level apart from the frame without
+  materials (up to 112 pixels of a 1080p frame; the shader compiler
+  rounding the same functions differently in two entry points); vertex
+  and pixel shading are exact.
+- Small dark notches can show where a curved object's polygons meet
+  (each polygon has its own tangent frame); distant relief sparkles a
+  little without mipmaps.
+- Specular (`.s`) and gloss (`.g`) maps are accepted and loaded but have
+  no effect yet; `pack-lint` notes them.
+
+**Roadmap.**
+
+- **Specular and gloss maps** (low priority). A specular map can only
+  scale the highlight the game's lamp already casts, so it would act on
+  four games. Measured by `make spec-stats` (21 frames of a coin-start
+  `make lighting-capture` per game, 960x720, pixels as shown): share of
+  textured pixels the game's specular term brightens by 1 and by 4 levels
+  or more (smooth normal), the mean and largest where it does, and the
+  share of its pixels that doubling the term (a specular map's most)
+  would brighten:
+
+  | Game | >= 1 level | >= 4 levels | mean | max | doubled >= 1 | Where |
+  |---|---|---|---|---|---|---|
+  | `stcc` | 4.6% | 3.8% | 28 | 103 | 7.6% | cars' bodywork |
+  | `bel` | 6.1% | 5.9% | 25 | 111 | 28.8% | props and vehicles |
+  | `fvipers` | 4.8% | 3.6% | 38 | 187 | 17.3% | fighters' bodies, armour, clothes |
+  | `schamp` | 5.8% | 4.5% | 28 | 199 | 37.1% | fighters, the mecha and station hull |
+  | `topskatr` | 0.01% | 0 | 1 | 1 | 0.02% | term on the floor, already at 255 |
+  | `srallyc` | 0 | 0 | | | 0 | term under a level or at 255 |
+  | `lastbrnx` | 0 | 0 | | | 0.3% | specular scale zero |
+  | the other eleven | 0 | 0 | | | 0 | no term on a textured polygon |
+
+  The other eleven: `doa`, `vstriker`, `sgt24h`, `indy500`, `dynabb97`,
+  `overrev`, `overrevb`, `skisuprg`, `segawski`, `waverunr`, `hotd`
+  (`vf2` draws no 3D yet). Gloss would change only the shape of those
+  highlights.
+- **Pack-declared highlights** where the game casts none (open
+  questions, below): the only way to give `topskatr`, `srallyc` or `doa`
+  highlights; it invents light.
+- **Light data on the chip path** (open questions, below), so materials
+  and per-pixel shading work with `--geo chip` and recompiled browser
+  builds.
+- **Hand-made reference maps** for a few key textures (a road, a wood
+  floor, a stone wall), to judge the rules fairly and to show pack
+  authors what good maps look like.
+
 ### Lighting
 
 The hardware lights each polygon with one luma value, through its luma
@@ -1118,7 +1268,8 @@ table: flat shading. Steps:
 1. **Per-vertex and per-pixel lighting** from smoothed vertex normals
    and the game's own lights and materials: done ("Smooth shading",
    above).
-2. **Material maps** carried in packs (normal, specular, roughness).
+2. **Material maps** carried in packs: normal maps done ("Material maps",
+   above); specular and gloss maps on its roadmap.
 3. **Shadows** (shadow maps from the game's light), **bloom**, **HDR**
    with tonemapping, **fog** with depth.
 
@@ -1148,13 +1299,13 @@ light direction and ambient, nothing physical), which is pack content.
   format"): an optional manifest, material maps as suffix files keyed by
   image or surface, model names reserved. The mesh format for models is
   still open.
-- Pack-declared highlights (deferred 2026-11-11). Material maps will scale
-  the specular highlight a game's lighting entry already has; a polygon
+- Pack-declared highlights (deferred). A specular map would scale the
+  highlight a game's lighting entry already has; a polygon
   whose entry casts none gets none, however shiny its pack paints it.
   Letting a pack add one (`spec_base=`, `spec_power=` on a `material`
   line, reserved in the manifest so it needs no new format) invents light
   the game doesn't cast. First measure how many polygons have a highlight
-  at all, per game; then decide. Measured 2026-11-12 (`make spec-stats`,
+  at all, per game; then decide. Measured (`make spec-stats`,
   21 frames of a coin-start `make lighting-capture` per game, pixels as
   shown, 960x720): the game's specular term brightens 4-6% of the
   textured pixels by 4 levels or more in `stcc` (cars' bodywork), `bel`
@@ -1165,13 +1316,13 @@ light direction and ambient, nothing physical), which is pack content.
   zero scale, and the rest (`doa`, `vstriker`, `sgt24h`, `indy500`,
   `dynabb97`, `overrev`, `overrevb`, `skisuprg`, `segawski`, `waverunr`,
   `hotd`) have no term on any textured polygon shown. Doubling the term
-  (a specular map's most) reaches little more outside those four. Per
-  game in `docs/games/`.
+  (a specular map's most) reaches little more outside those four (the
+  table in "Material maps", above; per game in `docs/games/`).
 - Whether light data can be recovered on the chip geometry path (not
   investigated, unconfirmed either way). Material maps and the exact
   lighting layer need the native geometrizer's per-polygon light data;
   the chip path (`--geo chip`, recompiled browser builds) has none, so
-  materials will do nothing there. Captures made without light data
+  material maps do nothing there. Captures made without light data
   don't need recovering: record them again with it.
 - Whether the depth buffer can be on by default (undecided). The
   evidence so far (2026-11-11, 21 captured frames per game; "Depth

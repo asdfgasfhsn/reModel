@@ -160,7 +160,8 @@ the same one.
 --aspect 4:3 shot FILE`: it boots the game, runs to the manifest's
 `attract_frame` with no inputs and saves the screen (software renderer, the
 same path as `run`'s snapshots) as a 480x360 PNG, 100-150 KB. Each takes
-15-40 s; `make web` makes the missing ones in parallel. Delete a `shot.png`
+15-40 s; `make web` makes the missing ones in parallel, `JOBS` at a time
+(3 by default). Delete a `shot.png`
 to remake it; if one fails, its card has no picture.
 
 **Per-game modules.** Each recompiled program is a crate of its own in
@@ -378,7 +379,8 @@ parameters:
   "Material maps") and `relief=off|S` (their rule: relief at strength S,
   0.1 to 8, by default 2, or `off` for the faithful rule). Both in the
   panel's Display section ("Material maps", "Material relief": 1, 2, 4, 8
-  or Faithful), both applied live; `materials` needs `pack`.
+  or Faithful, and "Custom (S)" for another strength from the link or the
+  saved settings), both applied live; `materials` needs `pack`.
 
 **Smooth shading.** With `shading=vertex` (or Shading: Smooth in the
 panel), brightness varies across curved surfaces instead of stepping from

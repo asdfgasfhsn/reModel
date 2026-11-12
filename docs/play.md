@@ -195,7 +195,9 @@ and brick, rougher road. It needs the texture pack on and works with any
 the player then records the geometrizer's lighting side channel, as
 shading does, for the lamps). `materials_relief` is the rule: relief at a
 strength (the menu and launcher offer 1, 2, 4 and 8; the settings file and
-command line 0.1 to 8), how strongly the bumps' light change scales the
+command line 0.1 to 8; such a strength shows in the menu as one more
+choice, "custom (1.5)", and in the launcher as "Custom (1.5)", kept until
+another is picked), how strongly the bumps' light change scales the
 surface's brightness, or `off`, the faithful rule (the map's normal in the
 game's own lighting sum: subtler, and nothing where the game lights a
 surface to full brightness). The menu's line under the checkbox (and the
@@ -206,7 +208,7 @@ maps, the chip geometrizer (`--geo chip`: no exact lighting layer, the
 picture is as with them off), or no polygon in the frame lit by the exact
 layer. The launcher's previews draw without them. Maps share the pack's
 GPU memory budget with its images. Nothing the game computes changes.
-Checked 2026-11-12 on `topskatr` (234 generated maps on the ESRGAN pack,
+Checked on `topskatr` (234 generated maps on the ESRGAN pack,
 `--frames 3300` shots at 1920x1080): the player's frame with maps on,
 relief or faithful, flat or pixel shading, changes exactly the pixels
 `gpu-check` changes for the same captured frame (538,345 of 2,073,600 for
@@ -407,7 +409,7 @@ material maps, which the preview draws without; they show in the game): aspect (
 or 4:3), bezel, HUD at the edges or centred, speed (one frame a refresh or
 exact arcade speed), smooth motion, run-ahead (off, 1, 2, 3), anti-aliasing (off, 4x, 8x), temporal anti-aliasing (off,
 TAA, 75%, 67%, 50%) and its checkerboard see-through (blend or keep), the depth buffer, shading (flat,
-vertex, pixel; with the chip geometrizer pixel says it draws as vertex), its brightness levels (the game's or blended) and its brightness balance (on or off), the texture pack and its filtering (off, mip, 2x to 16x), material maps (off or on; no effect without the pack or with the chip, said in place of the hint) and their relief (1, 2, 4, 8 or faithful), the effects and music levels in dB, the geometrizer (native
+vertex, pixel; with the chip geometrizer pixel says it draws as vertex), its brightness levels (the game's or blended) and its brightness balance (on or off), the texture pack and its filtering (off, mip, 2x to 16x), material maps (off or on; no effect without the pack or with the chip, said in place of the hint) and their relief (1, 2, 4, 8 or faithful; another strength from the settings file or the command line as "Custom (S)"), the effects and music levels in dB, the geometrizer (native
 or the game's chip; the preview restarts on it) and the Controls page
 (remapping, below). "Save for" says where changes go: the defaults for all
 games, or this game only (a game's own setting is tagged "this game", and

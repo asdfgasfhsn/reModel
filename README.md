@@ -13,7 +13,7 @@ browser build (WebAssembly and WebGPU, `make web`). On top of the faithful
 picture it can add what the hardware never had: any resolution and widescreen
 views with the HUD moved to the edges, smooth motion for fast displays,
 run-ahead to cut input lag, anti-aliasing and an optional depth buffer, smooth
-shading, texture packs, and custom soundtracks. Everything that is not specific to one game is
+shading, texture packs with material maps, and custom soundtracks. Everything that is not specific to one game is
 built to be reused across the Model 2 family.
 
 > **Bring your own ROMs.** reModel contains no game code or data. See
@@ -97,8 +97,8 @@ Guides:
 - [docs/architecture.md](docs/architecture.md): the crate layout and what is shared across Model 2.
 - [docs/recompiler.md](docs/recompiler.md): the static recompiler.
 - [docs/gpu.md](docs/gpu.md): the GPU renderer.
-- [docs/enhancements.md](docs/enhancements.md): visual enhancements, done and planned.
-- [docs/texture-packs.md](docs/texture-packs.md): texture dumps and packs.
+- [docs/enhancements.md](docs/enhancements.md): visual enhancements, done and planned (smooth shading, material maps, temporal anti-aliasing, ...).
+- [docs/texture-packs.md](docs/texture-packs.md): texture dumps and packs, the pack format and material maps.
 - [docs/mods.md](docs/mods.md): custom soundtracks and other mods.
 - [docs/mame-defects.md](docs/mame-defects.md): where MAME differs from the hardware, written up for upstream.
 

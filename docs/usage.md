@@ -51,10 +51,10 @@ make run STEPS=600000000 INPUT=coin1@1100-1104,start@1250-1254 \
     PACK=out/topskatr/texpack VIEW="--height 1080"   # snapshots with a texture pack (docs/texture-packs.md)
 make run STEPS=600000000 INPUT=coin1@1100-1104,start@1250-1254 PACK=out/topskatr/texpack \
     VIEW="--height 1080 --tex-filter mip"   # mipmapped pack images (--tex-filter off|mip|2|4|8|16; snapshots draw 2..16 as mip)
-make pack-materials TEXPACK=out/topskatr/texpack-4x   # normal maps for a pack from its images, built-in from brightness or NORMALGEN=CMD; a starting point to edit by hand, edits kept on reruns, textures listed in the pack's materials-exclude.txt skipped (docs/texture-packs.md, Material maps)
-make pack-lint PACK=out/topskatr/texpack-4x   # check a pack against the pack format, no ROM or GPU: pack.txt, names, index.txt, decoding, sizes, normal maps, memory (TEXDUMP=DIR: also against a dump; docs/texture-packs.md, Pack format)
+make pack-materials TEXPACK=out/topskatr/texpack-4x   # normal maps for a pack from its images, built-in from brightness (STRENGTH 2, DETAIL 8) or NORMALGEN=CMD; a starting point to edit by hand, edits kept on reruns, textures listed in the pack's materials-exclude.txt skipped (docs/texture-packs.md, Material maps)
+make pack-lint PACK=out/topskatr/texpack-4x   # check a pack against the pack format, no ROM or GPU: pack.txt, names, index.txt, decoding, sizes, normal maps (specular and gloss maps: a note, no effect yet), memory (TEXDUMP=DIR: also against a dump; docs/texture-packs.md, Pack format)
 make play PLAY_ARGS="--pack on --tex-filter 16"   # live in the player: pack from out/GAME/texpack (the browser: ?pack=1&texfilter=16, docs/web.md)
-make play PLAY_ARGS="--texture-pack DIR --materials --shading pixel"   # with the pack's material maps (relief 2; --materials-relief off|S; the menu's "Material maps"; browser ?materials=1&relief=S; docs/texture-packs.md, Trying material maps)
+make play PLAY_ARGS="--texture-pack DIR --materials --shading pixel"   # with the pack's material maps (relief 2; --materials-relief off|S; the menu's "Material maps"; browser ?materials=1&relief=S; docs/texture-packs.md, Trying material maps; docs/enhancements.md, Material maps)
 make assets               # extract the game's art for review -> out/topskatr/assets (needs ImageMagick)
 make bench                # timed run into a race: speed and state hash
 make latency              # frames from a wheel change to the game reacting and its polygons (LATENCY_CHANGE, LATENCY_FRAME)
@@ -74,7 +74,7 @@ make run-ahead-check      # run-ahead keeps the real state hash and shows the pl
 make install-desktop RECOMP=1   # reModel in the desktop's app menu, running this checkout's player
 make uninstall-desktop    # remove that app-menu entry and its icon
 make smooth-frames GAME=doa    # coin-start run drawing in-between frames beside the real ones -> out/doa/frames
-make web RECOMP=1         # browser build -> out/web: game list, a page and module per game (WebGPU; serve over HTTPS, docs/web.md)
+make web RECOMP=1         # browser build -> out/web: game list, a page and module per game (WebGPU; serve over HTTPS, docs/web.md); missing screenshots made JOBS at a time (default 3)
 make dist                 # player to hand out (interpreter only, no ROMs) -> out/dist/remodel-VERSION-TARGET.tar.gz
 make capture              # save renderer inputs from a run into a race -> out/topskatr/capture
 make gpu-check            # draw them on the software and GPU rasterisers, time and compare (GPU_OPTS="--aa 4 --depth": with them on)
@@ -83,8 +83,8 @@ make gpu-check PACK=DIR GPU_OPTS="--materials --shading pixel"   # also draw the
 # `run --texture-pack DIR --materials --geo native` snapshots draw its normal maps in software (a line per snapshot: polygons with a lamp, with a material, pixels changed)
 make pack-check PACK=DIR LIGHT_IN=out/scratch/lighting/topskatr/capture GPU_OPTS="--materials --shading pixel"   # also the pack without and with its maps, on captures with light.bin (make lighting-capture): FRAME-mat-off/-mat-on (GPU), -mat-sw (software), -mat-diff (off | on | x8), -mat-cover (green applied, orange no lamp, red degenerate frame, grey none); share of pixels with a material and a lamp, mean and largest change, frame mean (flagged over 2 levels), GPU against software, ms, memory; PROBE=X,Y@FRAME explains a pixel
 # --materials also records the side channel (as --light), so compare its snapshots with a run with --light, not a bare one: without either, vertex and pixel shading have no side channel and draw from the stream's lumas
-make materials-identity PACK=DIR   # the pack with every normal map made flat must draw with --materials exactly as with --light, under both rules, in flat, vertex, pixel and mipmapped pixel shading (coin-start snapshots; MAT_STEPS, MAT_SNAP), and on the GPU (gpu-check and temporal-probe of captures; MAT_GPU_SNAP)
-# `--materials-relief off|S` with --materials: how a normal map changes brightness: relief at strength S (default 2, 0.1 to 8; relative to how the flat surface is drawn, so it shows on fully lit scenery too) or off, the faithful rule (the map's normal in the game's own lighting sum)
+make materials-identity PACK=DIR   # the pack with every normal map made flat must draw with --materials exactly as with --light, under both rules, in flat, vertex, pixel and mipmapped pixel shading (coin-start snapshots, JOBS runs at a time, default 3; MAT_STEPS, MAT_SNAP), and on the GPU (gpu-check and temporal-probe of captures; MAT_GPU_SNAP)
+# `--materials-relief off|S` with --materials: how a normal map changes brightness: relief at strength S (default 2, 0.1 to 8; relative to how the flat surface is drawn, so it shows on fully lit scenery too; a quarter to 4 times) or off, the faithful rule (the map's normal in the game's own lighting sum)
 make pack-check PACK=out/topskatr/texpack-4x   # draw them with the pack on the GPU unfiltered, mipmapped and 16x, in software and as a supersampled reference; compare -> out/topskatr/pack-check
 make tile-check PACK=out/topskatr/texpack-4x   # the pack's tile images live on the GPU against the software snapshots' (1080p 16:9) -> out/topskatr/tile-check
 make pack-identity PACK=out/topskatr/texdump   # a pack of the dump itself must draw the captured frames as without one (no PACK: each frame's own textures); splits the differing pixels by cause and fails a frame over 0.003% one-texel/other-polygon pixels, not on filter order (up to 5%) -> out/topskatr/pack-identity
