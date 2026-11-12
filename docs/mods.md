@@ -284,6 +284,8 @@ Behaviour, for all of them (settings per game, as the others are):
 
 ### 3. The game's own track-title pop-up
 
+*Investigated: see "Track-title pop-up and billboard logo" in `docs/games/topskatr.md`. It is a standing 2D HUD bar of pre-rendered bitmaps, not text, and the game changes its title mid-track.*
+
 `topskatr` shows each song's title when it starts. The plan is to put the
 playing song's title in that pop-up, in the game's own font and animation:
 
@@ -303,6 +305,8 @@ playing song's title in that pop-up, in the game's own font and animation:
   mechanism stays generic. Games without a pop-up use the notice.
 
 ### 4. Album art on billboards
+
+*Investigated: the logo is one whole 128x128 texture, see `docs/games/topskatr.md`, "Track-title pop-up and billboard logo".*
 
 `topskatr`'s billboards carry a band's logo. A live texture-pack entry would
 show the playing song's album art there instead:
