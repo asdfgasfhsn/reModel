@@ -355,7 +355,9 @@ registers and memory in a save state differ (they are the start-up's,
 with the native state written in on save); "identical" therefore means the
 machine state hash (all RAM, the last raster stream, the copro results:
 not the geometrizer SHARC), and the raster stream of every frame. Both
-are the same as the SHARC's: coin-start runs of 600M instructions give
+are the same as the SHARC's: coin-start runs of 600M instructions gave
+(before the timer read fix of 2026-11-13, which changes the hashes of the
+games that read the timers, `docs/hw/peripherals.md`)
 the same state hash on the SHARC and natively for `sgt24h`
 (`282c8d6fd5151c21`), `doa` (`78f308b4da95cefb`), `schamp`
 (`8d2b7b4cd55d64a0`), `vstriker` (`a4af0c62acc656f3`, interpreted and

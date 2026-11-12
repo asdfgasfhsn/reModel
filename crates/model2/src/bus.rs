@@ -669,8 +669,18 @@ impl Model2Bus {
             // (docs/games/lastbrnx.md); *unconfirmed* what the
             // hardware returns. No other game reads it.
             0x00e8_0004 => self.irq_request & self.irq_enable,
+            // A timer's count reads one word above where it is written:
+            // timer N (written at 0xF00000 + 4N) counts at 0xF00004 + 4N.
+            // Every game that reads the timers does so with `ldl` and uses
+            // the second word just after writing the timer of the first:
+            // `vf2` times a frame on timer 2 (`st 0xF00008` at vblank, then
+            // the second word of `ldl 0xF00008`), `lastbrnx` and
+            // `dynabb97` profile on timers 0 and 1 the same way
+            // (docs/hw/peripherals.md). What a lone read of 0xF00000
+            // returns is *unconfirmed* (no game makes one); it wraps to
+            // timer 3 here.
             0x00f0_0000..=0x00f0_000f => {
-                let t = &self.timers[((addr >> 2) & 3) as usize];
+                let t = &self.timers[(((addr >> 2) + 3) & 3) as usize];
                 if t.running {
                     t.reload.saturating_sub((self.now - t.started_at) as u32)
                 } else {
@@ -1382,6 +1392,19 @@ mod tests {
         assert_eq!(b.read32(0x0108_1000), 0x1234_5678);
         b.write32(0x0100_0004, 0x9abc_def0);
         assert_eq!(b.read32(0x0110_0004), 0x9abc_def0);
+    }
+
+    /// A timer's count reads one word above where it was written (`vf2`
+    /// writes 0xF00008 at vblank and times the frame with the second word
+    /// of `ldl 0xF00008`).
+    #[test]
+    fn timer_counts_read_a_word_above() {
+        let mut b = bus("vf2");
+        b.write32(0x00f0_0008, 0xfffff);
+        b.now += 2500;
+        assert_eq!(b.read32(0x00f0_000c), 0xfffff - 2500);
+        // Timer 3, not running, reads back as written (wrapping to 0xF00000).
+        assert_eq!(b.read32(0x00f0_0000), 0xfffff);
     }
 
     /// The word after the requests (what `lastbrnx`'s `ldl 0xE80000` takes

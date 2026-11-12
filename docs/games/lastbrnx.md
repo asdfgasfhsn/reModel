@@ -89,7 +89,9 @@ which aren't supported as sets of their own.
   (`--audio`) averages -32.7 dBFS RMS (peak -13), like the games at 0
   dB, so the manifest adds no gain; the sound program's own string reads
   "CRX_drv Ver3.1.1". A coin-start
-  run of 600M instructions gives the state hash `38e1f20d016dd508` (the first
+  run of 600M instructions gives the state hash `c3ec82727bacd608`
+  (`38e1f20d016dd508` before the timers' counts were read a word higher,
+  2026-11-13, `docs/hw/peripherals.md`; the first
   run, which creates the EEPROM, gives `700e5666e46dd508`). `make state-check
   GAME=lastbrnx` round-trips (state hash and audio), and `make lockstep GAME=lastbrnx RECOMP=1
   INPUT=coin-start` runs 600M instructions identical (i960 and both SHARCs recompiled). Its i960 program and both SHARC programs have crates of their own (`docs/recompiler.md`), and the recompiled run, with or without the native geometrizer, gives the same hash.

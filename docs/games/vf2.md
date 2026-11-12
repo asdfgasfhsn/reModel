@@ -69,6 +69,28 @@ round after round.
   floor beyond the ring and the shadows' headers were flat or missing
   the same way. With the slot, faces animate (blinks, open mouths) and
   those surfaces are textured.
+- *Confirmed (by running it and from the game's code, 2026-11-13):* the
+  "flickering hair" was the fighters' headband tails, hair and braids
+  (Akira's headband, Lau's braid and sash: objects with second-pair
+  textures) missing from the display list in 3 frames of 5, in every
+  renderer and with every enhancement off: the game left them out.
+  It draws them in a task per fighter that has a time budget: each frame
+  it reads how long the frame has run (timer 2, started at vblank) and
+  skips a fighter's task if that plus the task's measured cost would
+  pass 17,000 us (`0x4268`), counting the skips in RAM `0x500164`. When a
+  task runs, it appends its objects at the end of the list and links them
+  in with a jump the fighter's own objects left (buffer RAM `0x1960` into
+  the list, patched to the appended block), so a skipped frame has the
+  fighter without them. The game reads timer counts one word above where
+  it writes them (`docs/hw/peripherals.md`, "Timers"), and the board
+  model returned the timer at the address read, so the elapsed time came
+  from a timer just restarted or one not running and the budget looked
+  spent: 1,308 skips by frame 2,250 of a coin-start run. With the read
+  moved a word, none in a 10,354-frame run (fights, game over, attract),
+  the tails and braid are drawn every frame, and the game plays as before
+  (rounds against Lau and Sarah, K.O.s, "GAME OVER"). The fights differ
+  from earlier runs from the first frame the game reads a timer, so the
+  frame numbers of older notes here no longer match exactly.
 - *Confirmed (by running it):* the player-select screen draws its 3D
   fighter (the chosen fighter's head turning in the box on the left).
   Its lists (frames ~1,265-1,463 of a coin-start run) have no window

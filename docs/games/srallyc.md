@@ -238,9 +238,12 @@ loose in `rom/srallyc/`): attract, car and course select, and races.
 - *Input lag, measured (`make input-lag`):* the wheel, from frame 4007
   of a coin-start run with the accelerator held, shows after 1 frame
   (the same from frames 3907 and 4207), as `stcc`'s does.
-- *State hash:* a 600M-instruction coin-start run gives `2108cb7ccade31b3`
-  with `--geo native` (`56b5c12673c631b3` on the run that creates the
-  EEPROM); the save state round trip (`make state-check GAME=srallyc`)
+- *State hash:* a 600M-instruction coin-start run gives `45fbec5e9d1215cf`
+  (`2108cb7ccade31b3` before the timers' counts were read a word higher,
+  2026-11-13, `docs/hw/peripherals.md`; the game reads timer 2 that way,
+  and its pictures over the run look the same)
+  with `--geo native` (before the fix, `56b5c12673c631b3` on the run that
+  creates the EEPROM); the save state round trip (`make state-check GAME=srallyc`)
   and run-ahead (`make run-ahead-check GAME=srallyc`) keep it.
 - *Not done:* the force feedback (drive board); the meaning of the
   course polygons' attribute words and last four words; the later

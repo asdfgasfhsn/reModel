@@ -248,7 +248,7 @@ In counter mode, reads of port G come from four 16-bit counters. The low 3 bits 
 | MB86235 | 20 MHz crystal | MAME |
 | Sound 68EC000 | 11.2896 MHz (45.158 / 4) | MAME. The "FN12" part is rated 12 MHz, which is consistent |
 | SCSP | 22.5792 MHz (45.158 / 2) | MAME; the Saturn SCSP also runs at 22.58 MHz (H for the chip) |
-| i960-side timers | count down at 25 MHz, 4 channels at 0x00F00000 | MAME-only |
+| i960-side timers | count down at 25 MHz, 4 channels at 0x00F00000 (each written at 0xF00000 + 4N, its count read at 0xF00004 + 4N: below) | MAME-only for the rate; the read offset from the games' code |
 | UART baud | 31.25 kbaud | MAME-only (see §3) |
 
 ### Video timing (especially wanted)
@@ -283,6 +283,29 @@ In counter mode, reads of port G come from four 16-bit counters. The low 3 bits 
 | bits 10–11 | IRQ3 | bit 10 = sound UART (RxRDY or TxRDY pin) |
 
 The comm board also checks for vblank IRQs; it is absent on topskatr.
+
+### Timers: where a count reads (from the games' code, 2026-11-13)
+- Writing 0xF00000 + 4N starts timer N from the value written (the
+  interrupt handlers of `vf2` and others restart timer N there when bit
+  2 + N fires: 0, then 0xFFFFF).
+- *Confirmed as the games' assumption (from their code), unconfirmed on
+  the board:* timer N's count is read **one word higher**, at
+  0xF00004 + 4N. No game was found reading the timers with a single `ld`: every read
+  by absolute address in the 18 games' code is `ldl` of a pair, and every one uses the
+  pair's second word, after writing the timer of the first. `vf2` starts
+  timer 2 at vblank (`st 0xF00008`) and reads the frame's elapsed time as
+  the second word of `ldl 0xF00008`; it profiles a task by writing
+  0xF00004 and reading the second word of `ldl 0xF00004`; and it arms
+  timer 3 to fire a number of microseconds into the frame by reading that
+  same elapsed time just after writing 0xF0000C. `lastbrnx`, `dynabb97`,
+  `skisuprg`, `hotd` (`ldl 0xF00000`), `stcc`, `fvipers`, `schamp`
+  (`ldl 0xF00008`) follow the same pattern (`segawski` also reads
+  `ldl 0xF00000`; not followed). The interrupt controller's request
+  register reads one word higher too (`ldl 0xE80000`, above).
+  reModel reads timer N at 0xF00004 + 4N; a read of 0xF00000 (no game
+  makes one) wraps to timer 3, *unconfirmed*. Before, a read of word N
+  returned timer N: `vf2` read a timer it had just restarted or one not
+  running, and thought its frame overran (`docs/games/vf2.md`).
 
 ---
 
