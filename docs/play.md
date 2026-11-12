@@ -50,9 +50,9 @@ temporal on turns that recording on (0.05-0.5 ms a game frame, plus one
 geometrizer replay: 0.2-0.4 ms on 2C, 1.4-1.8 ms on 2B) whether or not
 smooth motion's in-betweens are on; with them on, each in-between is
 blended with its own motion. It needs the native geometrizer (with the
-chip it is off, and the menu and launcher say so), and it replaces
+chip it is off: the launcher says so and the menu leaves its row out), and it replaces
 multisampling: `aa` is kept but off while temporal is on (the menu's
-anti-aliasing choices are greyed out, the launcher's row says why). A GPU
+anti-aliasing row is left out, the launcher's row says why). A GPU
 without 16-bit float render targets (the OpenGL fallback, say) can't, and
 says so. The games' checkerboard (screen door) see-through polygons are
 drawn as an even 50% blend with `stipple = blend`, which stays steady at
@@ -244,8 +244,8 @@ At 60 Hz (one game frame per refresh) there is nothing to draw between,
 and none are drawn below 69 Hz or when the game is behind (paced by the
 clock).
 
-**Run-ahead** (a setting, below: off, 1, 2 or 3 frames; `--run-ahead N`
-for one run; off by default). Every game takes some frames from reading
+**Run-ahead** (a setting, below: off up to the game's useful maximum, 3 at
+most; `--run-ahead N` for one run; off by default). Every game takes some frames from reading
 a control to showing what it does: its own input lag, on top of the
 display's. Run-ahead hides up to N frames of it: after each game frame a
 second machine takes a copy of the game's state and runs N more frames
@@ -257,21 +257,21 @@ the frames ahead do leaves the second machine (their sound commands are
 dropped, its EEPROM and drive board are never read). How much there is
 to hide depends on the game (`make input-lag`, each game's `docs/games/<set>.md`):
 
-| Game | Control | Input lag (frames) | Run-ahead worth setting |
+| Game | Control | Input lag (frames) | Offered by the menu (`run_ahead_max`) |
 |---|---|---|---|
-| `topskatr`, `skisuprg`, `segawski`, `waverunr` | curving, swing, lean, handlebar | 0 | off |
-| `overrev`, `overrevb` | wheel | 0 | off |
-| `vstriker` | stick, shoot | 0 | off |
-| `hotd` | trigger | 0 (once 1) | off |
-| `schamp` | stick 0, punch 1 | 0 | off (1 for punches) |
-| `lastbrnx` | stick 0, punch 1 | 0 | off (1 for punches) |
-| `stcc`, `indy500` | wheel | 1 | 1 |
-| `srallyc` | wheel | 1 | 1, if the machine has 2x the game's speed (7 ms a frame interpreted) to spare |
-| `doa` | punch, stick | 1 | 1 |
-| `fvipers` | punch | 1 (8 once, mid-move) | 1 |
-| `dynabb97` | bat, stick | 1 to 6, by the moment | 1 |
+| `topskatr`, `skisuprg`, `segawski`, `waverunr` | curving, swing, lean, handlebar | 0 | none: no row |
+| `overrev`, `overrevb` | wheel | 0 | none |
+| `vstriker` | stick, shoot | 0 | none |
+| `hotd` | trigger | 0 (once 1) | none |
+| `schamp` | stick 0, punch 1 | 0 | off or 1 (helps punches, the stick judders) |
+| `lastbrnx` | stick 0, punch 1 | 0 | off or 1 (helps punches, the stick judders) |
+| `stcc`, `indy500` | wheel | 1 | off or 1 |
+| `srallyc` | wheel | 1 | off or 1, if the machine has 2x the game's speed (7 ms a frame interpreted) to spare |
+| `doa` | punch, stick | 1 | off or 1 |
+| `fvipers` | punch | 1 (8 once, mid-move) | off or 1 |
+| `dynabb97` | bat, stick | 1 to 6, by the moment | off or 1 |
 | `bel` | trigger | 3 (one measurement) | up to 3 |
-| `sgt24h` | wheel | 4 | 3 |
+| `sgt24h` | wheel | 4 | up to 3 (the most the player offers) |
 
 Input lag here counts the frames after the first one that reads the
 control, until the picture first differs from a run without it (`remodel
@@ -282,7 +282,14 @@ it, which in the player is one frame from input to screen (the display
 adds its own). The fighters were measured with no button already under
 way; a move in progress can hold a control off for many frames (above,
 the "once" values), which no run-ahead hides. Each game's least value is
-in its manifest (`Game::input_lag`); the menu says it beside the setting.
+in its manifest (`Game::input_lag`), and the most the menu offers is
+`Game::run_ahead_max`: that lag, at most 3, or 1 for `schamp` and
+`lastbrnx`, whose punches lag a frame (the help line says it helps them and
+makes the stick judder). A game with nothing to hide (`run_ahead_max` 0)
+has no run-ahead row; `--run-ahead N` still takes 0 to 3 for any game but
+warns above the game's maximum. The help line says what the row does for
+the game, and, when the player switched run-ahead off because the machine
+could not keep up (below), that it did.
 
 A game whose picture changes in the first frame that reads the control
 (0 above) has nothing to hide: run-ahead then only shows the game N
@@ -414,7 +421,9 @@ or the game's chip; the preview restarts on it) and the Controls page
 (remapping, below). "Save for" says where changes go: the defaults for all
 games, or this game only (a game's own setting is tagged "this game", and
 "Use the settings for all games" forgets them). The same settings are in
-the Esc menu while playing. They come in layers, lowest first, as in the
+the Esc menu while playing, in tabs and behind a picture preset (below,
+"The menu"); the launcher keeps listing the individual rows, and a row
+changed there under a preset makes it Custom. They come in layers, lowest first, as in the
 browser build: the built-in defaults, the defaults for all games, the
 game's own, then the command line (`--mix`, `--hud`, `--aspect`, `--bezel`,
 `--exact`, `--smooth`, `--run-ahead`, `--aa`, `--temporal`, `--stipple`, `--depth`, `--shading`, `--crease`, `--shading-fine`, `--shading-balance`, `--pack`, `--texture-pack`, `--tex-filter`, `--materials`, `--materials-relief`, `--geo`), which applies to that run only and is
@@ -802,34 +811,78 @@ CALIBRATION in the test menu changes that.
 
 ## The menu
 
-From a gamepad: the d-pad or left stick moves between the menu's buttons,
-checkboxes, choices and sliders as they're laid out (repeating while held,
-as in the launcher), A presses or ticks the one that glows cyan, left and
-right move a slider or step through a choice, B or Select closes the menu
-(or leaves the Controls page), and Start resumes. It opens on Resume. Its
-foot shows the pad's buttons while the pad is what's being used.
-`crates/play/src/focus.rs` does it for any egui page; the menu's tests
-(`menu.rs`) drive it with `Nav`s headless. *Unconfirmed:* tested with
-synthetic and scripted (`--nav`) events only, not yet with a real pad.
+Esc opens the pause menu (and closes it again). It is a short list:
+**Resume**, **Save / Load**, **Settings**, **Controls**, **Back to games**
+and **Quit**. Nothing else sits beside Resume: the game's settings are one
+level in.
 
-- **Save states**: a quick slot (F5/F9) and four more. A save holds the
-  whole machine, both sound boards included, so loading one resumes the
-  sound exactly where it was. The one thing not saved is a replacement
-  soundtrack voice that's playing (`docs/mods.md`).
-- **Sound**: the effects (sound board) and music (DSB2 or DSB1) levels in dB; the
-  default 8:-8 was set by ear (`docs/hw/sound.md`).
-- **Display**: the aspect (fit the window, the default, drawing the game
-  wider than its frame from 4:3 to 32:9; or 4:3, `--aspect 4:3`), the
-  bezel (below), where the HUD goes on wide windows, smooth motion,
-  anti-aliasing, temporal anti-aliasing and the checkerboard pattern, and
-  the depth buffer, shading and its blended brightness levels (above; the crease angle is the settings
-  file's or `--crease`'s), the texture pack and its
-  filtering, material maps and their relief, with a line on what they did
-  or why they have no effect (above), run-ahead (above), the geometrizer (on the next start),
-  fullscreen (as F11), "Save changes for" this game or all games (as in the launcher), and exact arcade speed
-  (57.524 frames per second) against the default of one game frame per
-  display refresh at 60 or 120 Hz, which is 4.3% fast but smooth.
-  **Below full speed** (a game frame taking longer than a refresh, as
+From a gamepad: the d-pad or left stick moves between the buttons and rows
+as they're laid out (repeating while held, as in the launcher), A presses
+the one that glows cyan, left and right change a settings row, LB and RB
+switch settings tabs, B or Select goes back one screen (from the pause menu
+it resumes) and Start resumes from anywhere. The menu opens on Resume. The
+keyboard does the same: the arrow keys, Enter or Space for A, Q and E
+(or Tab and Shift+Tab) for the tabs, Backspace for B; Esc closes the whole
+menu. The focus glows while the pad or those keys are in use, and the foot
+shows the pad's buttons while the pad is. `crates/play/src/focus.rs` does
+it for any egui page; the menu's tests (`menu.rs`) drive it with `Nav`s
+headless. *Unconfirmed:* tested with synthetic and scripted (`--nav`)
+events only, not yet with a real pad.
+
+- **Save / Load**: a screen of its own with the quick slot (F5/F9) and four
+  more. A save holds the whole machine, both sound boards included, so
+  loading one resumes the sound exactly where it was. The one thing not
+  saved is a replacement soundtrack voice that's playing (`docs/mods.md`).
+- **Settings**, in tabs. Each row reads "label ◂ value ▸": left and right
+  change it (A or a click on the name steps on, round to the first), and a
+  single help line at the foot says what the row in focus, or under the
+  pointer, does. A row that does nothing as things are set is left out, not
+  greyed (anti-aliasing while temporal is on, temporal with the chip
+  geometrizer or on a GPU that can't, the shading options with flat
+  shading). Every tab ends with **Applies to: this game / all games**,
+  where the changes are kept (as in the launcher).
+  - **Display**: the aspect (fit the window, the default, drawing the game
+    wider than its frame from 4:3 to 32:9; or 4:3, `--aspect 4:3`), where
+    the HUD goes on wide windows (shown for fit the window), the bezel
+    (below; shown for 4:3, where there is art), and fullscreen (as F11).
+  - **Picture**: starts with the preset row, **Original**, **Sharp**,
+    **Enhanced** or **Custom** (below). Only Custom lists the individual
+    rows: anti-aliasing, temporal anti-aliasing and the checkerboard
+    pattern, the depth buffer, shading with its crease angle, blended
+    brightness levels and brightness balance, the texture pack and, with
+    it, material maps and their relief (the help line says what they did or
+    why they have no effect: above). The crease angle is "the game's" or
+    20 to 60 degrees; other values come from the settings file or
+    `--crease`.
+  - **Motion**: exact arcade speed (57.524 frames per second) against the
+    default of one game frame per display refresh at 60 or 120 Hz, which is
+    4.3% fast but smooth; smooth motion (not with the chip); run-ahead
+    (above; only up to the game's useful maximum, and not at all for a game
+    with no lag to hide).
+  - **Sound**: the effects (sound board) and music (DSB2 or DSB1) levels in
+    dB; the default 8:-8 was set by ear (`docs/hw/sound.md`).
+  - **More**: the geometrizer (native or the game's chip, on the next
+    start) and texture filtering (of the texture pack's images, with the
+    pack on).
+
+  **Picture presets.** *Original* is the arcade look and every default:
+  nothing that changes the picture (and no smooth motion or run-ahead).
+  *Sharp* is 4x multisampling and mipmapped texture filtering, nothing
+  else. *Enhanced* is per game (`romset::Recommended` in the manifest, the
+  evidence in each game's `docs/games/<set>.md`): temporal anti-aliasing
+  at full size (4x multisampling where temporal misbehaves, `vstriker`; and
+  kept as the fallback with the chip geometrizer or a GPU without temporal),
+  the depth buffer only for the games whose depth-check pictures it fixed
+  and none it broke, smooth shading (vertex, the game's crease) for the
+  games it flatters, smooth motion, mipmapped filtering and run-ahead at
+  the game's useful maximum (below; 0 for `schamp` and `lastbrnx`, whose
+  stick has no lag to hide). Choosing a preset sets those rows; changing
+  any picture row afterwards makes the preset *Custom* and keeps the values.
+  The preset is kept in the settings files as itself (`preset = enhanced`)
+  and its rows are worked out per game, so Enhanced kept for all games is
+  each game's own; a file with rows and no preset (from before presets)
+  shows as Custom.
+- **Below full speed** (a game frame taking longer than a refresh, as
   `overrevb`'s interpreted SHARC geometrizer does in races) the player
   doesn't let the game drop to half speed with the refresh rate: it paces
   by the clock instead, running frames as fast as they come (the title
@@ -851,8 +904,7 @@ synthetic and scripted (`--nav`) events only, not yet with a real pad.
   SHARC blocks; 6.8 ms now) would run it dry
   every few seconds, modelled from its frame costs; the title bar counts
   underruns.
-- **Controls** (the button beside Resume): remap the game's keys and
-  gamepad bindings, below.
+- **Controls**: remap the game's keys and gamepad bindings, below.
 - **Back to games**: leave the game for the launcher (keeping a resume
   state for Continue). The launcher lists the supported sets in the ROM
   folder, read as MAME keeps them: `<set>.zip` or a `<set>/` folder, and a
@@ -866,7 +918,7 @@ synthetic and scripted (`--nav`) events only, not yet with a real pad.
 
 ## Remapping
 
-The menu's Controls page lists every input of the game being played with
+The pause menu's Controls page lists every input of the game being played with
 its keys and gamepad bindings. Click a binding, then press the key or
 gamepad button that should replace it; **+** adds one (an input can have
 several), **×** removes one, **reset** puts one input back, and "Reset to

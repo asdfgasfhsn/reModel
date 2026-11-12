@@ -128,3 +128,11 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 - one light vector per frame; lighting entries not changed within a frame.
 - True focal length over the window width: median 0.960 (range 0.960-1.921); the stream-only layer guesses 1.0.
 - The list scan's block facts equal the native geometrizer's on 525,081 blocks, differ on 0.
+
+## Enhanced preset
+
+What the player's Enhanced picture preset (`romset::Recommended` in the
+manifest, `run_ahead_max` for run-ahead) turns on for `doa`, and why:
+Temporal at full size; smooth shading on (the fighters are clearly better
+in the review pictures); no depth buffer (nothing recorded as fixed);
+smooth motion; run-ahead 1 (the lag measured above).

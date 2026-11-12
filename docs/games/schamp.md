@@ -90,3 +90,13 @@ smoothed away and each spike reads as one blob of blue or red; at 30 the
 larger ridges start to go; at 25 the ridges stay while the heads, cheeks,
 gloves and shoes still shade smoothly; at 20 the faces look nearly flat
 again. The angle is a choice by eye, not a property of the data.
+
+## Enhanced preset
+
+What the player's Enhanced picture preset (`romset::Recommended` in the
+manifest, `run_ahead_max` for run-ahead) turns on for `schamp`, and why:
+Temporal at full size; the depth buffer on (the tangled feet come out
+right, nothing broken: `docs/enhancements.md`, "Depth buffer"); smooth
+shading with the crease of 25 degrees chosen above; smooth motion;
+run-ahead 0 (the stick has no lag; the menu offers 1 for the punches, with
+a help line that it makes the stick judder).

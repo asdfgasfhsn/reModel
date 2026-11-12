@@ -99,3 +99,12 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 - one light vector per frame; a lighting entry's values change between objects in 103 frames (206 polygons).
 - True focal length over the window width: median 0.602 (range 0.000-0.886); the stream-only layer guesses 1.0.
 - The list scan's block facts equal the native geometrizer's on 477,012 blocks, differ on 0.
+
+## Enhanced preset
+
+What the player's Enhanced picture preset (`romset::Recommended` in the
+manifest, `run_ahead_max` for run-ahead) turns on for `waverunr`, and why:
+Temporal at full size; no depth buffer (a tree on a cliff top is hidden
+by the cliff face, which is 3.3x nearer: can't tell, above) and no smooth
+shading (no pictures recorded as better); smooth motion; run-ahead 0
+(input lag 0).

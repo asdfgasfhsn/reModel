@@ -97,3 +97,12 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 - the light vector changes within a frame in 229 of 6073 frames (up to 2 vectors a frame); lighting entries not changed within a frame.
 - True focal length over the window width: median 0.402 (range 0.341-200.000); the stream-only layer guesses 1.0.
 - The list scan's block facts equal the native geometrizer's on 358,611 blocks, differ on 0.
+
+## Enhanced preset
+
+What the player's Enhanced picture preset (`romset::Recommended` in the
+manifest, `run_ahead_max` for run-ahead) turns on for `indy500`, and why:
+Temporal at full size; the depth buffer on (the fence rail goes in front
+of the spectators and the sidepod lettering is whole, above); no smooth
+shading (the game lights its cars evenly: `docs/play.md`); smooth motion;
+run-ahead 1.

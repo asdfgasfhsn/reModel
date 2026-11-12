@@ -284,3 +284,15 @@ data. Frame numbers are of a `coin-start` run. No ROM data is reproduced here.
 - The same dump holds the other billboards for reference (an airwalk, a
   warp magazine, Coca-Cola, a stunttrackers sign); only the Pennywise logo is
   the band's.
+
+## Enhanced preset
+
+What the player's Enhanced picture preset (`romset::Recommended` in the
+manifest, `run_ahead_max` for run-ahead) turns on for `topskatr`, and why:
+Temporal anti-aliasing at full size; the depth buffer on (the skater's leg
+and the tree billboards come out right in the 21 captured frames, nothing
+broken: "Depth buffer" in `docs/enhancements.md`); smooth shading, vertex
+with the game's crease (the skaters are clearly better in the review
+pictures: `docs/play.md`, "Smooth shading"); smooth motion; run-ahead 0 (no
+lag to hide). The FINISH sign flickers under temporal as the game draws it
+(confirmed above).

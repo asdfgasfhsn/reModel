@@ -88,3 +88,12 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 - the light vector changes within a frame in 4207 of 6077 frames (up to 3 vectors a frame); lighting entries not changed within a frame.
 - True focal length over the window width: median 1.442 (range 0.706-2.734); the stream-only layer guesses 1.0.
 - The list scan's block facts equal the native geometrizer's on 388,760 blocks, differ on 0.
+
+## Enhanced preset
+
+What the player's Enhanced picture preset (`romset::Recommended` in the
+manifest, `run_ahead_max` for run-ahead) turns on for `overrev`, and why:
+Temporal at full size; the depth buffer on (the crossed tree cards
+intersect, and the one banner traded off is half covered as with the buffer
+off: above); no smooth shading (no pictures recorded either way); smooth
+motion; run-ahead 0 (input lag 0).

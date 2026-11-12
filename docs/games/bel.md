@@ -82,3 +82,12 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 - the light vector changes within a frame in 4204 of 6155 frames (up to 2 vectors a frame); lighting entries not changed within a frame.
 - True focal length over the window width: median 0.664 (range 0.664-0.805); the stream-only layer guesses 1.0.
 - The list scan's block facts equal the native geometrizer's on 312,574 blocks, differ on 0.
+
+## Enhanced preset
+
+What the player's Enhanced picture preset (`romset::Recommended` in the
+manifest, `run_ahead_max` for run-ahead) turns on for `bel`, and why:
+Temporal at full size; the depth buffer on (the ivy on the cliff and a
+hanging soldier's legs in front of a beam come out right, above); no
+smooth shading (no pictures recorded as better); smooth motion; run-ahead 3,
+the lag measured above (one measurement).

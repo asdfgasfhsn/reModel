@@ -111,3 +111,13 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 - the light vector changes within a frame in 139 of 6163 frames (up to 3 vectors a frame); lighting entries not changed within a frame.
 - True focal length over the window width: median 0.605 (range 0.605-1.210); the stream-only layer guesses 1.0.
 - The list scan's block facts equal the native geometrizer's on 279,408 blocks, differ on 0.
+
+## Enhanced preset
+
+What the player's Enhanced picture preset (`romset::Recommended` in the
+manifest, `run_ahead_max` for run-ahead) turns on for `sgt24h`, and why:
+Temporal at full size; no depth buffer or smooth shading (little or no
+change); smooth motion; run-ahead 3: the lag measured above is 4, the player
+offers 3 at most. With temporal and run-ahead 1 on an interpreted
+machine it fell behind once (`docs/play.md`, "Temporal anti-aliasing"); the
+player then drops run-ahead and says so.

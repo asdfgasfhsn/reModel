@@ -126,3 +126,15 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 - the light vector changes within a frame in 4749 of 6212 frames (up to 2 vectors a frame); lighting entries not changed within a frame.
 - True focal length over the window width: median 2.018 (range 1.859-2.430); the stream-only layer guesses 1.0.
 - The list scan's block facts equal the native geometrizer's on 748,040 blocks, differ on 0.
+
+## Enhanced preset
+
+What the player's Enhanced picture preset (`romset::Recommended` in the
+manifest, `run_ahead_max` for run-ahead) turns on for `vstriker`, and why:
+4x multisampling instead of temporal anti-aliasing: the players' pose
+models change, so temporal draws their motion nearer the plain frame, the
+crowd shimmers slightly in a still picture and `temporal-check` is over its
+limit on the crowd (above, and `docs/play.md`, "Temporal anti-aliasing"). No
+depth buffer (it changes at most 0.007% of the pixels) or smooth shading
+(the players look a little rounder, not clearly better); smooth motion;
+run-ahead 0 (input lag 0).

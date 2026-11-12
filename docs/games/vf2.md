@@ -43,3 +43,11 @@ Status: **in progress** (`romset::games::IN_PROGRESS`); not playable yet.
   instructions; the other entries are `bf60xxxx` jumps, so `62` is probably
   a call or jump variant), plus `4a000001`, `4a000003`, `1c1743a1` (once
   or twice each). The geometrizer also counts 243622 bad commands.
+
+## Enhanced preset
+
+What the player's Enhanced picture preset (`romset::Recommended` in the
+manifest, `run_ahead_max` for run-ahead) turns on for `vf2`, and why:
+Not playable yet, so the defaults: temporal at full size, no depth buffer
+or smooth shading, nothing recorded either way; run-ahead from its input lag
+once it plays.

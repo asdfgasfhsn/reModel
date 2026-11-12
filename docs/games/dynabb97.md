@@ -73,3 +73,12 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 - True focal length over the window width: median 4.032 (range 0.414-12.097); the stream-only layer guesses 1.0.
 - The list scan's block facts equal the native geometrizer's on 510,023 blocks, differ on 0.
 - Smooth shading: the players' colour translation tables hold coloured entries in the dark columns (0-11) below a grey ramp, so most lit polygons (over 90% in the 21 captured frames) are shaded only within the levels of their own hue (docs/hw/geometrizer.md, "Colour tables are not always brightness ramps"); before that refinement 2,234 of 3,758 lit polygons were left flat.
+
+## Enhanced preset
+
+What the player's Enhanced picture preset (`romset::Recommended` in the
+manifest, `run_ahead_max` for run-ahead) turns on for `dynabb97`, and why:
+Temporal at full size; no depth buffer (the batter's undershirt collar
+shows through the jersey, above) and no smooth shading (over 90% of the lit
+polygons are shaded only within their own levels, below); smooth motion;
+run-ahead 1.

@@ -257,39 +257,64 @@ of all private ranges also admits them.
 before the game boots (`crates/web/panel.js`, `crates/web/settings.js`;
 plain HTML, no egui). The module and the ROMs download behind it, so Play
 starts at once if they've arrived; the panel's last line shows the
-progress. It offers:
+progress. It has the native player's menu structure
+(docs/play.md, "The menu"): tabs, each row "label ◂ value ▸" (left and
+right change it, a click on its name or the value, Space or a pad's A
+steps on), rows that do nothing as things are set left out rather than
+greyed, one help line at the foot for the row in focus or under the
+pointer, and "Applies to: this game / all games" below the tabs, for every
+tab. Q and E (a pad's LB and RB) switch tabs; Tab keeps moving between
+controls, as a page needs. The tabs:
 
 - **Display:** render height (384, the native height; 768; 1080; or the
   screen's, the default: the window's height in device pixels, up to
   1080), aspect (fit the window, the default, 4:3 to 21:9; 4:3; 16:9),
-  HUD placement in wide views (at the edges, or centred), the bezel (on,
-  the default, or off; below), anti-aliasing (off, the default, or 4x),
-  the depth buffer (off by default), shading (flat, the default; smooth;
-  per pixel) and its crease angle (the game's, the default; 30°, 40°,
-  60°; below, "Smooth shading"), blended brightness levels (off by
-  default), the brightness balance (on by default), the texture pack (off by default; below) and its filtering
-  (off, the default; mipmaps; 2x to 16x);
+  HUD placement in wide views (at the edges, or centred; not with 4:3)
+  and the bezel (on, the default, or off; below; only with 4:3);
+- **Picture:** the preset (below), then, with Custom only,
+  anti-aliasing (off, the default, or 4x), the depth buffer (off by
+  default), shading (flat, the default; smooth; per pixel) and its crease
+  angle (the game's, the default; 30°, 40°, 60°; below, "Smooth
+  shading"), blended brightness levels (off by default) and the
+  brightness balance (on by default; both only with shading and a crease
+  above 0), the texture pack (off by default; below) and, with it, material
+  maps and their relief;
+- **Motion:** smooth motion (off by default; below; not with the chip).
+  Exact arcade speed and run-ahead are the native player's;
 - **Sound:** on or off, the effects (sound board) and music levels in
-  dB (sliders from -24 to +24; defaults +8 and -8,
+  dB (from -24 to +24; defaults +8 and -8,
   `model2::audio::DEFAULT_MIX`; the game's own
-  level is added to both), and the buffer: the audio queued (auto, the
-  default: 70 ms, or 150 ms on a phone or tablet; 70, 150 or 250 ms;
-  above, "Audio rate");
+  level is added to both);
 - **Controls:** each input with its keys, gamepad bindings (Xbox names)
   and on-screen control, remappable (below, "Remapping"); on touch
   screens, touch controls on or off and, where an analog follows the left
   stick, tilt steering;
-- **Advanced:** the geometrizer in a worker (the default) or on the
+- **More:** the sound buffer: the audio queued (auto, the
+  default: 70 ms, or 150 ms on a phone or tablet; 70, 150 or 250 ms;
+  above, "Audio rate"); the geometrizer in a worker (the default) or on the
   page's thread, or the game's own program on its chip (the 2B SHARC,
-  the 2C TGP) in a worker instead of the native geometrizer; and smooth
-  motion (off by default; below).
+  the 2C TGP) in a worker instead of the native geometrizer; and texture
+  filtering of the pack's images (off, the default; mipmaps; 2x to 16x).
+
+**Picture presets.** Original is the arcade look and every default.
+Sharp is 4x multisampling and mipmapped filtering. Enhanced is per game:
+4x multisampling and mipmaps, smooth motion, and (from the manifest's
+`romset::Recommended`, the module's `game_recommended`) the depth buffer
+and smooth shading where the game's notes say they suit it; the browser
+has no temporal anti-aliasing or run-ahead. Choosing a preset sets those
+rows; changing a picture row makes it Custom and keeps the values. The
+preset is stored as itself (`preset`, `?preset=enhanced`) and its rows
+follow from it per game, so Enhanced saved for all games is each game's
+own; stored settings from before presets, with rows and no preset, show as
+Custom.
 
 Play (or Enter, or a gamepad's Start, or A anywhere but on another button
 or a checkbox) starts the game; the
 Play tap also starts the audio and, on iOS, asks for the motion
 permission tilt needs (a gamepad press isn't a user gesture, so after a
 pad's Start the audio waits for a tap or key). On a gamepad the d-pad or
-left stick moves through the panel and changes values. While the panel is
+left stick moves through the panel and changes values; the arrow keys do
+the same. While the panel is
 open, keys go to it, not the game. Defaults puts every setting back to
 the built-in defaults except the touch controls and the remapped
 controls. "Don't show this again for this game"
@@ -332,6 +357,10 @@ shared link doesn't change anyone's settings; changing it in the panel
 drops the parameter from the address and saves the new value. The URL
 parameters:
 
+- `preset=original|sharp|enhanced|custom` (the picture preset; its rows
+  follow it per game, and a row given beside it wins and makes it Custom;
+  the module's `game_recommended(game)` says what Enhanced turns on:
+  JSON `{depth, shading}`);
 - `height=1080` (rounded to even, 96 to 4320; `height=auto` the
   screen's);
 - `aspect=16:9` (a ratio from 0.5 to 4; `aspect=auto` fits the window);
@@ -354,7 +383,7 @@ parameters:
   guarantees; `aa=0` or `aa=off` off) and `depth=1` (a depth buffer: polygons
   by depth, not the game's order, except skies, shadows, translucent
   layers and large floors; `docs/enhancements.md`). Both off by default,
-  both in the panel's Display section, both applied live. The module's
+  both in the panel's Picture tab (with Custom), both applied live. The module's
   `set_quality(aa, depth, texfilter, shading, crease, fine, balance, materials, relief)` takes them before
   or after `start` (`texfilter` is a string: `off`, `mip`, `2`, `4`, `8` or
   `16`; anything else is off; `shading`, `crease`, `fine`, `balance`, `materials` and `relief` as below, and may be
@@ -368,7 +397,7 @@ parameters:
   hard edge; 0 smooths nothing; `crease=auto`, the default, is the game's
   own, `romset::Shading`), `shadefine=1` (finer levels, off by
   default) and `shadebalance=0` (no brightness balance, on by
-  default). All in the panel's Display section, all applied live (below,
+  default). All in the panel's Picture tab (with Custom), all applied live (below,
   "Smooth shading");
 - `pack=1` (the game's texture pack from `/texpack/<set>/`; `pack=0` off) and
   `texfilter=off|mip|2|4|8|16` (filtering of pack images, as in
@@ -378,7 +407,7 @@ parameters:
 - `materials=1` (the texture pack's material maps, off by default; below,
   "Material maps") and `relief=off|S` (their rule: relief at strength S,
   0.1 to 8, by default 2, or `off` for the faithful rule). Both in the
-  panel's Display section ("Material maps", "Material relief": 1, 2, 4, 8
+  panel's Picture tab ("Material maps", "Material relief": 1, 2, 4, 8
   or Faithful, and "Custom (S)" for another strength from the link or the
   saved settings), both applied live; `materials` needs `pack`.
 
@@ -451,7 +480,7 @@ status line's draw time went from 4.3-5.4 ms flat to 5.3-6.3 ms. (That
 was the first browser build, `vertex` only; the final one, with `pixel`
 and finer levels, measured 1.1-1.5 ms: `docs/enhancements.md`.)
 
-**Smooth motion.** With the setting on (`?smooth=1`, or Advanced in the
+**Smooth motion.** With the setting on (`?smooth=1`, or Motion in the
 panel; off by default), a display faster than the game's 57.5 Hz shows
 in-between frames: the 3D geometry part way from the frame before to the
 newest, the native geometrizer running the newest frame's display list

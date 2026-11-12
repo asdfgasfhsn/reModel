@@ -905,10 +905,11 @@ make pack-materials GAME=srallyc TEXPACK=out/srallyc/texpack-maps TEXDUMP=out/sr
 make play GAME=srallyc PLAY_ARGS="--texture-pack out/srallyc/texpack-maps --materials --shading pixel"
 ```
 
-`PLAY_ARGS` hold for that run only. To compare, press **Esc**: under
-Display, tick or untick **Material maps** and pick a **Material relief**
+`PLAY_ARGS` hold for that run only. To compare, press **Esc**, then
+Settings, Picture (choose the **Custom** preset to see the rows): turn **Material maps**
+on or off and pick a **Material relief**
 (1, 2, 4, 8 or faithful); they apply at once on the paused frame, and the
-line under them says what the last frame did. Menu changes are saved, as
+help line says what the last frame did. Menu changes are saved, as
 all are. Try `Shading: flat` with the maps on too: faces stay flat but
 keep the maps' detail. Copying a pack resets file times, so
 `pack-materials` takes every map in a copy as hand-edited: delete the

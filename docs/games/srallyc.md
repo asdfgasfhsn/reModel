@@ -261,3 +261,12 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 - The exact match is reModel's 2A model against itself (`Program::Fixed`,
   the 2C shared program's maths): it confirms the side channel, not the 2A
   hardware's lighting, which stays *unconfirmed*.
+
+## Enhanced preset
+
+What the player's Enhanced picture preset (`romset::Recommended` in the
+manifest, `run_ahead_max` for run-ahead) turns on for `srallyc`, and why:
+Temporal at full size; no depth buffer or smooth shading (little or no
+change on mostly flat cars and scenery: `docs/play.md`); smooth motion;
+run-ahead 1, which needs the machine to have twice the game's speed to
+spare.

@@ -150,3 +150,13 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
   fighters' joint pieces the list rewrites every frame): smooth shading
   derives everything per frame from the frame's own polygons and keeps no
   per-model data.
+
+## Enhanced preset
+
+What the player's Enhanced picture preset (`romset::Recommended` in the
+manifest, `run_ahead_max` for run-ahead) turns on for `lastbrnx`, and why:
+Temporal at full size; smooth shading on (the fighters are clearly better
+in the review pictures; about 58% of the lit polygons are shaded only within
+their hue, below); no depth buffer (nothing recorded as fixed); smooth
+motion; run-ahead 0: the stick has no lag, so the menu's 1 (for the
+punches) is left to the player.

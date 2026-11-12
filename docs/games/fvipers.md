@@ -93,3 +93,11 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 - the light vector changes within a frame in 109 of 6205 frames (up to 2 vectors a frame); lighting entries not changed within a frame.
 - True focal length over the window width: median 0.968 (range 0.968-0.968); the stream-only layer guesses 1.0.
 - The list scan's block facts equal the native geometrizer's on 496,220 blocks, differ on 0.
+
+## Enhanced preset
+
+What the player's Enhanced picture preset (`romset::Recommended` in the
+manifest, `run_ahead_max` for run-ahead) turns on for `fvipers`, and why:
+Temporal at full size; smooth shading on (the fighters are clearly better
+in the review pictures); no depth buffer (18 of 21 frames differ by a few
+pixels and "can't tell which is right", above); smooth motion; run-ahead 1.
