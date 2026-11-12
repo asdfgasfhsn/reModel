@@ -19,10 +19,11 @@
 # (temporal anti-aliasing: its pictures with --light and with --materials).
 #
 # Environment (the Makefile sets these): REMODEL, GAME, ROM, PACK, WORK,
-# STEPS, SNAP, GPU_SNAP (the captures' interval).
+# STEPS, SNAP, GPU_SNAP (the captures' interval), JOBS (how many of the 12
+# runs go at once; 3 by default).
 set -eu
 : "${REMODEL:?}" "${GAME:?}" "${ROM:?}" "${PACK:?}" "${WORK:?}" "${STEPS:=900000000}" "${SNAP:=300}"
-: "${GPU_SNAP:=900}"
+: "${GPU_SNAP:=900}" "${JOBS:=3}"
 remodel=$(readlink -f "$REMODEL")
 rom=$(readlink -f "$ROM")
 rm -rf "$WORK"
@@ -40,17 +41,29 @@ one() {
         echo "$label: the run failed ($work/$label/log.txt)"
 }
 
+# bg LABEL ARGS...: `one` in the background, JOBS at a time (each batch
+# waits for the one before it).
+running=0
+bg() {
+    one "$@" &
+    running=$((running + 1))
+    if [ "$running" -ge "$JOBS" ]; then
+        wait
+        running=0
+    fi
+}
+
 # NAME:ARGS, = for a space in ARGS.
 modes="flat: vertex:--shading=vertex pixel:--shading=pixel mip:--shading=pixel=--tex-filter=mip"
 for m in $modes; do
     name=${m%%:*}
     args=$(echo "${m#*:}" | tr = ' ')
     # shellcheck disable=SC2086
-    one "$name-light" --light $args &
+    bg "$name-light" --light $args
     # shellcheck disable=SC2086
-    one "$name-relief" --materials $args &
+    bg "$name-relief" --materials $args
     # shellcheck disable=SC2086
-    one "$name-faithful" --materials --materials-relief off $args &
+    bg "$name-faithful" --materials --materials-relief off $args
 done
 wait
 

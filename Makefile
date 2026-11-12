@@ -15,6 +15,9 @@ INPUT ?=
 VIEW  ?=
 # Texture pack directory for `run` snapshots and gpu-check (docs/texture-packs.md), e.g. PACK=out/topskatr/texpack.
 PACK  ?=
+# How many emulator runs a target that starts several (materials-identity,
+# web's screenshots) has going at once.
+JOBS  ?= 3
 # Fixed run for `make bench`: attract, coin-up, start, into a race.
 # `coin-start` is the game's own coin-up and start script (its manifest's
 # controls); for topskatr that is coin1@1100-1104,start@1250-1254.
@@ -311,8 +314,8 @@ dist: ## Distributable player for this platform (interpreter only, stripped) -> 
 	tar -C $(DIST_OUT) -czf $$dir.tar.gz $$name; \
 	echo "built $$dir.tar.gz ($$(du -h $$dir.tar.gz | cut -f1))"
 
-web: ## Browser build into out/web: game list, a page per game (model2/SET/), screenshots; RECOMP=1 gives each game its own module with its recompiled code (docs/web.md)
-	WEB_OUT=$(WEB_OUT) ROM=$(ROM) RECOMP=$(RECOMP) CARGO="$(CARGO)" WASM_CARGO="$(WASM_CARGO)" WASM_BINDGEN=$(WASM_BINDGEN) sh tools/web.sh
+web: ## Browser build into out/web: game list, a page per game (model2/SET/), screenshots (JOBS at once, default 3); RECOMP=1 gives each game its own module with its recompiled code (docs/web.md)
+	WEB_OUT=$(WEB_OUT) ROM=$(ROM) RECOMP=$(RECOMP) CARGO="$(CARGO)" WASM_CARGO="$(WASM_CARGO)" WASM_BINDGEN=$(WASM_BINDGEN) JOBS=$(JOBS) sh tools/web.sh
 
 capture: release ## Run into a race saving every 300th frame's renderer inputs to out/GAME/capture (~200 MB)
 	rm -rf $(OUT)/capture
@@ -345,15 +348,16 @@ pack-identity: release ## Draw the captured frames with a pack standing for the 
 	$(RUN) $(GPU_OPTS) $(if $(PACK),--texture-pack $(PACK)) pack-check --identity $(OUT)/capture $(OUT)/pack-identity
 
 # materials-identity: the coin-start run's length and snapshot interval,
-# and the interval of its captures for the GPU checks.
+# and the interval of its captures for the GPU checks (its 12 runs go JOBS
+# at a time).
 MAT_STEPS    ?= 900000000
 MAT_SNAP     ?= 300
 MAT_GPU_SNAP ?= 900
 .PHONY: materials-identity
-materials-identity: release ## Check that texture pack PACK with all its normal maps made flat draws with --materials exactly as with --light and no materials (the comparison to make: --materials records the side channel), under both rules (relief and --materials-relief off), in flat, vertex, pixel and mipmapped pixel shading, from coin-start run snapshots; and the same on the GPU (gpu-check of captures, unfiltered, mip, 16x and --aa 4 --depth; temporal-probe) (MAT_STEPS, MAT_SNAP, MAT_GPU_SNAP; needs a GPU; scratch in out/scratch/materials-identity/GAME, deleted when it passes)
+materials-identity: release ## Check that texture pack PACK with all its normal maps made flat draws with --materials exactly as with --light and no materials (the comparison to make: --materials records the side channel), under both rules (relief and --materials-relief off), in flat, vertex, pixel and mipmapped pixel shading, from coin-start run snapshots; and the same on the GPU (gpu-check of captures, unfiltered, mip, 16x and --aa 4 --depth; temporal-probe) (MAT_STEPS, MAT_SNAP, MAT_GPU_SNAP; JOBS runs at once, default 3; needs a GPU; scratch in out/scratch/materials-identity/GAME, deleted when it passes)
 	@test -n "$(PACK)" || { echo "materials-identity wants PACK=DIR (a pack with normal maps)"; exit 1; }
 	REMODEL=$(REMODEL) GAME=$(GAME) ROM=$(ROM) PACK=$(PACK) WORK=out/scratch/materials-identity/$(GAME) \
-		STEPS=$(MAT_STEPS) SNAP=$(MAT_SNAP) GPU_SNAP=$(MAT_GPU_SNAP) sh tools/materials-identity.sh
+		STEPS=$(MAT_STEPS) SNAP=$(MAT_SNAP) GPU_SNAP=$(MAT_GPU_SNAP) JOBS=$(JOBS) sh tools/materials-identity.sh
 
 # depth-check: PROBE="X,Y@FRAME ..." follows those output pixels through the
 # depth buffer (only those frames are drawn); AGAINST=DIR compares the

@@ -10,8 +10,10 @@
 # Without, all games share one interpreter module at WEB_OUT/model2/pkg/.
 #
 # Environment (the Makefile sets these): WEB_OUT, ROM, RECOMP, CARGO,
-# WASM_CARGO (a command, may start with VAR=value), WASM_BINDGEN.
+# WASM_CARGO (a command, may start with VAR=value), WASM_BINDGEN, JOBS (how
+# many screenshots are made at once; 3 by default).
 set -eu
+: "${JOBS:=3}"
 
 # Built beside the live site (WEB_OUT.next, starting from a copy of it, so
 # screenshots and unchanged files carry over) and swapped in at the end, so
@@ -42,6 +44,7 @@ mkdir -p "$model2"
 
 # Screenshots from the attract mode, made once (delete shot.png to remake
 # one). A failure leaves the card without a picture.
+running=0
 for g in $games; do
     shot=$model2/$g/shot.png
     [ -s "$shot" ] && continue
@@ -54,6 +57,11 @@ for g in $games; do
             echo "web: warning: no screenshot for $g" >&2
         fi
     ) &
+    running=$((running + 1))
+    if [ "$running" -ge "$JOBS" ]; then
+        wait
+        running=0
+    fi
 done
 wait
 
