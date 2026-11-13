@@ -204,6 +204,7 @@ const CONTROLS: Controls = Controls {
             keys_pos: &["ArrowRight"],
             pad_neg: &[PadButton::DPadLeft],
             pad_pos: &[PadButton::DPadRight],
+            key_ramp: None,
         },
         // Throttle lever: 0xFF released, 0x00 fully open (about 100 km/h);
         // it also confirms the course choice.
@@ -217,6 +218,7 @@ const CONTROLS: Controls = Controls {
             keys_pos: &["ArrowUp", "KeyZ"],
             pad_neg: &[],
             pad_pos: &[PadButton::South],
+            key_ramp: None,
         },
         // The body's roll sensor. Calibrated like the handlebar and read
         // in play (a lean past +-0x20 from centre triggers something);
@@ -231,6 +233,7 @@ const CONTROLS: Controls = Controls {
             keys_pos: &["KeyD"],
             pad_neg: &[],
             pad_pos: &[],
+            key_ramp: None,
         },
         // The body's pitch sensor: shown in the input test, never read in
         // play.
@@ -244,6 +247,7 @@ const CONTROLS: Controls = Controls {
             keys_pos: &[],
             pad_neg: &[],
             pad_pos: &[],
+            key_ramp: None,
         },
     ],
     // Three coins, start, the throttle to pick the first course, then the

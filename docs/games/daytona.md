@@ -4,9 +4,10 @@ Status: **plays** (`make play GAME=daytona`; the launcher's Model 2
 group): it boots to its attract mode, draws it in 3D, textured, and
 `coin-start` reaches a race on each course that drives (and runs out its
 clock), with music and effects (the sound board model, not yet checked by
-ear against a cabinet). Known issues: the car's handling is unconfirmed
-as twitchy (below), no whole 8-lap race has been steered to the flag, and
-the clones are not added. The
+ear against a cabinet). The keys steer
+through a ramp, as the game wants a wheel that can't jump to full lock
+(below, "the handling"). Known issues: no whole 8-lap race has been
+steered to the flag, and the clones are not added. The
 first game on the original Model 2 board (`Board::Model2`,
 [`docs/hw/model2.md`](../hw/model2.md)); `vcop` and `desert` are on the
 same board.
@@ -56,8 +57,10 @@ same board.
 - *Confirmed (by running it):* `coin-start` (one coin, start, the
   accelerator on the CIRCUIT SELECT screen and again on MISSION SELECT)
   starts a Beginner race with an automatic: the rolling start, then with
-  the accelerator held the car pulls away (95 km/h four seconds in, the
-  lap timer running, "POSITION 40/40"), runs into the wall on the first
+  the accelerator held the car pulls away (206 km/h on the speedometer
+  under the rev gauge at frame 2,780; the big number above the gauge is
+  the time left, which an earlier note here took for the speed; the lap
+  timer running, "POSITION 40/40"), runs into the wall on the first
   bend with the wheel centred, and turned (`wheel=0x40` for a second)
   spins round to face the wrong way ("逆走"). Without the RAM0 call fix
   the race stayed in its rolling start at 50 km/h.
@@ -150,15 +153,55 @@ same board.
   and the accelerator held, to frame 6,200). Beginner met the same
   infinity but drew. *Unconfirmed:* what the hardware does with a
   division by 0 (the reciprocal port's output for 0 is this model's).
-- *Unconfirmed, to look into (handling):* with a script the car is
-  twitchy: a short steering pulse starts a yaw that carries on after the
-  wheel is back at the centre and ends in a spin ("逆走", wrong way, on the
-  HUD), at the 95 km/h the car holds. Steering by feel may be all that
-  this is, but the TGP functions behind the car's physics are unchecked.
-  The `-sin` of port `0x22` is borne out by its only use (function
-  `0x2A` splits course points' offsets into along and across a
-  direction, which needs -sin there: [`mb86234.md`](../hw/mb86234.md),
-  the function unit), so it is unlikely to be the cause.
+- *Confirmed (from the code and by running it):* **the handling**: why
+  the car was twitchy from the keyboard ("very jerky", snapping left and
+  right). The wheel's path, traced per frame (logs of work RAM and of the
+  TGP calls from a local debugging build, in a coin-start race with the
+  accelerator held, steering from frame 2,780 at 206 km/h):
+  - The ADC is read sanely: the four samples the game averages (I/O
+    registers 0-7, `docs/hw/model2.md`) give the scripted byte every
+    frame, with one in-between value on the frame it changes (`0xD0`
+    pressed: steering 25, then 127). No noise, spikes or jumps.
+  - `0x57A8`: steering -127..127 (above) into `0x501050`. The car's
+    routine (`0xF048`, object `0x505180` for the player's car in these
+    runs) keeps `(steering * 256 + last) / 2` at `0xBC`: a one-pole
+    filter that **halves the gap each frame**, the game's only smoothing.
+    `0xFD50` makes the front wheels' angle from it, `-(it >> 3)` at
+    `0x128` (in 1/65536 turns): full lock is `0xFE0`, 22 degrees.
+  - `0xFFE8`-`0x10214` turns that into yaw through the TGP: a bicycle
+    model, the turning radius from the wheelbase (2.75) by the law of
+    sines over the front and rear angles (functions 29, 27, 3, 30, 10:
+    `x sin a`, `sin a`, `a / b`, `x cos a`, an atan2), then the yaw step
+    as speed (`0x34`, 0.895 a frame) over the radius times 10430.4
+    (65536 / 2π) (functions 36, 41, 40, 37), added to the heading at
+    `0x58`/`0x48`. The values check by hand: at frame 2,781 the angle
+    difference is -10.6 degrees, the radius 2.75 / sin 10.6° = 14.9, and
+    0.8965 / 14.75 radians is the 634 units (3.5 degrees) the heading
+    moves; the speed byte at `0x18` (206) is the speedometer's km/h and
+    0.895 m a frame is 54 m/s, the same speed. Nothing out of range, no
+    saturated values on this path while turning (the 2^128 of a straight
+    line only gives a yaw step of 0, as it should).
+  So the emulation does what the code says; the cause is the input. A
+  key holds the wheel at full lock (`0xD0`) from one frame to the next,
+  which a cabinet's wheel can't do; the game's filter gets the front
+  wheels to 22 degrees in two frames, and at 200 km/h the heading moves
+  7.5 degrees in one frame, swings back past where it started when the
+  key is let go (+2.9 degrees the other way) and settles over 20 frames:
+  a 6-frame tap moved the heading 30 degrees all told for a net 2. The
+  fix (`KeyRamp` in the manifest, docs/play.md "Digital steering"): the
+  keys and d-pad turn the wheel to full lock over 12 frames and let it
+  back in 6; a stick goes straight through. The same tap then peaks at
+  1.5 degrees a frame with no swing back (heading 0 to -3.7 degrees,
+  30 degrees of movement down to 11); four alternating 6-frame taps
+  (left, right, ...) went from 107 degrees of heading movement and 7.7
+  a frame to 42 and 1.6. (Measured with scripts holding the values the
+  ramp gives, frames 2,780-2,850 of `coin-start,gas=0xff@2300-99999`.)
+  *Unconfirmed:* how fast the cabinet's wheel can really be turned (the
+  12 and 6 frames are chosen to feel right, not measured), and the
+  slip terms at `0x18C`/`0x18E` (the heading rebounds by about half
+  within 3 frames of a step, with the wheel still held), which look
+  like the game's own tyre model. `srallyc` handles the keys' switch
+  well (span 112) without a ramp; its steering code was not traced.
 - *Confirmed (by running it):* **input lag** (`make input-lag GAME=daytona`,
   `wheel=0xD0` held from frame 3300 of a coin-start run with the
   accelerator held, and from 2900): the picture changes in the first frame

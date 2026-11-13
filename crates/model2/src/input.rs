@@ -297,10 +297,11 @@ pub fn held(p: &dyn PlayerInput, inputs: &[Input]) -> bool {
 /// player's remapped ones; the browser reads its touch controls through
 /// the manifest's, whatever the keys and pad are remapped to). A button is
 /// down if any source holds it; an analog follows the source deflecting it
-/// most, keys and buttons holding it at full deflection over its axis.
+/// most, keys and buttons holding it at full deflection over its axis
+/// (or turning it there at the manifest's [`romset::KeyRamp`]).
 pub fn apply_player(bus: &mut Model2Bus, sources: &[(&Bindings, &dyn PlayerInput)]) {
     let controls = bus.controls;
-    let (buttons, analogs) = read_player(controls, sources);
+    let (buttons, analogs) = read_player_ramped(controls, sources, &mut bus.key_ramps);
     for (a, v) in controls.analogs.iter().zip(analogs) {
         bus.analog[a.channel as usize] = v;
     }
@@ -354,24 +355,72 @@ fn latch_gear(latch: &mut GearLatch, controls: &Controls, mut buttons: Vec<bool>
     buttons
 }
 
+/// Where the keys and buttons have moved each analog input with a
+/// [`romset::KeyRamp`] (-1 to 1, by the manifest's order): they turn it at
+/// that rate rather than jump to full deflection.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct KeyRamps([f32; 8]);
+
+impl KeyRamps {
+    /// One frame toward `target` (-1, 0 or 1, the keys held) for input `i`:
+    /// out from the centre at `attack` frames for the whole way, back to
+    /// it (and through it, toward the other side) at `release`.
+    fn step(&mut self, i: usize, target: f32, r: romset::KeyRamp) -> f32 {
+        let Some(at) = self.0.get_mut(i) else { return target };
+        let out = target != 0.0 && (*at == 0.0 || (*at > 0.0) == (target > 0.0)) && target.abs() > at.abs();
+        let frames = if out { r.attack } else { r.release };
+        let step = 1.0 / frames.max(1) as f32;
+        *at += (target - *at).clamp(-step, step);
+        // Steps of 1/n add up to the ends only nearly: land on them.
+        for end in [-1.0, 0.0, 1.0] {
+            if (*at - end).abs() < 1e-4 {
+                *at = end;
+            }
+        }
+        *at
+    }
+}
+
 /// What [`apply_player`] sets: each button's state and each analog's value,
 /// in the manifest's order.
+#[cfg(test)]
 fn read_player(controls: &Controls, sources: &[(&Bindings, &dyn PlayerInput)]) -> (Vec<bool>, Vec<u8>) {
+    read_player_ramped(controls, sources, &mut KeyRamps::default())
+}
+
+/// [`read_player`], moving the analogs with a key ramp by one frame.
+fn read_player_ramped(
+    controls: &Controls,
+    sources: &[(&Bindings, &dyn PlayerInput)],
+    ramps: &mut KeyRamps,
+) -> (Vec<bool>, Vec<u8>) {
     let analogs = controls.analogs.iter().enumerate().map(|(i, a)| {
-        let mut deflection = 0.0f32;
+        // The first source holding a key decides; a source's key overrides
+        // its axis.
+        let (mut keys, mut axis) = (0.0f32, 0.0f32);
         for (b, p) in sources {
-            let d = if held(*p, b.neg(i)) {
+            let k = if held(*p, b.neg(i)) {
                 -1.0
             } else if held(*p, b.pos(i)) {
                 1.0
             } else {
-                b.axis(i).read(|x| p.pad_axis(x))
+                0.0
             };
-            if d.abs() > deflection.abs() {
-                deflection = d;
+            if k != 0.0 {
+                if keys == 0.0 {
+                    keys = k;
+                }
+            } else {
+                let d = b.axis(i).read(|x| p.pad_axis(x));
+                if d.abs() > axis.abs() {
+                    axis = d;
+                }
             }
         }
-        a.value(deflection)
+        if let Some(r) = a.key_ramp {
+            keys = ramps.step(i, keys, r);
+        }
+        a.value(if keys.abs() >= axis.abs() { keys } else { axis })
     });
     let buttons = (0..controls.buttons.len()).map(|i| sources.iter().any(|(b, p)| held(*p, b.button(i))));
     (buttons.collect(), analogs.collect())
@@ -488,6 +537,45 @@ mod tests {
         let (b, a) = read_player(c, &[(&mine, &none), (&defaults, &touch)]);
         assert!(b[jump]);
         assert_eq!(a[0], c.analogs[0].value(-0.25));
+    }
+
+    #[test]
+    fn keys_turn_a_ramped_wheel_gradually() {
+        use romset::PadAxis;
+        let c = &romset::games::find("daytona").unwrap().controls;
+        let wheel = &c.analogs[0];
+        let r = wheel.key_ramp.unwrap();
+        let defaults = Bindings::defaults(c);
+        let mut ramps = KeyRamps::default();
+        let mut frame = |keys: &[&'static str], axis: f32| {
+            let p = fake(keys, &[], (PadAxis::LeftStickX, axis));
+            read_player_ramped(c, &[(&defaults, &p)], &mut ramps).1[0]
+        };
+        // Right held: out to full lock over `attack` frames, one step each.
+        let out: Vec<u8> = (0..r.attack).map(|_| frame(&["ArrowRight"], 0.0)).collect();
+        assert!(out.windows(2).all(|w| w[1] > w[0]));
+        assert_eq!(out[0], wheel.value(1.0 / r.attack as f32));
+        assert_eq!(*out.last().unwrap(), wheel.value(1.0));
+        assert_eq!(frame(&["ArrowRight"], 0.0), wheel.value(1.0));
+        // Let go: back to the centre over `release` frames.
+        let back: Vec<u8> = (0..r.release).map(|_| frame(&[], 0.0)).collect();
+        assert!(back.windows(2).all(|w| w[1] < w[0]));
+        assert_eq!(*back.last().unwrap(), wheel.centre);
+        // Left after a short tap right: back through the centre at the
+        // release rate, then out at the attack rate.
+        frame(&["ArrowRight"], 0.0);
+        frame(&["ArrowRight"], 0.0);
+        let left: Vec<u8> = (0..4).map(|_| frame(&["ArrowLeft"], 0.0)).collect();
+        assert!(left.windows(2).all(|w| w[1] < w[0]) && left[3] < wheel.centre);
+        // A stick is the player's own hand: it goes straight through.
+        let mut ramps = KeyRamps::default();
+        let p = fake(&[], &[], (PadAxis::LeftStickX, -1.0));
+        assert_eq!(read_player_ramped(c, &[(&defaults, &p)], &mut ramps).1[0], wheel.value(-1.0));
+        // Games without a ramp keep the keys a switch.
+        let s = &romset::games::find("srallyc").unwrap().controls;
+        let p = fake(&["ArrowRight"], &[], (PadAxis::None, 0.0));
+        let sb = Bindings::defaults(s);
+        assert_eq!(read_player_ramped(s, &[(&sb, &p)], &mut KeyRamps::default()).1[0], s.analogs[0].value(1.0));
     }
 
     #[test]

@@ -182,6 +182,7 @@ const CONTROLS: Controls = Controls {
             keys_pos: &["ArrowRight"],
             pad_neg: &[PadButton::DPadLeft],
             pad_pos: &[PadButton::DPadRight],
+            key_ramp: None,
         },
         AnalogInput {
             name: "swing",
@@ -193,6 +194,7 @@ const CONTROLS: Controls = Controls {
             keys_pos: &["ArrowRight"],
             pad_neg: &[PadButton::DPadLeft],
             pad_pos: &[PadButton::DPadRight],
+            key_ramp: None,
         },
         // Read and calibrated like the others; the skier's physics adds
         // (value - 0x80) to the speed outside 0x70-0x8F, but no scripted
@@ -207,6 +209,7 @@ const CONTROLS: Controls = Controls {
             keys_pos: &["ArrowUp"],
             pad_neg: &[],
             pad_pos: &[],
+            key_ramp: None,
         },
     ],
     guns: &[],

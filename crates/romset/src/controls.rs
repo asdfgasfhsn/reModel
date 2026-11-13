@@ -179,6 +179,20 @@ pub struct AnalogInput {
     pub keys_pos: &'static [&'static str],
     pub pad_neg: &'static [PadButton],
     pub pad_pos: &'static [PadButton],
+    /// How fast those keys and buttons move it (`None`: at once to full
+    /// deflection and back, as a switch). A game whose own code steers
+    /// straight from the position, as a cabinet's wheel can't jump, wants
+    /// one (`daytona`, docs/play.md "Digital steering").
+    pub key_ramp: Option<KeyRamp>,
+}
+
+/// Keys and buttons moving an analog input as a hand would: frames from
+/// rest to full deflection while one is held, and from full deflection
+/// back to rest once it's let go (or on the way to the other side).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyRamp {
+    pub attack: u8,
+    pub release: u8,
 }
 
 impl AnalogInput {
@@ -490,6 +504,7 @@ mod tests {
             keys_pos: &[],
             pad_neg: &[],
             pad_pos: &[],
+            key_ramp: None,
         };
         assert_eq!(a.value(0.0), 0x80);
         assert_eq!(a.value(1.0), 0x10);

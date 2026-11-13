@@ -1,5 +1,5 @@
 use crate::controls::button;
-use crate::{AnalogInput, Board, Controls, Game, PadAxis, PadButton, Role, RomFile, Shifter};
+use crate::{AnalogInput, Board, Controls, Game, KeyRamp, PadAxis, PadButton, Role, RomFile, Shifter};
 
 /// Daytona USA (revision A), the original Model 2 board (`docs/games/daytona.md`,
 /// `docs/hw/model2.md`).
@@ -310,6 +310,12 @@ const CONTROLS: Controls = Controls {
             keys_pos: &["ArrowRight"],
             pad_neg: &[PadButton::DPadLeft],
             pad_pos: &[PadButton::DPadRight],
+            // The game steers the front wheels straight from the wheel's
+            // position (halving the gap each frame), so a key at full
+            // lock turns a 200 km/h car 7 degrees in a frame and it swings
+            // back when let go: the keys turn the wheel over 12 frames
+            // (0.2 s) and let it back in 6 (docs/games/daytona.md).
+            key_ramp: Some(KeyRamp { attack: 12, release: 6 }),
         },
         AnalogInput {
             name: "gas",
@@ -321,6 +327,7 @@ const CONTROLS: Controls = Controls {
             keys_pos: &["ArrowUp"],
             pad_neg: &[],
             pad_pos: &[],
+            key_ramp: None,
         },
         AnalogInput {
             name: "brake",
@@ -332,6 +339,7 @@ const CONTROLS: Controls = Controls {
             keys_pos: &["ArrowDown"],
             pad_neg: &[],
             pad_pos: &[],
+            key_ramp: None,
         },
     ],
     guns: &[],

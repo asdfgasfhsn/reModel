@@ -220,6 +220,7 @@ const CONTROLS: Controls = Controls {
             keys_pos: &["Space"],
             pad_neg: &[],
             pad_pos: &[],
+            key_ramp: None,
         },
         AnalogInput {
             name: "bat2",
@@ -231,6 +232,7 @@ const CONTROLS: Controls = Controls {
             keys_pos: &[],
             pad_neg: &[],
             pad_pos: &[],
+            key_ramp: None,
         },
     ],
     guns: &[],

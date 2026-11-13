@@ -776,6 +776,22 @@ player, the browser build and scripted `--input` all read them.
 Players can remap them per game (below, "Remapping"); the tables here are
 the defaults.
 
+### Digital steering
+
+Keys and pad buttons on an analog input (Left and Right on a wheel, the
+d-pad, the browser's touch arrows) hold it at full deflection while
+they're down: a switch. That suits most games, whose own code eases the
+wheel in. A game that steers straight from the wheel's position gets a
+`KeyRamp` on that input in its manifest (`romset::AnalogInput`): the keys
+then turn it out to full deflection over `attack` frames and let it back
+to the centre over `release` (also on the way through to the other side),
+as a hand on a wheel would. A stick or trigger is never ramped: its
+position is the player's. `crates/model2/src/input.rs` (`KeyRamps`) does
+it, for the native player and the browser alike; scripted `--input`
+values are raw and not ramped. `daytona` has one (12 frames out, 6 back:
+`docs/games/daytona.md`, "the handling"); the other games' keys are
+switches.
+
 ### Top Skater (`topskatr`)
 
 | Control | Keys | Gamepad |

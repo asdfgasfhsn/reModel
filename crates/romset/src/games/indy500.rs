@@ -204,6 +204,7 @@ const CONTROLS: Controls = Controls {
             keys_pos: &["ArrowRight"],
             pad_neg: &[PadButton::DPadLeft],
             pad_pos: &[PadButton::DPadRight],
+            key_ramp: None,
         },
         // The pedals read 0x00 released and 0xFF fully down. Pressing the
         // gas confirms on the menus.
@@ -217,6 +218,7 @@ const CONTROLS: Controls = Controls {
             keys_pos: &["ArrowUp"],
             pad_neg: &[],
             pad_pos: &[],
+            key_ramp: None,
         },
         AnalogInput {
             name: "brake",
@@ -228,6 +230,7 @@ const CONTROLS: Controls = Controls {
             keys_pos: &["ArrowDown"],
             pad_neg: &[],
             pad_pos: &[],
+            key_ramp: None,
         },
     ],
     guns: &[],

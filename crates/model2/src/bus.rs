@@ -210,6 +210,9 @@ pub struct Model2Bus {
     /// The latched gear lever (`input::apply_player`, for games with a
     /// `Controls::shifter`). Players' state, not the machine's.
     pub gear: crate::input::GearLatch,
+    /// Where the keys have turned the analog inputs that ramp
+    /// (`input::apply_player`, `romset::KeyRamp`). Players' state too.
+    pub key_ramps: crate::input::KeyRamps,
     io_analog_channel: usize,
     pub analog: [u8; 8],
     /// Diagnostics, not machine state: when each analog channel was last
@@ -429,6 +432,7 @@ impl Model2Bus {
             uart: Uart::default(),
             inputs: [0xff; 4],
             gear: Default::default(),
+            key_ramps: Default::default(),
             io_analog_channel: 0,
             analog: [0x80; 8],
             analog_reads: [(0, 0); 8],

@@ -229,6 +229,7 @@ const CONTROLS: Controls = Controls {
         keys_pos: &["ArrowRight"],
         pad_neg: &[PadButton::DPadLeft],
         pad_pos: &[PadButton::DPadRight],
+        key_ramp: None,
     }],
     guns: &[],
     shifter: None,
