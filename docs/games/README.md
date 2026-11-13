@@ -22,6 +22,7 @@ which ROM sets are supported and how they are named is in [../roms.md](../roms.m
 | Indianapolis 500 | `indy500` | 2B | [indy500.md](indy500.md) |
 | Fighting Vipers | `fvipers` | 2B | [fvipers.md](fvipers.md) |
 | Sonic Championship | `schamp` | 2B | [schamp.md](schamp.md) |
+| Sonic The Fighters | `sfight` | 2B | [schamp.md](schamp.md#sfight) |
 | Virtua Striker | `vstriker` | 2B | [vstriker.md](vstriker.md) |
 | Last Bronx | `lastbrnx` | 2B | [lastbrnx.md](lastbrnx.md) |
 | Sega Rally Championship | `srallyc` | 2A | [srallyc.md](srallyc.md) |

@@ -4,8 +4,8 @@
 
 Sonic Championship (Sega; the title screen says ©SEGA 1996), the
 fifteenth game and the seventh on Model 2B. `schamp.zip` also holds the
-program and `.7/.8` chips of its clone `sfight` (Sonic the Fighters, as
-the dat names it), which isn't supported.
+program and `.7/.8` chips of its clone `sfight` (Sonic The Fighters, the
+Japanese release), which is supported too ("`sfight`" below).
 
 - *Confirmed (ROM, then the memory test: every ROM, IC 7-16, and RAM
   GOOD):* program `.15/.16`; main data `.11/.12` and `.9/.10`; the 1 MB
@@ -114,3 +114,42 @@ a help line that it makes the stick judder).
 - *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
   a 600M-instruction coin-start run (`make bench`) fast-forwards 65.7%
   of its instructions through it, and the state hash is unchanged.
+
+## `sfight`
+
+Sonic The Fighters, the Japanese release, a clone of `schamp` (`parent:
+Some("schamp")`, as `overrevb` is of `overrev`): it shares the card's
+poster and bezel and finds its other chips in `schamp.zip` or `schamp/`.
+
+- *Confirmed (by running it):* the game's own warning screen reads "THIS
+  GAME IS TO BE USED ONLY IN JAPAN" (SEGA ENTERPRISES, LTD.), and its
+  title and attract show "SONIC THE FIGHTERS". `make run GAME=sfight
+  INPUT=coin-start` boots, attracts, coins up, starts and fights
+  Knuckles with Sonic, as `schamp` does.
+- *Confirmed (by the chip list and by running it):* four chips differ,
+  each of `schamp`'s name pattern and size and placed in the same slot:
+  the program pair `epr-19001.15/.16` in place of `epr-19141.15/.16`
+  (512 KB), and the 1 MB pair `epr-19003.7/.8` in place of
+  `epr-19143.7/.8` (`.7` is `epr-19003`, `.8` is `epr-19004`). Every other
+  chip (main data, polygons, textures, copro data, sound) is `schamp`'s;
+  with them in those places it runs, so the board work is `schamp`'s.
+  The catalogue dat lists only these four under `sfight` (the rest are
+  `schamp`'s, as a merged set).
+- *Confirmed (by running it):* the same ports and the same controls as
+  `schamp` (it shares its `CONTROLS`), and a coin-start run reaches the
+  same fight.
+- *Idle loop, confirmed (disassembly, then by running it):* the program
+  differs, but the frame wait is the same two instructions (`ldob
+  0x500000` and `cmpibe` back) at `0x11610-0x1161B`, 0x2C lower than
+  `schamp`'s; the manifest's `idle_loops` holds it. It was found as the
+  hottest code of a coin-start run (with the loops empty), and with it
+  the idle skip fast-forwards 66.6% of a 600M-instruction run.
+- *Confirmed (by running it):* a coin-start run of 600M instructions
+  gives the state hash `2a0a5a5d0d957997` (`make bench GAME=sfight`).
+  Without input the attract is on the title screen with the logo at frame
+  3500, which the manifest keeps as `attract_frame` (`schamp`'s is a fight
+  demo there; the programs' attract timings differ).
+- *Unconfirmed:* the other differences between the two programs (text,
+  balance), the clone's EEPROM defaults, and how it looks on the
+  hardware. Not run on a real cabinet, and `make state-check`,
+  `make lockstep` and the recompiled build haven't been run for it.

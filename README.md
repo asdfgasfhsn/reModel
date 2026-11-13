@@ -42,6 +42,7 @@ sound in the native player; the details, and what each game needed, are in
 | Indianapolis 500 | `indy500` | 2B | plays |
 | Fighting Vipers | `fvipers` | 2B | plays |
 | Sonic Championship | `schamp` | 2B | plays |
+| Sonic The Fighters (Sonic Championship, Japan) | `sfight` | 2B | plays |
 | Virtua Striker | `vstriker` | 2B | plays |
 | Last Bronx | `lastbrnx` | 2B | plays |
 | Sega Rally Championship | `srallyc` | 2A | plays; its program runs on an MB86234 interpreter |

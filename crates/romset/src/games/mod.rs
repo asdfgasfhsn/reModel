@@ -13,6 +13,7 @@ mod overrev;
 mod overrevb;
 mod schamp;
 mod segawski;
+mod sfight;
 mod sgt24h;
 mod skisuprg;
 mod srallyc;
@@ -36,6 +37,7 @@ pub use overrev::OVERREV;
 pub use overrevb::OVERREVB;
 pub use schamp::SCHAMP;
 pub use segawski::SEGAWSKI;
+pub use sfight::SFIGHT;
 pub use sgt24h::SGT24H;
 pub use skisuprg::SKISUPRG;
 pub use srallyc::SRALLYC;
@@ -47,7 +49,7 @@ pub use waverunr::WAVERUNR;
 
 pub static ALL: &[&Game] = &[
     &TOPSKATR, &SKISUPRG, &STCC, &SEGAWSKI, &WAVERUNR, &OVERREV, &HOTD, &BEL, &OVERREVB, &SGT24H, &DYNABB97, &DOA,
-    &INDY500, &FVIPERS, &SCHAMP, &VSTRIKER, &LASTBRNX, &SRALLYC, &VF2, &DAYTONA,
+    &INDY500, &FVIPERS, &SCHAMP, &SFIGHT, &VSTRIKER, &LASTBRNX, &SRALLYC, &VF2, &DAYTONA,
 ];
 
 /// Games whose board model runs but which don't show a game yet. The CLI
