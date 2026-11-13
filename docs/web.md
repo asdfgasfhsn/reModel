@@ -703,8 +703,25 @@ headless: the module (`Headless`, Node 26) runs the game from boot to a
 race through the worker's job path with raster streams of up to 35,671
 words from frame 1,500 on; and in Chromium, `geo-worker.js` loads the
 module and `srallyc`'s chips over HTTP, builds the engine and answers
-frame jobs without a boot job. Not checked: a real browser with WebGPU
-drawing the game.
+frame jobs without a boot job. In a real browser (Chromium 155 with
+WebGPU, headed under Wayland, driven by Playwright; also with a phone's
+viewport and touch) the live page, from Play, runs `srallyc` and `topskatr`
+at 60 fps with sound, no console errors. WebKit (WebKitGTK 2.54, the same
+JavaScriptCore and WebAssembly engine as iOS, but without WebGPU) loaded
+the page, compiled the module, ran 400 frames of `topskatr` on the page
+thread, and started the geometry and sound workers (`ready`). Not
+checked: WebKit's WebGPU (iOS itself): a `srallyc` or `topskatr` page
+that stays at "Starting…" there is stuck in the module's WebGPU setup
+(adapter, device, building the renderer's pipelines) or a worker, and the
+page now says which: see "When a start stalls" below.
+
+**When a start stalls.** The splash shows the module's stage while the game
+starts (`starting WebGPU: requesting an adapter`, `... a device`, `...
+building the renderer (shaders)`, `loading ROMs`), a WebGPU error the
+device reports (`WebGPU error: ...`) replaces it, an uncaught error or
+rejected promise during the start fails it with a message, and after 30 s
+the splash says where it is. A phone has no console, so what it shows is
+what a bug report can quote.
 
 Frames 2800-4000 of a coin-start run (Race: from frame 2637), from boot,
 all interpreted (`srallyc`'s code runs from work RAM, which the

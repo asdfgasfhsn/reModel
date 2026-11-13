@@ -495,12 +495,41 @@
   }
   // The compiled module, for the pack worker (set once it's compiled).
   let packModule;
+  let startFailed = false;
   const fail = (e) => {
+    startFailed = true;
     status.textContent = "error: " + (e.message ?? e);
     ptext.textContent = "Couldn't start: " + (e.message ?? e);
     ptext.style.color = "#f66";
     panel.setStatus(ptext.textContent, true);
     console.error(e);
+  };
+
+  // A start that fails or stalls must say so, on a phone with no console too:
+  // the module's stage (its status line) shows on the splash while the game
+  // starts, an error nobody caught fails the start, and a start that takes
+  // too long says where it is.
+  new MutationObserver(() => {
+    if (started || startFailed || !run) return;
+    const t = status.textContent;
+    if (t && /^(starting|loading|WebGPU error)/.test(t)) {
+      ptext.textContent = t.charAt(0).toUpperCase() + t.slice(1);
+      panel.setStatus(ptext.textContent, t.startsWith("WebGPU error"));
+    }
+  }).observe(status, { childList: true, characterData: true, subtree: true });
+  for (const ev of ["error", "unhandledrejection"]) {
+    addEventListener(ev, (e) => {
+      if (started || startFailed || !run) return;
+      const err = e.reason ?? e.error ?? e.message ?? ev;
+      fail(err instanceof Error ? err : { message: String(err?.message ?? err) });
+    });
+  }
+  const stalled = () => {
+    if (started || startFailed) return;
+    ptext.textContent = `Still starting after 30 s (${status.textContent || "no status"}). ` +
+      "If this stays, the browser's WebGPU isn't answering; reload and try Play again.";
+    ptext.style.color = "#fa6";
+    panel.setStatus(ptext.textContent, true);
   };
 
   if (!navigator.gpu) {
@@ -539,6 +568,7 @@
       run = { ...values };
       const opt = S.effective(values, env());
       progress("Starting…");
+      setTimeout(stalled, 30000);
       document.title = `${game_title(game)} · reModel`;
       set_bindings(values.controls);
       showKeys();

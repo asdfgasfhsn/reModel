@@ -1803,6 +1803,7 @@ pub async fn start(
     desc.backends = wgpu::Backends::BROWSER_WEBGPU;
     let instance = wgpu::Instance::new(desc);
     let surface = instance.create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone())).map_err(|e| err(&e))?;
+    set_status(&status, "starting WebGPU: requesting an adapter");
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -1812,6 +1813,7 @@ pub async fn start(
         .await
         .map_err(|e| err(&format!("no WebGPU adapter ({e}); this browser may not support WebGPU")))?;
     let name = gpu::adapter_name(&adapter);
+    set_status(&status, &format!("starting WebGPU: requesting a device from {name}"));
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("remodel"),
@@ -1821,8 +1823,18 @@ pub async fn start(
         .await
         .map_err(|e| err(&e))?;
 
-    device
-        .on_uncaptured_error(std::sync::Arc::new(|e| web_sys::console::error_1(&format!("WebGPU error: {e}").into())));
+    // A browser without a console (a phone) still shows what the GPU
+    // refused: shown in the status line while the game starts.
+    // (Looked up by id: the handler must be Send, as on native targets.)
+    device.on_uncaptured_error(std::sync::Arc::new(|e| {
+        web_sys::console::error_1(&format!("WebGPU error: {e}").into());
+        let shown = window().document().and_then(|d| d.get_element_by_id("status"));
+        if let Some(shown) = shown
+            .filter(|s| s.text_content().is_some_and(|t| t.starts_with("starting") || t.starts_with("WebGPU error")))
+        {
+            set_status(&shown, &format!("WebGPU error: {e}"));
+        }
+    }));
     device.set_device_lost_callback(|reason, msg| {
         web_sys::console::error_1(&format!("WebGPU device lost ({reason:?}): {msg}").into())
     });
@@ -1846,6 +1858,7 @@ pub async fn start(
         .or_else(|| formats.iter().copied().find(|f| !f.is_srgb()))
         .unwrap_or(config.format.remove_srgb_suffix());
     surface.configure(&device, &config);
+    set_status(&status, "starting WebGPU: building the renderer (shaders)");
     let mut renderer = gpu::Renderer::from_device(device, queue, name.clone());
     renderer.set_quality(QUALITY.with(|q| q.get()).gpu());
     // Smooth shading's per-game rules (crease angle, windows left flat).
