@@ -21,7 +21,7 @@ built to be reused across the Model 2 family.
 
 ## Games
 
-Twenty games run, on the original Model 2 and the 2A, 2B and 2C boards. "Plays" means playable with
+Twenty-one games run, on the original Model 2 and the 2A, 2B and 2C boards. "Plays" means playable with
 sound in the native player; the details, and what each game needed, are in
 [docs/games/](docs/games/README.md).
 

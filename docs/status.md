@@ -5,7 +5,7 @@ history. The README has the short version; the findings are in [docs/games/](gam
 
 ## Status
 
-Twenty games run, from boot through attract and coin-up into play, in a
+Twenty-one games run, from boot through attract and coin-up into play, in a
 native window (`make play`) and in the browser (`make web`), with live sound,
 controls and save states. The table below tracks each part; the first rows
 date from bringing up `topskatr`, the first game.

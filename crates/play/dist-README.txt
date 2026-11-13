@@ -8,8 +8,8 @@ Sega Touring Car Championship (stcc), Sega Water Ski (segawski),
 Wave Runner (waverunr), Over Rev (overrev), Super GT 24h (sgt24h), The
 House of the Dead (hotd), Behind Enemy Lines (bel), Dynamite Baseball
 '97 (dynabb97), Dead or Alive (doa), Indianapolis 500 (indy500),
-Fighting Vipers (fvipers), Sonic Championship (schamp), Virtua
-Striker (vstriker), Last Bronx (lastbrnx), Sega Rally Championship
+Fighting Vipers (fvipers), Sonic Championship (schamp) and its
+Japanese release Sonic The Fighters (sfight), Virtua Striker (vstriker), Last Bronx (lastbrnx), Sega Rally Championship
 (srallyc), Virtua Fighter 2 (vf2) and Daytona USA (daytona).
 This build runs the game code on the interpreter (no recompiled game code
 is included).
