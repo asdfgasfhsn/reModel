@@ -27,7 +27,7 @@ use crate::controls::{key_label, key_symbol, Controls, PadAxis, PadButton, Reloa
 
 /// The players' own keys (menu, quick save and load, fullscreen): never
 /// bound to a game's input. The browser adds its own (`KeyF`, `KeyH`).
-pub const RESERVED_KEYS: &[&str] = &["Escape", "F5", "F9", "F11"];
+pub const RESERVED_KEYS: &[&str] = &["Escape", "F5", "F8", "F9", "F11"];
 
 /// Default pad buttons that fire and reload the gun the pad's crosshair
 /// aims (both sticks move it).

@@ -752,6 +752,7 @@ The player's own keys are the same for every game:
 |---|---|
 | Esc | menu (the game pauses while it's open) |
 | F5, F9 | quick save, quick load |
+| F8 | photo mode (docs/photo-mode.md) |
 | F11 | fullscreen |
 
 A gamepad opens and closes the menu too: its Guide button (the logo
@@ -1083,8 +1084,8 @@ CALIBRATION in the test menu changes that.
 ## The menu
 
 Esc opens the pause menu (and closes it again). It is a short list:
-**Resume**, **Save / Load**, **Settings**, **Controls**, **Back to games**
-and **Quit**. Nothing else sits beside Resume: the game's settings are one
+**Resume**, **Save / Load**, **Settings**, **Controls**, **Photo mode** (as
+F8: `docs/photo-mode.md`), **Back to games** and **Quit**. Nothing else sits beside Resume: the game's settings are one
 level in.
 
 From a gamepad: the d-pad or left stick moves between the buttons and rows
@@ -1218,7 +1219,7 @@ service, player 2 in `doa`) are behind "Show unbound inputs".
 A key or button bound to two inputs is allowed (both get it) but marked
 ⚠ with the other input's name, except where the manifest itself binds it
 so (`skisuprg`'s two ski angles share the arrows on purpose). The player's
-own keys (Esc, F5, F9, F11) can't be bound: pressing one while it waits
+own keys (Esc, F5, F8, F9, F11) can't be bound: pressing one while it waits
 says so and waits for another.
 
 Changes apply at once and are kept per game in
@@ -1276,6 +1277,8 @@ directory), the player keeps its files in `out/`; anywhere else in
   launcher's attract mode preview state.
 - `<set>/texpack/`: the game's texture pack, if you make one (PNGs named
   as a dump's).
+- `<set>/photos/`: photo mode's photos (`docs/photo-mode.md`;
+  `--photo-dir` puts them elsewhere).
 
 ## A copy to hand out
 

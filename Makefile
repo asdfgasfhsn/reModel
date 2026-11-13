@@ -87,7 +87,7 @@ endif
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm tgp-disasm tgp-check m68k-tests clean recomp recomp-workspace bench latency input-lag run-ahead-check run-ahead-profile draw-overlap-check sound sound-disasm geo-check geo-fuzz smooth-frames temporal-capture temporal-check pace-sim install-desktop uninstall-desktop
+.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm tgp-disasm tgp-check m68k-tests clean recomp recomp-workspace bench latency input-lag run-ahead-check run-ahead-profile draw-overlap-check photo-check camera-scan sound sound-disasm geo-check geo-fuzz smooth-frames temporal-capture temporal-check pace-sim install-desktop uninstall-desktop
 
 ##@ General
 
@@ -492,6 +492,29 @@ draw-overlap-check: ## The player with its draw thread and with --no-overlap (op
 	done
 	@cmp -s $(DRAW_CHECK_OUT)/overlap.txt $(DRAW_CHECK_OUT)/no-overlap.txt && echo "state hash    the same: $$(cut -c15- $(DRAW_CHECK_OUT)/overlap.txt)" || { echo "state hash DIFFERS:"; cat $(DRAW_CHECK_OUT)/*.txt; exit 1; }
 	@python3 -I tools/frame-log-diff.py $(DRAW_CHECK_OUT)/overlap.log $(DRAW_CHECK_OUT)/no-overlap.log
+
+PHOTO_CHECK_FRAMES ?= 2400
+PHOTO_CHECK_SPEC   ?= 2200:back=100,orbit=40,tilt=-12,z=0.2,dof=1,blur=8,hud=on,vignette=0.3,res=1080,name=photo-check
+PHOTO_CHECK_OPTS   ?=
+PHOTO_CHECK_OUT    ?= out/scratch/photo-check/$(GAME)
+photo-check: ## Photo mode leaves the game alone (opens a window; needs a GPU): a coin-start run of GAME to frame PHOTO_CHECK_FRAMES with a scripted photo session (PHOTO_CHECK_SPEC: open at a frame, scrub back, move the camera, take a photo into PHOTO_CHECK_OUT) must end on the same state hash as one without, and photo mode's machine, run again from its history, must hold the game's frame (when it shows the game's own: not with run-ahead or --photo-history 0) (PHOTO_CHECK_OPTS; RECOMP=1: recompiled code)
+	$(call release_build,remodel-play)
+	@mkdir -p $(PHOTO_CHECK_OUT)
+	@for m in plain photo; do \
+		$(PLAY) --game $(GAME) --rom $(ROM) --no-splash --no-sound --bezel off --fast \
+			--input $(BENCH_INPUT) --frames $(PHOTO_CHECK_FRAMES) $(PHOTO_CHECK_OPTS) \
+			$$([ $$m = photo ] && echo --photo-dir $(PHOTO_CHECK_OUT) --photo "$(PHOTO_CHECK_SPEC)") \
+			> $(PHOTO_CHECK_OUT)/$$m.log || exit 1; \
+		grep '^frames' $(PHOTO_CHECK_OUT)/$$m.log > $(PHOTO_CHECK_OUT)/$$m.txt; \
+	done
+	@grep '^photo' $(PHOTO_CHECK_OUT)/photo.log
+	@! grep -q 'studio state hash .* DIFFERS' $(PHOTO_CHECK_OUT)/photo.log || { echo "photo mode's frame is not the game's"; exit 1; }
+	@cmp -s $(PHOTO_CHECK_OUT)/plain.txt $(PHOTO_CHECK_OUT)/photo.txt && echo "state hash    the same with and without photo mode: $$(cut -c15- $(PHOTO_CHECK_OUT)/plain.txt)" || { echo "state hash DIFFERS:"; cat $(PHOTO_CHECK_OUT)/*.txt; exit 1; }
+
+CAMERA_FRAME ?= 3000
+CAMERA_GAP   ?= 20
+camera-scan: release ## Photo mode's true camera, a spike (docs/photo-mode.md): run a coin-start run (INPUT) to CAMERA_FRAME and CAMERA_GAP frames on, and list the rotations in the i960's RAM that turned as the scenery says the camera did (candidates for the game's camera)
+	$(RUN) --input $(or $(INPUT),$(BENCH_INPUT)) camera-scan $(CAMERA_FRAME) $(CAMERA_GAP)
 
 bench: release ## Timed fixed run into a race: speed vs real time and the state hash (must not change with speed-ups)
 	$(RUN) --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep -E '^(instructions|emulated|host time|idle skip|state hash)'

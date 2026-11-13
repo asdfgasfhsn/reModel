@@ -75,6 +75,10 @@ make run-ahead-check      # run-ahead keeps the real state hash and shows the pl
 make run-ahead-profile GAME=srallyc RUN_AHEAD_FRAMES=1   # host time per shown frame: real frame, copy, frames ahead
 make play GAME=vf2 PLAY_ARGS="--no-overlap"   # draw on the main thread after each frame instead of on the draw thread alongside the next (for comparison; docs/play.md, The frame loop)
 make draw-overlap-check GAME=vf2   # the player with and without its draw thread (opens a window): same state hash, same picture for every frame both drew (--frame-log; DRAW_CHECK_FRAMES, DRAW_CHECK_OPTS)
+make play PLAY_ARGS="--photo-history 30"   # photo mode (F8, docs/photo-mode.md) with a 30 s time scrub (default 10; 0: none); --photo-dir DIR for where photos go
+make play GAME=stcc PLAY_ARGS='--input coin-start --frames 3000 --photo "2800:back=60,orbit=30,dof=1,res=4k"'   # a scripted photo session (keys in docs/photo-mode.md, "Scripted")
+make camera-scan GAME=srallyc CAMERA_FRAME=3000 CAMERA_GAP=20   # a spike for photo mode's true camera: rotations in the i960's RAM that turned as the scenery says the camera did (docs/photo-mode.md, A true camera)
+make photo-check GAME=stcc   # photo mode leaves the game alone (opens a window): the same state hash with and without a photo session, and photo mode's machine holds the game's frame (PHOTO_CHECK_FRAMES, PHOTO_CHECK_SPEC, PHOTO_CHECK_OPTS; RECOMP=1)
 make install-desktop RECOMP=1   # reModel in the desktop's app menu, running this checkout's player
 make uninstall-desktop    # remove that app-menu entry and its icon
 make smooth-frames GAME=doa    # coin-start run drawing in-between frames beside the real ones -> out/doa/frames

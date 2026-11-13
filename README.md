@@ -79,7 +79,7 @@ make check                         # format, clippy, unit tests (no ROMs needed)
 make verify                        # check the chips against known-good hashes
 make scan                          # list the sets found in rom/
 make play RECOMP=1                 # the launcher: pick a game, then play
-make play GAME=hotd RECOMP=1       # straight into a game
+make play GAME=hotd RECOMP=1       # straight into a game (Esc menu, F8 photo mode)
 make web RECOMP=1                  # browser build -> out/web (needs unzipped rom/<set>/ folders; serve over HTTPS)
 ```
 
@@ -94,6 +94,7 @@ Guides:
 
 - [docs/usage.md](docs/usage.md): the full command catalogue with examples.
 - [docs/play.md](docs/play.md): the native player, its launcher and settings.
+- [docs/photo-mode.md](docs/photo-mode.md): the player's photo mode (free camera, time scrub, depth of field, captures).
 - [docs/web.md](docs/web.md): the browser build.
 - [docs/roms.md](docs/roms.md): the ROM sets, their boards and what each game needs.
 - [docs/status.md](docs/status.md): the status table; what is done, in progress and planned.

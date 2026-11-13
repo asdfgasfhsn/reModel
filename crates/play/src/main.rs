@@ -40,6 +40,7 @@ mod launcher;
 mod menu;
 mod pack;
 mod pad;
+mod photo;
 mod preview;
 mod settings;
 mod sound;
@@ -186,6 +187,20 @@ usage: remodel-play [options]
                      down (the d-pad), accept (A), back (B), settings (Y),
                      prev, next (shoulders), start, select, guide; a+b
                      presses both, @S:H holds them H seconds
+  --photo-history N  photo mode's time scrub keeps the last N seconds of
+                     the game to go back through (save states every
+                     second and the inputs between, compressed on another
+                     thread; 0: none, photo mode then freezes two frames
+                     on). Default 10
+  --photo LIST       scripted photo mode, for checking: at game frame F,
+                     open it, set KEY=VALUE..., take a photo, close it:
+                     F[:KEY=VALUE,...], sessions separated by ; (keys in
+                     docs/photo-mode.md, e.g. 1500:orbit=30,dof=1,res=4k)
+  --photo-dir DIR    where photos go (default: photos/ in the game's
+                     folder beside its saves)
+  --fast             for checking (with --frames, --input, --photo): run
+                     the game as fast as it goes, drawing nothing (a
+                     hidden window gets about a redraw a second)
   --frame-log FILE   for checking: each picture presented, read back and
                      hashed, a line each: the shown machine's frame, game
                      or ahead (run-ahead's machine), -late if drawn with
@@ -200,7 +215,8 @@ defaults for all games and the game's own, which the launcher's settings
 and the menu keep.
 --rom and --fullscreen are remembered.
 
-keys: Esc menu (pause), F5 quick save, F9 quick load, F11 fullscreen. The
+keys: Esc menu (pause), F5 quick save, F9 quick load, F8 photo mode, F11
+fullscreen. The
 game's controls depend on the game (docs/play.md); C coins up and arrows
 steer. Gamepads work too: Guide, or Start and Select together, opens the
 menu. The menu's Controls page remaps them per game.
@@ -260,6 +276,14 @@ struct Options {
     overlap: bool,
     /// `--frame-log`: where to log each presented picture's hash.
     frame_log: Option<PathBuf>,
+    /// `--photo`: scripted photo mode sessions, in frame order.
+    photo: std::collections::VecDeque<photo::Script>,
+    /// `--photo-dir`: where photos go.
+    photo_dir: Option<PathBuf>,
+    /// `--photo-history`: seconds of the game kept for the time scrub.
+    photo_history: f64,
+    /// `--fast`: run as fast as the game goes, drawing nothing.
+    fast: bool,
 }
 
 /// `--nav`'s list: NAME[+NAME]@SECONDS[:HELD], pad buttons pressed together
@@ -311,6 +335,10 @@ fn options(s: &mut Settings) -> Result<Options, String> {
         texture_pack: None,
         overlap: true,
         frame_log: None,
+        photo: Default::default(),
+        photo_dir: None,
+        photo_history: 10.0,
+        fast: false,
     };
     let mut args = std::env::args().skip(1).peekable();
     let mut cli = |k: &str, v: &str| s.cli.insert(k.to_string(), v.to_string());
@@ -533,7 +561,21 @@ fn options(s: &mut Settings) -> Result<Options, String> {
             }
             "--no-splash" => o.splash = false,
             "--no-overlap" => o.overlap = false,
+            "--fast" => o.fast = true,
             "--frame-log" => o.frame_log = Some(PathBuf::from(value()?)),
+            "--photo" => {
+                let mut v: Vec<photo::Script> = photo::parse_scripts(&value()?)?;
+                v.sort_by_key(|p| p.at);
+                o.photo = v.into();
+            }
+            "--photo-dir" => o.photo_dir = Some(PathBuf::from(value()?)),
+            "--photo-history" => {
+                o.photo_history = value()?
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|s| (0.0..=120.0).contains(s))
+                    .ok_or("--photo-history wants seconds, 0 to 120")?
+            }
             "--fullscreen" => fullscreen = true,
             "--exact" => {
                 cli("exact", "true");
@@ -586,6 +628,11 @@ struct Session {
     drew_ahead: bool,
     /// Started on the geometrizer's chip (the setting applies on starting).
     geo_chip: bool,
+    /// Photo mode's time scrub: the game's last seconds (None: off, or the
+    /// launcher's preview).
+    history: Option<model2::photo::History>,
+    /// Photo mode's machine, made the first time it opens.
+    studio: Option<model2::photo::Studio>,
 }
 
 /// `set`'s save state folder.
@@ -876,6 +923,8 @@ struct Play {
     max_anisotropy: u8,
     /// The GPU can do temporal anti-aliasing (`gpu::temporal_supported`).
     temporal_supported: bool,
+    /// Photo mode, while it's open.
+    photo: Option<photo::Mode>,
 }
 
 /// The texture pack the renderer draws with (`Play::sync_pack`).
@@ -975,6 +1024,7 @@ impl Play {
     /// Stop the game: keep its EEPROM and a resume state (for Continue),
     /// unless it's the launcher's preview or a scripted run.
     fn leave_game(&mut self) {
+        self.leave_photo();
         let Some(mut s) = self.session.take() else { return };
         s.save_eeprom();
         if s.preview || s.script.is_some() {
@@ -1045,7 +1095,13 @@ impl Play {
                 run_ahead_dropped: false,
                 drew_ahead: false,
                 geo_chip: values.geo_chip,
+                history: None,
+                studio: None,
             };
+            // Photo mode's time scrub: the game's last seconds.
+            if self.opts.photo_history > 0.0 {
+                s.history = Some(model2::photo::History::new(self.opts.photo_history, 60));
+            }
             // A run-ahead the command line asked for beyond what the game's
             // lag can use only judders: it's kept, and said.
             if self.settings.cli.contains_key("run_ahead") && values.run_ahead > game.run_ahead_max as u32 {
@@ -1155,6 +1211,8 @@ impl Play {
             run_ahead_dropped: false,
             drew_ahead: false,
             geo_chip: self.values.geo_chip,
+            history: None,
+            studio: None,
         });
         self.preview.shown = None;
         self.preview.leaving = None;
@@ -1309,7 +1367,24 @@ impl Play {
             view_formats: &[],
         });
         let target = texture.create_view(&Default::default());
-        if self.launcher.open {
+        if self.photo.is_some() {
+            // Photo mode as the window shows it: the photo and its panel.
+            let (view, origin) = self.fit(w, h);
+            let job = self.photo_job(1, 4);
+            let g = self.gpu.as_mut().unwrap();
+            let max_side = g.drawer.core().renderer.device().limits().max_texture_dimension_2d;
+            if let Some(job) = &job {
+                photo::draw(g.drawer.core(), job, &target, &view, origin, format);
+            }
+            let menu = &mut self.menu;
+            if let Some(m) = &mut self.photo {
+                let line = photo::status(m, (view.width as u32, view.height as u32), max_side);
+                draw_overlay(g, &target, false, [w, h], Some(ppp), |ctx| {
+                    menu.notices(ctx);
+                    m.ui(ctx, &line);
+                });
+            }
+        } else if self.launcher.open {
             self.draw_launcher(&target, [w, h], ppp, Instant::now());
         } else {
             self.sync_pack();
@@ -1537,7 +1612,7 @@ impl Play {
         if (self.launcher.open || self.menu.open) && self.menu.capture.is_none() {
             self.navs.extend(self.pad_nav.repeat(now));
         }
-        if !self.launcher.open && !self.menu.open && self.gate.tick(now) {
+        if !self.launcher.open && !self.menu.open && self.photo.is_none() && self.gate.tick(now) {
             self.set_menu(true);
             self.menu.pad_used = true;
         }
@@ -1572,6 +1647,13 @@ impl Play {
         }
         if self.launcher.open {
             self.navs.extend(self.pad_nav.event(ev, now));
+            return;
+        }
+        if self.photo.is_some() {
+            if let Event::Pressed(b) = ev {
+                self.gate.keep(b);
+                self.photo_button(b);
+            }
             return;
         }
         if let Event::Pressed(b) = ev {
@@ -1667,7 +1749,7 @@ impl Play {
     fn emulate(&mut self) -> Result<u32, i960::cpu::Stop> {
         let now = Instant::now();
         self.redraws += 1;
-        if self.menu.open || self.session.is_none() {
+        if self.menu.open || self.session.is_none() || self.photo.is_some() {
             // Paused: keep the clock with the game for when it resumes.
             if let Some(s) = &self.session {
                 self.epoch = now - Duration::from_secs_f64(s.machine.frames as f64 / FPS);
@@ -1677,6 +1759,8 @@ impl Play {
         let frames = self.session.as_ref().map_or(0, |s| s.machine.frames);
         // Follow the display (one frame per refresh, or per two) or the clock.
         let (due, speed) = match self.per_refresh() {
+            // `--fast`: as fast as it goes.
+            _ if self.opts.fast => (frames + MAX_CATCH_UP as u64, 1.0),
             Some(k) => {
                 let hz = self.gpu.as_ref().and_then(|g| g.refresh).unwrap_or(60.0);
                 (frames + (k == 1.0 || self.redraws.is_multiple_of(2)) as u64, hz * k / FPS)
@@ -1697,6 +1781,11 @@ impl Play {
                 }
             }
             let s = self.session.as_mut().unwrap();
+            // Photo mode's history: the inputs this frame runs with, and a
+            // save state now and then (nothing in the machine changes).
+            if let Some(h) = &mut s.history {
+                h.before_frame(&mut s.machine);
+            }
             s.machine.run_slice(u64::MAX)?;
             match &mut s.sound {
                 Some(snd) => snd.send(&mut s.machine.bus),
@@ -1754,7 +1843,7 @@ impl Play {
                 let st = &mut self.stats;
                 st.emulating += emulate_time;
                 st.emulated += ran;
-                if ran == 0 && !self.menu.open {
+                if ran == 0 && !self.menu.open && self.photo.is_none() {
                     st.repeats += 1;
                 } else if ran > 0 {
                     st.longest_gap = st.longest_gap.max(st.last_new.elapsed());
@@ -1989,6 +2078,17 @@ impl Play {
         (Instant::now() < at).then_some(at)
     }
 
+    /// `--fast`: the frames due and `--photo`'s sessions, nothing drawn.
+    fn fast_frame(&mut self) {
+        self.poll_pads();
+        if self.launcher.open {
+            return;
+        }
+        self.run_due();
+        self.photo_script();
+        self.status();
+    }
+
     /// One redraw: run the game, draw it and the menu, report status.
     fn frame(&mut self, el: &ActiveEventLoop) {
         // Also while the game isn't reading them (the menu's open, or the
@@ -2005,6 +2105,11 @@ impl Play {
         let (ran, emulate_time) = self.run_due();
         if self.launcher.open {
             return;
+        }
+        // `--photo`: a scripted photo session once its frame is reached.
+        self.photo_script();
+        if self.photo.is_some() {
+            return self.photo_frame();
         }
         let slots = if self.menu.open { self.slot_times() } else { Vec::new() };
         let crosshair = if self.menu.visible() { None } else { self.stick_crosshair() };
@@ -2090,6 +2195,7 @@ impl Play {
         let g = self.gpu.as_mut().unwrap();
         let job = draw::Job {
             game,
+            photo: None,
             view: g.view,
             origin: g.origin,
             config: g.config.clone(),
@@ -2110,6 +2216,12 @@ impl Play {
                     self.set_menu(false);
                 }
                 menu::Action::Games => self.open_launcher(),
+                menu::Action::Photo => {
+                    self.set_menu(false);
+                    if let Err(e) = self.enter_photo() {
+                        self.menu.notify(format!("Photo mode: {e}"));
+                    }
+                }
                 menu::Action::Bindings => {
                     if let Some(s) = &self.session {
                         settings::save_bindings(s.game, &s.bindings);
@@ -2530,6 +2642,14 @@ impl Play {
             let hash = s.machine.bus.state_hash();
             let what = if s.preview { "preview" } else { "frames" };
             println!("{what:<14}{}, state hash {hash:016x}", s.machine.frames);
+            if let Some(h) = s.history.as_ref().filter(|h| h.taken > 0) {
+                println!(
+                    "photo history {} save states, {:.2} ms each on the game's thread, {:.1} MB held",
+                    h.taken,
+                    h.cost.as_secs_f64() * 1000.0 / h.taken as f64,
+                    h.bytes() as f64 / (1 << 20) as f64
+                );
+            }
             if let Some(d) = &s.machine.bus.drive {
                 println!("drive board   {}", d.describe());
             }
@@ -2547,6 +2667,7 @@ impl Play {
     }
 
     fn quit(&mut self, el: &ActiveEventLoop) {
+        self.leave_photo();
         // The picture in flight: drawn, and logged.
         if let Some(g) = &mut self.gpu {
             g.drawer.finish();
@@ -2646,6 +2767,15 @@ impl ApplicationHandler<Wake> for Play {
     /// Waiting for the draw thread (`next_start`): redraw at the time set,
     /// unless it wakes the loop first.
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        // `--fast`: run the game here, not on redraws (a hidden window gets
+        // about one a second), and draw nothing.
+        if self.opts.fast && self.gpu.is_some() {
+            if !self.time_up(el) {
+                self.fast_frame();
+                el.set_control_flow(ControlFlow::Poll);
+            }
+            return;
+        }
         if let Some(s) = self.opts.seconds {
             if self.time_up(el) {
                 return;
@@ -2750,7 +2880,8 @@ impl ApplicationHandler<Wake> for Play {
         window.request_redraw();
         let refresh = refresh_hz(&window);
         let overlay = Overlay { ctx, state };
-        let core = draw::Core { surface, renderer, egui, backdrop, frame: gpu::BoardFrame::default() };
+        let core =
+            draw::Core { surface, renderer, egui, backdrop, frame: gpu::BoardFrame::default(), photo_shots: None };
         // The draw thread wakes the event loop as it starts drawing and when
         // it's done (`next_start`).
         let wake = self.opts.overlap.then(|| self.proxy.clone()).flatten().map(|p| {
@@ -2809,6 +2940,17 @@ impl ApplicationHandler<Wake> for Play {
             }
             None => false,
         };
+        if self.photo.is_some() {
+            if let WindowEvent::CursorMoved { position, .. } = &event {
+                self.mouse = Some((position.x, position.y));
+            }
+            let over_panel = self.gpu.as_ref().is_some_and(|g| g.overlay.ctx.egui_wants_pointer_input());
+            if matches!(event, WindowEvent::CursorMoved { .. })
+                || !over_panel && matches!(event, WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. })
+            {
+                self.photo_mouse(&event);
+            }
+        }
         match event {
             WindowEvent::CloseRequested => self.quit(el),
             WindowEvent::Resized(size) => self.resize(size.width, size.height),
@@ -2821,6 +2963,16 @@ impl ApplicationHandler<Wake> for Play {
                 }
                 // The launcher reads its keys from egui.
                 if self.launcher.open {
+                    return;
+                }
+                if self.photo.is_some() {
+                    return self.photo_key(code, pressed, event.repeat);
+                }
+                if pressed && !event.repeat && code == photo::KEY && self.session.as_ref().is_some_and(|s| !s.preview) {
+                    self.set_menu(false);
+                    if let Err(e) = self.enter_photo() {
+                        self.menu.notify(format!("Photo mode: {e}"));
+                    }
                     return;
                 }
                 if pressed && !event.repeat {
@@ -2845,7 +2997,9 @@ impl ApplicationHandler<Wake> for Play {
                 self.mouse_used = true;
             }
             WindowEvent::CursorLeft { .. } => self.mouse = None,
-            WindowEvent::MouseInput { state, button, .. } if !self.menu.open && !to_menu && !self.launcher.open => {
+            WindowEvent::MouseInput { state, button, .. }
+                if !self.menu.open && !to_menu && !self.launcher.open && self.photo.is_none() =>
+            {
                 let i = match button {
                     MouseButton::Left => 0,
                     MouseButton::Right => 1,
@@ -2853,6 +3007,7 @@ impl ApplicationHandler<Wake> for Play {
                 };
                 self.mouse_buttons[i] = state == ElementState::Pressed;
             }
+            WindowEvent::RedrawRequested if self.opts.fast => {}
             WindowEvent::RedrawRequested => {
                 if self.time_up(el) {
                     return;
@@ -2940,6 +3095,7 @@ fn main() {
         pack: PackState::default(),
         max_anisotropy: 16,
         temporal_supported: true,
+        photo: None,
     };
     if play.settings.rom == Settings::default().rom {
         // So there's an obvious place to put sets.

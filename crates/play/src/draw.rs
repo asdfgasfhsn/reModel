@@ -23,6 +23,9 @@ pub struct Core {
     pub backdrop: backdrop::Backdrop,
     /// The frame being drawn, copied from the machine shown.
     pub frame: gpu::BoardFrame,
+    /// Photo mode: the geometry of its last picture, kept while the
+    /// camera stays put (`photo::draw`).
+    pub photo_shots: Option<(crate::photo::ShotKey, crate::photo::Shots)>,
 }
 
 /// How to draw the game's frame in [`Core::frame`]: decided on the main
@@ -174,6 +177,8 @@ pub fn paint_overlay(core: &mut Core, o: &OverlayPaint, target: &wgpu::TextureVi
 /// overlay (None: not shown), into the surface, presented.
 pub struct Job {
     pub game: Option<GameJob>,
+    /// Photo mode: the frame drawn as a photo instead (`photo::draw`).
+    pub photo: Option<crate::photo::Job>,
     pub view: model2::video::View,
     pub origin: (u32, u32),
     /// The surface's configuration (its format; to configure it again if
@@ -213,6 +218,9 @@ pub fn run(core: &mut Core, job: Job, started: &dyn Fn()) -> Report {
     started();
     let target = frame.texture.create_view(&Default::default());
     let game = job.game.as_ref().map(|g| draw_game(core, g, &target, &job.view, job.origin, job.config.format));
+    if let Some(p) = &job.photo {
+        crate::photo::draw(core, p, &target, &job.view, job.origin, job.config.format);
+    }
     if let Some(o) = &job.overlay {
         paint_overlay(core, o, &target);
     }

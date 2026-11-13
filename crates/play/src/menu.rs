@@ -1,6 +1,6 @@
 //! The in-game menu (Esc) and short notices, drawn with egui over the game.
 //!
-//! The pause menu is a short list: Resume, Save / Load, Settings, Controls,
+//! The pause menu is a short list: Resume, Save / Load, Settings, Controls, Photo mode,
 //! Back to games, Quit. Save / Load is a small screen of its own (the
 //! slots). Settings come in tabs (Display, Picture, Motion, Sound, More),
 //! each row "label ◂ value ▸": left and right change it, and one help line
@@ -41,6 +41,8 @@ pub enum Action {
     Load(u8),
     /// Leave the game for the launcher.
     Games,
+    /// Open photo mode.
+    Photo,
     /// The game's bindings changed (save them).
     Bindings,
     Quit,
@@ -468,6 +470,9 @@ impl Menu {
                 }
                 if view.playing.is_some() && big(ui, "Controls") {
                     to_controls = true;
+                }
+                if view.playing.is_some() && big(ui, "Photo mode") {
+                    actions.push(Action::Photo);
                 }
                 if big(ui, "Back to games") {
                     actions.push(Action::Games);
@@ -1155,6 +1160,7 @@ mod tests {
                 Action::Save(_) => "save",
                 Action::Load(_) => "load",
                 Action::Games => "games",
+                Action::Photo => "photo",
                 Action::Bindings => "bindings",
                 Action::Quit => "quit",
             })
@@ -1172,7 +1178,7 @@ mod tests {
 
     #[test]
     fn the_pause_menu_is_a_short_list() {
-        // Resume, Save / Load, Settings, Controls, Back to games, Quit, in
+        // Resume, Save / Load, Settings, Controls, Photo mode, Back to games, Quit, in
         // that order: down to the foot is Quit, one up Back to games.
         let mut r = Rig::new("topskatr");
         r.press(30, Nav::Down).run(&[&[Nav::Accept]]);
@@ -1182,8 +1188,12 @@ mod tests {
         assert_eq!(r.names(), ["games"]);
         // Nothing else on it: the controls of the settings aren't here.
         let mut r = Rig::new("topskatr");
-        r.press(5, Nav::Down).run(&[&[Nav::Accept]]);
-        assert_eq!(r.names(), ["quit"], "five steps from Resume is the last");
+        r.press(6, Nav::Down).run(&[&[Nav::Accept]]);
+        assert_eq!(r.names(), ["quit"], "six steps from Resume is the last");
+        // Photo mode, four down.
+        let mut r = Rig::new("topskatr");
+        r.press(4, Nav::Down).run(&[&[Nav::Accept]]);
+        assert_eq!(r.names(), ["photo"]);
     }
 
     #[test]
