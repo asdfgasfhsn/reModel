@@ -5,16 +5,18 @@ What is known about the original Model 2 board (1993-94: `daytona`,
 (Virtua Cop, revision B). Everything comes from the games' own code and
 data and from running them on the board model (`model2::bus` with
 `Board::Model2`); where a statement is a guess it says so. The games'
-pages are [`docs/games/daytona.md`](../games/daytona.md) and
-[`docs/games/vcop.md`](../games/vcop.md).
+pages are [`docs/games/daytona.md`](../games/daytona.md),
+[`docs/games/vcop.md`](../games/vcop.md) and
+[`docs/games/desert.md`](../games/desert.md) (Desert Tank, which needed
+nothing new from the board model).
 
 **Status.** The board model boots `daytona` to its attract mode (the
 settings screen, the AM2 logo, the 3D attract races, textured and lit,
 the "V.R." screen and the ranking tables), and a coin-start run reaches a
 race that drives, with sound (§5). `vcop` boots to its attract mode and
 a coin-start run plays its first stage with the light gun (shots, the
-off-screen reload), with sound. Both are in `romset::games::IN_PROGRESS`,
-not yet in the launcher.
+off-screen reload), with sound; `desert` plays its first mission. All
+three are in `romset::games::IN_PROGRESS`, not yet in the launcher.
 
 ## 1. What it shares with Model 2A (confirmed by the run)
 
@@ -133,6 +135,12 @@ ROM; its first MultiPCM's ROMs are 1 MB chips in 2 MB sockets
 the sound program's sockets are `daytona`'s. The board model maps the
 `0x220000` window for both; *unconfirmed* what the hardware has there for
 a 512 KB program.
+
+`desert` (*confirmed* by running it, [`desert.md`](../games/desert.md)):
+a 512 KB program as `vcop`'s; main data as `daytona`'s; polygons paired
+**`.16/.21` and `.17/.20`** (found from the data); textures `.25/.24`; the
+TGP's data ROM two 512 KB EPROMs, `.28` low and `.29` high, as
+`daytona`'s pair.
 
 ## 4. The TGP's external bus: the bus register's high bits
 
