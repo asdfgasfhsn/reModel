@@ -26,7 +26,7 @@ pub const DEFAULT_MIX: (f32, f32) = (8.0, -8.0);
 /// 2's (MultiPCMs and an OPN2). Both take the sound link's bytes and give
 /// 44.1 kHz stereo.
 enum Sound {
-    Scsp(sound::SoundBoard),
+    Scsp(Box<sound::SoundBoard>),
     Pcm(Box<sound::PcmBoard>),
 }
 
@@ -143,7 +143,7 @@ impl Live {
             if roms.game.board == romset::Board::Model2 {
                 Sound::Pcm(Box::new(sound::PcmBoard::new(prog, bytes(Role::MultiPcmA), bytes(Role::MultiPcmB))))
             } else {
-                Sound::Scsp(sound::SoundBoard::new(prog, roms.region16be(Role::Samples)))
+                Sound::Scsp(Box::new(sound::SoundBoard::new(prog, roms.region16be(Role::Samples))))
             }
         });
         let mpeg = || -> Vec<u8> {
