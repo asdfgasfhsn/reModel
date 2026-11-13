@@ -21,7 +21,7 @@ built to be reused across the Model 2 family.
 
 ## Games
 
-Eighteen games run, on the 2A, 2B and 2C boards. "Plays" means playable with
+Nineteen games run, on the 2A, 2B and 2C boards. "Plays" means playable with
 sound in the native player; the details, and what each game needed, are in
 [docs/games/](docs/games/README.md).
 
@@ -45,6 +45,7 @@ sound in the native player; the details, and what each game needed, are in
 | Virtua Striker | `vstriker` | 2B | plays |
 | Last Bronx | `lastbrnx` | 2B | plays |
 | Sega Rally Championship | `srallyc` | 2A | plays; its program runs on an MB86234 interpreter |
+| Virtua Fighter 2 | `vf2` | 2A | plays; its program runs on an MB86234 interpreter |
 
 ## Highlights
 

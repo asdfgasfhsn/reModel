@@ -9,8 +9,8 @@ Wave Runner (waverunr), Over Rev (overrev), Super GT 24h (sgt24h), The
 House of the Dead (hotd), Behind Enemy Lines (bel), Dynamite Baseball
 '97 (dynabb97), Dead or Alive (doa), Indianapolis 500 (indy500),
 Fighting Vipers (fvipers), Sonic Championship (schamp), Virtua
-Striker (vstriker), Last Bronx (lastbrnx) and Sega Rally Championship
-(srallyc).
+Striker (vstriker), Last Bronx (lastbrnx), Sega Rally Championship
+(srallyc) and Virtua Fighter 2 (vf2).
 This build runs the game code on the interpreter (no recompiled game code
 is included).
 
@@ -19,7 +19,7 @@ Bring your own ROMs
 No game data is included. Put the sets as MAME keeps them, topskatr.zip or
 a topskatr/ folder (likewise skisuprg, stcc, segawski, waverunr,
 overrev, sgt24h, hotd, bel, dynabb97, doa, indy500, fvipers, schamp,
-vstriker, lastbrnx, srallyc), in
+vstriker, lastbrnx, srallyc, vf2), in
 the ROM folder:
 
     ~/.local/share/remodel/roms     ($XDG_DATA_HOME/remodel/roms)

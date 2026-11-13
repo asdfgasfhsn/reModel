@@ -1,8 +1,8 @@
 # Virtua Fighter 2 (`vf2`, Model 2A-CRX, 1995)
 
-Status: **in progress** (`romset::games::IN_PROGRESS`); a game starts,
-the player-select screen draws its fighter, and its fights play out
-round after round.
+Status: **plays** (`make play GAME=vf2`; the launcher's Model 2A group): a
+game starts, the player-select screen draws its fighter, and its fights
+play out round after round.
 
 - *Confirmed:* the manifest verifies (33 chips, program set 2.1:
   `epr-18385..18388`). The i960 boots and uploads a 3,802-word TGP program
