@@ -168,7 +168,20 @@ pub enum Tap {
     /// per kind of value now in effect that is ([`Kind::sets`]), and
     /// `blocks` gets one entry per object ([`Tap::object`]) or direct data
     /// block ([`Tap::direct`]).
-    Replay { values: Vec<Xform>, next: usize, lost: bool, snap: Vec<bool>, snapped: u8, blocks: Vec<bool> },
+    ///
+    /// `turn`, for photo mode's free camera (`crate::photo`): a rotation
+    /// (column by column) given to the light vectors the list sets, which
+    /// are in view space as the transforms are, so the scene keeps its
+    /// lighting when the camera turns. None: they go through unchanged.
+    Replay {
+        values: Vec<Xform>,
+        next: usize,
+        lost: bool,
+        snap: Vec<bool>,
+        snapped: u8,
+        blocks: Vec<bool>,
+        turn: Option<[f32; 9]>,
+    },
 }
 
 impl Tap {
@@ -178,7 +191,17 @@ impl Tap {
 
     /// A replay giving the transforms `values`, every one blended.
     pub fn replay(values: Vec<Xform>) -> Self {
-        Tap::Replay { values, next: 0, lost: false, snap: Vec::new(), snapped: 0, blocks: Vec::new() }
+        Tap::Replay { values, next: 0, lost: false, snap: Vec::new(), snapped: 0, blocks: Vec::new(), turn: None }
+    }
+
+    /// A light vector command's words (three IEEE singles, view space), as
+    /// read from the list: turned by a replay's `turn`, else unchanged.
+    pub fn light(&mut self, w: &mut [u32]) {
+        if let (Tap::Replay { turn: Some(r), .. }, [x, y, z]) = (self, w) {
+            let v = [f32::from_bits(*x), f32::from_bits(*y), f32::from_bits(*z)];
+            let o: [f32; 3] = std::array::from_fn(|i| r[i] * v[0] + r[3 + i] * v[1] + r[6 + i] * v[2]);
+            [*x, *y, *z] = o.map(f32::to_bits);
+        }
     }
 
     /// A transform command's words, as read from the list: noted, or
@@ -814,7 +837,7 @@ impl Frame {
             return None;
         }
         let mut tap = crate::light::Tap::new();
-        let (stream, _) = self.replay(self.plan.values(t), Vec::new(), None, Some(&mut tap));
+        let (stream, _) = self.replay(self.plan.values(t), Vec::new(), None, Some(&mut tap), None);
         Some((stream, tap.finish(self.frame)))
     }
 
@@ -828,7 +851,7 @@ impl Frame {
                 return Motion { cut: true, ..Default::default() };
             }
             let mut log = Vec::new();
-            let (s0, mut valid) = self.replay(self.plan.values(0.0), self.plan.unknown(), Some(&mut log), None);
+            let (s0, mut valid) = self.replay(self.plan.values(0.0), self.plan.unknown(), Some(&mut log), None, None);
             for b in unsure_blocks(&log) {
                 if let Some(v) = valid.get_mut(b) {
                     *v = false;
@@ -840,7 +863,23 @@ impl Frame {
 
     /// Frame N's list again with these transforms.
     pub(crate) fn render_values(&self, values: Vec<Xform>) -> Vec<u32> {
-        self.replay(values, Vec::new(), None, None).0
+        self.replay(values, Vec::new(), None, None, None).0
+    }
+
+    /// Frame N's list again with these transforms (photo mode's free
+    /// camera, `crate::photo`: frame N's or an in-between's, moved into
+    /// another view), its light vectors turned by `turn` (column by
+    /// column); with `lit`, its lighting side channel too, numbered as
+    /// frame N.
+    pub fn render_posed(
+        &self,
+        values: Vec<Xform>,
+        turn: Option<[f32; 9]>,
+        lit: bool,
+    ) -> (Vec<u32>, Option<crate::light::Frame>) {
+        let mut tap = lit.then(crate::light::Tap::new);
+        let (stream, _) = self.replay(values, Vec::new(), None, tap.as_mut(), turn);
+        (stream, tap.map(|t| t.finish(self.frame)))
     }
 
     /// Frame N's list again with these transforms (`snap`: those that are
@@ -848,18 +887,20 @@ impl Frame {
     /// transforms were blended. With `log`, polygon RAM is read as it was
     /// before frame N whatever the list writes, the accesses noted there;
     /// without, the list's writes are read back, as in frame N. `light`:
-    /// record its lighting side channel.
+    /// record its lighting side channel. `turn`: turn the light vectors
+    /// ([`Tap::light`]).
     fn replay(
         &self,
         values: Vec<Xform>,
         snap: Vec<bool>,
         log: Option<&mut Vec<Access>>,
         light: Option<&mut crate::light::Tap>,
+        turn: Option<[f32; 9]>,
     ) -> (Vec<u32>, Vec<bool>) {
         let mut native = self.native.clone();
         let (mut words, mut fed, mut out, mut latch) = (0, Vec::new(), Vec::new(), self.latch);
         let mut overlay = HashMap::new();
-        let mut tap = Tap::Replay { values, next: 0, lost: false, snap, snapped: 0, blocks: Vec::new() };
+        let mut tap = Tap::Replay { values, next: 0, lost: false, snap, snapped: 0, blocks: Vec::new(), turn };
         let mut list = crate::geo::ListDma::new(&self.buffer, &self.jumps, self.read_ptr, &mut words, &mut fed);
         let poly = match log {
             Some(log) => crate::geo::GeoExt::before(&self.poly, log, &self.rom),

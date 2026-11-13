@@ -19,6 +19,7 @@
 mod bloom;
 mod board;
 mod materials;
+mod photo;
 mod temporal;
 mod tiles;
 
@@ -30,6 +31,7 @@ pub use model2::light::{Shading, CREASE_AUTO};
 pub use model2::raster::Relief;
 use model2::raster::{tex_info, Placed, Poly, Sources, TexKeys};
 use model2::video::{Layers2d, View, HEIGHT, WIDTH};
+pub use photo::{Look as PhotoLook, Request as PhotoRequest, Shot as PhotoShot};
 use std::collections::HashMap;
 pub use temporal::{step, temporal_supported, BusMotion, FrameTag, Step, TemporalDebug, Tuning as TemporalTuning};
 use temporal::{Temporal, TemporalPass};
@@ -441,6 +443,18 @@ pub struct Renderer {
     pack_budget: u64,
     /// The pack's tile replacements (tiles.rs).
     tiles: tiles::Tiles,
+    /// Photo mode's passes (photo.rs), made when first used.
+    photo: Option<Box<photo::Photo>>,
+    /// While a photo is drawn: leave out the HUD (tile HUD and HUD
+    /// windows) and the 2D background.
+    photo_hide: (bool, bool),
+    /// While a photo's last image is drawn: its depth (1/z) and depth test
+    /// targets, drawn by `encode_frame`.
+    photo_depth: Option<(wgpu::TextureView, wgpu::TextureView)>,
+    /// Bloom's chain this many levels longer (a photo larger than play).
+    bloom_extra: u32,
+    /// While a photo is drawn: its near plane (`raster::BuildIn::near`).
+    photo_near: f32,
 }
 
 /// Bytes per vertex: x, y, 1/z, u/z, v/z, polygon index.
@@ -745,6 +759,11 @@ impl Renderer {
             materials: Default::default(),
             pack_budget: PACK_BUDGET,
             tiles,
+            photo: None,
+            photo_hide: (false, false),
+            photo_depth: None,
+            bloom_extra: 0,
+            photo_near: 0.0,
         }
     }
 
@@ -897,11 +916,37 @@ impl Renderer {
     /// themselves). Without a pack, or with one that has no tile images,
     /// exactly `layers_2d`.
     pub fn layers_2d(&mut self, tiles: &[u8], palette: &[u8], view: &View, has_3d: bool) -> Layers2d {
-        match self.pack.as_mut() {
+        let mut layers = match self.pack.as_mut() {
             Some(pack) if pack.has_tiles() => {
                 self.tiles.layers(&self.device, &self.queue, pack.as_mut(), tiles, palette, view, has_3d)
             }
             _ => model2::video::layers_2d(tiles, palette, view, has_3d),
+        };
+        // A photo without the HUD or the background: transparent, or the
+        // backdrop colour (the original patterns' layers, not the pack's).
+        let (hud, base) = self.photo_hide;
+        if hud || base {
+            if layers.tiles.is_some() {
+                layers = model2::video::layers_2d(tiles, palette, view, has_3d);
+            }
+            if hud {
+                layers.hud.fill(0);
+            }
+            if base {
+                let b = layers.backdrop;
+                layers.base.as_chunks_mut::<4>().0.iter_mut().for_each(|p| *p = [b[0], b[1], b[2], 255]);
+            }
+        }
+        layers
+    }
+
+    /// A photo without the HUD: its HUD windows' polygons left out too.
+    fn photo_drop_hud(&self, polys: &[Poly], placed: &mut Vec<Placed>, view: &View) {
+        if self.photo_hide.0 {
+            placed.retain(|p| {
+                let w = polys[p.poly].window;
+                w >= 32 || view.hud_windows >> w & 1 == 0
+            });
         }
     }
 
@@ -1012,6 +1057,7 @@ impl Renderer {
             fine: opts.is_some_and(|o| o.fine),
             relief: self.quality.materials_relief,
             texels: Some(&self.texels),
+            near: self.photo_near,
         };
         model2::raster::build_with(stream, src, &input)
     }
@@ -2023,6 +2069,9 @@ impl Renderer {
         origin: (u32, u32),
     ) {
         let (w, h) = (view.width as u32, view.height as u32);
+        if let Some(targets) = self.photo_depth.take() {
+            self.encode_photo_depth(enc, polys, placed, &targets, (w, h));
+        }
         let layer3d_view = if self.quality.temporal > 0 {
             // The accumulated picture, output size.
             self.encode_temporal(enc, polys, placed, src, view)
@@ -2044,7 +2093,7 @@ impl Renderer {
         // shader never reads it then).
         let bloom_strength = self.quality.bloom as f32 / 100.0;
         let bloom_view = if self.quality.bloom > 0 && !placed.is_empty() {
-            self.bloom.encode(&self.device, enc, &layer3d_view, w, h)
+            self.bloom.encode(&self.device, enc, &layer3d_view, w, h, self.bloom_extra)
         } else {
             let usage = wgpu::TextureUsages::TEXTURE_BINDING;
             self.kept_texture("bloom none", 1, 1, usage).create_view(&Default::default())
@@ -2300,7 +2349,8 @@ impl Renderer {
         let src = b.sources(points);
         let (mut polys, _) = self.build_polys(stream, &src, None, Some(b.versions.0));
         model2::video::HudLayout::new(b.tiles, b.palette, view).anchor(&mut polys, view);
-        let placed = model2::raster::place(&mut polys, view);
+        let mut placed = model2::raster::place(&mut polys, view);
+        self.photo_drop_hud(&polys, &mut placed, view);
         let layers = self.layers_2d(b.tiles, b.palette, view, !placed.is_empty());
         let (render, palette) = b.versions;
         self.set_ram_versions(render, palette);

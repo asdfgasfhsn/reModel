@@ -756,6 +756,11 @@ pub struct BuildIn<'a> {
     /// kept across frames while render RAM is unchanged (None: worked out
     /// for this frame alone).
     pub texels: Option<&'a std::cell::RefCell<TexelCache>>,
+    /// The nearest view-space z kept: polygons are clipped there (photo
+    /// mode's free camera, which can come close to anything). At most
+    /// [`NEAR`] (0, the default): the game's view, nothing clipped that
+    /// can be drawn.
+    pub near: f32,
 }
 
 /// [`texel_indices`] by texture rectangle (bank, x0, y0, w, h,
@@ -995,7 +1000,7 @@ fn build_impl(stream: &[u32], src: &Sources, input: &BuildIn) -> (Vec<Poly>, Vec
                     if link != 0 && (double_sided || !backface) && maxz > 0.0 {
                         let w = &windows[win];
                         let (cx, cy) = w.centres[centre];
-                        let clipped = clip_view(&verts, cx, cy);
+                        let clipped = clip_view(&verts, cx, cy, input.near.max(NEAR));
                         if clipped.len() >= 3 {
                             let prev = match m {
                                 Some(m) => {
@@ -1184,14 +1189,15 @@ const GUARD: f32 = 2.0 * WIDTH as f32;
 /// Clip a view-space polygon to the volume that projects into the guard
 /// band around the screen, given the window centre (cx, cy) in screen
 /// pixels (sx = cx + x/z, sy = cy - y/z): four side planes through the
-/// eye and a near plane at [`NEAR`]. Polygons are clipped, not dropped,
-/// so geometry crossing in front of the camera keeps its visible part.
-fn clip_view(v: &[Vtx], cx: f32, cy: f32) -> Vec<Vtx> {
+/// eye and a near plane at `near` ([`NEAR`] for the game's view).
+/// Polygons are clipped, not dropped, so geometry crossing in front of the
+/// camera keeps its visible part.
+fn clip_view(v: &[Vtx], cx: f32, cy: f32, near: f32) -> Vec<Vtx> {
     let (x0, x1) = (-GUARD - cx, WIDTH as f32 + GUARD - cx);
     let (y0, y1) = (cy - (HEIGHT as f32 + GUARD), cy + GUARD);
     // Each plane as (a, b, c, d): inside where a·x + b·y + c·z + d >= 0.
     let planes = [
-        [0.0, 0.0, 1.0, -NEAR],
+        [0.0, 0.0, 1.0, -near],
         [1.0, 0.0, -x0, 0.0],
         [-1.0, 0.0, x1, 0.0],
         [0.0, 1.0, -y0, 0.0],
@@ -2707,10 +2713,10 @@ mod tests {
     fn close_geometry_is_clipped_not_dropped() {
         let v = |x, y, z| Vtx { x, y, z, u: x, ..Default::default() };
         // A triangle in front of the eye, nearer than one unit: kept whole.
-        let c = clip_view(&[v(-0.1, 0.0, 0.5), v(0.1, 0.0, 0.5), v(0.0, 0.1, 0.4)], 248.0, 192.0);
+        let c = clip_view(&[v(-0.1, 0.0, 0.5), v(0.1, 0.0, 0.5), v(0.0, 0.1, 0.4)], 248.0, 192.0, NEAR);
         assert_eq!(c.len(), 3);
         // One crossing the eye plane keeps its front part, inside the guard band.
-        let c = clip_view(&[v(0.0, 0.0, -1.0), v(-0.1, 0.0, 0.5), v(0.1, 0.0, 0.5)], 248.0, 192.0);
+        let c = clip_view(&[v(0.0, 0.0, -1.0), v(-0.1, 0.0, 0.5), v(0.1, 0.0, 0.5)], 248.0, 192.0, NEAR);
         assert!(c.len() >= 3);
         for p in &c {
             // Near NEAR, give or take rounding at the plane: 1/z stays finite.
@@ -2719,7 +2725,7 @@ mod tests {
             assert!((-GUARD - 1.0..=WIDTH as f32 + GUARD + 1.0).contains(&sx));
         }
         // Wholly behind the eye: nothing.
-        assert!(clip_view(&[v(0.0, 0.0, -1.0), v(1.0, 0.0, -1.0), v(0.0, 1.0, -2.0)], 248.0, 192.0).len() < 3);
+        assert!(clip_view(&[v(0.0, 0.0, -1.0), v(1.0, 0.0, -1.0), v(0.0, 1.0, -2.0)], 248.0, 192.0, NEAR).len() < 3);
     }
 
     #[test]

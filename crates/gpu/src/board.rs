@@ -156,6 +156,16 @@ impl BoardFrame {
         }
     }
 
+    /// The texture point RAM drawn with the frame's polygons.
+    pub fn points(&self) -> &[u16] {
+        &self.points
+    }
+
+    /// The lighting side channel recorded with the frame's polygons.
+    pub fn light_frame(&self) -> Option<&Arc<model2::light::Frame>> {
+        self.light.as_ref()
+    }
+
     pub(crate) fn engine(&self) -> (&[u32], &[u16]) {
         (&self.stream, &self.points)
     }

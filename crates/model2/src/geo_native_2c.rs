@@ -515,9 +515,10 @@ impl Native {
                     }
                 }
                 0x0a => {
-                    for k in 0..3 {
-                        let v = io.rd();
-                        self.set(l.light, k, v);
+                    let mut v = [io.rd(), io.rd(), io.rd()];
+                    io.light_dir(&mut v);
+                    for (k, &v) in v.iter().enumerate() {
+                        self.set(l.light, k as u32, v);
                     }
                 }
                 0x0b => {

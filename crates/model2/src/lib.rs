@@ -19,6 +19,7 @@ pub mod input;
 pub mod light;
 pub mod pacing;
 pub mod pack;
+pub mod photo;
 pub mod protection;
 pub mod raster;
 pub mod sharc;

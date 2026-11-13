@@ -202,6 +202,14 @@ impl Io<'_, '_> {
             t.xform(kind, w);
         }
     }
+    /// A light vector command's operands as read, before they are used
+    /// (photo mode's free camera turns them, `crate::photo`).
+    #[inline]
+    pub(crate) fn light_dir(&mut self, w: &mut [u32]) {
+        if let Some(t) = self.tap.as_deref_mut() {
+            t.light(w);
+        }
+    }
     /// An object at model address `oba`.
     #[inline]
     pub(crate) fn object(&mut self, oba: u32) {
@@ -613,8 +621,9 @@ impl Native {
                     }
                 }
                 0x0a | 0x1a => {
-                    for k in 0..3 {
-                        let v = io.rd();
+                    let mut l = [io.rd(), io.rd(), io.rd()];
+                    io.light_dir(&mut l);
+                    for (k, &v) in l.iter().enumerate() {
                         self.dm[LIGHT + k] = v;
                         self.pm[8 + k] = v;
                     }

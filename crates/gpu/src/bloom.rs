@@ -9,7 +9,8 @@
 
 use crate::temporal::AUX_FORMAT;
 
-/// Levels of the chain (each half the size of the one before).
+/// Levels of the chain (each half the size of the one before), in play; a
+/// photo larger than play adds some (`encode`'s `extra`).
 const LEVELS: usize = 5;
 /// Brightness (largest channel, 0 to 1) where glow starts, and the width of
 /// the soft knee around it.
@@ -99,10 +100,12 @@ impl Bloom {
         src: &wgpu::TextureView,
         w: u32,
         h: u32,
+        extra: u32,
     ) -> wgpu::TextureView {
-        if self.size != (w, h) || self.levels.is_empty() {
+        let levels = LEVELS + extra.min(3) as usize;
+        if self.size != (w, h) || self.levels.len() != levels {
             self.size = (w, h);
-            self.levels = (1..=LEVELS as u32)
+            self.levels = (1..=levels as u32)
                 .map(|i| {
                     device
                         .create_texture(&wgpu::TextureDescriptor {
@@ -165,10 +168,10 @@ impl Bloom {
             };
         let dims = |i: usize| ((w >> (i + 1)).max(1), (h >> (i + 1)).max(1));
         pass(0, src, &self.levels[0], dims(0), false);
-        for i in 1..LEVELS {
+        for i in 1..levels {
             pass(1, &self.levels[i - 1], &self.levels[i], dims(i), false);
         }
-        for i in (0..LEVELS - 1).rev() {
+        for i in (0..levels - 1).rev() {
             pass(2, &self.levels[i + 1], &self.levels[i], dims(i), true);
         }
         self.levels[0].clone()
