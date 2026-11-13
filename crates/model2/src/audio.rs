@@ -130,18 +130,10 @@ impl Live {
         // The original Model 2's sound board is another design: a 68000
         // with MultiPCM and FM chips (docs/hw/model2.md §5).
         let prog = roms.region16be(Role::AudioCpu);
-        let bytes = |role| -> Vec<u8> {
-            roms.game
-                .files
-                .iter()
-                .zip(&roms.chips)
-                .filter(|(f, _)| f.role == role)
-                .flat_map(|(_, c)| c.iter().copied())
-                .collect()
-        };
         let sound = (!prog.is_empty()).then(|| {
             if roms.game.board == romset::Board::Model2 {
-                Sound::Pcm(Box::new(sound::PcmBoard::new(prog, bytes(Role::MultiPcmA), bytes(Role::MultiPcmB))))
+                let (a, b) = (roms.multipcm(Role::MultiPcmA), roms.multipcm(Role::MultiPcmB));
+                Sound::Pcm(Box::new(sound::PcmBoard::new(prog, a, b)))
             } else {
                 Sound::Scsp(Box::new(sound::SoundBoard::new(prog, roms.region16be(Role::Samples))))
             }

@@ -19,6 +19,11 @@
 //! its Y, `4`-`7` player 2's X and Y, and counter 8 holds one bit a player
 //! (bit 0 player 1, bit 1 player 2), read active low; which is which is in
 //! the game's manifest ([`romset::Gun`]).
+//!
+//! The original Model 2 (Virtua Cop) has no command interface: its gun
+//! registers at `0x1C00100 + 2N` read counter N directly, in this layout
+//! (positions read as 16 bits, docs/hw/model2.md), so the bus serves them from the
+//! same [`GunBoard::counters`].
 
 /// The gun interface's state, plus what the guns currently report.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

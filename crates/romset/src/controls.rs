@@ -79,7 +79,9 @@ pub enum GunSource {
     /// Model 2C's gun interface (`model2::gun`): X and Y are counter
     /// pairs (a low byte, then the next counter's two high bits), and
     /// `offscreen_bit` of counter 8 reads 0 while the gun points at the
-    /// screen and 1 when it sees nothing.
+    /// screen and 1 when it sees nothing. The original Model 2's gun
+    /// registers at `0x1C00100` (`vcop`) have the same layout, read
+    /// directly (docs/hw/model2.md).
     Counters { x: u8, y: u8, offscreen_bit: u8 },
     /// A mounted gun on two ADC channels (yaw and pitch potentiometers,
     /// bel), read like any analog input. It can't point off the screen.

@@ -130,6 +130,17 @@ run every banked sample was keyed with its run's bank selected (both
 chips; `REMODEL_SOUND_TRACE=1 make sound` lists the key-ons with the
 bank).
 
+**Sockets** (*confirmed* from `vcop`): each MultiPCM's ROMs sit in 2 MB
+sockets, two a chip, and a smaller chip repeats through its socket.
+`vcop`'s first chip has two 1 MB ROMs, `mpr-17172.32` (the header table)
+and `mpr-17173.33`; its banked samples (headers 52 on, from `0x100000`)
+are in `.33` (their loops fit it, a mean jump of 1.7 against 8.8 in
+`.32`) and the sound program selects them with **bank 2**, the MB where the
+second socket starts. Packed back to back, bank 2 read past the end and
+those samples (one of the most used) were silent. `RomSet::multipcm`
+assembles the sockets; `daytona`'s 2 MB chips fill theirs, so nothing
+changes for it.
+
 ## Envelope (*assumed*)
 
 Attack, decay 1 to the decay level, decay 2, and release on key-off, from

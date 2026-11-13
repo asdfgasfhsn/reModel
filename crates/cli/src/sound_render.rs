@@ -199,16 +199,7 @@ fn write_wav(wav: &Path, out: &[i16]) -> Result<(), String> {
 /// an OPN2). With `REMODEL_SOUND_TRACE` set, writes the key-ons to
 /// `<wav>.keys.txt`: time, chip, voice, sample, bank and the registers.
 fn render_pcm(roms: &RomSet, prog: Vec<u8>, tx: &[(u64, u8)], seconds: Option<f64>, wav: &Path) -> Result<(), String> {
-    let bytes = |role| -> Vec<u8> {
-        roms.game
-            .files
-            .iter()
-            .zip(&roms.chips)
-            .filter(|(f, _)| f.role == role)
-            .flat_map(|(_, c)| c.iter().copied())
-            .collect()
-    };
-    let (a, b) = (bytes(Role::MultiPcmA), bytes(Role::MultiPcmB));
+    let (a, b) = (roms.multipcm(Role::MultiPcmA), roms.multipcm(Role::MultiPcmB));
     if a.is_empty() || b.is_empty() {
         return Err(format!("{}: no MultiPCM sample ROMs in the manifest", roms.game.id));
     }

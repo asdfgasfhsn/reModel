@@ -768,7 +768,8 @@ impl Model2Bus {
     /// The original Model 2's I/O registers (docs/hw/model2.md): register
     /// N at 0x1C00000 + 2N, in byte lanes 0 and 2 of its word. *From
     /// `daytona`'s code:* 0-7 the analog channels (read directly, no
-    /// channel select), 8, 9, 10 and 14 switch inputs (active low), 15 an
+    /// channel select), 8, 9, 10 and 14 switch inputs (active low), 11 DIP
+    /// switches (`vcop`'s; read as all off), 15 an
     /// output latch, 17 the drive board's command; 32 a command register
     /// (the game waits for it to read 0) and 33 a status (it waits for
     /// 0x40). The commands complete at once here.
@@ -783,6 +784,9 @@ impl Model2Bus {
             8 => self.inputs[0],
             9 => self.inputs[1],
             10 => self.inputs[2],
+            // DIP switches, active low: all off (`vcop` reads its reload
+            // and enemy type from bits 7 and 6, docs/games/vcop.md).
+            11 => 0xff,
             14 => self.inputs[3],
             32 => 0,
             33 => 0x40,
@@ -792,6 +796,16 @@ impl Model2Bus {
 
     fn io_read32_m2(&mut self, addr: u32) -> Option<u32> {
         self.m2_io.as_ref()?;
+        // The light gun registers at 0x1C00100 (`vcop`, docs/hw/model2.md):
+        // register N, a byte at 0x1C00100 + 2N, is gun counter N, laid out
+        // as the 2C gun interface's (players' Y and X in 0-7, the "sees
+        // no screen" bits in 8), but read directly.
+        if let Some(g) = &self.gun {
+            if (0x01c0_0100..0x01c0_0120).contains(&addr) {
+                let n = ((addr & !3) - 0x01c0_0100) as usize / 2;
+                return Some(g.counters[n] as u32 | (g.counters[n + 1] as u32) << 16);
+            }
+        }
         if !(0x01c0_0000..0x01c0_0000 + 2 * M2_IO_REGS as u32).contains(&addr) {
             return None;
         }

@@ -154,8 +154,9 @@ pub enum Role {
     /// it are `MpegData`.
     Dsb1Cpu,
     /// The original Model 2 sound board's first MultiPCM sample ROMs
-    /// (plain bytes, concatenated in order: the one with the header table
-    /// first). The 68000 program beside it is `AudioCpu`.
+    /// (plain bytes, in order, the one with the header table first, each in
+    /// a 2 MB socket: [`RomSet::multipcm`]). The 68000 program beside it is
+    /// `AudioCpu`.
     MultiPcmA,
     /// The second MultiPCM's sample ROMs, likewise.
     MultiPcmB,
@@ -498,6 +499,25 @@ impl RomSet {
         for (f, c) in self.game.files.iter().zip(&self.chips) {
             if f.role == role {
                 out.extend(c.as_chunks::<2>().0.iter().flat_map(|&[a, b]| [b, a]));
+            }
+        }
+        out
+    }
+
+    /// A MultiPCM's sample ROMs on the original Model 2 sound board
+    /// ([`Role::MultiPcmA`], [`Role::MultiPcmB`]), in manifest order, each
+    /// in its own 2 MB socket: a 1 MB chip repeats through its socket.
+    /// `vcop`'s first chip has two 1 MB ROMs and selects its second with
+    /// bank 2, the MB where a second 2 MB chip starts (`daytona`'s 2 MB
+    /// chips fill their sockets; docs/hw/multipcm.md).
+    pub fn multipcm(&self, role: Role) -> Vec<u8> {
+        const SOCKET: usize = 0x20_0000;
+        let mut out = Vec::new();
+        for (_, c) in self.game.files.iter().zip(&self.chips).filter(|(f, c)| f.role == role && !c.is_empty()) {
+            let start = out.len();
+            while out.len() - start < SOCKET {
+                let n = c.len().min(SOCKET - (out.len() - start));
+                out.extend_from_slice(&c[..n]);
             }
         }
         out

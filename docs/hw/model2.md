@@ -1,16 +1,19 @@
 # Model 2 (the original board): map, I/O board, ROM layout, sound
 
 What is known about the original Model 2 board (1993-94: `daytona`,
-`vcop`, `desert`) from `daytona` (Daytona USA, revision A), the only one
-brought up so far. Everything comes from the game's own code and data and
-from running it on the board model (`model2::bus` with `Board::Model2`);
-where a statement is a guess it says so. The game's page is
-[`docs/games/daytona.md`](../games/daytona.md).
+`vcop`, `desert`) from `daytona` (Daytona USA, revision A) and `vcop`
+(Virtua Cop, revision B). Everything comes from the games' own code and
+data and from running them on the board model (`model2::bus` with
+`Board::Model2`); where a statement is a guess it says so. The games'
+pages are [`docs/games/daytona.md`](../games/daytona.md) and
+[`docs/games/vcop.md`](../games/vcop.md).
 
 **Status.** The board model boots `daytona` to its attract mode (the
 settings screen, the AM2 logo, the 3D attract races, textured and lit,
 the "V.R." screen and the ranking tables), and a coin-start run reaches a
-race that drives, with sound (§5). It is in `romset::games::IN_PROGRESS`,
+race that drives, with sound (§5). `vcop` boots to its attract mode and
+a coin-start run plays its first stage with the light gun (shots, the
+off-screen reload), with sound. Both are in `romset::games::IN_PROGRESS`,
 not yet in the launcher.
 
 ## 1. What it shares with Model 2A (confirmed by the run)
@@ -59,14 +62,33 @@ as the 2C's chip does).
 |---|---|---|
 | 0-7 | `0x1C00000`-`0x1C0000E` | **analog channels 0-7**, read directly (no channel select register); the game sums four reads of each. Daytona's input test (*confirmed*): channel 0 the wheel (an absolute position, `0x80` centre, dead zone +-5, full lock at +-80, below `0x80` left), 1 the accelerator, 2 the brake |
 | 8 | `0x1C00010` | switches (active low): coin 1 `0x01`, coin 2 `0x02`, test `0x04`, service `0x08`, start `0x10`, view buttons `0x20`, `0x40`, `0x80` |
-| 9, 10 | `0x1C00012`, `0x1C00014` | switches (the fourth view button is reg 9 bit 0; the gear lever is reg 9 bits 4-6, read through a table at `0x230D1C`: a 4-position H gate as on `srallyc`; reg 10 is read as 16 bits in the test menu: DIP switches, *unconfirmed*) |
+| 9, 10 | `0x1C00012`, `0x1C00014` | switches (the fourth view button is reg 9 bit 0; the gear lever is reg 9 bits 4-6, read through a table at `0x230D1C`: a 4-position H gate as on `srallyc`; reg 10 is read as 16 bits in the test menu: DIP switches, *unconfirmed*). `vcop`: reg 9 bits 0 and 1 are the two guns' triggers (its input test) |
+| 11 | `0x1C00016` | **DIP switches** (`vcop`, *confirmed* from the code, `0x25E0`): bit 7 clear sets automatic reloading, bit 6 the enemies' look (GAME SYSTEM shows both, neither can be changed there), bit 5 a flag at `0x501700` (*unknown*). The model reads `0xFF`, every switch off (active low, as the inputs): manual reloading, which the off-screen shot needs. *Unconfirmed:* the factory setting |
 | 14 | `0x1C0001C` | switches, read with reg 8 as one 16-bit input word |
 | 15 | `0x1C0001E` | an output latch the game sets and clears bits of (lamps, *unconfirmed*) |
 | 17 | `0x1C00022` | a byte queue the game feeds from a 256-byte ring (the drive board's commands, *unconfirmed*) |
 | 18 | `0x1C00024` | written 0 and 1 at start-up |
 | 26-29 | `0x1C00034`-`0x1C0003A` | written "S", "E", "G", "A" at start-up |
+| 12, 13 | `0x1C00018`, `0x1C0001A` | read by `vcop`'s input routine with 11 (`0x1800`); not used further (*unknown*) |
 | 32 | `0x1C00040` | **command**: the game waits for it to read 0, writes a command, and waits for 0 again |
 | 33 | `0x1C00042` | **status**: the game waits for `0x40` around the buffer's commands |
+
+**The light gun registers** (`vcop`, *confirmed* from the code and its
+GUN MARK CHECK screen): register N is the low byte of the 16-bit word at
+`0x1C00100 + 2N`, read with `ldos` once a frame (`0x1500`-`0x16FC`).
+Registers 0/1 are player 1's Y (low byte, then the high byte), 2/3 its X,
+4/5 and 6/7 player 2's Y and X, and register 8 one bit a player (bit 0
+player 1, bit 1 player 2) that is **set while the gun sees no screen**: the
+gun mark isn't drawn and a shot with it set reloads. That is the layout of
+the 2C gun interface's counters (`model2c.md`, `hotd`), read directly here
+rather than through commands, so the model serves both from `model2::gun`.
+The game maps a position through a calibration in its settings (bytes
+`0x24`-`0x33` of the record below; the defaults X 131-630 and Y 36-425
+for player 1, X 128-627 and Y 39-425 for player 2) to the 496x384 view.
+On a shot it fills the tile layer for four frames (the flash the gun
+sees) and takes the position latched in the middle of it (`0x585xx`,
+`0x15xx`). *Unconfirmed:* what the registers hold while a gun sees nothing
+(the model reports 0), and the timing hardware behind them.
 
 The buffer commands (*confirmed*, the routines at ROM `0x28D40` and
 `0x28E00`): **3** fills the buffer from the board's store, after which the
@@ -101,6 +123,16 @@ this board (not the SRAM, which the game overwrites from it).
 
 The zip also holds the clones' chips (`dayton93`, `daytonas`, `daytonase`,
 `daytonat`, `daytonata`, `daytonagtx`, `daytonam`); none is used.
+
+`vcop` (*confirmed* by running it, [`vcop.md`](../games/vcop.md)) differs:
+its program is **512 KB**, `.12/.13` then `.14/.15`, linked where it lies
+(code runs from `0x40000`-`0x7FFFF`; nothing from the `0x220000` window);
+one polygon pair (`.16/.20`) and one texture pair (`.25/.24`); no TGP data
+ROM; its first MultiPCM's ROMs are 1 MB chips in 2 MB sockets
+([`multipcm.md`](multipcm.md), "Sockets"). Main data, the TGP's tables and
+the sound program's sockets are `daytona`'s. The board model maps the
+`0x220000` window for both; *unconfirmed* what the hardware has there for
+a 512 KB program.
 
 ## 4. The TGP's external bus: the bus register's high bits
 
@@ -186,4 +218,5 @@ same absolute addresses throughout).
   the link board's protocol.
 - The sound board's clocks and analog mix, the MultiPCM's envelope and
   LFO timings, `C00001` and `C40013` (§5, [`multipcm.md`](multipcm.md)).
-- The I/O board's other registers and its store (§2).
+- The I/O board's other registers and its store (§2); registers 12 and
+  13, which `vcop` reads; the gun registers while a gun sees nothing.
