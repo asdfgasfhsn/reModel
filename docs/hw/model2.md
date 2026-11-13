@@ -57,9 +57,9 @@ as the 2C's chip does).
 
 | Reg | Address | Use |
 |---|---|---|
-| 0-7 | `0x1C00000`-`0x1C0000E` | **analog channels 0-7**, read directly (no channel select register); the game sums four reads of each |
+| 0-7 | `0x1C00000`-`0x1C0000E` | **analog channels 0-7**, read directly (no channel select register); the game sums four reads of each. Daytona's input test (*confirmed*): channel 0 the wheel (an absolute position, `0x80` centre, dead zone +-5, full lock at +-80, below `0x80` left), 1 the accelerator, 2 the brake |
 | 8 | `0x1C00010` | switches (active low): coin 1 `0x01`, coin 2 `0x02`, test `0x04`, service `0x08`, start `0x10`, view buttons `0x20`, `0x40`, `0x80` |
-| 9, 10 | `0x1C00012`, `0x1C00014` | switches (the fourth view button is reg 9 bit 0; reg 10 is read as 16 bits in the test menu: DIP switches, *unconfirmed*) |
+| 9, 10 | `0x1C00012`, `0x1C00014` | switches (the fourth view button is reg 9 bit 0; the gear lever is reg 9 bits 4-6, read through a table at `0x230D1C`: a 4-position H gate as on `srallyc`; reg 10 is read as 16 bits in the test menu: DIP switches, *unconfirmed*) |
 | 14 | `0x1C0001C` | switches, read with reg 8 as one 16-bit input word |
 | 15 | `0x1C0001E` | an output latch the game sets and clears bits of (lamps, *unconfirmed*) |
 | 17 | `0x1C00022` | a byte queue the game feeds from a 256-byte ring (the drive board's commands, *unconfirmed*) |
@@ -144,6 +144,6 @@ work of about the size of the DSB1 board, not a variant of the SCSP board.
 
 ## 6. What is left
 
-- The inputs on the test menu (brake, shifter), the drive board, the
+- The shifter in play (its bits are from the code), the drive board, the
   link board's protocol, and the sound board (§5).
 - The I/O board's other registers and its store (§2).

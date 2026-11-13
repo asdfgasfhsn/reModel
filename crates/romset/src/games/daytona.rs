@@ -1,5 +1,5 @@
 use crate::controls::button;
-use crate::{AnalogInput, Board, Controls, Game, PadAxis, PadButton, Role, RomFile};
+use crate::{AnalogInput, Board, Controls, Game, PadAxis, PadButton, Role, RomFile, Shifter};
 
 /// Daytona USA (revision A), the original Model 2 board (`docs/games/daytona.md`,
 /// `docs/hw/model2.md`).
@@ -23,8 +23,8 @@ pub static DAYTONA: Game = Game {
     year: 1994,
     board: Board::Model2,
     attract_frame: 1500,
-    input_lag: 1,
-    run_ahead_max: 1,
+    input_lag: 0,
+    run_ahead_max: 0,
     hud_windows: &[],
     hud_element_windows: &[],
     controls: CONTROLS,
@@ -266,13 +266,13 @@ pub static DAYTONA: Game = Game {
 };
 
 /// A wheel, two pedals, a four-speed H gate and four view buttons, as on
-/// the cabinet. From the game's input polling: register 8 holds coin 1 and
-/// 2, test, service, start and three view buttons, register 9 bit 0 the
-/// fourth. *Confirmed by running it:* the accelerator is analog channel 1
-/// (it confirms the select screens and drives the car) and the wheel
-/// channel 0 (it turns the car); the brake on channel 2, the wheel's
-/// direction and the shifter are still to be checked on the input test
-/// (docs/games/daytona.md).
+/// the cabinet; every channel and bit read off the game's own input test
+/// (docs/games/daytona.md). Register 8 holds coin 1 and 2, test, service,
+/// start and three view buttons, register 9 bit 0 the fourth view button
+/// and bits 4-6 the gear lever (as on srallyc). The wheel is analog
+/// channel 0, an absolute position with `0x80` the centre, a dead zone of
+/// +-5 and full lock at +-80 (`0x30`/`0xD0`; below `0x80` is left); the
+/// accelerator is channel 1 and the brake channel 2, `0` released.
 const CONTROLS: Controls = Controls {
     buttons: &[
         button("coin1", 0, 0x01, &["KeyC", "Digit5"], &[PadButton::Select]).labelled("Coin"),
@@ -286,13 +286,23 @@ const CONTROLS: Controls = Controls {
         button("view2", 0, 0x40, &["KeyB"], &[]).labelled("View 2"),
         button("view3", 0, 0x80, &["KeyN"], &[]).labelled("View 3"),
         button("view4", 1, 0x01, &["KeyM"], &[]).labelled("View 4"),
+        // The H gate (the Manual-4 mission), latched by the shifter below:
+        // reg 9 bits 4-6, as on srallyc (docs/games/daytona.md).
+        button("gear1", 1, 0x50, &["KeyQ"], &[]).labelled("Gear 1"),
+        button("gear2", 1, 0x60, &["KeyW"], &[]).labelled("Gear 2"),
+        button("gear3", 1, 0x10, &["KeyE"], &[]).labelled("Gear 3"),
+        button("gear4", 1, 0x20, &["KeyR"], &[]).labelled("Gear 4"),
+        // Virtual buttons (no bits): neutral and stepping through the gate.
+        button("neutral", 1, 0x00, &["KeyX"], &[]).labelled("Neutral"),
+        button("shiftup", 1, 0x00, &["KeyA"], &[PadButton::RightShoulder, PadButton::East]).labelled("Gear +"),
+        button("shiftdown", 1, 0x00, &["KeyZ"], &[PadButton::LeftShoulder, PadButton::West]).labelled("Gear −"),
     ],
     analogs: &[
         AnalogInput {
             name: "wheel",
             channel: 0,
             centre: 0x80,
-            span: 112,
+            span: 80,
             axis: PadAxis::LeftStickX,
             keys_neg: &["ArrowLeft"],
             keys_pos: &["ArrowRight"],
@@ -323,7 +333,12 @@ const CONTROLS: Controls = Controls {
         },
     ],
     guns: &[],
-    shifter: None,
+    shifter: Some(Shifter {
+        gears: &["gear1", "gear2", "gear3", "gear4"],
+        neutral: "neutral",
+        up: "shiftup",
+        down: "shiftdown",
+    }),
     // One coin a credit (the default), start, then the accelerator twice:
     // it picks the course under the wheel (Beginner) and the transmission
     // (Automatic) on the select screens (docs/games/daytona.md).
