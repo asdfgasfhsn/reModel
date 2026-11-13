@@ -117,7 +117,18 @@ costs 20% higher (85%); following the game's pace took that to about 1.
 ```sh
 make web            # out/web: game list, a page per game, one shared interpreter module
 make web RECOMP=1   # each game gets its own module with its recompiled code (after `make recomp GAME=...`)
+make web RECOMP=1 GAME=daytona   # just that game's page and module; the rest of the live site stays
 ```
+
+**Skipping what hasn't changed.** Each module's `pkg/` keeps a `.stamp`:
+a hash of reModel's sources (tracked, modified and new files under
+`crates/`, `Cargo.toml`, `Cargo.lock`), the wasm toolchain commands and,
+for a game's own module, its recompiled program crates in `out/recomp/`.
+`make web` rebuilds a module only when its stamp differs, so after adding a
+game only that game's module builds; a change to reModel's code rebuilds
+them all, as it must. Delete a `pkg/` to force one. `GAME=` limits the
+build to one game (its page, module and screenshot); the game list,
+scripts, posters and bezels are still refreshed.
 
 **Rebuilding a live site.** The build works in `out/web.next` (starting
 from a copy of `out/web`) and swaps each top-level entry into `out/web` at

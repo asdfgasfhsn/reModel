@@ -314,8 +314,8 @@ dist: ## Distributable player for this platform (interpreter only, stripped) -> 
 	tar -C $(DIST_OUT) -czf $$dir.tar.gz $$name; \
 	echo "built $$dir.tar.gz ($$(du -h $$dir.tar.gz | cut -f1))"
 
-web: ## Browser build into out/web: game list, a page per game (model2/SET/), screenshots (JOBS at once, default 3); RECOMP=1 gives each game its own module with its recompiled code (docs/web.md)
-	WEB_OUT=$(WEB_OUT) ROM=$(ROM) RECOMP=$(RECOMP) CARGO="$(CARGO)" WASM_CARGO="$(WASM_CARGO)" WASM_BINDGEN=$(WASM_BINDGEN) JOBS=$(JOBS) sh tools/web.sh
+web: ## Browser build into out/web: game list, a page per game (model2/SET/), screenshots (JOBS at once, default 3); RECOMP=1 gives each game its own module with its recompiled code; GAME= rebuilds just that game; unchanged modules are skipped (docs/web.md)
+	WEB_GAME=$(if $(filter command line environment,$(origin GAME)),$(GAME)) WEB_OUT=$(WEB_OUT) ROM=$(ROM) RECOMP=$(RECOMP) CARGO="$(CARGO)" WASM_CARGO="$(WASM_CARGO)" WASM_BINDGEN=$(WASM_BINDGEN) JOBS=$(JOBS) sh tools/web.sh
 
 capture: release ## Run into a race saving every 300th frame's renderer inputs to out/GAME/capture (~200 MB)
 	rm -rf $(OUT)/capture

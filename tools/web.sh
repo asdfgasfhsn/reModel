@@ -11,9 +11,16 @@
 #
 # Environment (the Makefile sets these): WEB_OUT, ROM, RECOMP, CARGO,
 # WASM_CARGO (a command, may start with VAR=value), WASM_BINDGEN, JOBS (how
-# many screenshots are made at once; 3 by default).
+# many screenshots are made at once; 3 by default), WEB_GAME (optional: rebuild
+# only that game's page and module; the rest of the live site is kept).
+#
+# A module is rebuilt only when what it's built from changed: each pkg/ keeps
+# a stamp of reModel's sources (tracked, modified and new files under crates/,
+# Cargo.toml, Cargo.lock), the toolchain commands and, for a game's own
+# module, its recompiled program crates. Delete a pkg/ to force a rebuild.
 set -eu
 : "${JOBS:=3}"
+: "${WEB_GAME:=}"
 
 # Built beside the live site (WEB_OUT.next, starting from a copy of it, so
 # screenshots and unchanged files carry over) and swapped in at the end, so
@@ -40,6 +47,35 @@ games=$($remodel --rom "$ROM" web-index)
 if [ -z "$games" ]; then
     echo "web: no supported game has all its chips in $ROM/<set>/" >&2
 fi
+if [ -n "$WEB_GAME" ]; then
+    if ! echo "$games" | grep -qx "$WEB_GAME"; then
+        echo "web: $WEB_GAME is not a listed game with its chips in $ROM/<set>/" >&2
+        exit 1
+    fi
+    games=$WEB_GAME
+fi
+
+# The stamp of reModel's sources and the toolchain (see the top).
+src_key=$({
+    git ls-files -s -- crates Cargo.toml Cargo.lock
+    git diff HEAD -- crates Cargo.toml Cargo.lock
+    git ls-files -o --exclude-standard -z -- crates | xargs -0 -r sha256sum
+    echo "$WASM_CARGO"
+    $WASM_BINDGEN --version
+} | sha256sum | cut -c1-32)
+# The stamp for a module: the sources' plus its program crates' ($@).
+stamp_for() {
+    {
+        echo "$src_key"
+        for p in "$@"; do
+            find "out/recomp/$p" -type f -not -path '*/target/*' | LC_ALL=C sort | xargs -r sha256sum
+        done
+    } | sha256sum | cut -c1-32
+}
+# Whether pkg dir $1 was built with stamp $2.
+fresh() {
+    [ -s "$1/remodel_web_bg.wasm" ] && [ "$(cat "$1/.stamp" 2>/dev/null)" = "$2" ]
+}
 mkdir -p "$model2"
 
 # Screenshots from the attract mode, made once (delete shot.png to remake
@@ -79,6 +115,7 @@ build() {
     set -- "$pkg_dir"
     env $WASM_CARGO build --release --target wasm32-unknown-unknown --manifest-path "$manifest" -p remodel-web
     $WASM_BINDGEN --target web --no-typescript --out-dir "$1" "$wasm"
+    echo "$stamp" >"$1/.stamp"
     echo "web: $1 built in $(($(date +%s) - t)) s, $(du -h "$1/remodel_web_bg.wasm" | cut -f1)"
 }
 export CARGO_TARGET_DIR=$target CARGO_PROFILE_RELEASE_DEBUG=false
@@ -95,12 +132,18 @@ for g in $games; do
         pkg=../pkg/
         rm -rf "$model2/$g/pkg"
     else
-        # A workspace registering only this game's program crates.
-        dir=target/web-recomp/$g
         # shellcheck disable=SC2086 # one argument per program
-        $remodel recomp-workspace --web "$dir" $files
-        # shellcheck disable=SC2086
-        build "$dir/Cargo.toml" "$model2/$g/pkg" $files
+        stamp=$(stamp_for $files)
+        if fresh "$model2/$g/pkg" "$stamp"; then
+            echo "web: $g's module is up to date"
+        else
+            # A workspace registering only this game's program crates.
+            dir=target/web-recomp/$g
+            # shellcheck disable=SC2086
+            $remodel recomp-workspace --web "$dir" $files
+            # shellcheck disable=SC2086
+            build "$dir/Cargo.toml" "$model2/$g/pkg" $files
+        fi
         pkg=./pkg/
     fi
     # Its chips' folder under rom/: its own, or a clone's parent's.
@@ -108,8 +151,13 @@ for g in $games; do
     sed -e "s|@PKG@|$pkg|" -e "s|@ROMSET@|$romset|" crates/web/game.html >"$model2/$g/index.html"
 done
 if [ -n "$shared" ]; then
-    build Cargo.toml "$model2/pkg"
-else
+    stamp=$(stamp_for)
+    if fresh "$model2/pkg" "$stamp"; then
+        echo "web: the shared module is up to date"
+    else
+        build Cargo.toml "$model2/pkg"
+    fi
+elif [ -z "$WEB_GAME" ]; then
     rm -rf "$model2/pkg"
 fi
 
