@@ -114,7 +114,7 @@ Hardware notes ([docs/hw/](docs/hw/)):
 - [texture-lod.md](docs/hw/texture-lod.md): mipmaps, the log table and microtextures, as the games send them.
 - [mb86235.md](docs/hw/mb86235.md) (2C geometry chip), [mb86234.md](docs/hw/mb86234.md) (2A), [adsp2106x.md](docs/hw/adsp2106x.md) (2B SHARC).
 - [tilemap.md](docs/hw/tilemap.md): the 2D tile layer.
-- [sound.md](docs/hw/sound.md): 68000 + SCSP and the DSB2 music board; [dsb1.md](docs/hw/dsb1.md): the DSB1; [z80.md](docs/hw/z80.md): the Z80 core.
+- [sound.md](docs/hw/sound.md): 68000 + SCSP and the DSB2 music board; [dsb1.md](docs/hw/dsb1.md): the DSB1; [multipcm.md](docs/hw/multipcm.md): the original Model 2's MultiPCM sample chips; [z80.md](docs/hw/z80.md): the Z80 core.
 
 Asset conventions: [posters](assets/posters/README.md), [bezels](assets/bezels/README.md).
 

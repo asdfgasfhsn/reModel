@@ -16,7 +16,8 @@ crates/
              (Model 2B's geometry DSPs; generic)
   m68k/      68000 interpreter and disassembler (sound CPUs)
   z80/       Z80 interpreter (DSB1 music board CPU)   (generic)
-  sound/     SCSP (YMF292) with its DSP, and the sound board (Model 2-generic)
+  sound/     SCSP (YMF292) with its DSP, and the sound board; the original
+             Model 2's board: MultiPCM, OPN2 (Model 2-generic)
   mpeg/      MPEG-1 Audio Layer II decoder          (generic)
   dsb/       DSB2 and DSB1 MPEG music boards: 68000 or Z80, UART,
              decoder chip model, replacement soundtracks (WAV/MP2
@@ -44,7 +45,7 @@ board the 68000/SCSP sound system. The geometry processor is what differs betwee
 |---|---|---|---|---|
 | i960 decoder, interpreter, recompiler | shared | shared | shared | shared |
 | ROM loading, code analysis | shared | shared | shared | shared |
-| Sound (68000 + SCSP) | no: 68000 with MultiPCM and FM chips, not modelled (`docs/hw/model2.md`) | shared | shared | shared |
+| Sound (68000 + SCSP) | no: 68000 with two MultiPCMs and an OPN2 FM chip (`sound::PcmBoard`, `docs/hw/model2.md` §5, `docs/hw/multipcm.md`) | shared | shared | shared |
 | Geometry processor | Fujitsu TGP (MB86234), program uploaded | as Model 2; fixed-function geometrizer | two ADSP-21062 SHARCs (copro, geometrizer), programs uploaded; core in `crates/adsp2106x`, board in `crates/model2` | Fujitsu TGP (MB86235) |
 | Renderer | shared | shared | shared | shared |
 

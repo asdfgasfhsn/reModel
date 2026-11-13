@@ -3,7 +3,8 @@
 Status: **in progress**, with one open bug (the Advanced and Expert races
 draw no road, below) (`romset::games::IN_PROGRESS`, not in the
 launcher): it boots to its attract mode, draws it in 3D, textured, and
-`coin-start` reaches a race that drives (and runs out its clock); it is silent. The
+`coin-start` reaches a race that drives (and runs out its clock), with music and effects (the
+sound board model, not yet checked by ear against a cabinet). The
 first game on the original Model 2 board (`Board::Model2`,
 [`docs/hw/model2.md`](../hw/model2.md)); `vcop` and `desert` are on the
 same board.
@@ -98,10 +99,20 @@ same board.
   `srallyc`, so the manifest gives it the same `Shifter`. *Confirmed by
   running it:* with the gear buttons held, the input test's SHIFT1, SHIFT2,
   SHIFT3 and SHIFT4 light for gears 1 to 4. *Not driven:* a Manual-4 race.
-- *Confirmed (from the sound program):* the sound board is not the
-  2A/2B/2C one: a 68000 with RAM at `0xF00000`, two MultiPCM-type sample
-  chips and an OPN2-type FM chip (`docs/hw/model2.md` §5). It is not
-  modelled, so the game is silent.
+- *Confirmed (from the sound program, and by running it):* the sound
+  board is not the 2A/2B/2C one: a 68000 (program `epr-16720.7`, RAM at
+  `0xF00000`) taking the i960's MIDI-style bytes on a UART in its level-2
+  interrupt, two MultiPCMs (`.32`+`.33` the music's samples, `.4`+`.5`
+  the effects'; banked by MB) and an OPN2 FM chip that the program uses
+  only for timer B, its tempo (`docs/hw/model2.md` §5,
+  [`docs/hw/multipcm.md`](../hw/multipcm.md)). Modelled as
+  `sound::PcmBoard`: `make sound` renders the captured link, and the
+  player and the browser play it live. In a coin-start run the music
+  starts 3.3 s after boot; the race music is about 100 beats a minute
+  (with the FM chip's clock *assumed* 8 MHz) and in tune with A440 within
+  about 5 cents; attract plays at a lower level than the race (the host
+  sets it). *Unconfirmed:* the clocks, the envelope and LFO timings, the
+  board's mix.
 - *Confirmed (by running it):* the idle loops are the waits on the
   frame counter byte at work RAM `0x500000`, in the main loop
   (`0x1394`-`0x13A0`) and the boot screens' (`0x1B8B8`-`0x1B8C4`): 74 to
@@ -151,7 +162,8 @@ same board.
    car's position is not read from the game yet), and the Advanced and
    Expert races' missing 3D.
 2. A Manual-4 race, to try the gears in play.
-3. The sound board (`docs/hw/model2.md` §5): a MultiPCM and an OPN2 model.
+3. The sound board by ear against a recording of the cabinet: tempo (the
+   FM chip's clock), envelopes, the level of attract against the race.
 4. `vcop` and `desert` on the same board model (`vcop`'s chips have
    daytona's layout, sound board included).
 5. The drive board (register 17's queue) and the link board.

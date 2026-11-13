@@ -45,7 +45,7 @@ the same). The geometry hardware is what changes:
 
 | Board | Geometry (gk unless marked) | What reModel would need |
 |---|---|---|
-| Model 2 (1993-94) | Fujitsu TGP MB86234 (gk). **ROM:** the game uploads its program (`daytona`, `vcop`; each game its own), contrary to the gk that it is internal and undumped. | *In progress (`daytona` races):* the 2A board model with the original board's differences (`docs/hw/model2.md`); its sound board (MultiPCM, FM) is new work. |
+| Model 2 (1993-94) | Fujitsu TGP MB86234 (gk). **ROM:** the game uploads its program (`daytona`, `vcop`; each game its own), contrary to the gk that it is internal and undumped. | *In progress (`daytona` races):* the 2A board model with the original board's differences (`docs/hw/model2.md`); its sound board (two MultiPCMs, an OPN2) is modelled (`docs/hw/multipcm.md`). |
 | 2A-CRX (1995) | Same TGP as Model 2 (gk). **ROM:** `srallyc` and `vf2` upload theirs too; no geometrizer program is uploaded (fixed function, unconfirmed). | As Model 2, plus 2A's map and a fixed-function geometrizer. Once one 2A game runs, the others are mostly manifests. |
 | 2B-CRX (1995) | Two ADSP-21062 SHARCs (gk for the chip; **ROM** for two): copro and geometrizer, both programmed by the i960 through their I/O-processor DMA. | *Done for `overrevb`, `sgt24h`, `dynabb97` and `doa`:* the SHARC core (interpreter and recompiler), 2B's uploads and port map, and the geometrizer SHARC's output, which has the 2C stream's format (`docs/hw/model2b.md`). Sega's 2B games run their own SHARC programs and may use more of the board. |
 | 2C-CRX (1996-98) | Fujitsu MB86235 (TGPx4) copro and geometrizer, both running programs the i960 uploads. **ROM:** every 2C program set contains MB86235 code shared with `topskatr`'s uploaded programs; no 2A or 2B set does. | Mostly a manifest per game. The MB86235 interpreter and recompiler, the geometrizer, the 2C memory map and the sound board are all there. New work is per game: inputs, any extra board, and whatever the game's code uses that `topskatr`'s doesn't. |
@@ -62,7 +62,7 @@ in.
 
 **Sound.** The 2A, 2B and 2C sets have the 68000 + SCSP board (gk); the
 original Model 2's `daytona` has another (ROM: its program drives two
-MultiPCM-type chips and an FM chip, `docs/hw/model2.md` §5). The sound programs of
+MultiPCM chips and an OPN2 FM chip, `docs/hw/model2.md` §5, modelled as `sound::PcmBoard`). The sound programs of
 12 sets carry the same Sega driver ID string as `topskatr`'s ("CRX_drv",
 with a version): 3.2.8 like `topskatr` in `hotd`, `skisuprg`, `dynamcop`,
 `dynabb97` and `motoraid`; others 3.1.1 to 3.4.9 (ROM). The rest (the
