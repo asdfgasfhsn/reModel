@@ -361,11 +361,14 @@ impl Cpu {
                         next = w & 0xffff;
                     }
                     // Jump to the address in register r (`BF62 4019`: the
-                    // dispatch through a table of jumps).
-                    0x62 => next = self.read_reg((w & 0x3f) as u8) & 0xffff,
+                    // dispatch through a table of jumps), or with bit 14
+                    // clear in RAM0 at a direct address (`daytona`'s
+                    // `BF66 0035` calls the routine whose address it
+                    // stored at RAM0 0x35).
+                    0x62 => next = self.jump_target(w),
                     0x66 => {
                         self.push(next);
-                        next = self.read_reg((w & 0x3f) as u8) & 0xffff;
+                        next = self.jump_target(w);
                     }
                     0x6a => match self.stack.pop() {
                         Some(a) => next = a,
@@ -387,6 +390,13 @@ impl Cpu {
             }
         }
         self.pc = next & 0xffff;
+    }
+
+    /// The target of an indirect jump or call: register `w & 0x3F` with
+    /// bit 14 set, else RAM0's direct address `w & 0x7F`.
+    fn jump_target(&mut self, w: u32) -> u32 {
+        let v = if w & 0x4000 != 0 { self.read_reg((w & 0x3f) as u8) } else { self.ram_read(w & 0x7f) };
+        v & 0xffff
     }
 
     fn push(&mut self, a: u32) {
@@ -471,10 +481,21 @@ impl Cpu {
         self.ram[(a as usize) & (RAM_WORDS - 1)]
     }
 
+    /// The 24-bit external address of an access through `a`: the bus
+    /// register's bits 16-21 and 23 complete it (bit 22 is the mode).
+    /// `daytona`'s program puts a data ROM address in the bus register and
+    /// its low 16 bits in an address register (docs/hw/mb86234.md); the
+    /// 2A programs set only bit 22 there and carry the ROM's address in
+    /// the address register itself.
+    fn ext_addr(&self, a: u32) -> u32 {
+        (a & 0xff_ffff) | (self.regs[reg::BUS as usize] & 0xbf_0000)
+    }
+
     fn ext_read(&mut self, bus: &mut dyn Bus, a: u32) -> u32 {
+        let a = self.ext_addr(a);
         // The data ROM (from 0x800000) is there in both bus modes.
-        if self.shared_bus || a & 0xff_ffff >= ROM_BASE {
-            bus.read(a & 0xff_ffff)
+        if self.shared_bus || a >= ROM_BASE {
+            bus.read(a)
         } else {
             match self.funcs.read(a & 0xffff) {
                 Some(v) => v,
@@ -487,8 +508,9 @@ impl Cpu {
     }
 
     fn ext_write(&mut self, bus: &mut dyn Bus, a: u32, v: u32) {
-        if self.shared_bus || a & 0xff_ffff >= ROM_BASE {
-            bus.write(a & 0xff_ffff, v);
+        let a = self.ext_addr(a);
+        if self.shared_bus || a >= ROM_BASE {
+            bus.write(a, v);
         } else if !self.funcs.write(a & 0xffff, v) {
             *self.unknown_ext.entry(a & 0xffff).or_default() += 1;
         }

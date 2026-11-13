@@ -126,6 +126,10 @@ impl Funcs {
         Some(match a {
             0x20 => self.sine(self.angle),
             0x21 => self.sine(self.angle.wrapping_add(0x4000)),
+            // The sine a half turn on, -sin (*hypothesis*: `daytona` reads
+            // it where a rotation needs the negated sine;
+            // docs/hw/mb86234.md).
+            0x22 => self.sine(self.angle.wrapping_add(0x8000)),
             0x28 => self.recip_pair().0,
             0x29 => self.recip_pair().1,
             0x2a => self.rsqrt_pair().0,

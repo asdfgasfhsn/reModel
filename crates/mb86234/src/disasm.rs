@@ -184,8 +184,14 @@ pub fn line(w: u32) -> String {
                 0x10 => format!("loop r0d {:#05x}", w & 0xffff),
                 0x60 => format!("jmp {:#05x}", w & 0xffff),
                 0x64 => format!("call {:#05x}", w & 0xffff),
-                0x62 => format!("jmp {}", reg_name(w & 0x3f)),
-                0x66 => format!("call {}", reg_name(w & 0x3f)),
+                0x62 | 0x66 => {
+                    let op = if (w >> 16) & 0xff == 0x62 { "jmp" } else { "call" };
+                    if w & 0x4000 != 0 {
+                        format!("{op} {}", reg_name(w & 0x3f))
+                    } else {
+                        format!("{op} [{:#04x}]", w & 0x7f)
+                    }
+                }
                 0x6a => "ret".into(),
                 0x6e => "reti".into(),
                 _ => "??".into(),
