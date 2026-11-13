@@ -26,7 +26,7 @@ impl Core {
     pub fn of(board: romset::Board) -> Self {
         match board {
             romset::Board::Model2B => Core::Sharc,
-            romset::Board::Model2A => Core::Fixed,
+            romset::Board::Model2A | romset::Board::Model2 => Core::Fixed,
             _ => Core::Tgp,
         }
     }

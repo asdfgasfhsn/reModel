@@ -2,6 +2,7 @@
 //! it in `ALL`.
 
 mod bel;
+mod daytona;
 mod doa;
 mod dynabb97;
 mod fvipers;
@@ -24,6 +25,7 @@ mod waverunr;
 use crate::{Error, Game};
 
 pub use bel::BEL;
+pub use daytona::DAYTONA;
 pub use doa::DOA;
 pub use dynabb97::DYNABB97;
 pub use fvipers::FVIPERS;
@@ -52,7 +54,7 @@ pub static ALL: &[&Game] = &[
 /// can run them (`find`), but every list built from [`ALL`] (the player's
 /// and the browser's game lists, `remodel games`, the posters and
 /// bezels) leaves them out. A game moves to `ALL` when it plays.
-pub static IN_PROGRESS: &[&Game] = &[];
+pub static IN_PROGRESS: &[&Game] = &[&DAYTONA];
 
 /// The game `id`, if it is one a front end lists ([`ALL`]).
 pub fn playable(id: &str) -> Option<&'static Game> {

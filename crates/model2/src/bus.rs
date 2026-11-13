@@ -72,6 +72,8 @@ impl Mem {
 
 /// Index of buffer RAM in `mems`; shared with the TGP's external bus.
 const BUFFER_RAM: usize = 3;
+/// The original Model 2's I/O registers (`Model2Bus::m2_io`).
+const M2_IO_REGS: usize = 64;
 /// Indexes of palette RAM and render RAM in `mems`.
 const PALETTE_RAM: usize = 6;
 const RENDER_RAM: usize = 10;
@@ -225,6 +227,10 @@ pub struct Model2Bus {
     pub gun: Option<GunBoard>,
     /// The protection device at 0x1D80000, for games whose manifest has one.
     protection: Option<Box<protection::Device>>,
+    /// The original Model 2's I/O registers at 0x1C00000 (a byte each,
+    /// every other byte address; docs/hw/model2.md), in place of the
+    /// 315-5649's: what the game last wrote to each.
+    m2_io: Option<Box<[u8; M2_IO_REGS]>>,
 
     /// Non-memory accesses, by word address.
     pub io_log: AccessLog,
@@ -250,9 +256,10 @@ pub(crate) struct Probe {
 
 /// Backup SRAM's contents at power-on: all ones, with the operator
 /// settings the game's manifest gives (`Game::backup_ram`).
+/// (On the original Model 2 they go to its I/O board's store instead.)
 fn backup_ram(game: &romset::Game) -> Vec<u8> {
     let mut ram = vec![0xff; 0x4000];
-    for &(at, bytes) in game.backup_ram {
+    for &(at, bytes) in game.backup_ram.iter().filter(|_| game.board != Board::Model2) {
         ram[at..at + bytes.len()].copy_from_slice(bytes);
     }
     ram
@@ -297,6 +304,14 @@ impl Model2Bus {
             Map { start: 0x01d0_0000, end: 0x01d0_3fff, mem: 8, base: 0 },
             Map { start: 0x0200_0000, end: 0x03ff_ffff, mem: 9, base: 0 },
         ];
+        // The original Model 2 (docs/hw/model2.md): the program ROM's
+        // second 128 KB is also at 0x220000, where the code is linked to
+        // run (`daytona` calls it there); 0x200000-0x21FFFF stays RAM,
+        // which the boot code fills with the first 128 KB.
+        if roms.game.board == Board::Model2 {
+            map[1].end = 0x0021_ffff;
+            map.push(Map { start: 0x0022_0000, end: 0x0023_ffff, mem: 0, base: 0x2_0000 });
+        }
         // Render RAM: the two texture banks, then the luma tables. Some
         // boards have 1 MB texture banks, each repeating through its 2 MB
         // window (`Game::texture_ram_mirrored`).
@@ -320,12 +335,27 @@ impl Model2Bus {
         // RAM, 8 MB of which the game fills below 0x12180000 and from
         // 0x12580000, and a small block above it.
         let mut video_2a = None;
-        if roms.game.board == Board::Model2A {
+        if roms.game.board.has_tgp_2a() {
             video_2a = Some(mems.len());
             for (start, size) in [(0x1200_0000u32, 0x80_0000usize), (0x1280_0000, 0x1_0000)] {
                 map.push(Map { start, end: start + size as u32 - 1, mem: mems.len(), base: 0 });
                 mems.push(Mem::zeroed(size));
             }
+        }
+        // The original Model 2's I/O board buffer at 0x1C00200: 128 bytes
+        // the game reads and writes a byte a 16-bit word, around the
+        // commands of register 0x20 (docs/hw/model2.md). Plain RAM here.
+        // The game keeps its operator settings there, not in the SRAM, so
+        // `Game::backup_ram` fills this store (byte N at 0x1C00200 + 2N).
+        if roms.game.board == Board::Model2 {
+            map.push(Map { start: 0x01c0_0200, end: 0x01c0_03ff, mem: mems.len(), base: 0 });
+            let mut store = vec![0; 0x200];
+            for &(at, bytes) in roms.game.backup_ram {
+                for (i, &b) in bytes.iter().enumerate() {
+                    store[2 * (at + i)] = b;
+                }
+            }
+            mems.push(Mem::from(store, true));
         }
         // Two 64 KB RAMs on the video side that only the memory test uses:
         // IC55 at 0x10A00000 and IC54 at 0x10C00000 (segawski, skisuprg and
@@ -372,7 +402,7 @@ impl Model2Bus {
             copro_booted: false,
             tgp: Tgp::new(),
             sharc: (board == Board::Model2B).then(|| Box::new(sharc::Copro::with_data(&copro_data))),
-            tgp2a: (board == Board::Model2A).then(|| Box::new(Tgp2a::new(copro_data.clone()))),
+            tgp2a: board.has_tgp_2a().then(|| Box::new(Tgp2a::new(copro_data.clone()))),
             copro_data,
             tgp_fault: None,
             tgp_stalled: false,
@@ -405,6 +435,7 @@ impl Model2Bus {
                 .iter()
                 .any(|g| matches!(g.source, romset::GunSource::Counters { .. }))
                 .then(GunBoard::default),
+            m2_io: (board == Board::Model2).then(|| Box::new([0; M2_IO_REGS])),
             protection: roms.game.protection.as_ref().map(|p| Box::new(protection::Device::new(p, &roms.program))),
             io_log: AccessLog::default(),
             unmapped: BTreeMap::new(),
@@ -726,8 +757,64 @@ impl Model2Bus {
         true
     }
 
+    /// The original Model 2's I/O registers (docs/hw/model2.md): register
+    /// N at 0x1C00000 + 2N, in byte lanes 0 and 2 of its word. *From
+    /// `daytona`'s code:* 0-7 the analog channels (read directly, no
+    /// channel select), 8, 9, 10 and 14 switch inputs (active low), 15 an
+    /// output latch, 17 the drive board's command; 32 a command register
+    /// (the game waits for it to read 0) and 33 a status (it waits for
+    /// 0x40). The commands complete at once here.
+    fn m2_io_reg_read(&mut self, reg: usize) -> u8 {
+        let latched = self.m2_io.as_ref().map_or(0, |r| r[reg % M2_IO_REGS]);
+        match reg {
+            0..=7 => {
+                let v = self.analog[reg];
+                self.analog_reads[reg] = (self.now, v);
+                v
+            }
+            8 => self.inputs[0],
+            9 => self.inputs[1],
+            10 => self.inputs[2],
+            14 => self.inputs[3],
+            32 => 0,
+            33 => 0x40,
+            _ => latched,
+        }
+    }
+
+    fn io_read32_m2(&mut self, addr: u32) -> Option<u32> {
+        self.m2_io.as_ref()?;
+        if !(0x01c0_0000..0x01c0_0000 + 2 * M2_IO_REGS as u32).contains(&addr) {
+            return None;
+        }
+        let reg = ((addr & !3) - 0x01c0_0000) as usize / 2;
+        Some(self.m2_io_reg_read(reg) as u32 | (self.m2_io_reg_read(reg + 1) as u32) << 16)
+    }
+
+    fn io_write32_m2(&mut self, addr: u32, v: u32, lanes: u32) -> bool {
+        if self.m2_io.is_none() || !(0x01c0_0000..0x01c0_0000 + 2 * M2_IO_REGS as u32).contains(&addr) {
+            return false;
+        }
+        let reg = ((addr & !3) - 0x01c0_0000) as usize / 2;
+        for k in 0..2 {
+            if lanes & (1 << (2 * k)) != 0 {
+                let b = (v >> (16 * k)) as u8;
+                if let Some(r) = self.m2_io.as_mut() {
+                    r[reg + k] = b;
+                }
+                if reg + k == 17 {
+                    if let Some(d) = &mut self.drive {
+                        d.command(b);
+                    }
+                }
+            }
+        }
+        true
+    }
+
     fn io_read32(&mut self, addr: u32) -> Option<u32> {
-        if let Some(v) = self.io_read32_2b(addr).or_else(|| self.io_read32_2a(addr)) {
+        if let Some(v) = self.io_read32_2b(addr).or_else(|| self.io_read32_2a(addr)).or_else(|| self.io_read32_m2(addr))
+        {
             self.log(addr, None);
             return Some(v);
         }
@@ -861,7 +948,7 @@ impl Model2Bus {
         if let (Some(t), 0x0080_0000..=0x0080_7fff) = (self.geo_trace.as_mut(), addr) {
             t.push((addr, v));
         }
-        if self.io_write32_2b(addr, v) || self.io_write32_2a(addr, v) {
+        if self.io_write32_2b(addr, v) || self.io_write32_2a(addr, v) || self.io_write32_m2(addr, v, lanes) {
             self.log(addr, Some(v));
             return true;
         }
@@ -1312,6 +1399,10 @@ impl Model2Bus {
         if let Some(t) = &self.tgp2a {
             t.save(w);
         }
+        // And on the original Model 2, its I/O registers.
+        if let Some(r) = &self.m2_io {
+            (**r).save(w);
+        }
     }
 
     fn load_parts(&mut self, r: &mut state::Reader, parts: Parts) -> Result<(), state::Error> {
@@ -1385,6 +1476,9 @@ impl Model2Bus {
         }
         if let Some(t) = &mut self.tgp2a {
             t.load(r)?;
+        }
+        if let Some(regs) = &mut self.m2_io {
+            (**regs).load(r)?;
         }
         Ok(())
     }

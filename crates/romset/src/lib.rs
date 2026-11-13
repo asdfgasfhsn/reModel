@@ -100,6 +100,14 @@ impl Board {
             Board::Model2C => "Model 2C",
         }
     }
+
+    /// The boards whose geometry processor is an MB86234 TGP with an
+    /// uploaded program, Model 2A's video RAM at `0x12000000` and a
+    /// fixed-function geometrizer: 2A and, as far as `daytona` shows, the
+    /// original Model 2 (docs/hw/model2.md).
+    pub fn has_tgp_2a(self) -> bool {
+        matches!(self, Board::Model2 | Board::Model2A)
+    }
 }
 
 /// One chip in a set.
