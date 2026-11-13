@@ -1,7 +1,6 @@
 # Daytona USA (`daytona`, the original Model 2, 1994)
 
-Status: **in progress**, with one open bug (the Advanced and Expert races
-draw no road, below) (`romset::games::IN_PROGRESS`, not in the
+Status: **in progress** (`romset::games::IN_PROGRESS`, not in the
 launcher): it boots to its attract mode, draws it in 3D, textured, and
 `coin-start` reaches a race that drives (and runs out its clock), with music and effects (the
 sound board model, not yet checked by ear against a cabinet). The
@@ -50,7 +49,7 @@ same board.
   (`BF66 0035`), which the interpreter took as registers: the TGP jumped
   to 0, restarted, and attract froze on its first 3D frame. A function
   unit port `0x22` (read after an angle is written) is taken to be -sin
-  (*hypothesis*).
+  (*hypothesis*, which its one use supports: below).
 - *Confirmed (by running it):* `coin-start` (one coin, start, the
   accelerator on the CIRCUIT SELECT screen and again on MISSION SELECT)
   starts a Beginner race with an automatic: the rolling start, then with
@@ -124,23 +123,39 @@ same board.
   (the number above the rev gauge, about 99 seconds) down in about 6,000 frames,
   shows "RESULTS 40th", "GAME OVER" and goes through the title and the
   attract races again: no hang, crash or misdraw on that path. (40th, so
-  no name entry.) Advanced (30 cars, `wheel=0xA4` held through the
+  no name entry.) Advanced (20 cars by the HUD's POSITION, `wheel=0xA4` held through the
   accelerator at CIRCUIT SELECT) and Expert (`0xE8`) end the same way
-  (RESULTS 20th and 30th), but see the next item. Not done: a whole
+  (RESULTS 20th and 30th). Not done: a whole
   8-lap Beginner race to the flag; the car wants steering through the
   bends (a steering script, below).
-- **OPEN (misdraw): the Advanced and Expert races show no road.** In the Advanced and Expert
-  races the 3D view is only sky and sea (cloud and water layers), with no
-  road, scenery or car, throughout, although the HUD, lap and time run
-  and the course's marker moves on the mini map; the same courses draw
-  fine in attract. Beginner's race draws. Not investigated (the course
-  data or its geometrizer calls may fail for these courses).
+- *Confirmed (by running it):* **the Advanced and Expert races draw**
+  (fixed; they used to show only sky and sea, with the HUD, lap and time
+  running and the marker moving on the mini map, from the start lights
+  on). The cause was the TGP model's special values: the car code at
+  i960 `0xFFE8` divides (function 3, `a * 1/b` through the reciprocal
+  port) by the sine of an angle difference that is sometimes 0, and then
+  multiplies the result by the cosine of a quarter turn, 0. With IEEE
+  rules that was infinity times 0, a NaN (from frame 2,170 of an
+  Advanced coin-start run), which reached the position of the car the
+  view follows (`0x170`/`0x174` of the object at `0x511400`, i960
+  `0x102A4`-`0x102AC`) when the race started at frame 2,400; the view
+  was then lost. The MB86234 model now takes exponent 255 as an ordinary
+  binade and saturates beyond it (no infinities or NaNs: a *hypothesis*
+  for the chip, [`mb86234.md`](../hw/mb86234.md), "Special values"), and
+  both courses draw road, scenery, cars and the player's car all race
+  (coin-start runs with `wheel=0xa4@1450-1520` or `wheel=0xe8@1450-1520`
+  and the accelerator held, to frame 6,200). Beginner met the same
+  infinity but drew. *Unconfirmed:* what the hardware does with a
+  division by 0 (the reciprocal port's output for 0 is this model's).
 - *Unconfirmed, to look into (handling):* with a script the car is
   twitchy: a short steering pulse starts a yaw that carries on after the
   wheel is back at the centre and ends in a spin ("逆走", wrong way, on the
   HUD), at the 95 km/h the car holds. Steering by feel may be all that
-  this is, but the TGP functions behind the car's physics (the
-  `-sin` hypothesis above among them) are unchecked.
+  this is, but the TGP functions behind the car's physics are unchecked.
+  The `-sin` of port `0x22` is borne out by its only use (function
+  `0x2A` splits course points' offsets into along and across a
+  direction, which needs -sin there: [`mb86234.md`](../hw/mb86234.md),
+  the function unit), so it is unlikely to be the cause.
 - *Confirmed (by running it):* **input lag** (`make input-lag GAME=daytona`,
   `wheel=0xD0` held from frame 3300 of a coin-start run with the
   accelerator held, and from 2900): the picture changes in the first frame
@@ -159,8 +174,8 @@ same board.
 ## Next
 
 1. A steering script for a whole Beginner race (a tracking script; the
-   car's position is not read from the game yet), and the Advanced and
-   Expert races' missing 3D.
+   car's position, `0x170`/`0x174` of the object at `0x511400` by the
+   above, is not read from the game yet).
 2. A Manual-4 race, to try the gears in play.
 3. The sound board by ear against a recording of the cabinet: tempo (the
    FM chip's clock), envelopes, the level of attract against the race.

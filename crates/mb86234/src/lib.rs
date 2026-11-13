@@ -124,8 +124,31 @@ impl Ea {
     }
 }
 
-fn f(v: u32) -> f32 {
-    f32::from_bits(v)
+/// A float word's value. The chip has no infinities or NaNs (*hypothesis*,
+/// `docs/hw/mb86234.md`, "Special values"): an exponent field of 255 is an
+/// ordinary binade, `1.m * 2^128`.
+pub(crate) fn f(v: u32) -> f64 {
+    if (v >> 23) & 0xff == 0xff {
+        f32::from_bits(v - (1 << 23)) as f64 * 2.0
+    } else {
+        f32::from_bits(v) as f64
+    }
+}
+
+/// `x` rounded to a float word: single precision (computing in `f64` and
+/// rounding once gives IEEE single's results, so in range nothing changes),
+/// using exponent 255 as an ordinary binade and saturating beyond it.
+pub(crate) fn word(x: f64) -> u32 {
+    let r = x as f32;
+    if r.is_finite() {
+        return r.to_bits();
+    }
+    let h = (x / 2.0) as f32;
+    if h.is_finite() && (h.to_bits() >> 23) & 0xff == 0xfe {
+        h.to_bits() + (1 << 23)
+    } else {
+        (if x.is_sign_negative() { 0x8000_0000 } else { 0 }) | 0x7fff_ffff
+    }
 }
 
 /// A float register and its two views: `+1` is its exponent field
@@ -702,9 +725,9 @@ impl Cpu {
         let r10 = self.regs[reg::R10 as usize];
         let r13 = self.regs[reg::R13 as usize];
         let p = self.regs[reg::P as usize];
-        let product = || (f(r10) * f(r13)).to_bits();
-        let fl = |s: &mut Self, v: f32| {
-            let b = v.to_bits();
+        let product = || word(f(r10) * f(r13));
+        let fl = |s: &mut Self, v: f64| {
+            let b = word(v);
             s.set_flags_f(b);
             Some(b)
         };
@@ -720,7 +743,7 @@ impl Cpu {
             // NOT (hypothesis: `vf2` clears a mask's bit with it and 1).
             4 => AluOut { acc: int(self, !a), product: None },
             5 => {
-                self.set_flags_f((f(a) - f(r10)).to_bits());
+                self.set_flags_f(word(f(a) - f(r10)));
                 AluOut::default()
             }
             6 => AluOut { acc: fl(self, f(a) + f(r10)), product: None },
@@ -734,7 +757,7 @@ impl Cpu {
                 self.set_flags_f(p);
                 AluOut { acc: Some(p), product: Some(product()) }
             }
-            14 => AluOut { acc: fl(self, a as i32 as f32), product: None },
+            14 => AluOut { acc: fl(self, a as i32 as f32 as f64), product: None },
             15 => {
                 let x = f(a);
                 let v = if self.mode[0xa] & 3 == 0 { x.trunc() } else { x.round_ties_even() };

@@ -48,6 +48,32 @@ fn fifo_and_float_alu() {
 }
 
 #[test]
+fn no_infinities_or_nans() {
+    // Words with exponent 255 are numbers (1.m * 2^128), results past them
+    // saturate, and nothing is an IEEE infinity or NaN (`daytona`, see
+    // docs/hw/mb86234.md, "Special values").
+    let word = |cpu: &mut Cpu, input: &[u32]| {
+        cpu.fifo_in.extend(input);
+        assert_eq!(cpu.run(&mut NoBus, 10_000), Stop::Input);
+        cpu.fifo_out.drain(..).collect::<Vec<u32>>()
+    };
+    let prog = |code| vec![mov(R10, IN), mov(ACC, IN), alu(code, NOP), mov(OUT, ACC), jmp(0)];
+    // 2^128 (0x7F800000) minus 2^127, and 2^128 / 2.
+    let mut c = Cpu::new(prog(7), Vec::new());
+    assert_eq!(word(&mut c, &[0x7f00_0000, 0x7f80_0000]), [0x7f00_0000]);
+    let mut c = Cpu::new(prog(16), Vec::new());
+    assert_eq!(word(&mut c, &[2.0f32.to_bits(), 0x7f80_0000]), [0x7f00_0000]);
+    // 2^127 + 2^127 = 2^128; 1/0 saturates.
+    let mut c = Cpu::new(prog(6), Vec::new());
+    assert_eq!(word(&mut c, &[0x7f00_0000, 0x7f00_0000]), [0x7f80_0000]);
+    let mut c = Cpu::new(prog(16), Vec::new());
+    assert_eq!(word(&mut c, &[0, 1.0f32.to_bits()]), [0x7fff_ffff]);
+    // 2^128 * 0 = 0, and 2^128 * 1.5 = 1.5 * 2^128.
+    let mut c = Cpu::new(vec![mov(R10, IN), mov(R13, IN), alu(8, NOP), mov(OUT, P), jmp(0)], Vec::new());
+    assert_eq!(word(&mut c, &[0x7f80_0000, 0, 0x7f80_0000, 1.5f32.to_bits()]), [0, 0x7fc0_0000]);
+}
+
+#[test]
 fn multiply_accumulate_pipeline() {
     // x*a + y*b + z*c as the program's dot products do it: each word's
     // multiply uses the inputs the word before loaded.

@@ -79,7 +79,7 @@ impl Funcs {
         let slope = f32::from_bits(self.rom(base + 2 * k)) as f64;
         let icpt = f32::from_bits(self.rom(base + 2 * k + 1)) as f64;
         let i = icpt * scale;
-        (((slope.abs() * scale) as f32).to_bits(), ((if negative { -i } else { i }) as f32).to_bits())
+        (crate::word(slope.abs() * scale), crate::word(if negative { -i } else { i }))
     }
 
     fn recip_pair(&self) -> (u32, u32) {
@@ -101,7 +101,7 @@ impl Funcs {
 
     /// Is |x| < |y| for the arctangent (the jump condition `A0`)?
     pub fn atan_steep(&self) -> bool {
-        f32::from_bits(self.atan_x).abs() < f32::from_bits(self.atan_y).abs()
+        crate::f(self.atan_x).abs() < crate::f(self.atan_y).abs()
     }
 
     /// atan2(y, x) in 65,536ths of a turn (signed), the octant's angle
