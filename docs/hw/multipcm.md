@@ -60,12 +60,39 @@ The key-on routine (`0xC22`-`0xD26`) writes, in order: 3, 2, 1, 5, 0, 4.
   it. So the rate is linear in F within an octave: **`2^octave * (1 +
   F / 1024)`** times the base rate (semitone 1 is F = 61, `2^(1/12) =
   1.0595`).
-- **Base rate**: *inferred* 44.1 kHz. A sample played at octave 0, F = 0
-  steps one sample per base-rate sample; the instrument tables give each
-  multisample's root note (84 minus its transpose), and the loops of
-  sustained samples with several periods in the loop put the base rate at
-  44,040-44,200 Hz for the four clearest. The model uses the output rate,
-  44,100 Hz.
+- **Base rate**: *inferred* **22.05 kHz**: octave 0, F = 0 reads one sample
+  of the ROM per two 44.1 kHz output samples, and **octave 1, F = 0 plays a
+  sample at its stored rate** (the model: `2^(octave - 1) * (1 + F/1024)`
+  ROM samples per 44.1 kHz output sample). The evidence, from `daytona`'s
+  own data (key-ons of an attract and a coin-start run,
+  `REMODEL_SOUND_TRACE=1 make sound`):
+  - **The announcer.** "GENTLEMEN, START YOUR ENGINES" is sample 47 of the
+    second chip, keyed (voice `0x00` on the link, frame 1852 of a
+    coin-start run) at octave -1, F 0, with an echo 0.15 s later. At a
+    22.05 kHz base it lasts 2.56 s, filling the title card the game shows
+    for it (frames 1852-2012, 2.8 s), with a voice pitch (F0) of 185-200
+    Hz; at 44.1 kHz it was 1.28 s at 370-400 Hz. The course and mission
+    calls (samples 169, 172, 173, keyed when the accelerator picks a
+    course or a mission) come out at 100-250 Hz, a man's voice at a
+    speaking pace (about 5 syllables a second); at 44.1 kHz they were
+    200-500 Hz, and samples 172 and 173 (keyed at octave 1) packed four
+    voiced syllables into 0.27 s.
+  - **Where samples are keyed.** Of the 150 or so samples the two runs
+    play, 77 are keyed most often at exactly octave 1, F 0 (most of them
+    only there: drums, hits, the sustained choir loops 104-115), against
+    23 at octave 0, F 0. One fixed pitch per drum is where a sound
+    designer plays it at its own speed: octave 1.
+  - The earlier 44.1 kHz figure took each multisample's root note (84
+    minus its transpose, the note keyed at octave 0) to be its recorded
+    pitch; with the 22.05 kHz base the root note is an octave above the
+    pitch it sounds at, so the sequences' note numbers run an octave above
+    the music. Tuning can't tell the two apart: the rendered music is
+    within about 5 cents of A440 either way.
+
+  The previous model (44.1 kHz at octave 0) played everything an octave
+  high and twice as fast. *Unconfirmed*: the chip's clock and divider
+  (the model doesn't need them), and whether the hardware's output rate is
+  44.1 kHz with this octave offset or half that.
 - **Level glide**: with bit 0 of register 5 clear, the level is taken to
   glide to the new value rather than jump (the program clears it only for
   changes to sounding voices, which would otherwise click). *Assumed*
@@ -155,7 +182,8 @@ pins them down. A voice stops when its envelope reaches -96 dB.
 ## The model
 
 `sound::multipcm::MultiPcm`, one output sample at a time at 44.1 kHz: the
-sample position steps by the pitch, linearly interpolated, through the
+sample position steps by the pitch (`2^(octave - 1) * (1 + F/1024)`
+samples, above), linearly interpolated, through the
 loop; the envelope, the level, the LFO and the pan scale it; the 28 voices
 are summed at 16-bit scale. Save states keep each voice's registers and
 playback state and the chip's selects and bank.

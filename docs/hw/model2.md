@@ -214,9 +214,12 @@ same absolute addresses throughout).
 - **Clocks** (*unconfirmed*): the model runs the 68000 at 10 MHz and the
   FM chip at 8 MHz (timer B's tick 1.152 ms, so the music's tempo: the
   race music's sixteenth notes come out 0.15 s apart, 100 beats a minute);
-  the MultiPCMs' base rate is inferred as 44.1 kHz from the samples'
-  tuning ([`multipcm.md`](multipcm.md)); rendered music is within about 5
-  cents of A440 tuning by its spectral peaks. Nothing on the CPU side
+  the MultiPCMs play a sample at its stored rate at octave 1 (a 22.05 kHz
+  base at octave 0, at a 44.1 kHz output), inferred from the announcer's
+  voice and where the program keys its samples ([`multipcm.md`](multipcm.md),
+  "Base rate"; until 2026-11 the model had 44.1 kHz at octave 0, an octave
+  high and twice as fast); rendered music is within about 5 cents of A440
+  tuning by its spectral peaks. Nothing on the CPU side
   depends on its clock except how much it gets done between ticks.
 - **Mix** (*unconfirmed*): the two MultiPCMs summed at equal level and the
   FM chip's channels added; the board's analog stage is not known.

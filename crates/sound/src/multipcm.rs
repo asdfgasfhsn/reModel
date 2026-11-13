@@ -26,8 +26,11 @@
 //! | 6 | LFO frequency (bits 5-3), vibrato depth (bits 2-0) |
 //! | 7 | tremolo depth (bits 2-0) |
 //!
-//! The pitch is `2^octave * (1 + F / 1024)` times the base rate, which is
-//! the output rate (44.1 kHz, inferred from the samples' tuning).
+//! The pitch is `2^(octave - 1) * (1 + F / 1024)` samples of the ROM per
+//! output sample at 44.1 kHz: octave 1, F 0 plays a sample at its stored
+//! rate (inferred from the game's use of its samples: most are keyed
+//! there, and its announcer's words are natural speech there,
+//! `docs/hw/multipcm.md`).
 //!
 //! Sample addresses are 22 bits. The board banks the upper half of the
 //! 2 MB space: `0x000000-0x0FFFFF` reads the ROM's first MB, `0x100000-
@@ -35,7 +38,7 @@
 
 /// Voices.
 pub const VOICES: usize = 28;
-/// Output (and base pitch) rate.
+/// Output rate (a sample keyed at octave 1, F 0 plays at its stored rate).
 pub const RATE: f64 = 44_100.0;
 
 const MB: u32 = 0x10_0000;
@@ -375,7 +378,9 @@ impl MultiPcm {
                 (if p < 0x8000 { p as i32 * 2 - 0x8000 } else { 0x17fff - p as i32 * 2 }) as f32 / 32768.0
             };
             let (oct, f) = Self::pitch(&v);
-            let mut step = (1024 + f) << 6;
+            // Octave 1, F 0 reads one sample per output sample (16-bit
+            // fraction): 2^(octave - 1) * (1 + F / 1024).
+            let mut step = (1024 + f) << 5;
             step = if oct >= 0 { step << oct } else { step >> -oct };
             let vib = v.regs[6] & 7;
             if vib != 0 {
@@ -491,18 +496,23 @@ mod tests {
 
     #[test]
     fn pitch_follows_octave_and_f_number() {
-        // Period 64 at the base rate: 44100 / 64 rising edges a second.
+        // Period 64 at the stored rate (octave 1, F 0): 44100 / 64 rising
+        // edges a second.
         let mut c = MultiPcm::new(rom());
-        key(&mut c, 0, &[(1, 0), (3, 0x00), (2, 0), (5, 0x01), (0, 0), (4, 0x80)]);
+        key(&mut c, 0, &[(1, 0), (3, 0x10), (2, 0), (5, 0x01), (0, 0), (4, 0x80)]);
         let n = rising(&mut c, 44100);
         assert!((n as i64 - 689).abs() <= 2, "{n}");
         // One octave up, then a fifth below that (F = 512 is x1.5).
-        key(&mut c, 0, &[(3, 0x10), (4, 0x80)]);
+        key(&mut c, 0, &[(3, 0x20), (4, 0x80)]);
         let n = rising(&mut c, 44100);
         assert!((n as i64 - 1378).abs() <= 2, "{n}");
-        key(&mut c, 0, &[(3, 0x08), (2, 0), (4, 0x80)]);
+        key(&mut c, 0, &[(3, 0x18), (2, 0), (4, 0x80)]);
         let n = rising(&mut c, 44100);
         assert!((n as i64 - 1034).abs() <= 2, "{n}");
+        // Octave 0 is half the stored rate.
+        key(&mut c, 0, &[(3, 0x00), (2, 0), (4, 0x80)]);
+        let n = rising(&mut c, 44100);
+        assert!((n as i64 - 345).abs() <= 2, "{n}");
     }
 
     #[test]

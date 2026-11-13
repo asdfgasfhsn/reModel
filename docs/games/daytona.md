@@ -113,11 +113,20 @@ same board.
   [`docs/hw/multipcm.md`](../hw/multipcm.md)). Modelled as
   `sound::PcmBoard`: `make sound` renders the captured link, and the
   player and the browser play it live. In a coin-start run the music
-  starts 3.3 s after boot; the race music is about 100 beats a minute
-  (with the FM chip's clock *assumed* 8 MHz) and in tune with A440 within
-  about 5 cents; attract plays at a lower level than the race (the host
-  sets it). *Unconfirmed:* the clocks, the envelope and LFO timings, the
-  board's mix.
+  starts 3.3 s after boot; the attract tune is about 100 beats a minute
+  and the Beginner race's about 139 (with the FM chip's clock *assumed* 8
+  MHz), in tune with A440 within about 5 cents; attract plays at a lower
+  level than the race (the host sets it). *Unconfirmed:* the clocks, the
+  envelope and LFO timings, the board's mix.
+- *Inferred (from the game's samples):* **the MultiPCM plays a sample at
+  its stored rate at octave 1**, not 0: the model played every sample an
+  octave high and twice as fast ("too fast, pitch too high" in play).
+  The announcer's "GENTLEMEN, START YOUR ENGINES" (second chip, sample
+  47, keyed at octave -1 at frame 1852 of a coin-start run) now lasts 2.6
+  s, the time the game shows its title card (frames 1852-2012), at a
+  man's pitch (185-200 Hz; it was 1.3 s at 370-400 Hz), and 77 of the
+  samples the game plays are keyed mostly at exactly octave 1, F 0
+  ([`multipcm.md`](../hw/multipcm.md), "Base rate").
 - *Confirmed (by running it):* the idle loops are the waits on the
   frame counter byte at work RAM `0x500000`, in the main loop
   (`0x1394`-`0x13A0`) and the boot screens' (`0x1B8B8`-`0x1B8C4`): 74 to

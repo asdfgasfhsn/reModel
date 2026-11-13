@@ -25,7 +25,8 @@
 //! Clocks are *unconfirmed*: the CPU at 10 MHz (only how much the program
 //! gets done between timer ticks depends on it), the FM chip at 8 MHz
 //! (timer B's period, so the music's tempo), the MultiPCMs at the 44.1 kHz
-//! output rate (inferred from the samples' tuning, `docs/hw/multipcm.md`).
+//! output rate, octave 1 playing a sample at its stored rate (inferred from
+//! the game's use of its samples, `docs/hw/multipcm.md`).
 
 use crate::multipcm::MultiPcm;
 use crate::opn2::Opn2;
