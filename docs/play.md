@@ -308,10 +308,14 @@ could not keep up (below), that it did.
 
 Once the game has run for a couple of seconds the help line also says how
 much run-ahead this computer has time for: the player times the game's own
-frames and the drawing (without run-ahead, so the figure doesn't change
-when it is turned on), and run-ahead N costs about N+1 emulated frames for
-each one shown, so it counts how many fit in 85% of the display's frame
-time, up to 3 ("this computer has time for about 2", or "this computer is
+frames, the main thread's hand-over of each to drawing and the drawing
+(without run-ahead, so the figure doesn't change when it is turned on),
+and run-ahead N costs about N+1 emulated frames for each one shown, so it
+counts how many fit in 85% of the display's frame time beside the
+hand-over, with the drawing on its own thread (below, "The frame loop")
+fitting in that time by itself (with `--no-overlap`, all of it on one
+thread, the drawing is counted in with the frames), up to 3 ("this
+computer has time for about 2", or "this computer is
 too slow for run-ahead"). A choice above that is warned of ("3 is more
 than it can keep up with, and is switched off if the game falls behind";
 the launcher's hint turns amber): it still works, and the 3 s rule below
@@ -385,6 +389,105 @@ second machine notes the transforms of the last frame of each run only
 game's own machine records none (`docs/hw/geometrizer.md`, "Smooth
 motion"). `make run-ahead-check` compares them with a plain run's.
 
+### The frame loop
+
+Each redraw the main thread reads the controls, runs the frames that are
+due (and run-ahead's), and hands the frame shown over to drawing; the
+draw thread (`crates/play/src/draw.rs`) then draws it, the overlay over
+it, and presents it, while the main thread goes back to the event loop
+and on to the next frame. So emulating frame N+1 (and its frames ahead)
+runs alongside drawing frame N, and a frame costs the busier of the two
+threads rather than both added up. `--no-overlap` draws on the main
+thread straight after emulating, as before (for comparison; the same
+code, run in place).
+
+The hand-over copies what the renderer reads from the machine shown
+(`gpu::BoardFrame`): the geometrizer's raster stream and texture point
+RAM, its smooth motion frame and lighting side channel (shared, not
+copied), tile RAM (1 MB) and the 3D offsets every frame, and palette RAM
+(128 KB) and render RAM (the 7 MB of texture RAM, luma tables and
+framebuffers) only when their write counts changed since the last copy
+(`Model2Bus::video_ram_versions`; forgotten on a switch between the
+game's and run-ahead's machines, a new game, a loaded state). Texture ROM
+is shared with the machine. Most frames move 2.3 to 3.5 MB in 0.2 to
+0.3 ms; frames that upload textures add the 7 MB. The geometrizer's wait
+(a frame drawn with the frame before's polygons if it is late) is part of
+the hand-over too, as it was of the drawing. The overlay is laid out on
+the main thread (egui's context and input stay there) and painted on the
+draw thread. Nothing the machine computes changes: only when it is
+drawn.
+
+When to start the next frame: as soon as the draw thread is done with the
+last one, as on one thread, or, if that would leave too little of the
+refresh for the next frame's emulation (the time recent redraws' took,
+plus a tenth and a millisecond), at the last moment that still makes the
+next refresh, counted from when the draw thread got the surface's
+texture (after any wait for vsync). The main thread waits in the event
+loop, so key presses keep coming in and the controls read are as fresh
+as on one thread: on a machine fast enough for both in one refresh
+nothing changes, and on a slower one the frame's controls are read as
+late as the refresh allows. The draw thread wakes the event loop when it
+starts drawing and when it is done.
+
+Costs are timed per thread: the status line's `draw` is the draw
+thread's (`on its thread`), with the main thread's hand-over and any wait
+for the draw before (`waited`, 0 while drawing is the quicker part). The
+"behind" test (paced by the clock, run-ahead dropped after 3 s) uses the
+busier thread's time per frame. The launcher draws on the main thread
+(its previews are light).
+
+What it did (60 Hz display, 1280x720 window, RTX 2080 Super, interpreted
+i960, native geometrizer, coin-start runs, mean of the status lines from
+45 to 66 s, with a build that never drops run-ahead, for measuring; Original is the defaults,
+heavy is `--temporal taa --shading pixel --shading-fine on --bloom 50`):
+
+| Game | Settings | Run-ahead | Before: emulate + draw | fps | After: main thread (emulate + hand-over), draw thread | fps |
+|---|---|---|---|---|---|---|
+| `vf2` | Original | 0 | 3.8 + 4.5 = 8.3 | 60 | 3.8 + 0.8 = 4.6, 4.4 | 60 |
+|  | Original | 1 | 9.0 + 4.5 = 13.4 | 60 (clock) | 8.9 + 0.8 = 9.7, 4.5 | 60 |
+|  | Original | 2 | 13.3 + 4.7 = 18.0 | 49 (clock) | 13.8 + 0.5 = 14.3, 4.7 | 56 (clock) |
+|  | Heavy | 0 | 3.8 + 9.4 = 13.2 | 60 | 3.9 + 1.6 = 5.5, 9.3 | 60 |
+|  | Heavy | 1 | 9.2 + 10.6 = 19.8 | 44 (clock) | 9.6 + 1.5 = 11.1, 9.9 | 60 |
+|  | Heavy | 2 | 11.3 + 9.9 = 21.2 | 36 (clock) | 14.1 + 0.5 = 14.6, 9.8 | 55 (clock) |
+| `srallyc` | Original | 0 | 3.1 + 4.5 = 7.6 | 60 | 3.0 + 0.8 = 3.8, 4.5 | 60 |
+|  | Original | 1 | 8.7 + 5.7 = 14.4 | 55 (clock) | 7.4 + 0.8 = 8.2, 4.4 | 60 |
+|  | Original | 2 | 11.4 + 4.9 = 16.3 | 59 (clock) | 10.9 + 0.8 = 11.7, 4.5 | 60 |
+|  | Heavy | 0 | 3.2 + 8.4 = 11.6 | 60 | 3.0 + 1.3 = 4.3, 8.4 | 60 |
+|  | Heavy | 1 | 7.6 + 9.9 = 17.5 | 56 (clock) | 7.9 + 1.6 = 9.5, 8.5 | 60 |
+|  | Heavy | 2 | 9.6 + 9.3 = 18.9 | 47 (clock) | 11.6 + 1.5 = 13.1, 8.8 | 60 |
+| `lastbrnx` | Original | 0 | 8.7 + 3.3 = 12.0 | 60 | 8.7 + 2.0 = 10.7, 3.3 | 60 |
+|  | Original | 1 | 15.2 + 3.3 = 18.5 | 37 (clock) | 17.0 + 0.2 = 17.2, 3.4 | 47 (clock) |
+|  | Original | 2 | 16.1 + 3.4 = 19.5 | 22 (clock) | 17.3 + 0.2 = 17.5, 3.5 | 25 (clock) |
+|  | Heavy | 0 | 8.3 + 11.6 = 19.9 | 44 (clock) | 8.4 + 2.6 = 11.0, 9.8 | 58 |
+|  | Heavy | 1 | 13.1 + 9.4 = 22.5 | 26 (clock) | 17.0 + 0.4 = 17.4, 10.8 | 42 (clock) |
+|  | Heavy | 2 | 16.0 + 9.9 = 25.9 | 18 (clock) | 17.2 + 0.3 = 17.5, 10.1 | 24 (clock) |
+
+Milliseconds: `emulate` is the status line's per emulated frame, run-ahead
+included; the draw is per picture; fps is pictures a second; "(clock)":
+too slow to follow the display in at least one of the status lines, so
+paced by the clock (where it catches up two frames to a redraw, the
+emulate column is per frame, not per picture). Before is the build
+without the draw thread. The hand-over is mostly the geometrizer's wait
+(1.2 ms of `vf2`'s heavy 1.5) and 0.2 to 0.3 ms of copying; it shrinks
+when the game is behind, since the late frame is drawn without waiting.
+
+What the numbers say: everything whose emulation fits on its own now
+keeps 60 fps. `vf2` run-ahead 1 heavy goes from 19.8 ms (44 fps, paced
+by the clock, and the player would drop run-ahead) to 11.1 ms on the
+main thread beside 9.9 on the draw thread; `srallyc` run-ahead 1 and 2
+fit with heavy settings too, and `lastbrnx` with heavy settings and no
+run-ahead goes from 44 to 58 fps. Run-ahead 2 on `vf2` (14.6 ms) is
+close to the frame and runs a little behind; `lastbrnx` at run-ahead 1
+or 2 doesn't fit by its emulation alone (17 ms: its copro SHARC, "Run-ahead
+cost" below), which the draw thread can't help.
+
+*Untested by eye*: smooth motion's in-betweens on a display over 60
+Hz with the draw thread (they're computed on it, at the time it draws),
+and how the hand-over feels in play; the frames presented were checked
+headless (`make draw-overlap-check`: `--frame-log` reads every picture
+back and hashes it; both ways must draw the same picture for every frame
+both drew, and end on the same state hash).
+
 ### Run-ahead cost
 
 Measured with `make run-ahead-profile GAME=g RUN_AHEAD_FRAMES=n` (the
@@ -413,6 +516,8 @@ same thread as the emulation (a `--run-ahead 0` player run on an RTX
 2080 Super, default window; the figure includes waiting for
 the GPU). With the heavy settings `srallyc` needs 7.7 + 8 ms before
 run-ahead adds anything, which is why the player drops run-ahead there.
+(That was before the draw thread: now the drawing runs alongside the
+emulation, above, "The frame loop".)
 
 What the numbers say:
 
@@ -470,7 +575,8 @@ Ranking, by expected saving:
 3. **Overlap drawing with the next emulated frame** (not on the list):
    2 to 10 ms a frame on the main thread, which the heavier presets make
    as large as the emulation; the GPU work of frame n can run alongside
-   frame n + 1's emulation. Saves up to the draw time.
+   frame n + 1's emulation. Saves up to the draw time. **Done**: the
+   drawing is on its own thread, above, "The frame loop".
 4. **Skip work in the ahead frames** (option 2): drawing and sound are
    already skipped. The geometrizer can't be skipped without diverging
    the shadow (its output feeds polygon RAM and the lists), so what's left

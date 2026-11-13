@@ -73,6 +73,8 @@ make play PLAY_ARGS="--temporal 67"   # temporal anti-aliasing, 3D drawn at 67% 
 make input-lag            # each game's own input lag: frames from a control to the picture changing
 make run-ahead-check      # run-ahead keeps the real state hash and shows the plain run's later frames
 make run-ahead-profile GAME=srallyc RUN_AHEAD_FRAMES=1   # host time per shown frame: real frame, copy, frames ahead
+make play GAME=vf2 PLAY_ARGS="--no-overlap"   # draw on the main thread after each frame instead of on the draw thread alongside the next (for comparison; docs/play.md, The frame loop)
+make draw-overlap-check GAME=vf2   # the player with and without its draw thread (opens a window): same state hash, same picture for every frame both drew (--frame-log; DRAW_CHECK_FRAMES, DRAW_CHECK_OPTS)
 make install-desktop RECOMP=1   # reModel in the desktop's app menu, running this checkout's player
 make uninstall-desktop    # remove that app-menu entry and its icon
 make smooth-frames GAME=doa    # coin-start run drawing in-between frames beside the real ones -> out/doa/frames
