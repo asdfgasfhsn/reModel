@@ -486,7 +486,15 @@ Hz with the draw thread (they're computed on it, at the time it draws),
 and how the hand-over feels in play; the frames presented were checked
 headless (`make draw-overlap-check`: `--frame-log` reads every picture
 back and hashes it; both ways must draw the same picture for every frame
-both drew, and end on the same state hash).
+both drew, and end on the same state hash). Checked on `vf2` (run-ahead
+1, 8x multisampling, pixel shading, bloom; 840 frames compared),
+`lastbrnx` (the same; 509) and `srallyc` (run-ahead 2, Original; 2,437):
+the same pictures and state hashes. Pictures drawn late (the frame
+before's polygons) are only reported: on run-ahead's machine which
+polygons those are depends on timing whatever the drawing
+(`Geometrizer::copy_from` copies the engine, not `last_frame`, so the
+machine keeps its own from before the copy), and one boot frame of
+`srallyc` differed that way.
 
 ### Run-ahead cost
 
