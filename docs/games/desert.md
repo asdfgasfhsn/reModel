@@ -1,7 +1,7 @@
 # Desert Tank (`desert`, the original Model 2, 1994)
 
-Status: **in progress** (`romset::games::IN_PROGRESS`, not in the
-launcher). The third game on the original Model 2 board
+Status: **plays** (listed; the launcher's Model 2 group, with a poster and
+bezel). The third game on the original Model 2 board
 (`Board::Model2`, [`docs/hw/model2.md`](../hw/model2.md)), after
 [`daytona`](daytona.md) and [`vcop`](vcop.md). The title screen reads
 "©1994 SEGA / MARTIN MARIETTA".
@@ -85,10 +85,29 @@ launcher). The third game on the original Model 2 board
   picture changes in the first frame that can read it, so `input_lag` and
   `run_ahead_max` are 0.
 
+- *Confirmed (by running it):* **steering**: with the handle held at `0x40`,
+  `0x60`, `0xA0` or `0xC0` from the first checkpoint the tank turns (the
+  compass arrow in the HUD follows), keeps its armour up, and the score goes
+  on from 69,000 to 91,000 with the time extensions. Held straight the
+  tank runs into the track's wall and runs out the clock ("TIME OVER", the
+  results screen, the victors' table, attract).
+- *Confirmed (by running it):* **the canyon (EXPERT) mission**: holding the
+  handle above `0x80` until the pedal selects (the select screen counts down
+  and takes whichever is highlighted) starts it: canyon walls, a crane and
+  a bridge, "WRONG WAY" when off the course, the armour and the clock run
+  out, the tank is destroyed ("GAME OVER").
+- *Confirmed (by running it):* sound over a 3-minute canyon run: never
+  silent after the first 10 s, peak 32,767 once (2 samples clipped in 3 min),
+  rms 1,200-5,400.
+- *Unconfirmed:* the keyboard's feel for the handle (the keys snap it to
+  full lock; `daytona`'s wheel has a key ramp, `AnalogInput::key_ramp`, not
+  added here).
+
 ## Next
 
-1. The whole desert mission to its end, and the canyon (EXPERT); a
-   steering script.
+1. The whole desert mission to its end, and the canyon, with a script that
+   steers along the track (neither mission has been driven to its last
+   checkpoint).
 2. The turret's direction and travel, the handle's travel.
 3. The boot bytes the sound board overruns (above).
 4. The OUTPUT TEST (lamps) and the motion cabinet (not needed to play).
