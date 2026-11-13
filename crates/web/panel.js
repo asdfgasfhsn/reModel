@@ -46,7 +46,7 @@ const STYLE = `
   background: rgba(0, 0, 0, 0.72); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
   padding: max(12px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
     max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); box-sizing: border-box; }
-#settings [hidden] { display: none !important; }
+#settings[hidden], #settings [hidden] { display: none !important; }
 #settings * { box-sizing: border-box; }
 #settings .card { width: 100%; max-width: 560px; margin: auto 0; background: #070b12; color: #f2f4f8;
   border: 1px solid #163a44; border-radius: 12px; box-shadow: 0 0 24px rgba(47, 230, 239, 0.18);
