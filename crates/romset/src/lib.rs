@@ -153,6 +153,12 @@ pub enum Role {
     /// DSB1 music board Z80 program (plain bytes). The MPEG ROMs beside
     /// it are `MpegData`.
     Dsb1Cpu,
+    /// The original Model 2 sound board's first MultiPCM sample ROMs
+    /// (plain bytes, concatenated in order: the one with the header table
+    /// first). The 68000 program beside it is `AudioCpu`.
+    MultiPcmA,
+    /// The second MultiPCM's sample ROMs, likewise.
+    MultiPcmB,
     /// Not yet identified.
     Unknown,
 }

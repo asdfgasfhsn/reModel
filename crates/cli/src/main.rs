@@ -404,8 +404,10 @@ commands:
   sound-render [WAV] [SECONDS]
                        boot the sound board, replay the host bytes captured
                        by `run` (out/GAME/sound-tx.txt) and render the SCSP
-                       output (default out/GAME/sound.wav; length: until 3 s
-                       after the last byte)
+                       output, or the MultiPCMs' and FM chip's on the original
+                       Model 2 (default out/GAME/sound.wav; length: until 3 s
+                       after the last byte). REMODEL_SOUND_TRACE=1 also writes
+                       the key-ons to WAV's .keys.txt
   music-render [--soundtrack DIR] [WAV] [SECONDS]
                        replay out/GAME/sound-tx.txt (from `run`) into the
                        DSB2 MPEG music board; writes WAV (default

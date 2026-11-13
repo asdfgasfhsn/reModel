@@ -35,10 +35,7 @@ pub fn render(roms: &RomSet, tx: &[(u64, u8)], seconds: Option<f64>, wav: &Path)
         return Err(format!("{}: no sound program in the manifest", roms.game.id));
     }
     if roms.game.board == romset::Board::Model2 {
-        return Err(format!(
-            "{}: the original Model 2's sound board is not modelled (docs/hw/model2.md)",
-            roms.game.id
-        ));
+        return render_pcm(roms, prog, tx, seconds, wav);
     }
     let last = tx.last().map_or(0, |&(f, _)| frame_to_sample(f));
     let total = match seconds {
@@ -135,25 +132,7 @@ pub fn render(roms: &RomSet, tx: &[(u64, u8)], seconds: Option<f64>, wav: &Path)
         println!("  {} {a:#08x} at PC {pc:#08x}", if w { "write" } else { "read " });
     }
 
-    let peak = out.iter().map(|&v| (v as i32).abs()).max().unwrap_or(0);
-    let rms = (out.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>() / out.len().max(1) as f64).sqrt();
-    let db = |x: f64| if x > 0.0 { 20.0 * (x / 32768.0).log10() } else { f64::NEG_INFINITY };
-    let clipped = out.iter().filter(|&&v| v == i16::MAX || v == i16::MIN).count();
-    println!(
-        "level         peak {peak} ({:.1} dBFS), RMS {rms:.0} ({:.1} dBFS), {clipped} clipped samples",
-        db(peak as f64),
-        db(rms)
-    );
-    // RMS per 5-second window.
-    let per = (5 * SAMPLE_RATE as u64 / chunk) as usize;
-    let windows: Vec<String> = profile
-        .chunks(per)
-        .map(|w| {
-            let n = (w.len() as u64 * chunk * 2) as f64;
-            format!("{:.0}", db((w.iter().sum::<f64>() / n).sqrt()).max(-99.0))
-        })
-        .collect();
-    println!("RMS per 5 s   {} dBFS", windows.join(" "));
+    report_level(&out, &profile, chunk);
 
     if let Some(log) = &b.scsp.key_log {
         let text: String = log
@@ -181,12 +160,156 @@ pub fn render(roms: &RomSet, tx: &[(u64, u8)], seconds: Option<f64>, wav: &Path)
         let _ = std::fs::write(&path, text);
         println!("key trace     {} events to {}", log.len(), path.display());
     }
+    write_wav(wav, &out)
+}
+
+/// Peak, RMS and clipping of `out`, and RMS per 5-second window from the
+/// per-chunk energies in `profile`.
+fn report_level(out: &[i16], profile: &[f64], chunk: u64) {
+    let peak = out.iter().map(|&v| (v as i32).abs()).max().unwrap_or(0);
+    let rms = (out.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>() / out.len().max(1) as f64).sqrt();
+    let db = |x: f64| if x > 0.0 { 20.0 * (x / 32768.0).log10() } else { f64::NEG_INFINITY };
+    let clipped = out.iter().filter(|&&v| v == i16::MAX || v == i16::MIN).count();
+    println!(
+        "level         peak {peak} ({:.1} dBFS), RMS {rms:.0} ({:.1} dBFS), {clipped} clipped samples",
+        db(peak as f64),
+        db(rms)
+    );
+    let per = (5 * SAMPLE_RATE as u64 / chunk) as usize;
+    let windows: Vec<String> = profile
+        .chunks(per)
+        .map(|w| {
+            let n = (w.len() as u64 * chunk * 2) as f64;
+            format!("{:.0}", db((w.iter().sum::<f64>() / n).sqrt()).max(-99.0))
+        })
+        .collect();
+    println!("RMS per 5 s   {} dBFS", windows.join(" "));
+}
+
+fn write_wav(wav: &Path, out: &[i16]) -> Result<(), String> {
     if let Some(d) = wav.parent() {
         let _ = std::fs::create_dir_all(d);
     }
-    std::fs::write(wav, sound::wav::encode(SAMPLE_RATE, 2, &out)).map_err(|e| format!("{}: {e}", wav.display()))?;
+    std::fs::write(wav, sound::wav::encode(SAMPLE_RATE, 2, out)).map_err(|e| format!("{}: {e}", wav.display()))?;
     println!("wrote         {}", wav.display());
     Ok(())
+}
+
+/// `render` for the original Model 2's sound board (68000, two MultiPCMs,
+/// an OPN2). With `REMODEL_SOUND_TRACE` set, writes the key-ons to
+/// `<wav>.keys.txt`: time, chip, voice, sample, bank and the registers.
+fn render_pcm(roms: &RomSet, prog: Vec<u8>, tx: &[(u64, u8)], seconds: Option<f64>, wav: &Path) -> Result<(), String> {
+    let bytes = |role| -> Vec<u8> {
+        roms.game
+            .files
+            .iter()
+            .zip(&roms.chips)
+            .filter(|(f, _)| f.role == role)
+            .flat_map(|(_, c)| c.iter().copied())
+            .collect()
+    };
+    let (a, b) = (bytes(Role::MultiPcmA), bytes(Role::MultiPcmB));
+    if a.is_empty() || b.is_empty() {
+        return Err(format!("{}: no MultiPCM sample ROMs in the manifest", roms.game.id));
+    }
+    let last = tx.last().map_or(0, |&(f, _)| frame_to_sample(f));
+    let total = match seconds {
+        Some(s) => (s * SAMPLE_RATE as f64) as u64,
+        None => last + 3 * SAMPLE_RATE as u64,
+    };
+    let mut board = sound::PcmBoard::new(prog, a, b);
+    let trace = std::env::var_os("REMODEL_SOUND_TRACE").is_some();
+    if trace {
+        for c in &mut board.bus.pcm {
+            c.key_log = Some(Vec::new());
+        }
+    }
+    println!("reset         SSP {:#x} PC {:#x}", board.cpu.a[7], board.cpu.pc);
+    let started = std::time::Instant::now();
+    let mut out = Vec::with_capacity(total as usize * 2);
+    let mut next = 0;
+    let mut first_irq_on = None;
+    let mut voice_peak = 0;
+    let mut profile = Vec::new();
+    let chunk = 1024u64;
+    let mut t = 0u64;
+    while t < total {
+        while next < tx.len() && frame_to_sample(tx[next].0) <= t {
+            board.midi_in(tx[next].1);
+            next += 1;
+        }
+        let n = chunk.min(total - t);
+        let start = out.len();
+        board.run(n as usize, &mut out);
+        t += n;
+        if first_irq_on.is_none() && board.cpu.sr() & 0x0700 != 0x0700 {
+            first_irq_on = Some((t, board.cpu.pc));
+        }
+        voice_peak = voice_peak.max(board.bus.pcm.iter().map(|c| c.sounding()).sum::<usize>());
+        profile.push(out[start..].iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>());
+    }
+    let secs = started.elapsed().as_secs_f64();
+    let emulated = total as f64 / SAMPLE_RATE as f64;
+    let s = &board.bus.stats;
+    println!("emulated      {emulated:.2}s of audio in {secs:.2}s host ({:.1}x real time)", emulated / secs);
+    println!("68k           {} instructions, PC {:#08x}, SR {:#06x}", board.instructions, board.cpu.pc, board.cpu.sr());
+    match first_irq_on {
+        Some((t, pc)) => {
+            println!("interrupts    first unmasked at {:.3}s (PC {pc:#08x})", t as f64 / SAMPLE_RATE as f64)
+        }
+        None => println!("interrupts    never unmasked"),
+    }
+    println!("coverage      {} program words started an instruction", board.covered_words());
+    println!(
+        "link          {} bytes queued, {} received, {} overruns, {} left on the link",
+        tx.len(),
+        s.rx_bytes,
+        s.overruns,
+        board.link_pending()
+    );
+    for (i, c) in board.bus.pcm.iter().enumerate() {
+        let used: Vec<String> =
+            c.stats.samples_used.iter().enumerate().filter(|(_, &n)| n > 0).map(|(i, n)| format!("{i}:{n}")).collect();
+        println!(
+            "multipcm {}    {} key-ons, {} key-offs, bank {} ({} writes), {} bad-slot writes, other {:x?}",
+            i + 1,
+            c.stats.key_ons,
+            c.stats.key_offs,
+            c.bank(),
+            c.stats.bank_writes,
+            c.stats.bad_slot,
+            c.stats.other
+        );
+        println!("  samples     {} used: {}", used.len(), used.join(" "));
+    }
+    println!("polyphony     up to {voice_peak} voices sounding at a chunk boundary");
+    println!("fm            {} data writes, {} busy status reads", s.fm_writes, s.fm_busy_waits);
+    println!("unmapped      {} reads, {} writes", s.unmapped_reads, s.unmapped_writes);
+    for &(a, w, pc) in &s.unmapped {
+        println!("  {} {a:#08x} at PC {pc:#08x}", if w { "write" } else { "read " });
+    }
+    report_level(&out, &profile, chunk);
+    if trace {
+        let mut lines = Vec::new();
+        for (chip, c) in board.bus.pcm.iter().enumerate() {
+            for &(t, v, r, bank) in c.key_log.iter().flatten() {
+                let regs: Vec<String> = r.iter().map(|b| format!("{b:02x}")).collect();
+                let line = format!(
+                    "{:9.4} {} {v:2} s{:3} b{bank} {}\n",
+                    t as f64 / SAMPLE_RATE as f64,
+                    chip + 1,
+                    r[1],
+                    regs.join(" ")
+                );
+                lines.push((t, line));
+            }
+        }
+        lines.sort();
+        let path = wav.with_extension("keys.txt");
+        let _ = std::fs::write(&path, lines.into_iter().map(|(_, l)| l).collect::<String>());
+        println!("key trace     to {}", path.display());
+    }
+    write_wav(wav, &out)
 }
 
 #[cfg(test)]

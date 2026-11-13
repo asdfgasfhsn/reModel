@@ -1,4 +1,5 @@
-//! Live audio: the sound board (68000 + SCSP) and, on games that have one,
+//! Live audio: the sound board (68000 + SCSP, or on the original Model 2
+//! the 68000 with MultiPCM and FM chips) and, on games that have one,
 //! the DSB2 or DSB1 music board, run alongside the main board and fed the bytes the
 //! game sends on the sound link as it sends them.
 //!
@@ -20,6 +21,45 @@ pub const RATE: u32 = 44_100;
 /// in a race and buried the announcer. +8 / -8 was judged right by ear on
 /// the native build. Unconfirmed against a cabinet: a listening choice.
 pub const DEFAULT_MIX: (f32, f32) = (8.0, -8.0);
+
+/// The sound board: the SCSP one (Model 2A/2B/2C) or the original Model
+/// 2's (MultiPCMs and an OPN2). Both take the sound link's bytes and give
+/// 44.1 kHz stereo.
+enum Sound {
+    Scsp(sound::SoundBoard),
+    Pcm(Box<sound::PcmBoard>),
+}
+
+impl Sound {
+    fn midi_in(&mut self, byte: u8) {
+        match self {
+            Sound::Scsp(s) => s.midi_in(byte),
+            Sound::Pcm(s) => s.midi_in(byte),
+        }
+    }
+
+    fn run(&mut self, samples: usize, out: &mut Vec<i16>) {
+        match self {
+            Sound::Scsp(s) => s.run(samples, out),
+            Sound::Pcm(s) => s.run(samples, out),
+        }
+    }
+}
+
+impl state::State for Sound {
+    fn save(&self, w: &mut state::Writer) {
+        match self {
+            Sound::Scsp(s) => s.save(w),
+            Sound::Pcm(s) => s.save(w),
+        }
+    }
+    fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
+        match self {
+            Sound::Scsp(s) => s.load(r),
+            Sound::Pcm(s) => s.load(r),
+        }
+    }
+}
 
 /// A music board: the DSB2 (68000, `topskatr`) or the DSB1 (Z80, `stcc`).
 /// Both take the sound link's bytes and give 44.1 kHz stereo.
@@ -67,7 +107,7 @@ impl state::State for Music {
 }
 
 pub struct Live {
-    sound: Option<sound::SoundBoard>,
+    sound: Option<Sound>,
     music: Option<Music>,
     /// Output samples produced so far (per channel).
     samples: u64,
@@ -87,11 +127,25 @@ impl Live {
     /// The boards `roms` has: none, the sound board, or the sound board and
     /// a music board (DSB2 or DSB1).
     pub fn new(roms: &RomSet) -> Self {
-        // The original Model 2's sound board is another design (a 68000
-        // with MultiPCM and FM chips, docs/hw/model2.md), not modelled:
-        // its program isn't run on the SCSP board.
-        let prog = if roms.game.board == romset::Board::Model2 { Vec::new() } else { roms.region16be(Role::AudioCpu) };
-        let sound = (!prog.is_empty()).then(|| sound::SoundBoard::new(prog, roms.region16be(Role::Samples)));
+        // The original Model 2's sound board is another design: a 68000
+        // with MultiPCM and FM chips (docs/hw/model2.md §5).
+        let prog = roms.region16be(Role::AudioCpu);
+        let bytes = |role| -> Vec<u8> {
+            roms.game
+                .files
+                .iter()
+                .zip(&roms.chips)
+                .filter(|(f, _)| f.role == role)
+                .flat_map(|(_, c)| c.iter().copied())
+                .collect()
+        };
+        let sound = (!prog.is_empty()).then(|| {
+            if roms.game.board == romset::Board::Model2 {
+                Sound::Pcm(Box::new(sound::PcmBoard::new(prog, bytes(Role::MultiPcmA), bytes(Role::MultiPcmB))))
+            } else {
+                Sound::Scsp(sound::SoundBoard::new(prog, roms.region16be(Role::Samples)))
+            }
+        });
         let mpeg = || -> Vec<u8> {
             roms.game
                 .files

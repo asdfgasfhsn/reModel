@@ -13,9 +13,11 @@ use crate::{AnalogInput, Board, Controls, Game, PadAxis, PadButton, Role, RomFil
 /// chip by chip); the TGP's data ROM `.28/.29`, **`.28` the low half**
 /// (the reverse of `srallyc`'s: so paired it begins with an identity
 /// matrix of floats). The sound board is not the SCSP one
-/// (`docs/hw/model2.md` §5): `epr-16720.7` is its 68000 program, which
-/// nothing runs yet; `.8` and the four 2 MB chips are presumably its
-/// tables and samples (unconfirmed). The zip's other chips belong to the
+/// (`docs/hw/model2.md` §5): `epr-16720.7` is its 68000 program; the
+/// first MultiPCM reads `.32` then `.33`, the second `.4` then `.5` (each
+/// pair's first chip holds the sample header table; the banked samples
+/// were matched to their MB by the loops, `docs/hw/multipcm.md`). `.8` is
+/// not referenced by the sound program (unknown). The zip's other chips belong to the
 /// clones and the ramps `16310`-`16312` (as on 2A) are unused.
 pub static DAYTONA: Game = Game {
     id: "daytona",
@@ -242,25 +244,25 @@ pub static DAYTONA: Game = Game {
             name: "mpr-16491.32",
             size: 0x200000,
             sha1: "06d1d55470ae99f8de0f8c88c694f34c4eb13668",
-            role: Role::Unknown,
+            role: Role::MultiPcmA,
         },
         RomFile {
             name: "mpr-16492.33",
             size: 0x200000,
             sha1: "2054f69cecad677eb00c6a3051f5b5d90885e19b",
-            role: Role::Unknown,
+            role: Role::MultiPcmA,
         },
         RomFile {
             name: "mpr-16493.4",
             size: 0x200000,
             sha1: "ea9a8b45a07dccaae62be7cf095532ce7596a70c",
-            role: Role::Unknown,
+            role: Role::MultiPcmB,
         },
         RomFile {
             name: "mpr-16494.5",
             size: 0x200000,
             sha1: "d4e246fc57a16ff562bbcbccf6a739b706f58696",
-            role: Role::Unknown,
+            role: Role::MultiPcmB,
         },
     ],
 };
