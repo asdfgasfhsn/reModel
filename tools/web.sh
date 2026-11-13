@@ -17,7 +17,10 @@
 # A module is rebuilt only when what it's built from changed: each pkg/ keeps
 # a stamp of reModel's sources (tracked, modified and new files under crates/,
 # Cargo.toml, Cargo.lock), the toolchain commands and, for a game's own
-# module, its recompiled program crates. Delete a pkg/ to force a rebuild.
+# module, its recompiled program crates. The game manifests
+# (crates/romset/src/games/) count only for the game and its parent, so
+# adding a game doesn't rebuild the others; the shared module counts them
+# all. Delete a pkg/ to force a rebuild.
 set -eu
 : "${JOBS:=3}"
 : "${WEB_GAME:=}"
@@ -56,17 +59,27 @@ if [ -n "$WEB_GAME" ]; then
 fi
 
 # The stamp of reModel's sources and the toolchain (see the top).
+manifests=crates/romset/src/games
 src_key=$({
-    git ls-files -s -- crates Cargo.toml Cargo.lock
-    git diff HEAD -- crates Cargo.toml Cargo.lock
-    git ls-files -o --exclude-standard -z -- crates | xargs -0 -r sha256sum
+    git ls-files -s -- crates Cargo.toml Cargo.lock ":!$manifests"
+    git diff HEAD -- crates Cargo.toml Cargo.lock ":!$manifests"
+    git ls-files -o --exclude-standard -z -- crates ":!$manifests" | xargs -0 -r sha256sum
     echo "$WASM_CARGO"
     $WASM_BINDGEN --version
 } | sha256sum | cut -c1-32)
-# The stamp for a module: the sources' plus its program crates' ($@).
+# The stamp for a module: the sources' plus the manifests named by $1 (a
+# game's: its own and its parent's; empty: all of them) and its program
+# crates' (the rest).
 stamp_for() {
+    m=$1
+    shift
     {
         echo "$src_key"
+        if [ -n "$m" ]; then
+            for f in $m; do cat "$manifests/$f.rs" 2>/dev/null || true; done
+        else
+            cat "$manifests"/*.rs
+        fi
         for p in "$@"; do
             find "out/recomp/$p" -type f -not -path '*/target/*' | LC_ALL=C sort | xargs -r sha256sum
         done
@@ -132,8 +145,9 @@ for g in $games; do
         pkg=../pkg/
         rm -rf "$model2/$g/pkg"
     else
+        parent=$($remodel games | awk -v g="$g" '$1 == g { print $NF }')
         # shellcheck disable=SC2086 # one argument per program
-        stamp=$(stamp_for $files)
+        stamp=$(stamp_for "$g $parent" $files)
         if fresh "$model2/$g/pkg" "$stamp"; then
             echo "web: $g's module is up to date"
         else
@@ -151,7 +165,7 @@ for g in $games; do
     sed -e "s|@PKG@|$pkg|" -e "s|@ROMSET@|$romset|" crates/web/game.html >"$model2/$g/index.html"
 done
 if [ -n "$shared" ]; then
-    stamp=$(stamp_for)
+    stamp=$(stamp_for "")
     if fresh "$model2/pkg" "$stamp"; then
         echo "web: the shared module is up to date"
     else

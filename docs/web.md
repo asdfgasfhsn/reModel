@@ -124,9 +124,11 @@ make web RECOMP=1 GAME=daytona   # just that game's page and module; the rest of
 a hash of reModel's sources (tracked, modified and new files under
 `crates/`, `Cargo.toml`, `Cargo.lock`), the wasm toolchain commands and,
 for a game's own module, its recompiled program crates in `out/recomp/`.
-`make web` rebuilds a module only when its stamp differs, so after adding a
-game only that game's module builds; a change to reModel's code rebuilds
-them all, as it must. Delete a `pkg/` to force one. `GAME=` limits the
+The game manifests (`crates/romset/src/games/`) count only for the game
+and its parent (the shared interpreter module counts them all). `make web`
+rebuilds a module only when its stamp differs, so after adding a game only
+that game's module builds; a change to reModel's code rebuilds them all,
+as it must. Delete a `pkg/` to force one. `GAME=` limits the
 build to one game (its page, module and screenshot); the game list,
 scripts, posters and bezels are still refreshed.
 
