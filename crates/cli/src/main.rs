@@ -399,7 +399,8 @@ commands:
                        2B sharc-copro.bin, sharc-geo.bin for sharc-disasm)
   sound-disasm ADDR [COUNT]
                        disassemble the sound board's 68000 program (its own
-                       address space: ROM at 0x600000)
+                       address space: ROM at 0x600000; at 0 on the original
+                       Model 2)
   sound-render [WAV] [SECONDS]
                        boot the sound board, replay the host bytes captured
                        by `run` (out/GAME/sound-tx.txt) and render the SCSP
@@ -1787,8 +1788,10 @@ fn main() -> ExitCode {
             };
             let count = args.get(2).and_then(|s| parse_num(s)).unwrap_or(32);
             let rom = roms.region16be(romset::Role::AudioCpu);
+            // The original Model 2's sound 68000 runs its program from 0.
+            let base = if roms.game.board == romset::Board::Model2 { 0 } else { 0x60_0000 };
             let fetch = |a: u32| {
-                let o = a.wrapping_sub(0x60_0000) as usize;
+                let o = a.wrapping_sub(base) as usize;
                 rom.get(o..o + 2).map_or(0, |b| u16::from_be_bytes([b[0], b[1]]))
             };
             for _ in 0..count {

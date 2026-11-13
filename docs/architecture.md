@@ -8,7 +8,7 @@ crates/
   romset/    ROM manifests, verification, assembly (Model 2-generic)
     src/games/  one module per supported game
   analyze/   recursive-descent code discovery      (CPU-generic)
-  model2/    board model (2A, 2B and 2C): memory map, IRQs, timers, I/O,
+  model2/    board model (Model 2, 2A, 2B and 2C): memory map, IRQs, timers, I/O,
              copro and geometrizer interfaces
   mb86234/   MB86234 (Model 2A TGP) interpreter and disassembler
   mb86235/   MB86235 (TGPx4) decoder, disassembler and interpreter
@@ -37,14 +37,14 @@ tools/
 
 ## Reuse across Model 2
 
-All Model 2 boards share the i960KB main CPU and the 68000/SCSP sound
-system. The geometry processor is what differs between revisions:
+All Model 2 boards share the i960KB main CPU, and all but the original
+board the 68000/SCSP sound system. The geometry processor is what differs between revisions:
 
 | Component | Model 2 | 2A | 2B | 2C |
 |---|---|---|---|---|
 | i960 decoder, interpreter, recompiler | shared | shared | shared | shared |
 | ROM loading, code analysis | shared | shared | shared | shared |
-| Sound (68000 + SCSP) | shared | shared | shared | shared |
+| Sound (68000 + SCSP) | no: 68000 with MultiPCM and FM chips, not modelled (`docs/hw/model2.md`) | shared | shared | shared |
 | Geometry processor | Fujitsu TGP (MB86234), program uploaded | as Model 2; fixed-function geometrizer | two ADSP-21062 SHARCs (copro, geometrizer), programs uploaded; core in `crates/adsp2106x`, board in `crates/model2` | Fujitsu TGP (MB86235) |
 | Renderer | shared | shared | shared | shared |
 
@@ -60,7 +60,8 @@ in `crates/model2/src/drive.rs`, one per kind; the 2C gun interface in
 `waverunr`, `overrev`, `hotd` and `bel` are Model 2C-CRX (MB86235 geometry
 processor); `overrevb`, `sgt24h`, `dynabb97`, `doa`, `indy500`, `fvipers`,
 `schamp`, `vstriker` and `lastbrnx` are Model 2B-CRX (ADSP-21062 SHARCs);
-`srallyc` is Model 2A-CRX (MB86234 TGP). The manifest's
+`srallyc` is Model 2A-CRX (MB86234 TGP); `daytona` (in progress) the original
+Model 2, on the 2A board model with its differences (`Board::Model2`). The manifest's
 `board` picks the board model: `crates/model2` keeps what differs between
 the boards (the copro and geometrizer cores, the 2B host windows, the UART
 address) behind it, with nothing keyed on a game's name. A manifest's

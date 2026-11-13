@@ -4,7 +4,19 @@ use crate::{AnalogInput, Board, Controls, Game, PadAxis, PadButton, Role, RomFil
 /// Daytona USA (revision A), the original Model 2 board (`docs/games/daytona.md`,
 /// `docs/hw/model2.md`).
 ///
-/// Work in progress: roles are being checked against what the code reads.
+/// Chip pairs are listed low half-word first. Program `16722a.12`/`.13`
+/// (its second 128 KB also at `0x220000`, where that code runs); main
+/// data `.10/.11`, `.8/.9`, `.6/.7` packed from `0x2000000` (the boot
+/// record's interrupt table is at `0x2802040`, in `.6/.7`, which also hold
+/// the TGP program); polygons `.16/.20 .17/.21 .18/.22 .19/.23` and
+/// textures `.25/.24 .27/.26` as on 2A (the pictures are right; not checked
+/// chip by chip); the TGP's data ROM `.28/.29`, **`.28` the low half**
+/// (the reverse of `srallyc`'s: so paired it begins with an identity
+/// matrix of floats). The sound board is not the SCSP one
+/// (`docs/hw/model2.md` §5): `epr-16720.7` is its 68000 program, which
+/// nothing runs yet; `.8` and the four 2 MB chips are presumably its
+/// tables and samples (unconfirmed). The zip's other chips belong to the
+/// clones and the ramps `16310`-`16312` (as on 2A) are unused.
 pub static DAYTONA: Game = Game {
     id: "daytona",
     title: "Daytona USA",
@@ -39,7 +51,10 @@ pub static DAYTONA: Game = Game {
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
     recommended: crate::Recommended::DEFAULT,
-    idle_loops: &[],
+    // The waits for the next frame: poll the frame counter byte at work
+    // RAM 0x500000 until the vblank handler changes it (the main loop's,
+    // and the boot screens') (docs/games/daytona.md).
+    idle_loops: &[crate::IdleLoop { start: 0x1394, end: 0x13a0 }, crate::IdleLoop { start: 0x1b8b8, end: 0x1b8c4 }],
     packed: &[Role::MainData, Role::CoproData, Role::Polygons, Role::TgpData],
     volume_db: 0.0,
     files: &[
@@ -164,15 +179,15 @@ pub static DAYTONA: Game = Game {
             role: Role::Textures,
         },
         RomFile {
-            name: "mpr-16536.29",
-            size: 0x200000,
-            sha1: "2018468d7d849854b3d0cfbcd217317e2fc93555",
-            role: Role::TgpData,
-        },
-        RomFile {
             name: "mpr-16537.28",
             size: 0x200000,
             sha1: "b32fd1d3fc8983fb5f2a7b236b665a8c9b52769f",
+            role: Role::TgpData,
+        },
+        RomFile {
+            name: "mpr-16536.29",
+            size: 0x200000,
+            sha1: "2018468d7d849854b3d0cfbcd217317e2fc93555",
             role: Role::TgpData,
         },
         RomFile {
@@ -215,7 +230,7 @@ pub static DAYTONA: Game = Game {
             name: "epr-16720.7",
             size: 0x20000,
             sha1: "9933ccc0757e8c86e0adb938d1c89210b26841ea",
-            role: Role::Unknown,
+            role: Role::AudioCpu,
         },
         RomFile {
             name: "epr-16721.8",
@@ -251,15 +266,26 @@ pub static DAYTONA: Game = Game {
 };
 
 /// A wheel, two pedals, a four-speed H gate and four view buttons, as on
-/// the cabinet. Ports, bits and channels are still to be confirmed on the
-/// game's input test (docs/games/daytona.md).
+/// the cabinet. From the game's input polling: register 8 holds coin 1 and
+/// 2, test, service, start and three view buttons, register 9 bit 0 the
+/// fourth. *Confirmed by running it:* the accelerator is analog channel 1
+/// (it confirms the select screens and drives the car) and the wheel
+/// channel 0 (it turns the car); the brake on channel 2, the wheel's
+/// direction and the shifter are still to be checked on the input test
+/// (docs/games/daytona.md).
 const CONTROLS: Controls = Controls {
     buttons: &[
         button("coin1", 0, 0x01, &["KeyC", "Digit5"], &[PadButton::Select]).labelled("Coin"),
         button("coin2", 0, 0x02, &[], &[]),
         button("test", 0, 0x04, &[], &[]),
         button("service", 0, 0x08, &[], &[]),
-        button("start", 0, 0x40, &["Enter", "Digit1"], &[PadButton::Start]).labelled("Start"),
+        button("start", 0, 0x10, &["Enter", "Digit1"], &[PadButton::Start]).labelled("Start"),
+        // The four V.R. (view) buttons: the code tests these bits together
+        // and picks a view by which is set.
+        button("view1", 0, 0x20, &["KeyV"], &[PadButton::North]).labelled("View 1"),
+        button("view2", 0, 0x40, &["KeyB"], &[]).labelled("View 2"),
+        button("view3", 0, 0x80, &["KeyN"], &[]).labelled("View 3"),
+        button("view4", 1, 0x01, &["KeyM"], &[]).labelled("View 4"),
     ],
     analogs: &[
         AnalogInput {
@@ -298,5 +324,8 @@ const CONTROLS: Controls = Controls {
     ],
     guns: &[],
     shifter: None,
-    coin_start: "coin1@1100-1104,start@1300-1304",
+    // One coin a credit (the default), start, then the accelerator twice:
+    // it picks the course under the wheel (Beginner) and the transmission
+    // (Automatic) on the select screens (docs/games/daytona.md).
+    coin_start: "coin1@1100-1104,start@1300-1304,gas=0xff@1500-1510,gas=0xff@1700-1710",
 };

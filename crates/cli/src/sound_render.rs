@@ -34,6 +34,12 @@ pub fn render(roms: &RomSet, tx: &[(u64, u8)], seconds: Option<f64>, wav: &Path)
     if prog.is_empty() {
         return Err(format!("{}: no sound program in the manifest", roms.game.id));
     }
+    if roms.game.board == romset::Board::Model2 {
+        return Err(format!(
+            "{}: the original Model 2's sound board is not modelled (docs/hw/model2.md)",
+            roms.game.id
+        ));
+    }
     let last = tx.last().map_or(0, |&(f, _)| frame_to_sample(f));
     let total = match seconds {
         Some(s) => (s * SAMPLE_RATE as f64) as u64,

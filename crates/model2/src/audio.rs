@@ -87,7 +87,10 @@ impl Live {
     /// The boards `roms` has: none, the sound board, or the sound board and
     /// a music board (DSB2 or DSB1).
     pub fn new(roms: &RomSet) -> Self {
-        let prog = roms.region16be(Role::AudioCpu);
+        // The original Model 2's sound board is another design (a 68000
+        // with MultiPCM and FM chips, docs/hw/model2.md), not modelled:
+        // its program isn't run on the SCSP board.
+        let prog = if roms.game.board == romset::Board::Model2 { Vec::new() } else { roms.region16be(Role::AudioCpu) };
         let sound = (!prog.is_empty()).then(|| sound::SoundBoard::new(prog, roms.region16be(Role::Samples)));
         let mpeg = || -> Vec<u8> {
             roms.game

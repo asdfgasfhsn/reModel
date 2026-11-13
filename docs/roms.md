@@ -36,7 +36,8 @@ sizes and CRCs are metadata.
 
 ## Board generations and what they mean for reModel
 
-Every board has the i960KB main CPU, the 68000 + SCSP sound board, the
+Every board has the i960KB main CPU, the 68000 + SCSP sound board (but the
+original Model 2: ROM, `docs/hw/model2.md` §5), the
 same tilemap/2D layers and the same kind of polygon raster stream, so the
 i960 recompiler, ROM loading, the sound board, the GPU renderer and both
 players carry over (gk for the shared parts; `docs/architecture.md`'s reuse table says
@@ -44,7 +45,7 @@ the same). The geometry hardware is what changes:
 
 | Board | Geometry (gk unless marked) | What reModel would need |
 |---|---|---|
-| Model 2 (1993-94) | Fujitsu TGP MB86234 (gk). **ROM:** the game uploads its program (`daytona`, `vcop`; each game its own), contrary to the gk that it is internal and undumped. | A TGP interpreter for its undocumented instruction set, the original board's memory map and its sound board ROM layout. Large new work. |
+| Model 2 (1993-94) | Fujitsu TGP MB86234 (gk). **ROM:** the game uploads its program (`daytona`, `vcop`; each game its own), contrary to the gk that it is internal and undumped. | *In progress (`daytona` races):* the 2A board model with the original board's differences (`docs/hw/model2.md`); its sound board (MultiPCM, FM) is new work. |
 | 2A-CRX (1995) | Same TGP as Model 2 (gk). **ROM:** `srallyc` and `vf2` upload theirs too; no geometrizer program is uploaded (fixed function, unconfirmed). | As Model 2, plus 2A's map and a fixed-function geometrizer. Once one 2A game runs, the others are mostly manifests. |
 | 2B-CRX (1995) | Two ADSP-21062 SHARCs (gk for the chip; **ROM** for two): copro and geometrizer, both programmed by the i960 through their I/O-processor DMA. | *Done for `overrevb`, `sgt24h`, `dynabb97` and `doa`:* the SHARC core (interpreter and recompiler), 2B's uploads and port map, and the geometrizer SHARC's output, which has the 2C stream's format (`docs/hw/model2b.md`). Sega's 2B games run their own SHARC programs and may use more of the board. |
 | 2C-CRX (1996-98) | Fujitsu MB86235 (TGPx4) copro and geometrizer, both running programs the i960 uploads. **ROM:** every 2C program set contains MB86235 code shared with `topskatr`'s uploaded programs; no 2A or 2B set does. | Mostly a manifest per game. The MB86235 interpreter and recompiler, the geometrizer, the 2C memory map and the sound board are all there. New work is per game: inputs, any extra board, and whatever the game's code uses that `topskatr`'s doesn't. |
@@ -59,7 +60,9 @@ rasteriser (unconfirmed). The 2B/2C zips that contain them (`doa`,
 `dynamcop`, `pltkids`, `zerogun`) only do so because of a 2A clone merged
 in.
 
-**Sound.** All sets have the 68000 + SCSP board (gk). The sound programs of
+**Sound.** The 2A, 2B and 2C sets have the 68000 + SCSP board (gk); the
+original Model 2's `daytona` has another (ROM: its program drives two
+MultiPCM-type chips and an FM chip, `docs/hw/model2.md` §5). The sound programs of
 12 sets carry the same Sega driver ID string as `topskatr`'s ("CRX_drv",
 with a version): 3.2.8 like `topskatr` in `hotd`, `skisuprg`, `dynamcop`,
 `dynabb97` and `motoraid`; others 3.1.1 to 3.4.9 (ROM). The rest (the
@@ -84,9 +87,9 @@ board (i960KB on all, gk). Controls and special hardware are gk throughout.
 
 | Set | Title | Year | Clones in zip | Sound | Controls | Special hardware | Complete |
 |---|---|---|---|---|---|---|---|
-| `daytona` | Daytona USA | 1996 (dat) | `dayton93`, `daytonas`, `daytonase`, `daytonat`, `daytonata`, `daytonagtx`, `daytonam` | SCSP | wheel, pedals, 4-speed shifter, view buttons | drive board (force feedback); link up to 8 | yes (66 files). Several clones are fan hacks (non-Sega chip names such as `gtx.12`, `maxx.12`, `bank0.bin`; gk) |
-| `desert` | Desert Tank | 1996 (dat) | none | SCSP | tank handles with triggers, pedal (gk, weak) | motion cabinet; extra 128 KB `epr-16985.7` on a socket the main board also uses, so on another board (ROM) | yes |
-| `vcop` | Virtua Cop | 1994 | `vcopa` | SCSP | 2 light guns | none known | yes |
+| `daytona` | Daytona USA | 1996 (dat) | `dayton93`, `daytonas`, `daytonase`, `daytonat`, `daytonata`, `daytonagtx`, `daytonam` | **not SCSP** (ROM): 68000 with two MultiPCM-type and an OPN2-type chip (`docs/hw/model2.md` §5) | wheel, pedals, 4-speed shifter, view buttons | drive board (force feedback); link up to 8 | yes (66 files). Several clones are fan hacks (non-Sega chip names such as `gtx.12`, `maxx.12`, `bank0.bin`; gk) |
+| `desert` | Desert Tank | 1996 (dat) | none | probably as `daytona` (the same sockets: `.7` program, `.32`/`.4`/`.5` samples; unchecked) | tank handles with triggers, pedal (gk, weak) | motion cabinet; extra 128 KB `epr-16985.7` on a socket the main board also uses, so on another board (ROM) | yes |
+| `vcop` | Virtua Cop | 1994 | `vcopa` | probably as `daytona` (the same sockets `.7`, `.8`, `.32`, `.33`, `.4`, `.5`; unchecked) | 2 light guns | none known | yes |
 
 ### Model 2A-CRX
 

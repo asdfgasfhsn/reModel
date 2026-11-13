@@ -108,7 +108,7 @@ Games: [docs/games/](docs/games/README.md) has one page per game with its findin
 
 Hardware notes ([docs/hw/](docs/hw/)):
 
-- [model2a.md](docs/hw/model2a.md), [model2b.md](docs/hw/model2b.md), [model2c.md](docs/hw/model2c.md): the three boards.
+- [model2.md](docs/hw/model2.md), [model2a.md](docs/hw/model2a.md), [model2b.md](docs/hw/model2b.md), [model2c.md](docs/hw/model2c.md): the original board and its three successors.
 - [peripherals.md](docs/hw/peripherals.md): the 2C board's I/O and peripherals.
 - [geometrizer.md](docs/hw/geometrizer.md): the geometrizer and 3D rasteriser; [geometrizer-2c.md](docs/hw/geometrizer-2c.md) and [geometrizer-2b.md](docs/hw/geometrizer-2b.md): the native geometrizers.
 - [texture-lod.md](docs/hw/texture-lod.md): mipmaps, the log table and microtextures, as the games send them.
