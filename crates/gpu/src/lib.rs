@@ -17,6 +17,7 @@
 //! 2D tile layers around the 3D layer into the output.
 
 mod bloom;
+mod board;
 mod materials;
 mod temporal;
 mod tiles;
@@ -27,6 +28,8 @@ pub use model2::light::{Shading, CREASE_AUTO};
 pub use model2::raster::Relief;
 use model2::raster::{tex_info, Placed, Poly, Sources, TexKeys};
 use model2::video::{Layers2d, View, HEIGHT, WIDTH};
+pub use board::BoardFrame;
+use board::BoardRef;
 use std::collections::HashMap;
 pub use temporal::{step, temporal_supported, BusMotion, FrameTag, Step, TemporalDebug, Tuning as TemporalTuning};
 use temporal::{Temporal, TemporalPass};
@@ -2130,26 +2133,12 @@ impl Renderer {
         format: wgpu::TextureFormat,
         origin: (u32, u32),
     ) {
-        if self.quality.temporal > 0 {
-            let frame = match geo {
-                None => {
-                    bus.geo.sync();
-                    bus.geo.engine().smooth_frame()
-                }
-                Some(_) => None,
-            };
-            let motion = frame.as_deref().map(|f| BusMotion::of(f, FrameTag::game(f.frame), None));
-            return self.present_bus_motion(bus, geo, motion.as_ref(), view, target, format, origin);
-        }
-        if geo.is_none() {
-            bus.geo.sync();
-            if self.light_side.is_none() {
-                self.light_side = bus.geo.engine().light_frame();
-            }
-        }
-        let b = &*bus;
-        let geo = geo.unwrap_or_else(|| (&b.geo.engine().stream, &b.geo.engine().texture_point_ram));
-        self.draw_bus(b, geo, view, target, format, origin);
+        bus.geo.sync();
+        let e = bus.geo.engine();
+        let (smooth, light) = (e.smooth_frame(), e.light_frame());
+        let engine = (&e.stream[..], &e.texture_point_ram[..]);
+        let own = Own { engine, smooth: smooth.as_deref(), light: light.as_ref(), late: false };
+        self.present_ref(BoardRef::of(bus), own, geo, None, view, target, format, origin);
     }
 
     /// [`Renderer::present_bus`] with the polygons of the geometrizer's
@@ -2163,18 +2152,9 @@ impl Renderer {
         format: wgpu::TextureFormat,
         origin: (u32, u32),
     ) {
-        if self.light_side.is_none() {
-            self.light_side = bus.geo.last_light().cloned();
-        }
-        if self.quality.temporal > 0 {
-            let (stream, points) = bus.geo.last_frame();
-            let frame = bus.geo.last_smooth();
-            let motion = frame.map(|f| BusMotion::of(f, FrameTag::game(f.frame), Some(stream)));
-            let src = Self::bus_sources(bus, points);
-            self.draw_bus_t(bus, stream, &src, stream, motion.as_ref(), view, target, format, origin);
-            return;
-        }
-        self.draw_bus(bus, bus.geo.last_frame(), view, target, format, origin);
+        let g = &bus.geo;
+        let own = Own { engine: g.last_frame(), smooth: g.last_smooth().map(|f| &**f), light: g.last_light(), late: true };
+        self.present_ref(BoardRef::of(bus), own, None, None, view, target, format, origin);
     }
 
     /// [`Renderer::present_bus`] with motion data for temporal
@@ -2200,26 +2180,69 @@ impl Renderer {
         if geo.is_none() || motion.is_some_and(|m| m.s1.is_none()) {
             bus.geo.sync();
         }
-        if geo.is_none() && self.light_side.is_none() {
-            self.light_side = bus.geo.engine().light_frame();
-        }
-        let b = &*bus;
-        let engine = (&b.geo.engine().stream[..], &b.geo.engine().texture_point_ram[..]);
-        let (stream, points) = geo.unwrap_or(engine);
-        let src = Self::bus_sources(b, points);
-        self.draw_bus_t(b, stream, &src, engine.0, motion, view, target, format, origin);
+        let e = bus.geo.engine();
+        let (smooth, light) = (e.smooth_frame(), e.light_frame());
+        let engine = (&e.stream[..], &e.texture_point_ram[..]);
+        let own = Own { engine, smooth: smooth.as_deref(), light: light.as_ref(), late: false };
+        self.present_ref(BoardRef::of(bus), own, geo, Some(motion), view, target, format, origin);
     }
 
-    fn bus_sources<'a>(b: &'a model2::Model2Bus, points: &'a [u16]) -> Sources<'a> {
-        let (xoff, yoff) = b.sync_offsets();
-        Sources {
-            texture_rom: &b.texture_rom,
-            texture_point_ram: points,
-            render_ram: b.render_ram(),
-            palette: b.palette_ram(),
-            xoff,
-            yoff,
+    /// Draw a frame copied from a bus ([`BoardFrame::capture`]) as the
+    /// `present_bus*` calls draw the bus: `geo` None, the frame's own
+    /// polygons (as `present_bus`, or `present_bus_last` for a frame
+    /// captured late); else that geometry (an in-between) with `motion`
+    /// for temporal anti-aliasing, as `present_bus_motion`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn present_board(
+        &mut self,
+        f: &BoardFrame,
+        geo: Option<(&[u32], &[u16])>,
+        motion: Option<&BusMotion>,
+        view: &View,
+        target: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        origin: (u32, u32),
+    ) {
+        let own = Own { engine: f.engine(), smooth: f.smooth().map(|s| &**s), light: f.light(), late: f.late() };
+        let motion = geo.is_some().then_some(motion);
+        self.present_ref(f.board(), own, geo, motion, view, target, format, origin);
+    }
+
+    /// What the `present_*` calls share: `b`'s frame with the
+    /// geometrizer's `own` output, or `geo` instead; with temporal on,
+    /// `motion` Some is the motion data to draw with (as
+    /// `present_bus_motion`), None: `own`'s smooth frame's for its own
+    /// polygons, none for other geometry.
+    #[allow(clippy::too_many_arguments)]
+    fn present_ref(
+        &mut self,
+        b: BoardRef,
+        own: Own,
+        geo: Option<(&[u32], &[u16])>,
+        motion: Option<Option<&BusMotion>>,
+        view: &View,
+        target: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        origin: (u32, u32),
+    ) {
+        // The side channel of the geometrizer's own frame, unless one was
+        // passed in (`set_light_frame`); other geometry has none.
+        if geo.is_none() && self.light_side.is_none() {
+            self.light_side = own.light.cloned();
         }
+        if self.quality.temporal == 0 {
+            return self.draw_bus(b, geo.unwrap_or(own.engine), view, target, format, origin);
+        }
+        // The frame's own polygons are drawn with its motion data (tagged
+        // as the game frame: a repeat when drawn again).
+        let own_motion = match geo {
+            None => own.smooth.map(|f| BusMotion::of(f, FrameTag::game(f.frame), own.late.then_some(own.engine.0))),
+            Some(_) => None,
+        };
+        let motion = motion.unwrap_or(own_motion.as_ref());
+        let (stream, points) = geo.unwrap_or(own.engine);
+        let src = b.sources(points);
+        self.draw_bus_t(b, stream, &src, own.engine.0, motion, view, target, format, origin);
     }
 
     /// `draw_bus` with temporal on: `stream` drawn with motion data
@@ -2227,7 +2250,7 @@ impl Renderer {
     #[allow(clippy::too_many_arguments)]
     fn draw_bus_t(
         &mut self,
-        b: &model2::Model2Bus,
+        b: BoardRef,
         stream: &[u32],
         src: &Sources,
         s1: &[u32],
@@ -2250,12 +2273,12 @@ impl Renderer {
                 }),
                 _ => None,
             };
-            self.build_polys(stream, src, m_in.as_ref(), Some(b.video_ram_versions().0))
+            self.build_polys(stream, src, m_in.as_ref(), Some(b.versions.0))
         };
-        model2::video::HudLayout::new(b.tile_ram(), b.palette_ram(), view).anchor(&mut polys, view);
+        model2::video::HudLayout::new(b.tiles, b.palette, view).anchor(&mut polys, view);
         let placed = model2::raster::place(&mut polys, view);
-        let layers = self.layers_2d(b.tile_ram(), b.palette_ram(), view, !placed.is_empty());
-        let (render, palette) = b.video_ram_versions();
+        let layers = self.layers_2d(b.tiles, b.palette, view, !placed.is_empty());
+        let (render, palette) = b.versions;
         self.set_ram_versions(render, palette);
         self.temporal.pending = Some((motion.map(|m| m.tag), step, centres));
         let mut enc = self.device.create_command_encoder(&Default::default());
@@ -2266,33 +2289,24 @@ impl Renderer {
     #[allow(clippy::too_many_arguments)]
     fn draw_bus(
         &mut self,
-        b: &model2::Model2Bus,
+        b: BoardRef,
         (stream, points): (&[u32], &[u16]),
         view: &View,
         target: &wgpu::TextureView,
         format: wgpu::TextureFormat,
         origin: (u32, u32),
     ) {
-        let (xoff, yoff) = b.sync_offsets();
-        let src = Sources {
-            texture_rom: &b.texture_rom,
-            texture_point_ram: points,
-            render_ram: b.render_ram(),
-            palette: b.palette_ram(),
-            xoff,
-            yoff,
-        };
-        let (mut polys, _) = self.build_polys(stream, &src, None, Some(b.video_ram_versions().0));
-        model2::video::HudLayout::new(b.tile_ram(), b.palette_ram(), view).anchor(&mut polys, view);
+        let src = b.sources(points);
+        let (mut polys, _) = self.build_polys(stream, &src, None, Some(b.versions.0));
+        model2::video::HudLayout::new(b.tiles, b.palette, view).anchor(&mut polys, view);
         let placed = model2::raster::place(&mut polys, view);
-        let layers = self.layers_2d(b.tile_ram(), b.palette_ram(), view, !placed.is_empty());
-        let (render, palette) = b.video_ram_versions();
+        let layers = self.layers_2d(b.tiles, b.palette, view, !placed.is_empty());
+        let (render, palette) = b.versions;
         self.set_ram_versions(render, palette);
         let mut enc = self.device.create_command_encoder(&Default::default());
         self.encode_frame(&mut enc, &polys, &placed, &src, view, &layers, target, format, origin);
         self.queue.submit([enc.finish()]);
     }
-
     /// `present` into an offscreen texture and read it back as RGB, for
     /// checking against the CPU compositor. Blocks: native only.
     pub fn frame(
@@ -2333,6 +2347,16 @@ impl Renderer {
         let rgba = self.read_texture(&out, w, h);
         rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect()
     }
+}
+
+/// The geometrizer's own output for a frame drawn by `present_ref`: its
+/// raster stream and texture point RAM, smooth motion frame and lighting
+/// side channel, and whether it is the frame before the newest (late).
+struct Own<'a> {
+    engine: (&'a [u32], &'a [u16]),
+    smooth: Option<&'a model2::smooth::Frame>,
+    light: Option<&'a std::sync::Arc<model2::light::Frame>>,
+    late: bool,
 }
 
 /// Upload a pack image: as is (straight alpha, one level), or `mipmapped`

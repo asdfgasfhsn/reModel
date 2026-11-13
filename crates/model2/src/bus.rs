@@ -165,8 +165,9 @@ pub struct Model2Bus {
     pub copro_booted: bool,
     /// The second MB86235: transforms display lists for the rasteriser.
     pub geo: Geometrizer,
-    /// "textures" ROM (texture headers and point lists) as u16 words.
-    pub texture_rom: Vec<u16>,
+    /// "textures" ROM (texture headers and point lists) as u16 words;
+    /// shared, so a renderer can hold it while the machine runs on.
+    pub texture_rom: std::sync::Arc<[u16]>,
     /// The geometry processor, running the uploaded program.
     pub tgp: Tgp,
     /// Model 2B's copro, a SHARC, in place of `tgp`.
@@ -406,7 +407,14 @@ impl Model2Bus {
             copro_data,
             tgp_fault: None,
             tgp_stalled: false,
-            texture_rom: roms.bank(Role::Textures).as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect(),
+            texture_rom: roms
+                .bank(Role::Textures)
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_le_bytes(*c))
+                .collect::<Vec<_>>()
+                .into(),
             geo: Geometrizer::new(polygon_rom(roms), geo::Core::of(board)),
             copro_empty_reads: 0,
             copro_result_hash: 0xcbf2_9ce4_8422_2325,
