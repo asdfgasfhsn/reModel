@@ -162,6 +162,20 @@ same board.
   and the accelerator held, to frame 6,200). Beginner met the same
   infinity but drew. *Unconfirmed:* what the hardware does with a
   division by 0 (the reciprocal port's output for 0 is this model's).
+- *Confirmed (by running it):* **the V.R. screen's view preview draws**
+  (fixed; it used to show only the sky, mountains and grass after the
+  first view, from frame 2,247 of attract). The camera eases toward each
+  view's distances from the view table in backup SRAM (`0x1D00220`, 20
+  bytes a view, copied from the program's defaults) at i960
+  `0x99B0`-`0x9A38`: `(target - now)` scaled by 2^-3 with `scaler` (opcode
+  `0x677`, a single real). The interpreter ran `scaler` as `scalerl`, the
+  long-real form: it scaled the register pair as a double, changing the
+  next register (the next distance) instead, so on the switch to view 1
+  the camera's height went to -148,000 and then off in millions. No TGP
+  special value was involved (no NaN or infinity reached memory in the
+  segment). The i960 interpreter's `scaler` is now single precision (a
+  CPU fix: any game's `scaler` was wrong). *Not checked:* whether the
+  race's handling (below) went through it too.
 - *Confirmed (from the code and by running it):* **the handling**: why
   the car was twitchy from the keyboard ("very jerky", snapping left and
   right). The wheel's path, traced per frame (logs of work RAM and of the

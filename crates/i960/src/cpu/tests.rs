@@ -4,6 +4,8 @@ const G0: u32 = 16;
 const G1: u32 = 17;
 const G2: u32 = 18;
 const G3: u32 = 19;
+const G4: u32 = 20;
+const G5: u32 = 21;
 const R4: u32 = 4;
 
 struct Ram(Vec<u8>);
@@ -245,6 +247,24 @@ fn single_precision_add() {
     cpu.r[G1 as usize] = 2.25f32.to_bits();
     run(&mut cpu, &mut ram, 1);
     assert_eq!(f32::from_bits(cpu.r[G2 as usize]), 3.75);
+}
+
+/// `scaler` (0x677) scales a single real, leaving the next register alone
+/// (`daytona`'s camera eases toward a new view with it: as a long real it
+/// changed the next register and the view flew off).
+#[test]
+fn scaler_is_single_precision() {
+    let (mut cpu, mut ram) = setup(&[reg(0x677, G0, G2, G2, false), reg(0x676, G0, G4, G4, false)]);
+    cpu.r[G0 as usize] = (-3i32) as u32;
+    cpu.r[G2 as usize] = 6.0f32.to_bits();
+    cpu.r[G3 as usize] = 2.15f32.to_bits();
+    cpu.r[G4 as usize] = 8.0f64.to_bits() as u32;
+    cpu.r[G5 as usize] = (8.0f64.to_bits() >> 32) as u32;
+    run(&mut cpu, &mut ram, 2);
+    assert_eq!(f32::from_bits(cpu.r[G2 as usize]), 0.75);
+    assert_eq!(f32::from_bits(cpu.r[G3 as usize]), 2.15);
+    let l = (cpu.r[G5 as usize] as u64) << 32 | cpu.r[G4 as usize] as u64;
+    assert_eq!(f64::from_bits(l), 1.0);
 }
 
 #[test]

@@ -843,7 +843,11 @@ impl Cpu {
     fn exec_float(&mut self, insn: &InsnRef, full: u32) -> Result<(), FaultKind> {
         use Real::*;
         let ops = insn.operands;
-        let k = if (full >> 4) & 1 == 1 && full < 0x6c0 || matches!(full, 0x79b..=0x79f | 0x6d9 | 0x676) {
+        // Bit 4 marks the long-real forms from 0x680 (0x69x of 0x68x);
+        // below, 0x676 is scalerl and 0x677 scaler (single).
+        let k = if (full >> 4) & 1 == 1 && (0x680..0x6c0).contains(&full)
+            || matches!(full, 0x79b..=0x79f | 0x6d9 | 0x676)
+        {
             Double
         } else {
             Single
