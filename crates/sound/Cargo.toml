@@ -1,6 +1,6 @@
 [package]
 name = "remodel-sound"
-description = "Model 2 sound board: SCSP (YMF292) and its 68EC000"
+description = "Model 2 sound boards: SCSP (YMF292) and its 68EC000; the original board's 68000, MultiPCMs and OPN2"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
