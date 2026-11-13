@@ -1,3 +1,4 @@
+mod camera_scan;
 mod depth_check;
 mod geo_check;
 mod gpu_check;
@@ -378,6 +379,12 @@ commands:
                       host time per shown frame with run-ahead AHEAD (0: off):
                       the real frame, copy, frames ahead, memory copied,
                       how often the inputs change (docs/run-ahead.md)
+  camera-scan FRAME GAP
+                       photo mode's true camera (docs/photo-mode.md): run to
+                       FRAME and GAP frames on (with --input) on the native
+                       geometrizer, and list rotations in the i960's RAM
+                       that turned as the scenery's transforms say the
+                       camera did: candidates for where the game keeps it
   run-ahead-check [STEPS] [FRAMES] [EVERY]
                        run-ahead (docs/play.md): a plain run (default 450M
                        instructions, with --input, --load-state, --geo,
@@ -1744,6 +1751,18 @@ fn main() -> ExitCode {
                     eprintln!("error: {e}");
                     return ExitCode::FAILURE;
                 }
+            }
+        }
+        "camera-scan" => {
+            let (Some(at), Some(gap)) =
+                (args.get(1).and_then(|s| parse_num(s)), args.get(2).and_then(|s| parse_num(s)))
+            else {
+                eprint!("{USAGE}");
+                return ExitCode::FAILURE;
+            };
+            if let Err(e) = camera_scan::scan(&roms, at as u64, gap as u64, input.as_deref().unwrap_or(""), interp) {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
             }
         }
         "run-ahead-profile" => {
