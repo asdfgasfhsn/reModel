@@ -87,7 +87,7 @@ endif
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm tgp-disasm tgp-check m68k-tests clean recomp recomp-workspace bench latency input-lag run-ahead-check run-ahead-profile sound sound-disasm geo-check geo-fuzz smooth-frames temporal-capture temporal-check pace-sim install-desktop uninstall-desktop
+.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm tgp-disasm tgp-check m68k-tests clean recomp recomp-workspace bench latency input-lag run-ahead-check run-ahead-profile draw-overlap-check sound sound-disasm geo-check geo-fuzz smooth-frames temporal-capture temporal-check pace-sim install-desktop uninstall-desktop
 
 ##@ General
 
@@ -476,6 +476,21 @@ RUN_AHEAD_WARMUP ?= 3000
 RUN_AHEAD_PROFILE_FRAMES ?= 1000
 run-ahead-profile: release ## Host time per shown frame with run-ahead RUN_AHEAD_FRAMES (0: off) for GAME=: real frame, copy, frames ahead, memory copied, input change rate (docs/play.md, "Run-ahead cost")
 	$(RUN) --geo native --input $(BENCH_INPUT) run-ahead-profile $(RUN_AHEAD_WARMUP) $(RUN_AHEAD_PROFILE_FRAMES) $(RUN_AHEAD_FRAMES)
+
+DRAW_CHECK_FRAMES ?= 1500
+DRAW_CHECK_OPTS   ?= --run-ahead 1 --aa 8 --shading pixel --bloom 50
+DRAW_CHECK_OUT    ?= out/scratch/draw-overlap-check/$(GAME)
+draw-overlap-check: ## The player with its draw thread and with --no-overlap (opens a window; needs a GPU): coin-start runs of GAME to frame DRAW_CHECK_FRAMES (DRAW_CHECK_OPTS, default run-ahead 1 and heavy settings without temporal) must end on the same state hash and present the same picture of every frame both drew (--frame-log, read back; DRAW_CHECK_OUT)
+	$(call release_build,remodel-play)
+	@mkdir -p $(DRAW_CHECK_OUT)
+	@for m in overlap no-overlap; do \
+		$(PLAY) --game $(GAME) --rom $(ROM) --no-splash --no-sound --smooth off --bezel off \
+			--input $(BENCH_INPUT) --frames $(DRAW_CHECK_FRAMES) $(DRAW_CHECK_OPTS) \
+			--frame-log $(DRAW_CHECK_OUT)/$$m.log $$([ $$m = no-overlap ] && echo --no-overlap) \
+			| grep '^frames' > $(DRAW_CHECK_OUT)/$$m.txt || exit 1; \
+	done
+	@cmp -s $(DRAW_CHECK_OUT)/overlap.txt $(DRAW_CHECK_OUT)/no-overlap.txt && echo "state hash    the same: $$(cut -c15- $(DRAW_CHECK_OUT)/overlap.txt)" || { echo "state hash DIFFERS:"; cat $(DRAW_CHECK_OUT)/*.txt; exit 1; }
+	@python3 -I tools/frame-log-diff.py $(DRAW_CHECK_OUT)/overlap.log $(DRAW_CHECK_OUT)/no-overlap.log
 
 bench: release ## Timed fixed run into a race: speed vs real time and the state hash (must not change with speed-ups)
 	$(RUN) --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep -E '^(instructions|emulated|host time|idle skip|state hash)'

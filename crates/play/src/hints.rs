@@ -36,13 +36,18 @@ pub fn run_ahead_shown(game: Option<&romset::Game>, set: u32) -> bool {
 }
 
 /// What the machine costs a displayed frame, measured with no run-ahead:
-/// the game's emulation of one frame, and drawing it, and the time the
-/// display allows (all in seconds).
+/// the game's emulation of one frame, the rest of the main thread's work
+/// for it (copying the frame for drawing, the overlay), drawing it, and the
+/// time the display allows (all in seconds); and whether drawing runs on
+/// its own thread alongside the next frame's emulation (docs/play.md, "The
+/// frame loop").
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrameCost {
     pub emulate: f64,
+    pub overhead: f64,
     pub draw: f64,
     pub budget: f64,
+    pub overlap: bool,
 }
 
 impl FrameCost {
@@ -51,12 +56,22 @@ impl FrameCost {
     const USABLE: f64 = 0.85;
 
     /// The frames of run-ahead this machine can afford: running N ahead
-    /// emulates N+1 frames for each one displayed, besides drawing it.
+    /// emulates N+1 frames for each one displayed, besides drawing it. On
+    /// one thread they add up; with the drawing on its own thread, N fits
+    /// if the N+1 frames do, and the drawing does by itself.
     pub fn run_ahead_room(&self) -> u32 {
         if self.emulate <= 0.0 || !self.emulate.is_finite() {
             return MAX_RUN_AHEAD;
         }
-        let frames = ((self.budget * Self::USABLE - self.draw) / self.emulate).floor();
+        let usable = self.budget * Self::USABLE;
+        let left = if !self.overlap {
+            usable - self.overhead - self.draw
+        } else if self.draw > usable {
+            return 0;
+        } else {
+            usable - self.overhead
+        };
+        let frames = (left / self.emulate).floor();
         (frames - 1.0).clamp(0.0, MAX_RUN_AHEAD as f64) as u32
     }
 }
@@ -165,7 +180,13 @@ mod tests {
 
     #[test]
     fn room_follows_the_frame_budget() {
-        let ms = |e: f64, d: f64| FrameCost { emulate: e / 1000.0, draw: d / 1000.0, budget: 1.0 / 60.0 };
+        let ms = |e: f64, d: f64| FrameCost {
+            emulate: e / 1000.0,
+            overhead: 0.0,
+            draw: d / 1000.0,
+            budget: 1.0 / 60.0,
+            overlap: false,
+        };
         // 16.7 ms a frame, 85% usable: 14.2 ms.
         assert_eq!(ms(1.0, 2.0).run_ahead_room(), 3, "plenty: capped at the most");
         assert_eq!(ms(3.0, 2.0).run_ahead_room(), 3, "4 frames fit, one is the game's own");
@@ -175,8 +196,27 @@ mod tests {
         assert_eq!(ms(20.0, 2.0).run_ahead_room(), 0, "not even one");
         assert_eq!(ms(5.0, 30.0).run_ahead_room(), 0, "drawing alone takes too long");
         // A faster display leaves less.
-        let fast = FrameCost { emulate: 0.004, draw: 0.002, budget: 1.0 / 120.0 };
+        let fast = FrameCost { emulate: 0.004, overhead: 0.0, draw: 0.002, budget: 1.0 / 120.0, overlap: false };
         assert_eq!(fast.run_ahead_room(), 0);
+    }
+
+    #[test]
+    fn room_with_drawing_alongside() {
+        let ms = |e: f64, o: f64, d: f64| FrameCost {
+            emulate: e / 1000.0,
+            overhead: o / 1000.0,
+            draw: d / 1000.0,
+            budget: 1.0 / 60.0,
+            overlap: true,
+        };
+        // 14.2 ms usable: the frames and the drawing each get all of it.
+        assert_eq!(ms(4.0, 0.0, 10.0).run_ahead_room(), 2, "3 frames fit beside a 10 ms draw");
+        assert_eq!(ms(4.0, 2.5, 10.0).run_ahead_room(), 1, "the copy and overlay take from the frames");
+        assert_eq!(ms(3.5, 0.5, 12.0).run_ahead_room(), 2, "vf2 with heavy settings");
+        assert_eq!(ms(2.0, 0.0, 15.0).run_ahead_room(), 0, "drawing alone takes too long");
+        // On one thread the same machine has room for none.
+        let one = FrameCost { overlap: false, ..ms(3.5, 0.5, 12.0) };
+        assert_eq!(one.run_ahead_room(), 0);
     }
 
     #[test]

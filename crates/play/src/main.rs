@@ -1,10 +1,12 @@
 //! remodel-play: Model 2 games in a native window.
 //!
-//! The main thread runs the window (winit), input, the board model, drawing
-//! (the GPU renderer, presented with vsync) and the menu (egui, over the
-//! game). The geometrizer runs on its own thread (the board model's
-//! default) and the sound boards on another (`sound`), playing through the
-//! system's audio API.
+//! The main thread runs the window (winit), input, the board model and the
+//! menu (egui, over the game). Drawing (the GPU renderer, presented with
+//! vsync) runs on the draw thread, from a copy of the frame, alongside the
+//! next frame's emulation (`draw`; on the main thread with
+//! `--no-overlap`). The geometrizer runs on its own thread (the board
+//! model's default) and the sound boards on another (`sound`), playing
+//! through the system's audio API.
 //!
 //! Pacing: with a display near the game's 57.524 Hz (60 Hz, or 120 Hz at
 //! one game frame per two refreshes) the game runs exactly one frame per
@@ -31,6 +33,7 @@ mod art;
 mod backdrop;
 mod bezel;
 mod controls;
+mod draw;
 mod focus;
 mod hints;
 mod launcher;
@@ -76,6 +79,10 @@ usage: remodel-play [options]
   --no-idle-skip     run the game's idle loops instruction by instruction
                      instead of skipping through them (same game, slower;
                      docs/idle-skip.md)
+  --no-overlap       draw each frame on the main thread after emulating
+                     it, instead of on the draw thread alongside the next
+                     frame's emulation (for comparison; docs/play.md, \"The
+                     frame loop\")
   --geo native|chip  the geometrizer: the native implementation where there
                      is one for the program the game uploads (the default;
                      docs/hw/geometrizer-2b.md, geometrizer-2c.md), or the
@@ -179,6 +186,11 @@ usage: remodel-play [options]
                      down (the d-pad), accept (A), back (B), settings (Y),
                      prev, next (shoulders), start, select, guide; a+b
                      presses both, @S:H holds them H seconds
+  --frame-log FILE   for checking: each picture presented, read back and
+                     hashed, a line each: the shown machine's frame, game
+                     or ahead (run-ahead's machine), -late if drawn with
+                     the frame before's polygons, the hash. Slow; keeps
+                     run-ahead on when the game falls behind
 
 The game's settings (mix, HUD, aspect, bezel, speed, smooth motion,
 run-ahead, anti-aliasing, temporal anti-aliasing and stipple, depth buffer,
@@ -243,6 +255,11 @@ struct Options {
     /// `--texture-pack`: the pack for every game this run, in place of
     /// each game's own.
     texture_pack: Option<PathBuf>,
+    /// Draw on the draw thread alongside the next frame's emulation (not
+    /// `--no-overlap`).
+    overlap: bool,
+    /// `--frame-log`: where to log each presented picture's hash.
+    frame_log: Option<PathBuf>,
 }
 
 /// `--nav`'s list: NAME[+NAME]@SECONDS[:HELD], pad buttons pressed together
@@ -292,6 +309,8 @@ fn options(s: &mut Settings) -> Result<Options, String> {
         shot_size: ([1920, 1080], 1.0),
         nav: Default::default(),
         texture_pack: None,
+        overlap: true,
+        frame_log: None,
     };
     let mut args = std::env::args().skip(1).peekable();
     let mut cli = |k: &str, v: &str| s.cli.insert(k.to_string(), v.to_string());
@@ -513,6 +532,8 @@ fn options(s: &mut Settings) -> Result<Options, String> {
                 cli("bloom", &v);
             }
             "--no-splash" => o.splash = false,
+            "--no-overlap" => o.overlap = false,
+            "--frame-log" => o.frame_log = Some(PathBuf::from(value()?)),
             "--fullscreen" => fullscreen = true,
             "--exact" => {
                 cli("exact", "true");
@@ -651,11 +672,11 @@ impl Session {
     }
 }
 
-/// egui over the game: its context, window input and renderer.
+/// egui over the game: its context and window input (its renderer is
+/// the drawer's, `draw::Core::egui`).
 struct Overlay {
     ctx: egui::Context,
     state: egui_winit::State,
-    renderer: egui_wgpu::Renderer,
 }
 
 /// The launcher's preview: the game drawn into a texture egui shows.
@@ -668,16 +689,18 @@ struct PreviewTarget {
 
 struct Gpu {
     window: Arc<Window>,
-    surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
-    renderer: gpu::Renderer,
     view: model2::video::View,
     origin: (u32, u32),
     /// The display's refresh rate (Hz), if known.
     refresh: Option<f64>,
     overlay: Overlay,
-    backdrop: backdrop::Backdrop,
     preview: Option<PreviewTarget>,
+    /// The surface, renderer and the frame drawn: on the draw thread while
+    /// a draw is in flight (`draw::Drawer::core` waits for it).
+    drawer: draw::Drawer,
+    /// The texture pack counters of the last frame drawn.
+    pack_stats: gpu::PackStats,
 }
 
 /// Status line counters for the current one-second window.
@@ -686,8 +709,15 @@ struct Stats {
     emulated: u32,
     drawn: u32,
     emulating: Duration,
-    /// Host time drawing (not waiting for vsync).
+    /// Host time drawing (not waiting for vsync), on the draw thread or
+    /// the main thread.
     drawing: Duration,
+    /// Main thread time copying the frame for drawing and laying out the
+    /// overlay, and waiting for the draw thread to finish the frame before.
+    capturing: Duration,
+    waiting: Duration,
+    /// Bytes the frame copies moved.
+    copied: usize,
     /// Redraws that showed no new game frame, and the longest time between
     /// new frames.
     repeats: u32,
@@ -720,6 +750,9 @@ impl Stats {
             drawn: 0,
             emulating: Duration::ZERO,
             drawing: Duration::ZERO,
+            capturing: Duration::ZERO,
+            waiting: Duration::ZERO,
+            copied: 0,
             repeats: 0,
             longest_gap: Duration::ZERO,
             last_new: Instant::now(),
@@ -802,18 +835,36 @@ struct Play {
     /// When `emulate` last ran (for the audio rate control).
     last_emulate: Option<Instant>,
     /// Host time per game frame (emulating, waiting for the geometrizer and
-    /// drawing, not waiting for vsync), smoothed, in seconds; and whether
+    /// drawing, not waiting for vsync; with the drawing on the draw thread,
+    /// the busier of the two threads), smoothed, in seconds; and whether
     /// that is too slow to follow the display (then the clock paces).
     frame_cost: f64,
     behind: bool,
     /// Frames run since `behind` was last clear.
     behind_frames: u32,
     /// What a displayed frame costs without run-ahead, smoothed: emulating
-    /// a frame and drawing, in seconds, and the redraws they come from (for
-    /// `run_ahead_room`).
+    /// a frame, the main thread's copy of it and overlay, and drawing, in
+    /// seconds, and the redraws they come from (for `run_ahead_room`).
     emulate_cost: f64,
+    overhead_cost: f64,
     draw_cost: f64,
     cost_frames: u32,
+    /// The host time drawing the last frame drawn (`draw::Report::draw`).
+    last_draw: Duration,
+    /// Overlap: emulate the next frame while the draw thread draws, when
+    /// the draw is done or at this time, whichever comes first
+    /// (`next_start`); waiting for it now.
+    waiting: Option<Instant>,
+    /// Smoothed host time of a redraw's emulation with frames, run-ahead
+    /// included, in seconds (`next_start`).
+    emulate_redraw: f64,
+    /// `--frame-log`: the file, and what the picture in flight is (the
+    /// shown machine's frame, whether that is run-ahead's, whether its
+    /// polygons are the frame before's).
+    frame_log: Option<std::io::BufWriter<std::fs::File>>,
+    drawing: Option<(u64, bool, bool)>,
+    /// For the draw thread to wake the event loop.
+    proxy: Option<winit::event_loop::EventLoopProxy<Wake>>,
     /// The host time the last `emulate` spent on the game's own frames,
     /// not the run-ahead.
     real_emulate: Duration,
@@ -1018,8 +1069,10 @@ impl Play {
                 if let Some(g) = &mut self.gpu {
                     let gun = !s.game.controls.guns.is_empty();
                     g.window.set_cursor(if gun { CursorIcon::Crosshair } else { CursorIcon::Default });
-                    g.renderer.forget_ram();
-                    g.renderer.reset_history();
+                    let core = g.drawer.core();
+                    core.renderer.forget_ram();
+                    core.renderer.reset_history();
+                    core.frame.forget();
                 }
                 self.session = Some(s);
                 self.epoch = Instant::now();
@@ -1084,8 +1137,10 @@ impl Play {
             (t_machine - t_new).as_secs_f64() * 1000.0,
         );
         if let Some(g) = &mut self.gpu {
-            g.renderer.forget_ram();
-            g.renderer.reset_history();
+            let core = g.drawer.core();
+            core.renderer.forget_ram();
+            core.renderer.reset_history();
+            core.frame.forget();
         }
         let bindings = settings::load_bindings(game);
         self.epoch = Instant::now() - Duration::from_secs_f64(machine.frames as f64 / FPS);
@@ -1143,9 +1198,12 @@ impl Play {
         match result {
             Ok(()) => {
                 self.epoch = Instant::now() - Duration::from_secs_f64(s.machine.frames as f64 / FPS);
-                // A jump the motion data doesn't know of.
+                // A jump the motion data doesn't know of; memory the
+                // frame copy's versions don't describe.
                 if let Some(g) = &mut self.gpu {
-                    g.renderer.reset_history();
+                    let core = g.drawer.core();
+                    core.renderer.reset_history();
+                    core.frame.forget();
                 }
                 self.menu.notify(done);
             }
@@ -1240,7 +1298,7 @@ impl Play {
         let ([w, h], ppp) = self.opts.shot_size;
         let Some(g) = &mut self.gpu else { return Err("no window".into()) };
         let format = g.config.format;
-        let texture = g.renderer.device().create_texture(&wgpu::TextureDescriptor {
+        let texture = g.drawer.core().renderer.device().create_texture(&wgpu::TextureDescriptor {
             label: Some("shot"),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             mip_level_count: 1,
@@ -1263,12 +1321,13 @@ impl Play {
             let has_bezel = self.bezel.is_some();
             let room = self.session.as_ref().and_then(|s| self.run_ahead_room(s.game.id));
             let (Some(g), Some(s)) = (&mut self.gpu, &mut self.session) else { return Err("no game".into()) };
-            g.renderer.forget_ram();
+            let r = &mut g.drawer.core().renderer;
+            r.forget_ram();
             // A one-off frame: with temporal on, the plain (unjittered) one.
-            g.renderer.reset_history();
-            g.renderer.set_light_rules(&s.game.shading, hud_mask(s.game));
-            g.renderer.set_quality(self.values.quality(self.temporal_supported));
-            g.renderer.present_bus(&mut s.shown().bus, None, &view, &target, format, origin);
+            r.reset_history();
+            r.set_light_rules(&s.game.shading, hud_mask(s.game));
+            r.set_quality(self.values.quality(self.temporal_supported));
+            r.present_bus(&mut s.shown().bus, None, &view, &target, format, origin);
             s.drew_ahead = s.run_ahead.as_ref().is_some_and(|ra| ra.is_ahead_of(&s.machine));
             let (bezel, menu) = (&mut self.bezel, &mut self.menu);
             let mut values = self.values.clone();
@@ -1296,8 +1355,8 @@ impl Play {
                 }
             });
         }
-        let g = self.gpu.as_ref().unwrap();
-        let mut rgba = g.renderer.read_texture(&texture, w, h);
+        let g = self.gpu.as_mut().unwrap();
+        let mut rgba = g.drawer.core().renderer.read_texture(&texture, w, h);
         if format == wgpu::TextureFormat::Bgra8Unorm {
             rgba.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p.swap(0, 2));
         }
@@ -1319,9 +1378,10 @@ impl Play {
             return;
         }
         let Some(g) = &mut self.gpu else { return };
+        let renderer = &mut g.drawer.core().renderer;
         self.pack = PackState { dir: wanted.clone(), loaded: None };
         let Some(dir) = wanted else {
-            g.renderer.set_pack(None);
+            renderer.set_pack(None);
             return;
         };
         let opened = if dir.is_dir() {
@@ -1334,13 +1394,13 @@ impl Play {
                 let maps = if p.maps() > 0 { format!(", {} material maps", p.maps()) } else { String::new() };
                 println!("texture pack  {}: {} images{maps}", dir.display(), p.len());
                 self.pack.loaded = Some(Ok((p.len(), p.maps())));
-                g.renderer.set_pack(Some(Box::new(p)));
+                renderer.set_pack(Some(Box::new(p)));
             }
             Err(e) => {
                 eprintln!("{e}");
                 self.menu.notify(format!("{}{}", e[..1].to_uppercase(), &e[1..]));
                 self.pack.loaded = Some(Err(e));
-                g.renderer.set_pack(None);
+                renderer.set_pack(None);
             }
         }
     }
@@ -1352,7 +1412,7 @@ impl Play {
         let dir = self.pack.dir.as_ref()?;
         Some(match self.pack.loaded.as_ref()? {
             Ok((images, _)) => {
-                let st = g.renderer.pack_stats();
+                let st = g.pack_stats;
                 let tiles = if st.tiles_held > 0 {
                     format!("; {} tile patterns ({} held)", st.tiles, st.tiles_held)
                 } else {
@@ -1395,7 +1455,7 @@ impl Play {
                 "No effect with the game's chip: material maps need the native geometrizer's lighting".to_string()
             }
             (Some(Ok((_, maps))), Some(g)) => {
-                let st = g.renderer.pack_stats();
+                let st = g.pack_stats;
                 if st.textured > 0 && st.lamped == 0 {
                     "No effect in this frame: no textured polygon had the game's exact lighting \
                      (unlit, or the lighting check fell back)"
@@ -1428,11 +1488,12 @@ impl Play {
         if let Some(g) = &mut self.gpu {
             g.config.width = w.max(1);
             g.config.height = h.max(1);
-            g.surface.configure(g.renderer.device(), &g.config);
+            let core = g.drawer.core();
+            core.surface.configure(core.renderer.device(), &g.config);
             // A resize can mean the window moved to another monitor.
             g.refresh = refresh_hz(&g.window);
             // The temporal targets are made again at the new size.
-            g.renderer.reset_history();
+            core.renderer.reset_history();
         }
         self.refit();
     }
@@ -1719,134 +1780,131 @@ impl Play {
         }
     }
 
-    /// Draw the session's current frame into `target` as `view` at
-    /// `origin`: this frame's polygons if the geometrizer has them in time
-    /// for this refresh (`t0`, when the redraw started), else the previous
-    /// frame's; with smooth motion, an in-between.
+    /// Copy the session's current frame for drawing (into the drawer's
+    /// `draw::Core::frame`, so the drawer must be idle) and say how to draw
+    /// it: this frame's polygons if the geometrizer has them in time for
+    /// this refresh (`t0`, when the redraw started), else the previous
+    /// frame's; with smooth motion, in-betweens. None without a session.
     ///
-    /// With temporal anti-aliasing each image is tagged for the renderer
-    /// (`gpu::FrameTag`): the game's frame N as (N, 1) by `present_bus`
-    /// itself (drawn again: a repeat), an in-between at t as (N, t)
-    /// through `present_bus_motion`, the previous frame's polygons as
-    /// that frame by `present_bus_last`. A switch of the machine shown
-    /// (run-ahead) starts the accumulation again.
-    fn draw_session(
-        &mut self,
-        target: &wgpu::TextureView,
-        view: &model2::video::View,
-        origin: (u32, u32),
-        format: wgpu::TextureFormat,
-        t0: Instant,
-    ) {
+    /// The game's machine or run-ahead's, whichever is shown: a switch
+    /// between them starts the renderer's video RAM and temporal
+    /// accumulation afresh, as their versions and frames are each
+    /// machine's own.
+    fn capture_game(&mut self, t0: Instant) -> Option<draw::GameJob> {
         self.sync_pack();
-        let (Some(g), Some(s)) = (&mut self.gpu, &mut self.session) else { return };
+        let (Some(g), Some(s)) = (&mut self.gpu, &mut self.session) else { return None };
         // When the geometrizer is the slowest part, drawing the previous
         // frame's polygons lets it run alongside the next frame instead of
         // after it, at the cost of the polygons lagging a frame.
         let budget = frame_budget(g.refresh, self.values.exact);
         let period = frame_budget(g.refresh, self.values.exact || self.behind).as_secs_f64();
-        // Switching between the game and run-ahead's machine: video RAM
-        // versions are each machine's own.
         let ahead = s.run_ahead.as_ref().is_some_and(|ra| ra.is_ahead_of(&s.machine));
-        if ahead != s.drew_ahead {
-            s.drew_ahead = ahead;
-            g.renderer.forget_ram();
-            // The other machine's frames: their tags don't follow on.
-            g.renderer.reset_history();
+        let switched = ahead != s.drew_ahead;
+        s.drew_ahead = ahead;
+        let core = g.drawer.core();
+        if switched {
+            core.frame.forget();
         }
         // Anti-aliasing, the depth buffer and smooth shading (by the game's
         // rules): the game's settings, not the launcher preview's (flat).
-        // Every image below (game frame, in-between, late, run-ahead) is
-        // shaded by the renderer from the polygons it draws.
-        let q = if s.preview { gpu::Quality::default() } else { self.values.quality(self.temporal_supported) };
-        g.renderer.set_light_rules(&s.game.shading, hud_mask(s.game));
-        let temporal = g.renderer.set_quality(q).temporal > 0;
+        // Every image (game frame, in-between, late, run-ahead) is shaded
+        // by the renderer from the polygons it draws.
+        let quality = if s.preview { gpu::Quality::default() } else { self.values.quality(self.temporal_supported) };
         let bus = &mut s.shown().bus;
-        if bus.geo.wait_until(t0 + budget.mul_f64(0.8)) {
-            // Smooth motion: the polygons part way from the frame before to
-            // this one, by the time since this one was first shown. Only on
-            // a display faster than the game, and not when it's already
-            // behind.
-            let t_smooth = Instant::now();
-            // Smooth motion's setting, not just its recording (which
-            // temporal anti-aliasing turns on too).
-            let fast =
-                g.refresh.is_none_or(|hz| hz > FPS * 1.2) && !self.behind && !self.menu.open && self.values.smooth_on();
-            // With smooth shading or material maps, the in-between's own
-            // lighting side channel (its replay records it as the game
-            // frame's was), so it is shaded at the level of the frames
-            // around it.
-            let lit = (q.shading != gpu::Shading::Flat || q.materials) && bus.geo.engine().light_on();
-            let between = bus.geo.engine().smooth_frame().filter(|_| fast).and_then(|f| {
-                let t = (t_smooth.saturating_duration_since(self.smooth_at).as_secs_f64() / period) as f32;
-                if lit {
-                    f.render_lit(t).map(|(stream, side)| (stream, Some(std::sync::Arc::new(side)), f, t))
-                } else {
-                    f.render(t).map(|stream| (stream, None, f, t))
-                }
-            });
-            if let Some((_, side, _, _)) = &between {
-                g.renderer.set_light_frame(side.clone());
-            }
-            match &between {
-                Some((stream, _, f, t)) if temporal => {
-                    // Tagged (N, t): the renderer works out the motion
-                    // since the image before. t = 0 is the frame before's
-                    // pose, which follows that frame's own image (N-1, 1)
-                    // as a step forward, not a repeat.
-                    let tag = gpu::FrameTag { frame: f.frame, t: t.max(1e-4) };
-                    let m = gpu::BusMotion::of(f, tag, None);
-                    g.renderer.present_bus_motion(
-                        bus,
-                        Some((stream, &f.points)),
-                        Some(&m),
-                        view,
-                        target,
-                        format,
-                        origin,
-                    );
-                    self.stats.smooth += 1;
-                    self.stats.smoothing += t_smooth.elapsed();
-                }
-                Some((stream, _, f, _)) => {
-                    self.stats.smooth += 1;
-                    self.stats.smoothing += t_smooth.elapsed();
-                    g.renderer.present_bus(bus, Some((stream, &f.points)), view, target, format, origin)
-                }
-                // With temporal on, tagged (N, 1) from the engine's smooth
-                // frame (a repeat when drawn again).
-                None => g.renderer.present_bus(bus, None, view, target, format, origin),
-            }
-        } else {
-            // With temporal on, tagged as the frame these polygons are
-            // (`Geometrizer::last_smooth`, kept with `set_keep_last`).
-            g.renderer.present_bus_last(bus, view, target, format, origin);
+        let late = !bus.geo.wait_until(t0 + budget.mul_f64(0.8));
+        core.frame.capture(bus, late);
+        self.stats.copied += core.frame.bytes;
+        if late {
             self.stats.geo_late += 1;
         }
-        // Smooth shading: what the frame was drawn as, and its cost (a
-        // repeat of a frame costs nothing: the renderer keeps its shading).
-        if let (Some(st), Some(eff)) = (g.renderer.light_stats(), g.renderer.light_effective()) {
-            self.stats.shaded += 1;
-            self.stats.shading += Duration::from_secs_f32(st.ms.max(0.0) / 1000.0);
-            self.stats.shading_as = Some((eff, st.lit, st.polys - st.hidden));
+        // Smooth motion's in-betweens: by its setting, not just its
+        // recording (which temporal anti-aliasing turns on too); only on a
+        // display faster than the game, and not when it's already behind.
+        let fast =
+            g.refresh.is_none_or(|hz| hz > FPS * 1.2) && !self.behind && !self.menu.open && self.values.smooth_on();
+        // With smooth shading or material maps, an in-between gets its own
+        // lighting side channel (its replay records it as the game frame's
+        // was), so it is shaded at the level of the frames around it.
+        // (In-betweens are of the geometrizer's newest frame: not when late.)
+        let lit = (quality.shading != gpu::Shading::Flat || quality.materials) && !late && bus.geo.engine().light_on();
+        // For the frame log: what this picture is.
+        self.drawing = Some((s.shown().frames, ahead, late));
+        Some(draw::GameJob {
+            forget_ram: switched,
+            reset_history: switched,
+            quality,
+            rules: (&s.game.shading, hud_mask(s.game)),
+            smooth: fast.then_some((self.smooth_at, period)),
+            lit,
+        })
+    }
+
+    /// Account for the draw just done (`draw::Drawer::take_report`): the
+    /// status line's counters, the frame log.
+    fn take_report(&mut self) {
+        let Some(g) = &mut self.gpu else { return };
+        let Some(r) = g.drawer.take_report() else { return };
+        let drawing = self.drawing.take();
+        if r.missed {
+            self.stats.surface_misses += 1;
+            return;
+        }
+        self.stats.drawn += 1;
+        self.stats.drawing += r.draw;
+        self.last_draw = r.draw;
+        if let Some(gr) = r.game {
+            if let Some(t) = gr.smooth {
+                self.stats.smooth += 1;
+                self.stats.smoothing += t;
+            }
+            // Smooth shading: what the frame was drawn as, and its cost (a
+            // repeat of a frame costs nothing: the renderer keeps its
+            // shading).
+            if let Some((st, eff)) = gr.shading {
+                self.stats.shaded += 1;
+                self.stats.shading += Duration::from_secs_f32(st.ms.max(0.0) / 1000.0);
+                self.stats.shading_as = Some((eff, st.lit, st.polys - st.hidden));
+            }
+            g.pack_stats = gr.pack;
+        }
+        if let (Some(log), Some(hash)) = (&mut self.frame_log, r.hash) {
+            use std::io::Write;
+            let line = match drawing {
+                Some((frame, ahead, late)) => format!(
+                    "{frame} {}{} {hash:016x}",
+                    if ahead { "ahead" } else { "game" },
+                    if late { "-late" } else { "" }
+                ),
+                None => format!("- - {hash:016x}"),
+            };
+            let _ = writeln!(log, "{line}");
         }
     }
 
-    /// Smooth the frame cost (`ran` frames emulated in `emulate`, drawn in
-    /// `draw`): below full speed when following the display, pace by the
-    /// clock instead, running frames as fast as they can be (dropping to
-    /// half the refresh rate otherwise).
-    fn note_cost(&mut self, ran: u32, emulate: Duration, draw: Duration) {
+    /// Smooth the frame cost (`ran` frames emulated in `emulate`, the frame
+    /// copied and the overlay laid out in `overhead`, drawn in `draw`):
+    /// below full speed when following the display, pace by the clock
+    /// instead, running frames as fast as they can be (dropping to half the
+    /// refresh rate otherwise). With the drawing on the draw thread, a
+    /// frame costs the busier thread's time, not the sum.
+    fn note_cost(&mut self, ran: u32, emulate: Duration, overhead: Duration, draw: Duration) {
         let Some(g) = &self.gpu else { return };
+        // (The launcher draws on this thread.)
+        let overlap = g.drawer.overlaps() && !self.launcher.open;
         if ran > 0 {
-            // What run-ahead would add to: the game's own frames, and the
-            // drawing, as measured with or without it.
-            let (e, d) = (self.real_emulate.as_secs_f64() / ran as f64, draw.as_secs_f64());
+            // What run-ahead would add to: the game's own frames, the rest
+            // of the main thread's work and the drawing, as measured with
+            // or without it.
+            let e = self.real_emulate.as_secs_f64() / ran as f64;
+            let (o, d) = (overhead.as_secs_f64(), draw.as_secs_f64());
             let k = if self.cost_frames == 0 { 1.0 } else { 0.05 };
             self.emulate_cost += (e - self.emulate_cost) * k;
+            self.overhead_cost += (o - self.overhead_cost) * k;
             self.draw_cost += (d - self.draw_cost) * k;
             self.cost_frames = self.cost_frames.saturating_add(1);
-            let cost = (emulate + draw).as_secs_f64() / ran as f64;
+            let main = emulate + overhead;
+            let busy = if overlap { main.max(draw) } else { main + draw };
+            let cost = busy.as_secs_f64() / ran as f64;
             self.frame_cost += (cost - self.frame_cost) * 0.05;
             let budget = frame_budget(g.refresh, false).as_secs_f64();
             if self.frame_cost > budget * 0.95 {
@@ -1854,12 +1912,17 @@ impl Play {
             } else if self.frame_cost < budget * 0.8 {
                 self.behind = false;
             }
+            // For `next_start`: a redraw's emulation, run-ahead included.
+            let k = if self.emulate_redraw == 0.0 { 1.0 } else { 0.1 };
+            self.emulate_redraw += (emulate.as_secs_f64() - self.emulate_redraw) * k;
         }
         // Run-ahead the machine can't keep up with: off (until it's set
         // again), rather than the game running slow. Counted in frames
         // run, so time in the menu doesn't count.
         self.behind_frames = if self.behind { self.behind_frames + ran } else { 0 };
-        if self.behind_frames as f64 > RUN_AHEAD_GRACE * FPS {
+        // (Not while `--frame-log` reads every picture back.)
+        let keep = self.frame_log.is_some();
+        if self.behind_frames as f64 > RUN_AHEAD_GRACE * FPS && !keep {
             if let Some(s) = self.session.as_mut().filter(|s| s.run_ahead.is_some()) {
                 s.run_ahead = None;
                 s.run_ahead_dropped = true;
@@ -1875,7 +1938,8 @@ impl Play {
 
     /// Forget the frame costs (a new game is running).
     fn reset_cost(&mut self) {
-        (self.emulate_cost, self.draw_cost, self.cost_frames) = (0.0, 0.0, 0);
+        (self.emulate_cost, self.overhead_cost, self.draw_cost, self.cost_frames) = (0.0, 0.0, 0.0, 0);
+        self.emulate_redraw = 0.0;
     }
 
     /// The frames of run-ahead this computer has time for, once the game
@@ -1888,10 +1952,41 @@ impl Play {
         }
         let cost = hints::FrameCost {
             emulate: self.emulate_cost,
+            overhead: self.overhead_cost,
             draw: self.draw_cost,
             budget: frame_budget(g.refresh, false).as_secs_f64(),
+            // The launcher draws its preview on the main thread.
+            overlap: g.drawer.overlaps() && !self.launcher.open,
         };
         Some(cost.run_ahead_room())
+    }
+
+    /// With the draw thread still drawing the frame before: when to start
+    /// this redraw anyway (None: now). The next frame's emulation starts
+    /// once that draw is done, as it would after it on one thread, or, if
+    /// that leaves too little of the refresh for it, when waiting longer
+    /// would miss the next one (its emulation, at the time the last ones
+    /// took, and a margin, before a refresh after the draw started, which
+    /// is after the surface gave it a texture, past any wait for vsync):
+    /// then they overlap. The event loop runs in between, so the controls
+    /// read are as fresh as without the draw thread; the draw thread wakes
+    /// it when it starts drawing and when it's done.
+    fn next_start(&mut self) -> Option<Instant> {
+        let g = self.gpu.as_mut()?;
+        g.drawer.busy_since()?;
+        if g.drawer.done() {
+            return None;
+        }
+        let Some(since) = g.drawer.drawing_since() else {
+            // Still waiting for the surface: it wakes the loop.
+            return Some(Instant::now() + Duration::from_secs(1));
+        };
+        // A refresh (one game frame or none at 120 Hz), or a game frame.
+        let budget = g.refresh.map_or(1.0 / FPS, |hz| 1.0 / hz);
+        let e = self.emulate_redraw;
+        let margin = 0.001 + 0.1 * e;
+        let at = since + Duration::from_secs_f64((budget - e - margin).max(0.0));
+        (Instant::now() < at).then_some(at)
     }
 
     /// One redraw: run the game, draw it and the menu, report status.
@@ -1902,6 +1997,10 @@ impl Play {
         if self.launcher.open {
             return self.launcher_frame(el);
         }
+        self.waiting = self.next_start();
+        if self.waiting.is_some() {
+            return;
+        }
         let t0 = Instant::now();
         let (ran, emulate_time) = self.run_due();
         if self.launcher.open {
@@ -1911,25 +2010,21 @@ impl Play {
         let crosshair = if self.menu.visible() { None } else { self.stick_crosshair() };
         let bezel_at = self.gpu.as_ref().and_then(|g| self.bezel_at(&g.view, g.origin, g.config.width));
         let Some(g) = &mut self.gpu else { return };
-        let frame = match g.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
-            // Lost, outdated, hidden or timed out: reconfigure, skip a draw.
-            _ => {
-                g.surface.configure(g.renderer.device(), &g.config);
-                self.stats.surface_misses += 1;
-                return;
-            }
-        };
-        let t_draw = Instant::now();
-        let target = frame.texture.create_view(&Default::default());
-        let (view, origin, format) = (g.view, g.origin, g.config.format);
-        self.draw_session(&target, &view, origin, format, t0);
+        // The frame before, if it is still being drawn: its core (and the
+        // copy of its frame) is needed for this one.
+        let t_wait = Instant::now();
+        g.drawer.finish();
+        self.stats.waiting += t_wait.elapsed();
+        self.take_report();
+        let t_capture = Instant::now();
+        let game = self.capture_game(t0);
         let mut actions = Vec::new();
         let fade =
             self.game_fade.map(|t| 1.0 - t.elapsed().as_secs_f32() / GAME_FADE.as_secs_f32()).filter(|f| *f > 0.0);
         if fade.is_none() {
             self.game_fade = None;
         }
+        let mut overlay = None;
         if self.menu.visible()
             || self.session.is_none()
             || self.splash.active()
@@ -1962,7 +2057,8 @@ impl Play {
             let mut bindings = self.session.as_mut().map(|s| &mut s.bindings);
             let scale = g.window.scale_factor() as f32;
             let size = [g.config.width, g.config.height];
-            actions = draw_overlay(g, &target, no_game, size, None, |ctx| {
+            let paint;
+            (paint, actions) = run_overlay(g, no_game, size, None, |ctx| {
                 if let (Some(b), Some((rect, pic))) = (bezel.as_mut(), bezel_at) {
                     b.paint(ctx, rect, pic, size[0] as f32, scale);
                 }
@@ -1981,17 +2077,30 @@ impl Play {
                 splash.ui(ctx);
                 actions
             });
+            overlay = Some(paint);
             self.set_prefs(fullscreen, for_all);
             if let Some(set) = self.session.as_ref().map(|s| s.game.id) {
                 self.edit_values(set, values);
             }
         }
-        // Not counting `present`, which can wait for vsync.
-        let draw_time = t_draw.elapsed();
-        self.gpu.as_ref().unwrap().renderer.queue().present(frame);
-        self.stats.drawn += 1;
-        self.stats.drawing += draw_time;
-        self.note_cost(ran, emulate_time, draw_time);
+        let overhead = t_capture.elapsed();
+        self.stats.capturing += overhead;
+        // Draw it: on the draw thread, while the next redraw emulates, or
+        // here and now.
+        let g = self.gpu.as_mut().unwrap();
+        let job = draw::Job {
+            game,
+            view: g.view,
+            origin: g.origin,
+            config: g.config.clone(),
+            overlay,
+            hash: self.frame_log.is_some(),
+        };
+        g.drawer.submit(job);
+        if !g.drawer.overlaps() {
+            self.take_report();
+        }
+        self.note_cost(ran, emulate_time, overhead, self.last_draw);
         for action in actions {
             match action {
                 menu::Action::Resume => self.set_menu(false),
@@ -2094,10 +2203,15 @@ impl Play {
         let t0 = Instant::now();
         let (ran, emulate_time) = self.run_due();
         let Some(g) = &mut self.gpu else { return };
-        let frame = match g.surface.get_current_texture() {
+        // The launcher draws on this thread: the game's last frame first.
+        g.drawer.finish();
+        self.take_report();
+        let g = self.gpu.as_mut().unwrap();
+        let core = g.drawer.core();
+        let frame = match core.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             _ => {
-                g.surface.configure(g.renderer.device(), &g.config);
+                core.surface.configure(core.renderer.device(), &g.config);
                 self.stats.surface_misses += 1;
                 return;
             }
@@ -2108,10 +2222,10 @@ impl Play {
         let ppp = g.window.scale_factor() as f32;
         let actions = self.draw_launcher_at(&target, size, ppp, t0);
         let draw_time = t_draw.elapsed();
-        self.gpu.as_ref().unwrap().renderer.queue().present(frame);
+        self.gpu.as_mut().unwrap().drawer.core().renderer.queue().present(frame);
         self.stats.drawn += 1;
         self.stats.drawing += draw_time;
-        self.note_cost(ran, emulate_time, draw_time);
+        self.note_cost(ran, emulate_time, Duration::ZERO, draw_time);
         for action in actions {
             match action {
                 launcher::Action::Play { set, resume } => {
@@ -2160,6 +2274,7 @@ impl Play {
         // The backdrop's horizon sits behind the cards' tops.
         let horizon = (l.cards_y - l.card.y * 0.62) / screen.height();
         let g = self.gpu.as_mut().unwrap();
+        let core = g.drawer.core();
         let params = backdrop::Params {
             size: [size[0] as f32, size[1] as f32],
             horizon,
@@ -2169,7 +2284,7 @@ impl Play {
             level: 1.0,
             _pad: 0.0,
         };
-        g.backdrop.draw(g.renderer.device(), g.renderer.queue(), target, &params);
+        core.backdrop.draw(core.renderer.device(), core.renderer.queue(), target, &params);
         // The preview: the game drawn as the window would show it, at the
         // preview's size.
         let hero = l.hero;
@@ -2180,8 +2295,9 @@ impl Play {
             let (view, origin) = self.fit(pw, ph);
             let g = self.gpu.as_mut().unwrap();
             let format = g.config.format;
+            let core = g.drawer.core();
             if g.preview.as_ref().is_none_or(|p| p.size != [pw, ph]) {
-                let texture = g.renderer.device().create_texture(&wgpu::TextureDescriptor {
+                let texture = core.renderer.device().create_texture(&wgpu::TextureDescriptor {
                     label: Some("preview"),
                     size: wgpu::Extent3d { width: pw, height: ph, depth_or_array_layers: 1 },
                     mip_level_count: 1,
@@ -2192,10 +2308,10 @@ impl Play {
                     view_formats: &[],
                 });
                 let view = texture.create_view(&Default::default());
-                let device = g.renderer.device();
+                let device = core.renderer.device();
                 let id = match &g.preview {
                     Some(p) => {
-                        g.overlay.renderer.update_egui_texture_from_wgpu_texture(
+                        core.egui.update_egui_texture_from_wgpu_texture(
                             device,
                             &view,
                             wgpu::FilterMode::Linear,
@@ -2203,13 +2319,21 @@ impl Play {
                         );
                         p.id
                     }
-                    None => g.overlay.renderer.register_native_texture(device, &view, wgpu::FilterMode::Linear),
+                    None => core.egui.register_native_texture(device, &view, wgpu::FilterMode::Linear),
                 };
                 g.preview = Some(PreviewTarget { _texture: texture, view, id, size: [pw, ph] });
             }
             let pt = g.preview.as_ref().unwrap();
             let (pview, id) = (pt.view.clone(), pt.id);
-            self.draw_session(&pview, &view, origin, format, t0);
+            if let Some(job) = self.capture_game(t0) {
+                let core = self.gpu.as_mut().unwrap().drawer.core();
+                let r = draw::draw_game(core, &job, &pview, &view, origin, format);
+                self.drawing = None;
+                if let Some(t) = r.smooth {
+                    self.stats.smooth += 1;
+                    self.stats.smoothing += t;
+                }
+            }
             let shown = *self.preview.shown.get_or_insert(now);
             let fade_in = ((now - shown).as_secs_f32() / launcher::FADE_IN.as_secs_f32()).min(1.0);
             let fade_out = self.preview.leaving.map_or(1.0, |t| 1.0 - (now - t).as_secs_f32() / FADE_OUT.as_secs_f32());
@@ -2306,14 +2430,29 @@ impl Play {
             _ if self.behind => "too slow to sync, paced by the clock".into(),
             _ => "exact speed".into(),
         };
+        // Handing each frame over to drawing on the main thread (waiting
+        // for the geometrizer, copying the frame, the overlay), and with the
+        // draw thread, waiting for it to finish the frame before.
+        let overlap = self.gpu.as_ref().is_some_and(|g| g.drawer.overlaps()) && !self.launcher.open;
+        let per_draw = |d: Duration| d.as_secs_f64() * 1000.0 / st.drawn.max(1) as f64;
+        let copied = st.copied as f64 / st.drawn.max(1) as f64 / (1 << 20) as f64;
+        let thread = if overlap {
+            format!(
+                " on its thread (hand-over {:.2} ms, {copied:.1} MB; waited {:.2} ms)",
+                per_draw(st.capturing),
+                per_draw(st.waiting)
+            )
+        } else {
+            format!(" (hand-over {:.2} ms, {copied:.1} MB)", per_draw(st.capturing))
+        };
         let status = format!(
-            "{mode} · {:.0}% speed · {:.0} fps ({} repeats, longest gap {:.0} ms) · emulate {:.1} ms/frame · draw {:.2} ms{audio}{}",
+            "{mode} · {:.0}% speed · {:.0} fps ({} repeats, longest gap {:.0} ms) · emulate {:.1} ms/frame · draw {:.2} ms{thread}{audio}{}",
             st.emulated as f64 / secs / FPS * 100.0,
             st.drawn as f64 / secs,
             st.repeats,
             st.longest_gap.as_secs_f64() * 1000.0,
             st.emulating.as_secs_f64() * 1000.0 / st.emulated.max(1) as f64,
-            st.drawing.as_secs_f64() * 1000.0 / st.drawn.max(1) as f64,
+            per_draw(st.drawing),
             if st.surface_misses > 0 { format!(" · {} draws skipped", st.surface_misses) } else { String::new() },
         ) + &if st.geo_late > 0 {
             format!(" · {} drawn with the last frame's polygons", st.geo_late)
@@ -2404,7 +2543,20 @@ impl Play {
         true
     }
 
+    /// Ask for the next redraw.
+    fn redraw(&mut self) {
+        self.waiting = None;
+        if let Some(g) = &self.gpu {
+            g.window.request_redraw();
+        }
+    }
+
     fn quit(&mut self, el: &ActiveEventLoop) {
+        // The picture in flight: drawn, and logged.
+        if let Some(g) = &mut self.gpu {
+            g.drawer.finish();
+        }
+        self.take_report();
         self.previews.cancel_all();
         self.leave_game();
         self.settings.save();
@@ -2456,8 +2608,23 @@ fn draw_overlay<T: Default>(
     clear: bool,
     size: [u32; 2],
     ppp: Option<f32>,
-    mut ui: impl FnMut(&egui::Context) -> T,
+    ui: impl FnMut(&egui::Context) -> T,
 ) -> T {
+    let (paint, result) = run_overlay(g, clear, size, ppp, ui);
+    draw::paint_overlay(g.drawer.core(), &paint, target);
+    result
+}
+
+/// Lay the overlay out (`ui`) for a `size` pixel target at `ppp` pixels a
+/// point (None: the window's) and tessellate it, to paint with
+/// `draw::paint_overlay` (`clear`: over nothing).
+fn run_overlay<T: Default>(
+    g: &mut Gpu,
+    clear: bool,
+    size: [u32; 2],
+    ppp: Option<f32>,
+    mut ui: impl FnMut(&egui::Context) -> T,
+) -> (draw::OverlayPaint, T) {
     let o = &mut g.overlay;
     let mut raw = o.state.take_egui_input(&g.window);
     let ppp = ppp.unwrap_or(g.window.scale_factor() as f32);
@@ -2468,47 +2635,42 @@ fn draw_overlay<T: Default>(
     let out = o.ctx.run_ui(raw, |ui_root| result = ui(ui_root.ctx()));
     o.state.handle_platform_output(&g.window, out.platform_output);
     let jobs = o.ctx.tessellate(out.shapes, out.pixels_per_point);
-    let (device, queue) = (g.renderer.device(), g.renderer.queue());
-    for (id, deltas) in &out.textures_delta.set {
-        for delta in deltas {
-            o.renderer.update_texture(device, queue, *id, delta);
-        }
-    }
     let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: size, pixels_per_point: out.pixels_per_point };
-    let mut enc = device.create_command_encoder(&Default::default());
-    let extra = o.renderer.update_buffers(device, queue, &mut enc, &jobs, &screen);
-    {
-        let load = if clear { wgpu::LoadOp::Clear(wgpu::Color::BLACK) } else { wgpu::LoadOp::Load };
-        let mut pass = enc
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("menu"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
-                })],
-                ..Default::default()
-            })
-            .forget_lifetime();
-        o.renderer.render(&mut pass, &jobs, &screen);
-    }
-    queue.submit(extra.into_iter().chain([enc.finish()]));
-    for id in &out.textures_delta.free {
-        o.renderer.free_texture(id);
-    }
-    result
+    (draw::OverlayPaint { jobs, textures: out.textures_delta, screen, clear }, result)
 }
 
-impl ApplicationHandler for Play {
+/// The draw thread's call to the event loop (`next_start`).
+#[derive(Debug, Clone, Copy)]
+struct Wake;
+
+impl ApplicationHandler<Wake> for Play {
     /// `--seconds` is checked here as well as on redraws, and the loop set
     /// to wake at the limit: a hidden window may get almost no redraws
     /// (about one a second on Wayland). Without `--seconds` the loop keeps
     /// winit's default (wait for events), so pacing is unchanged.
+    /// Waiting for the draw thread (`next_start`): redraw at the time set,
+    /// unless it wakes the loop first.
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
-        let Some(s) = self.opts.seconds else { return };
-        if !self.time_up(el) {
+        if let Some(s) = self.opts.seconds {
+            if self.time_up(el) {
+                return;
+            }
             el.set_control_flow(ControlFlow::WaitUntil(self.started + Duration::from_secs_f64(s)));
+        } else {
+            el.set_control_flow(ControlFlow::Wait);
+        }
+        if let Some(at) = self.waiting {
+            if Instant::now() >= at {
+                self.redraw();
+            } else if self.opts.seconds.is_none_or(|s| at < self.started + Duration::from_secs_f64(s)) {
+                el.set_control_flow(ControlFlow::WaitUntil(at));
+            }
+        }
+    }
+
+    fn user_event(&mut self, _: &ActiveEventLoop, _: Wake) {
+        if self.waiting.is_some() {
+            self.redraw();
         }
     }
 
@@ -2558,6 +2720,10 @@ impl ApplicationHandler for Play {
             .find(|f| formats.contains(f))
             .unwrap_or(config.format.remove_srgb_suffix());
         config.present_mode = wgpu::PresentMode::AutoVsync;
+        // `--frame-log` reads each picture back.
+        if self.opts.frame_log.is_some() {
+            config.usage |= wgpu::TextureUsages::COPY_SRC;
+        }
         surface.configure(&device, &config);
         println!("gpu           {name}");
         let ctx = egui::Context::default();
@@ -2570,7 +2736,7 @@ impl ApplicationHandler for Play {
             None,
             Some(device.limits().max_texture_dimension_2d as usize),
         );
-        let egui_renderer = egui_wgpu::Renderer::new(&device, config.format, Default::default());
+        let egui = egui_wgpu::Renderer::new(&device, config.format, Default::default());
         let backdrop = backdrop::Backdrop::new(&device, config.format);
         let mut renderer = gpu::Renderer::from_device(device, queue, name);
         renderer.set_max_msaa(max_msaa);
@@ -2588,9 +2754,27 @@ impl ApplicationHandler for Play {
         // Redraws drive everything; Wayland sends none until asked.
         window.request_redraw();
         let refresh = refresh_hz(&window);
-        let overlay = Overlay { ctx, state, renderer: egui_renderer };
-        self.gpu =
-            Some(Gpu { window, surface, config, renderer, view, origin, refresh, overlay, backdrop, preview: None });
+        let overlay = Overlay { ctx, state };
+        let core = draw::Core { surface, renderer, egui, backdrop, frame: gpu::BoardFrame::default() };
+        // The draw thread wakes the event loop as it starts drawing and when
+        // it's done (`next_start`).
+        let wake = self.opts.overlap.then(|| self.proxy.clone()).flatten().map(|p| {
+            Box::new(move || {
+                let _ = p.send_event(Wake);
+            }) as Box<dyn Fn() + Send>
+        });
+        let drawer = draw::Drawer::new(core, wake);
+        self.gpu = Some(Gpu {
+            window,
+            config,
+            view,
+            origin,
+            refresh,
+            overlay,
+            preview: None,
+            drawer,
+            pack_stats: gpu::PackStats::default(),
+        });
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
@@ -2679,8 +2863,9 @@ impl ApplicationHandler for Play {
                     return;
                 }
                 self.frame(el);
-                if let Some(g) = &self.gpu {
-                    g.window.request_redraw();
+                // Unless waiting for the draw thread (`next_start`).
+                if self.waiting.is_none() {
+                    self.redraw();
                 }
             }
             _ => {}
@@ -2745,8 +2930,15 @@ fn main() {
         behind: false,
         behind_frames: 0,
         emulate_cost: 0.0,
+        overhead_cost: 0.0,
         draw_cost: 0.0,
         cost_frames: 0,
+        last_draw: Duration::ZERO,
+        waiting: None,
+        emulate_redraw: 0.0,
+        frame_log: None,
+        drawing: None,
+        proxy: None,
         real_emulate: Duration::ZERO,
         stats: Stats::new(),
         started: Instant::now(),
@@ -2774,6 +2966,22 @@ fn main() {
         }
         None => play.launcher.open = true,
     }
-    let event_loop = EventLoop::new().expect("event loop");
+    let event_loop = EventLoop::<Wake>::with_user_event().build().expect("event loop");
+    play.proxy = Some(event_loop.create_proxy());
+    if let Some(path) = &play.opts.frame_log {
+        match std::fs::File::create(path) {
+            Ok(f) => play.frame_log = Some(std::io::BufWriter::new(f)),
+            Err(e) => {
+                eprintln!("--frame-log: {}: {e}", path.display());
+                std::process::exit(1);
+            }
+        }
+    }
     event_loop.run_app(&mut play).expect("event loop");
+    // The draw thread's last picture, the frame log's last lines.
+    drop(play.gpu.take());
+    if let Some(mut log) = play.frame_log.take() {
+        use std::io::Write;
+        let _ = log.flush();
+    }
 }
