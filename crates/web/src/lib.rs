@@ -684,6 +684,7 @@ struct Quality {
     shading_balance: bool,
     materials: bool,
     materials_relief: gpu::Relief,
+    bloom: u8,
 }
 
 impl Quality {
@@ -697,6 +698,7 @@ impl Quality {
         shading_balance: true,
         materials: false,
         materials_relief: gpu::Relief::Diffuse { tenths: gpu::Relief::DEFAULT_TENTHS },
+        bloom: 0,
     };
 
     fn gpu(self) -> gpu::Quality {
@@ -710,6 +712,7 @@ impl Quality {
             shading_balance,
             materials,
             materials_relief,
+            bloom,
         } = self;
         gpu::Quality {
             msaa: aa,
@@ -721,6 +724,7 @@ impl Quality {
             shading_balance,
             materials,
             materials_relief,
+            bloom,
             ..Default::default()
         }
     }
@@ -753,7 +757,9 @@ impl Quality {
 /// `off` for the faithful rule; left out or unreadable is 2). The shading
 /// is done on this page, from the polygon stream and the side channel the
 /// geometrizer recorded (`geo=local`: turned on here; with the worker the
-/// page asks it for it, geo-worker.js `light`). Before `start`, for the
+/// page asks it for it, geo-worker.js `light`), and `bloom` the strength
+/// of bloom in percent (`gpu::Quality::bloom`: 0 or left out is off, 100 the
+/// strongest; the 3D layer's bright parts glow, the HUD stays sharp). Before `start`, for the
 /// game it starts; after, from the next frame.
 #[wasm_bindgen]
 pub fn set_quality(
@@ -766,6 +772,7 @@ pub fn set_quality(
     balance: Option<bool>,
     materials: Option<bool>,
     relief: Option<String>,
+    bloom: Option<u32>,
 ) {
     let q = Quality {
         aa,
@@ -780,6 +787,7 @@ pub fn set_quality(
         shading_balance: balance.unwrap_or(true),
         materials: materials.unwrap_or(false),
         materials_relief: relief.as_deref().and_then(gpu::Relief::parse).unwrap_or_default(),
+        bloom: bloom.unwrap_or(0).min(100) as u8,
     };
     QUALITY.with(|c| c.set(q));
     APP.with(|a| {

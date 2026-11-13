@@ -68,6 +68,7 @@ make play RECOMP=1        # the launcher: pick a game (live attract previews, se
 make play GAME=hotd RECOMP=1   # straight into a game (Esc or pad Guide or Start+Select menu, F5/F9 quick save/load, F11 fullscreen)
 make play PLAY_ARGS=--smooth   # with in-between frames on a display over 60 Hz (a frame more latency)
 make play GAME=sgt24h PLAY_ARGS="--run-ahead 3"   # show the game 3 frames ahead: less input lag, 4x the emulation
+make play PLAY_ARGS="--bloom 50"   # bloom on the 3D layer's bright parts, 1 to 100 percent (off by default; docs/play.md)
 make play PLAY_ARGS="--temporal 67"   # temporal anti-aliasing, 3D drawn at 67% and upscaled (taa: full size; --stipple keep; docs/play.md)
 make input-lag            # each game's own input lag: frames from a control to the picture changing
 make run-ahead-check      # run-ahead keeps the real state hash and shows the plain run's later frames
@@ -78,7 +79,7 @@ make smooth-frames GAME=doa    # coin-start run drawing in-between frames beside
 make web RECOMP=1         # browser build -> out/web: game list, a page and module per game (WebGPU; serve over HTTPS, docs/web.md); missing screenshots made JOBS at a time (default 3)
 make dist                 # player to hand out (interpreter only, no ROMs) -> out/dist/remodel-VERSION-TARGET.tar.gz
 make capture              # save renderer inputs from a run into a race -> out/topskatr/capture
-make gpu-check            # draw them on the software and GPU rasterisers, time and compare (GPU_OPTS="--aa 4 --depth": with them on)
+make gpu-check            # draw them on the software and GPU rasterisers, time and compare (GPU_OPTS="--aa 4 --depth": with them on; "--bloom 50": bloom at 50% on the GPU frames, which the software renderer has none of, so the comparison then includes it; the cost table always adds bloom columns, at --bloom's strength or 50)
 make gpu-check PACK=out/topskatr/texpack-4x GPU_OPTS="--tex-filter mip"   # the same with a texture pack on both renderers (docs/texture-packs.md)
 make gpu-check PACK=DIR GPU_OPTS="--materials --shading pixel"   # also draw the pack's normal maps, GPU against software, from captures with light.bin (made with --geo native); counts and memory per frame; --light instead of --materials for the frame to compare with
 # `run --texture-pack DIR --materials --geo native` snapshots draw its normal maps in software (a line per snapshot: polygons with a lamp, with a material, pixels changed)

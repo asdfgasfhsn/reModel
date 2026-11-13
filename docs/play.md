@@ -42,6 +42,18 @@ floors). Neither changes what the game computes: state hashes are the
 same. Costs 0.5-1 and 1.5-3 ms a frame at 1080p on the development GPU
 (`docs/gpu.md`); what the depth buffer does is in `docs/enhancements.md`.
 
+**Bloom** (setting `bloom`, below; `--bloom off|N` for one run, N a strength
+from 1 to 100 percent; off by default). The bright parts of the 3D layer
+glow: blurred through a chain of halvings and added back over the picture
+before the HUD, so text and the HUD stay sharp and the tile layers don't
+feed it. Works with anti-aliasing, temporal anti-aliasing and upscaling,
+needs the same 16-bit float targets as temporal (a GPU without them has no
+row), GPU only. The menu offers Off, Light (25), Medium (50) and Strong
+(100). It is not part of any preset: it is taste, not fidelity. Costs about
+0.25 ms a frame at 1080p and 0.7 ms at 4K (`docs/enhancements.md`, "Bloom").
+There is no fog setting: the games send no fog to smooth (same place,
+"Fog").
+
 **Temporal anti-aliasing** (settings `temporal` and `stipple`, below;
 `--temporal off|taa|75|67|50` and `--stipple blend|keep` for one run; off
 and blend by default). Each frame's 3D layer is drawn at a slightly
@@ -545,12 +557,12 @@ emulated like the game would be (it costs what the game costs).
 
 **Settings** slide out from the right over the preview, which shows what
 they change as they change (except anti-aliasing, temporal anti-aliasing,
-the depth buffer, shading, the texture pack and its filtering and
+the depth buffer, bloom, shading, the texture pack and its filtering and
 material maps, which the preview draws without; they show in the game): aspect (fit the window
 or 4:3), bezel, HUD at the edges or centred, speed (one frame a refresh or
 exact arcade speed), smooth motion, run-ahead (off, 1, 2, 3), anti-aliasing (off, 4x, 8x), temporal anti-aliasing (off,
 TAA, 75%, 67%, 50%) and its checkerboard see-through (blend or keep), the depth buffer, shading (flat,
-vertex, pixel; with the chip geometrizer pixel says it draws as vertex), its brightness levels (the game's or blended) and its brightness balance (on or off), the texture pack and its filtering (off, mip, 2x to 16x), material maps (off or on; no effect without the pack or with the chip, said in place of the hint) and their relief (1, 2, 4, 8 or faithful; another strength from the settings file or the command line as "Custom (S)"), the effects and music levels in dB, the geometrizer (native
+vertex, pixel; with the chip geometrizer pixel says it draws as vertex), its brightness levels (the game's or blended) and its brightness balance (on or off), the texture pack and its filtering (off, mip, 2x to 16x), material maps (off or on; no effect without the pack or with the chip, said in place of the hint) and their relief (1, 2, 4, 8 or faithful; another strength from the settings file or the command line as "Custom (S)"), bloom (off, light, medium, strong; another percentage from a flag or file as "N%"; not offered on a GPU without 16-bit float targets), the effects and music levels in dB, the geometrizer (native
 or the game's chip; the preview restarts on it) and the Controls page
 (remapping, below). "Save for" says where changes go: the defaults for all
 games, or this game only (a game's own setting is tagged "this game", and
@@ -571,7 +583,7 @@ what is saved from either place is identical (`preset = enhanced` and so
 on). The crease angle is only in the menu. They come in layers, lowest first, as in the
 browser build: the built-in defaults, the defaults for all games, the
 game's own, then the command line (`--mix`, `--hud`, `--aspect`, `--bezel`,
-`--exact`, `--smooth`, `--run-ahead`, `--aa`, `--temporal`, `--stipple`, `--depth`, `--shading`, `--crease`, `--shading-fine`, `--shading-balance`, `--pack`, `--texture-pack`, `--tex-filter`, `--materials`, `--materials-relief`, `--geo`), which applies to that run only and is
+`--exact`, `--smooth`, `--run-ahead`, `--aa`, `--temporal`, `--stipple`, `--depth`, `--shading`, `--crease`, `--shading-fine`, `--shading-balance`, `--pack`, `--texture-pack`, `--tex-filter`, `--materials`, `--materials-relief`, `--bloom`, `--geo`), which applies to that run only and is
 never saved, unless a setting it gave is changed in the launcher or menu
 (that change is then kept as any other). A layer keeps only what it sets.
 

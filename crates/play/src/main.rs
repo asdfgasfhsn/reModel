@@ -154,6 +154,10 @@ usage: remodel-play [options]
                      for the faithful rule (the map's normal in the game's
                      own lighting sum: little shows where the game lights
                      to full). Default 2
+  --bloom off|N      bloom: the 3D layer's bright parts glow, N percent
+                     strong (1 to 100; 25 light, 50 medium, 100 strong).
+                     The HUD and tile layers are left out, it works with
+                     any anti-aliasing and is GPU only. Default off
   --exact            run at the arcade's exact 57.524 frames per second
                      (default: one frame per display refresh when the
                      refresh is 60 or 120 Hz, which is 4.3% fast but smooth)
@@ -179,7 +183,7 @@ usage: remodel-play [options]
 The game's settings (mix, HUD, aspect, bezel, speed, smooth motion,
 run-ahead, anti-aliasing, temporal anti-aliasing and stipple, depth buffer,
 shading, crease, finer levels and brightness balance, texture pack and
-filtering, material maps and their rule, geometrizer) given here are for this run only, over the
+filtering, material maps and their rule, bloom, geometrizer) given here are for this run only, over the
 defaults for all games and the game's own, which the launcher's settings
 and the menu keep.
 --rom and --fullscreen are remembered.
@@ -500,6 +504,13 @@ fn options(s: &mut Settings) -> Result<Options, String> {
                     return Err("--materials-relief wants off or a strength from 0.1 to 8".into());
                 };
                 cli("materials_relief", &r.name());
+            }
+            "--bloom" => {
+                let v = value()?;
+                if gpu::Quality::parse_bloom(&v).is_none() {
+                    return Err("--bloom wants off or a strength from 1 to 100".into());
+                }
+                cli("bloom", &v);
             }
             "--no-splash" => o.splash = false,
             "--fullscreen" => fullscreen = true,

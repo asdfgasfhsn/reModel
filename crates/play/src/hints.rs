@@ -13,6 +13,12 @@ pub const PRESETS: [(Preset, &str); 4] = [
     (Preset::Custom, "Custom"),
 ];
 
+/// The bloom row's choices (strength in percent, label).
+pub const BLOOM: [(u8, &str); 4] = [(0, "Off"), (25, "Light"), (50, "Medium"), (100, "Strong")];
+
+/// The help line of the bloom row.
+pub const BLOOM_HELP: &str = "Bright parts of the 3D picture glow. The HUD is left sharp.";
+
 /// The run-ahead row's choices (frames, label); a game offers the first
 /// `run_ahead_max + 1`.
 pub const RUN_AHEAD: [(u32, &str); 4] = [(0, "Off"), (1, "1 frame"), (2, "2 frames"), (3, "3 frames")];

@@ -73,7 +73,12 @@ pub fn captures(
         video::HudLayout::new(&f.tiles, &f.palette, &view).anchor(&mut polys, &view);
         let placed = raster::place(&mut polys, &view);
         let layers = video::layers_2d(&f.tiles, &f.palette, &view, !placed.is_empty());
-        let off_q = gpu::Quality { depth: quality.depth, tex_filter: quality.tex_filter, ..super::gpu_light(light) };
+        let off_q = gpu::Quality {
+            depth: quality.depth,
+            bloom: quality.bloom,
+            tex_filter: quality.tex_filter,
+            ..super::gpu_light(light)
+        };
         let keep_q = gpu::Quality { temporal: 100, stipple: gpu::Stipple::Keep, ..off_q };
         let blend_q = gpu::Quality { stipple: gpu::Stipple::Blend, ..keep_q };
         gpu.set_quality(off_q);

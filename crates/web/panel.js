@@ -233,7 +233,10 @@ export function createPanel(opts) {
       "The pack's normal maps: bumps and grooves lit by the game's own lights. Needs the native geometrizer."),
     step("relief", "Material relief", () => withValue("relief",
       [["1", "1"], ["2", "2"], ["4", "4"], ["8", "8"], ["off", "Faithful"]], (v) => `Custom (${v})`),
-    "How strongly the bumps shade, 2 by default. Faithful keeps the game's own lighting sum: subtler."));
+    "How strongly the bumps shade, 2 by default. Faithful keeps the game's own lighting sum: subtler."),
+    step("bloom", "Bloom", () => withValue("bloom",
+      [["off", "Off"], ["25", "Light"], ["50", "Medium"], ["100", "Strong"]], (v) => `${v}%`),
+    "Bright parts of the 3D picture glow. The HUD is left sharp."));
   const motion = pane(
     onOff("smooth", "Smooth motion", "Draws in-between frames on displays faster than 60 Hz, a frame later."),
     el("p", { className: "hint", textContent: "Exact arcade speed and run-ahead are the native player's " +
@@ -346,7 +349,7 @@ export function createPanel(opts) {
     const custom = values.preset === "custom";
     const chip = values.geo === "chip";
     const shaded = values.shading !== "flat";
-    for (const k of ["aa", "depth", "shading", "pack"]) show(k, custom);
+    for (const k of ["aa", "depth", "shading", "pack", "bloom"]) show(k, custom);
     show("crease", custom && shaded);
     show("shadefine", custom && shaded && values.crease !== 0);
     show("shadebalance", custom && shaded && values.crease !== 0);

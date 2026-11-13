@@ -413,6 +413,19 @@ in the level, the filtering between levels and the microtexture's blend stay unc
   outside the stream, for example) is **unconfirmed**. fvipers and schamp write a 128-entry
   luma-table-shaped map at `0x12800000` that a test menu calls "TRANS MAP", but leave it
   at its boot ramp in play (`model2b.md`).
+- **Fog, depth cue:** none is known. Nothing in what the games send carries
+  a fog colour, density or distance table: the command set (§2) has no fn
+  for it, a polygon's record is its attribute word, luma word, distance
+  word (the texture LOD, §5.3) and vertices, and the texture header's
+  unidentified bits (h1 8-15, h2 11, h3 0-5) are fixed per texture, not
+  per distance. Distant haze in the games is made of the polygons
+  themselves (sky and far scenery in pale colours, `srallyc`'s fade in and
+  out of white through its colour tables). reModel's two renderers apply
+  no fog, and a game's colour for one isn't read anywhere. **M**: a
+  register outside the stream, or an unidentified header bit, could still
+  carry one; none is among the registers and fields documented here (found
+  by reading these tables and reModel's renderers, not by a hunt through
+  each game's code).
 - **Gamma:** MAME then applies a guessed gamma (MH-3: out = max(0, (v − 64)·255/191)). It is
   calibration, not hardware.
 

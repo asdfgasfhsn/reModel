@@ -21,7 +21,9 @@
 //! Tab and Shift+Tab) for tabs, Backspace to go back; Esc closes the menu.
 
 use crate::focus::Focus;
-use crate::hints::{preset_help, run_ahead_help, run_ahead_max, run_ahead_shown, PRESETS, RUN_AHEAD};
+use crate::hints::{
+    preset_help, run_ahead_help, run_ahead_max, run_ahead_shown, BLOOM, BLOOM_HELP, PRESETS, RUN_AHEAD,
+};
 use crate::launcher::{keycap, Nav, CYAN, DIM, FG};
 use crate::settings::{GameSettings, Preset};
 use egui::{pos2, vec2, Align2, Color32, FontId, Rect, Sense, Shape};
@@ -965,6 +967,15 @@ fn picture_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings, view: 
             &list,
             "How strongly the bumps shade, 2 by default. Faithful keeps the game's own lighting sum: subtler.",
         );
+    }
+    if view.temporal_supported {
+        // A strength set by flag or file that isn't one of the choices.
+        let mut list: Vec<(u8, String)> = BLOOM.iter().map(|(n, t)| (*n, t.to_string())).collect();
+        if !list.iter().any(|o| o.0 == s.bloom) {
+            list.push((s.bloom, format!("{}%", s.bloom)));
+        }
+        let list: Vec<(u8, &str)> = list.iter().map(|(v, t)| (*v, t.as_str())).collect();
+        rows.choose(ui, "Bloom", &mut s.bloom, &list, BLOOM_HELP);
     }
 }
 

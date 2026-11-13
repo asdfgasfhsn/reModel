@@ -243,7 +243,7 @@
     set_hud(values.hud !== "center");
     const q = S.effective(values, env());
     set_quality(q.aa, q.depth, q.texFilter, q.shading, q.crease, q.shadingFine, q.shadingBalance, q.materials,
-      q.relief);
+      q.relief, q.bloom);
     geoWorker?.postMessage({ type: "set", light: wantsLight(q) });
     if (values.pack !== before.pack) usePack(values.pack);
     set_bindings(values.controls);
@@ -620,7 +620,7 @@
       }
       set_smooth(opt.smooth);
       set_quality(opt.aa, opt.depth, opt.texFilter, opt.shading, opt.crease, opt.shadingFine, opt.shadingBalance,
-        opt.materials, opt.relief);
+        opt.materials, opt.relief, opt.bloom);
       if (opt.pack) await usePack(true);
       set_audio_buffer(opt.audio.target);
       await start(game, document.getElementById("screen"), status, rom, opt.height, opt.aspect, opt.hudEdges, link, geo);

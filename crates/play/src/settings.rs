@@ -56,7 +56,7 @@ impl Preset {
 /// The rows a preset describes the picture by: a preset matches when all
 /// of them are what it sets. Changing one of them under a preset makes it
 /// Custom.
-pub const PICTURE_KEYS: [&str; 12] = [
+pub const PICTURE_KEYS: [&str; 13] = [
     "aa",
     "temporal",
     "stipple",
@@ -69,11 +69,12 @@ pub const PICTURE_KEYS: [&str; 12] = [
     "tex_filter",
     "materials",
     "materials_relief",
+    "bloom",
 ];
 
 /// The rows choosing a preset sets: the picture's, smooth motion and
 /// run-ahead (the last two don't count against a preset matching).
-const PRESET_KEYS: [&str; 14] = [
+const PRESET_KEYS: [&str; 15] = [
     "aa",
     "temporal",
     "stipple",
@@ -86,6 +87,7 @@ const PRESET_KEYS: [&str; 14] = [
     "tex_filter",
     "materials",
     "materials_relief",
+    "bloom",
     "smooth",
     "run_ahead",
 ];
@@ -154,6 +156,10 @@ pub struct GameSettings {
     /// How material maps change brightness (`gpu::Relief`): relief at a
     /// strength (2 by default), or the faithful rule (`off`).
     pub materials_relief: gpu::Relief,
+    /// Bloom (`gpu::Quality::bloom`): strength in percent, 0 for none. The
+    /// bright parts of the 3D layer glow; GPU only, never part of a preset
+    /// but Original's "off".
+    pub bloom: u8,
     /// The geometrizer on its chip (the game's own program) rather than
     /// the native implementation. Applies when the game starts.
     pub geo_chip: bool,
@@ -183,13 +189,14 @@ impl Default for GameSettings {
             tex_filter: TexFilter::Off,
             materials: false,
             materials_relief: gpu::Relief::default(),
+            bloom: 0,
             geo_chip: false,
         }
     }
 }
 
 /// Every game setting's key, in the order the panels show them.
-pub const KEYS: [&str; 22] = [
+pub const KEYS: [&str; 23] = [
     "preset",
     "wide",
     "bezel",
@@ -209,6 +216,7 @@ pub const KEYS: [&str; 22] = [
     "tex_filter",
     "materials",
     "materials_relief",
+    "bloom",
     "sfx_db",
     "music_db",
     "geo",
@@ -263,6 +271,10 @@ impl GameSettings {
             "tex_filter" => self.tex_filter.to_string(),
             "materials" => self.materials.to_string(),
             "materials_relief" => self.materials_relief.name(),
+            "bloom" => match self.bloom {
+                0 => "off".to_string(),
+                n => n.to_string(),
+            },
             "geo" => if self.geo_chip { "chip" } else { "native" }.to_string(),
             _ => String::new(),
         }
@@ -299,6 +311,7 @@ impl GameSettings {
             "tex_filter" => TexFilter::parse(v).map(|f| self.tex_filter = f).is_some(),
             "materials" => flag(v).map(|x| self.materials = x).is_some(),
             "materials_relief" => gpu::Relief::parse(v).map(|r| self.materials_relief = r).is_some(),
+            "bloom" => gpu::Quality::parse_bloom(v).map(|n| self.bloom = n).is_some(),
             "geo" => match model2::geo::GeoMode::parse(v) {
                 Some(model2::geo::GeoMode::Chip) => {
                     self.geo_chip = true;
@@ -407,7 +420,8 @@ impl GameSettings {
     }
 
     /// The renderer's quality for these settings (`supported`: the GPU
-    /// has temporal anti-aliasing). Multisampling is asked for as set; the
+    /// has temporal anti-aliasing's 16-bit float targets, which bloom
+    /// needs too). Multisampling is asked for as set; the
     /// renderer turns it off while temporal is on.
     pub fn quality(&self, supported: bool) -> gpu::Quality {
         gpu::Quality {
@@ -422,6 +436,7 @@ impl GameSettings {
             shading_balance: self.shading_balance,
             materials: self.materials_on(),
             materials_relief: self.materials_relief,
+            bloom: if supported { self.bloom } else { 0 },
         }
     }
 }
@@ -892,6 +907,29 @@ mod tests {
         let s = Settings::parse(&s.text());
         let (v, _) = with_game(s, "x", &[]).resolve("x");
         assert_eq!((v.temporal, v.stipple_keep), (67, true));
+    }
+
+    #[test]
+    fn bloom_is_off_and_not_a_preset_row() {
+        let mut v = GameSettings::default();
+        assert_eq!((v.bloom, v.get("bloom").as_str()), (0, "off"));
+        for (text, n) in [("off", 0), ("0", 0), ("25", 25), ("100", 100)] {
+            assert!(v.set("bloom", text));
+            assert_eq!(v.bloom, n);
+        }
+        assert_eq!(v.get("bloom"), "100");
+        assert!(!v.set("bloom", "101") && !v.set("bloom", "-1") && !v.set("bloom", "x"));
+        assert_eq!(v.bloom, 100);
+        // Only a GPU with the 16-bit float targets has it.
+        assert_eq!((v.quality(true).bloom, v.quality(false).bloom), (100, 0));
+        // The presets leave it off, and a bloom under one makes it Custom.
+        for p in [Preset::Original, Preset::Sharp, Preset::Enhanced] {
+            v.apply_preset(p, None);
+            assert_eq!(v.bloom, 0, "{p:?}");
+        }
+        v.bloom = 50;
+        assert!(!v.picture_is(Preset::Enhanced, None));
+        assert!(Settings::default().text().find("bloom").is_none());
     }
 
     #[test]

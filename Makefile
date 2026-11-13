@@ -321,7 +321,7 @@ capture: release ## Run into a race saving every 300th frame's renderer inputs t
 	rm -rf $(OUT)/capture
 	$(RUN) --capture $(OUT)/capture --input $(BENCH_INPUT) run 900000000 300 >/dev/null
 
-# Options for gpu-check, depth-check and pack-check: --aa N (multisampling;
+# Options for gpu-check, depth-check and pack-check: --bloom N (gpu-check, temporal-probe: bloom), --aa N (multisampling;
 # software supersamples to match), --depth, --tex-filter off|mip|2|4|8|16
 # (gpu-check with PACK), --materials (the pack's material maps: gpu-check draws them from captures with light.bin;
 # --materials-relief off|S), --light (gpu-check: shade with light.bin), and for depth-check and pack-check

@@ -278,7 +278,8 @@ controls, as a page needs. The tabs:
   shading"), blended brightness levels (off by default) and the
   brightness balance (on by default; both only with shading and a crease
   above 0), the texture pack (off by default; below) and, with it, material
-  maps and their relief;
+  maps and their relief, and bloom (off, light 25, medium 50, strong 100;
+  below);
 - **Motion:** smooth motion (off by default; below; not with the chip).
   Exact arcade speed and run-ahead are the native player's;
 - **Sound:** on or off, the effects (sound board) and music levels in
@@ -384,13 +385,23 @@ parameters:
   by depth, not the game's order, except skies, shadows, translucent
   layers and large floors; `docs/enhancements.md`). Both off by default,
   both in the panel's Picture tab (with Custom), both applied live. The module's
-  `set_quality(aa, depth, texfilter, shading, crease, fine, balance, materials, relief)` takes them before
+  `set_quality(aa, depth, texfilter, shading, crease, fine, balance, materials, relief, bloom)` takes them before
   or after `start` (`texfilter` is a string: `off`, `mip`, `2`, `4`, `8` or
   `16`; anything else is off; `shading`, `crease`, `fine`, `balance`, `materials` and `relief` as below, and may be
-  left out: flat, the game's angle, off, on, off, 2). Temporal anti-aliasing and upscaling
+  left out: flat, the game's angle, off, on, off, 2, off). Temporal anti-aliasing and upscaling
   are the native player's only (`docs/play.md`); the browser has no
   setting for them and keeps multisampling (`set_quality` never turns
   them on);
+- `bloom=N` (bloom, `gpu::Quality::bloom`: the 3D layer's bright parts
+  glow, N percent strong, 1 to 100; `bloom=off` or 0, the default, off; the
+  panel offers light 25, medium 50 and strong 100 under Custom, applied
+  live). The HUD and tile layers are left out, it works with 4x
+  multisampling, and costs about 0.25 ms a frame at 1080p and 0.7 ms at 4K
+  on the development GPU (native numbers, `docs/enhancements.md`,
+  "Bloom"). WebGPU has the 16-bit float targets it needs. The code path
+  is the one `make check` builds and the native player runs; the
+  browser's panel, URL parameter and `set_quality` argument were written
+  against the player's and have not been run in a browser;
 - `shading=vertex` (smooth shading; `shading=flat` or `off`, the default,
   the original; `shading=pixel`, the game's lighting per pixel) and
   `crease=40` (degrees, 0 to 180: faces meeting at a sharper angle keep a

@@ -14,12 +14,19 @@ struct Params {
     // Top-left of the frame in the target (letterboxing), in pixels.
     origin: vec2f,
     backdrop: vec4f,
+    // Bloom's strength (0: off, nothing is read) and the 3D layer's size in
+    // output pixels.
+    bloom: f32,
+    size: vec2f,
 }
 
 @group(0) @binding(0) var<uniform> pr: Params;
 @group(0) @binding(1) var base: texture_2d<f32>;
 @group(0) @binding(2) var layer3d: texture_2d<f32>;
 @group(0) @binding(3) var hud: texture_2d<f32>;
+// Half-size blurred bright parts of the 3D layer (gpu/src/bloom.rs).
+@group(0) @binding(4) var glow: texture_2d<f32>;
+@group(0) @binding(5) var glow_sampler: sampler;
 
 @vertex
 fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
@@ -27,6 +34,14 @@ fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
     let x = f32((i << 1u) & 2u);
     let y = f32(i & 2u);
     return vec4f(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
+}
+
+// The glow added over the picture, before the HUD.
+fn add_glow(c: vec3f, pos: vec2f) -> vec3f {
+    if pr.bloom <= 0.0 {
+        return c;
+    }
+    return c + pr.bloom * textureSampleLevel(glow, glow_sampler, pos / pr.size, 0.0).rgb;
 }
 
 @fragment
@@ -50,6 +65,7 @@ fn fs(@builtin(position) frag: vec4f) -> @location(0) vec4f {
     // what is behind them.
     let d = textureLoad(layer3d, vec2i(floor(pos.xy)), 0);
     c = d.rgb + (1.0 - d.a) * c;
+    c = add_glow(c, pos.xy);
     if i32(ex) < i32(pr.ext_w) {
         let h = textureLoad(hud, vec2i(i32(ex), gy), 0);
         if h.a > 0.0 {
@@ -153,6 +169,7 @@ fn fs_tiles(@builtin(position) frag: vec4f) -> @location(0) vec4f {
     }
     let d = textureLoad(layer3d, vec2i(floor(pos.xy)), 0);
     c = d.rgb + (1.0 - d.a) * c;
+    c = add_glow(c, pos.xy);
     if i32(ex) < i32(pr.ext_w) {
         let sx = textureLoad(hud_src, vec2i(i32(ex), gy), 0).x;
         if sx != 0xffffffffu {

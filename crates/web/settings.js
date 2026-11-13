@@ -16,7 +16,7 @@ export const MIX = [8, -8];
 
 /// Every setting, in panel order.
 export const KEYS = ["preset", "height", "aspect", "hud", "bezel", "aa", "depth", "shading", "crease", "shadefine", "shadebalance", "pack", "texfilter",
-  "materials", "relief", "sound", "sfx",
+  "materials", "relief", "bloom", "sound", "sfx",
   "music", "buffer", "touch", "tilt", "geo", "smooth", "controls"];
 /// Settings kept per game only, never as the defaults for all games:
 /// `controls` is the game's remapped keys and pad bindings, as the module
@@ -40,7 +40,7 @@ export const BUFFER = { desktop: 70, phone: 150 };
 /// change how the game looks, which a preset sets and only Custom lists.
 export const PRESETS = ["original", "sharp", "enhanced", "custom"];
 export const PICTURE = ["aa", "depth", "shading", "crease", "shadefine", "shadebalance", "pack", "texfilter", "materials",
-  "relief"];
+  "relief", "bloom"];
 /// What "Enhanced" turns on for a game that has no say (the module's
 /// `game_recommended` gives the game's own).
 export const RECOMMENDED = { depth: false, shading: false };
@@ -92,6 +92,7 @@ export function builtin(env = {}) {
     texfilter: "off",
     materials: false,
     relief: "2",
+    bloom: "off",
     sound: true,
     sfx: MIX[0],
     music: MIX[1],
@@ -170,6 +171,12 @@ export function clean(key, v) {
       const t = Math.round(n * 10);
       return Number.isFinite(t) && t >= 1 && t <= 80 ? String(t / 10) : undefined;
     }
+    // Bloom (gpu::Quality::bloom): off, or a strength in percent, 1 to 100.
+    case "bloom": {
+      if (v === "off" || v === false || v === 0 || v === "0") return "off";
+      const n = typeof v === "number" ? v : typeof v === "string" && /^\d+$/.test(v.trim()) ? Number(v) : NaN;
+      return Number.isInteger(n) && n >= 1 && n <= 100 ? String(n) : undefined;
+    }
     case "sfx":
     case "music": {
       const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
@@ -222,7 +229,8 @@ function cleanAll(o) {
 /// (the game's texture pack, from /texpack/<set>/) and
 /// `texfilter=off|mip|2|4|8|16` (filtering of pack images), `materials=1`
 /// (the pack's material maps) with `relief=off|S` (their rule: a relief
-/// strength from 0.1 to 8, or off for the faithful rule).
+/// strength from 0.1 to 8, or off for the faithful rule), `bloom=off|N` (the
+/// 3D layer's bright parts glow, N percent strong, 1 to 100).
 export function fromParams(params) {
   const raw = {};
   const flag = (k) => params.get(k) !== "0" && params.get(k) !== "off" && params.get(k) !== "false";
@@ -241,6 +249,7 @@ export function fromParams(params) {
   if (params.has("texfilter")) raw.texfilter = params.get("texfilter");
   if (params.has("materials")) raw.materials = flag("materials");
   if (params.has("relief")) raw.relief = params.get("relief");
+  if (params.has("bloom")) raw.bloom = params.get("bloom");
   if (params.has("sound")) raw.sound = flag("sound");
   if (params.has("sfx")) raw.sfx = params.get("sfx");
   if (params.has("music")) raw.music = params.get("music");
@@ -371,7 +380,8 @@ export function audioBuffer(buffer, env = {}) {
 /// touch, tilt, geoLocal, geoNative, smooth, aa (samples, 0 or 4), depth,
 /// shading ("flat", "vertex", "pixel"), crease (degrees, or undefined: the
 /// game's), shadingFine, shadingBalance, pack, texFilter ("off", "mip", "2" ... "16"),
-/// materials (with the pack only), relief ("off" or a strength)}`
+/// materials (with the pack only), relief ("off" or a strength), bloom
+/// (percent, 0 for off)}`
 /// (smooth motion needs the
 /// native geometrizer: off with the chip).
 export function effective(values, env) {
@@ -398,6 +408,7 @@ export function effective(values, env) {
     texFilter: values.texfilter,
     materials: values.materials && values.pack,
     relief: values.relief,
+    bloom: values.bloom === "off" ? 0 : Number(values.bloom),
   };
 }
 

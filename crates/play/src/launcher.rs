@@ -217,6 +217,7 @@ fn shown_rows(c: &Shown) -> Vec<Row> {
                 "temporal" => custom && !v.geo_chip && c.temporal_supported,
                 "stipple" => custom && temporal,
                 "depth" | "shading" | "pack" => custom,
+                "bloom" => custom && c.temporal_supported,
                 "shading_fine" | "shading_balance" => custom && v.light_on(),
                 "materials" => custom && v.pack && !v.geo_chip,
                 "materials_relief" => custom && v.materials_on() && !v.geo_chip,
@@ -319,6 +320,12 @@ fn rows(has_own: bool, max_anisotropy: u8) -> Vec<Row> {
             "Material relief",
             "how strongly maps shade (2 by default); faithful keeps the game's own lighting sum, subtler",
             &[("1", "1"), ("2", "2"), ("4", "4"), ("8", "8"), ("Faithful", "off")],
+        ),
+        Row::Choice(
+            "bloom",
+            "Bloom",
+            "bright parts of the 3D picture glow; the HUD stays sharp",
+            &[("Off", "off"), ("Light", "25"), ("Medium", "50"), ("Strong", "100")],
         ),
         Row::Choice(
             "exact",
@@ -1765,7 +1772,7 @@ mod tests {
         assert!(overridden("materials_relief", &v, true).is_some());
         assert!(overridden("materials_relief", &GameSettings { materials: true, pack: true, ..v }, true).is_none());
         // The rows hold every value the settings take for them.
-        for key in ["temporal", "stipple", "shading", "materials", "materials_relief"] {
+        for key in ["temporal", "stipple", "shading", "materials", "materials_relief", "bloom"] {
             let Some(Row::Choice(_, _, _, options)) =
                 rows(false, 16).into_iter().find(|r| matches!(r, Row::Choice(k, ..) if *k == key))
             else {

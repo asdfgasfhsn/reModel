@@ -16,6 +16,7 @@
 //! default). [`Renderer::present`] then blends the
 //! 2D tile layers around the 3D layer into the output.
 
+mod bloom;
 mod materials;
 mod temporal;
 mod tiles;
@@ -97,6 +98,13 @@ pub struct Quality {
     /// How material maps change brightness ([`Relief`]): relief at
     /// strength 2 (the default), another strength, or the faithful rule.
     pub materials_relief: Relief,
+    /// Bloom strength in percent (0: off, the default; 100: the strongest):
+    /// the bright parts of the 3D layer glow, blurred through a chain of
+    /// halvings and added over the frame before the HUD. Works with
+    /// multisampling and temporal anti-aliasing (it takes the finished 3D
+    /// layer at output size). Needs the 16-bit float targets temporal
+    /// anti-aliasing does ([`temporal_supported`]); off without. GPU only.
+    pub bloom: u8,
 }
 
 impl Default for Quality {
@@ -113,11 +121,20 @@ impl Default for Quality {
             shading_balance: true,
             materials: false,
             materials_relief: Relief::default(),
+            bloom: 0,
         }
     }
 }
 
 impl Quality {
+    /// A `bloom` setting by name: `off`, or a strength in percent, 1 to 100.
+    pub fn parse_bloom(s: &str) -> Option<u8> {
+        match s {
+            "off" | "0" => Some(0),
+            n => n.parse::<u8>().ok().filter(|n| (1..=100).contains(n)),
+        }
+    }
+
     /// A `temporal` setting by name: `off`, `taa` (100) or a render scale
     /// in percent, 50 to 100.
     pub fn parse_temporal(s: &str) -> Option<u8> {
@@ -371,6 +388,9 @@ pub struct Renderer {
     raster_layout: wgpu::BindGroupLayout,
     compose_shader: wgpu::ShaderModule,
     compose_layout: wgpu::BindGroupLayout,
+    /// Bloom's passes and the sampler the compose pass reads it with.
+    bloom: bloom::Bloom,
+    bloom_sampler: wgpu::Sampler,
     /// The compose pipeline for the last output format used.
     compose: Option<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
     adapter: String,
@@ -449,6 +469,29 @@ fn uniform(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayou
             has_dynamic_offset: false,
             min_binding_size: None,
         },
+        count: None,
+    }
+}
+
+/// A texture read with a filtering sampler.
+fn filterable(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
+
+fn sampler(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
         count: None,
     }
 }
@@ -636,9 +679,23 @@ impl Renderer {
         });
         let compose_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("compose"),
-            entries: &[uniform(0, wgpu::ShaderStages::FRAGMENT), texture(1), texture(2), texture(3)],
+            entries: &[
+                uniform(0, wgpu::ShaderStages::FRAGMENT),
+                texture(1),
+                texture(2),
+                texture(3),
+                filterable(4),
+                sampler(5),
+            ],
         });
         let tiles = tiles::Tiles::new(&device);
+        let bloom = bloom::Bloom::new(&device);
+        let bloom_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("bloom"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         Renderer {
             device,
             queue,
@@ -657,6 +714,8 @@ impl Renderer {
             raster_layout,
             compose_shader,
             compose_layout,
+            bloom,
+            bloom_sampler,
             compose: None,
             adapter,
             ram: [None, None],
@@ -745,7 +804,8 @@ impl Renderer {
         if !quality.materials {
             self.materials.clear();
         }
-        let q = Quality { msaa, tex_filter, temporal, ..quality };
+        let bloom = if self.temporal.supported { quality.bloom.min(100) } else { 0 };
+        let q = Quality { msaa, tex_filter, temporal, bloom, ..quality };
         if q != self.quality {
             self.temporal.reset();
         }
@@ -1977,6 +2037,15 @@ impl Renderer {
             let replaced = layers.tiles.as_ref().map_or(0, |m| m.replaced);
             (self.pack_stats.tiles, self.pack_stats.tiles_held, self.pack_stats.tile_bytes) = (replaced, held, bytes);
         }
+        // Bloom of the finished 3D layer; a 1x1 stand-in when off (the
+        // shader never reads it then).
+        let bloom_strength = self.quality.bloom as f32 / 100.0;
+        let bloom_view = if self.quality.bloom > 0 && !placed.is_empty() {
+            self.bloom.encode(&self.device, enc, &layer3d_view, w, h)
+        } else {
+            let usage = wgpu::TextureUsages::TEXTURE_BINDING;
+            self.kept_texture("bloom none", 1, 1, usage).create_view(&Default::default())
+        };
         let base = self.upload("base", &layers.base, (WIDTH + 2 * layers.side) as u32, HEIGHT as u32);
         let hud = self.upload("hud", &layers.hud, layers.ext_w as u32, HEIGHT as u32);
         let b = layers.backdrop.map(|c| c as f32 / 255.0);
@@ -1984,6 +2053,8 @@ impl Renderer {
         params.extend(le([!placed.is_empty() as u32, layers.ext_w as u32, layers.side as u32].map(u32::to_le_bytes)));
         params.extend(le([origin.0 as f32, origin.1 as f32].map(f32::to_le_bytes)));
         params.extend(le([b[0], b[1], b[2], 1.0].map(f32::to_le_bytes)));
+        let bloom_strength = if self.quality.bloom > 0 && !placed.is_empty() { bloom_strength } else { 0.0 };
+        params.extend(le([bloom_strength, 0.0, w as f32, h as f32].map(f32::to_le_bytes)));
         let params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("compose params"),
             contents: &params,
@@ -1998,6 +2069,8 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&views[0]) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&layer3d_view) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&views[1]) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&bloom_view) },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.bloom_sampler) },
             ],
         });
         let pipeline = match tile_group {

@@ -111,10 +111,22 @@ fn cost(
     views: &[(&str, View)],
     pack: Option<&Path>,
     tex_filter: gpu::TexFilter,
+    bloom: u8,
     light: Option<&model2::light::Options>,
     side: bool,
 ) -> Result<(), String> {
-    let configs = [(1, false), (4, false), (8, false), (1, true), (4, true), (8, true)];
+    // Bloom costs are measured at --bloom's strength (50 without).
+    let bloom = if bloom > 0 { bloom } else { 50 };
+    let configs = [
+        (1, false, 0),
+        (4, false, 0),
+        (8, false, 0),
+        (1, true, 0),
+        (4, true, 0),
+        (8, true, 0),
+        (1, false, bloom),
+        (4, false, bloom),
+    ];
     let frames: Vec<_> = match root_dirs {
         CostFrames::Dirs(dirs) => dirs.iter().filter_map(|d| Frame::load(d).ok()).collect(),
         // A sequence: its first frames with 3D (each needs the ones before).
@@ -127,11 +139,14 @@ fn cost(
     };
     println!("cost          whole frame on the GPU incl. readback, mean over {} frames, ms", frames.len());
     print!("{:<12}", "");
-    for (m, d) in configs {
-        print!(
-            " {:>10}",
-            format!("{}{}", if m == 1 { "off".to_string() } else { format!("{m}x") }, if d { "+depth" } else { "" })
-        );
+    for (m, d, b) in configs {
+        let aa = match (m, b) {
+            (1, 0) => "off".to_string(),
+            (1, _) => String::new(),
+            _ => format!("{m}x"),
+        };
+        let more = format!("{}{}", if d { "+depth" } else { "" }, if b > 0 { "+bloom" } else { "" });
+        print!(" {:>10}", format!("{aa}{}", if aa.is_empty() { more.trim_start_matches('+') } else { &more }));
     }
     println!();
     // With a pack: each view without it, then with it.
@@ -147,9 +162,9 @@ fn cost(
                 print!("{name:<12}");
             }
         }
-        for (msaa, depth) in configs {
-            let q = gpu.set_quality(gpu::Quality { msaa, depth, tex_filter, ..super::gpu_light(light) });
-            if q.msaa != msaa {
+        for (msaa, depth, bloom) in configs {
+            let q = gpu.set_quality(gpu::Quality { msaa, depth, bloom, tex_filter, ..super::gpu_light(light) });
+            if q.msaa != msaa || q.bloom != bloom {
                 print!(" {:>10}", "n/a");
                 continue;
             }
@@ -178,6 +193,7 @@ pub fn run(
     hud_windows: (&[usize], &[usize]),
     aa: u32,
     depth: bool,
+    bloom: u8,
     pack: Option<&Path>,
     tex_filter: gpu::TexFilter,
     light: Option<&model2::light::Options>,
@@ -187,7 +203,7 @@ pub fn run(
         .map_err(|e| format!("{}: {e} (capture with `make capture`)", root.display()))?;
     let mut gpu = gpu::Renderer::new()?;
     println!("gpu           {}", gpu.adapter());
-    let q = gpu.set_quality(gpu::Quality { msaa: aa, depth, tex_filter, ..super::gpu_light(light) });
+    let q = gpu.set_quality(gpu::Quality { msaa: aa, depth, bloom, tex_filter, ..super::gpu_light(light) });
     if let Some(o) = light {
         println!("shading       {}, crease {} degrees (model2::light)", o.shading.name(), o.crease);
     }
@@ -204,6 +220,9 @@ pub fn run(
         },
         if depth { "on" } else { "off" }
     );
+    if bloom > 0 {
+        println!("bloom         {bloom}% on the GPU's 3D layer (the software renderer has none: the differences below include it)");
+    }
     let ss = if aa > 1 { super::supersample_factor(aa) } else { 1 };
     // A texture pack: the software renderer draws through its hooks, the
     // GPU through `set_pack`, from separate instances of the same pack.
@@ -403,7 +422,7 @@ pub fn run(
         println!("(multisampled: coverage is 0 and colour/>16 count pixels of the whole frame, the GPU's against the software renderer's supersampled one)");
     }
     let cost_frames = if seq { CostFrames::Seq(root) } else { CostFrames::Dirs(&dirs) };
-    cost(&mut gpu, cost_frames, &texture_rom, &views, pack, q.tex_filter, light, side)?;
+    cost(&mut gpu, cost_frames, &texture_rom, &views, pack, q.tex_filter, bloom, light, side)?;
     match tiles_differ.len() {
         0 => println!("2d layers     fast path identical to the reference on all {} frames", dirs.len()),
         n => println!("2d layers     fast path DIFFERS from the reference on {n} frames: {tiles_differ:?}"),

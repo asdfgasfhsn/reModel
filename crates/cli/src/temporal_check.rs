@@ -2134,7 +2134,8 @@ impl Section for Gpu {
     }
 }
 
-/// `--bench`: GPU time a frame, plain / MSAA 4x / temporal 100, 67, 50, on
+/// `--bench`: GPU time a frame, plain / MSAA 4x / temporal 100, 67, 50, and
+/// with bloom (50%) on the plain, MSAA 4x and temporal 100 paths, on
 /// the first `frames` frames of the sequence with 3D (each drawn `reps`
 /// times: once with its motion, then repeated, render RAM uploaded once).
 /// Wall time from submit to done, so it includes encoding the frame.
@@ -2172,9 +2173,18 @@ pub fn bench(root: &Path, view: &View, frames: usize, reps: usize) -> Result<(),
     }
     println!("bench         {}x{}, {} frames x {reps}", view.width, view.height, built.len());
     let q = |msaa, temporal| gpu::Quality { msaa, temporal, ..Default::default() };
-    for (name, quality) in
-        [("off", q(1, 0)), ("msaa4", q(4, 0)), ("taa", q(1, 100)), ("up67", q(1, 67)), ("up50", q(1, 50))]
-    {
+    // Bloom (gpu::Quality::bloom) at 50%, on the plain, MSAA and TAA paths.
+    let qb = |msaa, temporal| gpu::Quality { bloom: 50, ..q(msaa, temporal) };
+    for (name, quality) in [
+        ("off", q(1, 0)),
+        ("msaa4", q(4, 0)),
+        ("taa", q(1, 100)),
+        ("up67", q(1, 67)),
+        ("up50", q(1, 50)),
+        ("bloom", qb(1, 0)),
+        ("m4+blm", qb(4, 0)),
+        ("taa+bl", qb(1, 100)),
+    ] {
         let mut r = gpu::Renderer::new()?;
         r.set_quality(quality);
         let target = r.device().create_texture(&gpu::wgpu::TextureDescriptor {

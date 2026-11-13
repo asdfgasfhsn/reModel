@@ -67,7 +67,9 @@ through DirectX 8/9's fixed-function pipeline.
 | Lighting | Hand-made reference maps for a few key textures (road, wood, stone) | idea (below, "Material maps") |
 | Lighting | Pack-declared highlights where the game casts none | idea, deferred: a map can only scale the game's own specular; manifest keys reserved (below) |
 | Lighting | Light data on the chip geometry path (materials and smooth shading there) | idea, not investigated (below) |
-| Lighting | Shadows, bloom, HDR tonemapping, better fog | idea |
+| Lighting | Bloom | done, opt-in (2026-11-13), player, browser and CLI; GPU only (below) |
+| Lighting | Better fog (smooth per-pixel fog from the game's own fog) | not done: the games send no fog, so there is nothing to smooth (below, "Fog") |
+| Lighting | Shadows, HDR tonemapping | idea; tonemapping skipped, the games' output isn't HDR |
 | Lighting | Hybrid ray tracing (shadows, reflections, AO) | idea |
 | Lighting | Path tracing with denoising | idea (research) |
 | Audio | Replacement soundtracks | done (`docs/mods.md`) |
@@ -1271,8 +1273,92 @@ table: flat shading. Steps:
    above).
 2. **Material maps** carried in packs: normal maps done ("Material maps",
    above); specular and gloss maps on its roadmap.
-3. **Shadows** (shadow maps from the game's light), **bloom**, **HDR**
-   with tonemapping, **fog** with depth.
+3. **Bloom** (done, below). **Shadows** (shadow maps from the game's
+   light) and **HDR** with tonemapping remain; **fog** has nothing to build
+   on (below).
+
+#### Bloom
+
+Done, off by default, so the Original preset is unchanged. Settings: the
+player's `bloom` (menu and launcher Picture rows under Custom, `--bloom
+off|N`, settings files), the browser's `bloom` (panel, `?bloom=50`),
+`remodel --bloom N` for `gpu-check` and `temporal-probe`. Render-only:
+state hashes unchanged. GPU only: the software rasteriser and its
+snapshots have none (like anisotropic filtering).
+
+- **What glows.** The finished 3D layer, at output resolution: after the
+  multisample resolve or the temporal accumulation (`present_bus_motion`),
+  so it works with both, with upscaling (the layer is already output size)
+  and the depth buffer. The 2D layers are left out on purpose: the tile
+  planes (backgrounds, text) never feed it and the HUD, which the compose
+  pass draws over the picture *after* adding the glow, is never smeared
+  (checked on `stcc`'s big lap timer at Strong: as sharp as without). 3D parts of the HUD (`topskatr`'s speed
+  wheel) are in the 3D layer and glow like the scene. A tile-layer sky
+  (`doa`'s) doesn't, being 2D.
+- **How.** `crates/gpu/src/bloom.rs`, `bloom.wgsl`. A first pass halves the
+  layer keeping what is above a threshold (largest channel 0.85, soft knee
+  0.15, per tap before averaging so one bright texel doesn't flicker), four
+  more halve that (13-tap downsample, 16-bit float targets), then each level
+  is added to the next larger with a 3x3 tent at weight 0.5. The compose
+  pass samples the largest (half size) bilinearly and adds
+  `strength * glow` before the HUD. Both compose shaders (plain and
+  replaced tiles) do it. One setting, strength in percent: the menu offers
+  Off, Light 25, Medium 50, Strong 100 (any 1 to 100 from a flag or file).
+  The threshold and weights are constants: the games are LDR and lit
+  bright, so a lower threshold (0.7, tried first) washed pale surfaces out
+  (`topskatr`'s track and boards at Medium); at 0.85 Medium is a faint
+  halo on whites and Strong is soft and unmistakable.
+- **Off is the old picture.** Off, the compose pass reads nothing of it (the
+  strength is 0 and a 1x1 stand-in is bound) and the frames are byte for
+  byte the old ones: `gpu-frame.png` of `topskatr` and `stcc` (4 captured
+  frames each) against a binary from before the change, plain and with
+  `--aa 4 --depth`, and the temporal-probe pictures (all identical).
+- **Needs** the 16-bit float targets temporal anti-aliasing does
+  (`gpu::temporal_supported`): without them the row isn't offered and the
+  renderer clamps it to off. WebGPU has them.
+- **Cost** (`temporal-check SEQ --bench 30`, wall time of a `present`,
+  mean ms, RTX 2080 SUPER, Vulkan, bloom at 50%; `sgt24h` / `srallyc`):
+
+| | off | bloom | MSAA 4x | 4x + bloom | TAA | TAA + bloom |
+|---|---|---|---|---|---|---|
+| 1080p 16:9 | 1.43 / 1.56 | 1.67 / 1.78 | 1.47 / 1.63 | 1.73 / 1.91 | 2.63 / 2.95 | 3.01 / 3.24 |
+| 4K 16:9 | 3.48 / 3.70 | 4.12 / 4.43 | 3.63 / 3.83 | 4.24 / 4.68 | 5.80 / 6.09 | 6.70 / 7.42 |
+
+  So about 0.2-0.25 ms at 1080p and 0.65-0.75 ms at 4K, a tenth of a
+  frame's budget on this GPU. Memory: the chain is a quarter of the output
+  in 16-bit float (8 bytes a pixel, a third more for the other levels):
+  about 5.5 MB at 1080p and 22 MB at 4K. A frame makes nine small passes
+  and a uniform buffer each (cheap; the chain's textures are kept until
+  the size changes).
+- **Not in a preset.** Enhanced is what a game's documentation says suits
+  it, without changing its look; bloom changes the look (a pale, bright
+  scene glows, for taste), so it stays an explicit row and no game's
+  `recommended` names it. Original and Sharp leave it off, and a preset
+  chosen after sets it off again (it is one of the picture rows, so
+  changing it under a preset makes that Custom).
+- **Left out.** Per-pixel luminance rather than largest-channel
+  thresholding (saturated reds barely glow: `sgt24h`'s logo), a second
+  threshold setting, a lens-dirt or star pattern, and bloom of the tile
+  planes. Cheap to add if wanted.
+
+#### Fog
+
+The roadmap row asked for a smoother per-pixel fog from the game's fog
+colour and parameters. **There are none to follow**, so it isn't built.
+Checked: reModel's renderers (software and GPU) apply no fog today; nothing
+in the geometrizer's command set, the polygon records, the window and
+render-mode registers or the texture headers reModel decodes carries a fog
+colour, density or distance table (`docs/hw/geometrizer.md` 5.4, **M**: a
+register or an unidentified header bit not yet found could); and the
+captured frames show crisp far scenery (`srallyc`'s mountains and
+treeline, `stcc`'s grandstands) with no depth haze. Whatever haze a game
+has is in its polygons and colour tables (`srallyc`'s fade through white).
+A smooth fog would therefore be reModel's own invention (a colour and a
+density chosen per game by eye), not the game's look kept smooth, and it
+has no "game" setting to fall back to but today's no-fog. If wanted it
+would be a per-game patch with the same shape as bloom (a depth-based
+blend in the compose or fragment stage, the depth already exists with
+`depth`), decided per game; not started.
 
 ### Ray tracing
 

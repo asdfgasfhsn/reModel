@@ -110,6 +110,10 @@ options:
                        upscaling from N% (50 to 99) for the GPU's 3D layer
                        (gpu::Quality::temporal; snapshots are software and
                        ignore it)
+  --bloom off|N        gpu-check, temporal-probe: bloom on the GPU's 3D layer at
+                       strength N percent (1 to 100; gpu::Quality::bloom;
+                       gpu-check's cost table adds bloom columns at N, 50
+                       by default; snapshots are software and ignore it)
   --stipple blend|keep with --temporal: checkerboard translucency as a 50%
                        blend (default) or the pattern kept
   --shading flat|vertex|pixel
@@ -542,6 +546,17 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         };
         let _ = TEMPORAL.set(t);
+    }
+    let Ok(bloom) = opt("--bloom") else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    if let Some(b) = bloom {
+        let Some(b) = gpu::Quality::parse_bloom(&b) else {
+            eprintln!("error: --bloom wants off or a strength from 1 to 100");
+            return ExitCode::FAILURE;
+        };
+        let _ = BLOOM.set(b);
     }
     if let Some(s) = stipple {
         let Some(s) = gpu::Stipple::parse(&s) else {
@@ -1350,7 +1365,17 @@ fn main() -> ExitCode {
             let light = light_options_lamps(roms.game, materials_on() && pack_dir.is_some());
             let side = LIGHT.get().is_some() || materials_on();
             let pack = pack_dir.as_deref();
-            if let Err(e) = gpu_check::run(&root, windows, aa, depth, pack, tex_filter(), light.as_ref(), side) {
+            if let Err(e) = gpu_check::run(
+                &root,
+                windows,
+                aa,
+                depth,
+                BLOOM.get().copied().unwrap_or(0),
+                pack,
+                tex_filter(),
+                light.as_ref(),
+                side,
+            ) {
                 eprintln!("error: {e}");
                 return ExitCode::FAILURE;
             }
@@ -1360,6 +1385,7 @@ fn main() -> ExitCode {
                 depth: DEPTH.get().copied().unwrap_or(false),
                 temporal: TEMPORAL.get().copied().unwrap_or(100),
                 stipple: STIPPLE.get().copied().unwrap_or_default(),
+                bloom: BLOOM.get().copied().unwrap_or(0),
                 ..Default::default()
             };
             let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
@@ -1984,6 +2010,7 @@ fn gpu_light(light: Option<&model2::light::Options>) -> gpu::Quality {
 
 /// `--temporal`, `--stipple`: temporal anti-aliasing on the GPU.
 static TEMPORAL: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+static BLOOM: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
 static STIPPLE: std::sync::OnceLock<gpu::Stipple> = std::sync::OnceLock::new();
 
 /// Linear supersampling factor for `samples` a pixel: the smallest k

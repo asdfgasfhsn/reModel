@@ -56,6 +56,11 @@ is bit-for-bit what it was:
 - **Temporal anti-aliasing and upscaling** (`Quality::temporal`,
   `Quality::stipple`): see "Temporal path" below. Off (0, the default) the
   pipelines, shaders and output are the ones above, unchanged.
+- **Bloom** (`Quality::bloom`, percent): the finished 3D layer's bright
+  parts blurred through a chain of halvings (`bloom.rs`, `bloom.wgsl`) and
+  added by the compose pass before the HUD (`docs/enhancements.md`,
+  "Bloom"). Off (0, the default) the compose pass reads nothing of it and
+  the output is byte for byte the old one.
 - **Smooth shading** (`Quality::shading`, `crease`, `shading_fine`): see
   "Smooth shading" below. Flat (the default) takes the old pipelines and
   shader text.
