@@ -1742,6 +1742,15 @@ mod tests {
     }
 
     #[test]
+    fn original_model_2_has_its_own_group_first() {
+        let mut l = Launcher::default();
+        l.set_games(&games(&["srallyc", "daytona", "topskatr"]), &[]);
+        let names: Vec<&str> = l.groups().iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, ["Model 2", "Model 2A", "Model 2C"]);
+        assert_eq!(l.selected().unwrap().id, "daytona");
+    }
+
+    #[test]
     fn settings_temporal_overrides() {
         let mut v = GameSettings { aa: 4, ..Default::default() };
         assert!(["aa", "temporal", "stipple"].iter().all(|k| overridden(k, &v, true).is_none()));

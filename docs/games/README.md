@@ -25,7 +25,7 @@ which ROM sets are supported and how they are named is in [../roms.md](../roms.m
 | Virtua Striker | `vstriker` | 2B | [vstriker.md](vstriker.md) |
 | Last Bronx | `lastbrnx` | 2B | [lastbrnx.md](lastbrnx.md) |
 | Sega Rally Championship | `srallyc` | 2A | [srallyc.md](srallyc.md) |
-| Virtua Fighter 2 (in progress, not playable) | `vf2` | 2A | [vf2.md](vf2.md) |
-| Daytona USA (in progress, not playable) | `daytona` | Model 2 | [daytona.md](daytona.md) |
+| Virtua Fighter 2 | `vf2` | 2A | [vf2.md](vf2.md) |
+| Daytona USA | `daytona` | Model 2 | [daytona.md](daytona.md) |
 
 Board-wide findings: [2C](../hw/model2c.md), [2B](../hw/model2b.md), [2A](../hw/model2a.md), [the original Model 2](../hw/model2.md).

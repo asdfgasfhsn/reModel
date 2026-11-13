@@ -1,9 +1,12 @@
 # Daytona USA (`daytona`, the original Model 2, 1994)
 
-Status: **in progress** (`romset::games::IN_PROGRESS`, not in the
-launcher): it boots to its attract mode, draws it in 3D, textured, and
-`coin-start` reaches a race that drives (and runs out its clock), with music and effects (the
-sound board model, not yet checked by ear against a cabinet). The
+Status: **plays** (`make play GAME=daytona`; the launcher's Model 2
+group): it boots to its attract mode, draws it in 3D, textured, and
+`coin-start` reaches a race on each course that drives (and runs out its
+clock), with music and effects (the sound board model, not yet checked by
+ear against a cabinet). Known issues: the car's handling is unconfirmed
+as twitchy (below), no whole 8-lap race has been steered to the flag, and
+the clones are not added. The
 first game on the original Model 2 board (`Board::Model2`,
 [`docs/hw/model2.md`](../hw/model2.md)); `vcop` and `desert` are on the
 same board.

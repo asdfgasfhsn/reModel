@@ -61,7 +61,7 @@ in `crates/model2/src/drive.rs`, one per kind; the 2C gun interface in
 `waverunr`, `overrev`, `hotd` and `bel` are Model 2C-CRX (MB86235 geometry
 processor); `overrevb`, `sgt24h`, `dynabb97`, `doa`, `indy500`, `fvipers`,
 `schamp`, `vstriker` and `lastbrnx` are Model 2B-CRX (ADSP-21062 SHARCs);
-`srallyc` is Model 2A-CRX (MB86234 TGP); `daytona` (in progress) the original
+`srallyc` is Model 2A-CRX (MB86234 TGP); `daytona` the original
 Model 2, on the 2A board model with its differences (`Board::Model2`). The manifest's
 `board` picks the board model: `crates/model2` keeps what differs between
 the boards (the copro and geometrizer cores, the 2B host windows, the UART

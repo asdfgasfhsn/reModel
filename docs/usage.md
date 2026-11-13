@@ -144,7 +144,7 @@ same directory. The geometrizer's thread doesn't change the hash: it runs
 each frame on its own copy of the inputs and nothing reads its results
 before `sync()`, so the default run and `--single-thread` agree.
 
-Every target takes `GAME=<set>` for any of the nineteen games (`make games`
+Every target takes `GAME=<set>` for any of the twenty games (`make games`
 lists them; the sets are in the README's table and [games/](games/README.md)),
 e.g. `make play GAME=stcc`, `make capture GAME=skisuprg`. `GAME=overrevb` is
 Over Rev's Model 2B version, its chips in `overrev.zip` as MAME merges them.
