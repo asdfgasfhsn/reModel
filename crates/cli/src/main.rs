@@ -2211,7 +2211,7 @@ fn render(m: &model2::Machine, stream: Option<&[u32]>, path: &std::path::Path) -
         }
     }
     let layer3d = Some((&rgb3d[..], &covered[..]));
-    let rgb = match packs.as_mut() {
+    let mut rgb = match packs.as_mut() {
         Some(p) => {
             let rgb = model2::video::compose_enhanced(b.tile_ram(), b.palette_ram(), layer3d, &view, p);
             p.finish_snapshot();
@@ -2219,6 +2219,7 @@ fn render(m: &model2::Machine, stream: Option<&[u32]>, path: &std::path::Path) -
         }
         None => model2::video::compose(b.tile_ram(), b.palette_ram(), layer3d, &view),
     };
+    model2::video::lift_black(&mut rgb, b.black_level());
     (out_view, model2::video::downsample(&rgb, view.width, view.height, k))
 }
 

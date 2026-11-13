@@ -17,6 +17,9 @@ struct Params {
     // Bloom's strength (0: off, nothing is read) and the 3D layer's size in
     // output pixels.
     bloom: f32,
+    // The level shown as black (0-1, `Model2Bus::black_level`): the
+    // finished picture is stretched from there.
+    black: f32,
     size: vec2f,
 }
 
@@ -34,6 +37,15 @@ fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
     let x = f32((i << 1u) & 2u);
     let y = f32(i & 2u);
     return vec4f(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
+}
+
+// The finished picture stretched from the level shown as black
+// (model2::video::lift_black).
+fn lift_black(c: vec3f) -> vec3f {
+    if pr.black <= 0.0 {
+        return c;
+    }
+    return max(c - pr.black, vec3f(0.0)) / (1.0 - pr.black);
 }
 
 // The glow added over the picture, before the HUD.
@@ -72,7 +84,7 @@ fn fs(@builtin(position) frag: vec4f) -> @location(0) vec4f {
             c = h.rgb;
         }
     }
-    return vec4f(c, 1.0);
+    return vec4f(lift_black(c), 1.0);
 }
 
 // Replaced tile patterns (texture packs, gpu/src/tiles.rs): the frame's
@@ -186,5 +198,5 @@ fn fs_tiles(@builtin(position) frag: vec4f) -> @location(0) vec4f {
             }
         }
     }
-    return vec4f(c, 1.0);
+    return vec4f(lift_black(c), 1.0);
 }

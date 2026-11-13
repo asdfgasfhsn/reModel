@@ -237,6 +237,49 @@ impl View {
     }
 }
 
+/// The black pedestal of a game's colour translation tables, if they have
+/// one: the level its tile column (0x40, a component's plain colour) gives
+/// component 0 when the column is a straight line from there up to 255 at
+/// component 31 (within one step, the same in all three channels), with
+/// component 0 itself black. `daytona` builds its tables so, over a
+/// pedestal of 100 or 69 by its CABINET setting (TWIN or UPLIGHT, DELUXE):
+/// calibration for the cabinet's monitor, which shows the pedestal as
+/// black (docs/hw/model2.md, "Colour"). `vcop` and `desert` do too (69,
+/// 115.5).
+pub fn black_pedestal(palette: &[u8]) -> Option<f32> {
+    let at = |ch: usize, c: usize| palette.get(0x1_0000 + ch * 0x4000 + (c * 256 + 0x40) * 2).map(|&v| v as f32);
+    let mut found = None;
+    for ch in 0..3 {
+        let (v0, v1, v31) = (at(ch, 0)?, at(ch, 1)?, at(ch, 31)?);
+        if v0 != 0.0 || v31 != 255.0 || v1 <= 1.0 {
+            return None;
+        }
+        let k = (v31 - v1) / 30.0;
+        let b = v1 - k;
+        if k <= 0.0 || b <= 0.0 || (1..32).any(|c| at(ch, c).is_none_or(|v| (v - (b + k * c as f32)).abs() > 1.0)) {
+            return None;
+        }
+        if found.is_some_and(|f: f32| (f - b).abs() > 1.0) {
+            return None;
+        }
+        found = Some(b);
+    }
+    found
+}
+
+/// Show `pedestal` (0-255) as black: every RGB value `v` becomes `(v -
+/// pedestal) * 255 / (255 - pedestal)`, at least 0.
+pub fn lift_black(rgb: &mut [u8], pedestal: f32) {
+    if pedestal <= 0.0 {
+        return;
+    }
+    let lut: [u8; 256] =
+        std::array::from_fn(|v| ((v as f32 - pedestal) * 255.0 / (255.0 - pedestal)).round().clamp(0.0, 255.0) as u8);
+    for v in rgb {
+        *v = lut[*v as usize];
+    }
+}
+
 /// Average RGB pixels in `k` x `k` blocks: a `w` x `h` image to
 /// `w / k` x `h / k` (the second half of supersampling, see
 /// [`View::supersampled`]). Blocks average the stored values, as a GPU's
@@ -1064,6 +1107,33 @@ impl HudLayout {
 
 #[cfg(test)]
 mod tests {
+    /// Palette RAM whose tile column is `f(c)` in every channel.
+    fn tile_column(f: impl Fn(usize) -> u8) -> Vec<u8> {
+        let mut p = vec![0u8; 0x2_0000];
+        for ch in 0..3 {
+            for c in 0..32 {
+                p[0x1_0000 + ch * 0x4000 + (c * 256 + 0x40) * 2] = f(c);
+            }
+        }
+        p
+    }
+
+    /// `daytona`'s TWIN tables (`(10c + 201) >> 1`) have a pedestal of 100;
+    /// a curve (`srallyc`'s), a column short of 255 or empty RAM none.
+    #[test]
+    fn black_pedestal_of_linear_tables() {
+        let day = tile_column(|c| if c == 0 { 0 } else { ((10 * c + 201) >> 1) as u8 });
+        assert_eq!(super::black_pedestal(&day), Some(100.0));
+        let curve = tile_column(|c| (255.0 * (c as f32 / 31.0).sqrt()) as u8);
+        assert_eq!(super::black_pedestal(&curve), None);
+        let short = tile_column(|c| if c == 0 { 0 } else { (64 + c * 9 / 2) as u8 });
+        assert_eq!(super::black_pedestal(&short), None);
+        assert_eq!(super::black_pedestal(&vec![0; 0x2_0000]), None);
+        let mut rgb = vec![0, 100, 105, 255];
+        super::lift_black(&mut rgb, 100.0);
+        assert_eq!(rgb, [0, 0, 8, 255]);
+    }
+
     /// An anchored HUD polygon's previous position moves with it.
     #[test]
     fn anchor_moves_motion_too() {

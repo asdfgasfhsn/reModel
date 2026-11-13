@@ -403,6 +403,9 @@ pub struct Renderer {
     ram: [Option<(Option<u64>, wgpu::Buffer)>; 2],
     /// Versions for the next frame's RAM (see `set_ram_versions`).
     versions: Option<(u64, u64)>,
+    /// The level the next frame shows as black (`Model2Bus::black_level`,
+    /// 0-255): the bus's for its own frames, 0 for frames handed in.
+    black: f32,
     /// Textures kept between frames, by label.
     textures: Vec<(&'static str, wgpu::Texture)>,
     /// The texture pack, if any (`set_pack`).
@@ -737,6 +740,7 @@ impl Renderer {
             adapter,
             ram: [None, None],
             versions: None,
+            black: 0.0,
             textures: Vec::new(),
             pack: None,
             keys: TexKeys::default(),
@@ -2106,7 +2110,8 @@ impl Renderer {
         params.extend(le([origin.0 as f32, origin.1 as f32].map(f32::to_le_bytes)));
         params.extend(le([b[0], b[1], b[2], 1.0].map(f32::to_le_bytes)));
         let bloom_strength = if self.quality.bloom > 0 && !placed.is_empty() { bloom_strength } else { 0.0 };
-        params.extend(le([bloom_strength, 0.0, w as f32, h as f32].map(f32::to_le_bytes)));
+        let black = self.black / 255.0;
+        params.extend(le([bloom_strength, black, w as f32, h as f32].map(f32::to_le_bytes)));
         let params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("compose params"),
             contents: &params,
@@ -2160,6 +2165,7 @@ impl Renderer {
         target: &wgpu::TextureView,
         format: wgpu::TextureFormat,
     ) {
+        self.black = 0.0;
         let mut enc = self.device.create_command_encoder(&Default::default());
         self.encode_frame(&mut enc, polys, placed, src, view, layers, target, format, (0, 0));
         self.queue.submit([enc.finish()]);
@@ -2331,6 +2337,7 @@ impl Renderer {
         let (render, palette) = b.versions;
         self.set_ram_versions(render, palette);
         self.temporal.pending = Some((motion.map(|m| m.tag), step, centres));
+        self.black = b.black;
         let mut enc = self.device.create_command_encoder(&Default::default());
         self.encode_frame(&mut enc, &polys, &placed, src, view, &layers, target, format, origin);
         self.queue.submit([enc.finish()]);
@@ -2354,6 +2361,7 @@ impl Renderer {
         let layers = self.layers_2d(b.tiles, b.palette, view, !placed.is_empty());
         let (render, palette) = b.versions;
         self.set_ram_versions(render, palette);
+        self.black = b.black;
         let mut enc = self.device.create_command_encoder(&Default::default());
         self.encode_frame(&mut enc, &polys, &placed, &src, view, &layers, target, format, origin);
         self.queue.submit([enc.finish()]);
@@ -2371,6 +2379,7 @@ impl Renderer {
         let (w, h) = (view.width as u32, view.height as u32);
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
         let out = self.texture("frame", w, h, usage);
+        self.black = 0.0;
         let mut enc = self.device.create_command_encoder(&Default::default());
         self.encode_frame(
             &mut enc,

@@ -176,6 +176,12 @@ same board.
   segment). The i960 interpreter's `scaler` is now single precision (a
   CPU fix: any game's `scaler` was wrong). *Not checked:* whether the
   race's handling (below) went through it too.
+- *Confirmed (from the code):* **the colours sit on a black pedestal the
+  game sets for its cabinet's monitor** (CABINET TWIN: 100.5 of 255,
+  DELUXE: 69.5; `docs/hw/model2.md` §6). Drawn as they were, every colour
+  was lifted onto a grey floor: the Hornet's red came out pink, its blue
+  pale and the road nearly white. The renderers now show the pedestal as
+  black on this board, in software snapshots and on the GPU alike.
 - *Confirmed (from the code and by running it):* **the handling**: why
   the car was twitchy from the keyboard ("very jerky", snapping left and
   right). The wheel's path, traced per frame (logs of work RAM and of the

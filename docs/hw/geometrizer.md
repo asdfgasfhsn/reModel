@@ -427,7 +427,10 @@ in the level, the filtering between levels and the microtexture's blend stay unc
   by reading these tables and reModel's renderers, not by a hunt through
   each game's code).
 - **Gamma:** MAME then applies a guessed gamma (MH-3: out = max(0, (v − 64)·255/191)). It is
-  calibration, not hardware.
+  calibration, not hardware. The games' tables carry their own calibration: on the original
+  Model 2 they are built over a black pedestal (`daytona` 100.5 or 69.5 by cabinet, `vcop`
+  69.5, `desert` 115.5), which reModel shows as black there (`model2.md` §6); other boards'
+  tables are drawn as they are.
 
 ---
 

@@ -16,6 +16,8 @@ pub(crate) struct BoardRef<'a> {
     pub tiles: &'a [u8],
     pub sync: (f32, f32),
     pub versions: (u64, u64),
+    /// `Model2Bus::black_level`.
+    pub black: f32,
 }
 
 impl<'a> BoardRef<'a> {
@@ -27,6 +29,7 @@ impl<'a> BoardRef<'a> {
             tiles: b.tile_ram(),
             sync: b.sync_offsets(),
             versions: b.video_ram_versions(),
+            black: b.black_level(),
         }
     }
 
@@ -62,6 +65,7 @@ pub struct BoardFrame {
     copied: Option<(u64, u64)>,
     sync: (f32, f32),
     versions: (u64, u64),
+    black: f32,
     /// The geometrizer's output drawn: its raster stream and texture point
     /// RAM, and its smooth motion frame and lighting side channel if it
     /// recorded them.
@@ -102,6 +106,7 @@ impl BoardFrame {
         self.copied = Some(b.versions);
         self.sync = b.sync;
         self.versions = b.versions;
+        self.black = b.black;
         let geo = &bus.geo;
         let ((stream, points), smooth, light) = if late {
             (geo.last_frame(), geo.last_smooth().cloned(), geo.last_light().cloned())
@@ -153,6 +158,7 @@ impl BoardFrame {
             tiles: &self.tiles,
             sync: self.sync,
             versions: self.versions,
+            black: self.black,
         }
     }
 

@@ -224,7 +224,39 @@ same absolute addresses throughout).
 - **Mix** (*unconfirmed*): the two MultiPCMs summed at equal level and the
   FM chip's channels added; the board's analog stage is not known.
 
-## 6. What is left
+## 6. Colour: the black pedestal
+
+*Confirmed (from `daytona`'s code):* the game builds its three colour
+translation tables (`0x1810000`, `geometrizer.md` §5.4) once at boot
+(i960 `0xA74`-`0xB40`, frame 3; nothing writes them again) by a formula
+over a **black pedestal**: for component `c` and luma `l` (1-63) the
+level is `(c * l * s + P) >> 6`, the tile column (`0x40`) `(c * s + 2P/64)
+>> 1`, and component 0 or luma 0 is 0. `s` and `P` depend on the operator
+setting CABINET (record byte `0x1A`, the GAME SYSTEM menu: DELUXE, TWIN,
+UPLIGHT; the manifest's default is TWIN): TWIN and UPLIGHT take `s` = 10
+and `P` = 6432 (a pedestal of 100.5, the tile column 105, 110 ... 255),
+DELUXE `s` = 12 and `P` = 4448 (69.5: 75, 81 ... 255). So the tables are
+calibrated for the cabinet's monitor, which shows the pedestal as black and
+the rest as a straight ramp (component 1 just above black, 31 full).
+`vcop`'s tables are DELUXE's numbers (69.5) and `desert`'s a pedestal of
+115.5 (120, 125 ... 255), the same construction (*checked* from their
+tables, not their code).
+
+Drawn as they are, every colour sits on that grey floor: in `daytona` the
+Hornet's red was pink, its blue pale, the road nearly white (a component
+of 1 is 105 of 255). The renderers now take the pedestal as black on this
+board (`Model2Bus::black_level`, `video::black_pedestal` and `lift_black`:
+the finished frame, software and GPU alike, stretched as `(v - P) * 255 /
+(255 - P)`), with the pedestal read from the game's own tile column when
+it is such a straight line (until the game writes its tables there is
+none, and tables of another shape change nothing). *Unconfirmed:* what the
+board's video output itself does (a monitor set up for the cabinet is
+the likely reading); and the other boards, whose games are not changed:
+`topskatr` (2C) has a straight tile column over 39, `vf2` (2A) over 63.5
+that tops out at 202, `lastbrnx` over 11; `srallyc` and `hotd` have
+curves.
+
+## 7. What is left
 
 - The shifter in play (its bits are from the code), the drive board and
   the link board's protocol.

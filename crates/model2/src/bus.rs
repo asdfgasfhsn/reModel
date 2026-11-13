@@ -1202,6 +1202,17 @@ impl Model2Bus {
         &self.mems[6].data
     }
 
+    /// The level (0-255) the display shows as black: on the original Model
+    /// 2 the pedestal its games build their colour tables on
+    /// ([`crate::video::black_pedestal`]), else 0. Renderers apply it to
+    /// the finished frame ([`crate::video::lift_black`]).
+    pub fn black_level(&self) -> f32 {
+        if self.board != Board::Model2 {
+            return 0.0;
+        }
+        crate::video::black_pedestal(self.palette_ram()).unwrap_or(0.0)
+    }
+
     /// Versions of render RAM and palette RAM: they change whenever the
     /// memory does, so a renderer can skip re-uploading it.
     pub fn video_ram_versions(&self) -> (u64, u64) {
