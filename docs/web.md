@@ -709,11 +709,11 @@ viewport and touch) the live page, from Play, runs `srallyc` and `topskatr`
 at 60 fps with sound, no console errors. WebKit (WebKitGTK 2.54, the same
 JavaScriptCore and WebAssembly engine as iOS, but without WebGPU) loaded
 the page, compiled the module, ran 400 frames of `topskatr` on the page
-thread, and started the geometry and sound workers (`ready`). Not
-checked: WebKit's WebGPU (iOS itself): a `srallyc` or `topskatr` page
-that stays at "Starting…" there is stuck in the module's WebGPU setup
-(adapter, device, building the renderer's pipelines) or a worker, and the
-page now says which: see "When a start stalls" below.
+thread, and started the geometry and sound workers (`ready`). On an
+iPhone (2026-11-13) every game seemed stuck at "Starting…": the game was
+running behind the settings panel, which the tabbed panel's CSS no longer
+hid (`#settings[hidden]`, fixed in `b806294`); with the fix, games start
+there and the panel closes on Play.
 
 **When a start stalls.** The splash shows the module's stage while the game
 starts (`starting WebGPU: requesting an adapter`, `... a device`, `...
