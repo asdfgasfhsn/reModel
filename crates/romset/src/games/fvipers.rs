@@ -31,6 +31,9 @@ pub static FVIPERS: Game = Game {
     texture_ram_mirrored: true,
     shading: crate::Shading::DEFAULT,
     recommended: crate::Recommended { shading: true, ..crate::Recommended::DEFAULT },
+    // The wait for the next frame: polls a work RAM byte (0x500000) until an
+    // interrupt handler changes it (docs/games/fvipers.md).
+    idle_loops: &[crate::IdleLoop { start: 0x118dc, end: 0x118e8 }],
     // In 8 MB slots the second and third polygon pairs' fighters draw as
     // shards; packed textures draw Bahn's coat wrong.
     packed: &[Role::Polygons],

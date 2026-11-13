@@ -27,6 +27,10 @@ pub static SEGAWSKI: Game = Game {
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
     recommended: crate::Recommended { depth: true, shading: true, ..crate::Recommended::DEFAULT },
+    // The wait for the next frame: polls the video status's frame bit
+    // (0x98000C bit 2) until vblank toggles it, counting passes in g0
+    // (docs/games/segawski.md).
+    idle_loops: &[crate::IdleLoop { start: 0x4fd24, end: 0x4fd38 }],
     packed: &[],
     volume_db: 0.0,
     files: &[

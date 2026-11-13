@@ -34,6 +34,10 @@ pub static INDY500: Game = Game {
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
     recommended: crate::Recommended { depth: true, ..crate::Recommended::DEFAULT },
+    // The wait for the next frame: polls the video status's frame bit
+    // (0x98000C bit 2) until vblank toggles it, counting passes in g0
+    // (docs/games/indy500.md).
+    idle_loops: &[crate::IdleLoop { start: 0x34914, end: 0x34928 }],
     packed: &[],
     // A coin-start run's `make sound` averages -35 dBFS RMS, with
     // dynabb97's and hotd's (docs/hw/sound.md §6).

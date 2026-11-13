@@ -38,6 +38,9 @@ pub static DOA: Game = Game {
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
     recommended: crate::Recommended { shading: true, ..crate::Recommended::DEFAULT },
+    // The wait for the next frame: polls a work RAM word (0x54B150) until an
+    // interrupt handler sets it, counting passes in g0 (docs/games/doa.md).
+    idle_loops: &[crate::IdleLoop { start: 0x27e0, end: 0x27f4 }],
     packed: &[],
     // A coin-start run's `make sound` averages -30 dBFS RMS (peak -11),
     // louder than the games here that play at 0 dB (about -31 to -38):

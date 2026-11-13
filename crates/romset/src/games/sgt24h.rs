@@ -36,6 +36,9 @@ pub static SGT24H: Game = Game {
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
     recommended: crate::Recommended::DEFAULT,
+    // The wait for the next frame: polls a work RAM word (0x532F30) until an
+    // interrupt handler sets it (docs/games/sgt24h.md).
+    idle_loops: &[crate::IdleLoop { start: 0x5b3e0, end: 0x5b3ec }],
     packed: &[],
     // Jaleco's driver plays its voices at DISDL 3 as on overrev: a race
     // averages about -38 dBFS RMS, as overrev's does (docs/hw/sound.md §6).

@@ -216,7 +216,7 @@ pub fn profile(
     let mut last = inputs(&m);
     let mut base = None;
     let mut n = 0u64;
-    let mut insts = 0u64;
+    let (mut insts, mut skipped) = (0u64, 0u64);
     while n < frames {
         let used = inputs(&m);
         let measuring = m.frames >= warmup;
@@ -229,6 +229,7 @@ pub fn profile(
             });
             base = Some((ra.as_ref().map(|r| r.stats), m.bus.geo.engine().busy, m.bus.geo.waited, shadow_busy));
             insts = m.cpu.icount;
+            skipped = m.idle_stats().skipped;
             last = used;
         }
         let t = Instant::now();
@@ -250,14 +251,16 @@ pub fn profile(
         script.apply(m.frames, &mut m.bus);
     }
     let insts = m.cpu.icount - insts;
+    let skipped = m.idle_stats().skipped - skipped;
     m.bus.geo.sync();
     let (st0, busy0, waited0, shadow0) = base.unwrap();
     let per = |d: Duration| d.as_secs_f64() * 1e3 / n as f64;
     println!(
-        "profile       {} run-ahead {ahead}, i960 {}, {n} frames after {warmup}: {:.0} i960 instructions a frame",
+        "profile       {} run-ahead {ahead}, i960 {}, {n} frames after {warmup}: {:.0} i960 instructions a frame, {:.1}% of them skipped idle",
         roms.game.id,
         if m.is_native() { "recompiled" } else { "interpreted" },
-        insts as f64 / n as f64
+        insts as f64 / n as f64,
+        skipped as f64 * 100.0 / insts.max(1) as f64
     );
     println!(
         "  real frame {:.2} ms (of that the real geometrizer's wait {:.2} ms; its worker busy {:.2} ms a frame)",

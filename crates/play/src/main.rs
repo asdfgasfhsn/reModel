@@ -73,6 +73,9 @@ usage: remodel-play [options]
                      window (default on)
   --interp           run the i960 on the interpreter even if this build
                      has recompiled code
+  --no-idle-skip     run the game's idle loops instruction by instruction
+                     instead of skipping through them (same game, slower;
+                     docs/idle-skip.md)
   --geo native|chip  the geometrizer: the native implementation where there
                      is one for the program the game uploads (the default;
                      docs/hw/geometrizer-2b.md, geometrizer-2c.md), or the
@@ -339,6 +342,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
             }
             "--nav" => o.nav = parse_nav(&value()?)?,
             "--interp" => o.interp = true,
+            "--no-idle-skip" => model2::idle::set_default(false),
             "--smooth" => {
                 // Bare `--smooth` (as before it took a value) turns it on.
                 let on = match args.peek().map(String::as_str) {

@@ -32,6 +32,10 @@ pub static VSTRIKER: Game = Game {
     texture_ram_mirrored: true,
     shading: crate::Shading::DEFAULT,
     recommended: crate::Recommended { temporal: false, ..crate::Recommended::DEFAULT },
+    // The wait for the next frame: polls the video status's frame bit
+    // (0x98000C bit 2) until vblank toggles it, counting passes in g0
+    // (docs/games/vstriker.md).
+    idle_loops: &[crate::IdleLoop { start: 0x3d54, end: 0x3d68 }],
     // In 8 MB slots the copro and geometrizer uploads read zeros (the
     // program fetches them from 0x2825F30) and the stands, boards and pitch
     // lines (polygon models from 0x900000 on) were missing.

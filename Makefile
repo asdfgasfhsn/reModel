@@ -477,7 +477,7 @@ run-ahead-profile: release ## Host time per shown frame with run-ahead RUN_AHEAD
 	$(RUN) --geo native --input $(BENCH_INPUT) run-ahead-profile $(RUN_AHEAD_WARMUP) $(RUN_AHEAD_PROFILE_FRAMES) $(RUN_AHEAD_FRAMES)
 
 bench: release ## Timed fixed run into a race: speed vs real time and the state hash (must not change with speed-ups)
-	$(RUN) --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep -E '^(instructions|emulated|host time|state hash)'
+	$(RUN) --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep -E '^(instructions|emulated|host time|idle skip|state hash)'
 
 copro-disasm: release ## Disassemble the geometry program captured by `make run`
 	$(RUN) copro-disasm

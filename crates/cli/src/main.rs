@@ -59,6 +59,9 @@ options:
                        and tile pattern drawn to DIR as PNG, plus DIR/index.txt
   --interp             run the i960 on the interpreter even when this build
                        has recompiled code for the game
+  --no-idle-skip       run the game's idle loops instruction by instruction
+                       instead of skipping through them (same results;
+                       docs/idle-skip.md)
   --single-thread      run the geometrizer inline instead of on a second
                        thread (as a browser build must); same results
   --audio WAV          `run`: play the sound and music boards live, fed as
@@ -701,6 +704,9 @@ fn main() -> ExitCode {
         None => false,
     };
     let (interp, single_thread) = (flag("--interp"), flag("--single-thread"));
+    if flag("--no-idle-skip") {
+        model2::idle::set_default(false);
+    }
     if flag("--depth") {
         let _ = DEPTH.set(true);
     }
@@ -2441,6 +2447,21 @@ fn run(
         geo.slowest.as_secs_f64() * 1e3,
         b.geo.waited.as_secs_f64()
     );
+    let idle = m.idle_stats();
+    match (m.idle_skip_on(), roms.game.idle_loops.len()) {
+        (_, 0) => println!("idle skip     none (no idle loops in the manifest)"),
+        (false, _) => println!("idle skip     off"),
+        (true, n) => println!(
+            "idle skip     {} instructions ({:.1}%) in {} skips, {} loop{}; {} of {} probes refused",
+            idle.skipped,
+            idle.skipped as f64 * 100.0 / m.cpu.icount.max(1) as f64,
+            idle.skips,
+            n,
+            if n == 1 { "" } else { "s" },
+            idle.refused,
+            idle.probes
+        ),
+    }
     println!("ip            {:#x}  priority {}  icr {:#010x}", m.cpu.ip, m.cpu.priority(), m.cpu.icr);
     println!("irq           request {:#x} enable {:#x}", b.irq_request, b.irq_enable);
     println!("coverage      {} distinct instructions", m.coverage.len());

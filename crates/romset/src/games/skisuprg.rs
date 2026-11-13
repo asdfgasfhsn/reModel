@@ -23,6 +23,10 @@ pub static SKISUPRG: Game = Game {
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
     recommended: crate::Recommended::DEFAULT,
+    // The wait for the next frame: polls the video status's frame bit
+    // (0x98000C bit 2) until vblank toggles it, counting passes in g0
+    // (docs/games/skisuprg.md).
+    idle_loops: &[crate::IdleLoop { start: 0x44864, end: 0x44878 }],
     packed: &[],
     volume_db: 0.0,
     files: &[

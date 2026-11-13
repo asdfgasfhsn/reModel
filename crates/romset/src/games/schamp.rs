@@ -33,6 +33,9 @@ pub static SCHAMP: Game = Game {
     // keep their ridges (docs/games/schamp.md, "Smooth shading").
     shading: crate::Shading { crease: 25, ..crate::Shading::DEFAULT },
     recommended: crate::Recommended { depth: true, shading: true, ..crate::Recommended::DEFAULT },
+    // The wait for the next frame: polls a work RAM byte (0x500000) until an
+    // interrupt handler changes it (docs/games/schamp.md).
+    idle_loops: &[crate::IdleLoop { start: 0x1163c, end: 0x11648 }],
     packed: &[],
     // A coin-start run's `make sound` averages -28 dBFS RMS (peak -8), louder
     // than the games here that play at 0 dB (about -31 to -38): brought

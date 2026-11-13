@@ -33,6 +33,9 @@ pub static VF2: Game = Game {
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
     recommended: crate::Recommended { shading: true, ..crate::Recommended::DEFAULT },
+    // The wait for the next frame: polls a work RAM byte (0x500000) until an
+    // interrupt handler changes it (docs/games/vf2.md).
+    idle_loops: &[crate::IdleLoop { start: 0x10f98, end: 0x10fa4 }],
     packed: &[Role::MainData, Role::CoproData, Role::Polygons, Role::TgpData],
     volume_db: 0.0,
     files: &[

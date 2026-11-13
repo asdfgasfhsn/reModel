@@ -27,6 +27,10 @@ pub static OVERREVB: Game = Game {
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
     recommended: crate::Recommended::DEFAULT,
+    // The wait for the next frame: polls the video status's frame bit
+    // (0x98000C bit 2) until vblank toggles it, counting passes in g0
+    // (docs/games/overrevb.md).
+    idle_loops: &[crate::IdleLoop { start: 0x12c44, end: 0x12c58 }],
     packed: &[],
     // Its voices mostly play at DISDL 3: the sound board averages about
     // 5.5 dB below the other SCSP-only games (docs/hw/sound.md §6).

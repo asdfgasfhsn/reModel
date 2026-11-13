@@ -33,6 +33,10 @@ pub static STCC: Game = Game {
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
     recommended: crate::Recommended { shading: true, ..crate::Recommended::DEFAULT },
+    // The wait for the next frame: polls the video status's frame bit
+    // (0x98000C bit 2) until vblank toggles it, counting passes in r4
+    // (docs/games/stcc.md).
+    idle_loops: &[crate::IdleLoop { start: 0x763d4, end: 0x763ec }],
     packed: &[],
     volume_db: 0.0,
     files: &[

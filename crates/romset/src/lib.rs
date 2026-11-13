@@ -231,6 +231,23 @@ pub struct Game {
     /// ([`Recommended::DEFAULT`] unless the game's pictures said
     /// otherwise; the evidence in `docs/games/<set>.md`).
     pub recommended: Recommended,
+    /// Poll loops the main program waits in, which the board model may
+    /// fast-forward through exactly (`model2::idle`, docs/idle-skip.md),
+    /// each found and checked in the game's code (docs/games/<set>.md).
+    /// Empty: nothing is skipped.
+    pub idle_loops: &'static [IdleLoop],
+}
+
+/// A loop the i960 polls in until something it reads changes: its
+/// instructions from `start` (where the loop branches back to) up to
+/// `end`, just past the backward branch. The board model checks every
+/// pass before it skips more (no writes, reads that can't change before
+/// the next event, the CPU back in the same state but for counters), so
+/// a wrong entry costs speed, not correctness.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IdleLoop {
+    pub start: u32,
+    pub end: u32,
 }
 
 impl Game {

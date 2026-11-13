@@ -230,6 +230,22 @@ pub struct Model2Bus {
     pub io_log: AccessLog,
     /// Accesses that hit nothing, by word address.
     pub unmapped: BTreeMap<u32, Access>,
+
+    /// An idle-loop probe is watching the i960's accesses (`crate::idle`).
+    probing: bool,
+    probe: Probe,
+}
+
+/// What the i960 touched during an idle-loop probe ([`Model2Bus::probe_begin`]).
+#[derive(Default)]
+pub(crate) struct Probe {
+    /// It wrote, or read something that may change before the next event.
+    pub impure: bool,
+    /// It read something the copro changes (buffer RAM, its output
+    /// status): stable only while the copro is idle.
+    pub needs_copro_idle: bool,
+    /// Registers it read, for their access counts.
+    pub io_reads: Vec<u32>,
 }
 
 /// Backup SRAM's contents at power-on: all ones, with the operator
@@ -392,6 +408,8 @@ impl Model2Bus {
             protection: roms.game.protection.as_ref().map(|p| Box::new(protection::Device::new(p, &roms.program))),
             io_log: AccessLog::default(),
             unmapped: BTreeMap::new(),
+            probing: false,
+            probe: Probe::default(),
         }
     }
 
@@ -483,6 +501,93 @@ impl Model2Bus {
             if after[i] && !before[i] {
                 self.raised_lines[i] = true;
             }
+        }
+    }
+
+    /// How many i960 instructions from now retire with nothing happening
+    /// but time passing and the copro running: no vblank, no timer
+    /// expiring, no sound UART interrupt (all `retire_insn` does besides).
+    /// The retire after them is the first that may.
+    pub(crate) fn quiet_retires(&self) -> u64 {
+        // Retire r (from 1) leaves `now` at now + CYCLES_PER_INSN * r.
+        let first = |at: u64| at.saturating_sub(self.now).div_ceil(crate::CYCLES_PER_INSN).max(1);
+        let mut q = first(self.next_vblank);
+        for t in self.timers.iter().filter(|t| t.running) {
+            q = q.min(first(t.started_at + t.reload as u64));
+        }
+        if self.irq_enable & IRQ_UART != 0 && self.irq_request & IRQ_UART == 0 && self.uart.tx_enabled {
+            q = q.min(first(self.uart.ready_at));
+        }
+        q - 1
+    }
+
+    /// True if the copro can't change anything the i960 reads until the
+    /// i960 gives it work: no program, stopped, or waiting on its input.
+    pub(crate) fn copro_idle(&self) -> bool {
+        let tgp = !self.copro_booted || self.tgp_fault.is_some() || (self.tgp_stalled && self.tgp.fifo_in.is_empty());
+        tgp && self.sharc.as_ref().is_none_or(|c| c.idle())
+    }
+
+    /// Retire `n` quiet instructions (within [`Model2Bus::quiet_retires`])
+    /// at once, `k` passes of an idle loop that read the registers
+    /// `io_reads` each: the copro runs as far as `n` single retires take
+    /// it, batched, and time moves on. The 2C TGP's batch is exact: `n`
+    /// runs of a few words stop where one long one does (it stalls only
+    /// on an empty input FIFO, which nothing fills meanwhile, and stays
+    /// stalled), and so is the SHARC's (`sharc::Copro::run_calls`).
+    pub(crate) fn idle_advance(&mut self, n: u64, k: u64, io_reads: &[u32]) {
+        self.run_tgp(crate::TGP_WORDS_PER_INSN * n);
+        if let Some(c) = &mut self.sharc {
+            c.run_calls(n, sharc::STEPS_PER_INSN, &mut self.mems[BUFFER_RAM].data, self.geo.commands());
+        }
+        self.now += crate::CYCLES_PER_INSN * n;
+        for &a in io_reads {
+            self.io_log.entry(a & !3).or_default().reads += k;
+        }
+    }
+
+    /// Start watching the i960's accesses for an idle-loop probe.
+    pub(crate) fn probe_begin(&mut self) {
+        self.probe.impure = false;
+        self.probe.needs_copro_idle = false;
+        self.probe.io_reads.clear();
+        self.probing = true;
+    }
+
+    /// Stop watching: what the probe saw. [`Model2Bus::probe_return`] gives
+    /// it back, to keep its buffer.
+    pub(crate) fn probe_end(&mut self) -> Probe {
+        self.probing = false;
+        std::mem::take(&mut self.probe)
+    }
+
+    pub(crate) fn probe_return(&mut self, p: Probe) {
+        self.probe = p;
+    }
+
+    /// A read during a probe. Plain memory other than buffer RAM is
+    /// written only by the i960, and a few registers change only at events
+    /// (`quiet_retires`) or by the i960's own writes; anything else may
+    /// change at any time (timer counts, inputs, FIFO data) or has side
+    /// effects.
+    #[cold]
+    #[inline(never)]
+    fn probe_read(&mut self, addr: u32) {
+        match self.find(addr) {
+            Some((m, _)) => self.probe.needs_copro_idle |= m == BUFFER_RAM,
+            None => match addr & !3 {
+                // Video status (vblank), interrupt requests and enable,
+                // copro control and status, board control.
+                0x0098_000c | 0x00e8_0000 | 0x00e8_0004 | 0x0098_0000 | 0x0098_0014 | 0x00f8_0000 => {
+                    self.probe.io_reads.push(addr)
+                }
+                // The copro's output FIFO empty flag.
+                0x0098_0004 => {
+                    self.probe.needs_copro_idle = true;
+                    self.probe.io_reads.push(addr);
+                }
+                _ => self.probe.impure = true,
+            },
         }
     }
 
@@ -903,6 +1008,9 @@ impl Model2Bus {
 
     #[inline]
     fn read(&mut self, addr: u32, n: usize) -> u32 {
+        if self.probing {
+            self.probe_read(addr);
+        }
         if let Some(v) = self.mem_read(addr, n) {
             return v;
         }
@@ -922,6 +1030,9 @@ impl Model2Bus {
 
     #[inline]
     fn write(&mut self, addr: u32, v: u32, n: usize) {
+        if self.probing {
+            self.probe.impure = true;
+        }
         if self.mem_write(addr, v, n) {
             return;
         }

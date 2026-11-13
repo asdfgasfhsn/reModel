@@ -28,6 +28,9 @@ pub static BEL: Game = Game {
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
     recommended: crate::Recommended { depth: true, ..crate::Recommended::DEFAULT },
+    // The wait for the next frame: polls a work RAM byte (0x5B48A0) until an
+    // interrupt handler changes it (docs/games/bel.md).
+    idle_loops: &[crate::IdleLoop { start: 0xe28, end: 0xe34 }],
     packed: &[Role::MainData, Role::Polygons],
     volume_db: 0.0,
     files: &[

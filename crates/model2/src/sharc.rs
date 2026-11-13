@@ -277,6 +277,38 @@ impl Copro {
         self.step(n, buffer, commands);
     }
 
+    /// True if [`Copro::run`] does nothing until the host changes its
+    /// FIFOs or control: no program, held, faulted, or spinning on a flag.
+    pub fn idle(&self) -> bool {
+        !self.booted || self.held || self.fault.is_some() || self.spin == Some(self.flags())
+    }
+
+    /// What `n` calls of `run(per, ..)` do, with nothing else touching the
+    /// copro in between (the i960 in an idle loop), in as few runs as
+    /// that allows: one, unless the core stops early. Then the calls left
+    /// are no-ops if it spins on a flag or faulted, and if it went IDLE
+    /// each of them ticks it once (and may wake it), so they run one by
+    /// one until it is running again.
+    pub fn run_calls(&mut self, n: u64, per: u64, buffer: &mut [u8], commands: &mut BTreeMap<u32, u32>) {
+        let mut left = n;
+        while left > 0 && !self.idle() {
+            if self.cpu.idle {
+                self.step(per, buffer, commands);
+                left -= 1;
+                continue;
+            }
+            let before = self.cpu.steps;
+            self.step(per * left, buffer, commands);
+            let ran = self.cpu.steps - before;
+            if ran >= per * left {
+                return;
+            }
+            // It stopped trying step `ran + 1`, which the call after
+            // `ran / per` full ones made.
+            left -= (ran / per + 1).min(left);
+        }
+    }
+
     #[inline(never)]
     fn step(&mut self, n: u64, buffer: &mut [u8], commands: &mut BTreeMap<u32, u32>) {
         self.spin = None;
@@ -451,6 +483,45 @@ mod tests {
         c.run(10_000, &mut buffer, &mut commands);
         d.run(10_000, &mut buffer, &mut commands);
         assert_eq!(c.fifo_out, d.fifo_out);
+    }
+
+    /// `run_calls(n, 5)` leaves the copro as `n` calls of `run(5)` do:
+    /// running, stopping to spin on a flag part way through a call, and
+    /// going IDLE (which ticks it once per call from then on).
+    #[test]
+    fn batched_runs_are_single_runs() {
+        let mut spin = vec![0u64; 0x89];
+        spin[0x05] = 0x063e_0002_0080; // JUMP 0x20080
+        spin[0x40] = 0x0b3e_0000_0000; // RTI
+        spin[0x80..0x89].copy_from_slice(&[
+            0x0f10_0040_0000, // I0 = 0x400000
+            0x0f11_00c0_0000, // I1 = 0xc00000
+            0x0f20_0000_0000, // M0 = 0
+            0x0712_0000_0000, // IF FLAG0_IN JUMP (PC,0)
+            0x503e_0000_0000, // R0 = DM(I0,M0)
+            0x013e_0002_9000, // R0 = R0 + 1
+            0x0714_0000_0000, // IF FLAG1_IN JUMP (PC,0)
+            0x523e_8000_0000, // DM(I1,M0) = R0
+            0x063e_0002_0083, // JUMP 0x20083
+        ]);
+        let mut idle = spin.clone();
+        idle[0x84] = 0x0080_0000_0000; // IDLE in place of the read
+        for (p, words) in [(&spin, 0..40u32), (&idle, 0..1)] {
+            for n in [1, 2, 3, 7, 50, 400] {
+                let (mut a, mut b) = (Copro::new(), Copro::new());
+                let (mut buffer, mut commands) = (vec![0u8; 0x2_0000], BTreeMap::new());
+                for c in [&mut a, &mut b] {
+                    upload(c, p);
+                    c.fifo_in.extend(words.clone());
+                }
+                for _ in 0..n {
+                    a.run(STEPS_PER_INSN, &mut buffer, &mut commands);
+                }
+                b.run_calls(n, STEPS_PER_INSN, &mut buffer, &mut commands);
+                assert_eq!(state::to_bytes(&a), state::to_bytes(&b), "{n} calls");
+                assert_eq!((a.cpu.steps, a.cpu.cycles), (b.cpu.steps, b.cpu.cycles), "{n} calls");
+            }
+        }
     }
 
     /// Buffer RAM in bank 2 (word addressed, repeating through the bank)

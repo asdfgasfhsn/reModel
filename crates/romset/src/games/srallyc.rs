@@ -45,6 +45,10 @@ pub static SRALLYC: Game = Game {
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
     recommended: crate::Recommended::DEFAULT,
+    // The wait for the next frame: polls the video status's frame bit
+    // (0x98000C bit 2) until vblank toggles it, counting passes in g0 (code
+    // the game copies to work RAM) (docs/games/srallyc.md).
+    idle_loops: &[crate::IdleLoop { start: 0x5a379c, end: 0x5a37b4 }],
     packed: &[Role::MainData, Role::CoproData, Role::Polygons, Role::Textures, Role::TgpData],
     volume_db: 10.0,
     files: &[

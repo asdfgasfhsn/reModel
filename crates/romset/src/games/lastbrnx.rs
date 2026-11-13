@@ -32,6 +32,10 @@ pub static LASTBRNX: Game = Game {
     texture_ram_mirrored: false,
     shading: crate::Shading::DEFAULT,
     recommended: crate::Recommended { shading: true, ..crate::Recommended::DEFAULT },
+    // The wait for the next frame: polls the video status's frame bit
+    // (0x98000C bit 2) until vblank toggles it, counting passes in g0
+    // (docs/games/lastbrnx.md).
+    idle_loops: &[crate::IdleLoop { start: 0x73f4, end: 0x7408 }],
     packed: &[],
     // A coin-start run's audio averages -32.7 dBFS RMS (peak -13), with the
     // games here that play at 0 dB (docs/hw/sound.md §6).

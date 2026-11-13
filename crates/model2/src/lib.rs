@@ -14,6 +14,7 @@ pub mod geo;
 pub mod geo_native;
 pub mod geo_native_2c;
 pub mod gun;
+pub mod idle;
 pub mod input;
 pub mod light;
 pub mod pacing;
@@ -62,6 +63,8 @@ pub struct Machine {
     /// States loaded into it so far: a copy from it must start afresh
     /// after one (`runahead`).
     loads: u64,
+    /// The game's idle loops and their skipping (`idle`).
+    idle: idle::IdleSkip,
 }
 
 impl Machine {
@@ -89,6 +92,7 @@ impl Machine {
             indirect: BTreeSet::new(),
             frame_profile: Profile::default(),
             loads: 0,
+            idle: idle::IdleSkip::new(roms.game),
         }
     }
 
@@ -133,17 +137,22 @@ impl Machine {
 
     /// Run up to `max` instructions, stopping after the one that ends a
     /// frame. Returns how many ran. Identical in effect to calling `step`
-    /// that many times, but runs recompiled code where there is some.
+    /// that many times, but runs recompiled code where there is some, and
+    /// skips through the game's idle loops (`idle`).
     pub fn run_slice(&mut self, max: u64) -> Result<u64, Stop> {
         let (start, frames) = (self.cpu.icount, self.frames);
         if self.native.is_none() {
             while self.cpu.icount - start < max && self.frames == frames {
-                self.step()?;
+                if !self.idle_skip(max - (self.cpu.icount - start))? {
+                    self.step()?;
+                }
             }
             return Ok(self.cpu.icount - start);
         }
         while self.cpu.icount - start < max && self.frames == frames {
-            self.dispatch(max - (self.cpu.icount - start))?;
+            if !self.idle_skip(max - (self.cpu.icount - start))? {
+                self.dispatch(max - (self.cpu.icount - start))?;
+            }
         }
         Ok(self.cpu.icount - start)
     }
@@ -243,6 +252,7 @@ impl Machine {
         if !src.is_native() {
             self.disable_native();
         }
+        self.set_idle_skip(src.idle_skip_on());
         if let (Some(c), Some(s)) = (self.bus.sharc.as_deref_mut(), src.bus.sharc.as_deref()) {
             if c.interpret != s.interpret {
                 c.interpret = s.interpret;
@@ -391,6 +401,13 @@ impl Profile {
             self.touched.push(ip);
         }
         *c += 1;
+    }
+
+    /// `n` more executions of `ip`, already counted once.
+    fn add(&mut self, ip: u32, n: u64) {
+        if let Some(c) = self.counts.get_mut((ip / 4) as usize) {
+            *c = c.saturating_add(n.min(u32::MAX as u64) as u32);
+        }
     }
 
     fn counts(&self) -> Vec<(u32, u64)> {
