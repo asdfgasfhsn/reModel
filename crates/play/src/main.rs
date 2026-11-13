@@ -2311,12 +2311,7 @@ impl Play {
                 let device = core.renderer.device();
                 let id = match &g.preview {
                     Some(p) => {
-                        core.egui.update_egui_texture_from_wgpu_texture(
-                            device,
-                            &view,
-                            wgpu::FilterMode::Linear,
-                            p.id,
-                        );
+                        core.egui.update_egui_texture_from_wgpu_texture(device, &view, wgpu::FilterMode::Linear, p.id);
                         p.id
                     }
                     None => core.egui.register_native_texture(device, &view, wgpu::FilterMode::Linear),

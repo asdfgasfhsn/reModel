@@ -22,14 +22,14 @@ mod materials;
 mod temporal;
 mod tiles;
 
+pub use board::BoardFrame;
+use board::BoardRef;
 pub use model2::enhance::TexFilter;
 use model2::enhance::{Found, Rgba, TexturePack};
 pub use model2::light::{Shading, CREASE_AUTO};
 pub use model2::raster::Relief;
 use model2::raster::{tex_info, Placed, Poly, Sources, TexKeys};
 use model2::video::{Layers2d, View, HEIGHT, WIDTH};
-pub use board::BoardFrame;
-use board::BoardRef;
 use std::collections::HashMap;
 pub use temporal::{step, temporal_supported, BusMotion, FrameTag, Step, TemporalDebug, Tuning as TemporalTuning};
 use temporal::{Temporal, TemporalPass};
@@ -2153,7 +2153,8 @@ impl Renderer {
         origin: (u32, u32),
     ) {
         let g = &bus.geo;
-        let own = Own { engine: g.last_frame(), smooth: g.last_smooth().map(|f| &**f), light: g.last_light(), late: true };
+        let own =
+            Own { engine: g.last_frame(), smooth: g.last_smooth().map(|f| &**f), light: g.last_light(), late: true };
         self.present_ref(BoardRef::of(bus), own, None, None, view, target, format, origin);
     }
 
