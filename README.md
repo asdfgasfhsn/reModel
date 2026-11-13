@@ -96,6 +96,7 @@ Guides:
 - [docs/status.md](docs/status.md): the status table; what is done, in progress and planned.
 - [docs/architecture.md](docs/architecture.md): the crate layout and what is shared across Model 2.
 - [docs/recompiler.md](docs/recompiler.md): the static recompiler.
+- [docs/idle-skip.md](docs/idle-skip.md): fast-forwarding exactly through the games' idle loops.
 - [docs/gpu.md](docs/gpu.md): the GPU renderer.
 - [docs/enhancements.md](docs/enhancements.md): visual enhancements, done and planned (smooth shading, material maps, temporal anti-aliasing, ...).
 - [docs/texture-packs.md](docs/texture-packs.md): texture dumps and packs, the pack format and material maps.

@@ -67,6 +67,12 @@ address) behind it, with nothing keyed on a game's name. A manifest's
 `parent` marks a clone: its chips may sit in the parent set's zip or
 folder, and it shares the parent's poster and bezel.
 
+A manifest's `idle_loops` lists the poll loops the game waits for the
+next frame in; the board model fast-forwards through them exactly, with
+every pass checked as it runs (`crates/model2/src/idle.rs`,
+`docs/idle-skip.md`), so the mechanism stays generic and only the
+addresses are per game.
+
 The board table is from public documentation (largely MAME's driver notes).
 MAME does not run `topskatr` correctly, so its board details are treated as
 **unverified hypotheses**: the game's own code is the ground truth, and the

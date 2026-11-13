@@ -121,3 +121,16 @@ change); smooth motion; run-ahead 3: the lag measured above is 4, the player
 offers 3 at most. With temporal and run-ahead 1 on an interpreted
 machine it fell behind once (`docs/play.md`, "Temporal anti-aliasing"); the
 player then drops run-ahead and says so.
+
+## Idle loop
+
+- *Confirmed (from the code, then by running it):* the main program
+  waits for the next frame in the loop at `0x5B3E0-0x5B3EB` (the
+  manifest's `idle_loops`; found as the hottest code of a coin-start
+  run). It polls a word at `0x532F30` in work RAM, branching back while
+  it is 0. Nothing in the loop writes it, so something else must (an
+  interrupt handler, *unconfirmed*: the writer was not traced), and
+  between interrupts every pass is the same.
+- *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
+  a 600M-instruction coin-start run (`make bench`) fast-forwards 56.1%
+  of its instructions through it, and the state hash is unchanged.

@@ -108,3 +108,17 @@ manifest, `run_ahead_max` for run-ahead) turns on for `fvipers`, and why:
 Temporal at full size; smooth shading on (the fighters are clearly better
 in the review pictures); no depth buffer (18 of 21 frames differ by a few
 pixels and "can't tell which is right", above); smooth motion; run-ahead 1.
+
+## Idle loop
+
+- *Confirmed (from the code, then by running it):* the main program
+  waits for the next frame in the loop at `0x118DC-0x118E7` (the
+  manifest's `idle_loops`; found as the hottest code of a coin-start
+  run). It polls a byte at `0x500000` (`ldob`) in work RAM, branching
+  back while it equals the value it had before the loop. Nothing in the
+  loop writes it, so something else must (an interrupt handler,
+  *unconfirmed*: the writer was not traced), and between interrupts
+  every pass is the same.
+- *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
+  a 600M-instruction coin-start run (`make bench`) fast-forwards 60.3%
+  of its instructions through it, and the state hash is unchanged.

@@ -100,3 +100,17 @@ right, nothing broken: `docs/enhancements.md`, "Depth buffer"); smooth
 shading with the crease of 25 degrees chosen above; smooth motion;
 run-ahead 0 (the stick has no lag; the menu offers 1 for the punches, with
 a help line that it makes the stick judder).
+
+## Idle loop
+
+- *Confirmed (from the code, then by running it):* the main program
+  waits for the next frame in the loop at `0x1163C-0x11647` (the
+  manifest's `idle_loops`; found as the hottest code of a coin-start
+  run). It polls a byte at `0x500000` (`ldob`) in work RAM, branching
+  back while it equals the value it had before the loop. Nothing in the
+  loop writes it, so something else must (an interrupt handler,
+  *unconfirmed*: the writer was not traced), and between interrupts
+  every pass is the same.
+- *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
+  a 600M-instruction coin-start run (`make bench`) fast-forwards 65.7%
+  of its instructions through it, and the state hash is unchanged.

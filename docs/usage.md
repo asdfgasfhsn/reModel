@@ -121,7 +121,15 @@ input FIFO, and prints the next 60 instructions with the AA0, AA1, AA3,
 AR0 and AR1 registers and the FIFO's length after each, to follow how the
 program reads a command.
 
-`make bench` prints a hash of all RAM and the last rasteriser stream. A change
+`make bench` prints a hash of all RAM and the last rasteriser stream, and
+an `idle skip` line: how many of the instructions the game's idle loops
+were fast-forwarded through (`docs/idle-skip.md`). Skipping is exact, so
+`--no-idle-skip` (an option of every `remodel` command, and of
+`remodel-play`), which runs every pass of those loops, gives the same
+hash, more slowly: `./target/release/remodel --game srallyc --no-idle-skip
+--input coin-start run 600000000`.
+
+The hash covers all RAM and the last rasteriser stream. A change
 meant only to make things faster must leave it unchanged. The hash depends on
 `out/GAME/eeprom.bin`, which `run` creates on first boot: a run in a
 directory where an earlier run left one loads it (`eeprom loaded` in the

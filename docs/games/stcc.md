@@ -127,3 +127,17 @@ manifest, `run_ahead_max` for run-ahead) turns on for `stcc`, and why:
 Temporal at full size; smooth shading on (the cars are clearly better in
 the review pictures); no depth buffer (it cuts the grandstand pennants in
 half, above); smooth motion; run-ahead 1.
+
+## Idle loop
+
+- *Confirmed (from the code, then by running it):* the main program
+  waits for the next frame in the loop at `0x763D4-0x763EB` (the
+  manifest's `idle_loops`; found as the hottest code of a coin-start
+  run). It polls the video status register for vblank: `ld 0x98000c`,
+  its frame bit (bit 2) compared with the one it read before the loop,
+  branching back while they are equal, and `r4` added to on every pass (a
+  count of passes nothing in the loop reads). It leaves the loop on the
+  first read after vblank toggles the bit.
+- *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
+  a 600M-instruction coin-start run (`make bench`) fast-forwards 74.6%
+  of its instructions through it, and the state hash is unchanged.

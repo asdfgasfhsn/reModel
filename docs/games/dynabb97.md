@@ -82,3 +82,15 @@ Temporal at full size; no depth buffer (the batter's undershirt collar
 shows through the jersey, above) and no smooth shading (over 90% of the lit
 polygons are shaded only within their own levels, below); smooth motion;
 run-ahead 1.
+
+## Idle loop
+
+- *Confirmed (from the code):* the main program waits for the next frame
+  at `0x82B18-0x82B2F`, a poll of the video status's frame bit
+  (`ld 0x98000c`) like the other games', but each pass also calls
+  `0x64C60` (which returns at once while the word at `0x5D4C08` is 0) and
+  counts passes in `r5`, a local register. The call saves the caller's
+  locals, the count among them, to its stack frame in work RAM, so every
+  pass writes memory with a new value and none is the fixed point the
+  idle skip needs (`docs/idle-skip.md`). The game is left without an
+  idle loop: it runs every pass.

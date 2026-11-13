@@ -226,11 +226,12 @@ loose in `rom/srallyc/`): attract, car and course select, and races.
   as interpreting (1.41x vs 1.42x) because it covers no more than the
   82 instructions. Recompiling code that lives in RAM would need the
   code captured from a run, a guard that the RAM still holds it, and the
-  block table over the RAM range; not done. Meanwhile 18% of the
-  instructions poll the video status register in a five-instruction
-  loop at `0x5A379C`, which an exact idle skip would have to account for
-  (instruction count, bus time, the TGP and timers) to keep the state
-  hash. The TGP interpreter is cheap: 1.2 s for the 4,141 frames (0.3 ms
+  block table over the RAM range; not done. Most of the instructions
+  (86% of a 600M-instruction coin-start run's, 80% of each frame's
+  in a race; an earlier note here said 18%, which is not what a
+  coin-start run does) poll the video
+  status register in a five-instruction loop at `0x5A379C`, which the
+  idle skip now fast-forwards through ("Idle loop", below). The TGP interpreter is cheap: 1.2 s for the 4,141 frames (0.3 ms
   a frame) and 1.6 s for 6,212 frames of a race (21,000 TGP words a frame
   in the race, about 0.13 ms), the geometrizer thread 0.9 s of 31. The
   player needs 1.4x to hold 60 Hz and has 2.3x; run-ahead of 2 frames
@@ -273,3 +274,19 @@ Temporal at full size; no depth buffer or smooth shading (little or no
 change on mostly flat cars and scenery: `docs/play.md`); smooth motion;
 run-ahead 1, which needs the machine to have twice the game's speed to
 spare.
+
+## Idle loop
+
+- *Confirmed (from the code, then by running it):* the main program
+  waits for the next frame in the loop at `0x5A379C-0x5A37B3` (the
+  manifest's `idle_loops`; found as the hottest code of a coin-start
+  run). It polls the video status register for vblank: `ld 0x98000c`,
+  its frame bit (bit 2) compared with the one it read before the loop,
+  branching back while they are equal, and `g0` added to on every pass (a
+  count of passes nothing in the loop reads). It leaves the loop on the
+  first read after vblank toggles the bit. The code is in work RAM,
+  where the game copies it at boot, so it always runs on the
+  interpreter.
+- *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
+  a 600M-instruction coin-start run (`make bench`) fast-forwards 85.6%
+  of its instructions through it, and the state hash is unchanged.

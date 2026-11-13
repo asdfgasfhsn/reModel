@@ -296,3 +296,18 @@ with the game's crease (the skaters are clearly better in the review
 pictures: `docs/play.md`, "Smooth shading"); smooth motion; run-ahead 0 (no
 lag to hide). The FINISH sign flickers under temporal as the game draws it
 (confirmed above).
+
+## Idle loop
+
+- *Confirmed (from the code, then by running it):* the main program
+  waits for the next frame in the loop at `0x4820C-0x48223` (the
+  manifest's `idle_loops`; found as the hottest code of a coin-start
+  run). It polls the video status register for vblank: `ld 0x98000c`,
+  its frame bit (bit 2) compared with the one it read before the loop,
+  branching back while they are equal, and `g0` added to on every pass (a
+  count of passes nothing in the loop reads). It leaves the loop on the
+  first read after vblank toggles the bit. The register is read through
+  `g6`, which holds `0x98000C`.
+- *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
+  a 600M-instruction coin-start run (`make bench`) fast-forwards 82.0%
+  of its instructions through it, and the state hash is unchanged.

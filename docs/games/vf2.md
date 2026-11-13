@@ -231,3 +231,17 @@ manifest, `run_ahead_max` for run-ahead) turns on for `vf2`, and why:
 Temporal at full size; smooth shading on (the fighters are rounder, the
 side channel is exact); no depth buffer (nothing recorded as fixed);
 smooth motion; run-ahead up to 1 (punches lag a frame, the stick none).
+
+## Idle loop
+
+- *Confirmed (from the code, then by running it):* the main program
+  waits for the next frame in the loop at `0x10F98-0x10FA3` (the
+  manifest's `idle_loops`; found as the hottest code of a coin-start
+  run). It polls a byte at `0x500000` (`ldob`) in work RAM, branching
+  back while it equals the value it had before the loop. Nothing in the
+  loop writes it, so something else must (an interrupt handler,
+  *unconfirmed*: the writer was not traced), and between interrupts
+  every pass is the same.
+- *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
+  a 600M-instruction coin-start run (`make bench`) fast-forwards 60.6%
+  of its instructions through it, and the state hash is unchanged.

@@ -136,3 +136,17 @@ manifest, `run_ahead_max` for run-ahead) turns on for `doa`, and why:
 Temporal at full size; smooth shading on (the fighters are clearly better
 in the review pictures); no depth buffer (nothing recorded as fixed);
 smooth motion; run-ahead 1 (the lag measured above).
+
+## Idle loop
+
+- *Confirmed (from the code, then by running it):* the main program
+  waits for the next frame in the loop at `0x27E0-0x27F3` (the
+  manifest's `idle_loops`; found as the hottest code of a coin-start
+  run). It polls a word at `0x54B150` in work RAM, branching back while
+  it is 0. Nothing in the loop writes it, so something else must (an
+  interrupt handler, *unconfirmed*: the writer was not traced), and
+  between interrupts every pass is the same. It counts passes in `g0` as
+  the vblank polls do.
+- *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
+  a 600M-instruction coin-start run (`make bench`) fast-forwards 78.9%
+  of its instructions through it, and the state hash is unchanged.

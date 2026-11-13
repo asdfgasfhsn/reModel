@@ -138,3 +138,17 @@ limit on the crowd (above, and `docs/play.md`, "Temporal anti-aliasing"). No
 depth buffer (it changes at most 0.007% of the pixels) or smooth shading
 (the players look a little rounder, not clearly better); smooth motion;
 run-ahead 0 (input lag 0).
+
+## Idle loop
+
+- *Confirmed (from the code, then by running it):* the main program
+  waits for the next frame in the loop at `0x3D54-0x3D67` (the
+  manifest's `idle_loops`; found as the hottest code of a coin-start
+  run). It polls the video status register for vblank: `ld 0x98000c`,
+  its frame bit (bit 2) compared with the one it read before the loop,
+  branching back while they are equal, and `g0` added to on every pass (a
+  count of passes nothing in the loop reads). It leaves the loop on the
+  first read after vblank toggles the bit.
+- *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
+  a 600M-instruction coin-start run (`make bench`) fast-forwards 51.3%
+  of its instructions through it, and the state hash is unchanged.

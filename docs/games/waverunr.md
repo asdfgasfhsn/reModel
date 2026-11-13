@@ -108,3 +108,17 @@ Temporal at full size; no depth buffer (a tree on a cliff top is hidden
 by the cliff face, which is 3.3x nearer: can't tell, above) and no smooth
 shading (no pictures recorded as better); smooth motion; run-ahead 0
 (input lag 0).
+
+## Idle loop
+
+- *Confirmed (from the code, then by running it):* the main program
+  waits for the next frame in the loop at `0x353C4-0x353D7` (the
+  manifest's `idle_loops`; found as the hottest code of a coin-start
+  run). It polls the video status register for vblank: `ld 0x98000c`,
+  its frame bit (bit 2) compared with the one it read before the loop,
+  branching back while they are equal, and `g0` added to on every pass (a
+  count of passes nothing in the loop reads). It leaves the loop on the
+  first read after vblank toggles the bit.
+- *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
+  a 600M-instruction coin-start run (`make bench`) fast-forwards 71.9%
+  of its instructions through it, and the state hash is unchanged.

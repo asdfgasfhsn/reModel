@@ -97,3 +97,17 @@ Temporal at full size; the depth buffer on (the crossed tree cards
 intersect, and the one banner traded off is half covered as with the buffer
 off: above); no smooth shading (no pictures recorded either way); smooth
 motion; run-ahead 0 (input lag 0).
+
+## Idle loop
+
+- *Confirmed (from the code, then by running it):* the main program
+  waits for the next frame in the loop at `0x12C44-0x12C57` (the
+  manifest's `idle_loops`; found as the hottest code of a coin-start
+  run). It polls the video status register for vblank: `ld 0x98000c`,
+  its frame bit (bit 2) compared with the one it read before the loop,
+  branching back while they are equal, and `g0` added to on every pass (a
+  count of passes nothing in the loop reads). It leaves the loop on the
+  first read after vblank toggles the bit.
+- *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
+  a 600M-instruction coin-start run (`make bench`) fast-forwards 79.7%
+  of its instructions through it, and the state hash is unchanged.

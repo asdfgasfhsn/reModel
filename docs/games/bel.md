@@ -91,3 +91,16 @@ Temporal at full size; the depth buffer on (the ivy on the cliff and a
 hanging soldier's legs in front of a beam come out right, above); no
 smooth shading (no pictures recorded as better); smooth motion; run-ahead 3,
 the lag measured above (one measurement).
+
+## Idle loop
+
+- *Confirmed (from the code, then by running it):* the main program
+  waits for the next frame in the loop at `0xE28-0xE33` (the manifest's
+  `idle_loops`; found as the hottest code of a coin-start run). It polls
+  a byte at `0x5B48A0` (`ldob`) in work RAM, branching back while it
+  equals the value it had before the loop. Nothing in the loop writes
+  it, so something else must (an interrupt handler, *unconfirmed*: the
+  writer was not traced), and between interrupts every pass is the same.
+- *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
+  a 600M-instruction coin-start run (`make bench`) fast-forwards 65.5%
+  of its instructions through it, and the state hash is unchanged.

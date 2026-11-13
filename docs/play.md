@@ -13,7 +13,10 @@ key, click or gamepad button skips it; `--no-splash` leaves it out. The
 logo (`assets/reModel-logo-1086.png`, half the size of the original) is
 built into the binary and decoded with `remodel-png`. `--fullscreen`
 starts fullscreen (remembered, as `--rom` is), and `--interp` runs the
-i960 on the interpreter in a build with recompiled code.
+i960 on the interpreter in a build with recompiled code. `--no-idle-skip`
+runs the games' idle loops instruction by instruction instead of
+fast-forwarding through them (`docs/idle-skip.md`): the game is the same
+either way, only slower.
 
 **Geometrizer.** The geometrizer runs on the native implementation
 (`docs/hw/geometrizer-2b.md` for Model 2B, `docs/hw/geometrizer-2c.md`
@@ -442,6 +445,7 @@ Ranking, by expected saving:
    passes to keep the state hash, so it is per loop, to the poll's own
    exit (vblank status). Expect `srallyc` run-ahead 1 from 18 ms to about
    7 and `vf2` from 15.5 to about 8; `lastbrnx` from 31 to about 20.
+   **Done** (`docs/idle-skip.md`), and it came in as expected; below.
 2. **Unchanged-input fast path on two threads** (option 1): with the
    inputs as the last frame's the shadow runs one frame and the real
    machine runs its own frame at the same time, so a frame costs about
@@ -464,6 +468,27 @@ Ranking, by expected saving:
 5. **Cheaper save and restore** (option 3): the copy is 0.8 to 1.0 ms of
    15 to 31, 3 to 5%, and already moves a seventh of the state. Not worth
    more.
+
+**With the idle skip** (2026-11-13, the same runs, same machine;
+milliseconds per shown frame, the total with the waits and the copy,
+which didn't change; before: the build before the skip):
+
+| Game | Run-ahead | Real frame before | after | Total before | after | Skipped |
+|---|---|---|---|---|---|---|
+| `srallyc` | 0 | 8.0 | 2.7 | 8.0 | 2.7 | 80% |
+| | 1 | 8.3 | 2.8 | 18.1 | 6.9 | |
+| | 2 | 8.3 | 2.8 | 26.7 | 10.1 | |
+| `lastbrnx` | 0 | 13.8 | 8.6 | 13.8 | 8.6 | 78% |
+| | 1 | 13.6 | 8.7 | 29.7 | 20.2 | |
+| | 2 | 13.5 | 8.8 | 44.8 | 30.5 | |
+| `vf2` | 0 | 6.7 | 3.5 | 6.7 | 3.5 | 72% |
+| | 1 | 6.9 | 3.5 | 15.2 | 8.4 | |
+| | 2 | 6.9 | 3.5 | 22.8 | 12.3 | |
+
+Run-ahead 1 now fits a 17.4 ms frame on all three, and run-ahead 2 on
+`srallyc` and `vf2`. Less is saved on `lastbrnx` (2B): its copro SHARC
+still runs through the skipped passes, five steps for each i960
+instruction credited.
 
 ## The launcher
 
