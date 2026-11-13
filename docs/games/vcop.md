@@ -1,7 +1,7 @@
 # Virtua Cop (`vcop`, the original Model 2, 1994)
 
-Status: **in progress** (`romset::games::IN_PROGRESS`, not in the
-launcher). The second game on the original Model 2 board
+Status: **plays** (listed; the launcher's Model 2 group, with a poster and
+bezel). The second game on the original Model 2 board
 (`Board::Model2`, [`docs/hw/model2.md`](../hw/model2.md)) after
 [`daytona`](daytona.md).
 
@@ -107,9 +107,23 @@ launcher). The second game on the original Model 2 board
 - *Clones:* `vcopa` (revision A: `epr-17166a.12`/`-17167a.13`, the rest
   shared) is in the zip; not added.
 
+- *Confirmed (by running it):* **stages 2 and 3** (MEDIUM, a quarry, and
+  EXPERT, a tower block with a car park) start from STAGE SELECT by shooting
+  their panels (the panels' centres are about x 98, 250 and 400 at y 190 of
+  the 496x384 view) and draw and play (enemies, the sights, hostages: "MISS!
+  LIFE" for a shot hostage). Sound over a 6-minute run of several credits:
+  never silent, peak 18,000 of 32,767, no clipping.
+- *Confirmed (by running it):* the enemies carry the game's own sights, a
+  circle around each that shrinks and goes green, yellow, orange, red and
+  then the enemy fires (the glass cracks, a life goes). A throwaway script
+  that read the sight's circle off each rendered frame and aimed at it (not
+  in the tree) got through the first areas of stage 1 and kept the game
+  progressing across continues; a blind sweep of aims does not.
+
 ## Next
 
-1. A whole stage with aimed shots (a script that follows the enemies), to
-   the boss and the stage's end; stages 2 and 3.
+1. A whole stage shot through to its boss and end (the aimed script above
+   was crude: it misses enemies on roofs and ducked behind cover); no fault
+   was seen, but no stage has been cleared in a scripted run.
 2. The sound by ear against a cabinet (as `daytona`'s).
 3. The OUTPUT TEST (lamps, `0x1C0001E`) and the gun's recoil, if any.

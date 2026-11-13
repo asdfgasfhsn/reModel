@@ -28,7 +28,7 @@ which ROM sets are supported and how they are named is in [../roms.md](../roms.m
 | Sega Rally Championship | `srallyc` | 2A | [srallyc.md](srallyc.md) |
 | Virtua Fighter 2 | `vf2` | 2A | [vf2.md](vf2.md) |
 | Daytona USA | `daytona` | Model 2 | [daytona.md](daytona.md) |
-| Virtua Cop (in progress, not in the launcher) | `vcop` | Model 2 | [vcop.md](vcop.md) |
-| Desert Tank (in progress, not in the launcher) | `desert` | Model 2 | [desert.md](desert.md) |
+| Virtua Cop | `vcop` | Model 2 | [vcop.md](vcop.md) |
+| Desert Tank | `desert` | Model 2 | [desert.md](desert.md) |
 
 Board-wide findings: [2C](../hw/model2c.md), [2B](../hw/model2b.md), [2A](../hw/model2a.md), [the original Model 2](../hw/model2.md).

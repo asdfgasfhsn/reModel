@@ -15,8 +15,9 @@ settings screen, the AM2 logo, the 3D attract races, textured and lit,
 the "V.R." screen and the ranking tables), and a coin-start run reaches a
 race that drives, with sound (§5). `vcop` boots to its attract mode and
 a coin-start run plays its first stage with the light gun (shots, the
-off-screen reload), with sound; `desert` plays its first mission. All
-three are in `romset::games::IN_PROGRESS`, not yet in the launcher.
+off-screen reload), with sound, and its stages 2 and 3 start; `desert` plays
+its desert mission and the canyon (EXPERT). All three are listed (the
+launcher's Model 2 group).
 
 ## 1. What it shares with Model 2A (confirmed by the run)
 
