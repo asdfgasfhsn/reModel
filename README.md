@@ -100,6 +100,7 @@ Guides:
 - [docs/web.md](docs/web.md): the browser build.
 - [docs/roms.md](docs/roms.md): the ROM sets, their boards and what each game needs.
 - [docs/status.md](docs/status.md): the status table; what is done, in progress and planned.
+- [CHANGELOG.md](CHANGELOG.md): the tagged versions and what each one brought.
 - [docs/architecture.md](docs/architecture.md): the crate layout and what is shared across Model 2.
 - [docs/recompiler.md](docs/recompiler.md): the static recompiler.
 - [docs/idle-skip.md](docs/idle-skip.md): fast-forwarding exactly through the games' idle loops.
