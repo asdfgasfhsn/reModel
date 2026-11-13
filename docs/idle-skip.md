@@ -103,10 +103,12 @@ launcher's previews, run-ahead's shadow machine (which skips if the real
 one does: `Machine::configure_like`) and the browser build. Interpreted
 or recompiled: with `RECOMP=1` the probe pass runs recompiled blocks (a
 loop is one or two blocks; the dispatcher sees its start between them),
-and the bus watches their accesses the same way. *Not yet checked:* no
-`RECOMP=1` build has been run with it (the recompiled build of all the
-programs ran the machine short of memory while benches ran; rebuild and
-compare `make bench RECOMP=1` hashes before relying on it). `srallyc`
+and the bus watches their accesses the same way. *Confirmed* on
+`topskatr`, `vf2` and `lastbrnx` (2026-11-13): `make bench RECOMP=1` gives
+the interpreter's hashes with the same instructions skipped (topskatr
+400275251269648e 82.0%, vf2 23a2a5094a998773 60.6%, lastbrnx
+c3ec82727bacd608 74.4%); recompiled with the skip, lastbrnx runs 600M
+instructions in 23.9 s (3.0x real time) against 87.7 s interpreted. `srallyc`
 runs its code from work RAM, so its loop is always interpreted.
 
 ## The off switch
