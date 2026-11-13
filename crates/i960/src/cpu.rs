@@ -209,6 +209,18 @@ impl Cpu {
         }
     }
 
+    /// Everything that decides what the CPU does next (all its saved state
+    /// but the instruction count), to compare two moments.
+    pub fn arch_state(&self) -> ArchState {
+        ArchState {
+            r: self.r,
+            fpr: self.fpr.map(f64::to_bits),
+            ctl: [self.ip, self.ac, self.pc, self.tc, self.sat, self.prcb, self.icr],
+            pending: self.pending,
+            locals: self.locals.clone(),
+        }
+    }
+
     pub fn has_pending(&self) -> bool {
         self.pending.iter().any(|&w| w != 0)
     }
@@ -1040,6 +1052,28 @@ pub struct LocalCache {
     /// Frame address and r0-r15 of each cached set, oldest first.
     sets: [(u32, [u32; 16]); CACHED_SETS],
     len: usize,
+}
+
+/// [`Cpu::arch_state`]: the CPU's state but its instruction count.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArchState {
+    r: [u32; 32],
+    fpr: [u64; 4],
+    /// IP, AC, PC, TC, SAT, PRCB, ICR.
+    ctl: [u32; 7],
+    pending: [u32; 8],
+    locals: LocalCache,
+}
+
+impl ArchState {
+    /// How `self` differs from `before`, if only in r0-r15/g0-g15: each
+    /// register that changed, with what was added to it (wrapping).
+    pub fn changes(&self, before: &ArchState) -> Option<Vec<(usize, u32)>> {
+        let same = ArchState { r: before.r, ..self.clone() };
+        (same == *before).then(|| {
+            (0..32).filter(|&i| self.r[i] != before.r[i]).map(|i| (i, self.r[i].wrapping_sub(before.r[i]))).collect()
+        })
+    }
 }
 
 /// Cached caller frames: the KB's four sets less the current procedure's.
