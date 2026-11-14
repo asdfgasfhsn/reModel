@@ -32,6 +32,11 @@ shared geometrizer code with three commands added and a copro program of
 its own (6,566 words) that depends on the SHARC's MODE1 effect latency;
 it needed the host DMA's low-index alias, the interrupt register's second
 word and tile RAM's 1 MB repeat ("Last Bronx" below).
+`gunblade` (Gunblade NY, 1995) uploads a copro program of its own (6,958
+words as uploaded) and the shared geometrizer code (3,117 words, code hash
+`15393321f266b9cf`), and needed nothing new. It has copro data ROMs
+(`.29/.30`) mapped on the copro's external bus as `indy500`'s are
+(*unconfirmed* that its program reads them).
 This page
 is what the board model (`crates/model2`: `bus.rs`, `sharc.rs`, `geo.rs`)
 is built on. The SHARC core itself is

@@ -34,5 +34,6 @@ which ROM sets are supported and how they are named is in [../roms.md](../roms.m
 | Desert Tank | `desert` | Model 2 | [desert.md](desert.md) |
 | Manx TT Superbike (clone `manxttc`) | `manxtt` | 2A | [manxtt.md](manxtt.md) |
 | Motor Raid | `motoraid` | 2A | [motoraid.md](motoraid.md) |
+| Gunblade NY | `gunblade` | 2B | [gunblade.md](gunblade.md) |
 
 Board-wide findings: [2C](../hw/model2c.md), [2B](../hw/model2b.md), [2A](../hw/model2a.md), [the original Model 2](../hw/model2.md).

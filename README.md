@@ -21,7 +21,7 @@ built to be reused across the Model 2 family.
 
 ## Games
 
-Twenty-eight games run, on the original Model 2 and the 2A, 2B and 2C boards. "Plays" means playable with
+Twenty-nine games run, on the original Model 2 and the 2A, 2B and 2C boards. "Plays" means playable with
 sound in the native player; the details, and what each game needed, are in
 [docs/games/](docs/games/README.md).
 
@@ -55,6 +55,7 @@ sound in the native player; the details, and what each game needed, are in
 | Manx TT Superbike | `manxtt` | 2A | plays; both courses, automatic or manual gearbox, to the end of the clock; no race steered to a finished lap |
 | Manx TT Superbike (twin cabinet) | `manxttc` | 2A | plays; the twin-cabinet release, a clone of `manxtt` |
 | Motor Raid | `motoraid` | 2A | plays; a Championship rides stage 1 to the finish and into stage 2 |
+| Gunblade NY | `gunblade` | 2B | plays, with mounted guns; the first mission to game over, none finished |
 
 ## Highlights
 
