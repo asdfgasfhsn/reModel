@@ -14,6 +14,24 @@ message is its text), set `version` in the root `Cargo.toml`, commit, then
 creates the annotated tag `vx.y.z` without pushing. Details in
 [docs/usage.md](docs/usage.md), "Versions and releases".
 
+## 0.8.0 (2026-11-15): the JITs, and five more games
+
+- A JIT for every Model 2 CPU but the 2B's SHARCs (opt-in, `--jit`,
+  `make play JIT=1`): the i960, the MB86234 (TGP) and the MB86235 (2C copro
+  and geometrizer), on Cranelift, exact to the interpreters (same state
+  hashes and lockstep). No recompiled build needed; 1.7-1.8x the
+  interpreter, faster than the recompiled build.
+- The JITs translate on background workers, so a game never waits for
+  them, and keep each game's hot blocks between runs to translate at boot
+  (`make jit-warm GAME=x` warms the list; `make jit-hitch` measures).
+- Model 2A: Virtua Cop 2, Sky Target, Manx TT Superbike (with its twin
+  set) and Motor Raid. Model 2B: Gunblade NY.
+- Builds and save states carry the reModel version (`--version`, the
+  launcher, the menu's About line).
+- Photo mode's photos go to `reModel/<set>/` in the system's pictures
+  folder.
+- `make clean-stale` deletes old builds Cargo leaves in `target/`.
+
 ## 0.7.0 (2026-11-14): the original Model 2, and photo mode
 
 - The original Model 2 board and its sound board (68000, two MultiPCMs, an
