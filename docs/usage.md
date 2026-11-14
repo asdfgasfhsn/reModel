@@ -62,6 +62,8 @@ make recomp               # recompile the game's i960 code and TGP or SHARC prog
 make recomp-workspace     # rewrite out/recomp's Cargo workspace and crate manifests (after updating reModel or moving the checkout)
 make bench RECOMP=1       # same run on the recompiled build: same hash, about twice as fast
 make state-check          # save state round trip: saved at frame 2000 and resumed must match an uninterrupted run (state hash and audio)
+make bench-all            # `make bench` for every set in tools/expected-hashes.txt that has ROMs; lists any state hash that differs
+make release-tag VERSION=0.7.0   # cut a release (below, "Releases"); DRY_RUN=1 checks without tagging
 make geo-check GAME=sgt24h   # native geometrizer beside the chip (2B SHARC, 2C TGP) on a coin-start run, raster streams compared each frame, both timed
 make geo-fuzz GAME=sgt24h    # random display lists through the chip's program and the native geometrizer, compared (FUZZ_FRAMES, FUZZ_SEED)
 make play RECOMP=1        # the launcher: pick a game (live attract previews, settings, Continue), then play
@@ -162,4 +164,44 @@ default `rom`), `OUT` (default `out/GAME`), `ADDR`, `COUNT`, `STEPS`, and the
 per-target ones `make help` lists (`VIEW`, `PACK`, `GPU_OPTS`, `PLAY_ARGS`,
 ...). The `Makefile` is the supported interface for humans and agents alike;
 `make help` is always current.
+
+## Versions and releases
+
+`remodel --version` and `remodel-play --version` print the build's version:
+`git describe --tags --dirty --always` (`v0.6.0-42-gabc1234`: 42 commits
+after the tag, `-dirty` for uncommitted changes as of the last rebuild), or
+the crate version where git or the history is missing (a source tarball).
+The player shows it in the launcher's corner and at the foot of the Esc
+menu; the browser's landing page footer and settings panel show it (`make
+web` writes the build's version into the pages). It is display only: it
+never enters emulation or a state hash. `REMODEL_VERSION=...` in the
+environment overrides it at build time.
+
+**Save states** carry a format number (`REMODEL-SAVE-<n>` at the head of
+the file; the machine state inside has its own, `REMODEL-STATE-<n>`),
+bumped when the layout changes, plus, from format 2, the version of the
+reModel that wrote it. Format 1 files (everything saved before this) are
+read as before. A file with a newer format is refused with a message
+("this save state was made by reModel X with format N; this build reads
+format M"), not loaded. States only load into the same program ROMs.
+Texture packs have had a `format` in their manifest since pack format 2
+(docs/texture-packs.md, "Pack format"): a pack without one is format 1, and a
+pack of a newer format than the build reads is refused with a message.
+
+**Cutting a release** (the maintainer):
+
+1. Move `CHANGELOG.md`'s entries under a `## x.y.z (date): title` heading
+   and set `version` in the root `Cargo.toml`'s `[workspace.package]`.
+   Commit.
+2. `make release-tag VERSION=x.y.z` (`ROM=` if the ROMs aren't in `rom/`).
+   It checks the tree is clean, the Cargo version and the CHANGELOG heading,
+   runs `make check` and `make release`, benches every set in
+   `tools/expected-hashes.txt` that has ROMs (`make bench-all`) and requires
+   each state hash to match, then creates the annotated tag `vx.y.z` with
+   the CHANGELOG section as its message. `DRY_RUN=1` does everything but
+   create the tag.
+3. It never pushes; it prints the command: `git push origin HEAD vx.y.z`.
+
+When emulation changes on purpose, update that set's line in
+`tools/expected-hashes.txt` in the same commit.
 

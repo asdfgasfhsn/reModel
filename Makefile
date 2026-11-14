@@ -18,6 +18,10 @@ PACK  ?=
 # How many emulator runs a target that starts several (materials-identity,
 # web's screenshots) has going at once.
 JOBS  ?= 3
+# `make release-tag`: the version to tag (x.y.z); DRY_RUN=1 does the checks only.
+VERSION ?=
+DRY_RUN ?=
+SKIP_BUILD ?=
 # Fixed run for `make bench`: attract, coin-up, start, into a race.
 # `coin-start` is the game's own coin-up and start script (its manifest's
 # controls); for topskatr that is coin1@1100-1104,start@1250-1254.
@@ -87,11 +91,11 @@ endif
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm tgp-disasm tgp-check m68k-tests clean recomp recomp-workspace bench latency input-lag run-ahead-check run-ahead-profile draw-overlap-check photo-check camera-scan sound sound-disasm geo-check geo-fuzz smooth-frames temporal-capture temporal-check pace-sim install-desktop uninstall-desktop
+.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm tgp-disasm tgp-check m68k-tests clean recomp recomp-workspace bench bench-all release-tag latency input-lag run-ahead-check run-ahead-profile draw-overlap-check photo-check camera-scan sound sound-disasm geo-check geo-fuzz smooth-frames temporal-capture temporal-check pace-sim install-desktop uninstall-desktop
 
 ##@ General
 
-help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, JOBS, PACK_CHECK_OUT, TILE_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, NORMALGEN, NORMAL_Y, STRENGTH, DETAIL, MAT_STEPS, MAT_SNAP, MAT_GPU_SNAP, GPU_OPTS, LIGHT_OPTS, LIGHT_CAPTURE, LIGHT_IN, PROBE, AGAINST, SEQ_FROM, SEQ_FRAMES, STATE, TEMPORAL_SEQ, TEMPORAL_OPTS, RECOMP, PLAY_ARGS, FILE, SECONDS, SOUNDTRACK, SRC)
+help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, JOBS, PACK_CHECK_OUT, TILE_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, NORMALGEN, NORMAL_Y, STRENGTH, DETAIL, MAT_STEPS, MAT_SNAP, MAT_GPU_SNAP, GPU_OPTS, LIGHT_OPTS, LIGHT_CAPTURE, LIGHT_IN, PROBE, AGAINST, SEQ_FROM, SEQ_FRAMES, STATE, TEMPORAL_SEQ, TEMPORAL_OPTS, RECOMP, PLAY_ARGS, VERSION, DRY_RUN, FILE, SECONDS, SOUNDTRACK, SRC)
 	@awk 'BEGIN {FS = ":.*## "; printf "usage: make <target> [VAR=value]\n"} \
 		/^##@/ {printf "\n%s\n", substr($$0, 5)} \
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -518,6 +522,13 @@ camera-scan: release ## Photo mode's true camera, a spike (docs/photo-mode.md): 
 
 bench: release ## Timed fixed run into a race: speed vs real time and the state hash (must not change with speed-ups)
 	$(RUN) --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep -E '^(instructions|emulated|host time|idle skip|state hash)'
+
+bench-all: release ## `make bench` for every set in tools/expected-hashes.txt that has ROMs; report any state hash that differs
+	@ROM=$(ROM) MAKE="$(MAKE)" REMODEL=$(REMODEL) sh tools/release.sh bench-all
+
+release-tag: ## Cut a release: VERSION=x.y.z; check, release build, bench-all, clean tree, CHANGELOG and Cargo.toml versions, then an annotated tag vX.Y.Z (never pushes; DRY_RUN=1 only checks)
+	@test -n "$(VERSION)" || { echo "usage: make release-tag VERSION=x.y.z"; exit 1; }
+	@ROM=$(ROM) MAKE="$(MAKE)" REMODEL=$(REMODEL) DRY_RUN=$(DRY_RUN) SKIP_BUILD=$(SKIP_BUILD) sh tools/release.sh tag $(VERSION)
 
 copro-disasm: release ## Disassemble the geometry program captured by `make run`
 	$(RUN) copro-disasm

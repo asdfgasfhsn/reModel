@@ -1,0 +1,16 @@
+# set state-hash: what `make bench GAME=<set>` must print (tools/release.sh;
+# `make bench-all`, `make release-tag`). Update a line, in the commit that
+# changes it, when emulation changes on purpose.
+srallyc 45fbec5e9d1215cf
+lastbrnx c3ec82727bacd608
+topskatr 400275251269648e
+vf2 23a2a5094a998773
+daytona e15632c50ca3f9f2
+hotd 38c08a3e3591af45
+vcop 01f963b7f4bcc9be
+desert cd3d58d3e5039fcf
+sfight 2a0a5a5d0d957997
+schamp 0dd9ca5f3388771f
+fvipers f2da97d89774d706
+stcc b42ea11201ac75c4
+bel a634c029241973eb

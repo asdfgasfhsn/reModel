@@ -1102,7 +1102,7 @@ CALIBRATION in the test menu changes that.
 Esc opens the pause menu (and closes it again). It is a short list:
 **Resume**, **Save / Load**, **Settings**, **Controls**, **Photo mode** (as
 F8: `docs/photo-mode.md`), **Back to games** and **Quit**. Nothing else sits beside Resume: the game's settings are one
-level in.
+level in. A small "About: reModel <version>" line sits at the foot.
 
 From a gamepad: the d-pad or left stick moves between the buttons and rows
 as they're laid out (repeating while held, as in the launcher), A presses
@@ -1287,7 +1287,10 @@ directory), the player keeps its files in `out/`; anywhere else in
   from its manifest (above, "Remapping").
 - `<set>/eeprom.bin`: the game's EEPROM (settings, records), written on quit or on switching games.
 - `<set>/saves/quick.save`, `slot1.save` ...: save states, zlib-compressed,
-  about 1.2 MB each. They only load into the same program ROMs.
+  about 1.2 MB each. They only load into the same program ROMs, and carry
+  a format number and the reModel version that wrote them (docs/usage.md,
+  "Versions and releases"): a state from a newer format is refused with a
+  message in the menu.
   `resume.save` is the one Continue loads.
 - `<set>/preview-native.save` (`-chip` with the chip geometrizer): the
   launcher's attract mode preview state.

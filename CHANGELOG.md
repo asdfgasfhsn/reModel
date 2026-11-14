@@ -7,6 +7,13 @@ packs) and the documented `make` targets and CLI may still change between
 minor versions; 1.0 comes when they are stable. Versions up to 0.6.0 were
 tagged after the fact on the commit that reached each milestone.
 
+Cutting a release: add a `## x.y.z (date): title` section here (the tag's
+message is its text), set `version` in the root `Cargo.toml`, commit, then
+`make release-tag VERSION=x.y.z`, which checks the tree, runs `make check`,
+`make release` and `make bench-all` against `tools/expected-hashes.txt`, and
+creates the annotated tag `vx.y.z` without pushing. Details in
+[docs/usage.md](docs/usage.md), "Versions and releases".
+
 ## 0.7.0 (2026-11-14): the original Model 2, and photo mode
 
 - The original Model 2 board and its sound board (68000, two MultiPCMs, an
