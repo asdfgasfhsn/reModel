@@ -133,6 +133,72 @@ pub struct Tgp2a {
     pub runaways: u64,
     /// The function open and the chip's pc at the first of them.
     pub first_runaway: Option<(Option<u32>, u32)>,
+
+    /// The chip on the JIT (docs/jit.md, "Copro JITs"), for the program
+    /// it holds, when [`Tgp2a::set_jit`] turned it on.
+    #[cfg(not(target_arch = "wasm32"))]
+    jit: Jit,
+}
+
+/// The MB86234 JIT's part of the board: whether it is on, its translation
+/// of the program the chip holds, and (for `jit-copro-lockstep`) the
+/// interpreter beside it.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+struct Jit {
+    on: bool,
+    check: bool,
+    code: Option<Box<jit::mb86234::Mb86234Jit>>,
+    shadow: Option<Box<mb86234::Cpu>>,
+    /// Runs compared (lockstep), and the stats of programs dropped.
+    checked: u64,
+    retired: jit::CoproStats,
+}
+
+/// A bus that keeps an interpreter's writes to itself and lists them, over
+/// the real one, for the lockstep: it runs first, on the memory as the JIT
+/// will find it.
+#[cfg(not(target_arch = "wasm32"))]
+struct Overlay<'a, 'b> {
+    inner: &'a mut Shared<'b>,
+    writes: Vec<(u32, u32)>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl mb86234::Bus for Overlay<'_, '_> {
+    fn read(&mut self, addr: u32) -> u32 {
+        // The last write to the same word (a ROM address is never kept).
+        let word = |a: u32| if a >= mb86234::ROM_BASE { a } else { a & 0x7fff };
+        match self.writes.iter().rev().find(|&&(a, _)| addr < mb86234::ROM_BASE && word(a) == word(addr)) {
+            Some(&(_, v)) => v,
+            None => mb86234::Bus::read(self.inner, addr),
+        }
+    }
+    fn write(&mut self, addr: u32, v: u32) {
+        if addr < mb86234::ROM_BASE {
+            self.writes.push((addr, v));
+        }
+    }
+}
+
+/// The real bus, its writes listed.
+#[cfg(not(target_arch = "wasm32"))]
+struct Listed<'a, 'b> {
+    inner: &'a mut Shared<'b>,
+    writes: Vec<(u32, u32)>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl mb86234::Bus for Listed<'_, '_> {
+    fn read(&mut self, addr: u32) -> u32 {
+        mb86234::Bus::read(self.inner, addr)
+    }
+    fn write(&mut self, addr: u32, v: u32) {
+        if addr < mb86234::ROM_BASE {
+            self.writes.push((addr, v));
+        }
+        mb86234::Bus::write(self.inner, addr, v)
+    }
 }
 
 /// Command port of a write at `offset` from `0x880000`: the address bits
@@ -178,6 +244,53 @@ impl Tgp2a {
                 self.cpu = Some(Box::new(mb86234::Cpu::new(self.program.clone(), self.rom())));
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.jit_follow();
+    }
+
+    /// Run the chip on the JIT (docs/jit.md), or not; with `check`, beside
+    /// the interpreter, comparing them after every run (panics at the first
+    /// difference: `make jit-copro-lockstep`). Fails where Cranelift has
+    /// no back end for this machine.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_jit(&mut self, on: bool, check: bool) -> Result<(), String> {
+        if on {
+            // Fail now rather than at the upload.
+            jit::mb86234::Mb86234Jit::new(&[])?;
+        }
+        self.jit.on = on;
+        self.jit.check = check;
+        self.jit_follow();
+        Ok(())
+    }
+
+    /// The JIT's counters and, in lockstep, the runs compared.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn jit_stats(&self) -> Option<(jit::CoproStats, u64)> {
+        let mut s = self.jit.retired;
+        if let Some(c) = &self.jit.code {
+            s.add(&c.stats());
+        }
+        self.jit.on.then_some((s, self.jit.checked))
+    }
+
+    /// Bring the JIT's translation in line with the program the chip
+    /// holds: drop it for another (an upload, a loaded state), make one
+    /// for a new one.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn jit_follow(&mut self) {
+        let j = &mut self.jit;
+        let program = self.cpu.as_ref().filter(|_| j.on).map(|c| &c.program);
+        if j.code.as_ref().is_some_and(|c| program.is_none_or(|p| !c.is_for(p))) {
+            if let Some(c) = j.code.take() {
+                j.retired.add(&c.stats());
+            }
+        }
+        if let (None, Some(p)) = (&j.code, program) {
+            j.code = jit::mb86234::Mb86234Jit::new(p).ok().map(Box::new);
+        }
+        // The lockstep's interpreter starts again from the chip as it is.
+        j.shadow = None;
     }
 
     /// The function unit's ROM: the first 64K words of `tables`.
@@ -188,7 +301,19 @@ impl Tgp2a {
     /// Run the chip until it waits for input.
     fn run(&mut self, bus: &mut Shared) {
         if let Some(c) = &mut self.cpu {
-            if c.run(bus, RUN_LIMIT) == mb86234::Stop::Limit {
+            #[cfg(not(target_arch = "wasm32"))]
+            let stop = match &mut self.jit.code {
+                Some(j) if self.jit.check => {
+                    let shadow = self.jit.shadow.get_or_insert_with(|| c.clone());
+                    self.jit.checked += 1;
+                    check_run(c, shadow, j, bus)
+                }
+                Some(j) => j.run(c, bus, RUN_LIMIT),
+                None => c.run(bus, RUN_LIMIT),
+            };
+            #[cfg(target_arch = "wasm32")]
+            let stop = c.run(bus, RUN_LIMIT);
+            if stop == mb86234::Stop::Limit {
                 self.runaways += 1;
                 self.first_runaway.get_or_insert((self.open.port, c.pc));
             }
@@ -361,8 +486,41 @@ impl state::State for Tgp2a {
             c.funcs.rom = rom;
             c
         });
+        #[cfg(not(target_arch = "wasm32"))]
+        self.jit_follow();
         Ok(())
     }
+}
+
+/// One run of the chip on the JIT with the interpreter beside it
+/// (`shadow`, kept in step: it gets the same input), which runs first on
+/// the memory the JIT will find; then everything is compared.
+#[cfg(not(target_arch = "wasm32"))]
+fn check_run(
+    c: &mut mb86234::Cpu,
+    shadow: &mut mb86234::Cpu,
+    j: &mut jit::mb86234::Mb86234Jit,
+    bus: &mut Shared,
+) -> mb86234::Stop {
+    shadow.fifo_in.clone_from(&c.fifo_in);
+    shadow.fifo_out.clone_from(&c.fifo_out);
+    let pc = c.pc;
+    let mut over = Overlay { inner: bus, writes: Vec::new() };
+    let want = shadow.run(&mut over, RUN_LIMIT);
+    let want_writes = over.writes;
+    let mut listed = Listed { inner: bus, writes: Vec::new() };
+    let got = j.run(c, &mut listed, RUN_LIMIT);
+    let what = jit::mb86234::differs(shadow, c)
+        .or((want != got).then_some("where it stopped"))
+        .or((want_writes != listed.writes).then_some("external writes"));
+    if let Some(what) = what {
+        panic!(
+            "copro JIT lockstep: the MB86234 on the JIT differs from the interpreter in {what}, \
+             in a run from pc {pc:#x} (interpreter stopped at {:#x}, JIT at {:#x})",
+            shadow.pc, c.pc
+        );
+    }
+    got
 }
 
 #[cfg(test)]

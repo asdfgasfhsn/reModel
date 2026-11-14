@@ -1130,6 +1130,27 @@ impl Model2Bus {
         }
     }
 
+    /// Run the copro programs on their JITs, or not (docs/jit.md, "Copro
+    /// JITs"); `check`: each beside its interpreter (a lockstep).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_copro_jit(&mut self, on: bool, check: bool) -> Result<(), String> {
+        if let Some(t) = self.tgp2a.as_deref_mut() {
+            t.set_jit(on, check)?;
+        }
+        Ok(())
+    }
+
+    /// The copro JITs' counters, by chip, with the runs compared in a
+    /// lockstep.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn copro_jit_stats(&self) -> Vec<(&'static str, jit::CoproStats, u64)> {
+        let mut v = Vec::new();
+        if let Some((s, n)) = self.tgp2a.as_deref().and_then(|t| t.jit_stats()) {
+            v.push(("MB86234", s, n));
+        }
+        v
+    }
+
     /// Move every write counter, as if all of the code RAMs had been
     /// written (after their contents were replaced directly).
     pub fn code_written_everywhere(&mut self) {

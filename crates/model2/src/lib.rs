@@ -158,7 +158,14 @@ impl Machine {
         self.bus.count_code_writes();
         self.native = None;
         self.jit = Some(Box::new(j));
-        Ok(())
+        self.bus.set_copro_jit(config.copro, config.copro_check)
+    }
+
+    /// The copro JITs' counters (docs/jit.md, "Copro JITs"), by chip, with
+    /// the runs compared in a lockstep.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn copro_jit_stats(&self) -> Vec<(&'static str, jit::CoproStats, u64)> {
+        self.bus.copro_jit_stats()
     }
 
     /// The JIT's counters, when it is on.

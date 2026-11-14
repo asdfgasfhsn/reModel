@@ -96,7 +96,7 @@ JIT_STEPS ?= 300000000
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM) $(if $(JIT),--jit)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release dist test lint fmt fmt-check check ci jit-lockstep jit-translate z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm tgp-disasm tgp-check m68k-tests clean recomp recomp-workspace bench bench-all release-tag latency input-lag run-ahead-check run-ahead-profile draw-overlap-check photo-check camera-scan sound sound-disasm geo-check geo-fuzz smooth-frames temporal-capture temporal-check pace-sim install-desktop uninstall-desktop
+.PHONY: help build release dist test lint fmt fmt-check check ci jit-test jit-lockstep jit-copro-lockstep jit-translate z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm tgp-disasm tgp-check m68k-tests clean recomp recomp-workspace bench bench-all release-tag latency input-lag run-ahead-check run-ahead-profile draw-overlap-check photo-check camera-scan sound sound-disasm geo-check geo-fuzz smooth-frames temporal-capture temporal-check pace-sim install-desktop uninstall-desktop
 
 ##@ General
 
@@ -167,6 +167,9 @@ z80-test: ## Run the Z80 core against the zexdoc and zexall exercisers in Z80_TE
 		echo "  curl -fsSL -o $(Z80_TESTS)/zexall.com $(Z80_TESTS_URL)/zexall.com"; \
 		exit 1; \
 	fi
+
+jit-test: ## Unit tests of the JITs (crates/jit: the i960's and the copros', each against its interpreter on hand-made and random programs; release build, as the random runs are long)
+	$(CARGO) test --release -p remodel-jit
 
 sharc-test: ## ADSP-21062 (SHARC) unit tests; then decode, discovery and a boot of the 2B programs in SHARC_PROGRAMS= (default: those captured in out/overrevb)
 	$(CARGO) test -p adsp2106x
@@ -533,6 +536,9 @@ bench: release ## Timed fixed run into a race: speed vs real time and the state 
 
 jit-lockstep: release ## The i960 JIT beside the interpreter, block by block, through a coin-start run (JIT_STEPS, default 300M; INPUT), stopping at the first difference; no recompiled build needed (docs/jit.md)
 	$(REMODEL) --game $(GAME) --rom $(ROM) --jit --input $(or $(INPUT),$(BENCH_INPUT)) lockstep $(JIT_STEPS)
+
+jit-copro-lockstep: release ## The copro JITs (Model 2A's MB86234, 2C's MB86235 copro and geometrizer) each beside its interpreter through a coin-start run (JIT_STEPS i960 instructions, default 300M; INPUT), compared after every run of the chip, stopping at the first difference (docs/jit.md)
+	$(REMODEL) --game $(GAME) --rom $(ROM) --jit --jit-copro check --input $(or $(INPUT),$(BENCH_INPUT)) run $(JIT_STEPS) | grep -E '^(instructions|jit copro|state hash)'
 
 jit-translate: release ## Translate the game's whole i960 program on the JIT ahead of time, cut as `make recomp` cuts it (discovery plus `make run`'s trace), and time it
 	$(RUN) jit-translate

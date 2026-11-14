@@ -3,11 +3,10 @@
 use cranelift_codegen::ir::{
     condcodes::IntCC, types, AbiParam, Block as ClifBlock, InstBuilder, MemFlagsData, SigRef, Signature, Type, Value,
 };
-use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{default_libcall_names, Module};
+use cranelift_jit::JITModule;
+use cranelift_module::Module;
 use i960::cpu::{Cpu, Host, Stop};
 use i960::lower::{lower, Alu, Op, Src, Width};
 use i960::{decode, Flow, Insn, MemRef};
@@ -50,11 +49,16 @@ pub struct Config {
     pub optimise: bool,
     /// Instructions per block at most.
     pub max_block: usize,
+    /// The copro programs on their JITs too (the MB86234 of Model 2A:
+    /// `docs/jit.md`, "Copro JITs"); with `copro_check`,
+    /// each beside its interpreter, compared after every run (a lockstep).
+    pub copro: bool,
+    pub copro_check: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { hot: 2, optimise: false, max_block: 128 }
+        Config { hot: 2, optimise: false, max_block: 128, copro: true, copro_check: false }
     }
 }
 
@@ -153,21 +157,7 @@ pub struct Jit<H> {
 
 impl<H: JitHost> Jit<H> {
     pub fn new(config: Config) -> Result<Self, String> {
-        let mut flags = settings::builder();
-        let set = |f: &mut settings::Builder, k: &str, v: &str| f.set(k, v).map_err(|e| format!("cranelift {k}: {e}"));
-        set(&mut flags, "use_colocated_libcalls", "false")?;
-        set(&mut flags, "is_pic", "false")?;
-        set(&mut flags, "opt_level", if config.optimise { "speed" } else { "none" })?;
-        if !config.optimise {
-            set(&mut flags, "regalloc_algorithm", "single_pass")?;
-        }
-        // The IR is made here and only checked by the tests.
-        set(&mut flags, "enable_verifier", if cfg!(debug_assertions) { "true" } else { "false" })?;
-        let isa = cranelift_native::builder()
-            .map_err(|e| format!("this machine has no Cranelift back end: {e}"))?
-            .finish(settings::Flags::new(flags))
-            .map_err(|e| format!("cranelift: {e}"))?;
-        let module = JITModule::new(JITBuilder::with_isa(isa, default_libcall_names()));
+        let module = crate::copro::module(config.optimise)?;
         let ctx = module.make_context();
         Ok(Jit {
             module,

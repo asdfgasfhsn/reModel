@@ -127,7 +127,7 @@ impl Ea {
 /// A float word's value. The chip has no infinities or NaNs (*hypothesis*,
 /// `docs/hw/mb86234.md`, "Special values"): an exponent field of 255 is an
 /// ordinary binade, `1.m * 2^128`.
-pub(crate) fn f(v: u32) -> f64 {
+pub fn f(v: u32) -> f64 {
     if (v >> 23) & 0xff == 0xff {
         f32::from_bits(v - (1 << 23)) as f64 * 2.0
     } else {
@@ -138,7 +138,7 @@ pub(crate) fn f(v: u32) -> f64 {
 /// `x` rounded to a float word: single precision (computing in `f64` and
 /// rounding once gives IEEE single's results, so in range nothing changes),
 /// using exponent 255 as an ordinary binade and saturating beyond it.
-pub(crate) fn word(x: f64) -> u32 {
+pub fn word(x: f64) -> u32 {
     let r = x as f32;
     if r.is_finite() {
         return r.to_bits();
@@ -176,7 +176,9 @@ pub struct Cpu {
     pub stack: Vec<u32>,
     /// Executions left of a word repeated by `3C04 n`.
     pub repeat: u32,
-    repeat_armed: bool,
+    /// Set by a `3C04` word while it executes (its own step doesn't count
+    /// down the repeat); always clear between words.
+    pub repeat_armed: bool,
     pub negative: bool,
     pub zero: bool,
     /// Control registers written by `3C`/`3D` (4 bits select one): `4` is
@@ -426,7 +428,12 @@ impl Cpu {
         v & 0xffff
     }
 
-    fn push(&mut self, a: u32) {
+    /// Push a return address (the oldest is lost past [`STACK_DEPTH`]).
+    /// Public for the JIT (`remodel-jit`), as are [`Cpu::ext_read`] and
+    /// [`Cpu::ext_write`]: translated words call them as the interpreter
+    /// does.
+    #[doc(hidden)]
+    pub fn push(&mut self, a: u32) {
         if self.stack.len() == STACK_DEPTH {
             self.stack.remove(0);
         }
@@ -518,7 +525,8 @@ impl Cpu {
         (a & 0xff_ffff) | (self.regs[reg::BUS as usize] & 0xbf_0000)
     }
 
-    fn ext_read(&mut self, bus: &mut dyn Bus, a: u32) -> u32 {
+    #[doc(hidden)]
+    pub fn ext_read(&mut self, bus: &mut dyn Bus, a: u32) -> u32 {
         let a = self.ext_addr(a);
         // The data ROM (from 0x800000) is there in both bus modes.
         if self.shared_bus || a >= ROM_BASE {
@@ -534,7 +542,8 @@ impl Cpu {
         }
     }
 
-    fn ext_write(&mut self, bus: &mut dyn Bus, a: u32, v: u32) {
+    #[doc(hidden)]
+    pub fn ext_write(&mut self, bus: &mut dyn Bus, a: u32, v: u32) {
         let a = self.ext_addr(a);
         if self.shared_bus || a >= ROM_BASE {
             bus.write(a, v);

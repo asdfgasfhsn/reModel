@@ -61,7 +61,7 @@ make latency              # frames from a wheel change to the game reacting and 
 make recomp               # recompile the game's i960 code and TGP or SHARC programs (after a `run`; builds only what changed)
 make recomp-workspace     # rewrite out/recomp's Cargo workspace and crate manifests (after updating reModel or moving the checkout)
 make bench RECOMP=1       # same run on the recompiled build: same hash, about twice as fast
-make bench JIT=1          # same run with the i960 on the JIT (no recompiled build needed): same hash, the JIT's counters (docs/jit.md)
+make bench JIT=1          # same run with the i960 and the copro programs on their JITs (no recompiled build needed): same hash, the JITs' counters (docs/jit.md; --jit-copro off: the i960's alone)
 make jit-translate        # the whole i960 program translated by the JIT ahead of time, as `make recomp` cuts it, timed
 make state-check          # save state round trip: saved at frame 2000 and resumed must match an uninterrupted run (state hash and audio)
 make bench-all            # `make bench` for every set in tools/expected-hashes.txt that has ROMs; lists any state hash that differs
@@ -117,6 +117,8 @@ make temporal-check GAME=sgt24h TEMPORAL_OPTS="--dump 770,842,16,4"   # the reso
 ./target/release/remodel --game sgt24h [--height 2160] temporal-check SEQ --bench 30   # GPU time a frame: plain, MSAA 4x, TAA, 67%, 50%, and the temporal targets' memory
 make lockstep RECOMP=1    # recompiled vs interpreted i960 (and 2B SHARCs), block by block, until they differ
 make jit-lockstep GAME=srallyc   # the i960 JIT vs the interpreter, block by block, through a coin-start run (JIT_STEPS, default 300M)
+make jit-copro-lockstep GAME=vf2 # the copro JITs (MB86234, MB86235) vs their interpreters, run by run, through a coin-start run
+make jit-test                    # the JITs' unit tests: hand-made and random programs on each JIT and its interpreter
 make music                # after a `run` into a race: the music board's music -> out/topskatr/music.wav (GAME=stcc too)
 make soundtrack-import SRC=~/my-mix SOUNDTRACK=my-mix   # your own music (ffmpeg converts)
 make music SOUNDTRACK=my-mix      # same, with your tracks -> out/topskatr/music-my-mix.wav

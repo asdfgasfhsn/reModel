@@ -2629,6 +2629,7 @@ dependencies = [
  "cranelift-module",
  "cranelift-native",
  "i960",
+ "mb86234",
 ]
 
 [[package]]

@@ -65,7 +65,11 @@ options:
                        machine's code as it runs (docs/jit.md), no
                        recompiled build needed; --jit-hot N translates a
                        block after N interpreted visits (default 2),
-                       --jit-opt speed runs Cranelift's optimiser (default none)
+                       --jit-opt speed runs Cranelift's optimiser (default none);
+                       the copro programs (Model 2A's MB86234)
+                       run on their JITs too unless --jit-copro off, and with
+                       --jit-copro check beside their interpreters, compared
+                       after every run (a lockstep: stops at a difference)
   --no-idle-skip       run the game's idle loops instruction by instruction
                        instead of skipping through them (same results;
                        docs/idle-skip.md)
@@ -697,7 +701,7 @@ fn main() -> ExitCode {
         };
         let _ = GEO_MODE.set(mode);
     }
-    let (Ok(jit_hot), Ok(jit_opt)) = (opt("--jit-hot"), opt("--jit-opt")) else {
+    let (Ok(jit_hot), Ok(jit_opt), Ok(jit_copro)) = (opt("--jit-hot"), opt("--jit-opt"), opt("--jit-copro")) else {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
     };
@@ -748,8 +752,17 @@ fn main() -> ExitCode {
         None => false,
     };
     let (interp, single_thread) = (flag("--interp"), flag("--single-thread"));
-    if flag("--jit") || jit_hot.is_some() || jit_opt.is_some() {
+    if flag("--jit") || jit_hot.is_some() || jit_opt.is_some() || jit_copro.is_some() {
         let mut c = model2::jit::Config::default();
+        match jit_copro.as_deref() {
+            None | Some("on") => {}
+            Some("off") => c.copro = false,
+            Some("check") => c.copro_check = true,
+            Some(_) => {
+                eprintln!("error: --jit-copro wants on, off or check");
+                return ExitCode::FAILURE;
+            }
+        }
         if let Some(n) = jit_hot {
             match n.parse() {
                 Ok(n) => c.hot = n,
@@ -2151,10 +2164,28 @@ fn jit_if_asked(m: &mut model2::Machine) {
     }
 }
 
-/// The JIT's report line, if it ran.
+/// The JIT's report lines, if it ran.
 fn jit_report(m: &model2::Machine) {
-    let Some(s) = m.jit_stats() else { return };
     let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
+    for (chip, s, checked) in m.copro_jit_stats() {
+        if s.blocks == 0 && s.runs == 0 && s.interpreted == 0 {
+            continue;
+        }
+        println!(
+            "jit copro     {chip}: {} blocks, {} words ({} left to the interpreter), {} KB of code, translated in {:.1} ms \
+             (slowest block {:.2} ms); {} blocks run, {} words interpreted outside blocks{}",
+            s.blocks,
+            s.words,
+            s.fallbacks,
+            s.code_bytes / 1024,
+            ms(s.time),
+            ms(s.slowest),
+            s.runs,
+            s.interpreted,
+            if checked > 0 { format!("; lockstep: {checked} runs compared, identical") } else { String::new() }
+        );
+    }
+    let Some(s) = m.jit_stats() else { return };
     println!(
         "jit           {} blocks, {} instructions ({} left to the interpreter), {} KB of code, translated in {:.1} ms \
          ({:.1} us a block, slowest {:.2} ms; {:.1} ms compiling, {:.1} ms linking); {} blocks run, {} instructions interpreted outside blocks; \

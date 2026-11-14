@@ -10,9 +10,20 @@
 //! instruction for instruction an interpreted one. docs/jit.md has the
 //! design and the measurements.
 //!
+//! The copro programs have JITs of their own on the same Cranelift setup
+//! ([`mb86234`]): each word lowered as its interpreter's step
+//! defines it, the interpreter's timing kept word for word (docs/jit.md,
+//! "Copro JITs").
+//!
 //! Off the browser build only: on `wasm32` the crate is empty.
 
 #[cfg(not(target_arch = "wasm32"))]
+mod copro;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod mb86234;
+#[cfg(not(target_arch = "wasm32"))]
 mod native;
+#[cfg(not(target_arch = "wasm32"))]
+pub use copro::CoproStats;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::*;

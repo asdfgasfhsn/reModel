@@ -109,7 +109,7 @@ Guides:
 - [CHANGELOG.md](CHANGELOG.md): the tagged versions and what each one brought.
 - [docs/architecture.md](docs/architecture.md): the crate layout and what is shared across Model 2.
 - [docs/recompiler.md](docs/recompiler.md): the static recompiler.
-- [docs/jit.md](docs/jit.md): the i960 JIT (a spike): the recompiler's translation at run time, opt-in.
+- [docs/jit.md](docs/jit.md): the JITs (a spike): the i960's and the copro programs' code translated at run time, opt-in.
 - [docs/idle-skip.md](docs/idle-skip.md): fast-forwarding exactly through the games' idle loops.
 - [docs/gpu.md](docs/gpu.md): the GPU renderer.
 - [docs/enhancements.md](docs/enhancements.md): visual enhancements, done and planned (smooth shading, material maps, temporal anti-aliasing, ...).
