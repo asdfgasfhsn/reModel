@@ -19,15 +19,16 @@ fn main() {
     let fallback = std::env::var("CARGO_PKG_VERSION").unwrap();
     let described = std::env::var("REMODEL_VERSION").ok().filter(|v| !v.is_empty()).or_else(|| {
         let v = git(&["describe", "--tags", "--dirty", "--always"])?;
-        // Tracking: HEAD, packed refs, branches and tags. A worktree's HEAD
+        // Tracking: HEAD, its branch, packed refs and tags. A worktree's HEAD
         // is in its own git dir, the refs in the common one.
-        let places: [(&str, &[&str]); 2] =
-            [("--absolute-git-dir", &["HEAD"]), ("--git-common-dir", &["packed-refs", "refs/tags", "refs/heads"])];
+        let branch = git(&["symbolic-ref", "-q", "HEAD"]).unwrap_or_default();
+        let places: [(&str, Vec<&str>); 2] =
+            [("--absolute-git-dir", vec!["HEAD"]), ("--git-common-dir", vec!["packed-refs", "refs/tags", &branch])];
         for (flag, files) in places {
             if let Some(d) = git(&["rev-parse", flag]) {
                 let d = PathBuf::from(d);
                 let d = if d.is_relative() { PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(d) } else { d };
-                for f in files {
+                for f in files.into_iter().filter(|f| !f.is_empty()) {
                     println!("cargo:rerun-if-changed={}", d.join(f).display());
                 }
             }
