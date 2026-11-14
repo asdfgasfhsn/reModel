@@ -57,13 +57,14 @@ make pack-lint PACK=out/topskatr/texpack-4x   # check a pack against the pack fo
 make play PLAY_ARGS="--pack on --tex-filter 16"   # live in the player: pack from out/GAME/texpack (the browser: ?pack=1&texfilter=16, docs/web.md)
 make play PLAY_ARGS="--texture-pack DIR --materials --shading pixel"   # with the pack's material maps (relief 2; --materials-relief off|S; the menu's "Material maps"; browser ?materials=1&relief=S; docs/texture-packs.md, Trying material maps; docs/enhancements.md, Material maps)
 make assets               # extract the game's art for review -> out/topskatr/assets (needs ImageMagick)
-make bench                # timed run into a race: speed and state hash
+make bench                # timed run into a race: speed, state hash and frame times (host ms per emulated frame: median, p90, p99, p99.9, worst; a JIT hitch shows here)
 make latency              # frames from a wheel change to the game reacting and its polygons (LATENCY_CHANGE, LATENCY_FRAME)
 make recomp               # recompile the game's i960 code and TGP or SHARC programs (after a `run`; builds only what changed)
 make recomp-workspace     # rewrite out/recomp's Cargo workspace and crate manifests (after updating reModel or moving the checkout)
 make bench RECOMP=1       # same run on the recompiled build: same hash, about twice as fast
 make bench JIT=1          # same run with the i960 and the copro programs on their JITs (no recompiled build needed): same hash, the JITs' counters (docs/jit.md; --jit-copro off: the i960's alone)
-make jit-translate        # the whole i960 program translated by the JIT ahead of time, as `make recomp` cuts it, timed
+make jit-translate        # the whole i960 program translated by the JIT ahead of time (on its workers), as `make recomp` cuts it, timed
+./target/release/remodel --game topskatr --jit --jit-sync --input coin-start run 600000000   # the JIT translating on the thread that needs it, as before the workers (frame times: the hitches it caused)
 make state-check          # save state round trip: saved at frame 2000 and resumed must match an uninterrupted run (state hash and audio)
 make bench-all            # `make bench` for every set in tools/expected-hashes.txt that has ROMs; lists any state hash that differs
 make release-tag VERSION=0.8.0   # cut a release (below, "Versions and releases"); DRY_RUN=1 checks without tagging

@@ -1148,17 +1148,19 @@ impl Model2Bus {
     }
 
     /// Run the copro programs on their JITs, or not (docs/jit.md, "Copro
-    /// JITs"); `check`: each beside its interpreter (a lockstep).
+    /// JITs") as `c` says: `copro`, and with `copro_check` each beside its
+    /// interpreter (a lockstep), translating on the workers if
+    /// `background`.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn set_copro_jit(&mut self, on: bool, check: bool) -> Result<(), String> {
+    pub fn set_copro_jit(&mut self, c: &jit::Config) -> Result<(), String> {
         if let Some(t) = self.tgp2a.as_deref_mut() {
-            t.set_jit(on, check)?;
+            t.set_jit(c)?;
         }
         // Model 2C's copro (2A's `tgp` and 2B's never run).
         if self.tgp2a.is_none() && self.sharc.is_none() {
-            self.tgp_jit.set(on, check)?;
+            self.tgp_jit.set(c.copro, c)?;
         }
-        self.geo.set_tgp_jit(on, check)
+        self.geo.set_tgp_jit(c)
     }
 
     /// The copro JITs' counters, by chip, with the runs compared in a

@@ -84,7 +84,7 @@ fn cpu_at(ip: u32) -> Cpu {
 /// visit) from `ip`, then as many on the interpreter, and compare.
 fn same_as_interpreter(rom: &[u32], ram: &[(u32, u32)], ip: u32, steps: u64) -> (Cpu, Flat, Stats) {
     let (mut b, mut hb) = (cpu_at(ip), Flat::new(rom, ram));
-    let mut jit = Jit::<Flat>::new(Config { hot: 0, ..Config::default() }).unwrap();
+    let mut jit = Jit::<Flat>::new(Config { hot: 0, background: false, ..Config::default() }).unwrap();
     while b.icount < steps {
         if jit.run(&mut b, &mut hb).is_none() {
             b.step_insn(&mut hb).unwrap();
@@ -177,7 +177,7 @@ fn code_in_ram_is_retranslated_when_written() {
         c.r[G as usize + 7] = 0x4000;
         (c, h)
     };
-    let mut jit = Jit::<Flat>::new(Config { hot: 0, ..Config::default() }).unwrap();
+    let mut jit = Jit::<Flat>::new(Config { hot: 0, background: false, ..Config::default() }).unwrap();
     let (mut b, mut hb) = start();
     while b.icount < 20 {
         if jit.run(&mut b, &mut hb).is_none() {
@@ -192,6 +192,73 @@ fn code_in_ram_is_retranslated_when_written() {
     assert_eq!(b.r[G as usize], 2, "the second call ran the new code");
     let stats = jit.stats();
     assert!(stats.ram_blocks >= 2 && stats.dropped >= 1, "{stats:?}");
+}
+
+#[test]
+fn a_block_translated_in_the_background_runs_once_ready() {
+    // The same loop as above, translated on the workers: interpreted
+    // until its blocks are ready, then run as blocks, the same result.
+    let w = assemble(&[
+        (0x00, reg(0x5cc, 0x10, true, 0, G)),           // mov 0x10, g0
+        (0x04, reg(0x5cc, 5, true, 0, G + 1)),          // mov 5, g1
+        (0x08, reg(0x590, G + 1, false, G, G)),         // addo g1, g0, g0
+        (0x0c, reg(0x592, 1, true, G + 1, G + 1)),      // subo 1, g1, g1
+        (0x10, cobr(0x35, 0, true, G + 1, 0x10, 0x08)), // cmpobne 0, g1, 0x08
+        (0x14, ctrl(0x08, 0x14, 0x00)),                 // b 0x00
+    ]);
+    let mut jit = Jit::<Flat>::new(Config { hot: 0, ..Config::default() }).unwrap();
+    let (mut b, mut hb) = (cpu_at(0), Flat::new(&w, &[]));
+    let (mut a, mut ha) = (cpu_at(0), Flat::new(&w, &[]));
+    for k in 0..400 {
+        if k == 200 {
+            jit.wait(&hb);
+        }
+        if jit.run(&mut b, &mut hb).is_none() {
+            b.step_insn(&mut hb).unwrap();
+        }
+        while a.icount < b.icount {
+            a.step(&mut ha).unwrap();
+        }
+        assert_eq!(a.arch_state(), b.arch_state(), "after {} instructions", b.icount);
+    }
+    let s = jit.stats();
+    assert!(s.blocks >= 2 && s.runs > 0, "{s:?}");
+}
+
+#[test]
+fn code_written_while_it_is_translated_is_thrown_away() {
+    // ROM: call 0x4000; st g6, (g7) (a new first instruction for it);
+    // call 0x4000; spin. RAM: mov 1, g0; ret. The RAM block is queued on
+    // the first call and may be finished only after the store: then its
+    // translation is of the old code and is thrown away (or, if it was
+    // installed before, dropped on entry), and never runs.
+    let w = assemble(&[
+        (0x0, ctrl(0x09, 0x0, 0x4000)),
+        (0x4, mem(0x92, G + 6, G + 7, 0)),
+        (0x8, ctrl(0x09, 0x8, 0x4000)),
+        (0xc, ctrl(0x08, 0xc, 0xc)),
+    ]);
+    let ram = [(0x4000, reg(0x5cc, 1, true, 0, G)), (0x4004, 0x0a00_0000)];
+    let (mut c, mut h) = (cpu_at(0), Flat::new(&w, &ram));
+    c.r[G as usize + 6] = reg(0x5cc, 2, true, 0, G);
+    c.r[G as usize + 7] = 0x4000;
+    let mut jit = Jit::<Flat>::new(Config { hot: 0, ..Config::default() }).unwrap();
+    // Up to the store: the call, then the RAM code (queued, interpreted).
+    while c.ip != 0x4 {
+        if jit.run(&mut c, &mut h).is_none() {
+            c.step_insn(&mut h).unwrap();
+        }
+    }
+    c.step_insn(&mut h).unwrap(); // the store, interpreted
+    jit.wait(&h);
+    while c.icount < 20 {
+        if jit.run(&mut c, &mut h).is_none() {
+            c.step_insn(&mut h).unwrap();
+        }
+    }
+    assert_eq!(c.r[G as usize], 2, "the second call ran the new code");
+    let s = jit.stats();
+    assert!(s.discarded + s.dropped >= 1, "the old code's translation never runs: {s:?}");
 }
 
 #[test]
@@ -212,7 +279,7 @@ fn a_block_that_overwrites_its_own_code_leaves_after_the_store() {
         c.r[G as usize + 7] = 0x4008;
         (c, h)
     };
-    let mut jit = Jit::<Flat>::new(Config { hot: 0, ..Config::default() }).unwrap();
+    let mut jit = Jit::<Flat>::new(Config { hot: 0, background: false, ..Config::default() }).unwrap();
     let (mut b, mut hb) = start();
     while b.icount < 12 {
         if jit.run(&mut b, &mut hb).is_none() {

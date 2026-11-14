@@ -69,7 +69,10 @@ options:
                        the copro programs (Model 2A's MB86234, 2C's MB86235s)
                        run on their JITs too unless --jit-copro off, and with
                        --jit-copro check beside their interpreters, compared
-                       after every run (a lockstep: stops at a difference)
+                       after every run (a lockstep: stops at a difference);
+                       blocks are translated on background workers and
+                       interpreted until ready, --jit-sync translates them
+                       at once on the thread that runs them (the game waits)
   --no-idle-skip       run the game's idle loops instruction by instruction
                        instead of skipping through them (same results;
                        docs/idle-skip.md)
@@ -752,8 +755,9 @@ fn main() -> ExitCode {
         None => false,
     };
     let (interp, single_thread) = (flag("--interp"), flag("--single-thread"));
-    if flag("--jit") || jit_hot.is_some() || jit_opt.is_some() || jit_copro.is_some() {
-        let mut c = model2::jit::Config::default();
+    let jit_sync = flag("--jit-sync");
+    if flag("--jit") || jit_sync || jit_hot.is_some() || jit_opt.is_some() || jit_copro.is_some() {
+        let mut c = model2::jit::Config { background: !jit_sync, ..model2::jit::Config::default() };
         match jit_copro.as_deref() {
             None | Some("on") => {}
             Some("off") => c.copro = false,
@@ -2173,7 +2177,7 @@ fn jit_report(m: &model2::Machine) {
         }
         println!(
             "jit copro     {chip}: {} blocks, {} words ({} left to the interpreter), {} KB of code, translated in {:.1} ms \
-             (slowest block {:.2} ms); {} blocks run, {} words interpreted outside blocks{}",
+             (slowest block {:.2} ms); {} blocks run, {} words interpreted outside blocks; {} translations thrown away{}",
             s.blocks,
             s.words,
             s.fallbacks,
@@ -2182,6 +2186,7 @@ fn jit_report(m: &model2::Machine) {
             ms(s.slowest),
             s.runs,
             s.interpreted,
+            s.discarded,
             if checked > 0 { format!("; lockstep: {checked} runs compared, identical") } else { String::new() }
         );
     }
@@ -2189,7 +2194,7 @@ fn jit_report(m: &model2::Machine) {
     println!(
         "jit           {} blocks, {} instructions ({} left to the interpreter), {} KB of code, translated in {:.1} ms \
          ({:.1} us a block, slowest {:.2} ms; {:.1} ms compiling, {:.1} ms linking); {} blocks run, {} instructions interpreted outside blocks; \
-         {} blocks from RAM, {} rechecked, {} dropped as overwritten",
+         {} blocks from RAM, {} rechecked, {} dropped as overwritten, {} translations thrown away; {} translation workers{}",
         s.blocks,
         s.insns,
         s.fallbacks,
@@ -2203,13 +2208,43 @@ fn jit_report(m: &model2::Machine) {
         s.interpreted,
         s.ram_blocks,
         s.rechecked,
-        s.dropped
+        s.dropped,
+        s.discarded,
+        model2::jit::workers(),
+        if m.jit_config().is_some_and(|c| !c.background) { " (not used: --jit-sync)" } else { "" }
     );
     let kinds: Vec<String> = m.jit_fallbacks().iter().take(10).map(|(k, n)| format!("{k} {n}")).collect();
     if !kinds.is_empty() {
         println!("jit fallbacks {}", kinds.join(", "));
     }
 }
+/// The `frame times` line of a run: the distribution of host milliseconds
+/// per emulated frame (from one frame's end to the next's, everything the
+/// run does in between), and the frames that would miss a 60 Hz display.
+fn frame_times_report(ms: &[f64]) -> String {
+    if ms.is_empty() {
+        return "frame times   no frames".into();
+    }
+    let mut v = ms.to_vec();
+    v.sort_by(f64::total_cmp);
+    let at = |q: f64| v[((v.len() - 1) as f64 * q).round() as usize];
+    let (worst, frame) = ms.iter().enumerate().fold((0.0, 0), |w, (i, &t)| if t > w.0 { (t, i) } else { w });
+    let over = |limit: f64| ms.iter().filter(|&&t| t > limit).count();
+    format!(
+        "frame times   {} frames, ms: median {:.2}, p90 {:.2}, p99 {:.2}, p99.9 {:.2}, worst {worst:.1} (frame {}); \
+         over 8 ms {}, over 16.7 ms {}, over 33 ms {}",
+        ms.len(),
+        at(0.5),
+        at(0.9),
+        at(0.99),
+        at(0.999),
+        frame + 1,
+        over(8.0),
+        over(1e3 / 60.0),
+        over(33.3)
+    )
+}
+
 /// `--tgp2a hle`: Model 2A's TGP answered by the function model.
 static TGP2A_HLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
@@ -2576,6 +2611,9 @@ fn run(
     let mut last_frame = 0;
     let mut seq = None;
     let mut light = light_report::Acc::default();
+    // Host time of each emulated frame (`frame times`, a hitch shows as
+    // one long frame).
+    let (mut frame_times, mut frame_start) = (Vec::new(), std::time::Instant::now());
     while m.cpu.icount < steps {
         if let Err(s) = m.run_slice(steps - m.cpu.icount) {
             stop = Some(s);
@@ -2589,6 +2627,9 @@ fn run(
             audio_secs += t.elapsed().as_secs_f64();
         }
         if m.frames != last_frame {
+            let now = std::time::Instant::now();
+            frame_times.push((now - frame_start).as_secs_f64() * 1e3);
+            frame_start = now;
             if LIGHT.get().is_some() {
                 light.frame(&mut m);
             }
@@ -2675,6 +2716,7 @@ fn run(
         geo.slowest.as_secs_f64() * 1e3,
         b.geo.waited.as_secs_f64()
     );
+    println!("{}", frame_times_report(&frame_times));
     let idle = m.idle_stats();
     match (m.idle_skip_on(), roms.game.idle_loops.len()) {
         (_, 0) => println!("idle skip     none (no idle loops in the manifest)"),

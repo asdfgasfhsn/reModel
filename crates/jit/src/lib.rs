@@ -26,6 +26,10 @@ pub mod mb86235;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 #[cfg(not(target_arch = "wasm32"))]
+mod pool;
+#[cfg(not(target_arch = "wasm32"))]
 pub use copro::CoproStats;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::*;
+#[cfg(not(target_arch = "wasm32"))]
+pub use pool::{busy, set_workers, workers};

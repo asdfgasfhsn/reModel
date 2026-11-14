@@ -20,16 +20,17 @@
 //! delay slot, a branch under a repeat, and a block start with a delayed
 //! branch pending (the dispatcher runs that one word interpreted).
 
-use crate::copro::{call, module, sig, trusted, CoproStats, OwnedModule, F32, I32, I64, I8};
+use crate::copro::{
+    block_signature, call, install, module, sig, trusted, Background, CoproStats, OwnedModule, F32, I32, I64, I8,
+};
+use crate::pool::{Compiled, Urgency};
 use ::mb86235::cpu::{External, Step, Tgp};
 use ::mb86235::{decode, AluOp, BranchTarget, Control, Insn, Loc, Mem, MulOp, Transfer, PROGRAM_WORDS};
 use cranelift_codegen::ir::{
     condcodes::{FloatCC, IntCC},
-    AbiParam, Block as ClifBlock, InstBuilder, MemFlagsData, SigRef, Type, Value,
+    Block as ClifBlock, InstBuilder, MemFlagsData, SigRef, Type, Value,
 };
-use cranelift_codegen::Context;
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
-use cranelift_module::Module;
+use cranelift_frontend::{FunctionBuilder, Variable};
 use std::mem::{offset_of, ManuallyDrop};
 use std::time::Instant;
 
@@ -84,21 +85,24 @@ struct Block {
     code: BlockFn,
 }
 
+/// Table entries: not translated, nothing to translate, being translated
+/// (on a worker), else block + `FIRST`.
 const COLD: u32 = 0;
 const NEVER: u32 = 1;
+const QUEUED: u32 = 2;
+const FIRST: u32 = 3;
 
 /// The JIT for one uploaded program (found again by its
 /// `mb86235::cpu::program_hash`; another program clears it).
 pub struct Mb86235Jit {
     module: OwnedModule,
-    ctx: Context,
-    fctx: FunctionBuilderContext,
     blocks: Vec<Block>,
     table: Box<[u32]>,
     program: Vec<u64>,
     hash: Option<u64>,
     max_block: usize,
     stats: CoproStats,
+    jobs: Background,
 }
 
 impl Mb86235Jit {
@@ -112,18 +116,23 @@ impl Mb86235Jit {
     /// translating them costs less.
     pub fn with_max_block(max: usize) -> Result<Self, String> {
         let module = module(false)?;
-        let ctx = module.make_context();
         Ok(Mb86235Jit {
             module: OwnedModule(ManuallyDrop::new(module)),
-            ctx,
-            fctx: FunctionBuilderContext::new(),
             blocks: Vec::new(),
             table: vec![COLD; PROGRAM_WORDS as usize].into_boxed_slice(),
             program: Vec::new(),
             hash: None,
             max_block: max.max(2),
             stats: CoproStats::default(),
+            jobs: Background::new(),
         })
+    }
+
+    /// Translate on the background workers (the default: a block is
+    /// interpreted until its code is ready), or at once, on the thread
+    /// that runs the chip.
+    pub fn set_background(&mut self, on: bool) {
+        self.jobs.on = on;
     }
 
     pub fn stats(&self) -> CoproStats {
@@ -139,6 +148,7 @@ impl Mb86235Jit {
             self.table.fill(COLD);
             self.program.clone_from(&t.program);
             self.hash = Some(t.program_hash);
+            self.jobs.clear();
         }
     }
 
@@ -151,15 +161,13 @@ impl Mb86235Jit {
         let mut left = max;
         while left > 0 {
             if t.pending().is_none() {
-                let pc = t.pc as usize;
-                let id = match self.table[pc] {
-                    COLD => {
-                        let id = self.translate(t.pc);
-                        self.table[pc] = id.map_or(NEVER, |id| id + 2);
-                        id
-                    }
+                let id = match self.table[t.pc as usize] {
+                    COLD | QUEUED => self.cold(t.pc),
                     NEVER => None,
-                    s => Some(s - 2),
+                    s => {
+                        self.jobs.through = (0, 0);
+                        Some(s - FIRST)
+                    }
                 };
                 if let Some(id) = id {
                     let mut ctx = Ctx {
@@ -193,6 +201,33 @@ impl Mb86235Jit {
             }
         }
         Step::Ran
+    }
+
+    /// A start with no block yet: queue it (unless it is inside a queued
+    /// block being interpreted), install what the workers have finished,
+    /// and say whether its block is among them.
+    #[cold]
+    fn cold(&mut self, pc: u32) -> Option<u32> {
+        if self.table[pc as usize] == COLD {
+            if self.jobs.inside(pc) {
+                return None;
+            }
+            self.queue(pc);
+        }
+        self.install(false);
+        match self.table[pc as usize] {
+            s if s >= FIRST => Some(s - FIRST),
+            QUEUED => {
+                self.jobs.through = (pc, self.jobs.pending.get(&pc).copied().unwrap_or(0));
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Wait for the blocks being translated, and install them (tests).
+    pub fn wait(&mut self) {
+        self.install(true);
     }
 
     fn insn(&self, pc: u32) -> Insn {
@@ -233,44 +268,60 @@ impl Mb86235Jit {
         v
     }
 
-    fn translate(&mut self, start: u32) -> Option<u32> {
-        let t0 = Instant::now();
+    /// Queue the block at `start` for translation, or mark it as nothing
+    /// to translate.
+    fn queue(&mut self, start: u32) {
         let words = self.plan(start);
         if words.is_empty() {
-            return None;
+            self.table[start as usize] = NEVER;
+            return;
         }
-        let ptr = self.module.0.target_config().pointer_type();
-        let mut s = self.module.0.make_signature();
-        s.params.extend([AbiParam::new(ptr), AbiParam::new(ptr), AbiParam::new(ptr)]);
-        s.returns.push(AbiParam::new(I32));
-        self.ctx.func.signature = s;
-        {
-            let mut b = FunctionBuilder::new(&mut self.ctx.func, &mut self.fctx);
-            let mut e = Emit::new(&mut b, ptr);
-            e.block(&words);
-            b.seal_all_blocks();
-            b.finalize(self.module.0.target_config());
+        let end = start + words.len() as u32;
+        self.table[start as usize] = QUEUED;
+        self.jobs.queue(self.hash.unwrap_or(0), start, end, Urgency::Now, Some(I32), move |b, ptr| {
+            Emit::new(b, ptr).block(&words);
+        });
+    }
+
+    /// Put the finished translations (`wait`: every one queued) in the
+    /// table, throwing away any for another program.
+    fn install(&mut self, wait: bool) {
+        let done = self.jobs.finished(wait);
+        if done.is_empty() {
+            return;
         }
-        let m = &mut self.module.0;
-        let id = m.declare_anonymous_function(&self.ctx.func.signature).ok()?;
-        let defined = m.define_function(id, &mut self.ctx);
-        let size = self.ctx.compiled_code().map_or(0, |c| c.code_buffer().len());
-        m.clear_context(&mut self.ctx);
-        if let Err(e) = defined {
-            eprintln!("jit: MB86235 block at {start:#x}: {e:?}");
-            return None;
+        let t0 = Instant::now();
+        let mut keep = Vec::new();
+        for d in done {
+            let ours = Some(d.key) == self.hash && self.table[d.start as usize] == QUEUED;
+            match d.code {
+                Ok(c) if ours => keep.push((d.start, d.end, c)),
+                Err(e) if ours => {
+                    eprintln!("jit: MB86235 block at {:#x}: {e}", d.start);
+                    self.table[d.start as usize] = NEVER;
+                }
+                _ => self.stats.discarded += 1,
+            }
         }
-        m.finalize_definitions().ok()?;
-        // SAFETY: made with the signature of `BlockFn` (the C convention).
-        let code = unsafe { std::mem::transmute::<*const u8, BlockFn>(m.get_finalized_function(id)) };
-        self.blocks.push(Block { code });
-        let dt = t0.elapsed();
-        self.stats.blocks += 1;
-        self.stats.words += words.len() as u64;
-        self.stats.code_bytes += size as u64;
-        self.stats.time += dt;
-        self.stats.slowest = self.stats.slowest.max(dt);
-        Some(self.blocks.len() as u32 - 1)
+        let sig = block_signature(&self.module.0, Some(I32));
+        let compiled: Vec<&Compiled> = keep.iter().map(|(_, _, c)| c).collect();
+        let entries = install(&mut self.module.0, &sig, &compiled);
+        for ((start, end, c), entry) in keep.iter().zip(entries) {
+            self.stats.time += c.time;
+            self.stats.slowest = self.stats.slowest.max(c.time);
+            let Some((ptr, size)) = entry else {
+                self.table[*start as usize] = NEVER;
+                continue;
+            };
+            // SAFETY: made with the signature of `BlockFn` (the C convention).
+            let code = unsafe { std::mem::transmute::<*const u8, BlockFn>(ptr) };
+            self.blocks.push(Block { code });
+            self.table[*start as usize] = self.blocks.len() as u32 - 1 + FIRST;
+            self.stats.blocks += 1;
+            self.stats.words += (end - start) as u64;
+            self.stats.code_bytes += size as u64;
+        }
+        self.stats.time += t0.elapsed();
     }
 }
 

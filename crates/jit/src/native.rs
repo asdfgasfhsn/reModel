@@ -1,18 +1,22 @@
 //! The Cranelift back end (docs/jit.md).
 
+use crate::pool::{Compiled, Compiler, Job, Urgency};
 use cranelift_codegen::ir::{
     condcodes::IntCC, types, AbiParam, Block as ClifBlock, InstBuilder, MemFlagsData, SigRef, Signature, Type, Value,
 };
-use cranelift_codegen::Context;
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use cranelift_frontend::FunctionBuilder;
 use cranelift_jit::JITModule;
 use cranelift_module::Module;
 use i960::cpu::{Cpu, Host, Stop};
 use i960::lower::{lower, Alu, Op, Src, Width};
 use i960::{decode, Flow, Insn, MemRef};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::marker::PhantomData;
 use std::mem::offset_of;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Code is translated below this address (the program ROM and the RAM the
@@ -54,11 +58,16 @@ pub struct Config {
     /// each beside its interpreter, compared after every run (a lockstep).
     pub copro: bool,
     pub copro_check: bool,
+    /// Translate on the background workers (`pool`), interpreting a block
+    /// until its code is ready, so the game never waits for Cranelift
+    /// (docs/jit.md, "Translation off the game's thread"). Off: at once,
+    /// on the thread that needs it (tests, measurements).
+    pub background: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { hot: 2, optimise: false, max_block: 128, copro: true, copro_check: false }
+        Config { hot: 2, optimise: false, max_block: 128, copro: true, copro_check: false, background: true }
     }
 }
 
@@ -73,11 +82,12 @@ pub struct Stats {
     /// Blocks from writable memory among them.
     pub ram_blocks: u64,
     /// Host time translating (IR, Cranelift, linking), and the slowest
-    /// block.
+    /// block (on the workers).
     pub time: Duration,
     pub slowest: Duration,
-    /// Of `time`: Cranelift compiling (IR to machine code), and making the
-    /// code executable.
+    /// Of `time`: building the IR and compiling it (on the workers), and
+    /// copying the code in and making it executable (on the JIT's
+    /// thread).
     pub compile: Duration,
     pub link: Duration,
     /// Bytes of machine code.
@@ -90,6 +100,9 @@ pub struct Stats {
     /// by word and kept, or dropped because the code changed.
     pub rechecked: u64,
     pub dropped: u64,
+    /// Finished translations thrown away: their code was written while
+    /// they were being made (or a newer one was asked for).
+    pub discarded: u64,
 }
 
 /// A translated block: `(cpu, host, ctx) -> 0` (ran) or 1 (faulted, the
@@ -128,6 +141,8 @@ struct Block {
 enum Slot {
     /// Not translated: dispatched this many times.
     Cold(u32),
+    /// Being translated (on a worker): interpreted until it is ready.
+    Queued,
     Block(u32),
     /// Nothing to translate here (undecodable, or not code the JIT can
     /// track).
@@ -136,11 +151,26 @@ enum Slot {
 
 const SLOTS_PER_PAGE: usize = 1024;
 
+/// A block being translated: its job's number (a later one for the same
+/// start would supersede it) and, from writable memory, what it is being
+/// translated from.
+struct Pending {
+    seq: u64,
+    end: u32,
+    ram: Option<RamCode>,
+}
+
+/// A finished translation, back from a worker.
+struct Done {
+    start: u32,
+    seq: u64,
+    insns: Box<[Insn]>,
+    code: Result<Compiled, String>,
+}
+
 /// The JIT for a machine `H`.
 pub struct Jit<H> {
     module: JITModule,
-    ctx: Context,
-    fctx: FunctionBuilderContext,
     blocks: Vec<Block>,
     /// Block (or state) by instruction address / 4, in pages.
     table: Vec<Option<Box<[Slot; SLOTS_PER_PAGE]>>>,
@@ -152,23 +182,44 @@ pub struct Jit<H> {
     /// Instructions left to the interpreter in translated blocks, by
     /// mnemonic.
     fallback_kinds: BTreeMap<&'static str, u64>,
+    pending: HashMap<u32, Pending>,
+    seq: u64,
+    /// The rest of a queued block the interpreter is running through
+    /// (after its start, before its end): its addresses aren't block
+    /// starts, so they aren't counted towards translation.
+    through: (u32, u32),
+    done_tx: Sender<Done>,
+    done_rx: Receiver<Done>,
+    /// Cleared when the JIT is dropped: its jobs not yet started are
+    /// skipped.
+    alive: Arc<AtomicBool>,
     host: PhantomData<fn(&mut H)>,
 }
 
-impl<H: JitHost> Jit<H> {
+impl<H> Drop for Jit<H> {
+    fn drop(&mut self) {
+        self.alive.store(false, Ordering::Relaxed);
+    }
+}
+
+impl<H: JitHost + 'static> Jit<H> {
     pub fn new(config: Config) -> Result<Self, String> {
         let module = crate::copro::module(config.optimise)?;
-        let ctx = module.make_context();
+        let (done_tx, done_rx) = channel();
         Ok(Jit {
             module,
-            ctx,
-            fctx: FunctionBuilderContext::new(),
             blocks: Vec::new(),
             table: Vec::new(),
             stops: BTreeSet::new(),
             config,
             stats: Stats::default(),
             fallback_kinds: BTreeMap::new(),
+            pending: HashMap::new(),
+            seq: 0,
+            through: (0, 0),
+            done_tx,
+            done_rx,
+            alive: Arc::new(AtomicBool::new(true)),
             host: PhantomData,
         })
     }
@@ -203,9 +254,11 @@ impl<H: JitHost> Jit<H> {
         &mut self.table[page].get_or_insert_with(|| Box::new([Slot::Cold(0); SLOTS_PER_PAGE]))[at]
     }
 
-    /// Run the block at the CPU's IP, translating it if it is due. `None`
-    /// if there is none (yet): the caller runs one instruction on the
-    /// interpreter. Interrupts must have been taken first, as for a
+    /// Run the block at the CPU's IP, if there is one. `None` if there is
+    /// none (yet): the caller runs one instruction on the interpreter. A
+    /// block start that is due is queued for translation (docs/jit.md,
+    /// "Translation off the game's thread"), and interpreted until its
+    /// code is ready. Interrupts must have been taken first, as for a
     /// recompiled block.
     #[inline]
     pub fn run(&mut self, cpu: &mut Cpu, host: &mut H) -> Option<Result<(), Stop>> {
@@ -216,8 +269,15 @@ impl<H: JitHost> Jit<H> {
         }
         let (slot, hot) = (*self.slot(ip), self.config.hot);
         let id = match slot {
-            Slot::Block(id) => id,
+            Slot::Block(id) => {
+                self.through = (0, 0);
+                id
+            }
             Slot::Never => {
+                self.stats.interpreted += 1;
+                return None;
+            }
+            _ if self.through.0 < ip && ip < self.through.1 => {
                 self.stats.interpreted += 1;
                 return None;
             }
@@ -226,10 +286,9 @@ impl<H: JitHost> Jit<H> {
                 self.stats.interpreted += 1;
                 return None;
             }
-            Slot::Cold(_) => match self.translate_at(ip, host) {
+            Slot::Cold(_) | Slot::Queued => match self.cold(ip, host) {
                 Some(id) => id,
                 None => {
-                    *self.slot(ip) = Slot::Never;
                     self.stats.interpreted += 1;
                     return None;
                 }
@@ -239,10 +298,10 @@ impl<H: JitHost> Jit<H> {
         if self.blocks[id as usize].ram.is_some() && !self.still_there(id, host) {
             // The code changed: translate what is there now.
             self.stats.dropped += 1;
-            match self.translate_at(ip, host) {
+            *self.slot(ip) = Slot::Cold(hot);
+            match self.cold(ip, host) {
                 Some(new) => id = new,
                 None => {
-                    *self.slot(ip) = Slot::Never;
                     self.stats.interpreted += 1;
                     return None;
                 }
@@ -262,29 +321,41 @@ impl<H: JitHost> Jit<H> {
         }
     }
 
+    /// A start with no block yet: queue it if it isn't, install what the
+    /// workers have finished, and say whether its block is among them.
+    #[cold]
+    fn cold(&mut self, ip: u32, host: &H) -> Option<u32> {
+        if let Slot::Cold(_) = *self.slot(ip) {
+            self.queue_at(ip, host, Urgency::Now);
+        }
+        self.install(host);
+        match *self.slot(ip) {
+            Slot::Block(id) => Some(id),
+            _ => {
+                // Interpreted until it is ready: what follows its start is
+                // the block's, not starts of its own.
+                self.through = self.pending.get(&ip).map_or((0, 0), |p| (ip, p.end));
+                None
+            }
+        }
+    }
+
     /// True if block `id` (from writable memory) still holds what is in
     /// memory: its pages weren't written, or its words are the same.
     fn still_there(&mut self, id: u32, host: &H) -> bool {
         let b = &mut self.blocks[id as usize];
         let Some(ram) = &mut b.ram else { return true };
-        let gens = host.code_generations();
-        let now = [gens[ram.pages[0]], gens[ram.pages[1]]];
-        if now == *ram.seen {
-            return true;
-        }
-        self.stats.rechecked += 1;
-        let same = ram.words.iter().enumerate().all(|(k, &w)| host.fetch(b.start + 4 * k as u32) == Some(w));
-        if same {
-            *ram.seen = now;
-        }
-        same
+        ram.current(b.start, host, &mut self.stats)
     }
 
-    fn translate_at(&mut self, ip: u32, host: &H) -> Option<u32> {
-        let insns = self.plan(ip, host)?;
-        let id = self.translate(insns, host)?;
-        *self.slot(ip) = Slot::Block(id);
-        Some(id)
+    /// Queue the block at `ip` for translation (planned now, from memory
+    /// as it is), or mark it as nothing to translate. True if queued.
+    fn queue_at(&mut self, ip: u32, host: &H, urgency: Urgency) -> bool {
+        let queued = self.plan(ip, host).is_some_and(|insns| self.queue(insns, host, urgency));
+        if !queued {
+            *self.slot(ip) = Slot::Never;
+        }
+        queued
     }
 
     /// The instructions of the block at `start`: up to and including the
@@ -316,10 +387,11 @@ impl<H: JitHost> Jit<H> {
     /// block at each leader of `insns`, running to the next. Returns how
     /// many blocks; times them in [`Stats`]. (A measurement: these blocks
     /// are used from then on, as if each had been translated when it
-    /// first ran.)
+    /// first ran.) The workers translate them, all at once, and this
+    /// waits for them.
     pub fn translate_program(&mut self, insns: &BTreeMap<u32, Insn>, extra: &BTreeSet<u32>, host: &H) -> usize {
         let leaders = i960::codegen::leaders(insns, extra);
-        let mut made = 0;
+        let before = self.stats.blocks;
         for &start in &leaders {
             if start >= CODE_SPAN || start & 3 != 0 || !host.is_rom(start) {
                 continue;
@@ -336,78 +408,163 @@ impl<H: JitHost> Jit<H> {
                 }
                 pc = next;
             }
-            if let Some(id) = self.translate(block, host) {
-                *self.slot(start) = Slot::Block(id);
-                made += 1;
-            }
+            self.queue(block, host, Urgency::Now);
         }
-        made
+        self.wait(host);
+        (self.stats.blocks - before) as usize
     }
 
-    fn translate(&mut self, insns: Vec<Insn>, host: &H) -> Option<u32> {
-        let t0 = Instant::now();
+    /// Hand `insns` (a block) to the translation workers. False if it
+    /// can't be translated (code in writable memory the host doesn't
+    /// track, or over more than two of its counters' pages).
+    fn queue(&mut self, insns: Vec<Insn>, host: &H, urgency: Urgency) -> bool {
         let start = insns[0].addr;
         let end = insns.last().map_or(start, Insn::next);
         let ram = if host.is_rom(start) {
             None
         } else {
-            let first = host.code_generation_index(start)?;
-            let last = host.code_generation_index(end - 1)?;
+            let (Some(first), Some(last)) = (host.code_generation_index(start), host.code_generation_index(end - 1))
+            else {
+                return false;
+            };
             // A block over more than two counters' pages isn't worth the
             // checks (they are 1 KB; blocks are at most 128 instructions).
             if last.abs_diff(first) > 1 {
-                return None;
+                return false;
             }
             let gens = host.code_generations();
             let words: Option<Vec<u32>> = (start..end).step_by(4).map(|a| host.fetch(a)).collect();
+            let Some(words) = words else { return false };
             Some(RamCode {
-                words: words?.into_boxed_slice(),
+                words: words.into_boxed_slice(),
                 pages: [first, last],
                 seen: Box::new([gens[first], gens[last]]),
             })
         };
+        self.seq += 1;
+        let seq = self.seq;
+        // The block reads the counters as last checked from here: the box
+        // goes with the block when it is installed, so it doesn't move.
+        let ram_at = ram.as_ref().map(|r| (r.pages, &*r.seen as *const [u32; 2] as usize));
         let insns = insns.into_boxed_slice();
-        let fallbacks = insns.iter().filter(|i| lower(i).is_none()).count();
-        for i in insns.iter().filter(|i| lower(i).is_none()) {
-            *self.fallback_kinds.entry(i.mnemonic).or_default() += 1;
+        let (tx, alive, optimise) = (self.done_tx.clone(), self.alive.clone(), self.config.optimise);
+        let job: Job = Box::new(move |c: &mut Compiler| {
+            if !alive.load(Ordering::Relaxed) {
+                return;
+            }
+            let code = catch_unwind(AssertUnwindSafe(|| {
+                c.compile(optimise, 3, Some(I32), |b, ptr| {
+                    // The instructions are boxed, so the addresses the
+                    // block hands the interpreter stay valid once it is
+                    // back.
+                    let mut e = Emit::<H>::new(b, ptr, ram_at.map(|(p, s)| (p, s as *const [u32; 2])));
+                    e.block(&insns);
+                })
+            }))
+            .unwrap_or_else(|_| Err("the translation panicked".into()));
+            let _ = tx.send(Done { start, seq, insns, code });
+        });
+        self.pending.insert(start, Pending { seq, end, ram });
+        *self.slot(start) = Slot::Queued;
+        crate::pool::submit(self.config.background, urgency, job);
+        true
+    }
+
+    /// Wait for every queued block and install them (a measurement, and
+    /// for tests; the game never waits).
+    pub fn wait(&mut self, host: &H) {
+        let mut ready = Vec::new();
+        while !self.pending.is_empty() {
+            match self.done_rx.recv() {
+                Ok(d) => self.take(d, host, &mut ready),
+                Err(_) => break,
+            }
         }
+        self.finish(ready);
+    }
+
+    /// Install the blocks the workers have finished (at a block boundary:
+    /// the dispatcher is between blocks).
+    fn install(&mut self, host: &H) {
+        let mut ready = Vec::new();
+        while let Ok(d) = self.done_rx.try_recv() {
+            self.take(d, host, &mut ready);
+        }
+        self.finish(ready);
+    }
+
+    /// One finished translation: into this JIT's memory (`finish` makes it
+    /// executable), or thrown away if it is stale.
+    fn take(&mut self, d: Done, host: &H, ready: &mut Vec<Ready>) {
+        if self.pending.get(&d.start).is_none_or(|p| p.seq != d.seq) {
+            self.stats.discarded += 1;
+            return;
+        }
+        let Some(mut p) = self.pending.remove(&d.start) else { return };
+        let c = match d.code {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("jit: block at {:#x}: {e}", d.start);
+                *self.slot(d.start) = Slot::Never;
+                return;
+            }
+        };
+        self.stats.compile += c.time;
+        self.stats.time += c.time;
+        // Code in writable memory that was written while it was being
+        // translated: throw it away; the next visit translates what is
+        // there now.
+        if let Some(ram) = &mut p.ram {
+            if !ram.current(d.start, host, &mut self.stats) {
+                self.stats.discarded += 1;
+                *self.slot(d.start) = Slot::Cold(self.config.hot);
+                return;
+            }
+        }
+        let t = Instant::now();
         let sig = self.block_signature();
-        self.ctx.func.signature = sig;
-        let ptr = self.module.target_config().pointer_type();
-        {
-            let mut b = FunctionBuilder::new(&mut self.ctx.func, &mut self.fctx);
-            let mut e = Emit::<H>::new(&mut b, ptr, ram.as_ref().map(|r| (r.pages, &*r.seen as *const [u32; 2])));
-            e.block(&insns);
-            b.seal_all_blocks();
-            b.finalize(self.module.target_config());
+        match c.define(&mut self.module, &sig) {
+            Some(id) => {
+                ready.push(Ready { id, start: d.start, insns: d.insns, ram: p.ram, size: c.bytes.len(), time: c.time })
+            }
+            None => *self.slot(d.start) = Slot::Never,
         }
-        let id = self.module.declare_anonymous_function(&self.ctx.func.signature).ok()?;
-        let t1 = Instant::now();
-        let defined = self.module.define_function(id, &mut self.ctx);
-        let t2 = Instant::now();
-        self.stats.compile += t2 - t1;
-        let size = self.ctx.compiled_code().map_or(0, |c| c.code_buffer().len());
-        self.module.clear_context(&mut self.ctx);
-        if let Err(e) = defined {
-            eprintln!("jit: block at {start:#x}: {e:?}");
-            return None;
+        self.stats.link += t.elapsed();
+        self.stats.time += t.elapsed();
+    }
+
+    /// Make the defined blocks executable and put them in the table.
+    fn finish(&mut self, ready: Vec<Ready>) {
+        if ready.is_empty() {
+            return;
         }
-        self.module.finalize_definitions().ok()?;
-        self.stats.link += t2.elapsed();
-        let ptr = self.module.get_finalized_function(id);
-        // SAFETY: made with `block_signature`, the C convention of `BlockFn`.
-        let code = unsafe { std::mem::transmute::<*const u8, BlockFn>(ptr) };
-        let n = insns.len() as u64;
-        self.stats.blocks += 1;
-        self.stats.insns += n;
-        self.stats.fallbacks += fallbacks as u64;
-        self.stats.ram_blocks += ram.is_some() as u64;
-        self.stats.code_bytes += size as u64;
-        self.blocks.push(Block { code, start, insns, ram });
-        let dt = t0.elapsed();
-        self.stats.time += dt;
-        self.stats.slowest = self.stats.slowest.max(dt);
-        Some(self.blocks.len() as u32 - 1)
+        let t = Instant::now();
+        if let Err(e) = self.module.finalize_definitions() {
+            eprintln!("jit: {e:?}");
+            for r in ready {
+                *self.slot(r.start) = Slot::Never;
+            }
+            return;
+        }
+        for r in ready {
+            let ptr = self.module.get_finalized_function(r.id);
+            // SAFETY: made with `block_signature`, the C convention of `BlockFn`.
+            let code = unsafe { std::mem::transmute::<*const u8, BlockFn>(ptr) };
+            let fallbacks = r.insns.iter().filter(|i| lower(i).is_none()).count();
+            for i in r.insns.iter().filter(|i| lower(i).is_none()) {
+                *self.fallback_kinds.entry(i.mnemonic).or_default() += 1;
+            }
+            self.stats.blocks += 1;
+            self.stats.insns += r.insns.len() as u64;
+            self.stats.fallbacks += fallbacks as u64;
+            self.stats.ram_blocks += r.ram.is_some() as u64;
+            self.stats.code_bytes += r.size as u64;
+            self.stats.slowest = self.stats.slowest.max(r.time);
+            self.blocks.push(Block { code, start: r.start, insns: r.insns, ram: r.ram });
+            *self.slot(r.start) = Slot::Block(self.blocks.len() as u32 - 1);
+        }
+        self.stats.link += t.elapsed();
+        self.stats.time += t.elapsed();
     }
 
     fn block_signature(&self) -> Signature {
@@ -416,6 +573,35 @@ impl<H: JitHost> Jit<H> {
         s.params.extend([AbiParam::new(ptr), AbiParam::new(ptr), AbiParam::new(ptr)]);
         s.returns.push(AbiParam::new(types::I32));
         s
+    }
+}
+
+/// A block defined in the module, to be made executable.
+struct Ready {
+    id: cranelift_module::FuncId,
+    start: u32,
+    insns: Box<[Insn]>,
+    ram: Option<RamCode>,
+    size: usize,
+    time: Duration,
+}
+
+impl RamCode {
+    /// True if memory still holds the words this was translated from at
+    /// `start`: its pages weren't written, or its words are the same
+    /// (and the counters are noted as seen).
+    fn current<H: JitHost>(&mut self, start: u32, host: &H, stats: &mut Stats) -> bool {
+        let gens = host.code_generations();
+        let now = [gens[self.pages[0]], gens[self.pages[1]]];
+        if now == *self.seen {
+            return true;
+        }
+        stats.rechecked += 1;
+        let same = self.words.iter().enumerate().all(|(k, &w)| host.fetch(start + 4 * k as u32) == Some(w));
+        if same {
+            *self.seen = now;
+        }
+        same
     }
 }
 

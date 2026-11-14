@@ -137,17 +137,52 @@ The JIT translates it like ROM code, and keeps it honest:
   drop one (`srallyc`: 0 rechecks, 0 drops over 600M instructions), and
   a unit test covers the path.
 
-### Cache (designed, not built)
+### Translation off the game's thread
 
-Translation is cheap enough (below) that the spike has no cache. If one is
-wanted, the first step is not machine code: keep the list of hot block
-starts per program hash (a few KB) and translate those on a worker
-thread at boot, before the game reaches them. A machine-code cache would
-need the helper addresses as relocations instead of constants
-(`cranelift-module` imports rather than `iconst`), a key of program hash,
-block words and the JIT's version, and invalidation on any reModel
-update. Either is derived from the user's ROM and lives only on their
-machine.
+Translating a block takes Cranelift 0.1-5 ms (25 ms on a loaded
+machine), the geometrizer's first frames tens of milliseconds more, so
+translating where the code is needed made the game hitch: in the bench
+session the JIT's slowest frame was 71 ms (`topskatr`, native
+geometrizer), 208 ms (`topskatr --geo chip`), 59 ms (`srallyc`) and 43 ms
+(`vf2`), against 8-16 ms interpreted. So no JIT translates on the thread
+that runs its chip any more (`crates/jit/src/pool.rs`):
+
+- **A pool of workers** shared by every JIT in the process (the i960's,
+  the MB86234's, both MB86235s', run-ahead's and the launcher's
+  machines): the core count less three, one to eight
+  (`REMODEL_JIT_WORKERS=N` to choose). Each has its own Cranelift
+  context and builds and compiles a block's IR to bytes.
+- **The JIT plans** a block on its own thread (it reads the code: ROM,
+  RAM, the uploaded program), hands the plan to the pool and goes on
+  interpreting. The bytes come back on the JIT's channel, and the JIT
+  copies them into its own executable memory (its Cranelift module: the
+  code still belongs to, and is freed with, the JIT) when it next reaches
+  a start that is waiting, which is a block boundary: the dispatcher is
+  between blocks. The game never waits.
+- **The rest of a waiting block isn't a start.** Interpreted one
+  instruction (or word) at a time, every address after a waiting
+  block's start would reach the hot threshold and be queued too (14,584
+  i960 blocks for `topskatr`'s 2,787); the addresses up to a waiting
+  block's end, entered from its start, are run without being counted.
+- **Exactly the same machine.** A block and the interpreter retire the
+  same instructions with the same effects (above), so when a block is
+  installed changes the host's time, not the state: hashes are the
+  interpreter's (`make bench-all JIT=1`), and `make jit-lockstep` and
+  `make jit-copro-lockstep` still compare after every block or run,
+  whichever ran it.
+- **Code written while it was translated.** An i960 block from RAM keeps
+  the words and page counters it was planned from (as an installed one
+  does): one whose code changed before it was installed is thrown away
+  ("translations thrown away" in the report) and planned again on the
+  next visit, and an installed one is still checked on every entry. A
+  copro result for a program the chip no longer holds (another upload;
+  a loaded state) is thrown away, as is one for a JIT that was dropped
+  (its jobs not yet started are skipped).
+- `--jit-sync` translates at once on the thread that needs it, as
+  before (the unit tests do, so that every block they reach is
+  translated code; `make jit-test` also runs the random programs with
+  the workers, installing at random points). `make jit-translate` hands
+  the whole program to the workers and waits.
 
 ## Results
 
@@ -208,8 +243,8 @@ translates `topskatr`'s 2,789 hot blocks (27,409 instructions) and
 `srallyc`'s 2,372 (26,752) in about 0.4 s each: 140-190 µs a block, 14-17
 µs an instruction, almost all of it Cranelift compiling (making the code
 executable is 2-4%). The slowest block (128 instructions) took 3-5 ms, up
-to 25 ms on the loaded machine: a frame's worth, so a worker thread
-should take translation off the emulation thread before this ships. The
+to 25 ms on the loaded machine: a frame's worth, which is why it now
+runs on the workers ("Translation off the game's thread"). The
 whole program translated ahead of time (`make jit-translate`: 53,431
 instructions in 11,061 blocks, as `make recomp` cuts `topskatr`) takes
 0.78 s (1.69 s with the optimiser), where rebuilding one game's
@@ -336,7 +371,8 @@ interpreter's timing word for word:
   time, the copro's blocks start almost anywhere and rarely run long,
   and shorter ones cost less to translate.
 
-Translation is at first use (no hot threshold: the programs are small),
+Translation is queued at first use (no hot threshold: the programs are small; on the workers,
+"Translation off the game's thread"),
 for the program the chip holds; another upload starts again (MB86234: a
 new translation; MB86235: the program found by its hash), and the code
 of a program dropped is freed with its module (unlike the i960's). The
@@ -422,11 +458,11 @@ the next thing a short session (a boot, an attract loop) would notice.
 
 - **Translation cost**: 40 µs a word for the MB86235 (VLIW words, each
   lowered with its budget exit: about 500 bytes of code a word), 20 µs for
-  the MB86234. The geometrizer's first frames translate on its thread
-  (slowest frame 210 ms against 16 ms interpreted): a hitch the player
-  would see once a boot. Translating an upload's blocks on a worker, or
-  a smaller IR per word (one shared budget exit instead of one per word),
-  would hide or halve it.
+  the MB86234. The geometrizer's first frames used to translate on its
+  thread (slowest frame 210 ms against 16 ms interpreted); the workers
+  hide that now ("Translation off the game's thread"), but a smaller IR
+  per word (one shared budget exit instead of one per word) would still
+  halve the work.
 - **Block linking and longer copro slices**: every block returns to the
   dispatcher, and the 2C copro's runs are two words long by its schedule,
   so the dispatcher is much of its cost. Running the copro ahead in

@@ -533,7 +533,7 @@ camera-scan: release ## Photo mode's true camera, a spike (docs/photo-mode.md): 
 	$(RUN) --input $(or $(INPUT),$(BENCH_INPUT)) camera-scan $(CAMERA_FRAME) $(CAMERA_GAP)
 
 bench: release ## Timed fixed run into a race: speed vs real time and the state hash (must not change with speed-ups; JIT=1: on the i960 JIT, with its counters)
-	$(RUN) --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep -E '^(instructions|emulated|host time|idle skip|jit|state hash)'
+	$(RUN) --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep -E '^(instructions|emulated|host time|frame times|idle skip|jit|state hash)'
 
 jit-lockstep: release ## The i960 JIT beside the interpreter, block by block, through a coin-start run (JIT_STEPS, default 300M; INPUT), stopping at the first difference; no recompiled build needed (docs/jit.md)
 	$(REMODEL) --game $(GAME) --rom $(ROM) --jit --input $(or $(INPUT),$(BENCH_INPUT)) lockstep $(JIT_STEPS)

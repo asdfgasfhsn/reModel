@@ -141,7 +141,13 @@ fn fuzz(jit: &mut Mb86235Jit, seed: u64, len: u32, runs: usize) {
     randomise(&mut b, &mut Rng(state), len);
     let mem: Vec<u32> = (0..0x1000).map(|_| r.value()).collect();
     let (mut ea, mut eb) = (Ext(mem.clone()), Ext(mem));
+    // In the background, blocks are installed when the workers finish
+    // them; now and then, all of them at once.
+    let mut w = Rng(seed ^ 0x5bd1_e995);
     for run in 0..runs {
+        if w.below(8) == 0 {
+            jit.wait();
+        }
         for _ in 0..r.below(4) {
             let v = r.value();
             a.fifo_in.push_back(v);
@@ -174,9 +180,27 @@ fn fuzz(jit: &mut Mb86235Jit, seed: u64, len: u32, runs: usize) {
 /// them all.
 const SEEDS: u64 = if cfg!(debug_assertions) { 10 } else { 300 };
 
+/// A JIT that translates at once (so every block a run reaches is
+/// translated code).
+fn sync(mut j: Mb86235Jit) -> Mb86235Jit {
+    j.set_background(false);
+    j
+}
+
+#[test]
+fn random_programs_translated_in_the_background() {
+    // Blocks interpreted until the workers finish them, installed between
+    // runs, and those for a program replaced thrown away: the same runs.
+    let mut jit = Mb86235Jit::new().expect("this machine has a Cranelift back end");
+    for seed in 1..SEEDS {
+        fuzz(&mut jit, seed.wrapping_mul(0x7f4a_7c15_9e37_79b9), 48, 200);
+    }
+    assert!(jit.stats().runs > 0 && jit.stats().interpreted > 0, "{:?}", jit.stats());
+}
+
 #[test]
 fn random_programs_run_as_interpreted() {
-    let mut jit = Mb86235Jit::new().expect("this machine has a Cranelift back end");
+    let mut jit = sync(Mb86235Jit::new().expect("this machine has a Cranelift back end"));
     for seed in 1..SEEDS {
         fuzz(&mut jit, seed.wrapping_mul(0x9e37_79b9_7f4a_7c15), 48, 200);
     }
@@ -185,7 +209,7 @@ fn random_programs_run_as_interpreted() {
 
 #[test]
 fn long_programs() {
-    let mut jit = Mb86235Jit::new().expect("this machine has a Cranelift back end");
+    let mut jit = sync(Mb86235Jit::new().expect("this machine has a Cranelift back end"));
     for seed in 1..(SEEDS / 10).max(3) {
         fuzz(&mut jit, seed.wrapping_mul(0x2545_f491_4f6c_dd1d), 400, 400);
     }
@@ -203,7 +227,7 @@ fn a_repeat_cut_by_the_budget() {
     let (mut a, mut b) = (Tgp::new(), Tgp::new());
     a.boot(&program);
     b.boot(&program);
-    let mut jit = Mb86235Jit::new().unwrap();
+    let mut jit = sync(Mb86235Jit::new().unwrap());
     let mut ext = Ext(vec![0; 0x1000]);
     for _ in 0..100 {
         assert_eq!(a.run(&mut ext, 2), jit.run(&mut b, &mut ext, 2));

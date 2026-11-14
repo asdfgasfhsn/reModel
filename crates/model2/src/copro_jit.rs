@@ -67,14 +67,18 @@ impl TgpJit {
         TgpJit { name, max_block, ..TgpJit::default() }
     }
 
-    /// Turn it on or off (on fails where Cranelift has no back end).
-    pub fn set(&mut self, on: bool, check: bool) -> Result<(), String> {
+    /// Turn it on or off, as `c` configures the JIT (on fails where
+    /// Cranelift has no back end).
+    pub fn set(&mut self, on: bool, c: &jit::Config) -> Result<(), String> {
         self.code = if on {
-            Some(self.code.take().map_or_else(|| Mb86235Jit::with_max_block(self.max_block).map(Box::new), Ok)?)
+            let mut j =
+                self.code.take().map_or_else(|| Mb86235Jit::with_max_block(self.max_block).map(Box::new), Ok)?;
+            j.set_background(c.background);
+            Some(j)
         } else {
             None
         };
-        self.check = check;
+        self.check = c.copro_check;
         self.shadow = None;
         Ok(())
     }

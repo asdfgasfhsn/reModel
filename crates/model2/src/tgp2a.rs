@@ -148,6 +148,8 @@ pub struct Tgp2a {
 struct Jit {
     on: bool,
     check: bool,
+    /// Translating on the workers (`jit::Config::background`).
+    background: bool,
     code: Option<Box<jit::mb86234::Mb86234Jit>>,
     shadow: Option<Box<mb86234::Cpu>>,
     /// Runs compared (lockstep), and the stats of programs dropped.
@@ -253,13 +255,14 @@ impl Tgp2a {
     /// difference: `make jit-copro-lockstep`). Fails where Cranelift has
     /// no back end for this machine.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn set_jit(&mut self, on: bool, check: bool) -> Result<(), String> {
-        if on {
+    pub fn set_jit(&mut self, c: &jit::Config) -> Result<(), String> {
+        if c.copro {
             // Fail now rather than at the upload.
             jit::mb86234::Mb86234Jit::new(&[])?;
         }
-        self.jit.on = on;
-        self.jit.check = check;
+        self.jit.on = c.copro;
+        self.jit.check = c.copro_check;
+        self.jit.background = c.background;
         self.jit_follow();
         Ok(())
     }
@@ -287,7 +290,10 @@ impl Tgp2a {
             }
         }
         if let (None, Some(p)) = (&j.code, program) {
-            j.code = jit::mb86234::Mb86234Jit::new(p).ok().map(Box::new);
+            j.code = jit::mb86234::Mb86234Jit::new(p).ok().map(|mut c| {
+                c.set_background(j.background);
+                Box::new(c)
+            });
         }
         // The lockstep's interpreter starts again from the chip as it is.
         j.shadow = None;

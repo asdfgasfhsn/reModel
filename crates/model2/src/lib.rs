@@ -160,7 +160,7 @@ impl Machine {
         self.bus.count_code_writes();
         self.native = None;
         self.jit = Some(Box::new(j));
-        self.bus.set_copro_jit(config.copro, config.copro_check)
+        self.bus.set_copro_jit(&config)
     }
 
     /// The copro JITs' counters (docs/jit.md, "Copro JITs"), by chip, with
@@ -168,6 +168,12 @@ impl Machine {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn copro_jit_stats(&self) -> Vec<(&'static str, jit::CoproStats, u64)> {
         self.bus.copro_jit_stats()
+    }
+
+    /// The JIT's settings, when it is on.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn jit_config(&self) -> Option<jit::Config> {
+        self.jit.as_ref().map(|j| j.config())
     }
 
     /// The JIT's counters, when it is on.

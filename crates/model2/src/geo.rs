@@ -1957,13 +1957,14 @@ impl Geometrizer {
     }
 
     /// Run the engine's TGP (2C) on the JIT, or not (docs/jit.md, "Copro
-    /// JITs"); `check`: beside the interpreter (a lockstep).
+    /// JITs"), as `c` says (`copro`, `copro_check`: beside the
+    /// interpreter, a lockstep; `background`).
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn set_tgp_jit(&mut self, on: bool, check: bool) -> Result<(), String> {
+    pub fn set_tgp_jit(&mut self, c: &jit::Config) -> Result<(), String> {
         let e = self.engine_mut();
         // Only a 2C board's geometrizer runs a TGP program.
-        let on = on && e.sharc.is_none() && !e.fixed;
-        e.tgp_jit.set(on, check)
+        let on = c.copro && e.sharc.is_none() && !e.fixed;
+        e.tgp_jit.set(on, c)
     }
 
     /// Its JIT's counters and the runs compared, when it is on (and no
