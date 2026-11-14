@@ -34,6 +34,7 @@ pub fn alu_name(c: u32) -> String {
         0 => String::new(),
         1 => "acc &= r10".into(),
         2 => "acc |= r10".into(),
+        3 => "acc ^= r10".into(),
         4 => "acc = ~acc".into(),
         5 => "fcmp acc, r10".into(),
         6 => "acc += r10".into(),
@@ -150,6 +151,7 @@ pub fn line(w: u32) -> String {
         },
         _ => match top {
             0x36 => format!("mode {:#x} = {:#x}", (w >> 16) & 0xf, w & 0xffff),
+            0x38 => format!("p = #{}", sext(w, 24)),
             0x39 => format!("r10 = #{}", sext(w, 24)),
             0x3a => format!("r13 = #{}", sext(w, 24)),
             0x3b => format!("acc = #{}", sext(w, 24)),

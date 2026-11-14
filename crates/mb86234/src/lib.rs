@@ -296,6 +296,10 @@ impl Cpu {
             0x00 | 0x07 => self.op(bus, w),
             _ => match top {
                 0x36 => self.mode[((w >> 16) & 0xf) as usize] = w & 0xffff,
+                // P = sign-extended imm (`skytargt` loads 0 or 1 into R13
+                // and P on the two sides of a compare and stores whichever
+                // its branch took as the index of the larger value).
+                0x38 => self.write_regs(&[(reg::P, sext(w, 24))], None),
                 0x39 => self.write_regs(&[(reg::R10, sext(w, 24))], None),
                 // R13 = sign-extended imm (hypothesis: `vf2` loads an
                 // all-ones mask into R13 this way and stores R13 next).
@@ -740,6 +744,9 @@ impl Cpu {
             0 => AluOut::default(),
             1 => AluOut { acc: int(self, a & r10), product: None },
             2 => AluOut { acc: int(self, a | r10), product: None },
+            // XOR (hypothesis: `skytargt` keeps a product only when its
+            // exponent's bits 4-6 equal the mask 0x70, else flushes it).
+            3 => AluOut { acc: int(self, a ^ r10), product: None },
             // NOT (hypothesis: `vf2` clears a mask's bit with it and 1).
             4 => AluOut { acc: int(self, !a), product: None },
             5 => {
