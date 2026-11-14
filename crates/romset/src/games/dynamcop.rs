@@ -38,8 +38,8 @@ pub static DYNAMCOP: Game = Game {
     protection: Some(Protection {
         interface: ProtectionInterface::Keyed,
         replies: &[
-            ProtectionReply { command: 0x1326, rom: 0xbc7f0, len: 16 },
-            ProtectionReply { command: 0x7700, rom: 0xbc800, len: 16 },
+            ProtectionReply { command: 0x1326, offset: None, rom: 0xbc7f0, len: 16 },
+            ProtectionReply { command: 0x7700, offset: None, rom: 0xbc800, len: 16 },
         ],
     }),
     dropouts: &[],

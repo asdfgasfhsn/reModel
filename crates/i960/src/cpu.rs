@@ -107,6 +107,12 @@ pub struct Cpu {
     pub tc: u32,
     pub sat: u32,
     pub prcb: u32,
+    /// The interrupt table and interrupt stack addresses, read from the
+    /// PRCB (+20, +24) when the processor initialises and kept: `zerogun`
+    /// clears its PRCB in RAM right after the IAC reinit that names it and
+    /// still takes interrupts (docs/games/zerogun.md).
+    pub int_table: u32,
+    pub int_stack: u32,
     pub icr: u32,
     /// Pending interrupt vectors, one bit each.
     pending: [u32; 8],
@@ -146,6 +152,8 @@ impl Cpu {
             tc: 0,
             sat: 0,
             prcb: 0,
+            int_table: 0,
+            int_stack: 0,
             icr: ICR_RESET,
             pending: [0; 8],
             icount: 0,
@@ -169,10 +177,12 @@ impl Cpu {
     fn reinit(&mut self, bus: &mut impl Bus, sat: u32, prcb: u32, ip: u32) {
         self.sat = sat;
         self.prcb = prcb;
+        self.int_table = bus.read32(prcb + 20);
+        self.int_stack = bus.read32(prcb + 24);
         self.ip = ip;
         self.pc = PC_RESET;
         self.ac = 0;
-        self.r[FP] = bus.read32(prcb + 24);
+        self.r[FP] = self.int_stack;
         self.r[SP] = self.r[FP] + 64;
         self.r[PFP] = 0;
         // Assumed (no source to hand): a reinit discards cached frames.
@@ -215,7 +225,7 @@ impl Cpu {
         ArchState {
             r: self.r,
             fpr: self.fpr.map(f64::to_bits),
-            ctl: [self.ip, self.ac, self.pc, self.tc, self.sat, self.prcb, self.icr],
+            ctl: [self.ip, self.ac, self.pc, self.tc, self.sat, self.prcb, self.icr, self.int_table, self.int_stack],
             pending: self.pending,
             locals: self.locals.clone(),
         }
@@ -244,10 +254,9 @@ impl Cpu {
     }
 
     fn take_interrupt(&mut self, bus: &mut impl Bus, vector: u8, level: u32) {
-        let table = bus.read32(self.prcb + 20);
-        let handler = bus.read32(table + 36 + (vector as u32 - 8) * 4);
+        let handler = bus.read32(self.int_table + 36 + (vector as u32 - 8) * 4);
         // Not already interrupted: switch to the interrupt stack.
-        let sp = if self.pc & PC_INTERRUPTED == 0 { bus.read32(self.prcb + 24) } else { self.r[SP] };
+        let sp = if self.pc & PC_INTERRUPTED == 0 { self.int_stack } else { self.r[SP] };
         // Room for the 16-byte interrupt record just below the new frame.
         let fp = ((sp + 63) & !63) + 64;
         self.push_frame(bus, self.ip, fp, 7);
@@ -1063,8 +1072,8 @@ pub struct LocalCache {
 pub struct ArchState {
     r: [u32; 32],
     fpr: [u64; 4],
-    /// IP, AC, PC, TC, SAT, PRCB, ICR.
-    ctl: [u32; 7],
+    /// IP, AC, PC, TC, SAT, PRCB, ICR, the interrupt table and stack.
+    ctl: [u32; 9],
     pending: [u32; 8],
     locals: LocalCache,
 }
@@ -1174,7 +1183,7 @@ fn f64_to_ext80(v: f64) -> (u32, u32, u32) {
 
 // Save states: the decoded-instruction cache and diagnostics are rebuilt or
 // dropped.
-state::fields!(Cpu { r, fpr, ip, ac, pc, tc, sat, prcb, icr, pending, icount, locals });
+state::fields!(Cpu { r, fpr, ip, ac, pc, tc, sat, prcb, int_table, int_stack, icr, pending, icount, locals });
 
 #[cfg(test)]
 mod tests;

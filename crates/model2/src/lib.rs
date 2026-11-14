@@ -430,7 +430,7 @@ pub const SAVE_FORMAT: u32 = 2;
 
 /// The inner machine state's layout (`REMODEL-STATE-<n>`), bumped when any
 /// saved field is added, removed or reordered.
-pub const STATE_FORMAT: u32 = 1;
+pub const STATE_FORMAT: u32 = 2;
 
 static APP_VERSION: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 

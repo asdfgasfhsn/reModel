@@ -13,7 +13,7 @@
 //! written to `0x7FF2` to start, then the answer read from `0x7FF8`, the
 //! first read discarded.
 //!
-//! `Keyed` (`dynamcop`): the block into the device's RAM (`0x0000` on), its
+//! `Keyed` (`dynamcop`, `zerogun`): the block into the device's RAM (`0x0000` on), its
 //! halfword offset to `0x10008`, a key to `0x1000C`, which starts it, then
 //! the answer read from `0x1000E`, the first read discarded, with bit 0 of
 //! `0x10000` (busy) polled clear after each read.
@@ -37,9 +37,11 @@ const READY: u16 = 0xfff0;
 
 pub struct Device {
     interface: ProtectionInterface,
-    /// (command, answer as the halfwords the device returns).
-    replies: Vec<(u16, Vec<u16>)>,
+    /// (command, offset, answer as the halfwords the device returns).
+    replies: Vec<(u16, Option<u16>, Vec<u16>)>,
     command: u16,
+    /// The block offset the request names (`0x7FF2`, `0x10008`).
+    offset: u16,
     /// The answer being read: index into `replies`, and the next halfword.
     reading: Option<(usize, usize)>,
     /// What the next read of the output register returns: the output is
@@ -59,11 +61,12 @@ impl Device {
             .map(|r| {
                 (
                     r.command,
+                    r.offset,
                     (0..r.len.div_ceil(2)).map(|i| byte(r.rom + 2 * i) << 8 | byte(r.rom + 2 * i + 1)).collect(),
                 )
             })
             .collect();
-        Device { interface: p.interface, replies, command: 0, reading: None, latch: 0 }
+        Device { interface: p.interface, replies, command: 0, offset: 0, reading: None, latch: 0 }
     }
 
     /// The last address of the device's registers.
@@ -91,7 +94,7 @@ impl Device {
         let v = self.latch;
         self.latch = match &mut self.reading {
             Some((r, i)) => {
-                let w = self.replies[*r].1.get(*i).copied().unwrap_or(0);
+                let w = self.replies[*r].2.get(*i).copied().unwrap_or(0);
                 *i += 1;
                 w
             }
@@ -106,20 +109,29 @@ impl Device {
             (ProtectionInterface::Tables, 0x4000) => self.command = v as u16,
             // Start: answer the request the command asked for, if it's one
             // the manifest knows (otherwise the answer reads as zeros).
-            (ProtectionInterface::Tables, 0x7ff2) => self.start(),
+            (ProtectionInterface::Tables, 0x7ff2) => {
+                self.offset = v as u16;
+                self.start();
+            }
+            (ProtectionInterface::Keyed, 0x10008) => self.offset = v as u16,
             // The key both names the request and starts it.
             (ProtectionInterface::Keyed, 0x1000c) => {
                 self.command = v as u16;
                 self.start();
             }
-            // The data block, the tables, offsets and resets: taken and not
-            // kept, as nothing is computed from them.
+            // The data block, the tables and resets: taken and not kept, as
+            // nothing is computed from them.
             _ => {}
         }
     }
 
     fn start(&mut self) {
-        self.reading = self.replies.iter().position(|r| r.0 == self.command).map(|r| (r, 0));
+        // A reply that names an offset answers only a request for it.
+        self.reading = self
+            .replies
+            .iter()
+            .position(|r| r.0 == self.command && r.1.is_none_or(|o| o == self.offset))
+            .map(|r| (r, 0));
         self.latch = 0;
     }
 }
@@ -129,13 +141,15 @@ impl state::State for Device {
         self.command.save(w);
         self.reading.map(|(r, i)| (r as u64, i as u64)).save(w);
         self.latch.save(w);
+        self.offset.save(w);
     }
     fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
         self.command.load(r)?;
         let mut reading: Option<(u64, u64)> = None;
         reading.load(r)?;
         self.reading = reading.map(|(r, i)| (r as usize, i as usize)).filter(|&(r, _)| r < self.replies.len());
-        self.latch.load(r)
+        self.latch.load(r)?;
+        self.offset.load(r)
     }
 }
 
@@ -145,7 +159,7 @@ mod tests {
 
     #[test]
     fn answers_a_request_one_halfword_behind() {
-        static R: &[romset::ProtectionReply] = &[romset::ProtectionReply { command: 6, rom: 2, len: 3 }];
+        static R: &[romset::ProtectionReply] = &[romset::ProtectionReply { command: 6, offset: None, rom: 2, len: 3 }];
         let p = romset::Protection { interface: ProtectionInterface::Tables, replies: R };
         let mut d = Device::new(&p, &[0, 0, b'A', b'B', b'C', 0]);
         assert_eq!(d.read(0x400c, 2), 0xfff0);
@@ -164,7 +178,8 @@ mod tests {
 
     #[test]
     fn keyed_answers_the_key_one_halfword_behind() {
-        static R: &[romset::ProtectionReply] = &[romset::ProtectionReply { command: 0x7700, rom: 2, len: 4 }];
+        static R: &[romset::ProtectionReply] =
+            &[romset::ProtectionReply { command: 0x7700, offset: None, rom: 2, len: 4 }];
         let p = romset::Protection { interface: ProtectionInterface::Keyed, replies: R };
         let mut d = Device::new(&p, &[0, 0, b'U', b'C', b'H', b'I']);
         assert_eq!(d.end(), 0x01d9_ffff);
@@ -177,6 +192,28 @@ mod tests {
         assert_eq!(d.read(0x1000e, 2), u32::from_be_bytes([0, 0, b'H', b'I']));
         // Another key reads zeros.
         d.write(0x1000c, 0x1326, 2);
+        assert_eq!(d.read(0x1000e, 2) | d.read(0x1000e, 2), 0);
+    }
+
+    #[test]
+    fn keyed_tells_requests_apart_by_key_and_offset() {
+        static R: &[romset::ProtectionReply] = &[
+            romset::ProtectionReply { command: 0x234d, offset: Some(0x18), rom: 2, len: 2 },
+            romset::ProtectionReply { command: 0x234d, offset: Some(0x4e), rom: 4, len: 2 },
+        ];
+        let p = romset::Protection { interface: ProtectionInterface::Keyed, replies: R };
+        let mut d = Device::new(&p, &[0, 0, b'Z', b'G', b'U', b'N']);
+        d.write(0x10008, 0x4e, 2);
+        d.write(0x1000c, 0x234d, 2);
+        assert_eq!(d.read(0x1000e, 2), 0);
+        assert_eq!(d.read(0x1000e, 2), u32::from_be_bytes([0, 0, b'U', b'N']));
+        d.write(0x10008, 0x18, 2);
+        d.write(0x1000c, 0x234d, 2);
+        assert_eq!(d.read(0x1000e, 2), 0);
+        assert_eq!(d.read(0x1000e, 2), u32::from_be_bytes([0, 0, b'Z', b'G']));
+        // Another offset reads zeros.
+        d.write(0x10008, 0, 2);
+        d.write(0x1000c, 0x234d, 2);
         assert_eq!(d.read(0x1000e, 2) | d.read(0x1000e, 2), 0);
     }
 }

@@ -310,6 +310,7 @@ fn iac_reinit_jumps_to_new_ip() {
     assert_eq!(cpu.ip, 0x2000);
     assert_eq!(cpu.prcb, prcb);
     assert_eq!(cpu.r[FP], 0x9000);
+    assert_eq!(cpu.int_stack, 0x9000);
 }
 
 #[test]
@@ -318,8 +319,7 @@ fn interrupt_enters_and_returns() {
     let prcb = 0x6000;
     let table = 0x7000;
     cpu.prcb = prcb;
-    ram.write32(prcb + 20, table);
-    ram.write32(prcb + 24, 0xa000);
+    (cpu.int_table, cpu.int_stack) = (table, 0xa000);
     let vector = 0x52u8; // priority 10
     ram.write32(table + 36 + (vector as u32 - 8) * 4, 0x3000);
     ram.load(0x3000, &[mov_lit(9, G2), RET]);

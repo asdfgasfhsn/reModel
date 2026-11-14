@@ -31,6 +31,7 @@ mod vcop2;
 mod vf2;
 mod vstriker;
 mod waverunr;
+mod zerogun;
 
 use crate::{Error, Game};
 
@@ -64,11 +65,12 @@ pub use vcop2::VCOP2;
 pub use vf2::VF2;
 pub use vstriker::VSTRIKER;
 pub use waverunr::WAVERUNR;
+pub use zerogun::ZEROGUN;
 
 pub static ALL: &[&Game] = &[
     &TOPSKATR, &SKISUPRG, &STCC, &SEGAWSKI, &WAVERUNR, &OVERREV, &HOTD, &BEL, &OVERREVB, &SGT24H, &DYNABB97, &DOA,
     &INDY500, &FVIPERS, &SCHAMP, &SFIGHT, &VSTRIKER, &LASTBRNX, &SRALLYC, &VF2, &DAYTONA, &VCOP, &DESERT, &VCOP2,
-    &SKYTARGT, &MANXTT, &MANXTTC, &MOTORAID, &GUNBLADE, &DYNAMCOP,
+    &SKYTARGT, &MANXTT, &MANXTTC, &MOTORAID, &GUNBLADE, &DYNAMCOP, &ZEROGUN,
 ];
 
 /// Games whose board model runs but which don't show a game yet. The CLI

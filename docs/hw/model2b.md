@@ -37,6 +37,11 @@ words as uploaded) and the shared geometrizer code (3,117 words, code hash
 `15393321f266b9cf`), and needed nothing new. It has copro data ROMs
 (`.29/.30`) mapped on the copro's external bus as `indy500`'s are
 (*unconfirmed* that its program reads them).
+`zerogun` (Zero Gunner, Psikyo, 1997) uploads copro and geometrizer
+programs of its own (the geometrizer's code hash `8c502dffb7ce9a1e`, not
+the shared one, so no native geometrizer runs it). It needed the i960 to
+keep the interrupt table it was initialised with and a keyed protection
+device ("The keyed protection device" below).
 This page
 is what the board model (`crates/model2`: `bus.rs`, `sharc.rs`, `geo.rs`)
 is built on. The SHARC core itself is
@@ -177,16 +182,38 @@ against the value at `0x8FCE0`, i960 `0x520`) fails, so patching the
 boot check would trip it too. With the check answered the countdown
 never arms.
 
-The other 2B games that touch `0x1D80000` use another interface (*seen*
-in throwaway boots, with no device answering): `zerogun` writes 0 to
-`0x1D9000A` and a block of 96 halfwords to `0x1D80000`, from code it runs
-in RAM, then faults at IP 0 without reading anything back. `dynmcopb` and
-`dyndek2b` write 0 to `0x1D9000A`, 10 halfwords to `0x1D80000`, then
-`0x1D90008` and `0x1D9000C`, read `0x1D9000E` and `0x1D90000` nine times
-each and fault at IP 0. `pltkids` faults at IP 0 before touching it.
-None of them compares an answer with its ROM the way `doa` does, so the
-`doa` device model doesn't apply to them; *unconfirmed* whether their
-faults come from the missing device.
+## The keyed protection device (`zerogun`)
+
+`zerogun` uses another interface at the same base, the one 2A `dynamcop`
+uses (`docs/hw/model2a.md`), all 16-bit accesses
+(*confirmed* from the code, and by running it with the board model
+answering, `ProtectionInterface::Keyed`):
+
+| Address | Access | What the game does |
+|---|---|---|
+| `0x1D9000A` | write | 0, once at boot, before the block |
+| `0x1D80000 + 2·n` | write | the data block: 96 halfwords at boot, each byte-swapped from the ROM |
+| `0x1D90008` | write | a request's halfword offset into the block (0, 6, ... `0x5A`) |
+| `0x1D9000C` | write | a key, which starts the request |
+| `0x1D9000E` | read | the answer: one read that the game discards, then one halfword a read, the earlier byte in the high half |
+| `0x1D90000` | read | status: bit 0 busy, polled clear after each read of the answer |
+
+Each of the sixteen requests reads 8 bytes, compared with the game's ROM;
+two share a key and differ in offset, so the board model matches a reply
+on both (`romset::ProtectionReply::offset`). What the device computes from
+the block, the key and the offset is *unknown*; as for `doa`, the manifest
+names the ROM bytes of each answer. The game's side is in
+`docs/games/zerogun.md`.
+
+`dynmcopb` and `dyndek2b` (*seen* in throwaway boots, with no device
+answering) write 0 to `0x1D9000A`, 10 halfwords to `0x1D80000`, then
+`0x1D90008` and `0x1D9000C`, read `0x1D9000E` and `0x1D90000` nine
+times each, the same interface, and fault at IP 0. `pltkids` faults at
+IP 0 before touching it. `zerogun` faulted at IP 0 too, in its first
+vblank interrupt, before the device mattered: it clears the PRCB it
+reinitialised the i960 with, and the i960 must keep the interrupt table
+and stack pointers it read at initialisation (`docs/games/zerogun.md`).
+*Unconfirmed* whether the other three fault for the same reason.
 
 ## The copro SHARC
 

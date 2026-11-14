@@ -66,7 +66,7 @@ pub enum ProtectionInterface {
     /// The block in RAM at `0x1D80000`, then from `0x1D90000`: its
     /// halfword offset at `+8`, a key at `+0xC` that starts the device,
     /// the answer at `+0xE`, busy in bit 0 of `+0` (`dynamcop`,
-    /// docs/hw/model2a.md).
+    /// docs/hw/model2a.md; `zerogun`, docs/hw/model2b.md).
     Keyed,
 }
 
@@ -76,6 +76,11 @@ pub struct ProtectionReply {
     /// The value the game writes to the command register (`0x1D84000`)
     /// before the request, or the key that starts it (`0x1D9000C`).
     pub command: u16,
+    /// The halfword offset into the device's RAM the request names (the
+    /// value written to `0x1D87FF2` or `0x1D90008`), where it tells
+    /// requests apart: `zerogun` sends the same key with two pieces of its
+    /// block. `None` matches any offset.
+    pub offset: Option<u16>,
     /// Where the answer is in the program ROM (i960 address) and how many
     /// bytes long: the bytes the game compares the device's stream with.
     pub rom: u32,

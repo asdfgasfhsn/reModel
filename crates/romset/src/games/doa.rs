@@ -31,7 +31,7 @@ pub static DOA: Game = Game {
     // when a game starts and stops itself mid-fight (docs/games/doa.md).
     protection: Some(Protection {
         interface: ProtectionInterface::Tables,
-        replies: &[ProtectionReply { command: 6, rom: 0x2810, len: 0x30 }],
+        replies: &[ProtectionReply { command: 6, offset: None, rom: 0x2810, len: 0x30 }],
     }),
     // The dump of mpr-19324.19 (the low half of the third polygon pair,
     // Kasumi's and other fighters' models) reads 60% of the 1s on data line
