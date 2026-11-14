@@ -10,6 +10,8 @@ mod fvipers;
 mod hotd;
 mod indy500;
 mod lastbrnx;
+mod manxtt;
+mod manxttc;
 mod overrev;
 mod overrevb;
 mod schamp;
@@ -38,6 +40,8 @@ pub use fvipers::FVIPERS;
 pub use hotd::HOTD;
 pub use indy500::INDY500;
 pub use lastbrnx::LASTBRNX;
+pub use manxtt::MANXTT;
+pub use manxttc::MANXTTC;
 pub use overrev::OVERREV;
 pub use overrevb::OVERREVB;
 pub use schamp::SCHAMP;
@@ -64,7 +68,7 @@ pub static ALL: &[&Game] = &[
 /// can run them (`find`), but every list built from [`ALL`] (the player's
 /// and the browser's game lists, `remodel games`, the posters and
 /// bezels) leaves them out. A game moves to `ALL` when it plays.
-pub static IN_PROGRESS: &[&Game] = &[&VCOP2, &SKYTARGT];
+pub static IN_PROGRESS: &[&Game] = &[&VCOP2, &SKYTARGT, &MANXTT, &MANXTTC];
 
 /// The game `id`, if it is one a front end lists ([`ALL`]).
 pub fn playable(id: &str) -> Option<&'static Game> {

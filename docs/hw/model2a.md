@@ -274,6 +274,14 @@ stays packed (three pairs at `0x800000`, `0x900000`, `0xA00000`). The zip also h
 (`epr-17888b.12`, `epr-17889b.13`) and `ic12.bin`/`ic13.bin`, which are
 the program pair again under other names; they are not used.
 
+*Confirmed (`manxtt`, by the TGP's replies and the run):* the TGP's data
+ROM pair is not in the same order in every 2A set. `manxtt`'s is `.28`
+(low half) with `.29`, as `daytona`'s on the original Model 2 and the
+reverse of `srallyc`'s: with `srallyc`'s order the course data's first
+word read `0x00B40000` where a count (180) belongs, every course search
+missed, and the game's physics ran away (`docs/games/manxtt.md`). So the
+pair is a manifest's to state, checked by the first word making sense.
+
 *Confirmed (numerically):* the shared Model 2/2A chips are maths tables:
 `opr-14742a.45/.46` a quarter-wave sine (65,536 steps a circle, within
 3e-8), an arctangent, and slope and intercept pairs for `1/x` and

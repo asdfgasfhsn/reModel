@@ -95,8 +95,8 @@ board (i960KB on all, gk). Controls and special hardware are gk throughout.
 
 | Set | Title | Year | Clones in zip | Sound | Controls | Special hardware | Complete |
 |---|---|---|---|---|---|---|---|
-| `manxtt` | Manx TT Superbike (Rev D, Deluxe) | 1995 | none (`manxttc` is its own set) | SCSP | motorbike: lean steering, throttle, brake | deluxe moving bike; 128 KB `epr-18742.7` on another board (ROM); link | yes |
-| `manxttc` | Manx TT Superbike (Rev C, Twin) | 1995 | none | SCSP | as `manxtt` | twin cabinet; link | yes |
+| `manxtt` | Manx TT Superbike (Rev D, Deluxe) | 1995 | none (`manxttc` is its own set) | SCSP (ROM, by running it) | throttle, brake, bank (the lean) on analog channels 0-2, shift up/down, start/view (ROM: its input test, `docs/games/manxtt.md`) | the "Active Motion Slider" platform, checked at boot (ROM: modelled as `DriveBoard::MotionSlider`); 128 KB `epr-18742.7` (a 68000 program) and `mpr-18743.32` on another board, not used; link | yes; *in progress:* attract and coin-start races with sound |
+| `manxttc` | Manx TT Superbike (Rev C, Twin) | 1995 | none | SCSP | as `manxtt` | twin cabinet, also with the motion slider (ROM: its boot check); link | yes; a clone of `manxtt` here (`parent`), its shared chips found in `manxtt.zip` |
 | `motoraid` | Motor Raid | 1997 | none | SCSP, CRX_drv 3.2.8 | motorbike handlebars | ride-on cabinet | yes |
 | `srallyc` | Sega Rally Championship (revision C) | 1995 | `srallycb`, `srallyp` (prototype-named chips `ic12.bin`, `ic13.bin`) | SCSP | wheel, pedals, shifter | drive board; link | yes; supported and playable, with sound (2A; the game's TGP program on an MB86234 interpreter, its data ROM on the TGP's bus, the 2C native geometrizer's command handling for the fixed-function geometrizer; `docs/hw/model2a.md`) |
 | `skytargt` | Sky Target | 1995 | none | SCSP | flight stick with trigger | none known | yes |
