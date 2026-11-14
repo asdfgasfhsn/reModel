@@ -14,6 +14,18 @@ message is its text), set `version` in the root `Cargo.toml`, commit, then
 creates the annotated tag `vx.y.z` without pushing. Details in
 [docs/usage.md](docs/usage.md), "Versions and releases".
 
+## 0.9.0 (2026-11-15): three more games
+
+- Model 2A: Dynamite Cop, with its keyed protection device answered from
+  the manifest. Model 2B: Zero Gunner and Pilot Kids (Psikyo), on the same
+  keyed device; the i960 now keeps its interrupt table and stack from the
+  last reset or reinit, which both needed at boot. Thirty-two games in
+  all.
+- Save states move to format 2 (the i960's interrupt table and stack);
+  older states no longer load.
+- Cleanup: shared bit and sign-extension helpers, dead code removed,
+  Makefile and web build script tidied.
+
 ## 0.8.0 (2026-11-15): the JITs, and five more games
 
 - A JIT for every Model 2 CPU but the 2B's SHARCs (opt-in, `--jit`,
