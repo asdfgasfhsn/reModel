@@ -27,6 +27,7 @@ which ROM sets are supported and how they are named is in [../roms.md](../roms.m
 | Last Bronx | `lastbrnx` | 2B | [lastbrnx.md](lastbrnx.md) |
 | Sega Rally Championship | `srallyc` | 2A | [srallyc.md](srallyc.md) |
 | Virtua Fighter 2 | `vf2` | 2A | [vf2.md](vf2.md) |
+| Virtua Cop 2 (in progress) | `vcop2` | 2A | [vcop2.md](vcop2.md) |
 | Daytona USA | `daytona` | Model 2 | [daytona.md](daytona.md) |
 | Virtua Cop | `vcop` | Model 2 | [vcop.md](vcop.md) |
 | Desert Tank | `desert` | Model 2 | [desert.md](desert.md) |

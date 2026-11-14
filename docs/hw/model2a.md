@@ -64,6 +64,17 @@ reads of `0x10800000` once a frame in attract (from frame 925, returning 0
 without effect), `0x1A14000` (the link board's status, as on 2C),
 `0x1C00200`. Their purpose is unknown.
 
+*Confirmed (`vcop2`, from its code and by running it):* the **light gun
+interface** of the 2C's `hotd` (I/O registers 9-13: a configuration image
+streamed through command `0x07`, then the gun counters read with `0x87`;
+`model2c.md`, `model2::gun`) is what a 2A gun game talks to, on the same
+I/O chip registers; the board model's `GunBoard` answers it unchanged. The
+same program also runs on the original Model 2's I/O board: at boot it
+writes 1 to `0x1C00024` (that board's register 18, `model2.md` §2) and
+takes the 2A's 315-5649 layout when it doesn't read back 1, as here, where
+the address is unmapped. Whether a real 2A reads anything there is
+*unconfirmed*.
+
 ## 3. The `0x12000000` region
 
 *Confirmed by the code's copy loop:* the game fills it at boot (from frame 13) with a loop at an i960 address in RAM, 32-bit stores of 16-bit
