@@ -401,7 +401,7 @@ impl GameSettings {
     /// whenever shading can light anything (the game's own lighting per
     /// polygon for the exact layer, block facts with the chip).
     pub fn light_on(&self) -> bool {
-        self.shading != gpu::Shading::Flat && self.crease != 0
+        gpu::Quality::shading_lit(self.shading, self.crease)
     }
 
     /// Material maps as asked for: on, with the texture pack on. Whether

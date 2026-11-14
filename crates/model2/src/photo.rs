@@ -240,7 +240,7 @@ impl History {
     /// every `every` frames.
     pub fn new(seconds: f64, every: u64) -> Self {
         let every = every.max(2);
-        let keep = ((seconds * 57.524 / every as f64).ceil() as usize).max(1) + 1;
+        let keep = ((seconds * crate::pacing::FPS / every as f64).ceil() as usize).max(1) + 1;
         History {
             every,
             keep,

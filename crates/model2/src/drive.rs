@@ -69,6 +69,7 @@ impl Drive {
     }
 
     /// The last command written: what the board was last told to do.
+    #[cfg(test)]
     pub fn last_command(&self) -> u8 {
         match self {
             Drive::Ski(b) => b.last,

@@ -227,14 +227,6 @@ pub fn set_button(bus: &mut Model2Bus, name: &str, pressed: bool) -> bool {
     true
 }
 
-/// Set analog channel `name` to a raw value. False if the game has no such
-/// channel.
-pub fn set_analog(bus: &mut Model2Bus, name: &str, value: u8) -> bool {
-    let Some(a) = bus.controls.analog(name) else { return false };
-    bus.analog[a.channel as usize] = value;
-    true
-}
-
 use romset::bindings::{Bindings, Input};
 /// Default gamepad bindings for aiming a gun with a stick ([`StickCursor`]):
 /// both sticks move it, these fire and reload (players can rebind them,

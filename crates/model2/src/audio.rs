@@ -182,10 +182,6 @@ impl Live {
         self.samples
     }
 
-    pub fn has_sound(&self) -> bool {
-        self.sound.is_some() || self.music.is_some()
-    }
-
     /// Render up to the bus's current time, delivering the sound link bytes
     /// written since the last call (taken from `bus.uart_log`). Appends
     /// interleaved stereo i16 at [`RATE`] to `out`.

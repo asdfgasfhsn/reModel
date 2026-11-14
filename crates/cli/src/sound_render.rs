@@ -7,7 +7,7 @@ use sound::SoundBoard;
 use std::path::Path;
 
 /// Main-board video frame rate; `sound-tx.txt` is stamped in frames.
-const FRAME_HZ: f64 = 57.524;
+const FRAME_HZ: f64 = model2::pacing::FPS;
 
 /// Parse `sound-tx.txt`: one UART write per line, `<frame> data|ctl <hex>`.
 /// Returns the data bytes with their frame numbers.

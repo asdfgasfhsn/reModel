@@ -39,7 +39,7 @@ impl Splash {
         if t < HOLD {
             1.0
         } else {
-            1.0 - (t - HOLD).as_secs_f32() / FADE.as_secs_f32()
+            crate::fade_left(t - HOLD, FADE)
         }
     }
 

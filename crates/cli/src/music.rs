@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::Instant;
 
 /// Host frames per second: the rate `run` stamps on `sound-tx.txt` lines.
-const HOST_FPS: f64 = 57.524;
+const HOST_FPS: f64 = model2::pacing::FPS;
 
 /// The MPEG ROM space: the `MpegData` chips, concatenated as plain bytes.
 fn mpeg_rom(roms: &RomSet) -> Vec<u8> {
@@ -20,24 +20,7 @@ fn mpeg_rom(roms: &RomSet) -> Vec<u8> {
 
 /// Write 16-bit PCM as a WAV file.
 pub fn write_wav(path: &Path, rate: u32, channels: u16, pcm: &[i16]) -> std::io::Result<()> {
-    let data = (pcm.len() * 2) as u32;
-    let mut b = Vec::with_capacity(44 + data as usize);
-    b.extend(b"RIFF");
-    b.extend((36 + data).to_le_bytes());
-    b.extend(b"WAVEfmt ");
-    b.extend(16u32.to_le_bytes());
-    b.extend(1u16.to_le_bytes());
-    b.extend(channels.to_le_bytes());
-    b.extend(rate.to_le_bytes());
-    b.extend((rate * channels as u32 * 2).to_le_bytes());
-    b.extend((channels * 2).to_le_bytes());
-    b.extend(16u16.to_le_bytes());
-    b.extend(b"data");
-    b.extend(data.to_le_bytes());
-    for s in pcm {
-        b.extend(s.to_le_bytes());
-    }
-    std::fs::write(path, b)
+    std::fs::write(path, sound::wav::encode(rate, channels, pcm))
 }
 
 /// Peak, RMS (both relative to full scale) and clipped-sample count.

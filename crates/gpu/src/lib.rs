@@ -132,6 +132,19 @@ impl Default for Quality {
 }
 
 impl Quality {
+    /// Whether smooth shading can light anything: not flat, and a crease
+    /// angle above 0 (`shading`, `crease` as in [`Quality`]).
+    pub fn shading_lit(shading: Shading, crease: u8) -> bool {
+        shading != Shading::Flat && crease != 0
+    }
+
+    /// Whether the geometrizer's side channel (`Geometrizer::set_light`) is
+    /// wanted: smooth shading, or material maps (their lamps come from it,
+    /// with shading flat too).
+    pub fn side_channel_on(&self) -> bool {
+        Self::shading_lit(self.shading, self.crease) || self.materials
+    }
+
     /// A `bloom` setting by name: `off`, or a strength in percent, 1 to 100.
     pub fn parse_bloom(s: &str) -> Option<u8> {
         match s {
@@ -592,6 +605,19 @@ pub fn limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
     }
 }
 
+#[cfg(test)]
+impl Renderer {
+    /// A renderer for a test, or None (said on stderr) where there is no
+    /// GPU adapter, so the test skips.
+    pub(crate) fn for_test() -> Option<Self> {
+        let r = Self::new().ok();
+        if r.is_none() {
+            eprintln!("no GPU adapter: skipped");
+        }
+        r
+    }
+}
+
 impl Renderer {
     /// A headless renderer on the best GPU available (blocks; not for the
     /// web, where adapters arrive asynchronously: use `from_device`).
@@ -860,12 +886,6 @@ impl Renderer {
     /// on ([`step`]); `cut` from its motion data (`smooth::Motion::cut`).
     pub fn temporal_step(&self, tag: FrameTag, cut: bool) -> Step {
         step(self.temporal.last, tag, cut)
-    }
-
-    /// The window centres of the last frame drawn with temporal on, for
-    /// `model2::raster::MotionIn::prev_centres`.
-    pub fn temporal_centres(&self) -> &[model2::raster::Centres] {
-        &self.temporal.centres
     }
 
     /// For the next [`Renderer::present`] or [`Renderer::frame`] with

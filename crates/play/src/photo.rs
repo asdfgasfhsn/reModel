@@ -315,7 +315,7 @@ impl Mode {
                         if at == self.live {
                             "Live".into()
                         } else {
-                            format!("{:.2} s before", (b.max(self.live) - at) as f64 / 57.524)
+                            format!("{:.2} s before", (b.max(self.live) - at) as f64 / model2::pacing::FPS)
                         }
                     }
                     None => "Live".into(),
@@ -972,9 +972,7 @@ impl crate::Play {
         self.keys.clear();
         if let Some(g) = &mut self.gpu {
             let core = g.drawer.core();
-            core.frame.forget();
-            core.renderer.forget_ram();
-            core.renderer.reset_history();
+            core.forget_frame();
             core.photo_shots = None;
         }
         if let Some(s) = &mut self.session {
@@ -1003,9 +1001,7 @@ impl crate::Play {
         let (Some(g), Some(s), Some(m)) = (&mut self.gpu, &mut self.session, &mut self.photo) else { return };
         let Some(st) = &mut s.studio else { return };
         let core = g.drawer.core();
-        core.frame.forget();
-        core.renderer.forget_ram();
-        core.renderer.reset_history();
+        core.forget_frame();
         core.photo_shots = None;
         core.frame.capture(&mut st.machine().bus, false);
         let first = m.scale == 1.0 && m.camera.is_identity();

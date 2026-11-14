@@ -196,7 +196,8 @@ impl Default for Options {
     }
 }
 
-fn window_mask(windows: &[usize]) -> u64 {
+/// A bit per window number (those below 64) in `windows`.
+pub fn window_mask(windows: &[usize]) -> u64 {
     windows.iter().filter(|&&w| w < 64).fold(0, |m, &w| m | 1 << w)
 }
 
@@ -578,6 +579,7 @@ impl Shaded {
 
     /// The per-pixel lighting of the polygon at stream index `at`, if it
     /// is lit per pixel.
+    #[cfg(test)]
     pub fn pixel_light(&self, at: u32) -> Option<&PixelLight> {
         self.at.binary_search(&at).ok().and_then(|k| self.pixel.get(k)?.as_ref())
     }

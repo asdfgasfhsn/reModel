@@ -30,6 +30,7 @@
 #![cfg(target_arch = "wasm32")]
 
 use model2::enhance::{Found, FoundMaterial, Rgba, TexInfo, TexturePack, TileInfo};
+use model2::pacing::{FPS, MAX_CATCH_UP};
 use model2::video;
 use romset::bindings::{Bindings, Capture, Slot, Value};
 use romset::{PadAxis, PadButton};
@@ -41,10 +42,6 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlCanvasElement, KeyboardEvent};
 
-/// Model 2 video frame rate.
-const FPS: f64 = 57.524;
-/// Most emulated frames run per browser frame before dropping time.
-const MAX_CATCH_UP: u32 = 3;
 /// Audio the worklet should hold (seconds) unless the page says otherwise
 /// ([`set_audio_buffer`]): the rate control (`model2::audio::Pace`) steers
 /// towards it.
@@ -728,12 +725,6 @@ impl Quality {
             ..Default::default()
         }
     }
-
-    /// Smooth shading or material maps want the geometrizer's side
-    /// channel (material maps' lamps come from it, with shading flat too).
-    fn light_on(self) -> bool {
-        (self.shading != gpu::Shading::Flat && self.crease != 0) || self.materials
-    }
 }
 
 /// Image quality of the 3D layer (docs/enhancements.md): `aa` samples a
@@ -797,7 +788,7 @@ pub fn set_quality(
             // The local engine's side channel (the worker's is the page's
             // `set` message).
             if app.geo_frame.is_none() {
-                app.machine.bus.geo.set_light(q.light_on());
+                app.machine.bus.geo.set_light(q.gpu().side_channel_on());
             }
         }
     });
@@ -1663,13 +1654,6 @@ pub fn bindings_edit(game: &str, overrides: &str, op: &str, slot: &str, index: u
     b.overrides()
 }
 
-/// The keys the panel won't bind (the players' own and the page's), as
-/// `KeyboardEvent.code`s, one per line.
-#[wasm_bindgen]
-pub fn reserved_keys() -> String {
-    reserved().join("\n")
-}
-
 /// The sound and music boards on their own, for a Web Worker: fed the sound
 /// link bytes the game sends, it renders the audio.
 #[wasm_bindgen]
@@ -1769,7 +1753,7 @@ pub async fn start(
         machine.bus.geo.set_mode(model2::geo::GeoMode::Native);
         machine.bus.geo.set_smooth(smooth);
         // Smooth shading lights from what the geometrizer knew.
-        machine.bus.geo.set_light(QUALITY.with(|q| q.get()).light_on());
+        machine.bus.geo.set_light(QUALITY.with(|q| q.get()).gpu().side_channel_on());
     }
     let geo_in_flight = Rc::new(Cell::new(0));
     let smooth_steps = Rc::new(Cell::new(0));
@@ -1862,7 +1846,7 @@ pub async fn start(
     let mut renderer = gpu::Renderer::from_device(device, queue, name.clone());
     renderer.set_quality(QUALITY.with(|q| q.get()).gpu());
     // Smooth shading's per-game rules (crease angle, windows left flat).
-    let hud = game.hud_windows.iter().filter(|&&w| w < 64).fold(0u64, |m, &w| m | 1 << w);
+    let hud = model2::light::window_mask(game.hud_windows);
     renderer.set_light_rules(&game.shading, hud);
     if let Some(pack) = PACK.with(|p| p.borrow().clone()) {
         renderer.set_pack(Some(Box::new(WebPack::new(pack))));

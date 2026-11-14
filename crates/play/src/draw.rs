@@ -28,6 +28,16 @@ pub struct Core {
     pub photo_shots: Option<(crate::photo::ShotKey, crate::photo::Shots)>,
 }
 
+impl Core {
+    /// Forget what the renderer kept of the last frame (its frame copy, RAM
+    /// versions and temporal history): the next one is drawn from scratch.
+    pub fn forget_frame(&mut self) {
+        self.frame.forget();
+        self.renderer.forget_ram();
+        self.renderer.reset_history();
+    }
+}
+
 /// How to draw the game's frame in [`Core::frame`]: decided on the main
 /// thread when it was captured.
 pub struct GameJob {

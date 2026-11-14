@@ -3,6 +3,11 @@
 //! how many refreshes each callback stands for, and whether to follow it
 //! at all (docs/web.md, "Pacing").
 
+/// Model 2 video frame rate (Hz).
+pub const FPS: f64 = 57.524;
+/// Most emulated frames run per redraw before dropping time.
+pub const MAX_CATCH_UP: u32 = 3;
+
 /// Intervals the coarse refresh period is the median of.
 const HISTORY: usize = 31;
 /// Callbacks the refresh grid is fitted to (about 4 s at 60 Hz).

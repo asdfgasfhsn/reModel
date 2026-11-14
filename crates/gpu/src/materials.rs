@@ -273,10 +273,7 @@ mod tests {
     /// drawn first, and asked for again when next drawn.
     #[test]
     fn materials_load_draw_nothing_and_share_the_budget() {
-        let Ok(mut gpu) = Renderer::new() else {
-            eprintln!("no GPU adapter: skipped");
-            return;
-        };
+        let Some(mut gpu) = Renderer::for_test() else { return };
         let render = vec![0u8; 0x48_0000];
         let palette = vec![0u8; 0x2_0000];
         let src = Sources {
@@ -544,10 +541,7 @@ mod tests {
     /// agrees with the software renderer as closely as without materials.
     #[test]
     fn material_pipelines_identities_and_software() {
-        let Ok(gpu) = Renderer::new() else {
-            eprintln!("no GPU adapter: skipped");
-            return;
-        };
+        let Some(gpu) = Renderer::for_test() else { return };
         // One renderer, its pack set again (forgetting every texture) and
         // its history reset before each frame: a fresh renderer's frame.
         let gpu = std::cell::RefCell::new(gpu);

@@ -91,6 +91,19 @@ pub enum Fault {
     Stack { pc: u32, what: &'static str },
 }
 
+impl Fault {
+    /// The address of the instruction that faulted.
+    pub fn pc(&self) -> u32 {
+        match *self {
+            Fault::Undefined { pc, .. }
+            | Fault::Unimplemented { pc, .. }
+            | Fault::Iop { pc, .. }
+            | Fault::BadAddress { pc, .. }
+            | Fault::Stack { pc, .. } => pc,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
     Ran,
@@ -186,6 +199,7 @@ pub const VIRPT: u32 = 0x01;
 pub const WAIT: u32 = 0x02;
 pub const SYSTAT: u32 = 0x03;
 pub const EPB0: u32 = 0x04;
+#[cfg(test)]
 pub const MSGR0: u32 = 0x08;
 pub const DMAC6: u32 = 0x1c;
 pub const II6: u32 = 0x40;
@@ -486,6 +500,7 @@ impl Sharc {
 
     /// Start executing at `addr` with an empty pipeline, as if jumped to
     /// (for tests and tools that load memory directly).
+    #[cfg(test)]
     pub fn start_at(&mut self, addr: u32) {
         self.pc = addr;
         self.idle = false;
@@ -496,6 +511,7 @@ impl Sharc {
     }
 
     /// Load 48-bit words into internal memory from `addr` on.
+    #[cfg(test)]
     pub fn load48(&mut self, addr: u32, words: &[u64]) {
         for (k, &w) in words.iter().enumerate() {
             let a = addr + k as u32;
@@ -672,6 +688,7 @@ impl Sharc {
         &self.pc_stack
     }
 
+    #[cfg(test)]
     pub fn loop_depth(&self) -> usize {
         self.loop_stack.len()
     }
@@ -682,10 +699,6 @@ impl Sharc {
     #[inline(always)]
     pub fn rf(&self, n: u8) -> u32 {
         (self.r[n as usize & 15] >> 8) as u32
-    }
-
-    pub fn set_rf(&mut self, n: u8, v: u32) {
-        self.r[n as usize & 15] = (v as u64) << 8;
     }
 
     /// A universal register as the 40-bit DM data bus carries it: 32-bit

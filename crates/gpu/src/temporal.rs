@@ -1082,10 +1082,7 @@ mod tests {
     /// and the off path after temporal frames is a fresh renderer's.
     #[test]
     fn identity_at_100_without_jitter() {
-        let Ok(mut gpu) = Renderer::new() else {
-            eprintln!("no GPU adapter: skipped");
-            return;
-        };
+        let Some(mut gpu) = Renderer::for_test() else { return };
         let mut seed = 0x1234_5678u32;
         let mut bytes = |n: usize| {
             (0..n)
@@ -1178,10 +1175,7 @@ mod tests {
     /// byte; and varying corners agree with the software renderer.
     #[test]
     fn shading_off_path_and_lit_pipelines() {
-        let Ok(gpu) = Renderer::new() else {
-            eprintln!("no GPU adapter: skipped");
-            return;
-        };
+        let Some(gpu) = Renderer::for_test() else { return };
         drop(gpu);
         let mut seed = 0x0bad_cafeu32;
         let mut bytes = |n: usize| {
@@ -1438,10 +1432,7 @@ mod tests {
     fn pack_at_finer_levels_next_to_black() {
         use model2::enhance::{Enhance, Found, Rgba, TexInfo, TexturePack, TileInfo};
         use std::sync::Arc;
-        let Ok(mut gpu) = Renderer::new() else {
-            eprintln!("no GPU adapter: skipped");
-            return;
-        };
+        let Some(mut gpu) = Renderer::for_test() else { return };
         struct One(Arc<Rgba>);
         impl TexturePack for One {
             fn find(&mut self, _: &TexInfo) -> Found {
@@ -1566,10 +1557,7 @@ mod tests {
     /// 100% and when upscaling.
     #[test]
     fn history_stays_finite() {
-        let Ok(mut gpu) = Renderer::new() else {
-            eprintln!("no GPU adapter: skipped");
-            return;
-        };
+        let Some(mut gpu) = Renderer::for_test() else { return };
         let (render, palette) = (vec![0x5au8; 0x480000], vec![0x3cu8; 0x20000]);
         let src = Sources {
             texture_rom: &[],
@@ -1630,10 +1618,7 @@ mod tests {
     /// and less, and stay near the plain frame.
     #[test]
     fn still_scene_converges() {
-        let Ok(mut gpu) = Renderer::new() else {
-            eprintln!("no GPU adapter: skipped");
-            return;
-        };
+        let Some(mut gpu) = Renderer::for_test() else { return };
         let (render, palette) = (vec![0x5au8; 0x480000], vec![0x3cu8; 0x20000]);
         let src = Sources {
             texture_rom: &[],
@@ -1678,10 +1663,7 @@ mod tests {
     /// to. At 100% and upscaled, with motion data and without.
     #[test]
     fn alternating_colour_is_not_averaged() {
-        let Ok(mut gpu) = Renderer::new() else {
-            eprintln!("no GPU adapter: skipped");
-            return;
-        };
+        let Some(mut gpu) = Renderer::for_test() else { return };
         let (render, palette) = (vec![0x5au8; 0x480000], vec![0x3cu8; 0x20000]);
         let src = Sources {
             texture_rom: &[],
@@ -1740,10 +1722,7 @@ mod tests {
     /// frame, give the same picture.
     #[test]
     fn rounding_in_the_history_is_not_clipped() {
-        let Ok(mut gpu) = Renderer::new() else {
-            eprintln!("no GPU adapter: skipped");
-            return;
-        };
+        let Some(mut gpu) = Renderer::for_test() else { return };
         let mut other = Renderer::new().unwrap();
         // Colours from the palette: varied, so the two quads differ.
         let render = vec![0x5au8; 0x480000];
@@ -1809,10 +1788,7 @@ mod tests {
     /// halos, no ringing), and leaves the history alone.
     #[test]
     fn sharpening_stays_within_the_neighbourhood() {
-        let Ok(mut plain) = Renderer::new() else {
-            eprintln!("no GPU adapter: skipped");
-            return;
-        };
+        let Some(mut plain) = Renderer::for_test() else { return };
         let mut sharp = Renderer::new().unwrap();
         let render = vec![0x5au8; 0x480000];
         let palette: Vec<u8> = (0..0x20000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8).collect();
@@ -1970,10 +1946,7 @@ mod tests {
     /// its history away).
     #[test]
     fn thin_line_stays_whole_when_upscaled() {
-        let Ok(mut on) = Renderer::new() else {
-            eprintln!("no GPU adapter: skipped");
-            return;
-        };
+        let Some(mut on) = Renderer::for_test() else { return };
         let rig = LineRig::new();
         let mut off = Renderer::new().unwrap();
         off.set_temporal_tuning(Tuning { thin: 0.0, ..Tuning::default() });
@@ -2013,10 +1986,7 @@ mod tests {
     /// gives the flat line's pictures, frame by frame, at 67% and 50%.
     #[test]
     fn thin_lit_line_as_flat() {
-        let Ok(mut flat) = Renderer::new() else {
-            eprintln!("no GPU adapter: skipped");
-            return;
-        };
+        let Some(mut flat) = Renderer::for_test() else { return };
         let rig = LineRig::new();
         let mut lit = Renderer::new().unwrap();
         let own = |polys: Vec<Poly>| {
@@ -2046,10 +2016,7 @@ mod tests {
     /// frames, at 50% and 100%.
     #[test]
     fn thin_line_leaves_no_trail() {
-        let Ok(mut g) = Renderer::new() else {
-            eprintln!("no GPU adapter: skipped");
-            return;
-        };
+        let Some(mut g) = Renderer::for_test() else { return };
         let rig = LineRig::new();
         let thin = 0.4;
         for scale in [50, 100] {

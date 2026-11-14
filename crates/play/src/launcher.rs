@@ -117,7 +117,7 @@ pub fn layout(screen: Rect) -> Layout {
         Rect::from_min_max(pos2(screen.left() + margin, y0 + 24.0 * u), pos2(screen.right() - margin, y0 + 80.0 * u));
     // The preview has the window's shape (what the game will look like),
     // leaving room for the details beside it.
-    let aspect = (screen.width() / screen.height().max(1.0)).clamp(4.0 / 3.0, 32.0 / 9.0);
+    let aspect = (screen.width() / screen.height().max(1.0)).clamp(crate::ASPECTS.0, crate::ASPECTS.1);
     let (slot_top, slot_h) = (y0 + 104.0 * u, 424.0 * u);
     let room = screen.width() - 2.0 * margin - 40.0 * u - 440.0 * u;
     let w = (slot_h * aspect).min(room.max(200.0 * u));
@@ -1878,7 +1878,7 @@ mod tests {
             assert!(l.hints_y < h, "{w}x{h}");
             // The preview has the window's shape, within the views' range.
             let a = l.hero.width() / l.hero.height();
-            assert!((a - (w / h).clamp(4.0 / 3.0, 32.0 / 9.0)).abs() < 0.01, "{w}x{h}: {a}");
+            assert!((a - (w / h).clamp(crate::ASPECTS.0, crate::ASPECTS.1)).abs() < 0.01, "{w}x{h}: {a}");
         }
     }
 

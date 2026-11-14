@@ -115,11 +115,6 @@ fn map_for(tiles: &[u8], plane: usize, x: usize, y: usize) -> (usize, usize) {
     }
 }
 
-/// Render the tile layers to RGB888 (`WIDTH` x `HEIGHT`).
-pub fn render_tiles(tiles: &[u8], palette: &[u8]) -> Vec<u8> {
-    render_frame(tiles, palette, None)
-}
-
 /// Where HUD (high-priority tile) elements go when the view is wider than
 /// the game's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

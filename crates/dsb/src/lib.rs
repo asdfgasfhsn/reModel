@@ -200,11 +200,6 @@ impl Dsb2 {
         self.diagnostics = on;
     }
 
-    /// Change the IRQ2 tick rate.
-    pub fn set_tick_hz(&mut self, hz: u64) {
-        self.tick_cycles = CPU_HZ / hz.max(1);
-    }
-
     /// Queue a byte from the host link; it reaches the UART receiver at
     /// 31.25 kbaud after any bytes already queued.
     pub fn midi_in(&mut self, byte: u8) {

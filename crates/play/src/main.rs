@@ -47,6 +47,7 @@ mod sound;
 mod splash;
 
 use gilrs::Gilrs;
+use model2::pacing::{FPS, MAX_CATCH_UP};
 use settings::{GameSettings, Settings, Source, KEYS};
 use sound::Sound;
 use std::collections::{HashMap, HashSet};
@@ -185,11 +186,11 @@ usage: remodel-play [options]
   --no-splash        don't show the logo at startup
   --input SCRIPT     scripted inputs, as for `remodel run` (for timing runs),
                      e.g. coin-start (the game's own coin-up and start)
-  --shot FILE        with --seconds: at the end, draw the last frame (the
-                     game, bezel included, or the launcher) as a 1920x1080
-                     window would show it to a PNG
-  --shot-size WxH[@S] the --shot window's size in pixels, and its display
-                     scaling (e.g. 3840x2160@2)
+  --shot FILE        with --seconds or --frames: at the end, draw the last
+                     frame (the game, bezel included, or the launcher) as
+                     a window would show it to a PNG
+  --shot-size WxH[@S] the --shot window's size in pixels (default 1920x1080)
+                     and its display scaling (e.g. 3840x2160@2)
   --nav LIST         scripted gamepad input, for checking with --shot:
                      NAME@SECONDS, comma separated; names left, right, up,
                      down (the d-pad), accept (A), back (B), settings (Y),
@@ -215,6 +216,9 @@ usage: remodel-play [options]
                      the frame before's polygons, the hash. Slow; keeps
                      run-ahead on when the game falls behind
 
+The on|off options (--smooth, --depth, --shading-fine, --shading-balance,
+--pack, --materials) also work bare, as on.
+
 The game's settings (mix, HUD, aspect, bezel, speed, smooth motion,
 run-ahead, anti-aliasing, temporal anti-aliasing and stipple, depth buffer,
 shading, crease, finer levels and brightness balance, texture pack and
@@ -233,13 +237,14 @@ menu. The menu's Controls page remaps them per game.
 /// The game's HUD windows, a bit each: smooth shading leaves them flat
 /// (`gpu::Renderer::set_light_rules`).
 fn hud_mask(game: &romset::Game) -> u64 {
-    game.hud_windows.iter().filter(|&&w| w < 64).fold(0, |m, &w| m | 1 << w)
+    model2::light::window_mask(game.hud_windows)
 }
 
-/// Model 2 video frame rate.
-const FPS: f64 = 57.524;
-/// Most emulated frames run per redraw before dropping time.
-const MAX_CATCH_UP: u32 = 3;
+/// What is left of a fade `total` long, `elapsed` into it: 1 falling to 0
+/// (and below, once it is over).
+fn fade_left(elapsed: Duration, total: Duration) -> f32 {
+    1.0 - elapsed.as_secs_f32() / total.as_secs_f32()
+}
 /// Narrowest and widest views; windows beyond are letterboxed.
 const ASPECTS: (f32, f32) = (4.0 / 3.0, 32.0 / 9.0);
 /// The launcher's preview plays this much quieter than the game.
@@ -333,6 +338,22 @@ fn parse_nav(list: &str) -> Result<std::collections::VecDeque<(f64, pad::Event)>
     Ok(out.into())
 }
 
+/// An on/off option's value: `on` or `off` if that comes next, else the
+/// bare flag, which means on (as before the options took a value).
+fn opt_bool(args: &mut std::iter::Peekable<impl Iterator<Item = String>>) -> bool {
+    match args.peek().map(String::as_str) {
+        Some("on") => {
+            args.next();
+            true
+        }
+        Some("off") => {
+            args.next();
+            false
+        }
+        _ => true,
+    }
+}
+
 fn options(s: &mut Settings) -> Result<Options, String> {
     let mut o = Options {
         sound: true,
@@ -412,18 +433,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
             "--jit-warm" => o.jit_warm = true,
             "--no-idle-skip" => model2::idle::set_default(false),
             "--smooth" => {
-                // Bare `--smooth` (as before it took a value) turns it on.
-                let on = match args.peek().map(String::as_str) {
-                    Some("on") => {
-                        args.next();
-                        true
-                    }
-                    Some("off") => {
-                        args.next();
-                        false
-                    }
-                    _ => true,
-                };
+                let on = opt_bool(&mut args);
                 cli("smooth", &on.to_string());
             }
             "--geo" => match model2::geo::GeoMode::parse(&value()?) {
@@ -470,17 +480,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
                 cli("stipple", &v);
             }
             "--depth" => {
-                let on = match args.peek().map(String::as_str) {
-                    Some("on") => {
-                        args.next();
-                        true
-                    }
-                    Some("off") => {
-                        args.next();
-                        false
-                    }
-                    _ => true,
-                };
+                let on = opt_bool(&mut args);
                 cli("depth", &on.to_string());
             }
             "--shading" => {
@@ -497,45 +497,15 @@ fn options(s: &mut Settings) -> Result<Options, String> {
                 cli("crease", &v);
             }
             "--shading-fine" => {
-                let on = match args.peek().map(String::as_str) {
-                    Some("on") => {
-                        args.next();
-                        true
-                    }
-                    Some("off") => {
-                        args.next();
-                        false
-                    }
-                    _ => true,
-                };
+                let on = opt_bool(&mut args);
                 cli("shading_fine", &on.to_string());
             }
             "--shading-balance" => {
-                let on = match args.peek().map(String::as_str) {
-                    Some("on") => {
-                        args.next();
-                        true
-                    }
-                    Some("off") => {
-                        args.next();
-                        false
-                    }
-                    _ => true,
-                };
+                let on = opt_bool(&mut args);
                 cli("shading_balance", &on.to_string());
             }
             "--pack" => {
-                let on = match args.peek().map(String::as_str) {
-                    Some("on") => {
-                        args.next();
-                        true
-                    }
-                    Some("off") => {
-                        args.next();
-                        false
-                    }
-                    _ => true,
-                };
+                let on = opt_bool(&mut args);
                 cli("pack", &on.to_string());
             }
             "--texture-pack" => {
@@ -550,17 +520,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
                 cli("tex_filter", &f.to_string());
             }
             "--materials" => {
-                let on = match args.peek().map(String::as_str) {
-                    Some("on") => {
-                        args.next();
-                        true
-                    }
-                    Some("off") => {
-                        args.next();
-                        false
-                    }
-                    _ => true,
-                };
+                let on = opt_bool(&mut args);
                 cli("materials", &on.to_string());
             }
             "--materials-relief" => {
@@ -1226,9 +1186,7 @@ impl Play {
                     let gun = !s.game.controls.guns.is_empty();
                     g.window.set_cursor(if gun { CursorIcon::Crosshair } else { CursorIcon::Default });
                     let core = g.drawer.core();
-                    core.renderer.forget_ram();
-                    core.renderer.reset_history();
-                    core.frame.forget();
+                    core.forget_frame();
                 }
                 self.session = Some(s);
                 self.epoch = Instant::now();
@@ -1294,9 +1252,7 @@ impl Play {
         );
         if let Some(g) = &mut self.gpu {
             let core = g.drawer.core();
-            core.renderer.forget_ram();
-            core.renderer.reset_history();
-            core.frame.forget();
+            core.forget_frame();
         }
         let bindings = settings::load_bindings(game);
         self.epoch = Instant::now() - Duration::from_secs_f64(machine.frames as f64 / FPS);
@@ -2229,8 +2185,7 @@ impl Play {
         let t_capture = Instant::now();
         let game = self.capture_game(t0);
         let mut actions = Vec::new();
-        let fade =
-            self.game_fade.map(|t| 1.0 - t.elapsed().as_secs_f32() / GAME_FADE.as_secs_f32()).filter(|f| *f > 0.0);
+        let fade = self.game_fade.map(|t| fade_left(t.elapsed(), GAME_FADE)).filter(|f| *f > 0.0);
         if fade.is_none() {
             self.game_fade = None;
         }
@@ -2399,7 +2354,7 @@ impl Play {
         }
         // The sound fades in once the preview shows.
         if let (Some(s), Some(shown)) = (&self.session, self.preview.shown) {
-            let leaving = self.preview.leaving.map(|t| 1.0 - (now - t).as_secs_f32() / FADE_OUT.as_secs_f32());
+            let leaving = self.preview.leaving.map(|t| fade_left(now - t, FADE_OUT));
             let f = ((now - shown).as_secs_f32() / SOUND_FADE.as_secs_f32()).min(1.0) * leaving.unwrap_or(1.0);
             if let Some(snd) = &s.sound {
                 if f < 1.0 || leaving.is_some() || self.redraws.is_multiple_of(30) {
@@ -2548,7 +2503,7 @@ impl Play {
             }
             let shown = *self.preview.shown.get_or_insert(now);
             let fade_in = ((now - shown).as_secs_f32() / launcher::FADE_IN.as_secs_f32()).min(1.0);
-            let fade_out = self.preview.leaving.map_or(1.0, |t| 1.0 - (now - t).as_secs_f32() / FADE_OUT.as_secs_f32());
+            let fade_out = self.preview.leaving.map_or(1.0, |t| fade_left(now - t, FADE_OUT));
             let bezel = self.values.bezel && view.pad < 1.0 && (view.width as u32) + 1 < pw;
             preview_view = Some(launcher::PreviewView {
                 texture: id,
