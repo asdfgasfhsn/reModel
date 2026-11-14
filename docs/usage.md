@@ -63,7 +63,7 @@ make recomp-workspace     # rewrite out/recomp's Cargo workspace and crate manif
 make bench RECOMP=1       # same run on the recompiled build: same hash, about twice as fast
 make state-check          # save state round trip: saved at frame 2000 and resumed must match an uninterrupted run (state hash and audio)
 make bench-all            # `make bench` for every set in tools/expected-hashes.txt that has ROMs; lists any state hash that differs
-make release-tag VERSION=0.7.0   # cut a release (below, "Releases"); DRY_RUN=1 checks without tagging
+make release-tag VERSION=0.8.0   # cut a release (below, "Versions and releases"); DRY_RUN=1 checks without tagging
 make geo-check GAME=sgt24h   # native geometrizer beside the chip (2B SHARC, 2C TGP) on a coin-start run, raster streams compared each frame, both timed
 make geo-fuzz GAME=sgt24h    # random display lists through the chip's program and the native geometrizer, compared (FUZZ_FRAMES, FUZZ_SEED)
 make play RECOMP=1        # the launcher: pick a game (live attract previews, settings, Continue), then play
