@@ -7,6 +7,24 @@ packs) and the documented `make` targets and CLI may still change between
 minor versions; 1.0 comes when they are stable. Versions up to 0.6.0 were
 tagged after the fact on the commit that reached each milestone.
 
+## 0.7.0 (2026-11-14): the original Model 2, and photo mode
+
+- The original Model 2 board and its sound board (68000, two MultiPCMs, an
+  OPN2 as the tempo timer): Daytona USA (all three courses), Virtua Cop
+  (two light guns) and Desert Tank play.
+- Sonic The Fighters (`sfight`), the Japanese Sonic Championship, as a
+  clone.
+- Photo mode in the native player (F8): freeze, free camera, stills up to
+  8K, depth of field, grading, film effects, motion blur and a 10-second
+  time scrub, all without touching the game's own state.
+- The player draws on its own thread alongside the next frame's emulation:
+  run-ahead with heavy picture settings fits a 60 Hz frame.
+- Fixes: the MB86234's floats have no IEEE infinities or NaNs; the i960's
+  `scaler` is single precision; the MultiPCM's base rate; the original
+  board's black pedestal; ramped keyboard steering for Daytona.
+- The browser build rebuilds only the modules whose sources changed, and
+  `make web GAME=` builds one game.
+
 ## 0.6.0 (2026-11-13): Virtua Fighter 2
 
 - Virtua Fighter 2 (`vf2`, Model 2A) plays: the MB86234's circular

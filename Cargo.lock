@@ -35,7 +35,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "adsp2106x"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "remodel-state",
 ]
@@ -1043,7 +1043,7 @@ checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
 
 [[package]]
 name = "i960"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "remodel-state",
 ]
@@ -1414,7 +1414,7 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "m68k"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "remodel-state",
 ]
@@ -1427,14 +1427,14 @@ checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 
 [[package]]
 name = "mb86234"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "remodel-state",
 ]
 
 [[package]]
 name = "mb86235"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "remodel-state",
 ]
@@ -2332,7 +2332,7 @@ dependencies = [
 
 [[package]]
 name = "remodel"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "adsp2106x",
  "i960",
@@ -2353,14 +2353,14 @@ dependencies = [
 
 [[package]]
 name = "remodel-analyze"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "i960",
 ]
 
 [[package]]
 name = "remodel-dsb"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "m68k",
  "remodel-mpeg",
@@ -2370,7 +2370,7 @@ dependencies = [
 
 [[package]]
 name = "remodel-gpu"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "naga",
  "pollster",
@@ -2381,7 +2381,7 @@ dependencies = [
 
 [[package]]
 name = "remodel-model2"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "adsp2106x",
  "i960",
@@ -2396,14 +2396,14 @@ dependencies = [
 
 [[package]]
 name = "remodel-mpeg"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "remodel-state",
 ]
 
 [[package]]
 name = "remodel-play"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "cpal",
  "egui",
@@ -2425,22 +2425,22 @@ dependencies = [
 
 [[package]]
 name = "remodel-png"
-version = "0.1.0"
+version = "0.7.0"
 
 [[package]]
 name = "remodel-recomp"
-version = "0.1.0"
+version = "0.7.0"
 
 [[package]]
 name = "remodel-romset"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "remodel-png",
 ]
 
 [[package]]
 name = "remodel-sound"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "m68k",
  "remodel-state",
@@ -2448,11 +2448,11 @@ dependencies = [
 
 [[package]]
 name = "remodel-state"
-version = "0.1.0"
+version = "0.7.0"
 
 [[package]]
 name = "remodel-web"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "console_error_panic_hook",
  "js-sys",
@@ -2469,7 +2469,7 @@ dependencies = [
 
 [[package]]
 name = "remodel-z80"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "remodel-state",
 ]
