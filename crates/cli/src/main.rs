@@ -507,21 +507,35 @@ fn parse_num(s: &str) -> Option<u32> {
     }
 }
 
-fn main() -> ExitCode {
-    recomp::register();
-    model2::set_app_version(remodel_version::VERSION);
+/// What the command line says, parsed once by `parse_opts`; the options that
+/// are process-wide settings are also stored in the statics above.
+struct Opts {
+    game_id: String,
+    rom_dir: PathBuf,
+    input: Option<String>,
+    geo_frame: Option<String>,
+    pack_dir: Option<PathBuf>,
+    soundtrack: Option<String>,
+    interp: bool,
+    single_thread: bool,
+    /// The command and its arguments, flags taken out.
+    args: Vec<String>,
+}
+
+/// Parse the command line; `Err` is the exit code to leave with at once.
+fn parse_opts() -> Result<Opts, ExitCode> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
         print!("{USAGE}");
-        return ExitCode::SUCCESS;
+        return Err(ExitCode::SUCCESS);
     }
     if args.iter().any(|a| a == "-V" || a == "--version") {
         println!("remodel {}", remodel_version::VERSION);
-        return ExitCode::SUCCESS;
+        return Err(ExitCode::SUCCESS);
     }
     if args.is_empty() {
         eprint!("{USAGE}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     }
     let mut opt = |flag: &str| -> Result<Option<String>, ()> {
         let Some(i) = args.iter().position(|a| a == flag) else { return Ok(None) };
@@ -536,11 +550,11 @@ fn main() -> ExitCode {
         (opt("--game"), opt("--rom"), opt("--input"), opt("--geo-trace"))
     else {
         eprint!("{USAGE}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     let (Ok(height), Ok(aspect), Ok(hud)) = (opt("--height"), opt("--aspect"), opt("--hud")) else {
         eprint!("{USAGE}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     if height.is_some() || aspect.is_some() || hud.is_some() {
         let height = height.and_then(|h| h.parse().ok()).unwrap_or(model2::video::HEIGHT);
@@ -557,68 +571,68 @@ fn main() -> ExitCode {
     }
     let Ok(aa) = opt("--aa") else {
         eprint!("{USAGE}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     if let Some(a) = aa {
         let Some(n) = a.parse::<u32>().ok().filter(|n| (1..=64).contains(n)) else {
             eprintln!("error: --aa wants a number of samples a pixel, 1 to 64");
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         };
         let _ = AA.set(n);
     }
     let (Ok(dump_textures), Ok(texture_pack)) = (opt("--dump-textures"), opt("--texture-pack")) else {
         eprint!("{USAGE}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     let pack_dir = texture_pack.clone().map(PathBuf::from);
     let Ok(tex_filter_opt) = opt("--tex-filter") else {
         eprint!("{USAGE}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     if let Some(f) = tex_filter_opt {
         let Some(f) = model2::enhance::TexFilter::parse(&f) else {
             eprintln!("error: --tex-filter wants off, mip, 2, 4, 8 or 16");
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         };
         let _ = TEX_FILTER.set(f);
     }
     let (Ok(temporal), Ok(stipple)) = (opt("--temporal"), opt("--stipple")) else {
         eprint!("{USAGE}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     if let Some(t) = temporal {
         let Some(t) = gpu::Quality::parse_temporal(&t) else {
             eprintln!("error: --temporal wants off, taa or a render scale from 50 to 100");
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         };
         let _ = TEMPORAL.set(t);
     }
     let Ok(bloom) = opt("--bloom") else {
         eprint!("{USAGE}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     if let Some(b) = bloom {
         let Some(b) = gpu::Quality::parse_bloom(&b) else {
             eprintln!("error: --bloom wants off or a strength from 1 to 100");
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         };
         let _ = BLOOM.set(b);
     }
     if let Some(s) = stipple {
         let Some(s) = gpu::Stipple::parse(&s) else {
             eprintln!("error: --stipple wants blend or keep");
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         };
         let _ = STIPPLE.set(s);
     }
     let Ok(relief) = opt("--materials-relief") else {
         eprint!("{USAGE}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     if let Some(r) = relief {
         let Some(r) = model2::raster::Relief::parse(&r) else {
             eprintln!("error: --materials-relief wants off or a strength from 0.1 to 8");
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         };
         let _ = MATERIALS_RELIEF.set(r);
     }
@@ -626,14 +640,14 @@ fn main() -> ExitCode {
         (opt("--shading"), opt("--crease"), opt("--shading-fine"), opt("--shading-balance"))
     else {
         eprint!("{USAGE}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     let fine = match fine.as_deref() {
         None | Some("off") => false,
         Some("on") => true,
         Some(_) => {
             eprintln!("error: --shading-fine wants on or off");
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
     };
     let _ = SHADING_FINE.set(fine);
@@ -642,43 +656,43 @@ fn main() -> ExitCode {
         Some("off") => false,
         Some(_) => {
             eprintln!("error: --shading-balance wants on or off");
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
     };
     let _ = SHADING_BALANCE.set(balance);
     if shading.is_some() || crease.is_some() {
         let Some(s) = model2::light::Shading::parse(shading.as_deref().unwrap_or("vertex")) else {
             eprintln!("error: --shading wants flat, vertex or pixel");
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         };
         let Some(c) = model2::light::parse_crease(crease.as_deref().unwrap_or("auto")) else {
             eprintln!("error: --crease wants auto or degrees from 0 to 180");
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         };
         let _ = SHADING.set((if shading.is_some() { s } else { model2::light::Shading::Flat }, c));
     }
     let _ = GAME_ID.set(game_id.clone().unwrap_or_else(|| "topskatr".into()));
     if let Err(e) = texpack::configure(dump_textures, texture_pack) {
         eprintln!("error: {e}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     }
     let game_id = game_id.unwrap_or_else(|| "topskatr".into());
     let rom_dir = PathBuf::from(rom_dir.unwrap_or_else(|| "rom".into()));
     let Ok(audio) = opt("--audio") else {
         eprint!("{USAGE}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     if let Some(a) = audio {
         let _ = AUDIO.set(PathBuf::from(a));
     }
     let (Ok(save_state), Ok(load_state)) = (opt("--save-state"), opt("--load-state")) else {
         eprint!("{USAGE}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     if let Some(v) = save_state {
         let Some((file, frame)) = v.rsplit_once('@').and_then(|(f, n)| Some((f, n.parse::<u64>().ok()?))) else {
             eprintln!("error: --save-state wants FILE@FRAME");
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         };
         let _ = SAVE_STATE.set((PathBuf::from(file), frame));
     }
@@ -687,14 +701,14 @@ fn main() -> ExitCode {
     }
     let Ok(capture) = opt("--capture") else {
         eprint!("{USAGE}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     if let Some(c) = capture {
         let _ = CAPTURE.set(PathBuf::from(c));
     }
     let (Ok(capture_seq), Ok(seq)) = (opt("--capture-seq"), opt("--seq")) else {
         eprint!("{USAGE}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     if let Some(c) = capture_seq {
         let range = match seq.as_deref().map(|v| v.split_once(',').map(|(a, b)| (a.parse::<u64>(), b.parse::<u64>()))) {
@@ -702,29 +716,29 @@ fn main() -> ExitCode {
             Some(Some((Ok(a), Ok(b)))) => (a, b),
             _ => {
                 eprintln!("error: --seq wants FROM,COUNT (frames)");
-                return ExitCode::FAILURE;
+                return Err(ExitCode::FAILURE);
             }
         };
         let _ = CAPTURE_SEQ.set((PathBuf::from(c), range.0, range.1));
     }
     let Ok(geo_mode) = opt("--geo") else {
         eprint!("{USAGE}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     if let Some(g) = geo_mode {
         let Some(mode) = model2::geo::GeoMode::parse(&g) else {
             eprintln!("error: --geo wants chip, native or check");
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         };
         let _ = GEO_MODE.set(mode);
     }
     let (Ok(jit_hot), Ok(jit_opt), Ok(jit_copro)) = (opt("--jit-hot"), opt("--jit-opt"), opt("--jit-copro")) else {
         eprint!("{USAGE}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     let Ok(jit_cache) = opt("--jit-cache") else {
         eprint!("{USAGE}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     if let Some(dir) = jit_cache {
         let path = PathBuf::from(dir).join(model2::jit::hotlist::FILE);
@@ -733,7 +747,7 @@ fn main() -> ExitCode {
     }
     let Ok(tgp2a_mode) = opt("--tgp2a") else {
         eprint!("{USAGE}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     match tgp2a_mode.as_deref() {
         None | Some("chip") => {}
@@ -742,33 +756,33 @@ fn main() -> ExitCode {
         }
         Some(_) => {
             eprintln!("error: --tgp2a wants chip or hle");
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
     }
     let Ok(smooth) = opt("--smooth") else {
         eprint!("{USAGE}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     if let Some(v) = smooth {
         let ts: Option<Vec<f32>> =
             v.split(',').map(|t| t.trim().parse::<f32>().ok().filter(|t| (0.0..=1.0).contains(t))).collect();
         let Some(ts) = ts else {
             eprintln!("error: --smooth wants fractions from 0 to 1, e.g. 0.25,0.5,0.75");
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         };
         if GEO_MODE.get() != Some(&model2::geo::GeoMode::Native) {
             eprintln!("error: --smooth needs --geo native (in-betweens come from the native geometrizer)");
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
         let _ = SMOOTH.set(ts);
     }
     if CAPTURE_SEQ.get().is_some() && GEO_MODE.get() != Some(&model2::geo::GeoMode::Native) {
         eprintln!("error: --capture-seq needs --geo native (motion data comes from the native geometrizer)");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     }
     let Ok(soundtrack) = opt("--soundtrack") else {
         eprint!("{USAGE}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     let mut flag = |name: &str| match args.iter().position(|a| a == name) {
         Some(i) => {
@@ -793,7 +807,7 @@ fn main() -> ExitCode {
             Some("check") => c.copro_check = true,
             Some(_) => {
                 eprintln!("error: --jit-copro wants on, off or check");
-                return ExitCode::FAILURE;
+                return Err(ExitCode::FAILURE);
             }
         }
         if let Some(n) = jit_hot {
@@ -801,7 +815,7 @@ fn main() -> ExitCode {
                 Ok(n) => c.hot = n,
                 Err(_) => {
                     eprintln!("error: --jit-hot wants a number");
-                    return ExitCode::FAILURE;
+                    return Err(ExitCode::FAILURE);
                 }
             }
         }
@@ -810,7 +824,7 @@ fn main() -> ExitCode {
             Some("speed") => c.optimise = true,
             Some(_) => {
                 eprintln!("error: --jit-opt wants speed or none");
-                return ExitCode::FAILURE;
+                return Err(ExitCode::FAILURE);
             }
         }
         let _ = JIT.set(c);
@@ -827,1183 +841,1351 @@ fn main() -> ExitCode {
     if flag("--light") || CAPTURE.get().is_some() || CAPTURE_SEQ.get().is_some() {
         let _ = LIGHT.set(true);
     }
-    let Some(cmd) = args.first().cloned() else {
+
+    if args.is_empty() {
         eprint!("{USAGE}");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
+    }
+    Ok(Opts { game_id, rom_dir, input, geo_frame, pack_dir, soundtrack, interp, single_thread, args })
+}
+
+/// The commands that need no ROMs; `None` if the command is not one of them.
+fn dispatch_no_roms(o: &Opts) -> Option<ExitCode> {
+    Some(match o.args[0].as_str() {
+        "soundtrack-import" => cmd_soundtrack_import(o),
+        "texpack-upscale" => cmd_texpack_upscale(o),
+        "texpack-materials" => cmd_texpack_materials(o),
+        "pack-lint" => cmd_pack_lint(o),
+        "sharc-disasm" | "sharc-check" => cmd_sharc(o),
+        "temporal-check" => cmd_temporal_check(o),
+        "tgp-disasm" => cmd_tgp_disasm(o),
+        "scan" => cmd_scan(o),
+        "web-index" => cmd_web_index(o),
+        "recomp-workspace" => cmd_recomp_workspace(o),
+        "rom-folder" => cmd_rom_folder(o),
+        "games" => cmd_games(o),
+        "inputs" => cmd_inputs(o),
+        _ => return None,
+    })
+}
+
+fn main() -> ExitCode {
+    recomp::register();
+    model2::set_app_version(remodel_version::VERSION);
+    let o = match parse_opts() {
+        Ok(o) => o,
+        Err(code) => return code,
     };
-    if cmd == "soundtrack-import" {
-        let (Some(src), Some(name)) = (args.get(1), args.get(2)) else {
-            eprint!("{USAGE}");
-            return ExitCode::FAILURE;
-        };
-        let dest = if name.contains('/') { PathBuf::from(name) } else { PathBuf::from("soundtracks").join(name) };
-        return match soundtrack::import(Path::new(src), &dest) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("error: {e}");
-                ExitCode::FAILURE
-            }
-        };
+    if let Some(code) = dispatch_no_roms(&o) {
+        return code;
     }
-    if cmd == "texpack-upscale" {
-        return match texpack_upscale::main(&args[1..], &game_id) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("error: {e}");
-                ExitCode::FAILURE
-            }
-        };
-    }
-    if cmd == "texpack-materials" {
-        return match texpack_materials::main(&args[1..], &game_id) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("error: {e}");
-                ExitCode::FAILURE
-            }
-        };
-    }
-    if cmd == "pack-lint" {
-        return match pack_lint::main(&args[1..]) {
-            Ok(true) => ExitCode::SUCCESS,
-            Ok(false) => ExitCode::FAILURE,
-            Err(e) => {
-                eprintln!("error: {e}");
-                ExitCode::FAILURE
-            }
-        };
-    }
-    if cmd == "sharc-disasm" || cmd == "sharc-check" {
-        let r = match (cmd.as_str(), args.get(1)) {
-            ("sharc-disasm", Some(file)) => {
-                let out = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{file}.lst")));
-                sharc::disasm(Path::new(file), &out)
-            }
-            ("sharc-check", Some(_)) => sharc::check(&args[1..], 10_000_000),
-            _ => {
-                eprint!("{USAGE}");
-                return ExitCode::FAILURE;
-            }
-        };
-        return match r {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("error: {e}");
-                ExitCode::FAILURE
-            }
-        };
-    }
-    if cmd == "temporal-check" {
-        let Some(root) = args.get(1).map(PathBuf::from) else {
-            eprint!("{USAGE}");
-            return ExitCode::FAILURE;
-        };
-        let every = match args.iter().position(|a| a == "--every") {
-            Some(i) => match args.get(i + 1).and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0) {
-                Some(n) => {
-                    args.drain(i..i + 2);
-                    n
-                }
-                None => {
-                    eprintln!("error: --every wants a number of frames");
-                    return ExitCode::FAILURE;
-                }
-            },
-            None => 10,
-        };
-        // Flags: --no-gpu, --gpu-only, --bench [FRAMES], --tune K=V,..., --crop X,Y,W,H
-        // (repeatable), --ref-cache DIR.
-        let mut take = |name: &str| -> Option<Option<String>> {
-            let i = args.iter().position(|a| a == name)?;
-            let v = args.get(i + 1).filter(|v| !v.starts_with("--")).cloned();
-            args.drain(i..i + 1 + v.is_some() as usize);
-            Some(v)
-        };
-        let no_gpu = take("--no-gpu").is_some();
-        let gpu_only = take("--gpu-only").is_some();
-        let bench = take("--bench");
-        let tune = take("--tune").flatten();
-        let ref_cache = take("--ref-cache").flatten().map(PathBuf::from);
-        let at: Vec<u64> =
-            take("--at").flatten().unwrap_or_default().split(',').filter_map(|x| x.parse().ok()).collect();
-        let inspect = take("--inspect").is_some();
-        let dump = match take("--dump")
-            .map(|d| d.unwrap_or_default().split(',').filter_map(|x| x.parse().ok()).collect::<Vec<usize>>())
-        {
-            None => None,
-            Some(v) => match v[..] {
-                [x, y, w, h] => Some((x, y, w, h, 100)),
-                [x, y, w, h, s @ (100 | 67 | 50)] => Some((x, y, w, h, s)),
-                _ => {
-                    eprintln!("error: --dump wants X,Y,W,H[,SCALE] in output pixels (scale 100, 67 or 50)");
-                    return ExitCode::FAILURE;
-                }
-            },
-        };
-        let mut crops = Vec::new();
-        while let Some(c) = take("--crop") {
-            let v: Vec<usize> = c.unwrap_or_default().split(',').filter_map(|x| x.parse().ok()).collect();
-            let [x, y, w, h] = v[..] else {
-                eprintln!("error: --crop wants X,Y,W,H in output pixels");
-                return ExitCode::FAILURE;
-            };
-            crops.push((x, y, w, h));
-        }
-        let tuning = match tune.map(|t| gpu::TemporalTuning::parse(&t)).transpose() {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("error: --tune: {e}");
-                return ExitCode::FAILURE;
-            }
-        };
-        let out = args.get(2).map(PathBuf::from).unwrap_or_else(|| root.join("check"));
-        let view = VIEW
-            .get()
-            .copied()
-            .unwrap_or_else(|| model2::video::View::new(1080, 16.0 / 9.0, model2::video::Hud::Edges));
-        if let Some(n) = bench {
-            let frames = n.and_then(|n| n.parse().ok()).unwrap_or(30);
-            return match temporal_check::bench(&root, &view, frames, 8) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    ExitCode::FAILURE
-                }
-            };
-        }
-        let depth = DEPTH.get().copied().unwrap_or(false);
-        let opts = temporal_check::Options {
-            view,
-            every,
-            out,
-            gpu: !no_gpu,
-            gpu_only,
-            tuning,
-            crops,
-            ref_cache,
-            at,
-            depth,
-            inspect,
-            dump,
-        };
-        return match temporal_check::run(&root, &opts) {
-            Ok(true) => ExitCode::SUCCESS,
-            Ok(false) => ExitCode::FAILURE,
-            Err(e) => {
-                eprintln!("error: {e}");
-                ExitCode::FAILURE
-            }
-        };
-    }
-    if cmd == "tgp-disasm" {
-        // A 2A game's uploaded TGP program (`run` writes out/GAME/tgp.bin).
-        let file =
-            args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out").join(&game_id).join("tgp.bin"));
-        let out = args.get(2).map(PathBuf::from).unwrap_or_else(|| file.with_extension("lst"));
-        return match tgp_disasm::disasm(&file, &out) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("error: {e}");
-                ExitCode::FAILURE
-            }
-        };
-    }
-    if cmd == "scan" {
-        let sets = romset::sets_with_clones(&rom_dir);
-        if sets.is_empty() {
-            eprintln!("no sets in {} (expected <set>.zip or <set>/)", rom_dir.display());
-            return ExitCode::FAILURE;
-        }
-        let mut supported = 0;
-        for set in &sets {
-            match games::find(set) {
-                Ok(g) => {
-                    supported += 1;
-                    let state = match RomSet::load(g, &rom_dir, true) {
-                        Ok(_) => "ok".to_string(),
-                        Err(e) => format!("bad: {e}"),
-                    };
-                    println!("{set:<12} {:<34} {state}", g.title);
-                }
-                Err(_) => println!("{set:<12} {:<34} not supported yet", "-"),
-            }
-        }
-        println!("{} sets, {supported} supported", sets.len());
-        return ExitCode::SUCCESS;
-    }
-    if cmd == "web-index" {
-        let games = web_index(&rom_dir);
-        if let Some(dir) = args.get(1).map(PathBuf::from) {
-            let path = dir.join("games.json");
-            if let Err(e) = std::fs::write(&path, games_json(&games, &dir)) {
-                eprintln!("error: {}: {e}", path.display());
-                return ExitCode::FAILURE;
-            }
-            eprintln!("wrote {} ({} games)", path.display(), games.len());
-        }
-        for g in games {
-            println!("{}", g.id);
-        }
-        return ExitCode::SUCCESS;
-    }
-    if cmd == "recomp-workspace" {
-        let out = Path::new(recomp_crates::DIR);
-        let r = match args.get(1).map(String::as_str) {
-            None => recomp_crates::programs(out)
-                .and_then(|names| recomp_crates::write_workspace(out, out, &names, recomp_crates::Front::Native)),
-            Some("--web") if args.len() > 2 => {
-                recomp_crates::write_workspace(Path::new(&args[2]), out, &args[3..], recomp_crates::Front::Web)
-            }
-            _ => {
-                eprint!("{USAGE}");
-                return ExitCode::FAILURE;
-            }
-        };
-        if let Err(e) = r {
-            eprintln!("error: {e}");
-            return ExitCode::FAILURE;
-        }
-        return ExitCode::SUCCESS;
-    }
-    if cmd == "rom-folder" {
-        // The set folder in --rom with all of the game's chips (its own or
-        // its parent's), for the browser build's pages.
-        let Ok(g) = games::find(&game_id) else {
-            eprintln!("error: unknown game '{game_id}'");
-            return ExitCode::FAILURE;
-        };
-        return match romset::rom_folder(g, &rom_dir) {
-            Some(set) => {
-                println!("{set}");
-                ExitCode::SUCCESS
-            }
-            None => ExitCode::FAILURE,
-        };
-    }
-    if cmd == "games" {
-        for g in games::ALL {
-            // Last, the set it is a clone of ("-" for none).
-            println!("{:<10} {:<20} {:<12} {}", g.id, g.title, format!("{:?}", g.board), g.parent.unwrap_or("-"));
-        }
-        return ExitCode::SUCCESS;
-    }
-    if cmd == "inputs" {
-        let Ok(g) = games::find(&game_id) else {
-            eprintln!("error: unknown game '{game_id}'");
-            return ExitCode::FAILURE;
-        };
-        let c = &g.controls;
-        println!("{} inputs (name: port bit / channel centre):", g.id);
-        for b in c.buttons {
-            println!("  {:<10} port {} bit 0x{:02x}", b.name, b.port, b.bit);
-        }
-        for a in c.analogs {
-            println!("  {:<10} analog channel {}, centre 0x{:02x}", a.name, a.channel, a.centre);
-        }
-        println!("coin-start = {}", c.coin_start);
-        println!("player bindings (keys / pad):\n{}", romset::Bindings::defaults(c).describe().trim_end());
-        return ExitCode::SUCCESS;
-    }
-    let verify = cmd == "verify";
-    let roms = match games::find(&game_id).and_then(|g| RomSet::load(g, &rom_dir, verify)) {
+    let cmd = o.args[0].as_str();
+    let roms = match games::find(&o.game_id).and_then(|g| RomSet::load(g, &o.rom_dir, cmd == "verify")) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: {e}");
             return ExitCode::FAILURE;
         }
     };
-    let img = Image { base: 0, bytes: &roms.program };
+    let roms = &roms;
+    match cmd {
+        "verify" => cmd_verify(&o, roms),
+        "boot" => cmd_boot(&o, roms),
+        "tgp-check" => cmd_tgp_check(&o, roms),
+        "disasm" => cmd_disasm(&o, roms),
+        "analyze" => cmd_analyze(&o, roms),
+        "copro-disasm" => cmd_copro_disasm(&o, roms),
+        "jit-translate" => cmd_jit_translate(&o, roms),
+        "recomp" => cmd_recomp(&o, roms),
+        "recomp-files" => cmd_recomp_files(&o, roms),
+        "shot" => cmd_shot(&o, roms),
+        "gpu-check" => cmd_gpu_check(&o, roms),
+        "temporal-probe" => cmd_temporal_probe(&o, roms),
+        "pack-check" if o.args.iter().any(|a| a == "--identity") => cmd_pack_check_identity(&o, roms),
+        "pack-check" => cmd_pack_check(&o, roms),
+        "tile-check" => cmd_tile_check(&o, roms),
+        "depth-check" => cmd_depth_check(&o, roms),
+        "lighting-check" => cmd_lighting_check(&o, roms),
+        "lockstep" => cmd_lockstep(&o, roms),
+        "geo-trace-words" => cmd_geo_trace_words(&o, roms),
+        "geo-check" => cmd_geo_check(&o, roms),
+        "geo-fuzz" => cmd_geo_fuzz(&o, roms),
+        "run-ahead-check" => cmd_run_ahead_check(&o, roms),
+        "camera-scan" => cmd_camera_scan(&o, roms),
+        "run-ahead-profile" => cmd_run_ahead_profile(&o, roms),
+        "latency" => cmd_latency(&o, roms),
+        "run" => cmd_run(&o, roms),
+        "sound-disasm" => cmd_sound_disasm(&o, roms),
+        "sound-render" => cmd_sound_render(&o, roms),
+        "music-render" | "mpeg-dump" => cmd_music_render_mpeg_dump(&o, roms),
+        _ => {
+            eprint!("{USAGE}");
+            ExitCode::FAILURE
+        }
+    }
+}
 
-    match cmd.as_str() {
-        "verify" => {
-            for r in roms.game.files {
-                println!("ok  {:<14} {:>8x}  {:?}", r.name, r.size, r.role);
-            }
-            println!("{}: all {} chips match", roms.game.id, roms.game.files.len());
+fn cmd_soundtrack_import(o: &Opts) -> ExitCode {
+    let args = &o.args;
+    let (Some(src), Some(name)) = (args.get(1), args.get(2)) else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    let dest = if name.contains('/') { PathBuf::from(name) } else { PathBuf::from("soundtracks").join(name) };
+    match soundtrack::import(Path::new(src), &dest) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
         }
-        "boot" => {
-            let Some(b) = read_boot(&img) else {
-                eprintln!("error: boot record out of range");
-                return ExitCode::FAILURE;
-            };
-            println!("prcb        {:#x}", b.prcb);
-            println!("reset ip    {:#x}", b.reset_ip);
-            println!("int table   {:#x}", b.int_table);
-            println!("sysproc     {:#x}", b.sysproc_table);
-            println!("fault table {:#x}", b.fault_table);
-            let mut by_target: BTreeMap<u32, Vec<String>> = BTreeMap::new();
-            for (k, a) in &b.seeds {
-                by_target.entry(*a).or_default().push(format!("{k:?}"));
-            }
-            for (a, ks) in by_target {
-                let shown = if ks.len() > 4 {
-                    format!("{} .. {} ({} entries)", ks[0], ks[ks.len() - 1], ks.len())
-                } else {
-                    ks.join(", ")
-                };
-                println!("  {a:#08x}  {shown}");
-            }
-        }
-        "tgp-check" => {
-            // A 2A game's uploaded TGP program on the interpreter, with the
-            // board's function ROM.
-            let file =
-                args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out").join(&game_id).join("tgp.bin"));
-            let bytes = match std::fs::read(&file) {
-                Ok(b) => b,
-                Err(e) => {
-                    eprintln!("error: {}: {e} (`make run GAME={game_id}` writes it)", file.display());
-                    return ExitCode::FAILURE;
-                }
-            };
-            let program: Vec<u32> = bytes.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
-            let tables: Vec<u32> = roms
-                .bank(romset::Role::CoproData)
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .take(0x1_0000)
-                .map(|c| u32::from_le_bytes(*c))
-                .collect();
-            match tgp_check::check(&program, tables) {
-                Ok(true) => {}
-                Ok(false) => return ExitCode::FAILURE,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    return ExitCode::FAILURE;
-                }
-            }
-        }
-        "disasm" => {
-            let Some(mut pc) = args.get(1).and_then(|s| parse_num(s)) else {
-                eprint!("{USAGE}");
-                return ExitCode::FAILURE;
-            };
-            let count = args.get(2).and_then(|s| parse_num(s)).unwrap_or(32);
-            for _ in 0..count {
-                let i = img.decode(pc);
-                println!("{:08x}  {:08x}  {i}", i.addr, i.word);
-                pc = i.next();
-            }
-        }
-        "analyze" => {
-            let default_out = format!("out/{}/program.lst", roms.game.id);
-            let out = PathBuf::from(args.get(1).map(String::as_str).unwrap_or(&default_out));
-            let Some(b) = read_boot(&img) else {
-                eprintln!("error: boot record out of range");
-                return ExitCode::FAILURE;
-            };
-            let seeds: Vec<u32> = b.seeds.iter().map(|s| s.1).collect();
-            // Use the interpreter's trace from `remodel run`, when present.
-            let dir = PathBuf::from("out").join(roms.game.id);
-            let read = |f: &str| std::fs::read_to_string(dir.join(f)).unwrap_or_default();
-            let trace = Trace::parse(&read("coverage.txt"), &read("indirect.txt"));
-            let a = explore(&img, &seeds, &trace);
+    }
+}
 
-            let mut text = String::new();
-            for (addr, i) in &a.insns {
-                if a.functions.contains(addr) {
-                    let _ = writeln!(text, "\nsub_{addr:x}:");
-                } else if a.labels.contains(addr) {
-                    let _ = writeln!(text, "loc_{addr:x}:");
-                }
-                let _ = writeln!(text, "  {addr:08x}  {i}");
-            }
-            if let Some(dir) = out.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            if let Err(e) = std::fs::write(&out, text) {
-                eprintln!("error: {}: {e}", out.display());
-                return ExitCode::FAILURE;
-            }
+fn cmd_texpack_upscale(o: &Opts) -> ExitCode {
+    let game_id = &o.game_id;
+    let args = &o.args;
+    match texpack_upscale::main(&args[1..], game_id) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
 
-            let code_bytes: u32 = a.insns.values().map(|i| i.size).sum();
-            println!("instructions  {}", a.insns.len());
-            println!(
-                "code bytes    {code_bytes:#x} ({:.1}% of {:#x})",
-                100.0 * code_bytes as f64 / roms.program.len() as f64,
-                roms.program.len()
-            );
-            println!("functions     {} ({} via lda code pointers)", a.functions.len(), a.speculative.len());
-            println!("indirect      {} (jump tables / function pointers to resolve)", a.indirect.len());
-            if !trace.executed.is_empty() {
-                let confirmed = trace.executed.iter().filter(|e| a.insns.contains_key(e)).count();
-                let spec_hit = a.speculative.iter().filter(|p| trace.executed.contains(p)).count();
-                println!(
-                    "trace         {} executed, {} in listing; {} indirect pairs; {} of {} pointer guesses ran",
-                    trace.executed.len(),
-                    confirmed,
-                    trace.indirect.len(),
-                    spec_hit,
-                    a.speculative.len()
-                );
-            }
-            println!("invalid stops {}", a.invalid.len());
-            for &p in a.invalid.iter().take(8) {
-                println!("  invalid at {p:#x}");
-            }
+fn cmd_texpack_materials(o: &Opts) -> ExitCode {
+    let game_id = &o.game_id;
+    let args = &o.args;
+    match texpack_materials::main(&args[1..], game_id) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
 
-            // Bucket static data references by 1MB region: a first, empirical
-            // memory map of what the game touches.
-            let mut regions: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
-            for (&t, &n) in &a.data_refs {
-                let e = regions.entry(t >> 20).or_default();
-                e.0 += 1;
-                e.1 += n;
-            }
-            println!("static data references by 1MB region:");
-            for (r, (addrs, refs)) in regions {
-                println!("  {:#010x}  {addrs:>5} addrs  {refs:>6} refs", r << 20);
-            }
-            println!("listing written to {}", out.display());
+fn cmd_pack_lint(o: &Opts) -> ExitCode {
+    let args = &o.args;
+    match pack_lint::main(&args[1..]) {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
         }
-        "copro-disasm" => {
-            let dir = PathBuf::from("out").join(roms.game.id);
-            let input = args.get(1).map(PathBuf::from).unwrap_or_else(|| dir.join("copro.bin"));
-            let Ok(bin) = std::fs::read(&input) else {
-                eprintln!("error: {}: not found (run `make run` first)", input.display());
-                return ExitCode::FAILURE;
-            };
-            copro_disasm(&bin, &input.with_extension("lst"));
+    }
+}
+
+fn cmd_sharc(o: &Opts) -> ExitCode {
+    let args = &o.args;
+    let cmd = &o.args[0];
+    let r = match (cmd.as_str(), args.get(1)) {
+        ("sharc-disasm", Some(file)) => {
+            let out = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{file}.lst")));
+            sharc::disasm(Path::new(file), &out)
         }
-        "jit-translate" => {
-            // The whole program as `recomp` would compile it, on the JIT.
-            let dir = PathBuf::from("out").join(roms.game.id);
-            let read = |f: &str| std::fs::read_to_string(dir.join(f)).unwrap_or_default();
-            let trace = Trace::parse(&read("coverage.txt"), &read("indirect.txt"));
-            let Some(b) = read_boot(&img) else {
-                eprintln!("error: boot record out of range");
-                return ExitCode::FAILURE;
-            };
-            let seeds: Vec<u32> = b.seeds.iter().map(|s| s.1).collect();
-            let t0 = std::time::Instant::now();
-            let a = explore(&img, &seeds, &trace);
-            let mut insns = a.insns;
-            insns.retain(|addr, _| (!a.speculative.contains(addr) || trace.executed.contains(addr)) && addr & 3 == 0);
-            for &addr in trace.executed.iter().filter(|&&a| img.contains(a)) {
-                insns.entry(addr).or_insert_with(|| img.decode(addr));
-            }
-            let mut entries: BTreeSet<u32> = a.functions.iter().copied().collect();
-            entries.extend(trace.indirect.iter().map(|&(_, t)| t).filter(|&t| img.contains(t)));
-            entries.extend(seeds);
-            let found = t0.elapsed();
-            let mut m = model2::Machine::new(&roms);
-            if let Err(e) = m.enable_jit(JIT.get().copied().unwrap_or_default()) {
-                eprintln!("error: {e}");
-                return ExitCode::FAILURE;
-            }
-            let t1 = std::time::Instant::now();
-            let blocks = m.jit_translate_program(&insns, &entries).unwrap_or(0);
-            println!(
-                "discovery     {} instructions ({} executed in coverage.txt) in {:.1} ms",
-                insns.len(),
-                trace.executed.len(),
-                found.as_secs_f64() * 1e3
-            );
-            println!("translated    {blocks} blocks in {:.1} ms", t1.elapsed().as_secs_f64() * 1e3);
-            jit_report(&m);
+        ("sharc-check", Some(_)) => sharc::check(&args[1..], 10_000_000),
+        _ => {
+            eprint!("{USAGE}");
+            return ExitCode::FAILURE;
         }
-        "recomp" => {
-            let dir = PathBuf::from("out").join(roms.game.id);
-            let out = PathBuf::from(recomp_crates::DIR);
-            let _ = std::fs::create_dir_all(&out);
-            let mut made = 0;
-            {
-                let read = |f: &str| std::fs::read_to_string(dir.join(f)).unwrap_or_default();
-                let trace = Trace::parse(&read("coverage.txt"), &read("indirect.txt"));
-                if trace.executed.is_empty() {
-                    eprintln!("i960: no coverage.txt in {} (run `make run` first)", dir.display());
-                }
-                let Some(b) = read_boot(&img) else {
-                    eprintln!("error: boot record out of range");
-                    return ExitCode::FAILURE;
-                };
-                let seeds: Vec<u32> = b.seeds.iter().map(|s| s.1).collect();
-                let a = explore(&img, &seeds, &trace);
-                // Only code the interpreter ran or control flow reaches for
-                // certain; `lda` pointer guesses may be data.
-                let mut insns = a.insns;
-                insns.retain(|addr, _| !a.speculative.contains(addr) || trace.executed.contains(addr));
-                // Instructions are word aligned: discovery can decode data
-                // at an odd address (schamp's 0x20E), and a block there
-                // would take the table slot of the word it sits in.
-                insns.retain(|addr, _| addr & 3 == 0);
-                // Code run from RAM (waverunr copies routines to work RAM)
-                // stays on the interpreter: only program ROM is compiled.
-                for &addr in trace.executed.iter().filter(|&&a| img.contains(a)) {
-                    insns.entry(addr).or_insert_with(|| img.decode(addr));
-                }
-                let mut entries: BTreeSet<u32> = a.functions.iter().copied().collect();
-                entries.extend(trace.indirect.iter().map(|&(_, t)| t).filter(|&t| img.contains(t)));
-                entries.extend(seeds);
-                let hash = model2::program_hash(&roms);
-                let code = i960::codegen::program_module(&insns, &entries, hash);
-                let path = match recomp_crates::write_program(&out, &format!("i960_{hash:016x}"), &code) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        eprintln!("error: {e}");
-                        return ExitCode::FAILURE;
-                    }
-                };
-                let blocks = code.matches("\nfn b").count();
-                println!("i960: {} instructions in {blocks} blocks -> {}", insns.len(), path.display());
-                made += 1;
-            }
-            // Model 2B's copro and geometrizer are SHARCs: their programs
-            // are ADSP-21062 code.
-            let sharc = model2::geo::Core::of(roms.game.board) == model2::geo::Core::Sharc;
-            let tgp_programs: &[&str] = if sharc { &[] } else { &["copro", "geo"] };
-            for name in ["copro", "geo"].into_iter().filter(|_| sharc) {
-                let p = match sharc_program(&dir, name) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        eprintln!("{name}: {e} (run `make run` first)");
-                        continue;
-                    }
-                };
-                let (prog, words, found, ran) = (&p.image, &p.words, &p.found, &p.ran);
-                let extra = ran.difference(found).count();
-                for note in adsp2106x::codegen::check(prog, words) {
-                    println!("{name}: {note}");
-                }
-                let code = adsp2106x::codegen::program_module(prog, words);
-                let krate = p.krate();
-                // Crates were named after the whole image before they were
-                // named after their code: that one is out of date.
-                let old = out.join(format!("sharc_{:016x}", adsp2106x::cpu::program_hash(prog)));
-                if old != out.join(&krate) && old.is_dir() {
-                    let _ = std::fs::remove_dir_all(&old);
-                }
-                let path = match recomp_crates::add_role(&out, &krate, name)
-                    .and_then(|()| recomp_crates::write_program(&out, &krate, &code))
-                {
-                    Ok(p) => p,
-                    Err(e) => {
-                        eprintln!("error: {e}");
-                        return ExitCode::FAILURE;
-                    }
-                };
-                println!(
-                    "{name}: SHARC, {} of {} words recompiled ({} found statically, {extra} more from {} executed) -> {}",
-                    words.len(),
-                    prog.len(),
-                    found.len(),
-                    ran.len(),
-                    path.display()
-                );
-                made += 1;
-            }
-            for &name in tgp_programs {
-                let (Ok(bin), Ok(cov)) = (
-                    std::fs::read(dir.join(format!("{name}.bin"))),
-                    std::fs::read_to_string(dir.join(format!("{name}-coverage.txt"))),
-                ) else {
-                    eprintln!(
-                        "{name}: no {name}.bin / {name}-coverage.txt in {} (run `make run` first)",
-                        dir.display()
-                    );
-                    continue;
-                };
-                let prog: Vec<u64> = bin.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect();
-                let words: Vec<u32> = cov.lines().filter_map(|l| u32::from_str_radix(l.trim(), 16).ok()).collect();
-                let hash = mb86235::cpu::program_hash(&prog);
-                let code = mb86235::codegen::program_module(&prog, &words);
-                let path = match recomp_crates::write_program(&out, &format!("tgp_{hash:016x}"), &code) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        eprintln!("error: {e}");
-                        return ExitCode::FAILURE;
-                    }
-                };
-                println!("{name}: {} of {} words recompiled -> {}", words.len(), prog.len(), path.display());
-                made += 1;
-            }
-            if made == 0 {
-                return ExitCode::FAILURE;
-            }
-            // Every game's programs, not just this one's: the native build
-            // has them all.
-            if let Err(e) = recomp_crates::programs(&out)
-                .and_then(|names| recomp_crates::write_workspace(&out, &out, &names, recomp_crates::Front::Native))
-            {
-                eprintln!("error: {e}");
-                return ExitCode::FAILURE;
-            }
-            println!("workspace: {}/Cargo.toml", out.display());
+    };
+    match r {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
         }
-        "recomp-files" => {
-            let dir = PathBuf::from("out").join(roms.game.id);
-            let mut hashes = vec![format!("i960_{:016x}", model2::program_hash(&roms))];
-            let sharc = model2::geo::Core::of(roms.game.board) == model2::geo::Core::Sharc;
-            for name in ["copro", "geo"] {
-                if sharc {
-                    if let Ok(p) = sharc_program(&dir, name) {
-                        hashes.push(p.krate());
-                    }
-                } else if let Ok(bin) = std::fs::read(dir.join(format!("{name}.bin"))) {
-                    let prog: Vec<u64> = bin.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect();
-                    hashes.push(format!("tgp_{:016x}", mb86235::cpu::program_hash(&prog)));
-                }
-            }
-            hashes.dedup();
-            let out = Path::new(recomp_crates::DIR);
-            // Moves loose files from the older layout into crates.
-            let have = recomp_crates::programs(out).unwrap_or_default();
-            for f in hashes.iter().filter(|f| have.contains(f)) {
-                println!("{f}");
-            }
-        }
-        "shot" => {
-            let Some(path) = args.get(1).map(PathBuf::from) else {
-                eprint!("{USAGE}");
-                return ExitCode::FAILURE;
-            };
-            let frame = args.get(2).and_then(|s| parse_num(s)).map_or(roms.game.attract_frame, u64::from);
-            let script = match model2::input::InputScript::parse(input.as_deref().unwrap_or(""), &roms.game.controls) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("error: --input: {e}");
-                    return ExitCode::FAILURE;
-                }
-            };
-            let mut m = machine(&roms);
-            if interp {
-                m.disable_native();
-            }
-            m.bus.geo.set_threaded(!single_thread);
-            while m.frames < frame {
-                let last = m.frames;
-                if let Err(s) = m.run_slice(u64::MAX) {
-                    eprintln!("error: stopped at frame {}: {s:?}", m.frames);
-                    return ExitCode::FAILURE;
-                }
-                if m.frames != last {
-                    script.apply(m.frames, &mut m.bus);
-                }
-            }
-            if let Some(dir) = path.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            snapshot(&mut m, &path);
-            println!("frame {frame} -> {}", path.display());
-        }
-        "gpu-check" => {
-            let default = PathBuf::from("out").join(roms.game.id).join("capture");
-            let root = args.get(1).map(PathBuf::from).unwrap_or(default);
-            let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
-            let (aa, depth) = (AA.get().copied().unwrap_or(1), DEPTH.get().copied().unwrap_or(false));
-            // With --materials: lamps for the pack's maps, from each
-            // capture's side channel (also with --light, for the frame to
-            // compare with).
-            let light = light_options_lamps(roms.game, materials_on() && pack_dir.is_some());
-            let side = LIGHT.get().is_some() || materials_on();
-            let pack = pack_dir.as_deref();
-            if let Err(e) = gpu_check::run(
-                &root,
-                windows,
-                aa,
-                depth,
-                BLOOM.get().copied().unwrap_or(0),
-                pack,
-                tex_filter(),
-                light.as_ref(),
-                side,
-            ) {
-                eprintln!("error: {e}");
-                return ExitCode::FAILURE;
-            }
-        }
-        "temporal-probe" => {
-            let quality = gpu::Quality {
-                depth: DEPTH.get().copied().unwrap_or(false),
-                temporal: TEMPORAL.get().copied().unwrap_or(100),
-                stipple: STIPPLE.get().copied().unwrap_or_default(),
-                bloom: BLOOM.get().copied().unwrap_or(0),
-                ..Default::default()
-            };
-            let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
-            let view = VIEW.get().copied();
-            let result = if args.get(1).map(String::as_str) == Some("live") {
-                let (Some(from), Some(count), Some(out)) =
-                    (args.get(2).and_then(|s| parse_num(s)), args.get(3).and_then(|s| parse_num(s)), args.get(4))
-                else {
-                    eprint!("{USAGE}");
-                    return ExitCode::FAILURE;
-                };
-                match model2::input::InputScript::parse(input.as_deref().unwrap_or(""), &roms.game.controls) {
-                    Ok(script) => {
-                        let mut m = machine(&roms);
-                        m.bus.geo.set_threaded(!single_thread);
-                        temporal_probe::live(
-                            &mut m,
-                            &script,
-                            from.into(),
-                            count.into(),
-                            windows,
-                            view,
-                            quality,
-                            Path::new(out),
-                        )
-                    }
-                    Err(e) => Err(format!("--input: {e}")),
-                }
-            } else {
-                let default = PathBuf::from("out").join(roms.game.id).join("capture");
-                let root = args.get(1).map(PathBuf::from).unwrap_or(default);
-                let out = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out/scratch/temporal-probe"));
-                // With a pack and --materials: its maps, lit from each
-                // capture's side channel (also with --light).
-                let light = light_options_lamps(roms.game, materials_on() && pack_dir.is_some());
-                let side = LIGHT.get().is_some() || materials_on();
-                let lq = gpu_light(light.as_ref());
-                let quality = gpu::Quality {
-                    shading: lq.shading,
-                    shading_fine: lq.shading_fine,
-                    shading_balance: lq.shading_balance,
-                    tex_filter: tex_filter(),
-                    ..quality
-                };
-                let pack = pack_dir.as_deref();
-                temporal_probe::captures(&root, windows, view, quality, &out, light.as_ref(), pack, side)
-            };
-            if let Err(e) = result {
-                eprintln!("error: {e}");
-                return ExitCode::FAILURE;
-            }
-        }
-        "pack-check" if args.iter().any(|a| a == "--identity") => {
-            args.retain(|a| a != "--identity");
-            let default = PathBuf::from("out").join(roms.game.id).join("capture");
-            let root = args.get(1).map(PathBuf::from).unwrap_or(default);
-            let out = args
-                .get(2)
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("pack-identity"));
-            let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
-            let (aa, depth) = (AA.get().copied().unwrap_or(1), DEPTH.get().copied().unwrap_or(false));
-            if let Err(e) =
-                pack_check::identity(&root, windows, VIEW.get().copied(), aa, depth, pack_dir.as_deref(), &out)
-            {
-                eprintln!("error: {e}");
-                return ExitCode::FAILURE;
-            }
-        }
-        "pack-check" => {
-            let Some(pack) = &pack_dir else {
-                eprintln!("error: pack-check needs --texture-pack DIR");
-                return ExitCode::FAILURE;
-            };
-            let mut probes = Vec::new();
-            while let Some(i) = args.iter().position(|a| a == "--probe") {
-                let Some(p) = args.get(i + 1).and_then(|v| depth_check::Probe::parse(v)) else {
-                    eprintln!("error: --probe wants X,Y@FRAME (output pixel, captured frame)");
-                    return ExitCode::FAILURE;
-                };
-                probes.push(p);
+    }
+}
+
+fn cmd_temporal_check(o: &Opts) -> ExitCode {
+    let mut args = o.args.clone();
+    let Some(root) = args.get(1).map(PathBuf::from) else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    let every = match args.iter().position(|a| a == "--every") {
+        Some(i) => match args.get(i + 1).and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0) {
+            Some(n) => {
                 args.drain(i..i + 2);
+                n
             }
-            if !probes.is_empty() && !materials_on() {
-                eprintln!("error: pack-check --probe is for --materials");
+            None => {
+                eprintln!("error: --every wants a number of frames");
                 return ExitCode::FAILURE;
             }
-            let default = PathBuf::from("out").join(roms.game.id).join("capture");
-            let root = args.get(1).map(PathBuf::from).unwrap_or(default);
-            let out = args
-                .get(2)
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("pack-check"));
-            let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
-            let (aa, depth) = (AA.get().copied().unwrap_or(1), DEPTH.get().copied().unwrap_or(false));
-            let light = light_options(roms.game);
-            let materials = light_options_lamps(roms.game, materials_on());
-            let materials = materials.filter(|o| o.lamps);
-            if let Err(e) = pack_check::run(
-                &root,
-                windows,
-                VIEW.get().copied(),
-                aa,
-                depth,
-                pack,
-                &out,
-                light.as_ref(),
-                materials.as_ref(),
-                &probes,
-            ) {
-                eprintln!("error: {e}");
+        },
+        None => 10,
+    };
+    // Flags: --no-gpu, --gpu-only, --bench [FRAMES], --tune K=V,..., --crop X,Y,W,H
+    // (repeatable), --ref-cache DIR.
+    let mut take = |name: &str| -> Option<Option<String>> {
+        let i = args.iter().position(|a| a == name)?;
+        let v = args.get(i + 1).filter(|v| !v.starts_with("--")).cloned();
+        args.drain(i..i + 1 + v.is_some() as usize);
+        Some(v)
+    };
+    let no_gpu = take("--no-gpu").is_some();
+    let gpu_only = take("--gpu-only").is_some();
+    let bench = take("--bench");
+    let tune = take("--tune").flatten();
+    let ref_cache = take("--ref-cache").flatten().map(PathBuf::from);
+    let at: Vec<u64> = take("--at").flatten().unwrap_or_default().split(',').filter_map(|x| x.parse().ok()).collect();
+    let inspect = take("--inspect").is_some();
+    let dump = match take("--dump")
+        .map(|d| d.unwrap_or_default().split(',').filter_map(|x| x.parse().ok()).collect::<Vec<usize>>())
+    {
+        None => None,
+        Some(v) => match v[..] {
+            [x, y, w, h] => Some((x, y, w, h, 100)),
+            [x, y, w, h, s @ (100 | 67 | 50)] => Some((x, y, w, h, s)),
+            _ => {
+                eprintln!("error: --dump wants X,Y,W,H[,SCALE] in output pixels (scale 100, 67 or 50)");
                 return ExitCode::FAILURE;
             }
+        },
+    };
+    let mut crops = Vec::new();
+    while let Some(c) = take("--crop") {
+        let v: Vec<usize> = c.unwrap_or_default().split(',').filter_map(|x| x.parse().ok()).collect();
+        let [x, y, w, h] = v[..] else {
+            eprintln!("error: --crop wants X,Y,W,H in output pixels");
+            return ExitCode::FAILURE;
+        };
+        crops.push((x, y, w, h));
+    }
+    let tuning = match tune.map(|t| gpu::TemporalTuning::parse(&t)).transpose() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: --tune: {e}");
+            return ExitCode::FAILURE;
         }
-        "tile-check" => {
-            let Some(pack) = &pack_dir else {
-                eprintln!("error: tile-check needs --texture-pack DIR");
-                return ExitCode::FAILURE;
-            };
-            let default = PathBuf::from("out").join(roms.game.id).join("capture");
-            let root = args.get(1).map(PathBuf::from).unwrap_or(default);
-            let out = args
-                .get(2)
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("tile-check"));
-            let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
-            let light = light_options(roms.game);
-            if let Err(e) = pack_check::run_tiles(&root, windows, VIEW.get().copied(), pack, &out, light.as_ref()) {
+    };
+    let out = args.get(2).map(PathBuf::from).unwrap_or_else(|| root.join("check"));
+    let view =
+        VIEW.get().copied().unwrap_or_else(|| model2::video::View::new(1080, 16.0 / 9.0, model2::video::Hud::Edges));
+    if let Some(n) = bench {
+        let frames = n.and_then(|n| n.parse().ok()).unwrap_or(30);
+        return match temporal_check::bench(&root, &view, frames, 8) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
                 eprintln!("error: {e}");
-                return ExitCode::FAILURE;
+                ExitCode::FAILURE
             }
+        };
+    }
+    let depth = DEPTH.get().copied().unwrap_or(false);
+    let opts = temporal_check::Options {
+        view,
+        every,
+        out,
+        gpu: !no_gpu,
+        gpu_only,
+        tuning,
+        crops,
+        ref_cache,
+        at,
+        depth,
+        inspect,
+        dump,
+    };
+    match temporal_check::run(&root, &opts) {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
         }
-        "depth-check" => {
-            let (mut probes, mut against) = (Vec::new(), None);
-            while let Some(i) = args.iter().position(|a| a == "--probe" || a == "--against") {
-                let (Some(v), true) = (args.get(i + 1).cloned(), args[i] == "--probe") else {
-                    against = args.get(i + 1).map(PathBuf::from);
-                    args.drain(i..(i + 2).min(args.len()));
-                    continue;
+    }
+}
+
+fn cmd_tgp_disasm(o: &Opts) -> ExitCode {
+    let game_id = &o.game_id;
+    let args = &o.args;
+    // A 2A game's uploaded TGP program (`run` writes out/GAME/tgp.bin).
+    let file = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out").join(game_id).join("tgp.bin"));
+    let out = args.get(2).map(PathBuf::from).unwrap_or_else(|| file.with_extension("lst"));
+    match tgp_disasm::disasm(&file, &out) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_scan(o: &Opts) -> ExitCode {
+    let rom_dir = &o.rom_dir;
+    let sets = romset::sets_with_clones(rom_dir);
+    if sets.is_empty() {
+        eprintln!("no sets in {} (expected <set>.zip or <set>/)", rom_dir.display());
+        return ExitCode::FAILURE;
+    }
+    let mut supported = 0;
+    for set in &sets {
+        match games::find(set) {
+            Ok(g) => {
+                supported += 1;
+                let state = match RomSet::load(g, rom_dir, true) {
+                    Ok(_) => "ok".to_string(),
+                    Err(e) => format!("bad: {e}"),
                 };
-                let Some(p) = depth_check::Probe::parse(&v) else {
-                    eprintln!("error: --probe wants X,Y@FRAME (output pixel, captured frame)");
-                    return ExitCode::FAILURE;
-                };
-                probes.push(p);
-                args.drain(i..i + 2);
+                println!("{set:<12} {:<34} {state}", g.title);
             }
-            let default = PathBuf::from("out").join(roms.game.id).join("capture");
-            let root = args.get(1).map(PathBuf::from).unwrap_or(default);
-            let out = args
-                .get(2)
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("depth-check"));
-            let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
-            let (aa, against) = (AA.get().copied().unwrap_or(1), against.as_deref());
-            let light = light_options(roms.game);
-            if let Err(e) =
-                depth_check::run(&root, windows, VIEW.get().copied(), aa, &out, &probes, against, light.as_ref())
-            {
-                eprintln!("error: {e}");
-                return ExitCode::FAILURE;
-            }
+            Err(_) => println!("{set:<12} {:<34} not supported yet", "-"),
         }
-        "lighting-check" => {
-            let mut args = args.clone();
-            let mut probes = Vec::new();
-            while let Some(i) = args.iter().position(|a| a == "--probe") {
-                let Some(p) = args.get(i + 1).and_then(|v| depth_check::Probe::parse(v)) else {
-                    eprintln!("error: --probe wants X,Y@FRAME (output pixel, captured frame)");
-                    return ExitCode::FAILURE;
-                };
-                probes.push(p);
-                args.drain(i..i + 2);
-            }
-            let bench = match args.iter().position(|a| a == "--bench") {
-                Some(i) => {
-                    let n = args.get(i + 1).and_then(|v| v.parse::<usize>().ok());
-                    args.drain(i..i + 1 + n.is_some() as usize);
-                    Some(n.unwrap_or(8))
-                }
-                None => None,
-            };
-            let every = match args.iter().position(|a| a == "--every") {
-                Some(i) => match args.get(i + 1).and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0) {
-                    Some(n) => {
-                        args.drain(i..i + 2);
-                        n
-                    }
-                    None => {
-                        eprintln!("error: --every wants a number of frames");
-                        return ExitCode::FAILURE;
-                    }
-                },
-                None => 1,
-            };
-            let side = match args.iter().position(|a| a == "--no-side") {
-                Some(i) => {
-                    args.remove(i);
-                    false
-                }
-                None => true,
-            };
-            let spec = match args.iter().position(|a| a == "--spec-stats") {
-                Some(i) => {
-                    args.remove(i);
-                    true
-                }
-                None => false,
-            };
-            let default = PathBuf::from("out").join(roms.game.id).join("capture");
-            let root = args.get(1).map(PathBuf::from).unwrap_or(default);
-            let out = args
-                .get(2)
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("out/scratch/lighting").join(roms.game.id));
-            let crease = SHADING.get().map_or(model2::light::CREASE_AUTO, |s| s.1);
-            // `--shading pixel` checks the per-pixel level; anything else vertex.
-            let level = match SHADING.get() {
-                Some((model2::light::Shading::Pixel, _)) => model2::light::Shading::Pixel,
-                _ => model2::light::Shading::Vertex,
-            };
-            let opts = model2::light::Options::new(level, crease, &roms.game.shading, roms.game.hud_windows)
-                .with_fine(SHADING_FINE.get().copied().unwrap_or(false))
-                .with_balance(SHADING_BALANCE.get().copied().unwrap_or(true));
-            let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
-            let result = if spec {
-                spec_stats::run(&root, windows, VIEW.get().copied(), opts, &out, every)
-            } else {
-                lighting_check::run(&root, windows, VIEW.get().copied(), opts, &out, &probes, bench, every, side)
-            };
-            match result {
-                Ok(true) => {}
-                Ok(false) => return ExitCode::FAILURE,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    return ExitCode::FAILURE;
-                }
-            }
+    }
+    println!("{} sets, {supported} supported", sets.len());
+    ExitCode::SUCCESS
+}
+
+fn cmd_web_index(o: &Opts) -> ExitCode {
+    let rom_dir = &o.rom_dir;
+    let args = &o.args;
+    let games = web_index(rom_dir);
+    if let Some(dir) = args.get(1).map(PathBuf::from) {
+        let path = dir.join("games.json");
+        if let Err(e) = std::fs::write(&path, games_json(&games, &dir)) {
+            eprintln!("error: {}: {e}", path.display());
+            return ExitCode::FAILURE;
         }
-        // Debug: run recompiled and interpreted i960s side by side, one
-        // instruction at a time, and report the first that differs.
-        "lockstep" => {
-            let steps = args.get(1).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(50_000_000);
-            let mut native = model2::Machine::new(&roms);
-            jit_if_asked(&mut native);
-            let mut reference = model2::Machine::new(&roms);
-            reference.disable_native();
-            reference.disable_native_sharc();
-            if !native.is_native() {
-                eprintln!("error: this build has no recompiled i960 code for {} (try --jit)", roms.game.id);
-                return ExitCode::FAILURE;
-            }
-            // Model 2B: the SHARCs too, the copro after every block, the
-            // geometrizer (inline, so its frame has run) every frame.
-            native.bus.geo.set_threaded(false);
-            reference.bus.geo.set_threaded(false);
-            // --input: the same inputs into both, at each new frame.
-            let script = match model2::input::InputScript::parse(input.as_deref().unwrap_or(""), &roms.game.controls) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("error: --input: {e}");
-                    return ExitCode::FAILURE;
-                }
-            };
-            let (mut sharcs_reported, mut checked_frame) = (false, 0);
-            while native.cpu.icount < steps {
-                let ip = native.cpu.ip;
-                let before = native.cpu.r;
-                let frame = native.frames;
-                let a = native.run_block();
-                if native.frames != frame {
-                    script.apply(native.frames, &mut native.bus);
-                }
-                let mut b = Ok(());
-                while b.is_ok() && reference.cpu.icount < native.cpu.icount {
-                    let frame = reference.frames;
-                    b = reference.step();
-                    if reference.frames != frame {
-                        script.apply(reference.frames, &mut reference.bus);
-                    }
-                }
-                let (n, r) = (&native.cpu, &reference.cpu);
-                if a.is_err()
-                    || b.is_err()
-                    || n.r != r.r
-                    || n.ip != r.ip
-                    || n.ac != r.ac
-                    || n.pc != r.pc
-                    || n.locals != r.locals
-                {
-                    println!("diverged after {} instructions, in the block at {ip:#x}:", r.icount);
-                    let mut pc = ip;
-                    for _ in 0..a.as_ref().map_or(1, |&n| n) {
-                        let i = img.decode(pc);
-                        println!("  {pc:08x}  {i}");
-                        pc = i.next();
-                    }
-                    println!("  results: recompiled {a:?}, interpreter {b:?}");
-                    println!(
-                        "  ip {:#x} / {:#x}  ac {:#x} / {:#x}  pc {:#x} / {:#x}",
-                        n.ip, r.ip, n.ac, r.ac, n.pc, r.pc
-                    );
-                    if n.locals != r.locals {
-                        println!("  cached frames: recompiled {:x?}", n.locals.sets());
-                        println!("               interpreter {:x?}", r.locals.sets());
-                    }
-                    for (i, ((&was, &got), &want)) in before.iter().zip(&n.r).zip(&r.r).enumerate() {
-                        if got != want || was != want {
-                            let name = i960::reg_name(i as u8);
-                            println!(
-                                "  {name:>4}: before {was:#010x}  recompiled {got:#010x}  interpreter {want:#010x}"
-                            );
-                        }
-                    }
-                    return ExitCode::FAILURE;
-                }
-                if let Err(e) = sharc_lockstep(&native, &reference, &mut sharcs_reported, &mut checked_frame) {
-                    println!("diverged after {} i960 instructions (frame {}): {e}", r.icount, native.frames);
-                    return ExitCode::FAILURE;
-                }
-            }
-            println!("{} instructions identical", native.cpu.icount);
-            jit_report(&native);
-        }
-        // Debug: boot out/GAME/geo.bin, pulse F0, feed hex words, trace.
-        "geo-trace-words" => {
-            let dir = PathBuf::from("out").join(roms.game.id);
-            let bin = std::fs::read(dir.join("geo.bin")).unwrap_or_default();
-            let prog: Vec<u64> = bin.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect();
-            let words: Vec<u32> = args[1..].iter().filter_map(|s| u32::from_str_radix(s, 16).ok()).collect();
-            geo_trace_words(&prog, &words);
-        }
-        "geo-check" => {
-            let steps = args.get(1).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(750_000_000);
-            let from = args.get(2).and_then(|s| parse_num(s)).map_or(0, u64::from);
-            let script = match model2::input::InputScript::parse(input.as_deref().unwrap_or(""), &roms.game.controls) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("error: --input: {e}");
-                    return ExitCode::FAILURE;
-                }
-            };
-            let mut m = model2::Machine::new(&roms);
-            if interp {
-                m.disable_native();
-            }
-            m.bus.geo.set_threaded(!single_thread);
-            m.bus.geo.set_mode(model2::geo::GeoMode::Check);
-            m.bus.geo.set_light(LIGHT.get().is_some());
-            if let Err(e) = geo_check::run(&mut m, &roms, steps, from, &script, LOAD_STATE.get()) {
-                eprintln!("error: {e}");
-                return ExitCode::FAILURE;
-            }
-        }
-        "geo-fuzz" => {
-            let frames = args.get(1).and_then(|s| parse_num(s)).map_or(200, u64::from);
-            let seed = args.get(2).and_then(|s| parse_num(s)).map_or(1, u64::from);
-            if let Err(e) = geo_check::fuzz(&roms, frames, seed) {
-                eprintln!("error: {e}");
-                return ExitCode::FAILURE;
-            }
-        }
-        "run-ahead-check" => {
-            let steps = args.get(1).and_then(|s| parse_num(s)).map_or(450_000_000, u64::from);
-            let frames = args.get(2).and_then(|s| parse_num(s)).unwrap_or(1);
-            let every = args.get(3).and_then(|s| parse_num(s)).map_or(50, u64::from).max(1);
-            match run_ahead::check(&roms, steps, frames, every, input.as_deref().unwrap_or(""), interp, single_thread) {
-                Ok(true) => {}
-                Ok(false) => return ExitCode::FAILURE,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    return ExitCode::FAILURE;
-                }
-            }
-        }
-        "camera-scan" => {
-            let (Some(at), Some(gap)) =
-                (args.get(1).and_then(|s| parse_num(s)), args.get(2).and_then(|s| parse_num(s)))
-            else {
-                eprint!("{USAGE}");
-                return ExitCode::FAILURE;
-            };
-            if let Err(e) = camera_scan::scan(&roms, at as u64, gap as u64, input.as_deref().unwrap_or(""), interp) {
-                eprintln!("error: {e}");
-                return ExitCode::FAILURE;
-            }
-        }
-        "run-ahead-profile" => {
-            let warmup = args.get(1).and_then(|s| parse_num(s)).map_or(1500, u64::from);
-            let frames = args.get(2).and_then(|s| parse_num(s)).map_or(1500, u64::from);
-            let ahead = args.get(3).and_then(|s| parse_num(s)).unwrap_or(1);
-            if let Err(e) =
-                run_ahead::profile(&roms, warmup, frames, ahead, input.as_deref().unwrap_or(""), interp, single_thread)
-            {
-                eprintln!("error: {e}");
-                return ExitCode::FAILURE;
-            }
-        }
-        "latency" => {
-            let (Some(at), Some(change)) = (args.get(1).and_then(|s| parse_num(s)), args.get(2)) else {
-                eprint!("{USAGE}");
-                return ExitCode::FAILURE;
-            };
-            let frames = args.get(3).and_then(|s| parse_num(s)).map_or(12, u64::from);
-            if let Err(e) =
-                latency(&roms, at as u64, change, frames, input.as_deref().unwrap_or(""), interp, single_thread)
-            {
-                eprintln!("error: {e}");
-                return ExitCode::FAILURE;
-            }
-        }
-        "run" => {
-            let steps = args.get(1).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(50_000_000);
-            let snap = args.get(2).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(0);
-            let script = match model2::input::InputScript::parse(input.as_deref().unwrap_or(""), &roms.game.controls) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("error: --input: {e}");
-                    return ExitCode::FAILURE;
-                }
-            };
-            let geo_frame = geo_frame.and_then(|s| parse_num(&s)).map(u64::from);
-            run(&roms, steps, snap, &script, geo_frame, interp, single_thread);
-        }
-        "sound-disasm" => {
-            let Some(mut pc) = args.get(1).and_then(|s| parse_num(s)) else {
-                eprint!("{USAGE}");
-                return ExitCode::FAILURE;
-            };
-            let count = args.get(2).and_then(|s| parse_num(s)).unwrap_or(32);
-            let rom = roms.region16be(romset::Role::AudioCpu);
-            // The original Model 2's sound 68000 runs its program from 0.
-            let base = if roms.game.board == romset::Board::Model2 { 0 } else { 0x60_0000 };
-            let fetch = |a: u32| {
-                let o = a.wrapping_sub(base) as usize;
-                rom.get(o..o + 2).map_or(0, |b| u16::from_be_bytes([b[0], b[1]]))
-            };
-            for _ in 0..count {
-                let (text, len) = m68k::disasm(pc, fetch);
-                let words: Vec<String> = (0..len / 2).map(|i| format!("{:04x}", fetch(pc + 2 * i))).collect();
-                println!("{pc:06x}  {:<20}  {text}", words.join(" "));
-                pc += len;
-            }
-        }
-        "sound-render" => {
-            let dir = PathBuf::from("out").join(roms.game.id);
-            let tx_path = dir.join("sound-tx.txt");
-            let tx = match std::fs::read_to_string(&tx_path) {
-                Ok(t) => sound_render::parse_tx(&t),
-                Err(e) => {
-                    eprintln!("error: {}: {e} (run `make run` first)", tx_path.display());
-                    return ExitCode::FAILURE;
-                }
-            };
-            let wav = args.get(1).map(PathBuf::from).unwrap_or_else(|| dir.join("sound.wav"));
-            let seconds = args.get(2).and_then(|s| s.parse::<f64>().ok());
-            println!("host bytes    {} from {}", tx.len(), tx_path.display());
-            if let Err(e) = sound_render::render(&roms, &tx, seconds, &wav) {
-                eprintln!("error: {e}");
-                return ExitCode::FAILURE;
-            }
-        }
-        "music-render" | "mpeg-dump" => {
-            let dir = PathBuf::from("out").join(roms.game.id);
-            let r = if cmd == "music-render" {
-                let wav = args.get(1).map(PathBuf::from).unwrap_or_else(|| dir.join("music.wav"));
-                let secs = args.get(2).and_then(|s| s.parse().ok());
-                music::music_render(&roms, &dir.join("sound-tx.txt"), &wav, secs, soundtrack.as_deref().map(Path::new))
-            } else {
-                let Some(addr) = args.get(1).and_then(|s| parse_num(s)) else {
-                    eprint!("{USAGE}");
-                    return ExitCode::FAILURE;
-                };
-                let secs = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10.0);
-                music::mpeg_dump(&roms, addr, secs, &dir)
-            };
-            if let Err(e) = r {
-                eprintln!("error: {e}");
-                return ExitCode::FAILURE;
-            }
+        eprintln!("wrote {} ({} games)", path.display(), games.len());
+    }
+    for g in games {
+        println!("{}", g.id);
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_recomp_workspace(o: &Opts) -> ExitCode {
+    let args = &o.args;
+    let out = Path::new(recomp_crates::DIR);
+    let r = match args.get(1).map(String::as_str) {
+        None => recomp_crates::programs(out)
+            .and_then(|names| recomp_crates::write_workspace(out, out, &names, recomp_crates::Front::Native)),
+        Some("--web") if args.len() > 2 => {
+            recomp_crates::write_workspace(Path::new(&args[2]), out, &args[3..], recomp_crates::Front::Web)
         }
         _ => {
             eprint!("{USAGE}");
             return ExitCode::FAILURE;
         }
+    };
+    if let Err(e) = r {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_rom_folder(o: &Opts) -> ExitCode {
+    let game_id = &o.game_id;
+    let rom_dir = &o.rom_dir;
+    // The set folder in --rom with all of the game's chips (its own or
+    // its parent's), for the browser build's pages.
+    let Ok(g) = games::find(game_id) else {
+        eprintln!("error: unknown game '{game_id}'");
+        return ExitCode::FAILURE;
+    };
+    match romset::rom_folder(g, rom_dir) {
+        Some(set) => {
+            println!("{set}");
+            ExitCode::SUCCESS
+        }
+        None => ExitCode::FAILURE,
+    }
+}
+
+fn cmd_games(_o: &Opts) -> ExitCode {
+    for g in games::ALL {
+        // Last, the set it is a clone of ("-" for none).
+        println!("{:<10} {:<20} {:<12} {}", g.id, g.title, format!("{:?}", g.board), g.parent.unwrap_or("-"));
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_inputs(o: &Opts) -> ExitCode {
+    let game_id = &o.game_id;
+    let Ok(g) = games::find(game_id) else {
+        eprintln!("error: unknown game '{game_id}'");
+        return ExitCode::FAILURE;
+    };
+    let c = &g.controls;
+    println!("{} inputs (name: port bit / channel centre):", g.id);
+    for b in c.buttons {
+        println!("  {:<10} port {} bit 0x{:02x}", b.name, b.port, b.bit);
+    }
+    for a in c.analogs {
+        println!("  {:<10} analog channel {}, centre 0x{:02x}", a.name, a.channel, a.centre);
+    }
+    println!("coin-start = {}", c.coin_start);
+    println!("player bindings (keys / pad):\n{}", romset::Bindings::defaults(c).describe().trim_end());
+    ExitCode::SUCCESS
+}
+
+fn cmd_verify(_o: &Opts, roms: &RomSet) -> ExitCode {
+    for r in roms.game.files {
+        println!("ok  {:<14} {:>8x}  {:?}", r.name, r.size, r.role);
+    }
+    println!("{}: all {} chips match", roms.game.id, roms.game.files.len());
+    ExitCode::SUCCESS
+}
+
+fn cmd_boot(_o: &Opts, roms: &RomSet) -> ExitCode {
+    let img = Image { base: 0, bytes: &roms.program };
+    let Some(b) = read_boot(&img) else {
+        eprintln!("error: boot record out of range");
+        return ExitCode::FAILURE;
+    };
+    println!("prcb        {:#x}", b.prcb);
+    println!("reset ip    {:#x}", b.reset_ip);
+    println!("int table   {:#x}", b.int_table);
+    println!("sysproc     {:#x}", b.sysproc_table);
+    println!("fault table {:#x}", b.fault_table);
+    let mut by_target: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+    for (k, a) in &b.seeds {
+        by_target.entry(*a).or_default().push(format!("{k:?}"));
+    }
+    for (a, ks) in by_target {
+        let shown = if ks.len() > 4 {
+            format!("{} .. {} ({} entries)", ks[0], ks[ks.len() - 1], ks.len())
+        } else {
+            ks.join(", ")
+        };
+        println!("  {a:#08x}  {shown}");
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_tgp_check(o: &Opts, roms: &RomSet) -> ExitCode {
+    let game_id = &o.game_id;
+    let args = &o.args;
+    // A 2A game's uploaded TGP program on the interpreter, with the
+    // board's function ROM.
+    let file = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out").join(game_id).join("tgp.bin"));
+    let bytes = match std::fs::read(&file) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: {}: {e} (`make run GAME={game_id}` writes it)", file.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let program: Vec<u32> = bytes.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
+    let tables: Vec<u32> = roms
+        .bank(romset::Role::CoproData)
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .take(0x1_0000)
+        .map(|c| u32::from_le_bytes(*c))
+        .collect();
+    match tgp_check::check(&program, tables) {
+        Ok(true) => {}
+        Ok(false) => return ExitCode::FAILURE,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_disasm(o: &Opts, roms: &RomSet) -> ExitCode {
+    let img = Image { base: 0, bytes: &roms.program };
+    let args = &o.args;
+    let Some(mut pc) = args.get(1).and_then(|s| parse_num(s)) else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    let count = args.get(2).and_then(|s| parse_num(s)).unwrap_or(32);
+    for _ in 0..count {
+        let i = img.decode(pc);
+        println!("{:08x}  {:08x}  {i}", i.addr, i.word);
+        pc = i.next();
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_analyze(o: &Opts, roms: &RomSet) -> ExitCode {
+    let img = Image { base: 0, bytes: &roms.program };
+    let args = &o.args;
+    let default_out = format!("out/{}/program.lst", roms.game.id);
+    let out = PathBuf::from(args.get(1).map(String::as_str).unwrap_or(&default_out));
+    let Some(b) = read_boot(&img) else {
+        eprintln!("error: boot record out of range");
+        return ExitCode::FAILURE;
+    };
+    let seeds: Vec<u32> = b.seeds.iter().map(|s| s.1).collect();
+    // Use the interpreter's trace from `remodel run`, when present.
+    let dir = PathBuf::from("out").join(roms.game.id);
+    let read = |f: &str| std::fs::read_to_string(dir.join(f)).unwrap_or_default();
+    let trace = Trace::parse(&read("coverage.txt"), &read("indirect.txt"));
+    let a = explore(&img, &seeds, &trace);
+
+    let mut text = String::new();
+    for (addr, i) in &a.insns {
+        if a.functions.contains(addr) {
+            let _ = writeln!(text, "\nsub_{addr:x}:");
+        } else if a.labels.contains(addr) {
+            let _ = writeln!(text, "loc_{addr:x}:");
+        }
+        let _ = writeln!(text, "  {addr:08x}  {i}");
+    }
+    if let Some(dir) = out.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Err(e) = std::fs::write(&out, text) {
+        eprintln!("error: {}: {e}", out.display());
+        return ExitCode::FAILURE;
+    }
+
+    let code_bytes: u32 = a.insns.values().map(|i| i.size).sum();
+    println!("instructions  {}", a.insns.len());
+    println!(
+        "code bytes    {code_bytes:#x} ({:.1}% of {:#x})",
+        100.0 * code_bytes as f64 / roms.program.len() as f64,
+        roms.program.len()
+    );
+    println!("functions     {} ({} via lda code pointers)", a.functions.len(), a.speculative.len());
+    println!("indirect      {} (jump tables / function pointers to resolve)", a.indirect.len());
+    if !trace.executed.is_empty() {
+        let confirmed = trace.executed.iter().filter(|e| a.insns.contains_key(e)).count();
+        let spec_hit = a.speculative.iter().filter(|p| trace.executed.contains(p)).count();
+        println!(
+            "trace         {} executed, {} in listing; {} indirect pairs; {} of {} pointer guesses ran",
+            trace.executed.len(),
+            confirmed,
+            trace.indirect.len(),
+            spec_hit,
+            a.speculative.len()
+        );
+    }
+    println!("invalid stops {}", a.invalid.len());
+    for &p in a.invalid.iter().take(8) {
+        println!("  invalid at {p:#x}");
+    }
+
+    // Bucket static data references by 1MB region: a first, empirical
+    // memory map of what the game touches.
+    let mut regions: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
+    for (&t, &n) in &a.data_refs {
+        let e = regions.entry(t >> 20).or_default();
+        e.0 += 1;
+        e.1 += n;
+    }
+    println!("static data references by 1MB region:");
+    for (r, (addrs, refs)) in regions {
+        println!("  {:#010x}  {addrs:>5} addrs  {refs:>6} refs", r << 20);
+    }
+    println!("listing written to {}", out.display());
+    ExitCode::SUCCESS
+}
+
+fn cmd_copro_disasm(o: &Opts, roms: &RomSet) -> ExitCode {
+    let args = &o.args;
+    let dir = PathBuf::from("out").join(roms.game.id);
+    let input = args.get(1).map(PathBuf::from).unwrap_or_else(|| dir.join("copro.bin"));
+    let Ok(bin) = std::fs::read(&input) else {
+        eprintln!("error: {}: not found (run `make run` first)", input.display());
+        return ExitCode::FAILURE;
+    };
+    copro_disasm(&bin, &input.with_extension("lst"));
+    ExitCode::SUCCESS
+}
+
+fn cmd_jit_translate(_o: &Opts, roms: &RomSet) -> ExitCode {
+    let img = Image { base: 0, bytes: &roms.program };
+    // The whole program as `recomp` would compile it, on the JIT.
+    let dir = PathBuf::from("out").join(roms.game.id);
+    let read = |f: &str| std::fs::read_to_string(dir.join(f)).unwrap_or_default();
+    let trace = Trace::parse(&read("coverage.txt"), &read("indirect.txt"));
+    let Some(b) = read_boot(&img) else {
+        eprintln!("error: boot record out of range");
+        return ExitCode::FAILURE;
+    };
+    let seeds: Vec<u32> = b.seeds.iter().map(|s| s.1).collect();
+    let t0 = std::time::Instant::now();
+    let a = explore(&img, &seeds, &trace);
+    let mut insns = a.insns;
+    insns.retain(|addr, _| (!a.speculative.contains(addr) || trace.executed.contains(addr)) && addr & 3 == 0);
+    for &addr in trace.executed.iter().filter(|&&a| img.contains(a)) {
+        insns.entry(addr).or_insert_with(|| img.decode(addr));
+    }
+    let mut entries: BTreeSet<u32> = a.functions.iter().copied().collect();
+    entries.extend(trace.indirect.iter().map(|&(_, t)| t).filter(|&t| img.contains(t)));
+    entries.extend(seeds);
+    let found = t0.elapsed();
+    let mut m = model2::Machine::new(roms);
+    if let Err(e) = m.enable_jit(JIT.get().copied().unwrap_or_default()) {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    let t1 = std::time::Instant::now();
+    let blocks = m.jit_translate_program(&insns, &entries).unwrap_or(0);
+    println!(
+        "discovery     {} instructions ({} executed in coverage.txt) in {:.1} ms",
+        insns.len(),
+        trace.executed.len(),
+        found.as_secs_f64() * 1e3
+    );
+    println!("translated    {blocks} blocks in {:.1} ms", t1.elapsed().as_secs_f64() * 1e3);
+    jit_report(&m);
+    ExitCode::SUCCESS
+}
+
+fn cmd_recomp(_o: &Opts, roms: &RomSet) -> ExitCode {
+    let img = Image { base: 0, bytes: &roms.program };
+    let dir = PathBuf::from("out").join(roms.game.id);
+    let out = PathBuf::from(recomp_crates::DIR);
+    let _ = std::fs::create_dir_all(&out);
+    let mut made = 0;
+    {
+        let read = |f: &str| std::fs::read_to_string(dir.join(f)).unwrap_or_default();
+        let trace = Trace::parse(&read("coverage.txt"), &read("indirect.txt"));
+        if trace.executed.is_empty() {
+            eprintln!("i960: no coverage.txt in {} (run `make run` first)", dir.display());
+        }
+        let Some(b) = read_boot(&img) else {
+            eprintln!("error: boot record out of range");
+            return ExitCode::FAILURE;
+        };
+        let seeds: Vec<u32> = b.seeds.iter().map(|s| s.1).collect();
+        let a = explore(&img, &seeds, &trace);
+        // Only code the interpreter ran or control flow reaches for
+        // certain; `lda` pointer guesses may be data.
+        let mut insns = a.insns;
+        insns.retain(|addr, _| !a.speculative.contains(addr) || trace.executed.contains(addr));
+        // Instructions are word aligned: discovery can decode data
+        // at an odd address (schamp's 0x20E), and a block there
+        // would take the table slot of the word it sits in.
+        insns.retain(|addr, _| addr & 3 == 0);
+        // Code run from RAM (waverunr copies routines to work RAM)
+        // stays on the interpreter: only program ROM is compiled.
+        for &addr in trace.executed.iter().filter(|&&a| img.contains(a)) {
+            insns.entry(addr).or_insert_with(|| img.decode(addr));
+        }
+        let mut entries: BTreeSet<u32> = a.functions.iter().copied().collect();
+        entries.extend(trace.indirect.iter().map(|&(_, t)| t).filter(|&t| img.contains(t)));
+        entries.extend(seeds);
+        let hash = model2::program_hash(roms);
+        let code = i960::codegen::program_module(&insns, &entries, hash);
+        let path = match recomp_crates::write_program(&out, &format!("i960_{hash:016x}"), &code) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let blocks = code.matches("\nfn b").count();
+        println!("i960: {} instructions in {blocks} blocks -> {}", insns.len(), path.display());
+        made += 1;
+    }
+    // Model 2B's copro and geometrizer are SHARCs: their programs
+    // are ADSP-21062 code.
+    let sharc = model2::geo::Core::of(roms.game.board) == model2::geo::Core::Sharc;
+    let tgp_programs: &[&str] = if sharc { &[] } else { &["copro", "geo"] };
+    for name in ["copro", "geo"].into_iter().filter(|_| sharc) {
+        let p = match sharc_program(&dir, name) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("{name}: {e} (run `make run` first)");
+                continue;
+            }
+        };
+        let (prog, words, found, ran) = (&p.image, &p.words, &p.found, &p.ran);
+        let extra = ran.difference(found).count();
+        for note in adsp2106x::codegen::check(prog, words) {
+            println!("{name}: {note}");
+        }
+        let code = adsp2106x::codegen::program_module(prog, words);
+        let krate = p.krate();
+        // Crates were named after the whole image before they were
+        // named after their code: that one is out of date.
+        let old = out.join(format!("sharc_{:016x}", adsp2106x::cpu::program_hash(prog)));
+        if old != out.join(&krate) && old.is_dir() {
+            let _ = std::fs::remove_dir_all(&old);
+        }
+        let path = match recomp_crates::add_role(&out, &krate, name)
+            .and_then(|()| recomp_crates::write_program(&out, &krate, &code))
+        {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        println!(
+            "{name}: SHARC, {} of {} words recompiled ({} found statically, {extra} more from {} executed) -> {}",
+            words.len(),
+            prog.len(),
+            found.len(),
+            ran.len(),
+            path.display()
+        );
+        made += 1;
+    }
+    for &name in tgp_programs {
+        let (Ok(bin), Ok(cov)) = (
+            std::fs::read(dir.join(format!("{name}.bin"))),
+            std::fs::read_to_string(dir.join(format!("{name}-coverage.txt"))),
+        ) else {
+            eprintln!("{name}: no {name}.bin / {name}-coverage.txt in {} (run `make run` first)", dir.display());
+            continue;
+        };
+        let prog: Vec<u64> = bin.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect();
+        let words: Vec<u32> = cov.lines().filter_map(|l| u32::from_str_radix(l.trim(), 16).ok()).collect();
+        let hash = mb86235::cpu::program_hash(&prog);
+        let code = mb86235::codegen::program_module(&prog, &words);
+        let path = match recomp_crates::write_program(&out, &format!("tgp_{hash:016x}"), &code) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        println!("{name}: {} of {} words recompiled -> {}", words.len(), prog.len(), path.display());
+        made += 1;
+    }
+    if made == 0 {
+        return ExitCode::FAILURE;
+    }
+    // Every game's programs, not just this one's: the native build
+    // has them all.
+    if let Err(e) = recomp_crates::programs(&out)
+        .and_then(|names| recomp_crates::write_workspace(&out, &out, &names, recomp_crates::Front::Native))
+    {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    println!("workspace: {}/Cargo.toml", out.display());
+    ExitCode::SUCCESS
+}
+
+fn cmd_recomp_files(_o: &Opts, roms: &RomSet) -> ExitCode {
+    let dir = PathBuf::from("out").join(roms.game.id);
+    let mut hashes = vec![format!("i960_{:016x}", model2::program_hash(roms))];
+    let sharc = model2::geo::Core::of(roms.game.board) == model2::geo::Core::Sharc;
+    for name in ["copro", "geo"] {
+        if sharc {
+            if let Ok(p) = sharc_program(&dir, name) {
+                hashes.push(p.krate());
+            }
+        } else if let Ok(bin) = std::fs::read(dir.join(format!("{name}.bin"))) {
+            let prog: Vec<u64> = bin.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect();
+            hashes.push(format!("tgp_{:016x}", mb86235::cpu::program_hash(&prog)));
+        }
+    }
+    hashes.dedup();
+    let out = Path::new(recomp_crates::DIR);
+    // Moves loose files from the older layout into crates.
+    let have = recomp_crates::programs(out).unwrap_or_default();
+    for f in hashes.iter().filter(|f| have.contains(f)) {
+        println!("{f}");
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_shot(o: &Opts, roms: &RomSet) -> ExitCode {
+    let input = &o.input;
+    let interp = o.interp;
+    let single_thread = o.single_thread;
+    let args = &o.args;
+    let Some(path) = args.get(1).map(PathBuf::from) else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    let frame = args.get(2).and_then(|s| parse_num(s)).map_or(roms.game.attract_frame, u64::from);
+    let script = match model2::input::InputScript::parse(input.as_deref().unwrap_or(""), &roms.game.controls) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: --input: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut m = machine(roms);
+    if interp {
+        m.disable_native();
+    }
+    m.bus.geo.set_threaded(!single_thread);
+    while m.frames < frame {
+        let last = m.frames;
+        if let Err(s) = m.run_slice(u64::MAX) {
+            eprintln!("error: stopped at frame {}: {s:?}", m.frames);
+            return ExitCode::FAILURE;
+        }
+        if m.frames != last {
+            script.apply(m.frames, &mut m.bus);
+        }
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    snapshot(&mut m, &path);
+    println!("frame {frame} -> {}", path.display());
+    ExitCode::SUCCESS
+}
+
+fn cmd_gpu_check(o: &Opts, roms: &RomSet) -> ExitCode {
+    let pack_dir = &o.pack_dir;
+    let args = &o.args;
+    let default = PathBuf::from("out").join(roms.game.id).join("capture");
+    let root = args.get(1).map(PathBuf::from).unwrap_or(default);
+    let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
+    let (aa, depth) = (AA.get().copied().unwrap_or(1), DEPTH.get().copied().unwrap_or(false));
+    // With --materials: lamps for the pack's maps, from each
+    // capture's side channel (also with --light, for the frame to
+    // compare with).
+    let light = light_options_lamps(roms.game, materials_on() && pack_dir.is_some());
+    let side = LIGHT.get().is_some() || materials_on();
+    let pack = pack_dir.as_deref();
+    if let Err(e) = gpu_check::run(
+        &root,
+        windows,
+        aa,
+        depth,
+        BLOOM.get().copied().unwrap_or(0),
+        pack,
+        tex_filter(),
+        light.as_ref(),
+        side,
+    ) {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_temporal_probe(o: &Opts, roms: &RomSet) -> ExitCode {
+    let input = &o.input;
+    let pack_dir = &o.pack_dir;
+    let single_thread = o.single_thread;
+    let args = &o.args;
+    let quality = gpu::Quality {
+        depth: DEPTH.get().copied().unwrap_or(false),
+        temporal: TEMPORAL.get().copied().unwrap_or(100),
+        stipple: STIPPLE.get().copied().unwrap_or_default(),
+        bloom: BLOOM.get().copied().unwrap_or(0),
+        ..Default::default()
+    };
+    let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
+    let view = VIEW.get().copied();
+    let result = if args.get(1).map(String::as_str) == Some("live") {
+        let (Some(from), Some(count), Some(out)) =
+            (args.get(2).and_then(|s| parse_num(s)), args.get(3).and_then(|s| parse_num(s)), args.get(4))
+        else {
+            eprint!("{USAGE}");
+            return ExitCode::FAILURE;
+        };
+        match model2::input::InputScript::parse(input.as_deref().unwrap_or(""), &roms.game.controls) {
+            Ok(script) => {
+                let mut m = machine(roms);
+                m.bus.geo.set_threaded(!single_thread);
+                temporal_probe::live(&mut m, &script, from.into(), count.into(), windows, view, quality, Path::new(out))
+            }
+            Err(e) => Err(format!("--input: {e}")),
+        }
+    } else {
+        let default = PathBuf::from("out").join(roms.game.id).join("capture");
+        let root = args.get(1).map(PathBuf::from).unwrap_or(default);
+        let out = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out/scratch/temporal-probe"));
+        // With a pack and --materials: its maps, lit from each
+        // capture's side channel (also with --light).
+        let light = light_options_lamps(roms.game, materials_on() && pack_dir.is_some());
+        let side = LIGHT.get().is_some() || materials_on();
+        let lq = gpu_light(light.as_ref());
+        let quality = gpu::Quality {
+            shading: lq.shading,
+            shading_fine: lq.shading_fine,
+            shading_balance: lq.shading_balance,
+            tex_filter: tex_filter(),
+            ..quality
+        };
+        let pack = pack_dir.as_deref();
+        temporal_probe::captures(&root, windows, view, quality, &out, light.as_ref(), pack, side)
+    };
+    if let Err(e) = result {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_pack_check_identity(o: &Opts, roms: &RomSet) -> ExitCode {
+    let pack_dir = &o.pack_dir;
+    let mut args = o.args.clone();
+    args.retain(|a| a != "--identity");
+    let default = PathBuf::from("out").join(roms.game.id).join("capture");
+    let root = args.get(1).map(PathBuf::from).unwrap_or(default);
+    let out =
+        args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("pack-identity"));
+    let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
+    let (aa, depth) = (AA.get().copied().unwrap_or(1), DEPTH.get().copied().unwrap_or(false));
+    if let Err(e) = pack_check::identity(&root, windows, VIEW.get().copied(), aa, depth, pack_dir.as_deref(), &out) {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_pack_check(o: &Opts, roms: &RomSet) -> ExitCode {
+    let pack_dir = &o.pack_dir;
+    let mut args = o.args.clone();
+    let Some(pack) = &pack_dir else {
+        eprintln!("error: pack-check needs --texture-pack DIR");
+        return ExitCode::FAILURE;
+    };
+    let mut probes = Vec::new();
+    while let Some(i) = args.iter().position(|a| a == "--probe") {
+        let Some(p) = args.get(i + 1).and_then(|v| depth_check::Probe::parse(v)) else {
+            eprintln!("error: --probe wants X,Y@FRAME (output pixel, captured frame)");
+            return ExitCode::FAILURE;
+        };
+        probes.push(p);
+        args.drain(i..i + 2);
+    }
+    if !probes.is_empty() && !materials_on() {
+        eprintln!("error: pack-check --probe is for --materials");
+        return ExitCode::FAILURE;
+    }
+    let default = PathBuf::from("out").join(roms.game.id).join("capture");
+    let root = args.get(1).map(PathBuf::from).unwrap_or(default);
+    let out =
+        args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("pack-check"));
+    let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
+    let (aa, depth) = (AA.get().copied().unwrap_or(1), DEPTH.get().copied().unwrap_or(false));
+    let light = light_options(roms.game);
+    let materials = light_options_lamps(roms.game, materials_on());
+    let materials = materials.filter(|o| o.lamps);
+    if let Err(e) = pack_check::run(
+        &root,
+        windows,
+        VIEW.get().copied(),
+        aa,
+        depth,
+        pack,
+        &out,
+        light.as_ref(),
+        materials.as_ref(),
+        &probes,
+    ) {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_tile_check(o: &Opts, roms: &RomSet) -> ExitCode {
+    let pack_dir = &o.pack_dir;
+    let args = &o.args;
+    let Some(pack) = &pack_dir else {
+        eprintln!("error: tile-check needs --texture-pack DIR");
+        return ExitCode::FAILURE;
+    };
+    let default = PathBuf::from("out").join(roms.game.id).join("capture");
+    let root = args.get(1).map(PathBuf::from).unwrap_or(default);
+    let out =
+        args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("tile-check"));
+    let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
+    let light = light_options(roms.game);
+    if let Err(e) = pack_check::run_tiles(&root, windows, VIEW.get().copied(), pack, &out, light.as_ref()) {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_depth_check(o: &Opts, roms: &RomSet) -> ExitCode {
+    let mut args = o.args.clone();
+    let (mut probes, mut against) = (Vec::new(), None);
+    while let Some(i) = args.iter().position(|a| a == "--probe" || a == "--against") {
+        let (Some(v), true) = (args.get(i + 1).cloned(), args[i] == "--probe") else {
+            against = args.get(i + 1).map(PathBuf::from);
+            args.drain(i..(i + 2).min(args.len()));
+            continue;
+        };
+        let Some(p) = depth_check::Probe::parse(&v) else {
+            eprintln!("error: --probe wants X,Y@FRAME (output pixel, captured frame)");
+            return ExitCode::FAILURE;
+        };
+        probes.push(p);
+        args.drain(i..i + 2);
+    }
+    let default = PathBuf::from("out").join(roms.game.id).join("capture");
+    let root = args.get(1).map(PathBuf::from).unwrap_or(default);
+    let out =
+        args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("depth-check"));
+    let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
+    let (aa, against) = (AA.get().copied().unwrap_or(1), against.as_deref());
+    let light = light_options(roms.game);
+    if let Err(e) = depth_check::run(&root, windows, VIEW.get().copied(), aa, &out, &probes, against, light.as_ref()) {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_lighting_check(o: &Opts, roms: &RomSet) -> ExitCode {
+    let mut args = o.args.clone();
+    let mut probes = Vec::new();
+    while let Some(i) = args.iter().position(|a| a == "--probe") {
+        let Some(p) = args.get(i + 1).and_then(|v| depth_check::Probe::parse(v)) else {
+            eprintln!("error: --probe wants X,Y@FRAME (output pixel, captured frame)");
+            return ExitCode::FAILURE;
+        };
+        probes.push(p);
+        args.drain(i..i + 2);
+    }
+    let bench = match args.iter().position(|a| a == "--bench") {
+        Some(i) => {
+            let n = args.get(i + 1).and_then(|v| v.parse::<usize>().ok());
+            args.drain(i..i + 1 + n.is_some() as usize);
+            Some(n.unwrap_or(8))
+        }
+        None => None,
+    };
+    let every = match args.iter().position(|a| a == "--every") {
+        Some(i) => match args.get(i + 1).and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0) {
+            Some(n) => {
+                args.drain(i..i + 2);
+                n
+            }
+            None => {
+                eprintln!("error: --every wants a number of frames");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => 1,
+    };
+    let side = match args.iter().position(|a| a == "--no-side") {
+        Some(i) => {
+            args.remove(i);
+            false
+        }
+        None => true,
+    };
+    let spec = match args.iter().position(|a| a == "--spec-stats") {
+        Some(i) => {
+            args.remove(i);
+            true
+        }
+        None => false,
+    };
+    let default = PathBuf::from("out").join(roms.game.id).join("capture");
+    let root = args.get(1).map(PathBuf::from).unwrap_or(default);
+    let out =
+        args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out/scratch/lighting").join(roms.game.id));
+    let crease = SHADING.get().map_or(model2::light::CREASE_AUTO, |s| s.1);
+    // `--shading pixel` checks the per-pixel level; anything else vertex.
+    let level = match SHADING.get() {
+        Some((model2::light::Shading::Pixel, _)) => model2::light::Shading::Pixel,
+        _ => model2::light::Shading::Vertex,
+    };
+    let opts = model2::light::Options::new(level, crease, &roms.game.shading, roms.game.hud_windows)
+        .with_fine(SHADING_FINE.get().copied().unwrap_or(false))
+        .with_balance(SHADING_BALANCE.get().copied().unwrap_or(true));
+    let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
+    let result = if spec {
+        spec_stats::run(&root, windows, VIEW.get().copied(), opts, &out, every)
+    } else {
+        lighting_check::run(&root, windows, VIEW.get().copied(), opts, &out, &probes, bench, every, side)
+    };
+    match result {
+        Ok(true) => {}
+        Ok(false) => return ExitCode::FAILURE,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_lockstep(o: &Opts, roms: &RomSet) -> ExitCode {
+    let img = Image { base: 0, bytes: &roms.program };
+    let input = &o.input;
+    let args = &o.args;
+    let steps = args.get(1).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(50_000_000);
+    let mut native = model2::Machine::new(roms);
+    jit_if_asked(&mut native);
+    let mut reference = model2::Machine::new(roms);
+    reference.disable_native();
+    reference.disable_native_sharc();
+    if !native.is_native() {
+        eprintln!("error: this build has no recompiled i960 code for {} (try --jit)", roms.game.id);
+        return ExitCode::FAILURE;
+    }
+    // Model 2B: the SHARCs too, the copro after every block, the
+    // geometrizer (inline, so its frame has run) every frame.
+    native.bus.geo.set_threaded(false);
+    reference.bus.geo.set_threaded(false);
+    // --input: the same inputs into both, at each new frame.
+    let script = match model2::input::InputScript::parse(input.as_deref().unwrap_or(""), &roms.game.controls) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: --input: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let (mut sharcs_reported, mut checked_frame) = (false, 0);
+    while native.cpu.icount < steps {
+        let ip = native.cpu.ip;
+        let before = native.cpu.r;
+        let frame = native.frames;
+        let a = native.run_block();
+        if native.frames != frame {
+            script.apply(native.frames, &mut native.bus);
+        }
+        let mut b = Ok(());
+        while b.is_ok() && reference.cpu.icount < native.cpu.icount {
+            let frame = reference.frames;
+            b = reference.step();
+            if reference.frames != frame {
+                script.apply(reference.frames, &mut reference.bus);
+            }
+        }
+        let (n, r) = (&native.cpu, &reference.cpu);
+        if a.is_err()
+            || b.is_err()
+            || n.r != r.r
+            || n.ip != r.ip
+            || n.ac != r.ac
+            || n.pc != r.pc
+            || n.locals != r.locals
+        {
+            println!("diverged after {} instructions, in the block at {ip:#x}:", r.icount);
+            let mut pc = ip;
+            for _ in 0..a.as_ref().map_or(1, |&n| n) {
+                let i = img.decode(pc);
+                println!("  {pc:08x}  {i}");
+                pc = i.next();
+            }
+            println!("  results: recompiled {a:?}, interpreter {b:?}");
+            println!("  ip {:#x} / {:#x}  ac {:#x} / {:#x}  pc {:#x} / {:#x}", n.ip, r.ip, n.ac, r.ac, n.pc, r.pc);
+            if n.locals != r.locals {
+                println!("  cached frames: recompiled {:x?}", n.locals.sets());
+                println!("               interpreter {:x?}", r.locals.sets());
+            }
+            for (i, ((&was, &got), &want)) in before.iter().zip(&n.r).zip(&r.r).enumerate() {
+                if got != want || was != want {
+                    let name = i960::reg_name(i as u8);
+                    println!("  {name:>4}: before {was:#010x}  recompiled {got:#010x}  interpreter {want:#010x}");
+                }
+            }
+            return ExitCode::FAILURE;
+        }
+        if let Err(e) = sharc_lockstep(&native, &reference, &mut sharcs_reported, &mut checked_frame) {
+            println!("diverged after {} i960 instructions (frame {}): {e}", r.icount, native.frames);
+            return ExitCode::FAILURE;
+        }
+    }
+    println!("{} instructions identical", native.cpu.icount);
+    jit_report(&native);
+    ExitCode::SUCCESS
+}
+
+fn cmd_geo_trace_words(o: &Opts, roms: &RomSet) -> ExitCode {
+    let args = &o.args;
+    let dir = PathBuf::from("out").join(roms.game.id);
+    let bin = std::fs::read(dir.join("geo.bin")).unwrap_or_default();
+    let prog: Vec<u64> = bin.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect();
+    let words: Vec<u32> = args[1..].iter().filter_map(|s| u32::from_str_radix(s, 16).ok()).collect();
+    geo_trace_words(&prog, &words);
+    ExitCode::SUCCESS
+}
+
+fn cmd_geo_check(o: &Opts, roms: &RomSet) -> ExitCode {
+    let input = &o.input;
+    let interp = o.interp;
+    let single_thread = o.single_thread;
+    let args = &o.args;
+    let steps = args.get(1).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(750_000_000);
+    let from = args.get(2).and_then(|s| parse_num(s)).map_or(0, u64::from);
+    let script = match model2::input::InputScript::parse(input.as_deref().unwrap_or(""), &roms.game.controls) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: --input: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut m = model2::Machine::new(roms);
+    if interp {
+        m.disable_native();
+    }
+    m.bus.geo.set_threaded(!single_thread);
+    m.bus.geo.set_mode(model2::geo::GeoMode::Check);
+    m.bus.geo.set_light(LIGHT.get().is_some());
+    if let Err(e) = geo_check::run(&mut m, roms, steps, from, &script, LOAD_STATE.get()) {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_geo_fuzz(o: &Opts, roms: &RomSet) -> ExitCode {
+    let args = &o.args;
+    let frames = args.get(1).and_then(|s| parse_num(s)).map_or(200, u64::from);
+    let seed = args.get(2).and_then(|s| parse_num(s)).map_or(1, u64::from);
+    if let Err(e) = geo_check::fuzz(roms, frames, seed) {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_run_ahead_check(o: &Opts, roms: &RomSet) -> ExitCode {
+    let input = &o.input;
+    let interp = o.interp;
+    let single_thread = o.single_thread;
+    let args = &o.args;
+    let steps = args.get(1).and_then(|s| parse_num(s)).map_or(450_000_000, u64::from);
+    let frames = args.get(2).and_then(|s| parse_num(s)).unwrap_or(1);
+    let every = args.get(3).and_then(|s| parse_num(s)).map_or(50, u64::from).max(1);
+    match run_ahead::check(roms, steps, frames, every, input.as_deref().unwrap_or(""), interp, single_thread) {
+        Ok(true) => {}
+        Ok(false) => return ExitCode::FAILURE,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_camera_scan(o: &Opts, roms: &RomSet) -> ExitCode {
+    let input = &o.input;
+    let interp = o.interp;
+    let args = &o.args;
+    let (Some(at), Some(gap)) = (args.get(1).and_then(|s| parse_num(s)), args.get(2).and_then(|s| parse_num(s))) else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    if let Err(e) = camera_scan::scan(roms, at as u64, gap as u64, input.as_deref().unwrap_or(""), interp) {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_run_ahead_profile(o: &Opts, roms: &RomSet) -> ExitCode {
+    let input = &o.input;
+    let interp = o.interp;
+    let single_thread = o.single_thread;
+    let args = &o.args;
+    let warmup = args.get(1).and_then(|s| parse_num(s)).map_or(1500, u64::from);
+    let frames = args.get(2).and_then(|s| parse_num(s)).map_or(1500, u64::from);
+    let ahead = args.get(3).and_then(|s| parse_num(s)).unwrap_or(1);
+    if let Err(e) =
+        run_ahead::profile(roms, warmup, frames, ahead, input.as_deref().unwrap_or(""), interp, single_thread)
+    {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_latency(o: &Opts, roms: &RomSet) -> ExitCode {
+    let input = &o.input;
+    let interp = o.interp;
+    let single_thread = o.single_thread;
+    let args = &o.args;
+    let (Some(at), Some(change)) = (args.get(1).and_then(|s| parse_num(s)), args.get(2)) else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    let frames = args.get(3).and_then(|s| parse_num(s)).map_or(12, u64::from);
+    if let Err(e) = latency(roms, at as u64, change, frames, input.as_deref().unwrap_or(""), interp, single_thread) {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_run(o: &Opts, roms: &RomSet) -> ExitCode {
+    let input = &o.input;
+    let geo_frame = o.geo_frame.clone();
+    let interp = o.interp;
+    let single_thread = o.single_thread;
+    let args = &o.args;
+    let steps = args.get(1).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(50_000_000);
+    let snap = args.get(2).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(0);
+    let script = match model2::input::InputScript::parse(input.as_deref().unwrap_or(""), &roms.game.controls) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: --input: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let geo_frame = geo_frame.and_then(|s| parse_num(&s)).map(u64::from);
+    run(roms, steps, snap, &script, geo_frame, interp, single_thread);
+    ExitCode::SUCCESS
+}
+
+fn cmd_sound_disasm(o: &Opts, roms: &RomSet) -> ExitCode {
+    let args = &o.args;
+    let Some(mut pc) = args.get(1).and_then(|s| parse_num(s)) else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    let count = args.get(2).and_then(|s| parse_num(s)).unwrap_or(32);
+    let rom = roms.region16be(romset::Role::AudioCpu);
+    // The original Model 2's sound 68000 runs its program from 0.
+    let base = if roms.game.board == romset::Board::Model2 { 0 } else { 0x60_0000 };
+    let fetch = |a: u32| {
+        let o = a.wrapping_sub(base) as usize;
+        rom.get(o..o + 2).map_or(0, |b| u16::from_be_bytes([b[0], b[1]]))
+    };
+    for _ in 0..count {
+        let (text, len) = m68k::disasm(pc, fetch);
+        let words: Vec<String> = (0..len / 2).map(|i| format!("{:04x}", fetch(pc + 2 * i))).collect();
+        println!("{pc:06x}  {:<20}  {text}", words.join(" "));
+        pc += len;
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_sound_render(o: &Opts, roms: &RomSet) -> ExitCode {
+    let args = &o.args;
+    let dir = PathBuf::from("out").join(roms.game.id);
+    let tx_path = dir.join("sound-tx.txt");
+    let tx = match std::fs::read_to_string(&tx_path) {
+        Ok(t) => sound_render::parse_tx(&t),
+        Err(e) => {
+            eprintln!("error: {}: {e} (run `make run` first)", tx_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let wav = args.get(1).map(PathBuf::from).unwrap_or_else(|| dir.join("sound.wav"));
+    let seconds = args.get(2).and_then(|s| s.parse::<f64>().ok());
+    println!("host bytes    {} from {}", tx.len(), tx_path.display());
+    if let Err(e) = sound_render::render(roms, &tx, seconds, &wav) {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_music_render_mpeg_dump(o: &Opts, roms: &RomSet) -> ExitCode {
+    let soundtrack = &o.soundtrack;
+    let args = &o.args;
+    let cmd = &o.args[0];
+    let dir = PathBuf::from("out").join(roms.game.id);
+    let r = if cmd == "music-render" {
+        let wav = args.get(1).map(PathBuf::from).unwrap_or_else(|| dir.join("music.wav"));
+        let secs = args.get(2).and_then(|s| s.parse().ok());
+        music::music_render(roms, &dir.join("sound-tx.txt"), &wav, secs, soundtrack.as_deref().map(Path::new))
+    } else {
+        let Some(addr) = args.get(1).and_then(|s| parse_num(s)) else {
+            eprint!("{USAGE}");
+            return ExitCode::FAILURE;
+        };
+        let secs = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10.0);
+        music::mpeg_dump(roms, addr, secs, &dir)
+    };
+    if let Err(e) = r {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
 }
