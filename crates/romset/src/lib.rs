@@ -34,6 +34,11 @@ pub enum DriveBoard {
     /// byte a frame on `0x1C00008`; the game stores the reply from
     /// `0x1C00006` but never checks it (docs/games/stcc.md).
     Wheel,
+    /// Manx TT Superbike's deluxe "Active Motion Slider" (the bike's
+    /// platform): one command byte a frame on `0x1C00008`, one reply on
+    /// `0x1C00006`; boots with a `0xCE` then `0xCD` handshake
+    /// (docs/games/manxtt.md).
+    MotionSlider,
 }
 
 /// A device on the board's expansion bus at `0x1D80000-0x1D87FFF` that the

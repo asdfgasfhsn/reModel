@@ -17,6 +17,7 @@ use romset::DriveBoard;
 pub enum Drive {
     Ski(SkiPlatform),
     Wheel(Wheel),
+    Slider(MotionSlider),
 }
 
 impl Drive {
@@ -24,6 +25,7 @@ impl Drive {
         match kind {
             DriveBoard::SkiPlatform => Drive::Ski(SkiPlatform::default()),
             DriveBoard::Wheel => Drive::Wheel(Wheel::default()),
+            DriveBoard::MotionSlider => Drive::Slider(MotionSlider::default()),
         }
     }
 
@@ -32,6 +34,7 @@ impl Drive {
         match self {
             Drive::Ski(b) => b.command(v),
             Drive::Wheel(b) => b.command(v),
+            Drive::Slider(b) => b.command(v),
         }
     }
 
@@ -40,6 +43,7 @@ impl Drive {
         match self {
             Drive::Ski(b) => b.reply,
             Drive::Wheel(_) => Wheel::REPLY,
+            Drive::Slider(b) => b.reply,
         }
     }
 
@@ -55,6 +59,12 @@ impl Drive {
             Drive::Wheel(b) => {
                 format!("wheel: last command {:#04x}, recent {:02x?}, {} commands", b.last(), b.recent(), b.count)
             }
+            Drive::Slider(b) => format!(
+                "motion slider: last command {:#04x}, reply {:#04x}, setting {}",
+                b.last,
+                b.reply,
+                b.setting.map_or("not sent".into(), |c| format!("{c:#04x}"))
+            ),
         }
     }
 
@@ -63,6 +73,7 @@ impl Drive {
         match self {
             Drive::Ski(b) => b.last,
             Drive::Wheel(b) => b.last(),
+            Drive::Slider(b) => b.last,
         }
     }
 }
@@ -163,24 +174,74 @@ impl Wheel {
     }
 }
 
+/// Manx TT Superbike's deluxe cabinet platform, the "Active Motion
+/// Slider". What the game's code shows (docs/games/manxtt.md):
+///
+/// - Boot ("DANGER! ACTIVE MOTION SLIDER NOW CHECKING SYSTEM"): the I/O
+///   routine reads the reply from `0x1C00006` and writes the command to
+///   `0x1C00008` each frame. The game sends `0x3D` until the reply is
+///   `0xCE`, then a byte from its settings (`0xFF` minus a calibration
+///   value) until the reply is `0xCD`, and goes on to the attract. A reply
+///   `0xB0`-`0xB7` before it starts is a fault the game names; no `0xCE`
+///   within 846 frames, or no `0xCD` within 564, is a fault too.
+///
+/// The model answers `0xCE` until a command other than `0x3D` (or the
+/// `0x00` start-up leaves) follows `0x3D` (the settings byte), and `0xCD`
+/// from then on: the healthy board
+/// at rest that the check looks for. What the real board replies to the
+/// motion commands of a race is unknown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MotionSlider {
+    /// Reply to the last command.
+    pub reply: u8,
+    /// Last command.
+    pub last: u8,
+    /// The byte the game sent after the `0xCE` reply, once it has.
+    pub setting: Option<u8>,
+}
+
+impl Default for MotionSlider {
+    fn default() -> Self {
+        // Before any command: no fault (a reply 0xB0-0xB7 would be one).
+        MotionSlider { reply: 0xff, last: 0, setting: None }
+    }
+}
+
+impl MotionSlider {
+    /// The command the game sends until the board answers `0xCE`.
+    const CHECK: u8 = 0x3d;
+
+    fn command(&mut self, v: u8) {
+        // Start-up clears the command byte before the check begins.
+        if self.setting.is_none() && v != Self::CHECK && v != 0 && self.last == Self::CHECK {
+            self.setting = Some(v);
+        }
+        self.last = v;
+        self.reply = if self.setting.is_some() { 0xcd } else { 0xce };
+    }
+}
+
 // The kind comes from the manifest, so a state only holds the board's own.
 impl state::State for Drive {
     fn save(&self, w: &mut state::Writer) {
         match self {
             Drive::Ski(b) => b.save(w),
             Drive::Wheel(b) => b.save(w),
+            Drive::Slider(b) => b.save(w),
         }
     }
     fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
         match self {
             Drive::Ski(b) => b.load(r),
             Drive::Wheel(b) => b.load(r),
+            Drive::Slider(b) => b.load(r),
         }
     }
 }
 
 state::fields!(SkiPlatform { reply, last, centre });
 state::fields!(Wheel { history, count });
+state::fields!(MotionSlider { reply, last, setting });
 
 #[cfg(test)]
 mod tests {
@@ -212,6 +273,35 @@ mod tests {
         assert_eq!(step, 4);
         let Drive::Ski(b) = &d else { panic!() };
         assert_eq!(b.centre, Some(0x7c));
+    }
+
+    /// Manx TT's boot check: `0x3D` until `0xCE`, then the settings byte
+    /// until `0xCD`, the reply read before each frame's command.
+    #[test]
+    fn motion_slider_passes_the_boot_check() {
+        let mut d = Drive::new(DriveBoard::MotionSlider);
+        let mut cmd = 0;
+        let mut step = 0;
+        for i in 0..12 {
+            if i == 2 {
+                cmd = 0x3d;
+            }
+            let reply = d.reply();
+            assert!(reply & 0xf0 != 0xb0, "no fault");
+            d.command(cmd);
+            match step {
+                0 if cmd == 0x3d && reply == 0xce => (cmd, step) = (0x80, 1),
+                1 if reply == 0xcd => step = 2,
+                _ => {}
+            }
+        }
+        assert_eq!(step, 2);
+        let Drive::Slider(b) = &d else { panic!() };
+        assert_eq!(b.setting, Some(0x80));
+        let bytes = state::to_bytes(&d);
+        let mut e = Drive::new(DriveBoard::MotionSlider);
+        state::State::load(&mut e, &mut state::Reader::new(&bytes)).unwrap();
+        assert_eq!(d, e);
     }
 
     #[test]
