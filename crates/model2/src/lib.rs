@@ -18,6 +18,8 @@ pub mod geo_native_2c;
 pub mod gun;
 pub mod idle;
 pub mod input;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod jit_warm;
 pub mod light;
 pub mod pacing;
 pub mod pack;

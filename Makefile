@@ -96,11 +96,11 @@ JIT_STEPS ?= 300000000
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM) $(if $(JIT),--jit)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release dist test lint fmt fmt-check check ci jit-test jit-lockstep jit-copro-lockstep jit-translate z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm tgp-disasm tgp-check m68k-tests clean recomp recomp-workspace bench bench-all release-tag latency input-lag run-ahead-check run-ahead-profile draw-overlap-check photo-check camera-scan sound sound-disasm geo-check geo-fuzz smooth-frames temporal-capture temporal-check pace-sim install-desktop uninstall-desktop clean-stale
+.PHONY: help build release dist test lint fmt fmt-check check ci jit-test jit-lockstep jit-copro-lockstep jit-translate jit-warm jit-hitch z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm tgp-disasm tgp-check m68k-tests clean recomp recomp-workspace bench bench-all release-tag latency input-lag run-ahead-check run-ahead-profile draw-overlap-check photo-check camera-scan sound sound-disasm geo-check geo-fuzz smooth-frames temporal-capture temporal-check pace-sim install-desktop uninstall-desktop clean-stale
 
 ##@ General
 
-help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, JOBS, PACK_CHECK_OUT, TILE_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, NORMALGEN, NORMAL_Y, STRENGTH, DETAIL, MAT_STEPS, MAT_SNAP, MAT_GPU_SNAP, GPU_OPTS, LIGHT_OPTS, LIGHT_CAPTURE, LIGHT_IN, PROBE, AGAINST, SEQ_FROM, SEQ_FRAMES, STATE, TEMPORAL_SEQ, TEMPORAL_OPTS, RECOMP, JIT, JIT_STEPS, PLAY_ARGS, VERSION, DRY_RUN, FILE, SECONDS, SOUNDTRACK, SRC)
+help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, JOBS, PACK_CHECK_OUT, TILE_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, NORMALGEN, NORMAL_Y, STRENGTH, DETAIL, MAT_STEPS, MAT_SNAP, MAT_GPU_SNAP, GPU_OPTS, LIGHT_OPTS, LIGHT_CAPTURE, LIGHT_IN, PROBE, AGAINST, SEQ_FROM, SEQ_FRAMES, STATE, TEMPORAL_SEQ, TEMPORAL_OPTS, RECOMP, JIT, JIT_STEPS, JIT_CACHE, JIT_WARM_STEPS, JIT_HITCH_OPTS, PLAY_ARGS, VERSION, DRY_RUN, FILE, SECONDS, SOUNDTRACK, SRC)
 	@awk 'BEGIN {FS = ":.*## "; printf "usage: make <target> [VAR=value]\n"} \
 		/^##@/ {printf "\n%s\n", substr($$0, 5)} \
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -543,6 +543,24 @@ jit-copro-lockstep: release ## The copro JITs (Model 2A's MB86234, 2C's MB86235 
 
 jit-translate: release ## Translate the game's whole i960 program on the JIT ahead of time, cut as `make recomp` cuts it (discovery plus `make run`'s trace), and time it
 	$(RUN) jit-translate
+
+# Where `make jit-warm` writes the hot-block list: the player's folder for
+# it in a source tree (docs/jit.md, "Hot-block list").
+JIT_CACHE      ?= out/$(GAME)/jit
+JIT_WARM_STEPS ?= $(BENCH_STEPS)
+jit-warm: release ## Warm the JITs' hot-block list without playing: a headless coin-start run (JIT_WARM_STEPS, default BENCH_STEPS) on the JITs, the blocks they translate written to JIT_CACHE/hot.txt (default out/GAME/jit, where the player looks), translated at the next boot; addresses only (docs/jit.md)
+	$(REMODEL) --game $(GAME) --rom $(ROM) --jit --jit-cache $(JIT_CACHE) --input $(or $(INPUT),$(BENCH_INPUT)) run $(JIT_WARM_STEPS) | grep -E '^(frame times|jit list|state hash)'
+
+# A scratch hot-block list for `make jit-hitch`.
+JIT_HITCH_DIR  := out/scratch/jit-hitch/$(GAME)
+JIT_HITCH_OPTS ?=
+jit-hitch: release ## Frame-time hitches: the bench session (BENCH_STEPS; JIT_HITCH_OPTS, e.g. --geo native) on the interpreter, on the JIT translating where it runs (--jit-sync, as before the workers), on the JIT cold (no hot-block list) and warm (the list the cold run left); each run's host time per frame (median to worst, frames over 8, 16.7 and 33 ms) and state hash (scratch list in out/scratch/jit-hitch/GAME, deleted after)
+	@rm -rf $(JIT_HITCH_DIR)
+	@for run in "interpreter|" "jit inline|--jit --jit-sync" "jit cold|--jit --jit-cache $(JIT_HITCH_DIR)" "jit warm|--jit --jit-cache $(JIT_HITCH_DIR)"; do \
+		echo "== $(GAME) $(JIT_HITCH_OPTS): $${run%%|*}"; \
+		$(REMODEL) --game $(GAME) --rom $(ROM) $${run#*|} $(JIT_HITCH_OPTS) --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep -E '^(host time|frame times|state hash)' || exit 1; \
+	done
+	@rm -rf $(JIT_HITCH_DIR)
 
 bench-all: release ## `make bench` for every set in tools/expected-hashes.txt that has ROMs; report any state hash that differs
 	@ROM=$(ROM) MAKE="$(MAKE)" REMODEL=$(REMODEL) sh tools/release.sh bench-all

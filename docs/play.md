@@ -1301,7 +1301,11 @@ directory), the player keeps its files in `out/`; anywhere else in
   hot-block list, the addresses of the blocks they translated (no game
   code), handed to the translation workers at the next boot so the game
   runs translated from its first seconds. Written on leaving the game and
-  every 30 s; safe to delete (docs/jit.md, "Hot-block list"). The JIT never makes the game wait: blocks are
+  every 30 s; safe to delete. `--jit-warm` makes one for a game that
+  has none from a quiet coin-start run in the background (no window or
+  sound), for the game's next boot; `make jit-warm GAME=<set>` does the
+  same from the command line (docs/jit.md, "Hot-block list" and
+  "Pre-flight"). The JIT never makes the game wait: blocks are
   translated on background threads and interpreted until ready.
 - Photo mode's photos aren't here: they go to `reModel/<set>/` in your
   pictures folder (`docs/photo-mode.md`; `--photo-dir` puts them

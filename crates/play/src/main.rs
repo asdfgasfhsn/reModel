@@ -82,6 +82,9 @@ usage: remodel-play [options]
                      to this machine's as it runs (docs/jit.md), on
                      background workers, with the blocks it translated
                      kept per game and translated again at boot
+  --jit-warm         with --jit, a game with no hot-block list yet gets
+                     one from a quiet run in the background (coin and
+                     start, no window or sound), for its next boot
   --no-idle-skip     run the game's idle loops instruction by instruction
                      instead of skipping through them (same game, slower;
                      docs/idle-skip.md)
@@ -261,6 +264,9 @@ struct Options {
     interp: bool,
     /// `--jit`: the i960 on the JIT (the game's own sessions).
     jit: bool,
+    /// `--jit-warm`: warm a game's missing hot-block list in the
+    /// background.
+    jit_warm: bool,
     seconds: Option<f64>,
     /// `--frames`: quit at this game frame.
     frames: Option<u64>,
@@ -332,6 +338,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
         sound: true,
         interp: false,
         jit: false,
+        jit_warm: false,
         seconds: None,
         frames: None,
         input: None,
@@ -402,6 +409,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
             "--nav" => o.nav = parse_nav(&value()?)?,
             "--interp" => o.interp = true,
             "--jit" => o.jit = true,
+            "--jit-warm" => o.jit_warm = true,
             "--no-idle-skip" => model2::idle::set_default(false),
             "--smooth" => {
                 // Bare `--smooth` (as before it took a value) turns it on.
@@ -662,6 +670,38 @@ fn jit_list_path(set: &str) -> PathBuf {
         dirs::cache_dir().unwrap_or_else(settings::data_dir).join("remodel").join("jit").join(set)
     };
     dir.join(model2::jit::hotlist::FILE)
+}
+
+/// `--jit-warm`: make `game`'s hot-block list from a quiet coin-start run
+/// on a thread of its own (no window, sound or saves; its translations
+/// are the workers'), written to `path` when it is done, for the next
+/// boot. The game being played isn't touched.
+fn jit_warm(
+    game: &'static romset::Game,
+    rom: PathBuf,
+    geo: model2::geo::GeoMode,
+    list: Arc<model2::jit::HotList>,
+    path: PathBuf,
+) {
+    let spawned = std::thread::Builder::new().name("jit-warm".into()).spawn(move || {
+        let t = Instant::now();
+        let run = romset::RomSet::load(game, &rom, false)
+            .map_err(|e| e.to_string())
+            .and_then(|roms| model2::jit_warm::run(&roms, list.clone(), model2::jit_warm::STEPS, geo));
+        match run.and_then(|_| list.save(&path).map_err(|e| e.to_string())) {
+            Ok(_) => println!(
+                "jit warm      {}: {} blocks listed in {:.1} s -> {}",
+                game.id,
+                list.len(),
+                t.elapsed().as_secs_f64(),
+                path.display()
+            ),
+            Err(e) => eprintln!("jit warm      {}: {e}", game.id),
+        }
+    });
+    if let Err(e) = spawned {
+        eprintln!("jit warm: {e}");
+    }
 }
 
 /// `set`'s save state folder.
@@ -1101,6 +1141,9 @@ impl Play {
             } else if self.opts.jit {
                 let path = jit_list_path(game.id);
                 let list = Arc::new(model2::jit::HotList::load(&path));
+                if list.is_empty() && self.opts.jit_warm {
+                    jit_warm(game, self.settings.rom.clone(), values.geo_mode(), list.clone(), path.clone());
+                }
                 match machine.enable_jit_with(model2::jit::Config::default(), Some(list.clone())) {
                     Ok(()) => jit_list = Some((path, list)),
                     Err(e) => eprintln!("warning: --jit: {e}; the i960 runs on the interpreter"),

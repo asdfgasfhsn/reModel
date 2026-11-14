@@ -64,6 +64,9 @@ make recomp-workspace     # rewrite out/recomp's Cargo workspace and crate manif
 make bench RECOMP=1       # same run on the recompiled build: same hash, about twice as fast
 make bench JIT=1          # same run with the i960 and the copro programs on their JITs (no recompiled build needed): same hash, the JITs' counters (docs/jit.md; --jit-copro off: the i960's alone)
 make jit-translate        # the whole i960 program translated by the JIT ahead of time (on its workers), as `make recomp` cuts it, timed
+make jit-warm             # warm the JITs' hot-block list without playing: a headless coin-start run writes out/topskatr/jit/hot.txt (addresses only), translated at the next boot (JIT_CACHE=DIR, JIT_WARM_STEPS)
+make jit-hitch JIT_HITCH_OPTS="--geo native"   # frame-time hitches of the bench session: interpreter, JIT inline (--jit-sync), JIT cold and warm (docs/jit.md, Pre-flight)
+./target/release/remodel --game srallyc --jit --jit-cache out/srallyc/jit --input coin-start run 600000000   # a run on the JITs with the hot-block list in out/srallyc/jit/hot.txt: its blocks translated at boot, the ones it translates added at the end (`jit list` line)
 ./target/release/remodel --game topskatr --jit --jit-sync --input coin-start run 600000000   # the JIT translating on the thread that needs it, as before the workers (frame times: the hitches it caused)
 make state-check          # save state round trip: saved at frame 2000 and resumed must match an uninterrupted run (state hash and audio)
 make bench-all            # `make bench` for every set in tools/expected-hashes.txt that has ROMs; lists any state hash that differs

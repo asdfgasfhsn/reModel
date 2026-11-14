@@ -221,6 +221,60 @@ translated in a fraction of a second, before the game gets to most of it.
 - **Shared**: a machine's JITs share one list (run-ahead's machine too,
   `Machine::enable_jit_with`).
 
+### Pre-flight
+
+```sh
+make jit-warm GAME=topskatr      # a headless coin-start run (JIT_WARM_STEPS) writes out/topskatr/jit/hot.txt
+make jit-hitch GAME=topskatr JIT_HITCH_OPTS="--geo native"   # frame times: interpreter, JIT inline, cold, warm
+remodel-play --jit --jit-warm    # a game with no list yet gets one from a quiet run in the background
+```
+
+`make jit-warm` warms a list without playing: the bench session (boot,
+attract, coin, start, into the race) on the JITs with `--geo chip`, so
+the geometrizer's MB86235 program is listed too, writing the file the
+player reads in a source tree (`JIT_CACHE=DIR` for another). In the
+player, `--jit-warm` does the same for a game that has no list yet, like
+a shader-cache precompile: a second machine on its own thread
+(`model2::jit_warm`, no window, sound or saves) runs the session and
+writes the list for the next boot; the game being played isn't touched
+(the two only share the workers). `make jit-hitch` is the measurement:
+the bench session's frame-time distribution (`run`'s `frame times`
+line: host time from one frame's end to the next) on the interpreter,
+the JIT translating where it runs (`--jit-sync`), and the JIT cold and
+warm, with the state hash of each (the same four).
+
+**Hitches, before and after** (`make jit-hitch`: the bench session,
+600M instructions, 4,141 frames, unthrottled, on the 16-core machine
+shared with other builds; host milliseconds per emulated frame; "inline"
+is the JIT as it was, translating where it runs, `--jit-sync`; "cold"
+the workers with no list, "warm" with the list the cold run left):
+
+| | interpreter | JIT inline | JIT cold | JIT warm |
+|---|---|---|---|---|
+| `topskatr` native: worst frame | 9.4 | 72.3 | 12.0 | 6.8 |
+| p99.9 / p99 | 8.3 / 6.1 | 23.6 / 5.0 | 6.2 / 3.0 | 6.2 / 2.8 |
+| frames over 16.7 ms / 33 ms | 0 / 0 | 11 / 3 | 0 / 0 | 0 / 0 |
+| `topskatr --geo chip`: worst frame | 18.6 | 210.4 | 16.4 | 6.8 |
+| p99.9 / p99 | 15.7 / 14.4 | 29.3 / 10.5 | 7.0 / 5.0 | 6.4 / 5.0 |
+| frames over 16.7 ms / 33 ms | 2 / 0 | 10 / 4 | 0 / 0 | 0 / 0 |
+| `srallyc`: worst frame | 11.3 | 60.4 | 8.5 | 10.5 |
+| p99.9 / p99 | 11.3 / 8.3 | 14.2 / 3.8 | 4.8 / 3.3 | 5.9 / 3.3 |
+| frames over 16.7 ms / 33 ms | 0 / 0 | 4 / 2 | 0 / 0 | 0 / 0 |
+| `vf2`: worst frame | 8.9 | 44.5 | 9.7 | 7.7 |
+| p99.9 / p99 | 8.9 / 8.8 | 18.3 / 5.5 | 6.3 / 4.2 | 5.7 / 4.2 |
+| frames over 16.7 ms / 33 ms | 0 / 0 | 5 / 3 | 0 / 0 | 0 / 0 |
+| host seconds (`topskatr` native, chip, `srallyc`, `vf2`) | 8.0, 21.5, 8.4, 16.5 | 5.6, 9.8, 3.9, 9.0 | 4.6, 7.7, 3.5, 8.6 | 4.3, 7.7, 3.5, 8.5 |
+
+The JIT's worst frame is now no worse than the interpreter's: what is
+left are the frames that are long on the interpreter too (the first
+race frame on `topskatr`'s chip geometrizer is 14-18 ms however it
+runs; `srallyc`'s frame 9 and 2,642 are its own), and warm, the boot's
+first frames run translated (`topskatr`: 66,000 instructions
+interpreted outside blocks in its first 100M against 165,000 cold).
+Translating on 8 workers also makes the whole run faster than inline
+(`topskatr` native 5.6 to 4.6 s cold, 4.3 s warm). The state hashes are
+the same in every column.
+
 ## Results
 
 Measured on the development machine (16 cores, shared with other work,
