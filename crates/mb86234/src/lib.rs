@@ -744,8 +744,8 @@ impl Cpu {
             0 => AluOut::default(),
             1 => AluOut { acc: int(self, a & r10), product: None },
             2 => AluOut { acc: int(self, a | r10), product: None },
-            // XOR (hypothesis: `skytargt` keeps a product only when its
-            // exponent's bits 4-6 equal the mask 0x70, else flushes it).
+            // XOR (hypothesis: `skytargt` and `motoraid` keep a product only
+            // when its exponent's bits 4-6 equal the mask 0x70, else flush it).
             3 => AluOut { acc: int(self, a ^ r10), product: None },
             // NOT (hypothesis: `vf2` clears a mask's bit with it and 1).
             4 => AluOut { acc: int(self, !a), product: None },

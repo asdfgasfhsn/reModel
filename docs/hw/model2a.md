@@ -58,6 +58,15 @@ On 2C the same upload is 64-bit words (two stores each, low half first);
 2A's program ROM image is 1,665 words of 32 bits (*confirmed*: the stores
 equal the ROM's words from `0x5AE94` on).
 
+*Confirmed (`motoraid`, from its program, data and pictures):* the 2A
+has a **second main data bank at `0x6000000`**, as 2C (`segawski`,
+`waverunr`): `motoraid` keeps its `.6/.7` and `.4/.5` pairs there
+(`Role::MainDataHigh`, 8 MB slots), and its textures and models draw
+only with them there (`docs/games/motoraid.md`). The board model maps it
+whenever a set has such chips. It also writes 64 KB at
+`0x12810000-0x1281FFFF`, past the luma tables, which nothing maps
+(*unknown*).
+
 Not seen, so not mapped: the 2C's `0x11000000` render RAM is still mapped
 from the board model's common map, but nothing was found to use it on 2A;
 reads of `0x10800000` once a frame in attract (from frame 925, returning 0
