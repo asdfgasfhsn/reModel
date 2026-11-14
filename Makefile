@@ -64,10 +64,11 @@ WASM_RUSTUP  ?= $(firstword $(wildcard $(HOME)/.local/share/rustup-wasm/bin/rust
 WASM_CARGO   ?= RUSTC=$(shell $(WASM_RUSTUP) which rustc) $(shell $(WASM_RUSTUP) which cargo)
 WASM_BINDGEN ?= $(HOME)/.cargo/bin/wasm-bindgen
 WEB_OUT      ?= out/web
+RECOMP_REMODEL := target/recomp/release/remodel
 # RECOMP=1: use the build with recompiled i960 and TGP code (see `make recomp`).
 RECOMP  ?=
 ifneq ($(RECOMP),)
-REMODEL := target/recomp/release/remodel
+REMODEL := $(RECOMP_REMODEL)
 PLAY    := target/recomp/release/remodel-play
 # Built from the generated workspace in out/recomp, which links the
 # registry of recompiled programs in place of the crates/recomp stub. No
@@ -95,15 +96,22 @@ JIT     ?=
 JIT_STEPS ?= 300000000
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM) $(if $(JIT),--jit)
 
+# $(call compare_hashes,A,B,WHAT): the state hash lines in files A and B must
+# be the same, or fail showing both.
+compare_hashes = @cmp -s $(1) $(2) && echo "state hash    $(3): $$(cut -c15- $(1))" || { echo "state hash DIFFERS:"; cat $(1) $(2); exit 1; }
+
 .DEFAULT_GOAL := help
-.PHONY: help build release dist test lint fmt fmt-check check ci jit-test jit-lockstep jit-copro-lockstep jit-translate jit-warm jit-hitch z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm tgp-disasm tgp-check m68k-tests clean recomp recomp-workspace bench bench-all release-tag latency input-lag run-ahead-check run-ahead-profile draw-overlap-check photo-check camera-scan sound sound-disasm geo-check geo-fuzz smooth-frames temporal-capture temporal-check pace-sim install-desktop uninstall-desktop clean-stale
+# Every target with a `## description` is phony (none of them makes a file).
+.PHONY: $(shell sed -n 's/^\([a-zA-Z0-9_-]*\):.*## .*/\1/p' $(firstword $(MAKEFILE_LIST)))
 
 ##@ General
 
-help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, JOBS, PACK_CHECK_OUT, TILE_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, NORMALGEN, NORMAL_Y, STRENGTH, DETAIL, MAT_STEPS, MAT_SNAP, MAT_GPU_SNAP, GPU_OPTS, LIGHT_OPTS, LIGHT_CAPTURE, LIGHT_IN, PROBE, AGAINST, SEQ_FROM, SEQ_FRAMES, STATE, TEMPORAL_SEQ, TEMPORAL_OPTS, RECOMP, JIT, JIT_STEPS, JIT_CACHE, JIT_WARM_STEPS, JIT_HITCH_OPTS, PLAY_ARGS, VERSION, DRY_RUN, FILE, SECONDS, SOUNDTRACK, SRC)
-	@awk 'BEGIN {FS = ":.*## "; printf "usage: make <target> [VAR=value]\n"} \
-		/^##@/ {printf "\n%s\n", substr($$0, 5)} \
-		/^[a-zA-Z0-9_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+help: ## Show this help (the variables a target takes are in its description)
+	@awk 'BEGIN {FS = ":.*## "} \
+		/^##@/ {rows[n++] = "\n" substr($$0, 5)} \
+		/^[a-zA-Z0-9_-]+:.*## / {rows[n++] = $$1 FS $$2; if (length($$1) > w) w = length($$1)} \
+		END {printf "usage: make <target> [VAR=value]\n"; \
+			for (i = 0; i < n; i++) {if (index(rows[i], FS)) {split(rows[i], f, FS); printf "  %-*s %s\n", w, f[1], f[2]} else print rows[i]}}' $(MAKEFILE_LIST)
 	@printf "\ncurrent: GAME=%s ROM=%s OUT=%s\n" "$(GAME)" "$(ROM)" "$(OUT)"
 
 ##@ Build and test
@@ -205,7 +213,6 @@ analyze: release ## Recursive-descent code discovery; listing goes to OUT=
 run: release ## Boot and report; PNG every SNAP frames; scripted INPUT (see remodel usage; INPUT=coin-start coins up and starts)
 	$(RUN) $(VIEW) $(if $(PACK),--texture-pack $(PACK)) $(if $(INPUT),--input $(INPUT)) run $(STEPS) $(SNAP)
 
-.PHONY: assets
 assets: release ## Extract topskatr's art for review: capture sessions, then distinct textures, screens and contact sheets in OUT/assets (about 15 min)
 	rm -rf $(OUT)/assets && mkdir -p $(OUT)/assets/raw
 	$(RUN) --dump-textures $(OUT)/assets/raw/attract run 900000000 20 > $(OUT)/assets/raw/attract.log
@@ -219,7 +226,6 @@ assets: release ## Extract topskatr's art for review: capture sessions, then dis
 	wait
 	python3 -I tools/asset-review.py $(OUT)/assets
 
-.PHONY: dump-textures
 dump-textures: release ## Coin-start-race run dumping every 3D texture and tile pattern drawn (each 60 frames) to OUT/texdump
 	rm -rf $(OUT)/texdump
 	$(RUN) $(VIEW) --dump-textures $(OUT)/texdump --input $(BENCH_INPUT) run $(BENCH_STEPS) 60
@@ -243,7 +249,6 @@ MAX_SIDE ?= 4096
 FORCE    ?=
 TEXDUMP  ?= $(OUT)/texdump
 TEXPACK  ?= $(OUT)/texpack-$(SCALE)x
-.PHONY: upscale-textures
 # Through the environment, so the template's quotes reach the tool as written.
 upscale-textures: export UPSCALER_CMD = $(UPSCALER)
 upscale-textures: release ## Upscale TEXDUMP (default OUT/texdump, from dump-textures) into texture pack TEXPACK (OUT/texpack-SCALEx) with UPSCALER= (empty: built-in); wrap-aware padding, colour matched to the dump (COLOUR=keep: off), hard alpha, only new or changed dumps
@@ -262,7 +267,6 @@ NORMALGEN ?=
 NORMAL_Y  ?= up
 STRENGTH  ?=
 DETAIL    ?=
-.PHONY: pack-materials
 pack-materials: export NORMALGEN_CMD = $(NORMALGEN)
 pack-materials: release ## Make normal maps for texture pack TEXPACK from its images (or TEXDUMP's where it has none) with NORMALGEN= (empty: built-in, from luminance); STRENGTH (default 2), DETAIL (default 8), MIN_USES, FORCE; wrap-aware, neutral under cut-outs, one per surface, keeps hand-made and edited maps, skips the textures listed in the pack's materials-exclude.txt; a starting point to edit by hand
 	$(REMODEL) --game $(GAME) texpack-materials $(TEXPACK) $(if $(TEXDUMP),--dump $(TEXDUMP)) \
@@ -271,7 +275,6 @@ pack-materials: release ## Make normal maps for texture pack TEXPACK from its im
 		$(if $(NORMALGEN),--normalgen "$$NORMALGEN_CMD" --normal-y $(NORMAL_Y)) $(if $(FORCE),--force)
 
 # pack-lint checks against a dump only when TEXDUMP is given.
-.PHONY: pack-lint
 pack-lint: release ## Check texture pack PACK= against the pack format, no ROM or GPU: pack.txt, file names, index.txt, every PNG decodes within MAX_SIDE, image and map proportions, unit normals, maps under cut-outs, materials-exclude.txt entries, specular and gloss maps (a note: loaded, no effect yet), GPU memory against the budgets (TEXDUMP= adds mirror and repeat seams, never-drawn and image-or-surface checks); fails on errors
 	$(if $(PACK),,$(error pack-lint needs PACK=DIR, a texture pack))
 	$(REMODEL) pack-lint $(PACK) --max-side $(MAX_SIDE) \
@@ -351,7 +354,6 @@ pack-check: release ## Draw the captured frames with texture pack PACK= on the G
 
 # Where tile-check writes its pictures.
 TILE_CHECK_OUT ?= $(OUT)/tile-check
-.PHONY: tile-check
 tile-check: release ## Draw the captured frames with the tile images of texture pack PACK live on the GPU and as the software snapshots replace them; write FRAME-gpu, -sw and -orig.png to TILE_CHECK_OUT (default OUT/tile-check) and compare them (needs a GPU; VIEW= sets the view, default 1080p 16:9)
 	$(if $(PACK),,$(error tile-check needs PACK=DIR, a texture pack))
 	$(RUN) $(VIEW) --texture-pack $(PACK) tile-check $(OUT)/capture $(TILE_CHECK_OUT)
@@ -365,7 +367,6 @@ pack-identity: release ## Draw the captured frames with a pack standing for the 
 MAT_STEPS    ?= 900000000
 MAT_SNAP     ?= 300
 MAT_GPU_SNAP ?= 900
-.PHONY: materials-identity
 materials-identity: release ## Check that texture pack PACK with all its normal maps made flat draws with --materials exactly as with --light and no materials (the comparison to make: --materials records the side channel), under both rules (relief and --materials-relief off), in flat, vertex, pixel and mipmapped pixel shading, from coin-start run snapshots; and the same on the GPU (gpu-check of captures, unfiltered, mip, 16x and --aa 4 --depth; temporal-probe) (MAT_STEPS, MAT_SNAP, MAT_GPU_SNAP; JOBS runs at once, default 3; needs a GPU; scratch in out/scratch/materials-identity/GAME, deleted when it passes)
 	@test -n "$(PACK)" || { echo "materials-identity wants PACK=DIR (a pack with normal maps)"; exit 1; }
 	REMODEL=$(REMODEL) GAME=$(GAME) ROM=$(ROM) PACK=$(PACK) WORK=out/scratch/materials-identity/$(GAME) \
@@ -381,23 +382,19 @@ depth-check: release ## Draw the captured frames on the GPU with the depth buffe
 # every 5th frame), "--probe X,Y@FRAME" (repeatable), "--bench [N]";
 # GPU_OPTS before it ("--crease N", "--height", "--aspect").
 LIGHT_OPTS ?=
-.PHONY: lighting-check
 lighting-check: release ## Draw the captured frames flat and smooth-shaded (vertex, or GPU_OPTS="--shading pixel" for per pixel; "--shading-fine on" adds finer levels and K, against the game's levels; "--shading-balance off" checks without the brightness balance, -nobal pictures and reports, its mean brightness C report-only) on the software and GPU renderers; check the invariants (crease 0 is flat, unlit polygons unchanged, brightness of corners and pixels, software against GPU, hue kept, determinism; with LIGHT_IN=a lighting-capture: the side channel's self-check and list scan, L0 against it), report and pictures into out/scratch/lighting/GAME (LIGHT_OPTS: --every N, --probe X,Y@F, --bench [N], --no-side; GPU_OPTS: --crease N, --height/--aspect; needs a GPU)
 	$(RUN) $(GPU_OPTS) lighting-check $(or $(LIGHT_IN),$(OUT)/capture) out/scratch/lighting/$(GAME) $(LIGHT_OPTS)
 
-.PHONY: spec-stats
 spec-stats: release ## Count the game's own specular highlights on a lighting-capture (LIGHT_IN, default LIGHT_CAPTURE): textured polygons with a specular term, the pixels it brightens by 1 and 4 levels or more (face and smooth normals); spec-stats.txt and frame | flat term | smooth term pictures into out/scratch/lighting/GAME/spec (LIGHT_OPTS: --every N; GPU_OPTS: --height/--aspect; no GPU needed)
 	$(RUN) $(GPU_OPTS) lighting-check $(or $(LIGHT_IN),$(LIGHT_CAPTURE)) out/scratch/lighting/$(GAME)/spec --spec-stats $(LIGHT_OPTS)
 
 # Where lighting-capture saves (a directory of its own: the regression
 # baseline hashes out/GAME/capture).
 LIGHT_CAPTURE ?= out/scratch/lighting/$(GAME)/capture
-.PHONY: lighting-capture
 lighting-capture: release ## Save every 300th frame of a coin-start run with its lighting side channel (native geometrizer; light.bin, scan.bin) to LIGHT_CAPTURE (default out/scratch/lighting/GAME/capture), for lighting-check, spec-stats and pack-check with material maps (LIGHT_IN=); prints the side channel's self-check over every frame of the run
 	rm -rf $(LIGHT_CAPTURE)
 	$(RUN) --geo native --light --capture $(LIGHT_CAPTURE) --input $(BENCH_INPUT) run 900000000 300 | grep -E '^light'
 
-.PHONY: temporal-probe
 temporal-probe: release ## Draw the captured frames with the GPU's temporal anti-aliasing (GPU_OPTS: --temporal, --stipple, --depth, --height, --aspect): its first frame against the frame with it off, jittered, blend and keep pictures into out/scratch/temporal-probe/GAME (needs a GPU)
 	$(RUN) $(GPU_OPTS) temporal-probe $(OUT)/capture out/scratch/temporal-probe/$(GAME)
 
@@ -437,12 +434,12 @@ smooth-frames: release ## Smooth motion's in-betweens: a coin-start run (BENCH_S
 
 lockstep: ## Run the recompiled code beside the interpreter (i960 block by block; Model 2B's SHARCs too) and stop at the first difference (RECOMP=1, STEPS, INPUT)
 	$(MAKE) release RECOMP=1
-	target/recomp/release/remodel --game $(GAME) --rom $(ROM) $(if $(INPUT),--input $(INPUT)) lockstep $(STEPS)
+	$(RECOMP_REMODEL) --game $(GAME) --rom $(ROM) $(if $(INPUT),--input $(INPUT)) lockstep $(STEPS)
 
 state-check: release ## Save state round trip: a run saved at frame 2000 and resumed must match an uninterrupted one (state hash and audio)
 	@$(RUN) --audio $(OUT)/state-a.wav --save-state $(OUT)/state-check.save@2000 --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep '^state hash' > $(OUT)/state-a.txt
 	@$(RUN) --audio $(OUT)/state-b.wav --load-state $(OUT)/state-check.save --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep '^state hash' > $(OUT)/state-b.txt
-	@cmp -s $(OUT)/state-a.txt $(OUT)/state-b.txt && echo "state hash    same after save and load: $$(cut -c15- $(OUT)/state-a.txt)" || { echo "state hash DIFFERS:"; cat $(OUT)/state-a.txt $(OUT)/state-b.txt; exit 1; }
+	$(call compare_hashes,$(OUT)/state-a.txt,$(OUT)/state-b.txt,same after save and load)
 	@python3 -I -c 'import sys, wave; a, b = (wave.open(f).readframes(1 << 30) for f in sys.argv[1:]); print("audio         " + ("resumed run matches the uninterrupted one" if a.endswith(b) else "DIFFERS")); sys.exit(not a.endswith(b))' $(OUT)/state-a.wav $(OUT)/state-b.wav
 
 LATENCY_FRAME  ?= 3100
@@ -506,7 +503,7 @@ draw-overlap-check: ## The player with its draw thread and with --no-overlap (op
 			--frame-log $(DRAW_CHECK_OUT)/$$m.log $$([ $$m = no-overlap ] && echo --no-overlap) \
 			| grep '^frames' > $(DRAW_CHECK_OUT)/$$m.txt || exit 1; \
 	done
-	@cmp -s $(DRAW_CHECK_OUT)/overlap.txt $(DRAW_CHECK_OUT)/no-overlap.txt && echo "state hash    the same: $$(cut -c15- $(DRAW_CHECK_OUT)/overlap.txt)" || { echo "state hash DIFFERS:"; cat $(DRAW_CHECK_OUT)/*.txt; exit 1; }
+	$(call compare_hashes,$(DRAW_CHECK_OUT)/overlap.txt,$(DRAW_CHECK_OUT)/no-overlap.txt,the same)
 	@python3 -I tools/frame-log-diff.py $(DRAW_CHECK_OUT)/overlap.log $(DRAW_CHECK_OUT)/no-overlap.log
 
 PHOTO_CHECK_FRAMES ?= 2400
@@ -525,7 +522,7 @@ photo-check: ## Photo mode leaves the game alone (opens a window; needs a GPU): 
 	done
 	@grep '^photo' $(PHOTO_CHECK_OUT)/photo.log
 	@! grep -q 'studio state hash .* DIFFERS' $(PHOTO_CHECK_OUT)/photo.log || { echo "photo mode's frame is not the game's"; exit 1; }
-	@cmp -s $(PHOTO_CHECK_OUT)/plain.txt $(PHOTO_CHECK_OUT)/photo.txt && echo "state hash    the same with and without photo mode: $$(cut -c15- $(PHOTO_CHECK_OUT)/plain.txt)" || { echo "state hash DIFFERS:"; cat $(PHOTO_CHECK_OUT)/*.txt; exit 1; }
+	$(call compare_hashes,$(PHOTO_CHECK_OUT)/plain.txt,$(PHOTO_CHECK_OUT)/photo.txt,the same with and without photo mode)
 
 CAMERA_FRAME ?= 3000
 CAMERA_GAP   ?= 20
@@ -586,7 +583,6 @@ sound: release ## Boot the sound board, replay the sound bytes captured by `make
 
 sound-disasm: release ## Disassemble the sound 68000 program: make sound-disasm ADDR=0x600120 COUNT=64
 	$(RUN) sound-disasm $(ADDR) $(COUNT)
-.PHONY: music mpeg-dump mpeg-test soundtrack-import
 SECONDS ?= 10
 # Replacement soundtrack for `make music` (docs/mods.md): a name under
 # soundtracks/, or a path when it contains a `/`.

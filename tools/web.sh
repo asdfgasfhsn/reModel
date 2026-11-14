@@ -48,6 +48,8 @@ started=$(date +%s)
 $CARGO build --release -p remodel
 version=$($remodel --version | cut -d' ' -f2)
 games=$($remodel --rom "$ROM" web-index)
+# Every set with its parent (last field), for clones' stamps and posters.
+all_games=$($remodel games)
 if [ -z "$games" ]; then
     echo "web: no supported game has all its chips in $ROM/<set>/" >&2
 fi
@@ -146,7 +148,7 @@ for g in $games; do
         pkg=../pkg/
         rm -rf "$model2/$g/pkg"
     else
-        parent=$($remodel games | awk -v g="$g" '$1 == g { print $NF }')
+        parent=$(echo "$all_games" | awk -v g="$g" '$1 == g { print $NF }')
         # shellcheck disable=SC2086 # one argument per program
         stamp=$(stamp_for "$g $parent" $files)
         if fresh "$model2/$g/pkg" "$stamp"; then
@@ -176,8 +178,11 @@ elif [ -z "$WEB_GAME" ]; then
     rm -rf "$model2/pkg"
 fi
 
-cp crates/web/audio-worklet.js crates/web/sound-worker.js crates/web/geo-worker.js crates/web/pack-worker.js \
-    crates/web/touch.js crates/web/gun.js crates/web/settings.js crates/web/panel.js "$model2/"
+# The scripts the game pages load, beside them.
+shared_js="audio-worklet.js sound-worker.js geo-worker.js pack-worker.js touch.js gun.js settings.js panel.js"
+for f in $shared_js; do
+    cp "crates/web/$f" "$model2/"
+done
 sed "s|@VERSION@|$version|" crates/web/index.html >"$WEB_OUT/index.html"
 cp LICENSE "$WEB_OUT/"
 python3 -I tools/notices.py remodel-web wasm32-unknown-unknown "$WEB_OUT/THIRD-PARTY-NOTICES.txt"
@@ -187,7 +192,7 @@ mkdir -p "$WEB_OUT/posters"
 cp assets/posters/*.webp "$WEB_OUT/posters/"
 # A clone uses its parent's poster: `games` lists each set's parent.
 for g in $games; do
-    parent=$($remodel games | awk -v g="$g" '$1 == g { print $NF }')
+    parent=$(echo "$all_games" | awk -v g="$g" '$1 == g { print $NF }')
     [ -f "assets/posters/$g.webp" ] || [ -f "assets/posters/$parent.webp" ] ||
         echo "web: warning: no poster for $g (assets/posters/README.md); using the placeholder" >&2
 done
@@ -196,7 +201,10 @@ done
 mkdir -p "$WEB_OUT/bezels"
 cp assets/bezels/*.webp "$WEB_OUT/bezels/"
 # Left from the single-page layout (before model2/).
-rm -rf "$WEB_OUT/pkg" "$WEB_OUT/audio-worklet.js" "$WEB_OUT/sound-worker.js" "$WEB_OUT/geo-worker.js" "$WEB_OUT/touch.js" "$WEB_OUT/gun.js" "$WEB_OUT/settings.js" "$WEB_OUT/panel.js"
+rm -rf "$WEB_OUT/pkg"
+for f in $shared_js; do
+    rm -f "$WEB_OUT/$f"
+done
 $remodel --rom "$ROM" web-index "$WEB_OUT" >/dev/null
 # model2/ first: a game page, its module and scripts all live there. rom/
 # and texpack/ stay: they're where a server mounts the ROMs and the texture
