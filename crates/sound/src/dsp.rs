@@ -8,6 +8,8 @@
 //! - A memory read lands in a latch that IWT copies to MEMS on any later
 //!   step (MAME's model); Mednafen delays it by two steps.
 
+use state::sext_i as sext;
+
 /// Register block layout, byte offsets in the SCSP register space.
 const COEF: u32 = 0x700;
 const MADRS: u32 = 0x780;
@@ -17,10 +19,6 @@ const MEMS: u32 = 0xe00;
 const MIXS: u32 = 0xe80;
 const EFREG: u32 = 0xec0;
 const EXTS: u32 = 0xee0;
-
-fn sext(v: i32, bits: u32) -> i32 {
-    v << (32 - bits) >> (32 - bits)
-}
 
 /// 24-bit value to the DSP's 16-bit memory float: sign, 4-bit count of
 /// leading sign-equal bits (0-12), 11 mantissa bits.

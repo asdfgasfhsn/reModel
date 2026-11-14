@@ -20,16 +20,9 @@ pub mod float;
 pub mod mem;
 
 pub use compute::{AluOp, Compute, MulOp, ShiftOp};
+use state::bits;
+use state::sext;
 use std::fmt;
-
-pub(crate) fn bits(w: u64, hi: u32, lo: u32) -> u32 {
-    ((w >> lo) & ((1u64 << (hi - lo + 1)) - 1)) as u32
-}
-
-pub(crate) fn sext(v: u32, width: u32) -> i32 {
-    let s = 32 - width;
-    ((v << s) as i32) >> s
-}
 
 /// Condition code that always holds in an `IF` (and never terminates a
 /// `DO UNTIL`): TRUE / FOREVER (UM Table 3.2).

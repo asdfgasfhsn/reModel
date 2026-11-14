@@ -13,6 +13,7 @@ pub mod codegen;
 pub mod cpu;
 pub mod lower;
 
+use state::sext_u as sext;
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,11 +118,6 @@ pub fn reg_name(r: u8) -> &'static str {
         "g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8", "g9", "g10", "g11", "g12", "g13", "g14", "fp",
     ];
     N[(r & 31) as usize]
-}
-
-fn sext(v: u32, bits: u32) -> u32 {
-    let s = 32 - bits;
-    (((v << s) as i32) >> s) as u32
 }
 
 fn ctrl_name(op: u32) -> Option<&'static str> {

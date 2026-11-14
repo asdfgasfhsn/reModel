@@ -24,8 +24,6 @@ pub mod int {
     pub const DMA: u16 = 1 << 4;
     pub const CPU: u16 = 1 << 5;
     pub const TIMER_A: u16 = 1 << 6;
-    pub const TIMER_B: u16 = 1 << 7;
-    pub const TIMER_C: u16 = 1 << 8;
     pub const MIDI_OUT: u16 = 1 << 9;
     pub const SAMPLE: u16 = 1 << 10;
 }
@@ -386,11 +384,6 @@ impl Scsp {
     /// The interrupt level presented to the sound CPU (0 = none).
     pub fn irq(&self) -> u8 {
         self.irq
-    }
-
-    /// Main-CPU interrupt pending bits (unconnected on Model 2).
-    pub fn main_pending(&self) -> u16 {
-        self.mcipd & self.mcieb
     }
 
     fn update_irq(&mut self) {
@@ -886,22 +879,7 @@ state::fields!(Scsp {
 state::fields!(Slot { regs, keyed, active, phase, eg, pos, frac, backward, lfo, lfo_div });
 state::fields!(Timer { ctl, count });
 
-impl state::State for Phase {
-    fn save(&self, w: &mut state::Writer) {
-        (*self as u8).save(w);
-    }
-    fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
-        let mut v = 0u8;
-        v.load(r)?;
-        *self = match v {
-            0 => Phase::Attack,
-            1 => Phase::Decay1,
-            2 => Phase::Decay2,
-            _ => Phase::Release,
-        };
-        Ok(())
-    }
-}
+state::byte_enum!(Phase, "SCSP envelope phase", { 0 => Attack, 1 => Decay1, 2 => Decay2, 3 => Release });
 
 #[cfg(test)]
 mod tests {

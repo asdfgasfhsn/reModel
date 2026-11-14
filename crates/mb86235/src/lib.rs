@@ -9,16 +9,9 @@ pub mod codegen;
 pub mod cpu;
 pub mod float;
 
+use state::bits;
+use state::sext;
 use std::fmt;
-
-fn bits(w: u64, hi: u32, lo: u32) -> u32 {
-    ((w >> lo) & ((1u64 << (hi - lo + 1)) - 1)) as u32
-}
-
-fn sext(v: u32, width: u32) -> i32 {
-    let s = 32 - width;
-    ((v << s) as i32) >> s
-}
 
 /// Program memory size in words; the PC is 12 bits.
 pub const PROGRAM_WORDS: u32 = 4096;

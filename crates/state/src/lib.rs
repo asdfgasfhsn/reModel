@@ -6,6 +6,9 @@
 //! list the fields that are their state with [`fields!`]; the rest are
 //! skipped. Numbers are little-endian; collections carry their length.
 
+mod bitops;
+pub use bitops::{bits, sext, sext64, sext_i, sext_u};
+
 use std::collections::VecDeque;
 
 #[derive(Default)]
@@ -207,6 +210,28 @@ macro_rules! tuple {
 
 tuple!(0 A, 1 B);
 tuple!(0 A, 1 B, 2 C);
+
+/// Implement [`State`] for a fieldless enum as one byte, the listed number
+/// for each variant; any other byte is an error naming `what`.
+#[macro_export]
+macro_rules! byte_enum {
+    ($t:ident, $what:literal, { $($n:literal => $v:ident),* $(,)? }) => {
+        impl $crate::State for $t {
+            fn save(&self, w: &mut $crate::Writer) {
+                $crate::State::save(&(match self { $($t::$v => $n),* } as u8), w);
+            }
+            fn load(&mut self, r: &mut $crate::Reader) -> Result<(), $crate::Error> {
+                let mut v = 0u8;
+                $crate::State::load(&mut v, r)?;
+                *self = match v {
+                    $($n => $t::$v,)*
+                    _ => return Err($crate::Error(format!("bad {} {v}", $what))),
+                };
+                Ok(())
+            }
+        }
+    };
+}
 
 /// Implement [`State`] for a struct as the listed fields, in order; the
 /// others are left as they are on load.

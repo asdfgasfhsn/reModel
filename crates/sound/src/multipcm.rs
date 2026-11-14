@@ -65,24 +65,7 @@ enum Stage {
     Release,
 }
 
-impl state::State for Stage {
-    fn save(&self, w: &mut state::Writer) {
-        (*self as u8).save(w);
-    }
-    fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
-        let mut v = 0u8;
-        v.load(r)?;
-        *self = match v {
-            0 => Stage::Off,
-            1 => Stage::Attack,
-            2 => Stage::Decay1,
-            3 => Stage::Decay2,
-            4 => Stage::Release,
-            _ => return Err(state::Error(format!("bad MultiPCM envelope stage {v}"))),
-        };
-        Ok(())
-    }
-}
+state::byte_enum!(Stage, "MultiPCM envelope stage", { 0 => Off, 1 => Attack, 2 => Decay1, 3 => Decay2, 4 => Release });
 
 /// One voice.
 #[derive(Clone, Default)]

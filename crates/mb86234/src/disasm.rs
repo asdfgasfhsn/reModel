@@ -2,10 +2,7 @@
 //! implements (`docs/hw/mb86234.md` says how sure each is). Forms that
 //! aren't known print as `??`.
 
-fn sext(v: u32, bits: u32) -> i32 {
-    let s = 32 - bits;
-    ((v << s) as i32) >> s
-}
+use state::sext;
 
 /// A register of the transfer fields.
 pub fn reg_name(r: u32) -> String {

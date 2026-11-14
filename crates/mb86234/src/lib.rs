@@ -23,6 +23,7 @@
 pub mod disasm;
 pub mod funcs;
 
+use state::sext_u as sext;
 use std::collections::{BTreeMap, VecDeque};
 
 pub use funcs::Funcs;
@@ -97,11 +98,6 @@ pub enum Stop {
     Input,
     /// The step budget ran out.
     Limit,
-}
-
-fn sext(v: u32, bits: u32) -> u32 {
-    let s = 32 - bits;
-    (((v << s) as i32) >> s) as u32
 }
 
 /// An operand's address: an index and the base added to it (0 unless the

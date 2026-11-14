@@ -2,11 +2,8 @@
 //! multiplier and shifter operations, MR transfers and the multifunction
 //! computations.
 
+use state::bits;
 use std::fmt;
-
-fn bits(w: u32, hi: u32, lo: u32) -> u32 {
-    (w >> lo) & ((1 << (hi - lo + 1)) - 1)
-}
 
 /// ALU operations (UM Tables B.1 and B.2). Names follow the syntax; `F`
 /// variants are floating point.

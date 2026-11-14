@@ -40,23 +40,7 @@ enum Stage {
     Release,
 }
 
-impl state::State for Stage {
-    fn save(&self, w: &mut state::Writer) {
-        (*self as u8).save(w);
-    }
-    fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
-        let mut v = 0u8;
-        v.load(r)?;
-        *self = match v {
-            0 => Stage::Attack,
-            1 => Stage::Decay1,
-            2 => Stage::Decay2,
-            3 => Stage::Release,
-            _ => return Err(state::Error(format!("bad OPN2 envelope stage {v}"))),
-        };
-        Ok(())
-    }
-}
+state::byte_enum!(Stage, "OPN2 envelope stage", { 0 => Attack, 1 => Decay1, 2 => Decay2, 3 => Release });
 
 #[derive(Clone, Default)]
 struct Operator {

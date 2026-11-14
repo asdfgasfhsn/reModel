@@ -5,6 +5,7 @@ use super::*;
 use crate::compute::{AluOp, Mr, MulDst, MulOp, ShiftOp};
 use crate::float::{self, Class, Mode, ToInt};
 use crate::{BitOp, Compute, Count, Move, Op, StackOps, Target};
+use state::sext64;
 
 /// Register file results of a compute operation, written in order (so a
 /// later one wins: multiplier before ALU, UM §2.9).
@@ -118,14 +119,6 @@ fn add3(a: u32, b: u32, c: u32) -> (u32, bool, bool) {
     let s = a as u64 + b as u64 + c as u64;
     let r = s as u32;
     (r, s >> 32 != 0, ((a ^ r) & (b ^ r)) >> 31 != 0)
-}
-
-fn sext_from(v: u64, len: u32) -> u64 {
-    if len == 0 || len >= 64 {
-        v
-    } else {
-        (((v << (64 - len)) as i64) >> (64 - len)) as u64
-    }
 }
 
 impl Sharc {
@@ -868,7 +861,7 @@ impl Sharc {
                 let mut f = x as u64 & field(len6);
                 // Sign-extend unless the field's MSB lands off-scale left.
                 if matches!(op, FdepSe | OrFdepSe) && len6 > 0 && bit6 + len6 <= 32 {
-                    f = sext_from(f, len6);
+                    f = sext64(f, len6);
                 }
                 let dep = (f << bit6) as u32;
                 sv = bit6 + len6 > 32;
@@ -878,7 +871,7 @@ impl Sharc {
                 let (bit6, len6) = (y.bit6, y.len6);
                 let mut f = (x as u64 >> bit6) & field(len6);
                 if op == FextSe && len6 > 0 && bit6 + len6 <= 32 {
-                    f = sext_from(f, len6);
+                    f = sext64(f, len6);
                 }
                 sv = bit6 + len6 > 32;
                 Some(f as u32)
