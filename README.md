@@ -21,7 +21,7 @@ built to be reused across the Model 2 family.
 
 ## Games
 
-Twenty-three games run, on the original Model 2 and the 2A, 2B and 2C boards. "Plays" means playable with
+Twenty-five games run, on the original Model 2 and the 2A, 2B and 2C boards. "Plays" means playable with
 sound in the native player; the details, and what each game needed, are in
 [docs/games/](docs/games/README.md).
 
@@ -50,6 +50,8 @@ sound in the native player; the details, and what each game needed, are in
 | Daytona USA | `daytona` | Model 2 | plays; the first original Model 2 game, its program runs on an MB86234 interpreter |
 | Virtua Cop | `vcop` | Model 2 | plays, with light guns; stages 1 to 3 start and play, whole stages not yet shot through to their bosses |
 | Desert Tank | `desert` | Model 2 | plays; the desert mission and the canyon (EXPERT) mission, steered by handle and pedal |
+| Virtua Cop 2 | `vcop2` | 2A | plays, with light guns; all three stages start and play, no stage shot through to its end |
+| Sky Target | `skytargt` | 2A | plays, with a flight stick; mission 1 to its boss, no mission finished |
 
 ## Highlights
 

@@ -11,7 +11,8 @@ House of the Dead (hotd), Behind Enemy Lines (bel), Dynamite Baseball
 Fighting Vipers (fvipers), Sonic Championship (schamp) and its
 Japanese release Sonic The Fighters (sfight), Virtua Striker (vstriker), Last Bronx (lastbrnx), Sega Rally Championship
 (srallyc), Virtua Fighter 2 (vf2), Daytona USA (daytona), Virtua Cop
-(vcop) and Desert Tank (desert).
+(vcop), Desert Tank (desert), Virtua Cop 2 (vcop2) and Sky Target
+(skytargt).
 This build runs the game code on the interpreter (no recompiled game code
 is included).
 
@@ -20,7 +21,7 @@ Bring your own ROMs
 No game data is included. Put the sets as MAME keeps them, topskatr.zip or
 a topskatr/ folder (likewise skisuprg, stcc, segawski, waverunr,
 overrev, sgt24h, hotd, bel, dynabb97, doa, indy500, fvipers, schamp,
-vstriker, lastbrnx, srallyc, vf2, daytona, vcop, desert), in
+vstriker, lastbrnx, srallyc, vf2, daytona, vcop, desert, vcop2, skytargt), in
 the ROM folder:
 
     ~/.local/share/remodel/roms     ($XDG_DATA_HOME/remodel/roms)

@@ -1,6 +1,6 @@
 # Virtua Cop 2 (`vcop2`, Model 2A-CRX, 1995)
 
-Status: **plays** in scripted runs (in `IN_PROGRESS`, not yet listed):
+Status: **plays** (listed; the launcher's Model 2A group, with a poster and bezel), checked in scripted runs:
 boot, attract, coin-start, the stage select and all three stages, light
 guns with shots, hits and the off-screen reload, two players, sound. Not
 yet played by hand. The third Model 2A game after

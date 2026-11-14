@@ -1,6 +1,6 @@
 # Sky Target (`skytargt`, Model 2A-CRX, 1995)
 
-Status: **plays** in scripted runs (in `IN_PROGRESS`, not yet listed):
+Status: **plays** (listed; the launcher's Model 2A group, with a poster and bezel), checked in scripted runs:
 boot, attract with its 3D flight demo and weapon screens, coin-start, the
 fighter select, the carrier launch and mission 1 to its boss, continue and
 game over, sound. Not yet played by hand. The fourth Model 2A game.
