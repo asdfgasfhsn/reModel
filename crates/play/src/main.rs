@@ -78,6 +78,8 @@ usage: remodel-play [options]
                      window (default on)
   --interp           run the i960 on the interpreter even if this build
                      has recompiled code
+  --jit              run the i960 on the JIT: the game's code translated
+                     to this machine's as it runs (docs/jit.md)
   --no-idle-skip     run the game's idle loops instruction by instruction
                      instead of skipping through them (same game, slower;
                      docs/idle-skip.md)
@@ -255,6 +257,8 @@ const GAME_FADE: Duration = Duration::from_millis(400);
 struct Options {
     sound: bool,
     interp: bool,
+    /// `--jit`: the i960 on the JIT (the game's own sessions).
+    jit: bool,
     seconds: Option<f64>,
     /// `--frames`: quit at this game frame.
     frames: Option<u64>,
@@ -325,6 +329,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
     let mut o = Options {
         sound: true,
         interp: false,
+        jit: false,
         seconds: None,
         frames: None,
         input: None,
@@ -394,6 +399,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
             }
             "--nav" => o.nav = parse_nav(&value()?)?,
             "--interp" => o.interp = true,
+            "--jit" => o.jit = true,
             "--no-idle-skip" => model2::idle::set_default(false),
             "--smooth" => {
                 // Bare `--smooth` (as before it took a value) turns it on.
@@ -1061,6 +1067,10 @@ impl Play {
             let mut machine = model2::Machine::new(&roms);
             if self.opts.interp {
                 machine.disable_native();
+            } else if self.opts.jit {
+                if let Err(e) = machine.enable_jit(model2::jit::Config::default()) {
+                    eprintln!("warning: --jit: {e}; the i960 runs on the interpreter");
+                }
             }
             machine.bus.geo.set_mode(values.geo_mode());
             machine.bus.geo.set_smooth(values.motion_on());
@@ -1085,7 +1095,13 @@ impl Play {
                 "game          {} ({}), i960 {}{}",
                 game.title,
                 game.id,
-                if machine.is_native() { "recompiled" } else { "interpreted" },
+                if machine.jit_on() {
+                    "on the JIT"
+                } else if machine.is_native() {
+                    "recompiled"
+                } else {
+                    "interpreted"
+                },
                 sound.as_ref().map_or(String::new(), |s| format!(", audio {} Hz", s.rate))
             );
             let bindings = settings::load_bindings(game);

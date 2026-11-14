@@ -180,7 +180,10 @@ keeps a table of them indexed by address. Execution enters at
 any block start. Anywhere else, such as the point an interrupt returns to,
 runs on the interpreter until it reaches one.
 
-**Instructions.** Each instruction is either translated into plain Rust on
+**Instructions.** What each translated instruction does is said once, in
+`i960::lower` (an `Op` on the register file), which the JIT shares
+(`docs/jit.md`); `codegen.rs` prints it as Rust. Each instruction is either
+translated into plain Rust on
 the register file (`c.r[17] = c.r[16].wrapping_add(0x4);`) or, for the rare
 and floating-point ones, a call to the interpreter's `Cpu::exec` with the
 decoded instruction as a constant. In `topskatr`, 96% of the 53,000

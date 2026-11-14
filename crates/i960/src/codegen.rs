@@ -18,6 +18,7 @@
 //! The output is derived from game code: write it under `out/`, never commit
 //! it.
 
+use crate::lower::{lower, Alu, Op, Src, Width};
 use crate::{Flow, Insn, MemRef, Operand};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -61,18 +62,10 @@ pub fn leaders(insns: &BTreeMap<u32, Insn>, extra: &BTreeSet<u32>) -> BTreeSet<u
     l
 }
 
-fn src(op: Option<&Operand>) -> Option<String> {
-    match op? {
-        Operand::Reg(r) => Some(format!("c.r[{r}]")),
-        Operand::Lit(v) => Some(format!("{v:#x}u32")),
-        _ => None,
-    }
-}
-
-fn reg(op: Option<&Operand>) -> Option<usize> {
-    match op? {
-        Operand::Reg(r) => Some(*r as usize),
-        _ => None,
+fn src(s: Src) -> String {
+    match s {
+        Src::Reg(r) => format!("c.r[{r}]"),
+        Src::Lit(v) => format!("{v:#x}u32"),
     }
 }
 
@@ -125,118 +118,103 @@ pub fn insn_expr(i: &Insn) -> String {
 /// Rust statements for `i`, or `None` to leave it to the interpreter.
 /// Statements that transfer control set `c.ip` themselves.
 fn translate(i: &Insn) -> Option<String> {
-    let ops = &i.operands;
-    let op = i.word >> 24;
-    let next = i.next();
-    let fault = format!("map_err(|kind| Stop::Fault {{ kind, ip: {:#x} }})?", i.addr);
-    Some(match op {
-        0x08 | 0x09 | 0x0b | 0x10..=0x17 => {
-            let Some(Operand::Target(t)) = ops.first() else { return None };
-            match op {
-                0x08 => format!("c.ip = {t:#x};"),
-                0x09 => format!("c.call(h, {t:#x}, {next:#x});"),
-                0x0b => format!("c.r[30] = {next:#x}; c.ip = {t:#x};"),
-                _ => format!("c.ip = if c.cond({}) {{ {t:#x} }} else {{ {next:#x} }};", op & 7),
-            }
-        }
-        0x0a => format!("c.ret(h).{fault};"),
-        0x20..=0x27 => format!("c.r[{}] = c.cond({}) as u32;", reg(ops.first())?, op & 7),
-        0x30..=0x3f => {
-            let (a, b) = (src(ops.first())?, src(ops.get(1))?);
-            let Some(Operand::Target(t)) = ops.get(2) else { return None };
-            let take = match op {
-                0x30 | 0x37 => {
-                    return Some(format!(
-                        "let set = {b} & (1u32 << ({a} & 31)) != 0; c.set_cc(if set {{ 2 }} else {{ 0 }}); \
-                         c.ip = if set == {} {{ {t:#x} }} else {{ {next:#x} }};",
-                        op == 0x37
-                    ))
-                }
-                0x31..=0x36 => format!("c.compare({a}, {b});"),
-                _ => format!("c.compare({a} as i32, {b} as i32);"),
-            };
-            format!("{take} c.ip = if c.cond({}) {{ {t:#x} }} else {{ {next:#x} }};", op & 7)
-        }
-        0x58..=0x7f => return translate_reg(i),
-        0x80..=0xcf => {
-            let m = match ops.iter().find(|o| matches!(o, Operand::Mem(_))) {
-                Some(Operand::Mem(m)) => ea(m),
-                _ => return None,
-            };
-            let load = || reg(ops.get(1));
-            let store = || reg(ops.first());
-            match op {
-                0x84 => format!("c.ip = {m};"),
-                0x85 => format!("let a = {m}; c.r[{}] = {next:#x}; c.ip = a;", load()?),
-                0x86 => format!("let a = {m}; c.call(h, a, {next:#x});"),
-                0x8c => format!("c.r[{}] = {m};", load()?),
-                0x80 => format!("c.r[{}] = h.read8({m}) as u32;", load()?),
-                0xc0 => format!("c.r[{}] = h.read8({m}) as i8 as i32 as u32;", load()?),
-                0x88 => format!("c.r[{}] = h.read16({m}) as u32;", load()?),
-                0xc8 => format!("c.r[{}] = h.read16({m}) as i16 as i32 as u32;", load()?),
-                0x82 | 0xc2 => format!("h.write8({m}, c.r[{}] as u8);", store()?),
-                0x8a | 0xca => format!("h.write16({m}, c.r[{}] as u16);", store()?),
-                0x90 | 0x98 | 0xa0 | 0xb0 | 0x92 | 0x9a | 0xa2 | 0xb2 => {
-                    let n = match op & !2 {
-                        0x90 => 1,
-                        0x98 => 2,
-                        0xa0 => 3,
-                        _ => 4,
-                    };
-                    let mut s = format!("let a = {m};");
-                    for k in 0..n {
-                        let addr = if k == 0 { "a".to_string() } else { format!("a.wrapping_add({})", 4 * k) };
-                        if op & 2 == 0 {
-                            let _ = write!(s, " c.r[{}] = h.read32({addr});", (load()? + k) & 31);
-                        } else {
-                            let _ = write!(s, " h.write32({addr}, c.r[{}]);", (store()? + k) & 31);
-                        }
-                    }
-                    s
-                }
-                _ => return None,
-            }
-        }
-        _ => return None,
-    })
+    Some(rust(&lower(i)?, i.addr))
 }
 
-fn translate_reg(i: &Insn) -> Option<String> {
-    let ops = &i.operands;
-    let full = ((i.word >> 24) << 4) | ((i.word >> 7) & 0xf);
-    let (s1, s2) = (|| src(ops.first()), || src(ops.get(1)));
-    let dst3 = |e: String| Some(format!("c.r[{}] = {e};", reg(ops.get(2))?));
+/// `op` (the instruction at `addr`) as Rust statements.
+fn rust(op: &Op, addr: u32) -> String {
+    let fault = format!("map_err(|kind| Stop::Fault {{ kind, ip: {addr:#x} }})?");
     let bit = |e: String| format!("(1u32 << ({e} & 31))");
-    match full {
-        0x580 => dst3(format!("{} ^ {}", s2()?, bit(s1()?))),
-        0x581 => dst3(format!("{} & {}", s2()?, s1()?)),
-        0x582 => dst3(format!("{} & !{}", s2()?, s1()?)),
-        0x583 => dst3(format!("{} | {}", s2()?, bit(s1()?))),
-        0x584 => dst3(format!("!{} & {}", s2()?, s1()?)),
-        0x586 => dst3(format!("{} ^ {}", s2()?, s1()?)),
-        0x587 => dst3(format!("{} | {}", s2()?, s1()?)),
-        0x588 => dst3(format!("!({} | {})", s2()?, s1()?)),
-        0x589 => dst3(format!("!({} ^ {})", s2()?, s1()?)),
-        0x58a => Some(format!("c.r[{}] = !{};", reg(ops.get(1))?, s1()?)),
-        0x58b => dst3(format!("{} | !{}", s2()?, s1()?)),
-        0x58c => dst3(format!("{} & !{}", s2()?, bit(s1()?))),
-        0x58d => dst3(format!("!{} | {}", s2()?, s1()?)),
-        0x58e => dst3(format!("!({} & {})", s2()?, s1()?)),
-        0x590 | 0x591 => dst3(format!("{}.wrapping_add({})", s2()?, s1()?)),
-        0x592 | 0x593 => dst3(format!("{}.wrapping_sub({})", s2()?, s1()?)),
-        0x598 => dst3(format!("{{ let n = {}; if n >= 32 {{ 0 }} else {{ {} >> n }} }}", s1()?, s2()?)),
-        0x59b => dst3(format!("(({} as i32) >> {}.min(31)) as u32", s2()?, s1()?)),
-        0x59c | 0x59e => dst3(format!("{{ let n = {}; if n >= 32 {{ 0 }} else {{ {} << n }} }}", s1()?, s2()?)),
-        0x59d => dst3(format!("{}.rotate_left({} & 31)", s2()?, s1()?)),
-        0x5a0 => Some(format!("c.compare({}, {});", s1()?, s2()?)),
-        0x5a1 => Some(format!("c.compare({} as i32, {} as i32);", s1()?, s2()?)),
-        0x5ae => Some(format!("c.set_cc(if {} & {} != 0 {{ 2 }} else {{ 0 }});", s2()?, bit(s1()?))),
-        0x5cc | 0x5dc | 0x5ec | 0x5fc => {
-            let n = ((full - 0x5cc) >> 4) as usize + 1;
-            let d = reg(ops.get(1))?;
-            Some(match ops.first()? {
-                Operand::Reg(s) => {
-                    let s = *s as usize;
+    let dst3 = |d: u8, e: String| format!("c.r[{d}] = {e};");
+    match *op {
+        Op::Jump(t) => format!("c.ip = {t:#x};"),
+        Op::Call { target, next } => format!("c.call(h, {target:#x}, {next:#x});"),
+        Op::Link { target, next } => format!("c.r[30] = {next:#x}; c.ip = {target:#x};"),
+        Op::Branch { mask, target, next } => {
+            format!("c.ip = if c.cond({mask}) {{ {target:#x} }} else {{ {next:#x} }};")
+        }
+        Op::Ret => format!("c.ret(h).{fault};"),
+        Op::Test { mask, dst } => format!("c.r[{dst}] = c.cond({mask}) as u32;"),
+        Op::BitBranch { bit: a, src: b, set, target, next } => format!(
+            "let set = {} & (1u32 << ({} & 31)) != 0; c.set_cc(if set {{ 2 }} else {{ 0 }}); \
+             c.ip = if set == {set} {{ {target:#x} }} else {{ {next:#x} }};",
+            src(b),
+            src(a)
+        ),
+        Op::CmpBranch { signed, a, b, mask, target, next } => {
+            let take = if signed {
+                format!("c.compare({} as i32, {} as i32);", src(a), src(b))
+            } else {
+                format!("c.compare({}, {});", src(a), src(b))
+            };
+            format!("{take} c.ip = if c.cond({mask}) {{ {target:#x} }} else {{ {next:#x} }};")
+        }
+        Op::JumpInd(m) => format!("c.ip = {};", ea(&m)),
+        Op::LinkInd { ea: m, dst, next } => format!("let a = {}; c.r[{dst}] = {next:#x}; c.ip = a;", ea(&m)),
+        Op::CallInd { ea: m, next } => format!("let a = {}; c.call(h, a, {next:#x});", ea(&m)),
+        Op::Lda { ea: m, dst } => format!("c.r[{dst}] = {};", ea(&m)),
+        Op::LoadNarrow { width, signed, ea: m, dst } => {
+            let m = ea(&m);
+            match (width, signed) {
+                (Width::Byte, false) => format!("c.r[{dst}] = h.read8({m}) as u32;"),
+                (Width::Byte, true) => format!("c.r[{dst}] = h.read8({m}) as i8 as i32 as u32;"),
+                (Width::Short, false) => format!("c.r[{dst}] = h.read16({m}) as u32;"),
+                (Width::Short, true) => format!("c.r[{dst}] = h.read16({m}) as i16 as i32 as u32;"),
+            }
+        }
+        Op::StoreNarrow { width: Width::Byte, ea: m, src: r } => format!("h.write8({}, c.r[{r}] as u8);", ea(&m)),
+        Op::StoreNarrow { width: Width::Short, ea: m, src: r } => format!("h.write16({}, c.r[{r}] as u16);", ea(&m)),
+        Op::Load { n, ea: m, dst: r } | Op::Store { n, ea: m, src: r } => {
+            let mut s = format!("let a = {};", ea(&m));
+            for k in 0..n as usize {
+                let addr = if k == 0 { "a".to_string() } else { format!("a.wrapping_add({})", 4 * k) };
+                if matches!(op, Op::Load { .. }) {
+                    let _ = write!(s, " c.r[{}] = h.read32({addr});", (r as usize + k) & 31);
+                } else {
+                    let _ = write!(s, " h.write32({addr}, c.r[{}]);", (r as usize + k) & 31);
+                }
+            }
+            s
+        }
+        Op::Alu { op, a, b, dst } => {
+            let (s1, s2) = (src(a), src(b));
+            dst3(
+                dst,
+                match op {
+                    Alu::NotBit => format!("{s2} ^ {}", bit(s1)),
+                    Alu::And => format!("{s2} & {s1}"),
+                    Alu::AndNot => format!("{s2} & !{s1}"),
+                    Alu::SetBit => format!("{s2} | {}", bit(s1)),
+                    Alu::NotAnd => format!("!{s2} & {s1}"),
+                    Alu::Xor => format!("{s2} ^ {s1}"),
+                    Alu::Or => format!("{s2} | {s1}"),
+                    Alu::Nor => format!("!({s2} | {s1})"),
+                    Alu::Xnor => format!("!({s2} ^ {s1})"),
+                    Alu::OrNot => format!("{s2} | !{s1}"),
+                    Alu::ClrBit => format!("{s2} & !{}", bit(s1)),
+                    Alu::NotOr => format!("!{s2} | {s1}"),
+                    Alu::Nand => format!("!({s2} & {s1})"),
+                    Alu::Add => format!("{s2}.wrapping_add({s1})"),
+                    Alu::Sub => format!("{s2}.wrapping_sub({s1})"),
+                    Alu::Shro => format!("{{ let n = {s1}; if n >= 32 {{ 0 }} else {{ {s2} >> n }} }}"),
+                    Alu::Shri => format!("(({s2} as i32) >> {s1}.min(31)) as u32"),
+                    Alu::Shl => format!("{{ let n = {s1}; if n >= 32 {{ 0 }} else {{ {s2} << n }} }}"),
+                    Alu::Rotate => format!("{s2}.rotate_left({s1} & 31)"),
+                    Alu::Mul => format!("{s2}.wrapping_mul({s1})"),
+                },
+            )
+        }
+        Op::Not { a, dst } => format!("c.r[{dst}] = !{};", src(a)),
+        Op::Compare { signed: false, a, b } => format!("c.compare({}, {});", src(a), src(b)),
+        Op::Compare { signed: true, a, b } => format!("c.compare({} as i32, {} as i32);", src(a), src(b)),
+        Op::ChkBit { bit: a, src: b } => {
+            format!("c.set_cc(if {} & {} != 0 {{ 2 }} else {{ 0 }});", src(b), bit(src(a)))
+        }
+        Op::Mov { n, src: s, dst: d } => {
+            let (n, d) = (n as usize, d as usize);
+            match s {
+                Src::Reg(s) => {
+                    let s = s as usize;
                     let t: Vec<String> = (0..n).map(|k| format!("c.r[{}]", (s + k) & 31)).collect();
                     let dsts: Vec<String> = (0..n).map(|k| format!("c.r[{}]", (d + k) & 31)).collect();
                     if n == 1 {
@@ -245,18 +223,15 @@ fn translate_reg(i: &Insn) -> Option<String> {
                         format!("let t = [{}]; [{}] = t;", t.join(", "), dsts.join(", "))
                     }
                 }
-                Operand::Lit(v) => {
+                Src::Lit(v) => {
                     let mut s = format!("c.r[{d}] = {v:#x};");
                     for k in 1..n {
                         let _ = write!(s, " c.r[{}] = 0;", (d + k) & 31);
                     }
                     s
                 }
-                _ => return None,
-            })
+            }
         }
-        0x701 | 0x741 => dst3(format!("{}.wrapping_mul({})", s2()?, s1()?)),
-        _ => None,
     }
 }
 

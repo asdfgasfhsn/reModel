@@ -33,6 +33,9 @@ pub mod runahead;
 
 pub use bus::Model2Bus;
 use i960::cpu::{Cpu, Stop};
+/// The i960 JIT (native builds; docs/jit.md), for the front ends' settings.
+#[cfg(not(target_arch = "wasm32"))]
+pub use jit;
 use romset::RomSet;
 use std::collections::BTreeSet;
 
@@ -55,6 +58,10 @@ pub struct Machine {
     /// Recompiled blocks by address / 4 over the program ROM, if this build
     /// has recompiled code for the game's ROM.
     native: Option<Vec<Option<Block>>>,
+    /// The i960 JIT, when it is on (`enable_jit`, docs/jit.md): it takes
+    /// the place of recompiled code.
+    #[cfg(not(target_arch = "wasm32"))]
+    jit: Option<Box<jit::Jit<Model2Bus>>>,
     /// Every instruction address executed.
     pub coverage: Coverage,
     /// Targets of indirect branches/calls actually taken, by source.
@@ -89,6 +96,8 @@ impl Machine {
             frames: 0,
             program_hash: program_hash(roms),
             native,
+            #[cfg(not(target_arch = "wasm32"))]
+            jit: None,
             coverage: Coverage::default(),
             indirect: BTreeSet::new(),
             frame_profile: Profile::default(),
@@ -116,14 +125,66 @@ impl Machine {
     }
 
     /// True if the i960 runs recompiled code (this build has it for the
-    /// game's ROM and it hasn't been turned off).
+    /// game's ROM and it hasn't been turned off) or JIT-translated code.
     pub fn is_native(&self) -> bool {
-        self.native.is_some()
+        self.native.is_some() || self.jit_on()
     }
 
-    /// Run the interpreter only, even if recompiled code is available.
+    /// Run the interpreter only, even if recompiled code is available (and
+    /// turn the JIT off).
     pub fn disable_native(&mut self) {
         self.native = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.jit = None;
+        }
+    }
+
+    /// True if the i960 runs on the JIT.
+    pub fn jit_on(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.jit.is_some();
+        #[cfg(target_arch = "wasm32")]
+        false
+    }
+
+    /// Run the i960 on the JIT (docs/jit.md): its code translated to the
+    /// host's machine code as it runs, in place of any recompiled code.
+    /// Fails where Cranelift has no back end for the host.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn enable_jit(&mut self, config: jit::Config) -> Result<(), String> {
+        let mut j = jit::Jit::new(config)?;
+        j.set_stops(self.idle.starts());
+        self.bus.count_code_writes();
+        self.native = None;
+        self.jit = Some(Box::new(j));
+        Ok(())
+    }
+
+    /// The JIT's counters, when it is on.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn jit_stats(&self) -> Option<jit::Stats> {
+        self.jit.as_ref().map(|j| j.stats())
+    }
+
+    /// What translated blocks leave to the interpreter, by mnemonic.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn jit_fallbacks(&self) -> Vec<(&'static str, u64)> {
+        self.jit.as_ref().map(|j| j.fallback_kinds()).unwrap_or_default()
+    }
+
+    /// Translate the whole program now, as the static recompiler cuts it
+    /// (`insns` and its entry points, from `analyze`): a measurement of
+    /// what translating everything ahead of time costs. Returns the number
+    /// of blocks, or `None` with the JIT off.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn jit_translate_program(
+        &mut self,
+        insns: &std::collections::BTreeMap<u32, i960::Insn>,
+        entries: &BTreeSet<u32>,
+    ) -> Option<usize> {
+        let bus = &self.bus;
+        self.jit.as_mut().map(|j| j.translate_program(insns, entries, bus))
     }
 
     /// Run the SHARCs (Model 2B) on their interpreter, even if the build has
@@ -142,7 +203,7 @@ impl Machine {
     /// skips through the game's idle loops (`idle`).
     pub fn run_slice(&mut self, max: u64) -> Result<u64, Stop> {
         let (start, frames) = (self.cpu.icount, self.frames);
-        if self.native.is_none() {
+        if self.native.is_none() && !self.jit_on() {
             while self.cpu.icount - start < max && self.frames == frames {
                 if !self.idle_skip(max - (self.cpu.icount - start))? {
                     self.step()?;
@@ -170,6 +231,20 @@ impl Machine {
         self.bus.budget = budget;
         self.cpu.take_interrupts(&mut self.bus);
         let ip = self.cpu.ip;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(j) = self.jit.as_deref_mut() {
+            match j.run(&mut self.cpu, &mut self.bus) {
+                Some(r) => r?,
+                None => {
+                    self.bus.cur_ip = ip;
+                    let (ip, _) = self.cpu.step_insn(&mut self.bus)?;
+                    self.coverage.insert(ip);
+                    self.bus.retire_insn(&mut self.cpu);
+                }
+            }
+            self.frames = self.bus.frames;
+            return Ok(());
+        }
         let block = self.native.as_ref().and_then(|t| t.get((ip / 4) as usize).copied().flatten());
         match block {
             Some(block) if ip & 3 == 0 => block(&mut self.cpu, &mut self.bus)?,
@@ -232,6 +307,7 @@ impl Machine {
             return Err("save state has trailing data".into());
         }
         self.frames = self.bus.frames;
+        self.forget_ram_code();
         Ok(())
     }
 
@@ -250,6 +326,15 @@ impl Machine {
         marks.cpu = w.buf;
         self.bus.copy_from(&mut src.bus, marks);
         self.frames = src.frames;
+        self.forget_ram_code();
+    }
+
+    /// RAM was replaced without the bus seeing writes: code the JIT
+    /// translated from it must be checked against it again (each block
+    /// compares its words on its next entry; run-ahead copies every frame,
+    /// so dropping them all would mean translating them every frame).
+    fn forget_ram_code(&mut self) {
+        self.bus.code_written_everywhere();
     }
 
     /// Run the way `src` runs: the interpreter or recompiled code, and the
@@ -257,6 +342,11 @@ impl Machine {
     pub fn configure_like(&mut self, src: &mut Machine) {
         if !src.is_native() {
             self.disable_native();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let (Some(j), false) = (src.jit.as_deref(), self.jit_on()) {
+            // Same settings; a JIT that worked there works here.
+            let _ = self.enable_jit(j.config());
         }
         self.set_idle_skip(src.idle_skip_on());
         if let (Some(c), Some(s)) = (self.bus.sharc.as_deref_mut(), src.bus.sharc.as_deref()) {

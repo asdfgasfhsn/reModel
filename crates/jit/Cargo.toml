@@ -1,0 +1,21 @@
+[package]
+name = "remodel-jit"
+description = "i960 JIT: translates the game's code to native machine code at run time with Cranelift (docs/jit.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "jit"
+
+[dependencies]
+i960.workspace = true
+
+# Native code generation only exists off the browser build: there the crate
+# is empty (docs/jit.md, "WebAssembly").
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+cranelift-codegen = "0.137.1"
+cranelift-frontend = "0.137.1"
+cranelift-jit = "0.137.1"
+cranelift-module = "0.137.1"
+cranelift-native = "0.137.1"

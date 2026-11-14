@@ -82,6 +82,7 @@ make verify                        # check the chips against known-good hashes
 make scan                          # list the sets found in rom/
 make play RECOMP=1                 # the launcher: pick a game, then play
 make play GAME=hotd RECOMP=1       # straight into a game (Esc menu, F8 photo mode)
+make play GAME=srallyc JIT=1       # the i960 translated as it runs instead, no recompiled build (a spike, docs/jit.md)
 make web RECOMP=1                  # browser build -> out/web (needs unzipped rom/<set>/ folders; serve over HTTPS)
 ```
 
@@ -103,6 +104,7 @@ Guides:
 - [CHANGELOG.md](CHANGELOG.md): the tagged versions and what each one brought.
 - [docs/architecture.md](docs/architecture.md): the crate layout and what is shared across Model 2.
 - [docs/recompiler.md](docs/recompiler.md): the static recompiler.
+- [docs/jit.md](docs/jit.md): the i960 JIT (a spike): the recompiler's translation at run time, opt-in.
 - [docs/idle-skip.md](docs/idle-skip.md): fast-forwarding exactly through the games' idle loops.
 - [docs/gpu.md](docs/gpu.md): the GPU renderer.
 - [docs/enhancements.md](docs/enhancements.md): visual enhancements, done and planned (smooth shading, material maps, temporal anti-aliasing, ...).

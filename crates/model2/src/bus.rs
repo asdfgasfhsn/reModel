@@ -72,6 +72,11 @@ impl Mem {
 
 /// Index of buffer RAM in `mems`; shared with the TGP's external bus.
 const BUFFER_RAM: usize = 3;
+/// The RAMs code can be copied to and run from (0x200000 and work RAM at
+/// 0x500000), whose writes the JIT counts.
+const CODE_RAMS: [usize; 2] = [1, 2];
+/// Bytes per write counter (`jit::GEN_PAGE`).
+const CODE_GEN_SHIFT: u32 = 10;
 /// The original Model 2's I/O registers (`Model2Bus::m2_io`).
 const M2_IO_REGS: usize = 64;
 /// Indexes of palette RAM and render RAM in `mems`.
@@ -189,6 +194,10 @@ pub struct Model2Bus {
     pub copro_empty_by_ip: BTreeMap<u32, u64>,
     /// IP of the instruction being executed, set by the machine.
     pub cur_ip: u32,
+    /// For the JIT (docs/jit.md): a write counter per KB of the RAMs code
+    /// can run from ([`CODE_RAMS`]), bumped by every write there; empty
+    /// (and not counted) unless [`Model2Bus::count_code_writes`] was called.
+    code_gens: Vec<u32>,
     pub geo_words: u64,
     /// When set, geo port writes (address, value) are recorded here.
     pub geo_trace: Option<Vec<(u32, u32)>>,
@@ -423,6 +432,7 @@ impl Model2Bus {
             copro_result_hash: 0xcbf2_9ce4_8422_2325,
             copro_empty_by_ip: BTreeMap::new(),
             cur_ip: 0,
+            code_gens: Vec::new(),
             geo_words: 0,
             geo_trace: None,
             watch: None,
@@ -1074,6 +1084,9 @@ impl Model2Bus {
                 log.push((self.now, self.cur_ip, addr, v, n));
             }
         }
+        if !self.code_gens.is_empty() {
+            self.count_code_write(m, off, n);
+        }
         let mem = &mut self.mems[m];
         if mem.writable {
             mem.writes += 1;
@@ -1105,6 +1118,38 @@ impl Model2Bus {
         if let Some(d) = render.data.get_mut(at..at + 2) {
             d.copy_from_slice(&w);
             render.writes += 1;
+        }
+    }
+
+    /// Start counting writes to the RAMs code can run from (the JIT's
+    /// check that code it translated from RAM is still there).
+    pub fn count_code_writes(&mut self) {
+        if self.code_gens.is_empty() {
+            let len: usize = CODE_RAMS.iter().map(|&m| self.mems[m].data.len() >> CODE_GEN_SHIFT).sum();
+            self.code_gens = vec![0; len];
+        }
+    }
+
+    /// Move every write counter, as if all of the code RAMs had been
+    /// written (after their contents were replaced directly).
+    pub fn code_written_everywhere(&mut self) {
+        self.code_gens.iter_mut().for_each(|g| *g = g.wrapping_add(1));
+    }
+
+    /// The write counter of byte `off` of memory `m`, if it has one.
+    #[inline]
+    fn code_gen(&self, m: usize, off: usize) -> Option<usize> {
+        let below = if m == CODE_RAMS[1] { self.mems[CODE_RAMS[0]].data.len() >> CODE_GEN_SHIFT } else { 0 };
+        CODE_RAMS.contains(&m).then_some(below + (off >> CODE_GEN_SHIFT))
+    }
+
+    #[inline]
+    fn count_code_write(&mut self, m: usize, off: usize, n: usize) {
+        let len = self.mems[m].data.len();
+        for o in [off, (off + n - 1) % len] {
+            if let Some(i) = self.code_gen(m, o) {
+                self.code_gens[i] = self.code_gens[i].wrapping_add(1);
+            }
         }
     }
 
@@ -1250,6 +1295,18 @@ impl Model2Bus {
 /// The polygon ROM as the geometrizer reads it (u32 words).
 pub fn polygon_rom(roms: &RomSet) -> Vec<u32> {
     roms.bank(Role::Polygons).as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect()
+}
+
+/// The JIT's view of writes to code (docs/jit.md).
+#[cfg(not(target_arch = "wasm32"))]
+impl jit::JitHost for Model2Bus {
+    fn code_generations(&self) -> &[u32] {
+        &self.code_gens
+    }
+    fn code_generation_index(&self, addr: u32) -> Option<usize> {
+        let (m, off) = self.find(addr)?;
+        self.code_gen(m, off)
+    }
 }
 
 /// Recompiled code returns at the end of each frame and when its budget

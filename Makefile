@@ -88,14 +88,19 @@ REMODEL := target/release/remodel
 PLAY    := target/release/remodel-play
 release_build = $(CARGO) build --release -p $(1)
 endif
-RUN     := $(REMODEL) --game $(GAME) --rom $(ROM)
+# JIT=1: run the i960 on the JIT, translated to machine code as it runs
+# (docs/jit.md); needs no recompiled build.
+JIT     ?=
+# Instructions `make jit-lockstep` compares.
+JIT_STEPS ?= 300000000
+RUN     := $(REMODEL) --game $(GAME) --rom $(ROM) $(if $(JIT),--jit)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release dist test lint fmt fmt-check check ci z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm tgp-disasm tgp-check m68k-tests clean recomp recomp-workspace bench bench-all release-tag latency input-lag run-ahead-check run-ahead-profile draw-overlap-check photo-check camera-scan sound sound-disasm geo-check geo-fuzz smooth-frames temporal-capture temporal-check pace-sim install-desktop uninstall-desktop
+.PHONY: help build release dist test lint fmt fmt-check check ci jit-lockstep jit-translate z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm tgp-disasm tgp-check m68k-tests clean recomp recomp-workspace bench bench-all release-tag latency input-lag run-ahead-check run-ahead-profile draw-overlap-check photo-check camera-scan sound sound-disasm geo-check geo-fuzz smooth-frames temporal-capture temporal-check pace-sim install-desktop uninstall-desktop
 
 ##@ General
 
-help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, JOBS, PACK_CHECK_OUT, TILE_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, NORMALGEN, NORMAL_Y, STRENGTH, DETAIL, MAT_STEPS, MAT_SNAP, MAT_GPU_SNAP, GPU_OPTS, LIGHT_OPTS, LIGHT_CAPTURE, LIGHT_IN, PROBE, AGAINST, SEQ_FROM, SEQ_FRAMES, STATE, TEMPORAL_SEQ, TEMPORAL_OPTS, RECOMP, PLAY_ARGS, VERSION, DRY_RUN, FILE, SECONDS, SOUNDTRACK, SRC)
+help: ## Show this help (variables: GAME, ROM, OUT, ADDR, COUNT, STEPS, SNAP, INPUT, VIEW, PACK, JOBS, PACK_CHECK_OUT, TILE_CHECK_OUT, SCALE, UPSCALER, TILES, MIN_USES, MAX_SIDE, FORCE, TEXDUMP, TEXPACK, COLOUR, NORMALGEN, NORMAL_Y, STRENGTH, DETAIL, MAT_STEPS, MAT_SNAP, MAT_GPU_SNAP, GPU_OPTS, LIGHT_OPTS, LIGHT_CAPTURE, LIGHT_IN, PROBE, AGAINST, SEQ_FROM, SEQ_FRAMES, STATE, TEMPORAL_SEQ, TEMPORAL_OPTS, RECOMP, JIT, JIT_STEPS, PLAY_ARGS, VERSION, DRY_RUN, FILE, SECONDS, SOUNDTRACK, SRC)
 	@awk 'BEGIN {FS = ":.*## "; printf "usage: make <target> [VAR=value]\n"} \
 		/^##@/ {printf "\n%s\n", substr($$0, 5)} \
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -269,9 +274,9 @@ pack-lint: release ## Check texture pack PACK= against the pack format, no ROM o
 	$(REMODEL) pack-lint $(PACK) --max-side $(MAX_SIDE) \
 		$(if $(filter command line environment,$(origin TEXDUMP)),--dump $(TEXDUMP))
 
-play: ## Play in a native window: the launcher (game cards, live attract previews, settings), or straight into GAME= if given; GPU, live sound, gamepads, Esc menu, save states (RECOMP=1: recompiled code; PLAY_ARGS)
+play: ## Play in a native window: the launcher (game cards, live attract previews, settings), or straight into GAME= if given; GPU, live sound, gamepads, Esc menu, save states (RECOMP=1: recompiled code; JIT=1: the i960 JIT; PLAY_ARGS)
 	$(call release_build,remodel-play)
-	$(PLAY) $(if $(filter command line environment,$(origin GAME)),--game $(GAME)) --rom $(ROM) $(PLAY_ARGS)
+	$(PLAY) $(if $(filter command line environment,$(origin GAME)),--game $(GAME)) --rom $(ROM) $(if $(JIT),--jit) $(PLAY_ARGS)
 
 # The launcher in the desktop's app menu, running this checkout's player
 # (from the repo, so it finds rom/ and keeps its files in out/).
@@ -520,8 +525,14 @@ CAMERA_GAP   ?= 20
 camera-scan: release ## Photo mode's true camera, a spike (docs/photo-mode.md): run a coin-start run (INPUT) to CAMERA_FRAME and CAMERA_GAP frames on, and list the rotations in the i960's RAM that turned as the scenery says the camera did (candidates for the game's camera)
 	$(RUN) --input $(or $(INPUT),$(BENCH_INPUT)) camera-scan $(CAMERA_FRAME) $(CAMERA_GAP)
 
-bench: release ## Timed fixed run into a race: speed vs real time and the state hash (must not change with speed-ups)
-	$(RUN) --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep -E '^(instructions|emulated|host time|idle skip|state hash)'
+bench: release ## Timed fixed run into a race: speed vs real time and the state hash (must not change with speed-ups; JIT=1: on the i960 JIT, with its counters)
+	$(RUN) --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep -E '^(instructions|emulated|host time|idle skip|jit|state hash)'
+
+jit-lockstep: release ## The i960 JIT beside the interpreter, block by block, through a coin-start run (JIT_STEPS, default 300M; INPUT), stopping at the first difference; no recompiled build needed (docs/jit.md)
+	$(REMODEL) --game $(GAME) --rom $(ROM) --jit --input $(or $(INPUT),$(BENCH_INPUT)) lockstep $(JIT_STEPS)
+
+jit-translate: release ## Translate the game's whole i960 program on the JIT ahead of time, cut as `make recomp` cuts it (discovery plus `make run`'s trace), and time it
+	$(RUN) jit-translate
 
 bench-all: release ## `make bench` for every set in tools/expected-hashes.txt that has ROMs; report any state hash that differs
 	@ROM=$(ROM) MAKE="$(MAKE)" REMODEL=$(REMODEL) sh tools/release.sh bench-all

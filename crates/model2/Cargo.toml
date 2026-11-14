@@ -18,3 +18,7 @@ adsp2106x.workspace = true
 remodel-sound.workspace = true
 remodel-dsb.workspace = true
 remodel-png.workspace = true
+
+# The i960 JIT (docs/jit.md): native builds only, never the browser's.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+remodel-jit.workspace = true

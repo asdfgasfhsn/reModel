@@ -61,6 +61,11 @@ options:
                        and tile pattern drawn to DIR as PNG, plus DIR/index.txt
   --interp             run the i960 on the interpreter even when this build
                        has recompiled code for the game
+  --jit                run the i960 on the JIT: its code translated to this
+                       machine's code as it runs (docs/jit.md), no
+                       recompiled build needed; --jit-hot N translates a
+                       block after N interpreted visits (default 2),
+                       --jit-opt speed runs Cranelift's optimiser (default none)
   --no-idle-skip       run the game's idle loops instruction by instruction
                        instead of skipping through them (same results;
                        docs/idle-skip.md)
@@ -395,10 +400,14 @@ commands:
                        inputs hold, the frame shown must be the plain run's
                        FRAMES later (picture, state hash, in-betweens);
                        times the copy and the frames ahead
-  lockstep [STEPS]     run the recompiled i960 code and the interpreter side
-                       by side, block by block; report the first difference
+  lockstep [STEPS]     run the recompiled i960 code (with --jit: the JIT's)
+                       and the interpreter side by side, block by block;
+                       report the first difference
                        (Model 2B: also the SHARCs, the copro after every
                        block, both whole after every frame)
+  jit-translate        translate the whole i960 program on the JIT ahead of
+                       time, cut into blocks as `recomp` cuts it (from code
+                       discovery and `make run`'s trace), and time it
   run [STEPS] [SNAP]   boot on the reference interpreter and report what
                        the game did (default 50M instructions); writes the
                        tile layer to out/GAME/frames/ every SNAP frames
@@ -688,6 +697,10 @@ fn main() -> ExitCode {
         };
         let _ = GEO_MODE.set(mode);
     }
+    let (Ok(jit_hot), Ok(jit_opt)) = (opt("--jit-hot"), opt("--jit-opt")) else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
     let Ok(tgp2a_mode) = opt("--tgp2a") else {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
@@ -735,6 +748,27 @@ fn main() -> ExitCode {
         None => false,
     };
     let (interp, single_thread) = (flag("--interp"), flag("--single-thread"));
+    if flag("--jit") || jit_hot.is_some() || jit_opt.is_some() {
+        let mut c = model2::jit::Config::default();
+        if let Some(n) = jit_hot {
+            match n.parse() {
+                Ok(n) => c.hot = n,
+                Err(_) => {
+                    eprintln!("error: --jit-hot wants a number");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        match jit_opt.as_deref() {
+            None | Some("none") => {}
+            Some("speed") => c.optimise = true,
+            Some(_) => {
+                eprintln!("error: --jit-opt wants speed or none");
+                return ExitCode::FAILURE;
+            }
+        }
+        let _ = JIT.set(c);
+    }
     if flag("--no-idle-skip") {
         model2::idle::set_default(false);
     }
@@ -1185,6 +1219,43 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             };
             copro_disasm(&bin, &input.with_extension("lst"));
+        }
+        "jit-translate" => {
+            // The whole program as `recomp` would compile it, on the JIT.
+            let dir = PathBuf::from("out").join(roms.game.id);
+            let read = |f: &str| std::fs::read_to_string(dir.join(f)).unwrap_or_default();
+            let trace = Trace::parse(&read("coverage.txt"), &read("indirect.txt"));
+            let Some(b) = read_boot(&img) else {
+                eprintln!("error: boot record out of range");
+                return ExitCode::FAILURE;
+            };
+            let seeds: Vec<u32> = b.seeds.iter().map(|s| s.1).collect();
+            let t0 = std::time::Instant::now();
+            let a = explore(&img, &seeds, &trace);
+            let mut insns = a.insns;
+            insns.retain(|addr, _| (!a.speculative.contains(addr) || trace.executed.contains(addr)) && addr & 3 == 0);
+            for &addr in trace.executed.iter().filter(|&&a| img.contains(a)) {
+                insns.entry(addr).or_insert_with(|| img.decode(addr));
+            }
+            let mut entries: BTreeSet<u32> = a.functions.iter().copied().collect();
+            entries.extend(trace.indirect.iter().map(|&(_, t)| t).filter(|&t| img.contains(t)));
+            entries.extend(seeds);
+            let found = t0.elapsed();
+            let mut m = model2::Machine::new(&roms);
+            if let Err(e) = m.enable_jit(JIT.get().copied().unwrap_or_default()) {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+            let t1 = std::time::Instant::now();
+            let blocks = m.jit_translate_program(&insns, &entries).unwrap_or(0);
+            println!(
+                "discovery     {} instructions ({} executed in coverage.txt) in {:.1} ms",
+                insns.len(),
+                trace.executed.len(),
+                found.as_secs_f64() * 1e3
+            );
+            println!("translated    {blocks} blocks in {:.1} ms", t1.elapsed().as_secs_f64() * 1e3);
+            jit_report(&m);
         }
         "recomp" => {
             let dir = PathBuf::from("out").join(roms.game.id);
@@ -1646,25 +1717,42 @@ fn main() -> ExitCode {
         "lockstep" => {
             let steps = args.get(1).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(50_000_000);
             let mut native = model2::Machine::new(&roms);
+            jit_if_asked(&mut native);
             let mut reference = model2::Machine::new(&roms);
             reference.disable_native();
             reference.disable_native_sharc();
             if !native.is_native() {
-                eprintln!("error: this build has no recompiled i960 code for {}", roms.game.id);
+                eprintln!("error: this build has no recompiled i960 code for {} (try --jit)", roms.game.id);
                 return ExitCode::FAILURE;
             }
             // Model 2B: the SHARCs too, the copro after every block, the
             // geometrizer (inline, so its frame has run) every frame.
             native.bus.geo.set_threaded(false);
             reference.bus.geo.set_threaded(false);
+            // --input: the same inputs into both, at each new frame.
+            let script = match model2::input::InputScript::parse(input.as_deref().unwrap_or(""), &roms.game.controls) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("error: --input: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
             let (mut sharcs_reported, mut checked_frame) = (false, 0);
             while native.cpu.icount < steps {
                 let ip = native.cpu.ip;
                 let before = native.cpu.r;
+                let frame = native.frames;
                 let a = native.run_block();
+                if native.frames != frame {
+                    script.apply(native.frames, &mut native.bus);
+                }
                 let mut b = Ok(());
                 while b.is_ok() && reference.cpu.icount < native.cpu.icount {
+                    let frame = reference.frames;
                     b = reference.step();
+                    if reference.frames != frame {
+                        script.apply(reference.frames, &mut reference.bus);
+                    }
                 }
                 let (n, r) = (&native.cpu, &reference.cpu);
                 if a.is_err()
@@ -1707,6 +1795,7 @@ fn main() -> ExitCode {
                 }
             }
             println!("{} instructions identical", native.cpu.icount);
+            jit_report(&native);
         }
         // Debug: boot out/GAME/geo.bin, pulse F0, feed hex words, trace.
         "geo-trace-words" => {
@@ -2050,6 +2139,46 @@ fn supersample_factor(samples: u32) -> usize {
 }
 /// `--geo`: how the 2B geometrizer runs.
 static GEO_MODE: std::sync::OnceLock<model2::geo::GeoMode> = std::sync::OnceLock::new();
+/// `--jit`: run the i960 on the JIT, so configured.
+static JIT: std::sync::OnceLock<model2::jit::Config> = std::sync::OnceLock::new();
+
+/// Turn the JIT on in `m` if the command line asked for it.
+fn jit_if_asked(m: &mut model2::Machine) {
+    if let Some(&c) = JIT.get() {
+        if let Err(e) = m.enable_jit(c) {
+            eprintln!("warning: --jit: {e}; the i960 runs on the interpreter");
+        }
+    }
+}
+
+/// The JIT's report line, if it ran.
+fn jit_report(m: &model2::Machine) {
+    let Some(s) = m.jit_stats() else { return };
+    let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
+    println!(
+        "jit           {} blocks, {} instructions ({} left to the interpreter), {} KB of code, translated in {:.1} ms \
+         ({:.1} us a block, slowest {:.2} ms; {:.1} ms compiling, {:.1} ms linking); {} blocks run, {} instructions interpreted outside blocks; \
+         {} blocks from RAM, {} rechecked, {} dropped as overwritten",
+        s.blocks,
+        s.insns,
+        s.fallbacks,
+        s.code_bytes / 1024,
+        ms(s.time),
+        ms(s.time) * 1e3 / s.blocks.max(1) as f64,
+        ms(s.slowest),
+        ms(s.compile),
+        ms(s.link),
+        s.runs,
+        s.interpreted,
+        s.ram_blocks,
+        s.rechecked,
+        s.dropped
+    );
+    let kinds: Vec<String> = m.jit_fallbacks().iter().take(10).map(|(k, n)| format!("{k} {n}")).collect();
+    if !kinds.is_empty() {
+        println!("jit fallbacks {}", kinds.join(", "));
+    }
+}
 /// `--tgp2a hle`: Model 2A's TGP answered by the function model.
 static TGP2A_HLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
@@ -2071,6 +2200,7 @@ fn machine(roms: &RomSet) -> model2::Machine {
     m.bus.geo.set_light(LIGHT.get().is_some() || materials_on());
     // For the frame before each snapshot (`snapshot`).
     m.bus.geo.set_keep_last(SMOOTH.get().is_some());
+    jit_if_asked(&mut m);
     m
 }
 
@@ -2368,7 +2498,16 @@ fn run(
         m.disable_native();
     }
     m.bus.geo.set_threaded(!single_thread);
-    println!("i960          {}", if m.is_native() { "recompiled" } else { "interpreter" });
+    println!(
+        "i960          {}",
+        if m.jit_on() {
+            "JIT"
+        } else if m.is_native() {
+            "recompiled"
+        } else {
+            "interpreter"
+        }
+    );
     let dir = PathBuf::from("out").join(roms.game.id);
     let eeprom_path = dir.join("eeprom.bin");
     if let Ok(bytes) = std::fs::read(&eeprom_path) {
@@ -2520,6 +2659,7 @@ fn run(
             idle.probes
         ),
     }
+    jit_report(&m);
     println!("ip            {:#x}  priority {}  icr {:#010x}", m.cpu.ip, m.cpu.priority(), m.cpu.icr);
     println!("irq           request {:#x} enable {:#x}", b.irq_request, b.irq_enable);
     println!("coverage      {} distinct instructions", m.coverage.len());

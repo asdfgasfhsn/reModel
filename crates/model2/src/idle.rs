@@ -100,6 +100,12 @@ impl IdleSkip {
         s
     }
 
+    /// Where the loops start (where the machine looks for one between
+    /// blocks: JIT blocks stop there).
+    pub fn starts(&self) -> Vec<u32> {
+        self.loops.iter().map(|l| l.0).collect()
+    }
+
     pub fn set_loops(&mut self, loops: &[romset::IdleLoop]) {
         self.loops = loops.iter().map(|l| (l.start, l.end)).collect();
         self.set(self.on);
@@ -198,6 +204,10 @@ impl Machine {
     /// Skip these loops instead of the manifest's (tests, experiments).
     pub fn set_idle_loops(&mut self, loops: &[romset::IdleLoop]) {
         self.idle.set_loops(loops);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(j) = self.jit.as_deref_mut() {
+            j.set_stops(self.idle.starts());
+        }
     }
 
     /// What idle skipping has done in this machine.

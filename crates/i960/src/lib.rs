@@ -11,6 +11,7 @@
 
 pub mod codegen;
 pub mod cpu;
+pub mod lower;
 
 use std::fmt;
 
