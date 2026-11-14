@@ -19,7 +19,7 @@ use crate::tgp2a::{Shared, Tgp2a};
 use i960::cpu::Bus;
 use mb86235::cpu::{External, Step, Tgp};
 use romset::{Board, Role, RomSet};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 /// Main CPU clock: 25 MHz.
 pub const CPU_HZ: u64 = 25_000_000;
@@ -692,30 +692,20 @@ impl Model2Bus {
                 if c.fifo_out.is_empty() {
                     c.run_for_result(&mut self.mems[BUFFER_RAM].data, self.geo.commands());
                 }
-                match c.fifo_out.pop_front() {
-                    Some(v) => {
-                        self.copro_result_hash = (self.copro_result_hash ^ v as u64).wrapping_mul(0x100_0000_01b3);
-                        v
-                    }
-                    None => {
-                        self.copro_empty_reads += 1;
-                        *self.copro_empty_by_ip.entry(self.cur_ip).or_default() += 1;
-                        0
-                    }
-                }
+                pop_result(
+                    &mut c.fifo_out,
+                    &mut self.copro_result_hash,
+                    &mut self.copro_empty_reads,
+                    &mut self.copro_empty_by_ip,
+                    self.cur_ip,
+                )
             }
             0x0098_0004 => c.fifo_out.is_empty() as u32,
             // Copro status. indy500's T.G.P. test reads it once and calls
             // the chips IC31 (bit 1) and IC37 (bit 0) bad if their bit is
             // set. As on 2C, all ones until the programs are uploaded, then
             // 0 (*unconfirmed*: no other 2B game reads it).
-            0x0098_0014 => {
-                if c.booted && self.geo.booted {
-                    0
-                } else {
-                    u32::MAX
-                }
-            }
+            0x0098_0014 => copro_status(c.booted && self.geo.booted),
             0x008c_0000..=0x008c_03ff => c.host_read((addr - 0x008c_0000) >> 2),
             0x0084_0000..=0x0084_03ff => 0,
             // Sound UART (8251 type): status, then data, a register a word.
@@ -736,7 +726,7 @@ impl Model2Bus {
         match addr & !3 {
             0x0088_4000..=0x0088_7fff if c.held => c.host_write(adsp2106x::cpu::EPB0, v),
             0x0088_4000..=0x0088_7fff => c.fifo_in.push_back(v),
-            0x0088_0000..=0x0088_3fff => c.fifo_in.push_back((v & 0x800f_ffff) | (((addr >> 4) & 0xff) << 23)),
+            0x0088_0000..=0x0088_3fff => c.fifo_in.push_back(tag_command(v, addr)),
             0x008c_0000..=0x008c_03ff => c.host_write((addr - 0x008c_0000) >> 2, v),
             0x0084_0000..=0x0084_03ff => {
                 self.geo.host_write((addr - 0x0084_0000) >> 2, v);
@@ -765,13 +755,7 @@ impl Model2Bus {
             0x0088_4000..=0x0088_7fff => t.data_read(self.frames, self.cur_ip, bus),
             0x0098_0004 => t.output_empty() as u32,
             // As on 2C: all ones while the TGP holds no program.
-            0x0098_0014 => {
-                if t.program.is_empty() {
-                    u32::MAX
-                } else {
-                    0
-                }
-            }
+            0x0098_0014 => copro_status(!t.program.is_empty()),
             _ => return None,
         })
     }
@@ -876,17 +860,13 @@ impl Model2Bus {
                 if self.tgp.fifo_out.is_empty() {
                     self.run_tgp(TGP_STALL_LIMIT);
                 }
-                match self.tgp.fifo_out.pop_front() {
-                    Some(v) => {
-                        self.copro_result_hash = (self.copro_result_hash ^ v as u64).wrapping_mul(0x100_0000_01b3);
-                        v
-                    }
-                    None => {
-                        self.copro_empty_reads += 1;
-                        *self.copro_empty_by_ip.entry(self.cur_ip).or_default() += 1;
-                        0
-                    }
-                }
+                pop_result(
+                    &mut self.tgp.fifo_out,
+                    &mut self.copro_result_hash,
+                    &mut self.copro_empty_reads,
+                    &mut self.copro_empty_by_ip,
+                    self.cur_ip,
+                )
             }
             0x0098_0000 => self.copro_ctrl,
             0x0098_0004 => self.tgp.fifo_out.is_empty() as u32,
@@ -894,13 +874,7 @@ impl Model2Bus {
             // All ones while the copro holds no program: from reset until
             // an upload's first word, and again once a new upload starts.
             // bel uploads its program only if it reads bit 0 set at boot.
-            0x0098_0014 => {
-                if self.copro_program.is_empty() {
-                    u32::MAX
-                } else {
-                    0
-                }
-            }
+            0x0098_0014 => copro_status(!self.copro_program.is_empty()),
             0x0098_0008..=0x0098_003f => 0,
             // Board control byte set during reset; meaning unknown.
             0x00f8_0000 => self.board_ctrl as u32,
@@ -1025,8 +999,7 @@ impl Model2Bus {
                 }
             }
             0x0088_0000..=0x0088_3fff => {
-                let tagged = (v & 0x800f_ffff) | (((addr >> 4) & 0xff) << 23);
-                self.tgp.fifo_in.push_back(tagged);
+                self.tgp.fifo_in.push_back(tag_command(v, addr));
             }
             0x0098_0000 => {
                 let rising = v & 0x8000_0000 != 0 && self.copro_ctrl & 0x8000_0000 == 0;
@@ -1476,6 +1449,46 @@ pub struct CopyMarks {
     pub(crate) cpu: Vec<u8>,
     /// Bytes of memory the last copy moved (diagnostics).
     pub copied: usize,
+}
+
+/// A command word written through the 0x880000 window with its function
+/// number (the address bits 11 to 4) merged into bits 30 to 23.
+fn tag_command(v: u32, addr: u32) -> u32 {
+    (v & 0x800f_ffff) | (((addr >> 4) & 0xff) << 23)
+}
+
+/// The copro status register: all ones until its programs are uploaded,
+/// then 0.
+fn copro_status(ready: bool) -> u32 {
+    if ready {
+        0
+    } else {
+        u32::MAX
+    }
+}
+
+/// A read of the copro's output FIFO (the caller has run the copro if it
+/// was empty): the next result, folded into the result hash; an empty read
+/// is counted, in total and by the i960 instruction that made it, and
+/// reads 0.
+fn pop_result(
+    fifo: &mut VecDeque<u32>,
+    hash: &mut u64,
+    empty_reads: &mut u64,
+    empty_by_ip: &mut BTreeMap<u32, u64>,
+    ip: u32,
+) -> u32 {
+    match fifo.pop_front() {
+        Some(v) => {
+            *hash = (*hash ^ v as u64).wrapping_mul(0x100_0000_01b3);
+            v
+        }
+        None => {
+            *empty_reads += 1;
+            *empty_by_ip.entry(ip).or_default() += 1;
+            0
+        }
+    }
 }
 
 impl Model2Bus {
