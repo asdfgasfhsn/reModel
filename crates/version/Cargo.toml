@@ -1,0 +1,7 @@
+[package]
+name = "remodel-version"
+description = "The build's version string (git describe, or the crate version)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+build = "build.rs"

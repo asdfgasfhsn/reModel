@@ -33,6 +33,7 @@ const USAGE: &str = "\
 usage: remodel [--game ID] [--rom DIR] <command>
 
 options:
+  -V, --version        print the version and exit
   --game ID            game manifest to use (default topskatr)
   --rom DIR            directory of unpacked chips (default rom)
   --geo-trace FRAME    record geometrizer port writes during FRAME of `run`
@@ -478,9 +479,14 @@ fn parse_num(s: &str) -> Option<u32> {
 
 fn main() -> ExitCode {
     recomp::register();
+    model2::set_app_version(remodel_version::VERSION);
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
         print!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    if args.iter().any(|a| a == "-V" || a == "--version") {
+        println!("remodel {}", remodel_version::VERSION);
         return ExitCode::SUCCESS;
     }
     if args.is_empty() {

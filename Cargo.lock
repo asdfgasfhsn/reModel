@@ -2349,6 +2349,7 @@ dependencies = [
  "remodel-romset",
  "remodel-sound",
  "remodel-state",
+ "remodel-version",
 ]
 
 [[package]]
@@ -2419,6 +2420,7 @@ dependencies = [
  "remodel-recomp",
  "remodel-romset",
  "remodel-state",
+ "remodel-version",
  "wgpu",
  "winit",
 ]
@@ -2449,6 +2451,10 @@ dependencies = [
 [[package]]
 name = "remodel-state"
 version = "0.7.0"
+
+[[package]]
+name = "remodel-version"
+version = "0.1.0"
 
 [[package]]
 name = "remodel-web"

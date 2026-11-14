@@ -46,6 +46,7 @@ wasm=$target/wasm32-unknown-unknown/release/remodel_web.wasm
 started=$(date +%s)
 
 $CARGO build --release -p remodel
+version=$($remodel --version | cut -d' ' -f2)
 games=$($remodel --rom "$ROM" web-index)
 if [ -z "$games" ]; then
     echo "web: no supported game has all its chips in $ROM/<set>/" >&2
@@ -162,7 +163,7 @@ for g in $games; do
     fi
     # Its chips' folder under rom/: its own, or a clone's parent's.
     romset=$($remodel --game "$g" --rom "$ROM" rom-folder)
-    sed -e "s|@PKG@|$pkg|" -e "s|@ROMSET@|$romset|" crates/web/game.html >"$model2/$g/index.html"
+    sed -e "s|@PKG@|$pkg|" -e "s|@ROMSET@|$romset|" -e "s|@VERSION@|$version|" crates/web/game.html >"$model2/$g/index.html"
 done
 if [ -n "$shared" ]; then
     stamp=$(stamp_for "")
@@ -177,7 +178,8 @@ fi
 
 cp crates/web/audio-worklet.js crates/web/sound-worker.js crates/web/geo-worker.js crates/web/pack-worker.js \
     crates/web/touch.js crates/web/gun.js crates/web/settings.js crates/web/panel.js "$model2/"
-cp crates/web/index.html LICENSE "$WEB_OUT/"
+sed "s|@VERSION@|$version|" crates/web/index.html >"$WEB_OUT/index.html"
+cp LICENSE "$WEB_OUT/"
 python3 -I tools/notices.py remodel-web wasm32-unknown-unknown "$WEB_OUT/THIRD-PARTY-NOTICES.txt"
 cp assets/reModel-logo-1086.png "$WEB_OUT/reModel-logo.png"
 # Card posters (assets/posters/README.md).

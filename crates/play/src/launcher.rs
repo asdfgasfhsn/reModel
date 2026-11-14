@@ -1318,6 +1318,10 @@ impl Launcher {
             p.text(pos2(r.right() + 8.0 * u, l.hints_y), Align2::LEFT_CENTER, *t, font.clone(), DIM);
             x = r.right() + 8.0 * u + tw + 28.0 * u;
         }
+        // The version, small in the corner.
+        let about = format!("reModel {}", remodel_version::VERSION);
+        let corner = pos2(l.screen.right() - 14.0 * u, l.screen.bottom() - 10.0 * u);
+        p.text(corner, Align2::RIGHT_BOTTOM, about, FontId::proportional(11.0 * u), DIM.gamma_multiply(0.7));
     }
 
     #[allow(clippy::too_many_arguments)]

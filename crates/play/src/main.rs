@@ -62,6 +62,7 @@ use winit::window::{CursorIcon, Fullscreen, Window, WindowId};
 const USAGE: &str = "\
 usage: remodel-play [options]
 
+  -V, --version      print the version and exit
   --game ID          start this set straight away (default: the launcher,
                      to choose one)
   --rom DIR          ROM folder: MAME sets as zips or folders (default: the
@@ -584,6 +585,10 @@ fn options(s: &mut Settings) -> Result<Options, String> {
             "--seconds" => o.seconds = Some(value()?.parse().map_err(|_| "bad --seconds")?),
             "--frames" => o.frames = Some(value()?.parse().map_err(|_| "bad --frames")?),
             "-h" | "--help" => return Err(String::new()),
+            "-V" | "--version" => {
+                println!("remodel-play {}", remodel_version::VERSION);
+                std::process::exit(0);
+            }
             _ => return Err(format!("unknown option {a}")),
         }
     }
@@ -3025,6 +3030,7 @@ impl ApplicationHandler<Wake> for Play {
 
 fn main() {
     recomp::register();
+    model2::set_app_version(remodel_version::VERSION);
     let mut settings = Settings::load();
     let opts = match options(&mut settings) {
         Ok(o) => o,

@@ -484,6 +484,8 @@ impl Menu {
                     ui.separator();
                     hints(ui, &[("D-pad", "choose"), ("A", "select"), ("B", "resume"), ("Start", "resume")]);
                 }
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(format!("About: reModel {}", remodel_version::VERSION)).small().weak());
             });
         self.pause_focus.end();
         if let Some(page) = go {

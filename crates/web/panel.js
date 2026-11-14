@@ -303,10 +303,13 @@ export function createPanel(opts) {
     el("label", { className: "check" }, skip, "Don't show this again for this game"), note);
   const actions = el("div", { className: "actions" }, el("div", { className: "buttons" }, reset, restart, play), status);
   const subtitle = el("p", { textContent: "Settings are kept in this browser. The ⚙︎ button opens them again." });
+  // The build's version (the page's meta tag, filled in by tools/web.sh).
+  const version = document.querySelector('meta[name="remodel-version"]')?.content;
+  const about = el("p", { className: "hint", textContent: version && !version.startsWith("@") ? `reModel ${version}` : "" });
   const card = el("div", { className: "card" },
     el("header", {}, el("a", { className: "back", href: opts.back, textContent: "← Games" }),
       el("h2", { textContent: opts.title }), subtitle),
-    tabs, display, picture, motion, sound, controls, more, footer, actions);
+    tabs, display, picture, motion, sound, controls, more, footer, actions, about);
   root.append(card);
   document.body.append(root);
   selectTab(tab);

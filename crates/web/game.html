@@ -6,9 +6,11 @@
 <title>reModel</title>
 <!-- `make web` copies this page to model2/<set>/index.html, with @PKG@ set to
      the directory of the WebAssembly module for that set and @ROMSET@ to the
-     folder under rom/ its chips are in (its own, or a clone's parent's). -->
+     folder under rom/ its chips are in (its own, or a clone's parent's), and
+     @VERSION@ to the build's version (`remodel --version`). -->
 <meta name="remodel-pkg" content="@PKG@">
 <meta name="remodel-rom" content="@ROMSET@">
+<meta name="remodel-version" content="@VERSION@">
 <style>
   :root { color-scheme: dark; }
   html, body { margin: 0; height: 100%; background: #000; color: #ccc; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }

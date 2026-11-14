@@ -200,7 +200,7 @@ impl Machine {
         use state::State as _;
         self.bus.geo.sync();
         let mut w = state::Writer::default();
-        w.buf.extend_from_slice(STATE_MAGIC);
+        w.buf.extend_from_slice(format!("REMODEL-STATE-{STATE_FORMAT}\n").as_bytes());
         self.program_hash.save(&mut w);
         self.cpu.save(&mut w);
         self.bus.save(&mut w);
@@ -213,9 +213,14 @@ impl Machine {
         use state::State as _;
         self.loads += 1;
         let mut r = state::Reader::new(data);
-        if r.bytes(STATE_MAGIC.len()).ok() != Some(STATE_MAGIC) {
-            return Err("not a reModel save state (or from another version)".into());
-        }
+        match split_header(data, STATE_PREFIX) {
+            None => return Err("not a reModel save state".into()),
+            Some((n, _)) if n > STATE_FORMAT => return Err(too_new("machine state", None, n, STATE_FORMAT)),
+            Some((n, _)) if n < STATE_FORMAT => {
+                return Err(format!("machine state format {n} is older than this build's {STATE_FORMAT}"))
+            }
+            Some(_) => r.bytes(STATE_PREFIX.len() + STATE_FORMAT.to_string().len() + 1).map_err(|e| e.to_string())?,
+        };
         let mut hash = 0u64;
         hash.load(&mut r).map_err(|e| e.to_string())?;
         if hash != self.program_hash {
@@ -277,8 +282,40 @@ impl Machine {
     }
 }
 
-/// Save file header (the rest is zlib-compressed).
-const SAVE_MAGIC: &[u8] = b"REMODEL-SAVE-1\n";
+/// Save file header: `REMODEL-SAVE-<format>\n`, then (format 2 on) a
+/// `made-by <app version>\n` line, informational; the rest is zlib-compressed.
+const SAVE_PREFIX: &[u8] = b"REMODEL-SAVE-";
+
+/// The save file layout this build writes and the newest it reads. An
+/// integer bumped when the layout changes, not the app's version. Format 1
+/// (no `made-by` line) is still read; docs/usage.md, "Save states".
+pub const SAVE_FORMAT: u32 = 2;
+
+/// The inner machine state's layout (`REMODEL-STATE-<n>`), bumped when any
+/// saved field is added, removed or reordered.
+pub const STATE_FORMAT: u32 = 1;
+
+static APP_VERSION: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// The version string the front end was built as, recorded in the save
+/// files it writes (for information; never read back into the machine).
+pub fn set_app_version(v: &'static str) {
+    let _ = APP_VERSION.set(v);
+}
+
+/// Split `<prefix><n>\n` off `data`: the format number and what follows.
+fn split_header<'a>(data: &'a [u8], prefix: &[u8]) -> Option<(u32, &'a [u8])> {
+    let rest = data.strip_prefix(prefix)?;
+    let end = rest.iter().take(12).position(|&b| b == b'\n')?;
+    let n = std::str::from_utf8(&rest[..end]).ok()?.parse::<u32>().ok().filter(|&n| n >= 1)?;
+    Some((n, &rest[end + 1..]))
+}
+
+/// The error for a file of a format this build can't read.
+fn too_new(what: &str, made_by: Option<&str>, format: u32, reads: u32) -> String {
+    let by = made_by.map_or("a newer reModel".to_string(), |v| format!("reModel {v}"));
+    format!("this {what} was made by {by} with format {format}; this build reads format {reads} (and older): update reModel")
+}
 
 /// A save file: the machine's state and, if given, the sound boards' (see
 /// [`audio::Live`]), compressed (about 1 MB for topskatr).
@@ -293,7 +330,8 @@ pub fn save_session_parts(machine: &mut Machine, live: Option<Vec<u8>>) -> Vec<u
     let mut raw = (m.len() as u64).to_le_bytes().to_vec();
     raw.extend(m);
     raw.extend(live.unwrap_or_default());
-    let mut out = SAVE_MAGIC.to_vec();
+    let made_by = APP_VERSION.get().copied().unwrap_or("unknown").replace(['\n', '\r'], " ");
+    let mut out = format!("REMODEL-SAVE-{SAVE_FORMAT}\nmade-by {made_by}\n").into_bytes();
     out.extend(png::zlib::compress(&raw));
     out
 }
@@ -312,7 +350,20 @@ pub fn load_session(machine: &mut Machine, live: Option<&mut audio::Live>, data:
 /// Load the machine from a [`save_session`] file; returns the sound
 /// boards' state (empty if none was saved), for [`audio::load_state`].
 pub fn load_session_parts(machine: &mut Machine, data: &[u8]) -> Result<Vec<u8>, String> {
-    let body = data.strip_prefix(SAVE_MAGIC).ok_or("not a reModel save file (or from another version)")?;
+    let (format, body) = split_header(data, SAVE_PREFIX).ok_or("not a reModel save file")?;
+    let made_by = body.strip_prefix(b"made-by ").and_then(|b| {
+        b.iter().take(80).position(|&c| c == b'\n').map(|e| String::from_utf8_lossy(&b[..e]).into_owned())
+    });
+    if format > SAVE_FORMAT {
+        return Err(too_new("save state", made_by.as_deref(), format, SAVE_FORMAT));
+    }
+    // Format 1 has no `made-by` line.
+    let body = if format >= 2 {
+        let line = made_by.as_ref().ok_or("save file damaged: no `made-by` line")?;
+        &body[b"made-by ".len() + line.len() + 1..]
+    } else {
+        body
+    };
     let data = png::zlib::decompress(body).map_err(|e| format!("save file damaged: {e}"))?;
     let len = data.get(..8).map(|b| u64::from_le_bytes(b.try_into().unwrap()) as usize).ok_or("save file truncated")?;
     let m = data.get(8..8 + len).ok_or("save file truncated")?;
@@ -320,8 +371,8 @@ pub fn load_session_parts(machine: &mut Machine, data: &[u8]) -> Result<Vec<u8>,
     Ok(data[8 + len..].to_vec())
 }
 
-/// Save state header: format name and version.
-const STATE_MAGIC: &[u8] = b"REMODEL-STATE-1\n";
+/// Machine state header: format name and number (`STATE_FORMAT`).
+const STATE_PREFIX: &[u8] = b"REMODEL-STATE-";
 
 /// Identifies the program ROM image, which recompiled i960 code is keyed by.
 pub fn program_hash(roms: &RomSet) -> u64 {
@@ -434,5 +485,17 @@ mod tests {
         }
         assert_eq!(c.len(), 3);
         assert_eq!(c.iter().collect::<Vec<_>>(), [0x40, 0x48, 0x2000_0000]);
+    }
+
+    #[test]
+    fn save_headers_name_their_format() {
+        assert_eq!(split_header(b"REMODEL-SAVE-1\nxyz", SAVE_PREFIX), Some((1, &b"xyz"[..])));
+        assert_eq!(split_header(b"REMODEL-SAVE-12\n", SAVE_PREFIX), Some((12, &b""[..])));
+        for bad in [&b"REMODEL-SAVE-\n"[..], b"REMODEL-SAVE-0\n", b"REMODEL-SAVE-x\n", b"PK\x03\x04", b"REMODEL-SAVE-1"]
+        {
+            assert_eq!(split_header(bad, SAVE_PREFIX), None);
+        }
+        let e = too_new("save state", Some("v9.0.0"), 7, SAVE_FORMAT);
+        assert!(e.contains("made by reModel v9.0.0 with format 7") && e.contains("reads format 2"), "{e}");
     }
 }

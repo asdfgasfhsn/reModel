@@ -14,6 +14,7 @@ remodel-model2.workspace = true
 remodel-romset.workspace = true
 remodel-gpu.workspace = true
 remodel-state.workspace = true
+remodel-version.workspace = true
 remodel-png.workspace = true
 i960.workspace = true
 remodel-recomp.workspace = true
