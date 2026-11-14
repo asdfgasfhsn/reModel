@@ -1,6 +1,6 @@
 [package]
 name = "remodel-jit"
-description = "JITs for the i960 and the copro programs (MB86234): code translated to native machine code at run time with Cranelift (docs/jit.md)"
+description = "JITs for the i960 and the copro programs (MB86234, MB86235): code translated to native machine code at run time with Cranelift (docs/jit.md)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -11,6 +11,7 @@ name = "jit"
 [dependencies]
 i960.workspace = true
 mb86234.workspace = true
+mb86235.workspace = true
 
 # Native code generation only exists off the browser build: there the crate
 # is empty (docs/jit.md, "WebAssembly").

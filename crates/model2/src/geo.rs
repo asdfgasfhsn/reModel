@@ -535,6 +535,9 @@ pub struct Engine {
     light: Option<Box<LightSide>>,
     /// Kept for [`Engine::copy_from`]'s SHARC state.
     copy_buf: Vec<u8>,
+    /// `tgp` on the JIT (docs/jit.md, "Copro JITs"), when it is on.
+    #[cfg(not(target_arch = "wasm32"))]
+    tgp_jit: crate::copro_jit::TgpJit,
 }
 
 /// What smooth motion keeps between frames ([`Engine::set_smooth`]).
@@ -1011,6 +1014,8 @@ impl Engine {
             smooth: None,
             light: None,
             copy_buf: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            tgp_jit: crate::copro_jit::TgpJit::new("geometrizer", jit::mb86235::MAX_BLOCK),
         }
     }
 
@@ -1061,6 +1066,8 @@ impl Engine {
             smooth: None,
             light: None,
             copy_buf: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            tgp_jit: crate::copro_jit::TgpJit::new("geometrizer", jit::mb86235::MAX_BLOCK),
         }
     }
 
@@ -1156,6 +1163,8 @@ impl Engine {
         match &mut self.sharc {
             None => {
                 self.tgp.boot(program);
+                #[cfg(not(target_arch = "wasm32"))]
+                self.tgp_jit.reset();
                 self.attach_native();
             }
             Some(s) => {
@@ -1257,6 +1266,8 @@ impl Engine {
         let native = self.mode == GeoMode::Native && (src.native.is_some() || src.native_tgp.is_some());
         if !native {
             self.tgp.copy_from(&src.tgp);
+            #[cfg(not(target_arch = "wasm32"))]
+            self.tgp_jit.reset();
             if let (Some(to), Some(from)) = (&mut self.sharc, &src.sharc) {
                 to.copy_from(from, &mut self.copy_buf);
                 self.sharc_native = src.sharc_native;
@@ -1691,13 +1702,22 @@ impl Engine {
     fn process(&mut self, buffer: &[u8], read_ptr: u32) {
         self.frames += 1;
         let mut pos = read_ptr as usize & (buffer.len() - 1) & !3;
+        // Polygon RAM's words (as the JIT's lockstep sees them).
+        #[cfg(not(target_arch = "wasm32"))]
+        let len = self.poly_ram.len() as u32;
         let mut ext = GeoExt::new(&mut self.poly_ram, &self.poly_rom);
         let start = self.tgp.steps;
         // Frame-start handshake: the program waits for F0 to rise, clears
         // its input FIFO, then waits for F0 to fall before reading the list
         // (topskatr geometrizer 0x327-0x331; confirmed by running it).
         self.tgp.ext_flags |= 1;
-        if let Step::Unsupported(pc) = self.tgp.run(&mut ext, F0_PULSE_STEPS) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let key = move |a: u32| (a < 0x80_0000).then(|| a % len);
+        #[cfg(not(target_arch = "wasm32"))]
+        let pulse = self.tgp_jit.run(&mut self.tgp, &mut ext, F0_PULSE_STEPS, &key);
+        #[cfg(target_arch = "wasm32")]
+        let pulse = None;
+        if let Step::Unsupported(pc) = pulse.unwrap_or_else(|| self.tgp.run(&mut ext, F0_PULSE_STEPS)) {
             self.fault = Some(pc);
             return;
         }
@@ -1725,7 +1745,16 @@ impl Engine {
                 self.list_words += 1;
             }
             let mut fault = None;
-            for _ in 0..256 {
+            // On the JIT, the same 256 words (without the trace below, a
+            // diagnostic of the interpreter's).
+            #[cfg(not(target_arch = "wasm32"))]
+            let jit = self.tgp_jit.run(&mut self.tgp, &mut ext, 256, &key);
+            #[cfg(target_arch = "wasm32")]
+            let jit: Option<Step> = None;
+            if let Some(Step::Unsupported(p)) = jit {
+                fault = Some(p);
+            }
+            for _ in 0..if jit.is_some() { 0 } else { 256 } {
                 let pc = self.tgp.pc;
                 match step(&mut self.tgp, &mut ext) {
                     Step::Unsupported(p) => {
@@ -1927,6 +1956,24 @@ impl Geometrizer {
         e.set_light(light);
     }
 
+    /// Run the engine's TGP (2C) on the JIT, or not (docs/jit.md, "Copro
+    /// JITs"); `check`: beside the interpreter (a lockstep).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_tgp_jit(&mut self, on: bool, check: bool) -> Result<(), String> {
+        let e = self.engine_mut();
+        // Only a 2C board's geometrizer runs a TGP program.
+        let on = on && e.sharc.is_none() && !e.fixed;
+        e.tgp_jit.set(on, check)
+    }
+
+    /// Its JIT's counters and the runs compared, when it is on (and no
+    /// frame is running: `sync` first).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn tgp_jit_stats(&self) -> Option<(jit::CoproStats, u64)> {
+        let Slot::Idle(e) = &self.engine else { return None };
+        e.tgp_jit.code.as_ref().map(|j| (j.stats(), e.tgp_jit.checked))
+    }
+
     /// Smooth motion: whether the frames started from now on are shown
     /// (the default), so their in-betweens are wanted. A frame that isn't
     /// (run-ahead's frames before the one it shows) records nothing, and
@@ -1987,6 +2034,8 @@ impl state::State for Engine {
     }
     fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
         self.tgp.load(r)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.tgp_jit.reset();
         self.poly_ram.load(r)?;
         self.buffer.load(r)?;
         self.stream.load(r)?;

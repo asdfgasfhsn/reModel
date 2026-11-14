@@ -7,6 +7,8 @@
 pub mod audio;
 pub mod bus;
 pub mod capture;
+#[cfg(not(target_arch = "wasm32"))]
+mod copro_jit;
 pub mod drive;
 pub mod eeprom;
 pub mod enhance;

@@ -20,6 +20,19 @@ pub trait External {
     fn write(&mut self, addr: u32, v: u32);
 }
 
+/// A borrowed bus is a bus (so `&mut dyn External` runs the interpreter,
+/// as the JIT's fallbacks do).
+impl<E: External + ?Sized> External for &mut E {
+    #[inline(always)]
+    fn read(&mut self, addr: u32) -> u32 {
+        (**self).read(addr)
+    }
+    #[inline(always)]
+    fn write(&mut self, addr: u32, v: u32) {
+        (**self).write(addr, v)
+    }
+}
+
 /// Depth reported by the FIFO-full flags. The real depth is unknown; the
 /// model itself never drops data.
 pub const FIFO_DEPTH: usize = 8;
@@ -90,8 +103,12 @@ pub struct Tgp {
     pub pdr: u32,
     pub ddr: u32,
     pub pc: u32,
-    pcs: [u32; 4],
-    pcsp: usize,
+    /// The return stack and its pointer (public for the JIT,
+    /// `remodel-jit`, as are [`Tgp::pending`] and [`Tgp::set_pending`]).
+    #[doc(hidden)]
+    pub pcs: [u32; 4],
+    #[doc(hidden)]
+    pub pcsp: usize,
     /// Target of a delayed branch, taken after the next word.
     pending: Option<u32>,
     pub fifo_in: VecDeque<u32>,
@@ -149,6 +166,26 @@ impl Tgp {
             decoded: (0..PROGRAM_WORDS).map(|a| decode(a, 0)).collect(),
             program_hash: 0,
         }
+    }
+
+    /// The target of a delayed branch the last word took, which the next
+    /// word (its delay slot) runs before.
+    #[doc(hidden)]
+    pub fn pending(&self) -> Option<u32> {
+        self.pending
+    }
+
+    #[doc(hidden)]
+    pub fn set_pending(&mut self, p: Option<u32>) {
+        self.pending = p;
+    }
+
+    /// The status register as the program reads it: `st` with the FIFO
+    /// flags and the external flags F0-F2 filled in.
+    #[doc(hidden)]
+    #[inline]
+    pub fn flags(&self) -> u32 {
+        self.live_flags()
     }
 
     /// Load a program and restart at address 0 (the i960 releasing HALT).
@@ -589,7 +626,8 @@ impl Tgp {
 
     /// Does this word read the input FIFO?
     #[inline(always)]
-    fn reads_fifo(t: &Transfer) -> bool {
+    #[doc(hidden)]
+    pub fn reads_fifo(t: &Transfer) -> bool {
         let fi = |l: &Loc| matches!(l, Loc::Reg(0x31));
         match t {
             Transfer::Move { src, .. } => fi(src),

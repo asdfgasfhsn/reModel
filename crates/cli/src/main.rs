@@ -66,7 +66,7 @@ options:
                        recompiled build needed; --jit-hot N translates a
                        block after N interpreted visits (default 2),
                        --jit-opt speed runs Cranelift's optimiser (default none);
-                       the copro programs (Model 2A's MB86234)
+                       the copro programs (Model 2A's MB86234, 2C's MB86235s)
                        run on their JITs too unless --jit-copro off, and with
                        --jit-copro check beside their interpreters, compared
                        after every run (a lockstep: stops at a difference)

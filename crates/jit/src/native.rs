@@ -49,8 +49,8 @@ pub struct Config {
     pub optimise: bool,
     /// Instructions per block at most.
     pub max_block: usize,
-    /// The copro programs on their JITs too (the MB86234 of Model 2A:
-    /// `docs/jit.md`, "Copro JITs"); with `copro_check`,
+    /// The copro programs on their JITs too (the MB86234 of Model 2A, the
+    /// MB86235s of 2C: `docs/jit.md`, "Copro JITs"); with `copro_check`,
     /// each beside its interpreter, compared after every run (a lockstep).
     pub copro: bool,
     pub copro_check: bool,

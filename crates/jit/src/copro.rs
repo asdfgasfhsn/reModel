@@ -1,6 +1,6 @@
 //! What the copro JITs share (docs/jit.md, "Copro JITs"): the Cranelift
 //! module, its settings, the counters, and the IR helpers both lowerings
-//! use. The chips' own lowerings are in `mb86234`.
+//! use. The chips' own lowerings are `mb86234` and `mb86235`.
 
 use cranelift_codegen::ir::{types, AbiParam, InstBuilder, MemFlagsData, SigRef, Signature, Type, Value};
 use cranelift_codegen::settings::{self, Configurable};
@@ -12,6 +12,7 @@ use std::time::Duration;
 
 pub(crate) const I8: Type = types::I8;
 pub(crate) const I32: Type = types::I32;
+pub(crate) const I64: Type = types::I64;
 pub(crate) const F32: Type = types::F32;
 pub(crate) const F64: Type = types::F64;
 

@@ -185,6 +185,9 @@ pub struct Model2Bus {
     pub tgp_fault: Option<u32>,
     /// The last run stopped waiting for input.
     tgp_stalled: bool,
+    /// `tgp` on the JIT (docs/jit.md, "Copro JITs"), when it is on.
+    #[cfg(not(target_arch = "wasm32"))]
+    tgp_jit: crate::copro_jit::TgpJit,
     pub copro_empty_reads: u64,
     /// Running FNV-1a hash of every value the i960 read from the copro, to
     /// compare runs.
@@ -419,6 +422,9 @@ impl Model2Bus {
             copro_data,
             tgp_fault: None,
             tgp_stalled: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            // Run two words at a time: short blocks (docs/jit.md).
+            tgp_jit: crate::copro_jit::TgpJit::new("copro", 16),
             texture_rom: roms
                 .bank(Role::Textures)
                 .as_chunks::<2>()
@@ -495,9 +501,18 @@ impl Model2Bus {
     fn step_tgp(&mut self, n: u64) {
         let mut ext =
             TgpExt { buffer: &mut self.mems[BUFFER_RAM].data, data: &self.copro_data, commands: self.geo.commands() };
-        let r = match crate::recomp::copro(self.tgp.program_hash) {
-            Some(step) => (0..n).map(|_| step(&mut self.tgp, &mut ext)).find(|&r| r != Step::Ran).unwrap_or(Step::Ran),
-            None => self.tgp.run(&mut ext, n),
+        #[cfg(not(target_arch = "wasm32"))]
+        let jit = self
+            .tgp_jit
+            .run(&mut self.tgp, &mut ext, n, &|a| (0x40_0000..=0x7f_ffff).contains(&a).then_some(a & 0x7fff));
+        #[cfg(target_arch = "wasm32")]
+        let jit = None;
+        let r = match (jit, crate::recomp::copro(self.tgp.program_hash)) {
+            (Some(r), _) => r,
+            (None, Some(step)) => {
+                (0..n).map(|_| step(&mut self.tgp, &mut ext)).find(|&r| r != Step::Ran).unwrap_or(Step::Ran)
+            }
+            (None, None) => self.tgp.run(&mut ext, n),
         };
         match r {
             Step::Unsupported(pc) => self.tgp_fault = Some(pc),
@@ -1025,6 +1040,8 @@ impl Model2Bus {
                     self.copro_booted = true;
                     self.tgp.boot(&self.copro_program);
                     self.tgp_stalled = false;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    self.tgp_jit.reset();
                 }
                 self.copro_ctrl = v;
             }
@@ -1137,7 +1154,11 @@ impl Model2Bus {
         if let Some(t) = self.tgp2a.as_deref_mut() {
             t.set_jit(on, check)?;
         }
-        Ok(())
+        // Model 2C's copro (2A's `tgp` and 2B's never run).
+        if self.tgp2a.is_none() && self.sharc.is_none() {
+            self.tgp_jit.set(on, check)?;
+        }
+        self.geo.set_tgp_jit(on, check)
     }
 
     /// The copro JITs' counters, by chip, with the runs compared in a
@@ -1147,6 +1168,12 @@ impl Model2Bus {
         let mut v = Vec::new();
         if let Some((s, n)) = self.tgp2a.as_deref().and_then(|t| t.jit_stats()) {
             v.push(("MB86234", s, n));
+        }
+        if let Some(j) = &self.tgp_jit.code {
+            v.push(("MB86235 copro", j.stats(), self.tgp_jit.checked));
+        }
+        if let Some((s, n)) = self.geo.tgp_jit_stats() {
+            v.push(("MB86235 geometrizer", s, n));
         }
         v
     }
@@ -1547,6 +1574,8 @@ impl Model2Bus {
         }
         if all {
             self.tgp.load(r)?;
+            #[cfg(not(target_arch = "wasm32"))]
+            self.tgp_jit.reset();
         }
         self.tgp_fault.load(r)?;
         self.tgp_stalled.load(r)?;
@@ -1633,6 +1662,8 @@ impl Model2Bus {
         }
         self.geo.copy_from(&mut src.geo);
         self.tgp.copy_from(&src.tgp);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.tgp_jit.reset();
         if let (Some(d), Some(s)) = (self.sharc.as_deref_mut(), src.sharc.as_deref()) {
             d.copy_from(s, &mut marks.rest);
         }

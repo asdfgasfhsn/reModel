@@ -11,7 +11,7 @@
 //! design and the measurements.
 //!
 //! The copro programs have JITs of their own on the same Cranelift setup
-//! ([`mb86234`]): each word lowered as its interpreter's step
+//! ([`mb86234`], [`mb86235`]): each word lowered as its interpreter's step
 //! defines it, the interpreter's timing kept word for word (docs/jit.md,
 //! "Copro JITs").
 //!
@@ -21,6 +21,8 @@
 mod copro;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mb86234;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod mb86235;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 #[cfg(not(target_arch = "wasm32"))]

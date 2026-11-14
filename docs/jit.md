@@ -1,4 +1,4 @@
-# The i960 JIT (spike)
+# The JITs (spike): the i960 and the copros
 
 The static recompiler (`docs/recompiler.md`) makes the game's code fast,
 but only for someone with this repository, a Rust toolchain and the
@@ -7,19 +7,21 @@ can't be handed out. The JIT does the same translation inside the player,
 at run time, from the ROM the player was pointed at, so a downloaded
 build could get recompiled speed with nothing game-derived in it. This page is the
 spike that tests whether that is worth it: one back end (native code
-through [Cranelift](https://cranelift.dev/)), the i960 only, opt-in.
+through [Cranelift](https://cranelift.dev/)), the i960 first, then the
+copro programs ("Copro JITs"), opt-in.
 
 ```sh
-make bench JIT=1                  # the bench session on the JIT: same state hash, its counters
+make bench JIT=1                  # the bench session on the JITs: same state hash, their counters
 make jit-lockstep GAME=srallyc    # the JIT beside the interpreter, block by block (JIT_STEPS, default 300M)
 make jit-translate                # the whole program translated ahead of time, timed
-remodel --jit ... / remodel-play --jit   # --jit-hot N, --jit-opt speed
+make jit-copro-lockstep GAME=vf2  # the copro JITs beside their interpreters, run by run
+remodel --jit ... / remodel-play --jit   # --jit-hot N, --jit-opt speed, --jit-copro off|check
 ```
 
 No recompiled build is involved: `JIT=1` works on an ordinary `make
-release`, and `RECOMP=1` and `JIT=1` together run the JIT (it takes the
-place of recompiled i960 code; the copro and geometrizer programs stay
-recompiled). The default paths are unchanged, and the browser build
+release`, and `RECOMP=1` and `JIT=1` together run the JITs (they take
+the place of recompiled code; with `--jit-copro off` the copro and
+geometrizer programs stay recompiled). The default paths are unchanged, and the browser build
 doesn't contain it (`crates/jit` is empty on `wasm32` and `crates/model2`
 depends on it only off `wasm32`).
 
@@ -238,45 +240,219 @@ instruction). The split between copro and geometrizer is by function
 name; on 2A the native geometrizer's MB86235 helpers count as
 geometrizer.
 
-## What is missing for the copro programs
+## Copro JITs
 
-The JIT covers the i960 only. After it, the copro is the largest single
-cost in both games measured (a quarter to a third of host time, above),
-and in the chip geometrizer mode the geometrizer program is too. What a
-JIT for those programs would need, by chip:
+After the i960 JIT the copro programs were the largest single cost
+(above), so the copros have back ends of their own, on the same Cranelift
+setup (`crates/jit`: `mb86234.rs`, `mb86235.rs`, the shared module and
+helpers in `copro.rs`):
 
-- **Front ends partly exist**: all three have a decoder, a disassembler
-  and an interpreter. The SHARC also has the static recompiler's code
-  discovery (`adsp2106x::codegen::discover`: vectors, jumps, calls, loops,
-  delay slots, the command dispatch tables) and its region rules
-  (`codegen::in_block`, `Sharc::block_start`/`block_end`), which say which
-  runs of words can execute as one block and how the pipeline, loop logic
-  and counters are brought up to date at its end; that carries over to a
-  JIT as the i960's block rules did. The MB86235's recompiled words are
-  the ones a run executed (no discovery, no blocks), and the MB86234 has
-  no recompiler.
-- **The lowering doesn't**: the recompiled MB86235 and SHARC code is
-  each word's *interpreter step* with its decoding as a constant, and
-  rustc does the specialising (decode, operand dispatch and unused paths
-  fold away). A JIT has no rustc at run time, so each instruction's
-  semantics must be written out as IR: for the MB86235 a VLIW word's ALU,
-  multiplier, transfer and control fields with their parallel reads,
-  FIFO stalls and the float formats; for the SHARC compute (ALU,
-  multiplier, shifter, with `float::single`'s exact rounding), the DAGs,
-  delayed branches and the loop and status stacks. That is an
-  `i960::lower` per chip, several times larger than the i960's, and each
-  needs the same lockstep (`make lockstep` already compares the SHARCs).
-- **A cheaper first step**: blocks that call the interpreter's step for
-  each word with its decoded form passed in, as the i960 JIT does for its
-  fallbacks. That removes fetch and dispatch but not the decoded form's
-  interpretation; worth measuring before writing full lowerings.
-- **Or no JIT at all**: the native geometrizers (`docs/hw/geometrizer-2b.md`,
-  `-2c.md`) replace the geometrizer programs outright and are already the
-  player's default, 20 times faster than the recompiled TGP. The copro
-  programs could get the same treatment per program family; that is per
-  game family work, where a JIT is once per chip.
-- **Model 2A's MB86234** (`srallyc`) has no recompiler at all; its
-  interpreter is about a quarter of `srallyc`'s host time after the JIT.
+- **MB86234**, the TGP of the original Model 2 and 2A (`srallyc`, `vf2`,
+  `daytona`, `vcop`, `desert`, `vcop2`, `skytargt`, `manxtt`,
+  `motoraid`): `jit::mb86234::Mb86234Jit`, run by `model2::tgp2a`.
+- **MB86235**, Model 2C's copro and its geometrizer TGP (`topskatr` and
+  the other 2C sets): `jit::mb86235::Mb86235Jit`, run by the bus (copro)
+  and the geometrizer's engine (`--geo chip`), through
+  `model2::copro_jit`.
+
+They are on with `--jit` (`make bench JIT=1`, `remodel-play --jit`);
+`--jit-copro off` leaves the copros on their interpreters (the i960's JIT
+alone, as measured below), and `--jit-copro check` runs each beside its
+interpreter (`make jit-copro-lockstep`). With `RECOMP=1` and `JIT=1` the
+copro JITs take the place of recompiled copro and geometrizer programs
+too.
+
+```sh
+make jit-copro-lockstep GAME=vf2   # each copro JIT beside its interpreter, every run compared
+make jit-test                      # the JITs' unit tests (random programs on both, compared)
+```
+
+### Lowering: the interpreter's step, written out as IR
+
+There is no shared `lower` here as there is for the i960: the static
+recompiler's MB86235 code is each word's interpreter step specialised by
+rustc, and the MB86234 has no recompiler, so each JIT has its own
+emitter that mirrors the interpreter function by function (`op`, `alu`,
+`write_regs`, `post` for the MB86234; `exec`, `alu`, `mul`, `ea`,
+`reg_read`/`reg_write`, `loc_read`/`loc_write` for the MB86235). The
+decoding is done at translation time, so what the IR holds is what rustc
+leaves of the step for a constant word: registers and RAM are loads and
+stores at fixed offsets in the chip's struct and its RAMs, the field
+decisions (which register, which view, which addressing mode, which RAM
+a transfer type fixes) are the emitter's, and only the data is computed
+at run time.
+
+- **Every word is translated.** Words the MB86234 interpreter counts as
+  unknown call its counter and do nothing, as there. The MB86235's
+  `Step::Unsupported` words (MOVI, MOV4, format 3) are left out of
+  blocks, so the interpreter's step meets them and stops the chip as
+  before.
+- **Floats exactly as the interpreters compute them.** MB86234: the
+  "special values" model (`docs/hw/mb86234.md`) inline, an exponent of 255
+  read as an ordinary binade (`f`), the operation in `f64`, one rounding
+  to single (`fdemote`), and only a result outside single precision's
+  range (saturation, 2^128) through the interpreter's own `word`. MB86235:
+  IEEE single inline, and a NaN result through the interpreter's
+  `float::add`/`sub`/`mul`/`rcp`/`rsq` (they define which NaN); FLOG calls
+  `float::log2`. Conversions use Cranelift's saturating ones, which match
+  Rust's `as` (NaN to 0).
+- **Calls into the interpreter's pieces** for what has state outside the
+  registers and RAM: the FIFOs (`VecDeque`s), the MB86234's return stack
+  and external bus (shared RAM, data ROM and the function unit's ports,
+  through `Cpu::ext_read`/`ext_write`), the MB86235's external bus
+  (`&mut dyn External`), CLRF, the live status flags (FIFO states) where a
+  condition or an ST read needs them, and the diagnostics.
+
+### Blocks and timing
+
+The two chips are scheduled differently, and each JIT keeps its
+interpreter's timing word for word:
+
+- **MB86234: synchronous.** The board runs it after each i960 access to
+  its ports until it waits for input (`Cpu::run`, at most a million
+  words). A block runs from a start to the first control word (jumps,
+  calls, returns, loops; at most 64 words), and never holds a word that
+  reads the input FIFO except as its first: the dispatcher makes the
+  interpreter's check (`reads_fifo` and an empty FIFO) before every
+  block, so a run stops on the same word with the same state. A block
+  runs only if its words fit in the step limit left. A repeat (`3C04 n`)
+  and the word it repeats are one loop in the IR; a start under a repeat
+  (a stop for input can leave one) is interpreted.
+- **MB86235: interleaved.** The copro runs two words after every i960
+  instruction (`Model2Bus::retire_insn`), the geometrizer 256 at a time.
+  `Mb86235Jit::run` has `Tgp::run`'s contract (up to `max` words), and a
+  block counts its words against that budget and leaves after whichever
+  one spends it, with the state the interpreter would have there: the PC,
+  a delayed branch pending (its delay slot not yet run), a repeat part
+  done. Within a block the delay slot follows its branch, and the block
+  leaves for the target if taken or goes on; the word after a REP checks
+  the repeat count as it runs (with the interpreter's nop skip), and so
+  does a block's first word, which may start under a repeat. A stall (an
+  FI read with the FIFO empty) leaves before the word. A block start with
+  a delayed branch pending, and a branch in a delay slot or under a
+  repeat, are the interpreter's (a word at a time: 1.1 million of the copro's
+  words in `topskatr`'s session, 0.17 million of the geometrizer's). Blocks are at most 64
+  words for the geometrizer and 16 for the copro: run two words at a
+  time, the copro's blocks start almost anywhere and rarely run long,
+  and shorter ones cost less to translate.
+
+Translation is at first use (no hot threshold: the programs are small),
+for the program the chip holds; another upload starts again (MB86234: a
+new translation; MB86235: the program found by its hash), and the code
+of a program dropped is freed with its module (unlike the i960's). The
+programs can't write their own code (the MB86235's MOVI is unsupported,
+the MB86234 has no program store).
+
+### Correctness
+
+- `make jit-test`: each JIT against its interpreter on random programs
+  (every word form and format, random registers, RAMs, external memory
+  and FIFO input, special float values), compared in full after every
+  run; for the MB86235 with runs of 1, 2, 3, 7, 50 and 256 words, so
+  budgets cut blocks everywhere (release build: 400 and 40 MB86234
+  programs, 300 and 30 MB86235 ones; a few in `make check`'s debug
+  build). Breaking one detail of a lowering (an operand order, a return
+  address, a delay slot's target, the ring of a circular operand) fails
+  them at once.
+- `make jit-copro-lockstep` (300M i960 instructions of a coin-start run):
+  identical on every MB86234 game (`srallyc`, `vf2`, `daytona`, `desert`,
+  `vcop`, `vcop2`, `skytargt`, `manxtt`, `motoraid`: 0.16 to 6 million runs
+  compared each) and on `topskatr`'s copro and geometrizer (0.5 and 0.2
+  million runs). For the MB86234 every run's whole state and its external
+  writes are compared; for the MB86235 the registers, FIFOs and writes
+  every run, its RAMs and execution counts every 64th run and at every
+  stall.
+- `make bench-all` and `make bench-all JIT=1`: all 18 expected hashes.
+  `make tgp-check GAME=srallyc` (the interpreter's): 0 unknown words.
+
+### Results
+
+`make bench`'s session (600M i960 instructions, coin start), host
+seconds, medians of two runs (which agreed within 1%). The 2A sets with
+`--geo chip`, the CLI's default (their geometrizer is fixed-function,
+the same either way); "recompiled" is the main checkout's `target/recomp`
+of the same day (`RECOMP=1`: the i960 and the MB86235 programs
+recompiled; the MB86234 has no recompiler, so on 2A it is the i960's
+alone, which can't reach `srallyc`'s code in RAM).
+
+| | `srallyc` | `vf2` | `daytona` | `topskatr` native | `topskatr` chip |
+|---|---|---|---|---|---|
+| interpreter | 7.02 | 14.95 | 10.30 | 7.94 | 21.4 |
+| i960 JIT only (`--jit --jit-copro off`) | 4.90 | 11.32 | 7.13 | 5.80 | 20.6 |
+| **i960 and copro JITs** (`--jit`) | **3.88** | **8.93** | **5.88** | **4.77** | **8.76** |
+| recompiled build (`RECOMP=1`) | 7.01 | 9.35 | 6.13 | 5.06 | 13.7 |
+
+- **MB86234**: the copro JIT takes 1.0-2.4 s off each 2A run (18-21% of
+  the i960-JIT run), and the JIT build is 1.8x the interpreter on
+  `srallyc`, 1.7x on `vf2` and `daytona`, and ahead of the recompiled build
+  on all three. Translating costs 23 ms (`srallyc`, 208 blocks) to 64 ms
+  (`vf2`, 497 blocks).
+- **MB86235, the copro** (`topskatr` native, the player's configuration):
+  1.0 s off (18%); the whole run is 1.66x the interpreter and 6% faster
+  than the recompiled build. Its 730 blocks take 0.28 s to translate.
+- **MB86235, the geometrizer** (`--geo chip`): its thread went from 19 s
+  busy to 6.4 s, and the run from 20.6 s to 8.8 s (2.4x), 1.6x faster than
+  the recompiled build. The native geometrizer is still far cheaper
+  (0.8 s).
+
+**Where the time goes now.** A sampling profile of the main
+thread (every 10 ms, under gdb: the main thread's stack at each sample,
+by function name; 430-940 samples a run) of the same session with
+`--jit --geo native`, by part of the machine:
+
+| share of the main thread | `srallyc` | `vf2` | `topskatr` |
+|---|---|---|---|
+| bus: memory and I/O accesses | 19% | 18% | 20% |
+| translated code (both JITs; frames without a name, which gdb can't attribute) | 16% | 16% | 21% |
+| translating (Cranelift; the i960's 0.4 s and the copro's) | 11% | 7% | 12% |
+| i960 interpreter (the JIT's fallbacks: floats; `exec`) | 10% | 11% | 10% |
+| per-instruction bookkeeping: `retire`, the interrupt check | 10% | 14% | 8% |
+| i960 JIT helpers and dispatcher (and the translated code gdb names) | 11% | 13% | 8% |
+| the copro: its dispatcher, board glue, interpreted words and the translated code gdb names | 6% | 7% | 6% |
+| native geometrizer (its MB86235 helpers), rasteriser | 4% | 2% | 5% |
+
+The copro, the largest part after the i960's JIT, is now a few percent
+plus its share of the translated code. What is left is what every
+instruction costs whoever runs it: the bus (the JIT's memory accesses are
+calls), `retire` and the interrupt check, the i960's float fallbacks,
+and translation, which is 7-12% of a 600M-instruction session and so
+the next thing a short session (a boot, an attract loop) would notice.
+
+### Not done, and next
+
+- **Translation cost**: 40 µs a word for the MB86235 (VLIW words, each
+  lowered with its budget exit: about 500 bytes of code a word), 20 µs for
+  the MB86234. The geometrizer's first frames translate on its thread
+  (slowest frame 210 ms against 16 ms interpreted): a hitch the player
+  would see once a boot. Translating an upload's blocks on a worker, or
+  a smaller IR per word (one shared budget exit instead of one per word),
+  would hide or halve it.
+- **Block linking and longer copro slices**: every block returns to the
+  dispatcher, and the 2C copro's runs are two words long by its schedule,
+  so the dispatcher is much of its cost. Running the copro ahead in
+  longer slices and catching up at the i960's accesses would be exact only
+  if everything that can see it (its FIFOs and status, buffer RAM, the
+  geometrizer's list) synchronised first; not attempted.
+- **Delay-slot starts**: a run that ends between a branch and its delay
+  slot resumes on the interpreter for one word; a block that starts in a
+  delay slot would take those too.
+
+### The SHARC (Model 2B), not done
+
+What carries over: the module and helper conventions (`copro.rs`), the
+dispatcher with a word budget and exits after any word (the 2B copro runs
+a few words per i960 instruction too, `sharc::STEPS_PER_INSN`), the
+lockstep harness (`model2::copro_jit`, with the overlay bus that keeps the
+interpreter's writes apart) and the random-program tests. The SHARC
+already has what the MB86235 lacked, block rules (`codegen::in_block`,
+`Sharc::block_start`/`block_end`) and code discovery, and `make lockstep`
+compares it. What is new: its compute lowering (ALU, multiplier and
+shifter, with `float::single`'s exact rounding and the 40-bit forms), the
+DAGs with their modify, circular and bit-reversed addressing, two delay
+slots, the loop and status stacks with their end-of-loop tests, and
+48-bit program memory that the programs write (so code checks like the
+i960's RAM blocks). A lowering two to three times the MB86235's: 3-4
+weeks, with the lockstep and the random tests reused.
 
 ## A WebAssembly back end (sketch)
 
@@ -313,7 +489,7 @@ bench hashes as the gate at each step:
 | Piece | What | Estimate |
 |---|---|---|
 | i960 native JIT, finished | floats translated (the largest fallback group in both games: `mulr`, `addr`, `subr`, `movr`, `cvtir`, `cmpr`); an inline fast path for plain RAM and ROM reads (and writes, with the bus's write count and code counters); the per-instruction step cheaper (the interrupt check is a scan of eight words each time); translation on a worker thread with the hot-block list kept between runs; code memory reclaimed; a player setting; `jit-lockstep` over every game | 2-3 weeks |
-| Copro JITs | MB86235 (2C copro), ADSP-21062 (2B copro and geometrizer), MB86234 (2A): a lowering each, blocks from the existing discovery and region rules, lockstep per chip | 2-4 weeks each (SHARC the most) |
+| Copro JITs | MB86234 and MB86235: done ("Copro JITs"). ADSP-21062 (2B copro and geometrizer): its lowering on the MB86235's dispatcher, lockstep and tests | 3-4 weeks |
 | WebAssembly back end | the emitter (`Op` to wasm), helper exports and a shared table in `remodel-web`, batched modules compiled off the main thread, Node lockstep | 3-4 weeks for the i960; each copro lowering then a further week or so, as the emitter is shared |
 
 ## Verdict
@@ -329,7 +505,11 @@ the bus and the per-instruction bookkeeping are half to two thirds. The real-wor
 the i960 JIT alone is 1.45-1.5x on these two games in the player's
 configuration; more needs, in order of what the profile says they buy:
 
-1. a copro back end (or native copro programs, as the geometrizers have),
+1. a copro back end (or native copro programs, as the geometrizers have):
+   done for the MB86234 and MB86235 ("Copro JITs"), a further 1.2-1.3x
+   (2.4x with the chip geometrizer), so that the JIT build is 1.66-1.8x
+   the interpreter and ahead of the recompiled build on every set
+   measured; the SHARC remains,
 2. an inline fast path for plain memory and a cheaper per-instruction
    step (interrupt check, timers),
 3. floats in the i960 lowering (the largest fallback group; small in time).
