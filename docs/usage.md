@@ -14,6 +14,7 @@ make release          # optimised build of the remodel CLI (RECOMP=1: with the r
 make test             # unit tests only; make lint (clippy, warnings are errors); make fmt / make fmt-check
 make pace-sim         # the browser's audio rate control on synthetic frame timings (docs/web.md)
 make clean            # remove build output and everything in out/ (scratch included)
+make clean-stale      # delete old crate builds Cargo leaves in target/ (unused 2 days; CLEAN_DAYS=, DRY_RUN=1); current builds kept
 make m68k-tests       # 68000 core vs the SingleStepTests suite (fetches ~200 MB, 1.1 GB unpacked, into out/)
 make z80-test         # Z80 core vs the zexdoc/zexall exercisers in out/z80-tests (docs/hw/z80.md)
 make sharc-test       # ADSP-21062 (SHARC) tests, plus the 2B programs if captured (docs/hw/adsp2106x.md)

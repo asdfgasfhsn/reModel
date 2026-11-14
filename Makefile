@@ -96,7 +96,7 @@ JIT_STEPS ?= 300000000
 RUN     := $(REMODEL) --game $(GAME) --rom $(ROM) $(if $(JIT),--jit)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release dist test lint fmt fmt-check check ci jit-test jit-lockstep jit-copro-lockstep jit-translate z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm tgp-disasm tgp-check m68k-tests clean recomp recomp-workspace bench bench-all release-tag latency input-lag run-ahead-check run-ahead-profile draw-overlap-check photo-check camera-scan sound sound-disasm geo-check geo-fuzz smooth-frames temporal-capture temporal-check pace-sim install-desktop uninstall-desktop
+.PHONY: help build release dist test lint fmt fmt-check check ci jit-test jit-lockstep jit-copro-lockstep jit-translate z80-test sharc-test sharc-disasm games inputs verify boot disasm analyze run copro-disasm tgp-disasm tgp-check m68k-tests clean recomp recomp-workspace bench bench-all release-tag latency input-lag run-ahead-check run-ahead-profile draw-overlap-check photo-check camera-scan sound sound-disasm geo-check geo-fuzz smooth-frames temporal-capture temporal-check pace-sim install-desktop uninstall-desktop clean-stale
 
 ##@ General
 
@@ -590,6 +590,9 @@ mpeg-test: ## MPEG decoder test against the MPEG ROMs in ROM=
 	REMODEL_ROM=$(abspath $(ROM)) $(CARGO) test --release -p remodel-mpeg -- --ignored
 
 ##@ Housekeeping
+
+clean-stale: ## Delete build output newer builds replaced: in target/, crate builds and incremental caches unused for CLEAN_DAYS days (default 2), always keeping each crate's newest build, so current builds aren't redone (DRY_RUN=1: report the total only)
+	python3 tools/clean-stale.py target --days $(or $(CLEAN_DAYS),2) $(if $(DRY_RUN),--dry-run)
 
 clean: ## Remove build output and generated listings
 	$(CARGO) clean
