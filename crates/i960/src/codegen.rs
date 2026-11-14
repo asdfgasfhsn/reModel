@@ -310,8 +310,7 @@ pub fn program_module(insns: &BTreeMap<u32, Insn>, extra: &BTreeSet<u32>, hash: 
         }
         s.push_str("}\n}\n\n");
     }
-    let _ = writeln!(s, "/// {translated} of {total} instructions translated, the rest run through `Cpu::exec`.");
-    let _ = writeln!(s, "#[allow(dead_code)]\npub const TRANSLATED: (usize, usize) = ({translated}, {total});\n");
+    let _ = writeln!(s, "// {translated} of {total} instructions translated, the rest run through `Cpu::exec`.\n");
     let _ = writeln!(
         s,
         "pub fn blocks<H: Host>() -> Vec<(u32, Block<H>)> {{\n    let mut v = Vec::with_capacity({});",

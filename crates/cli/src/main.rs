@@ -383,6 +383,12 @@ commands:
                        game reaches) through the game's uploaded geometrizer
                        program on its chip and the native one; report the
                        first difference
+  geo-trace-words WORD...
+                       boot the Model 2C geometrizer program the last `run`
+                       captured (out/GAME/geo.bin) on the MB86235
+                       interpreter, feed the hex WORDs into its input FIFO
+                       and print the next 60 instructions with the registers
+                       the command reading uses
   latency FRAME CHANGE [FRAMES]
                        input latency: two runs from FRAME (with --input,
                        or --load-state), one with CHANGE (an --input item
@@ -487,6 +493,11 @@ debugging (environment variables for `run`):
   REMODEL_PROBE=X,Y    at each snapshot, list the 3D polygons covering
                        pixel (X, Y) with their texture header and texels
   REMODEL_WATCH=ADDR   log every memory write to ADDR's 32-bit word
+  REMODEL_FUZZ_DUMP=FILE
+                       with geo-fuzz: at the first frame that differs, write
+                       its list to FILE and the native stream to FILE.stream
+  REMODEL_FUZZ_TRACE=1 with geo-fuzz: print each frame's list, read and
+                       stream sizes and the chip's PC and step count
 ";
 
 fn parse_num(s: &str) -> Option<u32> {

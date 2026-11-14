@@ -132,7 +132,7 @@ make music SOUNDTRACK=my-mix      # same, with your tracks -> out/topskatr/music
 Custom soundtracks, their `tracks.txt` format and how the game still drives
 them are described in `docs/mods.md`.
 
-One debugging command has no `make` target and isn't in the CLI's usage:
+One debugging command has no `make` target:
 `remodel --game ID geo-trace-words WORD...` boots the Model 2C geometrizer
 program the last `run` captured (`out/GAME/geo.bin`) on the MB86235
 interpreter, raises and drops its flag 0, feeds the hex WORDs into its

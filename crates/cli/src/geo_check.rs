@@ -396,12 +396,6 @@ pub fn fuzz(roms: &RomSet, frames: u64, seed: u64) -> Result<(), String> {
     }
     let program = m.bus.geo.program.clone();
     let rom = model2::bus::polygon_rom(roms);
-    if let Some(a) = std::env::var("REMODEL_FUZZ_ROM").ok().and_then(|v| u32::from_str_radix(&v, 16).ok()) {
-        let mask = rom.len().next_power_of_two() - 1;
-        let w: Vec<String> =
-            (0..60).map(|k| format!("{:08x}", rom.get((a as usize + k) & mask).copied().unwrap_or(0))).collect();
-        println!("rom {a:x}: {}", w.join(" "));
-    }
     let rom_words = rom.len() as u32;
     let mut e = Engine::new(rom, Core::Sharc);
     e.set_mode(GeoMode::Check);
