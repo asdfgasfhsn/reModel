@@ -79,7 +79,9 @@ usage: remodel-play [options]
   --interp           run the i960 on the interpreter even if this build
                      has recompiled code
   --jit              run the i960 on the JIT: the game's code translated
-                     to this machine's as it runs (docs/jit.md)
+                     to this machine's as it runs (docs/jit.md), on
+                     background workers, with the blocks it translated
+                     kept per game and translated again at boot
   --no-idle-skip     run the game's idle loops instruction by instruction
                      instead of skipping through them (same game, slower;
                      docs/idle-skip.md)
@@ -644,6 +646,22 @@ struct Session {
     history: Option<model2::photo::History>,
     /// Photo mode's machine, made the first time it opens.
     studio: Option<model2::photo::Studio>,
+    /// The JITs' hot-block list and its file (`--jit`), and when it was
+    /// last written.
+    jit_list: Option<(PathBuf, Arc<model2::jit::HotList>)>,
+    jit_saved: Instant,
+}
+
+/// Where `set`'s JIT hot-block list is kept (docs/jit.md, "Hot-block
+/// list"): beside its other files in a source tree (`out/SET/jit`), else
+/// in the user's cache folder (it can always be made again).
+fn jit_list_path(set: &str) -> PathBuf {
+    let dir = if Path::new("out").is_dir() {
+        settings::data_dir().join(set).join("jit")
+    } else {
+        dirs::cache_dir().unwrap_or_else(settings::data_dir).join("remodel").join("jit").join(set)
+    };
+    dir.join(model2::jit::hotlist::FILE)
 }
 
 /// `set`'s save state folder.
@@ -665,6 +683,17 @@ impl Session {
     fn slot_path(&self, slot: u8) -> PathBuf {
         let name = if slot == 0 { "quick.save".to_string() } else { format!("slot{slot}.save") };
         saves_dir(self.game.id).join(name)
+    }
+
+    /// Write the hot-block list if it grew (docs/jit.md, "Hot-block
+    /// list"): on leaving the game and every half a minute.
+    fn save_jit_list(&mut self) {
+        self.jit_saved = Instant::now();
+        if let Some((path, list)) = &self.jit_list {
+            if let Err(e) = list.save(path) {
+                eprintln!("{}: can't keep the JIT's hot-block list: {e}", path.display());
+            }
+        }
     }
 
     fn save_eeprom(&self) {
@@ -1038,6 +1067,7 @@ impl Play {
         self.leave_photo();
         let Some(mut s) = self.session.take() else { return };
         s.save_eeprom();
+        s.save_jit_list();
         if s.preview || s.script.is_some() {
             return;
         }
@@ -1065,11 +1095,15 @@ impl Play {
             };
             let roms = romset::RomSet::load(game, &self.settings.rom, false).map_err(|e| e.to_string())?;
             let mut machine = model2::Machine::new(&roms);
+            let mut jit_list = None;
             if self.opts.interp {
                 machine.disable_native();
             } else if self.opts.jit {
-                if let Err(e) = machine.enable_jit(model2::jit::Config::default()) {
-                    eprintln!("warning: --jit: {e}; the i960 runs on the interpreter");
+                let path = jit_list_path(game.id);
+                let list = Arc::new(model2::jit::HotList::load(&path));
+                match machine.enable_jit_with(model2::jit::Config::default(), Some(list.clone())) {
+                    Ok(()) => jit_list = Some((path, list)),
+                    Err(e) => eprintln!("warning: --jit: {e}; the i960 runs on the interpreter"),
                 }
             }
             machine.bus.geo.set_mode(values.geo_mode());
@@ -1118,6 +1152,8 @@ impl Play {
                 geo_chip: values.geo_chip,
                 history: None,
                 studio: None,
+                jit_list,
+                jit_saved: Instant::now(),
             };
             // Photo mode's time scrub: the game's last seconds.
             if self.opts.photo_history > 0.0 {
@@ -1234,6 +1270,8 @@ impl Play {
             geo_chip: self.values.geo_chip,
             history: None,
             studio: None,
+            jit_list: None,
+            jit_saved: Instant::now(),
         });
         self.preview.shown = None;
         self.preview.leaving = None;
@@ -2126,6 +2164,9 @@ impl Play {
         let (ran, emulate_time) = self.run_due();
         if self.launcher.open {
             return;
+        }
+        if let Some(s) = self.session.as_mut().filter(|s| s.jit_saved.elapsed() > Duration::from_secs(30)) {
+            s.save_jit_list();
         }
         // `--photo`: a scripted photo session once its frame is reached.
         self.photo_script();

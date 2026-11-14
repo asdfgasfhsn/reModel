@@ -26,7 +26,7 @@ use cranelift_module::{FuncId, Module, ModuleReloc};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// The Cranelift target for this machine, optimiser off unless
@@ -134,13 +134,20 @@ pub(crate) enum Urgency {
     Now,
     /// Ahead of time (the hot-block list, docs/jit.md "Hot-block list"):
     /// after every `Now` job.
-    #[allow(dead_code)] // the hot-block list's, next
     Later,
 }
 
+/// A queued job, taken by whoever runs it first: it can be in both
+/// queues once promoted ([`promote`]).
+type Item = Arc<Mutex<Option<Job>>>;
+
+/// A job handed to the pool, to [`promote`] it if the game reaches its
+/// code before a worker gets to it.
+pub(crate) struct Ticket(Item);
+
 struct Queue {
-    now: VecDeque<Job>,
-    later: VecDeque<Job>,
+    now: VecDeque<Item>,
+    later: VecDeque<Item>,
 }
 
 struct Pool {
@@ -205,9 +212,10 @@ fn pool() -> &'static Pool {
 }
 
 fn work(p: &'static Pool) {
+    lower_priority();
     let mut c = Compiler::new();
     loop {
-        let job = {
+        let item = {
             let mut q = p.queue.lock().unwrap_or_else(|e| e.into_inner());
             loop {
                 if let Some(j) = q.now.pop_front().or_else(|| q.later.pop_front()) {
@@ -216,8 +224,21 @@ fn work(p: &'static Pool) {
                 q = p.ready.wait(q).unwrap_or_else(|e| e.into_inner());
             }
         };
-        job(&mut c);
-        OUTSTANDING.fetch_sub(1, Ordering::Relaxed);
+        let job = item.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(job) = job {
+            job(&mut c);
+            OUTSTANDING.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// The workers yield to the game's threads when cores are short (Linux:
+/// a nice of 10 for this thread).
+fn lower_priority() {
+    #[cfg(target_os = "linux")]
+    // SAFETY: plain system calls on this thread's own id.
+    unsafe {
+        libc::setpriority(libc::PRIO_PROCESS, libc::gettid() as libc::id_t, 10);
     }
 }
 
@@ -227,21 +248,34 @@ thread_local! {
 }
 
 /// Run `job` on a worker, or here and now if `background` is off (or no
-/// worker thread could be started).
-pub(crate) fn submit(background: bool, urgency: Urgency, job: Job) {
+/// worker thread could be started). The ticket, if it was queued.
+pub(crate) fn submit(background: bool, urgency: Urgency, job: Job) -> Option<Ticket> {
     if background {
         let p = pool();
         if STARTED.load(Ordering::Acquire) != usize::MAX {
             OUTSTANDING.fetch_add(1, Ordering::Relaxed);
+            let item: Item = Arc::new(Mutex::new(Some(job)));
             let mut q = p.queue.lock().unwrap_or_else(|e| e.into_inner());
             match urgency {
-                Urgency::Now => q.now.push_back(job),
-                Urgency::Later => q.later.push_back(job),
+                Urgency::Now => q.now.push_back(item.clone()),
+                Urgency::Later => q.later.push_back(item.clone()),
             }
             drop(q);
             p.ready.notify_one();
-            return;
+            return Some(Ticket(item));
         }
     }
     HERE.with(|h| job(h.borrow_mut().get_or_insert_with(Compiler::new)));
+    None
+}
+
+/// The game reached the code of a job queued for `Later`: it goes to the
+/// front of the line too, if no worker has taken it yet.
+pub(crate) fn promote(t: &Ticket) {
+    if t.0.lock().unwrap_or_else(|e| e.into_inner()).is_none() {
+        return;
+    }
+    let p = pool();
+    p.queue.lock().unwrap_or_else(|e| e.into_inner()).now.push_front(t.0.clone());
+    p.ready.notify_one();
 }

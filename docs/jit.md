@@ -184,6 +184,43 @@ that runs its chip any more (`crates/jit/src/pool.rs`):
   the workers, installing at random points). `make jit-translate` hands
   the whole program to the workers and waits.
 
+### Hot-block list
+
+The workers hide translation, but a cold boot still runs the game's first
+seconds partly interpreted. So every JIT notes the blocks it translates
+in a list (`crates/jit/src/hotlist.rs`), kept between runs, and at boot
+hands the workers every block listed for the programs it is given,
+behind any the game is waiting for: on 16 cores the whole list is
+translated in a fraction of a second, before the game gets to most of it.
+
+- **What is kept: addresses.** Block starts, by chip (`i960`, `mb86234`,
+  `mb86235`) and program hash: the i960's program ROM hash (the one save
+  states carry), the hash of an uploaded copro program (the MB86235's
+  own, FNV-1a of the MB86234's words). No game code and no machine code:
+  a few KB of text, derived from the user's ROM and written only on
+  their machine. Nothing of it is in the repository.
+- **The file**, one per game set: `hot.txt` in `out/SET/jit/` in a
+  source tree, else in the user's cache folder
+  (`~/.cache/remodel/jit/SET/` on Linux); the CLI's with `--jit-cache DIR`
+  (none without it, so `make bench JIT=1` stays a cold boot). The first
+  line is the format's version (`reModel JIT hot blocks 1`); another
+  version, or a file that doesn't parse, is ignored with a warning and
+  replaced on the next save. Saved (through a temporary file) only when
+  it grew: by the player on leaving a game and every 30 s, by the CLI at
+  the end of a `run`.
+- **Entries are hints.** Each is planned from the code as it is now, as
+  the game's own would be: an address that doesn't decode is skipped
+  (left to the game: it isn't marked as untranslatable), one from
+  another version of the program is a translation wasted at most, and a
+  block from RAM keeps its words and is checked on every entry as
+  always. Listed RAM starts (`srallyc` runs from work RAM) are planned
+  when the game first runs code in RAM, when it has copied its code
+  there. A block the game never reaches is never run, so the list can't
+  change what the game does: `make bench-all JIT=1` hashes are the same
+  cold and warm.
+- **Shared**: a machine's JITs share one list (run-ahead's machine too,
+  `Machine::enable_jit_with`).
+
 ## Results
 
 Measured on the development machine (16 cores, shared with other work,

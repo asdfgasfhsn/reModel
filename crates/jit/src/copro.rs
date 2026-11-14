@@ -2,7 +2,7 @@
 //! module, its settings, the counters, and the IR helpers both lowerings
 //! use. The chips' own lowerings are `mb86234` and `mb86235`.
 
-use crate::pool::{Compiled, Compiler, Job, Urgency};
+use crate::pool::{Compiled, Compiler, Job, Ticket, Urgency};
 use cranelift_codegen::ir::{types, AbiParam, InstBuilder, MemFlagsData, SigRef, Signature, Type, Value};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_jit::{JITBuilder, JITModule};
@@ -112,8 +112,12 @@ pub(crate) struct Background {
     tx: Sender<Done>,
     rx: Receiver<Done>,
     alive: Arc<AtomicBool>,
-    /// Blocks queued: start, and the word after its last.
-    pub pending: HashMap<u32, u32>,
+    /// Blocks queued: start, and the program's key, the word after the
+    /// block's last, and (queued ahead of time, not yet promoted) the job.
+    pending: HashMap<u32, (u64, u32, Option<Ticket>)>,
+    /// Finished, by start, not yet installed: each goes in when the chip
+    /// reaches it (so a boot's hot-block list doesn't all go in at once).
+    received: HashMap<u32, Done>,
     /// A queued block being interpreted (after its start, before its
     /// end): those words aren't block starts and aren't queued.
     pub through: (u32, u32),
@@ -137,6 +141,7 @@ impl Background {
             rx,
             alive: Arc::new(AtomicBool::new(true)),
             pending: HashMap::new(),
+            received: HashMap::new(),
             through: (0, 0),
         }
     }
@@ -168,31 +173,61 @@ impl Background {
                 .unwrap_or_else(|_| Err("the translation panicked".into()));
             let _ = tx.send(Done { key, start, end, code });
         });
-        self.pending.insert(start, end);
-        crate::pool::submit(self.on, urgency, job);
+        let ticket = crate::pool::submit(self.on, urgency, job).filter(|_| urgency == Urgency::Later);
+        self.pending.insert(start, (key, end, ticket));
     }
 
-    /// The translations finished so far (`wait`: every one queued).
-    pub fn finished(&mut self, wait: bool) -> Vec<Done> {
+    /// Where the block queued at `start` ends, if one is; and if it was
+    /// queued ahead of time, it moves to the front of the line (the chip
+    /// is there).
+    pub fn reached(&mut self, start: u32) -> Option<u32> {
+        let p = self.pending.get_mut(&start)?;
+        if let Some(t) = p.2.take() {
+            crate::pool::promote(&t);
+        }
+        Some(p.1)
+    }
+
+    /// Translations finished: `want`'s, if it is (`wait`: every one
+    /// queued, waiting for them).
+    pub fn finished(&mut self, wait: bool, want: u32) -> Vec<Done> {
+        while let Ok(d) = self.rx.try_recv() {
+            // A later result for the same start (another program's, after
+            // a `clear`) replaces an earlier one, which is stale.
+            self.received.insert(d.start, d);
+        }
         let mut v = Vec::new();
         if wait {
+            v.extend(self.received.drain().map(|(_, d)| d));
+            for d in &v {
+                self.settled(d);
+            }
             while !self.pending.is_empty() {
                 let Ok(d) = self.rx.recv() else { break };
-                self.pending.remove(&d.start);
+                self.settled(&d);
                 v.push(d);
             }
+            return v;
         }
-        while let Ok(d) = self.rx.try_recv() {
-            self.pending.remove(&d.start);
-            v.push(d);
+        v.extend(self.received.remove(&want));
+        for d in &v {
+            self.settled(d);
         }
         v
+    }
+
+    /// `d` is no longer pending (unless a newer job for its start is).
+    fn settled(&mut self, d: &Done) {
+        if self.pending.get(&d.start).is_some_and(|p| p.0 == d.key) {
+            self.pending.remove(&d.start);
+        }
     }
 
     /// Forget what is queued (the chip has another program): its results
     /// are told apart by their key.
     pub fn clear(&mut self) {
         self.pending.clear();
+        self.received.clear();
         self.through = (0, 0);
     }
 }

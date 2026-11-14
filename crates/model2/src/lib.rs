@@ -64,6 +64,10 @@ pub struct Machine {
     /// the place of recompiled code.
     #[cfg(not(target_arch = "wasm32"))]
     jit: Option<Box<jit::Jit<Model2Bus>>>,
+    /// The JITs' hot-block list, if they keep one (docs/jit.md, "Hot-block
+    /// list").
+    #[cfg(not(target_arch = "wasm32"))]
+    jit_list: Option<std::sync::Arc<jit::HotList>>,
     /// Every instruction address executed.
     pub coverage: Coverage,
     /// Targets of indirect branches/calls actually taken, by source.
@@ -100,6 +104,8 @@ impl Machine {
             native,
             #[cfg(not(target_arch = "wasm32"))]
             jit: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            jit_list: None,
             coverage: Coverage::default(),
             indirect: BTreeSet::new(),
             frame_profile: Profile::default(),
@@ -155,12 +161,36 @@ impl Machine {
     /// Fails where Cranelift has no back end for the host.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn enable_jit(&mut self, config: jit::Config) -> Result<(), String> {
+        self.enable_jit_with(config, None)
+    }
+
+    /// [`Machine::enable_jit`], the JITs noting the blocks they translate
+    /// in `list` and translating those it already has for this game's
+    /// programs on the workers at once, before the game reaches them
+    /// (docs/jit.md, "Hot-block list").
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn enable_jit_with(
+        &mut self,
+        config: jit::Config,
+        list: Option<std::sync::Arc<jit::HotList>>,
+    ) -> Result<(), String> {
         let mut j = jit::Jit::new(config)?;
         j.set_stops(self.idle.starts());
         self.bus.count_code_writes();
+        if let Some(l) = &list {
+            j.set_hot_list(l.clone(), self.program_hash, &self.bus);
+        }
         self.native = None;
         self.jit = Some(Box::new(j));
-        self.bus.set_copro_jit(&config)
+        self.bus.set_copro_jit(&config, list.as_ref())?;
+        self.jit_list = list;
+        Ok(())
+    }
+
+    /// The JITs' hot-block list, if they keep one.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn jit_list(&self) -> Option<&std::sync::Arc<jit::HotList>> {
+        self.jit_list.as_ref()
     }
 
     /// The copro JITs' counters (docs/jit.md, "Copro JITs"), by chip, with
@@ -361,7 +391,7 @@ impl Machine {
         #[cfg(not(target_arch = "wasm32"))]
         if let (Some(j), false) = (src.jit.as_deref(), self.jit_on()) {
             // Same settings; a JIT that worked there works here.
-            let _ = self.enable_jit(j.config());
+            let _ = self.enable_jit_with(j.config(), src.jit_list.clone());
         }
         self.set_idle_skip(src.idle_skip_on());
         if let (Some(c), Some(s)) = (self.bus.sharc.as_deref_mut(), src.bus.sharc.as_deref()) {

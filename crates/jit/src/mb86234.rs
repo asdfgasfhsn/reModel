@@ -20,12 +20,14 @@
 use crate::copro::{
     block_signature, call, install, module, sig, trusted, Background, CoproStats, OwnedModule, F32, F64, I32, I8,
 };
+use crate::hotlist::{hash_words, Chip, HotList};
 use crate::pool::{Compiled, Urgency};
 use ::mb86234::{reads_fifo, reg, Bus, Cpu, Stop};
 use cranelift_codegen::ir::{condcodes::IntCC, InstBuilder, MemFlagsData, SigRef, Type, Value};
 use cranelift_frontend::FunctionBuilder;
 use std::collections::HashMap;
 use std::mem::{offset_of, ManuallyDrop};
+use std::sync::Arc;
 use std::time::Instant;
 
 /// Words per block at most.
@@ -72,6 +74,10 @@ pub struct Mb86234Jit {
     costs: HashMap<u32, u64>,
     stats: CoproStats,
     jobs: Background,
+    /// The hot-block list (docs/jit.md, "Hot-block list"), and the
+    /// program's hash there.
+    list: Option<Arc<HotList>>,
+    hash: u64,
 }
 
 impl Mb86234Jit {
@@ -88,6 +94,8 @@ impl Mb86234Jit {
             costs: HashMap::new(),
             stats: CoproStats::default(),
             jobs: Background::new(),
+            list: None,
+            hash: hash_words(program.iter().copied()),
         })
     }
 
@@ -109,6 +117,27 @@ impl Mb86234Jit {
         self.generation += 1;
         self.costs.clear();
         self.jobs.clear();
+        self.hash = hash_words(program.iter().copied());
+        self.preload();
+    }
+
+    /// Note translated blocks in `list`, and translate the blocks it lists
+    /// for this program (and any it is reloaded with) now, behind any the
+    /// chip is waiting for.
+    pub fn set_hot_list(&mut self, list: Arc<HotList>) {
+        self.list = Some(list);
+        self.preload();
+    }
+
+    /// Queue the listed blocks of the program (hints: any start in range
+    /// that plans to a block).
+    fn preload(&mut self) {
+        let Some(list) = &self.list else { return };
+        for pc in list.get(Chip::Mb86234, self.hash) {
+            if (pc as usize) < SPAN && self.table[pc as usize] == COLD {
+                self.queue(pc, Urgency::Later);
+            }
+        }
     }
 
     /// Is this the JIT for `program`?
@@ -181,13 +210,13 @@ impl Mb86234Jit {
             if self.jobs.inside(pc) {
                 return None;
             }
-            self.queue(pc);
+            self.queue(pc, Urgency::Now);
         }
-        self.install(false);
+        self.install(false, pc);
         match self.table[pc as usize] {
             s if s >= FIRST => Some(s - FIRST),
             QUEUED => {
-                self.jobs.through = (pc, self.jobs.pending.get(&pc).copied().unwrap_or(0));
+                self.jobs.through = (pc, self.jobs.reached(pc).unwrap_or(0));
                 None
             }
             _ => None,
@@ -196,7 +225,7 @@ impl Mb86234Jit {
 
     /// Wait for the blocks being translated, and install them (tests).
     pub fn wait(&mut self) {
-        self.install(true);
+        self.install(true, 0);
     }
 
     fn fetch(&self, pc: u32) -> u32 {
@@ -242,25 +271,27 @@ impl Mb86234Jit {
 
     /// Queue the block at `start` for translation, or mark it as nothing
     /// to translate.
-    fn queue(&mut self, start: u32) {
+    fn queue(&mut self, start: u32, urgency: Urgency) {
         let words = self.plan(start);
         if words.is_empty() {
-            self.table[start as usize] = NEVER;
+            if urgency == Urgency::Now {
+                self.table[start as usize] = NEVER;
+            }
             return;
         }
         let end = start + words.len() as u32;
         self.table[start as usize] = QUEUED;
         self.costs.insert(start, words.iter().map(|p| p.times as u64).sum());
         let prog_len = self.program.len();
-        self.jobs.queue(self.generation, start, end, Urgency::Now, None, move |b, ptr| {
+        self.jobs.queue(self.generation, start, end, urgency, None, move |b, ptr| {
             Emit::new(b, ptr, prog_len).block(&words);
         });
     }
 
-    /// Put the finished translations (`wait`: every one queued) in the
-    /// table, throwing away any for another program.
-    fn install(&mut self, wait: bool) {
-        let done = self.jobs.finished(wait);
+    /// Put the finished translation for `want` in the table (`wait`:
+    /// every one queued), throwing away any for another program.
+    fn install(&mut self, wait: bool, want: u32) {
+        let done = self.jobs.finished(wait, want);
         if done.is_empty() {
             return;
         }
@@ -276,6 +307,9 @@ impl Mb86234Jit {
                 }
                 _ => self.stats.discarded += 1,
             }
+        }
+        if let Some(list) = &self.list {
+            list.add(Chip::Mb86234, self.hash, keep.iter().map(|k| k.0));
         }
         let sig = block_signature(&self.module.0, None);
         let compiled: Vec<&Compiled> = keep.iter().map(|(_, _, c)| c).collect();

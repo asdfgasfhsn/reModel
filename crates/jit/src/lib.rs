@@ -20,6 +20,8 @@
 #[cfg(not(target_arch = "wasm32"))]
 mod copro;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod hotlist;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod mb86234;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mb86235;
@@ -29,6 +31,8 @@ mod native;
 mod pool;
 #[cfg(not(target_arch = "wasm32"))]
 pub use copro::CoproStats;
+#[cfg(not(target_arch = "wasm32"))]
+pub use hotlist::{Chip, HotList};
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::*;
 #[cfg(not(target_arch = "wasm32"))]

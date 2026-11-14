@@ -150,6 +150,8 @@ struct Jit {
     check: bool,
     /// Translating on the workers (`jit::Config::background`).
     background: bool,
+    /// The hot-block list (docs/jit.md, "Hot-block list").
+    list: Option<std::sync::Arc<jit::HotList>>,
     code: Option<Box<jit::mb86234::Mb86234Jit>>,
     shadow: Option<Box<mb86234::Cpu>>,
     /// Runs compared (lockstep), and the stats of programs dropped.
@@ -255,7 +257,7 @@ impl Tgp2a {
     /// difference: `make jit-copro-lockstep`). Fails where Cranelift has
     /// no back end for this machine.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn set_jit(&mut self, c: &jit::Config) -> Result<(), String> {
+    pub fn set_jit(&mut self, c: &jit::Config, list: Option<&std::sync::Arc<jit::HotList>>) -> Result<(), String> {
         if c.copro {
             // Fail now rather than at the upload.
             jit::mb86234::Mb86234Jit::new(&[])?;
@@ -263,6 +265,7 @@ impl Tgp2a {
         self.jit.on = c.copro;
         self.jit.check = c.copro_check;
         self.jit.background = c.background;
+        self.jit.list = list.cloned();
         self.jit_follow();
         Ok(())
     }
@@ -292,6 +295,9 @@ impl Tgp2a {
         if let (None, Some(p)) = (&j.code, program) {
             j.code = jit::mb86234::Mb86234Jit::new(p).ok().map(|mut c| {
                 c.set_background(j.background);
+                if let Some(l) = &j.list {
+                    c.set_hot_list(l.clone());
+                }
                 Box::new(c)
             });
         }

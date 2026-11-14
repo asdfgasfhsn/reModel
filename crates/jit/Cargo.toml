@@ -21,3 +21,7 @@ cranelift-frontend = "0.137.1"
 cranelift-jit = "0.137.1"
 cranelift-module = "0.137.1"
 cranelift-native = "0.137.1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The translation workers' priority (`pool`).
+libc = "0.2"

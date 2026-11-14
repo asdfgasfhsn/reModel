@@ -67,13 +67,21 @@ impl TgpJit {
         TgpJit { name, max_block, ..TgpJit::default() }
     }
 
-    /// Turn it on or off, as `c` configures the JIT (on fails where
-    /// Cranelift has no back end).
-    pub fn set(&mut self, on: bool, c: &jit::Config) -> Result<(), String> {
+    /// Turn it on or off, as `c` configures the JIT, with the hot-block
+    /// list `list` (on fails where Cranelift has no back end).
+    pub fn set(
+        &mut self,
+        on: bool,
+        c: &jit::Config,
+        list: Option<&std::sync::Arc<jit::HotList>>,
+    ) -> Result<(), String> {
         self.code = if on {
             let mut j =
                 self.code.take().map_or_else(|| Mb86235Jit::with_max_block(self.max_block).map(Box::new), Ok)?;
             j.set_background(c.background);
+            if let Some(l) = list {
+                j.set_hot_list(l.clone());
+            }
             Some(j)
         } else {
             None

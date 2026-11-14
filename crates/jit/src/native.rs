@@ -1,6 +1,7 @@
 //! The Cranelift back end (docs/jit.md).
 
-use crate::pool::{Compiled, Compiler, Job, Urgency};
+use crate::hotlist::{Chip, HotList};
+use crate::pool::{Compiled, Compiler, Job, Ticket, Urgency};
 use cranelift_codegen::ir::{
     condcodes::IntCC, types, AbiParam, Block as ClifBlock, InstBuilder, MemFlagsData, SigRef, Signature, Type, Value,
 };
@@ -158,6 +159,9 @@ struct Pending {
     seq: u64,
     end: u32,
     ram: Option<RamCode>,
+    /// Queued ahead of time (`Later`), not yet promoted: the job, to move
+    /// it up when the game gets there first.
+    later: Option<Ticket>,
 }
 
 /// A finished translation, back from a worker.
@@ -190,9 +194,20 @@ pub struct Jit<H> {
     through: (u32, u32),
     done_tx: Sender<Done>,
     done_rx: Receiver<Done>,
+    /// Finished translations received, by start, not yet installed: each
+    /// goes in when the game reaches it (copying a block in costs about
+    /// 10 µs, so a boot's whole hot-block list going in at once would be
+    /// a hitch of its own).
+    received: HashMap<u32, Done>,
     /// Cleared when the JIT is dropped: its jobs not yet started are
     /// skipped.
     alive: Arc<AtomicBool>,
+    /// The hot-block list this JIT notes its blocks in, and the program's
+    /// hash (docs/jit.md, "Hot-block list").
+    list: Option<(Arc<HotList>, u64)>,
+    /// Listed starts in writable memory, translated once the game first
+    /// runs code there (it has copied its code by then).
+    listed_ram: Vec<u32>,
     host: PhantomData<fn(&mut H)>,
 }
 
@@ -219,7 +234,10 @@ impl<H: JitHost + 'static> Jit<H> {
             through: (0, 0),
             done_tx,
             done_rx,
+            received: HashMap::new(),
             alive: Arc::new(AtomicBool::new(true)),
+            list: None,
+            listed_ram: Vec::new(),
             host: PhantomData,
         })
     }
@@ -238,6 +256,28 @@ impl<H: JitHost + 'static> Jit<H> {
 
     pub fn config(&self) -> Config {
         self.config
+    }
+
+    /// Note translated blocks in `list`, under the program `hash`, and
+    /// queue the blocks it already lists for translation now, behind any
+    /// the game is waiting for (those in ROM; those in writable memory
+    /// when the game first runs code there). Set the stops first. Entries
+    /// are hints: one that doesn't decode is left alone, one for other
+    /// code costs a translation, and code in RAM is checked as always.
+    pub fn set_hot_list(&mut self, list: Arc<HotList>, hash: u64, host: &H) {
+        for a in list.get(Chip::I960, hash) {
+            if a >= CODE_SPAN || a & 3 != 0 || !matches!(*self.slot(a), Slot::Cold(_)) {
+                continue;
+            }
+            if host.is_rom(a) {
+                if let Some(insns) = self.plan(a, host) {
+                    self.queue(insns, host, Urgency::Later);
+                }
+            } else if host.code_generation_index(a).is_some() {
+                self.listed_ram.push(a);
+            }
+        }
+        self.list = Some((list, hash));
     }
 
     /// Blocks stop before these addresses (they still start at them).
@@ -325,10 +365,16 @@ impl<H: JitHost + 'static> Jit<H> {
     /// workers have finished, and say whether its block is among them.
     #[cold]
     fn cold(&mut self, ip: u32, host: &H) -> Option<u32> {
+        if let Some(t) = self.pending.get_mut(&ip).and_then(|p| p.later.take()) {
+            crate::pool::promote(&t);
+        }
         if let Slot::Cold(_) = *self.slot(ip) {
             self.queue_at(ip, host, Urgency::Now);
+            if !self.listed_ram.is_empty() && !host.is_rom(ip) {
+                self.queue_listed_ram(host);
+            }
         }
-        self.install(host);
+        self.install(host, ip);
         match *self.slot(ip) {
             Slot::Block(id) => Some(id),
             _ => {
@@ -336,6 +382,18 @@ impl<H: JitHost + 'static> Jit<H> {
                 // the block's, not starts of its own.
                 self.through = self.pending.get(&ip).map_or((0, 0), |p| (ip, p.end));
                 None
+            }
+        }
+    }
+
+    /// The listed starts in writable memory, planned from what is there
+    /// now (a start that doesn't decode is left to the game).
+    fn queue_listed_ram(&mut self, host: &H) {
+        for a in std::mem::take(&mut self.listed_ram) {
+            if matches!(*self.slot(a), Slot::Cold(_)) {
+                if let Some(insns) = self.plan(a, host) {
+                    self.queue(insns, host, Urgency::Later);
+                }
             }
         }
     }
@@ -464,9 +522,12 @@ impl<H: JitHost + 'static> Jit<H> {
             .unwrap_or_else(|_| Err("the translation panicked".into()));
             let _ = tx.send(Done { start, seq, insns, code });
         });
-        self.pending.insert(start, Pending { seq, end, ram });
+        self.pending.insert(start, Pending { seq, end, ram, later: None });
         *self.slot(start) = Slot::Queued;
-        crate::pool::submit(self.config.background, urgency, job);
+        let ticket = crate::pool::submit(self.config.background, urgency, job);
+        if let (Some(p), Urgency::Later) = (self.pending.get_mut(&start), urgency) {
+            p.later = ticket;
+        }
         true
     }
 
@@ -474,6 +535,9 @@ impl<H: JitHost + 'static> Jit<H> {
     /// for tests; the game never waits).
     pub fn wait(&mut self, host: &H) {
         let mut ready = Vec::new();
+        for (_, d) in std::mem::take(&mut self.received) {
+            self.take(d, host, &mut ready);
+        }
         while !self.pending.is_empty() {
             match self.done_rx.recv() {
                 Ok(d) => self.take(d, host, &mut ready),
@@ -483,14 +547,22 @@ impl<H: JitHost + 'static> Jit<H> {
         self.finish(ready);
     }
 
-    /// Install the blocks the workers have finished (at a block boundary:
-    /// the dispatcher is between blocks).
-    fn install(&mut self, host: &H) {
-        let mut ready = Vec::new();
+    /// Install the block at `want` if the workers have finished it (at a
+    /// block boundary: the dispatcher is between blocks).
+    fn install(&mut self, host: &H, want: u32) {
         while let Ok(d) = self.done_rx.try_recv() {
-            self.take(d, host, &mut ready);
+            // A newer job for the same start supersedes an older one.
+            if self.received.get(&d.start).is_none_or(|o| o.seq < d.seq) {
+                self.received.insert(d.start, d);
+            } else {
+                self.stats.discarded += 1;
+            }
         }
-        self.finish(ready);
+        if let Some(d) = self.received.remove(&want) {
+            let mut ready = Vec::new();
+            self.take(d, host, &mut ready);
+            self.finish(ready);
+        }
     }
 
     /// One finished translation: into this JIT's memory (`finish` makes it
@@ -537,6 +609,9 @@ impl<H: JitHost + 'static> Jit<H> {
     fn finish(&mut self, ready: Vec<Ready>) {
         if ready.is_empty() {
             return;
+        }
+        if let Some((list, hash)) = &self.list {
+            list.add(Chip::I960, *hash, ready.iter().map(|r| r.start));
         }
         let t = Instant::now();
         if let Err(e) = self.module.finalize_definitions() {

@@ -1150,17 +1150,22 @@ impl Model2Bus {
     /// Run the copro programs on their JITs, or not (docs/jit.md, "Copro
     /// JITs") as `c` says: `copro`, and with `copro_check` each beside its
     /// interpreter (a lockstep), translating on the workers if
-    /// `background`.
+    /// `background`; noting their blocks in `list` and translating those
+    /// it has at once (docs/jit.md, "Hot-block list").
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn set_copro_jit(&mut self, c: &jit::Config) -> Result<(), String> {
+    pub fn set_copro_jit(
+        &mut self,
+        c: &jit::Config,
+        list: Option<&std::sync::Arc<jit::HotList>>,
+    ) -> Result<(), String> {
         if let Some(t) = self.tgp2a.as_deref_mut() {
-            t.set_jit(c)?;
+            t.set_jit(c, list)?;
         }
         // Model 2C's copro (2A's `tgp` and 2B's never run).
         if self.tgp2a.is_none() && self.sharc.is_none() {
-            self.tgp_jit.set(c.copro, c)?;
+            self.tgp_jit.set(c.copro, c, list)?;
         }
-        self.geo.set_tgp_jit(c)
+        self.geo.set_tgp_jit(c, list)
     }
 
     /// The copro JITs' counters, by chip, with the runs compared in a

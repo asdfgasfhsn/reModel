@@ -72,7 +72,10 @@ options:
                        after every run (a lockstep: stops at a difference);
                        blocks are translated on background workers and
                        interpreted until ready, --jit-sync translates them
-                       at once on the thread that runs them (the game waits)
+                       at once on the thread that runs them (the game waits);
+                       --jit-cache DIR keeps the hot-block list in DIR/hot.txt
+                       (read at the start, its blocks translated at boot;
+                       written at the end of a `run`: docs/jit.md)
   --no-idle-skip       run the game's idle loops instruction by instruction
                        instead of skipping through them (same results;
                        docs/idle-skip.md)
@@ -708,6 +711,15 @@ fn main() -> ExitCode {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
     };
+    let Ok(jit_cache) = opt("--jit-cache") else {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    if let Some(dir) = jit_cache {
+        let path = PathBuf::from(dir).join(model2::jit::hotlist::FILE);
+        let list = model2::jit::HotList::load(&path);
+        let _ = JIT_LIST.set((path, std::sync::Arc::new(list)));
+    }
     let Ok(tgp2a_mode) = opt("--tgp2a") else {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
@@ -756,7 +768,13 @@ fn main() -> ExitCode {
     };
     let (interp, single_thread) = (flag("--interp"), flag("--single-thread"));
     let jit_sync = flag("--jit-sync");
-    if flag("--jit") || jit_sync || jit_hot.is_some() || jit_opt.is_some() || jit_copro.is_some() {
+    if flag("--jit")
+        || jit_sync
+        || jit_hot.is_some()
+        || jit_opt.is_some()
+        || jit_copro.is_some()
+        || JIT_LIST.get().is_some()
+    {
         let mut c = model2::jit::Config { background: !jit_sync, ..model2::jit::Config::default() };
         match jit_copro.as_deref() {
             None | Some("on") => {}
@@ -2159,10 +2177,26 @@ static GEO_MODE: std::sync::OnceLock<model2::geo::GeoMode> = std::sync::OnceLock
 /// `--jit`: run the i960 on the JIT, so configured.
 static JIT: std::sync::OnceLock<model2::jit::Config> = std::sync::OnceLock::new();
 
+/// `--jit-cache DIR`: the hot-block list's file and the list.
+static JIT_LIST: std::sync::OnceLock<(PathBuf, std::sync::Arc<model2::jit::HotList>)> = std::sync::OnceLock::new();
+
+/// Write the hot-block list back if `--jit-cache` gave one and it grew.
+fn jit_list_save() {
+    let Some((path, list)) = JIT_LIST.get() else { return };
+    let counts: Vec<String> = list.counts().iter().map(|(c, n)| format!("{} {n}", c.name())).collect();
+    match list.save(path) {
+        Ok(true) => println!("jit list      {} starts ({}) -> {}", list.len(), counts.join(", "), path.display()),
+        Ok(false) => {
+            println!("jit list      {} starts ({}), unchanged: {}", list.len(), counts.join(", "), path.display())
+        }
+        Err(e) => eprintln!("warning: {}: {e}", path.display()),
+    }
+}
+
 /// Turn the JIT on in `m` if the command line asked for it.
 fn jit_if_asked(m: &mut model2::Machine) {
     if let Some(&c) = JIT.get() {
-        if let Err(e) = m.enable_jit(c) {
+        if let Err(e) = m.enable_jit_with(c, JIT_LIST.get().map(|l| l.1.clone())) {
             eprintln!("warning: --jit: {e}; the i960 runs on the interpreter");
         }
     }
@@ -2733,6 +2767,7 @@ fn run(
         ),
     }
     jit_report(&m);
+    jit_list_save();
     println!("ip            {:#x}  priority {}  icr {:#010x}", m.cpu.ip, m.cpu.priority(), m.cpu.icr);
     println!("irq           request {:#x} enable {:#x}", b.irq_request, b.irq_enable);
     println!("coverage      {} distinct instructions", m.coverage.len());

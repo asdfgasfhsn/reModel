@@ -2666,6 +2666,7 @@ dependencies = [
  "cranelift-module",
  "cranelift-native",
  "i960",
+ "libc",
  "mb86234",
  "mb86235",
 ]
