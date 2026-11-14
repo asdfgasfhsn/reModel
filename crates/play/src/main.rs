@@ -16,7 +16,7 @@
 //! the audio queue corrects the drift between the clocks by stretching the
 //! audio by at most 1% (inaudible), never by stalling the game. When the
 //! game persistently runs below full speed the audio follows the frames it
-//! actually runs (`model2::audio::Pace`), so it slows with it instead of
+//! actually runs (`model2::pacing::Pace`), so it slows with it instead of
 //! running dry.
 //!
 //! The logo shows for two seconds at startup, fading out over the game

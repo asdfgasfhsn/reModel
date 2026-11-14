@@ -31,7 +31,7 @@ game couldn't run in their refresh (held back by the geometry worker, or
 missed in a stall of up to 100 ms) run with the next ones, at most 6
 late and 3 at a time.
 
-**Audio rate.** The resampler's step comes from `model2::audio::Pace`,
+**Audio rate.** The resampler's step comes from `model2::pacing::Pace`,
 shared with the native window. While the game keeps up it is the speed
 the game is meant to run at (the counted refresh rate following the
 display, or 1 on the clock) times a correction from the worklet's queue of

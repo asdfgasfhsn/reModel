@@ -1181,7 +1181,7 @@ events only, not yet with a real pad.
   frame instead of after it: polygons then lag the 2D layers and inputs
   by a frame, as in the browser.
   The audio follows the frames the game actually runs
-  (`model2::audio::Pace`, described in `docs/web.md`, "Audio rate"): once
+  (`model2::pacing::Pace`, described in `docs/web.md`, "Audio rate"): once
   the game has been below full speed for 0.15 s (three times the 50 ms
   queue) it slows with it, lower in pitch, instead of running dry; while
   it keeps up only the queue's drift correction (at most 1%, inaudible)

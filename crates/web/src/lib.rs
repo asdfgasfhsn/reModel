@@ -10,7 +10,7 @@
 //! a late callback missed); otherwise it follows a steady 57.524 Hz clock.
 //! The sound worker resamples the audio to match: the game's speed, steered
 //! by the worklet's level reports ([`set_audio_level`]) and followed down
-//! when the game persistently can't keep it, through `model2::audio::Pace`.
+//! when the game persistently can't keep it, through `model2::pacing::Pace`.
 //!
 //! The sound and music boards run in a Web Worker (sound-worker.js, using
 //! [`SoundEngine`] from this same module), on another core: each frame the
@@ -43,7 +43,7 @@ use wasm_bindgen::JsCast;
 use web_sys::{HtmlCanvasElement, KeyboardEvent};
 
 /// Audio the worklet should hold (seconds) unless the page says otherwise
-/// ([`set_audio_buffer`]): the rate control (`model2::audio::Pace`) steers
+/// ([`set_audio_buffer`]): the rate control (`model2::pacing::Pace`) steers
 /// towards it.
 const AUDIO_TARGET: f64 = 0.07;
 /// Following the display, frames a held-back game may run late (at most
@@ -109,7 +109,7 @@ struct App {
     ratio_range: (f64, f64),
     /// The audio rate control, and the audio it holds the worklet at
     /// (seconds).
-    pace: model2::audio::Pace,
+    pace: model2::pacing::Pace,
     audio_target: f64,
     /// Following the display: frames due and not yet run.
     owed: u64,

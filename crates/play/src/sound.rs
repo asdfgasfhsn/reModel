@@ -66,7 +66,7 @@ pub struct Sound {
     ratio: Arc<AtomicU64>,
     /// The rate control: follows the game's actual pace, holds the queue
     /// at `AUDIO_TARGET`.
-    pace: model2::audio::Pace,
+    pace: model2::pacing::Pace,
     /// The longest recent gap between redraws (seconds, decaying), and the
     /// queue target it sets.
     gap: f64,
@@ -164,12 +164,12 @@ impl Sound {
     /// the audio plays at that speed, held at the queue target (`AUDIO_TARGET`,
     /// deeper while redraws come unevenly) and
     /// slowed with the game once it persistently can't keep it
-    /// (`model2::audio::Pace`).
+    /// (`model2::pacing::Pace`).
     pub fn set_speed(&mut self, speed: f64, dt: f64, ran: f64, due: f64) {
         // Redraws that come further apart than usual (a slow draw, a frame
         // that takes several refreshes) need a deeper queue; the rate control's
         // patience scales with it.
-        if dt > 0.0 && dt <= model2::audio::Pace::GAP {
+        if dt > 0.0 && dt <= model2::pacing::Pace::GAP {
             self.gap = (self.gap * (-dt / GAP_MEMORY).exp()).max(dt);
             let goal = (self.gap * GAP_HEADROOM).clamp(AUDIO_TARGET, AUDIO_TARGET_MAX);
             self.target += (goal - self.target) * (dt / TARGET_TAU).min(1.0);

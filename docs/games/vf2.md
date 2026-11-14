@@ -161,7 +161,7 @@ play out round after round.
   that is the 16.7 ms a refresh gives: the player drops from "synced to
   60 Hz" (104% speed) to "paced by the clock" (100%), a 70-cent slide,
   and frames come in bursts of two and three refreshes. The rate control
-  (`model2::audio::Pace`) then bent the pitch by up to 100 cents over a
+  (`model2::pacing::Pace`) then bent the pitch by up to 100 cents over a
   second with the game's true speed unchanged, and a single 0.2 s hitch
   (2 per 110 s here) pulled it down by up to 40% for seconds, since the
   clock's 11 frames due against 3 run read as a slow game. Fixed in the

@@ -1,15 +1,15 @@
 //! A deterministic model of a browser page's audio path (docs/web.md,
 //! "Audio rate"): the page's frame loop as `crates/web/src/lib.rs` runs it,
 //! following the display (`model2::pacing::Refresh`) or the clock, the
-//! audio rate control (`model2::audio::Pace`) setting the sound worker's
+//! audio rate control (`model2::pacing::Pace`) setting the sound worker's
 //! resampler step, and the AudioWorklet's queue
 //! (`crates/web/audio-worklet.js`) draining at the device's clock, driven
 //! by synthetic animation-frame timings. The controller before the phone
 //! fix is kept here (`Before`) to compare against. `make pace-sim` prints
 //! the report; the tests hold the controller to it.
 
-use model2::audio::{Pace, RATE};
-use model2::pacing::Refresh;
+use model2::audio::RATE;
+use model2::pacing::{Pace, Refresh};
 
 const FPS: f64 = 57.524;
 const MAX_CATCH_UP: u32 = 3;
