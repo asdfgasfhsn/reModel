@@ -591,8 +591,9 @@ mpeg-test: ## MPEG decoder test against the MPEG ROMs in ROM=
 
 ##@ Housekeeping
 
+CLEAN_DAYS ?= 2
 clean-stale: ## Delete build output newer builds replaced: in target/, crate builds and incremental caches unused for CLEAN_DAYS days (default 2), always keeping each crate's newest build, so current builds aren't redone (DRY_RUN=1: report the total only)
-	python3 tools/clean-stale.py target --days $(or $(CLEAN_DAYS),2) $(if $(DRY_RUN),--dry-run)
+	python3 -I tools/clean-stale.py target --days $(CLEAN_DAYS) $(if $(DRY_RUN),--dry-run)
 
 clean: ## Remove build output and generated listings
 	$(CARGO) clean

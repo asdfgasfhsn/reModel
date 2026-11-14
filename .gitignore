@@ -5,3 +5,4 @@
 # User soundtracks (docs/mods.md): their audio is not ours to commit.
 /soundtracks/
 /.claude/worktrees/
+__pycache__/
