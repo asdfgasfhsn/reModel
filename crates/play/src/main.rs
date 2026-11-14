@@ -199,8 +199,8 @@ usage: remodel-play [options]
                      open it, set KEY=VALUE..., take a photo, close it:
                      F[:KEY=VALUE,...], sessions separated by ; (keys in
                      docs/photo-mode.md, e.g. 1500:orbit=30,dof=1,res=4k)
-  --photo-dir DIR    where photos go (default: photos/ in the game's
-                     folder beside its saves)
+  --photo-dir DIR    where photos go (default: reModel/<set>/ in your
+                     pictures folder)
   --fast             for checking (with --frames, --input, --photo): run
                      the game as fast as it goes, drawing nothing (a
                      hidden window gets about a redraw a second)

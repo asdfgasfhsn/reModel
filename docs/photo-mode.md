@@ -21,8 +21,11 @@ panel on the right lists the settings, and the window shows the photo as
 it will be taken, at the window's size. Enter, Space, the pad's A or the
 panel's **Take photo** takes it: drawn at the chosen size, read back and
 written on another thread to
-`<data dir>/<set>/photos/<set>-<time>-<frame>.png` (`out/<set>/photos/` in
-a source tree; `--photo-dir DIR` puts them elsewhere). The notice at the
+`reModel/<set>/<set>-<time>-<frame>.png` in your pictures folder (on
+Linux the XDG pictures directory, `~/Pictures` unless `user-dirs.dirs`
+says otherwise; `~/Pictures` on macOS; the Pictures known folder on
+Windows, wherever it was moved; without one, `<data dir>/<set>/photos/`;
+`--photo-dir DIR` puts them elsewhere). The notice at the
 top says when it is written. Esc, F8, the pad's B, Start or Guide leaves
 photo mode and the game goes on.
 

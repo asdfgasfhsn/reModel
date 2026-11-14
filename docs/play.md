@@ -1296,8 +1296,9 @@ directory), the player keeps its files in `out/`; anywhere else in
   launcher's attract mode preview state.
 - `<set>/texpack/`: the game's texture pack, if you make one (PNGs named
   as a dump's).
-- `<set>/photos/`: photo mode's photos (`docs/photo-mode.md`;
-  `--photo-dir` puts them elsewhere).
+- Photo mode's photos aren't here: they go to `reModel/<set>/` in your
+  pictures folder (`docs/photo-mode.md`; `--photo-dir` puts them
+  elsewhere).
 
 ## A copy to hand out
 

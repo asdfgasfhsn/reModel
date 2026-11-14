@@ -549,9 +549,17 @@ pub fn sampling(w: u32, h: u32, max_side: u32) -> (u32, u32) {
     (k, msaa)
 }
 
-/// Where photos go: `<data dir>/<set>/photos/` (or `--photo-dir`).
+/// Where photos go: `reModel/<set>/` in the user's pictures folder (the
+/// XDG pictures directory on Linux, Pictures on macOS and Windows), or
+/// `--photo-dir`. Without a pictures folder, `<data dir>/<set>/photos/`.
 pub fn dir(set: &str, over: Option<&Path>) -> PathBuf {
-    over.map(Path::to_path_buf).unwrap_or_else(|| crate::settings::data_dir().join(set).join("photos"))
+    if let Some(d) = over {
+        return d.to_path_buf();
+    }
+    match dirs::picture_dir() {
+        Some(p) => p.join("reModel").join(set),
+        None => crate::settings::data_dir().join(set).join("photos"),
+    }
 }
 
 /// A file name for a photo of `set` at `frame`, not yet taken in `dir`.
