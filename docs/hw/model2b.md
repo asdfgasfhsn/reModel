@@ -42,6 +42,8 @@ programs of its own (the geometrizer's code hash `8c502dffb7ce9a1e`, not
 the shared one, so no native geometrizer runs it). It needed the i960 to
 keep the interrupt table it was initialised with and a keyed protection
 device ("The keyed protection device" below).
+`pltkids` (Pilot Kids, Psikyo, 1998) needed nothing more than `zerogun`
+did: the same PRCB clear at boot and the same keyed device, checked once.
 This page
 is what the board model (`crates/model2`: `bus.rs`, `sharc.rs`, `geo.rs`)
 is built on. The SHARC core itself is
@@ -208,12 +210,15 @@ names the ROM bytes of each answer. The game's side is in
 `dynmcopb` and `dyndek2b` (*seen* in throwaway boots, with no device
 answering) write 0 to `0x1D9000A`, 10 halfwords to `0x1D80000`, then
 `0x1D90008` and `0x1D9000C`, read `0x1D9000E` and `0x1D90000` nine
-times each, the same interface, and fault at IP 0. `pltkids` faults at
-IP 0 before touching it. `zerogun` faulted at IP 0 too, in its first
-vblank interrupt, before the device mattered: it clears the PRCB it
-reinitialised the i960 with, and the i960 must keep the interrupt table
-and stack pointers it read at initialisation (`docs/games/zerogun.md`).
-*Unconfirmed* whether the other three fault for the same reason.
+times each, the same interface, and fault at IP 0. `zerogun` faulted at
+IP 0 too, in its first vblank interrupt, before the device mattered: it
+clears the PRCB it reinitialised the i960 with, and the i960 must keep
+the interrupt table and stack pointers it read at initialisation
+(`docs/games/zerogun.md`). *Unconfirmed* whether the other two fault for
+the same reason. `pltkids` (Pilot Kids, Psikyo) did, the same way, and
+with that fixed it uses the same device once, at boot: a 12-byte block,
+key `0x7140` at offset 0, and an 8-byte answer compared with its ROM
+(`docs/games/pltkids.md`).
 
 ## The copro SHARC
 
