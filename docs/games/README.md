@@ -32,7 +32,7 @@ which ROM sets are supported and how they are named is in [../roms.md](../roms.m
 | Daytona USA | `daytona` | Model 2 | [daytona.md](daytona.md) |
 | Virtua Cop | `vcop` | Model 2 | [vcop.md](vcop.md) |
 | Desert Tank | `desert` | Model 2 | [desert.md](desert.md) |
-| Manx TT Superbike (in progress, not in the launcher; clone `manxttc`) | `manxtt` | 2A | [manxtt.md](manxtt.md) |
-| Motor Raid (in progress, not in the launcher) | `motoraid` | 2A | [motoraid.md](motoraid.md) |
+| Manx TT Superbike (clone `manxttc`) | `manxtt` | 2A | [manxtt.md](manxtt.md) |
+| Motor Raid | `motoraid` | 2A | [motoraid.md](motoraid.md) |
 
 Board-wide findings: [2C](../hw/model2c.md), [2B](../hw/model2b.md), [2A](../hw/model2a.md), [the original Model 2](../hw/model2.md).

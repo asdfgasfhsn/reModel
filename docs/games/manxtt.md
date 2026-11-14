@@ -1,7 +1,7 @@
 # Manx TT Superbike (`manxtt`, Model 2A-CRX, 1995)
 
-Status: **in progress** (in `IN_PROGRESS`: the CLI runs it, the launcher
-and the browser don't list it yet). It boots past its motion platform's
+Status: **plays** (listed; the launcher's Model 2A group, with a poster and
+bezel). It boots past its motion platform's
 check, runs its attract mode in 3D, and a coin-start race rides, on both
 courses, with the automatic or the manual gearbox, to the end of the
 clock and back to the attract mode, with sound. The deluxe set (revision

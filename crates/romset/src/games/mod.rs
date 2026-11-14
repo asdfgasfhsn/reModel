@@ -64,14 +64,14 @@ pub use waverunr::WAVERUNR;
 pub static ALL: &[&Game] = &[
     &TOPSKATR, &SKISUPRG, &STCC, &SEGAWSKI, &WAVERUNR, &OVERREV, &HOTD, &BEL, &OVERREVB, &SGT24H, &DYNABB97, &DOA,
     &INDY500, &FVIPERS, &SCHAMP, &SFIGHT, &VSTRIKER, &LASTBRNX, &SRALLYC, &VF2, &DAYTONA, &VCOP, &DESERT, &VCOP2,
-    &SKYTARGT,
+    &SKYTARGT, &MANXTT, &MANXTTC, &MOTORAID,
 ];
 
 /// Games whose board model runs but which don't show a game yet. The CLI
 /// can run them (`find`), but every list built from [`ALL`] (the player's
 /// and the browser's game lists, `remodel games`, the posters and
 /// bezels) leaves them out. A game moves to `ALL` when it plays.
-pub static IN_PROGRESS: &[&Game] = &[&MANXTT, &MANXTTC, &MOTORAID];
+pub static IN_PROGRESS: &[&Game] = &[];
 
 /// The game `id`, if it is one a front end lists ([`ALL`]).
 pub fn playable(id: &str) -> Option<&'static Game> {

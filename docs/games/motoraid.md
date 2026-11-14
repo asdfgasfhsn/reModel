@@ -1,7 +1,7 @@
 # Motor Raid (`motoraid`, Model 2A-CRX, 1997)
 
-Status: **in progress** (in `IN_PROGRESS`: the CLI runs it, the launcher
-and the browser don't list it yet). It boots to its attract mode in 3D,
+Status: **plays** (listed; the launcher's Model 2A group, with a poster and
+bezel). It boots to its attract mode in 3D,
 textured, and a coin-start Championship rides stage 1 to the finish
 (9th) and into stage 2, to the end of the clock, the ranking and back to
 the attract mode, with sound. Not yet played by hand.

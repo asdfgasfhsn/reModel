@@ -21,7 +21,7 @@ built to be reused across the Model 2 family.
 
 ## Games
 
-Twenty-five games run, on the original Model 2 and the 2A, 2B and 2C boards. "Plays" means playable with
+Twenty-eight games run, on the original Model 2 and the 2A, 2B and 2C boards. "Plays" means playable with
 sound in the native player; the details, and what each game needed, are in
 [docs/games/](docs/games/README.md).
 
@@ -52,6 +52,9 @@ sound in the native player; the details, and what each game needed, are in
 | Desert Tank | `desert` | Model 2 | plays; the desert mission and the canyon (EXPERT) mission, steered by handle and pedal |
 | Virtua Cop 2 | `vcop2` | 2A | plays, with light guns; all three stages start and play, no stage shot through to its end |
 | Sky Target | `skytargt` | 2A | plays, with a flight stick; mission 1 to its boss, no mission finished |
+| Manx TT Superbike | `manxtt` | 2A | plays; both courses, automatic or manual gearbox, to the end of the clock; no race steered to a finished lap |
+| Manx TT Superbike (twin cabinet) | `manxttc` | 2A | plays; the twin-cabinet release, a clone of `manxtt` |
+| Motor Raid | `motoraid` | 2A | plays; a Championship rides stage 1 to the finish and into stage 2 |
 
 ## Highlights
 
