@@ -75,6 +75,14 @@ takes the 2A's 315-5649 layout when it doesn't read back 1, as here, where
 the address is unmapped. Whether a real 2A reads anything there is
 *unconfirmed*.
 
+*Confirmed (`skytargt`, from its code and data):* the **second main data
+bank at `0x6000000`** (`Role::MainDataHigh`, as `segawski`'s and
+`waverunr`'s on 2C) is on the 2A too: `skytargt`'s `.6/.7` are read there
+(at `0x6400000`-`0x646xxxx`, a 1 MB pair repeating through its slot), its
+3D polygon colours among them. And its TGP data ROM pairs `.28` as the
+low half, as the original Model 2's `daytona` does and `srallyc` does not
+(`docs/games/skytargt.md`): the chip numbers don't say which is low.
+
 ## 3. The `0x12000000` region
 
 *Confirmed by the code's copy loop:* the game fills it at boot (from frame 13) with a loop at an i960 address in RAM, 32-bit stores of 16-bit
