@@ -41,24 +41,40 @@ pub enum DriveBoard {
     MotionSlider,
 }
 
-/// A device on the board's expansion bus at `0x1D80000-0x1D87FFF` that the
-/// game checks at boot (`model2::protection`). The game sends it a block of
-/// data and two tables and compares the stream it reads back with bytes in
-/// its own program ROM. How the device turns one into the other isn't
-/// known (the block isn't the plain code the tables describe), so the
-/// board model answers each request with those bytes, read from the ROM at
-/// run time. This answers the check; it doesn't model what the device
-/// computes for anything else.
+/// A device on the board's expansion bus at `0x1D80000` that the game
+/// checks at boot (`model2::protection`). The game sends it a block of
+/// data (and, on [`ProtectionInterface::Tables`], two tables) and compares
+/// the stream it reads back with bytes in its own program ROM. How the
+/// device turns one into the other isn't known, so the board model answers
+/// each request with those bytes, read from the ROM at run time. This
+/// answers the check; it doesn't model what the device computes for
+/// anything else.
 #[derive(Clone, Copy, Debug)]
 pub struct Protection {
+    pub interface: ProtectionInterface,
     pub replies: &'static [ProtectionReply],
+}
+
+/// The registers the game drives its [`Protection`] device through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProtectionInterface {
+    /// `0x1D80000-0x1D87FFF`: a command at `0x1D84000`, the block, two
+    /// tables through `0x1D87FF4/6`, started at `0x1D87FF2`, the answer at
+    /// `0x1D87FF8`, status `0xFFF0` at `0x1D8400C` (`doa`,
+    /// docs/hw/model2b.md).
+    Tables,
+    /// The block in RAM at `0x1D80000`, then from `0x1D90000`: its
+    /// halfword offset at `+8`, a key at `+0xC` that starts the device,
+    /// the answer at `+0xE`, busy in bit 0 of `+0` (`dynamcop`,
+    /// docs/hw/model2a.md).
+    Keyed,
 }
 
 /// One request the game makes of its [`Protection`] device, and the answer.
 #[derive(Clone, Copy, Debug)]
 pub struct ProtectionReply {
     /// The value the game writes to the command register (`0x1D84000`)
-    /// before the request.
+    /// before the request, or the key that starts it (`0x1D9000C`).
     pub command: u16,
     /// Where the answer is in the program ROM (i960 address) and how many
     /// bytes long: the bytes the game compares the device's stream with.

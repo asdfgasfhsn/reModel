@@ -103,7 +103,7 @@ board (i960KB on all, gk). Controls and special hardware are gk throughout.
 | `vcop2` | Virtua Cop 2 | 1995 | none | SCSP | 2 light guns | none known | yes |
 | `vf2` | Virtua Fighter 2.1 | 1995 | `vf2o`, `vf2a`, `vf2b` | SCSP | stick, 3 buttons | none | yes |
 | `doaa` | Dead or Alive (2A) | 1996 | clone of 2B `doa`, in `doa.zip` | SCSP | stick, 3 buttons | none | yes |
-| `dynamcop` | Dynamite Cop (2A) | 1998 | `dyndeka2` (2A), `dynmcopb`, `dyndek2b` (2B), `dynmcopc` (2C) | SCSP, CRX_drv 3.2.8 | stick, 3 buttons | none | yes |
+| `dynamcop` | Dynamite Cop (2A) | 1998 | `dyndeka2` (2A), `dynmcopb`, `dyndek2b` (2B), `dynmcopc` (2C) | SCSP, CRX_drv 3.2.8 | stick, punch, kick, jump, two players (ROM: its input test, `docs/games/dynamcop.md`) | a keyed protection device at `0x1D80000`/`0x1D90000`, checked at boot (ROM: answered as `ProtectionInterface::Keyed`); main data `.6/.7`, `.4/.5` in the second bank at `0x6000000` (ROM) | yes; supported and playable, with sound |
 | `pltkidsa` | Pilot Kids (2A) | 1998 | clone of 2B `pltkids` | SCSP, CRX_drv 3.4.9 | stick, buttons | none | yes |
 | `zeroguna`, `zerogunaj` | Zero Gunner (2A) | 1997 | clones of 2B `zerogun` | SCSP | stick, buttons | none | yes |
 

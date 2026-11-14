@@ -1232,7 +1232,7 @@ impl Model2Bus {
             let mask = if n == 4 { u32::MAX } else { (1u32 << (8 * n)) - 1 };
             return (w >> shift) & mask;
         }
-        if let Some(p) = self.protection.as_mut().filter(|_| (protection::START..=protection::END).contains(&addr)) {
+        if let Some(p) = self.protection.as_mut().filter(|p| (protection::START..=p.end()).contains(&addr)) {
             let v = p.read(addr - protection::START, n);
             self.log(addr, None);
             return v;
@@ -1255,7 +1255,7 @@ impl Model2Bus {
         if self.io_write32(addr, shifted, lanes) {
             return;
         }
-        if let Some(p) = self.protection.as_mut().filter(|_| (protection::START..=protection::END).contains(&addr)) {
+        if let Some(p) = self.protection.as_mut().filter(|p| (protection::START..=p.end()).contains(&addr)) {
             p.write(addr - protection::START, v, n);
             self.log(addr, Some(v));
             return;

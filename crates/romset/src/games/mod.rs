@@ -6,6 +6,7 @@ mod daytona;
 mod desert;
 mod doa;
 mod dynabb97;
+mod dynamcop;
 mod fvipers;
 mod gunblade;
 mod hotd;
@@ -38,6 +39,7 @@ pub use daytona::DAYTONA;
 pub use desert::DESERT;
 pub use doa::DOA;
 pub use dynabb97::DYNABB97;
+pub use dynamcop::DYNAMCOP;
 pub use fvipers::FVIPERS;
 pub use gunblade::GUNBLADE;
 pub use hotd::HOTD;
@@ -66,7 +68,7 @@ pub use waverunr::WAVERUNR;
 pub static ALL: &[&Game] = &[
     &TOPSKATR, &SKISUPRG, &STCC, &SEGAWSKI, &WAVERUNR, &OVERREV, &HOTD, &BEL, &OVERREVB, &SGT24H, &DYNABB97, &DOA,
     &INDY500, &FVIPERS, &SCHAMP, &SFIGHT, &VSTRIKER, &LASTBRNX, &SRALLYC, &VF2, &DAYTONA, &VCOP, &DESERT, &VCOP2,
-    &SKYTARGT, &MANXTT, &MANXTTC, &MOTORAID, &GUNBLADE,
+    &SKYTARGT, &MANXTT, &MANXTTC, &MOTORAID, &GUNBLADE, &DYNAMCOP,
 ];
 
 /// Games whose board model runs but which don't show a game yet. The CLI

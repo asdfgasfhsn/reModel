@@ -1,5 +1,7 @@
 use crate::controls::button;
-use crate::{Board, Controls, Dropout, Game, PadButton, Protection, ProtectionReply, Role, RomFile};
+use crate::{
+    Board, Controls, Dropout, Game, PadButton, Protection, ProtectionInterface, ProtectionReply, Role, RomFile,
+};
 
 /// Dead or Alive (Tecmo, Japan), Model 2B-CRX. Pairs are listed low
 /// half-word first, each in an 8 MB slot, laid out as dynabb97's: program
@@ -27,7 +29,10 @@ pub static DOA: Game = Game {
     // The boot check (i960 0x5A0): command 6, then the 48 bytes at 0x2810
     // the game compares the reply with. Without them it arms a countdown
     // when a game starts and stops itself mid-fight (docs/games/doa.md).
-    protection: Some(Protection { replies: &[ProtectionReply { command: 6, rom: 0x2810, len: 0x30 }] }),
+    protection: Some(Protection {
+        interface: ProtectionInterface::Tables,
+        replies: &[ProtectionReply { command: 6, rom: 0x2810, len: 0x30 }],
+    }),
     // The dump of mpr-19324.19 (the low half of the third polygon pair,
     // Kasumi's and other fighters' models) reads 60% of the 1s on data line
     // 9 as 0: its last quarter, the same data as the other two pairs' last

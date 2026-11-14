@@ -92,6 +92,20 @@ bank at `0x6000000`** (`Role::MainDataHigh`, as `segawski`'s and
 low half, as the original Model 2's `daytona` does and `srallyc` does not
 (`docs/games/skytargt.md`): the chip numbers don't say which is low.
 
+*Confirmed (`dynamcop`, from its code and by running it):* a **keyed
+protection device** on the expansion bus: a RAM window at `0x1D80000`
+that takes a data block (16-bit, the game byte-swaps each halfword), and
+registers from `0x1D90000`: `+0` status (bit 0 busy, polled clear), `+8`
+the block's halfword offset, `+0xC` a key, written last, which starts the
+device, `+0xE` the answer, one halfword a read, one read behind (the game
+discards the first), `+0xA` written once at init. The game checks two
+blocks at boot against 16 bytes of its ROM each and destroys its own work
+RAM on a mismatch (`docs/games/dynamcop.md`). What the device computes is
+*unknown*; the board model answers each key with the bytes the game
+expects (`romset::ProtectionInterface::Keyed`). Whether the device is on
+the 2A board or on the game's ROM board is *unknown*; `doa`'s 2B device
+at the same base has other registers (`model2b.md`).
+
 ## 3. The `0x12000000` region
 
 *Confirmed by the code's copy loop:* the game fills it at boot (from frame 13) with a loop at an i960 address in RAM, 32-bit stores of 16-bit
