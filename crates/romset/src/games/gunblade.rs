@@ -1,5 +1,6 @@
+use super::rom;
 use crate::controls::button;
-use crate::{Board, Controls, Game, Gun, GunSource, PadButton, Reload, Role, RomFile};
+use crate::{Board, Controls, Game, Gun, GunSource, PadButton, Reload, Role};
 
 /// Gunblade NY (Rev A), Model 2B-CRX: the program writes both SHARCs' host
 /// windows (`0x8C0000`, `0x840000`) and the 2B sound UART (`0x9C0000`).
@@ -36,108 +37,23 @@ pub static GUNBLADE: Game = Game {
     packed: &[],
     volume_db: 0.0,
     files: &[
-        RomFile {
-            name: "epr-18988a.15",
-            size: 0x80000,
-            sha1: "fcfb0a4691cd7d66168c421e4e1694ecaea56ab2",
-            role: Role::Program,
-        },
-        RomFile {
-            name: "epr-18989a.16",
-            size: 0x80000,
-            sha1: "92bffbf1250c53499c37a53f9e2a054fc7bf256f",
-            role: Role::Program,
-        },
-        RomFile {
-            name: "mpr-18974.11",
-            size: 0x400000,
-            sha1: "dcdfe9f59158cec2f02b213ee13f5e40cdb92e55",
-            role: Role::MainData,
-        },
-        RomFile {
-            name: "mpr-18975.12",
-            size: 0x400000,
-            sha1: "34a0b32eeed1a9f41bca8b9261851881b2ba79f2",
-            role: Role::MainData,
-        },
-        RomFile {
-            name: "mpr-18976.9",
-            size: 0x400000,
-            sha1: "892063e91b2ed20e0600d4b188da1e9f45a19692",
-            role: Role::MainData,
-        },
-        RomFile {
-            name: "mpr-18977.10",
-            size: 0x400000,
-            sha1: "c11d2c9e1e215aa7b2ebb777639c8cd651901f52",
-            role: Role::MainData,
-        },
-        RomFile {
-            name: "mpr-18986.29",
-            size: 0x400000,
-            sha1: "5eb6682399b358d77658d82e612b02b724e3f3e1",
-            role: Role::CoproData,
-        },
-        RomFile {
-            name: "mpr-18987.30",
-            size: 0x400000,
-            sha1: "0a04a1049d2da486dc9dbb97b383bd24259b78c8",
-            role: Role::CoproData,
-        },
-        RomFile {
-            name: "mpr-18980.17",
-            size: 0x400000,
-            sha1: "7b8bdcfe88953ce1b2d75af2ce4712ab6507e2cf",
-            role: Role::Polygons,
-        },
-        RomFile {
-            name: "mpr-18981.21",
-            size: 0x400000,
-            sha1: "a76193f70adb6abeba02328b290af5cca47d4e25",
-            role: Role::Polygons,
-        },
-        RomFile {
-            name: "mpr-18982.18",
-            size: 0x400000,
-            sha1: "95404baed88cc95b75ff9b9084d09622961d3e57",
-            role: Role::Polygons,
-        },
-        RomFile {
-            name: "mpr-18983.22",
-            size: 0x400000,
-            sha1: "550f8248699b9267da7d2e64002be56972381714",
-            role: Role::Polygons,
-        },
-        RomFile {
-            name: "mpr-18985.27",
-            size: 0x400000,
-            sha1: "2c487fb743730cacf92dbea952b1efada0f073df",
-            role: Role::Textures,
-        },
-        RomFile {
-            name: "mpr-18984.25",
-            size: 0x400000,
-            sha1: "095964de773f515d64d65dbc8f8ef9bae97e5ba9",
-            role: Role::Textures,
-        },
-        RomFile {
-            name: "epr-18990.31",
-            size: 0x80000,
-            sha1: "759b4683dc7149e04f41ddac7bd395e8d07ea858",
-            role: Role::AudioCpu,
-        },
-        RomFile {
-            name: "mpr-18978.32",
-            size: 0x400000,
-            sha1: "6c2cd6236cb001bb8d487a9b1e9907519dc43daa",
-            role: Role::Samples,
-        },
-        RomFile {
-            name: "mpr-18979.34",
-            size: 0x400000,
-            sha1: "a8165116b5e07e031ff960201dd8c9a441544961",
-            role: Role::Samples,
-        },
+        rom("epr-18988a.15", 0x80000, "fcfb0a4691cd7d66168c421e4e1694ecaea56ab2", Role::Program),
+        rom("epr-18989a.16", 0x80000, "92bffbf1250c53499c37a53f9e2a054fc7bf256f", Role::Program),
+        rom("mpr-18974.11", 0x400000, "dcdfe9f59158cec2f02b213ee13f5e40cdb92e55", Role::MainData),
+        rom("mpr-18975.12", 0x400000, "34a0b32eeed1a9f41bca8b9261851881b2ba79f2", Role::MainData),
+        rom("mpr-18976.9", 0x400000, "892063e91b2ed20e0600d4b188da1e9f45a19692", Role::MainData),
+        rom("mpr-18977.10", 0x400000, "c11d2c9e1e215aa7b2ebb777639c8cd651901f52", Role::MainData),
+        rom("mpr-18986.29", 0x400000, "5eb6682399b358d77658d82e612b02b724e3f3e1", Role::CoproData),
+        rom("mpr-18987.30", 0x400000, "0a04a1049d2da486dc9dbb97b383bd24259b78c8", Role::CoproData),
+        rom("mpr-18980.17", 0x400000, "7b8bdcfe88953ce1b2d75af2ce4712ab6507e2cf", Role::Polygons),
+        rom("mpr-18981.21", 0x400000, "a76193f70adb6abeba02328b290af5cca47d4e25", Role::Polygons),
+        rom("mpr-18982.18", 0x400000, "95404baed88cc95b75ff9b9084d09622961d3e57", Role::Polygons),
+        rom("mpr-18983.22", 0x400000, "550f8248699b9267da7d2e64002be56972381714", Role::Polygons),
+        rom("mpr-18985.27", 0x400000, "2c487fb743730cacf92dbea952b1efada0f073df", Role::Textures),
+        rom("mpr-18984.25", 0x400000, "095964de773f515d64d65dbc8f8ef9bae97e5ba9", Role::Textures),
+        rom("epr-18990.31", 0x80000, "759b4683dc7149e04f41ddac7bd395e8d07ea858", Role::AudioCpu),
+        rom("mpr-18978.32", 0x400000, "6c2cd6236cb001bb8d487a9b1e9907519dc43daa", Role::Samples),
+        rom("mpr-18979.34", 0x400000, "a8165116b5e07e031ff960201dd8c9a441544961", Role::Samples),
     ],
 };
 

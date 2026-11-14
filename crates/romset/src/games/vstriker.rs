@@ -1,5 +1,6 @@
+use super::rom;
 use crate::controls::button;
-use crate::{Board, Controls, Game, PadButton, Role, RomFile};
+use crate::{Board, Controls, Game, PadButton, Role};
 
 /// Virtua Striker (Rev A), Model 2B-CRX: Sega's, with geometrizer and copro
 /// programs of its own. Pairs are listed low half-word first: program
@@ -44,126 +45,26 @@ pub static VSTRIKER: Game = Game {
     // the games here that play at 0 dB (docs/hw/sound.md §6).
     volume_db: 0.0,
     files: &[
-        RomFile {
-            name: "ep18068a.15",
-            size: 0x20000,
-            sha1: "2127bde1de3cd6663c31cf2126847815234e09a4",
-            role: Role::Program,
-        },
-        RomFile {
-            name: "ep18069a.16",
-            size: 0x20000,
-            sha1: "3cbeac09d503a19c5950cf70e3b329f791acfa13",
-            role: Role::Program,
-        },
-        RomFile {
-            name: "ep18066a.13",
-            size: 0x20000,
-            sha1: "33266e6372e73f670688f58e51081ec5a7deec11",
-            role: Role::Program,
-        },
-        RomFile {
-            name: "ep18067a.14",
-            size: 0x20000,
-            sha1: "56c8d1a365985886dffeddf24d692ce6b377760a",
-            role: Role::Program,
-        },
-        RomFile {
-            name: "mp18055.11",
-            size: 0x200000,
-            sha1: "40d45af7e58fa48b6afa85071c2bd1d4b5b5ffa5",
-            role: Role::MainData,
-        },
-        RomFile {
-            name: "mp18056.12",
-            size: 0x200000,
-            sha1: "744e5a02abd82fbeb875c5cd30c5543570140cff",
-            role: Role::MainData,
-        },
-        RomFile {
-            name: "mp18053.9",
-            size: 0x200000,
-            sha1: "000e9edfed49cc3dcc136f80e044dcd2b42378ce",
-            role: Role::MainData,
-        },
-        RomFile {
-            name: "mp18054.10",
-            size: 0x200000,
-            sha1: "c5afa62100a93e160aa96b327a260cc7fee51fdc",
-            role: Role::MainData,
-        },
-        RomFile {
-            name: "ep18070a.7",
-            size: 0x80000,
-            sha1: "12ead9b782e092346b7cd5a7343b302f546fe066",
-            role: Role::MainData,
-        },
-        RomFile {
-            name: "ep18071a.8",
-            size: 0x80000,
-            sha1: "3b35522ab8e1fdfa327245fef797e3d7c0cceb85",
-            role: Role::MainData,
-        },
-        RomFile {
-            name: "mp18057.17",
-            size: 0x200000,
-            sha1: "fe73e4ea310e13b172e49d39c7eafba8f9052e67",
-            role: Role::Polygons,
-        },
-        RomFile {
-            name: "mp18059.21",
-            size: 0x200000,
-            sha1: "fd127d33bc5a78b81aaa7d5886beca2192a62867",
-            role: Role::Polygons,
-        },
-        RomFile {
-            name: "mp18058.18",
-            size: 0x200000,
-            sha1: "fe783c5bc94c2581fd990f0f0a705bdc5c05a386",
-            role: Role::Polygons,
-        },
-        RomFile {
-            name: "mp18060.22",
-            size: 0x200000,
-            sha1: "bca83f024d85c97ca59fae8d9097fc510ec0fc7f",
-            role: Role::Polygons,
-        },
-        RomFile {
-            name: "mp18062.27",
-            size: 0x200000,
-            sha1: "0810364934dee8d5035cef623d01dfbacc64bf2b",
-            role: Role::Textures,
-        },
-        RomFile {
-            name: "mp18061.25",
-            size: 0x200000,
-            sha1: "c917046c2d98af17c59ceb0ea4f89d215cc0ead8",
-            role: Role::Textures,
-        },
-        RomFile {
-            name: "ep18072.31",
-            size: 0x20000,
-            sha1: "4f6d70d6e0d7b469c5f2527efb08f208f4aa017e",
-            role: Role::AudioCpu,
-        },
-        RomFile {
-            name: "mp18063.32",
-            size: 0x200000,
-            sha1: "da0bc8b3822b01087b6f9de0446cab1eb6617e8e",
-            role: Role::Samples,
-        },
-        RomFile {
-            name: "mp18064.33",
-            size: 0x200000,
-            sha1: "108b23bb57e3133c555083aa4f9bc573ac6e3152",
-            role: Role::Samples,
-        },
-        RomFile {
-            name: "mp18065.34",
-            size: 0x200000,
-            sha1: "2db7eabf4318881a67b10dba24f6f0cd68940ace",
-            role: Role::Samples,
-        },
+        rom("ep18068a.15", 0x20000, "2127bde1de3cd6663c31cf2126847815234e09a4", Role::Program),
+        rom("ep18069a.16", 0x20000, "3cbeac09d503a19c5950cf70e3b329f791acfa13", Role::Program),
+        rom("ep18066a.13", 0x20000, "33266e6372e73f670688f58e51081ec5a7deec11", Role::Program),
+        rom("ep18067a.14", 0x20000, "56c8d1a365985886dffeddf24d692ce6b377760a", Role::Program),
+        rom("mp18055.11", 0x200000, "40d45af7e58fa48b6afa85071c2bd1d4b5b5ffa5", Role::MainData),
+        rom("mp18056.12", 0x200000, "744e5a02abd82fbeb875c5cd30c5543570140cff", Role::MainData),
+        rom("mp18053.9", 0x200000, "000e9edfed49cc3dcc136f80e044dcd2b42378ce", Role::MainData),
+        rom("mp18054.10", 0x200000, "c5afa62100a93e160aa96b327a260cc7fee51fdc", Role::MainData),
+        rom("ep18070a.7", 0x80000, "12ead9b782e092346b7cd5a7343b302f546fe066", Role::MainData),
+        rom("ep18071a.8", 0x80000, "3b35522ab8e1fdfa327245fef797e3d7c0cceb85", Role::MainData),
+        rom("mp18057.17", 0x200000, "fe73e4ea310e13b172e49d39c7eafba8f9052e67", Role::Polygons),
+        rom("mp18059.21", 0x200000, "fd127d33bc5a78b81aaa7d5886beca2192a62867", Role::Polygons),
+        rom("mp18058.18", 0x200000, "fe783c5bc94c2581fd990f0f0a705bdc5c05a386", Role::Polygons),
+        rom("mp18060.22", 0x200000, "bca83f024d85c97ca59fae8d9097fc510ec0fc7f", Role::Polygons),
+        rom("mp18062.27", 0x200000, "0810364934dee8d5035cef623d01dfbacc64bf2b", Role::Textures),
+        rom("mp18061.25", 0x200000, "c917046c2d98af17c59ceb0ea4f89d215cc0ead8", Role::Textures),
+        rom("ep18072.31", 0x20000, "4f6d70d6e0d7b469c5f2527efb08f208f4aa017e", Role::AudioCpu),
+        rom("mp18063.32", 0x200000, "da0bc8b3822b01087b6f9de0446cab1eb6617e8e", Role::Samples),
+        rom("mp18064.33", 0x200000, "108b23bb57e3133c555083aa4f9bc573ac6e3152", Role::Samples),
+        rom("mp18065.34", 0x200000, "2db7eabf4318881a67b10dba24f6f0cd68940ace", Role::Samples),
     ],
 };
 

@@ -1,5 +1,6 @@
+use super::rom;
 use crate::controls::button;
-use crate::{Board, Controls, Game, PadButton, Role, RomFile};
+use crate::{Board, Controls, Game, PadButton, Role};
 
 /// Last Bronx (Export, Rev A), Model 2B-CRX: Sega's, with the shared
 /// geometrizer program plus three commands of its own and a copro program
@@ -41,84 +42,19 @@ pub static LASTBRNX: Game = Game {
     // games here that play at 0 dB (docs/hw/sound.md §6).
     volume_db: 0.0,
     files: &[
-        RomFile {
-            name: "epr-19061a.15",
-            size: 0x80000,
-            sha1: "fa63081b0aa6f02c3d197485865ee38e9c78b43d",
-            role: Role::Program,
-        },
-        RomFile {
-            name: "epr-19062a.16",
-            size: 0x80000,
-            sha1: "a85ca36a537ba21d11ef3cfdf914c2c93ac5e68f",
-            role: Role::Program,
-        },
-        RomFile {
-            name: "mpr-19050.11",
-            size: 0x400000,
-            sha1: "abdf7aa4c594f0916d4335c70fdd67dc6b1f4630",
-            role: Role::MainData,
-        },
-        RomFile {
-            name: "mpr-19051.12",
-            size: 0x400000,
-            sha1: "bec22f657c6d939c095b99ca9c6eb44b9683fd72",
-            role: Role::MainData,
-        },
-        RomFile {
-            name: "mpr-19048.9",
-            size: 0x400000,
-            sha1: "cc5f8e61fee07aa4fc5bfe2d011088ee523c77c2",
-            role: Role::MainData,
-        },
-        RomFile {
-            name: "mpr-19049.10",
-            size: 0x400000,
-            sha1: "5955885ad2bfd69d7a2c4e1d1df907aca41fbdd0",
-            role: Role::MainData,
-        },
-        RomFile {
-            name: "mpr-19052.17",
-            size: 0x400000,
-            sha1: "b393af96522306dc2e055aea1e837979f41940d4",
-            role: Role::Polygons,
-        },
-        RomFile {
-            name: "mpr-19053.21",
-            size: 0x400000,
-            sha1: "950a92209b7c24f66db62c31627a1f1d52721f1e",
-            role: Role::Polygons,
-        },
-        RomFile {
-            name: "mpr-19055.27",
-            size: 0x200000,
-            sha1: "99c49fe135dc46fa861337b5bac654ae8478778a",
-            role: Role::Textures,
-        },
-        RomFile {
-            name: "mpr-19054.25",
-            size: 0x200000,
-            sha1: "f618e2b9b26a1f7eccebfc8f8e17ef8ad9029be8",
-            role: Role::Textures,
-        },
-        RomFile {
-            name: "mpr-19056.31",
-            size: 0x80000,
-            sha1: "baa039cd86650b6cd81f295916c4d256e60cb29c",
-            role: Role::AudioCpu,
-        },
-        RomFile {
-            name: "mpr-19057.32",
-            size: 0x400000,
-            sha1: "aa008f83e1eff0daafe01944248ebae6054cee9f",
-            role: Role::Samples,
-        },
-        RomFile {
-            name: "mpr-19058.34",
-            size: 0x400000,
-            sha1: "7c89cba757bd58747ed0d633b2fe7ef559fcd15e",
-            role: Role::Samples,
-        },
+        rom("epr-19061a.15", 0x80000, "fa63081b0aa6f02c3d197485865ee38e9c78b43d", Role::Program),
+        rom("epr-19062a.16", 0x80000, "a85ca36a537ba21d11ef3cfdf914c2c93ac5e68f", Role::Program),
+        rom("mpr-19050.11", 0x400000, "abdf7aa4c594f0916d4335c70fdd67dc6b1f4630", Role::MainData),
+        rom("mpr-19051.12", 0x400000, "bec22f657c6d939c095b99ca9c6eb44b9683fd72", Role::MainData),
+        rom("mpr-19048.9", 0x400000, "cc5f8e61fee07aa4fc5bfe2d011088ee523c77c2", Role::MainData),
+        rom("mpr-19049.10", 0x400000, "5955885ad2bfd69d7a2c4e1d1df907aca41fbdd0", Role::MainData),
+        rom("mpr-19052.17", 0x400000, "b393af96522306dc2e055aea1e837979f41940d4", Role::Polygons),
+        rom("mpr-19053.21", 0x400000, "950a92209b7c24f66db62c31627a1f1d52721f1e", Role::Polygons),
+        rom("mpr-19055.27", 0x200000, "99c49fe135dc46fa861337b5bac654ae8478778a", Role::Textures),
+        rom("mpr-19054.25", 0x200000, "f618e2b9b26a1f7eccebfc8f8e17ef8ad9029be8", Role::Textures),
+        rom("mpr-19056.31", 0x80000, "baa039cd86650b6cd81f295916c4d256e60cb29c", Role::AudioCpu),
+        rom("mpr-19057.32", 0x400000, "aa008f83e1eff0daafe01944248ebae6054cee9f", Role::Samples),
+        rom("mpr-19058.34", 0x400000, "7c89cba757bd58747ed0d633b2fe7ef559fcd15e", Role::Samples),
     ],
 };
 

@@ -34,7 +34,12 @@ mod vstriker;
 mod waverunr;
 mod zerogun;
 
-use crate::{Error, Game};
+use crate::{Error, Game, Role, RomFile};
+
+/// One chip of a set, for a game's `files` list.
+const fn rom(name: &'static str, size: usize, sha1: &'static str, role: Role) -> RomFile {
+    RomFile { name, size, sha1, role }
+}
 
 pub use bel::BEL;
 pub use daytona::DAYTONA;
