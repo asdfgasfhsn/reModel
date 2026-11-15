@@ -91,8 +91,10 @@ usage: remodel-play [options]
                      start, no window or sound), for its next boot
   --perf-log         print a line for each redraw that took longer to
                      emulate than its frames' share of real time, with
-                     what the JITs did in it, and frame times on leaving
-                     the game (docs/play.md, Slowdowns)
+                     what the JITs did in it, and for each that came over
+                     1.5 refreshes after the one before, where the time
+                     went; frame times and the late redraws summed up on
+                     leaving the game (docs/play.md, Slowdowns)
   --no-idle-skip     run the game's idle loops instruction by instruction
                      instead of skipping through them (same game, slower;
                      docs/idle-skip.md)
@@ -1096,6 +1098,7 @@ impl Play {
         let Some(mut s) = self.session.take() else { return };
         if let Some(p) = &s.perf {
             println!("{}", p.summary());
+            println!("{}", p.gaps_summary());
         }
         s.save_eeprom();
         s.save_jit_list();
@@ -1933,7 +1936,9 @@ impl Play {
     /// Emulate what's due and keep the stats; false if the game stopped.
     fn run_due(&mut self) -> (u32, Duration) {
         let t0 = Instant::now();
+        let span = perf::spans::begin();
         let result = self.emulate();
+        perf::spans::end(perf::spans::Kind::Emulate, span);
         if let (Ok(1..), Some(s)) = (&result, &self.session) {
             // When the newest frame was due: on the clock, or now when
             // following the display (which sets the clock to now).
@@ -2007,7 +2012,9 @@ impl Play {
         // by the renderer from the polygons it draws.
         let quality = if s.preview { gpu::Quality::default() } else { self.values.quality(self.temporal_supported) };
         let bus = &mut s.shown().bus;
+        let span = perf::spans::begin();
         let late = !bus.geo.wait_until(t0 + budget.mul_f64(0.8));
+        perf::spans::end(perf::spans::Kind::Geometry, span);
         core.frame.capture(bus, late);
         self.stats.copied += core.frame.bytes;
         if late {
@@ -2206,6 +2213,7 @@ impl Play {
         }
         self.waiting = self.next_start();
         if self.waiting.is_some() {
+            perf::spans::mark(perf::spans::Kind::Defer);
             return;
         }
         let t0 = Instant::now();
@@ -2312,6 +2320,14 @@ impl Play {
             hash: self.frame_log.is_some(),
         };
         g.drawer.submit(job);
+        // `--perf-log`: a gap line if this redraw came late (by the
+        // display's refresh, or the game's frame if that isn't known).
+        let (refresh, inline) = (Duration::from_secs_f64(1.0 / g.refresh.unwrap_or(FPS)), !g.drawer.overlaps());
+        if let Some(s) = &mut self.session {
+            if let Some(p) = &mut s.perf {
+                p.submitted(&s.machine, refresh, inline);
+            }
+        }
         if !g.drawer.overlaps() {
             self.take_report();
         }
@@ -3121,7 +3137,9 @@ impl ApplicationHandler<Wake> for Play {
                 if self.time_up(el) {
                     return;
                 }
+                perf::spans::mark(perf::spans::Kind::RedrawStart);
                 self.frame(el);
+                perf::spans::mark(perf::spans::Kind::RedrawEnd);
                 // Unless waiting for the draw thread (`next_start`).
                 if self.waiting.is_none() {
                     self.redraw();

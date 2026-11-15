@@ -82,6 +82,7 @@ make play PLAY_ARGS="--temporal 67"   # temporal anti-aliasing, 3D drawn at 67% 
 make input-lag            # each game's own input lag: frames from a control to the picture changing
 make run-ahead-check      # run-ahead keeps the real state hash and shows the plain run's later frames
 make run-ahead-profile GAME=srallyc RUN_AHEAD_FRAMES=1   # host time per shown frame: real frame, copy, frames ahead
+make play GAME=topskatr PLAY_ARGS=--perf-log   # slow redraws (what the JITs did) and late ones (where the time went: surface, drawing, event loop, emulation, geometrizer), summaries on leaving the game (docs/play.md, Slowdowns)
 make play GAME=vf2 PLAY_ARGS="--no-overlap"   # draw on the main thread after each frame instead of on the draw thread alongside the next (for comparison; docs/play.md, The frame loop)
 make draw-overlap-check GAME=vf2   # the player with and without its draw thread (opens a window): same state hash, same picture for every frame both drew (--frame-log; DRAW_CHECK_FRAMES, DRAW_CHECK_OPTS)
 make play PLAY_ARGS="--photo-history 30"   # photo mode (F8, docs/photo-mode.md) with a 30 s time scrub (default 10; 0: none); --photo-dir DIR for where photos go

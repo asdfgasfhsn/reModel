@@ -507,6 +507,28 @@ slow          topskatr frame 4211: 1 frames in 23.8 ms (23.8 ms each, 17.4 due);
 frame times   topskatr: 21034 frames emulated, ms: median 4.10, p99 9.80, p99.9 18.20, worst 23.8; over 8 ms 310, over 16.7 ms 9; 9 slow redraws
 ```
 
+It also times the redraws (`perf::spans`, off without it): one handed
+over to drawing more than 1.5 refreshes after the one before prints a
+`gap` line with where the time between the two went, and leaving the game
+a `redraw gaps` line:
+
+```
+gap           topskatr frame 1335: redraw 23.8 ms after the last (2.9 refreshes); ms: surface 18.1, drawing 5.6, other 0.1; mostly surface
+redraw gaps   topskatr: 22 of 4683 redraws came over 1.5 refreshes late, worst 80.0 ms; mostly: surface 16, drawing 3, event loop 2, emulation 1; ms in each: surface 8.5, drawing 4.7, event loop 4.1, emulation 1.9, geometrizer 0.1, other 0.3; QoS: game's thread user-interactive, draw thread default
+```
+
+The game's thread's time is split into: waiting for the draw thread
+(still on the frame before, in `Drawer::finish` or deferred by
+`next_start`, below "The frame loop"), as what the draw thread was doing
+then: `surface` (`get_current_texture`, which waits for a free image,
+so for the display), `present`, or `drawing`; `event loop` (idle until
+it delivered the redraw); `emulation` (the frames due and run-ahead's);
+`geometrizer` (waiting for its frame, at the hand-over and in emulation);
+and `other` (the rest of the redraw: the overlay, the copy). With
+`--no-overlap` the surface's wait and the present are the game thread's
+own. On macOS the summary gives each thread's quality-of-service class.
+The first redraw's gap is the game's start.
+
 (The numbers are an example.) A slowdown that is the JIT's shows as
 blocks arriving and code interpreted while they are made, jobs queued on
 the workers, or translations dropped (the game rewrote code it had) or

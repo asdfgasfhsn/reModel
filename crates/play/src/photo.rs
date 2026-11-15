@@ -840,6 +840,10 @@ impl crate::Play {
         if self.photo.is_none() {
             return;
         }
+        // `--perf-log`: the photo's redraws aren't the game's.
+        if let Some(p) = self.session.as_mut().and_then(|s| s.perf.as_mut()) {
+            p.pause();
+        }
         let Some(g) = &mut self.gpu else { return };
         g.drawer.finish();
         self.take_report();

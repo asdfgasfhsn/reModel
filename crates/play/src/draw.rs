@@ -9,6 +9,7 @@
 //! submitted.
 
 use crate::backdrop;
+use crate::perf::spans;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -232,7 +233,10 @@ pub struct Report {
 /// Run `job` on `core`; `started` once the surface has given its texture
 /// (after any wait for vsync), as drawing starts.
 pub fn run(core: &mut Core, job: Job, started: &dyn Fn()) -> Report {
-    let frame = match core.surface.get_current_texture() {
+    let span = spans::begin();
+    let texture = core.surface.get_current_texture();
+    spans::end(spans::Kind::Surface, span);
+    let frame = match texture {
         wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
         // Lost, outdated, hidden or timed out: configure again, skip a draw
         // (but keep the overlay's textures up to date).
@@ -259,7 +263,9 @@ pub fn run(core: &mut Core, job: Job, started: &dyn Fn()) -> Report {
         let (w, h) = (frame.texture.width(), frame.texture.height());
         fnv(&core.renderer.read_texture(&frame.texture, w, h))
     });
+    let span = spans::begin();
     core.renderer.queue().present(frame);
+    spans::end(spans::Kind::Present, span);
     Report { missed: false, draw, game, hash }
 }
 
@@ -357,7 +363,9 @@ impl Drawer {
         if self.busy.is_none() {
             return;
         }
+        let span = spans::begin();
         let (core, report) = self.thread.as_ref().unwrap().done.recv().expect("the draw thread stopped");
+        spans::end(spans::Kind::Finish, span);
         self.back(core, report);
     }
 
