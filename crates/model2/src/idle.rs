@@ -102,6 +102,7 @@ impl IdleSkip {
 
     /// Where the loops start (where the machine looks for one between
     /// blocks: JIT blocks stop there).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn starts(&self) -> Vec<u32> {
         self.loops.iter().map(|l| l.0).collect()
     }

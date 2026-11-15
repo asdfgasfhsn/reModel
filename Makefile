@@ -144,7 +144,15 @@ fmt: ## Format all Rust code
 fmt-check: ## Fail if any Rust code is unformatted
 	$(CARGO) fmt --all -- --check
 
-check: fmt-check lint test ## Everything a change must pass before commit
+check: fmt-check lint test web-check ## Everything a change must pass before commit
+
+web-check: ## Type-check the browser build (remodel-web for wasm32: its wasm-only code, which `lint` and `test` don't compile); skipped with a note where the wasm toolchain isn't installed
+	@if [ -x "$(WASM_RUSTUP)" ] && $(WASM_RUSTUP) target list --installed 2>/dev/null | grep -qx wasm32-unknown-unknown; then \
+		env $(WASM_CARGO) check --quiet --release --target wasm32-unknown-unknown --target-dir target/web -p remodel-web 2>&1 | tee target/web-check.log; \
+		! grep -qE '^(warning|error)' target/web-check.log; \
+	else \
+		echo "web-check: no wasm32 toolchain ($(WASM_RUSTUP)), skipped"; \
+	fi
 
 ci: check ## Alias for check
 

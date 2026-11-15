@@ -1825,6 +1825,7 @@ impl Engine {
         let jit = &mut self.sharc_jit;
         // The JIT if it is on, recompiled code for this program if the
         // build has it, else the interpreter; they must behave identically.
+        #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
         let mut run = |s: &mut Sharc, bus: &mut SharcGeoBus| {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(r) = jit.run(s, bus) {

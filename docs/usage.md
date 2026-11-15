@@ -8,7 +8,7 @@ Requires a Rust toolchain (stable) and `make`.
 
 ```sh
 make                  # list every target
-make check            # format check, clippy, unit tests (no ROMs needed); `make ci` is the same
+make check            # format check, clippy, unit tests, the browser build type-checked (no ROMs needed); `make ci` is the same
 make build            # debug build of the whole workspace
 make release          # optimised build of the remodel CLI (RECOMP=1: with the recompiled code)
 make test             # unit tests only; make lint (clippy, warnings are errors); make fmt / make fmt-check
