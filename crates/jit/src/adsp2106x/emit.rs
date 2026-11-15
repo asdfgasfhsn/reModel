@@ -184,28 +184,40 @@ struct Vars {
     ds: Variable,
     f: Variable,
     hold: Variable,
-    loop_end: Variable,
-    short: Variable,
-    /// Instructions and cycles run, the last instruction's address.
-    ran: Variable,
-    cyc: Variable,
+    /// Instructions the block may still run (it leaves at 0), the last
+    /// instruction's address. (Bubbles count their cycles in
+    /// `Ctx::cycles`; the loop end and short-loop flag stay in
+    /// `Ctx::pipe`, where the helpers keep them.)
+    left: Variable,
     pc: Variable,
-    /// Leave after this word.
-    stop: Variable,
     /// This word's branch: 0 none, 1 delayed, 2 not; and where to.
     rk: Variable,
     rt: Variable,
+}
+
+/// What a region is translated for, which no word of a block changes:
+/// MODE1 (its rounding, saturation and bit-reverse modes) and SYSCON's
+/// IMDW bits (which internal memory block holds 48-bit data). A region
+/// runs only while the core's are these (`SharcJit::one`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mode {
+    pub mode1: u32,
+    pub imdw: u32,
+}
+
+impl Mode {
+    pub fn of(s: &Sharc) -> Mode {
+        Mode { mode1: s.mode1, imdw: s.iop[::adsp2106x::cpu::SYSCON as usize] & (3 << 8) }
+    }
 }
 
 /// The IR of a region.
 pub(super) struct Emit<'a, 'b> {
     b: &'a mut FunctionBuilder<'b>,
     ptr: Type,
+    /// The core (`*mut Sharc`).
     s: Value,
-    ext: Value,
     ctx: Value,
-    /// MODE1, which no word of a block changes.
-    mode1: Value,
     /// The exit: everything kept in `v` written back to `Ctx`.
     exit: Block,
     sigs: Sigs,
@@ -217,17 +229,29 @@ pub(super) struct Emit<'a, 'b> {
     exit_plain: Block,
     /// The word being emitted for plain code (else for the variables).
     plain_at: Option<u32>,
+    /// Where each word copy notes STKY at the start of its cycle
+    /// (`note_st`): blocks filled in once the region is emitted, with the
+    /// note if the word can set an exception sticky bit (`changes_stky`),
+    /// else nothing; by word copy.
+    st_sites: Vec<(Block, Block, usize, u32)>,
+    changes_stky: Vec<bool>,
+    /// The modes the region is translated for.
+    mode: Mode,
+    /// The word being emitted, and whether it can change ASTAT and the
+    /// FLAG inputs.
+    pc_now: u32,
+    word_status: (bool, bool),
+    status_sites: Vec<(Block, Block, (bool, bool))>,
 }
 
 impl<'a, 'b> Emit<'a, 'b> {
-    pub fn new(b: &'a mut FunctionBuilder<'b>, ptr: Type) -> Self {
+    pub fn new(b: &'a mut FunctionBuilder<'b>, ptr: Type, mode: Mode) -> Self {
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
         let p = b.block_params(entry).to_vec();
         let exit = b.create_block();
         let dispatch = b.create_block();
-        let mode1 = b.ins().load(I32, trusted(), p[0], layout::MODE1 as i32);
         let var = |b: &mut FunctionBuilder, t: Type| b.declare_var(t);
         let v = Vars {
             x: var(b, I32),
@@ -238,17 +262,13 @@ impl<'a, 'b> Emit<'a, 'b> {
             ds: var(b, I32),
             f: var(b, I32),
             hold: var(b, I32),
-            loop_end: var(b, I32),
-            short: var(b, I32),
-            ran: var(b, I64),
-            cyc: var(b, I64),
+            left: var(b, I64),
             pc: var(b, I32),
-            stop: var(b, I32),
             rk: var(b, I32),
             rt: var(b, I32),
         };
         let sigs = Sigs {
-            exec: sig(b, &[ptr, ptr, ptr, ptr, I64], Some(I32)),
+            exec: sig(b, &[ptr, ptr, ptr, I64], Some(I32)),
             compute: sig(b, &[ptr, ptr], None),
             op2: sig(b, &[ptr, ptr, I64, I64], Some(I64)),
             shift: sig(b, &[ptr, ptr, I64, I64, I32], Some(I64)),
@@ -265,7 +285,29 @@ impl<'a, 'b> Emit<'a, 'b> {
         };
         let exit_plain = b.create_block();
         b.append_block_param(exit_plain, I32);
-        Emit { b, ptr, s: p[0], ext: p[1], ctx: p[2], mode1, exit, sigs, v, dispatch, exit_plain, plain_at: None }
+        Emit {
+            b,
+            ptr,
+            s: p[0],
+            ctx: p[2],
+            exit,
+            sigs,
+            v,
+            dispatch,
+            exit_plain,
+            plain_at: None,
+            st_sites: Vec::new(),
+            changes_stky: Vec::new(),
+            pc_now: 0,
+            word_status: (false, false),
+            status_sites: Vec::new(),
+            mode,
+        }
+    }
+
+    /// The core (`*mut Sharc`).
+    fn s(&mut self) -> Value {
+        self.s
     }
 
     fn k(&mut self, v: u32) -> Value {
@@ -311,36 +353,64 @@ impl<'a, 'b> Emit<'a, 'b> {
         self.b.ins().iadd_imm_s(self.ctx, offset_of!(Ctx, pipe) as i64)
     }
 
-    /// The loop end and short-loop flag again, from `Ctx::pipe`, after a
-    /// helper that may have changed the loop stack.
-    fn reload_loop(&mut self) {
-        let le =
-            self.b.ins().load(I32, trusted(), self.ctx, (offset_of!(Ctx, pipe) + offset_of!(JitPipe, loop_end)) as i32);
-        self.def(self.v.loop_end, le);
-        let sh = self.b.ins().load(
-            I32,
-            trusted(),
-            self.ctx,
-            (offset_of!(Ctx, pipe) + offset_of!(JitPipe, short_loop)) as i32,
-        );
-        self.def(self.v.short, sh);
+    /// The innermost loop's end (`JitPipe::loop_end`), as the helpers
+    /// keep it in `Ctx::pipe`.
+    fn loop_end(&mut self) -> Value {
+        self.b.ins().load(I32, trusted(), self.ctx, (offset_of!(Ctx, pipe) + offset_of!(JitPipe, loop_end)) as i32)
+    }
+
+    /// MODE1, which no word of a block changes: as the region was
+    /// translated for (`Mode`).
+    fn mode1(&mut self) -> Value {
+        self.k(self.mode.mode1)
+    }
+
+    /// One more cycle without an instruction (a bubble, or the cycle a
+    /// fault began), in `Ctx::cycles`.
+    fn extra_cycle(&mut self) {
+        let off = offset_of!(Ctx, cycles) as i32;
+        let c = self.b.ins().load(I64, trusted(), self.ctx, off);
+        let c = self.b.ins().iadd_imm_s(c, 1);
+        self.b.ins().store(trusted(), c, self.ctx, off);
+    }
+
+    /// Leave after this word if `go` (I32, 0 or 1): what is left of the
+    /// budget becomes 1, the rest noted in `Ctx::cut`.
+    fn stop_if(&mut self, go: Value) {
+        let left = self.use_(self.v.left);
+        let off = offset_of!(Ctx, cut) as i32;
+        let cut = self.b.ins().load(I64, trusted(), self.ctx, off);
+        let lost = self.b.ins().iadd_imm_s(left, -1);
+        let g = self.b.ins().uextend(I64, go);
+        let lost = self.b.ins().imul(lost, g);
+        let cut = self.b.ins().iadd(cut, lost);
+        self.b.ins().store(trusted(), cut, self.ctx, off);
+        let left = self.b.ins().isub(left, lost);
+        self.def(self.v.left, left);
     }
 
     fn ld32(&mut self, off: usize) -> Value {
-        self.b.ins().load(I32, trusted(), self.s, off as i32)
+        let s_ = self.s();
+        self.b.ins().load(I32, trusted(), s_, off as i32)
     }
 
     fn st32(&mut self, off: usize, v: Value) {
-        self.b.ins().store(trusted(), v, self.s, off as i32);
+        if off == layout::ASTAT {
+            self.word_status.0 = true;
+        }
+        let s_ = self.s();
+        self.b.ins().store(trusted(), v, s_, off as i32);
     }
 
     fn rf(&mut self, n: u8) -> Value {
-        self.b.ins().load(I64, trusted(), self.s, (layout::R + 8 * (n as usize & 15)) as i32)
+        let s_ = self.s();
+        self.b.ins().load(I64, trusted(), s_, (layout::R + 8 * (n as usize & 15)) as i32)
     }
 
     fn set_rf(&mut self, n: u8, v: Value) {
         let v = self.b.ins().band_imm_u(v, MASK40);
-        self.b.ins().store(trusted(), v, self.s, (layout::R + 8 * (n as usize & 15)) as i32);
+        let s_ = self.s();
+        self.b.ins().store(trusted(), v, s_, (layout::R + 8 * (n as usize & 15)) as i32);
     }
 
     /// `(v >> 8) as u32`: a 40-bit value's fixed-point field.
@@ -356,6 +426,21 @@ impl<'a, 'b> Emit<'a, 'b> {
     }
 
     fn helper(&mut self, s: SigRef, f: usize, args: &[Value]) -> Option<Value> {
+        // The interpreter's operations may set exception sticky bits.
+        if [h_compute as HCompute as usize, h_alu as HOp2 as usize, h_mul as HOp2 as usize, h_shift as HShift as usize]
+            .contains(&f)
+        {
+            self.sets_stky();
+            self.word_status.0 = true;
+        }
+        // A word on `block_exec` can do anything; the bus may change the
+        // FLAG inputs after an access.
+        if f == h_exec as HExec as usize {
+            self.word_status = (true, true);
+        }
+        if f == h_after_access as HAccess as usize {
+            self.word_status.1 = true;
+        }
         call(self.b, self.ptr, s, f, args)
     }
 
@@ -389,8 +474,6 @@ impl<'a, 'b> Emit<'a, 'b> {
         let has_general = |i: &Insn| sequencer(i) || general.contains(&i.addr);
         let pblocks: Vec<_> = words.iter().map(|i| (!sequencer(i)).then(|| self.b.create_block())).collect();
         let gblocks: Vec<_> = words.iter().map(|i| has_general(i).then(|| self.b.create_block())).collect();
-        let counts = self.b.ins().load(self.ptr, trusted(), self.ctx, offset_of!(Ctx, counts) as i32);
-        let budget = self.b.ins().load(I64, trusted(), self.ctx, offset_of!(Ctx, budget) as i32);
         // Entry: the pipeline from `Ctx::pipe`.
         let pf = |f: usize| (offset_of!(Ctx, pipe) + f) as i32;
         for (var, off) in [
@@ -402,18 +485,14 @@ impl<'a, 'b> Emit<'a, 'b> {
             (self.v.ds, offset_of!(JitPipe, d_some)),
             (self.v.f, offset_of!(JitPipe, f)),
             (self.v.hold, offset_of!(JitPipe, hold)),
-            (self.v.loop_end, offset_of!(JitPipe, loop_end)),
-            (self.v.short, offset_of!(JitPipe, short_loop)),
         ] {
             let x = self.b.ins().load(I32, trusted(), self.ctx, pf(off));
             self.def(var, x);
         }
-        let z = self.k64(0);
-        self.def(self.v.ran, z);
-        self.def(self.v.cyc, z);
+        let budget = self.b.ins().load(I64, trusted(), self.ctx, offset_of!(Ctx, budget) as i32);
+        self.def(self.v.left, budget);
         let x = self.use_(self.v.x);
         self.def(self.v.pc, x);
-        self.def_k(self.v.stop, 0);
         self.def_k(self.v.rk, 0);
         self.def_k(self.v.rt, 0);
         self.b.ins().jump(self.dispatch, &[]);
@@ -424,15 +503,18 @@ impl<'a, 'b> Emit<'a, 'b> {
         let xs = self.use_(self.v.xs);
         let (word, bubble) = self.if_then(xs);
         self.b.switch_to_block(bubble);
-        self.note_st();
+        self.note_no_insn();
         let (fa, ff) = self.fetch_status();
-        let c = self.use_(self.v.cyc);
-        let c = self.b.ins().iadd_imm_s(c, 1);
-        self.def(self.v.cyc, c);
+        self.extra_cycle();
         self.fetch_stage(fa, ff, false);
         self.b.ins().jump(self.dispatch, &[]);
         self.b.switch_to_block(word);
-        let short = self.use_(self.v.short);
+        let short = self.b.ins().load(
+            I32,
+            trusted(),
+            self.ctx,
+            (offset_of!(Ctx, pipe) + offset_of!(JitPipe, short_loop)) as i32,
+        );
         let (out, go) = self.if_then(short);
         self.b.switch_to_block(out);
         self.b.ins().jump(self.exit, &[]);
@@ -472,10 +554,13 @@ impl<'a, 'b> Emit<'a, 'b> {
                 let Some(blk) = (if plain { pblocks[j] } else { gblocks[j] }) else { continue };
                 self.b.switch_to_block(blk);
                 self.plain_at = plain.then_some(a);
-                let (fa, ff) = self.fetch_status();
+                let site = self.status_site();
                 if seq {
                     self.def_k(self.v.rk, 0);
                 }
+                self.changes_stky.push(false);
+                self.pc_now = a;
+                self.word_status = (false, false);
                 if lowered(i) {
                     self.word(i);
                 } else {
@@ -483,20 +568,15 @@ impl<'a, 'b> Emit<'a, 'b> {
                 }
                 self.plain_at = None;
                 // The cycle's end: counted.
-                let k = word_index(a).expect("region words are internal");
-                let n = self.b.ins().load(I64, trusted(), counts, 8 * k as i32);
-                let n = self.b.ins().iadd_imm_s(n, 1);
-                self.b.ins().store(trusted(), n, counts, 8 * k as i32);
-                for var in [self.v.ran, self.v.cyc] {
-                    let r = self.use_(var);
-                    let r = self.b.ins().iadd_imm_s(r, 1);
-                    self.def(var, r);
-                }
+                self.count(a);
+                let r = self.use_(self.v.left);
+                let r = self.b.ins().iadd_imm_s(r, -1);
+                self.def(self.v.left, r);
                 self.def_k(self.v.pc, a);
                 if plain {
                     // The fetch of a + 2: the plain sequence goes on unless
                     // it is the innermost loop's end.
-                    let le = self.use_(self.v.loop_end);
+                    let le = self.loop_end();
                     let at_end = self.b.ins().icmp_imm_u(IntCC::Equal, le, a as i64 + 2);
                     let (to_general, on) = self.if_then(at_end);
                     self.b.switch_to_block(to_general);
@@ -508,14 +588,12 @@ impl<'a, 'b> Emit<'a, 'b> {
                     self.def_k(self.v.ds, 1);
                     self.def_k(self.v.f, a + 2);
                     self.def_k(self.v.hold, 0);
+                    let (fa, ff) = self.status_after(site);
                     self.b.ins().jump(gtail, &[BlockArg::Value(fa), BlockArg::Value(ff)]);
                     self.b.switch_to_block(on);
                     let next = self.k(a + 1);
-                    let stop = self.use_(self.v.stop);
-                    let ran = self.use_(self.v.ran);
-                    let spent = self.b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, ran, budget);
-                    let spent = self.b.ins().uextend(I32, spent);
-                    let out = self.b.ins().bor(stop, spent);
+                    let left = self.use_(self.v.left);
+                    let out = self.b.ins().icmp_imm_u(IntCC::Equal, left, 0);
                     let (go, beyond) = match pblocks.get(j + 1).copied().flatten() {
                         Some(n) => (n, None),
                         None => {
@@ -537,6 +615,7 @@ impl<'a, 'b> Emit<'a, 'b> {
                         self.b.ins().jump(self.exit_plain, &[BlockArg::Value(next)]);
                     }
                 } else {
+                    let (fa, ff) = self.status_after(site);
                     self.b.ins().jump(gtail, &[BlockArg::Value(fa), BlockArg::Value(ff)]);
                 }
             }
@@ -547,11 +626,8 @@ impl<'a, 'b> Emit<'a, 'b> {
             let z = self.k(0);
             let h = self.b.ins().select(h, h1, z);
             self.def(self.v.hold, h);
-            let stop = self.use_(self.v.stop);
-            let ran = self.use_(self.v.ran);
-            let spent = self.b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, ran, budget);
-            let spent = self.b.ins().uextend(I32, spent);
-            let out = self.b.ins().bor(stop, spent);
+            let left = self.use_(self.v.left);
+            let out = self.b.ins().icmp_imm_u(IntCC::Equal, left, 0);
             let (leave, on) = self.if_then(out);
             self.b.switch_to_block(leave);
             self.set_kind(super::DONE);
@@ -576,6 +652,9 @@ impl<'a, 'b> Emit<'a, 'b> {
         self.def_k(self.v.ds, 1);
         self.b.ins().jump(self.exit, &[]);
 
+        self.fill_st();
+        self.fill_status();
+
         // The exit: the pipeline and counts back to `Ctx`.
         self.b.switch_to_block(self.exit);
         for (var, off) in [
@@ -591,10 +670,14 @@ impl<'a, 'b> Emit<'a, 'b> {
             let x = self.use_(var);
             self.b.ins().store(trusted(), x, self.ctx, pf(off));
         }
-        for (var, off) in [(self.v.ran, offset_of!(Ctx, ran)), (self.v.cyc, offset_of!(Ctx, cycles))] {
-            let x = self.use_(var);
-            self.b.ins().store(trusted(), x, self.ctx, off as i32);
-        }
+        // Instructions run: the budget less what is left and what was cut;
+        // as many cycles more.
+        let ran = self.ran();
+        self.b.ins().store(trusted(), ran, self.ctx, offset_of!(Ctx, ran) as i32);
+        let off = offset_of!(Ctx, cycles) as i32;
+        let c = self.b.ins().load(I64, trusted(), self.ctx, off);
+        let c = self.b.ins().iadd(c, ran);
+        self.b.ins().store(trusted(), c, self.ctx, off);
         let pc = self.use_(self.v.pc);
         self.b.ins().store(trusted(), pc, self.ctx, offset_of!(Ctx, pc) as i32);
         self.b.ins().return_(&[]);
@@ -627,11 +710,61 @@ impl<'a, 'b> Emit<'a, 'b> {
         ok
     }
 
+    /// Where a word notes ASTAT and the FLAG inputs at the start of its
+    /// cycle, for the loop test of its fetch stage (`fetch_status`): a
+    /// block filled in by `fill_status` with what the word can change
+    /// (`word_status`); what it can't is read after it (`status_after`).
+    fn status_site(&mut self) -> usize {
+        let (fl, on) = (self.b.create_block(), self.b.create_block());
+        self.b.ins().jump(fl, &[]);
+        self.b.switch_to_block(on);
+        self.status_sites.push((fl, on, (false, false)));
+        self.status_sites.len() - 1
+    }
+
+    /// ASTAT and the FLAG inputs as the word at `site` began, from after
+    /// the word.
+    fn status_after(&mut self, site: usize) -> (Value, Value) {
+        let (astat, flag_in) = self.word_status;
+        let st = &mut self.status_sites[site].2;
+        st.0 |= astat;
+        st.1 |= flag_in;
+        let a = if astat {
+            self.b.ins().load(I32, trusted(), self.ctx, offset_of!(Ctx, fa) as i32)
+        } else {
+            self.ld32(layout::ASTAT)
+        };
+        let f = if flag_in {
+            self.b.ins().load(I32, trusted(), self.ctx, offset_of!(Ctx, ff) as i32)
+        } else {
+            let s_ = self.s();
+            self.b.ins().uload8(I32, trusted(), s_, jit_layout::FLAG_IN as i32)
+        };
+        (a, f)
+    }
+
+    fn fill_status(&mut self) {
+        for (fl, on, (astat, flag_in)) in std::mem::take(&mut self.status_sites) {
+            self.b.switch_to_block(fl);
+            if astat || flag_in {
+                let (a, f) = self.fetch_status();
+                if astat {
+                    self.b.ins().store(trusted(), a, self.ctx, offset_of!(Ctx, fa) as i32);
+                }
+                if flag_in {
+                    self.b.ins().store(trusted(), f, self.ctx, offset_of!(Ctx, ff) as i32);
+                }
+            }
+            self.b.ins().jump(on, &[]);
+        }
+    }
+
     /// ASTAT and the FLAG inputs at the start of the cycle (the loop test
     /// of its fetch sees them: `fetch_status`).
     fn fetch_status(&mut self) -> (Value, Value) {
         let a = self.ld32(layout::ASTAT);
-        let f = self.b.ins().uload8(I32, trusted(), self.s, jit_layout::FLAG_IN as i32);
+        let s_ = self.s();
+        let f = self.b.ins().uload8(I32, trusted(), s_, jit_layout::FLAG_IN as i32);
         (a, f)
     }
 
@@ -640,7 +773,7 @@ impl<'a, 'b> Emit<'a, 'b> {
     /// slots moved on, and this word's branch (`redirect`) taken.
     fn fetch_stage(&mut self, fa: Value, ff: Value, redirect: bool) {
         let fetched = self.use_(self.v.f);
-        let le = self.use_(self.v.loop_end);
+        let le = self.loop_end();
         let at_end = self.b.ins().icmp(IntCC::Equal, fetched, le);
         let join = self.b.create_block();
         let succ = self.b.append_block_param(join, I32);
@@ -653,9 +786,8 @@ impl<'a, 'b> Emit<'a, 'b> {
         self.b.switch_to_block(lp);
         self.b.set_cold_block(lp);
         let pp = self.pipe_ptr();
-        let (s, sg) = (self.s, self.sigs.fetch);
+        let (s, sg) = (self.s(), self.sigs.fetch);
         let r = self.helper(sg, h_fetch as HFetch as usize, &[s, fetched, fa, ff, pp]).expect("returns");
-        self.reload_loop();
         let n = self.b.ins().ireduce(I32, r);
         let l = self.b.ins().ushr_imm_u(r, 32);
         let l = self.b.ins().ireduce(I32, l);
@@ -693,8 +825,15 @@ impl<'a, 'b> Emit<'a, 'b> {
     fn interpreted(&mut self, i: &Insn) {
         let insn = self.p(i as *const Insn as usize);
         let steps = self.steps_after();
-        let (s, ext, ctx, sg) = (self.s, self.ext, self.ctx, self.sigs.exec);
-        let r = self.helper(sg, h_exec as HExec as usize, &[s, ext, ctx, insn, steps]).expect("returns");
+        let (s, ctx, sg) = (self.s(), self.ctx, self.sigs.exec);
+        // `block_exec` notes STKY itself (unless it declines the word).
+        let st_pc = offset_of!(Ctx, st_pc) as i32;
+        let before = self.b.ins().load(I32, trusted(), self.ctx, st_pc);
+        let r = self.helper(sg, h_exec as HExec as usize, &[s, ctx, insn, steps]).expect("returns");
+        let declined = self.b.ins().icmp_imm_u(IntCC::Equal, r, BAIL as i64);
+        let here = self.k(i.addr);
+        let now = self.b.ins().select(declined, before, here);
+        self.b.ins().store(trusted(), now, self.ctx, st_pc);
         let (stopped, on) = self.if_then(r);
         self.b.switch_to_block(stopped);
         // LAST: it ran, and the block ends after it. FAULT: the cycle
@@ -702,7 +841,8 @@ impl<'a, 'b> Emit<'a, 'b> {
         let last = self.b.ins().icmp_imm_u(IntCC::Equal, r, LAST as i64);
         let (ran, other) = self.if_then(last);
         self.b.switch_to_block(ran);
-        self.def_k(self.v.stop, 1);
+        let one = self.k(1);
+        self.stop_if(one);
         self.b.ins().jump(on, &[]);
         self.b.switch_to_block(other);
         let fault = self.b.ins().icmp_imm_u(IntCC::Equal, r, FAULT as i64);
@@ -710,14 +850,8 @@ impl<'a, 'b> Emit<'a, 'b> {
         self.b.switch_to_block(bail);
         self.bail();
         self.b.switch_to_block(f);
-        let k = word_index(i.addr).expect("region words are internal");
-        let counts = self.b.ins().load(self.ptr, trusted(), self.ctx, offset_of!(Ctx, counts) as i32);
-        let n = self.b.ins().load(I64, trusted(), counts, 8 * k as i32);
-        let n = self.b.ins().iadd_imm_s(n, 1);
-        self.b.ins().store(trusted(), n, counts, 8 * k as i32);
-        let c = self.use_(self.v.cyc);
-        let c = self.b.ins().iadd_imm_s(c, 1);
-        self.def(self.v.cyc, c);
+        self.count(i.addr);
+        self.extra_cycle();
         self.def_k(self.v.pc, i.addr);
         if let Some(a) = self.plain_at {
             self.def_k(self.v.d, a + 1);
@@ -732,18 +866,69 @@ impl<'a, 'b> Emit<'a, 'b> {
         self.b.switch_to_block(on);
     }
 
+    /// Instructions run so far.
+    fn ran(&mut self) -> Value {
+        let budget = self.b.ins().load(I64, trusted(), self.ctx, offset_of!(Ctx, budget) as i32);
+        let cut = self.b.ins().load(I64, trusted(), self.ctx, offset_of!(Ctx, cut) as i32);
+        let left = self.use_(self.v.left);
+        let r = self.b.ins().isub(budget, cut);
+        self.b.ins().isub(r, left)
+    }
+
     /// The step count once this word has run.
     fn steps_after(&mut self) -> Value {
         let base = self.b.ins().load(I64, trusted(), self.ctx, offset_of!(Ctx, base) as i32);
-        let ran = self.use_(self.v.ran);
+        let ran = self.ran();
         let s = self.b.ins().iadd(base, ran);
         self.b.ins().iadd_imm_s(s, 1)
     }
 
-    /// `*st = self.stky`, as `block_exec` notes it before the word runs.
+    /// The word at `a` counted (`Sharc::counts`).
+    fn count(&mut self, a: u32) {
+        let k = word_index(a).expect("region words are internal");
+        let counts = self.b.ins().load(self.ptr, trusted(), self.ctx, offset_of!(Ctx, counts) as i32);
+        let n = self.b.ins().load(I64, trusted(), counts, 8 * k as i32);
+        let n = self.b.ins().iadd_imm_s(n, 1);
+        self.b.ins().store(trusted(), n, counts, 8 * k as i32);
+    }
+
+    /// `*st = self.stky`, as `block_exec` notes it before the word runs:
+    /// STKY at the start of the last cycle, for the interrupt latch at
+    /// the end (`Sharc::jit_exit`), which only looks at its exception
+    /// bits. Only a word that can set one needs it (`Ctx::st_pc`): this
+    /// is a place for the note, filled in by `fill_st` once the word is
+    /// known to be one.
     fn note_st(&mut self) {
-        let st = self.ld32(layout::STKY);
-        self.b.ins().store(trusted(), st, self.ctx, offset_of!(Ctx, st) as i32);
+        let (fl, on) = (self.b.create_block(), self.b.create_block());
+        self.b.ins().jump(fl, &[]);
+        let word = self.changes_stky.len() - 1;
+        self.st_sites.push((fl, on, word, self.pc_now));
+        self.b.switch_to_block(on);
+    }
+
+    /// This word can set an exception sticky bit.
+    fn sets_stky(&mut self) {
+        *self.changes_stky.last_mut().expect("in a word") = true;
+    }
+
+    /// A cycle without an instruction (a bubble): STKY as it ends it.
+    fn note_no_insn(&mut self) {
+        let m = self.k(u32::MAX);
+        self.b.ins().store(trusted(), m, self.ctx, offset_of!(Ctx, st_pc) as i32);
+    }
+
+    /// The notes of STKY, now that the words that need them are known.
+    fn fill_st(&mut self) {
+        for (fl, on, word, pc) in std::mem::take(&mut self.st_sites) {
+            self.b.switch_to_block(fl);
+            if self.changes_stky[word] {
+                let st = self.ld32(layout::STKY);
+                self.b.ins().store(trusted(), st, self.ctx, offset_of!(Ctx, st) as i32);
+                let pc = self.k(pc);
+                self.b.ins().store(trusted(), pc, self.ctx, offset_of!(Ctx, st_pc) as i32);
+            }
+            self.b.ins().jump(on, &[]);
+        }
     }
 
     /// A lowered word. Leaves the builder in the block that goes on to
@@ -822,14 +1007,13 @@ impl<'a, 'b> Emit<'a, 'b> {
                             let n = e.k(a + 1);
                             e.b.ins().select(ds, d, n)
                         };
-                        let (s, sg) = (e.s, e.sigs.pipe1);
+                        let (s, sg) = (e.s(), e.sigs.pipe1);
                         let pp = e.pipe_ptr();
                         e.helper(sg, h_push_pc as HPipe1 as usize, &[s, ret, pp]);
                     } else if *loop_abort {
-                        let (s, sg) = (e.s, e.sigs.pipe);
+                        let (s, sg) = (e.s(), e.sigs.pipe);
                         let pp = e.pipe_ptr();
                         e.helper(sg, h_abort as HPipe as usize, &[s, pp]);
-                        e.reload_loop();
                     }
                     e.branch(t, *delayed);
                 });
@@ -847,10 +1031,10 @@ impl<'a, 'b> Emit<'a, 'b> {
                     if !*else_ {
                         e.compute(compute);
                     }
-                    let (s, sg) = (e.s, e.sigs.pop);
+                    let (s, sg) = (e.s(), e.sigs.pop);
                     let t = e.helper(sg, h_pop_pc as HPop as usize, &[s]).expect("returns");
                     if *loop_reentry {
-                        let (s, sg) = (e.s, e.sigs.room);
+                        let (s, sg) = (e.s(), e.sigs.room);
                         e.helper(sg, h_reentry as HRoom as usize, &[s]);
                     }
                     e.branch(t, *delayed);
@@ -885,11 +1069,10 @@ impl<'a, 'b> Emit<'a, 'b> {
                 let n = self.b.ins().uextend(I64, n);
                 let k = ((has as u64) << 32 | (*term as u64) << 40) as i64;
                 let packed = self.b.ins().bor_imm_u(n, k);
-                let (s, sg) = (self.s, self.sigs.do_);
+                let (s, sg) = (self.s(), self.sigs.do_);
                 let (pc, e) = (self.k(a), self.k(*end));
                 let pp = self.pipe_ptr();
                 self.helper(sg, h_do as HDo as usize, &[s, pc, e, packed, pp]);
-                self.reload_loop();
             }
             Op::Stacks(st) => {
                 let need = (st.push_pcstk as u32 * 0xff) | (st.push_loop as u32 * 0xff00);
@@ -901,11 +1084,10 @@ impl<'a, 'b> Emit<'a, 'b> {
                     | (st.pop_loop as u32) << 1
                     | (st.push_pcstk as u32) << 2
                     | (st.pop_pcstk as u32) << 3;
-                let (s, sg) = (self.s, self.sigs.pipe1);
+                let (s, sg) = (self.s(), self.sigs.pipe1);
                 let k = self.k(bits);
                 let pp = self.pipe_ptr();
                 self.helper(sg, h_stacks as HPipe1 as usize, &[s, k, pp]);
-                self.reload_loop();
             }
             Op::CJump { target } => {
                 let t = self.target(*target, a);
@@ -1036,7 +1218,7 @@ impl<'a, 'b> Emit<'a, 'b> {
     /// bytes of `jit_stack_room` that must be nonzero (the PC stack's and
     /// the loop stack's room, the PC stack's and loop stack's depth).
     fn room(&mut self, mask: u32) {
-        let (s, sg) = (self.s, self.sigs.room);
+        let (s, sg) = (self.s(), self.sigs.room);
         let r = self.helper(sg, h_room as HRoom as usize, &[s]).expect("returns");
         for byte in 0..4 {
             if mask >> (8 * byte) & 0xff != 0 {
@@ -1071,7 +1253,8 @@ impl<'a, 'b> Emit<'a, 'b> {
                 let v = self.b.ins().iadd(iv, mv);
                 let v = self.b.ins().band_imm_u(v, 0xff_ffff);
                 if i == 8 {
-                    let br = self.b.ins().band_imm_u(self.mode1, BR8 as i64);
+                    let mode1 = self.mode1();
+                    let br = self.b.ins().band_imm_u(mode1, BR8 as i64);
                     let rev = self.b.ins().bitrev(v);
                     let rev = self.b.ins().ushr_imm_u(rev, 8);
                     self.b.ins().select(br, rev, v)
@@ -1160,16 +1343,15 @@ impl<'a, 'b> Emit<'a, 'b> {
         self.b.switch_to_block(tell);
         let _ = a;
         let steps = self.steps_after();
-        let (s, e, sg) = (self.s, self.ext, self.sigs.access);
+        let (s, e, sg) = (self.s(), self.ctx, self.sigs.access);
         self.helper(sg, h_after_access as HAccess as usize, &[s, e, steps]);
         self.b.ins().jump(on, &[]);
         self.b.switch_to_block(on);
         if wrote {
-            let d = self.b.ins().load(I8, trusted(), self.s, layout::CODE_DIRTY as i32);
+            let s_ = self.s();
+            let d = self.b.ins().load(I8, trusted(), s_, layout::CODE_DIRTY as i32);
             let d = self.b.ins().uextend(I32, d);
-            let st = self.use_(self.v.stop);
-            let st = self.b.ins().bor(st, d);
-            self.def(self.v.stop, st);
+            self.stop_if(d);
         }
     }
 
@@ -1196,16 +1378,19 @@ impl<'a, 'b> Emit<'a, 'b> {
         let (inl, slow) = self.if_then(normal);
         self.b.switch_to_block(inl);
         let block1 = self.b.ins().icmp_imm_u(IntCC::UnsignedGreaterThanOrEqual, off, 0x8000);
-        let iop = self.b.ins().load(self.ptr, trusted(), self.ctx, offset_of!(Ctx, iop) as i32);
-        let syscon = self.b.ins().load(I32, trusted(), iop, 0);
         let b1 = self.b.ins().uextend(I32, block1);
-        let sh = self.b.ins().iadd_imm_s(b1, 8);
-        let imdw = self.b.ins().ushr(syscon, sh);
-        let imdw = self.b.ins().band_imm_u(imdw, 1);
-        let (wide, plain) = self.if_then(imdw);
-        self.b.switch_to_block(wide);
-        self.b.ins().jump(slow, &[]);
-        self.b.switch_to_block(plain);
+        // IMDW (SYSCON, as the region was translated for): 48-bit data
+        // in that block goes the slow way.
+        if self.mode.imdw != 0 {
+            let syscon = self.k(self.mode.imdw);
+            let sh = self.b.ins().iadd_imm_s(b1, 8);
+            let imdw = self.b.ins().ushr(syscon, sh);
+            let imdw = self.b.ins().band_imm_u(imdw, 1);
+            let (wide, plain) = self.if_then(imdw);
+            self.b.switch_to_block(wide);
+            self.b.ins().jump(slow, &[]);
+            self.b.switch_to_block(plain);
+        }
         let m0 = self.b.ins().load(self.ptr, trusted(), self.ctx, offset_of!(Ctx, mem) as i32);
         let m1 = self.b.ins().load(self.ptr, trusted(), self.ctx, offset_of!(Ctx, mem) as i32 + 8);
         let col = self.b.ins().select(block1, m1, m0);
@@ -1249,13 +1434,13 @@ impl<'a, 'b> Emit<'a, 'b> {
         let (inv, on) = self.if_then(any.expect("two"));
         self.b.switch_to_block(inv);
         self.b.set_cold_block(inv);
-        let (s, sg) = (self.s, self.sigs.cond);
+        let (s, sg) = (self.s(), self.sigs.cond);
         self.helper(sg, h_invalidate as HCond as usize, &[s, at]);
         self.b.ins().jump(on, &[]);
         self.b.switch_to_block(on);
         self.b.ins().jump(join, &[]);
         self.b.switch_to_block(slow);
-        let (s, e, sg) = (self.s, self.ext, self.sigs.write);
+        let (s, e, sg) = (self.s(), self.ctx, self.sigs.write);
         self.helper(sg, h_write as HWrite as usize, &[s, e, pm, at, v]);
         self.b.ins().jump(join, &[]);
         self.b.switch_to_block(join);
@@ -1273,16 +1458,19 @@ impl<'a, 'b> Emit<'a, 'b> {
         let (inl, slow) = self.if_then(normal);
         self.b.switch_to_block(inl);
         let block1 = self.b.ins().icmp_imm_u(IntCC::UnsignedGreaterThanOrEqual, off, 0x8000);
-        let iop = self.b.ins().load(self.ptr, trusted(), self.ctx, offset_of!(Ctx, iop) as i32);
-        let syscon = self.b.ins().load(I32, trusted(), iop, 0);
         let b1 = self.b.ins().uextend(I32, block1);
-        let sh = self.b.ins().iadd_imm_s(b1, 8);
-        let imdw = self.b.ins().ushr(syscon, sh);
-        let imdw = self.b.ins().band_imm_u(imdw, 1);
-        let (wide, plain) = self.if_then(imdw);
-        self.b.switch_to_block(wide);
-        self.b.ins().jump(slow, &[]);
-        self.b.switch_to_block(plain);
+        // IMDW (SYSCON, as the region was translated for): 48-bit data
+        // in that block goes the slow way.
+        if self.mode.imdw != 0 {
+            let syscon = self.k(self.mode.imdw);
+            let sh = self.b.ins().iadd_imm_s(b1, 8);
+            let imdw = self.b.ins().ushr(syscon, sh);
+            let imdw = self.b.ins().band_imm_u(imdw, 1);
+            let (wide, plain) = self.if_then(imdw);
+            self.b.switch_to_block(wide);
+            self.b.ins().jump(slow, &[]);
+            self.b.switch_to_block(plain);
+        }
         let m0 = self.b.ins().load(self.ptr, trusted(), self.ctx, offset_of!(Ctx, mem) as i32);
         let m1 = self.b.ins().load(self.ptr, trusted(), self.ctx, offset_of!(Ctx, mem) as i32 + 8);
         let col = self.b.ins().select(block1, m1, m0);
@@ -1302,7 +1490,7 @@ impl<'a, 'b> Emit<'a, 'b> {
         let v = self.b.ins().ishl_imm_u(v, 8);
         self.b.ins().jump(join, &[BlockArg::Value(v)]);
         self.b.switch_to_block(slow);
-        let (s, e, sg) = (self.s, self.ext, self.sigs.read);
+        let (s, e, sg) = (self.s(), self.ctx, self.sigs.read);
         let v = self.helper(sg, h_read as HRead as usize, &[s, e, pm, at]).expect("returns");
         self.b.ins().jump(join, &[BlockArg::Value(v)]);
         self.b.switch_to_block(join);
@@ -1327,7 +1515,8 @@ impl<'a, 'b> Emit<'a, 'b> {
                 self.widen(v)
             }
             _ => {
-                let px = self.b.ins().load(I64, trusted(), self.s, offset_of!(Sharc, px) as i32);
+                let s_ = self.s();
+                let px = self.b.ins().load(I64, trusted(), s_, offset_of!(Sharc, px) as i32);
                 match r {
                     // PX: bits 47-8 as a 40-bit value.
                     0xdb => self.b.ins().ushr_imm_u(px, 8),
@@ -1362,7 +1551,8 @@ impl<'a, 'b> Emit<'a, 'b> {
             }
             _ => {
                 let off = offset_of!(Sharc, px) as i32;
-                let px = self.b.ins().load(I64, trusted(), self.s, off);
+                let s_ = self.s();
+                let px = self.b.ins().load(I64, trusted(), s_, off);
                 let new = match r {
                     0xdb => {
                         let v = self.b.ins().band_imm_u(v, MASK40);
@@ -1383,7 +1573,8 @@ impl<'a, 'b> Emit<'a, 'b> {
                     }
                     _ => unreachable!("not a register the lowering moves"),
                 };
-                self.b.ins().store(trusted(), new, self.s, off);
+                let s_ = self.s();
+                self.b.ins().store(trusted(), new, s_, off);
             }
         }
     }
@@ -1428,7 +1619,8 @@ impl<'a, 'b> Emit<'a, 'b> {
         };
         if i == 0 || i == 8 {
             // Bit-reversed in BR0 / BR8 mode.
-            let br = self.b.ins().band_imm_u(self.mode1, if dag2 { BR8 } else { BR0 } as i64);
+            let mode1 = self.mode1();
+            let br = self.b.ins().band_imm_u(mode1, if dag2 { BR8 } else { BR0 } as i64);
             let rev = self.b.ins().bitrev(out);
             let rev = if dag2 { self.b.ins().ushr_imm_u(rev, 8) } else { rev };
             self.b.ins().select(br, rev, out)
@@ -1547,14 +1739,15 @@ impl<'a, 'b> Emit<'a, 'b> {
                 let a = self.astat();
                 let a = self.b.ins().ushr_imm_u(a, 19 + n);
                 let a = self.b.ins().band_imm_u(a, 1);
-                let f = self.b.ins().uload8(I32, trusted(), self.s, jit_layout::FLAG_IN as i32);
+                let s_ = self.s();
+                let f = self.b.ins().uload8(I32, trusted(), s_, jit_layout::FLAG_IN as i32);
                 let f = self.b.ins().ushr_imm_u(f, n);
                 let f = self.b.ins().band_imm_u(f, 1);
                 let v = self.b.ins().select(out, a, f);
                 self.b.ins().icmp_imm_u(IntCC::NotEqual, v, 0)
             }
             (15, _) | (31, _) | (_, 14) => {
-                let (s, sg) = (self.s, self.sigs.cond);
+                let (s, sg) = (self.s(), self.sigs.cond);
                 let k = self.k(c as u32);
                 let r = self.helper(sg, h_cond as HCond as usize, &[s, k]).expect("returns");
                 return self.b.ins().icmp_imm_u(IntCC::NotEqual, r, 0);
@@ -1565,7 +1758,8 @@ impl<'a, 'b> Emit<'a, 'b> {
                 let an = self.flag(a, AN);
                 let av = self.flag(a, AV);
                 let az = self.flag(a, AZ);
-                let sat = self.b.ins().band_imm_u(self.mode1, ALUSAT as i64);
+                let mode1 = self.mode1();
+                let sat = self.b.ins().band_imm_u(mode1, ALUSAT as i64);
                 let nosat = self.b.ins().icmp_imm_u(IntCC::Equal, sat, 0);
                 let ov = self.b.ins().band(av, nosat);
                 let x = self.b.ins().bxor(an, ov);
@@ -1635,7 +1829,7 @@ impl<'a, 'b> Emit<'a, 'b> {
                 }
             }
             c => {
-                let (s, sg) = (self.s, self.sigs.compute);
+                let (s, sg) = (self.s(), self.sigs.compute);
                 let p = self.p(c as *const Compute as usize);
                 self.helper(sg, h_compute as HCompute as usize, &[s, p]);
             }
@@ -1660,8 +1854,20 @@ impl<'a, 'b> Emit<'a, 'b> {
     /// the result, if it has one.
     fn alu(&mut self, op: &AluOp, x40: Value, y40: Value) -> Option<Value> {
         use AluOp::*;
+        match op {
+            Comp => {
+                self.comp(x40, y40);
+                return None;
+            }
+            FComp => {
+                self.fcomp(op, x40, y40);
+                return None;
+            }
+            FAbs | FNeg | FPass => return Some(self.fsign(op, x40)),
+            _ => {}
+        }
         if !alu_ir(*op) {
-            let (s, sg) = (self.s, self.sigs.op2);
+            let (s, sg) = (self.s(), self.sigs.op2);
             let p = self.p(op as *const AluOp as usize);
             let v = self.helper(sg, h_alu as HOp2 as usize, &[s, p, x40, y40]).expect("returns");
             return (!matches!(op, Comp | FComp)).then_some(v);
@@ -1688,7 +1894,8 @@ impl<'a, 'b> Emit<'a, 'b> {
                 let v = self.b.ins().band(xr, br);
                 let v = self.b.ins().icmp_imm_s(IntCC::SignedLessThan, v, 0);
                 // ALUSAT: overflow saturates.
-                let sat = self.b.ins().band_imm_u(self.mode1, ALUSAT as i64);
+                let mode1 = self.mode1();
+                let sat = self.b.ins().band_imm_u(mode1, ALUSAT as i64);
                 let sat = self.b.ins().icmp_imm_u(IntCC::NotEqual, sat, 0);
                 let clip = self.b.ins().band(sat, v);
                 let neg = self.b.ins().icmp_imm_s(IntCC::SignedLessThan, r, 0);
@@ -1717,6 +1924,7 @@ impl<'a, 'b> Emit<'a, 'b> {
         self.set_alu_flags(bits);
         if let Some(f) = flags {
             // AV: AOS sticks.
+            self.sets_stky();
             let av = self.b.ins().band_imm_u(f, AV as i64);
             let (stick, on) = self.if_then(av);
             self.b.switch_to_block(stick);
@@ -1727,6 +1935,140 @@ impl<'a, 'b> Emit<'a, 'b> {
             self.b.switch_to_block(on);
         }
         Some(self.widen(out))
+    }
+
+    /// ASTAT's compare accumulation (bits 31-24) shifted down, `gt` (I8)
+    /// coming in at the top (`Sharc::cacc`).
+    fn cacc(&mut self, gt: Value) {
+        let a = self.ld32(layout::ASTAT);
+        let c = self.b.ins().ushr_imm_u(a, 25);
+        let c = self.b.ins().ishl_imm_u(c, 24);
+        let g = self.bit_if(gt, 1 << 31);
+        let lo = self.b.ins().band_imm_u(a, 0xff_ffff);
+        let a = self.b.ins().bor(lo, c);
+        let a = self.b.ins().bor(a, g);
+        self.st32(layout::ASTAT, a);
+    }
+
+    /// COMP(Rx, Ry): AZ if equal, AN if less (signed), and the compare
+    /// accumulation.
+    fn comp(&mut self, x40: Value, y40: Value) {
+        let (x, y) = (self.field(x40), self.field(y40));
+        let gt = self.b.ins().icmp(IntCC::SignedGreaterThan, x, y);
+        self.cacc(gt);
+        let eq = self.b.ins().icmp(IntCC::Equal, x, y);
+        let lt = self.b.ins().icmp(IntCC::SignedLessThan, x, y);
+        let az = self.bit_if(eq, AZ);
+        let an = self.bit_if(lt, AN);
+        let bits = self.b.ins().bor(az, an);
+        self.set_alu_flags(bits);
+    }
+
+    /// An operand as the float ALU sees it (`float::input`): with RND32
+    /// its eight LSBs clear; and whether it is a NaN (I8).
+    fn finput(&mut self, x40: Value) -> (Value, Value) {
+        let v = if self.mode.mode1 & RND32 != 0 { self.b.ins().band_imm_u(x40, !0xff_i64 & MASK40) } else { x40 };
+        let e = self.b.ins().ushr_imm_u(v, 31);
+        let e = self.b.ins().band_imm_u(e, 0xff);
+        let frac = self.b.ins().band_imm_u(v, 0x7fff_ffff);
+        let inf_exp = self.b.ins().icmp_imm_u(IntCC::Equal, e, 0xff);
+        let some = self.b.ins().icmp_imm_u(IntCC::NotEqual, frac, 0);
+        (v, self.b.ins().band(inf_exp, some))
+    }
+
+    /// Off the fast path of a float operation: `jit_alu` itself, its
+    /// result (if `ret`) to `join`'s parameter.
+    fn alu_slow(&mut self, op: &AluOp, x40: Value, y40: Value, join: Block, ret: bool) {
+        let (s, sg) = (self.s(), self.sigs.op2);
+        let p = self.p(op as *const AluOp as usize);
+        let w = self.helper(sg, h_alu as HOp2 as usize, &[s, p, x40, y40]).expect("returns");
+        if ret {
+            self.b.ins().jump(join, &[BlockArg::Value(w)]);
+        } else {
+            self.b.ins().jump(join, &[]);
+        }
+    }
+
+    /// FCOMP(Fx, Fy) for operands that aren't NaNs (else `jit_alu`): AZ
+    /// if equal, AN if less, AF, the compare accumulation. Zeros (and
+    /// denormals) of either sign are equal; otherwise the sign and the
+    /// magnitude order them.
+    fn fcomp(&mut self, op: &AluOp, x40: Value, y40: Value) {
+        let (a, an) = self.finput(x40);
+        let (b, bn) = self.finput(y40);
+        let nan = self.b.ins().bor(an, bn);
+        let (slow, fast) = self.if_then(nan);
+        let join = self.b.create_block();
+        self.b.switch_to_block(slow);
+        self.b.set_cold_block(slow);
+        self.alu_slow(op, x40, y40, join, false);
+        self.b.switch_to_block(fast);
+        let key = |e: &mut Self, v: Value| {
+            let ex = e.b.ins().ushr_imm_u(v, 31);
+            let ex = e.b.ins().band_imm_u(ex, 0xff);
+            let zero = e.b.ins().icmp_imm_u(IntCC::Equal, ex, 0);
+            let mag = e.b.ins().band_imm_u(v, 0x7f_ffff_ffff);
+            let neg = e.b.ins().ineg(mag);
+            let sign = e.b.ins().ushr_imm_u(v, 39);
+            let k = e.b.ins().select(sign, neg, mag);
+            let z = e.k64(0);
+            e.b.ins().select(zero, z, k)
+        };
+        let (ka, kb) = (key(self, a), key(self, b));
+        let gt = self.b.ins().icmp(IntCC::SignedGreaterThan, ka, kb);
+        self.cacc(gt);
+        let eq = self.b.ins().icmp(IntCC::Equal, ka, kb);
+        let lt = self.b.ins().icmp(IntCC::SignedLessThan, ka, kb);
+        let az = self.bit_if(eq, AZ);
+        let an = self.bit_if(lt, AN);
+        let bits = self.b.ins().bor(az, an);
+        let bits = self.b.ins().bor_imm_u(bits, AF as i64);
+        self.set_alu_flags(bits);
+        self.b.ins().jump(join, &[]);
+        self.b.switch_to_block(join);
+    }
+
+    /// FABS, -F and PASS Fx (`float::sign_op`) of an operand that isn't a
+    /// NaN (else `jit_alu`): the operand with its sign cleared, flipped or
+    /// kept; a zero (or denormal) becomes a zero of that sign. AZ, AN,
+    /// AF; ABS's AS if the operand was negative.
+    fn fsign(&mut self, op: &AluOp, x40: Value) -> Value {
+        let (v, nan) = self.finput(x40);
+        let (slow, fast) = self.if_then(nan);
+        let join = self.b.create_block();
+        let out = self.b.append_block_param(join, I64);
+        self.b.switch_to_block(slow);
+        self.b.set_cold_block(slow);
+        let z = self.k64(0);
+        self.alu_slow(op, x40, z, join, true);
+        self.b.switch_to_block(fast);
+        let sign = self.b.ins().ushr_imm_u(v, 39);
+        let ns = match op {
+            AluOp::FNeg => self.b.ins().bxor_imm_u(sign, 1),
+            AluOp::FAbs => self.k64(0),
+            _ => sign,
+        };
+        let e = self.b.ins().ushr_imm_u(v, 31);
+        let e = self.b.ins().band_imm_u(e, 0xff);
+        let zero = self.b.ins().icmp_imm_u(IntCC::Equal, e, 0);
+        let top = self.b.ins().ishl_imm_u(ns, 39);
+        let mag = self.b.ins().band_imm_u(v, 0x7f_ffff_ffff);
+        let whole = self.b.ins().bor(top, mag);
+        let r = self.b.ins().select(zero, top, whole);
+        let az = self.bit_if(zero, AZ);
+        let ns32 = self.b.ins().ireduce(I32, ns);
+        let an = self.b.ins().ishl_imm_u(ns32, 2);
+        let mut bits = self.b.ins().bor(az, an);
+        bits = self.b.ins().bor_imm_u(bits, AF as i64);
+        if *op == AluOp::FAbs {
+            let was = self.b.ins().ireduce(I32, sign);
+            let as_ = self.b.ins().ishl_imm_u(was, 4);
+            bits = self.b.ins().bor(bits, as_);
+        }
+        self.set_alu_flags(bits);
+        self.b.ins().jump(join, &[BlockArg::Value(r)]);
+        self.b.switch_to_block(join);
+        out
     }
 
     /// The 32-bit (RND32) fast path `float::single` takes for two normal
@@ -1752,7 +2094,8 @@ impl<'a, 'b> Emit<'a, 'b> {
         };
         let (na, nb) = (normal(self, ea), normal(self, eb));
         let mut ok = self.b.ins().band(na, nb);
-        let rnd = self.b.ins().band_imm_u(self.mode1, RND32 as i64);
+        let mode1 = self.mode1();
+        let rnd = self.b.ins().band_imm_u(mode1, RND32 as i64);
         let rnd = self.b.ins().icmp_imm_u(IntCC::NotEqual, rnd, 0);
         ok = self.b.ins().band(ok, rnd);
         if close {
@@ -1775,7 +2118,8 @@ impl<'a, 'b> Emit<'a, 'b> {
         ok = self.b.ins().band(ok, nz);
         // To 23 fraction bits, to nearest even or toward zero; a carry
         // lands in the exponent.
-        let t = self.b.ins().band_imm_u(self.mode1, TRUNC as i64);
+        let mode1 = self.mode1();
+        let t = self.b.ins().band_imm_u(mode1, TRUNC as i64);
         let trunc = self.b.ins().icmp_imm_u(IntCC::NotEqual, t, 0);
         let odd = self.b.ins().ushr_imm_u(mag, 29);
         let odd = self.b.ins().band_imm_u(odd, 1);
@@ -1818,7 +2162,8 @@ impl<'a, 'b> Emit<'a, 'b> {
         let fb = self.b.ins().icmp_imm_u(IntCC::NotEqual, eb, 0xff);
         let finite = self.b.ins().band(fa, fb);
         let any = self.b.ins().bor(za, zb);
-        let rnd = self.b.ins().band_imm_u(self.mode1, RND32 as i64);
+        let mode1 = self.mode1();
+        let rnd = self.b.ins().band_imm_u(mode1, RND32 as i64);
         let rnd = self.b.ins().icmp_imm_u(IntCC::NotEqual, rnd, 0);
         let ok = self.b.ins().band(any, finite);
         let ok = self.b.ins().band(ok, rnd);
@@ -1887,7 +2232,7 @@ impl<'a, 'b> Emit<'a, 'b> {
         self.b.ins().jump(join, &[BlockArg::Value(fv)]);
         self.b.switch_to_block(slow);
         self.b.set_cold_block(slow);
-        let (s, sg) = (self.s, self.sigs.op2);
+        let (s, sg) = (self.s(), self.sigs.op2);
         let p = self.p(op as *const AluOp as usize);
         let w = self.helper(sg, h_alu as HOp2 as usize, &[s, p, x40, y40]).expect("returns");
         self.b.ins().jump(join, &[BlockArg::Value(w)]);
@@ -1900,7 +2245,7 @@ impl<'a, 'b> Emit<'a, 'b> {
     /// register file result, if it has one.
     fn mul(&mut self, op: &MulOp, x40: Value, y40: Value) -> Option<Value> {
         if *op != MulOp::FMul {
-            let (s, sg) = (self.s, self.sigs.op2);
+            let (s, sg) = (self.s(), self.sigs.op2);
             let p = self.p(op as *const MulOp as usize);
             let v = self.helper(sg, h_mul as HOp2 as usize, &[s, p, x40, y40]).expect("returns");
             let reg = match op {
@@ -1932,7 +2277,7 @@ impl<'a, 'b> Emit<'a, 'b> {
         self.b.ins().jump(join, &[BlockArg::Value(fv)]);
         self.b.switch_to_block(slow);
         self.b.set_cold_block(slow);
-        let (s, sg) = (self.s, self.sigs.op2);
+        let (s, sg) = (self.s(), self.sigs.op2);
         let p = self.p(op as *const MulOp as usize);
         let w = self.helper(sg, h_mul as HOp2 as usize, &[s, p, x40, y40]).expect("returns");
         self.b.ins().jump(join, &[BlockArg::Value(w)]);
@@ -1944,9 +2289,51 @@ impl<'a, 'b> Emit<'a, 'b> {
     /// ASHIFT in IR, the rest through `jit_shift_imm`.
     fn shift_imm(&mut self, op: &ShiftOp, rn: u8, rx: u8, imm: u16) {
         let x40 = self.rf(rx);
+        if matches!(op, ShiftOp::Btst | ShiftOp::Bset | ShiftOp::Bclr | ShiftOp::Btgl) {
+            // The bit operations, with the bit (`ShiftY::imm`'s pos) known.
+            let pos = imm as u32 & 0xff;
+            let x = self.field(x40);
+            let (out, sz) = if pos > 31 {
+                // SV; nothing changes (BTST: SZ).
+                let sz = if *op == ShiftOp::Btst {
+                    self.b.ins().iconst(I8, 1)
+                } else {
+                    self.b.ins().icmp_imm_u(IntCC::Equal, x, 0)
+                };
+                (x, sz)
+            } else {
+                let bit = 1u32 << pos;
+                match op {
+                    ShiftOp::Btst => {
+                        let t = self.b.ins().band_imm_u(x, bit as i64);
+                        (x, self.b.ins().icmp_imm_u(IntCC::Equal, t, 0))
+                    }
+                    _ => {
+                        let o = match op {
+                            ShiftOp::Bset => self.b.ins().bor_imm_u(x, bit as i64),
+                            ShiftOp::Bclr => self.b.ins().band_imm_u(x, !bit as i64),
+                            _ => self.b.ins().bxor_imm_u(x, bit as i64),
+                        };
+                        (o, self.b.ins().icmp_imm_u(IntCC::Equal, o, 0))
+                    }
+                }
+            };
+            let sz = self.bit_if(sz, SZ);
+            let sv = if pos > 31 { SV } else { 0 };
+            let a = self.ld32(layout::ASTAT);
+            let a = self.b.ins().band_imm_u(a, !(SV | SZ | SS) as i64);
+            let a = self.b.ins().bor(a, sz);
+            let a = self.b.ins().bor_imm_u(a, sv as i64);
+            self.st32(layout::ASTAT, a);
+            if *op != ShiftOp::Btst {
+                let v = self.widen(out);
+                self.set_rf(rn, v);
+            }
+            return;
+        }
         if !matches!(op, ShiftOp::Lshift | ShiftOp::Ashift) {
             let n40 = self.rf(rn);
-            let (s, sg) = (self.s, self.sigs.shift);
+            let (s, sg) = (self.s(), self.sigs.shift);
             let p = self.p(op as *const ShiftOp as usize);
             let imm = self.k(imm as u32);
             let v = self.helper(sg, h_shift as HShift as usize, &[s, p, x40, n40, imm]).expect("returns");
@@ -1999,7 +2386,7 @@ impl<'a, 'b> Emit<'a, 'b> {
 // with the core, the `&mut dyn Bus` and the context it passed, live and
 // distinct, and pointers into the region's `words`.
 
-type HExec = unsafe extern "C" fn(*mut Sharc, *mut u8, *mut Ctx, *const Insn, u64) -> u32;
+type HExec = unsafe extern "C" fn(*mut Sharc, *mut Ctx, *const Insn, u64) -> u32;
 type HFetch = unsafe extern "C" fn(*mut Sharc, u32, u32, u32, *mut JitPipe) -> u64;
 type HRoom = unsafe extern "C" fn(*mut Sharc) -> u32;
 type HPipe = unsafe extern "C" fn(*mut Sharc, *mut JitPipe);
@@ -2009,20 +2396,22 @@ type HPop = unsafe extern "C" fn(*mut Sharc) -> u32;
 type HCompute = unsafe extern "C" fn(*mut Sharc, *const Compute);
 type HOp2 = unsafe extern "C" fn(*mut Sharc, *const u8, u64, u64) -> u64;
 type HShift = unsafe extern "C" fn(*mut Sharc, *const ShiftOp, u64, u64, u32) -> u64;
-type HRead = unsafe extern "C" fn(*mut Sharc, *mut u8, u32, u32) -> u64;
-type HWrite = unsafe extern "C" fn(*mut Sharc, *mut u8, u32, u32, u64);
-type HAccess = unsafe extern "C" fn(*mut Sharc, *mut u8, u64);
+type HRead = unsafe extern "C" fn(*mut Sharc, *mut Ctx, u32, u32) -> u64;
+type HWrite = unsafe extern "C" fn(*mut Sharc, *mut Ctx, u32, u32, u64);
+type HAccess = unsafe extern "C" fn(*mut Sharc, *mut Ctx, u64);
 type HCond = unsafe extern "C" fn(*mut Sharc, u32) -> u32;
 
-unsafe fn bus<'e>(e: *mut u8) -> &'e mut &'e mut dyn Bus {
-    unsafe { &mut *(e as *mut &mut dyn Bus) }
+/// The block's `&mut dyn Bus` (`Ctx::bus`).
+unsafe fn bus<'e>(ctx: *mut Ctx) -> &'e mut &'e mut dyn Bus {
+    unsafe { &mut *((*ctx).bus as *mut &mut dyn Bus) }
 }
 
 /// One word of a block (`Sharc::block_exec`): 0 if it ran and the block
 /// goes on, else how the block ends.
-unsafe extern "C" fn h_exec(s: *mut Sharc, e: *mut u8, ctx: *mut Ctx, insn: *const Insn, steps: u64) -> u32 {
+unsafe extern "C" fn h_exec(s: *mut Sharc, ctx: *mut Ctx, insn: *const Insn, steps: u64) -> u32 {
+    let ext = unsafe { bus(ctx) };
     let (s, ctx, insn) = unsafe { (&mut *s, &mut *ctx, &*insn) };
-    match s.block_exec(insn, &mut ctx.st, steps, unsafe { bus(e) }) {
+    match s.block_exec(insn, &mut ctx.st, steps, ext) {
         InBlock::Ran => {
             ctx.helper += 1;
             0
@@ -2055,17 +2444,17 @@ unsafe extern "C" fn h_shift(s: *mut Sharc, op: *const ShiftOp, x: u64, n: u64, 
     unsafe { (*s).jit_shift_imm(*op, x, imm as u16, n) }
 }
 
-unsafe extern "C" fn h_read(s: *mut Sharc, e: *mut u8, pm: u32, addr: u32) -> u64 {
+unsafe extern "C" fn h_read(s: *mut Sharc, e: *mut Ctx, pm: u32, addr: u32) -> u64 {
     unsafe { (*s).jit_read(pm != 0, addr, bus(e)) }
 }
 
-unsafe extern "C" fn h_write(s: *mut Sharc, e: *mut u8, pm: u32, addr: u32, v: u64) {
+unsafe extern "C" fn h_write(s: *mut Sharc, e: *mut Ctx, pm: u32, addr: u32, v: u64) {
     unsafe { (*s).jit_write(pm != 0, addr, v, bus(e)) }
 }
 
 /// After an external access in a block: the step count it leaves, then
 /// the bus's `after_access`.
-unsafe extern "C" fn h_after_access(s: *mut Sharc, e: *mut u8, steps: u64) {
+unsafe extern "C" fn h_after_access(s: *mut Sharc, e: *mut Ctx, steps: u64) {
     let s = unsafe { &mut *s };
     s.steps = steps;
     unsafe { bus(e) }.after_access(s);

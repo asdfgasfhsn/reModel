@@ -84,8 +84,9 @@ const PROGRAM: u32 = 0x2_0080;
 /// A compute field that decodes.
 fn compute(r: &mut Rng) -> u64 {
     use ::adsp2106x::{compute::MulOp, AluOp};
-    // A third of them the float add, subtract and multiply forms (alone and
-    // multifunction), which the lowering has on paths of its own.
+    // A third of them the forms the lowering has on paths of its own: the
+    // float add, subtract and multiply (alone and multifunction), the
+    // compares and the float sign operations.
     let float = r.chance(3);
     loop {
         let c = r.next() & 0x7f_ffff;
@@ -93,6 +94,7 @@ fn compute(r: &mut Rng) -> u64 {
             Compute::Unknown(_) => false,
             _ if !float => true,
             Compute::Alu { op: AluOp::FAdd | AluOp::FSub, .. } | Compute::Mul { op: MulOp::FMul, .. } => true,
+            Compute::Alu { op: AluOp::Comp | AluOp::FComp | AluOp::FAbs | AluOp::FNeg | AluOp::FPass, .. } => true,
             Compute::Multi { mul: MulOp::FMul, alu: AluOp::FAdd | AluOp::FSub, .. } => true,
             Compute::MultiAddSub { float: true, .. } => true,
             _ => false,
@@ -168,6 +170,14 @@ fn random_word(r: &mut Rng, addr: u32, len: u32) -> u64 {
             // Type 6: shift immediate, with or without a transfer.
             17..=18 => {
                 let w = if r.chance(2) { put(w, 47, 44, 0b1000) } else { put(w, 47, 40, 0b000_00010) };
+                // Half of them the bit operations (lowered on their own),
+                // mostly on a bit in range.
+                let w = if r.chance(2) {
+                    let op = [0xc4u64, 0xc0, 0xc8, 0xcc][r.below(4) as usize] >> 2;
+                    put(put(w, 21, 16, op), 15, 8, r.below(40) as u64)
+                } else {
+                    w
+                };
                 put(put(w, 37, 33, cond(r)), 22, 22, 0)
             }
             // Type 7: MODIFY with a compute.

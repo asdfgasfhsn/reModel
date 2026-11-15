@@ -108,8 +108,16 @@ impl Compiler {
             b.seal_all_blocks();
             b.finalize(isa.frontend_config());
         }
+        let disasm = std::env::var_os("REMODEL_JIT_DISASM");
+        self.ctx.set_disasm(disasm.is_some());
         self.ctx.compile(&**isa, &mut ControlPlane::default()).map_err(|e| format!("{:?}", e.inner))?;
         let code = self.ctx.compiled_code().expect("just compiled");
+        if let (Some(dir), Some(text)) = (disasm, &code.vcode) {
+            // A developer's look at the machine code (docs/jit.md).
+            static N: AtomicUsize = AtomicUsize::new(0);
+            let path = std::path::Path::new(&dir).join(format!("{:05}.s", N.fetch_add(1, Ordering::Relaxed)));
+            let _ = std::fs::write(path, text);
+        }
         let relocs =
             code.buffer.relocs().iter().map(|r| ModuleReloc::from_mach_reloc(r, &self.ctx.func, FuncId::from_u32(0)));
         let out = Compiled {

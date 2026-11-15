@@ -655,6 +655,10 @@ memory, execution counts and IOP registers every 64th and at every stop.
    halfway, near overflow and underflow, denormals, a third of the
    computes float adds and multiplies (done); the status stack and
    one-word loops in blocks still to come.
+5. A cheaper word (done; "The cost of a word", below): fewer values live
+   across a region, STKY and the fetch stage's status noted only by the
+   words that need them, regions translated for their MODE1 and SYSCON,
+   the compares, the float sign operations and the bit operations in IR.
 
 **What the programs run** (`REMODEL_SHARC_PROFILE=1 remodel run` prints
 it: each executed word by type and compute, from the execution counts;
@@ -677,13 +681,15 @@ are read before the compute, the compute's results land before a load's
 (so the load wins), DM after PM. In IR: conditions (on ASTAT, and the FLAG
 inputs as `Sharc::astat` shows them; BM and the loop counter through
 `Sharc::cond`); the ALU's fixed-point add, subtract, increment, decrement,
-pass and logic (with ALUSAT, the carry, overflow and AOS); FADD, FSUB and
+pass and logic (with ALUSAT, the carry, overflow and AOS); COMP and FCOMP
+(with the compare accumulation), FABS, -F and PASS F (NaN operands through
+the interpreter's operation); FADD, FSUB and
 FMUL on `float::single`'s path (RND32, two normal inputs, an add's
 exponents at most 28 apart: the exact f64 result rounded to 23 fraction
 bits in place, to nearest even or toward zero), and off it a zero operand
 (exponent field 0: zero or a denormal) as the exact path treats it, else
 the interpreter's own operation; the multifunction multiply with an ALU
-operation; type 6's LSHIFT and ASHIFT; register-file, DAG and PX register
+operation; type 6's LSHIFT, ASHIFT, BSET, BCLR, BTGL and BTST; register-file, DAG and PX register
 moves and immediates; the DAGs (pre- and post-modify, M registers and
 immediates, circular buffers with I7/I15's wrap flags and interrupt
 latches, BR0/BR8 bit reversal, BITREV); 32-bit reads and writes of
@@ -702,9 +708,57 @@ workers. A region is at most 256 words; the geometrizer programs are 6 to
 18 regions, translated in 0.4-1.3 s on the workers (the slowest region
 0.15-0.2 s), the copro programs' 50-335 in 0.3-1.8 s.
 
+**The cost of a word** (milestone 5). Each word was being paid for in
+values the register allocator had to keep: the pipeline's variables, the
+counters, the budget, the core, the context and the bus pointers live
+across a region of hundreds of blocks, each a target of the dispatch's
+jump table, with helper calls everywhere that clobber the caller-saved
+registers, so nearly all of them lived in stack slots, reloaded and stored
+around every word. Keeping more of the core in variables (the register
+file, the DAGs, ASTAT in parts, STKY: a cache written back at the exit and
+around the helpers that read or write it) was tried and measured first,
+and it was slower (`zerogun` 15.2 s against 12.4): with every word block a
+merge point, all ~45 cached values are live everywhere, Cranelift's
+allocator spills them all, and the merges add stack-to-stack moves. Calling
+the helpers through `preserve_all` trampolines (so no call clobbers
+anything) and keeping the core in the pinned register didn't change that
+(14.8 and 11.9 s): the allocator still spilled the long-lived values. So
+the state stays in the core, and milestone 5 makes each word need less:
+
+- fewer values live across a region: the budget is counted down in one
+  variable (a word that writes watched code makes it 1, the rest noted in
+  `Ctx::cut`); a bubble's cycle is counted in `Ctx::cycles`; the loop end,
+  the short-loop flag, MODE1 and the bus are read where they are used (the
+  helpers that need the bus find it in `Ctx::bus`);
+- STKY at the start of the cycle (for the interrupt latch at the end,
+  which only looks at the exception sticky bits) is noted only by the
+  words that can set one (the fixed-point adds, the interpreter's
+  operations, `block_exec`), with `Ctx::st_pc` saying which word noted it;
+  for any other last word STKY as it stands is the same;
+- ASTAT and the FLAG inputs at the start of the cycle (the fetch stage's
+  loop test at a loop's end) are noted only by a word that can change them
+  (ASTAT: a compute; the FLAG inputs: an external access, whose
+  `after_access` may set them); for the others they are read after the
+  word, on the (cold) way to the loop logic;
+- a region is translated for the MODE1 and SYSCON IMDW bits the core has
+  (`emit::Mode`), which no word of a block changes: rounding, truncation,
+  saturation and bit reversal are constants and an inline access tests no
+  IMDW bit; `SharcJit::one` runs a region only while the core's modes are
+  its own, and drops one whose aren't, to translate it again (counted
+  with the translations thrown away: none in the bench sessions);
+- the compares, the float sign operations and the type 6 bit operations
+  (the copro's commonest words on `jit_alu` and `jit_shift_imm`) in IR.
+
+`REMODEL_JIT_DISASM=DIR` writes the machine code of everything the JITs
+translate to DIR (Cranelift's listing, after register allocation): how
+the above was found. The code is 20-25% smaller (`zerogun`'s geometrizer
+1018 to 778 KB, its copro 1175 to 976 KB).
+
 **Results** (`make bench`'s session, 600M i960 instructions, coin start,
 host seconds and the geometrizer thread's, which the run waits for;
-`--jit` before is the i960's JIT alone, the SHARCs interpreted):
+`--jit` before is the i960's JIT alone, the SHARCs interpreted; milestones
+3 and 5 the faster of runs alternating on the same machine, which was
+busy, so within about 0.3 s):
 
 | | `zerogun` | `pltkids` | `gunblade` | `fvipers` | `schamp` |
 |---|---|---|---|---|---|
@@ -712,11 +766,13 @@ host seconds and the geometrizer thread's, which the run waits for;
 | `--jit`, before | 38.2 (36.2) | 58.7 (57.2) | | | |
 | milestone 1 (regions on `h_exec`) | 29.4 (27.4) | 44.0 (42.5) | | | |
 | milestone 2 (the lowering) | 14.2 (12.2) | 21.3 (19.9) | 29.2 (27.4) | 29.5 (25.2) | 30.4 (27.5) |
-| **milestone 3** (pipeline blocks) | **12.3 (10.6)** | **17.5 (16.5)** | **29.1 (28.0)** | **29.4 (25.8)** | **27.5 (26.1)** |
+| milestone 3 (pipeline blocks) | 12.2 (10.4) | 17.5 (16.5) | 26.2 (25.2) | 27.3 (24.0) | 27.1 (25.7) |
+| **milestone 5** (a cheaper word) | **10.9 (9.2)** | **15.4 (14.4)** | **24.7 (23.8)** | **24.7 (21.5)** | **24.7 (22.8)** |
 
-That is 5.8 times real time for `zerogun` (1.77 interpreted), 4.1 for
-`pltkids` (1.20), 2.5-2.6 for `gunblade`, `fvipers` and `schamp`
-(0.80-0.84): 3.0-3.4 times the interpreter. (Milestone 2's `gunblade`,
+That is 6.6 times real time for `zerogun` (1.77 interpreted), 4.7 for
+`pltkids` (1.20), 2.9 for `gunblade`, `fvipers` and `schamp`
+(0.80-0.84): 3.5-3.9 times the interpreter, and 6-12% faster than
+milestone 3 (the geometrizer's thread 6-13%). (Milestone 2's `gunblade`,
 `fvipers` and `schamp` were measured with another build running; the
 differences there are within that noise.) Words left to the interpreter's
 single step (`make bench JIT=1`'s `jit copro` lines, words outside blocks
@@ -729,12 +785,13 @@ runs of a region still being translated. Of the words in blocks, 0.1%
 (the geometrizer) and 2-3% (the copro: BIT, PX transfers) run on
 `block_exec`.
 
-What the geometrizer's time goes on now is mostly the translated code
-itself (70% of its thread's samples, gdb under `SIGUSR2`), and for
-`fvipers` and `schamp` that is mostly the program waiting for the next
-frame (a loop of NOPs, message register stores and raster NOPs until
-FLAG0 falls, which the board runs to its idle limit as the interpreter
-does).
+What the time goes on is still mostly the translated code itself: of
+the game's and the geometrizer's threads' samples (gdb under `SIGUSR2`,
+`zerogun`), translated code was 68% at milestone 3 and is 60% now (the
+SHARCs' regions 33 and 31% from the geometrizer, 10 and 7.5% from the
+copro, the rest the i960's). For `fvipers` and `schamp` the geometrizer's
+words are the same kinds as `zerogun`'s (loads with a multiply-add,
+loads, multiplies, stores with an increment, shifts with a move).
 
 **Exactness.** `make jit-copro-lockstep` (300M) is identical on
 `overrevb`, `zerogun`, `gunblade` and `fvipers` at every milestone
@@ -743,19 +800,27 @@ each); `make bench-all` and `make bench-all JIT=1` give all 22 hashes. The
 random-program tests (`make jit-test`; a debug build in `make check`)
 broke at once on a deliberate error in the float add, the inline read and
 (since milestone 4's operands) the rounding of exact ties, which they had
-missed before.
+missed before; at milestone 5, on errors in FNEG's AN, the compare
+accumulation, COMP's AZ, BTST's SZ, RND32's operand masking, the STKY
+note and the ASTAT a loop test sees. (The compares and bit operations
+needed operands of their own to be caught: a third of the computes now
+include them, half of type 6's words the bit operations.)
 
 **Not done, and next**
 
 - The status stack (PUSH/POP STS) and one-word loops in blocks; RTI and
   interrupts (blocks need interrupts off, as the 2B programs mostly run).
-- The per-word cost of plain code: the pipeline's variables and the
-  counters live across helper calls in large functions, which the
-  register allocator spills; ASTAT is loaded and stored around each
-  operation. Keeping ASTAT and the counters in registers across a run of
-  words would cut that.
-- Regions are 256 words at most and translating the largest takes 0.2 s
-  on a worker; a smaller IR per word would halve it.
+  POP STS sets MODE1 at once (register files swapped, interrupts perhaps
+  enabled and taken in the same step), so it would end a block.
+- Keeping core state in registers needs a region shape the allocator can
+  work with: plain code entered at fewer points (so that a run of words is
+  straight-line code, its values in registers and written back at its
+  exits), not every word a target of the dispatch. Regions of 1,024 words
+  instead of 256 (fewer exits to another region: `zerogun`'s geometrizer
+  leaves for another region about every 15 words) were no faster, and
+  took 0.85 s to translate.
+- FFLOAT, FFIX, the fixed-point multiplies and the shifter's field
+  operations still go through the interpreter's operation.
 
 ## A WebAssembly back end (sketch)
 
@@ -792,7 +857,7 @@ bench hashes as the gate at each step:
 | Piece | What | Estimate |
 |---|---|---|
 | i960 native JIT, finished | floats translated (the largest fallback group in both games: `mulr`, `addr`, `subr`, `movr`, `cvtir`, `cmpr`); an inline fast path for plain RAM and ROM reads (and writes, with the bus's write count and code counters); the per-instruction step cheaper (the interrupt check is a scan of eight words each time); translation on a worker thread with the hot-block list kept between runs; code memory reclaimed; a player setting; `jit-lockstep` over every game | 2-3 weeks |
-| Copro JITs | MB86234 and MB86235: done ("Copro JITs"). ADSP-21062 (2B copro and geometrizer): in progress ("The SHARC"): pipeline blocks on Cranelift (branches, delay slots, loops, the PC and loop stacks), the compute, data-move and memory lowering, lockstep and random tests done (milestones 1-4); the status stack in blocks and a cheaper word left | a few days left |
+| Copro JITs | MB86234 and MB86235: done ("Copro JITs"). ADSP-21062 (2B copro and geometrizer): in progress ("The SHARC"): pipeline blocks on Cranelift (branches, delay slots, loops, the PC and loop stacks), the compute, data-move and memory lowering, lockstep and random tests done (milestones 1-4), a cheaper word (milestone 5); the status stack in blocks left | a few days left |
 | WebAssembly back end | the emitter (`Op` to wasm), helper exports and a shared table in `remodel-web`, batched modules compiled off the main thread, Node lockstep | 3-4 weeks for the i960; each copro lowering then a further week or so, as the emitter is shared |
 
 ## Verdict

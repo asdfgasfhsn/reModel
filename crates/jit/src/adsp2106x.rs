@@ -63,8 +63,16 @@ struct Ctx {
     ran: u64,
     cycles: u64,
     pc: u32,
-    /// STKY at the start of the last cycle.
+    /// STKY at the start of the last cycle, if that cycle's instruction
+    /// was the one at `st_pc` (one that can set an exception sticky bit),
+    /// else STKY as it is: all `Sharc::jit_exit`'s interrupt latch looks
+    /// at.
     st: u32,
+    st_pc: u32,
+    /// ASTAT and the FLAG inputs at the start of a word that can change
+    /// them (the loop test of its fetch stage looks at them).
+    fa: u32,
+    ff: u32,
     /// Execution counts (`Sharc::counts`).
     counts: *mut u64,
     /// A word on `block_exec` faulted.
@@ -79,6 +87,11 @@ struct Ctx {
     mem: [*const u16; 2],
     /// `Sharc::jit_cached`: words an inline store must have invalidated.
     cached: *const u8,
+    /// The `&mut dyn Bus`, for the helpers that use it.
+    bus: *mut u8,
+    /// Instructions the budget lost to a word after which the block had
+    /// to leave (`ran` is `budget` less what is left, less these).
+    cut: u64,
 }
 
 /// A translated region: `(sharc, bus, ctx)`, `bus` pointing at a `&mut
@@ -90,6 +103,8 @@ struct Region {
     /// The words as translated (the IR points at them).
     words: Arc<[Insn]>,
     code: Option<RegionFn>,
+    /// The modes it was translated for: it runs only in them.
+    mode: emit::Mode,
     /// Dropped (overwritten, or its translation failed): its table
     /// entries are cold again.
     dead: bool,
@@ -197,6 +212,9 @@ impl SharcJit {
         }
         let a = s.compiled_pc();
         let Some(mut r) = self.region_at(s, a) else { return self.single(s, ext) };
+        if !self.in_mode(s, r) {
+            return self.single(s, ext);
+        }
         let Some(pipe) = s.jit_enter() else { return self.single(s, ext) };
         let budget = ext.block_budget(s);
         if budget == 0 {
@@ -210,6 +228,9 @@ impl SharcJit {
             cycles: 0,
             pc: a,
             st: s.stky(),
+            st_pc: u32::MAX,
+            fa: 0,
+            ff: 0,
             counts: s.counts.as_mut_ptr(),
             fault: None,
             kind: STOPPED,
@@ -217,6 +238,8 @@ impl SharcJit {
             iop: s.iop.as_ptr(),
             mem: [s.mem.cols[0].as_ptr(), s.mem.cols[1].as_ptr()],
             cached: s.jit_cached(),
+            bus: std::ptr::null_mut(),
+            cut: 0,
         };
         // Regions one after another while each leaves at a word outside it
         // (the pipeline handed on, the core brought up to date at the end):
@@ -225,6 +248,7 @@ impl SharcJit {
         loop {
             let code = self.regions[r as usize].code.expect("region_at found code");
             let mut d: &mut dyn Bus = ext;
+            ctx.bus = &mut d as *mut &mut dyn Bus as *mut u8;
             // SAFETY: made by `translate` for the words of region `r`,
             // which hold what it was translated from (they are watched;
             // `overwritten` drops a region before it can run stale),
@@ -235,7 +259,8 @@ impl SharcJit {
             ran += ctx.ran;
             if ctx.cycles > 0 {
                 cycles += ctx.cycles;
-                (pc, st) = (ctx.pc, ctx.st);
+                pc = ctx.pc;
+                st = if ctx.st_pc == ctx.pc { ctx.st } else { s.stky() };
             }
             if ctx.fault.is_some()
                 || ctx.kind != OUTSIDE
@@ -247,10 +272,13 @@ impl SharcJit {
                 break;
             }
             let Some(next) = self.region_at(s, ctx.pipe.x) else { break };
+            if !self.in_mode(s, next) {
+                break;
+            }
             r = next;
             ctx.budget = budget - ran;
             ctx.base = base + ran;
-            (ctx.ran, ctx.cycles, ctx.kind) = (0, 0, STOPPED);
+            (ctx.ran, ctx.cycles, ctx.kind, ctx.cut) = (0, 0, STOPPED, 0);
         }
         self.stats.helper_words += ctx.helper;
         s.jit_exit(&ctx.pipe, pc, cycles, base + ran, st);
@@ -261,6 +289,23 @@ impl SharcJit {
             return Step::Ran;
         }
         self.single(s, ext)
+    }
+
+    /// Can region `r` run, the core's modes being as they are? If not, it
+    /// is dropped, to be translated again for them when next reached.
+    #[inline]
+    fn in_mode(&mut self, s: &Sharc, r: u32) -> bool {
+        if self.regions[r as usize].mode == emit::Mode::of(s) {
+            return true;
+        }
+        self.mode_changed(r);
+        false
+    }
+
+    #[cold]
+    fn mode_changed(&mut self, r: u32) {
+        self.stats.discarded += 1;
+        self.drop_region(r as usize);
     }
 
     /// The interpreter's single step.
@@ -431,7 +476,8 @@ impl SharcJit {
             self.table[word_index(i.addr).expect("planned words are internal")] = r + FIRST;
         }
         s.watch_words(words.iter().map(|i| i.addr));
-        self.regions.push(Region { start, words: words.clone(), code: None, dead: false });
+        let mode = emit::Mode::of(s);
+        self.regions.push(Region { start, words: words.clone(), code: None, mode, dead: false });
         let end = start + words.len() as u32;
         // Words the pipeline may reach other than as the plain sequence: a
         // branch's two delay slots, a loop's last two words.
@@ -448,7 +494,7 @@ impl SharcJit {
             }
         }
         self.jobs.queue(self.key.unwrap_or(0), start, end, urgency, None, move |b, ptr| {
-            emit::Emit::new(b, ptr).region(&words, &general);
+            emit::Emit::new(b, ptr, mode).region(&words, &general);
         });
     }
 
