@@ -568,22 +568,95 @@ the next thing a short session (a boot, an attract loop) would notice.
   slot resumes on the interpreter for one word; a block that starts in a
   delay slot would take those too.
 
-### The SHARC (Model 2B), not done
+### The SHARC (Model 2B), in progress
 
-What carries over: the module and helper conventions (`copro.rs`), the
-dispatcher with a word budget and exits after any word (the 2B copro runs
-a few words per i960 instruction too, `sharc::STEPS_PER_INSN`), the
-lockstep harness (`model2::copro_jit`, with the overlay bus that keeps the
-interpreter's writes apart) and the random-program tests. The SHARC
-already has what the MB86235 lacked, block rules (`codegen::in_block`,
-`Sharc::block_start`/`block_end`) and code discovery, and `make lockstep`
-compares it. What is new: its compute lowering (ALU, multiplier and
-shifter, with `float::single`'s exact rounding and the 40-bit forms), the
-DAGs with their modify, circular and bit-reversed addressing, two delay
-slots, the loop and status stacks with their end-of-loop tests, and
-48-bit program memory that the programs write (so code checks like the
-i960's RAM blocks). A lowering two to three times the MB86235's: 3-4
-weeks, with the lockstep and the random tests reused.
+`jit::adsp2106x::SharcJit`, Model 2B's copro (`model2::sharc::Copro`) and
+geometrizer (`Engine::process_sharc`, `--geo chip`) through
+`model2::copro_jit::SharcJitSlot`; on with the other copro JITs (`--jit`,
+the player's default), off with `--jit-copro off`, beside the interpreter
+with `--jit-copro check` (`make jit-copro-lockstep`). It takes the place of
+recompiled SHARC code, as the other copro JITs do.
+
+**Shape: the recompiler's regions, translated at run time.** The static
+recompiler already runs a SHARC program's straight-line words as blocks
+(docs/recompiler.md, "Blocks"): runs of words that can be in one
+(`codegen::in_block`) become a region entered at any of its words, which
+`Sharc::block_start` lets run as one block when the pipeline, loop logic,
+interrupts and timer allow it, `block_exec` runs word by word (leaving
+before a taken branch or an IOP register access) and `block_end` brings
+the pipeline, counters and latches up to date as single steps would have
+left them. The JIT is that, made at run time: `SharcJit::run` has
+`Sharc::run_bus`'s contract and the recompiled `run`'s loop (a block where
+`block_start` allows one, else the interpreter's single step, then the
+bus's `after_step`); each region is one Cranelift function with a jump
+table to the word it is entered at. Regions are the recompiler's
+(`codegen::regions` over what `codegen::discover` finds from the reset
+and interrupt vectors), and a word reached outside them starts a region of
+its own, up to the next word that can't be in a block. So the timing is
+the interpreter's step for step, by the same rules the recompiled build
+and `make lockstep` already rely on.
+
+**The program, and code it writes.** A JIT follows the program its core
+holds, named by `code_hash` over the discovered words (so a state load,
+or another upload of the same code with other data, keeps its
+translations; another program starts again). The words of every region
+translated are watched (`Sharc::watch_words`, the recompiler's
+`watch_code` a region at a time): a write to one makes `block_start`
+decline and the JIT drop that region (`Sharc::take_overwritten`), which
+is planned again from the new words when it next runs. A state load or
+an upload stops the watch, and run-ahead's copy of a core takes the other
+core's: the JIT sets its own up again before its next run.
+
+**Lockstep.** The SHARCs' external buses have state the interpreter can't
+be given a copy of cheaply (the copro's FIFOs and buffer RAM, the
+geometrizer's list DMA and polygon RAM), so `--jit-copro check` runs the
+JIT first, on the board's bus, logging each read and the FLAG inputs the
+bus set after each instruction it was asked about, then the interpreter
+on a replay of that log (the same reads in the same order, its writes
+compared with the JIT's, the FLAG inputs as the bus set them, stopping at
+the step the JIT stopped at), and compares the two cores after every run:
+`digest` (registers, stacks, pipeline, counters) every run, internal
+memory, execution counts and IOP registers every 64th and at every stop.
+
+**Milestones** (each exact before the next):
+
+1. Plumbing (done): regions whose words each call the interpreter's
+   `block_exec` (`h_exec`), the dispatcher, both SHARCs, the hot-block
+   list (`adsp2106x` in `hot.txt`), the lockstep, random-program tests
+   (`make jit-test`: random words of every type, registers, DAGs, modes
+   and external memory, runs of 1 to 256 words, compared in full after
+   every run).
+2. The common compute and data-move forms lowered to IR, the rest left to
+   `h_exec`.
+3. Branches, the two delay slots, loops and the status stacks, so that
+   blocks span more code.
+4. More random-program coverage.
+
+**What the programs run** (`REMODEL_SHARC_PROFILE=1 remodel run` prints
+it: each executed word by type and compute, from the execution counts;
+`zerogun`, 200M i960 instructions): the geometrizer's words are 99.8%
+ones a block can hold (NOPs 17%, register loads 14%, loads with a
+multiply-add 14%, loads with a multiply 8%, stores with an increment 7%,
+shifts, stores); the copro's 90% (conditional jumps 8%, multiplies,
+loads, immediate loads, adds; returns, BIT, calls and DOs are single
+steps).
+
+**Results so far** (milestone 1; `make bench`'s session, 600M i960
+instructions, coin start, host seconds; `--jit` before is the i960's JIT
+alone, the SHARCs interpreted):
+
+| | `zerogun` | `pltkids` |
+|---|---|---|
+| interpreter | 40.5 (geometrizer thread 36.3) | 59.1 (56.7) |
+| `--jit`, before | 38.2 (36.2) | 58.7 (57.2) |
+| `--jit`, regions on `h_exec` | 29.4 (27.4) | 44.0 (42.5) |
+
+The geometrizer's thread is what the run waits for, and runs 94% of its
+words in blocks (`gunblade`, 300M: 308M words in blocks, 21M single
+steps); the copro's slices are five words (`sharc::STEPS_PER_INSN`), so
+its blocks are short. `make jit-copro-lockstep` (300M) is identical on
+`overrevb`, `zerogun`, `gunblade` and `fvipers` (3.0-8.6 million copro
+runs and about 4,000 geometrizer runs compared each).
 
 ## A WebAssembly back end (sketch)
 
@@ -620,7 +693,7 @@ bench hashes as the gate at each step:
 | Piece | What | Estimate |
 |---|---|---|
 | i960 native JIT, finished | floats translated (the largest fallback group in both games: `mulr`, `addr`, `subr`, `movr`, `cvtir`, `cmpr`); an inline fast path for plain RAM and ROM reads (and writes, with the bus's write count and code counters); the per-instruction step cheaper (the interrupt check is a scan of eight words each time); translation on a worker thread with the hot-block list kept between runs; code memory reclaimed; a player setting; `jit-lockstep` over every game | 2-3 weeks |
-| Copro JITs | MB86234 and MB86235: done ("Copro JITs"). ADSP-21062 (2B copro and geometrizer): its lowering on the MB86235's dispatcher, lockstep and tests | 3-4 weeks |
+| Copro JITs | MB86234 and MB86235: done ("Copro JITs"). ADSP-21062 (2B copro and geometrizer): in progress ("The SHARC"): the recompiler's regions on Cranelift, lockstep and random tests done (milestone 1); the compute and data-move lowering, then branches and loops in blocks, to come | 2-3 weeks left |
 | WebAssembly back end | the emitter (`Op` to wasm), helper exports and a shared table in `remodel-web`, batched modules compiled off the main thread, Node lockstep | 3-4 weeks for the i960; each copro lowering then a further week or so, as the emitter is shared |
 
 ## Verdict
@@ -640,7 +713,7 @@ configuration; more needs, in order of what the profile says they buy:
    done for the MB86234 and MB86235 ("Copro JITs"), a further 1.2-1.3x
    (2.4x with the chip geometrizer), so that the JIT build is 1.66-1.8x
    the interpreter and ahead of the recompiled build on every set
-   measured; the SHARC remains,
+   measured; the SHARC is under way ("The SHARC"),
 2. an inline fast path for plain memory and a cheaper per-instruction
    step (interrupt check, timers),
 3. floats in the i960 lowering (the largest fallback group; small in time).

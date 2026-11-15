@@ -68,6 +68,10 @@ pub struct Copro {
     /// (docs/recompiler.md); `interpret` keeps it on the interpreter.
     native: Option<crate::recomp::SharcCoproRun>,
     pub interpret: bool,
+    /// The JIT (docs/jit.md, "The SHARC"), when it is on: it takes the
+    /// place of recompiled code.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) jit: crate::copro_jit::SharcJitSlot,
     /// Diagnostics: reads of an empty input FIFO, host interface errors,
     /// and accesses to anything else on the external bus.
     pub empty_reads: u64,
@@ -188,6 +192,8 @@ impl Copro {
             spin: None,
             native: None,
             interpret: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            jit: crate::copro_jit::SharcJitSlot::new("copro"),
             empty_reads: 0,
             host_errors: 0,
             other: BTreeMap::new(),
@@ -210,6 +216,8 @@ impl Copro {
     /// SHARC reset into host boot mode; releasing it lets the program run.
     pub fn control(&mut self, hold: bool) {
         if hold && !self.held {
+            #[cfg(not(target_arch = "wasm32"))]
+            let jit = std::mem::take(&mut self.jit);
             *self = Copro {
                 empty_reads: self.empty_reads,
                 host_errors: self.host_errors,
@@ -217,6 +225,11 @@ impl Copro {
                 rom: self.rom.take(),
                 ..Copro::new()
             };
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.jit = jit;
+                self.jit.reset();
+            }
         }
         if !hold && self.held {
             self.booted = true;
@@ -229,7 +242,9 @@ impl Copro {
     /// it has some and `interpret` isn't set.
     pub fn attach(&mut self) {
         self.native = None;
-        if self.interpret {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.jit.reset();
+        if self.interpret || self.jit_on() {
             self.cpu.watch_code(&[], &[]);
         } else {
             self.native =
@@ -240,6 +255,28 @@ impl Copro {
         }
     }
 
+    /// True if the copro runs on the JIT.
+    pub fn jit_on(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.jit.on();
+        #[cfg(target_arch = "wasm32")]
+        false
+    }
+
+    /// Run on the JIT, or not (docs/jit.md, "The SHARC"), as `c` says.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn set_jit(
+        &mut self,
+        c: &jit::Config,
+        list: Option<&std::sync::Arc<jit::HotList>>,
+    ) -> Result<(), String> {
+        self.jit.set(c.copro, c, list)?;
+        if self.booted {
+            self.attach();
+        }
+        Ok(())
+    }
+
     /// True if the copro runs recompiled code.
     pub fn is_native(&self) -> bool {
         self.native.is_some()
@@ -248,6 +285,8 @@ impl Copro {
     /// A host write to IOP register `reg` (the window at `0x8C0000`, or
     /// EPB0 through `0x884000` during an upload).
     pub fn host_write(&mut self, reg: u32, v: u32) {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.jit.reset();
         if self.held {
             self.program.push((reg as u64) << 32 | v as u64);
         }
@@ -257,6 +296,8 @@ impl Copro {
     }
 
     pub fn host_read(&mut self, reg: u32) -> u32 {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.jit.reset();
         self.cpu.host_read(reg).unwrap_or_else(|_| {
             self.host_errors += 1;
             0
@@ -328,9 +369,14 @@ impl Copro {
             spin: &mut self.spin,
         };
         bus.set_flags(&mut self.cpu);
-        let r = match self.native {
-            Some(run) => run(&mut self.cpu, &mut bus),
-            None => self.cpu.run_bus(&mut bus),
+        #[cfg(not(target_arch = "wasm32"))]
+        let jit = self.jit.run(&mut self.cpu, &mut bus);
+        #[cfg(target_arch = "wasm32")]
+        let jit = None;
+        let r = match (jit, self.native) {
+            (Some(r), _) => r,
+            (None, Some(run)) => run(&mut self.cpu, &mut bus),
+            (None, None) => self.cpu.run_bus(&mut bus),
         };
         if let Step::Fault(f) = r {
             self.fault = Some(f);
@@ -388,6 +434,8 @@ impl Copro {
         self.fault = src.fault;
         self.spin = src.spin;
         self.native = src.native;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.jit.copied();
     }
 }
 

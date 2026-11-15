@@ -281,6 +281,54 @@ impl Sharc {
         }
     }
 
+    /// Watch the words at `addrs` too, as `watch_code` does (for a JIT,
+    /// which translates a program a block at a time): a write to one of
+    /// them from now on marks it overwritten, and `block_start` declines
+    /// until [`take_overwritten`](Sharc::take_overwritten) has been
+    /// called. Words that aren't internal 48-bit words are ignored.
+    pub fn watch_words(&mut self, addrs: impl IntoIterator<Item = u32>) {
+        if self.code.is_empty() {
+            self.code = vec![0; self.decoded.len()];
+        }
+        for a in addrs {
+            if let Some(k) = word_index(a) {
+                if self.code[k] == 0 {
+                    self.code[k] = 1;
+                }
+            }
+        }
+    }
+
+    /// The watched words written since they were watched, which are no
+    /// longer watched (a JIT drops their translations and watches them
+    /// again when it translates them again).
+    pub fn take_overwritten(&mut self) -> Vec<u32> {
+        let mut v = Vec::new();
+        if std::mem::take(&mut self.code_dirty) {
+            let words = mem::WORDS48 as usize;
+            for (k, c) in self.code.iter_mut().enumerate() {
+                if *c == 2 {
+                    *c = 0;
+                    let base = if k < words { mem::BLOCK0 } else { mem::BLOCK1 };
+                    v.push(base + (k % words) as u32);
+                }
+            }
+        }
+        v
+    }
+
+    /// Whether any words are watched (`watch_code`, `watch_words`); a
+    /// state load or `watch_code(&[], &[])` stops watching all of them.
+    pub fn code_watched(&self) -> bool {
+        !self.code.is_empty()
+    }
+
+    /// Some watched word has been written.
+    #[inline(always)]
+    pub fn code_dirty(&self) -> bool {
+        self.code_dirty
+    }
+
     /// Compiled words the program has overwritten since `watch_code`.
     pub fn overwritten_code(&self) -> Vec<u32> {
         (0x2_0000..0x4_0000).filter(|&a| self.overwritten(a) == Some(true)).collect()

@@ -2404,7 +2404,7 @@ fn jit_report(m: &model2::Machine) {
         }
         println!(
             "jit copro     {chip}: {} blocks, {} words ({} left to the interpreter), {} KB of code, translated in {:.1} ms \
-             (slowest block {:.2} ms); {} blocks run, {} words interpreted outside blocks; {} translations thrown away{}",
+             (slowest block {:.2} ms); {} blocks run{}, {} words interpreted outside blocks; {} translations thrown away{}",
             s.blocks,
             s.words,
             s.fallbacks,
@@ -2412,6 +2412,15 @@ fn jit_report(m: &model2::Machine) {
             ms(s.time),
             ms(s.slowest),
             s.runs,
+            if s.block_words > 0 {
+                format!(
+                    " ({} words, {:.1}% of them on the interpreter's step)",
+                    s.block_words,
+                    s.helper_words as f64 * 100.0 / s.block_words as f64
+                )
+            } else {
+                String::new()
+            },
             s.interpreted,
             s.discarded,
             if checked > 0 { format!("; lockstep: {checked} runs compared, identical") } else { String::new() }
@@ -3324,6 +3333,25 @@ fn report_2b(
             .map(|&(a, n)| format!("{a:05x} {:.1}%", n as f64 * 100.0 / total))
             .collect();
         println!("{name:<13} hot spots: {}", spots.join(", "));
+        // REMODEL_SHARC_PROFILE=1: what it ran, by kind of word (for the
+        // JIT's lowering: docs/jit.md, "The SHARC").
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::env::var_os("REMODEL_SHARC_PROFILE").is_some() {
+            let p = model2::jit::adsp2106x::profile(cpu);
+            let all: u64 = p.iter().map(|e| e.2).sum::<u64>().max(1);
+            let blocks: u64 = p.iter().filter(|e| e.1).map(|e| e.2).sum();
+            println!(
+                "{name:<13} profile: {:.1}% of executed words can be in a block",
+                blocks as f64 * 100.0 / all as f64
+            );
+            for (k, b, n) in p.iter().take(40) {
+                println!(
+                    "{name:<13} profile {:5.2}% {}{k}",
+                    *n as f64 * 100.0 / all as f64,
+                    if *b { "" } else { "(single step) " }
+                );
+            }
+        }
         let misses: u64 = cpu.misses.values().sum();
         if !cpu.misses.is_empty() {
             let mut top: Vec<_> = cpu.misses.iter().collect();

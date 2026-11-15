@@ -1138,6 +1138,10 @@ impl Model2Bus {
         if self.tgp2a.is_none() && self.sharc.is_none() {
             self.tgp_jit.set(c.copro, c, list)?;
         }
+        // Model 2B's.
+        if let Some(s) = self.sharc.as_deref_mut() {
+            s.set_jit(c, list)?;
+        }
         self.geo.set_tgp_jit(c, list)
     }
 
@@ -1152,8 +1156,16 @@ impl Model2Bus {
         if let Some(j) = &self.tgp_jit.code {
             v.push(("MB86235 copro", j.stats(), self.tgp_jit.checked));
         }
+        if let Some(s) = self.sharc.as_deref() {
+            if let Some(j) = &s.jit.code {
+                v.push(("ADSP-21062 copro", j.stats(), s.jit.checked));
+            }
+        }
         if let Some((s, n)) = self.geo.tgp_jit_stats() {
             v.push(("MB86235 geometrizer", s, n));
+        }
+        if let Some((s, n)) = self.geo.sharc_jit_stats() {
+            v.push(("ADSP-21062 geometrizer", s, n));
         }
         v
     }

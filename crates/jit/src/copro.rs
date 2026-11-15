@@ -67,6 +67,10 @@ pub struct CoproStats {
     /// start the JIT couldn't take: mid-repeat, a delay slot, the budget).
     pub runs: u64,
     pub interpreted: u64,
+    /// Words run in blocks, and of those, words run on the interpreter's
+    /// step from inside one (the ADSP-21062's: its words not lowered yet).
+    pub block_words: u64,
+    pub helper_words: u64,
     /// Finished translations thrown away (the chip had another program
     /// by then).
     pub discarded: u64,
@@ -82,6 +86,8 @@ impl CoproStats {
         self.code_bytes += o.code_bytes;
         self.runs += o.runs;
         self.interpreted += o.interpreted;
+        self.block_words += o.block_words;
+        self.helper_words += o.helper_words;
         self.discarded += o.discarded;
     }
 }

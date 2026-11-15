@@ -538,6 +538,10 @@ pub struct Engine {
     /// `tgp` on the JIT (docs/jit.md, "Copro JITs"), when it is on.
     #[cfg(not(target_arch = "wasm32"))]
     tgp_jit: crate::copro_jit::TgpJit,
+    /// `sharc` on the JIT (docs/jit.md, "The SHARC"), when it is on: it
+    /// takes the place of recompiled code.
+    #[cfg(not(target_arch = "wasm32"))]
+    sharc_jit: crate::copro_jit::SharcJitSlot,
 }
 
 /// What smooth motion keeps between frames ([`Engine::set_smooth`]).
@@ -1016,6 +1020,8 @@ impl Engine {
             copy_buf: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             tgp_jit: crate::copro_jit::TgpJit::new("geometrizer", jit::mb86235::MAX_BLOCK),
+            #[cfg(not(target_arch = "wasm32"))]
+            sharc_jit: crate::copro_jit::SharcJitSlot::new("geometrizer"),
         }
     }
 
@@ -1068,6 +1074,8 @@ impl Engine {
             copy_buf: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             tgp_jit: crate::copro_jit::TgpJit::new("geometrizer", jit::mb86235::MAX_BLOCK),
+            #[cfg(not(target_arch = "wasm32"))]
+            sharc_jit: crate::copro_jit::SharcJitSlot::new("geometrizer"),
         }
     }
 
@@ -1084,6 +1092,8 @@ impl Engine {
         if self.mode == GeoMode::Native {
             if let (Some(n), Some(s)) = (&self.native, self.sharc.as_deref_mut()) {
                 n.export(s);
+                #[cfg(not(target_arch = "wasm32"))]
+                self.sharc_jit.reset();
             }
             if let Some(n) = self.native_tgp.take() {
                 if crate::geo_native_2c::fresh(&self.tgp) {
@@ -1188,8 +1198,14 @@ impl Engine {
     /// it has some and `sharc_interpret` isn't set.
     pub fn attach_sharc(&mut self) {
         self.sharc_native = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.sharc_jit.reset();
+        #[cfg(not(target_arch = "wasm32"))]
+        let jit = self.sharc_jit.on();
+        #[cfg(target_arch = "wasm32")]
+        let jit = false;
         let Some(s) = self.sharc.as_deref_mut() else { return };
-        if self.sharc_interpret {
+        if self.sharc_interpret || jit {
             s.watch_code(&[], &[]);
         } else {
             self.sharc_native = crate::recomp::attach_sharc(s, crate::recomp::SharcRole::Geo).and_then(|p| p.geo);
@@ -1271,6 +1287,8 @@ impl Engine {
             if let (Some(to), Some(from)) = (&mut self.sharc, &src.sharc) {
                 to.copy_from(from, &mut self.copy_buf);
                 self.sharc_native = src.sharc_native;
+                #[cfg(not(target_arch = "wasm32"))]
+                self.sharc_jit.copied();
             }
         }
         self.native.clone_from(&src.native);
@@ -1801,11 +1819,19 @@ impl Engine {
         self.frames += 1;
         let native = self.sharc_native;
         let Some(s) = self.sharc.as_deref_mut() else { return };
-        // Recompiled code for this program if the build has it, else the
-        // interpreter; they must behave identically.
-        let run = |s: &mut Sharc, bus: &mut SharcGeoBus| match native {
-            Some(f) => f(s, bus),
-            None => s.run_bus(bus),
+        #[cfg(not(target_arch = "wasm32"))]
+        let jit = &mut self.sharc_jit;
+        // The JIT if it is on, recompiled code for this program if the
+        // build has it, else the interpreter; they must behave identically.
+        let mut run = |s: &mut Sharc, bus: &mut SharcGeoBus| {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(r) = jit.run(s, bus) {
+                return r;
+            }
+            match native {
+                Some(f) => f(s, bus),
+                None => s.run_bus(bus),
+            }
         };
         let mut out = Vec::new();
         let mut active = false;
@@ -1962,9 +1988,13 @@ impl Geometrizer {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn set_tgp_jit(&mut self, c: &jit::Config, list: Option<&std::sync::Arc<jit::HotList>>) -> Result<(), String> {
         let e = self.engine_mut();
-        // Only a 2C board's geometrizer runs a TGP program.
+        // Only a 2C board's geometrizer runs a TGP program; a 2B board's
+        // runs a SHARC one.
         let on = c.copro && e.sharc.is_none() && !e.fixed;
-        e.tgp_jit.set(on, c, list)
+        e.tgp_jit.set(on, c, list)?;
+        e.sharc_jit.set(c.copro && e.sharc.is_some(), c, list)?;
+        e.attach_sharc();
+        Ok(())
     }
 
     /// Its JIT's counters and the runs compared, when it is on (and no
@@ -1973,6 +2003,14 @@ impl Geometrizer {
     pub fn tgp_jit_stats(&self) -> Option<(jit::CoproStats, u64)> {
         let Slot::Idle(e) = &self.engine else { return None };
         e.tgp_jit.code.as_ref().map(|j| (j.stats(), e.tgp_jit.checked))
+    }
+
+    /// The 2B geometrizer's JIT's counters and the runs compared, when it
+    /// is on (and no frame is running: `sync` first).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn sharc_jit_stats(&self) -> Option<(jit::CoproStats, u64)> {
+        let Slot::Idle(e) = &self.engine else { return None };
+        e.sharc_jit.code.as_ref().map(|j| (j.stats(), e.sharc_jit.checked))
     }
 
     /// Smooth motion: whether the frames started from now on are shown

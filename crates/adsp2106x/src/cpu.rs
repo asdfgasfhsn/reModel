@@ -74,6 +74,31 @@ pub trait Bus {
     fn after_access(&mut self, _cpu: &mut Sharc) {}
 }
 
+/// A bus borrowed: what a JIT hands its translated code (as `&mut dyn
+/// Bus`), and anything else that wraps one.
+impl<B: Bus + ?Sized> Bus for &mut B {
+    #[inline(always)]
+    fn read(&mut self, addr: u32, width: Width) -> u64 {
+        (**self).read(addr, width)
+    }
+    #[inline(always)]
+    fn write(&mut self, addr: u32, width: Width, v: u64) {
+        (**self).write(addr, width, v)
+    }
+    #[inline(always)]
+    fn after_step(&mut self, cpu: &mut Sharc) -> bool {
+        (**self).after_step(cpu)
+    }
+    #[inline(always)]
+    fn block_budget(&mut self, cpu: &Sharc) -> u64 {
+        (**self).block_budget(cpu)
+    }
+    #[inline(always)]
+    fn after_access(&mut self, cpu: &mut Sharc) {
+        (**self).after_access(cpu)
+    }
+}
+
 /// Why the core stopped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fault {

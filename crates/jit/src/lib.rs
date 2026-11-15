@@ -11,12 +11,14 @@
 //! design and the measurements.
 //!
 //! The copro programs have JITs of their own on the same Cranelift setup
-//! ([`mb86234`], [`mb86235`]): each word lowered as its interpreter's step
-//! defines it, the interpreter's timing kept word for word (docs/jit.md,
-//! "Copro JITs").
+//! ([`mb86234`], [`mb86235`], [`adsp2106x`]): each word lowered as its
+//! interpreter's step defines it, the interpreter's timing kept word for
+//! word (docs/jit.md, "Copro JITs").
 //!
 //! Off the browser build only: on `wasm32` the crate is empty.
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod adsp2106x;
 #[cfg(not(target_arch = "wasm32"))]
 mod copro;
 #[cfg(not(target_arch = "wasm32"))]

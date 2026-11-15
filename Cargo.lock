@@ -2660,6 +2660,7 @@ dependencies = [
 name = "remodel-jit"
 version = "0.9.0"
 dependencies = [
+ "adsp2106x",
  "cranelift-codegen",
  "cranelift-frontend",
  "cranelift-jit",

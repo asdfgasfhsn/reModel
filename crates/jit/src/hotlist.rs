@@ -28,6 +28,8 @@ pub enum Chip {
     I960,
     Mb86234,
     Mb86235,
+    /// Model 2B's SHARCs, copro and geometrizer (their programs differ).
+    Adsp2106x,
 }
 
 impl Chip {
@@ -36,11 +38,12 @@ impl Chip {
             Chip::I960 => "i960",
             Chip::Mb86234 => "mb86234",
             Chip::Mb86235 => "mb86235",
+            Chip::Adsp2106x => "adsp2106x",
         }
     }
 
     fn parse(s: &str) -> Option<Chip> {
-        [Chip::I960, Chip::Mb86234, Chip::Mb86235].into_iter().find(|c| c.name() == s)
+        [Chip::I960, Chip::Mb86234, Chip::Mb86235, Chip::Adsp2106x].into_iter().find(|c| c.name() == s)
     }
 }
 

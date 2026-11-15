@@ -1,6 +1,6 @@
 [package]
 name = "remodel-jit"
-description = "JITs for the i960 and the copro programs (MB86234, MB86235): code translated to native machine code at run time with Cranelift (docs/jit.md)"
+description = "JITs for the i960 and the copro programs (MB86234, MB86235, ADSP-21062): code translated to native machine code at run time with Cranelift (docs/jit.md)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -9,6 +9,7 @@ license.workspace = true
 name = "jit"
 
 [dependencies]
+adsp2106x.workspace = true
 i960.workspace = true
 mb86234.workspace = true
 mb86235.workspace = true
