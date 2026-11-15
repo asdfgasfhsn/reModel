@@ -151,14 +151,30 @@ pub struct OverlayPaint {
     pub clear: bool,
 }
 
-/// Paint `o` over `target` and submit.
-pub fn paint_overlay(core: &mut Core, o: &OverlayPaint, target: &wgpu::TextureView) {
+/// Apply `o`'s texture changes without painting it: for a redraw that
+/// draws nothing (the surface gave no texture). egui sends each change
+/// once, so a dropped one would leave a later update to a texture that
+/// was never made (egui-wgpu panics: "not been allocated yet").
+pub fn apply_overlay_textures(core: &mut Core, o: &OverlayPaint) {
+    set_overlay_textures(core, o);
+    for id in &o.textures.free {
+        core.egui.free_texture(id);
+    }
+}
+
+fn set_overlay_textures(core: &mut Core, o: &OverlayPaint) {
     let (device, queue) = (core.renderer.device(), core.renderer.queue());
     for (id, deltas) in &o.textures.set {
         for delta in deltas {
             core.egui.update_texture(device, queue, *id, delta);
         }
     }
+}
+
+/// Paint `o` over `target` and submit.
+pub fn paint_overlay(core: &mut Core, o: &OverlayPaint, target: &wgpu::TextureView) {
+    set_overlay_textures(core, o);
+    let (device, queue) = (core.renderer.device(), core.renderer.queue());
     let mut enc = device.create_command_encoder(&Default::default());
     let extra = core.egui.update_buffers(device, queue, &mut enc, &o.jobs, &o.screen);
     {
@@ -218,8 +234,12 @@ pub struct Report {
 pub fn run(core: &mut Core, job: Job, started: &dyn Fn()) -> Report {
     let frame = match core.surface.get_current_texture() {
         wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
-        // Lost, outdated, hidden or timed out: configure again, skip a draw.
+        // Lost, outdated, hidden or timed out: configure again, skip a draw
+        // (but keep the overlay's textures up to date).
         _ => {
+            if let Some(o) = &job.overlay {
+                apply_overlay_textures(core, o);
+            }
             core.surface.configure(core.renderer.device(), &job.config);
             return Report { missed: true, draw: Duration::ZERO, game: None, hash: None };
         }
