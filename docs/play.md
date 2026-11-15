@@ -401,6 +401,14 @@ threads rather than both added up. `--no-overlap` draws on the main
 thread straight after emulating, as before (for comparison; the same
 code, run in place).
 
+Following the display, the frames due are the refreshes that went by
+since the last redraw (one game frame each at 60 Hz, one per two at
+120 Hz; the fraction of a refresh carried over), not one per redraw: a
+redraw that comes late, after the surface's wait ran past a vblank, runs
+the missed refreshes' frames too (up to `MAX_CATCH_UP`), so the game
+keeps its speed and the audio its pitch. A gap over 0.1 s is a stall,
+counted as one refresh and left to the audio queue.
+
 The hand-over copies what the renderer reads from the machine shown
 (`gpu::BoardFrame`): the geometrizer's raster stream and texture point
 RAM, its smooth motion frame and lighting side channel (shared, not

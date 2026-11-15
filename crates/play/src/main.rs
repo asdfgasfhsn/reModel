@@ -265,6 +265,25 @@ const ASPECTS: (f32, f32) = (4.0 / 3.0, 32.0 / 9.0);
 const PREVIEW_DB: f32 = -9.0;
 /// The preview's sound fades in over this, its picture out over `FADE_OUT`.
 const SOUND_FADE: Duration = Duration::from_millis(1200);
+/// Following the display: a gap between redraws longer than this is a
+/// stall (a driver or window-system hitch), counted as one refresh rather
+/// than caught up (as the audio rate control, `sound::STALL`).
+const REFRESH_STALL: f64 = 0.1;
+/// The refreshes at `hz` that went by in the `dt` seconds since the last
+/// redraw, with `part` the fraction of one carried between calls: 1 for
+/// the first redraw or after a stall (`REFRESH_STALL`), 0 for an extra
+/// early one.
+fn refreshes_gone(part: &mut f64, dt: f64, hz: f64) -> u64 {
+    if dt <= 0.0 || dt > REFRESH_STALL {
+        *part = 0.0;
+        return 1;
+    }
+    let r = *part + dt * hz;
+    let n = r.round().max(0.0);
+    *part = r - n;
+    n as u64
+}
+
 const FADE_OUT: Duration = Duration::from_millis(200);
 /// Seconds of game the player may run behind before run-ahead is turned
 /// off.
@@ -947,6 +966,10 @@ struct Play {
     /// A game started from the launcher: since when (fading in).
     game_fade: Option<Instant>,
     redraws: u64,
+    /// Following the display: refreshes counted since the game started
+    /// following it, and the fraction of one carried over (see `emulate`).
+    refreshes: u64,
+    refresh_part: f64,
     /// When `emulate` last ran (for the audio rate control).
     last_emulate: Option<Instant>,
     /// Host time per game frame (emulating, waiting for the geometrizer and
@@ -1858,9 +1881,18 @@ impl Play {
         let (due, speed) = match self.per_refresh() {
             // `--fast`: as fast as it goes.
             _ if self.opts.fast => (frames + MAX_CATCH_UP as u64, 1.0),
+            // A frame per refresh gone by since the last redraw, not per
+            // redraw: a redraw that comes late (the surface waited past a
+            // vblank) runs the frames of the refreshes it missed, so the
+            // game keeps its speed and the audio its pitch.
             Some(k) => {
                 let hz = self.gpu.as_ref().and_then(|g| g.refresh).unwrap_or(60.0);
-                (frames + (k == 1.0 || self.redraws.is_multiple_of(2)) as u64, hz * k / FPS)
+                let dt = self.last_emulate.map_or(0.0, |l| (now - l).as_secs_f64());
+                let n = refreshes_gone(&mut self.refresh_part, dt, hz);
+                let before = self.refreshes;
+                self.refreshes += n;
+                let f = if k == 1.0 { n } else { self.refreshes / 2 - before / 2 };
+                (frames + f, hz * k / FPS)
             }
             None => (((now - self.epoch).as_secs_f64() * FPS) as u64, 1.0),
         };
@@ -3215,6 +3247,8 @@ fn main() {
         smooth_at: Instant::now(),
         game_fade: None,
         redraws: 0,
+        refreshes: 0,
+        refresh_part: 0.0,
         last_emulate: None,
         frame_cost: 0.0,
         behind: false,
@@ -3284,5 +3318,31 @@ fn main() {
     if let Some(mut log) = play.frame_log.take() {
         use std::io::Write;
         let _ = log.flush();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::refreshes_gone;
+
+    #[test]
+    fn counts_refreshes_gone() {
+        let mut part = 0.0;
+        let ms = |t: f64| t / 1000.0;
+        // 60 Hz: on time, late by a vblank, a jittery pair, an extra early one.
+        let n: Vec<u64> = [16.7, 16.6, 33.4, 50.0, 24.0, 9.4, 4.0, 12.7]
+            .iter()
+            .map(|&t| refreshes_gone(&mut part, ms(t), 60.0))
+            .collect();
+        assert_eq!(n, [1, 1, 2, 3, 1, 1, 0, 1]);
+        // Over a long run with jitter none are lost or made up.
+        let mut total = 0;
+        for i in 0..6000 {
+            total += refreshes_gone(&mut part, ms(if i % 2 == 0 { 12.0 } else { 21.333 }), 60.0);
+        }
+        assert!((5999..=6001).contains(&total), "{total}");
+        // A stall counts as one.
+        assert_eq!(refreshes_gone(&mut part, 0.5, 60.0), 1);
+        assert_eq!(part, 0.0);
     }
 }
