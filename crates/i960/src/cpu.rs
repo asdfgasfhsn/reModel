@@ -116,6 +116,10 @@ pub struct Cpu {
     pub icr: u32,
     /// Pending interrupt vectors, one bit each.
     pending: [u32; 8],
+    /// Which words of `pending` are nonzero (bit i for word i): the
+    /// interrupt check before every instruction is one compare when
+    /// nothing is pending. Derived (not saved): kept with `pending`.
+    pending_words: u8,
     pub icount: u64,
     /// Saved local-register sets of the most recent callers.
     pub locals: LocalCache,
@@ -156,6 +160,7 @@ impl Cpu {
             int_stack: 0,
             icr: ICR_RESET,
             pending: [0; 8],
+            pending_words: 0,
             icount: 0,
             locals: LocalCache::default(),
             unhandled_iac: Vec::new(),
@@ -208,6 +213,7 @@ impl Cpu {
     /// Raise interrupt `vector` (8-255). Its priority is `vector / 8`.
     pub fn post_interrupt(&mut self, vector: u8) {
         self.pending[(vector >> 5) as usize] |= 1 << (vector & 31);
+        self.pending_words |= 1 << (vector >> 5);
     }
 
     /// Assert external interrupt line 0-3; the ICR picks its vector.
@@ -231,15 +237,20 @@ impl Cpu {
         }
     }
 
+    #[inline(always)]
     pub fn has_pending(&self) -> bool {
-        self.pending.iter().any(|&w| w != 0)
+        self.pending_words != 0
     }
 
+    #[inline(always)]
     fn highest_pending(&self) -> Option<u8> {
-        (0..8)
-            .rev()
-            .find(|&i| self.pending[i] != 0)
-            .map(|i| (i as u32 * 32 + 31 - self.pending[i].leading_zeros()) as u8)
+        let i = 7u32.checked_sub(self.pending_words.leading_zeros())?;
+        Some((i * 32 + 31 - self.pending[i as usize].leading_zeros()) as u8)
+    }
+
+    /// `pending_words` from `pending` (after `pending` was loaded).
+    fn sum_pending(&mut self) {
+        self.pending_words = (0..8).filter(|&i| self.pending[i] != 0).fold(0, |m, i| m | 1 << i);
     }
 
     #[doc(hidden)]
@@ -248,7 +259,11 @@ impl Cpu {
         let Some(v) = self.highest_pending() else { return };
         let level = (v >> 3) as u32;
         if level == 31 || level > self.priority() {
-            self.pending[(v >> 5) as usize] &= !(1 << (v & 31));
+            let w = (v >> 5) as usize;
+            self.pending[w] &= !(1 << (v & 31));
+            if self.pending[w] == 0 {
+                self.pending_words &= !(1 << w);
+            }
             self.take_interrupt(bus, v, level);
         }
     }
@@ -1183,7 +1198,22 @@ fn f64_to_ext80(v: f64) -> (u32, u32, u32) {
 
 // Save states: the decoded-instruction cache and diagnostics are rebuilt or
 // dropped.
-state::fields!(Cpu { r, fpr, ip, ac, pc, tc, sat, prcb, int_table, int_stack, icr, pending, icount, locals });
+// (`state::fields!`, but `pending_words` is derived from `pending` on load.)
+macro_rules! cpu_state {
+    ($($f:ident),*) => {
+        impl state::State for Cpu {
+            fn save(&self, w: &mut state::Writer) {
+                $( state::State::save(&self.$f, w); )*
+            }
+            fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
+                $( state::State::load(&mut self.$f, r)?; )*
+                self.sum_pending();
+                Ok(())
+            }
+        }
+    };
+}
+cpu_state!(r, fpr, ip, ac, pc, tc, sat, prcb, int_table, int_stack, icr, pending, icount, locals);
 
 #[cfg(test)]
 mod tests;

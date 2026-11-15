@@ -71,19 +71,26 @@ depends on it only off `wasm32`).
 - **Inline**: integer and logical operations, shifts with the i960's
   rules (0 from a count of 32, `shri` capped at 31), compares and the
   condition code, condition tests and branches, `lda`, `mov` to `movq`,
-  effective addresses.
-- **Calls**: memory accesses (`read8/16/32`, `write8/16/32`), `call` and
-  `callx`, `ret`, and fallbacks. A memory helper first tells the machine
-  the instruction's address (`Host::at`), as recompiled code does before
-  every instruction (the bus only uses it to attribute accesses).
-- **After each instruction**, one call (`step`, or `step_last` for a
-  block's last): count it, `Host::retire` it (the TGP, timers, vblank,
-  interrupt lines run), and leave the block if the machine says stop (a
-  frame ended, the budget ran out), an interrupt is due, or a fallback
-  moved the IP (an IAC reinit, `modpc` letting an interrupt in). This is
-  the recompiler's per-instruction sequence moved into one helper: it
-  keeps the IR small (translation time is mostly Cranelift's, in
-  proportion to the IR).
+  effective addresses; reads and writes of plain memory ("Plain memory
+  inline"); the step after an instruction while the machine is quiet ("A
+  cheaper step").
+- **Calls**: other memory accesses (`read8/16/32`, `write8/16/32`: I/O,
+  unaligned, unmapped), `call` and `callx`, `ret`, and fallbacks. A
+  memory helper first tells the machine the instruction's address
+  (`Host::at`), as recompiled code does before every instruction (the bus
+  only uses it to attribute I/O accesses). `call`, `ret` and the
+  fallbacks run the interpreter's own code on the machine wrapped so that
+  its plain memory is reached as the inline paths reach it (`Plain`: a
+  call's frame, 16 words written through, no longer goes through the
+  bus's lookups).
+- **After each instruction**, when the machine isn't quiet, one call
+  (`step`, or `step_last` for a block's last): count it, `Host::retire` it
+  (the TGP, timers, vblank, interrupt lines run), and leave the block if
+  the machine says stop (a frame ended, the budget ran out), an interrupt
+  is due, or a fallback moved the IP (an IAC reinit, `modpc` letting an
+  interrupt in). This is the recompiler's per-instruction sequence moved
+  into one helper: it keeps the IR small (translation time is mostly
+  Cranelift's, in proportion to the IR).
 - **No block linking**: every block returns to the dispatcher
   (`Machine::dispatch`), which takes due interrupts, checks the idle loops
   and looks the next block up in a page table by address. The profile
@@ -93,10 +100,54 @@ depends on it only off `wasm32`).
   isn't worth it before the bigger items below.
 - **Hot threshold**: a block start is interpreted twice before it is
   translated (`--jit-hot N`), which leaves most of the boot code, run
-  once, on the interpreter. Cranelift's optimiser is off and its
-  single-pass register allocator on (`--jit-opt speed` for the optimiser
-  and the full allocator): that halves the translation time, and the
-  blocks run as fast either way (Results).
+  once, on the interpreter. Cranelift's optimiser is off, its full
+  (backtracking) register allocator on (`--jit-opt speed` for the
+  optimiser too). With memory and the step inline a block is many small
+  CFG blocks, around which the single-pass allocator (the default until
+  then, and still the copro JITs') kept every value in a stack slot; the
+  full one made the blocks about 20% faster for 40% more translation time,
+  which the workers hide (Results).
+
+### Plain memory inline
+
+The machine hands each run of a block a table (`JitHost::fast_pages`):
+for each 64 KB page below `FAST_SPAN` (64 MB, which covers the program
+ROM, the RAMs, buffer RAM, tile and palette RAM and the data ROM), where
+its bytes are if all of it is plain memory, and for writes the memory's
+write count and, in code RAM, the page's first write counter. An access
+aligned to its width and below the span (one `band` against a mask) to a
+page with an entry is made inline: a read is a load, a write bumps the
+memory's write count (`Mem::writes`, the renderer's version numbers, in
+save states) and, in code RAM, its KB's counter by exactly what the bus
+adds (2: it counts the first and the last byte's KB, the same one for an
+aligned access), then stores. Everything else goes through the bus as
+before: I/O, unaligned accesses (which may cross a counter's KB or a
+page), Model 2A's video RAM (whose writes are mirrored), memories
+smaller than a page, ROM writes. `Model2Bus` makes the table when the JIT
+starts counting code writes and again after a state load, and gives an
+empty one while an idle-loop probe or a write watch is looking at
+accesses. The blocks of code in RAM still check their counters after
+each store, inline path or not ("Code in RAM").
+
+### A cheaper step
+
+Most retires do nothing but pass time: the copro is stopped or waiting
+on its input, and no timer, vblank or UART event is due. The machine
+says how many of the next retires are like that (`JitHost::quiet`, for
+`Model2Bus` the idle-loop skip's own bound, `quiet_retires`, when the
+copro is idle, no interrupt line is waiting to be passed on, and less
+than the budget). While that count lasts, a block's step is inline: count
+the instruction, take one off the count, go on. The retires are owed, and
+made at once (`JitHost::retire_quiet`: time and the budget move on) before
+anything reaches the machine: every helper call settles them first and
+leaves the count at 0, so the step after it is the full one, which
+retires and asks again. No interrupt can become due meanwhile (lines are
+raised only by events and I/O, priorities change only in helpers), and
+the dispatcher sees the machine exactly as after that many single
+retires. The interrupt check itself (`Cpu::interrupt_due`, before every
+instruction in the interpreter too) is one compare when nothing is
+pending: the CPU keeps a byte saying which of its eight pending words are
+nonzero, rebuilt from them on a state load (it isn't saved).
 
 ### Timing stays exact
 
@@ -369,6 +420,64 @@ the interrupt check (`Cpu::interrupt_due` scans eight words per
 instruction). The split between copro and geometrizer is by function
 name; on 2A the native geometrizer's MB86235 helpers count as
 geometrizer.
+
+**Memory and the step inline** ("Plain memory inline", "A cheaper step",
+the full register allocator). `make bench`'s session with `JIT=1`, host
+seconds, the faster of three runs alternating the build before and after
+on the same machine (busy with another session's hash loop, so within
+about 0.1 s):
+
+| | `topskatr` (chip geometrizer) | `topskatr --geo native` | `srallyc` | `vf2` | `zerogun` (2B) | `dynamcop` (2B) |
+|---|---|---|---|---|---|---|
+| before | 7.41 | 3.72 | 2.95 | 7.88 | 10.95 | 4.62 |
+| **after** | **6.78** | **2.62** | **2.21** | **6.06** | **10.49** | **3.18** |
+| faster | 1.09x | 1.42x | 1.33x | 1.30x | 1.04x | 1.45x |
+
+Where the i960 is the limit (`topskatr` native, `srallyc`, `vf2`,
+`dynamcop`) the session is 1.3-1.45x faster; with `topskatr`'s chip
+geometrizer and on `zerogun` the geometrizer's thread (its program on its
+JIT) is the limit, so the gain is what the game's thread no longer adds.
+Along the way: the inline paths and the inline step alone (single-pass
+allocator) 1.13-1.18x; the frame writes of `call` through `Plain`, and the
+full allocator, the rest. Translation time went up with the IR, from
+0.4 to 0.6-0.9 s per session (on the workers, hidden by them and by the
+hot-block list).
+
+The game's thread, sampled as above (every 5 ms of wall time, gdb under
+`SIGUSR2`), as shares of each run and in seconds of the session's time
+(the share times the bench time); translated code here includes the
+copros' (their code is in the same kind of memory, and the unwinder
+can't always say whose):
+
+| | `topskatr --geo native` before | after | `srallyc` before | after |
+|---|---|---|---|---|
+| translated code (i960 and copro) | 38% (1.40 s) | 52% (1.35 s) | 31% (0.91 s) | 43% (0.94 s) |
+| per-instruction: `step`, `retire`, the interrupt check | 20% (0.74 s) | 13% (0.33 s) | 23% (0.69 s) | 11% (0.25 s) |
+| bus: memory and I/O | 16% (0.59 s) | 9% (0.23 s) | 13% (0.39 s) | 8% (0.19 s) |
+| copro on its JIT's helpers, interpreter | 5% | 7% | 5% | 6% |
+| dispatcher, idle loops | 3% | 4% | 4% | 8% |
+| i960 interpreter (fallbacks, single steps) | 3% | 3% | 5% | 6% |
+| translating (linking, allocation), libc, other | 15% | 13% | 19% | 18% |
+
+What is left of the step is mostly the full step's own work: asking the
+machine again how long it stays quiet (`quiet_retires`, 3-4%) and the
+retires while the copro runs; of the bus, I/O (the copro's FIFOs and
+status, the frame registers) and the bus's own lookups for accesses the
+inline paths don't take.
+
+**Exactness.** `make bench-all` and `make bench-all JIT=1`: 22 of 22
+hashes. `make jit-lockstep` identical for 300M instructions on `srallyc`,
+`topskatr` and `zerogun`; `make jit-copro-lockstep` identical on
+`topskatr`, `vf2` and `zerogun`. Random programs (`make jit-test`,
+`native::fast_tests`: loads and stores of every width at the edges of
+ROM, code RAM, data RAM, an I/O page that counts its reads, the top of
+the span and a mirror just above it, unaligned ones, stores over the
+block's own code, events every 37 retires) compared with the interpreter
+after every block, then memory, write counts, code counters, I/O and
+event times: they fail on a quiet stretch one retire too long, a code
+counter bumped once instead of twice, no code counter, the I/O page
+taken as plain memory, and a slow read that doesn't settle the owed
+retires first.
 
 ## Copro JITs
 
@@ -856,7 +965,7 @@ bench hashes as the gate at each step:
 
 | Piece | What | Estimate |
 |---|---|---|
-| i960 native JIT, finished | floats translated (the largest fallback group in both games: `mulr`, `addr`, `subr`, `movr`, `cvtir`, `cmpr`); an inline fast path for plain RAM and ROM reads (and writes, with the bus's write count and code counters); the per-instruction step cheaper (the interrupt check is a scan of eight words each time); translation on a worker thread with the hot-block list kept between runs; code memory reclaimed; a player setting; `jit-lockstep` over every game | 2-3 weeks |
+| i960 native JIT, finished | floats translated (the largest fallback group in both games: `mulr`, `addr`, `subr`, `movr`, `cvtir`, `cmpr`); code memory reclaimed; `jit-lockstep` over every game. Done: plain memory inline (reads and writes, with the bus's write counts and code counters), the step inline while the machine is quiet and the interrupt check one compare, translation on workers with the hot-block list | a week |
 | Copro JITs | MB86234 and MB86235: done ("Copro JITs"). ADSP-21062 (2B copro and geometrizer): in progress ("The SHARC"): pipeline blocks on Cranelift (branches, delay slots, loops, the PC and loop stacks), the compute, data-move and memory lowering, lockstep and random tests done (milestones 1-4), a cheaper word (milestone 5); the status stack in blocks left | a few days left |
 | WebAssembly back end | the emitter (`Op` to wasm), helper exports and a shared table in `remodel-web`, batched modules compiled off the main thread, Node lockstep | 3-4 weeks for the i960; each copro lowering then a further week or so, as the emitter is shared |
 
@@ -879,8 +988,12 @@ configuration; more needs, in order of what the profile says they buy:
    the interpreter and ahead of the recompiled build on every set
    measured; the SHARC is under way ("The SHARC"),
 2. an inline fast path for plain memory and a cheaper per-instruction
-   step (interrupt check, timers),
-3. floats in the i960 lowering (the largest fallback group; small in time).
+   step (interrupt check, timers): done ("Memory and the step inline"),
+   a further 1.3-1.45x where the i960 is the limit (`topskatr` native,
+   `srallyc`, `vf2`, `dynamcop`),
+3. floats in the i960 lowering (the largest fallback group; small in
+   time), and the full step's own cost (asking how long the machine stays
+   quiet, 3-4%).
 
 The WebAssembly back end is worth doing on the same front end once the
 native one has items 1 and 2, since the browser's interpreters are slower

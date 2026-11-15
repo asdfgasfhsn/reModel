@@ -201,6 +201,11 @@ pub struct Model2Bus {
     /// can run from ([`CODE_RAMS`]), bumped by every write there; empty
     /// (and not counted) unless [`Model2Bus::count_code_writes`] was called.
     code_gens: Vec<u32>,
+    /// For the JIT: the plain memory its blocks reach without a call
+    /// (`jit::FastPage`, docs/jit.md "Plain memory inline"), made with
+    /// `code_gens` and again after a state load; empty until then.
+    #[cfg(not(target_arch = "wasm32"))]
+    fast: Vec<jit::FastPage>,
     pub geo_words: u64,
     /// When set, geo port writes (address, value) are recorded here.
     pub geo_trace: Option<Vec<(u32, u32)>>,
@@ -439,6 +444,8 @@ impl Model2Bus {
             copro_empty_by_ip: BTreeMap::new(),
             cur_ip: 0,
             code_gens: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            fast: Vec::new(),
             geo_words: 0,
             geo_trace: None,
             watch: None,
@@ -1118,6 +1125,44 @@ impl Model2Bus {
             let len: usize = CODE_RAMS.iter().map(|&m| self.mems[m].data.len() >> CODE_GEN_SHIFT).sum();
             self.code_gens = vec![0; len];
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.make_fast_pages();
+    }
+
+    /// The JIT's view of plain memory below `jit::FAST_SPAN`: a page whose
+    /// 64 KB are all one memory, in order (no wrap of a mirror inside it),
+    /// is read inline; written inline too if that memory is writable and
+    /// a write does nothing but store, count (`Mem::writes`) and bump its
+    /// code RAM counter (`count_code_write` adds 2 for a write within one
+    /// counter's KB: its first and last byte's). Not Model 2A's video RAM,
+    /// whose writes are mirrored.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn make_fast_pages(&mut self) {
+        let mut fast = vec![jit::FastPage::NONE; jit::FAST_PAGES];
+        for (p, e) in fast.iter_mut().enumerate() {
+            let first = (p as u32) << jit::FAST_SHIFT;
+            let last = first + (jit::FAST_PAGE - 1);
+            let (Some((m, off)), Some((m2, off2))) = (self.find(first), self.find(last)) else { continue };
+            if m != m2 || off2 != off + (jit::FAST_PAGE - 1) as usize {
+                continue;
+            }
+            let video = self.video_2a.is_some_and(|b| m == b || m == b + 1);
+            let gen = self.code_gen(m, off).filter(|_| !self.code_gens.is_empty());
+            let gens = self.code_gens.as_mut_ptr();
+            let mem = &mut self.mems[m];
+            e.data = mem.data[off..].as_mut_ptr();
+            if mem.writable && !video {
+                e.writes = &mut mem.writes;
+                if let Some(g) = gen {
+                    // SAFETY: the counters of this page's 64 KB are in
+                    // `code_gens` (`code_gen` of its first byte, the rest
+                    // after it).
+                    e.gen = unsafe { gens.add(g) };
+                    e.gen_add = 2;
+                }
+            }
+        }
+        self.fast = fast;
     }
 
     /// Run the copro programs on their JITs, or not (docs/jit.md, "Copro
@@ -1346,6 +1391,32 @@ impl jit::JitHost for Model2Bus {
     fn code_generation_index(&self, addr: u32) -> Option<usize> {
         let (m, off) = self.find(addr)?;
         self.code_gen(m, off)
+    }
+    /// Not while an idle-loop probe or a write watch looks at accesses.
+    #[inline]
+    fn fast_pages(&mut self) -> *const jit::FastPage {
+        if self.fast.is_empty() || self.probing || self.watch.is_some() {
+            jit::no_fast_pages()
+        } else {
+            self.fast.as_ptr()
+        }
+    }
+    /// Quiet: the copro does nothing when run (no program, stopped, or
+    /// waiting on its input), no interrupt line was raised for the next
+    /// retire to pass on, no event is due (`quiet_retires`), and the
+    /// budget lasts.
+    #[inline]
+    fn quiet(&mut self) -> u64 {
+        if !self.copro_idle() || self.raised_lines.iter().any(|&l| l) {
+            return 0;
+        }
+        self.quiet_retires().min(self.budget.saturating_sub(1))
+    }
+    /// What that many `retire`s do then: time passes, the budget goes down.
+    #[inline]
+    fn retire_quiet(&mut self, _cpu: &mut i960::cpu::Cpu, n: u64) {
+        self.now += crate::CYCLES_PER_INSN * n;
+        self.budget -= n;
     }
 }
 
@@ -1655,6 +1726,11 @@ impl Model2Bus {
         }
         if let Some(regs) = &mut self.m2_io {
             (**regs).load(r)?;
+        }
+        // Memory may have been reallocated.
+        #[cfg(not(target_arch = "wasm32"))]
+        if all && !self.fast.is_empty() {
+            self.make_fast_pages();
         }
         Ok(())
     }

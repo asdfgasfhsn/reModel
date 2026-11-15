@@ -3,7 +3,8 @@
 use crate::hotlist::{Chip, HotList};
 use crate::pool::{Compiled, Compiler, Job, Ticket, Urgency};
 use cranelift_codegen::ir::{
-    condcodes::IntCC, types, AbiParam, Block as ClifBlock, InstBuilder, MemFlagsData, SigRef, Signature, Type, Value,
+    condcodes::IntCC, types, AbiParam, Block as ClifBlock, BlockArg, Endianness, InstBuilder, MemFlagsData, SigRef,
+    Signature, Type, Value,
 };
 use cranelift_frontend::FunctionBuilder;
 use cranelift_jit::JITModule;
@@ -28,7 +29,8 @@ pub const GEN_PAGE: u32 = 1 << GEN_SHIFT;
 pub const GEN_SHIFT: u32 = 10;
 
 /// What the JIT needs from the machine beyond what recompiled code does:
-/// a way to see writes to code in writable memory.
+/// a way to see writes to code in writable memory, and (optionally) its
+/// plain memory and quiet stretches, which blocks use without a call.
 pub trait JitHost: Host {
     /// Write counters: one per [`GEN_PAGE`] bytes of the writable memories
     /// code may run from, bumped by every write into them. The JIT keeps
@@ -40,6 +42,73 @@ pub trait JitHost: Host {
     /// host counts writes to. `None` there (and for unmapped addresses)
     /// leaves the code to the interpreter.
     fn code_generation_index(&self, addr: u32) -> Option<usize>;
+    /// The plain memory below [`FAST_SPAN`], [`FAST_PAGES`] entries a
+    /// [`FAST_PAGE`] each, for this run of a block (docs/jit.md, "Plain
+    /// memory inline"): an aligned access to a page with an entry is made
+    /// by the block itself, exactly as the bus would make it; anything
+    /// else goes through the bus. [`no_fast_pages`] (the default) sends
+    /// everything through the bus.
+    fn fast_pages(&mut self) -> *const FastPage {
+        no_fast_pages()
+    }
+    /// How many retires from now are quiet: each would only pass time
+    /// (no event, no interrupt line, no other processor running) and
+    /// return true, so the next that many may be made at once, later, by
+    /// [`JitHost::retire_quiet`], as long as nothing reaches the machine in
+    /// between (docs/jit.md, "A cheaper step"). 0 (the default): none.
+    fn quiet(&mut self) -> u64 {
+        0
+    }
+    /// Make `n` retires that [`JitHost::quiet`] said are quiet, exactly as
+    /// `n` calls of [`Host::retire`] would.
+    fn retire_quiet(&mut self, cpu: &mut Cpu, n: u64) {
+        for _ in 0..n {
+            self.retire(cpu);
+        }
+    }
+}
+
+/// Plain memory is used inline below this address.
+pub const FAST_SPAN: u32 = 0x400_0000;
+/// Bytes per [`FastPage`].
+pub const FAST_PAGE: u32 = 1 << FAST_SHIFT;
+pub const FAST_SHIFT: u32 = 16;
+pub const FAST_PAGES: usize = (FAST_SPAN >> FAST_SHIFT) as usize;
+
+/// One [`FAST_PAGE`] of the address space as blocks see it: where its
+/// bytes are, if it is all plain memory (a read has no effect but its
+/// value), and what a write there changes besides them, if it is plain
+/// writable memory too.
+#[repr(C, align(32))]
+#[derive(Clone, Copy, Debug)]
+pub struct FastPage {
+    /// The page's first byte in host memory, its bytes in order
+    /// (little-endian words), or null: accesses here go through the bus.
+    pub data: *mut u8,
+    /// For writes: the memory's write count, which a write adds 1 to, or
+    /// null: writes here go through the bus.
+    pub writes: *mut u64,
+    /// For writes into code RAM: the write counter
+    /// ([`JitHost::code_generations`]) of the page's first [`GEN_PAGE`],
+    /// those of the rest following it, or null. A write (aligned, so
+    /// within one counter's page) adds `gen_add` to its counter.
+    pub gen: *mut u32,
+    pub gen_add: u32,
+}
+
+impl FastPage {
+    pub const NONE: FastPage =
+        FastPage { data: std::ptr::null_mut(), writes: std::ptr::null_mut(), gen: std::ptr::null_mut(), gen_add: 0 };
+}
+
+struct NoFast([FastPage; FAST_PAGES]);
+// SAFETY: all null; nothing is ever reached through it.
+unsafe impl Sync for NoFast {}
+static NO_FAST: NoFast = NoFast([FastPage::NONE; FAST_PAGES]);
+
+/// A table of [`FAST_PAGES`] empty entries: every access through the bus.
+pub fn no_fast_pages() -> *const FastPage {
+    NO_FAST.0.as_ptr()
 }
 
 /// How the JIT runs.
@@ -48,9 +117,9 @@ pub struct Config {
     /// Times a block start is dispatched on the interpreter before it is
     /// translated (0: at once).
     pub hot: u32,
-    /// Cranelift's optimiser (`speed`) and its full register allocator.
-    /// Off by default: it doubles the translation time, and the blocks run
-    /// no faster (the i960's own work is a small part of theirs; docs/jit.md).
+    /// Cranelift's optimiser (`speed`). Off by default: it adds half
+    /// again to the translation time for a few percent (docs/jit.md); the
+    /// full register allocator is on either way.
     pub optimise: bool,
     /// Instructions per block at most.
     pub max_block: usize,
@@ -110,11 +179,18 @@ pub struct Stats {
 /// fault in `ctx`).
 type BlockFn = unsafe extern "C" fn(*mut Cpu, *mut u8, *mut Ctx) -> u32;
 
-/// Passed to every block: where the host's write counters are this time,
-/// and where a helper leaves a fault.
+/// Passed to every block: where the host's write counters and plain
+/// memory are this time, the quiet retires it may still make inline, and
+/// where a helper leaves a fault.
 #[repr(C)]
 struct Ctx {
     gens: *const u32,
+    fast: *const FastPage,
+    /// Quiet retires left ([`JitHost::quiet`]): while nonzero, an
+    /// instruction's step is counting it, inline. `granted - quiet` are
+    /// owed to the machine, made ([`settle`]) before anything reaches it.
+    quiet: u64,
+    granted: u64,
     fault: Option<Stop>,
 }
 
@@ -349,12 +425,18 @@ impl<H: JitHost + 'static> Jit<H> {
         }
         self.stats.runs += 1;
         let gens = host.code_generations().as_ptr();
-        let mut ctx = Ctx { gens, fault: None };
+        let fast = host.fast_pages();
+        // An interrupt due already (one more of priority 31 after the
+        // dispatcher took one) is taken after the first instruction.
+        let quiet = if cpu.interrupt_due() { 0 } else { host.quiet() };
+        let mut ctx = Ctx { gens, fast, quiet, granted: quiet, fault: None };
         let code = self.blocks[id as usize].code;
         // SAFETY: the block was made for `H` by `emit`, from instructions
         // it owns; it only touches the CPU and host through the helpers
-        // below and the CPU's fields by offset.
+        // below, the CPU's fields by offset and the host's plain memory
+        // through `fast`.
         let r = unsafe { code(cpu, host as *mut H as *mut u8, &mut ctx) };
+        settle(cpu, host, &mut ctx);
         match r {
             0 => Some(Ok(())),
             _ => Some(Err(ctx.fault.expect("a faulting helper leaves its fault"))),
@@ -511,7 +593,7 @@ impl<H: JitHost + 'static> Jit<H> {
                 return;
             }
             let code = catch_unwind(AssertUnwindSafe(|| {
-                c.compile(optimise, 3, Some(I32), |b, ptr| {
+                c.compile(crate::pool::Opt::of(optimise, crate::pool::Opt::Alloc), 3, Some(I32), |b, ptr| {
                     // The instructions are boxed, so the addresses the
                     // block hands the interpreter stay valid once it is
                     // back.
@@ -690,6 +772,13 @@ fn trusted() -> MemFlagsData {
 const OFF_R: usize = offset_of!(Cpu, r);
 const OFF_IP: usize = offset_of!(Cpu, ip);
 const OFF_AC: usize = offset_of!(Cpu, ac);
+const OFF_ICOUNT: usize = offset_of!(Cpu, icount);
+
+/// Guest memory as blocks reach it inline: little-endian, maybe unaligned
+/// in host memory.
+fn guest() -> MemFlagsData {
+    MemFlagsData::new().with_notrap().with_endianness(Endianness::Little)
+}
 
 /// Helper calls' signatures, imported into the function being built.
 struct Sigs {
@@ -732,12 +821,12 @@ impl<'a, 'b, H: JitHost> Emit<'a, 'b, H> {
             b.import_signature(s)
         };
         let sigs = Sigs {
-            read: sig(&[ptr, I32, I32], true),
-            write: sig(&[ptr, I32, I32, I32], false),
-            call: sig(&[ptr, ptr, I32, I32, I32], false),
+            read: sig(&[ptr, ptr, ptr, I32, I32], true),
+            write: sig(&[ptr, ptr, ptr, I32, I32, I32], false),
+            call: sig(&[ptr, ptr, ptr, I32, I32, I32], false),
             ret: sig(&[ptr, ptr, ptr, I32], true),
             exec: sig(&[ptr, ptr, ptr, ptr], true),
-            step: sig(&[ptr, ptr, I32, I32], true),
+            step: sig(&[ptr, ptr, ptr, I32, I32], true),
         };
         let fault = b.create_block();
         Emit { b, ptr, cpu: p[0], host: p[1], ctx: p[2], sigs, fault, ram, host_type: PhantomData }
@@ -839,26 +928,121 @@ impl<'a, 'b, H: JitHost> Emit<'a, 'b, H> {
         self.b.inst_results(call).first().copied()
     }
 
+    /// The [`FastPage`] of `addr` (below [`FAST_SPAN`]).
+    fn fast_page(&mut self, addr: Value) -> Value {
+        let table = self.b.ins().load(self.ptr, trusted(), self.ctx, offset_of!(Ctx, fast) as i32);
+        let page = self.b.ins().ushr_imm_u(addr, FAST_SHIFT as i64);
+        let page = self.b.ins().uextend(self.ptr, page);
+        let at = self.b.ins().ishl_imm_u(page, size_of::<FastPage>().trailing_zeros() as i64);
+        self.b.ins().iadd(table, at)
+    }
+
+    /// Where `addr` is in the page whose bytes start at `data`.
+    fn in_page(&mut self, data: Value, addr: Value) -> Value {
+        let off = self.b.ins().band_imm_u(addr, (FAST_PAGE - 1) as i64);
+        let off = self.b.ins().uextend(self.ptr, off);
+        self.b.ins().iadd(data, off)
+    }
+
+    /// Nonzero unless `addr` is aligned for `width` bytes and below
+    /// [`FAST_SPAN`]: the accesses that may be made inline.
+    fn not_inline(&mut self, width: u32, addr: Value) -> Value {
+        let mask = !(FAST_SPAN - 1) | (width - 1);
+        self.b.ins().band_imm_u(addr, mask as i64)
+    }
+
+    /// A read of `width` bytes at `addr`: inline from plain memory
+    /// ([`JitHost::fast_pages`]), else through the bus.
     fn read(&mut self, width: u32, addr: Value, ip: u32) -> Value {
+        let (check, hit, slow, join) =
+            (self.b.create_block(), self.b.create_block(), self.b.create_block(), self.b.create_block());
+        let out = self.b.append_block_param(join, I32);
+        self.b.set_cold_block(slow);
+        let far = self.not_inline(width, addr);
+        self.b.ins().brif(far, slow, &[], check, &[]);
+        self.b.switch_to_block(check);
+        let page = self.fast_page(addr);
+        let data = self.b.ins().load(self.ptr, trusted(), page, offset_of!(FastPage, data) as i32);
+        self.b.ins().brif(data, hit, &[], slow, &[]);
+        self.b.switch_to_block(hit);
+        let p = self.in_page(data, addr);
+        let v = match width {
+            1 => self.b.ins().uload8(I32, guest(), p, 0),
+            2 => self.b.ins().uload16(I32, guest(), p, 0),
+            _ => self.b.ins().load(I32, guest(), p, 0),
+        };
+        self.b.ins().jump(join, &[BlockArg::Value(v)]);
+        self.b.switch_to_block(slow);
         let f = match width {
             1 => (read8::<H> as ReadFn) as usize,
             2 => (read16::<H> as ReadFn) as usize,
             _ => (read32::<H> as ReadFn) as usize,
         };
         let ip = self.konst(ip);
-        let (host, sig) = (self.host, self.sigs.read);
-        self.call(sig, f, &[host, addr, ip]).expect("reads return a value")
+        let (cpu, host, ctx, sig) = (self.cpu, self.host, self.ctx, self.sigs.read);
+        let v = self.call(sig, f, &[cpu, host, ctx, addr, ip]).expect("reads return a value");
+        self.b.ins().jump(join, &[BlockArg::Value(v)]);
+        self.b.switch_to_block(join);
+        out
     }
 
+    /// A write of `width` bytes of `v` at `addr`: inline into plain
+    /// writable memory, counted as the bus counts it (the memory's write
+    /// count, the code RAM counter of its [`GEN_PAGE`]), else through the
+    /// bus.
     fn write(&mut self, width: u32, addr: Value, v: Value, ip: u32) {
+        let (check, hit, gen, store, slow, join) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        self.b.set_cold_block(slow);
+        let far = self.not_inline(width, addr);
+        self.b.ins().brif(far, slow, &[], check, &[]);
+        self.b.switch_to_block(check);
+        let page = self.fast_page(addr);
+        let writes = self.b.ins().load(self.ptr, trusted(), page, offset_of!(FastPage, writes) as i32);
+        self.b.ins().brif(writes, hit, &[], slow, &[]);
+        self.b.switch_to_block(hit);
+        let n = self.b.ins().load(types::I64, trusted(), writes, 0);
+        let n = self.b.ins().iadd_imm_s(n, 1);
+        self.b.ins().store(trusted(), n, writes, 0);
+        let gens = self.b.ins().load(self.ptr, trusted(), page, offset_of!(FastPage, gen) as i32);
+        self.b.ins().brif(gens, gen, &[], store, &[]);
+        self.b.switch_to_block(gen);
+        let k = self.b.ins().band_imm_u(addr, (FAST_PAGE - 1) as i64);
+        let k = self.b.ins().ushr_imm_u(k, GEN_SHIFT as i64);
+        let k = self.b.ins().uextend(self.ptr, k);
+        let k = self.b.ins().ishl_imm_u(k, 2);
+        let at = self.b.ins().iadd(gens, k);
+        let g = self.b.ins().load(I32, trusted(), at, 0);
+        let add = self.b.ins().load(I32, trusted(), page, offset_of!(FastPage, gen_add) as i32);
+        let g = self.b.ins().iadd(g, add);
+        self.b.ins().store(trusted(), g, at, 0);
+        self.b.ins().jump(store, &[]);
+        self.b.switch_to_block(store);
+        let data = self.b.ins().load(self.ptr, trusted(), page, offset_of!(FastPage, data) as i32);
+        let p = self.in_page(data, addr);
+        match width {
+            1 => self.b.ins().istore8(guest(), v, p, 0),
+            2 => self.b.ins().istore16(guest(), v, p, 0),
+            _ => self.b.ins().store(guest(), v, p, 0),
+        };
+        self.b.ins().jump(join, &[]);
+        self.b.switch_to_block(slow);
         let f = match width {
             1 => (write8::<H> as WriteFn) as usize,
             2 => (write16::<H> as WriteFn) as usize,
             _ => (write32::<H> as WriteFn) as usize,
         };
         let ip = self.konst(ip);
-        let (host, sig) = (self.host, self.sigs.write);
-        self.call(sig, f, &[host, addr, v, ip]);
+        let (cpu, host, ctx, sig) = (self.cpu, self.host, self.ctx, self.sigs.write);
+        self.call(sig, f, &[cpu, host, ctx, addr, v, ip]);
+        self.b.ins().jump(join, &[]);
+        self.b.switch_to_block(join);
     }
 
     /// Continue in a new block if `fail` is zero; else go to `to`.
@@ -870,8 +1054,9 @@ impl<'a, 'b, H: JitHost> Emit<'a, 'b, H> {
 
     /// The block: each instruction as the static recompiler's
     /// `program_module` runs it. What follows each instruction (count it,
-    /// retire it, decide whether to go on) is one helper call, to keep the
-    /// IR, and so the translation time, small.
+    /// retire it, decide whether to go on) is inline while the machine is
+    /// quiet (`Ctx::quiet`: count it, owe the retire), else one helper
+    /// call, to keep the IR, and so the translation time, small.
     fn block(&mut self, insns: &[Insn]) {
         let done = self.b.create_block();
         for (k, i) in insns.iter().enumerate() {
@@ -891,6 +1076,42 @@ impl<'a, 'b, H: JitHost> Emit<'a, 'b, H> {
             }
             let ends = !matches!(i.flow, Flow::Next | Flow::CondFault);
             let last = ends || k + 1 == insns.len();
+            // After a store, a block from writable memory checks its own
+            // code wasn't written.
+            let check_code = self.ram.is_some() && !last && op.is_none_or(|o| o.stores());
+            let full = self.b.create_block();
+            let go_on = self.b.create_block();
+            // A fallback (or a call, a return: anything that always calls
+            // the machine) leaves `quiet` 0, so its step is the full one.
+            if op.is_some_and(|o| !always_calls(&o)) {
+                let quick = self.b.create_block();
+                let q = self.b.ins().load(types::I64, trusted(), self.ctx, offset_of!(Ctx, quiet) as i32);
+                self.b.ins().brif(q, quick, &[], full, &[]);
+                self.b.switch_to_block(quick);
+                let q = self.b.ins().iadd_imm_s(q, -1);
+                self.b.ins().store(trusted(), q, self.ctx, offset_of!(Ctx, quiet) as i32);
+                let n = self.b.ins().load(types::I64, trusted(), self.cpu, OFF_ICOUNT as i32);
+                let n = self.b.ins().iadd_imm_s(n, 1);
+                self.b.ins().store(trusted(), n, self.cpu, OFF_ICOUNT as i32);
+                if last {
+                    if !ends {
+                        self.set_ip_const(next);
+                    }
+                    self.b.ins().jump(done, &[]);
+                } else if let (true, Some((pages, seen))) = (check_code, self.ram) {
+                    let changed = self.code_written(pages, seen);
+                    let leave = self.b.create_block();
+                    self.b.ins().brif(changed, leave, &[], go_on, &[]);
+                    self.b.switch_to_block(leave);
+                    self.set_ip_const(next);
+                    self.b.ins().jump(done, &[]);
+                } else {
+                    self.b.ins().jump(go_on, &[]);
+                }
+            } else {
+                self.b.ins().jump(full, &[]);
+            }
+            self.b.switch_to_block(full);
             // Some "sequential" instructions can still move the IP: an IAC
             // reinit, or an interrupt taken by `modpc`.
             let mut flags = if op.is_none() && !ends { STEP_MOVED } else { 0 };
@@ -898,7 +1119,7 @@ impl<'a, 'b, H: JitHost> Emit<'a, 'b, H> {
                 flags |= STEP_ENDS;
             }
             let mut flags = self.konst(flags);
-            if let (Some((pages, seen)), false, true) = (self.ram, last, op.is_none_or(|o| o.stores())) {
+            if let (true, Some((pages, seen))) = (check_code, self.ram) {
                 // This block's own code may have been written: leave it,
                 // and the dispatcher checks it again.
                 let changed = self.code_written(pages, seen);
@@ -908,15 +1129,16 @@ impl<'a, 'b, H: JitHost> Emit<'a, 'b, H> {
                 let leave = self.b.ins().select(changed, leave, zero);
                 flags = self.b.ins().bor(flags, leave);
             }
-            let (cpu, host, sig) = (self.cpu, self.host, self.sigs.step);
+            let (cpu, host, ctx, sig) = (self.cpu, self.host, self.ctx, self.sigs.step);
             let n = self.konst(next);
             let f = if last { (step_last::<H> as StepFn) as usize } else { (step::<H> as StepFn) as usize };
-            let stop = self.call(sig, f, &[cpu, host, n, flags]).expect("step returns");
+            let stop = self.call(sig, f, &[cpu, host, ctx, n, flags]).expect("step returns");
             if last {
                 self.b.ins().jump(done, &[]);
                 break;
             }
-            self.exit_if(stop, done);
+            self.b.ins().brif(stop, done, &[], go_on, &[]);
+            self.b.switch_to_block(go_on);
         }
         self.b.switch_to_block(done);
         let zero = self.konst(0);
@@ -948,9 +1170,9 @@ impl<'a, 'b, H: JitHost> Emit<'a, 'b, H> {
         match *op {
             Op::Jump(t) => self.set_ip_const(t),
             Op::Call { target, next } => {
-                let (cpu, host, sig) = (self.cpu, self.host, self.sigs.call);
+                let (cpu, host, ctx, sig) = (self.cpu, self.host, self.ctx, self.sigs.call);
                 let (t, n, ip) = (self.konst(target), self.konst(next), self.konst(pc));
-                self.call(sig, (call::<H> as CallFn) as usize, &[cpu, host, t, n, ip]);
+                self.call(sig, (call::<H> as CallFn) as usize, &[cpu, host, ctx, t, n, ip]);
             }
             Op::Link { target, next } => {
                 let n = self.konst(next);
@@ -1007,9 +1229,9 @@ impl<'a, 'b, H: JitHost> Emit<'a, 'b, H> {
             }
             Op::CallInd { ea, next } => {
                 let a = self.ea(&ea);
-                let (cpu, host, sig) = (self.cpu, self.host, self.sigs.call);
+                let (cpu, host, ctx, sig) = (self.cpu, self.host, self.ctx, self.sigs.call);
                 let (n, ip) = (self.konst(next), self.konst(pc));
-                self.call(sig, (call::<H> as CallFn) as usize, &[cpu, host, a, n, ip]);
+                self.call(sig, (call::<H> as CallFn) as usize, &[cpu, host, ctx, a, n, ip]);
             }
             Op::Lda { ea, dst } => {
                 let a = self.ea(&ea);
@@ -1146,59 +1368,181 @@ impl<'a, 'b, H: JitHost> Emit<'a, 'b, H> {
 // SAFETY (all of them): called only by blocks `Jit::<H>::run` started, with
 // the CPU, host and context it passed in, which are live and distinct.
 
-type ReadFn = unsafe extern "C" fn(*mut u8, u32, u32) -> u32;
-type WriteFn = unsafe extern "C" fn(*mut u8, u32, u32, u32);
-type CallFn = unsafe extern "C" fn(*mut Cpu, *mut u8, u32, u32, u32);
+type ReadFn = unsafe extern "C" fn(*mut Cpu, *mut u8, *mut Ctx, u32, u32) -> u32;
+type WriteFn = unsafe extern "C" fn(*mut Cpu, *mut u8, *mut Ctx, u32, u32, u32);
+type CallFn = unsafe extern "C" fn(*mut Cpu, *mut u8, *mut Ctx, u32, u32, u32);
 type RetFn = unsafe extern "C" fn(*mut Cpu, *mut u8, *mut Ctx, u32) -> u32;
 type ExecFn = unsafe extern "C" fn(*mut Cpu, *mut u8, *mut Ctx, *const Insn) -> u32;
-type StepFn = unsafe extern "C" fn(*mut Cpu, *mut u8, u32, u32) -> u32;
+type StepFn = unsafe extern "C" fn(*mut Cpu, *mut u8, *mut Ctx, u32, u32) -> u32;
 
-unsafe extern "C" fn read8<H: Host>(h: *mut u8, a: u32, ip: u32) -> u32 {
-    let h = unsafe { &mut *(h as *mut H) };
+/// The machine as the helpers that run the interpreter's code (`call`,
+/// `ret`, the fallbacks) give it to the CPU: plain memory through the
+/// block's [`FastPage`]s, as the inline paths reach it (so a call's frame
+/// is written without the bus's lookups), the rest through the machine.
+struct Plain<'a, H> {
+    h: &'a mut H,
+    fast: *const FastPage,
+}
+
+impl<H: JitHost> Plain<'_, H> {
+    /// The page of `a` if an access of `n` bytes there is plain (aligned,
+    /// below [`FAST_SPAN`], an entry in the table).
+    #[inline(always)]
+    fn page(&self, a: u32, n: u32) -> Option<&FastPage> {
+        if a & (!(FAST_SPAN - 1) | (n - 1)) != 0 {
+            return None;
+        }
+        // SAFETY: the table has FAST_PAGES entries (`JitHost::fast_pages`).
+        Some(unsafe { &*self.fast.add((a >> FAST_SHIFT) as usize) })
+    }
+
+    #[inline(always)]
+    fn read(&self, a: u32, n: u32) -> Option<u32> {
+        let e = self.page(a, n)?;
+        if e.data.is_null() {
+            return None;
+        }
+        // SAFETY: a page with `data` has FAST_PAGE bytes there, and the
+        // access is within it.
+        let p = unsafe { e.data.add((a & (FAST_PAGE - 1)) as usize) };
+        let mut v = 0u32;
+        for i in 0..n as usize {
+            v |= (unsafe { *p.add(i) } as u32) << (8 * i);
+        }
+        Some(v)
+    }
+
+    #[inline(always)]
+    fn write(&mut self, a: u32, v: u32, n: u32) -> bool {
+        let Some(e) = self.page(a, n) else { return false };
+        if e.writes.is_null() {
+            return false;
+        }
+        // SAFETY: a page with `writes` has `data`, and `gen` (if set)
+        // has a counter for each GEN_PAGE of it.
+        unsafe {
+            *e.writes += 1;
+            let off = (a & (FAST_PAGE - 1)) as usize;
+            if !e.gen.is_null() {
+                let g = e.gen.add(off >> GEN_SHIFT);
+                *g = (*g).wrapping_add(e.gen_add);
+            }
+            for i in 0..n as usize {
+                *e.data.add(off + i) = (v >> (8 * i)) as u8;
+            }
+        }
+        true
+    }
+}
+
+impl<H: JitHost> i960::cpu::Bus for Plain<'_, H> {
+    fn read8(&mut self, a: u32) -> u8 {
+        self.read(a, 1).map_or_else(|| self.h.read8(a), |v| v as u8)
+    }
+    fn read16(&mut self, a: u32) -> u16 {
+        self.read(a, 2).map_or_else(|| self.h.read16(a), |v| v as u16)
+    }
+    fn read32(&mut self, a: u32) -> u32 {
+        self.read(a, 4).unwrap_or_else(|| self.h.read32(a))
+    }
+    fn write8(&mut self, a: u32, v: u8) {
+        if !self.write(a, v as u32, 1) {
+            self.h.write8(a, v)
+        }
+    }
+    fn write16(&mut self, a: u32, v: u16) {
+        if !self.write(a, v as u32, 2) {
+            self.h.write16(a, v)
+        }
+    }
+    fn write32(&mut self, a: u32, v: u32) {
+        if !self.write(a, v, 4) {
+            self.h.write32(a, v)
+        }
+    }
+    fn fetch(&self, a: u32) -> Option<u32> {
+        self.h.fetch(a)
+    }
+    fn is_rom(&self, a: u32) -> bool {
+        self.h.is_rom(a)
+    }
+}
+
+/// An op whose code always calls a helper (which leaves `quiet` 0): its
+/// step needs no inline path.
+fn always_calls(op: &Op) -> bool {
+    matches!(op, Op::Call { .. } | Op::CallInd { .. } | Op::Ret)
+}
+
+/// Before anything reaches the machine: make the retires the block owes
+/// it (the quiet ones it counted inline), and grant no more (what is about
+/// to happen may end the quiet).
+#[inline(always)]
+fn settle<H: JitHost>(c: &mut Cpu, h: &mut H, ctx: &mut Ctx) {
+    let owed = ctx.granted - ctx.quiet;
+    if owed != 0 {
+        h.retire_quiet(c, owed);
+    }
+    ctx.granted = 0;
+    ctx.quiet = 0;
+}
+
+/// Unpack a helper's arguments, settling first.
+///
+/// SAFETY: as for the helpers.
+#[inline(always)]
+unsafe fn enter<'a, H: JitHost>(c: *mut Cpu, h: *mut u8, ctx: *mut Ctx) -> (&'a mut Cpu, &'a mut H, &'a mut Ctx) {
+    let (c, h, ctx) = unsafe { (&mut *c, &mut *(h as *mut H), &mut *ctx) };
+    settle(c, h, ctx);
+    (c, h, ctx)
+}
+
+unsafe extern "C" fn read8<H: JitHost>(c: *mut Cpu, h: *mut u8, ctx: *mut Ctx, a: u32, ip: u32) -> u32 {
+    let (_, h, _) = unsafe { enter::<H>(c, h, ctx) };
     h.at(ip);
     h.read8(a) as u32
 }
 
-unsafe extern "C" fn read16<H: Host>(h: *mut u8, a: u32, ip: u32) -> u32 {
-    let h = unsafe { &mut *(h as *mut H) };
+unsafe extern "C" fn read16<H: JitHost>(c: *mut Cpu, h: *mut u8, ctx: *mut Ctx, a: u32, ip: u32) -> u32 {
+    let (_, h, _) = unsafe { enter::<H>(c, h, ctx) };
     h.at(ip);
     h.read16(a) as u32
 }
 
-unsafe extern "C" fn read32<H: Host>(h: *mut u8, a: u32, ip: u32) -> u32 {
-    let h = unsafe { &mut *(h as *mut H) };
+unsafe extern "C" fn read32<H: JitHost>(c: *mut Cpu, h: *mut u8, ctx: *mut Ctx, a: u32, ip: u32) -> u32 {
+    let (_, h, _) = unsafe { enter::<H>(c, h, ctx) };
     h.at(ip);
     h.read32(a)
 }
 
-unsafe extern "C" fn write8<H: Host>(h: *mut u8, a: u32, v: u32, ip: u32) {
-    let h = unsafe { &mut *(h as *mut H) };
+unsafe extern "C" fn write8<H: JitHost>(c: *mut Cpu, h: *mut u8, ctx: *mut Ctx, a: u32, v: u32, ip: u32) {
+    let (_, h, _) = unsafe { enter::<H>(c, h, ctx) };
     h.at(ip);
     h.write8(a, v as u8)
 }
 
-unsafe extern "C" fn write16<H: Host>(h: *mut u8, a: u32, v: u32, ip: u32) {
-    let h = unsafe { &mut *(h as *mut H) };
+unsafe extern "C" fn write16<H: JitHost>(c: *mut Cpu, h: *mut u8, ctx: *mut Ctx, a: u32, v: u32, ip: u32) {
+    let (_, h, _) = unsafe { enter::<H>(c, h, ctx) };
     h.at(ip);
     h.write16(a, v as u16)
 }
 
-unsafe extern "C" fn write32<H: Host>(h: *mut u8, a: u32, v: u32, ip: u32) {
-    let h = unsafe { &mut *(h as *mut H) };
+unsafe extern "C" fn write32<H: JitHost>(c: *mut Cpu, h: *mut u8, ctx: *mut Ctx, a: u32, v: u32, ip: u32) {
+    let (_, h, _) = unsafe { enter::<H>(c, h, ctx) };
     h.at(ip);
     h.write32(a, v)
 }
 
-unsafe extern "C" fn call<H: Host>(c: *mut Cpu, h: *mut u8, target: u32, next: u32, ip: u32) {
-    let (c, h) = unsafe { (&mut *c, &mut *(h as *mut H)) };
+unsafe extern "C" fn call<H: JitHost>(c: *mut Cpu, h: *mut u8, ctx: *mut Ctx, target: u32, next: u32, ip: u32) {
+    let (c, h, ctx) = unsafe { enter::<H>(c, h, ctx) };
     h.at(ip);
-    c.call(h, target, next)
+    c.call(&mut Plain { h, fast: ctx.fast }, target, next)
 }
 
-unsafe extern "C" fn ret<H: Host>(c: *mut Cpu, h: *mut u8, ctx: *mut Ctx, ip: u32) -> u32 {
-    let (c, h, ctx) = unsafe { (&mut *c, &mut *(h as *mut H), &mut *ctx) };
+unsafe extern "C" fn ret<H: JitHost>(c: *mut Cpu, h: *mut u8, ctx: *mut Ctx, ip: u32) -> u32 {
+    let (c, h, ctx) = unsafe { enter::<H>(c, h, ctx) };
     h.at(ip);
-    match c.ret(h) {
+    match c.ret(&mut Plain { h, fast: ctx.fast }) {
         Ok(()) => 0,
         Err(kind) => {
             ctx.fault = Some(Stop::Fault { kind, ip });
@@ -1207,10 +1551,11 @@ unsafe extern "C" fn ret<H: Host>(c: *mut Cpu, h: *mut u8, ctx: *mut Ctx, ip: u3
     }
 }
 
-unsafe extern "C" fn exec<H: Host>(c: *mut Cpu, h: *mut u8, ctx: *mut Ctx, insn: *const Insn) -> u32 {
-    let (c, h, ctx, insn) = unsafe { (&mut *c, &mut *(h as *mut H), &mut *ctx, &*insn) };
+unsafe extern "C" fn exec<H: JitHost>(c: *mut Cpu, h: *mut u8, ctx: *mut Ctx, insn: *const Insn) -> u32 {
+    let (c, h, ctx) = unsafe { enter::<H>(c, h, ctx) };
+    let insn = unsafe { &*insn };
     h.at(insn.addr);
-    match c.exec(h, &insn.view()) {
+    match c.exec(&mut Plain { h, fast: ctx.fast }, &insn.view()) {
         Ok(()) => 0,
         Err(kind) => {
             ctx.fault = Some(Stop::Fault { kind, ip: insn.addr });
@@ -1226,11 +1571,12 @@ const STEP_MOVED: u32 = 1;
 const STEP_ENDS: u32 = 2;
 const STEP_LEAVE: u32 = 4;
 
-/// After an instruction in the middle of a block: count and retire it.
-/// Nonzero to leave the block, with the IP where it goes on (`next`,
-/// unless the instruction moved it).
-unsafe extern "C" fn step<H: Host>(c: *mut Cpu, h: *mut u8, next: u32, flags: u32) -> u32 {
-    let (c, h) = unsafe { (&mut *c, &mut *(h as *mut H)) };
+/// After an instruction in the middle of a block, when it isn't quiet:
+/// count and retire it. Nonzero to leave the block, with the IP where it
+/// goes on (`next`, unless the instruction moved it). Else how many of the
+/// retires after it are quiet, for the block to count inline.
+unsafe extern "C" fn step<H: JitHost>(c: *mut Cpu, h: *mut u8, ctx: *mut Ctx, next: u32, flags: u32) -> u32 {
+    let (c, h, ctx) = unsafe { enter::<H>(c, h, ctx) };
     c.icount += 1;
     if flags & STEP_MOVED != 0 && c.ip != next {
         h.retire(c);
@@ -1240,13 +1586,17 @@ unsafe extern "C" fn step<H: Host>(c: *mut Cpu, h: *mut u8, next: u32, flags: u3
         c.ip = next;
         return 1;
     }
+    let quiet = h.quiet();
+    ctx.quiet = quiet;
+    ctx.granted = quiet;
     0
 }
 
-/// After a block's last instruction: count and retire it, and put the IP
-/// at `next` unless it set it (a control transfer) or moved it.
-unsafe extern "C" fn step_last<H: Host>(c: *mut Cpu, h: *mut u8, next: u32, flags: u32) -> u32 {
-    let (c, h) = unsafe { (&mut *c, &mut *(h as *mut H)) };
+/// After a block's last instruction, when it isn't quiet: count and retire
+/// it, and put the IP at `next` unless it set it (a control transfer) or
+/// moved it.
+unsafe extern "C" fn step_last<H: JitHost>(c: *mut Cpu, h: *mut u8, ctx: *mut Ctx, next: u32, flags: u32) -> u32 {
+    let (c, h, _) = unsafe { enter::<H>(c, h, ctx) };
     c.icount += 1;
     h.retire(c);
     if flags & STEP_ENDS == 0 && (flags & STEP_MOVED == 0 || c.ip == next) {
@@ -1255,5 +1605,7 @@ unsafe extern "C" fn step_last<H: Host>(c: *mut Cpu, h: *mut u8, next: u32, flag
     1
 }
 
+#[cfg(test)]
+mod fast_tests;
 #[cfg(test)]
 mod tests;

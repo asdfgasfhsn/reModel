@@ -29,16 +29,41 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-/// The Cranelift target for this machine, optimiser off unless
-/// `optimise` (docs/jit.md, "Back end"). The workers' and the modules'
-/// must agree, so both come from here.
-pub(crate) fn isa(optimise: bool) -> Result<OwnedTargetIsa, String> {
+/// How Cranelift compiles a function (docs/jit.md, "Back end").
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Opt {
+    /// No optimiser, the single-pass register allocator: the quickest to
+    /// translate (the copro JITs' default).
+    Quick,
+    /// No optimiser, the full register allocator (the i960's default: its
+    /// blocks, with memory inline, are many small CFG blocks the
+    /// single-pass allocator spills everything around).
+    Alloc,
+    /// The optimiser and the full allocator (`--jit-opt speed`).
+    Speed,
+}
+
+impl Opt {
+    pub(crate) fn of(optimise: bool, quick: Opt) -> Opt {
+        if optimise {
+            Opt::Speed
+        } else {
+            quick
+        }
+    }
+}
+
+/// The Cranelift target for this machine, compiling as `opt` says. The
+/// workers' and the modules' must agree on the target, so both come from
+/// here.
+pub(crate) fn isa(opt: Opt) -> Result<OwnedTargetIsa, String> {
+    let optimise = opt == Opt::Speed;
     let mut flags = settings::builder();
     let set = |f: &mut settings::Builder, k: &str, v: &str| f.set(k, v).map_err(|e| format!("cranelift {k}: {e}"));
     set(&mut flags, "use_colocated_libcalls", "false")?;
     set(&mut flags, "is_pic", "false")?;
     set(&mut flags, "opt_level", if optimise { "speed" } else { "none" })?;
-    if !optimise {
+    if opt == Opt::Quick {
         set(&mut flags, "regalloc_algorithm", "single_pass")?;
     }
     set(&mut flags, "enable_verifier", if cfg!(debug_assertions) { "true" } else { "false" })?;
@@ -72,12 +97,12 @@ impl Compiled {
 pub(crate) struct Compiler {
     ctx: Context,
     fctx: FunctionBuilderContext,
-    isas: [Option<OwnedTargetIsa>; 2],
+    isas: [Option<OwnedTargetIsa>; 3],
 }
 
 impl Compiler {
     fn new() -> Self {
-        Compiler { ctx: Context::new(), fctx: FunctionBuilderContext::new(), isas: [None, None] }
+        Compiler { ctx: Context::new(), fctx: FunctionBuilderContext::new(), isas: [None, None, None] }
     }
 
     /// Compile a function of `params` pointer arguments (returning `ret`
@@ -85,15 +110,15 @@ impl Compiler {
     /// type.
     pub fn compile(
         &mut self,
-        optimise: bool,
+        opt: Opt,
         params: usize,
         ret: Option<Type>,
         build: impl FnOnce(&mut FunctionBuilder, Type),
     ) -> Result<Compiled, String> {
         let t0 = Instant::now();
-        let slot = &mut self.isas[optimise as usize];
+        let slot = &mut self.isas[opt as usize];
         if slot.is_none() {
-            *slot = Some(isa(optimise)?);
+            *slot = Some(isa(opt)?);
         }
         let isa = slot.as_ref().expect("just made");
         let ptr = isa.pointer_type();

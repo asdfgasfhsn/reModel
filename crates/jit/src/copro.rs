@@ -29,7 +29,10 @@ pub(crate) fn trusted() -> MemFlagsData {
 /// `optimise` (as the i960's: docs/jit.md, "Back end"). The blocks it
 /// holds are compiled by the translation workers (`pool`) and copied in.
 pub(crate) fn module(optimise: bool) -> Result<JITModule, String> {
-    Ok(JITModule::new(JITBuilder::with_isa(crate::pool::isa(optimise)?, default_libcall_names())))
+    Ok(JITModule::new(JITBuilder::with_isa(
+        crate::pool::isa(crate::pool::Opt::of(optimise, crate::pool::Opt::Quick))?,
+        default_libcall_names(),
+    )))
 }
 
 /// A module whose code is freed with it. A copro JIT is made per uploaded
@@ -178,8 +181,10 @@ impl Background {
             if !alive.load(Ordering::Relaxed) {
                 return;
             }
-            let code = catch_unwind(AssertUnwindSafe(|| c.compile(optimise, 3, ret, build)))
-                .unwrap_or_else(|_| Err("the translation panicked".into()));
+            let code = catch_unwind(AssertUnwindSafe(|| {
+                c.compile(crate::pool::Opt::of(optimise, crate::pool::Opt::Quick), 3, ret, build)
+            }))
+            .unwrap_or_else(|_| Err("the translation panicked".into()));
             let _ = tx.send(Done { key, start, end, code });
         });
         let ticket = crate::pool::submit(self.on, urgency, job).filter(|_| urgency == Urgency::Later);
