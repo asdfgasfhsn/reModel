@@ -36,4 +36,4 @@ pub use hotlist::{Chip, HotList};
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::*;
 #[cfg(not(target_arch = "wasm32"))]
-pub use pool::{busy, set_workers, workers};
+pub use pool::{busy, lower_priority, set_workers, workers};

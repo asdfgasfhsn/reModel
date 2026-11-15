@@ -15,13 +15,17 @@ make bench JIT=1                  # the bench session on the JITs: same state ha
 make jit-lockstep GAME=srallyc    # the JIT beside the interpreter, block by block (JIT_STEPS, default 300M)
 make jit-translate                # the whole program translated ahead of time, timed
 make jit-copro-lockstep GAME=vf2  # the copro JITs beside their interpreters, run by run
-remodel --jit ... / remodel-play --jit   # --jit-hot N, --jit-opt speed, --jit-copro off|check
+remodel --jit ...                 # --jit-hot N, --jit-opt speed, --jit-copro off|check
+remodel-play --no-jit             # the player has them on by default; this turns them off (make play JIT=0)
 ```
 
 No recompiled build is involved: `JIT=1` works on an ordinary `make
 release`, and `RECOMP=1` and `JIT=1` together run the JITs (they take
 the place of recompiled code; with `--jit-copro off` the copro and
-geometrizer programs stay recompiled). The default paths are unchanged, and the browser build
+geometrizer programs stay recompiled). The native player runs on the JITs by default (`--no-jit`,
+`make play JIT=0` to turn them off; where Cranelift has no back end for
+the host it falls back on its own); the CLI's default is still the
+interpreter, the reference. The browser build
 doesn't contain it (`crates/jit` is empty on `wasm32` and `crates/model2`
 depends on it only off `wasm32`).
 
@@ -226,7 +230,7 @@ translated in a fraction of a second, before the game gets to most of it.
 ```sh
 make jit-warm GAME=topskatr      # a headless coin-start run (JIT_WARM_STEPS) writes out/topskatr/jit/hot.txt
 make jit-hitch GAME=topskatr JIT_HITCH_OPTS="--geo native"   # frame times: interpreter, JIT inline, cold, warm
-remodel-play --jit --jit-warm    # a game with no list yet gets one from a quiet run in the background
+remodel-play --jit-warm          # a game with no list yet gets one from a quiet run in the background
 ```
 
 `make jit-warm` warms a list without playing: the bench session (boot,
@@ -381,7 +385,7 @@ helpers in `copro.rs`):
   and the geometrizer's engine (`--geo chip`), through
   `model2::copro_jit`.
 
-They are on with `--jit` (`make bench JIT=1`, `remodel-play --jit`);
+They are on with `--jit` (`make bench JIT=1`) and by default in the player (`remodel-play --no-jit` turns them off);
 `--jit-copro off` leaves the copros on their interpreters (the i960's JIT
 alone, as measured below), and `--jit-copro check` runs each beside its
 interpreter (`make jit-copro-lockstep`). With `RECOMP=1` and `JIT=1` the

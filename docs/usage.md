@@ -73,8 +73,8 @@ make bench-all            # `make bench` for every set in tools/expected-hashes.
 make release-tag VERSION=0.8.0   # cut a release (below, "Versions and releases"); DRY_RUN=1 checks without tagging
 make geo-check GAME=sgt24h   # native geometrizer beside the chip (2B SHARC, 2C TGP) on a coin-start run, raster streams compared each frame, both timed
 make geo-fuzz GAME=sgt24h    # random display lists through the chip's program and the native geometrizer, compared (FUZZ_FRAMES, FUZZ_SEED)
-make play RECOMP=1        # the launcher: pick a game (live attract previews, settings, Continue), then play
-make play GAME=hotd RECOMP=1   # straight into a game (Esc or pad Guide or Start+Select menu, F5/F9 quick save/load, F11 fullscreen)
+make play                 # the launcher: pick a game (live attract previews, settings, Continue), then play; on the JITs (JIT=0: without them)
+make play GAME=hotd       # straight into a game (Esc or pad Guide or Start+Select menu, F5/F9 quick save/load, F11 fullscreen)
 make play PLAY_ARGS=--smooth   # with in-between frames on a display over 60 Hz (a frame more latency)
 make play GAME=sgt24h PLAY_ARGS="--run-ahead 3"   # show the game 3 frames ahead: less input lag, 4x the emulation
 make play PLAY_ARGS="--bloom 50"   # bloom on the 3D layer's bright parts, 1 to 100 percent (off by default; docs/play.md)

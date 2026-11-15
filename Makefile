@@ -89,8 +89,9 @@ REMODEL := target/release/remodel
 PLAY    := target/release/remodel-play
 release_build = $(CARGO) build --release -p $(1)
 endif
-# JIT=1: run the i960 on the JIT, translated to machine code as it runs
-# (docs/jit.md); needs no recompiled build.
+# JIT=1: run the CLI's i960 on the JIT, translated to machine code as it
+# runs (docs/jit.md); needs no recompiled build. The player has the JIT on
+# by default; JIT=0 turns it off there.
 JIT     ?=
 # Instructions `make jit-lockstep` compares.
 JIT_STEPS ?= 300000000
@@ -280,9 +281,9 @@ pack-lint: release ## Check texture pack PACK= against the pack format, no ROM o
 	$(REMODEL) pack-lint $(PACK) --max-side $(MAX_SIDE) \
 		$(if $(filter command line environment,$(origin TEXDUMP)),--dump $(TEXDUMP))
 
-play: ## Play in a native window: the launcher (game cards, live attract previews, settings), or straight into GAME= if given; GPU, live sound, gamepads, Esc menu, save states (RECOMP=1: recompiled code; JIT=1: the i960 JIT; PLAY_ARGS)
+play: ## Play in a native window: the launcher (game cards, live attract previews, settings), or straight into GAME= if given; GPU, live sound, gamepads, Esc menu, save states (on the JITs; JIT=0: without them; RECOMP=1 JIT=0: recompiled code; PLAY_ARGS)
 	$(call release_build,remodel-play)
-	$(PLAY) $(if $(filter command line environment,$(origin GAME)),--game $(GAME)) --rom $(ROM) $(if $(JIT),--jit) $(PLAY_ARGS)
+	$(PLAY) $(if $(filter command line environment,$(origin GAME)),--game $(GAME)) --rom $(ROM) $(if $(filter 0,$(JIT)),--no-jit) $(PLAY_ARGS)
 
 # The launcher in the desktop's app menu, running this checkout's player
 # (from the repo, so it finds rom/ and keeps its files in out/).

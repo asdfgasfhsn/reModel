@@ -89,9 +89,9 @@ make check                         # format, clippy, unit tests (no ROMs needed)
 # put your ROM sets in ./rom, as MAME keeps them (rom/topskatr.zip or rom/topskatr/)
 make verify                        # check the chips against known-good hashes
 make scan                          # list the sets found in rom/
-make play RECOMP=1                 # the launcher: pick a game, then play
-make play GAME=hotd RECOMP=1       # straight into a game (Esc menu, F8 photo mode)
-make play GAME=srallyc JIT=1       # the i960 translated as it runs instead, no recompiled build (a spike, docs/jit.md)
+make play                          # the launcher: pick a game, then play (on the JITs, docs/jit.md)
+make play GAME=hotd                # straight into a game (Esc menu, F8 photo mode)
+make play GAME=srallyc JIT=0       # without the JITs: the interpreters (RECOMP=1 JIT=0: recompiled code)
 make web RECOMP=1                  # browser build -> out/web (needs unzipped rom/<set>/ folders; serve over HTTPS)
 ```
 

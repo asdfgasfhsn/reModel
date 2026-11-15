@@ -40,6 +40,7 @@ mod launcher;
 mod menu;
 mod pack;
 mod pad;
+mod perf;
 mod photo;
 mod preview;
 mod settings;
@@ -79,13 +80,19 @@ usage: remodel-play [options]
                      window (default on)
   --interp           run the i960 on the interpreter even if this build
                      has recompiled code
-  --jit              run the i960 on the JIT: the game's code translated
-                     to this machine's as it runs (docs/jit.md), on
-                     background workers, with the blocks it translated
-                     kept per game and translated again at boot
-  --jit-warm         with --jit, a game with no hot-block list yet gets
+  --no-jit           don't use the JIT (the default runs the game's code
+                     translated to this machine's as it runs, docs/jit.md,
+                     on background workers, with the blocks it translated
+                     kept per game and translated again at boot); the
+                     recompiled code if this build has it, else the
+                     interpreter (--jit is accepted and changes nothing)
+  --jit-warm         a game with no hot-block list yet gets
                      one from a quiet run in the background (coin and
                      start, no window or sound), for its next boot
+  --perf-log         print a line for each redraw that took longer to
+                     emulate than its frames' share of real time, with
+                     what the JITs did in it, and frame times on leaving
+                     the game (docs/play.md, Slowdowns)
   --no-idle-skip     run the game's idle loops instruction by instruction
                      instead of skipping through them (same game, slower;
                      docs/idle-skip.md)
@@ -267,11 +274,14 @@ const GAME_FADE: Duration = Duration::from_millis(400);
 struct Options {
     sound: bool,
     interp: bool,
-    /// `--jit`: the i960 on the JIT (the game's own sessions).
+    /// The CPUs on the JITs (the game's own sessions); on unless
+    /// `--no-jit` or `--interp`.
     jit: bool,
     /// `--jit-warm`: warm a game's missing hot-block list in the
     /// background.
     jit_warm: bool,
+    /// `--perf-log`: slow redraws and frame times (`perf`).
+    perf_log: bool,
     seconds: Option<f64>,
     /// `--frames`: quit at this game frame.
     frames: Option<u64>,
@@ -358,8 +368,9 @@ fn options(s: &mut Settings) -> Result<Options, String> {
     let mut o = Options {
         sound: true,
         interp: false,
-        jit: false,
+        jit: true,
         jit_warm: false,
+        perf_log: false,
         seconds: None,
         frames: None,
         input: None,
@@ -430,7 +441,9 @@ fn options(s: &mut Settings) -> Result<Options, String> {
             "--nav" => o.nav = parse_nav(&value()?)?,
             "--interp" => o.interp = true,
             "--jit" => o.jit = true,
+            "--no-jit" => o.jit = false,
             "--jit-warm" => o.jit_warm = true,
+            "--perf-log" => o.perf_log = true,
             "--no-idle-skip" => model2::idle::set_default(false),
             "--smooth" => {
                 let on = opt_bool(&mut args);
@@ -614,6 +627,8 @@ struct Session {
     history: Option<model2::photo::History>,
     /// Photo mode's machine, made the first time it opens.
     studio: Option<model2::photo::Studio>,
+    /// `--perf-log`'s counters (the game's own sessions).
+    perf: Option<perf::PerfLog>,
     /// The JITs' hot-block list and its file (`--jit`), and when it was
     /// last written.
     jit_list: Option<(PathBuf, Arc<model2::jit::HotList>)>,
@@ -644,6 +659,8 @@ fn jit_warm(
     path: PathBuf,
 ) {
     let spawned = std::thread::Builder::new().name("jit-warm".into()).spawn(move || {
+        // A whole second machine: it must not take cores from the game.
+        model2::jit::lower_priority();
         let t = Instant::now();
         let run = romset::RomSet::load(game, &rom, false)
             .map_err(|e| e.to_string())
@@ -1066,6 +1083,9 @@ impl Play {
     fn leave_game(&mut self) {
         self.leave_photo();
         let Some(mut s) = self.session.take() else { return };
+        if let Some(p) = &s.perf {
+            println!("{}", p.summary());
+        }
         s.save_eeprom();
         s.save_jit_list();
         if s.preview || s.script.is_some() {
@@ -1106,7 +1126,7 @@ impl Play {
                 }
                 match machine.enable_jit_with(model2::jit::Config::default(), Some(list.clone())) {
                     Ok(()) => jit_list = Some((path, list)),
-                    Err(e) => eprintln!("warning: --jit: {e}; the i960 runs on the interpreter"),
+                    Err(e) => eprintln!("warning: no JIT: {e}; the i960 runs without it"),
                 }
             }
             machine.bus.geo.set_mode(values.geo_mode());
@@ -1155,9 +1175,13 @@ impl Play {
                 geo_chip: values.geo_chip,
                 history: None,
                 studio: None,
+                perf: None,
                 jit_list,
                 jit_saved: Instant::now(),
             };
+            if self.opts.perf_log {
+                s.perf = Some(perf::PerfLog::new(&s.machine));
+            }
             // Photo mode's time scrub: the game's last seconds.
             if self.opts.photo_history > 0.0 {
                 s.history = Some(model2::photo::History::new(self.opts.photo_history, 60));
@@ -1269,6 +1293,7 @@ impl Play {
             geo_chip: self.values.geo_chip,
             history: None,
             studio: None,
+            perf: None,
             jit_list: None,
             jit_saved: Instant::now(),
         });
@@ -1896,6 +1921,11 @@ impl Play {
             self.smooth_at = self.epoch + Duration::from_secs_f64(s.machine.frames as f64 / FPS);
         }
         let emulate_time = t0.elapsed();
+        if let (Ok(ran), Some(s)) = (&result, &mut self.session) {
+            if let Some(p) = &mut s.perf {
+                p.redraw(&s.machine, *ran, emulate_time, s.sound.as_ref().map(|snd| snd.queued()));
+            }
+        }
         match result {
             Ok(ran) => {
                 let st = &mut self.stats;

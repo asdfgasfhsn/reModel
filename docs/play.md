@@ -496,6 +496,30 @@ polygons those are depends on timing whatever the drawing
 machine keeps its own from before the copy), and one boot frame of
 `srallyc` differed that way.
 
+### Slowdowns
+
+`--perf-log` (`make play PLAY_ARGS=--perf-log`) prints a `slow` line for
+every redraw whose emulation took longer than its frames' share of real
+time (17.4 ms a frame), and a `frame times` line on leaving the game:
+
+```
+slow          frame 4211: 1 frames in 23.8 ms (23.8 ms each, 17.4 due); i960 JIT: +41 blocks (0.90 ms installing), 18233 instructions interpreted, 0 dropped, 0 thrown away; copro JITs: +3 blocks, 120 words interpreted, 0 thrown away; 12 jobs on the workers; audio 61 ms queued
+frame times   21034 frames emulated, ms: median 4.10, p99 9.80, p99.9 18.20, worst 23.8; over 8 ms 310, over 16.7 ms 9; 9 slow redraws
+```
+
+(The numbers are an example.) A slowdown that is the JIT's shows as
+blocks arriving and code interpreted while they are made, jobs queued on
+the workers, or translations dropped (the game rewrote code it had) or
+thrown away; one with none of those is the game, the geometrizer or the
+machine. The sound slows with the game only when the game stays behind
+for a while (`model2::pacing::Pace`); a single long redraw is taken up by
+the audio queue.
+
+The translation workers run below the game's threads: a nice of 10 on
+Linux, the "utility" quality-of-service class on macOS (which keeps them
+off the performance cores the game wants), below-normal priority on
+Windows (`jit::lower_priority`); so does `--jit-warm`'s background run.
+
 ### Run-ahead cost
 
 Measured with `make run-ahead-profile GAME=g RUN_AHEAD_FRAMES=n` (the
@@ -1296,7 +1320,7 @@ directory), the player keeps its files in `out/`; anywhere else in
   launcher's attract mode preview state.
 - `<set>/texpack/`: the game's texture pack, if you make one (PNGs named
   as a dump's).
-- `<set>/jit/hot.txt` (only with `--jit`; outside a source tree in the
+- `<set>/jit/hot.txt` (on the JITs, the default; outside a source tree in the
   cache folder instead, `~/.cache/remodel/jit/<set>/hot.txt`): the JITs'
   hot-block list, the addresses of the blocks they translated (no game
   code), handed to the translation workers at the next boot so the game

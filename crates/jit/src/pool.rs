@@ -232,13 +232,41 @@ fn work(p: &'static Pool) {
     }
 }
 
-/// The workers yield to the game's threads when cores are short (Linux:
-/// a nice of 10 for this thread).
-fn lower_priority() {
+/// Make the calling thread yield to the game's threads when cores are
+/// short: the translation workers, and any other background work done
+/// beside a game (the player's `--jit-warm` run). Linux: a nice of 10;
+/// macOS: the "utility" quality-of-service class, which also keeps the
+/// thread off the performance cores the game's threads want; Windows:
+/// below-normal priority.
+pub fn lower_priority() {
     #[cfg(target_os = "linux")]
     // SAFETY: plain system calls on this thread's own id.
     unsafe {
         libc::setpriority(libc::PRIO_PROCESS, libc::gettid() as libc::id_t, 10);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // <pthread/qos.h>: qos_class_t's QOS_CLASS_UTILITY.
+        const QOS_CLASS_UTILITY: u32 = 0x11;
+        extern "C" {
+            fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
+        }
+        // SAFETY: changes only the calling thread's own scheduling class.
+        unsafe {
+            pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+        }
+    }
+    #[cfg(windows)]
+    {
+        const THREAD_PRIORITY_BELOW_NORMAL: i32 = -1;
+        extern "system" {
+            fn GetCurrentThread() -> *mut core::ffi::c_void;
+            fn SetThreadPriority(thread: *mut core::ffi::c_void, priority: i32) -> i32;
+        }
+        // SAFETY: the pseudo-handle of the calling thread, its own priority.
+        unsafe {
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        }
     }
 }
 
