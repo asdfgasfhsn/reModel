@@ -506,11 +506,11 @@ run-ahead-profile: release ## Host time per shown frame with run-ahead RUN_AHEAD
 DRAW_CHECK_FRAMES ?= 1500
 DRAW_CHECK_OPTS   ?= --run-ahead 1 --aa 8 --shading pixel --bloom 50
 DRAW_CHECK_OUT    ?= out/scratch/draw-overlap-check/$(GAME)
-draw-overlap-check: ## The player with its draw thread and with --no-overlap (opens a window; needs a GPU): coin-start runs of GAME to frame DRAW_CHECK_FRAMES (DRAW_CHECK_OPTS, default run-ahead 1 and heavy settings without temporal) must end on the same state hash and present the same picture of every frame both drew (--frame-log, read back; DRAW_CHECK_OUT)
+draw-overlap-check: ## The player with its draw thread and with --no-overlap (opens a window; needs a GPU): coin-start runs of GAME to frame DRAW_CHECK_FRAMES (DRAW_CHECK_OPTS, default run-ahead 1 and heavy settings; smooth motion and temporal anti-aliasing off whatever the game's saved settings, as both make a picture depend on when and how often frames were drawn) must end on the same state hash and present the same picture of every frame both drew (--frame-log, read back; DRAW_CHECK_OUT)
 	$(call release_build,remodel-play)
 	@mkdir -p $(DRAW_CHECK_OUT)
 	@for m in overlap no-overlap; do \
-		$(PLAY) --game $(GAME) --rom $(ROM) --no-splash --no-sound --smooth off --bezel off \
+		$(PLAY) --game $(GAME) --rom $(ROM) --no-splash --no-sound --smooth off --temporal off --bezel off \
 			--input $(BENCH_INPUT) --frames $(DRAW_CHECK_FRAMES) $(DRAW_CHECK_OPTS) \
 			--frame-log $(DRAW_CHECK_OUT)/$$m.log $$([ $$m = no-overlap ] && echo --no-overlap) \
 			| grep '^frames' > $(DRAW_CHECK_OUT)/$$m.txt || exit 1; \

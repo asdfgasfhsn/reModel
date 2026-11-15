@@ -505,7 +505,14 @@ before's polygons) are only reported: on run-ahead's machine which
 polygons those are depends on timing whatever the drawing
 (`Geometrizer::copy_from` copies the engine, not `last_frame`, so the
 machine keeps its own from before the copy), and one boot frame of
-`srallyc` differed that way.
+`srallyc` differed that way. The check pins smooth motion and temporal
+anti-aliasing off whatever the game's saved settings say: both make a
+picture depend on when and how often frames were drawn, not only on the
+frame (an in-between on the clock; a temporal image on the images before
+it, a repeat adding a jittered sample), so the two ways legitimately
+differ with them. A saved `temporal = taa` (it turns multisampling off
+too) once made the check fail on `srallyc`: run-ahead pictures that
+differed and frames drawn twice two ways, wherever the 3D layer showed.
 
 ### Slowdowns
 
