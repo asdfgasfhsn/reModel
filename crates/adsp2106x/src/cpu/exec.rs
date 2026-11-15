@@ -911,3 +911,69 @@ impl Sharc {
         out.map(|v| (v as u64) << 8)
     }
 }
+
+/// What a JIT's translated code calls for the parts of a word it leaves
+/// to the interpreter (crates/jit, docs/jit.md "The SHARC"). Each is the
+/// piece of [`Sharc::exec`] it names, with the same effects; only words
+/// that can be in a block (`codegen::in_block`) use them, so none faults.
+impl Sharc {
+    /// A compute operation, its results written to the register file at
+    /// once. Exact as part of a word only where nothing else the word does
+    /// reads the registers it writes after it (the JIT reads a transfer's
+    /// stored value, and a register move's source, before).
+    #[doc(hidden)]
+    pub fn jit_compute(&mut self, c: &Compute) {
+        if let Some(res) = self.compute(c) {
+            self.apply(&res);
+        }
+    }
+
+    /// One ALU operation with its flags (as a single-function compute
+    /// does): the 40-bit result, or `u64::MAX` for none (COMP).
+    #[doc(hidden)]
+    pub fn jit_alu(&mut self, op: AluOp, x40: u64, y40: u64) -> u64 {
+        let (v, f) = self.alu(op, x40, y40);
+        self.set_alu_flags(f);
+        v.unwrap_or(u64::MAX)
+    }
+
+    /// One multiplier operation with its flags: the register file result,
+    /// or `u64::MAX` for none.
+    #[doc(hidden)]
+    pub fn jit_mul(&mut self, op: MulOp, x40: u64, y40: u64) -> u64 {
+        self.mul(op, x40, y40).unwrap_or(u64::MAX)
+    }
+
+    /// A type 6 shift with its immediate: Rn's new value, or `u64::MAX`
+    /// for none (BTST), with the shifter flags set.
+    #[doc(hidden)]
+    pub fn jit_shift_imm(&mut self, op: ShiftOp, x40: u64, imm: u16, n40: u64) -> u64 {
+        self.shift(op, x40, ShiftY::imm(imm), n40).unwrap_or(u64::MAX)
+    }
+
+    /// A register transfer's read (not of PX) from an address in internal
+    /// memory or on the external port: the register's new 40-bit value.
+    #[doc(hidden)]
+    pub fn jit_read(&mut self, pm: bool, addr: u32, ext: &mut impl Bus) -> u64 {
+        match self.load(pm, addr, false, ext) {
+            Ok(Loaded::Bus(v)) | Ok(Loaded::Px48(v)) => v,
+            Err(_) => 0,
+        }
+    }
+
+    /// A register transfer's write (not of PX) of the 40-bit value `v`.
+    #[doc(hidden)]
+    pub fn jit_write(&mut self, pm: bool, addr: u32, v: u64, ext: &mut impl Bus) {
+        let _ = self.store(pm, addr, v, None, ext);
+    }
+
+    /// A universal register as the DM bus carries it, and written from it.
+    #[doc(hidden)]
+    pub fn jit_ureg_read(&self, code: u8) -> u64 {
+        self.ureg_read(code)
+    }
+    #[doc(hidden)]
+    pub fn jit_ureg_write(&mut self, code: u8, v: u64) {
+        self.ureg_write(code, v)
+    }
+}

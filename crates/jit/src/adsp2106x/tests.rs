@@ -292,6 +292,19 @@ fn randomise(s: &mut Sharc, r: &mut Rng, len: u32) {
     s.set_mode1(m1);
     s.flag_in = r.below(16) as u8;
     s.ustat1 = r.next();
+    // Data where the DAGs point: random words, 32 or 48 bits (IMDW) by
+    // block now and then.
+    for base in [0x2_8000u32, 0x2_4000] {
+        for k in 0..0x80 {
+            s.mem.write32(base + k, r.next());
+        }
+    }
+    for k in 0..0x80 {
+        s.mem.write16(0x5_0000 + k, r.next() as u16);
+    }
+    if r.chance(6) {
+        s.iop[0] |= 1 << (8 + r.below(2));
+    }
 }
 
 /// Where the two cores differ, if anywhere.

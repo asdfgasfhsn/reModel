@@ -25,7 +25,7 @@ use std::collections::VecDeque;
 
 mod exec;
 mod recomp;
-pub use recomp::{code_hash, program_hash, program_image, Block, BlockEnd, InBlock};
+pub use recomp::{code_hash, layout, program_hash, program_image, Block, BlockEnd, InBlock};
 
 /// Width of an external port access.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

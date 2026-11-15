@@ -115,6 +115,8 @@ pub(crate) fn call(b: &mut FunctionBuilder, ptr: Type, sig: SigRef, f: usize, ar
 pub(crate) struct Background {
     /// On the workers; off: translated at once, here (tests).
     pub on: bool,
+    /// Cranelift's optimiser on (`pool::isa`).
+    pub optimise: bool,
     tx: Sender<Done>,
     rx: Receiver<Done>,
     alive: Arc<AtomicBool>,
@@ -143,6 +145,7 @@ impl Background {
         let (tx, rx) = channel();
         Background {
             on: true,
+            optimise: false,
             tx,
             rx,
             alive: Arc::new(AtomicBool::new(true)),
@@ -170,12 +173,12 @@ impl Background {
         ret: Option<Type>,
         build: impl FnOnce(&mut FunctionBuilder, Type) + Send + 'static,
     ) {
-        let (tx, alive) = (self.tx.clone(), self.alive.clone());
+        let (tx, alive, optimise) = (self.tx.clone(), self.alive.clone(), self.optimise);
         let job: Job = Box::new(move |c: &mut Compiler| {
             if !alive.load(Ordering::Relaxed) {
                 return;
             }
-            let code = catch_unwind(AssertUnwindSafe(|| c.compile(false, 3, ret, build)))
+            let code = catch_unwind(AssertUnwindSafe(|| c.compile(optimise, 3, ret, build)))
                 .unwrap_or_else(|_| Err("the translation panicked".into()));
             let _ = tx.send(Done { key, start, end, code });
         });

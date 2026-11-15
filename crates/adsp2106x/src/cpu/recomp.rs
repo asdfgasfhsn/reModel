@@ -436,3 +436,23 @@ pub fn program_image(s: &Sharc) -> Vec<u64> {
     words.truncate(used);
     words
 }
+
+/// Offsets of the core's fields, for a JIT's translated code (crates/jit),
+/// which reads and writes them in place. Private fields of the
+/// interpreter: anything else should use the methods.
+#[doc(hidden)]
+pub mod layout {
+    use super::Sharc;
+    use std::mem::offset_of;
+    pub const R: usize = offset_of!(Sharc, r);
+    pub const I: usize = offset_of!(Sharc, i);
+    pub const M: usize = offset_of!(Sharc, m);
+    pub const L: usize = offset_of!(Sharc, l);
+    pub const B: usize = offset_of!(Sharc, b);
+    pub const MODE1: usize = offset_of!(Sharc, mode1);
+    pub const ASTAT: usize = offset_of!(Sharc, astat);
+    pub const STKY: usize = offset_of!(Sharc, stky);
+    pub const IRPTL: usize = offset_of!(Sharc, irptl);
+    pub const IMASKP: usize = offset_of!(Sharc, imaskp);
+    pub const CODE_DIRTY: usize = offset_of!(Sharc, code_dirty);
+}

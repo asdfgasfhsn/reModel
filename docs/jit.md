@@ -626,8 +626,7 @@ memory, execution counts and IOP registers every 64th and at every stop.
    (`make jit-test`: random words of every type, registers, DAGs, modes
    and external memory, runs of 1 to 256 words, compared in full after
    every run).
-2. The common compute and data-move forms lowered to IR, the rest left to
-   `h_exec`.
+2. The common compute and data-move forms lowered to IR (done; below).
 3. Branches, the two delay slots, loops and the status stacks, so that
    blocks span more code.
 4. More random-program coverage.
@@ -641,22 +640,68 @@ shifts, stores); the copro's 90% (conditional jumps 8%, multiplies,
 loads, immediate loads, adds; returns, BIT, calls and DOs are single
 steps).
 
-**Results so far** (milestone 1; `make bench`'s session, 600M i960
-instructions, coin start, host seconds; `--jit` before is the i960's JIT
-alone, the SHARCs interpreted):
+**The lowering** (milestone 2, `adsp2106x/emit.rs`). A word the lowering
+has (`emit::lowered`: every type a block holds, with register-file and DAG
+registers; PX and BITREV words still go to `h_exec`) does what
+`block_exec` does, in its order: each transfer's address (under its
+condition) classified first, leaving before the word for an IOP register
+or reserved address as `block_exec` declines it; STKY noted for
+`block_end`; the word's effects; `Bus::after_access` after an external
+access; leaving after the word if a write reached watched code. A taken
+conditional branch or return leaves before the word, as it ends a block
+there. Within the word the effects keep `exec`'s visible order: a
+transfer's stored register and a register move's source are read before
+the compute, the compute's results land before a load's (so the load
+wins), DM after PM. In IR: conditions on ASTAT's arithmetic flags (FLAG
+inputs, BM and the loop counter through `Sharc::cond`); the ALU's
+fixed-point add, subtract, increment, decrement, pass and logic (with
+ALUSAT, the carry, overflow and AOS); FADD, FSUB and FMUL on
+`float::single`'s path (RND32, two normal inputs, an add's exponents at
+most 28 apart: the exact f64 result rounded to 23 fraction bits in place,
+to nearest even or toward zero; off the path, the interpreter's own
+operation); the multifunction multiply with an ALU operation; type 6's
+LSHIFT and ASHIFT; register-file and DAG register moves and immediates;
+the DAGs (pre- and post-modify, M registers and immediates, circular
+buffers with I7/I15's wrap flags and interrupt latches, BR0/BR8 bit
+reversal); and 32-bit reads of internal memory. The other compute
+operations go through the interpreter's operation alone (`jit_alu`,
+`jit_mul`, `jit_shift_imm`, `jit_compute`), and writes and other reads
+through its `load`/`store` (`jit_read`, `jit_write`), so they need no
+dispatch on the word. Regions are compiled with Cranelift's optimiser
+(the i960's and the other copros' aren't): a word is many IR
+instructions and a region runs many times, and it took the geometrizer
+from 14.6 to 12.2 s of `zerogun`'s session for 0.1 s more translation on
+the workers.
+
+**Results** (`make bench`'s session, 600M i960 instructions, coin start,
+host seconds and the geometrizer thread's, which the run waits for;
+`--jit` before is the i960's JIT alone, the SHARCs interpreted):
 
 | | `zerogun` | `pltkids` |
 |---|---|---|
 | interpreter | 40.5 (geometrizer thread 36.3) | 59.1 (56.7) |
 | `--jit`, before | 38.2 (36.2) | 58.7 (57.2) |
-| `--jit`, regions on `h_exec` | 29.4 (27.4) | 44.0 (42.5) |
+| `--jit`, milestone 1 (regions on `h_exec`) | 29.4 (27.4) | 44.0 (42.5) |
+| `--jit`, milestone 2 | 14.2 (12.2) | 21.3 (19.9) |
 
-The geometrizer's thread is what the run waits for, and runs 94% of its
-words in blocks (`gunblade`, 300M: 308M words in blocks, 21M single
-steps); the copro's slices are five words (`sharc::STEPS_PER_INSN`), so
-its blocks are short. `make jit-copro-lockstep` (300M) is identical on
-`overrevb`, `zerogun`, `gunblade` and `fvipers` (3.0-8.6 million copro
-runs and about 4,000 geometrizer runs compared each).
+So `zerogun` runs at 5.0 times real time (1.78 interpreted) and `pltkids`
+at 3.4 (1.22). What is still the interpreter's (`make bench JIT=1`'s
+`jit copro` lines): no word inside a block (0% on `h_exec`), but the
+single steps outside blocks, which are 3.6-5.8% of the geometrizer's
+words (`pltkids` 3.6, `zerogun` 4.2, `fvipers` 4.8, `schamp` 5.5,
+`gunblade` 5.8) and 27-58% of the copro's (`gunblade` 27, `zerogun` 30,
+`pltkids` 42, `fvipers` 52, `schamp` 58): loop ends (a block stops two
+words before the fetch reaches one), DOs, calls, returns, unconditional
+jumps, BIT, and every word of the copro's short wait loops. Those are
+milestone 3's.
+
+`make jit-copro-lockstep` (300M) is identical on `overrevb`, `zerogun`,
+`gunblade` and `fvipers` (3.0-8.6 million copro runs and about 4,000
+geometrizer runs compared each), at both milestones; `make bench-all` and
+`make bench-all JIT=1` give all 22 hashes. The random-program tests
+broke at once on a deliberate error in the float add or the inline read
+(not on one in the rounding of exact ties, which random operands
+almost never reach).
 
 ## A WebAssembly back end (sketch)
 
@@ -693,7 +738,7 @@ bench hashes as the gate at each step:
 | Piece | What | Estimate |
 |---|---|---|
 | i960 native JIT, finished | floats translated (the largest fallback group in both games: `mulr`, `addr`, `subr`, `movr`, `cvtir`, `cmpr`); an inline fast path for plain RAM and ROM reads (and writes, with the bus's write count and code counters); the per-instruction step cheaper (the interrupt check is a scan of eight words each time); translation on a worker thread with the hot-block list kept between runs; code memory reclaimed; a player setting; `jit-lockstep` over every game | 2-3 weeks |
-| Copro JITs | MB86234 and MB86235: done ("Copro JITs"). ADSP-21062 (2B copro and geometrizer): in progress ("The SHARC"): the recompiler's regions on Cranelift, lockstep and random tests done (milestone 1); the compute and data-move lowering, then branches and loops in blocks, to come | 2-3 weeks left |
+| Copro JITs | MB86234 and MB86235: done ("Copro JITs"). ADSP-21062 (2B copro and geometrizer): in progress ("The SHARC"): the recompiler's regions on Cranelift, lockstep and random tests, and the compute and data-move lowering done (milestones 1-2); branches, delay slots and loops in blocks to come | 1-2 weeks left |
 | WebAssembly back end | the emitter (`Op` to wasm), helper exports and a shared table in `remodel-web`, batched modules compiled off the main thread, Node lockstep | 3-4 weeks for the i960; each copro lowering then a further week or so, as the emitter is shared |
 
 ## Verdict

@@ -19,18 +19,20 @@
 //! a write to one drops its region, which is translated again from the new
 //! words when it next runs.
 
-use crate::copro::{block_signature, call, install, module, sig, trusted, Background, CoproStats, OwnedModule, I32};
+use crate::copro::{block_signature, install, module, Background, CoproStats, OwnedModule};
 use crate::hotlist::{Chip, HotList};
 use crate::pool::{Compiled, Urgency};
 use ::adsp2106x::codegen::{self, in_block};
-use ::adsp2106x::cpu::{code_hash, program_image, word_index, BlockEnd, Bus, Fault, InBlock, Sharc, Step};
+use ::adsp2106x::cpu::{code_hash, program_image, word_index, BlockEnd, Bus, Fault, Sharc, Step};
 use ::adsp2106x::{decode, Insn};
-use cranelift_codegen::ir::{condcodes::IntCC, BlockArg, InstBuilder, JumpTableData};
-use cranelift_frontend::FunctionBuilder;
 use std::collections::BTreeMap;
-use std::mem::{offset_of, ManuallyDrop};
+use std::mem::ManuallyDrop;
 use std::sync::Arc;
 use std::time::Instant;
+
+/// Cranelift's optimiser for the regions: on, as each word is many IR
+/// instructions and a region runs many times (docs/jit.md, "The SHARC").
+const OPTIMISE: bool = true;
 
 /// Words per region at most (the recompiler's `REGION_WORDS`).
 pub const MAX_REGION: u32 = 128;
@@ -61,6 +63,10 @@ struct Ctx {
     fault: Option<Fault>,
     /// Words run on the interpreter's step (`h_exec`).
     helper: u64,
+    /// The IOP registers and internal memory's two blocks (their `Vec`s
+    /// don't move while a block runs): what an inline read looks at.
+    iop: *const u32,
+    mem: [*const u16; 2],
 }
 
 /// A translated region: `(sharc, bus, ctx)`, `bus` pointing at a `&mut
@@ -113,14 +119,18 @@ pub struct SharcJit {
 impl SharcJit {
     pub fn new() -> Result<Self, String> {
         Ok(SharcJit {
-            module: OwnedModule(ManuallyDrop::new(module(false)?)),
+            module: OwnedModule(ManuallyDrop::new(module(OPTIMISE)?)),
             table: vec![COLD; 2 * ::adsp2106x::mem::WORDS48 as usize].into_boxed_slice(),
             regions: Vec::new(),
             key: None,
             planned: BTreeMap::new(),
             rewatch: false,
             stats: CoproStats::default(),
-            jobs: Background::new(),
+            jobs: {
+                let mut b = Background::new();
+                b.optimise = OPTIMISE;
+                b
+            },
             list: None,
         })
     }
@@ -185,6 +195,8 @@ impl SharcJit {
                     end: a,
                     fault: None,
                     helper: 0,
+                    iop: s.iop.as_ptr(),
+                    mem: [s.mem.cols[0].as_ptr(), s.mem.cols[1].as_ptr()],
                 };
                 let mut d: &mut dyn Bus = ext;
                 // SAFETY: made by `translate` for the words at `region`,
@@ -361,7 +373,7 @@ impl SharcJit {
         self.regions.push(Region { start, words: words.clone(), code: None, dead: false });
         let end = start + words.len() as u32;
         self.jobs.queue(self.key.unwrap_or(0), start, end, urgency, None, move |b, ptr| {
-            Emit::new(b, ptr).region(&words);
+            emit::Emit::new(b, ptr).region(&words);
         });
     }
 
@@ -417,95 +429,10 @@ impl SharcJit {
             g.code = Some(code);
             self.stats.blocks += 1;
             self.stats.words += g.words.len() as u64;
-            self.stats.fallbacks += g.words.len() as u64;
+            self.stats.fallbacks += g.words.iter().filter(|i| !emit::lowered(i)).count() as u64;
             self.stats.code_bytes += size as u64;
         }
         self.stats.time += t0.elapsed();
-    }
-}
-
-/// The IR of a region.
-struct Emit<'a, 'b> {
-    b: &'a mut FunctionBuilder<'b>,
-    ptr: cranelift_codegen::ir::Type,
-    s: cranelift_codegen::ir::Value,
-    ext: cranelift_codegen::ir::Value,
-    ctx: cranelift_codegen::ir::Value,
-    /// The exit: (kind, word).
-    exit: cranelift_codegen::ir::Block,
-}
-
-impl<'a, 'b> Emit<'a, 'b> {
-    fn new(b: &'a mut FunctionBuilder<'b>, ptr: cranelift_codegen::ir::Type) -> Self {
-        let entry = b.create_block();
-        b.append_block_params_for_function_params(entry);
-        b.switch_to_block(entry);
-        let p = b.block_params(entry).to_vec();
-        let exit = b.create_block();
-        b.append_block_param(exit, I32);
-        b.append_block_param(exit, I32);
-        Emit { b, ptr, s: p[0], ext: p[1], ctx: p[2], exit }
-    }
-
-    fn k(&mut self, v: u32) -> cranelift_codegen::ir::Value {
-        self.b.ins().iconst(I32, v as i64)
-    }
-
-    fn leave(&mut self, kind: u32, at: u32) {
-        let (k, a) = (self.k(kind), self.k(at));
-        self.b.ins().jump(self.exit, &[BlockArg::Value(k), BlockArg::Value(a)]);
-    }
-
-    /// The region `words`: a jump table to the word it is entered at,
-    /// then each word in turn, leaving at the block's stop or as a word
-    /// says.
-    fn region(&mut self, words: &[Insn]) {
-        let start = words[0].addr;
-        let blocks: Vec<_> = words.iter().map(|_| self.b.create_block()).collect();
-        let outside = self.b.create_block();
-        let at = self.b.ins().load(I32, trusted(), self.ctx, offset_of!(Ctx, at) as i32);
-        let idx = self.b.ins().iadd_imm_s(at, -(start as i64));
-        let calls: Vec<_> = blocks.iter().map(|&w| self.b.func.dfg.block_call(w, &[])).collect();
-        let def = self.b.func.dfg.block_call(outside, &[]);
-        let jt = self.b.create_jump_table(JumpTableData::new(def, &calls));
-        self.b.ins().br_table(idx, jt);
-        self.b.switch_to_block(outside);
-        let before = self.k(BEFORE);
-        self.b.ins().jump(self.exit, &[BlockArg::Value(before), BlockArg::Value(at)]);
-        let s_exec = sig(self.b, &[self.ptr, self.ptr, self.ptr, self.ptr], Some(I32));
-        for (j, i) in words.iter().enumerate() {
-            self.b.switch_to_block(blocks[j]);
-            let a = i.addr;
-            if j > 0 {
-                let stop = self.b.ins().load(I32, trusted(), self.ctx, offset_of!(Ctx, stop) as i32);
-                let here = self.b.ins().icmp_imm_u(IntCC::Equal, stop, a as i64);
-                let (out, on) = (self.b.create_block(), self.b.create_block());
-                self.b.ins().brif(here, out, &[], on, &[]);
-                self.b.switch_to_block(out);
-                self.leave(BEFORE, a);
-                self.b.switch_to_block(on);
-            }
-            let insn = self.b.ins().iconst(self.ptr, i as *const Insn as i64);
-            let (s, ext, ctx) = (self.s, self.ext, self.ctx);
-            let r = call(self.b, self.ptr, s_exec, h_exec as HExec as usize, &[s, ext, ctx, insn]).expect("returns");
-            let (stopped, on) = (self.b.create_block(), self.b.create_block());
-            self.b.ins().brif(r, stopped, &[], on, &[]);
-            self.b.switch_to_block(stopped);
-            let at = self.k(a);
-            self.b.ins().jump(self.exit, &[BlockArg::Value(r), BlockArg::Value(at)]);
-            self.b.switch_to_block(on);
-            match blocks.get(j + 1) {
-                Some(&next) => {
-                    self.b.ins().jump(next, &[]);
-                }
-                None => self.leave(BEFORE, a + 1),
-            }
-        }
-        self.b.switch_to_block(self.exit);
-        let p = self.b.block_params(self.exit).to_vec();
-        self.b.ins().store(trusted(), p[0], self.ctx, offset_of!(Ctx, kind) as i32);
-        self.b.ins().store(trusted(), p[1], self.ctx, offset_of!(Ctx, end) as i32);
-        self.b.ins().return_(&[]);
     }
 }
 
@@ -587,36 +514,7 @@ pub fn profile(s: &Sharc) -> Vec<(String, bool, u64)> {
     v
 }
 
-// The helpers: the interpreter's own pieces.
-//
-// SAFETY (all of them): called only by regions `SharcJit::one` started,
-// with the core, the `&mut dyn Bus` and the context it passed, live and
-// distinct, and an instruction of the region's `words`.
-
-type HExec = unsafe extern "C" fn(*mut Sharc, *mut u8, *mut Ctx, *const Insn) -> u32;
-
-/// One word of a block (`Sharc::block_exec`): 0 if it ran and the block
-/// goes on, else how the block ends.
-unsafe extern "C" fn h_exec(s: *mut Sharc, e: *mut u8, ctx: *mut Ctx, insn: *const Insn) -> u32 {
-    let (s, ctx, insn) = unsafe { (&mut *s, &mut *ctx, &*insn) };
-    let e = unsafe { &mut *(e as *mut &mut dyn Bus) };
-    let steps = ctx.base.wrapping_add(insn.addr as u64 + 1);
-    match s.block_exec(insn, &mut ctx.st, steps, e) {
-        InBlock::Ran => {
-            ctx.helper += 1;
-            0
-        }
-        InBlock::Last => {
-            ctx.helper += 1;
-            LAST
-        }
-        InBlock::Bail => BAIL,
-        InBlock::Fault(f) => {
-            ctx.fault = Some(f);
-            FAULT
-        }
-    }
-}
+mod emit;
 
 #[cfg(test)]
 mod tests;
