@@ -217,6 +217,11 @@ usage: remodel-play [options]
   --fast             for checking (with --frames, --input, --photo): run
                      the game as fast as it goes, drawing nothing (a
                      hidden window gets about a redraw a second)
+  --sound-log FILE   every byte the game sends its sound boards, a line
+                     each: the set, the game frame, the bus cycle and
+                     the byte in hex (control-register writes marked
+                     ctl), to see whether a sound or music command was
+                     sent when one is missing (docs/play.md, Slowdowns)
   --frame-log FILE   for checking: each picture presented, read back and
                      hashed, a line each: the shown machine's frame, game
                      or ahead (run-ahead's machine), -late if drawn with
@@ -304,6 +309,8 @@ struct Options {
     overlap: bool,
     /// `--frame-log`: where to log each presented picture's hash.
     frame_log: Option<PathBuf>,
+    /// `--sound-log`: where to log the sound link's bytes.
+    sound_log: Option<PathBuf>,
     /// `--photo`: scripted photo mode sessions, in frame order.
     photo: std::collections::VecDeque<photo::Script>,
     /// `--photo-dir`: where photos go.
@@ -382,6 +389,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
         texture_pack: None,
         overlap: true,
         frame_log: None,
+        sound_log: None,
         photo: Default::default(),
         photo_dir: None,
         photo_history: 10.0,
@@ -553,6 +561,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
             "--no-overlap" => o.overlap = false,
             "--fast" => o.fast = true,
             "--frame-log" => o.frame_log = Some(PathBuf::from(value()?)),
+            "--sound-log" => o.sound_log = Some(PathBuf::from(value()?)),
             "--photo" => {
                 let mut v: Vec<photo::Script> = photo::parse_scripts(&value()?)?;
                 v.sort_by_key(|p| p.at);
@@ -966,6 +975,8 @@ struct Play {
     /// shown machine's frame, whether that is run-ahead's, whether its
     /// polygons are the frame before's).
     frame_log: Option<std::io::BufWriter<std::fs::File>>,
+    /// `--sound-log`: the file.
+    sound_log: Option<std::io::BufWriter<std::fs::File>>,
     drawing: Option<(u64, bool, bool)>,
     /// For the draw thread to wake the event loop.
     proxy: Option<winit::event_loop::EventLoopProxy<Wake>>,
@@ -1870,6 +1881,14 @@ impl Play {
                 h.before_frame(&mut s.machine);
             }
             s.machine.run_slice(u64::MAX)?;
+            if let Some(log) = &mut self.sound_log {
+                use std::io::Write;
+                for &(cycle, control, byte) in &s.machine.bus.uart_log {
+                    let ctl = if control { " ctl" } else { "" };
+                    let _ = writeln!(log, "{} {} {cycle} {byte:02x}{ctl}", s.game.id, s.machine.frames);
+                }
+                let _ = log.flush();
+            }
             match &mut s.sound {
                 Some(snd) => snd.send(&mut s.machine.bus),
                 None => s.machine.bus.uart_log.clear(),
@@ -3178,6 +3197,7 @@ fn main() {
         waiting: None,
         emulate_redraw: 0.0,
         frame_log: None,
+        sound_log: None,
         drawing: None,
         proxy: None,
         real_emulate: Duration::ZERO,
@@ -3210,6 +3230,15 @@ fn main() {
     }
     let event_loop = EventLoop::<Wake>::with_user_event().build().expect("event loop");
     play.proxy = Some(event_loop.create_proxy());
+    if let Some(path) = &play.opts.sound_log {
+        match std::fs::File::create(path) {
+            Ok(f) => play.sound_log = Some(std::io::BufWriter::new(f)),
+            Err(e) => {
+                eprintln!("--sound-log: {}: {e}", path.display());
+                std::process::exit(1);
+            }
+        }
+    }
     if let Some(path) = &play.opts.frame_log {
         match std::fs::File::create(path) {
             Ok(f) => play.frame_log = Some(std::io::BufWriter::new(f)),

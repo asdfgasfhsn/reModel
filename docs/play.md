@@ -515,6 +515,13 @@ machine. The sound slows with the game only when the game stays behind
 for a while (`model2::pacing::Pace`); a single long redraw is taken up by
 the audio queue.
 
+`--sound-log FILE` writes every byte the game sends its sound boards, a
+line each (`topskatr 3144 1234567890 ae`: set, game frame, bus cycle,
+byte; `ctl` for control-register writes). When a sound or a music track
+is missing, it shows whether the game sent the command (a DSB2 music
+board's track is `ae 10 nn`, docs/hw/sound.md)
+or the board lost it.
+
 The translation workers run below the game's threads: a nice of 10 on
 Linux, the "utility" quality-of-service class on macOS (which keeps them
 off the performance cores the game wants), below-normal priority on
