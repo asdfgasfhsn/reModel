@@ -44,6 +44,9 @@ impl Snapshot {
 }
 
 pub struct PerfLog {
+    /// The game's set, at the start of every line (games started from the
+    /// launcher one after another share the terminal).
+    set: &'static str,
     last: Snapshot,
     /// Host milliseconds of emulation per frame, a redraw's time shared
     /// among its frames.
@@ -52,8 +55,8 @@ pub struct PerfLog {
 }
 
 impl PerfLog {
-    pub fn new(m: &model2::Machine) -> Self {
-        PerfLog { last: Snapshot::of(m), frames: Vec::new(), slow: 0 }
+    pub fn new(set: &'static str, m: &model2::Machine) -> Self {
+        PerfLog { set, last: Snapshot::of(m), frames: Vec::new(), slow: 0 }
     }
 
     /// One redraw: `ran` frames emulated in `emulate`, `queued` the audio
@@ -90,8 +93,8 @@ impl PerfLog {
             };
             let audio = queued.map_or(String::new(), |q| format!("; audio {:.0} ms queued", q * 1000.0));
             println!(
-                "slow          frame {}: {ran} frames in {ms:.1} ms ({per:.1} ms each, {budget:.1} due){jit}{audio}",
-                m.frames
+                "slow          {} frame {}: {ran} frames in {ms:.1} ms ({per:.1} ms each, {budget:.1} due){jit}{audio}",
+                self.set, m.frames
             );
         }
         self.last = now;
@@ -101,13 +104,14 @@ impl PerfLog {
     pub fn summary(&self) -> String {
         let mut v = self.frames.clone();
         if v.is_empty() {
-            return "frame times   no frames".into();
+            return format!("frame times   {}: no frames", self.set);
         }
         v.sort_by(f32::total_cmp);
         let at = |p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
         let over = |ms: f32| v.iter().filter(|&&x| x > ms).count();
         format!(
-            "frame times   {} frames emulated, ms: median {:.2}, p99 {:.2}, p99.9 {:.2}, worst {:.1}; over 8 ms {}, over 16.7 ms {}; {} slow redraws",
+            "frame times   {}: {} frames emulated, ms: median {:.2}, p99 {:.2}, p99.9 {:.2}, worst {:.1}; over 8 ms {}, over 16.7 ms {}; {} slow redraws",
+            self.set,
             v.len(),
             at(0.5),
             at(0.99),

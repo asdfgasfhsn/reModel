@@ -1180,7 +1180,7 @@ impl Play {
                 jit_saved: Instant::now(),
             };
             if self.opts.perf_log {
-                s.perf = Some(perf::PerfLog::new(&s.machine));
+                s.perf = Some(perf::PerfLog::new(game.id, &s.machine));
             }
             // Photo mode's time scrub: the game's last seconds.
             if self.opts.photo_history > 0.0 {

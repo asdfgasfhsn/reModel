@@ -503,8 +503,8 @@ every redraw whose emulation took longer than its frames' share of real
 time (17.4 ms a frame), and a `frame times` line on leaving the game:
 
 ```
-slow          frame 4211: 1 frames in 23.8 ms (23.8 ms each, 17.4 due); i960 JIT: +41 blocks (0.90 ms installing), 18233 instructions interpreted, 0 dropped, 0 thrown away; copro JITs: +3 blocks, 120 words interpreted, 0 thrown away; 12 jobs on the workers; audio 61 ms queued
-frame times   21034 frames emulated, ms: median 4.10, p99 9.80, p99.9 18.20, worst 23.8; over 8 ms 310, over 16.7 ms 9; 9 slow redraws
+slow          topskatr frame 4211: 1 frames in 23.8 ms (23.8 ms each, 17.4 due); i960 JIT: +41 blocks (0.90 ms installing), 18233 instructions interpreted, 0 dropped, 0 thrown away; copro JITs: +3 blocks, 120 words interpreted, 0 thrown away; 12 jobs on the workers; audio 61 ms queued
+frame times   topskatr: 21034 frames emulated, ms: median 4.10, p99 9.80, p99.9 18.20, worst 23.8; over 8 ms 310, over 16.7 ms 9; 9 slow redraws
 ```
 
 (The numbers are an example.) A slowdown that is the JIT's shows as
