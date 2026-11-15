@@ -518,6 +518,27 @@ fn path() -> PathBuf {
     data_dir().join("play-settings.txt")
 }
 
+/// For the log: the settings `set` plays with that aren't the built-in
+/// defaults, each with where it came from, and the files read.
+pub fn describe(set: &str, v: &GameSettings, sources: &[Source; KEYS.len()]) -> String {
+    let from = |src: Source| match src {
+        Source::Default => "default",
+        Source::AllGames => "all games",
+        Source::Game => "this game",
+        Source::CommandLine => "command line",
+    };
+    let set_here: Vec<String> = KEYS
+        .iter()
+        .zip(sources)
+        .filter(|(_, src)| **src != Source::Default)
+        .map(|(k, src)| format!("{k} {} ({})", v.get(k), from(*src)))
+        .collect();
+    let list =
+        if set_here.is_empty() { "all defaults".to_string() } else { set_here.join(", ") + "; the rest default" };
+    let file = |p: PathBuf| format!("{}{}", p.display(), if p.exists() { "" } else { " (none)" });
+    format!("{set}: {list}; files {}, {}", file(path()), file(game_path(set)))
+}
+
 fn game_path(set: &str) -> PathBuf {
     data_dir().join(set).join("settings.txt")
 }

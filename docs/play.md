@@ -1356,6 +1356,16 @@ directory), the player keeps its files in `out/`; anywhere else in
   A game setting whose value doesn't parse, in either file, is ignored
   with a warning on the terminal (the setting falls back to the next
   layer down, or its default).
+
+  Starting a game prints a `settings` line on the terminal: every game
+  setting that isn't the built-in default, with where it came from (all
+  games, this game, the command line), and the two files read; changing
+  one in the launcher or menu prints what changed and where it was saved:
+
+  ```
+  settings      srallyc: temporal taa (this game), aa 8 (all games); the rest default; files out/play-settings.txt, out/srallyc/settings.txt
+  settings      srallyc: temporal taa -> off (saved for this game)
+  ```
 - `<set>/controls.txt`: the game's remapped controls, only what differs
   from its manifest (above, "Remapping").
 - `<set>/eeprom.bin`: the game's EEPROM (settings, records), written on quit or on switching games.

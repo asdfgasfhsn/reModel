@@ -1099,6 +1099,17 @@ impl Play {
     /// apply it.
     fn edit_values(&mut self, set: &str, v: GameSettings) {
         if v != self.values {
+            // For the log: what the launcher or menu changed.
+            let changed: Vec<String> = KEYS
+                .iter()
+                .filter(|k| v.get(k) != self.values.get(k))
+                .map(|k| format!("{k} {} -> {}", self.values.get(k), v.get(k)))
+                .collect();
+            println!(
+                "settings      {set}: {} (saved for {})",
+                changed.join(", "),
+                if self.settings.for_all { "all games" } else { "this game" }
+            );
             self.settings.edit(set, &v);
         }
         self.use_values(set);
@@ -1205,6 +1216,7 @@ impl Play {
                 },
                 sound.as_ref().map_or(String::new(), |s| format!(", audio {} Hz", s.rate))
             );
+            println!("settings      {}", settings::describe(game.id, &values, &self.sources));
             let bindings = settings::load_bindings(game);
             let mut s = Session {
                 game,
