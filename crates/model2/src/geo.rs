@@ -849,7 +849,10 @@ impl Geometrizer {
             remote(Job::Frame { buffer: buffer.to_vec(), booted, read_ptr, jumps });
             return;
         }
-        let mut e = std::mem::replace(self.engine_mut(), Engine::placeholder());
+        // The engine itself moves to the worker (no placeholder: making one
+        // costs a TGP's decode of 4,096 words, every frame).
+        self.sync();
+        let Slot::Idle(mut e) = std::mem::replace(&mut self.engine, Slot::Empty) else { unreachable!() };
         if self.keep_last {
             self.last.0.clear();
             self.last.0.extend_from_slice(&e.stream);
@@ -863,11 +866,10 @@ impl Geometrizer {
         e.jumps = jumps;
         if !self.threaded {
             e.run_frame(booted, read_ptr);
-            self.engine = Slot::Idle(Box::new(e));
+            self.engine = Slot::Idle(e);
             return;
         }
         let handle = std::thread::spawn(move || {
-            let mut e = Box::new(e);
             e.run_frame(booted, read_ptr);
             e
         });
