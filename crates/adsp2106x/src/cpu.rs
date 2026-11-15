@@ -24,7 +24,9 @@ use crate::{decode, Addr, Insn, Modifier, Op, LCE, TRUE};
 use std::collections::VecDeque;
 
 mod exec;
+mod jit;
 mod recomp;
+pub use jit::{jit_layout, JitPipe};
 pub use recomp::{code_hash, layout, program_hash, program_image, Block, BlockEnd, InBlock};
 
 /// Width of an external port access.
@@ -395,6 +397,10 @@ pub struct Sharc {
     code: Vec<u8>,
     /// Some compiled word has been overwritten.
     code_dirty: bool,
+    /// Per internal word, nonzero where `decoded` or `code` may hold
+    /// something a write must clear (a JIT's inline stores skip
+    /// `invalidate` where it is zero). Derived: never saved.
+    cached: Vec<u8>,
     /// Instructions recompiled code had none for, by address.
     pub misses: std::collections::BTreeMap<u32, u64>,
 }
@@ -466,6 +472,7 @@ impl Sharc {
             decoded: vec![None; 2 * mem::WORDS48 as usize],
             code: Vec::new(),
             code_dirty: false,
+            cached: vec![0; 2 * mem::WORDS48 as usize],
             misses: Default::default(),
         };
         s.reset();
@@ -550,11 +557,13 @@ impl Sharc {
         for a in Internal::words48_touched(addr, width48).into_iter().flatten() {
             if let Some(k) = word_index(a) {
                 self.decoded[k] = None;
+                self.cached[k] = 0;
                 if let Some(c @ 1..) = self.code.get_mut(k) {
                     // Self-modifying code: that word runs on the
                     // interpreter from now on.
                     *c = 2;
                     self.code_dirty = true;
+                    self.cached[k] = 1;
                 }
             }
         }
@@ -1036,6 +1045,7 @@ impl Sharc {
                 }
                 let i = decode(addr, self.mem.read48(addr));
                 self.decoded[k] = Some(i);
+                self.cached[k] = 1;
                 Ok(i)
             }
             0x40_0000.. => Ok(decode(addr, ext.read(addr, Width::Word48))),
@@ -1718,6 +1728,7 @@ impl state::State for Sharc {
         // again.
         self.code.clear();
         self.code_dirty = false;
+        self.cached.fill(0);
         Ok(())
     }
 }
@@ -1819,6 +1830,15 @@ impl Sharc {
         self.fetch_status = src.fetch_status;
         self.code.clone_from(&src.code);
         self.code_dirty = src.code_dirty;
+        for k in 0..self.cached.len() {
+            self.cached[k] = (self.decoded[k].is_some() || self.code.get(k).is_some_and(|&c| c != 0)) as u8;
+        }
+    }
+
+    /// `cached`, for a JIT's inline stores.
+    #[doc(hidden)]
+    pub fn jit_cached(&self) -> *const u8 {
+        self.cached.as_ptr()
     }
 }
 

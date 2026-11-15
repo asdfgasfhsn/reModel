@@ -1,19 +1,18 @@
 //! The ADSP-21062 (Model 2B's copro and geometrizer SHARCs) on Cranelift
-//! (docs/jit.md, "The SHARC"): runs of straight-line words of the
-//! uploaded program translated to machine code as regions, each entered
-//! at any of its words and run as one block of the interpreter's
-//! (`Sharc::block_start`/`block_exec`/`block_end`), exactly as the static
-//! recompiler's region functions run them (`codegen::program_module`).
+//! (docs/jit.md, "The SHARC"): runs of the uploaded program's words
+//! translated to machine code as regions, each run as a pipeline block
+//! (`Sharc::jit_enter`/`jit_exit`): every cycle as `Sharc::step` runs it,
+//! branches, delay slots and loops included, on to whatever word the
+//! pipeline brings to the execute slot while it is in the region (and into
+//! the next region from there), the core brought up to date at the end.
 //!
 //! [`SharcJit::run`] has `Sharc::run_bus`'s contract: instructions until
 //! the bus's `after_step` says to stop or one doesn't run (IDLE, a
-//! fault). A word that can't be in a block (`codegen::in_block`: a DO, a
-//! stack operation, an unconditional branch, a system register operand),
-//! a block the core can't run now (`block_start`: interrupts or the timer
-//! on, a fetch reaching a loop end, the bus's budget) and a word a block
-//! leaves before (a taken branch, an IOP register access) run as the
-//! interpreter's single step, so a run is step for step an interpreted
-//! one.
+//! fault). A word a block can't hold (`emit::capable`), a block the core
+//! can't run now (interrupts or the timer on, a MODE1 write pending, a
+//! short conditional loop) and a word a block leaves before (an IOP
+//! register access, a stack that would overflow) run as the interpreter's
+//! single step, so a run is step for step an interpreted one.
 //!
 //! The words of each translated region are watched (`Sharc::watch_words`):
 //! a write to one drops its region, which is translated again from the new
@@ -22,10 +21,10 @@
 use crate::copro::{block_signature, install, module, Background, CoproStats, OwnedModule};
 use crate::hotlist::{Chip, HotList};
 use crate::pool::{Compiled, Urgency};
-use ::adsp2106x::codegen::{self, in_block};
-use ::adsp2106x::cpu::{code_hash, program_image, word_index, BlockEnd, Bus, Fault, Sharc, Step};
+use ::adsp2106x::codegen;
+use ::adsp2106x::cpu::{code_hash, program_image, word_index, Bus, Fault, JitPipe, Sharc, Step};
 use ::adsp2106x::{decode, Insn};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::mem::ManuallyDrop;
 use std::sync::Arc;
 use std::time::Instant;
@@ -34,39 +33,52 @@ use std::time::Instant;
 /// instructions and a region runs many times (docs/jit.md, "The SHARC").
 const OPTIMISE: bool = true;
 
-/// Words per region at most (the recompiler's `REGION_WORDS`).
-pub const MAX_REGION: u32 = 128;
+/// Words per region at most.
+pub const MAX_REGION: u32 = 256;
 
-/// How a region's run ended (`Ctx::kind`): before a word (0, or 2 for a
-/// word that declined), after one, or on a fault.
-const BEFORE: u32 = 0;
+/// What `block_exec` did (`h_exec`): ran, ran and the block ends after it,
+/// declined (the block ends before it), faulted.
 const LAST: u32 = 1;
 const BAIL: u32 = 2;
 const FAULT: u32 = 3;
 
-/// Passed to every region: where to enter it and the block's limits; on
-/// return how it ended.
+/// How a pipeline block ended (`Ctx::kind`): before a word it can't run
+/// (or into a short loop), at a word outside its region (so another
+/// region can go on at once), after its last word (the budget's, or one
+/// that wrote watched code).
+const STOPPED: u32 = 0;
+const OUTSIDE: u32 = 1;
+const DONE: u32 = 2;
+
+/// Passed to every region: the pipeline and the block's budget; on
+/// return the pipeline and what ran.
 #[repr(C)]
 struct Ctx {
-    /// The word to start at, and the one the block stops before at the
-    /// latest (`Block::stop`).
-    at: u32,
-    stop: u32,
-    /// The block's `steps` before it, less `at` (a word's step count once
-    /// it has run is this plus its address plus one).
+    /// The pipeline (`Sharc::jit_enter`), and as the block leaves it.
+    pipe: JitPipe,
+    /// Instructions the block may run, and `steps` before it.
+    budget: u64,
     base: u64,
-    /// STKY before the last word ran.
+    /// Instructions and cycles run, the last instruction's address.
+    ran: u64,
+    cycles: u64,
+    pc: u32,
+    /// STKY at the start of the last cycle.
     st: u32,
-    /// How it ended, and at which word.
-    kind: u32,
-    end: u32,
+    /// Execution counts (`Sharc::counts`).
+    counts: *mut u64,
+    /// A word on `block_exec` faulted.
     fault: Option<Fault>,
+    /// How the block ended.
+    kind: u32,
     /// Words run on the interpreter's step (`h_exec`).
     helper: u64,
     /// The IOP registers and internal memory's two blocks (their `Vec`s
     /// don't move while a block runs): what an inline read looks at.
     iop: *const u32,
     mem: [*const u16; 2],
+    /// `Sharc::jit_cached`: words an inline store must have invalidated.
+    cached: *const u8,
 }
 
 /// A translated region: `(sharc, bus, ctx)`, `bus` pointing at a `&mut
@@ -104,10 +116,12 @@ pub struct SharcJit {
     table: Box<[u32]>,
     regions: Vec<Region>,
     key: Option<u64>,
-    /// The recompiler's regions for the program (`codegen::regions` over
-    /// the discovered code): start and length. A word reached outside
-    /// them starts a region of its own.
-    planned: BTreeMap<u32, u32>,
+    /// The program's code, as `codegen::discover` finds it: regions grow
+    /// over it, and from a word reached outside it only forward.
+    code: BTreeSet<u32>,
+    /// The last two words of each loop the code has (`DO`s): code for the
+    /// pipeline in variables is made for them (`emit::Emit::region`).
+    loop_ends: BTreeSet<u32>,
     /// The core's watch on the translated words is to be set up again
     /// (its state was copied from another core's).
     rewatch: bool,
@@ -123,7 +137,8 @@ impl SharcJit {
             table: vec![COLD; 2 * ::adsp2106x::mem::WORDS48 as usize].into_boxed_slice(),
             regions: Vec::new(),
             key: None,
-            planned: BTreeMap::new(),
+            code: BTreeSet::new(),
+            loop_ends: BTreeSet::new(),
             rewatch: false,
             stats: CoproStats::default(),
             jobs: {
@@ -174,49 +189,83 @@ impl SharcJit {
         }
     }
 
-    /// One block or single step, as the recompiled `run`'s loop body.
+    /// One pipeline block or single step.
     #[inline]
     fn one<B: Bus>(&mut self, s: &mut Sharc, ext: &mut B) -> Step {
         if s.code_dirty() {
             self.overwritten(s);
         }
         let a = s.compiled_pc();
-        if let Some(r) = self.region_at(s, a) {
-            let region = &self.regions[r as usize];
-            let budget = ext.block_budget(s);
-            if let Some(b) = s.block_start(a, region.end(), budget) {
-                let code = region.code.expect("region_at found code");
-                let mut ctx = Ctx {
-                    at: a,
-                    stop: b.stop,
-                    base: b.steps.wrapping_sub(a as u64),
-                    st: 0,
-                    kind: BEFORE,
-                    end: a,
-                    fault: None,
-                    helper: 0,
-                    iop: s.iop.as_ptr(),
-                    mem: [s.mem.cols[0].as_ptr(), s.mem.cols[1].as_ptr()],
-                };
-                let mut d: &mut dyn Bus = ext;
-                // SAFETY: made by `translate` for the words at `region`,
-                // which hold what it was translated from (they are watched;
-                // `overwritten` drops a region before it can run stale).
-                unsafe { code(s, &mut d as *mut &mut dyn Bus as *mut u8, &mut ctx) };
-                self.stats.runs += 1;
-                let end = match (ctx.kind, ctx.fault) {
-                    (LAST, _) => BlockEnd::Last(ctx.end),
-                    (FAULT, Some(f)) => BlockEnd::Fault(ctx.end, f),
-                    _ => BlockEnd::Before(ctx.end),
-                };
-                let r = s.block_end(&b, end, ctx.st);
-                self.stats.block_words += s.steps - b.steps;
-                self.stats.helper_words += ctx.helper;
-                if let Some(r) = r {
-                    return r;
-                }
-            }
+        let Some(mut r) = self.region_at(s, a) else { return self.single(s, ext) };
+        let Some(pipe) = s.jit_enter() else { return self.single(s, ext) };
+        let budget = ext.block_budget(s);
+        if budget == 0 {
+            return self.single(s, ext);
         }
+        let mut ctx = Ctx {
+            pipe,
+            budget,
+            base: s.steps,
+            ran: 0,
+            cycles: 0,
+            pc: a,
+            st: s.stky(),
+            counts: s.counts.as_mut_ptr(),
+            fault: None,
+            kind: STOPPED,
+            helper: 0,
+            iop: s.iop.as_ptr(),
+            mem: [s.mem.cols[0].as_ptr(), s.mem.cols[1].as_ptr()],
+            cached: s.jit_cached(),
+        };
+        // Regions one after another while each leaves at a word outside it
+        // (the pipeline handed on, the core brought up to date at the end):
+        // one block for the bus.
+        let (base, mut ran, mut cycles, mut pc, mut st) = (s.steps, 0, 0, a, ctx.st);
+        loop {
+            let code = self.regions[r as usize].code.expect("region_at found code");
+            let mut d: &mut dyn Bus = ext;
+            // SAFETY: made by `translate` for the words of region `r`,
+            // which hold what it was translated from (they are watched;
+            // `overwritten` drops a region before it can run stale),
+            // entered with the word in the execute slot in it.
+            unsafe { code(s, &mut d as *mut &mut dyn Bus as *mut u8, &mut ctx) };
+            self.stats.runs += 1;
+            self.stats.block_words += ctx.ran;
+            ran += ctx.ran;
+            if ctx.cycles > 0 {
+                cycles += ctx.cycles;
+                (pc, st) = (ctx.pc, ctx.st);
+            }
+            if ctx.fault.is_some()
+                || ctx.kind != OUTSIDE
+                || ctx.ran == 0
+                || ran >= budget
+                || s.code_dirty()
+                || ctx.pipe.x_some == 0
+            {
+                break;
+            }
+            let Some(next) = self.region_at(s, ctx.pipe.x) else { break };
+            r = next;
+            ctx.budget = budget - ran;
+            ctx.base = base + ran;
+            (ctx.ran, ctx.cycles, ctx.kind) = (0, 0, STOPPED);
+        }
+        self.stats.helper_words += ctx.helper;
+        s.jit_exit(&ctx.pipe, pc, cycles, base + ran, st);
+        if let Some(f) = ctx.fault {
+            return Step::Fault(f);
+        }
+        if cycles > 0 {
+            return Step::Ran;
+        }
+        self.single(s, ext)
+    }
+
+    /// The interpreter's single step.
+    #[inline(never)]
+    fn single<B: Bus>(&mut self, s: &mut Sharc, ext: &mut B) -> Step {
         self.stats.interpreted += 1;
         s.step(ext)
     }
@@ -274,7 +323,16 @@ impl SharcJit {
             self.table.fill(COLD);
             self.regions.clear();
             self.jobs.clear();
-            self.planned = codegen::regions(&image, &words).into_iter().collect();
+            self.loop_ends = d
+                .code
+                .iter()
+                .filter_map(|&a| match decode(a, s.mem.read48(a)).op {
+                    ::adsp2106x::Op::Do { end, .. } => Some([end.wrapping_sub(1), end]),
+                    _ => None,
+                })
+                .flatten()
+                .collect();
+            self.code = d.code;
             if let Some(list) = &self.list {
                 for a in list.get(Chip::Adsp2106x, key) {
                     if word_index(a).is_some_and(|k| self.table[k] == COLD) {
@@ -322,23 +380,26 @@ impl SharcJit {
         }
     }
 
-    /// The words of the region to run from `a`: the planned region holding
-    /// it (from as far back as its words are still free and can be in a
-    /// block), else from `a` on; up to a word that can't be in a block,
-    /// one already in a region, the end of a 4,096-word group or
-    /// [`MAX_REGION`] words.
+    /// The words of the region to run from `a`: the run of words a
+    /// pipeline block can hold (`emit::capable`) around it, over the
+    /// discovered code (only forward from a word outside it), up to one
+    /// already in a region, the end of a 4,096-word group or [`MAX_REGION`]
+    /// words.
     fn plan(&self, s: &Sharc, a: u32) -> Vec<Insn> {
         let free = |w: u32| word_index(w).is_some_and(|k| self.table[k] == COLD);
         let insn = |w: u32| decode(w, s.mem.read48(w));
-        if !free(a) || !in_block(&insn(a)) {
+        let ok = |w: u32| free(w) && emit::capable(&insn(w));
+        if !ok(a) {
             return Vec::new();
         }
-        let (lo, hi) = match self.planned.range(..=a).next_back() {
-            Some((&p, &n)) if a < p + n => (p, p + n),
-            _ => (a, a + MAX_REGION),
-        };
+        let known = self.code.contains(&a);
         let mut start = a;
-        while start > lo && start & 0xfff != 0 && free(start - 1) && in_block(&insn(start - 1)) {
+        while known
+            && start & 0xfff != 0
+            && self.code.contains(&(start - 1))
+            && ok(start - 1)
+            && a - start < MAX_REGION / 2
+        {
             start -= 1;
         }
         let mut v = Vec::new();
@@ -346,7 +407,7 @@ impl SharcJit {
         loop {
             v.push(insn(w));
             w += 1;
-            if w >= hi || w & 0xfff == 0 || v.len() as u32 >= MAX_REGION || !free(w) || !in_block(&insn(w)) {
+            if w & 0xfff == 0 || v.len() as u32 >= MAX_REGION || !ok(w) || (known && !self.code.contains(&w)) {
                 break;
             }
         }
@@ -372,8 +433,22 @@ impl SharcJit {
         s.watch_words(words.iter().map(|i| i.addr));
         self.regions.push(Region { start, words: words.clone(), code: None, dead: false });
         let end = start + words.len() as u32;
+        // Words the pipeline may reach other than as the plain sequence: a
+        // branch's two delay slots, a loop's last two words.
+        let mut general = Vec::new();
+        for i in words.iter() {
+            if emit::sequencer(i) {
+                general.extend([i.addr + 1, i.addr + 2]);
+            }
+            if self.loop_ends.contains(&i.addr) {
+                general.push(i.addr);
+            }
+            if let ::adsp2106x::Op::Do { end, .. } = i.op {
+                general.extend([end.wrapping_sub(1), end]);
+            }
+        }
         self.jobs.queue(self.key.unwrap_or(0), start, end, urgency, None, move |b, ptr| {
-            emit::Emit::new(b, ptr).region(&words);
+            emit::Emit::new(b, ptr).region(&words, &general);
         });
     }
 
@@ -506,7 +581,7 @@ pub fn profile(s: &Sharc) -> Vec<(String, bool, u64)> {
         let n = s.count_at(a).unwrap_or(0);
         if n > 0 {
             let i = decode(a, s.mem.read48(a));
-            *m.entry((kind(&i), in_block(&i))).or_default() += n;
+            *m.entry((kind(&i), emit::capable(&i))).or_default() += n;
         }
     }
     let mut v: Vec<_> = m.into_iter().map(|((k, b), n)| (k, b, n)).collect();

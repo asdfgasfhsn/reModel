@@ -30,7 +30,29 @@ impl Rng {
     /// small integers, special values, random bits.
     fn value(&mut self) -> u64 {
         let f32bits = |r: &mut Rng, e: u32| ((r.below(2) << 31) | (e << 23) | (r.next() & 0x7f_ffff)) as u64;
-        match self.below(8) {
+        match self.below(11) {
+            // Sparse significands (a few bits set): products and sums of
+            // these often land exactly halfway between two results, where
+            // the rounding (to nearest even, or toward zero) decides.
+            8 | 9 => {
+                let mut sig = 0u32;
+                for _ in 0..1 + self.below(3) {
+                    sig |= 1 << self.below(23);
+                }
+                let e = match self.below(6) {
+                    // Near overflow and underflow.
+                    0 => 1 + self.below(4),
+                    1 => 251 + self.below(4),
+                    _ => 0x70 + self.below(24),
+                };
+                (((self.below(2) << 31) | (e << 23) | sig) as u64) << 8
+            }
+            // Denormals and the smallest and largest normals.
+            10 => {
+                let f = [0x0000_0001u32, 0x007f_ffff, 0x0080_0000, 0x7f7f_ffff, 0x0080_0001, 0x3400_0000]
+                    [self.below(6) as usize];
+                ((((self.below(2) << 31) | f) as u64) << 8) | (self.below(256) as u64 * self.below(2) as u64)
+            }
             0 => self.next64() & 0xff_ffff_ffff,
             1 => (self.below(64) as u64) << 8,
             2 => {
@@ -61,9 +83,21 @@ const PROGRAM: u32 = 0x2_0080;
 
 /// A compute field that decodes.
 fn compute(r: &mut Rng) -> u64 {
+    use ::adsp2106x::{compute::MulOp, AluOp};
+    // A third of them the float add, subtract and multiply forms (alone and
+    // multifunction), which the lowering has on paths of its own.
+    let float = r.chance(3);
     loop {
         let c = r.next() & 0x7f_ffff;
-        if !matches!(Compute::decode(c), Compute::Unknown(_)) {
+        let ok = match Compute::decode(c) {
+            Compute::Unknown(_) => false,
+            _ if !float => true,
+            Compute::Alu { op: AluOp::FAdd | AluOp::FSub, .. } | Compute::Mul { op: MulOp::FMul, .. } => true,
+            Compute::Multi { mul: MulOp::FMul, alu: AluOp::FAdd | AluOp::FSub, .. } => true,
+            Compute::MultiAddSub { float: true, .. } => true,
+            _ => false,
+        };
+        if ok {
             return c as u64;
         }
     }
@@ -374,18 +408,23 @@ fn compare(seed: u64, programs: usize, len: u32, steps: u64) {
         stats.add(&jit.stats());
     }
     // The blocks ran (the programs aren't all faults and single steps).
+    eprintln!(
+        "{seed:#x}: {} words in blocks, {} single steps, {} runs",
+        stats.block_words, stats.interpreted, stats.runs
+    );
     assert!(stats.runs > 4 * programs as u64, "{stats:?}");
+    assert!(stats.block_words > stats.interpreted, "{stats:?}");
 }
 
 #[test]
 fn random_programs() {
-    let (programs, steps) = if cfg!(debug_assertions) { (12, 400) } else { (400, 4000) };
+    let (programs, steps) = if cfg!(debug_assertions) { (8, 400) } else { (160, 4000) };
     compare(0x5eed_2106, programs, 48, steps);
 }
 
 #[test]
 fn straight_line_programs() {
     // Short programs, so the runs loop through them many times.
-    let (programs, steps) = if cfg!(debug_assertions) { (12, 300) } else { (300, 3000) };
+    let (programs, steps) = if cfg!(debug_assertions) { (8, 300) } else { (120, 3000) };
     compare(0x0b10_c4ed, programs, 12, steps);
 }

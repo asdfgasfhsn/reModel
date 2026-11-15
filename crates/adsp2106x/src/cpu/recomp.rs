@@ -278,6 +278,7 @@ impl Sharc {
                 self.code[k] = 2;
                 self.code_dirty = true;
             }
+            self.cached[k] = 1;
         }
     }
 
@@ -295,6 +296,7 @@ impl Sharc {
                 if self.code[k] == 0 {
                     self.code[k] = 1;
                 }
+                self.cached[k] = 1;
             }
         }
     }
