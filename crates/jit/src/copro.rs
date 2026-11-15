@@ -201,8 +201,13 @@ impl Background {
     /// queued, waiting for them).
     pub fn finished(&mut self, wait: bool, want: u32) -> Vec<Done> {
         while let Ok(d) = self.rx.try_recv() {
-            // A later result for the same start (another program's, after
-            // a `clear`) replaces an earlier one, which is stale.
+            // A result for a start queued again since, for another program
+            // (after a `clear`), is stale: workers finish in any order, so
+            // it can arrive after the current one, which it mustn't
+            // replace (`wait` would then wait for a result already taken).
+            if self.pending.get(&d.start).is_some_and(|p| p.0 != d.key) {
+                continue;
+            }
             self.received.insert(d.start, d);
         }
         let mut v = Vec::new();
