@@ -284,6 +284,9 @@ fn refreshes_gone(part: &mut f64, dt: f64, hz: f64) -> u64 {
     n as u64
 }
 
+/// Draws in a row that panicked before the player gives up and quits
+/// (rather than show a frozen window).
+const DRAW_FAILURES_TO_QUIT: u32 = 120;
 const FADE_OUT: Duration = Duration::from_millis(200);
 /// Seconds of game the player may run behind before run-ahead is turned
 /// off.
@@ -966,6 +969,10 @@ struct Play {
     /// A game started from the launcher: since when (fading in).
     game_fade: Option<Instant>,
     redraws: u64,
+    /// Draws that panicked (`draw::run_guarded`), in all and in a row: at
+    /// `DRAW_FAILURES_TO_QUIT` in a row the player quits.
+    draw_failures: u64,
+    draw_failures_in_row: u32,
     /// Following the display: refreshes counted since the game started
     /// following it, and the fraction of one carried over (see `emulate`).
     refreshes: u64,
@@ -2080,6 +2087,18 @@ impl Play {
         let Some(g) = &mut self.gpu else { return };
         let Some(r) = g.drawer.take_report() else { return };
         let drawing = self.drawing.take();
+        if let Some(msg) = r.failed {
+            // A draw that panicked (draw::run_guarded): say so once, carry
+            // on, and give up cleanly if every draw fails.
+            if self.draw_failures == 0 {
+                eprintln!("draw failed: {msg} (the player carries on; please report it)");
+                self.menu.notify(format!("A draw failed: {msg}"));
+            }
+            self.draw_failures += 1;
+            self.draw_failures_in_row += 1;
+            return;
+        }
+        self.draw_failures_in_row = 0;
         if r.missed {
             self.stats.surface_misses += 1;
             return;
@@ -2924,6 +2943,12 @@ impl ApplicationHandler<Wake> for Play {
     /// Waiting for the draw thread (`next_start`): redraw at the time set,
     /// unless it wakes the loop first.
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        if self.draw_failures_in_row >= DRAW_FAILURES_TO_QUIT {
+            eprintln!("draw failed {} times in a row: quitting", self.draw_failures_in_row);
+            self.draw_failures_in_row = 0;
+            self.quit(el);
+            return;
+        }
         // `--fast`: run the game here, not on redraws (a hidden window gets
         // about one a second), and draw nothing.
         if self.opts.fast && self.gpu.is_some() {
@@ -3247,6 +3272,8 @@ fn main() {
         smooth_at: Instant::now(),
         game_fade: None,
         redraws: 0,
+        draw_failures: 0,
+        draw_failures_in_row: 0,
         refreshes: 0,
         refresh_part: 0.0,
         last_emulate: None,

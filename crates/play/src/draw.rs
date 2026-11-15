@@ -217,7 +217,7 @@ pub struct Job {
 }
 
 /// What a [`Job`] did.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Report {
     /// The surface gave no texture (lost, outdated, hidden): nothing was
     /// drawn, the surface was configured again.
@@ -228,6 +228,9 @@ pub struct Report {
     pub game: Option<GameReport>,
     /// The picture's hash (`Job::hash`).
     pub hash: Option<u64>,
+    /// The draw panicked (its message): nothing was presented, and the
+    /// core came back for the next one (`run_guarded`).
+    pub failed: Option<String>,
 }
 
 /// Run `job` on `core`; `started` once the surface has given its texture
@@ -245,7 +248,7 @@ pub fn run(core: &mut Core, job: Job, started: &dyn Fn()) -> Report {
                 apply_overlay_textures(core, o);
             }
             core.surface.configure(core.renderer.device(), &job.config);
-            return Report { missed: true, draw: Duration::ZERO, game: None, hash: None };
+            return Report { missed: true, draw: Duration::ZERO, game: None, hash: None, failed: None };
         }
     };
     let t = Instant::now();
@@ -266,7 +269,24 @@ pub fn run(core: &mut Core, job: Job, started: &dyn Fn()) -> Report {
     let span = spans::begin();
     core.renderer.queue().present(frame);
     spans::end(spans::Kind::Present, span);
-    Report { missed: false, draw, game, hash }
+    Report { missed: false, draw, game, hash, failed: None }
+}
+
+/// [`run`], with a panic in it (wgpu, egui-wgpu, the renderer) caught: the
+/// draw is lost, not the player (a panicking draw thread used to take the
+/// main thread down with it at its next hand-over, aborting in `Drop`).
+pub fn run_guarded(core: &mut Core, job: Job, started: &dyn Fn()) -> Report {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(core, job, started))) {
+        Ok(report) => report,
+        Err(e) => {
+            let msg = e
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| e.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "a panic".into());
+            Report { missed: false, draw: Duration::ZERO, game: None, hash: None, failed: Some(msg) }
+        }
+    }
 }
 
 fn fnv(data: &[u8]) -> u64 {
@@ -312,7 +332,7 @@ impl Drawer {
                             *since.lock().unwrap() = Some(Instant::now());
                             wake();
                         };
-                        let report = run(&mut core, job, &started);
+                        let report = run_guarded(&mut core, job, &started);
                         if tx.send((core, report)).is_err() {
                             break;
                         }
@@ -392,7 +412,7 @@ impl Drawer {
                 self.busy = Some(Instant::now());
             }
             None => {
-                let report = run(&mut core, job, &|| {});
+                let report = run_guarded(&mut core, job, &|| {});
                 self.back(core, report);
             }
         }
@@ -406,7 +426,13 @@ impl Drawer {
 
 impl Drop for Drawer {
     fn drop(&mut self) {
-        self.finish();
+        // Not `finish`: a draw thread that stopped anyway must not panic
+        // here too (a panic while unwinding aborts).
+        if let (Some(_), Some(t)) = (self.busy, &self.thread) {
+            if let Ok((core, report)) = t.done.recv() {
+                self.back(core, report);
+            }
+        }
         if let Some(Thread { jobs, done, handle }) = self.thread.take() {
             drop((jobs, done));
             if let Some(h) = handle {

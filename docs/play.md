@@ -435,7 +435,10 @@ loop, so key presses keep coming in and the controls read are as fresh
 as on one thread: on a machine fast enough for both in one refresh
 nothing changes, and on a slower one the frame's controls are read as
 late as the refresh allows. The draw thread wakes the event loop when it
-starts drawing and when it is done.
+starts drawing and when it is done. A draw that panics (wgpu, egui's painter,
+the renderer) is caught on whichever thread drew it (`draw::run_guarded`):
+that picture is lost, the error printed and shown once, and the player
+carries on; after 120 failed draws in a row it quits cleanly.
 
 Costs are timed per thread: the status line's `draw` is the draw
 thread's (`on its thread`), with the main thread's hand-over and any wait
