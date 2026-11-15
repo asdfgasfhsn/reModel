@@ -527,7 +527,9 @@ it delivered the redraw); `emulation` (the frames due and run-ahead's);
 and `other` (the rest of the redraw: the overlay, the copy). With
 `--no-overlap` the surface's wait and the present are the game thread's
 own. On macOS the summary gives each thread's quality-of-service class.
-The first redraw's gap is the game's start.
+The first redraw's gap is the game's start. The `gpu` line at start-up
+gives the surface's present mode (vsync: FIFO relaxed where offered, else
+FIFO), the modes it offers and its frame latency, for a report.
 
 (The numbers are an example.) A slowdown that is the JIT's shows as
 blocks arriving and code interpreted while they are made, jobs queued on

@@ -2964,7 +2964,8 @@ impl ApplicationHandler<Wake> for Play {
         let mut config =
             surface.get_default_config(&adapter, size.width.max(1), size.height.max(1)).expect("surface config");
         // Colours are already display values: present without sRGB encoding.
-        let formats = surface.get_capabilities(&adapter).formats;
+        let caps = surface.get_capabilities(&adapter);
+        let formats = caps.formats;
         config.format = [wgpu::TextureFormat::Bgra8Unorm, wgpu::TextureFormat::Rgba8Unorm]
             .into_iter()
             .find(|f| formats.contains(f))
@@ -2975,7 +2976,18 @@ impl ApplicationHandler<Wake> for Play {
             config.usage |= wgpu::TextureUsages::COPY_SRC;
         }
         surface.configure(&device, &config);
-        println!("gpu           {name}");
+        // What AutoVsync resolves to (wgpu: FIFO relaxed if the surface
+        // offers it, else FIFO), with the modes on offer, for slowdown
+        // reports (docs/play.md).
+        let mode = if caps.present_modes.contains(&wgpu::PresentMode::FifoRelaxed) {
+            wgpu::PresentMode::FifoRelaxed
+        } else {
+            wgpu::PresentMode::Fifo
+        };
+        println!(
+            "gpu           {name}; present {mode:?} (offered {:?}), frame latency {}, {:?}",
+            caps.present_modes, config.desired_maximum_frame_latency, config.format
+        );
         let ctx = egui::Context::default();
         style(&ctx);
         let state = egui_winit::State::new(
