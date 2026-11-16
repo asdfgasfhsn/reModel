@@ -158,10 +158,15 @@ Windows:
 Needs a GPU with Vulkan, Metal (macOS) or Direct3D 12 (Windows) drivers
 and a sound device.
 
-The builds aren't signed. On macOS, if it won't open because the
-developer can't be verified, clear the download's quarantine first:
+On macOS, drag reModel to Applications. On Linux the AppImage runs as
+it is (chmod +x it first); this archive's remodel-play is the same
+player.
 
-    xattr -dr com.apple.quarantine remodel-play
+The builds aren't signed with a developer certificate. On macOS, the
+first time reModel won't open ("can't be verified"): System Settings,
+Privacy & Security, Open Anyway; or clear the download's quarantine:
+
+    xattr -dr com.apple.quarantine /Applications/reModel.app
 
 On Windows, SmartScreen may ask: More info, then Run anyway.
 

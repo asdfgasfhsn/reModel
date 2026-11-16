@@ -961,7 +961,7 @@ navigation tested headless (`cargo test -p remodel-play`).
 **In the app menu.** `make install-desktop` (`RECOMP=1` for the recompiled
 build) builds the player and adds reModel to the desktop's app menu: a
 `remodel.desktop` entry in `~/.local/share/applications` and the icon
-(`assets/reModel-icon.png`, the logo on a square) in the hicolor theme.
+(`assets/reModel-icon.png`, `assets/README.md`) in the hicolor theme.
 The entry runs this checkout's player from the checkout's directory, so it
 finds `rom/` and keeps its files in `out/` as `make play` does; rebuild
 with `make play` (or rerun `install-desktop`) and the menu runs the new

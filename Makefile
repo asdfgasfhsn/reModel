@@ -346,7 +346,37 @@ dist: ## Distributable player for this platform (interpreter only, stripped; DIS
 	*windows*) archive=$$dir.zip; (cd $(DIST_OUT) && 7z a -tzip -bso0 $$name.zip $$name) ;; \
 	*) archive=$$dir.tar.gz; tar -C $(DIST_OUT) -czf $$archive $$name ;; \
 	esac; \
+	echo $$name > $(DIST_OUT)/$$target.name; \
 	echo "built $$archive ($$(du -h $$archive | cut -f1))"
+
+# `make appimage`'s tools, pinned and checked (fetched into out/tools once).
+APPIMAGETOOL_VERSION := 1.9.1
+APPIMAGETOOL_SHA256  := ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+APPIMAGE_RUNTIME_VERSION := 20251108
+APPIMAGE_RUNTIME_SHA256  := 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+APPIMAGETOOL     := out/tools/appimagetool-$(APPIMAGETOOL_VERSION)-x86_64.AppImage
+APPIMAGE_RUNTIME := out/tools/runtime-$(APPIMAGE_RUNTIME_VERSION)-x86_64
+
+app: ## macOS: reModel.app, universal (Apple silicon and Intel; `rustup target add aarch64-apple-darwin x86_64-apple-darwin`), ad-hoc signed, in a .dmg -> out/dist/remodel-VERSION-macos-universal.dmg
+	@test "$$(uname -s)" = Darwin || { echo "make app needs macOS (lipo, iconutil, codesign, hdiutil)"; exit 1; }
+	$(MAKE) dist DIST_TARGET=aarch64-apple-darwin
+	$(MAKE) dist DIST_TARGET=x86_64-apple-darwin
+	DIST_OUT=$(DIST_OUT) sh tools/package.sh app
+
+appimage: dist $(APPIMAGETOOL) $(APPIMAGE_RUNTIME) ## Linux x86_64: the player as an AppImage (pinned appimagetool and runtime, fetched into out/tools) -> out/dist/remodel-VERSION-x86_64.AppImage
+	DIST_OUT=$(DIST_OUT) APPIMAGETOOL=$(APPIMAGETOOL) APPIMAGE_RUNTIME=$(APPIMAGE_RUNTIME) sh tools/package.sh appimage
+
+$(APPIMAGETOOL):
+	@mkdir -p $(@D)
+	curl -fsSLo $@.part https://github.com/AppImage/appimagetool/releases/download/$(APPIMAGETOOL_VERSION)/appimagetool-x86_64.AppImage
+	echo "$(APPIMAGETOOL_SHA256)  $@.part" | sha256sum -c --quiet
+	chmod +x $@.part && mv $@.part $@
+
+$(APPIMAGE_RUNTIME):
+	@mkdir -p $(@D)
+	curl -fsSLo $@.part https://github.com/AppImage/type2-runtime/releases/download/$(APPIMAGE_RUNTIME_VERSION)/runtime-x86_64
+	echo "$(APPIMAGE_RUNTIME_SHA256)  $@.part" | sha256sum -c --quiet
+	mv $@.part $@
 
 web: ## Browser build into out/web: game list, a page per game (model2/SET/), screenshots (JOBS at once, default 3); RECOMP=1 gives each game its own module with its recompiled code; GAME= rebuilds just that game; unchanged modules are skipped (docs/web.md)
 	WEB_GAME=$(if $(filter command line environment,$(origin GAME)),$(GAME)) WEB_OUT=$(WEB_OUT) ROM=$(ROM) RECOMP=$(RECOMP) CARGO="$(CARGO)" WASM_CARGO="$(WASM_CARGO)" WASM_BINDGEN=$(WASM_BINDGEN) JOBS=$(JOBS) sh tools/web.sh

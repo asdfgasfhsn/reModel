@@ -1,6 +1,7 @@
-# The player for Linux, Windows and macOS (Apple silicon and Intel), built
-# with `make dist` (interpreter and JIT only: never recompiled game code),
-# for a pushed release tag `vX.Y.Z` (`make release-tag` makes it). The
+# The player for Linux (a tarball and an AppImage, `make appimage`),
+# Windows (a zip) and macOS (a universal reModel.app in a .dmg, `make app`),
+# all from `make dist` (interpreter and JIT only: never recompiled game
+# code), for a pushed release tag `vX.Y.Z` (`make release-tag` makes it). The
 # archives go on a draft GitHub release with the tag's notes, to be checked
 # and published by hand. Run by hand (workflow_dispatch), it builds the
 # archives as workflow artifacts and makes no release. docs/usage.md,
@@ -24,10 +25,10 @@ jobs:
       matrix:
         include:
           # 22.04 for an older glibc, so the binary runs on more systems.
-          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
-          - { os: windows-2022, target: x86_64-pc-windows-msvc }
-          - { os: macos-15, target: aarch64-apple-darwin }
-          - { os: macos-15, target: x86_64-apple-darwin }
+          - { name: linux, os: ubuntu-22.04, targets: x86_64-unknown-linux-gnu, make: appimage DIST_TARGET=x86_64-unknown-linux-gnu }
+          - { name: windows, os: windows-2022, targets: x86_64-pc-windows-msvc, make: dist DIST_TARGET=x86_64-pc-windows-msvc PYTHON=python }
+          # Both slices of the universal app on the one runner.
+          - { name: macos, os: macos-15, targets: "aarch64-apple-darwin,x86_64-apple-darwin", make: app }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     defaults:
@@ -48,20 +49,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.99.1"
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.targets }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: ${{ matrix.name }}
           workspaces: |
             . -> target/dist
-      - name: make dist
-        run: make dist DIST_TARGET=${{ matrix.target }} PYTHON=${{ runner.os == 'Windows' && 'python' || 'python3' }}
+      - run: make ${{ matrix.make }}
       - uses: actions/upload-artifact@v4
         with:
-          name: remodel-${{ matrix.target }}
+          name: remodel-${{ matrix.name }}
           path: |
             out/dist/*.tar.gz
             out/dist/*.zip
+            out/dist/*.dmg
+            out/dist/*.AppImage
           if-no-files-found: error
 
   release:
