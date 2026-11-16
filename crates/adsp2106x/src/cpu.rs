@@ -1746,10 +1746,10 @@ impl Sharc {
             v.load(r)?;
         }
         self.dag_alt.load(r)?;
-        for k in 0..2 {
+        for mr in &mut self.mr {
             let mut p = (0u64, 0u64);
             p.load(r)?;
-            self.mr[k] = ((p.1 as u128) << 64 | p.0 as u128) as i128;
+            *mr = ((p.1 as u128) << 64 | p.0 as u128) as i128;
         }
         self.px.load(r)?;
         let mut regs = [0u32; 14];
