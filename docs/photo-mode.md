@@ -221,17 +221,59 @@ out (`gpu::Renderer::photo`, `crates/gpu/src/photo.rs` and `photo.wgsl`):
    towards the edges), grain, and letterbox bars.
 
 Picture settings for photos: temporal anti-aliasing off (supersampling is
-the better anti-aliasing for a still), 4x multisampling where the samples
-stay under about 140 million (else supersampling alone), the photo's
+the better anti-aliasing for a still), 4x multisampling only where the
+picture is not supersampled (below), the photo's
 shading, bloom and depth buffer rows, finer brightness levels with pixel
 shading, and 16x anisotropic filtering of texture pack images when a pack
 is on. Bloom's blur chain gets one more level per doubling of the size, so
 its glow is as wide as in the window.
 
-Supersampling: as many times the photo's size a side (up to 4) as keeps
-the drawn picture under about 36 million pixels and within the GPU's
-largest texture: 1080p is drawn at 4x (7680x4320), 1440p and 4K at 2x,
-8K at 1x with 4x MSAA.
+Supersampling and memory: as many times the photo's size a side (up to
+4) as keeps the drawn picture under about 36 million pixels, within the
+GPU's largest texture and within a budget of about 1.4 GB. The photo pass
+keeps about 28 bytes a drawn pixel (measured with the driver allocator's
+report on an RTX 2080 SUPER: the picture, its depth and depth test, the 3D
+layer and its depth buffer, the 16-bit float picture the look works on, the
+bloom chain), 8 more each with the HUD and with motion blur (their
+pictures and the sum). 1080p is drawn at 4x (7680x4320), 1440p at 3x, 4K at
+2x (7680x4320 for 4K: about 0.93 GB; with the HUD and motion blur, 4K is
+drawn at 1x). 4x multisampling goes with 1x only (it
+adds 32 bytes a pixel for its colour and depth, and supersampling
+anti-aliases better): 4K and 5K at 1x get it, 8K is drawn at 1x without
+(33 million pixels at about 31 bytes is 1 GB; with the multisampled targets
+it was 2 GB).
+
+The photo pass's textures (and the renderer's 3D layer, depth, multisampled
+targets and bloom levels) are kept between draws, so the live preview, which
+draws a photo every frame at the window's size, allocates nothing after the
+first, and are freed after each photo and on leaving photo mode (the preview
+then goes back to its footprint of about 200 MB at 1280x720). The game's
+temporal history is dropped on entering: photos are drawn without it.
+
+If the GPU runs out of memory (the budget is a guess: a desktop and its
+compositor can hold most of the card, and the free memory isn't known), the
+photo is drawn again one step down and the message says what it ended up at
+("drawn at 3840x2160 with 4x MSAA, after the GPU ran out of memory at
+7680x4320"): each smaller supersampling, then 1x with 4x multisampling where
+the budget allows, then 1x alone. A photo fails only if even that does not
+fit. The draw runs in a wgpu error scope, so an out-of-memory error is
+caught and not the player's panic.
+
+Measured (2026-11-17, RTX 2080 SUPER 8 GB, Vulkan, daytona, `res=4k`; the
+desktop held 6.3 GB of the 8 GB before the player started): before, a 4K
+photo drew at 7680x4320 with 4x MSAA (16 samples a pixel; the multisampled
+colour and depth alone 1 GB, 1.8 GB or more with the rest) and failed with
+"Out of Memory" with the card's memory at 7.4 GB; now it is drawn at
+7680x4320 with 935 MB of the renderer's allocations and card use peaking
+about 1 GB over its starting point; forced back to the old 2x with 4x MSAA
+the draw runs out of memory and falls back to 2x without. With the game
+running in a visible window the card's use was 7.5 GB (130 MB of it the
+player's, by `nvidia-smi`; the rest the compositor's and others', which
+grew when the window opened), leaving 0.7 GB: a 4K photo then fell back
+from 2x to 1x with 4x MSAA to 1x alone, and was taken. That is why the
+fallback is needed. With the HUD, motion blur, depth of field and bloom
+on, the 2x picture needed more than the 1.4 GB tried, and the budget now
+sends 4K at 1x with 4x multisampling (about 0.6 GB) from the start.
 
 ## What works, what doesn't
 
@@ -261,7 +303,7 @@ pictures looked at):
 *Not done or unconfirmed:*
 
 - Tiling: a photo is drawn in one piece, so its size is limited by the GPU's
-  largest texture and memory (8K is drawn at 1x with 4x multisampling).
+  largest texture and memory (8K is drawn at 1x without multisampling).
 - Not tried by hand: the mouse, keyboard and a real gamepad were not used on
   a visible window (the test machine's window was hidden, about a redraw a
   second, hence `--fast`); the window's preview cost while moving the

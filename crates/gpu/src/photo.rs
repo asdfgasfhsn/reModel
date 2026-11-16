@@ -79,6 +79,33 @@ pub struct Shot<'a> {
     pub light: Option<Arc<model2::light::Frame>>,
 }
 
+/// What [`Renderer::catch`] caught.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GpuFault {
+    /// The GPU ran out of memory.
+    OutOfMemory,
+    /// Any other error, with its description.
+    Other(String),
+}
+
+/// Run `f` with GPU out-of-memory and other errors on `device` caught
+/// instead of the device's panic: what went wrong, if anything (after
+/// which `Renderer::photo_release` frees what a retry needs). Errors are
+/// caught for this thread's calls only.
+pub fn catch<T>(device: &wgpu::Device, f: impl FnOnce() -> T) -> Result<T, GpuFault> {
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let out = f();
+    let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+    let oom = pollster::block_on(memory.pop());
+    let other = pollster::block_on(validation.pop());
+    match (oom, other) {
+        (Some(_), _) => Err(GpuFault::OutOfMemory),
+        (None, Some(e)) => Err(GpuFault::Other(e.to_string())),
+        (None, None) => Ok(out),
+    }
+}
+
 /// What [`Renderer::photo`] draws.
 pub struct Request<'a> {
     /// The picture at the size it is drawn (supersampled: larger than the
@@ -115,6 +142,10 @@ pub(crate) struct Photo {
     finish_module: wgpu::ShaderModule,
     /// The last picture's 1/z.
     pub iz: Option<wgpu::Texture>,
+    /// The photo's own textures, kept between calls (the preview draws a
+    /// photo every frame): one a label, made again if the size or format
+    /// differs, dropped by `Renderer::photo_release`.
+    kept: Vec<(&'static str, wgpu::Texture)>,
 }
 
 fn module(device: &wgpu::Device, part: usize) -> wgpu::ShaderModule {
@@ -216,6 +247,7 @@ impl Photo {
             post_layout,
             finish_layout,
             iz: None,
+            kept: Vec::new(),
         }
     }
 }
@@ -271,20 +303,52 @@ fn params(values: &[[u8; 4]]) -> Vec<u8> {
 }
 
 impl Renderer {
-    fn photo_texture(&self, label: &str, w: u32, h: u32, format: wgpu::TextureFormat) -> wgpu::Texture {
-        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT
-            | wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::COPY_SRC;
-        self.device.create_texture(&wgpu::TextureDescriptor {
+    /// The photo pass's texture `label`: the one kept from the last call
+    /// if it is this size and format, else a new one (the old is dropped).
+    fn photo_texture(&mut self, label: &'static str, w: u32, h: u32, format: wgpu::TextureFormat) -> wgpu::Texture {
+        let (w, h) = (w.max(1), h.max(1));
+        let photo = self.photo.as_mut().expect("photo state");
+        if let Some((_, t)) = photo.kept.iter().find(|(l, _)| *l == label) {
+            if t.width() == w && t.height() == h && t.format() == format {
+                return t.clone();
+            }
+        }
+        photo.kept.retain(|(l, _)| *l != label);
+        let usage = if label == "photo depth test" {
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+        } else {
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+        };
+        let t = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
-            size: wgpu::Extent3d { width: w.max(1), height: h.max(1), depth_or_array_layers: 1 },
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
             usage,
             view_formats: &[],
-        })
+        });
+        self.photo.as_mut().unwrap().kept.push((label, t.clone()));
+        t
+    }
+
+    /// Free what a big photo left on the GPU: the photo pass's textures
+    /// and the renderer's kept targets (3D layer, multisampled colour and
+    /// depth, temporal history, bloom levels), all made again at the next
+    /// draw's size. Call after a photo or when leaving photo mode.
+    pub fn photo_release(&mut self) {
+        if let Some(p) = &mut self.photo {
+            p.kept.clear();
+            p.iz = None;
+        }
+        self.photo_depth = None;
+        self.textures.clear();
+        self.texture_used.clear();
+        self.bloom.release();
+        let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
     }
 
     /// The photo pass's depth: called from `encode_frame` when a photo's
@@ -364,21 +428,18 @@ impl Renderer {
         if self.photo.is_none() {
             self.photo = Some(Box::new(Photo::new(&self.device)));
         }
+        // Photos are drawn without the temporal pass: its history and
+        // targets, at the window's size, would only sit there (they are
+        // made again, from nothing, when the game draws again).
+        self.textures.retain(|(l, _)| {
+            !matches!(*l, "3d layer t" | "3d depth t" | "3d aux a" | "3d aux b" | "history a" | "history b")
+        });
         // Without 16-bit float targets, 8 bits.
         let (hdr, wide) = if self.temporal.supported { (0, AUX_FORMAT) } else { (1, FORMAT) };
         let view_of = |t: &wgpu::Texture| t.create_view(&Default::default());
         let image = self.photo_texture("photo image", w, h, FORMAT);
         let iz = self.photo_texture("photo depth", w, h, IZ_FORMAT);
-        let zbuf = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("photo depth test"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: Z_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
+        let zbuf = self.photo_texture("photo depth test", w, h, Z_FORMAT);
         let sum = (req.shots.len() > 1).then(|| self.photo_texture("photo sum", w, h, wide));
         let saved = (self.photo_hide, self.bloom_extra);
         self.photo_hide = (true, req.hide_base);
@@ -442,10 +503,10 @@ impl Renderer {
             (with, without)
         });
         (self.photo_hide, self.bloom_extra) = saved;
-        let photo = self.photo.as_ref().unwrap();
-        let look = &req.look;
         let tiles = self.photo_texture("photo tiles", w.div_ceil(TILE), h.div_ceil(TILE), IZ_FORMAT);
         let post = self.photo_texture("photo post", w, h, wide);
+        let photo = self.photo.as_ref().unwrap();
+        let look = &req.look;
         let scene = sum.as_ref().map_or_else(|| image_view.clone(), view_of);
         let (hud_view, hudless_view) = match &hud {
             Some((a, b)) => (view_of(a), view_of(b)),

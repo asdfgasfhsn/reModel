@@ -32,7 +32,7 @@ pub use model2::light::{Shading, CREASE_AUTO};
 pub use model2::raster::Relief;
 use model2::raster::{tex_info, Placed, Poly, Sources, TexKeys};
 use model2::video::{Layers2d, View, HEIGHT, WIDTH};
-pub use photo::{Look as PhotoLook, Request as PhotoRequest, Shot as PhotoShot};
+pub use photo::{catch, GpuFault, Look as PhotoLook, Request as PhotoRequest, Shot as PhotoShot};
 use std::collections::HashMap;
 pub use temporal::{step, temporal_supported, BusMotion, FrameTag, Step, TemporalDebug, Tuning as TemporalTuning};
 use temporal::{Temporal, TemporalPass};

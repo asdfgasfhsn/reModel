@@ -420,18 +420,71 @@ pub fn size(res: Res, window: (u32, u32)) -> (u32, u32) {
     (w.max(1), h.max(1))
 }
 
-/// Supersampling and multisampling for a photo of `w` x `h`: as many
-/// times the size a side (up to 4) as keeps the picture drawn under about
-/// 36 million pixels and within `max_side`, and 4x multisampling where
-/// that keeps the samples under about 140 million (8K, 4K at twice).
-pub fn sampling(w: u32, h: u32, max_side: u32) -> (u32, u32) {
+/// What a photo may take on the GPU, bytes: about 1.4 GB, so that a 4K
+/// photo draws with a desktop and its compositor using most of an 8 GB
+/// card.
+const GPU_BYTES: f64 = 1.4e9;
+
+/// The most pixels worth drawing a photo at, whatever the memory.
+const DRAW_PIXELS: f64 = 36e6;
+
+/// What the GPU holds for each pixel the photo is drawn at, bytes
+/// (measured: docs/photo-mode.md): the picture, its depth and depth test,
+/// the 3D layer and its depth buffer, the look's 16-bit float picture and
+/// the bloom chain, 28 in all; the HUD's two pictures and the motion
+/// blur's sum take 8 more each.
+fn bytes_per_pixel(o: &Options) -> f64 {
+    28.0 + if o.hud { 8.0 } else { 0.0 } + if o.blur > 1 { 8.0 } else { 0.0 }
+}
+
+/// What 4x multisampling adds to a pixel: colour and depth, 4 samples each.
+const MSAA_BYTES: f64 = 32.0;
+
+/// Supersampling for a photo of `w` x `h` at `cost` bytes a pixel: as many
+/// times the size a side (up to 4) as keeps the picture drawn within the
+/// budget and `max_side`.
+fn supersampling(w: u32, h: u32, max_side: u32, cost: f64) -> u32 {
     let px = w as f64 * h as f64;
-    let mut k = ((36e6 / px).sqrt().floor() as u32).clamp(1, 4);
+    let mut k = (((DRAW_PIXELS).min(GPU_BYTES / cost) / px).sqrt().floor() as u32).clamp(1, 4);
     while k > 1 && (w * k > max_side || h * k > max_side) {
         k -= 1;
     }
-    let msaa = if px * (k * k) as f64 * 4.0 <= 140e6 && k < 4 { 4 } else { 1 };
-    (k, msaa)
+    k
+}
+
+/// Multisampling to go with supersampling `k`: 4x only where the picture
+/// is not supersampled (supersampling already antialiases, and the
+/// multisampled targets would cost more than the whole picture) and fits
+/// the budget.
+fn multisampling(w: u32, h: u32, k: u32, cost: f64) -> u32 {
+    if k == 1 && w as f64 * h as f64 * (cost + MSAA_BYTES) <= GPU_BYTES {
+        4
+    } else {
+        1
+    }
+}
+
+/// What to try, in order, for a photo of `w` x `h` at `cost` bytes a
+/// pixel: the first step is 1080p at 4x (7680x4320), 1440p at 3x, 4K at 2x,
+/// then each smaller supersampling (no multisampling), then the picture at
+/// its own size with 4x multisampling where the budget allows, and last
+/// with none. The GPU running out of memory moves down a step.
+fn ladder(w: u32, h: u32, max_side: u32, cost: f64) -> Vec<(u32, u32)> {
+    let k = supersampling(w, h, max_side, cost);
+    let mut steps: Vec<(u32, u32)> = (1..=k).rev().map(|k| (k, multisampling(w, h, k, cost))).collect();
+    if !steps.contains(&(1, 1)) {
+        steps.push((1, 1));
+    }
+    steps
+}
+
+/// "7680x4320 with 4x MSAA" for a photo of `w` x `h` at `k` and `msaa`.
+fn describe_sampling(w: u32, h: u32, k: u32, msaa: u32) -> String {
+    if msaa > 1 {
+        format!("{}x{} with {msaa}x MSAA", w * k, h * k)
+    } else {
+        format!("{}x{}", w * k, h * k)
+    }
 }
 
 /// Where photos go: `reModel/<set>/` in the user's pictures folder (the
@@ -840,6 +893,11 @@ impl crate::Play {
         m.frame = m.live;
         self.keys.clear();
         self.photo = Some(m);
+        if let Some(g) = &mut self.gpu {
+            // The game's temporal history and the like sit unused while
+            // photos are drawn, at the window's size or a photo's.
+            g.drawer.core().renderer.photo_release();
+        }
         self.photo_capture();
         self.autofocus();
         Ok(())
@@ -887,6 +945,8 @@ impl crate::Play {
             let core = g.drawer.core();
             core.forget_frame();
             core.photo_shots = None;
+            // The photo pass's targets go; the game's are made again.
+            core.renderer.photo_release();
         }
         if let Some(s) = &mut self.session {
             // What the renderer holds is the studio's: start afresh.
@@ -974,42 +1034,73 @@ impl crate::Play {
         let hud_mode = g.view.hud;
         let (m, s) = (self.photo.as_ref().ok_or("not in photo mode")?, self.session.as_ref().ok_or("no game")?);
         let (w, h) = size(m.opts.res, window);
+        let cost = bytes_per_pixel(&m.opts);
         let set = s.game.id;
         let frame = m.frame;
         let (hw, hew) = (s.game.hud_windows, s.game.hud_element_windows);
         let g = self.gpu.as_mut().unwrap();
         let max_side = g.drawer.core().renderer.device().limits().max_texture_dimension_2d;
-        let (k, msaa) = sampling(w, h, max_side);
-        let job = self.photo_job(k, msaa).ok_or("no game")?;
+        let steps = ladder(w, h, max_side, cost);
         let view = model2::video::View::new(h as usize, w as f32 / h as f32, hud_mode).with_hud_windows(hw, hew);
         let (w, h) = (view.width as u32, view.height as u32);
         let t = Instant::now();
-        let g = self.gpu.as_mut().unwrap();
-        let core = g.drawer.core();
-        let texture = core.renderer.device().create_texture(&wgpu::TextureDescriptor {
-            label: Some("photo"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let target = texture.create_view(&Default::default());
-        draw(core, &job, &target, &view, (0, 0), wgpu::TextureFormat::Rgba8Unorm);
-        let rgba = core.renderer.read_texture(&texture, w, h);
+        // Drawn at the first step that fits in the GPU's memory.
+        let mut short = Vec::new();
+        let mut done = None;
+        for &(k, msaa) in &steps {
+            let job = self.photo_job(k, msaa).ok_or("no game")?;
+            let core = self.gpu.as_mut().unwrap().drawer.core();
+            let device = core.renderer.device().clone();
+            let drawn = gpu::catch(&device, || {
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("photo"),
+                    size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                let target = texture.create_view(&Default::default());
+                draw(core, &job, &target, &view, (0, 0), wgpu::TextureFormat::Rgba8Unorm);
+                texture
+            });
+            match drawn {
+                Ok(texture) => {
+                    done = Some((k, msaa, core.renderer.read_texture(&texture, w, h)));
+                    break;
+                }
+                Err(gpu::GpuFault::OutOfMemory) => short.push(describe_sampling(w, h, k, msaa)),
+                Err(gpu::GpuFault::Other(e)) => {
+                    core.renderer.photo_release();
+                    return Err(format!("A draw failed: {e}"));
+                }
+            }
+            core.renderer.photo_release();
+        }
+        let core = self.gpu.as_mut().unwrap().drawer.core();
+        // What the picture held is the photo's: the preview starts afresh
+        // at its own size.
+        core.renderer.photo_release();
+        let Some((k, msaa, rgba)) = done else {
+            return Err(format!("The GPU ran out of memory drawing {w}x{h} ({})", short.join(", ")));
+        };
         let drawn = t.elapsed();
         // The window's preview is drawn at its own size again.
         core.photo_shots = None;
         let dir = dir(set, self.opts.photo_dir.as_deref());
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let path = file_name(&dir, set, frame, name);
+        let fell = if short.is_empty() {
+            String::new()
+        } else {
+            format!(", after the GPU ran out of memory at {}", short.join(" and "))
+        };
         let what = format!(
-            "{} ({w}x{h}, drawn at {}x{} with {msaa}x MSAA in {:.0} ms, frame {frame})",
+            "{} ({w}x{h}, drawn at {} in {:.0} ms{fell}, frame {frame})",
             path.display(),
-            w * k,
-            h * k,
+            describe_sampling(w, h, k, msaa),
             drawn.as_secs_f64() * 1000.0
         );
         let writer = std::thread::spawn(move || {
@@ -1331,5 +1422,75 @@ impl crate::Play {
         }
         println!("photo         opened in {:.0} ms", entered.as_secs_f64() * 1000.0);
         self.leave_photo();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MAX: u32 = 16384;
+    const PLAIN: f64 = 28.0;
+    /// The HUD and motion blur both on.
+    const FULL: f64 = 44.0;
+
+    fn first(w: u32, h: u32, max_side: u32, cost: f64) -> (u32, u32) {
+        ladder(w, h, max_side, cost)[0]
+    }
+
+    #[test]
+    fn photos_supersample_or_multisample_never_both() {
+        // 1080p, 1440p and 4K supersample (4x, 3x, 2x); 5K and up are not.
+        assert_eq!(first(1920, 1080, MAX, PLAIN), (4, 1));
+        assert_eq!(first(2560, 1440, MAX, PLAIN), (3, 1));
+        assert_eq!(first(3840, 2160, MAX, PLAIN), (2, 1));
+        // 4x multisampling where the budget has room for its targets.
+        assert_eq!(first(5120, 2880, MAX, PLAIN), (1, 4));
+        assert_eq!(first(7680, 4320, MAX, PLAIN), (1, 1));
+        for cost in [PLAIN, FULL] {
+            for (w, h) in [(640, 480), (1280, 720), (1920, 1080), (3840, 2160), (5120, 2880), (7680, 4320)] {
+                for (k, msaa) in ladder(w, h, MAX, cost) {
+                    assert!(k == 1 || msaa == 1, "{w}x{h}: {k}x with {msaa}x MSAA");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_4k_photo_fits_the_budget() {
+        for cost in [PLAIN, FULL] {
+            let (k, msaa) = first(3840, 2160, MAX, cost);
+            let px = 3840.0 * 2160.0 * (k * k) as f64;
+            assert!(px * (cost + if msaa > 1 { MSAA_BYTES } else { 0.0 }) <= GPU_BYTES, "{k}x {msaa}");
+        }
+        // The HUD and motion blur's extra targets cost the supersampling.
+        assert_eq!(first(3840, 2160, MAX, FULL), (1, 4));
+        assert_eq!(first(1920, 1080, MAX, FULL).0, 3);
+    }
+
+    #[test]
+    fn supersampling_stays_within_the_gpus_largest_texture() {
+        assert_eq!(first(1920, 1080, 4096, PLAIN), (2, 1));
+        assert_eq!(first(1920, 1080, 1920, PLAIN), (1, 4));
+    }
+
+    #[test]
+    fn the_ladder_steps_down_to_the_picture_alone() {
+        assert_eq!(ladder(3840, 2160, MAX, PLAIN), [(2, 1), (1, 4), (1, 1)]);
+        assert_eq!(ladder(1920, 1080, MAX, PLAIN), [(4, 1), (3, 1), (2, 1), (1, 4), (1, 1)]);
+        assert_eq!(ladder(5120, 2880, MAX, PLAIN), [(1, 4), (1, 1)]);
+        // Where multisampling is out of budget already, the picture alone.
+        assert_eq!(ladder(15360, 8640, MAX, PLAIN), [(1, 1)]);
+        for (w, h) in [(1280, 720), (3840, 2160), (7680, 4320), (15360, 8640)] {
+            let l = ladder(w, h, MAX, FULL);
+            assert_eq!(l.last(), Some(&(1, 1)));
+            assert!(l.windows(2).all(|p| p[0].0 >= p[1].0), "{l:?} gets no cheaper");
+        }
+    }
+
+    #[test]
+    fn what_was_drawn_is_described() {
+        assert_eq!(describe_sampling(3840, 2160, 2, 1), "7680x4320");
+        assert_eq!(describe_sampling(3840, 2160, 1, 4), "3840x2160 with 4x MSAA");
     }
 }
