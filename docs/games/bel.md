@@ -85,7 +85,7 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 
 ## Enhanced preset
 
-What the player's Enhanced picture preset (`romset::Recommended` in the
+What the player's Smooth modern picture style (the `enhanced` preset; `romset::Recommended` in the
 manifest, `run_ahead_max` for run-ahead) turns on for `bel`, and why:
 Temporal at full size; the depth buffer on (the ivy on the cliff and a
 hanging soldier's legs in front of a beam come out right, above); no

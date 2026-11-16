@@ -114,7 +114,7 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 
 ## Enhanced preset
 
-What the player's Enhanced picture preset (`romset::Recommended` in the
+What the player's Smooth modern picture style (the `enhanced` preset; `romset::Recommended` in the
 manifest, `run_ahead_max` for run-ahead) turns on for `sgt24h`, and why:
 Temporal at full size; no depth buffer or smooth shading (little or no
 change); smooth motion; run-ahead 3: the lag measured above is 4, the player

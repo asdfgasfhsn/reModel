@@ -129,7 +129,7 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 
 ## Enhanced preset
 
-What the player's Enhanced picture preset (`romset::Recommended` in the
+What the player's Smooth modern picture style (the `enhanced` preset; `romset::Recommended` in the
 manifest, `run_ahead_max` for run-ahead) turns on for `vstriker`, and why:
 4x multisampling instead of temporal anti-aliasing: the players' pose
 models change, so temporal draws their motion nearer the plain frame, the

@@ -217,6 +217,7 @@ fn shown_rows(c: &Shown) -> Vec<Row> {
                 "stipple" => custom && temporal,
                 "depth" | "shading" | "pack" => custom,
                 "bloom" => custom && c.temporal_supported,
+                "crt" => custom,
                 "shading_fine" | "shading_balance" => custom && v.light_on(),
                 "materials" => custom && v.pack && !v.geo_chip,
                 "materials_relief" => custom && v.materials_on() && !v.geo_chip,
@@ -256,9 +257,15 @@ fn rows(has_own: bool, max_anisotropy: u8) -> Vec<Row> {
         Row::Choice("hud_edges", "HUD", "in wide views", &[("At the edges", "true"), ("Centred", "false")]),
         Row::Choice(
             "preset",
-            "Preset",
+            "Picture style",
             "",
-            &[("Original", "original"), ("Sharp", "sharp"), ("Enhanced", "enhanced"), ("Custom", "custom")],
+            &[
+                ("Arcade original", "original"),
+                ("Sharp", "sharp"),
+                ("Smooth modern", "enhanced"),
+                ("CRT", "crt"),
+                ("Custom", "custom"),
+            ],
         ),
         Row::Choice(
             "aa",
@@ -325,6 +332,12 @@ fn rows(has_own: bool, max_anisotropy: u8) -> Vec<Row> {
             "Bloom",
             "bright parts of the 3D picture glow; the HUD stays sharp",
             &[("Off", "off"), ("Light", "25"), ("Medium", "50"), ("Strong", "100")],
+        ),
+        Row::Choice(
+            "crt",
+            "CRT",
+            "scanlines, a soft tube edge and a slight curve over the whole picture",
+            &[("Off", "off"), ("Light", "30"), ("Medium", "60"), ("Strong", "100")],
         ),
         Row::Choice(
             "exact",
@@ -1784,7 +1797,7 @@ mod tests {
         assert!(overridden("materials_relief", &v, true).is_some());
         assert!(overridden("materials_relief", &GameSettings { materials: true, pack: true, ..v }, true).is_none());
         // The rows hold every value the settings take for them.
-        for key in ["temporal", "stipple", "shading", "materials", "materials_relief", "bloom"] {
+        for key in ["temporal", "stipple", "shading", "materials", "materials_relief", "bloom", "crt"] {
             let Some(Row::Choice(_, _, _, options)) =
                 rows(false, 16).into_iter().find(|r| matches!(r, Row::Choice(k, ..) if *k == key))
             else {
@@ -2030,8 +2043,8 @@ mod tests {
             panic!("no preset row")
         };
         let names: Vec<_> = options.iter().map(|o| o.1).collect();
-        assert_eq!(names, hints::PRESETS.map(|(p, _)| p.name()));
-        assert_eq!(options.iter().map(|o| o.0).collect::<Vec<_>>(), hints::PRESETS.map(|(_, l)| l));
+        assert_eq!(names, Preset::ALL.map(Preset::name));
+        assert_eq!(options.iter().map(|o| o.0).collect::<Vec<_>>(), Preset::ALL.map(Preset::label));
     }
 
     #[test]

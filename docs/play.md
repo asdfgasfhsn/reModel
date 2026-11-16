@@ -909,8 +909,8 @@ games, or this game only (a game's own setting is tagged "this game", and
 the Esc menu while playing, in tabs and behind a picture preset (below,
 "The menu"). The launcher lists them as one scrolling list in the menu's
 order (display, picture, motion, sound, more) and with the menu's rules,
-sharing its code (`hints.rs`): a **Preset** row (Original, Sharp,
-Enhanced, Custom, with the menu's help line for the game) comes first of
+sharing its code (`hints.rs`): a **Picture style** row (Arcade original, Sharp,
+Smooth modern, CRT, Custom, with the menu's help line for the game) comes first of
 the picture rows, which only Custom lists; rows that do nothing as set
 (anti-aliasing under temporal, the lighting rows with flat shading, the
 chip's, the bezel in a wide window or for a game without art, texture
@@ -919,7 +919,7 @@ game's maximum and is gone for a game with no lag; and its hint says what
 this computer has time for (above). Choosing a preset sets its rows and a
 picture row changed afterwards makes it Custom, the same as in the menu, and
 what is saved from either place is identical (`preset = enhanced` and so
-on). The crease angle is only in the menu. They come in layers, lowest first, as in the
+on: Smooth modern is the `enhanced` preset, and old files keep loading). A **CRT** row (off, light, medium, strong) is among the picture rows Custom lists. The crease angle is only in the menu. They come in layers, lowest first, as in the
 browser build: the built-in defaults, the defaults for all games, the
 game's own, then the command line (`--mix`, `--hud`, `--aspect`, `--bezel`,
 `--exact`, `--smooth`, `--run-ahead`, `--aa`, `--temporal`, `--stipple`, `--depth`, `--shading`, `--crease`, `--shading-fine`, `--shading-balance`, `--pack`, `--texture-pack`, `--tex-filter`, `--materials`, `--materials-relief`, `--bloom`, `--geo`), which applies to that run only and is
@@ -1336,7 +1336,7 @@ load** (F9), **Save slots** (how many are used), **Photo mode** (F8:
 `docs/photo-mode.md`), **Reset game** (select it twice within four seconds:
 the game starts again from power-on, keeping its EEPROM) and **Back to
 games**. Under a small "SETTINGS" label come the settings, one level in,
-each showing its value: **Picture** (the preset), **Controls**, **Sound**
+each showing its value: **Picture** (the style), **Controls**, **Sound**
 (the music level) and **Speed and latency** (run-ahead, or exact speed or
 smooth). With no game running (the menu from the launcher) there is a
 **Quit reModel** row at the foot. The version is at the foot of
@@ -1383,15 +1383,7 @@ events only, not yet with a real pad.
     wider than its frame from 4:3 to 32:9; or 4:3, `--aspect 4:3`), where
     the HUD goes on wide windows (shown for fit the window), the bezel
     (below; shown for 4:3, where there is art), and fullscreen (as F11).
-  - **Picture**: starts with the preset row, **Original**, **Sharp**,
-    **Enhanced** or **Custom** (below). Only Custom lists the individual
-    rows: anti-aliasing, temporal anti-aliasing and the checkerboard
-    pattern, the depth buffer, shading with its crease angle, blended
-    brightness levels and brightness balance, the texture pack and, with
-    it, material maps and their relief (the help line says what they did or
-    why they have no effect: above). The crease angle is "the game's" or
-    20 to 60 degrees; other values come from the settings file or
-    `--crease`.
+  - **Picture** is a page of its own, not a tab (below, "Picture styles").
   - **Motion**: exact arcade speed (57.524 frames per second) against the
     default of one game frame per display refresh at 60 or 120 Hz, which is
     4.3% fast but smooth; smooth motion (not with the chip); run-ahead
@@ -1403,10 +1395,56 @@ events only, not yet with a real pad.
     start) and texture filtering (of the texture pack's images, with the
     pack on).
 
+  **Picture styles.** The Picture page (the menu's Picture row) lists
+  five cards, each a name, a small tag and one plain sentence: *Arcade
+  original*, *Sharp*, *Smooth modern* (recommended), *CRT* and *Custom*.
+  Choosing one applies it at once to the paused game beside the panel. A
+  switch at the top, "<Game> only | All games", is the settings' scope (the
+  same layers as the launcher's "Save for"), and the last line says where it
+  is saved and what other games keep ("Saved for Top Skater. Other games
+  keep Sharp."). *Compare* shows the paused picture twice, as the arcade
+  original left of a vertical divider and as chosen right of it, with
+  "Before" and "After" labels at the picture's top corners: drag the
+  divider with the mouse, or move it with the pad's left and right (also
+  from any card while Compare is on). The game is drawn twice (`draw::Compare`,
+  `gpu::Renderer::with_quality` and `wipe`): the original into a kept
+  picture, the chosen style into the window, and the original's part left
+  of the divider copied over; the divider is limited to the part of the
+  picture the panel doesn't cover. Cost doubles while paused only; the
+  texture pack, if on, shows on both sides. *Custom* is whatever Advanced
+  made; choosing another style and then Custom again restores the last
+  custom values (kept for the session, not in the files). *Advanced ›*
+  opens a row for each picture setting, each "◀ value ▶" with a yellow dot
+  where it differs from the style (or the style the Custom came from:
+  "Custom (from Smooth modern)"), and only the focused row says what it does:
+  Resolution (the temporal render scale; shown with temporal smoothing on),
+  Edge smoothing (multisampling; off while temporal smoothing is on),
+  Temporal smoothing, Lighting (flat, smooth, per pixel), Glow (bloom),
+  In-between frames (smooth motion; as before it does not make the style
+  Custom), Wide screens (HUD placement, only a dot-free setting), Texture
+  pack and CRT; under *More*: the depth buffer, see-through polygons,
+  crease angle, brightness levels and balance, material maps and relief
+  and texture filtering. Any picture row changed makes the style Custom;
+  *Back to the style's values* returns to it. Some changes finish when the
+  game runs again (smooth shading's exact lighting and temporal
+  smoothing's motion data are recorded from frames the paused game does not
+  run).
+
+  **The CRT look** (`crt` setting, 0 to 100, off by default and in every
+  other style; the CRT style is Sharp with 60) is a pass over the finished
+  picture (`crates/gpu/src/crt.wgsl`), not the bezel or menu, and changes
+  nothing the machine does. It draws one scanline for each of the game's
+  384 lines at any output size (a line's brightness a gaussian across it,
+  wider where brighter), a stripe mask staggered on alternate lines, a
+  little glow from bright parts, a soft vignette and a very slight barrel
+  curve, all scaling with the strength; the lines and mask fade out under
+  about 2 output pixels a game line (a window under 770 pixels tall), where they
+  would only beat against the pixel grid. `--crt off|N` sets it for a run.
+
   **Picture presets.** *Original* is the arcade look and every default:
   nothing that changes the picture (and no smooth motion or run-ahead).
   *Sharp* is 4x multisampling and mipmapped texture filtering, nothing
-  else. *Enhanced* is per game (`romset::Recommended` in the manifest, the
+  else. *Enhanced* (shown as Smooth modern) is per game (`romset::Recommended` in the manifest, the
   evidence in each game's `docs/games/<set>.md`): temporal anti-aliasing
   at full size (4x multisampling where temporal misbehaves, `vstriker`; and
   kept as the fallback with the chip geometrizer or a GPU without temporal),

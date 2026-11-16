@@ -22,8 +22,9 @@ use model2::enhance::TexFilter;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// The picture presets: a choice of the rows that change how the game
-/// looks (and, with Enhanced, moves). Custom is any other combination.
+/// The picture presets, shown to players as picture styles (`Preset::label`):
+/// a choice of the rows that change how the game looks (and, with Enhanced,
+/// moves). Custom is any other combination.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Preset {
     /// Everything that changes the picture off: the arcade look.
@@ -31,21 +32,36 @@ pub enum Preset {
     Original,
     /// 4x multisampling and mipmapped texture filtering only.
     Sharp,
-    /// Per game (`romset::Recommended`): what its documentation says is
-    /// right for it, with smooth motion and run-ahead.
+    /// Shown as "Smooth modern". Per game (`romset::Recommended`): what its
+    /// documentation says is right for it, with smooth motion and
+    /// run-ahead. Kept in files as `enhanced`.
     Enhanced,
+    /// Sharp, with the CRT look (`CRT_STYLE_STRENGTH`).
+    Crt,
     Custom,
 }
 
 impl Preset {
     /// Every preset, in the order the menu offers them.
-    pub const ALL: [Preset; 4] = [Preset::Original, Preset::Sharp, Preset::Enhanced, Preset::Custom];
+    pub const ALL: [Preset; 5] = [Preset::Original, Preset::Sharp, Preset::Enhanced, Preset::Crt, Preset::Custom];
+
+    /// The style's name for players ("Smooth modern" for Enhanced).
+    pub fn label(self) -> &'static str {
+        match self {
+            Preset::Original => "Arcade original",
+            Preset::Sharp => "Sharp",
+            Preset::Enhanced => "Smooth modern",
+            Preset::Crt => "CRT",
+            Preset::Custom => "Custom",
+        }
+    }
 
     pub fn name(self) -> &'static str {
         match self {
             Preset::Original => "original",
             Preset::Sharp => "sharp",
             Preset::Enhanced => "enhanced",
+            Preset::Crt => "crt",
             Preset::Custom => "custom",
         }
     }
@@ -58,7 +74,7 @@ impl Preset {
 /// The rows a preset describes the picture by: a preset matches when all
 /// of them are what it sets. Changing one of them under a preset makes it
 /// Custom.
-pub const PICTURE_KEYS: [&str; 13] = [
+pub const PICTURE_KEYS: [&str; 14] = [
     "aa",
     "temporal",
     "stipple",
@@ -72,11 +88,12 @@ pub const PICTURE_KEYS: [&str; 13] = [
     "materials",
     "materials_relief",
     "bloom",
+    "crt",
 ];
 
 /// The rows choosing a preset sets: the picture's, smooth motion and
 /// run-ahead (the last two don't count against a preset matching).
-const PRESET_KEYS: [&str; 15] = [
+pub const PRESET_KEYS: [&str; 16] = [
     "aa",
     "temporal",
     "stipple",
@@ -90,9 +107,13 @@ const PRESET_KEYS: [&str; 15] = [
     "materials",
     "materials_relief",
     "bloom",
+    "crt",
     "smooth",
     "run_ahead",
 ];
+
+/// The CRT style's strength in percent.
+pub const CRT_STYLE_STRENGTH: u8 = 60;
 
 /// The settings a game is played with.
 #[derive(Clone, Debug, PartialEq)]
@@ -162,6 +183,9 @@ pub struct GameSettings {
     /// bright parts of the 3D layer glow; GPU only, never part of a preset
     /// but Original's "off".
     pub bloom: u8,
+    /// The CRT look (`gpu::Quality::crt`): strength in percent, 0 for none.
+    /// A pass over the finished picture; GPU only.
+    pub crt: u8,
     /// The geometrizer on its chip (the game's own program) rather than
     /// the native implementation. Applies when the game starts.
     pub geo_chip: bool,
@@ -192,13 +216,14 @@ impl Default for GameSettings {
             materials: false,
             materials_relief: gpu::Relief::default(),
             bloom: 0,
+            crt: 0,
             geo_chip: false,
         }
     }
 }
 
 /// Every game setting's key, in the order the panels show them.
-pub const KEYS: [&str; 23] = [
+pub const KEYS: [&str; 24] = [
     "preset",
     "wide",
     "bezel",
@@ -219,6 +244,7 @@ pub const KEYS: [&str; 23] = [
     "materials",
     "materials_relief",
     "bloom",
+    "crt",
     "sfx_db",
     "music_db",
     "geo",
@@ -277,6 +303,10 @@ impl GameSettings {
                 0 => "off".to_string(),
                 n => n.to_string(),
             },
+            "crt" => match self.crt {
+                0 => "off".to_string(),
+                n => n.to_string(),
+            },
             "geo" => if self.geo_chip { "chip" } else { "native" }.to_string(),
             _ => String::new(),
         }
@@ -314,6 +344,7 @@ impl GameSettings {
             "materials" => flag(v).map(|x| self.materials = x).is_some(),
             "materials_relief" => gpu::Relief::parse(v).map(|r| self.materials_relief = r).is_some(),
             "bloom" => gpu::Quality::parse_bloom(v).map(|n| self.bloom = n).is_some(),
+            "crt" => gpu::Quality::parse_crt(v).map(|n| self.crt = n).is_some(),
             "geo" => match model2::geo::GeoMode::parse(v) {
                 Some(model2::geo::GeoMode::Chip) => {
                     self.geo_chip = true;
@@ -346,6 +377,9 @@ impl GameSettings {
         }
         self.aa = 4;
         self.tex_filter = TexFilter::Mip;
+        if p == Preset::Crt {
+            self.crt = CRT_STYLE_STRENGTH;
+        }
         if p == Preset::Enhanced {
             let rec = game.map_or(romset::Recommended::DEFAULT, |g| g.recommended);
             self.temporal = if rec.temporal { 100 } else { 0 };
@@ -439,6 +473,7 @@ impl GameSettings {
             materials: self.materials_on(),
             materials_relief: self.materials_relief,
             bloom: if supported { self.bloom } else { 0 },
+            crt: self.crt,
         }
     }
 }
@@ -640,6 +675,20 @@ impl Settings {
     /// Whether `set` has settings of its own.
     pub fn has_own(&mut self, set: &str) -> bool {
         !self.game_layer(set).is_empty()
+    }
+
+    /// Whether `set`'s own settings include any of the picture's (a style,
+    /// or rows a style sets): the picture menu says so when it saves for
+    /// all games.
+    pub fn has_own_picture(&mut self, set: &str) -> bool {
+        self.game_layer(set).keys().any(|k| k == "preset" || PRESET_KEYS.contains(&k.as_str()))
+    }
+
+    /// The picture style the games without their own settings play with
+    /// (the defaults for all games), as `set` would have it: what "other
+    /// games keep" in the picture menu says.
+    pub fn all_games_preset(&self, set: &str) -> Preset {
+        Self::stack(&[(&self.defaults, Source::AllGames)], set).0.preset
     }
 
     /// The settings `set` plays with, and where each came from (by
@@ -1147,6 +1196,38 @@ mod tests {
     /// `edit` without saving (the layers it would touch are given).
     fn edit_quietly(s: &mut Settings, set: &str, v: &GameSettings) {
         s.apply_edit(set, v);
+    }
+
+    /// The CRT style and the `crt` row save and load like the others, the
+    /// old names keep loading, and no other style turns it on.
+    #[test]
+    fn crt_is_a_setting_and_a_style() {
+        let topskatr = romset::games::find("topskatr").ok();
+        for p in [Preset::Original, Preset::Sharp, Preset::Enhanced] {
+            let mut v = GameSettings::default();
+            v.apply_preset(p, topskatr);
+            assert_eq!(v.crt, 0, "{p:?}");
+        }
+        let mut v = GameSettings::default();
+        v.apply_preset(Preset::Crt, topskatr);
+        assert_eq!((v.aa, v.crt, v.temporal), (4, CRT_STYLE_STRENGTH, 0));
+        assert!(v.picture_is(Preset::Crt, topskatr) && !v.picture_is(Preset::Sharp, topskatr));
+        let mut s = with_game(Settings::parse("preset = crt\n"), "topskatr", &[]);
+        assert_eq!(s.resolve("topskatr").0.crt, CRT_STYLE_STRENGTH);
+        let mut s2 = with_game(Settings::parse("crt = 80\n"), "topskatr", &[]);
+        let (v, _) = s2.resolve("topskatr");
+        assert_eq!((v.crt, v.get("crt")), (80, "80".to_string()));
+        assert!(!GameSettings::default().set("crt", "101") && GameSettings::default().set("crt", "off"));
+        // A style is kept as itself, for one game only.
+        let (mut v, _) = s.resolve("topskatr");
+        v.apply_preset(Preset::Original, topskatr);
+        s.for_all = false;
+        s.apply_edit("topskatr", &v);
+        assert_eq!(s.resolve("topskatr").0.crt, 0);
+        // What the picture menu says about the other games.
+        assert_eq!(s.all_games_preset("stcc"), Preset::Crt);
+        assert!(s.has_own_picture("topskatr") && !s.has_own_picture("stcc"));
+        assert_eq!(Preset::parse("enhanced").map(Preset::label), Some("Smooth modern"));
     }
 
     #[test]

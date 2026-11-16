@@ -5,13 +5,44 @@
 
 use crate::settings::{GameSettings, Preset, MAX_RUN_AHEAD};
 
-/// The preset row's choices (value, label), in the order offered.
-pub const PRESETS: [(Preset, &str); 4] = [
-    (Preset::Original, "Original"),
-    (Preset::Sharp, "Sharp"),
-    (Preset::Enhanced, "Enhanced"),
-    (Preset::Custom, "Custom"),
-];
+/// The CRT row's choices (strength in percent, label).
+pub const CRT: [(u8, &str); 4] = [(0, "Off"), (30, "Light"), (60, "Medium"), (100, "Strong")];
+
+/// The CRT row's help line.
+pub const CRT_HELP: &str = "Scanlines, a soft tube edge and a slight curve, like an arcade monitor.";
+
+/// A style's small tag in the picture menu.
+pub fn style_tag(p: Preset) -> &'static str {
+    match p {
+        Preset::Original => "as the cabinet",
+        Preset::Enhanced => "recommended",
+        Preset::Custom => "from Advanced",
+        _ => "",
+    }
+}
+
+/// A style's one plain sentence in the picture menu, for `game` (what
+/// Smooth modern turns on is the game's: `GameSettings::apply_preset`).
+pub fn style_line(p: Preset, game: Option<&romset::Game>) -> String {
+    match p {
+        Preset::Original => "The picture as the arcade board draws it: nothing added.".into(),
+        Preset::Sharp => "Clean edges and crisp textures. The same picture, crisper.".into(),
+        Preset::Crt => "Scanlines and a soft tube edge, like an arcade monitor.".into(),
+        Preset::Custom => "Your own mix of the advanced settings.".into(),
+        Preset::Enhanced => {
+            let mut d = GameSettings::default();
+            d.apply_preset(Preset::Enhanced, game);
+            let mut text = "Sharp".to_string();
+            if d.shading != gpu::Shading::Flat {
+                text += ", with smooth lighting";
+            }
+            if d.smooth {
+                text += " and in-between frames for fast screens";
+            }
+            text + ", set up for this game."
+        }
+    }
+}
 
 /// The bloom row's choices (strength in percent, label).
 pub const BLOOM: [(u8, &str); 4] = [(0, "Off"), (25, "Light"), (50, "Medium"), (100, "Strong")];
@@ -138,7 +169,7 @@ fn frames(n: u32) -> String {
     }
 }
 
-/// What a preset does for `game`, as the help line of the preset row
+/// What a style does for `game`, as the help line of the preset row
 /// (`temporal_supported`: the GPU can do temporal anti-aliasing; `geo_chip`:
 /// the game's chip draws).
 pub fn preset_help(p: Preset, game: Option<&romset::Game>, temporal_supported: bool, geo_chip: bool) -> String {
@@ -146,6 +177,7 @@ pub fn preset_help(p: Preset, game: Option<&romset::Game>, temporal_supported: b
         Preset::Original => "The arcade look: nothing that changes the picture.".into(),
         Preset::Sharp => "4x anti-aliasing and mipmapped texture filtering, nothing else.".into(),
         Preset::Custom => "Choose each picture setting yourself.".into(),
+        Preset::Crt => "Sharp, with scanlines, a mask and a soft edge like an arcade monitor.".into(),
         Preset::Enhanced => {
             let mut d = GameSettings::default();
             d.apply_preset(Preset::Enhanced, game);

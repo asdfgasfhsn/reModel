@@ -35,6 +35,10 @@ pub struct Focus {
     step: Vec<(Id, i32)>,
     /// The focus moved this frame (scroll it into view).
     moved: bool,
+    /// Left (-1) and right (+1) presses this frame that moved nothing: no
+    /// stepper took them and no widget lay beside the focused one (a page
+    /// can use them for itself: `take_loose`).
+    loose: i32,
     /// Draw the ring (the pad or keyboard is in use).
     pub show: bool,
 }
@@ -62,6 +66,7 @@ impl Focus {
         self.click.clear();
         self.step.clear();
         self.moved = false;
+        self.loose = 0;
         let mut rest = Vec::new();
         for &nav in navs {
             let at = self.on.and_then(|(id, _)| self.last.iter().position(|i| i.id == id));
@@ -79,11 +84,10 @@ impl Focus {
                     let d = if nav == Nav::Left { -1 } else { 1 };
                     match item.kind {
                         Kind::Stepper if item.enabled => self.step.push((item.id, d)),
-                        _ => {
-                            if let Some(to) = self.across(at, d as f32) {
-                                self.go(to);
-                            }
-                        }
+                        _ => match self.across(at, d as f32) {
+                            Some(to) => self.go(to),
+                            None => self.loose += d,
+                        },
                     }
                 }
                 Nav::Up | Nav::Down => {
@@ -95,6 +99,23 @@ impl Focus {
             }
         }
         rest
+    }
+
+    /// The net left and right presses this frame that nothing took (see
+    /// `loose`), once.
+    pub fn take_loose(&mut self) -> i32 {
+        std::mem::take(&mut self.loose)
+    }
+
+    /// Move the `n` widgets registered last by `dy` for the d-pad's moves
+    /// up and down only (not for drawing or scrolling): a page whose list
+    /// scrolls under a pinned footer puts the footer after the whole list
+    /// (a big `dy`), where the clipped list entries' real places would
+    /// put them beyond it.
+    pub fn shift_last(&mut self, n: usize, dy: f32) {
+        for item in self.items.iter_mut().rev().take(n) {
+            item.rect = item.rect.translate(egui::vec2(0.0, dy));
+        }
     }
 
     fn go(&mut self, to: usize) {

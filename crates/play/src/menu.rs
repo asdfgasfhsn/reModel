@@ -1,14 +1,16 @@
 //! The in-game menu (Esc) and short notices, drawn with egui over the game.
 //!
-//! The pause menu is a short list: Resume, Save / Load, Settings, Controls, Photo mode,
-//! Back to games, Quit. Save / Load is a small screen of its own (the
-//! slots). Settings come in tabs (Display, Picture, Motion, Sound, More),
-//! each row "label ◂ value ▸": left and right change it, and one help line
-//! at the bottom says what the focused (or pointed-at) row does. Options
-//! that do nothing as things are set are left out, not greyed: a
-//! picture preset (Original, Sharp, Enhanced, Custom) sets the picture
-//! rows, and only Custom lists them. Every settings tab ends with where
-//! the changes are kept (this game or all games).
+//! The pause menu is a short list: Resume, Save / Load, Picture, Controls,
+//! Sound, Speed and latency, Photo mode, Back to games, Quit. Save / Load is
+//! a small screen of its own (the slots). The picture has two pages of their
+//! own (`picture`): a list of styles (Arcade original, Sharp, Smooth modern,
+//! CRT, Custom) applied live to the paused game, with a before/after
+//! Compare, and an Advanced page with a row for each picture setting. The
+//! other settings come in tabs (Display, Motion, Sound, More), each row
+//! "label ◂ value ▸": left and right change it, and one help line at the
+//! bottom says what the focused (or pointed-at) row does. Options that do
+//! nothing as things are set are left out, not greyed. Every settings tab
+//! ends with where the changes are kept (this game or all games).
 //!
 //! Its Controls page (also the launcher's) remaps the game's keys and
 //! gamepad bindings (`romset::bindings`): click a binding, then press what
@@ -21,12 +23,12 @@
 //! Tab and Shift+Tab) for tabs, Backspace to go back; Esc closes the menu.
 
 use crate::focus::Focus;
-use crate::hints::{
-    preset_help, run_ahead_help, run_ahead_max, run_ahead_shown, BLOOM, BLOOM_HELP, PRESETS, RUN_AHEAD,
-};
+use crate::hints::{run_ahead_help, run_ahead_max, run_ahead_shown, RUN_AHEAD};
 use crate::launcher::{Nav, DIM};
 use crate::saves::{self, SlotInfo};
 use crate::settings::{GameSettings, Preset};
+
+mod picture;
 use crate::theme::{self, Chip, Level, Toasts};
 use egui::{pos2, vec2, Align2, Color32, FontFamily, FontId, Rect, Sense, Shape, Stroke};
 use romset::bindings::{Accepts, Bindings, Slot, Value};
@@ -60,6 +62,10 @@ pub enum Page {
     Pause,
     SaveLoad,
     Settings,
+    /// The picture styles, and Compare.
+    Picture,
+    /// Each picture setting.
+    Advanced,
 }
 
 /// The settings tabs.
@@ -67,19 +73,17 @@ pub enum Page {
 pub enum Tab {
     #[default]
     Display,
-    Picture,
     Motion,
     Sound,
     More,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] = [Tab::Display, Tab::Picture, Tab::Motion, Tab::Sound, Tab::More];
+    pub const ALL: [Tab; 4] = [Tab::Display, Tab::Motion, Tab::Sound, Tab::More];
 
     pub fn label(self) -> &'static str {
         match self {
             Tab::Display => "Display",
-            Tab::Picture => "Picture",
             Tab::Motion => "Motion",
             Tab::Sound => "Sound",
             Tab::More => "More",
@@ -129,6 +133,8 @@ pub struct Menu {
     pause_focus: Focus,
     slots_focus: Focus,
     settings_focus: Focus,
+    /// The Picture and Advanced pages' state.
+    picture: picture::State,
     controls_focus: Focus,
     /// The slot the slots page has selected.
     slot_sel: u8,
@@ -176,6 +182,11 @@ pub struct View<'a> {
     /// The frames of run-ahead this computer has time for, once measured
     /// (`hints::FrameCost::run_ahead_room`).
     pub run_ahead_room: Option<u32>,
+    /// The game's picture in the window, in pixels (x, y, width, height):
+    /// where Compare's divider goes. None: no game picture to compare.
+    pub picture: Option<[f32; 4]>,
+    /// What the picture pages say about where changes are kept.
+    pub keeps: Keeps,
     /// How the texture pack is doing (where it is, what it replaced), or
     /// why there is none, while the setting is on.
     pub pack: Option<&'a str>,
@@ -184,12 +195,15 @@ pub struct View<'a> {
     pub materials: Option<&'a str>,
 }
 
-/// Temporal anti-aliasing's choices: render scale in percent, label.
-const TEMPORAL: [(u8, &str); 5] = [(0, "Off"), (100, "TAA"), (75, "75%"), (67, "67%"), (50, "50%")];
-
-/// Smooth shading's choices.
-const SHADING: [(gpu::Shading, &str); 3] =
-    [(gpu::Shading::Flat, "Flat"), (gpu::Shading::Vertex, "Vertex"), (gpu::Shading::Pixel, "Pixel")];
+/// What the picture pages tell a player about where a change is kept
+/// (`Settings::all_games_preset`, `Settings::has_own_picture`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Keeps {
+    /// The style games with no settings of their own play with.
+    pub all_games: Preset,
+    /// The game has picture settings of its own.
+    pub own_picture: bool,
+}
 
 /// Smooth shading's crease angles besides the game's own, in degrees.
 const CREASES: [u8; 4] = [20, 30, 40, 60];
@@ -468,11 +482,15 @@ impl Menu {
             self.slots_focus = Focus::default();
             self.settings_focus = Focus::default();
             self.controls_focus = Focus::default();
+            self.picture = picture::State::default();
             self.thumbs.clear();
             self.reset_armed = None;
             return actions;
         }
-        paused_pill(ctx);
+        self.picture.wipe_rect = None;
+        if !self.picture.comparing(self.page) {
+            paused_pill(ctx);
+        }
         let keys = if self.capture.is_none() { menu_keys(ctx) } else { Vec::new() };
         self.note_input(ctx, navs, &keys);
         let all: Vec<Nav> = navs.iter().chain(&keys).copied().collect();
@@ -495,6 +513,8 @@ impl Menu {
             Page::Pause => self.pause_page(ctx, settings, view, navs, &mut actions),
             Page::SaveLoad => self.save_page(ctx, view, navs, &mut actions),
             Page::Settings => self.settings_page(ctx, settings, prefs, view, navs),
+            Page::Picture => self.picture_page(ctx, settings, prefs, view, navs),
+            Page::Advanced => self.advanced_page(ctx, settings, prefs, view, navs),
         }
         actions
     }
@@ -522,7 +542,7 @@ impl Menu {
         let playing = view.playing.is_some();
         let armed = self.reset_armed.is_some();
         let used = view.saves.iter().flatten().count();
-        let picture = PRESETS.iter().find(|p| p.0 == settings.preset).map_or("Custom", |p| p.1);
+        let picture = settings.preset.label();
         let sound = format!("Music {}{} dB", if settings.music_db > 0.0 { "+" } else { "" }, settings.music_db);
         let speed = if settings.run_ahead > 0 {
             format!("Run-ahead {}", settings.run_ahead)
@@ -586,7 +606,7 @@ impl Menu {
                     });
                     ui.add_space(4.0 * s);
                     if focus.menu_row(ui, "Picture", &format!("{picture} ›")) {
-                        go = Some((Page::Settings, Tab::Picture));
+                        go = Some((Page::Picture, Tab::Display));
                     }
                     if playing && focus.menu_row(ui, "Controls", "›") {
                         to_controls = true;
@@ -626,6 +646,7 @@ impl Menu {
             }
             self.slots_focus = Focus::default();
             self.settings_focus = Focus::default();
+            self.picture = picture::State::default();
         }
         if to_controls {
             self.controls = true;
@@ -743,7 +764,7 @@ impl Menu {
         }
     }
 
-    /// The settings: tabs of rows, the preset first on Picture.
+    /// The settings: tabs of rows.
     fn settings_page(
         &mut self,
         ctx: &egui::Context,
@@ -776,7 +797,6 @@ impl Menu {
                     ui.spacing_mut().item_spacing.y = 6.0 * s;
                     match tab {
                         Tab::Display => display_rows(ui, &mut rows, settings, &mut prefs, view),
-                        Tab::Picture => picture_rows(ui, &mut rows, settings, view),
                         Tab::Motion => motion_rows(ui, &mut rows, settings, view),
                         Tab::Sound => sound_rows(ui, &mut rows, settings),
                         Tab::More => more_rows(ui, &mut rows, settings, view),
@@ -811,7 +831,8 @@ impl Menu {
             self.tab = tab;
             self.settings_focus = Focus::default();
         }
-        // A picture preset whose rows no longer all match is Custom.
+        // A picture style whose rows no longer all match (texture
+        // filtering, on More) is Custom.
         *settings = settings.clone().settled(view.game);
         if back {
             self.page = Page::Pause;
@@ -1277,126 +1298,6 @@ fn display_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings, prefs:
     rows.toggle(ui, "Fullscreen", &mut *prefs.fullscreen, "Fills the screen (F11 does the same, any time).");
 }
 
-fn picture_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings, view: &View) {
-    let mut p = s.preset;
-    let help = preset_help(p, view.game, view.temporal_supported, s.geo_chip);
-    if rows.choose(ui, "Preset", &mut p, &PRESETS, &help) {
-        s.apply_preset(p, view.game);
-    }
-    if s.preset != Preset::Custom {
-        return;
-    }
-    // Temporal anti-aliasing replaces multisampling while it runs.
-    let temporal = s.temporal_on() && view.temporal_supported;
-    if !temporal {
-        rows.choose(
-            ui,
-            "Anti-aliasing",
-            &mut s.aa,
-            &[(0, "Off"), (4, "4x"), (8, "8x")],
-            "Smooths polygon edges by multisampling (8x where the GPU has it).",
-        );
-    }
-    if !s.geo_chip && view.temporal_supported {
-        rows.choose(
-            ui,
-            "Temporal anti-aliasing",
-            &mut s.temporal,
-            &TEMPORAL,
-            "Smooth edges that stay smooth in motion, and replaces anti-aliasing. A percentage draws the 3D layer \
-             smaller and upscales it: cheaper.",
-        );
-    }
-    if temporal {
-        rows.choose(
-            ui,
-            "See-through polygons",
-            &mut s.stipple_keep,
-            &[(false, "Even blend"), (true, "Checkerboard")],
-            "How the games' checkerboard shadows and glass look under temporal anti-aliasing: an even 50% blend, \
-             or the original pattern.",
-        );
-    }
-    rows.toggle(
-        ui,
-        "Depth buffer",
-        &mut s.depth,
-        "Polygons that cross sort right. Off draws them in the game's order.",
-    );
-    let hint = shading_hint(s);
-    rows.choose(ui, "Shading", &mut s.shading, &SHADING, hint);
-    if s.shading != gpu::Shading::Flat {
-        let game_crease = view.game.map_or(romset::Shading::DEFAULT.crease, |g| g.shading.crease);
-        let mut list = vec![(gpu::CREASE_AUTO, format!("The game's ({game_crease}°)"))];
-        list.extend(CREASES.iter().map(|c| (*c, format!("{c}°"))));
-        if !list.iter().any(|o| o.0 == s.crease) {
-            list.push((
-                s.crease,
-                if s.crease == 0 { "0° (nothing smoothed)".into() } else { format!("{}°", s.crease) },
-            ));
-        }
-        let list: Vec<(u8, &str)> = list.iter().map(|(v, t)| (*v, t.as_str())).collect();
-        rows.choose(
-            ui,
-            "Crease angle",
-            &mut s.crease,
-            &list,
-            "Faces meeting at a sharper angle than this keep a hard edge: boxes and limbs stay faceted, bodies \
-             smooth.",
-        );
-    }
-    if s.light_on() {
-        rows.toggle(
-            ui,
-            "Blend brightness levels",
-            &mut s.shading_fine,
-            "No banding on large smooth surfaces. Off keeps the game's 64 levels.",
-        );
-        rows.toggle(
-            ui,
-            "Brightness balance",
-            &mut s.shading_balance,
-            "Each smooth surface as bright as the game's. Off, bumpy surfaces come out brighter.",
-        );
-    }
-    let pack_help = match (s.pack, view.pack) {
-        (true, Some(text)) => text,
-        _ => "Replacement textures from the game's texpack folder, if it has one.",
-    };
-    rows.toggle(ui, "Texture pack", &mut s.pack, pack_help);
-    if s.pack && !s.geo_chip {
-        let help = match (s.materials, view.materials) {
-            (true, Some(text)) => text,
-            _ => "The pack's normal maps: bumps and grooves lit by the game's own lights.",
-        };
-        rows.toggle(ui, "Material maps", &mut s.materials, help);
-    }
-    if s.materials_on() && !s.geo_chip {
-        let custom = custom_relief(s.materials_relief);
-        let mut list: Vec<(gpu::Relief, &str)> =
-            RELIEF.iter().filter_map(|(text, v)| gpu::Relief::parse(v).map(|r| (r, *text))).collect();
-        if let Some(text) = &custom {
-            list.push((s.materials_relief, text.as_str()));
-        }
-        rows.choose(
-            ui,
-            "Material relief",
-            &mut s.materials_relief,
-            &list,
-            "How strongly the bumps shade, 2 by default. Faithful keeps the game's own lighting sum: subtler.",
-        );
-    }
-    if view.temporal_supported {
-        // A strength set by flag or file that isn't one of the choices.
-        let mut list: Vec<(u8, String)> = BLOOM.iter().map(|(n, t)| (*n, t.to_string())).collect();
-        if !list.iter().any(|o| o.0 == s.bloom) {
-            list.push((s.bloom, format!("{}%", s.bloom)));
-        }
-        let list: Vec<(u8, &str)> = list.iter().map(|(v, t)| (*v, t.as_str())).collect();
-        rows.choose(ui, "Bloom", &mut s.bloom, &list, BLOOM_HELP);
-    }
-}
-
 fn motion_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings, view: &View) {
     rows.toggle(
         ui,
@@ -1480,6 +1381,8 @@ mod tests {
         for_all: bool,
         dropped: bool,
         size: egui::Vec2,
+        /// The text drawn in the last frame.
+        texts: Vec<String>,
     }
 
     impl Rig {
@@ -1496,6 +1399,7 @@ mod tests {
                 for_all: false,
                 dropped: false,
                 size: egui::vec2(1920.0, 1080.0),
+                texts: Vec::new(),
             };
             // One frame to lay it out.
             rig.frame(&[], Vec::new());
@@ -1516,6 +1420,8 @@ mod tests {
                 run_ahead_room: None,
                 pack: None,
                 materials: None,
+                picture: Some([0.0, 0.0, self.size.x, self.size.y]),
+                keeps: Keeps { all_games: Preset::Sharp, own_picture: false },
             };
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)),
@@ -1528,6 +1434,19 @@ mod tests {
                 actions.extend(menu.ui(ui.ctx(), s, prefs, &view, Some(&mut *b), navs));
             });
             out.textures_delta.clear();
+            self.texts = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect();
+        }
+
+        /// Whether the last frame drew text containing `needle`.
+        fn shows(&self, needle: &str) -> bool {
+            self.texts.iter().any(|t| t.contains(needle))
         }
 
         /// A frame for each entry, the pad's `Nav`s that frame.
@@ -1546,11 +1465,26 @@ mod tests {
             self
         }
 
-        /// Into the Settings screen (by Picture, the first of its rows on
-        /// the pause menu, then back a tab), onto its first row.
+        /// Into the Settings screen (by Sound, then back two tabs), onto its
+        /// first row.
         fn open_settings(&mut self) -> &mut Rig {
-            self.press(7, Nav::Down).run(&[&[Nav::Accept], &[], &[Nav::PrevGroup], &[]]);
+            self.press(9, Nav::Down).run(&[&[Nav::Accept], &[], &[Nav::PrevGroup], &[Nav::PrevGroup], &[]]);
             assert_eq!(self.menu.tab, Tab::Display);
+            self
+        }
+
+        /// Into the Picture page, onto its first widget (the scope switch).
+        fn open_picture(&mut self) -> &mut Rig {
+            self.press(7, Nav::Down).run(&[&[Nav::Accept], &[]]);
+            assert_eq!(self.menu.page, Page::Picture);
+            self
+        }
+
+        /// Into the Advanced page, onto its first row.
+        fn open_advanced(&mut self) -> &mut Rig {
+            // The scope switch, five styles, Compare, Advanced.
+            self.open_picture().press(7, Nav::Down).run(&[&[Nav::Accept], &[], &[]]);
+            assert_eq!(self.menu.page, Page::Advanced);
             self
         }
 
@@ -1609,8 +1543,7 @@ mod tests {
         assert_eq!(at(3).menu.page, Page::SaveLoad);
         assert_eq!(at(4).names(), ["photo"]);
         assert_eq!(at(6).names(), ["games"]);
-        let r = at(7);
-        assert_eq!((r.menu.page, r.menu.tab), (Page::Settings, Tab::Picture));
+        assert_eq!(at(7).menu.page, Page::Picture);
         assert!(at(8).menu.controls);
         let r = at(9);
         assert_eq!((r.menu.page, r.menu.tab), (Page::Settings, Tab::Sound));
@@ -1738,9 +1671,9 @@ mod tests {
         r.open_settings();
         assert_eq!(r.menu.tab, Tab::Display);
         r.run(&[&[Nav::NextGroup], &[Nav::NextGroup]]);
-        assert_eq!(r.menu.tab, Tab::Motion);
+        assert_eq!(r.menu.tab, Tab::Sound);
         r.run(&[&[Nav::PrevGroup]]);
-        assert_eq!(r.menu.tab, Tab::Picture);
+        assert_eq!(r.menu.tab, Tab::Motion);
         // Round the ends.
         r.run(&[&[Nav::PrevGroup], &[Nav::PrevGroup]]);
         assert_eq!(r.menu.tab, Tab::More);
@@ -1755,9 +1688,9 @@ mod tests {
             modifiers: if shift { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE },
         };
         r.frame(&[], vec![key(egui::Key::E, false)]);
-        assert_eq!(r.menu.tab, Tab::Picture);
-        r.frame(&[], vec![key(egui::Key::Tab, false)]);
         assert_eq!(r.menu.tab, Tab::Motion);
+        r.frame(&[], vec![key(egui::Key::Tab, false)]);
+        assert_eq!(r.menu.tab, Tab::Sound);
         r.frame(&[], vec![key(egui::Key::Q, false)]);
         r.frame(&[], vec![key(egui::Key::Tab, true)]);
         assert_eq!(r.menu.tab, Tab::Display);
@@ -1788,29 +1721,6 @@ mod tests {
             r.press(40, Nav::Down).run(&[&[Nav::Right]]);
             assert!(r.for_all, "{t:?}");
         }
-    }
-
-    #[test]
-    fn picture_presets_set_the_rows() {
-        let mut r = Rig::new("topskatr");
-        assert_eq!(r.s.preset, Preset::Original);
-        // Picture's first row is the preset; right to Sharp.
-        r.open_tab(Tab::Picture).press(1, Nav::Right);
-        assert_eq!((r.s.preset, r.s.aa, r.s.tex_filter), (Preset::Sharp, 4, model2::enhance::TexFilter::Mip));
-        assert_eq!((r.s.temporal, r.s.depth, r.s.shading, r.s.smooth), (0, false, gpu::Shading::Flat, false));
-        // Enhanced: for topskatr temporal at full size, the depth buffer,
-        // smooth shading, smooth motion; its input lag is 0.
-        r.press(1, Nav::Right);
-        assert_eq!(r.s.preset, Preset::Enhanced);
-        assert_eq!((r.s.temporal, r.s.depth, r.s.shading), (100, true, gpu::Shading::Vertex));
-        assert_eq!((r.s.smooth, r.s.run_ahead), (true, 0));
-        // Back to Original: everything off again, smooth motion too.
-        r.press(2, Nav::Left);
-        assert_eq!(r.s.preset, Preset::Original);
-        assert_eq!(GameSettings { sfx_db: r.s.sfx_db, music_db: r.s.music_db, ..r.s.clone() }, GameSettings::default());
-        // Custom keeps the rows as they are.
-        r.press(2, Nav::Right).press(2, Nav::Right);
-        assert_eq!((r.s.preset, r.s.aa, r.s.temporal, r.s.depth), (Preset::Custom, 4, 100, true));
     }
 
     #[test]
@@ -1854,63 +1764,185 @@ mod tests {
         assert_eq!(s.settled(romset::games::playable("stcc")).preset, Preset::Custom);
     }
 
+    /// The styles, from the pad: the scope switch, then a card each (Arcade
+    /// original, Sharp, Smooth modern, CRT, Custom), Compare, Advanced.
     #[test]
-    fn only_custom_lists_the_picture_rows() {
+    fn choosing_a_style_sets_its_rows() {
         let mut r = Rig::new("topskatr");
-        // Original: the preset row, then "Applies to": a step down from the
-        // first is the last, and right on it sets that.
-        r.open_tab(Tab::Picture).press(1, Nav::Down).press(1, Nav::Right);
+        assert_eq!(r.s.preset, Preset::Original);
+        r.open_picture().press(2, Nav::Down).press(1, Nav::Accept);
+        assert_eq!((r.s.preset, r.s.aa, r.s.tex_filter), (Preset::Sharp, 4, model2::enhance::TexFilter::Mip));
+        assert_eq!((r.s.temporal, r.s.depth, r.s.shading), (0, false, gpu::Shading::Flat));
+        assert_eq!((r.s.smooth, r.s.crt), (false, 0));
+        // Smooth modern: for topskatr temporal at full size, the depth
+        // buffer, smooth shading, in-between frames.
+        r.press(1, Nav::Down).press(1, Nav::Accept);
+        assert_eq!(r.s.preset, Preset::Enhanced);
+        assert_eq!((r.s.temporal, r.s.depth, r.s.shading), (100, true, gpu::Shading::Vertex));
+        assert_eq!((r.s.smooth, r.s.run_ahead, r.s.crt), (true, 0, 0));
+        // CRT: Sharp with scanlines; nothing of Smooth modern left.
+        r.press(1, Nav::Down).press(1, Nav::Accept);
+        assert_eq!((r.s.preset, r.s.aa, r.s.crt), (Preset::Crt, 4, crate::settings::CRT_STYLE_STRENGTH));
+        assert_eq!((r.s.temporal, r.s.depth, r.s.smooth), (0, false, false));
+        // Back to Arcade original: everything off again, CRT too.
+        r.press(3, Nav::Up).press(1, Nav::Accept);
+        assert_eq!(r.s.preset, Preset::Original);
+        assert_eq!(GameSettings { sfx_db: r.s.sfx_db, music_db: r.s.music_db, ..r.s.clone() }, GameSettings::default());
+        // Custom with nothing made before keeps the rows as they are.
+        r.press(4, Nav::Down).press(1, Nav::Accept);
+        assert_eq!((r.s.preset, r.s.aa, r.s.crt), (Preset::Custom, 0, 0));
+        // B goes back to the pause menu.
+        r.run(&[&[Nav::Back], &[]]);
+        assert_eq!(r.menu.page, Page::Pause);
+    }
+
+    /// Choosing Custom again brings back the last mix the player made.
+    #[test]
+    fn custom_restores_the_last_custom_values() {
+        let mut r = Rig::new("topskatr");
+        r.s.preset = Preset::Custom;
+        (r.s.aa, r.s.bloom, r.s.crt) = (8, 50, 30);
+        r.open_picture().press(2, Nav::Down).press(1, Nav::Accept);
+        assert_eq!((r.s.preset, r.s.aa, r.s.bloom, r.s.crt), (Preset::Sharp, 4, 0, 0));
+        r.press(3, Nav::Down).press(1, Nav::Accept);
+        assert_eq!((r.s.preset, r.s.aa, r.s.bloom, r.s.crt), (Preset::Custom, 8, 50, 30));
+    }
+
+    /// Where it's saved: the switch is the settings' scope, and the footer
+    /// says what the other games keep.
+    #[test]
+    fn the_switch_says_where_it_is_saved() {
+        let mut r = Rig::new("topskatr");
+        r.open_picture();
+        assert!(!r.for_all);
+        assert!(r.shows("Saved for Top Skater. Other games keep Sharp."), "{:?}", r.texts);
+        r.press(1, Nav::Right).press(1, Nav::Up);
         assert!(r.for_all);
-        // Custom (rows as Original): preset, anti-aliasing, temporal, depth
-        // buffer, shading, texture pack. Four down is shading; right: vertex.
-        let mut r = Rig::new("topskatr");
-        r.s.preset = Preset::Custom;
-        r.open_tab(Tab::Picture).press(4, Nav::Down).press(1, Nav::Right);
-        assert_eq!(r.s.shading, gpu::Shading::Vertex);
-        assert_eq!(r.s.preset, Preset::Custom);
+        assert!(r.shows("Saved for all games (Top Skater has no style of its own)."), "{:?}", r.texts);
+        r.press(1, Nav::Left);
+        assert!(!r.for_all);
+        // A is the switch too.
+        r.press(1, Nav::Accept);
+        assert!(r.for_all);
     }
 
+    /// Compare: A switches it, then left and right move the divider (from
+    /// Compare itself or any other widget); the part of the picture left of
+    /// it goes to `wipe_rect`.
     #[test]
-    fn rows_that_do_nothing_are_left_out() {
-        // Temporal on: no anti-aliasing row (the first below the preset is
-        // temporal's, and its checkerboard row follows).
+    fn compare_moves_with_the_pad() {
         let mut r = Rig::new("topskatr");
-        (r.s.preset, r.s.temporal) = (Preset::Custom, 67);
-        r.open_tab(Tab::Picture).press(1, Nav::Down).press(1, Nav::Right);
-        assert_eq!((r.s.aa, r.s.temporal), (0, 50));
-        r.press(1, Nav::Down).press(1, Nav::Accept);
-        assert!(r.s.stipple_keep);
-        // With the chip temporal can't run: no temporal row, no checkerboard
-        // row; anti-aliasing is the first and the depth buffer the second.
-        let mut r = Rig::new("topskatr");
-        (r.s.preset, r.s.temporal, r.s.geo_chip) = (Preset::Custom, 67, true);
-        r.open_tab(Tab::Picture).press(1, Nav::Down).press(1, Nav::Right);
-        assert_eq!((r.s.aa, r.s.temporal), (4, 67));
-        r.press(1, Nav::Down).press(1, Nav::Accept);
-        assert!(r.s.depth && !r.s.stipple_keep);
-        // Flat shading: no crease, brightness levels or balance rows; the
-        // texture pack follows shading, and its maps appear once it's on.
-        let mut r = Rig::new("topskatr");
-        r.s.preset = Preset::Custom;
-        r.open_tab(Tab::Picture).press(5, Nav::Down).press(1, Nav::Accept);
-        assert!(r.s.pack && !r.s.materials);
-        r.press(1, Nav::Down).press(1, Nav::Accept);
-        assert!(r.s.materials);
-        // ... and relief once the maps are on.
-        r.press(1, Nav::Down).press(1, Nav::Right);
-        assert_ne!(r.s.materials_relief, gpu::Relief::default());
-        // Smooth shading brings its three: crease, levels, balance.
-        let mut r = Rig::new("topskatr");
-        (r.s.preset, r.s.shading) = (Preset::Custom, gpu::Shading::Vertex);
-        r.open_tab(Tab::Picture).press(8, Nav::Down).press(1, Nav::Accept);
-        assert!(r.s.pack, "preset, aa, temporal, depth, shading, crease, levels, balance, pack");
-        // Crease 0 smooths nothing: no levels or balance rows.
-        let mut r = Rig::new("topskatr");
-        (r.s.preset, r.s.shading, r.s.crease) = (Preset::Custom, gpu::Shading::Vertex, 0);
-        r.open_tab(Tab::Picture).press(6, Nav::Down).press(1, Nav::Accept);
-        assert!(r.s.pack);
+        r.open_picture();
+        assert_eq!(r.menu.wipe_rect(), None, "off");
+        // The scope switch, five styles, then Compare.
+        r.press(6, Nav::Down).press(1, Nav::Accept).run(&[&[], &[]]);
+        assert!(r.menu.picture.compare);
+        // The picture is the window (1920x1080: 1.5x), the panel 660 wide.
+        let visible = 1920.0 - 660.0;
+        let rect = |wipe: f32| Some((0, 0, (wipe * visible).round() as u32, 1080));
+        assert_eq!(r.menu.wipe_rect(), rect(0.5));
+        r.press(3, Nav::Right);
+        assert_eq!(r.menu.wipe_rect(), rect(0.5 + 3.0 * picture::WIPE_STEP));
+        // From a card too (nothing is beside it): left.
+        r.press(2, Nav::Up).press(2, Nav::Left);
+        assert_eq!(r.menu.wipe_rect(), rect(0.5 + picture::WIPE_STEP));
+        // To the ends and no further.
+        r.press(40, Nav::Left);
+        assert_eq!(r.menu.wipe_rect(), Some((0, 0, 0, 1080)));
+        r.press(60, Nav::Right);
+        assert_eq!(r.menu.wipe_rect(), rect(1.0));
+        // On the other page it's gone.
+        r.press(3, Nav::Down).press(1, Nav::Accept);
+        assert_eq!(r.menu.page, Page::Advanced);
+        assert_eq!(r.menu.wipe_rect(), None);
     }
 
+    /// The pointer drags the divider.
+    #[test]
+    fn compare_drags_with_the_pointer() {
+        let mut r = Rig::new("topskatr");
+        r.open_picture().press(6, Nav::Down).press(1, Nav::Accept).run(&[&[], &[]]);
+        let at = egui::pos2(300.0, 200.0);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        r.frame(&[], vec![egui::Event::PointerMoved(at)]);
+        r.frame(&[], vec![button(true)]);
+        r.frame(&[], vec![button(false)]);
+        // The window is 1920x1080 pixels at 1 point a pixel here: the picture
+        // shows 1920 - 440 * 1.5 = 1260 points of it.
+        let w = r.menu.picture.wipe;
+        assert!((w - 300.0 / 1260.0).abs() < 0.01, "{w}");
+    }
+
+    /// Advanced: only the focused row says what it does.
+    #[test]
+    fn only_the_focused_row_shows_its_help() {
+        let mut r = Rig::new("topskatr");
+        r.open_advanced();
+        assert!(r.shows("Softens jagged edges"));
+        assert!(!r.shows("Blends frames to remove shimmer"));
+        r.press(1, Nav::Down);
+        assert!(r.shows("Blends frames to remove shimmer"));
+        assert!(!r.shows("Softens jagged edges"));
+        // The style line.
+        assert!(r.shows("Arcade original") && r.shows(" · Top Skater only"), "{:?}", r.texts);
+    }
+
+    /// A row changed under a style makes it Custom, from that style; the
+    /// button goes back to its values.
+    #[test]
+    fn changing_a_row_in_advanced_makes_the_style_custom() {
+        let mut r = Rig::new("topskatr");
+        r.open_picture().press(3, Nav::Down).press(1, Nav::Accept);
+        assert_eq!(r.s.preset, Preset::Enhanced);
+        // Advanced: with temporal on the rows are Resolution, Temporal
+        // smoothing, Lighting, Glow, ...: right on Glow (the fourth).
+        r.press(4, Nav::Down).press(1, Nav::Accept).run(&[&[], &[]]);
+        assert_eq!(r.menu.page, Page::Advanced);
+        r.press(3, Nav::Down).press(1, Nav::Right);
+        assert_eq!((r.s.preset, r.s.bloom), (Preset::Custom, 25));
+        assert_eq!(r.menu.picture.base, Some(Preset::Enhanced));
+        r.run(&[&[]]);
+        assert!(r.shows("Custom (from Smooth modern)"), "{:?}", r.texts);
+        // Another change: still from Smooth modern.
+        r.press(1, Nav::Up).press(1, Nav::Right);
+        assert_eq!(r.menu.picture.base, Some(Preset::Enhanced));
+        // Back to the style's values: the last widget.
+        r.press(60, Nav::Down).press(1, Nav::Accept).run(&[&[]]);
+        assert_eq!((r.s.preset, r.s.bloom), (Preset::Enhanced, 0));
+        assert_eq!(r.s.shading, gpu::Shading::Vertex);
+        assert!(r.shows("Smooth modern") && !r.shows("Custom (from"));
+    }
+
+    /// In-between frames are part of the style's values (a dot) but, as
+    /// before, don't make it Custom; wide-screen HUD placement isn't the
+    /// picture's. CRT is a row.
+    #[test]
+    fn the_other_rows() {
+        let mut r = Rig::new("topskatr");
+        r.s.preset = Preset::Custom;
+        r.open_advanced();
+        // Original rows: Edge smoothing, Temporal smoothing, Lighting,
+        // Glow, In-between frames, Wide screens, Texture pack, CRT.
+        r.press(4, Nav::Down).press(1, Nav::Right);
+        assert!(r.s.smooth);
+        r.press(1, Nav::Down).press(1, Nav::Right);
+        assert!(!r.s.hud_edges);
+        r.press(2, Nav::Down).press(1, Nav::Right);
+        assert_eq!(r.s.crt, 30);
+        // More: the depth buffer.
+        r.press(1, Nav::Down).press(1, Nav::Accept);
+        assert!(r.s.depth);
+        // With the chip: no temporal smoothing or in-between frames.
+        let mut r = Rig::new("topskatr");
+        (r.s.preset, r.s.geo_chip) = (Preset::Custom, true);
+        r.open_advanced();
+        assert!(r.shows("Edge smoothing") && !r.shows("Temporal smoothing") && !r.shows("In-between frames"));
+    }
     #[test]
     fn motion_rows_and_the_run_ahead_cap() {
         // topskatr has no lag to hide: exact speed, smooth motion, nothing
@@ -1969,6 +2001,8 @@ mod tests {
                 run_ahead_room: None,
                 pack: None,
                 materials: None,
+                picture: None,
+                keeps: Keeps::default(),
             };
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0))),

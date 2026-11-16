@@ -64,7 +64,7 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 
 ## Enhanced preset
 
-What the player's Enhanced picture preset (`romset::Recommended` in the
+What the player's Smooth modern picture style (the `enhanced` preset; `romset::Recommended` in the
 manifest, `run_ahead_max` for run-ahead) turns on for `segawski`, and why:
 Temporal at full size; the depth buffer on (the skier's back and jersey
 text and logo come out right after the 2026-11-10 rules, nothing broken:

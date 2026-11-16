@@ -111,6 +111,26 @@ pub struct GameJob {
     /// In-betweens get their own lighting side channel (smooth shading or
     /// material maps, with the geometrizer recording it).
     pub lit: bool,
+    /// The picture menu's Compare: the frame drawn as the arcade original
+    /// on one side of a divider.
+    pub compare: Option<Compare>,
+}
+
+/// A before/after comparison of the paused game's picture
+/// (docs/play.md, "Picture styles"): the frame is drawn twice, as the
+/// arcade original (`before`) into a kept picture and as chosen into the
+/// window, and the part of the first left of the divider is copied over the
+/// second. The game is paused, so the second drawing costs nothing that
+/// matters; neither changes emulation.
+#[derive(Clone, Copy)]
+pub struct Compare {
+    /// The picture settings of the "before" side.
+    pub before: gpu::Quality,
+    /// The part of the window to show it in, left of the divider: x, y,
+    /// width and height in pixels.
+    pub rect: (u32, u32, u32, u32),
+    /// The window's size in pixels.
+    pub size: (u32, u32),
 }
 
 /// What drawing the game's frame did.
@@ -148,6 +168,14 @@ pub fn draw_game(
     }
     r.set_light_rules(job.rules.0, job.rules.1);
     let temporal = r.set_quality(job.quality).temporal > 0;
+    // Compare: the original's picture first, so what the renderer keeps of
+    // the last frame drawn (shading and texture pack counts) is the chosen
+    // one's.
+    let compare = job.compare.filter(|_| !f.is_empty());
+    if let Some(c) = &compare {
+        let before = r.wipe_source(c.size.0, c.size.1, format);
+        r.with_quality(c.before, |r| r.present_board(f, None, None, view, &before, format, origin));
+    }
     if f.is_empty() {
         // Nothing captured yet: the black frame present_board would draw
         // of empty memory.
@@ -186,6 +214,9 @@ pub fn draw_game(
             }
             None => r.present_board(f, None, None, view, target, format, origin),
         }
+    }
+    if let Some(c) = &compare {
+        r.wipe(target, format, c.rect);
     }
     // Smooth shading: what the frame was drawn as, and its cost (a repeat
     // of a frame costs nothing: the renderer keeps its shading).

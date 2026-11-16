@@ -102,7 +102,7 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 
 ## Enhanced preset
 
-What the player's Enhanced picture preset (`romset::Recommended` in the
+What the player's Smooth modern picture style (the `enhanced` preset; `romset::Recommended` in the
 manifest, `run_ahead_max` for run-ahead) turns on for `waverunr`, and why:
 Temporal at full size; no depth buffer (a tree on a cliff top is hidden
 by the cliff face, which is 3.3x nearer: can't tell, above) and no smooth

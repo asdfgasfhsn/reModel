@@ -222,11 +222,11 @@ play out round after round.
   frames):* the side channel is exact on all 63,029 polygons (L2 100%,
   no mismatch, hue kept, software and GPU the same); about 54% of the
   drawn polygons are lit. Smooth shading makes the fighters rounder with
-  no seams (review pictures), so the Enhanced preset turns it on.
+  no seams (review pictures), so the Smooth modern style turns it on.
 
 ## Enhanced preset
 
-What the player's Enhanced picture preset (`romset::Recommended` in the
+What the player's Smooth modern picture style (the `enhanced` preset; `romset::Recommended` in the
 manifest, `run_ahead_max` for run-ahead) turns on for `vf2`, and why:
 Temporal at full size; smooth shading on (the fighters are rounder, the
 side channel is exact); no depth buffer (nothing recorded as fixed);

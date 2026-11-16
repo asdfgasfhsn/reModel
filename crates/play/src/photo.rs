@@ -1026,6 +1026,8 @@ impl crate::Play {
     fn photo_quality(&self, m: &Mode, msaa: u32) -> gpu::Quality {
         let mut q = self.values.quality(self.temporal_supported);
         q.temporal = 0;
+        // Photos are the game's picture, not the monitor's.
+        q.crt = 0;
         q.msaa = msaa;
         q.depth = m.opts.depth;
         q.bloom = if self.temporal_supported { m.opts.bloom } else { 0 };

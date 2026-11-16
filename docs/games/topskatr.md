@@ -287,7 +287,7 @@ data. Frame numbers are of a `coin-start` run. No ROM data is reproduced here.
 
 ## Enhanced preset
 
-What the player's Enhanced picture preset (`romset::Recommended` in the
+What the player's Smooth modern picture style (the `enhanced` preset; `romset::Recommended` in the
 manifest, `run_ahead_max` for run-ahead) turns on for `topskatr`, and why:
 Temporal anti-aliasing at full size; the depth buffer on (the skater's leg
 and the tree billboards come out right in the 21 captured frames, nothing

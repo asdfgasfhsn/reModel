@@ -188,6 +188,9 @@ usage: remodel-play [options]
                      strong (1 to 100; 25 light, 50 medium, 100 strong).
                      The HUD and tile layers are left out, it works with
                      any anti-aliasing and is GPU only. Default off
+  --crt off|N        the CRT look (scanlines, mask, glow, vignette) over the
+                     finished picture, N percent (1 to 100; 60 is the CRT
+                     style). GPU only. Default off
   --exact            run at the arcade's exact 57.524 frames per second
                      (default: one frame per display refresh when the
                      refresh is 60 or 120 Hz, which is 4.3% fast but smooth)
@@ -584,6 +587,13 @@ fn options(s: &mut Settings) -> Result<Options, String> {
                     return Err("--bloom wants off or a strength from 1 to 100".into());
                 }
                 cli("bloom", &v);
+            }
+            "--crt" => {
+                let v = value()?;
+                if gpu::Quality::parse_crt(&v).is_none() {
+                    return Err("--crt wants off or a strength from 1 to 100".into());
+                }
+                cli("crt", &v);
             }
             "--no-splash" => o.splash = false,
             "--no-overlap" => o.overlap = false,
@@ -1664,10 +1674,16 @@ impl Play {
             let (bezel, menu) = (&mut self.bezel, &mut self.menu);
             let mut values = self.values.clone();
             let (mut fullscreen, mut for_all) = (self.settings.fullscreen, self.settings.for_all);
+            let keeps = menu::Keeps {
+                all_games: self.settings.all_games_preset(s.game.id),
+                own_picture: self.settings.has_own_picture(s.game.id),
+            };
             let menu_view = menu::View {
                 playing: Some(s.game.title),
                 saves: &slots,
                 game: Some(s.game),
+                picture: Some([origin.0 as f32, origin.1 as f32, view.width as f32, view.height as f32]),
+                keeps,
                 has_bezel,
                 run_ahead_dropped: s.run_ahead_dropped,
                 run_ahead_room: room,
@@ -2241,6 +2257,7 @@ impl Play {
             rules: (&s.game.shading, hud_mask(s.game)),
             smooth: fast.then_some((self.smooth_at, period)),
             lit,
+            compare: None,
         })
     }
 
@@ -2471,6 +2488,7 @@ impl Play {
             self.game_fade = None;
         }
         let mut overlay = None;
+        let mut compare = None;
         if self.menu.visible()
             || self.session.is_none()
             || self.splash.active()
@@ -2482,11 +2500,25 @@ impl Play {
             let materials_text = self.materials_text();
             let has_bezel = self.bezel.is_some();
             let room = self.session.as_ref().and_then(|s| self.run_ahead_room(s.game.id));
+            let keeps = match self.session.as_ref().map(|s| s.game.id) {
+                Some(id) => menu::Keeps {
+                    all_games: self.settings.all_games_preset(id),
+                    own_picture: self.settings.has_own_picture(id),
+                },
+                None => menu::Keeps::default(),
+            };
             let g = self.gpu.as_mut().unwrap();
+            let picture = self
+                .session
+                .as_ref()
+                .filter(|s| !s.preview)
+                .map(|_| [g.origin.0 as f32, g.origin.1 as f32, g.view.width as f32, g.view.height as f32]);
             let view = menu::View {
                 playing: self.session.as_ref().map(|s| s.game.title),
                 saves: &slots,
                 game: self.session.as_ref().map(|s| s.game),
+                picture,
+                keeps,
                 has_bezel,
                 run_ahead_dropped: self.session.as_ref().is_some_and(|s| s.run_ahead_dropped),
                 run_ahead_room: room,
@@ -2524,6 +2556,11 @@ impl Play {
                 actions
             });
             overlay = Some(paint);
+            compare = self.menu.wipe_rect().map(|rect| draw::Compare {
+                before: GameSettings::default().quality(self.temporal_supported),
+                rect,
+                size: (size[0], size[1]),
+            });
             self.set_prefs(fullscreen, for_all);
             if let Some(set) = self.session.as_ref().map(|s| s.game.id) {
                 self.edit_values(set, values);
@@ -2534,6 +2571,10 @@ impl Play {
         // Draw it: on the draw thread, while the next redraw emulates, or
         // here and now.
         let g = self.gpu.as_mut().unwrap();
+        let mut game = game;
+        if let Some(gj) = game.as_mut() {
+            gj.compare = compare;
+        }
         let job = draw::Job {
             game,
             photo: None,

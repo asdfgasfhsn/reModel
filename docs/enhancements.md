@@ -68,6 +68,7 @@ through DirectX 8/9's fixed-function pipeline.
 | Lighting | Pack-declared highlights where the game casts none | idea, deferred: a map can only scale the game's own specular; manifest keys reserved (below) |
 | Lighting | Light data on the chip geometry path (materials and smooth shading there) | idea, not investigated (below) |
 | Lighting | Bloom | done, opt-in (2026-11-13), player, browser and CLI; GPU only (below) |
+| Picture | CRT look (scanlines for the game's 384 lines, mask, glow, vignette, slight curve) | done, opt-in, player and CLI flag `--crt`; GPU only (below) |
 | Lighting | Better fog (smooth per-pixel fog from the game's own fog) | not done: the games send no fog, so there is nothing to smooth (below, "Fog") |
 | Lighting | Shadows, HDR tonemapping | idea; tonemapping skipped, the games' output isn't HDR |
 | Lighting | Hybrid ray tracing (shadows, reflections, AO) | idea |
@@ -1276,6 +1277,23 @@ table: flat shading. Steps:
 3. **Bloom** (done, below). **Shadows** (shadow maps from the game's
    light) and **HDR** with tonemapping remain; **fog** has nothing to build
    on (below).
+
+#### CRT
+
+Done, off by default and in every style but the player's CRT style (Sharp
+with strength 60), so pictures with it off are unchanged. `crt` is a
+strength in percent (`gpu::Quality::crt`, the settings key `crt`, `--crt`).
+When on, the compose pass draws the finished frame (3D, 2D layers and the
+game's own HUD, not the player's bezel or menu) into a kept texture and
+`crt.wgsl` writes it to the window: one scanline for each of the game's 384
+lines whatever the output size (three taps average the picture across a
+line; a gaussian beam, wider where brighter, so bright parts fill the gap),
+a little blur along the line, glow from what is brighter than 0.65, a
+stripe mask staggered on alternate lines, a soft vignette and a barrel
+curve of about 1.5% at full strength. Lines and mask fade out under about
+2 output pixels a game line. Original shader, from first principles. It is
+a pass after drawing: it changes nothing the machine does, and no state
+hash. Tests: `crt_tests.rs` (needs a GPU).
 
 #### Bloom
 

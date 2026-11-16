@@ -93,7 +93,7 @@ again. The angle is a choice by eye, not a property of the data.
 
 ## Enhanced preset
 
-What the player's Enhanced picture preset (`romset::Recommended` in the
+What the player's Smooth modern picture style (the `enhanced` preset; `romset::Recommended` in the
 manifest, `run_ahead_max` for run-ahead) turns on for `schamp`, and why:
 Temporal at full size; the depth buffer on (the tangled feet come out
 right, nothing broken: `docs/enhancements.md`, "Depth buffer"); smooth

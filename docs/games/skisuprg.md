@@ -88,7 +88,7 @@ Measured with `remodel --geo native --light --input coin-start run 900000000` (6
 
 ## Enhanced preset
 
-What the player's Enhanced picture preset (`romset::Recommended` in the
+What the player's Smooth modern picture style (the `enhanced` preset; `romset::Recommended` in the
 manifest, `run_ahead_max` for run-ahead) turns on for `skisuprg`, and why:
 Temporal at full size; no depth buffer (its scenes are dithered layers
 that keep the game's order, and nothing is recorded as fixed) and no smooth

@@ -18,6 +18,7 @@
 
 mod bloom;
 mod board;
+mod crt;
 mod materials;
 mod photo;
 mod temporal;
@@ -110,6 +111,13 @@ pub struct Quality {
     /// layer at output size). Needs the 16-bit float targets temporal
     /// anti-aliasing does ([`temporal_supported`]); off without. GPU only.
     pub bloom: u8,
+    /// The CRT look's strength in percent (0: off, the default; 100: the
+    /// strongest): the finished picture (3D, 2D layers and the game's own
+    /// HUD) as an arcade monitor shows it, with scanlines for each of the
+    /// game's 384 lines, a mask, glow, a vignette and a slight curve
+    /// (`crt.wgsl`). A pass over the composed frame: it changes nothing
+    /// the machine does, and nothing else about the picture. GPU only.
+    pub crt: u8,
 }
 
 impl Default for Quality {
@@ -127,6 +135,7 @@ impl Default for Quality {
             materials: false,
             materials_relief: Relief::default(),
             bloom: 0,
+            crt: 0,
         }
     }
 }
@@ -151,6 +160,11 @@ impl Quality {
             "off" | "0" => Some(0),
             n => n.parse::<u8>().ok().filter(|n| (1..=100).contains(n)),
         }
+    }
+
+    /// A `crt` setting by name: `off`, or a strength in percent, 1 to 100.
+    pub fn parse_crt(s: &str) -> Option<u8> {
+        Self::parse_bloom(s)
     }
 
     /// A `temporal` setting by name: `off`, `taa` (100) or a render scale
@@ -492,6 +506,9 @@ pub struct Renderer {
     /// Bloom's passes and the sampler the compose pass reads it with.
     bloom: bloom::Bloom,
     bloom_sampler: wgpu::Sampler,
+    /// The CRT pass and the wipe, and when they last drew.
+    crt: crt::Crt,
+    crt_used: u64,
     /// The compose pipeline for the last output format used.
     compose: Option<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
     adapter: String,
@@ -846,6 +863,7 @@ impl Renderer {
         });
         let tiles = tiles::Tiles::new(&device);
         let bloom = bloom::Bloom::new(&device);
+        let crt = crt::Crt::new(&device);
         let bloom_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("bloom"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -872,6 +890,8 @@ impl Renderer {
             compose_layout,
             bloom,
             bloom_sampler,
+            crt,
+            crt_used: 0,
             compose: None,
             adapter,
             ram: [None, None],
@@ -988,6 +1008,9 @@ impl Renderer {
         if frames.saturating_sub(self.bloom_used) > KEEP_FRAMES {
             self.bloom.release();
         }
+        if frames.saturating_sub(self.crt_used) > KEEP_FRAMES {
+            self.crt.release();
+        }
     }
 
     /// Draw the 3D layer with `quality` from the next frame on. The sample
@@ -1029,12 +1052,52 @@ impl Renderer {
             self.materials.clear();
         }
         let bloom = if self.temporal.supported { quality.bloom.min(100) } else { 0 };
-        let q = Quality { msaa, tex_filter, temporal, bloom, ..quality };
-        if q != self.quality {
+        let q = Quality { msaa, tex_filter, temporal, bloom, crt: quality.crt.min(100), ..quality };
+        // The CRT pass is after everything the accumulation holds.
+        if (Quality { crt: 0, ..q }) != (Quality { crt: 0, ..self.quality }) {
             self.temporal.reset();
         }
         self.quality = q;
         self.quality
+    }
+
+    /// Draw with `quality` for the duration of `f` (some `present_*` calls)
+    /// and then as before. Unlike [`Renderer::set_quality`] this keeps all
+    /// that the quality in effect holds (the temporal accumulation, the
+    /// texture pack's samplers and materials), so a picture can be drawn
+    /// both ways, each frame, without either one starting again: for the
+    /// picture menu's before/after wipe. The texture filter stays the one
+    /// in effect, and the multisampling is rounded to what the GPU has;
+    /// temporal anti-aliasing is left as `quality` says only if it is off
+    /// (the accumulation belongs to the quality in effect).
+    pub fn with_quality<R>(&mut self, quality: Quality, f: impl FnOnce(&mut Self) -> R) -> R {
+        let msaa = match quality.msaa {
+            0 | 1 => 1,
+            2..=7 => 4,
+            _ => self.max_msaa.min(8),
+        };
+        let q = Quality { msaa, temporal: 0, tex_filter: self.quality.tex_filter, ..quality };
+        let kept = std::mem::replace(&mut self.quality, q);
+        let r = f(self);
+        self.quality = kept;
+        r
+    }
+
+    /// The picture a wipe ([`Renderer::wipe`]) draws from, to be drawn into
+    /// (as a `present_*` target): `w` x `h` in `format`, kept between calls.
+    pub fn wipe_source(&mut self, w: u32, h: u32, format: wgpu::TextureFormat) -> wgpu::TextureView {
+        self.crt_used = self.frames;
+        self.crt.before(&self.device, w, h, format)
+    }
+
+    /// Copy the rectangle `rect` (x, y, width, height in pixels) of the
+    /// [`Renderer::wipe_source`] picture over the same place in `target`
+    /// (of `format`) and submit: the before side of a before/after
+    /// comparison.
+    pub fn wipe(&mut self, target: &wgpu::TextureView, format: wgpu::TextureFormat, rect: (u32, u32, u32, u32)) {
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        self.crt.wipe(&self.device, &mut enc, target, format, rect);
+        self.queue.submit([enc.finish()]);
     }
 
     /// Whether [`Quality::temporal`] can be used (from
@@ -2393,9 +2456,14 @@ impl Renderer {
         let base = self.upload(0, generation, "base", &layers.base, (WIDTH + 2 * layers.side) as u32, HEIGHT as u32);
         let hud = self.upload(1, generation, "hud", &layers.hud, layers.ext_w as u32, HEIGHT as u32);
         let b = layers.backdrop.map(|c| c as f32 / 255.0);
+        // With the CRT look the picture is composed into a kept texture at
+        // the origin, and the CRT pass writes it to the target.
+        let crt = self.quality.crt > 0;
+        let crt_view = crt.then(|| self.crt.input(&self.device, w, h, format));
+        let compose_origin = if crt { (0, 0) } else { origin };
         let mut params = le([view.sx, view.sy, view.pad].map(f32::to_le_bytes));
         params.extend(le([!placed.is_empty() as u32, layers.ext_w as u32, layers.side as u32].map(u32::to_le_bytes)));
-        params.extend(le([origin.0 as f32, origin.1 as f32].map(f32::to_le_bytes)));
+        params.extend(le([compose_origin.0 as f32, compose_origin.1 as f32].map(f32::to_le_bytes)));
         params.extend(le([b[0], b[1], b[2], 1.0].map(f32::to_le_bytes)));
         let bloom_strength = if self.quality.bloom > 0 && !placed.is_empty() { bloom_strength } else { 0.0 };
         let black = self.black / 255.0;
@@ -2425,14 +2493,14 @@ impl Renderer {
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("compose"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
+                view: crt_view.as_ref().unwrap_or(target),
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
             })],
             ..Default::default()
         });
-        pass.set_viewport(origin.0 as f32, origin.1 as f32, w as f32, h as f32, 0.0, 1.0);
+        pass.set_viewport(compose_origin.0 as f32, compose_origin.1 as f32, w as f32, h as f32, 0.0, 1.0);
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(0, &bind, &[]);
         if let Some(g) = &tile_group {
@@ -2440,6 +2508,11 @@ impl Renderer {
         }
         pass.draw(0..3, 0..1);
         drop(pass);
+        if crt {
+            self.crt_used = self.frames;
+            let strength = self.quality.crt as f32 / 100.0;
+            self.crt.encode(&self.device, enc, target, format, origin, (w, h), strength, HEIGHT as f32);
+        }
         if let Some(t) = t_frame {
             // Everything but the 3D layer's own encoding, which lapped
             // itself.
