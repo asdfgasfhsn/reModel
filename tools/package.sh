@@ -101,7 +101,8 @@ EOF
     cp "$arm"/LICENSE* "$arm/THIRD-PARTY-NOTICES.txt" "$stage/"
     ln -s /Applications "$stage/Applications"
     hdiutil create -quiet -volname reModel -srcfolder "$stage" -ov -format UDZO "$stage.dmg"
-    rm -rf "${stage:?}"
+    # The two single-architecture builds were only the slices.
+    rm -rf "${stage:?}" "${arm:?}" "$arm.tar.gz" "${x86:?}" "$x86.tar.gz"
     echo "built $stage.dmg ($(du -h "$stage.dmg" | cut -f1))"
 }
 
