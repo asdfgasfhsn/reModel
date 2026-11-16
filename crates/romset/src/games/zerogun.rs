@@ -12,6 +12,8 @@ pub static ZEROGUN: Game = Game {
     id: "zerogun",
     title: "Zero Gunner",
     year: 1997,
+    genre: "Shoot 'em up",
+    kind: crate::Kind::Shooting,
     board: Board::Model2B,
     // The attract demo: a helicopter over the sea.
     attract_frame: 1500,

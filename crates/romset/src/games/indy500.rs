@@ -19,6 +19,8 @@ pub static INDY500: Game = Game {
     id: "indy500",
     title: "Indianapolis 500",
     year: 1995,
+    genre: "Racing",
+    kind: crate::Kind::Racing,
     board: Board::Model2B,
     // The attract demo: the car under the flyover on the street course.
     attract_frame: 1500,

@@ -289,7 +289,7 @@ pack-lint: release ## Check texture pack PACK= against the pack format, no ROM o
 	$(REMODEL) pack-lint $(PACK) --max-side $(MAX_SIDE) \
 		$(if $(filter command line environment,$(origin TEXDUMP)),--dump $(TEXDUMP))
 
-play: ## Play in a native window: the launcher (game cards, live attract previews, settings), or straight into GAME= if given; GPU, live sound, gamepads, Esc menu, save states (on the JITs; JIT=0: without them; RECOMP=1 JIT=0: recompiled code; PLAY_ARGS)
+play: ## Play in a native window: the launcher (carousel or grid of the games, live attract previews, quick resume, saves, settings), or straight into GAME= if given; GPU, live sound, gamepads, Esc menu, save states (on the JITs; JIT=0: without them; RECOMP=1 JIT=0: recompiled code; PLAY_ARGS)
 	$(call release_build,remodel-play)
 	$(PLAY) $(if $(filter command line environment,$(origin GAME)),--game $(GAME)) --rom $(ROM) $(if $(filter 0,$(JIT)),--no-jit) $(PLAY_ARGS)
 

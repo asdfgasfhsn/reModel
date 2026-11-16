@@ -21,9 +21,10 @@
 //!
 //! The logo shows for two seconds at startup, fading out over the game
 //! booting underneath (`splash`). With no game given, the launcher opens
-//! (`launcher`): the games as cards, the selected one's attract mode live
-//! (`preview`) over a wireframe backdrop (`backdrop`), its settings, and
-//! Continue where it was left. Esc opens the menu (and pauses): save
+//! (`launcher`): the games as a carousel or a grid with filters, the
+//! selected one's attract mode live (`preview`) over a wireframe backdrop
+//! (`backdrop`), its settings and saves, and a quick resume of the game last
+//! played. Esc opens the menu (and pauses): save
 //! states, sound mix, display, back to the games. Settings persist
 //! (`settings`). Beside a 4:3 picture in a wider window, the game's bezel
 //! (`bezel`). With the texture pack setting on, replacement textures come
@@ -37,6 +38,7 @@ mod draw;
 mod focus;
 mod hints;
 mod launcher;
+mod library;
 mod log;
 mod menu;
 mod pack;
@@ -209,8 +211,9 @@ usage: remodel-play [options]
                      and its display scaling (e.g. 3840x2160@2)
   --nav LIST         scripted gamepad input, for checking with --shot:
                      NAME@SECONDS, comma separated; names left, right, up,
-                     down (the d-pad), accept (A), back (B), settings (Y),
-                     prev, next (shoulders), start, select, guide; a+b
+                     down (the d-pad), accept (A), back (B), continue (Y),
+                     saves (X), settings (the menu button), prev, next
+                     (shoulders), lt, rt (triggers), start, select, guide; a+b
                      presses both, @S:H holds them H seconds
   --photo-history N  photo mode's time scrub keeps the last N seconds of
                      the game to go back through (save states every
@@ -244,8 +247,8 @@ The game's settings (mix, HUD, aspect, bezel, speed, smooth motion,
 run-ahead, anti-aliasing, temporal anti-aliasing and stipple, depth buffer,
 shading, crease, finer levels and brightness balance, texture pack and
 filtering, material maps and their rule, bloom, geometrizer) given here are for this run only, over the
-defaults for all games and the game's own, which the launcher's settings
-and the menu keep.
+defaults for all games and the game's own, which the menu (from the launcher
+too) keeps.
 --rom and --fullscreen are remembered.
 
 keys: Esc menu (pause), F5 quick save, F9 quick load, F8 photo mode, F11
@@ -370,9 +373,13 @@ fn parse_nav(list: &str) -> Result<std::collections::VecDeque<(f64, pad::Event)>
                 "down" => Button::DPadDown,
                 "accept" => Button::South,
                 "back" => Button::East,
-                "settings" => Button::North,
+                "continue" => Button::North,
+                "saves" => Button::West,
+                "settings" => Button::Start,
                 "prev" => Button::LeftTrigger,
                 "next" => Button::RightTrigger,
+                "lt" => Button::LeftTrigger2,
+                "rt" => Button::RightTrigger2,
                 "start" => Button::Start,
                 "select" => Button::Select,
                 "guide" => Button::Mode,
@@ -728,15 +735,10 @@ fn jit_warm(
     }
 }
 
-/// `set`'s save state folder.
-fn saves_dir(set: &str) -> PathBuf {
-    settings::data_dir().join(set).join("saves")
-}
-
 /// Where a game's resume state goes: written on leaving it, offered by
 /// the launcher as Continue.
 fn resume_path(set: &str) -> PathBuf {
-    saves_dir(set).join("resume.save")
+    saves::resume_file(set)
 }
 
 impl Session {
@@ -745,8 +747,7 @@ impl Session {
     }
 
     fn slot_path(&self, slot: u8) -> PathBuf {
-        let name = if slot == 0 { "quick.save".to_string() } else { format!("slot{slot}.save") };
-        saves_dir(self.game.id).join(name)
+        saves::slot_file(self.game.id, slot)
     }
 
     /// Write the hot-block list if it grew (docs/jit.md, "Hot-block
@@ -1190,9 +1191,9 @@ impl Play {
         }
     }
 
-    /// Start `set` from power-on, or from its resume state with `resume`
-    /// (leaving the current game first).
-    fn start_game(&mut self, set: &str, resume: bool) {
+    /// Start `set` from power-on, or from a saved state (`from`), leaving
+    /// the current game first.
+    fn start_game(&mut self, set: &str, from: library::Start) {
         self.leave_game();
         self.previews.cancel_all();
         self.use_values(set);
@@ -1307,8 +1308,11 @@ impl Play {
                 self.session = Some(s);
                 self.epoch = Instant::now();
                 self.refit();
-                if resume {
-                    self.load_file(&resume_path(set), "Continued");
+                match from {
+                    library::Start::New => {}
+                    library::Start::Resume => self.load_file(&resume_path(set), "Continued"),
+                    library::Start::Slot(0) => self.load_file(&saves::slot_file(set, 0), "Quick loaded"),
+                    library::Start::Slot(n) => self.load_file(&saves::slot_file(set, n), &format!("Loaded slot {n}")),
                 }
             }
             Err(e) => {
@@ -1531,7 +1535,7 @@ impl Play {
                 // The machine may be half loaded: start the game afresh.
                 let set = s.game.id.to_string();
                 self.session = None;
-                self.start_game(&set, false);
+                self.start_game(&set, library::Start::New);
                 self.menu.error(format!("Load failed: {e}"));
             }
         }
@@ -1685,6 +1689,7 @@ impl Play {
                 picture: Some([origin.0 as f32, origin.1 as f32, view.width as f32, view.height as f32]),
                 keeps,
                 has_bezel,
+                has_own: false,
                 run_ahead_dropped: s.run_ahead_dropped,
                 run_ahead_room: room,
                 max_anisotropy: self.max_anisotropy,
@@ -2520,6 +2525,7 @@ impl Play {
                 picture,
                 keeps,
                 has_bezel,
+                has_own: false,
                 run_ahead_dropped: self.session.as_ref().is_some_and(|s| s.run_ahead_dropped),
                 run_ahead_room: room,
                 max_anisotropy: self.max_anisotropy,
@@ -2619,6 +2625,8 @@ impl Play {
                     }
                 }
                 menu::Action::Quit => self.quit(el),
+                // The launcher's.
+                menu::Action::ResetOwn => {}
             }
         }
         self.status();
@@ -2632,7 +2640,7 @@ impl Play {
         let set = s.game.id.to_string();
         self.session = None;
         self.set_menu(false);
-        self.start_game(&set, false);
+        self.start_game(&set, library::Start::New);
         self.menu.notify("Game reset");
     }
 
@@ -2654,7 +2662,7 @@ impl Play {
     /// fading it out), start getting the selected game's ready once it has
     /// been selected for `launcher::SETTLE`, and start it when it is.
     fn manage_preview(&mut self, now: Instant) {
-        let selected = self.launcher.selected();
+        let selected = self.launcher.selected().filter(|_| self.launcher.wants_preview());
         let wanted = selected.map(|g| g.id.to_string());
         if wanted != self.preview.wanted {
             self.preview.wanted = wanted.clone();
@@ -2743,17 +2751,23 @@ impl Play {
         self.note_cost(ran, emulate_time, Duration::ZERO, draw_time);
         for action in actions {
             match action {
-                launcher::Action::Play { set, resume } => {
+                launcher::Action::Play { set, from } => {
                     self.launcher.open = false;
                     self.launcher_bindings = None;
+                    self.set_menu(false);
                     self.session = None;
                     self.preview =
                         PreviewState { failed: std::mem::take(&mut self.preview.failed), ..Default::default() };
-                    self.start_game(&set, resume);
+                    self.start_game(&set, from);
                     if self.session.is_some() {
                         self.game_fade = Some(Instant::now());
                     }
                 }
+                launcher::Action::Settings => {
+                    self.set_menu(true);
+                    self.menu.pad_used = self.launcher.pad_used;
+                }
+                launcher::Action::CloseSettings => self.set_menu(false),
                 launcher::Action::Rescan(rom) => {
                     self.settings.rom = rom.into();
                     self.settings.save();
@@ -2765,6 +2779,11 @@ impl Play {
                 }
                 launcher::Action::Quit => self.quit(el),
             }
+        }
+        // The view is kept for next time.
+        if self.settings.launcher_view != self.launcher.mode {
+            self.settings.launcher_view = self.launcher.mode;
+            self.settings.save();
         }
         self.status();
     }
@@ -2786,8 +2805,8 @@ impl Play {
         let secs = (now - self.started).as_secs_f64();
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size[0] as f32, size[1] as f32) / ppp);
         let l = launcher::layout(screen);
-        // The backdrop's horizon sits behind the cards' tops.
-        let horizon = (l.cards_y - l.card.y * 0.62) / screen.height();
+        // The carousel's floor lies under the posters; the grid's is faint.
+        let (horizon, level) = launcher::Layout::backdrop(self.launcher.mode);
         let g = self.gpu.as_mut().unwrap();
         let core = g.drawer.core();
         let params = backdrop::Params {
@@ -2796,13 +2815,14 @@ impl Play {
             scale: ppp * l.u,
             phase: (secs * 0.18).fract() as f32,
             drift: (secs * 0.004 % 1000.0) as f32,
-            level: 1.0,
+            level,
             _pad: 0.0,
         };
         core.backdrop.draw(core.renderer.device(), core.renderer.queue(), target, &params);
         // The preview: the game drawn as the window would show it, at the
-        // preview's size.
-        let hero = l.hero;
+        // preview's size (the screen's shape at half the size: it plays
+        // dimmed behind the carousel).
+        let hero = l.hero();
         let pw = (hero.width() * ppp).round().max(16.0) as u32;
         let ph = (hero.height() * ppp).round().max(16.0) as u32;
         let mut preview_view = None;
@@ -2847,7 +2867,6 @@ impl Play {
             let shown = *self.preview.shown.get_or_insert(now);
             let fade_in = ((now - shown).as_secs_f32() / launcher::FADE_IN.as_secs_f32()).min(1.0);
             let fade_out = self.preview.leaving.map_or(1.0, |t| fade_left(now - t, FADE_OUT));
-            let bezel = self.values.bezel && view.pad < 1.0 && (view.width as u32) + 1 < pw;
             preview_view = Some(launcher::PreviewView {
                 texture: id,
                 alpha: (fade_in * fade_out).clamp(0.0, 1.0),
@@ -2857,7 +2876,6 @@ impl Play {
                     view.width as f32 / pw as f32,
                     view.height as f32 / ph as f32,
                 ],
-                bezel,
             });
         }
         let selected = self.launcher.selected();
@@ -2865,46 +2883,71 @@ impl Play {
         let progress = selected.and_then(|g| self.previews.progress(g.id));
         let failed = selected.and_then(|g| self.preview.failed.get(g.id)).cloned();
         let has_own = selected.is_some_and(|g| self.settings.has_own(g.id));
+        let cont = library::quick_resume(&self.games, &self.settings.recent, |set| library::saved_in(&saves::dir(set)));
         let view = launcher::View {
             preview: preview_view,
             progress: progress.filter(|_| preview_view.is_none()),
             no_preview: failed.as_deref(),
             resume,
             unsupported: self.unsupported,
-            run_ahead_room: selected.and_then(|g| self.run_ahead_room(g.id)),
-            run_ahead_dropped: selected
-                .is_some_and(|g| self.session.as_ref().is_some_and(|s| s.game.id == g.id && s.run_ahead_dropped)),
+            cont,
+            menu_open: self.menu.open,
+            capturing: self.menu.capture.is_some(),
         };
-        if self.launcher.panel == launcher::Panel::Controls && self.launcher_bindings.is_none() {
+        // Settings is the menu's side panel over the launcher, for the
+        // selected game (its Controls page edits that game's bindings).
+        if self.menu.open && self.menu.controls && self.launcher_bindings.is_none() {
             self.launcher_bindings = selected.map(settings::load_bindings);
         }
-        if self.launcher.panel != launcher::Panel::Controls {
+        if !(self.menu.open && self.menu.controls) {
             self.launcher_bindings = None;
         }
+        let keeps = match selected {
+            Some(g) => menu::Keeps {
+                all_games: self.settings.all_games_preset(g.id),
+                own_picture: self.settings.has_own_picture(g.id),
+            },
+            None => menu::Keeps::default(),
+        };
+        let menu_view = menu::View {
+            playing: None,
+            game: selected,
+            saves: &[],
+            max_anisotropy: self.max_anisotropy,
+            temporal_supported: self.temporal_supported,
+            has_bezel: selected.is_some_and(|g| bezel::art_set(g).is_some()),
+            has_own,
+            run_ahead_dropped: selected
+                .is_some_and(|g| self.session.as_ref().is_some_and(|s| s.game.id == g.id && s.run_ahead_dropped)),
+            run_ahead_room: selected.and_then(|g| self.run_ahead_room(g.id)),
+            picture: None,
+            keeps,
+            pack: None,
+            materials: None,
+        };
         let navs = std::mem::take(&mut self.navs);
         let mut values = self.values.clone();
-        let mut for_all = self.settings.for_all;
-        let sources = self.sources;
+        let (mut fullscreen, mut for_all) = (self.settings.fullscreen, self.settings.for_all);
         let (launcher, menu, splash) = (&mut self.launcher, &mut self.menu, &mut self.splash);
         let bindings = &mut self.launcher_bindings;
-        let title = selected.map_or("", |g| g.title);
         let animating = launcher.animating() || self.session.is_some() || progress.is_some();
         let g = self.gpu.as_mut().unwrap();
         let mut changed = false;
         let actions = draw_overlay(g, target, false, size, Some(ppp), |ctx| {
-            let actions = launcher.ui(ctx, navs.clone(), &view, &mut values, &sources, &mut for_all, has_own);
-            if launcher.panel == launcher::Panel::Controls {
-                if let Some(b) = bindings.as_mut() {
-                    menu.controls = true;
-                    changed |= menu.controls_page(ctx, b, title, &navs);
-                    if !menu.controls {
-                        launcher.panel = launcher::Panel::Settings;
+            let mut actions = launcher.ui(ctx, navs.clone(), &view);
+            let prefs = menu::Prefs { fullscreen: &mut fullscreen, for_all: &mut for_all };
+            for action in menu.ui(ctx, &mut values, prefs, &menu_view, bindings.as_mut(), &navs) {
+                match action {
+                    menu::Action::Resume => actions.push(launcher::Action::CloseSettings),
+                    menu::Action::ResetOwn => {
+                        actions.extend(selected.map(|g| launcher::Action::ResetGame(g.id.to_string())))
                     }
+                    menu::Action::Bindings => changed = true,
+                    menu::Action::Quit => actions.push(launcher::Action::Quit),
+                    // Nothing's running to save, load, reset or photograph.
+                    _ => {}
                 }
-            } else {
-                menu.capture = None;
             }
-            menu.notices(ctx);
             splash.ui(ctx);
             if animating {
                 ctx.request_repaint();
@@ -2916,7 +2959,7 @@ impl Play {
                 settings::save_bindings(game, b);
             }
         }
-        self.set_prefs(self.settings.fullscreen, for_all);
+        self.set_prefs(fullscreen, for_all);
         if let Some(set) = selected.map(|g| g.id) {
             self.edit_values(set, values);
         }
@@ -3288,11 +3331,9 @@ impl ApplicationHandler<Wake> for Play {
         renderer.set_max_msaa(max_msaa);
         self.max_anisotropy = gpu::max_anisotropy(&adapter);
         renderer.set_max_anisotropy(self.max_anisotropy);
-        self.launcher.max_anisotropy = self.max_anisotropy;
         // `from_device` assumes it; the GL fallback may not have it.
         self.temporal_supported = gpu::temporal_supported(&adapter);
         renderer.set_temporal_supported(self.temporal_supported);
-        self.launcher.temporal_supported = self.temporal_supported;
         if !self.temporal_supported {
             println!("temporal AA   not on this GPU (no 16-bit float targets)");
         }
@@ -3492,6 +3533,7 @@ fn main() {
         }
     }
     let splash = splash::Splash::new(opts.splash);
+    let launcher_view = settings.launcher_view;
     let mut play = Play {
         opts,
         settings,
@@ -3504,7 +3546,11 @@ fn main() {
         unsupported: 0,
         menu: menu::Menu::default(),
         slot_cache: None,
-        launcher: launcher::Launcher::default(),
+        launcher: {
+            let mut l = launcher::Launcher::default();
+            l.mode = launcher_view;
+            l
+        },
         previews: preview::Previews::default(),
         preview: PreviewState::default(),
         launcher_bindings: None,
@@ -3567,7 +3613,9 @@ fn main() {
             && romset::sets_with_clones(&play.settings.rom).iter().any(|s| s == set)
     };
     match play.opts.game.clone() {
-        Some(set) if play.games.iter().any(|g| g.id == set) || in_progress(&set) => play.start_game(&set, false),
+        Some(set) if play.games.iter().any(|g| g.id == set) || in_progress(&set) => {
+            play.start_game(&set, library::Start::New)
+        }
         Some(set) => {
             println!("no {set} in {}: choose a game", play.settings.rom.display());
             play.menu.error(format!("No {set} in {}", play.settings.rom.display()));

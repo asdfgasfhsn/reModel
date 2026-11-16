@@ -8,6 +8,22 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+/// `set`'s save state folder.
+pub fn dir(set: &str) -> PathBuf {
+    crate::settings::data_dir().join(set).join("saves")
+}
+
+/// Where a game's resume state goes: written on leaving it, offered by the
+/// launcher as Continue.
+pub fn resume_file(set: &str) -> PathBuf {
+    dir(set).join("resume.save")
+}
+
+/// The state of save slot `slot` (0 is the quick save).
+pub fn slot_file(set: &str, slot: u8) -> PathBuf {
+    dir(set).join(if slot == 0 { "quick.save".to_string() } else { format!("slot{slot}.save") })
+}
+
 /// A thumbnail's size in pixels: the game's 4:3 frame, twice the size the
 /// slots page shows it at.
 pub const THUMB_SIZE: (u32, u32) = (224, 168);

@@ -17,6 +17,8 @@ pub static LASTBRNX: Game = Game {
     id: "lastbrnx",
     title: "Last Bronx",
     year: 1996,
+    genre: "Weapons fighting",
+    kind: crate::Kind::Fighting,
     board: Board::Model2B,
     // The attract mode's fight in the Cross Street stage.
     attract_frame: 700,

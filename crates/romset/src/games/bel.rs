@@ -13,6 +13,8 @@ pub static BEL: Game = Game {
     id: "bel",
     title: "Behind Enemy Lines",
     year: 1997,
+    genre: "Shooter",
+    kind: crate::Kind::Shooting,
     board: Board::Model2C,
     // The attract demo: the vehicle driving up a forest track.
     attract_frame: 3900,

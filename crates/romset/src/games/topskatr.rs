@@ -8,6 +8,8 @@ pub static TOPSKATR: Game = Game {
     id: "topskatr",
     title: "Top Skater",
     year: 1997,
+    genre: "Skateboarding",
+    kind: crate::Kind::Sports,
     board: Board::Model2C,
     attract_frame: 1650,
     input_lag: 0,

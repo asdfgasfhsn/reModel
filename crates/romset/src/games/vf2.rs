@@ -19,6 +19,8 @@ pub static VF2: Game = Game {
     id: "vf2",
     title: "Virtua Fighter 2",
     year: 1995,
+    genre: "Fighting",
+    kind: crate::Kind::Fighting,
     board: Board::Model2A,
     attract_frame: 1500,
     input_lag: 1,

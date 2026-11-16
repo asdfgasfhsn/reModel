@@ -21,6 +21,8 @@ pub static DYNAMCOP: Game = Game {
     id: "dynamcop",
     title: "Dynamite Cop",
     year: 1998,
+    genre: "Brawler",
+    kind: crate::Kind::Fighting,
     board: Board::Model2A,
     attract_frame: 3600,
     input_lag: 0,

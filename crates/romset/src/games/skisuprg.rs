@@ -9,6 +9,8 @@ pub static SKISUPRG: Game = Game {
     id: "skisuprg",
     title: "Sega Ski Super G",
     year: 1996,
+    genre: "Skiing",
+    kind: crate::Kind::Sports,
     board: Board::Model2C,
     attract_frame: 3750,
     input_lag: 0,

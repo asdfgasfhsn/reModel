@@ -16,6 +16,8 @@ pub static PLTKIDS: Game = Game {
     id: "pltkids",
     title: "Pilot Kids",
     year: 1998,
+    genre: "Shoot 'em up",
+    kind: crate::Kind::Shooting,
     board: Board::Model2B,
     // The title screen.
     attract_frame: 3010,

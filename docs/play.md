@@ -65,9 +65,9 @@ temporal on turns that recording on (0.05-0.5 ms a game frame, plus one
 geometrizer replay: 0.2-0.4 ms on 2C, 1.4-1.8 ms on 2B) whether or not
 smooth motion's in-betweens are on; with them on, each in-between is
 blended with its own motion. It needs the native geometrizer (with the
-chip it is off: the launcher says so and the menu leaves its row out), and it replaces
+chip it is off: the menu leaves its row out), and it replaces
 multisampling: `aa` is kept but off while temporal is on (the menu's
-anti-aliasing row is left out, the launcher's row says why). A GPU
+anti-aliasing row is left out). A GPU
 without 16-bit float render targets (the OpenGL fallback, say) can't, and
 says so. The games' checkerboard (screen door) see-through polygons are
 drawn as an even 50% blend with `stipple = blend`, which stays steady at
@@ -129,8 +129,8 @@ original picture). The normals and lighting come from what the
 native geometrizer recorded about each polygon (its side channel, on
 whenever shading is); with the chip (`--geo chip`, not turned off by it)
 only block facts are known, so `vertex` blends the polygons' own
-brightnesses instead and `pixel` is drawn as `vertex` (the menu and
-launcher say so, and the window title says what was drawn: `shading
+brightnesses instead and `pixel` is drawn as `vertex` (the menu
+says so, and the window title says what was drawn: `shading
 pixel` or `shading vertex`). It works with temporal anti-aliasing (its
 first frame after a reset is the shaded frame), multisampling, the depth
 buffer and texture packs (a pack image's lighting follows the shaded
@@ -162,13 +162,12 @@ together at 40 degrees, so `schamp` uses 25, which keeps their ridges;
 40. Each limb of a fighter is shaded on its own, so joints keep a seam.
 Gradients step through the game's 64 brightness levels, so large smooth
 surfaces show bands; **Blend brightness levels** (`shading_fine`, the
-menu's checkbox under Shading, the launcher's "Brightness levels") blends
+menu's checkbox under Shading) blends
 the two of the game's colours around each lit pixel's brightness
 instead, which removes the bands and never leaves the polygon's colour
 (only lit pixels; the rest stay the game's; pure black, such as ink
 lines, stays black). **Balance brightness** (`shading_balance`, on by
-default; the menu's checkbox under Shading, the launcher's "Brightness
-balance") keeps each smooth surface as bright overall as the game drew
+default; the menu's checkbox under Shading) keeps each smooth surface as bright overall as the game drew
 it; off, the game's lighting is worked out at the smoothed normals with
 no correction, so bumpy surfaces (`skisuprg`'s snow) come out brighter
 (on screen a small change). The window title says `unbalanced` when it
@@ -209,10 +208,9 @@ and brick, rougher road. It needs the texture pack on and works with any
 `shading` (with `flat` the polygons stay flat but carry the maps' detail;
 the player then records the geometrizer's lighting side channel, as
 shading does, for the lamps). `materials_relief` is the rule: relief at a
-strength (the menu and launcher offer 1, 2, 4 and 8; the settings file and
+strength (the menu offers 1, 2, 4 and 8; the settings file and
 command line 0.1 to 8; such a strength shows in the menu as one more
-choice, "custom (1.5)", and in the launcher as "Custom (1.5)", kept until
-another is picked), how strongly the bumps' light change scales the
+choice, "custom (1.5)", kept until another is picked), how strongly the bumps' light change scales the
 surface's brightness, or `off`, the faithful rule (the map's normal in the
 game's own lighting sum: subtler, and nothing where the game lights a
 surface to full brightness). The menu's line under the checkbox (and the
@@ -318,7 +316,7 @@ thread, the drawing is counted in with the frames), up to 3 ("this
 computer has time for about 2", or "this computer is
 too slow for run-ahead"). A choice above that is warned of ("3 is more
 than it can keep up with, and is switched off if the game falls behind";
-the launcher's hint turns amber): it still works, and the 3 s rule below
+the menu's hint turns amber): it still works, and the 3 s rule below
 stays as the safety net. Before the game has been measured (just started,
 or the launcher showing another game) the line says nothing extra. The
 figure is an estimate: the first seconds of a game, a heavy scene or the
@@ -844,49 +842,83 @@ instruction credited.
 ## The launcher
 
 The start screen, when no game is given, and from the menu's "Back to
-games". The games found in the ROM folder are a row of cards along the
-bottom (each game's poster, `assets/posters`, and title), grouped under
-headings: the recently played first, then each board (Model 2B, 2C); the
-groups are also tabs along the top. The selected card's game fills the
-rest: its live attract mode on the left, in the window's shape (what the
-game will look like, bezel included with 4:3), and on the right its board,
-year, title, set name, controls (the manifest's default keys) and buttons:
-Play, or Continue and New game when it was left part way, and Settings.
-Behind everything a neon wireframe grid floor scrolls slowly towards a
-horizon of wireframe mountains (a shader, `crates/play/src/backdrop.wgsl`,
-in the logo's black, cyan and blue), with the selected game's bezel art
-faded in over it. The row slides to keep the selected card in view and
-scales it up; at the ends it stops at the margins. Everything is laid out
-on a 1600x900 design scaled to the window (on top of the display's own
-scaling), so it reads the same at 1080p, a 3440x1440 ultrawide and 4K.
+games". It lists the games found in the ROM folder (never the sets that
+aren't there) in one of two views, switched by the Carousel | Grid switch
+in the top bar or LB and RB (Q and E), and kept in `play-settings.txt`
+(`view = grid`) for next time.
+
+The **carousel**: at the right the selected game's poster large, the next
+games' beside it (the strip wraps round), at the left its name, what kind of
+game it is (`genre` in the game's manifest, `crates/romset/src/games/`),
+its board and year, a line on whether it was left part way, and the buttons
+Play, Saves and Settings. The game's live attract mode (below) plays dimmed
+behind everything, its poster blurred until it does. The neon wireframe
+floor (`crates/play/src/backdrop.wgsl`) lies under the posters.
+
+The **grid**: every game as a poster with its name and genre; above them
+filter chips (All; Recent, once something was played; and Racing, Fighting,
+Shooting or Sports for each kind there is a game of: the manifest's `kind`),
+a sort (Recently played, which puts the games played first, latest first,
+then the rest A to Z; or A to Z), and at the foot "N of M games". The grid
+doesn't run the preview. The carousel isn't filtered.
+
+Both have the same top bar and hint bar. The top bar is the logo, the
+**quick resume** pill (Y: the last game played, at its latest state:
+the resume state, the quick save or a slot, whichever was written last, or
+from the start if it has none; the pill says which and how long ago; a card
+in the carousel, one line beside the logo in the grid) and the view switch.
+The hint bar along the foot shows what each button does, the pad's chips
+(Choose, A Play, X Saves, a menu button Settings, Y Continue, LB RB View,
+and in the grid LT RT Filter) or, once the keyboard was used, its keys
+(arrows, Enter, S, Tab, C, Q E, [ ]). Each entry can be clicked.
+
+Play (A) starts the selected game from power-on; a game left part way is
+picked up from **Saves** (X): a side panel of that game's states (where you
+left off, the quick save, slots 1 to 4, each with its thumbnail when it has
+one), and choosing one starts the game from it.
 
 | | Keyboard | Gamepad | Mouse |
 |---|---|---|---|
-| choose a game | Left, Right | d-pad, left stick (repeat while held) | click a card, wheel |
-| choose a button | Up, Down | d-pad, stick | |
-| play (the button chosen) | Enter, Space | A, Start | click the button, or the selected card |
-| settings | Tab | Y | Settings |
-| previous, next group | Page Up, Page Down | shoulder buttons | the tabs |
-| back (close the settings) | Esc, Backspace | B, Back | |
+| choose a game, move over the controls | arrows | d-pad, left stick (repeat while held) | click a poster, wheel |
+| play the selected game | Enter, Space | A | click it again, or Play |
+| saves | S | X | Saves |
+| settings | Tab | Start (the menu button) | Settings |
+| quick resume | C | Y | the pill |
+| carousel or grid | Q, E, Page Up, Page Down | LB, RB | the switch |
+| previous, next filter (grid) | [ and ] | LT, RT | the chips |
+| back (close a panel) | Esc, Backspace | B | the panel's back arrow |
 
-F11 toggles fullscreen, as in a game. *Unconfirmed:* the gamepad
-navigation is tested with synthetic events only, not yet with a pad.
+Every control, the top bar's, the buttons, the chips, the sort and the hint
+bar's entries, is reachable from the d-pad, which moves between them as
+they're laid out; the focus ring (a cyan outline) shows while the pad or the
+keyboard is in use, and the chips show the pad's buttons until the keyboard
+or the mouse is used. Left and right on the carousel's selected poster step
+through the games; down goes to the buttons. F11 toggles fullscreen, as in a
+game. *Unconfirmed:* the gamepad navigation is tested with synthetic events
+only, not yet with a pad.
 
-**Live previews.** Once a card has been selected for half a second, its
-game starts in the background and its attract mode shows in place of the
-poster, fading in, its sound fading in 9 dB under the game's mix. It starts
+Everything is drawn in the theme's look (`theme.rs`: Inter and Exo 2) on a
+1280x720 design scaled to the window (and to the display's own scaling), so
+it reads the same at 1080p, a 3440x1440 ultrawide and 4K; no text is under
+18 points at 720p.
+
+**Live previews.** Once a game has been selected in the carousel for half a
+second, it starts in the background and its attract mode plays dimmed behind
+the carousel, in place of the blurred poster, fading in, its sound fading in
+9 dB under the game's mix (the texture is the window's shape at half its
+size). The grid doesn't run it. It starts
 from a save state at the manifest's `attract_frame` (the frame `remodel
 shot` takes for the browser's game list), so it's live almost at once:
 the chips and the state load on a thread of their own, then the machine is
 built and the state loaded on the main thread (about 100 ms, the one
 pause). The state is made the first time a game is previewed, by running
 it headless from power-on to that frame with its sound boards and a fresh
-EEPROM (never the player's), while the card shows the poster and how far
-it has got; it's kept as `<data dir>/<set>/preview-native.save` (or
+EEPROM (never the player's), while the poster stays and says how far it has
+got; it's kept as `<data dir>/<set>/preview-native.save` (or
 `preview-chip.save` with the chip geometrizer), in the save state format,
 and made again if it no longer loads. Making it takes as long as running
 the game that far as fast as it goes: recompiled, 2-4 s for `stcc`, `sgt24h`
-and `topskatr`, 12 s for `hotd`, 19 s for `fvipers`; interpreted, 12 s for `topskatr` and 15 s for `doa`. Once cached, a preview shows about 0.6 s after its card is selected (the half second, 20-40 ms loading, 75-115 ms starting). One state
+and `topskatr`, 12 s for `hotd`, 19 s for `fvipers`; interpreted, 12 s for `topskatr` and 15 s for `doa`. Once cached, a preview shows about 0.6 s after its game is selected (the half second, 20-40 ms loading, 75-115 ms starting). One state
 is made at a time, and it carries on if the selection moves to a game
 whose state is ready; selecting another game that needs one stops it. Only
 one preview runs: moving on fades it out over 0.2 s and drops it. A game
@@ -894,32 +926,17 @@ that can't start (chips missing from the ROM folder) keeps its poster and
 says why. The preview never takes input, never saves its EEPROM, and is
 emulated like the game would be (it costs what the game costs).
 
-**Settings** slide out from the right over the preview, which shows what
-they change as they change (except anti-aliasing, temporal anti-aliasing,
-the depth buffer, bloom, shading, the texture pack and its filtering and
-material maps, which the preview draws without; they show in the game): aspect (fit the window
-or 4:3), bezel, HUD at the edges or centred, speed (one frame a refresh or
-exact arcade speed), smooth motion, run-ahead (off, 1, 2, 3), anti-aliasing (off, 4x, 8x), temporal anti-aliasing (off,
-TAA, 75%, 67%, 50%) and its checkerboard see-through (blend or keep), the depth buffer, shading (flat,
-vertex, pixel; with the chip geometrizer pixel says it draws as vertex), its brightness levels (the game's or blended) and its brightness balance (on or off), the texture pack and its filtering (off, mip, 2x to 16x), material maps (off or on; no effect without the pack or with the chip, said in place of the hint) and their relief (1, 2, 4, 8 or faithful; another strength from the settings file or the command line as "Custom (S)"), bloom (off, light, medium, strong; another percentage from a flag or file as "N%"; not offered on a GPU without 16-bit float targets), the effects and music levels in dB, the geometrizer (native
-or the game's chip; the preview restarts on it) and the Controls page
-(remapping, below). "Save for" says where changes go: the defaults for all
-games, or this game only (a game's own setting is tagged "this game", and
-"Use the settings for all games" forgets them). The same settings are in
-the Esc menu while playing, in tabs and behind a picture preset (below,
-"The menu"). The launcher lists them as one scrolling list in the menu's
-order (display, picture, motion, sound, more) and with the menu's rules,
-sharing its code (`hints.rs`): a **Picture style** row (Arcade original, Sharp,
-Smooth modern, CRT, Custom, with the menu's help line for the game) comes first of
-the picture rows, which only Custom lists; rows that do nothing as set
-(anti-aliasing under temporal, the lighting rows with flat shading, the
-chip's, the bezel in a wide window or for a game without art, texture
-filtering without the pack) are left out; the run-ahead row stops at the
-game's maximum and is gone for a game with no lag; and its hint says what
-this computer has time for (above). Choosing a preset sets its rows and a
-picture row changed afterwards makes it Custom, the same as in the menu, and
-what is saved from either place is identical (`preset = enhanced` and so
-on: Smooth modern is the `enhanced` preset, and old files keep loading). A **CRT** row (off, light, medium, strong) is among the picture rows Custom lists. The crease angle is only in the menu. They come in layers, lowest first, as in the
+**Settings** (the menu button, Tab) open the Esc menu's side panel (below,
+"The menu") over the launcher, for the selected game: Picture, Controls
+(remap its keys and pad), Sound, Speed and latency, "Use the settings for all
+games" for a game that has its own, and Quit reModel. It is the same panel,
+code and settings as in a game (the picture styles, and the rows that apply
+as set); changes are kept for all games or this game by its scope switch,
+and what is saved from either place is identical. B, Start or Esc close it.
+The preview doesn't show the picture settings (it draws flat, without
+anti-aliasing and the rest); they show in the game.
+
+Settings come in layers, lowest first, as in the
 browser build: the built-in defaults, the defaults for all games, the
 game's own, then the command line (`--mix`, `--hud`, `--aspect`, `--bezel`,
 `--exact`, `--smooth`, `--run-ahead`, `--aa`, `--temporal`, `--stipple`, `--depth`, `--shading`, `--crease`, `--shading-fine`, `--shading-balance`, `--pack`, `--texture-pack`, `--tex-filter`, `--materials`, `--materials-relief`, `--bloom`, `--geo`), which applies to that run only and is
@@ -937,26 +954,31 @@ select).
 **Continue.** Leaving a game (quitting, "Back to games", or starting
 another) keeps a resume state, `<data dir>/<set>/saves/resume.save` (the
 F5/F9 save format, sound boards included), unless it was a scripted
-`--input` run. Its card then offers Continue (with how long ago) beside New
-game, which starts from power-on as before; the state is replaced the next
-time the game is left.
+`--input` run. The carousel's line for the game says when it was left
+(and Saves lists it first, "Where you left off"); the quick resume pill
+(Y) picks the last game played up at its latest state: this one, the quick
+save or a slot, whichever was written last. Play always starts from
+power-on. The state is replaced the next time the game is left.
 
 `--shot FILE --seconds N` draws the launcher too when it's what shows (and
 the menu, when it's open over a game), and `--nav` scripts gamepad input
 for that: `--nav next@1,settings@2,right@3` names a pad button and the
 second it's pressed (left, right, up, down for the d-pad; accept, back,
-settings for A, B, Y; prev, next for the shoulder buttons; start, select,
+continue, saves for A, B, Y, X; settings (the menu button, as start), prev,
+next for the shoulder buttons, lt, rt for the triggers; start, select,
 guide). It's released 0.08 s later, or after `:H` seconds
 (`down@3.5:2` holds it, repeating); `start+select@3` presses two at once.
 E.g.
-`remodel-play --no-sound --seconds 6 --shot-size 3840x2160@2 --nav settings@3 --shot out/launcher.png`,
+`remodel-play --no-sound --seconds 6 --shot-size 3840x2160@2 --nav next@3 --shot out/launcher.png`
+(the grid),
 or the menu over a game, left from the pad:
 `remodel-play --game topskatr --no-splash --no-sound --seconds 10 --nav start+select@3,down@3.5:3,left@7,accept@7.5 --shot out/back.png`.
 `--frames N` ends the run when the game reaches frame N (it stops there),
 so `--shot` pictures that frame: with `--input coin-start` the same frame
 the CLI's `--capture` saves, for `gpu-check` to draw beside it.
-It's drawn with egui (`crates/play/src/launcher.rs`), its layout and
-navigation tested headless (`cargo test -p remodel-play`).
+It's drawn with egui (`crates/play/src/launcher.rs`; what it lists, the
+filters, the sort and the quick resume are in `library.rs`), its layout,
+navigation, filters and hints tested headless (`cargo test -p remodel-play`).
 
 **In the app menu.** `make install-desktop` (`RECOMP=1` for the recompiled
 build) builds the player and adds reModel to the desktop's app menu: a
@@ -1338,8 +1360,10 @@ the game starts again from power-on, keeping its EEPROM) and **Back to
 games**. Under a small "SETTINGS" label come the settings, one level in,
 each showing its value: **Picture** (the style), **Controls**, **Sound**
 (the music level) and **Speed and latency** (run-ahead, or exact speed or
-smooth). With no game running (the menu from the launcher) there is a
-**Quit reModel** row at the foot. The version is at the foot of
+smooth). With no game running (the menu from the launcher's Settings, for the
+game selected there) there is no game to resume or save, **Controls** is that
+game's, a game with settings of its own has **Use the settings for all games**,
+and there is a **Quit reModel** row at the foot. The version is at the foot of
 the list.
 
 From a gamepad: the d-pad or left stick moves between the buttons and rows
@@ -1378,7 +1402,7 @@ events only, not yet with a real pad.
   greyed (anti-aliasing while temporal is on, temporal with the chip
   geometrizer or on a GPU that can't, the shading options with flat
   shading). Every tab ends with **Applies to: this game / all games**,
-  where the changes are kept (as in the launcher).
+  where the changes are kept (the same from the launcher's Settings).
   - **Display**: the aspect (fit the window, the default, drawing the game
     wider than its frame from 4:3 to 32:9; or 4:3, `--aspect 4:3`), where
     the HUD goes on wide windows (shown for fit the window), the bezel
@@ -1400,7 +1424,7 @@ events only, not yet with a real pad.
   original*, *Sharp*, *Smooth modern* (recommended), *CRT* and *Custom*.
   Choosing one applies it at once to the paused game beside the panel. A
   switch at the top, "<Game> only | All games", is the settings' scope (the
-  same layers as the launcher's "Save for"), and the last line says where it
+  same layers as the launcher's), and the last line says where it
   is saved and what other games keep ("Saved for Top Skater. Other games
   keep Sharp."). *Compare* shows the paused picture twice, as the arcade
   original left of a vertical divider and as chosen right of it, with

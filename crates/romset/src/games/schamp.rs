@@ -14,6 +14,8 @@ pub static SCHAMP: Game = Game {
     id: "schamp",
     title: "Sonic Championship",
     year: 1996,
+    genre: "Fighting",
+    kind: crate::Kind::Fighting,
     board: Board::Model2B,
     // The attract demo: two fighters in the desert ring.
     attract_frame: 3500,

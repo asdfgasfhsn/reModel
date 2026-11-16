@@ -14,6 +14,8 @@ pub static GUNBLADE: Game = Game {
     id: "gunblade",
     title: "Gunblade NY",
     year: 1995,
+    genre: "Light gun",
+    kind: crate::Kind::Shooting,
     board: Board::Model2B,
     // The attract demo: a New York street with a truck.
     attract_frame: 1500,

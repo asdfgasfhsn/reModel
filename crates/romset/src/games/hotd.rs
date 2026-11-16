@@ -13,6 +13,8 @@ pub static HOTD: Game = Game {
     id: "hotd",
     title: "The House of the Dead",
     year: 1996,
+    genre: "Light gun",
+    kind: crate::Kind::Shooting,
     board: Board::Model2C,
     // The attract demo: a zombie close up, with the HUD.
     attract_frame: 4080,

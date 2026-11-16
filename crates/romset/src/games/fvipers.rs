@@ -15,6 +15,8 @@ pub static FVIPERS: Game = Game {
     id: "fvipers",
     title: "Fighting Vipers",
     year: 1995,
+    genre: "Fighting",
+    kind: crate::Kind::Fighting,
     board: Board::Model2B,
     // The attract demo: Bahn squaring up to Honey on the rooftop.
     attract_frame: 3400,

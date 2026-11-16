@@ -18,6 +18,8 @@ pub static DESERT: Game = Game {
     id: "desert",
     title: "Desert Tank",
     year: 1994,
+    genre: "Tank shooter",
+    kind: crate::Kind::Shooting,
     board: Board::Model2,
     attract_frame: 1500,
     input_lag: 0,

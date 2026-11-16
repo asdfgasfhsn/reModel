@@ -10,6 +10,8 @@ pub static OVERREVB: Game = Game {
     id: "overrevb",
     title: "Over Rev",
     year: 1997,
+    genre: "Racing",
+    kind: crate::Kind::Racing,
     board: Board::Model2B,
     // The attract demo: two cars drifting past the grandstand (its attract
     // runs a few frames behind overrev's).

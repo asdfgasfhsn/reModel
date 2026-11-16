@@ -17,6 +17,8 @@ pub static SKYTARGT: Game = Game {
     id: "skytargt",
     title: "Sky Target",
     year: 1995,
+    genre: "Flight shooter",
+    kind: crate::Kind::Shooting,
     board: Board::Model2A,
     attract_frame: 2000,
     input_lag: 1,

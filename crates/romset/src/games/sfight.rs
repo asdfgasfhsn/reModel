@@ -10,6 +10,8 @@ pub static SFIGHT: Game = Game {
     id: "sfight",
     title: "Sonic The Fighters",
     year: 1996,
+    genre: "Fighting",
+    kind: crate::Kind::Fighting,
     board: Board::Model2B,
     // The attract: the title screen with the logo (schamp's attract is a
     // fight demo at this frame).

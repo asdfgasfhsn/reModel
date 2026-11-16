@@ -34,49 +34,27 @@ pub fn poster(game: &romset::Game) -> Option<&'static [u8]> {
 /// Art decoded on a thread of their own, arriving as it's done, for the
 /// launcher to upload as textures.
 pub struct Loader {
-    rx: mpsc::Receiver<(String, Kind, egui::ColorImage)>,
-    bezels: mpsc::Sender<&'static romset::Game>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
-    Poster,
-    Bezel,
+    rx: mpsc::Receiver<(String, egui::ColorImage)>,
 }
 
 impl Loader {
-    /// Decode the posters of `games` (in that order: the first show
-    /// first); then the bezels asked for (`bezel`), each a full-HD image,
-    /// so only those shown are decoded.
+    /// Decode the posters of `games`, in that order: the first show first.
     pub fn start(games: Vec<&'static romset::Game>) -> Loader {
         let (tx, rx) = mpsc::channel();
-        let (bezels, requests) = mpsc::channel::<&'static romset::Game>();
         let _ = std::thread::Builder::new().name("art".into()).spawn(move || {
             for g in &games {
                 if let Some(image) = poster(g).and_then(decode) {
-                    if tx.send((g.id.to_string(), Kind::Poster, image)).is_err() {
-                        return;
-                    }
-                }
-            }
-            while let Ok(g) = requests.recv() {
-                if let (Some(set), Some(image)) = (crate::bezel::art_set(g), crate::bezel::image(g)) {
-                    if tx.send((set.to_string(), Kind::Bezel, image)).is_err() {
+                    if tx.send((g.id.to_string(), image)).is_err() {
                         return;
                     }
                 }
             }
         });
-        Loader { rx, bezels }
+        Loader { rx }
     }
 
-    /// Decode `game`'s bezel (it arrives through `take`).
-    pub fn bezel(&self, game: &'static romset::Game) {
-        let _ = self.bezels.send(game);
-    }
-
-    /// What's been decoded since the last call.
-    pub fn take(&self) -> Vec<(String, Kind, egui::ColorImage)> {
+    /// What's been decoded since the last call: a set and its poster.
+    pub fn take(&self) -> Vec<(String, egui::ColorImage)> {
         self.rx.try_iter().collect()
     }
 }

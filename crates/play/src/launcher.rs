@@ -1,44 +1,54 @@
 //! The launcher: the player's start screen, drawn with egui over the
-//! backdrop (`backdrop`).
+//! backdrop (`backdrop`), in the theme's look (`theme`).
 //!
-//! A row of game cards (each game's poster and title) slides along the
-//! bottom, grouped by board with the recently played first; the selected
-//! card's game shows above it: its live attract mode (`preview`, once the
-//! card has been selected for `SETTLE`), title, year, board and controls,
-//! and what it can do (play, continue where it was left, settings). The
-//! settings slide out from the right over the preview, which shows what
-//! they change. The selected game's bezel art fades in behind everything.
+//! Two views of the games found in the ROM folder (never the ones missing),
+//! switched from the top bar or with LB and RB, and remembered:
 //!
-//! Keyboard: arrows choose (up and down step through the game's buttons),
-//! Enter plays, Tab the settings, Page Up / Page Down jump between the
-//! groups, Esc goes back. Gamepad (`pad::PadNav`): d-pad or left stick, A, Y,
-//! the shoulder buttons, B. Mouse: click a card to select it, again (or a
-//! button) to play; the wheel scrolls the row.
+//! * the **carousel**: the selected game's poster large at the right, the
+//!   next games beside it, and at the left its name, kind, board and year
+//!   and what can be done (play, saves, settings); the game's live attract
+//!   mode (`preview`, once it has been selected for `SETTLE`) plays dimmed
+//!   behind everything, its poster blurred there until it does;
+//! * the **grid**: every game as a poster, with filter chips (All, Recent
+//!   and the kinds there are games of: `library::Filter`), a sort
+//!   (`library::Sort`) and "N of M games".
 //!
-//! Everything is laid out in units of the screen (`Layout`): a 1600x900
-//! design scaled to fit, on top of the display's own scaling, so it reads
-//! the same at 1080p, 1440p ultrawide and 4K.
+//! Both have the same top bar (the logo, the quick resume pill, the view
+//! switch) and the same hint bar along the bottom (the pad's buttons, or the
+//! keys when the keyboard was used last), whose entries can be clicked too.
+//! Everything is reachable from a pad (`focus`, whose ring shows while the
+//! pad or the keyboard is in use) and from the mouse. Settings open the
+//! menu's side panel (`menu`), Saves a panel of the game's save slots.
+//!
+//! Keyboard: arrows choose, Enter plays, S saves, Tab settings, C
+//! continues, Q and E (or Page Up and Down) switch the view, [ and ] the
+//! filter. Pad: d-pad or stick, A, X, Start (the menu button), Y, LB RB, LT
+//! RT. Mouse: click a poster to select it, again to play; the wheel steps
+//! through the carousel and scrolls the grid.
+//!
+//! Everything is laid out in design points at 1280x720 and scaled to the
+//! window (`layout`), so it reads the same at 1080p, ultrawide and 4K.
 
-use crate::hints;
-use crate::settings::{GameSettings, Preset, Source, KEYS};
-use egui::{pos2, vec2, Align2, Color32, FontId, Id, Painter, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
+use crate::focus::Focus;
+use crate::library::{self, Continue, Filter, Sort, Start, ViewMode};
+use crate::menu;
+use crate::saves::{self, SlotInfo};
+use crate::theme::{self, Chip};
+use egui::{
+    pos2, vec2, Align2, Color32, FontFamily, FontId, Id, Painter, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Ui,
+    Vec2,
+};
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime};
 
-/// The shared palette (`theme`); the launcher's own darker lines.
-pub use crate::theme::{CYAN, RED};
+/// The shared palette (`theme`).
+pub use crate::theme::CYAN;
 pub const FG: Color32 = crate::theme::TEXT;
 pub const DIM: Color32 = crate::theme::TEXT_DIM;
-pub const PANEL: Color32 = Color32::from_rgb(8, 12, 22);
-pub const LINE: Color32 = Color32::from_rgb(22, 58, 68);
-const KEY_BG: Color32 = Color32::from_rgb(13, 20, 29);
-const KEY_LINE: Color32 = Color32::from_rgb(44, 58, 72);
-const AMBER: Color32 = Color32::from_rgb(255, 212, 121);
+const PANEL: Color32 = Color32::from_rgb(8, 12, 22);
 
-/// How long a card stays selected before its preview starts.
+/// How long a game stays selected before its preview starts.
 pub const SETTLE: Duration = Duration::from_millis(500);
-/// Most recently played games shown first.
-const RECENT: usize = 6;
 /// The preview's fade in and out.
 pub const FADE_IN: Duration = Duration::from_millis(450);
 
@@ -50,96 +60,87 @@ pub enum Nav {
     Up,
     Down,
     Accept,
-    /// The pad's Start: plays here, resumes in the menu.
+    /// The pad's Start (the menu button).
     Start,
     Back,
     Settings,
+    /// LB (and Q, Page Up): the menu's previous tab; the launcher's view.
     PrevGroup,
+    /// RB (and E, Page Down).
     NextGroup,
+    /// X: the selected game's save slots.
+    Saves,
+    /// Y: the quick resume.
+    Continue,
+    /// LT and RT (and [ and ]): the grid's previous and next filter.
+    PrevFilter,
+    NextFilter,
 }
 
 pub enum Action {
+    /// Start `set`, from power-on or a saved state.
     Play {
         set: String,
-        resume: bool,
+        from: Start,
     },
+    /// Open the menu over the launcher (its settings).
+    Settings,
+    /// Close it (Esc, Start).
+    CloseSettings,
+    /// Drop the game's own settings (the menu's "Use the settings for all
+    /// games").
+    ResetGame(String),
     /// Look for games in this ROM folder.
     Rescan(String),
-    /// Drop the game's own settings.
-    ResetGame(String),
     Quit,
 }
 
-/// Which page slides out over the preview.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Panel {
-    Closed,
-    Settings,
-    /// The game's controls, to remap (`menu::Menu::controls_page`).
-    Controls,
-}
-
-/// A run of cards under one heading.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Group {
-    pub name: String,
-    pub start: usize,
-    pub len: usize,
-}
-
-/// Where everything goes, in points.
+/// Where everything goes, in points. The 1280x720 design scaled by `u` to
+/// fit, its content centred and no wider than a 3440x1440 screen takes.
 #[derive(Clone, Copy, Debug)]
 pub struct Layout {
-    /// Points per design unit.
+    /// Points per design point.
     pub u: f32,
     pub screen: Rect,
-    /// The top bar (logo, groups).
+    /// The top bar (logo, pill, view switch).
     pub top: Rect,
-    /// The preview, the window's shape.
-    pub hero: Rect,
-    /// Title, details and buttons, right of the preview.
-    pub info: Rect,
-    /// Centre line of the cards, and a selected card's size.
-    pub cards_y: f32,
-    pub card: Vec2,
-    /// The hints along the bottom (centre line).
-    pub hints_y: f32,
+    /// Between the top bar and the hint bar.
+    pub body: Rect,
+    /// The hint bar, across the foot of the screen.
+    pub bar: Rect,
 }
 
-/// The launcher's layout for a screen `screen` points in size: a 1600x900
-/// design scaled by `u` to fit, centred.
 pub fn layout(screen: Rect) -> Layout {
-    let u = (screen.width() / 1600.0).min(screen.height() / 900.0).max(0.2);
-    let y0 = screen.top() + (screen.height() - 900.0 * u) / 2.0;
-    let margin = 56.0 * u;
-    let top =
-        Rect::from_min_max(pos2(screen.left() + margin, y0 + 24.0 * u), pos2(screen.right() - margin, y0 + 80.0 * u));
-    // The preview has the window's shape (what the game will look like),
-    // leaving room for the details beside it.
-    let aspect = (screen.width() / screen.height().max(1.0)).clamp(crate::ASPECTS.0, crate::ASPECTS.1);
-    let (slot_top, slot_h) = (y0 + 104.0 * u, 424.0 * u);
-    let room = screen.width() - 2.0 * margin - 40.0 * u - 440.0 * u;
-    let w = (slot_h * aspect).min(room.max(200.0 * u));
-    let h = w / aspect;
-    let hero = Rect::from_min_size(pos2(screen.left() + margin, slot_top + (slot_h - h) / 2.0), vec2(w, h));
-    let info =
-        Rect::from_min_max(pos2(hero.right() + 40.0 * u, slot_top), pos2(screen.right() - margin, slot_top + slot_h));
+    let u = (screen.width() / 1280.0).min(screen.height() / 720.0).max(theme::MIN_SCALE);
+    let width = (screen.width() - 96.0 * u).min(1744.0 * u).max(120.0 * u);
+    let left = screen.center().x - width / 2.0;
+    let bar = Rect::from_min_max(pos2(screen.left(), screen.bottom() - 64.0 * u), screen.max);
     Layout {
         u,
         screen,
-        top,
-        hero,
-        info,
-        cards_y: y0 + 704.0 * u,
-        card: vec2(160.0, 240.0) * u,
-        hints_y: y0 + 878.0 * u,
+        top: Rect::from_min_size(pos2(left, screen.top() + 28.0 * u), vec2(width, 44.0 * u)),
+        body: Rect::from_min_max(pos2(left, screen.top() + 100.0 * u), pos2(left + width, bar.top())),
+        bar,
     }
 }
 
-/// A game's card: what it shows besides the poster.
-pub struct Card {
-    pub game: &'static romset::Game,
-    pub group: usize,
+impl Layout {
+    /// The preview's size, for the texture it's drawn into: the screen's
+    /// shape at half its size (it is only ever shown dimmed behind the
+    /// carousel).
+    pub fn hero(&self) -> Rect {
+        Rect::from_center_size(self.screen.center(), self.screen.size() * 0.5)
+    }
+
+    /// Where the backdrop's horizon is, as a fraction of the screen's
+    /// height, and how bright it is, for `mode`: the carousel's floor lies
+    /// under the posters, the grid's is faint at the foot.
+    pub fn backdrop(mode: ViewMode) -> (f32, f32) {
+        match mode {
+            ViewMode::Carousel => (0.64, 1.0),
+            ViewMode::Grid => (0.92, 0.3),
+        }
+    }
 }
 
 /// What the launcher shows of the selected game besides what it keeps.
@@ -154,11 +155,13 @@ pub struct View<'a> {
     pub resume: Option<SystemTime>,
     /// Sets in the ROM folder reModel doesn't support yet.
     pub unsupported: usize,
-    /// The frames of run-ahead this computer has time for, once measured
-    /// (`hints::FrameCost::run_ahead_room`), and the selected game's
-    /// run-ahead was switched off as too slow.
-    pub run_ahead_room: Option<u32>,
-    pub run_ahead_dropped: bool,
+    /// The quick resume: the last game played and its latest state.
+    pub cont: Option<Continue>,
+    /// The menu is open over the launcher (Settings).
+    pub menu_open: bool,
+    /// The menu is waiting for a key or button to bind (Esc is the
+    /// binding's, not the way out).
+    pub capturing: bool,
 }
 
 /// The preview as a texture, and where the game's picture is in it.
@@ -170,329 +173,132 @@ pub struct PreviewView {
     /// The picture in the texture, as fractions (x, y, width, height): a
     /// 4:3 picture is narrower than the texture, the bezel beside it.
     pub picture: [f32; 4],
-    /// The bezel shows beside the picture.
-    pub bezel: bool,
 }
 
-/// The settings panel's rows.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Row {
-    Scope,
-    Choice(&'static str, &'static str, &'static str, &'static [(&'static str, &'static str)]),
-    Db(&'static str, &'static str, f32, f32),
-    Controls,
-    Reset,
+/// A save slot's entry in the Saves panel.
+struct SaveItem {
+    from: Start,
+    name: String,
+    info: Option<SlotInfo>,
+    thumb: Option<egui::TextureHandle>,
 }
 
-/// The run-ahead row's choices (label, value), as many as the game offers.
-static RUN_AHEAD_OPTIONS: [(&str, &str); 4] = [("Off", "0"), ("1", "1"), ("2", "2"), ("3", "3")];
-
-/// What the settings list shows of a game besides its settings.
-struct Shown<'a> {
+/// The Saves panel: the selected game's states.
+struct SavesPage {
     game: &'static romset::Game,
-    values: &'a GameSettings,
-    has_own: bool,
-    max_anisotropy: u8,
-    temporal_supported: bool,
+    items: Vec<SaveItem>,
+    focus: Focus,
 }
 
-/// The rows that apply to the game as set, as the in-game menu lists them
-/// (`menu::settings_page`): the preset first among the picture rows, the
-/// rest of the picture only under Custom, and rows with nothing to do (the
-/// chip's, a run-ahead the game has no lag for) left out.
-fn shown_rows(c: &Shown) -> Vec<Row> {
-    let v = c.values;
-    let temporal = v.temporal_on() && c.temporal_supported;
-    let custom = v.preset == Preset::Custom;
-    let max = hints::run_ahead_max(Some(c.game));
-    rows(c.has_own, c.max_anisotropy)
-        .into_iter()
-        .filter_map(|row| {
-            let Row::Choice(key, label, hint, options) = row else { return Some(row) };
-            let show = match key {
-                "hud_edges" => v.wide,
-                "bezel" => !v.wide && crate::bezel::art_set(c.game).is_some(),
-                "aa" => custom && !temporal,
-                "temporal" => custom && !v.geo_chip && c.temporal_supported,
-                "stipple" => custom && temporal,
-                "depth" | "shading" | "pack" => custom,
-                "bloom" => custom && c.temporal_supported,
-                "crt" => custom,
-                "shading_fine" | "shading_balance" => custom && v.light_on(),
-                "materials" => custom && v.pack && !v.geo_chip,
-                "materials_relief" => custom && v.materials_on() && !v.geo_chip,
-                "smooth" => !v.geo_chip,
-                "run_ahead" => hints::run_ahead_shown(Some(c.game), v.run_ahead),
-                "tex_filter" => v.pack,
-                _ => true,
-            };
-            let options = if key == "run_ahead" { &RUN_AHEAD_OPTIONS[..=(max as usize).min(3)] } else { options };
-            show.then_some(Row::Choice(key, label, hint, options))
-        })
-        .collect()
-}
-
-/// Change setting `key`: a preset sets the rows it describes.
-fn change(values: &mut GameSettings, key: &str, value: &str, game: &'static romset::Game) {
-    match (key, Preset::parse(value)) {
-        ("preset", Some(p)) => values.apply_preset(p, Some(game)),
-        _ => {
-            values.set(key, value);
-        }
-    }
-}
-
-/// `values` with a preset whose rows no longer all match made Custom.
-fn settle(values: &mut GameSettings, game: &'static romset::Game) {
-    *values = std::mem::take(values).settled(Some(game));
-}
-
-/// The settings panel's rows: key, label, hint, and choices (label, value);
-/// texture filters up to `max_anisotropy` (`gpu::max_anisotropy`).
-fn rows(has_own: bool, max_anisotropy: u8) -> Vec<Row> {
-    let mut rows = vec![
-        Row::Scope,
-        Row::Choice("wide", "Aspect", "", &[("Fit the window", "true"), ("4:3", "false")]),
-        Row::Choice("bezel", "Bezel", "beside a 4:3 picture in a wider window", &[("On", "true"), ("Off", "false")]),
-        Row::Choice("hud_edges", "HUD", "in wide views", &[("At the edges", "true"), ("Centred", "false")]),
-        Row::Choice(
-            "preset",
-            "Picture style",
-            "",
-            &[
-                ("Arcade original", "original"),
-                ("Sharp", "sharp"),
-                ("Smooth modern", "enhanced"),
-                ("CRT", "crt"),
-                ("Custom", "custom"),
-            ],
-        ),
-        Row::Choice(
-            "aa",
-            "Anti-aliasing",
-            "smooths polygon edges; 8x needs a GPU that has it, else 4x",
-            &[("Off", "0"), ("4x", "4"), ("8x", "8")],
-        ),
-        Row::Choice(
-            "temporal",
-            "Temporal AA",
-            "edges smoothed over frames; a % draws smaller, then upscales",
-            &[("Off", "off"), ("TAA", "taa"), ("75%", "75"), ("67%", "67"), ("50%", "50")],
-        ),
-        Row::Choice(
-            "stipple",
-            "Checkerboard see-through",
-            "with temporal: the games' screen-door translucency as an even blend, or the pattern kept",
-            &[("Blend", "blend"), ("Keep", "keep")],
-        ),
-        Row::Choice(
-            "depth",
-            "Depth buffer",
-            "polygons that cross or are sorted wrong come out right; off draws in the game's order",
-            &[("Off", "false"), ("On", "true")],
-        ),
-        Row::Choice(
-            "shading",
-            "Shading",
-            "flat is the game's own; vertex blends brightness across curved surfaces",
-            &[("Flat", "flat"), ("Vertex", "vertex"), ("Pixel", "pixel")],
-        ),
-        Row::Choice(
-            "shading_fine",
-            "Brightness levels",
-            "with shading: blended, so smooth surfaces don't band; or the game's 64",
-            &[("Game's", "false"), ("Blended", "true")],
-        ),
-        Row::Choice(
-            "shading_balance",
-            "Brightness balance",
-            "with shading: each smooth surface as bright as the game's; off, bumpy ones come out brighter",
-            &[("On", "true"), ("Off", "false")],
-        ),
-        Row::Choice(
-            "pack",
-            "Texture pack",
-            "replacement textures from the game's texpack folder",
-            &[("Off", "false"), ("On", "true")],
-        ),
-        Row::Choice(
-            "materials",
-            "Material maps",
-            "the pack's normal maps: bumps and grooves lit by the game's own lights",
-            &[("Off", "false"), ("On", "true")],
-        ),
-        Row::Choice(
-            "materials_relief",
-            "Material relief",
-            "how strongly maps shade (2 by default); faithful keeps the game's own lighting sum, subtler",
-            &[("1", "1"), ("2", "2"), ("4", "4"), ("8", "8"), ("Faithful", "off")],
-        ),
-        Row::Choice(
-            "bloom",
-            "Bloom",
-            "bright parts of the 3D picture glow; the HUD stays sharp",
-            &[("Off", "off"), ("Light", "25"), ("Medium", "50"), ("Strong", "100")],
-        ),
-        Row::Choice(
-            "crt",
-            "CRT",
-            "scanlines, a soft tube edge and a slight curve over the whole picture",
-            &[("Off", "off"), ("Light", "30"), ("Medium", "60"), ("Strong", "100")],
-        ),
-        Row::Choice(
-            "exact",
-            "Speed",
-            "exact is 57.5 frames a second; else one a 60 or 120 Hz refresh, 4.3% fast",
-            &[("One frame a refresh", "false"), ("Exact arcade", "true")],
-        ),
-        Row::Choice(
-            "smooth",
-            "Smooth motion",
-            "in-between frames on displays faster than 60 Hz, a frame later",
-            &[("Off", "false"), ("On", "true")],
-        ),
-        Row::Choice(
-            "run_ahead",
-            "Run-ahead",
-            "frames shown ahead of the game: less input lag for that much more work",
-            &RUN_AHEAD_OPTIONS,
-        ),
-        Row::Db("sfx_db", "Effects", -20.0, 20.0),
-        Row::Db("music_db", "Music", -30.0, 10.0),
-        Row::Choice(
-            "geo",
-            "Geometrizer",
-            "the chip runs the game's own program (the reference); applies on starting",
-            &[("Native", "native"), ("The game's chip", "chip")],
-        ),
-        Row::Choice(
-            "tex_filter",
-            "Texture filtering",
-            "of pack images: less shimmer far off",
-            crate::settings::tex_filters(max_anisotropy),
-        ),
-        Row::Controls,
-    ];
-    if has_own {
-        rows.push(Row::Reset);
-    }
-    rows
+/// A click (or a pad press) on the launcher's page, applied after it is
+/// drawn.
+#[derive(Clone, Copy)]
+enum Click {
+    View(ViewMode),
+    Filter(Filter),
+    NextFilter,
+    Sort,
+    Continue,
+    Play,
+    Saves,
+    Settings,
+    /// A game's poster: selects it, or plays it if it is.
+    Game(&'static romset::Game),
 }
 
 pub struct Launcher {
     pub open: bool,
-    cards: Vec<Card>,
-    groups: Vec<Group>,
-    sel: usize,
+    /// The playable games, and the recently played (latest first).
+    all: Vec<&'static romset::Game>,
+    recent: Vec<String>,
+    pub mode: ViewMode,
+    pub filter: Filter,
+    pub sort: Sort,
+    chips: Vec<Filter>,
+    /// The carousel's games (everything, the played first) and the grid's
+    /// (filtered, sorted).
+    carousel: Vec<&'static romset::Game>,
+    grid: Vec<&'static romset::Game>,
+    /// The selected game.
+    cur: Option<&'static romset::Game>,
     /// When the selection last changed.
     pub selected_at: Instant,
-    /// The row's scroll (points, where it starts), where it's going, and each
-    /// card's scale, animated towards their targets.
-    scroll: Option<f32>,
-    scroll_target: f32,
-    scales: Vec<f32>,
+    /// The carousel's slide, in cards, towards 0 after a step; each card's
+    /// growth (0 small, 1 selected).
+    slide: f32,
+    grow: HashMap<&'static str, f32>,
     last_frame: Option<Instant>,
-    /// The highlighted button beside the preview.
-    button: usize,
-    pub panel: Panel,
-    /// The panel's slide, 0 (closed) to 1.
-    panel_t: f32,
-    row: usize,
-    /// Mouse wheel travel not yet turned into a step.
     wheel: f32,
-    /// The last input came from a gamepad (the hints say its buttons).
+    /// The last input came from a gamepad (or none yet: the couch's
+    /// buttons are the default).
     pub pad_used: bool,
+    keys_used: bool,
+    focus: Focus,
+    /// Where the focus goes once the page has drawn it.
+    pending_focus: Option<(Id, u8)>,
+    saves: Option<SavesPage>,
+    want_saves: bool,
     posters: HashMap<String, egui::TextureHandle>,
-    /// Bezel art (a few, by set), the one fading in, and since when.
-    bezels: Vec<(String, egui::TextureHandle)>,
-    backdrop: Option<(String, Instant)>,
-    backdrop_before: Option<String>,
+    /// Each poster blurred (a small copy, stretched), the carousel's
+    /// background while the preview isn't there.
+    blurs: HashMap<String, egui::TextureHandle>,
     art: Option<crate::art::Loader>,
     logo: Option<egui::TextureHandle>,
+    /// The glyph for "choose" in the hint bar, if the fonts have it.
+    choose: Option<&'static str>,
     /// The ROM folder being edited (no games found).
     pub rom_text: String,
-    /// Anisotropic filtering the GPU has (`gpu::max_anisotropy`): the
-    /// texture filters offered.
-    pub max_anisotropy: u8,
-    /// The GPU can do temporal anti-aliasing (`gpu::temporal_supported`).
-    pub temporal_supported: bool,
 }
 
-/// The hint of the run-ahead row: `hint`, what this computer has time for
-/// (amber when `chosen` is more), and whether it was switched off.
-fn run_ahead_hint(hint: &str, chosen: u32, game: &romset::Game, view: &View) -> (String, Color32) {
-    let max = hints::run_ahead_max(Some(game));
-    let mut text = hint.to_string();
-    if let Some(note) = hints::run_ahead_note(view.run_ahead_room, max, chosen) {
-        text += &format!(". {note}");
-    }
-    if view.run_ahead_dropped {
-        text += ". Switched off: too slow. Choosing it again tries again.";
-    }
-    let warn = hints::run_ahead_warns(view.run_ahead_room, max, chosen) || view.run_ahead_dropped;
-    (text, if warn { AMBER } else { DIM })
+/// The id the carousel's selected card has whichever game it is, so the
+/// pad's focus stays on it as the games pass through.
+fn selected_card() -> Id {
+    Id::unique("carousel-selected")
 }
 
-/// Why setting `key` doesn't apply as set (said in place of its hint):
-/// temporal anti-aliasing needs the native geometrizer and a GPU that has
-/// it, and turns multisampling off; per-pixel shading needs the native
-/// geometrizer (the chip draws it as vertex), and a crease angle of 0
-/// smooths nothing; material maps need the texture pack and the native
-/// geometrizer.
-fn overridden(key: &str, v: &GameSettings, temporal_supported: bool) -> Option<&'static str> {
-    let temporal = v.temporal_on() && temporal_supported;
-    match key {
-        "aa" if temporal && v.aa > 0 => Some("off while temporal anti-aliasing is on"),
-        "temporal" if v.temporal > 0 && !temporal_supported => Some("off: this GPU can't"),
-        "temporal" if v.temporal > 0 && v.geo_chip => Some("off: it needs the native geometrizer"),
-        "stipple" if v.stipple_keep && !temporal => Some("only with temporal anti-aliasing on"),
-        "shading" if v.shading != gpu::Shading::Flat && v.crease == 0 => Some("crease 0: nothing is smoothed"),
-        "shading" if v.shading == gpu::Shading::Pixel && v.geo_chip => {
-            Some("drawn as vertex with the chip: per pixel needs the native geometrizer")
-        }
-        "shading_fine" if v.shading_fine && !v.light_on() => Some("only with shading on"),
-        "shading_balance" if !v.shading_balance && !v.light_on() => Some("only with shading on"),
-        "materials" if v.materials && !v.pack => Some("no effect without the texture pack on"),
-        "materials" if v.materials && v.geo_chip => Some("no effect with the chip: needs the native geometrizer"),
-        "materials_relief" if v.materials_relief != gpu::Relief::default() && !v.materials_on() => {
-            Some("only with material maps on")
-        }
-        _ => None,
-    }
+fn tile_id(game: &romset::Game) -> Id {
+    Id::unique(("tile", game.id))
+}
+
+fn button_id(name: &str) -> Id {
+    Id::unique(("launcher-button", name))
 }
 
 impl Default for Launcher {
     fn default() -> Self {
         Launcher {
             open: false,
-            cards: Vec::new(),
-            groups: Vec::new(),
-            sel: 0,
+            all: Vec::new(),
+            recent: Vec::new(),
+            mode: ViewMode::default(),
+            filter: Filter::All,
+            sort: Sort::default(),
+            chips: vec![Filter::All],
+            carousel: Vec::new(),
+            grid: Vec::new(),
+            cur: None,
             selected_at: Instant::now(),
-            scroll: None,
-            scroll_target: 0.0,
-            scales: Vec::new(),
+            slide: 0.0,
+            grow: HashMap::new(),
             last_frame: None,
-            button: 0,
-            panel: Panel::Closed,
-            panel_t: 0.0,
-            row: 0,
             wheel: 0.0,
-            pad_used: false,
+            pad_used: true,
+            keys_used: false,
+            focus: Focus::default(),
+            pending_focus: None,
+            saves: None,
+            want_saves: false,
             posters: HashMap::new(),
-            bezels: Vec::new(),
-            backdrop: None,
-            backdrop_before: None,
+            blurs: HashMap::new(),
             art: None,
             logo: None,
+            choose: None,
             rom_text: String::new(),
-            max_anisotropy: 16,
-            temporal_supported: true,
         }
     }
 }
 
-/// "2 h ago" and so on.
+/// "2 hours ago" and so on.
 pub fn age(t: SystemTime) -> String {
     let s = t.elapsed().unwrap_or_default().as_secs();
     match s {
@@ -511,196 +317,220 @@ fn ease(dt: f32, rate: f32) -> f32 {
     1.0 - (-dt * rate).exp()
 }
 
+fn full_uv() -> Rect {
+    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))
+}
+
+/// `image` as a small copy (24 texels across): drawn stretched with linear
+/// filtering it is a blur.
+fn blur_image(image: &egui::ColorImage) -> egui::ColorImage {
+    const W: usize = 24;
+    let (w0, h0) = (image.width().max(1), image.height().max(1));
+    let h = (h0 * W / w0).max(1);
+    let mut pixels = Vec::with_capacity(W * h);
+    for y in 0..h {
+        for x in 0..W {
+            let (x0, x1) = (x * w0 / W, ((x + 1) * w0 / W).clamp(x * w0 / W + 1, w0));
+            let (y0, y1) = (y * h0 / h, ((y + 1) * h0 / h).clamp(y * h0 / h + 1, h0));
+            let (mut sum, mut n) = ([0u32; 3], 0u32);
+            // Every few texels is enough of a cell for a blur.
+            for yy in (y0..y1).step_by(((y1 - y0) / 4).max(1)) {
+                for xx in (x0..x1).step_by(((x1 - x0) / 4).max(1)) {
+                    let c = image.pixels[yy * w0 + xx];
+                    sum = [sum[0] + c.r() as u32, sum[1] + c.g() as u32, sum[2] + c.b() as u32];
+                    n += 1;
+                }
+            }
+            let n = n.max(1);
+            pixels.push(Color32::from_rgb((sum[0] / n) as u8, (sum[1] / n) as u8, (sum[2] / n) as u8));
+        }
+    }
+    egui::ColorImage::new([W, h], pixels)
+}
+
+/// A control: its hit area, registered with the pad's focus. True if it
+/// was clicked or A was pressed on it.
+fn control(focus: &mut Focus, ui: &Ui, id: Id, rect: Rect) -> (Response, bool) {
+    let r = ui.interact(rect, id, Sense::click());
+    let hit = focus.register(ui, &r);
+    (r, hit)
+}
+
+/// `text` cut with an ellipsis to fit `width`.
+fn fit_text(p: &Painter, text: &str, font: &FontId, width: f32) -> String {
+    let wide = |t: &str| p.layout_no_wrap(t.to_string(), font.clone(), FG).size().x;
+    if wide(text) <= width {
+        return text.to_string();
+    }
+    let mut chars: Vec<char> = text.chars().collect();
+    while chars.len() > 1 {
+        chars.pop();
+        let t: String = chars.iter().collect::<String>().trim_end().to_string() + "…";
+        if wide(&t) <= width {
+            return t;
+        }
+    }
+    "…".to_string()
+}
+
 impl Launcher {
     /// Set the games (playable sets in the ROM folder) and the recently
     /// played (most recent first), keeping the selection if it's still
-    /// there, else selecting the most recent.
+    /// there, else selecting the first.
     pub fn set_games(&mut self, games: &[&'static romset::Game], recent: &[String]) {
-        let selected = self.selected().map(|g| g.id);
-        let mut cards = Vec::new();
-        let mut groups = Vec::new();
-        let recents: Vec<&'static romset::Game> =
-            recent.iter().filter_map(|r| games.iter().find(|g| g.id == r).copied()).take(RECENT).collect();
-        if !recents.is_empty() {
-            groups.push(Group { name: "Recently played".into(), start: 0, len: recents.len() });
-            cards.extend(recents.iter().map(|&game| Card { game, group: 0 }));
+        self.all = games.to_vec();
+        self.recent = recent.to_vec();
+        self.chips = Filter::chips(games, recent);
+        if !self.chips.contains(&self.filter) {
+            self.filter = Filter::All;
         }
-        let mut boards: Vec<&str> = games.iter().map(|g| g.board.name()).collect();
-        boards.sort();
-        boards.dedup();
-        for board in boards {
-            let mut list: Vec<&'static romset::Game> =
-                games.iter().copied().filter(|g| g.board.name() == board).collect();
-            list.sort_by_key(|g| (g.title, g.id));
-            groups.push(Group { name: board.to_string(), start: cards.len(), len: list.len() });
-            let group = groups.len() - 1;
-            cards.extend(list.into_iter().map(|game| Card { game, group }));
-        }
-        self.cards = cards;
-        self.groups = groups;
-        self.scales = self.cards.iter().map(|_| 0.8).collect();
-        self.scroll = None;
-        let keep = selected.and_then(|id| self.cards.iter().position(|c| c.game.id == id));
-        self.select(keep.unwrap_or(0));
-        let all: Vec<&'static romset::Game> = games.to_vec();
-        if !all.is_empty() {
-            self.art = Some(crate::art::Loader::start(all));
+        self.relist();
+        let keep = self.cur.filter(|c| self.all.iter().any(|g| g.id == c.id));
+        let first = self.carousel.first().copied();
+        self.cur = keep.or(first);
+        self.selected_at = Instant::now();
+        self.grow.clear();
+        self.slide = 0.0;
+        self.pending_focus = Some((self.selected_id(), 6));
+        if !games.is_empty() {
+            self.art = Some(crate::art::Loader::start(games.to_vec()));
         }
     }
 
-    /// Select the card for `set` (the first, if it's in more than one group).
+    /// The lists, from the games, the recent, the filter and the sort.
+    fn relist(&mut self) {
+        self.carousel = library::list(&self.all, &self.recent, Filter::All, Sort::Recent);
+        self.grid = library::list(&self.all, &self.recent, self.filter, self.sort);
+    }
+
+    /// The games the current view lists.
+    fn view_list(&self) -> &[&'static romset::Game] {
+        match self.mode {
+            ViewMode::Carousel => &self.carousel,
+            ViewMode::Grid => &self.grid,
+        }
+    }
+
+    /// The selected game's place in the current view.
+    fn index(&self) -> Option<usize> {
+        let cur = self.cur?;
+        self.view_list().iter().position(|g| g.id == cur.id)
+    }
+
+    /// The id the focus takes to rest on the selected game.
+    fn selected_id(&self) -> Id {
+        match (self.mode, self.cur) {
+            (ViewMode::Grid, Some(g)) => tile_id(g),
+            _ => selected_card(),
+        }
+    }
+
+    /// Select the game for `set`.
     pub fn select_set(&mut self, set: &str) {
-        if let Some(i) = self.cards.iter().position(|c| c.game.id == set) {
-            self.select(i);
+        if let Some(g) = self.all.iter().copied().find(|g| g.id == set) {
+            self.select(g);
+            self.pending_focus = Some((self.selected_id(), 6));
         }
     }
 
-    fn select(&mut self, i: usize) {
-        let i = i.min(self.cards.len().saturating_sub(1));
-        if i != self.sel || self.cards.is_empty() {
+    fn select(&mut self, game: &'static romset::Game) {
+        if self.cur.map(|c| c.id) != Some(game.id) {
             self.selected_at = Instant::now();
         }
-        let before = self.selected().map(|g| g.id);
-        self.sel = i;
-        if self.selected().map(|g| g.id) != before {
-            self.button = 0;
-            if self.panel == Panel::Controls {
-                self.panel = Panel::Settings;
-            }
-        }
+        self.cur = Some(game);
     }
 
     pub fn selected(&self) -> Option<&'static romset::Game> {
-        self.cards.get(self.sel).map(|c| c.game)
+        self.cur
     }
 
-    #[cfg(test)]
-    pub fn groups(&self) -> &[Group] {
-        &self.groups
-    }
-
-    #[cfg(test)]
-    pub fn selection(&self) -> usize {
-        self.sel
-    }
-
-    /// The buttons beside the preview: (label, play, resume).
-    fn buttons(resume: bool) -> &'static [(&'static str, Option<bool>)] {
-        if resume {
-            &[("Continue", Some(true)), ("New game", Some(false)), ("Settings", None)]
-        } else {
-            &[("Play", Some(false)), ("Settings", None)]
-        }
-    }
-
-    /// Act on `nav`: move, open or close the panel, play. `resume`: the
-    /// selected game has a resume state.
-    pub fn nav(
-        &mut self,
-        nav: Nav,
-        resume: bool,
-        values: &mut GameSettings,
-        for_all: &mut bool,
-        has_own: bool,
-        actions: &mut Vec<Action>,
-    ) {
-        let Some(game) = self.selected() else {
-            return;
+    /// Step the selection through the view's list by `d` (the carousel wraps
+    /// round, the grid stops at its ends).
+    fn step(&mut self, d: i32) {
+        let n = self.view_list().len() as i32;
+        let Some(at) = self.index().map(|i| i as i32).filter(|_| n > 0) else { return };
+        let to = match self.mode {
+            ViewMode::Carousel => (at + d).rem_euclid(n),
+            ViewMode::Grid => (at + d).clamp(0, n - 1),
         };
-        let nav = if nav == Nav::Start { Nav::Accept } else { nav };
-        match self.panel {
-            Panel::Controls => {
-                if nav == Nav::Back {
-                    self.panel = Panel::Settings;
-                }
-            }
-            Panel::Settings => {
-                let rows = shown_rows(&Shown {
-                    game,
-                    values,
-                    has_own,
-                    max_anisotropy: self.max_anisotropy,
-                    temporal_supported: self.temporal_supported,
-                });
-                self.row = self.row.min(rows.len() - 1);
-                match nav {
-                    Nav::Back | Nav::Settings => self.panel = Panel::Closed,
-                    Nav::Up => self.row = self.row.saturating_sub(1),
-                    Nav::Down => self.row = (self.row + 1).min(rows.len() - 1),
-                    Nav::Left | Nav::Right | Nav::Accept => {
-                        let step = match nav {
-                            Nav::Left => -1,
-                            Nav::Right => 1,
-                            _ => 0,
-                        };
-                        match rows[self.row] {
-                            Row::Scope => *for_all = if step == 0 { !*for_all } else { step > 0 },
-                            Row::Choice(key, _, _, options) => {
-                                // A value off the list is one more choice
-                                // after the others: staying on it keeps it.
-                                let (labels, at) = choice_labels(options, &values.get(key));
-                                let (at, n) = (at as i32, labels.len() as i32);
-                                let to = if step == 0 { (at + 1) % n } else { (at + step).clamp(0, n - 1) };
-                                if let Some(o) = options.get(to as usize) {
-                                    change(values, key, o.1, game);
-                                }
-                            }
-                            Row::Db(key, _, min, max) => {
-                                let v: f32 = values.get(key).parse().unwrap_or(0.0);
-                                values.set(key, &(v + step as f32).clamp(min, max).to_string());
-                            }
-                            Row::Controls if step == 0 => self.panel = Panel::Controls,
-                            Row::Reset if step == 0 => {
-                                actions.push(Action::ResetGame(game.id.to_string()));
-                                self.row = self.row.saturating_sub(1);
-                            }
-                            _ => {}
-                        }
-                        settle(values, game);
-                    }
-                    Nav::PrevGroup | Nav::NextGroup | Nav::Start => {}
-                }
-            }
-            Panel::Closed => {
-                let buttons = Self::buttons(resume);
-                self.button = self.button.min(buttons.len() - 1);
-                match nav {
-                    Nav::Left => self.select(self.sel.saturating_sub(1)),
-                    Nav::Right => self.select(self.sel + 1),
-                    Nav::Up => self.button = self.button.saturating_sub(1),
-                    Nav::Down => self.button = (self.button + 1).min(buttons.len() - 1),
-                    Nav::Settings => self.open_settings(),
-                    Nav::Accept => match buttons[self.button].1 {
-                        Some(resume) => actions.push(Action::Play { set: game.id.to_string(), resume }),
-                        None => self.open_settings(),
-                    },
-                    Nav::PrevGroup | Nav::NextGroup => {
-                        let g = self.cards[self.sel].group;
-                        let to = if nav == Nav::PrevGroup {
-                            // To the start of this group, or the one before.
-                            if self.sel > self.groups[g].start || g == 0 {
-                                self.groups[g].start
-                            } else {
-                                self.groups[g - 1].start
-                            }
-                        } else {
-                            self.groups.get(g + 1).map_or(self.cards.len() - 1, |n| n.start)
-                        };
-                        self.select(to);
-                    }
-                    Nav::Back | Nav::Start => {}
-                }
+        if to != at {
+            let game = self.view_list()[to as usize];
+            self.select(game);
+            if self.mode == ViewMode::Carousel && d.abs() == 1 {
+                self.slide = (self.slide + d as f32).clamp(-1.5, 1.5);
             }
         }
     }
 
-    fn open_settings(&mut self) {
-        self.panel = Panel::Settings;
-        self.row = 1;
+    /// Show `mode`, keeping the selected game.
+    pub fn set_mode(&mut self, mode: ViewMode) {
+        if self.mode == mode {
+            return;
+        }
+        self.mode = mode;
+        self.slide = 0.0;
+        if self.index().is_none() {
+            if let Some(first) = self.view_list().first().copied() {
+                self.select(first);
+            }
+        }
+        self.pending_focus = Some((self.selected_id(), 6));
+    }
+
+    /// Show the games `filter` keeps (when it is among the chips).
+    pub fn set_filter(&mut self, filter: Filter) {
+        if !self.chips.contains(&filter) {
+            return;
+        }
+        self.filter = filter;
+        self.relist();
+        if self.mode == ViewMode::Grid && self.index().is_none() {
+            if let Some(first) = self.grid.first().copied() {
+                self.select(first);
+            }
+        }
+        self.pending_focus = Some((self.selected_id(), 6));
+    }
+
+    /// The filter `d` chips on, wrapping round.
+    fn cycle_filter(&mut self, d: i32) {
+        let n = self.chips.len() as i32;
+        let at = self.chips.iter().position(|c| *c == self.filter).unwrap_or(0) as i32;
+        self.set_filter(self.chips[(at + d).rem_euclid(n) as usize]);
+    }
+
+    pub fn set_sort(&mut self, sort: Sort) {
+        self.sort = sort;
+        self.relist();
+    }
+
+    /// The selected game's preview is wanted: the grid doesn't show it.
+    pub fn wants_preview(&self) -> bool {
+        self.mode == ViewMode::Carousel
+    }
+
+    /// The games the grid lists now, and how many there are in all.
+    pub fn counts(&self) -> (usize, usize) {
+        (self.grid.len(), self.all.len())
+    }
+
+    #[cfg(test)]
+    fn grid_ids(&self) -> Vec<&'static str> {
+        self.grid.iter().map(|g| g.id).collect()
+    }
+
+    #[cfg(test)]
+    fn carousel_ids(&self) -> Vec<&'static str> {
+        self.carousel.iter().map(|g| g.id).collect()
+    }
+
+    /// The Saves panel is open.
+    pub fn saves_open(&self) -> bool {
+        self.saves.is_some() || self.want_saves
     }
 
     /// The keyboard's `Nav`s this frame (taken from egui's input, so the
-    /// controls page's widgets don't see them twice).
+    /// widgets don't see them twice).
     pub fn keys(ctx: &egui::Context) -> Vec<Nav> {
         use egui::{Key, Modifiers};
         let map = [
@@ -713,8 +543,14 @@ impl Launcher {
             (Key::Escape, Nav::Back),
             (Key::Backspace, Nav::Back),
             (Key::Tab, Nav::Settings),
+            (Key::S, Nav::Saves),
+            (Key::C, Nav::Continue),
+            (Key::Q, Nav::PrevGroup),
+            (Key::E, Nav::NextGroup),
             (Key::PageUp, Nav::PrevGroup),
             (Key::PageDown, Nav::NextGroup),
+            (Key::OpenBracket, Nav::PrevFilter),
+            (Key::CloseBracket, Nav::NextFilter),
         ];
         let mut out = Vec::new();
         ctx.input_mut(|i| {
@@ -727,59 +563,38 @@ impl Launcher {
         out
     }
 
-    /// Upload decoded art, and ask for the selected game's bezel.
+    /// Upload decoded art.
     fn art(&mut self, ctx: &egui::Context) {
         let Some(loader) = &self.art else { return };
-        for (set, kind, image) in loader.take() {
-            let tex = ctx.load_texture(format!("{kind:?} {set}"), image, egui::TextureOptions::LINEAR);
-            match kind {
-                crate::art::Kind::Poster => {
-                    self.posters.insert(set, tex);
-                }
-                crate::art::Kind::Bezel => {
-                    self.bezels.retain(|b| b.0 != set);
-                    self.bezels.push((set, tex));
-                    // The art is full HD: keep the last few.
-                    if self.bezels.len() > 3 {
-                        drop(self.bezels.remove(0));
-                    }
-                }
-            }
-        }
-        if let Some(game) = self.selected() {
-            let shown = self.backdrop.as_ref().map(|b| b.0.as_str());
-            if let Some(set) = crate::bezel::art_set(game) {
-                if shown != Some(set) {
-                    if self.bezel_tex(set).is_none() {
-                        loader.bezel(game);
-                    }
-                    self.backdrop_before = self.backdrop.take().map(|b| b.0);
-                    self.backdrop = Some((set.to_string(), Instant::now()));
-                }
-            }
+        for (set, image) in loader.take() {
+            let blur = ctx.load_texture(format!("blur {set}"), blur_image(&image), egui::TextureOptions::LINEAR);
+            self.blurs.insert(set.clone(), blur);
+            let tex = ctx.load_texture(format!("poster {set}"), image, egui::TextureOptions::LINEAR);
+            self.posters.insert(set, tex);
         }
     }
 
-    /// The bezel art of set `set` (a set with art: `bezel::art_set`).
-    fn bezel_tex(&self, set: &str) -> Option<&egui::TextureHandle> {
-        self.bezels.iter().find(|b| b.0 == set).map(|b| &b.1)
+    /// Note where this frame's input came from, as the menu does: the
+    /// pad's turns the focus ring and the pad's buttons on, the keyboard's
+    /// navigation keys the ring and the keys' hints, the pointer or other
+    /// keys the ring off.
+    fn note_input(&mut self, ctx: &egui::Context, navs: &[Nav], keys: &[Nav]) {
+        let other = ctx.input(|i| {
+            i.pointer.delta() != egui::Vec2::ZERO
+                || i.events.iter().any(|e| matches!(e, egui::Event::Key { .. } | egui::Event::PointerButton { .. }))
+        });
+        if !navs.is_empty() {
+            (self.pad_used, self.keys_used) = (true, false);
+        } else if !keys.is_empty() {
+            (self.pad_used, self.keys_used) = (false, true);
+        } else if other {
+            (self.pad_used, self.keys_used) = (false, false);
+        }
     }
 
     /// Draw the launcher and act on the input. `navs` are the gamepad's;
-    /// the keyboard's and mouse's are read here. `values` are the selected
-    /// game's settings, edited in place (`sources` says where each came
-    /// from); `for_all` is where edits go.
-    #[allow(clippy::too_many_arguments)]
-    pub fn ui(
-        &mut self,
-        ctx: &egui::Context,
-        mut navs: Vec<Nav>,
-        view: &View,
-        values: &mut GameSettings,
-        sources: &[Source; KEYS.len()],
-        for_all: &mut bool,
-        has_own: bool,
-    ) -> Vec<Action> {
+    /// the keyboard's and mouse's are read here.
+    pub fn ui(&mut self, ctx: &egui::Context, navs: Vec<Nav>, view: &View) -> Vec<Action> {
         let mut actions = Vec::new();
         let now = Instant::now();
         let dt = self.last_frame.map_or(0.0, |t| (now - t).as_secs_f32()).min(0.1);
@@ -792,776 +607,943 @@ impl Launcher {
                 self.logo = Some(ctx.load_texture("launcher logo", image, egui::TextureOptions::LINEAR));
             }
         }
-        let resume = view.resume.is_some();
-        if self.panel != Panel::Controls {
-            if !navs.is_empty() {
-                self.pad_used = true;
-            }
-            let keys = Self::keys(ctx);
-            if !keys.is_empty() {
-                self.pad_used = false;
-            }
-            navs.extend(keys);
+        if self.choose.is_none() {
+            let font = FontId::new(18.0, theme::bold());
+            let has = ctx.fonts_mut(|f| f.has_glyph(&font, '✥'));
+            self.choose = Some(if has { "✥" } else { "D-pad" });
         }
-        if self.cards.is_empty() {
+        if self.cur.is_none() {
             self.empty(ctx, &l, view, &mut actions);
             return actions;
         }
-        for nav in navs {
-            self.nav(nav, resume, values, for_all, has_own, &mut actions);
+
+        // The menu over the launcher takes the input; Esc and Start close it.
+        let keys = if view.menu_open {
+            if !view.capturing {
+                let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+                if esc || navs.contains(&Nav::Start) {
+                    actions.push(Action::CloseSettings);
+                }
+            }
+            Vec::new()
+        } else {
+            Self::keys(ctx)
+        };
+        self.note_input(ctx, &navs, &keys);
+        let all: Vec<Nav> = navs.iter().chain(&keys).copied().collect();
+        if self.want_saves {
+            self.want_saves = false;
+            self.open_saves(ctx);
+        }
+        // The Saves panel and the menu take the input; the page behind
+        // gets none (its focus just holds).
+        let page_navs = if view.menu_open || self.saves.is_some() { Vec::new() } else { all.clone() };
+        let page_navs = self.override_navs(page_navs);
+        self.focus.show = self.pad_used || self.keys_used;
+        let mut clicks = Vec::new();
+        for nav in self.focus.begin(&page_navs) {
+            match nav {
+                Nav::Start | Nav::Settings => clicks.push(Click::Settings),
+                Nav::Saves => clicks.push(Click::Saves),
+                Nav::Continue => clicks.push(Click::Continue),
+                Nav::PrevGroup | Nav::NextGroup => clicks.push(Click::View(self.mode.other())),
+                Nav::PrevFilter if self.mode == ViewMode::Grid => self.cycle_filter(-1),
+                Nav::NextFilter if self.mode == ViewMode::Grid => self.cycle_filter(1),
+                _ => {}
+            }
         }
 
-        // Animation targets.
-        for (i, s) in self.scales.iter_mut().enumerate() {
-            let target = if i == self.sel { 1.0 } else { 0.78 };
-            *s += (target - *s) * ease(dt, 16.0);
-        }
-        let open = if self.panel == Panel::Closed { 0.0 } else { 1.0 };
-        self.panel_t += (open - self.panel_t) * ease(dt, 18.0);
-        if (self.panel_t - open).abs() < 0.002 {
-            self.panel_t = open;
+        // Animation.
+        self.slide -= self.slide * ease(dt, 14.0);
+        if self.slide.abs() < 0.01 {
+            self.slide = 0.0;
         }
 
         let area = egui::Area::new(Id::unique("launcher")).fixed_pos(l.screen.min).order(egui::Order::Background);
         area.show(ctx, |ui| {
             ui.set_min_size(l.screen.size());
-            let painter = ui.painter().clone();
-            self.paint_backdrop(&painter, &l, now);
-            self.paint_top(ui, &painter, &l, &mut actions);
-            self.paint_hero(&painter, &l, view, now);
-            self.paint_info(ui, &painter, &l, view, &mut actions);
-            self.paint_cards(ui, &painter, &l, dt, &mut actions);
-            self.paint_hints(&painter, &l);
+            let p = ui.painter().clone();
+            self.paint_background(&p, &l, view);
+            match self.mode {
+                ViewMode::Carousel => self.paint_carousel(ui, &p, &l, view, dt, &mut clicks),
+                ViewMode::Grid => self.paint_grid(ui, &p, &l, view, &mut clicks),
+            }
+            self.paint_top(ui, &p, &l, view, &mut clicks);
+            self.paint_bar(ui, &p, &l, view, &mut clicks);
         });
-        if self.panel_t > 0.0 {
-            self.paint_panel(ctx, &l, view, values, sources, for_all, has_own, &mut actions);
+        self.focus.end();
+        self.apply_focus();
+        for click in clicks {
+            self.apply(click, view, &mut actions);
+        }
+        if self.saves.is_some() {
+            self.paint_saves(ctx, &all, view, &mut actions);
         }
         actions
     }
 
-    /// Whether anything is still moving (else redraws needn't animate).
-    pub fn animating(&self) -> bool {
-        let settled =
-            self.scales.iter().enumerate().all(|(i, s)| (s - if i == self.sel { 1.0 } else { 0.78 }).abs() < 0.002);
-        let scrolling = self.scroll.is_some_and(|s| s != self.scroll_target);
-        !settled || scrolling || (self.panel_t > 0.0 && self.panel_t < 1.0)
-    }
-
-    fn paint_backdrop(&self, p: &Painter, l: &Layout, now: Instant) {
-        // The selected game's bezel, faded in over the grid, the one before
-        // fading out.
-        let fade = self.backdrop.as_ref().map_or(1.0, |b| ((now - b.1).as_secs_f32() / 0.6).min(1.0));
-        let cover = |tex: &egui::TextureHandle, alpha: f32| {
-            let [w, h] = tex.size();
-            let s = (l.screen.width() / w as f32).max(l.screen.height() / h as f32);
-            let r = Rect::from_center_size(l.screen.center(), vec2(w as f32, h as f32) * s);
-            p.image(
-                tex.id(),
-                r,
-                Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-                Color32::from_white_alpha((alpha * 255.0) as u8),
-            );
-        };
-        const LEVEL: f32 = 0.30;
-        if fade < 1.0 {
-            if let Some(tex) = self.backdrop_before.as_deref().and_then(|s| self.bezel_tex(s)) {
-                cover(tex, LEVEL * (1.0 - fade));
+    /// The carousel's own moves: left and right on the selected card step
+    /// through the games (round, as the strip is), and down goes to the
+    /// buttons. The rest is for the focus to place by where things are.
+    fn override_navs(&mut self, navs: Vec<Nav>) -> Vec<Nav> {
+        if self.mode != ViewMode::Carousel || self.focus.focused() != Some(selected_card()) {
+            return navs;
+        }
+        let mut rest = Vec::new();
+        for nav in navs {
+            match nav {
+                Nav::Left => self.step(-1),
+                Nav::Right => self.step(1),
+                Nav::Down => self.pending_focus = Some((button_id("play"), 6)),
+                other => rest.push(other),
             }
         }
-        if let Some(tex) = self.backdrop.as_ref().and_then(|b| self.bezel_tex(&b.0)) {
-            cover(tex, LEVEL * fade);
-        }
-        // Darker behind the cards and the details, for reading.
-        let s = l.screen;
-        gradient(
-            p,
-            Rect::from_min_max(pos2(s.left(), l.cards_y - l.card.y), s.max),
-            Color32::TRANSPARENT,
-            Color32::from_black_alpha(200),
-        );
-        gradient(
-            p,
-            Rect::from_min_max(s.min, pos2(s.right(), l.top.bottom() + 20.0 * l.u)),
-            Color32::from_black_alpha(150),
-            Color32::TRANSPARENT,
-        );
+        rest
     }
 
-    fn paint_top(&mut self, ui: &mut egui::Ui, p: &Painter, l: &Layout, actions: &mut Vec<Action>) {
+    /// Move the focus where it was asked to go, once the page has been
+    /// drawn with that widget in it (a try or two); then take the
+    /// selection from where the focus is in the grid.
+    fn apply_focus(&mut self) {
+        if let Some((id, tries)) = self.pending_focus {
+            self.focus.focus_to(id);
+            self.pending_focus = (self.focus.focused() != Some(id) && tries > 1).then_some((id, tries - 1));
+        }
+        if self.mode == ViewMode::Grid {
+            if let Some(id) = self.focus.focused() {
+                if let Some(game) = self.grid.iter().copied().find(|g| tile_id(g) == id) {
+                    self.select(game);
+                }
+            }
+        }
+    }
+
+    /// Do what a click (or a pad press) on the page asked.
+    fn apply(&mut self, click: Click, view: &View, actions: &mut Vec<Action>) {
+        match click {
+            Click::View(mode) => self.set_mode(mode),
+            Click::Filter(f) => self.set_filter(f),
+            Click::NextFilter => self.cycle_filter(1),
+            Click::Sort => self.set_sort(self.sort.other()),
+            Click::Continue => {
+                if let Some(c) = view.cont {
+                    actions.push(Action::Play { set: c.game.id.to_string(), from: c.from });
+                }
+            }
+            Click::Play => {
+                if let Some(g) = self.cur {
+                    actions.push(Action::Play { set: g.id.to_string(), from: Start::New });
+                }
+            }
+            Click::Saves => {
+                if self.cur.is_some() {
+                    self.want_saves = true;
+                }
+            }
+            Click::Settings => actions.push(Action::Settings),
+            Click::Game(g) => {
+                if self.cur.map(|c| c.id) == Some(g.id) {
+                    actions.push(Action::Play { set: g.id.to_string(), from: Start::New });
+                } else {
+                    self.select(g);
+                    self.pending_focus = Some((self.selected_id(), 6));
+                }
+            }
+        }
+    }
+
+    /// Whether anything is still moving (else redraws needn't animate).
+    pub fn animating(&self) -> bool {
+        // (The posters only grow and slide in the carousel.)
+        let growing = self.mode == ViewMode::Carousel
+            && self.grow.iter().any(|(id, g)| {
+                let target = if self.cur.map(|c| c.id) == Some(*id) { 1.0 } else { 0.0 };
+                (g - target).abs() > 0.01
+            });
+        growing || (self.mode == ViewMode::Carousel && self.slide != 0.0) || self.pending_focus.is_some()
+    }
+
+    fn paint_background(&self, p: &Painter, l: &Layout, view: &View) {
+        let s = l.screen;
+        match self.mode {
+            ViewMode::Carousel => {
+                let cover = |tex: egui::TextureId, uv: Rect, alpha: u8| {
+                    p.image(tex, s, uv, Color32::from_white_alpha(alpha));
+                };
+                // The poster blurred, brightness .38 over the backdrop's black.
+                if let Some(tex) = self.cur.and_then(|g| self.blurs.get(g.id)) {
+                    let [w, h] = tex.size();
+                    let (w, h) = (w as f32, h as f32);
+                    let k = (s.width() / w).max(s.height() / h);
+                    let crop = vec2(s.width() / (w * k), s.height() / (h * k));
+                    cover(tex.id(), Rect::from_center_size(pos2(0.5, 0.5), crop), 100);
+                }
+                // The attract mode, dimmed, over it: the square of the
+                // texture's uv that is the picture's middle (the texture has
+                // the screen's shape, so a square in uv is the screen's).
+                if let Some(v) = view.preview.filter(|v| v.alpha > 0.0) {
+                    let [px, py, pw, ph] = v.picture;
+                    let side = pw.min(ph);
+                    let uv = Rect::from_center_size(pos2(px + pw / 2.0, py + ph / 2.0), vec2(side, side));
+                    cover(v.texture, uv, (v.alpha * 105.0) as u8);
+                }
+                // Dark behind the text at the left, lighter towards the right.
+                let (a, b, c) =
+                    (Color32::from_black_alpha(245), Color32::from_black_alpha(184), Color32::from_black_alpha(64));
+                let mid = s.left() + s.width() * 0.42;
+                hgradient(p, Rect::from_min_max(s.min, pos2(mid, s.bottom())), a, b);
+                hgradient(p, Rect::from_min_max(pos2(mid, s.top()), s.max), b, c);
+            }
+            ViewMode::Grid => {
+                // A cool glow at the top right fading to black.
+                let glow = Color32::from_rgba_unmultiplied(15, 42, 68, 200);
+                vgradient(
+                    p,
+                    Rect::from_min_max(s.min, pos2(s.right(), s.top() + s.height() * 0.6)),
+                    glow,
+                    Color32::TRANSPARENT,
+                );
+            }
+        }
+    }
+
+    /// The top bar: the logo, the quick resume pill (in the grid; the
+    /// carousel's is bigger, under it) and the view switch.
+    fn paint_top(&mut self, ui: &mut Ui, p: &Painter, l: &Layout, view: &View, clicks: &mut Vec<Click>) {
         let u = l.u;
         let mut x = l.top.left();
         if let Some(logo) = &self.logo {
             let [w, h] = logo.size();
-            let lh = l.top.height() * 0.92;
-            let r = Rect::from_min_size(pos2(x, l.top.center().y - lh / 2.0), vec2(lh * w as f32 / h as f32, lh));
-            p.image(logo.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-            x = r.right() + 40.0 * u;
+            let r =
+                Rect::from_min_size(pos2(x, l.top.top()), vec2(l.top.height() * w as f32 / h as f32, l.top.height()));
+            p.image(logo.id(), r, full_uv(), Color32::WHITE);
+            x = r.right() + 24.0 * u;
         }
-        // The groups, the current one underlined; click to jump.
-        let current = self.cards.get(self.sel).map_or(0, |c| c.group);
-        for (i, g) in self.groups.clone().iter().enumerate() {
-            let font = FontId::proportional(17.0 * u);
-            let galley = p.layout_no_wrap(g.name.to_uppercase(), font, FG);
-            let r = Rect::from_min_size(pos2(x, l.top.center().y - galley.size().y / 2.0), galley.size());
-            let hit = ui.interact(r.expand(8.0 * u), Id::unique(("group", i)), Sense::click());
-            let on = i == current;
-            let color = if on {
-                FG
-            } else if hit.hovered() {
-                Color32::from_rgb(200, 206, 216)
-            } else {
-                DIM
-            };
-            p.galley(r.min, galley.clone(), color);
+        if self.mode == ViewMode::Grid {
+            if let Some(c) = view.cont {
+                self.pill(ui, p, l, c, true, pos2(x, l.top.center().y), clicks);
+            }
+        }
+        // The view switch, at the right (the carousel's count beside it).
+        let font = FontId::new(18.0 * u, theme::bold());
+        let labels = ViewMode::ALL.map(|m| m.label());
+        let widths: Vec<f32> =
+            labels.iter().map(|t| p.layout_no_wrap(t.to_string(), font.clone(), FG).size().x + 40.0 * u).collect();
+        let total = widths.iter().sum::<f32>() + 16.0 * u;
+        let mut right = l.top.right();
+        if self.mode == ViewMode::Carousel {
+            let n = self.all.len();
+            let text = format!("{n} game{}", if n == 1 { "" } else { "s" });
+            let r = p.text(
+                pos2(right, l.top.center().y),
+                Align2::RIGHT_CENTER,
+                text,
+                FontId::new(18.0 * u, theme::semibold()),
+                Color32::from_rgb(185, 195, 214),
+            );
+            right = r.left() - 24.0 * u;
+        }
+        let capsule = Rect::from_min_size(pos2(right - total, l.top.center().y - 25.0 * u), vec2(total, 50.0 * u));
+        p.rect_filled(capsule, 999.0, Color32::from_white_alpha(20));
+        let mut sx = capsule.left() + 8.0 * u;
+        for (mode, w) in ViewMode::ALL.into_iter().zip(widths) {
+            let seg = Rect::from_min_size(pos2(sx, capsule.top() + 5.0 * u), vec2(w, capsule.height() - 10.0 * u));
+            let id = button_id(mode.name());
+            let (r, hit) = control(&mut self.focus, ui, id, seg);
+            let on = mode == self.mode;
             if on {
-                p.galley(r.min + vec2(0.6 * u, 0.0), galley, color);
-                p.rect_filled(
-                    Rect::from_min_size(pos2(r.left(), r.bottom() + 6.0 * u), vec2(r.width(), 3.0 * u)),
-                    1.5 * u,
-                    CYAN,
-                );
+                p.rect_filled(seg, 999.0, FG);
+            } else if r.hovered() {
+                p.rect_filled(seg, 999.0, Color32::from_white_alpha(24));
             }
-            if hit.clicked() {
-                self.select(g.start);
+            p.text(seg.center(), Align2::CENTER_CENTER, mode.label(), font.clone(), if on { theme::INK } else { FG });
+            if self.focus.is_on(id) {
+                theme::focus_ring(p, seg, u, 22.0);
             }
-            x = r.right() + 32.0 * u;
-        }
-        // Quit, top right.
-        let font = FontId::proportional(16.0 * u);
-        let galley = p.layout_no_wrap("Quit".into(), font, DIM);
-        let r = Rect::from_min_size(
-            pos2(l.top.right() - galley.size().x, l.top.center().y - galley.size().y / 2.0),
-            galley.size(),
-        );
-        let hit = ui.interact(r.expand(8.0 * u), Id::unique("quit"), Sense::click());
-        p.galley(r.min, galley, if hit.hovered() { FG } else { DIM });
-        if hit.clicked() {
-            actions.push(Action::Quit);
+            if hit && !on {
+                clicks.push(Click::View(mode));
+            }
+            sx += w;
         }
     }
 
-    fn paint_hero(&self, p: &Painter, l: &Layout, view: &View, now: Instant) {
+    /// The quick resume pill: the last game played and where it picks up.
+    /// `compact`: one line in the top bar, `at` the left edge's middle;
+    /// else the carousel's card, `at` its top left.
+    #[allow(clippy::too_many_arguments)]
+    fn pill(
+        &mut self,
+        ui: &mut Ui,
+        p: &Painter,
+        l: &Layout,
+        c: Continue,
+        compact: bool,
+        at: Pos2,
+        clicks: &mut Vec<Click>,
+    ) {
         let u = l.u;
-        let r = l.hero;
-        let radius = 12.0 * u;
-        // Glow and frame.
-        p.add(
-            egui::epaint::RectShape::filled(r, radius, Color32::from_rgba_unmultiplied(47, 230, 239, 40))
-                .with_blur_width(28.0 * u),
+        let when = match c.saved {
+            Some(t) => format!("{}, {}", c.from.label(), age(t)),
+            None => "from the start".to_string(),
+        };
+        let chip = self.chip(Chip::Y, "C");
+        let d = if compact { 32.0 } else { 36.0 } * u;
+        let (thumb, pad) = if compact { (40.0 * u, 6.0 * u) } else { (56.0 * u, 12.0 * u) };
+        let caption_font = FontId::new(18.0 * u, theme::semibold());
+        let line_font = FontId::new(if compact { 18.0 } else { 22.0 } * u, theme::semibold());
+        let (caption, line) = if compact {
+            ("Continue".to_string(), format!("{} · {}", c.game.title, c.saved.map_or("new".to_string(), age)))
+        } else {
+            ("CONTINUE".to_string(), format!("{} · {when}", c.game.title))
+        };
+        let cg = p.layout_no_wrap(caption, caption_font.clone(), theme::CYAN_LIGHT);
+        let lg = p.layout_no_wrap(line, line_font, FG);
+        let chip_w = theme::chip_width_at(p, chip, u, d / u);
+        let gap = 14.0 * u;
+        let (text_w, text_h) = if compact {
+            (cg.size().x + 8.0 * u + lg.size().x, lg.size().y)
+        } else {
+            (cg.size().x.max(lg.size().x), cg.size().y + 2.0 * u + lg.size().y)
+        };
+        let size = vec2(
+            pad + thumb + gap + text_w + gap + chip_w + pad + if compact { 2.0 * u } else { 8.0 * u },
+            thumb + 2.0 * pad,
         );
-        p.rect_filled(r, radius, Color32::BLACK);
-        let Some(game) = self.selected() else { return };
-        let live = view.preview.filter(|v| v.alpha > 0.0);
-        // The poster until the preview is live (and fading into it).
-        if live.is_none_or(|v| v.alpha < 1.0) {
-            if let Some(tex) = self.posters.get(game.id) {
-                let a = 1.0 - live.map_or(0.0, |v| v.alpha);
+        let rect = if compact {
+            Rect::from_min_size(pos2(at.x, at.y - size.y / 2.0), size)
+        } else {
+            Rect::from_min_size(at, size)
+        };
+        let radius = if compact { 12.0 } else { 14.0 };
+        let id = button_id("continue");
+        let (r, hit) = control(&mut self.focus, ui, id, rect);
+        let fill = if r.hovered() { Color32::from_white_alpha(32) } else { Color32::from_white_alpha(20) };
+        p.rect_filled(rect, radius * u, fill);
+        p.rect_stroke(
+            rect,
+            radius * u,
+            Stroke::new(1.0 * u, Color32::from_rgba_unmultiplied(34, 229, 255, 90)),
+            StrokeKind::Inside,
+        );
+        let tr = Rect::from_min_size(pos2(rect.left() + pad, rect.center().y - thumb / 2.0), vec2(thumb, thumb));
+        match self.posters.get(c.game.id) {
+            Some(tex) => {
                 let [w, h] = tex.size();
-                let (w, h) = (w as f32, h as f32);
-                // Cover the frame, dimmed, with the whole poster in the middle.
-                let s = (r.width() / w).max(r.height() / h);
-                let crop = vec2(r.width() / (w * s), r.height() / (h * s));
-                let uv = Rect::from_center_size(pos2(0.5, 0.5), crop);
+                let frac = (w as f32 / h as f32).min(1.0);
+                let uv = Rect::from_center_size(pos2(0.5, 0.5), vec2(1.0, frac));
+                p.add(egui::epaint::RectShape::filled(tr, 8.0 * u, Color32::WHITE).with_texture(tex.id(), uv));
+            }
+            None => {
+                p.rect_filled(tr, 8.0 * u, PANEL);
+            }
+        }
+        let tx = tr.right() + gap;
+        if compact {
+            let y = rect.center().y;
+            p.galley(pos2(tx, y - cg.size().y / 2.0), cg.clone(), theme::CYAN_LIGHT);
+            p.galley(pos2(tx + cg.size().x + 8.0 * u, y - lg.size().y / 2.0), lg, FG);
+        } else {
+            let ty = rect.center().y - text_h / 2.0;
+            p.galley(pos2(tx, ty), cg.clone(), theme::CYAN_LIGHT);
+            p.galley(pos2(tx, ty + cg.size().y + 2.0 * u), lg, FG);
+        }
+        theme::paint_chip_at(p, chip, pos2(rect.right() - pad - 2.0 * u - chip_w, rect.center().y), u, d / u);
+        if self.focus.is_on(id) {
+            theme::focus_ring(p, rect, u, radius);
+        }
+        if hit {
+            clicks.push(Click::Continue);
+        }
+    }
+
+    /// A chip as the last input names its button: the pad's, or the key.
+    fn chip<'a>(&self, pad: Chip<'a>, key: &'a str) -> Chip<'a> {
+        if self.pad_used {
+            pad
+        } else {
+            Chip::Key(key)
+        }
+    }
+
+    fn paint_carousel(&mut self, ui: &mut Ui, p: &Painter, l: &Layout, view: &View, dt: f32, clicks: &mut Vec<Click>) {
+        let u = l.u;
+        let Some(game) = self.cur else { return };
+        if let Some(c) = view.cont {
+            self.pill(ui, p, l, c, false, pos2(l.body.left(), l.body.top() + 4.0 * u), clicks);
+        }
+        // The game: its name large, what kind it is, and what can be done.
+        let info_w = (520.0 * u).min(l.body.width() * 0.45);
+        let left = l.body.left();
+        let mut y = l.body.top() + 112.0 * u;
+        let size = match game.title.chars().count() {
+            0..=14 => 60.0,
+            15..=22 => 48.0,
+            _ => 40.0,
+        };
+        let title = p.layout(game.title.to_uppercase(), FontId::new(size * u, theme::display()), FG, info_w);
+        p.galley(pos2(left, y), title.clone(), FG);
+        y += title.size().y + 14.0 * u;
+        let chip_font = FontId::new(18.0 * u, theme::semibold());
+        let mut x = left;
+        let facts = [
+            (game.genre.to_string(), Color32::from_rgba_unmultiplied(34, 229, 255, 41), theme::CYAN_LIGHT),
+            (game.board.name().to_string(), Color32::from_white_alpha(26), theme::TEXT_2),
+            (game.year.to_string(), Color32::from_white_alpha(26), theme::TEXT_2),
+        ];
+        let mut row_h = 0.0;
+        for (text, fill, ink) in facts {
+            let g = p.layout_no_wrap(text, chip_font.clone(), ink);
+            let r = Rect::from_min_size(pos2(x, y), g.size() + vec2(28.0 * u, 14.0 * u));
+            if x > left && r.right() > left + info_w {
+                x = left;
+                y += row_h + 8.0 * u;
+            }
+            let r = Rect::from_min_size(pos2(x, y), r.size());
+            p.rect_filled(r, 999.0, fill);
+            p.galley(r.min + vec2(14.0 * u, 7.0 * u), g, ink);
+            x = r.right() + 10.0 * u;
+            row_h = r.height();
+        }
+        y += row_h + 18.0 * u;
+        let line = match view.resume {
+            Some(t) => format!("You left off {}. Saves has it.", age(t)),
+            None if self.recent.iter().any(|r| r == game.id) => "Played before.".to_string(),
+            None => "Not played yet.".to_string(),
+        };
+        let para = p.layout(line, FontId::new(20.0 * u, FontFamily::Proportional), theme::TEXT_2, info_w);
+        p.galley(pos2(left, y), para.clone(), theme::TEXT_2);
+        y += para.size().y + 22.0 * u;
+        // Play, Saves, Settings.
+        let buttons = [
+            ("play", "Play", self.chip(Chip::A, "Enter"), Click::Play, true),
+            ("saves", "Saves", self.chip(Chip::X, "S"), Click::Saves, false),
+            ("settings", "Settings", self.chip(Chip::Menu, "Tab"), Click::Settings, false),
+        ];
+        let font = FontId::new(22.0 * u, theme::bold());
+        let mut bx = left;
+        for (name, label, chip, click, primary) in buttons {
+            let g = p.layout_no_wrap(label.to_string(), font.clone(), FG);
+            let d = 34.0;
+            let cw = theme::chip_width_at(p, chip, u, d);
+            let w = 18.0 * u + cw + 12.0 * u + g.size().x + 26.0 * u;
+            // (A narrow window wraps them.)
+            if bx > left && bx + w > left + info_w.max(w) {
+                bx = left;
+                y += 78.0 * u;
+            }
+            let r = Rect::from_min_size(pos2(bx, y), vec2(w, 66.0 * u));
+            let id = button_id(name);
+            let (resp, hit) = control(&mut self.focus, ui, id, r);
+            if primary {
                 p.add(
-                    egui::epaint::RectShape::filled(r, radius, Color32::from_white_alpha((a * 60.0) as u8))
-                        .with_texture(tex.id(), uv),
+                    egui::epaint::RectShape::filled(
+                        r.translate(vec2(0.0, 8.0 * u)),
+                        14.0 * u,
+                        Color32::from_rgba_unmultiplied(31, 107, 255, 90),
+                    )
+                    .with_blur_width(24.0 * u),
                 );
-                let fit = Rect::from_center_size(r.center(), vec2(w, h) * (r.height() / h));
-                p.image(
-                    tex.id(),
-                    fit,
-                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-                    Color32::from_white_alpha((a * 255.0) as u8),
+                p.rect_filled(r, 14.0 * u, if resp.hovered() { Color32::from_rgb(60, 130, 255) } else { theme::BLUE });
+                p.rect_stroke(
+                    r,
+                    14.0 * u,
+                    Stroke::new(2.0 * u, Color32::from_rgba_unmultiplied(34, 229, 255, 128)),
+                    StrokeKind::Inside,
                 );
-            }
-        }
-        if let Some(v) = live {
-            let a = (v.alpha * 255.0) as u8;
-            let [px, py, pw, ph] = v.picture;
-            let pic = Rect::from_min_size(
-                pos2(r.left() + px * r.width(), r.top() + py * r.height()),
-                vec2(pw * r.width(), ph * r.height()),
-            );
-            p.add(
-                egui::epaint::RectShape::filled(r, radius, Color32::from_white_alpha(a))
-                    .with_texture(v.texture, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))),
-            );
-            // The bezel over the black beside the picture.
-            if v.bezel {
-                if let Some(tex) = crate::bezel::art_set(game).and_then(|s| self.bezel_tex(s)) {
-                    let [bw, bh] = tex.size();
-                    let w = pic.height() * bw as f32 / bh as f32;
-                    let art = Rect::from_center_size(pic.center(), vec2(w, pic.height()));
-                    for (x0, x1) in [(art.left().max(r.left()), pic.left()), (pic.right(), art.right().min(r.right()))]
-                    {
-                        if x1 > x0 {
-                            let part = Rect::from_min_max(pos2(x0, pic.top()), pos2(x1, pic.bottom()));
-                            let uv =
-                                Rect::from_min_max(pos2((x0 - art.left()) / w, 0.0), pos2((x1 - art.left()) / w, 1.0));
-                            p.image(tex.id(), part, uv, Color32::from_white_alpha(a));
-                        }
-                    }
-                }
-            }
-        }
-        p.rect_stroke(r, radius, Stroke::new(1.5 * u, CYAN.gamma_multiply(0.8)), StrokeKind::Outside);
-        // Status along the foot of the frame.
-        let status = match (view.progress, view.no_preview) {
-            (Some(f), _) => Some(format!("Preparing the attract mode preview… {:.0}%", f * 100.0)),
-            (None, Some(why)) => Some(if why.contains(" not in ") {
-                "No preview: chips missing from the ROM folder".to_string()
             } else {
-                format!("No preview: {why}")
-            }),
+                p.rect_filled(r, 14.0 * u, Color32::from_white_alpha(if resp.hovered() { 36 } else { 26 }));
+            }
+            theme::paint_chip_at(p, chip, pos2(r.left() + 18.0 * u, r.center().y), u, d);
+            p.galley(pos2(r.left() + 18.0 * u + cw + 12.0 * u, r.center().y - g.size().y / 2.0), g, FG);
+            if self.focus.is_on(id) {
+                theme::focus_ring(p, r, u, 14.0);
+            }
+            if hit {
+                clicks.push(click);
+            }
+            bx = r.right() + 14.0 * u;
+        }
+        self.paint_strip(ui, p, l, dt, clicks);
+        // The preview's own status along the foot of the info column.
+        let status = match (view.progress, view.no_preview) {
+            (Some(f), _) => Some(format!("Preparing the preview… {:.0}%", f * 100.0)),
+            (None, Some(why)) if why.contains(" not in ") => {
+                Some("No preview: chips missing from the ROM folder".to_string())
+            }
+            (None, Some(why)) => Some(format!("No preview: {why}")),
             _ => None,
         };
         if let Some(text) = status {
-            let bar = Rect::from_min_max(pos2(r.left(), r.bottom() - 44.0 * u), r.max);
-            p.add(egui::epaint::RectShape::filled(
-                bar,
-                egui::CornerRadius { nw: 0, ne: 0, sw: radius as u8, se: radius as u8 },
-                Color32::from_black_alpha(190),
-            ));
-            p.with_clip_rect(bar.shrink(4.0 * u)).text(
-                pos2(bar.left() + 18.0 * u, bar.center().y),
-                Align2::LEFT_CENTER,
+            let at = pos2(left, l.bar.top() - 18.0 * u);
+            p.with_clip_rect(Rect::from_min_max(pos2(left, at.y - 30.0 * u), pos2(left + info_w, l.bar.top()))).text(
+                at,
+                Align2::LEFT_BOTTOM,
                 text,
-                FontId::proportional(15.0 * u),
-                FG,
+                FontId::new(18.0 * u, FontFamily::Proportional),
+                theme::TEXT_DIM,
             );
-            if let Some(f) = view.progress {
-                let track = Rect::from_min_size(pos2(bar.left(), bar.top()), vec2(r.width(), 3.0 * u));
-                p.rect_filled(track, 0.0, LINE);
-                p.rect_filled(Rect::from_min_size(track.min, vec2(r.width() * f.clamp(0.0, 1.0), 3.0 * u)), 0.0, CYAN);
-            }
-        }
-        let _ = now;
-    }
-
-    fn paint_info(&mut self, ui: &mut egui::Ui, p: &Painter, l: &Layout, view: &View, actions: &mut Vec<Action>) {
-        let u = l.u;
-        let Some(game) = self.selected() else { return };
-        let r = l.info;
-        let mut y = r.top() + 6.0 * u;
-        // Board and year, small capitals in cyan.
-        let meta = format!("{}  ·  {}", game.board.name().to_uppercase(), game.year);
-        let m = p.text(pos2(r.left(), y), Align2::LEFT_TOP, meta, FontId::proportional(15.0 * u), CYAN);
-        y = m.bottom() + 10.0 * u;
-        // The title, as large as fits.
-        let size = if game.title.len() > 22 { 40.0 } else { 48.0 } * u;
-        let galley = p.layout(game.title.to_string(), FontId::proportional(size), FG, r.width());
-        let t = Rect::from_min_size(pos2(r.left(), y), galley.size());
-        p.galley(t.min, galley.clone(), FG);
-        p.galley(t.min + vec2(0.9 * u, 0.0), galley, FG);
-        y = t.bottom() + 12.0 * u;
-        // The logo's red stripe.
-        let bar = [
-            pos2(r.left() + 8.0 * u, y),
-            pos2(r.left() + 64.0 * u, y),
-            pos2(r.left() + 56.0 * u, y + 5.0 * u),
-            pos2(r.left(), y + 5.0 * u),
-        ];
-        p.add(egui::Shape::convex_polygon(bar.to_vec(), RED, Stroke::NONE));
-        y += 22.0 * u;
-        let set = match game.parent {
-            Some(parent) => format!("{}  ·  a version of {parent}", game.id),
-            None => game.id.to_string(),
-        };
-        let s = p.text(pos2(r.left(), y), Align2::LEFT_TOP, set, FontId::monospace(13.0 * u), DIM);
-        y = s.bottom() + 18.0 * u;
-        // Controls: keycaps and what they do, wrapped.
-        let font = FontId::proportional(14.5 * u);
-        let key_font = FontId::monospace(12.5 * u);
-        let (mut x, line_h) = (r.left(), 30.0 * u);
-        for (keys, label) in controls(game) {
-            let key_w: Vec<f32> = keys
-                .iter()
-                .map(|k| p.layout_no_wrap(k.to_string(), key_font.clone(), FG).size().x.max(9.0 * u) + 12.0 * u)
-                .collect();
-            let label_g = p.layout_no_wrap(label, font.clone(), Color32::from_rgb(201, 208, 220));
-            let w = key_w.iter().sum::<f32>() + 4.0 * u * keys.len() as f32 + label_g.size().x + 22.0 * u;
-            if x > r.left() && x + w > r.right() {
-                x = r.left();
-                y += line_h;
-            }
-            if y + line_h > r.bottom() - 150.0 * u {
-                break;
-            }
-            for (k, kw) in keys.iter().zip(&key_w) {
-                let kr = Rect::from_min_size(pos2(x, y), vec2(*kw, 22.0 * u));
-                keycap(p, kr, k, &key_font, u);
-                x = kr.right() + 4.0 * u;
-            }
-            p.galley(
-                pos2(x + 2.0 * u, y + 11.0 * u - label_g.size().y / 2.0),
-                label_g.clone(),
-                Color32::from_rgb(201, 208, 220),
-            );
-            x += label_g.size().x + 22.0 * u;
-        }
-        // The buttons, from the foot of the column up.
-        let buttons = Self::buttons(view.resume.is_some());
-        self.button = self.button.min(buttons.len() - 1);
-        let bh = 50.0 * u;
-        let gap = 12.0 * u;
-        let mut by = r.bottom() - buttons.len() as f32 * (bh + gap) + gap;
-        let bw = r.width().min(420.0 * u);
-        for (i, (label, play)) in buttons.iter().enumerate() {
-            let br = Rect::from_min_size(pos2(r.left(), by), vec2(bw, bh));
-            let hit = ui.interact(br, Id::unique(("button", i)), Sense::click());
-            if hit.hovered() && ui.input(|i| i.pointer.delta() != Vec2::ZERO) {
-                self.button = i;
-            }
-            let focused = i == self.button && self.panel == Panel::Closed;
-            let primary = i == 0;
-            let fill = if focused {
-                Color32::from_rgba_unmultiplied(47, 230, 239, 46)
-            } else {
-                Color32::from_rgba_unmultiplied(13, 20, 29, 220)
-            };
-            if focused {
-                p.add(
-                    egui::epaint::RectShape::filled(br, bh / 2.0, Color32::from_rgba_unmultiplied(47, 230, 239, 60))
-                        .with_blur_width(18.0 * u),
-                );
-            }
-            p.rect_filled(br, bh / 2.0, fill);
-            let stroke = if focused {
-                CYAN
-            } else if primary {
-                CYAN.gamma_multiply(0.5)
-            } else {
-                KEY_LINE
-            };
-            p.rect_stroke(br, bh / 2.0, Stroke::new(2.0 * u, stroke), StrokeKind::Inside);
-            let ic = if focused { CYAN } else { DIM };
-            icon(p, pos2(br.left() + 26.0 * u, br.center().y), play.is_some(), ic, u);
-            let g = p.layout_no_wrap(label.to_string(), FontId::proportional(19.0 * u), FG);
-            let tp = pos2(br.left() + 48.0 * u, br.center().y - g.size().y / 2.0);
-            p.galley(tp, g.clone(), FG);
-            p.galley(tp + vec2(0.6 * u, 0.0), g.clone(), FG);
-            if *play == Some(true) {
-                if let Some(t) = view.resume {
-                    p.text(
-                        pos2(tp.x + g.size().x + 12.0 * u, br.center().y),
-                        Align2::LEFT_CENTER,
-                        format!("from {}", age(t)),
-                        FontId::proportional(15.0 * u),
-                        DIM,
-                    );
-                }
-            }
-            if hit.clicked() {
-                self.button = i;
-                match play {
-                    Some(resume) => actions.push(Action::Play { set: game.id.to_string(), resume: *resume }),
-                    None => self.open_settings(),
-                }
-            }
-            by += bh + gap;
         }
     }
 
-    fn paint_cards(&mut self, ui: &mut egui::Ui, p: &Painter, l: &Layout, dt: f32, actions: &mut Vec<Action>) {
+    /// The posters at the right: the selected game large, the next ones
+    /// beside it (round the list), a step sliding them along.
+    fn paint_strip(&mut self, ui: &mut Ui, p: &Painter, l: &Layout, dt: f32, clicks: &mut Vec<Click>) {
         let u = l.u;
-        let gap = 18.0 * u;
-        let group_gap = 56.0 * u;
-        // Each card's left edge along the row, at its current scale.
-        let mut xs = Vec::with_capacity(self.cards.len());
-        let mut x = 0.0;
-        for (i, c) in self.cards.iter().enumerate() {
-            if i > 0 && c.group != self.cards[i - 1].group {
-                x += group_gap;
-            }
-            xs.push(x);
-            x += l.card.x * self.scales[i] + gap;
-        }
-        // The selected card in the middle, but the row doesn't leave the
-        // margins empty: it starts at the left one, ends at the right one.
-        let end = x - gap;
-        let margin = l.hero.left() - l.screen.left();
-        let centred = l.screen.center().x - (xs[self.sel] + l.card.x * self.scales[self.sel] / 2.0);
-        let lowest = (l.screen.right() - margin - end).min(l.screen.left() + margin);
-        let target = centred.clamp(lowest, l.screen.left() + margin);
-        let shift = self.scroll.get_or_insert(target);
-        *shift += (target - *shift) * ease(dt, 12.0);
-        if (target - *shift).abs() < 0.3 {
-            *shift = target;
-        }
-        let shift = *shift;
-        self.scroll_target = target;
-        // The mouse wheel steps through the cards.
-        let row = Rect::from_min_max(
-            pos2(l.screen.left(), l.cards_y - l.card.y / 2.0 - 30.0 * u),
-            pos2(l.screen.right(), l.cards_y + l.card.y / 2.0 + 30.0 * u),
-        );
-        if ui.rect_contains_pointer(row) && self.panel == Panel::Closed {
+        let n = self.carousel.len();
+        let Some(at) = self.index() else { return };
+        let info_w = (520.0 * u).min(l.body.width() * 0.45);
+        let x0 = l.body.left() + info_w + 32.0 * u;
+        let cy = l.body.center().y;
+        let (small, big) = (vec2(168.0, 252.0) * u, vec2(236.0, 354.0) * u);
+        let gap = 26.0 * u;
+        let room = ((l.screen.right() - x0) / (small.x + gap)).ceil() as usize + 1;
+        let count = room.clamp(5.min(n), n);
+        let clip = Rect::from_min_max(pos2(x0 - 12.0 * u, l.body.top()), l.screen.max);
+        let pc = p.with_clip_rect(clip);
+        // The wheel steps through them.
+        let strip = Rect::from_min_max(pos2(x0, l.body.top()), pos2(l.screen.right(), l.body.bottom()));
+        if ui.rect_contains_pointer(strip) && !self.saves_open() {
             let d = ui.input(|i| i.smooth_scroll_delta);
             self.wheel += d.y + d.x;
-            let step = 40.0;
-            while self.wheel >= step {
-                self.wheel -= step;
-                self.select(self.sel.saturating_sub(1));
+            while self.wheel >= 40.0 {
+                self.wheel -= 40.0;
+                self.step(-1);
             }
-            while self.wheel <= -step {
-                self.wheel += step;
-                self.select(self.sel + 1);
+            while self.wheel <= -40.0 {
+                self.wheel += 40.0;
+                self.step(1);
             }
         }
-        // Group headings over their first card.
-        for g in &self.groups {
-            let gx = xs[g.start] + shift;
-            if gx > l.screen.right() || xs[g.start + g.len - 1] + shift + l.card.x < l.screen.left() {
-                continue;
-            }
-            let y = l.cards_y - l.card.y / 2.0 - 30.0 * u;
-            let stripe = [
-                pos2(gx + 6.0 * u, y - 2.0 * u),
-                pos2(gx + 30.0 * u, y - 2.0 * u),
-                pos2(gx + 24.0 * u, y + 2.0 * u),
-                pos2(gx, y + 2.0 * u),
-            ];
-            p.add(egui::Shape::convex_polygon(stripe.to_vec(), RED, Stroke::NONE));
-            p.text(
-                pos2(gx + 40.0 * u, y),
-                Align2::LEFT_CENTER,
-                g.name.to_uppercase(),
-                FontId::proportional(13.0 * u),
-                CYAN,
-            );
+        let first = if n > count && n >= 2 { -1 } else { 0 };
+        let order: Vec<(i32, &'static romset::Game)> =
+            (first..count as i32).map(|k| (k, self.carousel[(at as i32 + k).rem_euclid(n as i32) as usize])).collect();
+        let sizes: Vec<Vec2> = order
+            .iter()
+            .map(|(_, g)| {
+                let t = self.grow.entry(g.id).or_insert(if self.cur.map(|c| c.id) == Some(g.id) { 1.0 } else { 0.0 });
+                small + (big - small) * *t
+            })
+            .collect();
+        // Their left edges: the selected one's at `x0`, moved by the slide.
+        let k0 = order.iter().position(|(k, _)| *k == 0).unwrap_or(0);
+        let mut xs = vec![0.0; order.len()];
+        xs[k0] = x0 + self.slide * (small.x + gap);
+        for i in k0 + 1..order.len() {
+            xs[i] = xs[i - 1] + sizes[i - 1].x + gap;
         }
-        let mut clicked = None;
-        for (i, c) in self.cards.iter().enumerate() {
-            let s = self.scales[i];
-            let size = l.card * s;
-            let left = xs[i] + shift;
-            if left > l.screen.right() + 10.0 || left + size.x < l.screen.left() - 10.0 {
+        for i in (0..k0).rev() {
+            xs[i] = xs[i + 1] - gap - sizes[i].x;
+        }
+        for (i, (k, game)) in order.iter().enumerate() {
+            let selected = *k == 0;
+            let target = if selected { 1.0 } else { 0.0 };
+            let grow = self.grow.entry(game.id).or_insert(target);
+            *grow += (target - *grow) * ease(dt, 16.0);
+            if (target - *grow).abs() < 0.01 {
+                *grow = target;
+            }
+            let t = *grow;
+            let r = Rect::from_min_size(pos2(xs[i], cy - sizes[i].y / 2.0), sizes[i]);
+            if r.right() < clip.left() || r.left() > clip.right() {
                 continue;
             }
-            let r = Rect::from_min_size(pos2(left, l.cards_y - size.y / 2.0), size);
-            let selected = i == self.sel;
-            let radius = 10.0 * u * s;
-            // How lit it is: the selected card fully, the rest dimmed.
-            let lit = ((s - 0.78) / 0.22).clamp(0.0, 1.0);
+            let alpha = match *k {
+                -1 => (self.slide.max(0.0) * 0.8).min(0.8),
+                0 => 1.0,
+                1..=3 => 0.8,
+                _ => 0.45,
+            };
+            let radius = 14.0 * u;
             if selected {
-                p.add(
+                pc.add(
                     egui::epaint::RectShape::filled(
                         r,
                         radius,
-                        Color32::from_rgba_unmultiplied(47, 230, 239, (70.0 * lit) as u8),
+                        Color32::from_rgba_unmultiplied(34, 229, 255, (140.0 * t) as u8),
                     )
-                    .with_blur_width(26.0 * u),
+                    .with_blur_width(40.0 * u),
                 );
             }
-            p.add(
+            pc.add(
                 egui::epaint::RectShape::filled(
-                    r.translate(vec2(0.0, 8.0 * u)),
+                    r.translate(vec2(0.0, 14.0 * u)),
                     radius,
-                    Color32::from_black_alpha(160),
+                    Color32::from_black_alpha((140.0 * alpha) as u8),
                 )
-                .with_blur_width(18.0 * u),
+                .with_blur_width(34.0 * u),
             );
-            let shade = (150.0 + 105.0 * lit) as u8;
-            match self.posters.get(c.game.id) {
+            let tint = Color32::from_white_alpha((alpha * 255.0) as u8);
+            match self.posters.get(game.id) {
                 Some(tex) => {
-                    p.add(
-                        egui::epaint::RectShape::filled(r, radius, Color32::from_gray(shade))
-                            .with_texture(tex.id(), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))),
-                    );
+                    pc.add(egui::epaint::RectShape::filled(r, radius, tint).with_texture(tex.id(), full_uv()));
                 }
                 None => {
-                    p.rect_filled(r, radius, PANEL);
+                    pc.rect_filled(r, radius, PANEL.gamma_multiply(alpha));
                 }
             }
-            let stroke = if selected { Stroke::new(2.5 * u, CYAN) } else { Stroke::new(1.0 * u, LINE) };
-            p.rect_stroke(r, radius, stroke, StrokeKind::Outside);
-            // Its title underneath, and a mark for one to continue.
-            let tc = if selected { FG } else { DIM };
-            let title =
-                p.layout(c.game.title.to_string(), FontId::proportional(13.5 * u), tc, (l.card.x * 1.0).max(size.x));
-            p.galley(pos2(r.center().x - title.size().x / 2.0, r.bottom() + 10.0 * u), title, tc);
-            let hit = ui.interact(r, Id::unique(("card", i)), Sense::click());
-            if hit.clicked() {
-                clicked = Some(i);
+            if selected {
+                pc.rect_stroke(r, radius, Stroke::new(4.0 * u * t, CYAN), StrokeKind::Outside);
+            }
+            if *k >= 0 && r.intersects(clip) {
+                let id = if selected { selected_card() } else { Id::unique(("card", game.id)) };
+                let (resp, hit) = control(&mut self.focus, ui, id, r.intersect(clip));
+                if resp.hovered() && !selected {
+                    pc.rect_stroke(
+                        r,
+                        radius,
+                        Stroke::new(2.0 * u, Color32::from_white_alpha(120)),
+                        StrokeKind::Outside,
+                    );
+                }
+                if self.focus.is_on(id) && !selected {
+                    theme::focus_ring(&pc, r, u, 14.0);
+                }
+                if hit {
+                    clicks.push(Click::Game(game));
+                }
             }
         }
-        if let Some(i) = clicked {
-            if i == self.sel && self.panel == Panel::Closed {
-                if let Some(game) = self.selected() {
-                    actions.push(Action::Play { set: game.id.to_string(), resume: false });
-                }
-            } else {
-                self.select(i);
+        // The selected card's focus is the ring it wears (the focus ring is
+        // the same cyan, drawn brighter while the pad is in use).
+        if self.focus.is_on(selected_card()) {
+            if let Some((i, _)) = order.iter().enumerate().find(|(_, (k, _))| *k == 0) {
+                let r = Rect::from_min_size(pos2(xs[i], cy - sizes[i].y / 2.0), sizes[i]);
+                theme::focus_ring(&pc, r, u, 14.0);
             }
         }
     }
 
-    fn paint_hints(&self, p: &Painter, l: &Layout) {
+    /// The grid: the filters and sort, then the posters.
+    fn paint_grid(&mut self, ui: &mut Ui, p: &Painter, l: &Layout, view: &View, clicks: &mut Vec<Click>) {
+        let _ = view;
         let u = l.u;
-        let hints: &[(&str, &str)] = match (self.pad_used, self.panel) {
-            (true, Panel::Closed) => &[("D-pad", "choose"), ("A", "play"), ("Y", "settings"), ("LB RB", "board")],
-            (true, _) => &[("D-pad", "choose and change"), ("A", "select"), ("B", "back")],
-            (false, Panel::Closed) => &[
-                ("← →", "choose"),
-                ("Enter", "play"),
-                ("Tab", "settings"),
-                ("PgUp PgDn", "board"),
-                ("F11", "fullscreen"),
-            ],
-            (false, _) => &[("↑ ↓", "choose"), ("← →", "change"), ("Esc", "back")],
-        };
-        let key_font = FontId::monospace(12.0 * u);
-        let font = FontId::proportional(13.5 * u);
-        let parts: Vec<(f32, f32)> = hints
+        // The filters.
+        let font = FontId::new(18.0 * u, theme::semibold());
+        let row_y = l.body.top() + 6.0 * u;
+        let h = 42.0 * u;
+        let wide: Vec<(Filter, f32)> = self
+            .chips
             .iter()
-            .map(|(k, t)| {
-                (
-                    p.layout_no_wrap(k.to_string(), key_font.clone(), FG).size().x + 12.0 * u,
-                    p.layout_no_wrap(t.to_string(), font.clone(), DIM).size().x,
-                )
-            })
+            .map(|f| (*f, p.layout_no_wrap(f.label().to_string(), font.clone(), FG).size().x + 36.0 * u))
             .collect();
-        let total: f32 =
-            parts.iter().map(|(a, b)| a + b + 8.0 * u).sum::<f32>() + 28.0 * u * (parts.len() as f32 - 1.0);
-        let mut x = l.screen.center().x - total / 2.0;
-        for ((k, t), (kw, tw)) in hints.iter().zip(parts) {
-            let r = Rect::from_min_size(pos2(x, l.hints_y - 11.0 * u), vec2(kw, 22.0 * u));
-            keycap(p, r, k, &key_font, u);
-            p.text(pos2(r.right() + 8.0 * u, l.hints_y), Align2::LEFT_CENTER, *t, font.clone(), DIM);
-            x = r.right() + 8.0 * u + tw + 28.0 * u;
+        let sort_label = self.sort.label();
+        let sort_w = p.layout_no_wrap(sort_label.to_string(), font.clone(), FG).size().x + 62.0 * u;
+        let chips_w = wide.iter().map(|c| c.1 + 10.0 * u).sum::<f32>();
+        let labels = chips_w + sort_w + 160.0 * u < l.body.width();
+        let mut x = l.body.left();
+        if labels {
+            let r = p.text(
+                pos2(x, row_y + h / 2.0),
+                Align2::LEFT_CENTER,
+                "Show",
+                FontId::new(18.0 * u, FontFamily::Proportional),
+                theme::TEXT_DIM,
+            );
+            x = r.right() + 14.0 * u;
         }
-        // The version, small in the corner.
-        let about = format!("reModel {}", remodel_version::VERSION);
-        let corner = pos2(l.screen.right() - 14.0 * u, l.screen.bottom() - 10.0 * u);
-        p.text(corner, Align2::RIGHT_BOTTOM, about, FontId::proportional(11.0 * u), DIM.gamma_multiply(0.7));
+        for (f, w) in wide {
+            let r = Rect::from_min_size(pos2(x, row_y), vec2(w, h));
+            let id = button_id(f.label());
+            let (resp, hit) = control(&mut self.focus, ui, id, r);
+            let on = f == self.filter;
+            if on {
+                p.rect_filled(r, 999.0, CYAN);
+            } else {
+                p.rect_filled(r, 999.0, Color32::from_white_alpha(if resp.hovered() { 28 } else { 15 }));
+                p.rect_stroke(r, 999.0, Stroke::new(1.0 * u, Color32::from_white_alpha(51)), StrokeKind::Inside);
+            }
+            p.text(r.center(), Align2::CENTER_CENTER, f.label(), font.clone(), if on { theme::INK } else { FG });
+            if self.focus.is_on(id) {
+                theme::focus_ring(p, r, u, 21.0);
+            }
+            if hit {
+                clicks.push(Click::Filter(f));
+            }
+            x = r.right() + 10.0 * u;
+        }
+        let sr = Rect::from_min_size(pos2(l.body.right() - sort_w, row_y), vec2(sort_w, h));
+        if labels {
+            p.text(
+                pos2(sr.left() - 14.0 * u, row_y + h / 2.0),
+                Align2::RIGHT_CENTER,
+                "Sort",
+                FontId::new(18.0 * u, FontFamily::Proportional),
+                theme::TEXT_DIM,
+            );
+        }
+        let id = button_id("sort");
+        let (resp, hit) = control(&mut self.focus, ui, id, sr);
+        p.rect_filled(sr, 10.0 * u, Color32::from_white_alpha(if resp.hovered() { 28 } else { 15 }));
+        p.rect_stroke(sr, 10.0 * u, Stroke::new(1.0 * u, Color32::from_white_alpha(51)), StrokeKind::Inside);
+        p.text(pos2(sr.left() + 16.0 * u, sr.center().y), Align2::LEFT_CENTER, sort_label, font, FG);
+        // (Its down arrow is drawn: the fonts have no ▾.)
+        let tip = pos2(sr.right() - 22.0 * u, sr.center().y + 4.0 * u);
+        let arrow = vec![tip + vec2(-7.0, -4.0) * u, tip + vec2(7.0, -4.0) * u, tip + vec2(0.0, 4.0) * u];
+        p.add(egui::Shape::convex_polygon(arrow, FG, Stroke::NONE));
+        if self.focus.is_on(id) {
+            theme::focus_ring(p, sr, u, 10.0);
+        }
+        if hit {
+            clicks.push(Click::Sort);
+        }
+        // The posters, scrolling.
+        let area = Rect::from_min_max(
+            pos2(l.body.left() - 10.0 * u, l.body.top() + 62.0 * u),
+            pos2(l.body.right() + 10.0 * u, l.bar.top() - 6.0 * u),
+        );
+        if self.grid.is_empty() {
+            p.text(
+                area.center(),
+                Align2::CENTER_CENTER,
+                "No games here",
+                FontId::new(22.0 * u, theme::semibold()),
+                theme::TEXT_DIM,
+            );
+            return;
+        }
+        let games = self.grid.clone();
+        let sel = self.cur.map(|c| c.id);
+        let gap = 22.0 * u;
+        let inner_w = l.body.width();
+        let cols = (((inner_w + gap) / (170.0 * u + gap)).floor() as usize).clamp(2, 12);
+        let tw = (inner_w - gap * (cols - 1) as f32) / cols as f32;
+        let (ph, label_h) = (tw * 1.5, 62.0 * u);
+        let th = ph + label_h;
+        let rows = games.len().div_ceil(cols);
+        let total = rows as f32 * th + (rows - 1) as f32 * gap + 20.0 * u;
+        let name_font = FontId::new(18.0 * u, theme::semibold());
+        let genre_font = FontId::new(18.0 * u, FontFamily::Proportional);
+        let (posters, focus) = (&self.posters, &mut self.focus);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                let (_, space) = ui.allocate_space(vec2(area.width(), total));
+                let origin = space.min + vec2(10.0 * u, 8.0 * u);
+                let p = ui.painter().clone();
+                for (i, game) in games.iter().enumerate() {
+                    let (col, row) = (i % cols, i / cols);
+                    let r = Rect::from_min_size(
+                        origin + vec2(col as f32 * (tw + gap), row as f32 * (th + gap)),
+                        vec2(tw, th),
+                    );
+                    let pr = Rect::from_min_size(r.min, vec2(tw, ph));
+                    let id = tile_id(game);
+                    let (resp, hit) = control(focus, ui, id, r);
+                    if hit {
+                        clicks.push(Click::Game(game));
+                    }
+                    if !r.expand(20.0 * u).intersects(ui.clip_rect()) {
+                        continue;
+                    }
+                    let selected = sel == Some(game.id);
+                    match posters.get(game.id) {
+                        Some(tex) => {
+                            p.add(
+                                egui::epaint::RectShape::filled(pr, 12.0 * u, Color32::WHITE)
+                                    .with_texture(tex.id(), full_uv()),
+                            );
+                        }
+                        None => {
+                            p.rect_filled(pr, 12.0 * u, PANEL);
+                        }
+                    }
+                    if focus.is_on(id) {
+                        theme::focus_ring(&p, pr, u, 12.0);
+                    } else if selected {
+                        p.add(
+                            egui::epaint::RectShape::filled(
+                                pr,
+                                12.0 * u,
+                                Color32::from_rgba_unmultiplied(34, 229, 255, 70),
+                            )
+                            .with_blur_width(30.0 * u),
+                        );
+                        p.rect_stroke(pr, 12.0 * u, Stroke::new(4.0 * u, CYAN), StrokeKind::Outside);
+                    } else if resp.hovered() {
+                        p.rect_stroke(
+                            pr,
+                            12.0 * u,
+                            Stroke::new(2.0 * u, Color32::from_white_alpha(110)),
+                            StrokeKind::Outside,
+                        );
+                    }
+                    let name = fit_text(&p, game.title, &name_font, tw - 8.0 * u);
+                    p.text(
+                        pos2(r.left() + 4.0 * u, pr.bottom() + 8.0 * u),
+                        Align2::LEFT_TOP,
+                        name,
+                        name_font.clone(),
+                        FG,
+                    );
+                    let genre = fit_text(&p, game.genre, &genre_font, tw - 8.0 * u);
+                    p.text(
+                        pos2(r.left() + 4.0 * u, pr.bottom() + 8.0 * u + 28.0 * u),
+                        Align2::LEFT_TOP,
+                        genre,
+                        genre_font.clone(),
+                        theme::TEXT_DIM,
+                    );
+                }
+            });
+        });
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn paint_panel(
-        &mut self,
-        ctx: &egui::Context,
-        l: &Layout,
-        view: &View,
-        values: &mut GameSettings,
-        sources: &[Source; KEYS.len()],
-        for_all: &mut bool,
-        has_own: bool,
-        actions: &mut Vec<Action>,
-    ) {
+    /// The hint bar along the foot: what each button does, the same in both
+    /// views (the grid adds the filters), each one clickable.
+    fn paint_bar(&mut self, ui: &mut Ui, p: &Painter, l: &Layout, view: &View, clicks: &mut Vec<Click>) {
         let u = l.u;
-        let Some(game) = self.selected() else { return };
-        let w = (520.0 * u).min(l.screen.width() * 0.48);
-        let t = self.panel_t;
-        let x = l.screen.right() - w * (1.0 - (1.0 - t).powi(3));
-        let rect = Rect::from_min_size(pos2(x, l.screen.top()), vec2(w, l.screen.height()));
-        egui::Area::new(Id::unique("launcher panel")).fixed_pos(rect.min).order(egui::Order::Middle).show(ctx, |ui| {
-            ui.set_min_size(rect.size());
-            let p = ui.painter().clone();
-            p.add(egui::epaint::RectShape::filled(rect, 0.0, Color32::from_black_alpha(140)).with_blur_width(40.0 * u));
-            p.rect_filled(rect, 0.0, Color32::from_rgba_unmultiplied(7, 11, 18, 246));
-            p.vline(rect.left(), rect.y_range(), Stroke::new(1.5 * u, CYAN.gamma_multiply(0.7)));
-            let pad = 36.0 * u;
-            let inner = rect.shrink2(vec2(pad, 0.0));
-            let mut y = l.top.top() + 4.0 * u;
-            let h = p.text(pos2(inner.left(), y), Align2::LEFT_TOP, "SETTINGS", FontId::proportional(14.0 * u), CYAN);
-            y = h.bottom() + 6.0 * u;
-            let g = p.layout(game.title.to_string(), FontId::proportional(28.0 * u), FG, inner.width());
-            p.galley(pos2(inner.left(), y), g.clone(), FG);
-            p.galley(pos2(inner.left() + 0.7 * u, y), g.clone(), FG);
-            y += g.size().y + 14.0 * u;
-            p.hline(inner.x_range(), y, Stroke::new(1.0 * u, LINE));
-            y += 10.0 * u;
-            let rows = shown_rows(&Shown {
-                game,
-                values,
-                has_own,
-                max_anisotropy: self.max_anisotropy,
-                temporal_supported: self.temporal_supported,
-            });
-            self.row = self.row.min(rows.len() - 1);
-            let row_h = 66.0 * u;
-            // Keep the focused row on screen.
-            let room = rect.bottom() - 60.0 * u - y;
-            let scroll = ((self.row as f32 + 1.0) * row_h - room).max(0.0);
-            let clip = Rect::from_min_max(pos2(rect.left(), y), pos2(rect.right(), rect.bottom() - 52.0 * u));
-            let p = p.with_clip_rect(clip);
-            for (i, row) in rows.iter().enumerate() {
-                let r = Rect::from_min_size(
-                    pos2(inner.left() - 14.0 * u, y + i as f32 * row_h - scroll),
-                    vec2(inner.width() + 28.0 * u, row_h - 6.0 * u),
-                );
-                if !clip.intersects(r) {
-                    continue;
+        p.rect_filled(l.bar, 0.0, Color32::from_rgba_unmultiplied(4, 6, 11, 230));
+        p.hline(l.bar.x_range(), l.bar.top(), Stroke::new(1.0 * u, Color32::from_white_alpha(15)));
+        let grid = self.mode == ViewMode::Grid;
+        let choose = self.choose.unwrap_or("D-pad");
+        let hints: Vec<(Chip, &str, Option<Click>)> = if self.pad_used {
+            let mut h = vec![
+                (Chip::Key(choose), "Choose", None),
+                (Chip::A, "Play", Some(Click::Play)),
+                (Chip::X, "Saves", Some(Click::Saves)),
+                (Chip::Menu, "Settings", Some(Click::Settings)),
+                (Chip::Y, "Continue", Some(Click::Continue)),
+                (Chip::Key("LB RB"), "View", Some(Click::View(self.mode.other()))),
+            ];
+            if grid {
+                h.push((Chip::Key("LT RT"), "Filter", Some(Click::NextFilter)));
+            }
+            h
+        } else {
+            let mut h = vec![
+                (Chip::Key("← → ↑ ↓"), "Choose", None),
+                (Chip::Key("Enter"), "Play", Some(Click::Play)),
+                (Chip::Key("S"), "Saves", Some(Click::Saves)),
+                (Chip::Key("Tab"), "Settings", Some(Click::Settings)),
+                (Chip::Key("C"), "Continue", Some(Click::Continue)),
+                (Chip::Key("Q E"), "View", Some(Click::View(self.mode.other()))),
+            ];
+            if grid {
+                h.push((Chip::Key("[ ]"), "Filter", Some(Click::NextFilter)));
+            }
+            h
+        };
+        let font = FontId::new(18.0 * u, FontFamily::Proportional);
+        let d = theme::CHIP_LARGE;
+        let mut x = l.top.left();
+        let y = l.bar.center().y;
+        for (i, (chip, label, click)) in hints.into_iter().enumerate() {
+            let cw = theme::chip_width_at(p, chip, u, d);
+            let g = p.layout_no_wrap(label.to_string(), font.clone(), theme::TEXT_2);
+            let r = Rect::from_min_size(pos2(x, y - 22.0 * u), vec2(cw + 10.0 * u + g.size().x + 20.0 * u, 44.0 * u));
+            let dim = matches!(click, Some(Click::Continue)) && view.cont.is_none();
+            let mut shown = Color32::from_white_alpha(if dim { 90 } else { 255 });
+            if let Some(c) = click {
+                let id = Id::unique(("hint", i));
+                let (resp, hit) = control(&mut self.focus, ui, id, r);
+                if resp.hovered() && !dim {
+                    p.rect_filled(r, 10.0 * u, Color32::from_white_alpha(20));
                 }
-                let hit = ui.interact(r.intersect(clip), Id::unique(("row", i)), Sense::click_and_drag());
-                if hit.hovered() && ui.input(|i| i.pointer.delta() != Vec2::ZERO) {
-                    self.row = i;
+                if self.focus.is_on(id) {
+                    theme::focus_ring(p, r, u, 10.0);
                 }
-                let focused = i == self.row && self.panel == Panel::Settings;
-                if focused {
-                    p.rect_filled(r, 10.0 * u, Color32::from_rgba_unmultiplied(47, 230, 239, 22));
-                    p.rect_stroke(r, 10.0 * u, Stroke::new(1.5 * u, CYAN.gamma_multiply(0.8)), StrokeKind::Inside);
-                }
-                let lx = r.left() + 14.0 * u;
-                let (label, hint, key) = match row {
-                    Row::Scope => ("Save for", "where changes here are kept", None),
-                    Row::Choice(k, label, hint, _) => (*label, *hint, Some(*k)),
-                    Row::Db(k, label, _, _) => (*label, "", Some(*k)),
-                    Row::Controls => ("Controls…", "remap the keys and gamepad", None),
-                    Row::Reset => ("Use the settings for all games", "forget this game's own", None),
-                };
-                // The hint wraps short of the control on the right; the
-                // label and hint are centred on the row together.
-                let control_w = match row {
-                    Row::Scope => pills_width(&p, &["This game", "All games"], u),
-                    Row::Choice(k, _, _, options) => {
-                        let labels = choice_labels(options, &values.get(k)).0;
-                        pills_width(&p, &labels.iter().map(String::as_str).collect::<Vec<_>>(), u)
-                    }
-                    Row::Db(..) => 330.0 * u,
-                    Row::Controls | Row::Reset => 30.0 * u,
-                };
-                let wrap = (r.right() - 12.0 * u - control_w - 18.0 * u - lx).max(80.0 * u);
-                // A setting another overrides says so in place of its hint.
-                let (hint, hint_c) = match key.and_then(|k| overridden(k, values, self.temporal_supported)) {
-                    Some(why) => (why.to_string(), AMBER),
-                    None => match key {
-                        Some("preset") => (
-                            hints::preset_help(values.preset, Some(game), self.temporal_supported, values.geo_chip),
-                            DIM,
-                        ),
-                        Some("run_ahead") => run_ahead_hint(hint, values.run_ahead, game, view),
-                        _ => (hint.to_string(), DIM),
-                    },
-                };
-                let hint_g = (!hint.is_empty())
-                    .then(|| p.layout(hint.to_string(), FontId::proportional(11.5 * u), hint_c, wrap));
-                let label_h = 20.0 * u;
-                let block = label_h + hint_g.as_ref().map_or(0.0, |g| g.size().y + 2.0 * u);
-                let label_y = r.center().y - block / 2.0 + label_h / 2.0;
-                let lr = p.text(pos2(lx, label_y), Align2::LEFT_CENTER, label, FontId::proportional(16.5 * u), FG);
-                if let Some(g) = hint_g {
-                    p.galley(pos2(lx, label_y + label_h / 2.0 + 2.0 * u), g, hint_c);
-                }
-                if let Some(k) = key {
-                    let src = sources[KEYS.iter().position(|x| *x == k).unwrap_or(0)];
-                    let tag = match src {
-                        Source::Game => Some(("this game", CYAN)),
-                        Source::CommandLine => Some(("command line", AMBER)),
-                        _ => None,
-                    };
-                    if let Some((text, color)) = tag {
-                        let tg = p.layout_no_wrap(text.to_string(), FontId::proportional(10.5 * u), color);
-                        let tr = Rect::from_min_size(
-                            pos2(lr.right() + 8.0 * u, label_y - 8.0 * u),
-                            tg.size() + vec2(10.0 * u, 4.0 * u),
-                        );
-                        p.rect_stroke(tr, 8.0 * u, Stroke::new(1.0 * u, color.gamma_multiply(0.7)), StrokeKind::Inside);
-                        p.galley(tr.min + vec2(5.0 * u, 2.0 * u), tg, color);
-                    }
-                }
-                let right = r.right() - 12.0 * u;
-                match *row {
-                    Row::Scope => {
-                        let opts = [("This game", false), ("All games", true)];
-                        if let Some(v) = pills(
-                            ui,
-                            &p,
-                            right,
-                            r.center().y,
-                            &opts.map(|o| o.0),
-                            opts.iter().position(|o| o.1 == *for_all).unwrap_or(0),
-                            u,
-                            ("scope", i),
-                        ) {
-                            *for_all = opts[v].1;
-                            self.row = i;
-                        }
-                    }
-                    Row::Choice(k, _, _, options) => {
-                        let (labels, at) = choice_labels(options, &values.get(k));
-                        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
-                        if let Some(v) = pills(ui, &p, right, r.center().y, &labels, at, u, ("choice", i)) {
-                            if let Some(o) = options.get(v) {
-                                change(values, k, o.1, game);
-                            }
-                            self.row = i;
-                        }
-                    }
-                    Row::Db(k, _, min, max) => {
-                        let v: f32 = values.get(k).parse().unwrap_or(0.0);
-                        let text = format!("{}{v:.0} dB", if v > 0.0 { "+" } else { "" });
-                        let vr = p.text(
-                            pos2(right, r.center().y),
-                            Align2::RIGHT_CENTER,
-                            text,
-                            FontId::monospace(14.0 * u),
-                            FG,
-                        );
-                        let track = Rect::from_min_max(
-                            pos2(right - 250.0 * u, r.center().y - 2.0 * u),
-                            pos2(vr.left() - 16.0 * u, r.center().y + 2.0 * u),
-                        );
-                        let f = (v - min) / (max - min);
-                        p.rect_filled(track, 2.0 * u, KEY_LINE);
-                        p.rect_filled(
-                            Rect::from_min_max(track.min, pos2(track.left() + track.width() * f, track.bottom())),
-                            2.0 * u,
-                            CYAN,
-                        );
-                        p.circle_filled(pos2(track.left() + track.width() * f, track.center().y), 8.0 * u, FG);
-                        if hit.is_pointer_button_down_on() || hit.dragged() {
-                            if let Some(pos) = hit.interact_pointer_pos() {
-                                if pos.x >= track.left() - 12.0 * u {
-                                    let f = ((pos.x - track.left()) / track.width()).clamp(0.0, 1.0);
-                                    values.set(k, &(min + f * (max - min)).round().to_string());
-                                }
-                            }
-                            self.row = i;
-                        }
-                    }
-                    Row::Controls | Row::Reset => {
-                        p.text(
-                            pos2(right, r.center().y),
-                            Align2::RIGHT_CENTER,
-                            "›",
-                            FontId::proportional(24.0 * u),
-                            if focused { CYAN } else { DIM },
-                        );
-                        if hit.clicked() {
-                            self.row = i;
-                            if *row == Row::Controls {
-                                self.panel = Panel::Controls;
-                            } else {
-                                actions.push(Action::ResetGame(game.id.to_string()));
-                            }
-                        }
-                    }
+                if hit && !dim {
+                    clicks.push(c);
                 }
             }
-            settle(values, game);
-            // Close, at the foot.
-            let p = ui.painter().clone();
-            let foot = pos2(inner.left(), rect.bottom() - 28.0 * u);
-            let g = p.layout_no_wrap(
-                if self.pad_used { "B  close" } else { "Esc  close" }.into(),
-                FontId::proportional(13.5 * u),
-                DIM,
+            if dim {
+                shown = Color32::from_white_alpha(90);
+            }
+            theme::paint_chip_at(p, chip, pos2(r.left() + 6.0 * u, y), u, d);
+            p.galley(pos2(r.left() + 6.0 * u + cw + 10.0 * u, y - g.size().y / 2.0), g, shown);
+            x = r.right() + 8.0 * u;
+        }
+        if grid {
+            let (shown, of) = self.counts();
+            p.text(
+                pos2(l.top.right(), y),
+                Align2::RIGHT_CENTER,
+                format!("{shown} of {of} games"),
+                FontId::new(18.0 * u, FontFamily::Proportional),
+                theme::TEXT_DIM,
             );
-            let cr = Rect::from_min_size(pos2(foot.x, foot.y - g.size().y / 2.0), g.size());
-            let hit = ui.interact(cr.expand(8.0 * u), Id::unique("panel close"), Sense::click());
-            p.galley(cr.min, g, if hit.hovered() { FG } else { DIM });
-            if hit.clicked() {
-                self.panel = Panel::Closed;
-            }
+        }
+        let _ = view;
+    }
+
+    /// Read the selected game's states and show the Saves panel.
+    fn open_saves(&mut self, ctx: &egui::Context) {
+        let Some(game) = self.cur else { return };
+        let mut items = Vec::new();
+        let entries = std::iter::once((Start::Resume, "Where you left off".to_string(), saves::resume_file(game.id)))
+            .chain((0..menu::SLOTS).map(|n| {
+                (
+                    Start::Slot(n),
+                    if n == 0 { "Quick save".to_string() } else { format!("Slot {n}") },
+                    saves::slot_file(game.id, n),
+                )
+            }));
+        for (from, name, path) in entries {
+            let info = saves::read_info(&path);
+            let thumb = info.as_ref().and_then(|i| i.thumb.as_ref()).and_then(|(png, _)| saves::read_thumb(png)).map(
+                |(size, rgba)| {
+                    ctx.load_texture(
+                        format!("save {} {name}", game.id),
+                        egui::ColorImage::from_rgba_unmultiplied(size, &rgba),
+                        egui::TextureOptions::LINEAR,
+                    )
+                },
+            );
+            items.push(SaveItem { from, name, info, thumb });
+        }
+        self.saves = Some(SavesPage { game, items, focus: Focus::default() });
+    }
+
+    /// The Saves panel over the launcher: a card per state; one chosen
+    /// starts the game from it.
+    fn paint_saves(&mut self, ctx: &egui::Context, navs: &[Nav], view: &View, actions: &mut Vec<Action>) {
+        let _ = view;
+        let (pad, keys) = (self.pad_used, self.keys_used);
+        let Some(page) = &mut self.saves else { return };
+        let s = theme::scale(ctx);
+        page.focus.show = pad || keys;
+        let rest = page.focus.begin(navs);
+        let mut back = rest.iter().any(|n| matches!(n, Nav::Back | Nav::Saves));
+        if rest.contains(&Nav::Start) || rest.contains(&Nav::Settings) {
+            back = true;
+        }
+        let hints = [(Chip::A, "Load"), (Chip::B, "Back"), (Chip::Key("Esc"), "Close")];
+        let spec = menu::PanelSpec { game: page.game.title, heading: "Saves", back: true, extra_h: 0.0 };
+        let mut chosen = None;
+        let SavesPage { game, items, focus } = page;
+        back |= menu::side_panel(ctx, &spec, &hints, |ui, reg| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(reg.body.shrink2(vec2(24.0 * s, 0.0))), |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 12.0 * s;
+                    ui.add_space(16.0 * s);
+                    for (i, item) in items.iter().enumerate() {
+                        let id = Id::unique(("save-card", game.id, i));
+                        if menu::slot_card(ui, focus, id, &item.name, false, item.info.as_ref(), item.thumb.as_ref()) {
+                            chosen = Some(i);
+                        }
+                    }
+                    ui.add_space(16.0 * s);
+                });
+            });
+            false
         });
+        page.focus.end();
+        if let Some(i) = chosen {
+            let item = &page.items[i];
+            if item.info.as_ref().is_some_and(|inf| inf.loads) {
+                actions.push(Action::Play { set: page.game.id.to_string(), from: item.from });
+                back = true;
+            }
+        }
+        if back {
+            self.saves = None;
+        }
     }
 
     /// No games: say where reModel looked, and let another folder be typed in.
     fn empty(&mut self, ctx: &egui::Context, l: &Layout, view: &View, actions: &mut Vec<Action>) {
         let u = l.u;
         egui::Area::new(Id::unique("launcher empty")).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-            ui.set_max_width(640.0 * u);
+            ui.set_max_width(700.0 * u);
             ui.vertical_centered(|ui| {
                 if let Some(logo) = &self.logo {
                     let [w, h] = logo.size();
@@ -1569,22 +1551,22 @@ impl Launcher {
                     ui.add(egui::Image::new((logo.id(), vec2(lh * w as f32 / h as f32, lh))));
                 }
                 ui.add_space(24.0 * u);
-                ui.label(egui::RichText::new("No games found").size(28.0 * u).color(FG));
-                ui.add_space(8.0 * u);
+                ui.label(theme::heading(ctx, "No games found", 34.0));
+                ui.add_space(10.0 * u);
                 ui.label(
                     egui::RichText::new(
                         "reModel looks for MAME sets (zips or folders, e.g. topskatr.zip) in this folder:",
                     )
-                    .size(15.0 * u)
-                    .color(DIM),
+                    .size(18.0 * u)
+                    .color(theme::TEXT_2),
                 );
-                ui.add_space(12.0 * u);
+                ui.add_space(14.0 * u);
                 ui.horizontal(|ui| {
                     let edit = egui::TextEdit::singleline(&mut self.rom_text)
-                        .font(FontId::monospace(15.0 * u))
-                        .desired_width(460.0 * u);
+                        .font(FontId::new(18.0 * u, FontFamily::Monospace))
+                        .desired_width(480.0 * u);
                     let r = ui.add(edit);
-                    let scan = ui.add(egui::Button::new(egui::RichText::new("Scan").size(16.0 * u)));
+                    let scan = ui.add(egui::Button::new(egui::RichText::new("Scan").size(18.0 * u)));
                     if scan.clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
                         actions.push(Action::Rescan(self.rom_text.trim().to_string()));
                     }
@@ -1593,12 +1575,12 @@ impl Launcher {
                     ui.add_space(8.0 * u);
                     ui.label(
                         egui::RichText::new(format!("{} other sets there aren't supported yet", view.unsupported))
-                            .size(14.0 * u)
+                            .size(18.0 * u)
                             .color(DIM),
                     );
                 }
                 ui.add_space(20.0 * u);
-                if ui.add(egui::Button::new(egui::RichText::new("Quit").size(16.0 * u))).clicked() {
+                if ui.add(egui::Button::new(egui::RichText::new("Quit").size(18.0 * u))).clicked() {
                     actions.push(Action::Quit);
                 }
             });
@@ -1606,117 +1588,20 @@ impl Launcher {
     }
 }
 
-/// A play triangle, or a settings mark (three sliders), centred on `c`.
-fn icon(p: &Painter, c: Pos2, play: bool, color: Color32, u: f32) {
-    if play {
-        let pts = vec![c + vec2(-5.0, -7.0) * u, c + vec2(8.0, 0.0) * u, c + vec2(-5.0, 7.0) * u];
-        p.add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
-        return;
-    }
-    for (i, knob) in [(-1.0f32, 3.0f32), (0.0, -4.0), (1.0, 1.0)] {
-        let y = c.y + i * 6.0 * u;
-        p.hline((c.x - 8.0 * u)..=(c.x + 8.0 * u), y, Stroke::new(1.5 * u, color));
-        p.circle_filled(pos2(c.x + knob * u, y), 2.6 * u, color);
-    }
-}
-
-/// The game's controls for its card: the manifest's summary, with
-/// direction buttons bound to the arrow keys shown as one stick, and the
-/// start buttons last.
-fn controls(game: &romset::Game) -> Vec<(Vec<&'static str>, String)> {
-    let mut out = game.controls.summary();
-    let arrows = ["←", "→", "↑", "↓"];
-    let dirs: Vec<usize> = (0..out.len()).filter(|&i| out[i].0.len() == 1 && arrows.contains(&out[i].0[0])).collect();
-    let is_dir = |label: &str| ["up", "down", "left", "right"].contains(&label.to_lowercase().as_str());
-    if dirs.len() == 4 && dirs.iter().all(|&i| is_dir(&out[i].1)) {
-        let at = dirs[0];
-        for &i in dirs.iter().rev() {
-            out.remove(i);
-        }
-        out.insert(at, (arrows.to_vec(), "Move".to_string()));
-    }
-    out.sort_by_key(|(_, label)| label.starts_with("Start"));
-    out
-}
-
-/// A keyboard key or pad button's cap with `text` on it.
-pub fn keycap(p: &Painter, r: Rect, text: &str, font: &FontId, u: f32) {
-    p.rect_filled(r, 4.0 * u, KEY_BG);
-    p.rect_stroke(r, 4.0 * u, Stroke::new(1.0 * u, KEY_LINE), StrokeKind::Inside);
-    p.hline(r.x_range().shrink(2.0 * u), r.bottom() - 1.0 * u, Stroke::new(1.5 * u, KEY_LINE));
-    p.text(r.center() - vec2(0.0, 1.0 * u), Align2::CENTER_CENTER, text, font.clone(), FG);
-}
-
-/// A choice row's pill labels and the selected one: a value off the list
-/// (a `materials_relief` of 1.5 from the settings file or the command line)
-/// gets a pill of its own after the others, "Custom (1.5)", so the row
-/// shows what is in effect instead of highlighting the first choice.
-fn choice_labels(options: &[(&str, &str)], value: &str) -> (Vec<String>, usize) {
-    let mut labels: Vec<String> = options.iter().map(|o| o.0.to_string()).collect();
-    let at = options.iter().position(|o| o.1 == value).unwrap_or_else(|| {
-        labels.push(format!("Custom ({value})"));
-        options.len()
-    });
-    (labels, at)
-}
-
-/// How wide `pills` draws `labels`.
-fn pills_width(p: &Painter, labels: &[&str], u: f32) -> f32 {
-    let font = FontId::proportional(14.0 * u);
-    labels.iter().map(|l| p.layout_no_wrap(l.to_string(), font.clone(), FG).size().x + 24.0 * u).sum::<f32>()
-        + 6.0 * u * (labels.len() as f32 - 1.0)
-}
-
-/// Choice pills ending at `right`, centred on `y`, `at` chosen; returns one
-/// clicked.
-#[allow(clippy::too_many_arguments)]
-fn pills(
-    ui: &egui::Ui,
-    p: &Painter,
-    right: f32,
-    y: f32,
-    labels: &[&str],
-    at: usize,
-    u: f32,
-    id: (&str, usize),
-) -> Option<usize> {
-    let font = FontId::proportional(14.0 * u);
-    let h = 32.0 * u;
-    let widths: Vec<f32> =
-        labels.iter().map(|l| p.layout_no_wrap(l.to_string(), font.clone(), FG).size().x + 24.0 * u).collect();
-    let mut x = right - widths.iter().sum::<f32>() - 6.0 * u * (labels.len() as f32 - 1.0);
-    let mut clicked = None;
-    for (i, (label, w)) in labels.iter().zip(widths).enumerate() {
-        let r = Rect::from_min_size(pos2(x, y - h / 2.0), vec2(w, h));
-        let hit = ui.interact(r, Id::unique((id.0, id.1, i)), Sense::click());
-        let on = i == at;
-        let fill = if on { Color32::from_rgba_unmultiplied(47, 230, 239, 40) } else { KEY_BG };
-        p.rect_filled(r, h / 2.0, fill);
-        let stroke = if on {
-            CYAN
-        } else if hit.hovered() {
-            DIM
-        } else {
-            KEY_LINE
-        };
-        p.rect_stroke(r, h / 2.0, Stroke::new(1.5 * u, stroke), StrokeKind::Inside);
-        p.text(
-            r.center(),
-            Align2::CENTER_CENTER,
-            *label,
-            font.clone(),
-            if on { FG } else { Color32::from_rgb(201, 208, 220) },
-        );
-        if hit.clicked() {
-            clicked = Some(i);
-        }
-        x += w + 6.0 * u;
-    }
-    clicked
+/// A horizontal gradient over `r`.
+fn hgradient(p: &Painter, r: Rect, left: Color32, right: Color32) {
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(r.left_top(), left);
+    mesh.colored_vertex(r.right_top(), right);
+    mesh.colored_vertex(r.left_bottom(), left);
+    mesh.colored_vertex(r.right_bottom(), right);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 3, 2);
+    p.add(egui::Shape::mesh(mesh));
 }
 
 /// A vertical gradient over `r`.
-fn gradient(p: &Painter, r: Rect, top: Color32, bottom: Color32) {
+fn vgradient(p: &Painter, r: Rect, top: Color32, bottom: Color32) {
     let mut mesh = egui::Mesh::default();
     mesh.colored_vertex(r.left_top(), top);
     mesh.colored_vertex(r.right_top(), top);
@@ -1730,148 +1615,535 @@ fn gradient(p: &Painter, r: Rect, top: Color32, bottom: Color32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use romset::Kind;
 
     fn games(ids: &[&str]) -> Vec<&'static romset::Game> {
         ids.iter().map(|id| romset::games::find(id).unwrap()).collect()
     }
 
-    #[test]
-    fn grouped_by_board_recent_first() {
-        let mut l = Launcher::default();
-        l.set_games(&games(&["topskatr", "hotd", "fvipers", "doa", "stcc"]), &["hotd".into(), "gone".into()]);
-        let names: Vec<&str> = l.groups().iter().map(|g| g.name.as_str()).collect();
-        assert_eq!(names, ["Recently played", "Model 2B", "Model 2C"]);
-        assert_eq!(l.selected().unwrap().id, "hotd");
-        // Titles in order within a board.
-        let b: Vec<&str> = l.cards[l.groups[1].start..][..l.groups[1].len].iter().map(|c| c.game.title).collect();
-        assert_eq!(b, ["Dead or Alive", "Fighting Vipers"]);
-        assert_eq!(l.groups[2].len, 3);
+    const SET: [&str; 8] = ["topskatr", "hotd", "vf2", "stcc", "srallyc", "vcop", "doa", "sgt24h"];
+
+    fn view(cont: Option<Continue>, menu_open: bool) -> View<'static> {
+        View {
+            preview: None,
+            progress: None,
+            no_preview: None,
+            resume: None,
+            unsupported: 0,
+            cont,
+            menu_open,
+            capturing: false,
+        }
     }
 
-    #[test]
-    fn model_2a_has_its_own_group_before_2b() {
-        let mut l = Launcher::default();
-        l.set_games(&games(&["doa", "srallyc", "topskatr"]), &[]);
-        let names: Vec<&str> = l.groups().iter().map(|g| g.name.as_str()).collect();
-        assert_eq!(names, ["Model 2A", "Model 2B", "Model 2C"]);
-        assert_eq!(l.selected().unwrap().id, "srallyc");
+    /// A launcher drawn headless, a frame at a time, the way `ui` is called.
+    struct Rig {
+        ctx: egui::Context,
+        l: Launcher,
+        size: Vec2,
+        cont: Option<Continue>,
+        menu_open: bool,
+        actions: Vec<Action>,
+        shapes: Vec<egui::epaint::ClippedShape>,
+        /// Seconds of the frames so far (a tenth each).
+        time: f64,
     }
 
-    #[test]
-    fn original_model_2_has_its_own_group_first() {
-        let mut l = Launcher::default();
-        l.set_games(&games(&["srallyc", "daytona", "topskatr"]), &[]);
-        let names: Vec<&str> = l.groups().iter().map(|g| g.name.as_str()).collect();
-        assert_eq!(names, ["Model 2", "Model 2A", "Model 2C"]);
-        assert_eq!(l.selected().unwrap().id, "daytona");
-    }
-
-    #[test]
-    fn settings_temporal_overrides() {
-        let mut v = GameSettings { aa: 4, ..Default::default() };
-        assert!(["aa", "temporal", "stipple"].iter().all(|k| overridden(k, &v, true).is_none()));
-        v.temporal = 100;
-        assert!(overridden("aa", &v, true).is_some() && overridden("temporal", &v, true).is_none());
-        assert!(overridden("aa", &v, false).is_none() && overridden("temporal", &v, false).is_some());
-        v.geo_chip = true;
-        v.stipple_keep = true;
-        assert!(overridden("aa", &v, true).is_none());
-        assert!(overridden("temporal", &v, true).is_some() && overridden("stipple", &v, true).is_some());
-        // Shading: the chip doesn't turn it off; pixel is drawn as vertex
-        // with it, and says so (per pixel with the native geometrizer).
-        let mut v = GameSettings { geo_chip: true, shading: gpu::Shading::Vertex, ..Default::default() };
-        assert!(overridden("shading", &v, true).is_none());
-        v.shading = gpu::Shading::Pixel;
-        assert!(overridden("shading", &v, true).is_some_and(|s| s.contains("as vertex")));
-        assert!(overridden("shading", &GameSettings { geo_chip: false, ..v.clone() }, true).is_none());
-        v.crease = 0;
-        assert!(overridden("shading", &v, true).is_some_and(|s| s.contains("nothing")));
-        // Material maps: no effect without the pack or with the chip.
-        let mut v = GameSettings { materials: true, ..Default::default() };
-        assert!(overridden("materials", &v, true).is_some_and(|s| s.contains("texture pack")));
-        v.pack = true;
-        assert!(overridden("materials", &v, true).is_none());
-        v.geo_chip = true;
-        assert!(overridden("materials", &v, true).is_some_and(|s| s.contains("native")));
-        let v = GameSettings { materials_relief: gpu::Relief::Faithful, ..Default::default() };
-        assert!(overridden("materials_relief", &v, true).is_some());
-        assert!(overridden("materials_relief", &GameSettings { materials: true, pack: true, ..v }, true).is_none());
-        // The rows hold every value the settings take for them.
-        for key in ["temporal", "stipple", "shading", "materials", "materials_relief", "bloom", "crt"] {
-            let Some(Row::Choice(_, _, _, options)) =
-                rows(false, 16).into_iter().find(|r| matches!(r, Row::Choice(k, ..) if *k == key))
-            else {
-                panic!("no {key} row")
+    impl Rig {
+        fn new(ids: &[&str], recent: &[&str]) -> Rig {
+            let ctx = egui::Context::default();
+            theme::install(&ctx);
+            let mut l = Launcher::default();
+            let recent: Vec<String> = recent.iter().map(|s| s.to_string()).collect();
+            l.set_games(&games(ids), &recent);
+            let mut rig = Rig {
+                ctx,
+                l,
+                size: vec2(1280.0, 720.0),
+                cont: None,
+                menu_open: false,
+                actions: Vec::new(),
+                shapes: Vec::new(),
+                time: 0.0,
             };
-            for (_, value) in options {
-                let mut v = GameSettings::default();
-                assert!(v.set(key, value) && v.get(key) == *value, "{key} = {value}");
+            // One frame to lay it out, one for the focus to settle in.
+            rig.frame(&[], Vec::new());
+            rig.frame(&[], Vec::new());
+            rig.actions.clear();
+            rig
+        }
+
+        fn frame(&mut self, navs: &[Nav], events: Vec<egui::Event>) {
+            let view = view(self.cont, self.menu_open);
+            self.time += 0.1;
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            theme::sync(&self.ctx, self.size.y);
+            self.l.last_frame = Some(Instant::now() - Duration::from_millis(100));
+            let Rig { ctx, l, actions, .. } = self;
+            let mut out = ctx.run_ui(input, |ui| {
+                actions.extend(l.ui(ui.ctx(), navs.to_vec(), &view));
+            });
+            out.textures_delta.clear();
+            self.shapes = out.shapes;
+        }
+
+        /// `n` presses of `nav`, a frame each, then frames for the scrolling
+        /// and sliding to settle.
+        fn press(&mut self, n: usize, nav: Nav) -> &mut Rig {
+            for _ in 0..n {
+                self.frame(&[nav], Vec::new());
+            }
+            for _ in 0..6 {
+                self.frame(&[], Vec::new());
+            }
+            self
+        }
+
+        fn key(&mut self, key: egui::Key) {
+            let event = egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            };
+            self.frame(&[], vec![event]);
+            self.frame(&[], Vec::new());
+        }
+
+        /// The text drawn last frame, and its sizes in points.
+        fn texts(&self) -> Vec<(String, f32)> {
+            self.shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => {
+                        let size = t.galley.job.sections.first().map_or(0.0, |s| s.format.font_id.size);
+                        Some((t.galley.text().to_string(), size))
+                    }
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn shows(&self, needle: &str) -> bool {
+            self.texts().iter().any(|(t, _)| t.contains(needle))
+        }
+
+        fn selected(&self) -> &'static str {
+            self.l.selected().unwrap().id
+        }
+
+        fn played(&self) -> Vec<(String, Start)> {
+            self.actions
+                .iter()
+                .filter_map(|a| match a {
+                    Action::Play { set, from } => Some((set.clone(), *from)),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// The focus is on a tile of the grid.
+        fn on_a_tile(&self) -> bool {
+            self.l.focus.focused().is_some_and(|id| self.l.grid.iter().any(|g| tile_id(g) == id))
+        }
+    }
+
+    fn continuing(set: &str, from: Start) -> Option<Continue> {
+        Some(Continue {
+            game: romset::games::find(set).unwrap(),
+            from,
+            saved: Some(SystemTime::now() - Duration::from_secs(12 * 60)),
+        })
+    }
+
+    #[test]
+    fn the_symbols_the_launcher_draws_have_glyphs() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        // Fonts take effect with the first frame.
+        let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
+        out.textures_delta.clear();
+        for (family, chars) in [(theme::bold(), "←→↑↓·…"), (theme::semibold(), "·…"), (FontFamily::Proportional, "·…")]
+        {
+            let font = FontId::new(18.0, family);
+            for c in chars.chars() {
+                assert!(ctx.fonts_mut(|f| f.has_glyph(&font, c)), "no glyph for {c}");
             }
         }
     }
 
     #[test]
-    fn a_value_off_the_list_shows_as_custom() {
-        let Some(Row::Choice(_, _, _, options)) =
-            rows(false, 16).into_iter().find(|r| matches!(r, Row::Choice("materials_relief", ..)))
-        else {
-            panic!("no materials_relief row")
+    fn carousel_steps_round_the_games() {
+        let mut r = Rig::new(&SET, &["stcc", "hotd"]);
+        // The played first (latest first), then A to Z by title.
+        assert_eq!(r.l.carousel_ids()[..3], ["stcc", "hotd", "doa"]);
+        assert_eq!(r.selected(), "stcc");
+        r.press(1, Nav::Right);
+        assert_eq!(r.selected(), "hotd");
+        r.press(1, Nav::Left).press(1, Nav::Left);
+        assert_eq!(r.selected(), *r.l.carousel_ids().last().unwrap(), "left from the first goes round");
+        r.press(1, Nav::Right);
+        assert_eq!(r.selected(), "stcc", "and right from the last");
+        assert!(r.l.wants_preview());
+    }
+
+    #[test]
+    fn a_plays_from_the_start_and_a_poster_plays_when_clicked_twice() {
+        let mut r = Rig::new(&SET, &["stcc"]);
+        r.press(1, Nav::Accept);
+        assert_eq!(r.played(), [("stcc".to_string(), Start::New)]);
+        r.actions.clear();
+        // A click on another poster selects it; on the selected, plays.
+        let hotd = romset::games::find("hotd").unwrap();
+        r.l.apply(Click::Game(hotd), &view(None, false), &mut r.actions);
+        assert_eq!(r.selected(), "hotd");
+        assert!(r.actions.is_empty());
+        r.l.apply(Click::Game(hotd), &view(None, false), &mut r.actions);
+        assert_eq!(r.played(), [("hotd".to_string(), Start::New)]);
+    }
+
+    #[test]
+    fn down_from_the_poster_reaches_the_buttons() {
+        let mut r = Rig::new(&SET, &["stcc"]);
+        r.press(1, Nav::Down);
+        assert_eq!(r.l.focus.focused(), Some(button_id("play")));
+        r.press(1, Nav::Accept);
+        assert_eq!(r.played(), [("stcc".to_string(), Start::New)]);
+        r.actions.clear();
+        r.press(1, Nav::Right).press(1, Nav::Accept);
+        assert!(r.l.saves.is_some(), "right of Play is Saves");
+    }
+
+    #[test]
+    fn y_goes_back_to_the_last_game_at_its_latest_state() {
+        let mut r = Rig::new(&SET, &["stcc"]);
+        r.press(2, Nav::Right);
+        assert_eq!(r.selected(), "srallyc");
+        r.press(1, Nav::Continue);
+        assert!(r.played().is_empty(), "nothing to continue");
+        r.cont = continuing("stcc", Start::Slot(2));
+        r.press(1, Nav::Continue);
+        assert_eq!(r.played(), [("stcc".to_string(), Start::Slot(2))], "not the game selected");
+        // The pill says what and when.
+        assert!(r.shows("CONTINUE") && r.shows("slot 2, 12 minutes ago"), "{:?}", r.texts());
+        r.key(egui::Key::C);
+        assert_eq!(r.played().len(), 2, "the keyboard's C does the same");
+        // In the grid it is one line in the top bar.
+        r.l.set_mode(ViewMode::Grid);
+        r.frame(&[], Vec::new());
+        assert!(r.shows("Continue") && r.shows("12 minutes ago") && !r.shows("CONTINUE"), "{:?}", r.texts());
+    }
+
+    #[test]
+    fn x_opens_the_saves_and_a_card_starts_the_game_from_it() {
+        let mut r = Rig::new(&SET, &["stcc"]);
+        r.press(1, Nav::Saves);
+        r.frame(&[], Vec::new());
+        assert!(r.l.saves.is_some(), "the panel opens");
+        assert!(r.shows("Where you left off") && r.shows("Quick save") && r.shows("Slot 4"), "{:?}", r.texts());
+        // Empty slots load nothing.
+        r.press(1, Nav::Accept);
+        assert!(r.played().is_empty() && r.l.saves.is_some());
+        // Give the resume state and slot 2 a state this build loads.
+        let saved = |t: u64| SlotInfo {
+            time: SystemTime::UNIX_EPOCH + Duration::from_secs(t),
+            made_by: None,
+            loads: true,
+            thumb: None,
         };
-        let (labels, at) = choice_labels(options, "2");
-        assert_eq!((labels.len(), labels[at].as_str()), (options.len(), "2"));
-        let mut v = GameSettings::default();
-        assert!(v.set("materials_relief", "1.5"));
-        let (labels, at) = choice_labels(options, &v.get("materials_relief"));
-        assert_eq!((labels.len(), at, labels[at].as_str()), (options.len() + 1, options.len(), "Custom (1.5)"));
+        let page = r.l.saves.as_mut().unwrap();
+        page.items[0].info = Some(saved(100));
+        page.items[3].info = Some(saved(200));
+        r.press(1, Nav::Accept);
+        assert_eq!(r.played(), [("stcc".to_string(), Start::Resume)]);
+        assert!(r.l.saves.is_none(), "it closes");
+        // Slot 2 is three cards down.
+        r.actions.clear();
+        r.press(1, Nav::Saves);
+        r.l.saves.as_mut().unwrap().items[3].info = Some(saved(200));
+        r.press(3, Nav::Down).press(1, Nav::Accept);
+        assert_eq!(r.played(), [("stcc".to_string(), Start::Slot(2))]);
+        // B closes it without playing; the keyboard's S opens it.
+        r.actions.clear();
+        r.press(1, Nav::Saves).press(1, Nav::Back);
+        assert!(r.l.saves.is_none() && r.played().is_empty());
+        r.key(egui::Key::S);
+        assert!(r.l.saves.is_some());
     }
 
     #[test]
-    fn navigation() {
-        let mut l = Launcher::default();
-        l.set_games(&games(&["topskatr", "hotd", "fvipers", "doa", "stcc"]), &[]);
-        let (mut v, mut all, mut acts) = (GameSettings::default(), true, Vec::new());
-        let mut nav = |l: &mut Launcher, n: Nav, v: &mut GameSettings| l.nav(n, false, v, &mut all, false, &mut acts);
-        assert_eq!(l.selection(), 0);
-        nav(&mut l, Nav::Left, &mut v);
-        assert_eq!(l.selection(), 0, "stops at the first");
-        nav(&mut l, Nav::NextGroup, &mut v);
-        assert_eq!(l.selected().unwrap().board.name(), "Model 2C");
-        nav(&mut l, Nav::Right, &mut v);
-        nav(&mut l, Nav::PrevGroup, &mut v);
-        assert_eq!(l.selection(), l.groups[1].start, "to the group's start");
-        nav(&mut l, Nav::PrevGroup, &mut v);
-        assert_eq!(l.selection(), 0, "then the one before");
-        // Settings: down to the aspect row, change it, back out.
-        nav(&mut l, Nav::Settings, &mut v);
-        assert_eq!(l.panel, Panel::Settings);
-        nav(&mut l, Nav::Right, &mut v);
-        assert!(!v.wide, "4:3");
-        nav(&mut l, Nav::Down, &mut v);
-        nav(&mut l, Nav::Accept, &mut v);
-        assert!(!v.bezel);
-        nav(&mut l, Nav::Back, &mut v);
-        assert_eq!(l.panel, Panel::Closed);
-        nav(&mut l, Nav::Accept, &mut v);
-        let game = l.selected().unwrap().id;
-        assert!(matches!(&acts[..], [Action::Play { set, resume: false }] if set == game));
+    fn start_opens_the_settings_and_esc_or_start_close_them() {
+        let mut r = Rig::new(&SET, &[]);
+        r.press(1, Nav::Start);
+        assert!(r.actions.iter().any(|a| matches!(a, Action::Settings)));
+        r.actions.clear();
+        // With the menu open the launcher takes nothing but the way out.
+        r.menu_open = true;
+        let at = r.selected();
+        r.press(3, Nav::Right);
+        assert_eq!(r.selected(), at);
+        r.press(1, Nav::Start);
+        assert!(r.actions.iter().any(|a| matches!(a, Action::CloseSettings)));
+        r.actions.clear();
+        r.key(egui::Key::Escape);
+        assert!(r.actions.iter().any(|a| matches!(a, Action::CloseSettings)));
+        // Tab opens them from the keyboard.
+        r.actions.clear();
+        r.menu_open = false;
+        r.key(egui::Key::Tab);
+        assert!(r.actions.iter().any(|a| matches!(a, Action::Settings)));
     }
 
     #[test]
-    fn continue_or_new_game() {
-        let mut l = Launcher::default();
-        l.set_games(&games(&["topskatr"]), &[]);
-        let (mut v, mut all, mut acts) = (GameSettings::default(), true, Vec::new());
-        l.nav(Nav::Accept, true, &mut v, &mut all, false, &mut acts);
-        l.nav(Nav::Down, true, &mut v, &mut all, false, &mut acts);
-        l.nav(Nav::Accept, true, &mut v, &mut all, false, &mut acts);
-        let got: Vec<bool> = acts
-            .iter()
-            .map(|a| match a {
-                Action::Play { resume, .. } => *resume,
-                _ => panic!(),
-            })
-            .collect();
-        assert_eq!(got, [true, false]);
+    fn the_shoulder_buttons_switch_the_view_and_it_stays() {
+        let mut r = Rig::new(&SET, &["vf2"]);
+        assert_eq!(r.l.mode, ViewMode::Carousel);
+        r.press(1, Nav::NextGroup);
+        assert_eq!(r.l.mode, ViewMode::Grid);
+        assert!(!r.l.wants_preview(), "the grid has no preview to run");
+        assert_eq!(r.selected(), "vf2", "the same game");
+        r.press(1, Nav::PrevGroup);
+        assert_eq!(r.l.mode, ViewMode::Carousel);
+        // A new list of games (back from a game) keeps the view and the game.
+        r.l.set_mode(ViewMode::Grid);
+        r.l.set_games(&games(&SET), &["vf2".to_string(), "hotd".to_string()]);
+        assert_eq!((r.l.mode, r.l.selected().unwrap().id), (ViewMode::Grid, "vf2"));
+        // Q and E, from the keyboard.
+        r.key(egui::Key::Q);
+        assert_eq!(r.l.mode, ViewMode::Carousel);
+    }
+
+    #[test]
+    fn the_view_switch_is_clickable_and_pad_reachable() {
+        let mut r = Rig::new(&SET, &[]);
+        let view = view(None, false);
+        r.l.apply(Click::View(ViewMode::Grid), &view, &mut r.actions);
+        assert_eq!(r.l.mode, ViewMode::Grid);
+        // Up from a poster reaches the filters, up again the top bar.
+        r.frame(&[], Vec::new());
+        r.frame(&[], Vec::new());
+        r.press(3, Nav::Up);
+        assert!(!r.on_a_tile());
+    }
+
+    #[test]
+    fn the_grid_filters_by_kind_with_the_triggers() {
+        let mut r = Rig::new(&SET, &["vf2"]);
+        r.l.set_mode(ViewMode::Grid);
+        r.frame(&[], Vec::new());
+        assert_eq!(r.l.counts(), (8, 8));
+        let chips: Vec<&str> = r.l.chips.iter().map(|f| f.label()).collect();
+        assert_eq!(chips, ["All", "Recent", "Racing", "Fighting", "Shooting", "Sports"]);
+        // RT steps on (Recent, then Racing), LT back.
+        r.press(1, Nav::NextFilter);
+        assert_eq!(r.l.filter, Filter::Recent);
+        assert_eq!(r.l.grid_ids(), ["vf2"]);
+        r.press(1, Nav::NextFilter);
+        assert_eq!(r.l.filter, Filter::Kind(Kind::Racing));
+        assert_eq!(r.l.grid_ids(), ["srallyc", "stcc", "sgt24h"], "A to Z: Sega Rally, Sega Touring, Super GT");
+        assert_eq!(r.l.counts(), (3, 8));
+        assert!(r.shows("3 of 8 games"), "{:?}", r.texts());
+        assert!(r.l.selected().is_some_and(|g| g.kind == Kind::Racing), "the selection follows into the list");
+        r.press(2, Nav::PrevFilter);
+        assert_eq!(r.l.filter, Filter::All);
+        r.press(1, Nav::PrevFilter);
+        assert_eq!(r.l.filter, Filter::Kind(Kind::Sports), "round the other way");
+        // The carousel doesn't filter.
+        assert_eq!(r.l.carousel_ids().len(), 8);
+        // The keyboard's [ and ].
+        r.key(egui::Key::CloseBracket);
+        assert_eq!(r.l.filter, Filter::All);
+    }
+
+    #[test]
+    fn the_grid_sorts_recent_first_or_a_to_z() {
+        let mut r = Rig::new(&SET, &["vcop", "doa"]);
+        r.l.set_mode(ViewMode::Grid);
+        assert_eq!(r.l.grid_ids()[..2], ["vcop", "doa"]);
+        r.l.set_sort(Sort::AtoZ);
+        let order = r.l.grid_ids();
+        let mut sorted = order.clone();
+        sorted.sort_by_key(|id| romset::games::find(id).unwrap().title);
+        assert_eq!(order, sorted);
+        // The sort button says which, and a click flips it.
+        r.frame(&[], Vec::new());
+        assert!(r.shows("A to Z"), "{:?}", r.texts());
+        r.l.apply(Click::Sort, &view(None, false), &mut r.actions);
+        assert_eq!(r.l.sort, Sort::Recent);
+        assert_eq!(r.l.grid_ids()[..2], ["vcop", "doa"]);
+    }
+
+    #[test]
+    fn the_pad_moves_over_the_grid_and_up_to_the_filters() {
+        let mut r = Rig::new(&SET, &[]);
+        r.l.set_mode(ViewMode::Grid);
+        r.frame(&[], Vec::new());
+        r.frame(&[], Vec::new());
+        let order = r.l.grid_ids();
+        assert_eq!(r.selected(), order[0]);
+        r.press(1, Nav::Right);
+        assert_eq!(r.selected(), order[1]);
+        // Six to a row at 1280x720: down is the second row, under it.
+        r.press(1, Nav::Down);
+        assert_eq!(r.selected(), order[7]);
+        r.press(1, Nav::Up);
+        assert_eq!(r.selected(), order[1]);
+        // Up again leaves the posters for the filters; the selection stays.
+        r.press(1, Nav::Up);
+        assert!(!r.on_a_tile());
+        assert_eq!(r.selected(), order[1]);
+        r.press(1, Nav::Down);
+        assert!(r.on_a_tile());
+        // A plays the selected one.
+        r.press(1, Nav::Accept);
+        assert_eq!(r.played(), [(order[1].to_string(), Start::New)]);
+    }
+
+    #[test]
+    fn every_control_is_reachable_from_the_pad() {
+        for mode in ViewMode::ALL {
+            let mut r = Rig::new(&SET, &["stcc"]);
+            r.cont = continuing("stcc", Start::Resume);
+            r.l.set_mode(mode);
+            r.frame(&[], Vec::new());
+            r.frame(&[], Vec::new());
+            let mut seen = std::collections::HashSet::new();
+            // A long, repeatable wander over the d-pad.
+            let mut x = 0x2545_f491_4f6c_dd1du64;
+            for _ in 0..600 {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                let nav = [Nav::Up, Nav::Down, Nav::Left, Nav::Right][(x % 4) as usize];
+                r.frame(&[nav], Vec::new());
+                seen.extend(r.l.focus.focused());
+            }
+            let must: Vec<(&str, Id)> = match mode {
+                ViewMode::Carousel => vec![
+                    ("the pill", button_id("continue")),
+                    ("Carousel", button_id("carousel")),
+                    ("Grid", button_id("grid")),
+                    ("Play", button_id("play")),
+                    ("Saves", button_id("saves")),
+                    ("Settings", button_id("settings")),
+                    ("the selected poster", selected_card()),
+                    ("a hint", Id::unique(("hint", 1))),
+                ],
+                ViewMode::Grid => vec![
+                    ("the pill", button_id("continue")),
+                    ("Carousel", button_id("carousel")),
+                    ("Grid", button_id("grid")),
+                    ("a chip", button_id("Racing")),
+                    ("Sort", button_id("sort")),
+                    ("a hint", Id::unique(("hint", 1))),
+                ],
+            };
+            for (what, id) in must {
+                assert!(seen.contains(&id), "{mode:?}: the pad never reached {what}");
+            }
+        }
+    }
+
+    #[test]
+    fn both_views_have_the_same_hints_and_the_grid_adds_the_filter() {
+        for pad in [true, false] {
+            let mut r = Rig::new(&SET, &["stcc"]);
+            r.cont = continuing("stcc", Start::New);
+            if pad {
+                r.press(1, Nav::Right);
+            } else {
+                r.key(egui::Key::ArrowRight);
+            }
+            let hints = |r: &Rig| -> Vec<String> {
+                ["Choose", "Play", "Saves", "Settings", "Continue", "View", "Filter"]
+                    .iter()
+                    .filter(|h| r.texts().iter().any(|(t, _)| t == *h))
+                    .map(|h| h.to_string())
+                    .collect()
+            };
+            let carousel = hints(&r);
+            assert_eq!(carousel, ["Choose", "Play", "Saves", "Settings", "Continue", "View"], "pad {pad}");
+            // The keys' caps when the keyboard was last used, the pad's else.
+            assert_eq!(r.shows("Enter"), !pad, "pad {pad}");
+            assert_eq!(r.shows("LB RB"), pad, "pad {pad}");
+            r.l.set_mode(ViewMode::Grid);
+            r.frame(&[], Vec::new());
+            let grid = hints(&r);
+            let mut want = carousel.clone();
+            want.push("Filter".into());
+            assert_eq!(grid, want, "pad {pad}");
+            assert_eq!(r.shows("LT RT"), pad, "pad {pad}");
+        }
+    }
+
+    #[test]
+    fn text_is_never_under_18_points_at_720p() {
+        for mode in ViewMode::ALL {
+            for cont in [None, continuing("stcc", Start::Resume)] {
+                let mut r = Rig::new(&SET, &["stcc"]);
+                r.cont = cont;
+                r.l.set_mode(mode);
+                for _ in 0..3 {
+                    r.frame(&[], Vec::new());
+                }
+                let small: Vec<_> = r.texts().into_iter().filter(|(_, size)| *size < 17.99).collect();
+                assert!(small.is_empty(), "{mode:?}: {small:?}");
+                assert!(r.texts().len() > 10, "{mode:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_the_games_there_are_listed() {
+        let mut r = Rig::new(&["hotd", "vcop", "topskatr"], &["hotd"]);
+        r.l.set_mode(ViewMode::Grid);
+        r.frame(&[], Vec::new());
+        assert_eq!(r.l.counts(), (3, 3));
+        let chips: Vec<&str> = r.l.chips.iter().map(|f| f.label()).collect();
+        assert_eq!(chips, ["All", "Recent", "Shooting", "Sports"], "no Racing chip without a racing game");
+        assert!(r.shows("3 of 3 games"));
+        r.l.set_games(&games(&["hotd"]), &[]);
+        assert_eq!(r.l.counts(), (1, 1));
+        assert!(!r.l.grid_ids().contains(&"vcop"));
+        // The count at the foot of the carousel's top bar.
+        r.l.set_mode(ViewMode::Carousel);
+        r.frame(&[], Vec::new());
+        assert!(r.shows("1 game") && !r.shows("1 games"));
+        // No games: the ROM folder prompt.
+        r.l.set_games(&[], &[]);
+        r.frame(&[], Vec::new());
+        r.frame(&[], Vec::new());
+        assert!(r.shows("NO GAMES FOUND"));
+    }
+
+    #[test]
+    fn the_selection_survives_the_list_changing() {
+        let mut r = Rig::new(&SET, &[]);
+        r.l.select_set("vf2");
+        assert_eq!(r.selected(), "vf2");
+        let recent = vec!["hotd".to_string()];
+        r.l.set_games(&games(&SET), &recent);
+        assert_eq!(r.selected(), "vf2", "kept");
+        r.l.set_games(&games(&["hotd", "doa"]), &recent);
+        assert_eq!(r.selected(), "hotd", "else the first: the one played last");
+    }
+
+    #[test]
+    fn posters_blur_to_a_small_copy() {
+        let mut pixels = vec![Color32::from_rgb(200, 0, 0); 40 * 60 / 2];
+        pixels.extend(vec![Color32::from_rgb(0, 0, 200); 40 * 60 / 2]);
+        let img = egui::ColorImage::new([40, 60], pixels);
+        let blur = blur_image(&img);
+        assert_eq!(blur.width(), 24);
+        assert_eq!(blur.height(), 36, "the poster's shape");
+        assert!(blur.pixels[0].r() > 150 && blur.pixels[0].b() < 50, "red at the top");
+        assert!(blur.pixels.last().unwrap().b() > 150, "blue at the foot");
     }
 
     #[test]
@@ -1881,193 +2153,71 @@ mod tests {
         {
             let s = Rect::from_min_size(Pos2::ZERO, vec2(w, h));
             let l = layout(s);
-            for r in [l.top, l.hero, l.info] {
-                assert!(s.contains_rect(r), "{w}x{h}: {r:?}");
+            for r in [l.top, l.body, l.bar] {
+                assert!(s.expand(0.5).contains_rect(r), "{w}x{h}: {r:?}");
             }
-            assert!(l.hero.right() < l.info.left() && l.info.width() >= 300.0 * l.u, "{w}x{h}");
-            assert!(l.hero.bottom() < l.cards_y - l.card.y / 2.0 - 30.0 * l.u, "{w}x{h}: cards clear the preview");
-            assert!(l.cards_y + l.card.y / 2.0 + 30.0 * l.u < l.hints_y, "{w}x{h}: titles clear the hints");
-            assert!(l.hints_y < h, "{w}x{h}");
-            // The preview has the window's shape, within the views' range.
-            let a = l.hero.width() / l.hero.height();
-            assert!((a - (w / h).clamp(crate::ASPECTS.0, crate::ASPECTS.1)).abs() < 0.01, "{w}x{h}: {a}");
+            assert!(l.top.bottom() < l.body.top() && l.body.bottom() <= l.bar.top() + 0.5, "{w}x{h}");
+            assert!(l.body.height() > 400.0 * l.u * 0.8, "{w}x{h}: room for the posters");
+            assert!(l.u >= theme::MIN_SCALE);
+            assert!(s.contains_rect(l.hero()));
         }
+        // At the design size the design's own numbers.
+        let l = layout(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 720.0)));
+        assert_eq!((l.u, l.top.left(), l.top.top(), l.bar.top()), (1.0, 48.0, 28.0, 656.0));
     }
 
-    /// Headless: the launcher lays out at 1080p and 4K (2x), every card
-    /// and button inside the screen, and the keyboard moves it.
+    /// Headless: both views at 1080p, 4K (2x), ultrawide, 4:3 and small,
+    /// every text on screen where it should be, the animations settling,
+    /// and the keyboard moving it.
     #[test]
     fn draws_headless() {
-        let mut l = Launcher::default();
-        l.set_games(&games(&["topskatr", "hotd", "fvipers", "doa", "stcc", "overrevb", "sgt24h"]), &["stcc".into()]);
-        let ctx = egui::Context::default();
-        let (mut v, mut all) = (GameSettings::default(), true);
-        let sources = [Source::Default; KEYS.len()];
-        let view = View {
-            preview: None,
-            progress: Some(0.4),
-            no_preview: None,
-            resume: None,
-            unsupported: 0,
-            run_ahead_room: None,
-            run_ahead_dropped: false,
-        };
-        for (size, ppp) in [(vec2(1920.0, 1080.0), 1.0), (vec2(1920.0, 1080.0), 2.0), (vec2(3440.0, 1440.0), 1.0)] {
-            for key in [None, Some(egui::Key::ArrowRight), Some(egui::Key::Tab), Some(egui::Key::Escape)] {
-                let before = l.selection();
-                // The key, then frames a tenth of a second apart until the
-                // animations have settled.
-                let mut out = None;
-                for frame in 0..12 {
-                    let mut input = egui::RawInput {
-                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size / ppp)),
-                        ..Default::default()
-                    };
-                    input.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(ppp);
-                    if let (Some(key), 0) = (key, frame) {
-                        input.events.push(egui::Event::Key {
-                            key,
-                            physical_key: None,
-                            pressed: true,
-                            repeat: false,
-                            modifiers: Default::default(),
-                        });
-                    }
-                    l.last_frame = Some(Instant::now() - Duration::from_millis(100));
-                    let mut o = ctx.run_ui(input, |ui| {
-                        l.ui(ui.ctx(), Vec::new(), &view, &mut v, &sources, &mut all, false);
-                    });
-                    o.textures_delta.clear();
-                    out = Some(o);
+        for mode in ViewMode::ALL {
+            for (size, ppp) in [
+                (vec2(1920.0, 1080.0), 1.0),
+                (vec2(3840.0, 2160.0), 2.0),
+                (vec2(3440.0, 1440.0), 1.0),
+                (vec2(1024.0, 768.0), 1.0),
+                (vec2(800.0, 600.0), 1.0),
+            ] {
+                let mut r = Rig::new(&SET, &["stcc"]);
+                r.size = size / ppp;
+                r.cont = continuing("stcc", Start::Slot(1));
+                r.l.set_mode(mode);
+                let before = r.selected();
+                for _ in 0..12 {
+                    r.frame(&[], Vec::new());
                 }
-                let out = out.unwrap();
-                assert!(!l.animating(), "{size:?}@{ppp} {key:?}: settled");
-                if key == Some(egui::Key::ArrowRight) {
-                    assert_eq!(l.selection(), before + 1);
+                r.key(egui::Key::ArrowRight);
+                for _ in 0..12 {
+                    r.frame(&[], Vec::new());
                 }
-                if key == Some(egui::Key::Tab) {
-                    assert_eq!(l.panel, Panel::Settings);
-                }
-                let screen = Rect::from_min_size(Pos2::ZERO, size / ppp);
-                for s in &out.shapes {
-                    if let egui::Shape::Text(t) = &s.shape {
-                        let r = t.visual_bounding_rect();
-                        // Cards' titles run off the sides; everything else
-                        // is on screen.
-                        if r.center().y < screen.height() * 0.75 {
-                            assert!(screen.expand(1.0).contains_rect(r), "{size:?}@{ppp}: {r:?}");
+                assert!(!r.l.animating(), "{mode:?} {size:?}: settled");
+                assert!(r.selected() != before || mode == ViewMode::Grid, "{mode:?} {size:?}: the key moved it");
+                let screen = Rect::from_min_size(Pos2::ZERO, r.size);
+                let l = layout(screen);
+                for c in &r.shapes {
+                    if let egui::Shape::Text(t) = &c.shape {
+                        let b = t.visual_bounding_rect();
+                        // The top bar and the hint bar are never cut off.
+                        if c.clip_rect.intersects(b) && (b.center().y < l.top.bottom() || b.center().y > l.bar.top()) {
+                            assert!(
+                                screen.expand(1.0).contains_rect(b),
+                                "{mode:?} {size:?}: {:?} at {b:?}",
+                                t.galley.text()
+                            );
                         }
                     }
                 }
             }
         }
-        assert_eq!(l.panel, Panel::Closed);
-    }
-
-    fn shown(id: &str, v: &GameSettings) -> Vec<Row> {
-        let game = romset::games::find(id).unwrap();
-        shown_rows(&Shown { game, values: v, has_own: false, max_anisotropy: 16, temporal_supported: true })
-    }
-
-    fn keys(rows: &[Row]) -> Vec<&'static str> {
-        rows.iter().filter_map(|r| if let Row::Choice(k, ..) = r { Some(*k) } else { None }).collect()
     }
 
     #[test]
-    fn the_list_follows_the_preset_like_the_menu() {
-        let mut v = GameSettings::default();
-        let k = keys(&shown("topskatr", &v));
-        assert!(k.contains(&"preset") && k.contains(&"exact") && k.contains(&"smooth"));
-        assert!(!k.iter().any(|k| ["aa", "temporal", "depth", "shading", "pack"].contains(k)), "{k:?}");
-        // The preset comes before the rest of the picture, which Custom adds.
-        v.preset = Preset::Custom;
-        let k = keys(&shown("topskatr", &v));
-        let at = |key| k.iter().position(|x| *x == key).unwrap();
-        assert!(at("preset") < at("aa") && at("aa") < at("temporal") && at("depth") < at("shading"), "{k:?}");
-        assert!(at("shading") < at("exact"), "picture before motion");
-        // Rows with nothing to do are left out, as in the menu: no
-        // anti-aliasing under temporal, no lighting rows with flat shading,
-        // none of the native geometrizer's with the chip.
-        v.temporal = 100;
-        let k = keys(&shown("topskatr", &v));
-        assert!(!k.contains(&"aa") && k.contains(&"stipple") && !k.contains(&"shading_fine"), "{k:?}");
-        v.shading = gpu::Shading::Vertex;
-        assert!(keys(&shown("topskatr", &v)).contains(&"shading_fine"));
-        v.geo_chip = true;
-        let k = keys(&shown("topskatr", &v));
-        assert!(!k.contains(&"temporal") && !k.contains(&"smooth") && !k.contains(&"stipple") && k.contains(&"aa"));
-        // The wide view has the HUD row, a 4:3 one the bezel.
-        let v = GameSettings { wide: true, ..Default::default() };
-        let k = keys(&shown("topskatr", &v));
-        assert!(k.contains(&"hud_edges") && !k.contains(&"bezel"));
-        let k = keys(&shown("topskatr", &GameSettings { wide: false, ..Default::default() }));
-        assert!(!k.contains(&"hud_edges"));
-    }
-
-    #[test]
-    fn run_ahead_is_capped_per_game() {
-        let options = |id: &str, v: &GameSettings| {
-            shown(id, v).into_iter().find_map(|r| match r {
-                Row::Choice("run_ahead", _, _, o) => Some(o.len()),
-                _ => None,
-            })
-        };
-        let v = GameSettings::default();
-        assert_eq!(options("sgt24h", &v), Some(4));
-        assert_eq!(options("stcc", &v), Some(2));
-        assert_eq!(options("hotd", &v), None, "a zero-lag game has no row");
-        // Set anyway, it can be turned off.
-        assert_eq!(options("hotd", &GameSettings { run_ahead: 1, ..v }), Some(1));
-    }
-
-    #[test]
-    fn choosing_in_the_list_is_choosing_in_the_menu() {
-        let game = romset::games::find("stcc").unwrap();
-        let mut v = GameSettings::default();
-        change(&mut v, "preset", "enhanced", game);
-        let mut menu = GameSettings::default();
-        menu.apply_preset(Preset::Enhanced, Some(game));
-        assert_eq!(v, menu);
-        assert_eq!(v.get("preset"), "enhanced");
-        // Smooth motion and run-ahead don't count against the preset...
-        change(&mut v, "run_ahead", "0", game);
-        settle(&mut v, game);
-        assert_eq!(v.preset, Preset::Enhanced);
-        // ...a picture row does.
-        change(&mut v, "aa", "8", game);
-        settle(&mut v, game);
-        assert_eq!((v.preset, v.aa), (Preset::Custom, 8));
-        // The preset row offers what the menu does, by the files' names.
-        let rows = shown("stcc", &v);
-        let Some(Row::Choice(_, _, _, options)) = rows.iter().find(|r| keys(&[**r]) == ["preset"]) else {
-            panic!("no preset row")
-        };
-        let names: Vec<_> = options.iter().map(|o| o.1).collect();
-        assert_eq!(names, Preset::ALL.map(Preset::name));
-        assert_eq!(options.iter().map(|o| o.0).collect::<Vec<_>>(), Preset::ALL.map(Preset::label));
-    }
-
-    #[test]
-    fn the_run_ahead_hint_says_what_the_computer_can_do() {
-        let game = romset::games::find("sgt24h").unwrap();
-        let view = |room, dropped| View {
-            preview: None,
-            progress: None,
-            no_preview: None,
-            resume: None,
-            unsupported: 0,
-            run_ahead_room: room,
-            run_ahead_dropped: dropped,
-        };
-        let base = "base";
-        assert_eq!(run_ahead_hint(base, 2, game, &view(None, false)), ("base".to_string(), DIM), "unmeasured: as is");
-        let (t, c) = run_ahead_hint(base, 1, game, &view(Some(2), false));
-        assert!(t.contains("about 2") && c == DIM, "{t}");
-        let (t, c) = run_ahead_hint(base, 3, game, &view(Some(1), false));
-        assert!(t.contains("3 is more") && c == AMBER, "{t}");
-        let (t, _) = run_ahead_hint(base, 0, game, &view(Some(0), false));
-        assert!(t.contains("too slow for run-ahead"), "{t}");
-        let (t, c) = run_ahead_hint(base, 0, game, &view(None, true));
-        assert!(t.contains("Switched off") && c == AMBER);
+    fn the_empty_launcher_asks_for_a_rom_folder() {
+        let mut r = Rig::new(&[], &[]);
+        r.l.rom_text = "/roms".into();
+        r.frame(&[], Vec::new());
+        assert!(r.shows("NO GAMES FOUND"));
+        assert!(r.texts().iter().all(|(_, size)| *size >= 17.99), "{:?}", r.texts());
     }
 }

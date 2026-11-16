@@ -14,6 +14,8 @@ pub static DOA: Game = Game {
     id: "doa",
     title: "Dead or Alive",
     year: 1996,
+    genre: "Fighting",
+    kind: crate::Kind::Fighting,
     board: Board::Model2B,
     // The attract demo: two fighters in the ring.
     attract_frame: 2000,

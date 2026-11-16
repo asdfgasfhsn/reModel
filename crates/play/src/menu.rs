@@ -46,6 +46,9 @@ pub enum Action {
     Load(u8),
     /// Leave the game for the launcher.
     Games,
+    /// From the launcher: drop the selected game's own settings, so it
+    /// takes the ones for all games.
+    ResetOwn,
     /// Start the game again from power-on.
     Reset,
     /// Open photo mode.
@@ -177,6 +180,8 @@ pub struct View<'a> {
     pub temporal_supported: bool,
     /// The game has bezel art.
     pub has_bezel: bool,
+    /// The game has settings of its own (the launcher offers to drop them).
+    pub has_own: bool,
     /// Run-ahead was switched off because the machine could not keep up.
     pub run_ahead_dropped: bool,
     /// The frames of run-ahead this computer has time for, once measured
@@ -488,7 +493,7 @@ impl Menu {
             return actions;
         }
         self.picture.wipe_rect = None;
-        if !self.picture.comparing(self.page) {
+        if view.playing.is_some() && !self.picture.comparing(self.page) {
             paused_pill(ctx);
         }
         let keys = if self.capture.is_none() { menu_keys(ctx) } else { Vec::new() };
@@ -532,7 +537,8 @@ impl Menu {
         let focus = &mut self.pause_focus;
         focus.show = self.pad_used || self.keys_used;
         for nav in focus.begin(navs) {
-            if nav == Nav::Back && view.playing.is_some() {
+            // B resumes the game, or from the launcher closes the menu.
+            if nav == Nav::Back {
                 actions.push(Action::Resume);
             }
         }
@@ -555,10 +561,10 @@ impl Menu {
         let mut to_controls = false;
         let mut arm = false;
         let s = theme::scale(ctx);
-        let hints =
-            [(Chip::A, "Select"), (Chip::B, if playing { "Resume" } else { "Close" }), (Chip::Key("Esc"), "Resume")];
+        let way_out = if playing { "Resume" } else { "Close" };
+        let hints = [(Chip::A, "Select"), (Chip::B, way_out), (Chip::Key("Esc"), way_out)];
         let spec = PanelSpec {
-            game: view.playing.unwrap_or("reModel"),
+            game: view.playing.or(view.game.map(|g| g.title)).unwrap_or("reModel"),
             heading: if playing { "Paused" } else { "Menu" },
             back: false,
             extra_h: 0.0,
@@ -592,7 +598,7 @@ impl Menu {
                             }
                         }
                     }
-                    if focus.menu_row(ui, "Back to games", "") {
+                    if playing && focus.menu_row(ui, "Back to games", "") {
                         actions.push(Action::Games);
                     }
                     ui.add_space(14.0 * s);
@@ -608,7 +614,8 @@ impl Menu {
                     if focus.menu_row(ui, "Picture", &format!("{picture} ›")) {
                         go = Some((Page::Picture, Tab::Display));
                     }
-                    if playing && focus.menu_row(ui, "Controls", "›") {
+                    // (From the launcher the game is the one selected.)
+                    if (playing || view.game.is_some()) && focus.menu_row(ui, "Controls", "›") {
                         to_controls = true;
                     }
                     if focus.menu_row(ui, "Sound", &format!("{sound} ›")) {
@@ -616,6 +623,9 @@ impl Menu {
                     }
                     if focus.menu_row(ui, "Speed and latency", &format!("{speed} ›")) {
                         go = Some((Page::Settings, Tab::Motion));
+                    }
+                    if !playing && view.has_own && focus.menu_row(ui, "Use the settings for all games", "") {
+                        actions.push(Action::ResetOwn);
                     }
                     if !playing && focus.menu_row(ui, "Quit reModel", "") {
                         actions.push(Action::Quit);
@@ -721,7 +731,8 @@ impl Menu {
                     for slot in 0..SLOTS {
                         let id = ui.make_persistent_id(("slot-card", slot));
                         let info = view.saves.get(slot as usize).and_then(|i| i.as_ref());
-                        if slot_card(ui, focus, id, slot, sel == slot, info, thumbs.get(&slot).map(|t| &t.tex)) {
+                        let name = if slot == 0 { "Quick save".to_string() } else { format!("Slot {slot}") };
+                        if slot_card(ui, focus, id, &name, sel == slot, info, thumbs.get(&slot).map(|t| &t.tex)) {
                             // Selected: on to what's done with it.
                             sel = slot;
                             jump = Some(if info.is_some_and(|i| i.loads) { load_id } else { save_id });
@@ -843,12 +854,6 @@ impl Menu {
     /// The Controls page: every input with its bindings, to remap (`navs`:
     /// the pad's; B goes back). Returns whether they changed (to save
     /// them).
-    pub fn controls_page(&mut self, ctx: &egui::Context, b: &mut Bindings, title: &str, navs: &[Nav]) -> bool {
-        self.note_input(ctx, navs, &[]);
-        self.controls_inner(ctx, b, title, navs)
-    }
-
-    /// The Controls page, the input already noted.
     fn controls_inner(&mut self, ctx: &egui::Context, b: &mut Bindings, title: &str, navs: &[Nav]) -> bool {
         let mut changed = false;
         // Waiting too long for a binding gives up (a way out for a pad
@@ -1032,12 +1037,12 @@ const RESET_CONFIRM: Duration = Duration::from_secs(4);
 /// header, body, extra (a page's own footer, `extra_h` design points, maybe
 /// none) and the hint chips' footer.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Regions {
-    panel: Rect,
-    header: Rect,
-    body: Rect,
-    extra: Rect,
-    foot: Rect,
+pub(crate) struct Regions {
+    pub panel: Rect,
+    pub header: Rect,
+    pub body: Rect,
+    pub extra: Rect,
+    pub foot: Rect,
 }
 
 fn regions(screen: Rect, s: f32, extra_h: f32) -> Regions {
@@ -1059,21 +1064,21 @@ fn regions(screen: Rect, s: f32, extra_h: f32) -> Regions {
 }
 
 /// What a page tells the panel.
-struct PanelSpec<'a> {
+pub(crate) struct PanelSpec<'a> {
     /// The game (small, above the heading).
-    game: &'a str,
-    heading: &'a str,
+    pub game: &'a str,
+    pub heading: &'a str,
     /// A back arrow in the header.
-    back: bool,
+    pub back: bool,
     /// Height of the page's own footer region (design points).
-    extra_h: f32,
+    pub extra_h: f32,
 }
 
 /// The side panel the menu pages are in, docked on the right edge over the
 /// paused game: its shadow, edge, header and button hints; `content` fills
 /// the rest (its regions) and returns whether the page was asked to go back.
 /// True if it was, or the header's back arrow was clicked.
-fn side_panel(
+pub(crate) fn side_panel(
     ctx: &egui::Context,
     spec: &PanelSpec,
     hints: &[(Chip, &str)],
@@ -1210,11 +1215,11 @@ fn pill(ui: &mut egui::Ui, focus: &mut Focus, rect: Rect, text: &str, fill: Opti
 /// A slot's card: its thumbnail (or "Empty"), name, when and by what. The
 /// selected one has a cyan border and a faint fill. Clicked, or activated
 /// from the pad.
-fn slot_card(
+pub(crate) fn slot_card(
     ui: &mut egui::Ui,
     focus: &mut Focus,
     id: egui::Id,
-    slot: u8,
+    name: &str,
     selected: bool,
     info: Option<&SlotInfo>,
     thumb: Option<&egui::TextureHandle>,
@@ -1248,7 +1253,6 @@ fn slot_card(
     }
     let x = pic.right() + 16.0 * s;
     let wrap = (rect.right() - 10.0 * s - x).max(40.0);
-    let name = if slot == 0 { "Quick save".to_string() } else { format!("Slot {slot}") };
     let mut y = rect.top() + 12.0 * s;
     p.text(pos2(x, y), Align2::LEFT_TOP, name, FontId::new(19.0 * s, theme::bold()), theme::TEXT);
     y += 26.0 * s;
@@ -1416,6 +1420,7 @@ mod tests {
                 max_anisotropy: 16,
                 temporal_supported: true,
                 has_bezel: true,
+                has_own: false,
                 run_ahead_dropped: self.dropped,
                 run_ahead_room: None,
                 pack: None,
@@ -1511,6 +1516,7 @@ mod tests {
                 Action::Save(_) => "save",
                 Action::Load(_) => "load",
                 Action::Games => "games",
+                Action::ResetOwn => "reset-own",
                 Action::Reset => "reset",
                 Action::Photo => "photo",
                 Action::Bindings => "bindings",
@@ -1997,6 +2003,7 @@ mod tests {
                 max_anisotropy: 16,
                 temporal_supported: true,
                 has_bezel: false,
+                has_own: false,
                 run_ahead_dropped: false,
                 run_ahead_room: None,
                 pack: None,
@@ -2044,6 +2051,66 @@ mod tests {
             modifiers: egui::Modifiers::NONE,
         };
         assert_eq!(glow(&mut r, &[], vec![click]), 0, "the mouse turns it off");
+    }
+
+    /// The menu over the launcher: no game running, one selected.
+    #[test]
+    fn from_the_launcher_the_menu_has_no_game_rows() {
+        let game = romset::games::find("topskatr").unwrap();
+        let mut menu = Menu { open: true, ..Default::default() };
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut s = GameSettings::default();
+        let (mut fullscreen, mut for_all) = (false, false);
+        let mut run = |menu: &mut Menu, has_own: bool, navs: &[Nav]| {
+            let view = View {
+                playing: None,
+                game: Some(game),
+                saves: &[],
+                max_anisotropy: 16,
+                temporal_supported: true,
+                has_bezel: false,
+                has_own,
+                run_ahead_dropped: false,
+                run_ahead_room: None,
+                pack: None,
+                materials: None,
+                picture: None,
+                keeps: Keeps::default(),
+            };
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0))),
+                ..Default::default()
+            };
+            let mut actions = Vec::new();
+            let mut out = ctx.run_ui(input, |ui| {
+                let prefs = Prefs { fullscreen: &mut fullscreen, for_all: &mut for_all };
+                actions = menu.ui(ui.ctx(), &mut s, prefs, &view, None, navs);
+            });
+            out.textures_delta.clear();
+            let texts: Vec<String> = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect();
+            (names(&actions), texts)
+        };
+        run(&mut menu, false, &[]);
+        let (_, texts) = run(&mut menu, false, &[]);
+        let has = |t: &[String], n: &str| t.iter().any(|x| x.contains(n));
+        assert!(has(&texts, "Picture") && has(&texts, "Controls") && has(&texts, "Quit reModel"), "{texts:?}");
+        assert!(!has(&texts, "Back to games") && !has(&texts, "Resume"), "{texts:?}");
+        assert!(!has(&texts, "Use the settings for all games"));
+        assert!(has(&texts, "TOP SKATER"), "the selected game's name heads it: {texts:?}");
+        // A game with settings of its own can drop them.
+        let (_, texts) = run(&mut menu, true, &[]);
+        assert!(has(&texts, "Use the settings for all games"), "{texts:?}");
+        // B closes it (as Resume does over a game).
+        let (acts, _) = run(&mut menu, false, &[Nav::Back]);
+        assert_eq!(acts, ["resume"]);
     }
 
     #[test]

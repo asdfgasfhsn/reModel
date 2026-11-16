@@ -13,6 +13,8 @@ pub static SEGAWSKI: Game = Game {
     id: "segawski",
     title: "Sega Water Ski",
     year: 1997,
+    genre: "Water skiing",
+    kind: crate::Kind::Sports,
     board: Board::Model2C,
     hud_windows: &[],
     hud_element_windows: &[],

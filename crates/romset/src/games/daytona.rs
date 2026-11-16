@@ -24,6 +24,8 @@ pub static DAYTONA: Game = Game {
     id: "daytona",
     title: "Daytona USA",
     year: 1994,
+    genre: "Racing",
+    kind: crate::Kind::Racing,
     board: Board::Model2,
     attract_frame: 1500,
     input_lag: 0,

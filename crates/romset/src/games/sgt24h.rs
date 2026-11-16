@@ -16,6 +16,8 @@ pub static SGT24H: Game = Game {
     id: "sgt24h",
     title: "Super GT 24h",
     year: 1996,
+    genre: "Racing",
+    kind: crate::Kind::Racing,
     board: Board::Model2B,
     // The attract demo: the AUTO MAX car on the grid before the grandstand.
     attract_frame: 1150,

@@ -11,6 +11,8 @@ pub static MANXTTC: Game = Game {
     id: "manxttc",
     title: "Manx TT Superbike (Twin)",
     year: 1995,
+    genre: "Motorbike racing",
+    kind: crate::Kind::Racing,
     board: Board::Model2A,
     attract_frame: 2700,
     input_lag: 2,

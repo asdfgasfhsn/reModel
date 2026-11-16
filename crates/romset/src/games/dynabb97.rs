@@ -14,6 +14,8 @@ pub static DYNABB97: Game = Game {
     id: "dynabb97",
     title: "Dynamite Baseball '97",
     year: 1997,
+    genre: "Baseball",
+    kind: crate::Kind::Sports,
     board: Board::Model2B,
     // The attract demo: a batter at the plate facing the pitcher.
     attract_frame: 1850,

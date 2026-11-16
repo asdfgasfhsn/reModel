@@ -19,6 +19,8 @@ pub static STCC: Game = Game {
     id: "stcc",
     title: "Sega Touring Car Championship",
     year: 1996,
+    genre: "Racing",
+    kind: crate::Kind::Racing,
     board: Board::Model2C,
     attract_frame: 1050,
     input_lag: 1,

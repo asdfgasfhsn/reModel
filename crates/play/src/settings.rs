@@ -500,6 +500,8 @@ pub struct Settings {
     /// Games played, most recent first.
     pub recent: Vec<String>,
     pub fullscreen: bool,
+    /// The launcher's view (carousel or grid), kept for next time.
+    pub launcher_view: crate::library::ViewMode,
     /// The launcher's settings panel saves for all games (else for the
     /// game shown).
     pub for_all: bool,
@@ -518,6 +520,7 @@ impl Default for Settings {
             game: "topskatr".into(),
             recent: Vec::new(),
             fullscreen: false,
+            launcher_view: Default::default(),
             for_all: true,
             defaults: Layer::new(),
             games: BTreeMap::new(),
@@ -624,6 +627,7 @@ impl Settings {
                     s.recent = v.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect()
                 }
                 "fullscreen" => s.fullscreen = v == "true",
+                "view" => s.launcher_view = crate::library::ViewMode::parse(v).unwrap_or_default(),
                 "scope" => s.for_all = v != "game",
                 _ => {}
             }
@@ -636,11 +640,12 @@ impl Settings {
 
     fn text(&self) -> String {
         let mut text = format!(
-            "# remodel-play settings\nrom = {}\ngame = {}\nrecent = {}\nfullscreen = {}\nscope = {}\n",
+            "# remodel-play settings\nrom = {}\ngame = {}\nrecent = {}\nfullscreen = {}\nview = {}\nscope = {}\n",
             self.rom.display(),
             self.game,
             self.recent.join(","),
             self.fullscreen,
+            self.launcher_view.name(),
             if self.for_all { "all" } else { "game" },
         );
         if !self.defaults.is_empty() {
@@ -1228,6 +1233,19 @@ mod tests {
         assert_eq!(s.all_games_preset("stcc"), Preset::Crt);
         assert!(s.has_own_picture("topskatr") && !s.has_own_picture("stcc"));
         assert_eq!(Preset::parse("enhanced").map(Preset::label), Some("Smooth modern"));
+    }
+
+    #[test]
+    fn the_launcher_view_is_kept() {
+        use crate::library::ViewMode;
+        let mut s = Settings::default();
+        assert_eq!(s.launcher_view, ViewMode::Carousel);
+        s.launcher_view = ViewMode::Grid;
+        assert!(s.text().contains("view = grid"));
+        assert_eq!(Settings::parse(&s.text()).launcher_view, ViewMode::Grid);
+        // A file without it, or with a name it doesn't know, is the carousel.
+        assert_eq!(Settings::parse("rom = x\n").launcher_view, ViewMode::Carousel);
+        assert_eq!(Settings::parse("view = list\n").launcher_view, ViewMode::Carousel);
     }
 
     #[test]

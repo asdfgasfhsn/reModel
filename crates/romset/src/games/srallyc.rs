@@ -31,6 +31,8 @@ pub static SRALLYC: Game = Game {
     id: "srallyc",
     title: "Sega Rally Championship",
     year: 1995,
+    genre: "Rally",
+    kind: crate::Kind::Racing,
     board: Board::Model2A,
     attract_frame: 1500,
     input_lag: 1,

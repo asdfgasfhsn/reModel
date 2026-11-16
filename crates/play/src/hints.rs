@@ -113,12 +113,6 @@ fn usable(room: u32, max: u32, chosen: u32) -> u32 {
     room.min(max.max(chosen))
 }
 
-/// Whether `chosen` is more than this computer has time for (the note
-/// warns of it).
-pub fn run_ahead_warns(room: Option<u32>, max: u32, chosen: u32) -> bool {
-    room.is_some_and(|r| chosen > usable(r, max, chosen))
-}
-
 /// What this computer can do about the run-ahead row, said in its help
 /// line: `room` is [`FrameCost::run_ahead_room`] (None until measured),
 /// `max` what the game offers, `chosen` the setting.
@@ -166,43 +160,6 @@ fn frames(n: u32) -> String {
         "1 frame".into()
     } else {
         format!("{n} frames")
-    }
-}
-
-/// What a style does for `game`, as the help line of the preset row
-/// (`temporal_supported`: the GPU can do temporal anti-aliasing; `geo_chip`:
-/// the game's chip draws).
-pub fn preset_help(p: Preset, game: Option<&romset::Game>, temporal_supported: bool, geo_chip: bool) -> String {
-    match p {
-        Preset::Original => "The arcade look: nothing that changes the picture.".into(),
-        Preset::Sharp => "4x anti-aliasing and mipmapped texture filtering, nothing else.".into(),
-        Preset::Custom => "Choose each picture setting yourself.".into(),
-        Preset::Crt => "Sharp, with scanlines, a mask and a soft edge like an arcade monitor.".into(),
-        Preset::Enhanced => {
-            let mut d = GameSettings::default();
-            d.apply_preset(Preset::Enhanced, game);
-            let mut parts = Vec::new();
-            parts.push(match d.temporal {
-                _ if d.temporal > 0 && geo_chip => "4x anti-aliasing (temporal needs the native geometrizer)",
-                _ if d.temporal > 0 && !temporal_supported => "4x anti-aliasing (this GPU can't do temporal)",
-                0 => "4x anti-aliasing",
-                _ => "temporal anti-aliasing",
-            });
-            if d.depth {
-                parts.push("the depth buffer");
-            }
-            if d.shading != gpu::Shading::Flat {
-                parts.push("smooth shading");
-            }
-            if !geo_chip {
-                parts.push("smooth motion");
-            }
-            let mut text = format!("For this game: {}", parts.join(", "));
-            if d.run_ahead > 0 {
-                text += &format!(", run-ahead {}", d.run_ahead);
-            }
-            text + "."
-        }
     }
 }
 
@@ -263,8 +220,6 @@ mod tests {
         // A computer with room for more than the game takes says the most.
         assert!(run_ahead_note(Some(3), 1, 0).unwrap().contains("about 1"));
         assert!(run_ahead_note(Some(0), 3, 2).unwrap().contains("too slow"));
-        assert!(run_ahead_warns(Some(1), 3, 2) && !run_ahead_warns(Some(1), 3, 1));
-        assert!(!run_ahead_warns(None, 3, 3) && !run_ahead_warns(Some(0), 3, 0));
     }
 
     #[test]
@@ -292,15 +247,5 @@ mod tests {
         let h = run_ahead_help(sgt, false, Some(0), 3);
         assert!(h.contains("too slow for run-ahead"), "{h}");
         assert!(run_ahead_help(sgt, false, Some(1), 3).contains("3 is more"));
-    }
-
-    #[test]
-    fn the_help_line_says_what_the_preset_does() {
-        let stcc = romset::games::playable("stcc");
-        assert!(preset_help(Preset::Enhanced, stcc, true, false).contains("smooth shading"));
-        assert!(!preset_help(Preset::Enhanced, stcc, true, false).contains("depth buffer"));
-        assert!(preset_help(Preset::Enhanced, stcc, true, false).contains("run-ahead 1"));
-        assert!(preset_help(Preset::Enhanced, stcc, true, true).contains("native geometrizer"));
-        assert!(preset_help(Preset::Enhanced, romset::games::playable("bel"), true, false).contains("depth buffer"));
     }
 }

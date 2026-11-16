@@ -15,6 +15,8 @@ pub static VCOP2: Game = Game {
     id: "vcop2",
     title: "Virtua Cop 2",
     year: 1995,
+    genre: "Light gun",
+    kind: crate::Kind::Shooting,
     board: Board::Model2A,
     attract_frame: 1500,
     input_lag: 0,

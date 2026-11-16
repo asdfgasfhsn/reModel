@@ -14,6 +14,8 @@ pub static WAVERUNR: Game = Game {
     id: "waverunr",
     title: "Wave Runner",
     year: 1996,
+    genre: "Jet-ski racing",
+    kind: crate::Kind::Racing,
     board: Board::Model2C,
     // The attract demo's race, three craft side by side.
     attract_frame: 1800,

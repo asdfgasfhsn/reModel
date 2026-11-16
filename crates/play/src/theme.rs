@@ -289,13 +289,23 @@ impl<'a> Chip<'a> {
     }
 }
 
+/// A chip's size: its diameter in design points (its letters follow it).
+pub const CHIP: f32 = 26.0;
+/// The launcher's: big enough that its labels read at 18 points from a couch.
+pub const CHIP_LARGE: f32 = 32.0;
+
 /// How wide `chip` draws.
 fn chip_width(p: &Painter, chip: Chip, s: f32) -> f32 {
-    let d = 26.0 * s;
+    chip_width_at(p, chip, s, CHIP)
+}
+
+/// How wide `chip` draws, `d` design points across.
+pub fn chip_width_at(p: &Painter, chip: Chip, s: f32, d: f32) -> f32 {
+    let (d, f) = (d * s, d * 0.58 * s);
     match chip.face() {
         (_, Some(_)) => d,
         (text, None) => {
-            let w = p.layout_no_wrap(text.to_owned(), FontId::new(15.0 * s, bold()), TEXT).size().x + 16.0 * s;
+            let w = p.layout_no_wrap(text.to_owned(), FontId::new(f, bold()), TEXT).size().x + 0.6 * d;
             if chip == Chip::Menu {
                 w.max(d)
             } else {
@@ -307,9 +317,15 @@ fn chip_width(p: &Painter, chip: Chip, s: f32) -> f32 {
 
 /// Paint `chip` with its left edge at `at` (centred on `at.y`).
 fn paint_chip(p: &Painter, chip: Chip, at: egui::Pos2, s: f32) {
-    let font = FontId::new(15.0 * s, bold());
+    paint_chip_at(p, chip, at, s, CHIP);
+}
+
+/// Paint `chip` `d` design points across, its left edge at `at` (centred on
+/// `at.y`).
+pub fn paint_chip_at(p: &Painter, chip: Chip, at: egui::Pos2, s: f32, d: f32) {
+    let font = FontId::new(d * 0.58 * s, bold());
     let (text, circle) = chip.face();
-    let (d, w) = (26.0 * s, chip_width(p, chip, s));
+    let (w, d) = (chip_width_at(p, chip, s, d), d * s);
     if let Some(fill) = circle {
         let c = pos2(at.x + d / 2.0, at.y);
         p.circle_filled(c, d / 2.0, fill);
@@ -323,6 +339,15 @@ fn paint_chip(p: &Painter, chip: Chip, at: egui::Pos2, s: f32) {
         (Color32::from_white_alpha(36), TEXT)
     };
     p.rect_filled(r, 6.0 * s, fill);
+    if chip == Chip::Menu {
+        // Three bars: no font has the "≡" to be sure of.
+        let (half, gap) = (0.26 * d, 0.2 * d);
+        for i in [-1.0, 0.0, 1.0] {
+            let y = r.center().y + i * gap;
+            p.line_segment([pos2(r.center().x - half, y), pos2(r.center().x + half, y)], Stroke::new(0.085 * d, ink));
+        }
+        return;
+    }
     p.text(r.center(), Align2::CENTER_CENTER, text, font, ink);
 }
 

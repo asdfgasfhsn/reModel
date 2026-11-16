@@ -15,6 +15,8 @@ pub static VSTRIKER: Game = Game {
     id: "vstriker",
     title: "Virtua Striker",
     year: 1994,
+    genre: "Football",
+    kind: crate::Kind::Sports,
     board: Board::Model2B,
     // The attract mode's sweep over the stadium before kick-off.
     attract_frame: 1200,

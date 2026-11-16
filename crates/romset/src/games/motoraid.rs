@@ -23,6 +23,8 @@ pub static MOTORAID: Game = Game {
     id: "motoraid",
     title: "Motor Raid",
     year: 1997,
+    genre: "Motorbike combat",
+    kind: crate::Kind::Racing,
     board: Board::Model2A,
     attract_frame: 3900,
     input_lag: 0,

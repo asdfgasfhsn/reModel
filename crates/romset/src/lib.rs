@@ -136,6 +136,30 @@ impl Board {
     }
 }
 
+/// The broad sort of a game, for the launcher's filters (the finer one is
+/// [`Game::genre`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Kind {
+    Racing,
+    Fighting,
+    Shooting,
+    Sports,
+}
+
+impl Kind {
+    pub const ALL: [Kind; 4] = [Kind::Racing, Kind::Fighting, Kind::Shooting, Kind::Sports];
+
+    /// The filter's name.
+    pub fn label(self) -> &'static str {
+        match self {
+            Kind::Racing => "Racing",
+            Kind::Fighting => "Fighting",
+            Kind::Shooting => "Shooting",
+            Kind::Sports => "Sports",
+        }
+    }
+}
+
 /// One chip in a set.
 pub struct RomFile {
     pub name: &'static str,
@@ -200,6 +224,11 @@ pub struct Game {
     pub title: &'static str,
     /// Year of release, as on the title screen's copyright line.
     pub year: u16,
+    /// What sort of game it is, in a few words ("Rally", "Light gun"), as
+    /// the launcher shows it.
+    pub genre: &'static str,
+    /// The launcher's filter it falls under.
+    pub kind: Kind,
     pub board: Board,
     /// A frame of the attract mode (counted from boot, no inputs) that shows
     /// the game well: the browser build's game card screenshot

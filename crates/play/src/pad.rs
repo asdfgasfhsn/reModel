@@ -53,9 +53,12 @@ impl PadNav {
                     Button::South => Nav::Accept,
                     Button::Start => Nav::Start,
                     Button::East | Button::Select => Nav::Back,
-                    Button::North => Nav::Settings,
+                    Button::North => Nav::Continue,
+                    Button::West => Nav::Saves,
                     Button::LeftTrigger => Nav::PrevGroup,
                     Button::RightTrigger => Nav::NextGroup,
+                    Button::LeftTrigger2 => Nav::PrevFilter,
+                    Button::RightTrigger2 => Nav::NextFilter,
                     Button::DPadLeft => Nav::Left,
                     Button::DPadRight => Nav::Right,
                     Button::DPadUp => Nav::Up,
@@ -290,6 +293,11 @@ mod tests {
         assert_eq!(p.event(Event::Pressed(Button::Start), t), Some(Nav::Start));
         assert_eq!(p.event(Event::Pressed(Button::East), t), Some(Nav::Back));
         assert_eq!(p.event(Event::Pressed(Button::RightTrigger), t), Some(Nav::NextGroup));
+        // The launcher's: Y continues, X the saves, the triggers the filter.
+        assert_eq!(p.event(Event::Pressed(Button::North), t), Some(Nav::Continue));
+        assert_eq!(p.event(Event::Pressed(Button::West), t), Some(Nav::Saves));
+        assert_eq!(p.event(Event::Pressed(Button::LeftTrigger2), t), Some(Nav::PrevFilter));
+        assert_eq!(p.event(Event::Pressed(Button::RightTrigger2), t), Some(Nav::NextFilter));
     }
 
     /// What the game sees of Start, each `step` from `t` to `until`.
