@@ -52,9 +52,9 @@ impl State {
 
 /// The picture page's footer: Compare, Advanced and where it's saved, in
 /// design points.
-const FOOT_H: f32 = 176.0;
+const FOOT_H: f32 = 124.0;
 /// The Advanced page's footer: its one button.
-const ADV_FOOT_H: f32 = 80.0;
+const ADV_FOOT_H: f32 = 64.0;
 /// How far the d-pad's moves put a pinned widget past (or before) a
 /// scrolling list (`Focus::shift_last`).
 const SHIFT: f32 = 100_000.0;
@@ -134,21 +134,21 @@ impl Menu {
         let note = scope_note(name, for_all, view);
         let mut hints = vec![(Chip::A, "Select"), (Chip::B, "Back"), (Chip::Key("Esc"), "Resume")];
         if self.picture.compare {
-            hints.insert(1, (Chip::Key("◂ ▸"), "Divider"));
+            hints.insert(1, (Chip::LeftRight, "Divider"));
         }
         let spec = PanelSpec { game: name, heading: "Picture", back: true, extra_h: FOOT_H };
         let (mut chosen, mut to_advanced, mut scope, mut toggled) = (None, false, None, false);
         let (focus, compare, current) = (&mut self.picture.focus, self.picture.compare, settings.preset);
         let mut steps = 0;
         back |= side_panel(ctx, &spec, &hints, |ui, reg| {
-            ui.scope_builder(egui::UiBuilder::new().max_rect(reg.body.shrink2(vec2(20.0 * s, 0.0))), |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(reg.body.shrink2(vec2(16.0 * s, 0.0))), |ui| {
                 ui.add_space(4.0 * s);
                 let labels = [format!("{short} only"), "All games".to_string()];
                 scope = scope_toggle(ui, focus, &labels, for_all as usize);
                 focus.shift_last(1, -SHIFT);
-                ui.add_space(10.0 * s);
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 8.0 * s;
+                ui.add_space(8.0 * s);
+                focus.scroll_area("styles").show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 6.0 * s;
                     for p in Preset::ALL {
                         if style_card(ui, focus, p, p == current, view.game) {
                             chosen = Some(p);
@@ -158,19 +158,19 @@ impl Menu {
             });
             let foot = reg.extra;
             ui.painter().hline(foot.x_range(), foot.top(), Stroke::new(1.0, Color32::from_white_alpha(20)));
-            let (pad, h) = (20.0 * s, 48.0 * s);
+            let (pad, h) = (16.0 * s, 38.0 * s);
             let x = foot.left() + pad;
             let w = foot.width() - 2.0 * pad;
             let at = |dy: f32| Rect::from_min_size(pos2(x, foot.top() + dy * s), vec2(w, h));
-            let (t, n) = compare_row(ui, focus, at(10.0), compare);
+            let (t, n) = compare_row(ui, focus, at(8.0), compare);
             (toggled, steps) = (t, n);
-            if pill(ui, focus, at(66.0), "Advanced ›", Some(theme::RAISED), true) {
+            if pill(ui, focus, at(50.0), "Advanced ›", Some(theme::RAISED), true) {
                 to_advanced = true;
             }
             focus.shift_last(2, SHIFT);
             let p = ui.painter();
-            let galley = p.layout(note, FontId::new(15.0 * s, FontFamily::Proportional), theme::TEXT_DIM, w);
-            p.galley(pos2(x, foot.top() + 124.0 * s), galley, theme::TEXT_DIM);
+            let galley = p.layout(note, FontId::new(14.0 * s, FontFamily::Proportional), theme::TEXT_DIM, w);
+            p.galley(pos2(x, foot.top() + 94.0 * s), galley, theme::TEXT_DIM);
             false
         });
         self.picture.focus.end();
@@ -315,30 +315,34 @@ impl Menu {
         let differs = settings.preset == Preset::Custom || PRESET_KEYS.iter().any(|k| settings.get(k) != base.get(k));
         let focus = &mut self.picture.adv_focus;
         let mut adv = Adv { focus, nav_mode, base: &base };
-        let hints = [(Chip::Key("◂ ▸"), "Change"), (Chip::B, "Back"), (Chip::Key("Esc"), "Resume")];
+        let hints = [(Chip::LeftRight, "Change"), (Chip::B, "Back"), (Chip::Key("Esc"), "Resume")];
         let spec =
             PanelSpec { game: view.playing.unwrap_or("reModel"), heading: "Advanced", back: true, extra_h: ADV_FOOT_H };
         let mut reset = false;
         let mut back = back;
         back |= side_panel(ctx, &spec, &hints, |ui, reg| {
             ui.scope_builder(egui::UiBuilder::new().max_rect(reg.body.shrink2(vec2(16.0 * s, 0.0))), |ui| {
-                ui.horizontal(|ui| {
-                    ui.add_space(16.0 * s);
-                    let text = |t: &str, c: Color32, f: FontId| egui::RichText::new(t).font(f).color(c);
-                    let dim = FontId::new(16.0 * s, FontFamily::Proportional);
-                    ui.label(text("Style: ", theme::TEXT_DIM, dim.clone()));
-                    ui.label(text(&name, theme::TEXT, FontId::new(16.0 * s, theme::semibold())));
-                    ui.label(text(&format!(" · {scope}"), theme::TEXT_DIM, dim));
-                });
+                // One line, cut short with "…" rather than widening the page.
+                let mut job = egui::text::LayoutJob::default();
+                let dim = FontId::new(14.0 * s, FontFamily::Proportional);
+                let part = |font: &FontId, color: Color32| egui::TextFormat {
+                    font_id: font.clone(),
+                    color,
+                    ..Default::default()
+                };
+                job.append("Style: ", 14.0 * s, part(&dim, theme::TEXT_DIM));
+                job.append(&name, 0.0, part(&FontId::new(14.0 * s, theme::semibold()), theme::TEXT));
+                job.append(&format!(" · {scope}"), 0.0, part(&dim, theme::TEXT_DIM));
+                ui.add(egui::Label::new(job).truncate());
                 ui.add_space(6.0 * s);
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                adv.focus.scroll_area("advanced").show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0 * s;
                     advanced_rows(ui, &mut adv, settings, view);
                 });
             });
             let foot = reg.extra;
             ui.painter().hline(foot.x_range(), foot.top(), Stroke::new(1.0, Color32::from_white_alpha(20)));
-            let r = Rect::from_center_size(foot.center(), vec2(foot.width() - 40.0 * s, 52.0 * s));
+            let r = Rect::from_center_size(foot.center(), vec2(foot.width() - 32.0 * s, 42.0 * s));
             if pill(ui, adv.focus, r, "Back to the style's values", Some(theme::RAISED), differs) {
                 reset = true;
             }
@@ -396,7 +400,7 @@ pub(super) fn scope_toggle(
     selected: usize,
 ) -> Option<usize> {
     let s = theme::scale(ui.ctx());
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0 * s), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0 * s), Sense::hover());
     let id = ui.make_persistent_id("picture-scope");
     let r = ui.interact(rect, id, Sense::click());
     let (pad, accepted) = focus.stepper(ui, &r);
@@ -413,7 +417,7 @@ pub(super) fn scope_toggle(
         if on {
             p.rect_filled(seg, radius - 3.0 * s, theme::TEXT);
         }
-        let font = FontId::new(17.0 * s, theme::semibold());
+        let font = FontId::new(15.0 * s, theme::semibold());
         let colour = if on { theme::INK } else { theme::TEXT };
         let mut text = label.clone();
         // A name too long for its half is cut short.
@@ -444,17 +448,17 @@ fn style_card(ui: &mut egui::Ui, focus: &mut Focus, p: Preset, on: bool, game: O
     let s = theme::scale(ui.ctx());
     let w = ui.available_width();
     let painter = ui.painter().clone();
-    let name = painter.layout_no_wrap(p.label().to_string(), FontId::new(21.0 * s, theme::bold()), theme::TEXT);
+    let name = painter.layout_no_wrap(p.label().to_string(), FontId::new(18.0 * s, theme::bold()), theme::TEXT);
     let tag = style_tag(p);
     let tag = (!tag.is_empty())
         .then(|| painter.layout_no_wrap(tag.to_string(), FontId::new(14.0 * s, theme::semibold()), theme::CYAN_LIGHT));
     let line = painter.layout(
         style_line(p, game),
-        FontId::new(16.0 * s, FontFamily::Proportional),
+        FontId::new(14.0 * s, FontFamily::Proportional),
         theme::TEXT_2,
-        w - 32.0 * s,
+        w - 28.0 * s,
     );
-    let h = 12.0 * s + name.size().y + 4.0 * s + line.size().y + 12.0 * s;
+    let h = 9.0 * s + name.size().y + 2.0 * s + line.size().y + 9.0 * s;
     let (rect, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
     let id = ui.make_persistent_id(("style-card", p.name()));
     let r = ui.interact(rect, id, Sense::click());
@@ -465,8 +469,8 @@ fn style_card(ui: &mut egui::Ui, focus: &mut Focus, p: Preset, on: bool, game: O
     } else {
         painter.rect_filled(rect, radius, Color32::from_white_alpha(if r.hovered() { 14 } else { 8 }));
     }
-    let x = rect.left() + 16.0 * s;
-    let top = rect.top() + 12.0 * s;
+    let x = rect.left() + 14.0 * s;
+    let top = rect.top() + 9.0 * s;
     let name_h = name.size().y;
     let name_w = name.size().x;
     painter.galley(pos2(x, top), name, theme::TEXT);
@@ -474,7 +478,7 @@ fn style_card(ui: &mut egui::Ui, focus: &mut Focus, p: Preset, on: bool, game: O
         let at = pos2(x + name_w + 10.0 * s, top + (name_h - tag.size().y) / 2.0 + 1.0 * s);
         painter.galley(at, tag, theme::CYAN_LIGHT);
     }
-    painter.galley(pos2(x, top + name_h + 4.0 * s), line, theme::TEXT_2);
+    painter.galley(pos2(x, top + name_h + 2.0 * s), line, theme::TEXT_2);
     if focus.is_on(id) {
         theme::focus_ring(&painter, rect, s, theme::ROW_RADIUS);
     }
@@ -491,7 +495,7 @@ fn compare_row(ui: &mut egui::Ui, focus: &mut Focus, rect: Rect, on: bool) -> (b
     let (pad, accepted) = focus.stepper(ui, &r);
     let p = ui.painter().clone();
     let radius = theme::ROW_RADIUS * s;
-    let font = FontId::new(19.0 * s, theme::bold());
+    let font = FontId::new(16.0 * s, theme::bold());
     if on {
         p.rect_filled(rect, radius, theme::CYAN);
         p.text(rect.center(), Align2::CENTER_CENTER, "Compare", font.clone(), theme::INK);
@@ -548,8 +552,8 @@ impl Adv<'_> {
         let painter = ui.painter().clone();
         let galley = open.then(|| {
             let mut job = egui::text::LayoutJob::default();
-            job.wrap.max_width = width - 32.0 * s;
-            let font = FontId::new(16.0 * s, FontFamily::Proportional);
+            job.wrap.max_width = width - 28.0 * s;
+            let font = FontId::new(14.0 * s, FontFamily::Proportional);
             job.append(
                 help,
                 0.0,
@@ -564,8 +568,8 @@ impl Adv<'_> {
             }
             painter.layout_job(job)
         });
-        let head = 56.0 * s;
-        let h = head + galley.as_ref().map_or(0.0, |g| g.size().y + 12.0 * s);
+        let head = 46.0 * s;
+        let h = head + galley.as_ref().map_or(0.0, |g| g.size().y + 10.0 * s);
         let (rect, _) = ui.allocate_exact_size(vec2(width, h), Sense::hover());
         let r = ui.interact(rect, id, Sense::click());
         let (pad, accepted) = self.focus.stepper(ui, &r);
@@ -578,34 +582,34 @@ impl Adv<'_> {
             painter.rect_filled(rect, radius, Color32::from_white_alpha(14));
         }
         let mid = rect.top() + head / 2.0;
-        let btn = 36.0 * s;
-        let right = Rect::from_center_size(pos2(rect.right() - 16.0 * s - btn / 2.0, mid), vec2(btn, btn));
-        let value_w = 104.0 * s;
+        let btn = 32.0 * s;
+        let right = Rect::from_center_size(pos2(rect.right() - 12.0 * s - btn / 2.0, mid), vec2(btn, btn));
+        let value_w = 96.0 * s;
         let left = Rect::from_center_size(pos2(right.left() - value_w - btn / 2.0, mid), vec2(btn, btn));
         for (b, glyph, on) in [(left, "◀", can.0), (right, "▶", can.1)] {
             painter.rect_filled(b, 9.0 * s, Color32::from_white_alpha(20));
             let c = if on { theme::TEXT } else { DIM.gamma_multiply(0.45) };
-            painter.text(b.center(), Align2::CENTER_CENTER, glyph, FontId::new(14.0 * s, FontFamily::Proportional), c);
+            painter.text(b.center(), Align2::CENTER_CENTER, glyph, FontId::new(13.0 * s, FontFamily::Proportional), c);
         }
         painter.text(
             pos2(left.right() + value_w / 2.0, mid),
             Align2::CENTER_CENTER,
             value,
-            FontId::new(18.0 * s, theme::bold()),
+            FontId::new(16.0 * s, theme::bold()),
             theme::CYAN_LIGHT,
         );
         painter.text(
-            pos2(rect.left() + 16.0 * s, mid),
+            pos2(rect.left() + 14.0 * s, mid),
             Align2::LEFT_CENTER,
             label,
-            FontId::new(19.0 * s, theme::semibold()),
+            FontId::new(16.0 * s, theme::semibold()),
             theme::TEXT,
         );
         if changed {
             painter.circle_filled(pos2(left.left() - 12.0 * s, mid), 4.0 * s, theme::YELLOW);
         }
         if let Some(g) = galley {
-            painter.galley(pos2(rect.left() + 16.0 * s, rect.top() + head), g, theme::TEXT_2);
+            painter.galley(pos2(rect.left() + 14.0 * s, rect.top() + head), g, theme::TEXT_2);
         }
         if ring {
             theme::focus_ring(&painter, rect, s, theme::ROW_RADIUS);
@@ -679,10 +683,10 @@ impl Adv<'_> {
 /// A heading above a group of rows.
 fn group(ui: &mut egui::Ui, text: &str) {
     let s = theme::scale(ui.ctx());
-    ui.add_space(14.0 * s);
+    ui.add_space(10.0 * s);
     ui.horizontal(|ui| {
-        ui.add_space(16.0 * s);
-        ui.label(egui::RichText::new(text).font(FontId::new(14.0 * s, theme::semibold())).color(theme::TEXT_DIM));
+        ui.add_space(14.0 * s);
+        ui.label(egui::RichText::new(text).font(FontId::new(13.0 * s, theme::semibold())).color(theme::TEXT_DIM));
     });
     ui.add_space(4.0 * s);
 }

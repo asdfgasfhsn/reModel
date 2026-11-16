@@ -43,6 +43,8 @@ const FOCUS_FILL: Color32 = Color32::from_rgba_unmultiplied_const(34, 229, 255, 
 
 /// Radii in points at scale 1.
 pub const ROW_RADIUS: f32 = 12.0;
+/// A menu row's height in design points.
+pub const ROW_H: f32 = 40.0;
 pub const CARD_RADIUS: f32 = 16.0;
 
 /// The heading family (Exo 2 Black Italic); semibold and bold Inter.
@@ -97,8 +99,8 @@ fn shadow(offset_y: i8, blur: u8, alpha: u8) -> egui::Shadow {
     egui::Shadow { offset: [0, offset_y], blur, spread: 0, color: Color32::from_black_alpha(alpha) }
 }
 
-/// egui's style at scale `s`: the palette, the type scale (body 18, small
-/// 15, heading 28 points at 720p), radii and spacing.
+/// egui's style at scale `s`: the palette, the type scale (body 16, small
+/// 14, heading 26 points at 720p), radii and spacing.
 fn style_at(ctx: &Context, s: f32) {
     ctx.all_styles_mut(|st| {
         let v = &mut st.visuals;
@@ -133,10 +135,10 @@ fn style_at(ctx: &Context, s: f32) {
         st.spacing.item_spacing = vec2(10.0, 8.0) * s;
         st.spacing.interact_size.y = 30.0 * s;
         st.text_styles = [
-            (TextStyle::Heading, FontId::new(28.0 * s, display())),
-            (TextStyle::Body, FontId::new(18.0 * s, FontFamily::Proportional)),
-            (TextStyle::Button, FontId::new(18.0 * s, semibold())),
-            (TextStyle::Small, FontId::new(15.0 * s, FontFamily::Proportional)),
+            (TextStyle::Heading, FontId::new(26.0 * s, display())),
+            (TextStyle::Body, FontId::new(16.0 * s, FontFamily::Proportional)),
+            (TextStyle::Button, FontId::new(16.0 * s, semibold())),
+            (TextStyle::Small, FontId::new(14.0 * s, FontFamily::Proportional)),
             (TextStyle::Monospace, FontId::new(15.0 * s, FontFamily::Monospace)),
         ]
         .into();
@@ -197,7 +199,7 @@ pub fn menu_row_focus(p: &Painter, r: Rect, s: f32) {
 /// dim on the right. `focused` is whatever the pad or keyboard is on.
 pub fn menu_row(ui: &mut Ui, label: &str, hint: &str, focused: bool) -> Response {
     let s = scale(ui.ctx());
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0 * s), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H * s), Sense::hover());
     let r = ui.interact(rect, ui.make_persistent_id(("menu-row", label)), Sense::click());
     let p = ui.painter();
     if focused {
@@ -205,14 +207,14 @@ pub fn menu_row(ui: &mut Ui, label: &str, hint: &str, focused: bool) -> Response
     } else if r.hovered() {
         p.rect_filled(rect, ROW_RADIUS * s, Color32::from_white_alpha(14));
     }
-    let pad = 24.0 * s;
-    p.text(rect.left_center() + vec2(pad, 0.0), Align2::LEFT_CENTER, label, FontId::new(21.0 * s, semibold()), TEXT);
+    let pad = 20.0 * s;
+    p.text(rect.left_center() + vec2(pad, 0.0), Align2::LEFT_CENTER, label, FontId::new(18.0 * s, semibold()), TEXT);
     if !hint.is_empty() {
         p.text(
             rect.right_center() - vec2(pad, 0.0),
             Align2::RIGHT_CENTER,
             hint,
-            FontId::new(16.0 * s, FontFamily::Proportional),
+            FontId::new(15.0 * s, FontFamily::Proportional),
             TEXT_DIM,
         );
     }
@@ -223,12 +225,12 @@ pub fn menu_row(ui: &mut Ui, label: &str, hint: &str, focused: bool) -> Response
 /// selected segment is filled cyan.
 pub fn segmented(ui: &mut Ui, labels: &[&str], selected: usize) -> Option<usize> {
     let s = scale(ui.ctx());
-    let font = FontId::new(17.0 * s, semibold());
+    let font = FontId::new(15.0 * s, semibold());
     let widths: Vec<f32> = labels
         .iter()
-        .map(|l| ui.painter().layout_no_wrap(l.to_string(), font.clone(), TEXT).size().x + 36.0 * s)
+        .map(|l| ui.painter().layout_no_wrap(l.to_string(), font.clone(), TEXT).size().x + 30.0 * s)
         .collect();
-    let (rect, _) = ui.allocate_exact_size(vec2(widths.iter().sum::<f32>() + 8.0 * s, 44.0 * s), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(widths.iter().sum::<f32>() + 8.0 * s, 38.0 * s), Sense::hover());
     ui.painter().rect_filled(rect, 999.0, RAISED);
     let (mut x, mut clicked) = (rect.left() + 4.0 * s, None);
     let base = ui.make_persistent_id(labels.join("|"));
@@ -259,6 +261,8 @@ pub enum Chip<'a> {
     Y,
     /// The pad's menu button (Start), drawn "≡".
     Menu,
+    /// Left and right: a stepper's change, drawn as two arrows.
+    LeftRight,
     /// Any other cap: "LB RB", "Esc", "D-pad".
     Key(&'a str),
 }
@@ -272,6 +276,7 @@ impl<'a> Chip<'a> {
             "X" => Chip::X,
             "Y" => Chip::Y,
             "Start" | "Menu" | "≡" => Chip::Menu,
+            "◂ ▸" | "← →" => Chip::LeftRight,
             other => Chip::Key(other),
         }
     }
@@ -284,15 +289,16 @@ impl<'a> Chip<'a> {
             Chip::X => ("X", Some(Color32::from_rgb(58, 160, 255))),
             Chip::Y => ("Y", Some(YELLOW)),
             Chip::Menu => ("≡", None),
+            Chip::LeftRight => ("◂ ▸", None),
             Chip::Key(k) => (k, None),
         }
     }
 }
 
 /// A chip's size: its diameter in design points (its letters follow it).
-pub const CHIP: f32 = 26.0;
-/// The launcher's: big enough that its labels read at 18 points from a couch.
-pub const CHIP_LARGE: f32 = 32.0;
+pub const CHIP: f32 = 22.0;
+/// The launcher's: a little bigger than the panels', for the couch.
+pub const CHIP_LARGE: f32 = 26.0;
 
 /// How wide `chip` draws.
 fn chip_width(p: &Painter, chip: Chip, s: f32) -> f32 {
@@ -306,7 +312,9 @@ pub fn chip_width_at(p: &Painter, chip: Chip, s: f32, d: f32) -> f32 {
         (_, Some(_)) => d,
         (text, None) => {
             let w = p.layout_no_wrap(text.to_owned(), FontId::new(f, bold()), TEXT).size().x + 0.6 * d;
-            if chip == Chip::Menu {
+            if chip == Chip::LeftRight {
+                1.55 * d
+            } else if chip == Chip::Menu {
                 w.max(d)
             } else {
                 w
@@ -339,6 +347,17 @@ pub fn paint_chip_at(p: &Painter, chip: Chip, at: egui::Pos2, s: f32, d: f32) {
         (Color32::from_white_alpha(36), TEXT)
     };
     p.rect_filled(r, 6.0 * s, fill);
+    if chip == Chip::LeftRight {
+        // Two painted arrows: the bundled fonts may lack the glyphs.
+        let (h, w) = (0.24 * d, 0.2 * d);
+        for dir in [-1.0, 1.0] {
+            let c = pos2(r.center().x + dir * 0.36 * d, r.center().y);
+            let tip = c + vec2(dir * w * 0.6, 0.0);
+            let back = c - vec2(dir * w * 0.4, 0.0);
+            p.add(egui::Shape::convex_polygon(vec![tip, back + vec2(0.0, -h), back + vec2(0.0, h)], ink, Stroke::NONE));
+        }
+        return;
+    }
     if chip == Chip::Menu {
         // Three bars: no font has the "≡" to be sure of.
         let (half, gap) = (0.26 * d, 0.2 * d);
@@ -354,8 +373,8 @@ pub fn paint_chip_at(p: &Painter, chip: Chip, at: egui::Pos2, s: f32, d: f32) {
 /// A line of button hints: each chip and what it does ("A  Select").
 pub fn chips(ui: &mut Ui, hints: &[(Chip, &str)]) {
     let s = scale(ui.ctx());
-    let font = FontId::new(18.0 * s, FontFamily::Proportional);
-    let (gap, between) = (8.0 * s, 22.0 * s);
+    let font = FontId::new(16.0 * s, FontFamily::Proportional);
+    let (gap, between) = (7.0 * s, 18.0 * s);
     let p = ui.painter().clone();
     let widths: Vec<(f32, f32)> = hints
         .iter()
@@ -365,7 +384,7 @@ pub fn chips(ui: &mut Ui, hints: &[(Chip, &str)]) {
         .collect();
     let total: f32 =
         widths.iter().map(|(a, b)| a + gap + b).sum::<f32>() + between * hints.len().saturating_sub(1) as f32;
-    let (rect, _) = ui.allocate_exact_size(vec2(total, 28.0 * s), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(total, 24.0 * s), Sense::hover());
     let mut x = rect.left();
     for ((chip, what), (cw, tw)) in hints.iter().zip(&widths) {
         paint_chip(&p, *chip, pos2(x, rect.center().y), s);

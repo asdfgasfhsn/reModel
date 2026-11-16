@@ -1419,14 +1419,14 @@ impl Launcher {
             }
             h
         };
-        let font = FontId::new(18.0 * u, FontFamily::Proportional);
+        let font = FontId::new(16.0 * u, FontFamily::Proportional);
         let d = theme::CHIP_LARGE;
         let mut x = l.top.left();
         let y = l.bar.center().y;
         for (i, (chip, label, click)) in hints.into_iter().enumerate() {
             let cw = theme::chip_width_at(p, chip, u, d);
             let g = p.layout_no_wrap(label.to_string(), font.clone(), theme::TEXT_2);
-            let r = Rect::from_min_size(pos2(x, y - 22.0 * u), vec2(cw + 10.0 * u + g.size().x + 20.0 * u, 44.0 * u));
+            let r = Rect::from_min_size(pos2(x, y - 19.0 * u), vec2(cw + 8.0 * u + g.size().x + 18.0 * u, 38.0 * u));
             let dim = matches!(click, Some(Click::Continue)) && view.cont.is_none();
             let mut shown = Color32::from_white_alpha(if dim { 90 } else { 255 });
             if let Some(c) = click {
@@ -1446,7 +1446,7 @@ impl Launcher {
                 shown = Color32::from_white_alpha(90);
             }
             theme::paint_chip_at(p, chip, pos2(r.left() + 6.0 * u, y), u, d);
-            p.galley(pos2(r.left() + 6.0 * u + cw + 10.0 * u, y - g.size().y / 2.0), g, shown);
+            p.galley(pos2(r.left() + 6.0 * u + cw + 8.0 * u, y - g.size().y / 2.0), g, shown);
             x = r.right() + 8.0 * u;
         }
         if grid {
@@ -1455,7 +1455,7 @@ impl Launcher {
                 pos2(l.top.right(), y),
                 Align2::RIGHT_CENTER,
                 format!("{shown} of {of} games"),
-                FontId::new(18.0 * u, FontFamily::Proportional),
+                FontId::new(16.0 * u, FontFamily::Proportional),
                 theme::TEXT_DIM,
             );
         }
@@ -1509,16 +1509,16 @@ impl Launcher {
         let SavesPage { game, items, focus } = page;
         back |= menu::side_panel(ctx, &spec, &hints, |ui, reg| {
             ui.scope_builder(egui::UiBuilder::new().max_rect(reg.body.shrink2(vec2(24.0 * s, 0.0))), |ui| {
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 12.0 * s;
-                    ui.add_space(16.0 * s);
+                focus.scroll_area("saves").show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 8.0 * s;
+                    ui.add_space(12.0 * s);
                     for (i, item) in items.iter().enumerate() {
                         let id = Id::unique(("save-card", game.id, i));
                         if menu::slot_card(ui, focus, id, &item.name, false, item.info.as_ref(), item.thumb.as_ref()) {
                             chosen = Some(i);
                         }
                     }
-                    ui.add_space(16.0 * s);
+                    ui.add_space(12.0 * s);
                 });
             });
             false
@@ -2080,7 +2080,7 @@ mod tests {
     }
 
     #[test]
-    fn text_is_never_under_18_points_at_720p() {
+    fn text_is_never_under_14_points_at_720p() {
         for mode in ViewMode::ALL {
             for cont in [None, continuing("stcc", Start::Resume)] {
                 let mut r = Rig::new(&SET, &["stcc"]);
@@ -2089,7 +2089,7 @@ mod tests {
                 for _ in 0..3 {
                     r.frame(&[], Vec::new());
                 }
-                let small: Vec<_> = r.texts().into_iter().filter(|(_, size)| *size < 17.99).collect();
+                let small: Vec<_> = r.texts().into_iter().filter(|(_, size)| *size < 13.99).collect();
                 assert!(small.is_empty(), "{mode:?}: {small:?}");
                 assert!(r.texts().len() > 10, "{mode:?}");
             }

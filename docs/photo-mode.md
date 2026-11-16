@@ -49,7 +49,7 @@ photo mode and the game goes on.
 | Leave | Esc, F8, **Leave** | B, Start, Guide |
 
 The dock shows one tab at a time, as a row of cells (name, value, `<` `>`;
-text is never under 18 points at 720p), with the tab bar under it: **Hide**
+text is never under 14 points at 720p), with the tab bar under it: **Hide**
 (Y), the tabs, **Grid** (a rule-of-thirds grid over the picture, inside the
 letterbox; it is not in the photo), **Leave** (B) and the shutter. The dock
 and its margin take at most 140 points of a 720-point window; the photo is

@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 
 /// The footer's height: the reset button and a line about where the
 /// bindings are kept (design points).
-const FOOT_H: f32 = 124.0;
+const FOOT_H: f32 = 100.0;
 /// How far the pad's moves put the pinned footer past the scrolling list.
 const SHIFT: f32 = 100_000.0;
 /// Reset asks twice within this long.
@@ -42,7 +42,7 @@ const RESET_CONFIRM: Duration = Duration::from_secs(4);
 const ART_H: f32 = 360.0;
 const MARGIN: f32 = 28.0;
 /// Text on this page is never smaller than this (design points).
-const TEXT_SIZE: f32 = 18.0;
+const TEXT_SIZE: f32 = 16.0;
 
 /// The card behind a picture or the tuning.
 const CARD: Color32 = Color32::from_rgba_premultiplied(7, 10, 19, 214);
@@ -570,15 +570,15 @@ impl Menu {
             let body = reg.body.shrink2(vec2(14.0 * s, 0.0));
             // The device switch above the list.
             let bar = Rect::from_min_size(
-                pos2(body.left() + 6.0 * s, body.top() + 10.0 * s),
-                vec2(body.width() - 12.0 * s, 48.0 * s),
+                pos2(body.left() + 6.0 * s, body.top() + 8.0 * s),
+                vec2(body.width() - 12.0 * s, 40.0 * s),
             );
             let labels: Vec<String> = all.iter().map(|d| d.label(cabinet).to_string()).collect();
             let at = all.iter().position(|d| *d == device).unwrap_or(0);
             let (bar_resp, bar_id) = choice_bar(ui, bar, "controls-device", &labels, at);
             let list_area = Rect::from_min_max(pos2(body.left(), bar.bottom() + 8.0 * s), body.right_bottom());
             ui.scope_builder(egui::UiBuilder::new().max_rect(list_area), |ui| {
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                focus.scroll_area("controls").show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 4.0 * s;
                     for r in list_ref {
                         if let Some(act) = action_row(ui, focus, b_ref, r, capturing, waited, device) {
@@ -620,14 +620,14 @@ impl Menu {
             // The footer.
             let foot = reg.extra;
             ui.painter().hline(foot.x_range(), foot.top(), Stroke::new(1.0, Color32::from_white_alpha(20)));
-            let (pad_x, h) = (20.0 * s, 48.0 * s);
+            let (pad_x, h) = (16.0 * s, 40.0 * s);
             let x = foot.left() + pad_x;
             let w = foot.width() - 2.0 * pad_x;
             let label = if armed { "Again to confirm" } else { "Reset to the game's defaults" };
             if pill(
                 ui,
                 focus,
-                Rect::from_min_size(pos2(x, foot.top() + 12.0 * s), vec2(w, h)),
+                Rect::from_min_size(pos2(x, foot.top() + 10.0 * s), vec2(w, h)),
                 label,
                 Some(theme::RAISED),
                 true,
@@ -642,7 +642,7 @@ impl Menu {
             };
             let p = ui.painter();
             let galley = p.layout(text.to_string(), plain(s, TEXT_SIZE), colour, w);
-            p.galley(pos2(x, foot.top() + 70.0 * s), galley, colour);
+            p.galley(pos2(x, foot.top() + 58.0 * s), galley, colour);
             false
         });
         if let Some(d) = to_device {
@@ -1044,7 +1044,7 @@ fn action_row(
     device: Device,
 ) -> Option<RowAct> {
     let s = theme::scale(ui.ctx());
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 76.0 * s), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 62.0 * s), Sense::hover());
     let id = row_id(b, row.slot);
     let r = ui.interact(rect, id, Sense::click());
     let waiting = capturing.filter(|c| c.0 == row.slot);
@@ -1061,14 +1061,14 @@ fn action_row(
     } else if r.hovered() {
         p.rect_filled(rect, radius, Color32::from_white_alpha(14));
     }
-    let x = rect.left() + 20.0 * s;
+    let x = rect.left() + 18.0 * s;
     // Name, and (on a hovered or focused row) its buttons.
     let hot = r.hovered() || focused;
     let mut right = rect.right() - 10.0 * s;
-    let top = rect.top() + 10.0 * s;
+    let top = rect.top() + 8.0 * s;
     if hot && waiting.is_none() {
         let mut button = |text: &str, wide: f32, act_to: RowAct, tip: &str| {
-            let rc = Rect::from_min_size(pos2(right - wide, top - 2.0 * s), vec2(wide, 32.0 * s));
+            let rc = Rect::from_min_size(pos2(right - wide, top - 2.0 * s), vec2(wide, 26.0 * s));
             let bid = id.with(text);
             let br = ui.interact(rc, bid, Sense::click());
             let fill = Color32::from_white_alpha(if br.hovered() { 56 } else { 30 });
@@ -1089,14 +1089,14 @@ fn action_row(
             if row.edited { button("Reset", 70.0 * s, RowAct::Restore, "Back to the game's own") } else { None };
         act = first.or(second).or(third);
     }
-    let font = semibold(s, 20.0);
+    let font = semibold(s, 17.0);
     let name = fit(&p, &row.name, &font, right - x);
     p.text(pos2(x, top), Align2::LEFT_TOP, name, font, theme::TEXT);
     if row.edited {
-        p.circle_filled(pos2(rect.left() + 10.0 * s, top + 12.0 * s), 3.5 * s, theme::CYAN);
+        p.circle_filled(pos2(rect.left() + 10.0 * s, top + 10.0 * s), 3.5 * s, theme::CYAN);
     }
     // The line below: what it's bound to.
-    let cy = rect.bottom() - 24.0 * s;
+    let cy = rect.bottom() - 19.0 * s;
     if waiting.is_some() {
         let what = if b.accepts(row.slot) == Accepts::Axis {
             "Move a stick or press a trigger"
@@ -1108,7 +1108,7 @@ fn action_row(
         let font = semibold(s, TEXT_SIZE);
         let w = (p.layout_no_wrap(text.clone(), font.clone(), theme::INK).size().x + 28.0 * s)
             .min(rect.right() - x - 10.0 * s);
-        let pill = Rect::from_min_size(pos2(x, cy - 15.0 * s), vec2(w, 30.0 * s));
+        let pill = Rect::from_min_size(pos2(x, cy - 12.0 * s), vec2(w, 24.0 * s));
         p.rect_filled(pill, 8.0 * s, theme::CYAN);
         p.text(pill.center(), Align2::CENTER_CENTER, fit(&p, &text, &font, w - 16.0 * s), font, theme::INK);
         ui.ctx().request_repaint();
@@ -1118,11 +1118,11 @@ fn action_row(
         let font = semibold(s, TEXT_SIZE);
         let mut cx = x;
         for cap in &row.caps {
-            let w = p.layout_no_wrap(cap.text.clone(), font.clone(), theme::TEXT).size().x + 22.0 * s;
+            let w = p.layout_no_wrap(cap.text.clone(), font.clone(), theme::TEXT).size().x + 18.0 * s;
             if cx + w > rect.right() - 8.0 * s {
                 break;
             }
-            let chip = Rect::from_min_size(pos2(cx, cy - 15.0 * s), vec2(w, 30.0 * s));
+            let chip = Rect::from_min_size(pos2(cx, cy - 12.0 * s), vec2(w, 24.0 * s));
             let cid = id.with(("cap", cap.index));
             let cr = ui.interact(chip, cid, Sense::click());
             let (fill, ink) = if cap.clash {

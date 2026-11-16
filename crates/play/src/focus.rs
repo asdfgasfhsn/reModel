@@ -68,6 +68,18 @@ fn x_gap(a: Rect, b: Rect) -> f32 {
 }
 
 impl Focus {
+    /// A page's scroll area: its own state (not shared with the page that
+    /// was in the same place before), starting at the top when the page has
+    /// just opened.
+    pub fn scroll_area(&self, salt: &str) -> egui::ScrollArea {
+        let area = egui::ScrollArea::vertical().id_salt(salt).auto_shrink([false, false]);
+        if self.on.is_none() {
+            area.vertical_scroll_offset(0.0)
+        } else {
+            area
+        }
+    }
+
     /// The focused widget.
     pub fn focused(&self) -> Option<Id> {
         self.on.map(|o| o.0)

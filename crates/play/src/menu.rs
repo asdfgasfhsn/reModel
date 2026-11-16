@@ -264,10 +264,10 @@ impl Rows<'_> {
     /// there is a choice before and after.
     fn row(&mut self, ui: &mut egui::Ui, label: &str, value: &str, can: (bool, bool), help: &str) -> Step {
         let s = theme::scale(ui.ctx());
-        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 60.0 * s), Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 50.0 * s), Sense::hover());
         let r = ui.interact(rect, ui.make_persistent_id(("row", label)), Sense::CLICK);
         let (pad, accepted) = self.focus.stepper(ui, &r);
-        let arrow = 32.0 * s;
+        let arrow = 28.0 * s;
         let right = Rect::from_min_max(
             pos2(rect.right() - arrow - 8.0 * s, rect.top()),
             pos2(rect.right() - 8.0 * s, rect.bottom()),
@@ -277,23 +277,23 @@ impl Rows<'_> {
         if r.hovered() && !self.nav_mode {
             p.rect_filled(rect, theme::ROW_RADIUS * s, Color32::from_white_alpha(14));
         }
-        let x = rect.left() + 16.0 * s;
+        let x = rect.left() + 14.0 * s;
         p.text(
-            pos2(x, rect.top() + 9.0 * s),
+            pos2(x, rect.top() + 6.0 * s),
             Align2::LEFT_TOP,
             label,
             FontId::new(14.0 * s, FontFamily::Proportional),
             theme::TEXT_DIM,
         );
         p.text(
-            pos2(x, rect.top() + 29.0 * s),
+            pos2(x, rect.top() + 24.0 * s),
             Align2::LEFT_TOP,
             value,
-            FontId::new(19.0 * s, theme::semibold()),
+            FontId::new(17.0 * s, theme::semibold()),
             theme::TEXT,
         );
         for (rect, dir, on) in [(left, -1.0, can.0), (right, 1.0, can.1)] {
-            let c = rect.center() + vec2(0.0, 6.0 * s);
+            let c = rect.center() + vec2(0.0, 4.0 * s);
             let color = if on { theme::CYAN } else { DIM.gamma_multiply(0.35) };
             let tip = c + vec2(6.0 * dir, 0.0) * s;
             let back = c - vec2(4.0 * dir, 0.0) * s;
@@ -574,7 +574,12 @@ impl Menu {
         let mut arm = false;
         let s = theme::scale(ctx);
         let way_out = if playing { "Resume" } else { "Close" };
-        let hints = [(Chip::A, "Select"), (Chip::B, way_out), (Chip::Key("Esc"), way_out)];
+        // The way out is the pad's B or the keyboard's Esc, by what is in use.
+        let hints = if self.pad_used {
+            [(Chip::A, "Select"), (Chip::B, way_out)]
+        } else {
+            [(Chip::Key("Enter"), "Select"), (Chip::Key("Esc"), way_out)]
+        };
         let spec = PanelSpec {
             game: view.playing.or(view.game.map(|g| g.title)).unwrap_or("reModel"),
             heading: if playing { "Paused" } else { "Menu" },
@@ -583,9 +588,9 @@ impl Menu {
         };
         side_panel(ctx, &spec, &hints, |ui, reg| {
             ui.scope_builder(egui::UiBuilder::new().max_rect(reg.body.shrink2(vec2(12.0 * s, 0.0))), |ui| {
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                focus.scroll_area("pause").show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0 * s;
-                    ui.add_space(10.0 * s);
+                    ui.add_space(8.0 * s);
                     if playing {
                         if focus.menu_row(ui, "Resume", "Esc") {
                             actions.push(Action::Resume);
@@ -613,12 +618,12 @@ impl Menu {
                     if playing && focus.menu_row(ui, "Back to games", "") {
                         actions.push(Action::Games);
                     }
-                    ui.add_space(14.0 * s);
+                    ui.add_space(10.0 * s);
                     ui.horizontal(|ui| {
-                        ui.add_space(24.0 * s);
+                        ui.add_space(20.0 * s);
                         ui.label(
                             egui::RichText::new("SETTINGS")
-                                .font(FontId::new(14.0 * s, theme::semibold()))
+                                .font(FontId::new(13.0 * s, theme::semibold()))
                                 .color(theme::TEXT_DIM),
                         );
                     });
@@ -642,9 +647,9 @@ impl Menu {
                     if !playing && focus.menu_row(ui, "Quit reModel", "") {
                         actions.push(Action::Quit);
                     }
-                    ui.add_space(10.0 * s);
+                    ui.add_space(6.0 * s);
                     ui.horizontal(|ui| {
-                        ui.add_space(24.0 * s);
+                        ui.add_space(20.0 * s);
                         ui.label(
                             egui::RichText::new(format!("reModel {}", remodel_version::VERSION))
                                 .font(FontId::new(14.0 * s, FontFamily::Proportional))
@@ -728,15 +733,15 @@ impl Menu {
         let s = theme::scale(ctx);
         let hints = [(Chip::A, "Select"), (Chip::B, "Back"), (Chip::Key("Esc"), "Resume")];
         let spec =
-            PanelSpec { game: view.playing.unwrap_or("reModel"), heading: "Save slots", back: true, extra_h: 80.0 };
+            PanelSpec { game: view.playing.unwrap_or("reModel"), heading: "Save slots", back: true, extra_h: 68.0 };
         let mut jump = None;
         back |= side_panel(ctx, &spec, &hints, |ui, reg| {
             let (load_id, save_id) =
                 (ui.make_persistent_id(("pill", "Load")), ui.make_persistent_id(("pill", "Save here")));
             ui.scope_builder(egui::UiBuilder::new().max_rect(reg.body.shrink2(vec2(24.0 * s, 0.0))), |ui| {
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 12.0 * s;
-                    ui.add_space(16.0 * s);
+                focus.scroll_area("slots").show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 8.0 * s;
+                    ui.add_space(12.0 * s);
                     for slot in 0..SLOTS {
                         let id = ui.make_persistent_id(("slot-card", slot));
                         let info = view.saves.get(slot as usize).and_then(|i| i.as_ref());
@@ -753,9 +758,9 @@ impl Menu {
             // Load, Save here, Back.
             let foot = reg.extra;
             ui.painter().hline(foot.x_range(), foot.top(), Stroke::new(1.0, Color32::from_white_alpha(20)));
-            let (pad, gap, h) = (24.0 * s, 10.0 * s, 52.0 * s);
+            let (pad, gap, h) = (20.0 * s, 8.0 * s, 44.0 * s);
             let top = foot.center().y - h / 2.0;
-            let back_w = 96.0 * s;
+            let back_w = 84.0 * s;
             let w = (foot.width() - 2.0 * pad - 2.0 * gap - back_w) / 2.0;
             let at = |x: f32, w: f32| Rect::from_min_size(pos2(x, top), vec2(w, h));
             let info = view.saves.get(sel as usize).and_then(|i| i.as_ref());
@@ -807,13 +812,13 @@ impl Menu {
         let focus = &mut self.settings_focus;
         focus.show = nav_mode;
         let mut rows = Rows { focus, nav_mode, focused: None, hovered: None };
-        let hints = [(Chip::Key("◂ ▸"), "Change"), (Chip::Key("LB RB"), "Tabs"), (Chip::B, "Back")];
+        let hints = [(Chip::LeftRight, "Change"), (Chip::Key("LB RB"), "Tabs"), (Chip::B, "Back")];
         let spec =
-            PanelSpec { game: view.playing.unwrap_or("reModel"), heading: tab.heading(), back: true, extra_h: 136.0 };
+            PanelSpec { game: view.playing.unwrap_or("reModel"), heading: tab.heading(), back: true, extra_h: 120.0 };
         back |= side_panel(ctx, &spec, &hints, |ui, reg| {
             ui.scope_builder(egui::UiBuilder::new().max_rect(reg.body.shrink2(vec2(16.0 * s, 0.0))), |ui| {
                 tabs(ui, &mut tab);
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                rows.focus.scroll_area("settings").show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 6.0 * s;
                     match tab {
                         Tab::Display => display_rows(ui, &mut rows, settings, &mut prefs, view),
@@ -863,9 +868,9 @@ impl Menu {
 
 /// The side panel's width, and its header's and footer's heights, in
 /// design points (720 high).
-const PANEL_W: f32 = 440.0;
-const HEADER_H: f32 = 100.0;
-const FOOTER_H: f32 = 56.0;
+const PANEL_W: f32 = 380.0;
+const HEADER_H: f32 = 84.0;
+const FOOTER_H: f32 = 48.0;
 /// Reset game wants a second selection within this long.
 const RESET_CONFIRM: Duration = Duration::from_secs(4);
 
@@ -926,6 +931,7 @@ pub(crate) fn side_panel(
     egui::Area::new(egui::Id::unique("remodel-menu-panel"))
         .order(egui::Order::Middle)
         .fixed_pos(reg.panel.min)
+        .constrain(false)
         .fade_in(false)
         .show(ctx, |ui| {
             // The panel takes the pointer, so the game's picture behind it
@@ -942,17 +948,17 @@ pub(crate) fn side_panel(
             p.hline(reg.header.x_range(), reg.header.bottom(), rule);
             p.hline(reg.foot.x_range(), reg.foot.top(), rule);
             // The header: the game, then the page's heading.
-            let x = reg.header.left() + 32.0 * s;
+            let x = reg.header.left() + 26.0 * s;
             p.text(
-                pos2(x, reg.header.top() + 28.0 * s),
+                pos2(x, reg.header.top() + 20.0 * s),
                 Align2::LEFT_TOP,
                 spec.game.to_uppercase(),
-                FontId::new(15.0 * s, theme::semibold()),
+                FontId::new(13.0 * s, theme::semibold()),
                 theme::CYAN_LIGHT,
             );
-            let size = if spec.heading.len() > 12 { 28.0 } else { 34.0 };
+            let size = if spec.heading.len() > 12 { 22.0 } else { 26.0 };
             p.text(
-                pos2(x, reg.header.top() + 52.0 * s),
+                pos2(x, reg.header.top() + 40.0 * s),
                 Align2::LEFT_TOP,
                 spec.heading.to_uppercase(),
                 FontId::new(size * s, theme::display()),
@@ -960,8 +966,8 @@ pub(crate) fn side_panel(
             );
             if spec.back {
                 let r = Rect::from_center_size(
-                    pos2(reg.header.right() - 32.0 * s - 18.0 * s, reg.header.top() + 36.0 * s),
-                    vec2(36.0 * s, 36.0 * s),
+                    pos2(reg.header.right() - 26.0 * s - 16.0 * s, reg.header.top() + 30.0 * s),
+                    vec2(32.0 * s, 32.0 * s),
                 );
                 let resp = ui.interact(r, egui::Id::unique("remodel-menu-back"), Sense::click());
                 let fill = if resp.hovered() { Color32::from_white_alpha(36) } else { theme::RAISED };
@@ -970,15 +976,15 @@ pub(crate) fn side_panel(
                     r.center() - vec2(1.0, 2.0 * s),
                     Align2::CENTER_CENTER,
                     "‹",
-                    FontId::new(26.0 * s, theme::bold()),
+                    FontId::new(22.0 * s, theme::bold()),
                     theme::TEXT,
                 );
                 back |= resp.clicked();
             }
             back |= content(ui, &reg);
             let chips = Rect::from_min_size(
-                pos2(reg.foot.left() + 32.0 * s, reg.foot.top() + 14.0 * s),
-                vec2(reg.foot.width() - 64.0 * s, 28.0 * s),
+                pos2(reg.foot.left() + 26.0 * s, reg.foot.top() + 12.0 * s),
+                vec2(reg.foot.width() - 52.0 * s, 24.0 * s),
             );
             ui.scope_builder(egui::UiBuilder::new().max_rect(chips), |ui| theme::chips(ui, hints));
         });
@@ -988,8 +994,8 @@ pub(crate) fn side_panel(
 /// The settings' tab strip: the one clicked is chosen.
 fn tabs(ui: &mut egui::Ui, tab: &mut Tab) {
     let s = theme::scale(ui.ctx());
-    let font = FontId::new(16.0 * s, theme::semibold());
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0 * s), Sense::hover());
+    let font = FontId::new(15.0 * s, theme::semibold());
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0 * s), Sense::hover());
     let mut x = rect.left() + 8.0 * s;
     for (i, t) in Tab::ALL.iter().enumerate() {
         let w = ui.painter().layout_no_wrap(t.label().to_string(), font.clone(), theme::TEXT).size().x;
@@ -1039,7 +1045,7 @@ fn pill(ui: &mut egui::Ui, focus: &mut Focus, rect: Rect, text: &str, fill: Opti
             }
         }
         let ink = if enabled { theme::TEXT } else { theme::TEXT_DIM };
-        p.text(rect.center(), Align2::CENTER_CENTER, text, FontId::new(19.0 * s, theme::bold()), ink);
+        p.text(rect.center(), Align2::CENTER_CENTER, text, FontId::new(16.0 * s, theme::bold()), ink);
         if focus.is_on(id) {
             theme::focus_ring(p, rect, s, theme::ROW_RADIUS);
         }
@@ -1061,7 +1067,7 @@ pub(crate) fn slot_card(
     thumb: Option<&egui::TextureHandle>,
 ) -> bool {
     let s = theme::scale(ui.ctx());
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 104.0 * s), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 88.0 * s), Sense::hover());
     let r = ui.interact(rect, id, Sense::click());
     let radius = theme::ROW_RADIUS * s;
     let p = ui.painter().clone();
@@ -1072,7 +1078,7 @@ pub(crate) fn slot_card(
         let white = if r.hovered() { 14 } else { 8 };
         p.rect_filled(rect, radius, Color32::from_white_alpha(white));
     }
-    let pic = Rect::from_min_size(rect.min + vec2(10.0 * s, 10.0 * s), vec2(112.0 * s, 84.0 * s));
+    let pic = Rect::from_min_size(rect.min + vec2(8.0 * s, 8.0 * s), vec2(96.0 * s, 72.0 * s));
     match thumb {
         Some(tex) => egui::Image::from_texture((tex.id(), pic.size())).corner_radius(8.0 * s).paint_at(ui, pic),
         None => {
@@ -1087,14 +1093,14 @@ pub(crate) fn slot_card(
             );
         }
     }
-    let x = pic.right() + 16.0 * s;
+    let x = pic.right() + 14.0 * s;
     let wrap = (rect.right() - 10.0 * s - x).max(40.0);
-    let mut y = rect.top() + 12.0 * s;
-    p.text(pos2(x, y), Align2::LEFT_TOP, name, FontId::new(19.0 * s, theme::bold()), theme::TEXT);
-    y += 26.0 * s;
+    let mut y = rect.top() + 10.0 * s;
+    p.text(pos2(x, y), Align2::LEFT_TOP, name, FontId::new(17.0 * s, theme::bold()), theme::TEXT);
+    y += 23.0 * s;
     if let Some(info) = info {
         for (text, size, colour) in
-            [(saves::when(info.time), 15.0, theme::TEXT_2), (saves::meta(info), 13.0, theme::TEXT_DIM)]
+            [(saves::when(info.time), 14.0, theme::TEXT_2), (saves::meta(info), 14.0, theme::TEXT_DIM)]
         {
             let galley = p.layout(text, FontId::new(size * s, FontFamily::Proportional), colour, wrap);
             let h = galley.size().y;
@@ -1454,7 +1460,7 @@ mod tests {
     fn the_panel_regions_tile_its_edge() {
         let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 720.0));
         let r = regions(screen, 1.0, 80.0);
-        assert_eq!(r.panel, Rect::from_min_max(pos2(840.0, 0.0), pos2(1280.0, 720.0)));
+        assert_eq!(r.panel, Rect::from_min_max(pos2(900.0, 0.0), pos2(1280.0, 720.0)));
         assert_eq!(r.header.top(), 0.0);
         assert_eq!(r.header.bottom(), r.body.top());
         assert_eq!(r.body.bottom(), r.extra.top());
@@ -1463,11 +1469,11 @@ mod tests {
         assert_eq!(r.extra.height(), 80.0);
         // At 4K the panel is as much of the screen as at 720p.
         let big = regions(Rect::from_min_size(pos2(0.0, 0.0), vec2(3840.0, 2160.0)), 3.0, 0.0);
-        assert_eq!(big.panel.width(), 1320.0);
+        assert_eq!(big.panel.width(), 1140.0);
         assert_eq!(big.extra.height(), 0.0);
         // A window too short for its regions squeezes the body to nothing.
         let tiny = regions(Rect::from_min_size(pos2(0.0, 0.0), vec2(500.0, 200.0)), 1.0, 80.0);
-        assert!(tiny.body.height() >= 0.0 && tiny.panel.width() == 440.0);
+        assert!(tiny.body.height() >= 0.0 && tiny.panel.width() == 380.0);
     }
 
     #[test]
@@ -1674,8 +1680,8 @@ mod tests {
         // The scope switch, five styles, then Compare.
         r.press(6, Nav::Down).press(1, Nav::Accept).run(&[&[], &[]]);
         assert!(r.menu.picture.compare);
-        // The picture is the window (1920x1080: 1.5x), the panel 660 wide.
-        let visible = 1920.0 - 660.0;
+        // The picture is the window (1920x1080: 1.5x), the panel 570 wide.
+        let visible = 1920.0 - 570.0;
         let rect = |wipe: f32| Some((0, 0, (wipe * visible).round() as u32, 1080));
         assert_eq!(r.menu.wipe_rect(), rect(0.5));
         r.press(3, Nav::Right);
@@ -1710,9 +1716,9 @@ mod tests {
         r.frame(&[], vec![button(true)]);
         r.frame(&[], vec![button(false)]);
         // The window is 1920x1080 pixels at 1 point a pixel here: the picture
-        // shows 1920 - 440 * 1.5 = 1260 points of it.
+        // shows 1920 - 380 * 1.5 = 1350 points of it.
         let w = r.menu.picture.wipe;
-        assert!((w - 300.0 / 1260.0).abs() < 0.01, "{w}");
+        assert!((w - 300.0 / 1350.0).abs() < 0.01, "{w}");
     }
 
     /// Advanced: only the focused row says what it does.

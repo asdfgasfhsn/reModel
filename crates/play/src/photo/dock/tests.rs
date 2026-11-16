@@ -325,7 +325,7 @@ fn the_dock_stays_in_the_bottom_strip() {
 }
 
 #[test]
-fn nothing_is_set_under_18_points() {
+fn nothing_is_set_under_14_points() {
     for (w, h) in [(1280.0, 720.0), (1920.0, 1080.0)] {
         let s = theme::scale_for(h);
         let mut r = Rig::sized(w, h);
@@ -338,7 +338,7 @@ fn nothing_is_set_under_18_points() {
             let texts = r.texts();
             assert!(texts.len() > 10, "{tab:?}: {texts:?}");
             for (text, _, size) in texts {
-                assert!(size >= 18.0 * s - 0.01, "{tab:?}: {text:?} is {size} points at scale {s}");
+                assert!(size >= 14.0 * s - 0.01, "{tab:?}: {text:?} is {size} points at scale {s}");
             }
         }
         // Hidden, and a toast over it.
@@ -361,7 +361,7 @@ fn nothing_is_set_under_18_points() {
         let texts = r.texts();
         assert!(texts.iter().any(|t| t.0.starts_with("Saved srallyc")), "{texts:?}");
         for (text, pos, size) in texts {
-            assert!(size >= 18.0 * s - 0.01, "{text:?} is {size} points");
+            assert!(size >= 14.0 * s - 0.01, "{text:?} is {size} points");
             if text.starts_with("Saved") {
                 assert!(pos.y < 100.0 * s, "the toast is at the top, off the dock: {pos:?}");
             }

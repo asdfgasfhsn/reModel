@@ -227,30 +227,36 @@ impl Mode {
         let range = self.range;
         let live = self.live;
         let mut out = Out::default();
-        egui::Area::new(Id::unique("photo-dock")).order(Order::Middle).fixed_pos(pos).show(ctx, |ui| {
-            let (rect, _) = ui.allocate_exact_size(vec2(w, h), Sense::click_and_drag());
-            let p = ui.painter().clone();
-            p.rect_filled(rect, 16.0 * s, Color32::from_rgba_unmultiplied(6, 9, 16, 208));
-            p.rect_stroke(rect, 16.0 * s, Stroke::new(1.0, Color32::from_white_alpha(30)), StrokeKind::Inside);
-            let inner = rect.shrink2(vec2(PAD_X, PAD_Y) * s);
-            let cells_row = Rect::from_min_size(inner.min, vec2(inner.width(), CELLS * s));
-            let bar =
-                Rect::from_min_size(pos2(inner.left(), cells_row.bottom() + GAP * s), vec2(inner.width(), BAR * s));
-            let gap = 8.0 * s;
-            let cw = (cells_row.width() - gap * (COLUMNS - 1) as f32) / COLUMNS as f32;
-            if let (Some(t), Some(c)) = (&time, cells.first()) {
-                time_cell(ui, &mut dock.focus, cells_row, c, t, (range.map_or(0, |r| r.0), live), &mut out);
-            } else {
-                for (i, c) in cells.iter().enumerate() {
-                    let r = Rect::from_min_size(
-                        pos2(cells_row.left() + i as f32 * (cw + gap), cells_row.top()),
-                        vec2(cw, cells_row.height()),
-                    );
-                    cell(ui, &mut dock.focus, &mut dock.hold, r, c, &mut out);
+        // Not constrained to the screen: egui would clamp it by the size it
+        // had the frame before, which after the window (or a --shot) changes
+        // size is the old one's, and push the dock off its place.
+        egui::Area::new(Id::unique("photo-dock")).order(Order::Middle).fixed_pos(pos).constrain(false).show(
+            ctx,
+            |ui| {
+                let (rect, _) = ui.allocate_exact_size(vec2(w, h), Sense::click_and_drag());
+                let p = ui.painter().clone();
+                p.rect_filled(rect, 16.0 * s, Color32::from_rgba_unmultiplied(6, 9, 16, 208));
+                p.rect_stroke(rect, 16.0 * s, Stroke::new(1.0, Color32::from_white_alpha(30)), StrokeKind::Inside);
+                let inner = rect.shrink2(vec2(PAD_X, PAD_Y) * s);
+                let cells_row = Rect::from_min_size(inner.min, vec2(inner.width(), CELLS * s));
+                let bar =
+                    Rect::from_min_size(pos2(inner.left(), cells_row.bottom() + GAP * s), vec2(inner.width(), BAR * s));
+                let gap = 8.0 * s;
+                let cw = (cells_row.width() - gap * (COLUMNS - 1) as f32) / COLUMNS as f32;
+                if let (Some(t), Some(c)) = (&time, cells.first()) {
+                    time_cell(ui, &mut dock.focus, cells_row, c, t, (range.map_or(0, |r| r.0), live), &mut out);
+                } else {
+                    for (i, c) in cells.iter().enumerate() {
+                        let r = Rect::from_min_size(
+                            pos2(cells_row.left() + i as f32 * (cw + gap), cells_row.top()),
+                            vec2(cw, cells_row.height()),
+                        );
+                        cell(ui, &mut dock.focus, &mut dock.hold, r, c, &mut out);
+                    }
                 }
-            }
-            tab_bar(ui, &mut dock.focus, bar, &tabs, tab, grid, &mut out);
-        });
+                tab_bar(ui, &mut dock.focus, bar, &tabs, tab, grid, &mut out);
+            },
+        );
         dock.top = pos.y;
         dock.height = h;
         dock.focus.end();

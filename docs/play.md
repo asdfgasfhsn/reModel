@@ -900,7 +900,7 @@ only, not yet with a pad.
 Everything is drawn in the theme's look (`theme.rs`: Inter and Exo 2) on a
 1280x720 design scaled to the window (and to the display's own scaling), so
 it reads the same at 1080p, a 3440x1440 ultrawide and 4K; no text is under
-18 points at 720p.
+14 points at 720p.
 
 **Live previews.** Once a game has been selected in the carousel for half a
 second, it starts in the background and its attract mode plays dimmed behind
@@ -1348,7 +1348,7 @@ CALIBRATION in the test menu changes that.
 
 Esc opens the pause menu (and closes it again). The game stays on screen,
 paused, with a small "Paused" pill at its top left, and the menu is a panel
-docked on the right edge (440 points at 720p, scaled with the window like
+docked on the right edge (380 points at 720p, scaled with the window like
 the rest of the look), full height, over a soft shadow. Its header has the
 game's name and the page's heading; its foot the button hints (A Select, B
 Back, Esc Resume).
@@ -1531,7 +1531,7 @@ events only, not yet with a real pad.
 logical points and scaled by the window's height (`theme::scale`: 1.0 at
 720, a floor of 0.85, so a 4K screen and a small laptop window share one
 layout). It holds the palette (background `#04060b`, cyan `#22e5ff`, blue,
-red, yellow, green), the type (Inter for text, body 18 and never under 15
+red, yellow, green), the type (Inter for text, body 16 and never under 14
 points at 720p; Exo 2 Black Italic in capitals for headings), egui's style,
 and the pieces screens are built from: the panel, the menu row, the
 segmented control, the button-hint chips (coloured face-button circles, a
