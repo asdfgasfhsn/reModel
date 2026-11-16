@@ -345,7 +345,10 @@ fn menu_keys(ctx: &egui::Context) -> Vec<Nav> {
 impl Menu {
     /// Show `text` briefly at the top of the screen.
     pub fn notify(&mut self, text: impl Into<String>) {
-        self.notice = Some((text.into(), Instant::now()));
+        let text = text.into();
+        // The log has every notice, as the screen shows it only briefly.
+        println!("notice        {text}");
+        self.notice = Some((text, Instant::now()));
     }
 
     /// True while there's something to draw.

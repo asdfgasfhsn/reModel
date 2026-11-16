@@ -2707,6 +2707,7 @@ dependencies = [
  "gilrs",
  "i960",
  "image-webp",
+ "libc",
  "pollster",
  "remodel-gpu",
  "remodel-model2",

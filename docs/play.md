@@ -1366,6 +1366,20 @@ directory), the player keeps its files in `out/`; anywhere else in
   settings      srallyc: temporal taa (this game), aa 8 (all games); the rest default; files out/play-settings.txt, out/srallyc/settings.txt
   settings      srallyc: temporal taa -> off (saved for this game)
   ```
+- `play.log`: this session's log, everything the player printed on the
+  terminal (it goes to both), so a run started without a terminal can
+  still be reported; the session before is kept as `play.prev.log`. A
+  panic is written there with its backtrace. It starts with a `reModel`
+  line (version, OS, CPU, JIT workers, the data folder), then `display`
+  (monitor, refresh rate, scale, window) and `audio` (the output device,
+  its rate, channels and buffer). Then, as they happen: each game's `game`
+  and `settings` lines, `save` and `load` (the file, the frame, whether it
+  worked), every `notice` the screen shows, `pacing` (synced to the
+  display, or paced by the clock, and the frame costs that decided it),
+  `underrun` (the audio ran dry: frame, queue; once a second at most),
+  `controller` connects and disconnects, and the `--perf-log` lines if
+  on. (On Windows only the panic and the player's own start-up lines
+  reach the file for now.)
 - `<set>/controls.txt`: the game's remapped controls, only what differs
   from its manifest (above, "Remapping").
 - `<set>/eeprom.bin`: the game's EEPROM (settings, records), written on quit or on switching games.

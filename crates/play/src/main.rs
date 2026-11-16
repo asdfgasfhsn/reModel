@@ -37,6 +37,7 @@ mod draw;
 mod focus;
 mod hints;
 mod launcher;
+mod log;
 mod menu;
 mod pack;
 mod pad;
@@ -973,6 +974,11 @@ struct Play {
     /// `DRAW_FAILURES_TO_QUIT` in a row the player quits.
     draw_failures: u64,
     draw_failures_in_row: u32,
+    /// The display as last logged (`describe_display`).
+    display: String,
+    /// Audio underruns as last logged, and when.
+    underruns_logged: u64,
+    underrun_logged_at: Option<Instant>,
     /// Following the display: refreshes counted since the game started
     /// following it, and the fraction of one carried over (see `emulate`).
     refreshes: u64,
@@ -1068,6 +1074,19 @@ fn refresh_hz(window: &Window) -> Option<f64> {
     window.current_monitor()?.refresh_rate_millihertz().map(|m| m as f64 / 1000.0)
 }
 
+/// For the log: the monitor the window is on, its refresh rate and scale.
+fn describe_display(window: &Window) -> String {
+    let m = window.current_monitor();
+    let name = m.as_ref().and_then(|m| m.name()).unwrap_or_else(|| "an unknown monitor".into());
+    let size = m.as_ref().map(|m| m.size());
+    format!(
+        "{name}{}, {}, scale {}",
+        size.map_or(String::new(), |s| format!(" ({}x{})", s.width, s.height)),
+        refresh_hz(window).map_or("refresh rate unknown".to_string(), |hz| format!("{hz:.2} Hz")),
+        window.scale_factor()
+    )
+}
+
 /// A gain in dB for a linear fade `f` (0..1).
 fn fade_db(f: f32) -> f32 {
     20.0 * f.clamp(0.001, 1.0).log10()
@@ -1135,6 +1154,7 @@ impl Play {
     /// Stop the game: keep its EEPROM and a resume state (for Continue),
     /// unless it's the launcher's preview or a scripted run.
     fn leave_game(&mut self) {
+        self.underruns_logged = 0;
         self.leave_photo();
         let Some(mut s) = self.session.take() else { return };
         if let Some(p) = &s.perf {
@@ -1365,6 +1385,13 @@ impl Play {
         let data = s.save_state();
         let path = s.slot_path(slot);
         let result = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&path, data));
+        println!(
+            "save          {} frame {}: {} ({})",
+            s.game.id,
+            s.machine.frames,
+            path.display(),
+            result.as_ref().map_or_else(|e| format!("failed: {e}"), |_| "ok".into())
+        );
         let name = if slot == 0 { "Quick save".to_string() } else { format!("Saved to slot {slot}") };
         self.menu.notify(match result {
             Ok(()) => name,
@@ -1392,6 +1419,12 @@ impl Play {
             Some(snd) if !live.is_empty() => snd.load(live, &s.machine.bus),
             _ => Ok(()),
         });
+        println!(
+            "load          {} {}: {}",
+            s.game.id,
+            path.display(),
+            result.as_ref().map_or_else(|e| format!("failed: {e}"), |_| format!("ok, at frame {}", s.machine.frames))
+        );
         match result {
             Ok(()) => {
                 self.epoch = Instant::now() - Duration::from_secs_f64(s.machine.frames as f64 / FPS);
@@ -1706,6 +1739,11 @@ impl Play {
             core.surface.configure(core.renderer.device(), &g.config);
             // A resize can mean the window moved to another monitor.
             g.refresh = refresh_hz(&g.window);
+            let display = describe_display(&g.window);
+            if display != self.display {
+                println!("display       {display}");
+                self.display = display;
+            }
             // The temporal targets are made again at the new size.
             core.renderer.reset_history();
         }
@@ -1730,6 +1768,13 @@ impl Play {
         let mut events = Vec::new();
         if let Some(g) = &mut self.gilrs {
             while let Some(ev) = g.next_event() {
+                match ev.event {
+                    gilrs::EventType::Connected => println!("controller    connected: {}", g.gamepad(ev.id).name()),
+                    gilrs::EventType::Disconnected => {
+                        println!("controller    disconnected: {}", g.gamepad(ev.id).name())
+                    }
+                    _ => {}
+                }
                 if matches!(ev.event, gilrs::EventType::ButtonPressed(..) | gilrs::EventType::AxisChanged(..))
                     && self.pad != Some(ev.id)
                 {
@@ -1976,6 +2021,27 @@ impl Play {
                 snd.set_speed(speed, dt, ran as f64, dt * FPS * speed);
             }
         }
+        // For the log: the audio running dry, as it happens (once a
+        // second at most), with what the game was doing.
+        if let Some(s) = self.session.as_ref().filter(|s| !s.preview) {
+            if let Some(snd) = &s.sound {
+                let underruns = snd.queue.lock().unwrap().underruns;
+                if underruns > self.underruns_logged
+                    && self.underrun_logged_at.is_none_or(|t| t.elapsed().as_secs_f64() >= 1.0)
+                {
+                    println!(
+                        "underrun      {} frame {}: the audio ran dry ({} so far; {:.0} ms queued now, {:.1} ms since the last redraw)",
+                        s.game.id,
+                        s.machine.frames,
+                        underruns,
+                        snd.queued() * 1000.0,
+                        dt * 1000.0
+                    );
+                    self.underruns_logged = underruns;
+                    self.underrun_logged_at = Some(Instant::now());
+                }
+            }
+        }
         let frames = self.session.as_ref().map_or(0, |s| s.machine.frames);
         if self.per_refresh().is_some() || frames < due {
             // Following the display (or fell behind): keep the clock current.
@@ -2173,10 +2239,20 @@ impl Play {
             let cost = busy.as_secs_f64() / ran as f64;
             self.frame_cost += (cost - self.frame_cost) * 0.05;
             let budget = frame_budget(g.refresh, false).as_secs_f64();
+            let was = self.behind;
             if self.frame_cost > budget * 0.95 {
                 self.behind = true;
             } else if self.frame_cost < budget * 0.8 {
                 self.behind = false;
+            }
+            if self.behind != was {
+                let frame = self.session.as_ref().map_or(0, |s| s.machine.frames);
+                println!(
+                    "pacing        frame {frame}: {} ({:.2} ms a frame against {:.2})",
+                    if self.behind { "too slow to sync, paced by the clock" } else { "synced to the display again" },
+                    self.frame_cost * 1000.0,
+                    budget * 1000.0
+                );
             }
             // For `next_start`: a redraw's emulation, run-ahead included.
             let k = if self.emulate_redraw == 0.0 { 1.0 } else { 0.1 };
@@ -3085,6 +3161,14 @@ impl ApplicationHandler<Wake> for Play {
         // Redraws drive everything; Wayland sends none until asked.
         window.request_redraw();
         let refresh = refresh_hz(&window);
+        self.display = describe_display(&window);
+        println!(
+            "display       {}; window {}x{}{}",
+            self.display,
+            config.width,
+            config.height,
+            if window.fullscreen().is_some() { ", fullscreen" } else { "" }
+        );
         let overlay = Overlay { ctx, state };
         let core =
             draw::Core { surface, renderer, egui, backdrop, frame: gpu::BoardFrame::default(), photo_shots: None };
@@ -3245,6 +3329,15 @@ fn main() {
             std::process::exit(2);
         }
     };
+    let log_path = log::start(&settings::data_dir());
+    println!(
+        "reModel       {} on {}; JIT workers {}; data {}{}",
+        remodel_version::VERSION,
+        log::host(),
+        model2::jit::workers(),
+        settings::data_dir().display(),
+        log_path.map_or(String::new(), |p| format!(", log {}", p.display()))
+    );
     let gilrs = Gilrs::new().ok();
     if let Some(g) = &gilrs {
         for (_, p) in g.gamepads() {
@@ -3286,6 +3379,9 @@ fn main() {
         redraws: 0,
         draw_failures: 0,
         draw_failures_in_row: 0,
+        display: String::new(),
+        underruns_logged: 0,
+        underrun_logged_at: None,
         refreshes: 0,
         refresh_part: 0.0,
         last_emulate: None,
@@ -3338,7 +3434,10 @@ fn main() {
             Ok(f) => play.sound_log = Some(std::io::BufWriter::new(f)),
             Err(e) => {
                 eprintln!("--sound-log: {}: {e}", path.display());
-                std::process::exit(1);
+                {
+                    log::finish();
+                    std::process::exit(1)
+                }
             }
         }
     }
@@ -3347,7 +3446,10 @@ fn main() {
             Ok(f) => play.frame_log = Some(std::io::BufWriter::new(f)),
             Err(e) => {
                 eprintln!("--frame-log: {}: {e}", path.display());
-                std::process::exit(1);
+                {
+                    log::finish();
+                    std::process::exit(1)
+                }
             }
         }
     }
@@ -3358,6 +3460,7 @@ fn main() {
         use std::io::Write;
         let _ = log.flush();
     }
+    log::finish();
 }
 
 #[cfg(test)]

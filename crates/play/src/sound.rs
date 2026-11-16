@@ -81,6 +81,21 @@ impl Sound {
         let rate = supported.sample_rate();
         let channels = supported.channels() as usize;
         let config = supported.config();
+        // For the log: the device, once (and again if it changes).
+        {
+            static LAST: Mutex<String> = Mutex::new(String::new());
+            let name = device.description().map_or_else(|_| "an unnamed device".to_string(), |d| d.name().to_string());
+            let line = format!(
+                "{name}, {rate} Hz, {channels} channels, {:?}, buffer {:?}",
+                supported.sample_format(),
+                supported.buffer_size()
+            );
+            let mut last = LAST.lock().unwrap();
+            if *last != line {
+                println!("audio         {line}");
+                *last = line;
+            }
+        }
         let queue = Arc::new(Mutex::new(Queue { rate: rate as f64, target: AUDIO_TARGET, ..Queue::default() }));
         let q = queue.clone();
         let stream = match supported.sample_format() {
