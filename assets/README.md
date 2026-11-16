@@ -9,6 +9,9 @@
   install-desktop`'s menu entry.
 - `posters/`: the launcher's game cards (`posters/README.md`).
 - `bezels/`: the browser build's cabinet bezels.
+- `../crates/play/assets/controls/`: the pad, light gun and wheel pictures of
+  the player's Controls page, with their prompts
+  (`crates/play/assets/controls/README.md`).
 
 **The icon's provenance.** Made with Codex CLI image generation (`codex
 exec`, 1024x1024), then cut to the rounded square with its shadow with

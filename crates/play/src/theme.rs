@@ -354,7 +354,7 @@ pub fn paint_chip_at(p: &Painter, chip: Chip, at: egui::Pos2, s: f32, d: f32) {
 /// A line of button hints: each chip and what it does ("A  Select").
 pub fn chips(ui: &mut Ui, hints: &[(Chip, &str)]) {
     let s = scale(ui.ctx());
-    let font = FontId::new(16.0 * s, FontFamily::Proportional);
+    let font = FontId::new(18.0 * s, FontFamily::Proportional);
     let (gap, between) = (8.0 * s, 22.0 * s);
     let p = ui.painter().clone();
     let widths: Vec<(f32, f32)> = hints

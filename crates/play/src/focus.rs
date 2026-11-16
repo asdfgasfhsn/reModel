@@ -203,23 +203,6 @@ impl Focus {
         }
         self.click.contains(&r.id)
     }
-
-    /// A button: clicked, or activated from the pad.
-    pub fn button(&mut self, ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> Response) -> bool {
-        let r = add(ui);
-        self.item(ui, &r, Kind::Button) || r.clicked()
-    }
-
-    /// A checkbox for `value`: changed?
-    pub fn checkbox(&mut self, ui: &mut egui::Ui, value: &mut bool, text: impl Into<egui::WidgetText>) -> bool {
-        let mut r = ui.checkbox(value, text);
-        if self.item(ui, &r, Kind::Button) {
-            *value = !*value;
-            r.mark_changed();
-        }
-        r.changed()
-    }
-
     /// A stepper row: how many steps the pad moved it this frame (left
     /// and right), and whether A was pressed on it.
     pub fn stepper(&mut self, ui: &egui::Ui, r: &Response) -> (i32, bool) {

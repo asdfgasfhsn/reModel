@@ -1551,28 +1551,69 @@ fonts. Both are SIL OFL 1.1, and `make dist` copies the licences into
 
 ## Remapping
 
-The pause menu's Controls page lists every input of the game being played with
-its keys and gamepad bindings. Click a binding, then press the key or
-gamepad button that should replace it; **+** adds one (an input can have
-several), **×** removes one, **reset** puts one input back, and "Reset to
-defaults" all of them. Esc cancels waiting for a key, as does the pad's
-Guide button, or waiting 10 seconds (a pad's other buttons all bind).
-From the pad, A on a binding waits for the button to put there. Analog inputs (a
-wheel, pedals, a ski angle) have three rows: the axis (click it, then move
-a stick the way that should read as `+`, which binds it inverted if
-that's left or up, or press a trigger; "invert" flips it, × leaves it
-with none), and the keys or buttons that hold it at full `−` and `+`
-(Left and Right for a wheel, as before). Light-gun games keep the mouse as
-the gun; their trigger and reload keys are rows like any other, and so are
-the buttons that fire and reload the gamepad's crosshair (pad buttons
-only). Inputs the manifest leaves unbound (the second coin slot, test,
-service, player 2 in `doa`) are behind "Show unbound inputs".
+The Esc menu's **Controls** page (from the launcher's Settings too, for
+the selected game) is a side panel with the game's actions, and over the
+paused game beside it a picture of the device and, for games that read a
+stick or pedals, the tuning. It is the Picture page's layout.
 
-A key or button bound to two inputs is allowed (both get it) but marked
-⚠ with the other input's name, except where the manifest itself binds it
-so (`skisuprg`'s two ski angles share the arrows on purpose). The player's
-own keys (Esc, F5, F8, F9, F11) can't be bound: pressing one while it waits
+**The actions.** Each row is one input of the game with its bindings as
+chips, for the device chosen at the top: **Pad**, **Keyboard**, or for a
+driving game **Wheel** and for a light-gun game **Gun** (the game's own
+controls: both devices' bindings). LB and RB (or Q and E, or a click)
+switch device. A (or a click on the row) waits for a key, a pad button or,
+for an axis, a stick or trigger, and puts it in place of the row's first
+binding on that device; a click on one chip replaces that one; **X** (or the
+**+** on a hovered row) adds another (an input can have several); **Y** (or
+**×**) clears the device's bindings from the row, and on an empty row that
+differs from the game's own, brings them back (as a hovered row's **Reset**
+does). "Reset to the game's defaults" (it asks twice) puts every binding
+and the tuning back. Esc cancels waiting for a key, as does the pad's Guide
+button, or waiting 10 seconds (a pad's other buttons all bind). A dot
+marks a row changed from the game's own. Analog inputs (a wheel, pedals, a
+ski angle) have three rows: the axis (move a stick the way that should read
+as `+`, which binds it inverted if that's left or up, or press a trigger;
+X or **Flip** inverts it, Y leaves it with none), and the keys or buttons
+that hold it at full `−` and `+` (Left and Right for a wheel, as before).
+Light-gun games keep the mouse as the gun; their trigger and reload keys
+are rows like any other, and so are the buttons that fire and reload the
+gamepad's crosshair (pad buttons only). Inputs the manifest leaves unbound
+(the second coin slot, test, service, player 2 in `doa`) are behind "Show
+unbound inputs".
+
+**The picture.** The pad (drawn with its sticks offset, or side by side
+and with PlayStation button names when gilrs's name or vendor for the
+connected pad looks like Sony's; a button on the picture's corner chooses
+by hand), the wheel and pedals, the gun, or the keyboard, with each part
+this game uses labelled beside it with a leader line, and the focused
+action's parts glowing (its bindings are in the line under the picture).
+The art is `crates/play/assets/controls/` (original, with its prompts in
+its README); the parts' places are in `menu/figure.rs`. Actions the
+wheel or gun has no part for are listed under it, and keys off the
+picture's main block (the numeric pad's) aren't pictured but are in the
+action rows.
+
+**Conflicts.** A key or button bound to two inputs is allowed (both get
+it) but marked: its chip turns yellow and the row says "also Jump tail",
+the footer says some are doubled, and binding one raises a notice ("Z is
+also Jump tail"), except where the manifest itself binds it so
+(`skisuprg`'s two ski angles share the arrows on purpose). The player's own
+keys (Esc, F5, F8, F9, F11) can't be bound: pressing one while it waits
 says so and waits for another.
+
+**Tuning.** For a game with an analog input bound to a stick, and one
+bound to a trigger (pedals), a card gives each a **dead zone** (0 to 40%),
+a **sensitivity** (50 to 150%) and a **curve** (Linear; Gentle, which
+counts small movements for less; Quick, for more), with a graph of the
+response and bars for what the stick reads raw and what the game gets,
+live. The pad steps a row with left and right, the mouse drags the track.
+The defaults (a stick's 15% dead zone, a trigger's none, Linear, 100%)
+read exactly as before. Tuning follows the **This game only / All games**
+switch, as the Picture page's settings do, and is kept with the settings
+as `stick_dead`, `stick_sens`, `stick_curve` and `pedal_dead`,
+`pedal_sens`, `pedal_curve` (the sticks' dead zone is a step from none to
+its size at its edge, as it always has been: the curve bends what lies
+beyond). Bindings are always the game's own: a different game has other
+actions, so there is nothing for "all games" to share.
 
 Changes apply at once and are kept per game in
 `<data dir>/<set>/controls.txt` (`out/<set>/` in the source tree, else

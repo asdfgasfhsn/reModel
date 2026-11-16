@@ -18,6 +18,7 @@
 //! so changing the defaults for all games reaches every game that hasn't
 //! set its own.
 
+use crate::controls::{Curve, Response, Tuning};
 use model2::enhance::TexFilter;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -189,6 +190,9 @@ pub struct GameSettings {
     /// The geometrizer on its chip (the game's own program) rather than
     /// the native implementation. Applies when the game starts.
     pub geo_chip: bool,
+    /// The dead zone, sensitivity and curve of the sticks and of the
+    /// triggers (the Controls page). The defaults read as they always did.
+    pub tuning: Tuning,
 }
 
 impl Default for GameSettings {
@@ -218,12 +222,13 @@ impl Default for GameSettings {
             bloom: 0,
             crt: 0,
             geo_chip: false,
+            tuning: Tuning::default(),
         }
     }
 }
 
 /// Every game setting's key, in the order the panels show them.
-pub const KEYS: [&str; 24] = [
+pub const KEYS: [&str; 30] = [
     "preset",
     "wide",
     "bezel",
@@ -248,6 +253,12 @@ pub const KEYS: [&str; 24] = [
     "sfx_db",
     "music_db",
     "geo",
+    "stick_dead",
+    "stick_sens",
+    "stick_curve",
+    "pedal_dead",
+    "pedal_sens",
+    "pedal_curve",
 ];
 
 /// The anti-aliasing levels (samples a pixel; 0 is off).
@@ -308,6 +319,12 @@ impl GameSettings {
                 n => n.to_string(),
             },
             "geo" => if self.geo_chip { "chip" } else { "native" }.to_string(),
+            "stick_dead" => self.tuning.stick.dead.to_string(),
+            "stick_sens" => self.tuning.stick.sens.to_string(),
+            "stick_curve" => self.tuning.stick.curve.name().to_string(),
+            "pedal_dead" => self.tuning.pedal.dead.to_string(),
+            "pedal_sens" => self.tuning.pedal.sens.to_string(),
+            "pedal_curve" => self.tuning.pedal.curve.name().to_string(),
             _ => String::new(),
         }
     }
@@ -320,6 +337,8 @@ impl GameSettings {
             "false" => Some(false),
             _ => None,
         };
+        let dead = |v: &str| v.parse::<u8>().ok().filter(|n| *n <= Response::MAX_DEAD);
+        let sens = |v: &str| v.parse::<u8>().ok().filter(|n| Response::SENS.contains(n));
         let db = |v: &str| v.parse::<f32>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(-40.0, 24.0));
         match key {
             "preset" => Preset::parse(v).map(|p| self.preset = p).is_some(),
@@ -345,6 +364,12 @@ impl GameSettings {
             "materials_relief" => gpu::Relief::parse(v).map(|r| self.materials_relief = r).is_some(),
             "bloom" => gpu::Quality::parse_bloom(v).map(|n| self.bloom = n).is_some(),
             "crt" => gpu::Quality::parse_crt(v).map(|n| self.crt = n).is_some(),
+            "stick_dead" => dead(v).map(|n| self.tuning.stick.dead = n).is_some(),
+            "stick_sens" => sens(v).map(|n| self.tuning.stick.sens = n).is_some(),
+            "stick_curve" => Curve::parse(v).map(|c| self.tuning.stick.curve = c).is_some(),
+            "pedal_dead" => dead(v).map(|n| self.tuning.pedal.dead = n).is_some(),
+            "pedal_sens" => sens(v).map(|n| self.tuning.pedal.sens = n).is_some(),
+            "pedal_curve" => Curve::parse(v).map(|c| self.tuning.pedal.curve = c).is_some(),
             "geo" => match model2::geo::GeoMode::parse(v) {
                 Some(model2::geo::GeoMode::Chip) => {
                     self.geo_chip = true;
@@ -847,6 +872,44 @@ mod tests {
     fn with_game(mut s: Settings, set: &str, own: &[(&str, &str)]) -> Settings {
         s.games.insert(set.into(), own.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
         s
+    }
+
+    #[test]
+    fn tuning_round_trips_and_old_files_have_the_old_reading() {
+        // A file from before the Controls page: the defaults.
+        let old = Settings::parse("sfx_db = 4\n");
+        let mut s = old.clone();
+        assert_eq!(s.resolve("hotd").0.tuning, Tuning::default());
+        // Keys read, bad values ignored.
+        let s2 = Settings::parse(
+            "stick_dead = 25\nstick_sens = 120\nstick_curve = gentle\npedal_dead = 5\npedal_curve = nonsense\nstick_sens = 999\n",
+        );
+        let t = with_game(s2, "hotd", &[]).resolve("hotd").0.tuning;
+        assert_eq!((t.stick.dead, t.stick.sens, t.stick.curve), (25, 120, Curve::Gentle));
+        assert_eq!((t.pedal.dead, t.pedal.curve), (5, Curve::Linear));
+        // Edited for this game only, then for all games.
+        let mut v = s.resolve("hotd").0;
+        v.tuning.stick.dead = 30;
+        s.games.insert("hotd".into(), Layer::new());
+        s.for_all = false;
+        let _ = s.apply_edit("hotd", &v);
+        assert_eq!(s.games["hotd"].get("stick_dead").map(String::as_str), Some("30"));
+        assert!(!s.defaults.contains_key("stick_dead"));
+        s.games.insert("hotd".into(), Layer::new());
+        s.for_all = true;
+        let _ = s.apply_edit("hotd", &v);
+        assert_eq!(s.defaults.get("stick_dead").map(String::as_str), Some("30"));
+        assert!(!s.games["hotd"].contains_key("stick_dead"));
+        // And as text.
+        let again = Settings::parse(&s.text());
+        assert_eq!(again.defaults.get("stick_dead").map(String::as_str), Some("30"));
+        // Old controls files still load.
+        let b = romset::Bindings::with_overrides(
+            &romset::games::find("topskatr").unwrap().controls,
+            "jumpfront = KeyX pad:South\ncurving.axis = -RightStickX\nnonsense = 1\n",
+            romset::bindings::RESERVED_KEYS,
+        );
+        assert!(!b.is_default(b.slot_named("jumpfront").unwrap()));
     }
 
     #[test]

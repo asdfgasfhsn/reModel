@@ -9,14 +9,185 @@ use romset::{PadAxis, PadButton};
 use std::collections::HashSet;
 use winit::keyboard::KeyCode;
 
-/// Stick deflections smaller than this read as centred.
-const DEAD_ZONE: f32 = 0.15;
+/// How a deflection reads: its curve, and a dead zone and sensitivity in
+/// percent. The player's tuning of the analog inputs (Controls page).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Curve {
+    /// What the stick does, one to one.
+    #[default]
+    Linear,
+    /// Gentle: small movements count for less (finer control near the middle).
+    Gentle,
+    /// Quick: small movements count for more.
+    Quick,
+}
+
+impl Curve {
+    pub const ALL: [Curve; 3] = [Curve::Linear, Curve::Gentle, Curve::Quick];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Curve::Linear => "linear",
+            Curve::Gentle => "gentle",
+            Curve::Quick => "quick",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Curve::Linear => "Linear",
+            Curve::Gentle => "Gentle",
+            Curve::Quick => "Quick",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Curve> {
+        Curve::ALL.into_iter().find(|c| c.name() == s)
+    }
+
+    /// The curve's shape on 0 to 1.
+    fn shape(self, u: f32) -> f32 {
+        match self {
+            Curve::Linear => u,
+            Curve::Gentle => u * u,
+            Curve::Quick => u.sqrt(),
+        }
+    }
+}
+
+/// Tuning of one kind of analog input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Response {
+    /// Deflections up to this (percent of full) read as none.
+    pub dead: u8,
+    /// Percent of full deflection the largest deflection reaches (over 100
+    /// reaches full before the end of the travel).
+    pub sens: u8,
+    pub curve: Curve,
+}
+
+impl Response {
+    /// The most the dead zone can be, and the range of the sensitivity.
+    pub const MAX_DEAD: u8 = 40;
+    pub const SENS: std::ops::RangeInclusive<u8> = 50..=150;
+
+    /// What sticks have always had: a 15% dead zone, nothing else.
+    pub const STICK: Response = Response { dead: 15, sens: 100, curve: Curve::Linear };
+    /// Triggers and pedals: read as they are.
+    pub const PEDAL: Response = Response { dead: 0, sens: 100, curve: Curve::Linear };
+
+    /// The reading for a deflection `v` (-1 to 1, or 0 to 1): none inside
+    /// the dead zone, beyond it the curve over what's left of the travel
+    /// (the reading steps from none to the dead zone's size at its edge, as
+    /// a stick's always has; a curve other than Linear bends what comes
+    /// after) and the sensitivity. The defaults give `v` itself.
+    pub fn apply(&self, v: f32) -> f32 {
+        let dead = self.dead as f32 / 100.0;
+        let a = v.abs();
+        if a <= dead {
+            return 0.0;
+        }
+        let shaped = match self.curve {
+            Curve::Linear => a,
+            c => dead + (1.0 - dead) * c.shape(((a - dead) / (1.0 - dead)).clamp(0.0, 1.0)),
+        };
+        (shaped * (self.sens as f32 / 100.0)).min(1.0).copysign(v)
+    }
+}
+
+/// The player's tuning of the sticks and of the triggers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tuning {
+    pub stick: Response,
+    pub pedal: Response,
+}
+
+impl Default for Tuning {
+    fn default() -> Self {
+        Tuning { stick: Response::STICK, pedal: Response::PEDAL }
+    }
+}
+
+/// A gamepad that looks like a PlayStation one (by name or vendor) is
+/// drawn with its sticks side by side, as its own are; any other as an
+/// Xbox-style pad, the sticks offset.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PadStyle {
+    #[default]
+    Offset,
+    SideBySide,
+}
+
+/// Sony's USB vendor id.
+const SONY: u16 = 0x054c;
+
+pub fn pad_style(name: &str, vendor: Option<u16>) -> PadStyle {
+    let n = name.to_ascii_lowercase();
+    let sony = vendor == Some(SONY)
+        || n == "wireless controller"
+        || ["playstation", "dualshock", "dualsense", "ps3", "ps4", "ps5", "sony"].iter().any(|k| n.contains(k));
+    if sony {
+        PadStyle::SideBySide
+    } else {
+        PadStyle::Offset
+    }
+}
+
+/// What the pad reads now, for the Controls page's live meters and its
+/// picture of the pad.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PadLive {
+    pub connected: bool,
+    pub style: PadStyle,
+    /// Each axis' raw deflection (before tuning), in `PadAxis::ALL` order.
+    pub axes: [f32; 8],
+}
+
+impl PadLive {
+    /// A pad as gilrs has it (`None`: none connected).
+    pub fn of(pad: Option<&gilrs::Gamepad>) -> PadLive {
+        let Some(p) = pad else { return PadLive::default() };
+        let mut axes = [0.0; 8];
+        for (v, a) in axes.iter_mut().zip(PadAxis::ALL) {
+            *v = raw_axis(p, a);
+        }
+        PadLive { connected: true, style: pad_style(p.name(), p.vendor_id()), axes }
+    }
+
+    pub fn axis(&self, a: PadAxis) -> f32 {
+        PadAxis::ALL.iter().position(|x| *x == a).map_or(0.0, |i| self.axes[i])
+    }
+}
+
+/// A pad axis as the manifest reads it, before any tuning.
+pub fn raw_axis(p: &gilrs::Gamepad, a: PadAxis) -> f32 {
+    let stick = |axis: Axis, sign: f32| (p.value(axis) * sign).clamp(-1.0, 1.0);
+    let trigger = |b: Button| p.button_data(b).map_or(0.0, |d| d.value());
+    match a {
+        PadAxis::None => 0.0,
+        PadAxis::LeftStickX => stick(Axis::LeftStickX, 1.0),
+        // gilrs reads up as positive; the manifest's down is.
+        PadAxis::LeftStickY => stick(Axis::LeftStickY, -1.0),
+        PadAxis::RightStickX => stick(Axis::RightStickX, 1.0),
+        PadAxis::RightStickY => stick(Axis::RightStickY, -1.0),
+        PadAxis::LeftTrigger => trigger(Button::LeftTrigger2),
+        PadAxis::RightTrigger => trigger(Button::RightTrigger2),
+        PadAxis::Triggers => trigger(Button::RightTrigger2) - trigger(Button::LeftTrigger2),
+    }
+}
+
+/// Whether `a` is a stick's axis (else a trigger's, or none).
+pub fn is_stick(a: PadAxis) -> bool {
+    matches!(a, PadAxis::LeftStickX | PadAxis::LeftStickY | PadAxis::RightStickX | PadAxis::RightStickY)
+}
 
 pub struct Devices<'a> {
     pub keys: &'a HashSet<KeyCode>,
     pub pad: Option<gilrs::Gamepad<'a>>,
     /// Which of the pad's buttons the game sees (not the menu's).
     pub gate: &'a crate::pad::Gate,
+    /// The player's tuning of the sticks and triggers.
+    pub tuning: Tuning,
 }
 
 impl model2::input::PlayerInput for Devices<'_> {
@@ -30,25 +201,10 @@ impl model2::input::PlayerInput for Devices<'_> {
 
     fn pad_axis(&self, a: PadAxis) -> f32 {
         let Some(p) = &self.pad else { return 0.0 };
-        let stick = |axis: Axis, sign: f32| {
-            let v = (p.value(axis) * sign).clamp(-1.0, 1.0);
-            if v.abs() > DEAD_ZONE {
-                v
-            } else {
-                0.0
-            }
-        };
-        let trigger = |b: Button| p.button_data(b).map_or(0.0, |d| d.value());
+        let tune = if is_stick(a) { self.tuning.stick } else { self.tuning.pedal };
         match a {
             PadAxis::None => 0.0,
-            PadAxis::LeftStickX => stick(Axis::LeftStickX, 1.0),
-            // gilrs reads up as positive; the manifest's down is.
-            PadAxis::LeftStickY => stick(Axis::LeftStickY, -1.0),
-            PadAxis::RightStickX => stick(Axis::RightStickX, 1.0),
-            PadAxis::RightStickY => stick(Axis::RightStickY, -1.0),
-            PadAxis::LeftTrigger => trigger(Button::LeftTrigger2),
-            PadAxis::RightTrigger => trigger(Button::RightTrigger2),
-            PadAxis::Triggers => trigger(Button::RightTrigger2) - trigger(Button::LeftTrigger2),
+            a => tune.apply(raw_axis(p, a)),
         }
     }
 }
@@ -165,6 +321,47 @@ mod tests {
         // gilrs reads up as positive: up is the manifest's negative.
         assert_eq!(captured(Event::Axis(Axis::LeftStickY, 0.9)), Some(Capture::Axis(PadAxis::LeftStickY, true)));
         assert_eq!(captured(Event::Axis(Axis::LeftStickX, 0.3)), None);
+    }
+
+    /// The defaults read exactly as the old fixed dead zone did.
+    #[test]
+    fn default_tuning_is_the_old_reading() {
+        let old = |v: f32| if v.abs() > 0.15 { v } else { 0.0 };
+        for i in -1000..=1000 {
+            let v = i as f32 / 1000.0;
+            assert_eq!(Response::STICK.apply(v), old(v), "{v}");
+            assert_eq!(Response::PEDAL.apply(v.abs()), v.abs(), "{v}");
+        }
+    }
+
+    #[test]
+    fn tuning_curves() {
+        let r = |dead, sens, curve| Response { dead, sens, curve };
+        assert_eq!(r(20, 100, Curve::Linear).apply(0.2), 0.0);
+        assert_eq!(r(20, 100, Curve::Linear).apply(-0.19), 0.0);
+        assert_eq!(r(20, 100, Curve::Linear).apply(-0.5), -0.5);
+        assert!((r(0, 50, Curve::Linear).apply(0.8) - 0.4).abs() < 1e-6);
+        assert_eq!(r(0, 150, Curve::Linear).apply(0.9), 1.0);
+        assert_eq!(r(0, 150, Curve::Linear).apply(-0.9), -1.0);
+        let (g, q) = (r(0, 100, Curve::Gentle), r(0, 100, Curve::Quick));
+        assert!(g.apply(0.5) < 0.5 && q.apply(0.5) > 0.5);
+        assert!((g.apply(1.0) - 1.0).abs() < 1e-6 && (q.apply(1.0) - 1.0).abs() < 1e-6);
+        let g = r(15, 100, Curve::Gentle);
+        let mut last = 0.0;
+        for i in 0..=100 {
+            let y = g.apply(i as f32 / 100.0);
+            assert!(y >= last, "{i}");
+            last = y;
+        }
+    }
+
+    #[test]
+    fn pads_are_told_apart_by_name_and_vendor() {
+        assert_eq!(pad_style("Xbox Wireless Controller", Some(0x045e)), PadStyle::Offset);
+        assert_eq!(pad_style("DualSense Wireless Controller", None), PadStyle::SideBySide);
+        assert_eq!(pad_style("Some Pad", Some(0x054c)), PadStyle::SideBySide);
+        assert_eq!(pad_style("PS4 Controller", None), PadStyle::SideBySide);
+        assert_eq!(pad_style("8BitDo Pro 2", Some(0x2dc8)), PadStyle::Offset);
     }
 
     #[test]

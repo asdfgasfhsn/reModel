@@ -1696,6 +1696,7 @@ impl Play {
                 temporal_supported: self.temporal_supported,
                 pack: pack_text.as_deref(),
                 materials: materials_text.as_deref(),
+                pad: controls::PadLive::default(),
             };
             draw_overlay(g, &target, false, [w, h], Some(ppp), |ctx| {
                 if let (Some(b), Some((rect, pic))) = (bezel.as_mut(), at) {
@@ -1980,6 +1981,10 @@ impl Play {
             Ok(()) => {
                 settings::save_bindings(game, b);
                 self.menu.capture = None;
+                // Two actions on one key or button: say so.
+                if let Some(text) = menu::conflict_text(b, slot) {
+                    self.menu.warn(text);
+                }
             }
             Err(e) => self.menu.warn(e),
         }
@@ -1995,7 +2000,7 @@ impl Play {
         match &s.script {
             Some(script) => script.apply(s.machine.frames, &mut s.machine.bus),
             None => {
-                let devices = controls::Devices { keys: &self.keys, pad, gate: &self.gate };
+                let devices = controls::Devices { keys: &self.keys, pad, gate: &self.gate, tuning: self.values.tuning };
                 let bus = &mut s.machine.bus;
                 let b = &s.bindings;
                 model2::input::apply_player(bus, &[(b, &devices)]);
@@ -2015,6 +2020,12 @@ impl Play {
                 }
             }
         }
+    }
+
+    /// What the pad reads now, for the Controls page.
+    fn pad_live(&self) -> controls::PadLive {
+        let pad = self.gilrs.as_ref().and_then(|g| self.pad.map(|id| g.gamepad(id)));
+        controls::PadLive::of(pad.as_ref())
     }
 
     /// Where the mouse points in the game's view (fractions), None off it.
@@ -2502,6 +2513,7 @@ impl Play {
             || fade.is_some()
         {
             let pack_text = self.pack_text();
+            let pad_live = self.pad_live();
             let materials_text = self.materials_text();
             let has_bezel = self.bezel.is_some();
             let room = self.session.as_ref().and_then(|s| self.run_ahead_room(s.game.id));
@@ -2532,6 +2544,7 @@ impl Play {
                 temporal_supported: self.temporal_supported,
                 pack: pack_text.as_deref(),
                 materials: materials_text.as_deref(),
+                pad: pad_live,
             };
             let navs = std::mem::take(&mut self.navs);
             let (menu, splash, bezel) = (&mut self.menu, &mut self.splash, &mut self.bezel);
@@ -2896,10 +2909,10 @@ impl Play {
         };
         // Settings is the menu's side panel over the launcher, for the
         // selected game (its Controls page edits that game's bindings).
-        if self.menu.open && self.menu.controls && self.launcher_bindings.is_none() {
+        if self.menu.open && self.menu.on_controls() && self.launcher_bindings.is_none() {
             self.launcher_bindings = selected.map(settings::load_bindings);
         }
-        if !(self.menu.open && self.menu.controls) {
+        if !(self.menu.open && self.menu.on_controls()) {
             self.launcher_bindings = None;
         }
         let keeps = match selected {
@@ -2909,6 +2922,7 @@ impl Play {
             },
             None => menu::Keeps::default(),
         };
+        let pad_live = self.pad_live();
         let menu_view = menu::View {
             playing: None,
             game: selected,
@@ -2924,6 +2938,7 @@ impl Play {
             keeps,
             pack: None,
             materials: None,
+            pad: pad_live,
         };
         let navs = std::mem::take(&mut self.navs);
         let mut values = self.values.clone();

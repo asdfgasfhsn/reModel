@@ -28,10 +28,13 @@ use crate::launcher::{Nav, DIM};
 use crate::saves::{self, SlotInfo};
 use crate::settings::{GameSettings, Preset};
 
+mod controls;
+pub use controls::conflict_text;
+mod figure;
 mod picture;
 use crate::theme::{self, Chip, Level, Toasts};
 use egui::{pos2, vec2, Align2, Color32, FontFamily, FontId, Rect, Sense, Shape, Stroke};
-use romset::bindings::{Accepts, Bindings, Slot, Value};
+use romset::bindings::{Bindings, Slot};
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -69,6 +72,8 @@ pub enum Page {
     Picture,
     /// Each picture setting.
     Advanced,
+    /// The game's controls: bindings, the device's picture, the tuning.
+    Controls,
 }
 
 /// The settings tabs.
@@ -118,8 +123,6 @@ pub struct Menu {
     /// Which screen the menu is on (besides Controls) and which settings tab.
     pub page: Page,
     pub tab: Tab,
-    /// On the Controls page.
-    pub controls: bool,
     /// Waiting for a key, button or stick to bind into a slot: in place of
     /// its nth binding, or added (None).
     pub capture: Option<(Slot, Option<usize>)>,
@@ -138,7 +141,8 @@ pub struct Menu {
     settings_focus: Focus,
     /// The Picture and Advanced pages' state.
     picture: picture::State,
-    controls_focus: Focus,
+    /// The Controls page's state.
+    ctl: controls::State,
     /// The slot the slots page has selected.
     slot_sel: u8,
     /// The slots' thumbnails as textures, loaded as the slots page opens,
@@ -198,6 +202,8 @@ pub struct View<'a> {
     /// What material maps did in the last frame, or why they have no
     /// effect, while the setting is on.
     pub materials: Option<&'a str>,
+    /// What the pad reads now (the Controls page's picture and meters).
+    pub pad: crate::controls::PadLive,
 }
 
 /// What the picture pages tell a player about where a change is kept
@@ -480,20 +486,19 @@ impl Menu {
         self.was_open = self.open;
         self.notices(ctx);
         if !self.open {
-            self.controls = false;
             self.capture = None;
             self.page = Page::Pause;
             self.pause_focus = Focus::default();
             self.slots_focus = Focus::default();
             self.settings_focus = Focus::default();
-            self.controls_focus = Focus::default();
+            self.ctl = controls::State::default();
             self.picture = picture::State::default();
             self.thumbs.clear();
             self.reset_armed = None;
             return actions;
         }
         self.picture.wipe_rect = None;
-        if view.playing.is_some() && !self.picture.comparing(self.page) {
+        if view.playing.is_some() && !self.picture.comparing(self.page) && self.page != Page::Controls {
             paused_pill(ctx);
         }
         let keys = if self.capture.is_none() { menu_keys(ctx) } else { Vec::new() };
@@ -505,14 +510,17 @@ impl Menu {
             actions.push(Action::Resume);
             return actions;
         }
-        if let (true, Some(b)) = (self.controls, bindings) {
-            if self.controls_inner(ctx, b, view.playing.unwrap_or(""), navs) {
-                actions.push(Action::Bindings);
+        if self.page == Page::Controls {
+            match bindings {
+                Some(b) => {
+                    if self.controls_page(ctx, settings, prefs, view, b, navs) {
+                        actions.push(Action::Bindings);
+                    }
+                    return actions;
+                }
+                // Nothing to bind: back to the pause menu.
+                None => self.page = Page::Pause,
             }
-            return actions;
-        }
-        if self.controls {
-            self.controls = false;
         }
         match self.page {
             Page::Pause => self.pause_page(ctx, settings, view, navs, &mut actions),
@@ -520,6 +528,7 @@ impl Menu {
             Page::Settings => self.settings_page(ctx, settings, prefs, view, navs),
             Page::Picture => self.picture_page(ctx, settings, prefs, view, navs),
             Page::Advanced => self.advanced_page(ctx, settings, prefs, view, navs),
+            Page::Controls => {}
         }
         actions
     }
@@ -558,7 +567,6 @@ impl Menu {
             "Smooth".to_string()
         };
         let mut go: Option<(Page, Tab)> = None;
-        let mut to_controls = false;
         let mut arm = false;
         let s = theme::scale(ctx);
         let way_out = if playing { "Resume" } else { "Close" };
@@ -616,7 +624,7 @@ impl Menu {
                     }
                     // (From the launcher the game is the one selected.)
                     if (playing || view.game.is_some()) && focus.menu_row(ui, "Controls", "›") {
-                        to_controls = true;
+                        go = Some((Page::Controls, Tab::Display));
                     }
                     if focus.menu_row(ui, "Sound", &format!("{sound} ›")) {
                         go = Some((Page::Settings, Tab::Sound));
@@ -657,10 +665,7 @@ impl Menu {
             self.slots_focus = Focus::default();
             self.settings_focus = Focus::default();
             self.picture = picture::State::default();
-        }
-        if to_controls {
-            self.controls = true;
-            self.controls_focus = Focus::default();
+            self.ctl = controls::State::default();
         }
     }
 
@@ -849,179 +854,6 @@ impl Menu {
             self.page = Page::Pause;
             self.pause_focus = Focus::default();
         }
-    }
-
-    /// The Controls page: every input with its bindings, to remap (`navs`:
-    /// the pad's; B goes back). Returns whether they changed (to save
-    /// them).
-    fn controls_inner(&mut self, ctx: &egui::Context, b: &mut Bindings, title: &str, navs: &[Nav]) -> bool {
-        let mut changed = false;
-        // Waiting too long for a binding gives up (a way out for a pad
-        // without a free Guide button).
-        match (self.capture, self.capture_since) {
-            (None, _) => self.capture_since = None,
-            (Some(c), Some((was, at))) if c == was => {
-                if at.elapsed() >= CAPTURE_WAIT {
-                    self.capture = None;
-                    self.capture_since = None;
-                    self.notify("Nothing bound");
-                }
-            }
-            (Some(c), _) => self.capture_since = Some((c, Instant::now())),
-        }
-        let navs = if self.capture.is_some() { &[][..] } else { navs };
-        let focus = &mut self.controls_focus;
-        focus.show = self.pad_used || self.keys_used;
-        let mut back = focus.begin(navs).contains(&Nav::Back);
-        let max_h = ctx.content_rect().height() * 0.6;
-        let (capture, show_unbound, pad_used) = (&mut self.capture, &mut self.show_unbound, self.pad_used);
-        let waited = self.capture_since.map_or(0, |(_, at)| at.elapsed().as_secs());
-        egui::Window::new("Controls")
-            .frame(theme::panel_frame(ctx))
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.set_min_width(theme::px(ctx, 620.0));
-                ui.horizontal(|ui| {
-                    if focus.button(ui, |ui| ui.button("< Back")) {
-                        back = true;
-                    }
-                    ui.label(theme::heading(ctx, title, 28.0));
-                });
-                ui.label(
-                    "Click a binding, then press a key or gamepad button (for an axis, move a stick or \
-                     press a trigger: the way that should read +). + adds one, × removes it. Esc or the \
-                     pad's Guide button cancels, as does waiting; Esc, F5, F9 and F11 are the player's \
-                     own. Saved for this game.",
-                );
-                if let Some((slot, _)) = *capture {
-                    let what = if b.accepts(slot) == Accepts::Axis {
-                        "move a stick or trigger"
-                    } else {
-                        "press a key or button"
-                    };
-                    let left = CAPTURE_WAIT.as_secs().saturating_sub(waited);
-                    ui.colored_label(
-                        theme::YELLOW,
-                        format!("{}: {what}…  (Esc or Guide cancels; {left} s)", b.label(slot)),
-                    );
-                    ctx.request_repaint();
-                }
-                ui.separator();
-                let slots: Vec<(Slot, Value)> = b.slots().to_vec();
-                let hidden = slots
-                    .iter()
-                    .filter(|(s, v)| *v == Value::Inputs(Vec::new()) && b.default_of(*s) == Some(v))
-                    .count();
-                egui::ScrollArea::vertical().max_height(max_h).show(ui, |ui| {
-                    egui::Grid::new("bindings").num_columns(3).spacing([12.0, 6.0]).striped(true).show(ui, |ui| {
-                        for (slot, value) in &slots {
-                            let unbound = *value == Value::Inputs(Vec::new()) && b.default_of(*slot) == Some(value);
-                            if unbound && !*show_unbound {
-                                continue;
-                            }
-                            ui.label(b.label(*slot));
-                            ui.horizontal_wrapped(|ui| {
-                                // A grid column only grows to what it held
-                                // last frame: room to wrap in.
-                                ui.set_min_width(theme::px(ctx, 300.0));
-                                let current = *capture;
-                                let capturing = |at| current == Some((*slot, at));
-                                match value {
-                                    Value::Axis(a) => {
-                                        let text = if capturing(None) {
-                                            "…".to_string()
-                                        } else if a.axis == romset::PadAxis::None {
-                                            "none".to_string()
-                                        } else {
-                                            a.axis.label().to_string()
-                                        };
-                                        if focus.button(ui, |ui| ui.button(text)) {
-                                            *capture = Some((*slot, None));
-                                        }
-                                        if a.axis != romset::PadAxis::None {
-                                            let mut inv = a.invert;
-                                            if focus.checkbox(ui, &mut inv, "invert") {
-                                                b.invert(*slot);
-                                                changed = true;
-                                            }
-                                            if focus.button(ui, |ui| ui.small_button("×").on_hover_text("No axis")) {
-                                                b.remove(*slot, 0);
-                                                changed = true;
-                                            }
-                                        }
-                                    }
-                                    Value::Inputs(list) => {
-                                        for (i, input) in list.iter().enumerate() {
-                                            let text =
-                                                if capturing(Some(i)) { "…".to_string() } else { input.text() };
-                                            let hover = "Click, then press its replacement";
-                                            if focus.button(ui, |ui| ui.button(text).on_hover_text(hover)) {
-                                                *capture = Some((*slot, Some(i)));
-                                            }
-                                            if focus.button(ui, |ui| ui.small_button("×").on_hover_text("Remove")) {
-                                                b.remove(*slot, i);
-                                                changed = true;
-                                            }
-                                        }
-                                        let add = if capturing(None) { "…" } else { "+" };
-                                        if focus.button(ui, |ui| ui.button(add).on_hover_text("Add a binding")) {
-                                            *capture = Some((*slot, None));
-                                        }
-                                    }
-                                }
-                                if !b.is_default(*slot) && focus.button(ui, |ui| ui.small_button("reset")) {
-                                    b.reset(*slot);
-                                    changed = true;
-                                }
-                            });
-                            let others: Vec<String> = b
-                                .conflicts_of(*slot)
-                                .iter()
-                                .map(|c| {
-                                    let with: Vec<String> =
-                                        c.slots.iter().filter(|s| *s != slot).map(|&s| b.label(s)).collect();
-                                    format!("{} also: {}", c.input.text(), with.join(", "))
-                                })
-                                .collect();
-                            if others.is_empty() {
-                                ui.label("");
-                            } else {
-                                ui.colored_label(theme::YELLOW, format!("⚠ {}", others.join("; ")));
-                            }
-                            ui.end_row();
-                        }
-                    });
-                });
-                ui.separator();
-                if !b.conflicts().is_empty() {
-                    ui.colored_label(theme::YELLOW, "⚠ Some keys or buttons are bound twice: both inputs get them.");
-                }
-                ui.horizontal(|ui| {
-                    if focus.button(ui, |ui| ui.button("Reset to defaults")) {
-                        b.reset_all();
-                        *capture = None;
-                        changed = true;
-                    }
-                    if hidden > 0 {
-                        focus.checkbox(ui, show_unbound, format!("Show unbound inputs ({hidden})"));
-                    }
-                });
-                if pad_used {
-                    ui.separator();
-                    match capture {
-                        Some(_) => hints(ui, &[("any button", "binds it"), ("Guide", "cancel")]),
-                        None => hints(ui, &[("D-pad", "choose"), ("A", "rebind"), ("B", "back")]),
-                    }
-                }
-            });
-        focus.end();
-        if back {
-            self.controls = false;
-            self.capture = None;
-        }
-        changed
     }
 }
 
@@ -1272,12 +1104,6 @@ pub(crate) fn slot_card(
     focus.register(ui, &r)
 }
 
-/// A line of pad hints: each button's chip and what it does.
-fn hints(ui: &mut egui::Ui, hints: &[(&str, &str)]) {
-    let chips: Vec<(Chip, &str)> = hints.iter().map(|(key, what)| (Chip::named(key), *what)).collect();
-    theme::chips(ui, &chips);
-}
-
 fn display_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings, prefs: &mut Prefs, view: &View) {
     rows.choose(
         ui,
@@ -1425,6 +1251,7 @@ mod tests {
                 run_ahead_room: None,
                 pack: None,
                 materials: None,
+                pad: Default::default(),
                 picture: Some([0.0, 0.0, self.size.x, self.size.y]),
                 keeps: Keeps { all_games: Preset::Sharp, own_picture: false },
             };
@@ -1550,7 +1377,7 @@ mod tests {
         assert_eq!(at(4).names(), ["photo"]);
         assert_eq!(at(6).names(), ["games"]);
         assert_eq!(at(7).menu.page, Page::Picture);
-        assert!(at(8).menu.controls);
+        assert!(at(8).menu.on_controls());
         let r = at(9);
         assert_eq!((r.menu.page, r.menu.tab), (Page::Settings, Tab::Sound));
         // Speed and latency is the last row.
@@ -2008,6 +1835,7 @@ mod tests {
                 run_ahead_room: None,
                 pack: None,
                 materials: None,
+                pad: Default::default(),
                 picture: None,
                 keeps: Keeps::default(),
             };
@@ -2075,6 +1903,7 @@ mod tests {
                 run_ahead_room: None,
                 pack: None,
                 materials: None,
+                pad: Default::default(),
                 picture: None,
                 keeps: Keeps::default(),
             };
@@ -2113,27 +1942,130 @@ mod tests {
         assert_eq!(acts, ["resume"]);
     }
 
+    impl Rig {
+        /// Into the Controls page, onto its first action.
+        fn open_controls(&mut self) -> &mut Rig {
+            self.press(8, Nav::Down).run(&[&[Nav::Accept], &[], &[]]);
+            assert_eq!(self.menu.page, Page::Controls);
+            self
+        }
+
+        /// The first action row's slot (topskatr, on the keyboard: Coin).
+        fn first_slot(&self) -> romset::bindings::Slot {
+            controls::rows(&self.b, controls::Device::Keys, crate::controls::PadStyle::Offset, false).0[0].slot
+        }
+    }
+
     #[test]
     fn controls_page_from_the_pad() {
         let mut r = Rig::new("topskatr");
-        // Down to Controls (the ninth row), into it; down to the first
-        // binding, A captures.
-        r.press(8, Nav::Down).run(&[&[Nav::Accept], &[], &[Nav::Down], &[Nav::Accept]]);
+        r.open_controls();
         assert!(r.actions.is_empty());
-        assert!(r.menu.controls);
-        let first = r.b.slots()[0].0;
+        assert!(r.shows("CONTROLS") && r.shows("Keyboard"), "{:?}", r.texts);
+        // A on the first action waits for a binding.
+        let first = r.first_slot();
+        r.run(&[&[Nav::Accept]]);
         assert_eq!(r.menu.capture.map(|c| c.0), Some(first), "waiting for a binding");
+        r.run(&[&[]]);
+        assert!(r.shows("Press a key or button"), "{:?}", r.texts);
         // While it waits, the pad's input is the binding's, not the page's.
         r.run(&[&[Nav::Back]]);
-        assert!(r.menu.controls && r.menu.capture.is_some());
+        assert_eq!(r.menu.page, Page::Controls);
+        assert!(r.menu.capture.is_some());
         // Waiting too long gives up.
         r.menu.capture_since = r.menu.capture_since.map(|(c, at)| (c, at - CAPTURE_WAIT));
         r.run(&[&[]]);
         assert!(r.menu.capture.is_none());
         // B goes back to the pause menu, on Controls; B there resumes.
         r.run(&[&[Nav::Back]]);
-        assert!(!r.menu.controls);
+        assert_eq!(r.menu.page, Page::Pause);
         r.run(&[&[Nav::Back]]);
         assert_eq!(r.names(), ["resume"]);
+    }
+
+    #[test]
+    fn x_adds_y_clears_and_y_again_restores() {
+        let mut r = Rig::new("topskatr");
+        r.open_controls();
+        let first = r.first_slot();
+        let before = r.b.get(first).cloned().unwrap();
+        // X waits to add another.
+        r.run(&[&[Nav::Saves]]);
+        assert_eq!(r.menu.capture, Some((first, None)));
+        r.menu.capture = None;
+        r.run(&[&[]]);
+        // Y takes the keyboard's bindings off, and says the game changed.
+        r.run(&[&[Nav::Continue]]);
+        assert!(r.names().contains(&"bindings"));
+        assert!(r.b.get(first).unwrap().inputs().iter().all(|i| matches!(i, romset::bindings::Input::Pad(_))));
+        assert!(r.shows("not bound here"));
+        // Y on the empty row brings the game's own back.
+        r.run(&[&[], &[Nav::Continue]]);
+        assert_eq!(r.b.get(first), Some(&before));
+    }
+
+    #[test]
+    fn reset_asks_twice_and_puts_everything_back() {
+        let mut r = Rig::new("topskatr");
+        r.open_controls();
+        let first = r.first_slot();
+        r.run(&[&[Nav::Continue]]);
+        assert!(!r.b.is_default(first));
+        r.s.tuning.stick.dead = 30;
+        // Down to the last widget: the reset button.
+        r.press(40, Nav::Down).run(&[&[Nav::Accept]]);
+        assert!(r.menu.ctl.armed.is_some() && !r.b.is_default(first), "the first press only asks");
+        r.run(&[&[], &[Nav::Accept]]);
+        assert!(r.b.is_default(first));
+        assert_eq!(r.s.tuning, Default::default());
+    }
+
+    #[test]
+    fn a_doubled_binding_shows_on_the_page() {
+        let mut r = Rig::new("topskatr");
+        let jump = r.b.slot_named("jumpfront").unwrap();
+        let tail = r.b.slot_named("jumptail").unwrap();
+        r.b.assign(tail, None, romset::bindings::Input::Key("KeyZ".into()), romset::bindings::RESERVED_KEYS).unwrap();
+        let _ = jump;
+        r.open_controls();
+        assert!(r.shows("also "), "{:?}", r.texts);
+        assert!(r.shows("on two actions"));
+    }
+
+    #[test]
+    fn the_shoulder_buttons_change_device() {
+        let mut r = Rig::new("topskatr");
+        r.open_controls();
+        assert_eq!(r.menu.ctl.device, None);
+        r.run(&[&[Nav::PrevGroup], &[]]);
+        assert_eq!(r.menu.ctl.device, Some(controls::Device::Pad));
+        assert!(r.shows("Jump front") || r.shows("Jump"));
+        r.run(&[&[Nav::NextGroup], &[]]);
+        assert_eq!(r.menu.ctl.device, Some(controls::Device::Keys));
+        // A wheel game starts on its wheel.
+        let mut r = Rig::new("daytona");
+        r.open_controls();
+        assert!(r.shows("Wheel"));
+        assert_eq!(r.menu.device(controls::cabinet_art(Some(r.game)), &Default::default()), controls::Device::Cabinet);
+    }
+
+    #[test]
+    fn tuning_rows_step_with_the_pad_and_follow_the_settings() {
+        let mut r = Rig::new("daytona");
+        r.open_controls();
+        let dead = egui::Id::unique(("remodel-controls-tune", 0));
+        r.menu.ctl.focus.focus_to(dead);
+        let was = r.s.tuning.stick.dead;
+        r.run(&[&[Nav::Right], &[Nav::Right], &[Nav::Left]]);
+        assert_eq!(r.s.tuning.stick.dead, was + 1);
+        // The curve is a choice: A moves on to the next.
+        r.menu.ctl.focus.focus_to(egui::Id::unique(("remodel-controls-tune", 2)));
+        r.run(&[&[], &[Nav::Accept]]);
+        assert_eq!(r.s.tuning.stick.curve, crate::controls::Curve::Gentle);
+        assert!(r.shows("Dead zone") && r.shows("Sensitivity") && r.shows("Curve"));
+        // The pedals are the other block.
+        r.menu.ctl.block = 1;
+        r.run(&[&[], &[]]);
+        assert!(r.shows("Pedals") && r.shows("Steering"));
     }
 }

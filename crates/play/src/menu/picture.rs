@@ -389,7 +389,12 @@ fn scope_note(game: &str, for_all: bool, view: &View) -> String {
 
 /// The scope switch ("<Game> only", "All games"): the pad moves it as one
 /// row (left and right choose, A switches). Returns the new choice.
-fn scope_toggle(ui: &mut egui::Ui, focus: &mut Focus, labels: &[String; 2], selected: usize) -> Option<usize> {
+pub(super) fn scope_toggle(
+    ui: &mut egui::Ui,
+    focus: &mut Focus,
+    labels: &[String; 2],
+    selected: usize,
+) -> Option<usize> {
     let s = theme::scale(ui.ctx());
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0 * s), Sense::hover());
     let id = ui.make_persistent_id("picture-scope");
