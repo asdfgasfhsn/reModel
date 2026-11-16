@@ -1639,20 +1639,20 @@ impl Play {
         });
         let target = texture.create_view(&Default::default());
         if self.photo.is_some() {
-            // Photo mode as the window shows it: the photo and its panel.
+            // Photo mode as the window shows it: the photo and its dock.
             let (view, origin) = self.fit(w, h);
             let job = self.photo_job(1, 4);
             let g = self.gpu.as_mut().unwrap();
-            let max_side = g.drawer.core().renderer.device().limits().max_texture_dimension_2d;
             if let Some(job) = &job {
                 photo::draw(g.drawer.core(), job, &target, &view, origin, format);
             }
             let menu = &mut self.menu;
             if let Some(m) = &mut self.photo {
-                let line = photo::status(m, (view.width as u32, view.height as u32), max_side);
+                let line = photo::status(m, (view.width as u32, view.height as u32));
+                let picture = photo::picture_rect(origin, &view, ppp);
                 draw_overlay(g, &target, false, [w, h], Some(ppp), |ctx| {
-                    menu.notices(ctx);
-                    m.ui(ctx, &line);
+                    menu.photo_notices(ctx);
+                    m.ui(ctx, picture, &line);
                 });
             }
         } else if self.launcher.open {

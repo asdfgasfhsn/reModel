@@ -451,6 +451,13 @@ impl Menu {
         self.toasts.show(ctx);
     }
 
+    /// `notices` for photo mode: at the top middle, the dock having the
+    /// bottom.
+    pub fn photo_notices(&mut self, ctx: &egui::Context) {
+        let s = theme::scale(ctx);
+        self.toasts.show_at(ctx, egui::Align2::CENTER_TOP, [0.0, 20.0 * s]);
+    }
+
     /// Note where this frame's input came from: `navs` (the pad's) turn the
     /// pad's focus and hints on, `keys` (the keyboard's navigation keys)
     /// the focus alone, the pointer or other keys both off.

@@ -16,10 +16,11 @@ browser").
 ## Using it
 
 F8 (or **Photo mode** in the Esc menu, or `--photo` for scripted runs)
-opens it on the frame shown. The game, its sound and its clock pause; the
-panel on the right lists the settings, and the window shows the photo as
-it will be taken, at the window's size. Enter, Space, the pad's A or the
-panel's **Take photo** takes it: drawn at the chosen size, read back and
+opens it on the frame shown. The game, its sound and its clock pause; a
+compact dock along the bottom edge holds the settings (never a panel over the
+picture), and the window shows the photo as it will be taken, at the
+window's size. Enter, Space, the dock's red shutter button or the pad's A
+takes it: drawn at the chosen size, read back and
 written on another thread to
 `reModel/<set>/<set>-<time>-<frame>.png` in your pictures folder (on
 Linux the XDG pictures directory, `~/Pictures` unless `user-dirs.dirs`
@@ -36,46 +37,56 @@ photo mode and the game goes on.
 | Orbit (turn about the point ahead: the focus distance, or the scene's scale) | left mouse drag | |
 | Pan | middle mouse drag | |
 | Move in and out | mouse wheel | |
-| Roll | Q, E | LB, RB |
+| Roll | Q, E | click the left or right stick |
 | Zoom (field of view) | Z, X | LT, RT |
 | Focus on a point | double-click it | |
 | HUD on or off | Tab | X |
-| Panel on or off | H | Y |
+| Dock on or off (Hide UI: only the picture is left, and a small "Show controls") | H | Y |
 | Reset the camera | Backspace | Select |
-| Panel rows | PageUp, PageDown, and `,` `.` to change; or click `<` `>` | d-pad up and down, left and right to change |
-| Take a photo | Enter, Space | A |
-| Leave | Esc, F8 | B, Start, Guide |
+| Tabs | `[` `]`, or click | LB, RB |
+| The dock's cells | PageUp, PageDown to walk them, `,` `.` to change one; or click its arrows (held, they repeat) | d-pad up and down walk the cells (down off the last goes to the tab bar, up comes back), left and right change the one focused (held, they repeat) or move along the bar |
+| Take a photo | Enter, Space, the shutter button | A (on a value; on a button A presses it) |
+| Leave | Esc, F8, **Leave** | B, Start, Guide |
 
-The panel's rows (a row that does nothing as things are is left out):
+The dock shows one tab at a time, as a row of cells (name, value, `<` `>`;
+text is never under 18 points at 720p), with the tab bar under it: **Hide**
+(Y), the tabs, **Grid** (a rule-of-thirds grid over the picture, inside the
+letterbox; it is not in the photo), **Leave** (B) and the shutter. The dock
+and its margin take at most 140 points of a 720-point window; the photo is
+drawn on its own, so none of it is ever in a shot. When a photo is written, a
+notice at the top names the file. A setting that does nothing as things are is
+left out, and a tab with none is not shown (with the chip geometrizer there is
+no free camera or motion blur, so no Camera tab; with no history, no Time
+tab).
 
-- **Time**: the time scrub, a slider over the last seconds (`--photo-history`,
-  10 by default): the frame shown is run again from the history, so it is
-  exactly what the game showed then. "Live" is the frame photo mode opened on.
-- **Field of view**, **Roll**: the camera's zoom and roll (also on keys).
-- **Depth of field**, with **Focus distance** (in the scene's scale; it
-  starts on what is a little below the middle of the picture, where
-  third-person games put the player, and a double-click on the picture
-  sets it to what is there), **Aperture** (the
-  blur of something far away, as a share of the picture's height) and
-  **Bokeh highlights** (how much bright parts stand out as discs in the blur).
-- **Exposure** (stops), **Contrast**, **Saturation**, **Warmth**, **Tint**,
-  **Vignette**, **Film grain**, **Chromatic aberration**, **Letterbox**
-  (2.39:1, 1.85:1, 16:9, 4:3, 1:1 bars).
-- **Motion blur** (4 to 32 images averaged) and its **Shutter** (the share of
-  the frame before that it covers).
-- **HUD** (the game's HUD over the photo, as the game drew it, whatever the
-  camera; off by default) and **2D background** (the tile layers behind the
-  3D: off gives the backdrop colour, for games whose sky is a tile layer that
-  can't follow the free camera).
-- **Shading** (the game's setting, flat, vertex or pixel), **Bloom**, **Depth
-  buffer**: the picture settings for the photo, starting from the game's.
-- **Near clip**: with the camera moved, polygons nearer than this share of
-  the scene's scale are clipped (1% by default), so flying through a wall or a
-  car shows what is beyond rather than a screen-filling polygon; "the game's"
-  keeps the original near plane.
-- **Photo size**: the window's, 1080p, 1440p, 4K (2160) or 8K (4320) lines,
-  the window's picture's shape.
-- **Reset camera**, **Take photo**, **Leave photo mode**.
+- **Camera**: **Field of view** (zoom), **Roll**, **Near clip** (with the camera moved, polygons nearer than
+  this share of the scene's scale are clipped (1% by default), so flying
+  through a wall or a car shows what is beyond rather than a screen-filling
+  polygon; "the game's" keeps the original near plane), **Reset camera**.
+- **Time**: the time scrub, a strip over the last seconds (`--photo-history`,
+  10 by default; click or drag along it, or left and right for a frame): the
+  frame shown is run again from the history, so it is exactly what the game
+  showed then. "Live" is the frame photo mode opened on.
+- **Focus**: **Depth of field**, with **Focus distance** (in the scene's
+  scale; it starts on what is a little below the middle of the picture, where
+  third-person games put the player, and a double-click on the picture sets it
+  to what is there), **Aperture** (the blur of something far away, as a share
+  of the picture's height) and **Bokeh** (how much bright parts stand out as
+  discs in the blur).
+- **Look**: **Exposure** (stops), **Contrast**, **Saturation**, **Warmth**,
+  **Tint**, and **Shading** (the game's setting, flat, vertex or pixel).
+- **Effects**: **Vignette**, **Film grain**, **Aberration** (chromatic),
+  **Bloom**, **Motion blur** (4 to 32 images averaged) and its **Shutter**
+  (the share of the frame before that it covers).
+- **Frame**: **Letterbox** (2.39:1, 1.85:1, 16:9, 4:3, 1:1 bars), **Photo
+  size** (the window's, 1080p, 1440p, 4K (2160) or 8K (4320) lines, the window's
+  picture's shape), **HUD** (the game's HUD over the photo, as the game drew it,
+  whatever the camera; off by default), **2D background** (the tile layers
+  behind the 3D: off gives the backdrop colour, for games whose sky is a tile
+  layer that can't follow the free camera) and **Depth buffer**.
+
+(Bloom, depth buffer and shading are the picture settings for the photo,
+starting from the game's.)
 
 ## Scripted
 
@@ -94,7 +105,7 @@ prints a `photo` line and closes it. Keys:
 | `zoom` | focal length factor |
 | `dof` | depth of field: the aperture in percent of the height (0 off) |
 | `focus` | focus distance in the scene's scale |
-| `bokeh`, `exposure`, `contrast`, `saturation`, `warmth`, `tint`, `vignette`, `grain`, `aberration` | the look's values as the panel has them (exposure in stops) |
+| `bokeh`, `exposure`, `contrast`, `saturation`, `warmth`, `tint`, `vignette`, `grain`, `aberration` | the look's values as the dock has them (exposure in stops) |
 | `letterbox` | `W:H` or a ratio |
 | `blur`, `shutter` | motion blur images and shutter (a share of a frame) |
 | `hud`, `background`, `depth` | `on` or `off` |
@@ -242,8 +253,8 @@ pictures looked at):
 - Depth of field with the focus found on the fighter or skater, the HUD laid
   sharp over a blurred picture, vignette, grain, chromatic aberration and
   letterbox; 1080p, 4K and 8K photos.
-- The panel from a scripted pad (`--nav`: the pause menu's Photo mode, d-pad
-  rows, right to change) drawn with `--shot`.
+- The dock's layout, pad and mouse paths, hide, thirds, and its height and
+  text-size bounds, in the player's unit tests (`photo/dock/tests.rs`).
 - The bench state hashes (`make bench`: `srallyc`, `lastbrnx`, `topskatr`,
   `vf2`, `daytona`) are unchanged.
 
@@ -304,7 +315,7 @@ Measured on the development machine (16-core desktop, RTX 2080 SUPER):
 
 Not there. Everything the photo needs is in crates the browser build shares
 (`model2::photo`, `gpu::Renderer::photo`); what is native here is the
-player's side (`crates/play/src/photo.rs`: the panel, the controls, the
+player's side (`crates/play/src/photo.rs` and `photo/dock.rs`: the dock, the controls, the
 studio's ROM load, PNG writing on a thread). A browser photo mode would
 keep the studio in the emulation worker, take states there (WebAssembly
 memory permitting: about 1.2 MB a second compressed), draw the photo with

@@ -8,10 +8,14 @@
 //! which records what the free camera needs. The picture comes from that
 //! machine's frame, drawn by the renderer's photo passes
 //! (`gpu::Renderer::photo`), on the draw thread while the window shows it
-//! and on the main thread for a capture. Here: the controls, the panel
-//! (egui), the draw job, and `--photo`'s scripted sessions.
+//! and on the main thread for a capture. Here: the controls, the draw job
+//! and `--photo`'s scripted sessions; the dock along the bottom edge (egui)
+//! is `dock`.
 
-use crate::launcher::{CYAN, DIM, FG};
+mod dock;
+
+use crate::launcher::Nav;
+use dock::{Dock, Tab};
 use model2::photo::Camera;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -94,9 +98,11 @@ pub struct Mode {
     /// The frame has smooth motion's recording: the free camera and motion
     /// blur work (not with the chip geometrizer).
     pub free: bool,
-    /// The panel is shown; the row the pad and keys are on.
+    /// The dock is shown (else only the picture); the tab it is on; the pad
+    /// or keys last moved its focus (the focus ring shows).
     pub ui: bool,
-    pub row: usize,
+    pub tab: Tab,
+    pub dock: Dock,
     pub pad_used: bool,
     /// A mouse drag on the picture: the button and where it was.
     pub drag: Option<(winit::event::MouseButton, (f64, f64))>,
@@ -125,7 +131,8 @@ impl Mode {
             wanted: None,
             free: false,
             ui: true,
-            row: 0,
+            tab: Tab::Camera,
+            dock: Dock::default(),
             pad_used: false,
             drag: None,
             last_click: None,
@@ -154,9 +161,47 @@ impl Mode {
     pub fn reset_camera(&mut self) {
         self.camera = Camera::default();
     }
+
+    /// The tabs the dock shows: those with something to set as things are.
+    pub fn tabs(&self) -> Vec<Tab> {
+        dock::TABS.iter().copied().filter(|t| t.rows().iter().any(|r| self.shows(*r))).collect()
+    }
+
+    /// The next (`d` 1) or previous (-1) tab, round the ring.
+    pub fn step_tab(&mut self, d: i32) {
+        let tabs = self.tabs();
+        let at = tabs.iter().position(|t| *t == self.tab).unwrap_or(0) as i32;
+        self.tab = tabs[(at + d).rem_euclid(tabs.len() as i32) as usize];
+        self.pad_used = true;
+    }
+
+    /// A navigation press from the pad or keys for the dock.
+    pub fn press(&mut self, nav: Nav) {
+        self.pad_used = true;
+        self.dock.navs.push(nav);
+    }
+
+    /// A d-pad press that repeats while held (`repeat_held`).
+    pub fn press_held(&mut self, nav: Nav) {
+        self.press(nav);
+        let now = Instant::now();
+        self.dock.held = Some((nav, now, now));
+    }
+
+    /// Repeat the held d-pad direction: after a short wait, every 60 ms,
+    /// while `down` says it is still held.
+    pub fn repeat_held(&mut self, now: Instant, down: impl Fn(Nav) -> bool) {
+        let Some((nav, start, last)) = self.dock.held else { return };
+        if !down(nav) {
+            self.dock.held = None;
+        } else if now - start > Duration::from_millis(400) && now - last > Duration::from_millis(60) {
+            self.press(nav);
+            self.dock.held = Some((nav, start, now));
+        }
+    }
 }
 
-/// The rows of the panel, in order (the pad and keys step through them).
+/// The settings the dock's tabs hold (`Tab::rows`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Row {
     Frame,
@@ -185,40 +230,7 @@ pub enum Row {
     Near,
     Resolution,
     Reset,
-    Take,
-    Leave,
 }
-
-pub const ROWS: [Row; 28] = [
-    Row::Frame,
-    Row::Zoom,
-    Row::Roll,
-    Row::Dof,
-    Row::Focus,
-    Row::Aperture,
-    Row::Bokeh,
-    Row::Exposure,
-    Row::Contrast,
-    Row::Saturation,
-    Row::Warmth,
-    Row::Tint,
-    Row::Vignette,
-    Row::Grain,
-    Row::Aberration,
-    Row::Letterbox,
-    Row::Blur,
-    Row::Shutter,
-    Row::Hud,
-    Row::Background,
-    Row::Shading,
-    Row::Bloom,
-    Row::Depth,
-    Row::Near,
-    Row::Resolution,
-    Row::Reset,
-    Row::Take,
-    Row::Leave,
-];
 
 /// What a row asks of the player.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -240,7 +252,7 @@ fn step_in<T: PartialEq + Copy>(list: &[T], v: T, d: i32) -> T {
 
 impl Mode {
     /// Whether `row` does anything as things are (else it's left out).
-    fn shows(&self, row: Row) -> bool {
+    pub fn shows(&self, row: Row) -> bool {
         match row {
             Row::Frame => self.range.is_some(),
             Row::Zoom | Row::Roll | Row::Reset | Row::Near => self.free,
@@ -251,12 +263,8 @@ impl Mode {
         }
     }
 
-    fn rows(&self) -> Vec<Row> {
-        ROWS.iter().copied().filter(|r| self.shows(*r)).collect()
-    }
-
     /// Step `row` by `d` (left -1, right +1; `fine` for a smaller step).
-    pub fn adjust(&mut self, row: Row, d: i32) -> Option<Action> {
+    pub fn adjust(&mut self, row: Row, d: i32) {
         let f = d as f32;
         let l = &mut self.look;
         match row {
@@ -294,14 +302,11 @@ impl Mode {
             Row::Near => self.near = step_in(&NEARS, self.near, d),
             Row::Resolution => self.opts.res = step_in(&RESOLUTIONS, self.opts.res, d),
             Row::Reset => self.reset_camera(),
-            Row::Take => return Some(Action::Take),
-            Row::Leave => return Some(Action::Leave),
         }
-        None
     }
 
     /// The row's name and value, as shown.
-    fn text(&self, row: Row) -> (&'static str, String) {
+    pub fn text(&self, row: Row) -> (&'static str, String) {
         let l = &self.look;
         let pct = |v: f32| format!("{:.0}%", v * 100.0);
         let signed = |v: f32| format!("{v:+.2}");
@@ -359,126 +364,6 @@ impl Mode {
             ),
             Row::Resolution => ("Photo size", self.opts.res.name()),
             Row::Reset => ("Reset camera", String::new()),
-            Row::Take => ("Take photo", String::new()),
-            Row::Leave => ("Leave photo mode", String::new()),
-        }
-    }
-
-    /// The panel: rows with values, the selected one lit; arrows (or a
-    /// click on < >) change it. Returns what was asked for.
-    pub fn ui(&mut self, ctx: &egui::Context, status: &str) -> Vec<Action> {
-        let mut actions = Vec::new();
-        if !self.ui {
-            egui::Area::new(egui::Id::unique("photo hint")).anchor(egui::Align2::LEFT_BOTTOM, [12.0, -12.0]).show(
-                ctx,
-                |ui| {
-                    ui.label(egui::RichText::new("Photo mode · H or Y shows the panel").color(DIM));
-                },
-            );
-            return actions;
-        }
-        let rows = self.rows();
-        self.row = self.row.min(rows.len() - 1);
-        let mut adjust: Vec<(Row, i32)> = Vec::new();
-        let mut select = None;
-        egui::Window::new("Photo mode")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::RIGHT_TOP, [-12.0, 12.0])
-            .default_width(330.0)
-            .show(ctx, |ui| {
-                ui.set_min_width(320.0);
-                egui::ScrollArea::vertical().max_height(ctx.content_rect().height() - 140.0).show(ui, |ui| {
-                    for (i, &row) in rows.iter().enumerate() {
-                        let (name, value) = self.text(row);
-                        let selected = i == self.row;
-                        let colour = if selected { CYAN } else { FG };
-                        let r = ui.horizontal(|ui| {
-                            let button = matches!(row, Row::Reset | Row::Take | Row::Leave);
-                            if button {
-                                if ui.add_sized([300.0, 26.0], egui::Button::new(name)).clicked() {
-                                    adjust.push((row, 1));
-                                    select = Some(i);
-                                }
-                                return;
-                            }
-                            ui.add_sized([150.0, 22.0], egui::Label::new(egui::RichText::new(name).color(colour)));
-                            // The time scrub: a slider over the history.
-                            if let (Row::Frame, Some((a, _))) = (row, self.range) {
-                                let mut at = self.wanted.unwrap_or(self.frame);
-                                let slider = egui::Slider::new(&mut at, a..=self.live).show_value(false);
-                                if ui.add_sized([150.0, 22.0], slider).changed() {
-                                    self.wanted = Some(at);
-                                    select = Some(i);
-                                }
-                                ui.label(egui::RichText::new(value).color(colour).size(12.0));
-                                return;
-                            }
-                            if ui.small_button("<").clicked() {
-                                adjust.push((row, -1));
-                                select = Some(i);
-                            }
-                            ui.add_sized([110.0, 22.0], egui::Label::new(egui::RichText::new(value).color(colour)));
-                            if ui.small_button(">").clicked() {
-                                adjust.push((row, 1));
-                                select = Some(i);
-                            }
-                        });
-                        if selected && (self.pad_used || ui.ctx().input(|i| i.focused)) {
-                            let rect = r.response.rect.expand(2.0);
-                            ui.painter().rect_stroke(
-                                rect,
-                                4.0,
-                                egui::Stroke::new(if self.pad_used { 1.5 } else { 0.5 }, CYAN),
-                                egui::StrokeKind::Outside,
-                            );
-                            if self.pad_used {
-                                r.response.scroll_to_me(None);
-                            }
-                        }
-                    }
-                });
-                ui.separator();
-                ui.label(egui::RichText::new(status).color(DIM).size(12.5));
-                ui.label(
-                    egui::RichText::new(
-                        "Mouse: left drag orbits, right drag looks, middle drag pans, wheel moves in, \
-                         double-click focuses. Keys: WASD move, R/F up and down, arrows look, Q/E roll, \
-                         Z/X zoom, Shift faster, Tab HUD, H panel, Enter take, Esc leave. Pad: sticks move \
-                         and look, LB/RB roll, LT/RT zoom, d-pad rows, A take, B leave, Y panel, X HUD.",
-                    )
-                    .color(DIM)
-                    .size(12.0),
-                );
-            });
-        if let Some(i) = select {
-            self.row = i;
-        }
-        for (row, d) in adjust {
-            actions.extend(self.adjust(row, d));
-        }
-        actions
-    }
-
-    /// The pad or keys moved the selection or changed the row selected.
-    pub fn nav(&mut self, dy: i32, dx: i32) -> Option<Action> {
-        let rows = self.rows();
-        if dy != 0 {
-            self.row = (self.row as i32 + dy).rem_euclid(rows.len() as i32) as usize;
-        }
-        let row = *rows.get(self.row.min(rows.len() - 1))?;
-        if dx != 0 {
-            return self.adjust(row, dx);
-        }
-        None
-    }
-
-    /// The pad's A on the selected row: a button's action, else nothing.
-    pub fn accept(&mut self) -> Option<Action> {
-        let rows = self.rows();
-        match rows.get(self.row)? {
-            r @ (Row::Reset | Row::Take | Row::Leave) => self.adjust(*r, 1),
-            _ => Some(Action::Take),
         }
     }
 
@@ -703,6 +588,19 @@ impl Mode {
     }
 }
 
+/// The toast for a photo written, from `take_photo`'s line: "Saved
+/// NAME.png (3840x2160)" (None: the line is a failure's).
+pub fn saved_notice(line: &str) -> Option<String> {
+    line.contains("; written in")
+        .then(|| {
+            let (path, rest) = line.split_once(" (")?;
+            let name = Path::new(path).file_name()?.to_string_lossy();
+            let size = rest.split(',').next()?;
+            Some(format!("Saved {name} ({size})"))
+        })
+        .flatten()
+}
+
 /// Wait for photos being written; say what became of them.
 pub fn reap(saving: &mut Vec<std::thread::JoinHandle<Result<String, String>>>, wait: bool) -> Vec<String> {
     let mut out = Vec::new();
@@ -821,20 +719,31 @@ pub fn draw(
     t.elapsed()
 }
 
-/// A short line on the photo mode's state, under the panel.
-pub fn status(m: &Mode, window: (u32, u32), max_side: u32) -> String {
+/// The dock's readout: the photo's size and, with the free camera, its
+/// zoom and roll; else why the camera is fixed.
+pub fn status(m: &Mode, window: (u32, u32)) -> String {
     let (w, h) = size(m.opts.res, window);
-    let (k, msaa) = sampling(w, h, max_side);
-    let camera =
-        if m.free { String::new() } else { " · free camera and motion blur need the native geometrizer".into() };
-    format!("Photo {w}x{h}, drawn at {}x{} ({k}x{k} supersampled, {msaa}x MSAA){camera}", w * k, h * k)
+    if m.free {
+        format!("{w}×{h} · {:.2}x zoom · roll {:.0}°", m.camera.zoom, m.camera.roll.to_degrees())
+    } else {
+        format!("{w}×{h} · fixed camera (the free camera needs the native geometrizer)")
+    }
+}
+
+/// Where the picture is in the window, in points: the thirds grid and the
+/// readout line up with it.
+pub fn picture_rect(origin: (u32, u32), view: &model2::video::View, ppp: f32) -> egui::Rect {
+    egui::Rect::from_min_size(
+        egui::pos2(origin.0 as f32, origin.1 as f32) / ppp,
+        egui::vec2(view.width as f32, view.height as f32) / ppp,
+    )
 }
 
 // ---- The player's side: opening and closing, controls, captures. ----
 
 impl crate::Play {
     /// A redraw in photo mode: the controls, then the photo drawn into the
-    /// window with the panel over it (the game stays paused).
+    /// window with the dock over it (the game stays paused).
     pub(crate) fn photo_frame(&mut self) {
         self.photo_update();
         if self.photo.is_none() {
@@ -854,14 +763,14 @@ impl crate::Play {
             j
         });
         let g = self.gpu.as_mut().unwrap();
-        let max_side = g.drawer.core().renderer.device().limits().max_texture_dimension_2d;
         let window = (g.view.width as u32, g.view.height as u32);
         let size = [g.config.width, g.config.height];
+        let picture = picture_rect(g.origin, &g.view, g.window.scale_factor() as f32);
         let (menu, m) = (&mut self.menu, self.photo.as_mut().unwrap());
-        let line = status(m, window, max_side);
+        let line = status(m, window);
         let (paint, actions) = crate::run_overlay(g, false, size, None, |ctx| {
-            menu.notices(ctx);
-            m.ui(ctx, &line)
+            menu.photo_notices(ctx);
+            m.ui(ctx, picture, &line)
         });
         let job = crate::draw::Job {
             game: None,
@@ -1158,8 +1067,16 @@ impl crate::Play {
             mv[2] += axis(gilrs::Axis::LeftStickY);
             look[0] += axis(gilrs::Axis::RightStickX);
             look[1] -= axis(gilrs::Axis::RightStickY);
-            roll += p.is_pressed(gilrs::Button::RightTrigger) as i32 as f32
-                - p.is_pressed(gilrs::Button::LeftTrigger) as i32 as f32;
+            // LB and RB switch the dock's tabs: the stick clicks roll.
+            roll += p.is_pressed(gilrs::Button::RightThumb) as i32 as f32
+                - p.is_pressed(gilrs::Button::LeftThumb) as i32 as f32;
+            let held = |n: Nav| match n {
+                Nav::Up => p.is_pressed(gilrs::Button::DPadUp),
+                Nav::Down => p.is_pressed(gilrs::Button::DPadDown),
+                Nav::Left => p.is_pressed(gilrs::Button::DPadLeft),
+                _ => p.is_pressed(gilrs::Button::DPadRight),
+            };
+            m.repeat_held(now, held);
             zoom += button(gilrs::Button::RightTrigger2) - button(gilrs::Button::LeftTrigger2);
         }
         m.fly(dt, mv.map(|v| v * fast), look, roll, zoom);
@@ -1167,7 +1084,10 @@ impl crate::Play {
         let wanted = m.wanted.take().filter(|t| *t != m.frame);
         for line in saved {
             println!("photo         {line}");
-            self.menu.notify(format!("Saved {}", line.split(" (").next().unwrap_or(&line)));
+            match saved_notice(&line) {
+                Some(text) => self.menu.notify(text),
+                None => self.menu.warn(format!("Photo failed: {line}")),
+            }
         }
         if let Some(target) = wanted {
             if let Err(e) = self.photo_go(target) {
@@ -1199,10 +1119,25 @@ impl crate::Play {
         } else {
             self.keys.remove(&code);
         }
-        if !pressed || repeat {
+        if !pressed {
             return;
         }
         let Some(m) = &mut self.photo else { return };
+        // The dock's keys repeat while held; the rest act once.
+        let nav = match code {
+            KeyCode::PageUp => Some(Nav::Up),
+            KeyCode::PageDown => Some(Nav::Down),
+            KeyCode::Comma => Some(Nav::Left),
+            KeyCode::Period => Some(Nav::Right),
+            _ => None,
+        };
+        if let Some(n) = nav {
+            m.press(n);
+            return;
+        }
+        if repeat {
+            return;
+        }
         let action = match code {
             KeyCode::Escape | KEY => Some(Action::Leave),
             KeyCode::Enter | KeyCode::Space | KeyCode::NumpadEnter => Some(Action::Take),
@@ -1218,10 +1153,14 @@ impl crate::Play {
                 m.reset_camera();
                 None
             }
-            KeyCode::PageUp => m.nav(-1, 0),
-            KeyCode::PageDown => m.nav(1, 0),
-            KeyCode::Comma => m.nav(0, -1),
-            KeyCode::Period => m.nav(0, 1),
+            KeyCode::BracketLeft => {
+                m.step_tab(-1);
+                None
+            }
+            KeyCode::BracketRight => {
+                m.step_tab(1);
+                None
+            }
             _ => None,
         };
         if let Some(a) = action {
@@ -1235,7 +1174,12 @@ impl crate::Play {
         let Some(m) = &mut self.photo else { return };
         m.pad_used = true;
         let action = match b {
-            South => m.accept(),
+            // With the dock hidden there is only the shutter for A.
+            South if !m.ui => Some(Action::Take),
+            South => {
+                m.dock.navs.push(Nav::Accept);
+                None
+            }
             East | Start | Mode => Some(Action::Leave),
             North => {
                 m.ui = !m.ui;
@@ -1249,10 +1193,30 @@ impl crate::Play {
                 m.reset_camera();
                 None
             }
-            DPadUp => m.nav(-1, 0),
-            DPadDown => m.nav(1, 0),
-            DPadLeft => m.nav(0, -1),
-            DPadRight => m.nav(0, 1),
+            LeftTrigger => {
+                m.step_tab(-1);
+                None
+            }
+            RightTrigger => {
+                m.step_tab(1);
+                None
+            }
+            DPadUp => {
+                m.press_held(Nav::Up);
+                None
+            }
+            DPadDown => {
+                m.press_held(Nav::Down);
+                None
+            }
+            DPadLeft => {
+                m.press_held(Nav::Left);
+                None
+            }
+            DPadRight => {
+                m.press_held(Nav::Right);
+                None
+            }
             _ => None,
         };
         if let Some(a) = action {
@@ -1260,7 +1224,7 @@ impl crate::Play {
         }
     }
 
-    /// Mouse input in photo mode (not over the panel): drags move the
+    /// Mouse input in photo mode (not over the dock): drags move the
     /// camera, a double-click picks the focus, the wheel moves in and out.
     pub(crate) fn photo_mouse(&mut self, ev: &winit::event::WindowEvent) {
         use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
@@ -1303,7 +1267,7 @@ impl crate::Play {
         }
     }
 
-    /// Do what the panel, a key or a button asked.
+    /// Do what the dock, a key or a button asked.
     pub(crate) fn photo_action(&mut self, a: Action) {
         match a {
             Action::Leave => self.leave_photo(),

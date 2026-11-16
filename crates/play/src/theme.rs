@@ -445,6 +445,12 @@ impl Toasts {
 
     /// Draw the toasts in the screen's bottom-left corner.
     pub fn show(&mut self, ctx: &Context) {
+        let s = scale(ctx);
+        self.show_at(ctx, Align2::LEFT_BOTTOM, [24.0 * s, -24.0 * s]);
+    }
+
+    /// `show`, anchored elsewhere (photo mode's dock takes the bottom).
+    pub fn show_at(&mut self, ctx: &Context, anchor: Align2, offset: [f32; 2]) {
         let now = Instant::now();
         self.list.retain(|t| Self::live(t, now));
         if self.list.is_empty() {
@@ -452,44 +458,40 @@ impl Toasts {
         }
         let s = scale(ctx);
         let mut dismissed = None;
-        egui::Area::new(Id::unique("toasts"))
-            .order(egui::Order::Foreground)
-            .anchor(Align2::LEFT_BOTTOM, [24.0 * s, -24.0 * s])
-            .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing.y = 8.0 * s;
-                for t in &self.list {
-                    let left = Self::LIFE.saturating_sub(now.saturating_duration_since(t.at));
-                    let fade = if t.level == Level::Error {
-                        1.0
-                    } else {
-                        (left.as_secs_f32() / Self::FADE.as_secs_f32()).min(1.0)
-                    };
-                    ui.scope(|ui| {
-                        ui.set_opacity(fade);
-                        let frame = egui::Frame::new()
-                            .fill(Color32::from_rgba_unmultiplied(13, 18, 32, 235))
-                            .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(34, 229, 255, 102)))
-                            .corner_radius(ROW_RADIUS * s)
-                            .inner_margin(egui::Margin::symmetric((18.0 * s) as i8, (12.0 * s) as i8))
-                            .shadow(shadow(10, 30, 128));
-                        let out = frame.show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 12.0 * s;
-                                let (dot, _) = ui.allocate_exact_size(vec2(10.0 * s, 10.0 * s), Sense::hover());
-                                ui.painter().circle_filled(dot.center(), 5.0 * s, t.level.colour());
-                                ui.label(RichText::new(&t.text).font(FontId::new(17.0 * s, FontFamily::Proportional)));
-                                if t.level == Level::Error {
-                                    ui.label(RichText::new("×").size(20.0 * s).color(TEXT_DIM));
-                                }
-                            });
+        egui::Area::new(Id::unique("toasts")).order(egui::Order::Foreground).anchor(anchor, offset).show(ctx, |ui| {
+            ui.spacing_mut().item_spacing.y = 8.0 * s;
+            for t in &self.list {
+                let left = Self::LIFE.saturating_sub(now.saturating_duration_since(t.at));
+                let fade = if t.level == Level::Error {
+                    1.0
+                } else {
+                    (left.as_secs_f32() / Self::FADE.as_secs_f32()).min(1.0)
+                };
+                ui.scope(|ui| {
+                    ui.set_opacity(fade);
+                    let frame = egui::Frame::new()
+                        .fill(Color32::from_rgba_unmultiplied(13, 18, 32, 235))
+                        .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(34, 229, 255, 102)))
+                        .corner_radius(ROW_RADIUS * s)
+                        .inner_margin(egui::Margin::symmetric((18.0 * s) as i8, (12.0 * s) as i8))
+                        .shadow(shadow(10, 30, 128));
+                    let out = frame.show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 12.0 * s;
+                            let (dot, _) = ui.allocate_exact_size(vec2(10.0 * s, 10.0 * s), Sense::hover());
+                            ui.painter().circle_filled(dot.center(), 5.0 * s, t.level.colour());
+                            ui.label(RichText::new(&t.text).font(FontId::new(18.0 * s, FontFamily::Proportional)));
+                            if t.level == Level::Error {
+                                ui.label(RichText::new("×").size(20.0 * s).color(TEXT_DIM));
+                            }
                         });
-                        if ui.interact(out.response.rect, ui.scope_id().with(("toast", t.id)), Sense::click()).clicked()
-                        {
-                            dismissed = Some(t.id);
-                        }
                     });
-                }
-            });
+                    if ui.interact(out.response.rect, ui.scope_id().with(("toast", t.id)), Sense::click()).clicked() {
+                        dismissed = Some(t.id);
+                    }
+                });
+            }
+        });
         if let Some(id) = dismissed {
             self.list.retain(|t| t.id != id);
         }
