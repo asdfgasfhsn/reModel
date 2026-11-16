@@ -579,10 +579,7 @@ impl Launcher {
     /// navigation keys the ring and the keys' hints, the pointer or other
     /// keys the ring off.
     fn note_input(&mut self, ctx: &egui::Context, navs: &[Nav], keys: &[Nav]) {
-        let other = ctx.input(|i| {
-            i.pointer.delta() != egui::Vec2::ZERO
-                || i.events.iter().any(|e| matches!(e, egui::Event::Key { .. } | egui::Event::PointerButton { .. }))
-        });
+        let other = crate::focus::pointer_or_other_key(ctx);
         if !navs.is_empty() {
             (self.pad_used, self.keys_used) = (true, false);
         } else if !keys.is_empty() {

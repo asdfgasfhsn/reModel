@@ -462,10 +462,7 @@ impl Menu {
     /// pad's focus and hints on, `keys` (the keyboard's navigation keys)
     /// the focus alone, the pointer or other keys both off.
     fn note_input(&mut self, ctx: &egui::Context, navs: &[Nav], keys: &[Nav]) {
-        let other = ctx.input(|i| {
-            i.pointer.delta() != egui::Vec2::ZERO
-                || i.events.iter().any(|e| matches!(e, egui::Event::Key { .. } | egui::Event::PointerButton { .. }))
-        });
+        let other = crate::focus::pointer_or_other_key(ctx);
         if !navs.is_empty() {
             (self.pad_used, self.keys_used) = (true, false);
         } else if !keys.is_empty() {
@@ -1878,7 +1875,16 @@ mod tests {
         };
         r.menu.pad_used = false;
         r.menu.keys_used = false;
-        assert_eq!(glow(&mut r, &[], vec![key]), 1, "the navigation keys: one");
+        assert_eq!(glow(&mut r, &[], vec![key.clone()]), 1, "the navigation keys: one");
+        let up = egui::Event::Key {
+            key: egui::Key::ArrowDown,
+            physical_key: Some(egui::Key::ArrowDown),
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        assert_eq!(glow(&mut r, &[], vec![up]), 1, "letting the key go keeps it");
+        assert_eq!(glow(&mut r, &[], Vec::new()), 1, "and it stays");
         let click = egui::Event::PointerButton {
             pos: egui::pos2(5.0, 5.0),
             button: egui::PointerButton::Primary,

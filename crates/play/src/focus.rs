@@ -43,6 +43,20 @@ pub struct Focus {
     pub show: bool,
 }
 
+/// Whether this frame's input hands the page back to the mouse: the
+/// pointer moved more than a nudge, a mouse button, or a key pressed (a
+/// page's own navigation keys are counted before this, and releasing a key
+/// is not new input: counting it turned the keyboard's focus ring off as
+/// soon as an arrow key came up).
+pub fn pointer_or_other_key(ctx: &egui::Context) -> bool {
+    ctx.input(|i| {
+        i.pointer.delta().length() > 2.0
+            || i.events.iter().any(|e| {
+                matches!(e, egui::Event::Key { pressed: true, .. } | egui::Event::PointerButton { pressed: true, .. })
+            })
+    })
+}
+
 /// Two rects on the same line: their heights mostly overlap.
 fn same_row(a: Rect, b: Rect) -> bool {
     a.y_range().intersection(b.y_range()).span() >= 0.5 * a.height().min(b.height())
