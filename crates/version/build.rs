@@ -7,8 +7,15 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+/// The crate's folder as this build sees it (not `env!`'s, fixed when the
+/// script was compiled: a target folder shared between checkouts keeps the
+/// script, and would ask another, maybe removed, checkout).
+fn manifest_dir() -> PathBuf {
+    PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
+}
+
 fn git(args: &[&str]) -> Option<String> {
-    let out = Command::new("git").args(args).current_dir(env!("CARGO_MANIFEST_DIR")).output().ok()?;
+    let out = Command::new("git").args(args).current_dir(manifest_dir()).output().ok()?;
     let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
     (out.status.success() && !s.is_empty()).then_some(s)
 }
@@ -27,7 +34,7 @@ fn main() {
         for (flag, files) in places {
             if let Some(d) = git(&["rev-parse", flag]) {
                 let d = PathBuf::from(d);
-                let d = if d.is_relative() { PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(d) } else { d };
+                let d = if d.is_relative() { manifest_dir().join(d) } else { d };
                 for f in files.into_iter().filter(|f| !f.is_empty()) {
                     println!("cargo:rerun-if-changed={}", d.join(f).display());
                 }

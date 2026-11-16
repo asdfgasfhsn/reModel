@@ -7,11 +7,14 @@ use std::path::Path;
 
 /// `assets/<dir>/*.webp` as a static table `name` of (set, bytes).
 fn embed(dir: &str, name: &str, doc: &str) -> String {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets").join(dir);
+    // The crate's folder now, not `env!`'s: that is fixed when the build
+    // script is compiled, and a target folder shared between checkouts
+    // keeps the script, so a checkout since removed embedded no art.
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
+    let dir = Path::new(&manifest).join("../../assets").join(dir);
     println!("cargo:rerun-if-changed={}", dir.display());
-    let mut entries: Vec<(String, String)> = std::fs::read_dir(&dir)
-        .into_iter()
-        .flatten()
+    let read = std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+    let mut entries: Vec<(String, String)> = read
         .flatten()
         .filter_map(|e| {
             let path = e.path();
@@ -23,6 +26,7 @@ fn embed(dir: &str, name: &str, doc: &str) -> String {
             Some((set, path.canonicalize().ok()?.display().to_string()))
         })
         .collect();
+    assert!(!entries.is_empty(), "{}: no .webp art", dir.display());
     entries.sort();
     let mut out = format!("/// {doc}\npub static {name}: &[(&str, &[u8])] = &[\n");
     for (set, path) in entries {
