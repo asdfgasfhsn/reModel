@@ -1435,7 +1435,7 @@ events only, not yet with a real pad.
   it looked and a ROM folder can be typed in. The ROM folder defaults to
   `rom/` in the source tree (or wherever the current directory has a
   `rom/` folder), else to `roms/` beside the settings
-  (`~/.local/share/remodel/roms`), created on first run; `--rom` changes
+  (`~/.local/share/remodel/roms` on Linux), created on first run; `--rom` changes
   it (and is remembered).
 
 ## Remapping
@@ -1496,8 +1496,10 @@ the window, e.g.
 ## Files
 
 Run from the reModel source tree (an `out/` directory in the current
-directory), the player keeps its files in `out/`; anywhere else in
-`$XDG_DATA_HOME/remodel` (normally `~/.local/share/remodel`):
+directory), the player keeps its files in `out/`; anywhere else in the
+platform's data folder: `$XDG_DATA_HOME/remodel` (normally
+`~/.local/share/remodel`) on Linux, `~/Library/Application Support/remodel`
+on macOS, `%APPDATA%\remodel` on Windows:
 
 - `play-settings.txt`: the settings, as `key = value` lines: the ROM
   folder, the games played (most recent first), fullscreen, where the
@@ -1574,6 +1576,6 @@ workspace (in its own `target/dist`), never the generated one in
 `out/recomp/`, checks that it linked the empty `crates/recomp` stub, and
 refuses `RECOMP=1`.
 
-Unpacked anywhere outside the source tree, it keeps its files in
-`$XDG_DATA_HOME/remodel` and looks for sets in `roms/` there; with none
+Unpacked anywhere outside the source tree, it keeps its files in the
+data folder (above) and looks for sets in `roms/` there; with none
 found it opens the launcher, where another ROM folder can be typed in.

@@ -315,28 +315,38 @@ uninstall-desktop: ## Remove the app-menu entry and icon that install-desktop wr
 
 # `make dist`: interpreter only, so no game-derived recompiled code is
 # linked in; a target dir of its own keeps the stripped profile apart.
+# DIST_TARGET= builds for another target (x86_64-apple-darwin on an Apple
+# silicon Mac, its std from `rustup target add`). Windows gets a .zip with
+# remodel-play.exe (7-Zip packs it), everything else a .tar.gz.
 DIST_TARGET_DIR := target/dist
 DIST_OUT        ?= out/dist
+DIST_TARGET     ?=
+PYTHON          ?= python3
 
-dist: ## Distributable player for this platform (interpreter only, stripped) -> out/dist/remodel-VERSION-TARGET.tar.gz
+dist: ## Distributable player for this platform (interpreter only, stripped; DIST_TARGET= another target) -> out/dist/remodel-VERSION-TARGET.tar.gz (.zip on Windows)
 	@test -z "$(RECOMP)" || { echo "make dist builds the interpreter only: recompiled code is derived from the game, so it isn't distributed (drop RECOMP=1)"; exit 1; }
 	CARGO_TARGET_DIR=$(DIST_TARGET_DIR) CARGO_PROFILE_RELEASE_DEBUG=false CARGO_PROFILE_RELEASE_STRIP=true \
-		$(CARGO) build --release --locked --manifest-path Cargo.toml -p remodel-play
-	@$(CARGO) tree --locked --manifest-path Cargo.toml -p remodel-play -i remodel-recomp --prefix none | head -1 | grep -q "($(CURDIR)/crates/recomp)" \
+		$(CARGO) build --release --locked --manifest-path Cargo.toml -p remodel-play $(if $(DIST_TARGET),--target $(DIST_TARGET))
+	@$(CARGO) tree --locked --manifest-path Cargo.toml -p remodel-play -i remodel-recomp --prefix none | head -1 | grep -q "crates[/\\]recomp)" \
 		|| { echo "dist: remodel-recomp isn't the crates/recomp stub: recompiled code in the dist build"; exit 1; }
 	@set -e; \
 	version=$$($(CARGO) pkgid -p remodel-play | sed 's/.*[@#]//'); \
 	rev=$$(git describe --tags --always --dirty 2>/dev/null || true); \
-	target=$$(rustc -vV | sed -n 's/^host: //p'); \
+	[ "$$rev" != "v$$version" ] || rev=; \
+	target=$(DIST_TARGET); target=$${target:-$$(rustc -vV | sed -n 's/^host: //p')}; \
+	case $$target in *windows*) exe=.exe ;; *) exe= ;; esac; \
 	name=remodel-$$version$${rev:+-$$rev}-$$target; \
 	dir=$(DIST_OUT)/$$name; \
-	rm -rf $$dir $$dir.tar.gz; mkdir -p $$dir; \
-	cp $(DIST_TARGET_DIR)/release/remodel-play $$dir/; \
+	rm -rf $$dir $$dir.tar.gz $$dir.zip; mkdir -p $$dir; \
+	cp $(DIST_TARGET_DIR)/$(if $(DIST_TARGET),$(DIST_TARGET)/)release/remodel-play$$exe $$dir/; \
 	for l in $(wildcard LICENSE*); do cp $$l $$dir/; done; \
-	python3 -I tools/notices.py remodel-play $$target $$dir/THIRD-PARTY-NOTICES.txt; \
+	$(PYTHON) -I tools/notices.py remodel-play $$target $$dir/THIRD-PARTY-NOTICES.txt; \
 	sed -e "s|@VERSION@|$$version$${rev:+ ($$rev)}|" -e "s|@TARGET@|$$target|" crates/play/dist-README.txt > $$dir/README.txt; \
-	tar -C $(DIST_OUT) -czf $$dir.tar.gz $$name; \
-	echo "built $$dir.tar.gz ($$(du -h $$dir.tar.gz | cut -f1))"
+	case $$target in \
+	*windows*) archive=$$dir.zip; (cd $(DIST_OUT) && 7z a -tzip -bso0 $$name.zip $$name) ;; \
+	*) archive=$$dir.tar.gz; tar -C $(DIST_OUT) -czf $$archive $$name ;; \
+	esac; \
+	echo "built $$archive ($$(du -h $$archive | cut -f1))"
 
 web: ## Browser build into out/web: game list, a page per game (model2/SET/), screenshots (JOBS at once, default 3); RECOMP=1 gives each game its own module with its recompiled code; GAME= rebuilds just that game; unchanged modules are skipped (docs/web.md)
 	WEB_GAME=$(if $(filter command line environment,$(origin GAME)),$(GAME)) WEB_OUT=$(WEB_OUT) ROM=$(ROM) RECOMP=$(RECOMP) CARGO="$(CARGO)" WASM_CARGO="$(WASM_CARGO)" WASM_BINDGEN=$(WASM_BINDGEN) JOBS=$(JOBS) sh tools/web.sh

@@ -1,0 +1,43 @@
+# What `make check` runs, on every push to main and every pull request:
+# formatting, clippy with warnings as errors, the unit tests (no ROMs; the
+# GPU tests skip on a runner without one) and the browser build's type
+# check. docs/usage.md, "Continuous integration".
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  # rustc's own stack, for the largest generated functions.
+  RUST_MIN_STACK: "67108864"
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries (ALSA for sound, udev for gamepads)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+          cache-directories: target/web
+      - run: make fmt-check
+      - run: make lint
+      - run: make test
+      - run: make web-check WASM_RUSTUP=$(command -v rustup)

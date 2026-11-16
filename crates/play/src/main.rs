@@ -70,7 +70,8 @@ usage: remodel-play [options]
                      to choose one)
   --rom DIR          ROM folder: MAME sets as zips or folders (default: the
                      last one used; else rom in the reModel source tree,
-                     or $XDG_DATA_HOME/remodel/roms anywhere else)
+                     or roms in the data folder anywhere else: see
+                     README.txt)
   --mix SFX:MUSIC    sound board and music board gains in dB (default 8:-8)
   --no-sound         don't run the sound boards
   --hud center|edges wide windows: keep the HUD centred, or move each HUD

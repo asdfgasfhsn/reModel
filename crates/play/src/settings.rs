@@ -2,7 +2,9 @@
 //!
 //! Run from the reModel source tree (an `out/` directory in the current
 //! directory), files go under `out/` next to the other per-game output;
-//! otherwise under `$XDG_DATA_HOME/remodel` (`~/.local/share/remodel`).
+//! otherwise in the platform's data folder: `$XDG_DATA_HOME/remodel`
+//! (`~/.local/share/remodel`) on Linux, `~/Library/Application
+//! Support/remodel` on macOS, `%APPDATA%\remodel` on Windows.
 //!
 //! A game's settings ([`GameSettings`]: sound mix, display, speed, smooth
 //! motion, run-ahead, anti-aliasing, temporal anti-aliasing and its
@@ -507,11 +509,9 @@ pub fn data_dir() -> PathBuf {
     if Path::new("out").is_dir() {
         return PathBuf::from("out");
     }
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("remodel")
+    // XDG_DATA_HOME, else ~/.local/share, on Linux; Application Support on
+    // macOS; the roaming AppData on Windows.
+    dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("remodel")
 }
 
 fn path() -> PathBuf {

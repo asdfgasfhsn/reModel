@@ -93,7 +93,7 @@ make install-desktop RECOMP=1   # reModel in the desktop's app menu, running thi
 make uninstall-desktop    # remove that app-menu entry and its icon
 make smooth-frames GAME=doa    # coin-start run drawing in-between frames beside the real ones -> out/doa/frames
 make web RECOMP=1         # browser build -> out/web: game list, a page and module per game (WebGPU; serve over HTTPS, docs/web.md); missing screenshots made JOBS at a time (default 3)
-make dist                 # player to hand out (interpreter only, no ROMs) -> out/dist/remodel-VERSION-TARGET.tar.gz
+make dist                 # player to hand out (interpreter and JIT, no recompiled code, no ROMs) -> out/dist/remodel-VERSION-TARGET.tar.gz (.zip on Windows; DIST_TARGET= another target)
 make capture              # save renderer inputs from a run into a race -> out/topskatr/capture
 make gpu-check            # draw them on the software and GPU rasterisers, time and compare (GPU_OPTS="--aa 4 --depth": with them on; "--bloom 50": bloom at 50% on the GPU frames, which the software renderer has none of, so the comparison then includes it; the cost table always adds bloom columns, at --bloom's strength or 50)
 make gpu-check PACK=out/topskatr/texpack-4x GPU_OPTS="--tex-filter mip"   # the same with a texture pack on both renderers (docs/texture-packs.md)
@@ -212,6 +212,22 @@ pack of a newer format than the build reads is refused with a message.
    the CHANGELOG section as its message. `DRY_RUN=1` does everything but
    create the tag.
 3. It never pushes; it prints the command: `git push origin HEAD vx.y.z`.
+4. Pushing the tag starts `.github/workflows/release.yml`: `make dist` for
+   Linux (x86_64, built on Ubuntu 22.04 for an older glibc), Windows
+   (x86_64) and macOS (Apple silicon, and Intel cross-built on the same
+   runner), then a **draft** GitHub release named after the tag's subject,
+   with its notes, the four archives and `SHA256SUMS.txt`. Download one or
+   two, check they start, and publish the draft by hand. The workflow can
+   also be run by hand (Actions, release, Run workflow): it then builds
+   the archives as workflow artifacts and makes no release, a way to try a
+   build before tagging.
+
+**Continuous integration.** `.github/workflows/ci.yml` runs what `make
+check` runs (fmt-check, lint, test, web-check) on Ubuntu for every push to
+main and every pull request. The runners have no GPU, so the GPU tests
+skip (they print "no GPU adapter: skipped"); run `make check` here as
+before. The release builds aren't signed: the archives' README says how to
+open them past macOS's Gatekeeper and Windows's SmartScreen.
 
 When emulation changes on purpose, update that set's line in
 `tools/expected-hashes.txt` in the same commit.

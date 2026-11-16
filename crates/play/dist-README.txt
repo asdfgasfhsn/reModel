@@ -14,8 +14,8 @@ Japanese release Sonic The Fighters (sfight), Virtua Striker (vstriker), Last Br
 (vcop), Desert Tank (desert), Virtua Cop 2 (vcop2), Sky Target
 (skytargt), Manx TT Superbike (manxtt, manxttc), Motor Raid
 (motoraid), Gunblade NY (gunblade), Dynamite Cop (dynamcop), Zero Gunner (zerogun) and Pilot Kids (pltkids).
-This build runs the game code on the interpreter (no recompiled game code
-is included).
+This build runs the game code on its interpreter and JIT (no recompiled
+game code is included).
 
 Bring your own ROMs
 -------------------
@@ -23,9 +23,11 @@ No game data is included. Put the sets as MAME keeps them, topskatr.zip or
 a topskatr/ folder (likewise skisuprg, stcc, segawski, waverunr,
 overrev, sgt24h, hotd, bel, dynabb97, doa, indy500, fvipers, schamp,
 vstriker, lastbrnx, srallyc, vf2, daytona, vcop, desert, vcop2, skytargt, manxtt, manxttc, motoraid, gunblade, dynamcop, zerogun, pltkids), in
-the ROM folder:
+the ROM folder, roms in the data folder (see Files):
 
-    ~/.local/share/remodel/roms     ($XDG_DATA_HOME/remodel/roms)
+    Linux     ~/.local/share/remodel/roms ($XDG_DATA_HOME/remodel/roms)
+    macOS     ~/Library/Application Support/remodel/roms
+    Windows   %APPDATA%\remodel\roms
 
 or start the player: with no supported set found, its start screen says
 where it looked, and another folder can be typed in there (Scan).
@@ -142,14 +144,26 @@ and kick.
 
 Files
 -----
-Settings, EEPROMs and save states go in $XDG_DATA_HOME/remodel (normally
-~/.local/share/remodel):
+Settings, EEPROMs, save states and the session log go in the data folder:
+~/.local/share/remodel on Linux ($XDG_DATA_HOME/remodel),
+~/Library/Application Support/remodel on macOS, %APPDATA%\remodel on
+Windows:
 
     play-settings.txt           settings, as key = value lines
     <set>/eeprom.bin            the game's EEPROM (settings, records)
     <set>/saves/*.save          save states (quick, slot1 ... slot4)
+    play.log                    what the last session printed (play.prev.log
+                                the one before): send it with a bug report
 
-Needs a GPU with Vulkan (or GL) drivers and a sound device.
+Needs a GPU with Vulkan, Metal (macOS) or Direct3D 12 (Windows) drivers
+and a sound device.
+
+The builds aren't signed. On macOS, if it won't open because the
+developer can't be verified, clear the download's quarantine first:
+
+    xattr -dr com.apple.quarantine remodel-play
+
+On Windows, SmartScreen may ask: More info, then Run anyway.
 
 Licence
 -------

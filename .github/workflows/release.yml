@@ -1,0 +1,87 @@
+# The player for Linux, Windows and macOS (Apple silicon and Intel), built
+# with `make dist` (interpreter and JIT only: never recompiled game code),
+# for a pushed release tag `vX.Y.Z` (`make release-tag` makes it). The
+# archives go on a draft GitHub release with the tag's notes, to be checked
+# and published by hand. Run by hand (workflow_dispatch), it builds the
+# archives as workflow artifacts and makes no release. docs/usage.md,
+# "Versions and releases".
+name: release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  RUST_MIN_STACK: "67108864"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04 for an older glibc, so the binary runs on more systems.
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { os: windows-2022, target: x86_64-pc-windows-msvc }
+          - { os: macos-14, target: aarch64-apple-darwin }
+          - { os: macos-14, target: x86_64-apple-darwin }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: System libraries (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev pkg-config
+      - name: GNU make (Windows)
+        if: runner.os == 'Windows'
+        run: command -v make || choco install make --no-progress -y
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          workspaces: |
+            . -> target/dist
+      - name: make dist
+        run: make dist DIST_TARGET=${{ matrix.target }} PYTHON=${{ runner.os == 'Windows' && 'python' || 'python3' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: remodel-${{ matrix.target }}
+          path: |
+            out/dist/*.tar.gz
+            out/dist/*.zip
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: git fetch --force origin "+refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$GITHUB_REF_NAME
+          title=$(git tag -l --format='%(contents:subject)' "$tag")
+          git tag -l --format='%(contents:body)' "$tag" > notes.md
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+          gh release create "$tag" --draft --verify-tag --title "${title:-reModel $tag}" --notes-file notes.md dist/*
