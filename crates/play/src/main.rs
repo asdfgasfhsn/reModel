@@ -3101,6 +3101,12 @@ impl ApplicationHandler<Wake> for Play {
             label: Some("remodel"),
             required_limits: gpu::limits(&adapter),
             required_features: gpu::features(&adapter),
+            // Blocks of 4 to 8 MB for the small things; a larger texture
+            // gets a block of its own, its size exactly. (The default holds
+            // 192 MB in blocks of 128 and 64 MB before the first texture,
+            // and `MemoryUsage`'s 8 to 64 MB blocks hold up to one more
+            // each of what doesn't fill them.)
+            memory_hints: wgpu::MemoryHints::Manual { suballocated_device_memory_block_size: (4 << 20)..(8 << 20) },
             ..Default::default()
         }))
         .expect("create device");
@@ -3116,6 +3122,18 @@ impl ApplicationHandler<Wake> for Play {
             .find(|f| formats.contains(f))
             .unwrap_or(config.format.remove_srgb_suffix());
         config.present_mode = wgpu::PresentMode::AutoVsync;
+        // For profiling a window nobody sees (the compositor sends a hidden
+        // window one redraw a second under vsync): REMODEL_PRESENT=immediate
+        // or mailbox, where offered (docs/play.md, "Profiling").
+        let unpaced = match std::env::var("REMODEL_PRESENT").as_deref() {
+            Ok("immediate") => Some(wgpu::PresentMode::Immediate),
+            Ok("mailbox") => Some(wgpu::PresentMode::Mailbox),
+            _ => None,
+        }
+        .filter(|m| caps.present_modes.contains(m));
+        if let Some(m) = unpaced {
+            config.present_mode = m;
+        }
         // `--frame-log` reads each picture back.
         if self.opts.frame_log.is_some() {
             config.usage |= wgpu::TextureUsages::COPY_SRC;
@@ -3124,7 +3142,9 @@ impl ApplicationHandler<Wake> for Play {
         // What AutoVsync resolves to (wgpu: FIFO relaxed if the surface
         // offers it, else FIFO), with the modes on offer, for slowdown
         // reports (docs/play.md).
-        let mode = if caps.present_modes.contains(&wgpu::PresentMode::FifoRelaxed) {
+        let mode = if let Some(m) = unpaced {
+            m
+        } else if caps.present_modes.contains(&wgpu::PresentMode::FifoRelaxed) {
             wgpu::PresentMode::FifoRelaxed
         } else {
             wgpu::PresentMode::Fifo
@@ -3170,8 +3190,16 @@ impl ApplicationHandler<Wake> for Play {
             if window.fullscreen().is_some() { ", fullscreen" } else { "" }
         );
         let overlay = Overlay { ctx, state };
-        let core =
-            draw::Core { surface, renderer, egui, backdrop, frame: gpu::BoardFrame::default(), photo_shots: None };
+        let mut core = draw::Core {
+            surface,
+            renderer,
+            egui,
+            backdrop,
+            frame: gpu::BoardFrame::default(),
+            photo_shots: None,
+            log: self.opts.perf_log.then(Default::default),
+        };
+        core.renderer.set_profile(self.opts.perf_log);
         // The draw thread wakes the event loop as it starts drawing and when
         // it's done (`next_start`).
         let wake = self.opts.overlap.then(|| self.proxy.clone()).flatten().map(|p| {

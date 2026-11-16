@@ -27,6 +27,60 @@ pub struct Core {
     /// Photo mode: the geometry of its last picture, kept while the
     /// camera stays put (`photo::draw`).
     pub photo_shots: Option<(crate::photo::ShotKey, crate::photo::Shots)>,
+    /// `--perf-log`: report where draws spend their host time and what
+    /// the renderer holds on the GPU ([`Core::log_perf`]).
+    pub log: Option<PerfLog>,
+}
+
+/// What [`Core::log_perf`] keeps between draws.
+#[derive(Default)]
+pub struct PerfLog {
+    draws: u32,
+    memory: (u64, u64),
+    draw_time: Duration,
+}
+
+impl Core {
+    /// `--perf-log`: every 300 draws a `draw phases` line (the renderer's
+    /// phases, mean per draw), and a `gpu memory` line whenever the
+    /// renderer's allocations changed by a MB or more (checked every 30
+    /// draws), so one shows at the start and after each settings change.
+    fn log_perf(&mut self, draw: Duration) {
+        let Some(log) = self.log.as_mut() else { return };
+        log.draws += 1;
+        log.draw_time += draw;
+        if log.draws % 30 == 1 {
+            if let Some(m) = self.renderer.memory() {
+                if m.reserved.abs_diff(log.memory.0) >= 1 << 20 || m.allocated.abs_diff(log.memory.1) >= 1 << 20 {
+                    log.memory = (m.reserved, m.allocated);
+                    println!("gpu memory    {}", m.line());
+                }
+            }
+        }
+        if log.draws % 300 == 0 {
+            let p = self.renderer.take_phases();
+            let n = p.draws.max(1) as f64;
+            let ms = |d: Duration| d.as_secs_f64() * 1e3 / n;
+            println!(
+                "draw phases   {} draws, ms each: draw {:.2} (shading {:.2}, build {:.2}, place {:.2}, layers {:.2}, \
+                 3d prep {:.2}, 3d buffers {:.2}, 3d pass {:.2}, rest of the frame {:.2}, submit {:.2}); \
+                 2D layers reused in {}",
+                p.draws,
+                log.draw_time.as_secs_f64() * 1e3 / 300.0,
+                ms(p.shade),
+                ms(p.build),
+                ms(p.place),
+                ms(p.layers),
+                ms(p.prep3d),
+                ms(p.resources3d),
+                ms(p.pass3d),
+                ms(p.rest),
+                ms(p.submit),
+                p.layers_reused,
+            );
+            log.draw_time = Duration::ZERO;
+        }
+    }
 }
 
 impl Core {
@@ -262,6 +316,7 @@ pub fn run(core: &mut Core, job: Job, started: &dyn Fn()) -> Report {
         paint_overlay(core, o, &target);
     }
     let draw = t.elapsed();
+    core.log_perf(draw);
     let hash = job.hash.then(|| {
         let (w, h) = (frame.texture.width(), frame.texture.height());
         fnv(&core.renderer.read_texture(&frame.texture, w, h))

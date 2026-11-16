@@ -569,6 +569,158 @@ Linux, the "utility" quality-of-service class on macOS (which keeps them
 off the performance cores the game wants), below-normal priority on
 Windows (`jit::lower_priority`); so does `--jit-warm`'s background run.
 
+### The renderer's time and memory
+
+With `--perf-log` the draw thread says where a draw's host time goes and
+what the renderer holds on the GPU:
+
+```
+draw phases   300 draws, ms each: draw 6.66 (shading 0.83, build 1.15, place 1.14, layers 0.41, 3d prep 1.69, 3d buffers 0.23, 3d pass 0.02, rest of the frame 0.28, submit 0.54); 2D layers reused in 132
+gpu memory    357.1 MB allocated, 371.6 MB reserved; 3d aux a 63.8 MB; 3d aux b 63.8 MB; history a 63.8 MB; history b 63.8 MB; 3d depth t 31.9 MB; 3d layer t 31.9 MB; bloom level 23.6 MB (x5); ...
+```
+
+`draw phases` (every 300 draws; the example is Sega Rally at 4K with
+`--temporal taa --bloom 100 --depth on --shading pixel`): the whole draw,
+then `shading` (smooth shading's lighting of the frame; nothing for a
+repeat), `build` (the display list into polygons), `place` (the HUD's
+polygons moved, the polygons sorted, clipped and placed on the screen; with
+the HUD at the edges also the tile planes of a new frame, see below),
+`layers` (the 2D tile layers on the CPU, or found the same as the draw
+before's, then only compared; the count says how often), `3d prep` (vertices and the polygon table), `3d
+buffers` (their buffers and bind group, pipelines), `3d pass` (encoding the
+render pass: draws are batched, so it is small), the rest of the frame
+(temporal resolve, bloom, 2D uploads, the compose pass) and `submit`. They
+are CPU time of the draw thread: the GPU's own time shows as `submit` or
+the surface wait growing when it falls behind. `gpu memory` comes from the
+driver allocator's own accounting (wgpu's `generate_allocator_report`, so
+Vulkan and DX12; not the browser): bytes in live allocations by label, and
+`reserved`, the memory blocks they sit in, which is what the process holds
+(add some 50 MB of the driver's own: `nvidia-smi --query-compute-apps=pid,used_memory
+--format=csv`). It is printed at the start and whenever either changes by a
+MB, so after each change of settings.
+
+A hidden window gets a redraw a second under vsync. To time drawing
+without a visible window, `REMODEL_PRESENT=immediate` (or `mailbox`) sets
+that present mode where the surface offers it: the game then runs at its
+pace and redraws as fast as it can (most of those are repeats of a game
+frame; a repeat does everything but the emulation). The draw times
+are then those of a draw with warm caches on an idle GPU: not what a
+vsynced 4K window pays when the GPU is the slower side.
+
+What it costs (Top Skater in a race, an 1800x1350 window, Ryzen 7 3700X and
+RTX 2080 Super under `REMODEL_PRESENT=immediate`; ms of the draw thread per
+draw, medians of a minute's `draw phases` lines, the machine shared with
+other work, so a few tenths either way). About 87% of those draws repeat a
+game frame, which is what a window drawing far faster than the game does,
+and what smooth motion's in-betweens share with them: the same tiles and
+palette, so the 2D layers are reused (the 2D layers changed on every new
+game frame of the race: those draws cost what they did).
+
+| settings | before | after |
+|---|---|---|
+| default | 2.9 (layers 1.4, build 0.7, 3d prep 0.3, rest 0.5) | 1.0 (layers 0.2, build 0.4, 3d prep 0.15) |
+| `--temporal taa` | 3.5 (3d prep 0.9) | 1.5 (3d prep 0.5) |
+| `--temporal 50` | 3.9 (3d prep 1.1) | 1.2 (3d prep 0.4) |
+| `--shading pixel` | 4.5 (build 1.9) | about 2.9 (build 1.5) |
+| Sega Rally, 4K (3840x2160), `--temporal taa --bloom 100 --depth on --shading pixel` | 7.7 (build and place 3.3, 3d prep 1.7, layers 1.55) | 6.7 (shading 0.8, build 1.15, place 1.15, 3d prep 1.7, layers 0.4) |
+
+`layers` is `video::layers_2d`, a CPU rasteriser of the tile planes at the
+game's 496x384 whatever the window: 1.4 ms a call (the planes 0.95, HUD
+placement and shifts 0.3, widening 0.1, RGBA 0.15). `3d prep` is the vertex
+and polygon table; temporal's is dearer for the previous positions and the
+thin-polygon test. `3d pass` is nothing (the polygons are batched into a
+few draws): the encoding is not where the time goes, and no draw waited
+for the GPU at these sizes (`submit` 0.1 ms; `device.poll`, buffer maps and
+read-backs aren't used while playing). Bind groups and buffers are
+made each draw (`3d buffers`, 0.1 ms): not worth pooling.
+
+What the process holds on the GPU (nvidia-smi; the allocator's reserved
+memory in brackets), same window and race:
+
+| settings | before | after |
+|---|---|---|
+| default | 249 MiB (192 MB) | 91 MiB (34 MB) |
+| `--aa 8` | 505 MiB (448 MB) | 169 MiB (111 MB) |
+| `--aa 4 --depth on` | 505 MiB (448 MB) | 169 MiB (111 MB) |
+| `--temporal taa` | 507 MiB (448 MB) | 170 MiB (111 MB) |
+| `--temporal 50` | 251 MiB (192 MB) | 138 MiB (79 MB) |
+| Sega Rally, 4K, `--temporal taa --bloom 100 --depth on --shading pixel` | 555 MiB (448 MB) | 483 MiB (372 MB) |
+
+(About 55 MB of each is the driver's own, which none of this reaches. The
+rest scales with the window, as below: these windows are 2.4 million
+pixels, a 4K one has 3.4 times that.)
+
+Where memory goes, for a window of `W x H` pixels:
+
+- the 3D layer: 4 bytes a pixel; with `--aa 4|8` also the multisampled
+  image (16 or 32 bytes a pixel; cleared, resolved, never read back) and
+  with `--depth on` the depth buffer (4 bytes a sample: 16 or 32 with
+  multisampling);
+- temporal anti-aliasing: the 3D layer and the aux target at the internal
+  size (`--temporal 67` is 0.45 of the pixels) and two of each of aux (8
+  bytes a pixel, internal size) and the history (8 bytes, output size):
+  about 36 bytes a pixel at `taa` (4K: 300 MB); the multisampled targets
+  are not allocated;
+- bloom: its chain of half, quarter, ... sizes at 8 bytes a pixel: about
+  2.7 bytes per pixel of the 3D layer;
+- the game's render RAM, 7 MB, and the 2D layers (1 MB each);
+- texture packs: images and material maps up to the budget
+  (docs/texture-packs.md), tile atlas.
+
+What was wasted, and is fixed:
+
+- the allocator's blocks: wgpu's defaults hold 128 MB of device and 64 MB
+  of host memory before the first texture and grow in blocks up to 256 MB;
+  the player asks for blocks of 4 to 8 MB and a block of its own for a
+  texture larger than that (192 MB reserved became 34 at the default
+  settings, and the 448 MB of an 8x multisampled window 111);
+- targets kept after the setting that wanted them was changed (the 3D layer
+  and multisampled and depth targets after temporal anti-aliasing replaced
+  them, temporal's after it was turned off, bloom's levels): a kept texture
+  unused for 120 frames is dropped;
+- the multisampled colour and depth targets are cleared at the start of
+  their pass and discarded at its end: they are marked transient, which on
+  Apple GPUs makes them memoryless (the 8x multisampled target of a 4K
+  window is 265 MB there, and none now; elsewhere it changes nothing);
+- the 2D layers (and their two uploads): the tiles and palette of the draw
+  before's, the view and the 3D the same (a repeat, a smooth motion
+  in-between, a HUD that didn't change) are not rasterised and uploaded
+  again (`Renderer::layers_cached`). An in-between cost 1.4 ms of that on
+  this machine, of the roughly 4 ms a draw costs on an M3 Max (not measured
+  there);
+- the tile planes were worked out twice a draw with the HUD at the edges in
+  a game whose HUD has 3D parts (Sega Rally): once for the layout that moves
+  the HUD's polygons (`HudLayout`), once for the 2D layers; they are shared
+  now (`Planes`), and kept while the tiles and palette are the same. That
+  was 0.95 ms of every draw of such a game at any window size.
+
+Ideas not done:
+
+- the history in a 4-byte format (R11G11B10 float) would halve temporal's
+  history (4K: 66 MB) but rounds the colour, so the picture changes;
+- aux and history ping-pong in place where the resolve reads each pixel
+  once before writing it (it reads neighbours: needs a copy of a tile);
+- `layers_2d` itself, 1.4 ms of the 2.9 of a draw of a new game frame
+  (the planes 0.95), is a CPU rasteriser of the tile planes at the game's
+  496x384; as a compute or fragment pass over the tile RAM on the GPU it
+  would leave the draw thread (about half a core at 120 Hz with smooth
+  motion, where every other draw is an in-between, which now reuse the
+  layers), and cost the GPU a few microseconds; a change that can't alter
+  the picture but needs the tile planes' rules (modes, splits, priorities)
+  written in WGSL and checked against the CPU's (`tile_planes_check`);
+- the vertex and polygon table of a repeated game frame kept (the stream,
+  the RAM version and the view the same): `build` and `3d prep` (0.6 ms)
+  would go for repeats; they are few at the display's rate with smooth
+  motion off, and an in-between has geometry of its own;
+- smooth motion's in-between is `geometrizer replay` plus `build` and
+  `3d prep` of a whole frame: the polygons interpolated on the GPU from
+  both frames' (a vertex shader, the vertices uploaded once a game frame)
+  would take the in-between's CPU cost to about nothing, and is the
+  largest saving there is for 120 Hz (`build` 0.7 + `3d prep` 0.3 + the
+  replay);
+- the hand-over copy (1 MB of tile RAM every frame, render RAM only when
+  its version changed) is on the game's thread.
+
 ### Run-ahead cost
 
 Measured with `make run-ahead-profile GAME=g RUN_AHEAD_FRAMES=n` (the

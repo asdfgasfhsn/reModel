@@ -90,6 +90,12 @@ impl Bloom {
         Bloom { layout, sampler, pipelines, levels: Vec::new(), size: (0, 0) }
     }
 
+    /// Drop the level textures (bloom is off): the next `encode` makes them.
+    pub fn release(&mut self) {
+        self.levels.clear();
+        self.size = (0, 0);
+    }
+
     /// The bloom of `src` (a `w` x `h` filterable image, the 3D layer): the
     /// chain's largest level, half size, in `AUX_FORMAT`, to be sampled
     /// bilinearly over the frame.

@@ -375,6 +375,89 @@ struct LightCache {
     shaded: std::sync::Arc<model2::light::Shaded>,
 }
 
+/// Where a draw's host time went, summed over the draws since the last
+/// [`Renderer::take_phases`] (`Renderer::set_profile`; off by default).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Phases {
+    /// Draws summed.
+    pub draws: u32,
+    /// Smooth shading's lighting of the frame (a repeat costs nothing).
+    pub shade: std::time::Duration,
+    /// Polygons built from the display list.
+    pub build: std::time::Duration,
+    /// The HUD's polygons moved, the polygons clipped and placed.
+    pub place: std::time::Duration,
+    /// The 2D layers (tiles, palette) made on the CPU, or found the same
+    /// as the draw before's.
+    pub layers: std::time::Duration,
+    /// Draws that found them the same (`layers` is then the comparing).
+    pub layers_reused: u32,
+    /// `encode_3d` before its buffers: the vertices, the polygon table,
+    /// runs, pack slots.
+    pub prep3d: std::time::Duration,
+    /// `encode_3d`'s buffers, bind group and pipelines.
+    pub resources3d: std::time::Duration,
+    /// `encode_3d`'s render pass.
+    pub pass3d: std::time::Duration,
+    /// The rest of `encode_frame`: temporal's resolve, bloom, the 2D
+    /// uploads, the compose pass.
+    pub rest: std::time::Duration,
+    /// `Queue::submit`.
+    pub submit: std::time::Duration,
+}
+
+/// What the renderer holds on the GPU, from the driver allocator's own
+/// accounting ([`Renderer::memory`]).
+#[derive(Clone, Debug, Default)]
+pub struct MemoryReport {
+    /// Bytes in live allocations.
+    pub allocated: u64,
+    /// Bytes in the memory blocks they come from (what the process holds).
+    pub reserved: u64,
+    /// Live allocations by label: bytes and count, largest first.
+    pub by_label: Vec<(String, u64, u32)>,
+}
+
+impl MemoryReport {
+    /// One line: the totals and the largest labels.
+    pub fn line(&self) -> String {
+        let mb = |b: u64| b as f64 / 1048576.0;
+        let mut s = format!("{:.1} MB allocated, {:.1} MB reserved", mb(self.allocated), mb(self.reserved));
+        for (label, bytes, n) in self.by_label.iter().take(12) {
+            if *bytes >= 262_144 {
+                s += &format!("; {label} {:.1} MB", mb(*bytes));
+                if *n > 1 {
+                    s += &format!(" (x{n})");
+                }
+            }
+        }
+        s
+    }
+}
+
+/// What was made of the last frame's tile RAM and palette: the tile planes
+/// (shared by the HUD layout and the 2D layers) and the 2D layers for the
+/// view and 3D they were made for.
+struct TileCache {
+    tiles: Vec<u8>,
+    palette: Vec<u8>,
+    planes: std::sync::Arc<model2::video::Planes>,
+    layers: Option<CachedLayers>,
+}
+
+struct CachedLayers {
+    /// The view's part in them (`pad`, `sx`, `sy`, `hud`) and whether the
+    /// frame has 3D.
+    view: (f32, f32, f32, model2::video::Hud),
+    has_3d: bool,
+    layers: std::sync::Arc<Layers2d>,
+    /// Which layers these are (for `Renderer::uploaded`).
+    generation: u64,
+}
+
+/// Frames a kept texture may go unused before it is dropped.
+const KEEP_FRAMES: u64 = 120;
+
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -421,6 +504,27 @@ pub struct Renderer {
     black: f32,
     /// Textures kept between frames, by label.
     textures: Vec<(&'static str, wgpu::Texture)>,
+    /// `frames` when each kept texture was last asked for (by label): one
+    /// unused for `KEEP_FRAMES` frames is dropped (`evict_unused`), so a
+    /// feature turned off gives its memory back.
+    texture_used: HashMap<&'static str, u64>,
+    /// Frames encoded (`encode_frame`), for `texture_used`.
+    frames: u64,
+    /// `frames` when bloom's levels were last used.
+    bloom_used: u64,
+    /// The tile planes and 2D layers of the last frame, made again only
+    /// when what they come from changed (a repeat, smooth motion's
+    /// in-betweens).
+    tile_cache: Option<TileCache>,
+    layers_generations: u64,
+    /// The generation of the cached layers the next `encode_frame` draws
+    /// (one-shot), and the generation and texture each of the `base` and
+    /// `hud` textures last got: unchanged layers are not uploaded again.
+    layers_generation: Option<u64>,
+    uploaded: [Option<(u64, wgpu::Texture)>; 2],
+    /// `Phases` are timed (`set_profile`).
+    profile: bool,
+    phases: Phases,
     /// The texture pack, if any (`set_pack`).
     pack: Option<Box<dyn TexturePack + Send>>,
     /// Texture keys, kept while render RAM is unchanged.
@@ -633,6 +737,12 @@ impl Renderer {
             label: Some("remodel"),
             required_limits: limits(&adapter),
             required_features: features(&adapter),
+            // Blocks of 4 to 8 MB for the small things; a larger texture
+            // gets a block of its own, its size exactly. (The default holds
+            // 192 MB in blocks of 128 and 64 MB before the first texture,
+            // and `MemoryUsage`'s 8 to 64 MB blocks hold up to one more
+            // each of what doesn't fill them.)
+            memory_hints: wgpu::MemoryHints::Manual { suballocated_device_memory_block_size: (4 << 20)..(8 << 20) },
             ..Default::default()
         }))
         .map_err(|e| format!("{name}: {e}"))?;
@@ -768,6 +878,15 @@ impl Renderer {
             versions: None,
             black: 0.0,
             textures: Vec::new(),
+            texture_used: HashMap::new(),
+            frames: 0,
+            bloom_used: 0,
+            tile_cache: None,
+            layers_generations: 0,
+            layers_generation: None,
+            uploaded: [None, None],
+            profile: false,
+            phases: Phases::default(),
             pack: None,
             keys: TexKeys::default(),
             pack_tex: HashMap::new(),
@@ -816,6 +935,59 @@ impl Renderer {
     /// [`max_anisotropy`]; 1: none, so `tex_filter` stops at mipmaps).
     pub fn set_max_anisotropy(&mut self, n: u8) {
         self.max_anisotropy = n.clamp(1, 16);
+    }
+
+    /// Time each draw's phases ([`Renderer::take_phases`]); off by default.
+    pub fn set_profile(&mut self, on: bool) {
+        self.profile = on;
+    }
+
+    /// The phase times summed since the last call (zero without
+    /// [`Renderer::set_profile`]).
+    pub fn take_phases(&mut self) -> Phases {
+        std::mem::take(&mut self.phases)
+    }
+
+    /// The start of a timed phase: None unless profiling.
+    fn tick(&self) -> Option<std::time::Instant> {
+        self.profile.then(std::time::Instant::now)
+    }
+
+    /// Add the time since `t` to the phase `slot` picks.
+    fn lap(&mut self, t: Option<std::time::Instant>, slot: fn(&mut Phases) -> &mut std::time::Duration) {
+        if let Some(t) = t {
+            *slot(&mut self.phases) += t.elapsed();
+        }
+    }
+
+    /// What the GPU allocator holds for this renderer's device, by label
+    /// (None where the backend can't tell: the browser's).
+    pub fn memory(&self) -> Option<MemoryReport> {
+        let r = self.device.generate_allocator_report()?;
+        let mut by: HashMap<&str, (u64, u32)> = HashMap::new();
+        for a in &r.allocations {
+            let e = by.entry(a.name.as_str()).or_default();
+            e.0 += a.size;
+            e.1 += 1;
+        }
+        let mut by_label: Vec<(String, u64, u32)> = by.into_iter().map(|(l, (b, n))| (l.to_string(), b, n)).collect();
+        by_label.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        Some(MemoryReport { allocated: r.total_allocated_bytes, reserved: r.total_reserved_bytes, by_label })
+    }
+
+    /// Drop the kept textures and bloom levels nothing has asked for in
+    /// `KEEP_FRAMES` frames (a feature turned off, a size left behind).
+    fn evict_unused(&mut self) {
+        let (frames, used) = (self.frames, &self.texture_used);
+        let before = self.textures.len();
+        self.textures.retain(|(l, _)| frames.saturating_sub(used.get(l).copied().unwrap_or(0)) <= KEEP_FRAMES);
+        if self.textures.len() != before {
+            let kept: Vec<&'static str> = self.textures.iter().map(|(l, _)| *l).collect();
+            self.texture_used.retain(|l, _| kept.contains(l));
+        }
+        if frames.saturating_sub(self.bloom_used) > KEEP_FRAMES {
+            self.bloom.release();
+        }
     }
 
     /// Draw the 3D layer with `quality` from the next frame on. The sample
@@ -933,6 +1105,65 @@ impl Renderer {
         self.pack_stats = PackStats::default();
     }
 
+    /// The tile planes of `tiles` and `palette`, worked out again only if
+    /// they differ from the last frame's.
+    fn tile_cache(&mut self, tiles: &[u8], palette: &[u8]) -> &mut TileCache {
+        let same = self.tile_cache.as_ref().is_some_and(|c| c.tiles == tiles && c.palette == palette);
+        if !same {
+            self.tile_cache = Some(TileCache {
+                tiles: tiles.to_vec(),
+                palette: palette.to_vec(),
+                planes: std::sync::Arc::new(model2::video::Planes::of(tiles, palette)),
+                layers: None,
+            });
+        }
+        self.tile_cache.as_mut().unwrap()
+    }
+
+    /// `HudLayout::new` from the cached tile planes (which the 2D layers of
+    /// the same frame start from too).
+    fn hud_layout(&mut self, tiles: &[u8], palette: &[u8], view: &View) -> model2::video::HudLayout {
+        if !model2::video::HudLayout::needed(view) {
+            return Default::default();
+        }
+        let planes = self.tile_cache(tiles, palette).planes.clone();
+        model2::video::HudLayout::with_planes(&planes, view)
+    }
+
+    /// [`Renderer::layers_2d`] for the draws: the layers of the last frame
+    /// again if the tiles, palette, view and 3D are the same (not with a
+    /// pack's tile images or a photo's hidden layers, which change what
+    /// they make). Sets `layers_generation` for `encode_frame`.
+    fn layers_cached(&mut self, tiles: &[u8], palette: &[u8], view: &View, has_3d: bool) -> std::sync::Arc<Layers2d> {
+        let pack_tiles = self.pack.as_ref().is_some_and(|p| p.has_tiles());
+        if pack_tiles || self.photo_hide != (false, false) {
+            self.tile_cache = None;
+            self.layers_generation = None;
+            return std::sync::Arc::new(self.layers_2d(tiles, palette, view, has_3d));
+        }
+        let key = (view.pad, view.sx, view.sy, view.hud);
+        let cache = self.tile_cache(tiles, palette);
+        let hit = cache
+            .layers
+            .as_ref()
+            .filter(|c| c.view == key && c.has_3d == has_3d)
+            .map(|c| (c.generation, c.layers.clone()));
+        let planes = cache.planes.clone();
+        if let Some((generation, layers)) = hit {
+            self.layers_generation = Some(generation);
+            self.phases.layers_reused += self.profile as u32;
+            return layers;
+        }
+        let layers = std::sync::Arc::new(model2::video::layers_2d_with(&planes, tiles, palette, view, has_3d));
+        self.layers_generations += 1;
+        let generation = self.layers_generations;
+        if let Some(c) = self.tile_cache.as_mut() {
+            c.layers = Some(CachedLayers { view: key, has_3d, layers: layers.clone(), generation });
+        }
+        self.layers_generation = Some(generation);
+        layers
+    }
+
     /// The 2D layers of a frame (`model2::video::layers_2d`), with the
     /// pack's tile images (`tile_<key>.png`) in place of the patterns they
     /// replace when it has any: those are then drawn at output resolution
@@ -1044,6 +1275,7 @@ impl Renderer {
         m: Option<&model2::raster::MotionIn>,
         render_version: Option<u64>,
     ) -> (Vec<Poly>, Vec<model2::raster::Centres>) {
+        let t_shade = self.tick();
         let opts = self.shade_options();
         let side = self.light_side.take();
         let shaded = opts.map(|o| {
@@ -1073,6 +1305,8 @@ impl Renderer {
             .filter(|_| self.light_options().is_some())
             .map(|(s, hit)| model2::light::Stats { ms: if *hit { 0.0 } else { s.stats.ms }, ..s.stats });
         let shaded = shaded.map(|s| s.0);
+        self.lap(t_shade, |p| &mut p.shade);
+        let t_build = self.tick();
         self.texels.get_mut().begin(render_version);
         let input = model2::raster::BuildIn {
             motion: m,
@@ -1083,7 +1317,9 @@ impl Renderer {
             texels: Some(&self.texels),
             near: self.photo_near,
         };
-        model2::raster::build_with(stream, src, &input)
+        let built = model2::raster::build_with(stream, src, &input);
+        self.lap(t_build, |p| &mut p.build);
+        built
     }
 
     /// What the last frame drawn with shading on was drawn as
@@ -1513,6 +1749,7 @@ impl Renderer {
 
     /// A texture kept between frames (re-created if the size changed).
     fn kept_texture(&mut self, label: &'static str, w: u32, h: u32, usage: wgpu::TextureUsages) -> wgpu::Texture {
+        self.texture_used.insert(label, self.frames);
         if let Some((_, t)) = self.textures.iter().find(|(l, t)| *l == label && t.width() == w && t.height() == h) {
             return t.clone();
         }
@@ -1535,6 +1772,7 @@ impl Renderer {
         let same = |t: &wgpu::Texture| {
             t.width() == w && t.height() == h && t.sample_count() == samples && t.format() == format
         };
+        self.texture_used.insert(label, self.frames);
         if let Some((_, t)) = self.textures.iter().find(|(l, t)| *l == label && same(t)) {
             return t.clone();
         }
@@ -1545,7 +1783,9 @@ impl Renderer {
             sample_count: samples,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            // Cleared at the start of its pass and discarded at the end
+            // (`encode_3d`): on Apple GPUs it then takes no memory at all.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TRANSIENT_ATTACHMENT,
             view_formats: &[],
         });
         self.textures.retain(|(l, _)| *l != label);
@@ -1569,6 +1809,7 @@ impl Renderer {
         target: &wgpu::TextureView,
         temporal: Option<&TemporalPass>,
     ) {
+        let t0 = self.tick();
         let (w, h) = temporal.map_or((view.width as u32, view.height as u32), |t| t.size);
         let vertex_bytes = if temporal.is_some() { VERTEX_BYTES_T } else { VERTEX_BYTES };
         let mut verts: Vec<u8> = Vec::new();
@@ -1793,6 +2034,8 @@ impl Renderer {
         if table.is_empty() {
             table.resize(64, 0);
         }
+        self.lap(t0, |p| &mut p.prep3d);
+        let t0 = self.tick();
         let render = self.ram_buffer(0, src.render_ram, versions.map(|v| v.0));
         let palette = self.ram_buffer(1, src.palette, versions.map(|v| v.1));
         let d = &self.device;
@@ -1872,6 +2115,8 @@ impl Renderer {
             ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
         });
         let attachments = [colour, aux];
+        self.lap(t0, |p| &mut p.resources3d);
+        let t0 = self.tick();
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("3d layer"),
             color_attachments: if is_t { &attachments } else { &attachments[..1] },
@@ -1935,6 +2180,8 @@ impl Renderer {
             }
             pass.draw(run.vertices.clone(), 0..1);
         }
+        drop(pass);
+        self.lap(t0, |p| &mut p.pass3d);
     }
 
     fn texture(&self, label: &str, w: u32, h: u32, usage: wgpu::TextureUsages) -> wgpu::Texture {
@@ -2028,9 +2275,25 @@ impl Renderer {
         (rgb, covered)
     }
 
-    fn upload(&mut self, label: &'static str, rgba: &[u8], w: u32, h: u32) -> wgpu::Texture {
+    /// `rgba` in the kept texture `label` (`slot` of `uploaded`), unless
+    /// that texture already holds these cached layers (`generation`).
+    fn upload(
+        &mut self,
+        slot: usize,
+        generation: Option<u64>,
+        label: &'static str,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+    ) -> wgpu::Texture {
         let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
         let t = self.kept_texture(label, w, h, usage);
+        if let (Some(g), Some((ug, ut))) = (generation, &self.uploaded[slot]) {
+            if *ug == g && *ut == t {
+                return t;
+            }
+        }
+        self.uploaded[slot] = generation.map(|g| (g, t.clone()));
         self.queue.write_texture(
             t.as_image_copy(),
             rgba,
@@ -2093,6 +2356,9 @@ impl Renderer {
         origin: (u32, u32),
     ) {
         let (w, h) = (view.width as u32, view.height as u32);
+        self.frames += 1;
+        let t_frame = self.tick();
+        let in3d = self.phases.prep3d + self.phases.resources3d + self.phases.pass3d;
         if let Some(targets) = self.photo_depth.take() {
             self.encode_photo_depth(enc, polys, placed, &targets, (w, h));
         }
@@ -2117,13 +2383,15 @@ impl Renderer {
         // shader never reads it then).
         let bloom_strength = self.quality.bloom as f32 / 100.0;
         let bloom_view = if self.quality.bloom > 0 && !placed.is_empty() {
+            self.bloom_used = self.frames;
             self.bloom.encode(&self.device, enc, &layer3d_view, w, h, self.bloom_extra)
         } else {
             let usage = wgpu::TextureUsages::TEXTURE_BINDING;
             self.kept_texture("bloom none", 1, 1, usage).create_view(&Default::default())
         };
-        let base = self.upload("base", &layers.base, (WIDTH + 2 * layers.side) as u32, HEIGHT as u32);
-        let hud = self.upload("hud", &layers.hud, layers.ext_w as u32, HEIGHT as u32);
+        let generation = self.layers_generation.take();
+        let base = self.upload(0, generation, "base", &layers.base, (WIDTH + 2 * layers.side) as u32, HEIGHT as u32);
+        let hud = self.upload(1, generation, "hud", &layers.hud, layers.ext_w as u32, HEIGHT as u32);
         let b = layers.backdrop.map(|c| c as f32 / 255.0);
         let mut params = le([view.sx, view.sy, view.pad].map(f32::to_le_bytes));
         params.extend(le([!placed.is_empty() as u32, layers.ext_w as u32, layers.side as u32].map(u32::to_le_bytes)));
@@ -2171,6 +2439,14 @@ impl Renderer {
             pass.set_bind_group(1, g, &[]);
         }
         pass.draw(0..3, 0..1);
+        drop(pass);
+        if let Some(t) = t_frame {
+            // Everything but the 3D layer's own encoding, which lapped
+            // itself.
+            let in3d = self.phases.prep3d + self.phases.resources3d + self.phases.pass3d - in3d;
+            self.phases.rest += t.elapsed().saturating_sub(in3d);
+        }
+        self.evict_unused();
     }
 
     /// Draw a whole frame into `target` (a surface texture, say) and submit.
@@ -2351,16 +2627,23 @@ impl Renderer {
             };
             self.build_polys(stream, src, m_in.as_ref(), Some(b.versions.0))
         };
-        model2::video::HudLayout::new(b.tiles, b.palette, view).anchor(&mut polys, view);
+        let t = self.tick();
+        self.hud_layout(b.tiles, b.palette, view).anchor(&mut polys, view);
         let placed = model2::raster::place(&mut polys, view);
-        let layers = self.layers_2d(b.tiles, b.palette, view, !placed.is_empty());
+        self.lap(t, |p| &mut p.place);
+        let t = self.tick();
+        let layers = self.layers_cached(b.tiles, b.palette, view, !placed.is_empty());
+        self.lap(t, |p| &mut p.layers);
         let (render, palette) = b.versions;
         self.set_ram_versions(render, palette);
         self.temporal.pending = Some((motion.map(|m| m.tag), step, centres));
         self.black = b.black;
         let mut enc = self.device.create_command_encoder(&Default::default());
         self.encode_frame(&mut enc, &polys, &placed, src, view, &layers, target, format, origin);
+        let t = self.tick();
         self.queue.submit([enc.finish()]);
+        self.lap(t, |p| &mut p.submit);
+        self.phases.draws += self.profile as u32;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2375,16 +2658,23 @@ impl Renderer {
     ) {
         let src = b.sources(points);
         let (mut polys, _) = self.build_polys(stream, &src, None, Some(b.versions.0));
-        model2::video::HudLayout::new(b.tiles, b.palette, view).anchor(&mut polys, view);
+        let t = self.tick();
+        self.hud_layout(b.tiles, b.palette, view).anchor(&mut polys, view);
         let mut placed = model2::raster::place(&mut polys, view);
         self.photo_drop_hud(&polys, &mut placed, view);
-        let layers = self.layers_2d(b.tiles, b.palette, view, !placed.is_empty());
+        self.lap(t, |p| &mut p.place);
+        let t = self.tick();
+        let layers = self.layers_cached(b.tiles, b.palette, view, !placed.is_empty());
+        self.lap(t, |p| &mut p.layers);
         let (render, palette) = b.versions;
         self.set_ram_versions(render, palette);
         self.black = b.black;
         let mut enc = self.device.create_command_encoder(&Default::default());
         self.encode_frame(&mut enc, &polys, &placed, &src, view, &layers, target, format, origin);
+        let t = self.tick();
         self.queue.submit([enc.finish()]);
+        self.lap(t, |p| &mut p.submit);
+        self.phases.draws += self.profile as u32;
     }
     /// `present` into an offscreen texture and read it back as RGB, for
     /// checking against the CPU compositor. Blocks: native only.

@@ -680,6 +680,7 @@ impl Renderer {
         usage: wgpu::TextureUsages,
     ) -> (wgpu::Texture, bool) {
         let same = |t: &wgpu::Texture| t.width() == w && t.height() == h && t.format() == format && t.usage() == usage;
+        self.texture_used.insert(label, self.frames);
         if let Some((_, t)) = self.textures.iter().find(|(l, t)| *l == label && same(t)) {
             return (t.clone(), false);
         }

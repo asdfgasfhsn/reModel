@@ -673,11 +673,32 @@ pub fn tile_planes_check(tiles: &[u8], palette: &[u8]) -> usize {
 /// The 2D layers for `view`. `has_3d`: whether the frame draws any 3D
 /// (moves the HUD to the edges and fills the sides with the backdrop).
 pub fn layers_2d(tiles: &[u8], palette: &[u8], view: &View, has_3d: bool) -> Layers2d {
-    let (base, hud) = tile_planes_fast(tiles, palette);
-    let shift = hud_shifts(&hud, view, has_3d);
-    let (hud_ext, ext_w) = place_hud(&hud, &shift, view);
+    layers_2d_with(&Planes::of(tiles, palette), tiles, palette, view, has_3d)
+}
+
+/// The two tile layers of a frame before the view's part (what
+/// [`layers_2d`] and [`HudLayout`] both start from): the base picture and
+/// the high-priority HUD pixels, 496x384. Worked out once for the same
+/// `tiles` and `palette` by a caller that keeps it.
+pub struct Planes {
+    base: Vec<[u8; 3]>,
+    hud: Vec<Option<[u8; 3]>>,
+}
+
+impl Planes {
+    pub fn of(tiles: &[u8], palette: &[u8]) -> Planes {
+        let (base, hud) = tile_planes_fast(tiles, palette);
+        Planes { base, hud }
+    }
+}
+
+/// [`layers_2d`] from the frame's [`Planes`].
+pub fn layers_2d_with(planes: &Planes, tiles: &[u8], palette: &[u8], view: &View, has_3d: bool) -> Layers2d {
+    let (base, hud) = (&planes.base, &planes.hud);
+    let shift = hud_shifts(hud, view, has_3d);
+    let (hud_ext, ext_w) = place_hud(hud, &shift, view);
     let side = view.side();
-    let base = widen_base(tiles, palette, &base, side, has_3d);
+    let base = widen_base(tiles, palette, base, side, has_3d);
     Layers2d {
         base: base.iter().flat_map(|c| [c[0], c[1], c[2], 255]).collect(),
         side,
@@ -1047,11 +1068,24 @@ impl HudLayout {
     /// The layout of the frame in `tiles` and `palette` for `view`. Empty
     /// (nothing moves) unless the view puts the HUD at the edges.
     pub fn new(tiles: &[u8], palette: &[u8], view: &View) -> Self {
-        if view.hud != Hud::Edges || view.pad <= 0.0 || view.hud_element_windows == 0 {
+        if !Self::needed(view) {
             return HudLayout::default();
         }
-        let (_, hud) = tile_planes_fast(tiles, palette);
-        let boxes = hud_elements(&hud, view)
+        Self::with_planes(&Planes::of(tiles, palette), view)
+    }
+
+    /// Whether `view` moves any polygons with the HUD (else the layout is
+    /// empty, and `new` and `with_planes` cost nothing).
+    pub fn needed(view: &View) -> bool {
+        view.hud == Hud::Edges && view.pad > 0.0 && view.hud_element_windows != 0
+    }
+
+    /// [`HudLayout::new`] from the frame's [`Planes`].
+    pub fn with_planes(planes: &Planes, view: &View) -> Self {
+        if !Self::needed(view) {
+            return HudLayout::default();
+        }
+        let boxes = hud_elements(&planes.hud, view)
             .into_iter()
             .map(|(members, s)| {
                 let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
