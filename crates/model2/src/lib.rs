@@ -473,6 +473,26 @@ pub fn save_session_parts(machine: &mut Machine, live: Option<Vec<u8>>) -> Vec<u
     out
 }
 
+/// What a save file's header says (`save_info`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaveInfo {
+    pub format: u32,
+    /// The reModel that wrote it (format 2 on).
+    pub made_by: Option<String>,
+    /// This build can read its format (`load_session_parts` won't refuse it).
+    pub loads: bool,
+}
+
+/// Read a save file's header from its first bytes (a hundred or so are
+/// enough), without decompressing it. None: not a reModel save file.
+pub fn save_info(head: &[u8]) -> Option<SaveInfo> {
+    let (format, body) = split_header(head, SAVE_PREFIX)?;
+    let made_by = body.strip_prefix(b"made-by ").and_then(|b| {
+        b.iter().take(80).position(|&c| c == b'\n').map(|e| String::from_utf8_lossy(&b[..e]).into_owned())
+    });
+    Some(SaveInfo { format, made_by, loads: format <= SAVE_FORMAT })
+}
+
 /// Load a file from [`save_session`]. Without `live`, any sound board state
 /// in it is ignored; with `live` but none saved, the boards are left as
 /// they are.
@@ -628,6 +648,10 @@ mod tests {
     fn save_headers_name_their_format() {
         assert_eq!(split_header(b"REMODEL-SAVE-1\nxyz", SAVE_PREFIX), Some((1, &b"xyz"[..])));
         assert_eq!(split_header(b"REMODEL-SAVE-12\n", SAVE_PREFIX), Some((12, &b""[..])));
+        let info = save_info(b"REMODEL-SAVE-2\nmade-by v1.2.3\nxyz").unwrap();
+        assert_eq!((info.format, info.made_by.as_deref(), info.loads), (2, Some("v1.2.3"), true));
+        assert!(!save_info(b"REMODEL-SAVE-99\nmade-by v9\n").unwrap().loads);
+        assert_eq!(save_info(b"PK\x03\x04"), None);
         for bad in [&b"REMODEL-SAVE-\n"[..], b"REMODEL-SAVE-0\n", b"REMODEL-SAVE-x\n", b"PK\x03\x04", b"REMODEL-SAVE-1"]
         {
             assert_eq!(split_header(bad, SAVE_PREFIX), None);

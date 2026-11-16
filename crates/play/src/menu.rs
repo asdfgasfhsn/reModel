@@ -24,11 +24,13 @@ use crate::focus::Focus;
 use crate::hints::{
     preset_help, run_ahead_help, run_ahead_max, run_ahead_shown, BLOOM, BLOOM_HELP, PRESETS, RUN_AHEAD,
 };
-use crate::launcher::{Nav, CYAN, DIM, FG};
+use crate::launcher::{Nav, DIM};
+use crate::saves::{self, SlotInfo};
 use crate::settings::{GameSettings, Preset};
 use crate::theme::{self, Chip, Level, Toasts};
-use egui::{pos2, vec2, Align2, Color32, FontId, Rect, Sense, Shape};
+use egui::{pos2, vec2, Align2, Color32, FontFamily, FontId, Rect, Sense, Shape, Stroke};
 use romset::bindings::{Accepts, Bindings, Slot, Value};
+use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime};
 
 /// Save slots shown in the menu; slot 0 is the quick slot (F5 / F9).
@@ -42,6 +44,8 @@ pub enum Action {
     Load(u8),
     /// Leave the game for the launcher.
     Games,
+    /// Start the game again from power-on.
+    Reset,
     /// Open photo mode.
     Photo,
     /// The game's bindings changed (save them).
@@ -82,6 +86,14 @@ impl Tab {
         }
     }
 
+    /// The page's heading: the Motion tab is "Speed and latency" there.
+    pub fn heading(self) -> &'static str {
+        match self {
+            Tab::Motion => "Speed and latency",
+            other => other.label(),
+        }
+    }
+
     /// The tab `d` places on, wrapping round.
     pub fn step(self, d: i32) -> Tab {
         let i = Tab::ALL.iter().position(|t| *t == self).unwrap_or(0) as i32;
@@ -118,6 +130,22 @@ pub struct Menu {
     slots_focus: Focus,
     settings_focus: Focus,
     controls_focus: Focus,
+    /// The slot the slots page has selected.
+    slot_sel: u8,
+    /// The slots' thumbnails as textures, loaded as the slots page opens,
+    /// and pictures just taken, waiting to become textures.
+    thumbs: HashMap<u8, Thumb>,
+    fresh: HashMap<u8, egui::ColorImage>,
+    /// Reset game was selected once, and wants a second.
+    reset_armed: Option<Instant>,
+}
+
+/// A slot's thumbnail on the GPU: of the save made at `saved`, read from
+/// the PNG written at `stamp` (None: taken just now, the PNG not yet seen).
+struct Thumb {
+    saved: SystemTime,
+    stamp: Option<SystemTime>,
+    tex: egui::TextureHandle,
 }
 
 /// Player-wide settings the menu changes besides the game's.
@@ -134,8 +162,8 @@ pub struct View<'a> {
     /// The game running, for what its manifest says (input lag, the most
     /// run-ahead worth having, the preset's choices).
     pub game: Option<&'static romset::Game>,
-    /// When each slot was saved, if it has been.
-    pub slots: &'a [Option<SystemTime>],
+    /// Each slot, if it has been saved: when, by what, its thumbnail.
+    pub saves: &'a [Option<SlotInfo>],
     /// Anisotropic filtering the GPU has (`gpu::max_anisotropy`): the
     /// texture filters offered.
     pub max_anisotropy: u8,
@@ -186,16 +214,6 @@ fn shading_hint(v: &GameSettings) -> &'static str {
     }
 }
 
-fn age(t: SystemTime) -> String {
-    let s = t.elapsed().unwrap_or_default().as_secs();
-    match s {
-        0..60 => "just now".into(),
-        60..3600 => format!("{} min ago", s / 60),
-        3600..86400 => format!("{} h ago", s / 3600),
-        _ => format!("{} days ago", s / 86400),
-    }
-}
-
 /// How a row was changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Step {
@@ -217,27 +235,41 @@ struct Rows<'a> {
 }
 
 impl Rows<'_> {
-    /// One "label ◂ value ▸" row; `can`: whether there is a choice before
-    /// and after.
+    /// One "label ◂ value ▸" row, the label over the value; `can`: whether
+    /// there is a choice before and after.
     fn row(&mut self, ui: &mut egui::Ui, label: &str, value: &str, can: (bool, bool), help: &str) -> Step {
         let s = theme::scale(ui.ctx());
-        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0 * s), Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 60.0 * s), Sense::hover());
         let r = ui.interact(rect, ui.make_persistent_id(("row", label)), Sense::CLICK);
         let (pad, accepted) = self.focus.stepper(ui, &r);
-        let (arrow, value_w) = (28.0 * s, 230.0 * s);
-        let right = Rect::from_min_max(pos2(rect.right() - arrow, rect.top()), rect.right_bottom());
-        let mid = Rect::from_min_max(pos2(right.left() - value_w, rect.top()), pos2(right.left(), rect.bottom()));
-        let left = Rect::from_min_max(pos2(mid.left() - arrow, rect.top()), pos2(mid.left(), rect.bottom()));
+        let arrow = 32.0 * s;
+        let right = Rect::from_min_max(
+            pos2(rect.right() - arrow - 8.0 * s, rect.top()),
+            pos2(rect.right() - 8.0 * s, rect.bottom()),
+        );
+        let left = Rect::from_min_max(pos2(right.left() - arrow, rect.top()), pos2(right.left(), rect.bottom()));
         let p = ui.painter();
         if r.hovered() && !self.nav_mode {
             p.rect_filled(rect, theme::ROW_RADIUS * s, Color32::from_white_alpha(14));
         }
-        let font = FontId::new(18.0 * s, theme::semibold());
-        p.text(rect.left_center() + vec2(10.0 * s, 0.0), Align2::LEFT_CENTER, label, font.clone(), FG);
-        p.text(mid.center(), Align2::CENTER_CENTER, value, font, FG);
+        let x = rect.left() + 16.0 * s;
+        p.text(
+            pos2(x, rect.top() + 9.0 * s),
+            Align2::LEFT_TOP,
+            label,
+            FontId::new(14.0 * s, FontFamily::Proportional),
+            theme::TEXT_DIM,
+        );
+        p.text(
+            pos2(x, rect.top() + 29.0 * s),
+            Align2::LEFT_TOP,
+            value,
+            FontId::new(19.0 * s, theme::semibold()),
+            theme::TEXT,
+        );
         for (rect, dir, on) in [(left, -1.0, can.0), (right, 1.0, can.1)] {
-            let c = rect.center();
-            let color = if on { CYAN } else { DIM.gamma_multiply(0.35) };
+            let c = rect.center() + vec2(0.0, 6.0 * s);
+            let color = if on { theme::CYAN } else { DIM.gamma_multiply(0.35) };
             let tip = c + vec2(6.0 * dir, 0.0) * s;
             let back = c - vec2(4.0 * dir, 0.0) * s;
             p.add(Shape::convex_polygon(
@@ -315,6 +347,19 @@ impl Rows<'_> {
             if self.nav_mode { (&self.focused, &self.hovered) } else { (&self.hovered, &self.focused) };
         first.as_ref().or(second.as_ref()).cloned().unwrap_or_default()
     }
+}
+
+/// "Paused", a pill at the game's top left while the menu is up.
+fn paused_pill(ctx: &egui::Context) {
+    let s = theme::scale(ctx);
+    let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::unique("remodel-paused-pill")));
+    let galley = p.layout_no_wrap("Paused".into(), FontId::new(17.0 * s, theme::semibold()), theme::TEXT);
+    let size = vec2(galley.size().x + 52.0 * s, galley.size().y + 16.0 * s);
+    let rect = Rect::from_min_size(pos2(24.0 * s, 24.0 * s), size);
+    p.rect_filled(rect, 999.0, Color32::from_rgba_unmultiplied(4, 6, 11, 204));
+    let dot = Rect::from_center_size(pos2(rect.left() + 21.0 * s, rect.center().y), vec2(10.0 * s, 10.0 * s));
+    p.rect_filled(dot, 2.0 * s, theme::YELLOW);
+    p.galley(pos2(rect.left() + 36.0 * s, rect.center().y - galley.size().y / 2.0), galley, theme::TEXT);
 }
 
 /// The keyboard's navigation keys this frame as `Nav`s, taken out of egui's
@@ -423,8 +468,11 @@ impl Menu {
             self.slots_focus = Focus::default();
             self.settings_focus = Focus::default();
             self.controls_focus = Focus::default();
+            self.thumbs.clear();
+            self.reset_armed = None;
             return actions;
         }
+        paused_pill(ctx);
         let keys = if self.capture.is_none() { menu_keys(ctx) } else { Vec::new() };
         self.note_input(ctx, navs, &keys);
         let all: Vec<Nav> = navs.iter().chain(&keys).copied().collect();
@@ -444,15 +492,23 @@ impl Menu {
             self.controls = false;
         }
         match self.page {
-            Page::Pause => self.pause_page(ctx, view, navs, &mut actions),
+            Page::Pause => self.pause_page(ctx, settings, view, navs, &mut actions),
             Page::SaveLoad => self.save_page(ctx, view, navs, &mut actions),
             Page::Settings => self.settings_page(ctx, settings, prefs, view, navs),
         }
         actions
     }
 
-    /// The pause menu: a short list.
-    fn pause_page(&mut self, ctx: &egui::Context, view: &View, navs: &[Nav], actions: &mut Vec<Action>) {
+    /// The pause menu: what to do (the top rows), then where the settings
+    /// are, each with its value.
+    fn pause_page(
+        &mut self,
+        ctx: &egui::Context,
+        settings: &GameSettings,
+        view: &View,
+        navs: &[Nav],
+        actions: &mut Vec<Action>,
+    ) {
         let focus = &mut self.pause_focus;
         focus.show = self.pad_used || self.keys_used;
         for nav in focus.begin(navs) {
@@ -460,54 +516,114 @@ impl Menu {
                 actions.push(Action::Resume);
             }
         }
-        let mut go = None;
+        if self.reset_armed.is_some_and(|t| t.elapsed() > RESET_CONFIRM) {
+            self.reset_armed = None;
+        }
+        let playing = view.playing.is_some();
+        let armed = self.reset_armed.is_some();
+        let used = view.saves.iter().flatten().count();
+        let picture = PRESETS.iter().find(|p| p.0 == settings.preset).map_or("Custom", |p| p.1);
+        let sound = format!("Music {}{} dB", if settings.music_db > 0.0 { "+" } else { "" }, settings.music_db);
+        let speed = if settings.run_ahead > 0 {
+            format!("Run-ahead {}", settings.run_ahead)
+        } else if settings.exact {
+            "Exact speed".to_string()
+        } else {
+            "Smooth".to_string()
+        };
+        let mut go: Option<(Page, Tab)> = None;
         let mut to_controls = false;
-        egui::Window::new("reModel")
-            .frame(theme::panel_frame(ctx))
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.set_min_width(theme::px(ctx, 360.0));
-                ui.label(theme::heading(ctx, view.playing.unwrap_or("No game"), 28.0));
-                ui.add_space(6.0);
-                let w = ui.available_width();
-                let mut big = |ui: &mut egui::Ui, text: &str| {
-                    focus.button(ui, |ui| ui.add_sized([w, theme::px(ctx, 40.0)], egui::Button::new(text)))
-                };
-                if view.playing.is_some() {
-                    if big(ui, "Resume") {
-                        actions.push(Action::Resume);
+        let mut arm = false;
+        let s = theme::scale(ctx);
+        let hints =
+            [(Chip::A, "Select"), (Chip::B, if playing { "Resume" } else { "Close" }), (Chip::Key("Esc"), "Resume")];
+        let spec = PanelSpec {
+            game: view.playing.unwrap_or("reModel"),
+            heading: if playing { "Paused" } else { "Menu" },
+            back: false,
+            extra_h: 0.0,
+        };
+        side_panel(ctx, &spec, &hints, |ui, reg| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(reg.body.shrink2(vec2(12.0 * s, 0.0))), |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0 * s;
+                    ui.add_space(10.0 * s);
+                    if playing {
+                        if focus.menu_row(ui, "Resume", "Esc") {
+                            actions.push(Action::Resume);
+                        }
+                        if focus.menu_row(ui, "Quick save", "F5") {
+                            actions.push(Action::Save(0));
+                        }
+                        if focus.menu_row(ui, "Quick load", "F9") {
+                            actions.push(Action::Load(0));
+                        }
+                        if focus.menu_row(ui, "Save slots", &format!("{used} used ›")) {
+                            go = Some((Page::SaveLoad, Tab::Display));
+                        }
+                        if focus.menu_row(ui, "Photo mode", "F8") {
+                            actions.push(Action::Photo);
+                        }
+                        if focus.menu_row(ui, "Reset game", if armed { "again to confirm" } else { "" }) {
+                            if armed {
+                                actions.push(Action::Reset);
+                            } else {
+                                arm = true;
+                            }
+                        }
                     }
-                    if big(ui, "Save / Load") {
-                        go = Some(Page::SaveLoad);
+                    if focus.menu_row(ui, "Back to games", "") {
+                        actions.push(Action::Games);
                     }
-                }
-                if big(ui, "Settings") {
-                    go = Some(Page::Settings);
-                }
-                if view.playing.is_some() && big(ui, "Controls") {
-                    to_controls = true;
-                }
-                if view.playing.is_some() && big(ui, "Photo mode") {
-                    actions.push(Action::Photo);
-                }
-                if big(ui, "Back to games") {
-                    actions.push(Action::Games);
-                }
-                if big(ui, "Quit") {
-                    actions.push(Action::Quit);
-                }
-                if focus.show && self.pad_used {
-                    ui.separator();
-                    hints(ui, &[("D-pad", "choose"), ("A", "select"), ("B", "resume"), ("Start", "resume")]);
-                }
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new(format!("About: reModel {}", remodel_version::VERSION)).small().weak());
+                    ui.add_space(14.0 * s);
+                    ui.horizontal(|ui| {
+                        ui.add_space(24.0 * s);
+                        ui.label(
+                            egui::RichText::new("SETTINGS")
+                                .font(FontId::new(14.0 * s, theme::semibold()))
+                                .color(theme::TEXT_DIM),
+                        );
+                    });
+                    ui.add_space(4.0 * s);
+                    if focus.menu_row(ui, "Picture", &format!("{picture} ›")) {
+                        go = Some((Page::Settings, Tab::Picture));
+                    }
+                    if playing && focus.menu_row(ui, "Controls", "›") {
+                        to_controls = true;
+                    }
+                    if focus.menu_row(ui, "Sound", &format!("{sound} ›")) {
+                        go = Some((Page::Settings, Tab::Sound));
+                    }
+                    if focus.menu_row(ui, "Speed and latency", &format!("{speed} ›")) {
+                        go = Some((Page::Settings, Tab::Motion));
+                    }
+                    if !playing && focus.menu_row(ui, "Quit reModel", "") {
+                        actions.push(Action::Quit);
+                    }
+                    ui.add_space(10.0 * s);
+                    ui.horizontal(|ui| {
+                        ui.add_space(24.0 * s);
+                        ui.label(
+                            egui::RichText::new(format!("reModel {}", remodel_version::VERSION))
+                                .font(FontId::new(14.0 * s, FontFamily::Proportional))
+                                .color(theme::TEXT_DIM),
+                        );
+                    });
+                });
             });
+            false
+        });
         self.pause_focus.end();
-        if let Some(page) = go {
+        if arm {
+            self.reset_armed = Some(Instant::now());
+            self.warn("Select Reset game again to confirm");
+        }
+        if let Some((page, tab)) = go {
+            self.reset_armed = None;
             self.page = page;
+            if page == Page::Settings {
+                self.tab = tab;
+            }
             self.slots_focus = Focus::default();
             self.settings_focus = Focus::default();
         }
@@ -517,42 +633,109 @@ impl Menu {
         }
     }
 
-    /// The save slots, on a screen of their own.
+    /// Bring the slots' thumbnails up to date: a picture just taken, or
+    /// the PNG beside a state read when it is new to the menu (a page
+    /// at a time, as the slots page opens, not every frame).
+    fn sync_thumbs(&mut self, ctx: &egui::Context, saves: &[Option<SlotInfo>]) {
+        for slot in 0..SLOTS {
+            let Some(info) = saves.get(slot as usize).and_then(|i| i.as_ref()) else {
+                self.thumbs.remove(&slot);
+                self.fresh.remove(&slot);
+                continue;
+            };
+            let stamp = info.thumb.as_ref().map(|t| t.1);
+            let image = if let Some(img) = self.fresh.remove(&slot) {
+                Some(img)
+            } else if let Some((path, _)) =
+                info.thumb.as_ref().filter(|(_, t)| self.thumbs.get(&slot).is_none_or(|k| k.stamp != Some(*t)))
+            {
+                saves::read_thumb(path).map(|(size, rgba)| egui::ColorImage::from_rgba_unmultiplied(size, &rgba))
+            } else {
+                // Nothing new; a picture of an older save with none now.
+                if self.thumbs.get(&slot).is_some_and(|k| k.saved != info.time && stamp.is_none()) {
+                    self.thumbs.remove(&slot);
+                }
+                continue;
+            };
+            match image {
+                Some(img) => {
+                    let tex = ctx.load_texture(format!("slot-{slot}"), img, egui::TextureOptions::LINEAR);
+                    self.thumbs.insert(slot, Thumb { saved: info.time, stamp, tex });
+                }
+                None => {
+                    self.thumbs.remove(&slot);
+                }
+            }
+        }
+    }
+
+    /// The picture of the state just saved to `slot`, for the slots page
+    /// (its PNG is being written beside the state).
+    pub fn fresh_thumb(&mut self, slot: u8, size: [usize; 2], rgba: Vec<u8>) {
+        if rgba.len() == size[0] * size[1] * 4 {
+            self.fresh.insert(slot, egui::ColorImage::from_rgba_unmultiplied(size, &rgba));
+        }
+    }
+
+    /// The save slots: a card each, then Load, Save here and Back.
     fn save_page(&mut self, ctx: &egui::Context, view: &View, navs: &[Nav], actions: &mut Vec<Action>) {
+        self.sync_thumbs(ctx, view.saves);
         let focus = &mut self.slots_focus;
         focus.show = self.pad_used || self.keys_used;
         let mut back = focus.begin(navs).contains(&Nav::Back);
-        egui::Window::new("Save / Load")
-            .frame(theme::panel_frame(ctx))
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.set_min_width(theme::px(ctx, 360.0));
-                if ui.button("< Back").clicked() {
-                    back = true;
-                }
-                ui.add_space(4.0);
-                ui.label("F5 quick save, F9 quick load");
-                egui::Grid::new("slots").num_columns(4).spacing([12.0, 4.0]).show(ui, |ui| {
+        let mut sel = self.slot_sel.min(SLOTS - 1);
+        let thumbs = &self.thumbs;
+        let s = theme::scale(ctx);
+        let hints = [(Chip::A, "Select"), (Chip::B, "Back"), (Chip::Key("Esc"), "Resume")];
+        let spec =
+            PanelSpec { game: view.playing.unwrap_or("reModel"), heading: "Save slots", back: true, extra_h: 80.0 };
+        let mut jump = None;
+        back |= side_panel(ctx, &spec, &hints, |ui, reg| {
+            let (load_id, save_id) =
+                (ui.make_persistent_id(("pill", "Load")), ui.make_persistent_id(("pill", "Save here")));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(reg.body.shrink2(vec2(24.0 * s, 0.0))), |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 12.0 * s;
+                    ui.add_space(16.0 * s);
                     for slot in 0..SLOTS {
-                        ui.label(if slot == 0 { "Quick".to_string() } else { format!("Slot {slot}") });
-                        let saved = view.slots.get(slot as usize).copied().flatten();
-                        ui.label(saved.map_or("empty".into(), age));
-                        if focus.button(ui, |ui| ui.button("Save")) {
-                            actions.push(Action::Save(slot));
+                        let id = ui.make_persistent_id(("slot-card", slot));
+                        let info = view.saves.get(slot as usize).and_then(|i| i.as_ref());
+                        if slot_card(ui, focus, id, slot, sel == slot, info, thumbs.get(&slot).map(|t| &t.tex)) {
+                            // Selected: on to what's done with it.
+                            sel = slot;
+                            jump = Some(if info.is_some_and(|i| i.loads) { load_id } else { save_id });
                         }
-                        if focus.button(ui, |ui| ui.add_enabled(saved.is_some(), egui::Button::new("Load"))) {
-                            actions.push(Action::Load(slot));
-                        }
-                        ui.end_row();
                     }
+                    ui.add_space(16.0 * s);
                 });
-                if self.pad_used {
-                    ui.separator();
-                    hints(ui, &[("D-pad", "choose"), ("A", "select"), ("B", "back"), ("Start", "resume")]);
-                }
             });
+            // Load, Save here, Back.
+            let foot = reg.extra;
+            ui.painter().hline(foot.x_range(), foot.top(), Stroke::new(1.0, Color32::from_white_alpha(20)));
+            let (pad, gap, h) = (24.0 * s, 10.0 * s, 52.0 * s);
+            let top = foot.center().y - h / 2.0;
+            let back_w = 96.0 * s;
+            let w = (foot.width() - 2.0 * pad - 2.0 * gap - back_w) / 2.0;
+            let at = |x: f32, w: f32| Rect::from_min_size(pos2(x, top), vec2(w, h));
+            let info = view.saves.get(sel as usize).and_then(|i| i.as_ref());
+            let can_load = info.is_some_and(|i| i.loads);
+            let x = foot.left() + pad;
+            if pill(ui, focus, at(x, w), "Load", Some(theme::BLUE), can_load) {
+                actions.push(Action::Load(sel));
+            }
+            if pill(ui, focus, at(x + w + gap, w), "Save here", Some(theme::RAISED), true) {
+                actions.push(Action::Save(sel));
+            }
+            let mut back = false;
+            if pill(ui, focus, at(x + 2.0 * (w + gap), back_w), "Back", None, true) {
+                back = true;
+            }
+            back
+        });
+        self.slot_sel = sel;
+        if let Some(id) = jump {
+            self.slots_focus.focus_to(id);
+        }
         self.slots_focus.end();
         if back {
             self.page = Page::Pause;
@@ -578,33 +761,19 @@ impl Menu {
             self.settings_focus = Focus::default();
         }
         let nav_mode = self.pad_used || self.keys_used;
-        let pad_hints = self.pad_used;
         let mut tab = self.tab;
-        let max_h = (ctx.content_rect().height() * 0.5).max(theme::px(ctx, 160.0));
+        let s = theme::scale(ctx);
         let focus = &mut self.settings_focus;
         focus.show = nav_mode;
         let mut rows = Rows { focus, nav_mode, focused: None, hovered: None };
-        egui::Window::new("Settings")
-            .frame(theme::panel_frame(ctx))
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.set_min_width(theme::px(ctx, 620.0));
-                ui.horizontal(|ui| {
-                    if ui.button("< Back").clicked() {
-                        back = true;
-                    }
-                    ui.add_space(8.0);
-                    for t in Tab::ALL {
-                        if ui.selectable_label(tab == t, t.label()).clicked() {
-                            tab = t;
-                        }
-                    }
-                });
-                ui.separator();
-                egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
-                    ui.set_min_height(max_h.min(6.0 * theme::px(ctx, 36.0)));
+        let hints = [(Chip::Key("◂ ▸"), "Change"), (Chip::Key("LB RB"), "Tabs"), (Chip::B, "Back")];
+        let spec =
+            PanelSpec { game: view.playing.unwrap_or("reModel"), heading: tab.heading(), back: true, extra_h: 136.0 };
+        back |= side_panel(ctx, &spec, &hints, |ui, reg| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(reg.body.shrink2(vec2(16.0 * s, 0.0))), |ui| {
+                tabs(ui, &mut tab);
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 6.0 * s;
                     match tab {
                         Tab::Display => display_rows(ui, &mut rows, settings, &mut prefs, view),
                         Tab::Picture => picture_rows(ui, &mut rows, settings, view),
@@ -613,7 +782,10 @@ impl Menu {
                         Tab::More => more_rows(ui, &mut rows, settings, view),
                     }
                 });
-                ui.separator();
+            });
+            ui.painter().hline(reg.extra.x_range(), reg.extra.top(), Stroke::new(1.0, Color32::from_white_alpha(20)));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(reg.extra.shrink2(vec2(16.0 * s, 6.0 * s))), |ui| {
+                ui.spacing_mut().item_spacing.y = 4.0 * s;
                 rows.choose(
                     ui,
                     "Applies to",
@@ -622,30 +794,18 @@ impl Menu {
                     "Where changes on these screens are kept: for this game only, or as the settings of every \
                      game that has none of its own.",
                 );
-                ui.separator();
                 let help = rows.help();
-                ui.allocate_ui_with_layout(
-                    vec2(ui.available_width(), theme::px(ctx, 60.0)),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        ui.set_min_height(theme::px(ctx, 60.0));
-                        ui.add(egui::Label::new(egui::RichText::new(help).color(DIM)).wrap());
-                    },
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(help)
+                            .font(FontId::new(14.0 * s, FontFamily::Proportional))
+                            .color(theme::TEXT_DIM),
+                    )
+                    .wrap(),
                 );
-                if pad_hints {
-                    ui.separator();
-                    hints(
-                        ui,
-                        &[
-                            ("D-pad", "choose"),
-                            ("Left Right", "change"),
-                            ("LB RB", "tabs"),
-                            ("B", "back"),
-                            ("Start", "resume"),
-                        ],
-                    );
-                }
             });
+            false
+        });
         self.settings_focus.end();
         if tab != self.tab {
             self.tab = tab;
@@ -837,6 +997,254 @@ impl Menu {
         }
         changed
     }
+}
+
+/// The side panel's width, and its header's and footer's heights, in
+/// design points (720 high).
+const PANEL_W: f32 = 440.0;
+const HEADER_H: f32 = 100.0;
+const FOOTER_H: f32 = 56.0;
+/// Reset game wants a second selection within this long.
+const RESET_CONFIRM: Duration = Duration::from_secs(4);
+
+/// The panel's rectangle and the regions in it, tiling it top to bottom:
+/// header, body, extra (a page's own footer, `extra_h` design points, maybe
+/// none) and the hint chips' footer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Regions {
+    panel: Rect,
+    header: Rect,
+    body: Rect,
+    extra: Rect,
+    foot: Rect,
+}
+
+fn regions(screen: Rect, s: f32, extra_h: f32) -> Regions {
+    let panel = Rect::from_min_max(
+        pos2(screen.right() - (PANEL_W * s).min(screen.width()), screen.top()),
+        screen.right_bottom(),
+    );
+    let y = |v: f32| (panel.top() + v).clamp(panel.top(), panel.bottom());
+    let (header_b, foot_t) = (y(HEADER_H * s), y(panel.height() - FOOTER_H * s));
+    let extra_t = y(foot_t - panel.top() - extra_h * s).max(header_b);
+    let band = |top: f32, bottom: f32| Rect::from_x_y_ranges(panel.x_range(), top..=bottom);
+    Regions {
+        panel,
+        header: band(panel.top(), header_b),
+        body: band(header_b, extra_t),
+        extra: band(extra_t, foot_t),
+        foot: band(foot_t, panel.bottom()),
+    }
+}
+
+/// What a page tells the panel.
+struct PanelSpec<'a> {
+    /// The game (small, above the heading).
+    game: &'a str,
+    heading: &'a str,
+    /// A back arrow in the header.
+    back: bool,
+    /// Height of the page's own footer region (design points).
+    extra_h: f32,
+}
+
+/// The side panel the menu pages are in, docked on the right edge over the
+/// paused game: its shadow, edge, header and button hints; `content` fills
+/// the rest (its regions) and returns whether the page was asked to go back.
+/// True if it was, or the header's back arrow was clicked.
+fn side_panel(
+    ctx: &egui::Context,
+    spec: &PanelSpec,
+    hints: &[(Chip, &str)],
+    content: impl FnOnce(&mut egui::Ui, &Regions) -> bool,
+) -> bool {
+    let s = theme::scale(ctx);
+    let reg = regions(ctx.content_rect(), s, spec.extra_h);
+    let mut back = false;
+    egui::Area::new(egui::Id::unique("remodel-menu-panel"))
+        .order(egui::Order::Middle)
+        .fixed_pos(reg.panel.min)
+        .fade_in(false)
+        .show(ctx, |ui| {
+            // The panel takes the pointer, so the game's picture behind it
+            // doesn't.
+            ui.allocate_rect(reg.panel, Sense::click_and_drag());
+            let p = ui.painter().clone();
+            p.add(
+                egui::Shadow { offset: [-10, 0], blur: 60, spread: 0, color: Color32::from_black_alpha(140) }
+                    .as_shape(reg.panel, 0.0),
+            );
+            p.rect_filled(reg.panel, 0.0, theme::PANEL_FILL);
+            p.vline(reg.panel.left(), reg.panel.y_range(), Stroke::new(1.0, theme::PANEL_EDGE));
+            let rule = Stroke::new(1.0, Color32::from_white_alpha(20));
+            p.hline(reg.header.x_range(), reg.header.bottom(), rule);
+            p.hline(reg.foot.x_range(), reg.foot.top(), rule);
+            // The header: the game, then the page's heading.
+            let x = reg.header.left() + 32.0 * s;
+            p.text(
+                pos2(x, reg.header.top() + 28.0 * s),
+                Align2::LEFT_TOP,
+                spec.game.to_uppercase(),
+                FontId::new(15.0 * s, theme::semibold()),
+                theme::CYAN_LIGHT,
+            );
+            let size = if spec.heading.len() > 12 { 28.0 } else { 34.0 };
+            p.text(
+                pos2(x, reg.header.top() + 52.0 * s),
+                Align2::LEFT_TOP,
+                spec.heading.to_uppercase(),
+                FontId::new(size * s, theme::display()),
+                theme::TEXT,
+            );
+            if spec.back {
+                let r = Rect::from_center_size(
+                    pos2(reg.header.right() - 32.0 * s - 18.0 * s, reg.header.top() + 36.0 * s),
+                    vec2(36.0 * s, 36.0 * s),
+                );
+                let resp = ui.interact(r, egui::Id::unique("remodel-menu-back"), Sense::click());
+                let fill = if resp.hovered() { Color32::from_white_alpha(36) } else { theme::RAISED };
+                p.circle_filled(r.center(), r.width() / 2.0, fill);
+                p.text(
+                    r.center() - vec2(1.0, 2.0 * s),
+                    Align2::CENTER_CENTER,
+                    "‹",
+                    FontId::new(26.0 * s, theme::bold()),
+                    theme::TEXT,
+                );
+                back |= resp.clicked();
+            }
+            back |= content(ui, &reg);
+            let chips = Rect::from_min_size(
+                pos2(reg.foot.left() + 32.0 * s, reg.foot.top() + 14.0 * s),
+                vec2(reg.foot.width() - 64.0 * s, 28.0 * s),
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(chips), |ui| theme::chips(ui, hints));
+        });
+    back
+}
+
+/// The settings' tab strip: the one clicked is chosen.
+fn tabs(ui: &mut egui::Ui, tab: &mut Tab) {
+    let s = theme::scale(ui.ctx());
+    let font = FontId::new(16.0 * s, theme::semibold());
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0 * s), Sense::hover());
+    let mut x = rect.left() + 8.0 * s;
+    for (i, t) in Tab::ALL.iter().enumerate() {
+        let w = ui.painter().layout_no_wrap(t.label().to_string(), font.clone(), theme::TEXT).size().x;
+        let r = Rect::from_min_size(pos2(x - 6.0 * s, rect.top()), vec2(w + 12.0 * s, rect.height()));
+        let resp = ui.interact(r, ui.make_persistent_id(("settings-tab", i)), Sense::click());
+        let on = *t == *tab;
+        let colour = if on {
+            theme::TEXT
+        } else if resp.hovered() {
+            theme::TEXT_2
+        } else {
+            theme::TEXT_DIM
+        };
+        ui.painter().text(pos2(x, rect.center().y - 1.0 * s), Align2::LEFT_CENTER, t.label(), font.clone(), colour);
+        if on {
+            let y = rect.bottom() - 4.0 * s;
+            ui.painter().rect_filled(Rect::from_min_size(pos2(x, y), vec2(w, 3.0 * s)), 1.5 * s, theme::CYAN);
+        }
+        if resp.clicked() {
+            *tab = *t;
+        }
+        x += w + 18.0 * s;
+    }
+}
+
+/// A footer button in `rect`: `fill` None is an outline. Clicked, or
+/// activated from the pad. Disabled, it can't be focused.
+fn pill(ui: &mut egui::Ui, focus: &mut Focus, rect: Rect, text: &str, fill: Option<Color32>, enabled: bool) -> bool {
+    let s = theme::scale(ui.ctx());
+    let id = ui.make_persistent_id(("pill", text));
+    ui.add_enabled_ui(enabled, |ui| {
+        let r = ui.interact(rect, id, Sense::click());
+        let hover = r.hovered() && enabled;
+        let p = ui.painter();
+        let radius = theme::ROW_RADIUS * s;
+        let dim = if enabled { 1.0 } else { 0.4 };
+        match fill {
+            Some(f) => {
+                let f = if hover { f.gamma_multiply(1.15) } else { f };
+                p.rect_filled(rect, radius, f.gamma_multiply(dim));
+            }
+            None => {
+                if hover {
+                    p.rect_filled(rect, radius, Color32::from_white_alpha(18));
+                }
+                p.rect_stroke(rect, radius, Stroke::new(1.0, Color32::from_white_alpha(51)), egui::StrokeKind::Inside);
+            }
+        }
+        let ink = if enabled { theme::TEXT } else { theme::TEXT_DIM };
+        p.text(rect.center(), Align2::CENTER_CENTER, text, FontId::new(19.0 * s, theme::bold()), ink);
+        if focus.is_on(id) {
+            theme::focus_ring(p, rect, s, theme::ROW_RADIUS);
+        }
+        focus.register(ui, &r)
+    })
+    .inner
+}
+
+/// A slot's card: its thumbnail (or "Empty"), name, when and by what. The
+/// selected one has a cyan border and a faint fill. Clicked, or activated
+/// from the pad.
+fn slot_card(
+    ui: &mut egui::Ui,
+    focus: &mut Focus,
+    id: egui::Id,
+    slot: u8,
+    selected: bool,
+    info: Option<&SlotInfo>,
+    thumb: Option<&egui::TextureHandle>,
+) -> bool {
+    let s = theme::scale(ui.ctx());
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 104.0 * s), Sense::hover());
+    let r = ui.interact(rect, id, Sense::click());
+    let radius = theme::ROW_RADIUS * s;
+    let p = ui.painter().clone();
+    if selected {
+        p.rect_filled(rect, radius, Color32::from_rgba_unmultiplied(34, 229, 255, 26));
+        p.rect_stroke(rect, radius, Stroke::new(2.0 * s, theme::CYAN), egui::StrokeKind::Inside);
+    } else {
+        let white = if r.hovered() { 14 } else { 8 };
+        p.rect_filled(rect, radius, Color32::from_white_alpha(white));
+    }
+    let pic = Rect::from_min_size(rect.min + vec2(10.0 * s, 10.0 * s), vec2(112.0 * s, 84.0 * s));
+    match thumb {
+        Some(tex) => egui::Image::from_texture((tex.id(), pic.size())).corner_radius(8.0 * s).paint_at(ui, pic),
+        None => {
+            p.rect_filled(pic, 8.0 * s, Color32::from_rgb(20, 27, 44));
+            let text = if info.is_some() { "No preview" } else { "Empty" };
+            p.text(
+                pic.center(),
+                Align2::CENTER_CENTER,
+                text,
+                FontId::new(14.0 * s, FontFamily::Proportional),
+                Color32::from_rgb(109, 122, 148),
+            );
+        }
+    }
+    let x = pic.right() + 16.0 * s;
+    let wrap = (rect.right() - 10.0 * s - x).max(40.0);
+    let name = if slot == 0 { "Quick save".to_string() } else { format!("Slot {slot}") };
+    let mut y = rect.top() + 12.0 * s;
+    p.text(pos2(x, y), Align2::LEFT_TOP, name, FontId::new(19.0 * s, theme::bold()), theme::TEXT);
+    y += 26.0 * s;
+    if let Some(info) = info {
+        for (text, size, colour) in
+            [(saves::when(info.time), 15.0, theme::TEXT_2), (saves::meta(info), 13.0, theme::TEXT_DIM)]
+        {
+            let galley = p.layout(text, FontId::new(size * s, FontFamily::Proportional), colour, wrap);
+            let h = galley.size().y;
+            p.galley(pos2(x, y), galley, colour);
+            y += h + 3.0 * s;
+        }
+    }
+    if focus.is_on(id) {
+        theme::focus_ring(&p, rect, s, theme::ROW_RADIUS);
+    }
+    focus.register(ui, &r)
 }
 
 /// A line of pad hints: each button's chip and what it does.
@@ -1095,11 +1503,12 @@ mod tests {
         }
 
         fn frame(&mut self, navs: &[Nav], events: Vec<egui::Event>) {
-            let slots = [Some(SystemTime::now()), None, None, None, None];
+            let saved = SlotInfo { time: SystemTime::now(), made_by: Some("v0.9.0".into()), loads: true, thumb: None };
+            let saves = [Some(saved), None, None, None, None];
             let view = View {
                 playing: Some(self.game.title),
                 game: Some(self.game),
-                slots: &slots,
+                saves: &saves,
                 max_anisotropy: 16,
                 temporal_supported: true,
                 has_bezel: true,
@@ -1137,9 +1546,12 @@ mod tests {
             self
         }
 
-        /// Into the Settings screen, onto its first row.
+        /// Into the Settings screen (by Picture, the first of its rows on
+        /// the pause menu, then back a tab), onto its first row.
         fn open_settings(&mut self) -> &mut Rig {
-            self.run(&[&[Nav::Down], &[Nav::Down], &[Nav::Accept], &[]])
+            self.press(7, Nav::Down).run(&[&[Nav::Accept], &[], &[Nav::PrevGroup], &[]]);
+            assert_eq!(self.menu.tab, Tab::Display);
+            self
         }
 
         /// Into the settings tab `t`.
@@ -1165,6 +1577,7 @@ mod tests {
                 Action::Save(_) => "save",
                 Action::Load(_) => "load",
                 Action::Games => "games",
+                Action::Reset => "reset",
                 Action::Photo => "photo",
                 Action::Bindings => "bindings",
                 Action::Quit => "quit",
@@ -1182,43 +1595,109 @@ mod tests {
     }
 
     #[test]
-    fn the_pause_menu_is_a_short_list() {
-        // Resume, Save / Load, Settings, Controls, Photo mode, Back to games, Quit, in
-        // that order: down to the foot is Quit, one up Back to games.
+    fn the_pause_menu_lists_what_to_do_then_the_settings() {
+        // Resume, Quick save, Quick load, Save slots, Photo mode, Reset
+        // game, Back to games; then Picture, Controls, Sound, Speed and
+        // latency.
+        let at = |downs: usize| {
+            let mut r = Rig::new("topskatr");
+            r.press(downs, Nav::Down).run(&[&[Nav::Accept], &[]]);
+            r
+        };
+        assert_eq!(at(1).names(), ["save"]);
+        assert_eq!(at(2).names(), ["load"]);
+        assert_eq!(at(3).menu.page, Page::SaveLoad);
+        assert_eq!(at(4).names(), ["photo"]);
+        assert_eq!(at(6).names(), ["games"]);
+        let r = at(7);
+        assert_eq!((r.menu.page, r.menu.tab), (Page::Settings, Tab::Picture));
+        assert!(at(8).menu.controls);
+        let r = at(9);
+        assert_eq!((r.menu.page, r.menu.tab), (Page::Settings, Tab::Sound));
+        // Speed and latency is the last row.
+        for downs in [10, 30] {
+            let r = at(downs);
+            assert_eq!((r.menu.page, r.menu.tab), (Page::Settings, Tab::Motion), "{downs}");
+        }
+    }
+
+    #[test]
+    fn reset_game_asks_twice() {
         let mut r = Rig::new("topskatr");
-        r.press(30, Nav::Down).run(&[&[Nav::Accept]]);
-        assert_eq!(r.names(), ["quit"]);
+        r.press(5, Nav::Down).run(&[&[Nav::Accept], &[]]);
+        assert!(r.actions.is_empty(), "the first only asks");
+        r.run(&[&[Nav::Accept]]);
+        assert_eq!(r.names(), ["reset"]);
+        // Moving the focus about does not disarm it.
         let mut r = Rig::new("topskatr");
-        r.press(30, Nav::Down).press(1, Nav::Up).run(&[&[Nav::Accept]]);
-        assert_eq!(r.names(), ["games"]);
-        // Nothing else on it: the controls of the settings aren't here.
+        r.press(5, Nav::Down).run(&[&[Nav::Accept], &[Nav::Up], &[Nav::Down], &[Nav::Accept]]);
+        assert_eq!(r.names(), ["reset"], "moving the focus doesn't");
         let mut r = Rig::new("topskatr");
-        r.press(6, Nav::Down).run(&[&[Nav::Accept]]);
-        assert_eq!(r.names(), ["quit"], "six steps from Resume is the last");
-        // Photo mode, four down.
-        let mut r = Rig::new("topskatr");
-        r.press(4, Nav::Down).run(&[&[Nav::Accept]]);
-        assert_eq!(r.names(), ["photo"]);
+        r.press(5, Nav::Down).run(&[&[Nav::Accept]]);
+        r.menu.reset_armed = r.menu.reset_armed.map(|t| t - RESET_CONFIRM * 2);
+        r.run(&[&[Nav::Accept]]);
+        assert!(r.actions.is_empty(), "too late: it asks again");
     }
 
     #[test]
     fn save_and_load_slots() {
         let mut r = Rig::new("topskatr");
-        // Down to Save / Load, in; the quick slot's Save, right to its Load
-        // (it's saved).
-        r.run(&[&[Nav::Down], &[Nav::Accept], &[]]);
+        // Down to Save slots, in. A on the quick slot (saved) selects it
+        // and goes on to Load.
+        r.press(3, Nav::Down).run(&[&[Nav::Accept], &[]]);
         assert_eq!(r.menu.page, Page::SaveLoad);
-        r.run(&[&[Nav::Accept], &[Nav::Right], &[Nav::Accept]]);
-        assert!(matches!(&r.actions[..], [Action::Save(0), Action::Load(0)]));
-        // Slot 1 is empty: its Load can't be focused.
+        r.run(&[&[Nav::Accept], &[Nav::Accept]]);
+        assert!(matches!(&r.actions[..], [Action::Load(0)]));
+        // Slot 1 is empty: A selects it and goes on to Save here (Load
+        // can't be focused).
         let mut r = Rig::new("topskatr");
-        r.run(&[&[Nav::Down], &[Nav::Accept], &[], &[Nav::Down], &[Nav::Right], &[Nav::Accept]]);
+        r.press(3, Nav::Down).run(&[&[Nav::Accept], &[], &[Nav::Down], &[Nav::Accept], &[Nav::Accept]]);
         assert!(matches!(&r.actions[..], [Action::Save(1)]));
+        assert_eq!(r.menu.slot_sel, 1);
         // B goes back to the pause menu, which B then closes.
         r.run(&[&[Nav::Back], &[]]);
         assert_eq!(r.menu.page, Page::Pause);
         r.run(&[&[Nav::Back]]);
         assert_eq!(r.names(), ["save", "resume"]);
+    }
+
+    #[test]
+    fn thumbnails_become_textures_when_the_slots_page_opens() {
+        let mut r = Rig::new("topskatr");
+        // A picture just taken for the quick slot (saved), another for slot
+        // 3 (not saved: dropped).
+        r.menu.fresh_thumb(0, [2, 2], vec![200; 16]);
+        r.menu.fresh_thumb(3, [2, 2], vec![200; 16]);
+        r.menu.fresh_thumb(1, [2, 2], vec![200; 3]);
+        assert!(r.menu.thumbs.is_empty(), "nothing is loaded before the page opens");
+        r.press(3, Nav::Down).run(&[&[Nav::Accept], &[]]);
+        assert_eq!(r.menu.page, Page::SaveLoad);
+        assert!(r.menu.thumbs.contains_key(&0));
+        assert!(!r.menu.thumbs.contains_key(&3) && !r.menu.thumbs.contains_key(&1));
+        // Closing the menu frees them.
+        r.menu.open = false;
+        r.run(&[&[]]);
+        assert!(r.menu.thumbs.is_empty());
+    }
+
+    #[test]
+    fn the_panel_regions_tile_its_edge() {
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 720.0));
+        let r = regions(screen, 1.0, 80.0);
+        assert_eq!(r.panel, Rect::from_min_max(pos2(840.0, 0.0), pos2(1280.0, 720.0)));
+        assert_eq!(r.header.top(), 0.0);
+        assert_eq!(r.header.bottom(), r.body.top());
+        assert_eq!(r.body.bottom(), r.extra.top());
+        assert_eq!(r.extra.bottom(), r.foot.top());
+        assert_eq!(r.foot.bottom(), 720.0);
+        assert_eq!(r.extra.height(), 80.0);
+        // At 4K the panel is as much of the screen as at 720p.
+        let big = regions(Rect::from_min_size(pos2(0.0, 0.0), vec2(3840.0, 2160.0)), 3.0, 0.0);
+        assert_eq!(big.panel.width(), 1320.0);
+        assert_eq!(big.extra.height(), 0.0);
+        // A window too short for its regions squeezes the body to nothing.
+        let tiny = regions(Rect::from_min_size(pos2(0.0, 0.0), vec2(500.0, 200.0)), 1.0, 80.0);
+        assert!(tiny.body.height() >= 0.0 && tiny.panel.width() == 440.0);
     }
 
     #[test]
@@ -1478,11 +1957,11 @@ mod tests {
         let mut r = Rig::new("topskatr");
         let glow = |r: &mut Rig, navs: &[Nav], events: Vec<egui::Event>| {
             let before = r.ctx.cumulative_frame_nr();
-            let slots = [None; 5];
+            let saves = [None, None, None, None, None];
             let view = View {
                 playing: Some("A game"),
                 game: None,
-                slots: &slots,
+                saves: &saves,
                 max_anisotropy: 16,
                 temporal_supported: true,
                 has_bezel: false,
@@ -1536,9 +2015,9 @@ mod tests {
     #[test]
     fn controls_page_from_the_pad() {
         let mut r = Rig::new("topskatr");
-        // Down to Controls (the fourth), into it; down to the first
+        // Down to Controls (the ninth row), into it; down to the first
         // binding, A captures.
-        r.press(3, Nav::Down).run(&[&[Nav::Accept], &[], &[Nav::Down], &[Nav::Accept]]);
+        r.press(8, Nav::Down).run(&[&[Nav::Accept], &[], &[Nav::Down], &[Nav::Accept]]);
         assert!(r.actions.is_empty());
         assert!(r.menu.controls);
         let first = r.b.slots()[0].0;

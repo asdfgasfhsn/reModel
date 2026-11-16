@@ -138,6 +138,37 @@ impl Focus {
     }
 
     fn item(&mut self, ui: &egui::Ui, r: &Response, kind: Kind) -> bool {
+        self.item_with(ui, r, kind, true)
+    }
+
+    /// Move the focus to `id`, a widget of the page as last drawn.
+    pub fn focus_to(&mut self, id: Id) {
+        if let Some(i) = self.last.iter().position(|x| x.id == id) {
+            self.on = Some((id, i));
+            self.moved = true;
+        }
+    }
+
+    /// Whether the pad or keyboard's focus is on `id` (and shows).
+    pub fn is_on(&self, id: Id) -> bool {
+        self.show && self.focused() == Some(id)
+    }
+
+    /// A widget that paints its own focus (ask `is_on` with its id first):
+    /// clicked, or activated from the pad.
+    pub fn register(&mut self, ui: &egui::Ui, r: &Response) -> bool {
+        self.item_with(ui, r, Kind::Button, false) || r.clicked()
+    }
+
+    /// A menu row (`theme::menu_row`): clicked, or activated from the pad.
+    pub fn menu_row(&mut self, ui: &mut egui::Ui, label: &str, hint: &str) -> bool {
+        let id = ui.make_persistent_id(("menu-row", label));
+        let r = crate::theme::menu_row(ui, label, hint, self.is_on(id));
+        self.register(ui, &r)
+    }
+
+    /// `item`, with `ring` off for a widget that paints its own focus.
+    fn item_with(&mut self, ui: &egui::Ui, r: &Response, kind: Kind, ring: bool) -> bool {
         // A window's first frame sizes it, its widgets disabled.
         let enabled = r.enabled() || ui.is_sizing_pass();
         self.items.push(Item { id: r.id, rect: r.rect, kind, enabled });
@@ -145,7 +176,7 @@ impl Focus {
             if self.moved {
                 r.scroll_to_me(None);
             }
-            if self.show {
+            if self.show && ring {
                 glow(ui.painter(), r.rect);
             }
         }

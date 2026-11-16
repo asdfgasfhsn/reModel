@@ -44,6 +44,7 @@ mod pad;
 mod perf;
 mod photo;
 mod preview;
+mod saves;
 mod settings;
 mod sound;
 mod splash;
@@ -56,7 +57,7 @@ use sound::Sound;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -936,6 +937,9 @@ struct Play {
     games: Vec<&'static romset::Game>,
     unsupported: usize,
     menu: menu::Menu,
+    /// The save slots as the menu lists them, read when it opens and
+    /// after a save (None: read again).
+    slot_cache: Option<Vec<Option<saves::SlotInfo>>>,
     launcher: launcher::Launcher,
     previews: preview::Previews,
     preview: PreviewState,
@@ -1394,11 +1398,85 @@ impl Play {
             path.display(),
             result.as_ref().map_or_else(|e| format!("failed: {e}"), |_| "ok".into())
         );
-        let name = if slot == 0 { "Quick save".to_string() } else { format!("Saved to slot {slot}") };
+        let name = if slot == 0 { "Quick saved".to_string() } else { format!("Saved to slot {slot}") };
         match result {
-            Ok(()) => self.menu.notify(name),
+            Ok(()) => {
+                self.keep_thumbnail(&path, slot);
+                self.menu.notify(name);
+            }
             Err(e) => self.menu.error(format!("Save failed: {e}")),
         }
+        self.slot_cache = None;
+    }
+
+    /// The thumbnail of the state just saved to `save`: the game's frame
+    /// as it is, drawn small, handed to the menu for the slots page and
+    /// encoded to a PNG beside the state on another thread. A game that
+    /// can't be drawn now leaves no thumbnail (and drops an older one).
+    fn keep_thumbnail(&mut self, save: &Path, slot: u8) {
+        let thumb = saves::thumb_path(save);
+        match self.thumbnail() {
+            Some((w, h, rgba)) => {
+                self.menu.fresh_thumb(slot, [w as usize, h as usize], rgba.clone());
+                saves::write_thumb(thumb, w, h, rgba);
+            }
+            None => {
+                let _ = std::fs::remove_file(thumb);
+            }
+        }
+    }
+
+    /// The game's frame as a `saves::THUMB_SIZE` picture (4:3, bezel and
+    /// menu left out), RGBA. Drawn from the machine as `--shot` is, in a
+    /// small texture of its own with temporal anti-aliasing off, so the
+    /// frame being shown is left alone but for a fresh start of its
+    /// anti-aliasing history on the next redraw.
+    fn thumbnail(&mut self) -> Option<(u32, u32, Vec<u8>)> {
+        let (w, h) = saves::THUMB_SIZE;
+        if self.photo.is_some() || self.launcher.open {
+            return None;
+        }
+        let (Some(g), Some(s)) = (&mut self.gpu, &mut self.session) else { return None };
+        if s.preview {
+            return None;
+        }
+        let format = g.config.format;
+        let hud = if self.values.hud_edges { model2::video::Hud::Edges } else { model2::video::Hud::Center };
+        let view = model2::video::View::new(h as usize, ASPECTS.0, hud)
+            .with_hud_windows(s.game.hud_windows, s.game.hud_element_windows);
+        let (w, h) = (w.min(view.width as u32).max(1), h.min(view.height as u32).max(1));
+        let core = g.drawer.core();
+        let texture = core.renderer.device().create_texture(&wgpu::TextureDescriptor {
+            label: Some("thumbnail"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let target = texture.create_view(&Default::default());
+        let r = &mut core.renderer;
+        r.forget_ram();
+        r.reset_history();
+        r.set_light_rules(&s.game.shading, hud_mask(s.game));
+        let mut quality = self.values.quality(self.temporal_supported);
+        if quality.temporal > 0 {
+            quality.temporal = 0;
+            quality.msaa = quality.msaa.max(4);
+        }
+        r.set_quality(quality);
+        r.present_bus(&mut s.shown().bus, None, &view, &target, format, (0, 0));
+        let mut rgba = r.read_texture(&texture, w, h);
+        // The next redraw starts from scratch (its frame copy, RAM and
+        // anti-aliasing history), as after a load.
+        core.forget_frame();
+        s.drew_ahead = s.run_ahead.as_ref().is_some_and(|ra| ra.is_ahead_of(&s.machine));
+        if format == wgpu::TextureFormat::Bgra8Unorm || format == wgpu::TextureFormat::Bgra8UnormSrgb {
+            rgba.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p.swap(0, 2));
+        }
+        Some((w, h, rgba))
     }
 
     fn load_slot(&mut self, slot: u8) {
@@ -1406,7 +1484,7 @@ impl Play {
         if !path.is_file() {
             return self.menu.warn(if slot == 0 { "No quick save yet" } else { "That slot is empty" });
         }
-        let done = if slot == 0 { "Quick load".to_string() } else { format!("Loaded slot {slot}") };
+        let done = if slot == 0 { "Quick save loaded".to_string() } else { format!("Loaded slot {slot}") };
         self.load_file(&path, &done);
     }
 
@@ -1449,9 +1527,14 @@ impl Play {
         }
     }
 
-    fn slot_times(&self) -> Vec<Option<SystemTime>> {
+    /// The save slots (quick save first): when and by what each was saved,
+    /// its thumbnail. Read from disk when the menu opens and after a save.
+    fn slot_infos(&mut self) -> Vec<Option<saves::SlotInfo>> {
         let Some(s) = &self.session else { return Vec::new() };
-        (0..menu::SLOTS).map(|n| std::fs::metadata(s.slot_path(n)).and_then(|m| m.modified()).ok()).collect()
+        let cache = self
+            .slot_cache
+            .get_or_insert_with(|| (0..menu::SLOTS).map(|n| saves::read_info(&s.slot_path(n))).collect());
+        cache.clone()
     }
 
     /// Apply what changed in the game's settings to its machine.
@@ -1564,7 +1647,7 @@ impl Play {
             self.sync_pack();
             let (view, origin) = self.fit(w, h);
             let at = self.bezel_at(&view, origin, w);
-            let slots = self.slot_times();
+            let slots = self.slot_infos();
             let pack_text = self.pack_text();
             let materials_text = self.materials_text();
             let has_bezel = self.bezel.is_some();
@@ -1583,7 +1666,7 @@ impl Play {
             let (mut fullscreen, mut for_all) = (self.settings.fullscreen, self.settings.for_all);
             let menu_view = menu::View {
                 playing: Some(s.game.title),
-                slots: &slots,
+                saves: &slots,
                 game: Some(s.game),
                 has_bezel,
                 run_ahead_dropped: s.run_ahead_dropped,
@@ -2370,7 +2453,7 @@ impl Play {
         if self.photo.is_some() {
             return self.photo_frame();
         }
-        let slots = if self.menu.open { self.slot_times() } else { Vec::new() };
+        let slots = if self.menu.open { self.slot_infos() } else { Vec::new() };
         let crosshair = if self.menu.visible() { None } else { self.stick_crosshair() };
         let bezel_at = self.gpu.as_ref().and_then(|g| self.bezel_at(&g.view, g.origin, g.config.width));
         let Some(g) = &mut self.gpu else { return };
@@ -2402,7 +2485,7 @@ impl Play {
             let g = self.gpu.as_mut().unwrap();
             let view = menu::View {
                 playing: self.session.as_ref().map(|s| s.game.title),
-                slots: &slots,
+                saves: &slots,
                 game: self.session.as_ref().map(|s| s.game),
                 has_bezel,
                 run_ahead_dropped: self.session.as_ref().is_some_and(|s| s.run_ahead_dropped),
@@ -2482,6 +2565,7 @@ impl Play {
                     self.set_menu(false);
                 }
                 menu::Action::Games => self.open_launcher(),
+                menu::Action::Reset => self.reset_game(),
                 menu::Action::Photo => {
                     self.set_menu(false);
                     if let Err(e) = self.enter_photo() {
@@ -2497,6 +2581,18 @@ impl Play {
             }
         }
         self.status();
+    }
+
+    /// Start the game again from power-on (the menu's Reset game), keeping
+    /// its EEPROM but not its resume state.
+    fn reset_game(&mut self) {
+        let Some(s) = self.session.as_ref().filter(|s| !s.preview) else { return };
+        s.save_eeprom();
+        let set = s.game.id.to_string();
+        self.session = None;
+        self.set_menu(false);
+        self.start_game(&set, false);
+        self.menu.notify("Game reset");
     }
 
     /// The player-wide settings, as the launcher or menu left them.
@@ -2880,6 +2976,7 @@ impl Play {
     /// Open or close the menu; the game pauses while it's open.
     fn set_menu(&mut self, open: bool) {
         self.menu.open = open;
+        self.slot_cache = None;
         // Keys held when the menu opened would stay pressed otherwise; the
         // pad's Start and Select are kept from the game until released.
         self.keys.clear();
@@ -3365,6 +3462,7 @@ fn main() {
         games: Vec::new(),
         unsupported: 0,
         menu: menu::Menu::default(),
+        slot_cache: None,
         launcher: launcher::Launcher::default(),
         previews: preview::Previews::default(),
         preview: PreviewState::default(),

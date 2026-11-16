@@ -1324,10 +1324,23 @@ CALIBRATION in the test menu changes that.
 
 ## The menu
 
-Esc opens the pause menu (and closes it again). It is a short list:
-**Resume**, **Save / Load**, **Settings**, **Controls**, **Photo mode** (as
-F8: `docs/photo-mode.md`), **Back to games** and **Quit**. Nothing else sits beside Resume: the game's settings are one
-level in. A small "About: reModel <version>" line sits at the foot.
+Esc opens the pause menu (and closes it again). The game stays on screen,
+paused, with a small "Paused" pill at its top left, and the menu is a panel
+docked on the right edge (440 points at 720p, scaled with the window like
+the rest of the look), full height, over a soft shadow. Its header has the
+game's name and the page's heading; its foot the button hints (A Select, B
+Back, Esc Resume).
+
+The first page lists what to do: **Resume**, **Quick save** (F5), **Quick
+load** (F9), **Save slots** (how many are used), **Photo mode** (F8:
+`docs/photo-mode.md`), **Reset game** (select it twice within four seconds:
+the game starts again from power-on, keeping its EEPROM) and **Back to
+games**. Under a small "SETTINGS" label come the settings, one level in,
+each showing its value: **Picture** (the preset), **Controls**, **Sound**
+(the music level) and **Speed and latency** (run-ahead, or exact speed or
+smooth). With no game running (the menu from the launcher) there is a
+**Quit reModel** row at the foot. The version is at the foot of
+the list.
 
 From a gamepad: the d-pad or left stick moves between the buttons and rows
 as they're laid out (repeating while held, as in the launcher), A presses
@@ -1342,13 +1355,25 @@ it for any egui page; the menu's tests (`menu.rs`) drive it with `Nav`s
 headless. *Unconfirmed:* tested with synthetic and scripted (`--nav`)
 events only, not yet with a real pad.
 
-- **Save / Load**: a screen of its own with the quick slot (F5/F9) and four
-  more. A save holds the whole machine, both sound boards included, so
-  loading one resumes the sound exactly where it was. The one thing not
-  saved is a replacement soundtrack voice that's playing (`docs/mods.md`).
-- **Settings**, in tabs. Each row reads "label ◂ value ▸": left and right
+- **Save slots**: a page of its own with a card for the quick slot (F5/F9)
+  and four more: a thumbnail of the game as it was (or "Empty"), the name,
+  when it was saved ("Yesterday 21:08 · 14 h ago", in the computer's time
+  zone where the platform tells it) and which reModel saved it and whether
+  this version loads it. A click, or A, selects a card (the pad's focus
+  then goes on to Load, or to Save here for an empty slot); **Load**,
+  **Save here** and **Back** are at the foot. Quick save and Quick load on
+  the first page, F5 and F9 do the same as the quick card. Saves and loads
+  say so in a toast at the screen's bottom left. A save holds the whole
+  machine, both sound boards included, so loading one resumes the sound
+  exactly where it was. The one thing not saved is a replacement soundtrack
+  voice that's playing (`docs/mods.md`). The thumbnails are described under
+  "Files" below.
+- **Settings**, in tabs under the page's heading (the Motion tab's is
+  "Speed and latency"; Picture, Sound and Speed and latency are the pause
+  page's own rows, Display and More are one tab away). Each row reads
+  label over value, "◂ ▸" at its right: left and right
   change it (A or a click on the name steps on, round to the first), and a
-  single help line at the foot says what the row in focus, or under the
+  help line at the foot says what the row in focus, or under the
   pointer, does. A row that does nothing as things are set is left out, not
   greyed (anti-aliasing while temporal is on, temporal with the chip
   geometrizer or on a GPU that can't, the shading options with flat
@@ -1567,6 +1592,15 @@ on macOS, `%APPDATA%\remodel` on Windows:
   "Versions and releases"): a state from a newer format is refused with a
   message in the menu.
   `resume.save` is the one Continue loads.
+- `<set>/saves/quick.png`, `slot1.png` ...: the slot's thumbnail, beside its
+  state: 224x168 (4:3), drawn from the machine as the state is saved (the
+  game's own frame, without bezel or menu, anti-aliased by multisampling
+  where temporal anti-aliasing is on), encoded on its own thread so a save
+  doesn't wait for it. It is made only by the player, never read by the
+  emulator: the state file and its hash are the same with or without it,
+  and a state without one (saved by an older reModel, or a frame that
+  couldn't be drawn) shows "No preview". The slots page reads them when it
+  opens. Delete freely.
 - `<set>/preview-native.save` (`-chip` with the chip geometrizer): the
   launcher's attract mode preview state.
 - `<set>/texpack/`: the game's texture pack, if you make one (PNGs named
