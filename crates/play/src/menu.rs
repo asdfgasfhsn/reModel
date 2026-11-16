@@ -24,8 +24,9 @@ use crate::focus::Focus;
 use crate::hints::{
     preset_help, run_ahead_help, run_ahead_max, run_ahead_shown, BLOOM, BLOOM_HELP, PRESETS, RUN_AHEAD,
 };
-use crate::launcher::{keycap, Nav, CYAN, DIM, FG};
+use crate::launcher::{Nav, CYAN, DIM, FG};
 use crate::settings::{GameSettings, Preset};
+use crate::theme::{self, Chip, Level, Toasts};
 use egui::{pos2, vec2, Align2, Color32, FontId, Rect, Sense, Shape};
 use romset::bindings::{Accepts, Bindings, Slot, Value};
 use std::time::{Duration, Instant, SystemTime};
@@ -91,7 +92,10 @@ impl Tab {
 #[derive(Default)]
 pub struct Menu {
     pub open: bool,
-    notice: Option<(String, Instant)>,
+    /// The corner notices.
+    toasts: Toasts,
+    /// The menu was open last frame (opening it dismisses error toasts).
+    was_open: bool,
     /// Which screen the menu is on (besides Controls) and which settings tab.
     pub page: Page,
     pub tab: Tab,
@@ -104,10 +108,10 @@ pub struct Menu {
     show_unbound: bool,
     /// Since when the Controls page has waited for `capture`.
     capture_since: Option<((Slot, Option<usize>), Instant)>,
-    /// The last input came from a gamepad: its focus glows, hints show.
+    /// The last input came from a gamepad: its focus ring shows, hints show.
     pub pad_used: bool,
     /// The last input came from the keyboard's navigation keys: the focus
-    /// glows.
+    /// ring shows.
     keys_used: bool,
     /// The focus on each screen.
     pause_focus: Focus,
@@ -216,27 +220,28 @@ impl Rows<'_> {
     /// One "label ◂ value ▸" row; `can`: whether there is a choice before
     /// and after.
     fn row(&mut self, ui: &mut egui::Ui, label: &str, value: &str, can: (bool, bool), help: &str) -> Step {
-        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
+        let s = theme::scale(ui.ctx());
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0 * s), Sense::hover());
         let r = ui.interact(rect, ui.make_persistent_id(("row", label)), Sense::CLICK);
         let (pad, accepted) = self.focus.stepper(ui, &r);
-        let (arrow, value_w) = (26.0, 190.0);
+        let (arrow, value_w) = (28.0 * s, 230.0 * s);
         let right = Rect::from_min_max(pos2(rect.right() - arrow, rect.top()), rect.right_bottom());
         let mid = Rect::from_min_max(pos2(right.left() - value_w, rect.top()), pos2(right.left(), rect.bottom()));
         let left = Rect::from_min_max(pos2(mid.left() - arrow, rect.top()), pos2(mid.left(), rect.bottom()));
         let p = ui.painter();
         if r.hovered() && !self.nav_mode {
-            p.rect_filled(rect, 4.0, Color32::from_white_alpha(10));
+            p.rect_filled(rect, theme::ROW_RADIUS * s, Color32::from_white_alpha(14));
         }
-        let font = FontId::proportional(15.5);
-        p.text(rect.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, label, font.clone(), FG);
+        let font = FontId::new(18.0 * s, theme::semibold());
+        p.text(rect.left_center() + vec2(10.0 * s, 0.0), Align2::LEFT_CENTER, label, font.clone(), FG);
         p.text(mid.center(), Align2::CENTER_CENTER, value, font, FG);
         for (rect, dir, on) in [(left, -1.0, can.0), (right, 1.0, can.1)] {
             let c = rect.center();
             let color = if on { CYAN } else { DIM.gamma_multiply(0.35) };
-            let tip = c + vec2(5.0 * dir, 0.0);
-            let back = c - vec2(3.0 * dir, 0.0);
+            let tip = c + vec2(6.0 * dir, 0.0) * s;
+            let back = c - vec2(4.0 * dir, 0.0) * s;
             p.add(Shape::convex_polygon(
-                vec![tip, back + vec2(0.0, -6.0), back + vec2(0.0, 6.0)],
+                vec![tip, back + vec2(0.0, -7.0 * s), back + vec2(0.0, 7.0 * s)],
                 color,
                 egui::Stroke::NONE,
             ));
@@ -343,32 +348,37 @@ fn menu_keys(ctx: &egui::Context) -> Vec<Nav> {
 }
 
 impl Menu {
-    /// Show `text` briefly at the top of the screen.
+    /// Show `text` briefly in a corner of the screen.
     pub fn notify(&mut self, text: impl Into<String>) {
+        self.toast(Level::Ok, text);
+    }
+
+    /// Like `notify`, as a warning.
+    pub fn warn(&mut self, text: impl Into<String>) {
+        self.toast(Level::Warn, text);
+    }
+
+    /// Like `notify`, as an error: it stays until dismissed (a click, or
+    /// opening the menu).
+    pub fn error(&mut self, text: impl Into<String>) {
+        self.toast(Level::Error, text);
+    }
+
+    fn toast(&mut self, level: Level, text: impl Into<String>) {
         let text = text.into();
         // The log has every notice, as the screen shows it only briefly.
         println!("notice        {text}");
-        self.notice = Some((text, Instant::now()));
+        self.toasts.push(level, text);
     }
 
     /// True while there's something to draw.
     pub fn visible(&self) -> bool {
-        self.open || self.notice.as_ref().is_some_and(|n| n.1.elapsed() < Duration::from_millis(2500))
+        self.open || self.toasts.active()
     }
 
-    /// The notice, if one is showing.
-    pub fn notices(&self, ctx: &egui::Context) {
-        if let Some((text, at)) = &self.notice {
-            if at.elapsed() < Duration::from_millis(2500) {
-                egui::Area::new(egui::Id::unique("notice"))
-                    .order(egui::Order::Foreground)
-                    .anchor(egui::Align2::CENTER_TOP, [0.0, 24.0])
-                    .show(ctx, |ui| {
-                        egui::Frame::popup(ui.style()).show(ui, |ui| ui.label(egui::RichText::new(text).size(18.0)));
-                    });
-                ctx.request_repaint();
-            }
-        }
+    /// The notices, if any are showing.
+    pub fn notices(&mut self, ctx: &egui::Context) {
+        self.toasts.show(ctx);
     }
 
     /// Note where this frame's input came from: `navs` (the pad's) turn the
@@ -400,6 +410,10 @@ impl Menu {
         navs: &[Nav],
     ) -> Vec<Action> {
         let mut actions = Vec::new();
+        if self.open && !self.was_open {
+            self.toasts.dismiss_errors();
+        }
+        self.was_open = self.open;
         self.notices(ctx);
         if !self.open {
             self.controls = false;
@@ -449,16 +463,17 @@ impl Menu {
         let mut go = None;
         let mut to_controls = false;
         egui::Window::new("reModel")
+            .frame(theme::panel_frame(ctx))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.set_min_width(340.0);
-                ui.heading(view.playing.unwrap_or("No game"));
+                ui.set_min_width(theme::px(ctx, 360.0));
+                ui.label(theme::heading(ctx, view.playing.unwrap_or("No game"), 28.0));
                 ui.add_space(6.0);
                 let w = ui.available_width();
                 let mut big = |ui: &mut egui::Ui, text: &str| {
-                    focus.button(ui, |ui| ui.add_sized([w, 34.0], egui::Button::new(text)))
+                    focus.button(ui, |ui| ui.add_sized([w, theme::px(ctx, 40.0)], egui::Button::new(text)))
                 };
                 if view.playing.is_some() {
                     if big(ui, "Resume") {
@@ -508,11 +523,12 @@ impl Menu {
         focus.show = self.pad_used || self.keys_used;
         let mut back = focus.begin(navs).contains(&Nav::Back);
         egui::Window::new("Save / Load")
+            .frame(theme::panel_frame(ctx))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.set_min_width(340.0);
+                ui.set_min_width(theme::px(ctx, 360.0));
                 if ui.button("< Back").clicked() {
                     back = true;
                 }
@@ -564,16 +580,17 @@ impl Menu {
         let nav_mode = self.pad_used || self.keys_used;
         let pad_hints = self.pad_used;
         let mut tab = self.tab;
-        let max_h = (ctx.content_rect().height() * 0.5).max(160.0);
+        let max_h = (ctx.content_rect().height() * 0.5).max(theme::px(ctx, 160.0));
         let focus = &mut self.settings_focus;
         focus.show = nav_mode;
         let mut rows = Rows { focus, nav_mode, focused: None, hovered: None };
         egui::Window::new("Settings")
+            .frame(theme::panel_frame(ctx))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.set_min_width(520.0);
+                ui.set_min_width(theme::px(ctx, 620.0));
                 ui.horizontal(|ui| {
                     if ui.button("< Back").clicked() {
                         back = true;
@@ -587,7 +604,7 @@ impl Menu {
                 });
                 ui.separator();
                 egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
-                    ui.set_min_height(max_h.min(6.0 * 30.0));
+                    ui.set_min_height(max_h.min(6.0 * theme::px(ctx, 36.0)));
                     match tab {
                         Tab::Display => display_rows(ui, &mut rows, settings, &mut prefs, view),
                         Tab::Picture => picture_rows(ui, &mut rows, settings, view),
@@ -608,10 +625,10 @@ impl Menu {
                 ui.separator();
                 let help = rows.help();
                 ui.allocate_ui_with_layout(
-                    vec2(ui.available_width(), 54.0),
+                    vec2(ui.available_width(), theme::px(ctx, 60.0)),
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
-                        ui.set_min_height(54.0);
+                        ui.set_min_height(theme::px(ctx, 60.0));
                         ui.add(egui::Label::new(egui::RichText::new(help).color(DIM)).wrap());
                     },
                 );
@@ -674,16 +691,17 @@ impl Menu {
         let (capture, show_unbound, pad_used) = (&mut self.capture, &mut self.show_unbound, self.pad_used);
         let waited = self.capture_since.map_or(0, |(_, at)| at.elapsed().as_secs());
         egui::Window::new("Controls")
+            .frame(theme::panel_frame(ctx))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.set_min_width(520.0);
+                ui.set_min_width(theme::px(ctx, 620.0));
                 ui.horizontal(|ui| {
                     if focus.button(ui, |ui| ui.button("< Back")) {
                         back = true;
                     }
-                    ui.heading(title);
+                    ui.label(theme::heading(ctx, title, 28.0));
                 });
                 ui.label(
                     "Click a binding, then press a key or gamepad button (for an axis, move a stick or \
@@ -699,7 +717,7 @@ impl Menu {
                     };
                     let left = CAPTURE_WAIT.as_secs().saturating_sub(waited);
                     ui.colored_label(
-                        egui::Color32::YELLOW,
+                        theme::YELLOW,
                         format!("{}: {what}…  (Esc or Guide cancels; {left} s)", b.label(slot)),
                     );
                     ctx.request_repaint();
@@ -721,7 +739,7 @@ impl Menu {
                             ui.horizontal_wrapped(|ui| {
                                 // A grid column only grows to what it held
                                 // last frame: room to wrap in.
-                                ui.set_min_width(300.0);
+                                ui.set_min_width(theme::px(ctx, 300.0));
                                 let current = *capture;
                                 let capturing = |at| current == Some((*slot, at));
                                 match value {
@@ -784,10 +802,7 @@ impl Menu {
                             if others.is_empty() {
                                 ui.label("");
                             } else {
-                                ui.colored_label(
-                                    egui::Color32::from_rgb(255, 170, 60),
-                                    format!("⚠ {}", others.join("; ")),
-                                );
+                                ui.colored_label(theme::YELLOW, format!("⚠ {}", others.join("; ")));
                             }
                             ui.end_row();
                         }
@@ -795,10 +810,7 @@ impl Menu {
                 });
                 ui.separator();
                 if !b.conflicts().is_empty() {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(255, 170, 60),
-                        "⚠ Some keys or buttons are bound twice: both inputs get them.",
-                    );
+                    ui.colored_label(theme::YELLOW, "⚠ Some keys or buttons are bound twice: both inputs get them.");
                 }
                 ui.horizontal(|ui| {
                     if focus.button(ui, |ui| ui.button("Reset to defaults")) {
@@ -827,22 +839,10 @@ impl Menu {
     }
 }
 
-/// A line of pad hints: each button's cap and what it does.
+/// A line of pad hints: each button's chip and what it does.
 fn hints(ui: &mut egui::Ui, hints: &[(&str, &str)]) {
-    let key_font = egui::FontId::monospace(12.0);
-    let font = egui::FontId::proportional(13.5);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        for (i, (key, what)) in hints.iter().enumerate() {
-            if i > 0 {
-                ui.add_space(12.0);
-            }
-            let w = ui.painter().layout_no_wrap(key.to_string(), key_font.clone(), FG).size().x + 12.0;
-            let (r, _) = ui.allocate_exact_size(egui::vec2(w, 22.0), egui::Sense::hover());
-            keycap(ui.painter(), r, key, &key_font, 1.0);
-            ui.label(egui::RichText::new(*what).font(font.clone()).color(DIM));
-        }
-    });
+    let chips: Vec<(Chip, &str)> = hints.iter().map(|(key, what)| (Chip::named(key), *what)).collect();
+    theme::chips(ui, &chips);
 }
 
 fn display_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings, prefs: &mut Prefs, view: &View) {
@@ -1507,7 +1507,7 @@ mod tests {
                 // Cyan (fading in with the window).
                 .filter(|c| {
                     matches!(&c.shape, egui::Shape::Rect(r)
-                        if r.stroke.width == 1.5 && r.stroke.color.to_opaque().b() > 150 && r.stroke.color.r() < 100)
+                        if r.stroke.width == 4.0 && r.stroke.color.to_opaque().b() > 150 && r.stroke.color.r() < 100)
                 })
                 .count()
         };

@@ -47,6 +47,7 @@ mod preview;
 mod settings;
 mod sound;
 mod splash;
+mod theme;
 
 use gilrs::Gilrs;
 use model2::pacing::{FPS, MAX_CATCH_UP};
@@ -1298,7 +1299,7 @@ impl Play {
             }
             Err(e) => {
                 eprintln!("{set}: {e}");
-                self.menu.notify(format!("Can't start {set}: {e}"));
+                self.menu.error(format!("Can't start {set}: {e}"));
                 self.launcher.open = true;
             }
         }
@@ -1394,16 +1395,16 @@ impl Play {
             result.as_ref().map_or_else(|e| format!("failed: {e}"), |_| "ok".into())
         );
         let name = if slot == 0 { "Quick save".to_string() } else { format!("Saved to slot {slot}") };
-        self.menu.notify(match result {
-            Ok(()) => name,
-            Err(e) => format!("Save failed: {e}"),
-        });
+        match result {
+            Ok(()) => self.menu.notify(name),
+            Err(e) => self.menu.error(format!("Save failed: {e}")),
+        }
     }
 
     fn load_slot(&mut self, slot: u8) {
         let Some(path) = self.session.as_ref().filter(|s| !s.preview).map(|s| s.slot_path(slot)) else { return };
         if !path.is_file() {
-            return self.menu.notify(if slot == 0 { "No quick save yet" } else { "That slot is empty" });
+            return self.menu.warn(if slot == 0 { "No quick save yet" } else { "That slot is empty" });
         }
         let done = if slot == 0 { "Quick load".to_string() } else { format!("Loaded slot {slot}") };
         self.load_file(&path, &done);
@@ -1414,7 +1415,7 @@ impl Play {
         let Some(s) = &mut self.session else { return };
         let data = match std::fs::read(path) {
             Ok(d) => d,
-            Err(e) => return self.menu.notify(format!("Can't read {}: {e}", path.display())),
+            Err(e) => return self.menu.error(format!("Can't read {}: {e}", path.display())),
         };
         let result = model2::load_session_parts(&mut s.machine, &data).and_then(|live| match &mut s.sound {
             Some(snd) if !live.is_empty() => snd.load(live, &s.machine.bus),
@@ -1443,7 +1444,7 @@ impl Play {
                 let set = s.game.id.to_string();
                 self.session = None;
                 self.start_game(&set, false);
-                self.menu.notify(format!("Load failed: {e}"));
+                self.menu.error(format!("Load failed: {e}"));
             }
         }
     }
@@ -1646,7 +1647,7 @@ impl Play {
             }
             Err(e) => {
                 eprintln!("{e}");
-                self.menu.notify(format!("{}{}", e[..1].to_uppercase(), &e[1..]));
+                self.menu.warn(format!("{}{}", e[..1].to_uppercase(), &e[1..]));
                 self.pack.loaded = Some(Err(e));
                 renderer.set_pack(None);
             }
@@ -1876,7 +1877,7 @@ impl Play {
                 settings::save_bindings(game, b);
                 self.menu.capture = None;
             }
-            Err(e) => self.menu.notify(e),
+            Err(e) => self.menu.warn(e),
         }
     }
 
@@ -2090,7 +2091,7 @@ impl Play {
                         self.preview.failed.insert(set, format!("the game stopped ({e:?})"));
                     }
                     None => {
-                        self.menu.notify(format!("The game stopped: {e:?}"));
+                        self.menu.error(format!("The game stopped: {e:?}"));
                         self.open_launcher();
                     }
                 }
@@ -2171,7 +2172,7 @@ impl Play {
             // on, and give up cleanly if every draw fails.
             if self.draw_failures == 0 {
                 eprintln!("draw failed: {msg} (the player carries on; please report it)");
-                self.menu.notify(format!("A draw failed: {msg}"));
+                self.menu.error(format!("A draw failed: {msg}"));
             }
             self.draw_failures += 1;
             self.draw_failures_in_row += 1;
@@ -2273,7 +2274,7 @@ impl Play {
                 self.frame_cost = 0.0;
                 self.behind = false;
                 self.behind_frames = 0;
-                self.menu.notify("Run-ahead is off: this computer can't keep up with it");
+                self.menu.warn("Run-ahead is off: this computer can't keep up with it");
                 println!("run-ahead     off: too slow to keep up");
             }
         }
@@ -2484,7 +2485,7 @@ impl Play {
                 menu::Action::Photo => {
                     self.set_menu(false);
                     if let Err(e) = self.enter_photo() {
-                        self.menu.notify(format!("Photo mode: {e}"));
+                        self.menu.error(format!("Photo mode: {e}"));
                     }
                 }
                 menu::Action::Bindings => {
@@ -2958,28 +2959,6 @@ fn draw_crosshair(ctx: &egui::Context, at: egui::Pos2) {
     }
 }
 
-/// egui's look in the logo's colours: the menu, the Controls page and the
-/// launcher's widgets.
-fn style(ctx: &egui::Context) {
-    use launcher::{CYAN, FG, LINE, PANEL};
-    ctx.all_styles_mut(|s| {
-        let v = &mut s.visuals;
-        *v = egui::Visuals::dark();
-        v.window_fill = PANEL;
-        v.panel_fill = PANEL;
-        v.window_stroke = egui::Stroke::new(1.0, LINE);
-        v.window_corner_radius = 12.0.into();
-        v.selection.bg_fill = egui::Color32::from_rgba_unmultiplied(47, 230, 239, 90);
-        v.selection.stroke = egui::Stroke::new(1.0, CYAN);
-        v.hyperlink_color = CYAN;
-        v.override_text_color = Some(FG);
-        v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, CYAN);
-        v.widgets.active.bg_stroke = egui::Stroke::new(1.5, CYAN);
-        s.spacing.button_padding = egui::vec2(10.0, 5.0);
-        s.spacing.item_spacing = egui::vec2(10.0, 7.0);
-    });
-}
-
 /// Draw egui over `target` (`size` pixels, at `ppp` pixels per point, else
 /// the window's scaling), building the UI with `ui`; returns what it
 /// returned. `clear` clears to black first (no game under it).
@@ -3013,6 +2992,7 @@ fn run_overlay<T: Default>(
     raw.screen_rect =
         Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size[0] as f32, size[1] as f32) / ppp));
     let mut result = T::default();
+    theme::sync(&o.ctx, size[1] as f32 / ppp);
     let out = o.ctx.run_ui(raw, |ui_root| result = ui(ui_root.ctx()));
     o.state.handle_platform_output(&g.window, out.platform_output);
     let jobs = o.ctx.tessellate(out.shapes, out.pixels_per_point);
@@ -3155,7 +3135,7 @@ impl ApplicationHandler<Wake> for Play {
             caps.present_modes, config.desired_maximum_frame_latency, config.format
         );
         let ctx = egui::Context::default();
-        style(&ctx);
+        theme::install(&ctx);
         let state = egui_winit::State::new(
             ctx.clone(),
             egui::ViewportId::ROOT,
@@ -3244,9 +3224,9 @@ impl ApplicationHandler<Wake> for Play {
                         PhysicalKey::Code(KeyCode::Escape) => self.menu.capture = None,
                         PhysicalKey::Code(k) => match controls::code_name(k) {
                             Some(name) => self.capture(romset::bindings::Capture::Key(name.to_string())),
-                            None => self.menu.notify("That key can't be bound: pick another"),
+                            None => self.menu.warn("That key can't be bound: pick another"),
                         },
-                        _ => self.menu.notify("That key can't be bound: pick another"),
+                        _ => self.menu.warn("That key can't be bound: pick another"),
                     }
                 }
                 return;
@@ -3290,7 +3270,7 @@ impl ApplicationHandler<Wake> for Play {
                 if pressed && !event.repeat && code == photo::KEY && self.session.as_ref().is_some_and(|s| !s.preview) {
                     self.set_menu(false);
                     if let Err(e) = self.enter_photo() {
-                        self.menu.notify(format!("Photo mode: {e}"));
+                        self.menu.error(format!("Photo mode: {e}"));
                     }
                     return;
                 }
@@ -3451,7 +3431,7 @@ fn main() {
         Some(set) if play.games.iter().any(|g| g.id == set) || in_progress(&set) => play.start_game(&set, false),
         Some(set) => {
             println!("no {set} in {}: choose a game", play.settings.rom.display());
-            play.menu.notify(format!("No {set} in {}", play.settings.rom.display()));
+            play.menu.error(format!("No {set} in {}", play.settings.rom.display()));
             play.launcher.open = true;
         }
         None => play.launcher.open = true,

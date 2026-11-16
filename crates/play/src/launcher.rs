@@ -25,12 +25,11 @@ use egui::{pos2, vec2, Align2, Color32, FontId, Id, Painter, Pos2, Rect, Sense, 
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime};
 
-/// The logo's colours.
-pub const CYAN: Color32 = Color32::from_rgb(47, 230, 239);
-pub const RED: Color32 = Color32::from_rgb(255, 36, 54);
-pub const FG: Color32 = Color32::from_rgb(242, 244, 248);
-pub const DIM: Color32 = Color32::from_rgb(139, 147, 163);
-pub const PANEL: Color32 = Color32::from_rgb(7, 11, 18);
+/// The shared palette (`theme`); the launcher's own darker lines.
+pub use crate::theme::{CYAN, RED};
+pub const FG: Color32 = crate::theme::TEXT;
+pub const DIM: Color32 = crate::theme::TEXT_DIM;
+pub const PANEL: Color32 = Color32::from_rgb(8, 12, 22);
 pub const LINE: Color32 = Color32::from_rgb(22, 58, 68);
 const KEY_BG: Color32 = Color32::from_rgb(13, 20, 29);
 const KEY_LINE: Color32 = Color32::from_rgb(44, 58, 72);

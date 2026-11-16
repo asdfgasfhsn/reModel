@@ -1336,7 +1336,7 @@ switch settings tabs, B or Select goes back one screen (from the pause menu
 it resumes) and Start resumes from anywhere. The menu opens on Resume. The
 keyboard does the same: the arrow keys, Enter or Space for A, Q and E
 (or Tab and Shift+Tab) for the tabs, Backspace for B; Esc closes the whole
-menu. The focus glows while the pad or those keys are in use, and the foot
+menu. The focus ring shows while the pad or those keys are in use, and the foot
 shows the pad's buttons while the pad is. `crates/play/src/focus.rs` does
 it for any egui page; the menu's tests (`menu.rs`) drive it with `Nav`s
 headless. *Unconfirmed:* tested with synthetic and scripted (`--nav`)
@@ -1437,6 +1437,30 @@ events only, not yet with a real pad.
   `rom/` folder), else to `roms/` beside the settings
   (`~/.local/share/remodel/roms` on Linux), created on first run; `--rom` changes
   it (and is remembered).
+
+### The look
+
+`crates/play/src/theme.rs` is the player's shared look, laid out at 1280x720
+logical points and scaled by the window's height (`theme::scale`: 1.0 at
+720, a floor of 0.85, so a 4K screen and a small laptop window share one
+layout). It holds the palette (background `#04060b`, cyan `#22e5ff`, blue,
+red, yellow, green), the type (Inter for text, body 18 and never under 15
+points at 720p; Exo 2 Black Italic in capitals for headings), egui's style,
+and the pieces screens are built from: the panel, the menu row, the
+segmented control, the button-hint chips (coloured face-button circles, a
+"≡" chip for Start, grey chips for keys), the focus ring (a 4 point cyan
+outline with a faint fill, and a left bar on menu rows) and the toasts.
+
+Toasts are the corner notices (bottom left): a short queue, each a card with
+a status dot (green done, yellow warning, red error) that fades after 2.5 s.
+Errors (`Menu::error`) stay until a click on them or the menu opening;
+`Menu::notify` and `Menu::warn` are the other two levels.
+
+The fonts are in `crates/play/assets/fonts/` with their licences: Inter 4.1
+Regular, SemiBold and Bold (rsms/inter) and Exo 2 Black Italic
+(NDISCOVER/Exo-2.0), static TrueType because egui doesn't instance variable
+fonts. Both are SIL OFL 1.1, and `make dist` copies the licences into
+`THIRD-PARTY-NOTICES.txt`.
 
 ## Remapping
 
@@ -1569,7 +1593,8 @@ on macOS, `%APPDATA%\remodel` on Windows:
 about 6 MB: the stripped release binary, a `README.txt` (bring your own
 ROMs, keys, where files go), `LICENSE`, and `THIRD-PARTY-NOTICES.txt`, which
 `tools/notices.py` writes from `cargo metadata`: every crate linked in, its
-licence, and the licence texts it ships (bundled fonts' included). The version is the workspace's from Cargo plus
+licence, and the licence texts it ships, plus the player's own bundled fonts
+(Inter and Exo 2, SIL OFL 1.1). The version is the workspace's from Cargo plus
 `git describe`. It runs the i960 on the interpreter only: recompiled code is
 derived from the game's ROMs, so the target builds from the checkout's own
 workspace (in its own `target/dist`), never the generated one in

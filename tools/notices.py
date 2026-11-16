@@ -3,6 +3,7 @@ PACKAGE for TARGET, its licence, and the licence texts the crate ships.
 
 usage: python3 -I tools/notices.py PACKAGE TARGET OUT_FILE
 
+The fonts the package bundles (assets/fonts/*/OFL.txt) are listed too.
 Only normal dependencies count (build scripts and proc macros run at build
 time and aren't shipped). Crates with identical licence texts share one copy.
 Crates that ship no licence file are listed with their SPDX expression only
@@ -75,6 +76,17 @@ def main():
         "appear with other crates.",
         "",
     ]
+    # Fonts bundled in the package itself (<crate>/assets/fonts/<family>/OFL.txt).
+    own = next(p for p in metadata["packages"] if p["name"] == package and p["source"] is None)
+    own_dir = os.path.dirname(own["manifest_path"])
+    for licence in sorted(glob.glob(os.path.join(own_dir, "assets", "fonts", "*", "OFL*"))):
+        family = os.path.basename(os.path.dirname(licence))
+        faces = sorted(os.path.splitext(os.path.basename(f))[0] for f in glob.glob(os.path.join(os.path.dirname(licence), "*.ttf")))
+        lines.append(f"  {family + ' (font)':40} OFL-1.1: {', '.join(faces)}")
+        with open(licence, encoding="utf-8", errors="replace") as f:
+            text = f.read().strip()
+        key = hashlib.sha256(text.encode()).hexdigest()
+        groups.setdefault(key, (f"{family}/OFL.txt", text, []))[2].append(f"{family} font")
     for p in third:
         name = f"{p['name']} {p['version']}"
         lines.append(f"  {name:40} {p.get('license') or 'see licence text'}")

@@ -1,12 +1,12 @@
 //! Gamepad focus over a page of egui widgets (the menu's): the d-pad moves
 //! it between them as they're laid out on screen, A activates the focused
 //! one, left and right change a stepper row ("label ◂ value ▸"), and
-//! the focused one glows. Widgets register as they're drawn
+//! the focused one gets the theme's focus ring. Widgets register as they're drawn
 //! (`Focus::button` and so on); the moves apply to where they were the
 //! frame before.
 
-use crate::launcher::{Nav, CYAN};
-use egui::{Color32, Id, Rect, Response, Stroke, StrokeKind};
+use crate::launcher::Nav;
+use egui::{Id, Rect, Response};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Kind {
@@ -35,7 +35,7 @@ pub struct Focus {
     step: Vec<(Id, i32)>,
     /// The focus moved this frame (scroll it into view).
     moved: bool,
-    /// Draw the glow (the pad is in use).
+    /// Draw the ring (the pad or keyboard is in use).
     pub show: bool,
 }
 
@@ -190,12 +190,7 @@ impl Focus {
     }
 }
 
-/// The focus highlight: the launcher's cyan glow round `r`.
+/// The focus highlight: the theme's cyan ring round `r`.
 pub fn glow(p: &egui::Painter, r: Rect) {
-    let r = r.expand(3.0);
-    p.add(
-        egui::epaint::RectShape::filled(r, 6.0, Color32::from_rgba_unmultiplied(47, 230, 239, 36))
-            .with_blur_width(12.0),
-    );
-    p.rect_stroke(r, 6.0, Stroke::new(1.5, CYAN), StrokeKind::Outside);
+    crate::theme::focus_ring(p, r, crate::theme::scale(p.ctx()), crate::theme::ROW_RADIUS);
 }

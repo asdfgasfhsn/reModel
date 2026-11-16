@@ -156,6 +156,6 @@ Asset conventions: [logo and app icon](assets/README.md), [posters](assets/poste
 ## License
 
 MIT for reModel's own code ([LICENSE](LICENSE)). `make dist` and `make web`
-also ship `THIRD-PARTY-NOTICES.txt` for the crates they link
-(`tools/notices.py`). Game software and data remain the property of their
+also ship `THIRD-PARTY-NOTICES.txt` for the crates they link and the
+player's bundled fonts, Inter and Exo 2 under the SIL OFL (`tools/notices.py`). Game software and data remain the property of their
 respective owners.

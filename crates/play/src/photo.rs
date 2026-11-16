@@ -1169,7 +1169,7 @@ impl crate::Play {
         }
         if let Some(target) = wanted {
             if let Err(e) = self.photo_go(target) {
-                self.menu.notify(format!("Time scrub: {e}"));
+                self.menu.warn(format!("Time scrub: {e}"));
             }
         }
         let Some(m) = self.photo.as_mut() else { return };
@@ -1183,7 +1183,7 @@ impl crate::Play {
                         m.dof = true;
                         self.menu.notify(format!("Focus at {:.2}", m.look.focus / m.scale.max(1e-6)));
                     }
-                    None => self.menu.notify("Nothing to focus on there"),
+                    None => self.menu.warn("Nothing to focus on there"),
                 }
             }
         }
@@ -1307,7 +1307,7 @@ impl crate::Play {
             Action::Leave => self.leave_photo(),
             Action::Take => match self.take_photo(None, false) {
                 Ok(t) => self.menu.notify(t),
-                Err(e) => self.menu.notify(format!("Photo failed: {e}")),
+                Err(e) => self.menu.error(format!("Photo failed: {e}")),
             },
         }
     }
