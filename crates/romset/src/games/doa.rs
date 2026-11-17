@@ -25,6 +25,7 @@ pub static DOA: Game = Game {
     hud_element_windows: &[],
     controls: CONTROLS,
     drive_board: None,
+    link_board: None,
     parent: None,
     backup_ram: &[],
     // The boot check (i960 0x5A0): command 6, then the 48 bytes at 0x2810

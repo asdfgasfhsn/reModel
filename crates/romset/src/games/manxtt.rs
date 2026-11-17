@@ -34,6 +34,7 @@ pub static MANXTT: Game = Game {
     hud_element_windows: &[],
     controls: CONTROLS,
     drive_board: Some(crate::DriveBoard::MotionSlider),
+    link_board: None,
     parent: None,
     backup_ram: &[],
     protection: None,

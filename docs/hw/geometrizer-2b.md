@@ -28,7 +28,7 @@ the program's crate by (`docs/recompiler.md`), so `sharc_<hash>` in
 | Code hash | Games | Native |
 |---|---|---|
 | `15393321f266b9cf` | `overrevb`, `sgt24h`, `dynabb97`, `doa`, `schamp` (2,987 words of code; the uploads differ only past `0x20C30`, and `schamp`'s upload is shorter) | `Program::Shared2B` |
-| `1ee99ebc8a458237` | `indy500`, `fvipers` (an earlier version: see "The earlier version" below) | `Program::Indy500` |
+| `1ee99ebc8a458237` | `indy500`, `fvipers`, `von` (an earlier version: see "The earlier version" below) | `Program::Indy500` |
 | `9b6fb0e1100bf66e` | `vstriker` (earlier still, 2,910 words of code: see "The earliest version" below) | `Program::Vstriker` |
 | `90822719cbee82cd` | `lastbrnx` (3,312 words of code: the shared program with three commands added, see "Last Bronx's program" below) | `Program::Lastbrnx`, except its fn 0x1B |
 

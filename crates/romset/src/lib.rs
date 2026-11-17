@@ -41,6 +41,19 @@ pub enum DriveBoard {
     MotionSlider,
 }
 
+/// A communication (link) board in the cabinet's expansion slot at
+/// `0x1A10000`, which the game talks to for linking cabinets. With none
+/// fitted the slot reads as all ones ("no board"); the model
+/// (`model2::link`) answers each kind as far as the game's code checks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkBoard {
+    /// A board with no other cabinet on the link: it reports itself fitted
+    /// and idle (`0x1A14000` bit 0 clear, `0x1A14002` bit 7 clear), which
+    /// is all a game set to stand-alone checks for (`von`,
+    /// docs/games/von.md).
+    Idle,
+}
+
 /// A device on the board's expansion bus at `0x1D80000` that the game
 /// checks at boot (`model2::protection`). The game sends it a block of
 /// data (and, on [`ProtectionInterface::Tables`], two tables) and compares
@@ -272,6 +285,9 @@ pub struct Game {
     pub controls: Controls,
     /// A drive (motion or force feedback) board the game needs, if any.
     pub drive_board: Option<DriveBoard>,
+    /// A communication (link) board the game needs fitted, if any; none
+    /// means the slot is empty and reads as no board.
+    pub link_board: Option<LinkBoard>,
     /// The set this one is a clone of (another revision of the same game):
     /// its chips are also looked for in the parent's folder or zip, as a
     /// merged MAME set keeps them, and it shares the parent's poster and

@@ -30,6 +30,7 @@ mod topskatr;
 mod vcop;
 mod vcop2;
 mod vf2;
+mod von;
 mod vstriker;
 mod waverunr;
 mod zerogun;
@@ -70,6 +71,7 @@ pub use topskatr::TOPSKATR;
 pub use vcop::VCOP;
 pub use vcop2::VCOP2;
 pub use vf2::VF2;
+pub use von::VON;
 pub use vstriker::VSTRIKER;
 pub use waverunr::WAVERUNR;
 pub use zerogun::ZEROGUN;
@@ -77,7 +79,7 @@ pub use zerogun::ZEROGUN;
 pub static ALL: &[&Game] = &[
     &TOPSKATR, &SKISUPRG, &STCC, &SEGAWSKI, &WAVERUNR, &OVERREV, &HOTD, &BEL, &OVERREVB, &SGT24H, &DYNABB97, &DOA,
     &INDY500, &FVIPERS, &SCHAMP, &SFIGHT, &VSTRIKER, &LASTBRNX, &SRALLYC, &VF2, &DAYTONA, &VCOP, &DESERT, &VCOP2,
-    &SKYTARGT, &MANXTT, &MANXTTC, &MOTORAID, &GUNBLADE, &DYNAMCOP, &ZEROGUN, &PLTKIDS,
+    &SKYTARGT, &MANXTT, &MANXTTC, &MOTORAID, &GUNBLADE, &DYNAMCOP, &ZEROGUN, &PLTKIDS, &VON,
 ];
 
 /// Games whose board model runs but which don't show a game yet. The CLI

@@ -34,6 +34,7 @@ pub static DAYTONA: Game = Game {
     hud_element_windows: &[],
     controls: CONTROLS,
     drive_board: None,
+    link_board: None,
     parent: None,
     // The operator settings as the I/O board's store holds them (the board
     // model's 0x1C00200 buffer, docs/hw/model2.md): the program's own

@@ -29,6 +29,7 @@ pub static STCC: Game = Game {
     hud_element_windows: &[],
     controls: CONTROLS,
     drive_board: Some(DriveBoard::Wheel),
+    link_board: None,
     parent: None,
     backup_ram: &[],
     protection: None,

@@ -44,6 +44,11 @@ keep the interrupt table it was initialised with and a keyed protection
 device ("The keyed protection device" below).
 `pltkids` (Pilot Kids, Psikyo, 1998) needed nothing more than `zerogun`
 did: the same PRCB clear at boot and the same keyed device, checked once.
+`von` (Cyber Troopers Virtual-On, Sega, 1996) is `fvipers`' kind of 2B game
+(`indy500`'s geometrizer, a copro program of its own with data ROMs
+`.29/.30`) and needed one device: a communication (link) board at
+`0x1A10000`, which the game checks at every boot and starts nothing without
+(`docs/games/von.md`, `model2::link`).
 This page
 is what the board model (`crates/model2`: `bus.rs`, `sharc.rs`, `geo.rs`)
 is built on. The SHARC core itself is

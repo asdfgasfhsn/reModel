@@ -27,6 +27,7 @@ pub static PLTKIDS: Game = Game {
     hud_element_windows: &[],
     controls: CONTROLS,
     drive_board: None,
+    link_board: None,
     parent: None,
     backup_ram: &[],
     // One boot check of the keyed device at 0x1D80000/0x1D90000, as

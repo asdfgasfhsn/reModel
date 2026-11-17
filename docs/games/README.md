@@ -38,5 +38,6 @@ which ROM sets are supported and how they are named is in [../roms.md](../roms.m
 | Dynamite Cop | `dynamcop` | 2A | [dynamcop.md](dynamcop.md) |
 | Zero Gunner | `zerogun` | 2B | [zerogun.md](zerogun.md) |
 | Pilot Kids | `pltkids` | 2B | [pltkids.md](pltkids.md) |
+| Cyber Troopers Virtual-On | `von` | 2B | [von.md](von.md) |
 
 Board-wide findings: [2C](../hw/model2c.md), [2B](../hw/model2b.md), [2A](../hw/model2a.md), [the original Model 2](../hw/model2.md).

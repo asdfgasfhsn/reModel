@@ -243,6 +243,10 @@ pub struct Model2Bus {
     /// The cabinet's drive board, if the game has one: commands on I/O
     /// register 4, replies on register 3 (in place of port `inputs[2]`).
     pub drive: Option<Drive>,
+    /// The communication board in the expansion slot at `0x1A10000`, if
+    /// the game has one fitted (`model2::link`); empty slots read as all
+    /// ones.
+    pub link: Option<crate::link::Link>,
     /// The light gun interface, for games with guns: commands on I/O
     /// registers 9 and 10, replies on 12, status on 13.
     pub gun: Option<GunBoard>,
@@ -463,6 +467,7 @@ impl Model2Bus {
             eeprom: Eeprom::new(),
             controls: &roms.game.controls,
             drive: roms.game.drive_board.map(Drive::new),
+            link: roms.game.link_board.map(crate::link::Link::new),
             gun: roms
                 .game
                 .controls
@@ -923,7 +928,7 @@ impl Model2Bus {
             // communication board" to stcc's and overrev's network checks,
             // and overrev's stand-alone boot then waits for bit 7 of
             // 0x1A14002 to be set (docs/games/overrev.md).
-            0x01a1_4000 => u32::MAX,
+            0x01a1_4000 => self.link.as_ref().map_or(u32::MAX, crate::link::Link::status),
             0x1000_0000..=0x105f_ffff => 0,
             _ => return None,
         };

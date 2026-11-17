@@ -21,7 +21,7 @@ built to be reused across the Model 2 family.
 
 ## Games
 
-Thirty-two games run, on the original Model 2 and the 2A, 2B and 2C boards. "Plays" means playable with
+Thirty-three games run, on the original Model 2 and the 2A, 2B and 2C boards. "Plays" means playable with
 sound in the native player; the details, and what each game needed, are in
 [docs/games/](docs/games/README.md).
 
@@ -59,6 +59,7 @@ sound in the native player; the details, and what each game needed, are in
 | Dynamite Cop | `dynamcop` | 2A | plays; mission 1 on the ship's deck to game over, standing and punching; no mission finished |
 | Zero Gunner | `zerogun` | 2B | plays; the first mission (Asia) to game over, none finished |
 | Pilot Kids | `pltkids` | 2B | plays; stage 1 to its boss and game over, none finished |
+| Cyber Troopers Virtual-On | `von` | 2B | plays, with twin sticks; its link board answered; the first fight to a draw, none won |
 
 ## Highlights
 

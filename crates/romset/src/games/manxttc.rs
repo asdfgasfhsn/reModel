@@ -21,6 +21,7 @@ pub static MANXTTC: Game = Game {
     hud_element_windows: &[],
     controls: super::manxtt::CONTROLS,
     drive_board: Some(crate::DriveBoard::MotionSlider),
+    link_board: None,
     parent: Some("manxtt"),
     backup_ram: &[],
     protection: None,

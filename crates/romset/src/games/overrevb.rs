@@ -22,6 +22,7 @@ pub static OVERREVB: Game = Game {
     hud_element_windows: &[],
     controls: super::overrev::CONTROLS,
     drive_board: None,
+    link_board: None,
     // A clone: its chips can sit in the parent set as MAME merges them.
     parent: Some("overrev"),
     backup_ram: &[],

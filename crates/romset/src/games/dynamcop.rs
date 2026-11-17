@@ -31,6 +31,7 @@ pub static DYNAMCOP: Game = Game {
     hud_element_windows: &[],
     controls: CONTROLS,
     drive_board: None,
+    link_board: None,
     parent: None,
     backup_ram: &[],
     // Two boot checks of a keyed device at 0x1D80000/0x1D90000: a 20-byte

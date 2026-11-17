@@ -21,6 +21,7 @@ pub mod input;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod jit_warm;
 pub mod light;
+pub mod link;
 pub mod pacing;
 pub mod pack;
 pub mod photo;

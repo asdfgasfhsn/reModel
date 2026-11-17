@@ -13,7 +13,7 @@ Japanese release Sonic The Fighters (sfight), Virtua Striker (vstriker), Last Br
 (srallyc), Virtua Fighter 2 (vf2), Daytona USA (daytona), Virtua Cop
 (vcop), Desert Tank (desert), Virtua Cop 2 (vcop2), Sky Target
 (skytargt), Manx TT Superbike (manxtt, manxttc), Motor Raid
-(motoraid), Gunblade NY (gunblade), Dynamite Cop (dynamcop), Zero Gunner (zerogun) and Pilot Kids (pltkids).
+(motoraid), Gunblade NY (gunblade), Dynamite Cop (dynamcop), Zero Gunner (zerogun), Pilot Kids (pltkids) and Cyber Troopers Virtual-On (von).
 This build runs the game code on its interpreter and JIT (no recompiled
 game code is included).
 
@@ -22,7 +22,7 @@ Bring your own ROMs
 No game data is included. Put the sets as MAME keeps them, topskatr.zip or
 a topskatr/ folder (likewise skisuprg, stcc, segawski, waverunr,
 overrev, sgt24h, hotd, bel, dynabb97, doa, indy500, fvipers, schamp,
-vstriker, lastbrnx, srallyc, vf2, daytona, vcop, desert, vcop2, skytargt, manxtt, manxttc, motoraid, gunblade, dynamcop, zerogun, pltkids), in
+vstriker, lastbrnx, srallyc, vf2, daytona, vcop, desert, vcop2, skytargt, manxtt, manxttc, motoraid, gunblade, dynamcop, zerogun, pltkids, von), in
 the ROM folder, roms in the data folder (see Files):
 
     Linux     ~/.local/share/remodel/roms ($XDG_DATA_HOME/remodel/roms)

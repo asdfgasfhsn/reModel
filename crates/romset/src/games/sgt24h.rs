@@ -27,6 +27,7 @@ pub static SGT24H: Game = Game {
     hud_element_windows: &[],
     controls: CONTROLS,
     drive_board: None,
+    link_board: None,
     parent: None,
     // The I/O TYPE setting (game assignments, A to E), a 16-bit word at
     // SRAM 0x0A that the game's own reset of its settings leaves alone. The

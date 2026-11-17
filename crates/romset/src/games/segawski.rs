@@ -23,6 +23,7 @@ pub static SEGAWSKI: Game = Game {
     run_ahead_max: 0,
     controls: CONTROLS,
     drive_board: None,
+    link_board: None,
     parent: None,
     backup_ram: &[],
     protection: None,

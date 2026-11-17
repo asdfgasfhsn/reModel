@@ -41,6 +41,7 @@ pub static SRALLYC: Game = Game {
     hud_element_windows: &[1],
     controls: CONTROLS,
     drive_board: None,
+    link_board: None,
     parent: None,
     backup_ram: &[],
     protection: None,

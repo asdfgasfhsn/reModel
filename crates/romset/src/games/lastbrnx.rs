@@ -28,6 +28,7 @@ pub static LASTBRNX: Game = Game {
     hud_element_windows: &[],
     controls: CONTROLS,
     drive_board: None,
+    link_board: None,
     parent: None,
     backup_ram: &[],
     protection: None,

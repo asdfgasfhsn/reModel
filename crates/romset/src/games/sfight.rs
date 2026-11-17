@@ -22,6 +22,7 @@ pub static SFIGHT: Game = Game {
     hud_element_windows: &[],
     controls: super::schamp::CONTROLS,
     drive_board: None,
+    link_board: None,
     parent: Some("schamp"),
     backup_ram: &[],
     protection: None,
