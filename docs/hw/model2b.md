@@ -44,6 +44,11 @@ keep the interrupt table it was initialised with and a keyed protection
 device ("The keyed protection device" below).
 `pltkids` (Pilot Kids, Psikyo, 1998) needed nothing more than `zerogun`
 did: the same PRCB clear at boot and the same keyed device, checked once.
+`rchase2` (Rail Chase 2, Sega, 1995) uploads copro and geometrizer programs of
+its own (3,112 and 3,040 words; the geometrizer's is the Virtua Striker
+variant, so the native geometrizer runs it) and has no copro data ROMs. It
+needed a ride drive board: a "network" wire test at boot on the drive
+board registers (`model2::drive::RideLink`, `docs/games/rchase2.md`).
 `von` (Cyber Troopers Virtual-On, Sega, 1996) is `fvipers`' kind of 2B game
 (`indy500`'s geometrizer, a copro program of its own with data ROMs
 `.29/.30`) and needed one device: a communication (link) board at

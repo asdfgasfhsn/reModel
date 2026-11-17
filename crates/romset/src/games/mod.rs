@@ -18,6 +18,7 @@ mod motoraid;
 mod overrev;
 mod overrevb;
 mod pltkids;
+mod rchase2;
 mod schamp;
 mod segawski;
 mod sfight;
@@ -59,6 +60,7 @@ pub use motoraid::MOTORAID;
 pub use overrev::OVERREV;
 pub use overrevb::OVERREVB;
 pub use pltkids::PLTKIDS;
+pub use rchase2::RCHASE2;
 pub use schamp::SCHAMP;
 pub use segawski::SEGAWSKI;
 pub use sfight::SFIGHT;
@@ -79,7 +81,7 @@ pub use zerogun::ZEROGUN;
 pub static ALL: &[&Game] = &[
     &TOPSKATR, &SKISUPRG, &STCC, &SEGAWSKI, &WAVERUNR, &OVERREV, &HOTD, &BEL, &OVERREVB, &SGT24H, &DYNABB97, &DOA,
     &INDY500, &FVIPERS, &SCHAMP, &SFIGHT, &VSTRIKER, &LASTBRNX, &SRALLYC, &VF2, &DAYTONA, &VCOP, &DESERT, &VCOP2,
-    &SKYTARGT, &MANXTT, &MANXTTC, &MOTORAID, &GUNBLADE, &DYNAMCOP, &ZEROGUN, &PLTKIDS, &VON,
+    &SKYTARGT, &MANXTT, &MANXTTC, &MOTORAID, &GUNBLADE, &DYNAMCOP, &ZEROGUN, &PLTKIDS, &RCHASE2, &VON,
 ];
 
 /// Games whose board model runs but which don't show a game yet. The CLI

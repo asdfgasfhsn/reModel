@@ -39,6 +39,10 @@ pub enum DriveBoard {
     /// `0x1C00006`; boots with a `0xCE` then `0xCD` handshake
     /// (docs/games/manxtt.md).
     MotionSlider,
+    /// Rail Chase 2's ride drive board, linked "by network": one command
+    /// byte a frame on `0x1C00008`, the reply nibble on `0x1C00006`; boots
+    /// with a wire test of eight walking-bit commands (docs/games/rchase2.md).
+    RideLink,
 }
 
 /// A communication (link) board in the cabinet's expansion slot at

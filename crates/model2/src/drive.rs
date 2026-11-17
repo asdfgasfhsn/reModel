@@ -18,6 +18,7 @@ pub enum Drive {
     Ski(SkiPlatform),
     Wheel(Wheel),
     Slider(MotionSlider),
+    Ride(RideLink),
 }
 
 impl Drive {
@@ -26,6 +27,7 @@ impl Drive {
             DriveBoard::SkiPlatform => Drive::Ski(SkiPlatform::default()),
             DriveBoard::Wheel => Drive::Wheel(Wheel::default()),
             DriveBoard::MotionSlider => Drive::Slider(MotionSlider::default()),
+            DriveBoard::RideLink => Drive::Ride(RideLink::default()),
         }
     }
 
@@ -35,6 +37,7 @@ impl Drive {
             Drive::Ski(b) => b.command(v),
             Drive::Wheel(b) => b.command(v),
             Drive::Slider(b) => b.command(v),
+            Drive::Ride(b) => b.command(v),
         }
     }
 
@@ -44,6 +47,7 @@ impl Drive {
             Drive::Ski(b) => b.reply,
             Drive::Wheel(_) => Wheel::REPLY,
             Drive::Slider(b) => b.reply,
+            Drive::Ride(b) => b.reply,
         }
     }
 
@@ -59,6 +63,7 @@ impl Drive {
             Drive::Wheel(b) => {
                 format!("wheel: last command {:#04x}, recent {:02x?}, {} commands", b.last(), b.recent(), b.count)
             }
+            Drive::Ride(b) => format!("ride link: last command {:#04x}, reply {:#04x}", b.last, b.reply),
             Drive::Slider(b) => format!(
                 "motion slider: last command {:#04x}, reply {:#04x}, setting {}",
                 b.last,
@@ -75,6 +80,7 @@ impl Drive {
             Drive::Ski(b) => b.last,
             Drive::Wheel(b) => b.last(),
             Drive::Slider(b) => b.last,
+            Drive::Ride(b) => b.last,
         }
     }
 }
@@ -222,6 +228,50 @@ impl MotionSlider {
     }
 }
 
+/// Rail Chase 2's ride drive board, linked to the main board "by network"
+/// (docs/games/rchase2.md). What the game's code shows:
+///
+/// - The I/O routine writes a command byte to `0x1C00008` each frame and
+///   reads the reply from `0x1C00006`, of which it keeps only the low
+///   nibble, inverted.
+/// - Boot ("CHECKING NET_WORK NOW", MAIN BD / DRIVE BD): a wire test of
+///   eight commands, three frames apart, repeated twelve times: `0x07`,
+///   `0x0B`, `0x0D`, `0x0E`, `0x70`, `0xB0`, `0xD0`, `0xE0` (one nibble
+///   with a single clear bit, the other nibble 0). Each must be answered
+///   with the matching single bit set in the reply's low nibble (`08`,
+///   `04`, `02`, `01`, `08`, `04`, `02`, `01`); one miss in any round and the
+///   screen says NET_BAD and the game stays there (as run). It then
+///   sends `0x3B`, and from there a command each frame (`0x2F`, `0xAF`,
+///   `0xB8`, `0xC0`, `0xC8`, `0xF8` seen in the attract and in play).
+/// - The output test shows two reply bits (0 and 3) as ON or OFF.
+///
+/// The model answers with the nibbles of the command folded together,
+/// `(cmd | cmd >> 4) & 0x0F`: that reads back as the wire test expects.
+/// What a real board answers to the other commands is unknown; nothing
+/// physical moves, so the commands are kept for a player that might want
+/// to turn them into rumble.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RideLink {
+    /// Reply to the last command (a nibble).
+    pub reply: u8,
+    /// Last command.
+    pub last: u8,
+}
+
+impl Default for RideLink {
+    fn default() -> Self {
+        // Before any command: the port reads as with nothing attached.
+        RideLink { reply: 0xff, last: 0 }
+    }
+}
+
+impl RideLink {
+    fn command(&mut self, v: u8) {
+        self.last = v;
+        self.reply = (v | v >> 4) & 0x0f;
+    }
+}
+
 // The kind comes from the manifest, so a state only holds the board's own.
 impl state::State for Drive {
     fn save(&self, w: &mut state::Writer) {
@@ -229,6 +279,7 @@ impl state::State for Drive {
             Drive::Ski(b) => b.save(w),
             Drive::Wheel(b) => b.save(w),
             Drive::Slider(b) => b.save(w),
+            Drive::Ride(b) => b.save(w),
         }
     }
     fn load(&mut self, r: &mut state::Reader) -> Result<(), state::Error> {
@@ -236,6 +287,7 @@ impl state::State for Drive {
             Drive::Ski(b) => b.load(r),
             Drive::Wheel(b) => b.load(r),
             Drive::Slider(b) => b.load(r),
+            Drive::Ride(b) => b.load(r),
         }
     }
 }
@@ -243,6 +295,7 @@ impl state::State for Drive {
 state::fields!(SkiPlatform { reply, last, centre });
 state::fields!(Wheel { history, count });
 state::fields!(MotionSlider { reply, last, setting });
+state::fields!(RideLink { reply, last });
 
 #[cfg(test)]
 mod tests {
@@ -319,6 +372,31 @@ mod tests {
         assert_eq!(b.count, 20);
         let bytes = state::to_bytes(&d);
         let mut e = Drive::new(DriveBoard::Wheel);
+        state::State::load(&mut e, &mut state::Reader::new(&bytes)).unwrap();
+        assert_eq!(d, e);
+    }
+
+    /// The network check's wire test: each walking command is answered with
+    /// the single bit the game compares the inverted nibble against.
+    #[test]
+    fn ride_link_answers_the_wire_test() {
+        let mut d = Drive::new(DriveBoard::RideLink);
+        for (cmd, bit) in [
+            (0x07, 0x08),
+            (0x0b, 0x04),
+            (0x0d, 0x02),
+            (0x0e, 0x01),
+            (0x70, 0x08),
+            (0xb0, 0x04),
+            (0xd0, 0x02),
+            (0xe0, 0x01),
+        ] {
+            d.command(cmd);
+            // The game keeps the reply's low nibble inverted.
+            assert_eq!(!d.reply() & 0x0f, bit, "command {cmd:#04x}");
+        }
+        let bytes = state::to_bytes(&d);
+        let mut e = Drive::new(DriveBoard::RideLink);
         state::State::load(&mut e, &mut state::Reader::new(&bytes)).unwrap();
         assert_eq!(d, e);
     }

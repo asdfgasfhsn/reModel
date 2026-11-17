@@ -521,6 +521,7 @@ INPUT_LAG ?= topskatr+3507+curving=0xF0 skisuprg+3507+swing=0xF0 \
 	dynamcop+3507+punch+$(FIGHT_INPUT) dynamcop+3507+jump+$(FIGHT_INPUT) \
 	zerogun+2107+left \
 	pltkids+2107+up \
+	rchase2+2400+stickx=0xc0 \
 	von+2507+lleft+coin1@1100-1104,start@1250-1254,lshot@2000-99999/6
 input-lag: release ## Each game's input lag (INPUT_LAG, or just GAME='s): frames from a control held in play to the first change in the picture, which is how many run-ahead can take away
 	@for c in $(if $(filter command line,$(origin GAME)),$(filter $(GAME)+%,$(INPUT_LAG)),$(INPUT_LAG)); do \
