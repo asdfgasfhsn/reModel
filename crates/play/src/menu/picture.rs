@@ -374,7 +374,7 @@ fn nearest_style(s: &GameSettings, game: Option<&romset::Game>) -> Preset {
         want.apply_preset(p, game);
         PICTURE_KEYS.iter().filter(|k| want.get(k) == s.get(k)).count()
     };
-    let all = [Preset::Original, Preset::Sharp, Preset::Enhanced, Preset::Crt];
+    let all = [Preset::Original, Preset::Sharp, Preset::Enhanced, Preset::Crt, Preset::Comic];
     all.into_iter().max_by_key(|p| (score(*p), std::cmp::Reverse(all.iter().position(|q| q == p)))).unwrap_or_default()
 }
 
@@ -808,6 +808,19 @@ fn advanced_rows(ui: &mut egui::Ui, adv: &mut Adv, s: &mut GameSettings, view: &
     let list = with_current(&CRT, s.crt);
     let list: Vec<(u8, &str)> = list.iter().map(|(v, t)| (*v, t.as_str())).collect();
     adv.choose(ui, "CRT", d, &mut s.crt, &list, CRT_HELP, "Looks best on a tall screen.");
+    let d = adv.differs(s, &["look"]);
+    adv.toggle(
+        ui,
+        "Comic look",
+        d,
+        &mut s.look,
+        ("Off", "On"),
+        "Ink outlines, flat bands of light and halftone dots. Uses the texture pack's look.txt when it has one.",
+        "Needs smooth lighting for the bands.",
+    );
+    if let (true, Some(look)) = (s.look, view.look) {
+        look_rows(ui, adv, s, look);
+    }
 
     // More: the picture settings that don't fit above.
     group(ui, "MORE");
@@ -921,6 +934,68 @@ fn advanced_rows(ui: &mut egui::Ui, adv: &mut Adv, s: &mut GameSettings, view: &
              sharpness.",
             "",
         );
+    }
+}
+
+/// The look's rows: each parameter as steps over its range; a change goes
+/// into the settings' tuning (over the look file's value), live.
+fn look_rows(ui: &mut egui::Ui, adv: &mut Adv, s: &mut GameSettings, look: &model2::look::Look) {
+    use model2::look::{Kind, PARAMS, SPEED_LINES};
+    group(ui, "LOOK");
+    for p in PARAMS.iter().chain([&SPEED_LINES]).filter(|p| !p.label.is_empty()) {
+        let now = look.params.num(p.name);
+        let text = |v: f32| match p.kind {
+            Kind::Flag => (if v >= 0.5 { "On" } else { "Off" }).to_string(),
+            Kind::Steps => {
+                if v < 2.0 {
+                    "Off".to_string()
+                } else {
+                    format!("{}", v as u32)
+                }
+            }
+            _ if p.step >= 1.0 => format!("{v:.0}"),
+            _ => format!("{v:.2}"),
+        };
+        // The grid of values, and the current one if it isn't on it.
+        let step = if p.max >= 1000.0 { 1000.0 } else { p.step };
+        let mut vals: Vec<f32> = match p.kind {
+            Kind::Flag => vec![0.0, 1.0],
+            Kind::Steps => std::iter::once(0.0).chain((2..=p.max as u32).map(|n| n as f32)).collect(),
+            _ => (0..=((p.max - p.min) / step).round() as u32).map(|i| p.min + i as f32 * step).collect(),
+        };
+        let key = |v: f32| (v * 1000.0).round() as i64;
+        if !vals.iter().any(|v| key(*v) == key(now)) {
+            vals.push(now);
+            vals.sort_by(|a, b| a.total_cmp(b));
+        }
+        let list: Vec<(i64, String)> = vals.iter().map(|v| (key(*v), text(*v))).collect();
+        let list: Vec<(i64, &str)> = list.iter().map(|(k, t)| (*k, t.as_str())).collect();
+        let mut cur = key(now);
+        let changed = s.look_tuning.contains_key(p.name);
+        if adv.choose(ui, p.label, changed, &mut cur, &list, p.help, "") {
+            let v = cur as f32 / 1000.0;
+            let value = match p.kind {
+                Kind::Flag => (if v >= 0.5 { "on" } else { "off" }).to_string(),
+                Kind::Steps => format!("{}", v as u32),
+                _ => format!("{v}"),
+            };
+            s.look_tuning.insert(p.name.to_string(), value);
+        }
+    }
+    let mut reset = false;
+    if !s.look_tuning.is_empty()
+        && adv.choose(
+            ui,
+            "Look tuning",
+            true,
+            &mut reset,
+            &[(false, "Changed"), (true, "Reset")],
+            "Go back to the look file's own values.",
+            "",
+        )
+        && reset
+    {
+        s.look_tuning.clear();
     }
 }
 

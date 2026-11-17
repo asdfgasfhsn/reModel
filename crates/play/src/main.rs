@@ -1046,6 +1046,7 @@ struct Play {
     started: Instant,
     /// The texture pack set on the renderer.
     pack: PackState,
+    look: LookState,
     /// Anisotropic filtering the GPU has (`gpu::max_anisotropy`).
     max_anisotropy: u8,
     /// The GPU can do temporal anti-aliasing (`gpu::temporal_supported`).
@@ -1061,6 +1062,36 @@ struct PackState {
     dir: Option<PathBuf>,
     /// Images and material map files in it, or why it can't be used.
     loaded: Option<Result<(usize, usize), String>>,
+}
+
+/// The look the renderer draws with (`Play::look_current`): the base look
+/// from its file (watched for changes) or the built-in Comic defaults.
+struct LookState {
+    path: Option<PathBuf>,
+    mtime: Option<std::time::SystemTime>,
+    base: Arc<model2::look::Look>,
+    /// Bumped when the base changes.
+    generation: u64,
+    checked: Option<Instant>,
+    /// The look built from `base` and the tuning, and what it was built
+    /// from.
+    built: Option<LookBuilt>,
+}
+
+/// A look built from (base generation, look on, tuning), and the result.
+type LookBuilt = (u64, bool, std::collections::BTreeMap<String, String>, Option<Arc<model2::look::Look>>);
+
+impl Default for LookState {
+    fn default() -> Self {
+        LookState {
+            path: None,
+            mtime: None,
+            base: Arc::new(model2::look::Look::comic()),
+            generation: 0,
+            checked: None,
+            built: None,
+        }
+    }
 }
 
 struct Bezel {
@@ -1688,6 +1719,7 @@ impl Play {
             let slots = self.slot_infos();
             let pack_text = self.pack_text();
             let materials_text = self.materials_text();
+            let look_now = self.look_current();
             let has_bezel = self.bezel.is_some();
             let room = self.session.as_ref().and_then(|s| self.run_ahead_room(s.game.id));
             let (Some(g), Some(s)) = (&mut self.gpu, &mut self.session) else { return Err("no game".into()) };
@@ -1697,6 +1729,7 @@ impl Play {
             r.reset_history();
             r.set_light_rules(&s.game.shading, hud_mask(s.game));
             r.set_quality(self.values.quality(self.temporal_supported));
+            r.set_look(look_now.clone());
             r.present_bus(&mut s.shown().bus, None, &view, &target, format, origin);
             s.drew_ahead = s.run_ahead.as_ref().is_some_and(|ra| ra.is_ahead_of(&s.machine));
             let (bezel, menu) = (&mut self.bezel, &mut self.menu);
@@ -1720,6 +1753,7 @@ impl Play {
                 temporal_supported: self.temporal_supported,
                 pack: pack_text.as_deref(),
                 materials: materials_text.as_deref(),
+                look: look_now.as_deref(),
                 pad: controls::PadLive::default(),
             };
             draw_overlay(g, &target, false, [w, h], Some(ppp), |ctx| {
@@ -1740,6 +1774,63 @@ impl Play {
         }
         std::fs::write(path, png::encode_rgba(w as usize, h as usize, &rgba))
             .map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// The look to draw with: None with the setting off (or for the
+    /// launcher's preview). Its file is the texture pack's `look.txt` (pack
+    /// on), else `<data dir>/<set>/look.txt`, else the built-in Comic
+    /// defaults; the file is watched (every 0.4 s) and read again when it
+    /// changes, so an edit shows at once, and the player's tuning
+    /// (`GameSettings::look_tuning`) goes over it.
+    fn look_current(&mut self) -> Option<Arc<model2::look::Look>> {
+        let s = self.session.as_ref().filter(|s| !s.preview)?;
+        if !self.values.look {
+            return None;
+        }
+        let now = Instant::now();
+        if self.look.checked.is_none_or(|t| now.duration_since(t) > Duration::from_millis(400)) {
+            self.look.checked = Some(now);
+            let pack_dir =
+                self.values.pack.then(|| self.opts.texture_pack.clone().unwrap_or_else(|| pack::game_dir(s.game)));
+            let own = settings::data_dir().join(s.game.id);
+            let path = pack_dir.into_iter().chain([own]).map(|d| d.join(model2::look::FILE)).find(|p| p.is_file());
+            let mtime = path.as_ref().and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
+            if path != self.look.path || mtime != self.look.mtime {
+                let loaded = match &path {
+                    Some(p) => model2::look::Look::load(p),
+                    None => Ok(None),
+                };
+                match loaded {
+                    Ok(l) => {
+                        if let Some(l) = &l {
+                            println!(
+                                "look          {}",
+                                path.as_ref().map_or(String::new(), |p| p.display().to_string())
+                            );
+                            if let Some(n) = l.notice() {
+                                println!("look          {n}");
+                            }
+                        }
+                        self.look.base = Arc::new(l.unwrap_or_else(model2::look::Look::comic));
+                    }
+                    Err(e) => {
+                        // Keep what was drawn, and say why.
+                        eprintln!("look: {e}");
+                        self.menu.warn(format!("Look: {e}"));
+                    }
+                }
+                self.look.path = path;
+                self.look.mtime = mtime;
+                self.look.generation += 1;
+            }
+        }
+        let key = (self.look.generation, true, self.values.look_tuning.clone());
+        let fresh = self.look.built.as_ref().is_some_and(|b| (b.0, b.1, &b.2) == (key.0, key.1, &key.2));
+        if !fresh {
+            let l = self.values.effective_look(&self.look.base).map(Arc::new);
+            self.look.built = Some((key.0, key.1, key.2, l));
+        }
+        self.look.built.as_ref().and_then(|b| b.3.clone())
     }
 
     /// Set the texture pack the settings ask for on the renderer, when
@@ -2262,6 +2353,7 @@ impl Play {
     /// machine's own.
     fn capture_game(&mut self, t0: Instant) -> Option<draw::GameJob> {
         self.sync_pack();
+        let look = self.look_current();
         let (Some(g), Some(s)) = (&mut self.gpu, &mut self.session) else { return None };
         // When the geometrizer is the slowest part, drawing the previous
         // frame's polygons lets it run alongside the next frame instead of
@@ -2307,6 +2399,7 @@ impl Play {
             forget_ram: switched,
             reset_history: switched,
             quality,
+            look,
             rules: (&s.game.shading, hud_mask(s.game)),
             smooth: fast.then_some((self.smooth_at, period)),
             lit,
@@ -2545,6 +2638,7 @@ impl Play {
             let pack_text = self.pack_text();
             let pad_live = self.pad_live();
             let materials_text = self.materials_text();
+            let look_now = self.look_current();
             let has_bezel = self.bezel.is_some();
             let room = self.session.as_ref().and_then(|s| self.run_ahead_room(s.game.id));
             let keeps = match self.session.as_ref().map(|s| s.game.id) {
@@ -2574,6 +2668,7 @@ impl Play {
                 temporal_supported: self.temporal_supported,
                 pack: pack_text.as_deref(),
                 materials: materials_text.as_deref(),
+                look: look_now.as_deref(),
                 pad: pad_live,
             };
             let navs = std::mem::take(&mut self.navs);
@@ -2968,6 +3063,7 @@ impl Play {
             keeps,
             pack: None,
             materials: None,
+            look: None,
             pad: pad_live,
         };
         let navs = std::mem::take(&mut self.navs);
@@ -3641,6 +3737,7 @@ fn main() {
         stats: Stats::new(),
         started: Instant::now(),
         pack: PackState::default(),
+        look: LookState::default(),
         max_anisotropy: 16,
         temporal_supported: true,
         photo: None,

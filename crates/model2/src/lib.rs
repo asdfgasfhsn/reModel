@@ -22,6 +22,7 @@ pub mod input;
 pub mod jit_warm;
 pub mod light;
 pub mod link;
+pub mod look;
 pub mod pacing;
 pub mod pack;
 pub mod photo;

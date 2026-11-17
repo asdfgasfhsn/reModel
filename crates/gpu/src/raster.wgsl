@@ -24,6 +24,15 @@ struct Screen {
     // Output size in pixels, and output pixels per game pixel.
     size: vec2f,
     scale: vec2f,
+    // The look (look.rs): toon steps (0: off), the darkest band's level and
+    // where the bands start; the ink pass's per-polygon entries' place in
+    // `outlines` (a bit pattern).
+    toon: vec4f,
+    // Halftone in the darkest toon band: dot coverage (0: none), pitch in
+    // output pixels, angle in radians; w unused.
+    half: vec4f,
+    // The halftone dots' colour.
+    ink: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> screen: Screen;
@@ -840,15 +849,59 @@ fn poly_px(i: u32, px: vec2f) -> Poly {
     var p = polys[i];
     let l = lit_luma(i, px);
     lit_fine = -1.0;
+    toon_dark = 0.0;
     if l >= 0.0 {
         let flags = bitcast<u32>(outlines[i].z);
         lit_range = vec2u((flags >> 8u) & 255u, (flags >> 16u) & 255u);
-        p.luma = clamp(u32(clamp(l, 0.0, 255.0)), lit_range.x, lit_range.y);
-        if (flags & 4u) != 0u {
-            lit_fine = max(l, 0.0);
+        // Toon lighting (look.rs): the polygon's steps (flag bits 3-6: 0
+        // follow the look, 1 none, else the count) or the look's.
+        let own = (flags >> 3u) & 15u;
+        var steps = u32(screen.toon.x);
+        if own == 1u {
+            steps = 0u;
+        } else if own > 1u {
+            steps = own;
+        }
+        if steps >= 2u {
+            let n = f32(steps);
+            let t = clamp((l / 255.0 - screen.toon.z) / (1.0 - screen.toon.z), 0.0, 0.9999);
+            let k = floor(t * n);
+            let level = screen.toon.y + (1.0 - screen.toon.y) * k / (n - 1.0);
+            p.luma = clamp(u32(level * 255.0), lit_range.x, lit_range.y);
+            if k == 0.0 {
+                toon_dark = 1.0;
+                toon_px = px;
+            }
+        } else {
+            p.luma = clamp(u32(clamp(l, 0.0, 255.0)), lit_range.x, lit_range.y);
+            if (flags & 4u) != 0u {
+                lit_fine = max(l, 0.0);
+            }
         }
     }
     return p;
+}
+
+// Toon lighting's halftone: 1 in the darkest band of a toon-lit pixel
+// (set by `poly_px`), and where the pixel is.
+var<private> toon_dark: f32 = 0.0;
+var<private> toon_px: vec2f = vec2f(0.0);
+
+// The darkest band's halftone: a rotated grid of dots of ink, a dot's area
+// the coverage asked for, in screen space (so it doesn't swim with the
+// surface). Anything else is returned as it is.
+fn toon_ink(rgb: vec3f) -> vec3f {
+    if toon_dark == 0.0 || screen.half.x <= 0.0 {
+        return rgb;
+    }
+    let c = cos(screen.half.z);
+    let s = sin(screen.half.z);
+    let q = toon_px + 0.5;
+    let r = vec2f(q.x * c + q.y * s, -q.x * s + q.y * c) / screen.half.y;
+    let d = length(fract(r) - 0.5);
+    let radius = sqrt(screen.half.x / 3.14159265);
+    let aa = 0.75 / screen.half.y;
+    return mix(rgb, screen.ink.xyz, smoothstep(radius + aa, radius - aa, d));
 }
 
 // Finer levels (outline flags bit 2; raster.rs `fine_level`): the pixel's
@@ -975,7 +1028,7 @@ fn shade_l(in: VsOut, p: Poly) -> vec4f {
         return vec4f(floor(f + 0.5) / 255.0, 1.0);
     }
     let rgb = vec3u(translate(0u, p.colour.x, lum), translate(1u, p.colour.y, lum), translate(2u, p.colour.z, lum));
-    return vec4f(vec3f(rgb) / 255.0, 1.0);
+    return vec4f(toon_ink(vec3f(rgb) / 255.0), 1.0);
 }
 
 // `shade_pack` of polygon `p`.
@@ -1000,7 +1053,7 @@ fn shade_pack_l(in: VsOut, p: Poly) -> vec4f {
         discard;
     }
     let rgb = min(floor(pack_lit_l(p, s.rgb, u, v) + 0.5), vec3f(255.0));
-    return vec4f(rgb / 255.0, 1.0);
+    return vec4f(toon_ink(rgb / 255.0), 1.0);
 }
 
 // `shade_packf` of polygon `p`.
@@ -1031,7 +1084,7 @@ fn shade_packf_l(in: VsPackOut, p: Poly, gx: vec3f, gy: vec3f) -> vec4f {
         discard;
     }
     let rgb = min(floor(pack_lit_l(p, c.rgb / c.a * 255.0, u, v) + 0.5), vec3f(255.0));
-    return vec4f(rgb / 255.0, 1.0);
+    return vec4f(toon_ink(rgb / 255.0), 1.0);
 }
 
 @fragment
@@ -1675,5 +1728,60 @@ fn fs_matf_depth_t(in: VsTOut) -> TDepthOut {
     o.colour = shade_packf_m(packf_t(in), p, gx, gy) * (a * cover_t(in.poly));
     o.aux = aux_t(in, a < 1.0);
     o.depth = depth_t(in);
+    return o;
+}
+
+// The look's ID pass (look.rs; `encode_3d` with its ID targets): the same
+// polygons, runs and depth rules as the 3D layer's pass, writing what is
+// there instead of its colour: the polygon's texture ID and tag (a pair of
+// words the CPU left in `outlines` at `screen.toon.w`, one per polygon) and
+// its exact 1/z. The shading functions are called for their cut-outs only
+// (a polygon's transparent texels and its checkerboard draw nothing here
+// either); colours are never used.
+
+struct IdOut {
+    @location(0) id: vec2u,
+    @location(1) iz: f32,
+    @builtin(frag_depth) depth: f32,
+}
+
+fn id_out(poly: u32, pos: vec4f, iz: f32) -> IdOut {
+    var o: IdOut;
+    let e = bitcast<vec4u>(outlines[bitcast<u32>(screen.toon.w) + poly]);
+    let z1 = outline_iz(poly, floor(pos.xy), iz);
+    let z = z1 * (1.0 + f32(polys[poly].colour.w) * DEPTH_BIAS) * DEPTH_FACTOR;
+    o.id = e.xy;
+    o.iz = z1;
+    o.depth = z / (z + DEPTH_SCALE);
+    return o;
+}
+
+@fragment
+fn fs_id(in: VsOut) -> IdOut {
+    _ = shade(in);
+    return id_out(in.poly, in.pos, in.attr.x);
+}
+
+@fragment
+fn fs_id_pack(in: VsOut) -> IdOut {
+    _ = shade_pack(in);
+    return id_out(in.poly, in.pos, in.attr.x);
+}
+
+@fragment
+fn fs_id_packf(in: VsPackOut) -> IdOut {
+    let gx = dpdx(in.attr_c);
+    let gy = dpdy(in.attr_c);
+    _ = shade_packf(in, gx, gy);
+    return id_out(in.poly, in.pos, in.attr.x);
+}
+
+// A window's depth reset (as `fs_clear`), for the ID pass's targets.
+@fragment
+fn fs_id_clear() -> IdOut {
+    var o: IdOut;
+    o.id = vec2u(0u);
+    o.iz = 0.0;
+    o.depth = 0.0;
     return o;
 }

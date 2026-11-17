@@ -202,6 +202,9 @@ pub struct View<'a> {
     /// What material maps did in the last frame, or why they have no
     /// effect, while the setting is on.
     pub materials: Option<&'a str>,
+    /// The look drawn now (its file with the player's tuning), for the
+    /// Advanced page's rows; None with the look off.
+    pub look: Option<&'a model2::look::Look>,
     /// What the pad reads now (the Controls page's picture and meters).
     pub pad: crate::controls::PadLive,
 }
@@ -1261,6 +1264,7 @@ mod tests {
                 run_ahead_room: None,
                 pack: None,
                 materials: None,
+                look: None,
                 pad: Default::default(),
                 picture: Some([0.0, 0.0, self.size.x, self.size.y]),
                 keeps: Keeps { all_games: Preset::Sharp, own_picture: false },
@@ -1325,7 +1329,7 @@ mod tests {
         /// Into the Advanced page, onto its first row.
         fn open_advanced(&mut self) -> &mut Rig {
             // The scope switch, five styles, Compare, Advanced.
-            self.open_picture().press(7, Nav::Down).run(&[&[Nav::Accept], &[], &[]]);
+            self.open_picture().press(8, Nav::Down).run(&[&[Nav::Accept], &[], &[]]);
             assert_eq!(self.menu.page, Page::Advanced);
             self
         }
@@ -1632,7 +1636,7 @@ mod tests {
         assert_eq!(r.s.preset, Preset::Original);
         assert_eq!(GameSettings { sfx_db: r.s.sfx_db, music_db: r.s.music_db, ..r.s.clone() }, GameSettings::default());
         // Custom with nothing made before keeps the rows as they are.
-        r.press(4, Nav::Down).press(1, Nav::Accept);
+        r.press(5, Nav::Down).press(1, Nav::Accept);
         assert_eq!((r.s.preset, r.s.aa, r.s.crt), (Preset::Custom, 0, 0));
         // B goes back to the pause menu.
         r.run(&[&[Nav::Back], &[]]);
@@ -1647,7 +1651,7 @@ mod tests {
         (r.s.aa, r.s.bloom, r.s.crt) = (8, 50, 30);
         r.open_picture().press(2, Nav::Down).press(1, Nav::Accept);
         assert_eq!((r.s.preset, r.s.aa, r.s.bloom, r.s.crt), (Preset::Sharp, 4, 0, 0));
-        r.press(3, Nav::Down).press(1, Nav::Accept);
+        r.press(4, Nav::Down).press(1, Nav::Accept);
         assert_eq!((r.s.preset, r.s.aa, r.s.bloom, r.s.crt), (Preset::Custom, 8, 50, 30));
     }
 
@@ -1678,7 +1682,7 @@ mod tests {
         r.open_picture();
         assert_eq!(r.menu.wipe_rect(), None, "off");
         // The scope switch, five styles, then Compare.
-        r.press(6, Nav::Down).press(1, Nav::Accept).run(&[&[], &[]]);
+        r.press(7, Nav::Down).press(1, Nav::Accept).run(&[&[], &[]]);
         assert!(r.menu.picture.compare);
         // The picture is the window (1920x1080: 1.5x), the panel 570 wide.
         let visible = 1920.0 - 570.0;
@@ -1704,7 +1708,7 @@ mod tests {
     #[test]
     fn compare_drags_with_the_pointer() {
         let mut r = Rig::new("topskatr");
-        r.open_picture().press(6, Nav::Down).press(1, Nav::Accept).run(&[&[], &[]]);
+        r.open_picture().press(7, Nav::Down).press(1, Nav::Accept).run(&[&[], &[]]);
         let at = egui::pos2(300.0, 200.0);
         let button = |pressed| egui::Event::PointerButton {
             pos: at,
@@ -1744,7 +1748,7 @@ mod tests {
         assert_eq!(r.s.preset, Preset::Enhanced);
         // Advanced: with temporal on the rows are Resolution, Temporal
         // smoothing, Lighting, Glow, ...: right on Glow (the fourth).
-        r.press(4, Nav::Down).press(1, Nav::Accept).run(&[&[], &[]]);
+        r.press(5, Nav::Down).press(1, Nav::Accept).run(&[&[], &[]]);
         assert_eq!(r.menu.page, Page::Advanced);
         r.press(3, Nav::Down).press(1, Nav::Right);
         assert_eq!((r.s.preset, r.s.bloom), (Preset::Custom, 25));
@@ -1778,7 +1782,7 @@ mod tests {
         r.press(2, Nav::Down).press(1, Nav::Right);
         assert_eq!(r.s.crt, 30);
         // More: the depth buffer.
-        r.press(1, Nav::Down).press(1, Nav::Accept);
+        r.press(2, Nav::Down).press(1, Nav::Accept);
         assert!(r.s.depth);
         // With the chip: no temporal smoothing or in-between frames.
         let mut r = Rig::new("topskatr");
@@ -1845,6 +1849,7 @@ mod tests {
                 run_ahead_room: None,
                 pack: None,
                 materials: None,
+                look: None,
                 pad: Default::default(),
                 picture: None,
                 keeps: Keeps::default(),
@@ -1922,6 +1927,7 @@ mod tests {
                 run_ahead_room: None,
                 pack: None,
                 materials: None,
+                look: None,
                 pad: Default::default(),
                 picture: None,
                 keeps: Keeps::default(),

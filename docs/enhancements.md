@@ -1380,6 +1380,62 @@ would be a per-game patch with the same shape as bloom (a depth-based
 blend in the compose or fragment stage, the depth already exists with
 `depth`), decided per game; not started.
 
+### Looks
+
+A **look** (`model2::look`, `look.txt`; docs/texture-packs.md, "Looks";
+`gpu::Renderer::set_look`) draws the game as a comic, or any other
+profile, from what the renderer already has. Render only: nothing reads
+back into the game and the state hash cannot change; with no effect on,
+no target is allocated and no pass runs (a GPU test checks the frame is
+byte for byte the same).
+
+- **Toon lighting and halftone** are in the 3D layer's shader
+  (`raster.wgsl`, `poly_px`): a smooth-shaded pixel's brightness (the
+  separate lighting layer of "Smooth shading": per-pixel luma, from the
+  game's formula or the stream's lumas) is cut into N hard bands before the
+  colour tables turn it into a colour, so the game's own palettes and a
+  pack's images are lit in flat steps and keep their hue. The darkest band
+  can carry halftone dots (a rotated grid in screen space). Polygons the
+  game didn't light are untouched. The cost is a few instructions per lit
+  pixel. Not combined with material maps (they have their own luma path).
+- **The texture-ID target.** Every texture has a live ID: `2 + (key folded
+  to 23 bits)` from the 64-bit key pack files are named by
+  (`gpu::texture_id`); untextured polygons `2^23 | colour`
+  (`gpu::flat_id`); 0 is nothing. A second pass over the same polygons (same
+  runs, cut-outs and depth rules as the 3D layer; translucent polygons left
+  out) writes `Rg32Uint` (ID, tag word: outline weight and rim) and `R32Float`
+  (exact 1/z). It is a separate pass, not an extra attachment of the 3D
+  pass, because an integer target can't be multisample-resolved and the
+  pass has 25 entry points, some temporal; the price is drawing the
+  polygons a second time, only when a screen-space effect is on. The ID
+  scheme differs from `texmap`'s sequential IDs (those are per run); the
+  key in `inventory.tsv` gives the live ID.
+- **Ink outlines** (`look.wgsl`): one pass over the finished 3D layer. In
+  screen space 1/z is linear across a flat polygon, so its second
+  difference across a pixel at the line's half width is zero on any flat
+  surface, however tilted, and large only at a silhouette or crease: no
+  slope threshold, flat floors stay clean. Ink goes on the nearer side
+  only. Between two textures at one depth the same test on the IDs
+  (nearer, or the larger ID on a tie) draws a line. Weight is in pixels at
+  1080 lines and scales with the output; lines under a pixel fade; lines
+  thin with distance between two set distances; a tag can scale a
+  texture's line or remove it (`outline=none`, which is also how
+  HUD-like polygons opt out; 2D tiles are never in this pass).
+- **Speed lines** are minimal and off: radial wedges at a fixed amount.
+  Driving them from the temporal pass's motion vectors is not done.
+- **Browser:** these are WGSL passes in the shared renderer and run in
+  WebGPU unchanged (rg32uint and r32float are renderable in core WebGPU);
+  the web build has no look file or picker yet, so it draws none.
+- **Cost** (RTX 2080 SUPER, Top Skater frames 3300 and 3600, pack on, 4x
+  MSAA, GPU+CPU time per frame without read-back): toon and halftone alone
+  +0.1 ms; with the ID and ink passes +7 ms at 1080p (4.8 to 11.6 ms) and
+  +4 to +6 ms at 4K (7.8 to 11.5-14.0 ms). Most of it is the second
+  polygon pass's CPU preparation, not fill, which is why 4K costs no more;
+  sharing that preparation with the 3D pass is the next saving.
+
+Picture style *Comic* (`docs/play.md`) is these effects at their defaults
+with smooth lighting and 4x multisampling, working with no pack.
+
 ### Ray tracing
 
 Scenes are small: a few thousand polygons a frame, tiny for a modern

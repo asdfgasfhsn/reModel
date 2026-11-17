@@ -28,6 +28,7 @@ pub fn style_line(p: Preset, game: Option<&romset::Game>) -> String {
         Preset::Original => "The picture as the arcade board draws it: nothing added.".into(),
         Preset::Sharp => "Clean edges and crisp textures. The same picture, crisper.".into(),
         Preset::Crt => "Scanlines and a soft tube edge, like an arcade monitor.".into(),
+        Preset::Comic => "Ink outlines, flat bands of light and halftone dots: the game as a comic.".into(),
         Preset::Custom => "Your own mix of the advanced settings.".into(),
         Preset::Enhanced => {
             let mut d = GameSettings::default();

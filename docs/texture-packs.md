@@ -976,6 +976,86 @@ apply, GPU ms off and on, and the material memory held. `PROBE=X,Y@FRAME`
 explains one pixel: texture and map files, lamp, normal, tangent frame,
 the map's normal there, base and resulting luma.
 
+## Looks
+
+A **look** is a render profile that goes with a pack (or stands alone):
+ink outlines, toon lighting with halftone dots, speed lines, and
+per-texture tags. It is the file `look.txt`, in the pack directory or on
+its own (`<data dir>/<set>/look.txt` in the player, `--look FILE` in the
+CLI). Render only: nothing in it reaches the machine, and with its effects
+off the picture is byte for byte the one drawn without it. The design is
+in docs/uplift-studio.md, "Looks"; how the GPU draws it in
+docs/enhancements.md, "Looks".
+
+**Format 1.** Line-based UTF-8 like `pack.txt`: a keyword, a tab (or
+spaces), its value; `#` comments and blank lines skipped; `format` first.
+Every parameter has a default, so a file names only what it changes. A
+`format` above 1 refuses the whole look (said, the look not drawn); unknown
+keywords and unknown `k=v` fields of a tag are ignored and listed (the
+player prints one line), so formats rise only when the meaning of
+something already defined changes. Values out of range are errors that name
+the line (a typo is never clamped away). `model2::look` is the reader.
+
+```
+# reModel look
+format	1
+name	Top Skater comic
+game	topskatr
+outline_weight	2.25
+outline_colour	#120f1a
+toon_steps	3
+halftone	0.4
+tag	tex_0123456789abcdef_64x64	outline=none
+tag	surf_fedcba9876543210_32x32	toon=off emissive
+```
+
+| Parameter | Range (default) | Meaning |
+|---|---|---|
+| `outline` | on/off (on) | ink lines at depth jumps and creases, and between textures |
+| `outline_weight` | 0-8 (1.5) | thickness in pixels on a 1080-line picture; scales with the output height |
+| `outline_opacity` | 0-1 (0.9) | how solid |
+| `outline_depth` | 0-4 (1) | sensitivity to depth jumps (0: none from depth) |
+| `outline_ids` | 0-1 (0.6) | strength of lines between two textures at one depth (0: none) |
+| `outline_fade_near`, `outline_fade_far` | game units (3000, 14000) | distance where lines start to thin, and where they are gone, so far scenery isn't ink noise |
+| `outline_colour` | `#rrggbb` (`#120f19`) | ink |
+| `rim` | 0-1 (0) | a light band inside silhouettes (per texture with a `rim=` tag) |
+| `toon_steps` | 0 or 2-6 (3) | the game's smooth lighting in this many hard bands (0: smooth). Needs smooth shading (the Comic style turns it on; `look-render` does for a look with steps) |
+| `toon_floor` | 0-1 (0.45) | the darkest band's brightness, of the lit one |
+| `toon_cut` | 0-0.9 (0.35) | brightness below which everything is the darkest band |
+| `halftone` | 0-1 (0) | dots of ink in the darkest band, this share of its area |
+| `halftone_pitch`, `halftone_angle`, `halftone_colour` | 2-24 px at 1080 (6), 0-90 (45), `#rrggbb` | the dot grid |
+| `speed_lines` | 0-1 (0) | streaks from the middle of the picture; approximate: a fixed amount, not driven by speed |
+
+**Tags.** `tag STEM k=v ...` names a texture by its image stem
+(`tex_<key>_<w>x<h>`, this colour) or surface stem (`surf_<key>_<w>x<h>`,
+these texels in any colour), as `material` lines do; the inventory of
+`make texmap` is where to decide them (a group gets one line per texture).
+Fields: `outline=W` (a multiple of the look's weight, 0.. 4, or `none`: HUD
+pieces, signs, text), `toon=N` (2-6) or `toon=off`, `rim=X` (0-1),
+`emissive` (self-lit: full brightness, ignores the game's lighting).
+2D-layer HUD tiles are never outlined: the look works on the 3D layer.
+
+**Where it is loaded.** The player: the pack's `look.txt` with the pack on,
+else `<data dir>/<set>/look.txt`, else the built-in Comic defaults
+(`Look::comic`); the file is watched and read again when it changes
+(an edit shows within half a second; a bad file is reported and the
+last good look stays). The Advanced page's *Comic look* row turns it on and
+shows its parameters; what is changed there is kept as `look_tuning` over
+the file. The CLI: `remodel --look FILE|comic [--look-set NAME=VALUE ...]
+look-render` (`make look-render`) draws captured frames without and with
+it for agents:
+
+```
+make look-render CAPTURE=out/topskatr/capture PACK=out/topskatr/studio/cel-pack/pack \
+    LOOK=comic LOOK_SET="outline_weight=3 toon_steps=2" \
+    VIEW="--height 1080 --aspect 16:9 --hud edges --aa 4" LOOK_OPTS="--frames 2100,3300"
+```
+
+It writes `FRAME-plain.png`, `FRAME-look.png` and `FRAME-sheet.png` (both)
+and, with `--bench N`, the GPU time of each. `run` snapshots are software
+and draw no look. The browser draws looks with the rest of the GPU
+renderer (below, docs/enhancements.md); it has no look picker yet.
+
 ## Texture map
 
 `make texmap` answers "which texture is where on screen, and what belongs

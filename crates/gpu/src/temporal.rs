@@ -21,7 +21,7 @@ use model2::raster::Centres;
 /// The aux target: motion (r, g), 1/z (b), expected previous 1/z (a).
 pub(crate) const AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// The accumulated picture: premultiplied RGBA, display values.
-const HISTORY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+pub(crate) const HISTORY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// Whether the adapter can do temporal anti-aliasing: 16-bit float
 /// targets that can be drawn to, read and filtered (always on WebGPU; may
@@ -672,7 +672,7 @@ impl Renderer {
 
     /// A texture kept between frames by label, re-created if its size or
     /// format changed; true when (re-)created.
-    fn kept_target(
+    pub(crate) fn kept_target(
         &mut self,
         label: &'static str,
         (w, h): (u32, u32),
@@ -765,7 +765,7 @@ impl Renderer {
             cover: self.temporal.tuning.cover,
             isolated: self.temporal.tuning.isolated > 0.0,
         };
-        self.encode_3d(enc, polys, placed, src, view, &colour_view, Some(&pass));
+        self.encode_3d(enc, polys, placed, src, view, &colour_view, Some(&pass), None);
         let history_view = history.create_view(&Default::default());
         let io = ResolveIo {
             colour: &colour_view,

@@ -102,6 +102,8 @@ pub struct GameJob {
     /// Start temporal anti-aliasing's accumulation again.
     pub reset_history: bool,
     pub quality: gpu::Quality,
+    /// The look (ink outlines, toon lighting; `gpu::Renderer::set_look`).
+    pub look: Option<std::sync::Arc<model2::look::Look>>,
     /// Smooth shading's rules and HUD windows (`set_light_rules`).
     pub rules: (&'static romset::Shading, u64),
     /// Smooth motion's in-betweens, when they're drawn: when the newest
@@ -168,6 +170,7 @@ pub fn draw_game(
     }
     r.set_light_rules(job.rules.0, job.rules.1);
     let temporal = r.set_quality(job.quality).temporal > 0;
+    r.set_look(job.look.clone());
     // Compare: the original's picture first, so what the renderer keeps of
     // the last frame drawn (shading and texture pack counts) is the chosen
     // one's.

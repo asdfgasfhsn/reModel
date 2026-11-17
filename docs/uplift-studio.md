@@ -284,7 +284,12 @@ without it a look falls back to the ID and lighting effects and says so.
 room for it, but games that rewrite geometry each frame make it hard) and
 new geometry or particles.
 
-**Phase 2 is the "comic" look for the Top Skater showcase**: ink outlines
+**Phase 2 is built** (the look file, live ID target, ink outlines, toon
+lighting with halftone, minimal speed lines, `make look-render`, live tuning
+and hot reload in the player, the Comic picture style): see
+docs/texture-packs.md, "Looks" and docs/enhancements.md, "Looks". Not
+done: motion-driven speed lines, a browser look picker, tags set from the
+viewer. Original plan: **the "comic" look for the Top Skater showcase**: ink outlines
 from depth and texture-ID edges, toon lighting in 2-3 steps with halftone
 in the shadow step, optional motion-driven speed lines, all as look-file
 parameters. Phase 2 starts by producing the ID target live on the GPU and

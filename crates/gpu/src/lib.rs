@@ -19,6 +19,7 @@
 mod bloom;
 mod board;
 mod crt;
+mod look;
 mod materials;
 mod photo;
 mod temporal;
@@ -26,6 +27,7 @@ mod tiles;
 
 pub use board::BoardFrame;
 use board::BoardRef;
+pub use look::{flat_id, texture_id};
 pub use model2::enhance::TexFilter;
 use model2::enhance::{Found, Rgba, TexturePack};
 pub use model2::light::{Shading, CREASE_AUTO};
@@ -590,6 +592,17 @@ pub struct Renderer {
     photo_depth: Option<(wgpu::TextureView, wgpu::TextureView)>,
     /// Bloom's chain this many levels longer (a photo larger than play).
     bloom_extra: u32,
+    /// The look (`set_look`), its tags by key, and its ink pass.
+    look: Option<std::sync::Arc<model2::look::Look>>,
+    look_tags: look::LookTags,
+    ink: look::Ink,
+    /// Raster pipelines of the look's ID pass, by mode and variant.
+    raster_id: HashMap<(Mode, Variant), wgpu::RenderPipeline>,
+    /// While the ID pass is encoded: no material maps (it only needs
+    /// cut-outs and depth).
+    no_materials: bool,
+    /// `frames` when the look's targets were last used.
+    look_used: u64,
     /// While a photo is drawn: its near plane (`raster::BuildIn::near`).
     photo_near: f32,
 }
@@ -864,6 +877,7 @@ impl Renderer {
         let tiles = tiles::Tiles::new(&device);
         let bloom = bloom::Bloom::new(&device);
         let crt = crt::Crt::new(&device);
+        let ink = look::Ink::new(&device);
         let bloom_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("bloom"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -933,6 +947,12 @@ impl Renderer {
             photo_depth: None,
             bloom_extra: 0,
             photo_near: 0.0,
+            look: None,
+            look_tags: Default::default(),
+            ink,
+            raster_id: HashMap::new(),
+            no_materials: false,
+            look_used: 0,
         }
     }
 
@@ -1078,7 +1098,11 @@ impl Renderer {
         };
         let q = Quality { msaa, temporal: 0, tex_filter: self.quality.tex_filter, ..quality };
         let kept = std::mem::replace(&mut self.quality, q);
+        // A picture drawn at another quality (the wipe's arcade original)
+        // has no look.
+        let look = self.look.take();
         let r = f(self);
+        self.look = look;
         self.quality = kept;
         r
     }
@@ -1493,6 +1517,80 @@ impl Renderer {
         p
     }
 
+    /// The look's ID pass pipeline for `mode` (Test, DepthWrite or Clear)
+    /// and `variant` (Original, Pack or PackFiltered): the `fs_id*` entry
+    /// points into the ID target and the 1/z target, with the depth rules
+    /// of the 3D pass.
+    fn id_pipeline(&mut self, mode: Mode, variant: Variant) -> wgpu::RenderPipeline {
+        let key = (mode, variant);
+        if let Some(p) = self.raster_id.get(&key) {
+            return p.clone();
+        }
+        let mut constants = Vec::new();
+        if mode == Mode::Test {
+            constants.push(("DEPTH_FACTOR", f64::from(1.0 + model2::raster::DEPTH_TOLERANCE)));
+        }
+        let (vs, fs) = match (mode, variant) {
+            (Mode::Clear, _) => ("vs_clear", "fs_id_clear"),
+            (_, Variant::Original) => ("vs", "fs_id"),
+            (_, Variant::Pack) => ("vs", "fs_id_pack"),
+            (_, Variant::PackFiltered) => ("vs_pack", "fs_id_packf"),
+            _ => unreachable!("the ID pass has no materials"),
+        };
+        let layout = match variant {
+            Variant::Original => &self.raster_pipeline_layout,
+            Variant::Pack => &self.pack_pipeline_layout,
+            _ => &self.pack_filtered_pipeline_layout,
+        };
+        let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x3, 2 => Uint32];
+        let buffers = [Some(wgpu::VertexBufferLayout {
+            array_stride: VERTEX_BYTES,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &attributes,
+        })];
+        let depth_stencil = Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(matches!(mode, Mode::DepthWrite | Mode::Clear)),
+            depth_compare: Some(if matches!(mode, Mode::Test | Mode::DepthWrite) {
+                wgpu::CompareFunction::GreaterEqual
+            } else {
+                wgpu::CompareFunction::Always
+            }),
+            stencil: Default::default(),
+            bias: Default::default(),
+        });
+        let writes = if matches!(mode, Mode::Clear | Mode::DepthWrite) {
+            wgpu::ColorWrites::empty()
+        } else {
+            wgpu::ColorWrites::ALL
+        };
+        let targets = [look::ID_FORMAT, look::IZ_FORMAT]
+            .map(|format| Some(wgpu::ColorTargetState { format, blend: None, write_mask: writes }));
+        let p = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("raster id"),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module: &self.raster_shader,
+                entry_point: Some(vs),
+                compilation_options: Default::default(),
+                buffers: if mode == Mode::Clear { &[] } else { &buffers },
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &self.raster_shader,
+                entry_point: Some(fs),
+                compilation_options: wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() },
+                targets: &targets,
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        self.raster_id.insert(key, p.clone());
+        p
+    }
+
     /// A temporal raster pipeline (one sample): `vs_t` and the `_t`
     /// fragment entry points, 36-byte vertices, the colour target with
     /// premultiplied blending (for blended stipple) and the aux target.
@@ -1622,7 +1720,7 @@ impl Renderer {
         let max = self.device.limits().max_texture_dimension_2d as usize;
         let mut stats = PackStats::default();
         // Material maps: only asked for when on and the pack has some.
-        let materials = self.quality.materials && pack.has_materials();
+        let materials = self.quality.materials && pack.has_materials() && !self.no_materials;
         self.materials.begin();
         // Per polygon: its image's key, its material's id, its address
         // modes (filtered images only).
@@ -1871,9 +1969,15 @@ impl Renderer {
         view: &View,
         target: &wgpu::TextureView,
         temporal: Option<&TemporalPass>,
+        ids: Option<&wgpu::TextureView>,
     ) {
         let t0 = self.tick();
         let (w, h) = temporal.map_or((view.width as u32, view.height as u32), |t| t.size);
+        // The look's ID pass (look.rs): `target` is the ID image and `ids`
+        // the 1/z image; the same polygons and depth rules, written as
+        // what is there instead of colour, never temporal or multisampled.
+        let id_pass = ids.is_some();
+        debug_assert!(!(id_pass && temporal.is_some()));
         let vertex_bytes = if temporal.is_some() { VERTEX_BYTES_T } else { VERTEX_BYTES };
         let mut verts: Vec<u8> = Vec::new();
         let mut table: Vec<u8> = Vec::new();
@@ -1882,9 +1986,20 @@ impl Renderer {
         let q = self.quality;
         // Smooth shading: the lit pipelines only for frames with a lit
         // polygon.
-        let lit_frame = q.shading != Shading::Flat && placed.iter().any(|pl| !polys[pl.poly].lit.is_empty());
+        let lit_frame =
+            !id_pass && q.shading != Shading::Flat && placed.iter().any(|pl| !polys[pl.poly].lit.is_empty());
+        // The ID pass always has a depth buffer, and never a material.
+        let depth_on = q.depth || id_pass;
         let versions = self.versions.take();
         let slots = self.pack_slots(polys, placed, src, versions.map(|v| v.0));
+        // The look: per polygon, its ID and tag (the ID pass) and what
+        // the tags say about its lighting.
+        let look = self.look.clone().filter(|l| l.active());
+        let look_polys = match &look {
+            Some(l) => self.look_polys(polys, placed, src, l, id_pass, versions.map(|v| v.0)),
+            None => Vec::new(),
+        };
+        let toon = look::toon_params(look.as_deref().filter(|_| !id_pass), view.height as f32);
         // Material maps: their pipelines for the polygons with a material
         // (`Slots::mat_variant`); every polygon of such a frame has an
         // outline entry.
@@ -1988,8 +2103,14 @@ impl Renderer {
             }
             let tex = t.map_or([0; 4], |t| [t.x0, t.y0, t.w, t.h]);
             let (bank, luma_table) = t.map_or((0, 0), |t| (t.bank, t.luma_table));
+            // The look's tags: an emissive polygon is drawn at full
+            // brightness and unlit; a toon override rides in the outline
+            // flags (raster.wgsl `poly_px`).
+            let lk = if id_pass { None } else { look_polys.get(i) };
+            let emissive = lk.is_some_and(|l| l.emissive);
             table.extend(le([x0, y0, x1, y1].map(f32::to_le_bytes)));
-            let ints = tex.into_iter().chain([flags, bank, luma_table, p.luma]).chain(p.colour).chain([pl.rank]);
+            let luma = if emissive { 255 } else { p.luma };
+            let ints = tex.into_iter().chain([flags, bank, luma_table, luma]).chain(p.colour).chain([pl.rank]);
             table.extend(le(ints.map(u32::to_le_bytes)));
             let first = (verts.len() as u64 / vertex_bytes) as u32;
             // Convex polygon as a triangle fan.
@@ -2010,9 +2131,9 @@ impl Renderer {
                 }
             }
             let end = (verts.len() as u64 / vertex_bytes) as u32;
-            let lit = lit_frame && !p.lit.is_empty();
+            let lit = lit_frame && !p.lit.is_empty() && !emissive;
             let mat = slots.material[i];
-            if q.depth || lit || mat.is_some() {
+            if depth_on || lit || mat.is_some() {
                 let first = placed.len() + outline_points.len() / 16;
                 let count = pl.points.len();
                 // Lit: bit 0, per pixel bit 1, finer levels bit 2, the
@@ -2022,6 +2143,7 @@ impl Renderer {
                 let flags = if lit {
                     1 | (pixel as u32) << 1
                         | (fine as u32) << 2
+                        | (lk.map_or(0, |l| l.toon as u32) & 15) << 3
                         | (p.lit_range[0] as u32) << 8
                         | (p.lit_range[1] as u32) << 16
                 } else {
@@ -2070,14 +2192,17 @@ impl Renderer {
             } else if lit_frame || mat_frame {
                 outline_dir.extend([0; 16]);
             }
-            // Translucent (checkerboard) polygons are background.
-            let grouped = q.depth && !pl.background;
-            let mode = match (q.depth, pl.background) {
+            // Translucent (checkerboard) polygons are background; the ID
+            // pass leaves them out.
+            let grouped = depth_on && !pl.background;
+            let mode = match (depth_on, pl.background) {
                 (false, _) => Mode::Plain,
                 (_, true) => Mode::Background,
                 _ => Mode::Test,
             };
-            push(&mut runs, first..end, p.window, mode, pl.clip, slots.slot[i]);
+            if !(id_pass && pl.background) {
+                push(&mut runs, first..end, p.window, mode, pl.clip, slots.slot[i]);
+            }
             // The depth-only draw repeats a replaced polygon's cut-out.
             if grouped {
                 group_depth.push(Run {
@@ -2105,10 +2230,6 @@ impl Renderer {
         let buffer = |label, contents: &[u8], usage| {
             d.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage })
         };
-        // The output size (also for the temporal pass, which is placed in
-        // output pixels and drawn at its own size through the viewport).
-        let screen = le([view.width as f32, view.height as f32, view.sx, view.sy].map(f32::to_le_bytes));
-        let screen = buffer("screen", &screen, wgpu::BufferUsages::UNIFORM);
         let table = buffer("polys", &table, wgpu::BufferUsages::STORAGE);
         let vertices = buffer("vertices", &words(&verts), wgpu::BufferUsages::VERTEX);
         outline_dir.extend(outline_points);
@@ -2117,10 +2238,27 @@ impl Renderer {
         // the portable limits have).
         let clip_base = (outline_dir.len() / 16) as u32;
         outline_dir.extend(table_t);
+        // The ID pass: each polygon's ID and tag words, at `id_base`.
+        let id_base = (outline_dir.len() / 16) as u32;
+        if id_pass {
+            for l in &look_polys {
+                outline_dir.extend(le([l.id, l.tag, 0, 0].map(u32::to_le_bytes)));
+            }
+        }
         if outline_dir.is_empty() {
             outline_dir.resize(16, 0);
         }
         let outlines = buffer("outlines", &outline_dir, wgpu::BufferUsages::STORAGE);
+
+        // The output size (also for the temporal pass, which is placed in
+        // output pixels and drawn at its own size through the viewport).
+        let mut screen = le([view.width as f32, view.height as f32, view.sx, view.sy].map(f32::to_le_bytes));
+        // The look's toon and halftone (raster.wgsl `Screen`); toon.w is
+        // where the ID pass's entries are.
+        let mut look_words = toon;
+        look_words[3] = f32::from_bits(id_base);
+        screen.extend(le(look_words.map(f32::to_le_bytes)));
+        let screen = buffer("screen", &screen, wgpu::BufferUsages::UNIFORM);
         let mut entries = vec![
             wgpu::BindGroupEntry { binding: 0, resource: screen.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: table.as_entire_binding() },
@@ -2137,16 +2275,19 @@ impl Renderer {
             layout: if temporal.is_some() { &self.raster_layout_t } else { &self.raster_layout },
             entries: &entries,
         });
-        let samples = if temporal.is_some() { 1 } else { q.msaa.max(1) };
+        let samples = if temporal.is_some() || id_pass { 1 } else { q.msaa.max(1) };
         let msaa = (samples > 1).then(|| self.kept_attachment("3d msaa", w, h, samples, FORMAT));
         let msaa_view = msaa.as_ref().map(|t| t.create_view(&Default::default()));
         let depth_label = if temporal.is_some() { "3d depth t" } else { "3d depth" };
-        let depth = q.depth.then(|| self.kept_attachment(depth_label, w, h, samples, DEPTH_FORMAT));
+        let depth_label = if id_pass { "look depth" } else { depth_label };
+        let depth = depth_on.then(|| self.kept_attachment(depth_label, w, h, samples, DEPTH_FORMAT));
         let depth_view = depth.as_ref().map(|t| t.create_view(&Default::default()));
         let is_t = temporal.is_some();
         // Depth-only draws need no luma: never lit.
         let shading = |m: Mode| (lit_frame && m != Mode::DepthWrite) as u8;
-        let pipelines: Vec<(Mode, wgpu::RenderPipeline)> = if q.depth {
+        let pipelines: Vec<(Mode, wgpu::RenderPipeline)> = if id_pass {
+            [Mode::Test, Mode::DepthWrite].map(|m| (m, self.id_pipeline(m, variant))).into()
+        } else if q.depth {
             [Mode::Test, Mode::DepthWrite, Mode::Background]
                 .map(|m| (m, self.raster_pipeline(samples, m, variant, is_t, shading(m))))
                 .into()
@@ -2158,7 +2299,11 @@ impl Renderer {
             Some(v) => pipelines.iter().map(|(m, _)| (*m, self.raster_pipeline(samples, *m, v, is_t, 0))).collect(),
             None => Vec::new(),
         };
-        let clear_pipeline = q.depth.then(|| self.raster_pipeline(samples, Mode::Clear, variant, is_t, 0));
+        let clear_pipeline = if id_pass {
+            Some(self.id_pipeline(Mode::Clear, variant))
+        } else {
+            q.depth.then(|| self.raster_pipeline(samples, Mode::Clear, variant, is_t, 0))
+        };
         let dummy = (variant != Variant::Original).then(|| self.pack_dummy(variant));
         self.pack_stats.draws = runs.len() as u32;
         let colour = Some(wgpu::RenderPassColorAttachment {
@@ -2177,12 +2322,23 @@ impl Renderer {
             resolve_target: None,
             ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
         });
+        let id_colours = ids.map(|iz| {
+            let clear =
+                wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store };
+            [target, iz].map(|view| {
+                Some(wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: clear })
+            })
+        });
         let attachments = [colour, aux];
         self.lap(t0, |p| &mut p.resources3d);
         let t0 = self.tick();
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("3d layer"),
-            color_attachments: if is_t { &attachments } else { &attachments[..1] },
+            color_attachments: match &id_colours {
+                Some(c) => c,
+                None if is_t => &attachments,
+                None => &attachments[..1],
+            },
             depth_stencil_attachment: depth_view.as_ref().map(|view| wgpu::RenderPassDepthStencilAttachment {
                 view,
                 depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Discard }),
@@ -2318,7 +2474,7 @@ impl Renderer {
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
         let target = self.texture("3d layer", w, h, usage);
         let mut enc = self.device.create_command_encoder(&Default::default());
-        self.encode_3d(&mut enc, polys, placed, src, view, &target.create_view(&Default::default()), None);
+        self.encode_3d(&mut enc, polys, placed, src, view, &target.create_view(&Default::default()), None, None);
         let rgba = self.read_back(enc, &target, w, h);
         // Colour is premultiplied by coverage at multisampled edges.
         let un = |c: u8, a: u8| ((c as u32 * 255 + a as u32 / 2) / a as u32).min(255) as u8;
@@ -2422,6 +2578,7 @@ impl Renderer {
         self.frames += 1;
         let t_frame = self.tick();
         let in3d = self.phases.prep3d + self.phases.resources3d + self.phases.pass3d;
+        let versions = self.versions;
         if let Some(targets) = self.photo_depth.take() {
             self.encode_photo_depth(enc, polys, placed, &targets, (w, h));
         }
@@ -2432,8 +2589,20 @@ impl Renderer {
             let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
             let layer3d = self.kept_texture("3d layer", w, h, usage);
             let layer3d_view = layer3d.create_view(&Default::default());
-            self.encode_3d(enc, polys, placed, src, view, &layer3d_view, None);
+            self.encode_3d(enc, polys, placed, src, view, &layer3d_view, None, None);
             layer3d_view
+        };
+        // The look's ink pass over the finished 3D layer (the ID pass
+        // draws the polygons again, so the frame's RAM versions are put
+        // back for it).
+        let look = self.look.clone().filter(|l| l.active() && l.params.needs_ids() && !placed.is_empty());
+        let layer3d_view = match &look {
+            Some(l) => {
+                self.look_used = self.frames;
+                self.versions = versions;
+                self.encode_ink(enc, polys, placed, src, view, l, &layer3d_view)
+            }
+            None => layer3d_view,
         };
         let tile_group =
             layers.tiles.as_ref().and_then(|m| self.tiles.bind(&self.device, &self.queue, m, layers.ext_w));
@@ -2963,11 +3132,19 @@ mod tests {
             "fs_mat_depth_t",
             "fs_matf_t",
             "fs_matf_depth_t",
+            "fs_id",
+            "fs_id_pack",
+            "fs_id_packf",
+            "fs_id_clear",
         ] {
             assert!(names.contains(&name), "raster.wgsl has no entry point {name}");
             // Each fragment entry point has its smooth-shading twin.
             // (The material ones light lit polygons themselves.)
-            if name.starts_with("fs_") && name != "fs_clear" && !name.starts_with("fs_mat") {
+            if name.starts_with("fs_")
+                && name != "fs_clear"
+                && !name.starts_with("fs_mat")
+                && !name.starts_with("fs_id")
+            {
                 let lit = super::lit_entry(name, true);
                 assert!(names.contains(&lit.as_str()), "raster.wgsl has no entry point {lit}");
             }
@@ -2976,6 +3153,7 @@ mod tests {
             assert!(names.contains(&name), "raster.wgsl has no entry point {name}");
         }
         validate(include_str!("compose.wgsl"));
+        validate(include_str!("look.wgsl"));
         let temporal = validate(include_str!("temporal.wgsl"));
         assert!(temporal.entry_points.iter().any(|e| e.name == "fs_resolve"));
     }
@@ -3026,7 +3204,8 @@ mod tests {
                 .iter()
                 .any(|(h, v)| v.binding.as_ref().is_some_and(|b| b.group == 1) && !fi[h].is_empty());
             let material = ep.name.starts_with("fs_mat");
-            assert_eq!(uses_group_1, ep.name.starts_with("fs_pack") || material, "{}", ep.name);
+            let pack = ep.name.starts_with("fs_pack") || ep.name.starts_with("fs_id_pack");
+            assert_eq!(uses_group_1, pack || material, "{}", ep.name);
             let uses_binding_2 = module
                 .global_variables
                 .iter()
@@ -3035,7 +3214,12 @@ mod tests {
             // Only the filtered ones sample (derivatives, a sampler).
             let samples =
                 module.global_variables.iter().any(|(h, v)| v.name.as_deref() == Some("pack_smp") && !fi[h].is_empty());
-            assert_eq!(samples, ep.name.starts_with("fs_packf") || ep.name.starts_with("fs_matf"), "{}", ep.name);
+            assert_eq!(
+                samples,
+                ep.name.starts_with("fs_packf") || ep.name.starts_with("fs_matf") || ep.name == "fs_id_packf",
+                "{}",
+                ep.name
+            );
         }
     }
 }

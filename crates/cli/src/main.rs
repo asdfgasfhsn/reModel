@@ -4,6 +4,7 @@ mod geo_check;
 mod gpu_check;
 mod light_report;
 mod lighting_check;
+mod look_render;
 mod music;
 mod pack_check;
 mod pack_lint;
@@ -139,6 +140,12 @@ options:
                        strength N percent (1 to 100; gpu::Quality::bloom;
                        gpu-check's cost table adds bloom columns at N, 50
                        by default; snapshots are software and ignore it)
+  --look FILE|comic    look-render: the look (docs/texture-packs.md, \"Looks\"): a
+                       look.txt, a directory holding one, or `comic` for the
+                       built-in defaults of the Comic picture style
+  --look-set NAME=VALUE
+                       look-render: set one look parameter over the look
+                       (repeat for more; see docs/texture-packs.md)
   --stipple blend|keep with --temporal: checkerboard translucency as a 50%
                        blend (default) or the pattern kept
   --shading flat|vertex|pixel
@@ -245,6 +252,17 @@ commands:
                        --capture-seq sequence) in DIR
                        (default out/GAME/capture) with the software and GPU
                        rasterisers; time both and report how they differ
+  look-render [DIR] [OUT]
+                       draw the frames captured in DIR (default
+                       out/GAME/capture) on the GPU without and with the look
+                       given by --look and --look-set (docs/texture-packs.md,
+                       \"Looks\"; with --texture-pack the pack too; default view
+                       1920x1080; --height, --aspect, --hud, --aa, --depth,
+                       --shading as elsewhere) and write FRAME-plain.png,
+                       FRAME-look.png and FRAME-sheet.png (both side by side)
+                       to OUT (default out/GAME/look-render). --frames A,B
+                       draws only those captured frames; --bench N also
+                       times N draws of each without and with the look
   depth-check [DIR] [OUT]
                        draw the frames captured in DIR on the GPU with the
                        depth buffer off and on (default view 1440x1080; with
@@ -665,6 +683,38 @@ fn parse_opts() -> Result<Opts, ExitCode> {
         };
         let _ = STIPPLE.set(s);
     }
+    let Ok(look) = opt("--look") else {
+        eprint!("{USAGE}");
+        return Err(ExitCode::FAILURE);
+    };
+    let mut look_sets = Vec::new();
+    while let Ok(Some(v)) = opt("--look-set") {
+        look_sets.push(v);
+    }
+    if look.is_some() || !look_sets.is_empty() {
+        let mut l = match look.as_deref() {
+            None | Some("comic") => model2::look::Look::comic(),
+            Some(path) => match model2::look::Look::load(Path::new(path)) {
+                Ok(Some(l)) => l,
+                Ok(None) => {
+                    eprintln!("error: --look: no look at {path}");
+                    return Err(ExitCode::FAILURE);
+                }
+                Err(e) => {
+                    eprintln!("error: --look: {e}");
+                    return Err(ExitCode::FAILURE);
+                }
+            },
+        };
+        if let Some(n) = l.notice() {
+            eprintln!("{n}");
+        }
+        if let Err(e) = l.set_all(&look_sets) {
+            eprintln!("error: --look-set: {e}");
+            return Err(ExitCode::FAILURE);
+        }
+        let _ = LOOK.set(l);
+    }
     let Ok(relief) = opt("--materials-relief") else {
         eprint!("{USAGE}");
         return Err(ExitCode::FAILURE);
@@ -947,6 +997,7 @@ fn main() -> ExitCode {
         "tile-check" => cmd_tile_check(&o, roms),
         "texmap" => cmd_texmap(&o, roms),
         "depth-check" => cmd_depth_check(&o, roms),
+        "look-render" => cmd_look_render(&o, roms),
         "lighting-check" => cmd_lighting_check(&o, roms),
         "lockstep" => cmd_lockstep(&o, roms),
         "geo-trace-words" => cmd_geo_trace_words(&o, roms),
@@ -1897,6 +1948,78 @@ fn cmd_texmap(o: &Opts, roms: &RomSet) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn cmd_look_render(o: &Opts, roms: &RomSet) -> ExitCode {
+    let mut args = o.args.clone();
+    let mut frames = Vec::new();
+    let mut bench = 0usize;
+    for flag in ["--frames", "--bench"] {
+        if let Some(i) = args.iter().position(|a| a == flag) {
+            let Some(v) = args.get(i + 1).cloned() else {
+                eprintln!("error: {flag} wants a value");
+                return ExitCode::FAILURE;
+            };
+            args.drain(i..i + 2);
+            if flag == "--bench" {
+                let Ok(n) = v.parse::<usize>() else {
+                    eprintln!("error: --bench wants a number of draws");
+                    return ExitCode::FAILURE;
+                };
+                bench = n;
+            } else {
+                match v.split(',').map(|f| f.trim().parse::<u64>()).collect::<Result<Vec<_>, _>>() {
+                    Ok(f) => frames = f,
+                    Err(_) => {
+                        eprintln!("error: --frames wants captured frame numbers, e.g. 2100,3300");
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+        }
+    }
+    let Some(look) = LOOK.get().cloned() else {
+        eprintln!("error: look-render needs --look FILE (or `--look comic`), and takes --look-set NAME=VALUE");
+        return ExitCode::FAILURE;
+    };
+    let default = PathBuf::from("out").join(roms.game.id).join("capture");
+    let root = args.get(1).map(PathBuf::from).unwrap_or(default);
+    let out =
+        args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("look-render"));
+    // A look with toon bands lights smooth-shaded polygons: vertex shading
+    // unless asked otherwise.
+    let mut light = light_options(roms.game);
+    if light.is_none() && look.params.toon_steps() >= 2 {
+        light = Some(model2::light::Options::new(
+            model2::light::Shading::Vertex,
+            model2::light::CREASE_AUTO,
+            &roms.game.shading,
+            roms.game.hud_windows,
+        ));
+    }
+    let view =
+        VIEW.get().copied().unwrap_or_else(|| model2::video::View::new(1080, 16.0 / 9.0, model2::video::Hud::Edges));
+    let quality = gpu::Quality {
+        msaa: AA.get().copied().unwrap_or(1),
+        depth: DEPTH.get().copied().unwrap_or(false),
+        tex_filter: TEX_FILTER.get().copied().unwrap_or_default(),
+        ..gpu_light(light.as_ref())
+    };
+    let opts = look_render::Options {
+        view,
+        windows: (roms.game.hud_windows, roms.game.hud_element_windows),
+        light: light.as_ref(),
+        look,
+        pack: o.pack_dir.as_deref(),
+        quality,
+        frames,
+        bench,
+    };
+    if let Err(e) = look_render::run(&root, &out, &opts) {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
 fn cmd_depth_check(o: &Opts, roms: &RomSet) -> ExitCode {
     let mut args = o.args.clone();
     let (mut probes, mut against) = (Vec::new(), None);
@@ -2458,6 +2581,8 @@ fn gpu_light(light: Option<&model2::light::Options>) -> gpu::Quality {
 
 /// `--temporal`, `--stipple`: temporal anti-aliasing on the GPU.
 static TEMPORAL: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+/// `--look`, `--look-set`: the look `look-render` draws with.
+static LOOK: std::sync::OnceLock<model2::look::Look> = std::sync::OnceLock::new();
 static BLOOM: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
 static STIPPLE: std::sync::OnceLock<gpu::Stipple> = std::sync::OnceLock::new();
 

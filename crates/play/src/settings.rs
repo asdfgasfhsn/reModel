@@ -39,12 +39,17 @@ pub enum Preset {
     Enhanced,
     /// Sharp, with the CRT look (`CRT_STYLE_STRENGTH`).
     Crt,
+    /// Sharp, smooth-lit and drawn as a comic: ink outlines, toon lighting
+    /// in bands and halftone dots in the shadows (`model2::look`, the
+    /// default look, or the texture pack's `look.txt`).
+    Comic,
     Custom,
 }
 
 impl Preset {
     /// Every preset, in the order the menu offers them.
-    pub const ALL: [Preset; 5] = [Preset::Original, Preset::Sharp, Preset::Enhanced, Preset::Crt, Preset::Custom];
+    pub const ALL: [Preset; 6] =
+        [Preset::Original, Preset::Sharp, Preset::Enhanced, Preset::Crt, Preset::Comic, Preset::Custom];
 
     /// The style's name for players ("Smooth modern" for Enhanced).
     pub fn label(self) -> &'static str {
@@ -53,6 +58,7 @@ impl Preset {
             Preset::Sharp => "Sharp",
             Preset::Enhanced => "Smooth modern",
             Preset::Crt => "CRT",
+            Preset::Comic => "Comic",
             Preset::Custom => "Custom",
         }
     }
@@ -63,6 +69,7 @@ impl Preset {
             Preset::Sharp => "sharp",
             Preset::Enhanced => "enhanced",
             Preset::Crt => "crt",
+            Preset::Comic => "comic",
             Preset::Custom => "custom",
         }
     }
@@ -75,7 +82,7 @@ impl Preset {
 /// The rows a preset describes the picture by: a preset matches when all
 /// of them are what it sets. Changing one of them under a preset makes it
 /// Custom.
-pub const PICTURE_KEYS: [&str; 14] = [
+pub const PICTURE_KEYS: [&str; 16] = [
     "aa",
     "temporal",
     "stipple",
@@ -90,11 +97,13 @@ pub const PICTURE_KEYS: [&str; 14] = [
     "materials_relief",
     "bloom",
     "crt",
+    "look",
+    "look_tuning",
 ];
 
 /// The rows choosing a preset sets: the picture's, smooth motion and
 /// run-ahead (the last two don't count against a preset matching).
-pub const PRESET_KEYS: [&str; 16] = [
+pub const PRESET_KEYS: [&str; 18] = [
     "aa",
     "temporal",
     "stipple",
@@ -109,6 +118,8 @@ pub const PRESET_KEYS: [&str; 16] = [
     "materials_relief",
     "bloom",
     "crt",
+    "look",
+    "look_tuning",
     "smooth",
     "run_ahead",
 ];
@@ -187,6 +198,15 @@ pub struct GameSettings {
     /// The CRT look (`gpu::Quality::crt`): strength in percent, 0 for none.
     /// A pass over the finished picture; GPU only.
     pub crt: u8,
+    /// The look (`model2::look`, `gpu::Renderer::set_look`): ink outlines,
+    /// toon lighting and halftone, from the texture pack's `look.txt` when
+    /// the pack is on and has one, else `<data dir>/<set>/look.txt`, else
+    /// the built-in Comic defaults. GPU only.
+    pub look: bool,
+    /// The look's parameters changed in the Advanced page (`name=value`
+    /// over the look file's): the look is tuned live and the changes are
+    /// kept; a file edit keeps showing through the parameters not changed.
+    pub look_tuning: std::collections::BTreeMap<String, String>,
     /// The geometrizer on its chip (the game's own program) rather than
     /// the native implementation. Applies when the game starts.
     pub geo_chip: bool,
@@ -221,6 +241,8 @@ impl Default for GameSettings {
             materials_relief: gpu::Relief::default(),
             bloom: 0,
             crt: 0,
+            look: false,
+            look_tuning: Default::default(),
             geo_chip: false,
             tuning: Tuning::default(),
         }
@@ -228,7 +250,7 @@ impl Default for GameSettings {
 }
 
 /// Every game setting's key, in the order the panels show them.
-pub const KEYS: [&str; 30] = [
+pub const KEYS: [&str; 32] = [
     "preset",
     "wide",
     "bezel",
@@ -250,6 +272,8 @@ pub const KEYS: [&str; 30] = [
     "materials_relief",
     "bloom",
     "crt",
+    "look",
+    "look_tuning",
     "sfx_db",
     "music_db",
     "geo",
@@ -318,6 +342,8 @@ impl GameSettings {
                 0 => "off".to_string(),
                 n => n.to_string(),
             },
+            "look" => self.look.to_string(),
+            "look_tuning" => self.look_tuning.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(","),
             "geo" => if self.geo_chip { "chip" } else { "native" }.to_string(),
             "stick_dead" => self.tuning.stick.dead.to_string(),
             "stick_sens" => self.tuning.stick.sens.to_string(),
@@ -364,6 +390,22 @@ impl GameSettings {
             "materials_relief" => gpu::Relief::parse(v).map(|r| self.materials_relief = r).is_some(),
             "bloom" => gpu::Quality::parse_bloom(v).map(|n| self.bloom = n).is_some(),
             "crt" => gpu::Quality::parse_crt(v).map(|n| self.crt = n).is_some(),
+            "look" => flag(v).map(|x| self.look = x).is_some(),
+            "look_tuning" => {
+                // Each `name=value` must be one the look takes (tried on
+                // the default look), so a typo in the file is refused.
+                let mut look = model2::look::Look::default();
+                let mut out = std::collections::BTreeMap::new();
+                for part in v.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+                    let Some((k, x)) = part.split_once('=') else { return false };
+                    if look.params.set(k.trim(), x.trim()).is_err() {
+                        return false;
+                    }
+                    out.insert(k.trim().to_string(), x.trim().to_string());
+                }
+                self.look_tuning = out;
+                true
+            }
             "stick_dead" => dead(v).map(|n| self.tuning.stick.dead = n).is_some(),
             "stick_sens" => sens(v).map(|n| self.tuning.stick.sens = n).is_some(),
             "stick_curve" => Curve::parse(v).map(|c| self.tuning.stick.curve = c).is_some(),
@@ -404,6 +446,11 @@ impl GameSettings {
         self.tex_filter = TexFilter::Mip;
         if p == Preset::Crt {
             self.crt = CRT_STYLE_STRENGTH;
+        }
+        if p == Preset::Comic {
+            // The toon bands light smooth-shaded polygons.
+            self.shading = gpu::Shading::Vertex;
+            self.look = true;
         }
         if p == Preset::Enhanced {
             let rec = game.map_or(romset::Recommended::DEFAULT, |g| g.recommended);
@@ -500,6 +547,19 @@ impl GameSettings {
             bloom: if supported { self.bloom } else { 0 },
             crt: self.crt,
         }
+    }
+
+    /// The look drawn: the base look (`base`, the file's or the built-in
+    /// Comic defaults) with this game's tuning over it, or None with the
+    /// look off.
+    pub fn effective_look(&self, base: &model2::look::Look) -> Option<model2::look::Look> {
+        self.look.then(|| {
+            let mut l = base.clone();
+            for (k, v) in &self.look_tuning {
+                let _ = l.params.set(k, v);
+            }
+            l
+        })
     }
 }
 

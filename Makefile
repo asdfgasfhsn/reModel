@@ -429,6 +429,11 @@ studio-seam: release ## Seam check of STUDIO's pack/ (STUDIO_ARGS="--from draft"
 	$(RUN) studio seam $(STUDIO) $(STUDIO_ARGS)
 studio-compare: release ## Before and after: run the game twice (without and with STUDIO's pack/, JOBS at once) and write side-by-side sheets of the same frames to STUDIO/compare (BENCH_STEPS, INPUT default BENCH_INPUT; STUDIO_ARGS="--into DIR --frames F,.. --run-args '--height 1080 --aspect 16:9' --pack DIR --force")
 	$(RUN) studio compare $(STUDIO) --steps $(BENCH_STEPS) --snap 300 --input $(or $(INPUT),$(BENCH_INPUT)) --jobs $(JOBS) $(STUDIO_ARGS)
+LOOK      ?= comic
+LOOK_OUT  ?= $(OUT)/look-render
+LOOK_OPTS ?=
+look-render: release ## Draw the captured frames (CAPTURE=DIR, default OUT/capture) on the GPU without and with a look: LOOK=comic (the built-in Comic defaults) or a look.txt or directory with one; PACK=DIR adds a texture pack, LOOK_SET="outline_weight=3 toon_steps=2" sets parameters, VIEW sets the view (default 1080p 16:9), LOOK_OPTS="--frames 2100,3300 --bench 20" selects frames and times the cost; writes FRAME-plain/-look/-sheet.png to LOOK_OUT (default OUT/look-render); for agents tuning a look (docs/texture-packs.md, "Looks"; needs a GPU)
+	$(RUN) $(VIEW) $(if $(PACK),--texture-pack $(PACK)) $(GPU_OPTS) --look $(LOOK) $(foreach s,$(LOOK_SET),--look-set $(s)) look-render $(or $(CAPTURE),$(OUT)/capture) $(LOOK_OUT) $(LOOK_OPTS)
 
 # Options for gpu-check, depth-check and pack-check: --bloom N (gpu-check, temporal-probe: bloom), --aa N (multisampling;
 # software supersamples to match), --depth, --tex-filter off|mip|2|4|8|16

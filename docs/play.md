@@ -1469,8 +1469,9 @@ events only, not yet with a real pad.
     pack on).
 
   **Picture styles.** The Picture page (the menu's Picture row) lists
-  five cards, each a name, a small tag and one plain sentence: *Arcade
-  original*, *Sharp*, *Smooth modern* (recommended), *CRT* and *Custom*.
+  six cards, each a name, a small tag and one plain sentence: *Arcade
+  original*, *Sharp*, *Smooth modern* (recommended), *CRT*, *Comic* and
+  *Custom*.
   Choosing one applies it at once to the paused game beside the panel. A
   switch at the top, "<Game> only | All games", is the settings' scope (the
   same layers as the launcher's), and the last line says where it
@@ -1502,6 +1503,20 @@ events only, not yet with a real pad.
   game runs again (smooth shading's exact lighting and temporal
   smoothing's motion data are recorded from frames the paused game does not
   run).
+
+  **The Comic look** (`look` setting, off by default; the Comic style is
+  Sharp with smooth lighting and the look on) draws ink outlines, the
+  game's lighting in three flat bands and halftone dots in the shadows
+  (docs/enhancements.md, "Looks"), with no pack on any game. With the pack
+  on and a `look.txt` in it (or in the game's data folder) that file is the
+  look: it is read again within half a second of an edit, so a person or an
+  agent editing it sees the picture change in the running game. Advanced
+  shows *Comic look* and, with it on, a row for each parameter; a change
+  applies at once and is kept as `look_tuning` over the file's value
+  (*Look tuning: Reset* goes back to the file). Needs the GPU path; the
+  look is not in photo mode or the Compare "before" picture. For agents:
+  `make look-render` draws captured frames with a look and parameters
+  (docs/texture-packs.md, "Looks").
 
   **The CRT look** (`crt` setting, 0 to 100, off by default and in every
   other style; the CRT style is Sharp with 60) is a pass over the finished
