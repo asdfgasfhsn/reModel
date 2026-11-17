@@ -178,6 +178,14 @@ per-target ones `make help` lists (`VIEW`, `PACK`, `GPU_OPTS`, `PLAY_ARGS`,
 ...). The `Makefile` is the supported interface for humans and agents alike;
 `make help` is always current.
 
+**Memory cap.** Every `remodel` and `remodel-play` run the Makefile starts
+goes through `tools/capped`: on Linux with a systemd user session it runs in
+its own scope with `MemoryMax=$MEMCAP` (default `8G`) and no swap, so a
+runaway run is killed alone rather than the kernel's out-of-memory killer
+picking something else on the machine. `MEMCAP=16G` raises it for one
+command, `MEMCAP=` turns it off; elsewhere (macOS, Windows) runs aren't
+capped. For a direct run: `tools/capped target/release/remodel ...`.
+
 ## Versions and releases
 
 `remodel --version` and `remodel-play --version` print the build's version:

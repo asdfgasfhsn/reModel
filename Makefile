@@ -95,7 +95,14 @@ endif
 JIT     ?=
 # Instructions `make jit-lockstep` compares.
 JIT_STEPS ?= 300000000
-RUN     := $(REMODEL) --game $(GAME) --rom $(ROM) $(if $(JIT),--jit)
+# Every remodel and remodel-play run goes through tools/capped: its own
+# memory cap (MEMCAP, systemd's MemoryMax, default 8G; empty: none), so a
+# runaway run is stopped alone instead of starving the machine. No cap
+# where there's no systemd user session (macOS, Windows).
+MEMCAP  ?= 8G
+export MEMCAP
+CAP     := $(CURDIR)/tools/capped
+RUN     := $(CAP) $(REMODEL) --game $(GAME) --rom $(ROM) $(if $(JIT),--jit)
 
 # $(call compare_hashes,A,B,WHAT): the state hash lines in files A and B must
 # be the same, or fail showing both.
@@ -125,12 +132,12 @@ release: ## Optimised build of the remodel CLI (RECOMP=1: with the recompiled ga
 
 recomp: ## Recompile the game's i960 code and the TGP programs captured by `make run` into crates in out/recomp and build them (only what changed); then use RECOMP=1
 	$(CARGO) build --release -p remodel
-	target/release/remodel --game $(GAME) --rom $(ROM) recomp
+	$(CAP) target/release/remodel --game $(GAME) --rom $(ROM) recomp
 	$(MAKE) release RECOMP=1
 
 recomp-workspace: ## Rewrite out/recomp's Cargo workspace and program crate manifests from the programs there (after updating reModel or moving the checkout)
 	$(CARGO) build --release -p remodel
-	target/release/remodel recomp-workspace
+	$(CAP) target/release/remodel recomp-workspace
 
 test: ## Run all unit tests (no ROMs needed)
 	$(CARGO) test --workspace
@@ -191,7 +198,7 @@ jit-test: ## Unit tests of the JITs (crates/jit: the i960's and the copros', eac
 sharc-test: ## ADSP-21062 (SHARC) unit tests; then decode, discovery and a boot of the 2B programs in SHARC_PROGRAMS= (default: those captured in out/overrevb)
 	$(CARGO) test -p adsp2106x
 	@if [ -n "$(SHARC_PROGRAMS)" ]; then \
-		$(MAKE) --no-print-directory release && $(REMODEL) sharc-check $(SHARC_PROGRAMS); \
+		$(MAKE) --no-print-directory release && $(CAP) $(REMODEL) sharc-check $(SHARC_PROGRAMS); \
 	else \
 		echo "no SHARC program images in out/overrevb (docs/hw/adsp2106x.md): unit tests only"; \
 	fi
@@ -199,10 +206,10 @@ sharc-test: ## ADSP-21062 (SHARC) unit tests; then decode, discovery and a boot 
 ##@ ROM tools (need a user-supplied dump in ROM=)
 
 games: release ## List games with manifests
-	$(REMODEL) games
+	$(CAP) $(REMODEL) games
 
 inputs: release ## The game's inputs: names for INPUT=, ports and channels, default keys and pad bindings
-	$(REMODEL) --game $(GAME) inputs
+	$(CAP) $(REMODEL) --game $(GAME) inputs
 
 verify: release ## Check every chip in ROM= against known-good hashes
 	$(RUN) verify
@@ -261,7 +268,7 @@ TEXPACK  ?= $(OUT)/texpack-$(SCALE)x
 # Through the environment, so the template's quotes reach the tool as written.
 upscale-textures: export UPSCALER_CMD = $(UPSCALER)
 upscale-textures: release ## Upscale TEXDUMP (default OUT/texdump, from dump-textures) into texture pack TEXPACK (OUT/texpack-SCALEx) with UPSCALER= (empty: built-in); wrap-aware padding, colour matched to the dump (COLOUR=keep: off), hard alpha, only new or changed dumps
-	$(REMODEL) --game $(GAME) texpack-upscale $(TEXDUMP) $(TEXPACK) --scale $(SCALE) --tiles $(TILES) --colour $(COLOUR) \
+	$(CAP) $(REMODEL) --game $(GAME) texpack-upscale $(TEXDUMP) $(TEXPACK) --scale $(SCALE) --tiles $(TILES) --colour $(COLOUR) \
 		--min-uses $(MIN_USES) --max-side $(MAX_SIDE) --work out/scratch/texpack-upscale-$(GAME) \
 		$(if $(UPSCALER),--upscaler "$$UPSCALER_CMD") $(if $(FORCE),--force)
 
@@ -278,7 +285,7 @@ STRENGTH  ?=
 DETAIL    ?=
 pack-materials: export NORMALGEN_CMD = $(NORMALGEN)
 pack-materials: release ## Make normal maps for texture pack TEXPACK from its images (or TEXDUMP's where it has none) with NORMALGEN= (empty: built-in, from luminance); STRENGTH (default 2), DETAIL (default 8), MIN_USES, FORCE; wrap-aware, neutral under cut-outs, one per surface, keeps hand-made and edited maps, skips the textures listed in the pack's materials-exclude.txt; a starting point to edit by hand
-	$(REMODEL) --game $(GAME) texpack-materials $(TEXPACK) $(if $(TEXDUMP),--dump $(TEXDUMP)) \
+	$(CAP) $(REMODEL) --game $(GAME) texpack-materials $(TEXPACK) $(if $(TEXDUMP),--dump $(TEXDUMP)) \
 		--min-uses $(MIN_USES) --work out/scratch/texpack-materials-$(GAME) \
 		$(if $(STRENGTH),--strength $(STRENGTH)) $(if $(DETAIL),--detail $(DETAIL)) \
 		$(if $(NORMALGEN),--normalgen "$$NORMALGEN_CMD" --normal-y $(NORMAL_Y)) $(if $(FORCE),--force)
@@ -286,12 +293,12 @@ pack-materials: release ## Make normal maps for texture pack TEXPACK from its im
 # pack-lint checks against a dump only when TEXDUMP is given.
 pack-lint: release ## Check texture pack PACK= against the pack format, no ROM or GPU: pack.txt, file names, index.txt, every PNG decodes within MAX_SIDE, image and map proportions, unit normals, maps under cut-outs, materials-exclude.txt entries, specular and gloss maps (a note: loaded, no effect yet), GPU memory against the budgets (TEXDUMP= adds mirror and repeat seams, never-drawn and image-or-surface checks); fails on errors
 	$(if $(PACK),,$(error pack-lint needs PACK=DIR, a texture pack))
-	$(REMODEL) pack-lint $(PACK) --max-side $(MAX_SIDE) \
+	$(CAP) $(REMODEL) pack-lint $(PACK) --max-side $(MAX_SIDE) \
 		$(if $(filter command line environment,$(origin TEXDUMP)),--dump $(TEXDUMP))
 
 play: ## Play in a native window: the launcher (carousel or grid of the games, live attract previews, quick resume, saves, settings), or straight into GAME= if given; GPU, live sound, gamepads, Esc menu, save states (on the JITs; JIT=0: without them; RECOMP=1 JIT=0: recompiled code; PLAY_ARGS)
 	$(call release_build,remodel-play)
-	$(PLAY) $(if $(filter command line environment,$(origin GAME)),--game $(GAME)) --rom $(ROM) $(if $(filter 0,$(JIT)),--no-jit) $(PLAY_ARGS)
+	$(CAP) $(PLAY) $(if $(filter command line environment,$(origin GAME)),--game $(GAME)) --rom $(ROM) $(if $(filter 0,$(JIT)),--no-jit) $(PLAY_ARGS)
 
 # The launcher in the desktop's app menu, running this checkout's player
 # (from the repo, so it finds rom/ and keeps its files in out/).
@@ -379,7 +386,7 @@ $(APPIMAGE_RUNTIME):
 	mv $@.part $@
 
 web: ## Browser build into out/web: game list, a page per game (model2/SET/), screenshots (JOBS at once, default 3); RECOMP=1 gives each game its own module with its recompiled code; GAME= rebuilds just that game; unchanged modules are skipped (docs/web.md)
-	WEB_GAME=$(if $(filter command line environment,$(origin GAME)),$(GAME)) WEB_OUT=$(WEB_OUT) ROM=$(ROM) RECOMP=$(RECOMP) CARGO="$(CARGO)" WASM_CARGO="$(WASM_CARGO)" WASM_BINDGEN=$(WASM_BINDGEN) JOBS=$(JOBS) sh tools/web.sh
+	CAP=$(CAP) WEB_GAME=$(if $(filter command line environment,$(origin GAME)),$(GAME)) WEB_OUT=$(WEB_OUT) ROM=$(ROM) RECOMP=$(RECOMP) CARGO="$(CARGO)" WASM_CARGO="$(WASM_CARGO)" WASM_BINDGEN=$(WASM_BINDGEN) JOBS=$(JOBS) sh tools/web.sh
 
 capture: release ## Run into a race saving every 300th frame's renderer inputs to out/GAME/capture (~200 MB)
 	rm -rf $(OUT)/capture
@@ -418,7 +425,7 @@ MAT_SNAP     ?= 300
 MAT_GPU_SNAP ?= 900
 materials-identity: release ## Check that texture pack PACK with all its normal maps made flat draws with --materials exactly as with --light and no materials (the comparison to make: --materials records the side channel), under both rules (relief and --materials-relief off), in flat, vertex, pixel and mipmapped pixel shading, from coin-start run snapshots; and the same on the GPU (gpu-check of captures, unfiltered, mip, 16x and --aa 4 --depth; temporal-probe) (MAT_STEPS, MAT_SNAP, MAT_GPU_SNAP; JOBS runs at once, default 3; needs a GPU; scratch in out/scratch/materials-identity/GAME, deleted when it passes)
 	@test -n "$(PACK)" || { echo "materials-identity wants PACK=DIR (a pack with normal maps)"; exit 1; }
-	REMODEL=$(REMODEL) GAME=$(GAME) ROM=$(ROM) PACK=$(PACK) WORK=out/scratch/materials-identity/$(GAME) \
+	CAP=$(CAP) REMODEL=$(REMODEL) GAME=$(GAME) ROM=$(ROM) PACK=$(PACK) WORK=out/scratch/materials-identity/$(GAME) \
 		STEPS=$(MAT_STEPS) SNAP=$(MAT_SNAP) GPU_SNAP=$(MAT_GPU_SNAP) JOBS=$(JOBS) sh tools/materials-identity.sh
 
 # depth-check: PROBE="X,Y@FRAME ..." follows those output pixels through the
@@ -527,7 +534,7 @@ input-lag: release ## Each game's input lag (INPUT_LAG, or just GAME='s): frames
 	@for c in $(if $(filter command line,$(origin GAME)),$(filter $(GAME)+%,$(INPUT_LAG)),$(INPUT_LAG)); do \
 		set -- $$(echo $$c | tr + ' '); \
 		printf '%-10s %-16s ' $$1 "$$3 at $$2"; \
-		$(REMODEL) --game $$1 --rom $(ROM) --geo native --input $${4:-coin-start} latency $$2 $$3 16 \
+		$(CAP) $(REMODEL) --game $$1 --rom $(ROM) --geo native --input $${4:-coin-start} latency $$2 $$3 16 \
 			| sed -n 's/^input lag *//p'; \
 	done
 
@@ -536,7 +543,7 @@ RUN_AHEAD_FRAMES ?= 2
 RUN_AHEAD_STEPS  ?= 300000000
 run-ahead-check: release ## Run-ahead against plain runs (RUN_AHEAD_GAMES, or GAME=): coin-start runs (RUN_AHEAD_STEPS, smooth motion on) RUN_AHEAD_FRAMES ahead keep the real state hash, and the frames shown are the plain run's that many later (pictures, hashes, in-betweens); times the copy
 	@for g in $(if $(filter command line,$(origin GAME)),$(GAME),$(RUN_AHEAD_GAMES)); do \
-		$(REMODEL) --game $$g --rom $(ROM) --geo native --smooth 0.5 --input $(BENCH_INPUT) \
+		$(CAP) $(REMODEL) --game $$g --rom $(ROM) --geo native --smooth 0.5 --input $(BENCH_INPUT) \
 			run-ahead-check $(RUN_AHEAD_STEPS) $(RUN_AHEAD_FRAMES) 25 || exit 1; \
 	done
 
@@ -552,7 +559,7 @@ draw-overlap-check: ## The player with its draw thread and with --no-overlap (op
 	$(call release_build,remodel-play)
 	@mkdir -p $(DRAW_CHECK_OUT)
 	@for m in overlap no-overlap; do \
-		$(PLAY) --game $(GAME) --rom $(ROM) --no-splash --no-sound --smooth off --temporal off --bezel off \
+		$(CAP) $(PLAY) --game $(GAME) --rom $(ROM) --no-splash --no-sound --smooth off --temporal off --bezel off \
 			--input $(BENCH_INPUT) --frames $(DRAW_CHECK_FRAMES) $(DRAW_CHECK_OPTS) \
 			--frame-log $(DRAW_CHECK_OUT)/$$m.log $$([ $$m = no-overlap ] && echo --no-overlap) \
 			| grep '^frames' > $(DRAW_CHECK_OUT)/$$m.txt || exit 1; \
@@ -568,7 +575,7 @@ photo-check: ## Photo mode leaves the game alone (opens a window; needs a GPU): 
 	$(call release_build,remodel-play)
 	@mkdir -p $(PHOTO_CHECK_OUT)
 	@for m in plain photo; do \
-		$(PLAY) --game $(GAME) --rom $(ROM) --no-splash --no-sound --bezel off --fast \
+		$(CAP) $(PLAY) --game $(GAME) --rom $(ROM) --no-splash --no-sound --bezel off --fast \
 			--input $(BENCH_INPUT) --frames $(PHOTO_CHECK_FRAMES) $(PHOTO_CHECK_OPTS) \
 			$$([ $$m = photo ] && echo --photo-dir $(PHOTO_CHECK_OUT) --photo "$(PHOTO_CHECK_SPEC)") \
 			> $(PHOTO_CHECK_OUT)/$$m.log || exit 1; \
@@ -587,10 +594,10 @@ bench: release ## Timed fixed run into a race: speed vs real time and the state 
 	$(RUN) --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep -E '^(instructions|emulated|host time|frame times|idle skip|jit|state hash)'
 
 jit-lockstep: release ## The i960 JIT beside the interpreter, block by block, through a coin-start run (JIT_STEPS, default 300M; INPUT), stopping at the first difference; no recompiled build needed (docs/jit.md)
-	$(REMODEL) --game $(GAME) --rom $(ROM) --jit --input $(or $(INPUT),$(BENCH_INPUT)) lockstep $(JIT_STEPS)
+	$(CAP) $(REMODEL) --game $(GAME) --rom $(ROM) --jit --input $(or $(INPUT),$(BENCH_INPUT)) lockstep $(JIT_STEPS)
 
 jit-copro-lockstep: release ## The copro JITs (Model 2A's MB86234, 2C's MB86235 copro and geometrizer) each beside its interpreter through a coin-start run (JIT_STEPS i960 instructions, default 300M; INPUT), compared after every run of the chip, stopping at the first difference (docs/jit.md)
-	$(REMODEL) --game $(GAME) --rom $(ROM) --jit --jit-copro check --input $(or $(INPUT),$(BENCH_INPUT)) run $(JIT_STEPS) | grep -E '^(instructions|jit copro|state hash)'
+	$(CAP) $(REMODEL) --game $(GAME) --rom $(ROM) --jit --jit-copro check --input $(or $(INPUT),$(BENCH_INPUT)) run $(JIT_STEPS) | grep -E '^(instructions|jit copro|state hash)'
 
 jit-translate: release ## Translate the game's whole i960 program on the JIT ahead of time, cut as `make recomp` cuts it (discovery plus `make run`'s trace), and time it
 	$(RUN) jit-translate
@@ -600,7 +607,7 @@ jit-translate: release ## Translate the game's whole i960 program on the JIT ahe
 JIT_CACHE      ?= out/$(GAME)/jit
 JIT_WARM_STEPS ?= $(BENCH_STEPS)
 jit-warm: release ## Warm the JITs' hot-block list without playing: a headless coin-start run (JIT_WARM_STEPS, default BENCH_STEPS) on the JITs, the blocks they translate written to JIT_CACHE/hot.txt (default out/GAME/jit, where the player looks), translated at the next boot; addresses only (docs/jit.md)
-	$(REMODEL) --game $(GAME) --rom $(ROM) --jit --jit-cache $(JIT_CACHE) --input $(or $(INPUT),$(BENCH_INPUT)) run $(JIT_WARM_STEPS) | grep -E '^(frame times|jit list|state hash)'
+	$(CAP) $(REMODEL) --game $(GAME) --rom $(ROM) --jit --jit-cache $(JIT_CACHE) --input $(or $(INPUT),$(BENCH_INPUT)) run $(JIT_WARM_STEPS) | grep -E '^(frame times|jit list|state hash)'
 
 # A scratch hot-block list for `make jit-hitch`.
 JIT_HITCH_DIR  := out/scratch/jit-hitch/$(GAME)
@@ -609,7 +616,7 @@ jit-hitch: release ## Frame-time hitches: the bench session (BENCH_STEPS; JIT_HI
 	@rm -rf $(JIT_HITCH_DIR)
 	@for run in "interpreter|" "jit inline|--jit --jit-sync" "jit cold|--jit --jit-cache $(JIT_HITCH_DIR)" "jit warm|--jit --jit-cache $(JIT_HITCH_DIR)"; do \
 		echo "== $(GAME) $(JIT_HITCH_OPTS): $${run%%|*}"; \
-		$(REMODEL) --game $(GAME) --rom $(ROM) $${run#*|} $(JIT_HITCH_OPTS) --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep -E '^(host time|frame times|state hash)' || exit 1; \
+		$(CAP) $(REMODEL) --game $(GAME) --rom $(ROM) $${run#*|} $(JIT_HITCH_OPTS) --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep -E '^(host time|frame times|state hash)' || exit 1; \
 	done
 	@rm -rf $(JIT_HITCH_DIR)
 
@@ -630,7 +637,7 @@ tgp-check: release ## Run a Model 2A TGP program's functions on the MB86234 inte
 	$(RUN) tgp-check
 
 sharc-disasm: release ## Disassemble an ADSP-21062 program image: make sharc-disasm FILE=out/overrevb/sharc-geo.bin (listing to FILE.lst)
-	$(REMODEL) sharc-disasm $(FILE)
+	$(CAP) $(REMODEL) sharc-disasm $(FILE)
 
 sound: release ## Boot the sound board, replay the sound bytes captured by `make run`, write OUT/sound.wav
 	$(RUN) sound-render $(OUT)/sound.wav
@@ -650,7 +657,7 @@ music: release ## Music board (DSB2 or DSB1) music from the stream `make run` ca
 
 soundtrack-import: release ## Make soundtracks/SOUNDTRACK from the audio files in SRC= (ffmpeg converts non-WAV/MP2)
 	@test -n "$(SRC)" -a -n "$(SOUNDTRACK)" || { echo "usage: make soundtrack-import SRC=dir SOUNDTRACK=name"; exit 1; }
-	$(REMODEL) soundtrack-import "$(SRC)" "$(SOUNDTRACK_DIR)"
+	$(CAP) $(REMODEL) soundtrack-import "$(SRC)" "$(SOUNDTRACK_DIR)"
 
 mpeg-dump: release ## Decode MPEG ROM frames directly: make mpeg-dump ADDR=0x11000 SECONDS=10
 	$(RUN) mpeg-dump $(ADDR) $(SECONDS)

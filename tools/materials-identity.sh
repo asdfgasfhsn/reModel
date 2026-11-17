@@ -18,7 +18,7 @@
 # anisotropic and multisampled with the depth buffer; and `temporal-probe`
 # (temporal anti-aliasing: its pictures with --light and with --materials).
 #
-# Environment (the Makefile sets these): REMODEL, GAME, ROM, PACK, WORK,
+# Environment (the Makefile sets these): CAP (a memory-cap wrapper, may be empty), REMODEL, GAME, ROM, PACK, WORK,
 # STEPS, SNAP, GPU_SNAP (the captures' interval), JOBS (how many of the 12
 # runs go at once; 3 by default).
 set -eu
@@ -36,7 +36,7 @@ one() {
     label=$1
     shift
     mkdir -p "$work/$label/run"
-    (cd "$work/$label/run" && "$remodel" --game "$GAME" --rom "$rom" --geo native --input coin-start \
+    (cd "$work/$label/run" && ${CAP:-} "$remodel" --game "$GAME" --rom "$rom" --geo native --input coin-start \
         --texture-pack "$work/pack" "$@" run "$STEPS" "$SNAP" > "$work/$label/log.txt" 2>&1) ||
         echo "$label: the run failed ($work/$label/log.txt)"
 }
@@ -144,14 +144,14 @@ compare() {
     fi
 }
 mkdir -p "$work/capture-run"
-(cd "$work/capture-run" && "$remodel" --game "$GAME" --rom "$rom" --geo native --input coin-start \
+(cd "$work/capture-run" && ${CAP:-} "$remodel" --game "$GAME" --rom "$rom" --geo native --input coin-start \
     --capture "$work/capture" run "$STEPS" "$GPU_SNAP" > "$work/capture.log" 2>&1) ||
     echo "capture: the run failed ($work/capture.log)"
 # gpu LABEL ARGS...: gpu-check of the captures, its pictures into $work/gpu-LABEL.
 gpu() {
     label=$1
     shift
-    "$remodel" --game "$GAME" --rom "$rom" --texture-pack "$work/pack" "$@" gpu-check "$work/capture" \
+    ${CAP:-} "$remodel" --game "$GAME" --rom "$rom" --texture-pack "$work/pack" "$@" gpu-check "$work/capture" \
         > "$work/gpu-$label.txt" 2>&1 || echo "$label: gpu-check failed ($work/gpu-$label.txt)"
     mkdir -p "$work/gpu-$label"
     for d in "$work/capture"/*/; do
@@ -192,7 +192,7 @@ done
 tprobe() {
     label=$1
     shift
-    "$remodel" --game "$GAME" --rom "$rom" --texture-pack "$work/pack" "$@" --shading pixel \
+    ${CAP:-} "$remodel" --game "$GAME" --rom "$rom" --texture-pack "$work/pack" "$@" --shading pixel \
         temporal-probe "$work/capture" "$work/temporal-$label" > "$work/temporal-$label.txt" 2>&1 || true
 }
 for t in off:--tex-filter=off mip:--tex-filter=mip; do

@@ -31,3 +31,8 @@
   `out/scratch/`, which is on disk and git-ignored, not in `/tmp`: here
   `/tmp` is RAM-backed and filling it starves the machine of memory.
   Delete scratch output once a task is done.
+- Every `remodel` and `remodel-play` run is memory-capped: the Makefile
+  runs them through `tools/capped` (`MEMCAP`, default 8G), so a runaway
+  run is killed on its own instead of the machine's other work. Run the
+  binaries through `make`, or prefix a direct run with `tools/capped`;
+  raise `MEMCAP` for a run that genuinely needs more, never drop the cap.

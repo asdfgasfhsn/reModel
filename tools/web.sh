@@ -39,7 +39,8 @@ else
     mkdir -p "$WEB_OUT"
 fi
 
-remodel=target/release/remodel
+# Each run under the memory cap the Makefile passes (CAP; may be empty).
+remodel="${CAP:+$CAP }target/release/remodel"
 model2=$WEB_OUT/model2
 target=target/web
 wasm=$target/wasm32-unknown-unknown/release/remodel_web.wasm

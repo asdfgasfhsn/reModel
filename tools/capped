@@ -1,0 +1,20 @@
+#!/bin/sh
+# Run a command under a memory cap, so a runaway run is stopped on its own
+# instead of starving the machine (the kernel's out-of-memory killer then
+# picks whatever it likes: a desktop session, a terminal). The Makefile
+# runs every remodel and remodel-play invocation through this.
+#
+#   MEMCAP   the cap (systemd's MemoryMax: 8G, 512M, ...); default 8G,
+#            empty for no cap
+#
+# On Linux with a systemd user session the command runs in its own scope
+# with MemoryMax=$MEMCAP and no swap (so it fails fast rather than
+# thrashing); exceeding it kills the command alone. Elsewhere (macOS,
+# Windows, no user session) it runs as is.
+cap=${MEMCAP-8G}
+if [ -n "$cap" ] && command -v systemd-run >/dev/null 2>&1 \
+    && systemd-run --user --scope --quiet true >/dev/null 2>&1; then
+    exec systemd-run --user --scope --quiet --collect \
+        -p MemoryMax="$cap" -p MemorySwapMax=0 -- "$@"
+fi
+exec "$@"
