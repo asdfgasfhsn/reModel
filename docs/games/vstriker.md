@@ -67,7 +67,7 @@ suffix), the clone `vstrikro`, which isn't supported.
   sound. `make sound` of that run averages -32 dBFS RMS (peak -13), so
   the manifest adds no gain; no driver version string in its sound
   program. A coin-start run of 600M instructions gives the state hash
-  `a4af0c62acc656f3` recompiled and interpreted (the game never writes its EEPROM in it).
+  `a4af0c62acc656f3` recompiled and interpreted (before the 30 Hz mode below; now see `tools/expected-hashes.txt`) (the game never writes its EEPROM in it).
   `make state-check GAME=vstriker` round-trips, and `make lockstep
   GAME=vstriker RECOMP=1 INPUT=coin-start` runs 600M instructions
   identical (i960 and both SHARCs recompiled). Its geometrizer and copro
@@ -138,6 +138,56 @@ limit on the crowd (above, and `docs/play.md`, "Temporal anti-aliasing"). No
 depth buffer (it changes at most 0.007% of the pixels) or smooth shading
 (the players look a little rounder, not clearly better); smooth motion;
 run-ahead 0 (input lag 0).
+
+## Frame rate (30 Hz mode)
+
+- *Confirmed (by running it, then from the code):* before 2026-11-18 the
+  match ran twice too fast. The main loop (`0x11CC`) waits for the video
+  frame bit (`0x98000C` bit 2, wait routine `0x3D18`, called through
+  `0x84B0`) once per step, and the match clock (`0x10B20`) takes one off a
+  counter at `0x50158C` per step and shows `ceil(counter / 30)` seconds
+  (`divi 30`), so the game counts 30 steps a second. The model toggled the
+  bit every vblank, so the loop stepped on every one of the 57.524 vblanks
+  a second (measured in emulated frames from the counters at `0x5144BC`, one
+  per step, and `0x50158C`: exactly 1 step per vblank over a 4,141-frame
+  coin-start run, every frame, never an overrun; clock seconds 0.52 s
+  long, a 120 s half in 62.6 s). The game's work is not what limits it: the
+  i960 is busy about 46% of a vblank in a match.
+- *Confirmed (the game's writes):* `vstriker` is the one 2B game of the 17
+  checked that selects 30 Hz: it writes `1` to `0x98000C` (bit 0 = 30 Hz,
+  `docs/hw/geometrizer.md`) and `0x4000` to the render mode register
+  `0x10000000` (bit 2 clear), where `fvipers`, `dynabb97`, `schamp`,
+  `doa`, `sgt24h`, `indy500`, `lastbrnx`, `von`, `zerogun`, `pltkids`,
+  `rchase2`, `overrevb` write `0` and `0x4004` (the other 2 and 2A games, bar the three
+  below, `0` and `0x4`). reModel ignored the write.
+- *Model (unconfirmed in detail):* in 30 Hz mode the frame bit toggles, and
+  the geometrizer starts a frame, only on every second vblank (the even
+  ones); `Model2Bus::video_30hz`. The game's own protocol needs this (it
+  hands the geometrizer one list per wait; a bit that toggled every vblank
+  would have the hardware drop half of them), and with it the clock runs
+  30 steps in 30 / 28.76 = 1.043 s, as designed (the 4.3% is the 57.524 Hz
+  refresh, `docs/hw/peripherals.md`): a half of 3,600 steps is 7,200
+  vblanks, 125 s. *Unconfirmed:* that the vblank interrupt (the game
+  reads its inputs there, `0x4E0`) still comes on every vblank (kept so)
+  and the even/odd phase. The game plays at 28.76 distinct pictures a
+  second; the picture repeats on the odd vblanks (no new geometrizer
+  frame), so smooth motion's in-betweens pair identical frames for it
+  until it learns the mode (open).
+- *Open lead:* three non-2B games write the same two values: `vcop`
+  and `skytargt` (`1` to `0x98000C`, `0` to render mode, final) and
+  `dynamcop` (a `1` at some point, ending `0`/`0x4`). They poll the bit
+  (`vcop` 125M reads in 600M instructions) and may also be 30 Hz games, but
+  nobody has reported them fast and nothing here confirms it, so the mode
+  is applied on Model 2B only (`Model2Bus::video_30hz`); lifting that
+  changes their state hashes.
+- Not measured: a real board, or a manual's game-time setting (none found
+  online for this game). The 30 steps a second, the single selection of
+  30 Hz and the clock's 1.043 s are the evidence.
+- Hashes: `vstriker`'s changes (the game runs half as many steps); every
+  other set in `tools/expected-hashes.txt` is unchanged. Save states
+  keep their format (`frame_toggle`'s byte also carries the mode); a
+  `vstriker` state saved before this keeps running at 60 Hz, as the mode
+  was never recorded in it.
 
 ## Idle loop
 

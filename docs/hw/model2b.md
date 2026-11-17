@@ -531,6 +531,11 @@ FLAG input) until the input changes: the copro spends most of its time
 waiting for commands that way. This changes nothing the program can see;
 the state hash is identical with it off.
 
+**30 Hz mode** (`vstriker` only: `0x98000C` bit 0 and render mode bit 2
+clear): the frame bit at `0x98000C` and the geometrizer's start come every
+second vblank, so a game that waits on the bit steps at 28.76 Hz
+(`docs/games/vstriker.md`, "Frame rate").
+
 ## Speed
 
 The geometrizer SHARC is the cost: about 310,000 instructions a race

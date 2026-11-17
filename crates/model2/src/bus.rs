@@ -218,8 +218,14 @@ pub struct Model2Bus {
     /// The sound link UART's transmitter, for its TxRDY interrupt.
     uart: Uart,
     /// Video status bit 2 at 0x98000C. Hypothesis (from the boot code, which
-    /// times how long it takes to change): toggles once per frame.
+    /// times how long it takes to change): toggles once per frame, or once
+    /// per two frames in 30 Hz mode (`video_30hz`).
     pub frame_toggle: bool,
+    /// 30 Hz mode: bit 0 of what the game wrote to 0x98000C (`vstriker`
+    /// alone sets it, docs/games/vstriker.md, "Frame rate"). The frame bit
+    /// then toggles, and the geometrizer starts a frame, on every second
+    /// vblank only. Saved with `frame_toggle` in one byte.
+    pub video_30hz: bool,
     board_ctrl: u8,
 
     // 315-5649 I/O: inputs are active low.
@@ -455,6 +461,7 @@ impl Model2Bus {
             watch: None,
             uart_log: Vec::new(),
             frame_toggle: false,
+            video_30hz: false,
             board_ctrl: 0,
             uart: Uart::default(),
             inputs: [0xff; 4],
@@ -560,8 +567,13 @@ impl Model2Bus {
         if vblank {
             self.next_vblank += FRAME_CYCLES;
             self.frames += 1;
-            self.frame_toggle = !self.frame_toggle;
-            self.run_geometrizer();
+            // In 30 Hz mode the frame bit and the geometrizer's start come
+            // on every second vblank (the even ones); the vblank interrupt
+            // still comes on each (*unconfirmed*).
+            if !self.video_30hz || self.frames.is_multiple_of(2) {
+                self.frame_toggle = !self.frame_toggle;
+                self.run_geometrizer();
+            }
             self.request_irq(IRQ_VBLANK);
         }
         for line in 0..4 {
@@ -1031,6 +1043,9 @@ impl Model2Bus {
                 self.copro_ctrl = v;
             }
             0x0098_0008 => self.geo.control_write(v),
+            // Model 2B only for now: `vcop`, `skytargt` and `dynamcop` (2, 2A) write the same
+            // two values and are left at 60 Hz (docs/games/vstriker.md, "Frame rate").
+            0x0098_000c => self.video_30hz = self.sharc.is_some() && v & 1 != 0,
             0x0098_0004..=0x0098_003f => {}
             0x00f8_0000 => self.board_ctrl = v as u8,
             0x00e8_0000 => self.irq_request &= v,
@@ -1611,7 +1626,7 @@ impl Model2Bus {
         self.tgp_stalled.save(w);
         self.copro_result_hash.save(w);
         self.uart_log.save(w);
-        self.frame_toggle.save(w);
+        (self.frame_toggle as u8 | (self.video_30hz as u8) << 1).save(w);
         self.board_ctrl.save(w);
         self.inputs.save(w);
         self.io_analog_channel.save(w);
@@ -1689,7 +1704,9 @@ impl Model2Bus {
         self.tgp_stalled.load(r)?;
         self.copro_result_hash.load(r)?;
         self.uart_log.load(r)?;
-        self.frame_toggle.load(r)?;
+        let mut video = 0u8;
+        video.load(r)?;
+        (self.frame_toggle, self.video_30hz) = (video & 1 != 0, video & 2 != 0);
         self.board_ctrl.load(r)?;
         self.inputs.load(r)?;
         self.io_analog_channel.load(r)?;
