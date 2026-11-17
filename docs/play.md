@@ -445,6 +445,18 @@ for the draw before (`waited`, 0 while drawing is the quicker part). The
 busier thread's time per frame. The launcher draws on the main thread
 (its previews are light).
 
+The test has margins and patience both ways (`crates/play/src/sync.rs`),
+because a game's frame cost wanders by several milliseconds with what is
+on screen and a cost near the budget used to flip the player between
+the display and the clock every few seconds (`vstriker`'s preview did it
+at 16.0 ms against 16.7, and back at 13 ms, each flip a change of
+rhythm and of in-betweens on and off): the clock paces only once the
+smoothed cost has stayed over 103% of the frame time for 90 game
+frames (1.5 s), and the display again only after 240 frames (4 s) under
+80%; in between, whichever is on stays. A redraw that comes late runs at
+most 2 frames to catch up (`CATCH_UP`), the rest of the lateness is
+dropped, rather than sprinting several frames in one redraw.
+
 What it did (60 Hz display, 1280x720 window, RTX 2080 Super, interpreted
 i960, native geometrizer, coin-start runs, mean of the status lines from
 45 to 66 s, with a build that never drops run-ahead, for measuring; Original is the defaults,
@@ -916,7 +928,9 @@ it headless from power-on to that frame with its sound boards and a fresh
 EEPROM (never the player's), while the poster stays and says how far it has
 got; it's kept as `<data dir>/<set>/preview-native.save` (or
 `preview-chip.save` with the chip geometrizer), in the save state format,
-and made again if it no longer loads. Making it takes as long as running
+and made again if it no longer loads. Previews run the i960 on the JIT as games do (with the game's hot-block
+list, if it has one; interpreted, `vstriker`'s preview with smooth motion
+took 21 to 44 ms a frame while the game's own is 3 to 8). Making it takes as long as running
 the game that far as fast as it goes: recompiled, 2-4 s for `stcc`, `sgt24h`
 and `topskatr`, 12 s for `hotd`, 19 s for `fvipers`; interpreted, 12 s for `topskatr` and 15 s for `doa`. Once cached, a preview shows about 0.6 s after its game is selected (the half second, 20-40 ms loading, 75-115 ms starting). One state
 is made at a time, and it carries on if the selection moves to a game

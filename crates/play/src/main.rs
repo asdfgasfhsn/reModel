@@ -50,6 +50,7 @@ mod saves;
 mod settings;
 mod sound;
 mod splash;
+mod sync;
 mod theme;
 
 use gilrs::Gilrs;
@@ -293,6 +294,10 @@ fn refreshes_gone(part: &mut f64, dt: f64, hz: f64) -> u64 {
     *part = r - n;
     n as u64
 }
+
+/// Frames run in one redraw to catch up with the game's time (the least
+/// the player's pacing allows; `model2::pacing::MAX_CATCH_UP` bounds it).
+const CATCH_UP: u32 = 2;
 
 /// Draws in a row that panicked before the player gives up and quits
 /// (rather than show a frozen window).
@@ -1008,10 +1013,7 @@ struct Play {
     /// drawing, not waiting for vsync; with the drawing on the draw thread,
     /// the busier of the two threads), smoothed, in seconds; and whether
     /// that is too slow to follow the display (then the clock paces).
-    frame_cost: f64,
-    behind: bool,
-    /// Frames run since `behind` was last clear.
-    behind_frames: u32,
+    sync: sync::Sync,
     /// What a displayed frame costs without run-ahead, smoothed: emulating
     /// a frame, the main thread's copy of it and overlay, and drawing, in
     /// seconds, and the redraws they come from (for `run_ahead_room`).
@@ -1193,6 +1195,40 @@ impl Play {
         }
     }
 
+    /// Set the i960 up on `machine` the way the options say: the
+    /// interpreter (`--interp`), the JIT with the game's hot-block list
+    /// (the default; `warm`: a game with no list yet gets one from a quiet
+    /// run, `--jit-warm`), or the recompiled code. Games and the
+    /// launcher's previews both start this way. Returns the list and where
+    /// it is kept, if the JIT is on.
+    fn setup_cpu(
+        &self,
+        machine: &mut model2::Machine,
+        game: &'static romset::Game,
+        geo: model2::geo::GeoMode,
+        warm: bool,
+    ) -> Option<(PathBuf, Arc<model2::jit::HotList>)> {
+        if self.opts.interp {
+            machine.disable_native();
+            return None;
+        }
+        if !self.opts.jit {
+            return None;
+        }
+        let path = jit_list_path(game.id);
+        let list = Arc::new(model2::jit::HotList::load(&path));
+        if warm && list.is_empty() && self.opts.jit_warm {
+            jit_warm(game, self.settings.rom.clone(), geo, list.clone(), path.clone());
+        }
+        match machine.enable_jit_with(model2::jit::Config::default(), Some(list.clone())) {
+            Ok(()) => Some((path, list)),
+            Err(e) => {
+                eprintln!("warning: no JIT: {e}; the i960 runs without it");
+                None
+            }
+        }
+    }
+
     /// Start `set` from power-on, or from a saved state (`from`), leaving
     /// the current game first.
     fn start_game(&mut self, set: &str, from: library::Start) {
@@ -1209,20 +1245,7 @@ impl Play {
             };
             let roms = romset::RomSet::load(game, &self.settings.rom, false).map_err(|e| e.to_string())?;
             let mut machine = model2::Machine::new(&roms);
-            let mut jit_list = None;
-            if self.opts.interp {
-                machine.disable_native();
-            } else if self.opts.jit {
-                let path = jit_list_path(game.id);
-                let list = Arc::new(model2::jit::HotList::load(&path));
-                if list.is_empty() && self.opts.jit_warm {
-                    jit_warm(game, self.settings.rom.clone(), values.geo_mode(), list.clone(), path.clone());
-                }
-                match machine.enable_jit_with(model2::jit::Config::default(), Some(list.clone())) {
-                    Ok(()) => jit_list = Some((path, list)),
-                    Err(e) => eprintln!("warning: no JIT: {e}; the i960 runs without it"),
-                }
-            }
+            let jit_list = self.setup_cpu(&mut machine, game, values.geo_mode(), true);
             machine.bus.geo.set_mode(values.geo_mode());
             machine.bus.geo.set_smooth(values.motion_on());
             // Smooth shading and material maps light from what the
@@ -1331,10 +1354,10 @@ impl Play {
         let game = r.game;
         let mut machine = model2::Machine::new(&r.roms);
         let t_new = t.elapsed();
-        if self.opts.interp {
-            machine.disable_native();
-        }
         let geo = self.values.geo_mode();
+        // The i960 as in a game (previews were interpreted: with smooth
+        // motion on, that was 2 to 3 times the game's emulation time).
+        self.setup_cpu(&mut machine, game, geo, false);
         machine.bus.geo.set_mode(geo);
         // Previews draw without temporal anti-aliasing: in-betweens only.
         machine.bus.geo.set_smooth(self.values.smooth_on());
@@ -1397,8 +1420,7 @@ impl Play {
         });
         self.preview.shown = None;
         self.preview.leaving = None;
-        self.behind = false;
-        self.frame_cost = 0.0;
+        self.sync.reset();
         self.reset_cost();
     }
 
@@ -1863,7 +1885,7 @@ impl Play {
     /// (1 at about 60 Hz, 1/2 at about 120 Hz), or None to follow the clock.
     fn per_refresh(&self) -> Option<f64> {
         let hz = self.gpu.as_ref()?.refresh?;
-        if self.values.exact || self.behind {
+        if self.values.exact || self.sync.behind {
             return None;
         }
         [1.0, 0.5].into_iter().find(|k| (0.95..=1.1).contains(&(hz * k / FPS)))
@@ -2088,9 +2110,14 @@ impl Play {
         // `--frames`: the game stops at that frame.
         let due =
             self.opts.frames.filter(|_| self.session.as_ref().is_some_and(|s| !s.preview)).map_or(due, |n| due.min(n));
+        // Late: at most one frame more than due is run to catch up, the rest
+        // of the lateness dropped (the clock moves on below), rather than a
+        // sprint of several frames in one redraw that shows as the game
+        // running fast.
+        let catch_up = if self.opts.fast { MAX_CATCH_UP } else { MAX_CATCH_UP.min(CATCH_UP) };
         let mut ran = 0;
         let t_real = Instant::now();
-        while self.session.as_ref().is_some_and(|s| s.machine.frames < due) && ran < MAX_CATCH_UP {
+        while self.session.as_ref().is_some_and(|s| s.machine.frames < due) && ran < catch_up {
             if self.session.as_ref().is_some_and(|s| !s.preview) {
                 self.apply_inputs();
                 // The pad opened the menu: pause now.
@@ -2240,7 +2267,7 @@ impl Play {
         // frame's polygons lets it run alongside the next frame instead of
         // after it, at the cost of the polygons lagging a frame.
         let budget = frame_budget(g.refresh, self.values.exact);
-        let period = frame_budget(g.refresh, self.values.exact || self.behind).as_secs_f64();
+        let period = frame_budget(g.refresh, self.values.exact || self.sync.behind).as_secs_f64();
         let ahead = s.run_ahead.as_ref().is_some_and(|ra| ra.is_ahead_of(&s.machine));
         let switched = ahead != s.drew_ahead;
         s.drew_ahead = ahead;
@@ -2265,8 +2292,10 @@ impl Play {
         // Smooth motion's in-betweens: by its setting, not just its
         // recording (which temporal anti-aliasing turns on too); only on a
         // display faster than the game, and not when it's already behind.
-        let fast =
-            g.refresh.is_none_or(|hz| hz > FPS * 1.2) && !self.behind && !self.menu.open && self.values.smooth_on();
+        let fast = g.refresh.is_none_or(|hz| hz > FPS * 1.2)
+            && !self.sync.behind
+            && !self.menu.open
+            && self.values.smooth_on();
         // With smooth shading or material maps, an in-between gets its own
         // lighting side channel (its replay records it as the game frame's
         // was), so it is shaded at the level of the frames around it.
@@ -2363,20 +2392,16 @@ impl Play {
             let main = emulate + overhead;
             let busy = if overlap { main.max(draw) } else { main + draw };
             let cost = busy.as_secs_f64() / ran as f64;
-            self.frame_cost += (cost - self.frame_cost) * 0.05;
             let budget = frame_budget(g.refresh, false).as_secs_f64();
-            let was = self.behind;
-            if self.frame_cost > budget * 0.95 {
-                self.behind = true;
-            } else if self.frame_cost < budget * 0.8 {
-                self.behind = false;
-            }
-            if self.behind != was {
+            if let Some(change) = self.sync.note(cost, ran, budget) {
                 let frame = self.session.as_ref().map_or(0, |s| s.machine.frames);
                 println!(
                     "pacing        frame {frame}: {} ({:.2} ms a frame against {:.2})",
-                    if self.behind { "too slow to sync, paced by the clock" } else { "synced to the display again" },
-                    self.frame_cost * 1000.0,
+                    match change {
+                        sync::Change::Behind => "too slow to sync, paced by the clock",
+                        sync::Change::Synced => "synced to the display again",
+                    },
+                    self.sync.cost * 1000.0,
                     budget * 1000.0
                 );
             }
@@ -2387,17 +2412,14 @@ impl Play {
         // Run-ahead the machine can't keep up with: off (until it's set
         // again), rather than the game running slow. Counted in frames
         // run, so time in the menu doesn't count.
-        self.behind_frames = if self.behind { self.behind_frames + ran } else { 0 };
         // (Not while `--frame-log` reads every picture back.)
         let keep = self.frame_log.is_some();
-        if self.behind_frames as f64 > RUN_AHEAD_GRACE * FPS && !keep {
+        if self.sync.behind_frames as f64 > RUN_AHEAD_GRACE * FPS && !keep {
             if let Some(s) = self.session.as_mut().filter(|s| s.run_ahead.is_some()) {
                 s.run_ahead = None;
                 s.run_ahead_dropped = true;
                 s.machine.bus.geo.set_smooth(self.values.motion_on());
-                self.frame_cost = 0.0;
-                self.behind = false;
-                self.behind_frames = 0;
+                self.sync.reset();
                 self.menu.warn("Run-ahead is off: this computer can't keep up with it");
                 println!("run-ahead     off: too slow to keep up");
             }
@@ -3003,7 +3025,7 @@ impl Play {
         });
         let mode = match (self.per_refresh(), self.gpu.as_ref().and_then(|g| g.refresh)) {
             (Some(_), Some(hz)) => format!("synced to {hz:.0} Hz"),
-            _ if self.behind => "too slow to sync, paced by the clock".into(),
+            _ if self.sync.behind => "too slow to sync, paced by the clock".into(),
             _ => "exact speed".into(),
         };
         // Handing each frame over to drawing on the main thread (waiting
@@ -3603,9 +3625,7 @@ fn main() {
         refreshes: 0,
         refresh_part: 0.0,
         last_emulate: None,
-        frame_cost: 0.0,
-        behind: false,
-        behind_frames: 0,
+        sync: sync::Sync::default(),
         emulate_cost: 0.0,
         overhead_cost: 0.0,
         draw_cost: 0.0,
