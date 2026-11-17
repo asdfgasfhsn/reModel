@@ -976,6 +976,50 @@ apply, GPU ms off and on, and the material memory held. `PROBE=X,Y@FRAME`
 explains one pixel: texture and map files, lamp, normal, tangent frame,
 the map's normal there, base and resulting luma.
 
+## Texture map
+
+`make texmap` answers "which texture is where on screen, and what belongs
+together" for any game that captures (`remodel texmap CAPTURE OUT`; no
+GPU, render side only: emulation and state hashes are untouched). It draws
+each captured frame with the software renderer, 1024x768 by default
+(`VIEW="--height 1080 --aspect 16:9"`), and writes to `OUT` (default
+`out/GAME/texmap`; the files are ROM-derived, keep them out of git):
+
+| file | what |
+|---|---|
+| `frames/FRAME.png` | the frame |
+| `frames/FRAME-ids.png` | the ID image: a pixel's RGB is `r + 256 g + 65536 b` = the ID of what draws it (0 none, 1 an untextured polygon, 2 and up a texture or tile pattern, the same in every frame of the run). What shows is what `compose` shows: HUD tiles over the 3D layer over the low-priority tiles |
+| `frames/FRAME-uv.png` | where in its texture the pixel samples: red, green the position across it (0-255, wrapped; tiles 8x8), blue 255 where there is one |
+| `frames/FRAME-contact.png` | the frame beside the textures it shows, biggest coverage first, each labelled with its ID (tiles on blue) |
+| `frames/FRAME.tsv` | per ID in the frame: pixels, share of the frame, output bounding box, visible polygons, share of the texels that show and their box (`uv_*`), wrap (`rr`, `mr`, ... as `index.txt`), `span_u/v` (how many texture sizes the coordinates run over: above 1, it repeats), group |
+| `ids.tsv`, `inventory.tsv` | the ID table; the run's textures and tiles ranked by coverage (frames, pixels, best frame, union of the texels shown, wrap, span, group, and what `index.txt` calls the source) |
+| `groups.tsv`, `texmap.json` | the groups; everything above for tools |
+| `textures/NAME.png` | each texture as the game draws it at full luma, under the dump and pack names (`tex_<key>_<w>x<h>`, `tile_<key>`): a restyled image goes into a pack under the same name |
+| `index.html` | the static viewer: one file, works from `file://` (below) |
+
+**Groups.** Polygons carry the object block of the display list they came
+in (one model's polygons: a skater, a billboard). Two textures are linked
+when pixels of different textures touch in the frame (4-neighbours) and
+both are from the same block of the same window; tiles link likewise within
+a layer (a line of text's letters). The touching pixel pairs add up over
+the run, links under about one pair per 96 rows of the view are dropped
+(a corner is not a link), and the rest are merged strongest first into
+groups of at most `--group-cap` (default 24) members: an object block of
+dozens of textures that all touch (a course) falls apart at its weakest
+links. It is a heuristic: it finds parts that touch (a billboard's halves,
+a ramp's faces), not parts of one model that are far apart on screen, and
+a wide enough run can chain unrelated textures that share a block.
+
+**Viewer.** `index.html` holds the frames (`--viewer-frames N` of them,
+spread over the run), their ID and position images and every texture
+embedded, so it opens by double click and needs no server or library.
+Hovering a pixel shows its texture (preview, size, coverage, the part of it
+that shows as a box, and a marker where this pixel is in it); a click lists
+the group and tints its members; the gallery below ranks every texture and
+tile of the run by coverage (filter by kind, id or name; clicking one
+jumps to a frame that shows it). See `docs/uplift-studio.md` for how it
+fits the restyling workflow.
+
 ## Limitations
 
 - Tile keys include colours: tiles drawn during a fade or palette cycle

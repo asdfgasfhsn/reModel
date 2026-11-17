@@ -369,6 +369,73 @@ fn tile_info(tiles: &[u8], palette: &[u8], entry: usize) -> Option<TileInfo> {
     Some(TileInfo { key: f.0, tile: (entry & 0x3fff) as u16, bank: (base >> 4) as u16, pens, colours })
 }
 
+/// Where a game pixel's tile pattern came from ([`tile_pixels`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TileHit {
+    /// Index into [`TilePixels::infos`], or `u32::MAX` for none (no tile,
+    /// or a blank pattern).
+    pub info: u32,
+    /// Row and column within the 8x8 pattern.
+    pub row: u8,
+    pub col: u8,
+}
+
+impl TileHit {
+    pub const NONE: TileHit = TileHit { info: u32::MAX, row: 0, col: 0 };
+}
+
+/// The tile patterns on screen and which one shows at each game pixel,
+/// for tools that identify what draws where (`remodel texmap`): the same
+/// choice [`compose`] makes, in its two layers.
+pub struct TilePixels {
+    /// Distinct non-blank patterns (the keys texture packs use).
+    pub infos: Vec<TileInfo>,
+    /// WIDTH x HEIGHT: the high-priority tile pixel (HUD, drawn over the
+    /// 3D layer), where one is opaque.
+    pub high: Vec<TileHit>,
+    /// WIDTH x HEIGHT: the low-priority one that shows under the 3D layer
+    /// (plane A over plane B; B is opaque, so pen 0 of a B tile counts).
+    pub low: Vec<TileHit>,
+}
+
+/// Which tile pattern shows at every game pixel, in the high and low
+/// priority layers.
+pub fn tile_pixels(tiles: &[u8], palette: &[u8]) -> TilePixels {
+    let mut infos: Vec<TileInfo> = Vec::new();
+    let mut by_entry: std::collections::HashMap<usize, u32> = std::collections::HashMap::new();
+    let mut high = vec![TileHit::NONE; WIDTH * HEIGHT];
+    let mut low = vec![TileHit::NONE; WIDTH * HEIGHT];
+    for y in 0..HEIGHT {
+        for x in 0..WIDTH {
+            for (plane, opaque) in [(1, true), (0, false)] {
+                let (map, scroll) = map_for(tiles, plane, x, y);
+                let Some((entry, row, col)) = locate(tiles, map, scroll, x, y) else { continue };
+                let p = pen(tiles, entry, row, col);
+                if p == 0 && !opaque {
+                    continue;
+                }
+                let key = entry & 0x7fff;
+                let info = *by_entry.entry(key).or_insert_with(|| match tile_info(tiles, palette, key) {
+                    Some(t) => {
+                        infos.push(t);
+                        infos.len() as u32 - 1
+                    }
+                    None => u32::MAX,
+                });
+                let hit = TileHit { info, row: row as u8, col: col as u8 };
+                if entry & 0x8000 != 0 {
+                    if p != 0 {
+                        high[y * WIDTH + x] = hit;
+                    }
+                } else {
+                    low[y * WIDTH + x] = hit;
+                }
+            }
+        }
+    }
+    TilePixels { infos, high, low }
+}
+
 /// Per game pixel: the base layer (backdrop and low-priority tiles), the
 /// HUD (high-priority tiles, None where transparent) and, when `enhanced`,
 /// the tile hits of plane B then A.

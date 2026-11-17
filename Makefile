@@ -392,6 +392,14 @@ capture: release ## Run into a race saving every 300th frame's renderer inputs t
 	rm -rf $(OUT)/capture
 	$(RUN) --capture $(OUT)/capture --input $(BENCH_INPUT) run 900000000 300 >/dev/null
 
+# Where texmap reads captures (default OUT/capture, made by `make capture` if missing) and writes.
+CAPTURE     ?=
+TEXMAP_OUT  ?= $(OUT)/texmap
+TEXMAP_OPTS ?=
+texmap: release ## Which texture is where: draw the captured frames (CAPTURE=DIR, default OUT/capture, captured first if missing) and write to TEXMAP_OUT (default OUT/texmap) per-frame ID images, texel-position images, contact sheets and inventories, run-wide inventory.tsv, groups.tsv, texmap.json and a static viewer index.html (VIEW="--height 1080 --aspect 16:9", TEXMAP_OPTS="--every N --viewer-frames N --group-cap N"; docs/uplift-studio.md)
+	$(if $(CAPTURE),,@[ -d $(OUT)/capture ] || $(MAKE) capture)
+	$(RUN) $(VIEW) texmap $(or $(CAPTURE),$(OUT)/capture) $(TEXMAP_OUT) $(TEXMAP_OPTS)
+
 # Options for gpu-check, depth-check and pack-check: --bloom N (gpu-check, temporal-probe: bloom), --aa N (multisampling;
 # software supersamples to match), --depth, --tex-filter off|mip|2|4|8|16
 # (gpu-check with PACK), --materials (the pack's material maps: gpu-check draws them from captures with light.bin;

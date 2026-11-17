@@ -1979,6 +1979,26 @@ pub struct Visible {
 /// vector a temporal renderer would write there. `placed` is
 /// [`place`]'s for `polys`.
 pub fn visible(polys: &[Poly], placed: &[Placed], src: &Sources, view: &View) -> Visible {
+    visible_impl(polys, placed, src, view, None)
+}
+
+/// [`visible`] and, per output pixel, where in its polygon's texture the
+/// shown pixel samples: `[u, v]` in texels, before the texture's wrapping
+/// (so outside `0..w` where a texture repeats); `[0, 0]` for pixels with
+/// no textured polygon. Render-side tools use it (`remodel texmap`).
+pub fn visible_uv(polys: &[Poly], placed: &[Placed], src: &Sources, view: &View) -> (Visible, Vec<[f32; 2]>) {
+    let mut uv = vec![[0.0; 2]; view.width * view.height];
+    let vis = visible_impl(polys, placed, src, view, Some(&mut uv));
+    (vis, uv)
+}
+
+fn visible_impl(
+    polys: &[Poly],
+    placed: &[Placed],
+    src: &Sources,
+    view: &View,
+    mut uv: Option<&mut Vec<[f32; 2]>>,
+) -> Visible {
     let (w, h) = (view.width, view.height);
     let mut out = Visible { owner: vec![u32::MAX; w * h], iz: vec![0.0; w * h], prev: vec![[0.0; 3]; w * h] };
     let (gsx, gsy) = (view.sx, view.sy);
@@ -1987,7 +2007,7 @@ pub fn visible(polys: &[Poly], placed: &[Placed], src: &Sources, view: &View) ->
         let mut hits = Vec::new();
         fill(&pl.points, pl.clip, w, h, |x, y, iz, uz, vz| {
             let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
-            hits.push((y * w + x, iz, shade(p, src, gx, gy, uz / iz, vz / iz).is_some()));
+            hits.push((y * w + x, iz, shade(p, src, gx, gy, uz / iz, vz / iz).is_some(), [uz / iz, vz / iz]));
         });
         // The same fill visits the same pixels in the same order whatever
         // the attributes: carry [X, Y, W] as (u/z, v/z, 1/z).
@@ -1997,11 +2017,14 @@ pub fn visible(polys: &[Poly], placed: &[Placed], src: &Sources, view: &View) ->
                 pl.points.iter().zip(&pl.prev).map(|(v, q)| SVtx { iz: q[2], uz: q[0], vz: q[1], ..*v }).collect();
             fill(&pts, pl.clip, w, h, |_, _, ww, xx, yy| prev.push([xx, yy, ww]));
         }
-        for (i, &(o, iz, shown)) in hits.iter().enumerate() {
+        for (i, &(o, iz, shown, st)) in hits.iter().enumerate() {
             if shown {
                 out.owner[o] = k as u32;
                 out.iz[o] = iz;
                 out.prev[o] = prev.get(i).copied().unwrap_or([0.0; 3]);
+                if let Some(uv) = uv.as_deref_mut() {
+                    uv[o] = if p.texture.is_some() { st } else { [0.0; 2] };
+                }
             }
         }
     }

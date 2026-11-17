@@ -15,6 +15,8 @@ mod soundtrack;
 mod spec_stats;
 mod temporal_check;
 mod temporal_probe;
+mod texmap;
+mod texmap_viewer;
 mod texpack;
 mod texpack_materials;
 mod texpack_upscale;
@@ -319,6 +321,24 @@ commands:
                        differing pixels by cause and fails a frame on the
                        ones that mean a fault (one texel value, another
                        polygon), not on filter order (up to a ceiling)
+  texmap [DIR] [OUT]   which texture is where: draw the frames captured in
+                       DIR (default out/GAME/capture) with the software
+                       renderer and write to OUT (default
+                       out/GAME/texmap) per frame an ID image (FRAME-ids.png:
+                       a pixel's RGB is the id of the texture or tile that
+                       draws it, id = r + 256 g + 65536 b; 0 none, 1 flat), a
+                       texel-position image (-uv.png), a contact sheet
+                       (-contact.png) and an inventory (FRAME.tsv: coverage,
+                       box, polygons, the part of the texture that shows,
+                       wrap); and for the run ids.tsv, inventory.tsv,
+                       groups.tsv (textures drawn touching in one object
+                       block, at most --group-cap N, default 24, per group),
+                       texmap.json, textures/ (the pack's file names) and
+                       index.html, a static viewer. --every N: every Nth
+                       frame; --viewer-frames N: frames in the viewer
+                       (default 10); --height, --aspect set the view
+                       (default 1024x768). Render side only
+                       (docs/uplift-studio.md)
   tile-check [DIR] [OUT]
                        with --texture-pack: draw the frames captured in DIR
                        (default out/GAME/capture) with the pack's tile images
@@ -904,6 +924,7 @@ fn main() -> ExitCode {
         "pack-check" if o.args.iter().any(|a| a == "--identity") => cmd_pack_check_identity(&o, roms),
         "pack-check" => cmd_pack_check(&o, roms),
         "tile-check" => cmd_tile_check(&o, roms),
+        "texmap" => cmd_texmap(&o, roms),
         "depth-check" => cmd_depth_check(&o, roms),
         "lighting-check" => cmd_lighting_check(&o, roms),
         "lockstep" => cmd_lockstep(&o, roms),
@@ -1790,6 +1811,48 @@ fn cmd_tile_check(o: &Opts, roms: &RomSet) -> ExitCode {
     let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
     let light = light_options(roms.game);
     if let Err(e) = pack_check::run_tiles(&root, windows, VIEW.get().copied(), pack, &out, light.as_ref()) {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_texmap(o: &Opts, roms: &RomSet) -> ExitCode {
+    let mut args = o.args.clone();
+    let mut num = |flag: &str, default: usize| -> Result<usize, String> {
+        match args.iter().position(|a| a == flag) {
+            None => Ok(default),
+            Some(i) => {
+                let v = args.get(i + 1).and_then(|v| v.parse::<usize>().ok()).filter(|&v| v > 0);
+                let v = v.ok_or(format!("{flag} wants a number above 0"))?;
+                args.drain(i..i + 2);
+                Ok(v)
+            }
+        }
+    };
+    let (every, viewer_frames, group_cap) =
+        match (num("--every", 1), num("--viewer-frames", 10), num("--group-cap", 24)) {
+            (Ok(a), Ok(b), Ok(c)) => (a, b, c),
+            (a, b, c) => {
+                eprintln!("error: {}", [a.err(), b.err(), c.err()].into_iter().flatten().next().unwrap_or_default());
+                return ExitCode::FAILURE;
+            }
+        };
+    let default = PathBuf::from("out").join(roms.game.id).join("capture");
+    let root = args.get(1).map(PathBuf::from).unwrap_or(default);
+    let out = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("texmap"));
+    let light = light_options(roms.game);
+    let view =
+        VIEW.get().copied().unwrap_or_else(|| model2::video::View::new(768, 4.0 / 3.0, model2::video::Hud::Center));
+    let opts = texmap::Options {
+        view,
+        windows: (roms.game.hud_windows, roms.game.hud_element_windows),
+        light: light.as_ref(),
+        viewer_frames,
+        group_cap,
+        every,
+    };
+    if let Err(e) = texmap::run(&root, &out, roms.game.id, &opts) {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;
     }
