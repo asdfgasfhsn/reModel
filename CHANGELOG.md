@@ -14,6 +14,23 @@ message is its text), set `version` in the root `Cargo.toml`, commit, then
 creates the annotated tag `vx.y.z` without pushing. Details in
 [docs/usage.md](docs/usage.md), "Versions and releases".
 
+## 0.11.1 (2026-11-18): Virtua Striker at its own speed, and fixes
+
+- Virtua Striker ran its match about twice too fast: it sets the board's
+  30 Hz mode (`0x98000C` bit 0), which the Model 2B board model ignored.
+  Its logic and the geometrizer now step every second frame; a 120 s half
+  lasts 125 s (the 4% is display sync; Exact arcade speed removes it).
+  Smooth motion has nothing to add for it yet (tabled). Save states made
+  before keep the old rate.
+- The CRT look no longer brightens the picture (a mid grey was 12.6%
+  brighter, highlights up to 60% and clipped); a test holds it.
+- Launcher previews run on the JIT, as games do; display sync and clock
+  pacing switch with hysteresis instead of flapping, and a late redraw
+  catches up at most 2 frames.
+- Every `remodel` and `remodel-play` run started by the Makefile is under a
+  memory cap (`tools/capped`, `MEMCAP`, default 8G) where systemd is
+  available.
+
 ## 0.11.0 (2026-11-17): analog sticks as levers
 
 - A gamepad's analog sticks can stand for a game's digital lever: eight
