@@ -14,6 +14,31 @@ message is its text), set `version` in the root `Cargo.toml`, commit, then
 creates the annotated tag `vx.y.z` without pushing. Details in
 [docs/usage.md](docs/usage.md), "Versions and releases".
 
+## 0.10.0 (2026-11-17): a new look, release builds, and two more games
+
+- The player's interface, redone: a shared theme; the Esc menu is a side
+  panel with save-slot thumbnails; picture styles (Arcade original, Sharp,
+  Smooth modern, CRT, Custom) apply live, with a Compare wipe and an
+  Advanced page; the launcher is a carousel or a grid with quick resume,
+  saves and filters; a Controls page with a picture of the device and
+  stick tuning; photo mode's controls are a dock along the bottom edge.
+  Sized for 720p up, and usable from a pad or the keyboard throughout.
+- Photo mode: no MSAA on top of supersampling, its textures kept between
+  frames, and a fallback to a smaller size when the GPU runs out of
+  memory, instead of a failed photo (a 4K photo now draws at 7680x4320).
+- The JITs are on by default, and Model 2B's SHARCs have one too (copro
+  and geometrizer); the i960's plain memory accesses are inline.
+- Model 2B: Rail Chase 2 (its ride drive board's network check answered)
+  and Cyber Troopers Virtual-On (a link board stub, twin levers).
+  Thirty-four games in all.
+- Release builds on version tags: a Linux AppImage, Windows, and a
+  universal macOS app in a .dmg. CI checks every push.
+- A session log, `--perf-log`, `--sound-log`, and GPU memory profiling
+  for reports; a draw that panics no longer takes the player down.
+- Cleanup: the CLI parses its options once into `Opts`; shared copro FIFO
+  helpers in the bus; games list their chips with a `rom()` helper.
+- Save states stay at format 2: 0.9.0's load.
+
 ## 0.9.0 (2026-11-15): three more games
 
 - Model 2A: Dynamite Cop, with its keyed protection device answered from
