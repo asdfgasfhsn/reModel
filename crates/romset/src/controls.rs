@@ -228,6 +228,16 @@ pub enum PadButton {
     DPadDown,
     DPadLeft,
     DPadRight,
+    // Virtual buttons (after the standard pad's, so stored indices and
+    // names keep their meaning): a stick pushed one way. See `StickDirs`.
+    LeftStickUp,
+    LeftStickDown,
+    LeftStickLeft,
+    LeftStickRight,
+    RightStickUp,
+    RightStickDown,
+    RightStickLeft,
+    RightStickRight,
 }
 
 impl PadButton {
@@ -251,7 +261,71 @@ impl PadButton {
         PadButton::DPadRight,
     ];
 
-    /// Index in the W3C standard gamepad's `buttons`.
+    /// The stick directions: virtual buttons, read from the sticks' axes
+    /// (left stick up, down, left, right, then the right stick's).
+    pub const STICK_DIRS: [PadButton; 8] = [
+        PadButton::LeftStickUp,
+        PadButton::LeftStickDown,
+        PadButton::LeftStickLeft,
+        PadButton::LeftStickRight,
+        PadButton::RightStickUp,
+        PadButton::RightStickDown,
+        PadButton::RightStickLeft,
+        PadButton::RightStickRight,
+    ];
+
+    /// Whether this is a stick direction rather than a button of the
+    /// standard pad.
+    pub fn is_stick_dir(self) -> bool {
+        self as usize >= Self::ALL.len()
+    }
+
+    /// The stick direction an axis pushed to its negative end (left or up)
+    /// or positive end (right or down) is; None for a trigger.
+    pub fn stick_dir(axis: PadAxis, negative: bool) -> Option<PadButton> {
+        use PadButton::*;
+        Some(match (axis, negative) {
+            (PadAxis::LeftStickX, true) => LeftStickLeft,
+            (PadAxis::LeftStickX, false) => LeftStickRight,
+            (PadAxis::LeftStickY, true) => LeftStickUp,
+            (PadAxis::LeftStickY, false) => LeftStickDown,
+            (PadAxis::RightStickX, true) => RightStickLeft,
+            (PadAxis::RightStickX, false) => RightStickRight,
+            (PadAxis::RightStickY, true) => RightStickUp,
+            (PadAxis::RightStickY, false) => RightStickDown,
+            _ => return None,
+        })
+    }
+
+    /// The left stick direction that stands in for a d-pad direction.
+    pub fn left_stick_of(self) -> Option<PadButton> {
+        Some(match self {
+            PadButton::DPadUp => PadButton::LeftStickUp,
+            PadButton::DPadDown => PadButton::LeftStickDown,
+            PadButton::DPadLeft => PadButton::LeftStickLeft,
+            PadButton::DPadRight => PadButton::LeftStickRight,
+            _ => return None,
+        })
+    }
+
+    /// The stick whose axes a stick direction reads (the part of the pad it
+    /// is, for pictures); a standard button is itself.
+    pub fn part(self) -> PadButton {
+        match self {
+            PadButton::LeftStickUp
+            | PadButton::LeftStickDown
+            | PadButton::LeftStickLeft
+            | PadButton::LeftStickRight => PadButton::LeftStick,
+            PadButton::RightStickUp
+            | PadButton::RightStickDown
+            | PadButton::RightStickLeft
+            | PadButton::RightStickRight => PadButton::RightStick,
+            b => b,
+        }
+    }
+
+    /// Index in the W3C standard gamepad's `buttons` (for a stick
+    /// direction, past them: it isn't one).
     pub fn index(self) -> u32 {
         self as u32
     }
@@ -263,7 +337,7 @@ impl PadButton {
 
     /// The button named `name` (its variant's name, as stored).
     pub fn from_name(name: &str) -> Option<PadButton> {
-        Self::ALL.into_iter().find(|b| format!("{b:?}") == name)
+        Self::ALL.into_iter().chain(Self::STICK_DIRS).find(|b| format!("{b:?}") == name)
     }
 
     /// As an Xbox pad labels it.
@@ -285,7 +359,73 @@ impl PadButton {
             PadButton::DPadDown => "D-pad ↓",
             PadButton::DPadLeft => "D-pad ←",
             PadButton::DPadRight => "D-pad →",
+            PadButton::LeftStickUp => "L stick ↑",
+            PadButton::LeftStickDown => "L stick ↓",
+            PadButton::LeftStickLeft => "L stick ←",
+            PadButton::LeftStickRight => "L stick →",
+            PadButton::RightStickUp => "R stick ↑",
+            PadButton::RightStickDown => "R stick ↓",
+            PadButton::RightStickLeft => "R stick ←",
+            PadButton::RightStickRight => "R stick →",
         }
+    }
+}
+
+/// A stick read as an 8-way lever: which of the four directions each stick
+/// holds now, as the virtual [`PadButton`]s (`LeftStickUp` ...). Pushed
+/// past a threshold the stick holds the direction its angle is in, and a
+/// diagonal both of its two, like a lever's microswitches. It remembers
+/// what it held, so a stick resting on the edge of a threshold or of a
+/// sector doesn't chatter: it takes a push to start and lets go lower.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StickDirs {
+    /// One bit per [`PadButton::STICK_DIRS`].
+    held: u8,
+}
+
+impl StickDirs {
+    /// Push (of full, past the dead zone) that starts a direction. A
+    /// digital lever wants a real push, not a stick's slightest lean.
+    pub const PUSH: f32 = 0.5;
+    /// A held direction lets go this far (of full) below that, or at the
+    /// dead zone if that's higher.
+    pub const LET_GO: f32 = 0.1;
+    /// A direction starts when the stick's angle is within 67.5 degrees of
+    /// it (the diagonals' 45 are both, the axes' 22.5 are alone), and holds
+    /// to about 73. As the ratio of the side across to the side along.
+    const START: f32 = 0.414;
+    const HOLD: f32 = 0.30;
+
+    /// Read the sticks, each as (x right, y down) from -1 to 1, with the
+    /// player's dead zone (0 to 1).
+    pub fn update(&mut self, left: (f32, f32), right: (f32, f32), dead: f32) -> StickDirs {
+        let lo = self.held & 0x0f;
+        let hi = self.held >> 4;
+        self.held = Self::stick(lo, left, dead) | Self::stick(hi, right, dead) << 4;
+        *self
+    }
+
+    /// One stick's four bits (up, down, left, right) from its last.
+    fn stick(was: u8, (x, y): (f32, f32), dead: f32) -> u8 {
+        let push = Self::PUSH.max(dead);
+        let limit = if was != 0 { (push - Self::LET_GO).max(dead) } else { push };
+        if x.hypot(y) <= limit {
+            return 0;
+        }
+        let dir = |bit: u8, along: f32, across: f32| {
+            let ratio = if was & bit != 0 { Self::HOLD } else { Self::START };
+            if along > 0.0 && along > ratio * across.abs() {
+                bit
+            } else {
+                0
+            }
+        };
+        dir(1, -y, x) | dir(2, y, x) | dir(4, -x, y) | dir(8, x, y)
+    }
+
+    /// Whether `b` is held (false for anything but a stick direction).
+    pub fn held(&self, b: PadButton) -> bool {
+        PadButton::STICK_DIRS.iter().position(|&d| d == b).is_some_and(|i| self.held >> i & 1 != 0)
     }
 }
 
@@ -419,6 +559,104 @@ pub(crate) fn key_label(code: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Polar position of a stick: degrees clockwise from up, and a push.
+    fn at(deg: f32, push: f32) -> (f32, f32) {
+        let r = deg.to_radians();
+        (r.sin() * push, -r.cos() * push)
+    }
+
+    /// What `StickDirs` holds from a fresh start for one push of the left
+    /// stick, as "udlr" letters.
+    fn dirs(deg: f32, push: f32) -> String {
+        let mut d = StickDirs::default();
+        d.update(at(deg, push), (0.0, 0.0), 0.15);
+        let names = [
+            (PadButton::LeftStickUp, 'u'),
+            (PadButton::LeftStickDown, 'd'),
+            (PadButton::LeftStickLeft, 'l'),
+            (PadButton::LeftStickRight, 'r'),
+        ];
+        names.iter().filter(|(b, _)| d.held(*b)).map(|(_, c)| *c).collect()
+    }
+
+    #[test]
+    fn a_stick_is_an_eight_way_lever() {
+        assert_eq!(dirs(0.0, 1.0), "u");
+        assert_eq!(dirs(90.0, 1.0), "r");
+        assert_eq!(dirs(180.0, 1.0), "d");
+        assert_eq!(dirs(270.0, 1.0), "l");
+        assert_eq!(dirs(45.0, 1.0), "ur");
+        assert_eq!(dirs(135.0, 1.0), "dr");
+        assert_eq!(dirs(225.0, 1.0), "dl");
+        assert_eq!(dirs(315.0, 1.0), "ul");
+        // The sectors' edges: an axis owns 22.5 degrees each side of it.
+        assert_eq!(dirs(15.0, 1.0), "u");
+        assert_eq!(dirs(30.0, 1.0), "ur");
+        assert_eq!(dirs(60.0, 1.0), "ur");
+        assert_eq!(dirs(75.0, 1.0), "r");
+    }
+
+    #[test]
+    fn a_stick_needs_a_push() {
+        assert_eq!(dirs(0.0, 0.2), "");
+        assert_eq!(dirs(0.0, 0.49), "");
+        assert_eq!(dirs(0.0, 0.51), "u");
+        // A dead zone over the push raises it.
+        let mut d = StickDirs::default();
+        d.update((0.0, -0.55), (0.0, 0.0), 0.6);
+        assert!(!d.held(PadButton::LeftStickUp));
+        d.update((0.0, -0.65), (0.0, 0.0), 0.6);
+        assert!(d.held(PadButton::LeftStickUp));
+    }
+
+    #[test]
+    fn a_stick_lets_go_lower_and_holds_its_sector() {
+        let mut d = StickDirs::default();
+        let free = (0.0, 0.0);
+        d.update(at(0.0, 0.6), free, 0.15);
+        assert!(d.held(PadButton::LeftStickUp));
+        // Down to the let-go point: still held; past it: let go.
+        d.update(at(0.0, 0.45), free, 0.15);
+        assert!(d.held(PadButton::LeftStickUp));
+        d.update(at(0.0, 0.35), free, 0.15);
+        assert!(!d.held(PadButton::LeftStickUp));
+        // And it takes the full push to start again.
+        d.update(at(0.0, 0.45), free, 0.15);
+        assert!(!d.held(PadButton::LeftStickUp));
+        // Held up, drifting round to 70 degrees: right joins but up stays
+        // until about 73; from a fresh start up wouldn't start there.
+        d.update(at(0.0, 1.0), free, 0.15);
+        d.update(at(70.0, 1.0), free, 0.15);
+        assert!(d.held(PadButton::LeftStickUp) && d.held(PadButton::LeftStickRight));
+        d.update(at(80.0, 1.0), free, 0.15);
+        assert!(!d.held(PadButton::LeftStickUp));
+        assert_eq!(dirs(70.0, 1.0), "r");
+    }
+
+    #[test]
+    fn the_sticks_are_read_apart() {
+        let mut d = StickDirs::default();
+        d.update((0.0, 0.0), at(270.0, 1.0), 0.15);
+        assert!(d.held(PadButton::RightStickLeft));
+        assert!(!d.held(PadButton::LeftStickLeft) && !d.held(PadButton::DPadLeft) && !d.held(PadButton::South));
+    }
+
+    #[test]
+    fn stick_buttons_are_named_and_append_to_the_pad() {
+        assert_eq!(PadButton::DPadRight.index(), 15);
+        assert_eq!(PadButton::LeftStickUp.index(), 16);
+        assert_eq!(PadButton::from_index(16), None);
+        for b in PadButton::STICK_DIRS {
+            assert!(b.is_stick_dir());
+            assert_eq!(PadButton::from_name(&format!("{b:?}")), Some(b));
+        }
+        for b in PadButton::ALL {
+            assert!(!b.is_stick_dir());
+        }
+        assert_eq!(PadButton::stick_dir(PadAxis::RightStickY, true), Some(PadButton::RightStickUp));
+        assert_eq!(PadButton::stick_dir(PadAxis::LeftTrigger, true), None);
+    }
 
     #[test]
     fn every_game_has_consistent_controls() {

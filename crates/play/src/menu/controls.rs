@@ -342,10 +342,18 @@ pub(super) fn part_actions(b: &Bindings, device: Device, art: Art, rows: &[Row])
             Device::Pad => {
                 match value {
                     Some(Value::Inputs(list)) => {
+                        // A stick direction is the stick's part, unless it
+                        // only stands in for the d-pad's.
                         parts.extend(list.iter().filter_map(|i| match i {
+                            Input::Pad(p) if p.is_stick_dir() => {
+                                let twin = PadButton::ALL.into_iter().find(|t| t.left_stick_of() == Some(*p));
+                                let doubled = twin.is_some_and(|t| list.contains(&Input::Pad(t)));
+                                (!doubled).then_some(Part::Pad(p.part()))
+                            }
                             Input::Pad(p) => Some(Part::Pad(*p)),
                             _ => None,
                         }));
+                        parts.dedup();
                     }
                     Some(Value::Axis(a)) => parts.extend(axis_buttons(a.axis).iter().map(|p| Part::Pad(*p))),
                     None => {}

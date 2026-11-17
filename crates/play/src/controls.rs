@@ -5,7 +5,7 @@
 
 use gilrs::{Axis, Button};
 use romset::bindings::Capture;
-use romset::{PadAxis, PadButton};
+use romset::{PadAxis, PadButton, StickDirs};
 use std::collections::HashSet;
 use winit::keyboard::KeyCode;
 
@@ -188,6 +188,16 @@ pub struct Devices<'a> {
     pub gate: &'a crate::pad::Gate,
     /// The player's tuning of the sticks and triggers.
     pub tuning: Tuning,
+    /// What the sticks hold as directions ([`read_sticks`]).
+    pub dirs: StickDirs,
+}
+
+/// Move `dirs` by one frame of `pad`'s sticks, past the player's dead zone.
+pub fn read_sticks(dirs: &mut StickDirs, pad: Option<&gilrs::Gamepad>, tuning: Tuning) -> StickDirs {
+    let Some(p) = pad else { return dirs.update((0.0, 0.0), (0.0, 0.0), 0.0) };
+    let xy = |x, y| (raw_axis(p, x), raw_axis(p, y));
+    let (l, r) = (xy(PadAxis::LeftStickX, PadAxis::LeftStickY), xy(PadAxis::RightStickX, PadAxis::RightStickY));
+    dirs.update(l, r, tuning.stick.dead as f32 / 100.0)
 }
 
 impl model2::input::PlayerInput for Devices<'_> {
@@ -196,6 +206,9 @@ impl model2::input::PlayerInput for Devices<'_> {
     }
 
     fn pad_button(&self, b: PadButton) -> bool {
+        if b.is_stick_dir() {
+            return self.dirs.held(b);
+        }
         self.pad.as_ref().is_some_and(|p| self.gate.passes(button(b), p.is_pressed(button(b))))
     }
 
@@ -228,6 +241,8 @@ fn button(b: PadButton) -> Button {
         PadButton::DPadDown => Button::DPadDown,
         PadButton::DPadLeft => Button::DPadLeft,
         PadButton::DPadRight => Button::DPadRight,
+        // Not buttons: read from the axes (`StickDirs`).
+        _ => Button::Unknown,
     }
 }
 

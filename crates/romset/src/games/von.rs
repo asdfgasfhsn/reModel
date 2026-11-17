@@ -71,11 +71,13 @@ pub static VON: Game = Game {
 /// has two 8-way levers, each with SHOT and DASH, and a single START. Port
 /// 0 is the coins, test, service and start; port 1 the left lever and port
 /// 2 the right one, each with SHOT `0x01`, DASH `0x02` and the directions
-/// on the high nibble. The gamepad's d-pad is the left lever and the face
-/// buttons the right one (the generic controls bind a lever's direction to
-/// buttons only, not to an analogue stick's); the shoulders are the shots
-/// and the triggers the dashes. On the keyboard the left lever is WASD and
-/// the right one the arrows.
+/// on the high nibble. On the gamepad the left lever is the left stick
+/// (and the d-pad) and the right lever the right stick, each stick read
+/// as an 8-way lever (`StickDirs`); the shoulders are the shots and the
+/// triggers the dashes, with the face buttons for the same four on a pad
+/// whose fingers are on them (X and A the left lever's shot and dash, B and
+/// Y the right's). On the keyboard the left lever is WASD and the right one
+/// the arrows.
 const CONTROLS: Controls = Controls {
     buttons: &[
         button("coin1", 0, 0x01, &["KeyC", "Digit5"], &[PadButton::Select]).labelled("Coin"),
@@ -84,19 +86,19 @@ const CONTROLS: Controls = Controls {
         button("service", 0, 0x08, &[], &[]),
         button("start", 0, 0x10, &["Enter", "Digit1"], &[PadButton::Start]).labelled("Start"),
         // The left lever.
-        button("lshot", 1, 0x01, &["KeyQ"], &[PadButton::LeftShoulder]).labelled("Left shot"),
-        button("ldash", 1, 0x02, &["KeyE"], &[PadButton::LeftTrigger]).labelled("Left dash"),
-        button("ldown", 1, 0x10, &["KeyS"], &[PadButton::DPadDown]).labelled("Left down"),
-        button("lup", 1, 0x20, &["KeyW"], &[PadButton::DPadUp]).labelled("Left up"),
-        button("lright", 1, 0x40, &["KeyD"], &[PadButton::DPadRight]).labelled("Left right"),
-        button("lleft", 1, 0x80, &["KeyA"], &[PadButton::DPadLeft]).labelled("Left left"),
+        button("lshot", 1, 0x01, &["KeyQ"], &[PadButton::LeftShoulder, PadButton::West]).labelled("Left shot"),
+        button("ldash", 1, 0x02, &["KeyE"], &[PadButton::LeftTrigger, PadButton::South]).labelled("Left dash"),
+        button("ldown", 1, 0x10, &["KeyS"], &[PadButton::DPadDown, PadButton::LeftStickDown]).labelled("Left down"),
+        button("lup", 1, 0x20, &["KeyW"], &[PadButton::DPadUp, PadButton::LeftStickUp]).labelled("Left up"),
+        button("lright", 1, 0x40, &["KeyD"], &[PadButton::DPadRight, PadButton::LeftStickRight]).labelled("Left right"),
+        button("lleft", 1, 0x80, &["KeyA"], &[PadButton::DPadLeft, PadButton::LeftStickLeft]).labelled("Left left"),
         // The right lever.
-        button("rshot", 2, 0x01, &["Period"], &[PadButton::RightShoulder]).labelled("Right shot"),
-        button("rdash", 2, 0x02, &["Slash"], &[PadButton::RightTrigger]).labelled("Right dash"),
-        button("rdown", 2, 0x10, &["ArrowDown"], &[PadButton::South]).labelled("Right down"),
-        button("rup", 2, 0x20, &["ArrowUp"], &[PadButton::North]).labelled("Right up"),
-        button("rright", 2, 0x40, &["ArrowRight"], &[PadButton::East]).labelled("Right right"),
-        button("rleft", 2, 0x80, &["ArrowLeft"], &[PadButton::West]).labelled("Right left"),
+        button("rshot", 2, 0x01, &["Period"], &[PadButton::RightShoulder, PadButton::East]).labelled("Right shot"),
+        button("rdash", 2, 0x02, &["Slash"], &[PadButton::RightTrigger, PadButton::North]).labelled("Right dash"),
+        button("rdown", 2, 0x10, &["ArrowDown"], &[PadButton::RightStickDown]).labelled("Right down"),
+        button("rup", 2, 0x20, &["ArrowUp"], &[PadButton::RightStickUp]).labelled("Right up"),
+        button("rright", 2, 0x40, &["ArrowRight"], &[PadButton::RightStickRight]).labelled("Right right"),
+        button("rleft", 2, 0x80, &["ArrowLeft"], &[PadButton::RightStickLeft]).labelled("Right left"),
     ],
     analogs: &[],
     guns: &[],

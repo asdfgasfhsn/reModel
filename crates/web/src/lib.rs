@@ -78,6 +78,8 @@ struct App {
     /// A gun the gamepad's sticks aim: player 1's until the page aims it,
     /// then player 2's.
     stick: model2::input::StickCursor,
+    /// The pad's sticks as 8-way levers, with their memory.
+    stick_dirs: romset::StickDirs,
     stick_player: Option<usize>,
     /// Real time (ms) that emulated frame 0 corresponds to.
     epoch: f64,
@@ -190,6 +192,8 @@ fn reserved() -> Vec<&'static str> {
 struct Devices<'a> {
     keys: &'a HashSet<String>,
     pad: Option<web_sys::Gamepad>,
+    /// The sticks as 8-way levers, read once a frame ([`Devices::new`]).
+    dirs: romset::StickDirs,
 }
 
 /// The on-screen controls as a gamepad: steering (-1 to 1, the left
@@ -219,7 +223,18 @@ impl model2::input::PlayerInput for Touch {
     }
 }
 
-impl Devices<'_> {
+impl<'a> Devices<'a> {
+    /// The devices now, moving `sticks` (the memory of the stick levers) by
+    /// a frame.
+    fn new(keys: &'a HashSet<String>, sticks: &mut romset::StickDirs) -> Self {
+        let pad = gamepad();
+        let mut d = Devices { keys, pad, dirs: *sticks };
+        let raw = |i: u32| d.pad.as_ref().and_then(|p| p.axes().get(i).as_f64()).unwrap_or(0.0) as f32;
+        let (l, r) = ((raw(0), raw(1)), (raw(2), raw(3)));
+        d.dirs = sticks.update(l, r, 0.15);
+        d
+    }
+
     fn button(&self, i: u32) -> f32 {
         self.pad
             .as_ref()
@@ -243,6 +258,9 @@ impl model2::input::PlayerInput for Devices<'_> {
     }
 
     fn pad_button(&self, b: romset::PadButton) -> bool {
+        if b.is_stick_dir() {
+            return self.dirs.held(b);
+        }
         self.button(b.index()) > 0.5
     }
 
@@ -268,7 +286,7 @@ impl App {
     /// manifest's, remapped in the settings panel), the touch controls by
     /// the manifest's.
     fn apply_inputs(&mut self) {
-        let devices = Devices { keys: &self.keys, pad: gamepad() };
+        let devices = Devices::new(&self.keys, &mut self.stick_dirs);
         let touch = Touch(self.touch);
         let bus = &mut self.machine.bus;
         let b = &self.bindings;
@@ -1865,6 +1883,7 @@ pub async fn start(
         touch: (0.0, 0.0, 0.0, 0),
         guns: [None; 2],
         stick: model2::input::StickCursor::default(),
+        stick_dirs: romset::StickDirs::default(),
         stick_player: None,
         epoch: now(),
         counter: (now(), 0, 0),

@@ -539,7 +539,9 @@ export function createPanel(opts) {
     for (let i = 0; i < Math.min(16, now.buttons.length); i++) {
       if (now.buttons[i] && !base.buttons[i]) return captured("button", String(i));
     }
-    if (capture.accepts !== "axis") return;
+    // A button's list takes a stick pushed a way as a lever's direction; a
+    // pad's crosshair (accepts "pad") only buttons.
+    if (capture.accepts !== "axis" && capture.accepts !== "inputs") return;
     for (let i = 0; i < Math.min(4, now.axes.length); i++) {
       const v = now.axes[i];
       if (Math.abs(v) > 0.6 && Math.abs(base.axes[i] ?? 0) < 0.3) return captured("axis", `${i}${v < 0 ? "-" : "+"}`);

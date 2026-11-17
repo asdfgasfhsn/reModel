@@ -980,6 +980,8 @@ struct Play {
     mouse_used: bool,
     mouse_buttons: [bool; 2],
     stick: model2::input::StickCursor,
+    /// The sticks as 8-way levers (`romset::StickDirs`), with their memory.
+    stick_dirs: romset::StickDirs,
     /// Real time that emulated frame 0 corresponds to.
     epoch: Instant,
     /// Smooth motion: when the newest game frame was first drawn.
@@ -1973,8 +1975,12 @@ impl Play {
         };
         let (Some(b), Some(game)) = (bindings, game) else { return };
         let axis_slot = b.accepts(slot) == romset::bindings::Accepts::Axis;
-        // Sticks resting off centre, or moved on the way to a button.
-        if matches!(c, romset::bindings::Capture::Axis(..)) && !axis_slot {
+        // Sticks resting off centre, or moved on the way to a button: they
+        // bind only as a lever's directions, in the lists that take them.
+        if matches!(c, romset::bindings::Capture::Axis(..))
+            && !axis_slot
+            && b.accepts(slot) != romset::bindings::Accepts::Inputs
+        {
             return;
         }
         match b.capture(slot, at, c, romset::bindings::RESERVED_KEYS) {
@@ -2000,7 +2006,9 @@ impl Play {
         match &s.script {
             Some(script) => script.apply(s.machine.frames, &mut s.machine.bus),
             None => {
-                let devices = controls::Devices { keys: &self.keys, pad, gate: &self.gate, tuning: self.values.tuning };
+                let tuning = self.values.tuning;
+                let dirs = controls::read_sticks(&mut self.stick_dirs, pad.as_ref(), tuning);
+                let devices = controls::Devices { keys: &self.keys, pad, gate: &self.gate, tuning, dirs };
                 let bus = &mut s.machine.bus;
                 let b = &s.bindings;
                 model2::input::apply_player(bus, &[(b, &devices)]);
@@ -3582,6 +3590,7 @@ fn main() {
         mouse_used: false,
         mouse_buttons: [false; 2],
         stick: model2::input::StickCursor::default(),
+        stick_dirs: romset::StickDirs::default(),
         epoch: Instant::now(),
         smooth_at: Instant::now(),
         game_fade: None,

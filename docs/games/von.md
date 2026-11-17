@@ -137,21 +137,19 @@ supported; the clone isn't listed.
 
 On the keyboard the left stick is WASD and the right stick the arrow keys;
 Q and E are the left stick's shot and dash, `.` and `/` the right
-stick's; C is the coin and Enter the start. On a gamepad the d-pad is the
-left stick and the face buttons (Y up, A down, X left, B right) the right
-stick, the shoulders the shots (L1, R1) and the triggers the dashes (L2,
-R2); Select is the coin and Start the start. **A gap:** the manifest's
-controls bind a stick's four directions to buttons only (`PadButton`); an
-analogue stick can't stand for a digital lever, so the gamepad's own
-sticks aren't used. Binding a pad stick's directions to buttons (with a
-dead zone) would fit these two levers better, and the Controls page has no
+stick's; C is the coin and Enter the start. On a gamepad the left stick (or the d-pad) is the
+left lever and the right stick the right lever, each read as an 8-way
+lever (`docs/play.md`, "Sticks as levers"); the shoulders are the shots (LB,
+RB) and the triggers the dashes (LT, RT), with the face buttons doubling
+them (X and A the left lever's shot and dash, B and Y the right's); Select
+is the coin and Start the start. The Controls page has no
 cabinet picture for twin levers (its cabinet pictures are the wheel and
 pedals and the light gun): it shows the pad or the keyboard with the 17
 buttons labelled.
 
 ## Next
 
-1. Play it by hand; the twin-stick controls on a pad (the gap above).
+1. Play it by hand; the twin-stick controls on a pad (unchecked on a real one).
 2. Head-to-head play: the link board's protocol (shared RAM at
    `0x1A10000`, the node count at `0x1A10003`) and the Z80 program
    `epr-18643a.7`, which would let two instances be linked (the plan for

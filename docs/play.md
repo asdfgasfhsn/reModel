@@ -1039,6 +1039,41 @@ values are raw and not ramped. `daytona` has one (12 frames out, 6 back:
 `docs/games/daytona.md`, "the handling"); the other games' keys are
 switches.
 
+### Sticks as levers
+
+A game's digital stick or lever (the fighters, the shooters, `von`'s two
+levers) can be played with an analog stick. Each stick reads as an 8-way
+lever, as four more pad "buttons" (`romset::PadButton`: `LeftStickUp`,
+`LeftStickDown`, `LeftStickLeft`, `LeftStickRight` and the right stick's;
+`romset::StickDirs` does the reading, for the native player and the browser
+alike). It takes a real push, half of full travel or the dead zone if
+that's more, and holds the direction its angle is in: within 22.5 degrees
+of an axis it's that direction alone, between them both (a diagonal), as a
+lever's two switches. A held direction lets go a tenth of travel lower and
+keeps to a wider angle, so a stick resting on an edge doesn't chatter.
+
+Every game whose pad bindings use the d-pad for a button gets the left
+stick's same direction as well, unless the game itself reads that stick's
+axis (a wheel on the left stick's X, an analog bound to its Y) or has a gun
+the sticks aim: the d-pad and the left stick are one lever, with no
+per-game edit. The driving games, the light-gun games and the like keep
+their stick as an axis. A manifest can name the directions itself
+(`von` binds the right stick to its right lever), and they can be
+remapped like any button: on the Controls page, move a stick to bind it
+(the chips read "L stick ↑"). Older bindings files still load; a button
+the player has remapped keeps exactly their list.
+
+### Virtual-On (`von`)
+
+| Control | Keys | Gamepad |
+|---|---|---|
+| coin | C, 5 | Back |
+| start | Enter, 1 | Start |
+| left lever | W, A, S, D | left stick, d-pad |
+| left shot, left dash | Q, E | LB, LT (also X, A) |
+| right lever | arrow keys | right stick |
+| right shot, right dash | `.`, `/` | RB, RT (also B, Y) |
+
 ### Top Skater (`topskatr`)
 
 | Control | Keys | Gamepad |

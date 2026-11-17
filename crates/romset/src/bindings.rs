@@ -18,7 +18,8 @@
 //! ```
 //!
 //! A key is its `KeyboardEvent.code`, a pad button `pad:` and its name
-//! ([`PadButton`]), an axis its [`PadAxis`] name (`-` inverts, `None` for no
+//! ([`PadButton`]; the stick directions `LeftStickUp` ... are buttons read
+//! from the sticks), an axis its [`PadAxis`] name (`-` inverts, `None` for no
 //! axis); an empty list clears the slot. Lines that don't parse (an unknown
 //! slot, a bad or reserved key, the wrong kind of binding) are ignored, so
 //! stored data from another version or a hand edit can't break a game.
@@ -240,9 +241,29 @@ impl Bindings {
             slots.push((Slot::Neg(i), inputs(a.keys_neg, a.pad_neg)));
             slots.push((Slot::Pos(i), inputs(a.keys_pos, a.pad_pos)));
         }
+        // A digital game's d-pad is the left stick's too: its directions
+        // also read the stick (`StickDirs`), unless the game steers or aims
+        // with that stick's axis, or has a gun the sticks move.
+        let on_axis = |x: PadAxis| c.analogs.iter().any(|a| a.axis == x);
+        let stick_free = |b: PadButton| {
+            c.guns.is_empty()
+                && match b {
+                    PadButton::DPadUp | PadButton::DPadDown => !on_axis(PadAxis::LeftStickY),
+                    _ => !on_axis(PadAxis::LeftStickX),
+                }
+        };
         for (i, b) in c.buttons.iter().enumerate() {
             if !placed.contains(&i) {
-                slots.push((Slot::Button(i), inputs(b.keys, b.pad)));
+                let mut v = inputs(b.keys, b.pad);
+                if let Value::Inputs(list) = &mut v {
+                    for &p in b.pad {
+                        let Some(stick) = p.left_stick_of().filter(|_| stick_free(p)) else { continue };
+                        if !list.contains(&Input::Pad(stick)) {
+                            list.push(Input::Pad(stick));
+                        }
+                    }
+                }
+                slots.push((Slot::Button(i), v));
             }
         }
         let defaults = slots.iter().map(|s| s.1.clone()).collect();
@@ -410,7 +431,11 @@ impl Bindings {
         match c {
             Capture::Key(k) => self.assign(slot, at, Input::Key(k), reserved),
             Capture::Button(b) => self.assign(slot, at, Input::Pad(b), reserved),
-            Capture::Axis(..) => Err("Sticks go in an analog's axis row: press a key or button".into()),
+            // A stick pushed a way is that direction (a lever on a stick).
+            Capture::Axis(axis, negative) => match PadButton::stick_dir(axis, negative) {
+                Some(b) if self.accepts(slot) == Accepts::Inputs => self.assign(slot, at, Input::Pad(b), reserved),
+                _ => Err("Sticks go in an analog's axis row: press a key or button".into()),
+            },
         }
     }
 
@@ -601,7 +626,12 @@ mod tests {
             assert_eq!(b.overrides(), "", "{}", g.id);
             assert!(b.conflicts().is_empty(), "{}: {:?}", g.id, b.conflicts());
             for (i, x) in g.controls.buttons.iter().enumerate() {
-                assert_eq!(b.button(i).len(), x.keys.len() + x.pad.len(), "{}", g.id);
+                // The manifest's, and the left stick's directions that stand in
+                // for its d-pad's.
+                let sticks = b.button(i).iter().filter(|i| matches!(i, Input::Pad(p) if p.is_stick_dir())).count();
+                let own = x.pad.iter().filter(|p| p.is_stick_dir()).count();
+                assert_eq!(b.button(i).len(), x.keys.len() + x.pad.len() + sticks - own, "{}", g.id);
+                assert!(x.pad.iter().all(|p| b.button(i).contains(&Input::Pad(*p))), "{}", g.id);
             }
             // Every slot's name finds it again.
             for &(s, _) in b.slots() {
@@ -731,11 +761,93 @@ mod tests {
         assert_eq!(b.axis(0).axis, PadAxis::LeftTrigger);
         assert!(b.capture(axis, None, Capture::Key("KeyA".into()), RESERVED_KEYS).is_err());
         assert!(b.capture(axis, None, Capture::Button(PadButton::South), RESERVED_KEYS).is_err());
-        assert!(b.capture(jump, None, Capture::Axis(PadAxis::LeftStickX, false), RESERVED_KEYS).is_err());
+        // A trigger isn't a direction (a stick pushed a way is: see
+        // `stick_bindings_are_stored_by_name_and_old_files_load`).
+        assert!(b.capture(jump, None, Capture::Axis(PadAxis::LeftTrigger, false), RESERVED_KEYS).is_err());
         assert!(b.capture(jump, None, Capture::Key("F11".into()), RESERVED_KEYS).is_err());
         b.capture(jump, Some(2), Capture::Button(PadButton::North), RESERVED_KEYS).unwrap();
         assert_eq!(b.button(jump_index()).last(), Some(&Input::Pad(PadButton::North)));
         assert_eq!(b.overrides(), "curving.axis = LeftTrigger\njumpfront = KeyZ ArrowUp pad:North\n");
+    }
+
+    fn von() -> Bindings {
+        Bindings::defaults(&games::VON.controls)
+    }
+
+    #[test]
+    fn a_digital_games_dpad_is_the_left_stick_too() {
+        let b = Bindings::defaults(&games::VF2.controls);
+        let left = slot(&b, "left");
+        assert_eq!(
+            b.get(left).unwrap().inputs(),
+            [Input::Key("ArrowLeft".into()), Input::Pad(PadButton::DPadLeft), Input::Pad(PadButton::LeftStickLeft)]
+        );
+        // Not one that steers with the stick's axis, or aims a gun with it.
+        for g in games::ALL {
+            let steers_x = g.controls.analogs.iter().any(|a| a.axis == PadAxis::LeftStickX);
+            let steers_y = g.controls.analogs.iter().any(|a| a.axis == PadAxis::LeftStickY);
+            let b = Bindings::defaults(&g.controls);
+            for (i, x) in g.controls.buttons.iter().enumerate() {
+                for &(p, blocked) in &[
+                    (PadButton::LeftStickLeft, steers_x),
+                    (PadButton::LeftStickRight, steers_x),
+                    (PadButton::LeftStickUp, steers_y),
+                    (PadButton::LeftStickDown, steers_y),
+                ] {
+                    let bound = b.button(i).contains(&Input::Pad(p));
+                    if (blocked || !g.controls.guns.is_empty()) && !x.pad.contains(&p) {
+                        assert!(!bound, "{}: {} reads {p:?}", g.id, x.name);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn von_has_a_stick_for_each_lever() {
+        let b = von();
+        let pad = |name: &str| {
+            b.get(slot(&b, name))
+                .unwrap()
+                .inputs()
+                .iter()
+                .filter_map(|i| match i {
+                    Input::Pad(p) => Some(*p),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(pad("lup"), [PadButton::DPadUp, PadButton::LeftStickUp]);
+        assert_eq!(pad("rleft"), [PadButton::RightStickLeft]);
+        assert_eq!(pad("rshot"), [PadButton::RightShoulder, PadButton::East]);
+        assert!(b.conflicts().is_empty());
+    }
+
+    #[test]
+    fn stick_bindings_are_stored_by_name_and_old_files_load() {
+        let mut b = von();
+        let rup = slot(&b, "rup");
+        b.capture(rup, None, Capture::Axis(PadAxis::LeftStickY, true), RESERVED_KEYS).unwrap();
+        assert_eq!(
+            b.get(rup).unwrap().inputs(),
+            [Input::Key("ArrowUp".into()), Input::Pad(PadButton::RightStickUp), Input::Pad(PadButton::LeftStickUp)]
+        );
+        let text = b.overrides();
+        assert_eq!(text, "rup = ArrowUp pad:RightStickUp pad:LeftStickUp\n");
+        assert_eq!(Bindings::with_overrides(&games::VON.controls, &text, RESERVED_KEYS).slots(), b.slots());
+        // A file from before the stick directions: the d-pad and buttons
+        // it names, and a name this version doesn't know, as before.
+        let old = "lup = KeyW pad:DPadUp\nrup = ArrowUp pad:North\nlshot = pad:Nonsense\n";
+        let c = Bindings::with_overrides(&games::VON.controls, old, RESERVED_KEYS);
+        assert_eq!(
+            c.get(slot(&c, "lup")).unwrap().inputs(),
+            [Input::Key("KeyW".into()), Input::Pad(PadButton::DPadUp)]
+        );
+        assert_eq!(
+            c.get(slot(&c, "rup")).unwrap().inputs(),
+            [Input::Key("ArrowUp".into()), Input::Pad(PadButton::North)]
+        );
+        assert_eq!(c.get(slot(&c, "lshot")).unwrap(), von().get(slot(&c, "lshot")).unwrap());
     }
 
     fn jump_index() -> usize {
