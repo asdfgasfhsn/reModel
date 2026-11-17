@@ -14,6 +14,22 @@ message is its text), set `version` in the root `Cargo.toml`, commit, then
 creates the annotated tag `vx.y.z` without pushing. Details in
 [docs/usage.md](docs/usage.md), "Versions and releases".
 
+## 0.11.0 (2026-11-17): analog sticks as levers
+
+- A gamepad's analog sticks can stand for a game's digital lever: eight
+  new bindable stick directions (8-way, a push of at least 0.5 or the
+  dead zone, with hysteresis on push and angle so an edge doesn't
+  chatter), bindable on the Controls page by moving the stick, in the
+  native player and the browser.
+- Every game whose stick is digital (the fighters, the shooters) now takes
+  the left stick as well as the d-pad by default; games that steer or aim
+  with the left stick keep it as an axis, and remapped buttons are left as
+  the player set them.
+- Cyber Troopers Virtual-On: the left lever on the left stick (and d-pad),
+  the right lever on the right stick; shots on the shoulders, dashes on
+  the triggers, with face-button alternates.
+- Settings files from 0.10.0 load unchanged; save states stay at format 2.
+
 ## 0.10.0 (2026-11-17): a new look, release builds, and two more games
 
 - The player's interface, redone: a shared theme; the Esc menu is a side
