@@ -80,23 +80,34 @@ fn fs(@builtin(position) frag: vec4f) -> @location(0) vec4f {
         }
     }
 
-    // Glow: what is brighter than 0.65 a few pixels away.
+    // Glow: what is brighter than 0.75 a few pixels away, a soft halo
+    // rather than a lift (at most about +0.06 inside a white area).
     var g = vec3f(0.0);
     let reach = vec2f(3.0, 7.0) * dx;
-    g += max(tap(uv + vec2f(reach.x, 0.0)) - 0.65, vec3f(0.0));
-    g += max(tap(uv - vec2f(reach.x, 0.0)) - 0.65, vec3f(0.0));
-    g += max(tap(uv + vec2f(reach.y, 0.0)) - 0.65, vec3f(0.0));
-    g += max(tap(uv - vec2f(reach.y, 0.0)) - 0.65, vec3f(0.0));
-    g += max(tap(vec2f(uv.x, yc + 1.5 / pr.lines)) - 0.65, vec3f(0.0));
-    g += max(tap(vec2f(uv.x, yc - 1.5 / pr.lines)) - 0.65, vec3f(0.0));
-    c += (0.9 * s / 6.0) * g;
+    g += max(tap(uv + vec2f(reach.x, 0.0)) - 0.75, vec3f(0.0));
+    g += max(tap(uv - vec2f(reach.x, 0.0)) - 0.75, vec3f(0.0));
+    g += max(tap(uv + vec2f(reach.y, 0.0)) - 0.75, vec3f(0.0));
+    g += max(tap(uv - vec2f(reach.y, 0.0)) - 0.75, vec3f(0.0));
+    g += max(tap(vec2f(uv.x, yc + 1.5 / pr.lines)) - 0.75, vec3f(0.0));
+    g += max(tap(vec2f(uv.x, yc - 1.5 / pr.lines)) - 0.75, vec3f(0.0));
+    c += (0.25 * s / 6.0) * g;
 
-    // The beam: gaussian across the line, wider for brighter ones.
+    // The beam: gaussian across the line, wider for brighter ones, divided
+    // by its mean over the line so a line keeps the picture's brightness
+    // on average (brighter at its centre, darker at its edges) instead of
+    // lifting it.
     let lum = clamp(dot(c, vec3f(0.299, 0.587, 0.114)), 0.0, 1.0);
     let sigma = mix(0.27, 0.46, lum);
-    let beam = exp(-f * f / (2.0 * sigma * sigma));
+    let inv = 1.0 / (2.0 * sigma * sigma);
+    let beam = exp(-f * f * inv);
+    var mean = 0.0;
+    for (var i = 0; i < 8; i++) {
+        let fi = (f32(i) + 0.5) / 8.0 - 0.5;
+        mean += exp(-fi * fi * inv);
+    }
+    mean /= 8.0;
     let depth = 0.85 * s * dens;
-    c *= mix(1.0, 1.2 * beam, depth) * (1.0 + 0.25 * depth);
+    c *= mix(1.0, beam / mean, depth);
 
     // The mask: the triad's lit channel for this pixel, the others dimmer.
     let a = 0.35 * s * dens;

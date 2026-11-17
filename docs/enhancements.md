@@ -1287,8 +1287,10 @@ When on, the compose pass draws the finished frame (3D, 2D layers and the
 game's own HUD, not the player's bezel or menu) into a kept texture and
 `crt.wgsl` writes it to the window: one scanline for each of the game's 384
 lines whatever the output size (three taps average the picture across a
-line; a gaussian beam, wider where brighter, so bright parts fill the gap),
-a little blur along the line, glow from what is brighter than 0.65, a
+line; a gaussian beam, wider where brighter, so bright parts fill the gap,
+divided by its mean over the line so the picture keeps its brightness on
+average), a little blur along the line, a faint glow from what is brighter
+than 0.75, a
 stripe mask staggered on alternate lines, a soft vignette and a barrel
 curve of about 1.5% at full strength. Lines and mask fade out under about
 2 output pixels a game line. Original shader, from first principles. It is

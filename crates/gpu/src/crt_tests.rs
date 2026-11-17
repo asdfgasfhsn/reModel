@@ -85,6 +85,35 @@ fn scanlines_follow_the_games_lines() {
     assert!((flat(h * 5 / 8) - flat(h * 5 / 8 + 1)).abs() < 3.0);
 }
 
+/// The look keeps the picture's brightness: averaged over a few game lines
+/// in the middle of the picture (away from the vignette), a mid grey stays
+/// within 8% of itself at full strength and white doesn't get brighter.
+#[test]
+fn crt_keeps_the_brightness() {
+    let Some(mut gpu) = Renderer::for_test() else { return };
+    let (w, h) = (640, 1152);
+    let on = run(&mut gpu, w, h, 1.0);
+    let off = run(&mut gpu, w, h, 0.0);
+    // Mean luma over 4 game lines (12 output rows) and 8 columns at `x`.
+    let mean = |px: &[u8], x: u32, y: u32| {
+        let mut t = 0.0;
+        for dy in 0..12 {
+            for dx in 0..8 {
+                t += luma(px, w, x + dx, y + dy);
+            }
+        }
+        t / 96.0
+    };
+    // The grey ramp's middle (about 128), in the top half's lower part.
+    let (x, y) = (w / 2 - 4, h * 3 / 8);
+    let (grey_on, grey_off) = (mean(&on, x, y), mean(&off, x, y));
+    assert!((grey_on / grey_off - 1.0).abs() < 0.08, "grey {grey_on} against {grey_off}");
+    // A white bar in the bottom half, near the middle.
+    let wx = (w / 2..w).step_by(16).find(|x| (x / 16) % 2 == 0).unwrap() + 4;
+    let (white_on, white_off) = (mean(&on, wx, h * 5 / 8), mean(&off, wx, h * 5 / 8));
+    assert!(white_on <= white_off + 1.0, "white {white_on} against {white_off}");
+}
+
 /// The pass is a pure function of the picture and strength, and at under
 /// about 1.5 pixels a line it has no scanlines or mask to beat against the
 /// pixel grid.
