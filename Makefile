@@ -410,7 +410,7 @@ texmap: release ## Which texture is where: draw the captured frames (CAPTURE=DIR
 # options, e.g. STUDIO_ARGS="--key 2970 --category wall --reason 'big wall'".
 STUDIO      ?= $(OUT)/studio/default
 STUDIO_ARGS ?=
-studio-init: release ## Start a studio project in STUDIO: folders, project.txt, selection.tsv, style.md; STUDIO_ARGS="--game G --map TEXMAP_DIR [--copy-map] --style FILE --name N --capture DIR" (the map links or copies what `make texmap` wrote; give --map several times, NAME=DIR, for a project over several maps)
+studio-init: release ## Start a studio project in STUDIO: folders, project.txt, selection.tsv, style.md; STUDIO_ARGS="--game G --map TEXMAP_DIR [--copy-map] --style FILE --name N --capture-dir DIR" (the map links or copies what `make texmap` wrote; give --map several times, NAME=DIR, for a project over several maps)
 	$(RUN) studio init $(STUDIO) $(STUDIO_ARGS)
 studio-region: release ## What a frame's region draws: textures and tile cells with sizes, groups, surfaces (STUDIO_ARGS="--frame 3000 --region X,Y,W,H [--scale S]")
 	$(RUN) studio region $(STUDIO) $(STUDIO_ARGS)
@@ -430,7 +430,7 @@ studio-variants: release ## One restyled image feeding every key of its surface,
 	$(RUN) studio variants $(STUDIO) $(STUDIO_ARGS)
 studio-text: release ## Text to tiles: typeset text (--image FILE, or --text/--font/--size/--colour/--stroke through ImageMagick) laid over a frame region and cut into the tile_*.png replacements (STUDIO_ARGS="--frame F --region X,Y,W,H --box X,Y,W,H --fit contain --alpha original")
 	$(RUN) studio text $(STUDIO) $(STUDIO_ARGS)
-studio-region-capture: release ## A 2D region override cut from a captured frame's tile maps into STUDIO/regions/NAME (STUDIO_ARGS="NAME --capture DIR --frame F --region X,Y,W,H [--also F,..] [--wild X,Y;..] [--plane a|b] [--pin] [--image FILE]"): its tile layout and the original to redraw at Nx (docs/uplift-studio.md, "Regions")
+studio-region-capture: release ## A 2D region override cut from a captured frame's tile maps into STUDIO/regions/NAME (STUDIO_ARGS="NAME --capture-dir DIR --frame F --region X,Y,W,H [--also F,..] [--wild X,Y;..] [--plane a|b] [--pin] [--image FILE]"): its tile layout and the original to redraw at Nx (docs/uplift-studio.md, "Regions")
 	$(RUN) studio region-capture $(STUDIO) $(STUDIO_ARGS)
 studio-regions: release ## STUDIO's regions and which have a replacement (STUDIO_ARGS="--tsv"); `make studio-pack` puts those into pack/
 	$(RUN) studio regions $(STUDIO) $(STUDIO_ARGS)

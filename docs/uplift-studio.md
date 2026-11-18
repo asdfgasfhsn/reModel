@@ -112,7 +112,7 @@ changes nothing), print short text or TSV, and need no ROM except
 
 | command | what |
 |---|---|
-| `init` | the folders and files above; `--map DIR` links (or `--copy-map` copies) a texmap output; `--map` more than once (`--map course=DIR --map chars=DIR2`) makes `map/` a folder of them; `--capture DIR` records the capture directory `region-capture` reads |
+| `init` | the folders and files above; `--map DIR` links (or `--copy-map` copies) a texmap output; `--map` more than once (`--map course=DIR --map chars=DIR2`) makes `map/` a folder of them; `--capture-dir DIR` records the capture directory `region-capture` reads |
 | `region` | what a frame's region draws: textures and tile cells (TSV), from the ID and position images (`--map NAME` with several maps) |
 | `region-capture` | cut a 2D region override out of a captured frame's tile maps (below, "Regions") |
 | `regions` | the project's regions and which have a replacement (`--tsv`) |
@@ -252,9 +252,9 @@ arrangement of tiles in a tile map and an image drawn over its rectangle
 instead (docs/texture-packs.md, "Regions" is the pack side: matching is in
 map space, so it follows scrolling).
 
-`remodel studio region-capture PROJECT NAME --capture DIR --frame F --region
+`remodel studio region-capture PROJECT NAME --capture-dir DIR --frame F --region
 X,Y,W,H` cuts one out of a captured frame (the capture directory of a
-`--capture` run; `init --capture DIR` remembers it). `--region` is in the
+`--capture` run; `init --capture-dir DIR` remembers it). `--region` is in the
 pixels of the frame picture the map holds (`--game-px`: game pixels, 496 x
 384); the tool finds the tile cells the rectangle covers (cells it overlaps
 by at least half), in the plane it draws in (`--plane a|b`), and writes:

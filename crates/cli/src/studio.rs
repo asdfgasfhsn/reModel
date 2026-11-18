@@ -28,7 +28,7 @@ pub struct Ctx {
 
 const USAGE: &str = "\
 remodel studio SUB PROJECT [options]   (docs/uplift-studio.md)
-  init PROJECT [--name N] [--game G] [--map [NAME=]TEXMAP_DIR].. [--copy-map] [--style FILE] [--capture DIR]
+  init PROJECT [--name N] [--game G] [--map [NAME=]TEXMAP_DIR].. [--copy-map] [--style FILE] [--capture-dir DIR]
   region PROJECT --frame F --region X,Y,W,H [--scale S] [--map NAME]   what is drawn there (TSV)
   select PROJECT [--key K,..] [--group N] [--surface S] [--frame F --region X,Y,W,H]
          [--kind tex|tile] [--min-pixels N] [--all] [--category C] [--reason TEXT]
@@ -43,7 +43,7 @@ remodel studio SUB PROJECT [options]   (docs/uplift-studio.md)
   text PROJECT --frame F --region X,Y,W,H (--image FILE | --text STR --font FILE ..)
          [--box X,Y,W,H] [--pad N] [--bg #rrggbb|auto] [--fit contain|stretch] [--align left|center|right]
          [--alpha original|typeset] [--tile-scale N] [--dry-run]
-  region-capture PROJECT NAME --capture DIR --frame F --region X,Y,W,H [--plane a|b] [--layer high|low]
+  region-capture PROJECT NAME --capture-dir DIR --frame F --region X,Y,W,H [--plane a|b] [--layer high|low]
          [--also F,..] [--wild X,Y;..] [--image FILE] [--ref-scale N]   a 2D region override (tile layout + original)
   regions PROJECT [--tsv]   the project's regions and whether each has its replacement
   seam PROJECT [--from pack|draft] [--tsv] [--strict]
@@ -536,8 +536,8 @@ fn init(p: &Project, a: &Args) -> Result<bool, String> {
         )
         .map_err(|e| e.to_string())?;
     }
-    if let Some(c) = a.get("--capture") {
-        let abs = std::fs::canonicalize(c).map_err(|e| format!("--capture {c}: {e}"))?;
+    if let Some(c) = a.get("--capture-dir") {
+        let abs = std::fs::canonicalize(c).map_err(|e| format!("--capture-dir {c}: {e}"))?;
         meta.insert("capture".into(), abs.display().to_string());
         let mut s = String::new();
         for (k, v) in &meta {
@@ -2337,7 +2337,7 @@ mod tests {
         frame.save(&cap, &[0]).unwrap();
         // The cells are at screen x = 85..101, y = 80..88 (5 pixels of scroll).
         let line = format!(
-            "{} logo --capture {} --frame 300 --region 86,81,14,6 --game-px --ref-scale 2",
+            "{} logo --capture-dir {} --frame 300 --region 86,81,14,6 --game-px --ref-scale 2",
             d.display(),
             cap.display()
         );
@@ -2379,10 +2379,11 @@ mod tests {
         assert!(pack(&p, &args(&format!("{} --no-lint", d.display()))).unwrap());
         assert!(!d.join("pack/region_logo.png").exists() && !d.join("pack/regions.txt").exists());
         // Refusals: a bad name, an off-screen rectangle.
-        let bad = format!("{} Bad --capture {} --frame 300 --region 86,81,14,6 --game-px", d.display(), cap.display());
+        let bad =
+            format!("{} Bad --capture-dir {} --frame 300 --region 86,81,14,6 --game-px", d.display(), cap.display());
         assert!(regions::capture(&p, &args(&bad)).is_err());
         let off =
-            format!("{} off --capture {} --frame 300 --region 600,300,14,6 --game-px", d.display(), cap.display());
+            format!("{} off --capture-dir {} --frame 300 --region 600,300,14,6 --game-px", d.display(), cap.display());
         assert!(regions::capture(&p, &args(&off)).is_err());
         let _ = std::fs::remove_dir_all(&d);
     }

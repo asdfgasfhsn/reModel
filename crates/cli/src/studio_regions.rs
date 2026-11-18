@@ -29,7 +29,7 @@ fn region_dir(p: &Project, name: &str) -> PathBuf {
     p.p("regions").join(name)
 }
 
-/// A frame of a capture directory (`--capture`, a whole-frame capture or a
+/// A frame of a capture directory (from `remodel --capture`, a whole-frame capture or a
 /// sequence).
 fn load_frame(root: &Path, n: u64) -> Result<Frame, String> {
     let d = root.join(format!("{n:06}"));
@@ -43,7 +43,7 @@ fn load_frame(root: &Path, n: u64) -> Result<Frame, String> {
             return Ok(f);
         }
     }
-    Err(format!("{}: no frame {n} (--capture wants the directory a `--capture` run wrote)", root.display()))
+    Err(format!("{}: no frame {n} (--capture-dir wants the directory a `remodel --capture` run wrote)", root.display()))
 }
 
 /// Output scale and the game-pixel padding of the texmap frame `stem`
@@ -82,10 +82,10 @@ pub(super) fn capture(p: &Project, a: &Args) -> Result<bool, String> {
     }
     let meta = p.meta();
     let capdir = a
-        .get("--capture")
+        .get("--capture-dir")
         .map(PathBuf::from)
         .or_else(|| meta.get("capture").map(PathBuf::from))
-        .ok_or("--capture DIR: the capture directory the frame is in (or `init --capture DIR`)")?;
+        .ok_or("--capture-dir DIR: the capture directory the frame is in (or `init --capture-dir DIR`)")?;
     let frame_no: u64 = a
         .get("--frame")
         .ok_or("--frame F")?
@@ -168,8 +168,8 @@ pub(super) fn capture(p: &Project, a: &Args) -> Result<bool, String> {
         }
     }
     .ok_or("no tile map is drawn at the region's corner (a disabled map, or nothing there): try --plane a or b")?;
-    if cut.w * cut.h > 64 * 8 {
-        return Err(format!("{}x{} tiles is too big for a region", cut.w, cut.h));
+    if cut.w > 64 || cut.h > 64 {
+        return Err(format!("{}x{} tiles is too big for a region (64 x 64 at most)", cut.w, cut.h));
     }
     let plane_name = if cut.plane == 0 { Plane::A } else { Plane::B };
     println!(
