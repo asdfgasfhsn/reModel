@@ -41,3 +41,10 @@
   window also costs the desktop compositor GPU memory, which has crowded
   out the GPU tests. When the GPU is full anyway, `make check GPU_TESTS=0`
   skips the GPU tests with a warning; run them before pushing.
+- Agents in worktrees build into the shared `target-agents/` directory at
+  the repo root (`CARGO_TARGET_DIR=<repo>/target-agents`, under the heavy
+  lock), never the main checkout's `target/`: cargo judges freshness by
+  file times, so a build of older code from another tree can leave stale
+  crates that the main tree's next build keeps (it broke `make play` once).
+  Before an agent's final `make check`, `touch` the workspace crates'
+  `src/lib.rs`/`src/main.rs` so they rebuild from its own sources.
