@@ -98,6 +98,7 @@ make app                  # macOS: universal reModel.app, ad-hoc signed, in a .d
 make appimage             # Linux x86_64: the player as an AppImage (pinned appimagetool, fetched once into out/tools) -> out/dist/remodel-VERSION-x86_64.AppImage
 make capture              # save renderer inputs from a run into a race -> out/topskatr/capture
 make gpu-check            # draw them on the software and GPU rasterisers, time and compare (GPU_OPTS="--aa 4 --depth": with them on; "--bloom 50": bloom at 50% on the GPU frames, which the software renderer has none of, so the comparison then includes it; the cost table always adds bloom columns, at --bloom's strength or 50)
+make look-render           # draw captured frames without and with a look (LOOK=comic or a look.txt, PACK=, LOOK_SET="outline_weight=3 toon_steps=2"; docs/texture-packs.md, "Looks")
 make gpu-check PACK=out/topskatr/texpack-4x GPU_OPTS="--tex-filter mip"   # the same with a texture pack on both renderers (docs/texture-packs.md)
 make gpu-check PACK=DIR GPU_OPTS="--materials --shading pixel"   # also draw the pack's normal maps, GPU against software, from captures with light.bin (made with --geo native); counts and memory per frame; --light instead of --materials for the frame to compare with
 # `run --texture-pack DIR --materials --geo native` snapshots draw its normal maps in software (a line per snapshot: polygons with a lamp, with a material, pixels changed)
