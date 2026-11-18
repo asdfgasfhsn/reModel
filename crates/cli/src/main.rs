@@ -13,6 +13,9 @@ mod sharc;
 mod sound_render;
 mod soundtrack;
 mod spec_stats;
+mod studio;
+mod studio_img;
+mod studio_text;
 mod temporal_check;
 mod temporal_probe;
 mod texmap;
@@ -61,6 +64,9 @@ options:
                        coin-start is the game's own coin-up and start
   --dump-textures DIR  at each `run` snapshot, write every distinct 3D texture
                        and tile pattern drawn to DIR as PNG, plus DIR/index.txt
+  --out DIR            where `run` writes its files (frames/, eeprom.bin, the
+                       captured programs): default out/GAME relative to the
+                       working directory
   --interp             run the i960 on the interpreter even when this build
                        has recompiled code for the game
   --jit                run the i960 on the JIT: its code translated to this
@@ -450,6 +456,10 @@ commands:
                        (0 = final frame only), and the uploaded copro and
                        geometrizer programs (copro.bin, geo.bin; on Model
                        2B sharc-copro.bin, sharc-geo.bin for sharc-disasm)
+  studio SUB DIR ...   the uplift studio (docs/uplift-studio.md): init, select,
+                       region, status, approve, pack, draft, style, variants,
+                       text, seam, compare over a project directory; `remodel
+                       studio` lists them (no ROM needed except for compare)
   sound-disasm ADDR [COUNT]
                        disassemble the sound board's 68000 program (its own
                        address space: ROM at 0x600000; at 0 on the original
@@ -543,6 +553,9 @@ struct Opts {
 }
 
 /// Parse the command line; `Err` is the exit code to leave with at once.
+/// `--out DIR`: where `run` writes its files (default out/GAME).
+static OUT_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
 fn parse_opts() -> Result<Opts, ExitCode> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
@@ -599,6 +612,13 @@ fn parse_opts() -> Result<Opts, ExitCode> {
             return Err(ExitCode::FAILURE);
         };
         let _ = AA.set(n);
+    }
+    let Ok(out_dir) = opt("--out") else {
+        eprint!("{USAGE}");
+        return Err(ExitCode::FAILURE);
+    };
+    if let Some(d) = out_dir {
+        let _ = OUT_DIR.set(PathBuf::from(d));
     }
     let (Ok(dump_textures), Ok(texture_pack)) = (opt("--dump-textures"), opt("--texture-pack")) else {
         eprint!("{USAGE}");
@@ -876,6 +896,7 @@ fn dispatch_no_roms(o: &Opts) -> Option<ExitCode> {
         "texpack-upscale" => cmd_texpack_upscale(o),
         "texpack-materials" => cmd_texpack_materials(o),
         "pack-lint" => cmd_pack_lint(o),
+        "studio" => cmd_studio(o),
         "sharc-disasm" | "sharc-check" => cmd_sharc(o),
         "temporal-check" => cmd_temporal_check(o),
         "tgp-disasm" => cmd_tgp_disasm(o),
@@ -979,6 +1000,23 @@ fn cmd_texpack_materials(o: &Opts) -> ExitCode {
     let args = &o.args;
     match texpack_materials::main(&args[1..], game_id) {
         Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_studio(o: &Opts) -> ExitCode {
+    let ctx = studio::Ctx {
+        game: o.game_id.clone(),
+        rom: o.rom_dir.clone(),
+        jit: std::env::args().any(|a| a == "--jit"),
+        input: o.input.clone(),
+    };
+    match studio::main(&o.args[1..], &ctx) {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
         Err(e) => {
             eprintln!("error: {e}");
             ExitCode::FAILURE
@@ -2873,7 +2911,8 @@ fn run(
             "interpreter"
         }
     );
-    let dir = PathBuf::from("out").join(roms.game.id);
+    let dir = OUT_DIR.get().cloned().unwrap_or_else(|| PathBuf::from("out").join(roms.game.id));
+    let _ = std::fs::create_dir_all(&dir);
     let eeprom_path = dir.join("eeprom.bin");
     if let Ok(bytes) = std::fs::read(&eeprom_path) {
         m.bus.eeprom.load(&bytes);

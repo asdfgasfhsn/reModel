@@ -44,28 +44,33 @@ say neither.
 ## Workspace on disk
 
 Everything of a project lives under `out/<game>/studio/<project>/` (git
-ignored: it is ROM-derived):
+ignored: it is ROM-derived). `remodel studio init` makes it:
 
 ```
 studio/<project>/
+  project.txt         name, game, created (key, tab, value)
   style.md            the style sheet (step 1)
-  selection.tsv       id, name, group, coverage, status, note (step 3)
-  status/             one line per image: name, status, tool, prompt file, date
-  prompts/            the prompt or command behind each generated image
+  selection.tsv       name, kind, group, surface, pixels, category, reason (step 3)
+  recipes.txt         recipes of the local style processor (below)
+  briefs/             briefs for the batch generator (below)
+  status/status.txt   one line per drafted image: name, tool, prompt file, date
+  prompts/            the prompt or parameters behind each generated image
   original/           copies of the textures as dumped (tex_*.png, tile_*.png)
   draft/              replacements not yet approved (same names)
-  pack/               the pack proper: pack.txt, approved images, index
-  map/                what `make texmap` wrote (texmap.json, inventory.tsv, frames/)
+  pack/               the pack proper: pack.txt, approved images, index.txt
+  map/                what `make texmap` wrote (a link to it, or a copy)
+  work/               the runner's per-job folders, typeset images (scratch)
+  compare/            before and after sheets
 ```
 
-`status` is one of `original` (untouched), `drafted` (an image exists in
-`draft/`), `approved` (copied into `pack/`). The files are plain text so an
-agent edits them with ordinary tools and a person with an editor; the
-status of an image is the directory it is in plus its line in `status/`,
-so nothing has a second source of truth to fall out of step. The
-phase-1 `make texmap` writes `map/` (default `out/<game>/texmap`; point
-`TEXMAP_OUT` at `studio/<project>/map`); the rest is convention until the
-later phases give it commands.
+The status of an image is where it is: `original` (selected, no image),
+`drafted` (an image in `draft/`), `approved` (copied into `pack/`). It is
+never stored a second time, so nothing falls out of step; `status/status.txt`
+only says how a draft was made. The files are plain text so an agent edits
+them with ordinary tools and a person with an editor. `selection.tsv`'s
+`category` is the material a recipe is chosen by (`ash-shirt`, `ground`, ...)
+and `reason` says why the row is there. `make texmap` writes `map/` (default
+`out/<game>/texmap`; `init --map` links it).
 
 ## How agents use it
 
@@ -86,8 +91,7 @@ Everything is a command with a text output.
 - To produce: write a PNG of any size under the original's name; `make
   pack-lint PACK=...` says whether it is valid.
 
-Later phases add subcommands in the same style (`select`, `status`,
-`draft`) with TSV or JSON output.
+The studio commands (below) are the same kind: text or TSV in and out.
 
 ## How people use it
 
@@ -96,28 +100,142 @@ opens from `file://`): hover a pixel for its texture and where in it the
 pixel is, click for its group, a gallery of every texture ranked by
 coverage. Later: the same page next to a live player.
 
-## What phase 1 builds, what comes later
+## The studio commands
 
-Built (phase 1): the design above; `remodel texmap` and `make texmap`
-(ID images, texel positions, inventory, contact sheets, groups, JSON);
-the viewer. Render side only; no emulation or state hash is touched.
+`remodel studio SUB PROJECT [options]`, one `make studio-SUB` target each
+(`STUDIO=` the project directory, `STUDIO_ARGS=` the options); `remodel
+studio` lists them. All are non-interactive and idempotent (a second run
+changes nothing), print short text or TSV, and need no ROM except
+`compare`, which runs the game.
 
-Later, roughly in this order:
+| command | what |
+|---|---|
+| `init` | the folders and files above; `--map DIR` links (or `--copy-map` copies) a texmap output |
+| `region` | what a frame's region draws: textures and tile cells (TSV), from the ID and position images |
+| `select` | add rows by `--key` (name, hash or ID), `--group`, `--surface`, `--frame F --region X,Y,W,H`, `--all`, with `--category` and `--reason`; copies the originals |
+| `status` | counts by category, what has no draft, strays, images with no record; `--tsv` for rows |
+| `approve` | copy drafts into `pack/` (`--drafted`, a group, a category, names; `--undo`) |
+| `import` | bring in images made elsewhere with a `--tool` record |
+| `pack` | write `pack.txt` and `index.txt` from `pack/`, run pack-lint |
+| `draft` | the batch generator runner (below) |
+| `style` | the local style processor (below) |
+| `variants` | one restyled image for every key of its surface, tinted per key |
+| `text` | text to tiles (below) |
+| `seam` | the seam check (below) |
+| `compare` | before and after sheets (below) |
 
-1. **Project commands**: `studio init/select/status` over the layout above,
-   keeping `selection.tsv` and `status/` consistent and building `pack/`
-   from the approved images; a before/after page (the same frames with and
-   without the pack, side by side in the viewer).
-2. **Batch hooks**: `studio draft` running the Codex CLI image generation
-   or an upscaler over a selection (a group at a time, with the group's
-   other textures as context so the halves match), writing the prompt and
-   tool next to each image.
-3. **Live reload**: the player watching the pack directory and swapping
+**Batch generation (`draft`).** For each selected row without a draft
+(`--force` redoes) it makes `work/draft/NAME/` holding `in1.png` (the
+original enlarged with nearest-neighbour), the brief's reference images,
+`ctx-frame.png` (the frame where the texture shows most, cropped around it)
+and/or `ctx-group.png` (the group's other textures, their drafts where they
+exist, so the halves match), and `prompt.txt`. It then runs the generator
+command in that folder with the prompt on stdin, `--jobs` at a time,
+retrying (`--retries`), with a timeout, appending to `run.log`; the output
+`out.png` is cropped to the original's proportions, sized to the original
+times `@scale` and written to `draft/`, and the prompt, command and inputs
+to `prompts/NAME.txt`. A finished draft is skipped on the next run, so a
+broken batch resumes. The command is a template run by `sh -c`
+(`--cmd`), default `codex exec {images} -` (`{images}` becomes
+`-i in1.png -i ref1.png ...`; `{files}` the names alone, `{prompt_file}`,
+`{out}`); nothing depends on Codex. The generator must leave `out.png`.
+
+A brief is plain text: the prompt, with `{name} {w} {h} {aspect} {scale}
+{category} {group} {reason}` and `{images}` (a sentence saying which image
+is which) replaced, and directives on lines of their own: `@ref FILE`
+(relative to the brief; any number), `@scale N` (draft size over the
+original's, default 4), `@context none|frame|group|both` (default `frame`).
+
+**Style processor (`style`).** `remodel studio style P --recipe FILE`
+restyles the originals of the chosen rows into `draft/`, in Rust with no
+dependencies. The recipe file is `[default]`, `[material CATEGORY]` and
+`[key NAME]` sections of `name = value` lines, each layer overriding the
+last (`#` starts a comment at a line's start or before a space; `#rrggbb`
+is a colour):
+
+| setting | meaning (default) |
+|---|---|
+| `palette` | control colours, dark to light, ramped to `tones` |
+| `tones` | number of tones (3) |
+| `scale`, `blur`, `median` | output size over the source (4); Gaussian sigma in source texels (0.6); median radius in output pixels (2) |
+| `stretch`, `bias` | percent clipped at each end before quantising (2); added to the stretched brightness, shifting the mix of tones (0) |
+| `despeckle` | regions of one tone under this many source texels squared join the neighbour they touch most (0) |
+| `ink`, `ink_colour`, `ink_side`, `ink_step` | edge ink width in output pixels (0: none), colour, `light`/`dark`/`both` side of a tone step, minimum step in tones (1) |
+| `border_ink` | hairline width on the edges where the texture is clamped; never drawn on wrapped edges (0) |
+| `halftone`, `pitch`, `angle` | 0 hard steps, else the share of a step that is dotted around it (1 = the whole ramp); dot distance in output pixels; screen angle (45; 0 and 45 repeat exactly over the texture) |
+| `wrap` | `auto` (from the map's inventory), `repeat`, `mirror`, `clamp` |
+
+Every step runs on a copy padded the way the texture wraps (repeat,
+mirror or clamp, per axis from the inventory's `wrap`) and cropped
+afterwards, so a tone step or dot pattern runs through the seam. Edge ink
+comes only from tone steps, never from the texture's border: the first
+slice's dark diagonal on the ground was a hairline drawn on two wrapped
+edges. The halftone dot period is snapped to a divisor of the texture's
+size.
+
+**Surface variants (`variants`).** `--of KEY` takes KEY's restyle and
+writes one image for every other key of the same surface (the inventory's
+`surface` column: the same texels in another colour), tinted per key by
+the ratio of the mean colours of the originals. `--mode ratio` scales each
+channel (darker originals give darker variants), `luma` does the same and
+then puts the restyle's brightness back so only the hue moves, `mean` is
+one brightness gain; `--strength` goes part of the way; pixels in the ink
+colour stay ink. `--also KEY,..` adds keys of other surfaces.
+
+**Text to tiles (`text`).** `--frame F --region X,Y,W,H` finds the 8x8
+tile cells drawn there (the ID image says which tile, the position image
+where in the tile each pixel is, so the cell's corner follows). A typeset
+image (`--image`, or `--text` with `--font`, `--size`, `--colour`,
+`--stroke`, `--stroke-width`, typeset by ImageMagick's `magick` or by
+`--typesetter`, a shell command reading `$STUDIO_TEXT`, `$STUDIO_FONT`, ...
+and writing `$STUDIO_OUT`) is trimmed, fitted into `--box` (default the
+region; `--pad N` keeps the text N pixels inside it; `--fit contain|stretch`, `--align`), optionally on a solid
+`--bg` (`auto`: the box's commonest colour in the frame, which covers the
+old text) and cut into `tile_*.png` of `--tile-scale` times 8 pixels.
+`--alpha original` keeps each tile's own shape (the text is set into it),
+`typeset` takes the text's alpha. A tile drawn in several places of the
+region has one image: the biggest cell's wins, and the command says so.
+A tile pattern is one key wherever it is drawn, so text on a ticker that
+changes (song titles) is replaced for the tiles of that one title only.
+
+**Seam check (`seam`).** For each image in `pack/` (or `--from draft`), per
+axis by the wrap in the inventory: repeat compares the two edge lines
+(and each against its neighbour inside) with the typical difference of
+neighbouring lines inside; mirror, where the edge is its own reflection,
+looks for an edge line unlike the next one (a doubled ink line); clamped
+axes, and axes whose coordinates the map saw stay within one texture size
+(`once`: a skater's UV map), are not checked. An axis is suspect above 2.5 times the typical step
+and 12 levels, unless the original is just as suspect (the game's own
+seam). `--strict` fails on suspects.
+
+**Before and after (`compare`).** Runs the game twice (without and with the
+pack, `--jobs` at once) with `remodel --out DIR run STEPS SNAP`, frames to
+`compare/before/frames` and `after/frames`, then writes `sheet-FRAME.png`
+(before beside after), `sheet-all.png`, and `compare.tsv` (share of pixels
+changed, mean difference). It needs the ROMs and the `--input` and view
+(`--run-args "--height 1080 --aspect 16:9"`) you would give `run`.
+`remodel run` has `--out DIR` for it: where `run` writes `frames/`,
+`eeprom.bin` and the captured programs (default `out/GAME` in the working
+directory, as before; the eeprom is copied there from `out/GAME` first).
+
+## What is built, what comes later
+
+Built: the design above; `remodel texmap` and `make texmap` (ID images,
+texel positions, inventory, contact sheets, groups, JSON); the viewer
+(phase 1); the project commands, the batch runner, the style processor,
+text to tiles, surface variants, the seam check and before and after
+(phase 1b: render side and tooling only, no emulation or state hash is
+touched).
+
+Not built, roughly in this order:
+
+1. **Before/after page**: the sheets in the viewer, side by side per frame.
+2. **Live reload**: the player watching the pack directory and swapping
    textures as files change, so an edit shows in the running game.
-4. **Pick in the player**: a mode that names the texture (and group) under
+3. **Pick in the player**: a mode that names the texture (and group) under
    the cursor in the running game, with the ID image drawn by the same
    renderer, adding it to the selection.
-5. **Interactive editing** in the viewer: select, mark status, write a note,
+4. **Interactive editing** in the viewer: select, mark status, write a note,
    paste a prompt; stored in the project files.
 
 ## Looks: a pack plus a render profile

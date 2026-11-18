@@ -400,6 +400,36 @@ texmap: release ## Which texture is where: draw the captured frames (CAPTURE=DIR
 	$(if $(CAPTURE),,@[ -d $(OUT)/capture ] || $(MAKE) capture)
 	$(RUN) $(VIEW) texmap $(or $(CAPTURE),$(OUT)/capture) $(TEXMAP_OUT) $(TEXMAP_OPTS)
 
+# The uplift studio (docs/uplift-studio.md): a project is a directory
+# (STUDIO, default OUT/studio/default); STUDIO_ARGS is the subcommand's
+# options, e.g. STUDIO_ARGS="--key 2970 --category wall --reason 'big wall'".
+STUDIO      ?= $(OUT)/studio/default
+STUDIO_ARGS ?=
+studio-init: release ## Start a studio project in STUDIO: folders, project.txt, selection.tsv, style.md; STUDIO_ARGS="--game G --map TEXMAP_DIR [--copy-map] --style FILE --name N" (the map links or copies what `make texmap` wrote)
+	$(RUN) studio init $(STUDIO) $(STUDIO_ARGS)
+studio-region: release ## What a frame's region draws: textures and tile cells with sizes, groups, surfaces (STUDIO_ARGS="--frame 3000 --region X,Y,W,H [--scale S]")
+	$(RUN) studio region $(STUDIO) $(STUDIO_ARGS)
+studio-select: release ## Add textures or tiles to STUDIO's selection.tsv with a reason, idempotently, copying their originals (STUDIO_ARGS="--key K,.. | --group N | --surface S | --frame F --region X,Y,W,H | --all  --kind tex|tile --min-pixels N --category C --reason TEXT")
+	$(RUN) studio select $(STUDIO) $(STUDIO_ARGS)
+studio-status: release ## STUDIO's counts (original, drafted, approved) by category, what is missing, strays and unrecorded images (STUDIO_ARGS="--tsv [--missing]" for rows an agent reads)
+	$(RUN) studio status $(STUDIO) $(STUDIO_ARGS)
+studio-approve: release ## Copy drafts into STUDIO's pack/ (STUDIO_ARGS="NAME.. | --drafted | --group N | --category C", --undo removes them)
+	$(RUN) studio approve $(STUDIO) $(STUDIO_ARGS)
+studio-pack: release ## Build STUDIO's pack/ manifest and index.txt from the approved images and run pack-lint (STUDIO_ARGS="--approve-all --no-lint")
+	$(RUN) studio pack $(STUDIO) $(STUDIO_ARGS)
+studio-draft: release ## Batch generation: run an external generator (default `codex exec {images} -`, the prompt on stdin) over selected rows with a brief and reference images, JOBS at once, retried, logged, resumable (STUDIO_ARGS="--brief FILE --group N|--all|NAME.. --cmd TEMPLATE --ref IMG --jobs N --retries N --scale N --dry-run --force")
+	$(RUN) studio draft $(STUDIO) $(STUDIO_ARGS)
+studio-style: release ## Local style processor: restyle selected originals with a recipe file (palette ramp, despeckle, edge ink, halftone; wrap-aware) into draft/ (STUDIO_ARGS="--recipe FILE --group N|--category C|--all|NAME..")
+	$(RUN) studio style $(STUDIO) $(STUDIO_ARGS)
+studio-variants: release ## One restyled image feeding every key of its surface, tinted per key from the originals' colours (STUDIO_ARGS="--of KEY --mode luma|ratio|mean --strength S")
+	$(RUN) studio variants $(STUDIO) $(STUDIO_ARGS)
+studio-text: release ## Text to tiles: typeset text (--image FILE, or --text/--font/--size/--colour/--stroke through ImageMagick) laid over a frame region and cut into the tile_*.png replacements (STUDIO_ARGS="--frame F --region X,Y,W,H --box X,Y,W,H --fit contain --alpha original")
+	$(RUN) studio text $(STUDIO) $(STUDIO_ARGS)
+studio-seam: release ## Seam check of STUDIO's pack/ (STUDIO_ARGS="--from draft", --strict fails on suspects): per wrap mode, repeat edges against each other and edge lines on mirrored ones, against the originals
+	$(RUN) studio seam $(STUDIO) $(STUDIO_ARGS)
+studio-compare: release ## Before and after: run the game twice (without and with STUDIO's pack/, JOBS at once) and write side-by-side sheets of the same frames to STUDIO/compare (BENCH_STEPS, INPUT default BENCH_INPUT; STUDIO_ARGS="--into DIR --frames F,.. --run-args '--height 1080 --aspect 16:9' --pack DIR --force")
+	$(RUN) studio compare $(STUDIO) --steps $(BENCH_STEPS) --snap 300 --input $(or $(INPUT),$(BENCH_INPUT)) --jobs $(JOBS) $(STUDIO_ARGS)
+
 # Options for gpu-check, depth-check and pack-check: --bloom N (gpu-check, temporal-probe: bloom), --aa N (multisampling;
 # software supersamples to match), --depth, --tex-filter off|mip|2|4|8|16
 # (gpu-check with PACK), --materials (the pack's material maps: gpu-check draws them from captures with light.bin;

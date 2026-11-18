@@ -1,0 +1,1910 @@
+//! `remodel studio SUB DIR ...`: the uplift studio's project commands
+//! (docs/uplift-studio.md). A project is a directory of plain files; every
+//! command is non-interactive, idempotent and prints TSV or short text, so
+//! an agent and a person use the same ones. Nothing here is specific to a
+//! game: it works on what `remodel texmap` writes and on texture packs.
+
+#![allow(clippy::needless_range_loop, clippy::chunks_exact_to_as_chunks, clippy::manual_is_multiple_of)]
+
+use crate::studio_img::{self as img, Image, Wrap};
+use crate::studio_text as text;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+
+/// What the global options hold that `studio compare` needs.
+pub struct Ctx {
+    pub game: String,
+    pub rom: PathBuf,
+    pub jit: bool,
+    pub input: Option<String>,
+}
+
+const USAGE: &str = "\
+remodel studio SUB PROJECT [options]   (docs/uplift-studio.md)
+  init PROJECT [--name N] [--game G] [--map TEXMAP_DIR [--copy-map]] [--style FILE]
+  region PROJECT --frame F --region X,Y,W,H [--scale S]   what is drawn there (TSV)
+  select PROJECT [--key K,..] [--group N] [--surface S] [--frame F --region X,Y,W,H]
+         [--kind tex|tile] [--min-pixels N] [--all] [--category C] [--reason TEXT]
+  status PROJECT [--tsv] [--missing]
+  approve PROJECT [NAME..] [--drafted] [--category C] [--group N] [--undo]
+  import PROJECT --from DIR --tool TEXT [NAME..|--group N|--category C|--all]   drafts made elsewhere, with provenance
+  pack PROJECT [--approve-all] [--no-lint]      pack.txt, index.txt, pack-lint
+  draft PROJECT --brief FILE [NAME..|--group N|--category C|--all] [--cmd TEMPLATE]
+         [--ref IMG].. [--jobs N] [--retries N] [--timeout SECS] [--scale N] [--force] [--dry-run]
+  style PROJECT --recipe FILE [NAME..|--group N|--category C|--all] [--from original|draft]
+  variants PROJECT --of KEY [--also KEY,..] [--base IMG] [--mode luma|ratio|mean] [--strength S] [--dry-run]
+  text PROJECT --frame F --region X,Y,W,H (--image FILE | --text STR --font FILE ..)
+         [--box X,Y,W,H] [--pad N] [--bg #rrggbb|auto] [--fit contain|stretch] [--align left|center|right]
+         [--alpha original|typeset] [--tile-scale N] [--dry-run]
+  seam PROJECT [--from pack|draft] [--tsv] [--strict]
+  compare PROJECT [--pack DIR] [--steps N] [--snap N] [--frames F,..] [--jobs N]
+         [--run-args \"--height 1080 --aspect 16:9\"] [--force]   (needs the ROMs)
+";
+
+pub fn main(args: &[String], ctx: &Ctx) -> Result<bool, String> {
+    let Some(sub) = args.first() else {
+        print!("{USAGE}");
+        return Ok(true);
+    };
+    let a = Args::parse(&args[1..])?;
+    let dir = a.pos.first().ok_or_else(|| format!("studio {sub}: which PROJECT directory?\n{USAGE}"))?;
+    let p = Project { dir: PathBuf::from(dir) };
+    match sub.as_str() {
+        "init" => init(&p, &a),
+        "region" => region(&p, &a),
+        "select" => select(&p, &a),
+        "status" => status(&p, &a),
+        "approve" => approve(&p, &a),
+        "import" => import(&p, &a),
+        "pack" => pack(&p, &a),
+        "draft" => draft(&p, &a),
+        "style" => style(&p, &a),
+        "variants" => variants(&p, &a),
+        "text" => text_cmd(&p, &a),
+        "seam" => seam(&p, &a),
+        "compare" => compare(&p, &a, ctx),
+        _ => Err(format!("studio: no subcommand `{sub}`\n{USAGE}")),
+    }
+}
+
+// ------------------------------------------------------------ arguments
+
+const SWITCHES: &[&str] = &[
+    "--tsv",
+    "--missing",
+    "--force",
+    "--dry-run",
+    "--drafted",
+    "--all",
+    "--undo",
+    "--copy-map",
+    "--approve-all",
+    "--no-lint",
+    "--strict",
+];
+
+pub struct Args {
+    pub pos: Vec<String>,
+    flags: Vec<(String, String)>,
+    sw: HashSet<String>,
+}
+
+impl Args {
+    pub fn parse(a: &[String]) -> Result<Args, String> {
+        let mut r = Args { pos: vec![], flags: vec![], sw: HashSet::new() };
+        let mut it = a.iter();
+        while let Some(x) = it.next() {
+            if SWITCHES.contains(&x.as_str()) {
+                r.sw.insert(x.clone());
+            } else if x.starts_with("--") {
+                let v = it.next().ok_or_else(|| format!("{x} wants a value"))?;
+                r.flags.push((x.clone(), v.clone()));
+            } else {
+                r.pos.push(x.clone());
+            }
+        }
+        Ok(r)
+    }
+
+    fn get(&self, k: &str) -> Option<&str> {
+        self.flags.iter().rev().find(|(f, _)| f == k).map(|(_, v)| v.as_str())
+    }
+
+    fn all(&self, k: &str) -> Vec<&str> {
+        self.flags.iter().filter(|(f, _)| f == k).map(|(_, v)| v.as_str()).collect()
+    }
+
+    fn has(&self, k: &str) -> bool {
+        self.sw.contains(k)
+    }
+
+    fn num<T: std::str::FromStr>(&self, k: &str) -> Result<Option<T>, String> {
+        self.get(k).map(|v| v.parse::<T>().map_err(|_| format!("{k}: `{v}` is not a number"))).transpose()
+    }
+
+    /// `X,Y,W,H`.
+    fn rect(&self, k: &str) -> Result<Option<(usize, usize, usize, usize)>, String> {
+        let Some(v) = self.get(k) else { return Ok(None) };
+        let n: Vec<usize> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        match n[..] {
+            [x, y, w, h] if w > 0 && h > 0 => Ok(Some((x, y, w, h))),
+            _ => Err(format!("{k}: `{v}` is not X,Y,W,H")),
+        }
+    }
+}
+
+// -------------------------------------------------------------- project
+
+#[derive(Clone, Debug)]
+pub struct Inv {
+    pub id: u32,
+    pub name: String,
+    pub kind: String,
+    pub w: usize,
+    pub h: usize,
+    pub surface: String,
+    pub pixels: u64,
+    pub best_frame: String,
+    pub wrap: String,
+    pub group: u32,
+    /// How many texture sizes the coordinates run over (above 1: it repeats).
+    pub span_u: f32,
+    pub span_v: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Sel {
+    pub name: String,
+    pub kind: String,
+    pub group: u32,
+    pub surface: String,
+    pub pixels: u64,
+    pub category: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Status {
+    Original,
+    Drafted,
+    Approved,
+}
+
+impl Status {
+    fn name(self) -> &'static str {
+        match self {
+            Status::Original => "original",
+            Status::Drafted => "drafted",
+            Status::Approved => "approved",
+        }
+    }
+}
+
+pub struct Project {
+    pub dir: PathBuf,
+}
+
+const SEL_HEADER: &str = "name\tkind\tgroup\tsurface\tpixels\tcategory\treason";
+
+fn clean(s: &str) -> String {
+    s.replace(['\t', '\n', '\r'], " ")
+}
+
+impl Project {
+    fn p(&self, sub: &str) -> PathBuf {
+        self.dir.join(sub)
+    }
+
+    fn require(&self) -> Result<(), String> {
+        if self.p("project.txt").is_file() {
+            Ok(())
+        } else {
+            Err(format!("{}: not a studio project (no project.txt): `studio init` it first", self.dir.display()))
+        }
+    }
+
+    fn meta(&self) -> BTreeMap<String, String> {
+        let mut m = BTreeMap::new();
+        for l in std::fs::read_to_string(self.p("project.txt")).unwrap_or_default().lines() {
+            if let Some((k, v)) = l.split_once('\t') {
+                m.insert(k.to_string(), v.to_string());
+            }
+        }
+        m
+    }
+
+    fn inventory(&self) -> Result<Vec<Inv>, String> {
+        let path = self.p("map/inventory.tsv");
+        let t = std::fs::read_to_string(&path)
+            .map_err(|e| format!("{}: {e} (run `make texmap`, then init --map)", path.display()))?;
+        let mut lines = t.lines();
+        let head: Vec<&str> = lines.next().unwrap_or("").split('\t').collect();
+        let col = |n: &str| head.iter().position(|h| *h == n);
+        let (Some(id), Some(name)) = (col("id"), col("name")) else {
+            return Err(format!("{}: no id and name columns", path.display()));
+        };
+        let get = |f: &[&str], n: &str| col(n).and_then(|i| f.get(i)).copied().unwrap_or("").to_string();
+        Ok(lines
+            .filter_map(|l| {
+                let f: Vec<&str> = l.split('\t').collect();
+                Some(Inv {
+                    id: f.get(id)?.parse().ok()?,
+                    name: f.get(name)?.to_string(),
+                    kind: get(&f, "kind"),
+                    w: get(&f, "w").parse().unwrap_or(0),
+                    h: get(&f, "h").parse().unwrap_or(0),
+                    surface: get(&f, "surface"),
+                    pixels: get(&f, "pixels").parse().unwrap_or(0),
+                    best_frame: get(&f, "best_frame"),
+                    wrap: get(&f, "wrap"),
+                    group: get(&f, "group").parse().unwrap_or(0),
+                    span_u: get(&f, "span_u").parse().unwrap_or(2.0),
+                    span_v: get(&f, "span_v").parse().unwrap_or(2.0),
+                })
+            })
+            .collect())
+    }
+
+    fn selection(&self) -> Vec<Sel> {
+        std::fs::read_to_string(self.p("selection.tsv"))
+            .unwrap_or_default()
+            .lines()
+            .skip(1)
+            .filter_map(|l| {
+                let f: Vec<&str> = l.split('\t').collect();
+                Some(Sel {
+                    name: f.first()?.to_string(),
+                    kind: f.get(1)?.to_string(),
+                    group: f.get(2)?.parse().unwrap_or(0),
+                    surface: f.get(3)?.to_string(),
+                    pixels: f.get(4)?.parse().unwrap_or(0),
+                    category: f.get(5).unwrap_or(&"").to_string(),
+                    reason: f.get(6).unwrap_or(&"").to_string(),
+                })
+            })
+            .collect()
+    }
+
+    fn write_selection(&self, rows: &[Sel]) -> Result<(), String> {
+        let mut s = format!("{SEL_HEADER}\n");
+        for r in rows {
+            let _ = writeln!(
+                s,
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                r.name,
+                r.kind,
+                r.group,
+                r.surface,
+                r.pixels,
+                clean(&r.category),
+                clean(&r.reason)
+            );
+        }
+        std::fs::write(self.p("selection.tsv"), s).map_err(|e| e.to_string())
+    }
+
+    fn status_of(&self, name: &str) -> Status {
+        if self.p("pack").join(format!("{name}.png")).is_file() {
+            Status::Approved
+        } else if self.p("draft").join(format!("{name}.png")).is_file() {
+            Status::Drafted
+        } else {
+            Status::Original
+        }
+    }
+
+    /// The original as dumped: the project's copy, else the map's.
+    fn original(&self, name: &str) -> Option<PathBuf> {
+        [self.p("original"), self.p("map/textures")].iter().map(|d| d.join(format!("{name}.png"))).find(|p| p.is_file())
+    }
+
+    fn ledger(&self) -> BTreeMap<String, (String, String, String)> {
+        let mut m = BTreeMap::new();
+        for l in std::fs::read_to_string(self.p("status/status.txt")).unwrap_or_default().lines() {
+            let f: Vec<&str> = l.split('\t').collect();
+            if f.len() >= 4 {
+                m.insert(f[0].to_string(), (f[1].to_string(), f[2].to_string(), f[3].to_string()));
+            }
+        }
+        m
+    }
+
+    /// Record how `name`'s draft was made: tool, the file under prompts/
+    /// holding the prompt or parameters (or `-`), the date. One line per
+    /// image, replaced if there is one.
+    fn record(&self, name: &str, tool: &str, prompt: &str) -> Result<(), String> {
+        let mut m = self.ledger();
+        m.insert(name.to_string(), (clean(tool), prompt.to_string(), today()));
+        let mut s = String::new();
+        for (n, (t, p, d)) in m {
+            let _ = writeln!(s, "{n}\t{t}\t{p}\t{d}");
+        }
+        std::fs::create_dir_all(self.p("status")).map_err(|e| e.to_string())?;
+        std::fs::write(self.p("status/status.txt"), s).map_err(|e| e.to_string())
+    }
+
+    fn write_prompt(&self, name: &str, body: &str) -> Result<String, String> {
+        std::fs::create_dir_all(self.p("prompts")).map_err(|e| e.to_string())?;
+        let f = format!("{name}.txt");
+        std::fs::write(self.p("prompts").join(&f), body).map_err(|e| e.to_string())?;
+        Ok(f)
+    }
+
+    /// The selected rows a command works on: names given, a group, a
+    /// category, or all.
+    fn pick(&self, a: &Args, skip_first_pos: bool) -> Result<Vec<Sel>, String> {
+        let rows = self.selection();
+        let names: Vec<&String> = a.pos.iter().skip(skip_first_pos as usize).collect();
+        let group: Option<u32> = a.num("--group")?;
+        let cat = a.get("--category");
+        let picked: Vec<Sel> = rows
+            .iter()
+            .filter(|r| {
+                if !names.is_empty() {
+                    names.iter().any(|n| **n == r.name || r.name.contains(n.as_str()))
+                } else if group.is_some() || cat.is_some() {
+                    group.is_none_or(|g| r.group == g) && cat.is_none_or(|c| r.category == c)
+                } else {
+                    a.has("--all")
+                }
+            })
+            .cloned()
+            .collect();
+        if picked.is_empty() {
+            return Err("no selected rows match: name them, or --group N, --category C or --all".into());
+        }
+        Ok(picked)
+    }
+}
+
+fn today() -> String {
+    let secs =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
+    let z = secs / 86400 + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    format!("{:04}-{:02}-{:02}", y + (m <= 2) as i64, m, d)
+}
+
+fn frame_stem(f: &str) -> Result<String, String> {
+    f.trim_end_matches(".png")
+        .parse::<u64>()
+        .map(|n| format!("{n:06}"))
+        .map_err(|_| format!("--frame: `{f}` is not a frame number"))
+}
+
+fn copy_file(from: &Path, to: &Path) -> Result<(), String> {
+    if let Some(p) = to.parent() {
+        std::fs::create_dir_all(p).map_err(|e| format!("{}: {e}", p.display()))?;
+    }
+    std::fs::copy(from, to).map(|_| ()).map_err(|e| format!("{} -> {}: {e}", from.display(), to.display()))
+}
+
+// ----------------------------------------------------------------- init
+
+fn init(p: &Project, a: &Args) -> Result<bool, String> {
+    for d in ["original", "draft", "pack", "prompts", "status", "work"] {
+        std::fs::create_dir_all(p.p(d)).map_err(|e| e.to_string())?;
+    }
+    let mut meta = p.meta();
+    meta.entry("created".into()).or_insert_with(today);
+    let base = p.dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    if let Some(n) = a.get("--name") {
+        meta.insert("name".into(), clean(n));
+    }
+    meta.entry("name".into()).or_insert(base);
+    if let Some(g) = a.get("--game") {
+        meta.insert("game".into(), clean(g));
+    }
+    let mut s = String::new();
+    for (k, v) in &meta {
+        let _ = writeln!(s, "{k}\t{v}");
+    }
+    std::fs::write(p.p("project.txt"), s).map_err(|e| e.to_string())?;
+    if !p.p("selection.tsv").exists() {
+        std::fs::write(p.p("selection.tsv"), format!("{SEL_HEADER}\n")).map_err(|e| e.to_string())?;
+    }
+    if let Some(f) = a.get("--style") {
+        copy_file(Path::new(f), &p.p("style.md"))?;
+    } else if !p.p("style.md").exists() {
+        std::fs::write(
+            p.p("style.md"),
+            "# Style sheet\n\nPalette, materials, mood, what stays recognisable, what must not change\n(readability of signs and the HUD). Every later step reads this.\n",
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if let Some(m) = a.get("--map") {
+        let src = std::fs::canonicalize(m).map_err(|e| format!("--map {m}: {e}"))?;
+        let dst = p.p("map");
+        if dst.is_symlink() {
+            std::fs::remove_file(&dst).map_err(|e| e.to_string())?;
+        }
+        if a.has("--copy-map") {
+            copy_dir(&src, &dst)?;
+            println!("map           copied {}", src.display());
+        } else if dst.exists() {
+            return Err(format!("{} exists and is not a link: remove it or use --copy-map", dst.display()));
+        } else {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&src, &dst).map_err(|e| e.to_string())?;
+            #[cfg(not(unix))]
+            copy_dir(&src, &dst)?;
+            println!("map           {} -> {}", dst.display(), src.display());
+        }
+    }
+    println!("project       {} ({} selected)", p.dir.display(), p.selection().len());
+    Ok(true)
+}
+
+fn copy_dir(src: &Path, dst: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for e in std::fs::read_dir(src).map_err(|e| format!("{}: {e}", src.display()))? {
+        let e = e.map_err(|e| e.to_string())?;
+        let to = dst.join(e.file_name());
+        if e.path().is_dir() {
+            copy_dir(&e.path(), &to)?;
+        } else {
+            std::fs::copy(e.path(), to).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+// --------------------------------------------------------------- region
+
+fn frame_files(p: &Project, a: &Args) -> Result<(String, Vec<u32>, Image, f32), String> {
+    let stem = frame_stem(a.get("--frame").ok_or("--frame F wants a frame of the map")?)?;
+    let idp = p.p("map/frames").join(format!("{stem}-ids.png"));
+    let ids = img::load(&idp).map_err(|e| format!("{e} (frames the map has: map/frames/)"))?;
+    let scale = match a.num::<f32>("--scale")? {
+        Some(s) => s,
+        None => ids.height as f32 / 384.0,
+    };
+    Ok((stem, text::decode_ids(&ids), ids, scale))
+}
+
+fn id_names(p: &Project) -> Result<HashMap<u32, String>, String> {
+    Ok(p.inventory()?.into_iter().map(|i| (i.id, i.name)).collect())
+}
+
+fn region(p: &Project, a: &Args) -> Result<bool, String> {
+    p.require()?;
+    let rect = a.rect("--region")?.ok_or("--region X,Y,W,H (output pixels of the frame)")?;
+    let (stem, ids, idimg, scale) = frame_files(p, a)?;
+    let inv = p.inventory()?;
+    let by_id: HashMap<u32, &Inv> = inv.iter().map(|i| (i.id, i)).collect();
+    let counts = text::ids_in_region(&ids, idimg.width, rect);
+    let mut rows: Vec<(u32, usize)> = counts.into_iter().filter(|(id, _)| *id >= 2).collect();
+    rows.sort_by_key(|r| std::cmp::Reverse(r.1));
+    println!("# frame {stem}, region {},{},{},{}, scale {scale:.3}", rect.0, rect.1, rect.2, rect.3);
+    println!("name\tkind\tid\tsize\tpixels\tgroup\tsurface\twrap");
+    for (id, n) in &rows {
+        if let Some(i) = by_id.get(id) {
+            println!("{}	{}	{id}	{}x{}	{n}	{}	{}	{}", i.name, i.kind, i.w, i.h, i.group, i.surface, i.wrap);
+        }
+    }
+    let uvp = p.p("map/frames").join(format!("{stem}-uv.png"));
+    if let Ok(uv) = img::load(&uvp) {
+        let names = id_names(p)?;
+        let cells = text::tile_cells(&ids, &uv, &names, rect, scale);
+        if !cells.is_empty() {
+            println!("# tile cells (corner x, y, size in output pixels), reading order");
+            println!("tile\tx\ty\tsize\tpixels");
+            for c in cells {
+                println!("{}\t{:.1}\t{:.1}\t{:.1}\t{}", c.name, c.x, c.y, c.size, c.pixels);
+            }
+        }
+    }
+    Ok(true)
+}
+
+// --------------------------------------------------------------- select
+
+fn resolve_keys(inv: &[Inv], tokens: &[String]) -> Result<Vec<usize>, String> {
+    let mut out = Vec::new();
+    for t in tokens {
+        let t = t.trim();
+        if t.is_empty() {
+            continue;
+        }
+        let hit: Vec<usize> =
+            if let (true, Ok(id)) = (t.len() <= 7 && t.bytes().all(|b| b.is_ascii_digit()), t.parse::<u32>()) {
+                inv.iter().enumerate().filter(|(_, i)| i.id == id).map(|(n, _)| n).collect()
+            } else {
+                let exact: Vec<usize> = inv.iter().enumerate().filter(|(_, i)| i.name == t).map(|(n, _)| n).collect();
+                if exact.is_empty() {
+                    let (a, b) = (format!("tex_{t}_"), format!("tile_{t}"));
+                    inv.iter()
+                        .enumerate()
+                        .filter(|(_, i)| i.name.starts_with(&a) || i.name == b || i.name.starts_with(&format!("{t}_")))
+                        .map(|(n, _)| n)
+                        .collect()
+                } else {
+                    exact
+                }
+            };
+        if hit.is_empty() {
+            return Err(format!("--key {t}: not in the map's inventory"));
+        }
+        out.extend(hit);
+    }
+    Ok(out)
+}
+
+fn select(p: &Project, a: &Args) -> Result<bool, String> {
+    p.require()?;
+    let inv = p.inventory()?;
+    let mut idx: Vec<usize> = Vec::new();
+    let keys: Vec<String> = a.all("--key").iter().flat_map(|k| k.split(',')).map(str::to_string).collect();
+    idx.extend(resolve_keys(&inv, &keys)?);
+    if let Some(g) = a.num::<u32>("--group")? {
+        idx.extend(inv.iter().enumerate().filter(|(_, i)| i.group == g).map(|(n, _)| n));
+    }
+    if let Some(s) = a.get("--surface") {
+        let hit: Vec<usize> =
+            inv.iter().enumerate().filter(|(_, i)| i.surface == s && i.kind == "tex").map(|(n, _)| n).collect();
+        if hit.is_empty() {
+            return Err(format!("--surface {s}: no texture has it"));
+        }
+        idx.extend(hit);
+    }
+    if a.get("--region").is_some() {
+        let rect = a.rect("--region")?.unwrap();
+        let (_, ids, idimg, _) = frame_files(p, a)?;
+        let counts = text::ids_in_region(&ids, idimg.width, rect);
+        let by_id: HashMap<u32, usize> = inv.iter().enumerate().map(|(n, i)| (i.id, n)).collect();
+        idx.extend(counts.keys().filter_map(|id| by_id.get(id)).copied());
+    }
+    if a.has("--all") {
+        idx.extend(0..inv.len());
+    }
+    if idx.is_empty() {
+        return Err("select what? --key, --group, --surface, --frame with --region, or --all".into());
+    }
+    let kind = a.get("--kind");
+    let min: u64 = a.num("--min-pixels")?.unwrap_or(0);
+    let mut seen = BTreeSet::new();
+    let idx: Vec<usize> = idx
+        .into_iter()
+        .filter(|&n| kind.is_none_or(|k| inv[n].kind == k) && inv[n].pixels >= min && seen.insert(n))
+        .collect();
+
+    let mut rows = p.selection();
+    let (mut added, mut updated) = (0, 0);
+    for n in idx {
+        let i = &inv[n];
+        let fresh = Sel {
+            name: i.name.clone(),
+            kind: i.kind.clone(),
+            group: i.group,
+            surface: i.surface.clone(),
+            pixels: i.pixels,
+            category: a.get("--category").unwrap_or("").to_string(),
+            reason: a.get("--reason").unwrap_or("").to_string(),
+        };
+        match rows.iter_mut().find(|r| r.name == i.name) {
+            Some(r) => {
+                let before = r.clone();
+                r.group = i.group;
+                r.surface = i.surface.clone();
+                r.pixels = i.pixels;
+                if a.get("--category").is_some() {
+                    r.category = fresh.category;
+                }
+                if a.get("--reason").is_some() {
+                    r.reason = fresh.reason;
+                }
+                if *r != before {
+                    updated += 1;
+                }
+            }
+            None => {
+                rows.push(fresh);
+                added += 1;
+            }
+        }
+        if let Some(src) = [p.p("map/textures").join(format!("{}.png", i.name))].iter().find(|f| f.is_file()) {
+            let to = p.p("original").join(format!("{}.png", i.name));
+            if !to.exists() {
+                copy_file(src, &to)?;
+            }
+        }
+    }
+    rows.sort_by(|x, y| x.name.cmp(&y.name));
+    p.write_selection(&rows)?;
+    println!(
+        "selection     {added} added, {updated} changed, {} in all ({})",
+        rows.len(),
+        p.p("selection.tsv").display()
+    );
+    Ok(true)
+}
+
+// --------------------------------------------------------------- status
+
+fn status(p: &Project, a: &Args) -> Result<bool, String> {
+    p.require()?;
+    let rows = p.selection();
+    let ledger = p.ledger();
+    let st: Vec<(&Sel, Status)> = rows.iter().map(|r| (r, p.status_of(&r.name))).collect();
+    if a.has("--tsv") {
+        println!("name\tkind\tgroup\tcategory\tstatus\ttool\tprompt\tdate");
+        for (r, s) in &st {
+            if a.has("--missing") && *s != Status::Original {
+                continue;
+            }
+            let l = ledger.get(&r.name).cloned().unwrap_or(("-".into(), "-".into(), "-".into()));
+            println!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", r.name, r.kind, r.group, r.category, s.name(), l.0, l.1, l.2);
+        }
+        return Ok(true);
+    }
+    let count = |s: Status| st.iter().filter(|x| x.1 == s).count();
+    let meta = p.meta();
+    println!(
+        "project       {} (game {})",
+        meta.get("name").map(String::as_str).unwrap_or("?"),
+        meta.get("game").map(String::as_str).unwrap_or("?")
+    );
+    println!(
+        "selected      {}: {} original, {} drafted, {} approved",
+        st.len(),
+        count(Status::Original),
+        count(Status::Drafted),
+        count(Status::Approved)
+    );
+    let mut cats: BTreeMap<&str, [usize; 3]> = BTreeMap::new();
+    for (r, s) in &st {
+        let c = cats.entry(if r.category.is_empty() { "-" } else { &r.category }).or_default();
+        c[*s as usize] += 1;
+    }
+    println!("{:<14}{:>9}{:>9}{:>9}", "category", "original", "drafted", "approved");
+    for (c, n) in &cats {
+        println!("{c:<14}{:>9}{:>9}{:>9}", n[0], n[1], n[2]);
+    }
+    let missing: Vec<&str> = st.iter().filter(|x| x.1 == Status::Original).map(|x| x.0.name.as_str()).collect();
+    if !missing.is_empty() {
+        let shown: Vec<&str> = missing.iter().take(if a.has("--missing") { usize::MAX } else { 8 }).copied().collect();
+        println!(
+            "missing       {} without a draft: {}{}",
+            missing.len(),
+            shown.join(" "),
+            if shown.len() < missing.len() { " ..." } else { "" }
+        );
+    }
+    let no_orig: Vec<&str> = rows.iter().filter(|r| p.original(&r.name).is_none()).map(|r| r.name.as_str()).collect();
+    if !no_orig.is_empty() {
+        println!("no original   {}: {}", no_orig.len(), no_orig.join(" "));
+    }
+    let sel: HashSet<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+    for d in ["draft", "pack"] {
+        let stray: Vec<String> = png_names(&p.p(d)).into_iter().filter(|n| !sel.contains(n.as_str())).collect();
+        if !stray.is_empty() {
+            println!("not selected  {} in {d}/: {}", stray.len(), stray.join(" "));
+        }
+    }
+    let unrecorded = st.iter().filter(|x| x.1 != Status::Original && !ledger.contains_key(&x.0.name)).count();
+    if unrecorded > 0 {
+        println!("unrecorded    {unrecorded} images have no line in status/status.txt (made by hand)");
+    }
+    Ok(true)
+}
+
+fn png_names(dir: &Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(dir)
+        .map(|d| {
+            d.filter_map(|e| e.ok())
+                .filter_map(|e| e.file_name().to_string_lossy().strip_suffix(".png").map(str::to_string))
+                .filter(|n| !n.contains('.'))
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+// -------------------------------------------------------------- approve
+
+fn approve(p: &Project, a: &Args) -> Result<bool, String> {
+    p.require()?;
+    let rows = if a.has("--drafted") {
+        p.selection().into_iter().filter(|r| p.p("draft").join(format!("{}.png", r.name)).is_file()).collect::<Vec<_>>()
+    } else {
+        p.pick(a, true)?
+    };
+    let (mut n, mut skipped) = (0, 0);
+    for r in &rows {
+        let (d, k) = (p.p("draft").join(format!("{}.png", r.name)), p.p("pack").join(format!("{}.png", r.name)));
+        if a.has("--undo") {
+            if k.is_file() {
+                std::fs::remove_file(&k).map_err(|e| e.to_string())?;
+                n += 1;
+            }
+        } else if d.is_file() {
+            // Copy only what changed, so a second run does nothing.
+            if std::fs::read(&d).ok() != std::fs::read(&k).ok() {
+                copy_file(&d, &k)?;
+                n += 1;
+            }
+        } else {
+            skipped += 1;
+        }
+    }
+    println!(
+        "{}      {n} images, {skipped} without a draft",
+        if a.has("--undo") { "unapproved" } else { "approved  " }
+    );
+    Ok(true)
+}
+
+// --------------------------------------------------------------- import
+
+/// Bring images made elsewhere (by hand, another project) into draft/,
+/// recording `--tool` as their provenance; `--prompts DIR` also copies
+/// their NAME.txt prompt files.
+fn import(p: &Project, a: &Args) -> Result<bool, String> {
+    p.require()?;
+    let from = PathBuf::from(a.get("--from").ok_or("--from DIR: where the images are")?);
+    let tool = a.get("--tool").ok_or("--tool TEXT: how they were made, for the record")?;
+    let rows = p.pick(a, true)?;
+    let (mut n, mut missing) = (0, 0);
+    for r in &rows {
+        let src = from.join(format!("{}.png", r.name));
+        if !src.is_file() {
+            missing += 1;
+            continue;
+        }
+        copy_file(&src, &p.p("draft").join(format!("{}.png", r.name)))?;
+        let mut pf = "-".to_string();
+        if let Some(pd) = a.get("--prompts") {
+            let f = Path::new(pd).join(format!("{}.txt", r.name));
+            if f.is_file() {
+                copy_file(&f, &p.p("prompts").join(format!("{}.txt", r.name)))?;
+                pf = format!("{}.txt", r.name);
+            }
+        }
+        p.record(&r.name, tool, &pf)?;
+        n += 1;
+    }
+    println!("imported      {n} images into draft/, {missing} not in {}", from.display());
+    Ok(true)
+}
+
+// ----------------------------------------------------------------- pack
+
+fn pack(p: &Project, a: &Args) -> Result<bool, String> {
+    p.require()?;
+    if a.has("--approve-all") {
+        approve(p, &Args::parse(&["--drafted".to_string()])?)?;
+    }
+    let dir = p.p("pack");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let meta = p.meta();
+    let names = png_names(&dir);
+    let mut manifest = String::from("# reModel pack, written by `remodel studio pack`\nformat\t2\nkeys\t1\n");
+    let _ = writeln!(manifest, "name\t{}", meta.get("name").map(String::as_str).unwrap_or("studio pack"));
+    if let Some(g) = meta.get("game") {
+        let _ = writeln!(manifest, "game\t{g}");
+    }
+    std::fs::write(dir.join("pack.txt"), manifest).map_err(|e| e.to_string())?;
+    let mut index = String::from("# one file name a line, for the browser\n");
+    for n in &names {
+        let _ = writeln!(index, "{n}.png");
+    }
+    std::fs::write(dir.join("index.txt"), index).map_err(|e| e.to_string())?;
+    println!("pack          {} images in {} (pack.txt, index.txt)", names.len(), dir.display());
+    if a.has("--no-lint") {
+        return Ok(true);
+    }
+    crate::pack_lint::lint(&dir, None, 8192)
+}
+
+// ---------------------------------------------------------------- style
+
+fn tile_wrap(i: Option<&Inv>, name: &str) -> (Wrap, Wrap) {
+    img::parse_wrap(i.map(|i| i.wrap.as_str()).unwrap_or("-"), name.starts_with("tile_"))
+}
+
+fn style(p: &Project, a: &Args) -> Result<bool, String> {
+    p.require()?;
+    let rf_path = a.get("--recipe").ok_or("--recipe FILE")?;
+    let rf = img::RecipeFile::parse(&std::fs::read_to_string(rf_path).map_err(|e| format!("{rf_path}: {e}"))?)?;
+    let rows = p.pick(a, true)?;
+    let inv: HashMap<String, Inv> =
+        p.inventory().unwrap_or_default().into_iter().map(|i| (i.name.clone(), i)).collect();
+    let from = a.get("--from").unwrap_or("original");
+    let recipe_name = Path::new(rf_path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let mut done = 0;
+    for r in &rows {
+        let src_path = if from == "draft" {
+            p.p("draft").join(format!("{}.png", r.name))
+        } else {
+            p.original(&r.name).unwrap_or_default()
+        };
+        if !src_path.is_file() {
+            println!("skipped       {}: no {from} image", r.name);
+            continue;
+        }
+        let src = img::load(&src_path)?;
+        let rec = rf.resolve(&r.category, &r.name).map_err(|e| format!("{}: {e}", r.name))?;
+        let (wu, wv) = tile_wrap(inv.get(&r.name), &r.name);
+        let out = img::style(&src, &rec, wu, wv);
+        img::save(&p.p("draft").join(format!("{}.png", r.name)), &out)?;
+        let body = format!(
+            "local style processor\nrecipe\t{recipe_name} [material {}]\nfrom\t{from}\nwrap\t{} {}\n{rec:#?}\n",
+            r.category,
+            wu.name(),
+            wv.name()
+        );
+        let pf = p.write_prompt(&r.name, &body)?;
+        p.record(&r.name, &format!("style: {recipe_name}"), &pf)?;
+        done += 1;
+    }
+    println!("styled        {done} of {} into draft/", rows.len());
+    Ok(true)
+}
+
+// ------------------------------------------------------------- variants
+
+fn variants(p: &Project, a: &Args) -> Result<bool, String> {
+    p.require()?;
+    let inv = p.inventory()?;
+    let of = a.get("--of").ok_or("--of KEY: the texture whose restyle feeds the surface")?;
+    let k = *resolve_keys(&inv, &[of.to_string()])?.first().unwrap();
+    let key = &inv[k];
+    if key.kind != "tex" {
+        return Err(format!("{}: tiles have no surfaces", key.name));
+    }
+    let base_path =
+        a.get("--base").map(PathBuf::from).unwrap_or_else(|| p.p("draft").join(format!("{}.png", key.name)));
+    let base = img::load(&base_path).map_err(|e| format!("{e} (restyle {} first, or --base IMG)", key.name))?;
+    let reference = img::load(&p.original(&key.name).ok_or("the key's original is missing")?)?;
+    let mode = match a.get("--mode") {
+        Some(m) => img::TintMode::parse(m).ok_or("--mode: luma, ratio or mean")?,
+        None => img::TintMode::Luma,
+    };
+    let strength: f32 = a.num("--strength")?.unwrap_or(1.0);
+    let ink = img::parse_colour(a.get("--ink").unwrap_or("#111018"))?;
+    let mut members: Vec<&Inv> =
+        inv.iter().filter(|i| i.kind == "tex" && i.surface == key.surface && i.name != key.name).collect();
+    // --also: keys of other surfaces that take the same look (a texture
+    // drawn in colours the game made from other texels).
+    let also: Vec<String> = a.all("--also").iter().flat_map(|k| k.split(',')).map(str::to_string).collect();
+    for n in resolve_keys(&inv, &also)? {
+        if inv[n].name != key.name && !members.iter().any(|m| m.name == inv[n].name) {
+            members.push(&inv[n]);
+        }
+    }
+    let mut rows = p.selection();
+    let cat = rows.iter().find(|r| r.name == key.name).map(|r| r.category.clone()).unwrap_or_default();
+    println!("surface       {} feeds {} other keys besides {}", key.surface, members.len(), key.name);
+    for m in &members {
+        let Some(tp) = p.original(&m.name) else {
+            println!("skipped       {}: no original", m.name);
+            continue;
+        };
+        let target = img::load(&tp)?;
+        let out = img::tint(&base, &reference, &target, mode, strength, ink);
+        let mr = img::mean_rgb(&reference);
+        let mt = img::mean_rgb(&target);
+        println!(
+            "variant       {}  mean {:.0},{:.0},{:.0} -> {:.0},{:.0},{:.0}",
+            m.name, mr[0], mr[1], mr[2], mt[0], mt[1], mt[2]
+        );
+        if a.has("--dry-run") {
+            continue;
+        }
+        img::save(&p.p("draft").join(format!("{}.png", m.name)), &out)?;
+        let pf = p.write_prompt(
+            &m.name,
+            &format!(
+                "surface variant of {}\nmode\t{mode:?}\nstrength\t{strength}\nbase\t{}\n",
+                key.name,
+                base_path.display()
+            ),
+        )?;
+        p.record(&m.name, &format!("variant of {} ({mode:?})", key.name), &pf)?;
+        if !rows.iter().any(|r| r.name == m.name) {
+            rows.push(Sel {
+                name: m.name.clone(),
+                kind: m.kind.clone(),
+                group: m.group,
+                surface: m.surface.clone(),
+                pixels: m.pixels,
+                category: cat.clone(),
+                reason: format!("same surface as {}", key.name),
+            });
+            let to = p.p("original").join(format!("{}.png", m.name));
+            if !to.exists() {
+                copy_file(&tp, &to)?;
+            }
+        }
+    }
+    rows.sort_by(|x, y| x.name.cmp(&y.name));
+    if !a.has("--dry-run") {
+        p.write_selection(&rows)?;
+    }
+    Ok(true)
+}
+
+// ----------------------------------------------------------------- text
+
+fn typeset_with_magick(a: &Args, out: &Path) -> Result<(), String> {
+    let text = a.get("--text").ok_or("--text STR or --image FILE")?;
+    let size = a.get("--size").unwrap_or("96");
+    let fill = a.get("--colour").unwrap_or("#ffffff");
+    let stroke = a.get("--stroke").unwrap_or("none");
+    let sw = a.get("--stroke-width").unwrap_or("0");
+    let status = if let Some(t) = a.get("--typesetter") {
+        Command::new("sh")
+            .arg("-c")
+            .arg(t)
+            .env("STUDIO_TEXT", text)
+            .env("STUDIO_FONT", a.get("--font").unwrap_or(""))
+            .env("STUDIO_SIZE", size)
+            .env("STUDIO_FILL", fill)
+            .env("STUDIO_STROKE", stroke)
+            .env("STUDIO_STROKEW", sw)
+            .env("STUDIO_OUT", out)
+            .status()
+    } else {
+        let mut c = Command::new("magick");
+        c.args(["-background", "none"]);
+        if let Some(f) = a.get("--font") {
+            c.args(["-font", f]);
+        }
+        c.args(["-pointsize", size, "-fill", fill, "-stroke", stroke, "-strokewidth", sw]);
+        c.arg(format!("label:{text}")).arg(out).status()
+    };
+    match status {
+        Ok(s) if s.success() && out.is_file() => Ok(()),
+        Ok(s) => Err(format!("the typesetter failed ({s})")),
+        Err(e) => Err(format!("cannot run the typesetter: {e} (give --image a typeset PNG, or --typesetter a command using $STUDIO_TEXT, $STUDIO_FONT, $STUDIO_SIZE, $STUDIO_FILL, $STUDIO_STROKE, $STUDIO_STROKEW, $STUDIO_OUT; the default is ImageMagick's `magick`)")),
+    }
+}
+
+/// The commonest colour (4 bits a channel) of a box of an image.
+fn modal_colour(im: &Image, bx: (usize, usize, usize, usize)) -> [u8; 3] {
+    let mut h: HashMap<[u8; 3], usize> = HashMap::new();
+    for y in bx.1..(bx.1 + bx.3).min(im.height) {
+        for x in bx.0..(bx.0 + bx.2).min(im.width) {
+            let o = (y * im.width + x) * 4;
+            *h.entry([im.rgba[o] & 0xf0, im.rgba[o + 1] & 0xf0, im.rgba[o + 2] & 0xf0]).or_default() += 1;
+        }
+    }
+    let Some((bucket, _)) = h.into_iter().max_by_key(|(c, n)| (*n, *c)) else { return [0; 3] };
+    let (mut sum, mut n) = ([0u64; 3], 0u64);
+    for y in bx.1..(bx.1 + bx.3).min(im.height) {
+        for x in bx.0..(bx.0 + bx.2).min(im.width) {
+            let o = (y * im.width + x) * 4;
+            if [im.rgba[o] & 0xf0, im.rgba[o + 1] & 0xf0, im.rgba[o + 2] & 0xf0] == bucket {
+                for c in 0..3 {
+                    sum[c] += im.rgba[o + c] as u64;
+                }
+                n += 1;
+            }
+        }
+    }
+    [(sum[0] / n) as u8, (sum[1] / n) as u8, (sum[2] / n) as u8]
+}
+
+fn text_cmd(p: &Project, a: &Args) -> Result<bool, String> {
+    p.require()?;
+    let region = a.rect("--region")?.ok_or("--region X,Y,W,H: the frame's pixels the text covers")?;
+    let (stem, ids, idimg, scale) = frame_files(p, a)?;
+    let uv = img::load(&p.p("map/frames").join(format!("{stem}-uv.png")))?;
+    let names = id_names(p)?;
+    let cells = text::tile_cells(&ids, &uv, &names, region, scale);
+    if cells.is_empty() {
+        return Err("no tiles are drawn in that region".into());
+    }
+    let _ = idimg;
+    // The typeset image.
+    let ts_path = match a.get("--image") {
+        Some(f) => PathBuf::from(f),
+        None => {
+            let f = p.p("work/text-typeset.png");
+            std::fs::create_dir_all(p.p("work")).map_err(|e| e.to_string())?;
+            typeset_with_magick(a, &f)?;
+            f
+        }
+    };
+    let mut ts = img::load(&ts_path)?;
+    if a.get("--image").is_none() || a.get("--trim").is_some() {
+        ts = text::trim(&ts, a.num("--margin")?.unwrap_or(0));
+    }
+    let bx = a.rect("--box")?.unwrap_or(region);
+    let fit = match a.get("--fit").unwrap_or("contain") {
+        "contain" => text::Fit::Contain,
+        "stretch" => text::Fit::Stretch,
+        o => return Err(format!("--fit {o}: contain or stretch")),
+    };
+    let align = match a.get("--align").unwrap_or("left") {
+        "left" => text::Align::Left,
+        "center" => text::Align::Center,
+        "right" => text::Align::Right,
+        o => return Err(format!("--align {o}: left, center or right")),
+    };
+    let mode = match a.get("--alpha").unwrap_or("original") {
+        "original" => text::AlphaMode::Original,
+        "typeset" => text::AlphaMode::Typeset,
+        o => return Err(format!("--alpha {o}: original or typeset")),
+    };
+    let tile_px = 8 * a.num::<usize>("--tile-scale")?.unwrap_or(4).clamp(1, 16);
+    let pad: f32 = a.num("--pad")?.unwrap_or(0.0);
+    let mut at = text::place(
+        (ts.width, ts.height),
+        (bx.0 as f32 + pad, bx.1 as f32 + pad, (bx.2 as f32 - 2.0 * pad).max(1.0), (bx.3 as f32 - 2.0 * pad).max(1.0)),
+        fit,
+        align,
+    );
+    if let Some(bg) = a.get("--bg") {
+        // The text on a solid ground over the whole box, so what the old
+        // text drew there is covered: `auto` takes the box's commonest
+        // colour in the frame.
+        let colour = if bg == "auto" {
+            modal_colour(&img::load(&p.p("map/frames").join(format!("{stem}.png")))?, bx)
+        } else {
+            img::parse_colour(bg)?
+        };
+        let k = at.w / ts.width as f32;
+        let (cw, ch) = (((bx.2 as f32 / k).round() as usize).max(1), ((bx.3 as f32 / k).round() as usize).max(1));
+        let mut canvas = img::blank(cw, ch, [colour[0], colour[1], colour[2], 255]);
+        let (ox, oy) = (((at.x - bx.0 as f32) / k).round() as isize, ((at.y - bx.1 as f32) / k).round() as isize);
+        for y in 0..ts.height {
+            for x in 0..ts.width {
+                let (dx, dy) = (x as isize + ox, y as isize + oy);
+                if dx < 0 || dy < 0 || dx >= cw as isize || dy >= ch as isize {
+                    continue;
+                }
+                let (so, d) = ((y * ts.width + x) * 4, (dy as usize * cw + dx as usize) * 4);
+                let al = ts.rgba[so + 3] as f32 / 255.0;
+                for c in 0..3 {
+                    canvas.rgba[d + c] =
+                        (ts.rgba[so + c] as f32 * al + canvas.rgba[d + c] as f32 * (1.0 - al)).round() as u8;
+                }
+            }
+        }
+        ts = canvas;
+        at = text::Placement { x: bx.0 as f32, y: bx.1 as f32, w: bx.2 as f32, h: bx.3 as f32 };
+    }
+    // One image a key: the cell with the most pixels stands for it.
+    let mut best: BTreeMap<&str, &text::Cell> = BTreeMap::new();
+    let mut dup: BTreeMap<&str, usize> = BTreeMap::new();
+    for c in &cells {
+        *dup.entry(&c.name).or_default() += 1;
+        if best.get(c.name.as_str()).is_none_or(|b| c.pixels > b.pixels) {
+            best.insert(&c.name, c);
+        }
+    }
+    println!("cells         {} drawn, {} distinct tiles", cells.len(), best.len());
+    for (n, k) in &dup {
+        if *k > 1 {
+            println!("shared        {n} is drawn {k} times in the region; its image follows the biggest one");
+        }
+    }
+    let mut rows = p.selection();
+    let cat = a.get("--category").unwrap_or("text").to_string();
+    let reason = a.get("--reason").map(str::to_string).unwrap_or_else(|| {
+        format!("text over frame {stem} region {},{},{},{}", region.0, region.1, region.2, region.3)
+    });
+    for (name, c) in &best {
+        let orig = p.original(name).and_then(|f| img::load(&f).ok());
+        let out = text::slice_cell(&ts, &at, c, orig.as_ref(), tile_px, mode);
+        if a.has("--dry-run") {
+            continue;
+        }
+        img::save(&p.p("draft").join(format!("{name}.png")), &out)?;
+        let pf = p.write_prompt(name, &format!("text to tiles\ntypeset\t{}\nframe\t{stem}\nregion\t{region:?}\nbox\t{bx:?}\nfit\t{fit:?} {align:?}\nalpha\t{mode:?}\n", ts_path.display()))?;
+        p.record(name, "text to tiles", &pf)?;
+        if !rows.iter().any(|r| r.name == *name) {
+            let i = p.inventory()?.into_iter().find(|i| i.name == *name);
+            rows.push(Sel {
+                name: name.to_string(),
+                kind: "tile".into(),
+                group: i.as_ref().map(|i| i.group).unwrap_or(0),
+                surface: "0".into(),
+                pixels: i.as_ref().map(|i| i.pixels).unwrap_or(0),
+                category: cat.clone(),
+                reason: reason.clone(),
+            });
+            if let Some(f) = [p.p("map/textures").join(format!("{name}.png"))].iter().find(|f| f.is_file()) {
+                let to = p.p("original").join(format!("{name}.png"));
+                if !to.exists() {
+                    copy_file(f, &to)?;
+                }
+            }
+        }
+    }
+    if !a.has("--dry-run") {
+        rows.sort_by(|x, y| x.name.cmp(&y.name));
+        p.write_selection(&rows)?;
+        println!("wrote         {} tile images into draft/", best.len());
+    }
+    Ok(true)
+}
+
+// ----------------------------------------------------------------- seam
+
+fn seam(p: &Project, a: &Args) -> Result<bool, String> {
+    p.require()?;
+    let from = a.get("--from").unwrap_or("pack");
+    let inv: HashMap<String, Inv> =
+        p.inventory().unwrap_or_default().into_iter().map(|i| (i.name.clone(), i)).collect();
+    let tsv = a.has("--tsv");
+    println!("name\twrap_u\twrap_v\tu_jump\tu_ratio\tv_jump\tv_ratio\tverdict\tnote");
+    let (mut checked, mut suspects) = (0, 0);
+    for name in png_names(&p.p(from)) {
+        let im = img::load(&p.p(from).join(format!("{name}.png")))?;
+        let (mut wu, mut wv) = tile_wrap(inv.get(&name), &name);
+        // A texture the game never draws past its own size shows no seam:
+        // an axis whose coordinates stay within one size is not checked.
+        let (mut once_u, mut once_v) = (false, false);
+        if let Some(i) = inv.get(&name).filter(|i| i.kind == "tex") {
+            (once_u, once_v) = (i.span_u <= 1.0, i.span_v <= 1.0);
+            if once_u {
+                wu = Wrap::Clamp;
+            }
+            if once_v {
+                wv = Wrap::Clamp;
+            }
+        }
+        let u = img::seam_axis(&im, true, wu);
+        let v = img::seam_axis(&im, false, wv);
+        // Does the original have the same seam? Then it is the game's own.
+        let orig = p.original(&name).and_then(|f| img::load(&f).ok());
+        let (ou, ov) = orig.as_ref().map(|o| (img::seam_axis(o, true, wu), img::seam_axis(o, false, wv))).unzip();
+        checked += 1;
+        let bad_u = u.suspect && !ou.as_ref().is_some_and(|o| o.suspect);
+        let bad_v = v.suspect && !ov.as_ref().is_some_and(|o| o.suspect);
+        let (verdict, note) = match (bad_u, bad_v) {
+            (false, false) => ("ok", ""),
+            (true, false) => ("suspect", "left/right edges"),
+            (false, true) => ("suspect", "top/bottom edges"),
+            (true, true) => ("suspect", "both axes"),
+        };
+        suspects += (verdict == "suspect") as usize;
+        if tsv && verdict == "ok" && !a.has("--strict") {
+            // quiet rows are still printed: a TSV is the whole truth
+        }
+        println!(
+            "{name}\t{}\t{}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{verdict}\t{note}",
+            if once_u { "once" } else { wu.name() },
+            if once_v { "once" } else { wv.name() },
+            u.jump,
+            u.ratio,
+            v.jump,
+            v.ratio
+        );
+    }
+    println!("# seam check: {checked} images in {from}/, {suspects} suspect");
+    Ok(!(a.has("--strict") && suspects > 0))
+}
+
+// ---------------------------------------------------------------- draft
+
+struct Brief {
+    prompt: String,
+    refs: Vec<PathBuf>,
+    scale: usize,
+    context: String,
+}
+
+fn parse_brief(path: &Path) -> Result<Brief, String> {
+    let t = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let base = path.parent().unwrap_or(Path::new("."));
+    let mut b = Brief { prompt: String::new(), refs: vec![], scale: 4, context: "frame".into() };
+    for l in t.lines() {
+        if let Some(d) = l.strip_prefix('@') {
+            let (k, v) = d.split_once(char::is_whitespace).unwrap_or((d, ""));
+            let v = v.trim();
+            match k {
+                "ref" => b.refs.push(base.join(v)),
+                "scale" => b.scale = v.parse().map_err(|_| format!("brief: @scale {v}"))?,
+                "context" if ["none", "frame", "group", "both"].contains(&v) => b.context = v.to_string(),
+                _ => {
+                    return Err(format!(
+                        "brief: unknown directive `@{k} {v}` (@ref FILE, @scale N, @context none|frame|group|both)"
+                    ))
+                }
+            }
+        } else {
+            b.prompt.push_str(l);
+            b.prompt.push('\n');
+        }
+    }
+    if b.prompt.trim().is_empty() {
+        return Err("the brief has no prompt text".into());
+    }
+    Ok(b)
+}
+
+fn aspect_text(w: usize, h: usize) -> String {
+    fn g(a: usize, b: usize) -> usize {
+        if b == 0 {
+            a
+        } else {
+            g(b, a % b)
+        }
+    }
+    let d = g(w, h).max(1);
+    format!("{}:{}", w / d, h / d)
+}
+
+/// The frame crop where `i` is drawn most (its best frame), or None.
+fn frame_crop(p: &Project, i: &Inv) -> Option<Image> {
+    let stem = frame_stem(&i.best_frame).ok()?;
+    let tsv = std::fs::read_to_string(p.p("map/frames").join(format!("{stem}.tsv"))).ok()?;
+    let mut lines = tsv.lines();
+    let head: Vec<&str> = lines.next()?.split('\t').collect();
+    let col = |n: &str| head.iter().position(|h| *h == n);
+    let (ci, c0, c1, c2, c3) = (col("id")?, col("x0")?, col("y0")?, col("x1")?, col("y1")?);
+    let row = lines
+        .map(|l| l.split('\t').collect::<Vec<_>>())
+        .find(|f| f.get(ci).and_then(|v| v.parse::<u32>().ok()) == Some(i.id))?;
+    let n = |c: usize| row.get(c).and_then(|v| v.parse::<usize>().ok());
+    let (x0, y0, x1, y1) = (n(c0)?, n(c1)?, n(c2)?, n(c3)?);
+    let frame = img::load(&p.p("map/frames").join(format!("{stem}.png"))).ok()?;
+    let m = ((x1 - x0).max(y1 - y0) / 4).max(24);
+    let (cx0, cy0) = (x0.saturating_sub(m), y0.saturating_sub(m));
+    let (cx1, cy1) = ((x1 + m).min(frame.width - 1), (y1 + m).min(frame.height - 1));
+    Some(img::crop(&frame, cx0, cy0, cx1 - cx0 + 1, cy1 - cy0 + 1))
+}
+
+/// A sheet of the group's other members (their drafts where there are any).
+fn group_sheet(p: &Project, inv: &[Inv], i: &Inv) -> Option<Image> {
+    let others: Vec<&Inv> =
+        inv.iter().filter(|o| o.group == i.group && o.name != i.name && o.kind == i.kind).take(8).collect();
+    if others.is_empty() || i.group == 0 {
+        return None;
+    }
+    let cell = 160usize;
+    let cols = 4usize.min(others.len());
+    let rows = others.len().div_ceil(cols);
+    let mut sheet = img::blank(cols * cell, rows * cell, [60, 60, 60, 255]);
+    for (n, o) in others.iter().enumerate() {
+        let path = [p.p("draft").join(format!("{}.png", o.name))]
+            .into_iter()
+            .find(|f| f.is_file())
+            .or_else(|| p.original(&o.name));
+        let Some(im) = path.and_then(|f| img::load(&f).ok()) else { continue };
+        let k = (cell - 8) as f32 / im.width.max(im.height) as f32;
+        let (w, h) = (((im.width as f32 * k) as usize).max(1), ((im.height as f32 * k) as usize).max(1));
+        let t = img::resize(&im, w, h);
+        let (ox, oy) = ((n % cols) * cell + (cell - w) / 2, (n / cols) * cell + (cell - h) / 2);
+        for y in 0..h {
+            for x in 0..w {
+                let s = (y * w + x) * 4;
+                let d = ((oy + y) * sheet.width + ox + x) * 4;
+                sheet.rgba[d..d + 3].copy_from_slice(&t.rgba[s..s + 3]);
+            }
+        }
+    }
+    Some(sheet)
+}
+
+fn run_job(
+    cmd: &str,
+    dir: &Path,
+    prompt_file: &Path,
+    retries: usize,
+    timeout: u64,
+    env: &[(&str, String)],
+) -> Result<(), String> {
+    let log_path = dir.join("run.log");
+    let mut last = String::new();
+    for attempt in 1..=retries + 1 {
+        let _ = std::fs::remove_file(dir.join("out.png"));
+        let log = std::fs::OpenOptions::new().create(true).append(true).open(&log_path).map_err(|e| e.to_string())?;
+        let mut log2 = log.try_clone().map_err(|e| e.to_string())?;
+        {
+            use std::io::Write as _;
+            let _ = writeln!(log2, "== attempt {attempt}: {cmd}");
+        }
+        let mut c = Command::new("sh");
+        c.arg("-c")
+            .arg(cmd)
+            .current_dir(dir)
+            .stdin(Stdio::from(std::fs::File::open(prompt_file).map_err(|e| e.to_string())?));
+        c.stdout(Stdio::from(log)).stderr(Stdio::from(log2));
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        let mut child = c.spawn().map_err(|e| format!("cannot start `{cmd}`: {e}"))?;
+        let start = std::time::Instant::now();
+        let status = loop {
+            match child.try_wait().map_err(|e| e.to_string())? {
+                Some(s) => break Some(s),
+                None if start.elapsed().as_secs() > timeout => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                None => std::thread::sleep(std::time::Duration::from_millis(300)),
+            }
+        };
+        match status {
+            Some(s) if s.success() && img::load(&dir.join("out.png")).is_ok() => return Ok(()),
+            Some(s) => {
+                last = format!(
+                    "attempt {attempt}: exit {s}, {}",
+                    if dir.join("out.png").is_file() { "out.png does not decode" } else { "no out.png" }
+                )
+            }
+            None => last = format!("attempt {attempt}: timed out after {timeout}s"),
+        }
+        if attempt <= retries {
+            std::thread::sleep(std::time::Duration::from_secs(2 * attempt as u64));
+        }
+    }
+    Err(last)
+}
+
+fn draft(p: &Project, a: &Args) -> Result<bool, String> {
+    p.require()?;
+    let brief_path =
+        PathBuf::from(a.get("--brief").ok_or("--brief FILE: the prompt, with @ref/@scale/@context lines")?);
+    let mut brief = parse_brief(&brief_path)?;
+    for r in a.all("--ref") {
+        brief.refs.push(PathBuf::from(r));
+    }
+    if let Some(s) = a.num::<usize>("--scale")? {
+        brief.scale = s;
+    }
+    for r in &brief.refs {
+        if !r.is_file() {
+            return Err(format!("reference image {} not found", r.display()));
+        }
+    }
+    let template = a.get("--cmd").unwrap_or("codex exec {images} -").to_string();
+    let rows = p.pick(a, true)?;
+    let inv = p.inventory().unwrap_or_default();
+    let jobs: usize = a.num("--jobs")?.unwrap_or(3);
+    let retries: usize = a.num("--retries")?.unwrap_or(2);
+    let timeout: u64 = a.num("--timeout")?.unwrap_or(900);
+    let (force, dry) = (a.has("--force"), a.has("--dry-run"));
+
+    // Prepare every job (cheap), then run those without a draft.
+    struct Job {
+        name: String,
+        dir: PathBuf,
+        w: usize,
+        h: usize,
+        cmd: String,
+        prompt: String,
+        inputs: Vec<String>,
+    }
+    let mut todo = Vec::new();
+    let mut skipped = 0;
+    for r in &rows {
+        if !force && p.p("draft").join(format!("{}.png", r.name)).is_file() {
+            skipped += 1;
+            continue;
+        }
+        let Some(op) = p.original(&r.name) else {
+            println!("skipped       {}: no original", r.name);
+            continue;
+        };
+        let orig = img::load(&op)?;
+        let jd = p.p("work/draft").join(&r.name);
+        std::fs::create_dir_all(&jd).map_err(|e| e.to_string())?;
+        let k = (512 / orig.width.max(orig.height)).clamp(2, 16);
+        let mut files = vec!["in1.png".to_string()];
+        let mut desc = vec!["Image 1: the original texture, enlarged".to_string()];
+        img::save(&jd.join("in1.png"), &img::nearest(&orig, k))?;
+        for (n, rf) in brief.refs.iter().enumerate() {
+            let f = format!("ref{}.png", n + 1);
+            // Reference images may be any format the png codec reads.
+            copy_file(rf, &jd.join(&f))?;
+            files.push(f);
+            desc.push(format!(
+                "Image {}: reference {}",
+                files.len(),
+                rf.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()
+            ));
+        }
+        let me = inv.iter().find(|i| i.name == r.name);
+        if let Some(me) = me {
+            if matches!(brief.context.as_str(), "frame" | "both") {
+                if let Some(c) = frame_crop(p, me) {
+                    let k = (768.0f32 / c.width.max(c.height) as f32).min(1.0);
+                    let c = img::resize(
+                        &c,
+                        ((c.width as f32 * k) as usize).max(1),
+                        ((c.height as f32 * k) as usize).max(1),
+                    );
+                    img::save(&jd.join("ctx-frame.png"), &c)?;
+                    files.push("ctx-frame.png".into());
+                    desc.push(format!(
+                        "Image {}: where the texture is used in the game (context only, do not copy its look)",
+                        files.len()
+                    ));
+                }
+            }
+            if matches!(brief.context.as_str(), "group" | "both") {
+                if let Some(s) = group_sheet(p, &inv, me) {
+                    img::save(&jd.join("ctx-group.png"), &s)?;
+                    files.push("ctx-group.png".into());
+                    desc.push(format!("Image {}: the other textures of the same object (restyled ones show the target look); match them", files.len()));
+                }
+            }
+        }
+        let mut prompt = brief.prompt.clone();
+        for (k, v) in [
+            ("{name}", r.name.clone()),
+            ("{w}", orig.width.to_string()),
+            ("{h}", orig.height.to_string()),
+            ("{aspect}", aspect_text(orig.width, orig.height)),
+            ("{scale}", brief.scale.to_string()),
+            ("{category}", r.category.clone()),
+            ("{group}", r.group.to_string()),
+            ("{reason}", r.reason.clone()),
+            ("{images}", desc.join(". ") + "."),
+        ] {
+            prompt = prompt.replace(k, &v);
+        }
+        if !prompt.contains("out.png") {
+            prompt.push_str("\nSave the result as out.png in the current directory. Reply with the file path only.\n");
+        }
+        std::fs::write(jd.join("prompt.txt"), &prompt).map_err(|e| e.to_string())?;
+        let imgs: Vec<String> = files.iter().map(|f| format!("-i {f}")).collect();
+        let cmd = template
+            .replace("{images}", &imgs.join(" "))
+            .replace("{files}", &files.join(" "))
+            .replace("{prompt_file}", "prompt.txt")
+            .replace("{out}", "out.png");
+        todo.push(Job { name: r.name.clone(), dir: jd, w: orig.width, h: orig.height, cmd, prompt, inputs: files });
+    }
+    println!("jobs          {} to run, {} already drafted (--force redoes)", todo.len(), skipped);
+    if dry {
+        for j in &todo {
+            println!("{}\t{}\t{}", j.name, j.dir.display(), j.cmd);
+        }
+        return Ok(true);
+    }
+    let next = AtomicUsize::new(0);
+    let results: Mutex<Vec<(String, Result<(), String>)>> = Mutex::new(Vec::new());
+    std::thread::scope(|s| {
+        for _ in 0..jobs.clamp(1, 16) {
+            s.spawn(|| loop {
+                let n = next.fetch_add(1, Ordering::SeqCst);
+                let Some(j) = todo.get(n) else { break };
+                let env =
+                    [("STUDIO_NAME", j.name.clone()), ("STUDIO_W", j.w.to_string()), ("STUDIO_H", j.h.to_string())];
+                let r = run_job(&j.cmd, &j.dir, &j.dir.join("prompt.txt"), retries, timeout, &env).and_then(|_| {
+                    finish_draft(p, j.name.as_str(), &j.dir, j.w, j.h, brief.scale, a.has("--keep-size"))
+                });
+                match &r {
+                    Ok(()) => {
+                        let tool = template.split_whitespace().next().unwrap_or("generator");
+                        let note = format!(
+                            "{tool}: {}",
+                            brief_path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()
+                        );
+                        let body = format!(
+                            "{}\n---\ncommand\t{}\ninputs\t{}\nbrief\t{}\n",
+                            j.prompt,
+                            j.cmd,
+                            j.inputs.join(" "),
+                            brief_path.display()
+                        );
+                        let _ = p.write_prompt(&j.name, &body).and_then(|pf| p.record(&j.name, &note, &pf));
+                        println!("drafted       {}", j.name);
+                    }
+                    Err(e) => println!("failed        {}: {e} (log: {})", j.name, j.dir.join("run.log").display()),
+                }
+                results.lock().unwrap().push((j.name.clone(), r));
+            });
+        }
+    });
+    let res = results.into_inner().unwrap();
+    let failed = res.iter().filter(|r| r.1.is_err()).count();
+    println!("draft         {} drafted, {failed} failed, {skipped} skipped", res.len() - failed);
+    Ok(failed == 0)
+}
+
+fn finish_draft(
+    p: &Project,
+    name: &str,
+    jd: &Path,
+    w: usize,
+    h: usize,
+    scale: usize,
+    keep: bool,
+) -> Result<(), String> {
+    let out = img::load(&jd.join("out.png"))?;
+    let im = if keep {
+        out
+    } else {
+        // Crop to the original's proportions (a generator's frame is not
+        // always the aspect asked for), then size to scale x original.
+        let want = w as f32 / h as f32;
+        let have = out.width as f32 / out.height as f32;
+        let cropped = if (have / want - 1.0).abs() > 0.02 {
+            if have > want {
+                let nw = (out.height as f32 * want) as usize;
+                img::crop(&out, (out.width - nw) / 2, 0, nw, out.height)
+            } else {
+                let nh = (out.width as f32 / want) as usize;
+                img::crop(&out, 0, (out.height - nh) / 2, out.width, nh)
+            }
+        } else {
+            out
+        };
+        img::resize(&cropped, w * scale, h * scale)
+    };
+    img::save(&p.p("draft").join(format!("{name}.png")), &im)
+}
+
+// -------------------------------------------------------------- compare
+
+fn compare(p: &Project, a: &Args, ctx: &Ctx) -> Result<bool, String> {
+    p.require()?;
+    let pack_dir = a.get("--pack").map(PathBuf::from).unwrap_or_else(|| p.p("pack"));
+    let out = a.get("--into").map(PathBuf::from).unwrap_or_else(|| p.p("compare"));
+    let steps = a.get("--steps").unwrap_or("600000000").to_string();
+    let snap = a.get("--snap").unwrap_or("300").to_string();
+    let extra: Vec<String> = a.get("--run-args").unwrap_or("").split_whitespace().map(str::to_string).collect();
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let eeprom = PathBuf::from("out").join(&ctx.game).join("eeprom.bin");
+    let force = a.has("--force");
+    let jobs: usize = a.num("--jobs")?.unwrap_or(2);
+    let mut kids = Vec::new();
+    for (label, pack) in [("before", None), ("after", Some(&pack_dir))] {
+        let od = out.join(label);
+        if !force && od.join("frames/final.png").is_file() {
+            println!("{label:<8}      kept (--force reruns)");
+            continue;
+        }
+        std::fs::create_dir_all(&od).map_err(|e| e.to_string())?;
+        if eeprom.is_file() {
+            let _ = std::fs::copy(&eeprom, od.join("eeprom.bin"));
+        }
+        let mut c = Command::new(&exe);
+        c.args(["--game", &ctx.game, "--rom"]).arg(&ctx.rom);
+        if ctx.jit {
+            c.arg("--jit");
+        }
+        if let Some(i) = &ctx.input {
+            c.args(["--input", i]);
+        }
+        c.args(&extra).arg("--out").arg(&od);
+        if let Some(pk) = pack {
+            c.arg("--texture-pack").arg(pk);
+        }
+        c.args(["run", &steps, &snap]);
+        let log = std::fs::File::create(od.join("run.log")).map_err(|e| e.to_string())?;
+        c.stdout(Stdio::from(log.try_clone().map_err(|e| e.to_string())?)).stderr(Stdio::from(log));
+        kids.push((label, c));
+    }
+    // At most `jobs` at once.
+    let mut running: Vec<(&str, std::process::Child)> = Vec::new();
+    let mut failed = false;
+    let mut queue = kids.into_iter();
+    loop {
+        while running.len() < jobs.max(1) {
+            match queue.next() {
+                Some((l, mut c)) => {
+                    println!("running       {l}");
+                    running.push((l, c.spawn().map_err(|e| format!("{e}"))?));
+                }
+                None => break,
+            }
+        }
+        if running.is_empty() {
+            break;
+        }
+        let mut i = 0;
+        while i < running.len() {
+            match running[i].1.try_wait().map_err(|e| e.to_string())? {
+                Some(s) => {
+                    let (l, _) = running.remove(i);
+                    println!("finished      {l} ({s})");
+                    failed |= !s.success();
+                }
+                None => i += 1,
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    if failed {
+        return Err(format!("a run failed: see {}/before/run.log and after/run.log", out.display()));
+    }
+    let stems = |d: &str| -> BTreeSet<String> {
+        png_names(&out.join(d).join("frames")).into_iter().filter(|n| n.chars().all(|c| c.is_ascii_digit())).collect()
+    };
+    let mut common: Vec<String> = stems("before").intersection(&stems("after")).cloned().collect();
+    if let Some(f) = a.get("--frames") {
+        let want: Vec<String> = f.split(',').map(frame_stem).collect::<Result<_, _>>()?;
+        common.retain(|c| want.contains(c));
+    }
+    if common.is_empty() {
+        return Err("no frames in both runs".into());
+    }
+    let mut tsv = String::from("frame\tchanged_pct\tmean_abs_diff\n");
+    let mut sheets = Vec::new();
+    for f in &common {
+        let b = img::load(&out.join("before/frames").join(format!("{f}.png")))?;
+        let af = img::load(&out.join("after/frames").join(format!("{f}.png")))?;
+        let (changed, mad) = frame_diff(&b, &af);
+        let _ = writeln!(tsv, "{f}\t{changed:.1}\t{mad:.2}");
+        let sheet = side_by_side(&b, &af);
+        img::save(&out.join(format!("sheet-{f}.png")), &sheet)?;
+        sheets.push(sheet);
+    }
+    std::fs::write(out.join("compare.tsv"), &tsv).map_err(|e| e.to_string())?;
+    // One page of a few evenly spaced frames.
+    let pick: Vec<&Image> = if common.len() <= 4 {
+        sheets.iter().collect()
+    } else {
+        (0..4).map(|i| &sheets[i * (sheets.len() - 1) / 3]).collect()
+    };
+    let width = pick.iter().map(|s| s.width).max().unwrap_or(0);
+    let k = (2400.0f32 / width as f32).min(1.0);
+    let scaled: Vec<Image> =
+        pick.iter().map(|s| img::resize(s, (s.width as f32 * k) as usize, (s.height as f32 * k) as usize)).collect();
+    let h: usize = scaled.iter().map(|s| s.height).sum();
+    let mut all = img::blank(scaled.iter().map(|s| s.width).max().unwrap_or(1), h.max(1), [30, 30, 30, 255]);
+    let mut y = 0;
+    for s in &scaled {
+        all.rgba[y * all.width * 4..(y * all.width * 4) + s.rgba.len()].copy_from_slice(&s.rgba);
+        y += s.height;
+    }
+    img::save(&out.join("sheet-all.png"), &all)?;
+    println!(
+        "compare       {} frames: {}/sheet-FRAME.png (before | after), sheet-all.png, compare.tsv",
+        common.len(),
+        out.display()
+    );
+    Ok(true)
+}
+
+fn side_by_side(a: &Image, b: &Image) -> Image {
+    let gap = 8;
+    let mut s = img::blank(a.width + b.width + gap, a.height.max(b.height), [30, 30, 30, 255]);
+    for (im, x0) in [(a, 0), (b, a.width + gap)] {
+        for y in 0..im.height {
+            let d = (y * s.width + x0) * 4;
+            s.rgba[d..d + im.width * 4].copy_from_slice(&im.rgba[y * im.width * 4..(y + 1) * im.width * 4]);
+        }
+    }
+    s
+}
+
+fn frame_diff(a: &Image, b: &Image) -> (f32, f32) {
+    if a.width != b.width || a.height != b.height {
+        return (100.0, 255.0);
+    }
+    let (mut n, mut sum) = (0usize, 0u64);
+    for (x, y) in a.rgba.chunks_exact(4).zip(b.rgba.chunks_exact(4)) {
+        let d: u32 = (0..3).map(|c| (x[c] as i32 - y[c] as i32).unsigned_abs()).sum();
+        if d > 6 {
+            n += 1;
+        }
+        sum += d as u64;
+    }
+    let px = (a.width * a.height).max(1);
+    (100.0 * n as f32 / px as f32, sum as f32 / (3 * px) as f32)
+}
+
+// ---------------------------------------------------------------- tests
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../out/scratch/studio-tests"))
+            .join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn args(s: &str) -> Args {
+        Args::parse(&s.split_whitespace().map(str::to_string).collect::<Vec<_>>()).unwrap()
+    }
+
+    /// A two-texture, one-tile "map".
+    fn map(dir: &Path) {
+        let m = dir.join("map");
+        std::fs::create_dir_all(m.join("textures")).unwrap();
+        std::fs::create_dir_all(m.join("frames")).unwrap();
+        std::fs::write(
+            m.join("inventory.tsv"),
+            "id\tname\tkind\tw\th\tsurface\tframes\tpixels\tbest_frame\tbest_pixels\tpolys\tuv_used_pct\twrap\tspan_u\tspan_v\tgroup\tgroup_size\tdetail\n\
+             2\ttex_aaaaaaaaaaaaaaaa_8x8\ttex\t8\t8\tS1\t1\t900\t300\t900\t1\t100\trr\t2\t2\t1\t2\t-\n\
+             3\ttex_bbbbbbbbbbbbbbbb_8x8\ttex\t8\t8\tS1\t1\t500\t300\t500\t1\t100\trr\t2\t2\t1\t2\t-\n\
+             4\ttile_cccccccccccccccc\ttile\t8\t8\t0\t1\t100\t300\t100\t1\t100\t-\t1\t1\t2\t1\t-\n",
+        )
+        .unwrap();
+        for (n, c) in [
+            ("tex_aaaaaaaaaaaaaaaa_8x8", [200u8, 100, 50]),
+            ("tex_bbbbbbbbbbbbbbbb_8x8", [50, 100, 200]),
+            ("tile_cccccccccccccccc", [255, 255, 255]),
+        ] {
+            img::save(&m.join("textures").join(format!("{n}.png")), &img::blank(8, 8, [c[0], c[1], c[2], 255]))
+                .unwrap();
+        }
+        // a 16x16 frame: ids image with tex 2 left half, tex 3 right half
+        let mut ids = img::blank(16, 16, [0, 0, 0, 255]);
+        for y in 0..16 {
+            for x in 0..16 {
+                ids.rgba[(y * 16 + x) * 4] = if x < 8 { 2 } else { 3 };
+            }
+        }
+        img::save(&m.join("frames/000300-ids.png"), &ids).unwrap();
+    }
+
+    #[test]
+    fn project_select_status_approve_pack() {
+        let d = tmp("flow");
+        let p = Project { dir: d.clone() };
+        init(&p, &args(&format!("{} --name demo --game g", d.display()))).unwrap();
+        map(&d);
+        // selection by key hash, id, surface and frame region
+        select(&p, &args(&format!("{} --key aaaaaaaaaaaaaaaa --category wall --reason first", d.display()))).unwrap();
+        select(&p, &args(&format!("{} --key 4 --reason tile", d.display()))).unwrap();
+        select(&p, &args(&format!("{} --frame 300 --region 8,0,8,16 --category wall", d.display()))).unwrap();
+        let rows = p.selection();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].category, "wall");
+        assert_eq!(rows[0].reason, "first");
+        assert_eq!(rows[1].name, "tex_bbbbbbbbbbbbbbbb_8x8");
+        // idempotent
+        let before = std::fs::read_to_string(d.join("selection.tsv")).unwrap();
+        select(&p, &args(&format!("{} --key aaaaaaaaaaaaaaaa,4", d.display()))).unwrap();
+        assert_eq!(std::fs::read_to_string(d.join("selection.tsv")).unwrap(), before);
+        assert!(d.join("original/tile_cccccccccccccccc.png").is_file());
+        assert!(select(&p, &args(&format!("{} --key nope", d.display()))).is_err());
+        // by surface adds nothing new; by group of tile
+        select(&p, &args(&format!("{} --surface S1 --kind tex", d.display()))).unwrap();
+        assert_eq!(p.selection().len(), 3);
+        // status
+        assert_eq!(p.status_of("tex_aaaaaaaaaaaaaaaa_8x8"), Status::Original);
+        img::save(&d.join("draft/tex_aaaaaaaaaaaaaaaa_8x8.png"), &img::blank(32, 32, [1, 2, 3, 255])).unwrap();
+        assert_eq!(p.status_of("tex_aaaaaaaaaaaaaaaa_8x8"), Status::Drafted);
+        approve(&p, &args(&format!("{} --drafted", d.display()))).unwrap();
+        assert_eq!(p.status_of("tex_aaaaaaaaaaaaaaaa_8x8"), Status::Approved);
+        assert_eq!(p.status_of("tex_bbbbbbbbbbbbbbbb_8x8"), Status::Original);
+        p.record("tex_aaaaaaaaaaaaaaaa_8x8", "test", "-").unwrap();
+        p.record("tex_aaaaaaaaaaaaaaaa_8x8", "test2", "-").unwrap();
+        assert_eq!(p.ledger().len(), 1);
+        assert_eq!(p.ledger()["tex_aaaaaaaaaaaaaaaa_8x8"].0, "test2");
+        status(&p, &args(&format!("{}", d.display()))).unwrap();
+        // pack: manifest and index
+        assert!(pack(&p, &args(&format!("{} --no-lint", d.display()))).unwrap());
+        let idx = std::fs::read_to_string(d.join("pack/index.txt")).unwrap();
+        assert!(idx.contains("tex_aaaaaaaaaaaaaaaa_8x8.png") && !idx.contains("bbbb"));
+        assert!(std::fs::read_to_string(d.join("pack/pack.txt")).unwrap().contains("game\tg"));
+        approve(&p, &args(&format!("{} --undo tex_aaaaaaaaaaaaaaaa_8x8", d.display()))).unwrap();
+        assert_eq!(p.status_of("tex_aaaaaaaaaaaaaaaa_8x8"), Status::Drafted);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn surface_variants_tint_each_key_from_its_original() {
+        let d = tmp("variants");
+        let p = Project { dir: d.clone() };
+        init(&p, &args(&format!("{}", d.display()))).unwrap();
+        map(&d);
+        select(&p, &args(&format!("{} --key aaaaaaaaaaaaaaaa --category ground", d.display()))).unwrap();
+        // the restyle of key a: flat grey, 4x
+        img::save(&d.join("draft/tex_aaaaaaaaaaaaaaaa_8x8.png"), &img::blank(32, 32, [150, 150, 150, 255])).unwrap();
+        variants(&p, &args(&format!("{} --of aaaaaaaaaaaaaaaa", d.display()))).unwrap();
+        let v = img::load(&d.join("draft/tex_bbbbbbbbbbbbbbbb_8x8.png")).unwrap();
+        // b's original is blue where a's is orange: the variant is bluer
+        assert!(v.rgba[2] > v.rgba[0], "{:?}", &v.rgba[..4]);
+        assert_eq!(v.width, 32);
+        let sel = p.selection();
+        let b = sel.iter().find(|r| r.name.contains("bbbb")).unwrap();
+        assert_eq!(b.category, "ground");
+        assert!(b.reason.contains("same surface"));
+        assert!(p.ledger()["tex_bbbbbbbbbbbbbbbb_8x8"].0.starts_with("variant of"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn region_picker_lists_ids() {
+        let d = tmp("region");
+        let p = Project { dir: d.clone() };
+        init(&p, &args(&format!("{}", d.display()))).unwrap();
+        map(&d);
+        assert!(region(&p, &args(&format!("{} --frame 300 --region 0,0,8,8", d.display()))).unwrap());
+        assert!(region(&p, &args(&format!("{} --frame 301 --region 0,0,8,8", d.display()))).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn seam_reports_only_what_the_original_lacked() {
+        let d = tmp("seam");
+        let p = Project { dir: d.clone() };
+        init(&p, &args(&format!("{}", d.display()))).unwrap();
+        map(&d);
+        // a smooth ramp original and a pack image with a dark top row
+        let mut ramp = img::blank(16, 16, [0, 0, 0, 255]);
+        for y in 0..16 {
+            for x in 0..16 {
+                let v = (128.0 + 100.0 * (x as f32 / 16.0 * std::f32::consts::TAU).sin()) as u8;
+                ramp.rgba[(y * 16 + x) * 4..][..3].copy_from_slice(&[v, v, v]);
+            }
+        }
+        let name = "tex_aaaaaaaaaaaaaaaa_8x8";
+        img::save(&d.join(format!("original/{name}.png")), &ramp).unwrap();
+        let mut bad = ramp.clone();
+        for x in 0..16 {
+            bad.rgba[x * 4..x * 4 + 3].copy_from_slice(&[0, 0, 0]);
+        }
+        img::save(&d.join(format!("pack/{name}.png")), &bad).unwrap();
+        assert!(seam(&p, &args(&format!("{} --strict", d.display()))).is_ok_and(|ok| !ok));
+        img::save(&d.join(format!("pack/{name}.png")), &ramp).unwrap();
+        assert!(seam(&p, &args(&format!("{} --strict", d.display()))).unwrap());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn brief_directives_and_prompt() {
+        let d = tmp("brief");
+        let f = d.join("b.md");
+        std::fs::write(&f, "@ref logo.png\n@scale 2\n@context both\nRedraw {name} as {aspect}.\n").unwrap();
+        let b = parse_brief(&f).unwrap();
+        assert_eq!((b.scale, b.context.as_str()), (2, "both"));
+        assert!(b.refs[0].ends_with("logo.png") && b.prompt.trim() == "Redraw {name} as {aspect}.");
+        std::fs::write(&f, "@bogus 1\nx\n").unwrap();
+        assert!(parse_brief(&f).is_err());
+        assert_eq!(aspect_text(128, 64), "2:1");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn draft_runner_runs_a_template_resumes_and_sizes() {
+        let d = tmp("draft");
+        let p = Project { dir: d.clone() };
+        init(&p, &args(&format!("{}", d.display()))).unwrap();
+        map(&d);
+        select(&p, &args(&format!("{} --key aaaaaaaaaaaaaaaa,bbbbbbbbbbbbbbbb --category x", d.display()))).unwrap();
+        std::fs::write(d.join("brief.md"), "Make {name}. Save out.png.\n").unwrap();
+        // The "generator": copies the first input to out.png (a 2:1 image would be cropped to 1:1).
+        let cmd = "cp in1.png out.png; cat > /dev/null; echo {images} > args.txt";
+        let line = format!("{} --brief {}/brief.md --all --jobs 2 --scale 2 --retries 0", d.display(), d.display());
+        let mut a = args(&line);
+        a.flags.push(("--cmd".into(), cmd.into()));
+        assert!(draft(&p, &a).unwrap());
+        let out = img::load(&d.join("draft/tex_aaaaaaaaaaaaaaaa_8x8.png")).unwrap();
+        assert_eq!((out.width, out.height), (16, 16));
+        assert!(std::fs::read_to_string(d.join("prompts/tex_aaaaaaaaaaaaaaaa_8x8.txt"))
+            .unwrap()
+            .contains("Make tex_aaaaaaaaaaaaaaaa_8x8"));
+        assert!(
+            p.ledger()["tex_bbbbbbbbbbbbbbbb_8x8"].0.starts_with("sh:")
+                || p.ledger()["tex_bbbbbbbbbbbbbbbb_8x8"].0.contains("brief.md")
+        );
+        // resumable: a second run finds both done and runs nothing (the command would fail)
+        let mut a2 = args(&line);
+        a2.flags.push(("--cmd".into(), "false".into()));
+        assert!(draft(&p, &a2).unwrap());
+        // a failing generator fails the job and leaves no draft
+        std::fs::remove_file(d.join("draft/tex_bbbbbbbbbbbbbbbb_8x8.png")).unwrap();
+        let mut a3 = args(&line);
+        a3.flags.push(("--cmd".into(), "exit 1".into()));
+        assert!(!draft(&p, &a3).unwrap());
+        assert!(!d.join("draft/tex_bbbbbbbbbbbbbbbb_8x8.png").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn today_is_a_date() {
+        let t = today();
+        assert_eq!(t.len(), 10);
+        assert!(t.starts_with("20"));
+    }
+}
