@@ -1407,7 +1407,20 @@ byte for byte the same).
   (exact 1/z). It is a separate pass, not an extra attachment of the 3D
   pass, because an integer target can't be multisample-resolved and the
   pass has 25 entry points, some temporal; the price is drawing the
-  polygons a second time, only when a screen-space effect is on. The ID
+  polygons a second time, only when a screen-space effect is on. What the
+  3D pass has prepared is shared with it (`look::IdShare`: the vertex and
+  polygon-table buffers, the RAM buffers, the pack slots and the polygons'
+  IDs), so the ID pass makes only its 1/z points and ID words (temporal
+  frames and material maps still prepare it afresh). It draws the polygons
+  the colour pass draws but the translucent ones; the games' *painter's
+  order* polygons (skies and ground quads spanning more than 8 times in
+  depth, `raster::background_reason`) are in it, drawn in order without
+  depth like the colour pass (a ground missing from it drew a stray line
+  across Top Skater's track where it met the next piece). Tag bit 17 marks
+  them: where two meet no line is drawn, and a step between one and another
+  surface counts a fifth (their 1/z, from the software fill's edge
+  interpolation, is only roughly the surface's: a ground quad's far edge
+  sat a tenth above the ground it met). The ID
   scheme differs from `texmap`'s sequential IDs (those are per run); the
   key in `inventory.tsv` gives the live ID.
 - **Ink outlines** (`look.wgsl`): one pass over the finished 3D layer. In
@@ -1415,23 +1428,44 @@ byte for byte the same).
   difference across a pixel at the line's half width is zero on any flat
   surface, however tilted, and large only at a silhouette or crease: no
   slope threshold, flat floors stay clean. Ink goes on the nearer side
-  only. Between two textures at one depth the same test on the IDs
-  (nearer, or the larger ID on a tie) draws a line. Weight is in pixels at
-  1080 lines and scales with the output; lines under a pixel fade; lines
-  thin with distance between two set distances; a tag can scale a
-  texture's line or remove it (`outline=none`, which is also how
-  HUD-like polygons opt out; 2D tiles are never in this pass).
+  only. Between two textures the same test on the IDs (nearer, or the
+  larger ID on a tie) draws a line, but only where the surface bends (the
+  1/z of the pixel and its two neighbours across the boundary off a
+  straight line by 1 to 4 percent): pieces of one plane, however tilted
+  (a floor of many tiles, a decal), never get one. This was the cause of
+  the stray lines across Top Skater's ground at first: the test took any
+  tilt for a nearer side. A thing narrower than twice the line (wires, a
+  fence's mesh, far twigs) is drawn at a third, and a pixel the 3D layer
+  drew that the ID pass has nothing for (a translucent polygon) is never
+  taken for a step. Weight is in pixels at 1080 lines and scales with the
+  output; lines under a pixel fade; lines thin with distance (by default
+  between 100 and 800 times the scene's typical distance, which is the
+  area-weighted median distance of the frame's polygons, steadied over
+  frames: depth units differ by orders of magnitude between games); a tag
+  can scale a texture's line, remove it (`outline=none`, which is also how
+  HUD-like polygons opt out; 2D tiles are never in this pass) or force it
+  against a coplanar neighbour (any `outline=W` above 0).
 - **Speed lines** are minimal and off: radial wedges at a fixed amount.
   Driving them from the temporal pass's motion vectors is not done.
 - **Browser:** these are WGSL passes in the shared renderer and run in
   WebGPU unchanged (rg32uint and r32float are renderable in core WebGPU);
   the web build has no look file or picker yet, so it draws none.
-- **Cost** (RTX 2080 SUPER, Top Skater frames 3300 and 3600, pack on, 4x
-  MSAA, GPU+CPU time per frame without read-back): toon and halftone alone
-  +0.1 ms; with the ID and ink passes +7 ms at 1080p (4.8 to 11.6 ms) and
-  +4 to +6 ms at 4K (7.8 to 11.5-14.0 ms). Most of it is the second
-  polygon pass's CPU preparation, not fill, which is why 4K costs no more;
-  sharing that preparation with the 3D pass is the next saving.
+- **Cost** (RTX 2080 SUPER, Top Skater frame 3600, 1858 polygons, pack on,
+  4x MSAA, time per draw without read-back, `make look-render
+  LOOK_OPTS="--bench 30"`, which draws as the player does: RAM unchanged
+  between draws): toon and halftone alone nothing measurable; the ID and
+  ink passes were +7.0 ms at 1080p (4.4 to 11.4 ms) and +4.3 ms at 4K
+  (2.2 to 6.5 ms) when each pass prepared the polygons itself, and are now
+  **+0.7 ms at 1080p** (1.2 to 1.9 ms: 0.1 ms of CPU for the ID pass's
+  points and the polygons' IDs, the rest GPU) and **+3.0 ms at 4K**
+  (2.2 to 5.2 ms). At 4K it is GPU time: the ID pass is a full depth pass
+  (`outline_iz` per fragment, which writes the fragment depth and so draws
+  every overlapping fragment), about what the 3D layer costs with the depth
+  buffer on; its cut-out test now reads a texel only for a polygon that
+  has cut-outs (translucent texels, a checkerboard, a pack image). With RAM
+  versions unknown (every draw uploads and hashes the textures again, as
+  `--bench` did before) add 2 ms. The ID pass could be drawn at 1080p for
+  a 4K picture, at the price of jagged lines; not done.
 
 Picture style *Comic* (`docs/play.md`) is these effects at their defaults
 with smooth lighting and 4x multisampling, working with no pack.

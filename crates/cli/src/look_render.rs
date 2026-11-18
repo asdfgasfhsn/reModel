@@ -40,6 +40,7 @@ fn time_draws(
     view: &View,
     layers: &video::Layers2d,
     n: usize,
+    version: u64,
 ) -> f64 {
     let target = gpu.device().create_texture(&gpu::wgpu::TextureDescriptor {
         label: Some("look bench"),
@@ -56,16 +57,36 @@ fn time_draws(
         let _ = g.device().poll(gpu::wgpu::PollType::Wait { submission_index: None, timeout: None });
     };
     // Warm up (pipelines, kept targets), then time.
+    // The game's RAM as the player knows it: unchanged between draws, so
+    // nothing is uploaded or hashed again.
     for _ in 0..3 {
+        gpu.set_ram_versions(version, version);
         gpu.present(polys, placed, src, view, layers, &tv, gpu::wgpu::TextureFormat::Rgba8Unorm);
     }
     wait(gpu);
+    gpu.set_profile(true);
+    gpu.take_phases();
     let t = Instant::now();
     for _ in 0..n {
+        gpu.set_ram_versions(version, version);
         gpu.present(polys, placed, src, view, layers, &tv, gpu::wgpu::TextureFormat::Rgba8Unorm);
     }
     wait(gpu);
-    t.elapsed().as_secs_f64() * 1e3 / n as f64
+    let ms = t.elapsed().as_secs_f64() * 1e3 / n as f64;
+    let p = gpu.take_phases();
+    gpu.set_profile(false);
+    let each = |d: std::time::Duration| d.as_secs_f64() * 1e3 / n as f64;
+    println!(
+        "              host: prep {:.2} resources {:.2} pass {:.2} rest {:.2} submit {:.2} ms (look: polygon ids {:.2}, id pass {:.2})",
+        each(p.prep3d),
+        each(p.resources3d),
+        each(p.pass3d),
+        each(p.rest),
+        each(p.submit),
+        each(p.look),
+        each(p.look_id)
+    );
+    ms
 }
 
 pub fn run(root: &Path, out_dir: &Path, o: &Options) -> Result<(), String> {
@@ -125,16 +146,17 @@ pub fn run(root: &Path, out_dir: &Path, o: &Options) -> Result<(), String> {
         save("sheet", &sheet, w * 2);
         let changed = plain.chunks(3).zip(styled.chunks(3)).filter(|(a, b)| a != b).count();
         let mut line = format!(
-            "frame {:>5}: {} polygons, {:.1}% of pixels changed",
+            "frame {:>5}: {} polygons (typical distance {:.0}), {:.1}% of pixels changed",
             f.frame,
             placed.len(),
+            gpu::depth_reference(&polys, &placed).unwrap_or(0.0),
             100.0 * changed as f64 / (w * h) as f64
         );
         if o.bench > 0 {
             gpu.set_look(None);
-            let off = time_draws(&mut gpu, &polys, &placed, &src, &view, &layers, o.bench);
+            let off = time_draws(&mut gpu, &polys, &placed, &src, &view, &layers, o.bench, f.frame + 1);
             gpu.set_look(Some(look.clone()));
-            let on = time_draws(&mut gpu, &polys, &placed, &src, &view, &layers, o.bench);
+            let on = time_draws(&mut gpu, &polys, &placed, &src, &view, &layers, o.bench, f.frame + 1);
             line += &format!("; draw {off:.2} ms without, {on:.2} ms with ({:+.2})", on - off);
         }
         println!("{line}");

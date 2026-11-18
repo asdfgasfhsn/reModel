@@ -1012,19 +1012,31 @@ tag	surf_fedcba9876543210_32x32	toon=off emissive
 | Parameter | Range (default) | Meaning |
 |---|---|---|
 | `outline` | on/off (on) | ink lines at depth jumps and creases, and between textures |
-| `outline_weight` | 0-8 (1.5) | thickness in pixels on a 1080-line picture; scales with the output height |
+| `outline_weight` | 0-8 (1.5; Comic 5) | thickness in pixels on a 1080-line picture (a line is as wide as asked, on the nearer side of an edge only); scales with the output height |
 | `outline_opacity` | 0-1 (0.9) | how solid |
-| `outline_depth` | 0-4 (1) | sensitivity to depth jumps (0: none from depth) |
-| `outline_ids` | 0-1 (0.6) | strength of lines between two textures at one depth (0: none) |
-| `outline_fade_near`, `outline_fade_far` | game units (3000, 14000) | distance where lines start to thin, and where they are gone, so far scenery isn't ink noise |
+| `outline_depth` | 0-4 (1; Comic 1.5) | sensitivity to depth jumps and creases (0: none from depth); a thing narrower than twice the line's weight (a wire, a fence's mesh) is drawn at a third |
+| `outline_ids` | 0-1 (0.6; Comic 0.8) | strength of lines between two textures where the surface bends (0: none). Two textures on one flat surface (a floor of many pieces, a banner on a wall) never get one, however steeply the surface is tilted: that is paint, not a shape; a tag that names an `outline=` weight lines its texture there anyway |
+| `outline_fade_near`, `outline_fade_far` | game units (0, 0) | distance where lines start to thin, and where they are gone, so far scenery isn't ink noise. 0 leaves it to the scene: full strength up to 100 times its typical distance (where half the picture's polygon area is further away), gone at 800 times, since games' units and depth ranges differ by orders of magnitude (Top Skater's median surface is at 45, its stands at 15,000) |
 | `outline_colour` | `#rrggbb` (`#120f19`) | ink |
 | `rim` | 0-1 (0) | a light band inside silhouettes (per texture with a `rim=` tag) |
 | `toon_steps` | 0 or 2-6 (3) | the game's smooth lighting in this many hard bands (0: smooth). Needs smooth shading (the Comic style turns it on; `look-render` does for a look with steps) |
-| `toon_floor` | 0-1 (0.45) | the darkest band's brightness, of the lit one |
-| `toon_cut` | 0-0.9 (0.35) | brightness below which everything is the darkest band |
-| `halftone` | 0-1 (0) | dots of ink in the darkest band, this share of its area |
+| `toon_floor` | 0-1 (0.45; Comic 0.35) | the darkest band's brightness, of the lit one |
+| `toon_cut` | 0-0.9 (0.35; Comic 0.3) | brightness below which everything is the darkest band |
+| `halftone` | 0-1 (0; Comic 0.6) | dots of ink in the darkest band, this share of its area |
 | `halftone_pitch`, `halftone_angle`, `halftone_colour` | 2-24 px at 1080 (6), 0-90 (45), `#rrggbb` | the dot grid |
 | `speed_lines` | 0-1 (0) | streaks from the middle of the picture; approximate: a fixed amount, not driven by speed |
+
+**The Comic defaults** (`Look::comic`, the built-in look with no pack):
+`outline_weight 5`, `outline_depth 1.5`, `outline_ids 0.8`, three toon
+steps with `toon_floor 0.35` and `toon_cut 0.3`, `halftone 0.6`; the other
+parameters are the defaults above. Tuned by eye on Top Skater (with and
+without the cel restyle pack), Virtua Fighter 2, Daytona USA and Super GT
+24h, 1080p. Toon bands follow the game's lighting, so a game's
+smooth-shading layer matters: captured with `--geo native --light`
+(`make lighting-capture`) the bands follow the game's own lighting exactly;
+without it the stream's lumas are smoothed (also fine for the look, and
+what the player does on the chip geometrizer). Native-geometrizer games
+(2B, 2C) and `vf2`/`daytona` all give a lighting layer under `--light`.
 
 **Tags.** `tag STEM k=v ...` names a texture by its image stem
 (`tex_<key>_<w>x<h>`, this colour) or surface stem (`surf_<key>_<w>x<h>`,

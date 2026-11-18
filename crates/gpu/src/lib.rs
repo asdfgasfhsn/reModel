@@ -27,7 +27,7 @@ mod tiles;
 
 pub use board::BoardFrame;
 use board::BoardRef;
-pub use look::{flat_id, texture_id};
+pub use look::{depth_reference, flat_id, texture_id};
 pub use model2::enhance::TexFilter;
 use model2::enhance::{Found, Rgba, TexturePack};
 pub use model2::light::{Shading, CREASE_AUTO};
@@ -418,6 +418,10 @@ pub struct Phases {
     /// The rest of `encode_frame`: temporal's resolve, bloom, the 2D
     /// uploads, the compose pass.
     pub rest: std::time::Duration,
+    /// The look's IDs and tags of the polygons (inside `prep3d`).
+    pub look: std::time::Duration,
+    /// The look's ID pass's own preparation (inside `resources3d`).
+    pub look_id: std::time::Duration,
     /// `Queue::submit`.
     pub submit: std::time::Duration,
 }
@@ -603,6 +607,12 @@ pub struct Renderer {
     no_materials: bool,
     /// `frames` when the look's targets were last used.
     look_used: u64,
+    /// The look's ID pass will follow this frame's 3D pass (`encode_frame`):
+    /// the 3D pass keeps what the ID pass can reuse (`look::IdShare`).
+    share_ids: bool,
+    /// The scene's typical distance, steadied (`look::depth_reference`).
+    depth_ref: Option<f32>,
+    id_share: Option<look::IdShare>,
     /// While a photo is drawn: its near plane (`raster::BuildIn::near`).
     photo_near: f32,
 }
@@ -959,6 +969,9 @@ impl Renderer {
             raster_id: HashMap::new(),
             no_materials: false,
             look_used: 0,
+            share_ids: false,
+            depth_ref: None,
+            id_share: None,
         }
     }
 
@@ -2001,10 +2014,16 @@ impl Renderer {
         // The look: per polygon, its ID and tag (the ID pass) and what
         // the tags say about its lighting.
         let look = self.look.clone().filter(|l| l.active());
+        // The ID pass after this one reuses the polygons' IDs, the pack
+        // slots, the vertices and the polygon table (`look::IdShare`).
+        let share = self.share_ids && !id_pass && temporal.is_none() && slots.mat_variant.is_none();
+        let mut spans: Vec<look::Span> = Vec::new();
+        let t_look = self.tick();
         let look_polys = match &look {
-            Some(l) => self.look_polys(polys, placed, src, l, id_pass, versions.map(|v| v.0)),
+            Some(l) => self.look_polys(polys, placed, src, l, id_pass || share, versions.map(|v| v.0)),
             None => Vec::new(),
         };
+        self.lap(t_look, |p| &mut p.look);
         let toon = look::toon_params(look.as_deref().filter(|_| !id_pass), view.height as f32);
         // Material maps: their pipelines for the polygons with a material
         // (`Slots::mat_variant`); every polygon of such a frame has an
@@ -2206,8 +2225,21 @@ impl Renderer {
                 (_, true) => Mode::Background,
                 _ => Mode::Test,
             };
-            if !(id_pass && pl.background) {
+            // The ID pass draws what the colour pass does but the translucent
+            // polygons (look.rs `in_id_pass`).
+            if !(id_pass && !look::in_id_pass(p, pl)) {
                 push(&mut runs, first..end, p.window, mode, pl.clip, slots.slot[i]);
+            }
+            if share {
+                spans.push(look::Span {
+                    vertices: first..end,
+                    window: p.window,
+                    clip: pl.clip,
+                    slot: slots.slot[i],
+                    background: pl.background,
+                    in_id: look::in_id_pass(p, pl),
+                    group_end: placed.get(i + 1).is_none_or(|n| n.group != pl.group),
+                });
             }
             // The depth-only draw repeats a replaced polygon's cut-out.
             if grouped {
@@ -2292,7 +2324,7 @@ impl Renderer {
         // Depth-only draws need no luma: never lit.
         let shading = |m: Mode| (lit_frame && m != Mode::DepthWrite) as u8;
         let pipelines: Vec<(Mode, wgpu::RenderPipeline)> = if id_pass {
-            [Mode::Test, Mode::DepthWrite].map(|m| (m, self.id_pipeline(m, variant))).into()
+            [Mode::Test, Mode::DepthWrite, Mode::Background].map(|m| (m, self.id_pipeline(m, variant))).into()
         } else if q.depth {
             [Mode::Test, Mode::DepthWrite, Mode::Background]
                 .map(|m| (m, self.raster_pipeline(samples, m, variant, is_t, shading(m))))
@@ -2406,6 +2438,18 @@ impl Renderer {
             pass.draw(run.vertices.clone(), 0..1);
         }
         drop(pass);
+        if share {
+            self.id_share = Some(look::IdShare {
+                slots,
+                polys: look_polys,
+                spans,
+                vertices: vertices.clone(),
+                table: table.clone(),
+                render: render.clone(),
+                palette: palette.clone(),
+                variant,
+            });
+        }
         self.lap(t0, |p| &mut p.pass3d);
     }
 
@@ -2588,6 +2632,9 @@ impl Renderer {
         if let Some(targets) = self.photo_depth.take() {
             self.encode_photo_depth(enc, polys, placed, &targets, (w, h));
         }
+        let look = self.look.clone().filter(|l| l.active() && l.params.needs_ids() && !placed.is_empty());
+        self.share_ids = look.is_some();
+        self.id_share = None;
         let layer3d_view = if self.quality.temporal > 0 {
             // The accumulated picture, output size.
             self.encode_temporal(enc, polys, placed, src, view)
@@ -2601,7 +2648,7 @@ impl Renderer {
         // The look's ink pass over the finished 3D layer (the ID pass
         // draws the polygons again, so the frame's RAM versions are put
         // back for it).
-        let look = self.look.clone().filter(|l| l.active() && l.params.needs_ids() && !placed.is_empty());
+        self.share_ids = false;
         let layer3d_view = match &look {
             Some(l) => {
                 self.look_used = self.frames;

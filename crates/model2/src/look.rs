@@ -75,8 +75,8 @@ pub const PARAMS: [Param; 20] = [
     p("outline_opacity", Kind::Number, 0.9, 0.0, 1.0, 0.05, "Line opacity", "How solid the ink is."),
     p("outline_depth", Kind::Number, 1.0, 0.0, 4.0, 0.1, "Depth lines", "How readily a jump in depth, or a crease, draws a line. 0 draws none from depth."),
     p("outline_ids", Kind::Number, 0.6, 0.0, 1.0, 0.05, "Texture lines", "Lines where one texture meets another at the same depth. 0 draws none."),
-    p("outline_fade_near", Kind::Number, 3000.0, 0.0, 100000.0, 250.0, "Fade starts at", "Distance (game units) where lines begin to thin out, so far scenery isn't ink noise."),
-    p("outline_fade_far", Kind::Number, 14000.0, 0.0, 100000.0, 250.0, "Gone at", "Distance (game units) where lines have faded out completely."),
+    p("outline_fade_near", Kind::Number, 0.0, 0.0, 1000000.0, 250.0, "Fade starts at", "Distance (game units) where lines begin to thin out, so far scenery isn't ink noise. 0 leaves it to the scene: 100 times its typical distance, gone at 800 times."),
+    p("outline_fade_far", Kind::Number, 0.0, 0.0, 1000000.0, 250.0, "Gone at", "Distance (game units) where lines have faded out completely (used when the start is set)."),
     p("outline_r", Kind::Colour, 0.07, 0.0, 1.0, 0.0, "Ink colour", "The colour of the lines."),
     p("outline_g", Kind::Colour, 0.06, 0.0, 1.0, 0.0, "", ""),
     p("outline_b", Kind::Colour, 0.10, 0.0, 1.0, 0.0, "", ""),
@@ -290,10 +290,20 @@ fn tag_stem_ok(stem: &str) -> bool {
 
 impl Look {
     /// The look the Comic picture style draws with no pack: the defaults,
-    /// with heavier lines and halftone dots in the shadows.
+    /// with bold ink (5 px at 1080 lines, more readily from depth and
+    /// texture boundaries), three toon bands with a clear dark one, and
+    /// halftone dots in it. Tuned on Top Skater, Virtua Fighter 2, Daytona
+    /// USA and Super GT (docs/texture-packs.md, "Looks").
     pub fn comic() -> Look {
         let mut l = Look { name: Some("Comic".into()), ..Look::default() };
-        for (k, v) in [("outline_weight", "2.25"), ("halftone", "0.4")] {
+        for (k, v) in [
+            ("outline_weight", "5"),
+            ("outline_depth", "1.5"),
+            ("outline_ids", "0.8"),
+            ("toon_floor", "0.35"),
+            ("toon_cut", "0.3"),
+            ("halftone", "0.6"),
+        ] {
             let _ = l.params.set(k, v);
         }
         l
@@ -393,7 +403,9 @@ impl Look {
         if first {
             return Err(format!("{FILE}: no `format N` line"));
         }
-        if l.params.num("outline_fade_far") < l.params.num("outline_fade_near") {
+        if l.params.num("outline_fade_near") > 0.0
+            && l.params.num("outline_fade_far") < l.params.num("outline_fade_near")
+        {
             return Err(format!("{FILE}: `outline_fade_far` is nearer than `outline_fade_near`"));
         }
         Ok(l)

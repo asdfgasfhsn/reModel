@@ -1756,23 +1756,57 @@ fn id_out(poly: u32, pos: vec4f, iz: f32) -> IdOut {
     return o;
 }
 
+// The cut-outs of the original texture alone (`shade` without its colour):
+// the clip, the checkerboard, and a translucent texture's transparent
+// texels; a polygon with none of them reads no texel at all.
+fn id_cut(in: VsOut) {
+    let p = polys[in.poly];
+    let px = floor(in.pos.xy);
+    if px.y < p.clip.y || px.y >= p.clip.w || px.x + 0.5 < p.clip.x || px.x + 0.5 >= p.clip.z {
+        discard;
+    }
+    let g = vec2u(floor(px / screen.scale));
+    if (p.flags & 16u) != 0u && ((g.x ^ g.y) & 1u) != 0u {
+        discard;
+    }
+    if (p.flags & 9u) == 9u {
+        let iz = in.attr.x;
+        if filtered_texel(p, in.attr.y / iz, in.attr.z / iz) < 0 {
+            discard;
+        }
+    }
+}
+
 @fragment
 fn fs_id(in: VsOut) -> IdOut {
-    _ = shade(in);
+    id_cut(in);
     return id_out(in.poly, in.pos, in.attr.x);
 }
 
 @fragment
 fn fs_id_pack(in: VsOut) -> IdOut {
-    _ = shade_pack(in);
+    if (polys[in.poly].flags & 32u) == 0u {
+        id_cut(in);
+    } else {
+        _ = shade_pack(in);
+    }
     return id_out(in.poly, in.pos, in.attr.x);
 }
 
 @fragment
 fn fs_id_packf(in: VsPackOut) -> IdOut {
+    // Derivatives in uniform control flow.
     let gx = dpdx(in.attr_c);
     let gy = dpdy(in.attr_c);
-    _ = shade_packf(in, gx, gy);
+    if (polys[in.poly].flags & 32u) == 0u {
+        var o: VsOut;
+        o.pos = in.pos;
+        o.attr = in.attr;
+        o.poly = in.poly;
+        id_cut(o);
+    } else {
+        _ = shade_packf(in, gx, gy);
+    }
     return id_out(in.poly, in.pos, in.attr.x);
 }
 

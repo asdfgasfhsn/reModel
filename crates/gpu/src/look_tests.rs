@@ -180,15 +180,109 @@ fn outlines_on_depth_steps_and_texture_boundaries_only() {
     for (x, y) in [(250, 300), (400, 350), (30, 280)] {
         assert_eq!(at(&off, gx(x), gy(y)), at(&on, gx(x), gy(y)), "ink inside the tilted floor at {x},{y}");
     }
-    // The boundary of the two boxes (x = 180): a line on one side, at the
-    // same depth, and only there.
+    // The boundary of the two boxes (x = 180) is between coplanar pieces
+    // (the same depth): painted, not a shape, so no line.
     let (bx, by) = (gx(180), gy(130));
     let changed = (bx - 4..bx + 4).filter(|&x| at(&off, x, by) != at(&on, x, by)).count();
-    assert!((1..=4).contains(&changed), "{changed} pixels of ink at the texture boundary");
+    assert_eq!(changed, 0, "{changed} pixels of ink between coplanar pieces");
     // Weight scales with the picture: a quarter of the height has thinner
     // lines (counted in pixels, 2 at 1080: about 1 at 540).
     let thick = (ex..ex + 12).filter(|&x| at(&off, x, ey) != at(&on, x, ey)).count();
     assert!((2..=3).contains(&thick), "line thickness {thick}");
+}
+
+/// Coplanar polygons of different textures draw no line between them,
+/// level or tilted (a floor of many pieces is not a drawing of them); the
+/// same pieces meeting at a crease do; and a tag naming an outline weight
+/// lines the boundary anyway.
+#[test]
+fn texture_lines_only_where_the_surface_bends() {
+    let Some(mut gpu) = Renderer::for_test() else { return };
+    let scene = Scene::new();
+    let (gx, gy) = scene.px();
+    let (bx, by) = (gx(250), gy(300));
+    // Two floor pieces side by side with different textures, one plane
+    // tilted away down the picture and rising to the right.
+    let plane = |x: f32, y: f32| 0.002 + 0.00001 * x + 0.00002 * (y - 270.0);
+    let tex = |y0| Texture {
+        x0: 64,
+        y0,
+        w: 32,
+        h: 32,
+        mirror_x: false,
+        mirror_y: false,
+        bank: 0,
+        translucent: false,
+        luma_table: 3,
+    };
+    let floor = |x0: f32, x1: f32, y0: u32| {
+        let mut q = quad(x0, 270.0, x1, 384.0, 0.0, [4, 20, 6], 800.0 + y0 as f32);
+        q.texture = Some(tex(y0));
+        for (i, v) in q.points.iter_mut().enumerate() {
+            v.iz = plane(v.x, v.y);
+            v.uz = [0.0, 31.0, 31.0, 0.0][i] * v.iz;
+            v.vz = [0.0, 0.0, 31.0, 31.0][i] * v.iz;
+        }
+        q
+    };
+    let backdrop = quad(-10.0, -10.0, 510.0, 400.0, 0.001, [6, 12, 28], 900.0);
+    let level = vec![backdrop, floor(0.0, 250.0, 32), floor(250.0, 496.0, 96)];
+    let off = scene.draw(&mut gpu, &level, None, Quality::default());
+    let on = scene.draw(&mut gpu, &level, Some(ink_look()), Quality::default());
+    let ink = |off: &[u8], on: &[u8]| (bx - 6..bx + 6).filter(|&x| at(off, x, by) != at(on, x, by)).count();
+    assert_eq!(ink(&off, &on), 0, "ink between coplanar floor pieces");
+    // A crease: the right piece rises steeper.
+    let mut creased = level.clone();
+    for v in creased[2].points.iter_mut() {
+        v.iz = plane(v.x, v.y) + 0.00025 * (v.x - 250.0);
+    }
+    let off_c = scene.draw(&mut gpu, &creased, None, Quality::default());
+    let on_c = scene.draw(&mut gpu, &creased, Some(ink_look()), Quality::default());
+    let n = ink(&off_c, &on_c);
+    assert!((1..=4).contains(&n), "{n} pixels of ink at a crease between textures");
+    // A tag naming an outline weight lines the coplanar boundary anyway.
+    let mut look = ink_look();
+    for (i, y0) in [(1, 32), (2, 96)] {
+        let info = tex_info(&level[i], &tex(y0), &scene.src(), &mut TexKeys::default()).unwrap();
+        look.tags.insert(info.name(), Tag { outline: Some(1.0), ..Tag::default() });
+    }
+    let tagged = scene.draw(&mut gpu, &level, Some(look), Quality::default());
+    let n = ink(&off, &tagged);
+    assert!((1..=4).contains(&n), "{n} pixels of ink at a tagged boundary");
+}
+
+/// A ground quad running from the camera to the horizon is drawn in the
+/// game's order, without depth (`background_reason`: "spread"), beside
+/// depth-tested pieces of the same plane: it is in the ID pass like any
+/// surface, so its seam draws no line (the stray ink across Top Skater's
+/// ground came from its being missing there).
+#[test]
+fn a_ground_drawn_in_the_games_order_has_no_seam_line() {
+    let Some(mut gpu) = Renderer::for_test() else { return };
+    let scene = Scene::new();
+    let (gx, gy) = scene.px();
+    // One plane, 1/z rising 10 times down the picture.
+    let plane = |y: f32| 0.0005 + 0.00004 * (y - 270.0);
+    let ground = |x0: f32, x1: f32, y0: f32, colour, key| {
+        let mut q = quad(x0, y0, x1, 384.0, 0.0, colour, key);
+        for v in q.points.iter_mut() {
+            v.iz = plane(v.y);
+        }
+        q
+    };
+    let mut wide = ground(0.0, 250.0, 270.0, [4, 20, 6], 800.0);
+    wide.points[0].y = 270.0;
+    let polys = vec![
+        quad(-10.0, -10.0, 510.0, 400.0, 0.0001, [6, 12, 28], 900.0),
+        wide,
+        ground(250.0, 496.0, 340.0, [20, 4, 6], 700.0),
+    ];
+    assert!(model2::raster::background_reason(&polys[1]).is_some(), "the wide ground is a background");
+    let off = scene.draw(&mut gpu, &polys, None, Quality::default());
+    let on = scene.draw(&mut gpu, &polys, Some(ink_look()), Quality::default());
+    let (bx, by) = (gx(250), gy(370));
+    let ink = (bx - 8..bx + 8).filter(|&x| at(&off, x, by) != at(&on, x, by)).count();
+    assert_eq!(ink, 0, "{ink} pixels of ink at the seam of the ground");
 }
 
 /// With the lines off, or on nothing at all, the frame is the one drawn

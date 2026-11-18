@@ -11,7 +11,8 @@
 // at the line's half width are further away), so a line is as thick as
 // asked and never eats into the object behind. A line between two textures
 // at the same depth is the same test on the IDs, again on one side (the
-// nearer, or the larger ID for a tie). Lines fade with distance, and a tag
+// nearer, or the larger ID for a tie), and only where the surface bends
+// (never between coplanar pieces). Lines fade with distance, and a tag
 // can thin a texture's lines or remove them.
 
 struct Ink {
@@ -25,8 +26,9 @@ struct Ink {
     line: vec4f,
     // Ink colour, and the rim light's glow strength.
     colour: vec4f,
-    // Fade, as 1/z: where lines are at full strength (and nearer), where
-    // they are gone (and further); z a seed for the speed lines' hash.
+    // Fade, as distances (1/z): where lines are at full strength (and
+    // nearer), where they are gone (and further); w a seed for the speed
+    // lines' hash.
     fade: vec4f,
 }
 
@@ -50,26 +52,71 @@ fn iz_at(p: vec2i) -> f32 {
     return textureLoad(depth, clampi(p), 0).x;
 }
 
-fn id_at(p: vec2i) -> u32 {
-    return textureLoad(ids, clampi(p), 0).x;
+// Bit 17 of a pixel's tag: drawn by the game in its own order, without
+// depth.
+fn painter_of(tag: u32) -> bool {
+    return ((tag >> 17u) & 1u) != 0u;
+}
+
+// The 1/z at `p` as it counts next to a pixel of 1/z `fallback` (`cp`: that
+// pixel is a painter's-order polygon): `fallback` itself, which reads as
+// flat, where `p` is a pixel the 3D layer drew but the ID pass has nothing
+// for (a polygon drawn without depth, translucent: its depth and texture
+// are unknown, so it is never taken for a step), or where both are
+// painter's-order polygons (their depths where they meet are not the
+// surfaces'); a fifth of the step where just one is (a ground quad's far
+// edge hovers a tenth above the ground it meets: only a large step counts).
+// 0 where nothing is drawn.
+fn iz_or(p: vec2i, fallback: f32, cp: bool) -> f32 {
+    let q = clampi(p);
+    let e = textureLoad(ids, q, 0);
+    if e.x == 0u {
+        if textureLoad(layer, q, 0).a >= 0.5 {
+            return fallback;
+        }
+        return 0.0;
+    }
+    let pp = painter_of(e.y);
+    if cp && pp {
+        return fallback;
+    }
+    let n = textureLoad(depth, q, 0).x;
+    if cp != pp {
+        return fallback + (n - fallback) * 0.2;
+    }
+    return n;
 }
 
 // How much nearer than its neighbours `iz0` is at `r` pixels along each
 // axis: the largest relative drop in 1/z, one-sided (0 where the pixel is
-// the further one, or flat).
-fn near_side(c: vec2i, iz0: f32, r: i32) -> f32 {
-    let l = iz_at(c + vec2i(-r, 0));
-    let rt = iz_at(c + vec2i(r, 0));
-    let u = iz_at(c + vec2i(0, -r));
-    let d = iz_at(c + vec2i(0, r));
+// the further one, or flat). Where both neighbours on an axis are further
+// away the pixel is on something thinner than twice `r` (a wire, a fence's
+// mesh, a far tree's twigs): that is mostly noise as ink, so it is drawn
+// at a third.
+fn near_side(c: vec2i, iz0: f32, r: i32, cp: bool) -> f32 {
+    let l = iz_or(c + vec2i(-r, 0), iz0, cp);
+    let rt = iz_or(c + vec2i(r, 0), iz0, cp);
+    let u = iz_or(c + vec2i(0, -r), iz0, cp);
+    let d = iz_or(c + vec2i(0, r), iz0, cp);
     let lx = (l + rt - 2.0 * iz0) / iz0;
     let ly = (u + d - 2.0 * iz0) / iz0;
-    return max(max(-lx, -ly), 0.0);
+    // The nearer of the two neighbours' drop: large only where both are far.
+    let bx = max((l - iz0) / iz0, (rt - iz0) / iz0);
+    let by = max((u - iz0) / iz0, (d - iz0) / iz0);
+    let kx = 1.0 - 0.67 * smoothstep(-0.1, -0.3, bx);
+    let ky = 1.0 - 0.67 * smoothstep(-0.1, -0.3, by);
+    return max(max(-lx * kx, -ly * ky), 0.0);
 }
 
-// Whether a neighbour at `r` pixels in some direction is another texture
-// that this pixel is the front of (the nearer, or the larger ID).
-fn id_side(c: vec2i, id0: u32, iz0: f32, r: i32) -> f32 {
+// How strongly a neighbour at `r` pixels in some direction is another
+// texture that this pixel is the front of (the nearer, or the larger ID),
+// across a surface that bends: where the 1/z of the pixel and the two
+// pixels either side of it along that direction lie on one straight line
+// the two textures are coplanar (a decal on a wall, the pieces of a floor)
+// and no line is drawn, however steeply the plane is tilted: that is a
+// painted edge, not a shape. `forced` (a tag that names an outline weight)
+// draws it anyway.
+fn id_side(c: vec2i, id0: u32, iz0: f32, r: i32, forced: bool, cp: bool) -> f32 {
     var hit = 0.0;
     for (var k = 0; k < 4; k++) {
         var o = vec2i(r, 0);
@@ -80,17 +127,25 @@ fn id_side(c: vec2i, id0: u32, iz0: f32, r: i32) -> f32 {
         } else if k == 3 {
             o = vec2i(0, -r);
         }
-        let n = id_at(c + o);
-        if n == 0u || n == id0 {
+        let en = textureLoad(ids, clampi(c + o), 0);
+        let n = en.x;
+        if n == 0u || n == id0 || (cp && painter_of(en.y)) {
             continue;
         }
         let izn = iz_at(c + o);
         // Nearer than the neighbour by more than rounding, or equal and the
         // larger ID.
         let nearer = iz0 > izn * 1.002 || (iz0 >= izn * 0.998 && id0 > n);
-        if nearer {
-            hit = 1.0;
+        if !nearer {
+            continue;
         }
+        var bend = 1.0;
+        if !forced {
+            let back = iz_or(c - o, iz0, cp);
+            let second = abs(back + izn - 2.0 * iz0) / iz0;
+            bend = smoothstep(0.01, 0.04, second);
+        }
+        hit = max(hit, bend);
     }
     return hit;
 }
@@ -122,14 +177,14 @@ fn fs(@builtin(position) frag: vec4f) -> @location(0) vec4f {
     let e = textureLoad(ids, c, 0);
     if e.x != 0u {
         let tag = e.y;
+        let cp = painter_of(tag);
         let wmul = f32(tag & 255u) / 16.0;
         let rim = f32((tag >> 8u) & 255u) / 255.0;
         let iz0 = iz_at(c);
-        // Full strength at 1/z `fade.x` and nearer, none at `fade.y` and
-        // further.
-        let fade = smoothstep(ink.fade.y, ink.fade.x, iz0);
+        // Full strength up to distance `fade.x`, none from `fade.y`.
+        let fade = 1.0 - smoothstep(ink.fade.x, ink.fade.y, 1.0 / max(iz0, 1e-9));
         let wpx = ink.line.x * ink.scale * wmul;
-        if wpx > 0.0 && ink.line.y > 0.0 {
+        if wpx > 0.0 && ink.line.y > 0.0 && fade > 0.002 {
             let r = max(i32(round(wpx)), 1);
             // Under a pixel wide, thinner lines are fainter.
             let thin = min(wpx, 1.0);
@@ -138,10 +193,10 @@ fn fs(@builtin(position) frag: vec4f) -> @location(0) vec4f {
                 // Edge strength from a relative drop of 1/z (a fraction
                 // of it): a tenth is a clear step.
                 let t = 0.1 / ink.line.z;
-                k = smoothstep(t * 0.5, t, near_side(c, iz0, r));
+                k = smoothstep(t * 0.5, t, near_side(c, iz0, r, cp));
             }
             if ink.line.w > 0.0 {
-                k = max(k, ink.line.w * id_side(c, e.x, iz0, r));
+                k = max(k, ink.line.w * id_side(c, e.x, iz0, r, ((tag >> 16u) & 1u) != 0u, cp));
             }
             k *= ink.line.y * fade * thin;
             let ink_rgb = ink.colour.xyz * d.a;
@@ -149,7 +204,7 @@ fn fs(@builtin(position) frag: vec4f) -> @location(0) vec4f {
             if rim > 0.0 {
                 // A lighter band just inside the line.
                 let r2 = r * 3;
-                let s = smoothstep(0.05, 0.2, near_side(c, iz0, r2)) * (1.0 - k) * fade;
+                let s = smoothstep(0.05, 0.2, near_side(c, iz0, r2, cp)) * (1.0 - k) * fade;
                 d = vec4f(d.rgb + (vec3f(d.a) - d.rgb) * (rim * s * 0.6), d.a);
             }
         }

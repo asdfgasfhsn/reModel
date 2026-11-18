@@ -20,7 +20,11 @@
 //! [`texture_id`]); for a flat colour polygon, `2^23 | colour` (15 bits,
 //! [`flat_id`]). `y` is the polygon's tag word: bits 0-7 the outline weight
 //! in sixteenths of the look's (16: as the look, 0: none), bits 8-15 the rim
-//! light in 255ths. Translucent (checkerboard, shadow) polygons, which the
+//! light in 255ths, bit 16 set where the tag names an outline weight (the texture
+//! is lined even against a coplanar neighbour), bit 17 set for a polygon the
+//! game draws in its own order without depth (a sky, a ground quad running
+//! to the horizon: where two of them meet the depths are not the surface's
+//! and draw no line). Translucent (checkerboard, shadow) polygons, which the
 //! game draws without depth, are not in it.
 
 use crate::{Renderer, FORMAT};
@@ -99,6 +103,82 @@ pub(crate) struct PolyLook {
     /// Toon steps for this polygon: 0 follow the look, 1 none, else the
     /// count (`raster.wgsl`, `poly_px`).
     pub toon: u8,
+}
+
+/// Whether the ID pass draws a placed polygon: all that are depth tested,
+/// and the backgrounds that stand for surfaces (the sky, and a ground or
+/// wall quad drawn in the game's order that spans a wide range of depth),
+/// not the translucent shadows and checkerboards, which sit on other
+/// surfaces and are not shapes of their own. A background is drawn as the
+/// colour pass does, over what the earlier ones left and without depth.
+pub(crate) fn in_id_pass(p: &Poly, pl: &Placed) -> bool {
+    !pl.background || matches!(model2::raster::background_reason(p), Some("sky" | "spread"))
+}
+
+/// The scene's typical distance (as `1/iz`, game units): where half of the
+/// picture's polygon area, by the polygons' mean 1/z, is further away.
+/// Skies, shadows and checkerboards don't count. The look's fade distances
+/// are in multiples of it when they are left to the scene (`ink_params`).
+pub fn depth_reference(polys: &[Poly], placed: &[Placed]) -> Option<f32> {
+    let mut items: Vec<(f32, f32)> = placed
+        .iter()
+        .filter_map(|pl| {
+            let p = &polys[pl.poly];
+            if matches!(model2::raster::background_reason(p), Some("sky" | "shadow" | "checker")) {
+                return None;
+            }
+            let n = pl.points.len();
+            let area: f32 = (0..n)
+                .map(|i| {
+                    let (a, b) = (&pl.points[i], &pl.points[(i + 1) % n]);
+                    a.x * b.y - b.x * a.y
+                })
+                .sum::<f32>()
+                .abs()
+                / 2.0;
+            let iz = pl.points.iter().map(|v| v.iz).sum::<f32>() / n.max(1) as f32;
+            (area > 0.0 && iz > 0.0).then_some((iz, area))
+        })
+        .collect();
+    let total: f32 = items.iter().map(|i| i.1).sum();
+    if items.is_empty() || total <= 0.0 {
+        return None;
+    }
+    items.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut acc = 0.0;
+    for (iz, area) in &items {
+        acc += area;
+        if acc >= total / 2.0 {
+            return Some(1.0 / iz);
+        }
+    }
+    None
+}
+
+/// One placed polygon's draw as the 3D pass made it, for the ID pass.
+pub(crate) struct Span {
+    pub vertices: std::ops::Range<u32>,
+    pub window: usize,
+    pub clip: (f32, f32, f32, f32),
+    pub slot: u32,
+    pub background: bool,
+    /// In the ID pass (`in_id_pass`).
+    pub in_id: bool,
+    /// Last of its group (`Placed::group`).
+    pub group_end: bool,
+}
+
+/// What the 3D pass keeps for the ID pass that follows it in the same
+/// frame (`Renderer::encode_id`).
+pub(crate) struct IdShare {
+    pub slots: crate::Slots,
+    pub polys: Vec<PolyLook>,
+    pub spans: Vec<Span>,
+    pub vertices: wgpu::Buffer,
+    pub table: wgpu::Buffer,
+    pub render: wgpu::Buffer,
+    pub palette: wgpu::Buffer,
+    pub variant: crate::Variant,
 }
 
 /// The ink pass: outlines, rim light and speed lines over the 3D layer.
@@ -223,13 +303,26 @@ impl Ink {
     }
 }
 
-/// The ink pass's uniform for `look` on a `w` x `h` picture.
-fn ink_params(look: &Look, w: u32, h: u32) -> [f32; 16] {
+/// With `outline_fade_near` 0, lines are at full strength up to this many
+/// times the scene's typical distance and gone at the second (a scene
+/// spans three orders of magnitude of depth: a fixed distance in game
+/// units fades a whole game's stands and keeps another's).
+pub(crate) const FADE_NEAR_AUTO: f32 = 100.0;
+pub(crate) const FADE_FAR_AUTO: f32 = 800.0;
+
+/// The ink pass's uniform for `look`, its fade in distances on a `w` x `h` picture.
+fn ink_params(look: &Look, w: u32, h: u32, typical: f32) -> [f32; 16] {
     let p = &look.params;
     let dist = |name: &str| p.num(name).max(1.0);
-    // Fade by distance in game units, as 1/z.
-    let near = 1.0 / dist("outline_fade_near");
-    let far = (1.0f32 / dist("outline_fade_far")).min(near * 0.999);
+    // Fade by distance in game units, as 1/z; left to the scene (0), in
+    // multiples of its typical distance (`depth_reference`).
+    let (near_d, far_d) = if p.num("outline_fade_near") > 0.0 {
+        (dist("outline_fade_near"), dist("outline_fade_far"))
+    } else {
+        (FADE_NEAR_AUTO * typical, FADE_FAR_AUTO * typical)
+    };
+    let near = near_d.max(f32::MIN_POSITIVE);
+    let far = far_d.max(near * 1.001);
     let line_on = p.outline_on();
     [
         w as f32,
@@ -291,6 +384,7 @@ impl Renderer {
             self.temporal.reset();
         }
         self.look_tags = look.as_ref().map(|l| LookTags::new(l)).unwrap_or_default();
+        self.depth_ref = None;
         self.look = look;
     }
 
@@ -314,7 +408,10 @@ impl Renderer {
         if !ids && self.look_tags.is_empty() {
             return Vec::new();
         }
-        self.keys.begin(render_version);
+        // The pack's slots began the frame's texture keys already.
+        if self.pack.is_none() {
+            self.keys.begin(render_version);
+        }
         let rim = look.params.num("rim");
         placed
             .iter()
@@ -332,7 +429,9 @@ impl Renderer {
                         None => flat_id(p.colour),
                     },
                     tag: (weight * 16.0f32).round().clamp(0.0, 255.0) as u32
-                        | ((rim * 255.0).round().clamp(0.0, 255.0) as u32) << 8,
+                        | ((rim * 255.0).round().clamp(0.0, 255.0) as u32) << 8
+                        | (tag.is_some_and(|t| t.outline.is_some_and(|w| w > 0.0)) as u32) << 16
+                        | (pl.background as u32) << 17,
                     emissive: tag.is_some_and(|t| t.emissive),
                     toon: match tag.and_then(|t| t.toon) {
                         None => 0,
@@ -364,10 +463,191 @@ impl Renderer {
         let ids = self.kept_target("look ids", (w, h), ID_FORMAT, usage).0.create_view(&Default::default());
         let iz = self.kept_target("look iz", (w, h), IZ_FORMAT, usage).0.create_view(&Default::default());
         let out = self.kept_target("3d look", (w, h), format, usage).0.create_view(&Default::default());
-        self.encode_3d(enc, polys, placed, src, view, &ids, None, Some(&iz));
-        let params = ink_params(look, w, h);
+        match self.id_share.take().filter(|s| s.spans.len() == placed.len()) {
+            Some(share) => self.encode_id(enc, placed, view, &ids, &iz, share),
+            // The 3D pass was temporal or had materials: the ID pass
+            // prepares its polygons itself.
+            None => self.encode_3d(enc, polys, placed, src, view, &ids, None, Some(&iz)),
+        }
+        // The scene's typical distance, steadied over frames (a camera cut
+        // starts it again).
+        let now = depth_reference(polys, placed).unwrap_or(100.0);
+        let typical = match self.depth_ref {
+            Some(prev) if (0.5..2.0).contains(&(now / prev)) => (prev.ln() * 0.8 + now.ln() * 0.2).exp(),
+            _ => now,
+        };
+        self.depth_ref = Some(typical);
+        let params = ink_params(look, w, h, typical);
         self.ink.encode(&self.device, enc, &params, layer, &ids, &iz, &out, format);
         out
+    }
+
+    /// The ID pass from what the 3D pass prepared: its vertices, polygon
+    /// table, RAM buffers and pack slots are used as they are, and only the
+    /// 1/z points and the polygons' IDs are made (`encode_3d` with its ID
+    /// targets prepares all of it again, at 2-3x the CPU time).
+    fn encode_id(
+        &mut self,
+        enc: &mut wgpu::CommandEncoder,
+        placed: &[Placed],
+        view: &View,
+        ids: &wgpu::TextureView,
+        iz: &wgpu::TextureView,
+        sh: IdShare,
+    ) {
+        let t0 = self.tick();
+        let t_look = self.tick();
+        let (w, h) = (view.width as u32, view.height as u32);
+        // The outline buffer as `encode_3d` lays it out for polygons that
+        // are not lit: a directory of (first, count, 0, 0) per polygon, the
+        // points (x, y, 1/z, 0), then each polygon's ID words.
+        let n = placed.len();
+        let points: usize = placed.iter().map(|p| p.points.len()).sum();
+        let mut words: Vec<u8> = Vec::with_capacity(16 * (2 * n + points));
+        let mut first = n as u32;
+        for pl in placed {
+            for v in [first, pl.points.len() as u32, 0, 0] {
+                words.extend_from_slice(&v.to_le_bytes());
+            }
+            first += pl.points.len() as u32;
+        }
+        for pl in placed {
+            for v in &pl.points {
+                for f in [v.x, v.y, v.iz, 0.0] {
+                    words.extend_from_slice(&f.to_le_bytes());
+                }
+            }
+        }
+        let id_base = (words.len() / 16) as u32;
+        for l in &sh.polys {
+            for v in [l.id, l.tag, 0, 0] {
+                words.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        if words.is_empty() {
+            words.resize(16, 0);
+        }
+        let mut screen: Vec<u8> =
+            [view.width as f32, view.height as f32, view.sx, view.sy].iter().flat_map(|f| f.to_le_bytes()).collect();
+        let mut tail = [0.0f32; 12];
+        tail[3] = f32::from_bits(id_base);
+        screen.extend(tail.iter().flat_map(|f| f.to_le_bytes()));
+        let d = &self.device;
+        let buffer = |label, contents: &[u8], usage| {
+            wgpu::util::DeviceExt::create_buffer_init(
+                d,
+                &wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage },
+            )
+        };
+        let outlines = buffer("outlines id", &words, wgpu::BufferUsages::STORAGE);
+        let screen = buffer("screen id", &screen, wgpu::BufferUsages::UNIFORM);
+        let bind = d.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("raster id"),
+            layout: &self.raster_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: screen.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: sh.table.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: sh.render.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: sh.palette.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: outlines.as_entire_binding() },
+            ],
+        });
+        let depth = self.kept_attachment("look depth", w, h, 1, crate::DEPTH_FORMAT).create_view(&Default::default());
+        let test = self.id_pipeline(crate::Mode::Test, sh.variant);
+        let write = self.id_pipeline(crate::Mode::DepthWrite, sh.variant);
+        let background = self.id_pipeline(crate::Mode::Background, sh.variant);
+        let clear = self.id_pipeline(crate::Mode::Clear, sh.variant);
+        let dummy = (sh.variant != crate::Variant::Original).then(|| self.pack_dummy(sh.variant));
+        // Runs of polygons in one window with one pack image: the 3D
+        // pass's grouping, without its translucent polygons, each group's
+        // depth written once all its members are drawn.
+        struct Run {
+            vertices: std::ops::Range<u32>,
+            window: usize,
+            clip: (f32, f32, f32, f32),
+            slot: u32,
+            mode: crate::Mode,
+        }
+        let mut runs: Vec<Run> = Vec::new();
+        let push = |runs: &mut Vec<Run>, r: Run| match runs.last_mut() {
+            Some(l)
+                if l.window == r.window
+                    && l.mode == r.mode
+                    && l.vertices.end == r.vertices.start
+                    && (l.slot == r.slot || l.slot == crate::NO_SLOT || r.slot == crate::NO_SLOT) =>
+            {
+                l.vertices.end = r.vertices.end;
+                if l.slot == crate::NO_SLOT {
+                    l.slot = r.slot;
+                }
+            }
+            _ => runs.push(r),
+        };
+        let mut group: Vec<Run> = Vec::new();
+        for s in &sh.spans {
+            let run = |mode| Run { vertices: s.vertices.clone(), window: s.window, clip: s.clip, slot: s.slot, mode };
+            if !s.background {
+                push(&mut runs, run(crate::Mode::Test));
+                group.push(run(crate::Mode::DepthWrite));
+            } else if s.in_id {
+                push(&mut runs, run(crate::Mode::Background));
+            }
+            if s.group_end {
+                for r in group.drain(..) {
+                    push(&mut runs, r);
+                }
+            }
+        }
+        self.pack_stats.draws += runs.len() as u32;
+        self.lap(t_look, |p| &mut p.look_id);
+        self.lap(t0, |p| &mut p.resources3d);
+        let t0 = self.tick();
+        let clear_ops =
+            wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store };
+        let colours = [ids, iz].map(|view| {
+            Some(wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: clear_ops })
+        });
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("look id"),
+            color_attachments: &colours,
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Discard }),
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+        pass.set_bind_group(0, &bind, &[]);
+        if let Some(dummy) = &dummy {
+            pass.set_bind_group(1, dummy, &[]);
+        }
+        pass.set_vertex_buffer(0, sh.vertices.slice(..));
+        let mut bound = crate::NO_SLOT;
+        for (k, run) in runs.iter().enumerate() {
+            // Each window starts with an empty depth buffer where it draws.
+            if k > 0 && runs[k - 1].window != run.window {
+                let (x0, y0) = (run.clip.0.floor().max(0.0) as u32, run.clip.1.floor().max(0.0) as u32);
+                let (x1, y1) = ((run.clip.2.ceil().max(0.0) as u32).min(w), (run.clip.3.ceil().max(0.0) as u32).min(h));
+                if x1 > x0 && y1 > y0 {
+                    pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
+                    pass.set_pipeline(&clear);
+                    pass.draw(0..3, 0..1);
+                    pass.set_scissor_rect(0, 0, w, h);
+                }
+            }
+            pass.set_pipeline(match run.mode {
+                crate::Mode::DepthWrite => &write,
+                crate::Mode::Background => &background,
+                _ => &test,
+            });
+            if run.slot != crate::NO_SLOT && run.slot != bound {
+                bound = run.slot;
+                pass.set_bind_group(1, &sh.slots.groups[run.slot as usize], &[]);
+            }
+            pass.draw(run.vertices.clone(), 0..1);
+        }
+        drop(pass);
+        self.lap(t0, |p| &mut p.pass3d);
     }
 }
 
