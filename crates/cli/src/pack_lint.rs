@@ -17,8 +17,15 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 /// Tool records and the like that readers ignore.
-const RECORDS: [&str; 6] =
-    [pack::MANIFEST, pack::INDEX, "upscale.txt", "drift.txt", "materials.txt", texpack_materials::EXCLUDE];
+const RECORDS: [&str; 7] = [
+    pack::MANIFEST,
+    pack::INDEX,
+    "upscale.txt",
+    "drift.txt",
+    "materials.txt",
+    texpack_materials::EXCLUDE,
+    model2::regions::FILE,
+];
 /// Files named per finding before "and N more".
 const SHOWN: usize = 8;
 
@@ -392,6 +399,79 @@ fn check_normal_map(dir: &Path, m: &NormalMap, y_up: bool) -> Vec<(Level, char, 
     out
 }
 
+/// Region overrides: the file parses, every region has an image of enough
+/// pixels, the images belong to a region, and the manifest says `uses
+/// regions` (else readers never open the file).
+fn lint_regions(dir: &Path, files: &[File], manifest: Option<&Manifest>, r: &mut Report) {
+    use model2::regions;
+    let images: Vec<&File> = files.iter().filter(|f| matches!(f.kind, Ok(FileKind::Region))).collect();
+    let text = std::fs::read_to_string(dir.join(regions::FILE)).ok();
+    let uses = manifest.is_some_and(|m| m.uses.iter().chain(&m.needs).any(|f| f == regions::FEATURE));
+    let Some(text) = text else {
+        for f in &images {
+            r.add(Level::Warning, 'r', "region image but no regions.txt: never drawn", &f.stem);
+        }
+        if uses {
+            r.add(Level::Note, 'r', "pack.txt says `uses regions` but there is no regions.txt", "");
+        }
+        return;
+    };
+    if !uses {
+        r.add(
+            Level::Warning,
+            'r',
+            "regions.txt but pack.txt has no `uses regions` (format 2): readers never open it",
+            regions::FILE,
+        );
+    }
+    let defs = match regions::parse(&text) {
+        Ok(d) => d,
+        Err(e) => {
+            r.add(Level::Error, 'r', format!("{e}: readers draw the pack without its regions"), "");
+            return;
+        }
+    };
+    for d in &defs {
+        for u in &d.unknown {
+            r.add(
+                Level::Note,
+                'r',
+                "field this reModel doesn't know in a region line, ignored",
+                format!("{}: {u}", d.name),
+            );
+        }
+        let stem = format!("{}{}", regions::IMAGE_PREFIX, d.name);
+        match images.iter().find(|f| f.stem == stem) {
+            None => r.add(Level::Warning, 'r', "region has no image, drawn as the original", &d.name),
+            Some(f) => {
+                if let Some((w, h)) = f.size {
+                    if w < 8 * d.w || h < 8 * d.h {
+                        r.add(
+                            Level::Warning,
+                            'r',
+                            "region image under 8 pixels per tile, drawn as the original",
+                            format!("{stem} ({w}x{h}, region {}x{} tiles)", d.w, d.h),
+                        );
+                    } else if w * d.h != h * d.w {
+                        r.add(
+                            Level::Note,
+                            'r',
+                            "region image proportions differ from the region's w x h tiles (cut unevenly)",
+                            format!("{stem} ({w}x{h})"),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    for f in &images {
+        let n = f.stem.strip_prefix(regions::IMAGE_PREFIX).unwrap_or("");
+        if !defs.iter().any(|d| d.name == n) {
+            r.add(Level::Warning, 'r', "region image with no region line in regions.txt, never drawn", &f.stem);
+        }
+    }
+}
+
 /// Lint the pack in `dir`, print the findings and return them.
 fn lint_report(dir: &Path, dump: Option<&Path>, max_side: usize) -> Result<Report, String> {
     let mut r = Report::default();
@@ -451,7 +531,7 @@ fn lint_report(dir: &Path, dump: Option<&Path>, max_side: usize) -> Result<Repor
             for f in m.uses.iter().chain(&m.needs) {
                 if !pack::FEATURES.contains(&f.as_str()) {
                     r.add(Level::Note, 'a', "feature the format doesn't define (`uses`: ignored)", f.clone());
-                } else if f != "materials" {
+                } else if f != "materials" && f != model2::regions::FEATURE {
                     r.add(Level::Note, 'a', "feature reserved by the format, not drawn by any reader", f.clone());
                 }
             }
@@ -535,6 +615,9 @@ fn lint_report(dir: &Path, dump: Option<&Path>, max_side: usize) -> Result<Repor
             Err(e) => r.add(Level::Error, 'd', "doesn't load, drawn as the original", format!("{}.png ({e})", f.stem)),
         }
     }
+
+    // r: region overrides (regions.txt and region_<name>.png).
+    lint_regions(dir, &files, manifest.as_ref(), &mut r);
 
     // e: proportions; maps against their image and each other.
     let size_of: HashMap<&str, (usize, usize)> =

@@ -6,6 +6,9 @@
 
 #![allow(clippy::needless_range_loop, clippy::chunks_exact_to_as_chunks, clippy::manual_is_multiple_of)]
 
+#[path = "studio_regions.rs"]
+mod regions;
+
 use crate::studio_img::{self as img, Image, Wrap};
 use crate::studio_text as text;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -25,8 +28,8 @@ pub struct Ctx {
 
 const USAGE: &str = "\
 remodel studio SUB PROJECT [options]   (docs/uplift-studio.md)
-  init PROJECT [--name N] [--game G] [--map TEXMAP_DIR [--copy-map]] [--style FILE]
-  region PROJECT --frame F --region X,Y,W,H [--scale S]   what is drawn there (TSV)
+  init PROJECT [--name N] [--game G] [--map [NAME=]TEXMAP_DIR].. [--copy-map] [--style FILE] [--capture DIR]
+  region PROJECT --frame F --region X,Y,W,H [--scale S] [--map NAME]   what is drawn there (TSV)
   select PROJECT [--key K,..] [--group N] [--surface S] [--frame F --region X,Y,W,H]
          [--kind tex|tile] [--min-pixels N] [--all] [--category C] [--reason TEXT]
   status PROJECT [--tsv] [--missing]
@@ -40,6 +43,9 @@ remodel studio SUB PROJECT [options]   (docs/uplift-studio.md)
   text PROJECT --frame F --region X,Y,W,H (--image FILE | --text STR --font FILE ..)
          [--box X,Y,W,H] [--pad N] [--bg #rrggbb|auto] [--fit contain|stretch] [--align left|center|right]
          [--alpha original|typeset] [--tile-scale N] [--dry-run]
+  region-capture PROJECT NAME --capture DIR --frame F --region X,Y,W,H [--plane a|b] [--layer high|low]
+         [--also F,..] [--wild X,Y;..] [--image FILE] [--ref-scale N]   a 2D region override (tile layout + original)
+  regions PROJECT [--tsv]   the project's regions and whether each has its replacement
   seam PROJECT [--from pack|draft] [--tsv] [--strict]
   compare PROJECT [--pack DIR] [--steps N] [--snap N] [--frames F,..] [--jobs N]
          [--run-args \"--height 1080 --aspect 16:9\"] [--force]   (needs the ROMs)
@@ -65,6 +71,8 @@ pub fn main(args: &[String], ctx: &Ctx) -> Result<bool, String> {
         "style" => style(&p, &a),
         "variants" => variants(&p, &a),
         "text" => text_cmd(&p, &a),
+        "region-capture" => regions::capture(&p, &a),
+        "regions" => regions::list(&p, &a),
         "seam" => seam(&p, &a),
         "compare" => compare(&p, &a, ctx),
         _ => Err(format!("studio: no subcommand `{sub}`\n{USAGE}")),
@@ -85,6 +93,8 @@ const SWITCHES: &[&str] = &[
     "--approve-all",
     "--no-lint",
     "--strict",
+    "--game-px",
+    "--pin",
 ];
 
 pub struct Args {
@@ -149,6 +159,8 @@ pub struct Inv {
     pub surface: String,
     pub pixels: u64,
     pub best_frame: String,
+    /// The map (a name from `Project::maps`) whose frames and ids this row is from.
+    pub map: String,
     pub wrap: String,
     pub group: u32,
     /// How many texture sizes the coordinates run over (above 1: it repeats).
@@ -199,6 +211,10 @@ impl Project {
         self.dir.join(sub)
     }
 
+    fn map_names(&self) -> String {
+        self.maps().into_iter().map(|m| m.0).collect::<Vec<_>>().join(", ")
+    }
+
     fn require(&self) -> Result<(), String> {
         if self.p("project.txt").is_file() {
             Ok(())
@@ -217,8 +233,54 @@ impl Project {
         m
     }
 
+    /// The texture maps of the project: `map/` itself when it holds an
+    /// inventory (one map, named `map`), else each folder (or link) in it
+    /// that does, by name (a course run and a character-select run, say).
+    fn maps(&self) -> Vec<(String, PathBuf)> {
+        let m = self.p("map");
+        if m.join("inventory.tsv").is_file() {
+            return vec![("map".to_string(), m)];
+        }
+        let mut v: Vec<(String, PathBuf)> = std::fs::read_dir(&m)
+            .map(|d| {
+                d.filter_map(|e| e.ok())
+                    .map(|e| (e.file_name().to_string_lossy().to_string(), e.path()))
+                    .filter(|(_, p)| p.join("inventory.tsv").is_file())
+                    .collect()
+            })
+            .unwrap_or_default();
+        v.sort();
+        v
+    }
+
+    /// The directory of map `name`.
+    fn map_dir(&self, name: &str) -> PathBuf {
+        self.maps().into_iter().find(|(n, _)| n == name).map(|(_, d)| d).unwrap_or_else(|| self.p("map"))
+    }
+
+    /// Every map's inventory, merged: a name in several maps is listed once,
+    /// from the first map that has it (maps in name order); `id`s are only
+    /// meaningful with `Inv::map`.
     fn inventory(&self) -> Result<Vec<Inv>, String> {
-        let path = self.p("map/inventory.tsv");
+        let maps = self.maps();
+        if maps.is_empty() {
+            return Err(format!("{}: no texture map (run `make texmap`, then init --map)", self.p("map").display()));
+        }
+        let mut out: Vec<Inv> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        for (name, dir) in &maps {
+            for i in self.inventory_of(name, dir)? {
+                if seen.insert(i.name.clone()) {
+                    out.push(i);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// One map's inventory.
+    fn inventory_of(&self, map: &str, dir: &Path) -> Result<Vec<Inv>, String> {
+        let path = dir.join("inventory.tsv");
         let t = std::fs::read_to_string(&path)
             .map_err(|e| format!("{}: {e} (run `make texmap`, then init --map)", path.display()))?;
         let mut lines = t.lines();
@@ -240,6 +302,7 @@ impl Project {
                     surface: get(&f, "surface"),
                     pixels: get(&f, "pixels").parse().unwrap_or(0),
                     best_frame: get(&f, "best_frame"),
+                    map: map.to_string(),
                     wrap: get(&f, "wrap"),
                     group: get(&f, "group").parse().unwrap_or(0),
                     span_u: get(&f, "span_u").parse().unwrap_or(2.0),
@@ -299,7 +362,17 @@ impl Project {
 
     /// The original as dumped: the project's copy, else the map's.
     fn original(&self, name: &str) -> Option<PathBuf> {
-        [self.p("original"), self.p("map/textures")].iter().map(|d| d.join(format!("{name}.png"))).find(|p| p.is_file())
+        self.map_texture(name, true)
+    }
+
+    /// The map's own copy of a texture's original (any map has it).
+    fn map_texture(&self, name: &str, project_first: bool) -> Option<PathBuf> {
+        let mut dirs = vec![];
+        if project_first {
+            dirs.push(self.p("original"));
+        }
+        dirs.extend(self.maps().into_iter().map(|(_, d)| d.join("textures")));
+        dirs.iter().map(|d| d.join(format!("{name}.png"))).find(|p| p.is_file())
     }
 
     fn ledger(&self) -> BTreeMap<String, (String, String, String)> {
@@ -317,6 +390,9 @@ impl Project {
     /// holding the prompt or parameters (or `-`), the date. One line per
     /// image, replaced if there is one.
     fn record(&self, name: &str, tool: &str, prompt: &str) -> Result<(), String> {
+        // Parallel draft jobs record concurrently; read-modify-write under a lock.
+        static LEDGER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LEDGER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut m = self.ledger();
         m.insert(name.to_string(), (clean(tool), prompt.to_string(), today()));
         let mut s = String::new();
@@ -336,29 +412,66 @@ impl Project {
 
     /// The selected rows a command works on: names given, a group, a
     /// category, or all.
+    ///
+    /// Strict: a name (a row's name, or its 16-digit key) that is not in
+    /// the selection, a group with no rows or a category nobody has is an
+    /// error, never "nothing to narrow by, so every row"; filters given
+    /// together all apply.
     fn pick(&self, a: &Args, skip_first_pos: bool) -> Result<Vec<Sel>, String> {
         let rows = self.selection();
         let names: Vec<&String> = a.pos.iter().skip(skip_first_pos as usize).collect();
         let group: Option<u32> = a.num("--group")?;
         let cat = a.get("--category");
+        let unknown: Vec<&str> =
+            names.iter().filter(|n| !rows.iter().any(|r| name_matches(&r.name, n))).map(|n| n.as_str()).collect();
+        if !unknown.is_empty() {
+            let shown: Vec<&str> = unknown.iter().copied().take(8).collect();
+            return Err(format!(
+                "not in the selection ({} rows): {}{} (`studio status PROJECT --tsv` lists the names; a name is the row's name or its 16-digit key)",
+                rows.len(),
+                shown.join(", "),
+                if unknown.len() > shown.len() { format!(", and {} more", unknown.len() - shown.len()) } else { String::new() }
+            ));
+        }
+        if let Some(g) = group {
+            if !rows.iter().any(|r| r.group == g) {
+                return Err(format!("--group {g}: no selected row is in group {g}"));
+            }
+        }
+        if let Some(c) = cat {
+            if !rows.iter().any(|r| r.category == c) {
+                let cats: BTreeSet<&str> = rows.iter().map(|r| r.category.as_str()).collect();
+                return Err(format!(
+                    "--category {c}: no selected row has it (categories: {})",
+                    cats.into_iter().collect::<Vec<_>>().join(", ")
+                ));
+            }
+        }
+        if names.is_empty() && group.is_none() && cat.is_none() && !a.has("--all") {
+            return Err("which rows? name them, or --group N, --category C or --all".into());
+        }
         let picked: Vec<Sel> = rows
             .iter()
             .filter(|r| {
-                if !names.is_empty() {
-                    names.iter().any(|n| **n == r.name || r.name.contains(n.as_str()))
-                } else if group.is_some() || cat.is_some() {
-                    group.is_none_or(|g| r.group == g) && cat.is_none_or(|c| r.category == c)
-                } else {
-                    a.has("--all")
-                }
+                (names.is_empty() || names.iter().any(|n| name_matches(&r.name, n)))
+                    && group.is_none_or(|g| r.group == g)
+                    && cat.is_none_or(|c| r.category == c)
             })
             .cloned()
             .collect();
         if picked.is_empty() {
-            return Err("no selected rows match: name them, or --group N, --category C or --all".into());
+            return Err("no selected rows match all of those filters".into());
         }
         Ok(picked)
     }
+}
+
+/// Whether the user's token names a row: its name, or its 16-digit key.
+fn name_matches(row: &str, tok: &str) -> bool {
+    row == tok
+        || (tok.len() == 16
+            && tok.bytes().all(|b| b.is_ascii_hexdigit())
+            && (row == format!("tile_{tok}") || row.starts_with(&format!("tex_{tok}_"))))
 }
 
 fn today() -> String {
@@ -423,7 +536,44 @@ fn init(p: &Project, a: &Args) -> Result<bool, String> {
         )
         .map_err(|e| e.to_string())?;
     }
-    if let Some(m) = a.get("--map") {
+    if let Some(c) = a.get("--capture") {
+        let abs = std::fs::canonicalize(c).map_err(|e| format!("--capture {c}: {e}"))?;
+        meta.insert("capture".into(), abs.display().to_string());
+        let mut s = String::new();
+        for (k, v) in &meta {
+            let _ = writeln!(s, "{k}\t{v}");
+        }
+        std::fs::write(p.p("project.txt"), s).map_err(|e| e.to_string())?;
+    }
+    let maps = a.all("--map");
+    if maps.len() > 1 || maps.iter().any(|m| m.contains('=')) {
+        // Several maps: map/ is a folder of links (or copies) by name.
+        let dst = p.p("map");
+        if dst.is_symlink() {
+            std::fs::remove_file(&dst).map_err(|e| e.to_string())?;
+        }
+        std::fs::create_dir_all(&dst).map_err(|e| e.to_string())?;
+        for m in &maps {
+            let (name, path) = match m.split_once('=') {
+                Some((n, d)) => (n.to_string(), d),
+                None => (Path::new(m).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), *m),
+            };
+            let src = std::fs::canonicalize(path).map_err(|e| format!("--map {m}: {e}"))?;
+            let to = dst.join(&name);
+            if to.is_symlink() {
+                std::fs::remove_file(&to).map_err(|e| e.to_string())?;
+            }
+            if a.has("--copy-map") {
+                copy_dir(&src, &to)?;
+            } else if !to.exists() {
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(&src, &to).map_err(|e| e.to_string())?;
+                #[cfg(not(unix))]
+                copy_dir(&src, &to)?;
+            }
+            println!("map           {name}: {}", src.display());
+        }
+    } else if let Some(m) = maps.first() {
         let src = std::fs::canonicalize(m).map_err(|e| format!("--map {m}: {e}"))?;
         let dst = p.p("map");
         if dst.is_symlink() {
@@ -462,40 +612,71 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<(), String> {
 
 // --------------------------------------------------------------- region
 
-fn frame_files(p: &Project, a: &Args) -> Result<(String, Vec<u32>, Image, f32), String> {
+/// The frame's stem, its ids decoded, the ids image, its scale, and the
+/// map it is from (`--map NAME`, else the one map that has the frame: with
+/// several maps holding it, say which).
+type FrameFiles = (String, Vec<u32>, Image, f32, (String, PathBuf));
+
+fn frame_files(p: &Project, a: &Args) -> Result<FrameFiles, String> {
     let stem = frame_stem(a.get("--frame").ok_or("--frame F wants a frame of the map")?)?;
-    let idp = p.p("map/frames").join(format!("{stem}-ids.png"));
-    let ids = img::load(&idp).map_err(|e| format!("{e} (frames the map has: map/frames/)"))?;
+    let map = pick_map(p, a, &stem)?;
+    let idp = map.1.join("frames").join(format!("{stem}-ids.png"));
+    let ids = img::load(&idp).map_err(|e| format!("{e} (frames the map has: {}/frames/)", map.1.display()))?;
     let scale = match a.num::<f32>("--scale")? {
         Some(s) => s,
         None => ids.height as f32 / 384.0,
     };
-    Ok((stem, text::decode_ids(&ids), ids, scale))
+    Ok((stem, text::decode_ids(&ids), ids, scale, map))
 }
 
-fn id_names(p: &Project) -> Result<HashMap<u32, String>, String> {
-    Ok(p.inventory()?.into_iter().map(|i| (i.id, i.name)).collect())
+/// The map for a command about frame `stem`.
+fn pick_map(p: &Project, a: &Args, stem: &str) -> Result<(String, PathBuf), String> {
+    let maps = p.maps();
+    if maps.is_empty() {
+        return Err(format!("{}: no texture map (init --map)", p.p("map").display()));
+    }
+    if let Some(n) = a.get("--map") {
+        return maps
+            .into_iter()
+            .find(|(m, _)| m == n)
+            .ok_or_else(|| format!("--map {n}: the project's maps are {}", p.map_names()));
+    }
+    let has: Vec<&(String, PathBuf)> =
+        maps.iter().filter(|(_, d)| d.join("frames").join(format!("{stem}-ids.png")).is_file()).collect();
+    match has.len() {
+        1 => Ok(has[0].clone()),
+        0 => Ok(maps[0].clone()),
+        _ => Err(format!(
+            "frame {stem} is in several maps ({}): say --map NAME",
+            has.iter().map(|m| m.0.as_str()).collect::<Vec<_>>().join(", ")
+        )),
+    }
+}
+
+/// The ids of one map's frames: id -> texture or tile name.
+fn id_names(p: &Project, map: &(String, PathBuf)) -> Result<HashMap<u32, String>, String> {
+    Ok(p.inventory_of(&map.0, &map.1)?.into_iter().map(|i| (i.id, i.name)).collect())
 }
 
 fn region(p: &Project, a: &Args) -> Result<bool, String> {
     p.require()?;
     let rect = a.rect("--region")?.ok_or("--region X,Y,W,H (output pixels of the frame)")?;
-    let (stem, ids, idimg, scale) = frame_files(p, a)?;
-    let inv = p.inventory()?;
+    let (stem, ids, idimg, scale, map) = frame_files(p, a)?;
+    let inv = p.inventory_of(&map.0, &map.1)?;
     let by_id: HashMap<u32, &Inv> = inv.iter().map(|i| (i.id, i)).collect();
     let counts = text::ids_in_region(&ids, idimg.width, rect);
     let mut rows: Vec<(u32, usize)> = counts.into_iter().filter(|(id, _)| *id >= 2).collect();
     rows.sort_by_key(|r| std::cmp::Reverse(r.1));
-    println!("# frame {stem}, region {},{},{},{}, scale {scale:.3}", rect.0, rect.1, rect.2, rect.3);
+    println!("# frame {stem} of map {}, region {},{},{},{}, scale {scale:.3}", map.0, rect.0, rect.1, rect.2, rect.3);
     println!("name\tkind\tid\tsize\tpixels\tgroup\tsurface\twrap");
     for (id, n) in &rows {
         if let Some(i) = by_id.get(id) {
             println!("{}	{}	{id}	{}x{}	{n}	{}	{}	{}", i.name, i.kind, i.w, i.h, i.group, i.surface, i.wrap);
         }
     }
-    let uvp = p.p("map/frames").join(format!("{stem}-uv.png"));
+    let uvp = map.1.join("frames").join(format!("{stem}-uv.png"));
     if let Ok(uv) = img::load(&uvp) {
-        let names = id_names(p)?;
+        let names = id_names(p, &map)?;
         let cells = text::tile_cells(&ids, &uv, &names, rect, scale);
         if !cells.is_empty() {
             println!("# tile cells (corner x, y, size in output pixels), reading order");
@@ -510,7 +691,14 @@ fn region(p: &Project, a: &Args) -> Result<bool, String> {
 
 // --------------------------------------------------------------- select
 
-fn resolve_keys(inv: &[Inv], tokens: &[String]) -> Result<Vec<usize>, String> {
+/// `id_map`: the map numeric IDs are looked up in (they differ per map); None
+/// with several maps makes a numeric token an error.
+fn resolve_keys(
+    inv: &[Inv],
+    tokens: &[String],
+    id_map: Option<&str>,
+    several_maps: bool,
+) -> Result<Vec<usize>, String> {
     let mut out = Vec::new();
     for t in tokens {
         let t = t.trim();
@@ -519,7 +707,14 @@ fn resolve_keys(inv: &[Inv], tokens: &[String]) -> Result<Vec<usize>, String> {
         }
         let hit: Vec<usize> =
             if let (true, Ok(id)) = (t.len() <= 7 && t.bytes().all(|b| b.is_ascii_digit()), t.parse::<u32>()) {
-                inv.iter().enumerate().filter(|(_, i)| i.id == id).map(|(n, _)| n).collect()
+                if several_maps && id_map.is_none() {
+                    return Err(format!("--key {t}: IDs differ per map; say --map NAME, or use the name or hash"));
+                }
+                inv.iter()
+                    .enumerate()
+                    .filter(|(_, i)| i.id == id && id_map.is_none_or(|m| i.map == m))
+                    .map(|(n, _)| n)
+                    .collect()
             } else {
                 let exact: Vec<usize> = inv.iter().enumerate().filter(|(_, i)| i.name == t).map(|(n, _)| n).collect();
                 if exact.is_empty() {
@@ -544,9 +739,10 @@ fn resolve_keys(inv: &[Inv], tokens: &[String]) -> Result<Vec<usize>, String> {
 fn select(p: &Project, a: &Args) -> Result<bool, String> {
     p.require()?;
     let inv = p.inventory()?;
+    let several = p.maps().len() > 1;
     let mut idx: Vec<usize> = Vec::new();
     let keys: Vec<String> = a.all("--key").iter().flat_map(|k| k.split(',')).map(str::to_string).collect();
-    idx.extend(resolve_keys(&inv, &keys)?);
+    idx.extend(resolve_keys(&inv, &keys, a.get("--map"), several)?);
     if let Some(g) = a.num::<u32>("--group")? {
         idx.extend(inv.iter().enumerate().filter(|(_, i)| i.group == g).map(|(n, _)| n));
     }
@@ -560,10 +756,12 @@ fn select(p: &Project, a: &Args) -> Result<bool, String> {
     }
     if a.get("--region").is_some() {
         let rect = a.rect("--region")?.unwrap();
-        let (_, ids, idimg, _) = frame_files(p, a)?;
+        let (_, ids, idimg, _, map) = frame_files(p, a)?;
         let counts = text::ids_in_region(&ids, idimg.width, rect);
-        let by_id: HashMap<u32, usize> = inv.iter().enumerate().map(|(n, i)| (i.id, n)).collect();
-        idx.extend(counts.keys().filter_map(|id| by_id.get(id)).copied());
+        // This map's ids -> names -> rows of the merged inventory.
+        let names = id_names(p, &map)?;
+        let by_name: HashMap<&str, usize> = inv.iter().enumerate().map(|(n, i)| (i.name.as_str(), n)).collect();
+        idx.extend(counts.keys().filter_map(|id| names.get(id)).filter_map(|n| by_name.get(n.as_str())).copied());
     }
     if a.has("--all") {
         idx.extend(0..inv.len());
@@ -613,10 +811,10 @@ fn select(p: &Project, a: &Args) -> Result<bool, String> {
                 added += 1;
             }
         }
-        if let Some(src) = [p.p("map/textures").join(format!("{}.png", i.name))].iter().find(|f| f.is_file()) {
+        if let Some(src) = p.map_texture(&i.name, false) {
             let to = p.p("original").join(format!("{}.png", i.name));
             if !to.exists() {
-                copy_file(src, &to)?;
+                copy_file(&src, &to)?;
             }
         }
     }
@@ -789,11 +987,15 @@ fn pack(p: &Project, a: &Args) -> Result<bool, String> {
     let dir = p.p("pack");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let meta = p.meta();
+    let n_regions = regions::write_pack(p, &dir)?;
     let names = png_names(&dir);
     let mut manifest = String::from("# reModel pack, written by `remodel studio pack`\nformat\t2\nkeys\t1\n");
     let _ = writeln!(manifest, "name\t{}", meta.get("name").map(String::as_str).unwrap_or("studio pack"));
     if let Some(g) = meta.get("game") {
         let _ = writeln!(manifest, "game\t{g}");
+    }
+    if n_regions > 0 {
+        manifest += "uses\tregions\n";
     }
     std::fs::write(dir.join("pack.txt"), manifest).map_err(|e| e.to_string())?;
     let mut index = String::from("# one file name a line, for the browser\n");
@@ -801,7 +1003,12 @@ fn pack(p: &Project, a: &Args) -> Result<bool, String> {
         let _ = writeln!(index, "{n}.png");
     }
     std::fs::write(dir.join("index.txt"), index).map_err(|e| e.to_string())?;
-    println!("pack          {} images in {} (pack.txt, index.txt)", names.len(), dir.display());
+    println!(
+        "pack          {} images in {} (pack.txt, index.txt{})",
+        names.len(),
+        dir.display(),
+        if n_regions > 0 { format!(", {n_regions} regions") } else { String::new() }
+    );
     if a.has("--no-lint") {
         return Ok(true);
     }
@@ -859,7 +1066,8 @@ fn variants(p: &Project, a: &Args) -> Result<bool, String> {
     p.require()?;
     let inv = p.inventory()?;
     let of = a.get("--of").ok_or("--of KEY: the texture whose restyle feeds the surface")?;
-    let k = *resolve_keys(&inv, &[of.to_string()])?.first().unwrap();
+    let several = p.maps().len() > 1;
+    let k = *resolve_keys(&inv, &[of.to_string()], a.get("--map"), several)?.first().unwrap();
     let key = &inv[k];
     if key.kind != "tex" {
         return Err(format!("{}: tiles have no surfaces", key.name));
@@ -879,7 +1087,7 @@ fn variants(p: &Project, a: &Args) -> Result<bool, String> {
     // --also: keys of other surfaces that take the same look (a texture
     // drawn in colours the game made from other texels).
     let also: Vec<String> = a.all("--also").iter().flat_map(|k| k.split(',')).map(str::to_string).collect();
-    for n in resolve_keys(&inv, &also)? {
+    for n in resolve_keys(&inv, &also, a.get("--map"), several)? {
         if inv[n].name != key.name && !members.iter().any(|m| m.name == inv[n].name) {
             members.push(&inv[n]);
         }
@@ -997,12 +1205,29 @@ fn modal_colour(im: &Image, bx: (usize, usize, usize, usize)) -> [u8; 3] {
     [(sum[0] / n) as u8, (sum[1] / n) as u8, (sum[2] / n) as u8]
 }
 
+/// `--pad`: N (all sides), X,Y (left and right, top and bottom) or
+/// L,T,R,B, in output pixels; (left, top, right, bottom).
+fn parse_pad(v: Option<&str>) -> Result<(f32, f32, f32, f32), String> {
+    let Some(v) = v else { return Ok((0.0, 0.0, 0.0, 0.0)) };
+    let n: Vec<f32> = v
+        .split(',')
+        .map(|x| x.trim().parse::<f32>())
+        .collect::<Result<_, _>>()
+        .map_err(|_| format!("--pad: `{v}` is not N, X,Y or LEFT,TOP,RIGHT,BOTTOM"))?;
+    match n[..] {
+        [a] => Ok((a, a, a, a)),
+        [x, y] => Ok((x, y, x, y)),
+        [l, t, r, b] => Ok((l, t, r, b)),
+        _ => Err(format!("--pad: `{v}` is not N, X,Y or LEFT,TOP,RIGHT,BOTTOM")),
+    }
+}
+
 fn text_cmd(p: &Project, a: &Args) -> Result<bool, String> {
     p.require()?;
     let region = a.rect("--region")?.ok_or("--region X,Y,W,H: the frame's pixels the text covers")?;
-    let (stem, ids, idimg, scale) = frame_files(p, a)?;
-    let uv = img::load(&p.p("map/frames").join(format!("{stem}-uv.png")))?;
-    let names = id_names(p)?;
+    let (stem, ids, idimg, scale, map) = frame_files(p, a)?;
+    let uv = img::load(&map.1.join("frames").join(format!("{stem}-uv.png")))?;
+    let names = id_names(p, &map)?;
     let cells = text::tile_cells(&ids, &uv, &names, region, scale);
     if cells.is_empty() {
         return Err("no tiles are drawn in that region".into());
@@ -1040,10 +1265,10 @@ fn text_cmd(p: &Project, a: &Args) -> Result<bool, String> {
         o => return Err(format!("--alpha {o}: original or typeset")),
     };
     let tile_px = 8 * a.num::<usize>("--tile-scale")?.unwrap_or(4).clamp(1, 16);
-    let pad: f32 = a.num("--pad")?.unwrap_or(0.0);
+    let (pl, pt, pr, pb) = parse_pad(a.get("--pad"))?;
     let mut at = text::place(
         (ts.width, ts.height),
-        (bx.0 as f32 + pad, bx.1 as f32 + pad, (bx.2 as f32 - 2.0 * pad).max(1.0), (bx.3 as f32 - 2.0 * pad).max(1.0)),
+        (bx.0 as f32 + pl, bx.1 as f32 + pt, (bx.2 as f32 - pl - pr).max(1.0), (bx.3 as f32 - pt - pb).max(1.0)),
         fit,
         align,
     );
@@ -1052,7 +1277,7 @@ fn text_cmd(p: &Project, a: &Args) -> Result<bool, String> {
         // text drew there is covered: `auto` takes the box's commonest
         // colour in the frame.
         let colour = if bg == "auto" {
-            modal_colour(&img::load(&p.p("map/frames").join(format!("{stem}.png")))?, bx)
+            modal_colour(&img::load(&map.1.join("frames").join(format!("{stem}.png")))?, bx)
         } else {
             img::parse_colour(bg)?
         };
@@ -1117,10 +1342,10 @@ fn text_cmd(p: &Project, a: &Args) -> Result<bool, String> {
                 category: cat.clone(),
                 reason: reason.clone(),
             });
-            if let Some(f) = [p.p("map/textures").join(format!("{name}.png"))].iter().find(|f| f.is_file()) {
+            if let Some(f) = p.map_texture(name, false) {
                 let to = p.p("original").join(format!("{name}.png"));
                 if !to.exists() {
-                    copy_file(f, &to)?;
+                    copy_file(&f, &to)?;
                 }
             }
         }
@@ -1243,7 +1468,8 @@ fn aspect_text(w: usize, h: usize) -> String {
 /// The frame crop where `i` is drawn most (its best frame), or None.
 fn frame_crop(p: &Project, i: &Inv) -> Option<Image> {
     let stem = frame_stem(&i.best_frame).ok()?;
-    let tsv = std::fs::read_to_string(p.p("map/frames").join(format!("{stem}.tsv"))).ok()?;
+    let frames = p.map_dir(&i.map).join("frames");
+    let tsv = std::fs::read_to_string(frames.join(format!("{stem}.tsv"))).ok()?;
     let mut lines = tsv.lines();
     let head: Vec<&str> = lines.next()?.split('\t').collect();
     let col = |n: &str| head.iter().position(|h| *h == n);
@@ -1253,7 +1479,7 @@ fn frame_crop(p: &Project, i: &Inv) -> Option<Image> {
         .find(|f| f.get(ci).and_then(|v| v.parse::<u32>().ok()) == Some(i.id))?;
     let n = |c: usize| row.get(c).and_then(|v| v.parse::<usize>().ok());
     let (x0, y0, x1, y1) = (n(c0)?, n(c1)?, n(c2)?, n(c3)?);
-    let frame = img::load(&p.p("map/frames").join(format!("{stem}.png"))).ok()?;
+    let frame = img::load(&frames.join(format!("{stem}.png"))).ok()?;
     let m = ((x1 - x0).max(y1 - y0) / 4).max(24);
     let (cx0, cy0) = (x0.saturating_sub(m), y0.saturating_sub(m));
     let (cx1, cy1) = ((x1 + m).min(frame.width - 1), (y1 + m).min(frame.height - 1));
@@ -1555,11 +1781,35 @@ fn compare(p: &Project, a: &Args, ctx: &Ctx) -> Result<bool, String> {
     let snap = a.get("--snap").unwrap_or("300").to_string();
     let extra: Vec<String> = a.get("--run-args").unwrap_or("").split_whitespace().map(str::to_string).collect();
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let eeprom = PathBuf::from("out").join(&ctx.game).join("eeprom.bin");
+    // From any directory: the repo root (where `rom/` and `out/` are) is
+    // found by walking up from the working directory, the project and this
+    // program; the runs start there, with absolute paths.
+    let root = find_root(p).ok_or(
+        "cannot find the repo root (a folder with Makefile and crates/) above the working directory or the project",
+    )?;
+    let rom = if ctx.rom.is_absolute() || ctx.rom.exists() {
+        std::fs::canonicalize(&ctx.rom).unwrap_or(ctx.rom.clone())
+    } else {
+        find_up(&[root.clone(), cwd()], &ctx.rom)
+            .ok_or_else(|| format!("ROM directory {} not found from {}", ctx.rom.display(), root.display()))?
+    };
+    let eeprom = find_up(&[root.clone(), cwd()], &PathBuf::from("out").join(&ctx.game).join("eeprom.bin"))
+        .unwrap_or_else(|| root.join("out").join(&ctx.game).join("eeprom.bin"));
+    let out = absolute(&out);
+    let pack_dir = absolute(&pack_dir);
+    // The pack as it is now: a copy taken at the start, so a pack being
+    // rebuilt while this runs is never seen half written (a copy, not
+    // links: writers truncate files in place).
+    let snapshot = out.join(".pack-snapshot");
+    if !pack_dir.is_dir() {
+        return Err(format!("{}: pack directory not found", pack_dir.display()));
+    }
+    let _ = std::fs::remove_dir_all(&snapshot);
+    copy_dir(&pack_dir, &snapshot)?;
     let force = a.has("--force");
     let jobs: usize = a.num("--jobs")?.unwrap_or(2);
     let mut kids = Vec::new();
-    for (label, pack) in [("before", None), ("after", Some(&pack_dir))] {
+    for (label, pack) in [("before", None), ("after", Some(&snapshot))] {
         let od = out.join(label);
         if !force && od.join("frames/final.png").is_file() {
             println!("{label:<8}      kept (--force reruns)");
@@ -1570,7 +1820,8 @@ fn compare(p: &Project, a: &Args, ctx: &Ctx) -> Result<bool, String> {
             let _ = std::fs::copy(&eeprom, od.join("eeprom.bin"));
         }
         let mut c = Command::new(&exe);
-        c.args(["--game", &ctx.game, "--rom"]).arg(&ctx.rom);
+        c.current_dir(&root);
+        c.args(["--game", &ctx.game, "--rom"]).arg(&rom);
         if ctx.jit {
             c.arg("--jit");
         }
@@ -1616,6 +1867,7 @@ fn compare(p: &Project, a: &Args, ctx: &Ctx) -> Result<bool, String> {
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
+    let _ = std::fs::remove_dir_all(&snapshot);
     if failed {
         return Err(format!("a run failed: see {}/before/run.log and after/run.log", out.display()));
     }
@@ -1666,6 +1918,45 @@ fn compare(p: &Project, a: &Args, ctx: &Ctx) -> Result<bool, String> {
         out.display()
     );
     Ok(true)
+}
+
+fn cwd() -> PathBuf {
+    std::env::current_dir().unwrap_or_default()
+}
+
+fn absolute(p: &Path) -> PathBuf {
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        cwd().join(p)
+    }
+}
+
+/// The first of `rel` under `starts` or any of their ancestors that exists.
+fn find_up(starts: &[PathBuf], rel: &Path) -> Option<PathBuf> {
+    for s in starts {
+        let s = std::fs::canonicalize(s).unwrap_or_else(|_| s.clone());
+        for d in s.ancestors() {
+            let c = d.join(rel);
+            if c.exists() {
+                return Some(c);
+            }
+        }
+    }
+    None
+}
+
+/// The repo root: the nearest folder above the working directory, the
+/// project or this program with a `Makefile` and a `crates/` folder.
+fn find_root(p: &Project) -> Option<PathBuf> {
+    let exe = std::env::current_exe().unwrap_or_default();
+    for s in [cwd(), absolute(&p.dir), exe] {
+        let s = std::fs::canonicalize(&s).unwrap_or(s);
+        if let Some(d) = s.ancestors().find(|d| d.join("Makefile").is_file() && d.join("crates").is_dir()) {
+            return Some(d.to_path_buf());
+        }
+    }
+    None
 }
 
 fn side_by_side(a: &Image, b: &Image) -> Image {
@@ -1898,6 +2189,201 @@ mod tests {
         a3.flags.push(("--cmd".into(), "exit 1".into()));
         assert!(!draft(&p, &a3).unwrap());
         assert!(!d.join("draft/tex_bbbbbbbbbbbbbbbb_8x8.png").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn names_and_filters_are_strict() {
+        let d = tmp("strict");
+        let p = Project { dir: d.clone() };
+        init(&p, &args(&format!("{}", d.display()))).unwrap();
+        map(&d);
+        select(&p, &args(&format!("{} --key aaaaaaaaaaaaaaaa,bbbbbbbbbbbbbbbb --category wall", d.display()))).unwrap();
+        let recipe = d.join("r.txt");
+        std::fs::write(&recipe, "[default]\ntones = 3\n").unwrap();
+        let run = |extra: &str| style(&p, &args(&format!("{} --recipe {} {extra}", d.display(), recipe.display())));
+        // An unknown name refuses, naming it; nothing is restyled.
+        let e = run("tex_nope").unwrap_err();
+        assert!(e.contains("not in the selection") && e.contains("tex_nope"), "{e}");
+        assert!(run("aaaaaaaaaaaaaaaa tex_nope").is_err());
+        assert!(!d.join("draft/tex_aaaaaaaaaaaaaaaa_8x8.png").exists());
+        // A substring of a name is not a name; the key is.
+        assert!(run("aaaaaaaa").is_err());
+        assert!(run("aaaaaaaaaaaaaaaa").unwrap());
+        assert!(d.join("draft/tex_aaaaaaaaaaaaaaaa_8x8.png").is_file());
+        assert!(!d.join("draft/tex_bbbbbbbbbbbbbbbb_8x8.png").exists());
+        // Unknown group or category: an error, never every row.
+        assert!(run("--category nope").unwrap_err().contains("categories: wall"));
+        assert!(run("--group 99").unwrap_err().contains("group 99"));
+        // With nothing to narrow by, `--all` is needed.
+        assert!(run("").unwrap_err().contains("which rows"));
+        // Filters together all apply.
+        let e = run("aaaaaaaaaaaaaaaa --category nope").unwrap_err();
+        assert!(e.contains("--category"), "{e}");
+        assert!(approve(&p, &args(&format!("{} nothing", d.display()))).is_err());
+        assert!(import(&p, &args(&format!("{} --from {} --tool x tex_none", d.display(), d.display()))).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn several_maps_are_searched_together() {
+        let d = tmp("maps");
+        let p = Project { dir: d.clone() };
+        let (m1, m2) = (d.join("m1"), d.join("m2"));
+        for (m, name, id) in [(&m1, "tex_aaaaaaaaaaaaaaaa_8x8", 2), (&m2, "tex_dddddddddddddddd_8x8", 2)] {
+            std::fs::create_dir_all(m.join("textures")).unwrap();
+            std::fs::create_dir_all(m.join("frames")).unwrap();
+            std::fs::write(
+                m.join("inventory.tsv"),
+                format!(
+                    "id\tname\tkind\tw\th\tsurface\tframes\tpixels\tbest_frame\tbest_pixels\tpolys\tuv_used_pct\twrap\tspan_u\tspan_v\tgroup\tgroup_size\tdetail\n\
+                     {id}\t{name}\ttex\t8\t8\tS\t1\t900\t300\t900\t1\t100\trr\t2\t2\t1\t1\t-\n"
+                ),
+            )
+            .unwrap();
+            img::save(&m.join("textures").join(format!("{name}.png")), &img::blank(8, 8, [9, 9, 9, 255])).unwrap();
+            let mut ids = img::blank(16, 16, [0, 0, 0, 255]);
+            ids.rgba.chunks_exact_mut(4).for_each(|c| c[0] = id as u8);
+            img::save(&m.join("frames/000300-ids.png"), &ids).unwrap();
+        }
+        init(&p, &args(&format!("{0} --map one={1} --map two={2}", d.display(), m1.display(), m2.display()))).unwrap();
+        assert_eq!(p.maps().iter().map(|m| m.0.as_str()).collect::<Vec<_>>(), ["one", "two"]);
+        let inv = p.inventory().unwrap();
+        assert_eq!(inv.len(), 2);
+        assert_eq!((inv[0].map.as_str(), inv[1].map.as_str()), ("one", "two"));
+        // Select by name from either map; the originals come from the map that has them.
+        select(&p, &args(&format!("{} --key dddddddddddddddd,aaaaaaaaaaaaaaaa", d.display()))).unwrap();
+        assert!(d.join("original/tex_dddddddddddddddd_8x8.png").is_file());
+        assert!(d.join("original/tex_aaaaaaaaaaaaaaaa_8x8.png").is_file());
+        // IDs differ per map: a number needs --map; a frame in both maps needs --map.
+        assert!(select(&p, &args(&format!("{} --key 2", d.display()))).unwrap_err().contains("IDs differ per map"));
+        assert!(select(&p, &args(&format!("{} --key 2 --map two", d.display()))).unwrap());
+        let e = region(&p, &args(&format!("{} --frame 300 --region 0,0,8,8", d.display()))).unwrap_err();
+        assert!(e.contains("several maps"), "{e}");
+        assert!(region(&p, &args(&format!("{} --frame 300 --region 0,0,8,8 --map one", d.display()))).unwrap());
+        assert!(region(&p, &args(&format!("{} --frame 300 --region 0,0,8,8 --map zzz", d.display()))).is_err());
+        // Selecting what a frame region draws goes through that map's ids.
+        let before = p.selection().len();
+        select(&p, &args(&format!("{} --frame 300 --region 0,0,8,8 --map two", d.display()))).unwrap();
+        assert_eq!(p.selection().len(), before);
+        // A single linked folder is still one map named `map`.
+        let one = tmp("onemap");
+        let q = Project { dir: one.clone() };
+        init(&q, &args(&format!("{} --map {}", one.display(), m1.display()))).unwrap();
+        assert_eq!(q.maps().iter().map(|m| m.0.as_str()).collect::<Vec<_>>(), ["map"]);
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&one);
+    }
+
+    #[test]
+    fn pad_takes_one_two_or_four_values() {
+        assert_eq!(parse_pad(None).unwrap(), (0.0, 0.0, 0.0, 0.0));
+        assert_eq!(parse_pad(Some("3")).unwrap(), (3.0, 3.0, 3.0, 3.0));
+        assert_eq!(parse_pad(Some("4,2")).unwrap(), (4.0, 2.0, 4.0, 2.0));
+        assert_eq!(parse_pad(Some("1,2,3,4")).unwrap(), (1.0, 2.0, 3.0, 4.0));
+        assert!(parse_pad(Some("1,2,3")).is_err() && parse_pad(Some("x")).is_err());
+    }
+
+    #[test]
+    fn the_repo_root_is_found_from_the_project() {
+        let d = tmp("root");
+        std::fs::create_dir_all(d.join("crates")).unwrap();
+        std::fs::write(d.join("Makefile"), "").unwrap();
+        std::fs::create_dir_all(d.join("out/g/studio/p")).unwrap();
+        std::fs::create_dir_all(d.join("rom")).unwrap();
+        let p = Project { dir: d.join("out/g/studio/p") };
+        assert!(find_root(&p).is_some());
+        let found = find_up(&[d.join("out/g/studio/p")], Path::new("rom")).unwrap();
+        assert_eq!(found, std::fs::canonicalize(d.join("rom")).unwrap());
+        assert!(find_up(&[d.join("out")], Path::new("no/such/thing")).is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn region_capture_cuts_a_layout_and_the_pack_carries_it() {
+        use model2::capture::Frame;
+        use model2::regions::RegionSet;
+        let d = tmp("regioncap");
+        let p = Project { dir: d.clone() };
+        init(&p, &args(&format!("{} --game g", d.display()))).unwrap();
+        // Plane A (map 0): tiles 1 and 2 at cells (10, 10) and (11, 10), scrolled 5 pixels
+        // right; the other maps off.
+        let mut tiles = vec![0u8; 0x10_0000];
+        let put = |t: &mut [u8], off: usize, v: u16| t[off..off + 2].copy_from_slice(&v.to_le_bytes());
+        put(&mut tiles, (10 * 64 + 10) * 2, 1);
+        put(&mut tiles, (10 * 64 + 11) * 2, 2);
+        for m in 1..4 {
+            put(&mut tiles, 0xa008 + 2 * m, 0x8000);
+        }
+        put(&mut tiles, 0xa000, 5);
+        tiles[0x8_0000 + 32..0x8_0000 + 64].fill(0x11);
+        tiles[0x8_0000 + 64..0x8_0000 + 96].fill(0x22);
+        let mut palette = vec![0u8; 0x2_0000];
+        palette[2..4].copy_from_slice(&0x03e0u16.to_le_bytes());
+        palette[4..6].copy_from_slice(&0x03ffu16.to_le_bytes());
+        let frame = Frame {
+            frame: 300,
+            stream: vec![],
+            texture_point_ram: vec![0; 4],
+            render_ram: vec![0; 8],
+            palette,
+            tiles: tiles.clone(),
+            xoff: 0.0,
+            yoff: 0.0,
+            light: None,
+            scan: None,
+        };
+        let cap = d.join("cap");
+        frame.save(&cap, &[0]).unwrap();
+        // The cells are at screen x = 85..101, y = 80..88 (5 pixels of scroll).
+        let line = format!(
+            "{} logo --capture {} --frame 300 --region 86,81,14,6 --game-px --ref-scale 2",
+            d.display(),
+            cap.display()
+        );
+        assert!(regions::capture(&p, &args(&line)).unwrap());
+        let text = std::fs::read_to_string(d.join("regions/logo/region.txt")).unwrap();
+        let defs = model2::regions::parse(&text).unwrap();
+        assert_eq!((defs[0].w, defs[0].h), (2, 1));
+        assert_eq!(defs[0].plane, model2::regions::Plane::A);
+        let o = img::load(&d.join("regions/logo/original.png")).unwrap();
+        assert_eq!((o.width, o.height), (32, 16));
+        // The original is the game's picture of those cells: green then yellow.
+        assert_eq!(&o.rgba[..3], &[0, 255, 0]);
+        assert_eq!(&o.rgba[(16 * 4)..(16 * 4) + 3], &[255, 255, 0]);
+        // No replacement yet: nothing goes into the pack.
+        assert!(pack(&p, &args(&format!("{} --no-lint", d.display()))).unwrap());
+        assert!(!d.join("pack/regions.txt").exists());
+        assert!(!std::fs::read_to_string(d.join("pack/pack.txt")).unwrap().contains("regions"));
+        let mut listing = args(&format!("{}", d.display()));
+        listing.sw.insert("--tsv".into());
+        assert!(regions::list(&p, &listing).unwrap());
+        // Give it one (4x): the pack then has the regions file, the image and the feature.
+        img::save(&d.join("regions/logo/replacement.png"), &img::blank(64, 32, [200, 10, 10, 255])).unwrap();
+        assert!(pack(&p, &args(&format!("{}", d.display()))).unwrap());
+        assert!(d.join("pack/region_logo.png").is_file());
+        assert!(std::fs::read_to_string(d.join("pack/pack.txt")).unwrap().contains("uses\tregions"));
+        assert!(std::fs::read_to_string(d.join("pack/index.txt")).unwrap().contains("region_logo.png"));
+        // A reader loads it and finds it in the frame, where the scroll put it.
+        let set = RegionSet::load_dir(&d.join("pack"), &mut |f| {
+            let bytes = std::fs::read(f).ok()?;
+            let i = png::decode(&bytes).ok()?;
+            Some(std::sync::Arc::new(model2::enhance::Rgba { width: i.width, height: i.height, data: i.rgba }))
+        })
+        .unwrap();
+        assert_eq!(set.regions.len(), 1);
+        let grid = model2::video::match_regions(&tiles, &frame.palette, &set);
+        assert!(grid.at(0, 10, 10).is_some() && grid.at(0, 11, 10).is_some());
+        // Unapproving (removing the replacement) takes it back out of the pack.
+        std::fs::remove_file(d.join("regions/logo/replacement.png")).unwrap();
+        assert!(pack(&p, &args(&format!("{} --no-lint", d.display()))).unwrap());
+        assert!(!d.join("pack/region_logo.png").exists() && !d.join("pack/regions.txt").exists());
+        // Refusals: a bad name, an off-screen rectangle.
+        let bad = format!("{} Bad --capture {} --frame 300 --region 86,81,14,6 --game-px", d.display(), cap.display());
+        assert!(regions::capture(&p, &args(&bad)).is_err());
+        let off =
+            format!("{} off --capture {} --frame 300 --region 600,300,14,6 --game-px", d.display(), cap.display());
+        assert!(regions::capture(&p, &args(&off)).is_err());
         let _ = std::fs::remove_dir_all(&d);
     }
 

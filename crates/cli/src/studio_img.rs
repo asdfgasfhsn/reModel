@@ -334,7 +334,16 @@ impl RecipeFile {
                 continue;
             }
             if let Some(s) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
-                f.sections.push((s.trim().to_string(), HashMap::new()));
+                // A section given again continues the first one (its lines
+                // add to it, a repeated setting is overridden by the later).
+                let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+                match f.sections.iter().position(|(name, _)| *name == s) {
+                    Some(i) => {
+                        let sec = f.sections.remove(i);
+                        f.sections.push(sec);
+                    }
+                    None => f.sections.push((s, HashMap::new())),
+                }
             } else if let Some((k, v)) = line.split_once('=') {
                 let Some(sec) = f.sections.last_mut() else {
                     return Err(format!("recipe line {}: `{line}` before any [section]", n + 1));
@@ -640,7 +649,11 @@ pub fn style(src: &Image, r: &Recipe, wu: Wrap, wv: Wrap) -> Image {
     inner.sort_by(|a, b| a.total_cmp(b));
     let cut = (inner.len() as f32 * r.stretch / 100.0) as usize;
     let (lo, hi) = (inner[cut.min(inner.len() - 1)], inner[inner.len() - 1 - cut.min(inner.len() - 1)]);
-    let span = (hi - lo).max(1.0 / 64.0);
+    // A flat texture (one colour, or nearly) has no range to stretch: its
+    // tone is its luminance on the palette's own scale, so white stays the
+    // lightest tone and black the darkest, not everything the darkest.
+    let flat = hi - lo < 1.0 / 64.0;
+    let (lo, span) = if flat { (0.0, 1.0) } else { (lo, (hi - lo).max(1.0 / 64.0)) };
 
     let n = r.tones;
     let tone_t: Vec<f32> =
@@ -1086,6 +1099,30 @@ mod tests {
             .resolve("", "")
             .unwrap();
         assert_eq!((r.ink_colour, r.palette.len()), ([0x11, 0x22, 0x33], 2));
+    }
+
+    #[test]
+    fn repeated_sections_merge_and_flat_textures_take_their_luminance_tone() {
+        // A [key] section given twice is one section: both halves apply, the later wins a clash.
+        let f = RecipeFile::parse(
+            "[default]\ntones = 3\npalette = #000000 #ffffff\nmedian = 0\nblur = 0\n[key k]\nscale = 2\n[material m]\nbias = 0.1\n[key k]\nink = 1\nscale = 3\n",
+        )
+        .unwrap();
+        let r = f.resolve("m", "k").unwrap();
+        assert_eq!((r.scale, r.ink, r.tones), (3, 1.0, 3));
+        assert_eq!(r.bias, 0.1);
+        // Flat tiles map to the tone of their luminance: black darkest, white lightest, mid-grey the middle.
+        let tone = |v: u8| {
+            let src = blank(8, 8, [v, v, v, 255]);
+            let out =
+                style(&src, &Recipe { scale: 1, median: 0, blur: 0.0, ..Default::default() }, Wrap::Clamp, Wrap::Clamp);
+            out.rgba[0]
+        };
+        let (dark, light) = (0x11, 0xff);
+        assert_eq!(tone(0), dark);
+        assert_eq!(tone(255), light);
+        let mid = tone(128);
+        assert!(mid > dark && mid < light, "{mid}");
     }
 
     #[test]

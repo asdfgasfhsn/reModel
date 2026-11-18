@@ -28,6 +28,7 @@ pub mod pack;
 pub mod photo;
 pub mod protection;
 pub mod raster;
+pub mod regions;
 pub mod sharc;
 pub mod smooth;
 pub mod tgp2a;

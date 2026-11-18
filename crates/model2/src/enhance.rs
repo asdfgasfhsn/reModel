@@ -582,6 +582,12 @@ pub trait Enhance {
     /// A tile pattern is on screen this frame: its replacement, if any
     /// (any multiple of 8x8, sampled at output resolution).
     fn tile(&mut self, info: &TileInfo) -> Option<Arc<Rgba>>;
+    /// The pack's region overrides for the 2D layers (`regions`), if it
+    /// has any: matched against each frame's tile maps and drawn over the
+    /// tile patterns.
+    fn regions(&mut self) -> Option<Arc<crate::regions::RegionSet>> {
+        None
+    }
     /// A textured polygon with a lamp (`light::Options::lamps`, materials
     /// on) is about to be drawn: its material maps, if the pack has them.
     /// Never asked for otherwise.
@@ -624,6 +630,12 @@ pub trait TexturePack {
     /// A tile pattern's replacement, as `find` for textures.
     fn find_tile(&mut self, _info: &TileInfo) -> Found {
         Found::Missing
+    }
+    /// The pack's region overrides (`regions::RegionSet`), if it has any
+    /// that this reader loaded. The renderer takes the 2D path for a pack
+    /// with regions even if it has no tile images.
+    fn regions(&mut self) -> Option<Arc<crate::regions::RegionSet>> {
+        None
     }
     /// Whether the pack has any material maps it reads (a manifest of
     /// format 2 or later and `.n`, `.s` or `.g` files): without, the

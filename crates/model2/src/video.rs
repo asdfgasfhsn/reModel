@@ -10,6 +10,7 @@
 //! Character RAM at +0x80000: 8x8 tiles, 4bpp, 32 bytes per tile.
 
 use crate::enhance::{Address, Enhance, Fnv, Rgba, TileInfo};
+use crate::regions::{RegionGrid, RegionSet, Slice};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -75,6 +76,18 @@ fn sample(tiles: &[u8], map: usize, scroll_map: usize, x: usize, y: usize, opaqu
 /// pixel (x, y) scrolled by the registers of `scroll_map`; None if the map
 /// is disabled.
 fn locate(tiles: &[u8], map: usize, scroll_map: usize, x: usize, y: usize) -> Option<(usize, usize, usize)> {
+    locate_cell(tiles, map, scroll_map, x, y).map(|(entry, row, col, _)| (entry, row, col))
+}
+
+/// [`locate`], and the map cell too (`cy * 64 + cx`): where the pixel is in
+/// the map, whatever the scroll (region overrides are matched in map space).
+fn locate_cell(
+    tiles: &[u8],
+    map: usize,
+    scroll_map: usize,
+    x: usize,
+    y: usize,
+) -> Option<(usize, usize, usize, usize)> {
     if rd16(tiles, VSCROLL + 2 * map) & 0x8000 != 0 {
         return None;
     }
@@ -82,8 +95,74 @@ fn locate(tiles: &[u8], map: usize, scroll_map: usize, x: usize, y: usize) -> Op
     let v = rd16(tiles, VSCROLL + 2 * scroll_map) as usize & 0x1ff;
     let mx = (x + 512 - h) & 511;
     let my = (y + v) & 511;
-    let entry = rd16(tiles, map * 0x2000 + ((my / 8) * 64 + mx / 8) * 2) as usize;
-    Some((entry, my & 7, mx & 7))
+    let cell = (my / 8) * 64 + mx / 8;
+    let entry = rd16(tiles, map * 0x2000 + cell * 2) as usize;
+    Some((entry, my & 7, mx & 7, cell))
+}
+
+/// Where a game pixel is in a tile map (for tools that cut regions out of a
+/// frame, `remodel studio region-capture`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PixelCell {
+    /// The map (0-3), and the cell in it (0-63 each way).
+    pub map: usize,
+    pub cx: usize,
+    pub cy: usize,
+    /// The map entry there, and the pixel's row and column in its tile.
+    pub entry: u16,
+    pub row: usize,
+    pub col: usize,
+}
+
+/// The tile cell of plane `plane` (0 = A, 1 = B) under game pixel (`x`, `y`),
+/// whatever the scroll; None off the frame or where the map is disabled.
+pub fn cell_at(tiles: &[u8], plane: usize, x: usize, y: usize) -> Option<PixelCell> {
+    if x >= WIDTH || y >= HEIGHT {
+        return None;
+    }
+    let (map, scroll) = map_for(tiles, plane, x, y);
+    let (entry, row, col, cell) = locate_cell(tiles, map, scroll, x, y)?;
+    Some(PixelCell { map, cx: cell & 63, cy: cell >> 6, entry: entry as u16, row, col })
+}
+
+/// The key of the tile pattern at cell (`cx`, `cy`) of `map` as regions
+/// name it ([`crate::regions::BLANK`] for a blank tile), and the entry's
+/// priority bit.
+pub fn cell_key(tiles: &[u8], palette: &[u8], map: usize, cx: usize, cy: usize) -> (u64, bool) {
+    let entry = rd16(tiles, (map & 3) * 0x2000 + ((cy & 63) * 64 + (cx & 63)) * 2) as usize;
+    let key = tile_info(tiles, palette, entry & 0x7fff).map_or(crate::regions::BLANK, |t| t.key);
+    (key, entry & 0x8000 != 0)
+}
+
+/// Whether tile map `map` is enabled in this frame.
+pub fn map_enabled(tiles: &[u8], map: usize) -> bool {
+    rd16(tiles, VSCROLL + 2 * (map & 3)) & 0x8000 == 0
+}
+
+/// Match a pack's regions (docs/texture-packs.md, "Regions") against the
+/// four tile maps of a frame: each cell's tile pattern key (the one packs
+/// use, so a region's layout is made of the keys `tile_<key>.png` has),
+/// searched anywhere in each enabled map, wrapping at its edges. Per map
+/// cell, the slice of a region's image to draw there. Scrolling never
+/// matters: the maps are searched, not the screen.
+pub fn match_regions(tiles: &[u8], palette: &[u8], set: &RegionSet) -> RegionGrid {
+    if set.is_empty() {
+        return RegionGrid::empty(0);
+    }
+    let mut memo: HashMap<usize, u64> = HashMap::new();
+    let mut keys: [Vec<u64>; 4] = std::array::from_fn(|_| vec![crate::regions::BLANK; 4096]);
+    let mut prio: [Vec<bool>; 4] = std::array::from_fn(|_| vec![false; 4096]);
+    let enabled: [bool; 4] = std::array::from_fn(|m| rd16(tiles, VSCROLL + 2 * m) & 0x8000 == 0);
+    for map in (0..4).filter(|&m| enabled[m]) {
+        for i in 0..4096 {
+            let entry = rd16(tiles, map * 0x2000 + i * 2) as usize;
+            prio[map][i] = entry & 0x8000 != 0;
+            keys[map][i] = *memo
+                .entry(entry & 0x7fff)
+                .or_insert_with(|| tile_info(tiles, palette, entry & 0x7fff).map_or(crate::regions::BLANK, |t| t.key));
+        }
+    }
+    crate::regions::match_layout(set, &keys, &prio, enabled)
 }
 
 /// Which map of `plane` (0 = A, 1 = B) covers screen pixel (x, y), and
@@ -444,7 +523,10 @@ fn tile_planes(
     tiles: &[u8],
     palette: &[u8],
     enhanced: bool,
-) -> (Vec<[u8; 3]>, Vec<Option<[u8; 3]>>, Vec<[Option<Hit>; 2]>) {
+    regions: Option<(&RegionGrid, &RegionSet)>,
+) -> (Vec<[u8; 3]>, Vec<Option<[u8; 3]>>, Vec<[Option<Hit>; 2]>, Vec<Arc<Rgba>>) {
+    let mut region_reps: Vec<Arc<Rgba>> = Vec::new();
+    let mut slice_rep: HashMap<u32, u16> = HashMap::new();
     let mut hits: Vec<[Option<Hit>; 2]> = if enhanced { vec![[None; 2]; WIDTH * HEIGHT] } else { Vec::new() };
     let backdrop = rgb(rd16(palette, 0));
     let mut base = vec![[0u8; 3]; WIDTH * HEIGHT];
@@ -456,11 +538,17 @@ fn tile_planes(
                 let (map, scroll) = map_for(tiles, plane, x, y);
                 samples[slot] = sample(tiles, map, scroll, x, y, opaque);
                 if enhanced {
-                    hits[y * WIDTH + x][slot] = locate(tiles, map, scroll, x, y).map(|(entry, row, col)| Hit {
-                        entry: entry as u16,
-                        row: row as u8,
-                        col: col as u8,
-                        rep: NONE,
+                    hits[y * WIDTH + x][slot] = locate_cell(tiles, map, scroll, x, y).map(|(entry, row, col, cell)| {
+                        // A region's slice for this map cell takes the place of the tile's own replacement.
+                        let rep = regions
+                            .and_then(|(g, set)| g.at(map, cell & 63, cell >> 6).map(|s| (s, set)))
+                            .map_or(NONE, |(s, set)| {
+                                *slice_rep.entry(s).or_insert_with(|| {
+                                    region_reps.push(set.slices[s as usize].image.clone());
+                                    (region_reps.len() - 1) as u16
+                                })
+                            });
+                        Hit { entry: entry as u16, row: row as u8, col: col as u8, rep }
                     });
                 }
             }
@@ -478,7 +566,7 @@ fn tile_planes(
             hud[y * WIDTH + x] = h;
         }
     }
-    (base, hud, hits)
+    (base, hud, hits, region_reps)
 }
 
 /// The HUD placed element by element in an extended game-space layer
@@ -546,7 +634,7 @@ pub struct TileMap {
 /// scroll registers and mask words are read once per line, and pixels are
 /// produced in runs that share a map and a tile row. Same results.
 fn tile_planes_fast(tiles: &[u8], palette: &[u8]) -> (Vec<[u8; 3]>, Vec<Option<[u8; 3]>>) {
-    tile_planes_runs::<false>(tiles, palette, &mut Vec::new(), &mut |_| NO_CELL)
+    tile_planes_runs::<false>(tiles, palette, &mut Vec::new(), &mut |_| NO_CELL, &mut |_, _, _| NO_CELL)
 }
 
 /// A tile pixel's word in [`TileMap::hits`]: bits 0-11 its palette index
@@ -567,6 +655,7 @@ fn tile_planes_runs<const HITS: bool>(
     palette: &[u8],
     hits: &mut Vec<u32>,
     cell_of: &mut dyn FnMut(usize) -> u16,
+    region_cell: &mut dyn FnMut(usize, usize, usize) -> u16,
 ) -> (Vec<[u8; 3]>, Vec<Option<[u8; 3]>>) {
     /// No pixel (transparent or map disabled).
     const NONE: u16 = u16::MAX;
@@ -651,10 +740,13 @@ fn tile_planes_runs<const HITS: bool>(
                     if cells[e] == UNSET {
                         cells[e] = cell_of(e);
                     }
+                    // A region's slice of this map cell, else the pattern's own replacement.
+                    let rc = region_cell(map, mx / 8, my / 8);
+                    let cell = if rc != NO_CELL { rc } else { cells[e] };
                     let word = HIT_PRESENT
                         | if entry & 0x8000 != 0 { HIT_PRIORITY } else { 0 }
                         | ((my & 7) as u32) << 24
-                        | (cells[e] as u32) << 12
+                        | (cell as u32) << 12
                         | ((entry & 0x7f80) >> 3) as u32;
                     for (i, h) in (x..end).enumerate() {
                         let px = (mx + i) & 7;
@@ -732,7 +824,7 @@ fn widen_base(tiles: &[u8], palette: &[u8], base: &[[u8; 3]], side: usize, has_3
 /// (`remodel gpu-check` runs this over captured frames).
 #[doc(hidden)]
 pub fn tile_planes_check(tiles: &[u8], palette: &[u8]) -> usize {
-    let (b0, h0, _) = tile_planes(tiles, palette, false);
+    let (b0, h0, _, _) = tile_planes(tiles, palette, false, None);
     let (b1, h1) = tile_planes_fast(tiles, palette);
     b0.iter().zip(&b1).filter(|(a, b)| a != b).count() + h0.iter().zip(&h1).filter(|(a, b)| a != b).count()
 }
@@ -776,6 +868,9 @@ pub fn layers_2d_with(planes: &Planes, tiles: &[u8], palette: &[u8], view: &View
     }
 }
 
+/// Region set plus the resolver from a slice to the compositor cell.
+pub type RegionLookup<'a> = (&'a RegionSet, &'a mut dyn FnMut(&Slice) -> Option<u16>);
+
 /// [`layers_2d`] with the tile patterns on screen looked up in a texture
 /// pack: `cell` gets each pattern (with its colours; blank ones are
 /// skipped) once and returns where the compositor keeps its replacement
@@ -787,18 +882,47 @@ pub fn layers_2d_replaced(
     view: &View,
     has_3d: bool,
     cell: &mut dyn FnMut(&TileInfo) -> Option<u16>,
+    regions: Option<RegionLookup<'_>>,
 ) -> Layers2d {
     let mut hits = Vec::new();
     let mut replaced = 0;
-    let (base, hud) = tile_planes_runs::<true>(tiles, palette, &mut hits, &mut |e| match tile_info(tiles, palette, e)
-        .and_then(|info| cell(&info))
-    {
-        Some(c) if c < NO_CELL => {
-            replaced += 1;
-            c
+    let mut region_replaced = 0;
+    // Regions: matched in map space, then each map cell's slice resolved to
+    // the compositor's cell once.
+    let mut grid = None;
+    let mut slice_cell = None;
+    if let Some((set, f)) = regions {
+        let g = match_regions(tiles, palette, set);
+        if g.any {
+            grid = Some((g, set));
+            slice_cell = Some(f);
         }
-        _ => NO_CELL,
-    });
+    }
+    let mut slice_cache: HashMap<u32, u16> = HashMap::new();
+    let (base, hud) = tile_planes_runs::<true>(
+        tiles,
+        palette,
+        &mut hits,
+        &mut |e| match tile_info(tiles, palette, e).and_then(|info| cell(&info)) {
+            Some(c) if c < NO_CELL => {
+                replaced += 1;
+                c
+            }
+            _ => NO_CELL,
+        },
+        &mut |map, cx, cy| {
+            let (Some((g, set)), Some(f)) = (&grid, slice_cell.as_mut()) else { return NO_CELL };
+            let Some(s) = g.at(map, cx, cy) else { return NO_CELL };
+            *slice_cache.entry(s).or_insert_with(|| match f(&set.slices[s as usize]) {
+                Some(c) if c < NO_CELL => {
+                    region_replaced += 1;
+                    c
+                }
+                _ => NO_CELL,
+            })
+        },
+    );
+    replaced += region_replaced;
     let shift = hud_shifts(&hud, view, has_3d);
     let (hud_ext, ext_w) = place_hud(&hud, &shift, view);
     let side = view.side();
@@ -846,12 +970,18 @@ fn compose_impl(
     hooks: Option<&mut dyn Enhance>,
 ) -> Vec<u8> {
     let enhanced = hooks.is_some();
+    let mut hooks = hooks;
     let backdrop = rgb(rd16(palette, 0));
-    let (base, hud, hits) = if enhanced {
-        tile_planes(tiles, palette, true)
+    // The pack's regions (none without `uses regions`): matched once.
+    let regions = hooks.as_mut().and_then(|h| h.regions()).and_then(|set| {
+        let g = match_regions(tiles, palette, &set);
+        g.any.then_some((g, set))
+    });
+    let (base, hud, hits, region_reps) = if enhanced {
+        tile_planes(tiles, palette, true, regions.as_ref().map(|(g, s)| (g, &**s)))
     } else {
         let (base, hud) = tile_planes_fast(tiles, palette);
-        (base, hud, Vec::new())
+        (base, hud, Vec::new(), Vec::new())
     };
     let has_3d = layer3d.is_some_and(|(_, cov)| cov.iter().any(|&c| c));
     let shift = hud_shifts(&hud, view, has_3d);
@@ -860,7 +990,7 @@ fn compose_impl(
     let side = view.side();
     let wide = widen_base(tiles, palette, &base, side, has_3d);
     if let Some(hooks) = hooks {
-        let tl = TileLayers { tiles, palette, backdrop, hits, reps: Vec::new(), wide, side };
+        let tl = TileLayers { tiles, palette, backdrop, hits, reps: region_reps, wide, side };
         return tl.output(hooks, layer3d, view, &hud, &shift, has_3d);
     }
     let wide_w = WIDTH + 2 * side;
@@ -916,7 +1046,9 @@ impl TileLayers<'_> {
         for px in self.hits.iter_mut() {
             for hit in px.iter_mut().flatten() {
                 let e = hit.entry & 0x7fff;
-                hit.rep = *seen.entry(e).or_insert_with(|| {
+                // Every pattern on screen is still reported (dumps), but a
+                // hit in a region keeps the region's slice.
+                let rep = *seen.entry(e).or_insert_with(|| {
                     match tile_info(self.tiles, self.palette, e as usize).and_then(|info| hooks.tile(&info)) {
                         Some(img) if img.width >= 8 && img.height >= 8 => {
                             self.reps.push(img);
@@ -925,6 +1057,9 @@ impl TileLayers<'_> {
                         _ => NONE,
                     }
                 });
+                if hit.rep == NONE {
+                    hit.rep = rep;
+                }
             }
         }
     }
@@ -1381,13 +1516,19 @@ mod tests {
         let palette: Vec<u8> = (0..0x2000).map(|i| (i * 7) as u8).collect();
         for seed in 0..4 {
             let tiles = random_tiles(seed);
-            let (base0, hud0, hits0) = tile_planes(&tiles, &palette, true);
+            let (base0, hud0, hits0, _) = tile_planes(&tiles, &palette, true, None);
             let mut hits = Vec::new();
             let mut asked = HashMap::new();
-            let (base1, hud1) = tile_planes_runs::<true>(&tiles, &palette, &mut hits, &mut |e| {
-                *asked.entry(e).or_insert(0) += 1;
-                (e % 0x800) as u16
-            });
+            let (base1, hud1) = tile_planes_runs::<true>(
+                &tiles,
+                &palette,
+                &mut hits,
+                &mut |e| {
+                    *asked.entry(e).or_insert(0) += 1;
+                    (e % 0x800) as u16
+                },
+                &mut |_, _, _| NO_CELL,
+            );
             assert!(base0 == base1 && hud0 == hud1, "seed {seed}");
             assert!(asked.values().all(|&n| n == 1));
             for (i, h0) in hits0.iter().enumerate() {
@@ -1522,12 +1663,19 @@ mod tests {
             let views = [View::new(600, 16.0 / 9.0, Hud::Edges), View::new(500, 4.0 / 3.0, Hud::Center)];
             for (view, has_3d) in views.into_iter().flat_map(|v| [(v, false), (v, true)]) {
                 let mut cells = Vec::new();
-                let l = layers_2d_replaced(&tiles, &palette, &view, has_3d, &mut |info| {
-                    Every3::image(info).map(|img| {
-                        cells.push(img);
-                        cells.len() as u16 - 1
-                    })
-                });
+                let l = layers_2d_replaced(
+                    &tiles,
+                    &palette,
+                    &view,
+                    has_3d,
+                    &mut |info| {
+                        Every3::image(info).map(|img| {
+                            cells.push(img);
+                            cells.len() as u16 - 1
+                        })
+                    },
+                    None,
+                );
                 assert!(l.tiles.as_ref().is_some_and(|m| m.replaced > 0));
                 // A 3D layer covering one corner pixel (has_3d), or nothing;
                 // the compositors would draw it alike, so leave it out.
@@ -1541,8 +1689,270 @@ mod tests {
                 assert_eq!(differ, 0, "seed {seed} view {}x{} 3d {has_3d}", view.width, view.height);
                 // Nothing replaced: exactly `layers_2d`.
                 let plain = layers_2d(&tiles, &palette, &view, has_3d);
-                let none = layers_2d_replaced(&tiles, &palette, &view, has_3d, &mut |_| None);
+                let none = layers_2d_replaced(&tiles, &palette, &view, has_3d, &mut |_| None, None);
                 assert!(none.tiles.is_none() && none.base == plain.base && none.hud == plain.hud);
+            }
+        }
+    }
+
+    // ---- region overrides (docs/texture-packs.md, "Regions") ----
+
+    use crate::regions::{CellKey, Layer, Plane, RegionDef};
+
+    /// The key layout of `w` x `h` cells of `map` at (`cx`, `cy`), as a
+    /// region would name it.
+    fn layout_at(tiles: &[u8], palette: &[u8], map: usize, cx: usize, cy: usize, w: usize, h: usize) -> Vec<CellKey> {
+        let mut out = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                let e = rd16(tiles, map * 0x2000 + (((cy + y) & 63) * 64 + ((cx + x) & 63)) * 2) as usize;
+                out.push(tile_info(tiles, palette, e & 0x7fff).map_or(CellKey::Blank, |t| CellKey::Tile(t.key)));
+            }
+        }
+        out
+    }
+
+    fn region(name: &str, w: usize, h: usize, cells: Vec<CellKey>, img: Arc<Rgba>) -> RegionSet {
+        let def = RegionDef {
+            name: name.into(),
+            w,
+            h,
+            cells,
+            plane: Plane::Any,
+            layer: Layer::Any,
+            at: None,
+            unknown: vec![],
+        };
+        RegionSet::new(vec![def], |_| Some(img.clone()))
+    }
+
+    fn solid_halves(w: usize, h: usize) -> Arc<Rgba> {
+        // Left half red, right half blue.
+        let data = (0..w * h).flat_map(|i| if i % w < w / 2 { [255, 0, 0, 255] } else { [0, 0, 255, 255] }).collect();
+        Arc::new(Rgba { width: w, height: h, data })
+    }
+
+    /// Hooks that replace nothing but offer a region set.
+    struct WithRegions(Option<Arc<RegionSet>>);
+
+    impl Enhance for WithRegions {
+        fn texture(&mut self, _: &crate::enhance::TexInfo) -> Option<Arc<Rgba>> {
+            None
+        }
+        fn texture_drawn(&mut self, _: &crate::enhance::TexInfo, _: &crate::raster::Sources, _: usize) {}
+        fn tile(&mut self, _: &TileInfo) -> Option<Arc<Rgba>> {
+            None
+        }
+        fn regions(&mut self) -> Option<Arc<RegionSet>> {
+            self.0.clone()
+        }
+    }
+
+    /// Plane A (map 0) showing tiles 1 and 2 (pens 1 and 2: green, yellow)
+    /// at map cells (10, 10) and (11, 10) and nothing else; plane B off.
+    fn two_tile_ram(hscroll: u16) -> (Vec<u8>, Vec<u8>) {
+        let mut tiles = vec![0u8; 0x10_0000];
+        let put = |t: &mut [u8], off: usize, v: u16| t[off..off + 2].copy_from_slice(&v.to_le_bytes());
+        put(&mut tiles, (10 * 64 + 10) * 2, 1);
+        put(&mut tiles, (10 * 64 + 11) * 2, 2);
+        put(&mut tiles, VSCROLL + 4, 0x8000);
+        put(&mut tiles, VSCROLL + 6, 0x8000);
+        put(&mut tiles, VSCROLL + 2, 0x8000);
+        put(&mut tiles, HSCROLL, hscroll);
+        tiles[CHAR_BASE + 32..CHAR_BASE + 64].fill(0x11);
+        tiles[CHAR_BASE + 64..CHAR_BASE + 96].fill(0x22);
+        let mut palette = vec![0u8; 0x2_0000];
+        palette[2..4].copy_from_slice(&0x03e0u16.to_le_bytes());
+        palette[4..6].copy_from_slice(&0x03ffu16.to_le_bytes());
+        (tiles, palette)
+    }
+
+    fn px(frame: &[u8], x: usize, y: usize) -> [u8; 3] {
+        let o = (y * WIDTH + x) * 3;
+        [frame[o], frame[o + 1], frame[o + 2]]
+    }
+
+    #[test]
+    fn region_draws_over_its_cells_and_follows_scroll() {
+        let (red, blue) = ([255, 0, 0], [0, 0, 255]);
+        for hs in [0u16, 13, 0x1ff] {
+            let (tiles, palette) = two_tile_ram(hs);
+            let set = region("r", 2, 1, layout_at(&tiles, &palette, 0, 10, 10, 2, 1), solid_halves(16, 8));
+            let plain = compose_enhanced(&tiles, &palette, None, &View::native(), &mut WithRegions(None));
+            let drawn =
+                compose_enhanced(&tiles, &palette, None, &View::native(), &mut WithRegions(Some(Arc::new(set))));
+            // Screen x of map cell 10 under this scroll (the map is 512 wide).
+            let x0 = (80 + hs as usize) % 512;
+            assert_eq!(px(&plain, x0, 83), [0, 255, 0], "hs {hs}");
+            if x0 + 16 <= WIDTH {
+                assert_eq!(px(&drawn, x0, 83), red, "hs {hs}");
+                assert_eq!(px(&drawn, x0 + 7, 83), red, "hs {hs}");
+                assert_eq!(px(&drawn, x0 + 8, 83), blue, "hs {hs}");
+                assert_eq!(px(&drawn, x0 + 15, 87), blue, "hs {hs}");
+                assert_eq!(px(&drawn, x0 + 16, 83), px(&plain, x0 + 16, 83), "hs {hs}");
+                assert_eq!(px(&drawn, x0 - 1, 83), px(&plain, x0 - 1, 83), "hs {hs}");
+            }
+        }
+    }
+
+    #[test]
+    fn region_half_off_screen_still_draws_what_shows() {
+        // Cell 10 scrolls to x = 488 (map scroll 408): its 8 pixels show,
+        // cell 11 is off the right edge.
+        let (tiles, palette) = two_tile_ram(488 - 80);
+        let set = region("r", 2, 1, layout_at(&tiles, &palette, 0, 10, 10, 2, 1), solid_halves(16, 8));
+        let drawn = compose_enhanced(&tiles, &palette, None, &View::native(), &mut WithRegions(Some(Arc::new(set))));
+        assert_eq!(px(&drawn, 488, 83), [255, 0, 0]);
+        assert_eq!(px(&drawn, 495, 83), [255, 0, 0]);
+    }
+
+    #[test]
+    fn region_is_hidden_by_a_tile_drawn_over_it() {
+        // The region's cells are on plane B (map 2); plane A has an opaque
+        // tile over the first one.
+        let (mut tiles, palette) = two_tile_ram(0);
+        let put = |t: &mut [u8], off: usize, v: u16| t[off..off + 2].copy_from_slice(&v.to_le_bytes());
+        // Move the two tiles to map 2 (plane B) and put tile 2 over the first on map 0.
+        put(&mut tiles, (10 * 64 + 10) * 2, 0);
+        put(&mut tiles, (10 * 64 + 11) * 2, 0);
+        put(&mut tiles, 2 * 0x2000 + (10 * 64 + 10) * 2, 1);
+        put(&mut tiles, 2 * 0x2000 + (10 * 64 + 11) * 2, 2);
+        put(&mut tiles, VSCROLL + 4, 0);
+        put(&mut tiles, (10 * 64 + 10) * 2, 2);
+        let set = region("r", 2, 1, layout_at(&tiles, &palette, 2, 10, 10, 2, 1), solid_halves(16, 8));
+        let drawn = compose_enhanced(&tiles, &palette, None, &View::native(), &mut WithRegions(Some(Arc::new(set))));
+        // First cell: plane A's yellow tile; second: the region's blue.
+        assert_eq!(px(&drawn, 82, 83), [255, 255, 0]);
+        assert_eq!(px(&drawn, 90, 83), [0, 0, 255]);
+    }
+
+    #[test]
+    fn region_wildcard_cells_match_whatever_is_there() {
+        let (tiles, palette) = two_tile_ram(0);
+        let mut cells = layout_at(&tiles, &palette, 0, 10, 10, 2, 1);
+        cells[1] = CellKey::Any;
+        let set = Arc::new(region("r", 2, 1, cells, solid_halves(16, 8)));
+        let g = match_regions(&tiles, &palette, &set);
+        assert!(g.at(0, 10, 10).is_some() && g.at(0, 11, 10).is_some());
+        // The same arrangement with another tile in the wildcard cell.
+        let mut tiles2 = tiles.clone();
+        tiles2[(10 * 64 + 11) * 2..(10 * 64 + 11) * 2 + 2].copy_from_slice(&1u16.to_le_bytes());
+        let g = match_regions(&tiles2, &palette, &set);
+        assert!(g.at(0, 11, 10).is_some());
+        // Change the fixed cell instead: no match.
+        tiles2[(10 * 64 + 10) * 2..(10 * 64 + 10) * 2 + 2].copy_from_slice(&2u16.to_le_bytes());
+        tiles2[(10 * 64 + 11) * 2..(10 * 64 + 11) * 2 + 2].copy_from_slice(&2u16.to_le_bytes());
+        assert!(!match_regions(&tiles2, &palette, &set).any);
+    }
+
+    #[test]
+    fn no_regions_is_pixel_exact_and_an_empty_set_too() {
+        let palette: Vec<u8> = (0..0x2000).map(|i| (i * 13 + 5) as u8).collect();
+        let view = View::new(600, 16.0 / 9.0, Hud::Edges);
+        for seed in 0..2 {
+            let tiles = random_tiles(seed);
+            let base = compose_enhanced(&tiles, &palette, None, &view, &mut Every3);
+            // Regions that match nothing (or none) change nothing, with tile replacement on.
+            struct E3(Option<Arc<RegionSet>>);
+            impl Enhance for E3 {
+                fn texture(&mut self, _: &crate::enhance::TexInfo) -> Option<Arc<Rgba>> {
+                    None
+                }
+                fn texture_drawn(&mut self, _: &crate::enhance::TexInfo, _: &crate::raster::Sources, _: usize) {}
+                fn tile(&mut self, i: &TileInfo) -> Option<Arc<Rgba>> {
+                    Every3::image(i)
+                }
+                fn regions(&mut self) -> Option<Arc<RegionSet>> {
+                    self.0.clone()
+                }
+            }
+            let nomatch = region("r", 1, 1, vec![CellKey::Tile(0xdead_beef)], solid_halves(8, 8));
+            assert_eq!(compose_enhanced(&tiles, &palette, None, &view, &mut E3(None)), base);
+            assert_eq!(
+                compose_enhanced(&tiles, &palette, None, &view, &mut E3(Some(Arc::new(RegionSet::default())))),
+                base
+            );
+            assert_eq!(compose_enhanced(&tiles, &palette, None, &view, &mut E3(Some(Arc::new(nomatch.clone())))), base);
+            // And the GPU-side layers carry no tile map for a set that matches nothing.
+            let l =
+                layers_2d_replaced(&tiles, &palette, &view, false, &mut |_| None, Some((&nomatch, &mut |_| Some(0))));
+            assert!(l.tiles.is_none());
+        }
+    }
+
+    #[test]
+    fn region_map_composes_as_the_software_does() {
+        let palette: Vec<u8> = (0..0x2000).map(|i| (i * 13 + 5) as u8).collect();
+        for seed in 0..3 {
+            let tiles = random_tiles(seed);
+            // Two regions cut from the frame's own maps, one with a wildcard.
+            let mut a = layout_at(&tiles, &palette, 1, 9, 12, 3, 2);
+            let b = layout_at(&tiles, &palette, 2, 40, 3, 2, 2);
+            a[4] = CellKey::Any;
+            let defs = vec![
+                RegionDef {
+                    name: "a".into(),
+                    w: 3,
+                    h: 2,
+                    cells: a,
+                    plane: Plane::Any,
+                    layer: Layer::Any,
+                    at: None,
+                    unknown: vec![],
+                },
+                RegionDef {
+                    name: "b".into(),
+                    w: 2,
+                    h: 2,
+                    cells: b,
+                    plane: Plane::Any,
+                    layer: Layer::Any,
+                    at: None,
+                    unknown: vec![],
+                },
+            ];
+            let set = Arc::new(RegionSet::new(defs, |n| {
+                Some(if n == "a" { solid_halves(48, 32) } else { solid_halves(32, 32) })
+            }));
+            let grid = match_regions(&tiles, &palette, &set);
+            assert!(grid.any, "seed {seed}");
+            let view = View::new(600, 16.0 / 9.0, Hud::Edges);
+            for has_3d in [false, true] {
+                let mut cells: Vec<Arc<Rgba>> = Vec::new();
+                let mut by_key: HashMap<u64, u16> = HashMap::new();
+                let l = layers_2d_replaced(
+                    &tiles,
+                    &palette,
+                    &view,
+                    has_3d,
+                    &mut |_| None,
+                    Some((&set, &mut |s: &Slice| {
+                        Some(*by_key.entry(s.key).or_insert_with(|| {
+                            cells.push(s.image.clone());
+                            cells.len() as u16 - 1
+                        }))
+                    })),
+                );
+                assert!(l.tiles.as_ref().is_some_and(|m| m.replaced > 0));
+                let mut layer = (vec![0u8; view.width * view.height * 3], vec![false; view.width * view.height]);
+                layer.1[0] = has_3d;
+                let mut sw = compose_enhanced(
+                    &tiles,
+                    &palette,
+                    Some((&layer.0, &layer.1)),
+                    &view,
+                    &mut WithRegions(Some(set.clone())),
+                );
+                let mut mapped = compose_map(&l, &palette, &cells, &view, has_3d);
+                sw[..3].fill(0);
+                mapped[..3].fill(0);
+                let differ = sw.chunks(3).zip(mapped.chunks(3)).filter(|(a, b)| a != b).count();
+                assert_eq!(differ, 0, "seed {seed} 3d {has_3d}");
+                // The regions changed the picture.
+                let mut plain =
+                    compose_enhanced(&tiles, &palette, Some((&layer.0, &layer.1)), &view, &mut WithRegions(None));
+                plain[..3].fill(0);
+                assert_ne!(plain, sw, "seed {seed}");
             }
         }
     }

@@ -23,15 +23,21 @@ pub const FORMAT: u32 = 2;
 /// The highest key scheme (`keys`) this build computes.
 pub const KEYS: u32 = 1;
 /// The feature names the format defines (`uses`, `needs`): `materials`
-/// (material maps), and reserved `models` and `selflit`.
-pub const FEATURES: [&str; 3] = ["materials", "models", "selflit"];
+/// (material maps), `regions` (2D region overrides, `regions.txt`), and
+/// reserved `models` and `selflit`.
+pub const FEATURES: [&str; 4] = ["materials", "regions", "models", "selflit"];
 /// The features this build's readers show. A pack that `needs` any other is
 /// refused whole. `materials`: the CLI, the player and the browser draw
 /// material maps (`gpu::Quality::materials`, the software renderer's
 /// `--materials`); with the user's setting off such a pack still shows its
 /// images, without the maps (the setting is the user's choice, not the
 /// pack's).
-pub const SHOWN: [&str; 1] = ["materials"];
+pub const SHOWN: [&str; 2] = ["materials", "regions"];
+/// What the browser shows: it draws material maps but not regions yet (the
+/// 2D region overrides need the pack's `regions.txt` fetched; docs/
+/// texture-packs.md, "Regions"). A pack that `needs regions` is refused
+/// there; one that only `uses` them shows its tile and texture images.
+pub const SHOWN_WEB: [&str; 1] = ["materials"];
 /// Largest pack-wide or per-material strength (`normal_scale`, `spec_scale`,
 /// `normal=`, `spec=`).
 pub const SCALE_MAX: f32 = 4.0;
@@ -270,6 +276,12 @@ impl Manifest {
     /// instead. Never guesses: a higher `format` or `keys`, or a `needs`
     /// this build doesn't show, refuses the whole pack.
     pub fn check(&self) -> Result<(), String> {
+        self.check_for(&SHOWN)
+    }
+
+    /// [`Manifest::check`] for a reader that shows the features `shown`
+    /// (the browser: [`SHOWN_WEB`]).
+    pub fn check_for(&self, shown: &[&str]) -> Result<(), String> {
         if self.format > FORMAT {
             return Err(format!(
                 "the pack is format {}, this reModel reads up to {FORMAT}: it needs a newer reModel",
@@ -282,7 +294,7 @@ impl Manifest {
                 self.keys
             ));
         }
-        let missing: Vec<&str> = self.needs.iter().map(String::as_str).filter(|f| !SHOWN.contains(f)).collect();
+        let missing: Vec<&str> = self.needs.iter().map(String::as_str).filter(|f| !shown.contains(f)).collect();
         if !missing.is_empty() {
             return Err(format!("the pack needs {}, which this reModel can't show", missing.join(", ")));
         }
@@ -292,9 +304,14 @@ impl Manifest {
     /// A manifest's text (None: the pack has none), parsed and checked:
     /// what a reader shows the pack with, or why it draws the originals.
     pub fn accept(text: Option<&str>) -> Result<Manifest, String> {
+        Manifest::accept_for(text, &SHOWN)
+    }
+
+    /// [`Manifest::accept`] for a reader that shows the features `shown`.
+    pub fn accept_for(text: Option<&str>, shown: &[&str]) -> Result<Manifest, String> {
         let Some(text) = text else { return Ok(Manifest::NONE) };
         let m = Manifest::parse(text)?;
-        m.check()?;
+        m.check_for(shown)?;
         Ok(m)
     }
 
@@ -315,6 +332,14 @@ impl Manifest {
     /// holds.
     pub fn reads_maps(&self) -> bool {
         self.format >= 2
+    }
+
+    /// Whether readers load the pack's `regions.txt`: only with a manifest
+    /// of format 2 or later that says `uses regions` (or `needs regions`).
+    /// A pack without that never has its regions file opened, so an older
+    /// pack behaves as before whatever it holds.
+    pub fn reads_regions(&self) -> bool {
+        self.format >= 2 && self.uses.iter().chain(&self.needs).any(|f| f == crate::regions::FEATURE)
     }
 
     /// One line for the reader to print about what it ignores, if anything.
@@ -379,6 +404,8 @@ pub enum FileKind {
     /// `tex_<key>_<w>x<h>.<k>` (one image key, `surface` false) or
     /// `surf_<key>_<w>x<h>.<k>` (a surface key, true): a material map.
     Map { surface: bool, key: u64, width: u32, height: u32, kind: MapKind },
+    /// `region_<name>`: the image of a 2D region override (`regions.txt`).
+    Region,
     /// A name the format reserves (`.e`, `.m`, `mdl_`, `img_`): ignored.
     Reserved,
 }
@@ -410,6 +437,13 @@ pub fn parse_name(stem: &str) -> Result<FileKind, String> {
         if RESERVED_SUFFIXES.contains(&s) && (base.starts_with("tex_") || base.starts_with("surf_")) {
             return Ok(FileKind::Reserved);
         }
+    }
+    if let Some(n) = stem.strip_prefix(crate::regions::IMAGE_PREFIX) {
+        return if crate::regions::valid_name(n) {
+            Ok(FileKind::Region)
+        } else {
+            Err("a region image is region_<name> (lowercase letters, digits, - and _)".into())
+        };
     }
     let kind = suffix.map(|s| MapKind::from_suffix(s).ok_or_else(|| format!("`.{s}` isn't a map suffix (.n, .s, .g)")));
     if let Some(key) = base.strip_prefix("tile_") {
@@ -496,6 +530,29 @@ mod tests {
         let spaced = Manifest::parse("format 2\nuses  materials, selflit\nnormal_y up\n").unwrap();
         assert_eq!(spaced.uses, ["materials", "selflit"]);
         assert_eq!(Manifest::parse(&spaced.to_text()).unwrap(), spaced);
+    }
+
+    #[test]
+    fn regions_feature_is_shown_here_refused_by_the_browser_and_read_only_when_used() {
+        // A pack that merely uses regions is accepted everywhere.
+        let uses = "format 2\nuses regions\n";
+        assert!(Manifest::accept(Some(uses)).unwrap().reads_regions());
+        assert!(Manifest::accept_for(Some(uses), &SHOWN_WEB).unwrap().reads_regions());
+        // One that needs them is shown by readers that draw them, refused by the rest.
+        let needs = "format 2\nuses regions\nneeds regions\n";
+        assert!(Manifest::accept(Some(needs)).is_ok());
+        let e = Manifest::accept_for(Some(needs), &SHOWN_WEB).unwrap_err();
+        assert!(e.contains("needs regions") && e.contains("can't show"), "{e}");
+        // Older readers know nothing of the feature name and ignore it in `uses`.
+        assert!(FEATURES.contains(&"regions"));
+        // No manifest, format 1, or no `uses regions`: regions.txt is never opened.
+        assert!(!Manifest::NONE.reads_regions());
+        assert!(!Manifest::accept(Some("format 1\nuses regions\n")).unwrap().reads_regions());
+        assert!(!Manifest::accept(Some("format 2\nuses materials\n")).unwrap().reads_regions());
+        // Region image names.
+        assert_eq!(parse_name("region_logo-1_a"), Ok(FileKind::Region));
+        assert!(parse_name("region_Logo").is_err());
+        assert!(parse_name("region_").is_err());
     }
 
     #[test]

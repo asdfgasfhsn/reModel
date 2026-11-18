@@ -54,6 +54,9 @@ pub struct Packs {
     looked_up: [u64; 2],
     /// The pack has tile images (`TexturePack::has_tiles`).
     has_tiles: bool,
+    /// The pack's region overrides (`uses regions`; docs/texture-packs.md,
+    /// "Regions"), loaded when the pack is opened.
+    regions: Option<Arc<model2::regions::RegionSet>>,
     /// Why the pack given isn't drawn (`accept`).
     refused: Option<String>,
     /// The pack's manifest (`Manifest::NONE` without one).
@@ -119,11 +122,27 @@ impl Packs {
                 _ => {}
             }
         }
+        let regions = match (&pack, manifest.reads_regions()) {
+            (Some(dir), true) => match model2::regions::RegionSet::load_dir(dir, &mut |p| decode(p)) {
+                Ok(set) => {
+                    for (name, why) in &set.skipped {
+                        eprintln!("texture pack {}: region `{name}` not drawn: {why}", dir.display());
+                    }
+                    (!set.is_empty()).then(|| Arc::new(set))
+                }
+                Err(e) => {
+                    eprintln!("texture pack {}: {e}; drawing without regions", dir.display());
+                    None
+                }
+            },
+            _ => None,
+        };
         Ok(Packs {
             dump,
             pack,
             refused,
             manifest,
+            regions,
             maps,
             materials: HashMap::new(),
             material_mips: HashMap::new(),
@@ -311,6 +330,10 @@ impl Enhance for Packs {
         self.material_counts[1] += changed as u64;
     }
 
+    fn regions(&mut self) -> Option<Arc<model2::regions::RegionSet>> {
+        self.regions.clone()
+    }
+
     fn tile(&mut self, info: &TileInfo) -> Option<Arc<Rgba>> {
         let about = || format!("tile={:#06x}\tpalette_bank={:#04x}", info.tile, info.bank);
         self.record(info.name(), 0, || 0, about, || info.image());
@@ -333,7 +356,11 @@ impl TexturePack for Packs {
     }
 
     fn has_tiles(&self) -> bool {
-        self.has_tiles
+        self.has_tiles || self.regions.is_some()
+    }
+
+    fn regions(&mut self) -> Option<Arc<model2::regions::RegionSet>> {
+        self.regions.clone()
     }
 
     fn find_tile(&mut self, info: &TileInfo) -> Found {

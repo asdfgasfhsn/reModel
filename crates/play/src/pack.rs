@@ -29,6 +29,9 @@ pub struct DirPack {
     /// `reads_maps`).
     maps: HashSet<String>,
     manifest: Arc<Manifest>,
+    /// The pack's region overrides (`uses regions`), loaded when it is
+    /// opened (a few images, read here, not on the pack threads).
+    regions: Option<Arc<model2::regions::RegionSet>>,
     /// Images asked for and not yet handed over.
     asked: HashSet<String>,
     /// Decoded images (None: unreadable), not yet handed over.
@@ -107,6 +110,22 @@ impl DirPack {
             println!("texture pack  {}: {n}", dir.display());
         }
         let (names, maps) = list(dir, manifest.reads_maps()).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let regions = if manifest.reads_regions() {
+            match model2::regions::RegionSet::load_dir(dir, &mut |p| decode(p)) {
+                Ok(set) => {
+                    for (name, why) in &set.skipped {
+                        println!("texture pack  {}: region `{name}` not drawn: {why}", dir.display());
+                    }
+                    (!set.is_empty()).then(|| Arc::new(set))
+                }
+                Err(e) => {
+                    println!("texture pack  {}: {e}; drawing without regions", dir.display());
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let manifest = Arc::new(manifest);
         let (to_workers, jobs) = channel::<Job>();
         let (done, from_workers) = channel();
@@ -134,6 +153,7 @@ impl DirPack {
             names,
             maps,
             manifest,
+            regions,
             asked: HashSet::new(),
             ready: HashMap::new(),
             asked_materials: HashSet::new(),
@@ -194,7 +214,11 @@ impl TexturePack for DirPack {
     }
 
     fn has_tiles(&self) -> bool {
-        self.names.iter().any(|n| n.starts_with("tile_"))
+        self.regions.is_some() || self.names.iter().any(|n| n.starts_with("tile_"))
+    }
+
+    fn regions(&mut self) -> Option<Arc<model2::regions::RegionSet>> {
+        self.regions.clone()
     }
 
     fn find_tile(&mut self, info: &TileInfo) -> Found {

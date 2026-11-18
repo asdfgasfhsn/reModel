@@ -185,6 +185,7 @@ unchanged). **Format 2** adds, all optional:
 | File | What |
 |---|---|
 | `pack.txt` | the manifest (below) |
+| `regions.txt`, `region_<name>.png` | 2D region overrides (below, "Regions") |
 | `tex_<key>_<w>x<h>.n.png`, `.s.png`, `.g.png` | material maps for that image in that colour: normal, specular scale, gloss |
 | `surf_<skey>_<w>x<h>.n.png`, `.s.png`, `.g.png` | the same maps keyed by surface, serving every colour the texels are drawn in |
 | `materials.txt` | tool record of `make pack-materials` |
@@ -193,7 +194,7 @@ unchanged). **Format 2** adds, all optional:
 Keys are 16 lowercase hex digits and sizes plain decimals, exactly as the
 renderers write them; any other spelling is never opened. Tiles have no
 material maps (the 2D layer has no lighting): `tile_<key>.n.png` is not a
-pack name. Reserved, not to be used for anything else: map suffixes `.e`
+pack name. File prefix `region_` is region images (below, "Regions"). Reserved, not to be used for anything else: map suffixes `.e`
 (self-lit) and `.m` (maps packed in one file), file prefixes `mdl_`
 (replacement models) and `img_` (pack-own images), the directory
 `models/`, the manifest keyword `model` and the features `models` and
@@ -257,7 +258,7 @@ material	surf_fedcba9876543210_64x64	normal=0
 | `format N` | the format's major number; the first line | no manifest: 1 |
 | `keys N` | the key scheme of the file names: 1 is the image, tile and surface keys defined here | 1 |
 | `name`, `game` | free text: what the pack is, the set it was made from; never used for lookup | none |
-| `uses a,b` | optional features the pack contains (`materials`); names a reader doesn't know are ignored | none |
+| `uses a,b` | optional features the pack contains (`materials`, `regions`); names a reader doesn't know are ignored | none |
 | `needs a,b` | features without which the pack must not be shown at all | none |
 | `normal_y up\|down` | green direction of every normal map | `up` |
 | `normal_scale X`, `spec_scale X` | pack-wide strength of normal and specular maps, 0 to 4 | 1 |
@@ -280,7 +281,9 @@ twice, a value out of range) refuses the pack, with the line it is on.
    must not be shown without a feature puts it in `needs`, and a reader
    that can't show it refuses the whole pack. Every reader (the CLI, the
    player, the browser) draws material maps, so `needs materials` is
-   accepted everywhere (`model2::pack::SHOWN`); whether the maps are drawn
+   accepted everywhere (`model2::pack::SHOWN`). Regions are drawn by the
+   CLI and the player, not yet the browser (`SHOWN_WEB`), so `needs regions` is
+   refused there, `uses regions` ignored; whether the maps are drawn
    stays the user's `materials` setting, and with it off such a pack shows
    its images without the maps. `uses materials` is informative.
 4. Tools write `pack.txt` only when the pack holds something format 1
@@ -412,6 +415,88 @@ non-zero on errors:
 On the 4x ESRGAN pack of `topskatr` (241 images, 5,030 tiles): clean, one
 note (182 MB of images, 242 MB mipmapped: past the browser's budget, so
 the browser re-fetches the least recently drawn).
+
+## Regions
+
+Tiles are 8x8 and a pattern is one key wherever it is drawn, so a tile image
+can't reshape art that spans several tiles when its tiles are shared: a logo
+built from the same fill tiles as the background, a credit line whose
+letters are also another word. A **region** says "where this arrangement of
+tiles is in a tile map, draw this image over that rectangle instead".
+Nothing about it is game-specific; it is part of format 2 (`uses regions`).
+
+**Files.** `regions.txt` (below) and one image `region_<name>.png` per
+region, any size at least 8 pixels per tile in each direction (4x, 32 pixels
+a tile, is typical) and in the proportions of the rectangle (an uneven size is
+cut at integer fractions; `pack-lint` notes it). `pack.txt` says `uses
+regions` (a pack made by `remodel studio pack` does); the file is only opened
+for a pack with a format 2 manifest that does, so a pack that merely holds a
+`regions.txt` is read as it always was.
+
+```
+# reModel regions
+region	logo-a	3x2	cells=0123456789abcdef,*,_/fedcba9876543210,0000000000000001,*	plane=a	layer=high
+```
+
+`region NAME WxH cells=ROW/ROW...` then optional `k=v` fields, separated by
+tabs or spaces. `NAME` is lowercase letters, digits, `-` and `_`. `W` x `H`
+is the size in tiles (1 to 64 each way). `cells` has `H` rows of `W`
+comma-separated cells, each a **tile key** (the 16 hex digits of
+`tile_<key>.png`, which includes the pen colours), `*` (any tile: animated or
+irrelevant parts) or `_` (a blank tile: all pen 0, whatever its colours). A
+region of nothing but wildcards is an error. Fields: `plane=a|b` (plane A is
+maps 0 and 1, B maps 2 and 3; default either), `layer=high|low` (every tile
+that isn't `*` has, or hasn't, the entry's priority bit; default either),
+`at=MAP:X,Y` (only at this cell, map 0-3, cells 0-63; default anywhere).
+Unknown fields are ignored (`pack-lint` notes them), unknown keywords and `#`
+comments too. A malformed line, or a name given twice, refuses the file with
+its line number (the pack then draws without regions).
+
+**Matching.** In **map space**, not on the screen: each frame, for every
+enabled tile map (the four 64x64-cell maps), the layout of each region is
+looked for at every cell, wrapping at the map's edges, with each cell's key
+being the pattern the map entry names (the tile and its palette bank, as
+`tile_<key>` does). This is why it is found wherever the game scrolls it, with
+line scroll, plane splits and window masks (a pixel's cell is where the map
+puts it), why a region half off the screen draws what shows, and why one
+the game draws in a higher plane over a part of it simply hides that part. The
+alternatives were rejected: a fixed screen position breaks with any scroll
+(`at=` pins a *map* cell for the few cases that want that), and matching
+screen pixels would have to undo each line's scroll. A region matches
+wherever its arrangement is (a logo drawn twice is replaced twice); where
+two regions overlap the one earlier in the file takes the cell. Take
+enough of the picture that the arrangement is distinctive: a
+rectangle of one repeated tile matches any run of it (`studio region-capture`
+warns). Pen colours are part of a key, so a palette fade makes new keys and
+the region stops matching until the colours come back (mark such cells `*`,
+or keep to the cells whose colours hold).
+
+**Drawing.** Each cell of a matched region shows its piece of the image
+(the image cut at integer fractions into `W` x `H` pieces) in place of the
+tile pattern: same plane, same priority bit, same transparency rules as
+tile images (alpha < 0.5 is transparent; on the opaque back plane the
+original pen shows through; elsewhere what is behind), sampled at output
+resolution, bilinear and clamped to the piece. Everything else in the 2D
+layer is as before, and a region cell wins over a tile image for the same
+pattern. Wide views' added side columns keep the original patterns, as for
+tiles. It is render-only: no emulation, state hash or capture changes, and a
+pack without regions draws exactly as before (checked: software
+snapshots and GPU frames of a pack with tile images, with and without an
+empty or non-matching region set, are identical).
+
+**Readers.** The CLI (`--texture-pack`: snapshots, `gpu-check`,
+`pack-check`) and the native player draw regions, in software and on the GPU
+(each piece takes a cell of the tile atlas, found per map cell, so
+`compose.wgsl` is unchanged; the atlas's cells are sized for the largest
+image, regions' included). The images load when the pack opens. The
+**browser does not draw regions yet** (its pack loader fetches images by
+name from `index.txt` and has no `regions.txt`): it shows the pack's tile and
+texture images, ignores `uses regions`, and refuses a pack that
+`needs regions` (`pack::SHOWN_WEB`).
+
+**Making them.** `remodel studio region-capture` (docs/uplift-studio.md,
+"Regions") cuts a region's layout out of a captured frame and writes the
+original for an artist to redraw at Nx.
 
 ## Live display
 

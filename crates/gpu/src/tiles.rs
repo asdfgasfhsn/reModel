@@ -8,10 +8,18 @@
 //! replacements live in one atlas texture of equal square cells, and
 //! compose.wgsl's `fs_tiles` samples them at each output pixel's place in
 //! its game pixel, bilinear and clamped to the tile, so tiles never blend
-//! into their neighbours. Only a pack with tile images does any of this.
+//! into their neighbours. Only a pack with tile images (or regions) does any
+//! of this.
+//!
+//! Region overrides (docs/texture-packs.md, "Regions") ride the same path:
+//! each tile cell of a matched region's image is a cell of the atlas, found
+//! per map cell instead of per pattern (`video::layers_2d_replaced`), so
+//! the shader is unchanged.
 
 use model2::enhance::{Address, Found, Rgba, TexturePack, TileInfo};
+use model2::regions::Slice;
 use model2::video::{self, Layers2d, TileMap, View, HEIGHT, NO_CELL, WIDTH};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use wgpu::util::DeviceExt;
 
@@ -189,40 +197,65 @@ impl Tiles {
     ) -> Layers2d {
         self.frame += 1;
         let frame = self.frame;
-        let (atlas, by_key) = (&mut self.atlas, &mut self.by_key);
+        let set = pack.regions();
+        // The atlas's cells are as large as the largest image it will hold,
+        // regions' included (smaller images are scaled up to a cell).
+        let want = set.as_ref().map_or(0, |s| s.max_cell());
+        let state = RefCell::new((&mut self.atlas, &mut self.by_key));
+        // Put `img` in the atlas under `key` (None: unusable or no room this frame).
+        let put = |key: u64, img: &Rgba| -> Option<u16> {
+            let mut st = state.borrow_mut();
+            let (atlas, by_key) = &mut *st;
+            let side = (img.width.max(want) as u32).clamp(8, MAX_CELL);
+            let a = atlas.get_or_insert_with(|| Atlas::new(device, side));
+            // Full of this frame's tiles: the original this time.
+            let (c, old) = a.take(frame)?;
+            if let Some(old) = old {
+                by_key.remove(&old);
+            }
+            a.upload(queue, c, img);
+            a.owner[c as usize] = Some(key);
+            a.used[c as usize] = frame;
+            by_key.insert(key, Some(c));
+            Some(c)
+        };
+        // A cached cell for `key`, touched for this frame (Some(None): known to have none).
+        let cached = |key: u64| -> Option<Option<u16>> {
+            let mut st = state.borrow_mut();
+            let (atlas, by_key) = &mut *st;
+            let c = *by_key.get(&key)?;
+            if let (Some(c), Some(a)) = (c, atlas.as_mut()) {
+                a.used[c as usize] = frame;
+            }
+            Some(c)
+        };
         let mut cell = |info: &TileInfo| -> Option<u16> {
-            if let Some(&c) = by_key.get(&info.key) {
-                if let (Some(c), Some(a)) = (c, atlas.as_mut()) {
-                    a.used[c as usize] = frame;
-                }
+            if let Some(c) = cached(info.key) {
                 return c;
             }
             let img = match pack.find_tile(info) {
                 Found::Pending => return None,
                 Found::Missing => {
-                    by_key.insert(info.key, None);
+                    state.borrow_mut().1.insert(info.key, None);
                     return None;
                 }
                 Found::Image(img) => img,
             };
             // As the software: smaller than a tile is unusable.
             if img.width < 8 || img.height < 8 {
-                by_key.insert(info.key, None);
+                state.borrow_mut().1.insert(info.key, None);
                 return None;
             }
-            let a = atlas.get_or_insert_with(|| Atlas::new(device, (img.width as u32).clamp(8, MAX_CELL)));
-            // Full of this frame's tiles: the original this time.
-            let (c, old) = a.take(frame)?;
-            if let Some(old) = old {
-                by_key.remove(&old);
-            }
-            a.upload(queue, c, &img);
-            a.owner[c as usize] = Some(info.key);
-            a.used[c as usize] = frame;
-            by_key.insert(info.key, Some(c));
-            Some(c)
+            put(info.key, &img)
         };
-        video::layers_2d_replaced(tiles, palette, view, has_3d, &mut cell)
+        let mut slice_cell = |s: &Slice| -> Option<u16> {
+            if let Some(c) = cached(s.key) {
+                return c;
+            }
+            put(s.key, &s.image)
+        };
+        let regions = set.as_deref().map(|s| (s, &mut slice_cell as &mut dyn FnMut(&Slice) -> Option<u16>));
+        video::layers_2d_replaced(tiles, palette, view, has_3d, &mut cell, regions)
     }
 
     /// Upload `map` (of layers `ext_w` columns wide) and bind it with the

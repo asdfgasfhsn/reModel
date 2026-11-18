@@ -999,16 +999,17 @@ fn with_pack<T>(f: impl FnOnce(&mut PackState) -> T) -> Option<T> {
 pub fn set_pack(index: Option<String>, manifest: Option<String>) -> Result<u32, JsValue> {
     use model2::pack::{parse_name, FileKind, Manifest};
     // A pack this build can't show: none, and the page says why.
-    let (manifest, refused) = match index.is_some().then(|| Manifest::accept(manifest.as_deref())) {
-        Some(Ok(m)) => {
-            if let Some(n) = m.notice() {
-                web_sys::console::log_1(&format!("texture pack: {n}").into());
+    let (manifest, refused) =
+        match index.is_some().then(|| Manifest::accept_for(manifest.as_deref(), &model2::pack::SHOWN_WEB)) {
+            Some(Ok(m)) => {
+                if let Some(n) = m.notice() {
+                    web_sys::console::log_1(&format!("texture pack: {n}").into());
+                }
+                (m, None)
             }
-            (m, None)
-        }
-        Some(Err(e)) => (Manifest::NONE, Some(e)),
-        None => (Manifest::NONE, None),
-    };
+            Some(Err(e)) => (Manifest::NONE, Some(e)),
+            None => (Manifest::NONE, None),
+        };
     let state = index.filter(|_| refused.is_none()).map(|text| {
         let index: HashSet<String> = text
             .lines()

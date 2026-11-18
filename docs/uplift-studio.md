@@ -58,7 +58,9 @@ studio/<project>/
   original/           copies of the textures as dumped (tex_*.png, tile_*.png)
   draft/              replacements not yet approved (same names)
   pack/               the pack proper: pack.txt, approved images, index.txt
-  map/                what `make texmap` wrote (a link to it, or a copy)
+  map/                what `make texmap` wrote (a link to it, or a copy), or a folder of
+                      several, one per run: `map/course/`, `map/chars/` (below)
+  regions/NAME/       2D region overrides: region.txt, original.png, notes.txt, replacement.png
   work/               the runner's per-job folders, typeset images (scratch)
   compare/            before and after sheets
 ```
@@ -110,8 +112,10 @@ changes nothing), print short text or TSV, and need no ROM except
 
 | command | what |
 |---|---|
-| `init` | the folders and files above; `--map DIR` links (or `--copy-map` copies) a texmap output |
-| `region` | what a frame's region draws: textures and tile cells (TSV), from the ID and position images |
+| `init` | the folders and files above; `--map DIR` links (or `--copy-map` copies) a texmap output; `--map` more than once (`--map course=DIR --map chars=DIR2`) makes `map/` a folder of them; `--capture DIR` records the capture directory `region-capture` reads |
+| `region` | what a frame's region draws: textures and tile cells (TSV), from the ID and position images (`--map NAME` with several maps) |
+| `region-capture` | cut a 2D region override out of a captured frame's tile maps (below, "Regions") |
+| `regions` | the project's regions and which have a replacement (`--tsv`) |
 | `select` | add rows by `--key` (name, hash or ID), `--group`, `--surface`, `--frame F --region X,Y,W,H`, `--all`, with `--category` and `--reason`; copies the originals |
 | `status` | counts by category, what has no draft, strays, images with no record; `--tsv` for rows |
 | `approve` | copy drafts into `pack/` (`--drafted`, a group, a category, names; `--undo`) |
@@ -123,6 +127,22 @@ changes nothing), print short text or TSV, and need no ROM except
 | `text` | text to tiles (below) |
 | `seam` | the seam check (below) |
 | `compare` | before and after sheets (below) |
+
+**Several maps.** A project may hold more than one texture map: a course
+run and a character-select run, say (`init --map a=DIR --map b=DIR`, or
+folders and links in `map/`, each holding an `inventory.tsv`). `select`,
+`import`, `status` and the rest see the textures of all of them (a name in
+several is listed once, from the first map in name order, and its original
+copied from whichever map has it). IDs and frames belong to one map: a
+frame (`--frame F`) found in several needs `--map NAME`, as does a numeric
+`--key ID`; names and hashes need nothing.
+
+**Names are exact.** Every command that takes names, `--group` or
+`--category` (`style`, `draft`, `approve`, `import`, ...) refuses what it
+can't find: a name not in the selection (a name is a row's name or its
+16-digit key, never a substring), a group with no rows, or a category nobody
+has is an error naming it, never "nothing to narrow by, so every row".
+Filters given together all apply, and with none, `--all` is required.
 
 **Batch generation (`draft`).** For each selected row without a draft
 (`--force` redoes) it makes `work/draft/NAME/` holding `in1.png` (the
@@ -151,14 +171,15 @@ restyles the originals of the chosen rows into `draft/`, in Rust with no
 dependencies. The recipe file is `[default]`, `[material CATEGORY]` and
 `[key NAME]` sections of `name = value` lines, each layer overriding the
 last (`#` starts a comment at a line's start or before a space; `#rrggbb`
-is a colour):
+is a colour; a section given again continues the first, later settings
+winning a clash):
 
 | setting | meaning (default) |
 |---|---|
 | `palette` | control colours, dark to light, ramped to `tones` |
 | `tones` | number of tones (3) |
 | `scale`, `blur`, `median` | output size over the source (4); Gaussian sigma in source texels (0.6); median radius in output pixels (2) |
-| `stretch`, `bias` | percent clipped at each end before quantising (2); added to the stretched brightness, shifting the mix of tones (0) |
+| `stretch`, `bias` | percent clipped at each end before quantising (2); added to the stretched brightness, shifting the mix of tones (0). A flat texture (its brightness range under 1/64) isn't stretched: it takes the tone its luminance has on the palette's scale (white the lightest, black the darkest) |
 | `despeckle` | regions of one tone under this many source texels squared join the neighbour they touch most (0) |
 | `ink`, `ink_colour`, `ink_side`, `ink_step` | edge ink width in output pixels (0: none), colour, `light`/`dark`/`both` side of a tone step, minimum step in tones (1) |
 | `border_ink` | hairline width on the edges where the texture is clamped; never drawn on wrapped edges (0) |
@@ -189,7 +210,7 @@ image (`--image`, or `--text` with `--font`, `--size`, `--colour`,
 `--stroke`, `--stroke-width`, typeset by ImageMagick's `magick` or by
 `--typesetter`, a shell command reading `$STUDIO_TEXT`, `$STUDIO_FONT`, ...
 and writing `$STUDIO_OUT`) is trimmed, fitted into `--box` (default the
-region; `--pad N` keeps the text N pixels inside it; `--fit contain|stretch`, `--align`), optionally on a solid
+region; `--pad N` keeps the text N pixels inside it (`--pad X,Y`: left and right, top and bottom; `--pad L,T,R,B` per side); `--fit contain|stretch`, `--align`), optionally on a solid
 `--bg` (`auto`: the box's commonest colour in the frame, which covers the
 old text) and cut into `tile_*.png` of `--tile-scale` times 8 pixels.
 `--alpha original` keeps each tile's own shape (the text is set into it),
@@ -208,7 +229,11 @@ axes, and axes whose coordinates the map saw stay within one texture size
 and 12 levels, unless the original is just as suspect (the game's own
 seam). `--strict` fails on suspects.
 
-**Before and after (`compare`).** Runs the game twice (without and with the
+**Before and after (`compare`).** Works from any directory (the repo root,
+with `rom/` and `out/`, is found by walking up from the working directory
+and the project) and renders from a snapshot of the pack copied when it
+starts, so a pack being rebuilt meanwhile is never seen half written. Runs
+the game twice (without and with the
 pack, `--jobs` at once) with `remodel --out DIR run STEPS SNAP`, frames to
 `compare/before/frames` and `after/frames`, then writes `sheet-FRAME.png`
 (before beside after), `sheet-all.png`, and `compare.tsv` (share of pixels
@@ -217,6 +242,38 @@ changed, mean difference). It needs the ROMs and the `--input` and view
 `remodel run` has `--out DIR` for it: where `run` writes `frames/`,
 `eeprom.bin` and the captured programs (default `out/GAME` in the working
 directory, as before; the eeprom is copied there from `out/GAME` first).
+
+## Regions
+
+Some 2D art can't be restyled tile by tile: the tiles are shared (a sponsor
+logo built from the same fill tiles as the background, "©SEGA 1997" whose
+letters are also "INSERT COIN(S)", the boot logo). A **region** names an
+arrangement of tiles in a tile map and an image drawn over its rectangle
+instead (docs/texture-packs.md, "Regions" is the pack side: matching is in
+map space, so it follows scrolling).
+
+`remodel studio region-capture PROJECT NAME --capture DIR --frame F --region
+X,Y,W,H` cuts one out of a captured frame (the capture directory of a
+`--capture` run; `init --capture DIR` remembers it). `--region` is in the
+pixels of the frame picture the map holds (`--game-px`: game pixels, 496 x
+384); the tool finds the tile cells the rectangle covers (cells it overlaps
+by at least half), in the plane it draws in (`--plane a|b`), and writes:
+
+- `regions/NAME/region.txt`, the line for `regions.txt`: the keys of those
+  cells. `--also F,..` compares the same cells in other frames and makes
+  the ones that differ `*` (animated parts); `--wild X,Y;X,Y` names more;
+  `--layer high|low` and `--pin` (only at this map cell) narrow it.
+- `original.png`, the game's picture of exactly that rectangle, enlarged
+  (`--ref-scale`, default 4), for the artist or agent to redraw;
+- `notes.txt`: where it was cut from and the size to draw it at (4x).
+
+It says where the region matches in the frame (and the `--also` frames), and
+warns when it matches more than once, when its tiles are all one pattern
+(widen the rectangle), or when its cells aren't contiguous in the map. Put
+the artwork at `regions/NAME/replacement.png` (or give `--image FILE`), then
+`studio pack` writes `regions.txt`, the `region_NAME.png` images and `uses
+regions` into `pack/`; remove the replacement and pack again to take a
+region out. `studio regions` lists them.
 
 ## What is built, what comes later
 
