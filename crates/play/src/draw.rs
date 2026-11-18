@@ -30,6 +30,37 @@ pub struct Core {
     /// `--perf-log`: report where draws spend their host time and what
     /// the renderer holds on the GPU ([`Core::log_perf`]).
     pub log: Option<PerfLog>,
+    /// When the surface was last configured again after a miss
+    /// ([`recover_surface`]).
+    pub recovered: Option<Instant>,
+}
+
+/// How often at most a surface that times out is configured again.
+const RECOVER_EVERY: Duration = Duration::from_secs(15);
+
+/// The surface gave no texture (`outcome`): put it right, so a later draw
+/// can go on.
+///
+/// A timeout or an occluded window is not a broken surface: a window the
+/// compositor isn't showing (another workspace, minimised) is not given its
+/// swapchain's images back under a vsynced mode, so every acquire times
+/// out. Configuring the surface again on each miss (this used to) made a
+/// new swapchain each time, which got a few more frames through, and left
+/// the old one behind with its images still held by the compositor: with
+/// the NVIDIA driver about 100 MB a second in shared memory until the
+/// player was killed (once the kernel's out-of-memory killer took a whole
+/// desktop session with it). So those wait: the window isn't being looked
+/// at, and the game goes on at the rate the compositor gives redraws (about
+/// one a second) until it is; a surface that stays stuck anyway is
+/// configured again once every `RECOVER_EVERY`. Lost and outdated surfaces
+/// are configured again at once.
+pub fn recover_surface(core: &mut Core, config: &wgpu::SurfaceConfiguration, outcome: &wgpu::CurrentSurfaceTexture) {
+    use wgpu::CurrentSurfaceTexture as T;
+    if matches!(outcome, T::Timeout | T::Occluded) && core.recovered.is_some_and(|t| t.elapsed() < RECOVER_EVERY) {
+        return;
+    }
+    core.recovered = Some(Instant::now());
+    core.surface.configure(core.renderer.device(), config);
 }
 
 /// What [`Core::log_perf`] keeps between draws.
@@ -329,13 +360,13 @@ pub fn run(core: &mut Core, job: Job, started: &dyn Fn()) -> Report {
     spans::end(spans::Kind::Surface, span);
     let frame = match texture {
         wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
-        // Lost, outdated, hidden or timed out: configure again, skip a draw
-        // (but keep the overlay's textures up to date).
-        _ => {
+        // Lost, outdated, hidden or timed out: skip a draw (but keep the
+        // overlay's textures up to date), and put the surface right.
+        outcome => {
             if let Some(o) = &job.overlay {
                 apply_overlay_textures(core, o);
             }
-            core.surface.configure(core.renderer.device(), &job.config);
+            recover_surface(core, &job.config, &outcome);
             return Report { missed: true, draw: Duration::ZERO, game: None, hash: None, failed: None };
         }
     };

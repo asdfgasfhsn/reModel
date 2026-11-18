@@ -2871,8 +2871,8 @@ impl Play {
         let core = g.drawer.core();
         let frame = match core.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
-            _ => {
-                core.surface.configure(core.renderer.device(), &g.config);
+            outcome => {
+                draw::recover_surface(core, &g.config, &outcome);
                 self.stats.surface_misses += 1;
                 return;
             }
@@ -3431,6 +3431,10 @@ impl ApplicationHandler<Wake> for Play {
         let unpaced = match std::env::var("REMODEL_PRESENT").as_deref() {
             Ok("immediate") => Some(wgpu::PresentMode::Immediate),
             Ok("mailbox") => Some(wgpu::PresentMode::Mailbox),
+            // A bounded run (`--frames`) is a check or a measurement, not
+            // for watching: mailbox, which a window nobody sees can't stall
+            // (vsynced, it gets about a frame a second).
+            _ if self.opts.frames.is_some() => Some(wgpu::PresentMode::Mailbox),
             _ => None,
         }
         .filter(|m| caps.present_modes.contains(m));
@@ -3499,6 +3503,7 @@ impl ApplicationHandler<Wake> for Play {
             frame: gpu::BoardFrame::default(),
             photo_shots: None,
             log: self.opts.perf_log.then(Default::default),
+            recovered: None,
         };
         core.renderer.set_profile(self.opts.perf_log);
         // The draw thread wakes the event loop as it starts drawing and when

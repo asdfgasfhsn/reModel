@@ -609,9 +609,16 @@ Vulkan and DX12; not the browser): bytes in live allocations by label, and
 --format=csv`). It is printed at the start and whenever either changes by a
 MB, so after each change of settings.
 
-A hidden window gets a redraw a second under vsync. To time drawing
-without a visible window, `REMODEL_PRESENT=immediate` (or `mailbox`) sets
-that present mode where the surface offers it: the game then runs at its
+A hidden window gets a redraw a second under vsync (on Wayland with the
+NVIDIA driver the compositor does not hand its swapchain images back at
+all, so the acquire times out; the player skips those draws and configures
+the surface again at most every 15 seconds, where it used to do so at each
+miss, which left a swapchain's worth of shared memory behind each time:
+about 100 MB a second until the kernel killed the player). A bounded run
+(`--frames`) is for checks and measurements, not for watching, so it
+presents in mailbox mode and does not wait for the compositor. To time
+drawing without a visible window otherwise, `REMODEL_PRESENT=immediate` (or
+`mailbox`) sets that present mode where the surface offers it: the game then runs at its
 pace and redraws as fast as it can (most of those are repeats of a game
 frame; a repeat does everything but the emulation). The draw times
 are then those of a draw with warm caches on an idle GPU: not what a
