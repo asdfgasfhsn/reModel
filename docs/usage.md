@@ -186,6 +186,11 @@ per-target ones `make help` lists (`VIEW`, `PACK`, `GPU_OPTS`, `PLAY_ARGS`,
 ...). The `Makefile` is the supported interface for humans and agents alike;
 `make help` is always current.
 
+**GPU tests.** Some unit tests need a GPU. `make check GPU_TESTS=0`
+skips them (they return early, as on a machine without one, and the check
+prints that it is incomplete), for when the card's memory is taken by other
+programs; run them before pushing a change.
+
 **Memory cap.** Every `remodel` and `remodel-play` run the Makefile starts
 goes through `tools/capped`: on Linux with a systemd user session it runs in
 its own scope with `MemoryMax=$MEMCAP` (default `8G`) and no swap, so a

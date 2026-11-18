@@ -36,3 +36,8 @@
   run is killed on its own instead of the machine's other work. Run the
   binaries through `make`, or prefix a direct run with `tools/capped`;
   raise `MEMCAP` for a run that genuinely needs more, never drop the cap.
+- Agents render with the CLI (`make look-render`, `make studio-compare`,
+  `run` snapshots, `--shot`), not long-lived visible player windows: each
+  window also costs the desktop compositor GPU memory, which has crowded
+  out the GPU tests. When the GPU is full anyway, `make check GPU_TESTS=0`
+  skips the GPU tests with a warning; run them before pushing.

@@ -139,8 +139,13 @@ recomp-workspace: ## Rewrite out/recomp's Cargo workspace and program crate mani
 	$(CARGO) build --release -p remodel
 	$(CAP) target/release/remodel recomp-workspace
 
-test: ## Run all unit tests (no ROMs needed)
-	$(CARGO) test --workspace
+# GPU_TESTS=0 skips the tests that need a GPU (they return early, as on a
+# machine without one), for when the card's memory is full; never for a
+# change to the GPU code, and run the full check before pushing.
+GPU_TESTS ?= 1
+test: ## Run all unit tests (no ROMs needed); GPU_TESTS=0 skips the GPU ones, with a warning (for a busy GPU; run them before pushing)
+	REMODEL_GPU_TESTS=$(GPU_TESTS) $(CARGO) test --workspace
+	@if [ "$(GPU_TESTS)" = 0 ]; then echo "*** GPU tests SKIPPED (GPU_TESTS=0): this check is incomplete; run them before pushing ***"; fi
 
 lint: ## Clippy across all crates and targets, warnings are errors
 	$(CARGO) clippy --workspace --all-targets -- -D warnings

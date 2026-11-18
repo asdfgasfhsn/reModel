@@ -744,6 +744,12 @@ impl Renderer {
     /// A renderer for a test, or None (said on stderr) where there is no
     /// GPU adapter, so the test skips.
     pub(crate) fn for_test() -> Option<Self> {
+        // `make check GPU_TESTS=0`: the GPU is busy (or its memory full),
+        // so the tests that need one return early, as without an adapter.
+        if std::env::var("REMODEL_GPU_TESTS").is_ok_and(|v| v == "0") {
+            eprintln!("GPU tests off (REMODEL_GPU_TESTS=0): skipped");
+            return None;
+        }
         let r = Self::new().ok();
         if r.is_none() {
             eprintln!("no GPU adapter: skipped");
