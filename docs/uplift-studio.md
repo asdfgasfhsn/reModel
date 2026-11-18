@@ -275,6 +275,164 @@ the artwork at `regions/NAME/replacement.png` (or give `--image FILE`), then
 regions` into `pack/`; remove the replacement and pack again to take a
 region out. `studio regions` lists them.
 
+## Catalogue
+
+The map above comes from a few captured frames, so it shows what those
+frames showed. The **catalogue** is the same idea grown by observing: every
+distinct asset a game shows, found while it runs, kept per game in
+`out/<game>/catalogue/` (ROM-derived, so ignored by git), added to by every
+run and every play session, never rebuilt. It answers "have we seen all of
+it?" (later course sections, other skaters, menus) and holds the
+mappings the studio lacks (which HUD font tile is which digit).
+
+Nothing in it is specific to one game or touches the emulation: it reads
+what the renderers already read, and the state hash does not change.
+
+### What is catalogued
+
+| kind | what | key |
+|---|---|---|
+| `tex` | a 3D texture as drawn: size, sheet place, luma table, colour, wrapping (`rr`, `mr`, `rm`, `mm`), and its **surface key** (the artwork whatever colour it is drawn in) | the texture dump's key, so a name is a pack file |
+| `tile` | an 8x8 2D tile pattern | the tile dump's key |
+| `layout` | a connected arrangement of 4 to 600 tiles on one layer: a logo, a label, a number field, a panel. Its **shape** (cells only, no tile keys) is recorded too: a shape that recurs with different contents is a text or number field | hash of cells and tile keys |
+| `object` | one model's polygon list: its model address when the native geometrizer's side channel knows it (`oba`), else the set of its polygon headers (an approximation: two models with the same headers collide); polygons, textures it shows | the address, or the headers |
+| loads | texture RAM uploads (below) | frame, place, hash |
+
+For each entry: first and last seen, how often (samples), the screens it
+appears on, coverage (visible pixels, best sighting with its frame and
+box), a thumbnail, and what it appears with: textures and tiles that touch
+in one object or layer (the groups of `make texmap`), an object's textures,
+a texture's objects. A **screen** is a recognisable state of the picture:
+samples whose most covering textures (by surface) and tiles (by tile
+number, so fades and palette changes do not split it) are alike (Jaccard
+0.5 over the top 24); sessions' screens are merged the same way.
+
+### Loading, and what it joins
+
+`model2::texwatch` watches texture RAM. The game fills it with the CPU, so
+there is no upload call to hook and a hook on every write would cost the
+JIT its fast path. Instead, once a frame, the bus compares the texture
+RAM's write counter (which the fast path keeps) and only when it moved
+compares the two banks with a shadow copy, page by page; the changed pages
+become loads: frame, byte range and sheet rows (`bank0 rows 64-127`), a hash of the
+new bytes and, when the data is a verbatim copy of main data ROM (32-byte
+windows looked up at any 4-byte shift), the ROM address it came from. It is
+off by default, on with `--catalogue`, outside the machine's state (saving,
+loading, hashing and run-ahead never see it).
+
+Joined with what is drawn: a texture knows the load that fed it (when it
+was loaded, per screen) and how many loads overlapped its texels; its
+surface key says which keys are one artwork; the report counts the loaded
+bytes that lie under textures seen drawn, and lists loads no drawn texture
+touches (loaded, never drawn: or not yet observed). A frame number that
+jumps or goes back (a loaded save state) makes the watch start from what
+is there instead of calling it all a load, and the next sample is taken at
+once; a session is one process, so a long run is one session and several
+runs are several, merged when read.
+
+### Store
+
+`out/<game>/catalogue/`:
+
+```
+format.txt                 format number and game
+sessions/<id>/             one per observing process (id: start time, pid)
+  info.txt                 label, frames, samples, loads, cost counters
+  entries.tsv              every entry the session saw: ident, name, size, surface, detail, loaded, loads, with
+  seen.tsv                 per entry: samples, pixels, best sighting (frame, box), first, last, screens, wrap
+  edges.tsv                touching pairs and weights
+  screens.tsv              the session's screens: samples, frame image, top signatures
+  samples.tsv              append-only: one line per sample (frame, screen, counts, new, frame image)
+  loads.tsv                append-only: frame, offset, length, hash, destination, ROM source, screen
+thumbs/                    texture, layout and object images; tiles.dat (all tile patterns, 8x8 RGBA records)
+frames/                    saved frames (when something new showed, capped) and .tiles.z tile data of those showing a new layout
+index.html, report.txt, index.tsv    written by the commands below
+```
+
+Entry ids are `kind:key` (`tex:0123456789abcdef`). Files are plain TSV,
+appended or replaced whole (atomically, every 30 s and at the end), so a
+killed session loses its last half minute and sessions never write each
+other's files: **merging is copying directories** (`remodel catalogue
+merge SRC`), and everything a report reads is computed from the sessions,
+oldest first. Texture, tile and frame pictures are named by key or session
+so they can be shared.
+
+### Observing
+
+- `make catalogue GAME=topskatr INPUT=coin-start` runs the scripted run
+  (`INPUT` as `--input`, `CATALOGUE_STEPS=` its length, `LABEL=` its name) with `remodel --catalogue
+  DIR run`, then the report and viewer. `make catalogue-runs RUNS=FILE` runs a list
+  (lines `LABEL|STEPS|INPUT`): attract, every course, every character, the
+  menus, each its own session. Scripted runs go faster than real time, so
+  the worker is waited for (no sample is dropped).
+- `remodel-play --catalogue` (the **Catalogue** setting, off by default, in
+  the Esc menu's More page) observes while you play: docs/play.md,
+  "Catalogue". A sample is taken every 60 frames, and sooner (at most every 8) when
+  the tile layer was rewritten in bulk or textures were loaded.
+
+### Reading it
+
+- `make catalogue-report` (`remodel catalogue report`): per kind the entries, those new in
+  the last session, those seen in one sample only, and a Good-Turing
+  coverage estimate (1 minus the share of sightings that are single: the
+  chance a new sample shows something the catalogue holds; a guide, not a
+  measurement); sessions; the screens with their entries and how many were
+  seen once (a screen with many is "thin: observe it longer"); what is new
+  since the last session; loaded against drawn; how many keys are one
+  artwork.
+- `make catalogue-viewer`: `index.html` in the catalogue directory, one
+  file that opens from `file://`. A gallery filtered by kind, screen and
+  text and sorted by use, pixels or rarity; click an entry for its key,
+  surface, detail, wrapping, first and last sighting, load, the frame it is
+  best seen in with its box marked, the screens it is on (click to filter),
+  what it touches, its textures or objects, and its other keys with the same
+  artwork. Tabs for the screens (a frame of each), the loads and the
+  report.
+
+### The studio
+
+- `studio init --map catalogue=out/GAME/catalogue` writes the catalogue as
+  a map into the project (`catalogue-maps/`): `inventory.tsv` ranked by
+  pixels, `groups.tsv` from what touches, `textures/` under pack names. `select
+  --key/--group/--surface/--all`, `status`, `style`, `draft` and the rest then
+  work from it, alongside a texmap map (give `--map` more than once). The
+  catalogue has no per-frame ID images, so `select --frame --region` and
+  `studio region` need a texmap map of the frame.
+- `studio region-capture NAME --capture-dir out/GAME/catalogue --frame N
+  --game-px --region X,Y,W,H` cuts a region from the tile data the catalogue
+  saved with the frames that first showed a layout (`remodel catalogue
+  captures` lists them: frame `1000000 * (session + 1) + frame`).
+  `remodel catalogue export-map` and `captures` write both
+  forms without a project.
+
+### Glyph mapping
+
+HUD numbers are tiles: a digit is one tile, or a block of them (the Top
+Skater clock's are 2x2, the four **quarters** of the glyph). Their names say
+nothing about which digit they show. `make catalogue-glyphs INPUT=... `
+(`remodel --glyphs DIR run`) watches the tile layer every frame, keeps only
+the cells whose tile changes, and reads the digits off how a counter
+changes:
+
+1. cells that change in the same frames and touch are one glyph block;
+   its changes are replayed into states (the tiles of its cells), and a
+   block whose states step through ten in a clean cycle is a digit place;
+2. another block that changes only when that one wraps (the tens of
+   seconds, the minutes) says which step is 9 to 0: the state after it is
+   the zero of a counter that counts up, the nine of one that counts down;
+3. the direction comes from laying both against a 3x5 template font (the
+   better fit, when they differ by 0.03) else from `--glyph-counts up|down`;
+   with no carry partner the template fit alone chooses, and says so.
+
+`glyphs.tsv` has a row per tile: `tile key`, `glyph`, `quarter` (`-` one
+tile; `tl tr bl br`; `rRcC` for bigger blocks), `evidence`, `confidence`; a
+tile that serves two digits has two rows; `glyphs.txt` shows each glyph as
+the tiles draw it for checking; `events.tsv` and `tiles.tsv` are the trace,
+and `remodel catalogue glyphs --counts down` infers again from it without
+playing. It is an inference from behaviour, not read from the ROM, so
+unconfirmed until looked at: a score that never changes in the run gives
+nothing (play, or script, something that scores).
+
 ## What is built, what comes later
 
 Built: the design above; `remodel texmap` and `make texmap` (ID images,
@@ -282,7 +440,8 @@ texel positions, inventory, contact sheets, groups, JSON); the viewer
 (phase 1); the project commands, the batch runner, the style processor,
 text to tiles, surface variants, the seam check and before and after
 (phase 1b: render side and tooling only, no emulation or state hash is
-touched).
+touched). The catalogue (below) is built too: observing while playing and in
+scripted runs, loads, report, viewer, glyph mapping, and the studio reading it.
 
 Not built, roughly in this order:
 

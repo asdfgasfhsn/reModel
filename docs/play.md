@@ -1622,6 +1622,33 @@ Regular, SemiBold and Bold (rsms/inter) and Exo 2 Black Italic
 fonts. Both are SIL OFL 1.1, and `make dist` copies the licences into
 `THIRD-PARTY-NOTICES.txt`.
 
+### Catalogue
+
+`--catalogue` (or the **Catalogue** setting: Esc menu, More page; off by
+default, applies when a game starts; `--catalogue off` overrides a saved
+`on`) observes the game into its catalogue as you play: every distinct 3D
+texture, 2D tile pattern, tile layout (logos, labels, number fields) and
+object the game shows, each with how often, where and with what, and every
+texture RAM upload (`out/GAME/catalogue`, or `--catalogue-dir DIR`; the
+store, the report and the browser are in docs/uplift-studio.md,
+"Catalogue"). Play every course, every character and the menus normally and
+the catalogue fills; each run of the player is one session, and sessions
+add up. `--catalogue-every N` sets the frames between samples (default 60,
+about once a second; a sample is also taken, at most every 8 frames, when
+the 2D layer is rewritten in bulk or textures are loaded).
+
+What it costs: the game thread, once a frame, drains the texture watch (a
+counter compare, 0.3 ms only on frames where the game wrote texture RAM), and
+once a sample copies the frame's renderer inputs (about 4 MB) to a worker
+thread, which identifies, draws and writes: the game thread never waits for
+it (a sample the worker has no time for is dropped and counted). It turns the
+geometrizer's lighting side channel on (for the models' addresses), which is
+what `--shading` and `--materials` do too. `--frames N` with `--catalogue`
+prints the cost at the end (`catalogue ... game thread X ms a frame`). The
+emulation, its state hash and what is drawn are unchanged. A save state
+loaded in the middle is handled (the watch starts from the loaded textures
+and says so; the next sample is taken at once).
+
 ## Remapping
 
 The Esc menu's **Controls** page (from the launcher's Settings too, for

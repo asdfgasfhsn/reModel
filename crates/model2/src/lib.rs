@@ -7,6 +7,7 @@
 pub mod audio;
 pub mod bus;
 pub mod capture;
+pub mod catalogue;
 #[cfg(not(target_arch = "wasm32"))]
 mod copro_jit;
 #[cfg(not(target_arch = "wasm32"))]
@@ -19,6 +20,7 @@ pub mod geo_native;
 pub mod geo_native_2c;
 pub mod gun;
 pub mod idle;
+pub mod idmap;
 pub mod input;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod jit_warm;
@@ -40,6 +42,7 @@ pub mod video;
 
 pub mod recomp;
 pub mod runahead;
+pub mod texwatch;
 
 pub use bus::Model2Bus;
 use i960::cpu::{Cpu, Stop};

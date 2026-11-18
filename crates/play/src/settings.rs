@@ -210,6 +210,10 @@ pub struct GameSettings {
     /// The geometrizer on its chip (the game's own program) rather than
     /// the native implementation. Applies when the game starts.
     pub geo_chip: bool,
+    /// Observe the game into the catalogue as it is played
+    /// (`model2::catalogue`, docs/play.md "Catalogue"): applies when the
+    /// game starts. Never part of a preset.
+    pub catalogue: bool,
     /// The dead zone, sensitivity and curve of the sticks and of the
     /// triggers (the Controls page). The defaults read as they always did.
     pub tuning: Tuning,
@@ -244,13 +248,14 @@ impl Default for GameSettings {
             look: false,
             look_tuning: Default::default(),
             geo_chip: false,
+            catalogue: false,
             tuning: Tuning::default(),
         }
     }
 }
 
 /// Every game setting's key, in the order the panels show them.
-pub const KEYS: [&str; 32] = [
+pub const KEYS: [&str; 33] = [
     "preset",
     "wide",
     "bezel",
@@ -277,6 +282,7 @@ pub const KEYS: [&str; 32] = [
     "sfx_db",
     "music_db",
     "geo",
+    "catalogue",
     "stick_dead",
     "stick_sens",
     "stick_curve",
@@ -345,6 +351,7 @@ impl GameSettings {
             "look" => self.look.to_string(),
             "look_tuning" => self.look_tuning.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(","),
             "geo" => if self.geo_chip { "chip" } else { "native" }.to_string(),
+            "catalogue" => self.catalogue.to_string(),
             "stick_dead" => self.tuning.stick.dead.to_string(),
             "stick_sens" => self.tuning.stick.sens.to_string(),
             "stick_curve" => self.tuning.stick.curve.name().to_string(),
@@ -391,6 +398,7 @@ impl GameSettings {
             "bloom" => gpu::Quality::parse_bloom(v).map(|n| self.bloom = n).is_some(),
             "crt" => gpu::Quality::parse_crt(v).map(|n| self.crt = n).is_some(),
             "look" => flag(v).map(|x| self.look = x).is_some(),
+            "catalogue" => flag(v).map(|x| self.catalogue = x).is_some(),
             "look_tuning" => {
                 // Each `name=value` must be one the look takes (tried on
                 // the default look), so a typo in the file is refused.
@@ -524,7 +532,7 @@ impl GameSettings {
     /// for smooth shading, or for material maps (their lamps come from it,
     /// with shading flat too).
     pub fn side_channel_on(&self) -> bool {
-        self.light_on() || self.materials_on()
+        self.light_on() || self.materials_on() || self.catalogue
     }
 
     /// The renderer's quality for these settings (`supported`: the GPU

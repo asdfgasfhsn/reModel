@@ -212,6 +212,9 @@ pub struct Model2Bus {
     /// Write watch (debugging): an address, and the (cycle, ip, address,
     /// value, size) of every memory write touching its 32-bit word.
     pub watch: Option<(u32, Vec<WatchHit>)>,
+    /// The catalogue's texture upload watch (`crate::texwatch`); render
+    /// side only, never part of the state.
+    pub tex_watch: Option<Box<crate::texwatch::TexWatch>>,
     /// Everything written to the sound link UART: (cycle, control register,
     /// byte). Data bytes are the commands for the sound boards.
     pub uart_log: Vec<(u64, bool, u8)>,
@@ -459,6 +462,7 @@ impl Model2Bus {
             geo_words: 0,
             geo_trace: None,
             watch: None,
+            tex_watch: None,
             uart_log: Vec::new(),
             frame_toggle: false,
             video_30hz: false,
@@ -567,6 +571,9 @@ impl Model2Bus {
         if vblank {
             self.next_vblank += FRAME_CYCLES;
             self.frames += 1;
+            if self.tex_watch.is_some() {
+                self.watch_textures();
+            }
             // In 30 Hz mode the frame bit and the geometrizer's start come
             // on every second vblank (the even ones); the vblank interrupt
             // still comes on each (*unconfirmed*).
@@ -582,6 +589,17 @@ impl Model2Bus {
             }
         }
         vblank
+    }
+
+    /// The texture upload watch's look at the frame that just ended.
+    fn watch_textures(&mut self) {
+        let mut writes = self.mems[RENDER_RAM].writes;
+        if let Some(b) = self.video_2a {
+            writes += self.mems[b].writes + self.mems[b + 1].writes;
+        }
+        if let Some(w) = self.tex_watch.as_deref_mut() {
+            w.frame_end(self.frames, &self.mems[RENDER_RAM].data, writes);
+        }
     }
 
     /// Raise IRQ request bits (only those already enabled latch).
@@ -1340,6 +1358,18 @@ impl Model2Bus {
         let h = i16::from_le_bytes([t[0x4_0000], t[0x4_0001]]) as f32;
         let v = i16::from_le_bytes([t[0x6_0000], t[0x6_0001]]) as f32;
         (84.0 + h, 130.0 + v)
+    }
+
+    /// Tile RAM's write counter (a version number: the catalogue's
+    /// measure of how much of the 2D layer the game rewrote).
+    pub fn tile_ram_writes(&self) -> u64 {
+        self.mems[5].writes
+    }
+
+    /// The main data ROM (0x02000000), where the game's own art and data
+    /// are copied from.
+    pub fn data_rom(&self) -> &[u8] {
+        &self.mems[9].data
     }
 
     /// Render RAM from 0x11000000: texture banks, luma tables, framebuffers.

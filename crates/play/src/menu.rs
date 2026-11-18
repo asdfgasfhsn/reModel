@@ -1181,6 +1181,14 @@ fn more_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings, view: &Vi
         "Takes effect the next time a game starts. Native is faster and needed for smooth motion, temporal \
          anti-aliasing and smooth lighting; the chip runs the game's own program.",
     );
+    rows.toggle(
+        ui,
+        "Catalogue",
+        &mut s.catalogue,
+        "Takes effect the next time a game starts. Records every texture, tile pattern, 2D layout and object the \
+         game shows, and the textures it loads, into the game's catalogue folder as you play (out/GAME/catalogue): \
+         a map of the art for restyling. The work is done off the game's thread.",
+    );
     if s.pack {
         let mut list: Vec<(model2::enhance::TexFilter, &str)> = crate::settings::tex_filters(view.max_anisotropy)
             .iter()

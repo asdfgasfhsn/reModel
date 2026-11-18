@@ -405,6 +405,32 @@ texmap: release ## Which texture is where: draw the captured frames (CAPTURE=DIR
 	$(if $(CAPTURE),,@[ -d $(OUT)/capture ] || $(MAKE) capture)
 	$(RUN) $(VIEW) texmap $(or $(CAPTURE),$(OUT)/capture) $(TEXMAP_OUT) $(TEXMAP_OPTS)
 
+# The catalogue of everything a game shows (docs/uplift-studio.md,
+# "Catalogue"): out/GAME/catalogue, grown by sessions.
+CATALOGUE_DIR   ?= $(OUT)/catalogue
+CATALOGUE_STEPS ?= $(BENCH_STEPS)
+# `make catalogue-runs`: a file of runs, one per line: LABEL|STEPS|INPUT
+# (INPUT as for --input; `#` lines and blank lines are skipped).
+RUNS ?=
+catalogue: release ## Observe a scripted run into the catalogue (INPUT=script, default coin-start; CATALOGUE_STEPS=N, default BENCH_STEPS; LABEL=text; CATALOGUE_OPTS="--catalogue-every N"), then write the report and viewer; sessions add up, so run it again with another INPUT to grow the catalogue (docs/uplift-studio.md)
+	$(RUN) --catalogue $(CATALOGUE_DIR) --catalogue-label "$(or $(LABEL),$(or $(INPUT),$(BENCH_INPUT)))" $(CATALOGUE_OPTS) --input "$(or $(INPUT),$(BENCH_INPUT))" run $(CATALOGUE_STEPS) 0 | grep -E '^catalogue'
+	$(RUN) catalogue report --dir $(CATALOGUE_DIR) | head -30
+	$(RUN) catalogue viewer --dir $(CATALOGUE_DIR)
+catalogue-runs: release ## Observe every run listed in RUNS=FILE (lines LABEL|STEPS|INPUT) into the catalogue, one session each, then report and viewer: attract, every course, every character, the menus
+	@test -n "$(RUNS)" || { echo "usage: make catalogue-runs RUNS=FILE (lines LABEL|STEPS|INPUT)"; exit 1; }
+	@grep -vE '^[[:space:]]*(#|$$)' $(RUNS) | while IFS='|' read -r label steps input; do \
+		echo "== $$label"; \
+		$(RUN) --catalogue $(CATALOGUE_DIR) --catalogue-label "$$label" $(CATALOGUE_OPTS) --input "$$input" run $$steps 0 | grep -E '^catalogue' || exit 1; \
+	done
+	$(RUN) catalogue report --dir $(CATALOGUE_DIR) | head -30
+	$(RUN) catalogue viewer --dir $(CATALOGUE_DIR)
+catalogue-report: release ## The catalogue's coverage report: what is seen, what is new since the last session, screens and how complete they look, loaded vs drawn (also CATALOGUE_DIR/report.txt)
+	$(RUN) catalogue report --dir $(CATALOGUE_DIR)
+catalogue-viewer: release ## Write CATALOGUE_DIR/index.html, the static browser of the catalogue (gallery by kind and screen, where each entry appears, what it appears with, loads)
+	$(RUN) catalogue viewer --dir $(CATALOGUE_DIR)
+catalogue-glyphs: release ## Infer which tile shows which glyph (digits) from a run's changing tile layer: INPUT=script, CATALOGUE_STEPS=N, GLYPH_OPTS="--glyph-counts up|down"; writes CATALOGUE_DIR/glyphs/glyphs.tsv (tile key, glyph, quarter) and glyphs.txt (docs/uplift-studio.md, "Glyph mapping")
+	$(RUN) --glyphs $(CATALOGUE_DIR)/glyphs $(GLYPH_OPTS) --input "$(or $(INPUT),$(BENCH_INPUT))" run $(CATALOGUE_STEPS) 0 | grep -E '^glyphs'
+
 # The uplift studio (docs/uplift-studio.md): a project is a directory
 # (STUDIO, default OUT/studio/default); STUDIO_ARGS is the subcommand's
 # options, e.g. STUDIO_ARGS="--key 2970 --category wall --reason 'big wall'".

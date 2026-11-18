@@ -1,6 +1,9 @@
 mod camera_scan;
+mod catalogue;
+mod catalogue_viewer;
 mod depth_check;
 mod geo_check;
+mod glyphs;
 mod gpu_check;
 mod light_report;
 mod lighting_check;
@@ -835,6 +838,37 @@ fn parse_opts() -> Result<Opts, ExitCode> {
     if let Some(c) = capture {
         let _ = CAPTURE.set(PathBuf::from(c));
     }
+    let (Ok(cat), Ok(cat_every), Ok(cat_label)) =
+        (opt("--catalogue"), opt("--catalogue-every"), opt("--catalogue-label"))
+    else {
+        eprint!("{USAGE}");
+        return Err(ExitCode::FAILURE);
+    };
+    if let Some(d) = cat {
+        let every = cat_every.and_then(|v| v.parse::<u64>().ok()).filter(|&n| n > 0).unwrap_or(30);
+        let _ = CATALOGUE.set((PathBuf::from(d), every, cat_label.unwrap_or_default()));
+    }
+    let Ok(counts) = opt("--glyph-counts") else {
+        eprint!("{USAGE}");
+        return Err(ExitCode::FAILURE);
+    };
+    match counts.as_deref() {
+        None | Some("up") => {}
+        Some("down") => {
+            let _ = GLYPH_COUNTS.set(glyphs::Counts::Down);
+        }
+        Some(_) => {
+            eprintln!("error: --glyph-counts wants up or down");
+            return Err(ExitCode::FAILURE);
+        }
+    }
+    let Ok(glyphs) = opt("--glyphs") else {
+        eprint!("{USAGE}");
+        return Err(ExitCode::FAILURE);
+    };
+    if let Some(d) = glyphs {
+        let _ = GLYPHS.set(PathBuf::from(d));
+    }
     let (Ok(capture_seq), Ok(seq)) = (opt("--capture-seq"), opt("--seq")) else {
         eprint!("{USAGE}");
         return Err(ExitCode::FAILURE);
@@ -987,6 +1021,7 @@ fn dispatch_no_roms(o: &Opts) -> Option<ExitCode> {
         "pack-lint" => cmd_pack_lint(o),
         "pack-flicker" => cmd_pack_flicker(o),
         "studio" => cmd_studio(o),
+        "catalogue" => cmd_catalogue(o),
         "sharc-disasm" | "sharc-check" => cmd_sharc(o),
         "temporal-check" => cmd_temporal_check(o),
         "tgp-disasm" => cmd_tgp_disasm(o),
@@ -1106,6 +1141,17 @@ fn cmd_studio(o: &Opts) -> ExitCode {
         input: o.input.clone(),
     };
     match studio::main(&o.args[1..], &ctx) {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_catalogue(o: &Opts) -> ExitCode {
+    match catalogue::main(&o.args[1..], &o.game_id) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(e) => {
@@ -2792,7 +2838,7 @@ fn machine(roms: &RomSet) -> model2::Machine {
     }
     m.bus.geo.set_smooth(SMOOTH.get().is_some() || CAPTURE_SEQ.get().is_some());
     // Material maps need the side channel (the exact lighting layer).
-    m.bus.geo.set_light(LIGHT.get().is_some() || materials_on());
+    m.bus.geo.set_light(LIGHT.get().is_some() || materials_on() || CATALOGUE.get().is_some());
     // For the frame before each snapshot (`snapshot`).
     m.bus.geo.set_keep_last(SMOOTH.get().is_some());
     jit_if_asked(&mut m);
@@ -2822,6 +2868,14 @@ static AUDIO: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 /// `--pack-log FILE` with `--texture-pack DIR`: the log, the pack, which
 /// fixes are on and whether to keep the arcade's pace.
 static PACK_LOG: std::sync::OnceLock<(PathBuf, PathBuf, model2::packlog::Fixes, bool)> = std::sync::OnceLock::new();
+/// `--catalogue DIR [--catalogue-every N] [--catalogue-label TEXT]`: observe
+/// the run into the catalogue in DIR (docs/uplift-studio.md, "Catalogue").
+static CATALOGUE: std::sync::OnceLock<(PathBuf, u64, String)> = std::sync::OnceLock::new();
+/// `--glyph-counts up|down`: which way the run's counters count.
+static GLYPH_COUNTS: std::sync::OnceLock<glyphs::Counts> = std::sync::OnceLock::new();
+/// `--glyphs DIR`: watch the 2D layer's tile changes every frame and write
+/// the tile-font mapping into DIR when the run ends.
+static GLYPHS: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 /// Where `--capture` saves snapshot frames.
 static CAPTURE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 /// `--capture-seq DIR` with `--seq FROM,COUNT`: where to save a sequence,
@@ -3138,6 +3192,27 @@ fn run(
             }
         }
     }
+    let mut cat = match CATALOGUE.get() {
+        Some((cdir, every, label)) => {
+            let mut st = model2::catalogue::Settings::new(cdir.clone(), roms.game.id);
+            st.every = *every;
+            st.label = label.clone();
+            st.block = true;
+            st.windows = (roms.game.hud_windows.to_vec(), roms.game.hud_element_windows.to_vec());
+            match model2::catalogue::Catalogue::start(st, &mut m.bus) {
+                Ok(c) => {
+                    println!("catalogue     observing into {} (session {})", cdir.display(), c.session);
+                    Some(c)
+                }
+                Err(e) => {
+                    eprintln!("error: --catalogue: {}: {e}", cdir.display());
+                    return;
+                }
+            }
+        }
+        None => None,
+    };
+    let mut glyph_watch = GLYPHS.get().map(|_| glyphs::Watch::default());
     let (mut pcm, mut link, mut audio_secs) = (Vec::new(), Vec::new(), 0.0);
     let started = std::time::Instant::now();
     let mut stop = None;
@@ -3175,6 +3250,12 @@ fn run(
             frame_start = now;
             if LIGHT.get().is_some() {
                 light.frame(&mut m);
+            }
+            if let Some(c) = &mut cat {
+                c.tick(&mut m.bus);
+            }
+            if let Some(g) = &mut glyph_watch {
+                g.frame(m.frames, m.bus.tile_ram(), m.bus.palette_ram());
             }
             if let Some((path, frame)) = SAVE_STATE.get().filter(|s| s.1 == m.frames) {
                 let data = model2::save_session(&mut m, live.as_ref());
@@ -3222,6 +3303,28 @@ fn run(
         println!("pack log      {}", p.summary());
     }
     drop(pack_log);
+    if let Some(c) = cat.take() {
+        let wall = started.elapsed().as_secs_f64();
+        let s = c.finish(&mut m.bus);
+        println!(
+            "catalogue     session {}: {} samples ({} dropped), {} entries, {} texture loads; host time: game thread {:.1} ms \
+             ({:.3}% of the run), texture watch {:.1} ms, worker {:.0} ms",
+            s.session,
+            s.samples,
+            s.dropped,
+            s.entries,
+            s.loads,
+            s.tick_ms,
+            s.tick_ms / 10.0 / wall.max(1e-9),
+            s.watch_ms,
+            s.worker_ms
+        );
+    }
+    if let (Some(g), Some(d)) = (glyph_watch.take(), GLYPHS.get()) {
+        if let Err(e) = g.finish(d, roms.game.id) {
+            eprintln!("error: --glyphs: {e}");
+        }
+    }
     snapshot(&mut m, &frames_dir.join("final.png"));
     if LIGHT.get().is_some() {
         print!("{}", light.report());

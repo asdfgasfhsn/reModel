@@ -545,7 +545,27 @@ fn init(p: &Project, a: &Args) -> Result<bool, String> {
         }
         std::fs::write(p.p("project.txt"), s).map_err(|e| e.to_string())?;
     }
-    let maps = a.all("--map");
+    // A catalogue given as a map is turned into one (docs/uplift-studio.md,
+    // "Catalogue"): written into the project, from the sessions as they are.
+    let mut made: Vec<String> = Vec::new();
+    for m in a.all("--map") {
+        let (name, path) = match m.split_once('=') {
+            Some((n, d)) => (n.to_string(), d.to_string()),
+            None => {
+                (Path::new(m).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), m.to_string())
+            }
+        };
+        if crate::catalogue::is_catalogue(Path::new(&path)) {
+            let ix = crate::catalogue::Index::load(Path::new(&path))?;
+            let out = p.p("catalogue-maps").join(&name);
+            let n = crate::catalogue::export_map(&ix, &out)?;
+            println!("map           {name}: the catalogue {path}, {n} textures and tile patterns");
+            made.push(format!("{name}={}", out.display()));
+        } else {
+            made.push(m.to_string());
+        }
+    }
+    let maps: Vec<&str> = made.iter().map(String::as_str).collect();
     if maps.len() > 1 || maps.iter().any(|m| m.contains('=')) {
         // Several maps: map/ is a folder of links (or copies) by name.
         let dst = p.p("map");

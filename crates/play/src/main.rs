@@ -96,6 +96,16 @@ usage: remodel-play [options]
   --jit-warm         a game with no hot-block list yet gets
                      one from a quiet run in the background (coin and
                      start, no window or sound), for its next boot
+  --catalogue [on|off]
+                     observe the game into the catalogue as it is played
+                     (the Catalogue setting): every distinct texture, tile
+                     pattern, 2D layout and object it shows, and the
+                     texture RAM it loads, sampled every 60 frames and when
+                     the screen changes, the work done off the game's
+                     thread (docs/play.md, \"Catalogue\")
+  --catalogue-dir D  where (default out/GAME/catalogue, or the data
+                     folder's GAME/catalogue)
+  --catalogue-every N  frames between samples (default 60)
   --perf-log         print a line for each redraw that took longer to
                      emulate than its frames' share of real time, with
                      what the JITs did in it, and for each that came over
@@ -335,6 +345,9 @@ struct Options {
     jit_warm: bool,
     /// `--perf-log`: slow redraws and frame times (`perf`).
     perf_log: bool,
+    /// `--catalogue-dir`, `--catalogue-every`.
+    catalogue_dir: Option<PathBuf>,
+    catalogue_every: u64,
     seconds: Option<f64>,
     /// `--frames`: quit at this game frame.
     frames: Option<u64>,
@@ -436,6 +449,8 @@ fn options(s: &mut Settings) -> Result<Options, String> {
         jit: true,
         jit_warm: false,
         perf_log: false,
+        catalogue_dir: None,
+        catalogue_every: 60,
         seconds: None,
         frames: None,
         input: None,
@@ -512,6 +527,15 @@ fn options(s: &mut Settings) -> Result<Options, String> {
             "--no-jit" => o.jit = false,
             "--jit-warm" => o.jit_warm = true,
             "--perf-log" => o.perf_log = true,
+            "--catalogue" => {
+                let on = opt_bool(&mut args);
+                cli("catalogue", &on.to_string());
+            }
+            "--catalogue-dir" => o.catalogue_dir = Some(value()?.into()),
+            "--catalogue-every" => {
+                o.catalogue_every =
+                    value()?.parse().ok().filter(|&n| n > 0).ok_or("--catalogue-every wants a number above 0")?
+            }
             "--no-idle-skip" => model2::idle::set_default(false),
             "--smooth" => {
                 let on = opt_bool(&mut args);
@@ -711,6 +735,9 @@ struct Session {
     /// last written.
     jit_list: Option<(PathBuf, Arc<model2::jit::HotList>)>,
     jit_saved: Instant,
+    /// Observing into the catalogue (the Catalogue setting): the worker
+    /// finishes its session when this is dropped.
+    catalogue: Option<model2::catalogue::Catalogue>,
 }
 
 /// Where `set`'s JIT hot-block list is kept (docs/jit.md, "Hot-block
@@ -1346,7 +1373,29 @@ impl Play {
                 perf: None,
                 jit_list,
                 jit_saved: Instant::now(),
+                catalogue: None,
             };
+            if values.catalogue {
+                let mut st = model2::catalogue::Settings::new(
+                    self.opts.catalogue_dir.clone().unwrap_or_else(|| dir.join("catalogue")),
+                    game.id,
+                );
+                st.every = self.opts.catalogue_every;
+                st.label = "played".into();
+                st.windows = (game.hud_windows.to_vec(), game.hud_element_windows.to_vec());
+                match model2::catalogue::Catalogue::start(st.clone(), &mut s.machine.bus) {
+                    Ok(c) => {
+                        println!(
+                            "catalogue     observing into {} (session {}, a sample every {} frames)",
+                            st.dir.display(),
+                            c.session,
+                            st.every
+                        );
+                        s.catalogue = Some(c);
+                    }
+                    Err(e) => eprintln!("catalogue: {}: {e}; not observing", st.dir.display()),
+                }
+            }
             if self.opts.perf_log {
                 s.perf = Some(perf::PerfLog::new(game.id, &s.machine));
             }
@@ -1467,6 +1516,7 @@ impl Play {
             perf: None,
             jit_list: None,
             jit_saved: Instant::now(),
+            catalogue: None,
         });
         self.preview.shown = None;
         self.preview.leaving = None;
@@ -2249,6 +2299,9 @@ impl Play {
                 h.before_frame(&mut s.machine);
             }
             s.machine.run_slice(u64::MAX)?;
+            if let Some(c) = &mut s.catalogue {
+                c.tick(&mut s.machine.bus);
+            }
             if let Some(log) = &mut self.sound_log {
                 use std::io::Write;
                 for &(cycle, control, byte) in &s.machine.bus.uart_log {
@@ -3266,6 +3319,22 @@ impl Play {
             }
             if let Some(d) = &s.machine.bus.drive {
                 println!("drive board   {}", d.describe());
+            }
+            if let Some(c) = s.catalogue.take() {
+                let ran = s.machine.frames.max(1) as f64;
+                let sm = c.finish(&mut s.machine.bus);
+                println!(
+                    "catalogue     session {}: {} samples ({} dropped), {} entries, {} texture loads; game thread {:.3} ms a frame \
+                     (texture watch {:.3}), worker {:.0} ms in all",
+                    sm.session,
+                    sm.samples,
+                    sm.dropped,
+                    sm.entries,
+                    sm.loads,
+                    sm.tick_ms / ran,
+                    sm.watch_ms / ran,
+                    sm.worker_ms
+                );
             }
         }
         self.quit(el);

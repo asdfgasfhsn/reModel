@@ -86,6 +86,17 @@ pub(super) fn capture(p: &Project, a: &Args) -> Result<bool, String> {
         .map(PathBuf::from)
         .or_else(|| meta.get("capture").map(PathBuf::from))
         .ok_or("--capture-dir DIR: the capture directory the frame is in (or `init --capture-dir DIR`)")?;
+    // A catalogue as the capture directory: its saved frames' tile data,
+    // numbered 1000000 * (session + 1) + frame (`catalogue captures`).
+    let capdir = if crate::catalogue::is_catalogue(&capdir) {
+        let ix = crate::catalogue::Index::load(&capdir)?;
+        let out = capdir.join("captures");
+        let n = crate::catalogue::export_captures(&ix, &out)?;
+        println!("catalogue     {n} frames with tile data in {} (index.tsv: numbers)", out.display());
+        out
+    } else {
+        capdir
+    };
     let frame_no: u64 = a
         .get("--frame")
         .ok_or("--frame F")?
