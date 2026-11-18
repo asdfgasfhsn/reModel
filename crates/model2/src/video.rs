@@ -634,7 +634,7 @@ pub struct TileMap {
 /// scroll registers and mask words are read once per line, and pixels are
 /// produced in runs that share a map and a tile row. Same results.
 fn tile_planes_fast(tiles: &[u8], palette: &[u8]) -> (Vec<[u8; 3]>, Vec<Option<[u8; 3]>>) {
-    tile_planes_runs::<false>(tiles, palette, &mut Vec::new(), &mut |_| NO_CELL, &mut |_, _, _| NO_CELL)
+    tile_planes_runs::<false>(tiles, palette, &mut Vec::new(), &mut |_| NO_CELL, &mut |_, _, _| NO_CELL, None)
 }
 
 /// A tile pixel's word in [`TileMap::hits`]: bits 0-11 its palette index
@@ -656,6 +656,7 @@ fn tile_planes_runs<const HITS: bool>(
     hits: &mut Vec<u32>,
     cell_of: &mut dyn FnMut(usize) -> u16,
     region_cell: &mut dyn FnMut(usize, usize, usize) -> u16,
+    mut uses: Option<&mut TileUses>,
 ) -> (Vec<[u8; 3]>, Vec<Option<[u8; 3]>>) {
     /// No pixel (transparent or map disabled).
     const NONE: u16 = u16::MAX;
@@ -739,6 +740,13 @@ fn tile_planes_runs<const HITS: bool>(
                     let e = entry & 0x7fff;
                     if cells[e] == UNSET {
                         cells[e] = cell_of(e);
+                    }
+                    if let Some(u) = uses.as_deref_mut() {
+                        let n = (end - x) as f64;
+                        let r = u.entries.entry(e as u16).or_default();
+                        r.0 += n;
+                        r.1 += n * (x + end) as f64 / 2.0;
+                        r.2 += n * y as f64;
                     }
                     // A region's slice of this map cell, else the pattern's own replacement.
                     let rc = region_cell(map, mx / 8, my / 8);
@@ -868,6 +876,17 @@ pub fn layers_2d_with(planes: &Planes, tiles: &[u8], palette: &[u8], view: &View
     }
 }
 
+/// What a frame's 2D layers drew from the pack, gathered for the diagnostic
+/// (`crate::packlog`) by [`layers_2d_replaced_logged`].
+#[derive(Default)]
+pub struct TileUses {
+    /// Per map entry (tile and colour bank) on screen: game pixels and the
+    /// sums of their x and y.
+    pub entries: HashMap<u16, (f64, f64, f64)>,
+    /// Per region of the set, its matches this frame.
+    pub region_matches: Vec<u32>,
+}
+
 /// Region set plus the resolver from a slice to the compositor cell.
 pub type RegionLookup<'a> = (&'a RegionSet, &'a mut dyn FnMut(&Slice) -> Option<u16>);
 
@@ -884,6 +903,19 @@ pub fn layers_2d_replaced(
     cell: &mut dyn FnMut(&TileInfo) -> Option<u16>,
     regions: Option<RegionLookup<'_>>,
 ) -> Layers2d {
+    layers_2d_replaced_logged(tiles, palette, view, has_3d, cell, regions, None)
+}
+
+/// [`layers_2d_replaced`] noting in `uses` what it drew.
+pub fn layers_2d_replaced_logged(
+    tiles: &[u8],
+    palette: &[u8],
+    view: &View,
+    has_3d: bool,
+    cell: &mut dyn FnMut(&TileInfo) -> Option<u16>,
+    regions: Option<RegionLookup<'_>>,
+    mut uses: Option<&mut TileUses>,
+) -> Layers2d {
     let mut hits = Vec::new();
     let mut replaced = 0;
     let mut region_replaced = 0;
@@ -893,6 +925,9 @@ pub fn layers_2d_replaced(
     let mut slice_cell = None;
     if let Some((set, f)) = regions {
         let g = match_regions(tiles, palette, set);
+        if let Some(u) = uses.as_deref_mut() {
+            u.region_matches = g.matches.clone();
+        }
         if g.any {
             grid = Some((g, set));
             slice_cell = Some(f);
@@ -921,6 +956,7 @@ pub fn layers_2d_replaced(
                 _ => NO_CELL,
             })
         },
+        uses,
     );
     replaced += region_replaced;
     let shift = hud_shifts(&hud, view, has_3d);
@@ -1528,6 +1564,7 @@ mod tests {
                     (e % 0x800) as u16
                 },
                 &mut |_, _, _| NO_CELL,
+                None,
             );
             assert!(base0 == base1 && hud0 == hud1, "seed {seed}");
             assert!(asked.values().all(|&n| n == 1));

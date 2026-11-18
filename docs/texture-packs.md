@@ -548,7 +548,8 @@ them (a 1024x1024 PNG takes 10-50 ms) and the page hands over at most one
 image a frame. Without an `index.txt` the original textures stay, with a
 console warning.
 
-**GPU memory.** Images are uploaded when first drawn and kept; over a budget
+**GPU memory.** Images are uploaded ahead of their first draw when there is
+room (`preload`, "Flicker") or when first drawn, and kept; over a budget
 (512 MB natively, 192 MB in the browser) the least recently drawn are
 dropped and loaded again when next needed. With mipmaps on, an image costs
 about a third more. Material maps, when loaded, share that budget and that
@@ -574,6 +575,97 @@ pixel instead of reading two textures. Whole GPU frames with and without
 tiles were within the run-to-run noise there; the browser drew
 `overrevb`'s attract mode with 4x tiles at 60 fps, 6-7 ms of draw a frame
 (1413x1060).
+
+## Flicker: when replacements come and go
+
+A replacement shows only while its key is in the pack and its image is on
+the GPU, so anything that changes a key or delays an image makes the
+original show for a frame or many: a flash, or a texture that jitters
+between two looks. `make pack-log PACK=DIR` finds out which, per frame.
+
+**The diagnostic.** `remodel run ... --texture-pack DIR --pack-log FILE`
+(`make pack-log`) draws every frame of the run on the GPU with the pack as
+the player does (its decoding threads, uploads and eviction), at the
+arcade's pace (`--pack-pace off` for flat out), and the player has the same
+`--pack-log FILE`. The log has a block per frame drawn and a line for each
+texture (by key, with its surface, polygons, pixels and where on screen),
+tile pattern (by tile and colour bank) and region looked up: `hit`, `up` (a
+hit whose image was uploaded that frame), `held` (stood in for, below) or
+`miss:REASON`: `not-in-pack` (key not in the pack and nothing like it),
+`colour` (the same texels, another colour: a fade or colour-table change),
+`texels` (another texture in a sheet rectangle that had a replacement a
+moment ago: a transient upload), `sibling` (another key of its surface has
+an image), `pending` (decoding), `evicted` (given up over the budget),
+`full` (tile atlas), `unmatched` (a region that matched a moment ago).
+Nothing is gathered without the flag. `remodel pack-flicker LOG` (`--top N`)
+reads it: totals, misses by reason, and the subjects that change between
+replacement and original over the run, ranked by the pixels either side of
+the changes, with frames, positions and reasons.
+
+**What it found** (Top Skater, the cel showcase pack, `coin-start` to frame
+9664, 3D by surface; tiles by pattern and bank). Before, 9564 changes
+between replacement and original (20.9 M px involved), of which:
+
+- Colour (the largest by pixels): a texture drawn in another colour has
+  another key (the colour is part of it), so the original showed whenever
+  the game changed a polygon's colour: one 128x128 surface alternated every
+  frame (282 changes), 450 M px of 3D and 3.7 M px of tiles missed that way
+  in the run, and 265 M px more were another key of a surface the pack did
+  replace (`sibling`).
+- First appearance: the original shows until the image is decoded and
+  uploaded (`pending`): 18 M px of 3D and 0.6 M of tiles, at the first
+  frames of the attract, coin-up and the character select (frames 1012,
+  1254, 2893).
+- Tile atlas: the pack has 5970 tile images and the atlas 4096 cells; a
+  tile given up for room had to be decoded again (`evicted`, `pending`).
+- Not the cause here: regions matched steadily (each region's changes are
+  scene starts and ends, 30 in all, none while on screen); transient keys
+  (`texels`) did not occur in these runs; memory (197 MB held of 512).
+
+**Fixes** (render side; the game's state is untouched, `state hash`
+identical; all on by default, `--pack-fixes none|all|NAMES` with `surface`,
+`hold`, `preload` to compare):
+
+- `surface`: a key not in the pack whose surface (the same texels in
+  another colour or luma table) has an image under another key draws that
+  image, as is: the author's art in the original's other colour, not a
+  flash of the original. The renderer learns which key stands for a surface
+  as they are drawn. Not tinted: a tint would need the game's colour tables
+  (they map texel to colour per colour column), so a faded or tinted
+  surface shows the image at its own colours, lit as any replacement is. A
+  pack that deliberately leaves one colour of a texture original cannot
+  have that with this on: turn it off (`--pack-fixes hold,preload`).
+  Also, for up to 8 frames, a sheet rectangle that just drew a replacement
+  and now shows other texels (a texture being copied in across frames)
+  keeps its image.
+- `hold`: an image being decoded or given up (`pending`, `evicted`) is
+  stood in for by the same surface's or rectangle's image, if any; a tile
+  pattern whose colours changed, or that is not loaded, keeps the last image
+  drawn for it (the cell is checked to still hold it). The pack reader also
+  keeps decoded tile images (4 KB each), so a tile asked for again after the
+  atlas gave it up is there at once.
+- `preload`: the pack's images are decoded on its threads from the start and
+  uploaded ahead of their first draw: up to 2 textures (1 M texels) a frame
+  while under 75% of the budget, and tiles 64 a frame into free atlas cells
+  (256 kept free; preloaded images are the first to be given up). Everything
+  of this pack is on the GPU a few seconds in.
+
+**After**, the same runs: 1091 changes (263 k px), 3D 2898 -> 4 changes,
+20.1 M -> 0.12 M px; tiles 6636 -> 1057, 0.79 M -> 0.14 M px; `colour`,
+`sibling` and `evicted` misses gone, `pending` down from 18.2 M px (3D) and
+0.59 M (tiles) to none and 0.09 M. What is left are single-frame changes where a
+key appears that is in nothing the renderer has seen (`not-in-pack`: the
+first frame of a new texture before its sheet rectangle ever drew a
+replacement; a tile at a scene start), which needs a pack-side image for
+that key. The character-select run (3727 frames): 6403 -> 5935 changes of
+which 5896 tiles, 20.4 M -> 0.83 M px; the player on a real window (1500
+frames, 120 Hz) agreed: 4567 -> 884 changes, 53 M -> 0.6 M px.
+
+Other cases: a key shared by unrelated content (the same texels, e.g. a
+flat colour or a sole and a banner) is replaced the same everywhere; the log
+cannot tell, the pack author can (`make texmap`'s groups). Textures that
+change colour *without* changing key (`looks=`, above) don't flicker, they
+show the look drawn most.
 
 ## Mipmaps and anisotropic filtering
 
@@ -1200,11 +1292,13 @@ fits the restyling workflow.
 ## Limitations
 
 - Tile keys include colours: tiles drawn during a fade or palette cycle
-  show the original (one image per colour would be needed). The sides a
+  keep the image of the same pattern (not tinted; `hold`, "Flicker"), and
+  one never replaced in any colour shows the original. The sides a
   wide view adds (scrolled tile skies) keep the original patterns.
 - Dumps happen at snapshots, so short-lived textures can be missed.
-- Live, an image's first appearance can hitch (decode, upload, mip chain);
-  the original shows until it is ready. A frame that replaces many textures
+- Live, an image's decode, upload and mip chain are spread over the first
+  seconds (`preload`, "Flicker"); one drawn before then shows the original
+  (or a stand-in) until it is ready, and can hitch a frame. A frame that replaces many textures
   makes hundreds of draws.
 - Anisotropic filtering is GPU-only (snapshots draw it as `mip`), and
   mipmaps average display values, not linear light.

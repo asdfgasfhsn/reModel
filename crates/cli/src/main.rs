@@ -8,6 +8,7 @@ mod look_render;
 mod music;
 mod pack_check;
 mod pack_lint;
+mod pack_log_run;
 mod recomp_crates;
 mod run_ahead;
 mod sharc;
@@ -107,6 +108,20 @@ options:
   --texture-pack DIR   draw snapshots and gpu-check with the replacement PNGs
                        in DIR (same names as a dump; any size); see
                        docs/texture-packs.md
+  --pack-log FILE      `run` with --texture-pack: also draw every frame on the
+                       GPU as the player does (its background decoding,
+                       uploads and eviction), at the arcade's pace, and write
+                       the texture pack diagnostic to FILE: per frame, each
+                       texture, tile pattern and region looked up and whether
+                       its replacement or the original was drawn, and why;
+                       `pack-flicker` reports on it (docs/texture-packs.md,
+                       \"Flicker\")
+  --pack-fixes LIST    the render-side stabilisations of a pack's replacements
+                       in --pack-log runs (the player's `--pack-fixes`): all
+                       (default), none, or names separated by commas: surface,
+                       hold, regions, preload
+  --pack-pace on|off   --pack-log runs wait for the arcade's frame time
+                       (default on; off draws as fast as the machine runs)
   --tex-filter off|mip|2|4|8|16
                        filtering of texture pack images in snapshots and
                        gpu-check: off (default; bilinear), mipmaps
@@ -310,6 +325,10 @@ commands:
                        --bench [N]: time the GPU instead (plain, MSAA 4x,
                        taa, 67, 50) on the first N frames with 3D (default
                        30), and the temporal targets' memory
+  pack-flicker LOG..   report on --pack-log files: what alternates between
+                       its replacement and the original over the run, ranked
+                       by the pixels involved, with frames, positions and
+                       reasons (--top N rows, default 30)
   pack-check [DIR] [OUT]
                        with --texture-pack: draw the frames captured in DIR
                        (default out/GAME/capture) on the GPU with the pack
@@ -643,6 +662,26 @@ fn parse_opts() -> Result<Opts, ExitCode> {
         return Err(ExitCode::FAILURE);
     };
     let pack_dir = texture_pack.clone().map(PathBuf::from);
+    let (Ok(pack_log), Ok(pack_fixes), Ok(pack_pace)) = (opt("--pack-log"), opt("--pack-fixes"), opt("--pack-pace"))
+    else {
+        eprint!("{USAGE}");
+        return Err(ExitCode::FAILURE);
+    };
+    if let Some(l) = pack_log {
+        let Some(dir) = pack_dir.clone() else {
+            eprintln!("error: --pack-log needs --texture-pack");
+            return Err(ExitCode::FAILURE);
+        };
+        let fixes = match pack_fixes.as_deref().map(model2::packlog::Fixes::parse).transpose() {
+            Ok(f) => f.unwrap_or_default(),
+            Err(e) => {
+                eprintln!("error: --pack-fixes: {e}");
+                return Err(ExitCode::FAILURE);
+            }
+        };
+        let pace = pack_pace.as_deref() != Some("off");
+        let _ = PACK_LOG.set((PathBuf::from(l), dir, fixes, pace));
+    }
     let Ok(tex_filter_opt) = opt("--tex-filter") else {
         eprint!("{USAGE}");
         return Err(ExitCode::FAILURE);
@@ -946,6 +985,7 @@ fn dispatch_no_roms(o: &Opts) -> Option<ExitCode> {
         "texpack-upscale" => cmd_texpack_upscale(o),
         "texpack-materials" => cmd_texpack_materials(o),
         "pack-lint" => cmd_pack_lint(o),
+        "pack-flicker" => cmd_pack_flicker(o),
         "studio" => cmd_studio(o),
         "sharc-disasm" | "sharc-check" => cmd_sharc(o),
         "temporal-check" => cmd_temporal_check(o),
@@ -1080,6 +1120,33 @@ fn cmd_pack_lint(o: &Opts) -> ExitCode {
     match pack_lint::main(&args[1..]) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_pack_flicker(o: &Opts) -> ExitCode {
+    let mut top = 30;
+    let mut files = Vec::new();
+    let mut it = o.args[1..].iter();
+    while let Some(a) = it.next() {
+        if a == "--top" {
+            top = it.next().and_then(|v| v.parse().ok()).unwrap_or(top);
+        } else {
+            files.push(Path::new(a));
+        }
+    }
+    if files.is_empty() {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    }
+    match model2::packlog::report(&files, top) {
+        Ok(r) => {
+            print!("{r}");
+            ExitCode::SUCCESS
+        }
         Err(e) => {
             eprintln!("error: {e}");
             ExitCode::FAILURE
@@ -2752,6 +2819,9 @@ static SAVE_STATE: std::sync::OnceLock<(PathBuf, u64)> = std::sync::OnceLock::ne
 static LOAD_STATE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 /// Where `--audio` records the live sound.
 static AUDIO: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+/// `--pack-log FILE` with `--texture-pack DIR`: the log, the pack, which
+/// fixes are on and whether to keep the arcade's pace.
+static PACK_LOG: std::sync::OnceLock<(PathBuf, PathBuf, model2::packlog::Fixes, bool)> = std::sync::OnceLock::new();
 /// Where `--capture` saves snapshot frames.
 static CAPTURE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 /// `--capture-seq DIR` with `--seq FROM,COUNT`: where to save a sequence,
@@ -3074,6 +3144,16 @@ fn run(
     let mut last_frame = 0;
     let mut seq = None;
     let mut light = light_report::Acc::default();
+    let mut pack_log = PACK_LOG.get().and_then(|(log, pack, fixes, pace)| {
+        let view = VIEW.get().copied().unwrap_or_else(model2::video::View::native);
+        match pack_log_run::Run::new(pack, log, *fixes, view, *pace, tex_filter()) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                eprintln!("error: --pack-log: {e}");
+                None
+            }
+        }
+    });
     // Host time of each emulated frame (`frame times`, a hitch shows as
     // one long frame).
     let (mut frame_times, mut frame_start) = (Vec::new(), std::time::Instant::now());
@@ -3106,6 +3186,9 @@ fn run(
                 }
             }
             script.apply(m.frames, &mut m.bus);
+            if let Some(p) = pack_log.as_mut() {
+                p.frame(&mut m);
+            }
             if geo_frame == Some(m.frames) {
                 m.bus.geo_trace = Some(Vec::new());
             } else if let Some(t) = m.bus.geo_trace.take() {
@@ -3135,6 +3218,10 @@ fn run(
         }
         last_frame = m.frames;
     }
+    if let Some(p) = pack_log.as_mut() {
+        println!("pack log      {}", p.summary());
+    }
+    drop(pack_log);
     snapshot(&mut m, &frames_dir.join("final.png"));
     if LIGHT.get().is_some() {
         print!("{}", light.report());

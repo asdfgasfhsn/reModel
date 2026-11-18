@@ -29,7 +29,7 @@ pub use board::BoardFrame;
 use board::BoardRef;
 pub use look::{depth_reference, flat_id, texture_id};
 pub use model2::enhance::TexFilter;
-use model2::enhance::{Found, Rgba, TexturePack};
+use model2::enhance::{Found, PreloadKind, Rgba, TexturePack};
 pub use model2::light::{Shading, CREASE_AUTO};
 pub use model2::raster::Relief;
 use model2::raster::{tex_info, Placed, Poly, Sources, TexKeys};
@@ -287,6 +287,12 @@ pub struct PackStats {
     /// Textured polygons looked up in the pack, and of them replaced.
     pub textured: u32,
     pub replaced: u32,
+    /// Of the replaced, those drawn with another key's image (a stand-in,
+    /// `model2::packlog::Fixes`).
+    pub stood_in: u32,
+    /// Images uploaded this frame ahead of their first draw
+    /// (`Fixes::preload`; not in `uploaded`).
+    pub preloaded: u32,
     /// Distinct pack images drawn.
     pub images: u32,
     /// Draw calls of polygons (runs), with or without a pack.
@@ -324,6 +330,32 @@ pub struct PackStats {
 const PACK_BUDGET: u64 = model2::pack::BUDGET_NATIVE;
 #[cfg(target_arch = "wasm32")]
 const PACK_BUDGET: u64 = model2::pack::BUDGET_WASM;
+
+/// What the renderer remembers of the pack's textures between frames, for
+/// `Fixes` and the diagnostic.
+#[derive(Default)]
+struct PackMemory {
+    /// By sheet rectangle (bank, x, y, w, h): what it drew last.
+    rects: HashMap<[u32; 5], RectLast>,
+    /// A key whose image the pack has, by surface (learned as they are
+    /// drawn): stands in for the surface's other keys.
+    surface_image: HashMap<u64, u64>,
+    /// Keys dropped over the budget (a later miss is "evicted").
+    evicted: std::collections::HashSet<u64>,
+    /// Images uploaded without a draw (`Fixes::preload`).
+    preloaded: u32,
+}
+
+/// What a sheet rectangle last drew.
+#[derive(Clone, Copy)]
+struct RectLast {
+    key: u64,
+    surface: u64,
+    /// The key of the last image drawn for its own key there, and the
+    /// frame.
+    image: Option<u64>,
+    hit_frame: u64,
+}
 
 /// No pack image: a polygon drawn from its own texels.
 const NO_SLOT: u32 = u32::MAX;
@@ -586,6 +618,12 @@ pub struct Renderer {
     pack_budget: u64,
     /// The pack's tile replacements (tiles.rs).
     tiles: tiles::Tiles,
+    /// The stabilisations of replacements in effect (`set_pack_fixes`) and
+    /// what they remember between frames.
+    fixes: model2::packlog::Fixes,
+    stable: PackMemory,
+    /// The pack diagnostic being written (`set_pack_log`).
+    log: Option<model2::packlog::PackLog>,
     /// Photo mode's passes (photo.rs), made when first used.
     photo: Option<Box<photo::Photo>>,
     /// While a photo is drawn: leave out the HUD (tile HUD and HUD
@@ -957,6 +995,9 @@ impl Renderer {
             pack_warned: false,
             materials: Default::default(),
             pack_budget: PACK_BUDGET,
+            fixes: Default::default(),
+            stable: PackMemory::default(),
+            log: None,
             tiles,
             photo: None,
             photo_hide: (false, false),
@@ -1082,6 +1123,9 @@ impl Renderer {
             self.samplers = None;
             let mip = tex_filter.mipmapped();
             self.pack_tex.retain(|_, t| t.as_ref().is_none_or(|t| t.mipmapped == mip));
+            if let Some(p) = self.pack.as_mut() {
+                p.preload_restart(PreloadKind::Texture);
+            }
             for t in self.pack_tex.values_mut().flatten() {
                 t.groups = Default::default();
             }
@@ -1208,7 +1252,37 @@ impl Renderer {
         self.materials.clear();
         self.keys.clear();
         self.tiles.reset();
+        self.stable = PackMemory::default();
         self.pack_stats = PackStats::default();
+    }
+
+    /// Which stabilisations of the pack's replacements are on (default all;
+    /// `model2::packlog::Fixes`), to compare a run with and without.
+    pub fn set_pack_fixes(&mut self, fixes: model2::packlog::Fixes) {
+        self.fixes = fixes;
+        if !fixes.surface && !fixes.hold {
+            self.stable.rects.clear();
+        }
+        self.tiles.set_fixes(fixes);
+    }
+
+    /// Write the pack diagnostic (`model2::packlog`): for each frame drawn,
+    /// what the pack's lookups gave.
+    pub fn set_pack_log(&mut self, log: Option<model2::packlog::PackLog>) {
+        self.log = log;
+    }
+
+    /// The game frame the next draws are for (the diagnostic's block).
+    pub fn set_log_frame(&mut self, frame: u64) {
+        if let Some(l) = self.log.as_mut() {
+            l.set_frame(frame);
+            l.begin();
+        }
+    }
+
+    /// Images uploaded ahead of their first draw so far (`Fixes::preload`).
+    pub fn preloaded(&self) -> u32 {
+        self.stable.preloaded
     }
 
     /// The tile planes of `tiles` and `palette`, worked out again only if
@@ -1278,9 +1352,16 @@ impl Renderer {
     /// exactly `layers_2d`.
     pub fn layers_2d(&mut self, tiles: &[u8], palette: &[u8], view: &View, has_3d: bool) -> Layers2d {
         let mut layers = match self.pack.as_mut() {
-            Some(pack) if pack.has_tiles() => {
-                self.tiles.layers(&self.device, &self.queue, pack.as_mut(), tiles, palette, view, has_3d)
-            }
+            Some(pack) if pack.has_tiles() => self.tiles.layers(
+                &self.device,
+                &self.queue,
+                pack.as_mut(),
+                tiles,
+                palette,
+                view,
+                has_3d,
+                self.log.as_mut(),
+            ),
             _ => model2::video::layers_2d(tiles, palette, view, has_3d),
         };
         // A photo without the HUD or the background: transparent, or the
@@ -1738,12 +1819,37 @@ impl Renderer {
         let frame = self.frame;
         let max = self.device.limits().max_texture_dimension_2d as usize;
         let mut stats = PackStats::default();
+        // Images the game has not drawn yet, decoded on the pack's threads:
+        // a couple a frame (the upload and mip chain are the cost), while
+        // there is room.
+        if self.fixes.preload {
+            let mut used: u64 = self.pack_tex.values().flatten().map(|t| t.bytes).sum::<u64>() + self.materials.bytes();
+            let mut texels = 0usize;
+            if used < self.pack_budget / 4 * 3 {
+                for (key, img) in pack.preload(PreloadKind::Texture, 2) {
+                    let usable = img.width > 0 && img.height > 0 && img.width <= max && img.height <= max;
+                    if !usable || self.pack_tex.contains_key(&key) {
+                        continue;
+                    }
+                    texels += img.width * img.height;
+                    let tex = upload_pack(&self.device, &self.queue, &img, mip);
+                    used += tex.bytes;
+                    self.pack_tex.insert(key, Some(tex));
+                    self.stable.preloaded += 1;
+                    stats.preloaded += 1;
+                    if texels > 1 << 20 || used >= self.pack_budget / 4 * 3 {
+                        break;
+                    }
+                }
+            }
+        }
         // Material maps: only asked for when on and the pack has some.
         let materials = self.quality.materials && pack.has_materials() && !self.no_materials;
         self.materials.begin();
         // Per polygon: its image's key, its material's id, its address
         // modes (filtered images only).
         let mut picks: Vec<Option<SlotKey>> = vec![None; n];
+        let mut log_recs: HashMap<u64, model2::packlog::TexRec> = HashMap::new();
         for (i, pl) in placed.iter().enumerate() {
             let p = &polys[pl.poly];
             let Some(t) = &p.texture else { continue };
@@ -1758,11 +1864,26 @@ impl Renderer {
                 None
             };
             stats.material_polys += material.is_some() as u32;
-            let entry = match self.pack_tex.entry(info.key) {
-                std::collections::hash_map::Entry::Occupied(e) => e.into_mut().as_mut(),
+            let rect = [t.bank, t.x0, t.y0, t.w, t.h];
+            let fixes = self.fixes;
+            let remember = fixes.surface || fixes.hold || self.log.is_some();
+            // The pack's image for this key, if it has one (and why not).
+            let mut miss = None;
+            let mut uploaded_now = false;
+            match self.pack_tex.entry(info.key) {
+                std::collections::hash_map::Entry::Occupied(e) => {
+                    if e.get().is_none() {
+                        miss = Some("not-in-pack");
+                    }
+                }
                 std::collections::hash_map::Entry::Vacant(e) => match pack.find(&info) {
-                    Found::Pending => None,
-                    Found::Missing => e.insert(None).as_mut(),
+                    Found::Pending => {
+                        miss = Some(if self.stable.evicted.contains(&info.key) { "evicted" } else { "pending" })
+                    }
+                    Found::Missing => {
+                        e.insert(None);
+                        miss = Some("not-in-pack");
+                    }
                     Found::Image(img) => {
                         let tex = if img.width == 0 || img.height == 0 || img.width > max || img.height > max {
                             if !self.pack_warned {
@@ -1774,19 +1895,123 @@ impl Renderer {
                                     img.height
                                 );
                             }
+                            miss = Some("oversize");
                             None
                         } else {
                             stats.uploaded += 1;
+                            uploaded_now = true;
+                            self.stable.evicted.remove(&info.key);
                             Some(upload_pack(&self.device, &self.queue, &img, mip))
                         };
-                        e.insert(tex).as_mut()
+                        e.insert(tex);
                     }
                 },
-            };
-            let image = entry.map(|pt| {
+            }
+            let resident = |m: &HashMap<u64, Option<PackTex>>, k: u64| m.get(&k).is_some_and(Option::is_some);
+            let prev = if remember { self.stable.rects.get(&rect).copied() } else { None };
+            // A stand-in for a key without an image to draw: another key of
+            // the same surface that has one, or the image the sheet
+            // rectangle drew a moment ago (its texels or colour changed
+            // under it).
+            let mut draw_key = miss.is_none().then_some(info.key);
+            let mut stand_in = false;
+            if let Some(why) = miss {
+                let allowed = match why {
+                    "pending" | "evicted" => fixes.hold,
+                    _ => fixes.surface,
+                };
+                if allowed {
+                    let by_surface =
+                        self.stable.surface_image.get(&info.surface).copied().filter(|&k| resident(&self.pack_tex, k));
+                    let by_rect = prev
+                        .filter(|l| frame - l.hit_frame <= model2::packlog::HOLD_FRAMES)
+                        .and_then(|l| l.image)
+                        .filter(|&k| resident(&self.pack_tex, k));
+                    draw_key = by_surface.or(by_rect);
+                    stand_in = draw_key.is_some();
+                }
+            }
+            if remember {
+                let own = miss.is_none();
+                if own {
+                    let kept = self.stable.surface_image.get(&info.surface).copied();
+                    if !kept.is_some_and(|k| resident(&self.pack_tex, k)) {
+                        self.stable.surface_image.insert(info.surface, info.key);
+                    }
+                }
+                self.stable.rects.insert(
+                    rect,
+                    RectLast {
+                        key: info.key,
+                        surface: info.surface,
+                        image: if own { Some(info.key) } else { prev.and_then(|l| l.image) },
+                        hit_frame: if own { frame } else { prev.map_or(0, |l| l.hit_frame) },
+                    },
+                );
+            }
+            if let Some(log) = self.log.as_mut() {
+                let _ = log;
+                let outcome = match (miss, stand_in) {
+                    (None, _) if uploaded_now => "up".to_string(),
+                    (None, _) => "hit".to_string(),
+                    (Some(_), true) => "held".to_string(),
+                    (Some(why), false) => {
+                        // Why the key has no image: a key that changed under
+                        // a rectangle that was replaced a moment ago (a
+                        // colour change keeps the texels' surface, a
+                        // transient upload does not), or one of a surface
+                        // the pack has under another key.
+                        let reason = match why {
+                            "pending" | "evicted" | "oversize" => why,
+                            _ => match prev {
+                                Some(l)
+                                    if l.key != info.key
+                                        && l.image.is_some()
+                                        && frame - l.hit_frame <= 4 * model2::packlog::HOLD_FRAMES =>
+                                {
+                                    if l.surface == info.surface {
+                                        "colour"
+                                    } else {
+                                        "texels"
+                                    }
+                                }
+                                _ if self.stable.surface_image.contains_key(&info.surface) => "sibling",
+                                _ => why,
+                            },
+                        };
+                        format!("miss:{reason}")
+                    }
+                };
+                let (mut a, mut cx, mut cy) = (0.0f64, 0.0f64, 0.0f64);
+                let pts = &pl.points;
+                for k in 0..pts.len() {
+                    let (p, q) = (&pts[k], &pts[(k + 1) % pts.len()]);
+                    a += (p.x as f64) * (q.y as f64) - (q.x as f64) * (p.y as f64);
+                    cx += p.x as f64;
+                    cy += p.y as f64;
+                }
+                let n = pts.len().max(1) as f64;
+                let area = (a / 2.0).abs();
+                let r = log_recs.entry(info.key).or_insert_with(|| model2::packlog::TexRec {
+                    key: info.key,
+                    surface: info.surface,
+                    width: info.width,
+                    height: info.height,
+                    outcome: outcome.clone(),
+                    rect: [t.bank, t.x0, t.y0],
+                    ..Default::default()
+                });
+                r.polys += 1;
+                r.pixels += area;
+                r.sx += cx / n * area;
+                r.sy += cy / n * area;
+            }
+            let image = draw_key.and_then(|k| {
+                let pt = self.pack_tex.get_mut(&k)?.as_mut()?;
                 pt.used = frame;
                 stats.replaced += 1;
-                info.key
+                stats.stood_in += stand_in as u32;
+                Some(k)
             });
             if image.is_some() || material.is_some() {
                 let addr = if mip { t.mirror_x as usize | (t.mirror_y as usize) << 1 } else { 0 };
@@ -1811,6 +2036,7 @@ impl Renderer {
                     mat_bytes -= size;
                 } else {
                     self.pack_tex.remove(&key);
+                    self.stable.evicted.insert(key);
                     self.materials.forget_image(key);
                     bytes -= size;
                 }
@@ -1869,6 +2095,13 @@ impl Renderer {
                 out.mat_slot.push(material.is_some());
                 out.groups.len() as u32 - 1
             });
+        }
+        if let Some(log) = self.log.as_mut() {
+            let mut recs: Vec<_> = log_recs.into_values().collect();
+            recs.sort_by_key(|r| r.key);
+            for r in &recs {
+                log.tex(r);
+            }
         }
         stats.images = images.len() as u32;
         stats.held = self.pack_tex.values().flatten().count() as u32;
@@ -2872,6 +3105,7 @@ impl Renderer {
         format: wgpu::TextureFormat,
         origin: (u32, u32),
     ) {
+        self.set_log_frame(b.frame);
         // The side channel of the geometrizer's own frame, unless one was
         // passed in (`set_light_frame`); other geometry has none.
         if geo.is_none() && self.light_side.is_none() {

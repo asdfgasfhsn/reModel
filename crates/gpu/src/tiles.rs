@@ -16,11 +16,12 @@
 //! per map cell instead of per pattern (`video::layers_2d_replaced`), so
 //! the shader is unchanged.
 
-use model2::enhance::{Address, Found, Rgba, TexturePack, TileInfo};
+use model2::enhance::{Address, Found, PreloadKind, Rgba, TexturePack, TileInfo};
+use model2::packlog::{Fixes, PackLog, TileRec, HOLD_FRAMES};
 use model2::regions::Slice;
-use model2::video::{self, Layers2d, TileMap, View, HEIGHT, NO_CELL, WIDTH};
+use model2::video::{self, Layers2d, TileMap, TileUses, View, HEIGHT, NO_CELL, WIDTH};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use wgpu::util::DeviceExt;
 
 /// Cells along each side of the atlas, at most (fewer for large cells).
@@ -29,6 +30,8 @@ const CELLS_PER_ROW: u32 = 64;
 const MAX_ATLAS: u32 = 4096;
 /// Largest cell: larger images are scaled down to it.
 const MAX_CELL: u32 = 256;
+/// Free cells preloading leaves in the atlas.
+const PRELOAD_MARGIN: usize = 256;
 
 /// Replacement images in one texture, a cell each, by tile key; the least
 /// recently drawn give way when it is full.
@@ -139,6 +142,23 @@ pub(crate) struct Tiles {
     /// The hits and HUD source textures, kept while their size holds.
     hits: Option<wgpu::Texture>,
     hud_src: Option<wgpu::Texture>,
+    fixes: Fixes,
+    /// By pattern and colour bank (tile << 16 | bank): the last replacement
+    /// drawn for it, for stand-ins and the diagnostic.
+    last: HashMap<u32, TileLast>,
+    /// Keys given up for room (a later miss is "evicted").
+    evicted: HashSet<u64>,
+    /// Frame each region was last matched in.
+    region_seen: HashMap<usize, u64>,
+}
+
+#[derive(Clone, Copy)]
+struct TileLast {
+    key: u64,
+    /// Hash of the pens: the same art in other colours has the same.
+    pens: u64,
+    cell: u16,
+    frame: u64,
 }
 
 fn uint_texture(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -166,13 +186,32 @@ impl Tiles {
                 super::uniform(4, wgpu::ShaderStages::FRAGMENT),
             ],
         });
-        Tiles { atlas: None, by_key: HashMap::new(), frame: 0, layout, pipeline: None, hits: None, hud_src: None }
+        Tiles {
+            atlas: None,
+            by_key: HashMap::new(),
+            frame: 0,
+            layout,
+            pipeline: None,
+            hits: None,
+            hud_src: None,
+            fixes: Fixes::default(),
+            last: HashMap::new(),
+            evicted: HashSet::new(),
+            region_seen: HashMap::new(),
+        }
+    }
+
+    pub fn set_fixes(&mut self, fixes: Fixes) {
+        self.fixes = fixes;
     }
 
     /// Forget every image (another pack).
     pub fn reset(&mut self) {
         self.atlas = None;
         self.by_key.clear();
+        self.last.clear();
+        self.evicted.clear();
+        self.region_seen.clear();
     }
 
     /// Replacement images held, and the atlas's size in bytes.
@@ -194,6 +233,7 @@ impl Tiles {
         palette: &[u8],
         view: &View,
         has_3d: bool,
+        mut log: Option<&mut PackLog>,
     ) -> Layers2d {
         self.frame += 1;
         let frame = self.frame;
@@ -201,61 +241,181 @@ impl Tiles {
         // The atlas's cells are as large as the largest image it will hold,
         // regions' included (smaller images are scaled up to a cell).
         let want = set.as_ref().map_or(0, |s| s.max_cell());
-        let state = RefCell::new((&mut self.atlas, &mut self.by_key));
+        let fixes = self.fixes;
+        let remember = fixes.hold || log.is_some();
+        let state = RefCell::new((&mut self.atlas, &mut self.by_key, &mut self.evicted));
         // Put `img` in the atlas under `key` (None: unusable or no room this frame).
         let put = |key: u64, img: &Rgba| -> Option<u16> {
             let mut st = state.borrow_mut();
-            let (atlas, by_key) = &mut *st;
+            let (atlas, by_key, evicted) = &mut *st;
             let side = (img.width.max(want) as u32).clamp(8, MAX_CELL);
             let a = atlas.get_or_insert_with(|| Atlas::new(device, side));
             // Full of this frame's tiles: the original this time.
             let (c, old) = a.take(frame)?;
             if let Some(old) = old {
                 by_key.remove(&old);
+                evicted.insert(old);
             }
             a.upload(queue, c, img);
             a.owner[c as usize] = Some(key);
             a.used[c as usize] = frame;
             by_key.insert(key, Some(c));
+            evicted.remove(&key);
             Some(c)
         };
         // A cached cell for `key`, touched for this frame (Some(None): known to have none).
         let cached = |key: u64| -> Option<Option<u16>> {
             let mut st = state.borrow_mut();
-            let (atlas, by_key) = &mut *st;
+            let (atlas, by_key, _) = &mut *st;
             let c = *by_key.get(&key)?;
             if let (Some(c), Some(a)) = (c, atlas.as_mut()) {
                 a.used[c as usize] = frame;
             }
             Some(c)
         };
-        let mut cell = |info: &TileInfo| -> Option<u16> {
-            if let Some(c) = cached(info.key) {
-                return c;
-            }
-            let img = match pack.find_tile(info) {
-                Found::Pending => return None,
-                Found::Missing => {
-                    state.borrow_mut().1.insert(info.key, None);
-                    return None;
+        // The pack's other tile images, decoded ahead on its threads, into
+        // free cells (never taking one from a pattern in use), first to go
+        // when room is needed.
+        if fixes.preload {
+            for (key, img) in pack.preload(PreloadKind::Tile, 64) {
+                if img.width < 8 || img.height < 8 || state.borrow().1.contains_key(&key) {
+                    continue;
                 }
-                Found::Image(img) => img,
-            };
-            // As the software: smaller than a tile is unusable.
-            if img.width < 8 || img.height < 8 {
-                state.borrow_mut().1.insert(info.key, None);
-                return None;
+                let room = {
+                    let st = state.borrow();
+                    st.0.as_ref().is_none_or(|a| a.owner.iter().filter(|o| o.is_none()).count() > PRELOAD_MARGIN)
+                };
+                if !room {
+                    break;
+                }
+                if let Some(c) = put(key, &img) {
+                    if let Some(a) = state.borrow_mut().0.as_mut() {
+                        a.used[c as usize] = 0;
+                    }
+                }
             }
-            put(info.key, &img)
+        }
+        let last = RefCell::new(&mut self.last);
+        let recs: RefCell<HashMap<u32, TileRec>> = RefCell::new(HashMap::new());
+        let mut cell = |info: &TileInfo| -> Option<u16> {
+            let id = (info.tile as u32) << 16 | info.bank as u32;
+            let pens = {
+                let mut h = 0xcbf29ce484222325u64;
+                for &p in &info.pens {
+                    h = (h ^ p as u64).wrapping_mul(0x100000001b3);
+                }
+                h
+            };
+            // The pack's cell for this key and why not.
+            let (mut c, mut why): (Option<u16>, &str) = (None, "");
+            let mut uploaded = false;
+            match cached(info.key) {
+                Some(Some(k)) => c = Some(k),
+                Some(None) => why = "not-in-pack",
+                None => match pack.find_tile(info) {
+                    Found::Pending => why = if state.borrow().2.contains(&info.key) { "evicted" } else { "pending" },
+                    Found::Missing => {
+                        state.borrow_mut().1.insert(info.key, None);
+                        why = "not-in-pack";
+                    }
+                    // As the software: smaller than a tile is unusable.
+                    Found::Image(img) if img.width < 8 || img.height < 8 => {
+                        state.borrow_mut().1.insert(info.key, None);
+                        why = "not-in-pack";
+                    }
+                    Found::Image(img) => {
+                        c = put(info.key, &img);
+                        uploaded = c.is_some();
+                        if c.is_none() {
+                            why = "full";
+                        }
+                    }
+                },
+            }
+            let prev = if remember { last.borrow().get(&id).copied() } else { None };
+            let mut held = false;
+            if c.is_none() && fixes.hold && matches!(why, "not-in-pack" | "pending" | "evicted") {
+                // The same art in other colours (a fade, a cycle) or not
+                // loaded yet: the last image drawn for it, if still here.
+                // (However long ago: it is the pattern's art, and the cell
+                // is checked to still hold it.)
+                if let Some(l) = prev.filter(|l| l.pens == pens) {
+                    let st = state.borrow();
+                    if st.0.as_ref().is_some_and(|a| a.owner[l.cell as usize] == Some(l.key)) {
+                        c = Some(l.cell);
+                        held = true;
+                    }
+                }
+            }
+            if let (true, Some(cell), false) = (remember, c, held) {
+                last.borrow_mut().insert(id, TileLast { key: info.key, pens, cell, frame });
+            }
+            if log.is_some() {
+                let outcome = if held {
+                    "held".to_string()
+                } else if c.is_some() {
+                    if uploaded { "up" } else { "hit" }.to_string()
+                } else {
+                    let reason = match (why, prev) {
+                        ("not-in-pack", Some(l)) if l.key != info.key && frame - l.frame <= 4 * HOLD_FRAMES => {
+                            if l.pens == pens {
+                                "colour"
+                            } else {
+                                "texels"
+                            }
+                        }
+                        _ => why,
+                    };
+                    format!("miss:{reason}")
+                };
+                recs.borrow_mut().insert(id, TileRec { entry: id, key: info.key, outcome, ..Default::default() });
+            }
+            if let (Some(c), Some(a)) = (c, state.borrow_mut().0.as_mut()) {
+                a.used[c as usize] = frame;
+            }
+            c
         };
+        let mut slice_none = 0u32;
         let mut slice_cell = |s: &Slice| -> Option<u16> {
             if let Some(c) = cached(s.key) {
                 return c;
             }
-            put(s.key, &s.image)
+            let c = put(s.key, &s.image);
+            slice_none += c.is_none() as u32;
+            c
         };
         let regions = set.as_deref().map(|s| (s, &mut slice_cell as &mut dyn FnMut(&Slice) -> Option<u16>));
-        video::layers_2d_replaced(tiles, palette, view, has_3d, &mut cell, regions)
+        let mut uses = log.is_some().then(TileUses::default);
+        let layers = video::layers_2d_replaced_logged(tiles, palette, view, has_3d, &mut cell, regions, uses.as_mut());
+        if let (Some(log), Some(uses)) = (log.as_mut(), uses) {
+            let mut recs = recs.into_inner();
+            // The pixels each pattern covered, from the map entries.
+            for (e, (n, sx, sy)) in &uses.entries {
+                let (tile, bank) = (*e as u32 & 0x3fff, (((*e as u32) & 0x7f80) >> 3) >> 4);
+                if let Some(r) = recs.get_mut(&(tile << 16 | bank)) {
+                    r.pixels += n;
+                    r.sx += sx;
+                    r.sy += sy;
+                }
+            }
+            let mut recs: Vec<_> = recs.into_values().collect();
+            recs.sort_by_key(|r| r.entry);
+            for r in &recs {
+                log.tile(r);
+            }
+            if let Some(set) = set.as_deref() {
+                for (i, r) in set.regions.iter().enumerate() {
+                    let n = uses.region_matches.get(i).copied().unwrap_or(0);
+                    if n > 0 {
+                        self.region_seen.insert(i, frame);
+                        log.region(&r.def.name, if slice_none > 0 { "miss:full" } else { "hit" }, n);
+                    } else if self.region_seen.get(&i).is_some_and(|&f| frame - f <= 30) {
+                        log.region(&r.def.name, "miss:unmatched", 0);
+                    }
+                }
+            }
+        }
+        layers
     }
 
     /// Upload `map` (of layers `ext_w` columns wide) and bind it with the

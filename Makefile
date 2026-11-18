@@ -460,6 +460,14 @@ pack-check: release ## Draw the captured frames with texture pack PACK= on the G
 	$(if $(PACK),,$(error pack-check needs PACK=DIR, a texture pack))
 	$(RUN) $(GPU_OPTS) --texture-pack $(PACK) pack-check $(or $(LIGHT_IN),$(OUT)/capture) $(PACK_CHECK_OUT) $(foreach p,$(PROBE),--probe $(p))
 
+# Where pack-log writes its log.
+PACK_LOG ?= $(OUT)/pack.log
+pack-log: release ## Flicker report of texture pack PACK=: run INPUT (default coin-start) for STEPS, drawing every frame on the GPU with the pack at the arcade's pace (its background decoding, uploads and eviction), log what each frame's lookups gave to PACK_LOG (default OUT/pack.log) and report the textures, tiles and regions that alternate between replacement and original, ranked by pixels (PACK_FIXES=none|all|surface,hold,preload compares the stabilisations; PACK_LOG_OPTS="--pack-pace off" runs flat out; needs a GPU; docs/texture-packs.md, "Flicker")
+	$(if $(PACK),,$(error pack-log needs PACK=DIR, a texture pack))
+	$(RUN) --input $(or $(INPUT),coin-start) \
+		--texture-pack $(PACK) --pack-log $(PACK_LOG) $(if $(PACK_FIXES),--pack-fixes $(PACK_FIXES)) $(PACK_LOG_OPTS) run $(STEPS) 0
+	$(CAP) $(REMODEL) pack-flicker $(PACK_LOG)
+
 # Where tile-check writes its pictures.
 TILE_CHECK_OUT ?= $(OUT)/tile-check
 tile-check: release ## Draw the captured frames with the tile images of texture pack PACK live on the GPU and as the software snapshots replace them; write FRAME-gpu, -sw and -orig.png to TILE_CHECK_OUT (default OUT/tile-check) and compare them (needs a GPU; VIEW= sets the view, default 1080p 16:9)

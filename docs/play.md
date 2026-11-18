@@ -185,8 +185,10 @@ pack is the folder `<data dir>/<set>/texpack/` (`out/<set>/texpack` in a
 source tree; `make upscale-textures` makes one), and a clone with none uses
 its parent's (checked: `overrevb` with only `overrev/texpack`). `--texture-pack DIR` names one for
 every game that run and turns `pack` on; `--pack` alone means on. PNGs are
-decoded on background threads when their texture is first drawn and the
-original shows until then. The launcher's previews never use packs. The Esc
+decoded on background threads from the start and uploaded ahead of
+their first draw (a stand-in shows for a texture not ready; docs/texture-packs.md,
+"Flicker", with `--pack-log FILE` and `--pack-fixes none|all|surface,hold,preload`
+to find and compare what makes replacements flicker). The launcher's previews never use packs. The Esc
 menu's line under the checkbox shows the folder, how many images it holds and
 how many of the last frame's textured polygons (and tile patterns) were
 replaced, or why there is no pack (a missing folder also gives a notice). `tex_filter` filters pack

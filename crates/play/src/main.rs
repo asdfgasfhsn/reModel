@@ -235,6 +235,15 @@ usage: remodel-play [options]
                      the byte in hex (control-register writes marked
                      ctl), to see whether a sound or music command was
                      sent when one is missing (docs/play.md, Slowdowns)
+  --pack-log FILE    for checking a texture pack: for each frame drawn,
+                     every texture, tile pattern and region looked up in
+                     the pack and whether its replacement or the original
+                     was drawn, and why (`remodel pack-flicker FILE`
+                     reports what alternates; docs/texture-packs.md,
+                     \"Flicker\")
+  --pack-fixes LIST  which stabilisations of the pack's replacements are on:
+                     all (default), none, or surface, hold, regions,
+                     preload separated by commas (to compare runs)
   --frame-log FILE   for checking: each picture presented, read back and
                      hashed, a line each: the shown machine's frame, game
                      or ahead (run-ahead's machine), -late if drawn with
@@ -348,6 +357,12 @@ struct Options {
     overlap: bool,
     /// `--frame-log`: where to log each presented picture's hash.
     frame_log: Option<PathBuf>,
+    /// `--pack-log`: where to log what the texture pack's lookups gave in
+    /// each frame drawn (`remodel pack-flicker` reports on it), and
+    /// `--pack-fixes`: which stabilisations of the pack's replacements are
+    /// on.
+    pack_log: Option<PathBuf>,
+    pack_fixes: model2::packlog::Fixes,
     /// `--sound-log`: where to log the sound link's bytes.
     sound_log: Option<PathBuf>,
     /// `--photo`: scripted photo mode sessions, in frame order.
@@ -432,6 +447,8 @@ fn options(s: &mut Settings) -> Result<Options, String> {
         texture_pack: None,
         overlap: true,
         frame_log: None,
+        pack_log: None,
+        pack_fixes: Default::default(),
         sound_log: None,
         photo: Default::default(),
         photo_dir: None,
@@ -611,6 +628,8 @@ fn options(s: &mut Settings) -> Result<Options, String> {
             "--no-overlap" => o.overlap = false,
             "--fast" => o.fast = true,
             "--frame-log" => o.frame_log = Some(PathBuf::from(value()?)),
+            "--pack-log" => o.pack_log = Some(PathBuf::from(value()?)),
+            "--pack-fixes" => o.pack_fixes = model2::packlog::Fixes::parse(&value()?)?,
             "--sound-log" => o.sound_log = Some(PathBuf::from(value()?)),
             "--photo" => {
                 let mut v: Vec<photo::Script> = photo::parse_scripts(&value()?)?;
@@ -1860,6 +1879,13 @@ impl Play {
         };
         match opened {
             Ok(p) => {
+                renderer.set_pack_fixes(self.opts.pack_fixes);
+                if let Some(path) = &self.opts.pack_log {
+                    match model2::packlog::PackLog::create(path) {
+                        Ok(l) => renderer.set_pack_log(Some(l)),
+                        Err(e) => eprintln!("--pack-log: {}: {e}", path.display()),
+                    }
+                }
                 let maps = if p.maps() > 0 { format!(", {} material maps", p.maps()) } else { String::new() };
                 println!("texture pack  {}: {} images{maps}", dir.display(), p.len());
                 self.pack.loaded = Some(Ok((p.len(), p.maps())));

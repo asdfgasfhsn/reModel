@@ -604,6 +604,13 @@ pub trait Enhance {
     fn material_drawn(&mut self, _info: &TexInfo, _changed: usize) {}
 }
 
+/// What [`TexturePack::preload`] hands out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreloadKind {
+    Texture,
+    Tile,
+}
+
 /// A texture pack's answer for one texture.
 #[derive(Clone, Debug)]
 pub enum Found {
@@ -622,6 +629,15 @@ pub enum Found {
 /// pixel counts.
 pub trait TexturePack {
     fn find(&mut self, info: &TexInfo) -> Found;
+    /// Up to `max` images nobody has asked for yet, decoded, by key, for
+    /// the renderer to upload before their first draw (`Fixes::preload`);
+    /// asked again every frame, it also keeps the next ones decoding. A
+    /// pack that can't (or has none left) returns none.
+    fn preload(&mut self, _kind: PreloadKind, _max: usize) -> Vec<(u64, Arc<Rgba>)> {
+        Vec::new()
+    }
+    /// Start `preload` of `kind` over (the renderer dropped what it held).
+    fn preload_restart(&mut self, _kind: PreloadKind) {}
     /// Whether the pack has any tile images (`tile_<key>.png`): without,
     /// the renderer leaves the 2D layers alone.
     fn has_tiles(&self) -> bool {

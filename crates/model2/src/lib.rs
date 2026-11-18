@@ -9,6 +9,8 @@ pub mod bus;
 pub mod capture;
 #[cfg(not(target_arch = "wasm32"))]
 mod copro_jit;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod dirpack;
 pub mod drive;
 pub mod eeprom;
 pub mod enhance;
@@ -25,6 +27,7 @@ pub mod link;
 pub mod look;
 pub mod pacing;
 pub mod pack;
+pub mod packlog;
 pub mod photo;
 pub mod protection;
 pub mod raster;
