@@ -388,6 +388,20 @@ impl Renderer {
         self.look = look;
     }
 
+    pub(crate) const ID_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::RENDER_ATTACHMENT
+        .union(wgpu::TextureUsages::TEXTURE_BINDING)
+        .union(wgpu::TextureUsages::COPY_SRC);
+
+    /// SPIKE: the last ID pass's target read back: per pixel (texture ID, tag); with
+    /// `pick_blocks` the tag's bits 18+ are the object block number + 1 (0: none).
+    pub fn read_ids(&mut self, w: u32, h: u32) -> Vec<[u32; 2]> {
+        let t = self.kept_target("look ids", (w, h), ID_FORMAT, Self::ID_USAGE).0;
+        let raw = self.read_back_bpp(self.device.create_command_encoder(&Default::default()), &t, w, h, 8);
+        raw.chunks_exact(8)
+            .map(|c| [u32::from_le_bytes(c[0..4].try_into().unwrap()), u32::from_le_bytes(c[4..8].try_into().unwrap())])
+            .collect()
+    }
+
     /// The look in use.
     pub fn look(&self) -> Option<&Arc<Look>> {
         self.look.as_ref()
@@ -428,7 +442,8 @@ impl Renderer {
                         Some(i) => texture_id(i.key),
                         None => flat_id(p.colour),
                     },
-                    tag: (weight * 16.0f32).round().clamp(0.0, 255.0) as u32
+                    tag: (if self.pick_blocks { (p.block as u32 + 1) << 18 } else { 0 })
+                        | (weight * 16.0f32).round().clamp(0.0, 255.0) as u32
                         | ((rim * 255.0).round().clamp(0.0, 255.0) as u32) << 8
                         | (tag.is_some_and(|t| t.outline.is_some_and(|w| w > 0.0)) as u32) << 16
                         | (pl.background as u32) << 17,
@@ -458,7 +473,7 @@ impl Renderer {
         layer: &wgpu::TextureView,
     ) -> wgpu::TextureView {
         let (w, h) = (view.width as u32, view.height as u32);
-        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+        let usage = Self::ID_USAGE;
         let format = if self.quality.temporal > 0 { crate::temporal::HISTORY_FORMAT } else { FORMAT };
         let ids = self.kept_target("look ids", (w, h), ID_FORMAT, usage).0.create_view(&Default::default());
         let iz = self.kept_target("look iz", (w, h), IZ_FORMAT, usage).0.create_view(&Default::default());

@@ -256,6 +256,9 @@ pub struct Subst {
     pub counts: Vec<(u32, u32)>,
     /// Filled by a rerun: (model address, end word, compact, count the list gave).
     pub seen: std::sync::Mutex<Vec<(u32, u32, bool, u32)>>,
+    /// Filled by a rerun: every polygon RAM word read (address -> value, and
+    /// how many times a different value was read from the same address).
+    pub ram: std::sync::Mutex<std::collections::BTreeMap<u32, (u32, u32)>>,
 }
 
 impl Subst {
@@ -361,10 +364,30 @@ pub mod readmap {
 impl External for GeoExt<'_> {
     #[inline]
     fn read(&mut self, addr: u32) -> u32 {
-        if addr >= 0x80_0000 {
-            if let Some(w) = self.subst.and_then(|s| s.word(addr)) {
+        if let Some(s) = self.subst {
+            if let Some(w) = s.word(addr) {
                 return w;
             }
+            if addr < 0x80_0000 {
+                // SPIKE: polygon RAM words as read (overlay included), for RAM models.
+                let v = match &self.ram {
+                    PolyRam::Own(ram) => ram[addr as usize % ram.len()],
+                    PolyRam::Overlay(ram, o) => {
+                        let i = addr as usize % ram.len();
+                        o.get(&(i as u32)).copied().unwrap_or(ram[i])
+                    }
+                    PolyRam::Before(ram, _) => ram[addr as usize % ram.len()],
+                };
+                let mut m = s.ram.lock().unwrap();
+                let e = m.entry(addr).or_insert((v, 0));
+                if e.0 != v {
+                    e.0 = v;
+                    e.1 += 1;
+                }
+                return v;
+            }
+        }
+        if addr >= 0x80_0000 {
             readmap::mark(0, addr & self.rom_mask);
             self.rom.get((addr & self.rom_mask) as usize).copied().unwrap_or(0)
         } else {

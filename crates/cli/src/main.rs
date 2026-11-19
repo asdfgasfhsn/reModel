@@ -19,6 +19,7 @@ mod sound_render;
 mod soundtrack;
 mod model_pick;
 mod model_replace;
+mod gpu_pick;
 mod rom_read_map;
 mod spec_stats;
 mod studio;
@@ -1078,6 +1079,21 @@ fn main() -> ExitCode {
         "look-render" => cmd_look_render(&o, roms),
         "lighting-check" => cmd_lighting_check(&o, roms),
         "model-pick" => cmd_model_pick(&o, roms),
+        "gpu-pick" => {
+            let a = &o.args;
+            let (Some(root), Some(out)) = (a.get(1), a.get(2)) else {
+                eprintln!("usage: gpu-pick CAPDIR OUT [FRAME,..]");
+                return ExitCode::FAILURE;
+            };
+            let only: Vec<u64> = a.get(3).map(|s| s.split(',').filter_map(|v| v.parse().ok()).collect()).unwrap_or_default();
+            match gpu_pick::run(Path::new(root), (roms.game.hud_windows, roms.game.hud_element_windows), Path::new(out), &only) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         "model-replace" => {
             let a = &o.args;
             let oba = a.get(5).and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok());

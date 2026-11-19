@@ -648,6 +648,8 @@ pub struct Renderer {
     /// The look's ID pass will follow this frame's 3D pass (`encode_frame`):
     /// the 3D pass keeps what the ID pass can reuse (`look::IdShare`).
     share_ids: bool,
+    /// SPIKE: the ID pass's tag carries each polygon's block number (+1) in bits 18+.
+    pub pick_blocks: bool,
     /// The scene's typical distance, steadied (`look::depth_reference`).
     depth_ref: Option<f32>,
     id_share: Option<look::IdShare>,
@@ -1011,6 +1013,7 @@ impl Renderer {
             no_materials: false,
             look_used: 0,
             share_ids: false,
+            pick_blocks: false,
             depth_ref: None,
             id_share: None,
         }
