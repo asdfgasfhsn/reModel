@@ -88,36 +88,81 @@ picture from each scene the model appears in.
 
 ### Drawing it
 
-A replacement cannot be put into the geometrizer's output. That stream
-has a fixed form (a polygon count per block, and texture headers that
-point into texture RAM), which cannot carry new UVs, a pack's own images
-or per-corner normals. It is also part of the machine: the state hash
-covers the last stream (`crates/model2/src/bus.rs:1413-1428`). So the
-machine's stream is never touched.
+The machine's own output is never touched: the state hash covers the
+last stream (`crates/model2/src/bus.rs:1413-1428`). A replacement is
+drawn by the renderer from a second pass that the machine never sees.
 
-The replacement is made in the renderer, where the stream becomes
-polygons (`raster::build_with`). For a block whose model has a
-replacement, the renderer builds the new polygons itself and drops the
-block's own. It needs three things the native geometrizer already
-records on the side: the model's address for the block, the object's
-matrix, and the block's light. With those it transforms the mesh, lights
-each corner with the game's formula, culls, clips and projects, as the
-game's program would have.
+**Spiked on 2026-11-19** (Top Skater, software renderer, one model;
+branch `uplift-spikes`, about 480 lines). The spike changed this section.
+The first design had the renderer transform, light, cull and clip the new
+mesh itself. The spike tried something cheaper and it worked.
 
-This path is the one smooth motion and photo mode already use to draw a
-frame the machine never ran. It only exists while that recording is on,
-and with a native geometrizer.
+**Tier 1: reshape, by re-running the game's own geometry code.** Smooth
+motion already re-runs a frame's display list through the native
+geometrizer to draw frames the machine never ran. The same re-run is
+made with one model's polygon data swapped for the replacement's. The
+game's own transform, lighting, culling, clipping and sort order are
+reused, on every board that has a native geometrizer.
+
+- Re-run with the model's own data, the result equals the machine's
+  stream word for word, with no differing pixel, on 9 frames of 3 scenes.
+- A skater's torso scaled to 1.5 times stayed attached, lit and culled
+  through 7 frames of a moving camera.
+- A box drawn in the torso's place did the same.
+- State hashes were unchanged over 400 frames with it on.
+- The re-run cost 0.5 to 1.1 ms a frame, and shares work with the one
+  smooth motion makes.
+
+Tier 1 is bounded by the game's polygon format, and the bounds are
+tight:
+
+- **A mesh is strips** of triangles and quads with no index list.
+  Anything that is not a chain needs a hidden polygon to restart. The
+  box took 8 records for 6 faces.
+- **Normals are worked out from the strip**, so lighting is flat per
+  polygon.
+- **UVs are not in the model.** They sit in a list the object points to,
+  two per corner in strip order, and each polygon can only step a short
+  way through the texture headers. A replacement uses the original's
+  texture sheet.
+
+So tier 1 covers moving, scaling and re-cutting a model, and new shapes
+that reuse the original's textures. Those textures can themselves be
+replaced by the pack. It does not cover a free mesh with its own UVs,
+its own images and smooth normals.
+
+**Tier 2: a free mesh, built in the renderer.** Not spiked. The renderer
+draws the glTF mesh itself, using what the native geometrizer records on
+the side: the object's matrix, its light and its place in the draw
+order. Smooth shading already evaluates the game's lighting formula for
+any normal, and the GPU clips. The spike's author estimated 600 to 900
+lines to re-implement lighting, culling and clipping from scratch;
+reusing smooth shading and the GPU's clipping should need less
+(inferred). This is the tier "any glTF" needs, and it wants its own
+spike.
+
+**What a still check needs.** A capture cannot be re-run: it holds only
+the finished stream. A scene render with a replaced model must start
+from the scene's save state and run one frame, a few hundred
+milliseconds, or the capture must also hold the geometrizer's inputs.
 
 Two things need rules.
 
 - **Order.** The games draw without a depth buffer, far to near by a sort
-  key per polygon. A replacement's polygons take the original object's
-  place in that order and are depth-tested among themselves, the way the
-  depth option already treats a group of polygons the game sorted
-  together (`docs/enhancements.md`, "Depth buffer").
+  key per polygon. In tier 1 the replacement's polygons take the game's
+  own sort keys; nothing sorted wrongly in the spike's frames, by eye. In
+  tier 2 a replacement takes the original object's place in that order
+  and is depth-tested within itself, the way the depth option already
+  treats a group of polygons the game sorted together
+  (`docs/enhancements.md`, "Depth buffer").
 - **Distance models.** A pack can name several keys for one replacement,
   with an optional coarser mesh. Without that, a replaced car would turn
   back into the original at a distance.
+
+**A character is many models.** The skater is about ten: limbs, torso,
+board. Replacing a character is replacing its parts, each rigid. One
+smooth-skinned mesh over a moving character is animation the game does
+not supply.
 
 ### What it does not cover
 
@@ -199,5 +244,7 @@ a pack inside a frame. None of this is measured.
 1. `model export` for one model and for a scene, with previews.
 2. The identity test: export, import unchanged, draw, compare.
 3. `model check` with keys, bounds and budget.
-4. **Spike**, as already planned: one Top Skater prop and one skater's
-   parts exported, the prop modified, drawn before and after.
+4. Tier 1 from the spike made real: `mdl_` files encoded to the game's
+   records, with `model check` reporting what will not encode.
+5. **Spike:** tier 2 on one prop: a glTF with its own UVs and normals,
+   drawn by the renderer with the recorded matrix and light.

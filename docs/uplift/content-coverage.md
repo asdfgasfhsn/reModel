@@ -77,6 +77,30 @@ code          31% of discovered instructions run
 
 (The figures are invented, to show the shape.)
 
+**Spiked on 2026-11-19** for the polygon ROM (Top Skater's three runs,
+native geometrizer; branch `uplift-spikes`, about 200 lines):
+
+- **The three runs read 28% of the polygon ROM**: 2.38 MB of 8.39 MB.
+  The coin start alone read 16%, the character walk added 1%, and the
+  course added 11%. None of the ROM is blank.
+- **The unread part is whole regions**, not holes: 40 stretches, the
+  largest 4.89 MB, and only 64 KB in stretches under 16 KB.
+- **Models sit back to back.** 95% of models read begin exactly where
+  another ended, so an unread stretch can be parsed from its start.
+- **Unread stretches do parse as models.** A strict reader (attribute
+  bits, finite numbers, not only the end marker) read all 40 from their
+  first word, and chained through 1.72 MB of the 6.0 MB unread. The rest
+  is either a format the reader does not know or not models at all.
+- State hashes were unchanged. The map slowed one run from 17 s to 28 s
+  and the other two not at all.
+- Not done: the texture ROM. Texture headers and UV lists are read by
+  the rasteriser, not the geometrizer, so that map hooks elsewhere.
+
+So today's catalogue has seen less than a third of the model data, and
+that is a ceiling on how complete any pack made from it can be. It also
+says a model browser is within reach: at least 1.72 MB of models nobody
+has seen can be listed, and their shapes drawn, without playing.
+
 This needs no knowledge of where models begin, works for every game the
 same way, and reads only: nothing in the machine changes. It gives the
 one thing the catalogue cannot: the share of the game's art data that no
@@ -210,9 +234,11 @@ crawler's finest signal costs half the speed.
 
 ## Open questions
 
-- **How much of the polygon ROM do today's runs read?** The first spike.
-  If it is 90%, coverage is nearly solved by a few more tours; if 30%,
-  the crawler matters.
+- **What is the other 4.3 MB** of the polygon ROM that the strict reader
+  could not chain through: unused art, another record format, or data
+  that is not models?
+- **How much of the unread art can the game ever show?** ROMs keep
+  leftovers. A crawler that stops finding new reads is the only test.
 - **Do tours survive timing fixes?** A corrected emulator may shift
   frames, breaking `from=` and `mark=`. `scene verify` catches it;
   whether marks should be found by screen and not by frame is open.
@@ -226,8 +252,8 @@ crawler's finest signal costs half the speed.
 
 ## MVP
 
-1. **Spike (a day):** read maps for the polygon and texture ROMs, and the
-   figure for Top Skater's three runs.
+1. Read maps for the polygon ROM (spiked) and the texture ROM, merged
+   across runs.
 2. `tours.txt` with `from=` and `mark=`, `tour run`, and `coverage`.
 3. The player's tour recorder.
 4. `ram search` and `poke=`, with the cheats work.

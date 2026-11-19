@@ -178,7 +178,7 @@ each leads with spikes. In the order they depend on each other:
 | # | Spec | What it gives | Needs | Generic? | First proof |
 |---|---|---|---|---|---|
 | 16 | [Scene understanding](uplift/scene-understanding.md) | A model's identity per pixel; one stated set of buffers; exact positions and normals from each polygon's plane; camera movement | The ID pass (0.7 ms at 1080p, documented) | Planes, flags and normals for every game; models and movement need a native geometrizer | Pick a model under the cursor |
-| 17 | [Model interchange](uplift/model-interchange.md) | Any glTF mesh in a model's place | 16 | Rigid parts; not geometry rewritten each frame | Export, import unchanged, draw: the same frame |
+| 17 | [Model interchange](uplift/model-interchange.md) | Reshaped models now (spiked); any glTF mesh after a second spike | 16 | Rigid parts; not geometry rewritten each frame | Done for reshaping: unchanged data gives the same frame |
 | 18 | [Lighting](uplift/lighting.md) | Real transparency, ambient occlusion, shadows from the game's light | 16 | First two for every game | Blended stipple; occlusion timed on three games |
 | 19 | [Added elements](uplift/added-elements.md) | Grass, props, decals, weather | 16, 17 | Native geometrizer only | One prop held still through a moving clip |
 | 20 | [Authoring](uplift/authoring.md) | The Studio page: the path with no terminal | Slices A and C, 16 for picking | Yes | Scene grid, pick, edit, reload |
@@ -195,10 +195,12 @@ Three findings carry most of the weight.
   depth.** Depth is unreliable on the large ground polygons the games
   draw in their own order, which is exactly where occlusion, shadows and
   grass matter. A plane per polygon is exact, and works for every game.
-- **New geometry is built in the renderer, never in the machine.** The
-  state hash covers the geometrizer's output, so replacement models and
-  added elements are made where the renderer turns that output into
-  polygons, from what the native geometrizer records on the side.
+- **New geometry never enters the machine.** The state hash covers the
+  geometrizer's output, so replacement models and added elements are
+  drawn from a second pass the machine never sees. The spike found the
+  cheap way to make that pass: re-run the game's own geometry code with
+  a model's data swapped, as smooth motion already re-runs it. A free
+  mesh with its own textures still has to be built in the renderer.
 - **New lighting takes light away; it never adds on top.** Many surfaces
   are already at full brightness, so occlusion and shadows multiply.
   Lights a pack adds, and a different time of day, collide with that and
@@ -289,12 +291,14 @@ spec named; scratch output stays out of the repository.
 | 2026-11-19 | Can a mid-tier model do three tasks from [interface.md](uplift/interface.md) alone? | First read: one of three. After a table of every verb's shape: all three command sequences right, with small gaps reported and then closed. A paper test can go no further | The verb table; the real test waits for slice A's commands |
 | 2026-11-19 | Can every 3D pixel be traced to the model that drew it? | Yes on Top Skater, in software: every 3D pixel in 21 frames, state hashes unchanged, cost negligible. A model is a part (a limb, a board), so picking needs grouping. Existing captures hold no identity | [scene-understanding](uplift/scene-understanding.md): captures must record the side channel; a grouping step is needed |
 | 2026-11-19 | Do Top Skater's findings on colour variants hold on `vf2` and `daytona`? | Yes, and more strongly: artworks drawn in several colourings carry 70% and 88% of textured pixels. Daytona also varies by luma table. One catalogue run misses 40 to 50% of textures while reporting 100% | [asset-identity](uplift/asset-identity.md), [content-coverage](uplift/content-coverage.md): identity ranks higher; coverage cannot trust the catalogue's own figure |
-SPIKEROWS
+| 2026-11-19 | How much of the polygon ROM do Top Skater's three runs read? | 28%. The unread part is whole regions, and at least 1.72 MB of it parses as models nobody has seen | [content-coverage](uplift/content-coverage.md): the crawler and a model browser matter; the catalogue is far from complete |
+| 2026-11-19 | Can a different mesh be drawn in a model's place without touching the machine? | Yes, by re-running the game's own geometry code with one model's data swapped: identical when unchanged, a scaled torso and a box held through a moving camera, 0.5 to 1.1 ms. The game's format limits it to strips, flat lighting and the original's texture sheet | [model-interchange](uplift/model-interchange.md): two tiers. Reshaping is cheap and proven; a free glTF mesh still needs its own spike |
 
 Status of each spec, by the ladder in [uplift/README.md](uplift/README.md):
 the interface page and the eight pass-one specs are grounded;
-asset-identity and scenes-and-server are spiked in part; content-coverage,
-distribution and the six pass-two specs are sketches.
+asset-identity, scenes-and-server, content-coverage, scene-understanding
+and model-interchange are spiked in part; distribution and the other
+four pass-two specs are sketches.
 
 ## How this was made
 
