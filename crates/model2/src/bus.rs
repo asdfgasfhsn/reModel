@@ -966,7 +966,16 @@ impl Model2Bus {
             // communication board" to stcc's and overrev's network checks,
             // and overrev's stand-alone boot then waits for bit 7 of
             // 0x1A14002 to be set (docs/games/overrev.md).
-            0x01a1_4000 => self.link.as_ref().map_or(u32::MAX, crate::link::Link::status),
+            // On a link joined to a hub, bit 7 of 0x1A14002 flips every frame
+            // (daytona's network check waits on that flip, docs/hw/link-board.md section 10).
+            0x01a1_4000 => self.link.as_ref().map_or(u32::MAX, |l| {
+                l.status()
+                    | if l.hub && (l.beat_until == 0 || self.frames < l.beat_until) {
+                        ((self.frames & 1) as u32) << 23
+                    } else {
+                        0
+                    }
+            }),
             0x1000_0000..=0x105f_ffff => 0,
             _ => return None,
         };
@@ -1437,6 +1446,37 @@ impl Model2Bus {
         if let Some((m, off)) = self.find(crate::link::RAM) {
             let d = &mut self.mems[m].data;
             (d[off], d[off + 2], d[off + 3]) = if ready { (1, id, total) } else { (0, d[off + 2], d[off + 3]) };
+        }
+    }
+
+    /// Write received block `k` at `rx + block * k` of the link RAM, with
+    /// the geometry of the game's `romset::LinkPlay`.
+    pub fn link_rx_write_at(&mut self, rx: usize, block: usize, k: usize, data: &[u8]) {
+        if let Some((m, off)) = self.find(crate::link::RAM) {
+            let at = off + rx + block * k;
+            if let Some(d) = self.mems[m].data.get_mut(at..at + data.len()) {
+                d.copy_from_slice(data);
+            }
+        }
+    }
+
+    /// Set the original Model 2 I/O board's settings buffer (`0x1C00200`,
+    /// byte N at word N) from a record: the link-run harness's per-node settings.
+    pub fn io_store_load(&mut self, record: &[u8]) {
+        if let Some((m, off)) = self.find(0x01c0_0200) {
+            for (i, &b) in record.iter().enumerate() {
+                if let Some(d) = self.mems[m].data.get_mut(off + 2 * i) {
+                    *d = b;
+                }
+            }
+        }
+    }
+
+    /// The I/O board's settings buffer as a record of `n` bytes.
+    pub fn io_store_dump(&self, n: usize) -> Vec<u8> {
+        match self.find(0x01c0_0200) {
+            Some((m, off)) => (0..n).map(|i| self.mems[m].data.get(off + 2 * i).copied().unwrap_or(0)).collect(),
+            None => vec![],
         }
     }
 

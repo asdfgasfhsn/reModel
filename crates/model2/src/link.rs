@@ -36,6 +36,8 @@ pub struct Link {
     pub started: bool,
     pub master: bool,
     pub start_frame: u64,
+    /// Bit 7 of `0x1A14002` flips every frame up to this frame (0: for ever): a test.
+    pub beat_until: u64,
 }
 
 impl Link {
@@ -51,6 +53,7 @@ impl Link {
             started: false,
             master: false,
             start_frame: 0,
+            beat_until: 0,
         }
     }
 
@@ -138,6 +141,14 @@ pub struct LinkHub {
     pub freeze: Option<(usize, u64)>,
     /// Node IDs to hand out in place of the master-first order (a test).
     pub fixed_ids: Option<Vec<u8>>,
+    /// The link RAM geometry (a game's `romset::LinkPlay`, defaults `srallyc`'s):
+    /// offsets of the own block and of the first received block, the block
+    /// size, and what the ID register holds beyond the 0-based node number
+    /// (with layout 3).
+    pub tx: usize,
+    pub rx: usize,
+    pub block: usize,
+    pub id_base: u8,
     ids: Vec<u8>,
     ready: bool,
     started: Vec<bool>,
@@ -162,7 +173,7 @@ pub fn source(layout: u8, me: usize, k: usize, n: usize) -> usize {
 
 impl LinkHub {
     pub fn new(nodes: usize, delay: usize) -> Self {
-        assert!((1..=4).contains(&nodes), "1 to 4 nodes");
+        assert!((1..=8).contains(&nodes), "1 to 8 nodes");
         LinkHub {
             nodes,
             delay: delay.max(1),
@@ -171,11 +182,28 @@ impl LinkHub {
             drop_at: 0,
             freeze: None,
             fixed_ids: None,
+            tx: TX,
+            rx: RX,
+            block: BLOCK,
+            id_base: 1,
             ids: vec![0; nodes],
             ready: false,
             started: vec![false; nodes],
             hist: vec![Default::default(); nodes],
         }
+    }
+
+    /// A hub for the machines of a game, with its link RAM geometry.
+    pub fn for_game(nodes: usize, delay: usize, play: &romset::LinkPlay) -> Self {
+        assert!(nodes <= play.max_nodes, "{nodes} nodes: the game links at most {}", play.max_nodes);
+        let mut h = LinkHub::new(nodes, delay);
+        h.set_play(play);
+        h
+    }
+
+    /// Take the geometry of a game's link RAM.
+    pub fn set_play(&mut self, play: &romset::LinkPlay) {
+        (self.tx, self.rx, self.block, self.id_base) = (play.tx, play.rx, play.block, play.id_base);
     }
 
     /// The ID the hub gave node `i` (valid once ready).
@@ -230,13 +258,14 @@ impl LinkHub {
         }
         let total = self.nodes as u8;
         for (i, b) in buses.iter_mut().enumerate() {
-            b.link_set_ready(self.ready, self.ids[i] + u8::from(self.layout == 3), total);
+            b.link_set_ready(self.ready, self.ids[i] + if self.layout == 3 { self.id_base } else { 0 }, total);
         }
         if !self.ready {
             return log;
         }
+        let (tx_at, rx_at, block) = (self.tx, self.rx, self.block);
         let tx: Vec<Vec<u8>> =
-            buses.iter().map(|b| b.link_ram().map_or(vec![0; BLOCK], |r| r[TX..TX + BLOCK].to_vec())).collect();
+            buses.iter().map(|b| b.link_ram().map_or(vec![0; block], |r| r[tx_at..tx_at + block].to_vec())).collect();
         for (i, t) in tx.iter().enumerate() {
             if self.freeze.is_some_and(|(n, f)| n == i && frame >= f) {
                 continue;
@@ -253,13 +282,13 @@ impl LinkHub {
                 let want = source(self.layout, me, k, n);
                 let src = (0..n).find(|&j| self.ids[j] as usize == want).unwrap();
                 if src == i {
-                    b.link_rx_write(k, &tx[i]);
+                    b.link_rx_write_at(rx_at, block, k, &tx[i]);
                     continue;
                 }
                 let d = self.delays[i];
                 if self.hist[src].len() >= d {
                     let blk = self.hist[src][self.hist[src].len() - d].clone();
-                    b.link_rx_write(k, &blk);
+                    b.link_rx_write_at(rx_at, block, k, &blk);
                 }
             }
         }
@@ -271,6 +300,7 @@ impl LinkHub {
     /// machine's own state).
     pub fn save(&self, buses: &[&mut Bus]) -> Vec<u8> {
         let mut o = vec![self.nodes as u8, self.delay as u8, self.ready as u8];
+        o.extend((self.block as u16).to_le_bytes());
         o.extend(self.delays.iter().map(|&d| d as u8));
         o.extend(self.drop_at.to_le_bytes());
         for (i, b) in buses.iter().enumerate() {
@@ -298,12 +328,14 @@ impl LinkHub {
         if nodes != buses.len() {
             return Err(format!("the save has {nodes} nodes, the run {}", buses.len()));
         }
+        let block = u16::from_le_bytes(data.get(3..5).ok_or_else(short)?.try_into().unwrap()) as usize;
         let mut hub = LinkHub::new(nodes, delay);
+        hub.block = block;
         hub.ready = ready;
-        for (i, d) in data.get(3..3 + nodes).ok_or_else(short)?.iter().enumerate() {
+        for (i, d) in data.get(5..5 + nodes).ok_or_else(short)?.iter().enumerate() {
             hub.delays[i] = *d as usize;
         }
-        let at0 = 3 + nodes;
+        let at0 = 5 + nodes;
         hub.drop_at = u64::from_le_bytes(data.get(at0..at0 + 8).ok_or_else(short)?.try_into().unwrap());
         let mut at = at0 + 8;
         for (i, b) in buses.iter_mut().enumerate() {
@@ -317,8 +349,8 @@ impl LinkHub {
             let n = f[12] as usize;
             at += 13;
             for _ in 0..n {
-                hub.hist[i].push_back(data.get(at..at + BLOCK).ok_or_else(short)?.to_vec());
-                at += BLOCK;
+                hub.hist[i].push_back(data.get(at..at + block).ok_or_else(short)?.to_vec());
+                at += block;
             }
         }
         Ok(hub)
@@ -341,7 +373,7 @@ mod tests {
 
     #[test]
     fn the_received_blocks_are_ordered_as_the_game_expects() {
-        for n in 1..=4usize {
+        for n in 1..=8usize {
             for me in 0..n {
                 // The node's own block is the last one received (the "TOTAL - 1" the game compares with).
                 assert_eq!(source(3, me, n - 1, n), me);
@@ -353,6 +385,15 @@ mod tests {
                 seen.sort();
                 assert_eq!(seen, (0..n).collect::<Vec<_>>());
             }
+        }
+    }
+
+    #[test]
+    fn every_games_blocks_fit_the_link_ram() {
+        for id in ["srallyc", "daytona"] {
+            let p = romset::games::link_play(id).unwrap();
+            assert!(p.rx + p.max_nodes * p.block <= 0x4000, "{id}: {} received blocks fit the 16 KB", p.max_nodes);
+            assert_eq!(p.tx + p.block, p.rx, "{id}: the received blocks follow the own block");
         }
     }
 

@@ -5,15 +5,21 @@
 //! handshake, the nodes' states and what they put in their blocks.
 
 use super::*;
-use model2::link::{LinkHub, BLOCK, RX, TX};
+use model2::link::LinkHub;
+use romset::{LinkPlay, SettingsStore};
 
 const USAGE_LINK: &str = "usage: remodel --game G link-run [--nodes N] [--frames F] [--input0 S --input1 S ...]
-        [--delay D] [--link-types 1,2,..] [--eeprom FILE] [--shot-every K] [--shot-at F,F,..]
+        [--delay D] [--link-types 1,2,..] [--eeprom FILE] [--log-words] [--coverage] [--coverage-from F] [--geo-at F] [--beat-until F]
+        [--shot-every K] [--shot-at F,F,..]
         [--log-every K] [--trace NODE] [--drop-at F] [--freeze NODE:F] [--save-at F FILE] [--load FILE]
   --input S    inputs for every node without its own --inputN (as `run`'s --input)
-  --link-types the LINK TYPE setting patched into each node's EEPROM (1 CAR 1 (master), 2 CAR 2, ..; default 1,2,3,4)
+  --link-types the role setting patched into each node's settings (the game's own values: srallyc LINK TYPE 1 CAR 1 (master), 2 CAR 2, ..; daytona link ID 1 MASTER, 2 SLAVE; default the game's, master first)
+  --geo-at F   write node 0's geometry port writes of frame F to geo-trace-0.txt
+  --beat-until F   stop flipping bit 7 of 0x1A14002 every frame at F (a test; daytona's handshake needs it, docs/hw/link-board.md section 10)
+  --coverage   write each node's executed instruction addresses to coverage-N.txt
+  --log-words  log every change of a block word (by default only for games whose block layout is known, minus the moving numbers)
   --eeprom     the settings record to start from (default: the game's defaults); the user's files are never written
-  --set-byte N:OFF:V   set byte OFF of node N's EEPROM image (before the CRC is fixed)
+  --set-byte N:OFF:V   set byte OFF of node N's settings image (before the CRC is fixed)
   --delay-to N:D[,..]  the other nodes' blocks reach node N D frames late (a test)
   --skew A,B,..        node i starts running A frames late (a test)
   --ids A,B,..         hand out these node IDs in place of master first (a test)
@@ -23,48 +29,6 @@ const USAGE_LINK: &str = "usage: remodel --game G link-run [--nodes N] [--frames
   --fresh-hub          with --load: lose the board's state (only the machines were saved)
 ";
 
-/// The settings record of a `srallyc` EEPROM at its defaults (docs/hw/link-board.md section 2): the
-/// 4-byte header (CRC-16, length) and 32 bytes of settings, LINK TYPE 0 (NOTLINK); the bytes are those
-/// a game's own first boot writes.
-const DEFAULT_RECORD: [u8; 38] = [
-    0x00, 0x00, 0x24, 0x00, 0x02, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0x01, 0x04, 0, 0, 0x80, 0x3f, 0xf2, 0xff, 0xff, 0xff,
-    0x01, 0, 0x02, 0, 0, 0, 0x0b, 0, 0x01, 0, 0x01, 0, 0xff, 0xff,
-];
-
-/// The CRC-16 of a settings record: CCITT polynomial, start value `0xFFFF`,
-/// complemented (docs/hw/link-board.md section 2).
-fn record_crc(b: &[u8]) -> u16 {
-    let mut c = 0xffffu16;
-    for &x in b {
-        c ^= (x as u16) << 8;
-        for _ in 0..8 {
-            c = if c & 0x8000 != 0 { (c << 1) ^ 0x1021 } else { c << 1 };
-        }
-    }
-    !c
-}
-
-/// A 128-byte EEPROM image from `base` with LINK TYPE set to `link` and the header's CRC
-/// fixed. The game's work RAM from `0x202010` is the record from its first byte, header
-/// included, so LINK TYPE (RAM `0x20201B`) is byte `0x0B` of the image.
-fn patched_eeprom(base: Option<&[u8]>, link: u8, set: &[(usize, u8)]) -> Vec<u8> {
-    let mut e = vec![0xffu8; 128];
-    match base {
-        Some(b) => e[..b.len().min(128)].copy_from_slice(&b[..b.len().min(128)]),
-        None => e[..38].copy_from_slice(&DEFAULT_RECORD),
-    }
-    e[0x0b] = link;
-    for &(o, v) in set {
-        if o < 36 {
-            e[o] = v;
-        }
-    }
-    let c = record_crc(&e[2..36]);
-    e[0] = c as u8;
-    e[1] = (c >> 8) as u8;
-    e
-}
-
 fn u32at(b: &[u8], o: usize) -> u32 {
     u32::from_le_bytes(b[o..o + 4].try_into().unwrap())
 }
@@ -72,8 +36,11 @@ fn f32at(b: &[u8], o: usize) -> f32 {
     f32::from_bits(u32at(b, o))
 }
 
-/// What a block holds, as far as srallyc's layout is known (docs/hw/link-board.md section 4).
-fn block_summary(b: &[u8]) -> String {
+/// What a block holds, as far as the game's layout is known (docs/hw/link-board.md sections 4 and 10).
+fn block_summary(b: &[u8], p: &LinkPlay) -> String {
+    let (Some(_), Some(_)) = (p.state_off, p.pos_off) else {
+        return format!("{:08x} {:08x} {:08x} {:08x}", u32at(b, 0), u32at(b, 4), u32at(b, 8), u32at(b, 12));
+    };
     format!(
         "id {} car {} st {} seed {:#x} pos ({:.1},{:.1},{:.1}) clk {}",
         u16::from_le_bytes([b[0], b[1]]),
@@ -91,7 +58,12 @@ struct Args {
     nodes: usize,
     frames: u64,
     delay: usize,
-    types: Vec<u8>,
+    types: Option<Vec<u8>>,
+    log_words: bool,
+    coverage: bool,
+    cov_from: u64,
+    beat_until: u64,
+    geo_trace: u64,
     eeprom: Option<PathBuf>,
     shot_every: u64,
     shot_at: Vec<u64>,
@@ -118,7 +90,12 @@ fn parse(o: &Opts) -> Result<Args, String> {
         nodes: 2,
         frames: 3000,
         delay: 1,
-        types: vec![1, 2, 3, 4],
+        types: None,
+        log_words: false,
+        coverage: false,
+        cov_from: 0,
+        beat_until: 0,
+        geo_trace: 0,
         eeprom: None,
         shot_every: 0,
         shot_at: vec![],
@@ -132,12 +109,12 @@ fn parse(o: &Opts) -> Result<Args, String> {
         fresh_hub: false,
         layout: 3,
         delay_to: vec![],
-        skew: vec![0; 4],
+        skew: vec![0; 8],
         ids: None,
         ram_dump: None,
         watch: None,
         load: None,
-        inputs: vec![None; 4],
+        inputs: vec![None; 8],
     };
     let mut it = o.args.iter().skip(1);
     let num = |s: Option<&String>, what: &str| -> Result<u64, String> {
@@ -182,7 +159,7 @@ fn parse(o: &Opts) -> Result<Args, String> {
             "--skew" => {
                 let v = it.next().ok_or("--skew wants a list")?;
                 a.skew = v.split(',').filter_map(|x| x.parse().ok()).collect();
-                a.skew.resize(4, 0);
+                a.skew.resize(8, 0);
             }
             "--delay-to" => {
                 let v = it.next().ok_or("--delay-to wants NODE:D[,NODE:D]")?;
@@ -202,9 +179,17 @@ fn parse(o: &Opts) -> Result<Args, String> {
                 a.set_bytes.push((n as usize, off as usize, val as u8));
             }
             "--fresh-hub" => a.fresh_hub = true,
+            "--log-words" => a.log_words = true,
+            "--coverage" => a.coverage = true,
+            "--geo-at" => a.geo_trace = num(it.next(), f)?,
+            "--beat-until" => a.beat_until = num(it.next(), f)?,
+            "--coverage-from" => {
+                a.coverage = true;
+                a.cov_from = num(it.next(), f)?;
+            }
             "--link-types" => {
                 let v = it.next().ok_or("--link-types wants a list")?;
-                a.types = v.split(',').filter_map(|x| x.parse().ok()).collect();
+                a.types = Some(v.split(',').filter_map(|x| x.parse().ok()).collect());
             }
             "--eeprom" => a.eeprom = Some(PathBuf::from(it.next().ok_or("--eeprom wants a file")?)),
             "--freeze" => {
@@ -222,18 +207,18 @@ fn parse(o: &Opts) -> Result<Args, String> {
             "--load" => a.load = Some(PathBuf::from(it.next().ok_or("--load wants a file")?)),
             s if s.starts_with("--input") && s.len() == 8 => {
                 let n = (s.as_bytes()[7] as char).to_digit(10).ok_or("bad --inputN")? as usize;
-                if n >= 4 {
-                    return Err("--inputN: N is 0 to 3".into());
+                if n >= 8 {
+                    return Err("--inputN: N is 0 to 7".into());
                 }
                 a.inputs[n] = Some(it.next().ok_or("--inputN wants a script")?.clone());
             }
             other => return Err(format!("unknown option {other}")),
         }
     }
-    if !(1..=4).contains(&a.nodes) {
-        return Err("--nodes: 1 to 4".into());
+    if !(1..=8).contains(&a.nodes) {
+        return Err("--nodes: 1 to 8".into());
     }
-    if a.types.len() < a.nodes {
+    if a.types.as_ref().is_some_and(|t| t.len() < a.nodes) {
         return Err("--link-types: one per node".into());
     }
     Ok(a)
@@ -265,6 +250,16 @@ pub fn run(o: &Opts, roms: &RomSet) -> ExitCode {
 }
 
 fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
+    let play = romset::games::link_play(roms.game.id)
+        .ok_or_else(|| format!("{}: no link play data (crates/romset/src/games/link.rs)", roms.game.id))?;
+    if a.nodes > play.max_nodes {
+        return Err(format!("{} links at most {} nodes", roms.game.id, play.max_nodes));
+    }
+    let types: Vec<u8> = a
+        .types
+        .clone()
+        .unwrap_or_else(|| (0..a.nodes).map(|i| *play.roles.get(i).or(play.roles.last()).unwrap()).collect());
+    let (tx_o, rx_o, blk) = (play.tx, play.rx, play.block);
     let dir = OUT_DIR.get().cloned().unwrap_or_else(|| PathBuf::from("out").join("link-run"));
     let frames_dir = dir.join("frames");
     let _ = std::fs::remove_dir_all(&frames_dir);
@@ -283,12 +278,24 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
         .map(|i| {
             let mut m = machine(roms);
             m.bus.geo.set_threaded(!o.single_thread);
-            m.bus.eeprom.load(&patched_eeprom(
+            let image = play.settings.image(
                 base.as_deref(),
-                a.types[i],
-                &a.set_bytes.iter().filter(|b| b.0 == i).map(|b| (b.1, b.2)).collect::<Vec<_>>(),
-            ));
-            m.bus.link = Some(model2::link::Link::new(romset::LinkBoard::Idle).joined());
+                play.role_off,
+                types[i],
+                &play
+                    .car_off
+                    .map(|o| (o, i as u8))
+                    .into_iter()
+                    .chain(a.set_bytes.iter().filter(|b| b.0 == i).map(|b| (b.1, b.2)))
+                    .collect::<Vec<_>>(),
+            );
+            match play.settings.store {
+                SettingsStore::Eeprom => m.bus.eeprom.load(&image),
+                SettingsStore::IoBoard => m.bus.io_store_load(&image),
+            }
+            let mut l = model2::link::Link::new(romset::LinkBoard::Idle).joined();
+            l.beat_until = a.beat_until;
+            m.bus.link = Some(l);
             if let Some((_, ad)) = a.watch.filter(|w| w.0 == i) {
                 m.bus.watch = Some((ad, Vec::new()));
             }
@@ -298,7 +305,7 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
             m
         })
         .collect();
-    let mut hub = LinkHub::new(a.nodes, a.delay);
+    let mut hub = LinkHub::for_game(a.nodes, a.delay, play);
     hub.drop_at = a.drop_at;
     hub.freeze = a.freeze;
     hub.layout = a.layout;
@@ -338,9 +345,10 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
         let h = take(&mut at)?.to_vec();
         let mut buses: Vec<&mut model2::bus::Model2Bus> = ms.iter_mut().map(|m| &mut m.bus).collect();
         hub = LinkHub::load(&h, &mut buses)?;
+        hub.set_play(play);
         if a.fresh_hub {
             // Only the machines were saved: the board's own state is lost.
-            hub = LinkHub::new(a.nodes, a.delay);
+            hub = LinkHub::for_game(a.nodes, a.delay, play);
             for m in ms.iter_mut() {
                 if let Some(l) = m.bus.link.as_mut() {
                     (l.started, l.master) = (false, false);
@@ -362,14 +370,14 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
             roms.game.id,
             a.nodes,
             a.delay,
-            &a.types[..a.nodes]
+            &types[..a.nodes]
         ),
     );
     let mut last_state = vec![u32::MAX; a.nodes];
     let mut last_rx = vec![u32::MAX; a.nodes];
     // The received block that is the node's own echo.
     let own_k = if a.layout == 3 { a.nodes - 1 } else { 0 };
-    let mut last_tx: Vec<Vec<u8>> = vec![vec![0; BLOCK]; a.nodes];
+    let mut last_tx: Vec<Vec<u8>> = vec![vec![0; blk]; a.nodes];
     let started = std::time::Instant::now();
     let mut frame = ms[0].frames;
     let mut step = 0u64;
@@ -395,7 +403,7 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
         for (i, m) in ms.iter().enumerate() {
             let Some(ram) = m.bus.link_ram() else { continue };
             let (ready, id, total) = (ram[0], ram[2], ram[3]);
-            let tx = &ram[TX..TX + BLOCK];
+            let tx = &ram[tx_o..tx_o + blk];
             let st = u32at(tx, 0x18);
             if st != last_state[i] {
                 say(
@@ -403,15 +411,18 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
                     format!(
                         "frame {frame:>6}: node {i} state {} -> {st} (ready {ready} id {id} total {total}) own: {}",
                         last_state[i] as i32,
-                        block_summary(tx)
+                        block_summary(tx, play)
                     ),
                 );
                 last_state[i] = st;
             }
             // Every change of a word of the node's block outside the car's moving
             // numbers (the position and wheel floats, the race clock).
-            for w in (0..BLOCK).step_by(4) {
-                if (0x24..0x80).contains(&w) || w == 0x19c || w == 0x18 {
+            for w in (0..blk).step_by(4) {
+                if !a.log_words && play.state_off.is_none() {
+                    break;
+                }
+                if !a.log_words && ((0x24..0x80).contains(&w) || w == 0x19c || w == 0x18) {
                     continue;
                 }
                 if tx[w..w + 4] != last_tx[i][w..w + 4] {
@@ -428,20 +439,26 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
             last_tx[i].copy_from_slice(tx);
             if a.nodes > 1 {
                 let other = if own_k == 0 { 1 } else { 0 };
-                let rx1 = &ram[RX + other * BLOCK..RX + (other + 1) * BLOCK];
-                let s1 = u32at(rx1, 0x18);
+                let rx1 = &ram[rx_o + other * blk..rx_o + (other + 1) * blk];
+                let s1 = u32at(rx1, play.state_off.unwrap_or(0));
                 if s1 != last_rx[i] {
                     say(
                         &mut log,
-                        format!("frame {frame:>6}: node {i} sees the other at state {s1}: {}", block_summary(rx1)),
+                        format!(
+                            "frame {frame:>6}: node {i} sees the other at state {s1}: {}",
+                            block_summary(rx1, play)
+                        ),
                     );
                     last_rx[i] = s1;
                 }
             }
             if hub.is_ready() && (a.log_every == 0 || frame.is_multiple_of(a.log_every)) {
-                let mut s = format!(" | n{i} {}", block_summary(tx));
+                let mut s = format!(" | n{i} {}", block_summary(tx, play));
                 for k in (0..a.nodes).filter(|&k| k != own_k) {
-                    s.push_str(&format!(" ; rx{k} {}", block_summary(&ram[RX + k * BLOCK..RX + (k + 1) * BLOCK])));
+                    s.push_str(&format!(
+                        " ; rx{k} {}",
+                        block_summary(&ram[rx_o + k * blk..rx_o + (k + 1) * blk], play)
+                    ));
                 }
                 line.push_str(&s);
             }
@@ -453,7 +470,7 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
             for (i, m) in ms.iter().enumerate() {
                 if let Some(ram) = m.bus.link_ram() {
                     let mut t = String::new();
-                    for (k, blk) in ram[TX..RX + 4 * BLOCK].chunks(BLOCK).enumerate() {
+                    for (k, blk) in ram[tx_o..rx_o + a.nodes * blk].chunks(blk).enumerate() {
                         t.push_str(&format!(
                             "block {}\n",
                             if k == 0 { "tx".to_string() } else { format!("rx{}", k - 1) }
@@ -485,6 +502,21 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
             out.extend(png::zlib::compress(&raw));
             std::fs::write(path, &out).map_err(|e| format!("{}: {e}", path.display()))?;
             say(&mut log, format!("state         saved {} at frame {at} ({} KB)", path.display(), out.len() / 1024));
+        }
+        if a.geo_trace != 0 {
+            if frame == a.geo_trace {
+                ms[0].bus.geo_trace = Some(Vec::new());
+            } else if frame == a.geo_trace + 1 {
+                if let Some(t) = ms[0].bus.geo_trace.take() {
+                    let text: String = t.iter().map(|(a, v)| format!("{a:08x} {v:08x}\n")).collect();
+                    let _ = std::fs::write(dir.join("geo-trace-0.txt"), text);
+                }
+            }
+        }
+        if a.cov_from != 0 && frame == a.cov_from {
+            for m in ms.iter_mut() {
+                m.coverage = Default::default();
+            }
         }
         for (m, s) in ms.iter_mut().zip(&scripts) {
             s.apply(m.frames, &mut m.bus);
@@ -519,7 +551,15 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
         let sh = m.bus.state_hash();
         say(&mut log, format!("node {i}        state hash {sh:016x} ({} frames, ip {:#x})", m.frames, m.cpu.ip));
         h = fold(h, &sh.to_le_bytes());
-        let _ = std::fs::write(dir.join(format!("eeprom-{i}.bin")), m.bus.eeprom.save());
+        if a.coverage {
+            let cov: String = m.coverage.iter().map(|x| format!("{x:08x}\n")).collect();
+            let _ = std::fs::write(dir.join(format!("coverage-{i}.txt")), cov);
+        }
+        let store = match play.settings.store {
+            SettingsStore::Eeprom => m.bus.eeprom.save(),
+            SettingsStore::IoBoard => m.bus.io_store_dump(play.settings.size),
+        };
+        let _ = std::fs::write(dir.join(format!("eeprom-{i}.bin")), store);
         if let Some(t) = &m.bus.link_trace {
             let text: String = t
                 .iter()
@@ -556,32 +596,41 @@ fn shot(ms: &mut [model2::Machine], path: &Path) {
     let mut views = Vec::new();
     for m in ms.iter_mut() {
         m.bus.geo.sync();
+        println!("shot          {}: frame {}, {} geometry words in the frame's stream; geo words {}, TGP fault {:?}, empty copro reads {} {:?}", path.display(), m.frames, m.bus.geo.engine().stream.len(), m.bus.geo_words, m.bus.tgp_fault, m.bus.copro_empty_reads, m.bus.copro_empty_by_ip.iter().take(4).collect::<Vec<_>>());
         views.push(render(m, None, path));
     }
     let (w, h) = (views[0].0.width, views[0].0.height);
     let gap = 4usize;
-    let tw = w * views.len() + gap * (views.len() - 1);
-    let mut rgb = vec![40u8; tw * h * 3];
+    // One row up to four screens, then rows of four.
+    let cols = views.len().min(4);
+    let rows = views.len().div_ceil(cols);
+    let tw = w * cols + gap * (cols - 1);
+    let th = h * rows + gap * (rows - 1);
+    let mut rgb = vec![40u8; tw * th * 3];
     for (n, (_, px)) in views.iter().enumerate() {
+        let (cx, cy) = (n % cols, n / cols);
         for y in 0..h {
-            let dst = (y * tw + n * (w + gap)) * 3;
+            let dst = ((cy * (h + gap) + y) * tw + cx * (w + gap)) * 3;
             rgb[dst..dst + w * 3].copy_from_slice(&px[y * w * 3..(y + 1) * w * 3]);
         }
     }
-    let _ = std::fs::write(path, png::encode_rgb(tw, h, &rgb));
+    let _ = std::fs::write(path, png::encode_rgb(tw, th, &rgb));
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
-    fn the_default_record_checks_out() {
+    fn the_default_records_check_out() {
         // The CRC of a record the game itself wrote (link type 0), docs/hw/link-board.md section 2.
-        let mut e = patched_eeprom(None, 0, &[]);
+        let p = romset::games::link_play("srallyc").unwrap();
+        let mut e = p.settings.image(None, p.role_off, 0, &[]);
         assert_eq!((e[0], e[1]), (0x71, 0xad));
-        e = patched_eeprom(Some(&e), 1, &[]);
+        e = p.settings.image(Some(&e), p.role_off, 1, &[]);
         assert_eq!(e[0x0b], 1);
-        assert_eq!(record_crc(&e[2..36]), u16::from_le_bytes([e[0], e[1]]));
+        assert_eq!(p.settings.crc.compute(&e), u16::from_le_bytes([e[0], e[1]]));
+        // Daytona's own default record (the manifest's, link ID SINGLE) keeps its CRC.
+        let p = romset::games::link_play("daytona").unwrap();
+        let e = p.settings.image(None, p.role_off, 0, &[]);
+        assert_eq!((e[8], e[9]), (0x31, 0x3c));
     }
 }

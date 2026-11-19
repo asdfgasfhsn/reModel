@@ -15,8 +15,10 @@ four real copies of the game in one process** (section 9, the two-machine
 spike). Section 9 corrects two points of the first spike that a mirror
 partner could not show: the node IDs are 1-based and **a node's own block
 is the last of its received blocks**, not the first. Where an earlier
-section says otherwise, section 9 wins (the places are marked). `daytona`, `von` and `overrev` were only
-looked at (section 7). The 2A's slot is the same as the original board's
+section says otherwise, section 9 wins (the places are marked). `daytona` (the original Model 2, up
+to **eight** cabinets) was then run the same way (section 10; what is generic
+and what is per game: section 11); `von` and `overrev` were only looked at
+(section 7). The 2A's slot is the same as the original board's
 (`model2.md` section 2) and the 2B's.
 
 ## 1. Reproducing it
@@ -274,8 +276,8 @@ their docs have the code-level detail):
   reads its ID from `0x1A10002` and writes none; `von` writes its ID; the
   strings and states differ (`srallyc`: `NC_`/`NS_`; `von`: "Checking
   Network Now"). Whether the shared RAM layout beyond the `0x1C0`-byte
-  blocks and the ready byte is common is *unconfirmed*; Daytona and Virtual-On
-  were not run past their handshakes.
+  blocks and the ready byte is common is *unconfirmed*; Virtual-On was not run past its handshake; Daytona was taken
+  through a linked race with up to eight machines (section 10).
 - **One board model can serve all of them**: the registers (present, start,
   busy, ready/ID/count) and a block exchange of `0x1C0`-byte blocks are
   common. A game-specific part is only what each game puts in the blocks,
@@ -558,8 +560,7 @@ behaves the same way.
 - Host speed: a pair of machines runs about 700 frames a second on the JIT
   (a 4,800-frame run takes 7 s, a race to the finish 15 s), about ten times
   real time, with pictures drawn only at the frames asked for.
-- **Not tried**: Daytona (the handshake differs: its own ID write and busy
-  bit, section 7); the real board's behaviour when its ring breaks; the TWIN
+- **Not tried** (srallyc; Daytona is section 10): the real board's behaviour when its ring breaks; the TWIN
   cabinet type's effect; the 2-player screen layouts of the TWIN cabinet.
 
 ### 9.5 What the next steps need
@@ -584,3 +585,236 @@ behaves the same way.
 - The rollback or run-ahead work needs the hub's delay lines in its state
   and no sending from a rolled-back frame (section 8(c) 7), which the
   `LinkHub::save` / `load` already shape.
+
+## 10. Daytona USA (`daytona`, the original Model 2): two to eight machines
+
+The same hub and `remodel link-run` run `daytona` (`make link-run GAME=daytona
+NODES=8`), through the per-game data in `crates/romset/src/games/link.rs`
+(section 11). All of it is from running the game and reading its program (no
+emulator's code); each point is marked *confirmed* (seen in a run), *code*
+(read from the program, not exercised) or *unconfirmed*. Frames are from the
+scripted run `coin1@1100-1104,start@1300-1304,gas=0xff@1500-1510,
+gas=0xff@1700-1710,gas=0xff@2400-99999` on every node, D = 1, with the
+settings made by `link-run`; they are the same for 2, 4 and 8 nodes unless
+said.
+
+### 10.1 The board and how link play is enabled
+
+- **Same slot, same registers** (*confirmed*, `link-run --trace`): the
+  original board's slot is the 2A's (`model2.md` section 2). The game
+  touches exactly the registers of section 3 (`0x1A14000`, `0x1A14002`,
+  `0x1A10000`, `0x1A10002`, `0x1A10003`) and the blocks from `0x1A12000`.
+- **The setting is on the I/O board**, not in an EEPROM like srallyc's:
+  the 128-byte record the game fetches with command 3 at boot and saves with
+  1 and 2 (`model2.md` section 2; the model keeps it in the bus at
+  `0x1C00200`, byte N at word N). The record is "SEGA", a version, a
+  CRC-16 at `0x08` (CCITT polynomial, start 0, **not** complemented, over
+  bytes `0x0A`-`0x7F`: *confirmed* by recomputing the manifest's record),
+  then:
+  - **`0x0B` LINK ID**: 0 SINGLE (the network check is skipped), 1
+    MASTER, 2 SLAVE (the game's own default is MASTER). *Confirmed:* the
+    test screen at boot shows "LINK ID MASTER" or "SLAVE", and the board
+    check "THIS IS MASTER CONTROLLER" or "THIS IS SLAVE MACHINE" (a third
+    string, in the table at `0x1B948`, is for the value 0, *code*). With no
+    board (`0x1A14000` bit 0 set) a linked cabinet shows "NETWORK BOARD
+    NOT PRESENT" and restarts (`daytona.md`).
+  - **`0x0C` CAR NUMBER**, 0-based, shown +1 (*confirmed*: setting 1 shows
+    "CAR NUMBER 2"). Whether the game uses it beyond showing it is
+    *unconfirmed*: with every node left at CAR NUMBER 1 two nodes
+    link, play the selection and finish a race as with 1 and 2 (the first
+    runs of this section), and the node ID decides what the exchange does.
+    `link-run` sets it to the node's index all the same. In the 3D runs
+    (below, CAR NUMBER = index) the cars take different colours (red, blue,
+    yellow, green, pink, cyan, orange ..); whether it follows the ID or the
+    CAR NUMBER was not separated.
+  - Cabinet type (TWIN by default) and the rest: *unconfirmed*. No DIP
+    switch or input bit for linking was found.
+- **How many cabinets** (*confirmed*): **eight**. The program checks the ID
+  register (`0x1A10002`) and the node count (`0x1A10003`) to be 1 to 8 (the
+  routine at `0x1B5F4`) and reads eight received blocks each frame. Two,
+  four and eight machines were run through to the results.
+
+### 10.2 The handshake
+
+The routine at `0x1B5F4`, *confirmed* by the access trace and the screens:
+
+| Frame | What |
+|---|---|
+| 186 | writes 0 to `0x1A14000` and `0x1A14002` (byte writes) |
+| 187 | reads `0x1A14000` (bit 0 set: "NETWORK BOARD NOT PRESENT", "CANCELLED"); clears its local 448-byte copy (`0x540C00`); **writes 1 to `0x1A14000`**; the **master then writes 1 to `0x1A14002`** (srallyc writes `0x1A14002` first; the order does not matter to the hub) |
+| 188 on | every game frame: zeroes its own block (`0x1A12000`), waits for **bit 7 of `0x1A14002` to flip** (below), reads `0x1A10003` and while that is non-zero counts down **320 frames** ("NETWORK CHECKING", a blinking caption) |
+| 528 | the count ends; `0x1A10000` must read 1, `0x1A10002` (ID) 1-8 and `0x1A10003` (count) 1-8, or an error ("CANCELLED") and the game leaves the link; else it sets its link variables and sends a block every frame from then on |
+
+- **New register behaviour: bit 7 of `0x1A14002` flips every frame**
+  (*confirmed*: with the idle board's constant 0 the game stays in "NETWORK
+  CHECKING" for ever). The model flips it with the frame parity for boards
+  joined to a hub (`Model2Bus`), one flip per vblank,
+  which is what the loop's parity test needs; srallyc never reads the
+  register, so nothing changes there. The vblank handler also reads
+  `0x1A14002` every frame into a game variable (`0x540054`), whose use was
+  not found. What the real bit is (a frame token, a ring token, busy) is
+  *unconfirmed*. The 320-frame count only counts frames in which the node
+  count is non-zero: a ring that has not formed just keeps the game
+  waiting (no timeout, as srallyc).
+- **Ready, ID, count**: `0x1A10000` = 1 is read once at frame 528 and then
+  **every frame** (the link-loss check at `0x1B0D0`; the behaviour on a loss
+  is *code* only, not exercised). IDs are **1-based** (master 1) and the
+  count is the number of cabinets, as srallyc (section 9).
+- **Barriers**: the game has no barrier words. Each node's state is in the
+  header of its block (next section) and the nodes go on together because
+  the master's block says so. A late-started node (`--skew`) was not tried
+  on daytona.
+
+### 10.3 The exchanged block
+
+- **Size, place, rate** (*confirmed*): a **448-byte (`0x1C0`)** block at
+  `0x1A12000` written **once a frame** from frame 528, from a local copy at
+  `0x540C00` and the car table; **eight** received blocks at `0x1A121C0 +
+  0x1C0 * k` are read every frame (the loop at `0x1A960` covers all eight;
+  those past the node count are zeros). Eight blocks end at `0x1A12FC0`:
+  the 16 KB holds them (a unit test pins it). The same geometry as srallyc.
+- **Order of the received blocks** (*confirmed*: both screens show their
+  own and the other cars, `POSITION 1st/2`, `2nd/2` and the cars' order on 4
+  and 8): **the same own-last order as srallyc**. The game finds the block of
+  the node with ID X at index `(TOTAL - 1 - MYID + X) mod TOTAL` (`0x1AA60`,
+  `0x3FA8`, `0x1B760`), MYID the register's value. The node's own block is
+  the last one (X = MYID), and only the difference X - MYID counts, so
+  `LinkHub`'s layout 3 serves both games.
+- **Header** (the first `0x40` bytes; the game keeps one copy per node at
+  `0x540C40 + 0x40 * k`). From the dumps at frames 1200 and 3000
+  (`link-run --dump-at`):
+  - `+0x3C` a **checksum**: the sum (mod 2^32) of the other 15 words (*code*:
+    the sender stores it, the receiver at `0x1A960` recomputes it and
+    **keeps its previous copy of that header when it differs**, so a torn
+    block is ignored, a stale one harmless). Not exercised with a bad block.
+  - `+0x0A` the node's **state** (2 and 3 at 528/530; `0x24` to `0x28` at
+    1108-1119; 6 to 9 at 3136-3142, ..); `+0x0B` the master's value is the
+    **node count**, the others' 1 (*unconfirmed* reading); `+0x0C` the
+    node's own ID; `+0x08` a 16-bit number that falls from `0x3BF` after the
+    course select (*inferred*: a timer); `+0x2F` a mask of the nodes
+    entered (3 on the master of two, 1 on the slave).
+  - The **master's block carries the race entry** from frame 3140: `+0x00`
+    to `+0x07` a grid order (7 6 5 4 3 2 1 0 for eight nodes) and from `+0x0C`
+    the roster of IDs (1 2 3 4 ..); the other nodes' blocks have zeros there
+    (*confirmed* on 2, 4 and 8; the exact meaning *unconfirmed*).
+- **Body**: `+0x40` to `+0xE7` (`0xA8` bytes) the node's own car state copied
+  from the game's car table (`0x1A8B8`): position, orientation and wheel
+  numbers; each node recomputes every car's pose from the received ones
+  through the TGP (`0x1AA18`, `0x1AB94`); from `+0x120` 4-byte entries per
+  car slot (*code*). The rest is zero. There is no sequence number:
+  staleness shows only as a car that lags.
+
+### 10.4 What a linked Daytona does (*confirmed*, frames of the scripted run)
+
+| Frame | Every screen |
+|---|---|
+| 188 | the hub makes the link ready (both nodes started the board at 187) |
+| 190-528 | "NETWORK CHECKING" and the role line |
+| from 528 | the **link attract**: a title card "communication system: up to 2 people can battle" (fixed text, also with 8 nodes), then the usual attract |
+| 1100 / 1300 | coin; start: **CIRCUIT SELECT** (a 12 s timer) |
+| 1500-2400 | **MISSION SELECT** (Beginner, Automatic, a 3 s timer) |
+| about 2600 | "以上に決定しました" (decided as above) |
+| about 3000 | **"GENTLEMEN START YOUR ENGINES"** |
+| 3136-3142 | node states 6 to 9; the master's block carries the grid and roster |
+| 3200-4400 | ROLLING START with "AUTO DRIVE", the 3 shown at about 3950 |
+| from about 4400 | the race: `POSITION 1st/2`, `2nd/2` (`x/4`, `x/8`) from the nodes' positions; every node shows the others' cars (eight cars in eight colours in the 8-up picture) and, on the HUD, the other nodes' lap times |
+| by 13500 | **RESULTS 1st / 2nd** with total time and best lap on each screen (1'09"25 and 1'09"29 on the two nodes of the two-machine run) |
+| about 14500 | back to the Daytona USA title |
+
+Speed: 4,000 frames of two machines take 10 s on the JIT (26 s on the
+interpreter); 3,200 frames of eight take 34 s.
+
+### 10.5 The one thing that does not work: no 3D in a straight linked race
+
+(*Confirmed*, cause not found.) In a **straight run** the race's HUD, timers,
+positions, laps and results all work, but **the 3D scene is not drawn**: the
+geometry port gets about 10 words a frame (a viewport) instead of about
+1,000 and the frame's stream holds 7 words, so the picture is the sky, the
+grass and the HUD. It is so on 1, 2, 4 and 8 nodes, on the interpreter and the
+JIT, with `--geo chip` and `native`, threaded or not, and (1 node) with or
+without idle-loop skipping; LINK ID SINGLE inside `link-run` draws it.
+**After a save and a load it is drawn**: `--save-at 3200 F`, then `--load
+F`: the track, the own car and the others' cars appear from frame 3201, on 2,
+4 and 8 machines, D = 1 and 8, and the race runs to its results (13500) and
+the title (14500). A save at 3100 or earlier loads into the same no-3D run
+(its final hash equals the straight run's), so something goes wrong between
+3100 and 3200 and the saved state does not carry it. At frame 3201 the work
+RAM (both nodes), the link RAM, the video RAMs, the I/O board record and the
+backup RAM of node 0 are word for word the same in the straight and the
+loaded run (`--ram-dump`), yet the loaded run's **geometry output is a whole
+scene and the straight run's is empty**. Ruled out: the flipping bit
+(`--beat-until`), the layout and ID (a 1-node link does it too), CAR NUMBER,
+the delay, idle skipping, the geometrizer mode and its thread. A hunch for
+the next look: state of the geometrizer or the TGP that the save does not
+carry (the game builds its scene list once and patches it by about 10 port
+words a frame, so a stale part of the list DMA's jump table or the
+engine would empty every later frame), which a load rebuilds. Until then the
+**linked race is rendered from a save at frame 3200 and its load**
+(`make link-run GAME=daytona NODES=2 LINK_OPTS="--save-at 3200 F"`, then
+`LINK_OPTS="--load F"`); the game logic, the exchange and the hashes below
+are the same either way.
+
+### 10.6 Delay, determinism and the state
+
+- **D = 1, 2, 3, 8 and 16** (two machines; the other node's block arrives D
+  frames after it was sent, the own block is the echo): the handshake, the
+  selection screens and the race entry work at every D, each frame of D
+  shifting the 320-frame count and the state steps (state 2 at frame 528,
+  528, 532, 540, 556; race entry at 3136, 3136, 3138, 3142, 3150). In the
+  rendered race (10.5) D = 8 shows both cars, `1st/2`, `2nd/2` and the
+  lap times of both at frame 6000. No reset, no message: **no timeout and no
+  complaint about a stale partner** at any D, as srallyc. D = 16 was only
+  looked at by its states, not by its picture.
+- **Determinism** (*confirmed*): two machines, 4,000 frames, the script above:
+  the combined hash (an FNV of the machines' state hashes and the hub's
+  state, as in section 9.3) is `f848578ec39435d3` on the interpreter, the
+  JIT, with `--single-thread` and with both. A different D gives a
+  different hash.
+- **Save and load** (*confirmed*): `--save-at F FILE` then `--load FILE` ends
+  on the straight run's combined hash for a save at frame 300, 1900, 2600,
+  3000 or 3100. A save at 3200 or 3300 ends on a different one: it is the run
+  with the 3D scene (10.5), whose hash is stable across loads. The hub's state
+  (ready, IDs, delay lines), each bus's board flags and the settings (they
+  are in the machine's memory) are saved; the heartbeat is the frame parity
+  and needs no state. Without the hub's state (`--fresh-hub`) the ready byte
+  falls and the game leaves the link, as srallyc.
+
+### 10.7 What differs from srallyc
+
+- The settings are in the **I/O board's record** at `0x0B` (LINK ID 0, 1, 2)
+  with its own CRC, not the 2A's EEPROM LINK TYPE (1-4); a separate **CAR
+  NUMBER** byte.
+- **Eight** cabinets, not four.
+- The handshake **needs `0x1A14002` bit 7 to flip every frame** and counts 320
+  frames before it asks for the ready byte, the ID and the count; the
+  master's `0x1A14002` write comes after the `0x1A14000` one (srallyc
+  never reads `0x1A14002`).
+- The block: the same size, address and own-last order; a checksummed
+  **header** (state, count, ID, the master's grid and roster) instead of
+  srallyc's plain fields, an own car section copied from the car table.
+- No barrier words (srallyc: the `0x18C` acknowledgement ring and node
+  states 1 and 2): the states are in the header and the master leads.
+- The race's 3D scene does not come up in a straight run (10.5).
+
+## 11. What is generic and what is per game
+
+| | Generic (the board, `LinkHub`, `link-run`) | Per game (`romset::LinkPlay`, `crates/romset/src/games/link.rs`) |
+|---|---|---|
+| Registers | `0x1A14000` (present, start), `0x1A14002` (master flag; bit 7 flips with the frame parity on a hub, harmless where it is not read), `0x1A10000` ready, `0x1A10002` ID, `0x1A10003` node count | `id_base` (the register holds the 0-based node + this; 1 for both games) |
+| Ready, IDs | ready when every node has written 1 to `0x1A14000`; the master first, the others in order of start; a fixed D for a session | nothing |
+| Exchange | at the frame boundary: each node's own block out, the others' in D frames later, the own block echoed at once, in the **own-last** order `(ID + k + 1) mod N` | the block size (`block`), the own block's offset (`tx`), the first received block's (`rx`), the node limit (`max_nodes`: 4 srallyc, 8 daytona) |
+| Settings | `link-run` builds each node's image: the default record, the role byte, the CRC | where they live (`SettingsStore`: the EEPROM for srallyc, the I/O board record for daytona), the default record, the role byte's offset and its value for node 0, 1, .. (`role_off`, `roles`), a cabinet-number byte (`car_off`), the CRC (`RecordCrc`: range, position, start value, complement) |
+| Logging | handshake, state changes, block dumps | the state word and position in a block (`state_off`, `pos_off`; none known for daytona) |
+| Left open | | what is in a block; what the game needs to see before it goes on (srallyc's two barriers, daytona's 320 flips); what a lost or stale link does; any further register |
+
+What a LAN protocol must leave per game: the **block size and the number of
+blocks**; the **settings** each host must set (the master's and slaves' role
+byte, a number per cabinet) and **agree on** (srallyc copies the master's
+settings, daytona's header carries the master's grid and roster); the **ID
+base** and the **received-block order** (own last, in both so far); the
+**register behaviour** a game waits on (daytona's flip); the **handshake
+length** (about 1,350 frames to srallyc's link attract, 528 to daytona's);
+and the block's contents, which the exchange does not look at, **except that a
+daytona block has a checksum that the receiver uses to drop a torn one**, so
+a block must arrive whole. In short, a block-exchange service with per-game
+constants and a ready/ID/count board.

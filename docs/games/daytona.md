@@ -246,6 +246,33 @@ same board.
   so each needs a layout check and the Turbo, GTX and Maxx sets are
   patches on other hardware revisions (unconfirmed).
 
+## Linked play (experimental)
+
+Up to **eight** cabinets (`docs/hw/link-board.md` section 10; run them with
+`make link-run GAME=daytona NODES=8`, headless, in one process). Settings
+live on the I/O board's record: link ID at byte `0x0B` (0 SINGLE, 1
+MASTER, 2 SLAVE), CAR NUMBER at `0x0C` (0-based), CRC-16 at `0x08` (CCITT,
+start 0, not complemented, over `0x0A`-`0x7F`). The handshake is the
+network check at `0x1B5F4`: board start, the master's `0x1A14002` write,
+**bit 7 of `0x1A14002` flipping every frame** (the game waits 320 flips with
+a non-zero node count), then the ready byte, the 1-based ID and the node
+count. Each node sends a 448-byte block a frame at `0x1A12000` and reads
+eight at `0x1A121C0 + 0x1C0 * k`, own block last (as `srallyc`); the header's
+`+0x3C` checksum lets a node drop a torn block, and the master's block
+carries the grid and the roster.
+
+- *Confirmed (by running it):* two, four and eight machines reach the
+  link attract (frame 528 on), Circuit Select, Mission Select, the "decided"
+  line, the start movie (about 3000), the race with every node seeing the
+  others (`POSITION x/8` and eight cars) and the results (by frame 13500),
+  at delays of 1 to 16 frames, with the same combined hash on the
+  interpreter and the JIT.
+- *Open:* in a straight linked race the 3D scene is not drawn (HUD,
+  timers and results are); after a save at frame 3200 and a load it is.
+  The cause is not found (`docs/hw/link-board.md` section 10.5).
+- *Unconfirmed:* what the real board's `0x1A14002` bit 7 is, what CAR
+  NUMBER does beyond display, a late-starting node, a lost link.
+
 ## Next
 
 1. A steering script for a whole Beginner race (a tracking script; the
@@ -256,4 +283,6 @@ same board.
    FM chip's clock), envelopes, the level of attract against the race.
 4. `vcop` and `desert` on the same board model (`vcop`'s chips have
    daytona's layout, sound board included).
-5. The drive board (register 17's queue) and the link board.
+5. The drive board (register 17's queue); the linked race's missing 3D
+   scene in a straight run (see Linked play), then a player view of
+   linked cabinets.

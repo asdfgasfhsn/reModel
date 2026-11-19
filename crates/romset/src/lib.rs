@@ -60,6 +60,116 @@ pub enum LinkBoard {
     Idle,
 }
 
+/// How one game sets up and lays out link play (`docs/hw/link-board.md`): what
+/// `model2::link::LinkHub` and `remodel link-run` need to run several machines
+/// of it. Per-game data in `games/link.rs`, found with [`games::link_play`].
+#[derive(Clone, Copy, Debug)]
+pub struct LinkPlay {
+    /// Cabinets the game can link (the receive blocks that fit the link RAM
+    /// bound it too: 16 KB).
+    pub max_nodes: usize,
+    /// Where the operator settings live and the record of them.
+    pub settings: LinkSettings,
+    /// Byte of the record that selects the cabinet's role, and its value for
+    /// node 0 (the master), 1, 2, ... (the last repeats for more nodes).
+    pub role_off: usize,
+    pub roles: &'static [u8],
+    /// A byte of the record that numbers the cabinet (`daytona`'s CAR NUMBER:
+    /// the node's index, 0-based), if the game has one apart from the role.
+    pub car_off: Option<usize>,
+    /// Offsets in the link RAM (`0x1A10000`): the game's own block, the
+    /// first received block, and the size of a block.
+    pub tx: usize,
+    pub rx: usize,
+    pub block: usize,
+    /// The node ID register (`0x1A10002`) holds the node's 0-based number
+    /// plus this.
+    pub id_base: u8,
+    /// Where a block holds the node's state word, if known (logged by
+    /// `link-run`), and three floats of position.
+    pub state_off: Option<usize>,
+    pub pos_off: Option<usize>,
+}
+
+/// The record of operator settings a game keeps, and where.
+#[derive(Clone, Copy, Debug)]
+pub struct LinkSettings {
+    pub store: SettingsStore,
+    /// The record at its defaults, with the role set to stand-alone; the
+    /// rest of the store is filled with `fill`.
+    pub record: &'static [u8],
+    pub fill: u8,
+    /// The size of the store image.
+    pub size: usize,
+    pub crc: RecordCrc,
+}
+
+/// Where a game keeps its operator settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsStore {
+    /// The 93C46 EEPROM, 128 bytes (`srallyc`: the 2A boards).
+    Eeprom,
+    /// The original Model 2's I/O board buffer at `0x1C00200`, 128 bytes,
+    /// byte N at word N (`daytona`).
+    IoBoard,
+}
+
+/// A record's checksum: CRC-16, CCITT polynomial `0x1021`, over bytes
+/// `from..to`, stored at `at` low byte first.
+#[derive(Clone, Copy, Debug)]
+pub struct RecordCrc {
+    pub at: usize,
+    pub from: usize,
+    pub to: usize,
+    pub init: u16,
+    pub complement: bool,
+}
+
+impl RecordCrc {
+    pub fn compute(&self, image: &[u8]) -> u16 {
+        let mut c = self.init;
+        for &x in &image[self.from..self.to] {
+            c ^= (x as u16) << 8;
+            for _ in 0..8 {
+                c = if c & 0x8000 != 0 { (c << 1) ^ 0x1021 } else { c << 1 };
+            }
+        }
+        if self.complement {
+            !c
+        } else {
+            c
+        }
+    }
+
+    /// Store the checksum in the image.
+    pub fn fix(&self, image: &mut [u8]) {
+        let c = self.compute(image);
+        image[self.at] = c as u8;
+        image[self.at + 1] = (c >> 8) as u8;
+    }
+}
+
+impl LinkSettings {
+    /// The store's image for a node: `base` (a settings file) or the
+    /// defaults, the role byte set, `set` bytes (offset, value) applied, the
+    /// checksum fixed.
+    pub fn image(&self, base: Option<&[u8]>, role_off: usize, role: u8, set: &[(usize, u8)]) -> Vec<u8> {
+        let mut e = vec![self.fill; self.size];
+        match base {
+            Some(b) => e[..b.len().min(self.size)].copy_from_slice(&b[..b.len().min(self.size)]),
+            None => e[..self.record.len()].copy_from_slice(self.record),
+        }
+        e[role_off] = role;
+        for &(o, v) in set {
+            if o < self.size {
+                e[o] = v;
+            }
+        }
+        self.crc.fix(&mut e);
+        e
+    }
+}
+
 /// A device on the board's expansion bus at `0x1D80000` that the game
 /// checks at boot (`model2::protection`). The game sends it a block of
 /// data (and, on [`ProtectionInterface::Tables`], two tables) and compares
