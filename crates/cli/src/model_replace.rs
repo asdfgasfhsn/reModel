@@ -25,6 +25,12 @@ fn rom_words(rom: &[u32], mask: u32, base: u32, end: u32) -> Vec<u32> {
 /// A compact model's records: (word index of the attribute, vertex word
 /// indices). The two start vertices come first (attribute index None).
 fn records(w: &[u32]) -> (Vec<usize>, Vec<(usize, Vec<usize>)>) {
+    records_x(w, true)
+}
+
+/// `compact`: topskatr's; else the standard format, 10 words per polygon
+/// (attr, normal, Pa, Pb), whose vertices (not normals) are returned.
+fn records_x(w: &[u32], compact: bool) -> (Vec<usize>, Vec<(usize, Vec<usize>)>) {
     let start: Vec<usize> = (0..6).collect();
     let mut recs = Vec::new();
     let mut i = 6;
@@ -33,9 +39,14 @@ fn records(w: &[u32]) -> (Vec<usize>, Vec<(usize, Vec<usize>)>) {
         if attr & 3 == 0 {
             break;
         }
-        let k = if attr & 1 != 0 { 6 } else { 3 };
-        recs.push((i, (i + 1..(i + 1 + k).min(w.len())).collect()));
-        i += 1 + k;
+        if compact {
+            let k = if attr & 1 != 0 { 6 } else { 3 };
+            recs.push((i, (i + 1..(i + 1 + k).min(w.len())).collect()));
+            i += 1 + k;
+        } else {
+            recs.push((i, (i + 4..(i + 10).min(w.len())).collect()));
+            i += 10;
+        }
     }
     (start, recs)
 }
@@ -218,21 +229,21 @@ pub fn run(roms: &RomSet, mode: &str, from: u64, count: u64, out: &Path, oba_arg
                     println!("frame {}: model {oba:06x} not drawn", cap.frame);
                     continue;
                 };
-                if !compact {
-                    return Err(format!("{oba:06x} is not a compact model"));
+                if !compact && mode == "box" {
+                    return Err(format!("{oba:06x} is not a compact model (box is compact-only)"));
                 }
                 let mut sub = Subst::default();
                 let mut points = cap.texture_point_ram.clone();
                 let mut trom = texrom.clone();
                 if mode == "scale" {
                     let mut w = orig.clone();
-                    let (start, recs) = records(&w);
+                    let (start, recs) = records_x(&w, compact);
                     let idx: Vec<usize> =
                         start.iter().copied().chain(recs.iter().flat_map(|r| r.1.iter().copied())).collect();
                     for (k, i) in idx.iter().enumerate() {
                         let keep = w[*i] & 1;
                         let v = f(w[*i]) * 1.5;
-                        w[*i] = if k % 3 == 0 { (v.to_bits() & !1) | keep } else { v.to_bits() };
+                        w[*i] = if compact && k % 3 == 0 { (v.to_bits() & !1) | keep } else { v.to_bits() };
                     }
                     sub.models.push((oba, w));
                 } else {

@@ -40,6 +40,7 @@ fn parse(rom: &[u32], s: usize, lim: usize) -> Option<usize> {
 /// (8-9) equal to their copy (23-24), and every vertex word is a finite
 /// float under 1e6 in magnitude.
 fn parse_x(rom: &[u32], s: usize, lim: usize, strict: bool) -> Option<usize> {
+    let std = STD.load(std::sync::atomic::Ordering::Relaxed);
     let good = |w: u32| !strict || (f32::from_bits(w).is_finite() && f32::from_bits(w).abs() < 1e6);
     if s + 6 > lim || !rom[s..s + 6].iter().all(|&w| good(w)) {
         return None;
@@ -52,10 +53,10 @@ fn parse_x(rom: &[u32], s: usize, lim: usize, strict: bool) -> Option<usize> {
         if attr & 3 == 0 {
             return (n > 0).then_some(n);
         }
-        if strict && (attr & 0xfc != 0 || (attr >> 8) & 3 != (attr >> 23) & 3) {
+        if strict && (attr & 0xfc != 0 || (!std && (attr >> 8) & 3 != (attr >> 23) & 3)) {
             return None;
         }
-        let k = if attr & 1 != 0 { 6 } else { 3 };
+        let k = if std { 9 } else if attr & 1 != 0 { 6 } else { 3 };
         if i + k > lim || !rom[i..i + k].iter().all(|&w| good(w)) {
             return None;
         }
@@ -65,7 +66,10 @@ fn parse_x(rom: &[u32], s: usize, lim: usize, strict: bool) -> Option<usize> {
     None
 }
 
+static STD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn run(rom: &[u32], args: &[String]) -> Result<(), String> {
+    STD.store(std::env::var_os("MP_STD").is_some(), std::sync::atomic::Ordering::Relaxed);
     let n = rom.len();
     let mask = (n.next_power_of_two() - 1) as u32;
     // Blank: inside a run of 16+ identical words (64+ bytes).
@@ -146,6 +150,13 @@ pub fn run(rom: &[u32], args: &[String]) -> Result<(), String> {
         us.iter().filter(|&&s| near(s, 2)).count(),
         us.iter().filter(|&&s| near(s, 8)).count()
     );
+    // Gap before each read model start: words since the nearest earlier end.
+    let mut hist = [0usize; 18];
+    for &s0 in &us {
+        let g = ue.range(..=s0).next_back().map_or(17, |&e| (s0 - e) as usize).min(17);
+        hist[g] += 1;
+    }
+    println!("words from the nearest earlier end to each start (0..16, 17+): {:?}", hist);
     // Parse test: the parser on read models (validation), then on unread stretches.
     let ok_strict = us.iter().filter(|&&s| parse_x(rom, s as usize, n, true).is_some()).count();
     println!("strict parser on read model starts: {ok_strict} of {}", us.len());
@@ -162,6 +173,8 @@ pub fn run(rom: &[u32], args: &[String]) -> Result<(), String> {
     let big: Vec<&(usize, usize)> = st.iter().filter(|s| s.1 - s.0 >= 8).collect();
     let after_read = big.iter().filter(|s| s.0 > 0 && uni[s.0 - 1]).count();
     let clean = big.iter().filter(|s| parse(rom, s.0, s.1).is_some()).count();
+    let offs = big.iter().filter(|s| (0..=8).any(|k| parse_x(rom, s.0 + k, s.1, true).is_some())).count();
+    println!("strict parse from any of the first 9 words of those stretches: {offs} of {}", big.len());
     let strict = big.iter().filter(|s| parse_x(rom, s.0, s.1, true).is_some()).count();
     println!("strict parse from the start of those stretches: {strict} of {}", big.len());
     let clean_after = big.iter().filter(|s| s.0 > 0 && uni[s.0 - 1] && parse(rom, s.0, s.1).is_some()).count();
@@ -185,7 +198,7 @@ pub fn run(rom: &[u32], args: &[String]) -> Result<(), String> {
                 if a & 3 == 0 {
                     break;
                 }
-                i += if a & 1 != 0 { 6 } else { 3 };
+                i += if STD.load(std::sync::atomic::Ordering::Relaxed) { 9 } else if a & 1 != 0 { 6 } else { 3 };
             }
             covered += i - at;
             at = i;

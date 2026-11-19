@@ -76,6 +76,8 @@ pub fn run(root: &Path, windows: (&[usize], &[usize]), out_dir: &Path, at: &[(us
                 }
             }
         }
+        let direct = side.blocks.iter().filter(|b| b.flags & 1 != 0).count();
+        let polyram = side.blocks.iter().filter(|b| b.poly_ram()).count();
         let mut js = String::new();
         let _ = write!(
             js,
@@ -101,8 +103,10 @@ pub fn run(root: &Path, windows: (&[usize], &[usize]), out_dir: &Path, at: &[(us
             .map_err(|e| e.to_string())?;
         let distinct_oba: std::collections::BTreeSet<u32> = models.values().map(|m| m.oba).collect();
         println!(
-            "frame {:>6}: blocks {:>3} (polys see {:>3}) 3d px {:>6} model {:>6} ({:.1}%) none {:>6} distinct keys {:>3} distinct oba {:>3}",
+            "frame {:>6}: direct {} polyram {} blocks {:>3} (polys see {:>3}) 3d px {:>6} model {:>6} ({:.1}%) none {:>6} distinct keys {:>3} distinct oba {:>3}",
             f.frame,
+            direct,
+            polyram,
             side.blocks.len(),
             max_block,
             px3d,
