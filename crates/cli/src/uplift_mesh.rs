@@ -341,6 +341,9 @@ pub fn run(roms: &RomSet, mode: &str, from: u64, count: u64, out: &Path, oba: u3
                 smooth,
                 flip,
             };
+            if frames == 1 {
+                println!("lamp A: {:?} colour {:?} bbox centre {:?} half {:?} compact {}", lamp, colour, c0, e0, compact);
+            }
             let t0 = Instant::now();
             let main = uplift::polys(&inst(&keyname, 1.0, false), &b, &pl);
             tp += t0.elapsed().as_secs_f64();
@@ -358,7 +361,7 @@ pub fn run(roms: &RomSet, mode: &str, from: u64, count: u64, out: &Path, oba: u3
                 uplift::MARK.store(true, Relaxed);
                 let mut imgs = Vec::new();
                 for (oi, n) in names.iter().enumerate() {
-                    let mut p = base.clone();
+                    let mut p: Vec<Poly> = base.iter().filter(|p| !ks.contains(&(p.block as usize))).cloned().collect();
                     let kn = if *n == "depth" { "tri-min" } else { n };
                     p.extend(uplift::polys(&inst(kn, 1.0, false), &b, &pl));
                     imgs.push(render(&mut p, &ctx, *n == "depth"));
@@ -376,7 +379,7 @@ pub fn run(roms: &RomSet, mode: &str, from: u64, count: u64, out: &Path, oba: u3
             if mode == "clip" || (frames % 6 == 1 && mode == "ab") {
                 // Clipping: a mesh larger than its distance to the eye, double-sided.
                 let sc = 1.3 * zc / e0.iter().cloned().fold(0.0, f32::max);
-                let mut p = base.clone();
+                let mut p: Vec<Poly> = base.iter().filter(|p| !ks.contains(&(p.block as usize))).cloned().collect();
                 p.extend(uplift::polys(&inst("tri-min", sc, true), &b, &pl));
                 let img = render(&mut p, &ctx, false);
                 if pick.contains(&cap.frame) || frames % 6 == 1 {
@@ -427,7 +430,7 @@ pub fn run(roms: &RomSet, mode: &str, from: u64, count: u64, out: &Path, oba: u3
             if let Some((w2, c2)) = words_of(&rec, &rom, mask, oba2) {
                 let mv2 = model_vertices(&w2, c2);
                 let (cc, ee) = bounds(&mv2, true);
-                let r = 0.35 * ee.iter().cloned().fold(0.0, f32::max);
+                let r = std::env::var("MP_R").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.35) * ee.iter().cloned().fold(0.0, f32::max);
                 let mut bpolys: Vec<Poly> = Vec::new();
                 let mut anchor_px = (248.0f32, 192.0f32);
                 let mut lines = Vec::new();
@@ -471,6 +474,9 @@ pub fn run(roms: &RomSet, mode: &str, from: u64, count: u64, out: &Path, oba: u3
                         smooth,
                         flip,
                     };
+                    if frames == 1 {
+                        println!("lamp B: {:?} colour {:?}", lamp, colour);
+                    }
                     let main = uplift::polys(&mk(&keyname), &b, &pl);
                     let ap = uplift::project(&b, &pl, uplift::to_view(&b.xf, 0, offset));
                     anchor_px = (ap.0, ap.1);
