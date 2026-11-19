@@ -145,14 +145,20 @@ agents soonest.
 - **Slice D: the hard art.** Items 9 and 11, then 12.
 - **Slice E: scale and share.** Items 13, 14, 15 and 23.
 
-**Two games, every slice** (decided 2026-11-19). The friction that led
-here was all found on Top Skater, and so was every design. Each slice is
-done when its test passes on Top Skater and on a second game from
-another board: redo part of the showcase, and make the same kinds of
-asset for the second game, with calls, pictures read and wall time
-counted. The second game is not yet chosen. A fighter would stretch the
-design most: characters built from moving parts, a text-heavy HUD, and
-little scenery. `vf2` on Model 2A is the suggestion.
+**Three games** (decided 2026-11-19). The friction that led here was
+all found on Top Skater, and so was every design. The tooling is proven
+on three titles from three boards as it is built:
+
+| Game | Board | Why | Used for |
+|---|---|---|---|
+| Top Skater (`topskatr`) | 2C | The showcase; a pack exists | Every slice: redo part of the showcase |
+| Virtua Fighter 2 (`vf2`) | 2A | A fighter: characters built from moving parts, a text-heavy HUD, little scenery | Every slice: make the same kinds of asset |
+| Daytona USA (`daytona`) | Original | The oldest board, and the game most people would want uplifted | Every spike, and every slice that touches the geometrizer, the renderer or identity |
+
+A slice is done when its test passes on the first two, with calls,
+pictures read and wall time counted. Daytona joins wherever the board
+could change the answer. Running all three for every slice would cost
+more than it finds.
 
 ### What it should cost an agent
 
@@ -244,7 +250,7 @@ Taken by the user on 2026-11-19:
 | Pass two's order | Model and window IDs per pixel first |
 | Is reaching all of a game's content part of this? | Yes. A full uplift is not possible without it ([content-coverage](uplift/content-coverage.md)) |
 | How are packs found? | By a convention on GitHub (topics, a manifest at the root, a release), with no curated list ([distribution](uplift/distribution.md)) |
-| One game or two? | Two: the tooling is proven on Top Skater and a second title as it is built |
+| One game or more? | Three: Top Skater, `vf2` and `daytona`, proven as the tooling is built |
 | Who judges taste? | Nobody. The tools make comparing cheap and let packs sit side by side; players choose |
 | What crosses games beyond shader packs? | Left open until more than one game has a pack |
 

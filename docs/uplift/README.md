@@ -144,8 +144,9 @@ Every design here is checked against these.
 - **Original art only** in what reModel itself ships, such as the
   showcase pack, with invented brands in place of real ones. What other
   authors share is their business (decided 2026-11-19).
-- **Two games.** Every slice is proven on Top Skater and on a second
-  game from another board, so nothing hardens around one title.
+- **Three games.** Every slice is proven on Top Skater and `vf2`, and
+  `daytona` joins wherever the board could change the answer, so nothing
+  hardens around one title.
 
 ## How firm each spec is
 
@@ -168,7 +169,7 @@ rules keep that from mattering.
 3. **Only the next slice is a commitment.** Later specs are a menu, and
    are expected to change when the slice before them lands.
 4. **Each slice names its acceptance test first**, and the test is run
-   on two games and by an agent on a mid-tier model that has read only
+   on the games above and by an agent on a mid-tier model that has read only
    [interface.md](interface.md), with its calls and pictures counted.
 
 Where each spec stands is in the vision's table of spikes
