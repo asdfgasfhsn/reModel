@@ -315,12 +315,17 @@ spec named; scratch output stays out of the repository.
 | 2026-11-20 | Can a shader file brought by a user run on the finished picture, safely? | It runs, an identity shader is byte-exact, mistakes are reported, and it costs under 0.1 ms. An endless loop cannot be caught: it cost reModel its GPU device | [shader-packs](uplift/shader-packs.md): a loop rule, recovery from a lost device, and plain words that a shader pack is code |
 | 2026-11-20 | How much texture data do the scripted runs read? | 18% of Top Skater's texture ROM, 13.5% of `gunblade`'s, 3.6% of `daytona`'s. Headers cannot be counted, only bytes. A leftover EEPROM file changes a run's state hash | [content-coverage](uplift/content-coverage.md): report bytes, not headers; a tour carries its EEPROM |
 | 2026-11-20 | Can the renderer draw a free mesh, with its own normals, UVs and image, in a model's place or anchored to one? | Yes, in the software renderer: steady to under 0.01 of a pixel over 37 frames, smooth-shaded by the game's formula, own image, state hashes unchanged. Draw order must be per triangle and is still off on big objects | [model-interchange](uplift/model-interchange.md): tier 2 is real; the block must record matrices and material; the GPU path is the main work left. [added-elements](uplift/added-elements.md): an anchored prop holds |
+| 2026-11-20 | Do ambient occlusion and shadows from the game's light give a picture worth shipping? | Occlusion is safe on three games and leaves HUD and sky untouched, but is faint. Shadows are not ready: cut-out textures cast solid rectangles, a fighter's window casts nothing on the floor, and blob shadows double up. Back-face holes fill in 72 lines. CPU only | [lighting](uplift/lighting.md): occlusion judged on a GPU pass; shadows wait on four named pieces |
 
 Status of each spec, by the ladder in [uplift/README.md](uplift/README.md):
 the interface page and the eight pass-one specs are grounded;
-asset-identity, scenes-and-server, content-coverage, scene-understanding
-and model-interchange are spiked in part; distribution and the other
-four pass-two specs are sketches.
+asset-identity, scenes-and-server, content-coverage, scene-understanding,
+model-interchange, added-elements, lighting and shader-packs are spiked
+in part; distribution, authoring and generation are not spiked.
+
+Spike code is on two unmerged branches, `uplift-spikes` and
+`uplift-spikes-b`, about 3,800 lines in all. None of it is for merging
+as it stands.
 
 ## How this was made
 

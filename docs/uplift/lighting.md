@@ -97,6 +97,54 @@ tested per pixel and multiplied in.
   native geometrizer for the scene without culling, as it is already run
   a second time for motion vectors.
 
+### What the spike found (2026-11-20)
+
+One frame each of Top Skater, `daytona` and `vf2`, worked out on the
+CPU (branch `uplift-spikes-b`, about 770 lines). No GPU version was
+made, so every GPU cost here is still an estimate.
+
+**Ambient occlusion: safe, and faint.**
+
+- Position and normal come from the plane of the polygon shown at each
+  pixel, so ground drawn in the game's own order is no problem: it is
+  17%, 43% and 27% of the three scenes' 3D pixels.
+- Sky, HUD, 2D layers, the games' blob shadows and checker polygons
+  stayed byte for byte the original.
+- It darkens the contact under fighters, the skater and pillar bases,
+  and did not make flat-shaded facets look worse.
+- At a 40-pixel radius only 2% to 4% of pixels darken by more than a
+  tenth. By eye it is hard to see at the game's resolution. Whether it
+  is worth a pass is a judgement to make on a GPU version at 1080p.
+- A radius in world units cannot be shared: the games' units differ by
+  about 20 times. A radius in screen pixels suited all three.
+
+**Shadows: not yet.** The mechanism works and the scene's light is
+usable, but four things stand between it and a picture worth shipping.
+
+- **One light per scene holds**: 99.8% to 100% of pixels share one
+  direction. Its vector is not unit length, and its sign was settled by
+  eye.
+- **The culling holes are smaller than feared, and cheap to fill.** The
+  native geometrizer already emits back faces; the raster build drops
+  them. Collecting casters before that step took 72 lines and added 24%
+  more shadow on Top Skater, 8% on `vf2` and under 1% on `daytona`. What
+  the game's own program never listed stays lost.
+- **Cut-out textures cast solid rectangles.** Trees and rails shadowed
+  65% of Daytona's road; with them left out, 2.7%. The map must test
+  the texture's alpha.
+- **One map for the frame is wrong.** `vf2` draws its fighters in a
+  window of their own, so they cast nothing on the floor; maps must be
+  per window, and a fighter's shadow must cross windows.
+- **Scenes are deep.** Top Skater's spans about 10,000 units, so the map
+  needs a distance limit or cascades.
+- **Blob shadows do double up**, and can be named by model key or found
+  as flat black or checker polygons. On Daytona a real shadow would fall
+  on 36% of the blob's pixels.
+- The shadow lands correctly on ground drawn in the game's order.
+- On Daytona's frame the light is behind the camera: the shadows fall
+  out of view or under the car, where the blob already is. Top Skater is
+  the best of the three for this.
+
 ### 3. Real transparency in place of the checkerboard
 
 Make the existing `stipple` setting work without temporal anti-aliasing,
@@ -185,8 +233,8 @@ path's scan may give per block (unverified).
 
 ## Open questions
 
-- **How bad are the culling holes** in practice? Only a spike on two or
-  three scenes will say.
+- **How bad are the culling holes** in practice? Less than feared for
+  back faces (see the spike); unknown for what the game never lists.
 - **One light per scene, or several?** Blocks can carry different
   directions.
 - **Do occlusion and the game's flat shading fight?** Faceted surfaces
@@ -197,6 +245,8 @@ path's scan may give per block (unverified).
 
 1. Blended stipple without temporal anti-aliasing, with a per-asset
    opacity.
-2. **Spike:** ambient occlusion on three games' scenes, with timings.
-3. **Spike:** a shadow map from the game's light on one driving scene and
-   one fighting scene, to see the culling holes.
+2. Ambient occlusion as a GPU pass, radius in screen pixels, judged at
+   1080p before it is promised (spiked on the CPU: safe but faint).
+3. Shadows wait for four things the spike named: alpha-tested casters,
+   a map per window, a distance limit, and blob shadows named in the
+   manifest. Casters are taken before the raster build's culls.
