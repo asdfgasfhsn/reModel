@@ -32,6 +32,7 @@ fn quad(x0: f32, y0: f32, x1: f32, y1: f32, iz: f32, colour: [u32; 3], key: f32)
         lit_range: [0, 255],
         fine: false,
         lamp: None,
+        skin: None,
     }
 }
 

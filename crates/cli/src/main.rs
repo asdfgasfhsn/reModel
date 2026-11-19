@@ -19,6 +19,7 @@ mod sound_render;
 mod soundtrack;
 mod model_pick;
 mod model_replace;
+mod uplift_mesh;
 mod gpu_pick;
 mod rom_read_map;
 mod spec_stats;
@@ -1111,6 +1112,27 @@ fn main() -> ExitCode {
                 }
                 _ => {
                     eprintln!("usage: model-replace MODE FROM COUNT OUT [OBA]");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        "uplift-mesh" => {
+            let a = &o.args;
+            let hex = |i: usize| a.get(i).and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok());
+            let (from, count) = (a.get(2).and_then(|s| s.parse().ok()), a.get(3).and_then(|s| s.parse().ok()));
+            match (from, count, hex(5)) {
+                (Some(from), Some(count), Some(oba)) => {
+                    let out = PathBuf::from(a.get(4).cloned().unwrap_or_default());
+                    match uplift_mesh::run(roms, &a[1], from, count, &out, oba, hex(6), o.input.as_deref().unwrap_or("")) {
+                        Ok(()) => ExitCode::SUCCESS,
+                        Err(e) => {
+                            eprintln!("error: {e}");
+                            ExitCode::FAILURE
+                        }
+                    }
+                }
+                _ => {
+                    eprintln!("usage: uplift-mesh MODE FROM COUNT OUT OBA [OBA2]");
                     ExitCode::FAILURE
                 }
             }

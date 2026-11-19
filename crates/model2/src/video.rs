@@ -1425,6 +1425,7 @@ mod tests {
             lit_range: [0, 255],
             fine: false,
             lamp: None,
+            skin: None,
         }];
         let mut view = View::new(768, 16.0 / 9.0, Hud::Center);
         view.hud_element_windows = 1 << 1;

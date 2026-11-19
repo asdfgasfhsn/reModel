@@ -265,6 +265,7 @@ mod tests {
             lit_range: [0, 255],
             fine: false,
             lamp: Some(Box::new(lamp(40.0))),
+            skin: None,
         }
     }
 

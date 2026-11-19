@@ -17,7 +17,7 @@ fn f(w: u32) -> f32 {
 }
 
 /// The words of the model `[base, end)` as the machine's polygon ROM has them.
-fn rom_words(rom: &[u32], mask: u32, base: u32, end: u32) -> Vec<u32> {
+pub(crate) fn rom_words(rom: &[u32], mask: u32, base: u32, end: u32) -> Vec<u32> {
     let n = end.wrapping_sub(base) & 0xff_ffff;
     (0..n).map(|k| rom[((base + k) & 0xff_ffff & mask) as usize]).collect()
 }
@@ -51,7 +51,7 @@ fn records_x(w: &[u32], compact: bool) -> (Vec<usize>, Vec<(usize, Vec<usize>)>)
     (start, recs)
 }
 
-type Gpu = Option<gpu::Renderer>;
+pub(crate) type Gpu = Option<gpu::Renderer>;
 
 fn draw(stream: &[u32], cap: &capture::Frame, texrom: &[u16], points: &[u16], view: &View, windows: (&[usize], &[usize]), gpu: &mut Gpu) -> Vec<u8> {
     let view = view.with_hud_windows(windows.0, windows.1);

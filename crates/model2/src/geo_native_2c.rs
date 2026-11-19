@@ -908,6 +908,7 @@ impl Native {
             }
             if let Some(t) = io.light.as_deref_mut() {
                 t.block(oba, flags, c.fx, c.fy, c.l);
+                t.set_xf(c.m, c.t);
             }
         }
         if compact || self.get(l.computed, 0) & 1 != 0 {

@@ -49,6 +49,11 @@ pub struct Block {
     /// object (the model's own data); 0 for direct data. Not in the
     /// capture's first 9 words per block: a trailing section.
     pub key: u64,
+    /// SPIKE (tier 2): the transform in effect, as the program held it:
+    /// matrix 0 (9 floats, the images of x, y, z), translation 0 (3),
+    /// then the same for matrix 1 (`topskatr`'s second one; a copy of the
+    /// first elsewhere).
+    pub xf: [f32; 24],
 }
 
 impl Block {
@@ -258,6 +263,7 @@ impl Frame {
                     light: [f(b[4]), f(b[5]), f(b[6])],
                     first: b[7],
                     count: b[8],
+                    xf: [0.0; 24],
                 }
             })
             .collect::<Vec<_>>();
@@ -424,7 +430,22 @@ impl Tap {
             first: self.faces.len() as u32,
             count: 0,
             key: 0,
+            xf: [0.0; 24],
         });
+    }
+
+    /// SPIKE (tier 2): the transform of the current block.
+    pub fn set_xf(&mut self, m: [[u32; 9]; 2], t: [[u32; 3]; 2]) {
+        if let Some(b) = self.blocks.last_mut() {
+            for s in 0..2 {
+                for k in 0..9 {
+                    b.xf[12 * s + k] = f32::from_bits(m[s][k]);
+                }
+                for k in 0..3 {
+                    b.xf[12 * s + 9 + k] = f32::from_bits(t[s][k]);
+                }
+            }
+        }
     }
 
     /// SPIKE: the model key of the current block.

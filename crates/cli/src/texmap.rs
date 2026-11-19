@@ -569,6 +569,7 @@ mod tests {
             lit_range: [0, 255],
             fine: false,
             lamp: None,
+            skin: None,
         }
     }
 

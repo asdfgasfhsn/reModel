@@ -21,16 +21,16 @@ fn f24(w: u32) -> f32 {
 /// with smooth shading ([`build_with`]) its corner values (`[luma, nx, ny,
 /// nz]`, `crate::light::Shaded::corners`; zero without).
 #[derive(Clone, Copy, Debug, Default)]
-struct Vtx {
-    x: f32,
-    y: f32,
-    z: f32,
-    u: f32,
-    v: f32,
-    px: f32,
-    py: f32,
-    pz: f32,
-    lit: [f32; 4],
+pub(crate) struct Vtx {
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) z: f32,
+    pub(crate) u: f32,
+    pub(crate) v: f32,
+    pub(crate) px: f32,
+    pub(crate) py: f32,
+    pub(crate) pz: f32,
+    pub(crate) lit: [f32; 4],
 }
 
 /// Screen-space vertex with perspective-divided attributes.
@@ -155,6 +155,9 @@ pub struct Poly {
     /// (level L2) whose lamp depends on its normal. None otherwise, and
     /// always without `lamps`.
     pub lamp: Option<Box<PolyLamp>>,
+    /// SPIKE (tier 2): a free mesh's triangle: drawn from its own RGBA
+    /// image (`u`, `v` in 0..1 of it) lit by the corner values in `lit`.
+    pub skin: Option<Arc<crate::uplift::Skin>>,
 }
 
 /// What a polygon's material maps need of its lighting ([`Poly::lamp`]),
@@ -1125,6 +1128,7 @@ fn build_impl(stream: &[u32], src: &Sources, input: &BuildIn) -> (Vec<Poly>, Vec
                                 lit_range,
                                 fine,
                                 lamp,
+                                skin: None,
                             });
                         }
                     }
@@ -1178,7 +1182,7 @@ fn previous(v: &[Vtx], cx: f32, cy: f32) -> Vec<[f32; 3]> {
 /// Nearest view-space z kept by [`clip_view`]: only there to keep 1/z
 /// finite. The side planes bound x/z and y/z, so a vertex this close
 /// to the eye still projects inside the guard band.
-const NEAR: f32 = 1e-6;
+pub(crate) const NEAR: f32 = 1e-6;
 
 /// Screen-space guard band [`clip_view`] clips to, in game pixels beyond
 /// each edge of the screen: wide enough for any widened view to draw what
@@ -1192,7 +1196,7 @@ const GUARD: f32 = 2.0 * WIDTH as f32;
 /// eye and a near plane at `near` ([`NEAR`] for the game's view).
 /// Polygons are clipped, not dropped, so geometry crossing in front of the
 /// camera keeps its visible part.
-fn clip_view(v: &[Vtx], cx: f32, cy: f32, near: f32) -> Vec<Vtx> {
+pub(crate) fn clip_view(v: &[Vtx], cx: f32, cy: f32, near: f32) -> Vec<Vtx> {
     let (x0, x1) = (-GUARD - cx, WIDTH as f32 + GUARD - cx);
     let (y0, y1) = (cy - (HEIGHT as f32 + GUARD), cy + GUARD);
     // Each plane as (a, b, c, d): inside where a·x + b·y + c·z + d >= 0.
@@ -2124,7 +2128,52 @@ fn draw_impl(
                 }
             })
         };
-        if let (Some((_, Some(Replacement::Mips(chain)))), Some(t)) = (&hooked, &p.texture) {
+        if let Some(sk) = &p.skin {
+            // SPIKE (tier 2): a free mesh's triangle, from its own image,
+            // lit with the game's lighting for the block (as a replaced
+            // texture is: the polygon's colour tables at its luma).
+            let light0 = Light::new(p, own, src);
+            let mark = crate::uplift::MARK.load(std::sync::atomic::Ordering::Relaxed);
+            fill(points, clip, w, h, |x, y, iz, uz, vz| {
+                let luma = luma_at();
+                let o = y * w + x;
+                if test && depth_test_value(iz, rank) < zbuf[o] {
+                    return;
+                }
+                let lit;
+                let light = if luma == own {
+                    &light0
+                } else {
+                    lit = Light::new(p, luma, src);
+                    &lit
+                };
+                let (u, v) = (uz / iz, vz / iz);
+                let (rgb8, alpha) = sk.img.sample(
+                    u * sk.img.width as f32,
+                    v * sk.img.height as f32,
+                    Address::Repeat,
+                    Address::Repeat,
+                );
+                if alpha < 0.5 {
+                    return;
+                }
+                let c = if mark {
+                    [255, 0, 255]
+                } else if light.full {
+                    rgb8.map(|c| c.round().clamp(0.0, 255.0) as u8)
+                } else {
+                    [0, 1, 2].map(|ch| (rgb8[ch] * light.poly[ch]).round().clamp(0.0, 255.0) as u8)
+                };
+                if test {
+                    pending.push((o, depth_value(iz, rank)));
+                }
+                covered[o] = true;
+                rgb[o * 3..o * 3 + 3].copy_from_slice(&c);
+                pixels += 1;
+                crate::uplift::SKIN_PIXELS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                crate::uplift::SKIN_LUMA.fetch_add(luma.luma as u64, std::sync::atomic::Ordering::Relaxed);
+            });
+        } else if let (Some((_, Some(Replacement::Mips(chain)))), Some(t)) = (&hooked, &p.texture) {
             let light0 = Light::new(p, own, src);
             let grad = Gradients::new(points);
             fill(points, clip, w, h, |x, y, iz, uz, vz| {
