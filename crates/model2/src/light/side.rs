@@ -45,6 +45,10 @@ pub struct Block {
     /// Its faces in [`Frame::faces`] (count 0 without [`Block::HAS_FACES`]).
     pub first: u32,
     pub count: u32,
+    /// SPIKE: hash of the polygon words the geometrizer read for this
+    /// object (the model's own data); 0 for direct data. Not in the
+    /// capture's first 9 words per block: a trailing section.
+    pub key: u64,
 }
 
 impl Block {
@@ -210,6 +214,12 @@ impl Frame {
         for m in &self.materials {
             w.extend([m.ambient.to_bits(), m.diffuse.to_bits(), m.spec_scale.to_bits(), m.squarings]);
         }
+        // SPIKE: model keys, two words per block, after everything else.
+        if self.blocks.iter().any(|b| b.key != 0) {
+            for b in &self.blocks {
+                w.extend([b.key as u32, (b.key >> 32) as u32]);
+            }
+        }
         w
     }
 
@@ -221,14 +231,14 @@ impl Frame {
             return None;
         }
         let (nb, nf, nm) = (head[3] as usize, head[4] as usize, head[5] as usize);
-        if w.len()
-            != 6usize
-                .checked_add(nb.checked_mul(9)?)?
-                .checked_add(nf.checked_mul(4)?)?
-                .checked_add(nm.checked_mul(4)?)?
-        {
+        let base = 6usize
+            .checked_add(nb.checked_mul(9)?)?
+            .checked_add(nf.checked_mul(4)?)?
+            .checked_add(nm.checked_mul(4)?)?;
+        if w.len() != base && w.len() != base + 2 * nb {
             return None;
         }
+        let keys: &[u32] = &w[base..];
         let f = |v: u32| f32::from_bits(v);
         let mut at = 6;
         let mut take = |n: usize| {
@@ -237,9 +247,10 @@ impl Frame {
             s
         };
         let blocks = (0..nb)
-            .map(|_| {
+            .map(|i| {
                 let b = take(9);
                 Block {
+                    key: if keys.is_empty() { 0 } else { keys[2 * i] as u64 | (keys[2 * i + 1] as u64) << 32 },
                     oba: b[0],
                     flags: b[1],
                     fx: f(b[2]),
@@ -412,7 +423,15 @@ impl Tap {
             light: l.map(f32::from_bits),
             first: self.faces.len() as u32,
             count: 0,
+            key: 0,
         });
+    }
+
+    /// SPIKE: the model key of the current block.
+    pub fn set_key(&mut self, key: u64) {
+        if let Some(b) = self.blocks.last_mut() {
+            b.key = key;
+        }
     }
 
     /// A polygon record of the current block: the normal it was lit with

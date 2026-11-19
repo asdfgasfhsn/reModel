@@ -17,6 +17,7 @@ mod run_ahead;
 mod sharc;
 mod sound_render;
 mod soundtrack;
+mod model_pick;
 mod spec_stats;
 mod studio;
 mod studio_img;
@@ -1074,6 +1075,7 @@ fn main() -> ExitCode {
         "depth-check" => cmd_depth_check(&o, roms),
         "look-render" => cmd_look_render(&o, roms),
         "lighting-check" => cmd_lighting_check(&o, roms),
+        "model-pick" => cmd_model_pick(&o, roms),
         "lockstep" => cmd_lockstep(&o, roms),
         "geo-trace-words" => cmd_geo_trace_words(&o, roms),
         "geo-check" => cmd_geo_check(&o, roms),
@@ -2013,6 +2015,28 @@ fn cmd_tile_check(o: &Opts, roms: &RomSet) -> ExitCode {
     let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
     let light = light_options(roms.game);
     if let Err(e) = pack_check::run_tiles(&root, windows, VIEW.get().copied(), pack, &out, light.as_ref()) {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_model_pick(o: &Opts, roms: &RomSet) -> ExitCode {
+    let mut args = o.args.clone();
+    let mut at = Vec::new();
+    while let Some(i) = args.iter().position(|a| a == "--at") {
+        let v = args.get(i + 1).cloned().unwrap_or_default();
+        if let Some((x, y)) = v.split_once(',') {
+            if let (Ok(x), Ok(y)) = (x.parse(), y.parse()) {
+                at.push((x, y));
+            }
+        }
+        args.drain(i..(i + 2).min(args.len()));
+    }
+    let root = args.get(1).map(PathBuf::from).unwrap_or_default();
+    let out = args.get(2).map(PathBuf::from).unwrap_or_default();
+    let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
+    if let Err(e) = model_pick::run(&root, windows, &out, &at) {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;
     }

@@ -266,9 +266,14 @@ fn dot(a: [u32; 3], b: [u32; 3]) -> u32 {
 }
 
 /// The polygon memory port: `EB + EO`, then EO += 1.
+static NOHASH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
 struct Words {
     eb: u32,
     eo: u32,
+    /// SPIKE: running hash of the words read (when `hashing`).
+    h: u64,
+    hashing: bool,
 }
 
 impl Words {
@@ -276,6 +281,9 @@ impl Words {
     fn next(&mut self, io: &mut Io) -> u32 {
         let v = io.poly.read((self.eb + self.eo) & 0xff_ffff);
         self.eo = (self.eo + 1) & 0xff_ffff;
+        if self.hashing {
+            self.h = (self.h ^ v as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
         v
     }
     #[inline(always)]
@@ -874,7 +882,7 @@ impl Native {
             l: [self.get(l.light, 0), self.get(l.light, 1), self.get(l.light, 2)],
             lod: self.get(l.lod, 0),
         };
-        let mut w = Words { eb: 0, eo: oba & 0xff_ffff };
+        let mut w = Words { eb: 0, eo: oba & 0xff_ffff, h: 0xcbf2_9ce4_8422_2325, hashing: io.light.is_some() && !*NOHASH.get_or_init(|| std::env::var_os("MP_NOHASH").is_some()) };
         // A compact model's vertices pick their matrix by bit 0 of x.
         let sel = |p: [u32; 3]| if compact { (p[0] & 1) as usize } else { 0 };
         let v0 = w.vertex(io);
@@ -905,6 +913,11 @@ impl Native {
             self.computed_normals(io, &c, &mut w, compact);
         } else {
             self.given_normals(io, &c, &mut w);
+        }
+        if w.hashing {
+            if let Some(t) = io.light.as_deref_mut() {
+                t.set_key(w.h | 1);
+            }
         }
     }
 

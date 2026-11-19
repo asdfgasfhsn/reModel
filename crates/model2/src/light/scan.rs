@@ -94,6 +94,7 @@ fn scan(words: &[u32], prog: ScanProgram, st: &mut ScanState) -> Option<Vec<Bloc
             light: st.light.unwrap_or([0; 3]).map(f32::from_bits),
             first: 0,
             count: 0,
+            key: 0,
         }
     };
     while i < words.len() {
