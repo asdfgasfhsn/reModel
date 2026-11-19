@@ -17,6 +17,7 @@ mod run_ahead;
 mod sharc;
 mod sound_render;
 mod soundtrack;
+mod lighting_spike;
 mod model_pick;
 mod model_replace;
 mod gpu_pick;
@@ -1089,6 +1090,18 @@ fn main() -> ExitCode {
             };
             let only: Vec<u64> = a.get(3).map(|s| s.split(',').filter_map(|v| v.parse().ok()).collect()).unwrap_or_default();
             match gpu_pick::run(Path::new(root), (roms.game.hud_windows, roms.game.hud_element_windows), Path::new(out), &only) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        "lighting-spike" => {
+            let a = &o.args;
+            let frames: Vec<u64> = a.get(2).map(|s| s.split(',').filter_map(|v| v.parse().ok()).collect()).unwrap_or_default();
+            let out = PathBuf::from(a.get(1).cloned().unwrap_or_default());
+            match lighting_spike::run(roms, &out, &frames, o.input.as_deref().unwrap_or("")) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("error: {e}");

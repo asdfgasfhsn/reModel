@@ -1035,7 +1035,34 @@ fn build_impl(stream: &[u32], src: &Sources, input: &BuildIn) -> (Vec<Poly>, Vec
                     };
                     prev_z = key;
 
-                    if link != 0 && (double_sided || !backface) && maxz > 0.0 {
+                    let pass = link != 0 && (double_sided || !backface) && maxz > 0.0;
+                    if link != 0 && cast_on() {
+                        let (cx, cy) = windows[win].centres[centre];
+                        let colour = rd16(src.palette, 0x1000 + ((header[3] >> 6) as usize & 0x3ff)) as u32;
+                        let colour = [colour & 31, (colour >> 5) & 31, (colour >> 10) & 31];
+                        let flat_black = texture_from_header(header).is_none()
+                            && (0..3).all(|ch| src.translate(ch, colour[ch], ((luma_word >> 15) & 0xff) >> 2) == 0);
+                        let survived = pass && clip_view(&verts, cx, cy, input.near.max(NEAR)).len() >= 3;
+                        CAST.with(|c| {
+                            c.borrow_mut().as_mut().unwrap().push(Cast {
+                                at,
+                                block: block - 1,
+                                window: win,
+                                verts: verts.iter().map(|v| [v.x, v.y, v.z]).collect(),
+                                cx,
+                                cy,
+                                backface,
+                                double_sided,
+                                survived,
+                                sky: key >= BACKGROUND_KEY,
+                                shadow: flat_black,
+                                checker: header[0] & (1 << 15) != 0,
+                                textured: texture_from_header(header).is_some(),
+                                translucent: texture_from_header(header).is_some_and(|t| t.translucent),
+                            })
+                        });
+                    }
+                    if pass {
                         let w = &windows[win];
                         let (cx, cy) = w.centres[centre];
                         let clipped = clip_view(&verts, cx, cy, input.near.max(NEAR));
@@ -1211,6 +1238,49 @@ fn previous(v: &[Vtx], cx: f32, cy: f32) -> Vec<[f32; 3]> {
             [(cx * p.pz + p.px) * iz, (cy * p.pz - p.py) * iz, p.pz * iz]
         })
         .collect()
+}
+
+/// SPIKE: every polygon the build saw (before the back-face and view-volume
+/// culls), collected when [`cast_begin`] was called on this thread.
+#[derive(Clone, Debug)]
+pub struct Cast {
+    /// Stream index of its attribute word (`Poly::at`).
+    pub at: u32,
+    pub block: u32,
+    pub window: usize,
+    /// Stream-space (x, y, z) of its corners, unclipped: view space times
+    /// the block's focal lengths in x and y.
+    pub verts: Vec<[f32; 3]>,
+    pub cx: f32,
+    pub cy: f32,
+    pub backface: bool,
+    pub double_sided: bool,
+    /// Passed the build's culls and clipping (is a `Poly`).
+    pub survived: bool,
+    pub sky: bool,
+    pub shadow: bool,
+    pub checker: bool,
+    pub textured: bool,
+    /// Texel 15 is transparent (a cut-out).
+    pub translucent: bool,
+}
+
+thread_local! {
+    static CAST: std::cell::RefCell<Option<Vec<Cast>>> = const { std::cell::RefCell::new(None) };
+}
+
+fn cast_on() -> bool {
+    CAST.with(|c| c.borrow().is_some())
+}
+
+/// SPIKE: start collecting [`Cast`]s on this thread.
+pub fn cast_begin() {
+    CAST.with(|c| *c.borrow_mut() = Some(Vec::new()));
+}
+
+/// SPIKE: stop collecting and take them.
+pub fn cast_take() -> Vec<Cast> {
+    CAST.with(|c| c.borrow_mut().take().unwrap_or_default())
 }
 
 /// Nearest view-space z kept by [`clip_view`]: only there to keep 1/z
