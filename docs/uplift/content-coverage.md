@@ -96,6 +96,20 @@ native geometrizer; branch `uplift-spikes`, about 200 lines):
 - Not done: the texture ROM. Texture headers and UV lists are read by
   the rasteriser, not the geometrizer, so that map hooks elsewhere.
 
+**Repeated on `vf2` and `daytona`**, a coin start and a run with no
+input each:
+
+| | Top Skater | `vf2` | `daytona` |
+|---|---|---|---|
+| Polygon ROM, share not blank | 8 MB, 100% | 12 MB, 87% | 16 MB, 74% |
+| Read, of what is not blank | 28% | 28% | 18% |
+| Models sit | Back to back | 4 words apart | 4 words apart |
+
+On Daytona a scripted race read only 7 KB more than the title run: the
+demo had already shown that course, and the other courses need
+choosing. On both games most unread stretches parse as models from a
+start a few words in.
+
 So today's catalogue has seen less than a third of the model data, and
 that is a ceiling on how complete any pack made from it can be. It also
 says a model browser is within reach: at least 1.72 MB of models nobody

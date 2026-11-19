@@ -113,14 +113,25 @@ reused, on every board that has a native geometrizer.
 - The re-run cost 0.5 to 1.1 ms a frame, and shares work with the one
   smooth motion makes.
 
+**Repeated on `vf2` and `daytona`** with about 45 more lines: unchanged
+data gave the identical frame on both, a fighter's part and a car's body
+scaled to 1.5 times stayed attached over 5 frames, the re-run cost 0.3
+to 0.5 ms, and state hashes were unchanged. Both use the standard
+10-word polygon record, not Top Skater's compact one. Two gaps: the
+new-mesh test was not repeated, because the spike's encoder writes the
+compact record only; and the two models `vf2` keeps in polygon RAM and
+rewrites every pose cannot be swapped by this hook, and should not be:
+they are geometry the game animates.
+
 Tier 1 is bounded by the game's polygon format, and the bounds are
 tight:
 
 - **A mesh is strips** of triangles and quads with no index list.
   Anything that is not a chain needs a hidden polygon to restart. The
   box took 8 records for 6 faces.
-- **Normals are worked out from the strip**, so lighting is flat per
-  polygon.
+- **Normals are worked out from the strip** in Top Skater's compact
+  record, so lighting is flat per polygon. The standard record stores a
+  normal per polygon (read in the code, not tested).
 - **UVs are not in the model.** They sit in a list the object points to,
   two per corner in strip order, and each polygon can only step a short
   way through the texture headers. A replacement uses the original's

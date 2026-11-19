@@ -105,8 +105,19 @@ geometrizer and the renderer already produce.
 - **The hash added nothing over the address** in this game: 129
   addresses, 129 keys. Its value (the same model at two addresses, ROM
   revisions, models in RAM) did not arise.
-- Not done: the GPU's ID target, a Model 2B game, polygons sent directly
-  (none occurred), and models in polygon RAM (none occurred).
+- **Repeated on `vf2` (2A) and `daytona` (original Model 2)** with no
+  new hooks: both run the same native code in its fixed-function mode.
+  Every 3D pixel had a model key on both; keys were stable between runs;
+  state hashes were unchanged. A fighter is 15 to 20 parts and a car 3
+  to 5.
+- **Models in polygon RAM are real, and a hash cannot name them.**
+  `vf2` draws two per frame, at fixed addresses, and rewrites them every
+  pose: 17 and 14 different hashes over 21 frames. `daytona` draws up to
+  five. Such a model must be named by its address and marked
+  `rewritten`, as this section already proposed; the hash is useless for
+  it.
+- Not done: the GPU's ID target, a Model 2B game (other native code),
+  and polygons sent directly (none occurred in any of the three games).
 
 ### 2. Instances that persist
 
