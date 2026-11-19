@@ -113,6 +113,7 @@ agents soonest.
 | ★ | **1. Scenes and `scene render`** | Every still check without boot, build or lock | S | Low | Nothing | Five scenes for Top Skater, three for a game on another board |
 | ★ | **2. Lock tool, worktree set-up, pinned binary, `remodel img`** | Ends the queue; no shell image scripts | S | Low | Nothing | `tools/lock` wired into the Makefile |
 | ★ | **3. Interface rules on today's tools, and the three defects** | No silent work; output a model can parse | S to M | Low | Nothing | `--json`, exit codes, refuse to reuse or overwrite |
+| ★ | **22. [Content coverage](uplift/content-coverage.md)**: tours, ROM read maps, `coverage`; then the tour recorder, pokes and the crawler | A catalogue that holds the whole game, and a number for how much it holds | S, then M to L | Medium: the read-map figure is unknown | Nothing; cheats for pokes | The read-map spike on Top Skater's three runs |
 | ★ | **4. Asset gates and `pack check`** | "Done" is a number | M | Medium: limits need calibrating | 1 for scene coverage | Run the gates over the showcase's images |
 | | **5. Artwork identity in packs** | A pack replaces "the wall base" | M | Medium; `follow` tint is high | Nothing | `art_` images, fixed and baked; then the tint spike |
 | | **6. Project manifest and provenance** | Work survives hand-over | M | Low | 5 for names | Import the showcase workspace |
@@ -124,24 +125,34 @@ agents soonest.
 | | **12. Text fields** | Live scores and clocks in a pack font; Japanese HUDs | L | Medium to high | 9 | The score in Top Skater |
 | | **13. Server and clips** | Motion checks; many agents on one GPU | M to L | Medium: GPU sharing untested | 1 | MCP over a local socket, one verb |
 | | **14. Layers, archive, `pack doctor`** | Sharing | M | Low to medium | 6 | Two packs layered in the CLI |
+| | **23. [Distribution](uplift/distribution.md)**: find and install by a GitHub convention | Players find packs; nobody keeps a list | M | Low; adds an HTTP client | 14 | `pack install` from a file, then from a repository |
 | | **15. Look calibration** | A look that fits each game | M | Medium: targets unproven | 1, 10 | Numbers for four games |
 
 ### Suggested order
 
-- **Slice A: stop waiting.** Items 1, 2 and 3. Independent of each other;
-  three small pieces of work. After it, an art agent can check a still in
-  two seconds with a prebuilt binary and no lock.
-- **Slice B: know what you have.** Items 4, 5 and 6. The asset gates need
+- **Slice A: stop waiting.** Items 1, 2 and 3, and the first part of 22
+  (tours and read maps), since a scene is a point in a tour. Independent
+  of each other; small pieces of work. After it, an art agent can check a
+  still in two seconds with a prebuilt binary and no lock, and the pack
+  lead knows how much of the game the catalogue holds.
+- **Slice B: know what you have.** Items 4, 5 and 6, and the rest of 22
+  as the cheats work allows. The asset gates need
   nothing but scenes and can start at once; identity comes before the
   manifest, which names assets by it. Item 5 ships `fixed` and `baked`
   first; `follow` waits for its spike.
 - **Slice C: the loop.** Items 7, 8 and 10. The bundle for agents, the
   live player for the artist, overlays for both.
 - **Slice D: the hard art.** Items 9 and 11, then 12.
-- **Slice E: scale and share.** Items 13, 14 and 15.
+- **Slice E: scale and share.** Items 13, 14, 15 and 23.
 
-Redoing part of the showcase after each slice is the test: the same
-assets, with calls, pictures read and wall time counted.
+**Two games, every slice** (decided 2026-11-19). The friction that led
+here was all found on Top Skater, and so was every design. Each slice is
+done when its test passes on Top Skater and on a second game from
+another board: redo part of the showcase, and make the same kinds of
+asset for the second game, with calls, pictures read and wall time
+counted. The second game is not yet chosen. A fighter would stretch the
+design most: characters built from moving parts, a text-heavy HUD, and
+little scenery. `vf2` on Model 2A is the suggestion.
 
 ### What it should cost an agent
 
@@ -231,6 +242,11 @@ Taken by the user on 2026-11-19:
 | Is the browser an authoring target? | No, unless a piece is nearly free or highly efficient there |
 | The three defects found in current code | Fix them with slice A |
 | Pass two's order | Model and window IDs per pixel first |
+| Is reaching all of a game's content part of this? | Yes. A full uplift is not possible without it ([content-coverage](uplift/content-coverage.md)) |
+| How are packs found? | By a convention on GitHub (topics, a manifest at the root, a release), with no curated list ([distribution](uplift/distribution.md)) |
+| One game or two? | Two: the tooling is proven on Top Skater and a second title as it is built |
+| Who judges taste? | Nobody. The tools make comparing cheap and let packs sit side by side; players choose |
+| What crosses games beyond shader packs? | Left open until more than one game has a pack |
 
 The defects: `studio compare` reusing old frames without `--force`
 (`crates/cli/src/studio.rs:1834`); generated drafts not inheriting a

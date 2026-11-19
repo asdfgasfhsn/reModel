@@ -21,6 +21,8 @@ for interfaces, and the template. Read it before any one spec.
 | [renderer-controls.md](renderer-controls.md) | What a pack can tell the renderer, and the views that show it |
 | [generation.md](generation.md) | An adapter for any image model, with guarantees made by post-steps |
 | [agent-environment.md](agent-environment.md) | Locks, worktrees, binaries and tools, so work does not queue |
+| [content-coverage.md](content-coverage.md) | Reaching all of a game: tours, ROM read maps, the crawler, gaps |
+| [distribution.md](distribution.md) | Finding and installing packs by a convention on GitHub, with no curated list |
 | [scene-understanding.md](scene-understanding.md) | Model identity per pixel, the buffers every feature shares, space beyond one frame, classes |
 | [model-interchange.md](model-interchange.md) | Replacement models out and back through glTF |
 | [lighting.md](lighting.md) | Occlusion, shadows, real transparency, added lights |
@@ -28,7 +30,7 @@ for interfaces, and the template. Read it before any one spec.
 | [authoring.md](authoring.md) | The Studio page in the player: the path with no terminal |
 | [shader-packs.md](shader-packs.md) | Shaders that apply to any game, in the spirit of RetroArch's |
 
-The first eight specs after the interface page are pass one: what
+The first ten specs after the interface page are pass one: what
 unblocks the work now. The last six are pass two: what uplift could do
 next. Pass two is less grounded: most of its costs are unmeasured and
 each spec leads with spikes.
@@ -138,8 +140,38 @@ Every design here is checked against these.
   entries and matched motion need a native geometrizer. The chip path has
   none, and `zerogun` and `pltkids` have no native geometrizer. A feature
   that needs them says what it does without them.
-- **Original art only** in shared packs, with invented brands in place of
-  real ones.
+- **Original art only** in what reModel itself ships, such as the
+  showcase pack, with invented brands in place of real ones. What other
+  authors share is their business (decided 2026-11-19).
+- **Two games.** Every slice is proven on Top Skater and on a second
+  game from another board, so nothing hardens around one title.
+
+## How firm each spec is
+
+These pages were written ahead of the code, and will go stale. Four
+rules keep that from mattering.
+
+1. **Citations are evidence, not upkeep.** Each `path:line` was true at
+   commit `7d8f099`. Nobody maintains them. The day a slice starts, its
+   spec's "Observed" list is checked again against the code, by an
+   agent, before anything is built on it.
+2. **A spec carries a status**, and nothing is built on a sketch:
+
+   | Status | Means |
+   |---|---|
+   | Sketch | Reasoned from code and documents. Its risky assumptions are untried |
+   | Grounded | Its claims about today's code were checked by a second reader |
+   | Spiked | Its riskiest assumption was tried in code, and the result is written in the spec with its date and commit |
+   | Built | Gone: the spec is deleted and what is true moves to the user documentation |
+
+3. **Only the next slice is a commitment.** Later specs are a menu, and
+   are expected to change when the slice before them lands.
+4. **Each slice names its acceptance test first**, and the test is run
+   on two games and by an agent on a mid-tier model that has read only
+   [interface.md](interface.md), with its calls and pictures counted.
+
+Where each spec stands is in the vision's table of spikes
+([../uplift-vision.md](../uplift-vision.md), "Spikes").
 
 ## Template
 
