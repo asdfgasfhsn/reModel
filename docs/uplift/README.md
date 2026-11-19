@@ -81,7 +81,7 @@ tools better for people too.
    agent API share names and fields. There are seven nouns; an art agent's
    job uses eight verbs ([interface.md](interface.md)).
 3. **Structured output.** Every command takes `--json` and prints one
-   object: `ok`, `data`, `warnings`, `next` (a suggested next command).
+   object (written with a JSON library, not by hand): `ok`, `data`, `warnings`, `next` (a suggested next command).
    Tables stay TSV. Prose reports are for people and are made from the
    same data.
 4. **Exit codes mean something.** 0 done, 1 a gate failed, 2 the request
@@ -120,10 +120,14 @@ Every design here is checked against these.
   `Shading` table is the pattern to follow.
 - **Clean-room.** No other emulator's code is consulted. Nothing derived
   from ROMs enters the repository.
-- **Two platforms**, native and browser, each with a stated budget. The
-  browser has a 192 MB pack budget against 512 MB native
-  (`crates/gpu/src/lib.rs:325-331`), and no look, temporal anti-aliasing or
-  run-ahead yet.
+- **Native first.** The brief asked for native and browser alike. Decided
+  2026-11-19: uplift tooling stays out of the browser unless a piece is
+  nearly free there. Packs still draw in the browser through the shared
+  renderer where they do today, within its 192 MB pack budget against
+  512 MB native (`crates/gpu/src/lib.rs:325-331`). No design here should
+  rule the browser out later.
+- **One game per pack.** Keys, scenes and layers are per game. Only looks
+  without tags, and shader packs, cross games.
 - **Not every game has every side channel.** Per-polygon normals, lighting
   entries and matched motion need a native geometrizer. The chip path has
   none, and `zerogun` and `pltkids` have no native geometrizer. A feature

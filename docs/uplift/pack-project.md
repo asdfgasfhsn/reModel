@@ -85,7 +85,7 @@ keys       = 1                # the identity scheme, as pack.txt has it
 approvers  = lead
 made-with  = reModel 0.12.0
 version    = 0.4.0
-licence    = CC-BY-4.0
+licence    = CC-BY-4.0        # optional, free text
 depends    = other-pack >= 1.2  # optional: a pack this one must sit above
 ```
 
@@ -98,7 +98,6 @@ depends    = other-pack >= 1.2  # optional: a pack this one must sit above
 | `colour` | `baked`, `fixed` or `follow` |
 | `draw` | Draw rules: `selflit`, `filter=nearest` ([renderer-controls.md](renderer-controls.md)) |
 | `source` | `hand`, `recipe`, `generated` or `imported` |
-| `origin` | `original` (no game pixels went in) or `derived` (made from the game's art) |
 | `hash` | The approved image's hash |
 | `by`, `date` | Who approved it |
 | `note` | A reason, required for `rejected` |
@@ -112,8 +111,9 @@ merge cleanly in git.
 
 `provenance/<slug>.txt` holds the tool, the model and its version, the
 prompt file, the hashes of every input, the post-steps in order, the date,
-the author, the licence, and an AI label: `none`, `assisted` or
-`generated`. The label mirrors what mod sites now ask for. Prompts and
+the author and, if the author wants them, a licence and an AI label
+(`none`, `assisted` or `generated`, which some mod sites now ask for).
+Neither is required or checked. Prompts and
 seeds are a record, not a recipe: image models do not reproduce reliably
 across machines.
 
@@ -121,22 +121,30 @@ across machines.
 the hand-over between agents, and with git it is the history. A revision
 is a commit of the project folder; nothing else defines one.
 
-### What may be shared
+### One game per pack
 
-This is the hard line, so the tool draws it.
+A pack belongs to one game: its keys are that game's texels and tiles, and
+its scenes are that game's moments. Layers stack within a game. The one
+thing that is naturally shared across games is how the finished picture is
+treated: a look without per-texture tags, and the shader packs proposed
+for pass two ([../uplift-vision.md](../uplift-vision.md), "Horizon").
 
-| Class | Example | Shared as |
+### What a pack carries
+
+The tools build packs; they do not rule on what may be shared. That is the
+author's business (decided 2026-11-19). A pack can carry its art two ways,
+and may mix them:
+
+| Way | Holds | Good for |
 |---|---|---|
-| **Original art** | An invented logo, typeset text, a hand-painted sky | The image |
-| **Recipes** | "Posterise to this palette, halftone at 45 degrees" | The recipe; baked on the user's machine from their ROM |
-| **Derived images** | An upscale, a restyle of a game texture by an image model | Not shared by default |
-| **Caches** | Originals, captures, bundles | Never |
+| **Images** | The finished PNGs | Anything; the simplest |
+| **Recipes** | The recipe and its settings, baked on the user's machine from their ROM | Small downloads; art that is a mechanical restyle of the game's own |
 
-`pack build` bakes recipes from the user's own ROM, which is the plan
-already noted for distribution. `pack build --share` makes the archive to
-publish and refuses to include `derived` images or anything from `cache/`.
-Whether a redrawn game texture may be shared is a legal question this
-design does not settle; it makes the default safe and the choice explicit.
+`pack build` writes the pack. `pack build --archive` writes the file to
+publish. The project's `cache/` is left out because it is working files,
+not because of a rule. The rule in `CLAUDE.md` that nothing ROM-derived
+enters reModel's own repository is unchanged, and is about this
+repository only.
 
 ### The shipped manifest
 
@@ -185,7 +193,7 @@ today.
 | `project brief` | One agent's task as data: its assets, scenes, verbs and budgets |
 | `project review` | One sheet per category of everything `checked`, original beside new |
 | `project approve ID` or `--category C`, `project reject ID --reason` | Change status, after the gates; only for a listed approver |
-| `pack build` | Bakes recipes, resolves names, writes the pack; `--share` makes the archive |
+| `pack build` | Bakes recipes, resolves names, writes the pack; `--archive` makes the file to publish |
 | `pack resolve` | Which layer wins each asset |
 | `pack diff REV` | Before and after sheets per scene between two revisions |
 | `pack doctor` | What a reModel update broke |
@@ -209,7 +217,7 @@ today.
 ## Testing
 
 - **Without ROMs:** parsers; the status machine, including `stale`;
-  `--share` refusing derived and cached files; layer resolution; a build
+  the archive holding the built pack and nothing from `cache/`; layer resolution; a build
   from recipes over synthetic originals that gives the same bytes twice.
 - **With ROMs:** import the showcase workspace, build, and compare with
   the pack it has today.
@@ -226,10 +234,9 @@ colour copies; compressed textures are an open question.
 
 ## Open questions
 
-- **Licence and AI-made art.** A licence on purely generated images may
-  carry no weight in some countries. Which default should a new project
-  offer?
-- **May derived images be shared at all**, with a warning, or never?
+- **Licence.** Optional free text, shown where a pack is listed. No
+  default and no check is proposed, since the tools only help people
+  make and fetch packs.
 - **Signatures** for archives: later, or not at all?
 - **Compressed textures** in the built pack (KTX2) would cut memory and
   load time, and need a decoder in the browser build.

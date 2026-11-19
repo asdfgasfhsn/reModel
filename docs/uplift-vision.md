@@ -8,7 +8,7 @@ The specs are in [uplift/](uplift/README.md).
 Status, 2026-11-19: a design, written from the code at `7d8f099`, the
 record of the Top Skater showcase, and a survey of other projects'
 documentation. Nothing described here is built unless it says so. Pass
-one (this page and eight specs) covers what unblocks the work now. Pass
+one (this page and nine spec pages) covers what unblocks the work now. Pass
 two (model interchange, scene understanding, lighting, added elements,
 authoring) is outlined under "Horizon" and not yet specified.
 
@@ -95,7 +95,7 @@ findings change their shape or order.
 | **See** | Draw a scene in seconds; live in the player; overlays | [scenes-and-server](uplift/scenes-and-server.md), [renderer-controls](uplift/renderer-controls.md) | `look-render` on captures |
 | **Check** | Gates with numbers; "done" defined | [quality-gates](uplift/quality-gates.md) | Seam, lint, flicker, each separate |
 | **Keep** | Manifest, status, provenance, history | [pack-project](uplift/pack-project.md) | Loose files |
-| **Share** | Build, layers, safe archive, discovery | [pack-project](uplift/pack-project.md) | One pack; plans only |
+| **Share** | Build, layers, archive, discovery | [pack-project](uplift/pack-project.md) | One pack; plans only |
 | **Work** | Locks by resource, worktrees, pinned binary | [agent-environment](uplift/agent-environment.md) | A convention |
 | **Horizon** | Models, scene knowledge, lighting, added elements, authoring | Pass two | Parts: see below |
 
@@ -109,18 +109,18 @@ agents soonest.
 |---|---|---|---|---|---|---|
 | ★ | **1. Scenes and `scene render`** | Every still check without boot, build or lock | S | Low | Nothing | Five scenes for Top Skater, three for a game on another board |
 | ★ | **2. Lock tool, worktree set-up, pinned binary, `remodel img`** | Ends the queue; no shell image scripts | S | Low | Nothing | `tools/lock` wired into the Makefile |
-| ★ | **3. Interface rules on today's tools** | No silent work; output a model can parse | S to M | Low | Nothing | `--json`, exit codes, refuse to reuse or overwrite |
+| ★ | **3. Interface rules on today's tools, and the three defects** | No silent work; output a model can parse | S to M | Low | Nothing | `--json`, exit codes, refuse to reuse or overwrite |
 | ★ | **4. Asset gates and `pack check`** | "Done" is a number | M | Medium: limits need calibrating | 1 for scene coverage | Run the gates over the showcase's images |
 | | **5. Artwork identity in packs** | A pack replaces "the wall base" | M | Medium; `follow` tint is high | Nothing | `art_` images, fixed and baked; then the tint spike |
 | | **6. Project manifest and provenance** | Work survives hand-over | M | Low | 5 for names | Import the showcase workspace |
 | | **7. Context bundles** | An agent's whole briefing in one call | M | Low | 1, 5 | `bundle.json`, original, mask, two crops |
 | | **8. Player: `--scene`, pack watch, then a pack page** | The artist's loop, and the first step away from the terminal | S to M, then L | Low, then unknown | 1 | Reload on change, as the look does |
-| | **9. 2D: patterns, anchors, clearing; regions in the browser** | HUDs and logos without hand patches | M | Medium | 1 for capturing from scenes | Pattern keys; redo the showcase's 13 regions |
+| | **9. 2D: patterns, anchors, clearing** | HUDs and logos without hand patches | M | Medium | 1 for capturing from scenes | Pattern keys; redo the showcase's 13 regions |
 | | **10. Draw rules and overlays** | Colours as painted; see what a tag did | M | Low | 1 | `selflit`; `--overlay miss` |
 | | **11. Generation adapter** | Size, alpha, seams guaranteed | M | Low | 4, 7 | Normalise and classify around `studio draft` |
 | | **12. Text fields** | Live scores and clocks in a pack font; Japanese HUDs | L | Medium to high | 9 | The score in Top Skater |
-| | **13. Server and clips** | Motion checks; many agents on one GPU | M to L | Medium: GPU sharing untested | 1 | JSON lines over standard input |
-| | **14. Layers, safe archive, `pack doctor`** | Sharing | M | Low to medium | 6 | Two packs layered in the CLI |
+| | **13. Server and clips** | Motion checks; many agents on one GPU | M to L | Medium: GPU sharing untested | 1 | MCP over a local socket, one verb |
+| | **14. Layers, archive, `pack doctor`** | Sharing | M | Low to medium | 6 | Two packs layered in the CLI |
 | | **15. Look calibration** | A look that fits each game | M | Medium: targets unproven | 1, 10 | Numbers for four games |
 
 ### Suggested order
@@ -164,6 +164,17 @@ Each needs its own spec. What is known so far:
 | **Real transparency for stipple** | The checker flag per polygon | Yes | Small | Per-asset blend on a fighter's shadow |
 | **Added elements (grass, crowds, decals)** | World space, surface classes per game | Rules generic, data per game | Unmeasured | Scatter on one recognised ground, steady in motion |
 | **Authoring** | Items 1, 7, 8 and IDs | Yes | None at run time | Point at a thing in the player and open its bundle |
+| **Shader packs, for any game** | A stated set of inputs after the frame is composed | Yes: this is the one kind of pack that is not per game | Per pass; the CRT pass is the model | A user-supplied pass in place of the built-in CRT one |
+
+**Shader packs** were added by the user on 2026-11-19: let people bring
+shaders that apply to any number of games, as RetroArch does. reModel
+already runs passes of this kind after the frame is composed
+(`crates/gpu/src/crt.wgsl`, `bloom.wgsl`, `look.wgsl`), so the host
+exists. It can also offer a shader more than the finished picture: depth,
+the texture ID and the game's lighting layer. Two routes, to be weighed
+in pass two: reModel's own shader packs in WGSL against a stated
+contract, and importing RetroArch's preset format, which brings a large
+existing library and needs its shaders translated.
 
 Two cautions from the survey. Lighting added on top must multiply, as
 occlusion does, or it double-counts shading the game has already baked
@@ -172,53 +183,51 @@ browser should not be designed for: it does not exist there yet.
 
 ### The browser
 
-Pass one adds no work to a player's frame except region matching and
-text fields, which are small CPU loops, and overlays, which are tools.
-No browser timing was measured. What the browser needs from pass one:
-regions and fields listed as shown (it draws neither today), the look
-exposed, and packs that fit 192 MB, which the showcase pack does not.
-Artwork and pattern names help there by removing colour copies. Scene
-tools and the server are native only for now.
+Out of scope for uplift tooling unless a piece is nearly free there
+(decided 2026-11-19). Packs keep drawing in the browser through the
+shared renderer where they do today. Two facts to remember when that
+changes: the browser draws no regions and no look yet, and the showcase
+pack is over its 192 MB budget.
 
 Audio is out of scope. The one hook it will need from this work is a pack
 kind for sound, which the manifest's `kind` column allows.
 
-## Decisions for the user
+## Decisions
 
-These are choices, not open research. Each spec lists its technical
-questions separately.
+Taken by the user on 2026-11-19:
 
-1. **May a shared pack contain images derived from the game's art**
-   (upscales, restyles by an image model), with a warning, or only
-   original art and recipes? The design defaults to the second.
-2. **Which licence should a new project offer by default**, given that a
-   licence on purely generated images may carry no weight in some
-   countries? And is the AI label (`none`, `assisted`, `generated`)
-   required?
-3. **Is a game's scene list (input scripts and frame numbers) acceptable
-   in its manifest in the repository?** The manifests already hold
-   `coin-start` scripts and an attract frame. The scenes spec proposes
-   yes.
-4. **How soon does the artist's path matter?** The roadmap serves agents
-   first. Moving the player's pack page ahead of slice B would serve a
-   first outside artist sooner and delay identity and the manifest.
-5. **JSON output** needs either a hand-written emitter, as `texmap.json`
-   has, or a serialisation dependency. Which?
-6. **The server's transport**: standard input only, or also a local
-   socket and an MCP wrapper inside the main binary? The second adds
-   native-only dependencies.
-7. **Is the browser an authoring target** (a web studio drawing scenes),
-   or playback only for now? It decides how much of slices C and E must
-   hold to the browser's 192 MB budget.
-8. **Three defects found in current code**, not fixed here since this
-   work changes no product code: `studio compare` reusing old frames
-   without `--force` (`crates/cli/src/studio.rs:1834`); generated drafts
-   not inheriting a cut-out's alpha (inferred from `finish_draft`,
-   `studio.rs:1761`; not run); `--keep-size` read at `studio.rs:1730` but
-   missing from the switches at `studio.rs:84-98`, so it would take the
-   next argument as its value. Fix now, or with slice A?
-9. **Pass two's order.** IDs per pixel first is the recommendation, since
-   picking, overlays, the shared-key split and lighting all need it.
+| Question | Decision |
+|---|---|
+| May a shared pack hold images derived from game art? | Not the tools' business. The tools build packs and do not rule on what is shared |
+| Agents or the artist first? | Agents first, as the showcase was made. Cutting friction and waste matters more than the artist's path for now |
+| JSON output: by hand or a library? | A library, weighed by what it costs to carry. `serde` is already in the dependency tree; `serde_json` is the one addition |
+| The server's transport | As agent-native as possible: a local socket and MCP |
+| Is the browser an authoring target? | No, unless a piece is nearly free or highly efficient there |
+| The three defects found in current code | Fix them with slice A |
+| Pass two's order | Model and window IDs per pixel first |
+
+The defects: `studio compare` reusing old frames without `--force`
+(`crates/cli/src/studio.rs:1834`); generated drafts not inheriting a
+cut-out's alpha (inferred from `finish_draft`, `studio.rs:1761`; not
+run); `--keep-size` read at `studio.rs:1730` but missing from the
+switches at `studio.rs:84-98`, so it would take the next argument as its
+value.
+
+Still open, with a recommendation:
+
+1. **Licence and AI label.** Recommendation: both optional free text in
+   the manifest, shown where a pack is listed, with no default and no
+   check. The tools only help people make and fetch packs.
+2. **Scene lists in the repository.** A recipe is an input script and a
+   frame number, the same kind of fact as the `coin-start` scripts and
+   attract frames the manifests hold now, so there is no clean-room
+   concern. The real costs are upkeep: frame numbers shift when emulation
+   timing is corrected and differ between a game's revisions, a scene's
+   name becomes something packs depend on, and someone has to choose
+   scenes for 34 games. Recommendation: yes, but small and optional. A
+   handful per game where someone has done the work, a project's own
+   `scenes.txt` always taking precedence, and `scene verify` in the
+   benchmark run to catch drift.
 
 ## How this was made
 

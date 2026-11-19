@@ -54,7 +54,7 @@ An art agent's job uses eight of them: `project brief`, `asset show`,
 
 | Needs | Commands |
 |---|---|
-| The binary and the project only | `asset list/show/set/name/normalise/check`, `project *`, `pack build --share`, `pack resolve`, `pack check --level asset` and `pack`, `region list` |
+| The binary and the project only | `asset list/show/set/name/normalise/check`, `project *`, `pack build --archive`, `pack resolve`, `pack check --level asset` and `pack`, `region list` |
 | The catalogue as well | `asset bundle`, `asset same --suggest`, `asset show` on a pattern, `glyphs *` |
 | The scene library as well (and a GPU) | `scene list/render/what/where/sheet`, `region capture/check`, `pack check --level scene`, `pack diff`, `look *` |
 | The ROM as well | `scene make/verify/clip`, `pack build` (it bakes recipes), `pack check --level clip` |
@@ -72,9 +72,9 @@ makes the scene library once; art agents and artists then read it.
 | A project's own scene recipes, and which are `required` with what `coverage` | The project's `scenes.txt` | With the project |
 | Scene copies: capture, state, facts | `<data dir>/<set>/scenes/<name>/` | Never; one library per game, used by every project |
 | The catalogue | `<data dir>/<set>/catalogue/` | Never |
-| Approved art, by slug | The project's `art/` | Yes, if `original` |
+| Approved art, by slug | The project's `art/` | Yes |
 | Work in progress | The project's `draft/<slug>.png` | With the project |
-| Region definitions and their art | The project's `regions/<name>.txt` and `art/<name>.png` | The art, if `original` |
+| Region definitions and their art | The project's `regions/<name>.txt` and `art/<name>.png` | Yes |
 | Provenance, written by the tools | The project's `provenance/<slug>.txt` | Yes |
 | Bundles, originals, raw generator output | The project's `cache/` | Never |
 | Gate reports | The project's `reports/<date>-<commit>/` | Yes; they hold numbers and paths, and sheets stay in `cache/` |

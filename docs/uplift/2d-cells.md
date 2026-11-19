@@ -130,10 +130,13 @@ is one quarter of one glyph, as the clock's 31 rows are, the build step
 cuts a glyph image into those tiles. It fails for shared tiles, which is
 what the field is for.
 
-### 4. The same in the browser
+### 4. The browser, later
 
 Regions and fields use the tile atlas the browser build already shares.
 What is missing is fetching `regions.txt` and listing `regions` as shown.
+Browser work is out of scope for now (decided 2026-11-19). Until it is
+done, `pack check` warns when a pack relies on regions, so a HUD pack
+does not fail there silently.
 
 ## Interfaces
 
@@ -225,7 +228,5 @@ budget most; nothing was measured there.
    pattern.
 2. Anchors and `clear=auto` in `region capture`.
 3. Build-step glyph tiles for one clock, from a confirmed `glyphs.txt`.
-4. Regions drawn in the browser, so a HUD pack does not silently show
-   nothing there.
-5. **Spike:** a text field for Top Skater's score, and one Japanese HUD
+4. **Spike:** a text field for Top Skater's score, and one Japanese HUD
    label on a second game.

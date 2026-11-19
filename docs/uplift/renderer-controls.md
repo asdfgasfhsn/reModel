@@ -133,9 +133,10 @@ not free (inferred; the shader's bindings were not counted). This is the first s
 scene understanding and is specified in pass two; it is listed here
 because three features above improve once it lands.
 
-### 6. The browser
+### 6. The browser, later
 
-Expose the look in the web build: a `set_look` beside `set_pack`, a
+Out of scope for now (decided 2026-11-19). When it is wanted: expose the
+look in the web build: a `set_look` beside `set_pack`, a
 fetched `look.txt`, and a row in the settings panel. Draw rules are read
 by the shared pack code, but the web build must list them as shown, and
 `filter=nearest` needs a second sampler there as it does natively.

@@ -127,11 +127,16 @@ of each pack in memory. For a clip it forks the scene's machine with
 (`crates/model2/src/runahead.rs:1-31`), so the base state is never
 advanced.
 
-It speaks JSON lines on standard input and output first. reModel has no
-network code or dependency today, and standard input needs none, which
-keeps the browser build's check clean. A local socket and an MCP wrapper
-come after, behind a native-only feature. The MCP tools are generated from
-the same verb table as the CLI, so the two cannot drift.
+It is agent-native from the start (decided 2026-11-19): it speaks MCP,
+which is JSON-RPC, over standard input and output and over a local socket
+(a Unix socket, a named pipe on Windows). reModel has no network code or
+dependency today, so this is new, and it stays behind a native-only
+feature so the browser build's check is untouched. JSON is written and
+read with a library, not by hand: `serde` is already in the dependency
+tree and `serde_json` is the one addition. Whether to use an MCP library
+or implement the few messages needed over `serde_json` is a choice to
+make when building it, by what each costs to carry. The MCP tools are
+generated from the same verb table as the CLI, so the two cannot drift.
 
 ## Interfaces
 
@@ -162,8 +167,8 @@ the pack log records (`crates/model2/src/packlog.rs`; they are produced
 in `crates/gpu/src/lib.rs` and `crates/gpu/src/tiles.rs`). An agent that changed one
 asset learns from one call whether its file was used.
 
-A request to the server is one line, `{"id":1,"verb":"scene.render",
-"args":{...}}`, and the answer is the shared envelope.
+To an MCP client each verb is a tool (`scene.render`) whose arguments are
+the CLI's options and whose result is the shared envelope.
 
 ## The roles
 
@@ -223,9 +228,9 @@ several agents avoids each holding a pack of its own.
   broken the GPU tests before.
 - **30 Hz games.** `vstriker` repeats each stream; a clip there needs the
   two-vblank step.
-- **The browser.** The web module already exports a headless machine and a
-  live `set_pack` (`crates/web/src/lib.rs:990-1034`, `1426-1456`). Whether a
-  web studio should draw scenes itself or ask a server is for pass two.
+- **The browser** is out of scope for these tools (decided 2026-11-19).
+  The web module already exports a headless machine and a live `set_pack`
+  (`crates/web/src/lib.rs:990-1034`, `1426-1456`), should that change.
 
 ## MVP: a few days
 
