@@ -160,14 +160,22 @@ impl TexMap {
             or[2],
             or[3]
         );
-        // Candidate predicate: aligned 4-word tuple whose words lie inside the OR mask, h0 bit 14 set.
+        // Candidate predicate: any 4-word window with bit 14 of word 0 set and only bits seen in read headers.
         let pred = |s: usize| s + 4 <= n && rom[s] & (1 << 14) != 0 && (0..4).all(|k| rom[s + k] & !or[k] == 0);
-        let cand: Vec<usize> = (0..n / 4).map(|i| i * 4).filter(|&s| pred(s)).collect();
+        let mut by_mod = [0usize; 4];
+        for &s in &starts {
+            by_mod[s % 4] += 1;
+        }
+        let cand: Vec<usize> = (0..n).filter(|&s| pred(s)).collect();
+        let mut cand_mod = [0usize; 4];
+        for &s in &cand {
+            cand_mod[s % 4] += 1;
+        }
         let read_cand = cand.iter().filter(|&&s| texmap::get(2, s)).count();
         let nb_cand = cand.iter().filter(|&&s| !blank[s]).count();
-        // False positives: aligned tuples entirely made of words read as UV and never as header.
+        // False positives: windows entirely made of words read as UV and never as header.
         let (mut uvt, mut uvfp) = (0, 0);
-        for s in (0..n / 4).map(|i| i * 4) {
+        for s in 0..n.saturating_sub(4) {
             if (0..4).all(|k| texmap::get(0, s + k) && !texmap::get(1, s + k)) {
                 uvt += 1;
                 if pred(s) {
@@ -176,13 +184,10 @@ impl TexMap {
             }
         }
         println!(
-            "  candidates  {} aligned positions match the header look (bit 14 + only bits seen in read headers), {} non-blank, {} of them read as a header ({} of read headers are aligned candidates); false positives on UV-only tuples {}/{}",
+            "  candidates  header starts read by address mod 4: {by_mod:?}; windows at any offset that look like a header: {} ({} non-blank; by mod 4 {cand_mod:?}), {} of them read as a header; false positives on UV-only windows {uvfp}/{uvt}",
             cand.len(),
             nb_cand,
             read_cand,
-            starts.iter().filter(|&&s| s % 4 == 0 && pred(s)).count(),
-            uvfp,
-            uvt
         );
         // ---- data ROM ----
         let data = m.bus.data_rom();
