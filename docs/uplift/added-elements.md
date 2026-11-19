@@ -54,7 +54,16 @@ geometry code stay attached, lit and clipped. That tier can only use the
 host's texture sheet and flat lighting, which suits a decal or a simple
 prop and not a field of grass with its own image. Scatter and anything
 with its own texture need the second tier, drawn by the renderer from
-the object's recorded matrix and light, which is not yet spiked.
+the object's recorded matrix and light.
+
+The second tier was spiked on 2026-11-20: a torus with its own image,
+anchored at an offset to a Top Skater speed-limit sign, held to within
+0.009 of a pixel over 37 frames of moving camera, and was hidden by the
+sign's own polygons where it should be. Two things it showed for added
+elements: the element needs a stated material (it took a self-lit one
+from its host by accident and came out at full brightness), and draw
+order must be worked out per triangle. Scatter on ground polygons, the
+hardest case for draw order, is still untried.
 
 ### Four kinds
 
@@ -189,8 +198,8 @@ Nothing is added. Models are not known, so there is nothing to anchor to.
 
 ## MVP: a week
 
-1. **Spike:** one prop anchored to one Top Skater scenery model, held
-   through a moving clip, with the steadiness number.
+1. One prop anchored to one Top Skater scenery model (spiked: steady
+   to 0.009 of a pixel).
 2. **Spike:** scatter on one ground model, to settle draw order against
    painter's-order polygons.
 3. `place.txt` with `prop` and `scatter`, `place check`, and the

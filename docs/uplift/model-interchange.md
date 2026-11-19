@@ -181,15 +181,53 @@ that reuse the original's textures. Those textures can themselves be
 replaced by the pack. It does not cover a free mesh with its own UVs,
 its own images and smooth normals.
 
-**Tier 2: a free mesh, built in the renderer.** Not spiked. The renderer
-draws the glTF mesh itself, using what the native geometrizer records on
-the side: the object's matrix, its light and its place in the draw
-order. Smooth shading already evaluates the game's lighting formula for
-any normal, and the GPU clips. The spike's author estimated 600 to 900
-lines to re-implement lighting, culling and clipping from scratch;
-reusing smooth shading and the GPU's clipping should need less
-(inferred). This is the tier "any glTF" needs, and it wants its own
-spike.
+**Tier 2: a free mesh, built in the renderer.** Spiked on 2026-11-20
+(software renderer; Top Skater and `daytona`; branch `uplift-spikes`,
+about 1,000 lines). It works.
+
+A sphere and a torus with their own vertices, a normal per vertex, their
+own UVs and a generated 256x256 image with a cut-out were drawn in place
+of the skater's torso and Daytona's car body, and anchored beside a
+piece of Top Skater's scenery, over 37 frames of moving camera. The
+original was removed with tier 1. The side channel gained one thing: the
+object block's matrices.
+
+- **It does not drift.** The original model's own vertices, put through
+  the recorded matrix, land on the game's own picture to within 0.003
+  of a pixel (4,033 vertices on Top Skater, 24,938 on Daytona). The
+  anchored torus moved at most 0.009 of a pixel against its scenery.
+- **Smooth shading works**, per pixel, with the game's own lighting
+  formula and the block's light.
+- **Its own image works**, at any size, with nothing from the game's
+  sheets. A cut-out works; blended translucency was not tried.
+- **Clipping works** at the near plane and the window's edges.
+- **Draw order has to be per triangle.** The game sorts polygons and
+  does not depth-test most of them. Giving each new triangle the game's
+  own kind of key (its nearest corner) put it right to within 0.1 pixel
+  on the torso. One position for the whole mesh was wrong by 47 pixels
+  there and by thousands on Daytona's car, and even per triangle the car
+  was off by 211 pixels. Big objects next to big polygons need a better
+  rule.
+- **It costs nothing measurable**: 0.06 ms a frame to build the
+  polygons, and the software draw time did not change.
+- **State hashes were unchanged.**
+
+What it found missing:
+
+- **Which material?** A removed model leaves no polygon to copy a
+  lighting entry and colour table from. Taken from the wrong neighbour,
+  the anchored torus came out self-lit at full brightness. The block
+  must record them, or the mesh must name them.
+- **Parts with two matrices.** Top Skater's torso bends between two; the
+  spike used the first only. A mesh for such a part needs a weight per
+  vertex.
+- **The GPU renderer** has no way to draw a polygon with an image that
+  is not a game texture or a pack's replacement of one. That path is the
+  main work left.
+- **Model 2B** does not record the matrices yet.
+- **Names for instances**: one mesh per model address is not enough
+  where a model is drawn several times, or where a thing changes model
+  each pose ([scene-understanding.md](scene-understanding.md)).
 
 **What a still check needs.** A capture cannot be re-run: it holds only
 the finished stream. A scene render with a replaced model must start
@@ -296,5 +334,6 @@ a pack inside a frame. None of this is measured.
 3. `model check` with keys, bounds and budget.
 4. Tier 1 from the spike made real: `mdl_` files encoded to the game's
    records, with `model check` reporting what will not encode.
-5. **Spike:** tier 2 on one prop: a glTF with its own UVs and normals,
-   drawn by the renderer with the recorded matrix and light.
+5. Tier 2 (spiked in software): the block's matrices, light and
+   material on the side channel; a glTF loader; per-triangle sort keys;
+   then the GPU path.
