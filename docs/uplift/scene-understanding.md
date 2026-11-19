@@ -83,6 +83,31 @@ geometrizer and the renderer already produce.
   can be split by which model it is on
   ([asset-identity.md](asset-identity.md)).
 
+**Spiked on 2026-11-19** (Top Skater, software renderer; branch
+`uplift-spikes`, about 190 lines):
+
+- **It works.** The native 2C geometrizer hashes the polygon words each
+  object reads and passes the key beside the existing lighting side
+  channel. In 21 frames every 3D pixel had a model key. A race frame has
+  20 to 71 models.
+- **Draw-only holds.** The state hash over a 6,212-frame run is the same
+  with and without it, and the key costs under 0.02 s over that run.
+- **Keys are stable**: two runs gave identical output, and a model keeps
+  its key as the camera moves.
+- **A model is a part, not a thing.** The skater is about ten models
+  (limbs, board), and the ground a few large ones. Picking "the skater"
+  needs a step that groups models, which this spec did not have. Classes
+  and the game's manifest are where groups would live.
+- **Today's captures cannot answer.** A capture holds the finished
+  stream and video memory, with no side channel. Identity must be
+  recorded when the capture is made, because the polygon data is not in
+  it. Recording only the per-object part is a few hundred bytes a frame.
+- **The hash added nothing over the address** in this game: 129
+  addresses, 129 keys. Its value (the same model at two addresses, ROM
+  revisions, models in RAM) did not arise.
+- Not done: the GPU's ID target, a Model 2B game, polygons sent directly
+  (none occurred), and models in polygon RAM (none occurred).
+
 ### 2. Instances that persist
 
 A model drawn five times is five instances. The smooth-motion plan pairs

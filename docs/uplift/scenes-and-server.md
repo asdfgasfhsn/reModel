@@ -84,6 +84,13 @@ derived from the ROM. It lives in `<data dir>/<set>/scenes/<name>/`:
 | `facts.tsv` | Every asset drawn there: pixels, box, variant | "What is here" and "where is this" |
 | `thumb.png` | A small picture | Browsing |
 
+A scene's capture always records the geometrizer's side channel as well
+(each object's model key, at least). A spike on 2026-11-19 found that
+today's captures hold only the finished stream, so a scene made from one
+cannot say which model a pixel belongs to, and the polygon data needed
+to work it out later is not in the capture
+([scene-understanding.md](scene-understanding.md)).
+
 Scenes also come from play. The catalogue already notes each screen's best
 frame (97 screens for Top Skater). With a state and a capture saved at
 those frames, playing a game with `--catalogue` would fill the scene

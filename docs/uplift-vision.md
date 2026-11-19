@@ -271,6 +271,24 @@ Still open, with a recommendation:
    `scenes.txt` always taking precedence, and `scene verify` in the
    benchmark run to catch drift.
 
+## Spikes
+
+What has been tried, as against reasoned. Each row's detail is in the
+spec named; scratch output stays out of the repository.
+
+| Date | Question | Result | Changes |
+|---|---|---|---|
+| 2026-11-19 | How long does a still check take with no emulator? | 1.2 s without a pack, 1.75 s with the showcase pack, at 1080p from a cold start | [scenes-and-server](uplift/scenes-and-server.md): scenes before any server |
+| 2026-11-19 | Can one image be tinted to follow an artwork's colour variants? | Not by any simple tint: a polygon's colour is an index, not a strength. A lookup per texel is exact on the game's art and noisy on flat new art. The showcase's authors mostly wanted the same image or a redrawn one | [asset-identity](uplift/asset-identity.md): the build bakes colour copies; `follow` is only a fallback for unseen colours |
+| 2026-11-19 | Can a mid-tier model do three tasks from [interface.md](uplift/interface.md) alone? | First read: one of three. After a table of every verb's shape: all three command sequences right, with small gaps reported and then closed. A paper test can go no further | The verb table; the real test waits for slice A's commands |
+| 2026-11-19 | Can every 3D pixel be traced to the model that drew it? | Yes on Top Skater, in software: every 3D pixel in 21 frames, state hashes unchanged, cost negligible. A model is a part (a limb, a board), so picking needs grouping. Existing captures hold no identity | [scene-understanding](uplift/scene-understanding.md): captures must record the side channel; a grouping step is needed |
+SPIKEROWS
+
+Status of each spec, by the ladder in [uplift/README.md](uplift/README.md):
+the interface page and the eight pass-one specs are grounded;
+asset-identity and scenes-and-server are spiked in part; content-coverage,
+distribution and the six pass-two specs are sketches.
+
 ## How this was made
 
 - **Code and docs** read at `7d8f099` by four mapping passes, each claim
