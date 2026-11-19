@@ -26,7 +26,9 @@ first time a player picks the course nobody recorded.
   the share of sightings seen once, "a guide, not a measurement"
   (`crates/cli/src/catalogue.rs`, `coverage_estimate`). It measures how
   well the visited screens were sampled, and knows nothing of screens
-  never visited.
+  never visited. The same holds on `vf2` and `daytona`: each reported
+  100% after one run, and a second run added 50% and 40% more textures
+  (spike, 2026-11-19).
 - **There is no list of models to count against.** A model's address
   appears only in the display list the game builds as it runs. A model
   has no length; it ends at a marker (`docs/hw/geometrizer.md`, 2.1 and
