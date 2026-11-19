@@ -225,6 +225,9 @@ scan: release ## List the sets in ROM= (MAME zips or folders) and check the supp
 boot: release ## Print the i960 boot record and system-table entry points
 	$(RUN) boot
 
+link-trace: release ## Experimental, off by default: run GAME with a link board fitted (LINK=idle, or LINK=fake,ID,TOTAL: a partner that mirrors the game's own block; LINK_DELAY, LINK_FREEZE, LINK_DROP: frames) and write every access to 0x1A00000-0x1A1FFFF to OUT/link-trace.txt (INPUT, STEPS, SNAP as `run`; docs/hw/link-board.md)
+	REMODEL_LINK=$(or $(LINK),idle) REMODEL_LINK_DELAY=$(LINK_DELAY) REMODEL_LINK_FREEZE=$(LINK_FREEZE) REMODEL_LINK_DROP=$(LINK_DROP) $(RUN) $(if $(INPUT),--input $(INPUT)) run $(STEPS) $(SNAP)
+
 disasm: release ## Linear disassembly: make disasm ADDR=0x6f0 COUNT=64
 	$(RUN) disasm $(ADDR) $(COUNT)
 

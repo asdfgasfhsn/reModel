@@ -256,6 +256,10 @@ pub struct Model2Bus {
     /// the game has one fitted (`model2::link`); empty slots read as all
     /// ones.
     pub link: Option<crate::link::Link>,
+    /// Debugging (`REMODEL_LINK`, `docs/hw/link-board.md`): every CPU
+    /// access to `0x1A00000`-`0x1A1FFFF` (shared RAM and the board's
+    /// registers). Never part of the state; `None` costs a test per access.
+    pub link_trace: Option<Vec<LinkHit>>,
     /// The light gun interface, for games with guns: commands on I/O
     /// registers 9 and 10, replies on 12, status on 13.
     pub gun: Option<GunBoard>,
@@ -479,6 +483,7 @@ impl Model2Bus {
             controls: &roms.game.controls,
             drive: roms.game.drive_board.map(Drive::new),
             link: roms.game.link_board.map(crate::link::Link::new),
+            link_trace: None,
             gun: roms
                 .game
                 .controls
@@ -580,6 +585,9 @@ impl Model2Bus {
             if !self.video_30hz || self.frames.is_multiple_of(2) {
                 self.frame_toggle = !self.frame_toggle;
                 self.run_geometrizer();
+            }
+            if self.link.as_ref().is_some_and(|l| l.fake().is_some()) {
+                self.link_mirror();
             }
             self.request_irq(IRQ_VBLANK);
         }
@@ -1289,6 +1297,18 @@ impl Model2Bus {
 
     #[inline]
     fn read(&mut self, addr: u32, n: usize) -> u32 {
+        let v = self.read_untraced(addr, n);
+        if addr >> 17 == 0x01a0_0000 >> 17 {
+            let hit = LinkHit { cycle: self.now, ip: self.cur_ip, addr, value: v, size: n as u8, write: false };
+            if let Some(t) = &mut self.link_trace {
+                t.push(hit);
+            }
+        }
+        v
+    }
+
+    #[inline]
+    fn read_untraced(&mut self, addr: u32, n: usize) -> u32 {
         if self.probing {
             self.probe_read(addr);
         }
@@ -1311,6 +1331,12 @@ impl Model2Bus {
 
     #[inline]
     fn write(&mut self, addr: u32, v: u32, n: usize) {
+        if addr >> 17 == 0x01a0_0000 >> 17 {
+            let hit = LinkHit { cycle: self.now, ip: self.cur_ip, addr, value: v, size: n as u8, write: true };
+            if let Some(t) = &mut self.link_trace {
+                t.push(hit);
+            }
+        }
         if self.probing {
             self.probe.impure = true;
         }
@@ -1328,7 +1354,51 @@ impl Model2Bus {
             self.log(addr, Some(v));
             return;
         }
+        if self.link.is_some() && addr & !3 == 0x01a1_4000 {
+            self.link_register_write(addr, v);
+        }
         self.unmapped(addr, Some(v));
+    }
+
+    /// A write to the link board's registers (experimental: the scripted
+    /// partner of `REMODEL_LINK=fake`, `docs/hw/link-board.md`).
+    fn link_register_write(&mut self, addr: u32, v: u32) {
+        let Some((id, total)) = self.link.as_ref().and_then(crate::link::Link::fake) else { return };
+        if addr == 0x01a1_4000 && v & 0xff == 1 {
+            if let Some((m, off)) = self.find(0x01a1_0000) {
+                let d = &mut self.mems[m].data;
+                (d[off], d[off + 2], d[off + 3]) = (1, id, total);
+            }
+        }
+    }
+
+    /// Experimental partner that does what the game does (`REMODEL_LINK=
+    /// fake`): at each vblank the game's own block (`0x1A12000`, 0x1C0
+    /// bytes) is copied into the first TOTAL receive blocks (`0x1A121C0` +
+    /// 0x1C0 each), as if every node were in the same state as it.
+    fn link_mirror(&mut self) {
+        let Some((_, total)) = self.link.as_ref().and_then(crate::link::Link::fake) else { return };
+        let Some((m, base)) = self.find(0x01a1_2000) else { return };
+        let sent = self.mems[m].data[base..base + 0x1c0].to_vec();
+        let frame = self.frames;
+        // Receive block 0 is the game's own block, echoed at once; the
+        // others come from the partner, `delay` frames late.
+        let got = self.link.as_mut().and_then(|l| l.deliver(frame, &sent));
+        let drop_at = self.link.as_ref().map_or(0, |l| l.drop_at);
+        let d = &mut self.mems[m].data;
+        if drop_at != 0 && frame >= drop_at {
+            if let Some((m, off)) = self.find(0x01a1_0000) {
+                self.mems[m].data[off] = 0;
+            }
+            return;
+        }
+        d[base + 0x1c0..base + 0x380].copy_from_slice(&sent);
+        if let Some(got) = got {
+            for k in 1..total.min(4) as usize {
+                let at = base + 0x1c0 * (k + 1);
+                d[at..at + 0x1c0].copy_from_slice(&got);
+            }
+        }
     }
 
     /// The whole memory `addr` falls in (diagnostics: dumping a region).
@@ -1445,7 +1515,7 @@ impl jit::JitHost for Model2Bus {
     /// Not while an idle-loop probe or a write watch looks at accesses.
     #[inline]
     fn fast_pages(&mut self) -> *const jit::FastPage {
-        if self.fast.is_empty() || self.probing || self.watch.is_some() {
+        if self.fast.is_empty() || self.probing || self.watch.is_some() || self.link_trace.is_some() {
             jit::no_fast_pages()
         } else {
             self.fast.as_ptr()
@@ -1536,6 +1606,17 @@ impl std::hash::Hasher for AddrHasher {
     fn write_u32(&mut self, v: u32) {
         self.0 = (v as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
     }
+}
+
+/// One CPU access to the link board's range (`Model2Bus::link_trace`).
+#[derive(Clone, Copy, Debug)]
+pub struct LinkHit {
+    pub cycle: u64,
+    pub ip: u32,
+    pub addr: u32,
+    pub value: u32,
+    pub size: u8,
+    pub write: bool,
 }
 
 /// A watched write: (cycle, ip, address, value, size in bytes).

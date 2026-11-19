@@ -49,7 +49,7 @@ share at least what the game touches (`Board::has_tgp_2a`):
 | `0x220000`-`0x23FFFF` | **the program ROM's second 128 KB again** (ROM `0x20000`-`0x3FFFF`): the code there is linked to run at `0x22xxxx` | relative calls from the ROM's first half land on function entries only at `0x220000 +` their ROM offset (`call 0x229440` reaches ROM `0x29440`), and the code there calls back with negative displacements; 908 references to `0x22xxxx`/`0x23xxxx` in the program |
 | `0x1C00000`-`0x1C0007F` | **I/O registers**, a byte each at `0x1C00000 + 2N` (not the 315-5649's layout) | below |
 | `0x1C00200`-`0x1C002FF` | the **I/O board's buffer**: 128 bytes, one per 16-bit word | below |
-| `0x1A10000`-`0x1A14003` | the **network (link) board**: shared RAM from `0x1A10000`, status at `0x1A14000` (bit 0 set: no board) | the game's network check; with the link ID set to MASTER it shows "NETWORK BOARD NOT PRESENT" and restarts when bit 0 is set; on 2B `von` needs the board *present* (bit 0 clear, bit 7 of `0x1A14002` clear: `model2::link`, `docs/games/von.md`) |
+| `0x1A10000`-`0x1A14003` | the **network (link) board**: shared RAM from `0x1A10000`, status at `0x1A14000` (bit 0 set: no board) | the game's network check; with the link ID set to MASTER it shows "NETWORK BOARD NOT PRESENT" and restarts when bit 0 is set; on 2B `von` needs the board *present* (bit 0 clear, bit 7 of `0x1A14002` clear: `model2::link`, `docs/games/von.md`); the board as the games use it: `docs/hw/link-board.md` |
 
 `0x200000`'s RAM (as on 2A/2C, 256 KB there) is cut to 128 KB on this
 board in the model; whether the hardware has RAM, or the ROM again, at

@@ -563,6 +563,22 @@ debugging (environment variables for `run`):
   REMODEL_PROBE=X,Y    at each snapshot, list the 3D polygons covering
                        pixel (X, Y) with their texture header and texels
   REMODEL_WATCH=ADDR   log every memory write to ADDR's 32-bit word
+  REMODEL_LINK=idle|fake,ID,TOTAL
+                       experimental (docs/hw/link-board.md): fit a link
+                       board whatever the game's manifest says, and write
+                       every access to 0x1A00000-0x1A1FFFF to
+                       DIR/link-trace.txt. fake: also a partner that
+                       reports node ID and TOTAL nodes once the game starts
+                       the board and mirrors the game's own block;
+                       REMODEL_LINK_DELAY=N frames late, REMODEL_LINK_FREEZE=F
+                       silent from frame F, REMODEL_LINK_DROP=F board not
+                       ready from frame F
+  REMODEL_RAM_DUMP=ADDR:FILE
+                       at the end of `run`, write the memory ADDR is in
+                       (0x500000: the game's code and data)
+  REMODEL_DISASM_IMAGE=FILE:BASE
+                       with disasm: read FILE (a RAM dump) at BASE in place
+                       of the program ROM
   REMODEL_FUZZ_DUMP=FILE
                        with geo-fuzz: at the first frame that differs, write
                        its list to FILE and the native stream to FILE.stream
@@ -1516,7 +1532,16 @@ fn cmd_tgp_check(o: &Opts, roms: &RomSet) -> ExitCode {
 }
 
 fn cmd_disasm(o: &Opts, roms: &RomSet) -> ExitCode {
-    let img = Image { base: 0, bytes: &roms.program };
+    // REMODEL_DISASM_IMAGE=FILE:BASE disassembles a memory dump (written by
+    // REMODEL_RAM_DUMP) in place of the program ROM, FILE loaded at BASE.
+    let dump = std::env::var("REMODEL_DISASM_IMAGE").ok().and_then(|v| {
+        let (f, b) = v.split_once(':')?;
+        Some((std::fs::read(f).ok()?, parse_num(b)?))
+    });
+    let img = match &dump {
+        Some((bytes, base)) => Image { base: *base, bytes },
+        None => Image { base: 0, bytes: &roms.program },
+    };
     let args = &o.args;
     let Some(mut pc) = args.get(1).and_then(|s| parse_num(s)) else {
         eprint!("{USAGE}");
@@ -3173,6 +3198,25 @@ fn run(
     if let Some(a) = std::env::var("REMODEL_WATCH").ok().and_then(|v| parse_num(&v)) {
         m.bus.watch = Some((a, Vec::new()));
     }
+    // Experimental (docs/hw/link-board.md): REMODEL_LINK=idle fits an idle
+    // link board whatever the game's manifest says and traces every access
+    // to 0x1A00000-0x1A1FFFF into DIR/link-trace.txt. Off by default.
+    if let Ok(spec) = std::env::var("REMODEL_LINK") {
+        let mut link = model2::link::Link::new(romset::LinkBoard::Idle);
+        // REMODEL_LINK=fake,ID,TOTAL: also answers the start of the board.
+        if let Some(rest) = spec.strip_prefix("fake,") {
+            let n: Vec<u8> = rest.split(',').filter_map(|x| x.parse().ok()).collect();
+            if let [id, total] = n[..] {
+                let var = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+                link = link
+                    .with_fake(id, total)
+                    .with_timing(var("REMODEL_LINK_DELAY") as usize, var("REMODEL_LINK_FREEZE"));
+                link.drop_at = var("REMODEL_LINK_DROP");
+            }
+        }
+        m.bus.link = Some(link);
+        m.bus.link_trace = Some(Vec::new());
+    }
     let mut live = AUDIO.get().map(|_| model2::audio::Live::new(roms));
     if let Some(path) = LOAD_STATE.get() {
         let loaded = std::fs::read(path)
@@ -3449,6 +3493,32 @@ fn run(
         .map(|&(t, c, v)| format!("{:>6} {} {v:02x}\n", t / model2::bus::FRAME_CYCLES, if c { "ctl " } else { "data" }))
         .collect();
     let _ = std::fs::write(dir.join("sound-tx.txt"), text);
+    // REMODEL_RAM_DUMP=ADDR:FILE writes the memory ADDR is in, at the end.
+    if let Some((a, f)) = std::env::var("REMODEL_RAM_DUMP").ok().as_deref().and_then(|v| v.split_once(':')) {
+        if let (Some(a), Some(mem)) = (parse_num(a), parse_num(a).and_then(|a| b.memory_at(a))) {
+            let _ = std::fs::write(f, mem);
+            println!("ram dump      {a:#x}: {} bytes to {f}", mem.len());
+        }
+    }
+    if let Some(t) = &b.link_trace {
+        let text: String = t
+            .iter()
+            .map(|h| {
+                format!(
+                    "{:>6} ip {:08x} {} {:08x} {} {:0w$x}\n",
+                    h.cycle / model2::bus::FRAME_CYCLES,
+                    h.ip,
+                    if h.write { "W" } else { "R" },
+                    h.addr,
+                    h.size,
+                    h.value,
+                    w = h.size as usize * 2
+                )
+            })
+            .collect();
+        let _ = std::fs::write(dir.join("link-trace.txt"), text);
+        println!("link trace    {} accesses ({}/link-trace.txt)", t.len(), dir.display());
+    }
     if let Some((a, log)) = &b.watch {
         println!("watch {a:#010x}: {} writes", log.len());
         for &(t, ip, addr, v, n) in log.iter().take(64) {

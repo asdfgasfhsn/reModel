@@ -26,6 +26,7 @@ make scan             # list the sets in rom/ (MAME zips or folders) and check t
 make boot             # boot record and system-table entry points
 make analyze          # code discovery -> out/topskatr/program.lst
 make disasm ADDR=0x6f0 COUNT=64
+make link-trace GAME=srallyc LINK=fake,0,2   # experimental: a link board fitted, every access to the link RAM traced (docs/hw/link-board.md)
 make run STEPS=50000000   # boot on the interpreter, report hardware use
 make run SNAP=60          # also write the tile layer every 60 frames
 make run STEPS=900000000 SNAP=115 INPUT=coin-start   # coin-start: the game's own coin-up and start

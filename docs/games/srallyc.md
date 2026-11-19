@@ -290,3 +290,32 @@ spare.
 - *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
   a 600M-instruction coin-start run (`make bench`) fast-forwards 85.6%
   of its instructions through it, and the state hash is unchanged.
+
+## Linked play (investigation; not implemented)
+
+The full account, with evidence, is in `docs/hw/link-board.md`; in short
+(*confirmed* by running the game against `make link-trace GAME=srallyc
+LINK=fake,0,2`, an experimental board with a scripted partner, off by
+default):
+
+- The game links only if the board is present (`0x1A14000` bit 0 clear; today
+  the slot reads "none", and the game then resets its link and cabinet type
+  to 0) **and** the EEPROM's LINK TYPE (test mode, GAME ASSIGNMENTS;
+  settings byte `0x0B`, work RAM `0x20201B`) is not NOTLINK: CAR 1 is the
+  master, CAR 2-4 slaves, RELAY a relay. No DIP or input bit is involved.
+- Handshake: write 1 to `0x1A14000` (the master first writes 1 to
+  `0x1A14002`), poll `0x1A10000` for 1, then read the node ID
+  (`0x1A10002`) and node count (`0x1A10003`); two barriers on the nodes'
+  state words follow, then attract runs with the link on.
+- Per frame, to the end of the race: one 448-byte block written at
+  `0x1A12000` (state word, then the car's position, orientation, wheel
+  floats, the race clock), and reads of the received blocks from `0x1A121C0`
+  (block 0 is the game's own echoed back; block 1 the other node's). Nothing
+  waits on a partner's data once the barriers pass; with the partner's
+  blocks 3 or 8 frames late the race still ran, a silent partner changed
+  nothing visible, and the board's ready byte dropping (more than 10
+  polls) leaves a race running alone (`POSITION 1/1`) and restarts the
+  setup and attract modes.
+- Run this way, a mirror partner (the game's own block, echoed as the
+  other node's) takes it through attract, car select and a race with
+  `POSITION 1/2`.
