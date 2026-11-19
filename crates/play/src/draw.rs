@@ -33,6 +33,34 @@ pub struct Core {
     /// When the surface was last configured again after a miss
     /// ([`recover_surface`]).
     pub recovered: Option<Instant>,
+    /// Link play: the renderers and frames of the machines beyond the
+    /// first, which `renderer` and `frame` draw, each on the same device
+    /// (`Core::ensure_views`).
+    pub views: Vec<ViewCore>,
+}
+
+/// One more machine's picture in link play.
+pub struct ViewCore {
+    pub renderer: gpu::Renderer,
+    pub frame: gpu::BoardFrame,
+}
+
+impl Core {
+    /// Renderers and frames for `n` machines in all (the first is
+    /// `renderer`'s): the others made on the same device and queue, with the
+    /// GPU's limits `renderer` knows of.
+    pub fn ensure_views(&mut self, n: usize, max_anisotropy: u8, temporal: bool) {
+        while self.views.len() + 1 < n {
+            let r = &self.renderer;
+            let mut v = gpu::Renderer::from_device(r.device().clone(), r.queue().clone(), r.adapter().to_string());
+            v.set_max_msaa(r.max_msaa());
+            v.set_max_anisotropy(max_anisotropy);
+            v.set_temporal_supported(temporal);
+            v.set_keep_target(true);
+            self.views.push(ViewCore { renderer: v, frame: gpu::BoardFrame::default() });
+        }
+        self.views.truncate(n.saturating_sub(1));
+    }
 }
 
 /// How often at most a surface that times out is configured again.
@@ -147,6 +175,10 @@ pub struct GameJob {
     /// The picture menu's Compare: the frame drawn as the arcade original
     /// on one side of a divider.
     pub compare: Option<Compare>,
+    /// Link play: each machine's view and its top-left corner in the target,
+    /// machine 0's first (drawn from `Core::frame`, the others from
+    /// `Core::views`); `view` and `origin` of the job are not used.
+    pub link: Option<Vec<(model2::video::View, (u32, u32))>>,
 }
 
 /// A before/after comparison of the paused game's picture
@@ -190,8 +222,56 @@ pub fn draw_game(
     origin: (u32, u32),
     format: wgpu::TextureFormat,
 ) -> GameReport {
-    let r = &mut core.renderer;
-    let f = &core.frame;
+    core.renderer.set_keep_target(false);
+    draw_game_on(&mut core.renderer, &core.frame, job, target, view, origin, format)
+}
+
+/// Link play: the target cleared, then each machine's frame drawn into its
+/// own view (one device, a renderer each). Machine 0's report is returned.
+pub fn draw_link(
+    core: &mut Core,
+    job: &GameJob,
+    views: &[(model2::video::View, (u32, u32))],
+    target: &wgpu::TextureView,
+    format: wgpu::TextureFormat,
+) -> GameReport {
+    core.renderer.clear(target);
+    core.renderer.set_keep_target(true);
+    let (v0, o0) = views[0];
+    // The views' own work (building the polygons, the layers, the encoding) is
+    // on the CPU and each renderer is its own, so a thread each draws them
+    // into their parts of the target (the device and queue are shared; the
+    // clear above was submitted first).
+    std::thread::scope(|sc| {
+        let handles: Vec<_> = core
+            .views
+            .iter_mut()
+            .zip(&views[1..])
+            .map(|(v, &(view, origin))| {
+                sc.spawn(move || {
+                    draw_game_on(&mut v.renderer, &v.frame, job, target, &view, origin, format);
+                })
+            })
+            .collect();
+        let report = draw_game_on(&mut core.renderer, &core.frame, job, target, &v0, o0, format);
+        for h in handles {
+            if let Err(e) = h.join() {
+                std::panic::resume_unwind(e);
+            }
+        }
+        report
+    })
+}
+
+fn draw_game_on(
+    r: &mut gpu::Renderer,
+    f: &gpu::BoardFrame,
+    job: &GameJob,
+    target: &wgpu::TextureView,
+    view: &model2::video::View,
+    origin: (u32, u32),
+    format: wgpu::TextureFormat,
+) -> GameReport {
     let mut report = GameReport::default();
     if job.forget_ram {
         r.forget_ram();
@@ -373,7 +453,10 @@ pub fn run(core: &mut Core, job: Job, started: &dyn Fn()) -> Report {
     let t = Instant::now();
     started();
     let target = frame.texture.create_view(&Default::default());
-    let game = job.game.as_ref().map(|g| draw_game(core, g, &target, &job.view, job.origin, job.config.format));
+    let game = job.game.as_ref().map(|g| match &g.link {
+        Some(views) => draw_link(core, g, views, &target, job.config.format),
+        None => draw_game(core, g, &target, &job.view, job.origin, job.config.format),
+    });
     if let Some(p) = &job.photo {
         crate::photo::draw(core, p, &target, &job.view, job.origin, job.config.format);
     }

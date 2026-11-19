@@ -858,6 +858,9 @@ impl crate::Play {
             res: Res::H(2160),
         };
         let s = self.session.as_mut().filter(|s| !s.preview).ok_or("no game")?;
+        if s.link.is_some() {
+            return Err("not in link play (it is one machine's picture)".into());
+        }
         let mut studio = match s.studio.take() {
             Some(st) => st,
             None => {

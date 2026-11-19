@@ -7,7 +7,9 @@ lists its options.
 
 With no game given (`make play`, or `remodel-play` alone) it opens the
 launcher (below); `--game ID` (`make play GAME=ID`) starts that game
-straight away. At startup the reModel logo shows for 1.5 s, then fades out
+straight away; `--players N` (`make play GAME=srallyc PLAYERS=2`) starts it
+as linked machines on one split screen ("Link play (same screen)", below).
+At startup the reModel logo shows for 1.5 s, then fades out
 over 0.5 s over the launcher (or the game booting underneath). Any
 key, click or gamepad button skips it; `--no-splash` leaves it out. The
 logo (`assets/reModel-logo-1086.png`, half the size of the original) is
@@ -1013,6 +1015,164 @@ with `make play` (or rerun `install-desktop`) and the menu runs the new
 build. The window's app id (Wayland) and class (X11) are `remodel`, which
 the entry names, so the window gets the icon. `make uninstall-desktop`
 removes both.
+
+## Link play (same screen)
+
+Two to four linked machines of one game in one window, split-screen, one
+controller each, like a kart racer's split screen: each is a whole machine
+with its own sound board, joined by the link board model
+(`model2::link::LinkHub`, `docs/hw/link-board.md` section 9) the way
+the cabinets' own network joined them. Only games with an entry in `crates/romset/src/games/link.rs`
+(`romset::LinkPlay`: how many cabinets, where the game keeps the setting that
+makes a cabinet CAR 1 to CAR N and what its checksum is, the link RAM layout)
+can, and the player splits the screen for the ones it lists
+(`link::SPLIT_GAMES`); today that is Sega Rally (`srallyc`, up to 4). `daytona` links in `remodel link-run` (up to 8) but is left out of the split screen until its straight linked race draws 3D again (`docs/games/daytona.md`).
+
+**Starting it.** `make play GAME=srallyc PLAYERS=2` (2 to 4), or
+`remodel-play --game srallyc --players 2`. In the launcher a game that can
+has a **Link play** button (key L) beside Play, Saves and Settings: a panel
+asks for 2, 3 or 4 players. Each machine boots, does the board check,
+passes the link barriers and shows the link attract ("3人まで対戦可能!!")
+by itself; coin up and start per player as at a row of cabinets, and the
+cars race each other (`POSITION 1/2`, the others' cars on the road).
+
+**Machines and EEPROMs.** Each machine has its own EEPROM with LINK TYPE
+set in memory (CAR 1 for player 1, which is the master, up to CAR N); the
+settings the master sends to the others during the first handshake go into
+their own images. They are kept in the linked set's own files, `out/srallyc-link2/eeprom-0.bin`
+(`eeprom-1.bin`, ...; in the data folder anywhere else), so the single game's
+`out/srallyc/eeprom.bin` is only read, to start the set from the player's
+settings the first time, and is never written. The linked set's saves and
+resume state are likewise its own (`out/srallyc-link2/saves/`).
+
+**The screen.** Every machine draws into its own view of the window with
+its own renderer on the one GPU device (`gpu::Renderer::from_device`), each
+view 4:3 and letterboxed in its cell, so the picture styles (anti-aliasing,
+depth, shading, bloom, the CRT and ink looks) apply to each view as they do
+to a single game. Two players are side by side or stacked, as the
+`link_layout` setting (the menu's Display tab, `--link-layout auto|side|stacked`)
+says: Auto picks whichever gives each picture more room, which is side by side
+in a 16:9 window (two pictures of about 957x717 in 1920x1080, against 717x537 stacked)
+and stacked in a tall one. Three and four players are quadrants (957x537 cells
+in 1080p, a 716x537 picture); the empty fourth quadrant of three shows a dim
+panel with the game's name. A small tag by each view says who plays it and
+on what ("P2 Controller name", yellow and "Press a button on a controller to
+join" while nobody does), above the picture where the letterbox has room.
+The render resolution is the view's own, so it follows the window.
+
+What is off in link play: smooth motion and run-ahead (each would need
+every machine to run its in-betweens or frames ahead, and the exchange
+makes a machine's frame depend on the others), temporal anti-aliasing
+(it needs smooth motion's recording; the setting is ignored, multisampling
+as set applies), texture packs, the bezel, Compare and photo mode (its menu
+row is left out; F8 says so).
+
+**Controls.** Player 1 is the keyboard. Gamepads take the other seats in
+the order their first button press comes (that press is the join, not the
+game's): the first pad plays P2, and so on up to the player count; a pad
+that unplugs frees its seat. Each pad has its own gate (the Start and
+Select menu chord, buttons held in the menu), the bindings are the game's
+(the Controls page edits them for everyone: every machine is "player 1" of
+its own cabinet, so coin, start, pedals and wheel are all per player), and
+the menu follows the pad used last. `--link-keyboard off` has the
+keyboard play nothing, so pads take the seats from P1 (four pads for four
+players, where P1 would otherwise be the keyboard). A seat nobody holds has
+neutral controls. Scripted runs: `--input` is every player's script unless
+`--input2` to `--input4` say another for that player.
+
+**Sound.** Each machine's sound board runs on its own thread and its own audio
+stream, mixed by the system. The `link_audio` setting (the menu's Sound tab,
+`--link-audio`): **Player 1 loudest** (the default: P1 full, the others
+at 30%, so a pass is heard and engines are not a wall of sound), **All equal**,
+**Spread** (left to right in player order) and **Player 1 only** (the
+others' sound boards don't run, the cheapest). Changing mode changes
+levels at once and stops boards the new mode leaves out; one it adds is
+there from the next start.
+
+**Menu and states.** The Esc menu pauses every machine. A save, quick or in a
+slot, holds the whole set: every machine's state and sound board, the
+hub's and the board flags (`started`, `master`, which the machines' own state doesn't
+carry), as a normal save file whose tail is the other machines' (so
+`remodel link-run --save-at` and the player agree about what the set is);
+loading it resumes the race exactly: the same inputs from there give the same
+combined hash as an unbroken run. Reset game and Back to games keep the
+player count.
+
+**Reproducible.** `--frames N` prints each machine's state hash and the
+combined one (an FNV of the machines' hashes and the hub's state), which is
+what `remodel link-run` prints too; the same scripted inputs give the same
+value in both (4,400 frames, two machines: `a7d468fcdccbfe99`).
+
+### What link play costs
+
+Measured on the development machine (16 threads, RTX 2080 Super; the machine
+was shared with other work, load average 3 to 10, so read the milliseconds as
+within about 1 ms), Sega Rally, JIT, coin-start script into a race, status
+lines of the last 15 seconds of a 4,300 frame run (frames 3,100 on are the
+race), presentation unpaced (`--frames` runs use mailbox, so the player
+draws as fast as it can: the redraws a second below are the most it could
+draw, against the 60 a real display wants), sound off:
+
+| | Emulate, main thread (ms/frame) | Hand-over (ms) | Draw thread, 1280x720 window (ms/draw) | Most draws a second | GPU memory held: allocator, process |
+|---|---|---|---|---|---|
+| single game | 2.2 | 0.37 | 2.8 | 268 | 34 MB, 91 MiB |
+| 2 players | 1.5 | 0.70 | 2.6 | 278 | 48 MB, 105 MiB |
+| 3 players | 1.8 | 1.15 | 3.8 | 178 | 48 MB, 109 MiB |
+| 4 players | 1.9 | 1.39 | 4.1 | 158 | 64 MB, 125 MiB |
+| 4 players, 3840x2160 fullscreen | 1.9 | 1.42 | 4.1 | 159 | 80 MB, 189 MiB |
+| 2 players, 3840x2160 fullscreen | 1.4 | 0.67 | 2.4 | 297 | 55 MB, 167 MiB |
+
+Every count holds 60 Hz, with room: four machines take 1.9 ms of the
+16.7 ms refresh to run (the machines run alongside each other, a thread
+each, so it is the slowest one plus the hub) and the draw thread 4 ms, about
+2.7 times as many draws as the display asks for; the machines' own cost does
+not grow with the player count the way a single thread running them in turn
+would (one machine is about 1.5 ms of a frame; four in turn would be 6).
+`--fast` (no drawing; 2,700 frames in the race, two runs each) gave the
+emulation alone, every thread together, at 0.2 to 0.6 CPU cores at 60 Hz
+for 2 to 4 players (a single game 0.3 to 0.4; these differ run to run more
+than the players do, the JIT's translation of the race's code and the
+other work on the machine); the full emulation speed is 900 frames a second
+for two machines and 500 for four, 8 times real time. The sound boards cost
+about 0.08 of a core each (a single game 0.4 against 0.3 cores without
+sound; four players 0.9 with Player 1 loudest and 1.0 with All equal against
+0.6 without; Player 1 only 0.7: one board), so **Player 1 loudest** costs the
+four boards (0.3 core) and Player 1 only costs one. At 4 players
+the whole player is about 1.3 cores of the 16 (emulation 0.6, the four
+sound boards 0.3, drawing 0.3, the rest). Audio ran with four streams
+without an underrun.
+
+**GPU.** All the views share one device and queue; each machine has its
+renderer (`gpu::Renderer::from_device`), its frame copy and its own
+textures (the RAM of its game, its 3D layer, the 2D layers), so the memory
+is per machine (`render ram` 7 MB and the 3D layer at the view's size, 10.7
+MB at 480x360 views in a 1280x720 window and 25 MB at 1440x1080 views in
+3840x2160): four machines hold about 60 to 80 MB where a single game holds
+35 to 55. The draw thread draws the views on a thread each (one thread for
+the view whose renderer it holds, scoped threads for the others), which
+brought four views from 6 to 12 ms (drawn one after another) to about 4 (the
+CPU work of each view, polygons, layers and encoding, is the cost, not the GPU). The render
+resolution is the view's size, so a smaller cell draws fewer pixels.
+
+What the picture styles cost with four views (1280x720 window, the same
+race, draw ms a draw / GPU memory held by the allocator): original 4.1 / 64
+MB; anti-aliasing 4x 4.3 / 111 MB; 8x 4.2 / 157 MB; bloom 50 4.4 / 68 MB;
+the CRT look 3.7 to 5 / 80 MB; 4x, bloom, CRT and depth together 5.2 / 166
+MB (158 MB, 293 MiB in the process, at 3840x2160 with 4x anti-aliasing).
+The costs are the same per view as a single game's (`docs/gpu.md`)
+and the memory is the same times the players, so the multisampling
+targets are what to watch on a small GPU: 8x with four views holds
+about 90 MB more than none. None of them came near a refresh.
+
+**Degrading.** Four machines hold 60 Hz here with room, so nothing degrades
+by itself: the render size follows the window (a smaller window or fewer
+players draws fewer pixels), and the options for a slower machine are the
+sound mode (Player 1 only), anti-aliasing off, and a smaller window. A
+machine that cannot keep up is paced by the clock as a single game is
+(`sync`); there is no automatic reduction of the internal resolution, which
+none of the measured runs needed. *Unmeasured:* a slower GPU or CPU; four
+machines at 120 Hz; the pad's menu in link play beyond the checks above.
+
 
 ## Keys
 

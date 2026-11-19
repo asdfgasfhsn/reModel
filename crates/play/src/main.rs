@@ -39,6 +39,7 @@ mod focus;
 mod hints;
 mod launcher;
 mod library;
+mod link;
 mod log;
 mod menu;
 mod pack;
@@ -85,6 +86,23 @@ usage: remodel-play [options]
                      (the default), or keep its 4:3 picture
   --bezel on|off     the game's bezel beside a 4:3 picture in a wider
                      window (default on)
+  --players N        link play: N machines of the game (2 to 4, where the
+                     game can) linked on one screen, one controller each:
+                     the keyboard plays P1, gamepads join P2 up as a
+                     button is pressed (docs/play.md, \"Link play\")
+  --input2 S .. --input4 S
+                     link play: scripted inputs for players 2 to 4
+                     (--input is player 1's, and everyone's without their own)
+  --link-layout auto|side|stacked
+                     link play: two players side by side or stacked (default
+                     auto: whichever gives each picture more room)
+  --link-audio p1|mix|pan|p1only
+                     link play: whose sound you hear: player 1's machine
+                     loudest (default), all equal, spread left to right,
+                     or player 1's only (the others' sound boards off)
+  --link-keyboard on|off
+                     link play: whether the keyboard plays P1 (default on);
+                     off, gamepads take the seats from P1
   --interp           run the i960 on the interpreter even if this build
                      has recompiled code
   --no-jit           don't use the JIT (the default runs the game's code
@@ -386,6 +404,12 @@ struct Options {
     photo_history: f64,
     /// `--fast`: run as fast as the game goes, drawing nothing.
     fast: bool,
+    /// `--players`: link play with this many machines (0: a single game).
+    players: usize,
+    /// `--input2` to `--input4`, by player (index 0 and 1 unused).
+    link_inputs: Vec<Option<String>>,
+    /// `--link-keyboard`: the keyboard plays player 1.
+    link_keyboard: bool,
 }
 
 /// `--nav`'s list: NAME[+NAME]@SECONDS[:HELD], pad buttons pressed together
@@ -469,6 +493,9 @@ fn options(s: &mut Settings) -> Result<Options, String> {
         photo_dir: None,
         photo_history: 10.0,
         fast: false,
+        players: 0,
+        link_inputs: vec![None; 4],
+        link_keyboard: true,
     };
     let mut args = std::env::args().skip(1).peekable();
     let mut cli = |k: &str, v: &str| s.cli.insert(k.to_string(), v.to_string());
@@ -673,6 +700,28 @@ fn options(s: &mut Settings) -> Result<Options, String> {
                 cli("exact", "true");
             }
             "--input" => o.input = Some(value()?),
+            "--input2" | "--input3" | "--input4" => {
+                let n = (a.as_bytes()[7] - b'0') as usize - 1;
+                o.link_inputs[n] = Some(value()?);
+            }
+            "--players" => {
+                o.players = value()?.parse().ok().filter(|n| (2..=4).contains(n)).ok_or("--players wants 2 to 4")?
+            }
+            "--link-keyboard" => o.link_keyboard = opt_bool(&mut args),
+            "--link-layout" => {
+                let v = value()?;
+                if link::Layout::parse(&v).is_none() {
+                    return Err("--link-layout wants auto, side or stacked".into());
+                }
+                cli("link_layout", &v);
+            }
+            "--link-audio" => {
+                let v = value()?;
+                if link::Audio::parse(&v).is_none() {
+                    return Err("--link-audio wants p1, mix, pan or p1only".into());
+                }
+                cli("link_audio", &v);
+            }
             "--seconds" => o.seconds = Some(value()?.parse().map_err(|_| "bad --seconds")?),
             "--frames" => o.frames = Some(value()?.parse().map_err(|_| "bad --frames")?),
             "-h" | "--help" => return Err(String::new()),
@@ -738,6 +787,8 @@ struct Session {
     /// Observing into the catalogue (the Catalogue setting): the worker
     /// finishes its session when this is dropped.
     catalogue: Option<model2::catalogue::Catalogue>,
+    /// Link play: the other machines and the hub (`machine` is player 1's).
+    link: Option<link::LinkSet>,
 }
 
 /// Where `set`'s JIT hot-block list is kept (docs/jit.md, "Hot-block
@@ -798,7 +849,17 @@ impl Session {
     }
 
     fn slot_path(&self, slot: u8) -> PathBuf {
-        saves::slot_file(self.game.id, slot)
+        saves::slot_file(&self.key(), slot)
+    }
+
+    /// The name its saves and resume state go under: the game's, or for
+    /// linked machines the linked set's own, so link play never touches
+    /// the single game's.
+    fn key(&self) -> String {
+        match &self.link {
+            Some(l) => format!("{}-link{}", self.game.id, l.n()),
+            None => self.game.id.to_string(),
+        }
     }
 
     /// Write the hot-block list if it grew (docs/jit.md, "Hot-block
@@ -813,6 +874,15 @@ impl Session {
     }
 
     fn save_eeprom(&self) {
+        if let Some(l) = &self.link {
+            // The linked set's own files, one for each machine.
+            let buses = std::iter::once(&self.machine).chain(&l.machines).map(|m| &m.bus);
+            for (i, bus) in buses.enumerate().filter(|(_, b)| b.eeprom.dirty) {
+                let _ = std::fs::create_dir_all(&l.dir);
+                let _ = std::fs::write(l.dir.join(format!("eeprom-{i}.bin")), bus.eeprom.save());
+            }
+            return;
+        }
         let bus = &self.machine.bus;
         if bus.eeprom.dirty && !self.preview {
             let _ = std::fs::create_dir_all(self.dir());
@@ -854,6 +924,9 @@ impl Session {
     /// at the same level).
     fn set_light(&mut self, on: bool) {
         self.machine.bus.geo.set_light(on);
+        for m in self.link.iter_mut().flat_map(|l| l.machines.iter_mut()) {
+            m.bus.geo.set_light(on);
+        }
         if let Some(ra) = &mut self.run_ahead {
             ra.shadow().bus.geo.set_light(on);
         }
@@ -868,9 +941,29 @@ impl Session {
         }
     }
 
+    /// Link play's sound: the mode's levels, and the sound boards it leaves
+    /// out stopped. A mode that wants a board that isn't running gets it when
+    /// the game next starts.
+    fn set_link_audio(&mut self, audio: link::Audio) {
+        let Some(l) = &mut self.link else { return };
+        l.audio = audio;
+        let n = l.n();
+        for (i, slot) in l.sounds.iter_mut().enumerate() {
+            if audio.gains(i + 1, n).is_none() {
+                *slot = None;
+            }
+        }
+        l.apply_audio(self.sound.as_ref());
+    }
+
     /// The whole machine, sound boards included, as a save file.
     fn save_state(&mut self) -> Vec<u8> {
         let live = self.sound.as_ref().map(|snd| snd.save());
+        let live = match &mut self.link {
+            // The other machines, the hub and the board flags go in the tail.
+            Some(l) => Some(l.save(&mut self.machine, live)),
+            None => live,
+        };
         model2::save_session_parts(&mut self.machine, live)
     }
 }
@@ -904,6 +997,18 @@ struct Gpu {
     drawer: draw::Drawer,
     /// The texture pack counters of the last frame drawn.
     pack_stats: gpu::PackStats,
+    /// Link play: each machine's view and where it is in the window.
+    link: Option<LinkView>,
+}
+
+/// Link play's layout of the window (`Play::link_views`).
+struct LinkView {
+    /// Each machine's view and its top-left corner in the window.
+    views: Vec<(model2::video::View, (u32, u32))>,
+    /// The cell of the window each has, and the fourth quadrant, empty,
+    /// of three.
+    cells: Vec<link::Cell>,
+    empty: Option<link::Cell>,
 }
 
 /// Status line counters for the current one-second window.
@@ -1255,6 +1360,16 @@ impl Play {
         self.underruns_logged = 0;
         self.leave_photo();
         let Some(mut s) = self.session.take() else { return };
+        if s.link.is_some() {
+            // The renderers of the other machines go, and the frames are drawn into
+            // a cleared target again.
+            if let Some(g) = &mut self.gpu {
+                let core = g.drawer.core();
+                core.ensure_views(1, 1, true);
+                core.renderer.set_keep_target(false);
+                core.forget_frame();
+            }
+        }
         if let Some(p) = &s.perf {
             println!("{}", p.summary());
             println!("{}", p.gaps_summary());
@@ -1265,7 +1380,7 @@ impl Play {
             return;
         }
         let data = s.save_state();
-        let path = resume_path(s.game.id);
+        let path = resume_path(&s.key());
         let written = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&path, data));
         if let Err(e) = written {
             eprintln!("{}: can't keep the resume state: {e}", path.display());
@@ -1306,9 +1421,35 @@ impl Play {
         }
     }
 
+    /// A machine of `game` set up the way the game's settings say: the CPU
+    /// (`setup_cpu`), the geometrizer, and the lighting side channel.
+    /// Linked machines have no smooth motion (nor run-ahead).
+    fn new_machine(
+        &self,
+        roms: &romset::RomSet,
+        game: &'static romset::Game,
+        values: &GameSettings,
+        warm: bool,
+        linked: bool,
+    ) -> (model2::Machine, Option<(PathBuf, Arc<model2::jit::HotList>)>) {
+        let mut machine = model2::Machine::new(roms);
+        let jit_list = self.setup_cpu(&mut machine, game, values.geo_mode(), warm);
+        machine.bus.geo.set_mode(values.geo_mode());
+        machine.bus.geo.set_smooth(values.motion_on() && !linked);
+        // Smooth shading and material maps light from what the
+        // geometrizer knew (run-ahead's machine is made like this one).
+        machine.bus.geo.set_light(values.side_channel_on());
+        // Drawing can go ahead with the last frame's polygons when the
+        // geometrizer is late (`frame`).
+        machine.bus.geo.set_keep_last(true);
+        (machine, jit_list)
+    }
+
     /// Start `set` from power-on, or from a saved state (`from`), leaving
     /// the current game first.
-    fn start_game(&mut self, set: &str, from: library::Start) {
+    /// `start_game` for `players` machines linked on one screen (0 or 1: a
+    /// single game).
+    fn start_game_n(&mut self, set: &str, from: library::Start, players: usize) {
         self.leave_game();
         self.previews.cancel_all();
         self.use_values(set);
@@ -1321,19 +1462,31 @@ impl Play {
                 None => None,
             };
             let roms = romset::RomSet::load(game, &self.settings.rom, false).map_err(|e| e.to_string())?;
-            let mut machine = model2::Machine::new(&roms);
-            let jit_list = self.setup_cpu(&mut machine, game, values.geo_mode(), true);
-            machine.bus.geo.set_mode(values.geo_mode());
-            machine.bus.geo.set_smooth(values.motion_on());
-            // Smooth shading and material maps light from what the
-            // geometrizer knew (run-ahead's machine is made like this one).
-            machine.bus.geo.set_light(values.side_channel_on());
-            // Drawing can go ahead with the last frame's polygons when the
-            // geometrizer is late (`frame`).
-            machine.bus.geo.set_keep_last(true);
+            let linked = match players {
+                0 | 1 => None,
+                n => Some(
+                    link::play_for(game.id)
+                        .filter(|lp| n <= link::max_players(lp))
+                        .ok_or_else(|| format!("{} can't link {n} cabinets on one screen", game.title))?,
+                ),
+            };
+            let (mut machine, jit_list) = self.new_machine(&roms, game, &values, true, linked.is_some());
+            // The game's own EEPROM, or in link play the linked set's own (the
+            // player's single-player settings are only where it starts from,
+            // never written): each cabinet has its own, with its LINK TYPE set.
             let dir = settings::data_dir().join(game.id);
-            if let Ok(bytes) = std::fs::read(dir.join("eeprom.bin")) {
-                machine.bus.eeprom.load(&bytes);
+            let link_dir = settings::data_dir().join(format!("{}-link{players}", game.id));
+            let mine = std::fs::read(dir.join("eeprom.bin")).ok();
+            match linked {
+                None => {
+                    if let Some(bytes) = &mine {
+                        machine.bus.eeprom.load(bytes);
+                    }
+                }
+                Some(lp) => {
+                    let own = std::fs::read(link_dir.join("eeprom-0.bin")).ok().or(mine.clone());
+                    link::load_settings(&mut machine.bus, lp, own.as_deref(), 0);
+                }
             }
             let sound = if self.opts.sound {
                 Sound::new(&roms, (values.sfx_db, values.music_db))
@@ -1374,7 +1527,44 @@ impl Play {
                 jit_list,
                 jit_saved: Instant::now(),
                 catalogue: None,
+                link: None,
             };
+            if let Some(lp) = linked {
+                let mut machines = Vec::new();
+                let mut sounds = Vec::new();
+                for i in 1..players {
+                    let (mut m, _) = self.new_machine(&roms, game, &values, false, true);
+                    let own = std::fs::read(link_dir.join(format!("eeprom-{i}.bin"))).ok().or(mine.clone());
+                    link::load_settings(&mut m.bus, lp, own.as_deref(), i);
+                    machines.push(m);
+                    sounds.push(if self.opts.sound && values.link_audio.gains(i, players).is_some() {
+                        Sound::new(&roms, (values.sfx_db, values.music_db)).ok()
+                    } else {
+                        None
+                    });
+                }
+                let mut set =
+                    link::LinkSet::new(machines, model2::link::LinkHub::for_game(players, 1, lp), sounds, link_dir);
+                set.audio = values.link_audio;
+                set.keyboard = self.opts.link_keyboard;
+                for i in 1..players {
+                    let spec = self.opts.link_inputs.get(i).cloned().flatten().or_else(|| self.opts.input.clone());
+                    if let Some(spec) = spec {
+                        set.scripts[i - 1] = Some(
+                            model2::input::InputScript::parse(&spec, &game.controls)
+                                .map_err(|e| format!("--input{}: {e}", i + 1))?,
+                        );
+                    }
+                }
+                set.apply_audio(s.sound.as_ref());
+                println!(
+                    "link play     {players} cabinets of {}, one thread each; EEPROMs in {}; keyboard {}",
+                    game.title,
+                    set.dir.display(),
+                    if set.keyboard { "plays P1, gamepads P2 up" } else { "off, gamepads play P1 up" }
+                );
+                s.link = Some(set);
+            }
             if values.catalogue {
                 let mut st = model2::catalogue::Settings::new(
                     self.opts.catalogue_dir.clone().unwrap_or_else(|| dir.join("catalogue")),
@@ -1400,7 +1590,7 @@ impl Play {
                 s.perf = Some(perf::PerfLog::new(game.id, &s.machine));
             }
             // Photo mode's time scrub: the game's last seconds.
-            if self.opts.photo_history > 0.0 {
+            if self.opts.photo_history > 0.0 && s.link.is_none() {
                 s.history = Some(model2::photo::History::new(self.opts.photo_history, 60));
             }
             // A run-ahead the command line asked for beyond what the game's
@@ -1412,7 +1602,9 @@ impl Play {
                     values.run_ahead, game.id, game.run_ahead_max
                 );
             }
-            s.set_run_ahead(values.run_ahead, values.motion_on(), Some(&roms), &self.settings.rom);
+            if s.link.is_none() {
+                s.set_run_ahead(values.run_ahead, values.motion_on(), Some(&roms), &self.settings.rom);
+            }
             Ok(s)
         });
         match started {
@@ -1432,11 +1624,12 @@ impl Play {
                 self.session = Some(s);
                 self.epoch = Instant::now();
                 self.refit();
+                let key = self.session.as_ref().map_or(set.to_string(), |s| s.key());
                 match from {
                     library::Start::New => {}
-                    library::Start::Resume => self.load_file(&resume_path(set), "Continued"),
-                    library::Start::Slot(0) => self.load_file(&saves::slot_file(set, 0), "Quick loaded"),
-                    library::Start::Slot(n) => self.load_file(&saves::slot_file(set, n), &format!("Loaded slot {n}")),
+                    library::Start::Resume => self.load_file(&resume_path(&key), "Continued"),
+                    library::Start::Slot(0) => self.load_file(&saves::slot_file(&key, 0), "Quick loaded"),
+                    library::Start::Slot(n) => self.load_file(&saves::slot_file(&key, n), &format!("Loaded slot {n}")),
                 }
             }
             Err(e) => {
@@ -1517,6 +1710,7 @@ impl Play {
             jit_list: None,
             jit_saved: Instant::now(),
             catalogue: None,
+            link: None,
         });
         self.preview.shown = None;
         self.preview.leaving = None;
@@ -1596,6 +1790,7 @@ impl Play {
         });
         let target = texture.create_view(&Default::default());
         let r = &mut core.renderer;
+        r.set_keep_target(false);
         r.forget_ram();
         r.reset_history();
         r.set_light_rules(&s.game.shading, hud_mask(s.game));
@@ -1633,9 +1828,16 @@ impl Play {
             Ok(d) => d,
             Err(e) => return self.menu.error(format!("Can't read {}: {e}", path.display())),
         };
-        let result = model2::load_session_parts(&mut s.machine, &data).and_then(|live| match &mut s.sound {
-            Some(snd) if !live.is_empty() => snd.load(live, &s.machine.bus),
-            _ => Ok(()),
+        let result = model2::load_session_parts(&mut s.machine, &data).and_then(|live| {
+            // Link play: the tail holds the other machines, the hub and the board flags.
+            let live = match &mut s.link {
+                Some(l) => l.load(&mut s.machine, &live)?,
+                None => live,
+            };
+            match &mut s.sound {
+                Some(snd) if !live.is_empty() => snd.load(live, &s.machine.bus),
+                _ => Ok(()),
+            }
         });
         println!(
             "load          {} {}: {}",
@@ -1652,14 +1854,16 @@ impl Play {
                     let core = g.drawer.core();
                     core.renderer.reset_history();
                     core.frame.forget();
+                    core.views.iter_mut().for_each(|v| v.frame.forget());
                 }
                 self.menu.notify(done);
             }
             Err(e) => {
                 // The machine may be half loaded: start the game afresh.
                 let set = s.game.id.to_string();
+                let players = s.link.as_ref().map_or(0, |l| l.n());
                 self.session = None;
-                self.start_game(&set, library::Start::New);
+                self.start_game_n(&set, library::Start::New, players);
                 self.menu.error(format!("Load failed: {e}"));
             }
         }
@@ -1692,7 +1896,7 @@ impl Play {
         let motion = |v: &GameSettings| if preview { v.smooth_on() } else { v.motion_on() };
         if (motion(&old), old.run_ahead) != (motion(&new), new.run_ahead) {
             let rom = self.settings.rom.clone();
-            if let Some(s) = &mut self.session {
+            if let Some(s) = self.session.as_mut().filter(|s| s.link.is_none()) {
                 // Setting it again tries again after it was dropped.
                 s.run_ahead_dropped &= old.run_ahead == new.run_ahead;
                 let frames = if s.run_ahead_dropped { 0 } else { new.run_ahead };
@@ -1713,8 +1917,13 @@ impl Play {
                 self.menu.notify("The geometrizer changes when the game next starts");
             }
         }
-        if old.hud_edges != new.hud_edges || old.wide != new.wide {
+        if old.hud_edges != new.hud_edges || old.wide != new.wide || old.link_layout != new.link_layout {
             self.refit();
+        }
+        if old.link_audio != new.link_audio && !preview {
+            if let Some(s) = &mut self.session {
+                s.set_link_audio(new.link_audio);
+            }
         }
     }
 
@@ -1737,8 +1946,10 @@ impl Play {
     /// Where the bezel goes in a window `w` pixels wide showing `view` at
     /// `origin` (None: not shown), and the picture's left and right edges.
     fn bezel_at(&self, view: &model2::video::View, origin: (u32, u32), w: u32) -> Option<([f32; 4], (f32, f32))> {
-        let b =
-            self.bezel.as_ref().filter(|_| self.values.bezel && self.session.as_ref().is_some_and(|s| !s.preview))?;
+        let b = self
+            .bezel
+            .as_ref()
+            .filter(|_| self.values.bezel && self.session.as_ref().is_some_and(|s| !s.preview && s.link.is_none()))?;
         let pic = (origin.0, origin.1, view.width as u32, view.height as u32);
         let rect = bezel::layout(w, pic, view.pad, b.size)?;
         Some((rect, (origin.0 as f32, (origin.0 as usize + view.width) as f32)))
@@ -1784,6 +1995,7 @@ impl Play {
         } else {
             self.sync_pack();
             let (view, origin) = self.fit(w, h);
+            let link_views = self.link_views(w, h);
             let at = self.bezel_at(&view, origin, w);
             let slots = self.slot_infos();
             let pack_text = self.pack_text();
@@ -1792,14 +2004,40 @@ impl Play {
             let has_bezel = self.bezel.is_some();
             let room = self.session.as_ref().and_then(|s| self.run_ahead_room(s.game.id));
             let (Some(g), Some(s)) = (&mut self.gpu, &mut self.session) else { return Err("no game".into()) };
-            let r = &mut g.drawer.core().renderer;
-            r.forget_ram();
-            // A one-off frame: with temporal on, the plain (unjittered) one.
-            r.reset_history();
-            r.set_light_rules(&s.game.shading, hud_mask(s.game));
-            r.set_quality(self.values.quality(self.temporal_supported));
-            r.set_look(look_now.clone());
-            r.present_bus(&mut s.shown().bus, None, &view, &target, format, origin);
+            let core = g.drawer.core();
+            let mut quality = self.values.quality(self.temporal_supported);
+            if let (Some(l), Some(lv)) = (&mut s.link, &link_views) {
+                // Link play: each machine in its own view of one target.
+                quality.temporal = 0;
+                core.ensure_views(l.n(), self.max_anisotropy, self.temporal_supported);
+                core.renderer.clear(&target);
+                let machines = std::iter::once(&mut s.machine).chain(l.machines.iter_mut());
+                let renderers =
+                    std::iter::once(&mut core.renderer).chain(core.views.iter_mut().map(|v| &mut v.renderer));
+                for ((m, r), (view, origin)) in machines.zip(renderers).zip(&lv.views) {
+                    r.set_keep_target(true);
+                    r.forget_ram();
+                    r.reset_history();
+                    r.set_light_rules(&s.game.shading, hud_mask(s.game));
+                    r.set_quality(quality);
+                    r.set_look(look_now.clone());
+                    m.bus.geo.sync();
+                    r.present_bus(&mut m.bus, None, view, &target, format, *origin);
+                }
+                // The next redraw starts these renderers from scratch.
+                core.forget_frame();
+                core.views.iter_mut().for_each(|v| v.frame.forget());
+            } else {
+                let r = &mut core.renderer;
+                r.set_keep_target(false);
+                r.forget_ram();
+                // A one-off frame: with temporal on, the plain (unjittered) one.
+                r.reset_history();
+                r.set_light_rules(&s.game.shading, hud_mask(s.game));
+                r.set_quality(quality);
+                r.set_look(look_now.clone());
+                r.present_bus(&mut s.shown().bus, None, &view, &target, format, origin);
+            }
             s.drew_ahead = s.run_ahead.as_ref().is_some_and(|ra| ra.is_ahead_of(&s.machine));
             let (bezel, menu) = (&mut self.bezel, &mut self.menu);
             let mut values = self.values.clone();
@@ -1824,10 +2062,15 @@ impl Play {
                 materials: materials_text.as_deref(),
                 look: look_now.as_deref(),
                 pad: controls::PadLive::default(),
+                link: None,
             };
+            let lui = link_ui(Some(&*s), self.gilrs.as_ref(), link_views.as_ref());
             draw_overlay(g, &target, false, [w, h], Some(ppp), |ctx| {
                 if let (Some(b), Some((rect, pic))) = (bezel.as_mut(), at) {
                     b.paint(ctx, rect, pic, w as f32, ctx.pixels_per_point());
+                }
+                if let Some((cells, views, empty, seats, title)) = &lui {
+                    link_labels(ctx, ctx.pixels_per_point(), cells, views, *empty, seats, title);
                 }
                 // The menu as it is (drawing it changes nothing).
                 if menu.open {
@@ -1907,7 +2150,7 @@ impl Play {
     /// on, none for the launcher's preview.
     fn sync_pack(&mut self) {
         let wanted = match &self.session {
-            Some(s) if !s.preview && self.values.pack => {
+            Some(s) if !s.preview && self.values.pack && s.link.is_none() => {
                 Some(self.opts.texture_pack.clone().unwrap_or_else(|| pack::game_dir(s.game)))
             }
             _ => None,
@@ -2023,10 +2266,37 @@ impl Play {
 
     fn refit(&mut self) {
         if let Some((w, h)) = self.gpu.as_ref().map(|g| (g.config.width, g.config.height)) {
-            let (view, origin) = self.fit(w, h);
+            let (mut view, mut origin) = self.fit(w, h);
+            let link = self.link_views(w, h);
+            // The menu's picture and the pointer follow player 1's view.
+            if let Some(l) = &link {
+                (view, origin) = l.views[0];
+            }
             let g = self.gpu.as_mut().unwrap();
             (g.view, g.origin) = (view, origin);
+            g.link = link;
         }
+    }
+
+    /// Link play's views in a window of `w` x `h` pixels (None: a single
+    /// game): a cell each, a 4:3 view fitted in it
+    /// ([`link::cells`], [`link::fit`]); each view's height is its render
+    /// resolution, so the internal resolution follows the viewport.
+    fn link_views(&self, w: u32, h: u32) -> Option<LinkView> {
+        let s = self.session.as_ref()?;
+        let l = s.link.as_ref()?;
+        let (cells, empty) = link::cells(l.n(), (w, h), self.values.link_layout);
+        let hud = if self.values.hud_edges { model2::video::Hud::Edges } else { model2::video::Hud::Center };
+        let views = cells
+            .iter()
+            .map(|c| {
+                let (vh, origin) = link::fit(*c);
+                let view = model2::video::View::new(vh as usize, ASPECTS.0, hud)
+                    .with_hud_windows(s.game.hud_windows, s.game.hud_element_windows);
+                (view, origin)
+            })
+            .collect();
+        Some(LinkView { views, cells, empty })
     }
 
     fn resize(&mut self, w: u32, h: u32) {
@@ -2063,15 +2333,47 @@ impl Play {
     /// and Select held long enough to open the menu.
     fn poll_pads(&mut self) {
         let now = Instant::now();
-        let mut events = Vec::new();
+        let mut events: Vec<(pad::Event, bool, Option<usize>)> = Vec::new();
+        let link = !self.launcher.open && self.session.as_ref().is_some_and(|s| s.link.is_some());
         if let Some(g) = &mut self.gilrs {
             while let Some(ev) = g.next_event() {
                 match ev.event {
                     gilrs::EventType::Connected => println!("controller    connected: {}", g.gamepad(ev.id).name()),
                     gilrs::EventType::Disconnected => {
-                        println!("controller    disconnected: {}", g.gamepad(ev.id).name())
+                        println!("controller    disconnected: {}", g.gamepad(ev.id).name());
+                        if let Some(l) = self.session.as_mut().and_then(|s| s.link.as_mut()) {
+                            if let Some(seat) = l.leave(ev.id) {
+                                println!("link play     player {} lost their controller", seat + 1);
+                            }
+                        }
                     }
                     _ => {}
+                }
+                if link {
+                    // Link play: a gamepad's first button press takes a seat (and is
+                    // not the game's); each seat's pad has its own gate; the menu
+                    // follows the pad used last.
+                    let l = self.session.as_mut().and_then(|s| s.link.as_mut()).unwrap();
+                    if matches!(ev.event, gilrs::EventType::ButtonPressed(..))
+                        && l.seat_of(ev.id).is_none()
+                        && !self.menu.open
+                    {
+                        if let Some(seat) = l.join(ev.id) {
+                            let name = g.gamepad(ev.id).name().to_string();
+                            println!("link play     player {} plays on {name}", seat + 1);
+                            self.menu.notify(format!("Player {} joined on {name}", seat + 1));
+                            self.pad = Some(ev.id);
+                            continue;
+                        }
+                    }
+                    let seat = l.seat_of(ev.id);
+                    if matches!(ev.event, gilrs::EventType::ButtonPressed(..) | gilrs::EventType::AxisChanged(..)) {
+                        self.pad = Some(ev.id);
+                    }
+                    if seat.is_some() || Some(ev.id) == self.pad {
+                        events.extend(pad::Event::from_gilrs(&ev.event).map(|e| (e, false, seat)));
+                    }
+                    continue;
                 }
                 if matches!(ev.event, gilrs::EventType::ButtonPressed(..) | gilrs::EventType::AxisChanged(..))
                     && self.pad != Some(ev.id)
@@ -2080,24 +2382,45 @@ impl Play {
                     self.gate = pad::Gate::default();
                 }
                 if Some(ev.id) == self.pad {
-                    events.extend(pad::Event::from_gilrs(&ev.event).map(|e| (e, false)));
+                    events.extend(pad::Event::from_gilrs(&ev.event).map(|e| (e, false, None)));
                 }
             }
         }
         let secs = (now - self.started).as_secs_f64();
         while self.opts.nav.front().is_some_and(|n| n.0 <= secs) {
-            events.push((self.opts.nav.pop_front().unwrap().1, true));
+            events.push((self.opts.nav.pop_front().unwrap().1, true, None));
         }
-        for (ev, scripted) in events {
+        for (ev, scripted, seat) in events {
+            // The seat's own gate stands in for the player's for this event.
+            let swapped = seat.is_some_and(|i| self.swap_gate(i));
             self.pad_event(ev, scripted, now);
+            if let (true, Some(i)) = (swapped, seat) {
+                self.swap_gate(i);
+            }
         }
         if (self.launcher.open || self.menu.open) && self.menu.capture.is_none() {
             self.navs.extend(self.pad_nav.repeat(now));
         }
-        if !self.launcher.open && !self.menu.open && self.photo.is_none() && self.gate.tick(now) {
-            self.set_menu(true);
-            self.menu.pad_used = true;
+        if !self.launcher.open && !self.menu.open && self.photo.is_none() {
+            let mut open = self.gate.tick(now);
+            if let Some(l) = self.session.as_mut().and_then(|s| s.link.as_mut()) {
+                for seat in &mut l.seats {
+                    open |= seat.gate.tick(now);
+                }
+            }
+            if open {
+                self.set_menu(true);
+                self.menu.pad_used = true;
+            }
         }
+    }
+
+    /// Link play: put seat `i`'s gate in `self.gate` and the player's in
+    /// its place (call again to put them back). False without link play.
+    fn swap_gate(&mut self, i: usize) -> bool {
+        let Some(l) = self.session.as_mut().and_then(|s| s.link.as_mut()) else { return false };
+        std::mem::swap(&mut self.gate, &mut l.seats[i].gate);
+        true
     }
 
     /// A gamepad event: a press skips the splash (and does nothing else,
@@ -2192,6 +2515,26 @@ impl Play {
         let pad = self.gilrs.as_ref().and_then(|g| self.pad.map(|id| g.gamepad(id)));
         let mouse_aim = self.mouse_aim();
         let Some(s) = &mut self.session else { return };
+        if let Some(l) = s.link.as_mut() {
+            // Link play: each player drives their machine, by their seat's devices.
+            let tuning = self.values.tuning;
+            let none = HashSet::new();
+            let gilrs = self.gilrs.as_ref();
+            let machines = std::iter::once(&mut s.machine).chain(l.machines.iter_mut());
+            for (i, (m, seat)) in machines.zip(l.seats.iter_mut()).enumerate() {
+                let script = if i == 0 { s.script.as_ref() } else { l.scripts[i - 1].as_ref() };
+                if let Some(script) = script {
+                    script.apply(m.frames, &mut m.bus);
+                    continue;
+                }
+                let pad = gilrs.and_then(|g| seat.pad.map(|id| g.gamepad(id)));
+                let dirs = controls::read_sticks(&mut seat.dirs, pad.as_ref(), tuning);
+                let keys = if i == 0 && l.keyboard { &self.keys } else { &none };
+                let devices = controls::Devices { keys, pad, gate: &seat.gate, tuning, dirs };
+                model2::input::apply_player(&mut m.bus, &[(&s.bindings, &devices)]);
+            }
+            return;
+        }
         match &s.script {
             Some(script) => script.apply(s.machine.frames, &mut s.machine.bus),
             None => {
@@ -2298,7 +2641,13 @@ impl Play {
             if let Some(h) = &mut s.history {
                 h.before_frame(&mut s.machine);
             }
-            s.machine.run_slice(u64::MAX)?;
+            match &mut s.link {
+                // Every machine a frame, alongside each other, then the link blocks across.
+                Some(l) => l.step(&mut s.machine)?,
+                None => {
+                    s.machine.run_slice(u64::MAX)?;
+                }
+            }
             if let Some(c) = &mut s.catalogue {
                 c.tick(&mut s.machine.bus);
             }
@@ -2313,6 +2662,9 @@ impl Play {
             match &mut s.sound {
                 Some(snd) => snd.send(&mut s.machine.bus),
                 None => s.machine.bus.uart_log.clear(),
+            }
+            if let Some(l) = &mut s.link {
+                l.send_sound();
             }
             ran += 1;
         }
@@ -2338,9 +2690,12 @@ impl Play {
         // instead of running dry.
         let dt = self.last_emulate.map_or(0.0, |l| (now - l).as_secs_f64());
         self.last_emulate = Some(now);
-        if let Some(snd) = self.session.as_mut().and_then(|s| s.sound.as_mut()) {
+        if let Some(s) = self.session.as_mut() {
             if dt > 0.0 {
-                snd.set_speed(speed, dt, ran as f64, dt * FPS * speed);
+                let others = s.link.iter_mut().flat_map(|l| l.sounds.iter_mut().flatten());
+                for snd in s.sound.iter_mut().chain(others) {
+                    snd.set_speed(speed, dt, ran as f64, dt * FPS * speed);
+                }
             }
         }
         // For the log: the audio running dry, as it happens (once a
@@ -2450,7 +2805,14 @@ impl Play {
         // rules): the game's settings, not the launcher preview's (flat).
         // Every image (game frame, in-between, late, run-ahead) is shaded
         // by the renderer from the polygons it draws.
-        let quality = if s.preview { gpu::Quality::default() } else { self.values.quality(self.temporal_supported) };
+        let mut quality =
+            if s.preview { gpu::Quality::default() } else { self.values.quality(self.temporal_supported) };
+        // Linked machines draw without temporal anti-aliasing (no motion data) and
+        // smooth motion.
+        let linked = s.link.is_some();
+        if linked {
+            quality.temporal = 0;
+        }
         let bus = &mut s.shown().bus;
         let span = perf::spans::begin();
         let late = !bus.geo.wait_until(t0 + budget.mul_f64(0.8));
@@ -2466,12 +2828,26 @@ impl Play {
         let fast = g.refresh.is_none_or(|hz| hz > FPS * 1.2)
             && !self.sync.behind
             && !self.menu.open
+            && !linked
             && self.values.smooth_on();
         // With smooth shading or material maps, an in-between gets its own
         // lighting side channel (its replay records it as the game frame's
         // was), so it is shaded at the level of the frames around it.
         // (In-betweens are of the geometrizer's newest frame: not when late.)
-        let lit = (quality.shading != gpu::Shading::Flat || quality.materials) && !late && bus.geo.engine().light_on();
+        let lit = (quality.shading != gpu::Shading::Flat || quality.materials)
+            && !late
+            && !linked
+            && bus.geo.engine().light_on();
+        // Link play: the other machines' frames, each in its own copy and renderer.
+        if let Some(l) = &mut s.link {
+            core.ensure_views(l.n(), self.max_anisotropy, self.temporal_supported);
+            for (m, v) in l.machines.iter_mut().zip(core.views.iter_mut()) {
+                let late = !m.bus.geo.wait_until(t0 + budget.mul_f64(0.8));
+                v.frame.capture(&mut m.bus, late);
+                self.stats.copied += v.frame.bytes;
+                self.stats.geo_late += late as u32;
+            }
+        }
         // For the frame log: what this picture is.
         self.drawing = Some((s.shown().frames, ahead, late));
         Some(draw::GameJob {
@@ -2483,6 +2859,7 @@ impl Play {
             smooth: fast.then_some((self.smooth_at, period)),
             lit,
             compare: None,
+            link: g.link.as_ref().map(|l| l.views.clone()),
         })
     }
 
@@ -2707,12 +3084,14 @@ impl Play {
         }
         let mut overlay = None;
         let mut compare = None;
+        let linked = self.session.as_ref().is_some_and(|s| s.link.is_some());
         if self.menu.visible()
             || self.session.is_none()
             || self.splash.active()
             || crosshair.is_some()
             || bezel_at.is_some()
             || fade.is_some()
+            || linked
         {
             let pack_text = self.pack_text();
             let pad_live = self.pad_live();
@@ -2749,7 +3128,9 @@ impl Play {
                 materials: materials_text.as_deref(),
                 look: look_now.as_deref(),
                 pad: pad_live,
+                link: self.session.as_ref().and_then(|s| s.link.as_ref()).map(|l| l.n()),
             };
+            let link_ui = link_ui(self.session.as_ref(), self.gilrs.as_ref(), g.link.as_ref());
             let navs = std::mem::take(&mut self.navs);
             let (menu, splash, bezel) = (&mut self.menu, &mut self.splash, &mut self.bezel);
             let mut values = self.values.clone();
@@ -2765,6 +3146,9 @@ impl Play {
                 }
                 if let Some((x, y)) = crosshair {
                     draw_crosshair(ctx, egui::pos2(x / scale, y / scale));
+                }
+                if let Some((cells, views, empty, seats, title)) = &link_ui {
+                    link_labels(ctx, scale, cells, views, *empty, seats, title);
                 }
                 let prefs = menu::Prefs { fullscreen: &mut fullscreen, for_all: &mut for_all };
                 let actions = menu.ui(ctx, &mut values, prefs, &view, bindings.as_deref_mut(), &navs);
@@ -2795,7 +3179,7 @@ impl Play {
         // here and now.
         let g = self.gpu.as_mut().unwrap();
         let mut game = game;
-        if let Some(gj) = game.as_mut() {
+        if let Some(gj) = game.as_mut().filter(|g| g.link.is_none()) {
             gj.compare = compare;
         }
         let job = draw::Job {
@@ -2855,9 +3239,10 @@ impl Play {
         let Some(s) = self.session.as_ref().filter(|s| !s.preview) else { return };
         s.save_eeprom();
         let set = s.game.id.to_string();
+        let players = s.link.as_ref().map_or(0, |l| l.n());
         self.session = None;
         self.set_menu(false);
-        self.start_game(&set, library::Start::New);
+        self.start_game_n(&set, library::Start::New, players);
         self.menu.notify("Game reset");
     }
 
@@ -2968,17 +3353,9 @@ impl Play {
         self.note_cost(ran, emulate_time, Duration::ZERO, draw_time);
         for action in actions {
             match action {
-                launcher::Action::Play { set, from } => {
-                    self.launcher.open = false;
-                    self.launcher_bindings = None;
-                    self.set_menu(false);
-                    self.session = None;
-                    self.preview =
-                        PreviewState { failed: std::mem::take(&mut self.preview.failed), ..Default::default() };
-                    self.start_game(&set, from);
-                    if self.session.is_some() {
-                        self.game_fade = Some(Instant::now());
-                    }
+                launcher::Action::Play { set, from } => self.play_from_launcher(&set, from, 0),
+                launcher::Action::PlayLink { set, players } => {
+                    self.play_from_launcher(&set, library::Start::New, players)
                 }
                 launcher::Action::Settings => {
                     self.set_menu(true);
@@ -3003,6 +3380,20 @@ impl Play {
             self.settings.save();
         }
         self.status();
+    }
+
+    /// Start `set` from the launcher (`players` machines linked on one
+    /// screen, or 0 for a single game).
+    fn play_from_launcher(&mut self, set: &str, from: library::Start, players: usize) {
+        self.launcher.open = false;
+        self.launcher_bindings = None;
+        self.set_menu(false);
+        self.session = None;
+        self.preview = PreviewState { failed: std::mem::take(&mut self.preview.failed), ..Default::default() };
+        self.start_game_n(set, from, players);
+        if self.session.is_some() {
+            self.game_fade = Some(Instant::now());
+        }
     }
 
     /// Draw the launcher into `target` (`size` pixels at `ppp` pixels per
@@ -3144,6 +3535,7 @@ impl Play {
             materials: None,
             look: None,
             pad: pad_live,
+            link: None,
         };
         let navs = std::mem::take(&mut self.navs);
         let mut values = self.values.clone();
@@ -3285,6 +3677,9 @@ impl Play {
         // pad's Start and Select are kept from the game until released.
         self.keys.clear();
         self.gate.menu_changed();
+        if let Some(l) = self.session.as_mut().and_then(|s| s.link.as_mut()) {
+            l.seats.iter_mut().for_each(|seat| seat.gate.menu_changed());
+        }
         self.pad_nav = pad::PadNav::default();
         self.navs.clear();
         self.menu.pad_used = false;
@@ -3309,6 +3704,19 @@ impl Play {
             let hash = s.machine.bus.state_hash();
             let what = if s.preview { "preview" } else { "frames" };
             println!("{what:<14}{}, state hash {hash:016x}", s.machine.frames);
+            if let Some(l) = &mut s.link {
+                let h = l.combined_hash(&mut s.machine);
+                println!("link play     {} machines, combined hash {h:016x} (as `remodel link-run` prints it)", l.n());
+                if l.steps > 0 {
+                    let ms = |d: Duration| d.as_secs_f64() * 1e3 / l.steps as f64;
+                    println!(
+                        "link step     {:.2} ms a frame (the machines {:.2} ms at the slowest, the rest thread starts, the hub and waiting), {} frames",
+                        ms(l.step_total),
+                        ms(l.busiest_total),
+                        l.steps
+                    );
+                }
+            }
             if let Some(h) = s.history.as_ref().filter(|h| h.taken > 0) {
                 println!(
                     "photo history {} save states, {:.2} ms each on the game's thread, {:.1} MB held",
@@ -3364,6 +3772,92 @@ impl Play {
 }
 
 /// A crosshair at `at` (points), over everything.
+/// What link play's tags show: the cells and views, the empty quadrant, each
+/// seat's device, and the game's title.
+type LinkUi = (Vec<link::Cell>, Vec<(model2::video::View, (u32, u32))>, Option<link::Cell>, Vec<String>, &'static str);
+
+/// Link play's tags for `session` laid out as `lv` (None without link play).
+fn link_ui(session: Option<&Session>, gil: Option<&Gilrs>, lv: Option<&LinkView>) -> Option<LinkUi> {
+    let s = session?;
+    let (l, v) = (s.link.as_ref()?, lv?);
+    let seats: Vec<String> = l
+        .seats
+        .iter()
+        .enumerate()
+        .map(|(i, seat)| {
+            let pad = seat.pad.and_then(|id| gil.map(|g| g.gamepad(id).name().to_string()));
+            match (i == 0 && l.keyboard, pad) {
+                (true, Some(p)) => format!("Keyboard, {p}"),
+                (true, None) => "Keyboard".to_string(),
+                (false, Some(p)) => p,
+                (false, None) => "Press a button on a controller to join".to_string(),
+            }
+        })
+        .collect();
+    Some((v.cells.clone(), v.views.clone(), v.empty, seats, s.game.title))
+}
+
+/// Link play's tags over the views: each player's number and device in its
+/// corner, and in the empty fourth quadrant of three players what this is.
+/// (`cells` and `views` are in window pixels, `scale` the pixels per point.)
+fn link_labels(
+    ctx: &egui::Context,
+    scale: f32,
+    cells: &[link::Cell],
+    views: &[(model2::video::View, (u32, u32))],
+    empty: Option<link::Cell>,
+    seats: &[String],
+    title: &str,
+) {
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::unique("link tags")));
+    let pt = |x: u32, y: u32| egui::pos2(x as f32 / scale, y as f32 / scale);
+    let font = |size: f32| egui::FontId::new(size, egui::FontFamily::Proportional);
+    for (i, ((view, origin), seat)) in views.iter().zip(seats).enumerate() {
+        let waiting = seat.starts_with("Press");
+        let colour = if waiting { egui::Color32::from_rgb(255, 214, 90) } else { egui::Color32::from_white_alpha(190) };
+        let text = format!("P{}  {seat}", i + 1);
+        // In the bar above the picture where there is room, else a pill at the foot of it.
+        let room = origin.1.saturating_sub(cells.get(i).map_or(0, |c| c.y));
+        if room as f32 / scale >= 22.0 {
+            painter.text(
+                pt(origin.0 + 4, origin.1 - (20.0 * scale) as u32),
+                egui::Align2::LEFT_TOP,
+                text,
+                font(13.0),
+                colour,
+            );
+        } else {
+            let galley = painter.layout_no_wrap(text, font(13.0), colour);
+            let at = pt(origin.0 + view.width as u32 / 2, origin.1 + view.height as u32 - (10.0 * scale) as u32);
+            let rect = egui::Align2::CENTER_BOTTOM.anchor_size(at, galley.size()).expand2(egui::vec2(8.0, 3.0));
+            painter.rect_filled(rect, 8.0, egui::Color32::from_black_alpha(150));
+            painter.galley(rect.center() - galley.size() / 2.0, galley, colour);
+        }
+    }
+    if let Some(e) = empty {
+        let c = pt(e.x + e.w / 2, e.y + e.h / 2);
+        painter.rect_filled(
+            egui::Rect::from_min_max(pt(e.x, e.y), pt(e.x + e.w, e.y + e.h)),
+            0.0,
+            egui::Color32::from_rgb(8, 11, 18),
+        );
+        painter.text(
+            c - egui::vec2(0.0, 12.0),
+            egui::Align2::CENTER_CENTER,
+            "reModel",
+            font(26.0),
+            egui::Color32::from_white_alpha(70),
+        );
+        painter.text(
+            c + egui::vec2(0.0, 14.0),
+            egui::Align2::CENTER_CENTER,
+            format!("{title}: {} linked", views.len()),
+            font(13.0),
+            egui::Color32::from_white_alpha(60),
+        );
+    }
+}
+
 fn draw_crosshair(ctx: &egui::Context, at: egui::Pos2) {
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("crosshair")));
     for (w, c) in [(4.0, egui::Color32::BLACK), (2.0, egui::Color32::WHITE)] {
@@ -3599,6 +4093,7 @@ impl ApplicationHandler<Wake> for Play {
             photo_shots: None,
             log: self.opts.perf_log.then(Default::default),
             recovered: None,
+            views: Vec::new(),
         };
         core.renderer.set_profile(self.opts.perf_log);
         // The draw thread wakes the event loop as it starts drawing and when
@@ -3619,6 +4114,7 @@ impl ApplicationHandler<Wake> for Play {
             preview: None,
             drawer,
             pack_stats: gpu::PackStats::default(),
+            link: None,
         });
     }
 
@@ -3855,7 +4351,8 @@ fn main() {
     };
     match play.opts.game.clone() {
         Some(set) if play.games.iter().any(|g| g.id == set) || in_progress(&set) => {
-            play.start_game(&set, library::Start::New)
+            let players = play.opts.players;
+            play.start_game_n(&set, library::Start::New, players)
         }
         Some(set) => {
             println!("no {set} in {}: choose a game", play.settings.rom.display());

@@ -93,6 +93,7 @@ make verify                        # check the chips against known-good hashes
 make scan                          # list the sets found in rom/
 make play                          # the launcher: pick a game, then play (on the JITs, docs/jit.md)
 make play GAME=hotd                # straight into a game (Esc menu, F8 photo mode)
+make play GAME=srallyc PLAYERS=2   # two to four linked machines on one split screen, a controller each (docs/play.md)
 make play GAME=srallyc JIT=0       # without the JITs: the interpreters (RECOMP=1 JIT=0: recompiled code)
 make web RECOMP=1                  # browser build -> out/web (needs unzipped rom/<set>/ folders; serve over HTTPS)
 ```

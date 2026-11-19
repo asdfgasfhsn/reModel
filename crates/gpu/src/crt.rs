@@ -16,6 +16,9 @@ struct Kept {
 }
 
 pub(crate) struct Crt {
+    /// Draw over what `target` holds instead of clearing it first (a
+    /// picture in part of a shared target).
+    pub keep: bool,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     shader: wgpu::ShaderModule,
@@ -47,7 +50,7 @@ impl Crt {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        Crt { layout, sampler, shader, pipelines: Vec::new(), input: None, before: None }
+        Crt { keep: false, layout, sampler, shader, pipelines: Vec::new(), input: None, before: None }
     }
 
     /// Drop the kept pictures (nothing has used them for a while).
@@ -182,7 +185,10 @@ impl Crt {
                 view: target,
                 depth_slice: None,
                 resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                ops: wgpu::Operations {
+                    load: if self.keep { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(wgpu::Color::BLACK) },
+                    store: wgpu::StoreOp::Store,
+                },
             })],
             ..Default::default()
         });

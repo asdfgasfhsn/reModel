@@ -78,6 +78,7 @@ make geo-check GAME=sgt24h   # native geometrizer beside the chip (2B SHARC, 2C 
 make geo-fuzz GAME=sgt24h    # random display lists through the chip's program and the native geometrizer, compared (FUZZ_FRAMES, FUZZ_SEED)
 make play                 # the launcher: pick a game (live attract previews, settings, Continue), then play; on the JITs (JIT=0: without them)
 make play GAME=hotd       # straight into a game (Esc or pad Guide or Start+Select menu, F5/F9 quick save/load, F11 fullscreen)
+make play GAME=srallyc PLAYERS=2   # link play: 2 to 4 linked machines of the game on one split screen, one controller each (keyboard P1, gamepads join with a button press; --players N, the launcher's Link play button; docs/play.md, "Link play")
 make play PLAY_ARGS=--smooth   # with in-between frames on a display over 60 Hz (a frame more latency)
 make play GAME=sgt24h PLAY_ARGS="--run-ahead 3"   # show the game 3 frames ahead: less input lag, 4x the emulation
 make play PLAY_ARGS="--bloom 50"   # bloom on the 3D layer's bright parts, 1 to 100 percent (off by default; docs/play.md)

@@ -557,6 +557,9 @@ pub struct Renderer {
     /// The level the next frame shows as black (`Model2Bus::black_level`,
     /// 0-255): the bus's for its own frames, 0 for frames handed in.
     black: f32,
+    /// Frames are drawn over what the target holds (their `origin` and view
+    /// size a part of it) instead of clearing it first ([`Renderer::set_keep_target`]).
+    keep_target: bool,
     /// Textures kept between frames, by label.
     textures: Vec<(&'static str, wgpu::Texture)>,
     /// `frames` when each kept texture was last asked for (by label): one
@@ -965,6 +968,7 @@ impl Renderer {
             ram: [None, None],
             versions: None,
             black: 0.0,
+            keep_target: false,
             textures: Vec::new(),
             texture_used: HashMap::new(),
             frames: 0,
@@ -1780,6 +1784,33 @@ impl Renderer {
     /// again. Without this, every frame uploads both.
     pub fn set_ram_versions(&mut self, render: u64, palette: u64) {
         self.versions = Some((render, palette));
+    }
+
+    /// Several pictures to one target (the player's linked play, one
+    /// renderer for each machine on one device): with `keep`, a frame is
+    /// drawn over what the target holds, only inside its view at its
+    /// origin, so the caller clears the target once first
+    /// ([`Renderer::clear`]) and draws each picture in its own part.
+    /// Without (the default), a frame clears the whole target.
+    pub fn set_keep_target(&mut self, keep: bool) {
+        self.keep_target = keep;
+        self.crt.keep = keep;
+    }
+
+    /// Clear `target` to black and submit.
+    pub fn clear(&self, target: &wgpu::TextureView) {
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+            })],
+            ..Default::default()
+        }));
+        self.queue.submit([enc.finish()]);
     }
 
     /// Forget the game memory uploaded, so the next frame uploads it whole:
@@ -2951,7 +2982,10 @@ impl Renderer {
                 view: crt_view.as_ref().unwrap_or(target),
                 depth_slice: None,
                 resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                ops: wgpu::Operations {
+                    load: if self.keep_target { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(wgpu::Color::BLACK) },
+                    store: wgpu::StoreOp::Store,
+                },
             })],
             ..Default::default()
         });

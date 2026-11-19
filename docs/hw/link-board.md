@@ -565,13 +565,19 @@ behaves the same way.
 
 ### 9.5 What the next steps need
 
-- **Player view** (two cabinets in the player, side by side): `link-run`
-  already steps N machines and composes N pictures; the player needs one
-  renderer for each machine's picture (the GPU memory note in `CLAUDE.md`
-  applies twice), the controls of two players (two keyboard halves or two
-  pads), the hub stepped from the frame loop, and the EEPROM setup shown to
-  the player (LINK TYPE per cabinet; today patched in a copy). About
-  **3 days**.
+- **Player view: done** (`remodel-play --players N`, `make play GAME=srallyc
+  PLAYERS=2`, the launcher's Link play; `docs/play.md`, "Link play"): N
+  machines and one `LinkHub` stepped in lockstep from the frame loop, each
+  machine on its own thread for the frame (the frame is the barrier, the hub's
+  exchange the only thing they share), one renderer each on one GPU device
+  drawing into its view of the window, one controller each, the set's own
+  EEPROMs (`out/srallyc-link2/eeprom-N.bin`; LINK TYPE set per machine from
+  the manifest's `romset::LinkPlay`) and saves (every machine, the hub and
+  the board flags in one file). The combined hash of a player run equals
+  `remodel link-run`'s for the same inputs (section 9.3). What the LAN step
+  can take from it: `link::LinkSet::step` is where the exchange sits (one
+  frame boundary, all machines' blocks in, all received blocks out), and
+  `LinkSet::save`/`load` are the state a rollback needs.
 - **LAN**: each side runs one machine, sends its 448-byte block at the
   frame boundary and gets the other's `D` frames late into its block
   `(i + k + 1) mod N` with its own echo in the last. Two things from this

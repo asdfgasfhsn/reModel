@@ -214,6 +214,10 @@ pub struct GameSettings {
     /// (`model2::catalogue`, docs/play.md "Catalogue"): applies when the
     /// game starts. Never part of a preset.
     pub catalogue: bool,
+    /// Link play (same screen, docs/play.md): how the views are laid out in
+    /// the window, and what the machines' sound does.
+    pub link_layout: crate::link::Layout,
+    pub link_audio: crate::link::Audio,
     /// The dead zone, sensitivity and curve of the sticks and of the
     /// triggers (the Controls page). The defaults read as they always did.
     pub tuning: Tuning,
@@ -249,13 +253,15 @@ impl Default for GameSettings {
             look_tuning: Default::default(),
             geo_chip: false,
             catalogue: false,
+            link_layout: Default::default(),
+            link_audio: Default::default(),
             tuning: Tuning::default(),
         }
     }
 }
 
 /// Every game setting's key, in the order the panels show them.
-pub const KEYS: [&str; 33] = [
+pub const KEYS: [&str; 35] = [
     "preset",
     "wide",
     "bezel",
@@ -283,6 +289,8 @@ pub const KEYS: [&str; 33] = [
     "music_db",
     "geo",
     "catalogue",
+    "link_layout",
+    "link_audio",
     "stick_dead",
     "stick_sens",
     "stick_curve",
@@ -352,6 +360,8 @@ impl GameSettings {
             "look_tuning" => self.look_tuning.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(","),
             "geo" => if self.geo_chip { "chip" } else { "native" }.to_string(),
             "catalogue" => self.catalogue.to_string(),
+            "link_layout" => self.link_layout.name().to_string(),
+            "link_audio" => self.link_audio.name().to_string(),
             "stick_dead" => self.tuning.stick.dead.to_string(),
             "stick_sens" => self.tuning.stick.sens.to_string(),
             "stick_curve" => self.tuning.stick.curve.name().to_string(),
@@ -399,6 +409,8 @@ impl GameSettings {
             "crt" => gpu::Quality::parse_crt(v).map(|n| self.crt = n).is_some(),
             "look" => flag(v).map(|x| self.look = x).is_some(),
             "catalogue" => flag(v).map(|x| self.catalogue = x).is_some(),
+            "link_layout" => crate::link::Layout::parse(v).map(|x| self.link_layout = x).is_some(),
+            "link_audio" => crate::link::Audio::parse(v).map(|x| self.link_audio = x).is_some(),
             "look_tuning" => {
                 // Each `name=value` must be one the look takes (tried on
                 // the default look), so a typo in the file is refused.

@@ -207,6 +207,9 @@ pub struct View<'a> {
     pub look: Option<&'a model2::look::Look>,
     /// What the pad reads now (the Controls page's picture and meters).
     pub pad: crate::controls::PadLive,
+    /// Link play: how many machines are linked in the window (None: a
+    /// single game). The picture and sound rows offer its settings.
+    pub link: Option<usize>,
 }
 
 /// What the picture pages tell a player about where a change is kept
@@ -607,7 +610,7 @@ impl Menu {
                         if focus.menu_row(ui, "Save slots", &format!("{used} used ›")) {
                             go = Some((Page::SaveLoad, Tab::Display));
                         }
-                        if focus.menu_row(ui, "Photo mode", "F8") {
+                        if view.link.is_none() && focus.menu_row(ui, "Photo mode", "F8") {
                             actions.push(Action::Photo);
                         }
                         if focus.menu_row(ui, "Reset game", if armed { "again to confirm" } else { "" }) {
@@ -826,7 +829,7 @@ impl Menu {
                     match tab {
                         Tab::Display => display_rows(ui, &mut rows, settings, &mut prefs, view),
                         Tab::Motion => motion_rows(ui, &mut rows, settings, view),
-                        Tab::Sound => sound_rows(ui, &mut rows, settings),
+                        Tab::Sound => sound_rows(ui, &mut rows, settings, view),
                         Tab::More => more_rows(ui, &mut rows, settings, view),
                     }
                 });
@@ -1139,6 +1142,17 @@ fn display_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings, prefs:
         rows.toggle(ui, "Bezel", &mut s.bezel, "The cabinet's artwork beside a 4:3 picture in a wider window.");
     }
     rows.toggle(ui, "Fullscreen", &mut *prefs.fullscreen, "Fills the screen (F11 does the same, any time).");
+    if view.link == Some(2) {
+        let list: Vec<(crate::link::Layout, &str)> = crate::link::Layout::ALL.iter().map(|l| (*l, l.label())).collect();
+        rows.choose(
+            ui,
+            "Link play layout",
+            &mut s.link_layout,
+            &list,
+            "Two players: side by side, stacked, or whichever gives each picture more room in this window. Three and \
+             four players take quadrants.",
+        );
+    }
 }
 
 fn motion_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings, view: &View) {
@@ -1167,9 +1181,21 @@ fn motion_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings, view: &
     }
 }
 
-fn sound_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings) {
+fn sound_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings, view: &View) {
     rows.db(ui, "Effects", &mut s.sfx_db, (-20.0, 20.0), "The level of the sound board: effects and announcer, in dB.");
     rows.db(ui, "Music", &mut s.music_db, (-30.0, 10.0), "The level of the music board, in dB.");
+    if view.link.is_some() {
+        let list: Vec<(crate::link::Audio, &str)> = crate::link::Audio::ALL.iter().map(|a| (*a, a.label())).collect();
+        rows.choose(
+            ui,
+            "Link play sound",
+            &mut s.link_audio,
+            &list,
+            "Which machines you hear. Player 1 loudest keeps the others quiet behind it; All equal mixes every \
+             machine; Spread puts them left to right in player order; Player 1 only leaves the other sound boards \
+             off, which saves processor time.",
+        );
+    }
 }
 
 fn more_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings, view: &View) {
@@ -1274,6 +1300,7 @@ mod tests {
                 materials: None,
                 look: None,
                 pad: Default::default(),
+                link: None,
                 picture: Some([0.0, 0.0, self.size.x, self.size.y]),
                 keeps: Keeps { all_games: Preset::Sharp, own_picture: false },
             };
@@ -1859,6 +1886,7 @@ mod tests {
                 materials: None,
                 look: None,
                 pad: Default::default(),
+                link: None,
                 picture: None,
                 keeps: Keeps::default(),
             };
@@ -1937,6 +1965,7 @@ mod tests {
                 materials: None,
                 look: None,
                 pad: Default::default(),
+                link: None,
                 picture: None,
                 keeps: Keeps::default(),
             };

@@ -291,7 +291,14 @@ spare.
   a 600M-instruction coin-start run (`make bench`) fast-forwards 85.6%
   of its instructions through it, and the state hash is unchanged.
 
-## Linked play (a spike: two to four real machines in one process; not in the player)
+## Linked play (two to four real machines in one process; in the player as Link play)
+
+In the player it is **Link play** (`make play GAME=srallyc PLAYERS=2`, the
+launcher's Link play button; two to four machines on one split screen, one
+controller each: `docs/play.md`, "Link play"). The game's side of it is its
+`romset::LinkPlay` entry (`crates/romset/src/games/link.rs`): up to four
+cabinets, LINK TYPE at EEPROM byte `0x0B` (CAR 1 to CAR 4), the settings
+record's defaults and CRC.
 
 The full account, with evidence, is in `docs/hw/link-board.md`; the
 headless harness is `make link-run GAME=srallyc` (off by default: N machines

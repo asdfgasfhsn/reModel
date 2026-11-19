@@ -36,6 +36,9 @@ enum Command {
     Load(Vec<u8>, mpsc::Sender<Result<(), String>>),
     /// Mix in dB: sound board, music board.
     Mix(f32, f32),
+    /// Left and right gain on everything the boards make (linked play:
+    /// each machine's level and place in the mix).
+    Gain(f32, f32),
 }
 
 /// Audio queue shared with the output callback: interleaved stereo at the
@@ -132,11 +135,18 @@ impl Sound {
                 let base = model2::audio::RATE as f64 / rate as f64;
                 let mut resampler = model2::audio::Resampler::default();
                 let max = (AUDIO_MAX * rate as f64) as usize * 2;
+                let mut gain = (1.0f32, 1.0f32);
                 while let Ok(command) = rx.recv() {
                     match command {
                         Command::Link((bytes, until)) => {
                             pcm.clear();
                             live.feed(&bytes, until, &mut pcm);
+                            if gain != (1.0, 1.0) {
+                                for lr in pcm.as_chunks_mut::<2>().0 {
+                                    lr[0] = (lr[0] as f32 * gain.0) as i16;
+                                    lr[1] = (lr[1] as f32 * gain.1) as i16;
+                                }
+                            }
                             m.store(live.samples(), Ordering::Relaxed);
                             let step = base * f64::from_bits(r.load(Ordering::Relaxed));
                             let mut out = Vec::with_capacity(pcm.len() * 2);
@@ -156,6 +166,7 @@ impl Sound {
                             let _ = reply.send(result);
                         }
                         Command::Mix(sfx, music) => live.set_mix(sfx, music),
+                        Command::Gain(l, r) => gain = (l, r),
                     }
                 }
             })
@@ -231,6 +242,11 @@ impl Sound {
 
     pub fn set_mix(&self, sfx: f32, music: f32) {
         let _ = self.commands.send(Command::Mix(sfx, music));
+    }
+
+    /// Scale the left and right output (1.0 each: as made).
+    pub fn set_gain(&self, left: f32, right: f32) {
+        let _ = self.commands.send(Command::Gain(left, right));
     }
 }
 

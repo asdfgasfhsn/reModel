@@ -307,9 +307,9 @@ pack-lint: release ## Check texture pack PACK= against the pack format, no ROM o
 	$(CAP) $(REMODEL) pack-lint $(PACK) --max-side $(MAX_SIDE) \
 		$(if $(filter command line environment,$(origin TEXDUMP)),--dump $(TEXDUMP))
 
-play: ## Play in a native window: the launcher (carousel or grid of the games, live attract previews, quick resume, saves, settings), or straight into GAME= if given; GPU, live sound, gamepads, Esc menu, save states (on the JITs; JIT=0: without them; RECOMP=1 JIT=0: recompiled code; PLAY_ARGS)
+play: ## Play in a native window: the launcher (carousel or grid of the games, live attract previews, quick resume, saves, settings), or straight into GAME= if given; GPU, live sound, gamepads, Esc menu, save states (on the JITs; JIT=0: without them; RECOMP=1 JIT=0: recompiled code; PLAY_ARGS); PLAYERS=2..4 with GAME= (srallyc): that many linked machines on one split screen, one controller each (docs/play.md, "Link play")
 	$(call release_build,remodel-play)
-	$(CAP) $(PLAY) $(if $(filter command line environment,$(origin GAME)),--game $(GAME)) --rom $(ROM) $(if $(filter 0,$(JIT)),--no-jit) $(PLAY_ARGS)
+	$(CAP) $(PLAY) $(if $(filter command line environment,$(origin GAME)),--game $(GAME)) $(if $(PLAYERS),--players $(PLAYERS)) --rom $(ROM) $(if $(filter 0,$(JIT)),--no-jit) $(PLAY_ARGS)
 
 # The launcher in the desktop's app menu, running this checkout's player
 # (from the repo, so it finds rom/ and keeps its files in out/).

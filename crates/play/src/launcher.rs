@@ -83,6 +83,11 @@ pub enum Action {
         set: String,
         from: Start,
     },
+    /// Start `set` as link play: this many machines on one screen.
+    PlayLink {
+        set: String,
+        players: usize,
+    },
     /// Open the menu over the launcher (its settings).
     Settings,
     /// Close it (Esc, Start).
@@ -190,6 +195,12 @@ struct SavesPage {
     focus: Focus,
 }
 
+/// The Link play panel: how many machines to start the selected game with.
+struct LinkPage {
+    game: &'static romset::Game,
+    focus: Focus,
+}
+
 /// A click (or a pad press) on the launcher's page, applied after it is
 /// drawn.
 #[derive(Clone, Copy)]
@@ -202,6 +213,8 @@ enum Click {
     Play,
     Saves,
     Settings,
+    /// Link play (same screen): the player count panel.
+    Link,
     /// A game's poster: selects it, or plays it if it is.
     Game(&'static romset::Game),
 }
@@ -238,6 +251,7 @@ pub struct Launcher {
     pending_focus: Option<(Id, u8)>,
     saves: Option<SavesPage>,
     want_saves: bool,
+    link_page: Option<LinkPage>,
     posters: HashMap<String, egui::TextureHandle>,
     /// Each poster blurred (a small copy, stretched), the carousel's
     /// background while the preview isn't there.
@@ -288,6 +302,7 @@ impl Default for Launcher {
             pending_focus: None,
             saves: None,
             want_saves: false,
+            link_page: None,
             posters: HashMap::new(),
             blurs: HashMap::new(),
             art: None,
@@ -526,7 +541,7 @@ impl Launcher {
 
     /// The Saves panel is open.
     pub fn saves_open(&self) -> bool {
-        self.saves.is_some() || self.want_saves
+        self.saves.is_some() || self.want_saves || self.link_page.is_some()
     }
 
     /// The keyboard's `Nav`s this frame (taken from egui's input, so the
@@ -634,10 +649,16 @@ impl Launcher {
         }
         // The Saves panel and the menu take the input; the page behind
         // gets none (its focus just holds).
-        let page_navs = if view.menu_open || self.saves.is_some() { Vec::new() } else { all.clone() };
+        let page_navs =
+            if view.menu_open || self.saves.is_some() || self.link_page.is_some() { Vec::new() } else { all.clone() };
         let page_navs = self.override_navs(page_navs);
         self.focus.show = self.pad_used || self.keys_used;
         let mut clicks = Vec::new();
+        if !(view.menu_open || self.saves.is_some() || self.link_page.is_some())
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::L))
+        {
+            clicks.push(Click::Link);
+        }
         for nav in self.focus.begin(&page_navs) {
             match nav {
                 Nav::Start | Nav::Settings => clicks.push(Click::Settings),
@@ -675,6 +696,9 @@ impl Launcher {
         }
         if self.saves.is_some() {
             self.paint_saves(ctx, &all, view, &mut actions);
+        }
+        if self.link_page.is_some() {
+            self.paint_link(ctx, &all, &mut actions);
         }
         actions
     }
@@ -738,6 +762,11 @@ impl Launcher {
                 }
             }
             Click::Settings => actions.push(Action::Settings),
+            Click::Link => {
+                if let Some(game) = self.cur.filter(|g| crate::link::play_for(g.id).is_some()) {
+                    self.link_page = Some(LinkPage { game, focus: Focus::default() });
+                }
+            }
             Click::Game(g) => {
                 if self.cur.map(|c| c.id) == Some(g.id) {
                     actions.push(Action::Play { set: g.id.to_string(), from: Start::New });
@@ -1011,11 +1040,15 @@ impl Launcher {
         p.galley(pos2(left, y), para.clone(), theme::TEXT_2);
         y += para.size().y + 22.0 * u;
         // Play, Saves, Settings.
-        let buttons = [
+        let mut buttons = vec![
             ("play", "Play", self.chip(Chip::A, "Enter"), Click::Play, true),
             ("saves", "Saves", self.chip(Chip::X, "S"), Click::Saves, false),
             ("settings", "Settings", self.chip(Chip::Menu, "Tab"), Click::Settings, false),
         ];
+        // Games that can link cabinets on one screen: that, too.
+        if crate::link::play_for(game.id).is_some() {
+            buttons.insert(2, ("link", "Link play", Chip::Key("L"), Click::Link, false));
+        }
         let font = FontId::new(22.0 * u, theme::bold());
         let mut bx = left;
         for (name, label, chip, click, primary) in buttons {
@@ -1533,6 +1566,51 @@ impl Launcher {
         }
         if back {
             self.saves = None;
+        }
+    }
+
+    /// The Link play panel over the launcher: a row for each number of
+    /// machines the game can link; one chosen starts the game with them.
+    fn paint_link(&mut self, ctx: &egui::Context, navs: &[Nav], actions: &mut Vec<Action>) {
+        let (pad, keys) = (self.pad_used, self.keys_used);
+        let Some(page) = &mut self.link_page else { return };
+        page.focus.show = pad || keys;
+        let rest = page.focus.begin(navs);
+        let mut back = rest.iter().any(|n| matches!(n, Nav::Back | Nav::Start | Nav::Settings));
+        let hints = [(Chip::A, "Start"), (Chip::B, "Back"), (Chip::Key("Esc"), "Close")];
+        let spec = menu::PanelSpec { game: page.game.title, heading: "Link play", back: true, extra_h: 0.0 };
+        let max = crate::link::play_for(page.game.id).map_or(2, crate::link::max_players);
+        let mut chosen = None;
+        let LinkPage { game, focus } = page;
+        back |= menu::side_panel(ctx, &spec, &hints, |ui, reg| {
+            let s = theme::scale(ui.ctx());
+            ui.scope_builder(egui::UiBuilder::new().max_rect(reg.body.shrink2(vec2(24.0 * s, 0.0))), |ui| {
+                ui.add_space(12.0 * s);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Linked cabinets on one screen: {} machines side by side, one controller each. \
+                         The keyboard plays player 1; each gamepad joins with a button press.",
+                        game.title
+                    ))
+                    .size(15.0 * s)
+                    .color(theme::TEXT_2),
+                );
+                ui.add_space(12.0 * s);
+                for n in 2..=max {
+                    if focus.menu_row(ui, &format!("{n} players"), if n == 2 { "split" } else { "quadrants" }) {
+                        chosen = Some(n);
+                    }
+                }
+            });
+            false
+        });
+        page.focus.end();
+        if let Some(players) = chosen {
+            actions.push(Action::PlayLink { set: page.game.id.to_string(), players });
+            back = true;
+        }
+        if back {
+            self.link_page = None;
         }
     }
 
