@@ -8,7 +8,7 @@ this page is the intent and the spec needs correcting.
 
 ## Verbs
 
-Seven nouns. The CLI is `remodel NOUN VERB`; the server and the agent API
+The CLI is `remodel NOUN VERB`; the server and the agent API
 use `noun.verb` with the same arguments. Every verb takes `--json` and
 `--project DIR` (default: the current folder).
 
@@ -22,16 +22,18 @@ use `noun.verb` with the same arguments. Every verb takes `--json` and
 | `pack` | `build`, `check`, `report`, `resolve`, `diff`, `doctor`, `rekey` | [pack-project](pack-project.md), [quality-gates](quality-gates.md) |
 | `look` | `set`, `calibrate`, `suggest-tags` | [renderer-controls](renderer-controls.md) |
 
-Pass two adds three nouns and a few verbs: `model export/check`
+Content coverage adds `tour` and `coverage`, and distribution adds
+verbs to `pack`. Pass two adds three nouns and a few verbs: `model export/check`
 ([model-interchange](model-interchange.md)), `place check`
 ([added-elements](added-elements.md)), `shader check/list`
 ([shader-packs](shader-packs.md)), and `scene camera`, `asset set ID
 class=` and `asset list --suggest-class`
 ([scene-understanding](scene-understanding.md)).
 
-An art agent's job uses eight of them: `project brief`, `asset show`,
-`asset bundle`, `asset make`, `asset normalise`, `asset check`,
-`scene render` and `region capture`. `tools/lock`, `remodel img` and
+An art agent's job uses eleven of them: `project brief`, `asset show`,
+`asset bundle`, `asset set`, `asset make`, `asset normalise`,
+`asset check`, `scene render`, `scene what`, `region capture` and
+`region check`. `tools/lock`, `remodel img` and
 `backend` are tools around these, not part of the set
 ([agent-environment](agent-environment.md)).
 
@@ -57,11 +59,74 @@ An art agent's job uses eight of them: `project brief`, `asset show`,
    "data": null, "warnings": []}
   ```
 
+## Reference: every verb's shape
+
+A cold read of this page by a mid-tier model (2026-11-19) completed one
+task of three: the examples showed some verbs and left the shape of the
+rest to be guessed. This table is the fix. `ID` is a slug, a key or a
+file name; `[...]` is optional; `A|B` is a choice. `data` fields are
+listed in the last column.
+
+| Command | Answers with |
+|---|---|
+| `scene list [--tag T]` | `scenes[]`: `name`, `tags[]`, `local`, `stale`, `tour`, `frame`; and `tags`, every tag in use. Tags come from a fixed list: `attract`, `menu`, `select`, `play`, `result`, `hud` |
+| `scene make NAME\|--all [--replace]` | `made[]`, `failed[]` |
+| `scene verify [NAME]` | `scenes[]`: `name`, `ok`, `why` |
+| `scene render NAME [--asset ID]... [--against original\|REV] [--overlay CLASS] [--view V]` | `picture`, `changed_share`, `assets[]`: `name`, `drawn` (`replaced`, `original`, `absent`), `variants_drawn`, `misses` |
+| `scene what NAME X,Y[,W,H]` | `things[]`, largest first: `id`, `name`, `kind` (`art`, `pattern`, `layout`, `field`, `model`), `status`, `share`, `box` |
+| `scene where ID [--scene NAME]` | `scenes[]`: `scene`, `share`, `boxes[]` |
+| `scene sheet NAME --label art\|layouts\|models` | `picture`, and `labels[]`: `n`, `id`, `name`, `box`, so the picture need not be read to get names and boxes. `layouts` covers everything 2D: tiles, regions and text |
+| `scene clip NAME --frames N` | `clip`, `frames`, `flicker[]` |
+| `asset list [--status S,...] [--category C] [--kind K] [--scene NAME]` | `assets[]`: `id`, `name`, `kind`, `status`, `category` |
+| `asset show ID` | The row: `id`, `name`, `kind`, `status`, `category`, `colour`, `draw`, `size`, `variants`, `scenes[]`, `draft`, `art`, and `last`: `actor`, `verb`, `time`, `note` (a rejection's reason is here) |
+| `asset bundle ID` | As in task A; `folder` holds the original, the mask and the crops |
+| `asset name ID SLUG` | `id`, `name` |
+| `asset set ID KEY=VALUE...` | The changed row |
+| `asset same ID ID`, `asset same --suggest` | `merged`, or `pairs[]` with a likeness |
+| `asset make ID --with BACKEND [--replace]` | `outcome` (`ok`, `gate:NAME`, `backend:WHY`), `draft`, `status`, `gates[]`, `sheet` |
+| `asset normalise ID FILE [--replace]` | `draft`, `status`, `changes[]`. `FILE` is any PNG anywhere; a corrected copy is written to `draft/<slug>.png` |
+| `asset check ID` | `status`, `gates[]`: `gate`, `value`, `limit`, `verdict` (`pass`, `warn`, `review`, `error`), `fix`; `sheet` if a gate failed |
+| `region capture SCENE X,Y,W,H --name NAME [--replace]` | As in task B |
+| `region list` | `regions[]`: `name`, `cells`, `status` |
+| `region check NAME` | `scenes[]`: `scene`, `matched`, `cells_matched`, `cells` |
+| `project status [--status S,...] [--category C] [--scene NAME]` | `actor`, `approvers[]`, `counts` by status, `assets[]` (as `asset list`), `waiting`: `to_approve` (checked and clean) and `to_review` (checked, with a `review` item to accept), and `log[]`, the last twenty lines |
+| `project brief [--actor NAME]` | `actor`, `assets[]`, `scenes[]`, `verbs[]`, `budget` |
+| `project review [--category C]` | `sheets[]`: `category`, `picture`, `assets[]` |
+| `project approve ID...\|--category C [--accept "REASON"]` | `approved[]`, `skipped[]`: `asset`, `why`. With `--category`, assets not yet `checked`, or with a `review` item and no `--accept`, are skipped with the reason, not errors. A named ID that is not `checked` is exit code 2 |
+| `project reject ID --reason "TEXT"` | The changed row |
+| `pack build [--archive] [--out DIR] [--replace]` | `out` (default `build/` in the project), `files`, `bytes`, and `archive`, the path of the file to publish. It builds whatever is approved and does not need `pack check` first |
+| `pack check [--level asset\|scene\|clip\|pack]` | As in task C. `done` is true when nothing is at `error`, no required asset is short of `approved`, and every required scene meets its coverage. With no level it runs every level it can and lists the rest under `skipped` |
+| `tour list`, `tour run NAME\|--all`, `coverage` | [content-coverage](content-coverage.md) |
+| `pack find`, `pack install`, `pack update`, `pack publish --check` | [distribution](distribution.md) |
+
+Rules the table leans on:
+
+- **The envelope always has all six fields.** `code` equals the exit
+  code, `error` is null on success, `warnings` may be empty, and `next`
+  may be null: it is a hint, never something to depend on.
+- **`--replace`** is taken by every verb marked with it. Without it, a
+  verb that would overwrite a file stops with exit code 2 and says so.
+- **`REMODEL_ACTOR`** is an environment variable. A writing verb with it
+  unset stops with exit code 2.
+- **A rejected asset** returns to `drafted` when a new draft is written
+  with `--replace`. Its reason stays in `asset show` and in the bundle.
+- **A region's art** is drafted like any asset: `asset normalise NAME
+  FILE` writes `draft/<name>.png`, and approval copies it to `art/`.
+- **A box** is `[x, y, w, h]` in game coordinates. `region capture`
+  widens the box given to whole 8-pixel cells and reports the result.
+- **Finding something on screen** with no box given: `scene list --tag`
+  to choose a scene, `scene sheet --label layouts` for boxes and names
+  as data, then `scene what` on a box.
+
+This table is hand-written because nothing is built. Once slice A
+exists it is generated from the code (`remodel help --json`), and the
+cold read becomes a repeatable test of that output.
+
 ## What each command needs
 
 | Needs | Commands |
 |---|---|
-| The binary and the project only | `asset list/show/set/name/normalise/check`, `project *`, `pack build --archive`, `pack resolve`, `pack check --level asset` and `pack`, `region list` |
+| The binary and the project only | `asset list/show/set/name/normalise/check`, `project *`, `pack build --archive`, `pack resolve`, `pack check --level asset` and `--level pack`, `region list` |
 | The catalogue as well | `asset bundle`, `asset same --suggest`, `asset show` on a pattern, `glyphs *` |
 | The scene library as well (and a GPU) | `scene list/render/what/where/sheet`, `region capture/check`, `pack check --level scene`, `pack diff`, `look *` |
 | The ROM as well | `scene make/verify/clip`, `pack build` (it bakes recipes), `pack check --level clip` |
@@ -94,8 +159,9 @@ commit.
 
 | From | To | By |
 |---|---|---|
-| `todo` | `drafted` | `asset make` with outcome `ok`, or `asset normalise`. Either writes `draft/<slug>.png` and its provenance |
-| `drafted` | `checked` | `asset check` with no gate at `error`. Warnings are listed and do not block |
+| `todo` | `drafted` | `asset make` whenever it writes a draft, or `asset normalise`. Either writes `draft/<slug>.png` and its provenance |
+| `drafted` | `checked` | `asset check` with no gate at `error`. Warnings are listed and do not block. `asset make` runs the same gates itself, so a draft it makes with outcome `ok` is `checked` at once |
+| `rejected` | `drafted` | A new draft written with `--replace` |
 | `checked` | `approved` | `project approve`, by a name listed under `approvers` in `project.txt`. It copies the draft to `art/` and records its hash. Any `review` items must be accepted in the same call with `--accept "reason"` |
 | any | `rejected` | `project reject --reason` |
 | `approved` | `stale` | Found by any command: the file's hash is no longer the approved one |
@@ -153,7 +219,7 @@ needed only for a file made by hand.
 
 ```sh
 remodel asset set wall-base recipe.seamless=8
-remodel asset make wall-base --with recipe --json     # outcome ok -> checked
+remodel asset make wall-base --with recipe --replace --json   # outcome ok: status checked
 remodel scene render course-start --asset wall-base --against original --json
 ```
 ```json
@@ -185,15 +251,16 @@ remodel region capture char-select 168,116,166,72 --name sponsor-board --json
  "size_px":[168,80],"anchors":14,"clear":"auto","cleared_cells":9,
  "shared_patterns":[{"pattern":"pat:...","used_in":6}],
  "original":"cache/regions/sponsor-board.png"},
- "next":"remodel asset normalise sponsor-board art/logo-kelpjack.png"}
+ "next":"remodel asset normalise sponsor-board FILE"}
 ```
 ```sh
-remodel asset normalise sponsor-board art/logo-kelpjack.png --json
+remodel asset normalise sponsor-board ~/work/logo-kelpjack.png --json
+remodel asset check sponsor-board --json      # drafted -> checked
 remodel region check sponsor-board --json     # matches on which scenes
 remodel scene render char-select --asset sponsor-board --json
 ```
 
-Four calls and at most one picture. The shared fill tiles are reported,
+Five calls and at most one picture. The shared fill tiles are reported,
 and are replaced only inside the region.
 
 ### C. Is the pack done?
@@ -212,7 +279,8 @@ remodel pack check --json
  "next":"remodel project status --status todo,stale"}
 ```
 
-One call. Levels that cannot run are listed as skipped, not failed.
+One call. Levels that cannot run (no ROM, no scene library, no GPU) are
+listed as skipped, not failed.
 
 ## Budgets for one task
 

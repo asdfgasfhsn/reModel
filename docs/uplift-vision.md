@@ -115,7 +115,7 @@ agents soonest.
 | ★ | **3. Interface rules on today's tools, and the three defects** | No silent work; output a model can parse | S to M | Low | Nothing | `--json`, exit codes, refuse to reuse or overwrite |
 | ★ | **22. [Content coverage](uplift/content-coverage.md)**: tours, ROM read maps, `coverage`; then the tour recorder, pokes and the crawler | A catalogue that holds the whole game, and a number for how much it holds | S, then M to L | Medium: the read-map figure is unknown | Nothing; cheats for pokes | The read-map spike on Top Skater's three runs |
 | ★ | **4. Asset gates and `pack check`** | "Done" is a number | M | Medium: limits need calibrating | 1 for scene coverage | Run the gates over the showcase's images |
-| | **5. Artwork identity in packs** | A pack replaces "the wall base" | M | Medium; `follow` tint is high | Nothing | `art_` images, fixed and baked; then the tint spike |
+| | **5. Artwork identity in packs** | A pack replaces "the wall base" | M | Medium | Nothing | `art_` images, fixed and baked, with the build making the colour copies |
 | | **6. Project manifest and provenance** | Work survives hand-over | M | Low | 5 for names | Import the showcase workspace |
 | | **7. Context bundles** | An agent's whole briefing in one call | M | Low | 1, 5 | `bundle.json`, original, mask, two crops |
 | | **8. Player: `--scene`, pack watch, then a pack page** | The artist's loop, and the first step away from the terminal | S to M, then L | Low, then unknown | 1 | Reload on change, as the look does |
@@ -138,8 +138,8 @@ agents soonest.
 - **Slice B: know what you have.** Items 4, 5 and 6, and the rest of 22
   as the cheats work allows. The asset gates need
   nothing but scenes and can start at once; identity comes before the
-  manifest, which names assets by it. Item 5 ships `fixed` and `baked`
-  first; `follow` waits for its spike.
+  manifest, which names assets by it. Item 5 ships `fixed` and `baked`;
+  `follow` was spiked and is now only a fallback for unseen colours.
 - **Slice C: the loop.** Items 7, 8 and 10. The bundle for agents, the
   live player for the artist, overlays for both.
 - **Slice D: the hard art.** Items 9 and 11, then 12.

@@ -111,20 +111,58 @@ loader looks for the variant's own `tex_` image first, then the artwork's
 |---|---|---|
 | `baked` | One image per variant, as today | A variant that needs its own art |
 | `fixed` | One image, drawn the same for every variant | Art that should ignore the game's tint. This is today's stand-in, made deliberate |
-| `follow` | One image, made for a reference variant, re-tinted for the others | The usual case: the wall base in six colours |
+| `follow` | One image, made for a reference variant, re-tinted as it is drawn | A colour nobody catalogued, so no image could be baked for it |
 
-`follow` is the open design. The proposal: per channel, scale the image by
-what the game's colour table gives for this variant's colour over what it
-gives for the reference colour, at the original texel under the pixel.
-That is the shape of the lighting ratio the renderer already computes
+The usual case is `baked`, with the copies made by the build. The
+artist or agent makes one image. `pack build` makes the other colourings
+from it, as `studio variants` does today, and any one of them can be
+replaced by hand. A pack's size is not a reason to avoid this: in the
+showcase the extra colourings are 1.67 MB of 13.26 MB of 3D images.
+
+`follow` is the fallback for a colour never seen, in place of today's
+untinted stand-in. Its model: per channel, scale the image by what the
+game's colour table gives for this variant's colour over what it gives
+for the reference colour, at the original texel under the pixel. That is
+the shape of the lighting ratio the renderer already computes
 (`crates/model2/src/raster.rs:1609-1630`, `pack_lit` in
 `crates/gpu/src/raster.wgsl`), with the same fallback where the reference
-channel is zero. No project surveyed documents a tint model, so this needs
-its own proof: see the spike below.
+channel is zero.
+
+**Spiked on 2026-11-19** (Top Skater's catalogue and the showcase pack,
+at commit `7d8f099`; offline, on decoded images, without the game's real
+tables):
+
+- All 62 artworks with several colourings differ by polygon colour only.
+  None differs by luma table or translucency. They carry 49% of the
+  pixels sighted.
+- **A polygon's colour is an index, not a strength.** Brightness does not
+  rise with the number. Any tint worked out from the colour values is
+  wrong: three such models predicted the game's own variants to within
+  4 levels on 12 to 15 of the 62 artworks.
+- **A lookup per texel value is nearly exact** on the game's own art:
+  0.15 levels mean error over 148 pairs. That is the model above.
+- **One ratio for the whole image**, which is what `studio variants`
+  uses, serves 51 of 62 artworks within 4 levels but only 56% of the
+  pixels: it fails on the large ground textures, where hue changes with
+  brightness.
+- **On new art the per-texel model has a cost.** It carries the
+  original's texel-by-texel differences into the replacement, putting
+  tones back into flat cel art that the artist took out.
+- **The showcase's authors rarely wanted a tint.** Of 40 extra
+  colourings in the pack, 18 are the same image as their reference, and
+  most of the rest were deliberately redrawn (a ground in mint, lilac
+  and burgundy). `fixed` matches 18 of the 40; no tint matches more
+  than 2.
+- In 17 of 148 pairs the reference colour has a channel at zero, where
+  any ratio is undefined.
+
+So `follow` is demoted from the usual case to a fallback, and the build
+bakes. Not done: the real tables were not read, so the model was not run
+on a colour the catalogue has never seen, which is the one case it is now
+for.
 
 The policy is set per asset in the project (`asset set ID colour=...`)
 and written to the pack's `material` line for that artwork at build time.
-`fixed` and `baked` are safe today; `follow` is unproven.
 
 Both renderers resolve names the same way, so a snapshot and the player
 agree.
@@ -186,7 +224,8 @@ resolves to its artwork.
   context crops are ordinary PNGs.
 - **Tester.** The flicker report's `colour` and `sibling` misses should
   fall to zero for artworks set to `follow` or `fixed`.
-- **Player.** A pack is smaller: the showcase would drop 40 images.
+- **Player.** Fewer untinted stand-ins. The pack is hardly smaller: 18
+  of the showcase's 40 extra colourings are copies that `fixed` removes.
 
 ## Testing
 
@@ -207,8 +246,12 @@ budget. Nothing here was measured in the browser.
 
 ## Open questions
 
-- **Does `follow` hold where a game's tables change hue with brightness?**
-  Some do (`docs/enhancements.md`, "Brightness and colour").
+- **Which tint for an unseen colour on flat art:** the per-texel lookup,
+  which is exact on the original and noisy on cel art, or one ratio for
+  the image, which is smooth and wrong on large ground textures?
+- **Do other games' variants differ by more than colour?** Top Skater's
+  do not. Luma-table variants would need the tone step the spike could
+  not test.
 - **Is the ROM address safe to keep in shared files?** It is an offset, as
   a key is a hash; it is only needed locally.
 - **How different may two artworks be and still be offered as `same-as`?**
@@ -224,5 +267,7 @@ budget. Nothing here was measured in the browser.
    catalogue.
 3. Bundle v0: `bundle.json`, `original.png`, `uv-mask.png` and two context
    crops.
-4. **Spike:** `follow` on the showcase's wall base (six variants), compared
-   with the per-variant images `studio variants` makes today.
+4. Variants baked by `pack build`, replacing the hand-run `studio
+   variants` step.
+5. `follow` for unseen colours, after trying both tints on a colour held
+   out of the catalogue.

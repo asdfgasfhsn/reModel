@@ -86,10 +86,11 @@ tools better for people too.
 1. **One asset is one job.** An asset and its bundle are a complete unit of
    work that fits a small context. No job needs the whole catalogue.
 2. **One set of verbs, the same everywhere.** The CLI, the server and the
-   agent API share names and fields. There are seven nouns; an art agent's
-   job uses eight verbs ([interface.md](interface.md)).
+   agent API share names and fields. An art agent's job uses eleven
+   verbs ([interface.md](interface.md)).
 3. **Structured output.** Every command takes `--json` and prints one
-   object (written with a JSON library, not by hand): `ok`, `data`, `warnings`, `next` (a suggested next command).
+   object (written with a JSON library, not by hand): `ok`, `code`,
+   `error`, `data`, `warnings`, `next` (a suggested next command).
    Tables stay TSV. Prose reports are for people and are made from the
    same data.
 4. **Exit codes mean something.** 0 done, 1 a gate failed, 2 the request
