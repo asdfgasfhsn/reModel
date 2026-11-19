@@ -27,6 +27,7 @@ make boot             # boot record and system-table entry points
 make analyze          # code discovery -> out/topskatr/program.lst
 make disasm ADDR=0x6f0 COUNT=64
 make link-trace GAME=srallyc LINK=fake,0,2   # experimental: a link board fitted, every access to the link RAM traced (docs/hw/link-board.md)
+make link-run GAME=srallyc NODES=2 FRAMES=6000 SHOT_EVERY=100 INPUT0=coin1@1500-1504,coin1@1560-1564   # experimental: two to four real machines in one process joined by a link hub, pictures side by side and the handshake log in OUT (docs/hw/link-board.md, section 9)
 make run STEPS=50000000   # boot on the interpreter, report hardware use
 make run SNAP=60          # also write the tile layer every 60 frames
 make run STEPS=900000000 SNAP=115 INPUT=coin-start   # coin-start: the game's own coin-up and start

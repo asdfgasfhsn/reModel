@@ -291,26 +291,30 @@ spare.
   a 600M-instruction coin-start run (`make bench`) fast-forwards 85.6%
   of its instructions through it, and the state hash is unchanged.
 
-## Linked play (investigation; not implemented)
+## Linked play (a spike: two to four real machines in one process; not in the player)
 
-The full account, with evidence, is in `docs/hw/link-board.md`; in short
-(*confirmed* by running the game against `make link-trace GAME=srallyc
-LINK=fake,0,2`, an experimental board with a scripted partner, off by
-default):
+The full account, with evidence, is in `docs/hw/link-board.md`; the
+headless harness is `make link-run GAME=srallyc` (off by default: N machines
+joined by a link hub, run in lockstep; section 9 of that document). The
+first part of this list was *confirmed* against `make link-trace
+GAME=srallyc LINK=fake,0,2` (a scripted partner), the second against the
+two-machine spike:
 
 - The game links only if the board is present (`0x1A14000` bit 0 clear; today
   the slot reads "none", and the game then resets its link and cabinet type
   to 0) **and** the EEPROM's LINK TYPE (test mode, GAME ASSIGNMENTS;
-  settings byte `0x0B`, work RAM `0x20201B`) is not NOTLINK: CAR 1 is the
+  image byte `0x0B` of the 128-byte `eeprom.bin`, work RAM `0x20201B`) is
+  not NOTLINK: CAR 1 is the
   master, CAR 2-4 slaves, RELAY a relay. No DIP or input bit is involved.
 - Handshake: write 1 to `0x1A14000` (the master first writes 1 to
   `0x1A14002`), poll `0x1A10000` for 1, then read the node ID
-  (`0x1A10002`) and node count (`0x1A10003`); two barriers on the nodes'
+  (`0x1A10002`, **1-based**: the master is 1) and node count (`0x1A10003`); two barriers on the nodes'
   state words follow, then attract runs with the link on.
 - Per frame, to the end of the race: one 448-byte block written at
   `0x1A12000` (state word, then the car's position, orientation, wheel
   floats, the race clock), and reads of the received blocks from `0x1A121C0`
-  (block 0 is the game's own echoed back; block 1 the other node's). Nothing
+  (**the game's own block, echoed back, is the last one**, `N - 1`; the
+  others come first, a node's ring successor in block 0). Nothing
   waits on a partner's data once the barriers pass; with the partner's
   blocks 3 or 8 frames late the race still ran, a silent partner changed
   nothing visible, and the board's ready byte dropping (more than 10
@@ -319,3 +323,23 @@ default):
 - Run this way, a mirror partner (the game's own block, echoed as the
   other node's) takes it through attract, car select and a race with
   `POSITION 1/2`.
+- **Two real copies of the game, joined by `LinkHub` (`make link-run`), run
+  the whole link together**: the handshake (ready at frame 926, the board
+  screens "THIS IS MASTER CONTROLLER" and "THIS IS SLAVE MACHINE", the two
+  barriers at 1228 and 1351), the link attract (the "2 players can battle"
+  screens, and its `0x18C` ring: 1 at 1360, go 2 at 1362, 0 at 1363), coin-up
+  (frame 1560 in the run) to car select, the Desert race starting at frame
+  **3103**, each car in the other's picture, `POSITION 1/2` and `2/2`, the
+  results ("RETIRED RANK 1st" and "2nd"), and back to attract (frame 9982).
+  Three and four machines do the same (`x / 4` on the screens). The slave
+  copies the master's settings to its EEPROM at the first handshake.
+- It needed two corrections to the first spike's guesses: the ID register
+  is **1-based** and a node's own block is the **last** received one; with
+  a 0-based ID and the own block first, two real machines hang the link
+  attract for ever (a mirror partner could not show it).
+- The other nodes' blocks may arrive 1 to 12 frames after they were sent
+  (the delay D) without any reset or visible fault; the combined run is
+  reproducible (the same combined hash on the interpreter, the JIT and
+  with one thread) and a save of both machines **and the hub** resumes
+  exactly. The board's flags are part of the state: save the machines
+  without them and the link drops.

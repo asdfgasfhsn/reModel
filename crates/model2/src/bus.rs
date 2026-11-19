@@ -1363,6 +1363,19 @@ impl Model2Bus {
     /// A write to the link board's registers (experimental: the scripted
     /// partner of `REMODEL_LINK=fake`, `docs/hw/link-board.md`).
     fn link_register_write(&mut self, addr: u32, v: u32) {
+        let frame = self.frames;
+        if let Some(l) = self.link.as_mut().filter(|l| l.hub) {
+            // Joined to a hub: note what the game does, the hub answers.
+            match addr {
+                0x01a1_4000 => {
+                    l.started = v & 0xff == 1;
+                    l.start_frame = frame;
+                }
+                0x01a1_4002 => l.master = v & 0xff == 1,
+                _ => {}
+            }
+            return;
+        }
         let Some((id, total)) = self.link.as_ref().and_then(crate::link::Link::fake) else { return };
         if addr == 0x01a1_4000 && v & 0xff == 1 {
             if let Some((m, off)) = self.find(0x01a1_0000) {
@@ -1374,14 +1387,14 @@ impl Model2Bus {
 
     /// Experimental partner that does what the game does (`REMODEL_LINK=
     /// fake`): at each vblank the game's own block (`0x1A12000`, 0x1C0
-    /// bytes) is copied into the first TOTAL receive blocks (`0x1A121C0` +
+    /// bytes) is copied into the TOTAL receive blocks (`0x1A121C0` +
     /// 0x1C0 each), as if every node were in the same state as it.
     fn link_mirror(&mut self) {
         let Some((_, total)) = self.link.as_ref().and_then(crate::link::Link::fake) else { return };
         let Some((m, base)) = self.find(0x01a1_2000) else { return };
         let sent = self.mems[m].data[base..base + 0x1c0].to_vec();
         let frame = self.frames;
-        // Receive block 0 is the game's own block, echoed at once; the
+        // The last received block is the game's own, echoed at once; the
         // others come from the partner, `delay` frames late.
         let got = self.link.as_mut().and_then(|l| l.deliver(frame, &sent));
         let drop_at = self.link.as_ref().map_or(0, |l| l.drop_at);
@@ -1392,12 +1405,38 @@ impl Model2Bus {
             }
             return;
         }
-        d[base + 0x1c0..base + 0x380].copy_from_slice(&sent);
+        // The own block is the last received one (`link::source`).
+        let n = total.clamp(1, 4) as usize;
+        let at = base + 0x1c0 * n;
+        d[at..at + 0x1c0].copy_from_slice(&sent);
         if let Some(got) = got {
-            for k in 1..total.min(4) as usize {
+            for k in 0..n - 1 {
                 let at = base + 0x1c0 * (k + 1);
                 d[at..at + 0x1c0].copy_from_slice(&got);
             }
+        }
+    }
+
+    /// The link board's 16 KB of shared RAM from `0x1A10000`.
+    pub fn link_ram(&self) -> Option<&[u8]> {
+        let (m, off) = self.find(crate::link::RAM)?;
+        self.mems[m].data.get(off..off + 0x4000)
+    }
+
+    /// The hub's write of received block `k` (`0x1A121C0 + 0x1C0 * k`).
+    pub fn link_rx_write(&mut self, k: usize, block: &[u8]) {
+        if let Some((m, off)) = self.find(crate::link::RAM) {
+            let at = off + crate::link::RX + crate::link::BLOCK * k;
+            self.mems[m].data[at..at + block.len()].copy_from_slice(block);
+        }
+    }
+
+    /// The hub's ready byte (`0x1A10000`), ID (`0x1A10002`) and node count
+    /// (`0x1A10003`); while not ready the byte reads 0.
+    pub fn link_set_ready(&mut self, ready: bool, id: u8, total: u8) {
+        if let Some((m, off)) = self.find(crate::link::RAM) {
+            let d = &mut self.mems[m].data;
+            (d[off], d[off + 2], d[off + 3]) = if ready { (1, id, total) } else { (0, d[off + 2], d[off + 3]) };
         }
     }
 

@@ -7,6 +7,7 @@ mod glyphs;
 mod gpu_check;
 mod light_report;
 mod lighting_check;
+mod link_run;
 mod look_render;
 mod music;
 mod pack_check;
@@ -496,6 +497,13 @@ commands:
                        (0 = final frame only), and the uploaded copro and
                        geometrizer programs (copro.bin, geo.bin; on Model
                        2B sharc-copro.bin, sharc-geo.bin for sharc-disasm)
+  link-run [--nodes N] [--frames F] [--input0 S --input1 S] [--delay D] ...
+                       experimental (docs/hw/link-board.md): N real machines
+                       of the game (srallyc) in one process joined by a link
+                       hub, run in lockstep; EEPROM LINK TYPE patched per node
+                       (CAR 1 master, CAR 2..); side-by-side pictures every
+                       --shot-every frames and the handshake and block log
+                       in --out DIR (default out/link-run)
   studio SUB DIR ...   the uplift studio (docs/uplift-studio.md): init, select,
                        region, status, approve, pack, draft, style, variants,
                        text, seam, compare over a project directory; `remodel
@@ -1099,6 +1107,7 @@ fn main() -> ExitCode {
         "run-ahead-profile" => cmd_run_ahead_profile(&o, roms),
         "latency" => cmd_latency(&o, roms),
         "run" => cmd_run(&o, roms),
+        "link-run" => link_run::run(&o, roms),
         "sound-disasm" => cmd_sound_disasm(&o, roms),
         "sound-render" => cmd_sound_render(&o, roms),
         "music-render" | "mpeg-dump" => cmd_music_render_mpeg_dump(&o, roms),

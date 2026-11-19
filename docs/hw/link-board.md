@@ -10,7 +10,12 @@ exercised) or *unconfirmed*.
 
 `srallyc` (Sega Rally Championship, Model 2A) is the worked example: it
 was taken through boot, a link handshake, attract, car select and a race
-against a scripted partner. `daytona`, `von` and `overrev` were only
+against a scripted partner (sections 1 to 8), and then **between two to
+four real copies of the game in one process** (section 9, the two-machine
+spike). Section 9 corrects two points of the first spike that a mirror
+partner could not show: the node IDs are 1-based and **a node's own block
+is the last of its received blocks**, not the first. Where an earlier
+section says otherwise, section 9 wins (the places are marked). `daytona`, `von` and `overrev` were only
 looked at (section 7). The 2A's slot is the same as the original board's
 (`model2.md` section 2) and the 2B's.
 
@@ -61,8 +66,9 @@ Three things, all *confirmed* by running:
 2. **The EEPROM setting LINK TYPE**, in the test mode's GAME ASSIGNMENTS
    page (the menu text is in the program: "LINK TYPE": `NOTLINK`, `CAR 1`,
    `CAR 2`, `CAR 3`, `CAR 4`, `RELAY`; also "CABINET TYPE": `DELUXE`,
-   `TWIN`). It is the byte at offset `0x0B` of the settings record, the game's
-   work RAM `0x20201B`: 0 NOTLINK (the default), 1 CAR 1, 2-4 CAR 2-4, 5
+   `TWIN`). It is byte `0x0B` of the 128-byte `eeprom.bin` image (the game's work
+   RAM from `0x202010` is the record from its first byte, header included,
+   so this is `0x20201B`): 0 NOTLINK (the default), 1 CAR 1, 2-4 CAR 2-4, 5
    RELAY. *Confirmed:* set to 1 (with the record's CRC-16 fixed) the game
    shows "COMMUNICATION BOARD CHECKING", "THIS IS MASTER CONTROLLER" on the
    board check screen; 2 takes the other branch ("THIS IS SLAVE MACHINE",
@@ -80,11 +86,17 @@ Three things, all *confirmed* by running:
    and car selection is the EEPROM byte alone. (*Unconfirmed* for code the
    runs didn't reach.)
 
-The settings record: 4-byte header (CRC-16 over the next 34 bytes, `0x24`
-as a length), then 32 bytes of settings (the game's own copy is at work RAM
-`0x202010`); the CRC is the usual table-driven CCITT polynomial, initial
-value `0xFFFF`, result complemented, stored low byte first (the game's
-routine at `0x5C87E0`; reproduced and checked against two EEPROMs).
+The settings record: 4-byte header (a CRC-16 in image bytes 0-1, then
+`0x0024` as a length in bytes 2-3), then 32 bytes of settings; the game's
+own copy is at work RAM `0x202010` from the first header byte. The CRC covers
+image bytes 2 to 35 (the length word and the 32 settings): the usual CCITT
+polynomial `0x1021` taken the high bit first, initial value `0xFFFF`, result
+complemented, stored low byte first (the game's routine at `0x5C87E0`;
+reproduced and checked against a game-written EEPROM, `remodel link-run`'s
+patch of the link type). CABINET TYPE is image byte `0x0A`. (The first
+spike's remark that the link type is "byte `0x0B` of the settings record"
+meant this, header included; counted after the header it is `0x0F`, which is
+a different setting.)
 
 How a player sets it up: test mode, GAME ASSIGNMENTS, LINK TYPE one cabinet
 to CAR 1 (master) and the others to CAR 2 to 4, with a board fitted. The
@@ -101,7 +113,7 @@ idle board. The registers (all byte accesses by `srallyc`):
 | `0x1A14000` | write 0 / 1; read: bit 0 set = no board. Writing 1 **starts the board**. Written 0 at boot and at each link setup |
 | `0x1A14002` | write 0 at setup; the **master writes 1** (slaves don't) just before starting the board. `srallyc` never reads it (`von` and `daytona` read bit 7 as busy, section 7) |
 | `0x1A10000` | read: byte **1 = the link is up** (board ready); anything else, not |
-| `0x1A10002` | read once the link is up: this node's ID (0 for the master) |
+| `0x1A10002` | read once the link is up: this node's ID, **1-based: the master is 1, the slave of two 2** (*corrected, section 9*: the first spike's partner answered 0 for the master, which a one-machine mirror cannot tell apart, and two real machines deadlock with it) |
 | `0x1A10003` | read once the link is up: the number of nodes (a signed byte) |
 | `0x1A12000`-`0x1A121BF` | **the game's own block, 448 bytes**: written by the game |
 | `0x1A121C0`-... | **received blocks**, 448 bytes each, four at most (`0x1A121C0`, `0x1A12380`, `0x1A12540`, `0x1A12700`), read by the game |
@@ -140,21 +152,27 @@ all `srallyc` needs). The game uses:
   block copy every frame from a local structure (*confirmed*: 112 word
   writes per frame, from frame 926 to the end, in attract, select and the
   race alike).
-- **Received blocks** at `0x1A121C0 + 0x1C0 * k`. Receive block 0 is *this
-  node's own* block as the board echoes it; the game reads its own car's
-  state back from there (*confirmed*: a partner that delayed the *echo* too
-  changed the physics: the car's speed and gears went wrong). Block `k` is
-  *inferred* to hold node `(ID + k) mod TOTAL`: the game finds the master
-  in block `(TOTAL - ID) mod TOTAL` (the master reads block 0, the slave
-  with ID 1 of 2 block 1: *confirmed* for both, with the slave setting).
-  For two nodes then: receive 0 = me, receive 1 = the other.
+- **Received blocks** at `0x1A121C0 + 0x1C0 * k`. **Corrected (section 9,
+  *confirmed* with two, three and four real machines):** with the 1-based ID
+  register, received block `k` of a node with 0-based position `i` holds the
+  block of node `(i + k + 1) mod N`: the node's **own block, echoed, is the
+  last one (block `N - 1`)**, block 0 is its ring successor. The game's two
+  constants say so: it computes `0x20A584 = TOTAL - 1` (its own block, which
+  each node compares with "the node whose turn it is") and finds the master
+  at block `(TOTAL - ID) mod TOTAL`. (The first spike had the own block
+  first, `(i + k) mod N` with a 0-based ID, and a mirror partner could not
+  tell: every block was the game's own. With two real machines that layout
+  hangs the link attract, section 9.) The game reads its own car's state
+  back from the own block (*confirmed* in the first spike: a partner that
+  delayed the echo changed the physics: the car's speed and gears went
+  wrong).
 
 The block, as observed (a Desert-stage race, offsets in bytes from the
 block start; all words little-endian as the i960 stores them):
 
 | Offset | Observed |
 |---|---|
-| `0x00` | u16 node ID (0 master, 1 the slave of two); `0x02` u16 car number, ID + 1 |
+| `0x00` | u16 node ID (1-based, section 9: 1 the master, 2 the slave of two); `0x02` u16 car number (the LINK TYPE: 1 CAR 1, 2 CAR 2, ..) |
 | `0x04` | u32 changes at car select (2 at select) |
 | `0x08`, `0x0C`, `0x10`, `0x14` | in attract the master's four settings words (section 3); at car select `0x13`, a number `0x1469` that stays put through the race (*unconfirmed*: a race seed or id; the game reads it from both nodes' blocks, `0x1A121DC` and `0x1A1239C`, every race frame), `1`, `1` |
 | `0x18` | **node state**: 2 in attract, 3 at entry, 4 car select or waiting, 5 start, 6 racing (then 7 at the end, *inferred*). The game's own names for them (debug strings): `NS_None 0`, `Init 1`, `Adv 2`, `Entry 3`, `Wait 4`, `Start 5`, `Play 6`, `Finish 7` |
@@ -223,9 +241,10 @@ one block write per frame, own-state echo needed, delay tolerance of the
 race, behaviour on a silent partner and on a dropped ready byte, the
 barriers as they appear against a mirror partner.
 
-Inferred: that received block `k` is node `(ID + k) mod TOTAL`; the node
-state numbering past 6; settings copy to slaves; the meaning of most
-block fields.
+Inferred: the node state numbering past 6 (*section 9: 7 was never seen, 8
+is the finish*); the meaning of most block fields. (*Settings copy to
+slaves is confirmed in section 9.* The inference that received block `k` is
+node `(ID + k) mod TOTAL` was **wrong**, section 4.)
 
 Unconfirmed: what a *different* cabinet writes (its ID field and car
 number are inferred from the slave's own writes, not from a partner), how
@@ -278,12 +297,13 @@ in receive block 0. The board does not interpret the blocks.
 - **Per frame boundary** (the existing vblank point of `Model2Bus`): for
   each machine, copy its TX block (`0x1A12000`, 448 bytes) out, then, once
   all machines have reached the boundary, copy into each machine's receive
-  blocks: block 0 its own, block `k` node `(ID + k) mod TOTAL`'s. The
-  machines run frame-by-frame in lockstep (one thread each or alternately
-  on one).
+  blocks: its own into block `N - 1`, node `(i + k + 1) mod N`'s into block
+  `k` (*as built and corrected, section 9*). The machines run frame-by-frame
+  in lockstep (one thread each or alternately on one).
 - **Handshake model** (`Link` register behaviour): `0x1A14000` bit 0 reads
   0; a write of 1 starts the board; node IDs by master first (the cabinet
-  that wrote 1 to `0x1A14002` is 0, the others in order of start, 1..);
+  that wrote 1 to `0x1A14002` is the first, the others in order of start;
+  the register shows the ID plus one);
   `0x1A10003` = the number of cabinets that have started; `0x1A10000` = 1
   once all declared have; each cabinet's start waiting on the others is
   fine, they poll without a timeout.
@@ -296,9 +316,10 @@ in receive block 0. The board does not interpret the blocks.
   tool that steps two machines and writes both frames' PNGs; the player
   window for two cabinets (side by side) is a second step, and costs two
   renderers (the GPU memory warning in `CLAUDE.md` applies).
-- Effort: the model and a headless two-machine harness with a race to the
-  same finish line is about **3 days** if the mirror results hold; the
-  player view and two sets of controls about 2 more.
+- **Built as a spike (section 9):** `model2::link::LinkHub` and
+  `remodel link-run` / `make link-run`; two, three and four real machines
+  run attract, a race and the results together. The player view and two sets
+  of controls are still to do (section 9, "What the next steps need").
 
 ### (b) LAN, one cabinet per host, fixed-delay exchange
 
@@ -352,15 +373,17 @@ line are part of the state).
 
 ### (c) Open questions
 
-1. What a real second cabinet's blocks contain: ID and car number fields,
-   what the slave puts in the settings words, the `0x1469`-like seed
-   (does the master pick it and do slaves adopt it?). A mirror can't
-   show this; two machines in (a) will.
-2. How the real board numbers nodes and orders receive blocks for 3 and 4
-   cabinets, RELAY, and TWIN.
+1. ~~What a real second cabinet's blocks contain~~ *Answered in section
+   9*: ID (1-based) and car number fields, both nodes' words, the
+   `0x1469` seed the same on both after car select (it is in both blocks
+   from entry on, the game derives it, not the board).
+2. ~~How the real board numbers nodes~~ *Answered for 2, 3, 4 cabinets
+   (section 9)*; RELAY and TWIN are still open (RELAY with a CAR 1 ran
+   attract and the results, section 9).
 3. Whether the real board's echo of the own block is immediate or one
-   frame late; the model chose "visible next frame" and the game ran.
-4. Whether the game gets a block mid-frame torn on hardware (the real board
+   frame late; the model chose "visible next frame" and the game ran
+   (two to four machines, section 9).
+4. (Section 9 made the exchange frame-synchronous, so this stays open.) Whether the game gets a block mid-frame torn on hardware (the real board
    is asynchronous): the game seems to have no consistency check, so it
    probably copes; frame-boundary exchange removes the question.
 5. Daytona and Virtual-On's own block layouts and handshake details; a
@@ -373,3 +396,191 @@ line are part of the state).
    state, and a rolled-back frame must not have sent its TX.
 8. 2A TGP data: no link dependence seen, but a replay of the link needs
    the game's TGP state identical on both hosts (deterministic already).
+
+## 9. Two to four real machines in one process (the two-machine spike)
+
+Step (a) of the design in section 8, built as a spike, off by default, with
+no player UI: **`model2::link::LinkHub`** (the board: ready byte, IDs,
+exchange at the frame boundary, a delay line) and **`remodel link-run`**
+(`crates/cli/src/link_run.rs`; `make link-run`) which runs N complete
+machines of the game in one process, a frame each in turn (the machines are
+deterministic; the hub is touched only between frames), writes a PNG of all
+screens side by side and logs the handshake, the node states and every
+change in a block. A machine's EEPROM is built per node (the game's default
+settings record, LINK TYPE set, CRC fixed: section 2; the user's files are
+never read or written), so `--nodes 2` runs a CAR 1 and a CAR 2.
+
+```
+make link-run GAME=srallyc NODES=2 FRAMES=6000 SHOT_EVERY=100 \
+    INPUT0="coin1@1500-1504,coin1@1560-1564,gas=0xff@3430-99999" \
+    INPUT1="coin1@1500-1504,coin1@1560-1564,gas=0xff@3600-99999"
+    # pictures in out/link-run/frames, the log in out/link-run/link-run.log,
+    # blocks.txt: both nodes' blocks every frame
+make link-run NODES=4 INPUT="coin1@1500-1504,coin1@1560-1564,gas=0xff@3500-99999" LINK_OPTS="--shot-at 3600,4000"
+```
+
+Options for experiments: `--delay D`, `--delay-to NODE:D`, `--skew`,
+`--ids`, `--layout`, `--drop-at F`, `--freeze NODE:F`, `--set-byte
+NODE:OFFSET:VALUE`, `--save-at F FILE`, `--load FILE`, `--trace NODE`,
+`--dump-at F`, `--watch NODE:ADDR`, `--ram-dump NODE:ADDR:FILE`
+(`remodel` usage; `link-run` prints its own).
+
+### 9.1 What the two machines showed (all *confirmed* by running)
+
+- **The handshake completes between two genuine games**: both write 0 at
+  frame 924 and 1 to `0x1A14000` at 926 (the master first writes 1 to
+  `0x1A14002`); the hub, seeing both started, makes the ready byte 1 at
+  the boundary of frame 926; the boards screens ("COMMUNICATION BOARD
+  CHECKING", "THIS IS MASTER CONTROLLER" / "THIS IS SLAVE MACHINE", "Node ID
+  : 1" / "2", "Total Nodes: 2") show on both, and from 927 both send their
+  block (state 4). Barrier 1 passes at 1228 (state 1) and barrier 2 at 1351
+  (state 2) on both at the same frame. A start 150 frames apart
+  (`--skew 0,150`) has both passing the barriers together, 150 frames
+  later.
+- **The first spike's layout hangs real attract.** With a 0-based ID and
+  the own block first, both screens went blank after frame 1351 for ever
+  (state 2 in both blocks, nothing wrong visible in the handshake): the
+  link attract's synchronising word, **block offset `0x18C`** (*confirmed*
+  as the node's `0x20A770`: 0 idle, **1 ready**, **2 go**), is a ring of
+  acknowledgements (*inferred* from the code at `0x5AEE40`-`0x5AF300` and
+  watching the words): which node must answer first depends on the cars'
+  order among the received blocks, and a node writes its 1 at once only if
+  the block of that car is at index `TOTAL - 1` (`0x20A584`), the own
+  block (section 4). With the own block first, the CAR 1 node was left
+  waiting on its own block for ever. Three nodes with the old layout let the
+  slaves through and hung only the master. The layout of section 4 makes
+  two, three and four nodes pass: `0x18C` goes 1 (all, frames 1360-1361),
+  the go 2 (frame 1362) and back to 0 (1363) and the attract plays
+  ("3人まで対戦可能!!", the ranking table) on every screen.
+- **Both players coin up and start a linked race, and each sees the
+  other's car.** From the frames of one run (D = 1, a coin script at frames
+  1500 and 1560): coin at 1560 takes both nodes to state 3 at 1567 and car
+  select (state 4) at 1569, the `0x1469` seed appearing in both blocks at
+  1569 (not the board's: the game's); the course select, then the race: the
+  selection times out at 3021 (1452 frames after 1569, no inputs given)
+  into state 5 and the race (state 6) at **frame 3103**, the start grid at
+  `x = -369` and `-375` (z -310, the ID 1 car in front), the race clock 3000
+  counting down. The screens show `POSITION 1/2` and `2/2` swapping as the
+  cars pass, a green and a red dot on each minimap, and the other car:
+  ahead on the road, in the rear-view mirror when it is behind, and next to
+  the car with its number sign in a four-car race. Four nodes show
+  `x / 4`. The nodes in one race, at frame 4400 and D = 1: own state
+  and the other's position agree (`-203.6, -7.0, 271.7` here and in the
+  other's block).
+- **The ranking and the finish work between the machines**: the race ends
+  at frames 9205 and 9259 (state **8**, not 7; both retired in that run) with
+  "RETIRED RANK 1st" on one screen and "2nd" on the other, and the nodes
+  return to attract (state 2 at frame 9982) and run the `0x18C` handshake
+  again (1, 2, 0 at 9988-9991). `0x18C` also moves in a race, on the
+  master alone, at 5232 (1, back to 0 at 5293) and 7898 (2, 0 at 7959):
+  *unconfirmed* what the game decides there (a lap or checkpoint report).
+- **Settings travel from the master to the slaves during the first handshake**
+  (the code at `0x5AB9CC`, section 3; not timed), and the slave **writes them to its EEPROM**:
+  five bytes of the image, `0x08`, `0x09`, `0x0C`, `0x0D`, `0x0E` (the
+  game's `0x202018`, `19`, `1C`, `1D`, `1E`) are copied; in the test a slave
+  with `0x08 = 2, 0x0C = 3, 0x0E = 5` ended with the master's `1, 0, 1`, its
+  CRC fixed and its other bytes alone (`--set-byte` and `eeprom-N.bin`).
+  They travel in the master's block at `0x08`-`0x17` (four words, the last
+  carrying `0x0E` in its low byte and `0x09` in the next; *inferred* from
+  one test). The link type (`0x0B`) and cabinet type (`0x0A`) are not
+  copied; each cabinet keeps its own. The slave's block carries zeros in
+  those words, and the master does not mind.
+- **Different inputs per machine just work**: each node's own pedals and
+  wheel in its own car; the hub carries nothing of the inputs.
+- **The own block can be delayed no more** (as before): the own block is
+  the echo, immediate.
+
+### 9.2 Timing, D = 1 to 12 (the other nodes' blocks reach a node D frames
+after they were sent; D = 1 is as soon as the echo)
+
+Everything is deterministic, so the table is from one scripted run each
+(the same inputs; the whole game, handshake to a race at frame 4400):
+
+| D | race starts (state 6) | the other's clock at 4400 vs own | the other car's reported z against its own at 4400 |
+|---|---|---|---|
+| 1 | 3103 | same | same (271.7) |
+| 2 | 3104 | 1 frame older | 0.4 m behind |
+| 3 | 3105 | 2 older | 0.5 m behind |
+| 6 | 3108 | 5 older | 1.6 m behind |
+| 12 | 3114 | 11 older | 3 m behind |
+
+The game boots, passes both barriers, selects, races and finishes at every
+D with no reset, message or visible glitch in the frames looked at (3525 and
+4400 of each run; only D = 1 was looked at closely). The other car is where it was D - 1 frames ago, as it should be;
+whether D = 12 *looks* right (a car appearing late at the start, a mirror
+image behind) was not judged beyond that.
+
+Each extra frame of D delays the barriers and so the race start by a
+frame. The attract's `0x18C` ring takes D frames longer per round (1360 to
+1363 at D = 1, 1368 to 1383 at D = 5): the game's own limit, the poll of the
+ready byte, is not involved. **The game has no timeout on its handshake and
+no complaint about a stale partner at any of these delays.** An asymmetric
+delay (`--delay-to`, one node getting the other late and not the reverse)
+behaves the same way.
+
+### 9.3 Reproducibility and save states
+
+- **The combined run is reproducible**: the same inputs give the same
+  combined hash (an FNV of both machines' state hashes and the hub's state)
+  across runs, on the interpreter, on the JIT and with `--single-thread`
+  (`744c2f5f4a0c2da5` for a 4,800-frame run with a race, two machines;
+  `make link-run` prints it). A different D gives a different hash, as it
+  must.
+- **Saved together, the two machines resume exactly**: `--save-at 3900 F`
+  then `--load F` from the middle of a race ends on the same combined hash
+  as the straight run. What is saved: both machines' `save_state`, the
+  hub's state (ready flag, IDs, the delay lines) **and each bus's board flags**
+  (`started`, `master`: the registers' record of what the game did, which is
+  not part of a machine's own state). With only the machines saved and the
+  board's state lost (`--fresh-hub`), the hub never sees "started" again, the
+  ready byte falls to 0, and both games leave the link (a race goes on alone
+  as `1/1`, attract restarts the board check): the board is part of the
+  state, and the in-flight blocks must be saved with the nodes in any
+  rollback or save scheme.
+
+### 9.4 What breaks (and what does not)
+
+- **Own-block placement and ID base** (above): the one real defect found,
+  invisible to a mirror.
+- **Dropping the ready byte**: in a race both carry on alone as `1/1`
+  (`--drop-at 4000`), from frame 4000 on; in the attract (`--drop-at
+  1700`) both restart at "Network Checking !" and wait for the board for
+  ever. The hub as built keeps the board down; a hub that brought it up
+  again would let them handshake again (*untried*).
+- **A node that stops sending** (`--freeze 1:4000`, its blocks stale): the
+  other shows `1/2` and carries on, and the frozen node's car just stops
+  moving in its picture; nothing resets.
+- **A node booted late**: fine (the nodes just wait in the board check).
+- **RELAY** with a CAR 1 (link types 1, 5): both run attract and the
+  results, without the ring; RELAY with CARs was not tried.
+- **Three and four nodes** (link types 1, 2, 3 and 1 to 4): the handshake, the
+  attract's ring and a race run, each node seeing the others (`x / 4`).
+- Host speed: a pair of machines runs about 700 frames a second on the JIT
+  (a 4,800-frame run takes 7 s, a race to the finish 15 s), about ten times
+  real time, with pictures drawn only at the frames asked for.
+- **Not tried**: Daytona (the handshake differs: its own ID write and busy
+  bit, section 7); the real board's behaviour when its ring breaks; the TWIN
+  cabinet type's effect; the 2-player screen layouts of the TWIN cabinet.
+
+### 9.5 What the next steps need
+
+- **Player view** (two cabinets in the player, side by side): `link-run`
+  already steps N machines and composes N pictures; the player needs one
+  renderer for each machine's picture (the GPU memory note in `CLAUDE.md`
+  applies twice), the controls of two players (two keyboard halves or two
+  pads), the hub stepped from the frame loop, and the EEPROM setup shown to
+  the player (LINK TYPE per cabinet; today patched in a copy). About
+  **3 days**.
+- **LAN**: each side runs one machine, sends its 448-byte block at the
+  frame boundary and gets the other's `D` frames late into its block
+  `(i + k + 1) mod N` with its own echo in the last. Two things from this
+  spike matter: the **ID register is 1-based and the layout is own-last**
+  (section 4), and the **board's flags** (started, master) are part of the
+  state both sides hash and save. D = 1 to 12 all worked, so D can be
+  chosen from the measured round trip. Everything else is section 8(b):
+  about **a week** on top of the player view; the in-process hub is the
+  model to copy (`LinkHub::exchange` with one remote source), and a
+  save-state check (section 9.3) is the test.
+- The rollback or run-ahead work needs the hub's delay lines in its state
+  and no sending from a rolled-back frame (section 8(c) 7), which the
+  `LinkHub::save` / `load` already shape.
