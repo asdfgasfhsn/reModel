@@ -131,7 +131,8 @@ agree.
 
 **Splitting a shared key** (the sole and the banner) needs the renderer to
 know which model a polygon belongs to. That identity is on the CPU side
-only today, so the split waits for pass two. Until then a `shared`
+only today, so the split waits for
+[scene-understanding.md](scene-understanding.md). Until then a `shared`
 artwork is reported, and the pack author decides.
 
 ### The catalogue becomes the index of artworks

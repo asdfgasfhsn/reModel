@@ -22,6 +22,13 @@ use `noun.verb` with the same arguments. Every verb takes `--json` and
 | `pack` | `build`, `check`, `report`, `resolve`, `diff`, `doctor`, `rekey` | [pack-project](pack-project.md), [quality-gates](quality-gates.md) |
 | `look` | `set`, `calibrate`, `suggest-tags` | [renderer-controls](renderer-controls.md) |
 
+Pass two adds three nouns and a few verbs: `model export/check`
+([model-interchange](model-interchange.md)), `place check`
+([added-elements](added-elements.md)), `shader check/list`
+([shader-packs](shader-packs.md)), and `scene camera`, `asset set ID
+class=` and `asset list --suggest-class`
+([scene-understanding](scene-understanding.md)).
+
 An art agent's job uses eight of them: `project brief`, `asset show`,
 `asset bundle`, `asset make`, `asset normalise`, `asset check`,
 `scene render` and `region capture`. `tools/lock`, `remodel img` and

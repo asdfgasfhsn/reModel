@@ -9,8 +9,7 @@ Status, 2026-11-19: a design, written from the code at `7d8f099`, the
 record of the Top Skater showcase, and a survey of other projects'
 documentation. Nothing described here is built unless it says so. Pass
 one (this page and nine spec pages) covers what unblocks the work now. Pass
-two (model interchange, scene understanding, lighting, added elements,
-authoring) is outlined under "Horizon" and not yet specified.
+two (six more specs) covers what uplift could do next.
 
 ## The outcome
 
@@ -37,8 +36,8 @@ an approval for every asset.
 so far is a command, and the page in the player that would wrap them
 (pick a scene, export an asset to edit, see it reload, build the pack) is
 named but not designed. An independent read of these specs found the
-artist the worst-served role. Item 8 below is the start, and the
-authoring spec leads pass two.
+artist the worst-served role. Item 8 below is the start, and
+[uplift/authoring.md](uplift/authoring.md) designs the page.
 
 ## What the investigation changed
 
@@ -97,7 +96,11 @@ findings change their shape or order.
 | **Keep** | Manifest, status, provenance, history | [pack-project](uplift/pack-project.md) | Loose files |
 | **Share** | Build, layers, archive, discovery | [pack-project](uplift/pack-project.md) | One pack; plans only |
 | **Work** | Locks by resource, worktrees, pinned binary | [agent-environment](uplift/agent-environment.md) | A convention |
-| **Horizon** | Models, scene knowledge, lighting, added elements, authoring | Pass two | Parts: see below |
+| **Know the scene** | Model per pixel, shared buffers, classes | [scene-understanding](uplift/scene-understanding.md) | On the CPU side only |
+| **Reshape and add** | Replacement models, added elements | [model-interchange](uplift/model-interchange.md), [added-elements](uplift/added-elements.md) | Planned only |
+| **Light** | Occlusion, shadows, real transparency | [lighting](uplift/lighting.md) | Smooth shading, normal maps, bloom |
+| **Author** | The Studio page in the player | [authoring](uplift/authoring.md) | Two static viewers |
+| **Any game** | Shader packs | [shader-packs](uplift/shader-packs.md) | Built-in CRT, bloom, look |
 
 ## Roadmap
 
@@ -150,36 +153,59 @@ assets, with calls, pictures read and wall time counted.
 | Knowing the file was used | By eye | A field in the answer |
 | Hand-over | A prose report | The project's log and status |
 
-## Horizon (pass two, provisional)
+## Pass two: what uplift could do next
 
-Each needs its own spec. What is known so far:
+Six specs, less grounded than pass one: most costs are unmeasured, and
+each leads with spikes. In the order they depend on each other:
 
-| Idea | Needs | Generic? | Known cost | Smallest proof |
-|---|---|---|---|---|
-| **Model and window IDs per pixel** | Per-polygon data already on the CPU | Yes, with a native geometrizer | The ID pass: 0.7 ms at 1080p, 3.0 ms at 4K (documented) | Pick a model under the cursor in a scene |
-| **Camera and world space** | Recovering one camera from per-object view matrices | Unknown; a spike exists and is unconfirmed (`docs/photo-mode.md`, "A true camera") | Not measured | Hold a point still on the ground across 120 frames |
-| **Model replacement (glTF)** | Model identity; the plan exists | Rigid parts only; not geometry rewritten each frame | Not measured | One prop and one character's parts exported and swapped |
-| **Shadows from the game's light** | Depth, the light direction (native path) | Largely | Unmeasured; scenes are a few thousand polygons | A shadow map on one scene, multiplied in |
-| **Ambient occlusion** | Depth and normals | Yes | Unmeasured | Half-resolution pass on one scene |
-| **Real transparency for stipple** | The checker flag per polygon | Yes | Small | Per-asset blend on a fighter's shadow |
-| **Added elements (grass, crowds, decals)** | World space, surface classes per game | Rules generic, data per game | Unmeasured | Scatter on one recognised ground, steady in motion |
-| **Authoring** | Items 1, 7, 8 and IDs | Yes | None at run time | Point at a thing in the player and open its bundle |
-| **Shader packs, for any game** | A stated set of inputs after the frame is composed | Yes: this is the one kind of pack that is not per game | Per pass; the CRT pass is the model | A user-supplied pass in place of the built-in CRT one |
+| # | Spec | What it gives | Needs | Generic? | First proof |
+|---|---|---|---|---|---|
+| 16 | [Scene understanding](uplift/scene-understanding.md) | A model's identity per pixel; one stated set of buffers; exact positions and normals from each polygon's plane; camera movement | The ID pass (0.7 ms at 1080p, documented) | Planes, flags and normals for every game; models and movement need a native geometrizer | Pick a model under the cursor |
+| 17 | [Model interchange](uplift/model-interchange.md) | Any glTF mesh in a model's place | 16 | Rigid parts; not geometry rewritten each frame | Export, import unchanged, draw: the same frame |
+| 18 | [Lighting](uplift/lighting.md) | Real transparency, ambient occlusion, shadows from the game's light | 16 | First two for every game | Blended stipple; occlusion timed on three games |
+| 19 | [Added elements](uplift/added-elements.md) | Grass, props, decals, weather | 16, 17 | Native geometrizer only | One prop held still through a moving clip |
+| 20 | [Authoring](uplift/authoring.md) | The Studio page: the path with no terminal | Slices A and C, 16 for picking | Yes | Scene grid, pick, edit, reload |
+| 21 | [Shader packs](uplift/shader-packs.md) | Shaders for any game | Nothing | Yes: the one pack kind that is not per game | The built-in CRT pass as a pack, identical |
 
-**Shader packs** were added by the user on 2026-11-19: let people bring
-shaders that apply to any number of games, as RetroArch does. reModel
-already runs passes of this kind after the frame is composed
-(`crates/gpu/src/crt.wgsl`, `bloom.wgsl`, `look.wgsl`), so the host
-exists. It can also offer a shader more than the finished picture: depth,
-the texture ID and the game's lighting layer. Two routes, to be weighed
-in pass two: reModel's own shader packs in WGSL against a stated
-contract, and importing RetroArch's preset format, which brings a large
-existing library and needs its shaders translated.
+Three findings carry most of the weight.
 
-Two cautions from the survey. Lighting added on top must multiply, as
-occlusion does, or it double-counts shading the game has already baked
-in; many surfaces are lit to full brightness. And ray tracing in the
-browser should not be designed for: it does not exist there yet.
+- **Things stay put by living in a model's own space.** An added prop or
+  a tuft of grass is placed in the coordinates of a model the game draws,
+  and rides that object's matrix. No camera or world space has to be
+  recovered. That removes the hardest dependency this page listed after
+  pass one.
+- **Position and normal come from each polygon's plane, not from
+  depth.** Depth is unreliable on the large ground polygons the games
+  draw in their own order, which is exactly where occlusion, shadows and
+  grass matter. A plane per polygon is exact, and works for every game.
+- **New geometry is built in the renderer, never in the machine.** The
+  state hash covers the geometrizer's output, so replacement models and
+  added elements are made where the renderer turns that output into
+  polygons, from what the native geometrizer records on the side.
+- **New lighting takes light away; it never adds on top.** Many surfaces
+  are already at full brightness, so occlusion and shadows multiply.
+  Lights a pack adds, and a different time of day, collide with that and
+  are left undesigned.
+
+The main risk is what the game culls. It does not send objects off
+screen or faces turned from the camera, so a shadow map made from one
+frame has holes, and anything added to a model disappears when the game
+culls that model at the screen's edge. Only spikes will say how much
+either shows.
+
+**Shader packs** were added by the user on 2026-11-19, with RetroArch's
+shader system as the inspiration, not something to import. reModel
+already runs passes of this kind (CRT, bloom), and can offer a shader
+real depth and the game's lighting layer, which no emulator surveyed
+does. The spec proposes reModel's own shader packs in WGSL, proven by
+moving the built-in CRT pass into one and getting an identical picture.
+
+Where pass two fits the order of work: shader packs depend on nothing
+and can be done at any time. Scene understanding's first step (item 16)
+can start alongside slice C. The rest follow it.
+
+Ray tracing in the browser should not be designed for: it does not exist
+there yet.
 
 ### The browser
 
@@ -250,5 +276,13 @@ Still open, with a recommendation:
   informed which needs beyond Top Skater to cover (Japanese HUDs,
   crosshairs, stipple, 2D skies) and nothing else. It disagrees with
   `docs/status.md` on three games' boards; the repository stands.
+- **Pass two** was written from the same code maps, the rendering survey
+  and one more survey of shader systems. An independent review of its six
+  specs checked about 55 citations and the designs against the code. It
+  found that depth could not carry what three specs asked of it, and
+  that new geometry could not go where two specs put it; both designs
+  were changed. Its cost figures are quoted from
+  reModel's docs or are other engines' rough numbers, and are marked so.
 - **Not done**: no thresholds were calibrated, no tint model was tried,
-  and nothing was tested on a second game.
+  nothing was tested on a second game, and none of pass two's spikes was
+  run.

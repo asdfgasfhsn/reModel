@@ -16,10 +16,11 @@ The showcase agents learned the rules by trial and error.
   give at full brightness; it is drawn as painted only where the polygon
   is at full brightness (`pack_lit`, `crates/gpu/src/raster.wgsl:296-312`;
   `crates/model2/src/raster.rs:1609-1630`).
-- **The documented way out is a look tag.** `emissive` is described as
-  "full brightness, ignores the game's lighting"
-  (`docs/texture-packs.md:1224`). Whether it also bypasses the ratio for a
-  pack image was not checked in the shader (inferred that it does). It
+- **The one way out is a look tag.** `emissive` means "full brightness,
+  ignores the game's lighting" (`docs/texture-packs.md:1224`): the
+  renderer draws such a polygon at brightness 255
+  (`crates/gpu/src/lib.rs:2368`), where the ratio leaves a replacement
+  untouched. It
   lives in `look.txt`, so a pack with no look cannot use it, and
   `pack-lint` does not treat `look.txt` as a pack file. The pack manifest
   reserves a `selflit` key on its `material` line and does not implement
@@ -124,13 +125,13 @@ it. A picture from a tool is then the picture the player shows.
 
 ### 5. Model identity in the ID target
 
-Adding each polygon's model, window and flags to the ID target lets
+Specified in [scene-understanding.md](scene-understanding.md). Adding
+each polygon's model, window and flags to the ID target lets
 overlays, picking and tags work per model as well as per texture. The
 data exists per polygon on the CPU. It can ride in the buffer that
 already carries ID words. The renderer runs under wgpu's downlevel
 limits, which allow four storage buffers per stage, so a new buffer is
-not free (inferred; the shader's bindings were not counted). This is the first step of
-scene understanding and is specified in pass two; it is listed here
+not free (inferred; the shader's bindings were not counted). It is listed here
 because three features above improve once it lands.
 
 ### 6. The browser, later
@@ -187,16 +188,15 @@ there, and overlays are a tool, not something a player's frame pays for.
 
 ## Open questions
 
-- **Does `emissive` already bypass the lighting ratio for pack images?**
-  The docs imply it; the shader was not checked. If it does, `selflit` is
-  the same switch moved into the pack.
+- **`selflit` and `emissive` are the same switch** in two places. Should
+  the look tag remain once the pack has it?
 - **`selflit` beside lit neighbours** may look pasted on. Is a middle
   setting wanted, such as lit but never darker than a floor?
 - **Stipple.** The games fake transparency with a checkerboard. A real
   blend exists only under temporal anti-aliasing
   (`docs/enhancements.md`, "The checkerboard"). A per-asset
   `stipple=blend` with a chosen opacity is a likely request for fighters'
-  shadows and gun-game effects; it belongs with lighting in pass two.
+  shadows and gun-game effects; it is specified in [lighting.md](lighting.md).
 - **Target ranges** for calibration are unproven beyond one pack.
 
 ## MVP: a few days

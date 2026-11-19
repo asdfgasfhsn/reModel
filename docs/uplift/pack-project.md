@@ -127,7 +127,7 @@ A pack belongs to one game: its keys are that game's texels and tiles, and
 its scenes are that game's moments. Layers stack within a game. The one
 thing that is naturally shared across games is how the finished picture is
 treated: a look without per-texture tags, and the shader packs proposed
-for pass two ([../uplift-vision.md](../uplift-vision.md), "Horizon").
+in [shader-packs.md](shader-packs.md).
 
 ### What a pack carries
 
@@ -210,7 +210,8 @@ today.
   that was checked.
 - **Player.** Installs a small archive, bakes once, stacks packs, and can
   switch each one off. The install and bake steps have no interface yet:
-  the launcher's pack page is pass two, and until then this is a command.
+  the page that would do it is in [authoring.md](authoring.md), and until
+  then this is a command.
 - **Tool engineer.** A new asset kind is a new `kind` and file kind, with
   no new manifest.
 

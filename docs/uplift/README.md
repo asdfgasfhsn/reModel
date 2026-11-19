@@ -21,11 +21,17 @@ for interfaces, and the template. Read it before any one spec.
 | [renderer-controls.md](renderer-controls.md) | What a pack can tell the renderer, and the views that show it |
 | [generation.md](generation.md) | An adapter for any image model, with guarantees made by post-steps |
 | [agent-environment.md](agent-environment.md) | Locks, worktrees, binaries and tools, so work does not queue |
+| [scene-understanding.md](scene-understanding.md) | Model identity per pixel, the buffers every feature shares, space beyond one frame, classes |
+| [model-interchange.md](model-interchange.md) | Replacement models out and back through glTF |
+| [lighting.md](lighting.md) | Occlusion, shadows, real transparency, added lights |
+| [added-elements.md](added-elements.md) | Grass, props, decals and weather that stay put |
+| [authoring.md](authoring.md) | The Studio page in the player: the path with no terminal |
+| [shader-packs.md](shader-packs.md) | Shaders that apply to any game, in the spirit of RetroArch's |
 
-Still to write (pass two): model interchange, scene understanding, lighting,
-added elements, and the authoring experience. Until that last one exists,
-the artist's path is not specified end to end: every verb here is a
-command, and the player's pack page is only named.
+The first eight specs after the interface page are pass one: what
+unblocks the work now. The last six are pass two: what uplift could do
+next. Pass two is less grounded: most of its costs are unmeasured and
+each spec leads with spikes.
 
 ## Words
 
