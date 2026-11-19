@@ -164,6 +164,18 @@ pub enum Stop {
     Unsupported(u32),
 }
 
+/// SPIKE: the object model-key hash state (not part of the machine's state).
+#[derive(Default)]
+struct Spk {
+    h: std::sync::atomic::AtomicU64,
+    on: std::sync::atomic::AtomicBool,
+}
+impl Clone for Spk {
+    fn clone(&self) -> Self {
+        Spk::default()
+    }
+}
+
 /// The native geometrizer's state (the program's own, see the module
 /// comment) and diagnostics.
 #[derive(Clone)]
@@ -176,6 +188,8 @@ pub struct Native {
     /// Frame handshakes the boot still waits for (two after an upload).
     boot_frames: u8,
     pub stop: Option<Stop>,
+    /// SPIKE: running hash of the object's polygon words read, and whether to hash.
+    spk: Spk,
 }
 
 /// What a frame reads and writes: the list, polygon memory, the
@@ -421,7 +435,7 @@ impl Native {
     pub fn new(program: Program, msgr7: u32) -> Self {
         let mut dm = vec![0; DM_WORDS];
         dm[LAST_ATTR] = 0x3_0100;
-        Native { program, dm, pm: [0; PM_WORDS], check: msgr7 != NO_CHECK_KEY, boot_frames: 2, stop: None }
+        Native { program, dm, pm: [0; PM_WORDS], check: msgr7 != NO_CHECK_KEY, boot_frames: 2, stop: None, spk: Spk::default() }
     }
 
     /// Take over a SHARC's state between frames: its data words, and the
@@ -847,7 +861,14 @@ impl Native {
     #[inline(always)]
     fn word(&self, io: &mut Io, src: Source, k: u32) -> u32 {
         match src {
-            Source::Poly(base) => io.poly.read(base.wrapping_add(k)),
+            Source::Poly(base) => {
+                let v = io.poly.read(base.wrapping_add(k));
+                if self.spk.on.load(std::sync::atomic::Ordering::Relaxed) {
+                    let h = self.spk.h.load(std::sync::atomic::Ordering::Relaxed);
+                    self.spk.h.store((h ^ v as u64).wrapping_mul(0x0000_0100_0000_01b3), std::sync::atomic::Ordering::Relaxed);
+                }
+                v
+            }
             Source::Internal(base) => {
                 let a = base.wrapping_add(k);
                 Self::dm_index(a).map_or(0, |i| self.dm[i])
@@ -875,7 +896,11 @@ impl Native {
         let tpa = io.rd();
         let tha = io.rd();
         let oba = io.rd();
-        let obc = io.rd();
+        let mut obc = io.rd();
+        let list_obc = obc;
+        if let Some(c) = io.poly.subst.and_then(|s| s.count(oba)) {
+            obc = c;
+        }
         io.object(oba);
         io.emit(cmd);
         io.emit(tpa & 0xff_ffff);
@@ -903,6 +928,10 @@ impl Native {
             }
             t.block(oba, flags, c.fx, c.fy, c.l);
         }
+        crate::geo::readmap::mark(1, oba);
+        let hashing = io.light.is_some() && !std::env::var_os("MP_NOHASH").is_some();
+        self.spk.h.store(0xcbf2_9ce4_8422_2325, std::sync::atomic::Ordering::Relaxed);
+        self.spk.on.store(hashing, std::sync::atomic::Ordering::Relaxed);
         let p0 = c.xform(self.vertex(io, src, 0));
         if self.program.y0_by_fx() && mode & 2 != 0 {
             Ctx { fy: c.fx, ..c }.emit(io, p0);
@@ -923,7 +952,18 @@ impl Native {
         // polygon after the last one drawn.
         if let Source::Poly(oba) = src {
             *io.latch = oba.wrapping_add(6 + 10 * done as u32 + ahead);
+            let end = oba.wrapping_add(6 + 10 * done as u32 + (done < polygons) as u32);
+            crate::geo::readmap::mark(2, end);
+            if let Some(s) = io.poly.subst {
+                s.seen.lock().unwrap().push((oba & 0xff_ffff, end & 0xff_ffff, false, list_obc));
+            }
+            if hashing {
+                if let Some(t) = io.light.as_deref_mut() {
+                    t.set_key(self.spk.h.load(std::sync::atomic::Ordering::Relaxed) | 1);
+                }
+            }
         }
+        self.spk.on.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Mode bit 1 clear: each polygon's normal comes with it. Returns the
