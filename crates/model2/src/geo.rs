@@ -242,6 +242,32 @@ pub struct GeoExt<'a> {
     rom_mask: u32,
     /// Polygon RAM was written.
     pub(crate) wrote: bool,
+    /// SPIKE: a substituted polygon source (renderer-side reruns only).
+    pub(crate) subst: Option<&'a Subst>,
+}
+
+/// SPIKE: models whose polygon words (and polygon count) are replaced in a
+/// rerun of the list, and a record of every object's extent.
+#[derive(Default)]
+pub struct Subst {
+    /// Model address (24 bits) -> replacement words.
+    pub models: Vec<(u32, Vec<u32>)>,
+    /// Model address -> polygon count to use instead of the list's.
+    pub counts: Vec<(u32, u32)>,
+    /// Filled by a rerun: (model address, end word, compact, count the list gave).
+    pub seen: std::sync::Mutex<Vec<(u32, u32, bool, u32)>>,
+}
+
+impl Subst {
+    #[inline]
+    fn word(&self, addr: u32) -> Option<u32> {
+        let a = addr & 0xff_ffff;
+        self.models.iter().find(|m| a >= m.0 && ((a - m.0) as usize) < m.1.len()).map(|m| m.1[(a - m.0) as usize])
+    }
+    pub(crate) fn count(&self, oba: u32) -> Option<u32> {
+        let a = oba & 0xff_ffff;
+        self.counts.iter().find(|c| c.0 == a).map(|c| c.1)
+    }
 }
 
 /// Polygon RAM as a [`GeoExt`] sees it: its own, or (for smooth motion's
@@ -257,13 +283,13 @@ enum PolyRam<'a> {
 impl<'a> GeoExt<'a> {
     pub(crate) fn new(ram: &'a mut [u32], rom: &'a [u32]) -> Self {
         let rom_mask = (rom.len().next_power_of_two().max(1) - 1) as u32;
-        GeoExt { ram: PolyRam::Own(ram), rom, rom_mask, wrote: false }
+        GeoExt { ram: PolyRam::Own(ram), rom, rom_mask, wrote: false, subst: None }
     }
 
     /// Polygon RAM `ram`, unchanged: writes go to `overlay`.
     pub(crate) fn overlay(ram: &'a [u32], overlay: &'a mut HashMap<u32, u32>, rom: &'a [u32]) -> Self {
         let rom_mask = (rom.len().next_power_of_two().max(1) - 1) as u32;
-        GeoExt { ram: PolyRam::Overlay(ram, overlay), rom, rom_mask, wrote: false }
+        GeoExt { ram: PolyRam::Overlay(ram, overlay), rom, rom_mask, wrote: false, subst: None }
     }
 
     /// Polygon RAM `ram`, read as it is whatever is written (the RAM the
@@ -271,7 +297,7 @@ impl<'a> GeoExt<'a> {
     /// data block begun ([`GeoExt::block`]), are noted in `log`.
     pub(crate) fn before(ram: &'a [u32], log: &'a mut Vec<crate::smooth::Access>, rom: &'a [u32]) -> Self {
         let rom_mask = (rom.len().next_power_of_two().max(1) - 1) as u32;
-        GeoExt { ram: PolyRam::Before(ram, log), rom, rom_mask, wrote: false }
+        GeoExt { ram: PolyRam::Before(ram, log), rom, rom_mask, wrote: false, subst: None }
     }
 
     /// An object or direct data block begins (noted by [`GeoExt::before`]).
@@ -283,10 +309,63 @@ impl<'a> GeoExt<'a> {
     }
 }
 
+/// SPIKE: which polygon ROM words the geometrizer read (a side bitmap,
+/// off unless enabled; never part of the machine's state).
+pub mod readmap {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    use std::sync::OnceLock;
+    /// 0 words read, 1 object starts, 2 object ends (exclusive).
+    static BITS: OnceLock<[Vec<AtomicU64>; 3]> = OnceLock::new();
+    pub fn enable() {
+        BITS.get_or_init(|| std::array::from_fn(|_| (0..(1 << 24) / 64).map(|_| AtomicU64::new(0)).collect()));
+    }
+    #[inline]
+    pub fn mark(kind: usize, word: u32) {
+        if let Some(b) = BITS.get() {
+            let w = (word & 0xff_ffff) as usize;
+            b[kind][w >> 6].fetch_or(1 << (w & 63), Relaxed);
+        }
+    }
+    /// Text: `R start end` merged ranges of words read, `S a` starts, `E a` ends.
+    pub fn dump() -> String {
+        let Some(b) = BITS.get() else { return String::new() };
+        let mut out = String::new();
+        for (k, tag) in ["R", "S", "E"].iter().enumerate() {
+            let get = |w: usize| b[k][w >> 6].load(Relaxed) >> (w & 63) & 1 != 0;
+            let mut w = 0usize;
+            while w < 1 << 24 {
+                if b[k][w >> 6].load(Relaxed) == 0 && w & 63 == 0 {
+                    w += 64;
+                    continue;
+                }
+                if !get(w) {
+                    w += 1;
+                    continue;
+                }
+                if k == 0 {
+                    let s = w;
+                    while w < 1 << 24 && get(w) {
+                        w += 1;
+                    }
+                    out.push_str(&format!("R {s} {w}\n"));
+                } else {
+                    out.push_str(&format!("{tag} {w}\n"));
+                    w += 1;
+                }
+            }
+        }
+        out
+    }
+}
+
 impl External for GeoExt<'_> {
     #[inline]
     fn read(&mut self, addr: u32) -> u32 {
         if addr >= 0x80_0000 {
+            if let Some(w) = self.subst.and_then(|s| s.word(addr)) {
+                return w;
+            }
+            readmap::mark(0, addr & self.rom_mask);
             self.rom.get((addr & self.rom_mask) as usize).copied().unwrap_or(0)
         } else {
             match &mut self.ram {

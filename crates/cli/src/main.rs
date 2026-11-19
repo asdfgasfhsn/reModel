@@ -18,6 +18,8 @@ mod sharc;
 mod sound_render;
 mod soundtrack;
 mod model_pick;
+mod model_replace;
+mod rom_read_map;
 mod spec_stats;
 mod studio;
 mod studio_img;
@@ -1076,6 +1078,37 @@ fn main() -> ExitCode {
         "look-render" => cmd_look_render(&o, roms),
         "lighting-check" => cmd_lighting_check(&o, roms),
         "model-pick" => cmd_model_pick(&o, roms),
+        "model-replace" => {
+            let a = &o.args;
+            let oba = a.get(5).and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok());
+            let (from, count) = (a.get(2).and_then(|s| s.parse().ok()), a.get(3).and_then(|s| s.parse().ok()));
+            match (from, count) {
+                (Some(from), Some(count)) => {
+                    let out = PathBuf::from(a.get(4).cloned().unwrap_or_default());
+                    match model_replace::run(roms, &a[1], from, count, &out, oba, o.input.as_deref().unwrap_or("")) {
+                        Ok(()) => ExitCode::SUCCESS,
+                        Err(e) => {
+                            eprintln!("error: {e}");
+                            ExitCode::FAILURE
+                        }
+                    }
+                }
+                _ => {
+                    eprintln!("usage: model-replace MODE FROM COUNT OUT [OBA]");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        "rom-read-map" => {
+            let rom = model2::bus::polygon_rom(roms);
+            match rom_read_map::run(&rom, &o.args[1..]) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         "lockstep" => cmd_lockstep(&o, roms),
         "geo-trace-words" => cmd_geo_trace_words(&o, roms),
         "geo-check" => cmd_geo_check(&o, roms),
@@ -2469,6 +2502,9 @@ fn cmd_run(o: &Opts, roms: &RomSet) -> ExitCode {
     let interp = o.interp;
     let single_thread = o.single_thread;
     let args = &o.args;
+    if std::env::var_os("MP_READMAP").is_some() {
+        model2::geo::readmap::enable();
+    }
     let steps = args.get(1).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(50_000_000);
     let snap = args.get(2).and_then(|s| parse_num(s)).map(u64::from).unwrap_or(0);
     let script = match model2::input::InputScript::parse(input.as_deref().unwrap_or(""), &roms.game.controls) {
@@ -3372,6 +3408,10 @@ fn run(
         }
     }
     let state_hash = m.bus.state_hash();
+    if let Some(p) = std::env::var_os("MP_READMAP") {
+        m.bus.geo.sync();
+        let _ = std::fs::write(p, model2::geo::readmap::dump());
+    }
     if let Some(t) = m.bus.tgp2a.as_deref_mut() {
         t.finish();
     }

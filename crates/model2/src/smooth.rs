@@ -861,6 +861,42 @@ impl Frame {
         })
     }
 
+    /// SPIKE: frame N's list again with its own transforms and the polygon
+    /// source `subst` (models replaced); the stream is for the renderer only.
+    pub fn render_subst(&self, subst: &crate::geo::Subst, lit: bool) -> (Vec<u32>, Option<crate::light::Frame>) {
+        let mut native = self.native.clone();
+        let (mut words, mut fed, mut out, mut latch) = (0, Vec::new(), Vec::new(), self.latch);
+        let mut overlay = HashMap::new();
+        let mut tap = Tap::Replay {
+            values: self.plan.values(1.0),
+            next: 0,
+            lost: false,
+            snap: Vec::new(),
+            snapped: 0,
+            blocks: Vec::new(),
+            turn: None,
+        };
+        let mut ltap = lit.then(crate::light::Tap::new);
+        let mut list = crate::geo::ListDma::new(&self.buffer, &self.jumps, self.read_ptr, &mut words, &mut fed);
+        let mut poly = crate::geo::GeoExt::overlay(&self.poly, &mut overlay, &self.rom);
+        poly.subst = Some(subst);
+        let mut io = crate::geo_native::Io {
+            list: &mut list,
+            poly,
+            latch: &mut latch,
+            out: &mut out,
+            tap: Some(&mut tap),
+            light: ltap.as_mut(),
+        };
+        match &mut native {
+            Native::B(n) => n.run_frame(&mut io),
+            Native::C(n) => n.run_frame(&mut io),
+        }
+        out.retain(|&w| w != crate::geo::RASTER_NOP);
+        crate::geo::carry_window(&mut out, self.window);
+        (out, ltap.map(|t| t.finish(self.frame)))
+    }
+
     /// Frame N's list again with these transforms.
     pub(crate) fn render_values(&self, values: Vec<Xform>) -> Vec<u32> {
         self.replay(values, Vec::new(), None, None, None).0

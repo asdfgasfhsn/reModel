@@ -865,7 +865,11 @@ impl Native {
         let tpa = io.rd() & 0xff_ffff;
         let tha = io.rd() & 0xff_ffff;
         let oba = io.rd();
-        let obc = io.rd();
+        let mut obc = io.rd();
+        let list_obc = obc;
+        if let Some(c) = io.poly.subst.and_then(|s| s.count(oba)) {
+            obc = c;
+        }
         io.object(oba);
         self.set(l.count, 0, obc);
         io.emit(tpa);
@@ -882,6 +886,7 @@ impl Native {
             l: [self.get(l.light, 0), self.get(l.light, 1), self.get(l.light, 2)],
             lod: self.get(l.lod, 0),
         };
+        crate::geo::readmap::mark(1, oba);
         let mut w = Words { eb: 0, eo: oba & 0xff_ffff, h: 0xcbf2_9ce4_8422_2325, hashing: io.light.is_some() && !*NOHASH.get_or_init(|| std::env::var_os("MP_NOHASH").is_some()) };
         // A compact model's vertices pick their matrix by bit 0 of x.
         let sel = |p: [u32; 3]| if compact { (p[0] & 1) as usize } else { 0 };
@@ -913,6 +918,10 @@ impl Native {
             self.computed_normals(io, &c, &mut w, compact);
         } else {
             self.given_normals(io, &c, &mut w);
+        }
+        crate::geo::readmap::mark(2, w.eo);
+        if let Some(s) = io.poly.subst {
+            s.seen.lock().unwrap().push((oba & 0xff_ffff, w.eo, compact, list_obc));
         }
         if w.hashing {
             if let Some(t) = io.light.as_deref_mut() {
