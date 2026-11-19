@@ -126,7 +126,49 @@ is switched off with a message.
 
 **Safety.** A shader pack runs after the frame is composed and reads
 only. It cannot reach the machine, files or the network, and cannot
-change a state hash.
+change a state hash. It is still code, run on the GPU, and the spike
+below found the one thing that cannot be checked away: a loop.
+
+**Spiked on 2026-11-20** (branch `uplift-spikes-b`, about 400 lines; Top
+Skater and `gunblade`, offscreen):
+
+- **A WGSL file read at run time runs as a pass** on the finished
+  picture, with a fixed interface: the picture, a sampler, and one
+  block of numbers (output size, the game's 496x384, the frame number,
+  eight parameters).
+- **An identity shader is byte-exact**: no differing byte against no
+  shader, at the game's resolution and at 1080p, on both games.
+- **Mistakes are caught and reported.** A syntax error, a wrong entry
+  point, a binding the host does not offer and a wrong output type each
+  give wgpu's own message with line and column, and the picture falls
+  back to no shader. One gap: a parameter block larger than the host's
+  is only found when drawing, and panicked. The loader must check its
+  size.
+- **An endless loop cannot be caught.** Run once by mistake at the
+  game's resolution, it made the graphics driver kill reModel's GPU
+  context; reModel lost its device and exited. The desktop survived. A
+  merely slow shader is valid code: three million loop steps a pixel
+  cost 731 ms a frame.
+- **Parameters can be listed without a GPU** from comment lines
+  (`// @param NAME DEFAULT MIN MAX`). The link from a name to its slot
+  was by order of declaration, which is fragile; the real format should
+  name the slot.
+- **It is cheap.** 0.06 to 0.075 ms a pass at 1080p for simple shaders.
+  A new shader compiles in 7 to 10 ms (47 ms for the first in a
+  process), so reload on save is instant.
+- **Only colour is there to give.** At that point in the pipeline the 3D
+  depth is not readable, a 1/z image exists only in photo mode, and the
+  ID target only with a look active. The `uses depth` and `uses class`
+  rows above each need the renderer to keep that buffer.
+
+What follows for loops, none of it tried:
+
+- The loader walks the validated shader and refuses a loop whose count
+  is not a small constant. This rejects some honest shaders.
+- A lost device is recovered: the pack is switched off, named in a
+  message, and the renderer starts again.
+- A shader pack from the listing is tried first on one small frame, and
+  the listing says plainly that a shader pack is code for the GPU.
 
 **The proof** is to move the built-in CRT pass into a `screen` shader
 pack and get byte-for-byte the same picture. Bloom is the test of the
@@ -215,8 +257,8 @@ work.
 
 ## MVP: a few days
 
-1. `shader.txt` with a single pass, parameters as Picture rows, and
-   reload on save.
+1. `shader.txt` with a single pass (spiked), parameters as Picture
+   rows, reload on save, the loop rule and recovery from a lost device.
 2. The built-in CRT moved into a shader pack, with the identity test.
 3. Multi-pass, feedback and history, and the `scene` stage, with bloom
    moved over.

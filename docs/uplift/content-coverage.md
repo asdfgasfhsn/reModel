@@ -70,7 +70,7 @@ on the side, which bytes of each ROM a run has used.
 ```
 coverage topskatr
 polygon ROM   61% of non-blank bytes read   (3 tours)
-texture ROM   58% of headers read
+texture ROM   58% of bytes read
 data ROM      44% of texel ranges loaded
 tiles         catalogue only: no ROM source known
 code          31% of discovered instructions run
@@ -94,8 +94,30 @@ native geometrizer; branch `uplift-spikes`, about 200 lines):
   is either a format the reader does not know or not models at all.
 - State hashes were unchanged. The map slowed one run from 17 s to 28 s
   and the other two not at all.
-- Not done: the texture ROM. Texture headers and UV lists are read by
-  the rasteriser, not the geometrizer, so that map hooks elsewhere.
+
+**Texture data, spiked on 2026-11-20** (branch `uplift-spikes-b`, about
+230 lines). Texture headers and UV lists are read where the raster
+stream is built (`raster::build_impl`), which both renderers share, so
+one hook covers both.
+
+| | Top Skater, 3 runs | `gunblade`, coin start | `daytona`, coin start |
+|---|---|---|---|
+| Texture ROM read (headers and UV lists) | 18% of 8 MB | 13.5% | 3.6% of 16 MB |
+| Data ROM copied into texture RAM | 6.4% of 32 MB | 9.8% | 4.1% |
+
+- **Top Skater's texel loads were the same 2.14 MB in all three runs.**
+  It looks like one fill at boot, so "texels loaded" says little about
+  what was shown on this game, and is only a lower bound.
+- **There is no true count of headers.** Nothing marks one. A pattern
+  learned from the headers that were read guesses 65% read on Top
+  Skater, 24% on `gunblade` and 5.5% on `daytona`, but the pattern is
+  fitted to what was read, so these are guesses. The report gives bytes
+  read and the largest unread stretches, not "headers".
+- The hook cost 1.0 to 3.3 ms a frame, about 80% more wall time, as
+  written. State hashes were unchanged.
+- **A reused output folder changes the state hash by itself**: it
+  carries `eeprom.bin` over from the last run. Tours must start from a
+  stated EEPROM, or a tour does not reproduce.
 
 **Repeated on `vf2` and `daytona`**, a coin start and a run with no
 input each:
@@ -307,7 +329,8 @@ crawler's finest signal costs half the speed.
 - **Where 2D patterns come from** is not documented, so tiles have no
   read map yet.
 - **Can settings in EEPROM** (difficulty, region, blood) change the art?
-  A tour would need to carry them.
+  A tour must carry the EEPROM it starts from either way: a spike found
+  a leftover `eeprom.bin` changes the state hash.
 - **Is the test switch useful** for any game?
 - **How far can the crawler get** past a menu, where reaching new art
   takes skill and not breadth? Pokes are the likely answer.

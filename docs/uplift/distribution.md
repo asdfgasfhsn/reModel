@@ -110,7 +110,10 @@ packs come from their authors and are not reviewed by reModel.
 
 ### Safety
 
-A pack cannot run code, but its files are read by decoders. Images are
+A pack cannot run code on the CPU, but its files are read by decoders,
+and a shader pack is code for the GPU: a spike on 2026-11-20 showed an
+endless loop in one takes reModel down with a lost device
+([shader-packs.md](shader-packs.md), "Safety"). Images are
 decoded with a cap on size and memory, as the pack budget already
 requires. Meshes and shaders, when they exist, are validated before use
 ([model-interchange.md](model-interchange.md),
