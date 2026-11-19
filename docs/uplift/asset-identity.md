@@ -156,6 +156,35 @@ tables):
 - In 17 of 148 pairs the reference colour has a channel at zero, where
   any ratio is undefined.
 
+**Repeated on `vf2` and `daytona` the same day**, from new catalogues
+of two or three scripted runs each (no pack exists for either):
+
+| | Top Skater | `vf2` | `daytona` |
+|---|---|---|---|
+| Image keys over artworks | 565 / 417 | 954 / 693 | 989 / 396 |
+| Artworks with several colourings | 62 | 151 | 156 |
+| Their share of pixels sighted | 49% | 70% | 88% |
+| Differ by colour only | 62 | 142 | 141 |
+| Differ by luma table, alone or with colour | 0 | 6 | 15 |
+| Differ by translucency only | 0 | 3 | 0 |
+| Mean error, one ratio for the image | 7.0 | 4.2 | 15.3 |
+| Mean error, lookup per texel value | 0.15 | 0.04 | 0.74 |
+
+- **Artwork identity matters more on the other two.** Nearly nine
+  pixels in ten of Daytona's textures are on artworks drawn in several
+  colourings.
+- **Colour is an index on all three**, and the per-texel lookup is the
+  only model that holds.
+- **Variants by luma table exist**, mostly on Daytona, which uses about
+  38 tables where Top Skater uses 2. One ratio for the image is poor
+  there (10 levels on those pairs). The identity design already treats
+  the luma table as part of a variant; a tint must too.
+- **Variant sets can be large and plain.** Daytona's largest are 25 to 47
+  colourings of flat 32x32 gradients; `vf2`'s are stage walls and floors
+  in up to 28 colours. Baking by the build suits these: nobody should
+  draw 47 swatches.
+- Not tested: a fighter's second costumes, and text drawn as textures.
+
 So `follow` is demoted from the usual case to a fallback, and the build
 bakes. Not done: the real tables were not read, so the model was not run
 on a colour the catalogue has never seen, which is the one case it is now
@@ -249,9 +278,9 @@ budget. Nothing here was measured in the browser.
 - **Which tint for an unseen colour on flat art:** the per-texel lookup,
   which is exact on the original and noisy on cel art, or one ratio for
   the image, which is smooth and wrong on large ground textures?
-- **Do other games' variants differ by more than colour?** Top Skater's
-  do not. Luma-table variants would need the tone step the spike could
-  not test.
+- **Baking across luma tables.** Daytona has variants that differ by
+  luma table. The build's copies need the tone step as well as the
+  colour step; neither was run with the game's real tables.
 - **Is the ROM address safe to keep in shared files?** It is an offset, as
   a key is a hash; it is only needed locally.
 - **How different may two artworks be and still be offered as `same-as`?**
