@@ -183,6 +183,44 @@ An agent sits on top for what the crawler cannot do: read a new screen,
 recognise "this is a course select with three entries", and decide what
 is worth time. It is shown new screens only, one thumbnail each.
 
+**Spiked on 2026-11-20** as a Python loop around the CLI, on Top
+Skater's menus: 1,238 tries in 41 minutes of emulator time, one process.
+
+- **It works with no new code.** A catalogue session can start from a
+  loaded state, and a tour replayed from power-on twice is identical
+  byte for byte.
+- **It found most menu screens unaided**: course select, all six
+  skaters, the countdown, play, TIME UP and two caution screens. It
+  rediscovered 354 of the 565 known textures and found 51 textures, 148
+  objects and 17 screens the hand-made catalogue lacks.
+- **It did not reach the Expert course**, and it saturated: 80 of the
+  118 states kept came in the first quarter, 5 in the last. The policy
+  was greedy, so 117 of 118 descend from one branch.
+- **Waiting is an input.** Menus advance on timers; "wait six seconds"
+  and "hold start" found the most.
+- **It cannot play.** Random stick holds do not skate a course, so a
+  run ends at TIME UP and the game-over loop. Later course sections need
+  recorded play or pokes.
+- **A try costs 2 seconds, and the catalogue is 60 to 70% of it.**
+  Process start and state load are a tenth. The cheaper design is two
+  passes: a plain run with the read map first, the catalogue only on
+  tries that read something new.
+- **Screens need digits masked.** The credit counter made a "new screen"
+  per digit: 36 screens by the catalogue's count, about 12 by eye.
+- **A state reached by chained loads is not byte-equal to the same
+  frame reached in one run.** Its hash and instruction pointer differed,
+  while pictures 120 and 300 frames later were identical, even after 44
+  hops. The cause was not found (the script's step arithmetic is one
+  suspect). Until it is, a branch tour is checked by its pictures and
+  its catalogue entries, not by state hash.
+
+So the design holds for breadth, and needs three things before it can
+cover a game: a policy that spreads tries across branches, screens
+compared with counters masked, and the two-pass try. A steering agent
+needs one thumbnail per real screen, each state's children and tries
+since its last find, and two commands: "wait N" and "go back to state
+X".
+
 A tour that uses pokes is marked, and so is any state made from it. Tours
 are for cataloguing. They never touch play, replays or the benchmark
 hashes.
@@ -245,7 +283,8 @@ hashes.
   marks its tour.
 - **With ROMs:** the three existing runs as tours give today's catalogue;
   hashes equal with read maps on and off; a branch tour from a state
-  equals the same inputs from power-on.
+  gives the same pictures and catalogue entries as the same inputs from
+  power-on (the state hashes differed in the spike; see the crawler).
 
 ## Performance
 
@@ -280,4 +319,5 @@ crawler's finest signal costs half the speed.
 2. `tours.txt` with `from=` and `mark=`, `tour run`, and `coverage`.
 3. The player's tour recorder.
 4. `ram search` and `poke=`, with the cheats work.
-5. **Spike:** the crawler on Top Skater's menus.
+5. The crawler (spiked on menus): spread policy, masked screens,
+   two-pass tries, then an agent steering it.
