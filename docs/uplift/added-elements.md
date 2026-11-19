@@ -44,11 +44,17 @@ camera moves, in-between frames, run-ahead and photo mode, with no camera
 recovered and no per-game data.
 
 This is the same mechanism as a replacement model, with the same
-limits. The geometry is built in the renderer from what the native
-geometrizer records on the side (the model, its matrix, its light), and
-the machine's own output is never touched
+limits, and the machine's own output is never touched
 ([model-interchange.md](model-interchange.md), "Drawing it"). An added
 element is extra geometry that travels with a model the game draws.
+
+The spike of 2026-11-19 proved the first tier of that mechanism: extra
+polygons appended to a model's data in a re-run of the game's own
+geometry code stay attached, lit and clipped. That tier can only use the
+host's texture sheet and flat lighting, which suits a decal or a simple
+prop and not a field of grass with its own image. Scatter and anything
+with its own texture need the second tier, drawn by the renderer from
+the object's recorded matrix and light, which is not yet spiked.
 
 ### Four kinds
 
