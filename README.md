@@ -123,6 +123,7 @@ Guides:
 - [docs/enhancements.md](docs/enhancements.md): visual enhancements, done and planned (smooth shading, material maps, temporal anti-aliasing, ...).
 - [docs/texture-packs.md](docs/texture-packs.md): texture dumps and packs, the pack format and material maps.
 - [docs/uplift-studio.md](docs/uplift-studio.md): the uplift studio: restyling a game's art through texture packs (concept, texture map, select, restyle, check, show); `make texmap` says which texture is where, and the `make studio-*` targets (`remodel studio`) select, restyle, generate, check and compare a project of textures. `make catalogue` (and `remodel-play --catalogue`) build a catalogue of every texture, tile, layout and object a game shows, and the textures it loads, by observing it.
+- [docs/uplift-vision.md](docs/uplift-vision.md): where uplift is going: the vision, a map of capabilities and a ranked roadmap, with one spec per capability in [docs/uplift/](docs/uplift/README.md) (a design; not built).
 - [docs/mods.md](docs/mods.md): custom soundtracks and other mods.
 - [docs/mame-defects.md](docs/mame-defects.md): where MAME differs from the hardware, written up for upstream.
 
