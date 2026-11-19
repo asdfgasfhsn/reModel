@@ -132,8 +132,25 @@ geometrizer and the renderer already produce.
   - On `gunblade` 15 hashes each appear at two or more addresses: the
     ROM holds the same model twice. Address names a model; the hash says
     two are the same.
-- Not done: the GPU's ID target, and polygons sent directly (none
-  occurred in any of the five games).
+- **On the GPU it needed no new target** (2026-11-20, about 40 lines).
+  The look's ID target has spare bits in its tag; the object block's
+  number went there, and the CPU maps a block to its model. Against the
+  software result, every 4th pixel on 3 frames each:
+
+  | | Game's resolution | 1080p |
+  |---|---|---|
+  | Top Skater | 99.3% to 99.6% | 99.4% to 99.8% |
+  | `fvipers` | 95.8% to 98.5% | 98.1% to 99.3% |
+
+  The misses are where the two renderers resolve overlap differently
+  (the game's draw order against a depth test), mostly at edges between
+  neighbouring models. Reading the whole target back costs 5 to 7 ms at
+  the game's resolution and 55 to 71 ms at 1080p, so a click reads one
+  pixel and `scene what` reads at the game's resolution.
+- **The ID pass runs only with a look active** today. Picking needs it
+  on its own.
+- Not done: polygons sent directly (none occurred in any of the five
+  games).
 
 ### 2. Instances that persist
 

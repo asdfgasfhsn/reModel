@@ -133,19 +133,48 @@ enemy limb showed in only 2 of 6 frames, because the enemy is a
 different model in each pose: replacing "the enemy" means replacing
 every pose's model, which reshaping does not make practical.
 
+**A new mesh in the standard record, RAM models and the GPU** (spiked
+2026-11-20, about 480 more lines):
+
+- **A box replaced a fighter's lower leg on `vf2` and the car body on
+  `daytona`** (359 polygons swapped for 12), attached and culled
+  correctly over 6 frames each.
+- **The standard record's stored normal is used as given**: not
+  recomputed and not normalised. It alone decides culling and shading.
+  The games store it pointing inward. So a mesh can carry any normal,
+  but one per polygon, never per corner: smooth shading still needs
+  tier 2 or the renderer's own smooth-shading pass.
+- **Textures are the hard limit.** Every record, hidden ones included,
+  takes its UVs from the original's list in order, so a mesh with a
+  different polygon count reads the wrong ones. The spike rewrote the
+  list in the renderer's copy and could then choose among the original's
+  UV sets. A new texture is not possible this way.
+- **The two RAM models are cloth**: a flap of a fighter's garment on
+  `vf2` and on `fvipers`, 2 to 10 polygons, moved by the game each pose.
+  With the hook extended to RAM they re-run identically and can be
+  scaled. Replacing one only makes sense as a rule on the slot that
+  transforms the game's own words.
+- **The GPU agrees.** The re-run stream drawn by the wgpu renderer
+  equals the wgpu picture of the machine's stream on Top Skater and
+  `vf2`, and the scaled models match the software result to within 1 or
+  2 pixels at the edges.
+- Not tested: an object whose normals the game computes (a mode bit),
+  and a new mesh on 2B.
+
 Tier 1 is bounded by the game's polygon format, and the bounds are
 tight:
 
 - **A mesh is strips** of triangles and quads with no index list.
   Anything that is not a chain needs a hidden polygon to restart. The
   box took 8 records for 6 faces.
-- **Normals are worked out from the strip** in Top Skater's compact
-  record, so lighting is flat per polygon. The standard record stores a
-  normal per polygon (read in the code, not tested).
+- **One normal per polygon.** Top Skater's compact record works it out
+  from the strip; the standard record stores it. Either way lighting is
+  flat per polygon.
 - **UVs are not in the model.** They sit in a list the object points to,
   two per corner in strip order, and each polygon can only step a short
   way through the texture headers. A replacement uses the original's
-  texture sheet.
+  texture sheet, and its polygons must be matched to the original's UV
+  entries.
 
 So tier 1 covers moving, scaling and re-cutting a model, and new shapes
 that reuse the original's textures. Those textures can themselves be
