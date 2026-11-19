@@ -26,9 +26,10 @@ first time a player picks the course nobody recorded.
   the share of sightings seen once, "a guide, not a measurement"
   (`crates/cli/src/catalogue.rs`, `coverage_estimate`). It measures how
   well the visited screens were sampled, and knows nothing of screens
-  never visited. The same holds on `vf2` and `daytona`: each reported
-  100% after one run, and a second run added 50% and 40% more textures
-  (spike, 2026-11-19).
+  never visited. The same holds on four more games: `vf2`, `daytona`,
+  `gunblade` and `fvipers` each reported 99.9% or 100% after one run,
+  and a second run then supplied 50%, 40%, 35% and 61% of the final
+  texture list (spikes, 2026-11-19 and 2026-11-20).
 - **There is no list of models to count against.** A model's address
   appears only in the display list the game builds as it runs. A model
   has no length; it ends at a marker (`docs/hw/geometrizer.md`, 2.1 and
@@ -99,18 +100,26 @@ native geometrizer; branch `uplift-spikes`, about 200 lines):
 **Repeated on `vf2` and `daytona`**, a coin start and a run with no
 input each:
 
-| | Top Skater | `vf2` | `daytona` |
-|---|---|---|---|
-| Polygon ROM, share not blank | 8 MB, 100% | 12 MB, 87% | 16 MB, 74% |
-| Read, of what is not blank | 28% | 28% | 18% |
-| Models sit | Back to back | 4 words apart | 4 words apart |
+| | Top Skater | `vf2` | `daytona` | `gunblade` | `fvipers` |
+|---|---|---|---|---|---|
+| Board | 2C | 2A | Original | 2B | 2B |
+| Polygon ROM, share not blank | 8 MB, 100% | 12 MB, 87% | 16 MB, 74% | 16 MB, 86% | 12 MB, 86% |
+| Read, of the whole ROM | 28% | 28% | 18% | 14% | 14% |
+| Read, of what is not blank | 28% | 33% | 24% | 17% | 16% |
+| Models sit | Back to back | 4 words apart | 4 words apart | Back to back | 4 words apart |
+
+The two Model 2B games were added on 2026-11-20. (An earlier version of
+this table gave the whole-ROM figures under the "not blank" label.)
 
 On Daytona a scripted race read only 7 KB more than the title run: the
 demo had already shown that course, and the other courses need
-choosing. On both games most unread stretches parse as models from a
-start a few words in.
+choosing. On all four added games nearly every unread stretch parses as
+models: from its first word where models sit back to back, and from a
+start a few words in where they are 4 words apart. `gunblade` has by far
+the most unread stretches (98,313, the largest 4.2 MB), so its data is
+more broken up than the others'.
 
-So today's catalogue has seen less than a third of the model data, and
+So today's catalogues have seen a third of the model data at best, and
 that is a ceiling on how complete any pack made from it can be. It also
 says a model browser is within reach: at least 1.72 MB of models nobody
 has seen can be listed, and their shapes drawn, without playing.

@@ -123,6 +123,16 @@ compact record only; and the two models `vf2` keeps in polygon RAM and
 rewrites every pose cannot be swapped by this hook, and should not be:
 they are geometry the game animates.
 
+**Repeated on `gunblade` and `fvipers` (Model 2B)** on 2026-11-20, 43
+more lines in the 2B native code: unchanged data gave the identical
+frame on 8 frames of each, state hashes were unchanged, and a part of a
+fighter scaled to 1.5 times stayed attached. The re-run cost 1.9 to 2.7
+ms a frame, four times the other boards' (rough: the machine was
+shared). Both games use the standard record. On `gunblade` a scaled
+enemy limb showed in only 2 of 6 frames, because the enemy is a
+different model in each pose: replacing "the enemy" means replacing
+every pose's model, which reshaping does not make practical.
+
 Tier 1 is bounded by the game's polygon format, and the bounds are
 tight:
 

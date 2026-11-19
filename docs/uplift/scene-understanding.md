@@ -116,8 +116,24 @@ geometrizer and the renderer already produce.
   five. Such a model must be named by its address and marked
   `rewritten`, as this section already proposed; the hash is useless for
   it.
-- Not done: the GPU's ID target, a Model 2B game (other native code),
-  and polygons sent directly (none occurred in any of the three games).
+- **Repeated on `gunblade` and `fvipers` (Model 2B)** on 2026-11-20.
+  2B runs different native code, and it took the same four hooks there,
+  43 lines. Every 3D pixel had a model key; keys were stable between
+  runs; state hashes were unchanged.
+  - `fvipers`' second DSP writes parts of the display list. Those parts
+    are ordinary object commands, so they name models like any other.
+  - `fvipers` has the same two rewritten RAM models as `vf2`, at the
+    same addresses.
+  - **A `gunblade` enemy changes model address from frame to frame.**
+    The game animates it by drawing a different model per pose, so "this
+    enemy" is a set of models, and grouping must cover poses as well as
+    parts. An enemy is 8 to 10 models at a time; an explosion is hundreds
+    of tiny ones.
+  - On `gunblade` 15 hashes each appear at two or more addresses: the
+    ROM holds the same model twice. Address names a model; the hash says
+    two are the same.
+- Not done: the GPU's ID target, and polygons sent directly (none
+  occurred in any of the five games).
 
 ### 2. Instances that persist
 

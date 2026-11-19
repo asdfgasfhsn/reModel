@@ -160,6 +160,19 @@ pictures read and wall time counted. Daytona joins wherever the board
 could change the answer. Running all three for every slice would cost
 more than it finds.
 
+**Two Model 2B games for spikes** (added 2026-11-20). 2B runs different
+geometry code from the other three boards, in four versions. Spikes that
+touch the geometrizer, the renderer or identity are also run on:
+
+| Game | Why |
+|---|---|
+| Gunblade NY (`gunblade`) | The shared 2B geometry program, which 6 of the 14 2B games use. A rail shooter: city scenery and many enemies |
+| Fighting Vipers (`fvipers`) | The earlier program, which 3 games use. Its second DSP writes parts of the display list, the hardest case for naming models |
+
+Two of 2B's four programs are still untried: `vstriker`'s and
+`lastbrnx`'s. `zerogun` and `pltkids` have no native geometry code, so
+picking and reshaping do not reach them at all.
+
 ### What it should cost an agent
 
 | Per asset | Showcase | Target |
@@ -294,6 +307,9 @@ spec named; scratch output stays out of the repository.
 | 2026-11-19 | How much of the polygon ROM do Top Skater's three runs read? | 28%. The unread part is whole regions, and at least 1.72 MB of it parses as models nobody has seen | [content-coverage](uplift/content-coverage.md): the crawler and a model browser matter; the catalogue is far from complete |
 | 2026-11-19 | Can a different mesh be drawn in a model's place without touching the machine? | Yes, by re-running the game's own geometry code with one model's data swapped: identical when unchanged, a scaled torso and a box held through a moving camera, 0.5 to 1.1 ms. The game's format limits it to strips, flat lighting and the original's texture sheet | [model-interchange](uplift/model-interchange.md): two tiers. Reshaping is cheap and proven; a free glTF mesh still needs its own spike |
 | 2026-11-19 | Do picking, the read map and reshaping carry to `vf2` (2A) and `daytona` (original)? | Yes, with about 45 lines and no new hooks: every 3D pixel keyed, unchanged data gives the identical frame, a scaled part stays attached, state hashes unchanged. Read so far: 28% and 18% of the model data. `vf2` rewrites two models in RAM every pose, which a hash cannot name. Model 2B is untested | [scene-understanding](uplift/scene-understanding.md): RAM models are named by address. [content-coverage](uplift/content-coverage.md): the same gap on every game |
+| 2026-11-20 | Do picking, the read map and reshaping carry to Model 2B (`gunblade`, `fvipers`)? | Yes, with 43 lines in the 2B geometry code: every 3D pixel keyed, unchanged data gives the identical frame, state hashes unchanged. Read so far: 14% of each game's model data. A `gunblade` enemy is a different model in every pose | [scene-understanding](uplift/scene-understanding.md): grouping must cover poses as well as parts. [model-interchange](uplift/model-interchange.md): reshaping suits rigid things, not pose-swapped ones |
+| 2026-11-20 | Do the colour-variant findings hold on 2B? | Yes. The lookup per texel value is the only model that holds on all five games. `fvipers` has the most luma-table variants yet (58 artworks) | [asset-identity](uplift/asset-identity.md): no change, more evidence |
+| 2026-11-20 | Can the build bake an artwork's other colourings from one authored image? | Exactly, when the art stays near the game's own colour ramp. Not at all for a restyle: the showcase's redrawn colourings are new themes no method predicts, and half its colourings are plain copies | [asset-identity](uplift/asset-identity.md): the build bakes or copies by how far the art lies from the ramp; the catalogue must record each colouring's ramp |
 
 Status of each spec, by the ladder in [uplift/README.md](uplift/README.md):
 the interface page and the eight pass-one specs are grounded;
