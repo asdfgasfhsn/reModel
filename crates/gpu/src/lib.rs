@@ -24,6 +24,7 @@ mod materials;
 mod photo;
 mod temporal;
 mod tiles;
+pub mod userpass;
 
 pub use board::BoardFrame;
 use board::BoardRef;

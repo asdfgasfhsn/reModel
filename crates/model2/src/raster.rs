@@ -466,6 +466,31 @@ fn depth_scaled(iz: f32, rank: u32, factor: f32) -> f32 {
     z / (z + DEPTH_SCALE)
 }
 
+/// SPIKE: which texture ROM words the rasteriser read (a static bitmap, off
+/// unless enabled; never part of any state). Kinds: 0 UV list words, 1
+/// header words, 2 header starts.
+pub mod texmap {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    use std::sync::OnceLock;
+    static BITS: OnceLock<[Vec<AtomicU64>; 3]> = OnceLock::new();
+    pub fn enable() {
+        BITS.get_or_init(|| std::array::from_fn(|_| (0..(1 << 23) / 64).map(|_| AtomicU64::new(0)).collect()));
+    }
+    #[inline]
+    pub fn mark(kind: usize, word: u32) {
+        if let Some(b) = BITS.get() {
+            let w = (word & 0x7f_ffff) as usize;
+            b[kind][w >> 6].fetch_or(1 << (w & 63), Relaxed);
+        }
+    }
+    pub fn get(kind: usize, word: usize) -> bool {
+        BITS.get().is_some_and(|b| b[kind][word >> 6].load(Relaxed) >> (word & 63) & 1 != 0)
+    }
+    pub fn set(kind: usize, word: usize) {
+        mark(kind, word as u32);
+    }
+}
+
 /// Inputs the rasteriser reads besides the stream.
 pub struct Sources<'a> {
     /// "textures" ROM (texture headers and point lists) as u16 words.
@@ -484,6 +509,16 @@ pub struct Sources<'a> {
 }
 
 impl Sources<'_> {
+    /// `point_word`, noting a texture ROM read in the read map (SPIKE):
+    /// `kind` 0 = UV list word, 1 = header word.
+    #[inline]
+    fn point_word_k(&self, kind: usize, addr: u32) -> u16 {
+        if addr & 0x80_0000 == 0 {
+            texmap::mark(kind, addr);
+        }
+        self.point_word(addr)
+    }
+
     /// A u16 from texture point space: bit 23 selects point RAM.
     fn point_word(&self, addr: u32) -> u16 {
         if addr & 0x80_0000 != 0 {
@@ -973,15 +1008,18 @@ fn build_impl(stream: &[u32], src: &Sources, input: &BuildIn) -> (Vec<Poly>, Vec
                     let mut verts: Vec<Vtx> = if quad { vec![p1, p0, pa, pb] } else { vec![p1, p0, pa] };
                     // Texture points: (V, U) pairs, 13.3 fixed, per vertex.
                     for (k, vtx) in verts.iter_mut().enumerate() {
-                        vtx.v = src.point_word(tpa + 2 * k as u32) as f32 / 8.0;
-                        vtx.u = src.point_word(tpa + 2 * k as u32 + 1) as f32 / 8.0;
+                        vtx.v = src.point_word_k(0, tpa + 2 * k as u32) as f32 / 8.0;
+                        vtx.u = src.point_word_k(0, tpa + 2 * k as u32 + 1) as f32 / 8.0;
                         if let Some((c, _)) = corners {
                             vtx.lit = c[k];
                         }
                     }
                     tpa += 2 * verts.len() as u32;
 
-                    let header = [0, 1, 2, 3].map(|k| src.point_word(tha + k));
+                    if tha & 0x80_0000 == 0 {
+                        texmap::mark(2, tha);
+                    }
+                    let header = [0, 1, 2, 3].map(|k| src.point_word_k(1, tha + k));
                     let step = ((((attr >> 12) & 31) << 27) as i32) >> 27;
                     tha = (tha as i32 + step * 4) as u32 & 0xff_ffff;
 

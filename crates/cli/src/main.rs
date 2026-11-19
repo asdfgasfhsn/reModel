@@ -21,6 +21,8 @@ mod model_pick;
 mod model_replace;
 mod gpu_pick;
 mod rom_read_map;
+mod tex_read_map;
+mod shader_pass;
 mod spec_stats;
 mod studio;
 mod studio_img;
@@ -1111,6 +1113,16 @@ fn main() -> ExitCode {
                 }
                 _ => {
                     eprintln!("usage: model-replace MODE FROM COUNT OUT [OBA]");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        "shader-pass" => {
+            let root = o.args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out").join(roms.game.id).join("capture"));
+            match shader_pass::run(&root, (roms.game.hud_windows, roms.game.hud_element_windows)) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error: {e}");
                     ExitCode::FAILURE
                 }
             }
@@ -3289,6 +3301,7 @@ fn run(
         None => None,
     };
     let mut glyph_watch = GLYPHS.get().map(|_| glyphs::Watch::default());
+    let mut texmap = std::env::var_os("MP_TEXMAP").map(|_| tex_read_map::TexMap::start(&mut m));
     let (mut pcm, mut link, mut audio_secs) = (Vec::new(), Vec::new(), 0.0);
     let started = std::time::Instant::now();
     let mut stop = None;
@@ -3345,6 +3358,9 @@ fn run(
             script.apply(m.frames, &mut m.bus);
             if let Some(p) = pack_log.as_mut() {
                 p.frame(&mut m);
+            }
+            if let Some(t) = texmap.as_mut() {
+                t.frame(&mut m);
             }
             if geo_frame == Some(m.frames) {
                 m.bus.geo_trace = Some(Vec::new());
@@ -3424,6 +3440,9 @@ fn run(
         }
     }
     let state_hash = m.bus.state_hash();
+    if let (Some(t), Some(p)) = (texmap.as_mut(), std::env::var_os("MP_TEXMAP")) {
+        t.finish(&mut m, std::path::Path::new(&p));
+    }
     if let Some(p) = std::env::var_os("MP_READMAP") {
         m.bus.geo.sync();
         let _ = std::fs::write(p, model2::geo::readmap::dump());
