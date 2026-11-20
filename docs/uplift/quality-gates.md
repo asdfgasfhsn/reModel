@@ -57,6 +57,49 @@ A `review` item is settled when an approver accepts it with a reason.
 | `category` | Its *original* is not an outlier among its category's originals (an untested idea; not in the first set) | warn |
 | `text` | Any readable text or logo found is on the project's allow-list | review |
 
+**Calibrated on 2026-11-20** against the showcase (offline, in Python):
+6,273 pairs of an approved image and its original (303 textures, 5,970
+tiles), an older version of the pack, 30 raw image-model outputs, and
+defects injected into approved images. No rejected images survive: the
+project's drafts are the same files as the pack.
+
+| Gate | First limit | Level | Wrongly flags, of approved | Catches |
+|---|---|---|---|---|
+| `file` | Aspect, a whole scale up to 8, 4 MB | error | 0% | Every wrong aspect and non-whole scale |
+| `alpha`, textures | Over 2% of the cut-out disagrees | error | 2.3%, of which 4 are real | Every lost alpha, whole or a quarter |
+| `alpha`, tiles | The same | warn | 14.6% | Every whole loss, 90% of quarter losses |
+| `alpha`, part-transparent | Over 0.1% of pixels | warn | 0.7% | Every soft alpha |
+| `seam` | 12 levels across the edge | warn | 4.2% | 31% of a 24-level step; none of a 6-level one |
+| `changed`, textures | Under 5% differs | warn | 2.3% | 90% of unchanged copies |
+| `noise` (new) | Over 16 | warn | 1.3% | Heavy noise only |
+
+- **`alpha` earns its place at once.** It found four textures in the
+  approved pack that lost their cut-out: character textures the image
+  model returned opaque. The older pack still had their alpha.
+- **`seam` is weak, and a warning at most.** It misses small steps, and
+  most of what it flags in the pack is a seam the original has too. Ink
+  on a wrapped edge cannot be a gate for cel art, which has it on
+  purpose (13% to 23% wrongly flagged).
+- **Dropped for restyled art:** `kept`, `luma-order`, `palette` and a
+  halo test (26% to 65% wrongly flagged), and `changed` on tiles. None
+  separates a good restyle from a bad one. They may suit a faithful
+  pack; nothing here tests that.
+- **`category` is dropped.** It scored the purple-sand originals as
+  ordinary, the one case it was guessed for, and flagged 5% to 10% of
+  originals.
+- **Nothing catches a small offset or a blur**, at any limit.
+- **`file` must run on the finished image.** 26 of the 30 raw
+  image-model outputs fail it before normalising.
+- Cost: 0.7 ms an image at the median, 33 ms at the 99th percentile;
+  the whole pack in about 35 s on one core.
+- Limits were set on the same images they are reported on. `stale`,
+  `text` and the pack, scene and clip gates were not run.
+
+So the first set is `file`, `alpha` and `stale` as errors, and `seam`,
+`changed` (textures) and `noise` as warnings. A project states whether
+it is a restyle or a faithful pack, and the style gates apply only to
+the second.
+
 ### Pack gates
 
 | Gate | Passes when | Level |
@@ -87,13 +130,13 @@ A `review` item is settled when an approver accepts it with a reason.
 | Showcase problem | Gate | Confidence |
 |---|---|---|
 | Opaque draft for a cut-out | `alpha` | High |
-| Ink seam on the ground | `seam` | High |
+| Ink seam on the ground | `seam` | Low after the spike: ink on an edge is normal in cel art, and the file was not there to test |
 | Skaters that barely changed | `changed` | High |
 | Over the browser budget | `budget` | High (lint already notes it) |
 | 9,564 replacement changes | `flicker` | High |
 | Assets missing past frame 6212 | `coverage` on later scenes | High, given the scenes exist |
 | Halftone grid at a distance | `distance`, `steady` | Medium: needs calibration |
-| Purple sand floor | `category` | Low: a guess that the sand original stood out from the wall-base originals |
+| Purple sand floor | None | The `category` guess was tested and failed |
 | Stray outlines | None | These were renderer defects, fixed in the renderer |
 
 Not everything has a number. Whether a scene looks right is the pack lead's
@@ -185,10 +228,11 @@ part, so they run on request and before a release, not on every edit.
 
 ## MVP: a few days
 
-1. `asset check` with `file`, `alpha`, `seam` and `stale`, and
-   `project approve` refusing on errors.
+1. `asset check` with `file`, `alpha` and `stale` as errors and `seam`,
+   `changed` and `noise` as warnings, and `project approve` refusing on
+   errors.
 2. `pack check --json` adding `lint`, `budget`, `known`, `selected` and
    scene `coverage`, with `gates.tsv` and `report.md`.
 3. `pack-flicker` exits 1 over a limit.
-4. **Spike:** run every proposed asset gate over the showcase's approved
-   and rejected images, and set the first limits from the result.
+4. Limits from the spike of 2026-11-20, re-set once a second pack
+   exists to check them on.
