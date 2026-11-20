@@ -221,6 +221,36 @@ pub fn menu_row(ui: &mut Ui, label: &str, hint: &str, focused: bool) -> Response
     r
 }
 
+/// A taller menu row of two lines: `title` over `sub` (dim), each cut to the
+/// row's width with an ellipsis so nothing overlaps; dimmed when the row is
+/// disabled.
+pub fn menu_row2(ui: &mut Ui, id: egui::Id, title: &str, sub: &str, focused: bool) -> Response {
+    let s = scale(ui.ctx());
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 60.0 * s), Sense::hover());
+    let r = ui.interact(rect, id, Sense::click());
+    let enabled = ui.is_enabled();
+    let p = ui.painter();
+    if focused {
+        menu_row_focus(p, rect, s);
+    } else if r.hovered() && enabled {
+        p.rect_filled(rect, ROW_RADIUS * s, Color32::from_white_alpha(14));
+    }
+    let pad = 20.0 * s;
+    let width = (rect.width() - 2.0 * pad).max(10.0);
+    let line = |text: &str, font: FontId, color: Color32| {
+        let mut job = egui::text::LayoutJob::single_section(text.to_string(), egui::TextFormat::simple(font, color));
+        job.wrap = egui::text::TextWrapping::truncate_at_width(width);
+        ui.fonts_mut(|f| f.layout_job(job))
+    };
+    let (c1, c2) = if enabled { (TEXT, TEXT_DIM) } else { (TEXT_DIM, Color32::from_rgb(110, 118, 135)) };
+    let g1 = line(title, FontId::new(18.0 * s, semibold()), c1);
+    let g2 = line(sub, FontId::new(14.0 * s, FontFamily::Proportional), c2);
+    let top = rect.center().y - (g1.size().y + 2.0 * s + g2.size().y) / 2.0;
+    p.galley(pos2(rect.left() + pad, top), g1.clone(), c1);
+    p.galley(pos2(rect.left() + pad, top + g1.size().y + 2.0 * s), g2, c2);
+    r
+}
+
 /// A segmented control (a pill of choices): the one clicked, if any. The
 /// selected segment is filled cyan.
 pub fn segmented(ui: &mut Ui, labels: &[&str], selected: usize) -> Option<usize> {

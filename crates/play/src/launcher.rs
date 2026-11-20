@@ -102,6 +102,11 @@ pub enum Action {
     NetHost {
         set: String,
     },
+    /// Join the host at `addr` (a game found on the network, from the launcher's banner).
+    NetJoinAt {
+        set: String,
+        addr: String,
+    },
     /// Join one.
     NetJoin {
         set: String,
@@ -243,6 +248,8 @@ enum Click {
     Link,
     /// A game's poster: selects it, or plays it if it is.
     Game(&'static romset::Game),
+    /// The banner's game hosted on the network: join it.
+    LanJoin,
 }
 
 pub struct Launcher {
@@ -280,6 +287,13 @@ pub struct Launcher {
     link_page: Option<LinkPage>,
     /// The network link play panel (lobby or join), over everything else.
     net_page: Option<crate::netpage::NetPage>,
+    /// Games hosted on this network (mDNS), for the banner: the browse
+    /// (started on the first frame; never in tests), the hosts this player
+    /// could join, and when to look again.
+    lan: Option<linknet::Browser>,
+    lan_off: bool,
+    lan_hosts: Vec<linknet::Found>,
+    lan_next: Option<std::time::Instant>,
     posters: HashMap<String, egui::TextureHandle>,
     /// Each poster blurred (a small copy, stretched), the carousel's
     /// background while the preview isn't there.
@@ -334,6 +348,10 @@ impl Default for Launcher {
             want_saves: false,
             link_page: None,
             net_page: None,
+            lan: None,
+            lan_off: false,
+            lan_hosts: Vec::new(),
+            lan_next: None,
             posters: HashMap::new(),
             blurs: HashMap::new(),
             art: None,
@@ -704,6 +722,13 @@ impl Launcher {
         {
             clicks.push(Click::Link);
         }
+        self.poll_lan(ctx);
+        if !panel_open
+            && !self.lan_hosts.is_empty()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::J))
+        {
+            clicks.push(Click::LanJoin);
+        }
         if page_view {
             clicks.push(Click::Link);
         }
@@ -821,6 +846,11 @@ impl Launcher {
                     self.link_page = Some(LinkPage { game, focus: Focus::default() });
                 }
             }
+            Click::LanJoin => {
+                if let Some(f) = self.lan_hosts.first() {
+                    actions.push(Action::NetJoinAt { set: f.game.clone(), addr: f.addr.to_string() });
+                }
+            }
             Click::Game(g) => {
                 if self.cur.map(|c| c.id) == Some(g.id) {
                     actions.push(Action::Play { set: g.id.to_string(), from: Start::New });
@@ -889,6 +919,87 @@ impl Launcher {
 
     /// The top bar: the logo, the quick resume pill (in the grid; the
     /// carousel's is bigger, under it) and the view switch.
+    /// Look for games hosted on this network about once a second: the ones
+    /// this player could join (a game they have, the same reModel, a free seat).
+    fn poll_lan(&mut self, ctx: &egui::Context) {
+        if self.lan_off {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if self.lan_next.is_some_and(|t| now < t) {
+            return;
+        }
+        self.lan_next = Some(now + std::time::Duration::from_secs(1));
+        if self.lan.is_none() {
+            match linknet::Browser::start() {
+                Ok(b) => self.lan = Some(b),
+                Err(e) => {
+                    eprintln!("launcher: no network game discovery ({e})");
+                    self.lan_off = true;
+                    return;
+                }
+            }
+        }
+        let Some(b) = self.lan.as_mut() else { return };
+        let all = &self.all;
+        let before = self.lan_hosts.len();
+        self.lan_hosts = b
+            .poll()
+            .into_iter()
+            .filter(|f| {
+                f.version == env!("CARGO_PKG_VERSION")
+                    && f.lobby == linknet::Lobby::Open
+                    && f.players < f.max
+                    && all.iter().any(|g| g.id == f.game)
+            })
+            .collect();
+        if self.lan_hosts.len() != before {
+            ctx.request_repaint();
+        }
+    }
+
+    /// The banner for a game hosted on this network: who, what, and Join.
+    /// It ends at `right`; returns its left edge.
+    fn paint_lan(&mut self, ui: &mut Ui, p: &Painter, l: &Layout, right: f32, clicks: &mut Vec<Click>) -> f32 {
+        let Some(f) = self.lan_hosts.first() else { return right };
+        let u = l.u;
+        let title = romset::games::find(&f.game).map_or_else(|_| f.game.clone(), |g| g.title.to_string());
+        let more = self.lan_hosts.len() - 1;
+        let text = format!(
+            "{} is hosting {title} · {}/{}{}",
+            f.name,
+            f.players,
+            f.max,
+            if more > 0 { format!(" (+{more} more)") } else { String::new() }
+        );
+        let font = FontId::new(17.0 * u, theme::semibold());
+        let g = p.layout_no_wrap(text, font, FG);
+        let chip = self.chip(Chip::Key("J"), "J");
+        let d = 30.0;
+        let cw = theme::chip_width_at(p, chip, u, d);
+        let join = p.layout_no_wrap("Join".into(), FontId::new(17.0 * u, theme::bold()), theme::CYAN);
+        let w = 18.0 * u + g.size().x + 16.0 * u + cw + 8.0 * u + join.size().x + 18.0 * u;
+        let h = 46.0 * u;
+        let rect = Rect::from_min_size(pos2(right - w, l.top.center().y - h / 2.0), vec2(w, h));
+        let id = button_id("lan join");
+        let (r, hit) = control(&mut self.focus, ui, id, rect);
+        p.rect_filled(rect, 999.0, Color32::from_rgba_unmultiplied(20, 60, 72, if r.hovered() { 235 } else { 200 }));
+        p.rect_stroke(rect, 999.0, Stroke::new(1.5 * u, theme::CYAN), egui::StrokeKind::Inside);
+        let mut x = rect.left() + 18.0 * u;
+        p.galley(pos2(x, rect.center().y - g.size().y / 2.0), g.clone(), FG);
+        x += g.size().x + 16.0 * u;
+        theme::paint_chip_at(p, chip, pos2(x, rect.center().y), u, d);
+        x += cw + 8.0 * u;
+        p.galley(pos2(x, rect.center().y - join.size().y / 2.0), join, theme::CYAN);
+        if self.focus.is_on(id) {
+            theme::focus_ring(p, rect, u, 23.0);
+        }
+        if hit {
+            clicks.push(Click::LanJoin);
+        }
+        rect.left()
+    }
+
     fn paint_top(&mut self, ui: &mut Ui, p: &Painter, l: &Layout, view: &View, clicks: &mut Vec<Click>) {
         let u = l.u;
         let mut x = l.top.left();
@@ -945,6 +1056,7 @@ impl Launcher {
             }
             sx += w;
         }
+        self.paint_lan(ui, p, l, capsule.left() - 16.0 * u, clicks);
     }
 
     /// The quick resume pill: the last game played and where it picks up.
@@ -1821,6 +1933,7 @@ mod tests {
             let ctx = egui::Context::default();
             theme::install(&ctx);
             let mut l = Launcher::default();
+            l.lan_off = true;
             let recent: Vec<String> = recent.iter().map(|s| s.to_string()).collect();
             l.set_games(&games(ids), &recent);
             let mut rig = Rig {

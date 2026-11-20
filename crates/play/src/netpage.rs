@@ -293,17 +293,15 @@ impl NetPage {
                             "Found on this network:".to_string()
                         }));
                         for (f, why) in list.iter() {
-                            let label = format!("{}   {}  {}/{}", f.name, game_title(&f.game), f.players, f.max);
-                            let hint = match why {
-                                Some(w) => format!("can't join: {w}"),
-                                None => f.addr.to_string(),
+                            let title = format!("{} · {}", f.name, game_title(&f.game));
+                            let sub = match why {
+                                Some(w) => format!("Can't join: {w}"),
+                                None => format!("{} of {} players · {}", f.players, f.max, f.addr),
                             };
-                            ui.push_id(f.addr, |ui| {
-                                ui.add_enabled_ui(why.is_none(), |ui| {
-                                    if focus.menu_row(ui, &label, &hint) {
-                                        found_pick = Some(f.addr.to_string());
-                                    }
-                                });
+                            ui.add_enabled_ui(why.is_none(), |ui| {
+                                if focus.menu_row2(ui, f.addr, &title, &sub) {
+                                    found_pick = Some(f.addr.to_string());
+                                }
                             });
                         }
                     }

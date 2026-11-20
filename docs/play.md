@@ -1228,6 +1228,14 @@ is the next player. The window then shows the
 game's boot, board check and link attract by itself, like the same-screen
 set; coin up and start as at a row of cabinets.
 
+**Games on your network.** While the launcher is open it listens for hosts
+over mDNS; when one is hosting a game you have, on the same reModel, with a
+seat free, a banner at the top says so ("Sam is hosting Daytona USA · 1/4")
+with **Join** (click it, press J, or move up to it with the pad), which opens
+that game's join page already connecting to the host. The join list shows
+each host on two lines: its name and game, then the players and address, or
+why it can't be joined.
+
 **Finding hosts and names.** A host in its lobby advertises itself two ways, and the
 join list merges them (one entry per host, found either way):
 

@@ -3561,6 +3561,7 @@ impl Play {
                 }
                 launcher::Action::NetHost { set } => self.net_lobby(&set, true),
                 launcher::Action::NetJoin { set } => self.net_lobby(&set, false),
+                launcher::Action::NetJoinAt { set, addr } => self.net_lobby_for(&set, None, Some(addr)),
                 launcher::Action::PlayNet { set, session, params } => {
                     self.launcher.open = false;
                     self.launcher_bindings = None;

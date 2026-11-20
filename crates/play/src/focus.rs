@@ -214,6 +214,13 @@ impl Focus {
         self.register(ui, &r)
     }
 
+    /// A two-line menu row ([`crate::theme::menu_row2`]), clicked or accepted.
+    pub fn menu_row2(&mut self, ui: &mut egui::Ui, key: impl std::hash::Hash + std::fmt::Debug, title: &str, sub: &str) -> bool {
+        let id = ui.make_persistent_id(("menu-row2", key));
+        let r = crate::theme::menu_row2(ui, id, title, sub, self.is_on(id));
+        self.register(ui, &r)
+    }
+
     /// `item`, with `ring` off for a widget that paints its own focus.
     fn item_with(&mut self, ui: &egui::Ui, r: &Response, kind: Kind, ring: bool) -> bool {
         // A window's first frame sizes it, its widgets disabled.

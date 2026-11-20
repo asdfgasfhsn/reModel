@@ -14,6 +14,17 @@ message is its text), set `version` in the root `Cargo.toml`, commit, then
 creates the annotated tag `vx.y.z` without pushing. Details in
 [docs/usage.md](docs/usage.md), "Versions and releases".
 
+## Unreleased
+
+- Network link play: the Esc menu no longer pauses a network game (it held
+  every machine); the game runs on under it with that player's controls let
+  go. Backspace edits the Link play name field instead of closing the panel.
+- The launcher listens for games hosted on the network (mDNS) and shows a
+  banner ("Sam is hosting Daytona USA · 1/4", Join with a click or J) that
+  opens the join page connecting to that host. The join list's rows are two
+  lines (name and game; players and address, or why not), no longer
+  overlapping.
+
 ## 0.12.0 (2026-11-20): linked play
 
 Linked cabinets: Sega Rally and Daytona USA race each other as a row of
