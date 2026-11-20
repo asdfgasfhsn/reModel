@@ -1932,8 +1932,7 @@ mod tests {
         fn new(ids: &[&str], recent: &[&str]) -> Rig {
             let ctx = egui::Context::default();
             theme::install(&ctx);
-            let mut l = Launcher::default();
-            l.lan_off = true;
+            let mut l = Launcher { lan_off: true, ..Default::default() };
             let recent: Vec<String> = recent.iter().map(|s| s.to_string()).collect();
             l.set_games(&games(ids), &recent);
             let mut rig = Rig {
