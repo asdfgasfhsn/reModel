@@ -67,7 +67,10 @@ crop, and the prompt built from the brief and the style rules.
 - **Lint the prompt.** A list of known refusal triggers is checked before
   spending a call: a publisher's name, a real brand, "redraw X's artwork".
   The lint proposes wording that describes the task as restyling the
-  supplied image.
+  supplied image. The word "redraw" on its own belongs on the list (the
+  real-model spike below), and the lint must stop the call, not only
+  print a warning: in that spike it flagged all ten prompts and the
+  calls went ahead.
 
 ### 2. Generate
 
@@ -100,8 +103,8 @@ All deterministic, all in reModel, no Python or ImageMagick needed.
 | Alpha | Take the original's cut-out, scaled by the renderer's own 0.5 rule. The generator's alpha is never trusted for a cut-out |
 | Only visible texels change | Composite over the mask; outside it keep the recipe's result or the original; pad island edges |
 | Palette | Optional per category: snap to the style's palette in a perceptual colour space |
-| Seamless | For each repeated axis: roll by half, repair the seam band, measure again. The `seamless` levelling in `crates/cli/src/studio_img.rs:417` is the start |
-| Overall colour | Optional: put back the original's low-frequency colour, as the upscaler path does (`docs/enhancements.md`, "Batch texture upscaling") |
+| Seamless | For each repeated axis: measure the seam first, and only if it fails roll by half, repair the seam band and measure again. The `seamless` levelling in `crates/cli/src/studio_img.rs:417` is the start |
+| Overall colour | Optional: put back the original's low-frequency colour, as the upscaler path does (`docs/enhancements.md`, "Batch texture upscaling"). Untested, and the only step that would have held the colours in the real-model spike |
 
 ### 4. Check and classify
 
@@ -112,7 +115,7 @@ outcome:
 |---|---|
 | `ok` | Written to `draft/<slug>.png`; the asset becomes `checked`, since the gates have run |
 | `gate:<name>` | Retry, with the gate's fix line added to the prompt, up to a limit |
-| `refused` | No retry; report the lint's suggestion |
+| `refused` | No retry; report the lint's suggestion. A refusal took 5 s in the real-model spike, so one retry with the lint's wording may be worth allowing (not tested) |
 | `timeout`, `rate-limited` | Retry later |
 | `bad-output` | No image, a mockup with a border, or the wrong subject |
 
@@ -144,13 +147,57 @@ model was called.
   be repaired; a stretched or recomposed image cannot be told apart
   reliably and should be made again.
 - **Binary alpha was better than a smoothed one** by the gate.
-- Not tested: any real call, the seam and palette steps, and the
+- Not tested offline: the seam and palette steps, and the
   visible-texel mask (none is on disk; the original's cut-out stood in).
 
 So step 4 gains two outcomes: `repaired` (the image passed only after a
 stated repair, named in the record) and `refit` (the subject does not
 fit the original's cut-out, or the aspect is wrong: make it again, do
 not ship a repair). Of the 30: 26 `ok`, 3 `repaired`, 1 `refit`.
+
+**Spiked on 2026-11-20 with a real model.** Ten Top Skater textures,
+none among the 30, went through steps 1 to 4 with one call each: the
+Codex CLI (version 0.171.0, model `gpt-6.2-sol`), the original enlarged
+and letterboxed, one approved image as a style reference, and a prompt
+from one template. The ten were three cut-outs (3%, 43% and 57% cut
+out), a 4:1 strip, a 1:2 plank, two repeating surfaces, a "CHECK POINT"
+sign, a face and a striped cone.
+
+| | Observed |
+|---|---|
+| Pass the gates on the first call | 9 of 10. No retry was needed |
+| The tenth | Refused in 5 s: the face. No image |
+| Size returned | Exactly the size asked, 9 of 9 |
+| Letterbox bars | Returned flat and in place, 5 of 5, so undoing them was exact |
+| Cut-outs shown as flat magenta | Kept flat, 3 of 3; fit test 0.01 to 0.02 against a limit of 0.06 |
+| Repeating surfaces | Both already tiled as returned |
+| Cost | 45 to 108 s and 14,000 to 29,000 tokens a call; 188,000 tokens in all |
+
+- **Letterbox in, undo after, alpha from the original** all held
+  against a real model. Stripping bars by colour was never needed,
+  because the placement was recorded.
+- **The refusal was the prompt's wording, or the face, or both.** The
+  reply was "I can't redraw an existing game asset with the same exact
+  shapes and layout". The template said "only redraw them in the new
+  style" in all ten prompts, and nine were not refused. Which of the
+  two caused it was not tested.
+- **Seam repair must be conditional.** Run on a tile that already
+  passed, the roll-and-blend repair did no harm to one and made the
+  other worse (seam measure 0.0 to 8.9) and ghosted it.
+- **Shapes held; colour did not** (by eye, on one contact sheet).
+  Folds, planks, rails, the tree's outline and the sign's letters
+  stayed where they were. Red cloth came back salmon, pale wood orange,
+  and grey-green ground mint: the colours of the reference image. No
+  gate in the first set looks at colour, so all of these pass.
+- **"Keep every shape in place" means nothing for a noise texture.**
+  The two repeating surfaces came back as new blob patterns. They tile
+  and pass, and a recipe would have made them for nothing.
+- **The registration score is not a gate.** It read 0.02 to 0.15 on
+  images that were right.
+- Not tested: a retry after a gate failure, a retry after a refusal,
+  timeouts and rate limits, the palette and overall-colour steps, more
+  than one reference, more than two calls at once, and whether a second
+  call gives the same size. Ten assets is a count, not a rate.
 
 ### 5. Record
 
@@ -213,8 +260,12 @@ job records its time, so a pack's report can say what its art cost.
 
 - **Which backends honour transparent output**, and what are their terms
   on outputs? Only third-party summaries were read.
-- **The refusal list** is three entries from one model. It will need
-  feeding from real refusals.
+- **The refusal list** is three entries from one model, plus "redraw"
+  from the real-model spike. It will need feeding from real refusals.
+- **How much colour may a restyle change?** The real-model spike's
+  images took their colours from the reference. Whether that is wanted
+  is the pack lead's call per category; the adapter needs a switch and
+  a number to report.
 - **Material maps from a model.** Nothing found evaluates normal or
   roughness estimation on stylised low-resolution art. `make
   pack-materials` reads height from brightness today, with known flaws.
@@ -229,6 +280,8 @@ job records its time, so a pack's report can say what its art cost.
 3. `asset normalise` for hand-made images.
 4. The fit test and the `repaired` and `refit` outcomes from the offline
    spike.
-5. **Spike, needs a yes:** ten assets through a real image model with
-   the adapter, counting first-call passes. It sends game-derived images
-   to an outside service.
+5. Done as a spike on 2026-11-20: ten assets through a real image model
+   with the adapter, 9 passing on the first call and one refused. Next,
+   with a yes each time since images leave the machine: the refused face
+   again with the wording changed, and the overall-colour step on the
+   three that changed colour.
