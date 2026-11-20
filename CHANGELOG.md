@@ -14,7 +14,7 @@ message is its text), set `version` in the root `Cargo.toml`, commit, then
 creates the annotated tag `vx.y.z` without pushing. Details in
 [docs/usage.md](docs/usage.md), "Versions and releases".
 
-## Unreleased
+## 0.12.1 (2026-11-21): network play fixes
 
 - Network link play: the Esc menu no longer pauses a network game (it held
   every machine); the game runs on under it with that player's controls let
