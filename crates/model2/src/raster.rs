@@ -2073,7 +2073,7 @@ fn draw_impl(
                 zbuf[y * w + x0..y * w + x1].fill(0.0);
             }
         }
-        let test = depth && !pl.background;
+        let test = depth && (!pl.background || crate::uplift::ALL_TEST.load(std::sync::atomic::Ordering::Relaxed));
         let rank = pl.rank;
         let hooked = match (hooks.as_deref_mut(), &p.texture) {
             (Some(hk), Some(t)) => tex_info(p, t, src, &mut keys).map(|info| {

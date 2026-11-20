@@ -18,13 +18,13 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::Instant;
 
-fn f24(w: u32) -> f32 {
+pub(crate) fn f24(w: u32) -> f32 {
     f32::from_bits(w << 8)
 }
 
 /// A model's vertices in stream order (P0', P1', then each record's Pa and,
 /// for quads, Pb), with the matrix select (compact models: bit 0 of x).
-fn model_vertices(w: &[u32], compact: bool) -> Vec<([f32; 3], usize)> {
+pub(crate) fn model_vertices(w: &[u32], compact: bool) -> Vec<([f32; 3], usize)> {
     let v = |i: usize| -> ([f32; 3], usize) {
         let sel = if compact { (w[i] & 1) as usize } else { 0 };
         let x = if compact { f32::from_bits(w[i] & !1) } else { f32::from_bits(w[i]) };
@@ -53,7 +53,7 @@ fn model_vertices(w: &[u32], compact: bool) -> Vec<([f32; 3], usize)> {
 }
 
 /// A block's vertices in the stream (view space x*fx, y*fy, z) in order.
-fn stream_vertices(s: &[u32], at: usize) -> Vec<[f32; 3]> {
+pub(crate) fn stream_vertices(s: &[u32], at: usize) -> Vec<[f32; 3]> {
     let v = |i: usize| [f24(s[i]), f24(s[i + 1]), f24(s[i + 2])];
     let mut out = vec![v(at + 3), v(at + 6)];
     let mut i = at + 9;
@@ -68,7 +68,7 @@ fn stream_vertices(s: &[u32], at: usize) -> Vec<[f32; 3]> {
     out
 }
 
-fn bounds(vs: &[([f32; 3], usize)], only0: bool) -> ([f32; 3], [f32; 3]) {
+pub(crate) fn bounds(vs: &[([f32; 3], usize)], only0: bool) -> ([f32; 3], [f32; 3]) {
     let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
     for (p, s) in vs {
         if only0 && *s != 0 || p.iter().any(|c| !c.is_finite()) {
@@ -82,7 +82,7 @@ fn bounds(vs: &[([f32; 3], usize)], only0: bool) -> ([f32; 3], [f32; 3]) {
     (std::array::from_fn(|a| (lo[a] + hi[a]) / 2.0), std::array::from_fn(|a| (hi[a] - lo[a]) / 2.0))
 }
 
-fn words_of(rec: &Subst, rom: &[u32], mask: u32, oba: u32) -> Option<(Vec<u32>, bool)> {
+pub(crate) fn words_of(rec: &Subst, rom: &[u32], mask: u32, oba: u32) -> Option<(Vec<u32>, bool)> {
     let seen = rec.seen.lock().unwrap().clone();
     let ram = rec.ram.lock().unwrap().clone();
     seen.iter().find(|s| s.0 == oba).map(|s| {
@@ -97,7 +97,7 @@ fn words_of(rec: &Subst, rom: &[u32], mask: u32, oba: u32) -> Option<(Vec<u32>, 
 
 /// SPIKE (tier 2, GPU): a texture pack that answers the free mesh's bank
 /// with its image and nothing else.
-struct SkinPack(Arc<Rgba>);
+pub(crate) struct SkinPack(pub(crate) Arc<Rgba>);
 impl TexturePack for SkinPack {
     fn find(&mut self, info: &TexInfo) -> Found {
         if info.bank == uplift::SKIN_BANK {
@@ -110,7 +110,7 @@ impl TexturePack for SkinPack {
 
 /// Draw `polys` through the GPU renderer (offscreen), returning the whole
 /// frame as RGB and the milliseconds the call took.
-fn gpu_draw(g: &mut gpu::Renderer, polys: &[Poly], c: &Ctx, view: &View, depth: bool, flat: bool) -> (Vec<u8>, f64) {
+pub(crate) fn gpu_draw(g: &mut gpu::Renderer, polys: &[Poly], c: &Ctx, view: &View, depth: bool, flat: bool) -> (Vec<u8>, f64) {
     let mut p = polys.to_vec();
     uplift::gpu_skin(&mut p);
     let src = Sources {
@@ -135,14 +135,14 @@ fn gpu_draw(g: &mut gpu::Renderer, polys: &[Poly], c: &Ctx, view: &View, depth: 
 /// a channel, the mean absolute channel difference (over `mask`), and the
 /// pixels differing outside it.
 #[derive(Default, Clone, Copy)]
-struct Cmp {
-    mask: usize,
-    any: usize,
-    big: usize,
-    mean: f64,
-    outside: usize,
+pub(crate) struct Cmp {
+    pub(crate) mask: usize,
+    pub(crate) any: usize,
+    pub(crate) big: usize,
+    pub(crate) mean: f64,
+    pub(crate) outside: usize,
 }
-fn cmp(a: &[u8], b: &[u8], mask: &[bool]) -> Cmp {
+pub(crate) fn cmp(a: &[u8], b: &[u8], mask: &[bool]) -> Cmp {
     let mut c = Cmp::default();
     let mut sum = 0u64;
     for (i, m) in mask.iter().enumerate() {
@@ -160,13 +160,13 @@ fn cmp(a: &[u8], b: &[u8], mask: &[bool]) -> Cmp {
     c.mean = sum as f64 / (c.mask.max(1) * 3) as f64;
     c
 }
-fn differs(a: &[u8], b: &[u8]) -> Vec<bool> {
+pub(crate) fn differs(a: &[u8], b: &[u8]) -> Vec<bool> {
     a.chunks(3).zip(b.chunks(3)).map(|(x, y)| x != y).collect()
 }
-fn or(a: &[bool], b: &[bool]) -> Vec<bool> {
+pub(crate) fn or(a: &[bool], b: &[bool]) -> Vec<bool> {
     a.iter().zip(b).map(|(x, y)| *x || *y).collect()
 }
-fn show(label: &str, c: Cmp) -> String {
+pub(crate) fn show(label: &str, c: Cmp) -> String {
     format!(
         "{label}: region {} px, differing {} ({:.2}%), >16 {} ({:.2}%), mean abs {:.2}/255, differing outside {}",
         c.mask,
@@ -179,13 +179,13 @@ fn show(label: &str, c: Cmp) -> String {
     )
 }
 
-struct Ctx<'a> {
-    cap: &'a capture::Frame,
-    texrom: &'a [u16],
-    view: &'a View,
+pub(crate) struct Ctx<'a> {
+    pub(crate) cap: &'a capture::Frame,
+    pub(crate) texrom: &'a [u16],
+    pub(crate) view: &'a View,
 }
 
-fn render(polys: &mut Vec<Poly>, c: &Ctx, depth: bool) -> Vec<u8> {
+pub(crate) fn render(polys: &mut Vec<Poly>, c: &Ctx, depth: bool) -> Vec<u8> {
     let src = Sources {
         texture_rom: c.texrom,
         texture_point_ram: &c.cap.texture_point_ram,
@@ -198,11 +198,11 @@ fn render(polys: &mut Vec<Poly>, c: &Ctx, depth: bool) -> Vec<u8> {
     video::compose(&c.cap.tiles, &c.cap.palette, Some((&layer.0, &layer.1)), c.view)
 }
 
-fn magenta(img: &[u8]) -> usize {
+pub(crate) fn magenta(img: &[u8]) -> usize {
     img.chunks(3).filter(|p| p[0] == 255 && p[1] == 0 && p[2] == 255).count()
 }
 
-fn crop(img: &[u8], w: usize, h: usize, cx: f32, cy: f32, cw: usize, ch: usize, z: usize) -> Vec<u8> {
+pub(crate) fn crop(img: &[u8], w: usize, h: usize, cx: f32, cy: f32, cw: usize, ch: usize, z: usize) -> Vec<u8> {
     let x0 = (cx as i64 - cw as i64 / 2).clamp(0, (w - cw) as i64) as usize;
     let y0 = (cy as i64 - ch as i64 / 2).clamp(0, (h - ch) as i64) as usize;
     let mut o = Vec::with_capacity(cw * ch * z * z * 3);
@@ -220,7 +220,7 @@ fn crop(img: &[u8], w: usize, h: usize, cx: f32, cy: f32, cw: usize, ch: usize, 
     o
 }
 
-fn strip(rows: &[Vec<Vec<u8>>], w: usize, h: usize, path: &Path) {
+pub(crate) fn strip(rows: &[Vec<Vec<u8>>], w: usize, h: usize, path: &Path) {
     let n = rows[0].len();
     let mut rgb = vec![0u8; w * n * h * rows.len() * 3];
     for (r, row) in rows.iter().enumerate() {
@@ -235,14 +235,14 @@ fn strip(rows: &[Vec<Vec<u8>>], w: usize, h: usize, path: &Path) {
 }
 
 #[derive(Default)]
-struct Stat {
-    v: Vec<f64>,
+pub(crate) struct Stat {
+    pub(crate) v: Vec<f64>,
 }
 impl Stat {
-    fn add(&mut self, x: f64) {
+    pub(crate) fn add(&mut self, x: f64) {
         self.v.push(x);
     }
-    fn show(&self) -> String {
+    pub(crate) fn show(&self) -> String {
         if self.v.is_empty() {
             return "-".into();
         }
@@ -502,6 +502,7 @@ pub fn run(roms: &RomSet, mode: &str, from: u64, count: u64, out: &Path, oba: u3
                 double_sided: dbl,
                 smooth,
                 flip,
+                extra: Default::default(),
             };
             if frames == 1 {
                 println!("lamp A: {:?} colour {:?} bbox centre {:?} half {:?} compact {}", lamp, colour, c0, e0, compact);
@@ -653,7 +654,7 @@ pub fn run(roms: &RomSet, mode: &str, from: u64, count: u64, out: &Path, oba: u3
                     if let Some((lamp, colour)) = lamp_of(k) {
                         let (b, pl) = (side_sub.blocks[k], places_sub[k]);
                         let sc = 1.3 * uplift::to_view(&b.xf, 0, c0)[2] / e0.iter().cloned().fold(0.0, f32::max);
-                        let inst = Instance { mesh: &sphere, skin: skin.clone(), scale: e0.map(|e| e * sc), offset: c0, lamp, colour, key: KeyMode::TriMin, double_sided: true, smooth, flip };
+                        let inst = Instance { mesh: &sphere, skin: skin.clone(), scale: e0.map(|e| e * sc), offset: c0, lamp, colour, key: KeyMode::TriMin, double_sided: true, smooth, flip, extra: Default::default() };
                         let mut p = rem.clone();
                         p.extend(uplift::polys(&inst, &b, &pl));
                         let sw = render(&mut p.clone(), &ctx, false);
@@ -716,6 +717,7 @@ pub fn run(roms: &RomSet, mode: &str, from: u64, count: u64, out: &Path, oba: u3
                         double_sided: false,
                         smooth,
                         flip,
+                        extra: Default::default(),
                     };
                     if frames == 1 {
                         println!("lamp B: {:?} colour {:?}", lamp, colour);

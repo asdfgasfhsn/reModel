@@ -14,6 +14,9 @@ use std::sync::Arc;
 
 /// When set, skin pixels are drawn flat magenta (to count what shows).
 pub static MARK: AtomicBool = AtomicBool::new(false);
+/// SPIKE (scatter): with depth on, test and write every polygon (nothing
+/// is drawn in the game's order): the geometric reference.
+pub static ALL_TEST: AtomicBool = AtomicBool::new(false);
 /// Skin pixels written by the last draws (reset by the caller).
 pub static SKIN_PIXELS: AtomicU64 = AtomicU64::new(0);
 /// The sum of the game-level lumas of those pixels.
@@ -229,7 +232,7 @@ pub fn walk(stream: &[u32], xoff: f32, yoff: f32) -> Vec<Place> {
 
 /// How the free mesh's triangles are sorted among the game's polygons.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum KeyMode {
+pub enum KeyMode<'a> {
     /// One key for the whole mesh: the given z (the original block's sort
     /// position, or the mesh centre's).
     Fixed(f32),
@@ -238,6 +241,31 @@ pub enum KeyMode {
     /// Per triangle, the game's modes 1 and 2: nearest / farthest vertex z.
     TriMin,
     TriMax,
+    /// SPIKE (scatter): one key per instance (`Extra::per` triangles each).
+    Table(&'a [f32]),
+}
+
+/// SPIKE (scatter): per-instance data for a mesh made of many small
+/// instances of `per` triangles each, in order.
+#[derive(Default)]
+pub struct Extra<'a> {
+    pub per: usize,
+    /// Instances not drawn (their host polygon is not drawn).
+    pub active: Option<&'a [bool]>,
+    /// Depth of each instance's host plane at its foot (view z): every
+    /// vertex of the instance is given this depth.
+    pub plane: Option<&'a [f32]>,
+    pub colours: Option<&'a [[u32; 3]]>,
+    /// Scale of each instance about its root (model space `roots`), `vper`
+    /// vertices per instance (distance fade).
+    pub shrink: Option<&'a [f32]>,
+    pub roots: Option<&'a [[f32; 3]]>,
+    pub vper: usize,
+}
+
+/// SPIKE (scatter): a texture header's four words at `tha`.
+pub fn header_at(src: &crate::raster::Sources, tha: u32) -> [u16; 4] {
+    [0, 1, 2, 3].map(|k| src.point_word(tha + k))
 }
 
 /// How a mesh sits in the object block's model space, and how it is drawn.
@@ -252,7 +280,8 @@ pub struct Instance<'a> {
     pub lamp: Lamp,
     /// Palette colour of a neighbouring polygon (for the colour tables).
     pub colour: [u32; 3],
-    pub key: KeyMode,
+    pub key: KeyMode<'a>,
+    pub extra: Extra<'a>,
     pub double_sided: bool,
     /// Smooth (per-vertex normals, per pixel) or flat (face normal).
     pub smooth: bool,
@@ -310,11 +339,18 @@ pub fn polys(inst: &Instance, b: &Block, pl: &Place) -> Vec<Poly> {
         dot([r[0], r[1], r[2]], cross([r[3], r[4], r[5]], [r[6], r[7], r[8]]))
     };
     let s = inst.scale;
-    let view: Vec<[f32; 3]> = m
+    let mut view: Vec<[f32; 3]> = m
         .v
         .iter()
         .map(|p| to_view(&b.xf, 0, [p[0] * s[0] + inst.offset[0], p[1] * s[1] + inst.offset[1], p[2] * s[2] + inst.offset[2]]))
         .collect();
+    if let (Some(shr), Some(roots)) = (inst.extra.shrink, inst.extra.roots) {
+        for (vi, v) in view.iter_mut().enumerate() {
+            let ii = vi / inst.extra.vper.max(1);
+            let r = to_view(&b.xf, 0, roots[ii]);
+            *v = [r[0] + shr[ii] * (v[0] - r[0]), r[1] + shr[ii] * (v[1] - r[1]), r[2] + shr[ii] * (v[2] - r[2])];
+        }
+    }
     // The game's convention has normals pointing away from the eye on the
     // faces it draws; a mesh's outward normals are negated (calibrated by
     // `flip`).
@@ -323,7 +359,11 @@ pub fn polys(inst: &Instance, b: &Block, pl: &Place) -> Vec<Poly> {
         m.n.iter().map(|n| unit(rot(&b.xf, [n[0] / s[0], n[1] / s[1], n[2] / s[2]]).map(|c| c * sign))).collect();
     let near_z = view.iter().map(|v| v[2]).fold(f32::MAX, f32::min);
     let mut out = Vec::new();
-    for t in &m.tris {
+    for (ti, t) in m.tris.iter().enumerate() {
+        let ii = if inst.extra.per > 0 { ti / inst.extra.per } else { 0 };
+        if inst.extra.active.is_some_and(|a| !a[ii]) {
+            continue;
+        }
         let vs = t.map(|i| view[i as usize]);
         if vs.iter().all(|v| v[2] <= 0.0) {
             continue;
@@ -359,6 +399,7 @@ pub fn polys(inst: &Instance, b: &Block, pl: &Place) -> Vec<Poly> {
             KeyMode::Near => near_z,
             KeyMode::TriMin => minz,
             KeyMode::TriMax => maxz,
+            KeyMode::Table(k) => k[ii],
         };
         let (cx, cy) = pl.centre;
         let clipped = clip_view(&verts, cx, cy, NEAR);
@@ -368,8 +409,8 @@ pub fn polys(inst: &Instance, b: &Block, pl: &Place) -> Vec<Poly> {
         let points = clipped
             .iter()
             .map(|p| {
-                let iz = 1.0 / p.z;
-                SVtx { x: cx + p.x * iz, y: cy - p.y * iz, iz, uz: p.u * iz, vz: p.v * iz }
+                let iz = 1.0 / inst.extra.plane.map_or(p.z, |z| z[ii]);
+                SVtx { x: cx + p.x / p.z, y: cy - p.y / p.z, iz, uz: p.u * iz, vz: p.v * iz }
             })
             .collect();
         out.push(Poly {
@@ -378,7 +419,7 @@ pub fn polys(inst: &Instance, b: &Block, pl: &Place) -> Vec<Poly> {
             window: pl.window,
             clip: pl.clip,
             texture: None,
-            colour: inst.colour,
+            colour: inst.extra.colours.map_or(inst.colour, |c| c[ii]),
             luma: light::quantise(verts[0].lit[0]),
             checker: false,
             header: [0; 4],
