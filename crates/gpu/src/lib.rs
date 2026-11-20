@@ -1266,6 +1266,27 @@ impl Renderer {
         self.pack_stats = PackStats::default();
     }
 
+    /// SPIKE (authoring): swap one pack image in place: upload `img` as the
+    /// image of `key` and forget the old one (and its materials), nothing else.
+    pub fn replace_pack_image(&mut self, key: u64, img: &Rgba) {
+        let mip = self.quality.tex_filter.mipmapped();
+        let tex = upload_pack(&self.device, &self.queue, img, mip);
+        self.pack_tex.insert(key, Some(tex));
+        self.stable.evicted.remove(&key);
+        self.materials.forget_image(key);
+    }
+
+    /// SPIKE (authoring): forget one pack image (the next draw asks the pack for it).
+    pub fn drop_pack_image(&mut self, key: u64) {
+        self.pack_tex.remove(&key);
+        self.materials.forget_image(key);
+    }
+
+    /// SPIKE (authoring): keys of the pack images held on the GPU.
+    pub fn pack_keys(&self) -> Vec<u64> {
+        self.pack_tex.iter().filter(|(_, t)| t.is_some()).map(|(k, _)| *k).collect()
+    }
+
     /// Which stabilisations of the pack's replacements are on (default all;
     /// `model2::packlog::Fixes`), to compare a run with and without.
     pub fn set_pack_fixes(&mut self, fixes: model2::packlog::Fixes) {

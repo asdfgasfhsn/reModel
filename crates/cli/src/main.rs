@@ -23,6 +23,7 @@ mod lighting_spike;
 mod model_pick;
 mod model_replace;
 mod gpu_pick;
+mod authoring_spike;
 mod rom_read_map;
 mod tex_read_map;
 mod shader_pass;
@@ -1099,6 +1100,13 @@ fn main() -> ExitCode {
                 }
             }
         }
+        "authoring-spike" => match authoring_spike::run(roms, &o.args, (roms.game.hud_windows, roms.game.hud_element_windows)) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
+        },
         "lighting-spike" => {
             let a = &o.args;
             let frames: Vec<u64> = a.get(2).map(|s| s.split(',').filter_map(|v| v.parse().ok()).collect()).unwrap_or_default();

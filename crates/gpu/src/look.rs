@@ -403,6 +403,49 @@ impl Renderer {
             .collect()
     }
 
+    /// SPIKE (authoring): a `w`x`h` block at (`x`,`y`) of the last ID pass's target (a
+    /// frame of `size`), per pixel (texture ID, tag): what pointing at the picture needs.
+    pub fn read_ids_rect(&mut self, size: (u32, u32), x: u32, y: u32, w: u32, h: u32) -> Vec<[u32; 2]> {
+        let t = self.kept_target("look ids", size, ID_FORMAT, Self::ID_USAGE).0;
+        let row = (w * 16).div_ceil(256) * 256;
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("id pick"),
+            size: (row * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &t,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buf,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: None },
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        self.queue.submit([enc.finish()]);
+        let slice = buf.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+        let data = slice.get_mapped_range().expect("mapped");
+        let mut out = Vec::new();
+        for r in 0..h as usize {
+            for c in 0..w as usize {
+                let o = r * row as usize + c * 16;
+                out.push([
+                    u32::from_le_bytes(data[o..o + 4].try_into().unwrap()),
+                    u32::from_le_bytes(data[o + 4..o + 8].try_into().unwrap()),
+                ]);
+            }
+        }
+        out
+    }
+
     /// The look in use.
     pub fn look(&self) -> Option<&Arc<Look>> {
         self.look.as_ref()
