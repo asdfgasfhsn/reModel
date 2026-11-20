@@ -62,8 +62,48 @@ anchored at an offset to a Top Skater speed-limit sign, held to within
 sign's own polygons where it should be. Two things it showed for added
 elements: the element needs a stated material (it took a self-lit one
 from its host by accident and came out at full brightness), and draw
-order must be worked out per triangle. Scatter on ground polygons, the
-hardest case for draw order, is still untried.
+order must be worked out per triangle.
+
+**Scatter was spiked the same day** (about 1,300 lines on
+`uplift-spikes`): 200 to 2,000 grass tufts, each two crossed quads with
+a cut-out image, placed on the surface of Top Skater's grass verge and
+of a Daytona roadside, over 65 frames in software and 26 on the GPU.
+
+- **They stay glued down.** A tuft's foot against the ground's own
+  vertices: 0.002 of a pixel on average, 0.7 at worst (Top Skater); 0.17
+  at worst on Daytona.
+- **Draw order, measured against a depth test of everything:**
+
+  | Rule | Top Skater, wrong pixels a frame of about 3,980 | Daytona |
+  |---|---|---|
+  | One position for the whole ground model | 1,222 on average; tufts cut by ground drawn later | 456 |
+  | Each triangle keyed by its nearest corner | 0 | 13 |
+  | Each tuft drawn straight after the polygon it stands on | 7 | 241 |
+  | GPU depth test, ground in the game's order | 0 to 4 | 4 to 71 |
+  | The ground's plane used as depth | 246 | 213 |
+
+  So a per-triangle key, or the GPU's depth test, is right; one
+  position per model is not. No rule but the last ever drew a tuft over
+  the skater, a rail or the skater's shadow.
+- **Pop-in was not seen** on Top Skater: the game never culled a ground
+  piece in view. On Daytona the road changes model along the course and
+  scatter stops at the join, so a rule must cover every piece. A fade
+  hides the far edge, not a cull at the screen's edge.
+- **It is not free in number.** About 0.5 ms per thousand triangles in
+  software. On the GPU 13,800 triangles took a 1080p frame from 31 to
+  44 ms, because they are built on the CPU each frame. Real scatter
+  needs instancing on the GPU.
+- **Grass can be told from path by the polygon's texture**, which gives
+  the rule its "where". Palette colour alone does not.
+- **Even spacing looks thin up close.** Density needs to follow the
+  view.
+- State hashes were unchanged in software; the GPU runs' were not
+  compared.
+
+For the protected classes, four things a check can measure: no instance
+stands on a protected polygon; no tuft pixel lands where the plain
+picture shows a protected class; the track's edge moves by under a
+pixel; nothing lands on the HUD or a rival.
 
 ### Four kinds
 
@@ -200,7 +240,7 @@ Nothing is added. Models are not known, so there is nothing to anchor to.
 
 1. One prop anchored to one Top Skater scenery model (spiked: steady
    to 0.009 of a pixel).
-2. **Spike:** scatter on one ground model, to settle draw order against
-   painter's-order polygons.
+2. Scatter on a ground model (spiked: per-triangle keys or the GPU's
+   depth test; needs GPU instancing and view-dependent density).
 3. `place.txt` with `prop` and `scatter`, `place check`, and the
    protected classes.
