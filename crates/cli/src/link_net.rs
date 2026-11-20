@@ -33,6 +33,7 @@ const USAGE_NET: &str = "usage: remodel --game G link-net (--host [PORT] | --joi
   --realtime      hold the machine to 60 frames a second (the stalls then are what a player would see)
   --leave-at F    say goodbye and stop at frame F (a test)
   fault injection on what this host sends (tests): --latency/--jitter MS added one way, --loss/--dup PCT, --seed
+  --starve H:F        hold this host's records from frame F back from host H (a test of the leave agreement: the others must relay them)
   --corrupt-rx-at F   damage the record received for frame F (a test of the state check)
   --tamper-byte OFF:V set byte OFF of this machine's settings image after agreeing them (a test: the host refuses)
 ";
@@ -143,6 +144,12 @@ fn parse(o: &Opts) -> Result<Args, String> {
             "--loss" => a.faults.loss_pct = flt(next(&mut i, f)?)?,
             "--dup" => a.faults.dup_pct = flt(next(&mut i, f)?)?,
             "--seed" => a.faults.seed = num(next(&mut i, f)?)?,
+            "--starve" => {
+                let v = next(&mut i, f)?;
+                let p: Vec<u64> = v.split(':').filter_map(|x| x.parse().ok()).collect();
+                let [h, fr] = p[..] else { return Err("--starve wants HOST:FRAME".into()) };
+                a.faults.starve = Some((h as usize, fr));
+            }
             "--corrupt-rx-at" => a.faults.corrupt_frame = num(next(&mut i, f)?)?,
             "--tamper-byte" => {
                 let v = next(&mut i, f)?;
@@ -345,15 +352,31 @@ fn run_session(
             m.run_slice(u64::MAX).map_err(|s| format!("machine stopped: {s:?}"))?;
         }
         let frame = m.frames;
+        let mut stall_since: Option<Instant> = None;
+        let mut stall_said = false;
         loop {
             match net.boundary(frame, &mut [&mut m.bus]) {
                 Step::Done(log) => {
                     for l in log {
                         println!("frame {frame:>6}: {l}");
                     }
+                    notices(&mut net, frame);
                     break;
                 }
-                Step::Stalled => std::thread::sleep(Duration::from_micros(100)),
+                Step::Stalled => {
+                    notices(&mut net, frame);
+                    // A wait that does not end says what it waits for (once).
+                    let since = *stall_since.get_or_insert_with(Instant::now);
+                    if !stall_said && since.elapsed() > Duration::from_secs(3) {
+                        stall_said = true;
+                        println!(
+                            "link-net      waiting at boundary {frame} for (node, frame) {:?}; drop frames {:?}",
+                            net.hub.missing(frame, net.local_nodes()),
+                            (0..nodes).map(|n| net.hub.left_at(n)).collect::<Vec<_>>()
+                        );
+                    }
+                    std::thread::sleep(Duration::from_micros(100))
+                }
                 Step::End(e) => {
                     end = Some(e);
                     break 'frames;
@@ -418,17 +441,36 @@ fn run_session(
         ss.lost_by_fault,
         ss.checks_ok
     );
+    if ss.relayed_tx + ss.relayed_rx > 0 {
+        println!(
+            "link-net      records of a player who left, relayed between the players left: sent {}, received {}",
+            ss.relayed_tx, ss.relayed_rx
+        );
+    }
     println!("host time     {secs:.1}s for {} frames", m.frames);
     match end {
-        Some(linknet::End::Left { name, reason, .. }) if reason == "finished" => {
-            println!("link-net      {name} finished (at frame {})", m.frames);
-            Ok(ExitCode::SUCCESS)
-        }
         Some(e) => {
             eprintln!("link-net: {e} (at frame {})", m.frames);
             Ok(ExitCode::from(2))
         }
         None => Ok(ExitCode::SUCCESS),
+    }
+}
+
+/// What the session says about players leaving, one line each (`make link-net-test` reads them).
+fn notices(net: &mut NetLink, frame: u64) {
+    for n in net.take_notices() {
+        match n {
+            linknet::Notice::Left { name, lost, .. } => {
+                println!(
+                    "link-net      {name} {} (at boundary {frame})",
+                    if lost { "lost: connection silent" } else { "left" }
+                );
+            }
+            linknet::Notice::Dropped { name, frame: f, .. } => {
+                println!("link-net      drop frame of {name}: {f} (agreed at boundary {frame}; rerun link-run with --leave NODE:{f})");
+            }
+        }
     }
 }
 

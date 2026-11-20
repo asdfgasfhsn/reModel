@@ -1258,7 +1258,7 @@ Each player has a **user name**, kept with the player's settings
 page, `--name NAME` for one run. It defaults to the OS login name, else
 "Player"; it is trimmed to printable characters, at most 16. The host's lobby
 lists the players by name, the join list shows the host's, and the status line
-and the end messages use them ("Sam left", "Sam has been silent for 5.0 s"). Two
+and the leave notices use them ("Sam left - racing on"). Two
 players with one name are shown "Sam" and "Sam (2)". Names are only shown: they
 are not part of any machine's state or hash, so the same inputs still give the
 same state hashes.
@@ -1287,14 +1287,30 @@ are the master's and nothing of your own (EEPROM, resume state) is written.
 the game runs on underneath (the menu says "Menu", not "Paused") with your
 controls let go while it is open, so nobody else's race is held up.
 
-**When it ends.** If a player leaves, quits the game or their machine goes
-silent for 5 seconds, every other machine drops back to the launcher with the
-reason ("Sam left", "Sam has been silent for 5.0 s: connection
-lost"). If the machines' state checks disagree (every 60 frames each host
-hashes the records it feeds its link; a damaged or misdelivered record
-shows) the session stops with the frame and both hashes. There is no mid-race
-recovery or rejoin: what a game would do with a missing cabinet is not
-known, so the session ends instead.
+**When a player leaves.** The game goes on for the players left. A player
+who quits (the Esc menu, closing the window), whose machine crashes or whose
+connection goes silent for 5 seconds is "gone": the status line says so for a
+few seconds ("Sam left - racing on", or "Sam's connection was lost - racing
+on"; "racing on alone" when no one else is left) and then lists who has
+left. The machines agree on the last frame they all have of the leaver's
+data, share what one lacks, and from then on the leaver's car is held where
+it was with the rest of its cabinet following the others, so the game's own
+race clock, finish and next-game steps keep working (`docs/hw/link-board.md`
+section 12.3). Nothing resets and no one is sent back to the launcher; leave
+when you like from the Esc menu as usual. The last player left plays on
+alone. **The host is no different** (the master's board role lives in the
+games, the session is a mesh of equal hosts after the start), with one limit
+seen in Sega Rally (Daytona did not end its race in the same test): when the *master* cabinet (the host) leaves, the others
+finish the race and its results, but the next game's car select waits for
+the master, so that is the end of the evening's racing; any other player
+leaving costs nothing of that kind.
+
+**When it ends.** Only for a real error: if the machines' state checks
+disagree (every 60 frames each host hashes the records it feeds its link,
+the leavers' agreed last frames included; a damaged or misdelivered record
+shows) the session stops on every machine with the frame and both hashes.
+There is no rejoin: a player who left cannot come back into that session
+(host a new one).
 
 **Firewall and ports.** The host listens on UDP, default port 47890
 (`--host PORT`), on all interfaces; its firewall must let that port in, and
@@ -1328,12 +1344,14 @@ that node with the same inputs and delay: they must be equal), the stalls and
 the bandwidth. Fault injection for tests: `--latency MS --jitter MS --loss PCT
 --dup PCT --seed N` (on what that host sends), `--corrupt-rx-at F` (damage a
 received record: the state check must report it), `--tamper-byte OFF:V` (a
-settings byte changed after agreeing: the host refuses to start), `--leave-at F`; `--realtime` holds the machine to 60 frames a second, so the stall counts are what a
+settings byte changed after agreeing: the host refuses to start), `--leave-at F` (say goodbye at frame F and stop: the others go on), `--starve H:F` (hold this host's records from frame F back from host H, so the others must relay them when it leaves); `--realtime` holds the machine to 60 frames a second, so the stall counts are what a
 player would see (otherwise the hosts run as fast as they can and wait for each other).
 `make link-net-test` runs the whole set over loopback for both games
-(clean, 5% loss with 50 ms jitter, a polite leave, a kill, a settings
-mismatch, a damaged record) and checks every hash against `link-run`; it needs
-the ROMs.
+(clean, 5% loss with 50 ms jitter, a settings mismatch, a damaged record,
+and, mid-race with two and with three hosts, a polite leave, a kill and the
+host leaving, the others running on to the last frame) and checks every hash
+against `link-run` (for a leave, `link-run --leave NODE:F` with the drop frame
+F the survivors logged); it needs the ROMs.
 
 ## Keys
 

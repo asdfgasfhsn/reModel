@@ -558,6 +558,12 @@ behaves the same way.
 - **A node that stops sending** (`--freeze 1:4000`, its blocks stale): the
   other shows `1/2` and carries on, and the frozen node's car just stops
   moving in its picture; nothing resets.
+  *But not for the rest of a session* (section 12.3, from `link-run --leave`):
+  with the leaver's last block repeated for ever, `srallyc`'s race clock (it
+  follows the other nodes' clocks) stops and the race never ends, and
+  `daytona` waits at its next circuit select for the leaver's entry. What the
+  hub shows of a node that has left is a copy of the others' state with the
+  leaver's own car (12.3).
 - **A node booted late**: fine (the nodes just wait in the board check).
 - **RELAY** with a CAR 1 (link types 1, 5): both run attract and the
   results, without the ring; RELAY with CARs was not tried.
@@ -952,11 +958,11 @@ UDP, `RMLN` + protocol version + kind; at most 1,400 bytes; everything
 little-endian and bounds-checked, and **a malformed packet is dropped whole,
 never trusted** (sizes, node ids, host indexes, frame ranges; the session id
 and the source address must match the table). Kinds: Hello, Welcome, Refuse,
-Lobby, Ping, Pong, Start, StartAck, Go, **Data**, Bye, Abort, Discover, Info (protocol 2 as above).
+Lobby, Ping, Pong, Start, StartAck, Go, **Data**, Bye, Abort, Discover, Info (protocol 2 as above), **Relay** (protocol 3: see 12.3).
 
 A **Data** packet carries the sender's newest frame, an acknowledgement per
 host (the frame up to which the sender holds all of that host's records), the
-sender's last eight checkpoint hashes and **every record of the sender's that
+sender's last eight checkpoint hashes, **the leave reports it knows** (`(leaver, reporter, frame held)` triples, 10 bytes each, only while someone has left: 12.3) and **every record of the sender's that
 the receiver has not acknowledged**, oldest first. Records are whole (the
 block is never split: daytona's block checksum would drop a torn one), coded
 against the same node's block of the frame before (a run of unchanged bytes
@@ -968,7 +974,7 @@ and every 100 ms at least. A record that arrives twice or late is kept once
 (the first); the 5% duplication of the test runs shows as "duplicate
 records" in the stats and does nothing.
 
-### 12.3 Desync, disconnects, the end
+### 12.3 Desync, players leaving, the end
 
 * **State check.** Every N frames (default 60, `--check-every`) each host
   hashes **every node's record of that frame as it holds it** (flags, start
@@ -978,24 +984,142 @@ records" in the stats and does nothing.
   another node), so there is no machine hash to compare; what must agree is
   the records every host feeds its hub, and a damaged, misdecoded or
   misdelivered record shows there. (Checked: a record damaged in memory at
-  frame 1200 is reported at frame 1200 on both hosts.) A different build is
-  caught earlier by the version check, other ROMs by the ROM hash, other
-  settings by the settings hash.
-* **A host that goes silent** for T seconds (default 5, `--timeout`) ends the
-  session on every other host with `player P has been silent for T s:
-  connection lost`; a polite leave or finish sends `Bye` (three times) and
-  ends it at once with the reason. Records a leaving host had already sent
-  are used first: a host passes boundaries as long as it has what its view
-  needs and ends when it stalls for lack of what will never come. **What the
-  game would do** with a node that vanishes is not known beyond section 9.4
-  (a node that stops sending leaves its last block in the others' receive
-  area, and the games did not complain at any delay tried); a mid-race
-  recovery (a replacement, a rejoin) is out of scope: the session ends, and
-  the launcher shows why.
+  frame 1200 is reported at frame 1200 on both hosts.) For a node that has
+  left, the records after its drop frame are the hub's synthesis, so the
+  hash covers the records they are made from and **the drop event itself**
+  (node and drop frame): two hosts that agreed different drop frames differ
+  at the first checkpoint after it. A different build is caught earlier by
+  the version check, other ROMs by the ROM hash, other settings by the
+  settings hash. A real mismatch is the only thing that ends a running
+  session; the host that finds it says `Bye` with the reason, which ends
+  the others at once.
+
+* **A player leaves: the others go on** (protocol 3). A host *leaves* when
+  it says `Bye` (a quit, `finished`), when it is silent for T seconds
+  (default 5, `--timeout`), or when another host says it has left (the
+  reports below ride in every data packet, so a lost `Bye` does not leave
+  one host waiting for the timeout). The survivors then agree on the leaver
+  P's **drop frame F** and carry on with P's records from F + 1 made by the
+  hub:
+
+  1. *Report.* The moment a survivor S notices, it writes down `h_S`, the
+     frame up to which it holds all of P's records, and **takes no more of
+     P's records** (what P still sends is ignored; nothing of P's is
+     compared in the state check any more). The report `(P, S, h_S)` is
+     added to every data packet S sends, together with the reports S has
+     been told of (gossip), so it is repeated until the end and a lost
+     packet costs nothing.
+  2. *Agree.* When every host still in the session has reported on P, F is
+     the **largest report**. Every survivor computes the same F from the
+     same set of reports. (A host that leaves while this is going on is
+     dropped from the set that must report; its report still counts if it
+     is known.)
+  3. *Relay.* A survivor that holds P's records up to F sends the others
+     what they lack as `Relay` packets (kind 15: origin node, first frame,
+     the records coded as in `Data`, up to F, repeated until the receiver's
+     acknowledgement of P's records reaches F; the acknowledgements in `Data`
+     already say what each survivor holds of every host). A survivor takes
+     relayed records only after it knows F and only up to F.
+  4. *Synthesis.* From F + 1, the hub's record of P at a frame is made from
+     P's record F and the records of the survivors at that frame (below).
+     It does not depend on when anyone noticed or when F was agreed.
+
+  *Why it agrees (the lockstep argument).* A survivor passes boundary b only
+  if it holds the others' records of frame b - (D - 1), so it has consumed
+  at most the records it holds: `consumed_S <= h_S <= F` (it takes no more of
+  P's after reporting, so `h_S` is final). A record of P beyond F is held by
+  no survivor and so was consumed by none, and the hub never asks for one:
+  it uses record F instead, whatever arrives or is lost afterwards. The
+  record F is held by the survivor whose report is the maximum and the hub
+  needs, for any boundary, only the records up to F (relayed to any survivor
+  that lacks them) and F itself. So the sequence of records each survivor's
+  hub sees, and so its machine, is a function of the records and F alone.
+  Lockstep also bounds how far apart the survivors' `h_S` can be: a host is
+  at most D - 1 frames ahead of the slowest, so P's records can be D - 1
+  frames ahead of the slowest survivor's view and the reports differ by about
+  that many plus what loss held back: the relay is a few records in a normal
+  drop (`link-net --starve` holds 3 frames back at D = 6 and the survivor
+  gets 12 records relayed in `make link-net-test`).
+
+  *The synthesis* (`LinkHub::leave`, `Ghost`; the same code for `link-run
+  --leave NODE:F` and the player). **Freezing the record (`Ghost::Freeze`, what
+  `--freeze` does: P's car stops and its last block stays) does not work over
+  a whole session**, from runs of `link-run --leave 1:5000`, two nodes:
+  `srallyc`'s race clock follows the other nodes' clocks (the survivor's own
+  clock stopped at 1921, 1923 in the frozen block, from frame 5000 on) so the
+  race never ended (the picture still raced at frame 11,000, the baseline run
+  had the results at 9,726); and `daytona` ran to the results and the next
+  circuit select but waited there for ever for the leaver's entry
+  (`state 0x12000001` unchanged to frame 19,500) where a mirrored leaver went
+  on to the next race at 18,440. Dropping the ready byte (`Ghost::Down`,
+  `--drop-at`: the lone survivor carries on as `1/1`) lets `srallyc` finish
+  its race (results at 9,740, the game restarts its board at 10,452) and then
+  waits in "Network Checking" for ever (section 9.4); with three nodes it would
+  split the survivors. What works is a **mirrored leaver** (`Ghost::Mirror`,
+  the default): from F + 1 the leaver's block is a copy of the lowest-numbered
+  node still playing (a node plays up to its own drop frame) **except for the
+  bytes that are the leaver's own** (per game, `LinkPlay::ghost_keep`:
+  `srallyc` the node and car numbers `0x00-0x03` and the car's pose and wheels
+  `0x24-0x7F`; `daytona` the role and ID bytes `0x0B-0x0C` and the car body
+  `0x40-0xE7`, with the header's checksum word `0x3C` recomputed) and its
+  flags (started, master, start frame), which stay as they were. The leaver
+  thus keeps the game's own state, clock and barriers in step with the
+  survivors (every node's state in the barriers, the race clock, the finish),
+  and its car stays parked where it was, the cabinet gone from the race. Copying the
+  car's pose as well (`link-run --ghost-keep 0:4` only) puts the ghost car
+  on the player's: the race then ended at 11,666 in the wrong state (7), so
+  the pose is kept. With one survivor the leaver mirrors that one.
+  *Runs* (two and three nodes, one leaving at frame 5,000 in the race, then
+  on through the results, the attract, a second coin, the car select and the
+  second race):
+
+  | | leaver | race ends | next attract | next select | second race starts |
+  |---|---|---|---|---|---|
+  | `srallyc`, frozen | node 1 of 2 | never (clock stopped) | - | - | - |
+  | `srallyc`, ready dropped | both of 2 | 9,727 / 9,740 | board restarts, waits for ever | - | - |
+  | `srallyc`, mirrored | node 1 of 2 | 7,009 | 7,733 | 10,369 | 13,038 |
+  | `srallyc`, mirrored | node 2 of 3 | 9,730 / 9,744 | 10,454 | 10,457 | 13,128 |
+  | `srallyc`, mirrored | node 0 (the master) of 3 | 9,703 / 9,704 | 10,428 | **stays in the entry state 3** | - |
+  | `daytona`, frozen | node 1 of 2 | 13,082 | 14,431 | 14,817, then waits | - |
+  | `daytona`, mirrored | node 1 of 2 | 13,082 | 14,431 | 14,817 | 18,440 |
+  | `daytona`, mirrored | node 2 of 3 | 16,932 | 18,281 | 18,330 | beyond the run |
+
+  *The master leaving* (the host is node 0 and the master): the mirror makes
+  the master's block a copy of a slave's, and the games' next car select is
+  led by the master (the master goes to state 4 two frames after all are in
+  3 and the slaves follow it): with the master mirroring a slave, each waits
+  for the other. So in `srallyc` the survivors finish the race, the results
+  and the attract, and then **wait at the next select for ever** (`link-run
+  --leave 0:5000`, three nodes: state 3 from frame 10,429 to the end of the
+  run at 15,000). The slaves cannot become masters (the role is the game's
+  own setting). *Unconfirmed*: the same for `daytona` (the survivors of
+  `--leave 0:5000` with three nodes were still in the race, both cars against
+  a wall, at frame 19,500; the race had not ended). The host process itself
+  is not special after the start: the mesh is the hosts' addresses from the
+  `Start` packet, so the survivors never depend on it.
+
+* **A lone survivor** carries on exactly as above (it mirrors itself): its
+  game goes on with the leaver's parked car in the field (`POSITION 2/2`
+  against the parked car in the run's picture), through the results and the
+  next game, and the player shows "Sam left - racing on alone". There is nothing
+  to wait for, and the traffic falls to the heartbeat. A lone survivor's
+  scripted run (`--frames`) ends when it reaches the frame, without waiting
+  for anyone. (Not the same as dropping the ready byte, which is what
+  `--drop-at` does: there it plays `1/1` for the race and then waits in
+  "Network Checking" for ever.)
+* **What is not handled** (the session says so or stalls visibly, and a
+  player can always leave from the Esc menu): a survivor that is lost
+  *after* it reported on P, holding records of P that no one else has, which
+  the others then agree as F (they wait for records that cannot come; after
+  3 timeouts the session ends with `the records of P up to frame F are lost`);
+  a network that splits (each side drops the other: two sessions that go on
+  apart); rejoining; hosts that disagree on who left for the first frames
+  (a survivor timing out P while the others still hear it: the gossip makes
+  them all drop it).
 * **The end of a scripted run**: a host that reaches `--frames` waits (at
-  most 3 s) until every other host has acknowledged its last record, then says
-  `Bye finished`; the others pass the boundaries they have records for and
-  stop.
+  most 3 s) until every other host still in the session has acknowledged its
+  last record, then says `Bye finished`; the others see a player leave whose
+  last record they hold, pass the boundaries up to `--frames` and stop.
 
 ### 12.4 Save states, pacing, run-ahead
 
@@ -1027,8 +1151,7 @@ From `make link-net-test`: the scripted race to frame 4,400 (srallyc) or
 | 12 clean daytona runs in a row | every one equal to `link-run` (after the fix below) | |
 | state check: a record damaged at frame 1200 | reported on both hosts with the frame and both hashes | same |
 | a settings byte changed on a joiner | the host refuses to start, naming both hashes | same |
-| joiner killed (SIGKILL) | the host ends after the 2 s timeout, with the message | same |
-| joiner leaves politely (`--leave-at 1500`) | the host ends at once: `player 2 left: left` | same |
+| a player leaves mid-race (polite, killed, the host; two and three hosts) | the others notice at once (`Bye`) or after the 2 s timeout (kill), agree the drop frame, relay what one lacks and run to the last frame, each survivor's hash equal to `link-run --leave NODE:F` for the drop frame it logged (section 12.3) | same |
 
 The round trip shown in a paced run (16 to 19 ms) is mostly the other host's
 own frame period: a ping is answered when the other host next pumps its
@@ -1046,6 +1169,12 @@ what will never come (a desync or a lost connection still stops at once).
 * The D chosen (`remodel link-net` prints the round trips and D at the
   start) and whether the picture is held (stalls: the stats line, or the
   window's status line).
+* A player leaving mid-race (close one machine's window, pull its cable):
+  the other(s) should show "NAME left - racing on" or "NAME's connection was
+  lost - racing on", the other car parked, and the race, results and (any
+  player but the master) the next game should go on. The line `drop frame of
+  NAME: F` in `remodel link-net`'s output is the frame to give `link-run
+  --leave NODE:F` to compare hashes.
 * A race to the finish between the two machines, then the results screens
   (the end of a race is the one place the game's behaviour has not been seen
   over a delayed link at all: section 10.4's results were seen at D = 1).

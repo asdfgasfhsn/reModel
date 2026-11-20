@@ -5,7 +5,7 @@
 //! the running side: the frame boundary that may have to wait, and the
 //! status line.
 
-use linknet::{Config, NetLink, Params, Step};
+use linknet::{Config, NetLink, Notice, Params, Step};
 use model2::link::LinkHub;
 use std::time::{Duration, Instant};
 
@@ -27,7 +27,14 @@ pub struct NetPlay {
     waiting_since: Option<Instant>,
     /// The longest wait of the last few seconds, for the status line.
     recent: Vec<(Instant, Duration)>,
+    /// The hosts that have left (the others carry on without them), and the latest
+    /// notice for the status line with the time it came.
+    pub gone: Vec<usize>,
+    flash: Option<(String, Instant)>,
 }
+
+/// How long a notice stays in the status line.
+const FLASH: Duration = Duration::from_secs(8);
 
 impl NetPlay {
     pub fn new(sess: linknet::Session, params: &Params, play: &romset::LinkPlay) -> NetPlay {
@@ -45,6 +52,8 @@ impl NetPlay {
             held: 0,
             waiting_since: None,
             recent: Vec::new(),
+            gone: Vec::new(),
+            flash: None,
         }
     }
 
@@ -52,6 +61,46 @@ impl NetPlay {
     /// records are in. Returns true when it was passed (the next frame may
     /// run), false if the frame is held or the session ended.
     pub fn boundary(&mut self, m: &mut model2::Machine) -> bool {
+        let r = self.boundary_inner(m);
+        self.collect_notices();
+        r
+    }
+
+    /// While the machine is paused (a menu over the game): keep the session alive.
+    pub fn keepalive(&mut self) {
+        self.link.keepalive();
+        self.collect_notices();
+        if let Some(e) = self.link.sess.end.clone() {
+            self.ended.get_or_insert(e.to_string());
+        }
+    }
+
+    /// A player who left does not end the game: the status line says so for a few seconds.
+    fn collect_notices(&mut self) {
+        for n in self.link.take_notices() {
+            match n {
+                Notice::Left { host, name, lost } => {
+                    if !self.gone.contains(&host) {
+                        self.gone.push(host);
+                    }
+                    let alone = self.link.sess.alone();
+                    let what = match (lost, alone) {
+                        (false, false) => format!("{name} left - racing on"),
+                        (false, true) => format!("{name} left - racing on alone"),
+                        (true, false) => format!("{name}'s connection was lost - racing on"),
+                        (true, true) => format!("{name}'s connection was lost - racing on alone"),
+                    };
+                    println!("net link play: {what}");
+                    self.flash = Some((what, Instant::now()));
+                }
+                Notice::Dropped { name, frame, .. } => {
+                    println!("net link play: {name} dropped at frame {frame} (agreed by the players left)");
+                }
+            }
+        }
+    }
+
+    fn boundary_inner(&mut self, m: &mut model2::Machine) -> bool {
         match self.link.boundary(m.frames, &mut [&mut m.bus]) {
             Step::Done(log) => {
                 for l in log {
@@ -84,12 +133,23 @@ impl NetPlay {
         let worst = self.recent.iter().map(|(_, d)| *d).max().unwrap_or_default();
         let waiting = self.waiting_since.is_some_and(|t| t.elapsed() > Duration::from_millis(250));
         let me = self.link.sess.me;
-        let others: Vec<&str> =
-            self.names.iter().enumerate().filter(|(i, _)| *i != me).map(|(_, n)| n.as_str()).collect();
-        let who = others.join(", ");
+        let others: Vec<&str> = self
+            .names
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != me && !self.gone.contains(i))
+            .map(|(_, n)| n.as_str())
+            .collect();
+        let who = if others.is_empty() { "alone".to_string() } else { others.join(", ") };
+        let left: Vec<&str> = self.gone.iter().filter_map(|&i| self.names.get(i)).map(|n| n.as_str()).collect();
+        let notice = match &self.flash {
+            Some((t, at)) if at.elapsed() < FLASH => format!("{t}   "),
+            _ => String::new(),
+        };
+        let players = self.nodes - self.gone.len();
+        let head = if players == 1 { "1 player".to_string() } else { format!("{players} players") };
         format!(
-            "Link  {} players ({})  D {}  round trip {rtt}  held {}x ({:.1} s){}{}",
-            self.nodes,
+            "{notice}Link  {head} ({})  D {}  round trip {rtt}  held {}x ({:.1} s){}{}",
             who,
             self.delay,
             st.stalls,
@@ -100,7 +160,11 @@ impl NetPlay {
                 String::new()
             },
             if !waiting {
-                String::new()
+                if left.is_empty() {
+                    String::new()
+                } else {
+                    format!("  left: {}", left.join(", "))
+                }
             } else if others.len() == 1 {
                 format!("  WAITING for {who}")
             } else {

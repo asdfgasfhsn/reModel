@@ -1451,6 +1451,10 @@ impl Play {
         }
         s.save_eeprom();
         s.save_jit_list();
+        if let Some(n) = &mut s.net {
+            // The other players go on without us, at once rather than after their timeout.
+            n.link.sess.bye("left");
+        }
         if s.preview || s.script.is_some() || s.net.is_some() {
             return;
         }
@@ -2755,10 +2759,7 @@ impl Play {
         if (self.menu.open && !net_game) || self.session.is_none() || self.photo.is_some() {
             // A network game keeps its link alive while paused (the others wait for it).
             if let Some(n) = self.session.as_mut().and_then(|s| s.net.as_mut()) {
-                n.link.keepalive();
-                if let Some(e) = n.link.sess.end.clone() {
-                    n.ended.get_or_insert(e.to_string());
-                }
+                n.keepalive();
             }
             // Paused: keep the clock with the game for when it resumes.
             if let Some(s) = &self.session {

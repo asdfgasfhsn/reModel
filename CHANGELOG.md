@@ -14,6 +14,26 @@ message is its text), set `version` in the root `Cargo.toml`, commit, then
 creates the annotated tag `vx.y.z` without pushing. Details in
 [docs/usage.md](docs/usage.md), "Versions and releases".
 
+## Unreleased
+
+- Network link play: a player who leaves, quits or goes silent no longer ends
+  the game for everyone. The players left carry on: they agree on the
+  leaver's last frame (the newest of its records any of them has; a player
+  missing some gets them relayed from one who has them), and from the next
+  frame the hub shows the leaver as a copy of the lowest player still racing
+  but for its own identity bytes and its car, which stays where it was, so the
+  game's race clock, results and next-game steps keep working (freezing the
+  leaver's last block stalls both games, `docs/hw/link-board.md` section
+  12.3). The player says "Sam left - racing on" in the status line; the
+  last player left plays on alone; the host leaving is no different, with one
+  limit: after the master (the host) leaves, Sega Rally cannot start another
+  game. A real state mismatch still ends the session. Link protocol 3.
+  `remodel link-run --leave NODE:F` runs the same drop in one process (and
+  `--ghost` the alternatives), `link-net --starve H:F` is the test hook,
+  and `make link-net-test` now kills and quits players mid-race (two and
+  three hosts, both games) and checks the survivors' hashes against
+  `link-run --leave` for the drop frame they logged.
+
 ## 0.12.1 (2026-11-21): network play fixes
 
 - Network link play: the Esc menu no longer pauses a network game (it held

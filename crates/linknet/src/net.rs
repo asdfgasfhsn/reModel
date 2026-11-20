@@ -16,6 +16,9 @@ pub struct Faults {
     pub seed: u64,
     /// A test of desync detection: flip a bit of the record received for this frame (0: none).
     pub corrupt_frame: u64,
+    /// A test of the leave agreement: this host's own records from this frame on are not
+    /// sent to the given host (it holds fewer of them than the others do).
+    pub starve: Option<(usize, u64)>,
 }
 
 impl Faults {

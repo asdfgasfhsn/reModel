@@ -40,6 +40,9 @@ static SRALLYC: LinkPlay = LinkPlay {
     id_base: 1,
     state_off: Some(0x18),
     pos_off: Some(0x28),
+    // The node and car numbers (0x00-0x03) and the car's pose and wheels (0x24-0x7f).
+    ghost_keep: &[(0x00, 0x04), (0x24, 0x80)],
+    ghost_sum: None,
     free_play: Some(SRALLYC_FREE_PLAY),
 };
 
@@ -81,6 +84,10 @@ static DAYTONA: LinkPlay = LinkPlay {
     id_base: 1,
     state_off: None,
     pos_off: None,
+    // The role and node ID bytes of the header (0x0b-0x0c) and the car's body (0x40-0xe7); the
+    // header's checksum word at 0x3c is the sum of the other 15 words.
+    ghost_keep: &[(0x0b, 0x0d), (0x40, 0xe8)],
+    ghost_sum: Some(0x3c),
     free_play: Some(DAYTONA_FREE_PLAY),
 };
 

@@ -11,7 +11,7 @@ use romset::{LinkPlay, SettingsStore};
 const USAGE_LINK: &str = "usage: remodel --game G link-run [--nodes N] [--frames F] [--input0 S --input1 S ...]
         [--delay D] [--link-types 1,2,..] [--eeprom FILE] [--free-play] [--log-words] [--coverage] [--coverage-from F] [--geo-at F] [--beat-until F]
         [--shot-every K] [--shot-at F,F,..]
-        [--log-every K] [--trace NODE] [--drop-at F] [--freeze NODE:F] [--save-at F FILE] [--load FILE]
+        [--log-every K] [--trace NODE] [--drop-at F] [--freeze NODE:F] [--leave NODE:F] [--save-at F FILE] [--load FILE]
   --input S    inputs for every node without its own --inputN (as `run`'s --input)
   --link-types the role setting patched into each node's settings (the game's own values: srallyc LINK TYPE 1 CAR 1 (master), 2 CAR 2, ..; daytona link ID 1 MASTER, 2 SLAVE; default the game's, master first)
   --geo-at F   write node 0's geometry port writes of frame F to geo-trace-0.txt
@@ -27,8 +27,23 @@ const USAGE_LINK: &str = "usage: remodel --game G link-run [--nodes N] [--frames
   --layout L           received-block order, 3 (default: own block last, 1-based IDs) or older guesses 0-2
   --dump-at F,..       write every node's block and received blocks at those frames
   --ram-dump N:ADDR:FILE, --watch N:ADDR   dump a node's memory at the end / log the writes to a word
+  --leave NODE:F   node NODE leaves after its record of frame F (a player who quit or dropped out): from F + 1 its records are repeats of frame F's, as the hub of a networked session does for the agreed drop frame (repeatable; the node's own machine goes on, its state is not meant to be compared)
+  --ghost freeze|mirror|down, --ghost-keep A:B,.. --ghost-sum OFF   how a node that left shows (default: the game's own, a copy of the lowest node still playing; docs/hw/link-board.md section 12.3): experiments
   --fresh-hub          with --load: lose the board's state (only the machines were saved)
 ";
+
+/// The ghost options over the game's own (`--ghost`, `--ghost-keep`, `--ghost-sum`: experiments).
+fn set_ghost(hub: &mut LinkHub, a: &Args) {
+    if let Some(g) = a.ghost {
+        hub.ghost = g;
+    }
+    if let Some(k) = &a.ghost_keep {
+        hub.ghost_keep = k.clone();
+    }
+    if a.ghost_sum.is_some() {
+        hub.ghost_sum = a.ghost_sum;
+    }
+}
 
 fn u32at(b: &[u8], o: usize) -> u32 {
     u32::from_le_bytes(b[o..o + 4].try_into().unwrap())
@@ -73,6 +88,10 @@ struct Args {
     trace: Option<usize>,
     drop_at: u64,
     freeze: Option<(usize, u64)>,
+    leave: Vec<(usize, u64)>,
+    ghost: Option<model2::link::Ghost>,
+    ghost_keep: Option<Vec<(usize, usize)>>,
+    ghost_sum: Option<usize>,
     save: Option<(u64, PathBuf)>,
     dump_at: Vec<u64>,
     set_bytes: Vec<(usize, usize, u8)>,
@@ -106,6 +125,10 @@ fn parse(o: &Opts) -> Result<Args, String> {
         trace: None,
         drop_at: 0,
         freeze: None,
+        leave: vec![],
+        ghost: None,
+        ghost_keep: None,
+        ghost_sum: None,
         save: None,
         dump_at: vec![],
         set_bytes: vec![],
@@ -204,6 +227,30 @@ fn parse(o: &Opts) -> Result<Args, String> {
                     fr.parse().map_err(|_| "--freeze: bad frame")?,
                 ));
             }
+            "--leave" => {
+                let v = it.next().ok_or("--leave wants NODE:FRAME")?;
+                let (n, fr) = v.split_once(':').ok_or("--leave wants NODE:FRAME")?;
+                a.leave
+                    .push((n.parse().map_err(|_| "--leave: bad node")?, fr.parse().map_err(|_| "--leave: bad frame")?));
+            }
+            "--ghost" => {
+                a.ghost = Some(match it.next().map(|s| s.as_str()) {
+                    Some("freeze") => model2::link::Ghost::Freeze,
+                    Some("mirror") => model2::link::Ghost::Mirror,
+                    Some("down") => model2::link::Ghost::Down,
+                    _ => return Err("--ghost wants freeze, mirror or down".into()),
+                })
+            }
+            "--ghost-keep" => {
+                let v = it.next().ok_or("--ghost-keep wants A:B[,A:B..]")?;
+                a.ghost_keep = Some(
+                    v.split(',')
+                        .filter_map(|x| x.split_once(':'))
+                        .filter_map(|(x, y)| Some((parse_num(x)? as usize, parse_num(y)? as usize)))
+                        .collect(),
+                );
+            }
+            "--ghost-sum" => a.ghost_sum = Some(num(it.next(), f)? as usize),
             "--save-at" => {
                 let fr = num(it.next(), f)?;
                 a.save = Some((fr, PathBuf::from(it.next().ok_or("--save-at wants FRAME FILE")?)));
@@ -331,6 +378,12 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
     let mut hub = LinkHub::for_game(a.nodes, a.delay, play);
     hub.drop_at = a.drop_at;
     hub.freeze = a.freeze;
+    set_ghost(&mut hub, a);
+    for &(n, f) in &a.leave {
+        if n < a.nodes {
+            hub.leave(n, f);
+        }
+    }
     hub.layout = a.layout;
     for &(n, d) in &a.delay_to {
         if n < a.nodes {
@@ -380,6 +433,12 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
         }
         hub.drop_at = a.drop_at;
         hub.freeze = a.freeze;
+        set_ghost(&mut hub, a);
+        for &(n, f) in &a.leave {
+            if n < a.nodes {
+                hub.leave(n, f);
+            }
+        }
         hub.layout = a.layout;
         for (m, s) in ms.iter_mut().zip(&scripts) {
             s.apply(m.frames, &mut m.bus);

@@ -9,7 +9,9 @@ pub const MAGIC: &[u8; 4] = b"RMLN";
 /// Bumped whenever the packet layout or the session's rules change.
 /// 2: player names in the lobby packets, the host's version and ROM hash in the
 /// discovery answer.
-pub const PROTO: u8 = 2;
+/// 3: a host that leaves no longer ends the session: the data packet carries the
+/// leave reports and a `Relay` packet carries a departed host's records.
+pub const PROTO: u8 = 3;
 /// The largest datagram sent (under an Ethernet MTU) and read.
 pub const MAX_PACKET: usize = 1400;
 pub const MAX_HOSTS: usize = 8;
@@ -209,6 +211,7 @@ pub mod kind {
     pub const ABORT: u8 = 12;
     pub const DISCOVER: u8 = 13;
     pub const INFO: u8 = 14;
+    pub const RELAY: u8 = 15;
 }
 
 /// A datagram split into its kind and fields, or None if it isn't ours. The

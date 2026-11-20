@@ -108,8 +108,10 @@ fn run(sessions: Vec<Session>, frames: u64, d: u64, stop: Option<(usize, u64)>) 
                     }
                     s.publish(me, f, rec(me, f));
                     loop {
-                        for Event::Rec { node, frame, rec } in s.pump() {
-                            got.push((node, frame, rec));
+                        for ev in s.pump() {
+                            if let Event::Rec { node, frame, rec } = ev {
+                                got.push((node, frame, rec));
+                            }
                         }
                         if let Some(e) = &s.end {
                             return Err(e.clone());
@@ -160,7 +162,7 @@ fn two_hosts_exchange_records_in_order_on_a_clean_loopback() {
 
 #[test]
 fn records_survive_loss_jitter_and_duplication() {
-    let f = |seed| Faults { latency_ms: 5.0, jitter_ms: 50.0, loss_pct: 5.0, dup_pct: 5.0, seed, corrupt_frame: 0 };
+    let f = |seed| Faults { latency_ms: 5.0, jitter_ms: 50.0, loss_pct: 5.0, dup_pct: 5.0, seed, ..Faults::default() };
     let s = connect(f(1), vec![f(2)], 6);
     let r = run(s, 400, 6, None);
     check_delivery(&r, 400, 6);
@@ -168,40 +170,47 @@ fn records_survive_loss_jitter_and_duplication() {
 
 #[test]
 fn three_hosts_mesh() {
-    let f = |seed| Faults { latency_ms: 2.0, jitter_ms: 10.0, loss_pct: 3.0, dup_pct: 2.0, seed, corrupt_frame: 0 };
+    let f = |seed| Faults { latency_ms: 2.0, jitter_ms: 10.0, loss_pct: 3.0, dup_pct: 2.0, seed, ..Faults::default() };
     let s = connect(f(1), vec![f(2), f(3)], 3);
     let r = run(s, 200, 3, None);
     check_delivery(&r, 200, 3);
 }
 
-#[test]
-fn a_host_that_goes_silent_ends_the_session_for_the_others() {
-    let s = connect(Faults::default(), vec![Faults::default()], 2);
-    // Player 2 stops at frame 50 and its session is dropped with no goodbye.
-    let r = run(s, 200, 2, Some((1, 50)));
-    assert!(r[1].is_ok());
-    match &r[0] {
-        Err(End::Silent { host: 1, name, ms }) => {
-            assert!(*ms >= 700, "{ms}");
-            assert_eq!(name, "p0");
-            assert!(r[0].as_ref().unwrap_err().to_string().starts_with("p0 has been silent"));
-        }
-        other => panic!("expected a silent peer, got {other:?}"),
+/// Pump `s` until `done` is true of what it has raised (or a second passes); the events seen.
+fn pump_until(s: &mut Session, secs: f32, done: impl Fn(&[Event]) -> bool) -> Vec<Event> {
+    let mut seen = Vec::new();
+    let t = Instant::now();
+    while t.elapsed().as_secs_f32() < secs && !done(&seen) {
+        seen.extend(s.pump());
+        std::thread::sleep(Duration::from_micros(300));
     }
+    seen
 }
 
 #[test]
-fn a_goodbye_ends_the_session_at_once_with_the_reason() {
+fn a_host_that_goes_silent_has_left_and_the_session_goes_on() {
+    let mut s = connect(Faults::default(), vec![Faults::default()], 2);
+    let mut a = s.remove(0);
+    let b = s.remove(0);
+    drop(b);
+    let ev = pump_until(&mut a, 3.0, |e| e.iter().any(|x| matches!(x, Event::Dropped { .. })));
+    assert!(ev.iter().any(|e| matches!(e, Event::Left { host: 1, lost: true, name } if name == "p0")), "{ev:?}");
+    assert!(ev.iter().any(|e| matches!(e, Event::Dropped { host: 1, frame: 0 })), "{ev:?}");
+    assert_eq!(a.end, None, "a leaving host does not end the session");
+    assert!(a.alone());
+}
+
+#[test]
+fn a_goodbye_is_a_leave_at_once_with_the_session_going_on() {
     let mut s = connect(Faults::default(), vec![Faults::default()], 2);
     let mut a = s.remove(0);
     let mut b = s.remove(0);
     b.bye("quit");
     let t = Instant::now();
-    while a.end.is_none() && t.elapsed() < Duration::from_secs(1) {
-        a.pump();
-    }
-    assert_eq!(a.end, Some(End::Left { host: 1, name: "p0".into(), reason: "quit".into() }));
-    assert_eq!(a.end.as_ref().unwrap().to_string(), "p0 left: quit");
+    let ev = pump_until(&mut a, 1.0, |e| e.iter().any(|x| matches!(x, Event::Dropped { .. })));
+    assert!(ev.iter().any(|e| matches!(e, Event::Left { host: 1, lost: false, name } if name == "p0")), "{ev:?}");
+    assert_eq!(a.end, None);
+    assert_eq!(a.drop_frame(1), Some(0));
     assert!(t.elapsed() < Duration::from_millis(300));
 }
 
@@ -213,11 +222,9 @@ fn a_session_knows_the_names_and_uses_them_in_messages() {
     let _b = s.remove(0);
     let mut c = s.remove(0);
     c.bye("quit");
-    let t = Instant::now();
-    while a.end.is_none() && t.elapsed() < Duration::from_secs(1) {
-        a.pump();
-    }
-    assert_eq!(a.end.as_ref().unwrap().to_string(), "p1 left: quit");
+    let ev = pump_until(&mut a, 1.0, |e| e.iter().any(|x| matches!(x, Event::Left { .. })));
+    assert!(ev.iter().any(|e| matches!(e, Event::Left { host: 2, name, .. } if name == "p1")), "{ev:?}");
+    assert!(!a.alone(), "p0 is still here");
 }
 
 #[test]

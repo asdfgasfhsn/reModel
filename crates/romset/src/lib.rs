@@ -89,6 +89,13 @@ pub struct LinkPlay {
     /// `link-run`), and three floats of position.
     pub state_off: Option<usize>,
     pub pos_off: Option<usize>,
+    /// A player who leaves a running session is shown by the hub as a copy of the lowest node still
+    /// playing, but for these byte ranges of the block, which stay the leaver's last (its identity
+    /// and its car's pose), and, if the block has one, the offset of the word-sum checksum
+    /// (the sum of the first 16 words but itself) the copy must have recomputed
+    /// (`docs/hw/link-board.md` section 12.3).
+    pub ghost_keep: &'static [(usize, usize)],
+    pub ghost_sum: Option<usize>,
     /// What the game's own FREE PLAY coin setting changes in the record, if
     /// found (`docs/games/<set>.md`); a game without it has no free play.
     pub free_play: Option<&'static [FreePlayByte]>,

@@ -8,6 +8,18 @@
 //! ask for; the sender's hashes of the last few checkpoint frames; and the
 //! acknowledgements. A packet is sent when a record is made, when one is
 //! unacknowledged for a while, and now and then as a heartbeat.
+//!
+//! **A host that leaves** (a goodbye, or silence for the timeout) does not end
+//! the session: the others agree on its *drop frame* F, the newest frame of
+//! its records any of them holds, and carry on with its records from F + 1
+//! synthesised by the hub (`LinkHub::leave`: repeats of frame F's). Each
+//! survivor reports what it holds of the leaver's records the moment it
+//! notices (and takes no more of them), the reports ride in every data packet
+//! (gossiped), F is the largest report once every survivor has reported, and
+//! a survivor that lacks records up to F gets them from one that has them
+//! (`kind::RELAY`). Nothing is consumed beyond F: a survivor cannot have
+//! passed a boundary that needed a record it did not hold. The argument and
+//! the limits are in docs/hw/link-board.md section 12.3.
 
 use crate::net::Net;
 use crate::wire::*;
@@ -27,20 +39,35 @@ const RETAIN: u64 = 256;
 /// Checkpoint hashes carried in each packet.
 const HASHES: usize = 8;
 
+/// A host that has left, and how the survivors are agreeing its drop frame.
+#[derive(Clone, Debug)]
+struct Dep {
+    /// What each host reported holding of this host's records when it noticed the leave.
+    reports: Vec<Option<u64>>,
+    /// What this host held then (its own report).
+    mine: u64,
+    /// The agreed drop frame, and when it was agreed.
+    decided: Option<u64>,
+    decided_at: Option<Instant>,
+}
+
 /// What happened that the driver must act on.
 #[derive(Debug)]
 pub enum Event {
     /// A record from another host's node, validated.
     Rec { node: usize, frame: u64, rec: NodeRec },
+    /// Host `host` has left (`lost`: it went silent rather than said goodbye) and
+    /// its drop frame is not agreed yet.
+    Left { host: usize, name: String, lost: bool },
+    /// The drop frame of host `host` is agreed: its records from `frame + 1` are synthesised.
+    Dropped { host: usize, frame: u64 },
 }
 
 /// How the session ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum End {
-    /// A host finished or left and said so.
+    /// A host stopped the session for an error (a state mismatch) and said so.
     Left { host: usize, name: String, reason: String },
-    /// A host went silent.
-    Silent { host: usize, name: String, ms: u64 },
     /// The checkpoint hashes differ.
     Desync { frame: u64, ours: u64, theirs: u64, host: usize, name: String },
     /// The host aborted the setup.
@@ -52,9 +79,6 @@ impl std::fmt::Display for End {
         match self {
             End::Left { name, reason, .. } if reason.is_empty() || reason == "left" => write!(f, "{name} left"),
             End::Left { name, reason, .. } => write!(f, "{name} left: {reason}"),
-            End::Silent { name, ms, .. } => {
-                write!(f, "{name} has been silent for {:.1} s: connection lost", *ms as f32 / 1000.0)
-            }
             End::Desync { frame, ours, theirs, name, .. } => {
                 write!(f, "out of sync with {name} at frame {frame}: our state hash {ours:016x}, theirs {theirs:016x}")
             }
@@ -76,6 +100,9 @@ pub struct Stats {
     pub lost_by_fault: u64,
     /// Checkpoints compared and found equal.
     pub checks_ok: u64,
+    /// Records of a departed host sent to another survivor, and received from one.
+    pub relayed_tx: u64,
+    pub relayed_rx: u64,
 }
 
 struct Peer {
@@ -90,6 +117,9 @@ struct Peer {
     fresh: bool,
     rtt_ms: Option<f32>,
     last_ping: Instant,
+    /// What the peer says it holds of each host's records (frames up to).
+    holds: Vec<u64>,
+    last_relay: Instant,
     /// The peer's checkpoint hashes not yet compared, and the frames already compared.
     hashes: BTreeMap<u64, u64>,
     compared: std::collections::BTreeSet<u64>,
@@ -117,6 +147,12 @@ pub struct Session {
     pub end: Option<End>,
     pub stats: Stats,
     bye_sent: bool,
+    /// Per host, whether it has left and the agreement of its drop frame.
+    dep: Vec<Option<Dep>>,
+    /// Events raised outside `pump`'s receive loop, returned by the next `pump`.
+    queued: Vec<Event>,
+    /// Checkpoint frames waiting for a drop frame to be agreed.
+    pending_cp: std::collections::BTreeSet<u64>,
 }
 
 impl Session {
@@ -150,11 +186,14 @@ impl Session {
                     fresh: false,
                     rtt_ms: None,
                     last_ping: now,
+                    holds: vec![0; 8],
+                    last_relay: now,
                     hashes: BTreeMap::new(),
                     compared: Default::default(),
                 })
             })
             .collect();
+        let n_hosts = params.hosts.len();
         let names = crate::names::display_names(&params.hosts.iter().map(|h| h.name.clone()).collect::<Vec<_>>());
         Session {
             net,
@@ -174,6 +213,9 @@ impl Session {
             end: None,
             stats: Stats::default(),
             bye_sent: false,
+            dep: vec![None; n_hosts],
+            queued: Vec::new(),
+            pending_cp: Default::default(),
         }
     }
 
@@ -196,9 +238,39 @@ impl Session {
         self.peers.iter().flatten().count()
     }
 
-    /// The lowest frame every peer has acknowledged of ours.
+    /// The other hosts still in the session.
+    pub fn live_peers(&self) -> usize {
+        (0..self.peers.len()).filter(|&h| self.peers[h].is_some() && self.dep[h].is_none()).count()
+    }
+
+    /// Whether every other host has left: this host plays on alone.
+    pub fn alone(&self) -> bool {
+        self.peers() > 0 && self.live_peers() == 0
+    }
+
+    /// Whether host `h` has left.
+    pub fn has_left(&self, h: usize) -> bool {
+        self.dep.get(h).is_some_and(|d| d.is_some())
+    }
+
+    /// The agreed drop frame of host `h`, once it has left and the survivors agree.
+    pub fn drop_frame(&self, h: usize) -> Option<u64> {
+        self.dep.get(h)?.as_ref()?.decided
+    }
+
+    /// The nodes host `h` runs.
+    pub fn nodes_of_host(&self, h: usize) -> &[usize] {
+        &self.nodes_of[h]
+    }
+
+    /// The lowest frame every host still in the session has acknowledged of ours.
     pub fn acked_by_all(&self) -> u64 {
-        self.peers.iter().flatten().map(|p| p.acked).min().unwrap_or(self.latest)
+        (0..self.peers.len())
+            .filter(|&h| self.dep[h].is_none())
+            .filter_map(|h| self.peers[h].as_ref())
+            .map(|p| p.acked)
+            .min()
+            .unwrap_or(self.latest)
     }
 
     /// Our record of local node `node` at `frame`, made at the frame boundary.
@@ -231,11 +303,34 @@ impl Session {
         if every == 0 || !frame.is_multiple_of(every) || self.ours.contains_key(&frame) {
             return;
         }
-        let recs: Vec<Option<&NodeRec>> = (0..self.n).map(|i| self.store[i].get(&frame)).collect();
-        if recs.iter().any(|r| r.is_none()) {
+        // A node that has left: its records after the drop frame are repeats of that frame's.
+        let mut drops: Vec<(usize, u64)> = Vec::new();
+        let mut recs: Vec<Option<&NodeRec>> = Vec::new();
+        let mut waits = false;
+        for i in 0..self.n {
+            match self.dep[self.host_of_node(i)].as_ref() {
+                Some(Dep { decided: Some(f), .. }) if frame > *f => {
+                    drops.push((i, *f));
+                    recs.push(self.store[i].get(f));
+                }
+                // Left, the drop frame not agreed: only a frame this host holds is certainly real.
+                Some(Dep { decided: None, mine, .. }) if frame > *mine => waits = true,
+                _ => recs.push(self.store[i].get(&frame)),
+            }
+        }
+        if waits || recs.iter().any(|r| r.is_none()) {
+            if self.dep.iter().any(|d| d.is_some()) && self.pending_cp.len() < 64 {
+                self.pending_cp.insert(frame);
+            }
             return;
         }
-        let h = hash_recs(&recs.into_iter().flatten().collect::<Vec<_>>());
+        let mut h = hash_recs(&recs.into_iter().flatten().collect::<Vec<_>>());
+        // The drop events are part of the state check: hosts that disagree on a drop frame differ.
+        for (node, f) in drops {
+            h = fnv(h, &[0xd7, node as u8]);
+            h = fnv(h, &f.to_le_bytes());
+        }
+        self.pending_cp.remove(&frame);
         self.ours.insert(frame, h);
         self.recent.push((frame, h));
         if self.recent.len() > HASHES {
@@ -248,9 +343,25 @@ impl Session {
         }
     }
 
+    /// Checkpoints that waited for a drop frame or a relayed record.
+    fn retry_checkpoints(&mut self) {
+        let frames: Vec<u64> = self.pending_cp.iter().copied().collect();
+        for f in frames {
+            self.checkpoint(f);
+        }
+    }
+
+    fn host_of_node(&self, node: usize) -> usize {
+        self.nodes_of.iter().position(|ns| ns.contains(&node)).unwrap_or(0)
+    }
+
     fn compare(&mut self, frame: u64) {
         let Some(&ours) = self.ours.get(&frame) else { return };
         for h in 0..self.peers.len() {
+            // A host that has left no longer takes part in the check.
+            if self.dep[h].is_some() {
+                continue;
+            }
             let theirs = self.peers[h].as_ref().and_then(|p| p.hashes.get(&frame)).copied();
             if let Some(theirs) = theirs {
                 if theirs != ours {
@@ -295,7 +406,11 @@ impl Session {
         self.bye_sent = true;
         let mut w = Writer::new(kind::BYE);
         w.u32(self.params.session).u8(self.me as u8).str(reason);
-        for p in self.peers.iter().flatten() {
+        for (h, p) in self.peers.iter().enumerate() {
+            let Some(p) = p else { continue };
+            if self.dep[h].is_some() {
+                continue;
+            }
             for _ in 0..3 {
                 let _ = self.net.sock.send_to(&w.0, p.addr);
             }
@@ -309,15 +424,16 @@ impl Session {
     /// Do what is due: read what arrived, send what should go, check the
     /// others are alive. Call often (every frame and while stalled).
     pub fn pump(&mut self) -> Vec<Event> {
-        let mut events = Vec::new();
+        let mut events = std::mem::take(&mut self.queued);
         self.net.flush();
         while let Some((bytes, from)) = self.net.recv() {
             self.receive(&bytes, from, &mut events);
         }
         if self.end.is_none() {
-            self.send_due();
             self.liveness();
+            self.send_due();
         }
+        events.append(&mut self.queued);
         self.stats.bytes_tx = self.net.bytes_tx;
         self.stats.bytes_rx = self.net.bytes_rx;
         self.stats.pkts_tx = self.net.pkts_tx;
@@ -328,21 +444,83 @@ impl Session {
 
     fn liveness(&mut self) {
         let timeout = Duration::from_millis(self.params.timeout_ms as u64);
-        for h in 0..self.peers.len() {
-            if let Some(p) = &self.peers[h] {
-                if p.last_heard.elapsed() > timeout {
-                    let ms = p.last_heard.elapsed().as_millis() as u64;
-                    let name = self.name_of(h);
-                    self.finish(End::Silent { host: h, name, ms });
-                    return;
+        // Records of a leaver that no player left holds (a second player lost before it could relay
+        // them): the game cannot go on, and says so instead of waiting for ever.
+        for lv in 0..self.dep.len() {
+            if let Some(Dep { decided: Some(f), decided_at: Some(at), .. }) = &self.dep[lv] {
+                if self.held_of(lv) < *f && at.elapsed() > timeout * 3 {
+                    let name = self.name_of(lv);
+                    return self.finish(End::Aborted(format!(
+                        "the records of {name} up to frame {f} are lost (no player left has them)"
+                    )));
                 }
             }
+        }
+        for h in 0..self.peers.len() {
+            if self.dep[h].is_some() {
+                continue;
+            }
+            if let Some(p) = &self.peers[h] {
+                if p.last_heard.elapsed() > timeout {
+                    self.depart(h, true);
+                }
+            }
+        }
+    }
+
+    /// Host `h` has left (said goodbye, or `lost`: went silent, or another host says so): note what
+    /// this host holds of its records, take no more of them, and start agreeing the drop frame.
+    fn depart(&mut self, h: usize, lost: bool) {
+        if h == self.me || h >= self.dep.len() || self.dep[h].is_some() || self.peers[h].is_none() {
+            return;
+        }
+        let mine = self.held_of(h);
+        let mut reports = vec![None; self.dep.len()];
+        reports[self.me] = Some(mine);
+        self.dep[h] = Some(Dep { reports, mine, decided: None, decided_at: None });
+        // What the leaver sent that was not compared is not compared now.
+        if let Some(p) = self.peers[h].as_mut() {
+            p.hashes.clear();
+        }
+        let name = self.name_of(h);
+        self.queued.push(Event::Left { host: h, name, lost });
+        self.settle();
+    }
+
+    /// Agree every drop frame that has all its reports: the largest, once every host still in the
+    /// session has reported (the reports of hosts that have left since count too, as far as known).
+    fn settle(&mut self) {
+        let mut decided = false;
+        for p in 0..self.dep.len() {
+            let Some(d) = self.dep[p].as_ref() else { continue };
+            if d.decided.is_some() {
+                continue;
+            }
+            let live_reported =
+                (0..self.dep.len()).filter(|&k| k != p && self.dep[k].is_none()).all(|k| d.reports[k].is_some());
+            if !live_reported {
+                continue;
+            }
+            let f = d.reports.iter().flatten().copied().max().unwrap_or(0);
+            let d = self.dep[p].as_mut().unwrap();
+            (d.decided, d.decided_at) = (Some(f), Some(Instant::now()));
+            self.queued.push(Event::Dropped { host: p, frame: f });
+            decided = true;
+        }
+        if decided {
+            self.retry_checkpoints();
         }
     }
 
     fn send_due(&mut self) {
         let now = Instant::now();
         for h in 0..self.peers.len() {
+            if self.peers[h].is_none() || self.dep[h].is_some() {
+                continue;
+            }
+            for lv in 0..self.dep.len() {
+                self.relay_due(h, lv);
+            }
             let Some(p) = &self.peers[h] else { continue };
             let unacked = p.acked < self.latest;
             let due = (unacked && (p.fresh || now.duration_since(p.last_send) >= RESEND))
@@ -362,6 +540,58 @@ impl Session {
         }
     }
 
+    /// Send survivor `h` the records of the departed host `lv` it lacks, up to the drop frame, if we hold them.
+    fn relay_due(&mut self, h: usize, lv: usize) {
+        let Some(f) = self.dep[lv].as_ref().and_then(|d| d.decided) else { return };
+        let (holds, last) = {
+            let p = self.peers[h].as_ref().unwrap();
+            (p.holds[lv], p.last_relay)
+        };
+        let upto = self.held_of(lv).min(f);
+        if holds >= upto || last.elapsed() < RESEND {
+            return;
+        }
+        let block = self.params.block as usize;
+        let zeros = vec![0u8; block];
+        let mut w = Writer::new(kind::RELAY);
+        w.u32(self.params.session).u8(self.me as u8).u8(lv as u8).u64(holds + 1);
+        let count_at = w.0.len();
+        w.u8(0);
+        let mut count = 0u8;
+        let mut fr = holds + 1;
+        while fr <= upto && (count as usize) < MAX_FRAMES {
+            let mark = w.0.len();
+            let mut ok = true;
+            for &node in &self.nodes_of[lv] {
+                let Some(rec) = self.store[node].get(&fr) else {
+                    ok = false;
+                    break;
+                };
+                let base = if fr == 1 {
+                    Some(zeros.as_slice())
+                } else {
+                    self.store[node].get(&(fr - 1)).map(|r| r.tx.as_slice()).filter(|t| t.len() == block)
+                };
+                encode_rec(&mut w, rec, base.unwrap_or(&zeros), block);
+            }
+            if !ok || w.0.len() > MAX_PACKET - 200 && count > 0 {
+                w.0.truncate(mark);
+                break;
+            }
+            count += 1;
+            fr += 1;
+        }
+        if count == 0 {
+            return;
+        }
+        w.0[count_at] = count;
+        self.stats.relayed_tx += count as u64;
+        let p = self.peers[h].as_mut().unwrap();
+        p.last_relay = Instant::now();
+        let to = p.addr;
+        self.net.send(to, &w.0);
+    }
+
     /// Send peer `h` every record of ours it has not acknowledged (as many as fit), with acks and hashes.
     fn send_data(&mut self, h: usize) {
         let mut w = Writer::new(kind::DATA);
@@ -375,6 +605,21 @@ impl Session {
         for &(f, hash) in &self.recent {
             w.u64(f).u64(hash);
         }
+        // The leave reports this host knows (its own and those gossiped to it).
+        let mut reps: Vec<(u8, u8, u64)> = Vec::new();
+        for (p, d) in self.dep.iter().enumerate() {
+            if let Some(d) = d {
+                for (k, r) in d.reports.iter().enumerate() {
+                    if let Some(r) = r {
+                        reps.push((p as u8, k as u8, *r));
+                    }
+                }
+            }
+        }
+        w.u8(reps.len() as u8);
+        for (p, k, r) in reps {
+            w.u8(p).u8(k).u64(r);
+        }
         let first = acked + 1;
         let count_at = w.0.len() + 8;
         w.u64(first).u8(0);
@@ -382,7 +627,12 @@ impl Session {
         let block = self.params.block as usize;
         let zeros = vec![0u8; block];
         let mut f = first;
-        while f <= self.latest && (count as usize) < MAX_FRAMES {
+        // A test can hold back this host's newest records from one peer.
+        let last = match self.net.faults.starve {
+            Some((sh, from)) if sh == h => self.latest.min(from.saturating_sub(1)),
+            _ => self.latest,
+        };
+        while f <= last && (count as usize) < MAX_FRAMES {
             let mark = w.0.len();
             for &node in &self.nodes_of[self.me] {
                 let Some(rec) = self.store[node].get(&f) else {
@@ -422,6 +672,7 @@ impl Session {
         }
         let ok = match k {
             kind::DATA => self.on_data(&mut r, from, events),
+            kind::RELAY => self.on_relay(&mut r, from, events),
             kind::PING | kind::PONG => self.on_ping(k, &mut r, from),
             kind::BYE => self.on_bye(&mut r, from),
             kind::START_ACK => {
@@ -486,10 +737,16 @@ impl Session {
         if s != self.params.session || self.host_of(from) != Some(h) {
             return None;
         }
-        if self.end.is_none() {
+        if self.end.is_some() || self.dep[h].is_some() {
+            return Some(());
+        }
+        if reason.starts_with("out of sync") {
+            // A real error ends the session for everyone.
             let name = self.name_of(h);
             self.end = Some(End::Left { host: h, name, reason });
             self.bye_sent = true;
+        } else {
+            self.depart(h, false);
         }
         Some(())
     }
@@ -498,6 +755,10 @@ impl Session {
         let (s, h) = (r.u32()?, r.u8()? as usize);
         if s != self.params.session || h >= self.peers.len() || h == self.me || self.host_of(from) != Some(h) {
             return None;
+        }
+        if self.dep[h].is_some() {
+            // Whatever a host that has left still sends is not taken.
+            return Some(());
         }
         self.peers[h].as_mut()?.last_heard = Instant::now();
         let latest = r.u64()?;
@@ -515,6 +776,15 @@ impl Session {
         let mut hashes = Vec::new();
         for _ in 0..nh {
             hashes.push((r.u64()?, r.u64()?));
+        }
+        let nr = r.u8()? as usize;
+        let mut reps = Vec::new();
+        for _ in 0..nr {
+            let (p, k, v) = (r.u8()? as usize, r.u8()? as usize, r.u64()?);
+            if p >= self.dep.len() || k >= self.dep.len() || p == k {
+                return None;
+            }
+            reps.push((p, k, v));
         }
         let first = r.u64()?;
         let count = r.u8()? as usize;
@@ -556,6 +826,9 @@ impl Session {
             let p = self.peers[h].as_mut().unwrap();
             p.last_heard = now;
             p.acked = p.acked.max(acks[self.me]);
+            for (k, a) in acks.iter().enumerate().take(p.holds.len()) {
+                p.holds[k] = p.holds[k].max(*a);
+            }
             for (f, hash) in hashes {
                 if f != 0 && !p.compared.contains(&f) {
                     p.hashes.entry(f).or_insert(hash);
@@ -566,6 +839,19 @@ impl Session {
                 p.hashes.remove(&first);
             }
         }
+        // Leave reports: a host that others say has left has left (its goodbye may have been lost).
+        for (p, k, v) in reps {
+            if p == self.me {
+                continue;
+            }
+            self.depart(p, true);
+            if let Some(d) = self.dep[p].as_mut() {
+                if d.reports[k].is_none() {
+                    d.reports[k] = Some(v);
+                }
+            }
+        }
+        self.settle();
         let mut got_new = false;
         for (node, f, mut rec) in fresh {
             if self.store[node].contains_key(&f) {
@@ -597,12 +883,69 @@ impl Session {
         Some(())
     }
 
+    /// Records of a host that has left, relayed by a survivor that holds them, up to the drop frame.
+    fn on_relay(&mut self, r: &mut Reader, from: SocketAddr, events: &mut Vec<Event>) -> Option<()> {
+        let (s, h, lv) = (r.u32()?, r.u8()? as usize, r.u8()? as usize);
+        if s != self.params.session || h >= self.peers.len() || h == self.me || self.host_of(from) != Some(h) {
+            return None;
+        }
+        if lv >= self.dep.len() || lv == self.me || lv == h {
+            return None;
+        }
+        let first = r.u64()?;
+        let count = r.u8()? as usize;
+        if count > MAX_FRAMES || count == 0 || first == 0 {
+            return None;
+        }
+        self.peers[h].as_mut()?.last_heard = Instant::now();
+        // Until this host knows the drop frame it cannot tell what is real: the relay is sent again.
+        let Some(f) = self.dep[lv].as_ref().and_then(|d| d.decided) else { return Some(()) };
+        if first + count as u64 - 1 > f {
+            return None;
+        }
+        let block = self.params.block as usize;
+        let zeros = vec![0u8; block];
+        let mut fresh: Vec<(usize, u64, NodeRec)> = Vec::new();
+        let mut prev: BTreeMap<usize, NodeRec> = BTreeMap::new();
+        for i in 0..count as u64 {
+            let fr = first + i;
+            for &node in &self.nodes_of[lv] {
+                let base: Vec<u8> = match prev.get(&node).or_else(|| self.store[node].get(&(fr - 1))) {
+                    Some(b) if b.tx.len() == block => b.tx.clone(),
+                    Some(_) => zeros.clone(),
+                    None if fr == 1 => zeros.clone(),
+                    None => return Some(()),
+                };
+                let rec = decode_rec(r, &base, block)?;
+                prev.insert(node, rec.clone());
+                fresh.push((node, fr, rec));
+            }
+        }
+        if r.left() != 0 {
+            return None;
+        }
+        for (node, fr, rec) in fresh {
+            if self.store[node].contains_key(&fr) {
+                self.stats.dup_recs += 1;
+                continue;
+            }
+            self.store[node].insert(fr, rec.clone());
+            self.advance(node);
+            self.stats.relayed_rx += 1;
+            events.push(Event::Rec { node, frame: fr, rec });
+        }
+        self.retry_checkpoints();
+        self.settle();
+        Some(())
+    }
+
     /// Forget records nobody will ask for again.
     fn prune(&mut self) {
         let mine = self.acked_by_all();
         for node in 0..self.n {
             let keep_from = if self.nodes_of[self.me].contains(&node) {
-                mine.saturating_sub(1)
+                // Kept as far back as the others' (a checkpoint waits for the other hosts' records of its frame).
+                mine.saturating_sub(RETAIN)
             } else {
                 self.contig[node].saturating_sub(RETAIN)
             };

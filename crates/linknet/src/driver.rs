@@ -30,9 +30,20 @@ pub struct StallStats {
     pub boundaries: u64,
 }
 
+/// Something the player should tell the user about the session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Notice {
+    /// A player left (`lost`: its connection went silent); the survivors are agreeing the drop frame.
+    Left { host: usize, name: String, lost: bool },
+    /// The survivors agreed the drop frame of a player who left: from the next frame its node is frozen.
+    Dropped { host: usize, name: String, frame: u64 },
+}
+
 pub struct NetLink {
     pub hub: LinkHub,
     pub sess: Session,
+    /// What has happened since the player last took it ([`NetLink::take_notices`]).
+    notices: Vec<Notice>,
     local: Vec<usize>,
     put_frame: u64,
     waiting_since: Option<Instant>,
@@ -44,7 +55,15 @@ impl NetLink {
         // Records are kept a while for the session's own resends and checks.
         hub.keep = 0;
         let local = sess.local_nodes().to_vec();
-        NetLink { hub, sess, local, put_frame: 0, waiting_since: None, stalls: StallStats::default() }
+        NetLink {
+            hub,
+            sess,
+            notices: Vec::new(),
+            local,
+            put_frame: 0,
+            waiting_since: None,
+            stalls: StallStats::default(),
+        }
     }
 
     pub fn params(&self) -> &Params {
@@ -69,19 +88,12 @@ impl NetLink {
             self.put_frame = frame;
             self.stalls.boundaries += 1;
         }
-        for ev in self.sess.pump() {
-            let Event::Rec { node, frame, rec } = ev;
-            self.hub.put(node, frame, rec);
-        }
-        // A desync or a lost connection stops at once; a host that has said goodbye
-        // has left us what it sent, and only what it never sent ends the session.
-        if let Some(e) = self.sess.end.as_ref().filter(|e| !matches!(e, End::Left { .. })) {
+        self.take_events();
+        // Only an error (a state mismatch) ends the session: a player who leaves does not.
+        if let Some(e) = &self.sess.end {
             return Step::End(e.clone());
         }
         if !self.hub.has_all(frame, &self.local) {
-            if let Some(e) = &self.sess.end {
-                return Step::End(e.clone());
-            }
             self.waiting_since.get_or_insert_with(Instant::now);
             return Step::Stalled;
         }
@@ -99,10 +111,32 @@ impl NetLink {
     /// While the machine is not running (a menu over the game): keep the session
     /// alive and take what arrives, so the others see a host that is only paused.
     pub fn keepalive(&mut self) {
+        self.take_events();
+    }
+
+    /// Pump the session and take what it brought: records into the hub, a player's leaving
+    /// into a notice, an agreed drop frame into the hub (the node is frozen after it).
+    fn take_events(&mut self) {
         for ev in self.sess.pump() {
-            let Event::Rec { node, frame, rec } = ev;
-            self.hub.put(node, frame, rec);
+            match ev {
+                Event::Rec { node, frame, rec } => {
+                    self.hub.put(node, frame, rec);
+                }
+                Event::Left { host, name, lost } => self.notices.push(Notice::Left { host, name, lost }),
+                Event::Dropped { host, frame } => {
+                    for &node in self.sess.nodes_of_host(host) {
+                        self.hub.leave(node, frame);
+                    }
+                    let name = self.sess.name_of(host);
+                    self.notices.push(Notice::Dropped { host, name, frame });
+                }
+            }
         }
+    }
+
+    /// The notices since the last call.
+    pub fn take_notices(&mut self) -> Vec<Notice> {
+        std::mem::take(&mut self.notices)
     }
 
     /// After the last boundary: keep the session going until the other hosts

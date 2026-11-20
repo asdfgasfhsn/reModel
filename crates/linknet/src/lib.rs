@@ -25,7 +25,7 @@ pub mod session;
 pub mod setup;
 pub mod wire;
 
-pub use driver::{NetLink, StallStats, Step};
+pub use driver::{NetLink, Notice, StallStats, Step};
 pub use mdns::{blocker, merge, Advert, Browser, Lobby, Mine, Txt};
 pub use names::{default_name, display_names, name_or_default, sanitize_name, MAX_NAME};
 pub use net::{lan_address, Faults, Net};

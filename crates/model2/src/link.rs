@@ -116,6 +116,20 @@ pub const BLOCK: usize = 0x1c0;
 /// What the hub did at a frame boundary, for the harness's log.
 pub type HubLog = Vec<String>;
 
+/// What the hub shows of a node that has left, from the frame after its drop frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Ghost {
+    /// Repeat the node's last record: its car stops, everything else it said stays said.
+    #[default]
+    Freeze,
+    /// The block is a copy of the lowest-numbered node still playing, but for the identity bytes
+    /// (`ghost_keep`) and the flags, which stay the leaver's: the leaver keeps pace with the
+    /// others in the game's state, its clock and its barriers.
+    Mirror,
+    /// The leaver's board stops: its record says "not started" (the link goes down for all).
+    Down,
+}
+
 /// What one node showed the link at one frame boundary: the board flags
 /// the game set (`started` is the write of 1 to `0x1A14000`, `master` of 1
 /// to `0x1A14002`, and the frame it started at) and, while started, the
@@ -171,6 +185,11 @@ pub struct LinkHub {
     pub id_base: u8,
     /// Frames of records kept beyond what the views need (a network resends from them).
     pub keep: u64,
+    /// How a node that has left shows from its drop frame on, and for [`Ghost::Mirror`] the byte
+    /// ranges of the block that stay the leaver's and the offset of a word-sum checksum to recompute.
+    pub ghost: Ghost,
+    pub ghost_keep: Vec<(usize, usize)>,
+    pub ghost_sum: Option<usize>,
     /// Per receiving node: ready, the IDs it gave every node, the started
     /// flags it last saw.
     ready: Vec<bool>,
@@ -178,6 +197,10 @@ pub struct LinkHub {
     seen: Vec<Vec<bool>>,
     /// Per node, its records by frame.
     recs: Vec<std::collections::BTreeMap<u64, NodeRec>>,
+    /// Nodes that have left: the node's drop frame F (its last real record), and a
+    /// copy of that record, which every later frame's record is a repeat of.
+    left: Vec<Option<u64>>,
+    last: Vec<Option<NodeRec>>,
 }
 
 type Bus = crate::bus::Model2Bus;
@@ -211,10 +234,15 @@ impl LinkHub {
             block: BLOCK,
             id_base: 1,
             keep: 0,
+            ghost: Ghost::Freeze,
+            ghost_keep: Vec::new(),
+            ghost_sum: None,
             ready: vec![false; nodes],
             ids: vec![vec![0; nodes]; nodes],
             seen: vec![vec![false; nodes]; nodes],
             recs: vec![Default::default(); nodes],
+            left: vec![None; nodes],
+            last: vec![None; nodes],
         }
     }
 
@@ -229,6 +257,9 @@ impl LinkHub {
     /// Take the geometry of a game's link RAM.
     pub fn set_play(&mut self, play: &romset::LinkPlay) {
         (self.tx, self.rx, self.block, self.id_base) = (play.tx, play.rx, play.block, play.id_base);
+        self.ghost = Ghost::Mirror;
+        self.ghost_keep = play.ghost_keep.to_vec();
+        self.ghost_sum = play.ghost_sum;
     }
 
     /// The ID the hub gave node `i` (valid once ready).
@@ -246,14 +277,70 @@ impl LinkHub {
         self.delays.iter().copied().max().unwrap_or(1)
     }
 
-    /// Node `i`'s record of `frame`, if the hub has it.
-    pub fn rec(&self, node: usize, frame: u64) -> Option<&NodeRec> {
-        self.recs.get(node)?.get(&frame)
+    /// Node `i`'s record of `frame`, if the hub has it: for a node that has left
+    /// ([`LinkHub::leave`]), the record of every frame after its drop frame is a
+    /// repeat of the record of the drop frame (the node is frozen, as `--freeze` does).
+    pub fn rec(&self, node: usize, frame: u64) -> Option<std::borrow::Cow<'_, NodeRec>> {
+        use std::borrow::Cow;
+        match self.left.get(node)? {
+            Some(fl) if frame > *fl => {
+                let last = self.last[node].as_ref().or_else(|| self.recs[node].get(fl))?;
+                match self.ghost {
+                    Ghost::Freeze => Some(Cow::Borrowed(last)),
+                    Ghost::Down => Some(Cow::Owned(NodeRec::default())),
+                    Ghost::Mirror => {
+                        // The lowest node that is still playing at `frame` (a node is until its drop frame).
+                        let m = (0..self.nodes).find(|&n| n != node && self.left[n].is_none_or(|f| f >= frame));
+                        let Some(m) = m else { return Some(Cow::Borrowed(last)) };
+                        let src = self.rec(m, frame)?;
+                        let mut out = src.into_owned();
+                        out.master = last.master;
+                        out.start_frame = last.start_frame;
+                        out.started = out.started && last.started;
+                        if out.tx.len() == self.block && last.tx.len() == self.block {
+                            for &(a, b) in &self.ghost_keep {
+                                out.tx[a..b].copy_from_slice(&last.tx[a..b]);
+                            }
+                            if let Some(at) = self.ghost_sum {
+                                let sum = (0..self.block.min(64)).step_by(4).filter(|&o| o != at).fold(0u32, |a, o| {
+                                    a.wrapping_add(u32::from_le_bytes(out.tx[o..o + 4].try_into().unwrap()))
+                                });
+                                out.tx[at..at + 4].copy_from_slice(&sum.to_le_bytes());
+                            }
+                        }
+                        Some(Cow::Owned(out))
+                    }
+                }
+            }
+            // The drop frame's own record is kept after the others are forgotten.
+            Some(fl) if frame == *fl => self.recs[node].get(&frame).or(self.last[node].as_ref()).map(Cow::Borrowed),
+            _ => self.recs.get(node)?.get(&frame).map(Cow::Borrowed),
+        }
+    }
+
+    /// Node `node` has left: its last real record is that of frame `drop_frame`, and from the next
+    /// frame its records are repeats of it. Every host of a session must give the same frame
+    /// (`remodel-linknet` agrees it), and the hub must not have passed a boundary that needed a
+    /// record of the node beyond it. Idempotent for the same frame.
+    pub fn leave(&mut self, node: usize, drop_frame: u64) {
+        if self.left[node].is_some() {
+            return;
+        }
+        self.left[node] = Some(drop_frame);
+        self.last[node] = self.recs[node].get(&drop_frame).cloned();
+    }
+
+    /// The frame node `node` left at, if it has.
+    pub fn left_at(&self, node: usize) -> Option<u64> {
+        self.left[node]
     }
 
     /// Add a node's record of `frame` (a local node's, or one that came from
     /// the network). Returns false and keeps the first if there is one.
     pub fn put(&mut self, node: usize, frame: u64, rec: NodeRec) -> bool {
+        if self.left[node] == Some(frame) && self.last[node].is_none() {
+            self.last[node] = Some(rec.clone());
+        }
         match self.recs[node].entry(frame) {
             std::collections::btree_map::Entry::Occupied(_) => false,
             std::collections::btree_map::Entry::Vacant(v) => {
@@ -292,18 +379,26 @@ impl LinkHub {
         self.missing(frame, local).is_empty()
     }
 
+    fn has_rec(&self, node: usize, frame: u64) -> bool {
+        self.rec(node, frame).is_some()
+    }
+
     /// What [`LinkHub::has_all`] still waits for: `(node, frame)`.
     pub fn missing(&self, frame: u64, local: &[usize]) -> Vec<(usize, u64)> {
         let mut out = Vec::new();
         for &j in local {
-            if !self.recs[j].contains_key(&frame) {
+            if !self.has_rec(j, frame) {
                 out.push((j, frame));
             }
             let Some(vf) = self.view_frame(j, frame) else { continue };
             for i in (0..self.nodes).filter(|&i| i != j) {
                 // Frame numbers start at 1: there is no record of frame 0.
-                if vf >= 1 && !self.recs[i].contains_key(&vf) && !out.contains(&(i, vf)) {
-                    out.push((i, vf));
+                if vf >= 1 {
+                    // A node that left needs its drop frame's record, whatever the frame.
+                    let need = self.left[i].map_or(vf, |fl| vf.min(fl));
+                    if !self.has_rec(i, need) && !out.contains(&(i, need)) {
+                        out.push((i, need));
+                    }
                 }
             }
         }
@@ -330,7 +425,7 @@ impl LinkHub {
             let vf = self.view_frame(j, frame);
             let flags: Vec<(bool, bool, u64)> = (0..n)
                 .map(|i| {
-                    let r = if i == j { self.recs[i].get(&frame) } else { vf.and_then(|f| self.recs[i].get(&f)) };
+                    let r = if i == j { self.rec(i, frame) } else { vf.and_then(|f| self.rec(i, f)) };
                     r.map_or((false, false, 0), |r| (r.started, r.master, r.start_frame))
                 })
                 .collect();
@@ -379,7 +474,7 @@ impl LinkHub {
             for k in 0..n {
                 let want = source(self.layout, me, k, n);
                 let src = (0..n).find(|&x| self.ids[j][x] as usize == want).unwrap();
-                let rec = if src == j { self.recs[j].get(&frame) } else { vf.and_then(|f| self.recs[src].get(&f)) };
+                let rec = if src == j { self.rec(j, frame) } else { vf.and_then(|f| self.rec(src, f)) };
                 let frozen =
                     src != j && vf.is_some_and(|f| self.freeze.is_some_and(|(fnode, at)| fnode == src && f >= at));
                 if let (Some(r), false) = (rec, frozen) {
@@ -387,6 +482,12 @@ impl LinkHub {
                         bus.link_rx_write_at(self.rx, self.block, k, &r.tx);
                     }
                 }
+            }
+        }
+        // The drop frame's record is kept whatever is forgotten.
+        for i in 0..n {
+            if let (Some(fl), None) = (self.left[i], &self.last[i]) {
+                self.last[i] = self.recs[i].get(&fl).cloned();
             }
         }
         // Forget what no view will ask for again.
@@ -421,6 +522,23 @@ impl LinkHub {
                 o.extend(rec.start_frame.to_le_bytes());
                 o.extend((rec.tx.len() as u16).to_le_bytes());
                 o.extend(&rec.tx);
+            }
+        }
+        // Nodes that have left (only written when there are any, so a save without is as it was).
+        if self.left.iter().any(|l| l.is_some()) {
+            for (l, rec) in self.left.iter().zip(&self.last) {
+                match l {
+                    Some(f) => {
+                        o.push(1);
+                        o.extend(f.to_le_bytes());
+                        let r = rec.clone().unwrap_or_default();
+                        o.push(r.started as u8 | (r.master as u8) << 1 | (rec.is_some() as u8) << 2);
+                        o.extend(r.start_frame.to_le_bytes());
+                        o.extend((r.tx.len() as u16).to_le_bytes());
+                        o.extend(&r.tx);
+                    }
+                    None => o.push(0),
+                }
             }
         }
         o
@@ -470,6 +588,26 @@ impl LinkHub {
                 hub.recs[i].insert(frame, NodeRec { started: fl & 1 != 0, master: fl & 2 != 0, start_frame, tx });
             }
         }
+        // Nodes that have left, if the save has them.
+        if at < data.len() {
+            for i in 0..nodes {
+                if *data.get(at).ok_or_else(short)? == 0 {
+                    at += 1;
+                    continue;
+                }
+                let h = data.get(at + 1..at + 1 + 8 + 1 + 8 + 2).ok_or_else(short)?;
+                let f = u64::from_le_bytes(h[0..8].try_into().unwrap());
+                let fl = h[8];
+                let start_frame = u64::from_le_bytes(h[9..17].try_into().unwrap());
+                let len = u16::from_le_bytes([h[17], h[18]]) as usize;
+                let tx = data.get(at + 20..at + 20 + len).ok_or_else(short)?.to_vec();
+                at += 20 + len;
+                hub.left[i] = Some(f);
+                if fl & 4 != 0 {
+                    hub.last[i] = Some(NodeRec { started: fl & 1 != 0, master: fl & 2 != 0, start_frame, tx });
+                }
+            }
+        }
         Ok(hub)
     }
 }
@@ -486,6 +624,83 @@ mod tests {
         assert_eq!(l.deliver(2, &[3]), Some(vec![1]), "two frames late");
         assert_eq!(l.deliver(3, &[4]), Some(vec![2]));
         assert_eq!(l.deliver(10, &[5]), None, "silent from frame 10");
+    }
+
+    fn block_of(node: usize, frame: u64) -> NodeRec {
+        let mut tx = vec![0u8; BLOCK];
+        tx[0] = node as u8 + 1;
+        tx[2] = node as u8 + 1;
+        tx[10] = frame as u8;
+        tx[100] = node as u8;
+        NodeRec { started: true, master: node == 0, start_frame: 3, tx }
+    }
+
+    #[test]
+    fn a_node_that_left_repeats_its_last_record_and_is_no_longer_waited_for() {
+        let mut h = LinkHub::new(2, 2);
+        h.leave(1, 5);
+        for f in 1..=8 {
+            h.put(0, f, block_of(0, f));
+            h.put(1, f, block_of(1, f));
+        }
+        assert_eq!(h.rec(1, 5).unwrap().tx[10], 5);
+        assert_eq!(h.rec(1, 6).unwrap().tx[10], 5, "frame 6 is a repeat of 5");
+        assert_eq!(h.rec(1, 8).unwrap().tx[10], 5, "even though a record of 8 arrived");
+        // Boundary 20 of node 0 needs nothing of node 1 beyond the drop frame, only its own record.
+        let mut g = LinkHub::new(2, 2);
+        g.leave(1, 5);
+        for f in 1..=5 {
+            g.put(1, f, block_of(1, f));
+        }
+        g.put(0, 20, block_of(0, 20));
+        assert!(g.has_all(20, &[0]));
+        // A node that has left but whose drop-frame record has not arrived is waited for.
+        let mut k = LinkHub::new(2, 2);
+        k.leave(1, 5);
+        k.put(0, 20, block_of(0, 20));
+        assert_eq!(k.missing(20, &[0]), vec![(1, 5)]);
+        k.put(1, 5, block_of(1, 5));
+        assert!(k.has_all(20, &[0]));
+        // Before the drop frame the real records are still needed.
+        let mut m = LinkHub::new(2, 2);
+        m.leave(1, 5);
+        m.put(0, 4, block_of(0, 4));
+        assert_eq!(m.missing(4, &[0]), vec![(1, 3)]);
+    }
+
+    #[test]
+    fn a_mirrored_leaver_copies_the_lowest_node_still_playing_but_keeps_its_identity() {
+        let mut h = LinkHub::new(3, 2);
+        h.ghost = Ghost::Mirror;
+        h.ghost_keep = vec![(0, 4), (100, 101)];
+        h.ghost_sum = Some(0x3c);
+        h.leave(1, 5);
+        for f in 1..=9 {
+            for n in 0..3 {
+                h.put(n, f, block_of(n, f));
+            }
+        }
+        let g = h.rec(1, 7).unwrap().into_owned();
+        assert_eq!(g.tx[10], 7, "the state moves with node 0");
+        assert_eq!((g.tx[0], g.tx[2]), (2, 2), "node 1's own identity bytes");
+        assert_eq!(g.tx[100], 1, "and its car's pose");
+        assert!(g.started && !g.master && g.start_frame == 3);
+        let sum = (0..16)
+            .filter(|&w| w != 15)
+            .fold(0u32, |a, w| a.wrapping_add(u32::from_le_bytes(g.tx[w * 4..w * 4 + 4].try_into().unwrap())));
+        assert_eq!(u32::from_le_bytes(g.tx[0x3c..0x40].try_into().unwrap()), sum, "checksum recomputed");
+        // Up to the drop frame it is the real record.
+        assert_eq!(h.rec(1, 5).unwrap().tx[100], 1);
+        assert_eq!(h.rec(1, 4).unwrap().tx[10], 4);
+        // Node 0 leaves at 6: from 7 the lowest node playing is node 2 (for node 1's ghost too).
+        h.leave(0, 6);
+        assert_eq!(h.rec(1, 7).unwrap().tx[100], 1);
+        assert_eq!(h.rec(1, 8).unwrap().tx[10], 8);
+        assert_eq!(h.rec(0, 8).unwrap().tx[100], 0, "node 0's own pose");
+        assert_eq!(h.rec(0, 8).unwrap().tx[0], 1);
+        // The board of a leaver can also be shown down.
+        h.ghost = Ghost::Down;
+        assert!(!h.rec(1, 8).unwrap().started);
     }
 
     #[test]
