@@ -7,7 +7,7 @@ The specs are in [uplift/](uplift/README.md).
 
 Status, 2026-11-20: a design, written from the code at `7d8f099`, the
 record of the Top Skater showcase, a survey of other projects'
-documentation, and 26 spikes on seven games ("Spikes" below). Nothing
+documentation, and 27 spikes on seven games ("Spikes" below). Nothing
 described here is built into reModel. Spike code sits on two unmerged
 branches and is not for merging as it stands. Pass one (this page, the
 interface page and ten specs) covers what unblocks the work now. Pass
@@ -255,8 +255,13 @@ Four findings carry most of the weight.
   adds, and a different time of day, collide with that and are left
   undesigned.
 
-The main risk was what the game culls: it does not send objects off
-screen or faces turned from the camera. For shadows that part is
+The main risk was what the game culls: it does not send objects it
+judges out of view, or faces turned from the camera. Its margin is
+wider than the picture: 1.8% to 36% of listed objects lie wholly outside
+the 4:3 frame on the three games measured, which is why the wide views
+reModel already draws are nearly as full at the sides as in the
+middle. What remains there is objects appearing late, and nothing
+drawn from the display list can show one before the game lists it. For shadows that part is
 mostly solved, by collecting casters before the renderer culls them;
 what the game never listed stays lost. What keeps shadows from
 shipping is flicker, self-shadowing, a pale shadow term and the need
@@ -380,6 +385,7 @@ spec named; scratch output stays out of the repository.
 | 2026-11-20 | Is ambient occlusion worth having as a GPU pass, and can the shadow blockers be cleared? | Occlusion: no. It matches the CPU result and touches nothing it should not, but a player would not see it and it cost over 10 ms at 1080p. Shadows: cut-outs and windows are solved; flicker, self-shadowing and a pale shadow term are not | [lighting](uplift/lighting.md): occlusion set aside; shadows stay a spike; blended stipple is the only lighting item left in the first set |
 | 2026-11-20 | Can a saved texture reach the picture within a second, and is pointing cheap? | Yes: 0.2 s for a 512 texture and 0.6 s for a 2048 one, if only the saved image is swapped. Reading the pixel under the cursor takes 0.07 ms. The player has no reload at all today | [authoring](uplift/authoring.md): a one-image swap, decoding on a worker, and the ID pass without a look |
 | 2026-11-20 | Does the adapter hold against a real image model? | Mostly, on ten Top Skater textures through the Codex CLI: 9 pass the gates on the first call and one, a face, is refused. Sizes, letterbox bars and cut-outs all came back as asked. Colours drifted to the reference's and no gate sees it. The face passed on a second call with "redraw" taken out. A gain per channel put the colours back | [generation](uplift/generation.md): "redraw" joins the refusal list and the lint must block; seam repair only on failure; the colour step for restyles is a gain, not the upscaler's rule |
+| 2026-11-20 | Do games swap in simpler models by distance, and what is missing at the sides of a wide view? | `daytona` swaps a 91-polygon roadside object for a 16-polygon one at a fixed depth; Top Skater does not; `gunblade` is unclear. Games list objects well beyond the 4:3 edges, so a 16:9 view's sides are as full as its middle. Things still appear late inside the side bands: 6 events per 100 frames on `daytona`, 2 on Top Skater. 900 frames a game; matching not hand-checked | [scene-understanding](uplift/scene-understanding.md): a "fine model always" rule is possible and small in effect; late appearances cannot be fixed by drawing alone |
 | 2026-11-20 | Can many small things be scattered on a ground model and sort correctly? | Yes: up to 2,000 grass tufts stayed glued to Top Skater's verge and a Daytona roadside, and sorted right with a key per triangle or the GPU's depth test. One position per model is badly wrong. As built it is too slow in number | [added-elements](uplift/added-elements.md): the sort rule is settled; scatter needs GPU instancing; grass is found by texture |
 
 Status of each spec, by the ladder in [uplift/README.md](uplift/README.md):
@@ -405,7 +411,7 @@ tests.
   and three tasks. Their findings are folded in;
   [uplift/interface.md](uplift/interface.md) exists because of the last.
 - **The showcase record**: 14 agents' reports and timelines.
-- **Spikes**: the 26 rows above, run by agents on a mid-tier model
+- **Spikes**: the 27 rows above, run by agents on a mid-tier model
   from written briefs, each with a report kept out of the repository.
   Timings not from a spike are quoted from reModel's docs and marked
   so.

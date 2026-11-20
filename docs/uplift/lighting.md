@@ -99,7 +99,9 @@ light is usable, but the result is not yet worth shipping.
   checker, or near-black cut-out). A game's manifest says whether they
   are hidden when real shadows are on.
 - **What it cannot see.** The game does not send what it culled: objects
-  off screen, and the faces turned away from the camera. A shadow map
+  it judged out of view (its margin is wider than the picture:
+  [scene-understanding.md](scene-understanding.md), E5), and the faces
+  turned away from the camera. A shadow map
   made from what remains has holes, so a thing just out of view casts
   nothing and a thin object seen edge-on casts little. The native
   geometrizer already emits back faces and the raster build drops them,

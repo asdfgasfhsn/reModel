@@ -118,6 +118,19 @@ recorded transforms with the previous frame's. Where it has a pairing,
 give the instance the same small ID from frame to frame, and a new one
 when the pairing breaks or the camera cuts.
 
+A fitted camera motion plus the model key also follows instances, with
+no recording, and is what found the distance models below; it confuses
+rows of identical objects (E5).
+
+**Distance models.** Some games draw a simpler model beyond a fixed
+distance (`daytona` does; E5). A pack rule can ask for the fine one
+always, by the same swap that reshapes a model
+([model-interchange.md](model-interchange.md), tier 1), so it stays
+draw-only. On the one case measured it would change 0.04% of the
+picture, so it is worth having only where a game's far models are
+plainly worse. The far limit cannot be lifted this way: the game does
+not list the object at all.
+
 The limits are real and the design does not hide them. The plan pairs
 transform commands, not objects, so an object that reuses the previous
 matrix has no entry of its own. It exists only with a native geometrizer
@@ -360,6 +373,73 @@ changing each frame).
 
 Not tested across E1 to E4: the grouping step that turns parts into a
 thing.
+
+### E5. Instances over time: distance models and wide views (2026-11-20)
+
+Branch `uplift-spikes`, about 360 lines; software renderer; 900
+consecutive frames each of `daytona` (3000 to 3899, racing), Top Skater
+(3600 to 4499) and `gunblade` (3000 to 3899). Each object block was
+dumped with its model key, polygon count, view-space position and
+projected box, in units where -1 and +1 are the edges of the original
+4:3 picture (a 16:9 view spans about 1.33 each way). Instances were
+followed from frame to frame by a fitted camera motion and the model
+key. State hashes equal a plain run's with the dump on.
+
+Observed, models by distance:
+
+- **`daytona` swaps a model at a fixed distance.** One roadside object
+  is 91 polygons near and 16 far, the same size. Over the 900 frames
+  the 91-polygon version (4,209 sightings) lies at view depth 35.5 to
+  100.47 and the 16-polygon one (6,023) at 100.52 to 256.4, with no
+  overlap. Sixteen swaps were caught between consecutive frames, all
+  at that depth.
+- **Nothing of that kind is listed beyond depth 256.4**: a far limit.
+- **Drawing the fine version always** would add 502 polygons a frame
+  (15%) to an average of 6.7 instances, which cover 0.04% of the
+  picture. Not implemented.
+- **`gunblade` is suggestive only**: five parts of one soldier swap
+  together at depth about 146 (6 to 13 and 2 to 5 polygons), and
+  another set at about 387; about 15 events. **Top Skater shows none.**
+- **Most model changes are poses, not distance**: 59 of 68 on
+  `daytona` and 172 of 255 on Top Skater are neighbouring models of
+  equal polygon count.
+
+Observed, the sides of a wide view:
+
+- **The geometry program culls polygons, never whole objects.** Nothing
+  in the object step tests the window or a distance
+  (`crates/model2/src/geo_native_2c.rs:856`). The game's own display
+  list decides which objects exist.
+- **The games list objects beyond the 4:3 edges.** Blocks wholly
+  outside the original picture: 8.6% on `daytona`, 1.8% on Top Skater,
+  36% on `gunblade`. On `daytona` 1.6% lie wholly in the 16:9 band and
+  6.2% beyond it.
+- **A 16:9 picture's side bands are as full as the picture beside
+  them** on the two games rendered: 3D covers 0.74 of `daytona`'s left
+  band against 0.68 just inside the edge, and all of both on Top
+  Skater.
+- **Things do appear and vanish inside the bands**: 6.3 events per 100
+  frames on `daytona` (43 appearing, 14 vanishing) and 2.3 on Top
+  Skater. `daytona`'s roadside objects are first listed already inside
+  the left band, not at the old edge. Only 4 of the vanishings were
+  static scenery, about 11% of the popped area.
+- **Camera motion predicts a listed object's place** to 0.59 of a pixel
+  after one frame and 2.46 after 15 on `daytona` (90th percentile; 0.49
+  and 3.7 on Top Skater). Biased low: the sample is objects that
+  matched every frame.
+
+Inferred: the games cull with a margin wider than the picture, which is
+why wide views work as well as they do. What is left is mostly things
+appearing late, and nothing drawn from the display list can show an
+object before the game lists it.
+
+Thin: one stretch of 900 frames a game; the matching was not checked by
+hand, and rows of identical objects confuse it (42% of `daytona`'s
+unmatched blocks were relabels); `gunblade`'s pop counts were unusable;
+side exits could not be told from distance exits; the 100.5 threshold
+is on the object's origin, and the game's own rule is not decoded. A
+run made with `--capture-seq` ended on a different state hash from a
+plain run, not explained.
 
 ## Open questions
 
