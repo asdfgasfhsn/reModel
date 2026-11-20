@@ -74,8 +74,10 @@ project's drafts are the same files as the pack.
 | `noise` (new) | Over 16 | warn | 1.3% | Heavy noise only |
 
 - **`alpha` earns its place at once.** It found four textures in the
-  approved pack that lost their cut-out: character textures the image
-  model returned opaque. The older pack still had their alpha.
+  approved pack that the image model returned opaque. Three are plain
+  defects by eye (hair, cloth and wool with their cut-out filled in);
+  the fourth, a ticker, may be meant. The older pack still had their
+  alpha.
 - **`seam` is weak, and a warning at most.** It misses small steps, and
   most of what it flags in the pack is a seam the original has too. Ink
   on a wrapped edge cannot be a gate for cel art, which has it on
