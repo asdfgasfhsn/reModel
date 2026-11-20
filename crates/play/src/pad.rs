@@ -52,7 +52,8 @@ impl PadNav {
                 let nav = match b {
                     Button::South => Nav::Accept,
                     Button::Start => Nav::Start,
-                    Button::East | Button::Select => Nav::Back,
+                    Button::East => Nav::Back,
+                    Button::Select => Nav::View,
                     Button::North => Nav::Continue,
                     Button::West => Nav::Saves,
                     Button::LeftTrigger => Nav::PrevGroup,

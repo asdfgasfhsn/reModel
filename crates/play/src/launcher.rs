@@ -75,6 +75,16 @@ pub enum Nav {
     /// LT and RT (and [ and ]): the grid's previous and next filter.
     PrevFilter,
     NextFilter,
+    /// The pad's View (Select) button: Link play on the launcher's page,
+    /// Back everywhere else ([`Nav::view_as_back`]).
+    View,
+}
+
+impl Nav {
+    /// View is Back in the panels and menus.
+    pub fn view_as_back(navs: &[Nav]) -> Vec<Nav> {
+        navs.iter().map(|&n| if n == Nav::View { Nav::Back } else { n }).collect()
+    }
 }
 
 pub enum Action {
@@ -668,6 +678,12 @@ impl Launcher {
         };
         self.note_input(ctx, &navs, &keys);
         let all: Vec<Nav> = navs.iter().chain(&keys).copied().collect();
+        // View opens Link play from the page; over a panel it's Back.
+        let panel_open = view.menu_open || self.saves.is_some() || self.link_page.is_some() || self.net_page.is_some();
+        let page_view = !panel_open && all.contains(&Nav::View);
+        // (Used up here, so the panel it opens doesn't see a Back.)
+        let all =
+            if page_view { all.into_iter().filter(|&n| n != Nav::View).collect() } else { Nav::view_as_back(&all) };
         if self.want_saves {
             self.want_saves = false;
             self.open_saves(ctx);
@@ -686,6 +702,9 @@ impl Launcher {
         if !(view.menu_open || self.saves.is_some() || self.link_page.is_some() || self.net_page.is_some())
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::L))
         {
+            clicks.push(Click::Link);
+        }
+        if page_view {
             clicks.push(Click::Link);
         }
         for nav in self.focus.begin(&page_navs) {
@@ -1082,7 +1101,7 @@ impl Launcher {
         ];
         // Games that can link cabinets on one screen: that, too.
         if crate::link::play_for(game.id).is_some() {
-            buttons.insert(2, ("link", "Link play", Chip::Key("L"), Click::Link, false));
+            buttons.push(("link", "Link play", self.chip(Chip::Key("View"), "L"), Click::Link, false));
         }
         let font = FontId::new(22.0 * u, theme::bold());
         let mut bx = left;
@@ -1460,6 +1479,7 @@ impl Launcher {
         p.hline(l.bar.x_range(), l.bar.top(), Stroke::new(1.0 * u, Color32::from_white_alpha(15)));
         let grid = self.mode == ViewMode::Grid;
         let choose = self.choose.unwrap_or("D-pad");
+        let links = self.cur.is_some_and(|g| crate::link::play_for(g.id).is_some());
         let hints: Vec<(Chip, &str, Option<Click>)> = if self.pad_used {
             let mut h = vec![
                 (Chip::Key(choose), "Choose", None),
@@ -1469,6 +1489,9 @@ impl Launcher {
                 (Chip::Y, "Continue", Some(Click::Continue)),
                 (Chip::Key("LB RB"), "View", Some(Click::View(self.mode.other()))),
             ];
+            if links {
+                h.insert(4, (Chip::Key("View"), "Link play", Some(Click::Link)));
+            }
             if grid {
                 h.push((Chip::Key("LT RT"), "Filter", Some(Click::NextFilter)));
             }
@@ -1482,6 +1505,9 @@ impl Launcher {
                 (Chip::Key("C"), "Continue", Some(Click::Continue)),
                 (Chip::Key("Q E"), "View", Some(Click::View(self.mode.other()))),
             ];
+            if links {
+                h.insert(4, (Chip::Key("L"), "Link play", Some(Click::Link)));
+            }
             if grid {
                 h.push((Chip::Key("[ ]"), "Filter", Some(Click::NextFilter)));
             }
@@ -1628,30 +1654,29 @@ impl Launcher {
         back |= menu::side_panel(ctx, &spec, &hints, |ui, reg| {
             let s = theme::scale(ui.ctx());
             ui.scope_builder(egui::UiBuilder::new().max_rect(reg.body.shrink2(vec2(24.0 * s, 0.0))), |ui| {
+                let heading = |ui: &mut egui::Ui, title: &str, note: &str| {
+                    ui.label(egui::RichText::new(title).size(17.0 * s).strong().color(theme::TEXT));
+                    ui.add_space(2.0 * s);
+                    ui.label(egui::RichText::new(note).size(14.0 * s).color(theme::TEXT_2));
+                    ui.add_space(6.0 * s);
+                };
                 ui.add_space(12.0 * s);
-                ui.label(
-                    egui::RichText::new(format!(
-                        "Linked cabinets on one screen: {} machines side by side, one controller each. \
-                         The keyboard plays player 1; each gamepad joins with a button press.",
-                        game.title
-                    ))
-                    .size(15.0 * s)
-                    .color(theme::TEXT_2),
-                );
-                ui.add_space(12.0 * s);
+                heading(ui, "On this screen", &format!("{} machines side by side, one controller each.", game.title));
                 for n in 2..=max {
                     if focus.menu_row(ui, &format!("{n} players"), if n == 2 { "split" } else { "quadrants" }) {
                         chosen = Some(n);
                     }
                 }
-                ui.add_space(14.0 * s);
-                ui.label(
-                    egui::RichText::new("Or each on its own machine, over the network (a LAN):")
-                        .size(15.0 * s)
-                        .color(theme::TEXT_2),
-                );
-                ui.add_space(6.0 * s);
-                ui.label(egui::RichText::new("Your name for the other players").size(13.0 * s).color(theme::TEXT_DIM));
+                ui.add_space(18.0 * s);
+                heading(ui, "Over the network", "Each player on their own machine, on the same LAN.");
+                if focus.menu_row(ui, "Host a game", "") {
+                    net = Some(true);
+                }
+                if focus.menu_row(ui, "Join a game", "") {
+                    net = Some(false);
+                }
+                ui.add_space(10.0 * s);
+                ui.label(egui::RichText::new("Your name").size(13.0 * s).color(theme::TEXT_DIM));
                 let edit = egui::TextEdit::singleline(player_name)
                     .char_limit(linknet::MAX_NAME)
                     .hint_text(linknet::default_name())
@@ -1659,13 +1684,6 @@ impl Launcher {
                     .font(egui::FontId::new(17.0 * s, egui::FontFamily::Proportional));
                 if ui.add(edit).changed() {
                     name_edited = true;
-                }
-                ui.add_space(6.0 * s);
-                if focus.menu_row(ui, "Host a network game", "this machine is player 1") {
-                    net = Some(true);
-                }
-                if focus.menu_row(ui, "Join a network game", "an address, or a host found") {
-                    net = Some(false);
                 }
             });
             false
@@ -2246,6 +2264,25 @@ mod tests {
                 assert!(r.texts().len() > 10, "{mode:?}");
             }
         }
+    }
+
+    #[test]
+    fn the_pads_view_button_opens_link_play_and_is_back_in_it() {
+        let mut r = Rig::new(&["daytona", "hotd"], &[]);
+        while !r.l.cur.is_some_and(|g| g.id == "daytona") {
+            r.press(1, Nav::Right);
+        }
+        r.press(1, Nav::View);
+        assert!(r.l.link_page.is_some(), "View opens Link play on a game that links");
+        r.press(1, Nav::View);
+        assert!(r.l.link_page.is_none(), "View is Back in the panel");
+        r.l.link_page = None;
+        // On a game that can't link, View does nothing.
+        while r.l.cur.is_some_and(|g| g.id == "daytona") {
+            r.press(1, Nav::Right);
+        }
+        r.press(1, Nav::View);
+        assert!(r.l.link_page.is_none());
     }
 
     #[test]

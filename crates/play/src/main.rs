@@ -3308,7 +3308,7 @@ impl Play {
             let link_ui = link_ui(self.session.as_ref(), self.gilrs.as_ref(), g.link.as_ref());
             let net_line =
                 self.session.as_ref().filter(|s| !s.preview).and_then(|s| s.net.as_ref()).map(|n| n.status());
-            let navs = std::mem::take(&mut self.navs);
+            let navs = launcher::Nav::view_as_back(&std::mem::take(&mut self.navs));
             let (menu, splash, bezel) = (&mut self.menu, &mut self.splash, &mut self.bezel);
             let mut values = self.values.clone();
             let (mut fullscreen, mut for_all) = (self.settings.fullscreen, self.settings.for_all);
@@ -3798,7 +3798,9 @@ impl Play {
         let actions = draw_overlay(g, target, false, size, Some(ppp), |ctx| {
             let mut actions = launcher.ui(ctx, navs.clone(), &view);
             let prefs = menu::Prefs { fullscreen: &mut fullscreen, for_all: &mut for_all };
-            for action in menu.ui(ctx, &mut values, prefs, &menu_view, bindings.as_mut(), &navs) {
+            for action in
+                menu.ui(ctx, &mut values, prefs, &menu_view, bindings.as_mut(), &launcher::Nav::view_as_back(&navs))
+            {
                 match action {
                     menu::Action::Resume => actions.push(launcher::Action::CloseSettings),
                     menu::Action::ResetOwn => {

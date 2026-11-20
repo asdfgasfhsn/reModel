@@ -1030,7 +1030,7 @@ can, and the player splits the screen for the ones it lists
 
 **Starting it.** `make play GAME=srallyc PLAYERS=2` (2 to 4), or
 `remodel-play --game srallyc --players 2`. In the launcher a game that can
-has a **Link play** button (key L) beside Play, Saves and Settings: a panel
+has a **Link play** button (key L, or the pad's View/Select button; the hint bar shows it) after Play, Saves and Settings: a panel
 asks for 2, 3 or 4 players. Each machine boots, does the board check,
 passes the link barriers and shows the link attract ("3人まで対戦可能!!")
 by itself; coin up and start per player as at a row of cabinets, and the
@@ -1210,7 +1210,7 @@ lockstep (`remodel-linknet`, `docs/hw/link-board.md` section 12). Sega Rally
 
 **Hosting.** `make play GAME=srallyc PLAY_ARGS="--host"` (or `remodel-play
 --game srallyc --host [PORT]`; the port defaults to 47890), or in the launcher
-**Link play** (key L), then **Host a network game**. The panel shows this
+**Link play** (key L, or the pad's View button), then **Host a game**. The panel shows this
 machine's LAN address and port ("192.168.1.20:47890"), lists the players as
 they join with their round trip, and has **Start the game** (at least two
 players). `--net-players N` starts by itself once N players are in. The host
@@ -1218,7 +1218,7 @@ is player 1: CAR 1, the master, and the one whose settings everyone runs
 (srallyc's EEPROM settings; daytona starts from its default record).
 
 **Joining.** `remodel-play --game srallyc --join 192.168.1.20:47890`, or the
-launcher's **Link play**, **Join a network game**: type the host's address
+launcher's **Link play**, **Join a game**: type the host's address
 (the port may be left out) and press Enter, or pick a host the panel found on
 the network. The list merges two ways of finding hosts (see **Finding hosts
 and names** below) and shows each host's name, game and players ("Alex   Sega Rally
