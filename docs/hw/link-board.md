@@ -17,7 +17,9 @@ partner could not show: the node IDs are 1-based and **a node's own block
 is the last of its received blocks**, not the first. Where an earlier
 section says otherwise, section 9 wins (the places are marked). `daytona` (the original Model 2, up
 to **eight** cabinets) was then run the same way (section 10; what is generic
-and what is per game: section 11); `von` and `overrev` were only looked at
+and what is per game: section 11); both were then taken **between
+machines on a LAN**, over UDP in lockstep (section 12; what internet play
+would need: section 13); `von` and `overrev` were only looked at
 (section 7). The 2A's slot is the same as the original board's
 (`model2.md` section 2) and the 2B's.
 
@@ -506,6 +508,10 @@ Everything is deterministic, so the table is from one scripted run each
 | 6 | 3108 | 5 older | 1.6 m behind |
 | 12 | 3114 | 11 older | 3 m behind |
 
+(The table is from the hub as first built. Since section 12 each node also sees
+the others' board starts D - 1 frames late, so for D > 1 the ready byte, and with
+it every frame after, comes up D - 1 frames later than listed; D = 1 is unchanged.)
+
 The game boots, passes both barriers, selects, races and finishes at every
 D with no reset, message or visible glitch in the frames looked at (3525 and
 4400 of each run; only D = 1 was looked at closely). The other car is where it was D - 1 frames ago, as it should be;
@@ -848,3 +854,236 @@ and the block's contents, which the exchange does not look at, **except that a
 daytona block has a checksum that the receiver uses to drop a torn one**, so
 a block must arrive whole. In short, a block-exchange service with per-game
 constants and a ready/ID/count board.
+
+## 12. Linked play over a LAN (`remodel-linknet`; `remodel link-net`, `remodel-play --host/--join`)
+
+Each machine on the network runs its own linked cabinet and the link
+board's blocks travel between the hosts over UDP. Built as the lockstep
+with a fixed delay of section 8, with the changes below; the numbers are
+from loopback runs of two real processes (`make link-net-test`).
+
+### 12.1 What was built
+
+* **One node per host, any number of hosts** (2 to the game's `max_nodes`:
+  4 srallyc, 8 daytona), a full mesh of UDP between them. One host hosts and
+  owns node 0 (CAR 1, the master); the others join by `IP:port` and are
+  numbered in the order they joined. The protocol carries a node list per
+  host, so a host with several local nodes (split screen plus LAN) fits the
+  wire and the hub (`LinkHub::apply` takes any set of local nodes); the
+  command line and the player run one.
+* **The hub changed to make it so** (`model2::link::LinkHub`). Section 9's hub
+  made the ready byte and the IDs a global fact read from the buses at the
+  boundary; over a network a node cannot read another node's board flags at
+  the same boundary, so the flags travel with the blocks. What a node *shows
+  the link* at a boundary is now a record, `NodeRec` (the `started` and
+  `master` flags, the start frame, and the block while started), and each
+  node sees **its own record of frame F and the others' records of frame
+  F - (D - 1)**: the ready byte, the IDs and the received blocks all come
+  from that view. With D = 1 this is section 9's behaviour to the bit
+  (checked: `link-run` state hashes of three srallyc machines over 4,400
+  frames are unchanged); with D > 1 the ready byte comes up D - 1 frames
+  later than before (the other nodes' starts are seen late like their
+  blocks), so section 9.2's race-start frames move by about that. A node
+  also sees "ready" at its own frame, not a global one: two machines can
+  come up one boundary apart and the game does not notice. `remodel
+  link-run` runs the same hub, all nodes in one process, so **the same
+  inputs and D give each node the same machine state over a network and in
+  `link-run`**; this is an automated test (`tools/link-net-test.sh`: two
+  processes, each node's state hash equal to `link-run`'s, srallyc and
+  daytona, clean and under loss and jitter).
+* **D** is the hub's delay as before (1: the others' blocks of the same
+  frame, which a network cannot give except by waiting a trip every frame;
+  2: of the frame before, and so on). The host picks it at the start from the
+  measured round trips: `ceil(one-way / 16.7 ms) + 1`, the one-way time being
+  half the worst round trip (between two joiners, the sum of their halves to
+  the host), at least 1; `--delay N` forces it. On loopback it comes out as
+  **2** (a round trip under a frame still costs one frame plus the one); the
+  test runs use 2 and 6.
+* **Lockstep and stalls.** A host runs a frame, makes its record and sends it,
+  then passes the boundary if the others' records of frame F - (D - 1)
+  are all in; if not it **waits** (no guessing: a stall shows as a held
+  frame; `NetLink::boundary` returns `Stalled` and the player tries again
+  on the next redraw). The first D - 1 boundaries need nothing. A host
+  is never more than D - 1 frames ahead of the slowest, so the hosts run at
+  the speed of the slowest (a slow machine slows everyone: lockstep's price).
+* **Settings.** The master's settings record (srallyc's EEPROM image, where
+  the player has one; daytona's lives on the I/O board and starts from the
+  manifest's default) is sent at the start and every node builds its own
+  image from it (role byte, cabinet number, CRC) exactly as `link-run`
+  does. Each joiner reports a hash of the image it will run, and the host
+  refuses to start if one is not what it expects (checked: a joiner with one
+  settings byte changed is refused, with both hashes in the message).
+* **Session agreement** (the lobby): a joiner's `Hello` carries the game id, a
+  hash of the program ROMs, the reModel version (the crate version) and the
+  protocol version; the host answers `Welcome` or `Refuse` with a plain
+  reason (another game, other ROMs, another version or protocol, lobby full,
+  session already started). The host's `Start` carries D, the node
+  assignment, the host table (addresses), the check interval, the timeout and
+  the settings; the joiners answer with their settings hash; then `Go`.
+  Every step is repeated until answered, so the setup works through loss.
+
+### 12.2 The packets
+
+UDP, `RMLN` + protocol version + kind; at most 1,400 bytes; everything
+little-endian and bounds-checked, and **a malformed packet is dropped whole,
+never trusted** (sizes, node ids, host indexes, frame ranges; the session id
+and the source address must match the table). Kinds: Hello, Welcome, Refuse,
+Lobby, Ping, Pong, Start, StartAck, Go, **Data**, Bye, Abort, Discover, Info.
+
+A **Data** packet carries the sender's newest frame, an acknowledgement per
+host (the frame up to which the sender holds all of that host's records), the
+sender's last eight checkpoint hashes and **every record of the sender's that
+the receiver has not acknowledged**, oldest first. Records are whole (the
+block is never split: daytona's block checksum would drop a torn one), coded
+against the same node's block of the frame before (a run of unchanged bytes
+is two bytes; an unchanged block costs about 15). So loss costs nothing but a
+repeat: the next packet carries the same record again. A packet is sent when
+a record is made, again after 12 ms while unacknowledged, 6 ms after
+receiving something (to carry the acknowledgement if no record of ours does)
+and every 100 ms at least. A record that arrives twice or late is kept once
+(the first); the 5% duplication of the test runs shows as "duplicate
+records" in the stats and does nothing.
+
+### 12.3 Desync, disconnects, the end
+
+* **State check.** Every N frames (default 60, `--check-every`) each host
+  hashes **every node's record of that frame as it holds it** (flags, start
+  frame, block) and sends the hash in its packets; a mismatch with another
+  host's stops the session on both with `out of sync with player P at frame
+  F: our state hash X, theirs Y`. Each host's *machine* differs (it is
+  another node), so there is no machine hash to compare; what must agree is
+  the records every host feeds its hub, and a damaged, misdecoded or
+  misdelivered record shows there. (Checked: a record damaged in memory at
+  frame 1200 is reported at frame 1200 on both hosts.) A different build is
+  caught earlier by the version check, other ROMs by the ROM hash, other
+  settings by the settings hash.
+* **A host that goes silent** for T seconds (default 5, `--timeout`) ends the
+  session on every other host with `player P has been silent for T s:
+  connection lost`; a polite leave or finish sends `Bye` (three times) and
+  ends it at once with the reason. Records a leaving host had already sent
+  are used first: a host passes boundaries as long as it has what its view
+  needs and ends when it stalls for lack of what will never come. **What the
+  game would do** with a node that vanishes is not known beyond section 9.4
+  (a node that stops sending leaves its last block in the others' receive
+  area, and the games did not complain at any delay tried); a mid-race
+  recovery (a replacement, a rejoin) is out of scope: the session ends, and
+  the launcher shows why.
+* **The end of a scripted run**: a host that reaches `--frames` waits (at
+  most 3 s) until every other host has acknowledged its last record, then says
+  `Bye finished`; the others pass the boundaries they have records for and
+  stop.
+
+### 12.4 Save states, pacing, run-ahead
+
+Save states are **disabled** in a network session (the player says so; the
+resume state is not kept either; nothing of the player's own settings is
+written). The design allows them later: a save would have to be taken at the
+same frame on every host (agree a frame F; each saves its machine and its
+hub's records at the boundary of F) and a load would start every host from
+the matching files together; not built. Smooth motion and run-ahead are off,
+as in same-screen link play. The window shows a status line (players, D,
+round trip, how many frames were held and for how long, WAITING while
+stalled more than a quarter second).
+
+### 12.5 Measured (two processes, loopback, one shared machine at `nice` 10)
+
+From `make link-net-test`: the scripted race to frame 4,400 (srallyc) or
+4,600 (daytona), each host's hash equal to `link-run`'s for its node.
+
+| | srallyc | daytona |
+|---|---|---|
+| each host's state hash equals `link-run`'s for its node: D = 2 clean, D = 6 under faults | yes, 4,400 frames | yes, 4,600 frames |
+| D chosen by the host on loopback (round trips of 0.1 to 0.3 ms in the lobby: under a frame, so `ceil(..) + 1`) | **2** | **2** |
+| paced at 60 frames/s (`--realtime`), clean, D = 2: boundaries that had to wait | 1 of 4,400 (0.5 ms) on the host, 0 on the joiner | 1 of 4,700 (6.5 ms), 0 |
+| bandwidth each way, clean (one packet a frame, **191 bytes a frame**) | 11.2 KB/s at 60 frames/s | 11.2 KB/s |
+| paced, 5% loss, 5% duplication, 5 ms + up to 50 ms jitter on what each host sends, D = 6: waits | host 48 of 4,400 (1.1%, 561 ms in all, longest 45 ms), joiner 0 | not run paced |
+| bandwidth each way under those faults (every unacknowledged record rides in each packet: 5% duplicate records is 19,000 repeats in 4,400 frames) | 17 KB/s | 22 KB/s (unpaced run) |
+| unpaced (the hosts run as fast as they can, so they wait for each other every few frames: the waits are the machines' own speeds, not the network), clean, D = 2 | 60-150 waits of 4,400, 12-31 ms in all, longest 1.4 ms | 97-316 of 4,600, 26-62 ms, longest 4 ms |
+| unpaced, the fault run, D = 6 | about 1,100 waits (10 s in all, longest 72 ms) | about 900 (9 s, longest 88 ms) |
+| 12 clean daytona runs in a row | every one equal to `link-run` (after the fix below) | |
+| state check: a record damaged at frame 1200 | reported on both hosts with the frame and both hashes | same |
+| a settings byte changed on a joiner | the host refuses to start, naming both hashes | same |
+| joiner killed (SIGKILL) | the host ends after the 2 s timeout, with the message | same |
+| joiner leaves politely (`--leave-at 1500`) | the host ends at once: `player 2 left: left` | same |
+
+The round trip shown in a paced run (16 to 19 ms) is mostly the other host's
+own frame period: a ping is answered when the other host next pumps its
+session, once a frame. The lobby's, polled every 2 ms, is the network's own.
+
+One bug of this work, for the record: a host that finished its last frame
+first said goodbye, and the other treated the goodbye as the end of the
+session before using the records that had already arrived, so a run ended a
+frame short (and its hash differed) about one time in five. A host now passes
+every boundary its records allow and ends only when it stalls for want of
+what will never come (a desync or a lost connection still stops at once).
+
+### 12.6 What a two-PC test should check
+
+* The D chosen (`remodel link-net` prints the round trips and D at the
+  start) and whether the picture is held (stalls: the stats line, or the
+  window's status line).
+* A race to the finish between the two machines, then the results screens
+  (the end of a race is the one place the game's behaviour has not been seen
+  over a delayed link at all: section 10.4's results were seen at D = 1).
+* Whether the hash line of a scripted run (`remodel link-net ... --frames N`
+  on each; `remodel link-run --nodes 2 --delay D` for the same inputs) is
+  equal node by node on real hardware: the clean test of determinism across
+  two CPUs and two builds.
+* Firewalls: the host's UDP port (default 47890) must be reachable; the joiner
+  needs none opened (the host's replies come back to it); with three or more
+  hosts every host's port must be reachable by the others (the joiners' ports
+  are the ones their first packets came from).
+* LAN discovery finds hosts on the default port only, and only where the
+  network passes broadcast (guest Wi-Fi often does not).
+
+## 13. Internet play, next (not built)
+
+What the LAN design has that internet play can keep: lockstep with a fixed D
+(only D grows: a 60 ms round trip needs D = 4, 120 ms D = 6, 200 ms D = 9;
+the game's own timeouts did not complain at D = 12, section 9.2, and the
+price is D - 1 frames of input-to-picture latency over a cabinet's own);
+whole-record packets and redundancy against loss (each packet carries
+everything unacknowledged, which copes with the 5% loss and 50 ms jitter the
+loopback tests inject); the state check, the settings agreement and the
+version and ROM checks; the clean end; deterministic machines (so a
+spectator, or a replay, is a node that only listens).
+
+What internet play would add:
+
+* **NAT traversal.** Hosts behind NAT cannot be reached. UDP hole punching
+  through a rendezvous server (each side sends to the other's public address
+  and port as the server reports them) works for most home NATs; the
+  protocol already identifies a peer by session id and address table, and the
+  start packet carries the table, so the table would be filled with the
+  *public* addresses the rendezvous gives. Symmetric NATs need a relay.
+* **A relay fallback.** A small server that forwards a session's packets
+  between hosts (they still only exchange records; the relay needs to know
+  only whose session id is whose), at the cost of the relay's latency. The
+  mesh becomes a star at the relay; the packet format does not change (the
+  source-address check becomes a relay-authenticated host index).
+* **A rendezvous point.** Where hosts register ("srallyc, 1 of 2, a name")
+  and joiners find them: the lobby's `Info` already is the listing record
+  (game, name, players, maximum, port); discovery by broadcast becomes
+  discovery by asking the server. A short session code in place of an
+  `IP:port` is the user-visible gain.
+* **Security.** The LAN protocol trusts its network: the session id is random
+  but travels in the clear and a bystander on the path could inject a packet
+  (it would break a state check, not the host, but still end a session).
+  Internet play wants an authenticated, encrypted channel (a session key from
+  the rendezvous or an out-of-band code, a MAC on each packet), rate limits
+  on the lobby (a host answers `Hello` and `Discover` from anyone), and care
+  that **a block from another player is data fed to the game's own code**
+  (the games read other nodes' blocks without much checking: daytona's
+  checksum guards tearing, not malice), so hosts should only link with people
+  they chose. The bounds checks here keep a packet from harming the host,
+  not the game's memory.
+* **Larger D and jitter handling.** D chosen from a longer measurement (the
+  median round trip plus the jitter, re-measured) and perhaps changed between
+  races; the 12 ms resend and 100 ms heartbeat timers are LAN-sized (resend
+  after about one round trip instead); a late-join or rejoin story; and, at
+  D above about 6, the case for **rollback** (the modernisation track) over a
+  pure wait.
+* **Pace.** Lockstep makes every host run at the slowest; over the internet
+  one hiccup is everyone's, so a small buffer of frames (run ahead of the
+  network by a frame or two, then catch up) and a visible "waiting for
+  player 2" help; the status line already counts holds.

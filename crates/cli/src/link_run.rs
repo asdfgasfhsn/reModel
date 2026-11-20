@@ -249,6 +249,32 @@ pub fn run(o: &Opts, roms: &RomSet) -> ExitCode {
     }
 }
 
+/// Node `i`'s machine of a linked run of `play`'s game: the game's settings
+/// image for its role (`base`: the settings to start from, `extra`: bytes set
+/// before the CRC is fixed) loaded where the game keeps them, and a link board
+/// joined to a hub. Shared by `link-run` and `link-net`, so the same node is
+/// the same machine in both.
+pub(crate) fn node_machine(
+    roms: &RomSet,
+    o: &Opts,
+    play: &LinkPlay,
+    i: usize,
+    role: u8,
+    base: Option<&[u8]>,
+    extra: &[(usize, u8)],
+) -> model2::Machine {
+    let mut m = machine(roms);
+    m.bus.geo.set_threaded(!o.single_thread);
+    let set: Vec<(usize, u8)> = play.car_off.map(|o| (o, i as u8)).into_iter().chain(extra.iter().copied()).collect();
+    let image = play.settings.image(base, play.role_off, role, &set);
+    match play.settings.store {
+        SettingsStore::Eeprom => m.bus.eeprom.load(&image),
+        SettingsStore::IoBoard => m.bus.io_store_load(&image),
+    }
+    m.bus.link = Some(model2::link::Link::new(romset::LinkBoard::Idle).joined());
+    m
+}
+
 fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
     let play = romset::games::link_play(roms.game.id)
         .ok_or_else(|| format!("{}: no link play data (crates/romset/src/games/link.rs)", roms.game.id))?;
@@ -276,26 +302,11 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
         .collect::<Result<_, _>>()?;
     let mut ms: Vec<model2::Machine> = (0..a.nodes)
         .map(|i| {
-            let mut m = machine(roms);
-            m.bus.geo.set_threaded(!o.single_thread);
-            let image = play.settings.image(
-                base.as_deref(),
-                play.role_off,
-                types[i],
-                &play
-                    .car_off
-                    .map(|o| (o, i as u8))
-                    .into_iter()
-                    .chain(a.set_bytes.iter().filter(|b| b.0 == i).map(|b| (b.1, b.2)))
-                    .collect::<Vec<_>>(),
-            );
-            match play.settings.store {
-                SettingsStore::Eeprom => m.bus.eeprom.load(&image),
-                SettingsStore::IoBoard => m.bus.io_store_load(&image),
+            let extra: Vec<(usize, u8)> = a.set_bytes.iter().filter(|b| b.0 == i).map(|b| (b.1, b.2)).collect();
+            let mut m = node_machine(roms, o, play, i, types[i], base.as_deref(), &extra);
+            if let Some(l) = m.bus.link.as_mut() {
+                l.beat_until = a.beat_until;
             }
-            let mut l = model2::link::Link::new(romset::LinkBoard::Idle).joined();
-            l.beat_until = a.beat_until;
-            m.bus.link = Some(l);
             if let Some((_, ad)) = a.watch.filter(|w| w.0 == i) {
                 m.bus.watch = Some((ad, Vec::new()));
             }
@@ -329,7 +340,7 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
     };
     if let Some(p) = &a.load {
         let data = std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?;
-        let raw = png::zlib::decompress(data.strip_prefix(b"LINKRUN-SAVE-1\n").ok_or("not a link-run save")?)
+        let raw = png::zlib::decompress(data.strip_prefix(b"LINKRUN-SAVE-2\n").ok_or("not a link-run save")?)
             .map_err(|e| format!("save damaged: {e}"))?;
         let mut at = 0usize;
         let take = |at: &mut usize| -> Result<&[u8], String> {
@@ -498,7 +509,7 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
             let h = hub.save(&buses);
             raw.extend((h.len() as u64).to_le_bytes());
             raw.extend(h);
-            let mut out = b"LINKRUN-SAVE-1\n".to_vec();
+            let mut out = b"LINKRUN-SAVE-2\n".to_vec();
             out.extend(png::zlib::compress(&raw));
             std::fs::write(path, &out).map_err(|e| format!("{}: {e}", path.display()))?;
             say(&mut log, format!("state         saved {} at frame {at} ({} KB)", path.display(), out.len() / 1024));
@@ -592,7 +603,7 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
 }
 
 /// Every node's screen, side by side, to a PNG.
-fn shot(ms: &mut [model2::Machine], path: &Path) {
+pub(crate) fn shot(ms: &mut [model2::Machine], path: &Path) {
     let mut views = Vec::new();
     for m in ms.iter_mut() {
         m.bus.geo.sync();

@@ -94,6 +94,7 @@ make scan                          # list the sets found in rom/
 make play                          # the launcher: pick a game, then play (on the JITs, docs/jit.md)
 make play GAME=hotd                # straight into a game (Esc menu, F8 photo mode)
 make play GAME=srallyc PLAYERS=2   # two to four linked machines on one split screen, a controller each (docs/play.md)
+make play GAME=srallyc PLAY_ARGS=--host   # linked play over a LAN, a machine each: host here, `--join IP:PORT` there (docs/play.md)
 make play GAME=srallyc JIT=0       # without the JITs: the interpreters (RECOMP=1 JIT=0: recompiled code)
 make web RECOMP=1                  # browser build -> out/web (needs unzipped rom/<set>/ folders; serve over HTTPS)
 ```
@@ -131,7 +132,7 @@ Hardware notes ([docs/hw/](docs/hw/)):
 
 - [model2.md](docs/hw/model2.md), [model2a.md](docs/hw/model2a.md), [model2b.md](docs/hw/model2b.md), [model2c.md](docs/hw/model2c.md): the original board and its three successors.
 - [peripherals.md](docs/hw/peripherals.md): the 2C board's I/O and peripherals.
-- [link-board.md](docs/hw/link-board.md): the link (network) board as the games use it, `srallyc` in detail, and a design sketch for linked play.
+- [link-board.md](docs/hw/link-board.md): the link (network) board as the games use it, `srallyc` in detail, a design sketch for linked play, and linked play between machines over a LAN.
 - [geometrizer.md](docs/hw/geometrizer.md): the geometrizer and 3D rasteriser; [geometrizer-2c.md](docs/hw/geometrizer-2c.md) and [geometrizer-2b.md](docs/hw/geometrizer-2b.md): the native geometrizers.
 - [texture-lod.md](docs/hw/texture-lod.md): mipmaps, the log table and microtextures, as the games send them.
 - [mb86235.md](docs/hw/mb86235.md) (2C geometry chip), [mb86234.md](docs/hw/mb86234.md) (2A), [adsp2106x.md](docs/hw/adsp2106x.md) (2B SHARC).

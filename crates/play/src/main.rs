@@ -42,6 +42,8 @@ mod library;
 mod link;
 mod log;
 mod menu;
+mod netpage;
+mod netplay;
 mod pack;
 mod pad;
 mod perf;
@@ -103,6 +105,13 @@ usage: remodel-play [options]
   --link-keyboard on|off
                      link play: whether the keyboard plays P1 (default on);
                      off, gamepads take the seats from P1
+  --host [PORT]      network link play with --game: host a session on this
+                     machine (default port 47890; the lobby shows its
+                     address) and wait for the other machines
+                     (docs/play.md, \"Network link play\")
+  --join HOST:PORT   network link play with --game: join the host there
+  --net-players N    with --host: start when N players (this one included)
+                     have joined, without pressing Start
   --interp           run the i960 on the interpreter even if this build
                      has recompiled code
   --no-jit           don't use the JIT (the default runs the game's code
@@ -410,6 +419,17 @@ struct Options {
     link_inputs: Vec<Option<String>>,
     /// `--link-keyboard`: the keyboard plays player 1.
     link_keyboard: bool,
+    /// `--host [PORT]` / `--join ADDR`: network link play.
+    net: Option<NetMode>,
+    /// `--net-players`.
+    net_players: usize,
+}
+
+/// Network link play from the command line.
+#[derive(Clone, Debug)]
+enum NetMode {
+    Host(u16),
+    Join(String),
 }
 
 /// `--nav`'s list: NAME[+NAME]@SECONDS[:HELD], pad buttons pressed together
@@ -496,6 +516,8 @@ fn options(s: &mut Settings) -> Result<Options, String> {
         players: 0,
         link_inputs: vec![None; 4],
         link_keyboard: true,
+        net: None,
+        net_players: 0,
     };
     let mut args = std::env::args().skip(1).peekable();
     let mut cli = |k: &str, v: &str| s.cli.insert(k.to_string(), v.to_string());
@@ -708,6 +730,21 @@ fn options(s: &mut Settings) -> Result<Options, String> {
                 o.players = value()?.parse().ok().filter(|n| (2..=4).contains(n)).ok_or("--players wants 2 to 4")?
             }
             "--link-keyboard" => o.link_keyboard = opt_bool(&mut args),
+            "--host" => {
+                let port = match args.peek().and_then(|p| p.trim_start_matches(':').parse::<u16>().ok()) {
+                    Some(p) => {
+                        args.next();
+                        p
+                    }
+                    None => linknet::DEFAULT_PORT,
+                };
+                o.net = Some(NetMode::Host(port));
+            }
+            "--join" => o.net = Some(NetMode::Join(value()?)),
+            "--net-players" => {
+                o.net_players =
+                    value()?.parse().ok().filter(|n| (2..=8).contains(n)).ok_or("--net-players wants 2 to 8")?
+            }
             "--link-layout" => {
                 let v = value()?;
                 if link::Layout::parse(&v).is_none() {
@@ -789,6 +826,9 @@ struct Session {
     catalogue: Option<model2::catalogue::Catalogue>,
     /// Link play: the other machines and the hub (`machine` is player 1's).
     link: Option<link::LinkSet>,
+    /// Network link play: this machine is one cabinet of a session whose
+    /// others are on other machines.
+    net: Option<netplay::NetPlay>,
 }
 
 /// Where `set`'s JIT hot-block list is kept (docs/jit.md, "Hot-block
@@ -856,9 +896,10 @@ impl Session {
     /// linked machines the linked set's own, so link play never touches
     /// the single game's.
     fn key(&self) -> String {
-        match &self.link {
-            Some(l) => format!("{}-link{}", self.game.id, l.n()),
-            None => self.game.id.to_string(),
+        match (&self.link, &self.net) {
+            (Some(l), _) => format!("{}-link{}", self.game.id, l.n()),
+            (_, Some(_)) => format!("{}-net", self.game.id),
+            _ => self.game.id.to_string(),
         }
     }
 
@@ -874,6 +915,10 @@ impl Session {
     }
 
     fn save_eeprom(&self) {
+        if self.net.is_some() {
+            // The session's settings are the master's: nothing of the player's own is touched.
+            return;
+        }
         if let Some(l) = &self.link {
             // The linked set's own files, one for each machine.
             let buses = std::iter::once(&self.machine).chain(&l.machines).map(|m| &m.bus);
@@ -1376,7 +1421,7 @@ impl Play {
         }
         s.save_eeprom();
         s.save_jit_list();
-        if s.preview || s.script.is_some() {
+        if s.preview || s.script.is_some() || s.net.is_some() {
             return;
         }
         let data = s.save_state();
@@ -1450,6 +1495,21 @@ impl Play {
     /// `start_game` for `players` machines linked on one screen (0 or 1: a
     /// single game).
     fn start_game_n(&mut self, set: &str, from: library::Start, players: usize) {
+        self.start_game_inner(set, from, players, None)
+    }
+
+    /// Start `set` as one cabinet of an agreed network session.
+    fn start_net_game(&mut self, set: &str, session: linknet::Session, params: linknet::Params) {
+        self.start_game_inner(set, library::Start::New, 0, Some((session, params)))
+    }
+
+    fn start_game_inner(
+        &mut self,
+        set: &str,
+        from: library::Start,
+        players: usize,
+        net: Option<(linknet::Session, linknet::Params)>,
+    ) {
         self.leave_game();
         self.previews.cancel_all();
         self.use_values(set);
@@ -1470,7 +1530,14 @@ impl Play {
                         .ok_or_else(|| format!("{} can't link {n} cabinets on one screen", game.title))?,
                 ),
             };
-            let (mut machine, jit_list) = self.new_machine(&roms, game, &values, true, linked.is_some());
+            let net_play = match &net {
+                Some(_) => {
+                    Some(link::play_for(game.id).ok_or_else(|| format!("{} can't link over a network", game.title))?)
+                }
+                None => None,
+            };
+            let (mut machine, jit_list) =
+                self.new_machine(&roms, game, &values, true, linked.is_some() || net_play.is_some());
             // The game's own EEPROM, or in link play the linked set's own (the
             // player's single-player settings are only where it starts from,
             // never written): each cabinet has its own, with its LINK TYPE set.
@@ -1478,6 +1545,12 @@ impl Play {
             let link_dir = settings::data_dir().join(format!("{}-link{players}", game.id));
             let mine = std::fs::read(dir.join("eeprom.bin")).ok();
             match linked {
+                None if net.is_some() => {
+                    // A network session's settings are the master's, never the player's own.
+                    let (sess, p) = net.as_ref().unwrap();
+                    let node = p.hosts[sess.me].nodes[0] as usize;
+                    link::load_settings(&mut machine.bus, net_play.unwrap(), p.base.as_deref(), node);
+                }
                 None => {
                     if let Some(bytes) = &mine {
                         machine.bus.eeprom.load(bytes);
@@ -1528,7 +1601,16 @@ impl Play {
                 jit_saved: Instant::now(),
                 catalogue: None,
                 link: None,
+                net: None,
             };
+            if let Some((sess, params)) = net {
+                let np = netplay::NetPlay::new(sess, &params, net_play.unwrap());
+                println!(
+                    "net link play {} node {} of {}, delay D = {}, players {:?}",
+                    game.title, np.node, np.nodes, np.delay, np.names
+                );
+                s.net = Some(np);
+            }
             if let Some(lp) = linked {
                 let mut machines = Vec::new();
                 let mut sounds = Vec::new();
@@ -1590,7 +1672,7 @@ impl Play {
                 s.perf = Some(perf::PerfLog::new(game.id, &s.machine));
             }
             // Photo mode's time scrub: the game's last seconds.
-            if self.opts.photo_history > 0.0 && s.link.is_none() {
+            if self.opts.photo_history > 0.0 && s.link.is_none() && s.net.is_none() {
                 s.history = Some(model2::photo::History::new(self.opts.photo_history, 60));
             }
             // A run-ahead the command line asked for beyond what the game's
@@ -1602,7 +1684,7 @@ impl Play {
                     values.run_ahead, game.id, game.run_ahead_max
                 );
             }
-            if s.link.is_none() {
+            if s.link.is_none() && s.net.is_none() {
                 s.set_run_ahead(values.run_ahead, values.motion_on(), Some(&roms), &self.settings.rom);
             }
             Ok(s)
@@ -1711,6 +1793,7 @@ impl Play {
             jit_saved: Instant::now(),
             catalogue: None,
             link: None,
+            net: None,
         });
         self.preview.shown = None;
         self.preview.leaving = None;
@@ -1719,6 +1802,9 @@ impl Play {
     }
 
     fn save_slot(&mut self, slot: u8) {
+        if self.session.as_ref().is_some_and(|s| s.net.is_some()) {
+            return self.menu.error("Save states are off in a network game".to_string());
+        }
         let Some(s) = self.session.as_mut().filter(|s| !s.preview) else { return };
         let data = s.save_state();
         let path = s.slot_path(slot);
@@ -1823,6 +1909,9 @@ impl Play {
 
     /// Load the save file at `path` into the game, saying `done` if it did.
     fn load_file(&mut self, path: &Path, done: &str) {
+        if self.session.as_ref().is_some_and(|s| s.net.is_some()) {
+            return self.menu.error("Save states are off in a network game".to_string());
+        }
         let Some(s) = &mut self.session else { return };
         let data = match std::fs::read(path) {
             Ok(d) => d,
@@ -2590,7 +2679,28 @@ impl Play {
     fn emulate(&mut self) -> Result<u32, i960::cpu::Stop> {
         let now = Instant::now();
         self.redraws += 1;
+        // A network session that ended (a player left, the connection was lost, the
+        // states differ): back to the launcher with the reason, unless this is a
+        // scripted run, which reports it as it stops.
+        if self.opts.frames.is_none() {
+            let over = self.session.as_mut().and_then(|s| s.net.as_mut()).and_then(|n| n.ended.take());
+            if let Some(why) = over {
+                println!("net link play ended: {why}");
+                self.leave_game();
+                self.set_menu(false);
+                self.launcher.open = true;
+                self.menu.error(format!("The network game ended: {why}"));
+                return Ok(0);
+            }
+        }
         if self.menu.open || self.session.is_none() || self.photo.is_some() {
+            // A network game keeps its link alive while paused (the others wait for it).
+            if let Some(n) = self.session.as_mut().and_then(|s| s.net.as_mut()) {
+                n.link.keepalive();
+                if let Some(e) = n.link.sess.end.clone() {
+                    n.ended.get_or_insert(e.to_string());
+                }
+            }
             // Paused: keep the clock with the game for when it resumes.
             if let Some(s) = &self.session {
                 self.epoch = now - Duration::from_secs_f64(s.machine.frames as f64 / FPS);
@@ -2627,8 +2737,9 @@ impl Play {
         let catch_up = if self.opts.fast { MAX_CATCH_UP } else { MAX_CATCH_UP.min(CATCH_UP) };
         let mut ran = 0;
         let t_real = Instant::now();
-        while self.session.as_ref().is_some_and(|s| s.machine.frames < due) && ran < catch_up {
-            if self.session.as_ref().is_some_and(|s| !s.preview) {
+        let held = |s: &Session| s.net.as_ref().is_some_and(|n| n.pending);
+        while self.session.as_ref().is_some_and(|s| s.machine.frames < due || held(s)) && ran < catch_up {
+            if self.session.as_ref().is_some_and(|s| !s.preview && !held(s)) {
                 self.apply_inputs();
                 // The pad opened the menu: pause now.
                 if self.menu.open {
@@ -2641,11 +2752,23 @@ impl Play {
             if let Some(h) = &mut s.history {
                 h.before_frame(&mut s.machine);
             }
-            match &mut s.link {
-                // Every machine a frame, alongside each other, then the link blocks across.
-                Some(l) => l.step(&mut s.machine)?,
-                None => {
+            if let Some(n) = &mut s.net {
+                // One cabinet of a network session: run the frame once, then pass the
+                // boundary when the other machines' records are in; until then the frame
+                // is held (the screen keeps the last one) and tried again next time.
+                if !n.pending {
                     s.machine.run_slice(u64::MAX)?;
+                }
+                if !n.boundary(&mut s.machine) {
+                    break;
+                }
+            } else {
+                match &mut s.link {
+                    // Every machine a frame, alongside each other, then the link blocks across.
+                    Some(l) => l.step(&mut s.machine)?,
+                    None => {
+                        s.machine.run_slice(u64::MAX)?;
+                    }
                 }
             }
             if let Some(c) = &mut s.catalogue {
@@ -3085,6 +3208,7 @@ impl Play {
         let mut overlay = None;
         let mut compare = None;
         let linked = self.session.as_ref().is_some_and(|s| s.link.is_some());
+        let netted = self.session.as_ref().is_some_and(|s| s.net.is_some());
         if self.menu.visible()
             || self.session.is_none()
             || self.splash.active()
@@ -3092,6 +3216,7 @@ impl Play {
             || bezel_at.is_some()
             || fade.is_some()
             || linked
+            || netted
         {
             let pack_text = self.pack_text();
             let pad_live = self.pad_live();
@@ -3131,6 +3256,8 @@ impl Play {
                 link: self.session.as_ref().and_then(|s| s.link.as_ref()).map(|l| l.n()),
             };
             let link_ui = link_ui(self.session.as_ref(), self.gilrs.as_ref(), g.link.as_ref());
+            let net_line =
+                self.session.as_ref().filter(|s| !s.preview).and_then(|s| s.net.as_ref()).map(|n| n.status());
             let navs = std::mem::take(&mut self.navs);
             let (menu, splash, bezel) = (&mut self.menu, &mut self.splash, &mut self.bezel);
             let mut values = self.values.clone();
@@ -3149,6 +3276,9 @@ impl Play {
                 }
                 if let Some((cells, views, empty, seats, title)) = &link_ui {
                     link_labels(ctx, scale, cells, views, *empty, seats, title);
+                }
+                if let Some(line) = &net_line {
+                    net_status(ctx, line);
                 }
                 let prefs = menu::Prefs { fullscreen: &mut fullscreen, for_all: &mut for_all };
                 let actions = menu.ui(ctx, &mut values, prefs, &view, bindings.as_deref_mut(), &navs);
@@ -3236,6 +3366,9 @@ impl Play {
     /// Start the game again from power-on (the menu's Reset game), keeping
     /// its EEPROM but not its resume state.
     fn reset_game(&mut self) {
+        if self.session.as_ref().is_some_and(|s| s.net.is_some()) {
+            return self.menu.error("A network game can't be reset from one machine".to_string());
+        }
         let Some(s) = self.session.as_ref().filter(|s| !s.preview) else { return };
         s.save_eeprom();
         let set = s.game.id.to_string();
@@ -3357,6 +3490,20 @@ impl Play {
                 launcher::Action::PlayLink { set, players } => {
                     self.play_from_launcher(&set, library::Start::New, players)
                 }
+                launcher::Action::NetHost { set } => self.net_lobby(&set, true),
+                launcher::Action::NetJoin { set } => self.net_lobby(&set, false),
+                launcher::Action::PlayNet { set, session, params } => {
+                    self.launcher.open = false;
+                    self.launcher_bindings = None;
+                    self.set_menu(false);
+                    self.session = None;
+                    self.preview =
+                        PreviewState { failed: std::mem::take(&mut self.preview.failed), ..Default::default() };
+                    self.start_net_game(&set, *session, *params);
+                    if self.session.is_some() {
+                        self.game_fade = Some(Instant::now());
+                    }
+                }
                 launcher::Action::Settings => {
                     self.set_menu(true);
                     self.menu.pad_used = self.launcher.pad_used;
@@ -3380,6 +3527,41 @@ impl Play {
             self.settings.save();
         }
         self.status();
+    }
+
+    /// Open the launcher's network panel for `set`: the host's lobby (`host`) or the
+    /// joiner's page. `--host`/`--join` open it at start with their address.
+    fn net_lobby(&mut self, set: &str, host: bool) {
+        self.net_lobby_for(set, if host { Some(NetMode::Host(linknet::DEFAULT_PORT)) } else { None }, None)
+    }
+
+    fn net_lobby_for(&mut self, set: &str, host: Option<NetMode>, join: Option<String>) {
+        let result: Result<netpage::NetPage, String> = (|| {
+            let game = romset::games::find(set).map_err(|e| e.to_string())?;
+            let play = link::play_for(game.id).ok_or_else(|| format!("{} can't link over a network", game.title))?;
+            let roms = romset::RomSet::load(game, &self.settings.rom, false).map_err(|e| e.to_string())?;
+            let cfg = netplay::config(game, &roms, play, netplay::player_name());
+            Ok(match (host, join) {
+                (Some(NetMode::Host(port)), _) => {
+                    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+                    let h = linknet::Host::bind(cfg.clone(), addr).map_err(|e| {
+                        format!("Can't listen on UDP port {port}: {e} (is another game already hosting on it?)")
+                    })?;
+                    println!("net link play hosting {} on port {port}", game.id);
+                    netpage::NetPage::host(game, cfg, h, self.opts.net_players)
+                }
+                (_, Some(addr)) => netpage::NetPage::join(game, cfg, &addr),
+                _ => netpage::NetPage::pick(game, cfg, String::new()),
+            })
+        })();
+        match result {
+            Ok(page) => self.launcher.show_net(page),
+            Err(e) => {
+                eprintln!("{set}: {e}");
+                self.menu.error(e);
+            }
+        }
+        self.launcher.open = true;
     }
 
     /// Start `set` from the launcher (`players` machines linked on one
@@ -3687,11 +3869,15 @@ impl Play {
 
     /// Quit if `--seconds` has run out, reporting the run; true if so.
     fn time_up(&mut self, el: &ActiveEventLoop) -> bool {
-        let at_frame = self
-            .opts
-            .frames
-            .is_some_and(|n| self.session.as_ref().is_some_and(|s| !s.preview && s.machine.frames >= n));
-        if !at_frame && !self.opts.seconds.is_some_and(|s| self.started.elapsed().as_secs_f64() >= s) {
+        let at_frame = self.opts.frames.is_some_and(|n| {
+            self.session
+                .as_ref()
+                .is_some_and(|s| !s.preview && s.machine.frames >= n && !s.net.as_ref().is_some_and(|n| n.pending))
+        });
+        // A scripted network run also stops when its session ends.
+        let net_over = self.opts.frames.is_some()
+            && self.session.as_ref().is_some_and(|s| s.net.as_ref().is_some_and(|n| n.ended.is_some()));
+        if !at_frame && !net_over && !self.opts.seconds.is_some_and(|s| self.started.elapsed().as_secs_f64() >= s) {
             return false;
         }
         if let Some(path) = self.opts.shot.clone() {
@@ -3704,6 +3890,27 @@ impl Play {
             let hash = s.machine.bus.state_hash();
             let what = if s.preview { "preview" } else { "frames" };
             println!("{what:<14}{}, state hash {hash:016x}", s.machine.frames);
+            if let Some(n) = &mut s.net {
+                // Where the session stands, as `remodel link-net` prints it, so two players'
+                // runs can be compared with `link-run`'s hash for each node.
+                println!("node {}        state hash {hash:016x} ({} frames)", n.node, s.machine.frames);
+                match n.ended.clone() {
+                    Some(e) => println!("net link play ended: {e}"),
+                    None => n.link.linger(s.machine.frames, Duration::from_secs(3)),
+                }
+                let (st, ss) = (&n.link.stalls, &n.link.sess.stats);
+                println!(
+                    "net link play stalls {} of {} boundaries ({:.1} ms in all, longest {:.1} ms), D {}, round trip {}, sent {:.1} KB, received {:.1} KB",
+                    st.stalls,
+                    st.boundaries,
+                    st.stall_time.as_secs_f64() * 1e3,
+                    st.longest.as_secs_f64() * 1e3,
+                    n.delay,
+                    n.link.sess.worst_rtt().map_or("?".into(), |r| format!("{r:.2} ms")),
+                    ss.bytes_tx as f64 / 1024.0,
+                    ss.bytes_rx as f64 / 1024.0
+                );
+            }
             if let Some(l) = &mut s.link {
                 let h = l.combined_hash(&mut s.machine);
                 println!("link play     {} machines, combined hash {h:016x} (as `remodel link-run` prints it)", l.n());
@@ -3769,6 +3976,19 @@ impl Play {
         self.settings.save();
         el.exit();
     }
+}
+
+/// Network link play's status line: a small pill at the top of the window.
+fn net_status(ctx: &egui::Context, line: &str) {
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("net status")));
+    let waiting = line.contains("WAITING");
+    let colour = if waiting { egui::Color32::from_rgb(255, 214, 90) } else { egui::Color32::from_white_alpha(200) };
+    let galley =
+        painter.layout_no_wrap(line.to_string(), egui::FontId::new(13.0, egui::FontFamily::Proportional), colour);
+    let at = egui::pos2(ctx.content_rect().center().x, ctx.content_rect().top() + 8.0);
+    let rect = egui::Align2::CENTER_TOP.anchor_size(at, galley.size()).expand2(egui::vec2(10.0, 4.0));
+    painter.rect_filled(rect, 10.0, egui::Color32::from_black_alpha(150));
+    painter.galley(rect.center() - galley.size() / 2.0, galley, colour);
 }
 
 /// A crosshair at `at` (points), over everything.
@@ -4352,7 +4572,12 @@ fn main() {
     match play.opts.game.clone() {
         Some(set) if play.games.iter().any(|g| g.id == set) || in_progress(&set) => {
             let players = play.opts.players;
-            play.start_game_n(&set, library::Start::New, players)
+            match play.opts.net.clone() {
+                // Network link play: the lobby (or the connecting page) opens over the launcher.
+                Some(NetMode::Join(addr)) => play.net_lobby_for(&set, None, Some(addr)),
+                Some(host) => play.net_lobby_for(&set, Some(host), None),
+                None => play.start_game_n(&set, library::Start::New, players),
+            }
         }
         Some(set) => {
             println!("no {set} in {}: choose a game", play.settings.rom.display());

@@ -8,7 +8,7 @@ lists its options.
 With no game given (`make play`, or `remodel-play` alone) it opens the
 launcher (below); `--game ID` (`make play GAME=ID`) starts that game
 straight away; `--players N` (`make play GAME=srallyc PLAYERS=2`) starts it
-as linked machines on one split screen ("Link play (same screen)", below).
+as linked machines on one split screen ("Link play (same screen)", below); `--host` and `--join HOST:PORT` start it as one machine of a linked game whose others are on other machines ("Network link play", below).
 At startup the reModel logo shows for 1.5 s, then fades out
 over 0.5 s over the launcher (or the game booting underneath). Any
 key, click or gamepad button skips it; `--no-splash` leaves it out. The
@@ -1173,6 +1173,92 @@ machine that cannot keep up is paced by the clock as a single game is
 none of the measured runs needed. *Unmeasured:* a slower GPU or CPU; four
 machines at 120 Hz; the pad's menu in link play beyond the checks above.
 
+
+## Network link play (a LAN)
+
+The same linked cabinets, each on its **own machine**: every player runs
+reModel, one **hosts**, the others **join**, and each window shows its own
+cabinet. The link board's blocks travel between the machines over UDP, in
+lockstep (`remodel-linknet`, `docs/hw/link-board.md` section 12). Sega Rally
+(`srallyc`, 2 to 4 machines) and Daytona USA (`daytona`, 2 to 8) can.
+
+**Hosting.** `make play GAME=srallyc PLAY_ARGS="--host"` (or `remodel-play
+--game srallyc --host [PORT]`; the port defaults to 47890), or in the launcher
+**Link play** (key L), then **Host a network game**. The panel shows this
+machine's LAN address and port ("192.168.1.20:47890"), lists the players as
+they join with their round trip, and has **Start the game** (at least two
+players). `--net-players N` starts by itself once N players are in. The host
+is player 1: CAR 1, the master, and the one whose settings everyone runs
+(srallyc's EEPROM settings; daytona starts from its default record).
+
+**Joining.** `remodel-play --game srallyc --join 192.168.1.20:47890`, or the
+launcher's **Link play**, **Join a network game**: type the host's address
+(the port may be left out) and press Enter, or pick a host the panel found on
+the network (hosts on the default port that are waiting in their lobby show up
+in a second). Each joiner is the next player. The window then shows the
+game's boot, board check and link attract by itself, like the same-screen
+set; coin up and start as at a row of cabinets.
+
+**What must match.** The same game, the same ROM files (a hash of the program
+ROMs), the same reModel version (the crate version) and protocol. A joiner
+that does not match is refused with the reason. The host picks D, the link
+delay, from the measured round trip (about one frame per 17 ms of one-way
+delay, plus one): on a wired LAN 1 or 2, over Wi-Fi 3 to 5. `remodel link-net`
+(below) has `--delay`.
+
+**Playing.** Controls are a single player's: the keyboard and the first
+gamepad, the game's own bindings. A small status line at the top of the window
+gives the players, D, the round trip and how often the picture was held to wait
+for another machine ("held 12x (0.4 s)"; "WAITING for the other player" when
+it has been over a quarter second). Lockstep never guesses, so a late packet
+holds *every* machine's frame (the picture freezes, the sound drops) and a slow
+machine slows everyone; the cure is a larger D or a better network.
+
+**What is off.** Smooth motion and run-ahead (as in same-screen link play),
+texture packs' temporal parts, the bezel and photo mode as there, and
+**save states, quick save/load, Continue and Reset game**: the machines
+cannot be saved or reset alone (the menu says so). The session's settings
+are the master's and nothing of your own (EEPROM, resume state) is written.
+**Esc** opens the menu over the game, but the game does not pause for the
+others: lockstep holds every machine's frame while one is in its menu (the
+link stays alive; the others see "WAITING"), so keep it short.
+
+**When it ends.** If a player leaves, quits the game or their machine goes
+silent for 5 seconds, every other machine drops back to the launcher with the
+reason ("player 2 left", "player 2 has been silent for 5.0 s: connection
+lost"). If the machines' state checks disagree (every 60 frames each host
+hashes the records it feeds its link; a damaged or misdelivered record
+shows) the session stops with the frame and both hashes. There is no mid-race
+recovery or rejoin: what a game would do with a missing cabinet is not
+known, so the session ends instead.
+
+**Firewall and ports.** The host listens on UDP, default port 47890
+(`--host PORT`), on all interfaces; its firewall must let that port in. The
+joiner needs nothing opened. With three or more machines each machine's port
+must be reachable by the others (the joiners' ports are random). Nothing is
+opened or changed by reModel; there is no internet traversal: for play across
+the internet use a VPN that makes the machines look like one LAN, or see
+`docs/hw/link-board.md` section 13 for what it would take.
+
+**Headless: `remodel link-net`.** The same session without a window, for
+tests and tuning, scripted inputs and all:
+
+```
+remodel --game srallyc --input "coin1@1500-1504,coin1@1560-1564,gas=0xff@3430-99999" \
+    link-net --host 47890 --nodes 2 --delay 3 --frames 4400          # on one machine
+remodel --game srallyc --input "..." link-net --join 192.168.1.20:47890 --frames 4400
+```
+
+Each prints its node's state hash (the same line `remodel link-run` prints for
+that node with the same inputs and delay: they must be equal), the stalls and
+the bandwidth. Fault injection for tests: `--latency MS --jitter MS --loss PCT
+--dup PCT --seed N` (on what that host sends), `--corrupt-rx-at F` (damage a
+received record: the state check must report it), `--tamper-byte OFF:V` (a
+settings byte changed after agreeing: the host refuses to start), `--leave-at F`.
+`make link-net-test` runs the whole set over loopback for both games
+(clean, 5% loss with 50 ms jitter, a polite leave, a kill, a settings
+mismatch, a damaged record) and checks every hash against `link-run`; it needs
+the ROMs.
 
 ## Keys
 

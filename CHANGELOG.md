@@ -16,6 +16,26 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- Linked play over a LAN: each machine runs its own linked cabinet (Sega Rally,
+  Daytona USA) and the link board's blocks travel between the hosts over UDP,
+  in lockstep with a fixed delay D (new crate `remodel-linknet`; no new
+  dependencies). One machine hosts and the others join by `IP:port` (or
+  pick a host found by LAN broadcast); the host picks D from the measured
+  round trip. `remodel-play --game srallyc --host` / `--join HOST:PORT`, and
+  the launcher's Link play panel (Host or Join a network game, with the
+  address and the players listed, a status line while playing). The hub
+  now gives each node a view of the others' records D - 1 frames late
+  (ready byte and IDs included), so a node is the same machine over a
+  network and in `remodel link-run` with the same inputs and D (D = 1:
+  unchanged hashes); `link-run` saves are now `LINKRUN-SAVE-2`. Whole-block
+  packets with acknowledgements and redundancy survive 5% loss and 50 ms
+  jitter with only stalls; state hashes are exchanged every 60 frames
+  and a mismatch stops the session with the frame and the hashes; a silent
+  or departed player ends it with a message. Save states are off in a
+  network game. Headless `remodel link-net` with fault injection and
+  `make link-net-test` (both games over loopback, each host's hash against
+  `link-run`'s). `docs/hw/link-board.md` sections 12 and 13: the design as
+  built and what internet play would need.
 - Linked Daytona draws its 3D scene in a straight run. The original Model 2's
   fixed-function geometrizer hung for good on a display list the game was
   still writing at a vblank (the link check's frames); it now ends that

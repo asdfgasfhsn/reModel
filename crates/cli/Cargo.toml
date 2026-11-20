@@ -25,4 +25,5 @@ remodel-png.workspace = true
 remodel-gpu.workspace = true
 remodel-recomp.workspace = true
 remodel-state.workspace = true
+remodel-linknet.workspace = true
 remodel-version.workspace = true

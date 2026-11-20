@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/i960", "crates/romset", "crates/analyze", "crates/model2", "crates/mb86235", "crates/mb86234", "crates/adsp2106x","crates/m68k", "crates/sound", "crates/mpeg", "crates/dsb", "crates/png", "crates/gpu", "crates/web", "crates/play", "crates/state", "crates/version", "crates/z80", "crates/recomp", "crates/jit", "crates/cli"]
+members = ["crates/i960", "crates/romset", "crates/analyze", "crates/model2", "crates/mb86235", "crates/mb86234", "crates/adsp2106x","crates/m68k", "crates/sound", "crates/mpeg", "crates/dsb", "crates/png", "crates/gpu", "crates/web", "crates/play", "crates/state", "crates/version", "crates/z80", "crates/recomp", "crates/jit", "crates/linknet", "crates/cli"]
 
 [workspace.package]
 edition = "2021"
@@ -26,6 +26,7 @@ remodel-version = { path = "crates/version" }
 remodel-z80 = { path = "crates/z80" }
 remodel-recomp = { path = "crates/recomp" }
 remodel-jit = { path = "crates/jit" }
+remodel-linknet = { path = "crates/linknet" }
 
 [profile.release]
 debug = true

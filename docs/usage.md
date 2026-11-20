@@ -73,6 +73,8 @@ make jit-hitch JIT_HITCH_OPTS="--geo native"   # frame-time hitches of the bench
 ./target/release/remodel --game topskatr --jit --jit-sync --input coin-start run 600000000   # the JIT translating on the thread that needs it, as before the workers (frame times: the hitches it caused)
 make state-check          # save state round trip: saved at frame 2000 and resumed must match an uninterrupted run (state hash and audio)
 make state-roundtrip      # save state round trips for several sets (topskatr, daytona, srallyc, lastbrnx) saved at frames 700, 1900 and 3300: each must end on the uninterrupted run's state hash
+make link-net NET="--host 47890 --nodes 2" GAME=srallyc   # networked link play without a window: this host runs one machine, `NET="--join HOST:PORT"` on the other host (docs/play.md, "Network link play")
+make link-net-test        # two processes over loopback, srallyc and daytona: each host's state hash equals link-run's, under 5% loss and 50 ms jitter too; leave, kill, settings and desync cases end with a message
 make link-state-check     # experimental: the same for two linked Daytonas (link-run), saved at 1900, 3100, 3200 and 3300
 make bench-all            # `make bench` for every set in tools/expected-hashes.txt that has ROMs; lists any state hash that differs
 make release-tag VERSION=0.8.0   # cut a release (below, "Versions and releases"); DRY_RUN=1 checks without tagging
@@ -81,6 +83,7 @@ make geo-fuzz GAME=sgt24h    # random display lists through the chip's program a
 make play                 # the launcher: pick a game (live attract previews, settings, Continue), then play; on the JITs (JIT=0: without them)
 make play GAME=hotd       # straight into a game (Esc or pad Guide or Start+Select menu, F5/F9 quick save/load, F11 fullscreen)
 make play GAME=srallyc PLAYERS=2   # link play: 2 to 4 linked machines of the game on one split screen, one controller each (keyboard P1, gamepads join with a button press; --players N, the launcher's Link play button; docs/play.md, "Link play")
+make play GAME=srallyc PLAY_ARGS="--host"   # network link play: host (the lobby shows this machine's address; --net-players N starts by itself); PLAY_ARGS="--join HOST:PORT" on the other machines, or the launcher's Link play, Host or Join a network game (docs/play.md, "Network link play")
 make play PLAY_ARGS=--smooth   # with in-between frames on a display over 60 Hz (a frame more latency)
 make play GAME=sgt24h PLAY_ARGS="--run-ahead 3"   # show the game 3 frames ahead: less input lag, 4x the emulation
 make play PLAY_ARGS="--bloom 50"   # bloom on the 3D layer's bright parts, 1 to 100 percent (off by default; docs/play.md)

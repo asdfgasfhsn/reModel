@@ -2618,6 +2618,7 @@ dependencies = [
  "remodel-analyze",
  "remodel-dsb",
  "remodel-gpu",
+ "remodel-linknet",
  "remodel-model2",
  "remodel-mpeg",
  "remodel-png",
@@ -2673,6 +2674,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "remodel-linknet"
+version = "0.11.1"
+dependencies = [
+ "remodel-model2",
+ "remodel-romset",
+]
+
+[[package]]
 name = "remodel-model2"
 version = "0.11.1"
 dependencies = [
@@ -2710,6 +2719,7 @@ dependencies = [
  "libc",
  "pollster",
  "remodel-gpu",
+ "remodel-linknet",
  "remodel-model2",
  "remodel-png",
  "remodel-recomp",

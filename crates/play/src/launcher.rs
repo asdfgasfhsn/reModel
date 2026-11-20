@@ -88,6 +88,20 @@ pub enum Action {
         set: String,
         players: usize,
     },
+    /// Host a network link session of `set` (the player makes the lobby's socket).
+    NetHost {
+        set: String,
+    },
+    /// Join one.
+    NetJoin {
+        set: String,
+    },
+    /// A network session is agreed: start `set` as one cabinet of it.
+    PlayNet {
+        set: String,
+        session: Box<linknet::Session>,
+        params: Box<linknet::Params>,
+    },
     /// Open the menu over the launcher (its settings).
     Settings,
     /// Close it (Esc, Start).
@@ -252,6 +266,8 @@ pub struct Launcher {
     saves: Option<SavesPage>,
     want_saves: bool,
     link_page: Option<LinkPage>,
+    /// The network link play panel (lobby or join), over everything else.
+    net_page: Option<crate::netpage::NetPage>,
     posters: HashMap<String, egui::TextureHandle>,
     /// Each poster blurred (a small copy, stretched), the carousel's
     /// background while the preview isn't there.
@@ -303,6 +319,7 @@ impl Default for Launcher {
             saves: None,
             want_saves: false,
             link_page: None,
+            net_page: None,
             posters: HashMap::new(),
             blurs: HashMap::new(),
             art: None,
@@ -541,7 +558,7 @@ impl Launcher {
 
     /// The Saves panel is open.
     pub fn saves_open(&self) -> bool {
-        self.saves.is_some() || self.want_saves || self.link_page.is_some()
+        self.saves.is_some() || self.want_saves || self.link_page.is_some() || self.net_page.is_some()
     }
 
     /// The keyboard's `Nav`s this frame (taken from egui's input, so the
@@ -638,6 +655,9 @@ impl Launcher {
                 }
             }
             Vec::new()
+        } else if self.net_page.is_some() && ctx.egui_wants_keyboard_input() {
+            // Typing an address: the keys are the text's.
+            Vec::new()
         } else {
             Self::keys(ctx)
         };
@@ -649,12 +669,16 @@ impl Launcher {
         }
         // The Saves panel and the menu take the input; the page behind
         // gets none (its focus just holds).
-        let page_navs =
-            if view.menu_open || self.saves.is_some() || self.link_page.is_some() { Vec::new() } else { all.clone() };
+        let page_navs = if view.menu_open || self.saves.is_some() || self.link_page.is_some() || self.net_page.is_some()
+        {
+            Vec::new()
+        } else {
+            all.clone()
+        };
         let page_navs = self.override_navs(page_navs);
         self.focus.show = self.pad_used || self.keys_used;
         let mut clicks = Vec::new();
-        if !(view.menu_open || self.saves.is_some() || self.link_page.is_some())
+        if !(view.menu_open || self.saves.is_some() || self.link_page.is_some() || self.net_page.is_some())
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::L))
         {
             clicks.push(Click::Link);
@@ -699,6 +723,12 @@ impl Launcher {
         }
         if self.link_page.is_some() {
             self.paint_link(ctx, &all, &mut actions);
+        }
+        if let Some(page) = &mut self.net_page {
+            let show = self.pad_used || self.keys_used;
+            if page.paint(ctx, &all, show, &mut actions) {
+                self.net_page = None;
+            }
         }
         actions
     }
@@ -1569,6 +1599,11 @@ impl Launcher {
         }
     }
 
+    /// Show the network link play panel (the player made its lobby or its join).
+    pub fn show_net(&mut self, page: crate::netpage::NetPage) {
+        self.net_page = Some(page);
+    }
+
     /// The Link play panel over the launcher: a row for each number of
     /// machines the game can link; one chosen starts the game with them.
     fn paint_link(&mut self, ctx: &egui::Context, navs: &[Nav], actions: &mut Vec<Action>) {
@@ -1581,6 +1616,7 @@ impl Launcher {
         let spec = menu::PanelSpec { game: page.game.title, heading: "Link play", back: true, extra_h: 0.0 };
         let max = crate::link::play_for(page.game.id).map_or(2, crate::link::max_players);
         let mut chosen = None;
+        let mut net: Option<bool> = None;
         let LinkPage { game, focus } = page;
         back |= menu::side_panel(ctx, &spec, &hints, |ui, reg| {
             let s = theme::scale(ui.ctx());
@@ -1601,12 +1637,30 @@ impl Launcher {
                         chosen = Some(n);
                     }
                 }
+                ui.add_space(14.0 * s);
+                ui.label(
+                    egui::RichText::new("Or each on its own machine, over the network (a LAN):")
+                        .size(15.0 * s)
+                        .color(theme::TEXT_2),
+                );
+                ui.add_space(6.0 * s);
+                if focus.menu_row(ui, "Host a network game", "this machine is player 1") {
+                    net = Some(true);
+                }
+                if focus.menu_row(ui, "Join a network game", "an address, or a host found") {
+                    net = Some(false);
+                }
             });
             false
         });
         page.focus.end();
         if let Some(players) = chosen {
             actions.push(Action::PlayLink { set: page.game.id.to_string(), players });
+            back = true;
+        }
+        if let Some(host) = net {
+            let set = page.game.id.to_string();
+            actions.push(if host { Action::NetHost { set } } else { Action::NetJoin { set } });
             back = true;
         }
         if back {

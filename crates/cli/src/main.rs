@@ -7,6 +7,7 @@ mod glyphs;
 mod gpu_check;
 mod light_report;
 mod lighting_check;
+mod link_net;
 mod link_run;
 mod look_render;
 mod music;
@@ -504,6 +505,14 @@ commands:
                        patched per node (master first); side-by-side pictures every
                        --shot-every frames and the handshake and block log
                        in --out DIR (default out/link-run)
+  link-net (--host [PORT] | --join HOST:PORT) [--nodes N] [--frames F] [--input S] [--delay D] ...
+                       linked play between hosts (docs/play.md, Network link
+                       play): this host runs one node of the game (srallyc,
+                       daytona), the others run theirs on other machines, the
+                       link blocks travelling over UDP in lockstep; headless,
+                       scripted, with fault injection (--loss, --latency ..)
+                       for tests; the same inputs and delay give each node
+                       link-run's state hash; `remodel link-net` prints its options
   studio SUB DIR ...   the uplift studio (docs/uplift-studio.md): init, select,
                        region, status, approve, pack, draft, style, variants,
                        text, seam, compare over a project directory; `remodel
@@ -1108,6 +1117,7 @@ fn main() -> ExitCode {
         "latency" => cmd_latency(&o, roms),
         "run" => cmd_run(&o, roms),
         "link-run" => link_run::run(&o, roms),
+        "link-net" => link_net::run(&o, roms),
         "sound-disasm" => cmd_sound_disasm(&o, roms),
         "sound-render" => cmd_sound_render(&o, roms),
         "music-render" | "mpeg-dump" => cmd_music_render_mpeg_dump(&o, roms),

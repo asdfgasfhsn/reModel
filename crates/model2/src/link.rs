@@ -116,14 +116,34 @@ pub const BLOCK: usize = 0x1c0;
 /// What the hub did at a frame boundary, for the harness's log.
 pub type HubLog = Vec<String>;
 
+/// What one node showed the link at one frame boundary: the board flags
+/// the game set (`started` is the write of 1 to `0x1A14000`, `master` of 1
+/// to `0x1A14002`, and the frame it started at) and, while started, the
+/// game's own block. This is all that crosses between machines, so it is
+/// also what a network carries (`remodel-linknet`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NodeRec {
+    pub started: bool,
+    pub master: bool,
+    pub start_frame: u64,
+    /// The block (`LinkPlay::block` bytes), empty while the node's board is not started.
+    pub tx: Vec<u8>,
+}
+
 /// The link board of a cabinet group, stepped by the host in lockstep
 /// (experimental, `docs/hw/link-board.md` section 8a). After every machine
-/// has run a frame, [`LinkHub::exchange`] reads each game's own block
-/// and fills each machine's received blocks in the order [`source`] gives:
-/// the node's own block last, at once, the others `delay` frames after
-/// they were sent (1: as soon as the echo). The ready byte, the node's ID
-/// (1-based: the master is 1) and the node count at `0x1A10000`,
-/// `0x1A10002` and `0x1A10003` come from the nodes' board starts.
+/// has run a frame, each node's record of the frame ([`LinkHub::put_local`])
+/// is added and [`LinkHub::apply`] fills each local machine's received
+/// blocks in the order [`source`] gives: the node's own block last, at once,
+/// the others `delay` frames after they were sent (1: as soon as the echo, so
+/// at boundary `F` a node sees the others' records of frame `F - (delay - 1)`).
+/// The ready byte, the node's ID (1-based: the master is 1) and the node
+/// count at `0x1A10000`, `0x1A10002` and `0x1A10003` come from the nodes'
+/// board starts, **as each node sees them**: its own at once, the others'
+/// `delay - 1` frames late like their blocks. So the hub works the same
+/// whether every node is in this process ([`LinkHub::exchange`]) or the
+/// records of some come over a network, a node needing only the records its
+/// view asks for ([`LinkHub::has_all`]).
 #[derive(Clone, Debug)]
 pub struct LinkHub {
     pub nodes: usize,
@@ -149,11 +169,15 @@ pub struct LinkHub {
     pub rx: usize,
     pub block: usize,
     pub id_base: u8,
-    ids: Vec<u8>,
-    ready: bool,
-    started: Vec<bool>,
-    /// Per node, its last `delay` blocks, newest last.
-    hist: Vec<std::collections::VecDeque<Vec<u8>>>,
+    /// Frames of records kept beyond what the views need (a network resends from them).
+    pub keep: u64,
+    /// Per receiving node: ready, the IDs it gave every node, the started
+    /// flags it last saw.
+    ready: Vec<bool>,
+    ids: Vec<Vec<u8>>,
+    seen: Vec<Vec<bool>>,
+    /// Per node, its records by frame.
+    recs: Vec<std::collections::BTreeMap<u64, NodeRec>>,
 }
 
 type Bus = crate::bus::Model2Bus;
@@ -186,10 +210,11 @@ impl LinkHub {
             rx: RX,
             block: BLOCK,
             id_base: 1,
-            ids: vec![0; nodes],
-            ready: false,
-            started: vec![false; nodes],
-            hist: vec![Default::default(); nodes],
+            keep: 0,
+            ready: vec![false; nodes],
+            ids: vec![vec![0; nodes]; nodes],
+            seen: vec![vec![false; nodes]; nodes],
+            recs: vec![Default::default(); nodes],
         }
     }
 
@@ -208,113 +233,194 @@ impl LinkHub {
 
     /// The ID the hub gave node `i` (valid once ready).
     pub fn id(&self, i: usize) -> u8 {
-        self.ids[i]
+        self.ids[i][i]
     }
 
+    /// Whether any node's board is up as it sees things.
     pub fn is_ready(&self) -> bool {
-        self.ready
+        self.ready.iter().any(|&r| r)
     }
 
-    /// One frame boundary: every machine has run frame `frame - 1`.
+    /// The largest delay of any node.
+    pub fn max_delay(&self) -> usize {
+        self.delays.iter().copied().max().unwrap_or(1)
+    }
+
+    /// Node `i`'s record of `frame`, if the hub has it.
+    pub fn rec(&self, node: usize, frame: u64) -> Option<&NodeRec> {
+        self.recs.get(node)?.get(&frame)
+    }
+
+    /// Add a node's record of `frame` (a local node's, or one that came from
+    /// the network). Returns false and keeps the first if there is one.
+    pub fn put(&mut self, node: usize, frame: u64, rec: NodeRec) -> bool {
+        match self.recs[node].entry(frame) {
+            std::collections::btree_map::Entry::Occupied(_) => false,
+            std::collections::btree_map::Entry::Vacant(v) => {
+                v.insert(rec);
+                true
+            }
+        }
+    }
+
+    /// Record local node `node`'s machine at the boundary `frame`: its board
+    /// flags and, while the board is started, its own block.
+    pub fn put_local(&mut self, node: usize, frame: u64, bus: &Bus) -> NodeRec {
+        let (started, master, start_frame) =
+            bus.link.as_ref().map_or((false, false, 0), |l| (l.started, l.master, l.start_frame));
+        let tx = match bus.link_ram() {
+            Some(r) if started => r[self.tx..self.tx + self.block].to_vec(),
+            _ => Vec::new(),
+        };
+        // The start frame matters only while started (and is what crosses the wire only then).
+        let start_frame = if started { start_frame } else { 0 };
+        let rec = NodeRec { started, master, start_frame, tx };
+        self.put(node, frame, rec.clone());
+        rec
+    }
+
+    /// The frame node `j`'s view takes the others' records from at `frame`.
+    fn view_frame(&self, j: usize, frame: u64) -> Option<u64> {
+        let d = self.delays[j].max(1) as u64;
+        (frame + 1).checked_sub(d)
+    }
+
+    /// Whether every record the local nodes' views need at boundary `frame`
+    /// is here: the others' records of `frame - (delay - 1)` (those before
+    /// the first frame need none), and the local nodes' own of `frame`.
+    pub fn has_all(&self, frame: u64, local: &[usize]) -> bool {
+        self.missing(frame, local).is_empty()
+    }
+
+    /// What [`LinkHub::has_all`] still waits for: `(node, frame)`.
+    pub fn missing(&self, frame: u64, local: &[usize]) -> Vec<(usize, u64)> {
+        let mut out = Vec::new();
+        for &j in local {
+            if !self.recs[j].contains_key(&frame) {
+                out.push((j, frame));
+            }
+            let Some(vf) = self.view_frame(j, frame) else { continue };
+            for i in (0..self.nodes).filter(|&i| i != j) {
+                // Frame numbers start at 1: there is no record of frame 0.
+                if vf >= 1 && !self.recs[i].contains_key(&vf) && !out.contains(&(i, vf)) {
+                    out.push((i, vf));
+                }
+            }
+        }
+        out
+    }
+
+    /// One frame boundary with every node here: every machine has run frame `frame - 1`.
     pub fn exchange(&mut self, frame: u64, buses: &mut [&mut Bus]) -> HubLog {
-        let mut log = HubLog::new();
         assert_eq!(buses.len(), self.nodes);
-        let flags: Vec<(bool, bool, u64)> = buses
-            .iter()
-            .map(|b| b.link.as_ref().map_or((false, false, 0), |l| (l.started, l.master, l.start_frame)))
-            .collect();
-        for (i, f) in flags.iter().enumerate() {
-            if f.0 != self.started[i] {
-                log.push(format!(
-                    "node {i} {} the board{}",
-                    if f.0 { "starts" } else { "stops" },
-                    if f.1 && f.0 { " (as master)" } else { "" }
-                ));
-                self.started[i] = f.0;
-            }
+        for (i, b) in buses.iter().enumerate() {
+            self.put_local(i, frame, b);
         }
-        let all = flags.iter().all(|f| f.0) && !(self.drop_at != 0 && frame >= self.drop_at);
-        if all && !self.ready {
-            // The master is 0, the others in the order they started.
-            let mut order: Vec<usize> = (0..self.nodes).collect();
-            order.sort_by_key(|&i| (!flags[i].1, flags[i].2, i));
-            for (id, &i) in order.iter().enumerate() {
-                self.ids[i] = id as u8;
+        let mut local: Vec<(usize, &mut Bus)> = buses.iter_mut().enumerate().map(|(i, b)| (i, &mut **b)).collect();
+        self.apply(frame, &mut local)
+    }
+
+    /// Boundary `frame` for the local machines `(node, bus)`, whose records
+    /// of it ([`LinkHub::put_local`]) and the others' needed ([`LinkHub::has_all`]) are in.
+    pub fn apply(&mut self, frame: u64, local: &mut [(usize, &mut Bus)]) -> HubLog {
+        let mut log = HubLog::new();
+        let n = self.nodes;
+        for (slot, (j, bus)) in local.iter_mut().enumerate() {
+            let j = *j;
+            let vf = self.view_frame(j, frame);
+            let flags: Vec<(bool, bool, u64)> = (0..n)
+                .map(|i| {
+                    let r = if i == j { self.recs[i].get(&frame) } else { vf.and_then(|f| self.recs[i].get(&f)) };
+                    r.map_or((false, false, 0), |r| (r.started, r.master, r.start_frame))
+                })
+                .collect();
+            for (i, f) in flags.iter().enumerate() {
+                if f.0 != self.seen[j][i] {
+                    if slot == 0 {
+                        log.push(format!(
+                            "node {i} {} the board{}",
+                            if f.0 { "starts" } else { "stops" },
+                            if f.1 && f.0 { " (as master)" } else { "" }
+                        ));
+                    }
+                    self.seen[j][i] = f.0;
+                }
             }
-            if let Some(f) = &self.fixed_ids {
-                self.ids.copy_from_slice(f);
+            let all = flags.iter().all(|f| f.0) && !(self.drop_at != 0 && frame >= self.drop_at);
+            if all && !self.ready[j] {
+                // The master is 0, the others in the order they started.
+                let mut order: Vec<usize> = (0..n).collect();
+                order.sort_by_key(|&i| (!flags[i].1, flags[i].2, i));
+                for (id, &i) in order.iter().enumerate() {
+                    self.ids[j][i] = id as u8;
+                }
+                if let Some(f) = &self.fixed_ids {
+                    self.ids[j].copy_from_slice(f);
+                }
+                if slot == 0 {
+                    if flags.iter().filter(|f| f.1).count() != 1 {
+                        log.push("warning: not exactly one master among the started nodes".into());
+                    }
+                    log.push(format!("link ready: IDs {:?}, {} nodes", self.ids[j], n));
+                }
+                self.ready[j] = true;
+            } else if !all && self.ready[j] {
+                self.ready[j] = false;
+                if slot == 0 {
+                    log.push("link down".into());
+                }
             }
-            if flags.iter().filter(|f| f.1).count() != 1 {
-                log.push("warning: not exactly one master among the started nodes".into());
-            }
-            self.ready = true;
-            for h in &mut self.hist {
-                h.clear();
-            }
-            log.push(format!("link ready: IDs {:?}, {} nodes", self.ids, self.nodes));
-        } else if !all && self.ready {
-            self.ready = false;
-            log.push("link down".into());
-        }
-        let total = self.nodes as u8;
-        for (i, b) in buses.iter_mut().enumerate() {
-            b.link_set_ready(self.ready, self.ids[i] + if self.layout == 3 { self.id_base } else { 0 }, total);
-        }
-        if !self.ready {
-            return log;
-        }
-        let (tx_at, rx_at, block) = (self.tx, self.rx, self.block);
-        let tx: Vec<Vec<u8>> =
-            buses.iter().map(|b| b.link_ram().map_or(vec![0; block], |r| r[tx_at..tx_at + block].to_vec())).collect();
-        for (i, t) in tx.iter().enumerate() {
-            if self.freeze.is_some_and(|(n, f)| n == i && frame >= f) {
+            let id = self.ids[j][j] + if self.layout == 3 { self.id_base } else { 0 };
+            bus.link_set_ready(self.ready[j], id, n as u8);
+            if !self.ready[j] {
                 continue;
             }
-            self.hist[i].push_back(t.clone());
-            if self.hist[i].len() > self.delays.iter().copied().max().unwrap_or(1) {
-                self.hist[i].pop_front();
-            }
-        }
-        for (i, b) in buses.iter_mut().enumerate() {
-            let me = self.ids[i] as usize;
-            let n = self.nodes;
+            let me = self.ids[j][j] as usize;
             for k in 0..n {
                 let want = source(self.layout, me, k, n);
-                let src = (0..n).find(|&j| self.ids[j] as usize == want).unwrap();
-                if src == i {
-                    b.link_rx_write_at(rx_at, block, k, &tx[i]);
-                    continue;
-                }
-                let d = self.delays[i];
-                if self.hist[src].len() >= d {
-                    let blk = self.hist[src][self.hist[src].len() - d].clone();
-                    b.link_rx_write_at(rx_at, block, k, &blk);
+                let src = (0..n).find(|&x| self.ids[j][x] as usize == want).unwrap();
+                let rec = if src == j { self.recs[j].get(&frame) } else { vf.and_then(|f| self.recs[src].get(&f)) };
+                let frozen =
+                    src != j && vf.is_some_and(|f| self.freeze.is_some_and(|(fnode, at)| fnode == src && f >= at));
+                if let (Some(r), false) = (rec, frozen) {
+                    if r.tx.len() == self.block {
+                        bus.link_rx_write_at(self.rx, self.block, k, &r.tx);
+                    }
                 }
             }
+        }
+        // Forget what no view will ask for again.
+        let lo = frame.saturating_sub(self.max_delay() as u64 + self.keep);
+        for r in &mut self.recs {
+            *r = r.split_off(&lo);
         }
         log
     }
 
-    /// The hub's state and the nodes' board flags, for a save together with
-    /// the machines' (the flags live in each bus's [`Link`], outside the
-    /// machine's own state).
+    /// The hub's state and the local nodes' board flags, for a save together
+    /// with the machines' (the flags live in each bus's [`Link`], outside the
+    /// machine's own state). `buses` is every node's, in node order.
     pub fn save(&self, buses: &[&mut Bus]) -> Vec<u8> {
-        let mut o = vec![self.nodes as u8, self.delay as u8, self.ready as u8];
+        let mut o = vec![self.nodes as u8, self.delay as u8];
         o.extend((self.block as u16).to_le_bytes());
         o.extend(self.delays.iter().map(|&d| d as u8));
         o.extend(self.drop_at.to_le_bytes());
         for (i, b) in buses.iter().enumerate() {
             let l = b.link.as_ref();
-            o.extend([
-                self.ids[i],
-                self.started[i] as u8,
-                l.is_some_and(|l| l.started) as u8,
-                l.is_some_and(|l| l.master) as u8,
-            ]);
+            o.extend([self.ready[i] as u8]);
+            o.extend(&self.ids[i]);
+            o.extend(self.seen[i].iter().map(|&s| s as u8));
+            o.extend([l.is_some_and(|l| l.started) as u8, l.is_some_and(|l| l.master) as u8]);
             o.extend(l.map_or(0, |l| l.start_frame).to_le_bytes());
-            o.push(self.hist[i].len() as u8);
-            for h in &self.hist[i] {
-                o.extend(h);
+        }
+        for r in &self.recs {
+            o.extend((r.len() as u32).to_le_bytes());
+            for (f, rec) in r {
+                o.extend(f.to_le_bytes());
+                o.push(rec.started as u8 | (rec.master as u8) << 1);
+                o.extend(rec.start_frame.to_le_bytes());
+                o.extend((rec.tx.len() as u16).to_le_bytes());
+                o.extend(&rec.tx);
             }
         }
         o
@@ -324,33 +430,44 @@ impl LinkHub {
         let short = || "link hub state truncated".to_string();
         let nodes = *data.first().ok_or_else(short)? as usize;
         let delay = *data.get(1).ok_or_else(short)? as usize;
-        let ready = *data.get(2).ok_or_else(short)? != 0;
-        if nodes != buses.len() {
+        if nodes != buses.len() || !(1..=8).contains(&nodes) {
             return Err(format!("the save has {nodes} nodes, the run {}", buses.len()));
         }
-        let block = u16::from_le_bytes(data.get(3..5).ok_or_else(short)?.try_into().unwrap()) as usize;
+        let block = u16::from_le_bytes(data.get(2..4).ok_or_else(short)?.try_into().unwrap()) as usize;
         let mut hub = LinkHub::new(nodes, delay);
         hub.block = block;
-        hub.ready = ready;
-        for (i, d) in data.get(5..5 + nodes).ok_or_else(short)?.iter().enumerate() {
+        for (i, d) in data.get(4..4 + nodes).ok_or_else(short)?.iter().enumerate() {
             hub.delays[i] = *d as usize;
         }
-        let at0 = 5 + nodes;
+        let at0 = 4 + nodes;
         hub.drop_at = u64::from_le_bytes(data.get(at0..at0 + 8).ok_or_else(short)?.try_into().unwrap());
         let mut at = at0 + 8;
         for (i, b) in buses.iter_mut().enumerate() {
-            let f = data.get(at..at + 13).ok_or_else(short)?;
-            hub.ids[i] = f[0];
-            hub.started[i] = f[1] != 0;
-            if let Some(l) = b.link.as_mut() {
-                (l.started, l.master) = (f[2] != 0, f[3] != 0);
-                l.start_frame = u64::from_le_bytes(f[4..12].try_into().unwrap());
+            let len = 1 + 2 * nodes + 2 + 8;
+            let f = data.get(at..at + len).ok_or_else(short)?;
+            at += len;
+            hub.ready[i] = f[0] != 0;
+            hub.ids[i].copy_from_slice(&f[1..1 + nodes]);
+            for (s, v) in hub.seen[i].iter_mut().zip(&f[1 + nodes..1 + 2 * nodes]) {
+                *s = *v != 0;
             }
-            let n = f[12] as usize;
-            at += 13;
-            for _ in 0..n {
-                hub.hist[i].push_back(data.get(at..at + block).ok_or_else(short)?.to_vec());
-                at += block;
+            let g = &f[1 + 2 * nodes..];
+            if let Some(l) = b.link.as_mut() {
+                (l.started, l.master) = (g[0] != 0, g[1] != 0);
+                l.start_frame = u64::from_le_bytes(g[2..10].try_into().unwrap());
+            }
+        }
+        for i in 0..nodes {
+            let count = u32::from_le_bytes(data.get(at..at + 4).ok_or_else(short)?.try_into().unwrap());
+            at += 4;
+            for _ in 0..count {
+                let h = data.get(at..at + 19).ok_or_else(short)?;
+                let (frame, fl) = (u64::from_le_bytes(h[0..8].try_into().unwrap()), h[8]);
+                let start_frame = u64::from_le_bytes(h[9..17].try_into().unwrap());
+                let len = u16::from_le_bytes([h[17], h[18]]) as usize;
+                let tx = data.get(at + 19..at + 19 + len).ok_or_else(short)?.to_vec();
+                at += 19 + len;
+                hub.recs[i].insert(frame, NodeRec { started: fl & 1 != 0, master: fl & 2 != 0, start_frame, tx });
             }
         }
         Ok(hub)

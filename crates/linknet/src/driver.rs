@@ -1,0 +1,119 @@
+//! The frame-boundary exchange of a networked link: what `LinkHub::exchange`
+//! does for machines in one process, with the other hosts' records coming over
+//! the session. The host runs its frame, calls [`NetLink::boundary`], and if
+//! that says [`Step::Stalled`] runs nothing and calls it again (after other
+//! work, or a short sleep) until it says done: the others' records for the
+//! frame the delay asks for are then in and the machine goes on, exactly as
+//! it would in a same-process run with the same delay.
+
+use crate::session::{End, Event, Session};
+use crate::wire::Params;
+use model2::bus::Model2Bus as Bus;
+use model2::link::{HubLog, LinkHub};
+use std::time::{Duration, Instant};
+
+pub enum Step {
+    /// The boundary was passed; the hub's log lines.
+    Done(HubLog),
+    /// The others' records for this boundary have not all arrived.
+    Stalled,
+    /// The session is over.
+    End(End),
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct StallStats {
+    /// Boundaries that had to wait, and the time spent waiting (all, and the longest).
+    pub stalls: u64,
+    pub stall_time: Duration,
+    pub longest: Duration,
+    pub boundaries: u64,
+}
+
+pub struct NetLink {
+    pub hub: LinkHub,
+    pub sess: Session,
+    local: Vec<usize>,
+    put_frame: u64,
+    waiting_since: Option<Instant>,
+    pub stalls: StallStats,
+}
+
+impl NetLink {
+    pub fn new(mut hub: LinkHub, sess: Session) -> NetLink {
+        // Records are kept a while for the session's own resends and checks.
+        hub.keep = 0;
+        let local = sess.local_nodes().to_vec();
+        NetLink { hub, sess, local, put_frame: 0, waiting_since: None, stalls: StallStats::default() }
+    }
+
+    pub fn params(&self) -> &Params {
+        &self.sess.params
+    }
+
+    /// The local nodes (in the order `buses` is given to [`NetLink::boundary`]).
+    pub fn local_nodes(&self) -> &[usize] {
+        &self.local
+    }
+
+    /// The machines have run frame `frame - 1` (`frame` counts from 1, as `Machine::frames`
+    /// does): make their records, send them, and pass the boundary if the
+    /// others' have arrived.
+    pub fn boundary(&mut self, frame: u64, buses: &mut [&mut Bus]) -> Step {
+        assert_eq!(buses.len(), self.local.len());
+        if self.put_frame != frame {
+            for (k, &node) in self.local.iter().enumerate() {
+                let rec = self.hub.put_local(node, frame, buses[k]);
+                self.sess.publish(node, frame, rec);
+            }
+            self.put_frame = frame;
+            self.stalls.boundaries += 1;
+        }
+        for ev in self.sess.pump() {
+            let Event::Rec { node, frame, rec } = ev;
+            self.hub.put(node, frame, rec);
+        }
+        // A desync or a lost connection stops at once; a host that has said goodbye
+        // has left us what it sent, and only what it never sent ends the session.
+        if let Some(e) = self.sess.end.as_ref().filter(|e| !matches!(e, End::Left { .. })) {
+            return Step::End(e.clone());
+        }
+        if !self.hub.has_all(frame, &self.local) {
+            if let Some(e) = &self.sess.end {
+                return Step::End(e.clone());
+            }
+            self.waiting_since.get_or_insert_with(Instant::now);
+            return Step::Stalled;
+        }
+        if let Some(t) = self.waiting_since.take() {
+            let d = t.elapsed();
+            self.stalls.stalls += 1;
+            self.stalls.stall_time += d;
+            self.stalls.longest = self.stalls.longest.max(d);
+        }
+        let mut local: Vec<(usize, &mut Bus)> =
+            self.local.iter().copied().zip(buses.iter_mut().map(|b| &mut **b)).collect();
+        Step::Done(self.hub.apply(frame, &mut local))
+    }
+
+    /// While the machine is not running (a menu over the game): keep the session
+    /// alive and take what arrives, so the others see a host that is only paused.
+    pub fn keepalive(&mut self) {
+        for ev in self.sess.pump() {
+            let Event::Rec { node, frame, rec } = ev;
+            self.hub.put(node, frame, rec);
+        }
+    }
+
+    /// After the last boundary: keep the session going until the other hosts
+    /// hold everything of ours they will need (or `limit` passes), then say goodbye.
+    /// Returns when it is time to stop.
+    pub fn linger(&mut self, last: u64, limit: Duration) {
+        let t = Instant::now();
+        while t.elapsed() < limit && self.sess.end.is_none() && self.sess.acked_by_all() < last {
+            let _ = self.sess.pump();
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        self.sess.bye("finished");
+    }
+}

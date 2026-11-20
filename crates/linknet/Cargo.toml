@@ -1,0 +1,13 @@
+[package]
+name = "remodel-linknet"
+description = "LAN linked play: the link board's blocks between hosts over UDP, in lockstep"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "linknet"
+
+[dependencies]
+remodel-model2.workspace = true
+remodel-romset.workspace = true
