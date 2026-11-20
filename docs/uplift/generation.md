@@ -104,7 +104,7 @@ All deterministic, all in reModel, no Python or ImageMagick needed.
 | Only visible texels change | Composite over the mask; outside it keep the recipe's result or the original; pad island edges |
 | Palette | Optional per category: snap to the style's palette in a perceptual colour space |
 | Seamless | For each repeated axis: measure the seam first, and only if it fails roll by half, repair the seam band and measure again. The `seamless` levelling in `crates/cli/src/studio_img.rs:417` is the start |
-| Overall colour | Optional: put back the original's low-frequency colour, as the upscaler path does (`docs/enhancements.md`, "Batch texture upscaling"). Untested, and the only step that would have held the colours in the real-model spike |
+| Overall colour | Optional. For restyled art: one gain per channel that brings the mean colour back to the original's. For faithful upscales: the original's low-frequency colour, as the upscaler path does (`docs/enhancements.md`, "Batch texture upscaling"). The second spoils flat art (the real-model spike below) |
 
 ### 4. Check and classify
 
@@ -115,7 +115,7 @@ outcome:
 |---|---|
 | `ok` | Written to `draft/<slug>.png`; the asset becomes `checked`, since the gates have run |
 | `gate:<name>` | Retry, with the gate's fix line added to the prompt, up to a limit |
-| `refused` | No retry; report the lint's suggestion. A refusal took 5 s in the real-model spike, so one retry with the lint's wording may be worth allowing (not tested) |
+| `refused` | One retry with the lint's wording, then report. A refusal took 5 s in the real-model spike and the reworded call went through |
 | `timeout`, `rate-limited` | Retry later |
 | `bad-output` | No image, a mockup with a border, or the wrong subject |
 
@@ -194,10 +194,33 @@ sign, a face and a striped cone.
   and pass, and a recipe would have made them for nothing.
 - **The registration score is not a gate.** It read 0.02 to 0.15 on
   images that were right.
-- Not tested: a retry after a gate failure, a retry after a refusal,
-  timeouts and rate limits, the palette and overall-colour steps, more
-  than one reference, more than two calls at once, and whether a second
-  call gives the same size. Ten assets is a count, not a rate.
+- Not tested: a retry after a gate failure, timeouts and rate limits,
+  the palette step, more than one reference, more than two calls at
+  once, and whether a second call gives the same size. Ten assets is a
+  count, not a rate.
+
+**Two follow-ups the same day.**
+
+- **The face went through with one word changed.** The same call with
+  "only change their style" in place of "only redraw them in the new
+  style" returned an image in 49 s that passes the gates, with brows,
+  nose and mouth where the original's are. One call each way does not
+  prove the word was the cause.
+- **The colour step works as one gain per channel, not as the
+  upscaler's rule.** Tried on the nine results and the face, with no
+  calls. Drift is the largest difference in mean colour, in levels of
+  255.
+
+| Colour step | Worst drift of the ten | By eye |
+|---|---|---|
+| None | 89 | Skin orange, cloth salmon, ground mint |
+| The upscaler's low-pass difference, 2 texels wide | 11 | Colour returns, and so do the original's soft shading and blotches: halos round ink lines, gradients on flat areas |
+| One added shift per channel | 14 | Flat stays flat, but dark ink is tinted: the face's black lines turn blue |
+| One gain per channel | 10 | Flat stays flat and ink stays dark. Bright areas clip a little |
+
+  Every variant still passes the gates. One gain cannot fix a texture
+  of several colours: the cone's white stripe turned pink. A gain per
+  colour region was not tried.
 
 ### 5. Record
 
@@ -265,7 +288,8 @@ job records its time, so a pack's report can say what its art cost.
 - **How much colour may a restyle change?** The real-model spike's
   images took their colours from the reference. Whether that is wanted
   is the pack lead's call per category; the adapter needs a switch and
-  a number to report.
+  a number to report. The step itself is spiked; a `colour` warning in
+  the gates (mean drift over some limit) is not.
 - **Material maps from a model.** Nothing found evaluates normal or
   roughness estimation on stylised low-resolution art. `make
   pack-materials` reads height from brightness today, with known flaws.
@@ -281,7 +305,7 @@ job records its time, so a pack's report can say what its art cost.
 4. The fit test and the `repaired` and `refit` outcomes from the offline
    spike.
 5. Done as a spike on 2026-11-20: ten assets through a real image model
-   with the adapter, 9 passing on the first call and one refused. Next,
-   with a yes each time since images leave the machine: the refused face
-   again with the wording changed, and the overall-colour step on the
-   three that changed colour.
+   with the adapter, 9 passing on the first call and one refused; the
+   refused one passed with a word changed, and a per-channel gain put
+   the colours back. Any further run needs a yes, since images leave
+   the machine.
