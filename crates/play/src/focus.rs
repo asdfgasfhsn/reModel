@@ -215,7 +215,13 @@ impl Focus {
     }
 
     /// A two-line menu row ([`crate::theme::menu_row2`]), clicked or accepted.
-    pub fn menu_row2(&mut self, ui: &mut egui::Ui, key: impl std::hash::Hash + std::fmt::Debug, title: &str, sub: &str) -> bool {
+    pub fn menu_row2(
+        &mut self,
+        ui: &mut egui::Ui,
+        key: impl std::hash::Hash + std::fmt::Debug,
+        title: &str,
+        sub: &str,
+    ) -> bool {
         let id = ui.make_persistent_id(("menu-row2", key));
         let r = crate::theme::menu_row2(ui, id, title, sub, self.is_on(id));
         self.register(ui, &r)
