@@ -1026,7 +1026,7 @@ the cabinets' own network joined them. Only games with an entry in `crates/romse
 (`romset::LinkPlay`: how many cabinets, where the game keeps the setting that
 makes a cabinet CAR 1 to CAR N and what its checksum is, the link RAM layout)
 can, and the player splits the screen for the ones it lists
-(`link::SPLIT_GAMES`); today that is Sega Rally (`srallyc`, up to 4). `daytona` links in `remodel link-run` (up to 8) but is left out of the split screen until its straight linked race draws 3D again (`docs/games/daytona.md`).
+(`link::SPLIT_GAMES`); today that is Sega Rally (`srallyc`) and Daytona USA (`daytona`), up to 4 on one screen (`remodel link-run` runs Daytona with up to 8). Daytona keeps its settings on the I/O board, so its linked machines start from the manifest's default record rather than the player's own settings.
 
 **Starting it.** `make play GAME=srallyc PLAYERS=2` (2 to 4), or
 `remodel-play --game srallyc --players 2`. In the launcher a game that can

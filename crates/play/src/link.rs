@@ -20,10 +20,8 @@ use model2::Machine;
 use std::path::PathBuf;
 
 /// The games the player splits the screen for, and the most machines on
-/// one screen (the layout's quadrants). `daytona` links (`romset::games::link_play`)
-/// but a straight linked race draws no 3D yet (`docs/games/daytona.md`), so it is
-/// left out until that is fixed.
-const SPLIT_GAMES: &[&str] = &["srallyc"];
+/// one screen (the layout's quadrants).
+const SPLIT_GAMES: &[&str] = &["srallyc", "daytona"];
 pub const MAX_ON_SCREEN: usize = 4;
 
 /// The link data of `id` if it can be played linked on one screen.
@@ -41,6 +39,9 @@ pub fn max_players(play: &romset::LinkPlay) -> usize {
 pub fn load_settings(bus: &mut model2::bus::Model2Bus, play: &romset::LinkPlay, base: Option<&[u8]>, i: usize) {
     let role = *play.roles.get(i).or(play.roles.last()).unwrap();
     let car: Vec<(usize, u8)> = play.car_off.map(|o| (o, i as u8)).into_iter().collect();
+    // The player's own files hold an EEPROM image; a game that keeps its
+    // settings on the I/O board starts from the manifest's default record.
+    let base = base.filter(|_| matches!(play.settings.store, romset::SettingsStore::Eeprom));
     let image = play.settings.image(base, play.role_off, role, &car);
     match play.settings.store {
         romset::SettingsStore::Eeprom => bus.eeprom.load(&image),
