@@ -1275,9 +1275,9 @@ texture packs' temporal parts, the bezel and photo mode as there, and
 **save states, quick save/load, Continue and Reset game**: the machines
 cannot be saved or reset alone (the menu says so). The session's settings
 are the master's and nothing of your own (EEPROM, resume state) is written.
-**Esc** opens the menu over the game, but the game does not pause for the
-others: lockstep holds every machine's frame while one is in its menu (the
-link stays alive; the others see "WAITING"), so keep it short.
+**Esc** opens the menu over the game, but a network game doesn't pause:
+the game runs on underneath (the menu says "Menu", not "Paused") with your
+controls let go while it is open, so nobody else's race is held up.
 
 **When it ends.** If a player leaves, quits the game or their machine goes
 silent for 5 seconds, every other machine drops back to the launcher with the

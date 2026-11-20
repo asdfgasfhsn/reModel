@@ -210,6 +210,9 @@ pub struct View<'a> {
     /// Link play: how many machines are linked in the window (None: a
     /// single game). The picture and sound rows offer its settings.
     pub link: Option<usize>,
+    /// A network game: the game runs on under the menu (the others would
+    /// wait for it), so the menu says so instead of "Paused".
+    pub running: bool,
 }
 
 /// What the picture pages tell a player about where a change is kept
@@ -508,7 +511,8 @@ impl Menu {
             return actions;
         }
         self.picture.wipe_rect = None;
-        if view.playing.is_some() && !self.picture.comparing(self.page) && self.page != Page::Controls {
+        if view.playing.is_some() && !view.running && !self.picture.comparing(self.page) && self.page != Page::Controls
+        {
             paused_pill(ctx);
         }
         let keys = if self.capture.is_none() { menu_keys(ctx) } else { Vec::new() };
@@ -588,7 +592,7 @@ impl Menu {
         };
         let spec = PanelSpec {
             game: view.playing.or(view.game.map(|g| g.title)).unwrap_or("reModel"),
-            heading: if playing { "Paused" } else { "Menu" },
+            heading: if playing && !view.running { "Paused" } else { "Menu" },
             back: false,
             extra_h: 0.0,
         };
@@ -1314,6 +1318,7 @@ mod tests {
                 look: None,
                 pad: Default::default(),
                 link: None,
+                running: false,
                 picture: Some([0.0, 0.0, self.size.x, self.size.y]),
                 keeps: Keeps { all_games: Preset::Sharp, own_picture: false },
             };
@@ -1900,6 +1905,7 @@ mod tests {
                 look: None,
                 pad: Default::default(),
                 link: None,
+                running: false,
                 picture: None,
                 keeps: Keeps::default(),
             };
@@ -1979,6 +1985,7 @@ mod tests {
                 look: None,
                 pad: Default::default(),
                 link: None,
+                running: false,
                 picture: None,
                 keeps: Keeps::default(),
             };

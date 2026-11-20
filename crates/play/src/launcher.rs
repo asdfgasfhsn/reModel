@@ -670,8 +670,8 @@ impl Launcher {
                 }
             }
             Vec::new()
-        } else if self.net_page.is_some() && ctx.egui_wants_keyboard_input() {
-            // Typing an address: the keys are the text's.
+        } else if ctx.egui_wants_keyboard_input() {
+            // Typing an address or a name: the keys are the text's.
             Vec::new()
         } else {
             Self::keys(ctx)

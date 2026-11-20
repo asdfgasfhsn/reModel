@@ -2202,6 +2202,7 @@ impl Play {
                 look: look_now.as_deref(),
                 pad: controls::PadLive::default(),
                 link: None,
+                running: false,
             };
             let lui = link_ui(Some(&*s), self.gilrs.as_ref(), link_views.as_ref());
             draw_overlay(g, &target, false, [w, h], Some(ppp), |ctx| {
@@ -2674,12 +2675,17 @@ impl Play {
             }
             return;
         }
+        // The menu open over a running game (a network game's): the controls
+        // are the menu's, the game's let go.
+        let in_menu = self.menu.open;
+        let none = HashSet::new();
+        let (pad, keys) = if in_menu { (None, &none) } else { (pad, &self.keys) };
         match &s.script {
             Some(script) => script.apply(s.machine.frames, &mut s.machine.bus),
             None => {
                 let tuning = self.values.tuning;
                 let dirs = controls::read_sticks(&mut self.stick_dirs, pad.as_ref(), tuning);
-                let devices = controls::Devices { keys: &self.keys, pad, gate: &self.gate, tuning, dirs };
+                let devices = controls::Devices { keys, pad, gate: &self.gate, tuning, dirs };
                 let bus = &mut s.machine.bus;
                 let b = &s.bindings;
                 model2::input::apply_player(bus, &[(b, &devices)]);
@@ -2687,7 +2693,7 @@ impl Play {
                     use model2::input::{apply_gun, held, GunState};
                     let (reload0, reload1) = (held(&devices, b.reload(0)), held(&devices, b.reload(1)));
                     let mut stick = self.stick.update(&devices, b);
-                    if self.mouse_used {
+                    if self.mouse_used && !in_menu {
                         let [trigger, reload] = self.mouse_buttons;
                         apply_gun(bus, 0, GunState { at: mouse_aim, trigger, reload: reload || reload0 });
                         stick.reload |= reload1;
@@ -2743,7 +2749,10 @@ impl Play {
                 return Ok(0);
             }
         }
-        if self.menu.open || self.session.is_none() || self.photo.is_some() {
+        // A network game doesn't pause for the menu: the others would wait for
+        // it. The game runs on underneath with this player's controls let go.
+        let net_game = self.session.as_ref().is_some_and(|s| s.net.is_some() && !s.preview);
+        if (self.menu.open && !net_game) || self.session.is_none() || self.photo.is_some() {
             // A network game keeps its link alive while paused (the others wait for it).
             if let Some(n) = self.session.as_mut().and_then(|s| s.net.as_mut()) {
                 n.link.keepalive();
@@ -2791,8 +2800,8 @@ impl Play {
         while self.session.as_ref().is_some_and(|s| s.machine.frames < due || held(s)) && ran < catch_up {
             if self.session.as_ref().is_some_and(|s| !s.preview && !held(s)) {
                 self.apply_inputs();
-                // The pad opened the menu: pause now.
-                if self.menu.open {
+                // The pad opened the menu: pause now (not in a network game).
+                if self.menu.open && !net_game {
                     break;
                 }
             }
@@ -3304,6 +3313,7 @@ impl Play {
                 look: look_now.as_deref(),
                 pad: pad_live,
                 link: self.session.as_ref().and_then(|s| s.link.as_ref()).map(|l| l.n()),
+                running: self.session.as_ref().is_some_and(|s| s.net.is_some() && !s.preview),
             };
             let link_ui = link_ui(self.session.as_ref(), self.gilrs.as_ref(), g.link.as_ref());
             let net_line =
@@ -3786,6 +3796,7 @@ impl Play {
             look: None,
             pad: pad_live,
             link: None,
+            running: false,
         };
         let navs = std::mem::take(&mut self.navs);
         let mut values = self.values.clone();
