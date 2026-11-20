@@ -105,13 +105,13 @@ frame with the recorded one. Runs are bit-exact across the
 interpreter, the JITs and the recompiler (the engine rows of
 `docs/status.md`; `make state-check`), so a
 different hash means the emulation changed and the scene is rebuilt.
-Two cases to design for. A reused output folder carries `eeprom.bin`
+One case to design for. A reused output folder carries `eeprom.bin`
 over from the last run and changes the hash by itself, so a recipe must
-start from a stated EEPROM and a fresh folder. And a state reached by
-chained state loads did not hash the same as the same frame reached in
-one run, cause not found, so a scene reached by chaining (a `from=`
-branch in [content-coverage.md](content-coverage.md)) is checked by its
-picture and its catalogue entries, not by hash.
+start from a stated EEPROM and a fresh folder. With that, a state
+reached by chained state loads is byte-equal to the same frame reached
+in one run ([content-coverage.md](content-coverage.md), E4), so a scene
+reached by chaining (a `from=` branch) is checked by hash like any
+other.
 
 ### Three ways to draw a scene
 

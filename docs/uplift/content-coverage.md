@@ -179,11 +179,10 @@ What it can and cannot do (E4):
 - **A try is two passes.** A try costs about 2 seconds, and the catalogue
   is 60 to 70% of it. So run plainly with the read map first, and run the
   catalogue only on tries that read something new.
-- **A branch tour is checked by its pictures and its catalogue entries,
-  not by state hash.** A state reached by chained loads is not
-  byte-equal to the same frame reached in one run, though later pictures
-  are identical. The cause is not found (the script's step arithmetic is
-  one suspect).
+- **A branch tour can be checked by state hash.** A state reached by
+  chained loads is byte-equal to the same frame reached in one run from
+  power-on, as long as that run starts in a fresh folder (E4,
+  corrected).
 
 An agent sits on top for what the crawler cannot do: read a new screen,
 recognise "this is a course select with three entries", and decide what
@@ -240,9 +239,10 @@ Outside uplift, and noted for whoever owns emulation. The crawler runs
 thousands of short, varied sessions from saved states, which is also a
 test.
 
-- **It has already found two things** nobody was looking for: a state
-  reached by chained loads that does not hash like a straight run, and
-  a leftover `eeprom.bin` changing a run (E2, E4).
+- **It has already found one thing** nobody was looking for: a leftover
+  `eeprom.bin` changing a run (E2). A second report, a chained-load
+  state that did not hash like a straight run, was the same thing seen
+  again (E4, corrected).
 - **What it could report with little more:** a tour that does not give
   the same state hash twice, a panic or a hang, and the count of
   instructions and ROM data no session has reached. Each failure comes
@@ -413,12 +413,20 @@ Observed:
   start and state load are a tenth.
 - The credit counter made a "new screen" per digit: 36 screens by the
   catalogue's count, about 12 by eye.
-- A state reached by chained loads is not byte-equal to the same frame
-  reached in one run. Its hash and instruction pointer differed, while
-  pictures 120 and 300 frames later were identical, even after 44 hops.
+- As first reported, a state reached by chained loads was not
+  byte-equal to the same frame reached in one run: its hash and
+  instruction pointer differed, while pictures 120 and 300 frames later
+  were identical.
+- **Corrected 2026-11-21:** that was the leftover `eeprom.bin` of E2,
+  not the loads. The crawler's kept states are byte-equal to runs from
+  power-on in a fresh folder, with the crawler's own binary: one load
+  from the root (frame 1693) and its deepest state (frame 9015, 49
+  loads from the root by the crawler's record). On main (`8ad6a1e`),
+  one and two loads are byte-equal too, with the catalogue on and in a
+  shared folder. Only a power-on run started in a folder that holds an
+  `eeprom.bin` differs, in hash and instruction pointer.
 
-Inferred: the design holds for breadth. The cause of the chained-load
-difference is unknown.
+Inferred: the design holds for breadth.
 
 Not tested: the two-pass try, a spread policy, masked screens, an agent
 steering the crawler.
@@ -431,8 +439,6 @@ steering the crawler.
 - **Can unread models be drawn** in a viewer without the game ever
   showing them? Their shapes need nothing else; textures need the right
   sheet loaded.
-- **Why is a state reached by chained loads not byte-equal** to the
-  same frame reached in one run?
 - **How much of the unread art can the game ever show?** ROMs keep
   leftovers. A crawler that stops finding new reads is the only test.
 - **Do tours survive timing fixes?** A corrected emulator may shift

@@ -152,7 +152,7 @@ Every design here is checked against these.
 
 ## How firm each spec is
 
-These pages were written ahead of the code, and will go stale. Four
+These pages were written ahead of the code, and will go stale. Five
 rules keep that from mattering.
 
 1. **Citations are evidence, not upkeep.** Each `path:line` was true at
@@ -174,6 +174,9 @@ rules keep that from mattering.
 4. **Each slice names its acceptance test first**, and the test is run
    on the games above and by an agent on a mid-tier model that has read only
    [interface.md](interface.md), with its calls and pictures counted.
+5. **Whoever builds a slice deletes its spec in the same commit**, and
+   moves what is true into the user documentation. A spec left beside
+   the code it described is the stale page these rules guard against.
 
 Where each spec stands is in the vision's table of spikes
 ([../uplift-vision.md](../uplift-vision.md), "Spikes").

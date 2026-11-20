@@ -13,9 +13,10 @@ branches and is not for merging as it stands. Pass one (this page, the
 interface page and ten specs) covers what unblocks the work now. Pass
 two (six more specs) covers what uplift could do next.
 
-reModel has moved on since `7d8f099`: linked play arrived in 0.12.0.
-No spec has been checked against it, and 8 of the 37 files the specs
-cite have changed. The first rule in
+reModel has moved on since `7d8f099`: linked play arrived in 0.12.0
+and 0.12.1. It is checked only by roadmap item 29; no other spec has
+been read against it, and 8 of the 37 files the specs cite have
+changed. The first rule in
 [uplift/README.md](uplift/README.md), "How firm each spec is", covers
 that: citations are checked again the day a slice starts.
 
@@ -372,7 +373,7 @@ spec named; scratch output stays out of the repository.
 | 2026-11-20 | Do the colour-variant findings hold on 2B? | Yes. The lookup per texel value is the only model that holds on all five games. `fvipers` has the most luma-table variants yet (58 artworks) | [asset-identity](uplift/asset-identity.md): no change, more evidence |
 | 2026-11-20 | Can the build bake an artwork's other colourings from one authored image? | Exactly, when the art stays near the game's own colour ramp. Not at all for a restyle: the showcase's redrawn colourings are new themes no method predicts, and half its colourings are plain copies | [asset-identity](uplift/asset-identity.md): the build bakes or copies by how far the art lies from the ramp; the catalogue must record each colouring's ramp |
 | 2026-11-20 | Can a new mesh be drawn in the standard polygon record, and does any of this work on the GPU? | Yes to both. A box replaced a fighter's leg on `vf2` and the car on `daytona`; the GPU draws re-run frames the same and picks the same model on 96% to 99.8% of pixels. The stored normal is one per polygon, and a new mesh can only use the original's UV entries | [model-interchange](uplift/model-interchange.md): tier 1's limit is textures, not shape. [scene-understanding](uplift/scene-understanding.md): picking fits the existing ID target |
-| 2026-11-20 | Can a crawler find a game's screens without a person? | On menus, yes: with no new code it reached most of Top Skater's menu screens and found 51 textures and 17 screens the hand-made catalogue lacks. It cannot play a course, and a greedy policy starved the Expert branch | [content-coverage](uplift/content-coverage.md): the crawler is for breadth; recorded play and pokes for depth. A chained state did not hash the same as a straight run, cause not found |
+| 2026-11-20 | Can a crawler find a game's screens without a person? | On menus, yes: with no new code it reached most of Top Skater's menu screens and found 51 textures and 17 screens the hand-made catalogue lacks. It cannot play a course, and a greedy policy starved the Expert branch | [content-coverage](uplift/content-coverage.md): the crawler is for breadth; recorded play and pokes for depth. A chained state that seemed not to hash like a straight run was a leftover EEPROM file (corrected 2026-11-21) |
 | 2026-11-20 | Can a shader file brought by a user run on the finished picture, safely? | It runs, an identity shader is byte-exact, mistakes are reported, and it costs under 0.1 ms. An endless loop cannot be caught: it cost reModel its GPU device | [shader-packs](uplift/shader-packs.md): a loop rule, recovery from a lost device, and plain words that a shader pack is code |
 | 2026-11-20 | How much texture data do the scripted runs read? | 18% of Top Skater's texture ROM, 13.5% of `gunblade`'s, 3.6% of `daytona`'s. Headers cannot be counted, only bytes. A leftover EEPROM file changes a run's state hash | [content-coverage](uplift/content-coverage.md): report bytes, not headers; a tour carries its EEPROM |
 | 2026-11-20 | Can the renderer draw a free mesh, with its own normals, UVs and image, in a model's place or anchored to one? | Yes, in the software renderer: steady to under 0.01 of a pixel over 37 frames, smooth-shaded by the game's formula, own image, state hashes unchanged. Draw order must be per triangle and is still off on big objects | [model-interchange](uplift/model-interchange.md): tier 2 is real; the block must record matrices and material; the GPU path is the main work left. [added-elements](uplift/added-elements.md): an anchored prop holds |
@@ -439,7 +440,6 @@ tests.
 - **Not done**: `make check` was not run, since nothing but Markdown
   changed. No GPU version of shadows, no glTF loader, no blended
   stipple, no grouping of parts into things, nothing on `zerogun` or
-  `pltkids`, and no pack, scene or clip gates. A state reached by chained loads
-  hashes differently from a straight run, cause not found
-  ([content-coverage](uplift/content-coverage.md)). Linked play was
-  read for item 29 only; no other spec was checked against it.
+  `pltkids`, and no pack, scene or clip gates. Linked play (0.12.0,
+  0.12.1) is checked only by item 29; no other spec was read against
+  it.

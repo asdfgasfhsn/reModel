@@ -439,7 +439,9 @@ unmatched blocks were relabels); `gunblade`'s pop counts were unusable;
 side exits could not be told from distance exits; the 100.5 threshold
 is on the object's origin, and the game's own rule is not decoded. A
 run made with `--capture-seq` ended on a different state hash from a
-plain run, not explained.
+plain run only because it stops after its last captured frame: the
+state saved at the same frame is byte-equal with and without it
+(checked 2026-11-21 on Top Skater, main at `8ad6a1e`).
 
 ## Open questions
 
