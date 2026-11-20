@@ -14,8 +14,21 @@ message is its text), set `version` in the root `Cargo.toml`, commit, then
 creates the annotated tag `vx.y.z` without pushing. Details in
 [docs/usage.md](docs/usage.md), "Versions and releases".
 
-## Unreleased
+## 0.12.0 (2026-11-20): linked play
 
+Linked cabinets: Sega Rally and Daytona USA race each other as a row of
+linked machines, on one split screen or over a LAN, with free play.
+
+- Link board: the Model 2 link board as the games use it (`docs/hw/link-board.md`),
+  stepped in lockstep by a hub. `remodel link-run` runs two to four real
+  `srallyc` machines or two to eight `daytona` machines in one process, from
+  per-game data (`romset::LinkPlay`); runs are deterministic and a whole set
+  saves and loads (`make link-run`, `make link-state-check`).
+- Link play on one screen: `make play GAME=srallyc PLAYERS=2` (2 to 4, also
+  `daytona`), or the launcher's Link play panel: that many linked machines
+  side by side or in quadrants, one controller each, with each set's own
+  EEPROMs. The launcher shows Link play in its hint bar and on the pad's View
+  button for the games that can.
 - Free play for linked games: `srallyc` and `daytona` have FREE PLAY among the
   coin settings of their own test menu (found by driving the menu and diffing
   the settings store; the bytes and checksums are in `docs/games/srallyc.md`
@@ -78,6 +91,16 @@ creates the annotated tag `vx.y.z` without pushing. Details in
   trailing record only present in a halted state: the save format number
   is unchanged and older states load as before). New `make state-roundtrip`
   and `make link-state-check`.
+
+- Texture-pack and look tooling: a live texture-ID pass, ink outlines and toon
+  lighting (the Comic picture style, `make look-render`); 2D region
+  overrides and the studio's project, batch and region commands; a
+  per-frame pack diagnostic and flicker report with stand-ins, holds and
+  preloading so replacements stop coming and going; and the catalogue
+  (`--catalogue`), which records every texture, tile, layout and object a
+  game shows.
+- A hidden player window no longer leaks shared memory.
+- `make check GPU_TESTS=0` skips the GPU tests with a warning.
 
 ## 0.11.1 (2026-11-18): Virtua Striker at its own speed, and fixes
 
