@@ -18,8 +18,10 @@ wants to keep a list.
 - **A pack is a folder of data**: PNG images and text
   (`docs/texture-packs.md`). Pass two would add glTF meshes and WGSL
   shaders. None of it is code that runs on the CPU.
-- **The showcase pack is 197 MB built**, and megabytes as recipes plus
-  original art ([pack-project.md](pack-project.md)).
+- **The showcase pack is 18.8 MB of PNG files on disk** (measured
+  2026-11-20) and 197 MB once decoded, which is the figure the memory
+  budget counts ([pack-project.md](pack-project.md)). A download is the
+  small number.
 - **GitHub's search API** (its documentation, read 2026-11-19) allows
   10 requests a minute without signing in, returns up to 1,000 results
   at up to 100 a page, sorts by stars or last update, and returns each

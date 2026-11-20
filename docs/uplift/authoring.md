@@ -147,6 +147,50 @@ is. Reloading a whole pack resets the renderer's caches; if that is
 slower than a second on a large pack, single files must be reloaded
 instead. Not measured.
 
+**Measured on 2026-11-20** (branch `uplift-spikes-b`, about 940 lines;
+Top Skater's race scene at 1080p with the showcase pack; each step timed
+on its own, not one end-to-end run).
+
+| Step | A 512x512 texture | A 2048x2048 texture |
+|---|---|---|
+| Notice the save (10 checks a second, then 100 ms for the file to settle) | 0.14 to 0.19 s | The same |
+| Read and decode | 9 to 12 ms | 100 to 191 ms |
+| Alpha and mask | 1 ms | 19 ms |
+| Gates | About 10 ms | About 190 ms (from the gate spike) |
+| Upload and next frame | 3 to 5 ms | 8 to 42 ms |
+| **Save to picture** | **0.17 to 0.22 s** | **0.55 to 0.6 s** |
+
+- **The one-second target holds**, with room, as long as only the saved
+  image is swapped. It fails only when a 4096 image must be shrunk on
+  the CPU and the folder is checked just four times a second (1.2 to
+  1.3 s).
+- **The player has no reload today.** It does not watch a pack; a change
+  means switching the pack off and on, a cold load of about 0.3 s for
+  this scene, with original and pack art mixed for a quarter of a
+  second.
+- **Swapping one image works**: 2 ms at 64x64, 12 to 15 ms at 512, 108
+  to 200 ms at 2048, and the picture returns exactly when the original
+  is put back. One image under 12 colourings is 3 ms of uploads after
+  one decode, but over a second if each colouring is reloaded as its own
+  file.
+- **Checking 6,290 files costs 10.5 ms**; checking the 40 a scene uses,
+  0.04 ms. So: the scene's files ten times a second, the whole folder
+  once or twice.
+- **A half-written file is safe to refuse.** The rule "unchanged for 100
+  ms and decodes, else keep the old image" passed five ways editors
+  write files, with none accepted early or missed.
+- **Pointing is free.** Reading one pixel of the ID target takes 0.05 to
+  0.07 ms at any resolution. The ID pass adds 1.2 ms at 1080p and 3.8 ms
+  at 4K, and today runs only with a look.
+- **Jumping to a scene takes about 0.1 s**: 82 ms on Top Skater, 105 ms
+  on Daytona, from loading the state to the picture.
+- **Opening the image editor exists nowhere in the code.** It needs the
+  platform's opener, with its result checked.
+
+What the page needs from the renderer, then: a way to swap one decoded
+image under a list of keys; decoding and mipmaps on a worker thread;
+and the ID pass without a look.
+
 ## Open questions
 
 - **Is a page in the player enough**, or does review want a separate

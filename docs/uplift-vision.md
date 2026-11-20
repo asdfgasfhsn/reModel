@@ -323,16 +323,16 @@ spec named; scratch output stays out of the repository.
 | 2026-11-20 | Does the free mesh work on the GPU and on Model 2B? | Yes. The wgpu renderer draws it with no new pipeline, agreeing with software except at edges, at 0 to 3 ms at 1080p. An `fvipers` part was replaced, steady to 0.005 of a pixel. The block now records its material | [model-interchange](uplift/model-interchange.md): depth-testing for big objects; mesh images need IDs of their own |
 | 2026-11-20 | Do the geometry hooks hold on 2B's other two programs (`vstriker`, `lastbrnx`)? | Yes, unchanged. `lastbrnx` is the first game with polygons sent directly (99.1% of pixels keyed). `vstriker` keeps copies of a model at up to 7 addresses, and its teams differ only by palette | [scene-understanding](uplift/scene-understanding.md): a model is named by content hash in ROM and by address in RAM |
 | 2026-11-20 | Is ambient occlusion worth having as a GPU pass, and can the shadow blockers be cleared? | Occlusion: no. It matches the CPU result and touches nothing it should not, but a player would not see it and it cost over 10 ms at 1080p. Shadows: cut-outs and windows are solved; flicker, self-shadowing and a pale shadow term are not | [lighting](uplift/lighting.md): occlusion set aside; shadows stay a spike; blended stipple is the only lighting item left in the first set |
+| 2026-11-20 | Can a saved texture reach the picture within a second, and is pointing cheap? | Yes: 0.2 s for a 512 texture and 0.6 s for a 2048 one, if only the saved image is swapped. Reading the pixel under the cursor takes 0.07 ms. The player has no reload at all today | [authoring](uplift/authoring.md): a one-image swap, decoding on a worker, and the ID pass without a look |
 
 Status of each spec, by the ladder in [uplift/README.md](uplift/README.md):
-the interface page and the eight pass-one specs are grounded;
-asset-identity, scenes-and-server, content-coverage, scene-understanding,
-model-interchange, added-elements, lighting and shader-packs are spiked
-in part, and so are quality-gates, distribution and generation (offline
-only); authoring is not spiked.
+the interface page, agent-environment, pack-project, 2d-cells and
+renderer-controls are grounded; every other spec is spiked in part.
+Generation is spiked offline only, and distribution without a real
+repository.
 
 Spike code is on two unmerged branches, `uplift-spikes` and
-`uplift-spikes-b`, about 3,800 lines in all. None of it is for merging
+`uplift-spikes-b`, about 7,800 lines in all. None of it is for merging
 as it stands.
 
 ## How this was made

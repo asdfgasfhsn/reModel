@@ -228,9 +228,10 @@ today.
 A build bakes recipes: seconds per hundred textures, by the showcase's
 figures of 2 to 5 s per local texture in shell scripts and far less in
 `studio style`. Layer lookup is per asset on first draw, not per frame.
-A shared archive of recipes and original art is megabytes where the built
-showcase pack is 197 MB. That built pack is over the browser's 192 MB
-budget, so a pack meant for the browser needs smaller images or fewer
+The built showcase pack is 18.8 MB of PNG files on disk (measured
+2026-11-20) and 197 MB once decoded; a shared archive of recipes and
+original art would be smaller still. Decoded, it is over the browser's
+192 MB budget, so a pack meant for the browser needs smaller images or fewer
 colour copies; compressed textures are an open question.
 
 ## Open questions
