@@ -22,9 +22,12 @@ fn colour(key: u64) -> [u8; 3] {
 #[derive(Default)]
 struct M {
     oba: u32,
+    obas: std::collections::BTreeSet<u32>,
     pixels: u64,
     polys: u64,
     blocks: u64,
+    /// SPIKE: per object block, its polygons' texture headers and base colours.
+    tex: BTreeMap<u32, std::collections::BTreeSet<String>>,
 }
 
 pub fn run(root: &Path, windows: (&[usize], &[usize]), out_dir: &Path, at: &[(usize, usize)]) -> Result<(), String> {
@@ -67,9 +70,11 @@ pub fn run(root: &Path, windows: (&[usize], &[usize]), out_dir: &Path, at: &[(us
                 rgb[o * 3..o * 3 + 3].copy_from_slice(&colour(key));
                 let m = models.entry(key).or_default();
                 m.oba = side.blocks[p.block as usize].oba;
+                m.obas.insert(m.oba);
                 m.pixels += 1;
                 if seen_poly.insert(k) {
                     m.polys += 1;
+                    m.tex.entry(p.block).or_default().insert(format!("{:04x}{:04x}{:04x}{:04x}/{},{},{}/l{}", p.header[0], p.header[1], p.header[2], p.header[3], p.colour[0], p.colour[1], p.colour[2], p.luma));
                 }
                 if seen_block.insert(p.block) {
                     m.blocks += 1;
@@ -89,12 +94,14 @@ pub fn run(root: &Path, windows: (&[usize], &[usize]), out_dir: &Path, at: &[(us
         for (i, (k, m)) in models.iter().enumerate() {
             let _ = write!(
                 js,
-                "{}\"{k:016x}\":{{\"oba\":\"0x{:06x}\",\"pixels\":{},\"polys\":{},\"instances\":{}}}",
+                "{}\"{k:016x}\":{{\"oba\":\"0x{:06x}\",\"pixels\":{},\"polys\":{},\"instances\":{},\"obas\":[{}],\"tex\":[{}]}}",
                 if i > 0 { "," } else { "" },
                 m.oba,
                 m.pixels,
                 m.polys,
-                m.blocks
+                m.blocks,
+                m.obas.iter().map(|a| format!("\"0x{a:06x}\"")).collect::<Vec<_>>().join(","),
+                m.tex.values().map(|t| format!("\"{}\"", t.iter().cloned().collect::<Vec<_>>().join("+"))).collect::<Vec<_>>().join(",")
             );
         }
         js.push_str("}}\n");

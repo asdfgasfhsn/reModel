@@ -170,6 +170,17 @@ pub fn run(rom: &[u32], args: &[String]) -> Result<(), String> {
         })
         .count();
     let _ = ok_ends;
+    if std::env::var_os("MP_DUMPGAP").is_some() {
+        // SPIKE: the words after the first few read ends, and the start of read models that don't parse.
+        for &e in ue.iter().skip(40).take(4) {
+            let w: Vec<String> = (0..12).map(|k| format!("{:08x}", rom[(e as usize + k) % n])).collect();
+            eprintln!("after end {e:#x}: {}", w.join(" "));
+        }
+        for &st in us.iter().filter(|&&s| parse(rom, s as usize, n).is_none()).take(6) {
+            let w: Vec<String> = (0..24).map(|k| format!("{:08x}", rom[(st as usize + k) % n])).collect();
+            eprintln!("unparsed start {st:#x}: {}", w.join(" "));
+        }
+    }
     let big: Vec<&(usize, usize)> = st.iter().filter(|s| s.1 - s.0 >= 8).collect();
     let after_read = big.iter().filter(|s| s.0 > 0 && uni[s.0 - 1]).count();
     let clean = big.iter().filter(|s| parse(rom, s.0, s.1).is_some()).count();

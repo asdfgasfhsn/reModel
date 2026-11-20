@@ -105,6 +105,9 @@ pub enum Program {
     Lastbrnx,
 }
 
+/// SPIKE: how many times each fn was dispatched (counts for `MP_FNSTAT`; 32 = a 0x1C that sent words, 33 = a 0x1A with a non-zero operand).
+pub static FN_COUNT: [std::sync::atomic::AtomicU64; 34] = [const { std::sync::atomic::AtomicU64::new(0) }; 34];
+
 impl Program {
     /// Where the program keeps its program-memory data words.
     pub fn pm_base(self) -> u32 {
@@ -548,6 +551,7 @@ impl Native {
                 return;
             }
             let cmd = 0xff00_0000 | w >> 23;
+            FN_COUNT[fnc as usize].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             match fnc {
                 0x00 => io.emit(cmd),
                 0x01 | 0x11 => self.object(io, cmd),
@@ -721,6 +725,9 @@ impl Native {
     /// the ring's base).
     fn ring_flag(&mut self, io: &mut Io) {
         let on = io.rd();
+        if on != 0 {
+            FN_COUNT[33].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         let was = self.dm[RING_FLAG];
         self.dm[RING_FLAG] = on;
         if on != 0 {
@@ -757,6 +764,7 @@ impl Native {
         if n == 0 {
             return false;
         }
+        FN_COUNT[32].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         io.emit(0xff00_0004);
         io.emit(start);
         io.emit(n);

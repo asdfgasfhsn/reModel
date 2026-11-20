@@ -3456,6 +3456,11 @@ fn run(
     if let (Some(t), Some(p)) = (texmap.as_mut(), std::env::var_os("MP_TEXMAP")) {
         t.finish(&mut m, std::path::Path::new(&p));
     }
+    if std::env::var_os("MP_FNSTAT").is_some() {
+        m.bus.geo.sync();
+        let c: Vec<String> = model2::geo_native::FN_COUNT.iter().enumerate().map(|(i, v)| format!("{i:#04x}={}", v.load(std::sync::atomic::Ordering::Relaxed))).collect();
+        eprintln!("fnstat {}", c.join(" "));
+    }
     if let Some(p) = std::env::var_os("MP_READMAP") {
         m.bus.geo.sync();
         let _ = std::fs::write(p, model2::geo::readmap::dump());
