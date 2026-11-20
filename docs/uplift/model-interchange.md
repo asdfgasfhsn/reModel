@@ -212,22 +212,45 @@ object block's matrices.
   polygons, and the software draw time did not change.
 - **State hashes were unchanged.**
 
-What it found missing:
+**On the GPU and on Model 2B** (second spike, 2026-11-20, about 390
+more lines):
 
-- **Which material?** A removed model leaves no polygon to copy a
-  lighting entry and colour table from. Taken from the wrong neighbour,
-  the anchored torus came out self-lit at full brightness. The block
-  must record them, or the mesh must name them.
-- **Parts with two matrices.** Top Skater's torso bends between two; the
-  spike used the first only. A mesh for such a part needs a weight per
-  vertex.
-- **The GPU renderer** has no way to draw a polygon with an image that
-  is not a game texture or a pack's replacement of one. That path is the
-  main work left.
-- **Model 2B** does not record the matrices yet.
+- **The wgpu renderer draws it with no new pipeline.** The mesh's image
+  is registered as a pack image on a spare texture bank, and the mesh's
+  triangles go through as ordinary polygons. Smooth shading, the
+  cut-out, and clipping all carry over.
+- **GPU and software agree** to a mean of 0.9 to 4.7 levels over the
+  mesh; 1% to 6% of its pixels differ by more than 16 levels, all at
+  edges. The two renderers already differ by a level here and there
+  without any mesh.
+- **Depth-testing is the answer for big objects.** With the depth option
+  on, the GPU tests per pixel and the Daytona car sorts correctly; the
+  game's sort has one key a triangle and cannot. The cost is at the
+  game's own painter's-order decals and shadows, which depth does not
+  understand.
+- **Cost:** nothing measurable at the game's resolution; 0 to 3 ms at
+  1080p as spiked, with one image per draw.
+- **Model 2B works**: a part of an `fvipers` fighter replaced over 37
+  frames, steady to 0.005 of a pixel, state hash unchanged.
+- **Material is solved.** The block now records the lighting entry and
+  material of the model's own first polygon, read even when the model is
+  removed; it was the same with and without removal on all three games.
+  The colour table comes from the block's texture-header address.
+- **Two-matrix parts are recorded**: 407 of the torso's 4,033 vertices
+  use the second matrix, and both reproject exactly. A mesh for such a
+  part needs a matrix index or weight per vertex. Not built.
+
+Still missing:
+
+- **Image handling for real use**: an ID of its own for each mesh image
+  (a pack key includes the polygon colour, so one image is uploaded once
+  per colour), and an array or atlas so each image does not break a
+  draw run.
+- **A glTF loader**, and weights for parts with two matrices.
 - **Names for instances**: one mesh per model address is not enough
   where a model is drawn several times, or where a thing changes model
   each pose ([scene-understanding.md](scene-understanding.md)).
+- Untested with temporal anti-aliasing, MSAA and the looks.
 
 **What a still check needs.** A capture cannot be re-run: it holds only
 the finished stream. A scene render with a replaced model must start
@@ -334,6 +357,7 @@ a pack inside a frame. None of this is measured.
 3. `model check` with keys, bounds and budget.
 4. Tier 1 from the spike made real: `mdl_` files encoded to the game's
    records, with `model check` reporting what will not encode.
-5. Tier 2 (spiked in software): the block's matrices, light and
-   material on the side channel; a glTF loader; per-triangle sort keys;
-   then the GPU path.
+5. Tier 2 (spiked in both renderers, on three boards): the block's
+   matrices and material on the side channel; a glTF loader; mesh
+   images with their own IDs in an array; depth-testing for big
+   objects.
