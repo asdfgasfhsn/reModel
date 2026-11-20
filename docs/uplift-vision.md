@@ -317,12 +317,14 @@ spec named; scratch output stays out of the repository.
 | 2026-11-20 | Can the renderer draw a free mesh, with its own normals, UVs and image, in a model's place or anchored to one? | Yes, in the software renderer: steady to under 0.01 of a pixel over 37 frames, smooth-shaded by the game's formula, own image, state hashes unchanged. Draw order must be per triangle and is still off on big objects | [model-interchange](uplift/model-interchange.md): tier 2 is real; the block must record matrices and material; the GPU path is the main work left. [added-elements](uplift/added-elements.md): an anchored prop holds |
 | 2026-11-20 | Do ambient occlusion and shadows from the game's light give a picture worth shipping? | Occlusion is safe on three games and leaves HUD and sky untouched, but is faint. Shadows are not ready: cut-out textures cast solid rectangles, a fighter's window casts nothing on the floor, and blob shadows double up. Back-face holes fill in 72 lines. CPU only | [lighting](uplift/lighting.md): occlusion judged on a GPU pass; shadows wait on four named pieces |
 | 2026-11-20 | Which asset gates separate good images from bad on the showcase? | `file` and `alpha` do; `alpha` found three textures in the approved pack that had lost their cut-out, and a fourth that may be meant. `seam` is weak. The style gates (`kept`, `palette`, `luma-order`, `category`, a halo test) cannot tell a good restyle from a bad one | [quality-gates](uplift/quality-gates.md): a first set of three errors and three warnings, with limits; style gates only for faithful packs |
+| 2026-11-20 | Does GitHub behave as the pack convention assumes, and can an archive be unpacked safely? | Yes on every point checked, signed out. Forks never list; the release API already gives a hash, so the `.sha256` file goes; file addresses must use `HEAD`. Fifteen hostile archives were refused. Not tested: a real repository | [distribution](uplift/distribution.md): three rules changed; the unpacker counts real bytes |
 
 Status of each spec, by the ladder in [uplift/README.md](uplift/README.md):
 the interface page and the eight pass-one specs are grounded;
 asset-identity, scenes-and-server, content-coverage, scene-understanding,
 model-interchange, added-elements, lighting and shader-packs are spiked
-in part; distribution, authoring and generation are not spiked.
+in part, and so are quality-gates and distribution; authoring and
+generation are not spiked.
 
 Spike code is on two unmerged branches, `uplift-spikes` and
 `uplift-spikes-b`, about 3,800 lines in all. None of it is for merging

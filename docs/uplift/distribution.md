@@ -39,15 +39,33 @@ takes to be listed; nobody approves anything.
 | Topics `remodel-pack` and `remodel-<set>` (for example `remodel-topskatr`). A shader pack has `remodel-shader` instead | The search |
 | `pack.txt` at the root, with `name`, `game`, `version`, `author` | The check that this is a pack and not only a topic |
 | The repository's description is the pack's one-line summary; `preview.png` at the root is its picture | The listing, with no extra requests |
-| The newest release holds one file `<name>-<version>.remodel-pack` (a zip) and its `.sha256` | The download |
+| The newest release holds one file `<name>-<version>.remodel-pack` (a zip) | The download. GitHub's release API gives each file's SHA-256, so no separate hash file is needed |
 
 One pack per repository. Stars, the update date, issues and releases then
 all mean "this pack", and a search result is a pack.
 
-`pack build --archive` writes the two release files. `pack publish
+`pack build --archive` writes the release file, and a `.sha256` beside
+it for hosts other than GitHub. `pack publish
 --check` reads a repository's address and says which of the four rules it
 does not yet meet. It changes nothing; publishing is `git push` and a
 release, done by the author.
+
+### Checked against GitHub on 2026-11-20
+
+Read-only and signed out, on an unrelated pair of topics that about
+1,800 repositories share (25 requests in all). Nothing was created, so
+how soon a newly tagged repository becomes searchable is still unknown.
+
+| Claim | Result |
+|---|---|
+| One search finds repositories with both topics, 100 a page, sorted by stars or update | Confirmed. A result holds topics, default branch, fork and archived flags, licence, stars and dates |
+| Signed-out limits: 10 searches a minute, 60 other calls an hour | Confirmed from the response headers |
+| At most 1,000 results | Confirmed: the eleventh page is refused |
+| Forks | Hidden by default: a fork never lists unless the search asks for forks. Archived repositories do list, so the client drops them |
+| `pack.txt` fetched as a plain file | Confirmed, with no API quota, cached for 5 minutes. The address must use `HEAD`, not a branch name: `main` fails on a repository whose branch is `master` |
+| The newest release in one call | Confirmed. A repository with no release answers "not found". A release file can also be fetched by a fixed address with no API call at all |
+| A `.sha256` file is needed | Wrong: the release API gives a SHA-256 for every file |
+| Topic names like `remodel-topskatr` | Valid by GitHub's rules: lowercase letters, digits and hyphens, up to 50 characters, 20 topics a repository |
 
 ### Finding
 
@@ -89,10 +107,13 @@ it waits until it is needed.
 
 ### Installing
 
-1. Download the archive and check it against the `.sha256`. This proves
-   the download is whole. It says nothing about the author.
-2. Unpack with limits: a size cap, a file count cap, no path leaving the
-   pack's folder, and only the file kinds a pack may hold.
+1. Download the archive and check it against the hash the release
+   gives. This proves the download is whole. It says nothing about the
+   author.
+2. Unpack with limits, into a scratch folder first: a size cap counted
+   on the bytes actually written, a file count cap, no path leaving the
+   pack's folder, no links, no two names that differ only by case, no
+   archive inside, and only the file kinds a pack may hold.
 3. Run `pack check` on it. A pack that fails to parse is not enabled.
 4. Bake any recipes from the user's ROM, with a progress bar.
 5. Add it as a layer, switched on, above what is there
@@ -100,6 +121,16 @@ it waits until it is needed.
 
 Updates are offered, never taken silently, and the old version stays
 until the new one has passed step 3.
+
+**The archive was prototyped on 2026-11-20** (Python, standard library).
+Fifteen hostile archives, one per rule above and including one whose
+header lies about its size, were each refused with a clear message, and
+a clean one installed. A declared size cannot be trusted: the unpacker
+must count what it inflates. Two builds of one folder gave the same
+bytes and hash, also from a copy with other file times, as long as the
+compression library is the same; storing files uncompressed removes
+that condition, and PNGs gain little from compression anyway. On a 200
+MB pack: 6.2 s to build, 0.54 s to unpack safely, 0.11 s to hash.
 
 ### What the listing shows
 
@@ -174,8 +205,12 @@ Baking is the slow step ([pack-project.md](pack-project.md),
 - **A new dependency.** reModel has no HTTP client. Which one, and is it
   worth it before a second pack exists? Until then, paste-an-address and
   open-a-file can be built with none of the search.
-- **Forks and copies.** Does a fork of a pack list beside the original?
-  How GitHub's search treats forks here was not checked.
+- **Forks and copies.** A fork does not list (checked). Someone who
+  wants a variant of a pack to be found must make a repository of their
+  own, which is the right outcome. A plain copy does list, and nothing
+  tells it from the original but stars and dates.
+- **How soon does a new pack appear** after its topics are set? Not
+  tested: it needs a real repository.
 - **Other hosts.** The convention is GitHub's. The index file is the
   bridge for anything else.
 - **Signed releases**: later, or never?
