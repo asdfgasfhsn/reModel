@@ -145,6 +145,48 @@ usable, but four things stand between it and a picture worth shipping.
   out of view or under the car, where the blob already is. Top Skater is
   the best of the three for this.
 
+### The second spike (2026-11-20): occlusion on the GPU, shadows again
+
+About 1,400 more lines on `uplift-spikes-b`. Occlusion was built as real
+GPU passes; shadows were taken further on the CPU.
+
+**Ambient occlusion: not worth its cost as it stands.**
+
+- It was built as designed: the ID pass carries a polygon number per
+  pixel, a table gives each polygon's plane, and two passes (16 samples,
+  then a blur) darken the 3D layer before the 2D layers are added.
+- It matches the CPU result to 0.002, and changes no pixel of the HUD,
+  sky, 2D layers or blob shadows.
+- **A player would not notice it.** Looked at before and after at 1080p
+  on all three scenes, it shows only when the difference is multiplied
+  by four, and is no clearer at 1080p than at the game's resolution.
+  These games' scenes are open ground and convex parts, with few
+  creases to darken.
+- **It is not cheap.** At 1080p the two passes took 13 to 17 ms and the
+  wider ID pass 9 to 20 ms more, most of that on the CPU preparing
+  polygons a second time. Half-resolution passes might bring it to 3 or
+  4 ms (inferred). Against a frame of 17.4 ms that is too much for an
+  effect nobody sees.
+
+Occlusion moves out of the first set. A stronger setting, or occlusion
+only at contact with the ground, would be a new idea to try, not this
+one tuned.
+
+**Shadows: still no, with two blockers cleared and three found.**
+
+| Blocker | Now |
+|---|---|
+| Cut-outs cast rectangles | Fixed by testing the caster's texture: Daytona's road is 14.8% shadowed, from 66%, and trees throw tree shapes |
+| One map for all windows | Windows with the same light and lens are pooled; `vf2`'s fighters cast on the floor. A decal lying on the floor then shadows itself (94%), a bias problem not fixed |
+| Deep scenes | Top Skater needs two cascades and a distance limit, Daytona four. One map loses the rider's shadow entirely |
+| Blob shadows | Found by rule (flat black, checker, or near-black cut-out). Hiding them leaves the ground looking unshaded, because the game's own formula gives only a pale shadow |
+| Stability, new | 2% to 3% of shadowed pixels flicker over 12 frames on Top Skater and `vf2`; 9% to 25% on Daytona. The map cannot be snapped to a grid, since nothing here has world space |
+| Self-shadowing, new | Blotches on the rider |
+| The light's sign, new | Settled by eye; the evidence on `vf2` is weak |
+
+Top Skater with two cascades is the nearest to usable. None is
+shippable. No GPU version was made.
+
 ### 3. Real transparency in place of the checkerboard
 
 Make the existing `stipple` setting work without temporal anti-aliasing,
@@ -245,8 +287,7 @@ path's scan may give per block (unverified).
 
 1. Blended stipple without temporal anti-aliasing, with a per-asset
    opacity.
-2. Ambient occlusion as a GPU pass, radius in screen pixels, judged at
-   1080p before it is promised (spiked on the CPU: safe but faint).
-3. Shadows wait for four things the spike named: alpha-tested casters,
-   a map per window, a distance limit, and blob shadows named in the
-   manifest. Casters are taken before the raster build's culls.
+2. Ambient occlusion is set aside: built on the GPU, it was invisible
+   to a player and cost over 10 ms at 1080p.
+3. Shadows stay a spike: stability, self-shadowing and the pale term
+   are open after two rounds. Top Skater is the game to keep trying on.
