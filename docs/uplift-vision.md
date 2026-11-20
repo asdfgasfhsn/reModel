@@ -150,6 +150,12 @@ agents soonest.
 | | **14. Layers, archive, `pack doctor`** | Sharing | M | Low to medium | 6 | Two packs layered in the CLI |
 | | **23. [Distribution](uplift/distribution.md)**: find and install by a GitHub convention | Players find packs; nobody keeps a list | M | Low; adds an HTTP client | 14 | `pack install` from a file, then from a repository |
 | | **15. Look calibration** | A look that fits each game | M | Medium: targets unproven | 1, 10 | Numbers for four games |
+| | **24. Palette packs** ([asset-identity](uplift/asset-identity.md)) | Kits, liveries, costumes and colour-blind palettes with no images | S | Medium: games rewrite their colour tables as they run | 5 | One `vstriker` kit and one `daytona` car, by ramp |
+| | **25. Painting untextured polygons** ([model-interchange](uplift/model-interchange.md)) | Art for the flat-coloured parts no texture pack can reach | M | Unknown: how much of a picture is untextured | 16, 17 | Count untextured pixels per game |
+| | **26. Size tiers and compressed images** ([pack-project](uplift/pack-project.md)) | A big pack fits the browser's budget and loads faster | M | Medium: quality on flat art; formats differ by device | 6 | The showcase built at half size and block-compressed, measured |
+| | **27. A browser for unseen content** ([content-coverage](uplift/content-coverage.md)) | See what the catalogue lacks as shapes; aim tours | S to M | Low | 22's read map | List and draw Top Skater's unread models |
+| | **28. The crawler as an emulator test** ([content-coverage](uplift/content-coverage.md)) | Determinism faults and crashes found with a script that reproduces them | S, once the crawler exists | Low | 22's crawler | Report tours that do not hash the same twice |
+| | **29. Packs in linked play** ([pack-project](uplift/pack-project.md)) | Each linked player their own pack; original beside uplift, live, on the split screen | S | Low: nothing a pack does reaches the link (read from the code) | Linked play (0.12.0) | A pack per view in the player, then the hash test |
 
 ### Suggested order
 
@@ -167,6 +173,10 @@ agents soonest.
   live player for the artist, overlays for both.
 - **Slice D: the hard art.** Items 9 and 11, then 12.
 - **Slice E: scale and share.** Items 13, 14, 15 and 23.
+- **Added on 2026-11-20, not yet placed in a slice:** items 24 to 29.
+  They came out of the spikes. 24 follows item 5 closely and is
+  the cheapest; 27 and 28 follow the crawler; 26 matters when a second
+  large pack or the browser does; 29 is small and independent.
 
 **Three games** (decided 2026-11-19). The friction that led here was
 all found on Top Skater, and so was every design. The tooling is proven
@@ -426,4 +436,4 @@ tests.
   `pltkids`, and no pack, scene or clip gates. A state reached by chained loads
   hashes differently from a straight run, cause not found
   ([content-coverage](uplift/content-coverage.md)). Linked play was
-  not considered.
+  read for item 29 only; no other spec was checked against it.

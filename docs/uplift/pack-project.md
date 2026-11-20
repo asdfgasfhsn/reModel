@@ -153,6 +153,63 @@ not because of a rule. The rule in `CLAUDE.md` that nothing ROM-derived
 enters reModel's own repository is unchanged, and is about this
 repository only.
 
+### Packs in linked play
+
+Read from the code at `541d8ac` on 2026-11-20 (linked play, 0.12.0);
+nothing was run. Citations in this section are at that commit, not at
+`7d8f099`.
+
+- **Nothing a pack or a look does reaches the link.** Machines exchange
+  each node's link record and nothing else
+  (`crates/model2/src/link.rs:120-131`). The state hash covers RAM, the
+  geometrizer's command stream and the coprocessor's results
+  (`crates/model2/src/bus.rs:1566-1576`); no renderer or pack state is
+  in it. The settings carried from the master are the game's own
+  (`crates/cli/src/link_net.rs:211-225`).
+- **Over a LAN, each player already has their own pack and look**: each
+  host runs one machine and one renderer.
+- **On the split screen, packs are off.** `sync_pack` loads one pack
+  into one renderer and only when no link is active
+  (`crates/play/src/main.rs:2292`). Each view has a renderer of its own
+  (`crates/play/src/draw.rs:52-63`) and the look is copied to all of
+  them.
+- **The change for a pack per view** is in the player only: pack state
+  per view, `sync_pack` applied per node, and a per-node setting. With
+  it the split screen can show one node as the game drew it and one
+  with a pack, live. The pack budget is per renderer, so each packed
+  view can use up to the full 512 MiB
+  (`crates/gpu/src/lib.rs:330`).
+- **One setting is not draw-only**: the choice of chip or native
+  geometrizer changes what produces the command stream, which is in the
+  hash. Whether the two give equal streams was not determined.
+- **The test**: the same linked session, same inputs, with and without
+  a pack, comparing each node's state hash and the combined hash. It
+  needs the player change first, since `link-run` and `link-net` take
+  no pack.
+
+### Size tiers and compressed images
+
+Proposed on 2026-11-20; nothing here is tried. What a pack costs is its
+decoded size, not its download: the showcase is 18.8 MB on disk and 197
+MB decoded, over the browser's 192 MB budget.
+
+- **A half-size tier, made by the build.** `pack build --tier half`
+  writes a second set of images at half the scale. The loader takes the
+  tier that fits the budget it has. A quarter of the pixels is about a
+  quarter of the memory (arithmetic, not measured).
+- **Images compressed for the GPU.** A block format such as BC7 holds a
+  pixel in one byte where a decoded PNG takes four, and is not decoded
+  on load, which is where most of a reload's time went on a large image
+  ([authoring.md](authoring.md), "Evidence"). The build would write
+  them; a pack still ships PNGs as its source.
+- **What is not known.** What flat cel art with hard ink lines looks
+  like after block compression. Which formats the browser's GPU offers,
+  since they differ by device and a transcoding step would be a new
+  dependency. Whether the build should make these on the user's machine
+  or the author's.
+- **First step.** The showcase pack built both ways, with decoded
+  memory, load time and a difference picture for ten images.
+
 ### The shipped manifest
 
 `pack.txt` gains keywords: `version`, `author`, `licence`, `ai`, `program`
@@ -242,7 +299,7 @@ The built showcase pack is 18.8 MB of PNG files on disk (measured
 2026-11-20) and 197 MB once decoded; a shared archive of recipes and
 original art would be smaller still. Decoded, it is over the browser's
 192 MB budget, so a pack meant for the browser needs smaller images or fewer
-colour copies; compressed textures are an open question.
+colour copies ("Size tiers and compressed images").
 
 ## Open questions
 

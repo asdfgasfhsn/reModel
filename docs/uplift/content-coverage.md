@@ -59,8 +59,9 @@ first time a player picks the course nobody recorded.
 
 ## Design
 
-Three parts: a way to know how much has been seen, ways to reach the
-rest, and a pack that behaves when the list was still short.
+Four parts: a way to know how much has been seen, ways to reach the
+rest, a browser for what no run has shown, and a pack that behaves
+when the list was still short.
 
 ### 1. A number to count against: ROM read maps
 
@@ -194,7 +195,29 @@ A tour that uses pokes is marked, and so is any state made from it. Tours
 are for cataloguing. They never touch play, replays or the benchmark
 hashes.
 
-### 3. A pack that copes with a short list
+### 3. A browser for what no run has shown
+
+Proposed on 2026-11-20; only the parsing is tried. Unread stretches of
+polygon ROM parse as models from their start (E1, E3), so they can be
+listed and drawn without playing.
+
+- `coverage models --unread` lists each model found in data no run has
+  read: its address, polygon count and size.
+- `model show ADDRESS` draws one, turning, in flat shading. Its
+  textures need the right sheet loaded, which only the game does. Where
+  a model's texture headers point at ROM data the catalogue has seen
+  loaded ([asset-identity.md](asset-identity.md), "A second anchor"),
+  the textures could be put on (inferred; untried).
+- **What it is for.** The pack lead sees what the catalogue lacks as
+  shapes, not byte ranges, and can tell which course or character a
+  tour should aim at. It also shows art the game never uses.
+- **First step.** The list and plain renders for the 1.72 MB that
+  parses on Top Skater.
+
+Everything is drawn from the user's own ROM, on their machine. Nothing
+of it enters the repository.
+
+### 4. A pack that copes with a short list
 
 - **A pack states what it was made against.** `pack check` reports
   "covers 412 of 417 known surfaces; the catalogue has read 61% of the
@@ -210,6 +233,24 @@ hashes.
   live in a game's manifest or a pack's repository, as the `coin-start`
   scripts do now. Thumbnails and keys are made on each machine from the
   user's ROM.
+
+### The crawler as a test of the emulator
+
+Outside uplift, and noted for whoever owns emulation. The crawler runs
+thousands of short, varied sessions from saved states, which is also a
+test.
+
+- **It has already found two things** nobody was looking for: a state
+  reached by chained loads that does not hash like a straight run, and
+  a leftover `eeprom.bin` changing a run (E2, E4).
+- **What it could report with little more:** a tour that does not give
+  the same state hash twice, a panic or a hang, and the count of
+  instructions and ROM data no session has reached. Each failure comes
+  with the short input script that reproduces it.
+- **Picking helps the same person.** Pointing at a wrong pixel and
+  getting the model, polygon and texture that drew it
+  ([scene-understanding.md](scene-understanding.md)) is a debugging
+  tool for the renderer, not only for art.
 
 ## Interfaces
 

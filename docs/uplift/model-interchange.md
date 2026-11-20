@@ -203,6 +203,28 @@ original at a distance.
 board. Replacing a character is replacing its parts, each rigid. A
 smooth-skinned mesh would be animation the game does not supply.
 
+### Painting untextured polygons
+
+Proposed on 2026-11-20; nothing here is tried. A pack replaces
+textures, so a polygon the game draws in one flat colour cannot be
+given art at all today: it has a colour and no artwork to name. A
+model's name and the polygon's place in it do name it, and that pair is
+stable for ROM models ([scene-understanding.md](scene-understanding.md)).
+
+- **The route.** `model export` writes the model with its untextured
+  faces as their own material. The artist or agent gives those faces
+  UVs and an image, and the model comes back the same shape. The
+  renderer draws those polygons with the pack's image, by the route
+  tier 2 already uses for a mesh's own image, lit by the game's
+  formula.
+- **No new shape is needed**, so the game's own polygons, sort keys and
+  culling stay. Only the fill changes.
+- **What is not known.** How much of each game's picture is untextured:
+  it decides whether this matters. Whether a polygon's index survives
+  the copies and pose-swapped models some games use (E3, E7).
+- **First step.** Count the share of drawn pixels on untextured
+  polygons, per game, from captures already made.
+
 ### What it does not cover
 
 - Geometry the game rewrites each frame, or sends without a model.
@@ -378,7 +400,8 @@ by address changed one player.
   light per polygon; glTF is per vertex. Duplicated vertices per face
   work and inflate files.
 - **Untextured polygons** have a colour, not an artwork. A material per
-  palette colour, or vertex colours?
+  palette colour, or vertex colours? "Painting untextured polygons"
+  proposes a material per model.
 - **Which artwork variant** does a replacement's material mean when the
   original polygons used several colours of one artwork?
 - **Does every game store models the same way?** The native geometrizers

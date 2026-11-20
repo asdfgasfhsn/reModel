@@ -185,6 +185,39 @@ only today, so the split waits for
 [scene-understanding.md](scene-understanding.md). Until then a `shared`
 artwork is reported, and the pack author decides.
 
+### Palette packs: recolouring with no images
+
+Proposed on 2026-11-20; nothing here is tried. A colouring is a ramp of
+16 colours, and a variant's key already names its polygon colour and
+luma table. So a pack can replace a variant's ramp and nothing else:
+the game's own texels, drawn through 48 bytes the pack supplies.
+
+```
+ramp tex_<image key>_64x64   1a1020 2c1830 ... (16 colours)
+ramp art:<surface>  colour=<n>  from kit-away.ramp
+```
+
+- **What it is for.** Team kits, car liveries, alternate costumes and
+  colour-blind palettes. `vstriker`'s team kits are one artwork in 20
+  to 28 colourings that differ by palette entry alone (E3), so on such
+  a game a kit is a few ramps.
+- **Why it should be exact.** It is the per-texel lookup, which is
+  nearly exact on the game's own art on every game tried (E1, E3). The
+  noise that rules it out for repainted art does not arise, because the
+  texels are the game's.
+- **Draw-only.** The renderer's translation is replaced for that key.
+  Palette RAM is not written, so state hashes do not change (inferred
+  from how pack images are drawn today; to be tested).
+- **What is not known.** Games rewrite their tables as they run (E2):
+  a fade or a flash changes the ramp a key draws through. A fixed
+  replacement would freeze it, so the replacement may have to be
+  applied as a change from the catalogued ramp. Whether untextured
+  polygons, which take their colour from the same tables, can be
+  recoloured the same way is not checked.
+- **First step.** One `vstriker` kit and one `daytona` car recoloured
+  by ramp, compared with the game's own other colourings, with state
+  hashes checked. It needs the catalogue to record ramps (MVP item 4).
+
 ### Set aside
 
 - **One ratio for the whole image**, which is what `studio variants`
