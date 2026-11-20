@@ -531,7 +531,7 @@ behaves the same way.
 - **The combined run is reproducible**: the same inputs give the same
   combined hash (an FNV of both machines' state hashes and the hub's state)
   across runs, on the interpreter, on the JIT and with `--single-thread`
-  (`744c2f5f4a0c2da5` for a 4,800-frame run with a race, two machines;
+  (`744c2f5f4a0c2da5` for a 4,800-frame run with a race, two machines, with the hub as first built: the combined number folds the hub's saved state, which changed in section 12, so it differs now while the machines' own hashes (at D = 1) do not;
   `make link-run` prints it). A different D gives a different hash, as it
   must.
 - **Saved together, the two machines resume exactly**: `--save-at 3900 F`

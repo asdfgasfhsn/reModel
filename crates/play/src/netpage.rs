@@ -129,7 +129,9 @@ impl NetPage {
                     HostStatus::Failed(e) => fail = Some(e),
                     _ => {}
                 }
-                if !*starting && self.auto > 0 && host.players() >= self.auto {
+                // With the round trips measured (so D is picked from them).
+                let measured = host.joiners().iter().all(|(_, r)| r.is_some());
+                if !*starting && self.auto > 0 && host.players() >= self.auto && measured {
                     do_start = true;
                 }
             }
@@ -204,7 +206,7 @@ impl NetPage {
                         ui.label(
                             egui::RichText::new(format!(
                                 "Needs UDP port {port} reachable from the other machines (a firewall may need it opened). \
-                                 The delay is picked from the measured round trip: {} frames now.",
+                                 The delay is picked from the measured round trip: D = {} now.",
                                 host.suggest_delay()
                             ))
                             .size(13.0 * s)
@@ -213,7 +215,7 @@ impl NetPage {
                         ui.add_space(12.0 * s);
                         if *starting {
                             ui.label(dim("Starting...".into()));
-                        } else if focus.menu_row(ui, "Start the game", &format!("{} players", host.players())) {
+                        } else if focus.menu_row(ui, "Start the game", &format!("{} {}", host.players(), if host.players() == 1 { "player" } else { "players" })) {
                             if host.players() < 2 {
                                 *note = Some("Wait for another player to join first.".into());
                             } else {

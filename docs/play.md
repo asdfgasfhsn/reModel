@@ -1101,7 +1101,7 @@ player count.
 **Reproducible.** `--frames N` prints each machine's state hash and the
 combined one (an FNV of the machines' hashes and the hub's state), which is
 what `remodel link-run` prints too; the same scripted inputs give the same
-value in both (4,400 frames, two machines: `a7d468fcdccbfe99`).
+value in both (4,400 frames, two machines: `bd3b0b5768e8d6ad`; it was `a7d468fcdccbfe99` before the hub's saved state changed for network play, `docs/hw/link-board.md` section 12: the machines' own hashes are unchanged).
 
 ### What link play costs
 
@@ -1254,7 +1254,8 @@ that node with the same inputs and delay: they must be equal), the stalls and
 the bandwidth. Fault injection for tests: `--latency MS --jitter MS --loss PCT
 --dup PCT --seed N` (on what that host sends), `--corrupt-rx-at F` (damage a
 received record: the state check must report it), `--tamper-byte OFF:V` (a
-settings byte changed after agreeing: the host refuses to start), `--leave-at F`.
+settings byte changed after agreeing: the host refuses to start), `--leave-at F`; `--realtime` holds the machine to 60 frames a second, so the stall counts are what a
+player would see (otherwise the hosts run as fast as they can and wait for each other).
 `make link-net-test` runs the whole set over loopback for both games
 (clean, 5% loss with 50 ms jitter, a polite leave, a kill, a settings
 mismatch, a damaged record) and checks every hash against `link-run`; it needs
