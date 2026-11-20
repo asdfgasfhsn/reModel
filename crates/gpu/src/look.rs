@@ -35,7 +35,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// The texture-ID target's format and the 1/z target's.
-pub(crate) const ID_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Uint;
+pub(crate) const ID_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Uint;
 pub(crate) const IZ_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
 
 /// The live ID of the texture with key `key` (`TexInfo::key`): never 0 (no
@@ -112,7 +112,8 @@ pub(crate) struct PolyLook {
 /// surfaces and are not shapes of their own. A background is drawn as the
 /// colour pass does, over what the earlier ones left and without depth.
 pub(crate) fn in_id_pass(p: &Poly, pl: &Placed) -> bool {
-    !pl.background || matches!(model2::raster::background_reason(p), Some("sky" | "spread"))
+    crate::aospike::GBUF_ALL.load(std::sync::atomic::Ordering::Relaxed)
+        || !pl.background || matches!(model2::raster::background_reason(p), Some("sky" | "spread"))
 }
 
 /// The scene's typical distance (as `1/iz`, game units): where half of the
@@ -396,8 +397,8 @@ impl Renderer {
     /// `pick_blocks` the tag's bits 18+ are the object block number + 1 (0: none).
     pub fn read_ids(&mut self, w: u32, h: u32) -> Vec<[u32; 2]> {
         let t = self.kept_target("look ids", (w, h), ID_FORMAT, Self::ID_USAGE).0;
-        let raw = self.read_back_bpp(self.device.create_command_encoder(&Default::default()), &t, w, h, 8);
-        raw.chunks_exact(8)
+        let raw = self.read_back_bpp(self.device.create_command_encoder(&Default::default()), &t, w, h, 16);
+        raw.chunks_exact(16)
             .map(|c| [u32::from_le_bytes(c[0..4].try_into().unwrap()), u32::from_le_bytes(c[4..8].try_into().unwrap())])
             .collect()
     }

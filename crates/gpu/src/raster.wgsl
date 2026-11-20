@@ -1740,7 +1740,7 @@ fn fs_matf_depth_t(in: VsTOut) -> TDepthOut {
 // either); colours are never used.
 
 struct IdOut {
-    @location(0) id: vec2u,
+    @location(0) id: vec4u,
     @location(1) iz: f32,
     @builtin(frag_depth) depth: f32,
 }
@@ -1750,7 +1750,8 @@ fn id_out(poly: u32, pos: vec4f, iz: f32) -> IdOut {
     let e = bitcast<vec4u>(outlines[bitcast<u32>(screen.toon.w) + poly]);
     let z1 = outline_iz(poly, floor(pos.xy), iz);
     let z = z1 * (1.0 + f32(polys[poly].colour.w) * DEPTH_BIAS) * DEPTH_FACTOR;
-    o.id = e.xy;
+    // SPIKE: z is the polygon's index + 1 (the lighting passes' table).
+    o.id = vec4u(e.xy, poly + 1u, 0u);
     o.iz = z1;
     o.depth = z / (z + DEPTH_SCALE);
     return o;
@@ -1814,7 +1815,7 @@ fn fs_id_packf(in: VsPackOut) -> IdOut {
 @fragment
 fn fs_id_clear() -> IdOut {
     var o: IdOut;
-    o.id = vec2u(0u);
+    o.id = vec4u(0u);
     o.iz = 0.0;
     o.depth = 0.0;
     return o;

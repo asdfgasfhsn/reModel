@@ -16,6 +16,7 @@
 //! default). [`Renderer::present`] then blends the
 //! 2D tile layers around the 3D layer into the output.
 
+pub mod aospike;
 mod bloom;
 mod board;
 mod crt;
@@ -654,6 +655,9 @@ pub struct Renderer {
     /// The scene's typical distance, steadied (`look::depth_reference`).
     depth_ref: Option<f32>,
     id_share: Option<look::IdShare>,
+    /// SPIKE: the occlusion pass over the 3D layer (aospike.rs).
+    ao_spike: Option<aospike::AoSpike>,
+    ao_pass: Option<aospike::AoPass>,
     /// While a photo is drawn: its near plane (`raster::BuildIn::near`).
     photo_near: f32,
 }
@@ -1017,6 +1021,8 @@ impl Renderer {
             pick_blocks: false,
             depth_ref: None,
             id_share: None,
+            ao_spike: None,
+            ao_pass: None,
         }
     }
 
@@ -2519,6 +2525,10 @@ impl Renderer {
             for l in &look_polys {
                 outline_dir.extend(le([l.id, l.tag, 0, 0].map(u32::to_le_bytes)));
             }
+            // SPIKE: no look, the entries are empty.
+            if look_polys.is_empty() {
+                outline_dir.extend(std::iter::repeat_n(0u8, 16 * placed.len()));
+            }
         }
         if outline_dir.is_empty() {
             outline_dir.resize(16, 0);
@@ -2894,6 +2904,7 @@ impl Renderer {
             }
             None => layer3d_view,
         };
+        let layer3d_view = self.encode_ao_spike(enc, polys, placed, src, view, versions, layer3d_view);
         let tile_group =
             layers.tiles.as_ref().and_then(|m| self.tiles.bind(&self.device, &self.queue, m, layers.ext_w));
         if self.pack.is_some() {

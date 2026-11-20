@@ -1366,7 +1366,7 @@ fn wrap(c: i32, size: u32, mirror: bool) -> u32 {
 /// average stands in for it, and the pixel is dropped when less than half
 /// its weight is opaque (docs/hw/geometrizer.md 5.4; the hardware filter is
 /// unconfirmed).
-fn filtered_texel(t: &Texture, src: &Sources, u: f32, v: f32) -> Option<u32> {
+pub fn filtered_texel(t: &Texture, src: &Sources, u: f32, v: f32) -> Option<u32> {
     let (u, v) = (u - 0.5, v - 0.5);
     let (fu, fv) = (u - u.floor(), v - v.floor());
     let (u0, v0) = (u.floor() as i32, v.floor() as i32);

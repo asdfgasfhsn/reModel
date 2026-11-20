@@ -14,40 +14,40 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::time::Instant;
 
-type V3 = [f32; 3];
-fn sub(a: V3, b: V3) -> V3 {
+pub(crate) type V3 = [f32; 3];
+pub(crate) fn sub(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
-fn dot(a: V3, b: V3) -> f32 {
+pub(crate) fn dot(a: V3, b: V3) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
-fn cross(a: V3, b: V3) -> V3 {
+pub(crate) fn cross(a: V3, b: V3) -> V3 {
     [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
-fn norm(a: V3) -> V3 {
+pub(crate) fn norm(a: V3) -> V3 {
     let l = dot(a, a).sqrt().max(1e-20);
     [a[0] / l, a[1] / l, a[2] / l]
 }
-fn env(k: &str, d: f32) -> f32 {
+pub(crate) fn env(k: &str, d: f32) -> f32 {
     std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
 }
 
 /// Per-pixel buffers rebuilt from polygon planes.
-struct G {
-    w: usize,
-    h: usize,
-    pos: Vec<V3>,
-    nrm: Vec<V3>,
+pub(crate) struct G {
+    pub w: usize,
+    pub h: usize,
+    pub pos: Vec<V3>,
+    pub nrm: Vec<V3>,
     /// Takes the terms: a 3D pixel of a lit, non-HUD, non-sky, non-blob, non-checker polygon.
-    elig: Vec<bool>,
+    pub elig: Vec<bool>,
     /// 0 none, 1 plain, 2 sky, 3 blob shadow, 4 checker, 5 hud, 6 spread (ground in the game's order), 7 no focal
-    cat: Vec<u8>,
+    pub cat: Vec<u8>,
     /// the block of the owner
-    block: Vec<u32>,
-    win: Vec<u8>,
+    pub block: Vec<u32>,
+    pub win: Vec<u8>,
 }
 
-fn grey(v: f32) -> [u8; 3] {
+pub(crate) fn grey(v: f32) -> [u8; 3] {
     let g = (v.clamp(0.0, 1.0) * 255.0) as u8;
     [g, g, g]
 }
@@ -226,13 +226,13 @@ fn tris_of(casts: &[&Cast], focal: impl Fn(u32) -> (f32, f32)) -> Vec<[V3; 3]> {
     out
 }
 
-struct Scene {
-    tag: String,
-    out: std::path::PathBuf,
+pub(crate) struct Scene {
+    pub tag: String,
+    pub out: std::path::PathBuf,
 }
 
 impl Scene {
-    fn strip(&self, name: &str, w: usize, h: usize, rows: &[&[u8]]) {
+    pub(crate) fn strip(&self, name: &str, w: usize, h: usize, rows: &[&[u8]]) {
         let mut all = Vec::new();
         for r in rows {
             all.extend_from_slice(r);
@@ -241,11 +241,11 @@ impl Scene {
     }
 }
 
-fn pct(a: usize, b: usize) -> f64 {
+pub(crate) fn pct(a: usize, b: usize) -> f64 {
     100.0 * a as f64 / b.max(1) as f64
 }
 
-fn scene(sc: &Scene, cap: &capture::Frame, side: &model2::light::Frame, texrom: &[u16], view: &View, windows: (&[usize], &[usize])) {
+fn scene(sc: &Scene, cap: &capture::Frame, side: &model2::light::Frame, texrom: &[u16], view: &View, windows: (&[usize], &[usize]), gpu: Option<&mut gpu::Renderer>) {
     let (w, h) = (view.width, view.height);
     let view = view.with_hud_windows(windows.0, windows.1);
     let src = Sources {
@@ -510,6 +510,12 @@ fn scene(sc: &Scene, cap: &capture::Frame, side: &model2::light::Frame, texrom: 
             }
         }
     }
+    if let Some(gr) = gpu {
+        let cpu = crate::lighting_gpu::Cpu { elig: &g.elig, term: &a, orig: &orig, w };
+        if let Err(e) = crate::lighting_gpu::run(gr, &sc.tag, &sc.out, cap, side, texrom, windows, &casts, &cpu) {
+            println!("[{}] GPU error: {e}", sc.tag);
+        }
+    }
     let same = (0..w * h).filter(|&o| !g.elig[o]).all(|o| orig[o * 3..o * 3 + 3] == ao_img[o * 3..o * 3 + 3]);
     println!("[{}] AO leaves every non-eligible pixel (2D, HUD, sky, blob, checker) byte-identical: {same}", sc.tag);
 
@@ -641,6 +647,24 @@ fn scene(sc: &Scene, cap: &capture::Frame, side: &model2::light::Frame, texrom: 
         sp.iter().filter(|&&o| sh_s.term[o] < 0.5).count(),
         pct(sp.iter().filter(|&&o| sh_s.term[o] < 0.5).count(), sp.len())
     );
+    if std::env::var_os("LS_B").is_some() {
+        let ctx = crate::lighting_shadow::Ctx {
+            sc,
+            cap,
+            side,
+            src: &src,
+            view: &view,
+            polys: &polys,
+            placed: &placed,
+            casts: &casts,
+            hud_mask,
+            g: &g,
+            sign,
+            layer: &layer,
+            orig: &orig,
+        };
+        crate::lighting_shadow::run(&ctx);
+    }
     let both: Vec<f32> = (0..w * h).map(|o| a[o] * tf[o]).collect();
     sc.strip("both", w, h, &[&orig, &apply(&both)]);
 }
@@ -655,6 +679,7 @@ pub fn run(roms: &RomSet, out: &Path, frames: &[u64], spec: &str) -> Result<(), 
     if let Ok(bytes) = std::fs::read(Path::new("out").join(roms.game.id).join("eeprom.bin")) {
         m.bus.eeprom.load(&bytes);
     }
+    let mut gr = if std::env::var_os("LG").is_some() { Some(gpu::Renderer::new()?) } else { None };
     let view = View::native();
     let windows = (roms.game.hud_windows, roms.game.hud_element_windows);
     let last = frames.iter().copied().max().unwrap_or(0);
@@ -677,7 +702,7 @@ pub fn run(roms: &RomSet, out: &Path, frames: &[u64], spec: &str) -> Result<(), 
         let t_rerun = t0.elapsed().as_secs_f64() * 1000.0;
         let Some(side) = side else { continue };
         println!("frame {}: rerun equals machine stream: {} ({t_rerun:.2} ms, {} words)", cap.frame, rerun == cap.stream, rerun.len());
-        scene(&Scene { tag: format!("{}-{}", roms.game.id, cap.frame), out: out.to_path_buf() }, &cap, &side, &texrom, &view, windows);
+        scene(&Scene { tag: format!("{}-{}", roms.game.id, cap.frame), out: out.to_path_buf() }, &cap, &side, &texrom, &view, windows, gr.as_mut());
     }
     println!("final frame {} state hash {:016x}", m.frames, m.bus.state_hash());
     Ok(())

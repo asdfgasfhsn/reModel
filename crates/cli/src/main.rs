@@ -17,6 +17,8 @@ mod run_ahead;
 mod sharc;
 mod sound_render;
 mod soundtrack;
+mod lighting_gpu;
+mod lighting_shadow;
 mod lighting_spike;
 mod model_pick;
 mod model_replace;
