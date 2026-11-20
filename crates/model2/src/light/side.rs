@@ -59,6 +59,9 @@ pub struct Block {
     /// read from the model's own data even when a rerun removed or
     /// replaced it: what a replacement inherits.
     pub entry: Option<(u8, u16)>,
+    /// SPIKE (lod-wide): byte address in the display list buffer of the
+    /// object command that made the block (0: unknown).
+    pub lst: u32,
 }
 
 impl Block {
@@ -227,7 +230,11 @@ impl Frame {
         // SPIKE: model keys, two words per block, after everything else.
         if self.blocks.iter().any(|b| b.key != 0) {
             for b in &self.blocks {
-                w.extend([b.key as u32, (b.key >> 32) as u32]);
+                w.extend([b.key as u32, (b.key >> 32) as u32, b.lst]);
+            }
+            // SPIKE (lod-wide): then the transforms, 24 words per block.
+            for b in &self.blocks {
+                w.extend(b.xf.map(f32::to_bits));
             }
         }
         w
@@ -245,10 +252,12 @@ impl Frame {
             .checked_add(nb.checked_mul(9)?)?
             .checked_add(nf.checked_mul(4)?)?
             .checked_add(nm.checked_mul(4)?)?;
-        if w.len() != base && w.len() != base + 2 * nb {
+        if w.len() != base && w.len() != base + 2 * nb && w.len() != base + 3 * nb && w.len() != base + 27 * nb {
             return None;
         }
         let keys: &[u32] = &w[base..];
+        let stride = if keys.len() >= 3 * nb && nb > 0 { 3 } else { 2 };
+        let xfs: &[u32] = if keys.len() == 27 * nb && nb > 0 { &keys[3 * nb..] } else { &[] };
         let f = |v: u32| f32::from_bits(v);
         let mut at = 6;
         let mut take = |n: usize| {
@@ -260,7 +269,8 @@ impl Frame {
             .map(|i| {
                 let b = take(9);
                 Block {
-                    key: if keys.is_empty() { 0 } else { keys[2 * i] as u64 | (keys[2 * i + 1] as u64) << 32 },
+                    key: if keys.is_empty() { 0 } else { keys[stride * i] as u64 | (keys[stride * i + 1] as u64) << 32 },
+                    lst: if stride == 3 && !keys.is_empty() { keys[3 * i + 2] } else { 0 },
                     oba: b[0],
                     flags: b[1],
                     fx: f(b[2]),
@@ -268,7 +278,7 @@ impl Frame {
                     light: [f(b[4]), f(b[5]), f(b[6])],
                     first: b[7],
                     count: b[8],
-                    xf: [0.0; 24],
+                    xf: if xfs.is_empty() { [0.0; 24] } else { std::array::from_fn(|k| f32::from_bits(xfs[24 * i + k])) },
             entry: None,
                 }
             })
@@ -438,6 +448,7 @@ impl Tap {
             key: 0,
             xf: [0.0; 24],
             entry: None,
+            lst: 0,
         });
     }
 
@@ -452,6 +463,13 @@ impl Tap {
                     b.xf[12 * s + 9 + k] = f32::from_bits(t[s][k]);
                 }
             }
+        }
+    }
+
+    /// SPIKE (lod-wide): the list address of the current block's command.
+    pub fn set_lst(&mut self, lst: u32) {
+        if let Some(b) = self.blocks.last_mut() {
+            b.lst = lst;
         }
     }
 

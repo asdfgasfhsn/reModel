@@ -95,6 +95,7 @@ fn scan(words: &[u32], prog: ScanProgram, st: &mut ScanState) -> Option<Vec<Bloc
             first: 0,
             count: 0,
             key: 0,
+            lst: 0,
             xf: [0.0; 24],
             entry: None,
         }

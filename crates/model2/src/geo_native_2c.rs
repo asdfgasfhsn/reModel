@@ -862,6 +862,7 @@ impl Native {
         }
         io.emit(cmd);
         self.eb = 0;
+        let lst = io.list.pos().wrapping_sub(4);
         let tpa = io.rd() & 0xff_ffff;
         let tha = io.rd() & 0xff_ffff;
         let oba = io.rd();
@@ -909,6 +910,7 @@ impl Native {
             if let Some(t) = io.light.as_deref_mut() {
                 t.block(oba, flags, c.fx, c.fy, c.l);
                 t.set_xf(c.m, c.t);
+                t.set_lst(lst);
             }
             // SPIKE (tier 2b): the lighting entry of the model's own first polygon.
             let attr = io.poly.peek((oba & 0xff_ffff).wrapping_add(6));

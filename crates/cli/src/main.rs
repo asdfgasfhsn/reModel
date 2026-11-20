@@ -17,6 +17,7 @@ mod run_ahead;
 mod sharc;
 mod sound_render;
 mod soundtrack;
+mod lod_wide;
 mod model_pick;
 mod model_replace;
 mod uplift_mesh;
@@ -1081,6 +1082,36 @@ fn main() -> ExitCode {
         "look-render" => cmd_look_render(&o, roms),
         "lighting-check" => cmd_lighting_check(&o, roms),
         "model-pick" => cmd_model_pick(&o, roms),
+        "lod-dump" => {
+            let a = &o.args;
+            let (Some(root), Some(out)) = (a.get(1), a.get(2)) else {
+                eprintln!("usage: lod-dump CAPDIR OUT");
+                return ExitCode::FAILURE;
+            };
+            match lod_wide::dump(Path::new(root), Path::new(out)) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        "lod-render" => {
+            let a = &o.args;
+            let (Some(root), Some(out)) = (a.get(1), a.get(2)) else {
+                eprintln!("usage: lod-render CAPDIR OUT [FRAME,..] [ASPECT_W:H]");
+                return ExitCode::FAILURE;
+            };
+            let only: Vec<u64> = a.get(3).map(|s| s.split(',').filter_map(|v| v.parse().ok()).collect()).unwrap_or_default();
+            let aspect = a.get(4).and_then(|s| s.split_once(':')).and_then(|(w, h)| Some(w.parse::<f32>().ok()? / h.parse::<f32>().ok()?)).unwrap_or(16.0 / 9.0);
+            match lod_wide::render(Path::new(root), (roms.game.hud_windows, roms.game.hud_element_windows), Path::new(out), &only, 384, aspect) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         "gpu-pick" => {
             let a = &o.args;
             let (Some(root), Some(out)) = (a.get(1), a.get(2)) else {

@@ -494,6 +494,11 @@ impl<'a> ListDma<'a> {
         ListDma { buffer, jumps, pos: read_ptr as usize & (buffer.len() - 1) & !3, words, fed }
     }
 
+    /// SPIKE (lod-wide): the byte address of the next word.
+    pub(crate) fn pos(&self) -> u32 {
+        self.pos as u32
+    }
+
     /// The next list word, or None once the frame's cap is reached.
     pub(crate) fn next(&mut self) -> Option<u32> {
         let mask = self.buffer.len() - 1;

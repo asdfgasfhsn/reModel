@@ -893,6 +893,7 @@ impl Native {
     /// sent as a polygon block (geometrizer.md §4.2).
     fn object(&mut self, io: &mut Io, cmd: u32) {
         self.dm[TESTED] = 0;
+        let lst = io.list.pos().wrapping_sub(4);
         let tpa = io.rd();
         let tha = io.rd();
         let oba = io.rd();
@@ -930,6 +931,7 @@ impl Native {
             // SPIKE (tier 2): the transform (one matrix on 2B: both slots) and
             // the lighting entry of the model's own first polygon.
             t.set_xf([c.m, c.m], [c.t, c.t]);
+            t.set_lst(lst);
             if let Source::Poly(base) = src {
                 let attr = io.poly.peek(base.wrapping_add(6));
                 let ([diffuse, ambient, control, scale], _) = self.params(attr);
