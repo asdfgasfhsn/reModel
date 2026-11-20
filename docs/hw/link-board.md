@@ -922,13 +922,37 @@ from loopback runs of two real processes (`make link-net-test`).
   the settings; the joiners answer with their settings hash; then `Go`.
   Every step is repeated until answered, so the setup works through loss.
 
+* **Names and discovery (as built later).** The protocol is version 2: the
+  `Lobby` packet carries every player's name (host first) so a joiner sees who
+  is in, and the `Info` answer to a broadcast `Discover` carries the host's
+  reModel version, the ROM hash and D beside the game, name, players and port.
+  A host's name and every name in a packet is cleaned on receipt (printable,
+  at most 16 characters) and two players with one name are told apart on
+  display only ("Sam", "Sam (2)"); names are not in any state or hash. A
+  `Hello` of another protocol version is refused with the two versions in the
+  message, and a joiner that hears any packet of another version from its host
+  says so instead of waiting for its 5 second timeout. Discovery has a second
+  way beside the broadcast: DNS-SD over multicast DNS (`crates/linknet/src/mdns.rs`,
+  the `mdns-sd` crate): service `_remodel._udp.local.` on the host's real
+  port, instance `NAME GAME PORT`, TXT keys `proto`, `game`, `ver`, `rom` (the
+  hash, 16 hex digits), `players`, `max`, `free`, `d`, `state` (`open`, `full`,
+  `starting`) and `name`. The host re-registers (an update) when the TXT changes,
+  withdraws the service when the lobby is full or starting and unregisters on
+  `close` and on drop; a joiner browses and merges its answers with the
+  broadcast's by address (a host heard at several addresses, or both ways, is
+  one entry; the address on our own subnet is preferred). A host can be
+  refused before joining (version, ROM hash, game, full) from the record alone.
+  The responder shares UDP 5353 with other mDNS software; where it cannot
+  start, the broadcast alone is used. *Unmeasured:* Wi-Fi access points that
+  filter multicast, a second physical machine.
+
 ### 12.2 The packets
 
 UDP, `RMLN` + protocol version + kind; at most 1,400 bytes; everything
 little-endian and bounds-checked, and **a malformed packet is dropped whole,
 never trusted** (sizes, node ids, host indexes, frame ranges; the session id
 and the source address must match the table). Kinds: Hello, Welcome, Refuse,
-Lobby, Ping, Pong, Start, StartAck, Go, **Data**, Bye, Abort, Discover, Info.
+Lobby, Ping, Pong, Start, StartAck, Go, **Data**, Bye, Abort, Discover, Info (protocol 2 as above).
 
 A **Data** packet carries the sender's newest frame, an acknowledgement per
 host (the frame up to which the sender holds all of that host's records), the

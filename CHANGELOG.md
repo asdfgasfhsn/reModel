@@ -16,6 +16,28 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- Network link play: hosts are found by mDNS / DNS-SD as well as by broadcast.
+  A host in its lobby advertises `_remodel._udp.local.` on its real port with
+  the game, the reModel version, the ROM hash the session agreement compares,
+  players and free seats, D, the lobby state and its name, updating it as
+  players come and go and withdrawing it when the lobby is full, starting
+  or closed; the join list merges mDNS and the broadcast (kept as the
+  fallback, and used alone, logging once, where multicast fails) and greys out
+  hosts that cannot be joined with the reason. Uses the `mdns-sd` crate
+  (Apache-2.0 OR MIT, pure Rust; its dependencies are MIT, Apache-2.0,
+  BSD-3-Clause or Zlib, so the generated `THIRD-PARTY-NOTICES.txt` picks them
+  up with no change to `tools/notices.py`) and shares port 5353 with Avahi.
+  Players have user names (the OS login name by default, at most 16
+  printable characters; kept in the player settings, edited on the Link play
+  page, `--name`): the lobby, the join list, the status line and the
+  disconnect and desync messages use them ("Sam left"). The link protocol is
+  now 2 (names in the lobby packets, the host's version and ROM hash in the
+  discovery answer; an older reModel is refused with a message naming the
+  mismatch). Names are display only: state hashes and `link-run` equality are
+  unchanged. `remodel link-net --browse [SECS]` / `make link-browse` list the
+  hosts headlessly; `make link-net-test` finds a named host over mDNS and
+  joins it.
+
 - Linked play over a LAN: each machine runs its own linked cabinet (Sega Rally,
   Daytona USA) and the link board's blocks travel between the hosts over UDP,
   in lockstep with a fixed delay D (new crate `remodel-linknet`; no new

@@ -231,7 +231,10 @@ link-run: release ## Experimental, off by default: NODES (default 2; up to 4 sra
 link-net: release ## Networked link play without a window: one machine of GAME (srallyc, daytona) here, the others on other hosts, the blocks over UDP in lockstep: NET="--host 47890 --nodes 2 --delay 3" on one host, NET="--join HOST:PORT" on the others (FRAMES, INPUT; fault injection --loss --latency --jitter --dup; prints this node's state hash as link-run does; docs/play.md, "Network link play")
 	$(RUN) --out $(OUT) $(if $(INPUT),--input $(INPUT)) link-net $(NET) --frames $(or $(FRAMES),3000)
 
-link-net-test: release ## Networked link play over loopback, two processes per case, srallyc and daytona (GAMES): each host's state hash equals link-run's for its node, clean and under 5% loss with 50 ms jitter; a polite leave, a kill, a settings byte that differs and a damaged record end cleanly with a message (needs the ROMs; about 4 minutes)
+link-browse: release ## List the hosts of a network link game found on this network (mDNS and broadcast; SECS to look, default 3; GAME to judge which could be joined): name, game, players, address, version, ROM hash, delay and whether this machine can join each (docs/play.md, "Network link play")
+	$(RUN) link-net --browse $(or $(SECS),3)
+
+link-net-test: release ## Networked link play over loopback, two processes per case, srallyc and daytona (GAMES): each host's state hash equals link-run's for its node, clean and under 5% loss with 50 ms jitter; player names in the lobby and the messages, the host found by mDNS (--browse) with its TXT record before it is joined; a polite leave, a kill, a settings byte that differs and a damaged record end cleanly with a message (needs the ROMs; about 4 minutes)
 	tools/link-net-test.sh $(CURDIR)/$(REMODEL) $(ROM) out/link-net-test $(GAMES)
 
 link-trace: release ## Experimental, off by default: run GAME with a link board fitted (LINK=idle, or LINK=fake,ID,TOTAL: a partner that mirrors the game's own block; LINK_DELAY, LINK_FREEZE, LINK_DROP: frames) and write every access to 0x1A00000-0x1A1FFFF to OUT/link-trace.txt (INPUT, STEPS, SNAP as `run`; docs/hw/link-board.md)

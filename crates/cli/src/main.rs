@@ -505,7 +505,7 @@ commands:
                        patched per node (master first); side-by-side pictures every
                        --shot-every frames and the handshake and block log
                        in --out DIR (default out/link-run)
-  link-net (--host [PORT] | --join HOST:PORT) [--nodes N] [--frames F] [--input S] [--delay D] ...
+  link-net (--host [PORT] | --join HOST:PORT | --browse [SECS]) [--nodes N] [--frames F] [--input S] [--delay D] ...
                        linked play between hosts (docs/play.md, Network link
                        play): this host runs one node of the game (srallyc,
                        daytona), the others run theirs on other machines, the

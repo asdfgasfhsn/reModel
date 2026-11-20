@@ -111,6 +111,8 @@ pub enum Action {
     ResetGame(String),
     /// Look for games in this ROM folder.
     Rescan(String),
+    /// The player's name for network link play was edited.
+    SetPlayerName(String),
     Quit,
 }
 
@@ -278,6 +280,8 @@ pub struct Launcher {
     choose: Option<&'static str>,
     /// The ROM folder being edited (no games found).
     pub rom_text: String,
+    /// The player's name for network link play, as edited on the Link play page.
+    pub player_name: String,
 }
 
 /// The id the carousel's selected card has whichever game it is, so the
@@ -326,6 +330,7 @@ impl Default for Launcher {
             logo: None,
             choose: None,
             rom_text: String::new(),
+            player_name: String::new(),
         }
     }
 }
@@ -1618,6 +1623,8 @@ impl Launcher {
         let mut chosen = None;
         let mut net: Option<bool> = None;
         let LinkPage { game, focus } = page;
+        let player_name = &mut self.player_name;
+        let mut name_edited = false;
         back |= menu::side_panel(ctx, &spec, &hints, |ui, reg| {
             let s = theme::scale(ui.ctx());
             ui.scope_builder(egui::UiBuilder::new().max_rect(reg.body.shrink2(vec2(24.0 * s, 0.0))), |ui| {
@@ -1644,6 +1651,16 @@ impl Launcher {
                         .color(theme::TEXT_2),
                 );
                 ui.add_space(6.0 * s);
+                ui.label(egui::RichText::new("Your name for the other players").size(13.0 * s).color(theme::TEXT_DIM));
+                let edit = egui::TextEdit::singleline(player_name)
+                    .char_limit(linknet::MAX_NAME)
+                    .hint_text(linknet::default_name())
+                    .desired_width(f32::INFINITY)
+                    .font(egui::FontId::new(17.0 * s, egui::FontFamily::Proportional));
+                if ui.add(edit).changed() {
+                    name_edited = true;
+                }
+                ui.add_space(6.0 * s);
                 if focus.menu_row(ui, "Host a network game", "this machine is player 1") {
                     net = Some(true);
                 }
@@ -1654,6 +1671,9 @@ impl Launcher {
             false
         });
         page.focus.end();
+        if name_edited {
+            actions.push(Action::SetPlayerName(self.player_name.clone()));
+        }
         if let Some(players) = chosen {
             actions.push(Action::PlayLink { set: page.game.id.to_string(), players });
             back = true;

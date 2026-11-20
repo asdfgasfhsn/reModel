@@ -112,6 +112,9 @@ usage: remodel-play [options]
   --join HOST:PORT   network link play with --game: join the host there
   --net-players N    with --host: start when N players (this one included)
                      have joined, without pressing Start
+  --name NAME        network link play: the name the other players see, for
+                     this run (default: the one set on the launcher's Link
+                     play page, first the login name); at most 16 characters
   --interp           run the i960 on the interpreter even if this build
                      has recompiled code
   --no-jit           don't use the JIT (the default runs the game's code
@@ -423,6 +426,8 @@ struct Options {
     net: Option<NetMode>,
     /// `--net-players`.
     net_players: usize,
+    /// `--name`: the player's name for this run.
+    name: Option<String>,
 }
 
 /// Network link play from the command line.
@@ -518,6 +523,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
         link_keyboard: true,
         net: None,
         net_players: 0,
+        name: None,
     };
     let mut args = std::env::args().skip(1).peekable();
     let mut cli = |k: &str, v: &str| s.cli.insert(k.to_string(), v.to_string());
@@ -741,6 +747,13 @@ fn options(s: &mut Settings) -> Result<Options, String> {
                 o.net = Some(NetMode::Host(port));
             }
             "--join" => o.net = Some(NetMode::Join(value()?)),
+            "--name" => {
+                let n = linknet::sanitize_name(&value()?);
+                if n.is_empty() {
+                    return Err("--name wants a name (printable characters, at most 16)".into());
+                }
+                o.name = Some(n);
+            }
             "--net-players" => {
                 o.net_players =
                     value()?.parse().ok().filter(|n| (2..=8).contains(n)).ok_or("--net-players wants 2 to 8")?
@@ -1347,6 +1360,7 @@ impl Play {
         self.games = sets.iter().filter_map(|s| romset::games::playable(s)).collect();
         self.unsupported = sets.len() - self.games.len();
         self.launcher.rom_text = self.settings.rom.display().to_string();
+        self.launcher.player_name = self.opts.name.clone().unwrap_or_else(|| self.settings.player_name.clone());
         self.launcher.set_games(&self.games, &self.settings.recent);
     }
 
@@ -3490,6 +3504,15 @@ impl Play {
                 launcher::Action::PlayLink { set, players } => {
                     self.play_from_launcher(&set, library::Start::New, players)
                 }
+                launcher::Action::SetPlayerName(name) => {
+                    // An edit on the Link play page replaces `--name` and is kept.
+                    self.opts.name = None;
+                    let name = linknet::name_or_default(&name);
+                    if name != self.settings.player_name {
+                        self.settings.player_name = name;
+                        self.settings.save();
+                    }
+                }
                 launcher::Action::NetHost { set } => self.net_lobby(&set, true),
                 launcher::Action::NetJoin { set } => self.net_lobby(&set, false),
                 launcher::Action::PlayNet { set, session, params } => {
@@ -3540,7 +3563,8 @@ impl Play {
             let game = romset::games::find(set).map_err(|e| e.to_string())?;
             let play = link::play_for(game.id).ok_or_else(|| format!("{} can't link over a network", game.title))?;
             let roms = romset::RomSet::load(game, &self.settings.rom, false).map_err(|e| e.to_string())?;
-            let cfg = netplay::config(game, &roms, play, netplay::player_name());
+            let name = self.opts.name.clone().unwrap_or_else(|| self.settings.player_name.clone());
+            let cfg = netplay::config(game, &roms, play, name);
             Ok(match (host, join) {
                 (Some(NetMode::Host(port)), _) => {
                     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
@@ -3551,7 +3575,12 @@ impl Play {
                     netpage::NetPage::host(game, cfg, h, self.opts.net_players)
                 }
                 (_, Some(addr)) => netpage::NetPage::join(game, cfg, &addr),
-                _ => netpage::NetPage::pick(game, cfg, String::new()),
+                _ => netpage::NetPage::pick(
+                    game,
+                    cfg,
+                    String::new(),
+                    self.games.iter().map(|g| g.id.to_string()).collect(),
+                ),
             })
         })();
         match result {

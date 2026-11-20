@@ -38,11 +38,11 @@ pub enum Event {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum End {
     /// A host finished or left and said so.
-    Left { host: usize, reason: String },
+    Left { host: usize, name: String, reason: String },
     /// A host went silent.
-    Silent { host: usize, ms: u64 },
+    Silent { host: usize, name: String, ms: u64 },
     /// The checkpoint hashes differ.
-    Desync { frame: u64, ours: u64, theirs: u64, host: usize },
+    Desync { frame: u64, ours: u64, theirs: u64, host: usize, name: String },
     /// The host aborted the setup.
     Aborted(String),
 }
@@ -50,15 +50,14 @@ pub enum End {
 impl std::fmt::Display for End {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            End::Left { host, reason } => write!(f, "player {} left: {reason}", host + 1),
-            End::Silent { host, ms } => {
-                write!(f, "player {} has been silent for {:.1} s: connection lost", host + 1, *ms as f32 / 1000.0)
+            End::Left { name, reason, .. } if reason.is_empty() || reason == "left" => write!(f, "{name} left"),
+            End::Left { name, reason, .. } => write!(f, "{name} left: {reason}"),
+            End::Silent { name, ms, .. } => {
+                write!(f, "{name} has been silent for {:.1} s: connection lost", *ms as f32 / 1000.0)
             }
-            End::Desync { frame, ours, theirs, host } => write!(
-                f,
-                "out of sync with player {} at frame {frame}: our state hash {ours:016x}, theirs {theirs:016x}",
-                host + 1
-            ),
+            End::Desync { frame, ours, theirs, name, .. } => {
+                write!(f, "out of sync with {name} at frame {frame}: our state hash {ours:016x}, theirs {theirs:016x}")
+            }
             End::Aborted(s) => write!(f, "session aborted: {s}"),
         }
     }
@@ -99,6 +98,7 @@ struct Peer {
 pub struct Session {
     pub net: Net,
     pub me: usize,
+    names: Vec<String>,
     pub params: Params,
     peers: Vec<Option<Peer>>,
     nodes_of: Vec<Vec<usize>>,
@@ -120,6 +120,16 @@ pub struct Session {
 }
 
 impl Session {
+    /// Host `h`'s name as shown (players sharing a name are told apart).
+    pub fn name_of(&self, h: usize) -> String {
+        self.names.get(h).cloned().unwrap_or_else(|| format!("player {}", h + 1))
+    }
+
+    /// The hosts' names as shown, by host.
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
+
     /// A session of `params` as host `me`, on `net`, with the other hosts at `addrs`
     /// (indexed by host; ours is ignored).
     pub fn new(net: Net, me: usize, params: Params, addrs: Vec<SocketAddr>) -> Session {
@@ -145,9 +155,11 @@ impl Session {
                 })
             })
             .collect();
+        let names = crate::names::display_names(&params.hosts.iter().map(|h| h.name.clone()).collect::<Vec<_>>());
         Session {
             net,
             me,
+            names,
             params,
             peers,
             nodes_of,
@@ -242,7 +254,8 @@ impl Session {
             let theirs = self.peers[h].as_ref().and_then(|p| p.hashes.get(&frame)).copied();
             if let Some(theirs) = theirs {
                 if theirs != ours {
-                    self.finish(End::Desync { frame, ours, theirs, host: h });
+                    let name = self.name_of(h);
+                    self.finish(End::Desync { frame, ours, theirs, host: h, name });
                     return;
                 }
                 self.stats.checks_ok += 1;
@@ -319,7 +332,8 @@ impl Session {
             if let Some(p) = &self.peers[h] {
                 if p.last_heard.elapsed() > timeout {
                     let ms = p.last_heard.elapsed().as_millis() as u64;
-                    self.finish(End::Silent { host: h, ms });
+                    let name = self.name_of(h);
+                    self.finish(End::Silent { host: h, name, ms });
                     return;
                 }
             }
@@ -473,7 +487,8 @@ impl Session {
             return None;
         }
         if self.end.is_none() {
-            self.end = Some(End::Left { host: h, reason });
+            let name = self.name_of(h);
+            self.end = Some(End::Left { host: h, name, reason });
             self.bye_sent = true;
         }
         Some(())

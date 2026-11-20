@@ -1194,10 +1194,40 @@ is player 1: CAR 1, the master, and the one whose settings everyone runs
 **Joining.** `remodel-play --game srallyc --join 192.168.1.20:47890`, or the
 launcher's **Link play**, **Join a network game**: type the host's address
 (the port may be left out) and press Enter, or pick a host the panel found on
-the network (hosts on the default port that are waiting in their lobby show up
-in a second). Each joiner is the next player. The window then shows the
+the network. The list merges two ways of finding hosts (see **Finding hosts
+and names** below) and shows each host's name, game and players ("Alex   Sega Rally
+1/4"); a host you cannot join is greyed out with the reason (another reModel
+version, other ROMs, a game you don't have, full, already starting). Each joiner
+is the next player. The window then shows the
 game's boot, board check and link attract by itself, like the same-screen
 set; coin up and start as at a row of cabinets.
+
+**Finding hosts and names.** A host in its lobby advertises itself two ways, and the
+join list merges them (one entry per host, found either way):
+
+* **mDNS / DNS-SD**: the service `_remodel._udp.local.` on the host's real
+  port (any port, not only 47890), with a TXT record of the game set, the
+  reModel version, a hash of the program ROMs (what the session agreement
+  compares), players and seats free, the delay D it would start with, the lobby
+  state and the host's name. The record is updated as players join and leave;
+  the advert is withdrawn when the lobby is full or the start is under way, put
+  back if a seat frees up, and withdrawn with a goodbye when the host exits or
+  closes the lobby. It uses the shared multicast port 5353 as other mDNS
+  responders do, so Avahi or Bonjour on the same machine is fine.
+* **Broadcast**: a datagram to 255.255.255.255:47890 that hosts on the default
+  port answer, kept as the fallback. If mDNS cannot start (no multicast on the
+  machine) reModel says so once on the console and carries on with the
+  broadcast alone. Typing an address always works.
+
+Each player has a **user name**, kept with the player's settings
+(`player_name` in the settings file), edited on the launcher's **Link play**
+page, `--name NAME` for one run. It defaults to the OS login name, else
+"Player"; it is trimmed to printable characters, at most 16. The host's lobby
+lists the players by name, the join list shows the host's, and the status line
+and the end messages use them ("Sam left", "Sam has been silent for 5.0 s"). Two
+players with one name are shown "Sam" and "Sam (2)". Names are only shown: they
+are not part of any machine's state or hash, so the same inputs still give the
+same state hashes.
 
 **What must match.** The same game, the same ROM files (a hash of the program
 ROMs), the same reModel version (the crate version) and protocol. A joiner
@@ -1225,7 +1255,7 @@ link stays alive; the others see "WAITING"), so keep it short.
 
 **When it ends.** If a player leaves, quits the game or their machine goes
 silent for 5 seconds, every other machine drops back to the launcher with the
-reason ("player 2 left", "player 2 has been silent for 5.0 s: connection
+reason ("Sam left", "Sam has been silent for 5.0 s: connection
 lost"). If the machines' state checks disagree (every 60 frames each host
 hashes the records it feeds its link; a damaged or misdelivered record
 shows) the session stops with the frame and both hashes. There is no mid-race
@@ -1233,7 +1263,11 @@ recovery or rejoin: what a game would do with a missing cabinet is not
 known, so the session ends instead.
 
 **Firewall and ports.** The host listens on UDP, default port 47890
-(`--host PORT`), on all interfaces; its firewall must let that port in. The
+(`--host PORT`), on all interfaces; its firewall must let that port in, and
+for the mDNS list UDP 5353 as well (multicast 224.0.0.251; most desktop
+firewalls allow it on a trusted network). Some Wi-Fi access points and
+guest networks filter multicast or isolate clients: the host then does not
+show up in the list (and the broadcast may be filtered too); type its address. The
 joiner needs nothing opened. With three or more machines each machine's port
 must be reachable by the others (the joiners' ports are random). Nothing is
 opened or changed by reModel; there is no internet traversal: for play across
@@ -1248,6 +1282,12 @@ remodel --game srallyc --input "coin1@1500-1504,coin1@1560-1564,gas=0xff@3430-99
     link-net --host 47890 --nodes 2 --delay 3 --frames 4400          # on one machine
 remodel --game srallyc --input "..." link-net --join 192.168.1.20:47890 --frames 4400
 ```
+
+`--name NAME` sets the player name, `--no-mdns` turns mDNS off. `remodel link-net --browse [SECS]`
+(`make link-browse`) lists the hosts found on the network over mDNS and broadcast
+for SECS seconds (default 3) and exits: one line each with the name, game,
+players, address, version, ROM hash, D, how it was found, and whether this
+machine could join it.
 
 Each prints its node's state hash (the same line `remodel link-run` prints for
 that node with the same inputs and delay: they must be equal), the stalls and

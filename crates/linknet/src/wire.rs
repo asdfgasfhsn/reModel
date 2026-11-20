@@ -7,7 +7,9 @@ use model2::link::NodeRec;
 
 pub const MAGIC: &[u8; 4] = b"RMLN";
 /// Bumped whenever the packet layout or the session's rules change.
-pub const PROTO: u8 = 1;
+/// 2: player names in the lobby packets, the host's version and ROM hash in the
+/// discovery answer.
+pub const PROTO: u8 = 2;
 /// The largest datagram sent (under an Ethernet MTU) and read.
 pub const MAX_PACKET: usize = 1400;
 pub const MAX_HOSTS: usize = 8;
@@ -166,7 +168,7 @@ impl Params {
                 return None;
             }
             let nodes = r.bytes(k)?.to_vec();
-            hosts.push(HostEntry { addr, name, nodes });
+            hosts.push(HostEntry { addr, name: crate::names::sanitize_name(&name), nodes });
         }
         let base = match r.u8()? {
             0 => None,

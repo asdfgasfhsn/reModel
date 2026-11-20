@@ -11,17 +11,23 @@
 //!
 //! * [`wire`]: the packet formats, parsed defensively.
 //! * [`net`]: the UDP socket and fault injection (loss, delay, jitter, duplication).
+//! * [`mdns`]: mDNS / DNS-SD discovery (host advert, browser, merged list).
+//! * [`names`]: player user names.
 //! * [`setup`]: the lobby ([`Host`], [`Join`], [`Discovery`]) and the agreement.
 //! * [`session`]: records, acknowledgements, state checks, liveness, the end.
 //! * [`driver`]: [`NetLink`], the boundary exchange over a hub.
 
 pub mod driver;
+pub mod mdns;
+pub mod names;
 pub mod net;
 pub mod session;
 pub mod setup;
 pub mod wire;
 
 pub use driver::{NetLink, StallStats, Step};
+pub use mdns::{blocker, merge, Advert, Browser, Lobby, Mine, Txt};
+pub use names::{default_name, display_names, name_or_default, sanitize_name, MAX_NAME};
 pub use net::{lan_address, Faults, Net};
 pub use session::{End, Event, Session, Stats};
 pub use setup::{delay_for, Config, Discovery, Found, Host, HostStatus, Join, JoinStatus, DEFAULT_PORT};

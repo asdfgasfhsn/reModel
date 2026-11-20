@@ -14,12 +14,15 @@ use romset::SettingsStore;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
-const USAGE_NET: &str = "usage: remodel --game G link-net (--host [PORT] | --join HOST:PORT) [--nodes N] [--frames F] [--input S]
-        [--delay D] [--name NAME] [--bind IP] [--timeout S] [--check-every F] [--lobby-wait S] [--eeprom FILE]
+const USAGE_NET: &str = "usage: remodel --game G link-net (--host [PORT] | --join HOST:PORT | --browse [SECS]) [--nodes N] [--frames F] [--input S]
+        [--delay D] [--name NAME] [--no-mdns] [--bind IP] [--timeout S] [--check-every F] [--lobby-wait S] [--eeprom FILE]
         [--shot-every K] [--shot-at F,F,..] [--leave-at F] [--hash-every K] [--realtime]
         [--latency MS] [--jitter MS] [--loss PCT] [--dup PCT] [--seed N] [--corrupt-rx-at F] [--tamper-byte OFF:V]
   --host [PORT]   host the session (default port 47890) and wait for --nodes N - 1 players (default 2); this host runs node 1 (CAR 1, the master)
   --join H:P      join the host at H:P; the host assigns the node
+  --browse [SECS] list the hosts found on the network (mDNS and broadcast) for SECS seconds (default 3) and exit; says for each whether this machine can join it
+  --name NAME     the player's user name (default: the login name); at most 16 characters
+  --no-mdns       host/browse: broadcast discovery only, no mDNS
   --delay D       host: the link delay D in frames (default: from the measured round trip). D = 1 means no slack
   --frames F      end after this many frames (every host should give the same)
   --input S       scripted inputs as `run`'s --input, for this host's machine
@@ -36,6 +39,8 @@ const USAGE_NET: &str = "usage: remodel --game G link-net (--host [PORT] | --joi
 struct Args {
     host: Option<u16>,
     join: Option<String>,
+    browse: Option<f32>,
+    no_mdns: bool,
     nodes: usize,
     frames: u64,
     delay: Option<usize>,
@@ -59,6 +64,8 @@ fn parse(o: &Opts) -> Result<Args, String> {
     let mut a = Args {
         host: None,
         join: None,
+        browse: None,
+        no_mdns: false,
         nodes: 2,
         frames: 3000,
         delay: None,
@@ -99,6 +106,17 @@ fn parse(o: &Opts) -> Result<Args, String> {
                 a.host = Some(port);
             }
             "--join" => a.join = Some(next(&mut i, f)?),
+            "--browse" => {
+                let secs = match args.get(i + 1).and_then(|s| s.parse::<f32>().ok()) {
+                    Some(v) => {
+                        i += 1;
+                        v
+                    }
+                    None => 3.0,
+                };
+                a.browse = Some(secs);
+            }
+            "--no-mdns" => a.no_mdns = true,
             "--nodes" => a.nodes = num(next(&mut i, f)?)? as usize,
             "--frames" => a.frames = num(next(&mut i, f)?)?,
             "--delay" => a.delay = Some(num(next(&mut i, f)?)? as usize),
@@ -132,8 +150,12 @@ fn parse(o: &Opts) -> Result<Args, String> {
         }
         i += 1;
     }
-    if a.host.is_some() == a.join.is_some() {
-        return Err("give --host or --join".into());
+    if a.browse.is_some() {
+        if a.host.is_some() || a.join.is_some() {
+            return Err("--browse is on its own (no --host or --join)".into());
+        }
+    } else if a.host.is_some() == a.join.is_some() {
+        return Err("give --host, --join or --browse".into());
     }
     if !(2..=8).contains(&a.nodes) {
         return Err("--nodes: 2 to 8".into());
@@ -171,13 +193,17 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<ExitCode, String> {
         game: roms.game.id.to_string(),
         rom_hash: linknet::rom_hash(&roms.program),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        name: if a.name.is_empty() { format!("remodel-{}", std::process::id()) } else { a.name.clone() },
+        name: linknet::name_or_default(&a.name),
         block: play.block as u16,
         max_hosts: play.max_nodes,
         faults: a.faults.clone(),
         timeout: Duration::from_secs_f32(a.timeout),
         check_every: a.check_every,
     };
+    if let Some(secs) = a.browse {
+        return browse(&cfg, secs, a.no_mdns);
+    }
+    println!("link-net      player name {}", cfg.name);
     let base_file = match (&a.eeprom, play.settings.store) {
         (Some(p), SettingsStore::Eeprom) => Some(std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?),
         _ => None,
@@ -191,6 +217,16 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<ExitCode, String> {
         let ip: std::net::IpAddr = a.bind.parse().map_err(|_| format!("--bind {}: not an address", a.bind))?;
         let mut host =
             Host::bind(cfg, SocketAddr::new(ip, port)).map_err(|e| format!("cannot listen on {ip}:{port}: {e}"))?;
+        if !a.no_mdns {
+            match host.advertise() {
+                Ok(()) => println!(
+                    "link-net      advertising {} on mDNS (port {})",
+                    linknet::mdns::SERVICE,
+                    host.local_addr().port()
+                ),
+                Err(e) => println!("link-net      mDNS unavailable ({e}): hosts find this one by broadcast only"),
+            }
+        }
         let lan = linknet::lan_address().map(|i| i.to_string()).unwrap_or_else(|| "this machine's address".into());
         println!(
             "link-net      hosting {} on {} (join with --join {lan}:{})",
@@ -201,7 +237,12 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<ExitCode, String> {
         let t = Instant::now();
         let mut full_at: Option<Instant> = None;
         let mut started = false;
+        let mut lobby_names = host.names();
         loop {
+            if host.names() != lobby_names {
+                lobby_names = host.names();
+                println!("link-net      lobby: {}", lobby_names.join(", "));
+            }
             if !started && host.players() >= a.nodes {
                 // Let the round trips settle for a moment.
                 let at = *full_at.get_or_insert_with(Instant::now);
@@ -272,10 +313,11 @@ fn run_session(
         .map_err(|e| format!("input: {e}"))?;
     let hub = LinkHub::for_game(nodes, delay, play);
     let mut net = NetLink::new(hub, sess);
-    let names: Vec<String> = params.hosts.iter().map(|h| h.name.clone()).collect();
+    let names: Vec<String> = net.sess.names().to_vec();
     println!(
-        "link-net      {} node {node} of {nodes} (player {}), delay D = {delay}, players {names:?}",
+        "link-net      {} node {node} of {nodes} (you are {}, player {}), delay D = {delay}, players {names:?}",
         roms.game.id,
+        names[me],
         me + 1
     );
     let started = Instant::now();
@@ -365,8 +407,8 @@ fn run_session(
     );
     println!("host time     {secs:.1}s for {} frames", m.frames);
     match end {
-        Some(linknet::End::Left { host, reason }) if reason == "finished" => {
-            println!("link-net      player {} finished (at frame {})", host + 1, m.frames);
+        Some(linknet::End::Left { name, reason, .. }) if reason == "finished" => {
+            println!("link-net      {name} finished (at frame {})", m.frames);
             Ok(ExitCode::SUCCESS)
         }
         Some(e) => {
@@ -375,4 +417,62 @@ fn run_session(
         }
         None => Ok(ExitCode::SUCCESS),
     }
+}
+
+/// `--browse`: the hosts found in `secs` seconds, one a line, with whether this machine could join each.
+fn browse(cfg: &Config, secs: f32, no_mdns: bool) -> Result<ExitCode, String> {
+    use linknet::{Browser, Discovery, Found};
+    let mut browser = None;
+    if !no_mdns {
+        match Browser::start() {
+            Ok(b) => browser = Some(b),
+            Err(e) => println!("link-net      mDNS unavailable ({e}): looking by broadcast only"),
+        }
+    }
+    let mut discovery = match Discovery::broadcast() {
+        Ok(d) => Some(d),
+        Err(e) => {
+            println!("link-net      broadcast unavailable ({e})");
+            None
+        }
+    };
+    let (mut mdns_list, mut bc_list): (Vec<Found>, Vec<Found>) = (vec![], vec![]);
+    let t = Instant::now();
+    while t.elapsed().as_secs_f32() < secs {
+        if let Some(b) = browser.as_mut() {
+            mdns_list = b.poll();
+        }
+        if let Some(d) = discovery.as_mut() {
+            bc_list = d.poll().to_vec();
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let list = linknet::merge(&[&mdns_list, &bc_list]);
+    let mine = linknet::Mine { game: &cfg.game, version: &cfg.version, rom_hash: cfg.rom_hash };
+    let have = |g: &str| romset::games::find(g).is_ok();
+    println!("link-net      found {} host{} in {secs} s", list.len(), if list.len() == 1 { "" } else { "s" });
+    for f in &list {
+        let via = match (f.mdns, f.broadcast) {
+            (true, true) => "mdns+broadcast",
+            (true, false) => "mdns",
+            _ => "broadcast",
+        };
+        let can = match linknet::blocker(f, &mine, &have) {
+            None => "can join".to_string(),
+            Some(why) => format!("cannot join: {why}"),
+        };
+        println!(
+            "link-net      host {:?} game {} players {}/{} free {} addr {} version {} rom {} delay {} via {via}: {can}",
+            f.name,
+            f.game,
+            f.players,
+            f.max,
+            f.max.saturating_sub(f.players),
+            f.addr,
+            f.version,
+            f.rom_hash.map_or("?".to_string(), |h| format!("{h:016x}")),
+            f.delay,
+        );
+    }
+    Ok(ExitCode::SUCCESS)
 }

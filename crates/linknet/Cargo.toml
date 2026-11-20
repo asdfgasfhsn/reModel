@@ -11,3 +11,4 @@ name = "linknet"
 [dependencies]
 remodel-model2.workspace = true
 remodel-romset.workspace = true
+mdns-sd = "0.22"

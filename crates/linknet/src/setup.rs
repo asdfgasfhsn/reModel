@@ -7,11 +7,16 @@
 //! Refused with a clear message: another game, other ROMs, another build,
 //! another protocol version, a full lobby, a session already started, and (at
 //! the start) a joiner whose settings are not what the host sent.
+//!
+//! Hosts are found two ways, merged by the caller ([`crate::mdns::merge`]): the
+//! mDNS advert ([`crate::mdns`]) and the broadcast [`Discovery`] here.
 
+use crate::mdns::{Advert, Lobby, Txt};
+use crate::names::{display_names, sanitize_name};
 use crate::net::{Faults, Net};
 use crate::session::Session;
 use crate::wire::*;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
 /// The port a host listens on unless told another; hosts on it are found by [`Discovery`].
@@ -75,10 +80,16 @@ pub struct Host {
     phase: HostPhase,
     local: SocketAddr,
     pings: Instant,
+    advert: Option<Advert>,
+    /// The state last sent as the advert (to send only changes).
+    advert_note: Option<String>,
+    /// Names of joiners who left or went silent since the last poll's check.
+    gone: Vec<String>,
 }
 
 impl Host {
-    pub fn bind(cfg: Config, addr: SocketAddr) -> std::io::Result<Host> {
+    pub fn bind(mut cfg: Config, addr: SocketAddr) -> std::io::Result<Host> {
+        cfg.name = crate::names::name_or_default(&cfg.name);
         let sock = UdpSocket::bind(addr)?;
         let local = sock.local_addr()?;
         let net = Net::new(sock, cfg.faults.clone())?;
@@ -86,11 +97,76 @@ impl Host {
             (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.subsec_nanos())
                 ^ std::process::id().rotate_left(16))
             .max(1);
-        Ok(Host { net, cfg, joiners: Vec::new(), session, phase: HostPhase::Lobby, local, pings: Instant::now() })
+        Ok(Host {
+            net,
+            cfg,
+            joiners: Vec::new(),
+            session,
+            phase: HostPhase::Lobby,
+            local,
+            pings: Instant::now(),
+            advert: None,
+            advert_note: None,
+            gone: Vec::new(),
+        })
     }
 
     pub fn local_addr(&self) -> SocketAddr {
         self.local
+    }
+
+    /// Advertise this lobby over mDNS (`_remodel._udp`) while it is open and has a free
+    /// seat. On failure (no multicast) the error is returned and the broadcast answer
+    /// carries on alone.
+    pub fn advertise(&mut self) -> Result<(), String> {
+        self.advert = Some(Advert::start(self.local.port())?);
+        self.update_advert();
+        Ok(())
+    }
+
+    /// Whether the mDNS advert is out now.
+    pub fn advertised(&self) -> bool {
+        self.advert.as_ref().is_some_and(|a| a.is_advertised())
+    }
+
+    /// This lobby's name for itself, as the advert and the broadcast answer give it.
+    pub fn txt(&self) -> Txt {
+        Txt {
+            game: self.cfg.game.clone(),
+            version: self.cfg.version.clone(),
+            rom_hash: self.cfg.rom_hash,
+            players: self.players() as u8,
+            max: self.cfg.max_hosts as u8,
+            delay: self.suggest_delay().min(60) as u8,
+            lobby: match self.phase {
+                HostPhase::Lobby if self.players() >= self.cfg.max_hosts => Lobby::Full,
+                HostPhase::Lobby => Lobby::Open,
+                _ => Lobby::Starting,
+            },
+            name: self.cfg.name.clone(),
+        }
+    }
+
+    /// Bring the advert in line with the lobby: out while it is open with a seat free,
+    /// withdrawn once it is full or starting.
+    fn update_advert(&mut self) {
+        let t = self.txt();
+        let Some(a) = self.advert.as_mut() else { return };
+        let want = (t.lobby == Lobby::Open).then_some(&t);
+        let key = format!("{want:?}");
+        if self.advert_note.as_deref() == Some(&key) {
+            return;
+        }
+        self.advert_note = Some(key);
+        if let Err(e) = a.set(want) {
+            eprintln!("link: mDNS advert failed ({e}); hosts are still found by broadcast");
+            self.advert = None;
+        }
+    }
+
+    /// This host's name.
+    pub fn name(&self) -> &str {
+        &self.cfg.name
     }
 
     /// The players now: this host and the joiners.
@@ -98,9 +174,17 @@ impl Host {
         1 + self.joiners.len()
     }
 
-    /// The joiners' names and round trips (ms).
+    /// The joiners' names (as shown: two the same are told apart) and round trips (ms).
     pub fn joiners(&self) -> Vec<(String, Option<f32>)> {
-        self.joiners.iter().map(|j| (j.name.clone(), j.rtt_ms)).collect()
+        let all = self.names();
+        self.joiners.iter().zip(&all[1..]).map(|(j, n)| (n.clone(), j.rtt_ms)).collect()
+    }
+
+    /// Every player's name as shown, the host first.
+    pub fn names(&self) -> Vec<String> {
+        let raw: Vec<String> =
+            std::iter::once(self.cfg.name.clone()).chain(self.joiners.iter().map(|j| j.name.clone())).collect();
+        display_names(&raw)
     }
 
     /// The delay D to start with: frames for half the worst round trip between two
@@ -165,19 +249,23 @@ impl Host {
     }
 
     pub fn poll(&mut self) -> HostStatus {
+        self.update_advert();
         self.net.flush();
         while let Some((bytes, from)) = self.net.recv() {
             self.on_packet(&bytes, from);
         }
         let now = Instant::now();
         let timeout = self.cfg.timeout;
-        let before = self.joiners.len();
+        for j in self.joiners.iter().filter(|j| now.duration_since(j.last_heard) >= timeout) {
+            self.gone.push(j.name.clone());
+        }
         self.joiners.retain(|j| now.duration_since(j.last_heard) < timeout);
-        let lost = before != self.joiners.len();
+        let lost = !self.gone.is_empty();
         if matches!(self.phase, HostPhase::Lobby) {
             if now.duration_since(self.pings) >= Duration::from_millis(300) {
                 self.pings = now;
                 let n = self.joiners.len() + 1;
+                let names = self.names();
                 for k in 0..self.joiners.len() {
                     let to = self.joiners[k].addr;
                     let mut w = Writer::new(kind::PING);
@@ -185,14 +273,22 @@ impl Host {
                     send(&mut self.net, to, w);
                     let mut w = Writer::new(kind::LOBBY);
                     w.u32(self.session).u8(n as u8);
+                    for name in &names {
+                        w.str(name);
+                    }
                     send(&mut self.net, to, w);
                 }
             }
             return HostStatus::Lobby;
         }
+        let names = {
+            let raw: Vec<String> =
+                std::iter::once(self.cfg.name.clone()).chain(self.joiners.iter().map(|j| j.name.clone())).collect();
+            display_names(&raw)
+        };
         let HostPhase::Starting { params, expect, since, last } = &mut self.phase else { return HostStatus::Lobby };
         if lost {
-            let why = "a player left while the session was starting".to_string();
+            let why = format!("{} left while the session was starting", self.gone.join(", "));
             return self.abort(&why);
         }
         if now.duration_since(*since) > Duration::from_secs(10).max(timeout) {
@@ -203,8 +299,8 @@ impl Host {
             if let Some(h) = j.acked {
                 if h != expect[i + 1] {
                     let why = format!(
-                        "player {}'s game settings differ from the ones sent (hash {h:016x}, expected {:016x}): refusing to start",
-                        i + 2,
+                        "{}'s game settings differ from the ones sent (hash {h:016x}, expected {:016x}): refusing to start",
+                        names[i + 1],
                         expect[i + 1]
                     );
                     return self.abort(&why);
@@ -239,8 +335,9 @@ impl Host {
         HostStatus::Starting
     }
 
-    /// Close the lobby: the joiners are told and the port is let go.
+    /// Close the lobby: the joiners are told, the advert withdrawn and the port is let go.
     pub fn close(&mut self) {
+        self.advert = None;
         if matches!(self.phase, HostPhase::Lobby | HostPhase::Starting { .. }) {
             self.abort("the host closed the lobby");
         }
@@ -266,19 +363,29 @@ impl Host {
         let Some((ver, k, mut r)) = header(bytes) else { return };
         if k == kind::DISCOVER {
             if let HostPhase::Lobby = self.phase {
+                let t = self.txt();
                 let mut w = Writer::new(kind::INFO);
-                w.str(&self.cfg.game)
-                    .str(&self.cfg.name)
-                    .u8(self.players() as u8)
-                    .u8(self.cfg.max_hosts as u8)
-                    .u16(self.local.port());
+                w.str(&t.game)
+                    .str(&t.name)
+                    .u8(t.players)
+                    .u8(t.max)
+                    .u16(self.local.port())
+                    .str(&t.version)
+                    .u64(t.rom_hash)
+                    .u8(t.delay);
                 send(&mut self.net, from, w);
             }
             return;
         }
         if k == kind::HELLO {
             if ver != PROTO {
-                return self.refuse(from, &format!("protocol version {ver} here, {PROTO} on the host"));
+                return self.refuse(
+                    from,
+                    &format!(
+                        "your reModel speaks link protocol {ver}, this host's speaks {PROTO}: use the same reModel version ({} here)",
+                        self.cfg.version
+                    ),
+                );
             }
             return self.on_hello(&mut r, from);
         }
@@ -312,6 +419,9 @@ impl Host {
             }
             kind::BYE => {
                 // A joiner leaving the lobby.
+                if matches!(self.phase, HostPhase::Starting { .. }) {
+                    self.gone.push(j.name.clone());
+                }
                 self.joiners.retain(|j| j.addr != from);
             }
             _ => {}
@@ -341,7 +451,13 @@ impl Host {
             return self.refuse(from, &why);
         }
         let now = Instant::now();
-        self.joiners.push(Joiner { addr: from, name, last_heard: now, rtt_ms: None, acked: None });
+        self.joiners.push(Joiner {
+            addr: from,
+            name: crate::names::name_or_default(&name),
+            last_heard: now,
+            rtt_ms: None,
+            acked: None,
+        });
         let idx = self.joiners.len();
         self.welcome(from, idx);
     }
@@ -358,6 +474,8 @@ pub enum JoinStatus {
     /// In the host's lobby, with this many players so far.
     Lobby {
         players: usize,
+        /// Everyone's names as shown, the host first (empty until the host has sent them).
+        names: Vec<String>,
     },
     /// The host has started: check the settings and call [`Join::accept`] with their hash.
     Params(Box<Params>),
@@ -369,7 +487,7 @@ pub enum JoinStatus {
 
 enum JoinPhase {
     Hello,
-    Lobby { idx: usize, players: usize },
+    Lobby { idx: usize, players: usize, names: Vec<String> },
     Params(Params),
     Accepted { params: Params, hash: u64, last: Instant },
     Done,
@@ -390,7 +508,8 @@ pub struct Join {
 }
 
 impl Join {
-    pub fn connect(cfg: Config, host: SocketAddr) -> std::io::Result<Join> {
+    pub fn connect(mut cfg: Config, host: SocketAddr) -> std::io::Result<Join> {
+        cfg.name = crate::names::name_or_default(&cfg.name);
         let any: SocketAddr = if host.is_ipv4() { "0.0.0.0:0".parse().unwrap() } else { "[::]:0".parse().unwrap() };
         let sock = UdpSocket::bind(any)?;
         let net = Net::new(sock, cfg.faults.clone())?;
@@ -442,6 +561,12 @@ impl Join {
             }
             let Some((ver, k, mut r)) = header(&bytes) else { continue };
             if ver != PROTO {
+                if matches!(self.phase, JoinPhase::Hello) {
+                    self.phase = JoinPhase::Done;
+                    return JoinStatus::Failed(format!(
+                        "the host runs another version of reModel (link protocol {ver}, yours is {PROTO}): use the same version on every machine"
+                    ));
+                }
                 continue;
             }
             self.last_heard = Instant::now();
@@ -451,7 +576,8 @@ impl Join {
                         if matches!(self.phase, JoinPhase::Hello) {
                             self.session = s;
                             self.idx = idx as usize;
-                            self.phase = JoinPhase::Lobby { idx: idx as usize, players: idx as usize + 1 };
+                            self.phase =
+                                JoinPhase::Lobby { idx: idx as usize, players: idx as usize + 1, names: Vec::new() };
                         }
                     }
                 }
@@ -463,9 +589,13 @@ impl Join {
                 }
                 kind::LOBBY => {
                     if let (Some(s), Some(n)) = (r.u32(), r.u8()) {
-                        if let JoinPhase::Lobby { players, .. } = &mut self.phase {
+                        if let JoinPhase::Lobby { players, names, .. } = &mut self.phase {
                             if s == self.session && (1..=MAX_HOSTS as u8).contains(&n) {
                                 *players = n as usize;
+                                let list: Option<Vec<String>> = (0..n).map(|_| r.str()).collect();
+                                if let Some(l) = list {
+                                    *names = l.iter().map(|x| sanitize_name(x)).collect();
+                                }
                             }
                         }
                     }
@@ -528,13 +658,13 @@ impl Join {
                 }
                 JoinStatus::Connecting
             }
-            JoinPhase::Lobby { players, .. } => {
-                let players = *players;
+            JoinPhase::Lobby { players, names, .. } => {
+                let (players, names) = (*players, names.clone());
                 if now.duration_since(self.last_heard) > self.cfg.timeout {
                     self.phase = JoinPhase::Done;
                     return JoinStatus::Failed("the host went away".into());
                 }
-                JoinStatus::Lobby { players }
+                JoinStatus::Lobby { players, names }
             }
             JoinPhase::Params(p) => {
                 if self.reported {
@@ -591,11 +721,34 @@ impl Join {
 /// A host found on the network.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Found {
+    /// Where to join it.
     pub addr: SocketAddr,
     pub game: String,
+    /// The host's user name.
     pub name: String,
     pub players: usize,
     pub max: usize,
+    pub version: String,
+    /// The program ROM hash the host's agreement compares (None if only the
+    /// join itself can tell).
+    pub rom_hash: Option<u64>,
+    /// The delay D the host would start with.
+    pub delay: u8,
+    pub lobby: Lobby,
+    /// All the addresses the host was heard at (the one in `addr` included).
+    pub addrs: Vec<IpAddr>,
+    /// By which way it was heard.
+    pub mdns: bool,
+    pub broadcast: bool,
+}
+
+impl Found {
+    /// Whether `o` is this same host: the same port and the same address, or an
+    /// address the other one lists too.
+    pub fn same_host(&self, o: &Found) -> bool {
+        self.addr.port() == o.addr.port()
+            && (self.addr.ip() == o.addr.ip() || self.addrs.contains(&o.addr.ip()) || o.addrs.contains(&self.addr.ip()))
+    }
 }
 
 /// Looking for hosts: a datagram to the broadcast address (or a given one) that
@@ -633,11 +786,32 @@ impl Discovery {
             if ver != PROTO || k != kind::INFO {
                 continue;
             }
-            if let (Some(game), Some(name), Some(players), Some(max), Some(port)) =
-                (r.str(), r.str(), r.u8(), r.u8(), r.u16())
+            if let (
+                Some(game),
+                Some(name),
+                Some(players),
+                Some(max),
+                Some(port),
+                Some(version),
+                Some(rom),
+                Some(delay),
+            ) = (r.str(), r.str(), r.u8(), r.u8(), r.u16(), r.str(), r.u64(), r.u8())
             {
                 let addr = SocketAddr::new(from.ip(), port);
-                let f = Found { addr, game, name, players: players as usize, max: max as usize };
+                let f = Found {
+                    addr,
+                    game,
+                    name: sanitize_name(&name),
+                    players: players as usize,
+                    max: max as usize,
+                    version,
+                    rom_hash: Some(rom),
+                    delay,
+                    lobby: if players >= max { Lobby::Full } else { Lobby::Open },
+                    addrs: vec![from.ip()],
+                    mdns: false,
+                    broadcast: true,
+                };
                 self.seen.retain(|(o, _)| o.addr != f.addr);
                 self.seen.push((f, Instant::now()));
             }

@@ -32,13 +32,14 @@ pub struct NetPlay {
 impl NetPlay {
     pub fn new(sess: linknet::Session, params: &Params, play: &romset::LinkPlay) -> NetPlay {
         let node = params.hosts[sess.me].nodes[0] as usize;
+        let sess_names = sess.names().to_vec();
         let hub = LinkHub::for_game(params.nodes(), params.delay as usize, play);
         NetPlay {
             link: NetLink::new(hub, sess),
             node,
             nodes: params.nodes(),
             delay: params.delay as usize,
-            names: params.hosts.iter().map(|h| h.name.clone()).collect(),
+            names: sess_names,
             pending: false,
             ended: None,
             held: 0,
@@ -82,9 +83,14 @@ impl NetPlay {
         let st = &self.link.stalls;
         let worst = self.recent.iter().map(|(_, d)| *d).max().unwrap_or_default();
         let waiting = self.waiting_since.is_some_and(|t| t.elapsed() > Duration::from_millis(250));
+        let me = self.link.sess.me;
+        let others: Vec<&str> =
+            self.names.iter().enumerate().filter(|(i, _)| *i != me).map(|(_, n)| n.as_str()).collect();
+        let who = others.join(", ");
         format!(
-            "Link  {} players  D {}  round trip {rtt}  held {}x ({:.1} s){}{}",
+            "Link  {} players ({})  D {}  round trip {rtt}  held {}x ({:.1} s){}{}",
             self.nodes,
+            who,
             self.delay,
             st.stalls,
             st.stall_time.as_secs_f64(),
@@ -93,7 +99,13 @@ impl NetPlay {
             } else {
                 String::new()
             },
-            if waiting { "  WAITING for the other player" } else { "" },
+            if !waiting {
+                String::new()
+            } else if others.len() == 1 {
+                format!("  WAITING for {who}")
+            } else {
+                "  WAITING for the other players".to_string()
+            },
         )
     }
 }
@@ -112,9 +124,4 @@ pub fn config(game: &romset::Game, roms: &romset::RomSet, play: &romset::LinkPla
         timeout: Duration::from_secs(5),
         check_every: 60,
     }
-}
-
-/// A name for this player in the lobby.
-pub fn player_name() -> String {
-    std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "player".into())
 }

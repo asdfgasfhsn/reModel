@@ -610,6 +610,8 @@ pub struct Settings {
     /// The launcher's settings panel saves for all games (else for the
     /// game shown).
     pub for_all: bool,
+    /// The name shown to other players in network link play (docs/play.md).
+    pub player_name: String,
     /// The defaults for all games.
     pub defaults: Layer,
     /// Each game's own settings, read when first needed.
@@ -627,6 +629,7 @@ impl Default for Settings {
             fullscreen: false,
             launcher_view: Default::default(),
             for_all: true,
+            player_name: linknet::default_name(),
             defaults: Layer::new(),
             games: BTreeMap::new(),
             cli: Layer::new(),
@@ -734,6 +737,7 @@ impl Settings {
                 "fullscreen" => s.fullscreen = v == "true",
                 "view" => s.launcher_view = crate::library::ViewMode::parse(v).unwrap_or_default(),
                 "scope" => s.for_all = v != "game",
+                "player_name" => s.player_name = linknet::name_or_default(v),
                 _ => {}
             }
         }
@@ -745,13 +749,14 @@ impl Settings {
 
     fn text(&self) -> String {
         let mut text = format!(
-            "# remodel-play settings\nrom = {}\ngame = {}\nrecent = {}\nfullscreen = {}\nview = {}\nscope = {}\n",
+            "# remodel-play settings\nrom = {}\ngame = {}\nrecent = {}\nfullscreen = {}\nview = {}\nscope = {}\nplayer_name = {}\n",
             self.rom.display(),
             self.game,
             self.recent.join(","),
             self.fullscreen,
             self.launcher_view.name(),
             if self.for_all { "all" } else { "game" },
+            self.player_name,
         );
         if !self.defaults.is_empty() {
             text += "# the defaults for all games (a game's own are in <set>/settings.txt)\n";
@@ -1376,6 +1381,20 @@ mod tests {
         assert_eq!(s.all_games_preset("stcc"), Preset::Crt);
         assert!(s.has_own_picture("topskatr") && !s.has_own_picture("stcc"));
         assert_eq!(Preset::parse("enhanced").map(Preset::label), Some("Smooth modern"));
+    }
+
+    #[test]
+    fn the_player_name_is_kept_and_cleaned() {
+        let mut s = Settings::default();
+        assert!(!s.player_name.is_empty());
+        s.player_name = "Sam".into();
+        assert!(s.text().contains("player_name = Sam"));
+        assert_eq!(Settings::parse(&s.text()).player_name, "Sam");
+        // Not a game setting: it does not leak into the defaults for all games.
+        assert!(!Settings::parse(&s.text()).defaults.contains_key("player_name"));
+        // A hand-edited name is cleaned like a typed one; an empty one is the default.
+        assert_eq!(Settings::parse("player_name =   A very long name indeed  \n").player_name, "A very long name");
+        assert_eq!(Settings::parse("player_name =\n").player_name, linknet::default_name());
     }
 
     #[test]

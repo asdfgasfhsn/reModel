@@ -181,7 +181,11 @@ fn a_host_that_goes_silent_ends_the_session_for_the_others() {
     let r = run(s, 200, 2, Some((1, 50)));
     assert!(r[1].is_ok());
     match &r[0] {
-        Err(End::Silent { host: 1, ms }) => assert!(*ms >= 700, "{ms}"),
+        Err(End::Silent { host: 1, name, ms }) => {
+            assert!(*ms >= 700, "{ms}");
+            assert_eq!(name, "p0");
+            assert!(r[0].as_ref().unwrap_err().to_string().starts_with("p0 has been silent"));
+        }
         other => panic!("expected a silent peer, got {other:?}"),
     }
 }
@@ -196,8 +200,24 @@ fn a_goodbye_ends_the_session_at_once_with_the_reason() {
     while a.end.is_none() && t.elapsed() < Duration::from_secs(1) {
         a.pump();
     }
-    assert_eq!(a.end, Some(End::Left { host: 1, reason: "quit".into() }));
+    assert_eq!(a.end, Some(End::Left { host: 1, name: "p0".into(), reason: "quit".into() }));
+    assert_eq!(a.end.as_ref().unwrap().to_string(), "p0 left: quit");
     assert!(t.elapsed() < Duration::from_millis(300));
+}
+
+#[test]
+fn a_session_knows_the_names_and_uses_them_in_messages() {
+    let mut s = connect(Faults::default(), vec![Faults::default(), Faults::default()], 2);
+    assert_eq!(s[0].names(), ["host", "p0", "p1"]);
+    let mut a = s.remove(0);
+    let _b = s.remove(0);
+    let mut c = s.remove(0);
+    c.bye("quit");
+    let t = Instant::now();
+    while a.end.is_none() && t.elapsed() < Duration::from_secs(1) {
+        a.pump();
+    }
+    assert_eq!(a.end.as_ref().unwrap().to_string(), "p1 left: quit");
 }
 
 #[test]
