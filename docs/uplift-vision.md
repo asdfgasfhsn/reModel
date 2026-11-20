@@ -318,13 +318,14 @@ spec named; scratch output stays out of the repository.
 | 2026-11-20 | Do ambient occlusion and shadows from the game's light give a picture worth shipping? | Occlusion is safe on three games and leaves HUD and sky untouched, but is faint. Shadows are not ready: cut-out textures cast solid rectangles, a fighter's window casts nothing on the floor, and blob shadows double up. Back-face holes fill in 72 lines. CPU only | [lighting](uplift/lighting.md): occlusion judged on a GPU pass; shadows wait on four named pieces |
 | 2026-11-20 | Which asset gates separate good images from bad on the showcase? | `file` and `alpha` do; `alpha` found three textures in the approved pack that had lost their cut-out, and a fourth that may be meant. `seam` is weak. The style gates (`kept`, `palette`, `luma-order`, `category`, a halo test) cannot tell a good restyle from a bad one | [quality-gates](uplift/quality-gates.md): a first set of three errors and three warnings, with limits; style gates only for faithful packs |
 | 2026-11-20 | Does GitHub behave as the pack convention assumes, and can an archive be unpacked safely? | Yes on every point checked, signed out. Forks never list; the release API already gives a hash, so the `.sha256` file goes; file addresses must use `HEAD`. Fifteen hostile archives were refused. Not tested: a real repository | [distribution](uplift/distribution.md): three rules changed; the unpacker counts real bytes |
+| 2026-11-20 | Do the adapter's fixed steps turn a raw image-model output into one that passes the gates? | Yes for the 30 raw outputs on disk: 3 pass as returned, 30 after size and alpha are normalised, against 26 as hand-finished. One of the 30 passes and is still wrong: the subject does not fit the cut-out. No model was called | [generation](uplift/generation.md): a fit test, and two outcomes, `repaired` and `refit` |
 
 Status of each spec, by the ladder in [uplift/README.md](uplift/README.md):
 the interface page and the eight pass-one specs are grounded;
 asset-identity, scenes-and-server, content-coverage, scene-understanding,
 model-interchange, added-elements, lighting and shader-packs are spiked
-in part, and so are quality-gates and distribution; authoring and
-generation are not spiked.
+in part, and so are quality-gates, distribution and generation (offline
+only); authoring is not spiked.
 
 Spike code is on two unmerged branches, `uplift-spikes` and
 `uplift-spikes-b`, about 3,800 lines in all. None of it is for merging

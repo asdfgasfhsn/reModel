@@ -116,6 +116,42 @@ outcome:
 | `timeout`, `rate-limited` | Retry later |
 | `bad-output` | No image, a mockup with a border, or the wrong subject |
 
+**Spiked on 2026-11-20, offline**, on the 30 raw image-model outputs
+kept from the showcase, with the gates as calibrated the same day. No
+model was called.
+
+| | Pass the gates |
+|---|---|
+| The 30 raw outputs as returned | 3 |
+| After normalising (size, and alpha from the original) | 30 |
+| The same 30 as the hand scripts finished them | 26 |
+
+- **Size is the whole story for 23 of them**: the raw output is simply
+  not at a whole scale of the original. Four more needed the original's
+  cut-out as well. The hand scripts left those four opaque.
+- **Normalised and hand-finished images are the same picture**: within
+  3 levels on 28 of 29 comparable pairs.
+- **Passing the gates is not the same as being right.** One of the four,
+  a cloth with 64% cut-out, passes `alpha` by construction after its
+  alpha is taken from the original, and is unusable: the model drew a
+  larger subject and the cut-out chops it up. A fit test is needed:
+  the share of drawn (non-background) pixels that fall where the
+  original is cut out. It was 0.00 to 0.04 for the three good repairs
+  and 0.39 for the cloth. First limits 0.06 and 0.20, from four real
+  cases and synthetic shifts.
+- **Aspect was never wrong** in these 30, so undoing a letterbox was
+  tested on synthetic cases only: bars and a trim of up to a tenth can
+  be repaired; a stretched or recomposed image cannot be told apart
+  reliably and should be made again.
+- **Binary alpha was better than a smoothed one** by the gate.
+- Not tested: any real call, the seam and palette steps, and the
+  visible-texel mask (none is on disk; the original's cut-out stood in).
+
+So step 4 gains two outcomes: `repaired` (the image passed only after a
+stated repair, named in the record) and `refit` (the subject does not
+fit the original's cut-out, or the aspect is wrong: make it again, do
+not ship a repair). Of the 30: 26 `ok`, 3 `repaired`, 1 `refit`.
+
 ### 5. Record
 
 A provenance file per image, written by the tool and never by hand
@@ -191,6 +227,8 @@ job records its time, so a pack's report can say what its art cost.
    letterbox, alpha from the original, mask composite, outcome classes.
 2. `backends.txt` with the Codex CLI and a fake backend.
 3. `asset normalise` for hand-made images.
-4. **Spike:** ten showcase assets through the adapter, counting how many
-   pass the gates on the first call, against the same ten through the
-   hand scripts.
+4. The fit test and the `repaired` and `refit` outcomes from the offline
+   spike.
+5. **Spike, needs a yes:** ten assets through a real image model with
+   the adapter, counting first-call passes. It sends game-derived images
+   to an outside service.
