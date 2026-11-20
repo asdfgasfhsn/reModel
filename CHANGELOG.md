@@ -16,6 +16,17 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- Free play for linked games: `srallyc` and `daytona` have FREE PLAY among the
+  coin settings of their own test menu (found by driving the menu and diffing
+  the settings store; the bytes and checksums are in `docs/games/srallyc.md`
+  and `docs/games/daytona.md`), kept as per-game data beside the link play
+  settings (`romset::LinkPlay::free_play`). The player has a `free_play`
+  setting (link play only by default, always, never; the More tab and the
+  launcher, hidden for games without the data) and `--free-play` /
+  `--no-free-play`; the host's choice travels to every machine of a network
+  game in the master's settings, so the settings hash covers it. `remodel
+  link-run` and `link-net` take `--free-play`, and `make link-free-play-test`
+  races two machines of each game from start presses only.
 - Network link play: hosts are found by mDNS / DNS-SD as well as by broadcast.
   A host in its lobby advertises `_remodel._udp.local.` on its real port with
   the game, the reModel version, the ROM hash the session agreement compares,

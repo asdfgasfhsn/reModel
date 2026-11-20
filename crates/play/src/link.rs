@@ -34,20 +34,69 @@ pub fn max_players(play: &romset::LinkPlay) -> usize {
     play.max_nodes.min(MAX_ON_SCREEN)
 }
 
-/// Machine `i`'s settings image (`base`: the player's own settings to start from) with its
-/// role and car number set, loaded into its bus where the game keeps them.
+/// Machine `i`'s settings image (`base`: the settings the session starts from, see
+/// `romset::LinkPlay::base_with_free_play`) with its role and car number set, loaded into
+/// its bus where the game keeps them.
 pub fn load_settings(bus: &mut model2::bus::Model2Bus, play: &romset::LinkPlay, base: Option<&[u8]>, i: usize) {
     let role = *play.roles.get(i).or(play.roles.last()).unwrap();
     let car: Vec<(usize, u8)> = play.car_off.map(|o| (o, i as u8)).into_iter().collect();
-    // The player's own files hold an EEPROM image; a game that keeps its
-    // settings on the I/O board starts from the manifest's default record.
-    let base = base.filter(|_| matches!(play.settings.store, romset::SettingsStore::Eeprom));
     let image = play.settings.image(base, play.role_off, role, &car);
     match play.settings.store {
         romset::SettingsStore::Eeprom => bus.eeprom.load(&image),
         romset::SettingsStore::IoBoard => bus.io_store_load(&image),
     }
     bus.link = Some(model2::link::Link::new(romset::LinkBoard::Idle).joined());
+}
+
+/// Whether a game starts on free play (the `free_play` setting, `--free-play`): the
+/// game's own FREE PLAY coin setting (`romset::LinkPlay::free_play`), for the games
+/// that have it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FreePlay {
+    /// On in link play, where nobody wants to feed coins to a screen each, off in a
+    /// single game.
+    #[default]
+    Auto,
+    On,
+    Off,
+}
+
+impl FreePlay {
+    pub const ALL: [FreePlay; 3] = [FreePlay::Auto, FreePlay::On, FreePlay::Off];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            FreePlay::Auto => "auto",
+            FreePlay::On => "on",
+            FreePlay::Off => "off",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            FreePlay::Auto => "Link play only",
+            FreePlay::On => "Always",
+            FreePlay::Off => "Never",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<FreePlay> {
+        let t = s.trim().to_lowercase();
+        match t.as_str() {
+            "true" | "yes" => Some(FreePlay::On),
+            "false" | "no" => Some(FreePlay::Off),
+            _ => FreePlay::ALL.into_iter().find(|f| f.name() == t),
+        }
+    }
+
+    /// Free play for a game of `linked` play (two or more machines) or a single game.
+    pub fn on(self, linked: bool) -> bool {
+        match self {
+            FreePlay::Auto => linked,
+            FreePlay::On => true,
+            FreePlay::Off => false,
+        }
+    }
 }
 
 /// How the views are laid out in the window (the `link_layout` setting).

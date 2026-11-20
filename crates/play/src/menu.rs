@@ -1199,6 +1199,19 @@ fn sound_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings, view: &V
 }
 
 fn more_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings, view: &View) {
+    if view.game.and_then(|g| crate::link::play_for(g.id)).is_some_and(|p| p.free_play.is_some()) {
+        let list: Vec<(crate::link::FreePlay, &str)> =
+            crate::link::FreePlay::ALL.iter().map(|f| (*f, f.label())).collect();
+        rows.choose(
+            ui,
+            "Free play",
+            &mut s.free_play,
+            &list,
+            "Takes effect the next time a game starts. Uses the game's own FREE PLAY coin setting, so a start press \
+             begins a game with no coins. Link play only (the default) leaves a single game as the arcade has it; \
+             in a network game the host's choice is every machine's.",
+        );
+    }
     rows.choose(
         ui,
         "Geometrizer",

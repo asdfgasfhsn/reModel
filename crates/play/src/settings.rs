@@ -218,6 +218,9 @@ pub struct GameSettings {
     /// the window, and what the machines' sound does.
     pub link_layout: crate::link::Layout,
     pub link_audio: crate::link::Audio,
+    /// The game's own FREE PLAY coin setting (docs/play.md, "Free play"): applies
+    /// when the game starts, for the games that have it.
+    pub free_play: crate::link::FreePlay,
     /// The dead zone, sensitivity and curve of the sticks and of the
     /// triggers (the Controls page). The defaults read as they always did.
     pub tuning: Tuning,
@@ -255,13 +258,14 @@ impl Default for GameSettings {
             catalogue: false,
             link_layout: Default::default(),
             link_audio: Default::default(),
+            free_play: Default::default(),
             tuning: Tuning::default(),
         }
     }
 }
 
 /// Every game setting's key, in the order the panels show them.
-pub const KEYS: [&str; 35] = [
+pub const KEYS: [&str; 36] = [
     "preset",
     "wide",
     "bezel",
@@ -291,6 +295,7 @@ pub const KEYS: [&str; 35] = [
     "catalogue",
     "link_layout",
     "link_audio",
+    "free_play",
     "stick_dead",
     "stick_sens",
     "stick_curve",
@@ -362,6 +367,7 @@ impl GameSettings {
             "catalogue" => self.catalogue.to_string(),
             "link_layout" => self.link_layout.name().to_string(),
             "link_audio" => self.link_audio.name().to_string(),
+            "free_play" => self.free_play.name().to_string(),
             "stick_dead" => self.tuning.stick.dead.to_string(),
             "stick_sens" => self.tuning.stick.sens.to_string(),
             "stick_curve" => self.tuning.stick.curve.name().to_string(),
@@ -411,6 +417,7 @@ impl GameSettings {
             "catalogue" => flag(v).map(|x| self.catalogue = x).is_some(),
             "link_layout" => crate::link::Layout::parse(v).map(|x| self.link_layout = x).is_some(),
             "link_audio" => crate::link::Audio::parse(v).map(|x| self.link_audio = x).is_some(),
+            "free_play" => crate::link::FreePlay::parse(v).map(|x| self.free_play = x).is_some(),
             "look_tuning" => {
                 // Each `name=value` must be one the look takes (tried on
                 // the default look), so a typo in the file is refused.

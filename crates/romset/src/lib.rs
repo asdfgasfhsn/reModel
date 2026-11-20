@@ -89,6 +89,68 @@ pub struct LinkPlay {
     /// `link-run`), and three floats of position.
     pub state_off: Option<usize>,
     pub pos_off: Option<usize>,
+    /// What the game's own FREE PLAY coin setting changes in the record, if
+    /// found (`docs/games/<set>.md`); a game without it has no free play.
+    pub free_play: Option<&'static [FreePlayByte]>,
+}
+
+/// One byte of the settings record the COIN ASSIGNMENT page's FREE PLAY
+/// changes: its offset, the value with free play on and the value at the
+/// game's defaults.
+#[derive(Clone, Copy, Debug)]
+pub struct FreePlayByte {
+    pub at: usize,
+    pub on: u8,
+    pub off: u8,
+}
+
+impl LinkPlay {
+    /// The bytes that put the game on free play (`on`), as `set` bytes for
+    /// [`LinkSettings::image`]; none if the game has no free play data. With
+    /// `on` false and a base that already holds every free play byte (a
+    /// settings file written by an earlier free play session), the bytes
+    /// that undo it, so a session's choice never outlives it.
+    pub fn free_play_set(&self, base: Option<&[u8]>, on: bool) -> Vec<(usize, u8)> {
+        let Some(fp) = self.free_play else { return vec![] };
+        if on {
+            return fp.iter().map(|b| (b.at, b.on)).collect();
+        }
+        match base {
+            Some(img) if fp.iter().all(|b| img.get(b.at) == Some(&b.on)) => fp.iter().map(|b| (b.at, b.off)).collect(),
+            _ => vec![],
+        }
+    }
+
+    /// The settings record a linked session starts from (what `LinkSettings::image`
+    /// takes as its `base`): the player's own settings file `own` (only a game that keeps
+    /// its settings in the EEPROM has one) with free play set as `free` says. None if
+    /// that is just the game's defaults.
+    pub fn base_with_free_play(&self, own: Option<&[u8]>, free: bool) -> Option<Vec<u8>> {
+        self.with_free_play(own.filter(|_| self.settings.store == SettingsStore::Eeprom), free)
+    }
+
+    /// `base` with free play set as `free` says, whatever the store (a test's settings file).
+    pub fn with_free_play(&self, own: Option<&[u8]>, free: bool) -> Option<Vec<u8>> {
+        let set = self.free_play_set(own, free);
+        if set.is_empty() {
+            return own.map(<[u8]>::to_vec);
+        }
+        let role = own.and_then(|b| b.get(self.role_off).copied()).unwrap_or(self.settings.record[self.role_off]);
+        Some(self.settings.image(own, self.role_off, role, &set))
+    }
+
+    /// Take free play out of a settings image a session saved, if it is exactly
+    /// what [`Self::free_play_set`] put in (checksum fixed): a session's free play
+    /// is not kept in the player's own settings.
+    pub fn unset_free_play(&self, image: &mut [u8]) {
+        let set = self.free_play_set(Some(image), false);
+        for &(o, v) in &set {
+            image[o] = v;
+        }
+        if !set.is_empty() {
+            self.settings.crc.fix(image);
+        }
+    }
 }
 
 /// The record of operator settings a game keeps, and where.

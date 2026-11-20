@@ -98,6 +98,9 @@ usage: remodel-play [options]
   --link-layout auto|side|stacked
                      link play: two players side by side or stacked (default
                      auto: whichever gives each picture more room)
+  --free-play        start with the game's own FREE PLAY coin setting (games that
+  --no-free-play     have one; the default is on in link play, off in a single
+                     game; docs/play.md, \"Free play\")
   --link-audio p1|mix|pan|p1only
                      link play: whose sound you hear: player 1's machine
                      loudest (default), all equal, spread left to right,
@@ -772,6 +775,12 @@ fn options(s: &mut Settings) -> Result<Options, String> {
                 }
                 cli("link_audio", &v);
             }
+            "--free-play" => {
+                cli("free_play", "on");
+            }
+            "--no-free-play" => {
+                cli("free_play", "off");
+            }
             "--seconds" => o.seconds = Some(value()?.parse().map_err(|_| "bad --seconds")?),
             "--frames" => o.frames = Some(value()?.parse().map_err(|_| "bad --frames")?),
             "-h" | "--help" => return Err(String::new()),
@@ -842,6 +851,9 @@ struct Session {
     /// Network link play: this machine is one cabinet of a session whose
     /// others are on other machines.
     net: Option<netplay::NetPlay>,
+    /// The game was started on free play (its settings image carries the free
+    /// play bytes in memory only: saving the EEPROM takes them out again).
+    free_play: bool,
 }
 
 /// Where `set`'s JIT hot-block list is kept (docs/jit.md, "Hot-block
@@ -944,7 +956,11 @@ impl Session {
         let bus = &self.machine.bus;
         if bus.eeprom.dirty && !self.preview {
             let _ = std::fs::create_dir_all(self.dir());
-            let _ = std::fs::write(self.dir().join("eeprom.bin"), bus.eeprom.save());
+            let mut image = bus.eeprom.save();
+            if let (true, Some(play)) = (self.free_play, link::play_for(self.game.id)) {
+                play.unset_free_play(&mut image);
+            }
+            let _ = std::fs::write(self.dir().join("eeprom.bin"), image);
         }
     }
 
@@ -1558,6 +1574,8 @@ impl Play {
             let dir = settings::data_dir().join(game.id);
             let link_dir = settings::data_dir().join(format!("{}-link{players}", game.id));
             let mine = std::fs::read(dir.join("eeprom.bin")).ok();
+            // Free play: the game's own coin setting (for a network session, in the master's settings).
+            let free_play = values.free_play.on(linked.is_some() || net_play.is_some());
             match linked {
                 None if net.is_some() => {
                     // A network session's settings are the master's, never the player's own.
@@ -1566,13 +1584,28 @@ impl Play {
                     link::load_settings(&mut machine.bus, net_play.unwrap(), p.base.as_deref(), node);
                 }
                 None => {
-                    if let Some(bytes) = &mine {
-                        machine.bus.eeprom.load(bytes);
+                    match link::play_for(game.id).filter(|_| free_play) {
+                        // The game's own settings with its FREE PLAY coin setting, in memory only.
+                        Some(play) => {
+                            let base = play.base_with_free_play(mine.as_deref(), true);
+                            let role = base.as_ref().map_or(play.settings.record[play.role_off], |b| b[play.role_off]);
+                            let image = play.settings.image(base.as_deref(), play.role_off, role, &[]);
+                            match play.settings.store {
+                                romset::SettingsStore::Eeprom => machine.bus.eeprom.load(&image),
+                                romset::SettingsStore::IoBoard => machine.bus.io_store_load(&image),
+                            }
+                        }
+                        None => {
+                            if let Some(bytes) = &mine {
+                                machine.bus.eeprom.load(bytes);
+                            }
+                        }
                     }
                 }
                 Some(lp) => {
                     let own = std::fs::read(link_dir.join("eeprom-0.bin")).ok().or(mine.clone());
-                    link::load_settings(&mut machine.bus, lp, own.as_deref(), 0);
+                    let base = lp.base_with_free_play(own.as_deref(), free_play);
+                    link::load_settings(&mut machine.bus, lp, base.as_deref(), 0);
                 }
             }
             let sound = if self.opts.sound {
@@ -1615,6 +1648,7 @@ impl Play {
                 jit_saved: Instant::now(),
                 catalogue: None,
                 link: None,
+                free_play: free_play && net_play.is_none() && linked.is_none(),
                 net: None,
             };
             if let Some((sess, params)) = net {
@@ -1631,7 +1665,8 @@ impl Play {
                 for i in 1..players {
                     let (mut m, _) = self.new_machine(&roms, game, &values, false, true);
                     let own = std::fs::read(link_dir.join(format!("eeprom-{i}.bin"))).ok().or(mine.clone());
-                    link::load_settings(&mut m.bus, lp, own.as_deref(), i);
+                    let base = lp.base_with_free_play(own.as_deref(), free_play);
+                    link::load_settings(&mut m.bus, lp, base.as_deref(), i);
                     machines.push(m);
                     sounds.push(if self.opts.sound && values.link_audio.gains(i, players).is_some() {
                         Sound::new(&roms, (values.sfx_db, values.music_db)).ok()
@@ -1807,6 +1842,7 @@ impl Play {
             jit_saved: Instant::now(),
             catalogue: None,
             link: None,
+            free_play: false,
             net: None,
         });
         self.preview.shown = None;
@@ -3565,7 +3601,8 @@ impl Play {
             let roms = romset::RomSet::load(game, &self.settings.rom, false).map_err(|e| e.to_string())?;
             let name = self.opts.name.clone().unwrap_or_else(|| self.settings.player_name.clone());
             let cfg = netplay::config(game, &roms, play, name);
-            Ok(match (host, join) {
+            let free_play = self.settings.resolve(set).0.free_play.on(true);
+            let mut page = match (host, join) {
                 (Some(NetMode::Host(port)), _) => {
                     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
                     let h = linknet::Host::bind(cfg.clone(), addr).map_err(|e| {
@@ -3581,7 +3618,9 @@ impl Play {
                     String::new(),
                     self.games.iter().map(|g| g.id.to_string()).collect(),
                 ),
-            })
+            };
+            page.free_play = free_play;
+            Ok(page)
         })();
         match result {
             Ok(page) => self.launcher.show_net(page),

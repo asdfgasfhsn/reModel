@@ -237,6 +237,9 @@ link-browse: release ## List the hosts of a network link game found on this netw
 link-net-test: release ## Networked link play over loopback, two processes per case, srallyc and daytona (GAMES): each host's state hash equals link-run's for its node, clean and under 5% loss with 50 ms jitter; player names in the lobby and the messages, the host found by mDNS (--browse) with its TXT record before it is joined; a polite leave, a kill, a settings byte that differs and a damaged record end cleanly with a message (needs the ROMs; about 4 minutes)
 	tools/link-net-test.sh $(CURDIR)/$(REMODEL) $(ROM) out/link-net-test $(GAMES)
 
+link-free-play-test: release ## Free play in linked play, srallyc and daytona (GAMES): a two-node race started with start presses only (no coins) on the game's own FREE PLAY setting: deterministic, differs from the same inputs without it, and over loopback a host with --free-play and a joiner without end on link-run's hashes; race pictures in out/link-free-play-test/GAME/captures (needs the ROMs; about 2 minutes)
+	tools/link-free-play-test.sh $(CURDIR)/$(REMODEL) $(ROM) out/link-free-play-test $(GAMES)
+
 link-trace: release ## Experimental, off by default: run GAME with a link board fitted (LINK=idle, or LINK=fake,ID,TOTAL: a partner that mirrors the game's own block; LINK_DELAY, LINK_FREEZE, LINK_DROP: frames) and write every access to 0x1A00000-0x1A1FFFF to OUT/link-trace.txt (INPUT, STEPS, SNAP as `run`; docs/hw/link-board.md)
 	REMODEL_LINK=$(or $(LINK),idle) REMODEL_LINK_DELAY=$(LINK_DELAY) REMODEL_LINK_FREEZE=$(LINK_FREEZE) REMODEL_LINK_DROP=$(LINK_DROP) $(RUN) $(if $(INPUT),--input $(INPUT)) run $(STEPS) $(SNAP)
 

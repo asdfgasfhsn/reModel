@@ -9,7 +9,7 @@ use model2::link::LinkHub;
 use romset::{LinkPlay, SettingsStore};
 
 const USAGE_LINK: &str = "usage: remodel --game G link-run [--nodes N] [--frames F] [--input0 S --input1 S ...]
-        [--delay D] [--link-types 1,2,..] [--eeprom FILE] [--log-words] [--coverage] [--coverage-from F] [--geo-at F] [--beat-until F]
+        [--delay D] [--link-types 1,2,..] [--eeprom FILE] [--free-play] [--log-words] [--coverage] [--coverage-from F] [--geo-at F] [--beat-until F]
         [--shot-every K] [--shot-at F,F,..]
         [--log-every K] [--trace NODE] [--drop-at F] [--freeze NODE:F] [--save-at F FILE] [--load FILE]
   --input S    inputs for every node without its own --inputN (as `run`'s --input)
@@ -19,6 +19,7 @@ const USAGE_LINK: &str = "usage: remodel --game G link-run [--nodes N] [--frames
   --coverage   write each node's executed instruction addresses to coverage-N.txt
   --log-words  log every change of a block word (by default only for games whose block layout is known, minus the moving numbers)
   --eeprom     the settings record to start from (default: the game's defaults); the user's files are never written
+  --free-play  set the game's own FREE PLAY coin setting in every node's settings (no coins to start a game; srallyc, daytona)
   --set-byte N:OFF:V   set byte OFF of node N's settings image (before the CRC is fixed)
   --delay-to N:D[,..]  the other nodes' blocks reach node N D frames late (a test)
   --skew A,B,..        node i starts running A frames late (a test)
@@ -65,6 +66,7 @@ struct Args {
     beat_until: u64,
     geo_trace: u64,
     eeprom: Option<PathBuf>,
+    free_play: bool,
     shot_every: u64,
     shot_at: Vec<u64>,
     log_every: u64,
@@ -97,6 +99,7 @@ fn parse(o: &Opts) -> Result<Args, String> {
         beat_until: 0,
         geo_trace: 0,
         eeprom: None,
+        free_play: false,
         shot_every: 0,
         shot_at: vec![],
         log_every: 0,
@@ -191,6 +194,7 @@ fn parse(o: &Opts) -> Result<Args, String> {
                 let v = it.next().ok_or("--link-types wants a list")?;
                 a.types = Some(v.split(',').filter_map(|x| x.parse().ok()).collect());
             }
+            "--free-play" => a.free_play = true,
             "--eeprom" => a.eeprom = Some(PathBuf::from(it.next().ok_or("--eeprom wants a file")?)),
             "--freeze" => {
                 let v = it.next().ok_or("--freeze wants NODE:FRAME")?;
@@ -293,6 +297,14 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
     let base = match &a.eeprom {
         Some(p) => Some(std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?),
         None => None,
+    };
+    let base = if a.free_play {
+        if play.free_play.is_none() {
+            return Err(format!("{}: no free play data (crates/romset/src/games/link.rs)", roms.game.id));
+        }
+        play.with_free_play(base.as_deref(), true)
+    } else {
+        base
     };
     let scripts: Vec<model2::input::InputScript> = (0..a.nodes)
         .map(|i| {

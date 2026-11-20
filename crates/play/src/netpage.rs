@@ -43,6 +43,9 @@ pub struct NetPage {
     pub auto: usize,
     /// A message under the heading (a refusal, a mistake in the address).
     pub note: Option<String>,
+    /// The host's session starts on the game's own FREE PLAY setting (`free_play` setting):
+    /// carried in the settings the master sends, so every machine runs it.
+    pub free_play: bool,
 }
 
 fn play_of(game: &romset::Game) -> &'static romset::LinkPlay {
@@ -55,12 +58,11 @@ fn game_title(set: &str) -> String {
 }
 
 /// The master's settings the others start from: the player's own EEPROM image for a
-/// game that keeps its settings there.
-fn base_for(play: &romset::LinkPlay, game: &romset::Game) -> Option<Vec<u8>> {
-    if !matches!(play.settings.store, romset::SettingsStore::Eeprom) {
-        return None;
-    }
-    std::fs::read(crate::settings::data_dir().join(game.id).join("eeprom.bin")).ok().filter(|b| b.len() <= 512)
+/// game that keeps its settings there, with free play set as asked.
+fn base_for(play: &romset::LinkPlay, game: &romset::Game, free_play: bool) -> Option<Vec<u8>> {
+    let own =
+        std::fs::read(crate::settings::data_dir().join(game.id).join("eeprom.bin")).ok().filter(|b| b.len() <= 512);
+    play.base_with_free_play(own.as_deref(), free_play)
 }
 
 /// An address as typed: `host:port`, or just `host` (the default port).
@@ -97,6 +99,7 @@ impl NetPage {
             state: NetState::Host { host: Box::new(host), lan, starting: false },
             auto,
             note: None,
+            free_play: false,
         }
     }
 
@@ -116,6 +119,7 @@ impl NetPage {
             state: NetState::Pick { discovery, browser, addr, list: Vec::new(), have },
             auto: 0,
             note: None,
+            free_play: false,
         }
     }
 
@@ -345,7 +349,7 @@ impl NetPage {
         if do_start {
             if let NetState::Host { host, starting, .. } = &mut self.state {
                 if !*starting {
-                    let base = base_for(play, self.game);
+                    let base = base_for(play, self.game, self.free_play);
                     match host.start(None, base, &|p, h| {
                         linknet::settings_hash(play, p.base.as_deref(), p.hosts[h].nodes[0] as usize, &[])
                     }) {

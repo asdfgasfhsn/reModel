@@ -340,6 +340,25 @@ two-machine spike:
   results ("RETIRED RANK 1st" and "2nd"), and back to attract (frame 9982).
   Three and four machines do the same (`x / 4` on the screens). The slave
   copies the master's settings to its EEPROM at the first handshake.
+- *Confirmed (by running it): FREE PLAY is the game's own COIN ASSIGNMENTS
+  setting #26.* Test menu (`test@1300-1330`, then the service button moves the cursor and the test button selects):
+  COIN ASSIGNMENTS shows "COIN/CREDIT SETTING #12" (2 coins 1 credit, both
+  chutes) at the defaults; the test button on the setting line steps the
+  number through #13 to #25 (the ladders of coins per credit), then #26, whose chutes both
+  read FREE PLAY, then #1 to #11 again. Leaving the page, then the menu (the
+  settings are written when the test menu is left), and diffing the 128-byte
+  `eeprom.bin` of that run against one that entered and left the page without changing
+  anything: byte `0x1E` 0x0B -> 0x19 (the setting number, 0-based: #12 -> #26), byte `0x04` 0x02 -> 0x03, byte `0x14` 0xF2 -> 0xFA
+  and byte `0x1A` 0x02 -> 0x01 (what the game derives from it: not told apart
+  further), then the header checksum at `0x00` (the same CRC-16 as above, which
+  the game itself recomputed). With that image as the EEPROM, a boot shows "FREE PLAY"
+  at the bottom of the attract screens (where it reads "INSERT COIN(S)"
+  otherwise), and one start press, no coin, goes to CAR SELECT. In reModel
+  that is `romset::LinkPlay::free_play` (the four bytes and the checksum fixed; a
+  test builds the image and compares it with these values), applied with the
+  linked play settings: `make link-run GAME=srallyc LINK_OPTS=--free-play
+  INPUT=start@1560-1564,gas=0xff@3430-99999` races two machines with no
+  coins (`make link-free-play-test`; "Free play" in `docs/play.md`).
 - It needed two corrections to the first spike's guesses: the ID register
   is **1-based** and a node's own block is the **last** received one; with
   a 0-based ID and the own block first, two real machines hang the link

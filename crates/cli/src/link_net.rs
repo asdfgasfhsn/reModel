@@ -28,6 +28,7 @@ const USAGE_NET: &str = "usage: remodel --game G link-net (--host [PORT] | --joi
   --input S       scripted inputs as `run`'s --input, for this host's machine
   --timeout S     silence that ends the session (default 5)
   --check-every F frames between state checks (default 60, 0 off)
+  --free-play     host: set the game's own FREE PLAY coin setting in the settings every node starts from
   --eeprom FILE   host: the settings image all nodes start from (default: the game's defaults)
   --realtime      hold the machine to 60 frames a second (the stalls then are what a player would see)
   --leave-at F    say goodbye and stop at frame F (a test)
@@ -50,6 +51,7 @@ struct Args {
     check_every: u16,
     lobby_wait: f32,
     eeprom: Option<PathBuf>,
+    free_play: bool,
     shot_every: u64,
     shot_at: Vec<u64>,
     leave_at: u64,
@@ -75,6 +77,7 @@ fn parse(o: &Opts) -> Result<Args, String> {
         check_every: 60,
         lobby_wait: 120.0,
         eeprom: None,
+        free_play: false,
         shot_every: 0,
         shot_at: vec![],
         leave_at: 0,
@@ -125,6 +128,7 @@ fn parse(o: &Opts) -> Result<Args, String> {
             "--timeout" => a.timeout = flt(next(&mut i, f)?)?,
             "--check-every" => a.check_every = num(next(&mut i, f)?)? as u16,
             "--lobby-wait" => a.lobby_wait = flt(next(&mut i, f)?)?,
+            "--free-play" => a.free_play = true,
             "--eeprom" => a.eeprom = Some(PathBuf::from(next(&mut i, f)?)),
             "--shot-every" => a.shot_every = num(next(&mut i, f)?)?,
             "--shot-at" => {
@@ -207,6 +211,15 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<ExitCode, String> {
     let base_file = match (&a.eeprom, play.settings.store) {
         (Some(p), SettingsStore::Eeprom) => Some(std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?),
         _ => None,
+    };
+    // Free play is part of the master's settings, so every host runs it and the settings hash covers it.
+    let base_file = if a.free_play {
+        if play.free_play.is_none() {
+            return Err(format!("{}: no free play data (crates/romset/src/games/link.rs)", roms.game.id));
+        }
+        play.with_free_play(base_file.as_deref(), true)
+    } else {
+        base_file
     };
     let hash_for = |p: &linknet::Params, h: usize| {
         linknet::settings_hash(play, p.base.as_deref(), p.hosts[h].nodes[0] as usize, &[])

@@ -1103,6 +1103,32 @@ combined one (an FNV of the machines' hashes and the hub's state), which is
 what `remodel link-run` prints too; the same scripted inputs give the same
 value in both (4,400 frames, two machines: `bd3b0b5768e8d6ad`; it was `a7d468fcdccbfe99` before the hub's saved state changed for network play, `docs/hw/link-board.md` section 12: the machines' own hashes are unchanged).
 
+### Free play
+
+`srallyc` and `daytona` have a FREE PLAY choice among the coin settings in
+their own test menu (COIN ASSIGNMENTS, setting #26; COIN ASSIGNMENT,
+setting #27: `docs/games/srallyc.md`, `docs/games/daytona.md`). The player
+uses it, so a start press begins a game with no coins (srallyc asks for two per
+credit otherwise, and a linked race needs one credit a machine). The attract
+screens say FREE PLAY, as on the cabinet.
+
+The `free_play` setting (the menu's More tab and the launcher's game
+settings, shown only for games that have the choice), `--free-play` and
+`--no-free-play`: **Link play only** (the default: on in split-screen and
+network link play, off in a single game), **Always** or **Never**. It
+applies when the game starts. The game's settings are patched in memory
+(for srallyc, with its EEPROM checksum fixed): the player's own settings
+file is never given free play, and a link set's own files that an
+earlier session left on free play are put back when it is off. In a network game
+the host's setting goes to every machine with the rest of the master's
+settings (the settings hash the session agrees on covers it), whatever the
+others have chosen. From the command line:
+`make link-run GAME=srallyc LINK_OPTS=--free-play INPUT=start@1560-1564`
+and `make link-net GAME=daytona NET="--host 47890 --nodes 2 --free-play"`
+(`remodel link-run --free-play`, `link-net --free-play` on the host); `make
+link-free-play-test` runs a two-node race of each game from start presses
+only, in one process and over loopback.
+
 ### What link play costs
 
 Measured on the development machine (16 threads, RTX 2080 Super; the machine

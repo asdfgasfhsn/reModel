@@ -273,6 +273,23 @@ carries the grid and the roster.
   not carry the hang (`docs/hw/link-board.md` section 10.5). The fixed-function
   geometrizer now ends the list at a word that is no command (*unconfirmed*
   as hardware behaviour).
+- *Confirmed (by running it): FREE PLAY is the game's own COIN ASSIGNMENT
+  setting #27.* In the test menu (`test@1300-1330`; the service button is
+  cursor down, view 4 cursor up, view 2 and view 3 the value down and up,
+  start selects) the COIN ASSIGNMENT page shows CREDIT TO START 1 and
+  "COIN/CREDIT SETTING # 1" (both chutes 1 coin 1 credit) at the defaults;
+  stepping the value down from #1 wraps to **#27, whose chutes read FREE PLAY**
+  (#2 to #26 are the other ladders). Leaving the page and the menu and diffing
+  the I/O record dumped by `link-run` (`--nodes 1 --link-types 0`, which has the
+  game run as a single cabinet and keep the store) against a run that did the
+  same without changing it: byte `0x10` 0x00 -> 0x1A (the setting number,
+  0-based), byte `0x14` 0x00 -> 0x01 and byte `0x7C` 0x00 -> 0x01 (derived from it, not
+  told apart further), then the CRC at `0x08` (the same CCITT as above, recomputed
+  by the game). With that record loaded, attract shows "FREEPLAY" at the bottom
+  and one start press with no coin goes to Circuit Select. This is
+  `romset::LinkPlay::free_play`, applied with the linked play settings:
+  `remodel link-run --free-play` and the player's `--free-play`
+  (`make link-free-play-test`; `docs/play.md`, "Free play").
 - *Unconfirmed:* what the real board's `0x1A14002` bit 7 is, what CAR
   NUMBER does beyond display, a late-starting node, a lost link.
 
