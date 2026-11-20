@@ -1,8 +1,10 @@
 # Content coverage: reaching all of a game
 
 Shared words, roles and rules: [README.md](README.md). Nothing here is
-built. Added on 2026-11-19 after the user's review: a full uplift cannot
-be made from a catalogue that only holds what somebody happened to play.
+built into reModel; what was tried is in "Evidence" (spike code is on
+unmerged branches, not for merging as it stands). Added on 2026-11-19
+after the user's review: a full uplift cannot be made from a catalogue
+that only holds what somebody happened to play.
 
 ## The problem
 
@@ -29,7 +31,7 @@ first time a player picks the course nobody recorded.
   never visited. The same holds on four more games: `vf2`, `daytona`,
   `gunblade` and `fvipers` each reported 99.9% or 100% after one run,
   and a second run then supplied 50%, 40%, 35% and 61% of the final
-  texture list (spikes, 2026-11-19 and 2026-11-20).
+  texture list (measured 2026-11-19 and 2026-11-20).
 - **There is no list of models to count against.** A model's address
   appears only in the display list the game builds as it runs. A model
   has no length; it ends at a marker (`docs/hw/geometrizer.md`, 2.1 and
@@ -78,97 +80,45 @@ code          31% of discovered instructions run
 
 (The figures are invented, to show the shape.)
 
-**Spiked on 2026-11-19** for the polygon ROM (Top Skater's three runs,
-native geometrizer; branch `uplift-spikes`, about 200 lines):
-
-- **The three runs read 28% of the polygon ROM**: 2.38 MB of 8.39 MB.
-  The coin start alone read 16%, the character walk added 1%, and the
-  course added 11%. None of the ROM is blank.
-- **The unread part is whole regions**, not holes: 40 stretches, the
-  largest 4.89 MB, and only 64 KB in stretches under 16 KB.
-- **Models sit back to back.** 95% of models read begin exactly where
-  another ended, so an unread stretch can be parsed from its start.
-- **Unread stretches do parse as models.** A strict reader (attribute
-  bits, finite numbers, not only the end marker) read all 40 from their
-  first word, and chained through 1.72 MB of the 6.0 MB unread. The rest
-  is either a format the reader does not know or not models at all.
-- State hashes were unchanged. The map slowed one run from 17 s to 28 s
-  and the other two not at all.
-
-**Texture data, spiked on 2026-11-20** (branch `uplift-spikes-b`, about
-230 lines). Texture headers and UV lists are read where the raster
-stream is built (`raster::build_impl`), which both renderers share, so
-one hook covers both.
-
-| | Top Skater, 3 runs | `gunblade`, coin start | `daytona`, coin start |
-|---|---|---|---|
-| Texture ROM read (headers and UV lists) | 18% of 8 MB | 13.5% | 3.6% of 16 MB |
-| Data ROM copied into texture RAM | 6.4% of 32 MB | 9.8% | 4.1% |
-
-- **Top Skater's texel loads were the same 2.14 MB in all three runs.**
-  It looks like one fill at boot, so "texels loaded" says little about
-  what was shown on this game, and is only a lower bound.
-- **There is no true count of headers.** Nothing marks one. A pattern
-  learned from the headers that were read guesses 65% read on Top
-  Skater, 24% on `gunblade` and 5.5% on `daytona`, but the pattern is
-  fitted to what was read, so these are guesses. The report gives bytes
-  read and the largest unread stretches, not "headers".
-- The hook cost 1.0 to 3.3 ms a frame, about 80% more wall time, as
-  written. State hashes were unchanged.
-- **A reused output folder changes the state hash by itself**: it
-  carries `eeprom.bin` over from the last run. Tours must start from a
-  stated EEPROM, or a tour does not reproduce.
-
-**Repeated on `vf2` and `daytona`**, a coin start and a run with no
-input each:
-
-| | Top Skater | `vf2` | `daytona` | `gunblade` | `fvipers` |
-|---|---|---|---|---|---|
-| Board | 2C | 2A | Original | 2B | 2B |
-| Polygon ROM, share not blank | 8 MB, 100% | 12 MB, 87% | 16 MB, 74% | 16 MB, 86% | 12 MB, 86% |
-| Read, of the whole ROM | 28% | 28% | 18% | 14% | 14% |
-| Read, of what is not blank | 28% | 33% | 24% | 17% | 16% |
-| Models sit | Back to back | 4 words apart | 4 words apart | Back to back | 4 words apart |
-
-The two Model 2B games were added on 2026-11-20. (An earlier version of
-this table gave the whole-ROM figures under the "not blank" label.)
-
-Two more 2B games the same day show how wide the range is: one coin
-start and one run with no input read 47% of `vstriker`'s polygon ROM (8
-MB, a football pitch shows most of its models at once) and 9% of
-`lastbrnx`'s (8 MB, one fight of many). One fault in the spike's map
-came to light there: models drawn from polygon RAM were logged as if
-read from ROM. It was filtered out for these two; the `vf2` and
-`fvipers` figures above include up to two such small models a frame and
-were not redone.
-
-On Daytona a scripted race read only 7 KB more than the title run: the
-demo had already shown that course, and the other courses need
-choosing. On all four added games nearly every unread stretch parses as
-models: from its first word where models sit back to back, and from a
-start a few words in where they are 4 words apart. `gunblade` has by far
-the most unread stretches (98,313, the largest 4.2 MB), so its data is
-more broken up than the others'.
-
-So today's catalogues have seen a third of the model data at best, and
-that is a ceiling on how complete any pack made from it can be. It also
-says a model browser is within reach: at least 1.72 MB of models nobody
-has seen can be listed, and their shapes drawn, without playing.
-
 This needs no knowledge of where models begin, works for every game the
-same way, and reads only: nothing in the machine changes. It gives the
-one thing the catalogue cannot: the share of the game's art data that no
-run has touched. It will not reach 100%, since ROMs hold padding and
-unused art, so the report also lists the largest unread stretches.
+same way, and reads only: nothing in the machine changes, and state
+hashes are unchanged with it on (E1, E2). Texture headers and UV lists
+are read where the raster stream is built (`raster::build_impl`), which
+both renderers share, so one hook covers both (E2).
 
-Two things follow that are worth a spike each:
+It gives the one thing the catalogue cannot: the share of the game's art
+data that no run has touched. It will not reach 100%, since ROMs hold
+padding and unused art, so the report also lists the largest unread
+stretches. What the maps showed:
 
-- **Unread models can be found.** A model ends at a marker, so an unread
-  stretch of polygon ROM can be parsed as models from its start. Whether
-  the next model begins straight after the last is not known.
-- **Unread models could be drawn** in a viewer without the game ever
-  showing them. Their shapes need nothing else. Their textures need the
-  right sheet loaded, which only the game does.
+- **Today's catalogues have seen a minority of the model data**: 28%
+  on Top Skater and 9% to 47% on the others tried (E1, E3). That is a
+  ceiling on how complete any pack made from them can be.
+- **The unread part is whole regions**, not holes (E1), and nearly
+  every unread stretch parses as models from its start (on Top Skater
+  the reader chained through 1.72 MB of the 6.0 MB unread; the rest is
+  a format it does not know, or not models). A strict reader finds
+  them from the first word
+  where models sit back to back, and a few words in where they sit 4
+  words apart (E1, E3). So unread stretches of polygon ROM can be parsed
+  from their start, and a model browser is within reach: at least 1.72
+  MB of models nobody has seen can be listed, and their shapes drawn,
+  without playing. Their textures need the right sheet loaded, which only
+  the game does.
+- **There is no true count of texture headers.** Nothing marks one, so
+  the report gives bytes read and the largest unread stretches, not
+  "headers". "Texels loaded" is only a lower bound: Top Skater's loads
+  were the same in every run, which looks like one fill at boot (E2).
+- **A reused output folder changes the state hash by itself**, because
+  it carries `eeprom.bin` over from the last run. A tour must start from
+  a stated EEPROM, or it does not reproduce (E2).
+
+**Known defect.** The read map logs models drawn from polygon RAM as if
+they were read from ROM. The figures it affects: the `vf2` and `fvipers`
+columns in E3 include up to two such small models a frame and were not
+redone; `vstriker` and `lastbrnx` had it filtered out. The fix
+proposed, not tried: record reads only where the geometrizer reads the
+polygon ROM.
 
 The catalogue's own figure is renamed to what it is, "sampling of the
 screens visited", and the report leads with new entries per thousand
@@ -210,47 +160,35 @@ game's breadth is, and they are what this is good at: left, right and
 start, from every screen. Loading a state takes about 100 ms and a state
 is about 1.2 MB, so thousands of tries fit in an hour on one core.
 
+What it can and cannot do (E4):
+
+- **It needs no new code to start.** A catalogue session can start from
+  a loaded state, and a tour replayed from power-on twice is identical
+  byte for byte.
+- **It finds menu screens unaided**, and finds art a hand-made catalogue
+  lacks. It does not play: random stick holds do not skate a course, so a
+  run ends at TIME UP and the game-over loop. Later course sections, and
+  anything past a menu that needs skill, need recorded play or pokes.
+- **Waiting is an input.** Menus advance on timers; "wait six seconds"
+  and "hold start" find the most.
+- **The policy must spread tries across branches.** A greedy policy
+  saturates and descends almost wholly from one branch.
+- **Screens are compared with digits masked.** A credit counter
+  otherwise makes a new screen per digit.
+- **A try is two passes.** A try costs about 2 seconds, and the catalogue
+  is 60 to 70% of it. So run plainly with the read map first, and run the
+  catalogue only on tries that read something new.
+- **A branch tour is checked by its pictures and its catalogue entries,
+  not by state hash.** A state reached by chained loads is not
+  byte-equal to the same frame reached in one run, though later pictures
+  are identical. The cause is not found (the script's step arithmetic is
+  one suspect).
+
 An agent sits on top for what the crawler cannot do: read a new screen,
 recognise "this is a course select with three entries", and decide what
-is worth time. It is shown new screens only, one thumbnail each.
-
-**Spiked on 2026-11-20** as a Python loop around the CLI, on Top
-Skater's menus: 1,238 tries in 41 minutes of emulator time, one process.
-
-- **It works with no new code.** A catalogue session can start from a
-  loaded state, and a tour replayed from power-on twice is identical
-  byte for byte.
-- **It found most menu screens unaided**: course select, all six
-  skaters, the countdown, play, TIME UP and two caution screens. It
-  rediscovered 354 of the 565 known textures and found 51 textures, 148
-  objects and 17 screens the hand-made catalogue lacks.
-- **It did not reach the Expert course**, and it saturated: 80 of the
-  118 states kept came in the first quarter, 5 in the last. The policy
-  was greedy, so 117 of 118 descend from one branch.
-- **Waiting is an input.** Menus advance on timers; "wait six seconds"
-  and "hold start" found the most.
-- **It cannot play.** Random stick holds do not skate a course, so a
-  run ends at TIME UP and the game-over loop. Later course sections need
-  recorded play or pokes.
-- **A try costs 2 seconds, and the catalogue is 60 to 70% of it.**
-  Process start and state load are a tenth. The cheaper design is two
-  passes: a plain run with the read map first, the catalogue only on
-  tries that read something new.
-- **Screens need digits masked.** The credit counter made a "new screen"
-  per digit: 36 screens by the catalogue's count, about 12 by eye.
-- **A state reached by chained loads is not byte-equal to the same
-  frame reached in one run.** Its hash and instruction pointer differed,
-  while pictures 120 and 300 frames later were identical, even after 44
-  hops. The cause was not found (the script's step arithmetic is one
-  suspect). Until it is, a branch tour is checked by its pictures and
-  its catalogue entries, not by state hash.
-
-So the design holds for breadth, and needs three things before it can
-cover a game: a policy that spreads tries across branches, screens
-compared with counters masked, and the two-pass try. A steering agent
-needs one thumbnail per real screen, each state's children and tries
-since its last find, and two commands: "wait N" and "go back to state
-X".
+is worth time. It is shown new screens only, one thumbnail each, with
+each state's children and tries since its last find, and two commands:
+"wait N" and "go back to state X".
 
 A tour that uses pokes is marked, and so is any state made from it. Tours
 are for cataloguing. They never touch play, replays or the benchmark
@@ -315,21 +253,145 @@ hashes.
 - **With ROMs:** the three existing runs as tours give today's catalogue;
   hashes equal with read maps on and off; a branch tour from a state
   gives the same pictures and catalogue entries as the same inputs from
-  power-on (the state hashes differed in the spike; see the crawler).
+  power-on (the state hashes differ; see the crawler); read maps ignore
+  models drawn from polygon RAM.
 
 ## Performance
 
 The three runs are 20,557 frames: about six minutes at the game's speed
 and about 80 seconds recompiled (worked from the figures above; not
-run). The catalogue's and the read maps' own cost is not measured.
-Recording which code ran is done by the interpreter only, so the
-crawler's finest signal costs half the speed.
+run). The read map slowed one Top Skater run from 17 s to 28 s and the
+other two not at all (E1). The texture hook cost 1.0 to 3.3 ms a frame,
+about 80% more wall time, as written (E2). The catalogue's own cost is
+60 to 70% of a crawler try of 2 seconds (E4). Recording which code ran
+is done by the interpreter only, so the crawler's finest signal costs
+half the speed.
+
+## Evidence
+
+Spike code is on unmerged branches; none of it is in reModel. Each entry
+says what was observed and what is inferred.
+
+### E1. Polygon ROM read map (2026-11-19)
+
+Top Skater's three runs, native geometrizer; branch `uplift-spikes`,
+about 200 lines.
+
+Observed:
+
+- The three runs read 28% of the polygon ROM: 2.38 MB of 8.39 MB. The
+  coin start alone read 16%, the character walk added 1%, and the course
+  added 11%. None of the ROM is blank.
+- The unread part is whole regions, not holes: 40 stretches, the
+  largest 4.89 MB, and only 64 KB in stretches under 16 KB.
+- 95% of models read begin exactly where another ended.
+- A strict reader (attribute bits, finite numbers, not only the end
+  marker) read all 40 unread stretches from their first word, and
+  chained through 1.72 MB of the 6.0 MB unread.
+- State hashes were unchanged. The map slowed one run from 17 s to 28 s
+  and the other two not at all.
+
+Inferred: the rest is either a format the reader does not know or not
+models at all.
+
+Not tested: drawing unread models in a viewer.
+
+### E2. Texture data read map (2026-11-20)
+
+Branch `uplift-spikes-b`, about 230 lines.
+
+| | Top Skater, 3 runs | `gunblade`, coin start | `daytona`, coin start |
+|---|---|---|---|
+| Texture ROM read (headers and UV lists) | 18% of 8 MB | 13.5% | 3.6% of 16 MB |
+| Data ROM copied into texture RAM | 6.4% of 32 MB | 9.8% | 4.1% |
+
+Observed:
+
+- Top Skater's texel loads were the same 2.14 MB in all three runs.
+- A pattern learned from the headers that were read guesses 65% read on
+  Top Skater, 24% on `gunblade` and 5.5% on `daytona`.
+- The hook cost 1.0 to 3.3 ms a frame, about 80% more wall time, as
+  written. State hashes were unchanged.
+- A reused output folder changes the state hash by itself: it carries
+  `eeprom.bin` over from the last run.
+
+Inferred: the header guesses are fitted to what was read, so they are
+guesses, not counts.
+
+### E3. Polygon ROM across five and seven games (2026-11-20)
+
+`vf2` and `daytona` first: a coin start and a run with no input each.
+The two Model 2B games were added the same day.
+
+| | Top Skater | `vf2` | `daytona` | `gunblade` | `fvipers` |
+|---|---|---|---|---|---|
+| Board | 2C | 2A | Original | 2B | 2B |
+| Polygon ROM, share not blank | 8 MB, 100% | 12 MB, 87% | 16 MB, 74% | 16 MB, 86% | 12 MB, 86% |
+| Read, of the whole ROM | 28% | 28% | 18% | 14% | 14% |
+| Read, of what is not blank | 28% | 33% | 24% | 17% | 16% |
+| Models sit | Back to back | 4 words apart | 4 words apart | Back to back | 4 words apart |
+
+Correction: an earlier version of this table gave the whole-ROM figures
+under the "not blank" label. Both rows are kept.
+
+Observed:
+
+- One coin start and one run with no input read 47% of `vstriker`'s
+  polygon ROM (8 MB, a football pitch shows most of its models at once)
+  and 9% of `lastbrnx`'s (8 MB, one fight of many).
+- On Daytona a scripted race read only 7 KB more than the title run:
+  the demo had already shown that course, and the other courses need
+  choosing.
+- On all four added games nearly every unread stretch parses as models:
+  from its first word where models sit back to back, and from a start a
+  few words in where they are 4 words apart.
+- `gunblade` has by far the most unread stretches (98,313, the largest
+  4.2 MB), so its data is more broken up than the others'.
+- The map logged models drawn from polygon RAM as ROM reads. It was
+  filtered out for `vstriker` and `lastbrnx`; the `vf2` and `fvipers`
+  figures above include up to two such small models a frame and were not
+  redone.
+
+### E4. The crawler on Top Skater's menus (2026-11-20)
+
+A Python loop around the CLI: 1,238 tries in 41 minutes of emulator
+time, one process.
+
+Observed:
+
+- A catalogue session can start from a loaded state, and a tour
+  replayed from power-on twice is identical byte for byte.
+- It found most menu screens unaided: course select, all six skaters,
+  the countdown, play, TIME UP and two caution screens. It rediscovered
+  354 of the 565 known textures and found 51 textures, 148 objects and
+  17 screens the hand-made catalogue lacks.
+- It did not reach the Expert course, and it saturated: 80 of the 118
+  states kept came in the first quarter, 5 in the last. The policy was
+  greedy, so 117 of 118 descend from one branch.
+- A try costs 2 seconds, and the catalogue is 60 to 70% of it. Process
+  start and state load are a tenth.
+- The credit counter made a "new screen" per digit: 36 screens by the
+  catalogue's count, about 12 by eye.
+- A state reached by chained loads is not byte-equal to the same frame
+  reached in one run. Its hash and instruction pointer differed, while
+  pictures 120 and 300 frames later were identical, even after 44 hops.
+
+Inferred: the design holds for breadth. The cause of the chained-load
+difference is unknown.
+
+Not tested: the two-pass try, a spread policy, masked screens, an agent
+steering the crawler.
 
 ## Open questions
 
 - **What is the other 4.3 MB** of the polygon ROM that the strict reader
   could not chain through: unused art, another record format, or data
   that is not models?
+- **Can unread models be drawn** in a viewer without the game ever
+  showing them? Their shapes need nothing else; textures need the right
+  sheet loaded.
+- **Why is a state reached by chained loads not byte-equal** to the
+  same frame reached in one run?
 - **How much of the unread art can the game ever show?** ROMs keep
   leftovers. A crawler that stops finding new reads is the only test.
 - **Do tours survive timing fixes?** A corrected emulator may shift
@@ -338,18 +400,19 @@ crawler's finest signal costs half the speed.
 - **Where 2D patterns come from** is not documented, so tiles have no
   read map yet.
 - **Can settings in EEPROM** (difficulty, region, blood) change the art?
-  A tour must carry the EEPROM it starts from either way: a spike found
-  a leftover `eeprom.bin` changes the state hash.
+  A tour must carry the EEPROM it starts from either way: a leftover
+  `eeprom.bin` changes the state hash (E2).
 - **Is the test switch useful** for any game?
 - **How far can the crawler get** past a menu, where reaching new art
   takes skill and not breadth? Pokes are the likely answer.
 
 ## MVP
 
-1. Read maps for the polygon ROM (spiked) and the texture ROM, merged
-   across runs.
+1. Read maps for the polygon ROM and the texture ROM, merged across
+   runs, recording reads only where the geometrizer reads ROM so RAM
+   models are not counted.
 2. `tours.txt` with `from=` and `mark=`, `tour run`, and `coverage`.
 3. The player's tour recorder.
 4. `ram search` and `poke=`, with the cheats work.
-5. The crawler (spiked on menus): spread policy, masked screens,
-   two-pass tries, then an agent steering it.
+5. The crawler: spread policy, masked screens, two-pass tries, then an
+   agent steering it.

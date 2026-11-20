@@ -1,9 +1,11 @@
 # Shader packs: for any game
 
-Shared words, roles and rules: [README.md](README.md). Nothing here is
-built. The idea was added by the user on 2026-11-19: a shader engine in
-the spirit of RetroArch's, where people bring shaders that apply to any
-number of games. RetroArch is the inspiration, not something to import.
+Shared words, roles and rules: [README.md](README.md). Nothing is built
+into reModel; what was tried is in "Evidence" (spike code is on
+unmerged branches, not for merging as it stands). The idea was added by
+the user on 2026-11-19: a shader engine in the spirit of RetroArch's,
+where people bring shaders that apply to any number of games. RetroArch
+is the inspiration, not something to import.
 
 Every other pack is for one game. This is the one kind that is not.
 
@@ -124,44 +126,27 @@ is validated with naga when loaded, and an error names the file and line.
 A pack whose passes cost more than a set share of the frame for a second
 is switched off with a message.
 
-**Safety.** A shader pack runs after the frame is composed and reads
-only. It cannot reach the machine, files or the network, and cannot
-change a state hash. It is still code, run on the GPU, and the spike
-below found the one thing that cannot be checked away: a loop.
+**As tried (E1).** A pass reads a fixed interface: the picture, a
+sampler, and one block of numbers (output size, the game's 496x384, the
+frame number, the parameters). A shader can also declare parameters in
+comment lines (`// @param NAME DEFAULT MIN MAX`) so they can be listed
+without a GPU; the format should name each slot and not rely on order
+of declaration. Compile errors are caught and reported with wgpu's own
+message, line and column, and the picture falls back to no shader. The
+loader must check the parameter block's size against the host's before
+drawing. At first only colour is given: at the point where a `screen`
+pass runs the 3D depth is not readable, a 1/z image exists only in photo
+mode, and the ID target only with a look active, so the `uses depth` and
+`uses class` rows above each need the renderer to keep that buffer.
 
-**Spiked on 2026-11-20** (branch `uplift-spikes-b`, about 400 lines; Top
-Skater and `gunblade`, offscreen):
+### Safety
 
-- **A WGSL file read at run time runs as a pass** on the finished
-  picture, with a fixed interface: the picture, a sampler, and one
-  block of numbers (output size, the game's 496x384, the frame number,
-  eight parameters).
-- **An identity shader is byte-exact**: no differing byte against no
-  shader, at the game's resolution and at 1080p, on both games.
-- **Mistakes are caught and reported.** A syntax error, a wrong entry
-  point, a binding the host does not offer and a wrong output type each
-  give wgpu's own message with line and column, and the picture falls
-  back to no shader. One gap: a parameter block larger than the host's
-  is only found when drawing, and panicked. The loader must check its
-  size.
-- **An endless loop cannot be caught.** Run once by mistake at the
-  game's resolution, it made the graphics driver kill reModel's GPU
-  context; reModel lost its device and exited. The desktop survived. A
-  merely slow shader is valid code: three million loop steps a pixel
-  cost 731 ms a frame.
-- **Parameters can be listed without a GPU** from comment lines
-  (`// @param NAME DEFAULT MIN MAX`). The link from a name to its slot
-  was by order of declaration, which is fragile; the real format should
-  name the slot.
-- **It is cheap.** 0.06 to 0.075 ms a pass at 1080p for simple shaders.
-  A new shader compiles in 7 to 10 ms (47 ms for the first in a
-  process), so reload on save is instant.
-- **Only colour is there to give.** At that point in the pipeline the 3D
-  depth is not readable, a 1/z image exists only in photo mode, and the
-  ID target only with a look active. The `uses depth` and `uses class`
-  rows above each need the renderer to keep that buffer.
-
-What follows for loops, none of it tried:
+A shader pack runs after the frame is composed and reads only. It cannot
+reach the machine, files or the network, and cannot change a state hash.
+It is still code, run on the GPU, and one thing cannot be checked away:
+an endless loop cannot be caught once it is running. It cost one
+process its GPU device (E1, one run). A merely slow shader is valid
+code. The mitigations, none of them tried:
 
 - The loader walks the validated shader and refuses a loop whose count
   is not a small constant. This rejects some honest shaders.
@@ -246,6 +231,39 @@ in the browser, so shader packs would be nearly free there. It is not
 scheduled, in line with the decision to keep the browser out of uplift
 work.
 
+## Evidence
+
+**E1. 2026-11-20, a pass prototype** (branch `uplift-spikes-b`, about
+400 lines; Top Skater and `gunblade`, offscreen).
+
+- **Observed:** a WGSL file read at run time runs as a pass on the
+  finished picture, with a fixed interface: the picture, a sampler, and
+  one block of numbers (output size, the game's 496x384, the frame
+  number, eight parameters).
+- **Observed:** an identity shader is byte-exact: no differing byte
+  against no shader, at the game's resolution and at 1080p, on both
+  games.
+- **Observed:** a syntax error, a wrong entry point, a binding the host
+  does not offer and a wrong output type each give wgpu's own message
+  with line and column, and the picture falls back to no shader. One
+  gap: a parameter block larger than the host's is only found when
+  drawing, and panicked.
+- **Observed:** an endless loop, run once by mistake at the game's
+  resolution, made the graphics driver kill reModel's GPU context;
+  reModel lost its device and exited. The desktop survived. A merely
+  slow shader is valid code: three million loop steps a pixel cost 731
+  ms a frame.
+- **Observed:** parameters can be listed without a GPU from comment
+  lines (`// @param NAME DEFAULT MIN MAX`). The link from a name to its
+  slot was by order of declaration, which is fragile.
+- **Observed:** 0.06 to 0.075 ms a pass at 1080p for simple shaders. A
+  new shader compiles in 7 to 10 ms (47 ms for the first in a process),
+  so reload on save is instant.
+- **Observed:** at that point in the pipeline the 3D depth is not
+  readable, a 1/z image exists only in photo mode, and the ID target
+  only with a look active.
+- **Inferred:** the three loop mitigations under "Safety" are untried.
+
 ## Open questions
 
 - **Can bloom be matched exactly** as a `scene` pack, or only closely?
@@ -257,7 +275,7 @@ work.
 
 ## MVP: a few days
 
-1. `shader.txt` with a single pass (spiked), parameters as Picture
+1. `shader.txt` with a single pass, parameters as Picture
    rows, reload on save, the loop rule and recovery from a lost device.
 2. The built-in CRT moved into a shader pack, with the identity test.
 3. Multi-pass, feedback and history, and the `scene` stage, with bloom

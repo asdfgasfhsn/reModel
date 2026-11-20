@@ -1,9 +1,10 @@
 # Authoring: the path with no terminal
 
-Shared words, roles and rules: [README.md](README.md). Nothing here is
-built. This is the spec the artist role was missing in pass one. It adds
-no new abilities: it puts the verbs of [interface.md](interface.md) behind
-a page in the player.
+Shared words, roles and rules: [README.md](README.md). Nothing is built
+into reModel; what was tried is in "Evidence" (spike code is on
+unmerged branches, not for merging as it stands). This is the spec the
+artist role was missing in pass one. It adds no new abilities: it puts
+the verbs of [interface.md](interface.md) behind a page in the player.
 
 By decision (2026-11-19) agents are served first, so this follows the
 slices that give agents their loop. It is written now so those slices
@@ -19,9 +20,9 @@ specs found the artist the worst-served role for exactly that reason.
 **Observed.**
 
 - **The player already has the parts of an interface.** It is built on
-  egui (`crates/play/Cargo.toml:28`), with a side-panel Esc menu, a Picture page with live styles and a Compare divider, save slots with
-  thumbnails, and a photo mode with a free camera and a time scrub
-  (`docs/play.md`, `docs/photo-mode.md`).
+  egui (`crates/play/Cargo.toml:28`), with a side-panel Esc menu, a Picture page with live styles and a
+  Compare divider, save slots with thumbnails, and a photo mode with a
+  free camera and a time scrub (`docs/play.md`, `docs/photo-mode.md`).
 - **It can already observe a game.** The Esc menu has a Catalogue setting
   that records what a game shows while it is played
   (`docs/uplift-studio.md`, "Observing").
@@ -32,6 +33,13 @@ specs found the artist the worst-served role for exactly that reason.
   (`docs/uplift-studio.md`, "What is built, what comes later").
 - **The player can be driven by script** for tests: `--nav`, `--input`,
   `--shot` (`docs/play.md`).
+- **The player has no reload today.** It does not watch a pack; a change
+  means switching the pack off and on, a cold load of about 0.3 s for
+  Top Skater's race scene (E1), with original and pack art mixed for a
+  quarter of a second. Reloading a whole pack resets the renderer's
+  caches.
+- **Opening the image editor exists nowhere in the code.** It needs the
+  platform's opener, with its result checked.
 
 Other projects' lesson, from their documentation: the ones people enjoy
 modding show identity in the running game (RT64's texture tab, RTX
@@ -72,6 +80,26 @@ the actor. Nothing here can do what a command cannot.
 8. **Approve and build.** A review list steps through everything checked,
    original beside new, with approve and reject. "Build pack" writes the
    pack; "Make archive" writes the file to share.
+
+### What the renderer must gain
+
+The page needs three things from the renderer, and a reload at all
+(there is none today):
+
+- **A one-image swap**: replace one decoded image under a list of keys,
+  not a whole-pack reload. The one-second target holds with room as long
+  as only the saved image is swapped (E1).
+- **Decoding and mipmaps on a worker thread**, so a large image does not
+  stall the frame.
+- **The ID pass without a look**, so picking works with no look active
+  (E1).
+
+The watch checks the scene's files about ten times a second and the
+whole folder once or twice. A file is accepted when it is unchanged for
+100 ms and decodes; otherwise the old image stays, which is safe for a
+half-written file (E1). With a 4096 image shrunk on the CPU and the
+folder checked four times a second, the target is missed (E1); so
+check more often than that (inferred).
 
 ### Other kinds of work, same page
 
@@ -140,14 +168,16 @@ a project folder.
 
 ## Performance
 
-The ID pass that picking needs costs 0.7 ms at 1080p and 3.0 ms at 4K as
-documented (`docs/enhancements.md`, "Looks"), and runs only while the
-page is open. The watch is a check a few times a second, as the look's
-is. Reloading a whole pack resets the renderer's caches; if that is
-slower than a second on a large pack, single files must be reloaded
-instead. Not measured.
+Save to picture is 0.17 to 0.22 s for a 512x512 texture and 0.55 to
+0.6 s for a 2048x2048 one (E1). The ID pass that picking needs adds 1.2
+ms at 1080p and 3.8 ms at 4K as measured (E1; documented at 0.7 ms and
+3.0 ms, `docs/enhancements.md`, "Looks"), and runs only while the page
+is open. The watch is a check a few times a second, as the look's is.
+Pointing is free (E1). Jumping to a scene takes about 0.1 s.
 
-**Measured on 2026-11-20** (branch `uplift-spikes-b`, about 940 lines;
+## Evidence
+
+**E1. 2026-11-20, measured** (branch `uplift-spikes-b`, about 940 lines;
 Top Skater's race scene at 1080p with the showcase pack; each step timed
 on its own, not one end-to-end run).
 
@@ -164,10 +194,8 @@ on its own, not one end-to-end run).
   image is swapped. It fails only when a 4096 image must be shrunk on
   the CPU and the folder is checked just four times a second (1.2 to
   1.3 s).
-- **The player has no reload today.** It does not watch a pack; a change
-  means switching the pack off and on, a cold load of about 0.3 s for
-  this scene, with original and pack art mixed for a quarter of a
-  second.
+- **Observed:** the cold load that stands in for a reload is about 0.3
+  s for this scene.
 - **Swapping one image works**: 2 ms at 64x64, 12 to 15 ms at 512, 108
   to 200 ms at 2048, and the picture returns exactly when the original
   is put back. One image under 12 colourings is 3 ms of uploads after
@@ -184,12 +212,12 @@ on its own, not one end-to-end run).
   at 4K, and today runs only with a look.
 - **Jumping to a scene takes about 0.1 s**: 82 ms on Top Skater, 105 ms
   on Daytona, from loading the state to the picture.
-- **Opening the image editor exists nowhere in the code.** It needs the
-  platform's opener, with its result checked.
-
-What the page needs from the renderer, then: a way to swap one decoded
-image under a list of keys; decoding and mipmaps on a worker thread;
-and the ID pass without a look.
+- **Correction:** the documented ID-pass figures (0.7 ms at 1080p, 3.0
+  ms at 4K) differ from the 1.2 ms and 3.8 ms measured here; the
+  measured ones are used in Performance.
+- **Not measured:** one end-to-end run, and whether reloading a whole
+  pack takes over a second on a large pack (then single files must be
+  reloaded instead).
 
 ## Open questions
 

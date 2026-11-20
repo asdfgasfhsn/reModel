@@ -1,8 +1,10 @@
 # Distribution: finding and installing packs
 
-Shared words, roles and rules: [README.md](README.md). Nothing here is
-built. The direction is the user's (2026-11-18 and 2026-11-19): no
-curated list, packs found by a convention on GitHub, and easy to find.
+Shared words, roles and rules: [README.md](README.md). Nothing is built
+into reModel; what was tried is in "Evidence" (spike code is on
+unmerged branches, not for merging as it stands). The direction is the
+user's (2026-11-18 and 2026-11-19): no curated list, packs found by a
+convention on GitHub, and easy to find.
 
 ## The problem
 
@@ -52,23 +54,6 @@ it for hosts other than GitHub. `pack publish
 does not yet meet. It changes nothing; publishing is `git push` and a
 release, done by the author.
 
-### Checked against GitHub on 2026-11-20
-
-Read-only and signed out, on an unrelated pair of topics that about
-1,800 repositories share (25 requests in all). Nothing was created, so
-how soon a newly tagged repository becomes searchable is still unknown.
-
-| Claim | Result |
-|---|---|
-| One search finds repositories with both topics, 100 a page, sorted by stars or update | Confirmed. A result holds topics, default branch, fork and archived flags, licence, stars and dates |
-| Signed-out limits: 10 searches a minute, 60 other calls an hour | Confirmed from the response headers |
-| At most 1,000 results | Confirmed: the eleventh page is refused |
-| Forks | Hidden by default: a fork never lists unless the search asks for forks. Archived repositories do list, so the client drops them |
-| `pack.txt` fetched as a plain file | Confirmed, with no API quota, cached for 5 minutes. The address must use `HEAD`, not a branch name: `main` fails on a repository whose branch is `master` |
-| The newest release in one call | Confirmed. A repository with no release answers "not found". A release file can also be fetched by a fixed address with no API call at all |
-| A `.sha256` file is needed | Wrong: the release API gives a SHA-256 for every file |
-| Topic names like `remodel-topskatr` | Valid by GitHub's rules: lowercase letters, digits and hyphens, up to 50 characters, 20 topics a repository |
-
 ### Finding
 
 The launcher's page for a game has a "Find packs" action. Nothing is
@@ -78,8 +63,10 @@ requested until it is used.
    stars. The result already holds what a list needs: name, owner,
    summary, stars, last update.
 2. **For each result, `pack.txt` and `preview.png`** are fetched as plain
-   files. A repository without a readable `pack.txt` for this game is
-   dropped, which is what keeps the topic from being a spam list.
+   files, from `HEAD` and not a branch name (E1). A repository without
+   a readable `pack.txt` for this game is dropped, which is what keeps
+   the topic from being a spam list. Archived repositories are dropped
+   too; forks never list (E1).
 3. **Opening a pack** asks for its newest release: one API request.
 
 The list is cached for a day. At most one search per game per day, and
@@ -124,15 +111,10 @@ it waits until it is needed.
 Updates are offered, never taken silently, and the old version stays
 until the new one has passed step 3.
 
-**The archive was prototyped on 2026-11-20** (Python, standard library).
-Fifteen hostile archives, one per rule above and including one whose
-header lies about its size, were each refused with a clear message, and
-a clean one installed. A declared size cannot be trusted: the unpacker
-must count what it inflates. Two builds of one folder gave the same
-bytes and hash, also from a copy with other file times, as long as the
-compression library is the same; storing files uncompressed removes
-that condition, and PNGs gain little from compression anyway. On a 200
-MB pack: 6.2 s to build, 0.54 s to unpack safely, 0.11 s to hash.
+A declared size cannot be trusted: the unpacker counts what it inflates
+(E2). Two builds of one folder give the same bytes and hash as long as
+the compression library is the same; storing files uncompressed removes
+that condition, and PNGs gain little from compression anyway (E2).
 
 ### What the listing shows
 
@@ -144,9 +126,9 @@ packs come from their authors and are not reviewed by reModel.
 ### Safety
 
 A pack cannot run code on the CPU, but its files are read by decoders,
-and a shader pack is code for the GPU: a spike on 2026-11-20 showed an
-endless loop in one takes reModel down with a lost device
-([shader-packs.md](shader-packs.md), "Safety"). Images are
+and a shader pack is code for the GPU: an endless loop in one takes reModel
+down with a lost device ([shader-packs.md](shader-packs.md), "Safety").
+Images are
 decoded with a cap on size and memory, as the pack budget already
 requires. Meshes and shaders, when they exist, are validated before use
 ([model-interchange.md](model-interchange.md),
@@ -202,17 +184,44 @@ is about a hundred requests to plain file hosting and one to the API.
 Baking is the slow step ([pack-project.md](pack-project.md),
 "Performance").
 
+## Evidence
+
+**E1. 2026-11-20, checked against GitHub.** Read-only and signed out,
+on an unrelated pair of topics that about 1,800 repositories share (25
+requests in all). Nothing was created, so how soon a newly tagged
+repository becomes searchable is still unknown (no test repository is
+planned; the first real pack will answer it).
+
+| Claim | Result |
+|---|---|
+| One search finds repositories with both topics, 100 a page, sorted by stars or update | Confirmed. A result holds topics, default branch, fork and archived flags, licence, stars and dates |
+| Signed-out limits: 10 searches a minute, 60 other calls an hour | Confirmed from the response headers |
+| At most 1,000 results | Confirmed: the eleventh page is refused |
+| Forks | Hidden by default: a fork never lists unless the search asks for forks. Archived repositories do list, so the client drops them |
+| `pack.txt` fetched as a plain file | Confirmed, with no API quota, cached for 5 minutes. The address must use `HEAD`, not a branch name: `main` fails on a repository whose branch is `master` |
+| The newest release in one call | Confirmed. A repository with no release answers "not found". A release file can also be fetched by a fixed address with no API call at all |
+| A `.sha256` file is needed | Wrong: the release API gives a SHA-256 for every file |
+| Topic names like `remodel-topskatr` | Valid by GitHub's rules: lowercase letters, digits and hyphens, up to 50 characters, 20 topics a repository |
+
+**E2. 2026-11-20, the archive prototype** (Python, standard library).
+Fifteen hostile archives, one per unpack rule above and including one
+whose header lies about its size, were each refused with a clear
+message, and a clean one installed. Two builds of one folder gave the
+same bytes and hash, also from a copy with other file times. On a 200
+MB pack: 6.2 s to build, 0.54 s to unpack safely, 0.11 s to hash.
+
 ## Open questions
 
 - **A new dependency.** reModel has no HTTP client. Which one, and is it
   worth it before a second pack exists? Until then, paste-an-address and
   open-a-file can be built with none of the search.
-- **Forks and copies.** A fork does not list (checked). Someone who
+- **Forks and copies.** A fork does not list (E1). Someone who
   wants a variant of a pack to be found must make a repository of their
   own, which is the right outcome. A plain copy does list, and nothing
   tells it from the original but stars and dates.
-- **How soon does a new pack appear** after its topics are set? Not
-  tested: it needs a real repository.
+- **How soon does a new pack appear** after its topics are set?
+  Deferred: no test repository is planned, and the first real pack will
+  answer it.
 - **Other hosts.** The convention is GitHub's. The index file is the
   bridge for anything else.
 - **Signed releases**: later, or never?

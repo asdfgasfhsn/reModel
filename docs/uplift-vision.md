@@ -5,11 +5,19 @@ Model 2 game: its textures, 2D art, models, lighting and the scene itself.
 This page is the vision, the map of capabilities and the order of work.
 The specs are in [uplift/](uplift/README.md).
 
-Status, 2026-11-19: a design, written from the code at `7d8f099`, the
-record of the Top Skater showcase, and a survey of other projects'
-documentation. Nothing described here is built unless it says so. Pass
-one (this page and nine spec pages) covers what unblocks the work now. Pass
+Status, 2026-11-20: a design, written from the code at `7d8f099`, the
+record of the Top Skater showcase, a survey of other projects'
+documentation, and 26 spikes on seven games ("Spikes" below). Nothing
+described here is built into reModel. Spike code sits on two unmerged
+branches and is not for merging as it stands. Pass one (this page, the
+interface page and ten specs) covers what unblocks the work now. Pass
 two (six more specs) covers what uplift could do next.
+
+reModel has moved on since `7d8f099`: linked play arrived in 0.12.0.
+No spec has been checked against it, and 8 of the 37 files the specs
+cite have changed. The first rule in
+[uplift/README.md](uplift/README.md), "How firm each spec is", covers
+that: citations are checked again the day a slice starts.
 
 ## The outcome
 
@@ -19,9 +27,9 @@ reModel ships as one binary. With it and their own ROMs:
   has and where it appears, pulls one out as an ordinary image, edits it
   in their own tools, and sees it in the running game within a second.
 - **An agent**, including a mid-tier model, does the same through a small
-  set of verbs: eight for an art job. It is handed one asset and everything about it, makes or
-  edits the art, and learns from numbers whether it is right. It never
-  builds reModel or plays the game.
+  set of verbs: eight for an art job. It is handed one asset and
+  everything about it, makes or edits the art, and learns from numbers
+  whether it is right. It never builds reModel or plays the game.
 - **A pack lead** sees what is done, what failed and what needs a
   decision, and reviews a revision as before-and-after sheets.
 - **A tool engineer** adds a kind of uplift once, for every game, with
@@ -32,12 +40,13 @@ reModel ships as one binary. With it and their own ROMs:
 A pack is a project: versioned, reviewable, with a status, a source and
 an approval for every asset.
 
-**What pass one does not reach.** The artist's path. Every verb specified
-so far is a command, and the page in the player that would wrap them
-(pick a scene, export an asset to edit, see it reload, build the pack) is
-named but not designed. An independent read of these specs found the
-artist the worst-served role. Item 8 below is the start, and
-[uplift/authoring.md](uplift/authoring.md) designs the page.
+**What pass one does not reach.** The artist's path. Every verb in pass
+one is a command. An independent read of these specs found the artist
+the worst-served role. Item 8 below is the start, and
+[uplift/authoring.md](uplift/authoring.md) designs the page in the
+player that wraps the verbs (pick a scene, export an asset to edit, see
+it reload, build the pack). Its one-second reload is measured as
+reachable; it is scheduled after the agent slices.
 
 ## What the investigation changed
 
@@ -57,7 +66,9 @@ findings change their shape or order.
    colour-free surface key beside every pack key. The work is letting a
    pack name it, and deciding how one image meets several colours. In Top
    Skater 565 keys are 417 artworks, and the repeats cover 49% of drawn
-   pixels.
+   pixels; on `vf2` and `daytona` they cover 70% and 88%. No tint
+   reproduces a colouring. The build makes the copies: exactly, for art
+   near the game's own colours, and as plain copies for a restyle.
 4. **Silent failure cost as much as slowness.** A stray argument restyled
    4,204 rows and overwrote drafts. A compare run reused old frames.
    Checks that find problems exit 0. The interface rules in
@@ -66,7 +77,9 @@ findings change their shape or order.
    entries in its ledger, 30 came from a model and 5,591 from local
    recipes; the rest are typeset text, variants and imports. The batch
    runner was mostly bypassed for hand scripts. The adapter is
-   worth having, and recipes are the workhorse.
+   worth having, and recipes are the workhorse. Tried on ten textures
+   with a real model, the adapter's fixed steps were enough for nine on
+   the first call.
 6. **Image tools belong in the binary**, not in a container. A container
    helps one machine; `remodel img` helps every user.
 7. **The renderer can do more than the showcase's "can't do" list says,
@@ -74,12 +87,21 @@ findings change their shape or order.
    normal maps lit by the game's light, bloom, a depth buffer, temporal
    anti-aliasing and ink outlines exist. But there is no camera or world
    space anywhere: the game hands over geometry already in view space
-   (`crates/model2/src/photo.rs:13-17`). Model identity is on the CPU
-   side only. That makes placing new things
-   in a scene the hard part of the horizon.
+   (`crates/model2/src/photo.rs:13-17`), and in today's code model
+   identity is on the CPU side only. Pass two's answer to both is to
+   name every model and place new things in a model's own space.
 8. **2D has no prior art to copy.** No emulator surveyed replaces composed
    2D screens. reModel's map-space regions are ahead; the next step is
    colour-free patterns and live text fields.
+9. **The catalogue holds far less of a game than it reports.** The
+   scripted runs read 14% to 28% of five games' model data, and one
+   catalogue run misses 40 to 50% of textures while reporting 100%. A
+   full uplift needs tours, a read map to count against, and a crawler.
+10. **Numbers can say a file is sound, not that a restyle is good.** The
+    gates that hold are about the file and its cut-out (`stale` is in
+    the first set but was not run). The style gates cannot tell a good restyle from a bad one,
+    and no gate sees colour drift. Taste stays with people and
+    side-by-side sheets.
 
 ## Map of capabilities
 
@@ -94,7 +116,8 @@ findings change their shape or order.
 | **See** | Draw a scene in seconds; live in the player; overlays | [scenes-and-server](uplift/scenes-and-server.md), [renderer-controls](uplift/renderer-controls.md) | `look-render` on captures |
 | **Check** | Gates with numbers; "done" defined | [quality-gates](uplift/quality-gates.md) | Seam, lint, flicker, each separate |
 | **Keep** | Manifest, status, provenance, history | [pack-project](uplift/pack-project.md) | Loose files |
-| **Share** | Build, layers, archive, discovery | [pack-project](uplift/pack-project.md) | One pack; plans only |
+| **Share** | Build, layers, archive, discovery | [pack-project](uplift/pack-project.md), [distribution](uplift/distribution.md) | One pack; plans only |
+| **Cover** | Tours, read maps, the crawler, gaps | [content-coverage](uplift/content-coverage.md) | A catalogue from scripted runs |
 | **Work** | Locks by resource, worktrees, pinned binary | [agent-environment](uplift/agent-environment.md) | A convention |
 | **Know the scene** | Model per pixel, shared buffers, classes | [scene-understanding](uplift/scene-understanding.md) | On the CPU side only |
 | **Reshape and add** | Replacement models, added elements | [model-interchange](uplift/model-interchange.md), [added-elements](uplift/added-elements.md) | Planned only |
@@ -113,15 +136,15 @@ agents soonest.
 | ★ | **1. Scenes and `scene render`** | Every still check without boot, build or lock | S | Low | Nothing | Five scenes for Top Skater, three for a game on another board |
 | ★ | **2. Lock tool, worktree set-up, pinned binary, `remodel img`** | Ends the queue; no shell image scripts | S | Low | Nothing | `tools/lock` wired into the Makefile |
 | ★ | **3. Interface rules on today's tools, and the three defects** | No silent work; output a model can parse | S to M | Low | Nothing | `--json`, exit codes, refuse to reuse or overwrite |
-| ★ | **22. [Content coverage](uplift/content-coverage.md)**: tours, ROM read maps, `coverage`; then the tour recorder, pokes and the crawler | A catalogue that holds the whole game, and a number for how much it holds | S, then M to L | Medium: the read-map figure is unknown | Nothing; cheats for pokes | The read-map spike on Top Skater's three runs |
-| ★ | **4. Asset gates and `pack check`** | "Done" is a number | M | Medium: limits need calibrating | 1 for scene coverage | Run the gates over the showcase's images |
-| | **5. Artwork identity in packs** | A pack replaces "the wall base" | M | Medium | Nothing | `art_` images, fixed and baked, with the build making the colour copies |
+| ★ | **22. [Content coverage](uplift/content-coverage.md)**: tours, ROM read maps, `coverage`; then the tour recorder, pokes and the crawler | A catalogue that holds the whole game, and a number for how much it holds | S, then M to L | Medium: the crawler covers menus, not play | Nothing; cheats for pokes | Tours and `coverage` against the read map |
+| ★ | **4. Asset gates and `pack check`** | "Done" is a number | M | Medium: limits were set and reported on the same images | 1 for scene coverage | The first set of six gates, then limits checked on a second pack |
+| | **5. Artwork identity in packs** | A pack replaces "the wall base" | M | Medium | Nothing | Each key's colour ramp in the catalogue; `art_` images, with the build baking or copying the colour copies |
 | | **6. Project manifest and provenance** | Work survives hand-over | M | Low | 5 for names | Import the showcase workspace |
 | | **7. Context bundles** | An agent's whole briefing in one call | M | Low | 1, 5 | `bundle.json`, original, mask, two crops |
-| | **8. Player: `--scene`, pack watch, then a pack page** | The artist's loop, and the first step away from the terminal | S to M, then L | Low, then unknown | 1 | Reload on change, as the look does |
+| | **8. Player: `--scene`, pack watch, then a pack page** | The artist's loop, and the first step away from the terminal | S to M, then L | Low, then unknown | 1 | Reload on change by swapping one image, as the look does |
 | | **9. 2D: patterns, anchors, clearing** | HUDs and logos without hand patches | M | Medium | 1 for capturing from scenes | Pattern keys; redo the showcase's 13 regions |
 | | **10. Draw rules and overlays** | Colours as painted; see what a tag did | M | Low | 1 | `selflit`; `--overlay miss` |
-| | **11. Generation adapter** | Size, alpha, seams guaranteed | M | Low | 4, 7 | Normalise and classify around `studio draft` |
+| | **11. Generation adapter** | Size, alpha, seams and colour guaranteed | M | Low | 4, 7 | Normalise, the fit test and the outcome classes around `studio draft` |
 | | **12. Text fields** | Live scores and clocks in a pack font; Japanese HUDs | L | Medium to high | 9 | The score in Top Skater |
 | | **13. Server and clips** | Motion checks; many agents on one GPU | M to L | Medium: GPU sharing untested | 1 | MCP over a local socket, one verb |
 | | **14. Layers, archive, `pack doctor`** | Sharing | M | Low to medium | 6 | Two packs layered in the CLI |
@@ -139,7 +162,7 @@ agents soonest.
   as the cheats work allows. The asset gates need
   nothing but scenes and can start at once; identity comes before the
   manifest, which names assets by it. Item 5 ships `fixed` and `baked`;
-  `follow` was spiked and is now only a fallback for unseen colours.
+  `follow` is only a fallback for colours nobody has seen.
 - **Slice C: the loop.** Items 7, 8 and 10. The bundle for agents, the
   live player for the artist, overlays for both.
 - **Slice D: the hard art.** Items 9 and 11, then 12.
@@ -169,10 +192,10 @@ touch the geometrizer, the renderer or identity are also run on:
 | Gunblade NY (`gunblade`) | The shared 2B geometry program, which 6 of the 14 2B games use. A rail shooter: city scenery and many enemies |
 | Fighting Vipers (`fvipers`) | The earlier program, which 3 games use. Its second DSP writes parts of the display list, the hardest case for naming models |
 
-The other two of 2B's four programs were tried the same day on
-`vstriker` and `lastbrnx`, for picking, the read map, reshaping and
-colour variants only. `zerogun` and `pltkids` have no native geometry
-code, so picking and reshaping do not reach them at all.
+The other two of 2B's four programs are covered by `vstriker` and
+`lastbrnx`, for picking, the read map, reshaping and colour variants
+only. `zerogun` and `pltkids` have no native geometry code, so picking
+and reshaping do not reach them at all.
 
 ### What it should cost an agent
 
@@ -186,56 +209,63 @@ code, so picking and reshaping do not reach them at all.
 
 ## Pass two: what uplift could do next
 
-Six specs, less grounded than pass one: most costs are unmeasured, and
-each leads with spikes. In the order they depend on each other:
+Six specs. Each has had its riskiest assumption tried; the "Where it
+stands" column says what came of it. In the order they depend on each
+other:
 
-| # | Spec | What it gives | Needs | Generic? | First proof |
+| # | Spec | What it gives | Needs | Generic? | Where it stands |
 |---|---|---|---|---|---|
-| 16 | [Scene understanding](uplift/scene-understanding.md) | A model's identity per pixel; one stated set of buffers; exact positions and normals from each polygon's plane; camera movement | The ID pass (0.7 ms at 1080p, documented) | Planes, flags and normals for every game; models and movement need a native geometrizer | Pick a model under the cursor |
-| 17 | [Model interchange](uplift/model-interchange.md) | Reshaped models (spiked); any glTF mesh (spiked in both renderers) | 16 | Rigid parts; not geometry rewritten each frame | Done for reshaping: unchanged data gives the same frame |
-| 18 | [Lighting](uplift/lighting.md) | Real transparency, ambient occlusion, shadows from the game's light | 16 | First two for every game | Blended stipple; occlusion timed on three games |
-| 19 | [Added elements](uplift/added-elements.md) | Grass, props, decals, weather | 16, 17 | Native geometrizer only | One prop held still through a moving clip |
-| 20 | [Authoring](uplift/authoring.md) | The Studio page: the path with no terminal | Slices A and C, 16 for picking | Yes | Scene grid, pick, edit, reload |
-| 21 | [Shader packs](uplift/shader-packs.md) | Shaders for any game | Nothing | Yes: the one pack kind that is not per game | The built-in CRT pass as a pack, identical |
+| 16 | [Scene understanding](uplift/scene-understanding.md) | A model's identity per pixel; one stated set of buffers; exact positions and normals from each polygon's plane; camera movement | The ID pass (0.7 ms at 1080p, documented) | Planes, flags and normals for every game; models and movement need a native geometrizer | Works in software on seven games across all four boards, and on the GPU on the two tried. Grouping parts and poses into things is not done |
+| 17 | [Model interchange](uplift/model-interchange.md) | Reshaped models; any mesh with its own normals, UVs and image | 16 | Rigid parts; not geometry rewritten each frame | Both tiers draw, in both renderers. No glTF loader yet |
+| 18 | [Lighting](uplift/lighting.md) | Real transparency; shadows from the game's light | 16 | Transparency for every game | Transparency untried. Occlusion set aside: a player would not see it. Shadows not shippable |
+| 19 | [Added elements](uplift/added-elements.md) | Grass, props, decals, weather | 16, 17 | Native geometrizer only | A prop and 2,000 tufts stay put and sort right. Scatter needs GPU instancing |
+| 20 | [Authoring](uplift/authoring.md) | The Studio page: the path with no terminal | Slices A and C, 16 for picking | Yes | Timings fit one second. The player has no reload today |
+| 21 | [Shader packs](uplift/shader-packs.md) | Shaders for any game | Nothing | Yes: the one pack kind that is not per game | A user's shader runs and an identity pass is byte-exact. An endless loop cannot be caught |
 
-Three findings carry most of the weight.
+Four findings carry most of the weight.
 
 - **Things stay put by living in a model's own space.** An added prop or
   a tuft of grass is placed in the coordinates of a model the game draws,
   and rides that object's matrix. No camera or world space has to be
   recovered. That removes the hardest dependency this page listed after
-  pass one.
+  pass one. Tried: a prop and 2,000 tufts held to under a pixel.
 - **Position and normal come from each polygon's plane, not from
   depth.** Depth is unreliable on the large ground polygons the games
-  draw in their own order, which is exactly where occlusion, shadows and
-  grass matter. A plane per polygon is exact, and works for every game.
+  draw in their own order, which is exactly where shadows and grass
+  matter. A plane per polygon is exact, and works for every game.
 - **New geometry never enters the machine.** The state hash covers the
   geometrizer's output, so replacement models and added elements are
-  drawn from a second pass the machine never sees. The spike found the
-  cheap way to make that pass: re-run the game's own geometry code with
-  a model's data swapped, as smooth motion already re-runs it. A free
-  mesh with its own textures still has to be built in the renderer.
+  drawn from a second pass the machine never sees. There are two ways
+  to make that pass. The cheap one re-runs the game's own geometry code
+  with a model's data swapped, as smooth motion already re-runs it; it
+  reshapes a model but cannot give it new textures. The other builds a
+  free mesh in the renderer. Both leave state hashes unchanged.
 - **New lighting takes light away; it never adds on top.** Many surfaces
-  are already at full brightness, so occlusion and shadows multiply.
-  Lights a pack adds, and a different time of day, collide with that and
-  are left undesigned.
+  are already at full brightness, so shadows multiply. Lights a pack
+  adds, and a different time of day, collide with that and are left
+  undesigned.
 
-The main risk is what the game culls. It does not send objects off
-screen or faces turned from the camera, so a shadow map made from one
-frame has holes, and anything added to a model disappears when the game
-culls that model at the screen's edge. Only spikes will say how much
-either shows.
+The main risk was what the game culls: it does not send objects off
+screen or faces turned from the camera. For shadows that part is
+mostly solved, by collecting casters before the renderer culls them;
+what the game never listed stays lost. What keeps shadows from
+shipping is flicker, self-shadowing, a pale shadow term and the need
+for cascades ([lighting](uplift/lighting.md)). For added elements it stands:
+anything anchored to a model disappears when the game culls that model
+at the screen's edge ([added-elements](uplift/added-elements.md), "When
+the host is not drawn").
 
 **Shader packs** were added by the user on 2026-11-19, with RetroArch's
 shader system as the inspiration, not something to import. reModel
 already runs passes of this kind (CRT, bloom), and can offer a shader
 real depth and the game's lighting layer, which no emulator surveyed
-does. The spec proposes reModel's own shader packs in WGSL, proven by
-moving the built-in CRT pass into one and getting an identical picture.
+does. The spec proposes reModel's own shader packs in WGSL. A shader
+pack is code for the GPU, and the listing says so.
 
 Where pass two fits the order of work: shader packs depend on nothing
 and can be done at any time. Scene understanding's first step (item 16)
-can start alongside slice C. The rest follow it.
+can start alongside slice C. The rest follow it, with blended stipple
+the only lighting item in the first set.
 
 Ray tracing in the browser should not be designed for: it does not exist
 there yet.
@@ -270,6 +300,14 @@ Taken by the user on 2026-11-19:
 | Who judges taste? | Nobody. The tools make comparing cheap and let packs sit side by side; players choose |
 | What crosses games beyond shader packs? | Left open until more than one game has a pack |
 
+Taken on 2026-11-20:
+
+| Question | Decision |
+|---|---|
+| Is Model 2B covered? | Two 2B games join the spikes: `gunblade` and `fvipers` |
+| May game-derived textures go to an image model for a spike? | Yes, for the runs recorded in [generation](uplift/generation.md). Any further run is asked for again |
+| A public test repository for the GitHub convention? | Not now. The first real pack will show how soon a tagged repository is found |
+
 The defects: `studio compare` reusing old frames without `--force`
 (`crates/cli/src/studio.rs:1834`); generated drafts not inheriting a
 cut-out's alpha (inferred from `finish_draft`, `studio.rs:1761`; not
@@ -292,6 +330,13 @@ Still open, with a recommendation:
    handful per game where someone has done the work, a project's own
    `scenes.txt` always taking precedence, and `scene verify` in the
    benchmark run to catch drift.
+3. **Class tables in the repository.** What a model is (ground, sky, a
+   character, a HUD part) would be recorded per game by the model's
+   name: a content hash, or an address for models built in RAM
+   ([scene-understanding](uplift/scene-understanding.md)). A hash of
+   ROM content is a fact about the ROM, as a texture key is.
+   Recommendation: yes, as per-game data,
+   small and optional, like the scene lists.
 
 ## Spikes
 
@@ -329,13 +374,15 @@ spec named; scratch output stays out of the repository.
 
 Status of each spec, by the ladder in [uplift/README.md](uplift/README.md):
 the interface page, agent-environment, pack-project, 2d-cells and
-renderer-controls are grounded; every other spec is spiked in part.
-Generation is spiked offline and on ten real calls, and distribution
-without a real repository.
+renderer-controls are grounded; every other spec is spiked in part, and
+holds what was tried in its own "Evidence" section. Generation is
+spiked offline and on eleven real calls, and distribution without a
+real repository.
 
 Spike code is on two unmerged branches, `uplift-spikes` and
 `uplift-spikes-b`, about 7,800 lines in all. None of it is for merging
-as it stands.
+as it stands. Each slice rebuilds what it needs from the spec, with
+tests.
 
 ## How this was made
 
@@ -348,8 +395,10 @@ as it stands.
   and three tasks. Their findings are folded in;
   [uplift/interface.md](uplift/interface.md) exists because of the last.
 - **The showcase record**: 14 agents' reports and timelines.
-- **One measurement**: the scene render time above. Every other timing is
-  quoted from reModel's docs and marked so.
+- **Spikes**: the 26 rows above, run by agents on a mid-tier model
+  from written briefs, each with a report kept out of the repository.
+  Timings not from a spike are quoted from reModel's docs and marked
+  so.
 - **Other projects**: documentation, wikis and write-ups only; no
   emulator source. Several pages were read through summaries or in part,
   and the specs mark those claims unverified.
@@ -365,6 +414,16 @@ as it stands.
   that new geometry could not go where two specs put it; both designs
   were changed. Its cost figures are quoted from
   reModel's docs or are other engines' rough numbers, and are marked so.
-- **Not done**: no thresholds were calibrated, no tint model was tried,
-  nothing was tested on a second game, and none of pass two's spikes was
-  run.
+- **How far the spikes can be trusted.** Most rest on a few frames and
+  one model per game, and their numbers were reported by the agents
+  that ran them. The pictures behind the mesh, scatter, lighting, gate
+  and generation results were looked at by the orchestrating session;
+  the tables were not re-derived. Gate limits were set on the same images they are reported on, and
+  the bake rule's bands on synthetic art.
+- **Not done**: `make check` was not run, since nothing but Markdown
+  changed. No GPU version of shadows, no glTF loader, no blended
+  stipple, no grouping of parts into things, nothing on `zerogun` or
+  `pltkids`, and no pack, scene or clip gates. A state reached by chained loads
+  hashes differently from a straight run, cause not found
+  ([content-coverage](uplift/content-coverage.md)). Linked play was
+  not considered.

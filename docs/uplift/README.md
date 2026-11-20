@@ -1,7 +1,8 @@
 # Uplift specs: shared ground
 
 These specs describe how reModel could let people and agents restyle and
-improve a game's look. None of it is built. The vision, the roadmap and the
+improve a game's look. None of it is built into reModel; parts were tried
+in spikes, on branches that are not for merging. The vision, the roadmap and the
 order of work are in [../uplift-vision.md](../uplift-vision.md); what exists
 today is in [../uplift-studio.md](../uplift-studio.md),
 [../texture-packs.md](../texture-packs.md) and
@@ -32,8 +33,9 @@ for interfaces, and the template. Read it before any one spec.
 
 The first ten specs after the interface page are pass one: what
 unblocks the work now. The last six are pass two: what uplift could do
-next. Pass two is less grounded: most of its costs are unmeasured and
-each spec leads with spikes.
+next. Eleven of the specs have had something tried, and say what in
+their own "Evidence" section.
+
 
 ## Words
 
@@ -154,16 +156,17 @@ These pages were written ahead of the code, and will go stale. Four
 rules keep that from mattering.
 
 1. **Citations are evidence, not upkeep.** Each `path:line` was true at
-   commit `7d8f099`. Nobody maintains them. The day a slice starts, its
-   spec's "Observed" list is checked again against the code, by an
-   agent, before anything is built on it.
+   commit `7d8f099`. Nobody maintains them, and reModel has already
+   moved on (linked play, 0.12.0). The day a slice starts, its spec's
+   "Observed" list is checked again against the code, by an agent,
+   before anything is built on it.
 2. **A spec carries a status**, and nothing is built on a sketch:
 
    | Status | Means |
    |---|---|
    | Sketch | Reasoned from code and documents. Its risky assumptions are untried |
    | Grounded | Its claims about today's code were checked by a second reader |
-   | Spiked | Its riskiest assumption was tried in code, and the result is written in the spec with its date and commit |
+   | Spiked | Its riskiest assumption was tried in code, and the result is in the spec's "Evidence" section with its date and branch |
    | Built | Gone: the spec is deleted and what is true moves to the user documentation |
 
 3. **Only the next slice is a commitment.** Later specs are a menu, and
@@ -180,6 +183,12 @@ Where each spec stands is in the vision's table of spikes
 Each spec has: the problem (with evidence), the design, interfaces (CLI,
 files, agent API), data formats, the roles walked through it, how to test
 it, performance, open questions, and an MVP slice of a few days' work.
+
+A spec that has been spiked also has an "Evidence" section before its
+open questions: one numbered entry (E1, E2, ...) per spike, with its
+date, what was run, the results, and what was not tested. The design
+states the outcome and points to the entry by its tag. The design is
+what to build; the evidence is why.
 
 Claims about today's behaviour cite code as `path:line` at commit
 `7d8f099`, or a run. **Observed** means read in the code or measured;

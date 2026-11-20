@@ -1,7 +1,8 @@
 # Quality gates
 
-Shared words, roles and rules: [README.md](README.md). Nothing here is
-built.
+Shared words, roles and rules: [README.md](README.md). Nothing is built
+into reModel; what was tried is in "Evidence" (spike code is on
+unmerged branches, not for merging as it stands).
 
 ## The problem
 
@@ -44,63 +45,29 @@ A `review` item is settled when an approver accepts it with a reason.
 
 ### Asset gates: no ROM, no GPU, milliseconds each
 
+The first set is `file`, `alpha` and `stale` as errors, and `seam`,
+`changed` (textures) and `noise` as warnings, with the limits below
+(E1). The style gates (`kept`, `palette`, `luma-order` and a halo
+test) cannot judge a restyle. They may suit a faithful pack, which
+nothing here tests: a project states whether it is a restyle or a
+faithful pack, and they apply only to the second. `category` is dropped
+(E1).
+
 | Gate | Passes when | Level |
 |---|---|---|
-| `file` | It decodes, has the original's aspect, a whole-number scale, and is within the size limit | error |
-| `alpha` | Its cut-out at 0.5 agrees with the original's (overlap of at least 98%), and it has no part-transparent pixels where the original had none | error |
-| `seam` | Each repeated or mirrored axis is under the seam limit; today's check, plus ink drawn on a wrapped edge | error |
+| `file` | It decodes, has the original's aspect, a whole-number scale (up to 8), and is within the size limit (4 MB). Run on the finished image | error |
+| `alpha` | Its cut-out at 0.5 agrees with the original's (overlap of at least 98%), and it has no part-transparent pixels where the original had none (over 0.1% of pixels warns). For tiles the cut-out check is a warning | error (textures) |
+| `seam` | Each repeated or mirrored axis is under the seam limit (12 levels across the edge). Ink drawn on a wrapped edge cannot be a gate for cel art | warn |
 | `stale` | The file's hash is the one that was approved | error |
-| `changed` | Inside the visible-texel mask, enough of the image differs from the original | warn |
-| `kept` | Its structure is still related to the original's (a similarity band, so UV layout and lettering positions survive) | warn |
-| `palette` | Most pixels are near the style's palette for its category (CIEDE2000) | warn |
-| `luma-order` | Dark stays dark: brightness correlates with the original's, so the game's lighting still reads | warn |
-| `category` | Its *original* is not an outlier among its category's originals (an untested idea; not in the first set) | warn |
+| `changed` | Inside the visible-texel mask, enough of the image differs from the original (under 5% differing fails). Textures only | warn |
+| `noise` | Noise measure at most 16 | warn |
+| `kept` | Its structure is still related to the original's (a similarity band, so UV layout and lettering positions survive). Faithful packs only | warn |
+| `palette` | Most pixels are near the style's palette for its category (CIEDE2000). Faithful packs only | warn |
+| `luma-order` | Dark stays dark: brightness correlates with the original's, so the game's lighting still reads. Faithful packs only | warn |
+| `category` | Its *original* is not an outlier among its category's originals. Dropped: it did not separate good from bad (E1) | none |
 | `text` | Any readable text or logo found is on the project's allow-list | review |
 
-**Calibrated on 2026-11-20** against the showcase (offline, in Python):
-6,273 pairs of an approved image and its original (303 textures, 5,970
-tiles), an older version of the pack, 30 raw image-model outputs, and
-defects injected into approved images. No rejected images survive: the
-project's drafts are the same files as the pack.
-
-| Gate | First limit | Level | Wrongly flags, of approved | Catches |
-|---|---|---|---|---|
-| `file` | Aspect, a whole scale up to 8, 4 MB | error | 0% | Every wrong aspect and non-whole scale |
-| `alpha`, textures | Over 2% of the cut-out disagrees | error | 2.3%, of which 4 are real | Every lost alpha, whole or a quarter |
-| `alpha`, tiles | The same | warn | 14.6% | Every whole loss, 90% of quarter losses |
-| `alpha`, part-transparent | Over 0.1% of pixels | warn | 0.7% | Every soft alpha |
-| `seam` | 12 levels across the edge | warn | 4.2% | 31% of a 24-level step; none of a 6-level one |
-| `changed`, textures | Under 5% differs | warn | 2.3% | 90% of unchanged copies |
-| `noise` (new) | Over 16 | warn | 1.3% | Heavy noise only |
-
-- **`alpha` earns its place at once.** It found four textures in the
-  approved pack that the image model returned opaque. Three are plain
-  defects by eye (hair, cloth and wool with their cut-out filled in);
-  the fourth, a ticker, may be meant. The older pack still had their
-  alpha.
-- **`seam` is weak, and a warning at most.** It misses small steps, and
-  most of what it flags in the pack is a seam the original has too. Ink
-  on a wrapped edge cannot be a gate for cel art, which has it on
-  purpose (13% to 23% wrongly flagged).
-- **Dropped for restyled art:** `kept`, `luma-order`, `palette` and a
-  halo test (26% to 65% wrongly flagged), and `changed` on tiles. None
-  separates a good restyle from a bad one. They may suit a faithful
-  pack; nothing here tests that.
-- **`category` is dropped.** It scored the purple-sand originals as
-  ordinary, the one case it was guessed for, and flagged 5% to 10% of
-  originals.
-- **Nothing catches a small offset or a blur**, at any limit.
-- **`file` must run on the finished image.** 26 of the 30 raw
-  image-model outputs fail it before normalising.
-- Cost: 0.7 ms an image at the median, 33 ms at the 99th percentile;
-  the whole pack in about 35 s on one core.
-- Limits were set on the same images they are reported on. `stale`,
-  `text` and the pack, scene and clip gates were not run.
-
-So the first set is `file`, `alpha` and `stale` as errors, and `seam`,
-`changed` (textures) and `noise` as warnings. A project states whether
-it is a restyle or a faithful pack, and the style gates apply only to
-the second.
+Nothing catches a small offset or a blur at any limit (E1).
 
 ### Pack gates
 
@@ -132,13 +99,13 @@ the second.
 | Showcase problem | Gate | Confidence |
 |---|---|---|
 | Opaque draft for a cut-out | `alpha` | High |
-| Ink seam on the ground | `seam` | Low after the spike: ink on an edge is normal in cel art, and the file was not there to test |
+| Ink seam on the ground | `seam` | Low (E1): ink on an edge is normal in cel art, and the file was not there to test |
 | Skaters that barely changed | `changed` | High |
 | Over the browser budget | `budget` | High (lint already notes it) |
 | 9,564 replacement changes | `flicker` | High |
 | Assets missing past frame 6212 | `coverage` on later scenes | High, given the scenes exist |
 | Halftone grid at a distance | `distance`, `steady` | Medium: needs calibration |
-| Purple sand floor | None | The `category` guess was tested and failed |
+| Purple sand floor | None | The `category` guess was tested and failed (E1) |
 | Stray outlines | None | These were renderer defects, fixed in the renderer |
 
 Not everything has a number. Whether a scene looks right is the pack lead's
@@ -149,7 +116,8 @@ taste and not about defects.
 
 Defaults ship with reModel. A project overrides one in `gates.txt` with a
 reason, and the report shows the override. The first defaults come from
-measuring the showcase's approved assets: see the MVP.
+measuring the showcase's approved assets (E1), and are re-set once a
+second pack exists to check them on.
 
 ### What "done" means
 
@@ -178,8 +146,8 @@ and `report.md` (for people: totals, failures first, the sheets).
 One result:
 
 ```json
-{"asset":"wall-base","gate":"seam","value":3.1,"limit":2.5,
- "verdict":"error","axis":"x",
+{"asset":"wall-base","gate":"seam","value":14.2,"limit":12,
+ "verdict":"warn","axis":"x",
  "fix":"set seamless for this asset in recipes.txt, or repaint the left and right edges",
  "sheet":"cache/sheets/wall-base-seam.png"}
 ```
@@ -217,10 +185,50 @@ files) in under a minute on all cores; one asset in under 100 ms. Scene
 gates cost a scene render each. Clip gates run the game and are the slow
 part, so they run on request and before a release, not on every edit.
 
+## Evidence
+
+**E1. 2026-11-20, calibration** against the showcase (offline, in
+Python): 6,273 pairs of an approved image and its original (303
+textures, 5,970 tiles), an older version of the pack, 30 raw
+image-model outputs, and defects injected into approved images. No
+rejected images survive: the project's drafts are the same files as the
+pack.
+
+| Gate | First limit | Level | Wrongly flags, of approved | Catches |
+|---|---|---|---|---|
+| `file` | Aspect, a whole scale up to 8, 4 MB | error | 0% | Every wrong aspect and non-whole scale |
+| `alpha`, textures | Over 2% of the cut-out disagrees | error | 2.3%, of which 4 are real | Every lost alpha, whole or a quarter |
+| `alpha`, tiles | The same | warn | 14.6% | Every whole loss, 90% of quarter losses |
+| `alpha`, part-transparent | Over 0.1% of pixels | warn | 0.7% | Every soft alpha |
+| `seam` | 12 levels across the edge | warn | 4.2% | 31% of a 24-level step; none of a 6-level one |
+| `changed`, textures | Under 5% differs | warn | 2.3% | 90% of unchanged copies |
+| `noise` (new) | Over 16 | warn | 1.3% | Heavy noise only |
+
+- **Observed:** `alpha` found four textures in the approved pack that
+  the image model returned opaque. Three are plain defects by eye (hair,
+  cloth and wool with their cut-out filled in); the fourth, a ticker,
+  may be meant. The older pack still had their alpha.
+- **Observed:** `seam` misses small steps, and most of what it flags in
+  the pack is a seam the original has too. Ink on a wrapped edge is on
+  purpose in cel art (13% to 23% wrongly flagged).
+- **Observed:** `kept`, `luma-order`, `palette` and a halo test were
+  wrongly flagged on 26% to 65% of approved restyled art, and `changed`
+  on tiles; none separates a good restyle from a bad one. Whether they
+  suit a faithful pack was not tested.
+- **Observed:** `category` scored the purple-sand originals as ordinary,
+  the one case it was guessed for, and flagged 5% to 10% of originals.
+- **Observed:** `file` must run on the finished image: 26 of the 30 raw
+  image-model outputs fail it before normalising.
+- **Observed:** cost 0.7 ms an image at the median, 33 ms at the 99th
+  percentile; the whole pack in about 35 s on one core.
+- **Thin:** limits were set on the same images they are reported on.
+  `stale`, `text` and the pack, scene and clip gates were not run.
+
 ## Open questions
 
-- **Limits.** All of them need calibrating. `distance`, `steady`, `kept`
-  and `category` are untested ideas.
+- **Limits.** The scene, clip and pack gates need calibrating, and the
+  first asset limits need a second pack to check them on. `distance`,
+  `steady`, `kept` and `category` are untested ideas.
 - **Text and logo detection** would need an outside tool. Nothing was
   found on its accuracy at 32 to 64 pixels. It can only flag, never pass.
 - **Learned measures** such as LPIPS need model weights and are left out.
@@ -236,5 +244,5 @@ part, so they run on request and before a release, not on every edit.
 2. `pack check --json` adding `lint`, `budget`, `known`, `selected` and
    scene `coverage`, with `gates.tsv` and `report.md`.
 3. `pack-flicker` exits 1 over a limit.
-4. Limits from the spike of 2026-11-20, re-set once a second pack
-   exists to check them on.
+4. Limits from the calibration (E1), re-set once a second pack exists
+   to check them on.

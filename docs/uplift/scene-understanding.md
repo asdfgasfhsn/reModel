@@ -1,8 +1,10 @@
 # Scene understanding
 
 Shared words, roles and rules: [README.md](README.md). Nothing here is
-built. This spec underlies the other pass-two specs: models, lighting,
-added elements, authoring and shader packs all draw on what it provides.
+built into reModel; what was tried is in "Evidence" (spike code is on
+unmerged branches, not for merging as it stands). This spec underlies
+the other pass-two specs: models, lighting, added elements, authoring
+and shader packs all draw on what it provides.
 
 ## The problem
 
@@ -66,108 +68,48 @@ geometrizer and the renderer already produce.
 
 - **Model key**: a 16-digit hash of the model's polygon data, written
   `model:<hash>` and `mdl_<hash>` in a file name, with the ROM address
-  kept beside it. The hash survives a model being stored at two addresses;
-  the address is what the game's manifest tables use. Today the catalogue
-  keys an object by its address alone
+  kept beside it. A model has two names and a rule may use either. The
+  **content hash** names ROM models: it survives a model being stored at
+  two addresses (`gunblade` and `vstriker` do; a rule that names a model
+  by address reaches one `vstriker` player, so it must name the hash;
+  E2, E4). The **address** names RAM models, whose content changes every
+  pose: a model in polygon RAM, which the game can rewrite, is named by
+  its address, hashed again when that RAM changes, and marked
+  `rewritten` if it changes while on screen. The
+  address is also what the game's manifest tables use. Today the
+  catalogue keys an object by its address alone
   (`crates/model2/src/catalogue.rs:379-381`); changing that is part of
-  this work. A model in polygon RAM, which the game can rewrite, is hashed
-  again when that RAM changes and is marked `rewritten` if it does so
-  while on screen. Polygons the game sends directly have no model.
+  this work. Polygons the game sends directly have no model.
+- **Recording it.** The native geometrizers hash the polygon words each
+  object reads and pass the key beside the existing lighting side
+  channel (four hooks; Model 2B took the same four as the other boards,
+E2). The key is
+  recorded when a capture is made, because a capture holds the finished
+  stream and video memory and the polygon data is not in it: the
+  per-object part is a few hundred bytes a frame (E1). Keys are stable
+  between runs and as the camera moves, and recording changes no state
+  hash (E1 to E4).
 - **In the ID target.** Each polygon's model, window and flags (checker,
-  shadow, sky, drawn in the game's order) join the texture ID. They ride
-  in the buffer that already carries per-polygon ID words, since a new
-  storage buffer is not free.
+  shadow, sky, drawn in the game's order) join the texture ID. The look's
+  ID target has spare bits in its tag: the object block's number goes
+  there, and the CPU maps a block to its model, so no new target or
+  storage buffer is needed. The GPU's answer agrees with the software
+  renderer's on 95.8% to 99.8% of sampled pixels on the two games
+  tried, Top Skater and `fvipers`, the misses being
+  where the two resolve overlap differently (E3). Reading the whole
+  target back is slow, so a click reads one pixel and `scene what` reads
+  at the game's resolution (E3). The ID pass runs only with a look
+  active today; picking needs it on its own.
 - **In the tools.** `scene what` answers with the model as well as the
   artwork. The `ids` overlay can colour by model. A look tag or a draw
   rule can name a model. An artwork shared by a sandal sole and a banner
   can be split by which model it is on
   ([asset-identity.md](asset-identity.md)).
-
-**Spiked on 2026-11-19** (Top Skater, software renderer; branch
-`uplift-spikes`, about 190 lines):
-
-- **It works.** The native 2C geometrizer hashes the polygon words each
-  object reads and passes the key beside the existing lighting side
-  channel. In 21 frames every 3D pixel had a model key. A race frame has
-  20 to 71 models.
-- **Draw-only holds.** The state hash over a 6,212-frame run is the same
-  with and without it, and the key costs under 0.02 s over that run.
-- **Keys are stable**: two runs gave identical output, and a model keeps
-  its key as the camera moves.
-- **A model is a part, not a thing.** The skater is about ten models
-  (limbs, board), and the ground a few large ones. Picking "the skater"
-  needs a step that groups models, which this spec did not have. Classes
-  and the game's manifest are where groups would live.
-- **Today's captures cannot answer.** A capture holds the finished
-  stream and video memory, with no side channel. Identity must be
-  recorded when the capture is made, because the polygon data is not in
-  it. Recording only the per-object part is a few hundred bytes a frame.
-- **The hash added nothing over the address** in this game: 129
-  addresses, 129 keys. Its value (the same model at two addresses, ROM
-  revisions, models in RAM) did not arise.
-- **Repeated on `vf2` (2A) and `daytona` (original Model 2)** with no
-  new hooks: both run the same native code in its fixed-function mode.
-  Every 3D pixel had a model key on both; keys were stable between runs;
-  state hashes were unchanged. A fighter is 15 to 20 parts and a car 3
-  to 5.
-- **Models in polygon RAM are real, and a hash cannot name them.**
-  `vf2` draws two per frame, at fixed addresses, and rewrites them every
-  pose: 17 and 14 different hashes over 21 frames. `daytona` draws up to
-  five. Such a model must be named by its address and marked
-  `rewritten`, as this section already proposed; the hash is useless for
-  it.
-- **Repeated on `gunblade` and `fvipers` (Model 2B)** on 2026-11-20.
-  2B runs different native code, and it took the same four hooks there,
-  43 lines. Every 3D pixel had a model key; keys were stable between
-  runs; state hashes were unchanged.
-  - `fvipers`' second DSP writes parts of the display list. Those parts
-    are ordinary object commands, so they name models like any other.
-  - `fvipers` has the same two rewritten RAM models as `vf2`, at the
-    same addresses.
-  - **A `gunblade` enemy changes model address from frame to frame.**
-    The game animates it by drawing a different model per pose, so "this
-    enemy" is a set of models, and grouping must cover poses as well as
-    parts. An enemy is 8 to 10 models at a time; an explosion is hundreds
-    of tiny ones.
-  - On `gunblade` 15 hashes each appear at two or more addresses: the
-    ROM holds the same model twice. Address names a model; the hash says
-    two are the same.
-- **On the GPU it needed no new target** (2026-11-20, about 40 lines).
-  The look's ID target has spare bits in its tag; the object block's
-  number went there, and the CPU maps a block to its model. Against the
-  software result, every 4th pixel on 3 frames each:
-
-  | | Game's resolution | 1080p |
-  |---|---|---|
-  | Top Skater | 99.3% to 99.6% | 99.4% to 99.8% |
-  | `fvipers` | 95.8% to 98.5% | 98.1% to 99.3% |
-
-  The misses are where the two renderers resolve overlap differently
-  (the game's draw order against a depth test), mostly at edges between
-  neighbouring models. Reading the whole target back costs 5 to 7 ms at
-  the game's resolution and 55 to 71 ms at 1080p, so a click reads one
-  pixel and `scene what` reads at the game's resolution.
-- **The ID pass runs only with a look active** today. Picking needs it
-  on its own.
-- **Repeated on `vstriker` and `lastbrnx`** (2026-11-20), the other two
-  of 2B's four geometry programs, with no change to the hooks. Keys were
-  stable and state hashes unchanged on both.
-  - **`lastbrnx` is the first game below 100%**: 99.1% of 3D pixels had
-    a model key. It sends some polygons directly, with no model (22
-    blocks in 9 of 19 frames), and draws 32 to 71 RAM models a frame.
-    Its command 0x1B, the one the native code lacks, was never sent.
-  - **`vstriker` keeps identical copies of a model at up to 7
-    addresses**, and its two teams are the same models and the same
-    texture sheet with a different palette entry. A rule that names a
-    model by address reaches one player; it must name the content hash.
-  - A `vstriker` footballer is about 17 parts and changes models with
-    its pose, as `gunblade`'s enemies do (inferred from a quarter of
-    keys changing each frame). A `lastbrnx` fighter is about 20 parts
-    posed by matrices: 95% of its models persist from frame to frame.
-- So a model has two names and a rule may use either: the **content
-  hash** for ROM models (it survives copies, and is what `vstriker`
-  needs), and the **address** for RAM models (their content changes
-  every pose).
+- **A model is a part, not a thing.** A skater, a fighter, a footballer
+  or an enemy is many models, and some change model with each pose, so
+  "this enemy" is a set. Picking "the skater" needs a step that groups
+  models, across parts and across poses. Classes and the game's manifest
+  are where groups live (step 5).
 
 ### 2. Instances that persist
 
@@ -235,8 +177,9 @@ Three levels, cheapest first. Most features need only the first.
   two frames: the camera's. The matrices of matched objects give it by
   agreement among them, generically. The games also shift the window's
   centre from frame to frame (the camera bob described under "Smooth
-  motion" in `docs/hw/geometrizer.md`), which has to be added in. That is enough for effects that live
-  in the air (rain, dust) to move correctly as the camera does.
+  motion" in `docs/hw/geometrizer.md`), which has to be added in. That is
+  enough for effects that live in the air (rain, dust) to move
+  correctly as the camera does.
 - **A true world space.** The game's own camera, read from its RAM, as the
   photo-mode design proposes: per game, the address and format of the
   camera, held in the game's manifest. Reading RAM is draw-side. This is
@@ -311,8 +254,112 @@ once per model, not per frame.
 ## Without a native geometrizer
 
 Model keys, instances and camera movement are absent. Depth, artwork IDs,
-flags, and positions and normals from polygon planes remain. Features built on the first group say
-they are off for those games; nothing guesses.
+flags, and positions and normals from polygon planes remain. Features
+built on the first group say they are off for those games; nothing
+guesses. Even with a native geometrizer, coverage is not always total:
+on `lastbrnx` 99.1% of 3D pixels have a model key, because some
+polygons are sent directly (E4).
+
+## Evidence
+
+Spike code is on unmerged branches; none of it is in reModel. Each entry
+says what was observed and what is inferred.
+
+### E1. Model keys on Top Skater, `vf2` and `daytona` (2026-11-19)
+
+Top Skater, software renderer; branch `uplift-spikes`, about 190 lines.
+The native 2C geometrizer hashes the polygon words each object reads and
+passes the key beside the lighting side channel.
+
+Observed:
+
+- In 21 frames every 3D pixel had a model key. A race frame has 20 to 71
+  models.
+- The state hash over a 6,212-frame run is the same with and without it,
+  and the key costs under 0.02 s over that run.
+- Two runs gave identical output, and a model keeps its key as the
+  camera moves.
+- The skater is about ten models (limbs, board), and the ground a few
+  large ones.
+- A capture holds the finished stream and video memory, with no side
+  channel. Recording only the per-object part is a few hundred bytes a
+  frame.
+- The hash added nothing over the address in this game: 129 addresses,
+  129 keys.
+
+Repeated on `vf2` (2A) and `daytona` (original Model 2) with no new
+hooks (both run the same native code in its fixed-function mode; the old
+text gave no separate date for this repeat):
+
+- Every 3D pixel had a model key on both; keys were stable between runs;
+  state hashes were unchanged. A fighter is 15 to 20 parts and a car 3 to
+  5.
+- Models in polygon RAM are real. `vf2` draws two per frame, at fixed
+  addresses, and rewrites them every pose: 17 and 14 different hashes
+  over 21 frames. `daytona` draws up to five.
+
+Inferred: the hash's value (the same model at two addresses, ROM
+revisions, models in RAM) did not arise in Top Skater; for RAM models
+the hash is useless and the address must name them.
+
+### E2. Model keys on `gunblade` and `fvipers`, Model 2B (2026-11-20)
+
+2B runs different native code, and it took the same four hooks there, 43
+lines.
+
+Observed:
+
+- Every 3D pixel had a model key; keys were stable between runs; state
+  hashes were unchanged.
+- `fvipers`' second DSP writes parts of the display list. Those parts
+  are ordinary object commands, so they name models like any other.
+- `fvipers` has the same two rewritten RAM models as `vf2`, at the same
+  addresses.
+- A `gunblade` enemy changes model address from frame to frame: the game
+  animates it by drawing a different model per pose. An enemy is 8 to 10
+  models at a time; an explosion is hundreds of tiny ones.
+- On `gunblade` 15 hashes each appear at two or more addresses: the ROM
+  holds the same model twice.
+
+### E3. The ID target on the GPU (2026-11-20)
+
+About 40 lines. The object block's number went in the spare bits of the
+look's ID target tag. Against the software result, every 4th pixel on 3
+frames each:
+
+| | Game's resolution | 1080p |
+|---|---|---|
+| Top Skater | 99.3% to 99.6% | 99.4% to 99.8% |
+| `fvipers` | 95.8% to 98.5% | 98.1% to 99.3% |
+
+Observed: the misses are where the two renderers resolve overlap
+differently (the game's draw order against a depth test), mostly at
+edges between neighbouring models. Reading the whole target back costs
+5 to 7 ms at the game's resolution and 55 to 71 ms at 1080p.
+
+### E4. Model keys on `vstriker` and `lastbrnx` (2026-11-20)
+
+The other two of 2B's four geometry programs, with no change to the
+hooks. Keys were stable and state hashes unchanged on both.
+
+Observed:
+
+- `lastbrnx` is the first game below 100%: 99.1% of 3D pixels had a
+  model key. It sends some polygons directly, with no model (22 blocks
+  in 9 of 19 frames), and draws 32 to 71 RAM models a frame. Its command
+  0x1B, the one the native code lacks, was never sent.
+- `vstriker` keeps identical copies of a model at up to 7 addresses, and
+  its two teams are the same models and the same texture sheet with a
+  different palette entry.
+- A `lastbrnx` fighter is about 20 parts posed by matrices: 95% of its
+  models persist from frame to frame.
+
+Inferred: a `vstriker` footballer is about 17 parts and changes models
+with its pose, as `gunblade`'s enemies do (from a quarter of keys
+changing each frame).
+
+Not tested across E1 to E4: the grouping step that turns parts into a
+thing.
 
 ## Open questions
 
@@ -324,6 +371,7 @@ they are off for those games; nothing guesses.
   spike covered one.
 - **A plane per polygon is one more word of data per polygon** in a
   buffer that is already full of them. What does it cost?
+- **How should models be grouped** across parts and poses, per game?
 - **Model-address class tables in the repository**: acceptable, as the
   shading tables are?
 

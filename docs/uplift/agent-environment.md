@@ -110,7 +110,19 @@ An art agent uses a pinned, prebuilt binary and never runs `cargo`.
   scratch folder when run in a worktree.
 - `run` deletes only a frames folder it made.
 - The EEPROM a run starts from is read-only; a run writes its own copy.
+  A reused output folder carries `eeprom.bin` over from the last run
+  and changes the state hash by itself
+  ([content-coverage.md](content-coverage.md)), so a run that must
+  reproduce starts in a fresh folder from a stated EEPROM.
 - Projects hold no binaries, and copies inside a project are reflinks.
+- A build in the shared target folder is copied out while the lock is
+  still held. Observed twice while the spikes of 2026-11-20 ran: one
+  agent's build replaced the binary another was about to run.
+- Proposed, from the same spikes: GPU work by an agent is offscreen,
+  one frame at a time, under a timeout, at native resolution first,
+  and stops on the first GPU error. A shader it wrote has loops with small constant counts only:
+  an endless one cost a process its device
+  ([shader-packs.md](shader-packs.md), "Safety").
 
 ### 5. Image tools in the binary
 
@@ -195,6 +207,11 @@ holder within a second.
 - **What cap suits a build?** The largest compile measured used 4.8 GB.
 - **Should `make check` have a fast subset** for changes that touch only
   pack tools or docs? Today every change pays for the full run.
+- **A lost GPU device on a shared GPU.** An endless shader loop cost one
+  process its device and the desktop survived
+  ([shader-packs.md](shader-packs.md), "Safety"); what it does to
+  another agent's render at the same time is untested, and so is whether
+  a render slot should carry a time limit.
 - **A second machine** already pushes to the same branch. Locks are per
   machine; nothing here coordinates across them.
 

@@ -1,7 +1,8 @@
 # Asset identity and context bundles
 
 Shared words, roles and rules: [README.md](README.md). Nothing here is
-built.
+built into reModel; what was tried is in "Evidence" (spike code is on
+unmerged branches, not for merging as it stands).
 
 ## The problem
 
@@ -32,6 +33,9 @@ game's lighting but never re-colours it for another variant
 | Share of drawn pixels on those 62 | 49% |
 | Showcase pack images | 303, covering 263 artworks: 40 are colour copies |
 | Keys with no image that share an artwork with one that has | 47 |
+
+All 62 of those artworks differ by polygon colour only; none differs by
+luma table or translucency (E1). Other games' counts are in E3.
 
 A quarter of the keys are repeats, and they cover half the screen.
 "Colour is part of the key" was also the largest cause of replacement
@@ -115,79 +119,36 @@ loader looks for the variant's own `tex_` image first, then the artwork's
 
 The usual case is `baked`, with the copies made by the build. The
 artist or agent makes one image. `pack build` makes the other colourings
-from it, as `studio variants` does today, and any one of them can be
-replaced by hand. A pack's size is not a reason to avoid this: in the
-showcase the extra colourings are 1.67 MB of 13.26 MB of 3D images.
+from it, and any one of them can be replaced by hand. This replaces the
+hand-run `studio variants` step. A pack's size is not a reason to avoid
+it: in the showcase the extra colourings are 1.67 MB of 13.26 MB of 3D
+images.
 
-`follow` is the fallback for a colour never seen, in place of today's
-untinted stand-in. Its model: per channel, scale the image by what the
-game's colour table gives for this variant's colour over what it gives
-for the reference colour, at the original texel under the pixel. That is
-the shape of the lighting ratio the renderer already computes
-(`crates/model2/src/raster.rs:1609-1630`, `pack_lit` in
-`crates/gpu/src/raster.wgsl`), with the same fallback where the reference
-channel is zero.
+**A colouring is a ramp, not a tint.** The game's translation is small
+and known: a texel value goes through a luma table into a row of the
+palette chosen by the polygon's colour, which gives a ramp of 16 colours
+(`crates/model2/src/raster.rs`). Both tables are in every capture, but
+games rewrite them as they run, so one snapshot reproduces only part of
+what was sighted (E2). The catalogue therefore records each key's
+16-colour ramp (48 bytes) when it sights the key.
 
-**Spiked on 2026-11-19** (Top Skater's catalogue and the showcase pack,
-at commit `7d8f099`; offline, on decoded images, without the game's real
-tables):
+A polygon's colour is an index, not a strength: brightness does not rise
+with the number, so any tint worked out from the colour values is wrong
+(E1). The other games checked look the same (inferred, E3). The same artwork also
+differs by luma table on some games, so the luma table is part of a
+variant, and a tint must account for it.
 
-- All 62 artworks with several colourings differ by polygon colour only.
-  None differs by luma table or translucency. They carry 49% of the
-  pixels sighted.
-- **A polygon's colour is an index, not a strength.** Brightness does not
-  rise with the number. Any tint worked out from the colour values is
-  wrong: three such models predicted the game's own variants to within
-  4 levels on 12 to 15 of the 62 artworks.
-- **A lookup per texel value is nearly exact** on the game's own art:
-  0.15 levels mean error over 148 pairs. That is the model above.
-- **One ratio for the whole image**, which is what `studio variants`
-  uses, serves 51 of 62 artworks within 4 levels but only 56% of the
-  pixels: it fails on the large ground textures, where hue changes with
-  brightness.
-- **On new art the per-texel model has a cost.** It carries the
-  original's texel-by-texel differences into the replacement, putting
-  tones back into flat cel art that the artist took out.
-- **The showcase's authors rarely wanted a tint.** Of 40 extra
-  colourings in the pack, 18 are the same image as their reference, and
-  most of the rest were deliberately redrawn (a ground in mint, lilac
-  and burgundy). `fixed` matches 18 of the 40; no tint matches more
-  than 2.
-- In 17 of 148 pairs the reference colour has a channel at zero, where
-  any ratio is undefined.
+**How the build bakes.** Place each pixel on the first colouring's ramp,
+take the same place on the second's, and keep whatever part of the pixel
+lay off the ramp. On the game's own art this is exact or nearly (E2).
+Two things limit it:
 
-**Baking spiked on 2026-11-20** (offline, four games' catalogues and
-the showcase pack; no code change):
-
-- **The game's translation is small and known.** A colouring is a ramp
-  of 16 colours: texel value, through a luma table, into a row of the
-  palette chosen by the polygon's colour (`crates/model2/src/raster.rs`).
-  Both tables are in every capture.
-- **The catalogue does not keep them.** One snapshot of the tables
-  reproduced 52% to 77% of sighted pixels on three games and all of
-  Daytona's, because games rewrite the tables as they run. The catalogue
-  must record each key's 16-colour ramp (48 bytes) when it sights it.
-- **On the game's own art baking through the ramps is exact**: 0.00 mean
-  error on Top Skater and `vf2`, 0.20 on Daytona, 2.0 on `fvipers`
-  (0.00 on its luma-table pairs). The method: place each pixel on the
-  first colouring's ramp, take the same place on the second's, and keep
-  whatever part of the pixel lay off the ramp.
 - **Which colouring the author paints matters more than the method.**
-  Baking from the colouring with the most distinct colours cut Daytona's
-  error from 1.06 to 0.20. Baking from a flatter ramp cannot recover
-  detail it never had.
-- **It degrades with distance from the ramp.** On painted test art the
-  error was 1.3 levels for pixels within 1 level of the ramp, 4.5 at 4
-  to 8, 9 at 8 to 20, and 15.6 beyond.
-- **It cannot predict a restyle.** In the showcase every authored image
-  is 25 levels or more off the original ramp. Of its 40 extra
-  colourings, 20 are the same image as the first, where a copy is exact
-  and baking does harm (18 levels); the other 20 were redrawn to a new
-  theme, and no method came near them (46.8 mean error at best, against
-  58.3 for a copy).
-
-So `pack build` measures how far the authored image lies from the
-original ramp and chooses:
+  Baking from the colouring with the most distinct colours is best: a
+  flatter ramp cannot give back detail it never had (E2).
+- **It degrades with distance from the ramp, and it cannot predict a
+  restyle** (E2). So `pack build` measures how far the authored image
+  lies from the original ramp and chooses:
 
 | Mean distance from the ramp | Build does |
 |---|---|
@@ -199,62 +160,22 @@ It also copies when the two original ramps differ by under 4 levels. The
 thresholds come from synthetic art only: no pack that stays near the
 ramps exists yet to test them on.
 
-**Repeated on `vf2` and `daytona` the same day**, from new catalogues
-of two or three scripted runs each (no pack exists for either):
-
-| | Top Skater | `vf2` | `daytona` | `gunblade` | `fvipers` |
-|---|---|---|---|---|---|
-| Board | 2C | 2A | Original | 2B | 2B |
-| Image keys over artworks | 565 / 417 | 954 / 693 | 989 / 396 | 1,255 / 648 | 983 / 642 |
-| Artworks with several colourings | 62 | 151 | 156 | 222 | 215 |
-| Their share of pixels sighted | 49% | 70% | 88% | 41% | 36% |
-| Differ by colour only | 62 | 142 | 141 | 222 | 157 |
-| Differ by luma table, alone or with colour | 0 | 6 | 15 | 0 | 58 |
-| Luma tables in use | 2 | 4 | About 38 | 2 | 4 |
-| Largest set of colourings | 12 | 28 | 47 | 37 | 15 |
-| Mean error, one ratio for the image | 7.0 | 4.2 | 15.3 | 7.0 | 21.7 |
-| Mean error, lookup per texel value | 0.15 | 0.04 | 0.74 | 0.18 | 0.41 |
-
-The two Model 2B games were added on 2026-11-20, from a coin start and
-a run with no input each.
-
-- **The lookup per texel value holds on all five.** Nothing else does:
-  one ratio is worst on `fvipers` (21.7 levels), where 58 artworks also
-  change luma table.
-- **Luma-table variants are not only Daytona's.** `fvipers` has more of
-  them than any other game tried, covering 19% of its pixels.
-- **Two more 2B games agree** (`vstriker`, `lastbrnx`; same day).
-  Artworks in several colourings carry 79% and 39% of pixels; the
-  lookup per texel value errs by 1.2 and 0.0 levels, one ratio by 31.6
-  and 9.6. `vstriker`'s team kits are one artwork in 20 to 28
-  colourings: the teams differ by palette entry alone.
-- **`gunblade` is the one game where the plain ratio of the two
-  polygon colours nearly works** (88% of pixels within 4 levels). Its
-  colour index is still not a brightness, so this is that game's
-  palette, not a rule.
-- **Artwork identity matters more on `vf2` and `daytona`.** Nearly nine
-  pixels in ten of Daytona's textures are on artworks drawn in several
-  colourings.
-- **Colour is an index on every game checked**, and the per-texel lookup is the
-  only model that holds.
-- **Variants by luma table exist**, mostly on Daytona, which uses about
-  38 tables where Top Skater uses 2. One ratio for the image is poor
-  there (10 levels on those pairs). The identity design already treats
-  the luma table as part of a variant; a tint must too.
-- **Variant sets can be large and plain.** Daytona's largest are 25 to 47
-  colourings of flat 32x32 gradients; `vf2`'s are stage walls and floors
-  in up to 28 colours. Baking by the build suits these: nobody should
-  draw 47 swatches.
-- Not tested: a fighter's second costumes, and text drawn as textures.
-
-So `follow` is demoted from the usual case to a fallback, and the build
-bakes. Not done: the real tables were not read, so the model was not run
-on a colour the catalogue has never seen, which is the one case it is now
-for.
+**`follow` is the fallback for a colour never seen**, in place of
+today's untinted stand-in. Its model: per channel, scale the image by
+what the game's colour table gives for this variant's colour over what
+it gives for the reference colour, at the original texel under the
+pixel. That is the shape of the lighting ratio the renderer already
+computes (`crates/model2/src/raster.rs:1609-1630`, `pack_lit` in
+`crates/gpu/src/raster.wgsl`), with the same fallback where the
+reference channel is zero (it happens: E1). A lookup per texel value is
+nearly exact on the game's own art on all five games tried (E1, E3),
+but on new art it carries the original's texel-by-texel differences
+into the replacement, putting tones back into flat cel art (E1). It has
+not been run on a colour the catalogue has never seen, which is the one
+case it is now for: the real tables were not read (E2).
 
 The policy is set per asset in the project (`asset set ID colour=...`)
 and written to the pack's `material` line for that artwork at build time.
-
 Both renderers resolve names the same way, so a snapshot and the player
 agree.
 
@@ -263,6 +184,17 @@ know which model a polygon belongs to. That identity is on the CPU side
 only today, so the split waits for
 [scene-understanding.md](scene-understanding.md). Until then a `shared`
 artwork is reported, and the pack author decides.
+
+### Set aside
+
+- **One ratio for the whole image**, which is what `studio variants`
+  does today: it fails on large ground textures and across luma tables
+  (E1, E3). The build's baking replaces it.
+- **A tint worked out from the colour values**: wrong, as above (E1).
+- **`follow` as the usual case**: authors rarely wanted a tint
+  (inferred), since
+  `fixed` matched 18 of the showcase's 40 extra colourings and no tint
+  more than 2 (E1).
 
 ### The catalogue becomes the index of artworks
 
@@ -316,13 +248,15 @@ resolves to its artwork.
 - **Tester.** The flicker report's `colour` and `sibling` misses should
   fall to zero for artworks set to `follow` or `fixed`.
 - **Player.** Fewer untinted stand-ins. The pack is hardly smaller: 18
-  of the showcase's 40 extra colourings are copies that `fixed` removes.
+  of the showcase's 40 extra colourings are copies that `fixed` removes
+  (E1; E2 counted 20 as the same image as the first).
 
 ## Testing
 
 - **Without ROMs:** test vectors that freeze both keys; the lookup order;
   `follow` with the reference variant equals the image byte for byte;
-  bundle contents from a synthetic catalogue.
+  baking through two synthetic ramps, and each band of the distance
+  rule; bundle contents from a synthetic catalogue.
 - **With ROMs:** the pack log before and after on the showcase pack;
   software and GPU frames agree as closely as they do today.
 - **Draw-only:** state hashes with a pack that uses `artworks` equal
@@ -335,6 +269,120 @@ per pixel; expected to be within noise, not measured. Memory falls with
 the number of colour copies, which matters most in the browser's 192 MB
 budget. Nothing here was measured in the browser.
 
+## Evidence
+
+Spike code is on unmerged branches; none of it is in reModel. Each
+entry says what was observed (measured or read) and what is inferred.
+
+### E1. Colour variants offline (2026-11-19)
+
+Top Skater's catalogue and the showcase pack, at commit `7d8f099`;
+offline, on decoded images, without the game's real tables.
+
+Observed:
+
+- All 62 artworks with several colourings differ by polygon colour only.
+  None differs by luma table or translucency. They carry 49% of the
+  pixels sighted.
+- Brightness does not rise with the polygon's colour number. Three
+  models that worked a tint out from the colour values predicted the
+  game's own variants to within 4 levels on 12 to 15 of the 62 artworks.
+- A lookup per texel value is nearly exact on the game's own art: 0.15
+  levels mean error over 148 pairs.
+- One ratio for the whole image, which is what `studio variants` uses,
+  serves 51 of 62 artworks within 4 levels but only 56% of the pixels:
+  it fails on the large ground textures, where hue changes with
+  brightness.
+- On new art the per-texel model carries the original's texel-by-texel
+  differences into the replacement, putting tones back into flat cel
+  art that the artist took out.
+- Of 40 extra colourings in the showcase pack, 18 are the same image as
+  their reference, and most of the rest were deliberately redrawn (a
+  ground in mint, lilac and burgundy). `fixed` matches 18 of the 40; no
+  tint matches more than 2.
+- In 17 of 148 pairs the reference colour has a channel at zero, where
+  any ratio is undefined.
+
+Inferred: the showcase's authors rarely wanted a tint.
+
+### E2. Baking through ramps (2026-11-20)
+
+Offline; four games' catalogues and the showcase pack; no code change.
+
+Observed:
+
+- One snapshot of the palette and luma tables reproduced 52% to 77% of
+  sighted pixels on three games and all of Daytona's, because games
+  rewrite the tables as they run.
+- On the game's own art, baking through the ramps gave 0.00 mean error
+  on Top Skater and `vf2`, 0.20 on Daytona, 2.0 on `fvipers` (0.00 on
+  its luma-table pairs).
+- Baking from the colouring with the most distinct colours cut Daytona's
+  error from 1.06 to 0.20.
+- On painted test art the error was 1.3 levels for pixels within 1 level
+  of the ramp, 4.5 at 4 to 8, 9 at 8 to 20, and 15.6 beyond.
+- In the showcase every authored image is 25 levels or more off the
+  original ramp. Of its 40 extra colourings, 20 are the same image as
+  the first, where a copy is exact and baking does harm (18 levels); the
+  other 20 were redrawn to a new theme, and no method came near them
+  (46.8 mean error at best, against 58.3 for a copy).
+
+Not tested: the real tables were not read, so the `follow` model was not
+run on a colour the catalogue has never seen. The distance thresholds
+come from synthetic art only.
+
+Conflict noted: E1 counts 18 of the 40 as the same image as their
+reference, E2 counts 20 as the same as the first. The later count is
+E2's; E1's 18 is what `fixed` matched.
+
+### E3. Five games and two more (2026-11-20)
+
+New catalogues of two or three scripted runs each (no pack exists for
+any but Top Skater). The two Model 2B games were added from a coin
+start and a run with no input each.
+
+| | Top Skater | `vf2` | `daytona` | `gunblade` | `fvipers` |
+|---|---|---|---|---|---|
+| Board | 2C | 2A | Original | 2B | 2B |
+| Image keys over artworks | 565 / 417 | 954 / 693 | 989 / 396 | 1,255 / 648 | 983 / 642 |
+| Artworks with several colourings | 62 | 151 | 156 | 222 | 215 |
+| Their share of pixels sighted | 49% | 70% | 88% | 41% | 36% |
+| Differ by colour only | 62 | 142 | 141 | 222 | 157 |
+| Differ by luma table, alone or with colour | 0 | 6 | 15 | 0 | 58 |
+| Luma tables in use | 2 | 4 | About 38 | 2 | 4 |
+| Largest set of colourings | 12 | 28 | 47 | 37 | 15 |
+| Mean error, one ratio for the image | 7.0 | 4.2 | 15.3 | 7.0 | 21.7 |
+| Mean error, lookup per texel value | 0.15 | 0.04 | 0.74 | 0.18 | 0.41 |
+
+Observed:
+
+- The lookup per texel value holds on all five. One ratio is worst on
+  `fvipers` (21.7 levels), where 58 artworks also change luma table.
+- `fvipers` has more luma-table variants than any other game tried,
+  covering 19% of its pixels. Daytona uses about 38 tables where Top
+  Skater uses 2; one ratio for the image is poor there (10 levels on
+  those pairs).
+- Two more 2B games agree (`vstriker`, `lastbrnx`). Artworks in several
+  colourings carry 79% and 39% of pixels; the lookup per texel value
+  errs by 1.2 and 0.0 levels, one ratio by 31.6 and 9.6. `vstriker`'s
+  team kits are one artwork in 20 to 28 colourings: the teams differ by
+  palette entry alone.
+- `gunblade` is the one game where the plain ratio of the two polygon
+  colours nearly works (88% of pixels within 4 levels). Its colour index
+  is still not a brightness.
+- Nearly nine pixels in ten of Daytona's textures are on artworks drawn
+  in several colourings.
+- Daytona's largest sets are 25 to 47 colourings of flat 32x32
+  gradients; `vf2`'s are stage walls and floors in up to 28 colours.
+
+Inferred: colour is an index on every game checked, and the per-texel
+lookup is the only model that holds. `gunblade`'s ratio is that game's
+palette, not a rule. Artwork identity matters more on `vf2` and
+`daytona`. Variant sets can be large and plain, so baking by the build
+suits them: nobody should draw 47 swatches.
+
+Not tested: a fighter's second costumes, and text drawn as textures.
+
 ## Open questions
 
 - **Which tint for an unseen colour on flat art:** the per-texel lookup,
@@ -343,6 +391,8 @@ budget. Nothing here was measured in the browser.
 - **Baking across luma tables.** Daytona has variants that differ by
   luma table. The build's copies need the tone step as well as the
   colour step; neither was run with the game's real tables.
+- **Do the build's bands hold on real repaints?** The 4 and 12 level
+  thresholds were set on synthetic art.
 - **Is the ROM address safe to keep in shared files?** It is an offset, as
   a key is a hash; it is only needed locally.
 - **How different may two artworks be and still be offered as `same-as`?**
@@ -360,6 +410,7 @@ budget. Nothing here was measured in the browser.
    crops.
 4. Each key's 16-colour ramp recorded in the catalogue.
 5. Variants baked by `pack build` through the ramps, or copied, by the
-   distance rule; replacing the hand-run `studio variants` step.
+   distance rule, replacing the hand-run `studio variants` step; the
+   thresholds checked on a real repaint.
 6. `follow` for unseen colours, after trying both tints on a colour held
-   out of the catalogue.
+   out of the catalogue, with the game's real tables read.

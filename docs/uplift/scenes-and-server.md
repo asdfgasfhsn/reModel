@@ -78,7 +78,7 @@ derived from the ROM. It lives in `<data dir>/<set>/scenes/<name>/`:
 
 | File | Holds | Needed for |
 |---|---|---|
-| `scene.txt` | The recipe as run, the state hash at that frame, the reModel version, the geometrizer mode | Checking it is still valid |
+| `scene.txt` | The recipe as run, the EEPROM it started from, the state hash at that frame, the reModel version, the geometrizer mode | Checking it is still valid |
 | `capture/` | The renderer's inputs for the frame (about 10 MB; `out/topskatr/capture` is 221 MB for 22 frames) | Still pictures, with no emulator |
 | `state.save` | A save state at the frame | Motion clips, the live player |
 | `facts.tsv` | Every asset drawn there: pixels, box, variant | "What is here" and "where is this" |
@@ -99,18 +99,26 @@ works until a state-format change and cannot be regenerated.
 
 **Staying valid.** Any change to the state format refuses every older state
 (`crates/model2/src/lib.rs:349-352`). So the state is a cache and the
-recipe is the truth. `scene verify` runs each recipe again and compares the
-hash at the frame with the recorded one. Runs are bit-exact across the
+recipe is the truth. `scene verify` runs each recipe again, from power-on
+and from the EEPROM `scene.txt` names, and compares the hash at the
+frame with the recorded one. Runs are bit-exact across the
 interpreter, the JITs and the recompiler (the engine rows of
 `docs/status.md`; `make state-check`), so a
 different hash means the emulation changed and the scene is rebuilt.
+Two cases to design for. A reused output folder carries `eeprom.bin`
+over from the last run and changes the hash by itself, so a recipe must
+start from a stated EEPROM and a fresh folder. And a state reached by
+chained state loads did not hash the same as the same frame reached in
+one run, cause not found, so a scene reached by chaining (a `from=`
+branch in [content-coverage.md](content-coverage.md)) is checked by its
+picture and its catalogue entries, not by hash.
 
 ### Three ways to draw a scene
 
 | | Needs | Answers in | For |
 |---|---|---|---|
 | **1. One command**, from the capture | The released binary | 1 to 2 s (measured) | Agents, scripts, every still check |
-| **2. The player**, watching the pack | The binary and the ROM | Under 1 s after a save (target) | The artist: in motion, hands on the controls |
+| **2. The player**, watching the pack | The binary and the ROM | 0.2 to 0.6 s after a save, if only the saved image is swapped (measured in a spike) | The artist: in motion, hands on the controls |
 | **3. The server**, long-running | The binary and the ROM | Under 100 ms for a still (target) | Clips, many agents on one GPU, a web studio |
 
 Build them in that order. The first removes the build, the boot and the
@@ -121,7 +129,10 @@ same verbs, kept warm.
 there, which is the user loading a state, as from a save slot) and a watch on the pack directory, made the way the look is watched.
 On a change it opens the pack again and calls `Renderer::set_pack`, which
 already clears every pack cache (`crates/gpu/src/lib.rs:1249-1258`).
-Reloading single files comes later, if the full reset proves slow. Live
+Swapping only the saved image, with decoding on a worker, is what
+meets the one-second target; re-opening the whole pack is a cold load
+of about 0.3 s
+([authoring.md](authoring.md), "Evidence"). Live
 reload and picking are already the next two items in
 `docs/uplift-studio.md`.
 
@@ -211,8 +222,9 @@ the CLI's options and whose result is the shared envelope.
 |---|---|---|
 | Still, cold command, 1080p, full pack | 1.75 s (measured) | Keep under 2 s |
 | Still, warm server | Not built | Under 100 ms (the GPU draw is 7.3 ms with upload and read-back, `docs/gpu.md:92-105`) |
-| Player sees a saved file | Never | Under 1 s |
+| Player sees a saved file | Never | Under 1 s (0.2 to 0.6 s measured for a swapped image) |
 | Clip of 120 frames | Not built | Under 5 s |
+| Jumping to a scene from its state | 82 ms on Top Skater, 105 ms on Daytona (measured) | Keep |
 | Making a scene | 2 to 19 s to reach an attract frame (`docs/play.md:942-945`); a race scene near frame 3500 is about a minute of game time, so longer (inferred) | Once per scene per reModel version |
 | Browser | No scene tools | None in pass one; see the open question |
 

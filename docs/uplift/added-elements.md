@@ -1,7 +1,9 @@
 # Added elements: grass, props, decals, weather
 
-Shared words, roles and rules: [README.md](README.md). Nothing here is
-built. It rests on [scene-understanding.md](scene-understanding.md) and
+Shared words, roles and rules: [README.md](README.md). Nothing is built
+into reModel; what was tried is in "Evidence", and the spike code is on
+an unmerged branch, not for merging as it stands. It rests on
+[scene-understanding.md](scene-understanding.md) and
 [model-interchange.md](model-interchange.md).
 
 ## The problem
@@ -48,57 +50,40 @@ limits, and the machine's own output is never touched
 ([model-interchange.md](model-interchange.md), "Drawing it"). An added
 element is extra geometry that travels with a model the game draws.
 
-The spike of 2026-11-19 proved the first tier of that mechanism: extra
-polygons appended to a model's data in a re-run of the game's own
-geometry code stay attached, lit and clipped. That tier can only use the
-host's texture sheet and flat lighting, which suits a decal or a simple
-prop and not a field of grass with its own image. Scatter and anything
-with its own texture need the second tier, drawn by the renderer from
-the object's recorded matrix and light.
 
-The second tier was spiked on 2026-11-20: a torus with its own image,
-anchored at an offset to a Top Skater speed-limit sign, held to within
-0.009 of a pixel over 37 frames of moving camera, and was hidden by the
-sign's own polygons where it should be. Two things it showed for added
-elements: the element needs a stated material (it took a self-lit one
-from its host by accident and came out at full brightness), and draw
-order must be worked out per triangle.
+Two tiers of that mechanism are available. Extra polygons appended to a
+model's data in a re-run of the game's own geometry code (tier 1) stay
+attached, lit and clipped, but can only use the host's texture sheet and
+flat lighting. That suits a decal or a simple prop, not a field of grass
+with its own image (E1). Scatter and anything with its own texture use
+the second tier, drawn by the renderer from the object's recorded matrix
+and light. An anchored mesh holds steady through a moving camera and is
+hidden by its host's own polygons where it should be (E2). Two rules
+follow for any added element:
 
-**Scatter was spiked the same day** (about 1,300 lines on
-`uplift-spikes`): 200 to 2,000 grass tufts, each two crossed quads with
-a cut-out image, placed on the surface of Top Skater's grass verge and
-of a Daytona roadside, over 65 frames in software and 26 on the GPU.
+- **It needs a stated material.** Left alone it takes its host's, and a
+  self-lit host gives full brightness (E2).
+- **Draw order is worked out per triangle** (see "Drawing order").
 
-- **They stay glued down.** A tuft's foot against the ground's own
-  vertices: 0.002 of a pixel on average, 0.7 at worst (Top Skater); 0.17
-  at worst on Daytona.
-- **Draw order, measured against a depth test of everything:**
+### Scatter
 
-  | Rule | Top Skater, wrong pixels a frame of about 3,980 | Daytona |
-  |---|---|---|
-  | One position for the whole ground model | 1,222 on average; tufts cut by ground drawn later | 456 |
-  | Each triangle keyed by its nearest corner | 0 | 13 |
-  | Each tuft drawn straight after the polygon it stands on | 7 | 241 |
-  | GPU depth test, ground in the game's order | 0 to 4 | 4 to 71 |
-  | The ground's plane used as depth | 246 | 213 |
+Scatter is many small instances, each two crossed quads with a cut-out
+image for grass, placed on the surface of a ground model (E3).
 
-  So a per-triangle key, or the GPU's depth test, is right; one
-  position per model is not. No rule but the last ever drew a tuft over
-  the skater, a rail or the skater's shadow.
-- **Pop-in was not seen** on Top Skater: the game never culled a ground
-  piece in view. On Daytona the road changes model along the course and
-  scatter stops at the join, so a rule must cover every piece. A fade
-  hides the far edge, not a cull at the screen's edge.
-- **It is not free in number.** About 0.5 ms per thousand triangles in
-  software. On the GPU 13,800 triangles took a 1080p frame from 31 to
-  44 ms, because they are built on the CPU each frame. Real scatter
-  needs instancing on the GPU.
-- **Grass can be told from path by the polygon's texture**, which gives
-  the rule its "where". Palette colour alone does not.
-- **Even spacing looks thin up close.** Density needs to follow the
+- **Instances stay glued down**, measured against the ground's own
+  vertices.
+- **Cost.** In software it is about 0.5 ms per thousand triangles. On the
+  GPU, instances built on the CPU each frame are too slow: 13,800
+  triangles took a 1080p frame from 31 to 44 ms. Real scatter needs
+  instancing on the GPU.
+- **Where.** Grass can be told from path by the polygon's texture, which
+  gives the rule its "where". Palette colour alone does not.
+- **Density follows the view.** Even spacing looks thin up close.
+- **Every piece of the ground is covered by the rule.** On Daytona the
+  road changes model along the course and scatter stops at the join. A
+  fade hides the far edge; a cull at the screen's edge does not. Top
+  Skater showed no pop-in, since the game never culled a ground piece in
   view.
-- State hashes were unchanged in software; the GPU runs' were not
-  compared.
 
 For the protected classes, four things a check can measure: no instance
 stands on a protected polygon; no tuft pixel lands where the plain
@@ -136,13 +121,23 @@ frames").
 
 ### Drawing order
 
-Added geometry is depth-tested among itself and against the model it
-stands on. For a host polygon the game draws in its own order without
-depth, such as a large ground quad, the added geometry is drawn directly
-after its host, so it sits on the ground and under whatever the game
-draws next. Where that order would be wrong (grass in front of a car that
-is behind it), the depth option's rules decide, and the result needs
-looking at per game.
+The games draw without a depth buffer, far to near, so added geometry
+needs a rule. **One key per triangle, or the GPU's depth test; one
+position per ground model is wrong (E3).** Each added triangle takes the
+game's own kind of key, its nearest corner, so it is sorted with the
+polygons the game drew. Where the GPU's depth test is on, the ground
+stays in the game's order and the added geometry is tested against it.
+Which suits a game needs looking at per game, since the two differ on
+Daytona (E3).
+
+#### Set aside
+
+- **One position for the whole ground model**: tufts were cut by ground
+  drawn later (1,222 wrong pixels a frame on average on Top Skater).
+- **Each tuft drawn straight after the polygon it stands on**: 7 wrong
+  pixels on Top Skater and 241 on Daytona.
+- **The ground's plane used as depth**: 246 and 213, and the only rule
+  that ever drew a tuft over the skater, a rail or the skater's shadow.
 
 ### When the host is not drawn
 
@@ -205,42 +200,94 @@ it. That is part of [authoring.md](authoring.md).
 
 - **Without ROMs:** the same rule gives the same instances twice; an
   instance stays fixed to a synthetic model through a moving camera;
-  nothing is placed on a protected class.
+  nothing is placed on a protected class; a triangle's key is its own
+  nearest corner, not its host's.
 - **With ROMs:** over a clip, each instance's position relative to its
   host polygon is constant to a fraction of a pixel; state hashes are
   unchanged; with the feature off, frames are exact.
 
 ## Performance
 
-Unmeasured. The bounds are designed in: a cap on instances per scene, a
-fade distance, and instanced drawing so a field of grass is a few draw
+The bounds are designed in: a cap on instances per scene, a fade
+distance, and instanced drawing so a field of grass is a few draw
 calls. Instance positions are generated on the GPU from the host
-polygon's model data, not stored. A target to test: 20,000 scatter
-instances within 1 ms at 1080p on the development GPU.
+polygon's model data, not stored. Measured so far: about 0.5 ms per
+thousand triangles in software, and 13,800 CPU-built triangles raising a
+1080p GPU frame from 31 to 44 ms, which is why instancing is needed
+(E3). A target to test: 20,000 scatter instances within 1 ms at 1080p on
+the development GPU.
 
 ## Without a native geometrizer
 
 Nothing is added. Models are not known, so there is nothing to anchor to.
 
+## Evidence
+
+Spike code is on the unmerged branch `uplift-spikes`, not for merging as
+it stands. Entries are in date order.
+
+**E1. Appended polygons, tier 1 (2026-11-19).** Observed: extra polygons
+appended to a model's data in a re-run of the game's own geometry code
+stayed attached, lit and clipped. Not tested: anything with its own
+texture, which tier 1 cannot draw.
+
+**E2. An anchored prop, tier 2 (2026-11-20).** Observed: a torus with
+its own image, anchored at an offset to a Top Skater speed-limit sign,
+held to within 0.009 of a pixel over 37 frames of moving camera, and
+was hidden by the sign's own polygons where it should be. It took a
+self-lit material from its host by accident and came out at full
+brightness. Draw order had to be worked out per triangle.
+
+**E3. Scatter (2026-11-20).** About 1,300 lines on `uplift-spikes`: 200
+to 2,000 grass tufts, each two crossed quads with a cut-out image,
+placed on the surface of Top Skater's grass verge and of a Daytona
+roadside, over 65 frames in software and 26 on the GPU. Observed:
+
+- A tuft's foot against the ground's own vertices: 0.002 of a pixel on
+  average, 0.7 at worst (Top Skater); 0.17 at worst on Daytona.
+- Draw order, measured against a depth test of everything, as wrong
+  pixels a frame:
+
+  | Rule | Top Skater, of about 3,980 | Daytona |
+  |---|---|---|
+  | One position for the whole ground model | 1,222 on average; tufts cut by ground drawn later | 456 |
+  | Each triangle keyed by its nearest corner | 0 | 13 |
+  | Each tuft drawn straight after the polygon it stands on | 7 | 241 |
+  | GPU depth test, ground in the game's order | 0 to 4 | 4 to 71 |
+  | The ground's plane used as depth | 246 | 213 |
+
+  No rule but the last ever drew a tuft over the skater, a rail or the
+  skater's shadow.
+- No pop-in on Top Skater; on Daytona scatter stopped at the join where
+  the road changes model.
+- Cost: about 0.5 ms per thousand triangles in software; on the GPU
+  13,800 triangles took a 1080p frame from 31 to 44 ms.
+- Grass told from path by the polygon's texture, not by palette colour.
+  Even spacing looked thin up close.
+- State hashes were unchanged in software; the GPU runs' were not
+  compared.
+
 ## Open questions
 
 - **Does anchoring hold in every game?** Scenery the game rebuilds each
   frame, or sends without a model, cannot host anything.
-- **Grass on a painter's-order ground** is the common case and the
-  hardest for draw order. It needs a spike before anything else.
 - **Lighting added geometry.** With the game's formula for its host's
-  light, or unlit and tinted from the surface under it?
+  light, or unlit and tinted from the surface under it? A prop needs a
+  stated material either way (E2).
+- **Are state hashes unchanged with scatter on the GPU path?** Not
+  compared (E3).
 - **Reflections and water** need the scene drawn a second time from a
   mirrored view. Possible, since the geometrizer can be run again, and
   not designed here.
 - **Crowds** in these games are flat cards. Adding heads is scatter;
   making them move is animation the game does not have.
 
+
 ## MVP: a week
 
-1. One prop anchored to one Top Skater scenery model (spiked: steady
-   to 0.009 of a pixel).
-2. Scatter on a ground model (spiked: per-triangle keys or the GPU's
-   depth test; needs GPU instancing and view-dependent density).
+1. One prop anchored to one Top Skater scenery model, with a stated
+   material.
+2. Scatter on a ground model: a key per triangle or the GPU's depth
+   test, GPU instancing, and view-dependent density.
 3. `place.txt` with `prop` and `scatter`, `place check`, and the
    protected classes.

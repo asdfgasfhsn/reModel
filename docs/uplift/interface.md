@@ -83,7 +83,7 @@ listed in the last column.
 | `asset name ID SLUG` | `id`, `name` |
 | `asset set ID KEY=VALUE...` | The changed row |
 | `asset same ID ID`, `asset same --suggest` | `merged`, or `pairs[]` with a likeness |
-| `asset make ID --with BACKEND [--replace]` | `outcome` (`ok`, `gate:NAME`, `backend:WHY`), `draft`, `status`, `gates[]`, `sheet` |
+| `asset make ID --with BACKEND [--replace]` | `outcome` (`ok`, `repaired`, `refit`, `gate:NAME`, `backend:WHY`), `draft`, `status`, `gates[]`, `sheet` |
 | `asset normalise ID FILE [--replace]` | `draft`, `status`, `changes[]`. `FILE` is any PNG anywhere; a corrected copy is written to `draft/<slug>.png` |
 | `asset check ID` | `status`, `gates[]`: `gate`, `value`, `limit`, `verdict` (`pass`, `warn`, `review`, `error`), `fix`; `sheet` if a gate failed |
 | `region capture SCENE X,Y,W,H --name NAME [--replace]` | As in task B |
@@ -108,6 +108,13 @@ Rules the table leans on:
   verb that would overwrite a file stops with exit code 2 and says so.
 - **`REMODEL_ACTOR`** is an environment variable. A writing verb with it
   unset stops with exit code 2.
+- **The outcomes of `asset make`** are those of step 4 in
+  [generation](generation.md): `repaired` is a pass that needed a stated
+  repair, `refit` is an image whose subject does not fit the original's
+  cut-out and must be made again, and `WHY` in `backend:WHY` is `refused`,
+  `timeout`, `rate-limited` or `bad-output` (that page lists the four
+  without the prefix). A `refused` call is retried
+  once with the prompt lint's wording before it is reported.
 - **A rejected asset** returns to `drafted` when a new draft is written
   with `--replace`. Its reason stays in `asset show` and in the bundle.
 - **A region's art** is drafted like any asset: `asset normalise NAME
@@ -186,7 +193,9 @@ Slugs, scenes and numbers below are examples.
 ### A. Restyle the wall base
 
 The brief gives the asset. It tiles sideways and has six colour variants;
-the pack lead has set `colour=follow`.
+the pack lead has set `colour=baked`: the build makes the other five
+colourings from the one image
+([asset-identity](asset-identity.md), "Packs can name the artwork").
 
 ```sh
 remodel project brief --json          # my assets, scenes, budgets
@@ -194,9 +203,9 @@ remodel asset bundle wall-base --json
 ```
 ```json
 {"ok":true,"data":{"id":"art:...","name":"wall-base","size":[128,128],
- "wrap":["repeat","clamp"],"variants":6,"colour":"follow",
+ "wrap":["repeat","clamp"],"variants":6,"colour":"baked",
  "flags":[],"category":"wallbase","scenes":["course-start","course-sand"],
- "gates":["file","alpha","seam","changed","palette","luma-order"],
+ "gates":["file","alpha","stale","seam","changed","noise"],
  "suggest":"recipe","folder":"cache/bundles/wall-base/"},
  "next":"remodel asset make wall-base --with recipe"}
 ```
@@ -208,18 +217,21 @@ picture: recipes are the `recipe` backend.
 remodel asset make wall-base --with recipe --json
 ```
 ```json
-{"ok":true,"data":{"outcome":"gate:seam","draft":"draft/wall-base.png",
- "gates":[{"gate":"seam","value":3.1,"limit":2.5,"verdict":"error",
-   "fix":"asset set wall-base recipe.seamless=8, then make again"}],
- "sheet":"cache/sheets/wall-base-seam.png"}}
+{"ok":true,"data":{"outcome":"ok","draft":"draft/wall-base.png",
+ "status":"checked",
+ "gates":[{"gate":"seam","value":14.2,"limit":12,"verdict":"warn",
+   "fix":"asset set wall-base recipe.seamless=8, then make again"}]}}
 ```
 
-`asset make` runs the asset gates itself, so a separate `asset check` is
-needed only for a file made by hand.
+`seam` is a warning in the first set of gates, so the draft is `checked`
+and the warning is listed
+([quality-gates](quality-gates.md), "Asset gates"). The agent chooses to
+fix it. `asset make` runs the asset gates itself, so a separate `asset
+check` is needed only for a file made by hand.
 
 ```sh
 remodel asset set wall-base recipe.seamless=8
-remodel asset make wall-base --with recipe --replace --json   # outcome ok: status checked
+remodel asset make wall-base --with recipe --replace --json   # no warning
 remodel scene render course-start --asset wall-base --against original --json
 ```
 ```json
@@ -229,8 +241,7 @@ remodel scene render course-start --asset wall-base --against original --json
             "misses":0}]}}
 ```
 
-It stops there: the asset is `checked`. Six calls, no pictures read on the
-second attempt, one sheet on the first.
+It stops there: the asset is `checked`. Six calls and no pictures read.
 
 ### B. Replace the sponsor board
 
@@ -271,7 +282,7 @@ remodel pack check --json
 ```json
 {"ok":false,"code":1,"data":{"done":false,
  "assets":{"approved":281,"checked":14,"drafted":6,"todo":2,"stale":1},
- "errors":[{"asset":"lane-red","gate":"seam","value":3.4,"limit":2.5}],
+ "errors":[{"asset":"lane-red","gate":"alpha","value":0.034,"limit":0.02}],
  "review":[{"asset":"cap-letter","gate":"text","found":"K"}],
  "scenes":[{"scene":"course-sand","coverage":0.91,"target":0.95,
             "largest_unreplaced":["stone-wall-low","cliff-top"]}],

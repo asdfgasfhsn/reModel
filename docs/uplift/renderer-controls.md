@@ -62,7 +62,7 @@ They go on the manifest's existing per-texture `material` line, using the
 key it already reserves:
 
 ```
-material art_<key>_128x128  colour=follow          # re-lit, the default
+material art_<key>_128x128  colour=baked           # re-lit, the default
 material art_<key>_256x128  selflit                # drawn exactly as painted
 material @hud-3d            selflit filter=nearest
 ```
@@ -126,13 +126,17 @@ it. A picture from a tool is then the picture the player shows.
 ### 5. Model identity in the ID target
 
 Specified in [scene-understanding.md](scene-understanding.md). Adding
-each polygon's model, window and flags to the ID target lets
-overlays, picking and tags work per model as well as per texture. The
-data exists per polygon on the CPU. It can ride in the buffer that
-already carries ID words. The renderer runs under wgpu's downlevel
-limits, which allow four storage buffers per stage, so a new buffer is
-not free (inferred; the shader's bindings were not counted). It is listed here
-because three features above improve once it lands.
+each polygon's model to the ID target lets overlays, picking and tags
+work per model as well as per texture. The data exists per polygon on the
+CPU. It needs no new buffer or target
+([scene-understanding.md](scene-understanding.md), "Evidence"): the object block's
+number goes in spare bits of the ID target's tag, and the CPU maps a
+block to its model. The GPU's answer matched the software renderer's on
+95.8% to 99.8% of sampled pixels on the two games tried, the misses being where the two resolve overlap
+differently. Window and flags in the same bits were not tried. The ID
+pass runs only with a look active today, so overlays and picking need it
+on its own. It is listed here because three features above improve once
+it lands.
 
 ### 6. The browser, later
 
@@ -180,10 +184,12 @@ by the shared pack code, but the web build must list them as shown, and
 ## Performance
 
 `selflit` removes work per pixel. Overlays reuse the ID pass, which
-costs 0.7 ms at 1080p and 3.0 ms at 4K as documented in
-`docs/enhancements.md` (not re-measured), and run only when asked for.
-`filter=nearest` needs a second sampler, not a second pass. The browser
-gets the same costs through the shared renderer; none were measured
+is documented at 0.7 ms at 1080p and 3.0 ms at 4K
+(`docs/enhancements.md`) and was measured at 1.2 ms and 3.8 ms
+([authoring.md](authoring.md), "Evidence"). Reading one pixel of its
+target for picking takes 0.05 to 0.07 ms. Overlays run only when asked
+for. `filter=nearest` needs a second sampler, not a second pass. The
+browser gets the same costs through the shared renderer; none were measured
 there, and overlays are a tool, not something a player's frame pays for.
 
 ## Open questions
@@ -195,8 +201,10 @@ there, and overlays are a tool, not something a player's frame pays for.
 - **Stipple.** The games fake transparency with a checkerboard. A real
   blend exists only under temporal anti-aliasing
   (`docs/enhancements.md`, "The checkerboard"). A per-asset
-  `stipple=blend` with a chosen opacity is a likely request for fighters'
-  shadows and gun-game effects; it is specified in [lighting.md](lighting.md).
+  `stipple=blend` with a chosen opacity is a likely request for
+  fighters' shadows and gun-game effects; it is specified in
+  [lighting.md](lighting.md), where it is the one lighting item still in
+  the first set.
 - **Target ranges** for calibration are unproven beyond one pack.
 
 ## MVP: a few days

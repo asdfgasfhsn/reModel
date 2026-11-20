@@ -102,6 +102,13 @@ depends    = other-pack >= 1.2  # optional: a pack this one must sit above
 | `by`, `date` | Who approved it |
 | `note` | A reason, required for `rejected` |
 
+The build treats `baked` as the usual case: from one authored image it
+makes the other colourings, or copies the image, by how far the art lies
+from the game's own colour ramp. So the catalogue records each key's
+16-colour ramp (48 bytes) when it first sees the key
+([asset-identity.md](asset-identity.md), "Packs can name the artwork").
+`follow` is the fallback for a colour nobody catalogued.
+
 Status is recorded and then verified: if the image's hash is not the
 approved one, the asset is `stale`. The table of which verb moves which
 status is in [interface.md](interface.md). Rows change only through
@@ -182,7 +189,10 @@ today.
 - **Discovery** stays as planned: a repository with a topic and a release
   archive, no curated list. The client checks the manifest and the
   archive's hash itself, since a topic proves nothing. Packs never contain
-  code.
+  code that runs on the CPU. A shader pack is the exception that is code:
+  WGSL run on the GPU, which a loop can hang
+  ([shader-packs.md](shader-packs.md), "Safety"; the unpacking limits are
+  in [distribution.md](distribution.md), "Installing").
 
 ## Interfaces
 
@@ -243,6 +253,9 @@ colour copies; compressed textures are an open question.
 - **Compressed textures** in the built pack (KTX2) would cut memory and
   load time, and need a decoder in the browser build.
 - **One repository per pack**, or many packs in one?
+- **Restyle or faithful.** The style gates apply only to a faithful pack
+  ([quality-gates.md](quality-gates.md)), so a project must state which
+  it is. Where that is recorded (`project.txt` or `gates.txt`) is open.
 
 ## MVP: a few days
 
