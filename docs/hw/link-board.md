@@ -730,35 +730,58 @@ The routine at `0x1B5F4`, *confirmed* by the access trace and the screens:
 Speed: 4,000 frames of two machines take 10 s on the JIT (26 s on the
 interpreter); 3,200 frames of eight take 34 s.
 
-### 10.5 The one thing that does not work: no 3D in a straight linked race
+### 10.5 The race's 3D scene (was missing from a straight run; fixed)
 
-(*Confirmed*, cause not found.) In a **straight run** the race's HUD, timers,
-positions, laps and results all work, but **the 3D scene is not drawn**: the
-geometry port gets about 10 words a frame (a viewport) instead of about
-1,000 and the frame's stream holds 7 words, so the picture is the sky, the
-grass and the HUD. It is so on 1, 2, 4 and 8 nodes, on the interpreter and the
-JIT, with `--geo chip` and `native`, threaded or not, and (1 node) with or
-without idle-loop skipping; LINK ID SINGLE inside `link-run` draws it.
-**After a save and a load it is drawn**: `--save-at 3200 F`, then `--load
-F`: the track, the own car and the others' cars appear from frame 3201, on 2,
-4 and 8 machines, D = 1 and 8, and the race runs to its results (13500) and
-the title (14500). A save at 3100 or earlier loads into the same no-3D run
-(its final hash equals the straight run's), so something goes wrong between
-3100 and 3200 and the saved state does not carry it. At frame 3201 the work
-RAM (both nodes), the link RAM, the video RAMs, the I/O board record and the
-backup RAM of node 0 are word for word the same in the straight and the
-loaded run (`--ram-dump`), yet the loaded run's **geometry output is a whole
-scene and the straight run's is empty**. Ruled out: the flipping bit
-(`--beat-until`), the layout and ID (a 1-node link does it too), CAR NUMBER,
-the delay, idle skipping, the geometrizer mode and its thread. A hunch for
-the next look: state of the geometrizer or the TGP that the save does not
-carry (the game builds its scene list once and patches it by about 10 port
-words a frame, so a stale part of the list DMA's jump table or the
-engine would empty every later frame), which a load rebuilds. Until then the
-**linked race is rendered from a save at frame 3200 and its load**
-(`make link-run GAME=daytona NODES=2 LINK_OPTS="--save-at 3200 F"`, then
-`LINK_OPTS="--load F"`); the game logic, the exchange and the hashes below
-are the same either way.
+**What was seen** (*confirmed*): in a straight run the race's HUD, timers,
+positions, laps and results worked but the 3D scene was not drawn (the sky,
+the grass and the HUD), on 1, 2, 4 and 8 nodes; a save at frame 3200 and a
+load drew it from the next frame, a save at 3100 or earlier did not.
+LINK ID SINGLE inside `link-run` was fine.
+
+**The cause** (*confirmed* by bisecting a load: the same save loaded into a
+fresh machine, one subsystem at a time swapped back from the straight run;
+only the geometrizer's made it fail): the geometrizer hung **at frame 525**
+(the network check) and again at 3137 (the race entry), for good.
+
+- At the vblank of frame 525 the game is in the middle of rewriting the
+  list in buffer RAM (the title card's list is one buffer, not the double
+  buffer of a normal frame): the write pointer is `0x24`, nine of the
+  header's fifteen words are new and the rest are the old header's
+  (`0xFFFF0080`, a window word, among them). The geometrizer is started
+  with a copy of buffer RAM at the vblank (it does not see later writes), reads
+  the half-new list and meets that window word as a command. A list that is
+  half written when the frame starts is the game's own timing (the check
+  that fills the frame is the link's), and is *unconfirmed* as to what the
+  real board's geometrizer does with it.
+- The native geometrizer (`geo_native_2c`) answered a word that is no command
+  with `Stop::Hang`: the program of a 2B/2C geometrizer loops for ever on
+  one (the dispatch table's "error" entries), so nothing more is drawn until
+  the next upload. That is right for a program, but the 2A and original
+  Model 2 geometrizer is fixed-function (`Program::Fixed`) with no program to
+  loop in, and it was given the same permanent hang. The picture stayed
+  without 3D for the rest of the run, whatever the game then sent.
+- That state, `Native::stop`, **was not in the save state**: a load made a
+  new native geometrizer, which started without it. So a save taken **after**
+  the hang "fixed" the scene: the loaded machine was simply not hung. The
+  game's list is half written again at **frame 3137**, the race entry (the
+  node states 6 to 9 at 3136-3142, when the check's code runs again), so a
+  load at 3100 or earlier hung again there and ended on the straight run's
+  hash, and a load at 3200 or later (after both) never did. Everything else
+  (work RAM, link RAM, video RAMs, settings) was identical, as the
+  comparison found: the machine's own state was complete, only this flag
+  was missing.
+- Why only linked: single-player Daytona never has a half-written list at a
+  vblank (its list is double buffered and built early in the frame); the
+  link check's code (the 320-frame count, the block exchange and checksums)
+  fills the frame in link mode and the title card's single list was caught.
+
+**The fix:** the fixed-function geometrizer **ends the frame's list at a word
+that is no command** and reads the next frame's list afresh (*unconfirmed*
+as hardware behaviour, but a program-less chip has nothing to hang), and a
+program geometrizer's hang (and a failed command check) **is now carried by
+the save state**. A linked race now draws in a straight run, 2 nodes at D = 1
+from frame 3201 on, and a save at any frame (1900, 3100, 3200, 3300) loaded
+ends on the straight run's combined hash (`make link-state-check`).
 
 ### 10.6 Delay, determinism and the state
 
@@ -777,9 +800,9 @@ are the same either way.
   JIT, with `--single-thread` and with both. A different D gives a
   different hash.
 - **Save and load** (*confirmed*): `--save-at F FILE` then `--load FILE` ends
-  on the straight run's combined hash for a save at frame 300, 1900, 2600,
-  3000 or 3100. A save at 3200 or 3300 ends on a different one: it is the run
-  with the 3D scene (10.5), whose hash is stable across loads. The hub's state
+  on the straight run's combined hash for a save at any frame (checked at
+  300, 1900, 2600, 3000, 3100, 3200 and 3300; `make link-state-check`). The
+  hub's state
   (ready, IDs, delay lines), each bus's board flags and the settings (they
   are in the machine's memory) are saved; the heartbeat is the frame parity
   and needs no state. Without the hub's state (`--fresh-hub`) the ready byte
@@ -800,7 +823,8 @@ are the same either way.
   srallyc's plain fields, an own car section copied from the car table.
 - No barrier words (srallyc: the `0x18C` acknowledgement ring and node
   states 1 and 2): the states are in the header and the master leads.
-- The race's 3D scene does not come up in a straight run (10.5).
+- A frame's list can be half written at the vblank (10.5), which the
+  geometrizer must survive.
 
 ## 11. What is generic and what is per game
 

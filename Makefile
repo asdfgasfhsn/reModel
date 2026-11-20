@@ -590,6 +590,42 @@ state-check: release ## Save state round trip: a run saved at frame 2000 and res
 	$(call compare_hashes,$(OUT)/state-a.txt,$(OUT)/state-b.txt,same after save and load)
 	@python3 -I -c 'import sys, wave; a, b = (wave.open(f).readframes(1 << 30) for f in sys.argv[1:]); print("audio         " + ("resumed run matches the uninterrupted one" if a.endswith(b) else "DIFFERS")); sys.exit(not a.endswith(b))' $(OUT)/state-a.wav $(OUT)/state-b.wav
 
+# `make state-roundtrip`: per set, the input that gets it into play (daytona
+# needs the coin, start and gas of its selection screens).
+STATE_RT_GAMES ?= topskatr daytona srallyc lastbrnx
+STATE_RT_AT    ?= 700 1900 3300
+STATE_RT_STEPS ?= 600000000
+STATE_RT_INPUT_daytona ?= coin1@1100-1104,start@1300-1304,gas=0xff@1500-1510,gas=0xff@1700-1710,gas=0xff@2400-99999
+state-roundtrip: release ## Save state round trips for several sets at several frames (STATE_RT_GAMES, STATE_RT_AT, STATE_RT_STEPS): each run saved at a frame and resumed must end on the uninterrupted run's state hash
+	@set -e; mkdir -p $(OUT)/state-rt; bad=0; \
+	for g in $(STATE_RT_GAMES); do \
+	  folder=$$($(REMODEL) --game $$g --rom $(ROM) rom-folder 2>/dev/null) || folder=$$g; \
+	  if [ ! -e $(ROM)/$$folder ] && [ ! -e $(ROM)/$$folder.zip ]; then echo "state-rt      $$g: no ROMs (not checked)"; continue; fi; \
+	  eval "in=\$${STATE_RT_INPUT_$$g:-$(BENCH_INPUT)}"; \
+	  run="$(CAP) $(REMODEL) --game $$g --rom $(ROM) --out $(OUT)/state-rt --input $$in"; \
+	  $$run run $(STATE_RT_STEPS) >/dev/null; \
+	  want=$$($$run run $(STATE_RT_STEPS) | sed -n 's/^state hash *\([0-9a-f]*\).*/\1/p'); \
+	  for f in $(STATE_RT_AT); do \
+	    $$run --save-state $(OUT)/state-rt/$$g.save@$$f run $(STATE_RT_STEPS) >/dev/null; \
+	    got=$$($$run --load-state $(OUT)/state-rt/$$g.save run $(STATE_RT_STEPS) | sed -n 's/^state hash *\([0-9a-f]*\).*/\1/p'); \
+	    if [ "$$got" = "$$want" ]; then echo "state-rt      $$g saved at $$f: $$got ok"; else echo "state-rt      $$g saved at $$f: DIFFERS (got $$got, straight run $$want)"; bad=1; fi; \
+	  done; \
+	  rm -f $(OUT)/state-rt/$$g.save; \
+	done; [ $$bad = 0 ]
+
+LINK_STATE_GAME  ?= daytona
+LINK_STATE_AT    ?= 1900 3100 3200 3300
+LINK_STATE_INPUT ?= coin1@1100-1104,start@1300-1304,gas=0xff@1500-1510,gas=0xff@1700-1710,gas=0xff@2400-99999
+link-state-check: release ## Experimental: save state round trips of linked machines (LINK_STATE_GAME daytona, NODES 2, FRAMES 4600, LINK_STATE_AT): a run saved at a frame and resumed must end on the straight run's combined hash (3200 and 3300 are in the 3D race)
+	@set -e; mkdir -p $(OUT)/link-state; bad=0; \
+	run="$(CAP) $(REMODEL) --game $(LINK_STATE_GAME) --rom $(ROM) --out $(OUT)/link-state --input $(LINK_STATE_INPUT) link-run --nodes $(or $(NODES),2) --frames $(or $(FRAMES),4600)"; \
+	want=$$($$run | sed -n 's/^combined hash *//p'); \
+	for f in $(LINK_STATE_AT); do \
+	  $$run --save-at $$f $(OUT)/link-state/save >/dev/null; \
+	  got=$$($$run --load $(OUT)/link-state/save | sed -n 's/^combined hash *//p'); \
+	  if [ "$$got" = "$$want" ]; then echo "link-state    saved at $$f: $$got ok"; else echo "link-state    saved at $$f: DIFFERS (got $$got, straight run $$want)"; bad=1; fi; \
+	done; rm -f $(OUT)/link-state/save; [ $$bad = 0 ]
+
 LATENCY_FRAME  ?= 3100
 LATENCY_CHANGE ?= wheel=0xF0
 latency: release ## Input latency: frames from a held input (LATENCY_CHANGE, from frame LATENCY_FRAME of a coin-start run) to the game's RAM, display list and polygons

@@ -267,9 +267,12 @@ carries the grid and the roster.
   others (`POSITION x/8` and eight cars) and the results (by frame 13500),
   at delays of 1 to 16 frames, with the same combined hash on the
   interpreter and the JIT.
-- *Open:* in a straight linked race the 3D scene is not drawn (HUD,
-  timers and results are); after a save at frame 3200 and a load it is.
-  The cause is not found (`docs/hw/link-board.md` section 10.5).
+- *Confirmed:* the linked race draws its 3D scene in a straight run. It
+  did not: the geometrizer hung for good on a list the game was half way
+  through rewriting at a vblank (frames 525 and 3137), and a save state did
+  not carry the hang (`docs/hw/link-board.md` section 10.5). The fixed-function
+  geometrizer now ends the list at a word that is no command (*unconfirmed*
+  as hardware behaviour).
 - *Unconfirmed:* what the real board's `0x1A14002` bit 7 is, what CAR
   NUMBER does beyond display, a late-starting node, a lost link.
 
@@ -283,6 +286,5 @@ carries the grid and the roster.
    FM chip's clock), envelopes, the level of attract against the race.
 4. `vcop` and `desert` on the same board model (`vcop`'s chips have
    daytona's layout, sound board included).
-5. The drive board (register 17's queue); the linked race's missing 3D
-   scene in a straight run (see Linked play), then a player view of
-   linked cabinets.
+5. The drive board (register 17's queue); then a player view of linked
+   cabinets.

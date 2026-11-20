@@ -72,6 +72,8 @@ make jit-hitch JIT_HITCH_OPTS="--geo native"   # frame-time hitches of the bench
 ./target/release/remodel --game srallyc --jit --jit-cache out/srallyc/jit --input coin-start run 600000000   # a run on the JITs with the hot-block list in out/srallyc/jit/hot.txt: its blocks translated at boot, the ones it translates added at the end (`jit list` line)
 ./target/release/remodel --game topskatr --jit --jit-sync --input coin-start run 600000000   # the JIT translating on the thread that needs it, as before the workers (frame times: the hitches it caused)
 make state-check          # save state round trip: saved at frame 2000 and resumed must match an uninterrupted run (state hash and audio)
+make state-roundtrip      # save state round trips for several sets (topskatr, daytona, srallyc, lastbrnx) saved at frames 700, 1900 and 3300: each must end on the uninterrupted run's state hash
+make link-state-check     # experimental: the same for two linked Daytonas (link-run), saved at 1900, 3100, 3200 and 3300
 make bench-all            # `make bench` for every set in tools/expected-hashes.txt that has ROMs; lists any state hash that differs
 make release-tag VERSION=0.8.0   # cut a release (below, "Versions and releases"); DRY_RUN=1 checks without tagging
 make geo-check GAME=sgt24h   # native geometrizer beside the chip (2B SHARC, 2C TGP) on a coin-start run, raster streams compared each frame, both timed
@@ -227,7 +229,13 @@ bumped when the layout changes, plus, from format 2, the version of the
 reModel that wrote it. Format 1 files (everything saved before this) are
 read as before. A file with a newer format is refused with a message
 ("this save state was made by reModel X with format N; this build reads
-format M"), not loaded. States only load into the same program ROMs.
+format M"), not loaded. States only load into the same program ROMs. A state carries everything the
+machine holds that later behaviour depends on, including the native
+geometrizer's halt (a command it loops on for ever) when it is in one;
+that is a trailing record, present only then, so a state without one reads
+as before and the format number did not change. `make state-roundtrip`
+checks that a save and load at several frames ends on the straight run's
+hash.
 Texture packs have had a `format` in their manifest since pack format 2
 (docs/texture-packs.md, "Pack format"): a pack without one is format 1, and a
 pack of a newer format than the build reads is refused with a message.

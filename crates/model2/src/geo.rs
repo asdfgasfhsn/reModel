@@ -544,6 +544,62 @@ pub struct Engine {
     sharc_jit: crate::copro_jit::SharcJitSlot,
 }
 
+impl Engine {
+    /// The native geometrizer's halt, if it is in one the hardware would
+    /// be in too (a command the program loops on for ever): `(1, word)` a
+    /// failed command check, `(2, fn)` a command the program lacks. Not
+    /// the model's own limits (`Stop::Unsupported`). The chip keeps its
+    /// halt in its own state, which a save carries; the native
+    /// geometrizer's lives here, so a save carries it with this.
+    fn native_halt(&self) -> Option<[u32; 2]> {
+        use crate::{geo_native::Stop as Sharc, geo_native_2c::Stop as Tgp};
+        match (self.native_tgp.as_deref().and_then(|n| n.stop), self.native.as_deref().and_then(|n| n.stop)) {
+            (Some(Tgp::BadCommand(w)), _) | (_, Some(Sharc::BadCommand(w))) => Some([1, w]),
+            (Some(Tgp::Hang(f)), _) => Some([2, f]),
+            _ => None,
+        }
+    }
+
+    /// Put the native geometrizer back in the halt a save recorded
+    /// ([`Engine::native_halt`]), or out of any it is in.
+    fn set_native_halt(&mut self, halt: Option<[u32; 2]>) {
+        use crate::{geo_native::Stop as Sharc, geo_native_2c::Stop as Tgp};
+        if let Some(n) = self.native_tgp.as_deref_mut() {
+            if matches!(n.stop, Some(Tgp::BadCommand(_) | Tgp::Hang(_))) {
+                n.stop = None;
+            }
+            match halt {
+                Some([1, w]) => n.stop = Some(Tgp::BadCommand(w)),
+                Some([2, f]) => n.stop = Some(Tgp::Hang(f)),
+                _ => {}
+            }
+        }
+        if let Some(n) = self.native.as_deref_mut() {
+            if matches!(n.stop, Some(Sharc::BadCommand(_))) {
+                n.stop = None;
+            }
+            if let Some([1, w]) = halt {
+                n.stop = Some(Sharc::BadCommand(w));
+            }
+        }
+    }
+}
+
+impl Geometrizer {
+    /// The native geometrizer's halt for a save state (after a `sync`):
+    /// none unless it is in one.
+    pub(crate) fn halt(&self) -> Option<[u32; 2]> {
+        match &self.engine {
+            Slot::Idle(e) => e.native_halt(),
+            _ => panic!("geometrizer frame still running: call sync() before saving"),
+        }
+    }
+
+    pub(crate) fn set_halt(&mut self, halt: Option<[u32; 2]>) {
+        self.engine_mut().set_native_halt(halt);
+    }
+}
+
 /// What smooth motion keeps between frames ([`Engine::set_smooth`]).
 #[derive(Default)]
 struct Smooth {
@@ -2131,6 +2187,29 @@ mod tests {
     /// Jump words come only from the command port, and stop being jumps
     /// once overwritten: by the data port at once, by anything else when
     /// the next frame starts.
+    #[test]
+    fn a_halted_native_geometrizer_is_part_of_the_state() {
+        use crate::geo_native_2c::Stop;
+        let mut g = Geometrizer::new(Vec::new(), Core::Fixed);
+        g.set_threaded(false);
+        assert_eq!(g.halt(), None);
+        g.engine_mut().native_tgp.as_deref_mut().unwrap().stop = Some(Stop::Hang(0x1f));
+        assert_eq!(g.halt(), Some([2, 0x1f]));
+        let halt = g.halt();
+        let mut h = Geometrizer::new(Vec::new(), Core::Fixed);
+        h.set_threaded(false);
+        h.set_halt(halt);
+        assert_eq!(h.engine().native_tgp.as_deref().unwrap().stop, Some(Stop::Hang(0x1f)));
+        // A state without one takes a halt away; the model's own limit stays.
+        h.engine_mut().native_tgp.as_deref_mut().unwrap().stop = Some(Stop::Unsupported(1));
+        h.set_halt(None);
+        assert_eq!(h.halt(), None);
+        h.engine_mut().native_tgp.as_deref_mut().unwrap().stop = Some(Stop::BadCommand(7));
+        assert_eq!(h.halt(), Some([1, 7]));
+        h.set_halt(None);
+        assert_eq!(h.engine().native_tgp.as_deref().unwrap().stop, None);
+    }
+
     #[test]
     fn list_jumps_are_tracked() {
         let mut g = Geometrizer::new(Vec::new(), Core::Tgp);

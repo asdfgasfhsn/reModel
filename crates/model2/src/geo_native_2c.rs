@@ -389,6 +389,19 @@ impl Native {
         }
     }
 
+    /// The list holds a command the program loops on for ever (the caller
+    /// then ends the frame): the geometrizer draws nothing more until the
+    /// next upload. The 2A's fixed-function geometrizer has no program to
+    /// loop in, so it just ends the list there and reads the next frame's
+    /// afresh (*unconfirmed*: a list the game was still writing at the
+    /// vblank ends in such a word, `daytona` linked, docs/games/daytona.md;
+    /// a permanent hang there left linked Daytona without a 3D scene).
+    fn hang(&mut self, fnc: u32) {
+        if self.program != Program::Fixed {
+            self.stop = Some(Stop::Hang(fnc));
+        }
+    }
+
     fn unbounded(&mut self, n: u64, fnc: u32) -> bool {
         if n > MAX_LOOP {
             self.stop = Some(Stop::Unsupported(fnc));
@@ -460,12 +473,12 @@ impl Native {
                     let addr = io.rd();
                     self.eb = self.get(l.eb, 0) & 0xff_ffff;
                     if addr & 0xff00_0000 != 0 {
-                        self.stop = Some(Stop::Hang(fnc));
+                        self.hang(fnc);
                         return;
                     }
                     let n = io.rd();
                     if n & 0xffff_8000 != 0 {
-                        self.stop = Some(Stop::Hang(fnc));
+                        self.hang(fnc);
                         return;
                     }
                     let mut eo = addr & 0xff_ffff;
@@ -568,7 +581,7 @@ impl Native {
                     let n = io.rd();
                     let limit = if self.program == Program::Overrev { 0x100_0000u32 } else { 0x8000 };
                     if (0x100_0000u32.wrapping_sub(addr) as i32) < 0 || (limit.wrapping_sub(n) as i32) < 0 {
-                        self.stop = Some(Stop::Hang(fnc));
+                        self.hang(fnc);
                         return;
                     }
                     let mut eo = addr & 0xff_ffff;
@@ -610,7 +623,7 @@ impl Native {
                 }
                 // The rest of the dispatch table points at a loop forever.
                 _ => {
-                    self.stop = Some(Stop::Hang(fnc));
+                    self.hang(fnc);
                     return;
                 }
             }
@@ -1304,6 +1317,22 @@ mod tests {
         assert_eq!(n.pr[0], f(1.0), "the matrix was taken");
         // The squarings a program's start-up code sets up.
         assert_eq!(n.ram[SHARED.squarings as usize + 7], 3);
+    }
+
+    /// A word that is no command ends the 2A's list for that frame only; a
+    /// program's geometrizer loops on it for good.
+    #[test]
+    fn an_unknown_command_hangs_a_program_but_not_the_fixed_function_geometrizer() {
+        let list = [cmd(0x08), f(1.0), 0xffff_0080, cmd(0x08), f(2.0), cmd(0x0f)];
+        let mut n = Native::fixed();
+        assert_eq!(frame(&mut n, &list, &[]).len(), 2, "the list ends at the word");
+        assert_eq!(n.stop, None);
+        assert_eq!(frame(&mut n, &[cmd(0x08), f(1.0), cmd(0x0f)], &[]).len(), 2, "the next frame draws");
+        let mut n = Native::new(Program::Shared);
+        let list = [cmd(0x08), f(1.0), cmd(0x1f), cmd(0x0f)];
+        assert_eq!(frame(&mut n, &list, &[]).len(), 2);
+        assert_eq!(n.stop, Some(Stop::Hang(0x1f)));
+        assert!(frame(&mut n, &[cmd(0x08), f(1.0), cmd(0x0f)], &[]).is_empty(), "for good");
     }
 
     #[test]

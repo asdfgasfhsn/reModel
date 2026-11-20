@@ -460,8 +460,11 @@ is `.17` with `.21`**; `.24/.25` are not polygon data (§5). Evidence:
 `Core::Fixed` (`model2::geo`) is a geometrizer with no program: the
 2C native geometrizer's command handling (`geo_native_2c`, in its
 `Program::Fixed` form: the shared program's maths with the squarings
-table set at start and no command check) on the list as buffer RAM
-gives it, with the polygon ROM above. It runs from the first frame with
+table set at start and no command check, and **no permanent hang**: a
+word that is no command ends that frame's list, where a program's
+geometrizer loops on it until the next upload; *unconfirmed*, see
+`link-board.md` section 10.5, where a half-written list made it matter)
+on the list as buffer RAM gives it, with the polygon ROM above. It runs from the first frame with
 whatever `--geo` says. The display list's matrices, windows, focal
 lengths, lighting, mode and light vector are all the 2C commands. The 2A
 chip's own arithmetic, lighting and clipping are *unconfirmed*: this is

@@ -14,6 +14,18 @@ message is its text), set `version` in the root `Cargo.toml`, commit, then
 creates the annotated tag `vx.y.z` without pushing. Details in
 [docs/usage.md](docs/usage.md), "Versions and releases".
 
+## Unreleased
+
+- Linked Daytona draws its 3D scene in a straight run. The original Model 2's
+  fixed-function geometrizer hung for good on a display list the game was
+  still writing at a vblank (the link check's frames); it now ends that
+  frame's list there and carries on. The 2B and 2C native geometrizers'
+  hang (a failed command check, a command the program lacks) was not in
+  the save state, so a load silently un-hung them; it is now saved (a
+  trailing record only present in a halted state: the save format number
+  is unchanged and older states load as before). New `make state-roundtrip`
+  and `make link-state-check`.
+
 ## 0.11.1 (2026-11-18): Virtua Striker at its own speed, and fixes
 
 - Virtua Striker ran its match about twice too fast: it sets the board's

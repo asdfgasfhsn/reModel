@@ -1858,6 +1858,12 @@ impl Model2Bus {
         if let Some(r) = &self.m2_io {
             (**r).save(w);
         }
+        // Last, and only if there is one: the native geometrizer's halt
+        // (a state without it, from before or from a geometrizer that is
+        // running, is one that is not halted).
+        if let Some(halt) = self.geo.halt().filter(|_| all) {
+            halt.save(w);
+        }
     }
 
     fn load_parts(&mut self, r: &mut state::Reader, parts: Parts) -> Result<(), state::Error> {
@@ -1938,6 +1944,14 @@ impl Model2Bus {
         }
         if let Some(regs) = &mut self.m2_io {
             (**regs).load(r)?;
+        }
+        if all {
+            let mut halt = [0u32; 2];
+            let halted = !r.done();
+            if halted {
+                halt.load(r)?;
+            }
+            self.geo.set_halt(halted.then_some(halt));
         }
         // Memory may have been reallocated.
         #[cfg(not(target_arch = "wasm32"))]
