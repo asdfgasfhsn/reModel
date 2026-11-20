@@ -149,8 +149,25 @@ geometrizer and the renderer already produce.
   pixel and `scene what` reads at the game's resolution.
 - **The ID pass runs only with a look active** today. Picking needs it
   on its own.
-- Not done: polygons sent directly (none occurred in any of the five
-  games).
+- **Repeated on `vstriker` and `lastbrnx`** (2026-11-20), the other two
+  of 2B's four geometry programs, with no change to the hooks. Keys were
+  stable and state hashes unchanged on both.
+  - **`lastbrnx` is the first game below 100%**: 99.1% of 3D pixels had
+    a model key. It sends some polygons directly, with no model (22
+    blocks in 9 of 19 frames), and draws 32 to 71 RAM models a frame.
+    Its command 0x1B, the one the native code lacks, was never sent.
+  - **`vstriker` keeps identical copies of a model at up to 7
+    addresses**, and its two teams are the same models and the same
+    texture sheet with a different palette entry. A rule that names a
+    model by address reaches one player; it must name the content hash.
+  - A `vstriker` footballer is about 17 parts and changes models with
+    its pose, as `gunblade`'s enemies do (inferred from a quarter of
+    keys changing each frame). A `lastbrnx` fighter is about 20 parts
+    posed by matrices: 95% of its models persist from frame to frame.
+- So a model has two names and a rule may use either: the **content
+  hash** for ROM models (it survives copies, and is what `vstriker`
+  needs), and the **address** for RAM models (their content changes
+  every pose).
 
 ### 2. Instances that persist
 

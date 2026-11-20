@@ -169,9 +169,10 @@ touch the geometrizer, the renderer or identity are also run on:
 | Gunblade NY (`gunblade`) | The shared 2B geometry program, which 6 of the 14 2B games use. A rail shooter: city scenery and many enemies |
 | Fighting Vipers (`fvipers`) | The earlier program, which 3 games use. Its second DSP writes parts of the display list, the hardest case for naming models |
 
-Two of 2B's four programs are still untried: `vstriker`'s and
-`lastbrnx`'s. `zerogun` and `pltkids` have no native geometry code, so
-picking and reshaping do not reach them at all.
+The other two of 2B's four programs were tried the same day on
+`vstriker` and `lastbrnx`, for picking, the read map, reshaping and
+colour variants only. `zerogun` and `pltkids` have no native geometry
+code, so picking and reshaping do not reach them at all.
 
 ### What it should cost an agent
 
@@ -320,6 +321,7 @@ spec named; scratch output stays out of the repository.
 | 2026-11-20 | Does GitHub behave as the pack convention assumes, and can an archive be unpacked safely? | Yes on every point checked, signed out. Forks never list; the release API already gives a hash, so the `.sha256` file goes; file addresses must use `HEAD`. Fifteen hostile archives were refused. Not tested: a real repository | [distribution](uplift/distribution.md): three rules changed; the unpacker counts real bytes |
 | 2026-11-20 | Do the adapter's fixed steps turn a raw image-model output into one that passes the gates? | Yes for the 30 raw outputs on disk: 3 pass as returned, 30 after size and alpha are normalised, against 26 as hand-finished. One of the 30 passes and is still wrong: the subject does not fit the cut-out. No model was called | [generation](uplift/generation.md): a fit test, and two outcomes, `repaired` and `refit` |
 | 2026-11-20 | Does the free mesh work on the GPU and on Model 2B? | Yes. The wgpu renderer draws it with no new pipeline, agreeing with software except at edges, at 0 to 3 ms at 1080p. An `fvipers` part was replaced, steady to 0.005 of a pixel. The block now records its material | [model-interchange](uplift/model-interchange.md): depth-testing for big objects; mesh images need IDs of their own |
+| 2026-11-20 | Do the geometry hooks hold on 2B's other two programs (`vstriker`, `lastbrnx`)? | Yes, unchanged. `lastbrnx` is the first game with polygons sent directly (99.1% of pixels keyed). `vstriker` keeps copies of a model at up to 7 addresses, and its teams differ only by palette | [scene-understanding](uplift/scene-understanding.md): a model is named by content hash in ROM and by address in RAM |
 
 Status of each spec, by the ladder in [uplift/README.md](uplift/README.md):
 the interface page and the eight pass-one specs are grounded;

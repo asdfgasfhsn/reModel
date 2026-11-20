@@ -133,6 +133,15 @@ input each:
 The two Model 2B games were added on 2026-11-20. (An earlier version of
 this table gave the whole-ROM figures under the "not blank" label.)
 
+Two more 2B games the same day show how wide the range is: one coin
+start and one run with no input read 47% of `vstriker`'s polygon ROM (8
+MB, a football pitch shows most of its models at once) and 9% of
+`lastbrnx`'s (8 MB, one fight of many). One fault in the spike's map
+came to light there: models drawn from polygon RAM were logged as if
+read from ROM. It was filtered out for these two; the `vf2` and
+`fvipers` figures above include up to two such small models a frame and
+were not redone.
+
 On Daytona a scripted race read only 7 KB more than the title run: the
 demo had already shown that course, and the other courses need
 choosing. On all four added games nearly every unread stretch parses as

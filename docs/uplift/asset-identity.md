@@ -223,6 +223,11 @@ a run with no input each.
   change luma table.
 - **Luma-table variants are not only Daytona's.** `fvipers` has more of
   them than any other game tried, covering 19% of its pixels.
+- **Two more 2B games agree** (`vstriker`, `lastbrnx`; same day).
+  Artworks in several colourings carry 79% and 39% of pixels; the
+  lookup per texel value errs by 1.2 and 0.0 levels, one ratio by 31.6
+  and 9.6. `vstriker`'s team kits are one artwork in 20 to 28
+  colourings: the teams differ by palette entry alone.
 - **`gunblade` is the one game where the plain ratio of the two
   polygon colours nearly works** (88% of pixels within 4 levels). Its
   colour index is still not a brightness, so this is that game's

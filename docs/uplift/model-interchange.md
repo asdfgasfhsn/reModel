@@ -133,6 +133,13 @@ enemy limb showed in only 2 of 6 frames, because the enemy is a
 different model in each pose: replacing "the enemy" means replacing
 every pose's model, which reshaping does not make practical.
 
+On `vstriker` and `lastbrnx`, the other two 2B geometry programs,
+unchanged data again gave the identical frame (10 frames each, state
+hashes unchanged, 1.6 to 3.4 ms). `vstriker` holds identical copies of a
+model at up to 7 addresses, so a replacement named by address changed
+one player; a replacement must be named by content hash to reach them
+all.
+
 **A new mesh in the standard record, RAM models and the GPU** (spiked
 2026-11-20, about 480 more lines):
 
