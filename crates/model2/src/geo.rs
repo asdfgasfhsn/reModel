@@ -284,6 +284,23 @@ enum PolyRam<'a> {
 }
 
 impl<'a> GeoExt<'a> {
+    /// SPIKE (tier 2b): a word of the model's own data, whatever a
+    /// substitution says (no marks, no records).
+    pub(crate) fn peek(&self, addr: u32) -> u32 {
+        if addr >= 0x80_0000 {
+            self.rom.get((addr & self.rom_mask) as usize).copied().unwrap_or(0)
+        } else {
+            match &self.ram {
+                PolyRam::Own(ram) => ram[addr as usize % ram.len()],
+                PolyRam::Overlay(ram, o) => {
+                    let i = addr as usize % ram.len();
+                    o.get(&(i as u32)).copied().unwrap_or(ram[i])
+                }
+                PolyRam::Before(ram, _) => ram[addr as usize % ram.len()],
+            }
+        }
+    }
+
     pub(crate) fn new(ram: &'a mut [u32], rom: &'a [u32]) -> Self {
         let rom_mask = (rom.len().next_power_of_two().max(1) - 1) as u32;
         GeoExt { ram: PolyRam::Own(ram), rom, rom_mask, wrote: false, subst: None }

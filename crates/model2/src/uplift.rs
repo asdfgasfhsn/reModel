@@ -118,6 +118,48 @@ pub fn grid_texture(size: usize) -> Rgba {
     Rgba { width: size, height: size, data }
 }
 
+/// The texture bank number a free mesh's polygons carry on the GPU path
+/// (the sheet has banks 0 and 1; the shader skips the sheet texel for it).
+pub const SKIN_BANK: u32 = 2;
+/// Side of the (unused) sheet rectangle a mesh polygon names: texture
+/// coordinates are in its texels, scaled by the image's size over it.
+pub const SKIN_REGION: u32 = 16;
+
+/// Turn software skin triangles into polygons the GPU renderer draws from a
+/// pack image: a texture on a bank the shader does not read, coordinates
+/// in region texels. The image comes from a pack that answers
+/// `bank == SKIN_BANK`.
+pub fn gpu_skin(polys: &mut [Poly]) {
+    for p in polys.iter_mut().filter(|p| p.skin.is_some()) {
+        p.texture = Some(crate::raster::Texture {
+            x0: 0,
+            y0: 0,
+            w: SKIN_REGION,
+            h: SKIN_REGION,
+            mirror_x: false,
+            mirror_y: false,
+            bank: SKIN_BANK,
+            translucent: false,
+            luma_table: 0,
+        });
+        for v in &mut p.points {
+            v.uz *= SKIN_REGION as f32;
+            v.vz *= SKIN_REGION as f32;
+        }
+    }
+}
+
+/// The colour (5 bits a channel) the block's first texture header gives:
+/// the stream's `0x1` command at `at` carries the header address, which
+/// the program sent even when the model's own words were removed.
+pub fn block_colour(stream: &[u32], at: usize, src: &crate::raster::Sources) -> [u32; 3] {
+    let tha = stream.get(at + 2).copied().unwrap_or(0) & 0xff_ffff;
+    let h3 = src.point_word(tha + 3) as usize;
+    let o = (0x1000 + ((h3 >> 6) & 0x3ff)) * 2;
+    let c = src.palette.get(o..o + 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]])) as u32;
+    [c & 31, (c >> 5) & 31, (c >> 10) & 31]
+}
+
 /// What a skin triangle needs at draw time ([`Poly::skin`]).
 #[derive(Debug)]
 pub struct Skin {

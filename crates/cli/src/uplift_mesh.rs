@@ -6,7 +6,8 @@
 //! MP_FLIP, MP_OFF=x,y,z (B's offset in OBA2's units, as multiples of its extent).
 use model2::capture;
 use model2::geo::Subst;
-use model2::light::{Block, Lamp};
+use model2::enhance::{Found, Rgba, TexInfo, TexturePack};
+use model2::light::{Base, Block, Lamp};
 use model2::raster::{self, Poly, Sources};
 use model2::uplift::{self, Instance, KeyMode, Mesh, Place, Skin};
 use model2::video::{self, View};
@@ -92,6 +93,90 @@ fn words_of(rec: &Subst, rom: &[u32], mask: u32, oba: u32) -> Option<(Vec<u32>, 
         };
         (w, s.2)
     })
+}
+
+/// SPIKE (tier 2, GPU): a texture pack that answers the free mesh's bank
+/// with its image and nothing else.
+struct SkinPack(Arc<Rgba>);
+impl TexturePack for SkinPack {
+    fn find(&mut self, info: &TexInfo) -> Found {
+        if info.bank == uplift::SKIN_BANK {
+            Found::Image(self.0.clone())
+        } else {
+            Found::Missing
+        }
+    }
+}
+
+/// Draw `polys` through the GPU renderer (offscreen), returning the whole
+/// frame as RGB and the milliseconds the call took.
+fn gpu_draw(g: &mut gpu::Renderer, polys: &[Poly], c: &Ctx, view: &View, depth: bool, flat: bool) -> (Vec<u8>, f64) {
+    let mut p = polys.to_vec();
+    uplift::gpu_skin(&mut p);
+    let src = Sources {
+        texture_rom: c.texrom,
+        texture_point_ram: &c.cap.texture_point_ram,
+        render_ram: &c.cap.render_ram,
+        palette: &c.cap.palette,
+        xoff: c.cap.xoff,
+        yoff: c.cap.yoff,
+    };
+    let placed = raster::place(&mut p, view);
+    let layers = video::layers_2d(&c.cap.tiles, &c.cap.palette, view, !placed.is_empty());
+    let shading = if flat { model2::light::Shading::Flat } else { model2::light::Shading::Pixel };
+    g.set_quality(gpu::Quality { depth, shading, ..Default::default() });
+    g.forget_ram();
+    let t = Instant::now();
+    let img = g.frame(&p, &placed, &src, view, &layers);
+    (img, t.elapsed().as_secs_f64() * 1e3)
+}
+
+/// How two whole frames differ: pixels differing at all, by more than 16 in
+/// a channel, the mean absolute channel difference (over `mask`), and the
+/// pixels differing outside it.
+#[derive(Default, Clone, Copy)]
+struct Cmp {
+    mask: usize,
+    any: usize,
+    big: usize,
+    mean: f64,
+    outside: usize,
+}
+fn cmp(a: &[u8], b: &[u8], mask: &[bool]) -> Cmp {
+    let mut c = Cmp::default();
+    let mut sum = 0u64;
+    for (i, m) in mask.iter().enumerate() {
+        let (pa, pb) = (&a[i * 3..i * 3 + 3], &b[i * 3..i * 3 + 3]);
+        let d: Vec<u32> = (0..3).map(|k| pa[k].abs_diff(pb[k]) as u32).collect();
+        if *m {
+            c.mask += 1;
+            c.any += (d.iter().any(|&x| x > 0)) as usize;
+            c.big += (d.iter().any(|&x| x > 16)) as usize;
+            sum += d.iter().sum::<u32>() as u64;
+        } else if d.iter().any(|&x| x > 0) {
+            c.outside += 1;
+        }
+    }
+    c.mean = sum as f64 / (c.mask.max(1) * 3) as f64;
+    c
+}
+fn differs(a: &[u8], b: &[u8]) -> Vec<bool> {
+    a.chunks(3).zip(b.chunks(3)).map(|(x, y)| x != y).collect()
+}
+fn or(a: &[bool], b: &[bool]) -> Vec<bool> {
+    a.iter().zip(b).map(|(x, y)| *x || *y).collect()
+}
+fn show(label: &str, c: Cmp) -> String {
+    format!(
+        "{label}: region {} px, differing {} ({:.2}%), >16 {} ({:.2}%), mean abs {:.2}/255, differing outside {}",
+        c.mask,
+        c.any,
+        100.0 * c.any as f64 / c.mask.max(1) as f64,
+        c.big,
+        100.0 * c.big as f64 / c.mask.max(1) as f64,
+        c.mean,
+        c.outside
+    )
 }
 
 struct Ctx<'a> {
@@ -194,6 +279,21 @@ pub fn run(roms: &RomSet, mode: &str, from: u64, count: u64, out: &Path, oba: u3
             (v.len() == 3).then(|| [v[0], v[1], v[2]])
         })
         .unwrap_or([1.3, 0.0, 0.0]);
+    let mut gpu = if std::env::var_os("MP_GPU").is_some() {
+        let mut g = gpu::Renderer::new()?;
+        println!("gpu {}", g.adapter());
+        g.set_pack(Some(Box::new(SkinPack(Arc::new(skin.img.clone())))));
+        Some(g)
+    } else {
+        None
+    };
+    let gpu_max: u32 = std::env::var("MP_GPU_N").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
+    let mut gpu_n = 0u32;
+    let mut rows_ga: Vec<Vec<Vec<u8>>> = vec![vec![], vec![], vec![]];
+    let mut rows_gb: Vec<Vec<Vec<u8>>> = vec![vec![], vec![], vec![]];
+    let mut rows_gc: Vec<Vec<Vec<u8>>> = vec![vec![], vec![]];
+    let (mut ent_by_entry_n, mut ent_by_entry_eq) = (0u32, 0u32);
+    let (mut ent_n, mut ent_first, mut ent_dom, mut ent_same_sub, mut col_n, mut col_eq, mut sel1, mut sel_n) = (0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0usize, 0usize);
     let pick = (0..7).map(|i| from + (i * (count.max(2) - 1)) / 6).collect::<Vec<_>>();
 
     // Statistics.
@@ -294,12 +394,74 @@ pub fn run(roms: &RomSet, mode: &str, from: u64, count: u64, out: &Path, oba: u3
             let Some((lamp, colour)) = lamp_of(k) else { continue };
             let b = side_sub.blocks[k];
             let pl = places_sub[k];
+            // SPIKE (tier 2b): the lighting entry recorded for the block (from the
+            // model's own data, present although the model was removed) against
+            // the faces of the unmodified rerun; the colour from the block's
+            // texture header against the neighbour polygon's.
+            let mut lamp = lamp;
+            let mut colour = colour;
+            {
+                let pf = side.blocks[k];
+                let faces = side.faces_of(&pf);
+                if let (Some((e, m)), Some(f0)) = (b.entry, faces.first()) {
+                    ent_n += 1;
+                    let rm = side_sub.materials[m as usize];
+                    let fm = side.materials[f0.mat as usize];
+                    let same_m = |a: &model2::light::Material, b: &model2::light::Material| {
+                        a.ambient == b.ambient
+                            && a.diffuse == b.diffuse
+                            && a.spec_scale == b.spec_scale
+                            && (a.squarings == b.squarings || a.squarings == model2::light::Material::NO_SPEC || b.squarings == model2::light::Material::NO_SPEC)
+                    };
+                    ent_first += (same_m(&rm, &fm) && e == f0.entry()) as u32;
+                    let mut counts = std::collections::HashMap::new();
+                    for f in faces {
+                        *counts.entry(f.mat).or_insert(0) += 1;
+                    }
+                    let dom = counts.iter().max_by_key(|e| *e.1).map(|e| side.materials[*e.0 as usize]);
+                    ent_dom += dom.is_some_and(|d| same_m(&d, &rm)) as u32;
+                    ent_same_sub += (pf.entry == b.entry) as u32;
+                    // The entry number is a function of the table: faces with the same entry carry the same material.
+                    let same: Vec<&model2::light::Face> = faces.iter().filter(|f| f.entry() == e).collect();
+                    if !same.is_empty() {
+                        ent_by_entry_n += 1;
+                        ent_by_entry_eq += same.iter().all(|f| same_m(&side.materials[f.mat as usize], &rm)) as u32;
+                    }
+                    if frames == 1 {
+                        let mut es: Vec<u8> = faces.iter().map(|f| f.entry()).collect();
+                        es.sort();
+                        es.dedup();
+                        notes.push(format!("block {k}: recorded entry {e} material {rm:?}; first face entry {} {:?}; entries among faces {es:?}", f0.entry(), side.materials[f0.mat as usize]));
+                    }
+                    if std::env::var_os("MP_FACEMAT").is_none() {
+                        lamp = Lamp {
+                            l: b.light,
+                            ambient: rm.ambient,
+                            diffuse: rm.diffuse,
+                            spec_scale: rm.spec_scale,
+                            squarings: rm.squarings,
+                            front: true,
+                            base: if b.flags & Block::TRUNCATE != 0 { Base::Dotl } else { Base::D },
+                        };
+                    }
+                } else if std::env::var_os("MP_FACEMAT").is_none() && frames == 1 {
+                    notes.push(format!("block {k}: no recorded entry ({:?}) or no faces ({})", b.entry, faces.len()));
+                }
+                let hc = uplift::block_colour(&s_sub, pl.at, &src);
+                col_n += 1;
+                col_eq += (base.iter().filter(|p| p.block as usize == k).min_by_key(|p| p.at).is_some_and(|p| p.colour == hc)) as u32;
+                if std::env::var_os("MP_FACEMAT").is_none() {
+                    colour = hc;
+                }
+            }
             // M1: reprojection of every original vertex, recorded transform vs the game's.
             let sv = stream_vertices(&s_plain, places_plain[k].at);
             let pb = side.blocks[k];
             if sv.len() == mv.len() {
                 let mut cx = (0f64, 0f64, 0usize);
                 for ((p, sel), s) in mv.iter().zip(&sv) {
+                    sel_n += 1;
+                    sel1 += (*sel == 1) as usize;
                     let v = uplift::to_view(&pb.xf, *sel, *p);
                     let (mx, my) = uplift::project(&pb, &places_plain[k], v);
                     let (gx, gy) = (places_plain[k].centre.0 + s[0] / s[2], places_plain[k].centre.1 - s[1] / s[2]);
@@ -424,6 +586,87 @@ pub fn run(roms: &RomSet, mode: &str, from: u64, count: u64, out: &Path, oba: u3
         }
         let _ = &mut img0;
 
+        // ---- GPU (tier 2): the same polygons through the wgpu renderer.
+        let gpu_sample = gpu.is_some() && gpu_n < gpu_max && frames % 6 == 1;
+        if gpu_sample {
+            let g = gpu.as_mut().unwrap();
+            let rem: Vec<Poly> = base.iter().filter(|p| !ks.contains(&(p.block as usize))).cloned().collect();
+            let sw_rem = render(&mut rem.clone(), &ctx, false);
+            let (g_rem, t_rem) = gpu_draw(g, &rem, &ctx, &view, false, false);
+            let (g_with, t_with) = gpu_draw(g, &with, &ctx, &view, false, false);
+            let sw_d = render(&mut with.clone(), &ctx, true);
+            let (g_d, _) = gpu_draw(g, &with, &ctx, &view, true, false);
+            let mask = or(&differs(&img_a, &sw_rem), &differs(&g_with, &g_rem));
+            println!("GPU A frame {} (sorted, depth off): sw mesh px {}, gpu mesh px {}", cap.frame, differs(&img_a, &sw_rem).iter().filter(|x| **x).count(), differs(&g_with, &g_rem).iter().filter(|x| **x).count());
+            println!("  {}", show("gpu vs sw, mesh region", cmp(&img_a, &g_with, &mask)));
+            println!("  noise floor, no mesh: gpu vs sw whole frame differing px {}", differs(&sw_rem, &g_rem).iter().filter(|x| **x).count());
+            let maskd = or(&or(&mask, &differs(&sw_d, &img_a)), &differs(&g_d, &g_with));
+            println!("  {}", show("depth on, gpu vs sw", cmp(&sw_d, &g_d, &maskd)));
+            println!("  sw sorted vs sw depth: {}", show("region", cmp(&img_a, &sw_d, &maskd)));
+            println!("  gpu sorted vs gpu depth: {}", show("region", cmp(&g_with, &g_d, &maskd)));
+            if gpu_n == 0 {
+                let dd: Vec<u8> = sw_rem.chunks(3).zip(g_rem.chunks(3)).flat_map(|(a, b)| { let d = (0..3).map(|k| a[k].abs_diff(b[k]) as u32).max().unwrap().min(31) * 8; [d as u8; 3] }).collect();
+                let mut all = Vec::new();
+                for y in 0..vh {
+                    for im in [&sw_rem, &g_rem, &dd] {
+                        all.extend_from_slice(&im[y * vw * 3..(y + 1) * vw * 3]);
+                    }
+                }
+                let _ = std::fs::write(out.join("noise-floor.png"), png::encode_rgb(vw * 3, vh, &all));
+                let (g_flat, _) = gpu_draw(g, &with, &ctx, &view, false, true);
+                println!("  gpu smooth vs gpu flat shading (same polys): {}", show("region", cmp(&g_with, &g_flat, &mask)));
+                // Hole: alpha 0 region of the texture: pixels of the mesh area where the background shows through.
+                // Timing, native and 1080p.
+                let n = 3;
+                let mut tw = 0.0;
+                let mut tr = 0.0;
+                for _ in 0..n {
+                    tw += gpu_draw(g, &with, &ctx, &view, false, false).1;
+                    tr += gpu_draw(g, &rem, &ctx, &view, false, false).1;
+                }
+                let big = View::new(1080, 16.0 / 9.0, video::Hud::Edges).with_hud_windows(windows.0, windows.1);
+                let (mut bw, mut br) = (0.0, 0.0);
+                let mut diff1080 = 0;
+                for i in 0..n {
+                    let (a, ta) = gpu_draw(g, &with, &ctx, &big, false, false);
+                    let (b, tb) = gpu_draw(g, &rem, &ctx, &big, false, false);
+                    bw += ta;
+                    br += tb;
+                    if i == 0 {
+                        diff1080 = differs(&a, &b).iter().filter(|x| **x).count();
+                    }
+                }
+                println!(
+                    "  gpu cost per frame (incl. read-back): native with mesh {:.2} ms, without {:.2} ms (first call with mesh {:.2}/{:.2}); 1080p with {:.2} ms, without {:.2} ms; 1080p mesh px {}",
+                    tw / n as f64, tr / n as f64, t_with, t_rem, bw / n as f64, br / n as f64, diff1080
+                );
+                let st = g.pack_stats();
+                println!("  pack stats last frame: replaced polys {} images drawn {} uploaded {} held {} ({} bytes) draw calls {}", st.replaced, st.images, st.uploaded, st.held, st.bytes, st.draws);
+            }
+            gpu_n += 1;
+            rows_ga[0].push(crop(&img_a, vw, vh, centre_px.0, centre_px.1, 160, 120, 2));
+            rows_ga[1].push(crop(&g_with, vw, vh, centre_px.0, centre_px.1, 160, 120, 2));
+            rows_ga[2].push(crop(&g_d, vw, vh, centre_px.0, centre_px.1, 160, 120, 2));
+            // Clipping case: the oversize double-sided sphere.
+            if gpu_n <= 2 {
+                if let Some(&k) = ks.first() {
+                    if let Some((lamp, colour)) = lamp_of(k) {
+                        let (b, pl) = (side_sub.blocks[k], places_sub[k]);
+                        let sc = 1.3 * uplift::to_view(&b.xf, 0, c0)[2] / e0.iter().cloned().fold(0.0, f32::max);
+                        let inst = Instance { mesh: &sphere, skin: skin.clone(), scale: e0.map(|e| e * sc), offset: c0, lamp, colour, key: KeyMode::TriMin, double_sided: true, smooth, flip };
+                        let mut p = rem.clone();
+                        p.extend(uplift::polys(&inst, &b, &pl));
+                        let sw = render(&mut p.clone(), &ctx, false);
+                        let (gg, _) = gpu_draw(g, &p, &ctx, &view, false, false);
+                        let m = or(&differs(&sw, &sw_rem), &differs(&gg, &g_rem));
+                        println!("  clip case (1.3x distance, double sided): {}", show("gpu vs sw", cmp(&sw, &gg, &m)));
+                        rows_gc[0].push(crop(&sw, vw, vh, 248.0, 192.0, 248, 192, 1));
+                        rows_gc[1].push(crop(&gg, vw, vh, 248.0, 192.0, 248, 192, 1));
+                    }
+                }
+            }
+        }
+
         // ---- Test B: anchor to OBA2, original kept.
         if let Some(oba2) = oba2 {
             let kb: Vec<usize> = (0..side.blocks.len()).filter(|&k| side.blocks[k].oba & 0xff_ffff == oba2).collect();
@@ -506,12 +749,31 @@ pub fn run(roms: &RomSet, mode: &str, from: u64, count: u64, out: &Path, oba: u3
                 }
                 let mut with = base.clone();
                 with.extend(bpolys);
+                let with_b = with.clone();
                 uplift::SKIN_PIXELS.store(0, Relaxed);
                 uplift::SKIN_LUMA.store(0, Relaxed);
                 let img_b = render(&mut with, &ctx, false);
                 let (sp, sl) = (uplift::SKIN_PIXELS.load(Relaxed), uplift::SKIN_LUMA.load(Relaxed));
                 if sp > 0 {
                     l_b_mesh.add(sl as f64 / sp as f64);
+                }
+                if gpu_sample {
+                    let g = gpu.as_mut().unwrap();
+                    let (g_rem, _) = gpu_draw(g, &base, &ctx, &view, false, false);
+                    let (g_with, _) = gpu_draw(g, &with_b, &ctx, &view, false, false);
+                    let (g_d, _) = gpu_draw(g, &with_b, &ctx, &view, true, false);
+                    let sw_rem = img0.clone();
+                    let sw_d = render(&mut with_b.clone(), &ctx, true);
+                    let mask = or(&differs(&img_b, &sw_rem), &differs(&g_with, &g_rem));
+                    println!("GPU B frame {}: sw mesh px {}, gpu mesh px {}", cap.frame, differs(&img_b, &sw_rem).iter().filter(|x| **x).count(), differs(&g_with, &g_rem).iter().filter(|x| **x).count());
+                    println!("  {}", show("gpu vs sw, mesh region", cmp(&img_b, &g_with, &mask)));
+                    println!("  noise floor, no mesh: gpu vs sw whole frame differing px {}", differs(&sw_rem, &g_rem).iter().filter(|x| **x).count());
+                    let maskd = or(&or(&mask, &differs(&sw_d, &img_b)), &differs(&g_d, &g_with));
+                    println!("  {}", show("depth on, gpu vs sw", cmp(&sw_d, &g_d, &maskd)));
+                    println!("  gpu sorted vs gpu depth: {}", show("region", cmp(&g_with, &g_d, &maskd)));
+                    rows_gb[0].push(crop(&img_b, vw, vh, anchor_px.0, anchor_px.1, 160, 120, 2));
+                    rows_gb[1].push(crop(&g_with, vw, vh, anchor_px.0, anchor_px.1, 160, 120, 2));
+                    rows_gb[2].push(crop(&g_d, vw, vh, anchor_px.0, anchor_px.1, 160, 120, 2));
                 }
                 println!("B frame {}: {} | mesh px {} mean luma {:.1} scenery luma {:.1}", cap.frame, lines.join("; "), sp, if sp > 0 { sl as f64 / sp as f64 } else { 0.0 }, if bn > 0 { bs / bn as f64 } else { 0.0 });
                 if pick.contains(&cap.frame) {
@@ -533,6 +795,17 @@ pub fn run(roms: &RomSet, mode: &str, from: u64, count: u64, out: &Path, oba: u3
     if !rows_c[0].is_empty() {
         strip(&rows_c, 248, 192, &out.join("strip-clip.png"));
     }
+    for (rows, name) in [(&rows_ga, "strip-gpu-A.png"), (&rows_gb, "strip-gpu-B.png")] {
+        if !rows[0].is_empty() {
+            strip(rows, 320, 240, &out.join(name));
+        }
+    }
+    if !rows_gc[0].is_empty() {
+        strip(&rows_gc, 248, 192, &out.join("strip-gpu-clip.png"));
+    }
+    println!(
+        "recorded lighting entry: blocks {ent_n}; same material and entry as the first face of the unmodified rerun {ent_first}, as the commonest face material {ent_dom}; same record in the unmodified and removed runs {ent_same_sub}; faces with the recorded entry's number carry the recorded material in {ent_by_entry_eq}/{ent_by_entry_n} blocks; colour from the block's texture header equal to the neighbour polygon's {col_eq}/{col_n}; vertices through matrix 1: {sel1}/{sel_n}"
+    );
     println!("frames {frames} (model missing {missing}), max instances {inst_max}, mesh triangles {tris_total}");
     println!("M1 vertex reprojection error (px, every vertex of the original, recorded transform vs game): {}", s_vert.show());
     println!("M2 mesh centre vs original centre (px): {}", s_cent.show());
@@ -552,7 +825,7 @@ pub fn run(roms: &RomSet, mode: &str, from: u64, count: u64, out: &Path, oba: u3
         1000.0 * t_draw_with / nf,
         1000.0 * t_draw_without / nf
     );
-    for n in notes.iter().take(10) {
+    for n in notes.iter().take(30) {
         println!("note: {n}");
     }
     println!("state hash {:016x}", m.bus.state_hash());

@@ -488,7 +488,7 @@ pub struct Sources<'a> {
 
 impl Sources<'_> {
     /// A u16 from texture point space: bit 23 selects point RAM.
-    fn point_word(&self, addr: u32) -> u16 {
+    pub(crate) fn point_word(&self, addr: u32) -> u16 {
         if addr & 0x80_0000 != 0 {
             self.texture_point_ram.get((addr & 0xffff) as usize).copied().unwrap_or(0)
         } else {

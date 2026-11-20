@@ -109,6 +109,11 @@ fn wrap(c: i32, size: u32, mirror: bool) -> u32 {
 // Bilinearly filtered texel scaled to 0-255, or -1 where a translucent
 // texture is mostly transparent.
 fn filtered_texel(p: Poly, u_in: f32, v_in: f32) -> i32 {
+    // SPIKE (tier 2): a free mesh's polygon (bank 2) has no sheet texel:
+    // it is lit as over a transparent original.
+    if p.bank >= 2u {
+        return -1;
+    }
     let u = u_in - 0.5;
     let v = v_in - 0.5;
     let fu = u - floor(u);

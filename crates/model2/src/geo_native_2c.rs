@@ -910,6 +910,18 @@ impl Native {
                 t.block(oba, flags, c.fx, c.fy, c.l);
                 t.set_xf(c.m, c.t);
             }
+            // SPIKE (tier 2b): the lighting entry of the model's own first polygon.
+            let attr = io.poly.peek((oba & 0xff_ffff).wrapping_add(6));
+            let (p, _) = self.params(io, attr);
+            let control = p[3];
+            let squarings = if control & self.get(l.specular, 0) != 0 {
+                if control == 1 { 0 } else { (self.read_at(io, Ram::A, l.squarings + (control & 0x3fff)) & 0x3fff).max(1) }
+            } else {
+                Material::NO_SPEC
+            };
+            if let Some(t) = io.light.as_deref_mut() {
+                t.set_entry(attr, [p[0], p[1], p[2]], squarings);
+            }
         }
         if compact || self.get(l.computed, 0) & 1 != 0 {
             for k in 0..3 {

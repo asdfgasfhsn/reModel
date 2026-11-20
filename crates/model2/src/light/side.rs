@@ -54,6 +54,11 @@ pub struct Block {
     /// then the same for matrix 1 (`topskatr`'s second one; a copy of the
     /// first elsewhere).
     pub xf: [f32; 24],
+    /// SPIKE (tier 2b): the lighting entry the model's first polygon names
+    /// (attribute bits 18-22) and its material in [`Frame::materials`],
+    /// read from the model's own data even when a rerun removed or
+    /// replaced it: what a replacement inherits.
+    pub entry: Option<(u8, u16)>,
 }
 
 impl Block {
@@ -264,6 +269,7 @@ impl Frame {
                     first: b[7],
                     count: b[8],
                     xf: [0.0; 24],
+            entry: None,
                 }
             })
             .collect::<Vec<_>>();
@@ -431,6 +437,7 @@ impl Tap {
             count: 0,
             key: 0,
             xf: [0.0; 24],
+            entry: None,
         });
     }
 
@@ -483,9 +490,14 @@ impl Tap {
         if !v.iter().all(|x| x.is_finite()) {
             flags |= Face::NONE;
         }
+        let mat = self.intern(m, squarings);
+        self.faces.push(Face { n: v, mat, flags });
+    }
+
+    fn intern(&mut self, m: [u32; 3], squarings: u32) -> u16 {
         let squarings = squarings.min(Material::NO_SPEC);
         let key = [m[0], m[1], m[2], squarings];
-        let mat = match self.known.get(&key) {
+        match self.known.get(&key) {
             Some(&k) => k,
             None => {
                 let k = self.materials.len().min(u16::MAX as usize) as u16;
@@ -500,8 +512,18 @@ impl Tap {
                 self.known.insert(key, k);
                 k
             }
-        };
-        self.faces.push(Face { n: v, mat, flags });
+        }
+    }
+
+    /// SPIKE (tier 2b): the current block's lighting entry (from the first
+    /// polygon's attribute word as the model's own data has it) and the
+    /// material it gives (ambient, diffuse, specular scale as float bits,
+    /// squarings).
+    pub fn set_entry(&mut self, attr: u32, m: [u32; 3], squarings: u32) {
+        let k = self.intern(m, squarings);
+        if let Some(b) = self.blocks.last_mut() {
+            b.entry = Some((((attr >> 18) & 0x1f) as u8, k));
+        }
     }
 
     /// The last face was lit from the other side than it faces

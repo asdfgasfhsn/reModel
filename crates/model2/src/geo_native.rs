@@ -927,6 +927,14 @@ impl Native {
                 flags |= Block::SPECULAR;
             }
             t.block(oba, flags, c.fx, c.fy, c.l);
+            // SPIKE (tier 2): the transform (one matrix on 2B: both slots) and
+            // the lighting entry of the model's own first polygon.
+            t.set_xf([c.m, c.m], [c.t, c.t]);
+            if let Source::Poly(base) = src {
+                let attr = io.poly.peek(base.wrapping_add(6));
+                let ([diffuse, ambient, control, scale], _) = self.params(attr);
+                t.set_entry(attr, [ambient, diffuse, scale], light_squarings(specular, control));
+            }
         }
         crate::geo::readmap::mark(1, oba);
         let hashing = io.light.is_some() && !std::env::var_os("MP_NOHASH").is_some();
