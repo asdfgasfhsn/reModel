@@ -13,7 +13,7 @@ message is its text), set `version` in the root `Cargo.toml`, commit, then
 creates the annotated tag `vx.y.z` without pushing. Details in
 [docs/usage.md](docs/usage.md), "Versions and releases".
 
-## Unreleased
+## 0.13.0 (2026-11-22): every ROM variant, the game page, steering
 
 - Steering with a stick no longer jumps. Past the dead zone a stick's reading now
   starts from none at its edge and rises to full at the end of the travel (it used
