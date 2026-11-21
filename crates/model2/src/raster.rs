@@ -761,6 +761,9 @@ pub struct BuildIn<'a> {
     /// [`NEAR`] (0, the default): the game's view, nothing clipped that
     /// can be drawn.
     pub near: f32,
+    /// Note the texture ROM words read, texture headers and UV lists, in
+    /// this map (`crate::readmap`). Draw-only: the polygons are the same.
+    pub tex_map: Option<&'a crate::readmap::ReadMap>,
 }
 
 /// [`texel_indices`] by texture rectangle (bank, x0, y0, w, h,
@@ -972,6 +975,16 @@ fn build_impl(stream: &[u32], src: &Sources, input: &BuildIn) -> (Vec<Poly>, Vec
 
                     let mut verts: Vec<Vtx> = if quad { vec![p1, p0, pa, pb] } else { vec![p1, p0, pa] };
                     // Texture points: (V, U) pairs, 13.3 fixed, per vertex.
+                    if let Some(m) = input.tex_map {
+                        // Only the ROM half of texture point space (bit 23
+                        // selects point RAM): UV words, then the header.
+                        if tpa & 0x80_0000 == 0 {
+                            m.mark_range((tpa & 0x7f_ffff) as usize, (tpa & 0x7f_ffff) as usize + 2 * verts.len());
+                        }
+                        if tha & 0x80_0000 == 0 {
+                            m.mark_range((tha & 0x7f_ffff) as usize, (tha & 0x7f_ffff) as usize + 4);
+                        }
+                    }
                     for (k, vtx) in verts.iter_mut().enumerate() {
                         vtx.v = src.point_word(tpa + 2 * k as u32) as f32 / 8.0;
                         vtx.u = src.point_word(tpa + 2 * k as u32 + 1) as f32 / 8.0;

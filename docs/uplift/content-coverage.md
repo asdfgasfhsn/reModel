@@ -1,8 +1,12 @@
 # Content coverage: reaching all of a game
 
-Shared words, roles and rules: [README.md](README.md). Nothing here is
-built into reModel; what was tried is in "Evidence" (spike code is on
-unmerged branches, not for merging as it stands). Added on 2026-11-19
+Shared words, roles and rules: [README.md](README.md). **Built** (MVP items
+1 and 2, 2026-11-21): the polygon and texture ROM read maps, `tours.txt`'s
+`from=` and `mark=`, `remodel tour list|run` and `remodel coverage`; they
+are described in [../uplift-studio.md](../uplift-studio.md), "Tours and
+coverage", and are marked below. The tour recorder, pokes and the crawler
+are not built; what was tried is in "Evidence" (spike code is on unmerged
+branches, not for merging as it stands). Added on 2026-11-19
 after the user's review: a full uplift cannot be made from a catalogue
 that only holds what somebody happened to play.
 
@@ -114,8 +118,9 @@ stretches. What the maps showed:
   it carries `eeprom.bin` over from the last run. A tour must start from
   a stated EEPROM, or it does not reproduce (E2).
 
-**Known defect.** The read map logs models drawn from polygon RAM as if
-they were read from ROM. The figures it affects: the `vf2` and `fvipers`
+**Known defect (fixed in the built maps).** The spike's read map logged
+models drawn from polygon RAM as if they were read from ROM; the built one
+records only the ROM half of the geometrizer's bus. The figures it affects: the `vf2` and `fvipers`
 columns in E3 include up to two such small models a frame and were not
 redone; `vstriker` and `lastbrnx` had it filtered out. The fix
 proposed, not tried: record reads only where the geometrizer reads the
@@ -455,10 +460,13 @@ steering the crawler.
 
 ## MVP
 
-1. Read maps for the polygon ROM and the texture ROM, merged across
+1. **Built.** Read maps for the polygon ROM and the texture ROM, merged across
    runs, recording reads only where the geometrizer reads ROM so RAM
    models are not counted.
-2. `tours.txt` with `from=` and `mark=`, `tour run`, and `coverage`.
+2. **Built.** `tours.txt` with `from=` and `mark=`, `tour run`, and `coverage`.
+   Tours live in `crates/romset/src/games/tours/`; a project's own with
+   `--tours FILE`. A length is steps or frames (`6200f`). A mark saves a
+   state; `from=` replays the parent's inputs to the branch point.
 3. The player's tour recorder.
 4. `ram search` and `poke=`, with the cheats work.
 5. The crawler: spread policy, masked screens, two-pass tries, then an

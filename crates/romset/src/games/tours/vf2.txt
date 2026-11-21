@@ -1,0 +1,9 @@
+# Virtua Fighter 2's tours: LABEL|LENGTH|INPUT (docs/uplift-studio.md,
+# "Tours"). Inputs only; nothing taken from the ROMs.
+#
+# bench: what `make bench` runs (BENCH_STEPS, coin-start).
+bench|600000000|coin-start
+# Attract, a coin and a first fight with punches and kicks.
+coin-start|6000f|coin-start
+# The attract loop on its own.
+attract|5000f|

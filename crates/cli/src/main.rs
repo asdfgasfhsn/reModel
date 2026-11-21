@@ -1,7 +1,9 @@
 mod answer;
+mod answer_local;
 mod camera_scan;
 mod catalogue;
 mod catalogue_viewer;
+mod coverage;
 mod depth_check;
 mod geo_check;
 mod glyphs;
@@ -35,6 +37,7 @@ mod texpack_upscale;
 mod tgp2a;
 mod tgp_check;
 mod tgp_disasm;
+mod tour;
 
 use analyze::{explore, read_boot, Image, Trace};
 use romset::{games, RomSet};
@@ -1065,6 +1068,8 @@ fn dispatch_no_roms(o: &Opts) -> Option<ExitCode> {
         "studio" => cmd_studio(o),
         "scene" => scene::main(o),
         "catalogue" => cmd_catalogue(o),
+        "tour" if o.args.get(1).map(String::as_str) != Some("run") => tour::list(o),
+        "coverage" => coverage::main(o),
         "sharc-disasm" | "sharc-check" => cmd_sharc(o),
         "temporal-check" => cmd_temporal_check(o),
         "tgp-disasm" => cmd_tgp_disasm(o),
@@ -1126,6 +1131,7 @@ fn main() -> ExitCode {
         "run-ahead-profile" => cmd_run_ahead_profile(&o, roms),
         "latency" => cmd_latency(&o, roms),
         "run" => cmd_run(&o, roms),
+        "tour" => tour::run(&o, roms),
         "link-run" => link_run::run(&o, roms),
         "link-net" => link_net::run(&o, roms),
         "sound-disasm" => cmd_sound_disasm(&o, roms),

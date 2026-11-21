@@ -80,6 +80,22 @@ pub use vstriker::VSTRIKER;
 pub use waverunr::WAVERUNR;
 pub use zerogun::ZEROGUN;
 
+/// The set's tours (`remodel tour`, docs/uplift-studio.md, "Tours"): lines
+/// of `LABEL|LENGTH|INPUT`, input scripts and frame numbers only. A clone
+/// without tours of its own uses its parent's; empty where there are none.
+pub fn tours(game: &Game) -> &'static str {
+    let text = |id: &str| match id {
+        "topskatr" => include_str!("tours/topskatr.txt"),
+        "vf2" => include_str!("tours/vf2.txt"),
+        "daytona" => include_str!("tours/daytona.txt"),
+        _ => "",
+    };
+    match text(game.id) {
+        "" => game.parent.map_or("", text),
+        t => t,
+    }
+}
+
 pub static ALL: &[&Game] = &[
     &TOPSKATR, &SKISUPRG, &STCC, &SEGAWSKI, &WAVERUNR, &OVERREV, &HOTD, &BEL, &OVERREVB, &SGT24H, &DYNABB97, &DOA,
     &INDY500, &FVIPERS, &SCHAMP, &SFIGHT, &VSTRIKER, &LASTBRNX, &SRALLYC, &VF2, &DAYTONA, &VCOP, &DESERT, &VCOP2,

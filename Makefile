@@ -427,6 +427,11 @@ texmap: release ## Which texture is where: draw the captured frames (CAPTURE=DIR
 # "Catalogue"): out/GAME/catalogue, grown by sessions.
 CATALOGUE_DIR   ?= $(OUT)/catalogue
 CATALOGUE_STEPS ?= $(BENCH_STEPS)
+# Tours and the ROM read maps (docs/uplift-studio.md, "Tours and coverage").
+TOUR_OPTS ?=
+COVERAGE_OPTS ?=
+COVERAGE_GAMES ?= topskatr vf2 daytona
+OUT_ROOT ?= out/scratch
 # `make catalogue-runs`: a file of runs, one per line: LABEL|STEPS|INPUT
 # (INPUT as for --input; `#` lines and blank lines are skipped).
 RUNS ?=
@@ -442,6 +447,14 @@ catalogue-runs: release ## Observe every run listed in RUNS=FILE (lines LABEL|ST
 	done
 	$(RUN) catalogue report --dir $(CATALOGUE_DIR) | head -30
 	$(RUN) catalogue viewer --dir $(CATALOGUE_DIR)
+tour-list: release ## List GAME's tours (input scripts from power-on, crates/romset/src/games/tours/; TOUR_OPTS="--tours FILE --json"): length, branch point, marks, whether each has a read map (docs/uplift-studio.md, "Tours and coverage")
+	$(RUN) tour list $(TOUR_OPTS)
+tour-run: release ## Run GAME's tours (TOUR=name, default all; TOUR_OPTS="--tours FILE --dir DIR --json") from power-on with the ROM read maps on, writing out/GAME/coverage/LABEL.map and a state at each mark; same state hashes as without maps (the default is the native geometrizer; --geo chip runs the game's own)
+	$(RUN) tour run $(or $(TOUR),--all) $(TOUR_OPTS)
+coverage: release ## How much of GAME's polygon and texture ROM its tours have read, by region, with the largest unread stretches by address (COVERAGE_OPTS="--top N --json"; needs no ROM, run `make tour-run` first)
+	$(RUN) coverage $(COVERAGE_OPTS)
+coverage-check: release ## Acceptance test for tours and coverage on COVERAGE_GAMES (default topskatr vf2 daytona): the bench tour's state hash with the maps on is a plain run's (BENCH_STEPS of coin-start), a tour run twice writes the same map, the answers have the six envelope fields, coverage with no maps exits 3
+	sh tools/coverage-check.sh $(REMODEL) $(ROM) $(OUT_ROOT)/coverage-check $(BENCH_STEPS) $(COVERAGE_GAMES)
 catalogue-report: release ## The catalogue's coverage report: what is seen, what is new since the last session, screens and how complete they look, loaded vs drawn (also CATALOGUE_DIR/report.txt)
 	$(RUN) catalogue report --dir $(CATALOGUE_DIR)
 catalogue-viewer: release ## Write CATALOGUE_DIR/index.html, the static browser of the catalogue (gallery by kind and screen, where each entry appears, what it appears with, loads)

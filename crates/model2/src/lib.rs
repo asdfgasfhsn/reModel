@@ -33,6 +33,7 @@ pub mod packlog;
 pub mod photo;
 pub mod protection;
 pub mod raster;
+pub mod readmap;
 pub mod regions;
 pub mod sharc;
 pub mod smooth;

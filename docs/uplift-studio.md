@@ -561,6 +561,131 @@ pack replaced, and why not); `facts.tsv`; the side channel in captures
 (each object's model key); layered packs; the player's `--scene` and the
 server. Scenes use the default (chip) geometrizer; the design's choice of
 native waits for the side channel.
+## Tours and coverage
+
+The catalogue holds what somebody happened to play, and its own
+coverage figure only says how well the screens visited were sampled, not
+how much of the game was never visited
+([uplift/content-coverage.md](uplift/content-coverage.md)). **Tours** and
+**ROM read maps** give a number to count against: how much of a game's
+polygon ROM and texture ROM the tours have read.
+
+### Tours
+
+A tour is a named input script from power-on: one line of `LABEL|LENGTH|INPUT`.
+
+- `LENGTH` is CPU steps (as `run`'s STEPS) or frames with an `f` (`6200f`).
+- `INPUT` is the `--input` script (`name@from-to`, `name=value@from-to`,
+  `coin-start`), plus two terms: `from=LABEL@FRAME` starts as another tour
+  did up to that frame, then goes on with this tour's own inputs (which
+  must start after it: a branch cannot rewrite the past), and
+  `mark=NAME@FRAME` saves the state as that frame starts, to
+  `out/GAME/coverage/states/LABEL-NAME.state`.
+
+A game's own tours are in `crates/romset/src/games/tours/GAME.txt`: input
+scripts and frame numbers, nothing taken from a ROM. A project adds its own
+with `--tours FILE`. Top Skater, `vf2` and `daytona` have tours today; every
+game has a `bench` tour (the bench's steps and input) so a tour run can be
+checked against `tools/expected-hashes.txt`.
+
+```sh
+make tour-list GAME=topskatr             # the tours, their branches and marks, which have a map
+make tour-run GAME=topskatr              # all of them (TOUR=coin-start for one)
+make coverage GAME=topskatr              # the report
+```
+
+`remodel tour run` always starts from power-on in a machine of its own,
+with the EEPROM as the board is made: it never reads an `eeprom.bin` left in
+an output folder (that changed a state hash on its own: a tour that carried a
+stale one did not reproduce). So a tour run twice gives the same state hash
+and the same map. It uses the native geometrizer where the game has one
+(`--geo chip` for the game's own program: the same state hashes) and the JIT
+with `--jit`.
+
+### Read maps
+
+Each tour records, beside the run, which words of two ROMs it read:
+
+- **Polygon ROM**: the words the geometrizer read from the ROM half of its
+  bus. A model drawn from polygon RAM is not a ROM read and is not counted
+  (the first spike's map counted up to two small ones a frame on `vf2` and
+  `fvipers`). The hook is one place, the bus read, so it covers the native
+  geometrizers (2A, 2B, 2C and the original Model 2) and also the game's
+  own program on the chip (`--geo chip`).
+- **Texture ROM**: the texture headers and UV lists the rasteriser read,
+  noted where the raster stream is built (`raster::build_impl`, shared by
+  the software and GPU renderers), on a copy of each frame the tour grabs.
+  The texels are not here: they sit in texture RAM, loaded from the data
+  ROM, which these maps do not follow yet.
+
+Counts are **bytes** (the polygon ROM is read in 4-byte words, the texture
+ROM in 2-byte words): nothing marks where a header or a model begins, so
+"headers" cannot be counted. A map is a bitmap, one bit per ROM word,
+written to and never read back by the machine: nothing in emulation sees it,
+so state hashes, save states and run-ahead are unchanged with it on, and off
+is the default (`make coverage-check` proves the first on three boards).
+It is not on in the player.
+
+**Boards.** Every board whose geometrizer reads the polygon ROM through the
+shared bus is counted, which is all of them. The games with no native
+geometrizer (`zerogun`, `pltkids`) run the chip path only, and that is
+counted the same way; there is no native path to differ from. Texture
+reads come from the rasteriser, which every game has.
+
+### The report
+
+`remodel coverage` (no ROM needed; it reads the maps) merges the maps of
+the game's tours by union. For each ROM it gives the share of non-blank
+bytes read (blank: a run of at least 256 bytes all zero or all ones), the
+share of the whole ROM, the read share of each 1 MiB region, and the unread
+stretches, largest first, by address range and size. It lists addresses and
+sizes only; no ROM bytes. A tour that has no map yet, or whose line changed
+since its map, is named in a warning.
+
+`--json` on `tour list`, `tour run` and `coverage` prints one object,
+`{ok, code, error, data, warnings, next}`, and exits with `code`: 0 done, 2 a
+bad request (unknown tour, bad option), 3 something missing (no map yet:
+`next` says which command makes it), 4 an internal error.
+
+### What the shipped tours read (measured 2026-11-21)
+
+| | Top Skater (2C) | `vf2` (2A) | `daytona` (original) |
+|---|---|---|---|
+| Tours | `coin-start`, `characters`, `expert` (and `bench`) | `coin-start`, `attract` (and `bench`) | `coin-start`, `attract` (and `bench`) |
+| Polygon ROM | 8 MB, none blank | 12 MB, 1.60 MB blank | 16 MB, 4.20 MB blank |
+| Read, of the whole ROM | 27.9% | 27.3% | 17.6% |
+| Read, of what is not blank | 27.9% | 31.5% | 23.9% |
+| Unread stretches | 40, the largest 4.66 MB | 16,082, the largest 1.57 MB | 18,396, the largest 1.59 MB |
+| Texture ROM read (headers and UV lists) | 17.6% of 8 MB | 12.0% of 16 MB | 10.2% of 16 MB |
+
+The polygon figures agree with the first spike's (28%, 28% and 18%;
+[uplift/content-coverage.md](uplift/content-coverage.md), E1 and E3): the
+`vf2` difference is the spike counting its RAM models. The Top Skater
+tours are the three runs of its first catalogue (coin start, character
+walk, a steered course), written as tours.
+
+**The chip path reads the same words, plus one.** `--geo chip` runs the
+game's own geometrizer program, which reads the word after each model; the
+native geometrizer reads a model's words and stops. On a 2,500-frame
+coin-start the two maps of Top Skater (2C) differ by 60 bytes in 15 ranges
+(733,512 against 733,572) and `gunblade`'s (2B) by 480 of 1.63 MB; the
+state hashes are equal. `pltkids`, which has no native geometrizer, reads
+2.7% of its polygon ROM in the same run on either setting.
+
+**`tools/expected-hashes.txt` is a second-run hash.** `make bench` loads an
+`eeprom.bin` the game wrote earlier, so the file's Top Skater hash is the
+hash of the bench's second run in a folder; a tour, or a first run in a
+fresh folder, gives `7f0275251269648e`, not `400275251269648e`. The other
+games the check covers write no EEPROM in that run. This is the same leftover
+EEPROM as in the spec's E2, now seen in the benchmark itself: `make
+coverage-check` compares a tour with a plain run in a fresh folder.
+
+### What it does not do yet
+
+No tour recorder in the player, no `poke=`, no crawler, no model browser for
+the unread stretches, no map of the data ROM or the tiles
+([uplift/content-coverage.md](uplift/content-coverage.md), items 3 to 5 of
+its MVP).
 
 ## What is built, what comes later
 

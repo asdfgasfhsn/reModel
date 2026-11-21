@@ -1507,6 +1507,7 @@ impl Renderer {
             relief: self.quality.materials_relief,
             texels: Some(&self.texels),
             near: self.photo_near,
+            ..Default::default()
         };
         let built = model2::raster::build_with(stream, src, &input);
         self.lap(t_build, |p| &mut p.build);

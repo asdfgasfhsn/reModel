@@ -49,6 +49,16 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 - `studio compare` no longer reuses an old run's frames silently: it
   refuses a folder that holds one unless `--force`; `--scene` compares from
   scenes with no run (`make studio-compare SCENES=all`).
+- Uplift tooling, first part: **tours and ROM read maps**. `remodel tour
+  list|run` runs a game's named input scripts from power-on (a known
+  EEPROM, with `from=` branches and `mark=` states) while recording which
+  words of the polygon ROM and the texture ROM were read, and `remodel
+  coverage` reports how much of each the tours have read, by region, with
+  the unread stretches by address range. Draw-only: the maps are written to
+  and never read back, so state hashes are unchanged (`make
+  coverage-check`). Tours for Top Skater, `vf2` and `daytona`; `--json`
+  answers in the envelope the uplift specs define. `make tour-list`,
+  `tour-run`, `coverage`, `coverage-check`.
 
 ## 0.12.1 (2026-11-21): network play fixes
 

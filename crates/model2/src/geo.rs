@@ -242,6 +242,10 @@ pub struct GeoExt<'a> {
     rom_mask: u32,
     /// Polygon RAM was written.
     pub(crate) wrote: bool,
+    /// Where to note ROM words read (`crate::readmap`): off unless the
+    /// engine was given a map, and only for the frame that is the machine's
+    /// own, not a check or a renderer-side rerun.
+    map: Option<&'a crate::readmap::ReadMap>,
 }
 
 /// Polygon RAM as a [`GeoExt`] sees it: its own, or (for smooth motion's
@@ -257,13 +261,13 @@ enum PolyRam<'a> {
 impl<'a> GeoExt<'a> {
     pub(crate) fn new(ram: &'a mut [u32], rom: &'a [u32]) -> Self {
         let rom_mask = (rom.len().next_power_of_two().max(1) - 1) as u32;
-        GeoExt { ram: PolyRam::Own(ram), rom, rom_mask, wrote: false }
+        GeoExt { ram: PolyRam::Own(ram), rom, rom_mask, wrote: false, map: None }
     }
 
     /// Polygon RAM `ram`, unchanged: writes go to `overlay`.
     pub(crate) fn overlay(ram: &'a [u32], overlay: &'a mut HashMap<u32, u32>, rom: &'a [u32]) -> Self {
         let rom_mask = (rom.len().next_power_of_two().max(1) - 1) as u32;
-        GeoExt { ram: PolyRam::Overlay(ram, overlay), rom, rom_mask, wrote: false }
+        GeoExt { ram: PolyRam::Overlay(ram, overlay), rom, rom_mask, wrote: false, map: None }
     }
 
     /// Polygon RAM `ram`, read as it is whatever is written (the RAM the
@@ -271,7 +275,13 @@ impl<'a> GeoExt<'a> {
     /// data block begun ([`GeoExt::block`]), are noted in `log`.
     pub(crate) fn before(ram: &'a [u32], log: &'a mut Vec<crate::smooth::Access>, rom: &'a [u32]) -> Self {
         let rom_mask = (rom.len().next_power_of_two().max(1) - 1) as u32;
-        GeoExt { ram: PolyRam::Before(ram, log), rom, rom_mask, wrote: false }
+        GeoExt { ram: PolyRam::Before(ram, log), rom, rom_mask, wrote: false, map: None }
+    }
+
+    /// Note the ROM words read in `map` (None: none).
+    pub(crate) fn tracked(mut self, map: Option<&'a crate::readmap::ReadMap>) -> Self {
+        self.map = map;
+        self
     }
 
     /// An object or direct data block begins (noted by [`GeoExt::before`]).
@@ -287,7 +297,11 @@ impl External for GeoExt<'_> {
     #[inline]
     fn read(&mut self, addr: u32) -> u32 {
         if addr >= 0x80_0000 {
-            self.rom.get((addr & self.rom_mask) as usize).copied().unwrap_or(0)
+            let at = (addr & self.rom_mask) as usize;
+            if let Some(m) = self.map {
+                m.mark(at);
+            }
+            self.rom.get(at).copied().unwrap_or(0)
         } else {
             match &mut self.ram {
                 PolyRam::Own(ram) => ram[addr as usize % ram.len()],
@@ -487,6 +501,9 @@ pub struct Engine {
     pub sharc_interpret: bool,
     poly_ram: Vec<u32>,
     poly_rom: Arc<Vec<u32>>,
+    /// Polygon ROM words the geometrizer has read, if a front end asked
+    /// to know ([`Geometrizer::set_read_map`]); never part of its state.
+    read_map: Option<Arc<crate::readmap::ReadMap>>,
     /// Buffer RAM as it was when the frame started.
     buffer: Vec<u8>,
     /// Jump word offsets in `buffer` (see `Geometrizer::jumps`).
@@ -888,6 +905,19 @@ impl Geometrizer {
         self.engine_mut().set_light(on);
     }
 
+    /// Note every polygon ROM word the machine's own frames read in `map`
+    /// (one bit per word; `crate::readmap`), or stop. Draw-only: nothing
+    /// reads the map back, so frames and state hashes are the same with
+    /// it on.
+    pub fn set_read_map(&mut self, map: Option<Arc<crate::readmap::ReadMap>>) {
+        self.engine_mut().read_map = map;
+    }
+
+    /// The polygon ROM's size in words.
+    pub fn poly_rom_words(&self) -> usize {
+        self.engine().poly_rom.len()
+    }
+
     /// Start a frame on the worker thread from the list at the read
     /// pointer. Runs in the background until the next `sync`.
     pub fn start_frame(&mut self, buffer: &[u8]) {
@@ -1053,6 +1083,7 @@ impl Engine {
             sharc_interpret: false,
             poly_ram: vec![0; 0x10_0000],
             poly_rom: Arc::new(poly_rom),
+            read_map: None,
             buffer: Vec::new(),
             jumps: Vec::new(),
             stream: Vec::new(),
@@ -1107,6 +1138,7 @@ impl Engine {
             sharc_interpret: false,
             poly_ram: Vec::new(),
             poly_rom: Arc::new(Vec::new()),
+            read_map: None,
             buffer: Vec::new(),
             jumps: Vec::new(),
             stream: Vec::new(),
@@ -1602,7 +1634,7 @@ impl Engine {
         let mut list = ListDma::new(buffer, &self.jumps, read_ptr, &mut self.list_words, &mut self.fed);
         let mut io = crate::geo_native::Io {
             list: &mut list,
-            poly: GeoExt::new(&mut self.poly_ram, &self.poly_rom),
+            poly: GeoExt::new(&mut self.poly_ram, &self.poly_rom).tracked(self.read_map.as_deref()),
             latch: &mut self.poly_latch,
             out: &mut out,
             tap: tap.as_mut(),
@@ -1702,7 +1734,7 @@ impl Engine {
         let mut list = ListDma::new(buffer, &self.jumps, read_ptr, &mut self.list_words, &mut self.fed);
         let mut io = crate::geo_native::Io {
             list: &mut list,
-            poly: GeoExt::new(&mut self.poly_ram, &self.poly_rom),
+            poly: GeoExt::new(&mut self.poly_ram, &self.poly_rom).tracked(self.read_map.as_deref()),
             latch: &mut latch,
             out: &mut out,
             tap: tap.as_mut(),
@@ -1781,7 +1813,7 @@ impl Engine {
         // Polygon RAM's words (as the JIT's lockstep sees them).
         #[cfg(not(target_arch = "wasm32"))]
         let len = self.poly_ram.len() as u32;
-        let mut ext = GeoExt::new(&mut self.poly_ram, &self.poly_rom);
+        let mut ext = GeoExt::new(&mut self.poly_ram, &self.poly_rom).tracked(self.read_map.as_deref());
         let start = self.tgp.steps;
         // Frame-start handshake: the program waits for F0 to rise, clears
         // its input FIFO, then waits for F0 to fall before reading the list
@@ -1895,7 +1927,7 @@ impl Engine {
         let mut out = Vec::new();
         let mut active = false;
         let mut bus = SharcGeoBus {
-            poly: GeoExt::new(&mut self.poly_ram, &self.poly_rom),
+            poly: GeoExt::new(&mut self.poly_ram, &self.poly_rom).tracked(self.read_map.as_deref()),
             latch: &mut self.poly_latch,
             list: ListDma {
                 buffer,
@@ -2154,6 +2186,29 @@ impl state::State for Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The read map notes polygon ROM words and nothing else (a model
+    /// drawn from polygon RAM is not a ROM read), and a bus with a map
+    /// reads and writes exactly what one without does.
+    #[test]
+    fn the_read_map_counts_rom_words_only_and_changes_no_value() {
+        use crate::readmap::{Ranges, ReadMap};
+        let rom: Vec<u32> = (0..48).map(|i| i * 7 + 1).collect();
+        let map = ReadMap::new(rom.len());
+        let (mut ram_a, mut ram_b) = (vec![9u32; 16], vec![9u32; 16]);
+        let mut plain = GeoExt::new(&mut ram_a, &rom);
+        let mut tracked = GeoExt::new(&mut ram_b, &rom).tracked(Some(&map));
+        for step in [0x80_0000u32, 0x80_0003, 0x80_0003, 0x80_0010, 5, 6, 0x80_0032, 0x7f_ffff] {
+            assert_eq!(plain.read(step), tracked.read(step), "{step:x}");
+        }
+        plain.write(5, 77);
+        tracked.write(5, 77);
+        assert_eq!(plain.read(5), tracked.read(5));
+        assert_eq!(plain.read(0x80_0001), tracked.read(0x80_0001));
+        assert_eq!(plain.wrote, tracked.wrote);
+        // Words 0, 1, 3 and 16; word 50 is past the ROM's end (it reads 0).
+        assert_eq!(map.ranges(), Ranges(vec![(0, 2), (3, 4), (16, 17)]));
+    }
 
     /// A frame that draws before it sets a window gets the last window of
     /// the frame before, and so does one that sets none; one that sets
