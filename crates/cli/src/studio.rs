@@ -191,7 +191,10 @@ const OPTIONS: &[(&str, &[&str])] = &[
     ),
     ("regions", &["--tsv"]),
     ("seam", &["--from", "--tsv", "--strict"]),
-    ("compare", &["--pack", "--into", "--steps", "--snap", "--run-args", "--frames", "--jobs", "--force", "--scene", "--view"]),
+    (
+        "compare",
+        &["--pack", "--into", "--steps", "--snap", "--run-args", "--frames", "--jobs", "--force", "--scene", "--view"],
+    ),
 ];
 
 /// The options typed, before anything is parsed: one the subcommand does not

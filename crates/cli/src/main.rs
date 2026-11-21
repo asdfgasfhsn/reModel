@@ -1,5 +1,4 @@
 mod answer;
-mod answer_local;
 mod camera_scan;
 mod catalogue;
 mod catalogue_viewer;

@@ -16,7 +16,7 @@
 //! header or UV list from the texture ROM; the texels themselves come from
 //! texture RAM, filled from the data ROM, and are not in these maps.
 
-use crate::answer_local::Answer;
+use crate::answer::Answer;
 use crate::tour::{self, answer, fail, Finish};
 use model2::readmap::Ranges;
 use serde_json::{json, Value};

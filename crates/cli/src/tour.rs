@@ -19,7 +19,7 @@
 //! Nothing here changes what the machine does: the maps are written to,
 //! never read back, and the state hash is the same as `run`'s.
 
-use crate::answer_local::{Answer, Code};
+use crate::answer::{Answer, Code};
 use crate::coverage::{self, MapFile};
 use model2::readmap::{Ranges, ReadMap};
 use romset::RomSet;
@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 /// The codes under the names this module uses.
 pub mod answer {
-    use crate::answer_local::Code;
+    use crate::answer::Code;
     pub const BAD_REQUEST: Code = Code::BadRequest;
     pub const MISSING: Code = Code::Missing;
     pub const INTERNAL: Code = Code::Internal;
@@ -203,7 +203,7 @@ pub fn parse(text: &str, source: &str) -> Result<Vec<Tour>, String> {
 
 /// " (did you mean a, b?)" for the names in `all` close to `name`.
 pub fn near(name: &str, all: &[&str]) -> String {
-    let close = crate::answer_local::near_matches(name, all);
+    let close = crate::answer::near_matches(name, &all.iter().map(|s| s.to_string()).collect::<Vec<_>>());
     if close.is_empty() {
         let known = all.join(", ");
         if known.is_empty() {
