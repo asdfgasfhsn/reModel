@@ -110,6 +110,9 @@ make install-desktop RECOMP=1   # reModel in the desktop's app menu, running thi
 make uninstall-desktop    # remove that app-menu entry and its icon
 make smooth-frames GAME=doa    # coin-start run drawing in-between frames beside the real ones -> out/doa/frames
 make web RECOMP=1         # browser build -> out/web: game list, a page and module per game (WebGPU; serve over HTTPS, docs/web.md); missing screenshots made JOBS at a time (default 3)
+make site-shots           # the promo website's screenshots, from your ROMs with default settings -> out/site-shots (site/README.md)
+make site-serve           # assemble the website (site/ + posters + screenshots) into out/site and serve it on http://127.0.0.1:8800
+make site-deploy          # publish it: out/site force-pushed as the single commit of origin's gh-pages branch (DRY_RUN=1: don't push)
 make dist                 # player to hand out (interpreter and JIT, no recompiled code, no ROMs) -> out/dist/remodel-VERSION-TARGET.tar.gz (.zip on Windows; DIST_TARGET= another target)
 make app                  # macOS: universal reModel.app, ad-hoc signed, in a .dmg -> out/dist/remodel-VERSION-macos-universal.dmg
 make appimage             # Linux x86_64: the player as an AppImage (pinned appimagetool, fetched once into out/tools) -> out/dist/remodel-VERSION-x86_64.AppImage
@@ -344,5 +347,7 @@ notarised): the archives' README says how to open them past macOS's
 Gatekeeper and Windows's SmartScreen.
 
 When emulation changes on purpose, update that set's line in
-`tools/expected-hashes.txt` in the same commit.
+`tools/expected-hashes.txt` in the same commit. `make bench` runs from a blank EEPROM
+(`--fresh-eeprom`), so the hashes don't depend on what earlier runs saved in
+`out/GAME/eeprom.bin`.
 

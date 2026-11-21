@@ -709,13 +709,11 @@ coin-start the two maps of Top Skater (2C) differ by 60 bytes in 15 ranges
 state hashes are equal. `pltkids`, which has no native geometrizer, reads
 2.7% of its polygon ROM in the same run on either setting.
 
-**`tools/expected-hashes.txt` is a second-run hash.** `make bench` loads an
-`eeprom.bin` the game wrote earlier, so the file's Top Skater hash is the
-hash of the bench's second run in a folder; a tour, or a first run in a
-fresh folder, gives `7f0275251269648e`, not `400275251269648e`. The other
-games the check covers write no EEPROM in that run. This is the same leftover
-EEPROM as in the spec's E2, now seen in the benchmark itself: `make
-coverage-check` compares a tour with a plain run in a fresh folder.
+**The benchmark starts from a blank EEPROM.** `make bench` used to load
+an `eeprom.bin` an earlier run had written, so 16 of the 25 expected hashes
+were second-run hashes and a fresh folder gave different ones. It now runs
+with `--fresh-eeprom` (no EEPROM loaded or kept), the same start as a tour, so
+a tour's hash and the benchmark's agree (Top Skater `7f0275251269648e`).
 
 ### What it does not do yet
 

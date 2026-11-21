@@ -817,8 +817,8 @@ CAMERA_GAP   ?= 20
 camera-scan: release ## Photo mode's true camera, a spike (docs/photo-mode.md): run a coin-start run (INPUT) to CAMERA_FRAME and CAMERA_GAP frames on, and list the rotations in the i960's RAM that turned as the scenery says the camera did (candidates for the game's camera)
 	$(RUN) --input $(or $(INPUT),$(BENCH_INPUT)) camera-scan $(CAMERA_FRAME) $(CAMERA_GAP)
 
-bench: release ## Timed fixed run into a race: speed vs real time and the state hash (must not change with speed-ups; JIT=1: on the i960 JIT, with its counters)
-	$(RUN) --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep -E '^(instructions|emulated|host time|frame times|idle skip|jit|state hash)'
+bench: release ## Timed fixed run into a race from a blank EEPROM: speed vs real time and the state hash (must not change with speed-ups, nor with what earlier runs saved; JIT=1: on the i960 JIT, with its counters)
+	$(RUN) --fresh-eeprom --input $(BENCH_INPUT) run $(BENCH_STEPS) | grep -E '^(instructions|emulated|host time|frame times|idle skip|jit|state hash)'
 
 jit-lockstep: release ## The i960 JIT beside the interpreter, block by block, through a coin-start run (JIT_STEPS, default 300M; INPUT), stopping at the first difference; no recompiled build needed (docs/jit.md)
 	$(CAP) $(REMODEL) --game $(GAME) --rom $(ROM) --jit --input $(or $(INPUT),$(BENCH_INPUT)) lockstep $(JIT_STEPS)
@@ -891,6 +891,30 @@ mpeg-dump: release ## Decode MPEG ROM frames directly: make mpeg-dump ADDR=0x110
 
 mpeg-test: ## MPEG decoder test against the MPEG ROMs in ROM=
 	REMODEL_ROM=$(abspath $(ROM)) $(CARGO) test --release -p remodel-mpeg -- --ignored
+
+##@ Website (the promo site; site/README.md)
+
+# The promo site: site/ holds the page and original art only; the game
+# screenshots are made from your ROMs by `make site-shots` into
+# SITE_SHOTS and joined with the page by `make site` into SITE_OUT, so
+# nothing ROM-derived is ever committed.
+SITE_SHOTS ?= out/site-shots
+SITE_OUT   ?= out/site
+SITE_PORT  ?= 8800
+
+site-shots: ## Website screenshots from ROM=: every shot in tools/site-shots.sh's list, captured with the player's default settings (never your saved ones) into SITE_SHOTS (default out/site-shots); SHOT=NAME redoes one
+	$(call release_build,remodel-play)
+	CAP=$(CAP) PLAY=$(CURDIR)/$(PLAY) ROM=$(abspath $(ROM)) SITE_SHOTS=$(abspath $(SITE_SHOTS)) SHOT=$(SHOT) sh tools/site-shots.sh
+
+site: ## Assemble the website into SITE_OUT (default out/site): site/, the posters and the screenshots from `make site-shots`, as WebP
+	SITE_SHOTS=$(SITE_SHOTS) SITE_OUT=$(SITE_OUT) sh tools/site-build.sh
+
+site-serve: site ## Assemble the website and serve it on http://127.0.0.1:SITE_PORT (default 8800) until Ctrl-C
+	@echo "http://127.0.0.1:$(SITE_PORT)/"
+	cd $(SITE_OUT) && $(PYTHON) -m http.server $(SITE_PORT) --bind 127.0.0.1
+
+site-deploy: site ## Publish the website: assemble it, then force-push SITE_OUT as the single commit of origin's gh-pages branch, which GitHub Pages serves (DRY_RUN=1: commit, don't push)
+	SITE_OUT=$(SITE_OUT) DRY_RUN=$(DRY_RUN) sh tools/site-deploy.sh
 
 ##@ Housekeeping
 

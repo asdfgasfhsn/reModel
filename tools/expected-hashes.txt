@@ -1,28 +1,28 @@
 # set state-hash: what `make bench GAME=<set>` must print (tools/release.sh;
 # `make bench-all`, `make release-tag`). Update a line, in the commit that
 # changes it, when emulation changes on purpose.
-srallyc 45fbec5e9d1215cf
-lastbrnx c3ec82727bacd608
-topskatr 400275251269648e
+srallyc 75a22e67983d7d0f
+lastbrnx 100e033fccacd608
+topskatr 7f0275251269648e
 vf2 23a2a5094a998773
 daytona e15632c50ca3f9f2
-hotd 38c08a3e3591af45
+hotd 7322c40818223fb1
 vcop 01f963b7f4bcc9be
 desert cd3d58d3e5039fcf
 sfight 2a0a5a5d0d957997
 schamp 0dd9ca5f3388771f
 fvipers f2da97d89774d706
-stcc b42ea11201ac75c4
-bel a634c029241973eb
+stcc 58bc63c54a701dc4
+bel 756719dc571973eb
 vcop2 e31f9a0f51649643
-skytargt 9a102fc85df71fbc
-manxtt 9a55bbe8e7117c41
-manxttc bd23a2e62e2c4bb0
-motoraid eecec69cb92731d2
-gunblade 8f1a6b60319ffe13
-dynamcop 4fc9232bb702240c
-zerogun 8dcba7059288171d
-pltkids 9372c575ce6c52d6
-rchase2 d7abe9d43f16ed78
-von e0e990f07a540fe0
+skytargt 6f0be47b71f71fbc
+manxtt be2887300cfdec41
+manxttc d6558827f751bbb0
+motoraid 25cec69cb92731d2
+gunblade 86d2dd7f79f0cb7c
+dynamcop a265fe38a22193ce
+zerogun 6477ff313b68c2fb
+pltkids e5b01adecf6c52d6
+rchase2 3149b17afb985664
+von 81233ccaf133d6ab
 vstriker cfe234dfe91cddbf

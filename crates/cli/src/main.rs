@@ -77,6 +77,8 @@ options:
                        coin-start is the game's own coin-up and start
   --dump-textures DIR  at each `run` snapshot, write every distinct 3D texture
                        and tile pattern drawn to DIR as PNG, plus DIR/index.txt
+  --fresh-eeprom       `run` starts from a blank EEPROM and saves none
+                       (`make bench`: hashes independent of earlier runs)
   --out DIR            where `run` writes its files (frames/, eeprom.bin, the
                        captured programs): default out/GAME relative to the
                        working directory
@@ -641,6 +643,9 @@ struct Opts {
 /// Parse the command line; `Err` is the exit code to leave with at once.
 /// `--out DIR`: where `run` writes its files (default out/GAME).
 static OUT_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+/// `--fresh-eeprom`: `run` starts from a blank EEPROM and keeps none
+/// (`make bench`: a state hash that doesn't depend on an earlier run).
+static FRESH_EEPROM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn parse_opts() -> Result<Opts, ExitCode> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -655,6 +660,10 @@ fn parse_opts() -> Result<Opts, ExitCode> {
     if args.is_empty() {
         eprint!("{USAGE}");
         return Err(ExitCode::FAILURE);
+    }
+    if let Some(i) = args.iter().position(|a| a == "--fresh-eeprom") {
+        args.remove(i);
+        FRESH_EEPROM.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     let mut opt = |flag: &str| -> Result<Option<String>, ()> {
         let Some(i) = args.iter().position(|a| a == flag) else { return Ok(None) };
@@ -3264,7 +3273,10 @@ fn run(
     let dir = OUT_DIR.get().cloned().unwrap_or_else(|| default_run_dir(roms.game.id));
     let _ = std::fs::create_dir_all(&dir);
     let eeprom_path = dir.join("eeprom.bin");
-    if let Ok(bytes) = std::fs::read(&eeprom_path) {
+    let fresh = FRESH_EEPROM.load(std::sync::atomic::Ordering::Relaxed);
+    if fresh {
+        println!("eeprom        fresh (--fresh-eeprom: none loaded or kept)");
+    } else if let Ok(bytes) = std::fs::read(&eeprom_path) {
         m.bus.eeprom.load(&bytes);
         println!("eeprom        loaded {}", eeprom_path.display());
     }
@@ -3631,7 +3643,7 @@ fn run(
     if let Some(g) = &b.gun {
         println!("gun interface {} configuration bytes, counters {:02x?}", g.config_bytes, &g.counters[..9]);
     }
-    if b.eeprom.dirty {
+    if b.eeprom.dirty && !fresh {
         let _ = std::fs::write(&eeprom_path, b.eeprom.save());
     }
     // Raw video memory for offline inspection (game-derived: stays in out/).

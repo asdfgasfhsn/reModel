@@ -16,6 +16,11 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- `make bench` (and `bench-all`, `release-tag`) runs from a blank EEPROM
+  (`remodel --fresh-eeprom run`: none loaded or kept), so its state hashes no
+  longer depend on an `eeprom.bin` left by an earlier run; a fresh checkout or
+  worktree failed 16 of 25 before. `tools/expected-hashes.txt` holds the
+  fresh-start hashes (16 changed; checked stable over two runs).
 - Network link play: a player who leaves, quits or goes silent no longer ends
   the game for everyone. The players left carry on: they agree on the
   leaver's last frame (the newest of its records any of them has; a player
