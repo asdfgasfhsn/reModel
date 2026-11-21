@@ -21,7 +21,9 @@ branches back to (`start`) and the address just past its backward branch
 "hot spots") and read in the game's code; its game's page in
 `docs/games/` says what it reads and what ends it. An entry can't make a
 game run differently: everything below is checked as it runs, so a wrong
-entry only costs the time of checking it.
+entry only costs the time of checking it. A variant's loops are its own where
+its program moved them (found the same way, or by searching its program for the
+parent's loop instructions, and confirmed by the skips: `docs/variants.md`).
 
 ## What is checked
 

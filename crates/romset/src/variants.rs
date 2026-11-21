@@ -100,12 +100,21 @@ pub struct Variant {
     pub swaps: &'static [ChipSwap],
     /// Parent chips this variant lacks.
     pub drop: &'static [&'static str],
+    /// Chips the variant has that its parent lacks, after the parent's (a
+    /// cross-board clone's own program chips and the other board's extras).
+    pub add: &'static [RomFile],
+    /// Its textures are its own: texture packs do not fall back to the
+    /// parent's (`dayton93`).
+    pub own_textures: bool,
     pub board: Option<Board>,
     pub packed: Option<&'static [Role]>,
     pub attract_frame: Option<u64>,
     pub idle_loops: Option<&'static [IdleLoop]>,
     /// The protection answers at other ROM addresses: (reply index, address).
     pub protection_rom: &'static [(usize, u32)],
+    /// The `coin-start` script where the parent's does not reach play (the program
+    /// takes a start press later: `indy500to`).
+    pub coin_start: Option<&'static str>,
     pub backup_ram: Option<&'static [(usize, &'static [u8])]>,
     pub volume_db: Option<f32>,
     pub texture_ram_mirrored: Option<bool>,
@@ -131,11 +140,14 @@ impl Variant {
         year: None,
         swaps: &[],
         drop: &[],
+        add: &[],
+        own_textures: false,
         board: None,
         packed: None,
         attract_frame: None,
         idle_loops: None,
         protection_rom: &[],
+        coin_start: None,
         backup_ram: None,
         volume_db: None,
         texture_ram_mirrored: None,
@@ -165,6 +177,7 @@ impl Variant {
             }
             files.push(self.swaps.iter().find(|s| s.parent == f.name).map_or(*f, |s| s.chip));
         }
+        files.extend_from_slice(self.add);
         if self.swaps.iter().any(|s| !parent.files.iter().any(|f| f.name == s.parent)) {
             return None;
         }
@@ -187,6 +200,9 @@ impl Variant {
         }
         if let Some(a) = self.attract_frame {
             g.attract_frame = a;
+        }
+        if let Some(c) = self.coin_start {
+            g.controls.coin_start = c;
         }
         if let Some(i) = self.idle_loops {
             g.idle_loops = i;
@@ -321,5 +337,30 @@ mod tests {
         assert_eq!(g.files[2].sha1, p.files[2].sha1, "the rest are the parent's");
         assert!(g.scenes.is_empty() && !p.scenes.is_empty(), "scenes are not inherited");
         assert!(games::tours(g).is_empty() && !games::tours(p).is_empty(), "tours are not inherited");
+    }
+
+    #[test]
+    fn the_overrides_a_variant_may_make_take_effect() {
+        // Its own textures: no fall back to the parent's pack; the others fall back.
+        let sets = |id| crate::pack_sets(games::find(id).unwrap()).collect::<Vec<_>>();
+        assert_eq!(sets("dayton93"), ["dayton93"]);
+        assert_eq!(sets("daytonat"), ["daytonat", "daytona"]);
+        // A start script of its own, only where the variant gives one.
+        let (to, p) = (games::find("indy500to").unwrap(), games::find("indy500").unwrap());
+        assert_ne!(to.controls.coin_start, p.controls.coin_start);
+        assert_eq!(games::find("indy500d").unwrap().controls.coin_start, p.controls.coin_start);
+        // A cross-board clone: the other board, its extra chips after the parent's, the protection
+        // answer at its own ROM address and the rest of the protection the parent's.
+        let (a, b) = (games::find("doaa").unwrap(), games::find("doa").unwrap());
+        assert_eq!(a.board, Board::Model2A);
+        assert_eq!(a.files.len(), b.files.len() + 6);
+        assert!(a.files[b.files.len()..].iter().all(|f| f.role == Role::CoproData));
+        let (pa, pb) = (a.protection.as_ref().unwrap(), b.protection.as_ref().unwrap());
+        assert_eq!((pa.replies[0].rom, pb.replies[0].rom), (0x2830, 0x2810));
+        assert_eq!((pa.replies[0].command, pa.replies[0].len), (pb.replies[0].command, pb.replies[0].len));
+        // The preset settings record of a clone whose program rejects the parent's.
+        let (s, p) = (games::find("daytonas").unwrap(), games::find("daytona").unwrap());
+        assert_ne!(s.backup_ram, p.backup_ram);
+        assert_eq!(s.backup_ram[0].1[0x0b], 0, "SINGLE");
     }
 }

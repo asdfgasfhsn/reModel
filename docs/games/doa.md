@@ -150,3 +150,16 @@ smooth motion; run-ahead 1 (the lag measured above).
 - *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
   a 600M-instruction coin-start run (`make bench`) fast-forwards 78.9%
   of its instructions through it, and the state hash is unchanged.
+
+## `doaa`, the Model 2A clone
+
+`doa.zip` also holds the 2A set's program pair (`e19310aa.12`, `e19311aa.13`) and
+the six 2A geometry programs (`opr-14742a.45` ...): **supported, a variant** of `doa`
+with the board changed to 2A (`crates/romset/src/games/variants.rs`, docs/variants.md);
+the data, polygon, texture and sound chips are the parent's. *Confirmed (by running
+it):* the protection check's reply, which the 2B program compares against 48 bytes
+at ROM 0x2810, is at 0x2830 in the 2A program; with the parent's address the 3D
+fighters never draw and the fight freezes, with it Kasumi and Zack fight (the
+`coin-start` run reaches a fight and a winner screen). Its frame-wait loop is the
+parent's, 0x20 higher (0x2800; found by its instructions, 79% of a 600M-instruction
+run skipped, the state hash unchanged).

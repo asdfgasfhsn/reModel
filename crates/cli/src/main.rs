@@ -80,6 +80,7 @@ options:
   --fresh-eeprom       `run` starts from a blank EEPROM and saves none
                        (`make bench`: hashes independent of earlier runs)
   --out DIR            where `run` writes its files (frames/, eeprom.bin, the
+                       original Model 2's I/O board record iostore.bin, the
                        captured programs): default out/GAME relative to the
                        working directory
   --interp             run the i960 on the interpreter even when this build
@@ -3660,6 +3661,12 @@ fn run(
     }
     if b.eeprom.dirty && !fresh {
         let _ = std::fs::write(&eeprom_path, b.eeprom.save());
+    }
+    // The original Model 2's settings live on the I/O board: its 128-byte record, as the game
+    // left it (to find a program's own defaults and layout; game-derived: stays in out/).
+    let io_store = b.io_store_dump(128);
+    if !io_store.is_empty() {
+        let _ = std::fs::write(dir.join("iostore.bin"), io_store);
     }
     // Raw video memory for offline inspection (game-derived: stays in out/).
     let vram = dir.join("vram");

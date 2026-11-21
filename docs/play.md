@@ -904,11 +904,14 @@ version, a row of pills under its facts names them (the parent by its own
 label, "Export" or "Rev C", then revisions, regions, other boards,
 prototypes, hacks): a click chooses one, and so does the **Version** button
 beside Saves (the pad reaches it by focus, A steps to the next, round) or
-V on the keyboard; in the grid the hint bar has "Version: Japan" in the same
-place. The version shown is the one Play, Saves, Link play and the live
+V on the keyboard (the button and the hint carry no keycap while the pad is in
+use, and the network banner's Join button no J); in the grid the hint bar has
+"Version: Japan" in the same place. The version shown is the one Play, Saves, Link play and the live
 preview use: it has its own EEPROM, save states, resume state, settings and
 bindings (all keyed by its set id, never the parent's: `out/topskatrj/` and
-`out/topskatr/` don't touch), its own title and its own attract frame. The
+`out/topskatr/` don't touch; the settings and bindings of a variant that has
+none of its own are read from its parent's until the player changes something
+for the variant, which writes the variant's own files), its own title and its own attract frame. The
 choice is kept per title in `play-settings.txt` (`version.topskatr =
 topskatrj`) and Continue (Y) resumes the version last played. A version
 chosen that is no longer installed falls back to the parent. **Prototypes and
@@ -920,7 +923,7 @@ when it is turned off. `--game topskatrj`, `make play GAME=topskatrj` and
 its variant and is refused by another with a message naming both ("this save
 state is from another version of the game: it is for Top Skater (Japan), this
 is Top Skater (USA)"). Texture packs fall back to the parent's
-(`pack_sets`). Link play works for a variant whose settings record is its
+(`pack_sets`), except for `dayton93`, whose textures are its own. Link play works for a variant whose settings record is its
 parent's (`srallycb`, `srallyp`, `daytonat`, `daytonata`, `manxttc`); network
 sessions require the same variant on every machine (the set id is part of the
 ROM hash).

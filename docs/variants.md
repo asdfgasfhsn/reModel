@@ -1,8 +1,9 @@
 # ROM variants: a survey of every clone of the supported games
 
-The sets table in [roms.md](roms.md) lists which clones each zip holds; three
-are supported today as hand-written clone manifests (`manxttc`, `sfight`,
-`overrevb`). This page surveys the other 32 clones, of 14 of the 31
+The sets table in [roms.md](roms.md) lists which clones each zip holds. Of
+the 35 clones surveyed here, 27 are supported as variants (see
+[Status](#status-what-is-built)); the other 8 (class C) are not. The survey
+covers the 32 clones that were not hand-written manifests, of 14 of the 31
 supported titles (14 have no clone in the dat and 3 have only the clones
 already supported): what each is, which
 chips it changes, whether it runs on its parent's manifest with those chips
@@ -19,8 +20,12 @@ or the chips are marked *unconfirmed*.
 
 ## Status: what is built
 
-Steps 1 and 2 of the [order](#order) are built: the infrastructure, the three
-earlier clones re-expressed as variants, and the nine class A variants.
+Steps 1 to 4 of the [order](#order) are built, and `doaa` of step 5: the
+infrastructure, the three earlier clones re-expressed as variants, the nine
+class A variants and the fifteen class B variants, all booting, attracting and
+reaching play from a blank EEPROM. What is left is the cross-board clones of
+step 5 (the 2A clones of `zerogun` and `pltkids`, the 2B and 2C clones of
+`dynamcop`) and the Daytona hacks of step 6.
 
 **The model** (`crates/romset/src/variants.rs`, data in
 `crates/romset/src/games/variants.rs`): a `Variant` is a thin manifest that
@@ -32,11 +37,13 @@ title's):
 | Field | Meaning |
 |---|---|
 | `id`, `parent`, `label`, `kind` | the set id (what `--game` takes); the title's set; the Version list's name ("Rev B", "Japan"); `VariantKind` = Revision, Region, CrossBoard, Prototype or Hack (the last two hidden by the launcher unless "Show hacks and prototypes"); `kind_confirmed` is false where the kind rests on the dat's name and the chip names only |
-| `swaps: &[ChipSwap]`, `drop` | the parent's chip (by name, so by socket and role) replaced by the variant's own (name, size, SHA-1, role), and parent chips the variant lacks (`manxttc`) |
+| `swaps: &[ChipSwap]`, `drop`, `add` | the parent's chip (by name, so by socket and role) replaced by the variant's own (name, size, SHA-1, role); parent chips the variant lacks (`manxttc`); chips the parent lacks, after the parent's (`doaa`'s six 2A geometry programs) |
 | `title`, `year`, `board`, `packed`, `attract_frame`, `idle_loops`, `backup_ram`, `volume_db`, `texture_ram_mirrored`, `shading`, `recommended`, `input_lag`, `run_ahead_max` | optional overrides; `None` inherits |
-| `protection_rom` | the protection answers' ROM addresses (reply index, address), the rest of the protection inherited (not used yet: `dyndeka2`, `doaa`) |
+| `protection_rom` | the protection answers' ROM addresses (reply index, address), the rest of the protection inherited (`dyndeka2`, `doaa`) |
+| `coin_start` | the `coin-start` input script where the parent's does not reach play (`indy500to`) |
+| `own_textures` | its textures are its own chips: texture packs do not fall back to the parent's (`dayton93`) |
 | `scenes` | the variant's own; **never the parent's**, and `games::tours` no longer falls back to the parent's either |
-| `link: VariantLink` | `Parent` (its settings record is the parent's: `srallycb`, `srallyp`, `daytonat`, `daytonata`, `manxttc`), `None`, or `Own(&LinkPlay)` |
+| `link: VariantLink` | `Parent` (its settings record is the parent's: `srallycb`, `srallyp`, `daytonat`, `daytonata`, `manxttc`), `None` (the default: link play off for it), or `Own(&LinkPlay)` |
 
 Chips are looked up as `<variant id>/<chip>` before the bare name in each of
 the variant's folder and zip and the parent's (`topskatr.zip` keeps
@@ -46,49 +53,150 @@ whose swapped chips are not all there is not listed (`romset::sets_with_clones`,
 `variant_available`). `remodel games` lists the titles and then the variants.
 
 **Saves and settings**: EEPROM (`out/<set>/eeprom.bin`), save states, the
-resume state, the player's per-game settings and bindings, JIT hot lists and
-link settings are keyed by the set id, so a variant has its own and never
-touches its parent's. The save file header (format 3) records the set it was
-saved from and a load by another variant is refused naming both. Texture packs
-fall back to the parent's (`pack_sets`). *Not done:* a variant starts with no
-settings or bindings of its own (it does not read its parent's), so a remap
-made for `topskatr` is made again for `topskatrj`.
+resume state, JIT hot lists and link settings are keyed by the set id, so a
+variant has its own and never touches its parent's. The save file header
+(format 3) records the set it was saved from and a load by another variant is
+refused naming both. The player's per-game settings (`<set>/settings.txt`) and
+remapped controls (`<set>/controls.txt`) **start as the parent's**: a variant
+that has no file of its own reads its parent's, read-only, and the first change
+made for the variant writes the variant's own file (a variant whose own settings
+are all reset keeps an empty file, so the parent's do not come back). The
+launcher's remembered version is per title (`version.<title>` in
+`play-settings.txt`), so there is nothing to inherit there. Texture packs fall
+back to the parent's (`pack_sets`), except for a variant with `own_textures`.
+`remodel run` also writes the original Model 2's I/O board record the game left
+(`iostore.bin` in the output folder, 128 bytes), which is how a program's own
+defaults and layout are found there.
 
 **The launcher** has one card per title and a Version selector (docs/play.md,
 "Versions"); `--game`, `make GAME=` and the CLI take a variant id anywhere a set
-id goes.
+id goes. In pad mode the Version button, its hint in the bar and the network
+banner's Join button carry no keycap (the V and J keys are the keyboard's).
 
 **Network and link play**: the ROM hash in the session agreement is over every
 chip and the set id (protocol 4), so two variants never link; a variant links
-as its parent where `VariantLink::Parent`.
+as its parent where `VariantLink::Parent`, and has no link play where it is
+`None` (see the table of what each class B variant's link and free play is,
+below).
 
 **Bench**: `make bench-variants` runs `tools/expected-variant-hashes.txt`
 (blank-EEPROM coin-start, 600M instructions, as `bench-all`); the three
 earlier clones keep their lines in `tools/expected-hashes.txt`, and their
 hashes did not change when they became variants (`manxttc`
 `d6558827f751bbb0`, `sfight` `2a0a5a5d0d957997`) nor did `overrevb`'s
-(`de800c1e32ddb8aa`, measured before and after).
+(`de800c1e32ddb8aa`, measured before and after). A variant's hash does not
+depend on its idle loops (skipping is exact), so the survey's state hashes
+(measured with the parent's loops and a chip swap) are the committed ones
+wherever nothing else changed.
 
 | Variant | Kind | Chips swapped | State hash (600M, coin-start) | Status |
 |---|---|---|---|---|
 | `manxttc`, `sfight`, `overrevb` | revision, region, other board | as before | unchanged | the three clones, now variants |
-| `topskatrj` Japan | region | program pair | `d5b806cefa994cbe` | boots, attracts, coin-start reaches the race; its attract opens on the Japan warning (the card's `attract_frame` is the parent's: not tuned) |
+| `topskatrj` Japan | region | program pair | `d5b806cefa994cbe` | boots, attracts, coin-start reaches the race; the inherited attract frame (1650) is in the attract mode, not on the warning (checked headless in the launcher) |
 | `topskatru` USA | region | program pair | `de6f5171b2730155` | as `topskatrj`, FBI warning |
 | `vcopa` Rev A | revision | program pair | `5c206708efb1d3c8` | plays, the same stage |
 | `srallycb` Rev B | revision | program pair | `2d9857e7d3dacb29` | plays; link as the parent |
 | `srallyp` "Pro Drivin'" | prototype (*unconfirmed*) | program pair | `ef2b8b45eccd5732` | plays; hidden unless "Show hacks and prototypes" |
 | `daytonat` Turbo | hack (*unconfirmed*) | program pair | `0c64f85a8b95e340` | plays; hidden by default; link as the parent |
 | `daytonata` Turbo Rev A | hack (*unconfirmed*) | program pair | `95da2bac42132d58` | as `daytonat` |
-| `lastbrnxj` Japan, Rev A | region | program pair | `af452e8e6839ef0a` | plays |
-| `lastbrnxu` USA, Rev A | region | program pair | `5db58c2199e50ec7` | plays |
+| `lastbrnxj` Japan, Rev A | region | program pair | `af452e8e6839ef0a` | plays; own attract frame 1800 (the parent's 700 is the warning text) |
+| `lastbrnxu` USA, Rev A | region | program pair | `5db58c2199e50ec7` | plays; own attract frame 1500 (700 is the SEGA logo) |
+| `stcca` Rev A | revision | program pair | `969ed016b6b232c8` | plays: name entry, qualifying; idle loop 0x73424 (76.2% skipped) |
+| `stccb` Rev B | revision | program pair | `a50918a0e5333ac8` | as `stcca`; loop 0x73574 |
+| `vf2o` Original | revision | four program chips | `be420a1f95e7e0c6` | plays: fights; loop 0x10A74 (60.7%) |
+| `vf2a` Rev A | revision | four program chips | `aa8922832829ebc6` | plays; loop 0x10A98 |
+| `vf2b` Rev B | revision | four program chips | `6790a5d07fdfd8f7` | plays; loop 0x10B3C |
+| `vstrikro` Original | revision | four program chips and the `.7/.8` pair | `940ba002561c05cb` | plays: ranking, a match; loop found by the hot spots of the run |
+| `vonj` Japan | region | program pair | `c3bf3413fbdd155b` | plays; loop 0x28E2C |
+| `indy500d` Deluxe, Rev A | revision | program pair, `.7/.8` pair, sound program | `db57fdba291b8487` | plays; Japan warning then races; loop 0x345D4; attract frame 2250; **link off** |
+| `indy500to` Twin, older | revision | program pair, `.7/.8` pair, sound program | `56b54eb96991f0a8` | plays from its own `coin_start` (start press at 1900); loop 0x2E1C4; attract frame 2250; **link off** |
+| `dayton93` '93 Edition | revision | ten chips (program pair, main data `.8/.9` and `.6/.7`, polygons `.19/.23`, textures `.26/.27`), other sizes | `2a4707a921d968df` | plays; loop 0x12B0 (the parent's second loop is not in this program); own textures; **link off** |
+| `daytonas` Saturn Ads | revision | program pair and `.6/.7` | `39fb66ba9afb4930` | plays with its own preset settings record; loops 0x13A8 and 0x1BDA8; **link off** |
+| `daytonase` Special Edition | revision | program pair and `.6/.7` | `e6e62eba70d36995` | as `daytonas`; loops 0x13A8, 0x1BD38 |
+| `zerogunj` Japan | region | program pair | `171d4f54c4caa140` | plays: mission 1, continue; its loop is in RAM-run code, found by the run's hot spots (0x5490A0) |
+| `dyndeka2` Dynamite Deka 2 | region | program `.12/.13` | `a3b912a344e41ee1` | plays; protection answers 0x10 lower (`protection_rom`); loop 0x71184 (82.8%) |
+| `doaa` Model 2A | other board | program pair, plus the six 2A `opr-*` chips | `c815a2be3623d98d` | plays: Kasumi against Zack; protection answer at 0x2830 (`protection_rom`; 400M-instruction run `3cdae73e2525aa8b`, as the survey); loop 0x2800 (79%) |
 
-These hashes are the survey's own, measured again on the committed
-implementation: they agree (the survey's temporary patch and the resolver
-build the same machine). "Plays" is as the survey defines it: boots, attracts,
-coin-start reaches play, frames look like the game; nobody played them by hand.
-The hacks' and the prototype's *kind* is the dat's and the chip names', not
-documented. The Turbo hacks run on the parent's idle loops and settings
-record, so their link play is the parent's *by the survey's checks only*.
+The first nine hashes are the survey's own, measured again on the committed
+implementation: they agree (the survey's temporary patch and the resolver build
+the same machine), and so do the class B ones that were measured then (`doaa`'s
+survey figure was a 400M run, and its 600M hash is the one in the bench file;
+`indy500to`'s differs from the survey's `ed4ac127b1c34bff` because the survey's
+`coin-start` did not start a race and the variant's now does). "Plays" is as the
+survey defines it: boots, attracts, coin-start reaches play, frames look like
+the game; nobody played them by hand. The hacks' and the prototype's *kind* is
+the dat's and the chip names', not documented. The Turbo hacks run on the
+parent's idle loops and settings record, so their link play is the parent's *by
+the survey's checks only*.
+
+### Class B: what each needed
+
+- **Idle loops** are the parent's loop found again in the variant's program.
+  The method is the parent's (docs/idle-skip.md): the hottest code of a
+  coin-start run (`remodel run`'s "hot spots (current frame)") read in the
+  program, and, for loops that were not in the last frame's hot spots
+  (`vf2b`, `doaa`, the two Daytona Saturn sets), the parent's instruction
+  words searched for in the variant's program. Each was then confirmed by its
+  effect: a run with the loop listed skips 60 to 83% of the instructions and
+  ends on the same state hash. `zerogunj`'s, which the survey could not find,
+  is RAM-run code like the parent's and was in the hot spots (0x5490A0,
+  0x50 above the parent's). `dayton93` has only the first of the parent's two
+  loops: the second is a function that this older program does not contain.
+  Nothing a loop's address can do changes a state hash.
+- **Protection answers**: `dyndeka2`'s two 16-byte replies are 0x10 lower
+  than the parent's (0xBC7E0, 0xBC7F0) and `doaa`'s single reply is 0x20
+  higher (0x2830), each found by searching the program for the reply's
+  bytes; both run to play with them and fail without.
+- **`doaa`** is the cross-board clone: board 2A, the parent's data, polygon,
+  texture and sound chips, its own program pair and the six `opr-*` programs
+  every 2A set has (`add`, role `CoproData`, as `dynamcop`'s); the 2A model
+  needed nothing else from the parent's 2B manifest (`packed` stays empty).
+- **`dayton93`**'s chips are at other sizes (`.6/.7` 1 MB for 512 KB, polygons
+  `.19/.23` 512 KB for 2 MB) and the manifest takes each chip's size from the
+  variant's own entry; its textures are its own, so `own_textures` stops the
+  parent's texture pack serving it.
+- **Settings records**: `daytonas` and `daytonase` reject the parent's preset
+  record (`backup_ram`: a version and CRC of the parent's). Each program's own
+  defaults were found by running it with no preset and reading the record the game
+  left in the I/O board's store (`remodel run` writes `iostore.bin`): version 4
+  (Saturn Ads) and 3 (Special Edition) in the header's third byte, an extra
+  item (the "PROMOTE SATURN" page) and other defaults, all valid CRC-16 (the
+  parent's rule: CCITT, start 0, over bytes 0x0A-0x7F, stored at 8, recomputed
+  here and equal to what the game wrote). With the link ID byte (0x0B) set to
+  0 (SINGLE) and the CRC recomputed, as for the parent, each is the variant's
+  `backup_ram`, and the game goes to attract and a race instead of the network
+  check. (`dayton93` needs none: with an empty store its program writes its own
+  record, version 1, whose link ID byte is already 0 (SINGLE), and it
+  attracts and races; it keeps the parent's preset in the manifest, which
+  the program rewrites to version 1 keeping the parent's settings bytes, and
+  its state hash is the survey's. Whether the preset is accepted or only
+  migrated was not separated.)
+  `indy500d` and `indy500to` keep their settings in the EEPROM, which the game
+  writes itself from a blank one, so they need no preset.
+- **`indy500to`'s start**: the survey's `coin-start` presses start at frame 1250,
+  while this release is still on its warning screen (until about 1500) and the
+  ranking screen is not up; the credit is counted and the game waits on PRESS
+  START BUTTON. The variant's own script presses start at 1900 and the race
+  follows.
+- **Attract frames**: `indy500d` and `indy500to` 2250 (their parent's 1500 is the
+  title logo), `lastbrnxj` 1800 and `lastbrnxu` 1500 (700 is the warning text and
+  a logo); the others show attract at the inherited frame (checked on contact
+  sheets of a no-input run for every variant).
+
+### Link play and free play of the variants
+
+| Variant | Link play | Why |
+|---|---|---|
+| `srallycb`, `srallyp`, `daytonat`, `daytonata`, `manxttc` | the parent's | the settings record was checked to be the parent's |
+| `daytonas`, `daytonase` | off | the record has another version, other defaults and an extra item; the free-play bytes (0x10, 0x14, 0x7C in the parent) are not the same: the program's own default at 0x7C is 1, where the parent's is 0, and the link ID's place was not re-verified by a link run |
+| `dayton93` | off | its record is version 1 and was not checked against the parent's link and free-play bytes |
+| `indy500d` | off | another layout: the checksum over the parent's range fails, no copy at 0x2C, bytes 0x1E/0x1F hold 18 and 17 |
+| `indy500to` | off | the record has the parent's layout and checksum (valid by the parent's rule, copy at 0x2C, role and cabinet bytes 0 at 0x1E/0x1F), but the test-menu route to FREE PLAY and NETWORK TYPE that works on the parent (docs/games/indy500.md) changed nothing in this release (its menu is not the parent's), so its free-play bytes and the game's acceptance of a role were not found: *not done* |
+| `vonj` | none | `von` has no link play data (an idle link board is fitted) |
+| the others (`stcca`, `stccb`, `vf2*`, `vstrikro`, `zerogunj`, `dyndeka2`, `doaa`) | none | their parents have none |
+
+`make link-free-play-test`, `link-state-check` and `link-record-test` run on the
+parents only and are unchanged.
 
 ## Method
 
@@ -149,6 +257,10 @@ What the three hand-written clones needed beyond a chip swap shows what
 | `overrevb` | `overrev` | program pair; **another board** (2B for 2C) | board, idle loop, attract frame, recommended |
 
 ## Variants by title
+
+(The tables are the survey's, as measured before anything was built; what was
+built, and the corrections to them (`vstrikro`'s hash, `zerogunj`'s loop, `indy500to`'s
+start, `daytonas`' record), is in [Status](#status-what-is-built).)
 
 Legend: **kind** is official revision, region, prototype, hack or
 cross-board; **chips** are the clone's own chips by parent socket; the
@@ -273,7 +385,8 @@ supported (`manxttc` is a parent in the dat, not a clone).
 
 ## Totals
 
-32 clones of 14 supported titles, plus the 3 already supported.
+32 clones of 14 supported titles, plus the 3 already supported. Built: all of
+class A (9) and class B (15); class C (8) is not.
 
 | Effort | Count | Variants |
 |---|---|---|
@@ -401,7 +514,7 @@ that is class C stays out of the list until it plays (a manifest flag, as
 
 ### Order
 
-(Steps 1 and 2 are built: [Status](#status-what-is-built).)
+(Steps 1 to 4 and `doaa` of step 5 are built: [Status](#status-what-is-built).)
 
 1. The infrastructure on the three existing clones: the `Variant` type and
    resolver, subfolder lookup in zips, listing in the launcher, the program
@@ -427,11 +540,14 @@ that is class C stays out of the list until it plays (a manifest flag, as
 - Whether a variant's own gameplay, sound level or HUD differs: only the
   first race, fight or stage of a 600M-instruction coin-start run was looked
   at, no sound was checked, nothing was played.
-- Real idle loops where the loop is in RAM-run code (`zerogunj`, `doaa`,
-  the 2A clones); `daytonas`/`daytonase`/`vf2b` found by bytes only (the run
-  ended elsewhere).
-- Settings records and link data of the Daytona clones, and whether linked
-  play between variants could work.
+- (Since built: `zerogunj`'s and `doaa`'s loops, and `vf2b`'s and the Saturn
+  sets', are found and confirmed by their skips. Still open: the 2A clones'
+  loops, which are not built.)
+- Link data of `daytonas`, `daytonase`, `dayton93`, `indy500d` and `indy500to`
+  (off for them: see the table in Status), and whether linked play between
+  variants could work.
+- Whether `dayton93` accepts the parent's preset record or only migrates it
+  (its program runs stand-alone either way).
 - Why the 2A clones `zeroguna`, `zerogunaj` and `pltkidsa` and the three 2B and
   2C `dynamcop` clones fail on a generated manifest: the generated manifests'
   chip roles and packing were guesses, so these are failures of the guess
@@ -441,5 +557,5 @@ that is class C stays out of the list until it plays (a manifest flag, as
   the screens, not documentation; "official" does not mean a given revision
   was released in the markets its label suggests.
 - Whether the `coin-start` scripts, written for the parents, reach play on
-  every variant (one, `indy500to`, did not), or `make state-check`, lockstep
-  and the recompiled build on any variant.
+  every variant (one, `indy500to`, did not and has its own now), or `make state-check`,
+  lockstep and the recompiled build on any variant.

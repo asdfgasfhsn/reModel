@@ -140,3 +140,18 @@ run-ahead 1.
   FREE PLAY** (26 is "1 coin 6 credits"). Leaving through EXIT (the game saves) and comparing with a run that did not change it: byte `0x10`
   0x0B -> 0x1A (the setting, 0-based), byte `0x11` 0x02 -> 0x01 and byte `0x15` 0x00 -> 0x01 (derived), the counter at `0x0C` raised by one, the
   checksum, all in both copies. In `romset::LinkPlay::free_play`; `--free-play` starts a race from a start press.
+
+## Variants
+
+`indy500d` (Deluxe) and `indy500to` (older Twin) are supported variants
+(docs/variants.md): own program pair, `.7/.8` pair and sound program. Idle loops are at
+0x345D4 and 0x2E1C4. *Confirmed (by running it):* `indy500to` is on its warning screen until
+about frame 1500 and the ranking screen takes a start press only after that: the parent's
+`coin-start` presses start at 1250, which credits the coins and then waits on PRESS START
+BUTTON, so the variant has its own script (start at 1900), which reaches a race. *Confirmed:*
+the written settings records: `indy500to`'s has the parent's layout and checksum (the copy
+at 0x2C, role and cabinet bytes 0 at 0x1E/0x1F, `remodel link-settings` accepts it) with other
+default values (byte 0x1C 1 where the parent's is 2); `indy500d`'s has another version
+(0x11 0x07), the checksum over the parent's range fails and its bytes 0x1E/0x1F hold other
+values. The parent's test-menu script to FREE PLAY changes nothing in `indy500to`, so its
+free-play bytes and a link role were not found and linked play is off for both *(not done)*.

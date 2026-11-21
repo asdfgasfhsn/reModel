@@ -927,12 +927,14 @@ pub fn rom_folder(game: &Game, root: &Path) -> Option<&'static str> {
 }
 
 /// The sets whose texture pack serves `game`, in the order to look for one
-/// (docs/texture-packs.md): its own, then for a clone its parent's. Pack
+/// (docs/texture-packs.md): its own, then for a clone its parent's (not for a
+/// variant with textures of its own, `dayton93`). Pack
 /// keys are the textures' content, so a parent's images serve every
 /// version. The native player looks for `<set>/texpack/` directories in
 /// this order, the browser for `/texpack/<set>/index.txt`.
 pub fn pack_sets(game: &Game) -> impl Iterator<Item = &'static str> {
-    std::iter::once(game.id).chain(game.parent)
+    let own = variants::get(game.id).is_some_and(|v| v.own_textures);
+    std::iter::once(game.id).chain(game.parent.filter(|_| !own))
 }
 
 /// Set names in ROM directory `root`: `<set>.zip` files and directories.

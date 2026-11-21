@@ -32,6 +32,23 @@ creates the annotated tag `vx.y.z` without pushing. Details in
   message naming both (format 1 and 2 files still load). Scenes and tours are
   no longer inherited from the parent. Chips in subfolders of the parent's zip
   (`topskatrj/epr-19753.15`) are found.
+- ROM variants, class B: the fifteen clones whose program moved things are variants
+  too: `stcca`, `stccb`, `vf2o`, `vf2a`, `vf2b`, `vstrikro`, `vonj`, `indy500d`,
+  `indy500to`, `dayton93`, `daytonas`, `daytonase`, `zerogunj`, `dyndeka2` and `doaa`
+  (the 2A clone of the 2B Dead or Alive), each with its chip swaps and what differed:
+  idle loops at their new addresses, the protection answers' ROM addresses
+  (`dyndeka2`, `doaa`), the Saturn sets' own settings records, `dayton93`'s own
+  textures (texture packs do not fall back to the parent's for it) and `indy500to`'s
+  own `coin-start` script (the parent's start press came too early). Each boots,
+  attracts and plays from a blank EEPROM (`make bench-variants`). Link play is off for
+  `indy500d`, `indy500to`, `dayton93`, `daytonas` and `daytonase` (their records are not
+  the parent's: docs/variants.md). `remodel run` also writes the original Model 2's I/O
+  board record (`iostore.bin`).
+- A variant with no settings or controls of its own reads its parent's (read-only) until
+  the player changes something for it, which writes the variant's own file. `lastbrnxj`
+  and `lastbrnxu` have their own launcher attract frames (the inherited one was a warning
+  or logo screen). The launcher's Version button, its hint in the bar and the network
+  banner's Join button show no V or J keycap in pad mode.
 - Network link play compares a hash over every chip the game loads (and the set's id),
   not the program ROMs alone, in the session agreement and the mDNS record ("different
   ROMs"); two sets that differ in one data, texture or sound chip, or two versions of a

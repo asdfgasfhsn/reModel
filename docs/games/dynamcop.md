@@ -97,13 +97,21 @@ first game here to check the **keyed protection device** (below).
   `input_lag` is 0 and `run_ahead_max` 1, as `schamp`'s and `lastbrnx`'s
   are set where one control lags and the main one doesn't.
 
-## Clones (not done)
+## Clones
 
-`dynamcop.zip` also holds its clones' program chips; each is a separate
-set to bring up later:
+`dynamcop.zip` also holds its clones' program chips:
 
 - `dyndeka2`: Dynamite Deka 2 (Japan, 2A), `epr-20922.12`/`epr-20923.13`
-  in place of `.12/.13`.
+  in place of `.12/.13`: **supported, a variant** (`crates/romset/src/games/variants.rs`,
+  docs/variants.md). *Confirmed (by running it):* its two protection answers
+  (the 16-byte replies to commands `0x1326` and `0x7700`) are 0x10 lower in its
+  program than the parent's, 0xBC7E0 and 0xBC7F0 (found by searching the program
+  for their bytes): with the parent's addresses the game stops on "SCROLL
+  ALLOCATION ERROR" with a black screen, with these it attracts and plays. Its idle
+  loop is the parent's 0x10 lower (0x71184); 82.8% of a 600M coin-start run is
+  skipped.
+Not done:
+
 - `dynmcopb`: Dynamite Cop (export, 2B), `progrom0.15`/`progrom1.16`.
 - `dyndek2b`: Dynamite Deka 2 (Japan, 2B), `epr-20936.15`/`epr-20937.16`.
 - `dynmcopc`: Dynamite Cop (2C), `epr-20952.15`/`epr-20953.16`.

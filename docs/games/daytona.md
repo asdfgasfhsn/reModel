@@ -305,3 +305,25 @@ carries the grid and the roster.
    daytona's layout, sound board included).
 5. The drive board (register 17's queue); then a player view of linked
    cabinets.
+
+## Clones that are variants
+
+`dayton93` ('93 Edition), `daytonas` (Saturn Ads) and `daytonase` (Special Edition) are
+supported variants (docs/variants.md); the Turbo hacks `daytonat`/`daytonata` were already.
+
+- *Confirmed (by running it):* `daytonas` and `daytonase` reject the manifest's preset
+  record (the parent's version and CRC) and, with a MASTER link ID, stop on "NETWORK BOARD
+  NOT PRESENT". Each program's own defaults were read from the record the game left in the
+  I/O board's store (`remodel run` writes it as `iostore.bin`): the header's version byte is
+  4 (Saturn Ads) and 3 (Special Edition) where the parent's is 2, the record has an extra
+  item (a PROMOTE SATURN page) and its byte 0x7C is 1 by default (the parent's 0), and the
+  CRC-16 is the parent's rule. Their `backup_ram` is that record with the link ID (0x0B)
+  set to SINGLE and the CRC recomputed. Their link play and free-play bytes were **not**
+  re-found, so linked play is off for them *(unconfirmed whether the parent's offsets hold)*.
+- `dayton93` has ten chips of its own at other sizes and its own textures; of the parent's
+  two idle loops only the first exists in its program (0x12B0); the second is a function
+  this older program lacks (its instructions are not in the chips). With an empty store its
+  program writes its own record (version 1, link ID already 0 SINGLE); with the parent's
+  preset it rewrites it to version 1 keeping the parent's settings bytes (the manifest
+  keeps the preset; whether it is accepted or only migrated was not separated). Linked
+  play is off for it.

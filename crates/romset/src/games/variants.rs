@@ -20,6 +20,14 @@ pub static PARENT_LABELS: &[(&str, &str)] = &[
     ("manxtt", "Deluxe, Rev D"),
     ("schamp", "Sonic Championship"),
     ("overrev", "Model 2C"),
+    ("stcc", "Latest"),
+    ("vf2", "Rev 2.1"),
+    ("vstriker", "Rev A"),
+    ("von", "USA"),
+    ("indy500", "Twin, newer"),
+    ("zerogun", "Export"),
+    ("dynamcop", "Dynamite Cop"),
+    ("doa", "Model 2B"),
 ];
 
 const fn swap(parent: &'static str, chip: crate::RomFile) -> ChipSwap {
@@ -272,7 +280,7 @@ pub static VARIANTS: &[Variant] = &[
                 rom("epr-19047a.16", 0x80000, "87214f285a7bf67fbd824f2190cb9b2daf408193", Role::Program),
             ),
         ],
-        // The parent's attract frame (700) is on the warning text here; the fight demo (contact sheet
+        // The parent's attract frame (700) is on the warning text screen here; the fight demo (contact sheet
         // of a no-input run) is up by then.
         attract_frame: Some(1800),
         ..Variant::BASE
@@ -293,9 +301,312 @@ pub static VARIANTS: &[Variant] = &[
                 rom("epr-19060a.16", 0x80000, "a0904c97234f218caf489dc55e33082e453791a0", Role::Program),
             ),
         ],
-        // The parent's attract frame (700) is on the SEGA logo here; the fight demo (contact sheet
+        // The parent's attract frame (700) is on the SEGA logo screen here; the fight demo (contact sheet
         // of a no-input run) is up by then.
         attract_frame: Some(1500),
+        ..Variant::BASE
+    },
+    // Sega Touring Car Championship, Rev A: the program pair (`epr-19272a.15/19273a.16`); DSB1 and sound chips are the parent's.
+    Variant {
+        id: "stcca",
+        parent: "stcc",
+        label: "Rev A",
+        kind: VariantKind::Revision,
+        kind_confirmed: true,
+        swaps: &[
+            swap("epr-19570.15", rom("epr-19272a.15", 0x80000, "e465967c784de18caaaac77e164796e9779f576a", Role::Program)),
+            swap("epr-19571.16", rom("epr-19273a.16", 0x80000, "142bcd53fa6632fcc866bbda817aa83470111ef1", Role::Program)),
+        ],
+        // The wait for vblank moved with the program: the same loop as the parent's, at 0x73424.
+        idle_loops: Some(&[crate::IdleLoop { start: 0x73424, end: 0x7343c }]),
+        ..Variant::BASE
+    },
+    // Sega Touring Car Championship, Rev B (`epr-19272b.15/19273b.16`).
+    Variant {
+        id: "stccb",
+        parent: "stcc",
+        label: "Rev B",
+        kind: VariantKind::Revision,
+        kind_confirmed: true,
+        swaps: &[
+            swap("epr-19570.15", rom("epr-19272b.15", 0x80000, "5026e28b9d8267492bd0d9746d64526540a001da", Role::Program)),
+            swap("epr-19571.16", rom("epr-19273b.16", 0x80000, "3f22f13a3baa46f93cb40e8af9534afaa57ead9c", Role::Program)),
+        ],
+        idle_loops: Some(&[crate::IdleLoop { start: 0x73574, end: 0x7358c }]),
+        ..Variant::BASE
+    },
+    // Virtua Fighter 2, the original release: four program chips (`epr-17568.12`, `17569.13`, `17562.14`, `17563.15`).
+    Variant {
+        id: "vf2o",
+        parent: "vf2",
+        label: "Original",
+        kind: VariantKind::Revision,
+        kind_confirmed: true,
+        swaps: &[
+            swap("epr-18385.12", rom("epr-17568.12", 0x20000, "4ed907bbfc1a47e51c9cc11f55645752574adaef", Role::Program)),
+            swap("epr-18386.13", rom("epr-17569.13", 0x20000, "95efb3eeaf95fb5f79ddae4ef20e2211b07f8d30", Role::Program)),
+            swap("epr-18387.14", rom("epr-17562.14", 0x20000, "2f862a7099aa757ee1f2ad8245eb4f8f4fdfb7bc", Role::Program)),
+            swap("epr-18388.15", rom("epr-17563.15", 0x20000, "b1ca3d4d3568c1652dcd8e546ffff23a4a21a699", Role::Program)),
+        ],
+        idle_loops: Some(&[crate::IdleLoop { start: 0x10a74, end: 0x10a80 }]),
+        ..Variant::BASE
+    },
+    // Virtua Fighter 2, Rev A: four program chips (the `.ic12`..`.ic15` socket names).
+    Variant {
+        id: "vf2a",
+        parent: "vf2",
+        label: "Rev A",
+        kind: VariantKind::Revision,
+        kind_confirmed: true,
+        swaps: &[
+            swap("epr-18385.12", rom("epr-17568a.ic12", 0x20000, "04df1eb9cf094d8dc5118b95028b544b47d5d328", Role::Program)),
+            swap("epr-18386.13", rom("epr-17569a.ic13", 0x20000, "260c762d7853fb1d6f894d4dd954d82dfbc92d2d", Role::Program)),
+            swap("epr-18387.14", rom("epr-17562a.ic14", 0x20000, "1e9d3f09821596d3560bf54f6323ba295ee430d8", Role::Program)),
+            swap("epr-18388.15", rom("epr-17563a.ic15", 0x20000, "846fa1435a1a5c9f7f9690e1c810ca89008d1626", Role::Program)),
+        ],
+        idle_loops: Some(&[crate::IdleLoop { start: 0x10a98, end: 0x10aa4 }]),
+        ..Variant::BASE
+    },
+    // Virtua Fighter 2, Rev B: four program chips.
+    Variant {
+        id: "vf2b",
+        parent: "vf2",
+        label: "Rev B",
+        kind: VariantKind::Revision,
+        kind_confirmed: true,
+        swaps: &[
+            swap("epr-18385.12", rom("epr-17568b.12", 0x20000, "01d46313148ce509fa5641fb07a3f840c00886ac", Role::Program)),
+            swap("epr-18386.13", rom("epr-17569b.13", 0x20000, "ba2e0ac8b31955fed237ba9a5eda9fa14d1db11f", Role::Program)),
+            swap("epr-18387.14", rom("epr-17562b.14", 0x20000, "a7162d9c39d601ac92310c8cf2ae388647a5295a", Role::Program)),
+            swap("epr-18388.15", rom("epr-17563b.15", 0x20000, "b9b1f3c68c53a86dfa3cbc85fcb9150546c13f23", Role::Program)),
+        ],
+        idle_loops: Some(&[crate::IdleLoop { start: 0x10b3c, end: 0x10b48 }]),
+        ..Variant::BASE
+    },
+    // Virtua Striker, the original revision: the four program chips and the `.7/.8` pair without the parent's `a` suffix.
+    Variant {
+        id: "vstrikro",
+        parent: "vstriker",
+        label: "Original",
+        kind: VariantKind::Revision,
+        kind_confirmed: true,
+        swaps: &[
+            swap("ep18068a.15", rom("ep18068.15", 0x20000, "3ba34bd467e11e768eda95ff345f5993fb9d6bca", Role::Program)),
+            swap("ep18069a.16", rom("ep18069.16", 0x20000, "84bf16fc2a441cb724f4bc635a4c4209c240cfbf", Role::Program)),
+            swap("ep18066a.13", rom("ep18066.13", 0x20000, "0ff20aa3e030df869767bb9614565acc9f3fe3b1", Role::Program)),
+            swap("ep18067a.14", rom("ep18067.14", 0x20000, "d5eff8aff37fb0ef3c7f9d8bfca8460213b0f0a7", Role::Program)),
+            swap("ep18070a.7", rom("ep18070.7", 0x80000, "731452284c45329701258ee9fb8b7df6514fbba1", Role::MainData)),
+            swap("ep18071a.8", rom("ep18071.8", 0x80000, "c678f1f42de86cc968c3f823994d36c74b2e55fd", Role::MainData)),
+        ],
+        // The wait for vblank, 0x80 above the parent's (the run's hot spots).
+        idle_loops: Some(&[crate::IdleLoop { start: 0x3dd4, end: 0x3de8 }]),
+        ..Variant::BASE
+    },
+    // Virtual-On, Japan: the program pair `epr-18664b.15/18665b.16` for the parent's `vo-prog0.usa/vo-prog1.usa`.
+    Variant {
+        id: "vonj",
+        parent: "von",
+        label: "Japan",
+        kind: VariantKind::Region,
+        kind_confirmed: true,
+        swaps: &[
+            swap("vo-prog0.usa", rom("epr-18664b.15", 0x80000, "f3bcae9898c7d656eccb4d2546c9bb93daaefbb7", Role::Program)),
+            swap("vo-prog1.usa", rom("epr-18665b.16", 0x80000, "73f2a19a519ced8e0a1ab5cf69a4bf9d9841e288", Role::Program)),
+        ],
+        idle_loops: Some(&[crate::IdleLoop { start: 0x28e2c, end: 0x28e40 }]),
+        ..Variant::BASE
+    },
+    // Indianapolis 500, the Deluxe cabinet: the program pair, the `.7/.8` pair and the sound program differ.
+    Variant {
+        id: "indy500d",
+        parent: "indy500",
+        label: "Deluxe, Rev A",
+        kind: VariantKind::Revision,
+        kind_confirmed: true,
+        swaps: &[
+            swap("epr-18598a.15", rom("epr-18251a.15", 0x80000, "e60a4814b54b76c7c0a4d9cf2b093c577c2f6ecf", Role::Program)),
+            swap("epr-18599a.16", rom("epr-18252a.16", 0x80000, "8fc9244fd0eaf93d016f4494604e5a70bf1f7303", Role::Program)),
+            swap("epr-18596.7", rom("epr-18345.7", 0x80000, "6bbbae53e2f56ab1007f37fdd5eb66dda4828c28", Role::MainDataHigh)),
+            swap("epr-18597.8", rom("epr-18346.8", 0x80000, "425ca92d75054a17313732a9d11bbb31bea17a38", Role::MainDataHigh)),
+            swap("epr-18600.31", rom("epr-18253.31", 0x40000, "4a3037b69c4835ef16a20c5573de32a862f0b13e", Role::AudioCpu)),
+        ],
+        idle_loops: Some(&[crate::IdleLoop { start: 0x345d4, end: 0x345e8 }]),
+        // The parent's attract frame (1500) is the title logo here; the demo race runs from 1650.
+        attract_frame: Some(2250),
+        ..Variant::BASE
+    },
+    // Indianapolis 500, the older Twin release: the program pair, the `.7/.8` pair and the sound program differ.
+    Variant {
+        id: "indy500to",
+        parent: "indy500",
+        label: "Twin, older",
+        kind: VariantKind::Revision,
+        kind_confirmed: true,
+        swaps: &[
+            swap("epr-18598a.15", rom("epr-18254a.15", 0x80000, "0bff35fc1d892aaffbf1a3965bf3109c54839f4b", Role::Program)),
+            swap("epr-18599a.16", rom("epr-18255a.16", 0x80000, "299e87f8ec7bdefa6f94f4ab65e29e91f290611e", Role::Program)),
+            swap("epr-18596.7", rom("epr-18389.7", 0x80000, "ef10bb0ffcb1bbcf4672bb5f705a27679a793764", Role::MainDataHigh)),
+            swap("epr-18597.8", rom("epr-18390.8", 0x80000, "b23cfe45c363d616a65decd57aeb8ae61d5370e9", Role::MainDataHigh)),
+            swap("epr-18600.31", rom("epr-18391.31", 0x40000, "36fed8a9eeb34968b2852ea8fc9198427f0d27c6", Role::AudioCpu)),
+        ],
+        idle_loops: Some(&[crate::IdleLoop { start: 0x2e1c4, end: 0x2e1d8 }]),
+        // The older release is on its warning screen until about frame 1500 and takes a start press
+        // only after the ranking screen is up (the parent's at 1250 is ignored: it stays on PRESS START
+        // BUTTON): the same script with the start press at 1900.
+        coin_start: Some("coin1@1100-1104,coin1@1120-1124,start@1900-1904,gas=0xff@2050-2060,gas=0xff@2250-2260,gas=0xff@2450-2460,gas=0xff@2650-99999"),
+        attract_frame: Some(2250),
+        ..Variant::BASE
+    },
+    // Daytona USA '93 Edition: ten chips differ (program pair, main data `.8/.9` and `.6/.7`, polygons `.19/.23`, textures `.26/.27`), at other sizes.
+    Variant {
+        id: "dayton93",
+        parent: "daytona",
+        label: "'93 Edition",
+        kind: VariantKind::Revision,
+        kind_confirmed: true,
+        title: Some("Daytona USA '93 Edition"),
+        swaps: &[
+            swap("epr-16722a.12", rom("epr-16530a.12", 0x20000, "b98a1faabb4f1eff707a94c32224c7820f259874", Role::Program)),
+            swap("epr-16723a.13", rom("epr-16531a.13", 0x20000, "779734ba536db67e14760d52e8d8d7db07816481", Role::Program)),
+            swap("mpr-16808.8", rom("epr-16526.8", 0x200000, "f505910394d41a9ffecfdea7b45ef25b21469b7a", Role::MainData)),
+            swap("mpr-16809.9", rom("epr-16527.9", 0x200000, "1bf3aec88ef9fb40bde054f5f0b884bf715cbcc8", Role::MainData)),
+            swap("epr-16724a.6", rom("epr-16534a.6", 0x100000, "814004e3426b5638e9c8b226594f4f2a9138ffed", Role::MainData)),
+            swap("epr-16725a.7", rom("epr-16535.7", 0x100000, "607bc0f6c478c3d83ce81f34b7f69997361f906f", Role::MainData)),
+            swap("mpr-16772.19", rom("epr-16646.19", 0x80000, "6bcae009e8264bf038fe5d4bc436ec4fc1674831", Role::Polygons)),
+            swap("mpr-16771.23", rom("epr-16645.23", 0x80000, "488fd6c0246752b7d9c25d7ba6cdc5b3911d1836", Role::Polygons)),
+            swap("mpr-16769.26", rom("epr-16516.26", 0x200000, "a2ed7c586dfcb7980190b7057fa5366239035fe8", Role::Textures)),
+            swap("mpr-16770.27", rom("epr-16517.27", 0x200000, "99be9c5d9d99f7016199ffa8404fc471d09e360d", Role::Textures)),
+        ],
+        // Only the first of the parent's two frame-wait loops exists in this program (the second is a
+        // function this older program lacks: its bytes are not in the chips); the first moved.
+        idle_loops: Some(&[crate::IdleLoop { start: 0x12b0, end: 0x12bc }]),
+        // Its textures are its own chips: the parent's pack would miss.
+        own_textures: true,
+        ..Variant::BASE
+    },
+    // Daytona USA with adverts for the Saturn: the program pair and `.6/.7`.
+    Variant {
+        id: "daytonas",
+        parent: "daytona",
+        label: "Saturn Ads",
+        kind: VariantKind::Revision,
+        kind_confirmed: true,
+        title: Some("Daytona USA (Saturn Ads)"),
+        swaps: &[
+            swap("epr-16722a.12", rom("epr-17965.12", 0x20000, "3c337d12f4e12141b412a7289df46f44c66964b2", Role::Program)),
+            swap("epr-16723a.13", rom("epr-17966.13", 0x20000, "2df03455a00ae7066c30bace5c2b81581529e6f4", Role::Program)),
+            swap("epr-16724a.6", rom("epr17967.6", 0x80000, "a716646be6be0b87a550cb88b40e62a5c203ffdf", Role::MainData)),
+            swap("epr-16725a.7", rom("epr17968.7", 0x80000, "9eb43314f3dc6acbbe0aa991d7a5fa44afe9cdd0", Role::MainData)),
+        ],
+        idle_loops: Some(&[crate::IdleLoop { start: 0x13a8, end: 0x13b4 }, crate::IdleLoop { start: 0x1bda8, end: 0x1bdb4 }]),
+        // The program's own defaults as the game wrote them to the I/O board's store
+        // (version 4; a record of the parent's version is not accepted), with the link ID at
+        // byte 0x0B set to SINGLE and the CRC-16 to match, as the parent's (docs/games/daytona.md).
+        backup_ram: Some(&[(
+            0,
+            &[
+                0x53, 0x45, 0x47, 0x41, 0x40, 0x82, 0x04, 0x00, 0xb2, 0x3e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+                0x01, 0x01, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x02, 0x14, 0x1c, 0x00, 0x01,
+                0x00, 0x01, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+            ],
+        )]),
+        ..Variant::BASE
+    },
+    // Daytona USA Special Edition: the program pair and `.6/.7`.
+    Variant {
+        id: "daytonase",
+        parent: "daytona",
+        label: "Special Edition",
+        kind: VariantKind::Revision,
+        kind_confirmed: true,
+        title: Some("Daytona USA Special Edition"),
+        swaps: &[
+            swap("epr-16722a.12", rom("epr-17369a.12", 0x20000, "16e9fd25670ce4eda378df402066e3d9652210b1", Role::Program)),
+            swap("epr-16723a.13", rom("epr-17370a.13", 0x20000, "26eff5a07f6906e1ad20cd264ce6e25a9068ea2b", Role::Program)),
+            swap("epr-16724a.6", rom("epr-13731.6", 0x80000, "412d4db62436746da8d0d55ccf2016d14c05153c", Role::MainData)),
+            swap("epr-16725a.7", rom("epr-13732.7", 0x80000, "0c7502c2fe5a64db7e6020457b9f8e47f2c9af0e", Role::MainData)),
+        ],
+        idle_loops: Some(&[crate::IdleLoop { start: 0x13a8, end: 0x13b4 }, crate::IdleLoop { start: 0x1bd38, end: 0x1bd44 }]),
+        // The program's own defaults as the game wrote them to the I/O board's store
+        // (version 3; a record of the parent's version is not accepted), with the link ID at
+        // byte 0x0B set to SINGLE and the CRC-16 to match, as the parent's (docs/games/daytona.md).
+        backup_ram: Some(&[(
+            0,
+            &[
+                0x53, 0x45, 0x47, 0x41, 0x40, 0x82, 0x03, 0x00, 0x04, 0xad, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+                0x01, 0x01, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x02, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x02, 0x14, 0x1c, 0x00, 0x01,
+                0x00, 0x01, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+            ],
+        )]),
+        ..Variant::BASE
+    },
+    // Zero Gunner, Japan (Model 2B): the program pair `epr-20290.15/20291.16`.
+    Variant {
+        id: "zerogunj",
+        parent: "zerogun",
+        label: "Japan",
+        kind: VariantKind::Region,
+        kind_confirmed: true,
+        swaps: &[
+            swap("epr-20439.15", rom("epr-20290.15", 0x80000, "812ab45cc9e2920e74e58937d1826774f3f54183", Role::Program)),
+            swap("epr-20440.16", rom("epr-20291.16", 0x80000, "a7216914ee7535fa1856cb19bc05c89948a93c89", Role::Program)),
+        ],
+        // The wait for vblank is code copied to work RAM, as the parent's, 0x50 higher.
+        idle_loops: Some(&[crate::IdleLoop { start: 0x5490a0, end: 0x5490b4 }]),
+        ..Variant::BASE
+    },
+    // Dynamite Deka 2 (Japan), Model 2A: the program pair `.12/.13`; `.14/.15` are shared.
+    Variant {
+        id: "dyndeka2",
+        parent: "dynamcop",
+        label: "Dynamite Deka 2",
+        kind: VariantKind::Region,
+        kind_confirmed: true,
+        title: Some("Dynamite Deka 2"),
+        swaps: &[
+            swap("epr-20930.12", rom("epr-20922.12", 0x80000, "4076998fc600c1df3bb5ef48d42681c01e651495", Role::Program)),
+            swap("epr-20931.13", rom("epr-20923.13", 0x80000, "1404a9c79cd2bae13f60e5e008307417324c3666", Role::Program)),
+        ],
+        // The protection answers sit 0x10 lower in this program (the two 16-byte replies, found
+        // by their bytes); the idle loop too.
+        protection_rom: &[(0, 0xbc7e0), (1, 0xbc7f0)],
+        idle_loops: Some(&[crate::IdleLoop { start: 0x71184, end: 0x71198 }]),
+        ..Variant::BASE
+    },
+    // Dead or Alive on the Model 2A board (the 2A clone of the 2B set): its program pair
+    // (`e19310aa.12/e19311aa.13`) and the six `opr-*` geometry programs every 2A set has; the
+    // data, polygons, textures and sound chips are the parent's. Its protection reply is at
+    // another ROM address (*confirmed*: docs/games/doa.md, "`doaa`").
+    Variant {
+        id: "doaa",
+        parent: "doa",
+        label: "Model 2A",
+        kind: VariantKind::CrossBoard,
+        kind_confirmed: true,
+        swaps: &[
+            swap("epr-19379b.15", rom("e19310aa.12", 0x80000, "b3e14103570e5f45aed16e1c158e469bc85002ae", Role::Program)),
+            swap("epr-19380b.16", rom("e19311aa.13", 0x80000, "dcc2df8e28e1a107867f74248e6ffcac83afe7c0", Role::Program)),
+        ],
+        add: &[
+            rom("opr-14742a.45", 0x20000, "f46429fffcee17d056f56d5fe035a33f1fd6c27e", Role::CoproData),
+            rom("opr-14743a.46", 0x20000, "5b9f1fc47caf21e061e930c0d72804e4ec8c7bca", Role::CoproData),
+            rom("opr-14744.58", 0x20000, "651f1db4089a400d073b19ada299b4b08b08f372", Role::CoproData),
+            rom("opr-14745.59", 0x20000, "e3349ece0e47f684d61ad11bfea4a90602287350", Role::CoproData),
+            rom("opr-14746.62", 0x20000, "34e047a93459406c22acf4c25089d1a4955f94ca", Role::CoproData),
+            rom("opr-14747.63", 0x20000, "7d7ec300eeb9a8de1590011e37108688c092f329", Role::CoproData),
+        ],
+        board: Some(Board::Model2A),
+        protection_rom: &[(0, 0x2830)],
+        // The frame wait of the parent's, 0x20 higher (found by its instructions in the program).
+        idle_loops: Some(&[crate::IdleLoop { start: 0x2800, end: 0x2814 }]),
         ..Variant::BASE
     },
 ];
