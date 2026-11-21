@@ -179,7 +179,7 @@ impl NetPlay {
 pub fn config(game: &romset::Game, roms: &romset::RomSet, play: &romset::LinkPlay, name: String) -> Config {
     Config {
         game: game.id.to_string(),
-        rom_hash: linknet::rom_hash(&roms.program),
+        rom_hash: linknet::rom_hash(roms),
         version: env!("CARGO_PKG_VERSION").to_string(),
         name,
         block: play.block as u16,

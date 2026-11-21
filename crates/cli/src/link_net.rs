@@ -202,7 +202,7 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<ExitCode, String> {
     std::fs::create_dir_all(&frames_dir).map_err(|e| e.to_string())?;
     let cfg = Config {
         game: roms.game.id.to_string(),
-        rom_hash: linknet::rom_hash(&roms.program),
+        rom_hash: linknet::rom_hash(roms),
         version: env!("CARGO_PKG_VERSION").to_string(),
         name: linknet::name_or_default(&a.name),
         block: play.block as u16,

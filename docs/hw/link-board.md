@@ -920,14 +920,25 @@ from loopback runs of two real processes (`make link-net-test`).
   does. Each joiner reports a hash of the image it will run, and the host
   refuses to start if one is not what it expects (checked: a joiner with one
   settings byte changed is refused, with both hashes in the message).
-* **Session agreement** (the lobby): a joiner's `Hello` carries the game id, a
-  hash of the program ROMs, the reModel version (the crate version) and the
+* **Session agreement** (the lobby): a joiner's `Hello` carries the game id (a
+  set id, or a variant's own id), a hash of every chip the game loads
+  (protocol 4; below), the reModel version (the crate version) and the
   protocol version; the host answers `Welcome` or `Refuse` with a plain
   reason (another game, other ROMs, another version or protocol, lobby full,
   session already started). The host's `Start` carries D, the node
   assignment, the host table (addresses), the check interval, the timeout and
   the settings; the joiners answer with their settings hash; then `Go`.
   Every step is repeated until answered, so the setup works through loss.
+  **The ROM hash** (`linknet::rom_hash`) is an FNV-1a over the set's id and then
+  each chip in manifest order (so by socket and role) as its role, its length
+  and its content: never a file name, which clones share and users rename. Two
+  sets that differ in one data, polygon, texture or sound chip, or two variants
+  of a title (whose ids differ), do not agree, where protocol 3's hash covered
+  the program ROMs only. It is taken once when the session is configured
+  (tens of milliseconds); the same value is the `rom` key of the mDNS TXT record,
+  so a host is refused as "different ROMs" before joining. The protocol
+  version is 4 for this change: a peer of version 3 gets the version refusal
+  and never compares hashes of another meaning.
 
 * **Names and discovery (as built later).** The protocol is version 2: the
   `Lobby` packet carries every player's name (host first) so a joiner sees who

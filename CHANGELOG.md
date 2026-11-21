@@ -15,6 +15,10 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- Network link play compares a hash over every chip the game loads (and the set's id),
+  not the program ROMs alone, in the session agreement and the mDNS record ("different
+  ROMs"); two sets that differ in one data, texture or sound chip, or two versions of a
+  title, no longer link. Link protocol 4 (a peer of 3 gets the version refusal).
 - `make bench` (and `bench-all`, `release-tag`) runs from a blank EEPROM
   (`remodel --fresh-eeprom run`: none loaded or kept), so its state hashes no
   longer depend on an `eeprom.bin` left by an earlier run; a fresh checkout or

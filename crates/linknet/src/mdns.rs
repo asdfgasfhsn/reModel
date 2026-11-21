@@ -53,7 +53,7 @@ impl Lobby {
 pub struct Txt {
     pub game: String,
     pub version: String,
-    /// The hash of the program ROMs the session agreement compares.
+    /// The hash over every chip of the set (and its id) the session agreement compares.
     pub rom_hash: u64,
     pub players: u8,
     pub max: u8,

@@ -11,7 +11,10 @@ pub const MAGIC: &[u8; 4] = b"RMLN";
 /// discovery answer.
 /// 3: a host that leaves no longer ends the session: the data packet carries the
 /// leave reports and a `Relay` packet carries a departed host's records.
-pub const PROTO: u8 = 3;
+/// 4: the ROM hash in the lobby packets and the discovery record covers every chip of
+/// the set and its id, not the program alone (a host with other chips, or another
+/// variant, is refused).
+pub const PROTO: u8 = 4;
 /// The largest datagram sent (under an Ethernet MTU) and read.
 pub const MAX_PACKET: usize = 1400;
 pub const MAX_HOSTS: usize = 8;

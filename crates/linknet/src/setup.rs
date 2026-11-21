@@ -439,7 +439,10 @@ impl Host {
         } else if game != self.cfg.game {
             Some(format!("this host is playing {}, you chose {game}", self.cfg.game))
         } else if rom != self.cfg.rom_hash {
-            Some("your ROMs are not the same as the host's (the program ROM hashes differ)".to_string())
+            Some(
+                "your ROMs are not the same as the host's (the hashes over every chip and the set's id differ)"
+                    .to_string(),
+            )
         } else if version != self.cfg.version {
             Some(format!("reModel {version} here, {} on the host: use the same version", self.cfg.version))
         } else if self.players() >= self.cfg.max_hosts {

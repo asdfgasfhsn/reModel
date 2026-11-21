@@ -1242,7 +1242,7 @@ join list merges them (one entry per host, found either way):
 
 * **mDNS / DNS-SD**: the service `_remodel._udp.local.` on the host's real
   port (any port, not only 47890), with a TXT record of the game set, the
-  reModel version, a hash of the program ROMs (what the session agreement
+  reModel version, a hash of every chip of the set and its id (what the session agreement
   compares), players and seats free, the delay D it would start with, the lobby
   state and the host's name. The record is updated as players join and leave;
   the advert is withdrawn when the lobby is full or the start is under way, put
@@ -1264,8 +1264,7 @@ players with one name are shown "Sam" and "Sam (2)". Names are only shown: they
 are not part of any machine's state or hash, so the same inputs still give the
 same state hashes.
 
-**What must match.** The same game, the same ROM files (a hash of the program
-ROMs), the same reModel version (the crate version) and protocol. A joiner
+**What must match.** The same game (a variant is its own game: the same version of the title), the same ROM files (a hash over every chip the game loads, not the program alone, so a set with one other data or sound chip is refused), the same reModel version (the crate version) and protocol (4). A joiner
 that does not match is refused with the reason. The host picks D, the link
 delay, from the measured round trip (about one frame per 17 ms of one-way
 delay, plus one): on a wired LAN 1 or 2, over Wi-Fi 3 to 5. `remodel link-net`
