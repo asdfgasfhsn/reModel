@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""Set up a checkout or worktree for an agent, and pin a prebuilt binary
+(docs/uplift/agent-environment.md; `make agent-setup`, `make agent-bin`).
+
+  tools/agent-setup [--art] [--actor NAME]   run in the checkout's root
+  tools/agent-setup bin [--src FILE]         copy a built remodel to out/bin/ID/
+
+setup, idempotent:
+  * links rom/ to the main checkout's, when this is a worktree without one;
+  * copies each game's out/GAME/eeprom.bin from the main checkout where
+    there is none, so a benchmark's state hashes match (a missing one
+    gives false mismatches);
+  * makes the agent's scratch folder out/scratch/agent-NAME;
+  * writes out/agent.env, which the Makefile reads: CARGO_TARGET_DIR (the
+    shared target-agents/ of the main checkout), REMODEL and PLAY pointing
+    at that target dir's binaries, REMODEL_ACTOR, REMODEL_SCRATCH (which
+    makes `remodel run` write to a private folder in it), CARGO_BIN_DIR when
+    cargo is not on PATH;
+  * with --art: REMODEL points at the pinned binary instead (built first
+    with `make agent-bin`) and `make` does not build;
+  * prints, as one JSON object, what is available.
+
+bin: out/bin/ID/remodel, read-only; ID is the commit, plus a hash of the
+binary when the tree has changes, so nothing is overwritten and a new
+commit has a new folder.
+"""
+import hashlib
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+
+
+def sh(*a):
+    try:
+        return subprocess.run(a, capture_output=True, text=True, timeout=20).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def main_checkout(root):
+    g = os.path.join(root, ".git")
+    if os.path.isfile(g):
+        try:
+            gd = open(g).read().split(":", 1)[1].strip()
+            gd = gd if os.path.isabs(gd) else os.path.normpath(os.path.join(root, gd))
+            parts = gd.split(os.sep + ".git" + os.sep)
+            if len(parts) > 1:
+                return parts[0]
+        except (OSError, IndexError):
+            pass
+    return root
+
+
+def bin_id(src):
+    commit = sh("git", "rev-parse", "--short=10", "HEAD") or "nocommit"
+    dirty = sh("git", "status", "--porcelain", "--untracked-files=no")
+    if dirty:
+        h = hashlib.sha256(open(src, "rb").read()).hexdigest()[:8]
+        return f"{commit}-{h}"
+    return commit
+
+
+def cmd_bin(argv):
+    root = os.getcwd()
+    src = None
+    if "--src" in argv:
+        src = argv[argv.index("--src") + 1]
+    if not src:
+        t = os.environ.get("CARGO_TARGET_DIR") or "target"
+        src = os.path.join(t, "release", "remodel")
+    if not os.path.isfile(src):
+        print(f"agent-setup: {src} is not built (make release first)", file=sys.stderr)
+        return 3
+    dest_dir = os.path.join(root, "out", "bin", bin_id(src))
+    dest = os.path.join(dest_dir, "remodel")
+    if not os.path.exists(dest):
+        os.makedirs(dest_dir, exist_ok=True)
+        tmp = dest + ".part"
+        shutil.copyfile(src, tmp)
+        os.chmod(tmp, stat.S_IRUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+        os.rename(tmp, dest)
+    print(os.path.relpath(dest, root))
+    return 0
+
+
+def free_gpu_mb():
+    out = sh("nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits")
+    try:
+        return int(out.splitlines()[0])
+    except (IndexError, ValueError):
+        return None
+
+
+def cmd_setup(argv):
+    root = os.getcwd()
+    art = "--art" in argv
+    actor = argv[argv.index("--actor") + 1] if "--actor" in argv else os.environ.get("REMODEL_ACTOR") or os.path.basename(root)
+    main = main_checkout(root)
+    notes = []
+    # rom
+    rom = os.path.join(root, "rom")
+    if not os.path.exists(rom):
+        if os.path.isdir(os.path.join(main, "rom")) and main != root:
+            os.symlink(os.path.join(main, "rom"), rom)
+            notes.append("linked rom/ to the main checkout's")
+        else:
+            notes.append("no rom/ here and none in the main checkout: put the dumps in rom/")
+    # eeprom
+    copied = []
+    mo = os.path.join(main, "out")
+    if main != root and os.path.isdir(mo):
+        for g in sorted(os.listdir(mo)):
+            src = os.path.join(mo, g, "eeprom.bin")
+            dst = os.path.join(root, "out", g, "eeprom.bin")
+            if os.path.isfile(src) and not os.path.exists(dst):
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copyfile(src, dst)
+                copied.append(g)
+    # scratch
+    scratch = os.path.join("out", "scratch", f"agent-{actor}")
+    os.makedirs(os.path.join(root, scratch), exist_ok=True)
+    # env
+    target = os.path.join(main, "target-agents")
+    rel = lambda p: os.path.relpath(p, root)
+    env = [("CARGO_TARGET_DIR", target), ("REMODEL_ACTOR", actor), ("REMODEL_SCRATCH", scratch)]
+    if not shutil.which("cargo"):
+        for d in (os.path.expanduser("~/.cargo/bin"), os.path.expanduser("~/.local/share/rustup-wasm/bin")):
+            if os.path.isfile(os.path.join(d, "cargo")):
+                env.append(("CARGO_BIN_DIR", d))
+                notes.append(f"cargo was not on PATH: the Makefile adds {d}; for your shell: export PATH={d}:$PATH")
+                break
+    binary = None
+    if art:
+        env_bin = subprocess.run([sys.executable, __file__, "bin"], capture_output=True, text=True)
+        if env_bin.returncode != 0:
+            print(env_bin.stderr.strip(), file=sys.stderr)
+            return env_bin.returncode
+        binary = env_bin.stdout.strip()
+        env += [("REMODEL", binary), ("REMODEL_PINNED", "1")]
+    else:
+        binary = rel(os.path.join(target, "release", "remodel"))
+        env += [("REMODEL", binary), ("PLAY", rel(os.path.join(target, "release", "remodel-play")))]
+    os.makedirs(os.path.join(root, "out"), exist_ok=True)
+    with open(os.path.join(root, "out", "agent.env"), "w") as f:
+        f.write("# written by `make agent-setup`; read by the Makefile\n")
+        for k, v in env:
+            f.write(f"{k}={v}\n")
+    games = []
+    if os.path.isdir(rom):
+        games = sorted({os.path.splitext(n)[0] for n in os.listdir(rom) if not n.startswith(".") and not n.startswith("m2emu")})
+    st = os.statvfs(root)
+    info = {
+        "binary": binary,
+        "binary_exists": os.path.isfile(os.path.join(root, binary)),
+        "pinned": art,
+        "roms": games,
+        "eeprom_copied": copied,
+        "scenes": {},
+        "gpu_free_mb": free_gpu_mb(),
+        "disk_free_gb": round(st.f_bavail * st.f_frsize / 2**30),
+        "scratch": scratch + "/",
+        "env_file": "out/agent.env",
+        "notes": notes,
+    }
+    print(json.dumps(info))
+    return 0
+
+
+def main():
+    a = sys.argv[1:]
+    if a[:1] in (["-h"], ["--help"]):
+        print(__doc__)
+        return 0
+    if a[:1] == ["bin"]:
+        return cmd_bin(a[1:])
+    return cmd_setup(a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

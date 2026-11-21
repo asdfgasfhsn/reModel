@@ -11,6 +11,12 @@ make                  # list every target
 make check            # format check, clippy, unit tests, the browser build type-checked (no ROMs needed); `make ci` is the same
 make build            # debug build of the whole workspace
 make release          # optimised build of the remodel CLI (RECOMP=1: with the recompiled code)
+make lock-status      # who holds the build, test, render and emulate locks and who waits (tools/lock status; docs/usage.md, "Shared machine")
+make agent-setup      # a new worktree: link rom/, copy the EEPROMs, make out/scratch/agent-NAME, write out/agent.env (ART=1: pinned binary); prints what is available as JSON
+make agent-bin        # build once and keep a read-only remodel in out/bin/COMMIT/ for agents that never build
+make lock-test        # tools/lock's own tests (a private lock folder; part of make check)
+make agent-env-test   # slice A's acceptance test: beside a build and a test run holding their locks, img and studio answer in under 2 s, parseable, with the right exit codes (no ROM)
+remodel img sheet OUT.png IMG.. | diff A.png B.png | stats IMG.png   # contact sheet, pixel difference, image numbers, with --json (no ROM; docs/uplift-studio.md, "Image tools")
 make test             # unit tests only; make lint (clippy, warnings are errors); make fmt / make fmt-check
 make pace-sim         # the browser's audio rate control on synthetic frame timings (docs/web.md)
 make clean            # remove build output and everything in out/ (scratch included)
@@ -222,6 +228,57 @@ runaway run is killed alone rather than the kernel's out-of-memory killer
 picking something else on the machine. `MEMCAP=16G` raises it for one
 command, `MEMCAP=` turns it off; elsewhere (macOS, Windows) runs aren't
 capped. For a direct run: `tools/capped target/release/remodel ...`.
+
+## Shared machine: locks, worktrees, a pinned binary
+
+Several agents (or an agent and a person) share one machine. `tools/lock`
+gives each kind of shared resource its own lock, so work that needs
+different things does not queue:
+
+| Class | At once | Taken by |
+|---|---|---|
+| `build` | 1 | `make build`, `release`, `lint`, `web-check`, `recomp`, `agent-bin`: memory and the cargo target directory |
+| `test` | 1 | `make test` and `check`, `jit-test`, `sharc-test`, ...: the GPU tests and long runs (with `build`) |
+| `render` | 3 | the GPU render targets (`look-render`, `gpu-check`, `pack-check`, `depth-check`, `lighting-check`, `temporal-probe`) |
+| `emulate` | 3 | for callers that want it (`tools/lock emulate -- ...`); no target takes it yet |
+
+`tools/lock CLASS[,CLASS] [--wait SECS] -- COMMAND` runs the command holding
+a slot (a class already held by an ancestor is not taken again, so targets
+nest); `tools/lock status [--json]` lists holders (process, how long, the
+command) and waiters; `make lock-status` is the same. `--wait` (make:
+`LOCK_WAIT`, default 1800) bounds the wait: it gives up with exit code 3
+and names the holder. A holder that dies releases its lock by itself, the
+locks being `flock(2)` files in `out/locks/` of the main checkout (shared by
+its worktrees; `REMODEL_LOCK_DIR` moves them; `REMODEL_LOCK_<CLASS>_SLOTS`
+sets a class's slots). Not set up for macOS or Windows: a released build has
+no locks to take.
+
+Until nobody types it any more, `flock out/heavy.lock COMMAND` is honoured:
+`build` and `test` also take `out/heavy.lock` (first, so the order is always
+heavy, build, test) unless a process above has it already, so
+`flock out/heavy.lock make check` does not deadlock on itself, and a hand-typed
+holder shows in `status` as "by hand". `REMODEL_LEGACY_LOCK=0` turns this
+off, and the day it is not needed this goes.
+
+`make agent-setup` (in a new worktree) links `rom/` to the main checkout's,
+copies each game's `out/GAME/eeprom.bin` (a missing one gives false
+benchmark mismatches), makes `out/scratch/agent-NAME` (`ACTOR=NAME`, default
+the folder's name) and writes `out/agent.env`, which the Makefile reads:
+`CARGO_TARGET_DIR` (the shared `target-agents/`), `REMODEL` and `PLAY`
+pointing into it, `REMODEL_ACTOR`, `REMODEL_SCRATCH` and, where cargo is not
+on the path, where it is. With `REMODEL_SCRATCH` set, `remodel run` with no
+`--out` writes to `$REMODEL_SCRATCH/run/GAME/` instead of `out/GAME/`, with
+a fresh copy of `out/GAME/eeprom.bin` to start from (the shared one stays
+untouched), so two agents never write one output. It prints, as one JSON
+object, the binary, the ROM sets, free GPU memory (where `nvidia-smi` is),
+free disk and the scratch folder.
+
+`make agent-bin` builds the CLI under the `build` lock and keeps a
+read-only copy in `out/bin/COMMIT/remodel` (with a hash added when the tree
+has changes; a folder is never overwritten). `make agent-setup ART=1`
+then points `REMODEL` at it and marks it pinned: `make` targets that would
+build `release` use it as it is. Art work (renders, `studio`, `img`) needs
+nothing else.
 
 ## Versions and releases
 

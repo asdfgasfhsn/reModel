@@ -9,6 +9,7 @@
 #[path = "studio_regions.rs"]
 mod regions;
 
+use crate::studio_answer::unknown;
 use crate::studio_img::{self as img, Image, Wrap};
 use crate::studio_text as text;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -33,16 +34,16 @@ remodel studio SUB PROJECT [options]   (docs/uplift-studio.md)
   select PROJECT [--key K,..] [--group N] [--surface S] [--frame F --region X,Y,W,H]
          [--kind tex|tile] [--min-pixels N] [--all] [--category C] [--reason TEXT]
   status PROJECT [--tsv] [--missing]
-  approve PROJECT [NAME..] [--drafted] [--category C] [--group N] [--undo]
-  import PROJECT --from DIR --tool TEXT [NAME..|--group N|--category C|--all]   drafts made elsewhere, with provenance
-  pack PROJECT [--approve-all] [--no-lint]      pack.txt, index.txt, pack-lint
+  approve PROJECT [NAME..] [--drafted] [--category C] [--group N] [--undo] [--replace]
+  import PROJECT --from DIR --tool TEXT [NAME..|--group N|--category C|--all] [--replace]   drafts made elsewhere, with provenance
+  pack PROJECT [--approve-all] [--no-lint] [--replace]      pack.txt, index.txt, pack-lint
   draft PROJECT --brief FILE [NAME..|--group N|--category C|--all] [--cmd TEMPLATE]
-         [--ref IMG].. [--jobs N] [--retries N] [--timeout SECS] [--scale N] [--force] [--dry-run]
-  style PROJECT --recipe FILE [NAME..|--group N|--category C|--all] [--from original|draft]
-  variants PROJECT --of KEY [--also KEY,..] [--base IMG] [--mode luma|ratio|mean] [--strength S] [--dry-run]
+         [--ref IMG].. [--jobs N] [--retries N] [--timeout SECS] [--scale N] [--keep-size] [--replace] [--dry-run]
+  style PROJECT --recipe FILE [NAME..|--group N|--category C|--all] [--from original|draft] [--replace]
+  variants PROJECT --of KEY [--also KEY,..] [--base IMG] [--mode luma|ratio|mean] [--strength S] [--dry-run] [--replace]
   text PROJECT --frame F --region X,Y,W,H (--image FILE | --text STR --font FILE ..)
          [--box X,Y,W,H] [--pad N] [--bg #rrggbb|auto] [--fit contain|stretch] [--align left|center|right]
-         [--alpha original|typeset] [--tile-scale N] [--dry-run]
+         [--alpha original|typeset] [--tile-scale N] [--dry-run] [--replace]
   region-capture PROJECT NAME --capture-dir DIR --frame F --region X,Y,W,H [--plane a|b] [--layer high|low]
          [--also F,..] [--wild X,Y;..] [--image FILE] [--ref-scale N]   a 2D region override (tile layout + original)
   regions PROJECT [--tsv]   the project's regions and whether each has its replacement
@@ -52,6 +53,10 @@ remodel studio SUB PROJECT [options]   (docs/uplift-studio.md)
   compare PROJECT --scene NAME[,NAME..]|all [--pack DIR] [--into DIR] [--view native|H[,A:B]]
          before and after from the scenes' captures: no run, no ROM (remodel scene make first)
   A run's output is never reused: compare refuses a folder that holds one unless --force reruns it.
+Every command takes --json: one object (ok, code, error, data, warnings, next) instead of text.
+Exit codes: 0 done, 1 a check failed, 2 the request was wrong (unknown names and options are errors),
+3 something needed is missing, 4 an internal error. Nothing overwrites a draft or an approved image
+without --replace.
 ";
 
 pub fn main(args: &[String], ctx: &Ctx) -> Result<bool, String> {
@@ -59,7 +64,13 @@ pub fn main(args: &[String], ctx: &Ctx) -> Result<bool, String> {
         print!("{USAGE}");
         return Ok(true);
     };
+    let Some((_, allowed)) = OPTIONS.iter().find(|(n, _)| n == sub) else {
+        let names: Vec<&str> = OPTIONS.iter().map(|(n, _)| *n).collect();
+        return Err(format!("studio: {}\n{USAGE}", unknown("subcommand", sub, &names)));
+    };
+    prescan(sub, allowed, &args[1..])?;
     let a = Args::parse(&args[1..])?;
+    a.check(sub, allowed)?;
     let dir = a.pos.first().ok_or_else(|| format!("studio {sub}: which PROJECT directory?\n{USAGE}"))?;
     let p = Project { dir: PathBuf::from(dir) };
     match sub.as_str() {
@@ -78,8 +89,138 @@ pub fn main(args: &[String], ctx: &Ctx) -> Result<bool, String> {
         "regions" => regions::list(&p, &a),
         "seam" => seam(&p, &a),
         "compare" => compare(&p, &a, ctx),
-        _ => Err(format!("studio: no subcommand `{sub}`\n{USAGE}")),
+        _ => unreachable!("every name in OPTIONS has an arm"),
     }
+}
+
+/// Every subcommand and the options it reads (values and switches). An
+/// option not listed for the subcommand is an error that names the near
+/// ones, never a value that is silently ignored. `--json` is global.
+const OPTIONS: &[(&str, &[&str])] = &[
+    ("init", &["--name", "--game", "--map", "--style", "--capture-dir", "--copy-map"]),
+    ("region", &["--frame", "--region", "--scale", "--map"]),
+    (
+        "select",
+        &[
+            "--key",
+            "--group",
+            "--surface",
+            "--frame",
+            "--region",
+            "--kind",
+            "--min-pixels",
+            "--all",
+            "--category",
+            "--reason",
+            "--map",
+            "--scale",
+        ],
+    ),
+    ("status", &["--tsv", "--missing"]),
+    ("approve", &["--drafted", "--category", "--group", "--undo", "--all", "--replace"]),
+    ("import", &["--from", "--tool", "--prompts", "--group", "--category", "--all", "--replace"]),
+    ("pack", &["--approve-all", "--no-lint", "--replace"]),
+    (
+        "draft",
+        &[
+            "--brief",
+            "--ref",
+            "--jobs",
+            "--retries",
+            "--timeout",
+            "--scale",
+            "--cmd",
+            "--group",
+            "--category",
+            "--all",
+            "--keep-size",
+            "--replace",
+            "--force",
+            "--dry-run",
+        ],
+    ),
+    ("style", &["--recipe", "--from", "--group", "--category", "--all", "--replace"]),
+    ("variants", &["--of", "--also", "--base", "--mode", "--strength", "--ink", "--map", "--dry-run", "--replace"]),
+    (
+        "text",
+        &[
+            "--frame",
+            "--region",
+            "--image",
+            "--trim",
+            "--margin",
+            "--box",
+            "--fit",
+            "--align",
+            "--alpha",
+            "--tile-scale",
+            "--pad",
+            "--bg",
+            "--category",
+            "--reason",
+            "--text",
+            "--size",
+            "--colour",
+            "--stroke",
+            "--stroke-width",
+            "--typesetter",
+            "--font",
+            "--scale",
+            "--map",
+            "--dry-run",
+            "--replace",
+        ],
+    ),
+    (
+        "region-capture",
+        &[
+            "--capture-dir",
+            "--frame",
+            "--region",
+            "--plane",
+            "--layer",
+            "--also",
+            "--wild",
+            "--image",
+            "--ref-scale",
+            "--pin",
+            "--scale",
+            "--map",
+            "--game-px",
+        ],
+    ),
+    ("regions", &["--tsv"]),
+    ("seam", &["--from", "--tsv", "--strict"]),
+    ("compare", &["--pack", "--into", "--steps", "--snap", "--run-args", "--frames", "--jobs", "--force", "--scene", "--view"]),
+];
+
+/// The options typed, before anything is parsed: one the subcommand does not
+/// read is named with its near matches (parsing would first complain that it
+/// "wants a value"). A value is skipped, so one that starts with `--` (a
+/// `--run-args "--height 1080"`) is not taken for an option.
+fn prescan(sub: &str, allowed: &[&str], args: &[String]) -> Result<(), String> {
+    let mut it = args.iter();
+    while let Some(x) = it.next() {
+        if !x.starts_with("--") || x == "--json" {
+            continue;
+        }
+        if !allowed.contains(&x.as_str()) {
+            return Err(format!(
+                "studio {sub}: {}\n(its options: {})",
+                unknown("option", x, allowed),
+                allowed.join(" ")
+            ));
+        }
+        if !SWITCHES.contains(&x.as_str()) {
+            it.next();
+        }
+    }
+    Ok(())
+}
+
+/// A warning for the answer's `warnings` (stderr, read back by `--json`).
+fn warn(msg: &str) {
+    eprintln!("warning: {msg}");
 }
 
 // ------------------------------------------------------------ arguments
@@ -98,6 +239,9 @@ const SWITCHES: &[&str] = &[
     "--strict",
     "--game-px",
     "--pin",
+    "--keep-size",
+    "--replace",
+    "--json",
 ];
 
 pub struct Args {
@@ -121,6 +265,24 @@ impl Args {
             }
         }
         Ok(r)
+    }
+
+    /// Every option given must be one `sub` reads (or the global `--json`).
+    fn check(&self, sub: &str, allowed: &[&str]) -> Result<(), String> {
+        let mut used: Vec<&str> = self.flags.iter().map(|(f, _)| f.as_str()).collect();
+        used.extend(self.sw.iter().map(String::as_str));
+        used.sort();
+        used.dedup();
+        for u in used {
+            if u != "--json" && !allowed.contains(&u) {
+                return Err(format!(
+                    "studio {sub}: {}\n(its options: {})",
+                    unknown("option", u, allowed),
+                    allowed.join(" ")
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn get(&self, k: &str) -> Option<&str> {
@@ -363,6 +525,20 @@ impl Project {
         }
     }
 
+    /// What stands in the way of writing `name`'s draft: an image already
+    /// there (a draft, or an approved one) and no `--replace`.
+    fn blocked(&self, name: &str, a: &Args) -> Option<&'static str> {
+        if a.has("--replace") {
+            None
+        } else if self.p("pack").join(format!("{name}.png")).is_file() {
+            Some("approved")
+        } else if self.p("draft").join(format!("{name}.png")).is_file() {
+            Some("draft")
+        } else {
+            None
+        }
+    }
+
     /// The original as dumped: the project's copy, else the map's.
     fn original(&self, name: &str) -> Option<PathBuf> {
         self.map_texture(name, true)
@@ -467,6 +643,27 @@ impl Project {
         }
         Ok(picked)
     }
+}
+
+/// What a command that skipped images that were there says: a warning
+/// (the first few names) and, when it wrote nothing at all, an error
+/// naming the fix.
+fn report_kept(kept: &[(String, &str)], wrote: usize, fail_if_none: bool) -> Result<(), String> {
+    if kept.is_empty() {
+        return Ok(());
+    }
+    let shown: Vec<String> = kept.iter().take(6).map(|(n, w)| format!("{n} ({w})")).collect();
+    let msg = format!(
+        "{} kept, not overwritten: {}{}",
+        kept.len(),
+        shown.join(", "),
+        if kept.len() > 6 { format!(", and {} more", kept.len() - 6) } else { String::new() }
+    );
+    if wrote == 0 && fail_if_none {
+        return Err(format!("{msg}\nnext: run it again with --replace to overwrite them"));
+    }
+    warn(&format!("{msg}; --replace overwrites them"));
+    Ok(())
 }
 
 /// Whether the user's token names a row: its name, or its 16-digit key.
@@ -943,6 +1140,7 @@ fn approve(p: &Project, a: &Args) -> Result<bool, String> {
         p.pick(a, true)?
     };
     let (mut n, mut skipped) = (0, 0);
+    let mut kept: Vec<(String, &str)> = Vec::new();
     for r in &rows {
         let (d, k) = (p.p("draft").join(format!("{}.png", r.name)), p.p("pack").join(format!("{}.png", r.name)));
         if a.has("--undo") {
@@ -951,10 +1149,16 @@ fn approve(p: &Project, a: &Args) -> Result<bool, String> {
                 n += 1;
             }
         } else if d.is_file() {
-            // Copy only what changed, so a second run does nothing.
+            // Copy only what changed, so a second run does nothing; an
+            // approved image that differs from the draft is replaced only
+            // on request.
             if std::fs::read(&d).ok() != std::fs::read(&k).ok() {
-                copy_file(&d, &k)?;
-                n += 1;
+                if k.is_file() && !a.has("--replace") {
+                    kept.push((r.name.clone(), "approved, and the draft differs"));
+                } else {
+                    copy_file(&d, &k)?;
+                    n += 1;
+                }
             }
         } else {
             skipped += 1;
@@ -964,6 +1168,7 @@ fn approve(p: &Project, a: &Args) -> Result<bool, String> {
         "{}      {n} images, {skipped} without a draft",
         if a.has("--undo") { "unapproved" } else { "approved  " }
     );
+    report_kept(&kept, n, false)?;
     Ok(true)
 }
 
@@ -978,10 +1183,15 @@ fn import(p: &Project, a: &Args) -> Result<bool, String> {
     let tool = a.get("--tool").ok_or("--tool TEXT: how they were made, for the record")?;
     let rows = p.pick(a, true)?;
     let (mut n, mut missing) = (0, 0);
+    let mut kept: Vec<(String, &str)> = Vec::new();
     for r in &rows {
         let src = from.join(format!("{}.png", r.name));
         if !src.is_file() {
             missing += 1;
+            continue;
+        }
+        if let Some(w) = p.blocked(&r.name, a) {
+            kept.push((r.name.clone(), w));
             continue;
         }
         copy_file(&src, &p.p("draft").join(format!("{}.png", r.name)))?;
@@ -997,6 +1207,7 @@ fn import(p: &Project, a: &Args) -> Result<bool, String> {
         n += 1;
     }
     println!("imported      {n} images into draft/, {missing} not in {}", from.display());
+    report_kept(&kept, n, true)?;
     Ok(true)
 }
 
@@ -1005,7 +1216,11 @@ fn import(p: &Project, a: &Args) -> Result<bool, String> {
 fn pack(p: &Project, a: &Args) -> Result<bool, String> {
     p.require()?;
     if a.has("--approve-all") {
-        approve(p, &Args::parse(&["--drafted".to_string()])?)?;
+        let mut ap = vec!["--drafted".to_string()];
+        if a.has("--replace") {
+            ap.push("--replace".to_string());
+        }
+        approve(p, &Args::parse(&ap)?)?;
     }
     let dir = p.p("pack");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -1054,7 +1269,12 @@ fn style(p: &Project, a: &Args) -> Result<bool, String> {
     let from = a.get("--from").unwrap_or("original");
     let recipe_name = Path::new(rf_path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     let mut done = 0;
+    let mut kept: Vec<(String, &str)> = Vec::new();
     for r in &rows {
+        if let Some(w) = p.blocked(&r.name, a) {
+            kept.push((r.name.clone(), w));
+            continue;
+        }
         let src_path = if from == "draft" {
             p.p("draft").join(format!("{}.png", r.name))
         } else {
@@ -1080,6 +1300,7 @@ fn style(p: &Project, a: &Args) -> Result<bool, String> {
         done += 1;
     }
     println!("styled        {done} of {} into draft/", rows.len());
+    report_kept(&kept, done, true)?;
     Ok(true)
 }
 
@@ -1118,7 +1339,15 @@ fn variants(p: &Project, a: &Args) -> Result<bool, String> {
     let mut rows = p.selection();
     let cat = rows.iter().find(|r| r.name == key.name).map(|r| r.category.clone()).unwrap_or_default();
     println!("surface       {} feeds {} other keys besides {}", key.surface, members.len(), key.name);
+    let mut kept: Vec<(String, &str)> = Vec::new();
+    let mut wrote = 0;
     for m in &members {
+        if let Some(w) = p.blocked(&m.name, a) {
+            if !a.has("--dry-run") {
+                kept.push((m.name.clone(), w));
+                continue;
+            }
+        }
         let Some(tp) = p.original(&m.name) else {
             println!("skipped       {}: no original", m.name);
             continue;
@@ -1135,6 +1364,7 @@ fn variants(p: &Project, a: &Args) -> Result<bool, String> {
             continue;
         }
         img::save(&p.p("draft").join(format!("{}.png", m.name)), &out)?;
+        wrote += 1;
         let pf = p.write_prompt(
             &m.name,
             &format!(
@@ -1164,6 +1394,7 @@ fn variants(p: &Project, a: &Args) -> Result<bool, String> {
     if !a.has("--dry-run") {
         p.write_selection(&rows)?;
     }
+    report_kept(&kept, wrote, true)?;
     Ok(true)
 }
 
@@ -1345,7 +1576,14 @@ fn text_cmd(p: &Project, a: &Args) -> Result<bool, String> {
     let reason = a.get("--reason").map(str::to_string).unwrap_or_else(|| {
         format!("text over frame {stem} region {},{},{},{}", region.0, region.1, region.2, region.3)
     });
+    let mut kept: Vec<(String, &str)> = Vec::new();
     for (name, c) in &best {
+        if !a.has("--dry-run") {
+            if let Some(w) = p.blocked(name, a) {
+                kept.push((name.to_string(), w));
+                continue;
+            }
+        }
         let orig = p.original(name).and_then(|f| img::load(&f).ok());
         let out = text::slice_cell(&ts, &at, c, orig.as_ref(), tile_px, mode);
         if a.has("--dry-run") {
@@ -1376,8 +1614,9 @@ fn text_cmd(p: &Project, a: &Args) -> Result<bool, String> {
     if !a.has("--dry-run") {
         rows.sort_by(|x, y| x.name.cmp(&y.name));
         p.write_selection(&rows)?;
-        println!("wrote         {} tile images into draft/", best.len());
+        println!("wrote         {} tile images into draft/", best.len() - kept.len());
     }
+    report_kept(&kept, best.len() - kept.len(), true)?;
     Ok(true)
 }
 
@@ -1620,7 +1859,10 @@ fn draft(p: &Project, a: &Args) -> Result<bool, String> {
     let jobs: usize = a.num("--jobs")?.unwrap_or(3);
     let retries: usize = a.num("--retries")?.unwrap_or(2);
     let timeout: u64 = a.num("--timeout")?.unwrap_or(900);
-    let (force, dry) = (a.has("--force"), a.has("--dry-run"));
+    if a.has("--force") {
+        warn("--force is --replace here; use --replace");
+    }
+    let (force, dry) = (a.has("--replace") || a.has("--force"), a.has("--dry-run"));
 
     // Prepare every job (cheap), then run those without a draft.
     struct Job {
@@ -1713,7 +1955,10 @@ fn draft(p: &Project, a: &Args) -> Result<bool, String> {
             .replace("{out}", "out.png");
         todo.push(Job { name: r.name.clone(), dir: jd, w: orig.width, h: orig.height, cmd, prompt, inputs: files });
     }
-    println!("jobs          {} to run, {} already drafted (--force redoes)", todo.len(), skipped);
+    println!("jobs          {} to run, {} already drafted (--replace redoes)", todo.len(), skipped);
+    if skipped > 0 {
+        warn(&format!("{skipped} already drafted or approved and kept; --replace redoes them"));
+    }
     if dry {
         for j in &todo {
             println!("{}\t{}\t{}", j.name, j.dir.display(), j.cmd);
@@ -1771,7 +2016,7 @@ fn finish_draft(
     keep: bool,
 ) -> Result<(), String> {
     let out = img::load(&jd.join("out.png"))?;
-    let im = if keep {
+    let mut im = if keep {
         out
     } else {
         // Crop to the original's proportions (a generator's frame is not
@@ -1791,7 +2036,35 @@ fn finish_draft(
         };
         img::resize(&cropped, w * scale, h * scale)
     };
+    inherit_cutout(&mut im, p.original(name).and_then(|f| img::load(&f).ok()).as_ref());
     img::save(&p.p("draft").join(format!("{name}.png")), &im)
+}
+
+/// A cut-out texture's transparent texels stay transparent in its restyle:
+/// an image model returns an opaque picture, and drawn as it is the
+/// cut-out becomes a solid rectangle. The original's alpha, resampled to
+/// the draft's size, is applied (kept hard where the original's was hard;
+/// the lower of the two where the draft has its own transparency). A draft
+/// of an opaque original is left alone.
+fn inherit_cutout(im: &mut Image, original: Option<&Image>) {
+    let Some(o) = original else { return };
+    if o.rgba.chunks_exact(4).all(|p| p[3] == 255) {
+        return;
+    }
+    let hard = o.rgba.chunks_exact(4).all(|p| p[3] == 0 || p[3] == 255);
+    let mask = img::resize(o, im.width, im.height);
+    for (d, m) in im.rgba.chunks_exact_mut(4).zip(mask.rgba.chunks_exact(4)) {
+        let a = if hard {
+            if m[3] >= 128 {
+                255
+            } else {
+                0
+            }
+        } else {
+            m[3]
+        };
+        d[3] = d[3].min(a);
+    }
 }
 
 // -------------------------------------------------------------- compare
@@ -2486,5 +2759,147 @@ mod tests {
         let t = today();
         assert_eq!(t.len(), 10);
         assert!(t.starts_with("20"));
+    }
+
+    fn strings(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+
+    fn ctx() -> Ctx {
+        Ctx { game: "g".into(), rom: PathBuf::from("rom"), jit: false, input: None }
+    }
+
+    /// Defect (vision, "The defects"): `--keep-size` was read but missing
+    /// from the switches, so it took the next argument as its value.
+    #[test]
+    fn keep_size_is_a_switch_and_options_are_strict() {
+        let a = Args::parse(&strings(&["P", "--keep-size", "tex_a", "--brief", "b.txt"])).unwrap();
+        assert!(a.has("--keep-size"));
+        assert_eq!(a.pos, vec!["P", "tex_a"]);
+        assert_eq!(a.get("--brief"), Some("b.txt"));
+        // an option the subcommand does not read is an error naming the near ones
+        let allowed = OPTIONS.iter().find(|(n, _)| *n == "draft").unwrap().1;
+        let bad = Args::parse(&strings(&["P", "--replce", "x"])).unwrap();
+        let e = bad.check("draft", allowed).unwrap_err();
+        assert!(e.contains("did you mean --replace"), "{e}");
+        let bad = Args::parse(&strings(&["P", "--tsv"])).unwrap();
+        assert!(bad.check("draft", allowed).unwrap_err().contains("unknown option `--tsv`"));
+        // --json is global
+        Args::parse(&strings(&["P", "--json"])).unwrap().check("draft", allowed).unwrap();
+        // an unknown subcommand lists the near ones, before anything is read
+        let e = main(&strings(&["drat", "P"]), &ctx()).unwrap_err();
+        assert!(e.contains("did you mean draft"), "{e}");
+        // the same before parsing: an unknown option is named, not "wants a value"
+        let e = main(&strings(&["draft", "P", "--replce"]), &ctx()).unwrap_err();
+        assert!(e.contains("did you mean --replace"), "{e}");
+        // a value starting with -- is a value
+        let e = main(&strings(&["compare", "P", "--run-args", "--height 1080"]), &ctx()).unwrap_err();
+        assert!(!e.contains("unknown option"), "{e}");
+    }
+
+    /// Defect: a generated draft is an opaque picture; a cut-out texture's
+    /// transparent texels must stay transparent in it.
+    #[test]
+    fn a_draft_inherits_the_cutouts_alpha() {
+        let d = tmp("cutout");
+        let p = Project { dir: d.clone() };
+        init(&p, &args(&format!("{} --name demo --game g", d.display()))).unwrap();
+        map(&d);
+        select(&p, &args(&format!("{} --key aaaaaaaaaaaaaaaa --category wall", d.display()))).unwrap();
+        let name = "tex_aaaaaaaaaaaaaaaa_8x8";
+        // the original is a cut-out: its left half is transparent
+        let mut cut = img::blank(8, 8, [200, 100, 50, 255]);
+        for y in 0..8 {
+            for x in 0..4 {
+                cut.rgba[(y * 8 + x) * 4 + 3] = 0;
+            }
+        }
+        img::save(&d.join(format!("original/{name}.png")), &cut).unwrap();
+        // the "generator" returns an opaque picture of the wrong look
+        img::save(&d.join("generated.png"), &img::blank(32, 32, [0, 200, 0, 255])).unwrap();
+        img::save(&d.join("small.png"), &img::blank(16, 16, [0, 0, 200, 255])).unwrap();
+        std::fs::write(d.join("brief.txt"), "Redraw {name}.\n@scale 4\n@context none\n").unwrap();
+        let run = |rf: &str, extra: &[&str]| {
+            let mut v = vec![
+                d.to_string_lossy().to_string(),
+                "--brief".into(),
+                d.join("brief.txt").to_string_lossy().to_string(),
+                "--ref".into(),
+                d.join(rf).to_string_lossy().to_string(),
+                "--cmd".into(),
+                "cp ref1.png out.png".into(),
+                "--all".into(),
+                "--jobs".into(),
+                "1".into(),
+                "--retries".into(),
+                "0".into(),
+            ];
+            v.extend(extra.iter().map(|x| x.to_string()));
+            draft(&p, &Args::parse(&v).unwrap())
+        };
+        assert!(run("generated.png", &[]).unwrap());
+        let got = img::load(&d.join(format!("draft/{name}.png"))).unwrap();
+        assert_eq!((got.width, got.height), (32, 32));
+        let at = |x: usize, y: usize| got.rgba[(y * 32 + x) * 4..][..4].to_vec();
+        assert_eq!(at(3, 10)[3], 0, "the left half stays cut out");
+        assert_eq!(at(20, 10), vec![0, 200, 0, 255], "the right half is the new picture");
+        // a second run keeps the draft; --replace with --keep-size redoes it at the
+        // generator's own size (16x16), the cut-out resampled to it
+        let before = std::fs::read(d.join(format!("draft/{name}.png"))).unwrap();
+        assert!(run("small.png", &[]).unwrap());
+        assert_eq!(std::fs::read(d.join(format!("draft/{name}.png"))).unwrap(), before);
+        assert!(run("small.png", &["--keep-size", "--replace"]).unwrap());
+        let small = img::load(&d.join(format!("draft/{name}.png"))).unwrap();
+        assert_eq!((small.width, small.height), (16, 16));
+        assert_eq!(small.rgba[(5 * 16 + 2) * 4 + 3], 0);
+        assert_eq!(small.rgba[(5 * 16 + 12) * 4 + 3], 255);
+        // an opaque original leaves a draft opaque
+        let mut im = img::blank(4, 4, [1, 2, 3, 255]);
+        inherit_cutout(&mut im, Some(&img::blank(8, 8, [9, 9, 9, 255])));
+        assert!(im.rgba.chunks_exact(4).all(|q| q[3] == 255));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Nothing overwrites a draft or an approved image without --replace.
+    #[test]
+    fn nothing_is_overwritten_without_replace() {
+        let d = tmp("replace");
+        let p = Project { dir: d.clone() };
+        init(&p, &args(&format!("{} --name demo --game g", d.display()))).unwrap();
+        map(&d);
+        select(&p, &args(&format!("{} --key aaaaaaaaaaaaaaaa --category wall", d.display()))).unwrap();
+        let name = "tex_aaaaaaaaaaaaaaaa_8x8";
+        let from = d.join("from");
+        let put = |v: u8| img::save(&from.join(format!("{name}.png")), &img::blank(32, 32, [v, v, v, 255])).unwrap();
+        let red = |dir: &str| img::load(&d.join(format!("{dir}/{name}.png"))).unwrap().rgba[0];
+        let imp = |extra: &str| {
+            import(&p, &args(&format!("{} --from {} --tool test --all{extra}", d.display(), from.display())))
+        };
+        put(9);
+        assert!(imp("").unwrap());
+        assert_eq!(red("draft"), 9);
+        // a second import refuses, naming the fix, and changes nothing
+        put(7);
+        let e = imp("").unwrap_err();
+        assert!(e.contains("kept") && e.contains("--replace"), "{e}");
+        assert_eq!(red("draft"), 9);
+        assert!(imp(" --replace").unwrap());
+        assert_eq!(red("draft"), 7);
+        // approve copies; a changed draft does not replace the approved image unless asked
+        assert!(approve(&p, &args(&format!("{} --drafted", d.display()))).unwrap());
+        assert_eq!(red("pack"), 7);
+        put(5);
+        assert!(imp(" --replace").unwrap());
+        assert!(approve(&p, &args(&format!("{} --drafted", d.display()))).unwrap());
+        assert_eq!(red("pack"), 7, "the approved image stays");
+        assert!(approve(&p, &args(&format!("{} --drafted --replace", d.display()))).unwrap());
+        assert_eq!(red("pack"), 5);
+        // style: a draft stands in the way too
+        let rf = d.join("recipe.txt");
+        std::fs::write(&rf, "[default]\n").unwrap();
+        let e = style(&p, &args(&format!("{} --recipe {} --all", d.display(), rf.display()))).unwrap_err();
+        assert!(e.contains("kept"), "{e}");
+        assert_eq!(red("draft"), 5);
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

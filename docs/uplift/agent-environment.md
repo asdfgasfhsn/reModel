@@ -1,7 +1,10 @@
 # An environment where work does not queue
 
-Shared words, roles and rules: [README.md](README.md). Nothing here is
-built.
+Shared words, roles and rules: [README.md](README.md). **Part is built
+(2026-11-21):** the four MVP items below, described for use in
+[../usage.md](../usage.md) ("Shared machine") and
+[../uplift-studio.md](../uplift-studio.md) ("Image tools"). The rest of this
+page, the unmarked sections and the rest of the design, is still a design.
 
 This spec is about agents working in a reModel checkout on a shared
 machine. It does not concern a stranger with a released build: they have
@@ -32,18 +35,24 @@ partly a missing tool.
   work went through shell and ImageMagick, with syntax errors, and one
   `montage` command overwrote an original image.
 
-**Observed in the repository.**
+**Observed in the repository** (at `7d8f099`; rechecked 2026-11-21 against
+the code the MVP was built on, changes marked).
 
-- **The heavy lock is not a mechanism.** Nothing in the `Makefile`,
+- **The heavy lock is not a mechanism.** *Changed:* `tools/lock` is the
+  mechanism now and `make` takes it; `out/heavy.lock` stays honoured by
+  `build` and `test` until the hand-typed form is gone. At `7d8f099`:
+  nothing in the `Makefile`,
   `tools/` or any script takes `out/heavy.lock`. It is a convention typed
   by hand, described in `CLAUDE.md` and a local note. Two `make` runs do
   not wait for each other unless each caller remembers.
 - **`target-agents/` does not exist** yet, though `CLAUDE.md` tells agents
-  to build into it.
+  to build into it. *Changed:* it exists now (agents made it); `make
+  agent-setup` points `CARGO_TARGET_DIR` at it.
 - **Builds are not memory-capped.** `tools/capped` wraps runs of the two
   binaries (`Makefile:102-105`), not `cargo`. One `rustc` has been
   measured at 4.8 GB on this 31 GB machine (`docs/recompiler.md:89-105`).
-- **Runs collide.** `run` deletes `out/GAME/frames` and reads
+- **Runs collide.** *Still true without `REMODEL_SCRATCH`; with it `run`
+  writes to a private folder (`main.rs`, `default_run_dir`).* `run` deletes `out/GAME/frames` and reads
   `out/GAME/eeprom.bin` (`crates/cli/src/main.rs:3165-3172`), so two runs
   in one tree interfere unless both pass `--out`.
 - **A still render is light.** One scene with the full showcase pack
@@ -217,11 +226,27 @@ holder within a second.
 
 ## MVP: a few days
 
-1. `tools/lock` with `build`, `test` and `render`, wired into the
-   Makefile's targets, with `status` and bounded waits.
-2. `make agent-setup` and `make agent-bin`.
-3. `run` and the studio tools defaulting to private output folders.
-4. `remodel img sheet`, `diff` and `stats`.
+All four **built, 2026-11-21**:
+
+1. `tools/lock` with `build`, `test` and `render` (and `emulate`, which no
+   target takes yet), wired into the Makefile's targets, with `status` and
+   bounded waits. Built as designed in section 2, with the transition
+   described in [../usage.md](../usage.md): `build` and `test` also take
+   `out/heavy.lock` until nobody types it. `make lock-test` is the testing
+   list's first item. Not built: the free-GPU-memory check before a render
+   (section 6), a disk floor, a memory cap on builds.
+2. `make agent-setup` and `make agent-bin`. Not built: linking the scene
+   library and the catalogue (neither exists yet), the shared GPU figure
+   beyond `nvidia-smi`, and the testing list's "benchmark matches in a
+   temporary worktree".
+3. `run` defaults to a private folder when `REMODEL_SCRATCH` is set (which
+   `agent-setup` does), seeded from a copy of `out/GAME/eeprom.bin`. The
+   studio's own outputs were already inside the project (`compare` included);
+   `studio compare`, the one that collided, is left to the scenes work.
+   Not built: `run` deleting only a frames folder it made, and the other
+   commands' hard-coded `out/GAME/...` defaults.
+4. `remodel img sheet`, `diff` and `stats`. `crop`, `resize`, `quantise`,
+   `composite` and `roll` are not built.
 
 This slice and the scene slice together remove the top-ranked friction.
 Neither needs the other to start.

@@ -59,6 +59,27 @@ creates the annotated tag `vx.y.z` without pushing. Details in
   coverage-check`). Tours for Top Skater, `vf2` and `daytona`; `--json`
   answers in the envelope the uplift specs define. `make tour-list`,
   `tour-run`, `coverage`, `coverage-check`.
+- Agent environment (docs/uplift/agent-environment.md): `tools/lock` gives
+  builds, test runs, GPU renders and emulation their own locks (`make`
+  takes them itself; `make lock-status`, bounded waits with `LOCK_WAIT`,
+  a hand-typed `flock out/heavy.lock` still honoured), `make agent-setup`
+  sets up a worktree (rom, EEPROMs, scratch folder, shared target dir) and
+  `make agent-bin` keeps a pinned read-only binary so an art agent never
+  builds. With `REMODEL_SCRATCH` set `remodel run` writes to a private
+  folder. `make lock-test` joins `make check`; `make agent-env-test` is the
+  acceptance test.
+- `remodel img sheet | diff | stats` (no ROM, `--json`): contact sheets,
+  pixel differences and image numbers where agents used shell and
+  ImageMagick.
+- `remodel studio`: strict and scriptable. Unknown subcommands and options
+  are errors naming the near matches; nothing overwrites a draft or an
+  approved image without `--replace` (`draft --force` is now `--replace`);
+  exit codes mean something (0 done, 1 a check failed, 2 a wrong request,
+  3 something missing, 4 internal); `--json` prints one object (`ok`,
+  `code`, `error`, `data`, `warnings`, `next`).
+- Fixed `studio draft --keep-size`, which took the next argument as its
+  value, and generated drafts of cut-out textures, which came back opaque:
+  they now keep the original's transparent texels.
 
 ## 0.12.1 (2026-11-21): network play fixes
 

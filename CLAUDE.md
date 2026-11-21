@@ -46,9 +46,25 @@
   out the GPU tests. When the GPU is full anyway, `make check GPU_TESTS=0`
   skips the GPU tests with a warning; run them before pushing.
 - Agents in worktrees build into the shared `target-agents/` directory at
-  the repo root (`CARGO_TARGET_DIR=<repo>/target-agents`, under the heavy
-  lock), never the main checkout's `target/`: cargo judges freshness by
-  file times, so a build of older code from another tree can leave stale
-  crates that the main tree's next build keeps (it broke `make play` once).
-  Before an agent's final `make check`, `touch` the workspace crates'
-  `src/lib.rs`/`src/main.rs` so they rebuild from its own sources.
+  the repo root (`CARGO_TARGET_DIR=<repo>/target-agents`), never the main
+  checkout's `target/`: cargo judges freshness by file times, so a build of
+  older code from another tree can leave stale crates that the main tree's
+  next build keeps (it broke `make play` once). Before an agent's final
+  `make check`, `touch` the workspace crates' `src/lib.rs`/`src/main.rs` so
+  they rebuild from its own sources.
+- Locks are `tools/lock`, not a hand-typed `flock out/heavy.lock`: `make`
+  takes them itself (builds, `make test`/`check`: `build`, plus `test` for
+  test runs; the GPU render targets: `render`, three at once), so a render
+  does not wait behind a build. `make lock-status` (or `tools/lock status`)
+  says who holds what and who waits; `LOCK_WAIT=SECS` bounds a wait (exit
+  3, naming the holder: do other work or hand back, never a sleep loop).
+  To run something else heavy by hand: `tools/lock build -- COMMAND`. The
+  old `flock out/heavy.lock make check` still works, since build and test
+  also honour that file for now (`REMODEL_LEGACY_LOCK=0` turns it off).
+- A new worktree: run `make agent-setup` first (links `rom/`, copies each
+  game's EEPROM so benchmark hashes match, makes your scratch folder, writes
+  `out/agent.env` with the shared target dir; `run` then writes to a private
+  folder in your scratch). An agent that only checks pictures and never
+  builds runs `make agent-bin` once in a tree (a read-only copy of the CLI
+  in `out/bin/COMMIT/`) and then `make agent-setup ART=1`, after which
+  `make` uses that binary and does not build.

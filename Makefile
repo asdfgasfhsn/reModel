@@ -55,6 +55,16 @@ ifeq ($(shell command -v cargo 2>/dev/null),)
 export PATH := $(HOME)/.local/share/rustup-wasm/bin:$(PATH)
 endif
 CARGO   ?= cargo
+# tools/lock (docs/uplift/agent-environment.md): builds, test runs and GPU
+# renders each take their own lock, so a render does not queue behind a
+# build. Nested takes are free. LOCK_WAIT: seconds to wait before giving up
+# (exit 3, naming the holder; tools/lock status shows who). Hand-typed
+# `flock out/heavy.lock` is still honoured by build and test.
+LOCK        := $(CURDIR)/tools/lock
+LOCK_WAIT   ?= 1800
+LOCK_BUILD  := $(LOCK) build --wait $(LOCK_WAIT) --
+LOCK_TEST   := $(LOCK) build,test --wait $(LOCK_WAIT) --
+LOCK_RENDER := $(LOCK) render --wait $(LOCK_WAIT) --
 # The browser build needs a toolchain with the wasm32 target and
 # wasm-bindgen-cli matching Cargo.lock. Default: rustup's stable cargo, from
 # ~/.local/share/rustup-wasm/bin (a rustup kept out of ~/.cargo/bin, where
@@ -73,7 +83,7 @@ PLAY    := target/recomp/release/remodel-play
 # Built from the generated workspace in out/recomp, which links the
 # registry of recompiled programs in place of the crates/recomp stub. No
 # debug info: the generated code is large and only slows the build.
-RECOMP_CARGO := CARGO_TARGET_DIR=target/recomp CARGO_PROFILE_RELEASE_DEBUG=false $(CARGO) build --release --manifest-path out/recomp/Cargo.toml
+RECOMP_CARGO := $(LOCK_BUILD) env CARGO_TARGET_DIR=target/recomp CARGO_PROFILE_RELEASE_DEBUG=false $(CARGO) build --release --manifest-path out/recomp/Cargo.toml
 # $(call release_build,PACKAGE): the program crates one at a time, each
 # with every core (the largest take about 5 GB; docs/recompiler.md), then
 # the rest.
@@ -87,7 +97,21 @@ release_build = @test -f out/recomp/Cargo.toml || { echo "no out/recomp/Cargo.to
 else
 REMODEL := target/release/remodel
 PLAY    := target/release/remodel-play
-release_build = $(CARGO) build --release -p $(1)
+release_build = $(LOCK_BUILD) $(CARGO) build --release -p $(1)
+endif
+# `make agent-setup` writes out/agent.env (CARGO_TARGET_DIR, REMODEL_ACTOR,
+# a PATH to cargo, and with ART=1 REMODEL= a pinned prebuilt binary).
+-include out/agent.env
+export CARGO_TARGET_DIR REMODEL_ACTOR REMODEL_SCRATCH
+ifneq ($(CARGO_BIN_DIR),)
+export PATH := $(CARGO_BIN_DIR):$(PATH)
+endif
+# A binary given as REMODEL= (or pinned by agent.env) is used as it is: the
+# targets that need `release` do not build.
+PINNED := $(or $(filter command line,$(origin REMODEL)),$(REMODEL_PINNED))
+ifneq ($(PINNED),)
+$(eval release_build_real = $(value release_build))
+release_build = $(if $(filter remodel,$(1)),@echo "using the given binary $(REMODEL) (no build)",$(call release_build_real,$(1)))
 endif
 # JIT=1: run the CLI's i960 on the JIT, translated to machine code as it
 # runs (docs/jit.md); needs no recompiled build. The player has the JIT on
@@ -125,18 +149,18 @@ help: ## Show this help (the variables a target takes are in its description)
 ##@ Build and test
 
 build: ## Debug build of the whole workspace
-	$(CARGO) build --workspace
+	$(LOCK_BUILD) $(CARGO) build --workspace
 
 release: ## Optimised build of the remodel CLI (RECOMP=1: with the recompiled game code)
 	$(call release_build,remodel)
 
 recomp: ## Recompile the game's i960 code and the TGP programs captured by `make run` into crates in out/recomp and build them (only what changed); then use RECOMP=1
-	$(CARGO) build --release -p remodel
+	$(LOCK_BUILD) $(CARGO) build --release -p remodel
 	$(CAP) target/release/remodel --game $(GAME) --rom $(ROM) recomp
 	$(MAKE) release RECOMP=1
 
 recomp-workspace: ## Rewrite out/recomp's Cargo workspace and program crate manifests from the programs there (after updating reModel or moving the checkout)
-	$(CARGO) build --release -p remodel
+	$(LOCK_BUILD) $(CARGO) build --release -p remodel
 	$(CAP) target/release/remodel recomp-workspace
 
 # GPU_TESTS=0 skips the tests that need a GPU (they return early, as on a
@@ -144,11 +168,11 @@ recomp-workspace: ## Rewrite out/recomp's Cargo workspace and program crate mani
 # change to the GPU code, and run the full check before pushing.
 GPU_TESTS ?= 1
 test: ## Run all unit tests (no ROMs needed); GPU_TESTS=0 skips the GPU ones, with a warning (for a busy GPU; run them before pushing)
-	REMODEL_GPU_TESTS=$(GPU_TESTS) $(CARGO) test --workspace
+	$(LOCK_TEST) env REMODEL_GPU_TESTS=$(GPU_TESTS) $(CARGO) test --workspace
 	@if [ "$(GPU_TESTS)" = 0 ]; then echo "*** GPU tests SKIPPED (GPU_TESTS=0): this check is incomplete; run them before pushing ***"; fi
 
 lint: ## Clippy across all crates and targets, warnings are errors
-	$(CARGO) clippy --workspace --all-targets -- -D warnings
+	$(LOCK_BUILD) $(CARGO) clippy --workspace --all-targets -- -D warnings
 
 fmt: ## Format all Rust code
 	$(CARGO) fmt --all
@@ -156,11 +180,11 @@ fmt: ## Format all Rust code
 fmt-check: ## Fail if any Rust code is unformatted
 	$(CARGO) fmt --all -- --check
 
-check: fmt-check lint test web-check ## Everything a change must pass before commit
+check: fmt-check lint lock-test test web-check ## Everything a change must pass before commit
 
 web-check: ## Type-check the browser build (remodel-web for wasm32: its wasm-only code, which `lint` and `test` don't compile); skipped with a note where the wasm toolchain isn't installed
 	@if [ -x "$(WASM_RUSTUP)" ] && $(WASM_RUSTUP) target list --installed 2>/dev/null | grep -qx wasm32-unknown-unknown; then \
-		env $(WASM_CARGO) check --quiet --release --target wasm32-unknown-unknown --target-dir target/web -p remodel-web 2>&1 | tee target/web-check.log; \
+		$(LOCK_BUILD) env $(WASM_CARGO) check --quiet --release --target wasm32-unknown-unknown --target-dir target/web -p remodel-web 2>&1 | tee target/web-check.log; \
 		! grep -qE '^(warning|error)' target/web-check.log; \
 	else \
 		echo "web-check: no wasm32 toolchain ($(WASM_RUSTUP)), skipped"; \
@@ -169,10 +193,10 @@ web-check: ## Type-check the browser build (remodel-web for wasm32: its wasm-onl
 ci: check ## Alias for check
 
 pace-sim: ## The browser's audio rate control on synthetic frame timings (steady, phone jitter, 30 Hz, slowdowns): pitch movement and underruns, before and after (docs/web.md)
-	$(CARGO) test --release -p remodel-model2 --test pace_sim -- --ignored --nocapture
+	$(LOCK_TEST) $(CARGO) test --release -p remodel-model2 --test pace_sim -- --ignored --nocapture
 
 m68k-tests: $(M68K_TESTS)/.done ## Run the 68000 core against the SingleStepTests suite (downloaded to out/ on first use)
-	M68K_TESTS=$(abspath $(M68K_TESTS)) $(CARGO) test --release -p m68k --test singlestep -- --ignored --nocapture
+	$(LOCK_TEST) env M68K_TESTS=$(abspath $(M68K_TESTS)) $(CARGO) test --release -p m68k --test singlestep -- --ignored --nocapture
 
 # Fetch the public SingleStepTests 68000 suite and decompress it; never committed.
 $(M68K_TESTS)/.done:
@@ -187,7 +211,7 @@ $(M68K_TESTS)/.done:
 
 z80-test: ## Run the Z80 core against the zexdoc and zexall exercisers in Z80_TESTS= (default out/z80-tests; see docs/hw/z80.md)
 	@if [ -f $(Z80_TESTS)/zexdoc.com ] || [ -f $(Z80_TESTS)/zexall.com ]; then \
-		Z80_TESTS=$(abspath $(Z80_TESTS)) $(CARGO) test --release -p remodel-z80 --test zex -- --ignored --nocapture --test-threads 2; \
+		$(LOCK_TEST) env Z80_TESTS=$(abspath $(Z80_TESTS)) $(CARGO) test --release -p remodel-z80 --test zex -- --ignored --nocapture --test-threads 2; \
 	else \
 		echo "no zexdoc.com or zexall.com in $(Z80_TESTS). They are Frank Cringle's freely redistributable"; \
 		echo "Z80 exercisers (CP/M .com files); fetch them into $(Z80_TESTS), e.g.:"; \
@@ -198,15 +222,33 @@ z80-test: ## Run the Z80 core against the zexdoc and zexall exercisers in Z80_TE
 	fi
 
 jit-test: ## Unit tests of the JITs (crates/jit: the i960's and the copros', each against its interpreter on hand-made and random programs; release build, as the random runs are long)
-	$(CARGO) test --release -p remodel-jit
+	$(LOCK_TEST) $(CARGO) test --release -p remodel-jit
 
 sharc-test: ## ADSP-21062 (SHARC) unit tests; then decode, discovery and a boot of the 2B programs in SHARC_PROGRAMS= (default: those captured in out/overrevb)
-	$(CARGO) test -p adsp2106x
+	$(LOCK_TEST) $(CARGO) test -p adsp2106x
 	@if [ -n "$(SHARC_PROGRAMS)" ]; then \
 		$(MAKE) --no-print-directory release && $(CAP) $(REMODEL) sharc-check $(SHARC_PROGRAMS); \
 	else \
 		echo "no SHARC program images in out/overrevb (docs/hw/adsp2106x.md): unit tests only"; \
 	fi
+
+##@ Agents and shared-machine locks (docs/uplift/agent-environment.md)
+
+lock-status: ## Who holds the build, test, render and emulate locks, who waits and for how long (tools/lock status; --json: LOCK_STATUS_ARGS=--json); a hand-typed `flock out/heavy.lock` shows too
+	@$(LOCK) status $(LOCK_STATUS_ARGS)
+
+lock-test: ## Test tools/lock in a private lock folder: two holders of a one-slot class, a bounded wait that expires (exit 3, naming the holder), a dead holder cleared, three renders at once and a fourth waiting, nesting, status, the hand-typed heavy.lock honoured and not deadlocked
+	@sh tools/lock-test.sh
+
+agent-env-test: release ## Slice A's acceptance test (docs/uplift/agent-environment.md), no ROM or GPU: with a build and a test run holding their locks, a pinned binary answers img stats, diff and sheet in under 2 s without waiting, make builds nothing for a given REMODEL, and studio and img commands give parseable {ok, code, error, data, warnings, next} answers with the exit codes 0, 1, 2 and 3; AGENT_ENV_BIN=FILE tests another binary
+	@sh tools/agent-env-test.sh $(or $(AGENT_ENV_BIN),$(CURDIR)/$(REMODEL))
+
+agent-setup: ## Set up this checkout or worktree for an agent: link rom/, copy each game's EEPROM from the main checkout, make out/scratch/agent-ACTOR, write out/agent.env (shared target-agents/, REMODEL, a private output folder for run); ART=1 pins a prebuilt binary (agent-bin) so no build is needed; prints what is available as JSON
+	@tools/agent-setup $(if $(ART),--art) $(if $(ACTOR),--actor $(ACTOR))
+
+agent-bin: ## Build the remodel CLI once and keep a read-only copy in out/bin/COMMIT/ (never overwritten; a changed tree adds a hash to the folder name); art agents run it with REMODEL=out/bin/COMMIT/remodel and never build
+	$(call release_build,remodel)
+	@tools/agent-setup bin
 
 ##@ ROM tools (need a user-supplied dump in ROM=)
 
@@ -254,9 +296,9 @@ run: release ## Boot and report; PNG every SNAP frames; scripted INPUT (see remo
 
 assets: release ## Extract topskatr's art for review: capture sessions, then distinct textures, screens and contact sheets in OUT/assets (about 15 min)
 	rm -rf $(OUT)/assets && mkdir -p $(OUT)/assets/raw
-	$(RUN) --dump-textures $(OUT)/assets/raw/attract run 900000000 20 > $(OUT)/assets/raw/attract.log
+	$(RUN) --out $(OUT) --dump-textures $(OUT)/assets/raw/attract run 900000000 20 > $(OUT)/assets/raw/attract.log
 	cp -r $(OUT)/frames $(OUT)/assets/frames-attract
-	$(RUN) --dump-textures $(OUT)/assets/raw/menus --input $(ASSET_MENUS) run 480000000 10 > $(OUT)/assets/raw/menus.log
+	$(RUN) --out $(OUT) --dump-textures $(OUT)/assets/raw/menus --input $(ASSET_MENUS) run 480000000 10 > $(OUT)/assets/raw/menus.log
 	cp -r $(OUT)/frames $(OUT)/assets/frames-menus
 	$(RUN) --dump-textures $(OUT)/assets/raw/novice --input coin1@1100-1104,start@1250-1254,$(ASSET_STEER) \
 		run $(ASSET_RACE_STEPS) 15 > $(OUT)/assets/raw/novice.log & \
@@ -475,11 +517,11 @@ studio-select: release ## Add textures or tiles to STUDIO's selection.tsv with a
 	$(RUN) studio select $(STUDIO) $(STUDIO_ARGS)
 studio-status: release ## STUDIO's counts (original, drafted, approved) by category, what is missing, strays and unrecorded images (STUDIO_ARGS="--tsv [--missing]" for rows an agent reads)
 	$(RUN) studio status $(STUDIO) $(STUDIO_ARGS)
-studio-approve: release ## Copy drafts into STUDIO's pack/ (STUDIO_ARGS="NAME.. | --drafted | --group N | --category C", --undo removes them)
+studio-approve: release ## Copy drafts into STUDIO's pack/ (STUDIO_ARGS="NAME.. | --drafted | --group N | --category C", --undo removes them; --replace lets a changed draft replace an approved image)
 	$(RUN) studio approve $(STUDIO) $(STUDIO_ARGS)
 studio-pack: release ## Build STUDIO's pack/ manifest and index.txt from the approved images and run pack-lint (STUDIO_ARGS="--approve-all --no-lint")
 	$(RUN) studio pack $(STUDIO) $(STUDIO_ARGS)
-studio-draft: release ## Batch generation: run an external generator (default `codex exec {images} -`, the prompt on stdin) over selected rows with a brief and reference images, JOBS at once, retried, logged, resumable (STUDIO_ARGS="--brief FILE --group N|--all|NAME.. --cmd TEMPLATE --ref IMG --jobs N --retries N --scale N --dry-run --force")
+studio-draft: release ## Batch generation: run an external generator (default `codex exec {images} -`, the prompt on stdin) over selected rows with a brief and reference images, JOBS at once, retried, logged, resumable (STUDIO_ARGS="--brief FILE --group N|--all|NAME.. --cmd TEMPLATE --ref IMG --jobs N --retries N --scale N --keep-size --dry-run --replace"; every studio-* target takes --json in STUDIO_ARGS: one object, with exit codes 0 done, 1 a check failed, 2 wrong request, 3 missing, 4 internal)
 	$(RUN) studio draft $(STUDIO) $(STUDIO_ARGS)
 studio-style: release ## Local style processor: restyle selected originals with a recipe file (palette ramp, despeckle, edge ink, halftone; wrap-aware) into draft/ (STUDIO_ARGS="--recipe FILE --group N|--category C|--all|NAME..")
 	$(RUN) studio style $(STUDIO) $(STUDIO_ARGS)
@@ -493,13 +535,17 @@ studio-regions: release ## STUDIO's regions and which have a replacement (STUDIO
 	$(RUN) studio regions $(STUDIO) $(STUDIO_ARGS)
 studio-seam: release ## Seam check of STUDIO's pack/ (STUDIO_ARGS="--from draft", --strict fails on suspects): per wrap mode, repeat edges against each other and edge lines on mirrored ones, against the originals
 	$(RUN) studio seam $(STUDIO) $(STUDIO_ARGS)
+img: release ## Image tools, no ROM (docs/uplift-studio.md, "Image tools"): IMG_ARGS="sheet OUT.png A.png B.png --cols 2" (labelled contact sheet) | "diff A.png B.png [--max-changed PCT] [--out HEAT.png]" | "stats A.png [--region X,Y,W,H]"; add --json for one object; nothing is overwritten without --replace
+	$(CAP) $(REMODEL) img $(IMG_ARGS)
+
 studio-compare: release ## Before and after (without and with STUDIO's pack/), written as side-by-side sheets to STUDIO/compare: SCENES=all (or NAME,NAME) draws the project's named scenes from their captures in seconds, with no run and no ROM (make scene-make first); without SCENES it runs the game twice (BENCH_STEPS, INPUT default BENCH_INPUT, JOBS at once) and refuses a folder that already holds a run (STUDIO_ARGS="--into DIR --frames F,.. --run-args '--height 1080 --aspect 16:9' --pack DIR --force")
 	$(RUN) studio compare $(STUDIO) $(if $(SCENES),--scene $(SCENES),--steps $(BENCH_STEPS) --snap 300 --input $(or $(INPUT),$(BENCH_INPUT)) --jobs $(JOBS)) $(STUDIO_ARGS)
+
 LOOK      ?= comic
 LOOK_OUT  ?= $(OUT)/look-render
 LOOK_OPTS ?=
 look-render: release ## Draw the captured frames (CAPTURE=DIR, default OUT/capture) on the GPU without and with a look: LOOK=comic (the built-in Comic defaults) or a look.txt or directory with one; PACK=DIR adds a texture pack, LOOK_SET="outline_weight=3 toon_steps=2" sets parameters, VIEW sets the view (default 1080p 16:9), LOOK_OPTS="--frames 2100,3300 --bench 20" selects frames and times the cost; writes FRAME-plain/-look/-sheet.png to LOOK_OUT (default OUT/look-render); for agents tuning a look (docs/texture-packs.md, "Looks"; needs a GPU)
-	$(RUN) $(VIEW) $(if $(PACK),--texture-pack $(PACK)) $(GPU_OPTS) --look $(LOOK) $(foreach s,$(LOOK_SET),--look-set $(s)) look-render $(or $(CAPTURE),$(OUT)/capture) $(LOOK_OUT) $(LOOK_OPTS)
+	$(LOCK_RENDER) $(RUN) $(VIEW) $(if $(PACK),--texture-pack $(PACK)) $(GPU_OPTS) --look $(LOOK) $(foreach s,$(LOOK_SET),--look-set $(s)) look-render $(or $(CAPTURE),$(OUT)/capture) $(LOOK_OUT) $(LOOK_OPTS)
 
 # Named scenes (docs/uplift-studio.md, "Scenes"): SCENE=NAME, SCENE_OPTS="--json --project DIR".
 SCENE      ?=
@@ -536,13 +582,13 @@ scene-check: release ## The scene acceptance test, per SCENE_CHECK_GAMES (defaul
 # --shading-fine on|off (smooth shading, model2::light) for all of them.
 GPU_OPTS ?=
 gpu-check: release ## Draw the captured frames on the software and GPU rasterisers; time and compare them, and what GPU_OPTS="--aa 4 --depth" and PACK=DIR (a texture pack, both renderers) cost (needs a GPU)
-	$(RUN) $(GPU_OPTS) $(if $(PACK),--texture-pack $(PACK)) gpu-check
+	$(LOCK_RENDER) $(RUN) $(GPU_OPTS) $(if $(PACK),--texture-pack $(PACK)) gpu-check
 
 # Where pack-check writes its pictures.
 PACK_CHECK_OUT ?= $(OUT)/pack-check
 pack-check: release ## Draw the captured frames with texture pack PACK= on the GPU unfiltered, mipmapped and 16x anisotropic, in software trilinear and as a supersampled reference; write the pictures to PACK_CHECK_OUT (default OUT/pack-check) and compare them; GPU_OPTS="--materials --shading pixel" with LIGHT_IN= captures that have light.bin (make lighting-capture) adds the pack without and with its material maps on the GPU and in software, where they apply and a report, PROBE=X,Y@FRAME what a material does at a pixel (needs a GPU)
 	$(if $(PACK),,$(error pack-check needs PACK=DIR, a texture pack))
-	$(RUN) $(GPU_OPTS) --texture-pack $(PACK) pack-check $(or $(LIGHT_IN),$(OUT)/capture) $(PACK_CHECK_OUT) $(foreach p,$(PROBE),--probe $(p))
+	$(LOCK_RENDER) $(RUN) $(GPU_OPTS) --texture-pack $(PACK) pack-check $(or $(LIGHT_IN),$(OUT)/capture) $(PACK_CHECK_OUT) $(foreach p,$(PROBE),--probe $(p))
 
 # Where pack-log writes its log.
 PACK_LOG ?= $(OUT)/pack.log
@@ -559,7 +605,7 @@ tile-check: release ## Draw the captured frames with the tile images of texture 
 	$(RUN) $(VIEW) --texture-pack $(PACK) tile-check $(OUT)/capture $(TILE_CHECK_OUT)
 
 pack-identity: release ## Draw the captured frames with a pack standing for the original textures (PACK=DIR, normally the dump itself; empty: each frame's own textures) on the GPU and in software, unfiltered and mipmapped, against no pack; fails a frame on the differences that mean a fault (one texel value, another polygon), not on filter order up to a ceiling (needs a GPU)
-	$(RUN) $(GPU_OPTS) $(if $(PACK),--texture-pack $(PACK)) pack-check --identity $(OUT)/capture $(OUT)/pack-identity
+	$(LOCK_RENDER) $(RUN) $(GPU_OPTS) $(if $(PACK),--texture-pack $(PACK)) pack-check --identity $(OUT)/capture $(OUT)/pack-identity
 
 # materials-identity: the coin-start run's length and snapshot interval,
 # and the interval of its captures for the GPU checks (its 12 runs go JOBS
@@ -576,17 +622,17 @@ materials-identity: release ## Check that texture pack PACK with all its normal 
 # depth buffer (only those frames are drawn); AGAINST=DIR compares the
 # depth-on frames with an earlier run's pictures (docs/enhancements.md).
 depth-check: release ## Draw the captured frames on the GPU with the depth buffer off and on, report and picture the differences into OUT/depth-check (GPU_OPTS: --aa N, --height, --aspect; PROBE=X,Y@FRAME, AGAINST=DIR; needs a GPU)
-	$(RUN) $(GPU_OPTS) depth-check $(OUT)/capture $(OUT)/depth-check $(foreach p,$(PROBE),--probe $(p)) $(if $(AGAINST),--against $(AGAINST))
+	$(LOCK_RENDER) $(RUN) $(GPU_OPTS) depth-check $(OUT)/capture $(OUT)/depth-check $(foreach p,$(PROBE),--probe $(p)) $(if $(AGAINST),--against $(AGAINST))
 
 # lighting-check: LIGHT_OPTS for the command, e.g. "--every 5" (pictures of
 # every 5th frame), "--probe X,Y@FRAME" (repeatable), "--bench [N]";
 # GPU_OPTS before it ("--crease N", "--height", "--aspect").
 LIGHT_OPTS ?=
 lighting-check: release ## Draw the captured frames flat and smooth-shaded (vertex, or GPU_OPTS="--shading pixel" for per pixel; "--shading-fine on" adds finer levels and K, against the game's levels; "--shading-balance off" checks without the brightness balance, -nobal pictures and reports, its mean brightness C report-only) on the software and GPU renderers; check the invariants (crease 0 is flat, unlit polygons unchanged, brightness of corners and pixels, software against GPU, hue kept, determinism; with LIGHT_IN=a lighting-capture: the side channel's self-check and list scan, L0 against it), report and pictures into out/scratch/lighting/GAME (LIGHT_OPTS: --every N, --probe X,Y@F, --bench [N], --no-side; GPU_OPTS: --crease N, --height/--aspect; needs a GPU)
-	$(RUN) $(GPU_OPTS) lighting-check $(or $(LIGHT_IN),$(OUT)/capture) out/scratch/lighting/$(GAME) $(LIGHT_OPTS)
+	$(LOCK_RENDER) $(RUN) $(GPU_OPTS) lighting-check $(or $(LIGHT_IN),$(OUT)/capture) out/scratch/lighting/$(GAME) $(LIGHT_OPTS)
 
 spec-stats: release ## Count the game's own specular highlights on a lighting-capture (LIGHT_IN, default LIGHT_CAPTURE): textured polygons with a specular term, the pixels it brightens by 1 and 4 levels or more (face and smooth normals); spec-stats.txt and frame | flat term | smooth term pictures into out/scratch/lighting/GAME/spec (LIGHT_OPTS: --every N; GPU_OPTS: --height/--aspect; no GPU needed)
-	$(RUN) $(GPU_OPTS) lighting-check $(or $(LIGHT_IN),$(LIGHT_CAPTURE)) out/scratch/lighting/$(GAME)/spec --spec-stats $(LIGHT_OPTS)
+	$(LOCK_RENDER) $(RUN) $(GPU_OPTS) lighting-check $(or $(LIGHT_IN),$(LIGHT_CAPTURE)) out/scratch/lighting/$(GAME)/spec --spec-stats $(LIGHT_OPTS)
 
 # Where lighting-capture saves (a directory of its own: the regression
 # baseline hashes out/GAME/capture).
@@ -596,7 +642,7 @@ lighting-capture: release ## Save every 300th frame of a coin-start run with its
 	$(RUN) --geo native --light --capture $(LIGHT_CAPTURE) --input $(BENCH_INPUT) run 900000000 300 | grep -E '^light'
 
 temporal-probe: release ## Draw the captured frames with the GPU's temporal anti-aliasing (GPU_OPTS: --temporal, --stipple, --depth, --height, --aspect): its first frame against the frame with it off, jittered, blend and keep pictures into out/scratch/temporal-probe/GAME (needs a GPU)
-	$(RUN) $(GPU_OPTS) temporal-probe $(OUT)/capture out/scratch/temporal-probe/$(GAME)
+	$(LOCK_RENDER) $(RUN) $(GPU_OPTS) temporal-probe $(OUT)/capture out/scratch/temporal-probe/$(GAME)
 
 # Temporal anti-aliasing's test sequences: SEQ_FRAMES consecutive frames
 # from frame SEQ_FROM of a run with INPUT (default coin-start; STATE=FILE

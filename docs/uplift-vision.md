@@ -327,6 +327,13 @@ Taken on 2026-11-20:
 | May game-derived textures go to an image model for a spike? | Yes, for the runs recorded in [generation](uplift/generation.md). Any further run is asked for again |
 | A public test repository for the GitHub convention? | Not now. The first real pack will show how soon a tagged repository is found |
 
+**Built 2026-11-21** (slice A, items 2 and 3 on the studio tools): the
+second and third defects below are fixed and tested (a draft keeps the
+cut-out's transparency; `--keep-size` is a switch), and the studio tools are
+strict (near-match errors, `--replace`, exit codes, `--json`); see
+[uplift-studio](uplift-studio.md) "Strict, with answers". `studio compare`
+reusing old frames is left to the scenes work. As found:
+
 The defects: `studio compare` reusing old frames without `--force`
 (`crates/cli/src/studio.rs:1834`); generated drafts not inheriting a
 cut-out's alpha (inferred from `finish_draft`, `studio.rs:1761`; not

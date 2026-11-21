@@ -1,0 +1,448 @@
+#!/usr/bin/env python3
+"""Run a command holding a lock for a class of shared resource, so work on a
+shared machine does not queue behind work that needs something else
+(docs/uplift/agent-environment.md).
+
+  tools/lock CLASS[,CLASS..] [--wait SECS] [--json] -- COMMAND [ARGS..]
+  tools/lock status [--json]
+
+Classes (slots at once): build 1 (memory, the cargo target directory),
+test 1 (GPU tests, long test runs), render 3 (GPU memory), emulate 3 (CPU
+cores). REMODEL_LOCK_<CLASS>_SLOTS overrides a class's slots.
+
+  --wait SECS   give up after SECS (default 1800; 0: do not wait) with exit
+                code 3, naming who holds the lock. Never a sleep loop.
+
+Exit code: the command's own; 2 a wrong request; 3 the wait ran out.
+
+Locks are flock(2) files in out/locks/ of the main checkout (shared by its
+worktrees; REMODEL_LOCK_DIR overrides), so a holder that dies releases its
+lock by itself and is shown as gone. Each holds one JSON line: process,
+start time, command, working directory.
+
+Transition: until CLAUDE.md and the agents drop it, `flock out/heavy.lock`
+typed by hand is still honoured. build and test also take that lock (first,
+so the order is always heavy, build, test), unless a process above this one
+already holds it (`flock out/heavy.lock make check` then runs make, which
+runs this). REMODEL_LEGACY_LOCK=0 turns that off.
+
+A class already held by an ancestor (REMODEL_LOCKS_HELD, set for the
+command) is not taken again, so make targets can nest.
+"""
+import fcntl
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+
+SLOTS = {"build": 1, "test": 1, "render": 3, "emulate": 3}
+LEGACY_CLASSES = ("build", "test")
+ORDER = ["build", "test", "render", "emulate"]
+POLL = 0.25
+
+
+def die(code, msg):
+    print(f"lock: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def main_checkout():
+    """The checkout whose out/ holds the locks: the main one, not a worktree's."""
+    d = os.path.abspath(os.getcwd())
+    while True:
+        g = os.path.join(d, ".git")
+        if os.path.isdir(g):
+            return d
+        if os.path.isfile(g):
+            # a worktree: .git is "gitdir: MAIN/.git/worktrees/NAME"
+            try:
+                line = open(g).read().strip()
+                gd = line.split(":", 1)[1].strip()
+                if not os.path.isabs(gd):
+                    gd = os.path.normpath(os.path.join(d, gd))
+                parts = gd.split(os.sep + ".git" + os.sep)
+                if len(parts) > 1:
+                    return parts[0]
+            except OSError:
+                pass
+            return d
+        if os.path.dirname(d) == d:
+            return os.path.abspath(os.getcwd())
+        d = os.path.dirname(d)
+
+
+def lock_dir():
+    d = os.environ.get("REMODEL_LOCK_DIR") or os.path.join(main_checkout(), "out", "locks")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def slots(cls):
+    try:
+        return max(1, int(os.environ.get(f"REMODEL_LOCK_{cls.upper()}_SLOTS", SLOTS[cls])))
+    except ValueError:
+        return SLOTS[cls]
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def ancestors():
+    out = set()
+    pid = os.getpid()
+    while pid > 1:
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                s = f.read()
+            pid = int(s[s.rindex(")") + 2:].split()[1])
+        except (OSError, ValueError):
+            break
+        out.add(pid)
+    return out
+
+
+def legacy_path():
+    return os.environ.get("REMODEL_HEAVY_LOCK") or os.path.join(main_checkout(), "out", "heavy.lock")
+
+
+def legacy_held_above():
+    """Whether a process above this one holds out/heavy.lock (a hand-typed
+    `flock out/heavy.lock make ...`): /proc/locks names the pid that took it."""
+    try:
+        st = os.stat(legacy_path())
+    except OSError:
+        return False
+    want = f":{st.st_ino}"
+    up = ancestors()
+    try:
+        for line in open("/proc/locks"):
+            f = line.split()
+            if len(f) >= 6 and f[1] == "FLOCK" and f[5].endswith(want) and f[5].count(":") == 2:
+                if int(f[4]) in up:
+                    return True
+    except (OSError, ValueError):
+        pass
+    return False
+
+
+def held(fd_or_path_fd):
+    """Whether another open file description holds the lock now."""
+    try:
+        fcntl.flock(fd_or_path_fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        fcntl.flock(fd_or_path_fd, fcntl.LOCK_UN)
+        return False
+    except OSError:
+        return True
+
+
+def read_info(path):
+    try:
+        with open(path) as f:
+            return json.loads(f.readline() or "{}")
+    except (OSError, ValueError):
+        return {}
+
+
+def holders(d):
+    """Every held slot, as dicts, plus the legacy lock."""
+    res = []
+    for name in sorted(os.listdir(d)):
+        if "." not in name or name.startswith("wait."):
+            continue
+        cls, slot = name.rsplit(".", 1)
+        if cls not in SLOTS:
+            continue
+        p = os.path.join(d, name)
+        try:
+            fd = os.open(p, os.O_RDONLY)
+        except OSError:
+            continue
+        try:
+            if held(fd):
+                info = read_info(p)
+                if info.get("pid") and not alive(info["pid"]):
+                    continue
+                info.update({"class": cls, "slot": int(slot) if slot.isdigit() else 0})
+                if "start" in info:
+                    info["held_s"] = round(time.time() - info["start"])
+                res.append(info)
+        finally:
+            os.close(fd)
+    return res
+
+
+def legacy_holder():
+    p = legacy_path()
+    try:
+        fd = os.open(p, os.O_RDONLY)
+    except OSError:
+        return None
+    try:
+        if not held(fd):
+            return None
+    finally:
+        os.close(fd)
+    # who: /proc/locks names the pid
+    try:
+        st = os.stat(p)
+        want = f":{st.st_ino}"
+        for line in open("/proc/locks"):
+            f = line.split()
+            if len(f) >= 6 and f[1] == "FLOCK" and f[5].endswith(want):
+                pid = int(f[4])
+                try:
+                    cmd = open(f"/proc/{pid}/cmdline").read().replace("\0", " ").strip()
+                except OSError:
+                    cmd = ""
+                # taken by tools/lock itself (build, test): say what it runs
+                for h in holders(lock_dir()):
+                    if h.get("pid") == pid:
+                        return {"class": "heavy.lock (via tools/lock " + h["class"] + ")", "pid": pid,
+                                "cmd": h.get("cmd", ""), "held_s": h.get("held_s", 0)}
+                return {"class": "heavy.lock (by hand)", "pid": pid, "cmd": cmd}
+    except (OSError, ValueError):
+        pass
+    return {"class": "heavy.lock (by hand)", "pid": 0, "cmd": ""}
+
+
+def waiters(d):
+    res = []
+    for name in sorted(os.listdir(d)):
+        if not name.startswith("wait."):
+            continue
+        p = os.path.join(d, name)
+        info = read_info(p)
+        if info.get("pid") and alive(info["pid"]):
+            info["waited_s"] = round(time.time() - info.get("since", time.time()))
+            res.append(info)
+        else:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+    return res
+
+
+def describe(h):
+    who = f"pid {h.get('pid')}" if h.get("pid") else "an unknown process"
+    cmd = (h.get("cmd") or "")[:100]
+    t = f", {h['held_s']} s" if "held_s" in h else ""
+    return f"{h['class']}: {who}{t}: {cmd}"
+
+
+def status(argv):
+    js = "--json" in argv
+    d = lock_dir()
+    hs = holders(d)
+    lh = legacy_holder()
+    if lh:
+        hs.append(lh)
+    ws = waiters(d)
+    if js:
+        print(json.dumps({"holders": hs, "waiters": ws,
+                          "slots": {c: slots(c) for c in SLOTS}}))
+        return 0
+    if not hs and not ws:
+        print("lock: nothing held, nothing waiting")
+    for h in hs:
+        print("held     " + describe(h))
+    for w in ws:
+        print(f"waiting  {','.join(w.get('classes', []))}: pid {w.get('pid')}, {w['waited_s']} s: {(w.get('cmd') or '')[:100]}")
+    return 0
+
+
+class Waiting:
+    def __init__(self, d, classes, cmd):
+        self.path = os.path.join(d, f"wait.{os.getpid()}")
+        self.info = {"pid": os.getpid(), "classes": classes, "cmd": cmd, "since": time.time()}
+
+    def __enter__(self):
+        with open(self.path, "w") as f:
+            f.write(json.dumps(self.info) + "\n")
+        return self
+
+    def __exit__(self, *a):
+        try:
+            os.unlink(self.path)
+        except OSError:
+            pass
+
+
+class _Timeout(Exception):
+    pass
+
+
+def flock_wait(fd, deadline):
+    """Block on the lock until deadline (a blocked flock is woken when the
+    holder lets go, in the kernel's order, like flock(1); polling would lose
+    to every blocked flock(1) waiter). True if taken."""
+    left = deadline - time.time()
+    if left <= 0:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            return False
+
+    def alarm(*_):
+        raise _Timeout()
+
+    old = signal.signal(signal.SIGALRM, alarm)
+    signal.setitimer(signal.ITIMER_REAL, left)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return True
+    except _Timeout:
+        return False
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, old)
+
+
+def try_slot(d, cls):
+    """A held fd for a free slot of cls, else None."""
+    for i in range(slots(cls)):
+        p = os.path.join(d, f"{cls}.{i}")
+        fd = os.open(p, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd, p
+        except OSError:
+            os.close(fd)
+    return None
+
+
+def acquire(d, cls, deadline, cmd, classes):
+    """Take one slot of cls, waiting until deadline; returns the fd."""
+    announced = False
+    while True:
+        got = try_slot(d, cls)
+        if not got and slots(cls) == 1:
+            if not announced:
+                hs = [h for h in holders(d) if h["class"] == cls]
+                print(f"lock: waiting for {cls}: " + ("; ".join(describe(h) for h in hs) or "a free slot"),
+                      file=sys.stderr)
+                announced = True
+            fd = os.open(os.path.join(d, f"{cls}.0"), os.O_RDWR | os.O_CREAT, 0o644)
+            if flock_wait(fd, deadline):
+                got = (fd, os.path.join(d, f"{cls}.0"))
+            else:
+                os.close(fd)
+        if got:
+            fd, p = got
+            info = {"pid": os.getpid(), "start": time.time(), "cmd": cmd, "cwd": os.getcwd(),
+                    "actor": os.environ.get("REMODEL_ACTOR", "")}
+            os.ftruncate(fd, 0)
+            os.write(fd, (json.dumps(info) + "\n").encode())
+            return fd
+        if time.time() >= deadline:
+            hs = [h for h in holders(d) if h["class"] == cls]
+            die(3, f"gave up waiting for {cls}; held by " + "; ".join(describe(h) for h in hs)
+                + "\n(tools/lock status lists everything; wait longer with --wait SECS, or do other work)")
+        if not announced:
+            hs = [h for h in holders(d) if h["class"] == cls]
+            print(f"lock: waiting for {cls}: " + ("; ".join(describe(h) for h in hs) or "a free slot"),
+                  file=sys.stderr)
+            announced = True
+        time.sleep(POLL)
+
+
+def acquire_legacy(deadline):
+    p = legacy_path()
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    fd = os.open(p, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except OSError:
+        pass
+    h = legacy_holder() or {"class": "heavy.lock (by hand)"}
+    print("lock: waiting for out/heavy.lock: " + describe(h), file=sys.stderr)
+    if flock_wait(fd, deadline):
+        return fd
+    h = legacy_holder() or {"class": "heavy.lock (by hand)"}
+    die(3, "gave up waiting for out/heavy.lock; held by " + describe(h))
+
+
+def run(argv):
+    classes = []
+    wait = 1800.0
+    js = False
+    i = 0
+    cmd = []
+    while i < len(argv):
+        a = argv[i]
+        if a == "--":
+            cmd = argv[i + 1:]
+            break
+        if a == "--wait":
+            i += 1
+            try:
+                wait = float(argv[i])
+            except (IndexError, ValueError):
+                die(2, "--wait wants a number of seconds")
+        elif a == "--json":
+            js = True
+        elif a.startswith("-"):
+            die(2, f"unknown option {a}")
+        else:
+            classes += [c for c in a.split(",") if c]
+        i += 1
+    if not classes or not cmd:
+        die(2, "usage: tools/lock CLASS[,CLASS..] [--wait SECS] -- COMMAND ... | tools/lock status [--json]")
+    for c in classes:
+        if c not in SLOTS:
+            die(2, f"unknown class `{c}`; classes: {', '.join(SLOTS)}")
+    classes = sorted(set(classes), key=ORDER.index)
+    already = set(filter(None, os.environ.get("REMODEL_LOCKS_HELD", "").split(",")))
+    need = [c for c in classes if c not in already]
+    d = lock_dir()
+    deadline = time.time() + wait
+    cmdtext = " ".join(cmd)
+    fds = []
+    if need:
+        with Waiting(d, need, cmdtext):
+            if (any(c in LEGACY_CLASSES for c in need) and os.environ.get("REMODEL_LEGACY_LOCK", "1") != "0"
+                    and "heavy" not in already and not legacy_held_above()):
+                fds.append(acquire_legacy(deadline))
+            for c in need:
+                fds.append(acquire(d, c, deadline, cmdtext, need))
+    env = dict(os.environ)
+    env["REMODEL_LOCKS_HELD"] = ",".join(sorted(already | set(need) | ({"heavy"} if fds and len(fds) > len(need) else set())))
+    p = subprocess.Popen(cmd, env=env)
+
+    def fwd(sig, _frame):
+        try:
+            p.send_signal(sig)
+        except OSError:
+            pass
+
+    for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(s, fwd)
+    rc = p.wait()
+    if rc < 0:
+        rc = 128 - rc
+    sys.exit(rc)
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0 if argv else 2
+    if argv[0] == "status":
+        return status(argv[1:])
+    return run(argv)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

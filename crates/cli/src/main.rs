@@ -8,6 +8,7 @@ mod depth_check;
 mod geo_check;
 mod glyphs;
 mod gpu_check;
+mod img_cmd;
 mod light_report;
 mod lighting_check;
 mod link_net;
@@ -25,6 +26,7 @@ mod sound_render;
 mod soundtrack;
 mod spec_stats;
 mod studio;
+mod studio_answer;
 mod studio_img;
 mod studio_text;
 mod temporal_check;
@@ -1067,6 +1069,7 @@ fn dispatch_no_roms(o: &Opts) -> Option<ExitCode> {
         "pack-flicker" => cmd_pack_flicker(o),
         "studio" => cmd_studio(o),
         "scene" => scene::main(o),
+        "img" => cmd_img(o),
         "catalogue" => cmd_catalogue(o),
         "tour" if o.args.get(1).map(String::as_str) != Some("run") => tour::list(o),
         "coverage" => coverage::main(o),
@@ -1184,6 +1187,27 @@ fn cmd_texpack_materials(o: &Opts) -> ExitCode {
     }
 }
 
+/// Where `run` writes with no `--out`: `out/GAME`, or, when `REMODEL_SCRATCH`
+/// names an agent's own scratch folder (`make agent-setup` sets it), a
+/// private `run/GAME` inside it, so two agents never write one output.
+/// The EEPROM that private run starts from is a fresh copy of the shared
+/// `out/GAME/eeprom.bin` (which stays read-only), so its state hashes are
+/// the ones a run in `out/GAME` gives.
+fn default_run_dir(game: &str) -> PathBuf {
+    let shared = PathBuf::from("out").join(game);
+    let Some(scratch) = std::env::var_os("REMODEL_SCRATCH").filter(|s| !s.is_empty()) else {
+        return shared;
+    };
+    let dir = PathBuf::from(scratch).join("run").join(game);
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::remove_file(dir.join("eeprom.bin"));
+    if shared.join("eeprom.bin").is_file() {
+        let _ = std::fs::copy(shared.join("eeprom.bin"), dir.join("eeprom.bin"));
+    }
+    println!("output        {} (private: REMODEL_SCRATCH)", dir.display());
+    dir
+}
+
 fn cmd_studio(o: &Opts) -> ExitCode {
     let ctx = studio::Ctx {
         game: o.game_id.clone(),
@@ -1191,14 +1215,32 @@ fn cmd_studio(o: &Opts) -> ExitCode {
         jit: std::env::args().any(|a| a == "--jit"),
         input: o.input.clone(),
     };
+    // The answer of a studio command (studio_answer.rs): with `--json` the
+    // run is repeated without it and made into one object (the place where
+    // the shared answer module takes over); without, the text, with the
+    // exit codes 0 done, 1 a check failed, 2 a wrong request, 3 something
+    // missing, 4 internal. Errors are `error: ` lines, warnings `warning: `
+    // lines and a suggested next command a `next: ` line, on stderr.
+    if o.args.iter().any(|a| a == "--json") {
+        let argv: Vec<String> = std::env::args().skip(1).filter(|a| a != "--json").collect();
+        let ans = studio_answer::run_as_answer(&argv);
+        ans.print_json();
+        return ans.exit_code();
+    }
     match studio::main(&o.args[1..], &ctx) {
         Ok(true) => ExitCode::SUCCESS,
-        Ok(false) => ExitCode::FAILURE,
+        Ok(false) => ExitCode::from(studio_answer::Code::GateFailed as u8),
         Err(e) => {
             eprintln!("error: {e}");
-            ExitCode::FAILURE
+            ExitCode::from(studio_answer::classify(&e) as u8)
         }
     }
+}
+
+/// `remodel img VERB`: sheet, diff and stats of images (img_cmd.rs).
+fn cmd_img(o: &Opts) -> ExitCode {
+    let (answer, json) = img_cmd::run(&o.args[1..]);
+    img_cmd::finish(answer, json)
 }
 
 fn cmd_catalogue(o: &Opts) -> ExitCode {
@@ -3220,7 +3262,7 @@ fn run(
             "interpreter"
         }
     );
-    let dir = OUT_DIR.get().cloned().unwrap_or_else(|| PathBuf::from("out").join(roms.game.id));
+    let dir = OUT_DIR.get().cloned().unwrap_or_else(|| default_run_dir(roms.game.id));
     let _ = std::fs::create_dir_all(&dir);
     let eeprom_path = dir.join("eeprom.bin");
     if let Ok(bytes) = std::fs::read(&eeprom_path) {

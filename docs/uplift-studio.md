@@ -106,9 +106,9 @@ coverage. Later: the same page next to a live player.
 
 `remodel studio SUB PROJECT [options]`, one `make studio-SUB` target each
 (`STUDIO=` the project directory, `STUDIO_ARGS=` the options); `remodel
-studio` lists them. All are non-interactive and idempotent (a second run
-changes nothing), print short text or TSV, and need no ROM except
-`compare`, which runs the game.
+studio` lists them. All are non-interactive, print short text or TSV, and
+need no ROM except `compare`, which runs the game. They are strict and
+scriptable (below, "Strict, with answers").
 
 | command | what |
 |---|---|
@@ -118,7 +118,7 @@ changes nothing), print short text or TSV, and need no ROM except
 | `regions` | the project's regions and which have a replacement (`--tsv`) |
 | `select` | add rows by `--key` (name, hash or ID), `--group`, `--surface`, `--frame F --region X,Y,W,H`, `--all`, with `--category` and `--reason`; copies the originals |
 | `status` | counts by category, what has no draft, strays, images with no record; `--tsv` for rows |
-| `approve` | copy drafts into `pack/` (`--drafted`, a group, a category, names; `--undo`) |
+| `approve` | copy drafts into `pack/` (`--drafted`, a group, a category, names; `--undo`; an approved image that differs from its draft is replaced only with `--replace`) |
 | `import` | bring in images made elsewhere with a `--tool` record |
 | `pack` | write `pack.txt` and `index.txt` from `pack/`, run pack-lint |
 | `draft` | the batch generator runner (below) |
@@ -137,6 +137,28 @@ copied from whichever map has it). IDs and frames belong to one map: a
 frame (`--frame F`) found in several needs `--map NAME`, as does a numeric
 `--key ID`; names and hashes need nothing.
 
+**Strict, with answers.** An unknown subcommand, or an option the
+subcommand does not read, is an error that names the near matches
+(`unknown option --replce; did you mean --replace?`) instead of a value
+quietly ignored. Nothing overwrites a draft or an approved image without
+`--replace`: `import`, `style`, `variants`, `text` and `draft` keep what is
+there and say so (a warning, and when nothing at all was written an error
+that names the fix; `draft` skips finished drafts so a broken batch
+resumes, as before). Exit codes: 0 done, 1 a check failed (`seam --strict`,
+a failed pack-lint, a draft job that failed), 2 the request was wrong, 3
+something needed is missing (the project, a file, the ROM), 4 an internal
+error. `--json` on any of them prints one object instead of text:
+
+```json
+{"ok":false,"code":2,"error":"studio draft: unknown option `--replce`; did you mean --replace? ...",
+ "data":{"lines":["..."]},"warnings":[],"next":null}
+```
+
+`data.lines` is what the text mode printed (TSV stays TSV), `warnings` and
+`next` come from the command's `warning:` and `next:` lines on stderr. The
+code is `studio_answer.rs`; the answer module the rest of the CLI shares
+replaces it where `cmd_studio` and `cmd_img` in `main.rs` emit.
+
 **Names are exact.** Every command that takes names, `--group` or
 `--category` (`style`, `draft`, `approve`, `import`, ...) refuses what it
 can't find: a name not in the selection (a name is a row's name or its
@@ -145,7 +167,7 @@ has is an error naming it, never "nothing to narrow by, so every row".
 Filters given together all apply, and with none, `--all` is required.
 
 **Batch generation (`draft`).** For each selected row without a draft
-(`--force` redoes) it makes `work/draft/NAME/` holding `in1.png` (the
+(`--replace` redoes) it makes `work/draft/NAME/` holding `in1.png` (the
 original enlarged with nearest-neighbour), the brief's reference images,
 `ctx-frame.png` (the frame where the texture shows most, cropped around it)
 and/or `ctx-group.png` (the group's other textures, their drafts where they
@@ -153,8 +175,11 @@ exist, so the halves match), and `prompt.txt`. It then runs the generator
 command in that folder with the prompt on stdin, `--jobs` at a time,
 retrying (`--retries`), with a timeout, appending to `run.log`; the output
 `out.png` is cropped to the original's proportions, sized to the original
-times `@scale` and written to `draft/`, and the prompt, command and inputs
-to `prompts/NAME.txt`. A finished draft is skipped on the next run, so a
+times `@scale` (`--keep-size`: left at the generator's size) and written to
+`draft/`, and the prompt, command and inputs to `prompts/NAME.txt`. A
+cut-out texture's transparent texels stay transparent: the original's alpha,
+resampled to the draft's size, is applied to the opaque picture a generator
+returns (a draft of an opaque original is left alone). A finished draft is skipped on the next run, so a
 broken batch resumes. The command is a template run by `sh -c`
 (`--cmd`), default `codex exec {images} -` (`{images}` becomes
 `-i in1.png -i ref1.png ...`; `{files}` the names alone, `{prompt_file}`,
@@ -228,6 +253,18 @@ axes, and axes whose coordinates the map saw stay within one texture size
 (`once`: a skater's UV map), are not checked. An axis is suspect above 2.5 times the typical step
 and 12 levels, unless the original is just as suspect (the game's own
 seam). `--strict` fails on suspects.
+
+**Image tools (`remodel img`).** The per-pixel jobs that went through
+shell and ImageMagick, in the binary, with no ROM and `--json`:
+
+| command | what |
+|---|---|
+| `img sheet OUT.png IMG.. [--cols N] [--cell PX] [--labels A,B,..] [--bg #rrggbb]` | a contact sheet: each image fitted in a PX square (default 256; small art enlarged by whole numbers, a checker under transparency) with its name under it; `data.cells[]` has `n`, `label`, `file`, `box` so the picture need not be read to learn what is where |
+| `img diff A.png B.png [--threshold N] [--max-changed PCT] [--out DIFF.png]` | `changed_pct` (a pixel counts when its channels differ by more than N together, default 6), `mean_abs_diff`, `max_diff`, `bbox`, `identical`; `--out` writes a heat picture; `--max-changed` fails (exit 1) above PCT, and for pictures of different sizes |
+| `img stats IMG.png [--region X,Y,W,H]` | size, `opaque`, `transparent` and `partial` shares, `alpha_levels`, mean colour, brightness mean, range and histogram, `colours` used and the top five, the `bbox` of what is not transparent |
+
+Nothing is overwritten without `--replace`, and never an input. `crop`,
+`resize`, `quantise`, `composite` and `roll` of the spec are not built.
 
 **Before and after (`compare`).** Works from any directory (the repo root,
 with `rom/` and `out/`, is found by walking up from the working directory
