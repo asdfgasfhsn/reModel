@@ -33,6 +33,22 @@ creates the annotated tag `vx.y.z` without pushing. Details in
   and `make link-net-test` now kills and quits players mid-race (two and
   three hosts, both games) and checks the survivors' hashes against
   `link-run --leave` for the drop frame they logged.
+- Named scenes (uplift): `remodel scene list`, `make`, `verify` and
+  `render`. A scene is a recipe (input script and frame; five for Top
+  Skater, three for `vf2` in their manifests, more in a project's
+  `scenes.txt`) and a local copy made from it (capture, state, hash).
+  `scene render` draws a copy from its capture with no boot, ROM or
+  emulator, optionally with a texture pack, a crop and against the
+  original; `scene verify` catches emulation drift. Make targets
+  `scene-list`, `scene-make`, `scene-verify`, `scene-render`, `scene-check`.
+  Draw-only: no state hash or save state changes.
+- Every scene command shares one answer (`crates/cli/src/answer.rs`):
+  `--json` prints `ok`, `code`, `error`, `data`, `warnings`, `next`; exit
+  codes 0 done, 1 check failed, 2 bad request (unknown names list near
+  matches), 3 missing, 4 internal. `serde_json` is a new dependency.
+- `studio compare` no longer reuses an old run's frames silently: it
+  refuses a folder that holds one unless `--force`; `--scene` compares from
+  scenes with no run (`make studio-compare SCENES=all`).
 
 ## 0.12.1 (2026-11-21): network play fixes
 

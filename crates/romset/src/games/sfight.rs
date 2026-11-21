@@ -16,6 +16,7 @@ pub static SFIGHT: Game = Game {
     // The attract: the title screen with the logo (schamp's attract is a
     // fight demo at this frame).
     attract_frame: 3500,
+    scenes: &[],
     input_lag: 0,
     run_ahead_max: 1,
     hud_windows: &[],

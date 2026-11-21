@@ -1,8 +1,10 @@
 # Uplift specs: shared ground
 
 These specs describe how reModel could let people and agents restyle and
-improve a game's look. None of it is built into reModel; parts were tried
-in spikes, on branches that are not for merging. The vision, the roadmap and the
+improve a game's look. Only the first slice of
+[scenes-and-server.md](scenes-and-server.md) is built (and the shared answer
+every new command uses, `crates/cli/src/answer.rs`); parts of the rest were
+tried in spikes, on branches that are not for merging. The vision, the roadmap and the
 order of work are in [../uplift-vision.md](../uplift-vision.md); what exists
 today is in [../uplift-studio.md](../uplift-studio.md),
 [../texture-packs.md](../texture-packs.md) and

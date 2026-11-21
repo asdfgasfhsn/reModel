@@ -50,7 +50,8 @@ An art agent's job uses eleven of them: `project brief`, `asset show`,
 - **Exit codes.** 0 done. 1 a gate at `error` failed. 2 the request was
   wrong. 3 something needed is missing. 4 an internal error. A `warn` or
   `review` verdict does not change the exit code.
-- **The envelope.**
+- **The envelope** (built: `crates/cli/src/answer.rs`, which every uplift
+  command uses for its `--json` object, exit code and near-match errors).
 
   ```json
   {"ok": false, "code": 3,

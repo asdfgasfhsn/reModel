@@ -1,3 +1,4 @@
+mod answer;
 mod camera_scan;
 mod catalogue;
 mod catalogue_viewer;
@@ -16,6 +17,7 @@ mod pack_lint;
 mod pack_log_run;
 mod recomp_crates;
 mod run_ahead;
+mod scene;
 mod sharc;
 mod sound_render;
 mod soundtrack;
@@ -517,6 +519,13 @@ commands:
                        region, status, approve, pack, draft, style, variants,
                        text, seam, compare over a project directory; `remodel
                        studio` lists them (no ROM needed except for compare)
+  scene SUB [NAME]     named scenes (docs/uplift-studio.md, \"Scenes\"): list,
+                       make, verify (these run the game) and render (draws a
+                       scene's capture with no emulator: --pack DIR, --crop
+                       X,Y,W,H, --against original); --json prints one object
+                       (ok, code, error, data, warnings, next); exit 0 done,
+                       1 a check failed, 2 bad request, 3 missing, 4 internal;
+                       `remodel scene` lists the options
   sound-disasm ADDR [COUNT]
                        disassemble the sound board's 68000 program (its own
                        address space: ROM at 0x600000; at 0 on the original
@@ -1054,6 +1063,7 @@ fn dispatch_no_roms(o: &Opts) -> Option<ExitCode> {
         "pack-lint" => cmd_pack_lint(o),
         "pack-flicker" => cmd_pack_flicker(o),
         "studio" => cmd_studio(o),
+        "scene" => scene::main(o),
         "catalogue" => cmd_catalogue(o),
         "sharc-disasm" | "sharc-check" => cmd_sharc(o),
         "temporal-check" => cmd_temporal_check(o),

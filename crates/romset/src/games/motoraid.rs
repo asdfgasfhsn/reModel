@@ -27,6 +27,7 @@ pub static MOTORAID: Game = Game {
     kind: crate::Kind::Racing,
     board: Board::Model2A,
     attract_frame: 3900,
+    scenes: &[],
     input_lag: 0,
     run_ahead_max: 1,
     hud_windows: &[],

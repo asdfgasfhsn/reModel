@@ -19,6 +19,7 @@ pub static SCHAMP: Game = Game {
     board: Board::Model2B,
     // The attract demo: two fighters in the desert ring.
     attract_frame: 3500,
+    scenes: &[],
     input_lag: 0,
     run_ahead_max: 1,
     hud_windows: &[],

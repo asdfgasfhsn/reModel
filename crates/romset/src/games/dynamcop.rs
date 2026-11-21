@@ -25,6 +25,7 @@ pub static DYNAMCOP: Game = Game {
     kind: crate::Kind::Fighting,
     board: Board::Model2A,
     attract_frame: 3600,
+    scenes: &[],
     input_lag: 0,
     run_ahead_max: 1,
     hud_windows: &[],

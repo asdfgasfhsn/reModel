@@ -8,7 +8,10 @@ The specs are in [uplift/](uplift/README.md).
 Status, 2026-11-20: a design, written from the code at `7d8f099`, the
 record of the Top Skater showcase, a survey of other projects'
 documentation, and 27 spikes on seven games ("Spikes" below). Nothing
-described here is built into reModel. Spike code sits on two unmerged
+described here is built into reModel except item 1, scenes and
+`scene render`, built 2026-11-21 (with the shared `--json` answer and exit
+codes in `crates/cli/src/answer.rs`; user documentation in
+[uplift-studio.md](uplift-studio.md), "Scenes"). Spike code sits on two unmerged
 branches and is not for merging as it stands. Pass one (this page, the
 interface page and ten specs) covers what unblocks the work now. Pass
 two (six more specs) covers what uplift could do next.
@@ -134,7 +137,7 @@ agents soonest.
 
 | Soon | Item | Value | Effort | Risk | Needs | First step |
 |---|---|---|---|---|---|---|
-| ★ | **1. Scenes and `scene render`** | Every still check without boot, build or lock | S | Low | Nothing | Five scenes for Top Skater, three for a game on another board |
+| ★ | **1. Scenes and `scene render`** (built 2026-11-21: `scene list/make/verify/render`, `studio compare --scene`; `what/where/sheet/clip`, `--asset` and the player's `--scene` remain) | Every still check without boot, build or lock | S | Low | Nothing | Five scenes for Top Skater, three for a game on another board |
 | ★ | **2. Lock tool, worktree set-up, pinned binary, `remodel img`** | Ends the queue; no shell image scripts | S | Low | Nothing | `tools/lock` wired into the Makefile |
 | ★ | **3. Interface rules on today's tools, and the three defects** | No silent work; output a model can parse | S to M | Low | Nothing | `--json`, exit codes, refuse to reuse or overwrite |
 | ★ | **22. [Content coverage](uplift/content-coverage.md)**: tours, ROM read maps, `coverage`; then the tour recorder, pokes and the crawler | A catalogue that holds the whole game, and a number for how much it holds | S, then M to L | Medium: the crawler covers menus, not play | Nothing; cheats for pokes | Tours and `coverage` against the read map |

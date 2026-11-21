@@ -480,13 +480,40 @@ studio-regions: release ## STUDIO's regions and which have a replacement (STUDIO
 	$(RUN) studio regions $(STUDIO) $(STUDIO_ARGS)
 studio-seam: release ## Seam check of STUDIO's pack/ (STUDIO_ARGS="--from draft", --strict fails on suspects): per wrap mode, repeat edges against each other and edge lines on mirrored ones, against the originals
 	$(RUN) studio seam $(STUDIO) $(STUDIO_ARGS)
-studio-compare: release ## Before and after: run the game twice (without and with STUDIO's pack/, JOBS at once) and write side-by-side sheets of the same frames to STUDIO/compare (BENCH_STEPS, INPUT default BENCH_INPUT; STUDIO_ARGS="--into DIR --frames F,.. --run-args '--height 1080 --aspect 16:9' --pack DIR --force")
-	$(RUN) studio compare $(STUDIO) --steps $(BENCH_STEPS) --snap 300 --input $(or $(INPUT),$(BENCH_INPUT)) --jobs $(JOBS) $(STUDIO_ARGS)
+studio-compare: release ## Before and after (without and with STUDIO's pack/), written as side-by-side sheets to STUDIO/compare: SCENES=all (or NAME,NAME) draws the project's named scenes from their captures in seconds, with no run and no ROM (make scene-make first); without SCENES it runs the game twice (BENCH_STEPS, INPUT default BENCH_INPUT, JOBS at once) and refuses a folder that already holds a run (STUDIO_ARGS="--into DIR --frames F,.. --run-args '--height 1080 --aspect 16:9' --pack DIR --force")
+	$(RUN) studio compare $(STUDIO) $(if $(SCENES),--scene $(SCENES),--steps $(BENCH_STEPS) --snap 300 --input $(or $(INPUT),$(BENCH_INPUT)) --jobs $(JOBS)) $(STUDIO_ARGS)
 LOOK      ?= comic
 LOOK_OUT  ?= $(OUT)/look-render
 LOOK_OPTS ?=
 look-render: release ## Draw the captured frames (CAPTURE=DIR, default OUT/capture) on the GPU without and with a look: LOOK=comic (the built-in Comic defaults) or a look.txt or directory with one; PACK=DIR adds a texture pack, LOOK_SET="outline_weight=3 toon_steps=2" sets parameters, VIEW sets the view (default 1080p 16:9), LOOK_OPTS="--frames 2100,3300 --bench 20" selects frames and times the cost; writes FRAME-plain/-look/-sheet.png to LOOK_OUT (default OUT/look-render); for agents tuning a look (docs/texture-packs.md, "Looks"; needs a GPU)
 	$(RUN) $(VIEW) $(if $(PACK),--texture-pack $(PACK)) $(GPU_OPTS) --look $(LOOK) $(foreach s,$(LOOK_SET),--look-set $(s)) look-render $(or $(CAPTURE),$(OUT)/capture) $(LOOK_OUT) $(LOOK_OPTS)
+
+# Named scenes (docs/uplift-studio.md, "Scenes"): SCENE=NAME, SCENE_OPTS="--json --project DIR".
+SCENE      ?=
+SCENE_OPTS ?=
+scene-list: release ## List GAME's scenes (the manifest's and a project's scenes.txt) and whether each has a local copy: SCENE_OPTS="--json --tag play --project DIR" (docs/uplift-studio.md, "Scenes")
+	$(RUN) scene list $(SCENE_OPTS)
+scene-make: release ## Make GAME's scene SCENE (default: every scene without a local copy): run its recipe from power-on and keep the capture, state, hash and thumbnail in out/GAME/scenes/NAME; SCENE_OPTS="--replace --json" (needs the ROM)
+	$(RUN) scene make $(or $(SCENE),--all) $(SCENE_OPTS)
+scene-verify: release ## Run scenes' recipes again (SCENE=NAME, default all with a copy) and compare the state hash at their frames with the recorded one: a difference means the emulation changed and marks the scene stale (exit 1); run after a reModel update (needs the ROM)
+	$(RUN) scene verify $(SCENE) $(SCENE_OPTS)
+scene-render: release ## Draw scene SCENE from its capture with no emulator, ROM or boot, about 2 s: PACK=DIR a texture pack, VIEW the view (default 1080p 16:9), SCENE_OPTS="--against original --crop X,Y,W,H --json --out DIR" (game pixels, 496x384); writes NAME[-pack/-original/-sheet].png to out/GAME/scene-render (needs a GPU)
+	$(RUN) $(VIEW) scene render $(SCENE) $(if $(PACK),--pack $(PACK)) $(SCENE_OPTS)
+# Games `make scene-check` tries, and where it keeps their scenes.
+SCENE_CHECK_GAMES ?= topskatr vf2
+SCENE_CHECK_OUT   ?= out/scratch/scene-check
+scene-check: release ## The scene acceptance test, per SCENE_CHECK_GAMES (default topskatr vf2; JIT=1 runs the games on the JIT): make every scene from a fresh folder (SCENE_CHECK_OUT), verify them (the hashes must match), draw each from its capture against the original (under the Comic look) with a crop, and time the draw (needs the ROMs and a GPU); the folder is deleted after
+	@rm -rf $(SCENE_CHECK_OUT)
+	@set -e; for g in $(SCENE_CHECK_GAMES); do \
+		echo "== $$g"; \
+		export REMODEL_DATA=$(SCENE_CHECK_OUT); \
+		$(CAP) $(REMODEL) --game $$g --rom $(ROM) $(if $(JIT),--jit) scene make --all; \
+		$(CAP) $(REMODEL) --game $$g --rom $(ROM) $(if $(JIT),--jit) scene verify; \
+		for n in $$($(CAP) $(REMODEL) --game $$g --rom $(ROM) $(if $(JIT),--jit) scene list --json | sed -n 's/.*"name": "\([a-z0-9-]*\)".*/\1/p'); do \
+			$(CAP) $(REMODEL) --game $$g --rom $(ROM) $(if $(JIT),--jit) --look comic scene render $$n --against original --crop 0,0,248,192 | grep -E '^(scene|changed|time)'; \
+		done; \
+	done
+	@rm -rf $(SCENE_CHECK_OUT)
 
 # Options for gpu-check, depth-check and pack-check: --bloom N (gpu-check, temporal-probe: bloom), --aa N (multisampling;
 # software supersamples to match), --depth, --tex-filter off|mip|2|4|8|16

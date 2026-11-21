@@ -24,6 +24,7 @@ pub static RCHASE2: Game = Game {
     board: Board::Model2B,
     // The title screen over the cliff-side track.
     attract_frame: 4000,
+    scenes: &[],
     input_lag: 0,
     run_ahead_max: 0,
     hud_windows: &[],

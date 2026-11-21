@@ -23,6 +23,7 @@ pub static STCC: Game = Game {
     kind: crate::Kind::Racing,
     board: Board::Model2C,
     attract_frame: 1050,
+    scenes: &[],
     input_lag: 1,
     run_ahead_max: 1,
     hud_windows: &[],

@@ -21,6 +21,7 @@ pub static SKYTARGT: Game = Game {
     kind: crate::Kind::Shooting,
     board: Board::Model2A,
     attract_frame: 2000,
+    scenes: &[],
     input_lag: 1,
     run_ahead_max: 1,
     hud_windows: &[],

@@ -19,6 +19,7 @@ pub static SEGAWSKI: Game = Game {
     hud_windows: &[],
     hud_element_windows: &[],
     attract_frame: 2550,
+    scenes: &[],
     input_lag: 0,
     run_ahead_max: 0,
     controls: CONTROLS,

@@ -416,6 +416,21 @@ pub enum Role {
 /// Model 2C's ROM banks give each chip pair an 8 MB slot.
 pub const ROM_SLOT: usize = 0x80_0000;
 
+/// One named moment of a game: a recipe, never game data. The same kind of
+/// fact as the manifest's `coin-start` script and `attract_frame`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scene {
+    /// Lower-case slug: `[a-z0-9-]`.
+    pub name: &'static str,
+    pub title: &'static str,
+    /// An input script (`romset::Controls`' grammar; `coin-start` allowed).
+    pub input: &'static str,
+    /// The frame to stop and keep, counted from power-on with a fresh EEPROM.
+    pub frame: u64,
+    /// From the fixed list: attract, menu, select, play, result, hud.
+    pub tags: &'static [&'static str],
+}
+
 pub struct Game {
     /// Short set name, matching the usual dump naming (e.g. `topskatr`).
     pub id: &'static str,
@@ -432,6 +447,11 @@ pub struct Game {
     /// the game well: the browser build's game card screenshot
     /// (`remodel shot`).
     pub attract_frame: u64,
+    /// The game's named scenes: recipes (an input script and a frame) that
+    /// `remodel scene make` runs once to keep a frame's captured inputs
+    /// (docs/uplift-studio.md, "Scenes"). Small and optional; a project's
+    /// `scenes.txt` adds to them and wins on a name.
+    pub scenes: &'static [Scene],
     /// The game's own input lag in play, measured: frames after the first
     /// that reads a control before the picture shows it (`make input-lag`,
     /// docs/games/<set>.md; the least seen, for the control

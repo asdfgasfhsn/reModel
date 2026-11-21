@@ -17,6 +17,7 @@ pub static ZEROGUN: Game = Game {
     board: Board::Model2B,
     // The attract demo: a helicopter over the sea.
     attract_frame: 1500,
+    scenes: &[],
     input_lag: 0,
     run_ahead_max: 0,
     hud_windows: &[],

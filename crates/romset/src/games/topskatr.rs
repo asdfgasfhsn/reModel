@@ -1,6 +1,6 @@
 use super::rom;
 use crate::controls::button;
-use crate::{AnalogInput, Board, Controls, Game, PadAxis, PadButton, Role};
+use crate::{AnalogInput, Board, Controls, Game, PadAxis, PadButton, Role, Scene};
 
 /// Model 2C-CRX. Roles and interleave order follow the board wiring;
 /// pairs are listed low half-word first (note textures: `.27` before `.25`).
@@ -12,6 +12,32 @@ pub static TOPSKATR: Game = Game {
     kind: crate::Kind::Sports,
     board: Board::Model2C,
     attract_frame: 1650,
+    // Named moments of a coin-start run (frame numbers are the machine's own; `remodel scene verify` checks them).
+    scenes: &[
+        Scene { name: "coin-up", title: "Credit in, press start", input: "coin-start", frame: 1200, tags: &["menu"] },
+        Scene {
+            name: "course-select",
+            title: "Novice or Expert course",
+            input: "coin-start",
+            frame: 1500,
+            tags: &["select"],
+        },
+        Scene { name: "skater-select", title: "Skater select", input: "coin-start", frame: 2100, tags: &["select"] },
+        Scene {
+            name: "race-go",
+            title: "The GO of the Novice race",
+            input: "coin-start",
+            frame: 3150,
+            tags: &["play", "hud"],
+        },
+        Scene {
+            name: "race-course",
+            title: "Novice course, first stretch",
+            input: "coin-start",
+            frame: 3300,
+            tags: &["play", "hud"],
+        },
+    ],
     input_lag: 0,
     run_ahead_max: 0,
     // Window 4 holds the speed gauge and the time-limit ring (confirmed with

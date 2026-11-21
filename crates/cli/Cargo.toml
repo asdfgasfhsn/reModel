@@ -27,3 +27,4 @@ remodel-recomp.workspace = true
 remodel-state.workspace = true
 remodel-linknet.workspace = true
 remodel-version.workspace = true
+serde_json = { version = "1", features = ["preserve_order"] }

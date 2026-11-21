@@ -433,9 +433,138 @@ playing. It is an inference from behaviour, not read from the ROM, so
 unconfirmed until looked at: a score that never changes in the run gives
 nothing (play, or script, something that scores).
 
+## Scenes
+
+A scene is a named moment of a game: a recipe (the game, an input script
+and a frame) plus a local copy made from it. Checking an art change at a
+scene needs no boot, no build, no lock and no ROM: `remodel scene render`
+draws the copy's capture in about two seconds. Design and what is still to
+come: [uplift/scenes-and-server.md](uplift/scenes-and-server.md).
+
+**Recipes** are small text and hold no game data. A game's own scenes are
+in its manifest (`crates/romset/src/games/`, next to `attract_frame`; Top
+Skater has five, `vf2` three). A project adds its own in `scenes.txt`, and
+its names win over the manifest's:
+
+```ini
+[scene course-start]
+title = Novice course, first stretch
+input = coin-start          # any input script; coin-start is the game's own
+frame = 3300                # counted from power-on with a fresh EEPROM
+tags  = play hud            # attract menu select play result hud
+required = yes              # kept for pack checks (not used yet)
+coverage = 0.95
+```
+
+`--project DIR` reads `DIR/scenes.txt`; without it, a `scenes.txt` in the
+working directory is read if there is one. The file is strict: an unknown
+setting or tag is an error that lists near matches.
+
+**Local copies** are derived from the ROM and never shared or committed.
+They live in `<data dir>/<set>/scenes/<name>/` (`out/<set>/scenes` in a
+source tree, else the player's data folder; `REMODEL_DATA` overrides):
+
+| File | Holds |
+|---|---|
+| `scene.txt` | The recipe as run, `eeprom = fresh`, the geometrizer mode, the reModel version, the state hash at the frame, and `stale` or `verified` after `scene verify` |
+| `capture/` | The renderer's inputs for the frame (what `look-render`, `gpu-check` and `pack-check` read); about 19 MB on Top Skater and 28 MB on `vf2`, most of it the texture ROM, copied into every scene |
+| `state.save` | A save state at the frame, for the live player and clips (not used yet) |
+| `thumb.png` | A small picture |
+
+**Commands** (all take `--json`, see below):
+
+```sh
+remodel --game topskatr scene list [--tag play] [--project DIR]
+remodel --game topskatr scene make NAME | --all [--replace]    # needs the ROM
+remodel --game topskatr scene verify [NAME]                    # needs the ROM
+remodel --game topskatr scene render NAME [--pack DIR] [--crop X,Y,W,H] \
+        [--against original] [--view native|H[,A:B]] [--out DIR]
+```
+
+- `list` shows each scene and its state: `ready`, `missing` (no local
+  copy), `stale` (its recipe changed, or `verify` found the emulation
+  changed) or `unreproducible` (a copy whose recipe is gone).
+- `make` runs the recipe from power-on with a fresh EEPROM and keeps the
+  copy. It refuses to overwrite a copy without `--replace`; `--all` makes
+  the missing ones and lists the others as `skipped`.
+- `verify` runs each recipe again and compares the state hash at its frame
+  with the recorded one. A different hash means the emulation changed (runs
+  are bit-exact across engines), so the scene is marked stale, the command
+  exits 1, and `make --all --replace` rebuilds. Run it after a reModel
+  update; a difference in pictures is then not blamed on a pack.
+  `make scene-verify`.
+- `render` draws the scene from its capture on the GPU with no emulator.
+  `--pack DIR` draws a texture pack; `--against original` also draws the
+  original and writes `NAME-original.png`, `NAME-pack.png` and a
+  side-by-side `NAME-sheet.png`, and reports the share of pixels that
+  differ. `--crop X,Y,W,H` is in the game's own 496x384 picture whatever
+  the view (a wide view reaches negative X). `--view` is `native`, a height
+  or `HEIGHT,A:B`; the default is 1080p 16:9 (the global `--height`,
+  `--aspect` and `--hud` also work), and `--look` and the shading options
+  apply as for `look-render`. Output goes to `out/<set>/scene-render`
+  (`--out`); it is drawn again on every call, so nothing old is ever read
+  back. Layered packs (several `--pack`) are not built.
+- `studio compare PROJECT --scene all` (or `NAME,NAME`) writes the studio's
+  before and after sheets from scenes instead of running the game twice.
+  The run-based compare now refuses a folder that already holds a run
+  unless `--force` runs it again; it used to keep the old frames silently.
+
+**The answer.** Every scene command follows the uplift interface rules
+([uplift/README.md](uplift/README.md)). With `--json` it prints one object:
+`ok`, `code`, `error`, `data`, `warnings` and `next` (a suggested command).
+Exit codes: 0 done, 1 a check failed (`verify` found a stale scene), 2 the
+request was wrong (an unknown scene, option or tag lists near matches), 3
+something missing (the ROM, a local copy), 4 an internal error. The
+code is `crates/cli/src/answer.rs`, which later commands use too.
+
+```sh
+remodel --game topskatr scene render race-course --pack out/topskatr/texpack --against original --json
+```
+
+`data` has `picture`, `original`, `sheet`, `width`, `height`, `polygons`,
+`changed_share` (0 to 1), `pack`, `crop` and the time in ms.
+
+**Make targets:** `make scene-list`, `scene-make`, `scene-verify`,
+`scene-render` (`SCENE=`, `PACK=`, `SCENE_OPTS=`) and `make scene-check`,
+the acceptance test: it makes every scene of `topskatr` and `vf2` from a
+fresh folder, verifies them, draws each against the original and times it.
+
+**Acceptance test** (what the slice is judged on; `make scene-check` is its
+repeatable half). With a prebuilt binary, no lock and no boot, an agent
+that has a scene library and a pack must be able to check one still in at
+most 3 calls and 1 picture: `scene list`, `scene render NAME --pack DIR
+--against original --json` (the numbers say whether the pack drew and how
+much changed), and one crop only if it needs to look. The draw must take
+about 2 s or less cold at 1080p; a wrong name, an unknown option or a
+missing copy must answer with exit 2, 2 and 3 and near matches; `verify`
+must exit 1 when a hash differs. Run on 2026-11-21, on a machine with other
+work running (load about 5):
+
+| | `topskatr`, `race-course` | `vf2`, `fight-start` |
+|---|---|---|
+| Pack | 5,271 files (the demo pack) | 170 textures, colours inverted (made for the test) |
+| `scene render --against original --json`, wall time, cold, 1080p | 1.83 s (1.82 to 2.22 over 4 runs) | 0.95 s (0.94 to 0.98 over 3) |
+| of which GPU start, draw (both pictures), writing 3 PNGs | 0.22, 1.06, 0.45 s | 0.21, 0.13, 0.51 s |
+| Pixels changed against the original | 62% of the top-left quarter crop (30% of `race-go`, whole frame) | 71.5% |
+| `scene make --all` (JIT), per scene | 1 to 4 s; 11 s for the five | 2 to 4 s; 9 s for the three |
+| `scene verify` | 10 s on the JIT; the interpreter reproduces the same hashes (`vf2`: 21 s) | same |
+| Calls, pictures | 3 calls, 1 picture | 3 calls, 1 picture |
+
+It has not been run by a separate mid-tier model that had read only
+[uplift/interface.md](uplift/interface.md): the calls above were made by the
+author of the tool. A slice's acceptance test calls for that run, and it
+is still to do.
+
+**Not built yet:** `scene what`, `where`, `sheet` and `clip`; `--asset` and
+`--overlay` on `render`; the per-asset `assets[]` report (which assets the
+pack replaced, and why not); `facts.tsv`; the side channel in captures
+(each object's model key); layered packs; the player's `--scene` and the
+server. Scenes use the default (chip) geometrizer; the design's choice of
+native waits for the side channel.
+
 ## What is built, what comes later
 
-Built: the design above; `remodel texmap` and `make texmap` (ID images,
+Built: the design above; named scenes and `scene render` (above); `remodel texmap` and `make texmap` (ID images,
 texel positions, inventory, contact sheets, groups, JSON); the viewer
 (phase 1); the project commands, the batch runner, the style processor,
 text to tiles, surface variants, the seam check and before and after
@@ -445,7 +574,8 @@ scripted runs, loads, report, viewer, glyph mapping, and the studio reading it.
 
 Not built, roughly in this order:
 
-1. **Before/after page**: the sheets in the viewer, side by side per frame.
+1. **Before/after page**: the sheets in the viewer, side by side per frame
+   (`studio compare` writes the sheets, from a run or from scenes).
 2. **Live reload**: the player watching the pack directory and swapping
    textures as files change, so an edit shows in the running game.
 3. **Pick in the player**: a mode that names the texture (and group) under

@@ -16,6 +16,7 @@ pub static OVERREVB: Game = Game {
     // The attract demo: two cars drifting past the grandstand (its attract
     // runs a few frames behind overrev's).
     attract_frame: 1720,
+    scenes: &[],
     input_lag: 0,
     run_ahead_max: 0,
     hud_windows: &[],

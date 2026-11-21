@@ -20,6 +20,7 @@ pub static FVIPERS: Game = Game {
     board: Board::Model2B,
     // The attract demo: Bahn squaring up to Honey on the rooftop.
     attract_frame: 3400,
+    scenes: &[],
     input_lag: 1,
     run_ahead_max: 1,
     hud_windows: &[],

@@ -19,6 +19,7 @@ pub static VCOP2: Game = Game {
     kind: crate::Kind::Shooting,
     board: Board::Model2A,
     attract_frame: 1500,
+    scenes: &[],
     input_lag: 0,
     run_ahead_max: 0,
     hud_windows: &[],

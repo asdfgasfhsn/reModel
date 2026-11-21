@@ -1,6 +1,6 @@
 use super::rom;
 use crate::controls::button;
-use crate::{Board, Controls, Game, PadButton, Role};
+use crate::{Board, Controls, Game, PadButton, Role, Scene};
 
 /// Virtua Fighter 2 (2.1), Model 2A-CRX (`docs/games/vf2.md`, `docs/hw/model2a.md`).
 ///
@@ -23,6 +23,18 @@ pub static VF2: Game = Game {
     kind: crate::Kind::Fighting,
     board: Board::Model2A,
     attract_frame: 1500,
+    // Named moments of a coin-start run (frame numbers are the machine's own; `remodel scene verify` checks them).
+    scenes: &[
+        Scene { name: "player-select", title: "Player select", input: "coin-start", frame: 1350, tags: &["select"] },
+        Scene {
+            name: "fight-start",
+            title: "Round 1 begins",
+            input: "coin-start",
+            frame: 1500,
+            tags: &["play", "hud"],
+        },
+        Scene { name: "ring-out", title: "A ring out", input: "coin-start", frame: 2400, tags: &["result", "hud"] },
+    ],
     input_lag: 1,
     run_ahead_max: 1,
     hud_windows: &[],

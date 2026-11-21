@@ -28,6 +28,7 @@ pub static DAYTONA: Game = Game {
     kind: crate::Kind::Racing,
     board: Board::Model2,
     attract_frame: 1500,
+    scenes: &[],
     input_lag: 0,
     run_ahead_max: 0,
     hud_windows: &[],

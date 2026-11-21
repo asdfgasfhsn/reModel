@@ -22,6 +22,7 @@ pub static LASTBRNX: Game = Game {
     board: Board::Model2B,
     // The attract mode's fight in the Cross Street stage.
     attract_frame: 700,
+    scenes: &[],
     input_lag: 0,
     run_ahead_max: 1,
     hud_windows: &[],

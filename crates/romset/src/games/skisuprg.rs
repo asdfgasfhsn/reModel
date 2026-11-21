@@ -13,6 +13,7 @@ pub static SKISUPRG: Game = Game {
     kind: crate::Kind::Sports,
     board: Board::Model2C,
     attract_frame: 3750,
+    scenes: &[],
     input_lag: 0,
     run_ahead_max: 0,
     hud_windows: &[],

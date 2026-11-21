@@ -49,6 +49,9 @@ remodel studio SUB PROJECT [options]   (docs/uplift-studio.md)
   seam PROJECT [--from pack|draft] [--tsv] [--strict]
   compare PROJECT [--pack DIR] [--steps N] [--snap N] [--frames F,..] [--jobs N]
          [--run-args \"--height 1080 --aspect 16:9\"] [--force]   (needs the ROMs)
+  compare PROJECT --scene NAME[,NAME..]|all [--pack DIR] [--into DIR] [--view native|H[,A:B]]
+         before and after from the scenes' captures: no run, no ROM (remodel scene make first)
+  A run's output is never reused: compare refuses a folder that holds one unless --force reruns it.
 ";
 
 pub fn main(args: &[String], ctx: &Ctx) -> Result<bool, String> {
@@ -1795,6 +1798,9 @@ fn finish_draft(
 
 fn compare(p: &Project, a: &Args, ctx: &Ctx) -> Result<bool, String> {
     p.require()?;
+    if let Some(names) = a.get("--scene") {
+        return compare_scenes(p, a, ctx, names);
+    }
     let pack_dir = a.get("--pack").map(PathBuf::from).unwrap_or_else(|| p.p("pack"));
     let out = a.get("--into").map(PathBuf::from).unwrap_or_else(|| p.p("compare"));
     let steps = a.get("--steps").unwrap_or("600000000").to_string();
@@ -1831,9 +1837,13 @@ fn compare(p: &Project, a: &Args, ctx: &Ctx) -> Result<bool, String> {
     let mut kids = Vec::new();
     for (label, pack) in [("before", None), ("after", Some(&snapshot))] {
         let od = out.join(label);
+        // Old frames are never compared silently: a pack changed since is
+        // not what they show (an agent once lost a lot of time to this).
         if !force && od.join("frames/final.png").is_file() {
-            println!("{label:<8}      kept (--force reruns)");
-            continue;
+            return Err(format!(
+                "{} already holds a run's frames; compare never reuses old output: --force runs again, or --into a new folder",
+                od.display()
+            ));
         }
         std::fs::create_dir_all(&od).map_err(|e| e.to_string())?;
         if eeprom.is_file() {
@@ -1914,8 +1924,19 @@ fn compare(p: &Project, a: &Args, ctx: &Ctx) -> Result<bool, String> {
         sheets.push(sheet);
     }
     std::fs::write(out.join("compare.tsv"), &tsv).map_err(|e| e.to_string())?;
+    overview(&out, &sheets)?;
+    println!(
+        "compare       {} frames: {}/sheet-FRAME.png (before | after), sheet-all.png, compare.tsv",
+        common.len(),
+        out.display()
+    );
+    Ok(true)
+}
+
+/// One page of a few evenly spaced sheets: `sheet-all.png`.
+fn overview(out: &Path, sheets: &[Image]) -> Result<(), String> {
     // One page of a few evenly spaced frames.
-    let pick: Vec<&Image> = if common.len() <= 4 {
+    let pick: Vec<&Image> = if sheets.len() <= 4 {
         sheets.iter().collect()
     } else {
         (0..4).map(|i| &sheets[i * (sheets.len() - 1) / 3]).collect()
@@ -1932,9 +1953,61 @@ fn compare(p: &Project, a: &Args, ctx: &Ctx) -> Result<bool, String> {
         y += s.height;
     }
     img::save(&out.join("sheet-all.png"), &all)?;
+    Ok(())
+}
+
+/// `compare --scene`: the same before and after from scenes' captures, with
+/// no run and no ROM (docs/uplift-studio.md, "Scenes"). Every output is
+/// drawn fresh, so nothing old is read back.
+fn compare_scenes(p: &Project, a: &Args, ctx: &Ctx, names: &str) -> Result<bool, String> {
+    use crate::scene;
+    let game = romset::games::find(&ctx.game).map_err(|e| e.to_string())?;
+    let pack_dir = a.get("--pack").map(PathBuf::from).unwrap_or_else(|| p.p("pack"));
+    if !pack_dir.is_dir() {
+        return Err(format!("{}: pack directory not found", pack_dir.display()));
+    }
+    let out = absolute(&a.get("--into").map(PathBuf::from).unwrap_or_else(|| p.p("compare")));
+    let rs = scene::recipes(game, Some(&p.dir))?;
+    let all: Vec<String> = rs.iter().map(|r| r.name.clone()).collect();
+    let want: Vec<String> =
+        if names == "all" { all.clone() } else { names.split(',').map(|n| n.trim().to_string()).collect() };
+    for n in &want {
+        if !all.contains(n) {
+            return Err(crate::answer::Answer::unknown("scene", n, &all).message());
+        }
+    }
+    let view = scene::parse_view(a.get("--view")).map_err(|e| e.message())?;
+    std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let mut gpu = gpu::Renderer::new().map_err(|e| format!("no GPU: {e}"))?;
+    let root = scene::scenes_dir(game);
+    let mut tsv = String::from("scene\tchanged_pct\tmean_abs_diff\n");
+    let mut sheets = Vec::new();
+    for n in &want {
+        let dir = root.join(n);
+        let opts = scene::DrawOpts { pack: Some(pack_dir.clone()), crop: None, against: true, view };
+        let d = scene::draw(game, &dir, &opts, &mut gpu).map_err(|e| {
+            format!("{}{}", e.message(), e.next.as_ref().map(|n| format!(" (next: {n})")).unwrap_or_default())
+        })?;
+        for w in &d.warnings {
+            eprintln!("warning: {w}");
+        }
+        let to_img = |p: &scene::Picture| Image {
+            width: p.width,
+            height: p.height,
+            rgba: p.rgb.chunks_exact(3).flat_map(|c| [c[0], c[1], c[2], 255]).collect(),
+        };
+        let (b, af) = (to_img(d.original.as_ref().ok_or("no original drawn")?), to_img(&d.picture));
+        let (changed, mad) = frame_diff(&b, &af);
+        let _ = writeln!(tsv, "{n}\t{changed:.1}\t{mad:.2}");
+        let sheet = side_by_side(&b, &af);
+        img::save(&out.join(format!("sheet-{n}.png")), &sheet)?;
+        sheets.push(sheet);
+    }
+    std::fs::write(out.join("compare.tsv"), &tsv).map_err(|e| e.to_string())?;
+    overview(&out, &sheets)?;
     println!(
-        "compare       {} frames: {}/sheet-FRAME.png (before | after), sheet-all.png, compare.tsv",
-        common.len(),
+        "compare       {} scenes: {}/sheet-SCENE.png (before | after), sheet-all.png, compare.tsv",
+        want.len(),
         out.display()
     );
     Ok(true)

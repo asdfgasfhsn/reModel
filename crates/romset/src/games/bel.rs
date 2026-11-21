@@ -18,6 +18,7 @@ pub static BEL: Game = Game {
     board: Board::Model2C,
     // The attract demo: the vehicle driving up a forest track.
     attract_frame: 3900,
+    scenes: &[],
     input_lag: 3,
     run_ahead_max: 3,
     hud_windows: &[],

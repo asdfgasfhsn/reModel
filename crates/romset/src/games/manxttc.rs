@@ -15,6 +15,7 @@ pub static MANXTTC: Game = Game {
     kind: crate::Kind::Racing,
     board: Board::Model2A,
     attract_frame: 2700,
+    scenes: &[],
     input_lag: 2,
     run_ahead_max: 2,
     hud_windows: &[],

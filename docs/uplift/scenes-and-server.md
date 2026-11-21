@@ -1,7 +1,23 @@
 # Scenes, and drawing them fast
 
-Shared words, roles and rules: [README.md](README.md). Nothing here is
-built.
+Shared words, roles and rules: [README.md](README.md). Status: the MVP
+slice at the end is built (2026-11-21) and its user-facing parts are in
+[../uplift-studio.md](../uplift-studio.md), "Scenes". The rest (the
+player's watch, the server, `scene what/where/sheet/clip`, `--asset`,
+`--overlay`, facts, the side channel) is still a design.
+
+**Re-check of "Observed" before building (2026-11-21, main at `32abfdc`).**
+Line numbers have all moved. What changed in substance: the `studio compare`
+defect is fixed (it now refuses to reuse a run's folder); a capture can now
+also hold `light.bin` and `scan.bin` (the lighting side channel), but still
+no model key per object, so the "captures hold only the finished stream"
+finding stands for identity; `Frame::grab` waits for the geometrizer
+itself. Unchanged: `remodel-play` has no state-loading flag and `sync_pack`
+still returns early when the pack directory is unchanged; the CLI's options
+are still process-wide statics (scene commands read them, and build each
+machine themselves); `set_pack` still clears the pack caches; any
+state-format change still refuses older states. The default geometrizer is
+the chip, not native, so scenes record the mode and use the default.
 
 ## The problem
 
@@ -254,12 +270,13 @@ several agents avoids each holding a pack of its own.
 ## MVP: a few days
 
 1. `scenes.txt` and manifest scenes, with five recipes for Top Skater and
-   three for a second game on another board.
-2. `scene make` and `scene list`, saving capture, state and hash.
+   three for a second game on another board. **Built** (`vf2`, board 2A).
+2. `scene make` and `scene list`, saving capture, state and hash. **Built**,
+   with `scene verify` (and `make scene-verify`).
 3. `scene render` with `--pack`, `--crop`, `--against original` and
-   `--json`, built on what `look-render` does today.
+   `--json`, built on what `look-render` does today. **Built**.
 4. Point `studio compare` at scenes, and make it refuse to reuse old
-   output.
+   output. **Built** (`--scene`).
 
 That removes the boot, the build and the lock from every still check. The
 player's watch is the next slice; the server follows once clips are needed.

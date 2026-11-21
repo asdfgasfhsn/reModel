@@ -35,6 +35,7 @@ pub static SRALLYC: Game = Game {
     kind: crate::Kind::Racing,
     board: Board::Model2A,
     attract_frame: 1500,
+    scenes: &[],
     input_lag: 1,
     run_ahead_max: 1,
     hud_windows: &[],
