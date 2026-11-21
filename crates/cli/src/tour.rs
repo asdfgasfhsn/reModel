@@ -19,7 +19,7 @@
 //! Nothing here changes what the machine does: the maps are written to,
 //! never read back, and the state hash is the same as `run`'s.
 
-use crate::answer_local::{self as answer, Answer};
+use crate::answer_local::{Answer, Code};
 use crate::coverage::{self, MapFile};
 use model2::readmap::{Ranges, ReadMap};
 use romset::RomSet;
@@ -27,6 +27,35 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
+
+/// The codes under the names this module uses.
+pub mod answer {
+    use crate::answer_local::Code;
+    pub const BAD_REQUEST: Code = Code::BadRequest;
+    pub const MISSING: Code = Code::Missing;
+    pub const INTERNAL: Code = Code::Internal;
+}
+
+/// A failed answer with the command that would put it right.
+pub fn fail(code: Code, msg: impl Into<String>, next: Option<&str>) -> Answer {
+    let a = Answer::fail(code, msg);
+    match next {
+        Some(n) => a.next(n),
+        None => a,
+    }
+}
+
+/// An answer given out as JSON or text; `text` is given its data.
+pub trait Finish {
+    fn finish(self, json: bool, text: impl FnOnce(&serde_json::Value) -> String) -> ExitCode;
+}
+
+impl Finish for Answer {
+    fn finish(self, json: bool, text: impl FnOnce(&serde_json::Value) -> String) -> ExitCode {
+        let data = self.data.clone();
+        self.emit(json, move || text(&data))
+    }
+}
 
 /// How long a tour runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,8 +203,7 @@ pub fn parse(text: &str, source: &str) -> Result<Vec<Tour>, String> {
 
 /// " (did you mean a, b?)" for the names in `all` close to `name`.
 pub fn near(name: &str, all: &[&str]) -> String {
-    let close: Vec<&str> =
-        all.iter().copied().filter(|c| distance(name, c) <= 2 || c.contains(name) || name.contains(c)).collect();
+    let close = crate::answer_local::near_matches(name, all);
     if close.is_empty() {
         let known = all.join(", ");
         if known.is_empty() {
@@ -186,21 +214,6 @@ pub fn near(name: &str, all: &[&str]) -> String {
     } else {
         format!(" (did you mean {}?)", close.join(", "))
     }
-}
-
-fn distance(a: &str, b: &str) -> usize {
-    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
-    let mut row: Vec<usize> = (0..=b.len()).collect();
-    for i in 1..=a.len() {
-        let mut prev = row[0];
-        row[0] = i;
-        for j in 1..=b.len() {
-            let cur = row[j];
-            row[j] = (prev + (a[i - 1] != b[j - 1]) as usize).min(row[j] + 1).min(row[j - 1] + 1);
-            prev = cur;
-        }
-    }
-    row[b.len()]
 }
 
 /// An input item's first and last frame (`name@from-to[/n]`); None for a
@@ -316,12 +329,12 @@ pub fn list(o: &crate::Opts) -> ExitCode {
             None => "tour: say what to do (list, run)".to_string(),
         };
         let json = o.args.iter().any(|a| a == "--json");
-        return Answer::fail(answer::BAD_REQUEST, e, Some("remodel tour list")).finish(json, |_| String::new());
+        return fail(answer::BAD_REQUEST, e, Some("remodel tour list")).finish(json, |_| String::new());
     }
     let mut args = o.args[2..].to_vec();
     let c = match common(&mut args) {
         Ok(c) => c,
-        Err(e) => return Answer::fail(answer::BAD_REQUEST, e, None).finish(false, |_| String::new()),
+        Err(e) => return fail(answer::BAD_REQUEST, e, None).finish(false, |_| String::new()),
     };
     let a = list_answer(o, &c, &args);
     a.finish(c.json, |d| {
@@ -350,19 +363,15 @@ pub fn list(o: &crate::Opts) -> ExitCode {
 
 fn list_answer(o: &crate::Opts, c: &Common, args: &[String]) -> Answer {
     if let Some(extra) = args.first() {
-        return Answer::fail(
-            answer::BAD_REQUEST,
-            format!("tour list: unexpected {extra}"),
-            Some("remodel tour list [--json]"),
-        );
+        return fail(answer::BAD_REQUEST, format!("tour list: unexpected {extra}"), Some("remodel tour list [--json]"));
     }
     let game = match romset::games::find(&o.game_id) {
         Ok(g) => g,
-        Err(e) => return Answer::fail(answer::BAD_REQUEST, e.to_string(), Some("remodel games")),
+        Err(e) => return fail(answer::BAD_REQUEST, e.to_string(), Some("remodel games")),
     };
     let tours = match load(game, c.tours.as_deref()) {
         Ok(t) => t,
-        Err(e) => return Answer::fail(answer::BAD_REQUEST, e, None),
+        Err(e) => return fail(answer::BAD_REQUEST, e, None),
     };
     let dir = c.dir.clone().unwrap_or_else(|| default_dir(game.id));
     let rows: Vec<Value> = tours
@@ -389,7 +398,7 @@ pub fn run(o: &crate::Opts, roms: &RomSet) -> ExitCode {
     let mut args = o.args[2..].to_vec();
     let c = match common(&mut args) {
         Ok(c) => c,
-        Err(e) => return Answer::fail(answer::BAD_REQUEST, e, None).finish(false, |_| String::new()),
+        Err(e) => return fail(answer::BAD_REQUEST, e, None).finish(false, |_| String::new()),
     };
     let a = run_answer(&mut args, &c, roms);
     a.finish(c.json, |d| {
@@ -421,7 +430,7 @@ fn run_answer(args: &mut Vec<String>, c: &Common, roms: &RomSet) -> Answer {
     let game = roms.game;
     let tours = match load(game, c.tours.as_deref()) {
         Ok(t) => t,
-        Err(e) => return Answer::fail(answer::BAD_REQUEST, e, None),
+        Err(e) => return fail(answer::BAD_REQUEST, e, None),
     };
     let names: Vec<&str> = tours.iter().map(|t| t.label.as_str()).collect();
     let wanted: Vec<&Tour> = match (all, &args[..]) {
@@ -429,43 +438,39 @@ fn run_answer(args: &mut Vec<String>, c: &Common, roms: &RomSet) -> Answer {
         (false, [name]) => match tours.iter().find(|t| t.label == *name) {
             Some(t) => vec![t],
             None => {
-                return Answer::fail(
+                return fail(
                     answer::BAD_REQUEST,
                     format!("no tour {name} for {}{}", game.id, near(name, &names)),
                     Some("remodel tour list"),
                 )
             }
         },
-        _ => return Answer::fail(answer::BAD_REQUEST, "name one tour, or --all", Some(usage)),
+        _ => return fail(answer::BAD_REQUEST, "name one tour, or --all", Some(usage)),
     };
     if wanted.is_empty() {
-        return Answer::fail(
-            answer::MISSING,
-            format!("{} has no tours", game.id),
-            Some("write some and pass --tours FILE"),
-        );
+        return fail(answer::MISSING, format!("{} has no tours", game.id), Some("write some and pass --tours FILE"));
     }
     let dir = c.dir.clone().unwrap_or_else(|| default_dir(game.id));
     if let Err(e) = std::fs::create_dir_all(dir.join("states")) {
-        return Answer::fail(answer::INTERNAL, format!("{}: {e}", dir.display()), None);
+        return fail(answer::INTERNAL, format!("{}: {e}", dir.display()), None);
     }
     let mut rows = Vec::new();
     let mut warnings = Vec::new();
     for t in wanted {
         let items = match inputs(&tours, &t.label, game.controls.coin_start) {
             Ok(i) => i,
-            Err(e) => return Answer::fail(answer::BAD_REQUEST, e, None),
+            Err(e) => return fail(answer::BAD_REQUEST, e, None),
         };
         let script = match model2::input::InputScript::parse(&items.join(","), &game.controls) {
             Ok(s) => s,
-            Err(e) => return Answer::fail(answer::BAD_REQUEST, format!("tour {}: {e}", t.label), None),
+            Err(e) => return fail(answer::BAD_REQUEST, format!("tour {}: {e}", t.label), None),
         };
         match run_one(roms, t, &script, &dir) {
             Ok((row, w)) => {
                 rows.push(row);
                 warnings.extend(w);
             }
-            Err(e) => return Answer::fail(answer::INTERNAL, format!("tour {}: {e}", t.label), None),
+            Err(e) => return fail(answer::INTERNAL, format!("tour {}: {e}", t.label), None),
         }
     }
     let mut a = Answer::done(json!({"game": game.id, "dir": dir.display().to_string(), "tours": rows}));

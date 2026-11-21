@@ -16,8 +16,8 @@
 //! header or UV list from the texture ROM; the texels themselves come from
 //! texture RAM, filled from the data ROM, and are not in these maps.
 
-use crate::answer_local::{self as answer, Answer};
-use crate::tour;
+use crate::answer_local::Answer;
+use crate::tour::{self, answer, fail, Finish};
 use model2::readmap::Ranges;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -300,7 +300,7 @@ pub fn main(o: &crate::Opts) -> ExitCode {
     let mut args = o.args[1..].to_vec();
     let c = match tour::common(&mut args) {
         Ok(c) => c,
-        Err(e) => return Answer::fail(answer::BAD_REQUEST, e, None).finish(false, |_| String::new()),
+        Err(e) => return fail(answer::BAD_REQUEST, e, None).finish(false, |_| String::new()),
     };
     let top = tour::take_opt(&mut args, "--top");
     let a = answer_for(o, &c, top.as_deref(), &args);
@@ -309,7 +309,7 @@ pub fn main(o: &crate::Opts) -> ExitCode {
 
 fn answer_for(o: &crate::Opts, c: &tour::Common, top: Option<&str>, args: &[String]) -> Answer {
     if let Some(x) = args.first() {
-        return Answer::fail(
+        return fail(
             answer::BAD_REQUEST,
             format!("coverage: unexpected {x}"),
             Some("remodel coverage [--top N] [--json]"),
@@ -318,15 +318,15 @@ fn answer_for(o: &crate::Opts, c: &tour::Common, top: Option<&str>, args: &[Stri
     let top = match top.map(str::parse::<usize>) {
         None => TOP,
         Some(Ok(n)) => n,
-        Some(Err(_)) => return Answer::fail(answer::BAD_REQUEST, "--top wants a number (0: all)", None),
+        Some(Err(_)) => return fail(answer::BAD_REQUEST, "--top wants a number (0: all)", None),
     };
     let game = match romset::games::find(&o.game_id) {
         Ok(g) => g,
-        Err(e) => return Answer::fail(answer::BAD_REQUEST, e.to_string(), Some("remodel games")),
+        Err(e) => return fail(answer::BAD_REQUEST, e.to_string(), Some("remodel games")),
     };
     let tours = match tour::load(game, c.tours.as_deref()) {
         Ok(t) => t,
-        Err(e) => return Answer::fail(answer::BAD_REQUEST, e, None),
+        Err(e) => return fail(answer::BAD_REQUEST, e, None),
     };
     let dir = c.dir.clone().unwrap_or_else(|| tour::default_dir(game.id));
     let run_all = format!("remodel tour run --all --game {}", game.id);
@@ -347,11 +347,11 @@ fn answer_for(o: &crate::Opts, c: &tour::Common, top: Option<&str>, args: &[Stri
                 }
                 maps.push(m);
             }
-            Err(e) => return Answer::fail(answer::INTERNAL, e, Some(&run_all)),
+            Err(e) => return fail(answer::INTERNAL, e, Some(&run_all)),
         }
     }
     if maps.is_empty() {
-        return Answer::fail(
+        return fail(
             answer::MISSING,
             format!("no tour of {} has been run: there is no read map in {}", game.id, dir.display()),
             Some(&run_all),
@@ -359,7 +359,7 @@ fn answer_for(o: &crate::Opts, c: &tour::Common, top: Option<&str>, args: &[Stri
     }
     let mut data = match report(&maps, top) {
         Ok(d) => d,
-        Err(e) => return Answer::fail(answer::INTERNAL, e, Some(&run_all)),
+        Err(e) => return fail(answer::INTERNAL, e, Some(&run_all)),
     };
     data["missing_tours"] = json!(missing);
     data["changed_tours"] = json!(changed);
