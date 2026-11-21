@@ -4,6 +4,10 @@ What's in `rom/`, which board each game runs on, and which game to support
 after `topskatr`. Nothing here quotes ROM contents; set names, chip names,
 sizes and CRCs are metadata.
 
+The clones listed in the sets tables below (revisions, regions, other boards,
+hacks) are surveyed one by one in [variants.md](variants.md): which chips each
+changes, whether it runs on its parent's manifest and what it needs.
+
 **Sources and how sure we are.** Each claim carries one of these tags:
 
 - **ROM**: read from the zips themselves (member names, sizes, CRCs) or found
