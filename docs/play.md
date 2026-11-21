@@ -2116,20 +2116,42 @@ also Jump tail"), except where the manifest itself binds it so
 keys (Esc, F5, F8, F9, F11) can't be bound: pressing one while it waits
 says so and waits for another.
 
-**Tuning.** For a game with an analog input bound to a stick, and one
-bound to a trigger (pedals), a card gives each a **dead zone** (0 to 40%),
-a **sensitivity** (50 to 150%) and a **curve** (Linear; Gentle, which
-counts small movements for less; Quick, for more), with a graph of the
-response and bars for what the stick reads raw and what the game gets,
-live. The pad steps a row with left and right, the mouse drags the track.
-The defaults (a stick's 15% dead zone, a trigger's none, Linear, 100%)
-read exactly as before. Tuning follows the **This game only / All games**
-switch, as the Picture page's settings do, and is kept with the settings
-as `stick_dead`, `stick_sens`, `stick_curve` and `pedal_dead`,
-`pedal_sens`, `pedal_curve` (the sticks' dead zone is a step from none to
-its size at its edge, as it always has been: the curve bends what lies
-beyond). Bindings are always the game's own: a different game has other
-actions, so there is nothing for "all games" to share.
+**Tuning.** A card gives each kind of analog input a **dead zone** (0 to
+40%), a **sensitivity** (50 to 150%) and a **curve** (Linear; Fine, a little
+finer than Linear around the middle; Gentle, which counts small movements for
+less; Quick, for more), with a graph of the response and bars for what the
+stick reads raw and what the game gets, live. The kinds, shown only for the
+inputs the game has: **Steering** (a stick that steers), **Stick** (any other
+stick: aiming, flying) and **Pedals** (triggers). The pad steps a row with
+left and right, the mouse drags the track.
+
+What steers is marked in the manifest, not guessed: `AnalogInput::steering`
+is set on the wheel of `daytona`, `srallyc`, `indy500`, `stcc`, `overrev` and
+`sgt24h`, the handlebar of `waverunr`, the handle of `desert`, the bank of
+`manxtt` and `motoraid`, and the carving of `topskatr` (their variants follow
+their parent). Aiming and flying axes (`rchase2`, `skytargt`, the other
+`waverunr` axes, the ski axes, a bat) are bidirectional too but use the Stick
+tuning. A steering input bound to a trigger (by remapping) uses the pedal
+tuning, as any trigger does.
+
+Past the dead zone the reading starts from none at its edge and rises to
+full at the end of the travel, whatever the curve: `curve((a - dead) / (1 -
+dead))` times the sensitivity. There is no step at the dead zone's edge (the
+old reading jumped from none to the dead zone's size there, which flicked a
+car that steers straight from the wheel's position, as `daytona` does). The
+defaults: Steering an 8% dead zone, 100%, Fine; Stick a 15% dead zone, 100%,
+Linear; Pedals none, 100%, Linear. Fine is `0.5u + 0.5u^3` on the travel
+past the dead zone: half way along the travel it gives 0.31, where
+Linear gives 0.5 and Gentle (`u^2`) 0.25. A stick used as d-pad directions
+(`StickDirs`) still takes the dead zone as a threshold. Tuning follows the
+**This game only / All games** switch, as the Picture page's settings do, and
+is kept with the settings as `steer_dead`, `steer_sens`, `steer_curve`,
+`stick_dead`, `stick_sens`, `stick_curve` and `pedal_dead`, `pedal_sens`,
+`pedal_curve`; a settings file without the `steer_` keys gets the steering
+defaults. In a window too narrow for it the card leaves out the raw and tuned
+bars (and the sentence of help). Bindings are always the game's own: a
+different game has other actions, so there is nothing for "all games" to
+share.
 
 Changes apply at once and are kept per game in
 `<data dir>/<set>/controls.txt` (`out/<set>/` in the source tree, else

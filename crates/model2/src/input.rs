@@ -274,6 +274,12 @@ pub trait PlayerInput {
     fn pad_button(&self, b: romset::PadButton) -> bool;
     /// Deflection of an axis: -1 to 1 for sticks, 0 to 1 for triggers.
     fn pad_axis(&self, a: romset::PadAxis) -> f32;
+    /// [`Self::pad_axis`] for an axis that drives an analog input, which
+    /// says whether it `steering` (`AnalogInput::steering`) so the player's
+    /// tuning of steering can differ from that of other sticks.
+    fn analog_axis(&self, a: romset::PadAxis, _steering: bool) -> f32 {
+        self.pad_axis(a)
+    }
 }
 
 /// Whether any of `inputs` is held on `p`.
@@ -403,7 +409,7 @@ fn read_player_ramped(
                     keys = k;
                 }
             } else {
-                let d = b.axis(i).read(|x| p.pad_axis(x));
+                let d = b.axis(i).read(|x| p.analog_axis(x, a.steering));
                 if d.abs() > axis.abs() {
                     axis = d;
                 }

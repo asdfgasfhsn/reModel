@@ -16,6 +16,9 @@ pub enum Curve {
     /// What the stick does, one to one.
     #[default]
     Linear,
+    /// Fine: a little finer than linear near the middle, full at the end
+    /// (the steering default).
+    Fine,
     /// Gentle: small movements count for less (finer control near the middle).
     Gentle,
     /// Quick: small movements count for more.
@@ -23,11 +26,12 @@ pub enum Curve {
 }
 
 impl Curve {
-    pub const ALL: [Curve; 3] = [Curve::Linear, Curve::Gentle, Curve::Quick];
+    pub const ALL: [Curve; 4] = [Curve::Linear, Curve::Fine, Curve::Gentle, Curve::Quick];
 
     pub fn name(self) -> &'static str {
         match self {
             Curve::Linear => "linear",
+            Curve::Fine => "fine",
             Curve::Gentle => "gentle",
             Curve::Quick => "quick",
         }
@@ -36,6 +40,7 @@ impl Curve {
     pub fn label(self) -> &'static str {
         match self {
             Curve::Linear => "Linear",
+            Curve::Fine => "Fine",
             Curve::Gentle => "Gentle",
             Curve::Quick => "Quick",
         }
@@ -49,6 +54,9 @@ impl Curve {
     fn shape(self, u: f32) -> f32 {
         match self {
             Curve::Linear => u,
+            // Half straight, half cubed: finer than Linear around the middle,
+            // not as flat as Gentle.
+            Curve::Fine => 0.5 * u + 0.5 * u * u * u,
             Curve::Gentle => u * u,
             Curve::Quick => u.sqrt(),
         }
@@ -71,40 +79,53 @@ impl Response {
     pub const MAX_DEAD: u8 = 40;
     pub const SENS: std::ops::RangeInclusive<u8> = 50..=150;
 
-    /// What sticks have always had: a 15% dead zone, nothing else.
+    /// Sticks that aren't steering (aiming, flying): a 15% dead zone.
     pub const STICK: Response = Response { dead: 15, sens: 100, curve: Curve::Linear };
     /// Triggers and pedals: read as they are.
     pub const PEDAL: Response = Response { dead: 0, sens: 100, curve: Curve::Linear };
+    /// Steering (a wheel, handlebar or bank on a stick): a small dead zone
+    /// and a curve that is finer than linear near the middle.
+    pub const STEER: Response = Response { dead: 8, sens: 100, curve: Curve::Fine };
 
     /// The reading for a deflection `v` (-1 to 1, or 0 to 1): none inside
-    /// the dead zone, beyond it the curve over what's left of the travel
-    /// (the reading steps from none to the dead zone's size at its edge, as
-    /// a stick's always has; a curve other than Linear bends what comes
-    /// after) and the sensitivity. The defaults give `v` itself.
+    /// the dead zone; past it the curve over the rest of the travel,
+    /// rescaled so the reading starts from none at the dead zone's edge
+    /// (never a step there, whatever the curve) and reaches full at the
+    /// end of the travel; times the sensitivity. With no dead zone, the
+    /// Linear curve and 100% it gives `v` itself.
     pub fn apply(&self, v: f32) -> f32 {
         let dead = self.dead as f32 / 100.0;
         let a = v.abs();
         if a <= dead {
             return 0.0;
         }
-        let shaped = match self.curve {
-            Curve::Linear => a,
-            c => dead + (1.0 - dead) * c.shape(((a - dead) / (1.0 - dead)).clamp(0.0, 1.0)),
-        };
-        (shaped * (self.sens as f32 / 100.0)).min(1.0).copysign(v)
+        let u = ((a - dead) / (1.0 - dead)).clamp(0.0, 1.0);
+        (self.curve.shape(u) * (self.sens as f32 / 100.0)).min(1.0).copysign(v)
     }
 }
 
-/// The player's tuning of the sticks and of the triggers.
+/// The player's tuning of the sticks, of steering and of the triggers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tuning {
     pub stick: Response,
+    pub steer: Response,
     pub pedal: Response,
+}
+
+impl Tuning {
+    /// The tuning for axis `a`; `steering`: it drives a steering input.
+    pub fn for_axis(&self, a: PadAxis, steering: bool) -> Response {
+        match (is_stick(a), steering) {
+            (true, true) => self.steer,
+            (true, false) => self.stick,
+            (false, _) => self.pedal,
+        }
+    }
 }
 
 impl Default for Tuning {
     fn default() -> Self {
-        Tuning { stick: Response::STICK, pedal: Response::PEDAL }
+        Tuning { stick: Response::STICK, steer: Response::STEER, pedal: Response::PEDAL }
     }
 }
 
@@ -200,6 +221,19 @@ pub fn read_sticks(dirs: &mut StickDirs, pad: Option<&gilrs::Gamepad>, tuning: T
     dirs.update(l, r, tuning.stick.dead as f32 / 100.0)
 }
 
+impl Devices<'_> {
+    /// An axis past the player's tuning: a stick's is the steering tuning
+    /// when it steers (`steering`), else the stick one; a trigger's the
+    /// pedal one.
+    fn axis(&self, a: PadAxis, steering: bool) -> f32 {
+        let Some(p) = &self.pad else { return 0.0 };
+        match a {
+            PadAxis::None => 0.0,
+            a => self.tuning.for_axis(a, steering).apply(raw_axis(p, a)),
+        }
+    }
+}
+
 impl model2::input::PlayerInput for Devices<'_> {
     fn key(&self, code: &str) -> bool {
         key_code(code).is_some_and(|k| self.keys.contains(&k))
@@ -213,12 +247,11 @@ impl model2::input::PlayerInput for Devices<'_> {
     }
 
     fn pad_axis(&self, a: PadAxis) -> f32 {
-        let Some(p) = &self.pad else { return 0.0 };
-        let tune = if is_stick(a) { self.tuning.stick } else { self.tuning.pedal };
-        match a {
-            PadAxis::None => 0.0,
-            a => tune.apply(raw_axis(p, a)),
-        }
+        self.axis(a, false)
+    }
+
+    fn analog_axis(&self, a: PadAxis, steering: bool) -> f32 {
+        self.axis(a, steering)
     }
 }
 
@@ -338,15 +371,46 @@ mod tests {
         assert_eq!(captured(Event::Axis(Axis::LeftStickX, 0.3)), None);
     }
 
-    /// The defaults read exactly as the old fixed dead zone did.
+    /// Pedals read as they are; a stick reads none up to its dead zone and
+    /// then rises from none, with no step at the edge.
     #[test]
-    fn default_tuning_is_the_old_reading() {
-        let old = |v: f32| if v.abs() > 0.15 { v } else { 0.0 };
+    fn default_tuning_is_continuous() {
         for i in -1000..=1000 {
             let v = i as f32 / 1000.0;
-            assert_eq!(Response::STICK.apply(v), old(v), "{v}");
             assert_eq!(Response::PEDAL.apply(v.abs()), v.abs(), "{v}");
         }
+        for r in [Response::STICK, Response::STEER] {
+            let d = r.dead as f32 / 100.0;
+            assert_eq!(r.apply(d), 0.0);
+            assert!(r.apply(d + 0.005) < 0.01, "{r:?}");
+            assert!((r.apply(1.0) - 1.0).abs() < 1e-6 && (r.apply(-1.0) + 1.0).abs() < 1e-6);
+        }
+        // Every curve, every dead zone: the reading never jumps.
+        for c in Curve::ALL {
+            for dead in [0, 8, 15, 40] {
+                let r = Response { dead, sens: 100, curve: c };
+                let mut last = 0.0;
+                for i in 0..=2000 {
+                    let y = r.apply(i as f32 / 2000.0);
+                    assert!(y >= last && (c == Curve::Quick || y - last < 0.01), "{c:?} {dead} {i}");
+                    last = y;
+                }
+            }
+        }
+    }
+
+    /// Steering takes the steering tuning on a stick, the pedal one on a
+    /// trigger; other sticks the stick one.
+    #[test]
+    fn tuning_by_axis() {
+        let mut t = Tuning::default();
+        t.steer.dead = 1;
+        t.stick.dead = 2;
+        t.pedal.dead = 3;
+        assert_eq!(t.for_axis(PadAxis::LeftStickX, true).dead, 1);
+        assert_eq!(t.for_axis(PadAxis::RightStickY, false).dead, 2);
+        assert_eq!(t.for_axis(PadAxis::RightTrigger, true).dead, 3);
+        assert_eq!(t.for_axis(PadAxis::Triggers, false).dead, 3);
     }
 
     #[test]
@@ -354,7 +418,7 @@ mod tests {
         let r = |dead, sens, curve| Response { dead, sens, curve };
         assert_eq!(r(20, 100, Curve::Linear).apply(0.2), 0.0);
         assert_eq!(r(20, 100, Curve::Linear).apply(-0.19), 0.0);
-        assert_eq!(r(20, 100, Curve::Linear).apply(-0.5), -0.5);
+        assert!((r(20, 100, Curve::Linear).apply(-0.6) + 0.5).abs() < 1e-6);
         assert!((r(0, 50, Curve::Linear).apply(0.8) - 0.4).abs() < 1e-6);
         assert_eq!(r(0, 150, Curve::Linear).apply(0.9), 1.0);
         assert_eq!(r(0, 150, Curve::Linear).apply(-0.9), -1.0);

@@ -113,6 +113,7 @@ const CONTROLS: Controls = Controls {
             pad_neg: &[PadButton::DPadLeft],
             pad_pos: &[PadButton::DPadRight],
             key_ramp: None,
+            steering: true,
         },
         // The board pressed down at the back: the skater crouches and slides.
         AnalogInput {
@@ -126,6 +127,7 @@ const CONTROLS: Controls = Controls {
             pad_neg: &[],
             pad_pos: &[PadButton::East],
             key_ramp: None,
+            steering: false,
         },
     ],
     guns: &[],

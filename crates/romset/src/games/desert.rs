@@ -107,6 +107,7 @@ const CONTROLS: Controls = Controls {
             pad_neg: &[PadButton::DPadLeft],
             pad_pos: &[PadButton::DPadRight],
             key_ramp: None,
+            steering: true,
         },
         AnalogInput {
             name: "accel",
@@ -119,6 +120,7 @@ const CONTROLS: Controls = Controls {
             pad_neg: &[],
             pad_pos: &[],
             key_ramp: None,
+            steering: false,
         },
         AnalogInput {
             name: "turret",
@@ -131,6 +133,7 @@ const CONTROLS: Controls = Controls {
             pad_neg: &[],
             pad_pos: &[],
             key_ramp: None,
+            steering: false,
         },
     ],
     guns: &[],

@@ -90,6 +90,7 @@ pub(super) const CONTROLS: Controls = Controls {
             pad_neg: &[PadButton::DPadLeft],
             pad_pos: &[PadButton::DPadRight],
             key_ramp: None,
+            steering: true,
         },
         // The pedals read 0xFF released and 0x00 fully down (the input
         // test shows the raw value). Pressing the gas pedal confirms a
@@ -105,6 +106,7 @@ pub(super) const CONTROLS: Controls = Controls {
             pad_neg: &[],
             pad_pos: &[],
             key_ramp: None,
+            steering: false,
         },
         AnalogInput {
             name: "brake",
@@ -117,6 +119,7 @@ pub(super) const CONTROLS: Controls = Controls {
             pad_neg: &[],
             pad_pos: &[],
             key_ramp: None,
+            steering: false,
         },
     ],
     // One coin, start, the gas pedal to confirm the mode, car and gearbox

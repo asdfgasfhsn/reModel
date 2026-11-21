@@ -111,6 +111,7 @@ const CONTROLS: Controls = Controls {
             pad_neg: &[],
             pad_pos: &[],
             key_ramp: None,
+            steering: false,
         },
         AnalogInput {
             name: "bat2",
@@ -123,6 +124,7 @@ const CONTROLS: Controls = Controls {
             pad_neg: &[],
             pad_pos: &[],
             key_ramp: None,
+            steering: false,
         },
     ],
     guns: &[],

@@ -187,6 +187,11 @@ pub struct AnalogInput {
     /// straight from the position, as a cabinet's wheel can't jump, wants
     /// one (`daytona`, docs/play.md "Digital steering").
     pub key_ramp: Option<KeyRamp>,
+    /// Whether it points a vehicle or board (a wheel, handlebar, bank or
+    /// carving lean): the player's steering tuning, not the generic stick
+    /// one, shapes its pad axis. Aiming and flying axes (stick x/y, roll,
+    /// pitch, a bat) are not steering, even though they are bidirectional.
+    pub steering: bool,
 }
 
 /// Keys and buttons moving an analog input as a hand would: frames from
@@ -746,6 +751,7 @@ mod tests {
             pad_neg: &[],
             pad_pos: &[],
             key_ramp: None,
+            steering: false,
         };
         assert_eq!(a.value(0.0), 0x80);
         assert_eq!(a.value(1.0), 0x10);

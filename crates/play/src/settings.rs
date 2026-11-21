@@ -265,7 +265,7 @@ impl Default for GameSettings {
 }
 
 /// Every game setting's key, in the order the panels show them.
-pub const KEYS: [&str; 36] = [
+pub const KEYS: [&str; 39] = [
     "preset",
     "wide",
     "bezel",
@@ -302,6 +302,9 @@ pub const KEYS: [&str; 36] = [
     "pedal_dead",
     "pedal_sens",
     "pedal_curve",
+    "steer_dead",
+    "steer_sens",
+    "steer_curve",
 ];
 
 /// The anti-aliasing levels (samples a pixel; 0 is off).
@@ -374,6 +377,9 @@ impl GameSettings {
             "pedal_dead" => self.tuning.pedal.dead.to_string(),
             "pedal_sens" => self.tuning.pedal.sens.to_string(),
             "pedal_curve" => self.tuning.pedal.curve.name().to_string(),
+            "steer_dead" => self.tuning.steer.dead.to_string(),
+            "steer_sens" => self.tuning.steer.sens.to_string(),
+            "steer_curve" => self.tuning.steer.curve.name().to_string(),
             _ => String::new(),
         }
     }
@@ -439,6 +445,9 @@ impl GameSettings {
             "pedal_dead" => dead(v).map(|n| self.tuning.pedal.dead = n).is_some(),
             "pedal_sens" => sens(v).map(|n| self.tuning.pedal.sens = n).is_some(),
             "pedal_curve" => Curve::parse(v).map(|c| self.tuning.pedal.curve = c).is_some(),
+            "steer_dead" => dead(v).map(|n| self.tuning.steer.dead = n).is_some(),
+            "steer_sens" => sens(v).map(|n| self.tuning.steer.sens = n).is_some(),
+            "steer_curve" => Curve::parse(v).map(|c| self.tuning.steer.curve = c).is_some(),
             "geo" => match model2::geo::GeoMode::parse(v) {
                 Some(model2::geo::GeoMode::Chip) => {
                     self.geo_chip = true;
@@ -1038,6 +1047,32 @@ mod tests {
     fn with_game(mut s: Settings, set: &str, own: &[(&str, &str)]) -> Settings {
         s.games.insert(set.into(), own.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
         s
+    }
+
+    /// Steering has its own keys, per game or for all games; a file without
+    /// them gets the steering defaults.
+    #[test]
+    fn steering_tuning_has_its_own_keys() {
+        let mut s = Settings::parse("stick_dead = 25\n");
+        let t = s.resolve("daytona").0.tuning;
+        assert_eq!(t.steer, crate::controls::Response::STEER);
+        assert_eq!(t.stick.dead, 25);
+        let s2 = Settings::parse("steer_dead = 12\nsteer_sens = 90\nsteer_curve = quick\nsteer_dead = 99\n");
+        let t = with_game(s2, "daytona", &[]).resolve("daytona").0.tuning;
+        assert_eq!((t.steer.dead, t.steer.sens, t.steer.curve), (12, 90, Curve::Quick));
+        assert_eq!(t.stick, crate::controls::Response::STICK);
+        let mut v = s.resolve("daytona").0;
+        v.tuning.steer.dead = 3;
+        s.games.insert("daytona".into(), Layer::new());
+        s.for_all = false;
+        let _ = s.apply_edit("daytona", &v);
+        assert_eq!(s.games["daytona"].get("steer_dead").map(String::as_str), Some("3"));
+        assert!(!s.defaults.contains_key("steer_dead"));
+        s.games.insert("daytona".into(), Layer::new());
+        s.for_all = true;
+        let _ = s.apply_edit("daytona", &v);
+        assert_eq!(s.defaults.get("steer_dead").map(String::as_str), Some("3"));
+        assert!(!s.games["daytona"].contains_key("steer_dead"));
     }
 
     #[test]

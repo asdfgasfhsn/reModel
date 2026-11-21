@@ -151,6 +151,7 @@ const CONTROLS: Controls = Controls {
             // back when let go: the keys turn the wheel over 12 frames
             // (0.2 s) and let it back in 6 (docs/games/daytona.md).
             key_ramp: Some(KeyRamp { attack: 12, release: 6 }),
+            steering: true,
         },
         AnalogInput {
             name: "gas",
@@ -163,6 +164,7 @@ const CONTROLS: Controls = Controls {
             pad_neg: &[],
             pad_pos: &[],
             key_ramp: None,
+            steering: false,
         },
         AnalogInput {
             name: "brake",
@@ -175,6 +177,7 @@ const CONTROLS: Controls = Controls {
             pad_neg: &[],
             pad_pos: &[],
             key_ramp: None,
+            steering: false,
         },
     ],
     guns: &[],

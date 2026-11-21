@@ -100,6 +100,7 @@ const CONTROLS: Controls = Controls {
         pad_neg: &[PadButton::DPadLeft],
         pad_pos: &[PadButton::DPadRight],
         key_ramp: None,
+        steering: false,
     }],
     guns: &[],
     shifter: None,

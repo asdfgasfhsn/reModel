@@ -104,6 +104,7 @@ const CONTROLS: Controls = Controls {
             pad_neg: &[PadButton::DPadLeft],
             pad_pos: &[PadButton::DPadRight],
             key_ramp: None,
+            steering: false,
         },
         AnalogInput {
             name: "sticky",
@@ -116,6 +117,7 @@ const CONTROLS: Controls = Controls {
             pad_neg: &[PadButton::DPadUp],
             pad_pos: &[PadButton::DPadDown],
             key_ramp: None,
+            steering: false,
         },
         // Player 2's stick: the same on the next channels, unbound.
         AnalogInput {
@@ -129,6 +131,7 @@ const CONTROLS: Controls = Controls {
             pad_neg: &[],
             pad_pos: &[],
             key_ramp: None,
+            steering: false,
         },
         AnalogInput {
             name: "stick2y",
@@ -141,6 +144,7 @@ const CONTROLS: Controls = Controls {
             pad_neg: &[],
             pad_pos: &[],
             key_ramp: None,
+            steering: false,
         },
     ],
     guns: &[],

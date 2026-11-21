@@ -15,6 +15,17 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- Steering with a stick no longer jumps. Past the dead zone a stick's reading now
+  starts from none at its edge and rises to full at the end of the travel (it used
+  to jump from none to the dead zone's size there, 12 of the 80 steps on Daytona's
+  wheel, which flicked the car when a thumb was near the edge), for every stick
+  and every curve. Steering inputs (the wheel, handlebar, bank or carving of
+  Daytona, Sega Rally, Indy 500, STCC, Over Rev, Super GT, Wave Runner, Desert
+  Tank, Manx TT, Motor Raid and Top Skater) have their own tuning on the Controls
+  page, Steering, with an 8% dead zone and a new Fine curve by default
+  (`steer_dead`, `steer_sens`, `steer_curve`); other sticks keep the 15% Stick
+  tuning and triggers the Pedals one. Scripted input and the benchmarks are
+  unchanged.
 - The launcher's game page: a game's poster (A, Enter, a click) opens a full page
   with the live attract mode of the chosen version at the left and a menu at the
   right: Play, Version, Play together (for the games that link; greyed for a

@@ -2172,13 +2172,13 @@ mod tests {
         r.open_controls();
         let dead = egui::Id::unique(("remodel-controls-tune", 0));
         r.menu.ctl.focus.focus_to(dead);
-        let was = r.s.tuning.stick.dead;
+        let was = r.s.tuning.steer.dead;
         r.run(&[&[Nav::Right], &[Nav::Right], &[Nav::Left]]);
-        assert_eq!(r.s.tuning.stick.dead, was + 1);
+        assert_eq!(r.s.tuning.steer.dead, was + 1);
         // The curve is a choice: A moves on to the next.
         r.menu.ctl.focus.focus_to(egui::Id::unique(("remodel-controls-tune", 2)));
         r.run(&[&[], &[Nav::Accept]]);
-        assert_eq!(r.s.tuning.stick.curve, crate::controls::Curve::Gentle);
+        assert_eq!(r.s.tuning.steer.curve, crate::controls::Curve::Gentle);
         assert!(r.shows("Dead zone") && r.shows("Sensitivity") && r.shows("Curve"));
         // The pedals are the other block.
         r.menu.ctl.block = 1;

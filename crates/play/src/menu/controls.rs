@@ -388,9 +388,41 @@ pub(super) fn part_actions(b: &Bindings, device: Device, art: Art, rows: &[Row])
 
 /// The tuning's blocks: sticks and triggers the game reads, with what it
 /// calls them. A game whose analogs aren't bound to any axis has none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Tuned {
+    /// Sticks that aim or fly.
+    Stick,
+    /// Sticks that steer (`AnalogInput::steering`).
+    Steer,
+    /// Triggers.
+    Pedal,
+}
+
+impl Tuned {
+    fn bidirectional(self) -> bool {
+        self != Tuned::Pedal
+    }
+
+    fn help(self) -> &'static str {
+        match self {
+            Tuned::Stick => "Nothing is read inside the dead zone; past it the reading rises smoothly.",
+            Tuned::Steer => "A small dead zone and a finer curve keep steering steady near the middle.",
+            Tuned::Pedal => "Over 100% reaches full before the trigger is all the way down.",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Tuned::Stick => "Stick",
+            Tuned::Steer => "Steering",
+            Tuned::Pedal => "Pedals",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Block {
-    pub stick: bool,
+    pub kind: Tuned,
     pub title: String,
     /// The first analog's axis: what the live meter reads.
     pub axis: romset::bindings::Axis,
@@ -398,10 +430,18 @@ pub(super) struct Block {
 
 pub(super) fn blocks(b: &Bindings) -> Vec<Block> {
     let mut out: Vec<Block> = Vec::new();
-    for stick in [true, false] {
+    for kind in [Tuned::Steer, Tuned::Stick, Tuned::Pedal] {
         let mine: Vec<(usize, romset::bindings::Axis)> = (0..b.controls().analogs.len())
             .map(|i| (i, b.axis(i)))
-            .filter(|(_, a)| a.axis != PadAxis::None && is_stick(a.axis) == stick)
+            .filter(|(i, a)| {
+                let steers = b.controls().analogs[*i].steering;
+                a.axis != PadAxis::None
+                    && match kind {
+                        Tuned::Steer => is_stick(a.axis) && steers,
+                        Tuned::Stick => is_stick(a.axis) && !steers,
+                        Tuned::Pedal => !is_stick(a.axis),
+                    }
+            })
             .collect();
         let Some(first) = mine.first() else { continue };
         let names: Vec<String> = mine.iter().map(|(i, _)| b.controls().analogs[*i].label()).collect();
@@ -411,24 +451,24 @@ pub(super) fn blocks(b: &Bindings) -> Vec<Block> {
                 axes.push(a.axis.label());
             }
         }
-        out.push(Block { stick, title: format!("{}: {}", names.join(", "), axes.join(", ")), axis: first.1 });
+        out.push(Block { kind, title: format!("{}: {}", names.join(", "), axes.join(", ")), axis: first.1 });
     }
     out
 }
 
-fn response(s: &GameSettings, stick: bool) -> Response {
-    if stick {
-        s.tuning.stick
-    } else {
-        s.tuning.pedal
+fn response(s: &GameSettings, kind: Tuned) -> Response {
+    match kind {
+        Tuned::Stick => s.tuning.stick,
+        Tuned::Steer => s.tuning.steer,
+        Tuned::Pedal => s.tuning.pedal,
     }
 }
 
-fn response_mut(s: &mut GameSettings, stick: bool) -> &mut Response {
-    if stick {
-        &mut s.tuning.stick
-    } else {
-        &mut s.tuning.pedal
+fn response_mut(s: &mut GameSettings, kind: Tuned) -> &mut Response {
+    match kind {
+        Tuned::Stick => &mut s.tuning.stick,
+        Tuned::Steer => &mut s.tuning.steer,
+        Tuned::Pedal => &mut s.tuning.pedal,
     }
 }
 
@@ -759,7 +799,7 @@ impl Menu {
         let name = view.playing.unwrap_or_else(|| view.game.map_or("This game", |g| g.title));
         let short = if name.chars().count() > 16 { "This game" } else { name };
         let (mut scope, mut layout_click, mut block_pick) = (None, false, None);
-        let mut tweaks: Vec<(bool, Tweak, usize)> = Vec::new();
+        let mut tweaks: Vec<(Tuned, Tweak, usize)> = Vec::new();
         let ctl = &mut self.ctl;
         let focus = &mut ctl.focus;
         let block_at = ctl.block;
@@ -905,11 +945,9 @@ impl Menu {
                     });
                     let mut y = title_row.bottom();
                     if blocks.len() > 1 {
-                        let bar = Rect::from_min_size(pos2(inner.left(), y), vec2(300.0 * s, 44.0 * s));
-                        let labels: Vec<String> = blocks
-                            .iter()
-                            .map(|k| if k.stick { "Steering".to_string() } else { "Pedals".to_string() })
-                            .collect();
+                        let bar =
+                            Rect::from_min_size(pos2(inner.left(), y), vec2(130.0 * s * blocks.len() as f32, 44.0 * s));
+                        let labels: Vec<String> = blocks.iter().map(|k| k.kind.label().to_string()).collect();
                         let (resp, id) = choice_bar(ui, bar, "controls-block", &labels, block_at);
                         let (pad, accepted) = focus.stepper(ui, &resp);
                         if focus.is_on(id) {
@@ -928,8 +966,9 @@ impl Menu {
                         }
                         y = bar.bottom() + 6.0 * s;
                     }
-                    let r = response(settings, blk.stick);
-                    let rows_w = 430.0 * s;
+                    let r = response(settings, blk.kind);
+                    // Narrow windows give the rows less, to leave the meter room.
+                    let rows_w = (inner.width() - 218.0 * s).clamp(300.0 * s, 430.0 * s);
                     let row_h = 54.0 * s;
                     let mut at_y = y;
                     for (i, (label, value, frac, can)) in [
@@ -952,7 +991,7 @@ impl Menu {
                             "Curve",
                             r.curve.label().to_string(),
                             None,
-                            (r.curve != Curve::ALL[0], r.curve != Curve::ALL[2]),
+                            (r.curve != Curve::ALL[0], r.curve != Curve::ALL[Curve::ALL.len() - 1]),
                         ),
                     ]
                     .into_iter()
@@ -970,13 +1009,24 @@ impl Menu {
                             can,
                         );
                         if tw != Tweak::None {
-                            tweaks.push((blk.stick, tw, i));
+                            tweaks.push((blk.kind, tw, i));
                         }
                         at_y += row_h;
                     }
                     // The response and the live meter.
                     let right = Rect::from_min_max(pos2(inner.left() + rows_w + 28.0 * s, y), inner.right_bottom());
                     live_meter(ui.painter(), right, s, &pad_view, blk, r);
+                    // One plain sentence on what the tuning is for.
+                    let galley = ui.painter().layout(
+                        blk.kind.help().to_string(),
+                        plain(s, 15.0),
+                        theme::TEXT_DIM,
+                        right.width(),
+                    );
+                    let at = pos2(right.left(), right.top() + 116.0 * s);
+                    if at.y + galley.size().y <= right.bottom() {
+                        ui.painter().galley(at, galley, theme::TEXT_DIM);
+                    }
                 }
             },
         );
@@ -992,8 +1042,8 @@ impl Menu {
                 PadStyle::SideBySide => PadStyle::Offset,
             });
         }
-        for (stick, tw, row) in tweaks {
-            tune(response_mut(settings, stick), row, tw);
+        for (kind, tw, row) in tweaks {
+            tune(response_mut(settings, kind), row, tw);
         }
     }
 }
@@ -1303,11 +1353,11 @@ pub(super) fn tune(r: &mut Response, row: usize, tw: Tweak) {
         }
         (2, Tweak::By(n)) => {
             let at = Curve::ALL.iter().position(|c| *c == r.curve).unwrap_or(0) as i32;
-            r.curve = Curve::ALL[(at + n).clamp(0, 2) as usize];
+            r.curve = Curve::ALL[(at + n).clamp(0, Curve::ALL.len() as i32 - 1) as usize];
         }
         (2, Tweak::Cycle) => {
             let at = Curve::ALL.iter().position(|c| *c == r.curve).unwrap_or(0);
-            r.curve = Curve::ALL[(at + 1) % 3];
+            r.curve = Curve::ALL[(at + 1) % Curve::ALL.len()];
         }
         _ => {}
     }
@@ -1416,13 +1466,17 @@ fn live_meter(p: &Painter, area: Rect, s: f32, pad: &PadLive, block: &Block, res
     }
     // The bars: -1 to 1 for a stick, 0 to 1 for a trigger.
     let x0 = graph.right() + 16.0 * s;
-    let w = (area.right() - x0).max(60.0 * s);
+    let w = area.right() - x0;
+    // In a narrow window the graph alone fits.
+    if w < 110.0 * s {
+        return;
+    }
     let font = plain(s, TEXT_SIZE);
     for (i, (name, v, colour)) in
         [("Raw", raw, Color32::from_white_alpha(120)), ("Tuned", tuned, theme::CYAN)].into_iter().enumerate()
     {
         let y = area.top() + i as f32 * 54.0 * s;
-        let pct = match (pad.connected, block.stick) {
+        let pct = match (pad.connected, block.kind.bidirectional()) {
             (false, _) => "no pad".to_string(),
             (true, true) => format!("{:+.0}%", v * 100.0),
             (true, false) => format!("{:.0}%", v * 100.0),
@@ -1431,14 +1485,14 @@ fn live_meter(p: &Painter, area: Rect, s: f32, pad: &PadLive, block: &Block, res
         p.text(pos2(x0 + w, y), Align2::RIGHT_TOP, pct, font.clone(), theme::TEXT);
         let bar = Rect::from_min_size(pos2(x0, y + 26.0 * s), vec2(w, 14.0 * s));
         p.rect_filled(bar, 7.0 * s, Color32::from_white_alpha(26));
-        let (lo, hi) = if block.stick {
+        let (lo, hi) = if block.kind.bidirectional() {
             ((bar.center().x), bar.center().x + v.clamp(-1.0, 1.0) * bar.width() / 2.0)
         } else {
             (bar.left(), bar.left() + v.clamp(0.0, 1.0) * bar.width())
         };
         let fill = Rect::from_x_y_ranges(lo.min(hi)..=lo.max(hi), bar.y_range());
         p.rect_filled(fill, 7.0 * s, colour);
-        if block.stick {
+        if block.kind.bidirectional() {
             p.vline(bar.center().x, bar.y_range(), Stroke::new(1.5 * s, Color32::from_white_alpha(90)));
         }
     }

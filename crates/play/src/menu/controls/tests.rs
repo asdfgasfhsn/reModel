@@ -94,7 +94,27 @@ fn tuning_blocks_follow_the_axes() {
     assert!(blocks(&bindings("vf2")).is_empty());
     let b = bindings("daytona");
     let k = blocks(&b);
-    assert!(k.iter().any(|k| k.stick) && k.iter().any(|k| !k.stick), "{k:?}");
+    let kinds: Vec<Tuned> = k.iter().map(|k| k.kind).collect();
+    // The wheel steers; the pedals are triggers.
+    assert_eq!(kinds, [Tuned::Steer, Tuned::Pedal], "{k:?}");
+    // A gun game's sticks aim: the stick tuning, no steering.
+    assert!(blocks(&bindings("hotd")).iter().all(|k| k.kind != Tuned::Steer));
+}
+
+/// Every game's steering inputs are bidirectional analogs of a vehicle.
+#[test]
+fn steering_inputs_are_marked() {
+    let steering: Vec<&str> =
+        romset::games::ALL.iter().filter(|g| g.controls.analogs.iter().any(|a| a.steering)).map(|g| g.id).collect();
+    for id in ["daytona", "srallyc", "indy500", "stcc", "manxtt", "motoraid", "waverunr", "topskatr", "desert"] {
+        assert!(steering.contains(&id), "{id}");
+    }
+    for g in romset::games::ALL {
+        for a in g.controls.analogs.iter().filter(|a| a.steering) {
+            assert_ne!(a.centre, 0, "{}: {}", g.id, a.name);
+        }
+    }
+    assert!(!steering.contains(&"rchase2") && !steering.contains(&"skytargt"));
 }
 
 #[test]
@@ -113,7 +133,7 @@ fn tweaks_stay_in_range_and_snap() {
     tune(&mut r, 1, Tweak::To(2.0));
     assert_eq!(r.sens, 150);
     tune(&mut r, 2, Tweak::Cycle);
-    assert_eq!(r.curve, Curve::Gentle);
+    assert_eq!(r.curve, Curve::Fine);
     tune(&mut r, 2, Tweak::By(5));
     assert_eq!(r.curve, Curve::Quick);
     tune(&mut r, 2, Tweak::Cycle);
