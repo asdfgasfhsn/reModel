@@ -7,14 +7,88 @@ supported titles (14 have no clone in the dat and 3 have only the clones
 already supported): what each is, which
 chips it changes, whether it runs on its parent's manifest with those chips
 swapped, and what per-game data stops fitting. It ends with a recommendation
-for supporting all of them as sub-versions of a title. It is a survey: no
-variant system was built, and the temporary code behind the runs was
-reverted.
+for supporting all of them as sub-versions of a title. The survey's runs used
+temporary code that was reverted; what was built from it is under
+[Status](#status-what-is-built), which comes first, and the survey's own
+tables and recommendation follow unchanged.
 
 Nothing here quotes ROM contents. Set names, chip names and sizes are the
 dat's (a catalogue only; see [roms.md](roms.md)); the run results
 were observed by running the chips from `rom/`. Findings not confirmed by a run
 or the chips are marked *unconfirmed*.
+
+## Status: what is built
+
+Steps 1 and 2 of the [order](#order) are built: the infrastructure, the three
+earlier clones re-expressed as variants, and the nine class A variants.
+
+**The model** (`crates/romset/src/variants.rs`, data in
+`crates/romset/src/games/variants.rs`): a `Variant` is a thin manifest that
+inherits from its parent title's `Game`, resolved once at first use into a
+full `&'static Game` (`romset::games::find(id)`, cached, so downstream code
+is unchanged and `game.id` is the variant's own id, `game.parent` the
+title's):
+
+| Field | Meaning |
+|---|---|
+| `id`, `parent`, `label`, `kind` | the set id (what `--game` takes); the title's set; the Version list's name ("Rev B", "Japan"); `VariantKind` = Revision, Region, CrossBoard, Prototype or Hack (the last two hidden by the launcher unless "Show hacks and prototypes"); `kind_confirmed` is false where the kind rests on the dat's name and the chip names only |
+| `swaps: &[ChipSwap]`, `drop` | the parent's chip (by name, so by socket and role) replaced by the variant's own (name, size, SHA-1, role), and parent chips the variant lacks (`manxttc`) |
+| `title`, `year`, `board`, `packed`, `attract_frame`, `idle_loops`, `backup_ram`, `volume_db`, `texture_ram_mirrored`, `shading`, `recommended`, `input_lag`, `run_ahead_max` | optional overrides; `None` inherits |
+| `protection_rom` | the protection answers' ROM addresses (reply index, address), the rest of the protection inherited (not used yet: `dyndeka2`, `doaa`) |
+| `scenes` | the variant's own; **never the parent's**, and `games::tours` no longer falls back to the parent's either |
+| `link: VariantLink` | `Parent` (its settings record is the parent's: `srallycb`, `srallyp`, `daytonat`, `daytonata`, `manxttc`), `None`, or `Own(&LinkPlay)` |
+
+Chips are looked up as `<variant id>/<chip>` before the bare name in each of
+the variant's folder and zip and the parent's (`topskatr.zip` keeps
+`topskatrj/epr-19753.15` and `topskatru/epr-19753.15`; `RomSet::load`, and
+`Zip` now matches a name with a folder against the stored path). A variant
+whose swapped chips are not all there is not listed (`romset::sets_with_clones`,
+`variant_available`). `remodel games` lists the titles and then the variants.
+
+**Saves and settings**: EEPROM (`out/<set>/eeprom.bin`), save states, the
+resume state, the player's per-game settings and bindings, JIT hot lists and
+link settings are keyed by the set id, so a variant has its own and never
+touches its parent's. The save file header (format 3) records the set it was
+saved from and a load by another variant is refused naming both. Texture packs
+fall back to the parent's (`pack_sets`). *Not done:* a variant starts with no
+settings or bindings of its own (it does not read its parent's), so a remap
+made for `topskatr` is made again for `topskatrj`.
+
+**The launcher** has one card per title and a Version selector (docs/play.md,
+"Versions"); `--game`, `make GAME=` and the CLI take a variant id anywhere a set
+id goes.
+
+**Network and link play**: the ROM hash in the session agreement is over every
+chip and the set id (protocol 4), so two variants never link; a variant links
+as its parent where `VariantLink::Parent`.
+
+**Bench**: `make bench-variants` runs `tools/expected-variant-hashes.txt`
+(blank-EEPROM coin-start, 600M instructions, as `bench-all`); the three
+earlier clones keep their lines in `tools/expected-hashes.txt`, and their
+hashes did not change when they became variants (`manxttc`
+`d6558827f751bbb0`, `sfight` `2a0a5a5d0d957997`) nor did `overrevb`'s
+(`de800c1e32ddb8aa`, measured before and after).
+
+| Variant | Kind | Chips swapped | State hash (600M, coin-start) | Status |
+|---|---|---|---|---|
+| `manxttc`, `sfight`, `overrevb` | revision, region, other board | as before | unchanged | the three clones, now variants |
+| `topskatrj` Japan | region | program pair | `d5b806cefa994cbe` | boots, attracts, coin-start reaches the race; its attract opens on the Japan warning (the card's `attract_frame` is the parent's: not tuned) |
+| `topskatru` USA | region | program pair | `de6f5171b2730155` | as `topskatrj`, FBI warning |
+| `vcopa` Rev A | revision | program pair | `5c206708efb1d3c8` | plays, the same stage |
+| `srallycb` Rev B | revision | program pair | `2d9857e7d3dacb29` | plays; link as the parent |
+| `srallyp` "Pro Drivin'" | prototype (*unconfirmed*) | program pair | `ef2b8b45eccd5732` | plays; hidden unless "Show hacks and prototypes" |
+| `daytonat` Turbo | hack (*unconfirmed*) | program pair | `0c64f85a8b95e340` | plays; hidden by default; link as the parent |
+| `daytonata` Turbo Rev A | hack (*unconfirmed*) | program pair | `95da2bac42132d58` | as `daytonat` |
+| `lastbrnxj` Japan, Rev A | region | program pair | `af452e8e6839ef0a` | plays |
+| `lastbrnxu` USA, Rev A | region | program pair | `5db58c2199e50ec7` | plays |
+
+These hashes are the survey's own, measured again on the committed
+implementation: they agree (the survey's temporary patch and the resolver
+build the same machine). "Plays" is as the survey defines it: boots, attracts,
+coin-start reaches play, frames look like the game; nobody played them by hand.
+The hacks' and the prototype's *kind* is the dat's and the chip names', not
+documented. The Turbo hacks run on the parent's idle loops and settings
+record, so their link play is the parent's *by the survey's checks only*.
 
 ## Method
 
@@ -326,6 +400,8 @@ that is class C stays out of the list until it plays (a manifest flag, as
   a second line.
 
 ### Order
+
+(Steps 1 and 2 are built: [Status](#status-what-is-built).)
 
 1. The infrastructure on the three existing clones: the `Variant` type and
    resolver, subfolder lookup in zips, listing in the launcher, the program

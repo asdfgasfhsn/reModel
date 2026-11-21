@@ -853,6 +853,9 @@ jit-hitch: release ## Frame-time hitches: the bench session (BENCH_STEPS; JIT_HI
 bench-all: release ## `make bench` for every set in tools/expected-hashes.txt that has ROMs; report any state hash that differs
 	@ROM=$(ROM) MAKE="$(MAKE)" REMODEL=$(REMODEL) sh tools/release.sh bench-all
 
+bench-variants: release ## `make bench` for every variant in tools/expected-variant-hashes.txt whose ROMs are there (the other releases of a title: `--game topskatrj`...; docs/variants.md); report any state hash that differs. Kept apart from bench-all, which release-tag gates on
+	@ROM=$(ROM) MAKE="$(MAKE)" REMODEL=$(REMODEL) sh tools/release.sh bench-variants
+
 release-tag: ## Cut a release: VERSION=x.y.z; check, release build, bench-all, clean tree, CHANGELOG and Cargo.toml versions, then an annotated tag vX.Y.Z (never pushes; DRY_RUN=1 only checks)
 	@test -n "$(VERSION)" || { echo "usage: make release-tag VERSION=x.y.z"; exit 1; }
 	@ROM=$(ROM) MAKE="$(MAKE)" REMODEL=$(REMODEL) DRY_RUN=$(DRY_RUN) SKIP_BUILD=$(SKIP_BUILD) sh tools/release.sh tag $(VERSION)

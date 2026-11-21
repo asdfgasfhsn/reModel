@@ -3,12 +3,77 @@
 //! button goes straight back to). Pure functions of the playable games, the
 //! recently played and the save files, so they're tested without a window.
 
-use romset::{Game, Kind};
+use romset::{variants, Game, Kind, VariantKind};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::SystemTime;
 
 /// How many of the recently played the "Recent" filter shows.
 pub const RECENT_SHOWN: usize = 8;
+
+/// Whether the set `played` (a title or one of its versions) is a version of
+/// the card `game`: a title's card stands for its variants too.
+pub fn is_version_of(played: &str, game: &Game) -> bool {
+    played == game.id || variants::get(played).is_some_and(|v| v.parent == game.id)
+}
+
+/// Where the card `game` is in `recent` (0 the latest played), by any of its
+/// versions.
+pub fn played_rank(recent: &[String], game: &Game) -> Option<usize> {
+    recent.iter().position(|r| is_version_of(r, game))
+}
+
+/// The cards to list among `games`: the titles, and a variant whose title is
+/// not among them (only its own ROMs are there).
+pub fn cards(games: &[&'static Game]) -> Vec<&'static Game> {
+    games
+        .iter()
+        .copied()
+        .filter(|g| variants::get(g.id).is_none_or(|v| !games.iter().any(|t| t.id == v.parent)))
+        .collect()
+}
+
+/// The versions of the card `card` among `games`, in the version list's
+/// order: the title itself, then official revisions, regions, other boards,
+/// prototypes and hacks (each kind in the table's order). Prototypes and
+/// hacks only with `show_hacks`, or when `keep` is one of them (the version
+/// chosen stays listed whatever the setting).
+pub fn versions(card: &Game, games: &[&'static Game], show_hacks: bool, keep: Option<&str>) -> Vec<&'static Game> {
+    let mut out: Vec<(VariantKind, usize, &'static Game)> = Vec::new();
+    for g in games {
+        if g.id == card.id {
+            continue;
+        }
+        let Some(v) = variants::get(g.id).filter(|v| v.parent == card.id) else { continue };
+        if v.kind.hidden_by_default() && !show_hacks && keep != Some(g.id) {
+            continue;
+        }
+        let order = variants::all().iter().position(|x| x.id == g.id).unwrap_or(0);
+        out.push((v.kind, order, g));
+    }
+    out.sort_by_key(|&(k, order, _)| (k, order));
+    games.iter().copied().filter(|g| g.id == card.id).chain(out.into_iter().map(|o| o.2)).collect()
+}
+
+/// A version's name in the list: its label, or the title's own label ("Export").
+pub fn version_label(g: &Game) -> String {
+    match variants::get(g.id) {
+        Some(v) => v.label.to_string(),
+        None => variants::parent_label(g.id).unwrap_or("Original").to_string(),
+    }
+}
+
+/// The version of `card` the player chose (`chosen`: title to set), when it is
+/// listed in `versions`; else the card's own.
+pub fn chosen_version(
+    card: &'static Game,
+    versions: &[&'static Game],
+    chosen: &BTreeMap<String, String>,
+) -> &'static Game {
+    chosen.get(card.id).and_then(|set| versions.iter().copied().find(|g| g.id == set)).unwrap_or_else(|| {
+        versions.iter().copied().find(|g| g.id == card.id).or_else(|| versions.first().copied()).unwrap_or(card)
+    })
+}
 
 /// The launcher's two looks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -73,7 +138,7 @@ impl Filter {
     /// played), then each kind that has a game.
     pub fn chips(games: &[&Game], recent: &[String]) -> Vec<Filter> {
         let mut chips = vec![Filter::All];
-        if games.iter().any(|g| recent.iter().take(RECENT_SHOWN).any(|r| r == g.id)) {
+        if games.iter().any(|g| played_rank(recent, g).is_some_and(|i| i < RECENT_SHOWN)) {
             chips.push(Filter::Recent);
         }
         chips.extend(Kind::ALL.into_iter().filter(|k| games.iter().any(|g| g.kind == *k)).map(Filter::Kind));
@@ -83,7 +148,7 @@ impl Filter {
     fn keeps(self, game: &Game, recent: &[String]) -> bool {
         match self {
             Filter::All => true,
-            Filter::Recent => recent.iter().take(RECENT_SHOWN).any(|r| r == game.id),
+            Filter::Recent => played_rank(recent, game).is_some_and(|i| i < RECENT_SHOWN),
             Filter::Kind(k) => game.kind == k,
         }
     }
@@ -118,7 +183,7 @@ impl Sort {
 /// there) that `filter` keeps, in `sort`'s order.
 pub fn list(games: &[&'static Game], recent: &[String], filter: Filter, sort: Sort) -> Vec<&'static Game> {
     let mut out: Vec<&'static Game> = games.iter().copied().filter(|g| filter.keeps(g, recent)).collect();
-    let rank = |g: &Game| recent.iter().position(|r| r == g.id).unwrap_or(usize::MAX);
+    let rank = |g: &Game| played_rank(recent, g).unwrap_or(usize::MAX);
     out.sort_by_key(|g| match sort {
         Sort::Recent => (rank(g), g.title, g.id),
         Sort::AtoZ => (0, g.title, g.id),

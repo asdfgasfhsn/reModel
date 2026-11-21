@@ -69,6 +69,9 @@ pub struct Machine {
     pub frames: u64,
     /// `program_hash` of the ROM set (save states carry it).
     program_hash: u64,
+    /// The set id the machine was built from: a variant's own (save files
+    /// carry it, so a state is never loaded into another variant).
+    game_id: &'static str,
     /// Recompiled blocks by address / 4 over the program ROM, if this build
     /// has recompiled code for the game's ROM.
     native: Option<Vec<Option<Block>>>,
@@ -113,6 +116,7 @@ impl Machine {
             bus,
             frames: 0,
             program_hash: program_hash(roms),
+            game_id: roms.game.id,
             native,
             #[cfg(not(target_arch = "wasm32"))]
             jit: None,
@@ -430,13 +434,16 @@ impl Machine {
 }
 
 /// Save file header: `REMODEL-SAVE-<format>\n`, then (format 2 on) a
-/// `made-by <app version>\n` line, informational; the rest is zlib-compressed.
+/// `made-by <app version>\n` line, informational, and (format 3 on) a
+/// `game <set id>\n` line, the variant the state is of, which a load checks;
+/// the rest is zlib-compressed.
 const SAVE_PREFIX: &[u8] = b"REMODEL-SAVE-";
 
 /// The save file layout this build writes and the newest it reads. An
 /// integer bumped when the layout changes, not the app's version. Format 1
-/// (no `made-by` line) is still read; docs/usage.md, "Save states".
-pub const SAVE_FORMAT: u32 = 2;
+/// (no `made-by` line) and 2 (no `game` line) are still read; docs/usage.md,
+/// "Save states".
+pub const SAVE_FORMAT: u32 = 3;
 
 /// The inner machine state's layout (`REMODEL-STATE-<n>`), bumped when any
 /// saved field is added, removed or reordered.
@@ -464,6 +471,17 @@ fn too_new(what: &str, made_by: Option<&str>, format: u32, reads: u32) -> String
     format!("this {what} was made by {by} with format {format}; this build reads format {reads} (and older): update reModel")
 }
 
+/// The refusal of a save state from another set or version than the machine's.
+fn another_version(saved: &str, this: &str) -> String {
+    let same_title = romset::variants::title_of(saved) == romset::variants::title_of(this);
+    format!(
+        "this save state is from {}: it is for {}, this is {}; states only load into the version they were saved in",
+        if same_title { "another version of the game" } else { "another game" },
+        romset::variants::display_name(saved),
+        romset::variants::display_name(this)
+    )
+}
+
 /// A save file: the machine's state and, if given, the sound boards' (see
 /// [`audio::Live`]), compressed (about 1 MB for topskatr).
 pub fn save_session(machine: &mut Machine, live: Option<&audio::Live>) -> Vec<u8> {
@@ -478,7 +496,7 @@ pub fn save_session_parts(machine: &mut Machine, live: Option<Vec<u8>>) -> Vec<u
     raw.extend(m);
     raw.extend(live.unwrap_or_default());
     let made_by = APP_VERSION.get().copied().unwrap_or("unknown").replace(['\n', '\r'], " ");
-    let mut out = format!("REMODEL-SAVE-{SAVE_FORMAT}\nmade-by {made_by}\n").into_bytes();
+    let mut out = format!("REMODEL-SAVE-{SAVE_FORMAT}\nmade-by {made_by}\ngame {}\n", machine.game_id).into_bytes();
     out.extend(png::zlib::compress(&raw));
     out
 }
@@ -489,6 +507,8 @@ pub struct SaveInfo {
     pub format: u32,
     /// The reModel that wrote it (format 2 on).
     pub made_by: Option<String>,
+    /// The set (a variant's own id) it was saved from (format 3 on).
+    pub game: Option<String>,
     /// This build can read its format (`load_session_parts` won't refuse it).
     pub loads: bool,
 }
@@ -500,7 +520,12 @@ pub fn save_info(head: &[u8]) -> Option<SaveInfo> {
     let made_by = body.strip_prefix(b"made-by ").and_then(|b| {
         b.iter().take(80).position(|&c| c == b'\n').map(|e| String::from_utf8_lossy(&b[..e]).into_owned())
     });
-    Some(SaveInfo { format, made_by, loads: format <= SAVE_FORMAT })
+    let game = made_by.as_ref().and_then(|m| {
+        let rest = &body[b"made-by ".len() + m.len() + 1..];
+        let line = rest.strip_prefix(b"game ")?;
+        line.iter().take(40).position(|&c| c == b'\n').map(|e| String::from_utf8_lossy(&line[..e]).into_owned())
+    });
+    Some(SaveInfo { format, made_by, game, loads: format <= SAVE_FORMAT })
 }
 
 /// Load a file from [`save_session`]. Without `live`, any sound board state
@@ -524,10 +549,23 @@ pub fn load_session_parts(machine: &mut Machine, data: &[u8]) -> Result<Vec<u8>,
     if format > SAVE_FORMAT {
         return Err(too_new("save state", made_by.as_deref(), format, SAVE_FORMAT));
     }
-    // Format 1 has no `made-by` line.
+    // Format 1 has no `made-by` line, formats 1 and 2 no `game` line.
     let body = if format >= 2 {
         let line = made_by.as_ref().ok_or("save file damaged: no `made-by` line")?;
         &body[b"made-by ".len() + line.len() + 1..]
+    } else {
+        body
+    };
+    let body = if format >= 3 {
+        let line = body
+            .strip_prefix(b"game ")
+            .and_then(|b| b.iter().take(40).position(|&c| c == b'\n').map(|e| (&b[..e], &b[e + 1..])))
+            .ok_or("save file damaged: no `game` line")?;
+        let saved = String::from_utf8_lossy(line.0);
+        if saved != machine.game_id {
+            return Err(another_version(&saved, machine.game_id));
+        }
+        line.1
     } else {
         body
     };
@@ -660,6 +698,9 @@ mod tests {
         assert_eq!(split_header(b"REMODEL-SAVE-12\n", SAVE_PREFIX), Some((12, &b""[..])));
         let info = save_info(b"REMODEL-SAVE-2\nmade-by v1.2.3\nxyz").unwrap();
         assert_eq!((info.format, info.made_by.as_deref(), info.loads), (2, Some("v1.2.3"), true));
+        assert_eq!(info.game, None);
+        let info = save_info(b"REMODEL-SAVE-3\nmade-by v1.2.3\ngame topskatrj\nxyz").unwrap();
+        assert_eq!((info.format, info.game.as_deref(), info.loads), (3, Some("topskatrj"), true));
         assert!(!save_info(b"REMODEL-SAVE-99\nmade-by v9\n").unwrap().loads);
         assert_eq!(save_info(b"PK\x03\x04"), None);
         for bad in [&b"REMODEL-SAVE-\n"[..], b"REMODEL-SAVE-0\n", b"REMODEL-SAVE-x\n", b"PK\x03\x04", b"REMODEL-SAVE-1"]
@@ -667,6 +708,14 @@ mod tests {
             assert_eq!(split_header(bad, SAVE_PREFIX), None);
         }
         let e = too_new("save state", Some("v9.0.0"), 7, SAVE_FORMAT);
-        assert!(e.contains("made by reModel v9.0.0 with format 7") && e.contains("reads format 2"), "{e}");
+        assert!(e.contains("made by reModel v9.0.0 with format 7") && e.contains("reads format 3"), "{e}");
+    }
+
+    #[test]
+    fn another_variants_state_is_refused_by_name() {
+        let m = another_version("topskatrj", "topskatru");
+        assert!(m.contains("another version of the game") && m.contains("Top Skater (Japan)"), "{m}");
+        assert!(m.contains("Top Skater (USA)"), "{m}");
+        assert!(another_version("topskatr", "vcop").contains("another game"));
     }
 }

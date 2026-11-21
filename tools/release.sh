@@ -4,6 +4,9 @@
 #
 #   tools/release.sh bench-all             bench every set in tools/expected-hashes.txt
 #                                          that has ROMs, compare the state hashes
+#   tools/release.sh bench-variants        the same for the variants in
+#                                          tools/expected-variant-hashes.txt (kept
+#                                          apart: not part of a release's gate)
 #   tools/release.sh tag X.Y.Z             check everything, then tag vX.Y.Z (never pushes)
 #
 # Environment (the Makefile sets these): ROM (default rom), MAKE, REMODEL
@@ -21,33 +24,44 @@ cd "$(dirname "$0")/.."
 : "${DRY_RUN:=}"
 : "${SKIP_BUILD:=}"
 expected=tools/expected-hashes.txt
+expected_variants=tools/expected-variant-hashes.txt
 
-# Sets in the list whose ROM folder (or zip) exists. A clone's ROMs may be
-# in its parent's folder, so `remodel rom-folder` says where to look.
+# Sets in the list (default: the parents') whose ROMs are there. A clone's
+# ROMs may be in its parent's folder, so `remodel rom-folder` says where to
+# look; a variant's own chips may be in subfolders of its parent's zip, so
+# for those (`variants`) the answer is whether `remodel verify` loads it.
 bench_all() {
+    list=${1:-$expected} label=${2:-bench-all}
     bad=0 ran=0 skipped=
     while read -r set want; do
         case $set in '' | '#'*) continue ;; esac
-        folder=$("${REMODEL:-target/release/remodel}" --game "$set" --rom "$ROM" rom-folder 2>/dev/null) || folder=$set
-        if [ ! -e "$ROM/$folder" ] && [ ! -e "$ROM/$folder.zip" ]; then
-            skipped="$skipped $set"
-            continue
+        if [ "$label" = bench-variants ]; then
+            "${REMODEL:-target/release/remodel}" --game "$set" --rom "$ROM" verify >/dev/null 2>&1 || {
+                skipped="$skipped $set"
+                continue
+            }
+        else
+            folder=$("${REMODEL:-target/release/remodel}" --game "$set" --rom "$ROM" rom-folder 2>/dev/null) || folder=$set
+            if [ ! -e "$ROM/$folder" ] && [ ! -e "$ROM/$folder.zip" ]; then
+                skipped="$skipped $set"
+                continue
+            fi
         fi
         got=$($MAKE --no-print-directory bench GAME="$set" ROM="$ROM" | sed -n 's/^state hash *//p' | grep -o '^[0-9a-f]\{16\}' | head -n 1)
         ran=$((ran + 1))
         if [ "$got" = "$want" ]; then
-            echo "bench-all: $set $got ok"
+            echo "$label: $set $got ok"
         else
-            echo "bench-all: $set MISMATCH: got ${got:-nothing}, expected $want" >&2
+            echo "$label: $set MISMATCH: got ${got:-nothing}, expected $want" >&2
             bad=$((bad + 1))
         fi
-    done <"$expected"
-    [ -n "$skipped" ] && echo "bench-all: no ROMs for:$skipped (not checked)"
+    done <"$list"
+    [ -n "$skipped" ] && echo "$label: no ROMs for:$skipped (not checked)"
     if [ "$bad" -ne 0 ]; then
-        echo "bench-all: $bad of $ran state hashes differ from $expected" >&2
+        echo "$label: $bad of $ran state hashes differ from $list" >&2
         return 1
     fi
-    echo "bench-all: $ran state hashes match $expected"
+    echo "$label: $ran state hashes match $list"
 }
 
 die() {
@@ -98,6 +112,7 @@ tag() {
 
 case ${1:-} in
     bench-all) bench_all ;;
+    bench-variants) bench_all "$expected_variants" bench-variants ;;
     tag) tag "${2:-}" ;;
-    *) die "usage: tools/release.sh bench-all | tag X.Y.Z" ;;
+    *) die "usage: tools/release.sh bench-all | bench-variants | tag X.Y.Z" ;;
 esac

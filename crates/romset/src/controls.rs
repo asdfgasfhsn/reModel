@@ -13,6 +13,7 @@
 //! script), which the manifest maps to where and how the board reads it.
 
 /// A game's controls.
+#[derive(Clone, Copy)]
 pub struct Controls {
     /// Digital inputs: switches read active low on the I/O chip's ports.
     pub buttons: &'static [ButtonInput],
@@ -37,6 +38,7 @@ pub struct Controls {
 /// and nothing in neutral. The buttons of `neutral`, `up` and `down` are
 /// virtual: bit mask 0, so they set nothing on the board and exist for
 /// players to bind. Scripted inputs hold the gear buttons directly.
+#[derive(Clone, Copy)]
 pub struct Shifter {
     /// Button names of the gears, lowest first.
     pub gears: &'static [&'static str],
@@ -52,6 +54,7 @@ pub struct Shifter {
 /// view, or off screen); the manifest says where the board reads it and
 /// what raw values the view's edges give, so any pointer (mouse, touch,
 /// stick, a tracked hand) can drive it.
+#[derive(Clone, Copy)]
 pub struct Gun {
     /// Name in input scripts: `gun1=x:y@from-to` with x and y in view
     /// pixels (0-495, 0-383), or `gun1=off@from-to`.

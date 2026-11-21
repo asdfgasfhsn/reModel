@@ -17,6 +17,7 @@ make agent-bin        # build once and keep a read-only remodel in out/bin/COMMI
 make lock-test        # tools/lock's own tests (a private lock folder; part of make check)
 make agent-env-test   # slice A's acceptance test: beside a build and a test run holding their locks, img and studio answer in under 2 s, parseable, with the right exit codes (no ROM)
 remodel img sheet OUT.png IMG.. | diff A.png B.png | stats IMG.png   # contact sheet, pixel difference, image numbers, with --json (no ROM; docs/uplift-studio.md, "Image tools")
+remodel games         # the titles, then each variant (the other releases of a title: `--game topskatrj`, `make play GAME=srallycb`; a variant id works wherever a set id does; docs/variants.md)
 make test             # unit tests only; make lint (clippy, warnings are errors); make fmt / make fmt-check
 make pace-sim         # the browser's audio rate control on synthetic frame timings (docs/web.md)
 make clean            # remove build output and everything in out/ (scratch included)
@@ -86,6 +87,7 @@ make link-record-test     # the settings records linked play writes against what
 make link-net-test        # two processes over loopback, srallyc, daytona, manxtt and indy500: each host's state hash equals link-run's, under 5% loss and 50 ms jitter too; a named host is found by `--browse` over mDNS and joined; leave, kill, settings and desync cases end with a message
 make link-state-check     # experimental: the same for two linked Daytonas (link-run), saved at 1900, 3100, 3200 and 3300
 make bench-all            # `make bench` for every set in tools/expected-hashes.txt that has ROMs; lists any state hash that differs
+make bench-variants       # the same for every variant in tools/expected-variant-hashes.txt (`--game topskatrj`, `GAME=srallycb`...: the other releases of a title, docs/variants.md) whose ROMs are there; kept apart from bench-all
 make release-tag VERSION=0.8.0   # cut a release (below, "Versions and releases"); DRY_RUN=1 checks without tagging
 make geo-check GAME=sgt24h   # native geometrizer beside the chip (2B SHARC, 2C TGP) on a coin-start run, raster streams compared each frame, both timed
 make geo-fuzz GAME=sgt24h    # random display lists through the chip's program and the native geometrizer, compared (FUZZ_FRAMES, FUZZ_SEED)
@@ -299,10 +301,13 @@ environment overrides it at build time.
 **Save states** carry a format number (`REMODEL-SAVE-<n>` at the head of
 the file; the machine state inside has its own, `REMODEL-STATE-<n>`),
 bumped when the layout changes, plus, from format 2, the version of the
-reModel that wrote it. Format 1 files (everything saved before this) are
-read as before. A file with a newer format is refused with a message
+reModel that wrote it and, from format 3, the set it was saved from (a
+variant's own id: `game topskatrj`). Format 1 and 2 files are read as
+before; a format 3 file saved from another variant than the one loading it is
+refused with a message naming both ("this save state is from another version
+of the game: it is for Top Skater (Japan), this is Top Skater (USA)"). A file with a newer format is refused with a message
 ("this save state was made by reModel X with format N; this build reads
-format M"), not loaded. States only load into the same program ROMs. A state carries everything the
+format M"), not loaded. States only load into the same program ROMs (and the same variant). A state carries everything the
 machine holds that later behaviour depends on, including the native
 geometrizer's halt (a command it loops on for ever) when it is in one;
 that is a trailing record, present only then, so a state without one reads

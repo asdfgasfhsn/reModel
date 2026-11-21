@@ -21,12 +21,12 @@ use std::path::PathBuf;
 
 /// The games the player splits the screen for, and the most machines on
 /// one screen (the layout's quadrants).
-const SPLIT_GAMES: &[&str] = &["srallyc", "daytona", "manxtt", "manxttc", "indy500", "motoraid", "waverunr"];
+const SPLIT_GAMES: &[&str] = &["srallyc", "daytona", "manxtt", "indy500", "motoraid", "waverunr"];
 pub const MAX_ON_SCREEN: usize = 4;
 
 /// The link data of `id` if it can be played linked on one screen.
 pub fn play_for(id: &str) -> Option<&'static romset::LinkPlay> {
-    SPLIT_GAMES.contains(&id).then(|| romset::games::link_play(id)).flatten()
+    SPLIT_GAMES.contains(&romset::variants::title_of(id)).then(|| romset::games::link_play(id)).flatten()
 }
 
 /// The most machines of `play`'s game on one screen.
@@ -526,6 +526,11 @@ mod tests {
             assert!((2..=MAX_ON_SCREEN).contains(&max_players(p)), "{id}");
         }
         assert!(play_for("vf2").is_none());
+        // A variant links as its parent does where its record is the parent's, and not otherwise.
+        for id in ["manxttc", "srallycb", "srallyp", "daytonat", "daytonata"] {
+            assert!(play_for(id).is_some(), "{id}");
+        }
+        assert!(play_for("topskatrj").is_none());
     }
 
     #[test]

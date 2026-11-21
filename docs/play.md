@@ -895,6 +895,36 @@ The hint bar along the foot shows what each button does, the pad's chips
 and in the grid LT RT Filter) or, once the keyboard was used, its keys
 (arrows, Enter, S, Tab, C, Q E, [ ]). Each entry can be clicked.
 
+**Versions.** A title has one card however many releases of it are in the ROM
+folder (docs/variants.md): the parent set, and its variants (another
+revision, region, prototype, hack or board, each a thin manifest over its
+parent's in `crates/romset/src/games/variants.rs`) whose chips are there.
+A variant whose ROMs are missing is not listed. When a card has more than one
+version, a row of pills under its facts names them (the parent by its own
+label, "Export" or "Rev C", then revisions, regions, other boards,
+prototypes, hacks): a click chooses one, and so does the **Version** button
+beside Saves (the pad reaches it by focus, A steps to the next, round) or
+V on the keyboard; in the grid the hint bar has "Version: Japan" in the same
+place. The version shown is the one Play, Saves, Link play and the live
+preview use: it has its own EEPROM, save states, resume state, settings and
+bindings (all keyed by its set id, never the parent's: `out/topskatrj/` and
+`out/topskatr/` don't touch), its own title and its own attract frame. The
+choice is kept per title in `play-settings.txt` (`version.topskatr =
+topskatrj`) and Continue (Y) resumes the version last played. A version
+chosen that is no longer installed falls back to the parent. **Prototypes and
+hacks** (a variant's `kind`) are listed only with **Show hacks and
+prototypes** on (Settings, Display, while in the launcher; `show_hacks =
+true` in the settings file; off by default); the version chosen stays listed
+when it is turned off. `--game topskatrj`, `make play GAME=topskatrj` and
+`remodel --game topskatrj` take a variant like any set. A save state records
+its variant and is refused by another with a message naming both ("this save
+state is from another version of the game: it is for Top Skater (Japan), this
+is Top Skater (USA)"). Texture packs fall back to the parent's
+(`pack_sets`). Link play works for a variant whose settings record is its
+parent's (`srallycb`, `srallyp`, `daytonat`, `daytonata`, `manxttc`); network
+sessions require the same variant on every machine (the set id is part of the
+ROM hash).
+
 Play (A) starts the selected game from power-on; a game left part way is
 picked up from **Saves** (X): a side panel of that game's states (where you
 left off, the quick save, slots 1 to 4, each with its thumbnail when it has
@@ -1026,7 +1056,7 @@ the cabinets' own network joined them. Only games with an entry in `crates/romse
 (`romset::LinkPlay`: how many cabinets, where the game keeps the setting that
 makes a cabinet CAR 1 to CAR N and what its checksum is, the link RAM layout)
 can, and the player splits the screen for the ones it lists
-(`link::SPLIT_GAMES`); today that is Sega Rally (`srallyc`), Daytona USA (`daytona`), Manx TT Super Bike (`manxtt` and its clone `manxttc`), Indianapolis 500 (`indy500`), Motor Raid (`motoraid`) and Wave Runner (`waverunr`), up to 4 on one screen (`remodel link-run` runs Daytona with up to 8). Daytona keeps its settings on the I/O board, so its linked machines start from the manifest's default record rather than the player's own settings. The EEPROM games' role bytes go into the settings record with the checksum the game itself computes (`docs/hw/eeprom-records.md`); `indy500`, `motoraid` and `waverunr` also number each cabinet (CABINET ID), which must differ between the machines. `srallyc`, `daytona`, `manxtt` and `indy500` are also checked over the network and with free play (`make link-net-test`, `make link-free-play-test`); `motoraid` and `waverunr` were run in `link-run` only, and none of the new games has been played by hand (`docs/hw/link-board.md` section 14.7).
+(`link::SPLIT_GAMES`); today that is Sega Rally (`srallyc`), Daytona USA (`daytona`), Manx TT Super Bike (`manxtt` and its variant `manxttc`), Indianapolis 500 (`indy500`), Motor Raid (`motoraid`) and Wave Runner (`waverunr`), up to 4 on one screen (`remodel link-run` runs Daytona with up to 8). Daytona keeps its settings on the I/O board, so its linked machines start from the manifest's default record rather than the player's own settings. The EEPROM games' role bytes go into the settings record with the checksum the game itself computes (`docs/hw/eeprom-records.md`); `indy500`, `motoraid` and `waverunr` also number each cabinet (CABINET ID), which must differ between the machines. `srallyc`, `daytona`, `manxtt` and `indy500` are also checked over the network and with free play (`make link-net-test`, `make link-free-play-test`); `motoraid` and `waverunr` were run in `link-run` only, and none of the new games has been played by hand (`docs/hw/link-board.md` section 14.7).
 
 **Starting it.** `make play GAME=srallyc PLAYERS=2` (2 to 4), or
 `remodel-play --game srallyc --players 2`. In the launcher a game that can
@@ -1928,9 +1958,10 @@ events only, not yet with a real pad.
 - **Controls**: remap the game's keys and gamepad bindings, below.
 - **Back to games**: leave the game for the launcher (keeping a resume
   state for Continue). The launcher lists the supported sets in the ROM
-  folder, read as MAME keeps them: `<set>.zip` or a `<set>/` folder, and a
-  supported clone is listed beside its parent when its chips are in the
-  parent's (`overrevb` in `overrev.zip`). With none found, it says where
+  folder, read as MAME keeps them: `<set>.zip` or a `<set>/` folder, one card
+  a title, and a supported variant is a version of its parent's card when its
+  chips are in the parent's (`overrevb` in `overrev.zip`, `topskatrj` in
+  `topskatr.zip`'s `topskatrj/` folder). With none found, it says where
   it looked and a ROM folder can be typed in. The ROM folder defaults to
   `rom/` in the source tree (or wherever the current directory has a
   `rom/` folder), else to `roms/` beside the settings
@@ -2094,7 +2125,9 @@ on macOS, `%APPDATA%\remodel` on Windows:
 
 - `play-settings.txt`: the settings, as `key = value` lines: the ROM
   folder, the games played (most recent first), fullscreen, where the
-  settings panels save, and the game settings set for all games.
+  settings panels save, the version chosen of each title
+  (`version.<title> = <set>`), `show_hacks`, and the game settings set for
+  all games.
 - `<set>/settings.txt`: the game's own settings, only where they differ
   from those for all games.
 

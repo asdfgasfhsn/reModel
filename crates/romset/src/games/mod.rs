@@ -14,21 +14,19 @@ mod indy500;
 mod lastbrnx;
 mod link;
 mod manxtt;
-mod manxttc;
 mod motoraid;
 mod overrev;
-mod overrevb;
 mod pltkids;
 mod rchase2;
 mod schamp;
 mod segawski;
-mod sfight;
 mod sgt24h;
 mod skisuprg;
 mod skytargt;
 mod srallyc;
 mod stcc;
 mod topskatr;
+mod variants;
 mod vcop;
 mod vcop2;
 mod vf2;
@@ -57,21 +55,19 @@ pub use indy500::INDY500;
 pub use lastbrnx::LASTBRNX;
 pub use link::link_play;
 pub use manxtt::MANXTT;
-pub use manxttc::MANXTTC;
 pub use motoraid::MOTORAID;
 pub use overrev::OVERREV;
-pub use overrevb::OVERREVB;
 pub use pltkids::PLTKIDS;
 pub use rchase2::RCHASE2;
 pub use schamp::SCHAMP;
 pub use segawski::SEGAWSKI;
-pub use sfight::SFIGHT;
 pub use sgt24h::SGT24H;
 pub use skisuprg::SKISUPRG;
 pub use skytargt::SKYTARGT;
 pub use srallyc::SRALLYC;
 pub use stcc::STCC;
 pub use topskatr::TOPSKATR;
+pub use variants::{PARENT_LABELS, VARIANTS};
 pub use vcop::VCOP;
 pub use vcop2::VCOP2;
 pub use vf2::VF2;
@@ -81,25 +77,23 @@ pub use waverunr::WAVERUNR;
 pub use zerogun::ZEROGUN;
 
 /// The set's tours (`remodel tour`, docs/uplift-studio.md, "Tours"): lines
-/// of `LABEL|LENGTH|INPUT`, input scripts and frame numbers only. A clone
-/// without tours of its own uses its parent's; empty where there are none.
+/// of `LABEL|LENGTH|INPUT`, input scripts and frame numbers only. Tours are
+/// frame counts from power-on, so a variant (another program, other timing)
+/// has none until some are made: it does not use its parent's. Empty where
+/// there are none.
 pub fn tours(game: &Game) -> &'static str {
-    let text = |id: &str| match id {
+    match game.id {
         "topskatr" => include_str!("tours/topskatr.txt"),
         "vf2" => include_str!("tours/vf2.txt"),
         "daytona" => include_str!("tours/daytona.txt"),
         _ => "",
-    };
-    match text(game.id) {
-        "" => game.parent.map_or("", text),
-        t => t,
     }
 }
 
 pub static ALL: &[&Game] = &[
-    &TOPSKATR, &SKISUPRG, &STCC, &SEGAWSKI, &WAVERUNR, &OVERREV, &HOTD, &BEL, &OVERREVB, &SGT24H, &DYNABB97, &DOA,
-    &INDY500, &FVIPERS, &SCHAMP, &SFIGHT, &VSTRIKER, &LASTBRNX, &SRALLYC, &VF2, &DAYTONA, &VCOP, &DESERT, &VCOP2,
-    &SKYTARGT, &MANXTT, &MANXTTC, &MOTORAID, &GUNBLADE, &DYNAMCOP, &ZEROGUN, &PLTKIDS, &RCHASE2, &VON,
+    &TOPSKATR, &SKISUPRG, &STCC, &SEGAWSKI, &WAVERUNR, &OVERREV, &HOTD, &BEL, &SGT24H, &DYNABB97, &DOA, &INDY500,
+    &FVIPERS, &SCHAMP, &VSTRIKER, &LASTBRNX, &SRALLYC, &VF2, &DAYTONA, &VCOP, &DESERT, &VCOP2, &SKYTARGT, &MANXTT,
+    &MOTORAID, &GUNBLADE, &DYNAMCOP, &ZEROGUN, &PLTKIDS, &RCHASE2, &VON,
 ];
 
 /// Games whose board model runs but which don't show a game yet. The CLI
@@ -108,11 +102,21 @@ pub static ALL: &[&Game] = &[
 /// bezels) leaves them out. A game moves to `ALL` when it plays.
 pub static IN_PROGRESS: &[&Game] = &[];
 
-/// The game `id`, if it is one a front end lists ([`ALL`]).
-pub fn playable(id: &str) -> Option<&'static Game> {
-    ALL.iter().copied().find(|g| g.id == id)
+/// The title (a supported game, not a variant of one) `id`.
+pub fn title(id: &str) -> Option<&'static Game> {
+    ALL.iter().chain(IN_PROGRESS).copied().find(|g| g.id == id)
 }
 
+/// The game `id`, if it is one a front end lists: a title ([`ALL`]) or a
+/// variant of one, resolved.
+pub fn playable(id: &str) -> Option<&'static Game> {
+    ALL.iter().copied().find(|g| g.id == id).or_else(|| crate::variants::get(id).and_then(crate::variants::resolve))
+}
+
+/// The game `id`: a title, or a variant resolved into a full [`Game`] (its
+/// parent's manifest with its swaps and overrides: [`crate::variants`]).
 pub fn find(id: &str) -> Result<&'static Game, Error> {
-    ALL.iter().chain(IN_PROGRESS).copied().find(|g| g.id == id).ok_or_else(|| Error::UnknownGame(id.to_string()))
+    title(id)
+        .or_else(|| crate::variants::get(id).and_then(crate::variants::resolve))
+        .ok_or_else(|| Error::UnknownGame(id.to_string()))
 }

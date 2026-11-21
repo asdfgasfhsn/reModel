@@ -7,10 +7,17 @@ use crate::{FreePlayByte, LinkPlay, LinkSettings, RecordCrc, SettingsStore};
 
 /// The linked-play data of game `id`, if it has been looked at.
 pub fn link_play(id: &str) -> Option<&'static LinkPlay> {
+    if let Some(v) = crate::variants::get(id) {
+        return match v.link {
+            crate::variants::VariantLink::Parent => link_play(v.parent),
+            crate::variants::VariantLink::None => None,
+            crate::variants::VariantLink::Own(p) => Some(p),
+        };
+    }
     match id {
         "srallyc" => Some(&SRALLYC),
         "daytona" => Some(&DAYTONA),
-        "manxtt" | "manxttc" => Some(&MANXTT),
+        "manxtt" => Some(&MANXTT),
         "indy500" => Some(&INDY500),
         "motoraid" => Some(&MOTORAID),
         "waverunr" => Some(&WAVERUNR),

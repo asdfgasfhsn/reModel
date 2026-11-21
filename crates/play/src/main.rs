@@ -1377,6 +1377,7 @@ impl Play {
         self.unsupported = sets.len() - self.games.len();
         self.launcher.rom_text = self.settings.rom.display().to_string();
         self.launcher.player_name = self.opts.name.clone().unwrap_or_else(|| self.settings.player_name.clone());
+        self.launcher.set_versions(&self.settings.versions, self.settings.show_hacks);
         self.launcher.set_games(&self.games, &self.settings.recent);
     }
 
@@ -1416,6 +1417,7 @@ impl Play {
     fn open_launcher(&mut self) {
         let set = self.session.as_ref().map(|s| s.game.id);
         self.leave_game();
+        self.launcher.set_versions(&self.settings.versions, self.settings.show_hacks);
         self.launcher.set_games(&self.games, &self.settings.recent);
         if let Some(set) = set {
             self.launcher.select_set(set);
@@ -2218,7 +2220,8 @@ impl Play {
                 }
                 // The menu as it is (drawing it changes nothing).
                 if menu.open {
-                    let prefs = menu::Prefs { fullscreen: &mut fullscreen, for_all: &mut for_all };
+                    let prefs =
+                        menu::Prefs { fullscreen: &mut fullscreen, for_all: &mut for_all, show_hacks: &mut false };
                     menu.ui(ctx, &mut values, prefs, &menu_view, Some(&mut s.bindings), &[]);
                 }
             });
@@ -3341,7 +3344,7 @@ impl Play {
                 if let Some(line) = &net_line {
                     net_status(ctx, line);
                 }
-                let prefs = menu::Prefs { fullscreen: &mut fullscreen, for_all: &mut for_all };
+                let prefs = menu::Prefs { fullscreen: &mut fullscreen, for_all: &mut for_all, show_hacks: &mut false };
                 let actions = menu.ui(ctx, &mut values, prefs, &view, bindings.as_deref_mut(), &navs);
                 if let Some(f) = fade {
                     let painter =
@@ -3575,6 +3578,10 @@ impl Play {
                         self.game_fade = Some(Instant::now());
                     }
                 }
+                launcher::Action::Version { title, set } => {
+                    self.settings.versions.insert(title, set);
+                    self.settings.save();
+                }
                 launcher::Action::Settings => {
                     self.set_menu(true);
                     self.menu.pad_used = self.launcher.pad_used;
@@ -3803,6 +3810,7 @@ impl Play {
         let navs = std::mem::take(&mut self.navs);
         let mut values = self.values.clone();
         let (mut fullscreen, mut for_all) = (self.settings.fullscreen, self.settings.for_all);
+        let mut show_hacks = self.settings.show_hacks;
         let (launcher, menu, splash) = (&mut self.launcher, &mut self.menu, &mut self.splash);
         let bindings = &mut self.launcher_bindings;
         let animating = launcher.animating() || self.session.is_some() || progress.is_some();
@@ -3810,7 +3818,7 @@ impl Play {
         let mut changed = false;
         let actions = draw_overlay(g, target, false, size, Some(ppp), |ctx| {
             let mut actions = launcher.ui(ctx, navs.clone(), &view);
-            let prefs = menu::Prefs { fullscreen: &mut fullscreen, for_all: &mut for_all };
+            let prefs = menu::Prefs { fullscreen: &mut fullscreen, for_all: &mut for_all, show_hacks: &mut show_hacks };
             for action in
                 menu.ui(ctx, &mut values, prefs, &menu_view, bindings.as_mut(), &launcher::Nav::view_as_back(&navs))
             {
@@ -3837,6 +3845,11 @@ impl Play {
             }
         }
         self.set_prefs(fullscreen, for_all);
+        if show_hacks != self.settings.show_hacks {
+            self.settings.show_hacks = show_hacks;
+            self.settings.save();
+            self.launcher.set_show_hacks(show_hacks);
+        }
         if let Some(set) = selected.map(|g| g.id) {
             self.edit_values(set, values);
         }

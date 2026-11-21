@@ -38,7 +38,7 @@ use egui::{
     pos2, vec2, Align2, Color32, FontFamily, FontId, Id, Painter, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Ui,
     Vec2,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant, SystemTime};
 
 /// The shared palette (`theme`).
@@ -116,6 +116,11 @@ pub enum Action {
         set: String,
         session: Box<linknet::Session>,
         params: Box<linknet::Params>,
+    },
+    /// The player chose a version of a title (its card shows `set`): remember it.
+    Version {
+        title: String,
+        set: String,
     },
     /// Open the menu over the launcher (its settings).
     Settings,
@@ -246,6 +251,10 @@ enum Click {
     Settings,
     /// Link play (same screen): the player count panel.
     Link,
+    /// The next version of the selected title (the Version button, V).
+    Version,
+    /// A version in the card's list.
+    SetVersion(&'static romset::Game),
     /// A game's poster: selects it, or plays it if it is.
     Game(&'static romset::Game),
     /// The banner's game hosted on the network: join it.
@@ -254,9 +263,17 @@ enum Click {
 
 pub struct Launcher {
     pub open: bool,
-    /// The playable games, and the recently played (latest first).
+    /// The playable games (titles and their variants), and the recently
+    /// played (latest first).
     all: Vec<&'static romset::Game>,
+    /// The cards: one per title (a variant whose title isn't there stands
+    /// alone), the carousel's and grid's lists draw from these.
+    cards: Vec<&'static romset::Game>,
     recent: Vec<String>,
+    /// The version of each title chosen (title to set id), kept by the
+    /// player's settings, and whether prototypes and hacks are listed.
+    chosen: BTreeMap<String, String>,
+    show_hacks: bool,
     pub mode: ViewMode,
     pub filter: Filter,
     pub sort: Sort,
@@ -327,7 +344,10 @@ impl Default for Launcher {
         Launcher {
             open: false,
             all: Vec::new(),
+            cards: Vec::new(),
             recent: Vec::new(),
+            chosen: BTreeMap::new(),
+            show_hacks: false,
             mode: ViewMode::default(),
             filter: Filter::All,
             sort: Sort::default(),
@@ -444,13 +464,14 @@ impl Launcher {
     /// there, else selecting the first.
     pub fn set_games(&mut self, games: &[&'static romset::Game], recent: &[String]) {
         self.all = games.to_vec();
+        self.cards = library::cards(games);
         self.recent = recent.to_vec();
-        self.chips = Filter::chips(games, recent);
+        self.chips = Filter::chips(&self.cards, recent);
         if !self.chips.contains(&self.filter) {
             self.filter = Filter::All;
         }
         self.relist();
-        let keep = self.cur.filter(|c| self.all.iter().any(|g| g.id == c.id));
+        let keep = self.cur.filter(|c| self.cards.iter().any(|g| g.id == c.id));
         let first = self.carousel.first().copied();
         self.cur = keep.or(first);
         self.selected_at = Instant::now();
@@ -464,8 +485,8 @@ impl Launcher {
 
     /// The lists, from the games, the recent, the filter and the sort.
     fn relist(&mut self) {
-        self.carousel = library::list(&self.all, &self.recent, Filter::All, Sort::Recent);
-        self.grid = library::list(&self.all, &self.recent, self.filter, self.sort);
+        self.carousel = library::list(&self.cards, &self.recent, Filter::All, Sort::Recent);
+        self.grid = library::list(&self.cards, &self.recent, self.filter, self.sort);
     }
 
     /// The games the current view lists.
@@ -490,11 +511,59 @@ impl Launcher {
         }
     }
 
-    /// Select the game for `set`.
+    /// Select the game for `set`: its title's card, showing that version.
     pub fn select_set(&mut self, set: &str) {
-        if let Some(g) = self.all.iter().copied().find(|g| g.id == set) {
+        let card = self.cards.iter().copied().find(|c| library::is_version_of(set, c));
+        if let Some(g) = card {
+            if set != g.id {
+                self.chosen.insert(g.id.to_string(), set.to_string());
+            }
             self.select(g);
             self.pending_focus = Some((self.selected_id(), 6));
+        }
+    }
+
+    /// The player's chosen versions (title to set id) and whether prototypes
+    /// and hacks are listed, from the settings.
+    pub fn set_versions(&mut self, chosen: &BTreeMap<String, String>, show_hacks: bool) {
+        self.chosen = chosen.clone();
+        self.show_hacks = show_hacks;
+    }
+
+    pub fn set_show_hacks(&mut self, on: bool) {
+        self.show_hacks = on;
+    }
+
+    /// The versions the card `card` lists now: the title, then its variants
+    /// whose ROMs are there (hacks and prototypes if the setting is on).
+    fn versions_of(&self, card: &'static romset::Game) -> Vec<&'static romset::Game> {
+        library::versions(card, &self.all, self.show_hacks, self.chosen.get(card.id).map(String::as_str))
+    }
+
+    /// The version of the selected card that is shown and played.
+    fn version(&self) -> Option<&'static romset::Game> {
+        let card = self.cur?;
+        Some(library::chosen_version(card, &self.versions_of(card), &self.chosen))
+    }
+
+    /// Choose version `to` of the selected card.
+    fn choose_version(&mut self, to: &'static romset::Game, actions: &mut Vec<Action>) {
+        let Some(card) = self.cur else { return };
+        if self.version().map(|g| g.id) == Some(to.id) {
+            return;
+        }
+        self.chosen.insert(card.id.to_string(), to.id.to_string());
+        actions.push(Action::Version { title: card.id.to_string(), set: to.id.to_string() });
+        self.selected_at = Instant::now();
+    }
+
+    /// Step the selected card's version by one, round the list.
+    fn cycle_version(&mut self, actions: &mut Vec<Action>) {
+        let Some(card) = self.cur else { return };
+        let list = self.versions_of(card);
+        let Some(at) = self.version().and_then(|v| list.iter().position(|g| g.id == v.id)) else { return };
+        if list.len() > 1 {
+            self.choose_version(list[(at + 1) % list.len()], actions);
         }
     }
 
@@ -505,7 +574,14 @@ impl Launcher {
         self.cur = Some(game);
     }
 
+    /// The game the selected card plays: its chosen version.
     pub fn selected(&self) -> Option<&'static romset::Game> {
+        self.version()
+    }
+
+    /// The selected card (the title).
+    #[cfg(test)]
+    fn card(&self) -> Option<&'static romset::Game> {
         self.cur
     }
 
@@ -576,7 +652,7 @@ impl Launcher {
 
     /// The games the grid lists now, and how many there are in all.
     pub fn counts(&self) -> (usize, usize) {
-        (self.grid.len(), self.all.len())
+        (self.grid.len(), self.cards.len())
     }
 
     #[cfg(test)]
@@ -722,6 +798,12 @@ impl Launcher {
         {
             clicks.push(Click::Link);
         }
+        if !panel_open
+            && self.cur.is_some_and(|c| self.versions_of(c).len() > 1)
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::V))
+        {
+            clicks.push(Click::Version);
+        }
         self.poll_lan(ctx);
         if !panel_open
             && !self.lan_hosts.is_empty()
@@ -831,10 +913,12 @@ impl Launcher {
                 }
             }
             Click::Play => {
-                if let Some(g) = self.cur {
+                if let Some(g) = self.version() {
                     actions.push(Action::Play { set: g.id.to_string(), from: Start::New });
                 }
             }
+            Click::Version => self.cycle_version(actions),
+            Click::SetVersion(g) => self.choose_version(g, actions),
             Click::Saves => {
                 if self.cur.is_some() {
                     self.want_saves = true;
@@ -842,7 +926,7 @@ impl Launcher {
             }
             Click::Settings => actions.push(Action::Settings),
             Click::Link => {
-                if let Some(game) = self.cur.filter(|g| crate::link::play_for(g.id).is_some()) {
+                if let Some(game) = self.version().filter(|g| crate::link::play_for(g.id).is_some()) {
                     self.link_page = Some(LinkPage { game, focus: Focus::default() });
                 }
             }
@@ -853,7 +937,8 @@ impl Launcher {
             }
             Click::Game(g) => {
                 if self.cur.map(|c| c.id) == Some(g.id) {
-                    actions.push(Action::Play { set: g.id.to_string(), from: Start::New });
+                    let set = self.version().map_or(g.id, |v| v.id);
+                    actions.push(Action::Play { set: set.to_string(), from: Start::New });
                 } else {
                     self.select(g);
                     self.pending_focus = Some((self.selected_id(), 6));
@@ -1023,7 +1108,7 @@ impl Launcher {
         let total = widths.iter().sum::<f32>() + 16.0 * u;
         let mut right = l.top.right();
         if self.mode == ViewMode::Carousel {
-            let n = self.all.len();
+            let n = self.cards.len();
             let text = format!("{n} game{}", if n == 1 { "" } else { "s" });
             let r = p.text(
                 pos2(right, l.top.center().y),
@@ -1074,6 +1159,12 @@ impl Launcher {
         clicks: &mut Vec<Click>,
     ) {
         let u = l.u;
+        // A variant says which: "Top Skater (Japan)".
+        let named = if romset::variants::get(c.game.id).is_some() {
+            romset::variants::display_name(c.game.id)
+        } else {
+            c.game.title.to_string()
+        };
         let when = match c.saved {
             Some(t) => format!("{}, {}", c.from.label(), age(t)),
             None => "from the start".to_string(),
@@ -1084,9 +1175,9 @@ impl Launcher {
         let caption_font = FontId::new(18.0 * u, theme::semibold());
         let line_font = FontId::new(if compact { 18.0 } else { 22.0 } * u, theme::semibold());
         let (caption, line) = if compact {
-            ("Continue".to_string(), format!("{} · {}", c.game.title, c.saved.map_or("new".to_string(), age)))
+            ("Continue".to_string(), format!("{} · {}", named, c.saved.map_or("new".to_string(), age)))
         } else {
-            ("CONTINUE".to_string(), format!("{} · {when}", c.game.title))
+            ("CONTINUE".to_string(), format!("{} · {when}", named))
         };
         let cg = p.layout_no_wrap(caption, caption_font.clone(), theme::CYAN_LIGHT);
         let lg = p.layout_no_wrap(line, line_font, FG);
@@ -1159,7 +1250,10 @@ impl Launcher {
 
     fn paint_carousel(&mut self, ui: &mut Ui, p: &Painter, l: &Layout, view: &View, dt: f32, clicks: &mut Vec<Click>) {
         let u = l.u;
-        let Some(game) = self.cur else { return };
+        let Some(card) = self.cur else { return };
+        // The version of the title that Play starts: its own title, year and board.
+        let versions = self.versions_of(card);
+        let game = self.version().unwrap_or(card);
         if let Some(c) = view.cont {
             self.pill(ui, p, l, c, false, pos2(l.body.left(), l.body.top() + 4.0 * u), clicks);
         }
@@ -1196,10 +1290,50 @@ impl Launcher {
             x = r.right() + 10.0 * u;
             row_h = r.height();
         }
-        y += row_h + 18.0 * u;
+        y += row_h + 14.0 * u;
+        // The versions of the title, when it has more than one: a pill each, the shown one lit.
+        if versions.len() > 1 {
+            let font = FontId::new(17.0 * u, theme::semibold());
+            let mut x = left;
+            let mut row_h = 0.0;
+            for v in &versions {
+                let on = v.id == game.id;
+                let (fill, ink) = if on {
+                    (Color32::from_rgba_unmultiplied(31, 107, 255, 150), FG)
+                } else {
+                    (Color32::from_white_alpha(18), theme::TEXT_2)
+                };
+                let label = library::version_label(v);
+                let g = p.layout_no_wrap(label, font.clone(), ink);
+                let w = g.size().x + 24.0 * u;
+                if x > left && x + w > left + info_w {
+                    x = left;
+                    y += row_h + 8.0 * u;
+                }
+                let r = Rect::from_min_size(pos2(x, y), vec2(w, g.size().y + 12.0 * u));
+                let resp = ui.interact(r, Id::unique(("version-pill", v.id)), Sense::click());
+                let fill = if resp.hovered() && !on { Color32::from_white_alpha(34) } else { fill };
+                p.rect_filled(r, 999.0, fill);
+                if on {
+                    p.rect_stroke(
+                        r,
+                        999.0,
+                        Stroke::new(1.0 * u, Color32::from_rgba_unmultiplied(34, 229, 255, 128)),
+                        StrokeKind::Inside,
+                    );
+                }
+                p.galley(r.min + vec2(12.0 * u, 6.0 * u), g, ink);
+                if resp.clicked() {
+                    clicks.push(Click::SetVersion(v));
+                }
+                x = r.right() + 8.0 * u;
+                row_h = r.height();
+            }
+            y += row_h + 14.0 * u;
+        }
         let line = match view.resume {
             Some(t) => format!("You left off {}. Saves has it.", age(t)),
-            None if self.recent.iter().any(|r| r == game.id) => "Played before.".to_string(),
+            None if library::played_rank(&self.recent, card).is_some() => "Played before.".to_string(),
             None => "Not played yet.".to_string(),
         };
         let para = p.layout(line, FontId::new(20.0 * u, FontFamily::Proportional), theme::TEXT_2, info_w);
@@ -1214,6 +1348,10 @@ impl Launcher {
         // Games that can link cabinets on one screen: that, too.
         if crate::link::play_for(game.id).is_some() {
             buttons.push(("link", "Link play", self.chip(Chip::Key("View"), "L"), Click::Link, false));
+        }
+        // A title with versions: the pad's way through them (the pills are the pointer's).
+        if versions.len() > 1 {
+            buttons.push(("version", "Version", Chip::Key("V"), Click::Version, false));
         }
         let font = FontId::new(22.0 * u, theme::bold());
         let mut bx = left;
@@ -1591,7 +1729,9 @@ impl Launcher {
         p.hline(l.bar.x_range(), l.bar.top(), Stroke::new(1.0 * u, Color32::from_white_alpha(15)));
         let grid = self.mode == ViewMode::Grid;
         let choose = self.choose.unwrap_or("D-pad");
-        let links = self.cur.is_some_and(|g| crate::link::play_for(g.id).is_some());
+        let links = self.version().is_some_and(|g| crate::link::play_for(g.id).is_some());
+        let versions = self.cur.map_or(0, |c| self.versions_of(c).len());
+        let version_label = self.version().map(|g| format!("Version: {}", library::version_label(g)));
         let hints: Vec<(Chip, &str, Option<Click>)> = if self.pad_used {
             let mut h = vec![
                 (Chip::Key(choose), "Choose", None),
@@ -1603,6 +1743,9 @@ impl Launcher {
             ];
             if links {
                 h.insert(4, (Chip::Key("View"), "Link play", Some(Click::Link)));
+            }
+            if versions > 1 {
+                h.insert(4, (Chip::Key("V"), version_label.as_deref().unwrap_or("Version"), Some(Click::Version)));
             }
             if grid {
                 h.push((Chip::Key("LT RT"), "Filter", Some(Click::NextFilter)));
@@ -1619,6 +1762,9 @@ impl Launcher {
             ];
             if links {
                 h.insert(4, (Chip::Key("L"), "Link play", Some(Click::Link)));
+            }
+            if versions > 1 {
+                h.insert(4, (Chip::Key("V"), version_label.as_deref().unwrap_or("Version"), Some(Click::Version)));
             }
             if grid {
                 h.push((Chip::Key("[ ]"), "Filter", Some(Click::NextFilter)));
@@ -1670,7 +1816,7 @@ impl Launcher {
 
     /// Read the selected game's states and show the Saves panel.
     fn open_saves(&mut self, ctx: &egui::Context) {
-        let Some(game) = self.cur else { return };
+        let Some(game) = self.version() else { return };
         let mut items = Vec::new();
         let entries = std::iter::once((Start::Resume, "Where you left off".to_string(), saves::resume_file(game.id)))
             .chain((0..menu::SLOTS).map(|n| {
@@ -2517,5 +2663,167 @@ mod tests {
         r.frame(&[], Vec::new());
         assert!(r.shows("NO GAMES FOUND"));
         assert!(r.texts().iter().all(|(_, size)| *size >= 17.99), "{:?}", r.texts());
+    }
+
+    fn versions(r: &Rig) -> Vec<&'static str> {
+        let card = r.l.card().unwrap();
+        r.l.versions_of(card).iter().map(|g| g.id).collect()
+    }
+
+    fn chosen(r: &Rig) -> Vec<(String, String)> {
+        r.actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::Version { title, set } => Some((title.clone(), set.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_title_with_versions_is_one_card_and_lists_what_is_installed() {
+        let r = Rig::new(&["topskatr", "topskatrj", "topskatru", "hotd", "vcopa"], &[]);
+        // vcopa's title (vcop) is not here, so it stands alone; topskatr's versions are one card.
+        let mut cards = r.l.carousel_ids();
+        cards.sort();
+        assert_eq!(cards, ["hotd", "topskatr", "vcopa"]);
+        assert_eq!(r.l.counts().1, 3);
+        let mut r = r;
+        while r.l.card().unwrap().id != "topskatr" {
+            r.press(1, Nav::Right);
+        }
+        assert_eq!(versions(&r), ["topskatr", "topskatrj", "topskatru"], "the title first");
+        assert_eq!(r.selected(), "topskatr");
+        // The pills name them (the title by its own label), and the Version button is there.
+        for text in ["Export", "Japan", "USA", "Version"] {
+            assert!(r.shows(text), "{text}: {:?}", r.texts());
+        }
+        // A title without variants has no row.
+        while r.l.card().unwrap().id != "hotd" {
+            r.press(1, Nav::Right);
+        }
+        assert!(!r.shows("Version") && !r.shows("Japan"), "{:?}", r.texts());
+    }
+
+    #[test]
+    fn the_version_button_steps_through_and_play_starts_that_version() {
+        let mut r = Rig::new(&["topskatr", "topskatrj", "topskatru"], &[]);
+        assert_eq!(r.selected(), "topskatr");
+        // The pad: down to Play, and down again to Version (the fourth button wraps to a second row).
+        r.press(1, Nav::Down);
+        r.press(1, Nav::Down);
+        assert_eq!(r.l.focus.focused(), Some(button_id("version")));
+        r.press(1, Nav::Accept);
+        assert_eq!(r.selected(), "topskatrj");
+        assert_eq!(chosen(&r), [("topskatr".to_string(), "topskatrj".to_string())], "kept for the title");
+        assert!(r.shows("Japan"));
+        // Play starts the version shown, saves and link follow it.
+        r.actions.clear();
+        r.press(1, Nav::Up);
+        assert_eq!(r.l.focus.focused(), Some(button_id("play")));
+        r.press(1, Nav::Accept);
+        assert_eq!(r.played(), [("topskatrj".to_string(), Start::New)]);
+        r.actions.clear();
+        // The keyboard's V goes on round, back to the title after the last.
+        r.key(egui::Key::V);
+        assert_eq!(r.selected(), "topskatru");
+        r.key(egui::Key::V);
+        assert_eq!(r.selected(), "topskatr");
+        assert_eq!(chosen(&r).len(), 2);
+        // The Saves panel is the shown version's.
+        r.key(egui::Key::V);
+        r.key(egui::Key::S);
+        assert_eq!(r.l.saves.as_ref().unwrap().game.id, "topskatrj");
+    }
+
+    #[test]
+    fn a_pill_chooses_its_version_and_the_choice_is_remembered() {
+        let mut r = Rig::new(&["srallyc", "srallycb"], &[]);
+        let b = romset::games::find("srallycb").unwrap();
+        r.l.apply(Click::SetVersion(b), &view(None, false), &mut r.actions);
+        assert_eq!(r.selected(), "srallycb");
+        assert_eq!(chosen(&r), [("srallyc".to_string(), "srallycb".to_string())]);
+        // Choosing it again is no change.
+        r.actions.clear();
+        r.l.apply(Click::SetVersion(b), &view(None, false), &mut r.actions);
+        assert!(r.actions.is_empty());
+        // The settings give it back after a restart (the launcher is built afresh).
+        let mut again = Launcher { lan_off: true, ..Default::default() };
+        let saved = BTreeMap::from([("srallyc".to_string(), "srallycb".to_string())]);
+        again.set_versions(&saved, false);
+        again.set_games(&games(&["srallyc", "srallycb"]), &[]);
+        assert_eq!(again.selected().unwrap().id, "srallycb");
+        // A choice that is no longer installed falls back to the title.
+        again.set_games(&games(&["srallyc"]), &[]);
+        assert_eq!(again.selected().unwrap().id, "srallyc");
+        // The click on the card plays the version.
+        let mut r = Rig::new(&["srallyc", "srallycb"], &[]);
+        r.l.set_versions(&saved, false);
+        r.l.set_games(&games(&["srallyc", "srallycb"]), &[]);
+        let card = r.l.card().unwrap();
+        r.l.apply(Click::Game(card), &view(None, false), &mut r.actions);
+        assert_eq!(r.played(), [("srallycb".to_string(), Start::New)]);
+    }
+
+    #[test]
+    fn prototypes_and_hacks_are_listed_only_with_the_setting() {
+        let ids = ["daytona", "daytonat", "daytonata", "srallyc", "srallycb", "srallyp"];
+        let mut r = Rig::new(&ids, &[]);
+        let card = |r: &mut Rig, id: &str| {
+            while r.l.card().unwrap().id != id {
+                r.press(1, Nav::Right);
+            }
+        };
+        card(&mut r, "daytona");
+        assert_eq!(versions(&r), ["daytona"], "hacks hidden: nothing to choose, no row");
+        assert!(!r.shows("Turbo") && !r.shows("Version"), "{:?}", r.texts());
+        card(&mut r, "srallyc");
+        assert_eq!(versions(&r), ["srallyc", "srallycb"], "the prototype too");
+        r.l.set_show_hacks(true);
+        r.frame(&[], Vec::new());
+        assert_eq!(versions(&r), ["srallyc", "srallycb", "srallyp"]);
+        assert!(r.shows("Pro Drivin"), "{:?}", r.texts());
+        card(&mut r, "daytona");
+        assert_eq!(versions(&r), ["daytona", "daytonat", "daytonata"]);
+        // A version chosen stays listed if the setting is switched off, and is the one shown
+        // until another is chosen.
+        let t = romset::games::find("daytonat").unwrap();
+        r.l.apply(Click::SetVersion(t), &view(None, false), &mut r.actions);
+        r.l.set_show_hacks(false);
+        assert_eq!(r.selected(), "daytonat");
+    }
+
+    #[test]
+    fn a_variant_played_last_brings_its_card_forward_and_is_selected_again() {
+        let mut ids = SET.to_vec();
+        ids.push("topskatrj");
+        let mut r = Rig::new(&ids, &["topskatrj"]);
+        // The card of its title is first in the carousel, as the recent sort has it.
+        assert_eq!(r.l.carousel_ids()[0], "topskatr");
+        assert_eq!(r.l.card().unwrap().id, "topskatr");
+        // Coming back to the launcher from the game selects that version.
+        r.l.select_set("topskatrj");
+        assert_eq!(r.selected(), "topskatrj");
+        // The quick resume names the version.
+        let c = library::quick_resume(&r.l.all, &r.l.recent, |_| Vec::new()).unwrap();
+        assert_eq!(c.game.id, "topskatrj");
+    }
+
+    #[test]
+    fn the_version_hint_is_in_the_bar_for_titles_with_versions() {
+        let mut r = Rig::new(&["topskatr", "topskatrj", "hotd"], &[]);
+        r.l.set_mode(ViewMode::Grid);
+        r.frame(&[], Vec::new());
+        while r.l.card().unwrap().id != "topskatr" {
+            r.press(1, Nav::Right);
+        }
+        r.frame(&[], Vec::new());
+        assert!(r.shows("Version: Export"), "{:?}", r.texts());
+        // Clicked (or A on the focused hint), it steps.
+        let mut actions = Vec::new();
+        r.l.apply(Click::Version, &view(None, false), &mut actions);
+        assert_eq!(r.l.selected().unwrap().id, "topskatrj");
+        r.frame(&[], Vec::new());
+        assert!(r.shows("Version: Japan"), "{:?}", r.texts());
     }
 }

@@ -164,6 +164,8 @@ struct Thumb {
 /// Player-wide settings the menu changes besides the game's.
 pub struct Prefs<'a> {
     pub fullscreen: &'a mut bool,
+    /// The launcher lists prototypes and hacks among a title's versions.
+    pub show_hacks: &'a mut bool,
     /// Changes are kept for all games (else for the one playing).
     pub for_all: &'a mut bool,
 }
@@ -1146,6 +1148,16 @@ fn display_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings, prefs:
         rows.toggle(ui, "Bezel", &mut s.bezel, "The cabinet's artwork beside a 4:3 picture in a wider window.");
     }
     rows.toggle(ui, "Fullscreen", &mut *prefs.fullscreen, "Fills the screen (F11 does the same, any time).");
+    if view.playing.is_none() {
+        rows.toggle(
+            ui,
+            "Show hacks and prototypes",
+            &mut *prefs.show_hacks,
+            "The launcher's Version list always has a title's official revisions and regions; with this on it \
+             lists the prototypes and hacked sets too (their ROMs permitting). Off by default: some are not worth \
+             running.",
+        );
+    }
     if view.link == Some(2) {
         let list: Vec<(crate::link::Layout, &str)> = crate::link::Layout::ALL.iter().map(|l| (*l, l.label())).collect();
         rows.choose(
@@ -1329,7 +1341,7 @@ mod tests {
             };
             let Rig { menu, s, b, actions, fullscreen, for_all, .. } = self;
             let mut out = self.ctx.run_ui(input, |ui| {
-                let prefs = Prefs { fullscreen, for_all };
+                let prefs = Prefs { fullscreen, for_all, show_hacks: &mut false };
                 actions.extend(menu.ui(ui.ctx(), s, prefs, &view, Some(&mut *b), navs));
             });
             out.textures_delta.clear();
@@ -1916,7 +1928,7 @@ mod tests {
             };
             let Rig { menu, s, fullscreen, for_all, .. } = r;
             let mut out = r.ctx.run_ui(input, |ui| {
-                menu.ui(ui.ctx(), s, Prefs { fullscreen, for_all }, &view, None, navs);
+                menu.ui(ui.ctx(), s, Prefs { fullscreen, for_all, show_hacks: &mut false }, &view, None, navs);
             });
             out.textures_delta.clear();
             assert!(r.ctx.cumulative_frame_nr() > before);
@@ -1995,7 +2007,7 @@ mod tests {
             };
             let mut actions = Vec::new();
             let mut out = ctx.run_ui(input, |ui| {
-                let prefs = Prefs { fullscreen: &mut fullscreen, for_all: &mut for_all };
+                let prefs = Prefs { fullscreen: &mut fullscreen, for_all: &mut for_all, show_hacks: &mut false };
                 actions = menu.ui(ui.ctx(), &mut s, prefs, &view, None, navs);
             });
             out.textures_delta.clear();

@@ -15,6 +15,23 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- ROM variants: the other releases of a title (revisions, regions, other boards,
+  prototypes, hacks) are thin manifests over the parent's, resolved into a full
+  game (`crates/romset/src/variants.rs`, `games/variants.rs`; docs/variants.md).
+  `manxttc`, `sfight` and `overrevb` are now variants (their bench hashes are
+  unchanged) and nine more were added: `topskatrj`, `topskatru`, `vcopa`,
+  `srallycb`, `srallyp`, `daytonat`, `daytonata`, `lastbrnxj`, `lastbrnxu`, each
+  booting, attracting and playing from a blank EEPROM (`make bench-variants`,
+  `tools/expected-variant-hashes.txt`). A variant id works wherever a set id does
+  (`--game`, `make GAME=`). The launcher shows one card per title with a Version
+  selector (pills, a button, V) and lists prototypes and hacks only with the new
+  "Show hacks and prototypes" setting; each variant has its own EEPROM, saves,
+  settings and bindings, texture packs fall back to the parent's, and link play
+  works for the variants whose settings record is the parent's. Save files are
+  format 3: they record the variant and another variant's state is refused with a
+  message naming both (format 1 and 2 files still load). Scenes and tours are
+  no longer inherited from the parent. Chips in subfolders of the parent's zip
+  (`topskatrj/epr-19753.15`) are found.
 - Network link play compares a hash over every chip the game loads (and the set's id),
   not the program ROMs alone, in the session agreement and the mDNS record ("different
   ROMs"); two sets that differ in one data, texture or sound chip, or two versions of a

@@ -60,12 +60,36 @@ impl Zip {
         self.entries.iter().map(|e| e.0.as_str())
     }
 
-    /// A member's contents by name (case-insensitive, ignoring folders in
-    /// the archive), checked against its CRC-32.
-    pub fn read(&self, name: &str) -> Option<Result<Vec<u8>, String>> {
-        let base = |n: &str| n.rsplit('/').next().unwrap_or(n).to_ascii_lowercase();
+    /// The entry `name` names: a name with a folder (`topskatrj/epr-19753.15`)
+    /// matches the stored path (or its tail); a bare name matches a member
+    /// at the top of the archive, else the first one of that name in any
+    /// folder. Case-insensitive.
+    fn entry(&self, name: &str) -> Option<&(String, u16, usize, usize, u32, usize)> {
         let want = name.to_ascii_lowercase();
-        let &(ref stored, method, packed, size, crc, local) = self.entries.iter().find(|e| base(&e.0) == want)?;
+        if want.contains('/') {
+            let tail = format!("/{want}");
+            return self.entries.iter().find(|e| {
+                let n = e.0.to_ascii_lowercase();
+                n == want || n.ends_with(&tail)
+            });
+        }
+        let base = |n: &str| n.rsplit('/').next().unwrap_or(n).to_ascii_lowercase();
+        self.entries
+            .iter()
+            .find(|e| e.0.to_ascii_lowercase() == want)
+            .or_else(|| self.entries.iter().find(|e| base(&e.0) == want))
+    }
+
+    /// Whether the archive has a member `name` (as [`Zip::read`] finds it).
+    pub fn has(&self, name: &str) -> bool {
+        self.entry(name).is_some()
+    }
+
+    /// A member's contents by name (case-insensitive; a name with a folder
+    /// names that folder's member, a bare name ignores folders), checked
+    /// against its CRC-32.
+    pub fn read(&self, name: &str) -> Option<Result<Vec<u8>, String>> {
+        let &(ref stored, method, packed, size, crc, local) = self.entry(name)?;
         let read = || -> Result<Vec<u8>, String> {
             let d = &self.data;
             if d.get(local..local + 4) != Some(b"PK\x03\x04") {
@@ -143,5 +167,28 @@ mod tests {
             assert_eq!(z.read("epr-1.15").unwrap().unwrap(), body);
             assert!(z.read("missing").is_none());
         }
+    }
+
+    #[test]
+    fn a_name_with_a_folder_picks_that_folders_member() {
+        // A merged set keeps same-named chips of its variants in folders (`topskatrj/`, `topskatru/`).
+        let entry = |n: &str| (n.to_string(), 0u16, 0usize, 0usize, 0u32, 0usize);
+        let z = Zip {
+            data: Vec::new(),
+            entries: vec![
+                entry("topskatrj/epr-1.15"),
+                entry("topskatru/epr-1.15"),
+                entry("Top.BIN"),
+                entry("sub/top.bin"),
+            ],
+        };
+        let at = |n: &str| z.entry(n).map(|e| e.0.as_str());
+        assert_eq!(at("topskatru/epr-1.15"), Some("topskatru/epr-1.15"));
+        assert_eq!(at("TOPSKATRJ/EPR-1.15"), Some("topskatrj/epr-1.15"), "case-insensitive");
+        assert_eq!(at("other/epr-1.15"), None, "a folder that is not there is not another folder's member");
+        // A bare name finds the top-level member before one in a folder, else the first of that name.
+        assert_eq!(at("top.bin"), Some("Top.BIN"));
+        assert_eq!(at("epr-1.15"), Some("topskatrj/epr-1.15"));
+        assert!(z.has("topskatru/epr-1.15") && !z.has("nothing"));
     }
 }

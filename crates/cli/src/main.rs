@@ -1528,9 +1528,15 @@ fn cmd_rom_folder(o: &Opts) -> ExitCode {
 }
 
 fn cmd_games(_o: &Opts) -> ExitCode {
+    // Titles, then each variant (`--game` takes either); last, the set it is a
+    // version of ("-" for none) and, for a variant, its label and kind.
     for g in games::ALL {
-        // Last, the set it is a clone of ("-" for none).
         println!("{:<10} {:<20} {:<12} {}", g.id, g.title, format!("{:?}", g.board), g.parent.unwrap_or("-"));
+    }
+    for v in romset::variants::all() {
+        let Some(g) = romset::variants::resolve(v) else { continue };
+        let kind = format!("{}{}", v.kind.label(), if v.kind_confirmed { "" } else { ", unconfirmed" });
+        println!("{:<10} {:<20} {:<12} {}  ({}; {kind})", g.id, g.title, format!("{:?}", g.board), v.parent, v.label);
     }
     ExitCode::SUCCESS
 }
@@ -2645,9 +2651,13 @@ fn cmd_music_render_mpeg_dump(o: &Opts, roms: &RomSet) -> ExitCode {
 /// The supported games whose chips are all in `rom_dir/<set>/` with the
 /// right sizes: what the browser build can serve, one file per chip.
 fn web_index(rom_dir: &Path) -> Vec<&'static romset::Game> {
+    // The titles, and the variants whose chips sit unpacked in a folder (the
+    // browser fetches one file per chip).
+    let variants = romset::variants::all().iter().filter_map(romset::variants::resolve);
     games::ALL
         .iter()
         .copied()
+        .chain(variants.filter(|g| romset::rom_folder(g, rom_dir).is_some()))
         .filter(|g| {
             if romset::rom_folder(g, rom_dir).is_some() {
                 return true;

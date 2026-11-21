@@ -11,6 +11,7 @@ pub mod bindings;
 pub mod controls;
 pub mod games;
 mod sha1;
+pub mod variants;
 pub mod zip;
 
 use std::fmt;
@@ -22,6 +23,7 @@ pub use controls::{
     AnalogInput, ButtonInput, Controls, Gun, GunSource, KeyRamp, PadAxis, PadButton, Reload, Shifter, StickDirs,
 };
 pub use sha1::sha1_hex;
+pub use variants::{ChipSwap, Variant, VariantKind};
 
 /// Cabinet boards beyond the Model 2 board itself that the game talks to
 /// through the I/O chip, and which protocol they speak. The board model
@@ -427,6 +429,7 @@ impl Kind {
 }
 
 /// One chip in a set.
+#[derive(Clone, Copy, Debug)]
 pub struct RomFile {
     pub name: &'static str,
     pub size: usize,
@@ -499,8 +502,10 @@ pub struct Scene {
     pub tags: &'static [&'static str],
 }
 
+#[derive(Clone)]
 pub struct Game {
-    /// Short set name, matching the usual dump naming (e.g. `topskatr`).
+    /// Short set name, matching the usual dump naming (e.g. `topskatr`); a
+    /// variant's own id (`topskatrj`, resolved from its manifest: [`variants`]).
     pub id: &'static str,
     pub title: &'static str,
     /// Year of release, as on the title screen's copyright line.
@@ -743,32 +748,70 @@ pub struct RomSet {
     pub chips: Vec<Vec<u8>>,
 }
 
-impl RomSet {
-    /// Load `game`'s chips from ROM directory `root`: each chip from
-    /// `root/<set>/`, else `root/<set>.zip`, then (for a clone) the same
-    /// for its parent set, else `root/` itself. With `verify`, sizes and
-    /// hashes must match a known-good dump.
-    pub fn load(game: &'static Game, root: &Path, verify: bool) -> Result<Self, Error> {
-        let mut places = Vec::new();
+/// Where a set's chips can be in a ROM directory: its own folder and zip,
+/// then its parent's, then the directory itself.
+struct Places {
+    root: PathBuf,
+    list: Vec<(PathBuf, Option<zip::Zip>)>,
+}
+
+impl Places {
+    fn open(root: &Path, game: &Game) -> Result<Self, Error> {
+        let mut list = Vec::new();
         for set in std::iter::once(game.id).chain(game.parent) {
             let zip_path = root.join(format!("{set}.zip"));
             let archive = if zip_path.is_file() { Some(zip::Zip::open(&zip_path).map_err(Error::Zip)?) } else { None };
-            places.push((root.join(set), archive));
+            list.push((root.join(set), archive));
         }
-        let mut chips = Vec::with_capacity(game.files.len());
-        'chip: for rom in game.files {
-            for (dir, archive) in &places {
-                if let Ok(d) = fs::read(dir.join(rom.name)) {
-                    chips.push(d);
-                    continue 'chip;
+        Ok(Places { root: root.to_path_buf(), list })
+    }
+
+    /// The chip `name` of set `id`: `<id>/<name>` in each place first, then
+    /// the bare name in each place, then loose in the ROM directory.
+    fn read(&self, id: &str, name: &str) -> Option<Result<Vec<u8>, Error>> {
+        let prefixed = format!("{id}/{name}");
+        for n in [prefixed.as_str(), name] {
+            for (dir, archive) in &self.list {
+                if let Ok(d) = fs::read(dir.join(n)) {
+                    return Some(Ok(d));
                 }
-                if let Some(member) = archive.as_ref().and_then(|z| z.read(rom.name)) {
-                    chips.push(member.map_err(Error::Zip)?);
-                    continue 'chip;
+                if let Some(member) = archive.as_ref().and_then(|z| z.read(n)) {
+                    return Some(member.map_err(Error::Zip));
                 }
             }
-            let loose = fs::read(root.join(rom.name));
-            chips.push(loose.map_err(|_| Error::Missing { name: rom.name, root: root.to_path_buf(), set: game.id })?);
+        }
+        fs::read(self.root.join(name)).ok().map(Ok)
+    }
+
+    /// Whether [`Places::read`] would find the chip (nothing is read).
+    fn has(&self, id: &str, name: &str) -> bool {
+        let prefixed = format!("{id}/{name}");
+        [prefixed.as_str(), name].iter().any(|n| {
+            self.list.iter().any(|(dir, archive)| {
+                fs::metadata(dir.join(n)).is_ok_and(|m| m.is_file()) || archive.as_ref().is_some_and(|z| z.has(n))
+            })
+        }) || fs::metadata(self.root.join(name)).is_ok_and(|m| m.is_file())
+    }
+}
+
+impl RomSet {
+    /// Load `game`'s chips from ROM directory `root`: each chip from
+    /// `root/<set>/`, else `root/<set>.zip`, then (for a variant or clone)
+    /// the same for its parent set, else `root/` itself. A chip is looked
+    /// for as `<set id>/<name>` (a merged set keeps same-named chips of
+    /// several variants in folders, `topskatrj/epr-19753.15`) before its
+    /// bare name. With `verify`, sizes and hashes must match a known-good
+    /// dump.
+    pub fn load(game: &'static Game, root: &Path, verify: bool) -> Result<Self, Error> {
+        let places = Places::open(root, game)?;
+        let mut chips = Vec::with_capacity(game.files.len());
+        for rom in game.files {
+            match places.read(game.id, rom.name) {
+                Some(data) => chips.push(data?),
+                None => {
+                    return Err(Error::Missing { name: rom.name, root: root.to_path_buf(), set: game.id });
+                }
+            }
         }
         Self::from_chips(game, chips, verify)
     }
@@ -913,18 +956,37 @@ pub fn sets_in(root: &Path) -> Vec<String> {
     sets
 }
 
-/// [`sets_in`], with each supported clone after its parent when the clone
-/// has no zip or folder of its own (a merged MAME set keeps a clone's
-/// chips in its parent's).
+/// [`sets_in`], with each of a set's variants after it when the variant has
+/// no zip or folder of its own and every chip it swaps is there (a merged
+/// MAME set keeps a variant's chips in its parent's): a variant whose ROMs
+/// are missing is not listed. A variant that has its own zip or folder is
+/// listed as the set it is, wherever it sits.
 pub fn sets_with_clones(root: &Path) -> Vec<String> {
     let mut out = Vec::new();
     let sets = sets_in(root);
     for set in &sets {
         out.push(set.clone());
-        let clones = games::ALL.iter().filter(|g| g.parent == Some(set.as_str()) && !sets.iter().any(|s| s == g.id));
-        out.extend(clones.map(|g| g.id.to_string()));
+        let own: Vec<&Variant> = variants::of(set).filter(|v| !sets.iter().any(|s| s == v.id)).collect();
+        let Some(parent) = games::find(set).ok().filter(|_| !own.is_empty()) else { continue };
+        let places = Places::open(root, parent);
+        for v in own {
+            let present = match (&places, variants::resolve(v)) {
+                (Ok(p), Some(game)) => v.own_chips(game).all(|f| p.has(v.id, f.name)),
+                _ => false,
+            };
+            if present {
+                out.push(v.id.to_string());
+            }
+        }
     }
     out
+}
+
+/// Whether every chip `variant` swaps in is in ROM directory `root`
+/// (its own folder or zip, else the parent's).
+pub fn variant_available(variant: &'static Variant, root: &Path) -> bool {
+    let Some(game) = variants::resolve(variant) else { return false };
+    Places::open(root, game).is_ok_and(|p| variant.own_chips(game).all(|f| p.has(variant.id, f.name)))
 }
 
 /// Concatenate the interleaved pairs of chips with `role`, in manifest order.

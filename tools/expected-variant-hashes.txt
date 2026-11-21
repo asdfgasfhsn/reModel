@@ -1,0 +1,17 @@
+# variant state-hash: what `make bench GAME=<variant>` must print (tools/release.sh
+# bench-variants; `make bench-variants`). The other releases of a title
+# (docs/variants.md), kept apart from tools/expected-hashes.txt, whose lines
+# gate a release. Blank-EEPROM coin-start runs of 600M instructions, as bench-all;
+# manxttc and sfight, also variants, stay in tools/expected-hashes.txt (their hashes
+# did not change when they became variants). Update a line, in the commit that
+# changes it, when emulation changes on purpose.
+overrevb de800c1e32ddb8aa
+topskatrj d5b806cefa994cbe
+topskatru de6f5171b2730155
+vcopa 5c206708efb1d3c8
+srallycb 2d9857e7d3dacb29
+srallyp ef2b8b45eccd5732
+daytonat 0c64f85a8b95e340
+daytonata 95da2bac42132d58
+lastbrnxj af452e8e6839ef0a
+lastbrnxu 5db58c2199e50ec7
