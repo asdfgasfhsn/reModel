@@ -131,3 +131,6 @@ shading (no pictures recorded as better); smooth motion; run-ahead 0
 - *Confirmed (by running it):* NETWORK TYPE MASTER with a board fitted gives `srallyc`'s start, then a read of
   `0x1A14002` every frame. See `docs/hw/link-board.md` section 14.
 - *Confirmed (by running it):* two machines with the game's own MASTER / SLAVE (CABINET ID 1 / 2) images link in `link-run` (the HUD shows 1st/2 and 2nd/2 under the position). `docs/hw/link-board.md` section 14.5.
+- *Built:* `romset::LinkPlay` as `indy500`'s (`docs/hw/eeprom-records.md`: the same routine and start value, 36-byte records). Two machines link
+  in `link-run` and race (POSITION 10th/10 and 9th/10 with the 2nd/2 and 1st/2 of the link pair) and in the split-screen player. No free play data
+  (not looked for); not run over the network.

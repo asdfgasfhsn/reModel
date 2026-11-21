@@ -183,38 +183,106 @@ pub enum SettingsStore {
     IoBoard,
 }
 
-/// A record's checksum: CRC-16, CCITT polynomial `0x1021`, over bytes
-/// `from..to`, stored at `at` low byte first.
+/// How a record's checksum is computed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SumKind {
+    /// CRC-16, CCITT polynomial `0x1021`, MSB first, start value `init`
+    /// (low 16 bits), complemented if `complement` (`srallyc`, `manxtt`,
+    /// `daytona`).
+    Ccitt,
+    /// The shifting checksum of the "S32A" records (`docs/hw/eeprom-records.md`
+    /// section 2): a 32-bit register started at `init`, whose low byte takes
+    /// each data byte, shifted left eight times a byte with `0x10210000`
+    /// added whenever a 1 leaves the top (an addition, not an exclusive or),
+    /// the result the top 16 bits.
+    S32a,
+    /// The low 16 bits of the sum of the bytes (`sgt24h`'s record).
+    ByteSum,
+}
+
+/// A record's checksum over bytes `from..to`, stored at `at` low byte first
+/// ([`SumKind`]). `copy` is the size of the record that starts at `at`
+/// when the store keeps a second, identical copy right after it (the "S32A"
+/// records): [`RecordCrc::fix`] then rewrites the copy as well.
 #[derive(Clone, Copy, Debug)]
 pub struct RecordCrc {
+    pub kind: SumKind,
     pub at: usize,
     pub from: usize,
     pub to: usize,
-    pub init: u16,
+    pub init: u32,
     pub complement: bool,
+    pub copy: Option<usize>,
 }
 
 impl RecordCrc {
+    /// A CCITT checksum (the `srallyc` kind), no second copy.
+    pub const fn ccitt(at: usize, from: usize, to: usize, init: u16, complement: bool) -> Self {
+        RecordCrc { kind: SumKind::Ccitt, at, from, to, init: init as u32, complement, copy: None }
+    }
+
+    /// An "S32A" record's checksum (`docs/hw/eeprom-records.md`): the record is `size` bytes
+    /// from `at` (checksum word first) and repeated right after; `len` bytes after the
+    /// checksum word's two are fed to the shifting sum, started at `init`.
+    pub const fn s32a(at: usize, size: usize, len: usize, init: u32) -> Self {
+        RecordCrc { kind: SumKind::S32a, at, from: at + 2, to: at + 2 + len, init, complement: false, copy: Some(size) }
+    }
+
     pub fn compute(&self, image: &[u8]) -> u16 {
-        let mut c = self.init;
-        for &x in &image[self.from..self.to] {
-            c ^= (x as u16) << 8;
-            for _ in 0..8 {
-                c = if c & 0x8000 != 0 { (c << 1) ^ 0x1021 } else { c << 1 };
+        let data = &image[self.from..self.to];
+        match self.kind {
+            SumKind::Ccitt => {
+                let mut c = self.init as u16;
+                for &x in data {
+                    c ^= (x as u16) << 8;
+                    for _ in 0..8 {
+                        c = if c & 0x8000 != 0 { (c << 1) ^ 0x1021 } else { c << 1 };
+                    }
+                }
+                if self.complement {
+                    !c
+                } else {
+                    c
+                }
             }
-        }
-        if self.complement {
-            !c
-        } else {
-            c
+            SumKind::S32a => {
+                let mut r = self.init;
+                for &x in data {
+                    r = (r & 0xffff_ff00).wrapping_add(x as u32);
+                    for _ in 0..8 {
+                        r = if r & 0x8000_0000 == 0 { r << 1 } else { (r << 1).wrapping_add(0x1021_0000) };
+                    }
+                }
+                (r >> 16) as u16
+            }
+            SumKind::ByteSum => data.iter().fold(0u16, |a, &x| a.wrapping_add(x as u16)),
         }
     }
 
-    /// Store the checksum in the image.
+    /// Whether the checksum stored in the image (and in the second copy, if the store has
+    /// one) is the one the data gives: `Err` names the copy and both values.
+    pub fn check(&self, image: &[u8]) -> Result<(), String> {
+        let copies = 1 + self.copy.is_some() as usize;
+        for c in 0..copies {
+            let n = c * self.copy.unwrap_or(0);
+            let me = RecordCrc { at: self.at + n, from: self.from + n, to: self.to + n, ..*self };
+            let stored = u16::from_le_bytes([image[me.at], image[me.at + 1]]);
+            let got = me.compute(image);
+            if stored != got {
+                return Err(format!("copy {c} (at {:#x}): stored {stored:#06x}, computed {got:#06x}", me.at));
+            }
+        }
+        Ok(())
+    }
+
+    /// Store the checksum in the image (and rewrite the second copy from the first).
     pub fn fix(&self, image: &mut [u8]) {
         let c = self.compute(image);
         image[self.at] = c as u8;
         image[self.at + 1] = (c >> 8) as u8;
+        if let Some(n) = self.copy {
+            image.copy_within(self.at..self.at + n, self.at + n);
+        }
     }
 }
 

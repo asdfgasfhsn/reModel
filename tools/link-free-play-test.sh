@@ -4,7 +4,7 @@
 #
 #   usage: tools/link-free-play-test.sh REMODEL ROM_DIR OUT_DIR [GAME...]
 #
-# For each game (srallyc, daytona by default):
+# For each game (srallyc, daytona, manxtt, indy500 by default):
 #   deterministic   `link-run --free-play` twice: the same combined hash
 #   needed          the same inputs without --free-play (no coins: the game does not start)
 #                   end on another hash
@@ -15,7 +15,7 @@
 # Everything is on 127.0.0.1; scratch output stays under OUT_DIR.
 set -u
 BIN=$1; ROM=$2; OUT=$3; shift 3
-GAMES=${*:-srallyc daytona}
+GAMES=${*:-srallyc daytona manxtt indy500}
 mkdir -p "$OUT"
 fail=0
 port=$((47100 + RANDOM % 1500))
@@ -28,6 +28,8 @@ for game in $GAMES; do
 	case $game in
 	srallyc) INPUT="start@1560-1564,gas=0xff@3430-99999"; FRAMES=4400; SHOTS=2500,3300,4300 ;;
 	daytona) INPUT="start@1300-1304,gas=0xff@1500-1510,gas=0xff@1700-1710,gas=0xff@2400-99999"; FRAMES=4600; SHOTS=2000,3300,4500 ;;
+	manxtt) INPUT="start@1300-1304,throttle=0xe0@3500-99999"; FRAMES=4600; SHOTS=2500,3400,4500 ;;
+	indy500) INPUT="start@1250-1254,gas=0xff@1400-1410,gas=0xff@1600-1610,gas=0xff@1800-1810,gas=0xff@2000-99999"; FRAMES=4500; SHOTS=2200,3300,4400 ;;
 	*) echo "no scripted race for $game"; exit 2 ;;
 	esac
 	run=("$(dirname "$0")/capped" "$BIN" --game "$game" --rom "$ROM")

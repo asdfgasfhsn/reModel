@@ -326,6 +326,52 @@ pub(crate) fn node_machine(
     m
 }
 
+/// `remodel --game G link-settings FILE`: check a settings image the game itself wrote (a
+/// `run`'s `eeprom.bin`, a `link-run`'s `eeprom-N.bin`) against the game's `LinkPlay`
+/// record: the checksum of each copy, and print the role bytes and the write counter. Exit
+/// status 1 if a checksum is not what the data gives (`docs/hw/eeprom-records.md`).
+pub(crate) fn settings(o: &Opts, roms: &RomSet) -> ExitCode {
+    let Some(file) = o.args.get(1) else {
+        eprintln!("usage: remodel --game G link-settings FILE");
+        return ExitCode::from(2);
+    };
+    let Some(play) = romset::games::link_play(roms.game.id) else {
+        eprintln!("{}: no link play data (crates/romset/src/games/link.rs)", roms.game.id);
+        return ExitCode::from(2);
+    };
+    let image = match std::fs::read(file) {
+        Ok(b) if b.len() >= play.settings.size => b,
+        Ok(_) => {
+            eprintln!("{file}: too short for the record");
+            return ExitCode::from(2);
+        }
+        Err(e) => {
+            eprintln!("{file}: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let crc = &play.settings.crc;
+    match crc.check(&image) {
+        Ok(()) => {
+            let ctr = if crc.kind == romset::SumKind::S32a {
+                format!(", write counter {}", u32::from_le_bytes(image[crc.at + 4..crc.at + 8].try_into().unwrap()))
+            } else {
+                String::new()
+            };
+            let car = play.car_off.map_or(String::new(), |c| format!(", ID byte {:#x} = {}", c, image[c]));
+            println!(
+                "{}: checksums ok, role byte {:#x} = {}{car}{ctr}",
+                roms.game.id, play.role_off, image[play.role_off]
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            println!("{}: checksum differs: {e}", roms.game.id);
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
     let play = romset::games::link_play(roms.game.id)
         .ok_or_else(|| format!("{}: no link play data (crates/romset/src/games/link.rs)", roms.game.id))?;

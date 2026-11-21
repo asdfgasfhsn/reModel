@@ -1,5 +1,4 @@
 # Changelog
-
 reModel uses [semantic versioning](https://semver.org/). Before 1.0 a minor
 version marks a milestone (new games, boards or features) and a patch
 version a fix. Saved formats (save states, the settings file, texture
@@ -21,6 +20,22 @@ creates the annotated tag `vx.y.z` without pushing. Details in
   longer depend on an `eeprom.bin` left by an earlier run; a fresh checkout or
   worktree failed 16 of 25 before. `tools/expected-hashes.txt` holds the
   fresh-start hashes (16 changed; checked stable over two runs).
+- Linked play for four more games: Manx TT Super Bike (`manxtt`, `manxttc`),
+  Indianapolis 500 (`indy500`), Motor Raid (`motoraid`) and Wave Runner
+  (`waverunr`) now link two to four machines in `link-run` and the
+  split-screen player, and Manx TT and Indy 500 over the network too
+  (`make link-net-test` and `make link-free-play-test` cover them, with free
+  play from each game's own COIN ASSIGNMENTS setting #27). The games' "S32A"
+  settings record, which holds Indy 500's, Motor Raid's and Wave Runner's
+  (and Super GT's, Over Rev's and Ski Super G's) link role, now has its
+  checksum: found by reading the games' own code, not a CRC-16 but a shifting
+  sum with its own start value (`docs/hw/eeprom-records.md`), so a node's
+  record is built the way the game writes it, both copies included. New
+  `make link-record-test` checks it against records the games save
+  themselves, and `remodel link-settings FILE` checks an EEPROM image. Super
+  GT, Over Rev and Ski Super G still need their own block layout or start
+  (`docs/hw/link-board.md` section 14).
+
 - Network link play: a player who leaves, quits or goes silent no longer ends
   the game for everyone. The players left carry on: they agree on the
   leaver's last frame (the newest of its records any of them has; a player

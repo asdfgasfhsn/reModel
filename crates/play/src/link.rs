@@ -21,7 +21,7 @@ use std::path::PathBuf;
 
 /// The games the player splits the screen for, and the most machines on
 /// one screen (the layout's quadrants).
-const SPLIT_GAMES: &[&str] = &["srallyc", "daytona"];
+const SPLIT_GAMES: &[&str] = &["srallyc", "daytona", "manxtt", "manxttc", "indy500", "motoraid", "waverunr"];
 pub const MAX_ON_SCREEN: usize = 4;
 
 /// The link data of `id` if it can be played linked on one screen.
@@ -518,6 +518,15 @@ fn take<'a>(d: &'a [u8], at: &mut usize) -> Option<&'a [u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_split_screen_game_has_link_data_for_two_to_four_machines() {
+        for id in SPLIT_GAMES {
+            let p = play_for(id).unwrap_or_else(|| panic!("{id}: no link data"));
+            assert!((2..=MAX_ON_SCREEN).contains(&max_players(p)), "{id}");
+        }
+        assert!(play_for("vf2").is_none());
+    }
 
     #[test]
     fn two_players_side_by_side_on_a_wide_window_and_stacked_on_a_tall_one() {

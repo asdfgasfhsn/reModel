@@ -1026,7 +1026,7 @@ the cabinets' own network joined them. Only games with an entry in `crates/romse
 (`romset::LinkPlay`: how many cabinets, where the game keeps the setting that
 makes a cabinet CAR 1 to CAR N and what its checksum is, the link RAM layout)
 can, and the player splits the screen for the ones it lists
-(`link::SPLIT_GAMES`); today that is Sega Rally (`srallyc`) and Daytona USA (`daytona`), up to 4 on one screen (`remodel link-run` runs Daytona with up to 8). Daytona keeps its settings on the I/O board, so its linked machines start from the manifest's default record rather than the player's own settings.
+(`link::SPLIT_GAMES`); today that is Sega Rally (`srallyc`), Daytona USA (`daytona`), Manx TT Super Bike (`manxtt` and its clone `manxttc`), Indianapolis 500 (`indy500`), Motor Raid (`motoraid`) and Wave Runner (`waverunr`), up to 4 on one screen (`remodel link-run` runs Daytona with up to 8). Daytona keeps its settings on the I/O board, so its linked machines start from the manifest's default record rather than the player's own settings. The EEPROM games' role bytes go into the settings record with the checksum the game itself computes (`docs/hw/eeprom-records.md`); `indy500`, `motoraid` and `waverunr` also number each cabinet (CABINET ID), which must differ between the machines. The games above are the ones the check `make link-net-test` and `make link-record-test` cover: `srallyc`, `daytona`, `manxtt` and `indy500` race in two-node runs, over the network and with free play, `motoraid` and `waverunr` link in `link-run` only (docs/hw/link-board.md section 14.7).
 
 **Starting it.** `make play GAME=srallyc PLAYERS=2` (2 to 4), or
 `remodel-play --game srallyc --players 2`. In the launcher a game that can
@@ -1105,9 +1105,10 @@ value in both (4,400 frames, two machines: `bd3b0b5768e8d6ad`; it was `a7d468fcd
 
 ### Free play
 
-`srallyc` and `daytona` have a FREE PLAY choice among the coin settings in
-their own test menu (COIN ASSIGNMENTS, setting #26; COIN ASSIGNMENT,
-setting #27: `docs/games/srallyc.md`, `docs/games/daytona.md`). The player
+`srallyc`, `daytona`, `manxtt` and `indy500` have a FREE PLAY choice among the coin
+settings in their own test menu (COIN ASSIGNMENTS, setting #26; COIN ASSIGNMENT,
+setting #27 for `daytona`, `manxtt` and `indy500`: `docs/games/srallyc.md`, `docs/games/daytona.md`,
+`docs/games/manxtt.md`, `docs/games/indy500.md`). The player
 uses it, so a start press begins a game with no coins (srallyc asks for two per
 credit otherwise, and a linked race needs one credit a machine). The attract
 screens say FREE PLAY, as on the cabinet.
@@ -1206,7 +1207,7 @@ The same linked cabinets, each on its **own machine**: every player runs
 reModel, one **hosts**, the others **join**, and each window shows its own
 cabinet. The link board's blocks travel between the machines over UDP, in
 lockstep (`remodel-linknet`, `docs/hw/link-board.md` section 12). Sega Rally
-(`srallyc`, 2 to 4 machines) and Daytona USA (`daytona`, 2 to 8) can.
+(`srallyc`, 2 to 4 machines), Daytona USA (`daytona`, 2 to 8), Manx TT (`manxtt`, `manxttc`) and Indianapolis 500 (`indy500`) can (`motoraid` and `waverunr` are set up the same way but were only run in one process).
 
 **Hosting.** `make play GAME=srallyc PLAY_ARGS="--host"` (or `remodel-play
 --game srallyc --host [PORT]`; the port defaults to 47890), or in the launcher
@@ -1215,7 +1216,7 @@ machine's LAN address and port ("192.168.1.20:47890"), lists the players as
 they join with their round trip, and has **Start the game** (at least two
 players). `--net-players N` starts by itself once N players are in. The host
 is player 1: CAR 1, the master, and the one whose settings everyone runs
-(srallyc's EEPROM settings; daytona starts from its default record).
+(the EEPROM games' own settings; daytona starts from its default record).
 
 **Joining.** `remodel-play --game srallyc --join 192.168.1.20:47890`, or the
 launcher's **Link play**, **Join a game**: type the host's address

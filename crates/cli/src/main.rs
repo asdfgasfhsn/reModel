@@ -508,7 +508,8 @@ commands:
                        2B sharc-copro.bin, sharc-geo.bin for sharc-disasm)
   link-run [--nodes N] [--frames F] [--input0 S --input1 S] [--delay D] ...
                        experimental (docs/hw/link-board.md): N real machines
-                       of the game (srallyc, daytona) in one process joined by a
+                       of the game (srallyc, daytona, manxtt, indy500, motoraid,
+                       waverunr) in one process joined by a
                        link hub, run in lockstep; the game's link role setting
                        patched per node (master first); side-by-side pictures every
                        --shot-every frames and the handshake and block log
@@ -516,11 +517,14 @@ commands:
   link-net (--host [PORT] | --join HOST:PORT | --browse [SECS]) [--nodes N] [--frames F] [--input S] [--delay D] ...
                        linked play between hosts (docs/play.md, Network link
                        play): this host runs one node of the game (srallyc,
-                       daytona), the others run theirs on other machines, the
+                       daytona, manxtt, indy500, ..), the others run theirs on other machines, the
                        link blocks travelling over UDP in lockstep; headless,
                        scripted, with fault injection (--loss, --latency ..)
                        for tests; the same inputs and delay give each node
                        link-run's state hash; `remodel link-net` prints its options
+  link-settings FILE   check a settings image the game wrote (a run's eeprom.bin,
+                       a link-run's eeprom-N.bin) against the game's link data:
+                       each copy's checksum, the role bytes (docs/hw/eeprom-records.md)
   studio SUB DIR ...   the uplift studio (docs/uplift-studio.md): init, select,
                        region, status, approve, pack, draft, style, variants,
                        text, seam, compare over a project directory; `remodel
@@ -1145,6 +1149,7 @@ fn main() -> ExitCode {
         "tour" => tour::run(&o, roms),
         "link-run" => link_run::run(&o, roms),
         "link-net" => link_net::run(&o, roms),
+        "link-settings" => link_run::settings(&o, roms),
         "sound-disasm" => cmd_sound_disasm(&o, roms),
         "sound-render" => cmd_sound_render(&o, roms),
         "music-render" | "mpeg-dump" => cmd_music_render_mpeg_dump(&o, roms),

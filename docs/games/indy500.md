@@ -129,3 +129,14 @@ run-ahead 1.
 - *Confirmed (by running it):* NETWORK TYPE MASTER with a board fitted gives `srallyc`'s start, then a read of
   `0x1A14002` every frame. See `docs/hw/link-board.md` section 14.
 - *Confirmed (by running it):* in `link-run` (the hub as it is; per-node EEPROM images saved by the game) two machines show "CHECKING NETWORK NOW Ver.3.01", "THIS IS MASTER CONTROLLER" / "THIS IS SLAVE MACHINE", Node ID, Total Nodes and Cabinet ID, then race (POSITION 1/2 and 2/2). With both at CABINET ID 1 the game shows NETWORK ERROR and restarts the check forever. Blocks `0x1C0` at `0x2000`, received from `0x21C0`. `docs/hw/link-board.md` section 14.5.
+- *Built:* `romset::LinkPlay` for `indy500` (`crates/romset/src/games/link.rs`): the `S32A` record's checksum was read out of the game's
+  own code (`docs/hw/eeprom-records.md`), so a node's image has NETWORK TYPE 1 (master) or 2 (slave) and CABINET ID 0 or 1 in both copies of the
+  record and a good checksum, which the game accepts (the nodes' final EEPROMs keep the roles and the checksum; `make link-record-test`). Linked
+  race in `link-run` (the check screens "THIS IS MASTER CONTROLLER" / "THIS IS SLAVE MACHINE", then `1/2` and `2/2` with the other car in view),
+  split-screen (`make play GAME=indy500 PLAYERS=2`) and over the network; `make link-net-test GAMES=indy500` and `make link-free-play-test GAMES=indy500`.
+  The CABINET IDs differ per node (the node's index); two at one ID show NETWORK ERROR.
+- *Confirmed (by running it): FREE PLAY is the game's own COIN ASSIGNMENTS setting #27.* Test menu: COIN ASSIGNMENTS is the eighth row (eight
+  service presses from EXIT), COIN/CREDIT SETTING starts at 12 (2 coins 1 credit), **15 presses of the test button reach 27, whose chutes read
+  FREE PLAY** (26 is "1 coin 6 credits"). Leaving through EXIT (the game saves) and comparing with a run that did not change it: byte `0x10`
+  0x0B -> 0x1A (the setting, 0-based), byte `0x11` 0x02 -> 0x01 and byte `0x15` 0x00 -> 0x01 (derived), the counter at `0x0C` raised by one, the
+  checksum, all in both copies. In `romset::LinkPlay::free_play`; `--free-play` starts a race from a start press.

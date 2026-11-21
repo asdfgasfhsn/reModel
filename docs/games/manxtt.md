@@ -163,4 +163,18 @@ save states round-trip.
   shows "CHECKING COMMUNICATION BOARD", "THIS IS MASTER CONTROLLER" and runs `srallyc`'s start: 0 to
   `0x1A14000`/`0x1A14002`, a read of `0x1A14000`, the master's 1 to `0x1A14002`, 1 to `0x1A14000`, then it reads
   `0x1A14002` every frame (daytona's wait for bit 7 to flip). See `docs/hw/link-board.md` section 14.
-- *Confirmed (by running it):* a plain `LinkPlay` entry (the record above, role byte `0x0B`, roles 1 and 2, `0x1C0` blocks as `srallyc`) links two, three and four machines in `link-run` unchanged: the ring is up at frame 64, the game shows POSITION 1/2 (n/3, n/4) in the race. Data only; the entry was not committed. `docs/hw/link-board.md` section 14.5.
+- *Confirmed (by running it):* a plain `LinkPlay` entry (the record above, role byte `0x0B`, roles 1 and 2, `0x1C0` blocks as `srallyc`) links two, three and four machines in `link-run` unchanged: the ring is up at frame 64, the game shows POSITION 1/2 (n/3, n/4) in the race. `docs/hw/link-board.md` section 14.5.
+- *Built:* `romset::LinkPlay` for `manxtt` and `manxttc` (`crates/romset/src/games/link.rs`; the record is the 56 bytes
+  the game's own test menu writes at the defaults, LINK TYPE 1 for the master and 2 for the slave, the CRC fixed). Up to four machines
+  (the menu offers Master and Slave only; the hub ran four), in `link-run`, split-screen (`make play GAME=manxtt PLAYERS=2`) and over
+  the network (`link-net`); the block's identity bytes for the players-leaving ghost are `srallyc`'s (*unconfirmed*).
+  `make link-net-test GAMES=manxtt` (the clean and 5%-loss runs equal `link-run`'s hashes, the players-leaving cases, settings and
+  desync) and `make link-free-play-test GAMES=manxtt` pass. A scripted race (`coin1@1100-1104,start@1300-1304,throttle=0xe0@3500-99999`):
+  the course select at frame 2500, the race from about 3,380 with POSITION 1/2 and 2/2 and the other bike (the 1P marker) in view.
+- *Confirmed (by running it): FREE PLAY is the game's own COIN ASSIGNMENTS setting #27.* Test menu (`test@1300-1330`; the cursor starts on EXIT):
+  COIN ASSIGNMENTS is the sixth row (six service presses), its COIN/CREDIT SETTING starts at #1 (1 coin 1 credit, both chutes), the test
+  button steps the number (#26 is "1 coin 6 credits" for chute 1) and **26 presses reach #27, whose chutes both read FREE PLAY**
+  (the page then has no MANUAL SETTING row). Leaving the page and the menu (the game saves then) and comparing the 128-byte `eeprom.bin` with a run that
+  left the menu without changing anything: byte `0x2E` 0x00 -> 0x1A (the setting number, 0-based), byte `0x04` 0x01 -> 0x02, byte `0x24`
+  0xF2 -> 0xFA (derived: not told apart further), then the header CRC. As `srallyc`'s, in `romset::LinkPlay::free_play`; `--free-play`
+  starts a race from a start press with no coin.
