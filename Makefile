@@ -102,7 +102,8 @@ endif
 # `make agent-setup` writes out/agent.env (CARGO_TARGET_DIR, REMODEL_ACTOR,
 # a PATH to cargo, and with ART=1 REMODEL= a pinned prebuilt binary).
 -include out/agent.env
-export CARGO_TARGET_DIR REMODEL_ACTOR REMODEL_SCRATCH
+# Exported only when set: an empty CARGO_TARGET_DIR stops cargo.
+$(foreach v,CARGO_TARGET_DIR REMODEL_ACTOR REMODEL_SCRATCH,$(if $($(v)),$(eval export $(v))))
 ifneq ($(CARGO_BIN_DIR),)
 export PATH := $(CARGO_BIN_DIR):$(PATH)
 endif
