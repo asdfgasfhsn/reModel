@@ -147,8 +147,9 @@
   var L = { nat: $('#lNat'), enh: $('#lEnh'), bez: $('#lBez'), side: $('#lSide'), wide: $('#lWide'), ultra: $('#lUltra') };
   var stks = $$('.stk', pw), whip = $$('.whip i'), fign = $('#fign'), ghost = $('#ghost');
   var S = { nat: 1, enh: 0, bez: 0, bezY: 0, side: 0, wide: 0, ultra: 0, w: 4 / 3 };
-  var GHOST = ['4:3', '4:3', 'BEZEL', '4:3', '16:9', '21:9'];
+  var GHOST = ['4:3', '4:3', 'BEZEL', '16:9', '16:9', '21:9'];
   var H = 300, availW = 360, cur = -1;
+  var LAG = 0.56, SPAN = 6.5;
 
   /* a layer hides the one under it only when it has fully faded in AND its image has loaded */
   function up(img, v) { return v >= 0.999 && img.complete && img.naturalWidth > 0; }
@@ -204,9 +205,11 @@
     size();
     var narrow = root.clientWidth < 700;
     pin = ScrollTrigger.create({
-      trigger: stage, start: 'top top', end: '+=' + Math.round(window.innerHeight * (narrow ? 3.6 : 5.4)),
+      trigger: stage, start: 'top top', end: '+=' + Math.round(window.innerHeight * (narrow ? 3.9 : 5.85)),
       pin: true, scrub: true, anticipatePin: 1,
-      onUpdate: function (self) { var t = self.progress * 6; tl.time(t, false); apply(); setStep(Math.max(0, Math.min(5, Math.floor(t + 0.0001)))); }
+      /* step k's picture changes over [k, k+0.55); its label, sticker and caption follow once the change is done
+         (LAG), and the extra half step at the end gives the last view a full step of its own */
+      onUpdate: function (self) { var t = self.progress * SPAN; tl.time(t, false); apply(); setStep(Math.max(0, Math.min(5, Math.floor(t - LAG)))); }
     });
     tl.time(0, false); apply();
   }
