@@ -64,6 +64,12 @@ impl std::ops::Deref for Answer {
     }
 }
 
+impl std::ops::DerefMut for Answer {
+    fn deref_mut(&mut self) -> &mut Parts {
+        &mut self.0
+    }
+}
+
 impl Answer {
     /// A successful answer carrying `data`.
     pub fn done(data: Value) -> Answer {
@@ -119,6 +125,11 @@ impl Answer {
 
     pub fn ok(&self) -> bool {
         self.code == Code::Done
+    }
+
+    /// The object on one line, on stdout.
+    pub fn print_json(&self) {
+        println!("{}", serde_json::to_string(&self.to_json()).unwrap_or_else(|_| "{}".into()));
     }
 
     pub fn exit_code(&self) -> ExitCode {

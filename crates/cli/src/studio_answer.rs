@@ -17,58 +17,9 @@
 //! (`remodel img`) goes through `Answer` directly.
 
 use serde_json::{json, Value};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{Command, Stdio};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Code {
-    Done = 0,
-    GateFailed = 1,
-    BadRequest = 2,
-    Missing = 3,
-    Internal = 4,
-}
-
-pub struct Answer {
-    pub code: Code,
-    pub error: Option<String>,
-    pub data: Value,
-    pub warnings: Vec<String>,
-    pub next: Option<String>,
-}
-
-impl Answer {
-    pub fn done(data: Value) -> Answer {
-        Answer { code: Code::Done, error: None, data, warnings: vec![], next: None }
-    }
-
-    pub fn fail(code: Code, error: impl Into<String>) -> Answer {
-        Answer { code, error: Some(error.into()), data: Value::Null, warnings: vec![], next: None }
-    }
-
-    pub fn ok(&self) -> bool {
-        self.code == Code::Done
-    }
-
-    /// The object: `ok`, `code`, `error`, `data`, `warnings`, `next`.
-    pub fn to_json(&self) -> Value {
-        json!({
-            "ok": self.ok(),
-            "code": self.code as i32,
-            "error": self.error,
-            "data": self.data,
-            "warnings": self.warnings,
-            "next": self.next,
-        })
-    }
-
-    pub fn print_json(&self) {
-        println!("{}", serde_json::to_string(&self.to_json()).unwrap_or_else(|_| "{}".into()));
-    }
-
-    pub fn exit_code(&self) -> ExitCode {
-        ExitCode::from(self.code as u8)
-    }
-}
+pub use crate::answer::{Answer, Code};
 
 /// Which exit code a command's error message means. The studio's errors are
 /// plain strings; this reads what they say.

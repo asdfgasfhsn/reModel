@@ -566,7 +566,7 @@ mod tests {
         assert!(r.ok() && Path::new(&out).is_file());
         let (r, _) = run(&a(&["diff", &fa, &fb, "--out", &out]));
         assert_eq!(r.code, Code::BadRequest);
-        assert!(r.error.unwrap().contains("--replace"));
+        assert!(r.error.clone().unwrap().contains("--replace"));
         let (r, _) = run(&a(&["diff", &fa, &fb, "--out", &fa, "--replace"]));
         assert_eq!(r.code, Code::BadRequest);
         // different sizes
@@ -612,9 +612,9 @@ mod tests {
     fn strict_names() {
         let (r, _) = run(&a(&["shee"]));
         assert_eq!(r.code, Code::BadRequest);
-        assert!(r.error.unwrap().contains("did you mean sheet"));
+        assert!(r.error.clone().unwrap().contains("did you mean sheet"));
         let (r, _) = run(&a(&["diff", "a", "b", "--thresold", "3"]));
-        assert!(r.error.unwrap().contains("did you mean --threshold"));
+        assert!(r.error.clone().unwrap().contains("did you mean --threshold"));
         let (r, j) = run(&a(&["stats", "--json"]));
         assert!(j && r.code == Code::BadRequest);
     }
