@@ -134,3 +134,17 @@ player then drops run-ahead and says so.
 - *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
   a 600M-instruction coin-start run (`make bench`) fast-forwards 56.1%
   of its instructions through it, and the state hash is unchanged.
+
+## Link play (survey)
+
+- *Confirmed (by running it):* GAME ASSIGNMENTS has **LINK TYPE** (NOT LINK, CAR NO1 Master, CAR NO2 Slave, CAR NO3 Slave,
+  CAR NO4 Slave) and **LINK MAX** (NOT LINK while the type is NOT LINK; it shows 2 once a type is chosen; its range was not
+  explored). Found by driving the test menu with scripted input (`test@1300-1330` held to open it, `service@A-B/20` to step the cursor, `test@F` to select or change a value) and diffing the `eeprom.bin` of runs that changed the value, the menu left through EXIT so the game saved it. The EEPROM is the `S32A` kind (copies at `0x08` and `0x28`). The game changes bytes `0x19`-`0x1C`
+  of the record (and the copies at `0x39`-`0x3C`): NOT LINK `01 01 01 00`, CAR NO1 `02 00 01 00`, CAR NO2 `02 00 00 01`;
+  their meaning (LINK MAX, car number) is *unconfirmed*. The checksum field did **not** change with these, so what it covers
+  is *unknown*.
+- *Confirmed (by running it):* LINK TYPE CAR NO1 Master with a board fitted gives `srallyc`'s start (the master's 1 to
+  `0x1A14002`, then 1 to `0x1A14000`) and then a read of `0x1A14002` every frame (the same at boot even when not linked: the
+  start check runs whatever the setting). The Z80 link board ROM `epr-18643a.7` (the one in `von` and `stcc`) is in
+  this set. See `docs/hw/link-board.md` section 14.
+- *Confirmed (by running it):* in `link-run` with the game's own CAR NO1 / NO2 images and blocks of `0x380` bytes (own at `0x2000`, received from `0x2380`) two machines race in one field (POSITION 7/8 and 8/8); with the `0x1C0` layout both stay on "CHECKING NETWORK NOW, LINKED, CAR No.1 MASTER / CAR No.2 SLAVE". It writes its ID to `0x1A10001`. `docs/hw/link-board.md` section 14.5.

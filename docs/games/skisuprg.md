@@ -108,3 +108,13 @@ run-ahead 0 (input lag 0).
 - *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
   a 600M-instruction coin-start run (`make bench`) fast-forwards 86.5%
   of its instructions through it, and the state hash is unchanged.
+
+## Link play (survey)
+
+- *Confirmed (by running it):* GAME ASSIGNMENTS has **NETWORK TYPE** (NO LINK, MASTER, SLAVE) and **CABINET ID** (1 to 4,
+  cycling). Found by driving the test menu with scripted input (`test@1300-1330` held to open it, `service@A-B/20` to step the cursor, `test@F` to select or change a value) and diffing the `eeprom.bin` of runs that changed the value, the menu left through EXIT so the game saved it. The EEPROM record is the `S32A` kind with a longer record (copies at `0x08` and `0x30`): NETWORK TYPE
+  byte `0x20` (copy `0x48`; 0 / 1 / 2), CABINET ID byte `0x21` (copy `0x49`, 0-based).
+- *Confirmed (by running it):* the handshake is **not** the others': with NETWORK TYPE MASTER and a board fitted
+  (`REMODEL_LINK=fake,0,2`) the game writes 0 to `0x1A14000` and `0x1A14002`, **then** 1 to `0x1A14000`, reads it back
+  (0) and shows "NETWORK BOARD IS NOT EXIST !" for about 300 frames before going on to attract. It never writes
+  `0x1A14002` as a master nor reads `0x1A14002` or `0x1A10000`. What the board answers instead is *unknown*. See `docs/hw/link-board.md` section 14.

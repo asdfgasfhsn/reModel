@@ -20,7 +20,8 @@ to **eight** cabinets) was then run the same way (section 10; what is generic
 and what is per game: section 11); both were then taken **between
 machines on a LAN**, over UDP in lockstep (section 12; what internet play
 would need: section 13); `von` and `overrev` were only looked at
-(section 7). The 2A's slot is the same as the original board's
+(section 7), and then a dozen more games' test menus were walked for their link
+settings (section 14). The 2A's slot is the same as the original board's
 (`model2.md` section 2) and the 2B's.
 
 ## 1. Reproducing it
@@ -1240,3 +1241,192 @@ What internet play would add:
   one hiccup is everyone's, so a small buffer of frames (run ahead of the
   network by a frame or two, then catch up) and a visible "waiting for
   player 2" help; the status line already counts holds.
+
+## 14. Other linked games: survey
+
+Which other games here can be linked, what their own test menus say, and
+how far each is from the `srallyc` and `daytona` support. Everything was
+found by running the games (no emulator's code or link implementation was
+read); each point is marked *confirmed (by running it)* or *inferred*. The
+pictures of the test pages were kept out of the tree.
+
+### 14.1 Method
+
+- **The test menu.** `test@1300-1330` (TEST held) opens the test menu from
+  attract (the menu is up by about frame 1400; its cursor starts on EXIT);
+  `service@A-B/20` steps the cursor down every 20 frames (it wraps from
+  EXIT to the first row, and the rows of a page count one a line, a
+  multi-line setting such as `von`'s PLAY TIME 1P counting each of its
+  lines); `test@F` selects a page or changes the value under the cursor
+  (one press, one step; the values cycle). Counts differ per game and are
+  in each game's doc. Frames are as for `make run INPUT=`; the pictures
+  came from `remodel run` snapshots.
+- **Where a setting lives.** Two runs from a fresh `eeprom.bin`: one that
+  changes nothing, one that changes the value once, **both leaving the test
+  menu through EXIT** (`manxtt` saved to the EEPROM only when the test
+  menu was left, not when the value changed or the page was left: a first
+  attempt that stopped before that saw no difference; the others were run
+  the same way from the start) and compared byte by byte (`cmp -l` of the
+  two `eeprom.bin` files); `von` keeps it in the backup SRAM instead, seen with
+  `REMODEL_WATCH=0x1D00028` (it writes on each press).
+- **Which interface.** The game's setting at a linked value, the test menu
+  left (the game then restarts its mode logic and its start check), run with
+  `REMODEL_LINK=fake,0,2` (`make link-trace`) and the accesses to
+  `0x1A00000-0x1A1FFFF` read from `link-trace.txt`. The `fake` board answers
+  the board start of section 3 but its `0x1A14002` never flips bit 7, so every
+  game below stops at its first wait on that register: *what comes after it was
+  not seen for any game but `srallyc` and `daytona`*, except where a hub run
+  is mentioned.
+
+### 14.2 The table
+
+Max machines is what the game's own menu offers (*confirmed (by running it)*
+for the menu's range) unless marked inferred.
+
+| Game (board) | Link setting: name, where stored, range | Max machines | Interface | Effort | Confidence |
+|---|---|---|---|---|---|
+| `manxtt`, `manxttc` (2A) | LINK TYPE: EEPROM byte `0x0B` (`srallyc`'s record kind: CRC-16 at 0 (CCITT, start `0xFFFF`, complemented), length word `0x38`, CRC over bytes 2-55): 0 Not Link, 1 Master, 2 Slave. BIKE COLOR (No.) is a second setting | 2 by the menu (Master, Slave); the hub ran 2, 3 and 4 and the game showed POSITION n/N | Same board and start as `srallyc`/`daytona`, then reads `0x1A10000`/`2`/`3`, writes `0x1A10001`; blocks of `0x1C0` at `0x2000`, received from `0x21C0` | **Data only**: one `LinkPlay` entry, nothing else changed | Setting and interface: confirmed (by running it); linked in `link-run` (14.5) |
+| `von` (2B) | NETWORK LINK ATTRIBUTE: backup SRAM byte `0x1D00028`: 0 SLAVE, 1 MASTER, 2 NOLINK (default) | 2 (the game rejects any other node total) | Same registers; writes its own ID to `0x1A10001`, polls `0x1A10000`, reads the total at `0x1A10003`, waits for bit 7 of `0x1A14002` to be set; two 1,792-byte buffers (the `0x380`-byte block layout of `sgt24h`, inferred). Z80 ROM `epr-18643a.7` in the set | **Small hub change**: a settings store in SRAM, bit 7 set where the board is up | Setting and start: confirmed (by running it). The rest: inferred |
+| `stcc` (2C) | LINK TYPE: EEPROM byte `0x10` bits 5-7 (`SEGASTCb` record, checksum at `0x08`, counter at `0x0C`): 0 STAND ALONE, 1-7 CAR 1-7 (all seen) | 7 or 8 (CAR 1-7 selectable; more is *unconfirmed*) | `von`'s wording ("THIS IS MASTER SITE"), then a `0x1A14002` poll; no write to `0x1A14000` after the menu. Z80 ROM `epr-18643a.7` in the set | **Small hub change**: its own record and checksum (not found), `von`-family handshake and layout | Setting: confirmed (by running it). Family: inferred |
+| `indy500` (2B) | NETWORK TYPE: EEPROM `S32A` record byte `0x1E` (copy `0x42`): 0 STAND ALONE, 1 MASTER, 2 SLAVE. CABINET ID byte `0x1F` (copy `0x43`), 0-based, 1 to 4 on the sister games. CABINET TYPE TWIN | 4 inferred (2 run) | Same start as `manxtt`; reads `0x1A10000`/`2`/`3`; blocks `0x1C0` at `0x2000`, received from `0x21C0` | **Settings only**: the hub as it is, but each node needs the `S32A` record (two copies, checksum at `0x08` not solved), here taken from the game's own saves | Setting: confirmed (by running it). Linked in `link-run`: confirmed (by running it), needs different CABINET IDs |
+| `motoraid` (2A) | NETWORK TYPE: `S32A` byte `0x1E` (copy `0x42`): 0 / 1 MASTER / 2 SLAVE; CABINET ID byte `0x1F` (copy `0x43`): 1 to 4, cycling | 4 inferred (2 run) | as `indy500` plus a write of its ID to `0x1A10001` and `0x1A10014` | Settings only (as `indy500`) | Setting: confirmed (by running it). Linked in `link-run`: the HUD shows the rival (confirmed (by running it) by the picture; no race checked) |
+| `waverunr` (2C) | NETWORK TYPE: `S32A` byte `0x1E` (copy `0x42`): 0 STAND ALONE / 1 MASTER / 2 SLAVE; CABINET ID byte `0x1F` (copy `0x43`) | 4 inferred (2 run) | as `motoraid` (reads `0x1A10012`, writes `0x1A10001` and `0x1A10014`); own block about `0xB4` bytes | Settings only (as `indy500`) | Setting: confirmed (by running it). Linked in `link-run`: the HUD shows 1st/2 and 2nd/2 (confirmed (by running it)) |
+| `skisuprg` (2C) | NETWORK TYPE: `S32A` byte `0x20` (copy `0x48`; the record is longer): 0 NO LINK / 1 MASTER / 2 SLAVE; CABINET ID byte `0x21` (copy `0x49`): 1 to 4 | 4 inferred | **Different**: 0, 0 then 1 to `0x1A14000`, reads it back (0: "NETWORK BOARD IS NOT EXIST !"); no master write to `0x1A14002`; no poll of `0x1A14002` or `0x1A10000` | **New board model** (the start's reply is not known) | Setting: confirmed (by running it). Interface differs: confirmed (by running it); the reply is unknown |
+| `sgt24h` (2B) | LINK TYPE: EEPROM `S32A` record bytes `0x19`-`0x1C` (copies `0x20` later): `01 01 01 00` NOT LINK, `02 00 01 00` CAR NO1 Master, `02 00 00 01` CAR NO2 Slave; CAR NO3 and NO4 Slave also offered. LINK MAX (NOT LINK until a type is chosen, then 2) | 4 (LINK TYPE); 2 run | Same registers; writes its ID to `0x1A10001`; blocks of **`0x380`** (own `0x2000`-`0x237C`, received from `0x2380`); about 50 reads of `0x1A14002` a frame. Jaleco: the set holds the Z80 link board ROM `epr-18643a.7` | **Settings and data**: the `0x380` layout in `LinkPlay`, the `S32A` record per node | Setting: confirmed (by running it). Linked in `link-run` with `block 0x380, rx 0x2380`: two cars in one race (confirmed (by running it)); byte meanings and LINK MAX range unconfirmed |
+| `overrev` (2C), `overrevb` (2B) | GAME ASSIGNMENTS MENU, FOUNDATIONAL SETTING: LINK MAX byte `0x36` (copy `0x6A`): 0 NOT LINK, 1 2 LINKS, 2 3 LINKS, 3 4 LINKS; LINK TYPE byte `0x35` (copy `0x69`): 0 MASTER CarNo.1 (the default), 1 SLAVE CarNo.2, 2 CarNo.3 ... (`S32A` record). LINK MAX is what turns it on | 4 (menu); 2 run | The `sgt24h` family: reads `0x1A10002`/`3`, writes `0x1A10001`, blocks of `0x380` (own `0x2000`, received from `0x2380`); the master does **not** write `0x1A14002` (the hub warned "not exactly one master" and went on). Jaleco: no link board ROM in the set | **Settings and data** (as `sgt24h`) | Setting: confirmed (by running it). `overrev` linked in `link-run` with the `0x380` layout: both nodes in one race (confirmed (by running it)); `overrevb` only the LINK MAX byte checked |
+| `dynabb97` (2B) | none: GAME ASSIGNMENTS has GAME DIFFICULTY, ADVERTISE SOUND, CABINET TYPE (VS = two-player), FAVORITE, INNINGS | 1 | none: no access to `0x1A10000`-`0x1A14002` | not applicable | confirmed (by running it) |
+| `desert` (Model 2) | none: GAME SYSTEM has COIN/CREDIT, COUNTRY, ADVERTISE SOUND, DIFFICULTY | 1 | none | not applicable | confirmed (by running it) |
+| `srallyc`, `daytona` | built (sections 2 to 12) | 4, 8 | | done | |
+
+The `S32A` record (every game above but `manxtt`, `stcc`, `von`, `dynabb97` and `desert`):
+magic `53 33 32 41` ("S32A"), two copies of a record (36 bytes at `0x08` and
+`0x2C`; `overrev` and `sgt24h` space them differently, `skisuprg` 0x28 bytes
+apart), each a 16-bit checksum, a write counter that goes up by one at each
+save, then the settings from `0x10`. The game saves both copies. The
+checksum is not a plain CCITT, ARC or similar CRC-16 over the record, nor an
+additive sum of it (tried over every range, with and without its own
+field; *not found*), so a hub that writes this record per node needs the
+game's checksum routine read first.
+
+### 14.3 The rest of the games
+
+`topskatr`, `vf2`, `fvipers`, `lastbrnx`, `doa`, `zerogun`, `sfight`,
+`pltkids`, `schamp`, `vstriker`, `segawski`, `bel`, `hotd`, `gunblade`,
+`dynamcop`, `vcop`, `vcop2`, `skytargt`: none of their boot, attract and
+coin-start runs access `0x1A10000`-`0x1A14002` (the runs' `io.txt` list of
+unmapped accesses has no such address; the games that do link show
+`0x1A14000` there at once, even when not linked). They have no link board
+check, so no link play *(confirmed (by running it) for those runs; a check hidden
+behind a setting or mode no run reached cannot be ruled out)*. Their test
+menus were not walked. `rchase2` is the one with "checking network": that is its
+ride drive board (`docs/games/rchase2.md`), not this board. `dynabb97` and
+`desert` were walked (above): no setting.
+
+### 14.4 What the survey found about the board
+
+- **One register interface, two shared-RAM layouts.** Every game that has a
+  link setting except `skisuprg` starts the board as `srallyc` does (0, 0 to
+  `0x1A14000`/`0x1A14002`; read `0x1A14000`; the master 1 to `0x1A14002`; 1 to
+  `0x1A14000`) and then reads `0x1A14002`, `0x1A10000`, `0x1A10002` and
+  `0x1A10003`; several write their ID to `0x1A10001` (`von`, `sgt24h`, `overrev`,
+  `motoraid`, `waverunr`; the hub accepts it). What differs is the layout of the
+  shared RAM (section 14.5): `0x1C0`-byte blocks (`srallyc`, `daytona`,
+  `manxtt`, `indy500`) or `0x380`-byte blocks received from `0x2380` (`sgt24h`,
+  `overrev`), and the per-game setting store. The Z80 ROM `epr-18643a.7` (the link
+  board's firmware by its header, `docs/games/sgt24h.md`) is in the sets of `von`,
+  `stcc` and `sgt24h`, but nothing here runs it.
+- **The start check runs at every boot, linked or not**, in the games that
+  have a board slot: `0x1A14000` is written within the first 700 frames
+  (`manxtt` at 62, `sgt24h` at 98, `skisuprg` at 148, `stcc` at 630), which
+  is why the slot's all-ones value matters (section 7).
+- **The setting is saved when the test menu is left**, not when a value is
+  changed (`manxtt`), so a player UI or tool that sets it without the menu must
+  also write the record's checksum (`srallyc`, `manxtt`: known; the `S32A` and
+  `SEGASTCb` records: not found).
+
+### 14.5 Hub runs (what `link-run` did with them)
+
+To see more than the first wait, `remodel link-run` was given the games with
+**temporary, uncommitted** entries: for `manxtt` a plain `LinkPlay` (the
+game's own default record, EEPROM store, role byte `0x0B`, roles 1 and 2);
+for the `S32A` games a placeholder entry whose per-node settings were the
+EEPROM images the game itself saved from its test menu (one MASTER or
+CAR NO1, one SLAVE with CABINET ID 2), the role and checksum written to unused
+bytes, and for `sgt24h` and `overrev` block `0x380`, received blocks from
+`0x2380`. The hub itself is unchanged. Two machines, `coin-start`-like inputs on
+both, 4,500 frames, pictures kept out of the tree.
+
+- **`manxtt`**: the ring comes up at frame 64 (the boot start check), the game
+  exchanges `0x1C0` blocks (word 1 of a block carries `0x0101` / `0x0202` in its high half,
+  the ID and the car number as `srallyc`'s do), plays attract, the ACTIVE MOTION SLIDER screen, course
+  select and a race showing POSITION 1/2 and /2; with 3 and 4 nodes POSITION
+  n/3 and n/4 and the 1P markers. No setting needed but the entry, and the game's
+  own record with byte `0x04` at 1 (not 2) did as well.
+- **`indy500`**: "CHECKING NETWORK NOW Ver.3.01", "THIS IS MASTER CONTROLLER" /
+  "THIS IS SLAVE MACHINE", "Node ID :1 / :2", "Total Nodes :2", "Cabinet ID
+  :1 / :2", then the race with POSITION 1/2 and 2/2 and the other car in view.
+  **With both cabinets at CABINET ID 1 the game shows NETWORK ERROR and
+  restarts the check forever** (the first attempt), so each node's CABINET ID
+  must differ: the per-node role needs both bytes, as `daytona`'s CAR NUMBER.
+- **`motoraid`, `waverunr`**: linked (a RIVAL marker; 1st/2 and 2nd/2) with the
+  `0x1C0` geometry; only a look at the first race.
+- **`sgt24h`**: with the `0x1C0` geometry the board came up and both screens
+  stayed on "CHECKING NETWORK NOW, LINKED, CAR No.1 MASTER / CAR No.2 SLAVE" for
+  4,500 frames (the game's blocks are `0x380` bytes, which that exchange does not
+  copy); with `0x380` and received blocks from `0x2380` both are in one race
+  (POSITION 7/8 and 8/8, the cars side by side).
+- **`overrev`**: the same, with the `0x380` layout, after the first run
+  with `0x1C0` left one machine racing alone and the other on ROUND 1. The master
+  writes nothing to `0x1A14002`, so the hub's "master first" rule had no
+  master to find; node 0 was taken as the first and the ring was right.
+- Not run: `von`, `stcc` (they need a SRAM or `SEGASTCb` settings store, the
+  hub knows only the two), `skisuprg` (the start is not the hub's), `overrevb`.
+
+Two record families are visible in the traces (registers the same, shared RAM
+different): **`0x1C0` blocks at `0x2000`, received from `0x21C0`** (`srallyc`,
+`daytona`, `manxtt`, `indy500`; `motoraid` and `waverunr` write smaller blocks and
+run on it) and **`0x380` blocks, received from `0x2380`**, with the game writing
+its ID to `0x1A10001` (`sgt24h`, `overrev`; `von`'s two 1,792-byte buffers are the same
+size, *inferred*).
+
+### 14.6 Recommended order
+
+1. **`manxtt` (and its clone `manxttc`): data only, confirmed.** One `LinkPlay`
+   entry (EEPROM store, role byte `0x0B`, roles Master 1 / Slave 2, the game's
+   default record, CRC from byte 2 to 55) and the hub ran it unchanged with two,
+   three and four machines. It needs no new code, only the entry and a
+   `max_nodes` (the menu only offers Master and Slave; the game accepted four
+   in the hub), so it is the cheapest proof that the board model is generic and gives
+   two-bike head-to-head at once. Check the race to the flag and the
+   player UI's controls before calling it done.
+2. **The `S32A` settings record, once: then `indy500`, `motoraid`, `waverunr`,
+   `sgt24h`, `overrev`/`overrevb`.** Six games (seven sets) keep their link
+   setting in the same Sega record (a magic, two copies, a write counter and a
+   16-bit checksum), and the hub already links them: the runs above did it with
+   settings images the games saved themselves. The one piece of work is making a
+   node's record: read the checksum routine out of one game's program (the
+   library code is the same in the others, *inferred*), then give
+   `LinkSettings` a "two copies, counter, checksum" form with two role bytes
+   (NETWORK TYPE and CABINET ID, or LINK MAX and LINK TYPE; the IDs must
+   differ, `indy500` shows a NETWORK ERROR loop otherwise). Order within it:
+   `indy500` first (already linked in the hub, a clear race), then `motoraid` and
+   `waverunr` (linked at first look; check a race), then `sgt24h` and `overrev`
+   (they also need the `0x380`-byte layout, which is `LinkPlay` data: `block`,
+   `rx`), `overrevb` last as `overrev`'s clone.
+3. **`von`, then `stcc`: the `0x380` family with their own stores.** `von` is a
+   two-node head-to-head fighter and the most wanted of them for play; its
+   setting is a backup-SRAM byte (a third `SettingsStore`), it writes its ID to
+   `0x1A10001` and waits for bit 7 of `0x1A14002` to be *set*, which `sgt24h` and
+   `overrev` (step 2) will have settled in the hub; do it after them. `stcc`
+   shows `von`'s wording ("THIS IS MASTER SITE"), so it follows `von`: it has its
+   own record (`SEGASTCb`, LINK TYPE in the top three bits of byte `0x10`, a
+   checksum not yet found) and offers CAR 1 to 7, which would be the largest ring
+   after `daytona`.
+4. **`skisuprg`: last.** Its start is a different handshake (the read-back of
+   `0x1A14000` after the start, "NETWORK BOARD IS NOT EXIST !"), with no poll of
+   `0x1A14002` or read of `0x1A10000` in the part that ran; what it expects back
+   is unknown, so it needs code reading before any board model.
+
+`dynabb97` and `desert` have nothing to add. For all of them the test menu's own
+link setting is a start-up decision, so the player UI can set it the way it sets
+`srallyc`'s (`LinkPlay` roles) without the user opening the test menu.

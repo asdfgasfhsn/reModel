@@ -141,3 +141,14 @@ half, above); smooth motion; run-ahead 1.
 - *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
   a 600M-instruction coin-start run (`make bench`) fast-forwards 74.6%
   of its instructions through it, and the state hash is unchanged.
+
+## Link play (survey)
+
+- *Confirmed (by running it):* GAME ASSIGNMENTS has **LINK TYPE** (STAND ALONE, CAR 1, CAR 2, ... CAR 7 seen in seven
+  presses). Found by driving the test menu with scripted input (`test@1300-1330` held to open it, `service@A-B/20` to step the cursor, `test@F` to select or change a value) and diffing the `eeprom.bin` of runs that changed the value, the menu left through EXIT so the game saved it. The EEPROM record starts `SEGASTCb` (not the `S32A` of the other Sega racers): a checksum at
+  `0x08`, a write counter at `0x0C`, and LINK TYPE in **bits 5-7 of byte `0x10`** (`0x01` stand-alone, `0x21` CAR 1,
+  `0x41` CAR 2: the low bit is another setting). The checksum algorithm was not determined.
+- *Confirmed (by running it):* with LINK TYPE CAR 1 and a board fitted (`REMODEL_LINK=fake,0,2`) the game, after the test menu
+  is left, shows "THIS IS MASTER SITE" (`von`'s wording, not `srallyc`'s "MASTER CONTROLLER") and reads `0x1A14002` every frame, with
+  no further write to `0x1A14000`; neither board answers what it waits for (*inferred*: bit 7 set, as `von`). The Z80 link board ROM
+  `epr-18643a.7` is in this set. See `docs/hw/link-board.md` section 14.

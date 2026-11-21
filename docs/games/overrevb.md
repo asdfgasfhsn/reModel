@@ -78,3 +78,8 @@ motion; run-ahead 0 (input lag 0).
 - *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
   a 600M-instruction coin-start run (`make bench`) fast-forwards 79.6%
   of its instructions through it, and the state hash is unchanged.
+
+## Link play (survey)
+
+- *Confirmed (by running it):* the same FOUNDATIONAL SETTING page as `overrev` and the same EEPROM bytes (LINK MAX at
+  `0x36`, copy `0x6A`: one press 0 to 1). See `docs/games/overrev.md` and `docs/hw/link-board.md` section 14.

@@ -102,3 +102,15 @@ frame 2,900 of a race) and the brake; the punch shows 1 frame. As for
 - The ride-on cabinet's moving parts: no drive board is checked at boot
   and none is modelled; the I/O chip's register 4 is written
   (`0x1C00008`), what it drives is *unknown*.
+
+## Link play (survey)
+
+- *Confirmed (by running it):* GAME ASSIGNMENTS has **NETWORK TYPE** (STAND ALONE, MASTER, SLAVE) and **CABINET ID**
+  (1 to 4, cycling). Found by driving the test menu with scripted input (`test@1300-1330` held to open it, `service@A-B/20` to step the cursor, `test@F` to select or change a value) and diffing the `eeprom.bin` of runs that changed the value, the menu left through EXIT so the game saved it. Both are in the EEPROM's `S32A` record
+  (magic `53 33 32 41`; two copies of a 36-byte record at `0x08` and `0x2C`: a 16-bit checksum, a write counter at `0x0C`,
+  then the settings from `0x10`): NETWORK TYPE is byte `0x1E` (copy `0x42`), 0 / 1 / 2 in that order, and CABINET ID
+  byte `0x1F` (copy `0x43`), 0-based. The checksum algorithm was not found by black box (it is not a plain CRC-16 or
+  sum of the record).
+- *Confirmed (by running it):* NETWORK TYPE MASTER with a board fitted gives `srallyc`'s start (0, 0, read, master 1 to
+  `0x1A14002`, 1 to `0x1A14000`) and then a read of `0x1A14002` every frame. See `docs/hw/link-board.md` section 14.
+- *Confirmed (by running it):* two machines with the game's own MASTER / SLAVE (CABINET ID 1 / 2) images link in `link-run` (the HUD shows the rival); a race was not checked. `docs/hw/link-board.md` section 14.5.

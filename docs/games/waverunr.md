@@ -122,3 +122,12 @@ shading (no pictures recorded as better); smooth motion; run-ahead 0
 - *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
   a 600M-instruction coin-start run (`make bench`) fast-forwards 71.9%
   of its instructions through it, and the state hash is unchanged.
+
+## Link play (survey)
+
+- *Confirmed (by running it):* GAME ASSIGNMENTS has **NETWORK TYPE** (STAND ALONE, MASTER, SLAVE) and **CABINET ID**.
+  Found by driving the test menu with scripted input (`test@1300-1330` held to open it, `service@A-B/20` to step the cursor, `test@F` to select or change a value) and diffing the `eeprom.bin` of runs that changed the value, the menu left through EXIT so the game saved it. The EEPROM record is `motoraid`'s `S32A` kind with the same offsets: NETWORK TYPE byte `0x1E`
+  (copy `0x42`; 0 / 1 / 2), CABINET ID byte `0x1F` (copy `0x43`, 0-based; one press gave 2).
+- *Confirmed (by running it):* NETWORK TYPE MASTER with a board fitted gives `srallyc`'s start, then a read of
+  `0x1A14002` every frame. See `docs/hw/link-board.md` section 14.
+- *Confirmed (by running it):* two machines with the game's own MASTER / SLAVE (CABINET ID 1 / 2) images link in `link-run` (the HUD shows 1st/2 and 2nd/2 under the position). `docs/hw/link-board.md` section 14.5.

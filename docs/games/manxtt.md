@@ -150,3 +150,17 @@ save states round-trip.
   is named in `hud_element_windows`): not checked for wide views.
 - The link board (`0x1A14000`) reads as absent; linked play not looked
   at.
+
+## Link play (survey)
+
+- *Confirmed (by running it):* GAME ASSIGNMENTS has **LINK TYPE** (`Not Link`, `Master`, `Slave`) and BIKE COLOR (No.). Found by driving the test menu with scripted input (`test@1300-1330` held to open it, `service@A-B/20` to step the cursor, `test@F` to select or change a value) and diffing the `eeprom.bin` of runs that changed the value, the menu left through EXIT so the game saved it.
+  LINK TYPE is **byte `0x0B` of the 128-byte EEPROM image**: 0 Not Link, 1 Master, 2 Slave. The record is
+  `srallyc`'s kind: a CRC-16 at bytes 0-1 (CCITT, start `0xFFFF`, complemented, stored low byte first),
+  a length word `0x0038` at bytes 2-3, the settings after; the CRC covers bytes 2 to 55 (recomputed from two
+  game-written images). Byte `0x04` also goes from 1 to 2 when the game is linked (derived, *unconfirmed* what it is).
+  `manxttc` has the same page.
+- *Confirmed (by running it):* with LINK TYPE Master and a link board fitted (`REMODEL_LINK=fake,0,2`) the game
+  shows "CHECKING COMMUNICATION BOARD", "THIS IS MASTER CONTROLLER" and runs `srallyc`'s start: 0 to
+  `0x1A14000`/`0x1A14002`, a read of `0x1A14000`, the master's 1 to `0x1A14002`, 1 to `0x1A14000`, then it reads
+  `0x1A14002` every frame (daytona's wait for bit 7 to flip). See `docs/hw/link-board.md` section 14.
+- *Confirmed (by running it):* a plain `LinkPlay` entry (the record above, role byte `0x0B`, roles 1 and 2, `0x1C0` blocks as `srallyc`) links two, three and four machines in `link-run` unchanged: the ring is up at frame 64, the game shows POSITION 1/2 (n/3, n/4) in the race. Data only; the entry was not committed. `docs/hw/link-board.md` section 14.5.

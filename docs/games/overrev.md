@@ -111,3 +111,15 @@ motion; run-ahead 0 (input lag 0).
 - *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
   a 600M-instruction coin-start run (`make bench`) fast-forwards 79.7%
   of its instructions through it, and the state hash is unchanged.
+
+## Link play (survey)
+
+- *Confirmed (by running it):* GAME ASSIGNMENTS MENU, FOUNDATIONAL SETTING has **LINK MAX** (NOT LINK, 2 LINKS, 3 LINKS,
+  4 LINKS) and **LINK TYPE** (MASTER CarNo.1, SLAVE CarNo.2, CarNo.3, ...; the default is MASTER CarNo.1 with LINK MAX NOT LINK,
+  so LINK MAX is what turns linking on). Found by driving the test menu with scripted input (`test@1300-1330` held to open it, `service@A-B/20` to step the cursor, `test@F` to select or change a value) and diffing the `eeprom.bin` of runs that changed the value, the menu left through EXIT so the game saved it. The EEPROM is the `S32A` kind (copies `0x34` apart at `0x08` and
+  `0x3C`): LINK MAX byte `0x36` (copy `0x6A`; 0 to 3), LINK TYPE byte `0x35` (copy `0x69`; 0, 1, 2 seen). The checksum algorithm
+  was not determined.
+- *Confirmed (by running it):* LINK MAX 2 LINKS with a board fitted: the start check at boot and after the menu is
+  0 to `0x1A14000`/`0x1A14002`, a read of `0x1A14000`, 1 to `0x1A14000` (no write to `0x1A14002` as the default
+  CarNo.1 master), then a read of `0x1A14002` every frame. Jaleco's set has no link board ROM. See `docs/hw/link-board.md` section 14.
+- *Confirmed (by running it):* in `link-run` with the game's own images (LINK MAX 2 LINKS, MASTER CarNo.1 / SLAVE CarNo.2) and the `0x380` layout (as `sgt24h`) two machines race in one field; the hub warned that no node wrote 1 to `0x1A14002` as master (the game does not) and went on. `docs/hw/link-board.md` section 14.5.

@@ -157,3 +157,13 @@ buttons labelled.
 3. The analogue channels the game reads, and whether anything uses them.
 4. The sound program's version, and the sample order against it.
 5. The Japanese clone `vonj`.
+
+## Link play (survey)
+
+- *Confirmed (by running it):* GAME ASSIGNMENTS has **NETWORK LINK ATTRIBUTE** (NOLINK, SLAVE, MASTER in the order the TEST
+  button steps it). It is **a byte of the backup SRAM, `0x1D00028`** (a write watch on it saw 0, 1, 2 written by
+  the three presses): 0 SLAVE, 1 MASTER, 2 NOLINK (the default). The game's two-node limit is in its code (any total
+  other than 2 is "Illegal Nodes").
+- *Confirmed (by running it):* with MASTER set and a board fitted (`REMODEL_LINK=idle` or `fake,0,2`) the game shows "THIS IS
+  MASTER SITE" and "MODEL2 BCRX", writes 0, 0 to `0x1A14000`/`0x1A14002`, reads `0x1A14000`, writes 1 to `0x1A14000`, then
+  waits on `0x1A14002` (every frame) for bit 7 to be set, as the code reading said; neither board answers that. See `docs/hw/link-board.md` section 14.

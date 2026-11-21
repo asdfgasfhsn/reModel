@@ -94,3 +94,8 @@ run-ahead 1.
   pass writes memory with a new value and none is the fixed point the
   idle skip needs (`docs/idle-skip.md`). The game is left without an
   idle loop: it runs every pass.
+
+## Link play (survey)
+
+- *Confirmed (by running it):* the GAME ASSIGNMENTS page (GAME DIFFICULTY, ADVERTISE SOUND, CABINET TYPE (VS), FAVORITE,
+  INNINGS) has no link setting and a coin-start run never touches `0x1A10000`-`0x1A14002`: no link play. See `docs/hw/link-board.md` section 14.

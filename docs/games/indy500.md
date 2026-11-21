@@ -120,3 +120,12 @@ run-ahead 1.
 - *Confirmed (by running it):* with the idle skip (`docs/idle-skip.md`)
   a 600M-instruction coin-start run (`make bench`) fast-forwards 71.7%
   of its instructions through it, and the state hash is unchanged.
+
+## Link play (survey)
+
+- *Confirmed (by running it):* GAME ASSIGNMENTS has CABINET TYPE (TWIN), **NETWORK TYPE** (STAND ALONE, MASTER, SLAVE)
+  and **CABINET ID**. Found by driving the test menu with scripted input (`test@1300-1330` held to open it, `service@A-B/20` to step the cursor, `test@F` to select or change a value) and diffing the `eeprom.bin` of runs that changed the value, the menu left through EXIT so the game saved it. The EEPROM record is `motoraid`'s `S32A` kind with the same offsets (NETWORK TYPE byte
+  `0x1E`, copy `0x42`; CABINET ID byte `0x1F`, copy `0x43`).
+- *Confirmed (by running it):* NETWORK TYPE MASTER with a board fitted gives `srallyc`'s start, then a read of
+  `0x1A14002` every frame. See `docs/hw/link-board.md` section 14.
+- *Confirmed (by running it):* in `link-run` (the hub as it is; per-node EEPROM images saved by the game) two machines show "CHECKING NETWORK NOW Ver.3.01", "THIS IS MASTER CONTROLLER" / "THIS IS SLAVE MACHINE", Node ID, Total Nodes and Cabinet ID, then race (POSITION 1/2 and 2/2). With both at CABINET ID 1 the game shows NETWORK ERROR and restarts the check forever. Blocks `0x1C0` at `0x2000`, received from `0x21C0`. `docs/hw/link-board.md` section 14.5.

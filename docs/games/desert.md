@@ -111,3 +111,8 @@ bezel). The third game on the original Model 2 board
 2. The turret's direction and travel, the handle's travel.
 3. The boot bytes the sound board overruns (above).
 4. The OUTPUT TEST (lamps) and the motion cabinet (not needed to play).
+
+## Link play (survey)
+
+- *Confirmed (by running it):* the GAME SYSTEM page (COIN/CREDIT SETTING, COUNTRY, ADVERTISE SOUND, DIFFICULTY for the
+  desert and canyon stages) has no link setting and a coin-start run never touches the link slot: no link play. See `docs/hw/link-board.md` section 14.
