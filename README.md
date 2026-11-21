@@ -112,6 +112,7 @@ Guides:
 - [docs/play.md](docs/play.md): the native player, its launcher and settings.
 - [docs/photo-mode.md](docs/photo-mode.md): the player's photo mode (free camera, time scrub, depth of field, captures).
 - [docs/web.md](docs/web.md): the browser build.
+- [site/README.md](site/README.md): the promo website, how it is built from your ROMs and published.
 - [docs/roms.md](docs/roms.md): the ROM sets, their boards and what each game needs.
 - [docs/variants.md](docs/variants.md): a survey of every clone (revision, region, hack) of the supported games, what each needs, and how they could show as versions of a title.
 - [docs/status.md](docs/status.md): the status table; what is done, in progress and planned.
