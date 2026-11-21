@@ -685,8 +685,7 @@ impl Menu {
         self.controls_left(ctx, settings, prefs, view, b, &reg, device, cabinet, style, &list, focused_slot);
         self.ctl.focus.end();
         if back {
-            self.page = Page::Pause;
-            self.pause_focus = Focus::default();
+            self.back_to_pause();
             self.capture = None;
         }
         changed

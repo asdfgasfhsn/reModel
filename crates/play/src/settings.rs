@@ -622,8 +622,6 @@ pub struct Settings {
     /// The version of each title the launcher shows (title to set id), kept
     /// per title (`version.<title> = <set>`).
     pub versions: BTreeMap<String, String>,
-    /// The launcher lists prototypes and hacked sets among a title's versions.
-    pub show_hacks: bool,
     /// The defaults for all games.
     pub defaults: Layer,
     /// Each game's own settings, read when first needed.
@@ -643,7 +641,6 @@ impl Default for Settings {
             for_all: true,
             player_name: linknet::default_name(),
             versions: BTreeMap::new(),
-            show_hacks: false,
             defaults: Layer::new(),
             games: BTreeMap::new(),
             cli: Layer::new(),
@@ -773,7 +770,8 @@ impl Settings {
                 "view" => s.launcher_view = crate::library::ViewMode::parse(v).unwrap_or_default(),
                 "scope" => s.for_all = v != "game",
                 "player_name" => s.player_name = linknet::name_or_default(v),
-                "show_hacks" => s.show_hacks = v == "true",
+                // (An old setting: every version is listed now.)
+                "show_hacks" => {}
                 _ if k.starts_with("version.") && !v.is_empty() => {
                     s.versions.insert(k["version.".len()..].to_string(), v.to_string());
                 }
@@ -797,9 +795,6 @@ impl Settings {
             if self.for_all { "all" } else { "game" },
             self.player_name,
         );
-        if self.show_hacks {
-            text += "show_hacks = true\n";
-        }
         for (title, set) in &self.versions {
             text += &format!("version.{title} = {set}\n");
         }
@@ -1497,15 +1492,17 @@ mod tests {
     }
 
     #[test]
-    fn the_chosen_versions_and_the_hacks_setting_are_kept() {
+    fn the_chosen_versions_are_kept_and_the_old_hacks_setting_is_ignored() {
         let mut s = Settings::parse("");
-        assert!(s.versions.is_empty() && !s.show_hacks);
+        assert!(s.versions.is_empty());
         s.versions.insert("topskatr".into(), "topskatrj".into());
         s.versions.insert("srallyc".into(), "srallycb".into());
-        s.show_hacks = true;
         let back = Settings::parse(&s.text());
         assert_eq!(back.versions, s.versions);
-        assert!(back.show_hacks);
+        // A settings file from before every version was listed still reads, and drops the key.
+        let old = Settings::parse("show_hacks = true\nversion.srallyc = srallycb\n");
+        assert_eq!(old.versions.get("srallyc").map(String::as_str), Some("srallycb"));
+        assert!(!old.text().contains("show_hacks") && !old.defaults.contains_key("show_hacks"));
         // They are not game settings: no layer takes them.
         assert!(!back.defaults.contains_key("version.topskatr") && !back.defaults.contains_key("show_hacks"));
         assert!(!Settings::parse("version.topskatr =\n").versions.contains_key("topskatr"));

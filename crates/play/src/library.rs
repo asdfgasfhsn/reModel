@@ -35,19 +35,15 @@ pub fn cards(games: &[&'static Game]) -> Vec<&'static Game> {
 
 /// The versions of the card `card` among `games`, in the version list's
 /// order: the title itself, then official revisions, regions, other boards,
-/// prototypes and hacks (each kind in the table's order). Prototypes and
-/// hacks only with `show_hacks`, or when `keep` is one of them (the version
-/// chosen stays listed whatever the setting).
-pub fn versions(card: &Game, games: &[&'static Game], show_hacks: bool, keep: Option<&str>) -> Vec<&'static Game> {
+/// prototypes and hacks (each kind in the table's order): every version
+/// there is, none hidden.
+pub fn versions(card: &Game, games: &[&'static Game]) -> Vec<&'static Game> {
     let mut out: Vec<(VariantKind, usize, &'static Game)> = Vec::new();
     for g in games {
         if g.id == card.id {
             continue;
         }
         let Some(v) = variants::get(g.id).filter(|v| v.parent == card.id) else { continue };
-        if v.kind.hidden_by_default() && !show_hacks && keep != Some(g.id) {
-            continue;
-        }
         let order = variants::all().iter().position(|x| x.id == g.id).unwrap_or(0);
         out.push((v.kind, order, g));
     }

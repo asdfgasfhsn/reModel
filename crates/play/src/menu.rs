@@ -151,6 +151,11 @@ pub struct Menu {
     fresh: HashMap<u8, egui::ColorImage>,
     /// Reset game was selected once, and wants a second.
     reset_armed: Option<Instant>,
+    /// The menu was opened straight onto a page (the launcher's game page
+    /// does that): going back from it closes the menu instead of showing
+    /// the pause menu.
+    direct: bool,
+    close_asked: bool,
 }
 
 /// A slot's thumbnail on the GPU: of the save made at `saved`, read from
@@ -164,8 +169,6 @@ struct Thumb {
 /// Player-wide settings the menu changes besides the game's.
 pub struct Prefs<'a> {
     pub fullscreen: &'a mut bool,
-    /// The launcher lists prototypes and hacks among a title's versions.
-    pub show_hacks: &'a mut bool,
     /// Changes are kept for all games (else for the one playing).
     pub for_all: &'a mut bool,
 }
@@ -215,6 +218,20 @@ pub struct View<'a> {
     /// A network game: the game runs on under the menu (the others would
     /// wait for it), so the menu says so instead of "Paused".
     pub running: bool,
+}
+
+/// A game's picture style, music level and speed in a few words each, as the
+/// pause menu and the launcher's game page list them.
+pub fn summary(settings: &GameSettings) -> (&'static str, String, String) {
+    let sound = format!("Music {}{} dB", if settings.music_db > 0.0 { "+" } else { "" }, settings.music_db);
+    let speed = if settings.run_ahead > 0 {
+        format!("Run-ahead {}", settings.run_ahead)
+    } else if settings.exact {
+        "Exact speed".to_string()
+    } else {
+        "Smooth".to_string()
+    };
+    (settings.preset.label(), sound, speed)
 }
 
 /// What the picture pages tell a player about where a change is kept
@@ -510,6 +527,8 @@ impl Menu {
             self.picture = picture::State::default();
             self.thumbs.clear();
             self.reset_armed = None;
+            self.direct = false;
+            self.close_asked = false;
             return actions;
         }
         self.picture.wipe_rect = None;
@@ -532,6 +551,9 @@ impl Menu {
                     if self.controls_page(ctx, settings, prefs, view, b, navs) {
                         actions.push(Action::Bindings);
                     }
+                    if std::mem::take(&mut self.close_asked) {
+                        actions.push(Action::Resume);
+                    }
                     return actions;
                 }
                 // Nothing to bind: back to the pause menu.
@@ -546,7 +568,28 @@ impl Menu {
             Page::Advanced => self.advanced_page(ctx, settings, prefs, view, navs),
             Page::Controls => {}
         }
+        if std::mem::take(&mut self.close_asked) {
+            actions.push(Action::Resume);
+        }
         actions
+    }
+
+    /// Open the menu (already `open`) straight onto `page` (and `tab`, for
+    /// Settings): a way back from it closes the menu.
+    pub fn open_at(&mut self, page: Page, tab: Tab) {
+        self.page = page;
+        self.tab = tab;
+        self.direct = true;
+    }
+
+    /// Back from a page: to the pause menu, or out of the menu when it was
+    /// opened straight onto the page.
+    fn back_to_pause(&mut self) {
+        self.page = Page::Pause;
+        self.pause_focus = Focus::default();
+        if self.direct {
+            self.close_asked = true;
+        }
     }
 
     /// The pause menu: what to do (the top rows), then where the settings
@@ -573,15 +616,7 @@ impl Menu {
         let playing = view.playing.is_some();
         let armed = self.reset_armed.is_some();
         let used = view.saves.iter().flatten().count();
-        let picture = settings.preset.label();
-        let sound = format!("Music {}{} dB", if settings.music_db > 0.0 { "+" } else { "" }, settings.music_db);
-        let speed = if settings.run_ahead > 0 {
-            format!("Run-ahead {}", settings.run_ahead)
-        } else if settings.exact {
-            "Exact speed".to_string()
-        } else {
-            "Smooth".to_string()
-        };
+        let (picture, sound, speed) = summary(settings);
         let mut go: Option<(Page, Tab)> = None;
         let mut arm = false;
         let s = theme::scale(ctx);
@@ -796,8 +831,7 @@ impl Menu {
         }
         self.slots_focus.end();
         if back {
-            self.page = Page::Pause;
-            self.pause_focus = Focus::default();
+            self.back_to_pause();
         }
     }
 
@@ -872,8 +906,7 @@ impl Menu {
         // filtering, on More) is Custom.
         *settings = settings.clone().settled(view.game);
         if back {
-            self.page = Page::Pause;
-            self.pause_focus = Focus::default();
+            self.back_to_pause();
         }
     }
 }
@@ -1148,16 +1181,6 @@ fn display_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings, prefs:
         rows.toggle(ui, "Bezel", &mut s.bezel, "The cabinet's artwork beside a 4:3 picture in a wider window.");
     }
     rows.toggle(ui, "Fullscreen", &mut *prefs.fullscreen, "Fills the screen (F11 does the same, any time).");
-    if view.playing.is_none() {
-        rows.toggle(
-            ui,
-            "Show hacks and prototypes",
-            &mut *prefs.show_hacks,
-            "The launcher's Version list always has a title's official revisions and regions; with this on it \
-             lists the prototypes and hacked sets too (their ROMs permitting). Off by default: some are not worth \
-             running.",
-        );
-    }
     if view.link == Some(2) {
         let list: Vec<(crate::link::Layout, &str)> = crate::link::Layout::ALL.iter().map(|l| (*l, l.label())).collect();
         rows.choose(
@@ -1341,7 +1364,7 @@ mod tests {
             };
             let Rig { menu, s, b, actions, fullscreen, for_all, .. } = self;
             let mut out = self.ctx.run_ui(input, |ui| {
-                let prefs = Prefs { fullscreen, for_all, show_hacks: &mut false };
+                let prefs = Prefs { fullscreen, for_all };
                 actions.extend(menu.ui(ui.ctx(), s, prefs, &view, Some(&mut *b), navs));
             });
             out.textures_delta.clear();
@@ -1928,7 +1951,7 @@ mod tests {
             };
             let Rig { menu, s, fullscreen, for_all, .. } = r;
             let mut out = r.ctx.run_ui(input, |ui| {
-                menu.ui(ui.ctx(), s, Prefs { fullscreen, for_all, show_hacks: &mut false }, &view, None, navs);
+                menu.ui(ui.ctx(), s, Prefs { fullscreen, for_all }, &view, None, navs);
             });
             out.textures_delta.clear();
             assert!(r.ctx.cumulative_frame_nr() > before);
@@ -2007,7 +2030,7 @@ mod tests {
             };
             let mut actions = Vec::new();
             let mut out = ctx.run_ui(input, |ui| {
-                let prefs = Prefs { fullscreen: &mut fullscreen, for_all: &mut for_all, show_hacks: &mut false };
+                let prefs = Prefs { fullscreen: &mut fullscreen, for_all: &mut for_all };
                 actions = menu.ui(ui.ctx(), &mut s, prefs, &view, None, navs);
             });
             out.textures_delta.clear();

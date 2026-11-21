@@ -6,7 +6,7 @@
 //!
 //! * the **carousel**: the selected game's poster large at the right, the
 //!   next games beside it, and at the left its name, kind, board and year
-//!   and what can be done (play, saves, settings); the game's live attract
+//!   and one line about the player and the game; the game's live attract
 //!   mode (`preview`, once it has been selected for `SETTLE`) plays dimmed
 //!   behind everything, its poster blurred there until it does;
 //! * the **grid**: every game as a poster, with filter chips (All, Recent
@@ -17,17 +17,24 @@
 //! switch) and the same hint bar along the bottom (the pad's buttons, or the
 //! keys when the keyboard was used last), whose entries can be clicked too.
 //! Everything is reachable from a pad (`focus`, whose ring shows while the
-//! pad or the keyboard is in use) and from the mouse. Settings open the
-//! menu's side panel (`menu`), Saves a panel of the game's save slots.
+//! pad or the keyboard is in use) and from the mouse. A game's poster opens
+//! its **game page** (`page`): the live attract preview of the chosen
+//! version beside Play, Version, Play together, Saves and Game settings,
+//! each opening one level down; the settings open the menu's side panel
+//! (`menu`) on the page they name.
 //!
-//! Keyboard: arrows choose, Enter plays, S saves, Tab settings, C
-//! continues, Q and E (or Page Up and Down) switch the view, [ and ] the
-//! filter. Pad: d-pad or stick, A, X, Start (the menu button), Y, LB RB, LT
-//! RT. Mouse: click a poster to select it, again to play; the wheel steps
-//! through the carousel and scrolls the grid.
+//! Keyboard: arrows choose, Enter opens the game's page, C continues, Q and
+//! E (or Page Up and Down) switch the view, [ and ] the filter; S, L and V
+//! open the page at Saves, Play together and Version, Tab the player's
+//! settings. Pad: d-pad or stick, A, Y, LB RB, LT RT (X, View and Start do
+//! what S, L and Tab do). Mouse: click a poster to select it, again to open
+//! its page, twice quickly to play; the wheel steps through the carousel
+//! and scrolls the grid.
 //!
 //! Everything is laid out in design points at 1280x720 and scaled to the
 //! window (`layout`), so it reads the same at 1080p, ultrawide and 4K.
+
+mod page;
 
 use crate::focus::Focus;
 use crate::library::{self, Continue, Filter, Sort, Start, ViewMode};
@@ -40,6 +47,9 @@ use egui::{
 };
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant, SystemTime};
+
+/// Two clicks on a poster within this are a double click.
+const DOUBLE_CLICK: Duration = Duration::from_millis(450);
 
 /// The shared palette (`theme`).
 pub use crate::theme::CYAN;
@@ -124,6 +134,9 @@ pub enum Action {
     },
     /// Open the menu over the launcher (its settings).
     Settings,
+    /// Open it on one of the selected game's pages (the game page's
+    /// Game settings rows); going back closes it.
+    SettingsAt(menu::Page, menu::Tab),
     /// Close it (Esc, Start).
     CloseSettings,
     /// Drop the game's own settings (the menu's "Use the settings for all
@@ -167,10 +180,10 @@ pub fn layout(screen: Rect) -> Layout {
 
 impl Layout {
     /// The preview's size, for the texture it's drawn into: the screen's
-    /// shape at half its size (it is only ever shown dimmed behind the
-    /// carousel).
+    /// shape at 0.6 of its size (shown dimmed behind the carousel, and in a
+    /// frame on the game page).
     pub fn hero(&self) -> Rect {
-        Rect::from_center_size(self.screen.center(), self.screen.size() * 0.5)
+        Rect::from_center_size(self.screen.center(), self.screen.size() * 0.6)
     }
 
     /// Where the backdrop's horizon is, as a fraction of the screen's
@@ -203,6 +216,20 @@ pub struct View<'a> {
     /// The menu is waiting for a key or button to bind (Esc is the
     /// binding's, not the way out).
     pub capturing: bool,
+    /// What the selected game's settings are now, for the game page's rows.
+    pub settings: SettingsLine,
+}
+
+/// The selected game's settings in a few words each.
+#[derive(Clone, Debug, Default)]
+pub struct SettingsLine {
+    pub picture: String,
+    pub sound: String,
+    pub speed: String,
+    /// The Free play setting's label, for a game that has one.
+    pub free_play: Option<String>,
+    /// The game has settings of its own (they can be dropped).
+    pub has_own: bool,
 }
 
 /// The preview as a texture, and where the game's picture is in it.
@@ -224,41 +251,54 @@ struct SaveItem {
     thumb: Option<egui::TextureHandle>,
 }
 
-/// The Saves panel: the selected game's states.
-struct SavesPage {
-    game: &'static romset::Game,
-    items: Vec<SaveItem>,
-    focus: Focus,
-}
-
-/// The Link play panel: how many machines to start the selected game with.
-struct LinkPage {
-    game: &'static romset::Game,
-    focus: Focus,
+/// An entry of the hint bar: a button (or key), what it does, and the click
+/// it makes (none for the ones that only say how to move).
+pub(crate) struct Hint {
+    pub chip: Chip<'static>,
+    pub label: String,
+    pub click: Option<Click>,
 }
 
 /// A click (or a pad press) on the launcher's page, applied after it is
 /// drawn.
 #[derive(Clone, Copy)]
-enum Click {
+pub(crate) enum Click {
     View(ViewMode),
     Filter(Filter),
     NextFilter,
     Sort,
     Continue,
-    Play,
-    Saves,
+    /// The player's settings (the menu's pause page).
     Settings,
-    /// Link play (same screen): the player count panel.
-    Link,
-    /// The next version of the selected title (the Version button, V).
-    Version,
-    /// A version in the card's list.
-    SetVersion(&'static romset::Game),
-    /// A game's poster: selects it, or plays it if it is.
-    Game(&'static romset::Game),
-    /// The banner's game hosted on the network: join it.
+    /// Open the selected game's page (at its main menu).
+    OpenPage,
+    /// Open it at a level (the S, L and V keys, the pad's X and View).
+    OpenAt(page::Level),
+    /// A game's poster: selects it, or opens its page if it is; clicked
+    /// (the flag) twice quickly it plays.
+    Game(&'static romset::Game, bool),
+    /// The banner's game hosted on the network: its page at Play together.
     LanJoin,
+    /// On the page: back a level, or to the games.
+    PageBack,
+    /// Go down to a level of the page.
+    Enter(page::Level),
+    /// Start the chosen version.
+    Play,
+    /// A version chosen in the page's list.
+    SetVersion(&'static romset::Game),
+    /// Start the chosen version with this many machines on this screen.
+    Together(usize),
+    NetHost,
+    NetJoin,
+    /// Join the host the banner names.
+    NetJoinHosted,
+    /// Start from a save slot.
+    Load(Start),
+    /// Open the menu on a page of the game's settings.
+    SettingsAt(menu::Page, menu::Tab),
+    /// Drop the game's own settings.
+    ResetOwn,
 }
 
 pub struct Launcher {
@@ -269,11 +309,12 @@ pub struct Launcher {
     /// The cards: one per title (a variant whose title isn't there stands
     /// alone), the carousel's and grid's lists draw from these.
     cards: Vec<&'static romset::Game>,
+    /// How many versions each card has (its own set and every variant there).
+    versions_n: HashMap<&'static str, usize>,
     recent: Vec<String>,
     /// The version of each title chosen (title to set id), kept by the
-    /// player's settings, and whether prototypes and hacks are listed.
+    /// player's settings.
     chosen: BTreeMap<String, String>,
-    show_hacks: bool,
     pub mode: ViewMode,
     pub filter: Filter,
     pub sort: Sort,
@@ -299,9 +340,12 @@ pub struct Launcher {
     focus: Focus,
     /// Where the focus goes once the page has drawn it.
     pending_focus: Option<(Id, u8)>,
-    saves: Option<SavesPage>,
-    want_saves: bool,
-    link_page: Option<LinkPage>,
+    /// The selected game's page, when it is open.
+    page: Option<page::GamePage>,
+    /// The last poster clicked and when (a second click on it soon plays).
+    last_click: Option<(&'static str, Instant)>,
+    /// The player's name was edited on the page this frame.
+    name_edited: bool,
     /// The network link play panel (lobby or join), over everything else.
     net_page: Option<crate::netpage::NetPage>,
     /// Games hosted on this network (mDNS), for the banner: the browse
@@ -345,9 +389,9 @@ impl Default for Launcher {
             open: false,
             all: Vec::new(),
             cards: Vec::new(),
+            versions_n: HashMap::new(),
             recent: Vec::new(),
             chosen: BTreeMap::new(),
-            show_hacks: false,
             mode: ViewMode::default(),
             filter: Filter::All,
             sort: Sort::default(),
@@ -364,9 +408,9 @@ impl Default for Launcher {
             keys_used: false,
             focus: Focus::default(),
             pending_focus: None,
-            saves: None,
-            want_saves: false,
-            link_page: None,
+            page: None,
+            last_click: None,
+            name_edited: false,
             net_page: None,
             lan: None,
             lan_off: false,
@@ -465,6 +509,7 @@ impl Launcher {
     pub fn set_games(&mut self, games: &[&'static romset::Game], recent: &[String]) {
         self.all = games.to_vec();
         self.cards = library::cards(games);
+        self.versions_n = self.cards.iter().map(|c| (c.id, library::versions(c, games).len())).collect();
         self.recent = recent.to_vec();
         self.chips = Filter::chips(&self.cards, recent);
         if !self.chips.contains(&self.filter) {
@@ -523,21 +568,15 @@ impl Launcher {
         }
     }
 
-    /// The player's chosen versions (title to set id) and whether prototypes
-    /// and hacks are listed, from the settings.
-    pub fn set_versions(&mut self, chosen: &BTreeMap<String, String>, show_hacks: bool) {
+    /// The player's chosen versions (title to set id), from the settings.
+    pub fn set_versions(&mut self, chosen: &BTreeMap<String, String>) {
         self.chosen = chosen.clone();
-        self.show_hacks = show_hacks;
     }
 
-    pub fn set_show_hacks(&mut self, on: bool) {
-        self.show_hacks = on;
-    }
-
-    /// The versions the card `card` lists now: the title, then its variants
-    /// whose ROMs are there (hacks and prototypes if the setting is on).
+    /// The versions the card `card` lists: the title, then every variant
+    /// whose ROMs are there, hacks and prototypes too.
     fn versions_of(&self, card: &'static romset::Game) -> Vec<&'static romset::Game> {
-        library::versions(card, &self.all, self.show_hacks, self.chosen.get(card.id).map(String::as_str))
+        library::versions(card, &self.all)
     }
 
     /// The version of the selected card that is shown and played.
@@ -555,16 +594,6 @@ impl Launcher {
         self.chosen.insert(card.id.to_string(), to.id.to_string());
         actions.push(Action::Version { title: card.id.to_string(), set: to.id.to_string() });
         self.selected_at = Instant::now();
-    }
-
-    /// Step the selected card's version by one, round the list.
-    fn cycle_version(&mut self, actions: &mut Vec<Action>) {
-        let Some(card) = self.cur else { return };
-        let list = self.versions_of(card);
-        let Some(at) = self.version().and_then(|v| list.iter().position(|g| g.id == v.id)) else { return };
-        if list.len() > 1 {
-            self.choose_version(list[(at + 1) % list.len()], actions);
-        }
     }
 
     fn select(&mut self, game: &'static romset::Game) {
@@ -645,9 +674,20 @@ impl Launcher {
         self.relist();
     }
 
-    /// The selected game's preview is wanted: the grid doesn't show it.
+    /// The selected game's preview is wanted: the carousel and the game
+    /// page show it, the grid doesn't.
     pub fn wants_preview(&self) -> bool {
-        self.mode == ViewMode::Carousel
+        self.mode == ViewMode::Carousel || self.page.is_some()
+    }
+
+    /// The view whose backdrop is under the screen: the game page's is the
+    /// grid's, faint.
+    pub fn backdrop_view(&self) -> ViewMode {
+        if self.page.is_some() {
+            ViewMode::Grid
+        } else {
+            self.mode
+        }
     }
 
     /// The games the grid lists now, and how many there are in all.
@@ -665,9 +705,9 @@ impl Launcher {
         self.carousel.iter().map(|g| g.id).collect()
     }
 
-    /// The Saves panel is open.
-    pub fn saves_open(&self) -> bool {
-        self.saves.is_some() || self.want_saves || self.link_page.is_some() || self.net_page.is_some()
+    /// The game page or the network panel is open.
+    pub fn page_open(&self) -> bool {
+        self.page.is_some() || self.net_page.is_some()
     }
 
     /// The keyboard's `Nav`s this frame (taken from egui's input, so the
@@ -772,88 +812,80 @@ impl Launcher {
         };
         self.note_input(ctx, &navs, &keys);
         let all: Vec<Nav> = navs.iter().chain(&keys).copied().collect();
-        // View opens Link play from the page; over a panel it's Back.
-        let panel_open = view.menu_open || self.saves.is_some() || self.link_page.is_some() || self.net_page.is_some();
-        let page_view = !panel_open && all.contains(&Nav::View);
-        // (Used up here, so the panel it opens doesn't see a Back.)
+        // The menu and the network panel take the input; the page behind
+        // gets none (its focus just holds).
+        let blocked = view.menu_open || self.net_page.is_some();
+        // View opens Link play from the home screen; over a page or a panel it's Back.
+        let page_view = !blocked && self.page.is_none() && all.contains(&Nav::View);
+        // (Used up here, so the page it opens doesn't see a Back.)
         let all =
             if page_view { all.into_iter().filter(|&n| n != Nav::View).collect() } else { Nav::view_as_back(&all) };
-        if self.want_saves {
-            self.want_saves = false;
-            self.open_saves(ctx);
-        }
-        // The Saves panel and the menu take the input; the page behind
-        // gets none (its focus just holds).
-        let page_navs = if view.menu_open || self.saves.is_some() || self.link_page.is_some() || self.net_page.is_some()
-        {
-            Vec::new()
-        } else {
-            all.clone()
-        };
-        let page_navs = self.override_navs(page_navs);
-        self.focus.show = self.pad_used || self.keys_used;
         let mut clicks = Vec::new();
-        if !(view.menu_open || self.saves.is_some() || self.link_page.is_some() || self.net_page.is_some())
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::L))
-        {
-            clicks.push(Click::Link);
-        }
-        if !panel_open
-            && self.cur.is_some_and(|c| self.versions_of(c).len() > 1)
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::V))
-        {
-            clicks.push(Click::Version);
-        }
         self.poll_lan(ctx);
-        if !panel_open
-            && !self.lan_hosts.is_empty()
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::J))
-        {
-            clicks.push(Click::LanJoin);
-        }
-        if page_view {
-            clicks.push(Click::Link);
-        }
-        for nav in self.focus.begin(&page_navs) {
-            match nav {
-                Nav::Start | Nav::Settings => clicks.push(Click::Settings),
-                Nav::Saves => clicks.push(Click::Saves),
-                Nav::Continue => clicks.push(Click::Continue),
-                Nav::PrevGroup | Nav::NextGroup => clicks.push(Click::View(self.mode.other())),
-                Nav::PrevFilter if self.mode == ViewMode::Grid => self.cycle_filter(-1),
-                Nav::NextFilter if self.mode == ViewMode::Grid => self.cycle_filter(1),
-                _ => {}
+        if self.page.is_some() {
+            let page_navs = if blocked { Vec::new() } else { all.clone() };
+            self.page_frame(ctx, &l, view, page_navs, &mut clicks);
+            if std::mem::take(&mut self.name_edited) {
+                actions.push(Action::SetPlayerName(self.player_name.clone()));
             }
-        }
-
-        // Animation.
-        self.slide -= self.slide * ease(dt, 14.0);
-        if self.slide.abs() < 0.01 {
-            self.slide = 0.0;
-        }
-
-        let area = egui::Area::new(Id::unique("launcher")).fixed_pos(l.screen.min).order(egui::Order::Background);
-        area.show(ctx, |ui| {
-            ui.set_min_size(l.screen.size());
-            let p = ui.painter().clone();
-            self.paint_background(&p, &l, view);
-            match self.mode {
-                ViewMode::Carousel => self.paint_carousel(ui, &p, &l, view, dt, &mut clicks),
-                ViewMode::Grid => self.paint_grid(ui, &p, &l, view, &mut clicks),
+        } else {
+            let page_navs = if blocked { Vec::new() } else { all.clone() };
+            let page_navs = self.override_navs(page_navs);
+            self.focus.show = self.pad_used || self.keys_used;
+            if !blocked {
+                let links = self.cur.is_some_and(|c| crate::link::title_links(c.id));
+                let versions = self.cur.is_some_and(|c| self.versions_of(c).len() > 1);
+                let key = |k: egui::Key| ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, k));
+                if links && key(egui::Key::L) {
+                    clicks.push(Click::OpenAt(page::Level::Together));
+                }
+                if versions && key(egui::Key::V) {
+                    clicks.push(Click::OpenAt(page::Level::Version));
+                }
+                if !self.lan_hosts.is_empty() && key(egui::Key::J) {
+                    clicks.push(Click::LanJoin);
+                }
+                if page_view && links {
+                    clicks.push(Click::OpenAt(page::Level::Together));
+                }
             }
-            self.paint_top(ui, &p, &l, view, &mut clicks);
-            self.paint_bar(ui, &p, &l, view, &mut clicks);
-        });
-        self.focus.end();
-        self.apply_focus();
+            for nav in self.focus.begin(&page_navs) {
+                match nav {
+                    Nav::Start | Nav::Settings => clicks.push(Click::Settings),
+                    Nav::Saves => clicks.push(Click::OpenAt(page::Level::Saves)),
+                    Nav::Continue => clicks.push(Click::Continue),
+                    Nav::PrevGroup | Nav::NextGroup => clicks.push(Click::View(self.mode.other())),
+                    Nav::PrevFilter if self.mode == ViewMode::Grid => self.cycle_filter(-1),
+                    Nav::NextFilter if self.mode == ViewMode::Grid => self.cycle_filter(1),
+                    _ => {}
+                }
+            }
+
+            // Animation.
+            self.slide -= self.slide * ease(dt, 14.0);
+            if self.slide.abs() < 0.01 {
+                self.slide = 0.0;
+            }
+
+            let area = egui::Area::new(Id::unique("launcher")).fixed_pos(l.screen.min).order(egui::Order::Background);
+            area.show(ctx, |ui| {
+                ui.set_min_size(l.screen.size());
+                let p = ui.painter().clone();
+                self.paint_background(&p, &l, view);
+                match self.mode {
+                    ViewMode::Carousel => self.paint_carousel(ui, &p, &l, view, dt, &mut clicks),
+                    ViewMode::Grid => self.paint_grid(ui, &p, &l, view, &mut clicks),
+                }
+                self.paint_top(ui, &p, &l, view, &mut clicks);
+                let hints = self.home_hints();
+                let count = (self.mode == ViewMode::Grid).then(|| self.counts());
+                Self::paint_bar(ui, &p, &l, view, &mut self.focus, hints, count, &mut clicks);
+            });
+            self.focus.end();
+            self.apply_focus();
+        }
         for click in clicks {
             self.apply(click, view, &mut actions);
-        }
-        if self.saves.is_some() {
-            self.paint_saves(ctx, &all, view, &mut actions);
-        }
-        if self.link_page.is_some() {
-            self.paint_link(ctx, &all, &mut actions);
         }
         if let Some(page) = &mut self.net_page {
             let show = self.pad_used || self.keys_used;
@@ -865,8 +897,8 @@ impl Launcher {
     }
 
     /// The carousel's own moves: left and right on the selected card step
-    /// through the games (round, as the strip is), and down goes to the
-    /// buttons. The rest is for the focus to place by where things are.
+    /// through the games (round, as the strip is). The rest is for the
+    /// focus to place by where things are.
     fn override_navs(&mut self, navs: Vec<Nav>) -> Vec<Nav> {
         if self.mode != ViewMode::Carousel || self.focus.focused() != Some(selected_card()) {
             return navs;
@@ -876,7 +908,6 @@ impl Launcher {
             match nav {
                 Nav::Left => self.step(-1),
                 Nav::Right => self.step(1),
-                Nav::Down => self.pending_focus = Some((button_id("play"), 6)),
                 other => rest.push(other),
             }
         }
@@ -902,6 +933,7 @@ impl Launcher {
 
     /// Do what a click (or a pad press) on the page asked.
     fn apply(&mut self, click: Click, view: &View, actions: &mut Vec<Action>) {
+        let set = self.version().map(|g| g.id.to_string());
         match click {
             Click::View(mode) => self.set_mode(mode),
             Click::Filter(f) => self.set_filter(f),
@@ -912,38 +944,64 @@ impl Launcher {
                     actions.push(Action::Play { set: c.game.id.to_string(), from: c.from });
                 }
             }
-            Click::Play => {
-                if let Some(g) = self.version() {
-                    actions.push(Action::Play { set: g.id.to_string(), from: Start::New });
-                }
-            }
-            Click::Version => self.cycle_version(actions),
-            Click::SetVersion(g) => self.choose_version(g, actions),
-            Click::Saves => {
-                if self.cur.is_some() {
-                    self.want_saves = true;
-                }
-            }
             Click::Settings => actions.push(Action::Settings),
-            Click::Link => {
-                if let Some(game) = self.version().filter(|g| crate::link::play_for(g.id).is_some()) {
-                    self.link_page = Some(LinkPage { game, focus: Focus::default() });
-                }
-            }
-            Click::LanJoin => {
-                if let Some(f) = self.lan_hosts.first() {
-                    actions.push(Action::NetJoinAt { set: f.game.clone(), addr: f.addr.to_string() });
-                }
-            }
-            Click::Game(g) => {
-                if self.cur.map(|c| c.id) == Some(g.id) {
-                    let set = self.version().map_or(g.id, |v| v.id);
-                    actions.push(Action::Play { set: set.to_string(), from: Start::New });
+            Click::OpenPage => self.open_page(page::Level::Main, false),
+            Click::OpenAt(level) => self.open_page(level, false),
+            Click::Game(g, mouse) => {
+                let now = Instant::now();
+                let double = mouse && self.last_click.is_some_and(|(id, t)| id == g.id && now - t < DOUBLE_CLICK);
+                self.last_click = mouse.then_some((g.id, now));
+                if double {
+                    self.last_click = None;
+                    self.select(g);
+                    if let Some(set) = self.version().map(|v| v.id.to_string()) {
+                        actions.push(Action::Play { set, from: Start::New });
+                    }
+                } else if self.cur.map(|c| c.id) == Some(g.id) {
+                    self.open_page(page::Level::Main, mouse);
                 } else {
                     self.select(g);
                     self.pending_focus = Some((self.selected_id(), 6));
                 }
             }
+            Click::LanJoin => {
+                let Some(f) = self.lan_hosts.first().cloned() else { return };
+                let Some(card) = self.cards.iter().copied().find(|c| library::is_version_of(&f.game, c)) else {
+                    return;
+                };
+                self.select(card);
+                if let Some(v) = self.all.iter().copied().find(|g| g.id == f.game) {
+                    self.choose_version(v, actions);
+                }
+                self.open_page(page::Level::Together, false);
+                if let Some(page) = &mut self.page {
+                    page.want(page::Level::Together, "join hosted");
+                }
+            }
+            Click::PageBack => self.page_back(),
+            Click::Enter(level) => self.page_enter(level),
+            Click::Play => actions.extend(set.map(|set| Action::Play { set, from: Start::New })),
+            Click::SetVersion(g) => {
+                self.choose_version(g, actions);
+                if self.page.is_some() {
+                    self.page_leave(page::Level::Version);
+                    if let Some(page) = &mut self.page {
+                        page.want(page::Level::Main, "play");
+                    }
+                }
+            }
+            Click::Together(players) => actions.extend(set.map(|set| Action::PlayLink { set, players })),
+            Click::NetHost => actions.extend(set.map(|set| Action::NetHost { set })),
+            Click::NetJoin => actions.extend(set.map(|set| Action::NetJoin { set })),
+            Click::NetJoinHosted => {
+                let host = set.and_then(|set| self.lan_hosts.iter().find(|f| f.game == set).cloned());
+                if let Some(f) = host {
+                    actions.push(Action::NetJoinAt { set: f.game.clone(), addr: f.addr.to_string() });
+                }
+            }
+            Click::Load(from) => actions.extend(set.map(|set| Action::Play { set, from })),
+            Click::SettingsAt(page, tab) => actions.push(Action::SettingsAt(page, tab)),
+            Click::ResetOwn => actions.extend(set.map(Action::ResetGame)),
         }
     }
 
@@ -955,7 +1013,10 @@ impl Launcher {
                 let target = if self.cur.map(|c| c.id) == Some(*id) { 1.0 } else { 0.0 };
                 (g - target).abs() > 0.01
             });
-        growing || (self.mode == ViewMode::Carousel && self.slide != 0.0) || self.pending_focus.is_some()
+        growing
+            || (self.mode == ViewMode::Carousel && self.slide != 0.0)
+            || self.pending_focus.is_some()
+            || self.page.as_ref().is_some_and(|p| p.animating())
     }
 
     fn paint_background(&self, p: &Painter, l: &Layout, view: &View) {
@@ -1291,111 +1352,25 @@ impl Launcher {
             row_h = r.height();
         }
         y += row_h + 14.0 * u;
-        // The versions of the title, when it has more than one: a pill each, the shown one lit.
-        if versions.len() > 1 {
-            let font = FontId::new(17.0 * u, theme::semibold());
-            let mut x = left;
-            let mut row_h = 0.0;
-            for v in &versions {
-                let on = v.id == game.id;
-                let (fill, ink) = if on {
-                    (Color32::from_rgba_unmultiplied(31, 107, 255, 150), FG)
-                } else {
-                    (Color32::from_white_alpha(18), theme::TEXT_2)
-                };
-                let label = library::version_label(v);
-                let g = p.layout_no_wrap(label, font.clone(), ink);
-                let w = g.size().x + 24.0 * u;
-                if x > left && x + w > left + info_w {
-                    x = left;
-                    y += row_h + 8.0 * u;
-                }
-                let r = Rect::from_min_size(pos2(x, y), vec2(w, g.size().y + 12.0 * u));
-                let resp = ui.interact(r, Id::unique(("version-pill", v.id)), Sense::click());
-                let fill = if resp.hovered() && !on { Color32::from_white_alpha(34) } else { fill };
-                p.rect_filled(r, 999.0, fill);
-                if on {
-                    p.rect_stroke(
-                        r,
-                        999.0,
-                        Stroke::new(1.0 * u, Color32::from_rgba_unmultiplied(34, 229, 255, 128)),
-                        StrokeKind::Inside,
-                    );
-                }
-                p.galley(r.min + vec2(12.0 * u, 6.0 * u), g, ink);
-                if resp.clicked() {
-                    clicks.push(Click::SetVersion(v));
-                }
-                x = r.right() + 8.0 * u;
-                row_h = r.height();
-            }
-            y += row_h + 14.0 * u;
-        }
         let line = match view.resume {
-            Some(t) => format!("You left off {}. Saves has it.", age(t)),
-            None if library::played_rank(&self.recent, card).is_some() => "Played before.".to_string(),
-            None => "Not played yet.".to_string(),
+            Some(t) => format!("You left off {}", age(t)),
+            None if library::played_rank(&self.recent, card).is_some() => "Played before".to_string(),
+            None => "Not played yet".to_string(),
         };
-        let para = p.layout(line, FontId::new(20.0 * u, FontFamily::Proportional), theme::TEXT_2, info_w);
-        p.galley(pos2(left, y), para.clone(), theme::TEXT_2);
-        y += para.size().y + 22.0 * u;
-        // Play, Saves, Settings.
-        let mut buttons = vec![
-            ("play", "Play", self.chip(Chip::A, "Enter"), Click::Play, true),
-            ("saves", "Saves", self.chip(Chip::X, "S"), Click::Saves, false),
-            ("settings", "Settings", self.chip(Chip::Menu, "Tab"), Click::Settings, false),
-        ];
-        // Games that can link cabinets on one screen: that, too.
-        if crate::link::play_for(game.id).is_some() {
-            buttons.push(("link", "Link play", self.chip(Chip::Key("View"), "L"), Click::Link, false));
-        }
-        // A title with versions: the pad's way through them (the pills are the pointer's).
+        let para = p.layout(line, FontId::new(22.0 * u, theme::semibold()), FG, info_w);
+        p.galley(pos2(left, y), para.clone(), FG);
+        y += para.size().y + 6.0 * u;
+        // Under it, dim: the versions, and linking where the title does.
+        let mut extra = Vec::new();
         if versions.len() > 1 {
-            buttons.push(("version", "Version", self.chip(Chip::None, "V"), Click::Version, false));
+            extra.push(format!("{} versions", versions.len()));
         }
-        let font = FontId::new(22.0 * u, theme::bold());
-        let mut bx = left;
-        for (name, label, chip, click, primary) in buttons {
-            let g = p.layout_no_wrap(label.to_string(), font.clone(), FG);
-            let d = 34.0;
-            let cw = theme::chip_width_at(p, chip, u, d);
-            let w = 18.0 * u + cw + 12.0 * u + g.size().x + 26.0 * u;
-            // (A narrow window wraps them.)
-            if bx > left && bx + w > left + info_w.max(w) {
-                bx = left;
-                y += 78.0 * u;
-            }
-            let r = Rect::from_min_size(pos2(bx, y), vec2(w, 66.0 * u));
-            let id = button_id(name);
-            let (resp, hit) = control(&mut self.focus, ui, id, r);
-            if primary {
-                p.add(
-                    egui::epaint::RectShape::filled(
-                        r.translate(vec2(0.0, 8.0 * u)),
-                        14.0 * u,
-                        Color32::from_rgba_unmultiplied(31, 107, 255, 90),
-                    )
-                    .with_blur_width(24.0 * u),
-                );
-                p.rect_filled(r, 14.0 * u, if resp.hovered() { Color32::from_rgb(60, 130, 255) } else { theme::BLUE });
-                p.rect_stroke(
-                    r,
-                    14.0 * u,
-                    Stroke::new(2.0 * u, Color32::from_rgba_unmultiplied(34, 229, 255, 128)),
-                    StrokeKind::Inside,
-                );
-            } else {
-                p.rect_filled(r, 14.0 * u, Color32::from_white_alpha(if resp.hovered() { 36 } else { 26 }));
-            }
-            theme::paint_chip_at(p, chip, pos2(r.left() + 18.0 * u, r.center().y), u, d);
-            p.galley(pos2(r.left() + 18.0 * u + cw + 12.0 * u, r.center().y - g.size().y / 2.0), g, FG);
-            if self.focus.is_on(id) {
-                theme::focus_ring(p, r, u, 14.0);
-            }
-            if hit {
-                clicks.push(click);
-            }
-            bx = r.right() + 14.0 * u;
+        if let Some(n) = crate::link::title_machines(card.id) {
+            extra.push(format!("Link play, 2 to {n} machines"));
+        }
+        if !extra.is_empty() {
+            let more = p.layout(extra.join(" · "), FontId::new(18.0 * u, FontFamily::Proportional), DIM, info_w);
+            p.galley(pos2(left, y), more, DIM);
         }
         self.paint_strip(ui, p, l, dt, clicks);
         // The preview's own status along the foot of the info column.
@@ -1436,7 +1411,7 @@ impl Launcher {
         let pc = p.with_clip_rect(clip);
         // The wheel steps through them.
         let strip = Rect::from_min_max(pos2(x0, l.body.top()), pos2(l.screen.right(), l.body.bottom()));
-        if ui.rect_contains_pointer(strip) && !self.saves_open() {
+        if ui.rect_contains_pointer(strip) && !self.page_open() {
             let d = ui.input(|i| i.smooth_scroll_delta);
             self.wheel += d.y + d.x;
             while self.wheel >= 40.0 {
@@ -1533,7 +1508,7 @@ impl Launcher {
                     theme::focus_ring(&pc, r, u, 14.0);
                 }
                 if hit {
-                    clicks.push(Click::Game(game));
+                    clicks.push(Click::Game(game, resp.clicked()));
                 }
             }
         }
@@ -1663,7 +1638,7 @@ impl Launcher {
                     let id = tile_id(game);
                     let (resp, hit) = control(focus, ui, id, r);
                     if hit {
-                        clicks.push(Click::Game(game));
+                        clicks.push(Click::Game(game, resp.clicked()));
                     }
                     if !r.expand(20.0 * u).intersects(ui.clip_rect()) {
                         continue;
@@ -1708,7 +1683,9 @@ impl Launcher {
                         name_font.clone(),
                         FG,
                     );
-                    let genre = fit_text(&p, game.genre, &genre_font, tw - 8.0 * u);
+                    let versions = self.versions_n.get(game.id).copied().unwrap_or(1);
+                    let second = if versions > 1 { format!("{versions} versions") } else { game.genre.to_string() };
+                    let genre = fit_text(&p, &second, &genre_font, tw - 8.0 * u);
                     p.text(
                         pos2(r.left() + 4.0 * u, pr.bottom() + 8.0 * u + 28.0 * u),
                         Align2::LEFT_TOP,
@@ -1721,88 +1698,81 @@ impl Launcher {
         });
     }
 
-    /// The hint bar along the foot: what each button does, the same in both
-    /// views (the grid adds the filters), each one clickable.
-    fn paint_bar(&mut self, ui: &mut Ui, p: &Painter, l: &Layout, view: &View, clicks: &mut Vec<Click>) {
-        let u = l.u;
-        p.rect_filled(l.bar, 0.0, Color32::from_rgba_unmultiplied(4, 6, 11, 230));
-        p.hline(l.bar.x_range(), l.bar.top(), Stroke::new(1.0 * u, Color32::from_white_alpha(15)));
+    /// The home screen's hints: Choose, Open, Continue, View (the grid adds
+    /// the filter), the pad's buttons or the keys by what was used last.
+    fn home_hints(&self) -> Vec<Hint> {
         let grid = self.mode == ViewMode::Grid;
         let choose = self.choose.unwrap_or("D-pad");
-        let links = self.version().is_some_and(|g| crate::link::play_for(g.id).is_some());
-        let versions = self.cur.map_or(0, |c| self.versions_of(c).len());
-        let version_label = self.version().map(|g| format!("Version: {}", library::version_label(g)));
-        let hints: Vec<(Chip, &str, Option<Click>)> = if self.pad_used {
+        let hint = |chip, label: &str, click| Hint { chip, label: label.to_string(), click };
+        if self.pad_used {
             let mut h = vec![
-                (Chip::Key(choose), "Choose", None),
-                (Chip::A, "Play", Some(Click::Play)),
-                (Chip::X, "Saves", Some(Click::Saves)),
-                (Chip::Menu, "Settings", Some(Click::Settings)),
-                (Chip::Y, "Continue", Some(Click::Continue)),
-                (Chip::Key("LB RB"), "View", Some(Click::View(self.mode.other()))),
+                hint(Chip::Key(choose), "Choose", None),
+                hint(Chip::A, "Open", Some(Click::OpenPage)),
+                hint(Chip::Y, "Continue", Some(Click::Continue)),
+                hint(Chip::Key("LB RB"), "View", Some(Click::View(self.mode.other()))),
             ];
-            if links {
-                h.insert(4, (Chip::Key("View"), "Link play", Some(Click::Link)));
-            }
-            if versions > 1 {
-                h.insert(4, (Chip::None, version_label.as_deref().unwrap_or("Version"), Some(Click::Version)));
-            }
             if grid {
-                h.push((Chip::Key("LT RT"), "Filter", Some(Click::NextFilter)));
+                h.push(hint(Chip::Key("LT RT"), "Filter", Some(Click::NextFilter)));
             }
             h
         } else {
             let mut h = vec![
-                (Chip::Key("← → ↑ ↓"), "Choose", None),
-                (Chip::Key("Enter"), "Play", Some(Click::Play)),
-                (Chip::Key("S"), "Saves", Some(Click::Saves)),
-                (Chip::Key("Tab"), "Settings", Some(Click::Settings)),
-                (Chip::Key("C"), "Continue", Some(Click::Continue)),
-                (Chip::Key("Q E"), "View", Some(Click::View(self.mode.other()))),
+                hint(Chip::Key("← → ↑ ↓"), "Choose", None),
+                hint(Chip::Key("Enter"), "Open", Some(Click::OpenPage)),
+                hint(Chip::Key("C"), "Continue", Some(Click::Continue)),
+                hint(Chip::Key("Q E"), "View", Some(Click::View(self.mode.other()))),
             ];
-            if links {
-                h.insert(4, (Chip::Key("L"), "Link play", Some(Click::Link)));
-            }
-            if versions > 1 {
-                h.insert(4, (Chip::Key("V"), version_label.as_deref().unwrap_or("Version"), Some(Click::Version)));
-            }
             if grid {
-                h.push((Chip::Key("[ ]"), "Filter", Some(Click::NextFilter)));
+                h.push(hint(Chip::Key("[ ]"), "Filter", Some(Click::NextFilter)));
             }
             h
-        };
+        }
+    }
+
+    /// The hint bar along the foot: what each button does, each one
+    /// clickable. `count` ("N of M games") is the grid's, at the right.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_bar(
+        ui: &mut Ui,
+        p: &Painter,
+        l: &Layout,
+        view: &View,
+        focus: &mut Focus,
+        hints: Vec<Hint>,
+        count: Option<(usize, usize)>,
+        clicks: &mut Vec<Click>,
+    ) {
+        let u = l.u;
+        p.rect_filled(l.bar, 0.0, Color32::from_rgba_unmultiplied(4, 6, 11, 230));
+        p.hline(l.bar.x_range(), l.bar.top(), Stroke::new(1.0 * u, Color32::from_white_alpha(15)));
         let font = FontId::new(16.0 * u, FontFamily::Proportional);
         let d = theme::CHIP_LARGE;
         let mut x = l.top.left();
         let y = l.bar.center().y;
-        for (i, (chip, label, click)) in hints.into_iter().enumerate() {
+        for (i, Hint { chip, label, click }) in hints.into_iter().enumerate() {
             let cw = theme::chip_width_at(p, chip, u, d);
-            let g = p.layout_no_wrap(label.to_string(), font.clone(), theme::TEXT_2);
+            let g = p.layout_no_wrap(label, font.clone(), theme::TEXT_2);
             let r = Rect::from_min_size(pos2(x, y - 19.0 * u), vec2(cw + 8.0 * u + g.size().x + 18.0 * u, 38.0 * u));
             let dim = matches!(click, Some(Click::Continue)) && view.cont.is_none();
-            let mut shown = Color32::from_white_alpha(if dim { 90 } else { 255 });
+            let shown = Color32::from_white_alpha(if dim { 90 } else { 255 });
             if let Some(c) = click {
                 let id = Id::unique(("hint", i));
-                let (resp, hit) = control(&mut self.focus, ui, id, r);
+                let (resp, hit) = control(focus, ui, id, r);
                 if resp.hovered() && !dim {
                     p.rect_filled(r, 10.0 * u, Color32::from_white_alpha(20));
                 }
-                if self.focus.is_on(id) {
+                if focus.is_on(id) {
                     theme::focus_ring(p, r, u, 10.0);
                 }
                 if hit && !dim {
                     clicks.push(c);
                 }
             }
-            if dim {
-                shown = Color32::from_white_alpha(90);
-            }
             theme::paint_chip_at(p, chip, pos2(r.left() + 6.0 * u, y), u, d);
             p.galley(pos2(r.left() + 6.0 * u + cw + 8.0 * u, y - g.size().y / 2.0), g, shown);
             x = r.right() + 8.0 * u;
         }
-        if grid {
-            let (shown, of) = self.counts();
+        if let Some((shown, of)) = count {
             p.text(
                 pos2(l.top.right(), y),
                 Align2::RIGHT_CENTER,
@@ -1811,157 +1781,11 @@ impl Launcher {
                 theme::TEXT_DIM,
             );
         }
-        let _ = view;
-    }
-
-    /// Read the selected game's states and show the Saves panel.
-    fn open_saves(&mut self, ctx: &egui::Context) {
-        let Some(game) = self.version() else { return };
-        let mut items = Vec::new();
-        let entries = std::iter::once((Start::Resume, "Where you left off".to_string(), saves::resume_file(game.id)))
-            .chain((0..menu::SLOTS).map(|n| {
-                (
-                    Start::Slot(n),
-                    if n == 0 { "Quick save".to_string() } else { format!("Slot {n}") },
-                    saves::slot_file(game.id, n),
-                )
-            }));
-        for (from, name, path) in entries {
-            let info = saves::read_info(&path);
-            let thumb = info.as_ref().and_then(|i| i.thumb.as_ref()).and_then(|(png, _)| saves::read_thumb(png)).map(
-                |(size, rgba)| {
-                    ctx.load_texture(
-                        format!("save {} {name}", game.id),
-                        egui::ColorImage::from_rgba_unmultiplied(size, &rgba),
-                        egui::TextureOptions::LINEAR,
-                    )
-                },
-            );
-            items.push(SaveItem { from, name, info, thumb });
-        }
-        self.saves = Some(SavesPage { game, items, focus: Focus::default() });
-    }
-
-    /// The Saves panel over the launcher: a card per state; one chosen
-    /// starts the game from it.
-    fn paint_saves(&mut self, ctx: &egui::Context, navs: &[Nav], view: &View, actions: &mut Vec<Action>) {
-        let _ = view;
-        let (pad, keys) = (self.pad_used, self.keys_used);
-        let Some(page) = &mut self.saves else { return };
-        let s = theme::scale(ctx);
-        page.focus.show = pad || keys;
-        let rest = page.focus.begin(navs);
-        let mut back = rest.iter().any(|n| matches!(n, Nav::Back | Nav::Saves));
-        if rest.contains(&Nav::Start) || rest.contains(&Nav::Settings) {
-            back = true;
-        }
-        let hints = [(Chip::A, "Load"), (Chip::B, "Back"), (Chip::Key("Esc"), "Close")];
-        let spec = menu::PanelSpec { game: page.game.title, heading: "Saves", back: true, extra_h: 0.0 };
-        let mut chosen = None;
-        let SavesPage { game, items, focus } = page;
-        back |= menu::side_panel(ctx, &spec, &hints, |ui, reg| {
-            ui.scope_builder(egui::UiBuilder::new().max_rect(reg.body.shrink2(vec2(24.0 * s, 0.0))), |ui| {
-                focus.scroll_area("saves").show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 8.0 * s;
-                    ui.add_space(12.0 * s);
-                    for (i, item) in items.iter().enumerate() {
-                        let id = Id::unique(("save-card", game.id, i));
-                        if menu::slot_card(ui, focus, id, &item.name, false, item.info.as_ref(), item.thumb.as_ref()) {
-                            chosen = Some(i);
-                        }
-                    }
-                    ui.add_space(12.0 * s);
-                });
-            });
-            false
-        });
-        page.focus.end();
-        if let Some(i) = chosen {
-            let item = &page.items[i];
-            if item.info.as_ref().is_some_and(|inf| inf.loads) {
-                actions.push(Action::Play { set: page.game.id.to_string(), from: item.from });
-                back = true;
-            }
-        }
-        if back {
-            self.saves = None;
-        }
     }
 
     /// Show the network link play panel (the player made its lobby or its join).
     pub fn show_net(&mut self, page: crate::netpage::NetPage) {
         self.net_page = Some(page);
-    }
-
-    /// The Link play panel over the launcher: a row for each number of
-    /// machines the game can link; one chosen starts the game with them.
-    fn paint_link(&mut self, ctx: &egui::Context, navs: &[Nav], actions: &mut Vec<Action>) {
-        let (pad, keys) = (self.pad_used, self.keys_used);
-        let Some(page) = &mut self.link_page else { return };
-        page.focus.show = pad || keys;
-        let rest = page.focus.begin(navs);
-        let mut back = rest.iter().any(|n| matches!(n, Nav::Back | Nav::Start | Nav::Settings));
-        let hints = [(Chip::A, "Start"), (Chip::B, "Back"), (Chip::Key("Esc"), "Close")];
-        let spec = menu::PanelSpec { game: page.game.title, heading: "Link play", back: true, extra_h: 0.0 };
-        let max = crate::link::play_for(page.game.id).map_or(2, crate::link::max_players);
-        let mut chosen = None;
-        let mut net: Option<bool> = None;
-        let LinkPage { game, focus } = page;
-        let player_name = &mut self.player_name;
-        let mut name_edited = false;
-        back |= menu::side_panel(ctx, &spec, &hints, |ui, reg| {
-            let s = theme::scale(ui.ctx());
-            ui.scope_builder(egui::UiBuilder::new().max_rect(reg.body.shrink2(vec2(24.0 * s, 0.0))), |ui| {
-                let heading = |ui: &mut egui::Ui, title: &str, note: &str| {
-                    ui.label(egui::RichText::new(title).size(17.0 * s).strong().color(theme::TEXT));
-                    ui.add_space(2.0 * s);
-                    ui.label(egui::RichText::new(note).size(14.0 * s).color(theme::TEXT_2));
-                    ui.add_space(6.0 * s);
-                };
-                ui.add_space(12.0 * s);
-                heading(ui, "On this screen", &format!("{} machines side by side, one controller each.", game.title));
-                for n in 2..=max {
-                    if focus.menu_row(ui, &format!("{n} players"), if n == 2 { "split" } else { "quadrants" }) {
-                        chosen = Some(n);
-                    }
-                }
-                ui.add_space(18.0 * s);
-                heading(ui, "Over the network", "Each player on their own machine, on the same LAN.");
-                if focus.menu_row(ui, "Host a game", "") {
-                    net = Some(true);
-                }
-                if focus.menu_row(ui, "Join a game", "") {
-                    net = Some(false);
-                }
-                ui.add_space(10.0 * s);
-                ui.label(egui::RichText::new("Your name").size(13.0 * s).color(theme::TEXT_DIM));
-                let edit = egui::TextEdit::singleline(player_name)
-                    .char_limit(linknet::MAX_NAME)
-                    .hint_text(linknet::default_name())
-                    .desired_width(f32::INFINITY)
-                    .font(egui::FontId::new(17.0 * s, egui::FontFamily::Proportional));
-                if ui.add(edit).changed() {
-                    name_edited = true;
-                }
-            });
-            false
-        });
-        page.focus.end();
-        if name_edited {
-            actions.push(Action::SetPlayerName(self.player_name.clone()));
-        }
-        if let Some(players) = chosen {
-            actions.push(Action::PlayLink { set: page.game.id.to_string(), players });
-            back = true;
-        }
-        if let Some(host) = net {
-            let set = page.game.id.to_string();
-            actions.push(if host { Action::NetHost { set } } else { Action::NetJoin { set } });
-            back = true;
-        }
-        if back {
-            self.link_page = None;
-        }
     }
 
     /// No games: say where reModel looked, and let another folder be typed in.
@@ -2058,6 +1882,7 @@ mod tests {
             cont,
             menu_open,
             capturing: false,
+            settings: SettingsLine::default(),
         }
     }
 
@@ -2067,6 +1892,7 @@ mod tests {
         l: Launcher,
         size: Vec2,
         cont: Option<Continue>,
+        resume: Option<SystemTime>,
         menu_open: bool,
         actions: Vec<Action>,
         shapes: Vec<egui::epaint::ClippedShape>,
@@ -2086,6 +1912,7 @@ mod tests {
                 l,
                 size: vec2(1280.0, 720.0),
                 cont: None,
+                resume: None,
                 menu_open: false,
                 actions: Vec::new(),
                 shapes: Vec::new(),
@@ -2099,7 +1926,8 @@ mod tests {
         }
 
         fn frame(&mut self, navs: &[Nav], events: Vec<egui::Event>) {
-            let view = view(self.cont, self.menu_open);
+            let mut view = view(self.cont, self.menu_open);
+            view.resume = self.resume;
             self.time += 0.1;
             let input = egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)),
@@ -2219,33 +2047,6 @@ mod tests {
     }
 
     #[test]
-    fn a_plays_from_the_start_and_a_poster_plays_when_clicked_twice() {
-        let mut r = Rig::new(&SET, &["stcc"]);
-        r.press(1, Nav::Accept);
-        assert_eq!(r.played(), [("stcc".to_string(), Start::New)]);
-        r.actions.clear();
-        // A click on another poster selects it; on the selected, plays.
-        let hotd = romset::games::find("hotd").unwrap();
-        r.l.apply(Click::Game(hotd), &view(None, false), &mut r.actions);
-        assert_eq!(r.selected(), "hotd");
-        assert!(r.actions.is_empty());
-        r.l.apply(Click::Game(hotd), &view(None, false), &mut r.actions);
-        assert_eq!(r.played(), [("hotd".to_string(), Start::New)]);
-    }
-
-    #[test]
-    fn down_from_the_poster_reaches_the_buttons() {
-        let mut r = Rig::new(&SET, &["stcc"]);
-        r.press(1, Nav::Down);
-        assert_eq!(r.l.focus.focused(), Some(button_id("play")));
-        r.press(1, Nav::Accept);
-        assert_eq!(r.played(), [("stcc".to_string(), Start::New)]);
-        r.actions.clear();
-        r.press(1, Nav::Right).press(1, Nav::Accept);
-        assert!(r.l.saves.is_some(), "right of Play is Saves");
-    }
-
-    #[test]
     fn y_goes_back_to_the_last_game_at_its_latest_state() {
         let mut r = Rig::new(&SET, &["stcc"]);
         r.press(2, Nav::Right);
@@ -2265,16 +2066,108 @@ mod tests {
         assert!(r.shows("Continue") && r.shows("12 minutes ago") && !r.shows("CONTINUE"), "{:?}", r.texts());
     }
 
+    /// The page's level, if it is open.
+    fn level(r: &Rig) -> Option<page::Level> {
+        r.l.page.as_ref().map(|p| p.level)
+    }
+
+    /// The page's focus is on the row `key` of `level`.
+    fn on_row(r: &Rig, level: page::Level, key: &str) -> bool {
+        r.l.page.as_ref().and_then(|p| p.focus.focused()) == Some(page::row_id(level, key))
+    }
+
     #[test]
-    fn x_opens_the_saves_and_a_card_starts_the_game_from_it() {
+    fn a_opens_the_page_with_play_focused_and_a_again_plays() {
+        let mut r = Rig::new(&SET, &["stcc"]);
+        r.press(1, Nav::Accept);
+        assert!(r.played().is_empty(), "A on a poster opens the page, it does not play");
+        assert_eq!(level(&r), Some(page::Level::Main));
+        assert!(on_row(&r, page::Level::Main, "play"));
+        assert!(r.shows("PLAY") || r.shows("Play"), "{:?}", r.texts());
+        r.press(1, Nav::Accept);
+        assert_eq!(r.played(), [("stcc".to_string(), Start::New)]);
+    }
+
+    #[test]
+    fn a_click_selects_then_opens_and_two_quick_clicks_play() {
+        let mut r = Rig::new(&SET, &["stcc"]);
+        let hotd = romset::games::find("hotd").unwrap();
+        // A click on another poster selects it; on the selected one, opens its page.
+        r.l.apply(Click::Game(hotd, false), &view(None, false), &mut r.actions);
+        assert_eq!((r.selected(), level(&r)), ("hotd", None));
+        r.l.apply(Click::Game(hotd, false), &view(None, false), &mut r.actions);
+        assert_eq!(level(&r), Some(page::Level::Main));
+        assert!(r.actions.is_empty());
+        r.l.page = None;
+        // Two quick mouse clicks on a poster that is not selected: select, then play.
+        let vcop = romset::games::find("vcop").unwrap();
+        r.l.apply(Click::Game(vcop, true), &view(None, false), &mut r.actions);
+        assert!(r.actions.is_empty() && level(&r).is_none());
+        r.l.apply(Click::Game(vcop, true), &view(None, false), &mut r.actions);
+        assert_eq!(r.played(), [("vcop".to_string(), Start::New)]);
+        // On the selected one the first click opens the page, and a press soon after plays.
+        r.actions.clear();
+        r.l.apply(Click::Game(vcop, true), &view(None, false), &mut r.actions);
+        assert_eq!(level(&r), Some(page::Level::Main));
+        let press = vec![
+            egui::Event::PointerMoved(pos2(300.0, 300.0)),
+            egui::Event::PointerButton {
+                pos: pos2(300.0, 300.0),
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+        ];
+        r.frame(&[], press);
+        assert_eq!(r.played(), [("vcop".to_string(), Start::New)], "the second press of the double click");
+        // Slowly, it is just a click on the page.
+        r.actions.clear();
+        r.l.page = None;
+        r.l.last_click = None;
+        r.l.open_page(page::Level::Main, true);
+        r.l.page.as_mut().unwrap().dbl_until = Some(Instant::now() - Duration::from_millis(1));
+        let press = vec![egui::Event::PointerButton {
+            pos: pos2(40.0, 600.0),
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        }];
+        r.frame(&[], press);
+        assert!(r.played().is_empty());
+    }
+
+    #[test]
+    fn the_card_has_no_buttons_and_says_one_thing_about_the_game() {
+        let mut r = Rig::new(&["daytona", "dayton93", "daytonat", "topskatr", "hotd"], &["hotd"]);
+        while r.l.card().unwrap().id != "daytona" {
+            r.press(1, Nav::Right);
+        }
+        for gone in ["Saves", "Settings", "Link play", "Version", "Play"] {
+            assert!(!r.texts().iter().any(|(t, _)| t == gone), "{gone}: {:?}", r.texts());
+        }
+        assert!(r.shows("Not played yet"), "{:?}", r.texts());
+        // Under it, dim: the versions and the linking.
+        assert!(r.shows("3 versions · Link play, 2 to 8 machines"), "{:?}", r.texts());
+        while r.l.card().unwrap().id != "hotd" {
+            r.press(1, Nav::Right);
+        }
+        assert!(r.shows("Played before") && !r.shows("versions"), "{:?}", r.texts());
+        // The resume state's age, when there is one.
+        r.resume = Some(SystemTime::now() - Duration::from_secs(2 * 3600 + 60));
+        r.frame(&[], Vec::new());
+        assert!(r.shows("You left off 2 hours ago"), "{:?}", r.texts());
+    }
+
+    #[test]
+    fn the_saves_level_lists_the_slots_and_a_card_starts_the_game_from_it() {
         let mut r = Rig::new(&SET, &["stcc"]);
         r.press(1, Nav::Saves);
         r.frame(&[], Vec::new());
-        assert!(r.l.saves.is_some(), "the panel opens");
+        assert_eq!(level(&r), Some(page::Level::Saves), "X opens the page at Saves");
         assert!(r.shows("Where you left off") && r.shows("Quick save") && r.shows("Slot 4"), "{:?}", r.texts());
         // Empty slots load nothing.
         r.press(1, Nav::Accept);
-        assert!(r.played().is_empty() && r.l.saves.is_some());
+        assert!(r.played().is_empty() && level(&r) == Some(page::Level::Saves));
         // Give the resume state and slot 2 a state this build loads.
         let saved = |t: u64| SlotInfo {
             time: SystemTime::UNIX_EPOCH + Duration::from_secs(t),
@@ -2282,26 +2175,76 @@ mod tests {
             loads: true,
             thumb: None,
         };
-        let page = r.l.saves.as_mut().unwrap();
-        page.items[0].info = Some(saved(100));
-        page.items[3].info = Some(saved(200));
+        let page = r.l.page.as_mut().unwrap();
+        page.saves[0].info = Some(saved(100));
+        page.saves[3].info = Some(saved(200));
         r.press(1, Nav::Accept);
         assert_eq!(r.played(), [("stcc".to_string(), Start::Resume)]);
-        assert!(r.l.saves.is_none(), "it closes");
         // Slot 2 is three cards down.
         r.actions.clear();
-        r.press(1, Nav::Saves);
-        r.l.saves.as_mut().unwrap().items[3].info = Some(saved(200));
         r.press(3, Nav::Down).press(1, Nav::Accept);
         assert_eq!(r.played(), [("stcc".to_string(), Start::Slot(2))]);
-        // B closes it without playing; the keyboard's S opens it.
+        // B goes back to the main menu with Saves focused, then to the games.
         r.actions.clear();
-        r.press(1, Nav::Saves).press(1, Nav::Back);
-        assert!(r.l.saves.is_none() && r.played().is_empty());
+        r.press(1, Nav::Back);
+        assert_eq!(level(&r), Some(page::Level::Main));
+        assert!(on_row(&r, page::Level::Main, "saves"));
+        r.press(1, Nav::Back);
+        assert!(level(&r).is_none() && r.played().is_empty());
+        // The keyboard's S opens it again.
         r.key(egui::Key::S);
-        assert!(r.l.saves.is_some());
+        assert_eq!(level(&r), Some(page::Level::Saves));
     }
 
+    #[test]
+    fn b_goes_back_level_by_level() {
+        let mut r = Rig::new(&["daytona", "dayton93", "hotd"], &[]);
+        while r.l.card().unwrap().id != "daytona" {
+            r.press(1, Nav::Right);
+        }
+        r.press(1, Nav::Accept);
+        assert_eq!(level(&r), Some(page::Level::Main));
+        // Down to Version, in.
+        r.press(1, Nav::Down).press(1, Nav::Accept);
+        assert_eq!(level(&r), Some(page::Level::Version));
+        r.press(1, Nav::Back);
+        assert_eq!(level(&r), Some(page::Level::Main));
+        assert!(on_row(&r, page::Level::Main, "version"), "back to the row that opened it");
+        r.press(1, Nav::Back);
+        assert!(level(&r).is_none(), "and out to the games");
+        assert_eq!(r.l.focus.focused(), Some(selected_card()), "the poster has the focus again");
+        // The keyboard's Esc does the same.
+        r.press(1, Nav::Accept);
+        r.key(egui::Key::Escape);
+        assert!(level(&r).is_none());
+    }
+
+    #[test]
+    fn the_page_is_reached_from_the_keyboard_and_the_pad_and_never_loses_the_focus() {
+        let mut r = Rig::new(&["daytona", "dayton93", "hotd"], &[]);
+        while r.l.card().unwrap().id != "daytona" {
+            r.press(1, Nav::Right);
+        }
+        r.key(egui::Key::Enter);
+        assert_eq!(level(&r), Some(page::Level::Main));
+        // A long wander over every level: the focus is always on something.
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        for _ in 0..400 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let nav =
+                [Nav::Up, Nav::Down, Nav::Left, Nav::Right, Nav::Accept, Nav::Back, Nav::Accept][(x % 7) as usize];
+            r.frame(&[nav], Vec::new());
+            r.actions.clear();
+            r.frame(&[], Vec::new());
+            let on = match &r.l.page {
+                Some(p) => p.focus.focused().is_some() || level(&r) == Some(page::Level::About),
+                None => r.l.focus.focused().is_some(),
+            };
+            assert!(on, "the focus was lost at {:?}", level(&r));
+        }
+    }
     #[test]
     fn start_opens_the_settings_and_esc_or_start_close_them() {
         let mut r = Rig::new(&SET, &[]);
@@ -2425,7 +2368,9 @@ mod tests {
         assert_eq!(r.selected(), order[1]);
         r.press(1, Nav::Down);
         assert!(r.on_a_tile());
-        // A plays the selected one.
+        // A opens the selected one's page, and A again plays it.
+        r.press(1, Nav::Accept);
+        assert!(r.played().is_empty() && level(&r).is_some());
         r.press(1, Nav::Accept);
         assert_eq!(r.played(), [(order[1].to_string(), Start::New)]);
     }
@@ -2454,9 +2399,6 @@ mod tests {
                     ("the pill", button_id("continue")),
                     ("Carousel", button_id("carousel")),
                     ("Grid", button_id("grid")),
-                    ("Play", button_id("play")),
-                    ("Saves", button_id("saves")),
-                    ("Settings", button_id("settings")),
                     ("the selected poster", selected_card()),
                     ("a hint", Id::unique(("hint", 1))),
                 ],
@@ -2486,14 +2428,14 @@ mod tests {
                 r.key(egui::Key::ArrowRight);
             }
             let hints = |r: &Rig| -> Vec<String> {
-                ["Choose", "Play", "Saves", "Settings", "Continue", "View", "Filter"]
+                ["Choose", "Open", "Play", "Saves", "Settings", "Link play", "Version", "Continue", "View", "Filter"]
                     .iter()
                     .filter(|h| r.texts().iter().any(|(t, _)| t == *h))
                     .map(|h| h.to_string())
                     .collect()
             };
             let carousel = hints(&r);
-            assert_eq!(carousel, ["Choose", "Play", "Saves", "Settings", "Continue", "View"], "pad {pad}");
+            assert_eq!(carousel, ["Choose", "Open", "Continue", "View"], "pad {pad}");
             // The keys' caps when the keyboard was last used, the pad's else.
             assert_eq!(r.shows("Enter"), !pad, "pad {pad}");
             assert_eq!(r.shows("LB RB"), pad, "pad {pad}");
@@ -2522,25 +2464,6 @@ mod tests {
                 assert!(r.texts().len() > 10, "{mode:?}");
             }
         }
-    }
-
-    #[test]
-    fn the_pads_view_button_opens_link_play_and_is_back_in_it() {
-        let mut r = Rig::new(&["daytona", "hotd"], &[]);
-        while !r.l.cur.is_some_and(|g| g.id == "daytona") {
-            r.press(1, Nav::Right);
-        }
-        r.press(1, Nav::View);
-        assert!(r.l.link_page.is_some(), "View opens Link play on a game that links");
-        r.press(1, Nav::View);
-        assert!(r.l.link_page.is_none(), "View is Back in the panel");
-        r.l.link_page = None;
-        // On a game that can't link, View does nothing.
-        while r.l.cur.is_some_and(|g| g.id == "daytona") {
-            r.press(1, Nav::Right);
-        }
-        r.press(1, Nav::View);
-        assert!(r.l.link_page.is_none());
     }
 
     #[test]
@@ -2680,6 +2603,13 @@ mod tests {
             .collect()
     }
 
+    /// Select the card `id`, by the carousel.
+    fn go_to(r: &mut Rig, id: &str) {
+        while r.l.card().unwrap().id != id {
+            r.press(1, Nav::Right);
+        }
+    }
+
     #[test]
     fn a_title_with_versions_is_one_card_and_lists_what_is_installed() {
         let r = Rig::new(&["topskatr", "topskatrj", "topskatru", "hotd", "vcopa"], &[]);
@@ -2689,108 +2619,316 @@ mod tests {
         assert_eq!(cards, ["hotd", "topskatr", "vcopa"]);
         assert_eq!(r.l.counts().1, 3);
         let mut r = r;
-        while r.l.card().unwrap().id != "topskatr" {
-            r.press(1, Nav::Right);
-        }
+        go_to(&mut r, "topskatr");
         assert_eq!(versions(&r), ["topskatr", "topskatrj", "topskatru"], "the title first");
         assert_eq!(r.selected(), "topskatr");
-        // The pills name them (the title by its own label), and the Version button is there.
-        for text in ["Export", "Japan", "USA", "Version"] {
+        assert!(r.shows("3 versions"), "{:?}", r.texts());
+        // The page's Version row opens the list, every version a radio row with the chosen one lit.
+        r.press(1, Nav::Accept);
+        assert!(r.shows("Version"), "{:?}", r.texts());
+        r.press(1, Nav::Down).press(1, Nav::Accept);
+        for text in ["Export", "Japan", "USA"] {
             assert!(r.shows(text), "{text}: {:?}", r.texts());
         }
+        assert!(on_row(&r, page::Level::Version, "topskatr"), "the chosen one has the focus");
         // A title without variants has no row.
-        while r.l.card().unwrap().id != "hotd" {
-            r.press(1, Nav::Right);
-        }
+        r.l.page = None;
+        go_to(&mut r, "hotd");
+        r.press(1, Nav::Accept);
         assert!(!r.shows("Version") && !r.shows("Japan"), "{:?}", r.texts());
     }
 
     #[test]
-    fn the_version_button_steps_through_and_play_starts_that_version() {
+    fn the_version_list_switches_what_play_starts_and_the_choice_is_remembered() {
         let mut r = Rig::new(&["topskatr", "topskatrj", "topskatru"], &[]);
         assert_eq!(r.selected(), "topskatr");
-        // The pad: down to Play, and down again to Version (the fourth button wraps to a second row).
-        r.press(1, Nav::Down);
-        r.press(1, Nav::Down);
-        assert_eq!(r.l.focus.focused(), Some(button_id("version")));
         r.press(1, Nav::Accept);
+        // Play is first; Version is the row under it.
+        assert!(on_row(&r, page::Level::Main, "play"));
+        r.press(1, Nav::Down);
+        assert!(on_row(&r, page::Level::Main, "version"));
+        r.press(1, Nav::Accept);
+        assert_eq!(level(&r), Some(page::Level::Version));
+        r.press(1, Nav::Down).press(1, Nav::Accept);
         assert_eq!(r.selected(), "topskatrj");
         assert_eq!(chosen(&r), [("topskatr".to_string(), "topskatrj".to_string())], "kept for the title");
-        assert!(r.shows("Japan"));
-        // Play starts the version shown, saves and link follow it.
+        assert_eq!(level(&r), Some(page::Level::Main), "choosing goes back to the main menu");
+        assert!(on_row(&r, page::Level::Main, "play"));
+        assert!(r.shows("Japan"), "Play says which version it starts: {:?}", r.texts());
+        // The preview follows: the selection time restarts for it.
         r.actions.clear();
-        r.press(1, Nav::Up);
-        assert_eq!(r.l.focus.focused(), Some(button_id("play")));
         r.press(1, Nav::Accept);
         assert_eq!(r.played(), [("topskatrj".to_string(), Start::New)]);
+        // Choosing the same one again is no change.
         r.actions.clear();
-        // The keyboard's V goes on round, back to the title after the last.
-        r.key(egui::Key::V);
-        assert_eq!(r.selected(), "topskatru");
-        r.key(egui::Key::V);
-        assert_eq!(r.selected(), "topskatr");
-        assert_eq!(chosen(&r).len(), 2);
-        // The Saves panel is the shown version's.
-        r.key(egui::Key::V);
+        let j = romset::games::find("topskatrj").unwrap();
+        r.l.apply(Click::SetVersion(j), &view(None, false), &mut r.actions);
+        assert!(chosen(&r).is_empty());
+        // The Saves level is the chosen version's.
+        r.l.page = None;
         r.key(egui::Key::S);
-        assert_eq!(r.l.saves.as_ref().unwrap().game.id, "topskatrj");
+        r.frame(&[], Vec::new());
+        assert_eq!(r.l.version().unwrap().id, "topskatrj");
+        assert_eq!(r.l.page.as_ref().unwrap().saves_for, Some("topskatrj"));
+        // The keyboard's V opens the list.
+        r.l.page = None;
+        r.key(egui::Key::V);
+        assert_eq!(level(&r), Some(page::Level::Version));
     }
 
     #[test]
-    fn a_pill_chooses_its_version_and_the_choice_is_remembered() {
+    fn a_choice_is_remembered_and_a_missing_one_falls_back_to_the_title() {
         let mut r = Rig::new(&["srallyc", "srallycb"], &[]);
         let b = romset::games::find("srallycb").unwrap();
         r.l.apply(Click::SetVersion(b), &view(None, false), &mut r.actions);
         assert_eq!(r.selected(), "srallycb");
         assert_eq!(chosen(&r), [("srallyc".to_string(), "srallycb".to_string())]);
-        // Choosing it again is no change.
-        r.actions.clear();
-        r.l.apply(Click::SetVersion(b), &view(None, false), &mut r.actions);
-        assert!(r.actions.is_empty());
         // The settings give it back after a restart (the launcher is built afresh).
         let mut again = Launcher { lan_off: true, ..Default::default() };
         let saved = BTreeMap::from([("srallyc".to_string(), "srallycb".to_string())]);
-        again.set_versions(&saved, false);
+        again.set_versions(&saved);
         again.set_games(&games(&["srallyc", "srallycb"]), &[]);
         assert_eq!(again.selected().unwrap().id, "srallycb");
         // A choice that is no longer installed falls back to the title.
         again.set_games(&games(&["srallyc"]), &[]);
         assert_eq!(again.selected().unwrap().id, "srallyc");
-        // The click on the card plays the version.
+        // A double click on the card plays the version.
         let mut r = Rig::new(&["srallyc", "srallycb"], &[]);
-        r.l.set_versions(&saved, false);
+        r.l.set_versions(&saved);
         r.l.set_games(&games(&["srallyc", "srallycb"]), &[]);
         let card = r.l.card().unwrap();
-        r.l.apply(Click::Game(card), &view(None, false), &mut r.actions);
+        r.l.apply(Click::Game(card, true), &view(None, false), &mut r.actions);
+        r.l.page = None;
+        r.l.apply(Click::Game(card, true), &view(None, false), &mut r.actions);
         assert_eq!(r.played(), [("srallycb".to_string(), Start::New)]);
     }
 
     #[test]
-    fn prototypes_and_hacks_are_listed_only_with_the_setting() {
+    fn hacks_and_prototypes_are_listed_with_their_tags() {
         let ids = ["daytona", "daytonat", "daytonata", "srallyc", "srallycb", "srallyp"];
         let mut r = Rig::new(&ids, &[]);
-        let card = |r: &mut Rig, id: &str| {
-            while r.l.card().unwrap().id != id {
-                r.press(1, Nav::Right);
-            }
-        };
-        card(&mut r, "daytona");
-        assert_eq!(versions(&r), ["daytona"], "hacks hidden: nothing to choose, no row");
-        assert!(!r.shows("Turbo") && !r.shows("Version"), "{:?}", r.texts());
-        card(&mut r, "srallyc");
-        assert_eq!(versions(&r), ["srallyc", "srallycb"], "the prototype too");
-        r.l.set_show_hacks(true);
-        r.frame(&[], Vec::new());
+        go_to(&mut r, "daytona");
+        assert_eq!(versions(&r), ["daytona", "daytonat", "daytonata"], "the hacks are versions like the others");
+        r.press(1, Nav::Accept).press(1, Nav::Down).press(1, Nav::Accept);
+        assert!(r.shows("Turbo") && r.shows("Hack"), "{:?}", r.texts());
+        r.l.page = None;
+        go_to(&mut r, "srallyc");
         assert_eq!(versions(&r), ["srallyc", "srallycb", "srallyp"]);
-        assert!(r.shows("Pro Drivin"), "{:?}", r.texts());
-        card(&mut r, "daytona");
-        assert_eq!(versions(&r), ["daytona", "daytonat", "daytonata"]);
-        // A version chosen stays listed if the setting is switched off, and is the one shown
-        // until another is chosen.
-        let t = romset::games::find("daytonat").unwrap();
+        r.press(1, Nav::Accept).press(1, Nav::Down).press(1, Nav::Accept);
+        assert!(r.shows("Pro Drivin") && r.shows("Prototype"), "{:?}", r.texts());
+        assert!(!r.shows("Hack"), "{:?}", r.texts());
+        // Choosing one starts it.
+        let t = romset::games::find("srallyp").unwrap();
         r.l.apply(Click::SetVersion(t), &view(None, false), &mut r.actions);
-        r.l.set_show_hacks(false);
-        assert_eq!(r.selected(), "daytonat");
+        assert_eq!(r.selected(), "srallyp");
+        r.actions.clear();
+        r.frame(&[], Vec::new());
+        r.frame(&[], Vec::new());
+        r.press(1, Nav::Accept);
+        assert_eq!(r.played(), [("srallyp".to_string(), Start::New)]);
+    }
+
+    #[test]
+    fn play_together_is_for_games_that_link_and_greyed_for_versions_that_do_not() {
+        let mut r = Rig::new(&["daytona", "dayton93", "topskatr", "hotd"], &[]);
+        // A game that does not link: no row, and the keys and the pad's View do nothing.
+        go_to(&mut r, "topskatr");
+        r.press(1, Nav::Accept);
+        assert!(!r.shows("Play together"), "{:?}", r.texts());
+        r.l.page = None;
+        r.key(egui::Key::L);
+        assert_eq!(level(&r), None, "L does nothing here");
+        r.press(1, Nav::View);
+        assert_eq!(level(&r), None);
+        // Daytona links: the row is there and opens the level, the pad's View too.
+        go_to(&mut r, "daytona");
+        r.press(1, Nav::Accept);
+        assert!(r.shows("Play together") && !r.shows("Not for this version"), "{:?}", r.texts());
+        r.press(2, Nav::Down).press(1, Nav::Accept);
+        assert_eq!(level(&r), Some(page::Level::Together));
+        for text in ["On this screen", "2 players", "3 players", "4 players", "Host a game", "Join a game", "Your name"]
+        {
+            assert!(r.shows(&text.to_uppercase()) || r.shows(text), "{text}: {:?}", r.texts());
+        }
+        // Choosing two players starts them linked.
+        r.press(1, Nav::Accept);
+        assert!(r.actions.iter().any(|a| matches!(a, Action::PlayLink { set, players: 2 } if set == "daytona")));
+        r.actions.clear();
+        // Host and Join are the network's.
+        r.press(3, Nav::Down).press(1, Nav::Accept);
+        assert!(r.actions.iter().any(|a| matches!(a, Action::NetHost { set } if set == "daytona")), "host");
+        r.actions.clear();
+        r.press(1, Nav::Down).press(1, Nav::Accept);
+        assert!(r.actions.iter().any(|a| matches!(a, Action::NetJoin { set } if set == "daytona")), "join");
+        r.l.page = None;
+        r.press(1, Nav::View);
+        assert_eq!(level(&r), Some(page::Level::Together), "the pad's View on the home screen");
+        r.press(1, Nav::View);
+        assert_eq!(level(&r), Some(page::Level::Main), "and Back in the page");
+        // A version with link play off: the row is greyed, says so, and cannot be entered.
+        r.l.page = None;
+        let v = romset::games::find("dayton93").unwrap();
+        assert!(crate::link::play_for(v.id).is_none(), "the test's premise");
+        r.l.apply(Click::SetVersion(v), &view(None, false), &mut r.actions);
+        r.l.open_page(page::Level::Main, false);
+        r.frame(&[], Vec::new());
+        assert!(r.shows("Play together") && r.shows("Not for this version"), "{:?}", r.texts());
+        r.press(2, Nav::Down);
+        assert!(!on_row(&r, page::Level::Main, "together"), "the greyed row is skipped by the focus");
+        r.press(1, Nav::Accept);
+        assert_ne!(level(&r), Some(page::Level::Together));
+    }
+
+    #[test]
+    fn the_lan_banner_opens_the_page_at_play_together_with_the_join() {
+        let mut r = Rig::new(&["daytona", "hotd"], &[]);
+        go_to(&mut r, "hotd");
+        let found = linknet::Found {
+            addr: "192.168.1.20:47890".parse().unwrap(),
+            game: "daytona".into(),
+            name: "Sam".into(),
+            players: 1,
+            max: 4,
+            version: env!("CARGO_PKG_VERSION").into(),
+            rom_hash: None,
+            delay: 2,
+            lobby: linknet::Lobby::Open,
+            addrs: Vec::new(),
+            mdns: true,
+            broadcast: false,
+        };
+        r.l.lan_hosts = vec![found];
+        r.frame(&[], Vec::new());
+        assert!(r.shows("Sam is hosting Daytona USA · 1/4"), "{:?}", r.texts());
+        r.l.apply(Click::LanJoin, &view(None, false), &mut r.actions);
+        assert_eq!(r.selected(), "daytona");
+        assert_eq!(level(&r), Some(page::Level::Together));
+        r.frame(&[], Vec::new());
+        r.frame(&[], Vec::new());
+        assert!(on_row(&r, page::Level::Together, "join hosted"), "{:?}", r.l.page.as_ref().map(|p| p.focus.focused()));
+        assert!(r.shows("Join Sam's game") && r.shows("1 of 4 players"), "{:?}", r.texts());
+        r.press(1, Nav::Accept);
+        assert!(
+            r.actions.iter().any(
+                |a| matches!(a, Action::NetJoinAt { set, addr } if set == "daytona" && addr == "192.168.1.20:47890")
+            ),
+            "the join goes to that host"
+        );
+    }
+
+    #[test]
+    fn game_settings_rows_open_the_menu_pages() {
+        let mut r = Rig::new(&SET, &["stcc"]);
+        r.press(1, Nav::Accept);
+        // (Play, Saves, Game settings: stcc has no versions and does not link.)
+        r.press(2, Nav::Down).press(1, Nav::Accept);
+        assert_eq!(level(&r), Some(page::Level::Settings));
+        for text in ["Picture", "Controls", "Sound", "Speed and latency"] {
+            assert!(r.shows(text), "{text}: {:?}", r.texts());
+        }
+        r.press(1, Nav::Accept);
+        assert!(r.actions.iter().any(|a| matches!(a, Action::SettingsAt(menu::Page::Picture, _))));
+        r.actions.clear();
+        r.press(2, Nav::Down).press(1, Nav::Accept);
+        assert!(r.actions.iter().any(|a| matches!(a, Action::SettingsAt(menu::Page::Settings, menu::Tab::Sound))));
+    }
+
+    #[test]
+    fn about_this_version_says_what_there_is_to_say() {
+        let mut r = Rig::new(&["topskatr", "topskatrj", "hotd"], &[]);
+        go_to(&mut r, "hotd");
+        r.press(1, Nav::Accept);
+        assert!(!r.shows("About this version"), "nothing to say: {:?}", r.texts());
+        r.l.page = None;
+        go_to(&mut r, "topskatr");
+        r.press(1, Nav::Accept);
+        assert!(r.shows("About this version"));
+        r.l.page = None;
+        let j = romset::games::find("topskatrj").unwrap();
+        r.l.apply(Click::SetVersion(j), &view(None, false), &mut r.actions);
+        r.l.open_page(page::Level::About, false);
+        r.frame(&[], Vec::new());
+        assert!(r.shows("same game for another market") && r.shows("texture pack"), "{:?}", r.texts());
+        // Back is a row, so the pad can leave it.
+        r.press(1, Nav::Accept);
+        assert_eq!(level(&r), Some(page::Level::Main));
+    }
+
+    #[test]
+    fn the_page_hints_are_select_back_and_continue() {
+        for pad in [true, false] {
+            let mut r = Rig::new(&SET, &["stcc"]);
+            r.cont = continuing("stcc", Start::New);
+            if pad {
+                r.press(1, Nav::Accept);
+            } else {
+                r.key(egui::Key::Enter);
+            }
+            let has = |r: &Rig, t: &str| r.texts().iter().any(|(x, _)| x == t);
+            assert!(has(&r, "Select") && has(&r, "Back to games") && has(&r, "Continue"), "pad {pad}: {:?}", r.texts());
+            assert_eq!(r.shows("Esc"), !pad);
+            // A level down: Choose and Back, no Continue.
+            r.l.page_enter(page::Level::Settings);
+            r.frame(&[], Vec::new());
+            assert!(
+                has(&r, "Choose") && has(&r, "Back") && !has(&r, "Continue") && !has(&r, "Select"),
+                "{:?}",
+                r.texts()
+            );
+        }
+    }
+
+    #[test]
+    fn the_page_shows_the_title_and_its_facts_at_every_size() {
+        for (size, ppp) in [
+            (vec2(1280.0, 720.0), 1.0),
+            (vec2(1920.0, 1080.0), 1.0),
+            (vec2(3840.0, 2160.0), 2.0),
+            (vec2(1024.0, 768.0), 1.0),
+            (vec2(800.0, 600.0), 1.0),
+        ] {
+            for id in ["daytona", "topskatr"] {
+                let mut r = Rig::new(&["daytona", "dayton93", "daytonat", "topskatr"], &[]);
+                r.size = size / ppp;
+                go_to(&mut r, id);
+                r.press(1, Nav::Accept);
+                for _ in 0..3 {
+                    r.frame(&[], Vec::new());
+                }
+                assert!(r.shows(&r.l.version().unwrap().title.to_uppercase()), "{id} {size:?}: {:?}", r.texts());
+                let u = layout(Rect::from_min_size(Pos2::ZERO, r.size)).u;
+                let small: Vec<_> = r.texts().into_iter().filter(|(_, s)| *s < 13.99 * u).collect();
+                assert!(small.is_empty(), "{id} {size:?}: {small:?}");
+                for level in [
+                    page::Level::Version,
+                    page::Level::Together,
+                    page::Level::Saves,
+                    page::Level::Settings,
+                    page::Level::About,
+                ] {
+                    r.l.page_enter(level);
+                    for _ in 0..3 {
+                        r.frame(&[], Vec::new());
+                    }
+                    let screen = Rect::from_min_size(Pos2::ZERO, r.size);
+                    let l = layout(screen);
+                    for c in &r.shapes {
+                        if let egui::Shape::Text(t) = &c.shape {
+                            let b = t.visual_bounding_rect();
+                            // Nothing under the hint bar, and the header is inside the screen.
+                            if c.clip_rect.intersects(b) && b.center().y > l.bar.top() && b.center().y < l.bar.bottom()
+                            {
+                                assert!(
+                                    screen.expand(1.0).contains_rect(b),
+                                    "{id} {level:?} {size:?}: {:?} at {b:?}",
+                                    t.galley.text()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -2810,21 +2948,17 @@ mod tests {
     }
 
     #[test]
-    fn the_version_hint_is_in_the_bar_for_titles_with_versions() {
+    fn the_grid_card_says_how_many_versions_there_are() {
         let mut r = Rig::new(&["topskatr", "topskatrj", "hotd"], &[]);
         r.l.set_mode(ViewMode::Grid);
         r.frame(&[], Vec::new());
-        while r.l.card().unwrap().id != "topskatr" {
-            r.press(1, Nav::Right);
-        }
-        r.frame(&[], Vec::new());
-        assert!(r.shows("Version: Export"), "{:?}", r.texts());
-        // Clicked (or A on the focused hint), it steps.
-        let mut actions = Vec::new();
-        r.l.apply(Click::Version, &view(None, false), &mut actions);
-        assert_eq!(r.l.selected().unwrap().id, "topskatrj");
-        r.frame(&[], Vec::new());
-        assert!(r.shows("Version: Japan"), "{:?}", r.texts());
+        assert!(r.shows("2 versions"), "{:?}", r.texts());
+        // A or Enter on a poster opens the page here too, and the grid's hints are the home's and Filter.
+        r.press(1, Nav::Accept);
+        assert!(level(&r).is_some());
+        assert!(r.l.wants_preview(), "the page shows the preview whichever view is under it");
+        r.press(1, Nav::Back);
+        assert!(level(&r).is_none() && r.on_a_tile(), "back on the poster");
     }
 
     #[test]

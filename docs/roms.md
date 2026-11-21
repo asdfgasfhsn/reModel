@@ -6,7 +6,7 @@ sizes and CRCs are metadata.
 
 The clones listed in the sets tables below (revisions, regions, other boards,
 hacks) are surveyed one by one in [variants.md](variants.md): which chips each
-changes, whether it runs on its parent's manifest and what it needs. A supported clone is a *variant*: a thin manifest over its parent's (`crates/romset/src/games/variants.rs`), one card in the launcher with a Version selector (docs/play.md, "Versions").
+changes, whether it runs on its parent's manifest and what it needs. A supported clone is a *variant*: a thin manifest over its parent's (`crates/romset/src/games/variants.rs`), one card in the launcher, its game page with a Version list (docs/play.md, "The game page").
 
 **Sources and how sure we are.** Each claim carries one of these tags:
 

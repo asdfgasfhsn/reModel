@@ -15,6 +15,19 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- The launcher's game page: a game's poster (A, Enter, a click) opens a full page
+  with the live attract mode of the chosen version at the left and a menu at the
+  right: Play, Version, Play together (for the games that link; greyed for a
+  version with link play off), Saves, Game settings and About this version, each
+  opening one level down (B goes back a level at a time). The card on the home
+  screen loses its Play, Saves, Settings, Link play and Version buttons and the
+  version pills for one line about the player and the game and a dim line with the
+  number of versions and the linking; double-click a poster to play at once, Y
+  still continues. Every version is listed, hacks and prototypes tagged: the
+  "Show hacks and prototypes" setting is gone (an old `show_hacks` line is
+  ignored). The network banner opens the game's page at Play together with the join
+  to that host. The Game settings rows open the menu's own pages and going back
+  returns to the page.
 - ROM variants: the other releases of a title (revisions, regions, other boards,
   prototypes, hacks) are thin manifests over the parent's, resolved into a full
   game (`crates/romset/src/variants.rs`, `games/variants.rs`; docs/variants.md).
@@ -24,8 +37,8 @@ creates the annotated tag `vx.y.z` without pushing. Details in
   booting, attracting and playing from a blank EEPROM (`make bench-variants`,
   `tools/expected-variant-hashes.txt`). A variant id works wherever a set id does
   (`--game`, `make GAME=`). The launcher shows one card per title with a Version
-  selector (pills, a button, V) and lists prototypes and hacks only with the new
-  "Show hacks and prototypes" setting; each variant has its own EEPROM, saves,
+  selector (pills, a button, V; now the game page above) and lists prototypes and hacks only with the new
+  "Show hacks and prototypes" setting (since removed); each variant has its own EEPROM, saves,
   settings and bindings, texture packs fall back to the parent's, and link play
   works for the variants whose settings record is the parent's. Save files are
   format 3: they record the variant and another variant's state is refused with a

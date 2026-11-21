@@ -22,11 +22,8 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::{Board, Game, IdleLoop, LinkPlay, Protection, Recommended, Role, RomFile, Scene, Shading};
 
-/// What sort of release a variant is. The launcher hides [`Prototype`] and
-/// [`Hack`] variants unless asked ("Show hacks and prototypes").
-///
-/// [`Prototype`]: VariantKind::Prototype
-/// [`Hack`]: VariantKind::Hack
+/// What sort of release a variant is. The launcher lists every kind in a
+/// title's Version list, a prototype and a hack tagged as such.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum VariantKind {
     /// Another official revision of the program.
@@ -51,11 +48,6 @@ impl VariantKind {
             VariantKind::Prototype => "Prototype",
             VariantKind::Hack => "Hack",
         }
-    }
-
-    /// Whether the launcher shows it only with "Show hacks and prototypes" on.
-    pub fn hidden_by_default(self) -> bool {
-        matches!(self, VariantKind::Prototype | VariantKind::Hack)
     }
 }
 

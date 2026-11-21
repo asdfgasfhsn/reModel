@@ -198,8 +198,7 @@ impl Menu {
             self.picture.adv_focus = Focus::default();
             self.picture.compare = false;
         } else if back {
-            self.page = Page::Pause;
-            self.pause_focus = Focus::default();
+            self.back_to_pause();
             self.picture.compare = false;
         }
     }

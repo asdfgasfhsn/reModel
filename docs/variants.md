@@ -36,7 +36,7 @@ title's):
 
 | Field | Meaning |
 |---|---|
-| `id`, `parent`, `label`, `kind` | the set id (what `--game` takes); the title's set; the Version list's name ("Rev B", "Japan"); `VariantKind` = Revision, Region, CrossBoard, Prototype or Hack (the last two hidden by the launcher unless "Show hacks and prototypes"); `kind_confirmed` is false where the kind rests on the dat's name and the chip names only |
+| `id`, `parent`, `label`, `kind` | the set id (what `--game` takes); the title's set; the Version list's name ("Rev B", "Japan"); `VariantKind` = Revision, Region, CrossBoard, Prototype or Hack (the launcher lists every kind in the Version list, a hack and a prototype tagged as such); `kind_confirmed` is false where the kind rests on the dat's name and the chip names only |
 | `swaps: &[ChipSwap]`, `drop`, `add` | the parent's chip (by name, so by socket and role) replaced by the variant's own (name, size, SHA-1, role); parent chips the variant lacks (`manxttc`); chips the parent lacks, after the parent's (`doaa`'s six 2A geometry programs) |
 | `title`, `year`, `board`, `packed`, `attract_frame`, `idle_loops`, `backup_ram`, `volume_db`, `texture_ram_mirrored`, `shading`, `recommended`, `input_lag`, `run_ahead_max` | optional overrides; `None` inherits |
 | `protection_rom` | the protection answers' ROM addresses (reply index, address), the rest of the protection inherited (`dyndeka2`, `doaa`) |
@@ -68,10 +68,12 @@ back to the parent's (`pack_sets`), except for a variant with `own_textures`.
 (`iostore.bin` in the output folder, 128 bytes), which is how a program's own
 defaults and layout are found there.
 
-**The launcher** has one card per title and a Version selector (docs/play.md,
-"Versions"); `--game`, `make GAME=` and the CLI take a variant id anywhere a set
-id goes. In pad mode the Version button, its hint in the bar and the network
-banner's Join button carry no keycap (the V and J keys are the keyboard's).
+**The launcher** has one card per title; its game page (docs/play.md, "The game
+page") has a Version list of every version, hacks and prototypes tagged, and
+an About this version row with the variant's kind, link status and whether
+texture packs carry over. `--game`, `make GAME=` and the CLI take a variant id
+anywhere a set id goes. In pad mode the network banner's Join button carries no
+keycap (the J key is the keyboard's).
 
 **Network and link play**: the ROM hash in the session agreement is over every
 chip and the set id (protocol 4), so two variants never link; a variant links
@@ -96,8 +98,8 @@ wherever nothing else changed.
 | `topskatru` USA | region | program pair | `de6f5171b2730155` | as `topskatrj`, FBI warning |
 | `vcopa` Rev A | revision | program pair | `5c206708efb1d3c8` | plays, the same stage |
 | `srallycb` Rev B | revision | program pair | `2d9857e7d3dacb29` | plays; link as the parent |
-| `srallyp` "Pro Drivin'" | prototype (*unconfirmed*) | program pair | `ef2b8b45eccd5732` | plays; hidden unless "Show hacks and prototypes" |
-| `daytonat` Turbo | hack (*unconfirmed*) | program pair | `0c64f85a8b95e340` | plays; hidden by default; link as the parent |
+| `srallyp` "Pro Drivin'" | prototype (*unconfirmed*) | program pair | `ef2b8b45eccd5732` | plays; tagged "Prototype" in the Version list |
+| `daytonat` Turbo | hack (*unconfirmed*) | program pair | `0c64f85a8b95e340` | plays; tagged "Hack" in the Version list; link as the parent |
 | `daytonata` Turbo Rev A | hack (*unconfirmed*) | program pair | `95da2bac42132d58` | as `daytonat` |
 | `lastbrnxj` Japan, Rev A | region | program pair | `af452e8e6839ef0a` | plays; own attract frame 1800 (the parent's 700 is the warning text) |
 | `lastbrnxu` USA, Rev A | region | program pair | `5db58c2199e50ec7` | plays; own attract frame 1500 (700 is the SEGA logo) |
@@ -470,9 +472,8 @@ second row in the card's detail, and the same list under the game's
 settings) lists what is installed: the default first (the parent set,
 whichever revision it is), then official revisions newest to oldest, then
 regions, then prototypes and cross-board versions, each with its label and a
-badge for kind. Hacks (the four Daytona ones) and prototypes sit behind a
-"Show hacks and prototypes" setting, off by default, since some are not
-worth running and two do not boot. Only variants whose chips are present are
+tag for a hack or a prototype. Every version is listed (the launcher once
+hid hacks and prototypes behind a setting, since removed). Only variants whose chips are present are
 listed (`sets_with_clones` already knows which). The choice is remembered per
 title and "quick resume" resumes the variant last played; the card's live
 attract preview uses the selected variant's own `attract_frame`. A variant
@@ -532,8 +533,7 @@ that is class C stays out of the list until it plays (a manifest flag, as
    then the three 2A clones of `zerogun`/`pltkids` (why the 3D is black or
    the run stalls), then the 2B and 2C `dynamcop` clones (they need their
    chip layout worked out from the code).
-6. The Daytona hacks (`daytonagtx`, `daytonam`) last, behind the hacks
-   setting, if at all.
+6. The Daytona hacks (`daytonagtx`, `daytonam`) last, if at all.
 
 ## What this survey could not determine
 

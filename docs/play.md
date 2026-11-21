@@ -873,8 +873,11 @@ in the top bar or LB and RB (Q and E), and kept in `play-settings.txt`
 The **carousel**: at the right the selected game's poster large, the next
 games' beside it (the strip wraps round), at the left its name, what kind of
 game it is (`genre` in the game's manifest, `crates/romset/src/games/`),
-its board and year, a line on whether it was left part way, and the buttons
-Play, Saves and Settings. The game's live attract mode (below) plays dimmed
+its board and year, and one line about the player and the game ("You left off
+2 hours ago", "Played before" or "Not played yet"; under it, dim, how many
+versions it has and "Link play, 2 to 8 machines" where the title links). There
+are no buttons on the card: A, Enter or a click on the selected poster opens
+the game's page (below). The game's live attract mode (below) plays dimmed
 behind everything, its poster blurred until it does. The neon wireframe
 floor (`crates/play/src/backdrop.wgsl`) lies under the posters.
 
@@ -891,22 +894,64 @@ the resume state, the quick save or a slot, whichever was written last, or
 from the start if it has none; the pill says which and how long ago; a card
 in the carousel, one line beside the logo in the grid) and the view switch.
 The hint bar along the foot shows what each button does, the pad's chips
-(Choose, A Play, X Saves, a menu button Settings, Y Continue, LB RB View,
-and in the grid LT RT Filter) or, once the keyboard was used, its keys
-(arrows, Enter, S, Tab, C, Q E, [ ]). Each entry can be clicked.
+(Choose, A Open, Y Continue, LB RB View, and in the grid LT RT Filter) or, once
+the keyboard was used, its keys (arrows, Enter, C, Q E, [ ]). Each entry can be
+clicked. S, L and V (the pad's X and View) still open the page at Saves, Play
+together and Version, and Tab (the menu button) the player's settings, but the
+bar does not list them.
+
+**The game page.** A, Enter or a click on the selected poster opens a full
+page for the game; double-clicking a poster plays at once, and Y (C) continues
+the last game from either screen. At the left is the live attract mode of the
+chosen version in a frame (its poster, blurred behind, while the preview
+loads, with how far it has got or why there is none); at the right the game's
+genre, its name in the display face, and its facts (board, year, "Links 2 to
+8", the chosen version), then the menu:
+
+- **Play** (focused when the page opens, so a game is two presses away; its
+  right side says which version it starts) starts the chosen version from
+  power-on.
+- **Version** (only for a title with more than one): radio rows of every
+  version, with its label, a tag ("Hack", "Prototype") and a line about it.
+  Choosing one returns to the main menu with Play focused, and the preview
+  switches to that version's own attract mode.
+- **Play together** (only for a title that links, the Link play games below):
+  "On this screen" with 2, 3 or 4 players, "Over the network" with Host a game
+  and Join a game (the network panel's flows, "Network link play"), and the
+  player name. Greyed out, "Not for this version", when the chosen version has
+  link play off (its settings record has not been checked against the
+  title's).
+- **Saves**: the game's states (where you left off, the quick save, slots 1 to
+  4, each with its thumbnail when it has one); choosing one starts the game
+  from it. The main menu's row says how many there are.
+- **Game settings**: Picture, Controls, Sound, Speed and latency, Free play
+  (for the games that have it) and "Use the settings for all games" for a game
+  with its own. The first four open the Esc menu's own pages over the game page
+  (the code and settings are the menu's, "The menu"); B or Esc there return to
+  the game page.
+- **About this version** (only if there is something to say): what kind of
+  release the version is (the variant's `kind`, and whether it is confirmed),
+  whether link play works for it, and whether a texture pack made for the
+  title carries over to it.
+
+A, Enter or a click chooses a row, B or Esc goes back one level (to the main
+menu with the row that opened the level focused), and from the main menu to the
+games. The hint bar says A Select (Choose in a level), B Back (Back to games on
+the main menu) and, on the main menu, Y Continue. The wheel scrolls a long
+list. The network banner at the top of the home screen ("Sam is hosting Daytona
+USA · 1/4", **Join**, key J) opens the page of that game and version at **Play
+together** with the join to that host focused.
 
 **Versions.** A title has one card however many releases of it are in the ROM
 folder (docs/variants.md): the parent set, and its variants (another
 revision, region, prototype, hack or board, each a thin manifest over its
 parent's in `crates/romset/src/games/variants.rs`) whose chips are there.
-A variant whose ROMs are missing is not listed. When a card has more than one
-version, a row of pills under its facts names them (the parent by its own
-label, "Export" or "Rev C", then revisions, regions, other boards,
-prototypes, hacks): a click chooses one, and so does the **Version** button
-beside Saves (the pad reaches it by focus, A steps to the next, round) or
-V on the keyboard (the button and the hint carry no keycap while the pad is in
-use, and the network banner's Join button no J); in the grid the hint bar has
-"Version: Japan" in the same place. The version shown is the one Play, Saves, Link play and the live
+A variant whose ROMs are missing is not listed. The card says how many
+versions it has, and the page's Version list names every one (the parent by
+its own label, "Export" or "Rev C", then revisions, regions, other boards,
+prototypes, hacks), hacks and prototypes included and tagged; an older
+`show_hacks` line in the settings file is ignored. The version chosen is the one
+Play, Saves, Play together and the live
 preview use: it has its own EEPROM, save states, resume state, settings and
 bindings (all keyed by its set id, never the parent's: `out/topskatrj/` and
 `out/topskatr/` don't touch; the settings and bindings of a variant that has
@@ -914,11 +959,8 @@ none of its own are read from its parent's until the player changes something
 for the variant, which writes the variant's own files), its own title and its own attract frame. The
 choice is kept per title in `play-settings.txt` (`version.topskatr =
 topskatrj`) and Continue (Y) resumes the version last played. A version
-chosen that is no longer installed falls back to the parent. **Prototypes and
-hacks** (a variant's `kind`) are listed only with **Show hacks and
-prototypes** on (Settings, Display, while in the launcher; `show_hacks =
-true` in the settings file; off by default); the version chosen stays listed
-when it is turned off. `--game topskatrj`, `make play GAME=topskatrj` and
+chosen that is no longer installed falls back to the parent.
+`--game topskatrj`, `make play GAME=topskatrj` and
 `remodel --game topskatrj` take a variant like any set. A save state records
 its variant and is refused by another with a message naming both ("this save
 state is from another version of the game: it is for Top Skater (Japan), this
@@ -928,28 +970,24 @@ parent's (`srallycb`, `srallyp`, `daytonat`, `daytonata`, `manxttc`); network
 sessions require the same variant on every machine (the set id is part of the
 ROM hash).
 
-Play (A) starts the selected game from power-on; a game left part way is
-picked up from **Saves** (X): a side panel of that game's states (where you
-left off, the quick save, slots 1 to 4, each with its thumbnail when it has
-one), and choosing one starts the game from it.
-
 | | Keyboard | Gamepad | Mouse |
 |---|---|---|---|
 | choose a game, move over the controls | arrows | d-pad, left stick (repeat while held) | click a poster, wheel |
-| play the selected game | Enter, Space | A | click it again, or Play |
-| saves | S | X | Saves |
-| settings | Tab | Start (the menu button) | Settings |
+| open the game's page | Enter, Space | A | click the selected poster |
+| play at once | | | double-click a poster |
+| in the page: choose, back | Enter, Esc, Backspace | A, B | click, the hint bar's Back |
+| saves, Play together, Version (the page at that level) | S, L, V | X, View | |
+| player's settings | Tab | Start (the menu button) | |
 | quick resume | C | Y | the pill |
 | carousel or grid | Q, E, Page Up, Page Down | LB, RB | the switch |
 | previous, next filter (grid) | [ and ] | LT, RT | the chips |
-| back (close a panel) | Esc, Backspace | B | the panel's back arrow |
 
-Every control, the top bar's, the buttons, the chips, the sort and the hint
+Every control, the top bar's, the page's rows, the chips, the sort and the hint
 bar's entries, is reachable from the d-pad, which moves between them as
 they're laid out; the focus ring (a cyan outline) shows while the pad or the
 keyboard is in use, and the chips show the pad's buttons until the keyboard
 or the mouse is used. Left and right on the carousel's selected poster step
-through the games; down goes to the buttons. F11 toggles fullscreen, as in a
+through the games. F11 toggles fullscreen, as in a
 game. *Unconfirmed:* the gamepad navigation is tested with synthetic events
 only, not yet with a pad.
 
@@ -961,8 +999,10 @@ it reads the same at 1080p, a 3440x1440 ultrawide and 4K; no text is under
 **Live previews.** Once a game has been selected in the carousel for half a
 second, it starts in the background and its attract mode plays dimmed behind
 the carousel, in place of the blurred poster, fading in, its sound fading in
-9 dB under the game's mix (the texture is the window's shape at half its
-size). The grid doesn't run it. It starts
+9 dB under the game's mix (the texture is the window's shape at 0.6 of its
+size). On the game page the same preview, of the chosen version (choosing
+another restarts it), plays at full brightness in the page's frame, from
+either view. The grid itself doesn't run it. It starts
 from a save state at the manifest's `attract_frame` (the frame `remodel
 shot` takes for the browser's game list), so it's live almost at once:
 the chips and the state load on a thread of their own, then the machine is
@@ -984,10 +1024,12 @@ that can't start (chips missing from the ROM folder) keeps its poster and
 says why. The preview never takes input, never saves its EEPROM, and is
 emulated like the game would be (it costs what the game costs).
 
-**Settings** (the menu button, Tab) open the Esc menu's side panel (below,
+**Settings** (the menu button, Tab, on the home screen) open the Esc menu's side panel (below,
 "The menu") over the launcher, for the selected game: Picture, Controls
 (remap its keys and pad), Sound, Speed and latency, "Use the settings for all
-games" for a game that has its own, and Quit reModel. It is the same panel,
+games" for a game that has its own, and Quit reModel. The game page's Game
+settings rows open the same pages directly (going back from one returns to the
+page rather than showing this menu). It is the same panel,
 code and settings as in a game (the picture styles, and the rows that apply
 as set); changes are kept for all games or this game by its scope switch,
 and what is saved from either place is identical. B, Start or Esc close it.
@@ -1063,8 +1105,8 @@ can, and the player splits the screen for the ones it lists
 
 **Starting it.** `make play GAME=srallyc PLAYERS=2` (2 to 4), or
 `remodel-play --game srallyc --players 2`. In the launcher a game that can
-has a **Link play** button (key L, or the pad's View/Select button; the hint bar shows it) after Play, Saves and Settings: a panel
-asks for 2, 3 or 4 players. Each machine boots, does the board check,
+has **Play together** on its page (key L, or the pad's View/Select button, opens the page there):
+**On this screen** asks for 2, 3 or 4 players. Each machine boots, does the board check,
 passes the link barriers and shows the link attract ("3人まで対戦可能!!")
 by itself; coin up and start per player as at a row of cabinets, and the
 cars race each other (`POSITION 1/2`, the others' cars on the road).
@@ -1244,7 +1286,7 @@ lockstep (`remodel-linknet`, `docs/hw/link-board.md` section 12). Sega Rally
 
 **Hosting.** `make play GAME=srallyc PLAY_ARGS="--host"` (or `remodel-play
 --game srallyc --host [PORT]`; the port defaults to 47890), or in the launcher
-**Link play** (key L, or the pad's View button), then **Host a game**. The panel shows this
+the game page's **Play together** (key L, or the pad's View button), then **Host a game**. The panel shows this
 machine's LAN address and port ("192.168.1.20:47890"), lists the players as
 they join with their round trip, and has **Start the game** (at least two
 players). `--net-players N` starts by itself once N players are in. The host
@@ -1252,7 +1294,7 @@ is player 1: CAR 1, the master, and the one whose settings everyone runs
 (the EEPROM games' own settings; daytona starts from its default record).
 
 **Joining.** `remodel-play --game srallyc --join 192.168.1.20:47890`, or the
-launcher's **Link play**, **Join a game**: type the host's address
+game page's **Play together**, **Join a game**: type the host's address
 (the port may be left out) and press Enter, or pick a host the panel found on
 the network. The list merges two ways of finding hosts (see **Finding hosts
 and names** below) and shows each host's name, game and players ("Alex   Sega Rally
@@ -1266,7 +1308,8 @@ set; coin up and start as at a row of cabinets.
 over mDNS; when one is hosting a game you have, on the same reModel, with a
 seat free, a banner at the top says so ("Sam is hosting Daytona USA · 1/4")
 with **Join** (click it, press J, or move up to it with the pad), which opens
-that game's join page already connecting to the host. The join list shows
+that game's page at Play together, with **Join** that host the first row;
+choosing it opens the join page already connecting to the host. The join list shows
 each host on two lines: its name and game, then the players and address, or
 why it can't be joined.
 
@@ -1288,8 +1331,8 @@ join list merges them (one entry per host, found either way):
   broadcast alone. Typing an address always works.
 
 Each player has a **user name**, kept with the player's settings
-(`player_name` in the settings file), edited on the launcher's **Link play**
-page, `--name NAME` for one run. It defaults to the OS login name, else
+(`player_name` in the settings file), edited on the game page's **Play together**
+level, `--name NAME` for one run. It defaults to the OS login name, else
 "Player"; it is trimmed to printable characters, at most 16. The host's lobby
 lists the players by name, the join list shows the host's, and the status line
 and the leave notices use them ("Sam left - racing on"). Two

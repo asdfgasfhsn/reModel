@@ -29,6 +29,19 @@ pub fn play_for(id: &str) -> Option<&'static romset::LinkPlay> {
     SPLIT_GAMES.contains(&romset::variants::title_of(id)).then(|| romset::games::link_play(id)).flatten()
 }
 
+/// Whether the title `id` (a title's set or one of its versions) can link: it
+/// is one the player splits the screen for and has link data.
+pub fn title_links(id: &str) -> bool {
+    let title = romset::variants::title_of(id);
+    SPLIT_GAMES.contains(&title) && romset::games::link_play(title).is_some()
+}
+
+/// The most machines the title `id` links over a network, if it links.
+pub fn title_machines(id: &str) -> Option<usize> {
+    let title = romset::variants::title_of(id);
+    SPLIT_GAMES.contains(&title).then(|| romset::games::link_play(title)).flatten().map(|p| p.max_nodes)
+}
+
 /// The most machines of `play`'s game on one screen.
 pub fn max_players(play: &romset::LinkPlay) -> usize {
     play.max_nodes.min(MAX_ON_SCREEN)
