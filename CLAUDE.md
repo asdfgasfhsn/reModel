@@ -20,9 +20,13 @@
   goes in the status table in `docs/status.md`. The README stays a short
   front page: keep findings and tracking out of it, and link new docs from
   its documentation map.
-- When behaviour contradicts MAME (confirmed from the game, or found in
-  MAME's code), add or update an entry in `docs/mame-defects.md` with
-  evidence and a way to reproduce it, so it can become an upstream patch.
+- Work clean-room: never copy or consult other emulators' code (MAME,
+  Supermodel, ElSemi's or others). Facts come from running the games,
+  the hardware and public chip manuals.
+- When the game's behaviour contradicts MAME (confirmed by running the
+  game, or from the hardware), add or update an entry in
+  `docs/mame-defects.md` with evidence and a way to reproduce it, so it
+  can become an upstream patch.
 - When a game starts working, give it a poster in the same step: original
   artwork made with the Codex CLI's image generation, following
   `assets/posters/README.md` (no text, logos, characters or real brands),

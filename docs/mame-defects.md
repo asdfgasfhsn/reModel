@@ -5,11 +5,13 @@ does, kept so they can be turned into upstream patches. MAME marks
 `topskatr` as `MACHINE_NOT_WORKING`; several entries below are plausible
 reasons why.
 
-**Scope and method.** reModel is clean-room: we read MAME for facts, never
-copy its code. A patch to MAME would be written fresh against MAME's tree and
-its licence, using the evidence here. Line numbers refer to `mamedev/mame`
-master at commit `64eae1fe` (fetched 2026-11-05). Re-check them before
-patching.
+**Scope and method.** reModel copies no MAME code. Early entries cite MAME's
+source lines, read for facts before the project went strictly clean-room
+(README, "Provenance and legal"); new entries come from running the games and
+the hardware's documents, never from reading another emulator's code. A patch
+to MAME would be written fresh against MAME's tree and its licence, using the
+evidence here. Line numbers refer to `mamedev/mame` master at commit
+`64eae1fe` (fetched 2026-11-05). Re-check them before patching.
 
 **Status levels**
 
