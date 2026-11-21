@@ -272,6 +272,9 @@ pub static VARIANTS: &[Variant] = &[
                 rom("epr-19047a.16", 0x80000, "87214f285a7bf67fbd824f2190cb9b2daf408193", Role::Program),
             ),
         ],
+        // The parent's attract frame (700) is on the warning text here; the fight demo (contact sheet
+        // of a no-input run) is up by then.
+        attract_frame: Some(1800),
         ..Variant::BASE
     },
     Variant {
@@ -290,6 +293,9 @@ pub static VARIANTS: &[Variant] = &[
                 rom("epr-19060a.16", 0x80000, "a0904c97234f218caf489dc55e33082e453791a0", Role::Program),
             ),
         ],
+        // The parent's attract frame (700) is on the SEGA logo here; the fight demo (contact sheet
+        // of a no-input run) is up by then.
+        attract_frame: Some(1500),
         ..Variant::BASE
     },
 ];

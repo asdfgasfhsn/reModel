@@ -295,6 +295,9 @@ pub enum Chip<'a> {
     LeftRight,
     /// Any other cap: "LB RB", "Esc", "D-pad".
     Key(&'a str),
+    /// No cap at all: an action the pad reaches by focus and A, where the
+    /// keyboard has a key (drawn as nothing, zero wide).
+    None,
 }
 
 impl<'a> Chip<'a> {
@@ -321,6 +324,7 @@ impl<'a> Chip<'a> {
             Chip::Menu => ("≡", None),
             Chip::LeftRight => ("◂ ▸", None),
             Chip::Key(k) => (k, None),
+            Chip::None => ("", None),
         }
     }
 }
@@ -338,6 +342,9 @@ fn chip_width(p: &Painter, chip: Chip, s: f32) -> f32 {
 /// How wide `chip` draws, `d` design points across.
 pub fn chip_width_at(p: &Painter, chip: Chip, s: f32, d: f32) -> f32 {
     let (d, f) = (d * s, d * 0.58 * s);
+    if chip == Chip::None {
+        return 0.0;
+    }
     match chip.face() {
         (_, Some(_)) => d,
         (text, None) => {
@@ -361,6 +368,9 @@ fn paint_chip(p: &Painter, chip: Chip, at: egui::Pos2, s: f32) {
 /// Paint `chip` `d` design points across, its left edge at `at` (centred on
 /// `at.y`).
 pub fn paint_chip_at(p: &Painter, chip: Chip, at: egui::Pos2, s: f32, d: f32) {
+    if chip == Chip::None {
+        return;
+    }
     let font = FontId::new(d * 0.58 * s, bold());
     let (text, circle) = chip.face();
     let (w, d) = (chip_width_at(p, chip, s, d), d * s);

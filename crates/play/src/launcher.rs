@@ -1059,7 +1059,7 @@ impl Launcher {
         );
         let font = FontId::new(17.0 * u, theme::semibold());
         let g = p.layout_no_wrap(text, font, FG);
-        let chip = self.chip(Chip::Key("J"), "J");
+        let chip = self.chip(Chip::None, "J");
         let d = 30.0;
         let cw = theme::chip_width_at(p, chip, u, d);
         let join = p.layout_no_wrap("Join".into(), FontId::new(17.0 * u, theme::bold()), theme::CYAN);
@@ -1351,7 +1351,7 @@ impl Launcher {
         }
         // A title with versions: the pad's way through them (the pills are the pointer's).
         if versions.len() > 1 {
-            buttons.push(("version", "Version", Chip::Key("V"), Click::Version, false));
+            buttons.push(("version", "Version", self.chip(Chip::None, "V"), Click::Version, false));
         }
         let font = FontId::new(22.0 * u, theme::bold());
         let mut bx = left;
@@ -1745,7 +1745,7 @@ impl Launcher {
                 h.insert(4, (Chip::Key("View"), "Link play", Some(Click::Link)));
             }
             if versions > 1 {
-                h.insert(4, (Chip::Key("V"), version_label.as_deref().unwrap_or("Version"), Some(Click::Version)));
+                h.insert(4, (Chip::None, version_label.as_deref().unwrap_or("Version"), Some(Click::Version)));
             }
             if grid {
                 h.push((Chip::Key("LT RT"), "Filter", Some(Click::NextFilter)));
@@ -2825,5 +2825,16 @@ mod tests {
         assert_eq!(r.l.selected().unwrap().id, "topskatrj");
         r.frame(&[], Vec::new());
         assert!(r.shows("Version: Japan"), "{:?}", r.texts());
+    }
+
+    #[test]
+    fn the_pad_shows_no_key_cap_for_the_keyboards_version_and_join_keys() {
+        let mut r = Rig::new(&["topskatr", "topskatrj"], &[]);
+        r.l.pad_used = true;
+        assert_eq!(r.l.chip(Chip::None, "V"), Chip::None);
+        assert_eq!(r.l.chip(Chip::None, "J"), Chip::None);
+        r.l.pad_used = false;
+        assert_eq!(r.l.chip(Chip::None, "V"), Chip::Key("V"));
+        assert_eq!(r.l.chip(Chip::None, "J"), Chip::Key("J"));
     }
 }

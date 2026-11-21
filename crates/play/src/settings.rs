@@ -703,6 +703,27 @@ fn game_path(set: &str) -> PathBuf {
     data_dir().join(set).join("settings.txt")
 }
 
+/// The set a variant inherits its settings and controls from: its parent
+/// title (None for a title, or an unknown set).
+fn parent_of(set: &str) -> Option<&'static str> {
+    romset::games::find(set).ok().and_then(|g| g.parent)
+}
+
+/// The file `set`'s own settings are read from: its own, or while it has
+/// none (and has never saved any) its parent's, read-only.
+fn game_read_path(set: &str) -> PathBuf {
+    read_path_in(&data_dir(), set, parent_of(set), "settings.txt")
+}
+
+/// `<root>/<set>/<file>`, or the parent's while the set's own doesn't exist.
+fn read_path_in(root: &Path, set: &str, parent: Option<&str>, file: &str) -> PathBuf {
+    let own = root.join(set).join(file);
+    match parent {
+        Some(p) if !own.exists() => root.join(p).join(file),
+        _ => own,
+    }
+}
+
 /// `key = value` lines (blank lines and `#` comments skipped).
 fn lines(text: &str) -> impl Iterator<Item = (&str, &str)> {
     text.lines()
@@ -807,7 +828,8 @@ impl Settings {
     /// `set`'s own settings layer (read from its file the first time).
     fn game_layer(&mut self, set: &str) -> &mut Layer {
         self.games.entry(set.to_string()).or_insert_with(|| {
-            layer(&game_path(set), lines(&std::fs::read_to_string(game_path(set)).unwrap_or_default()))
+            let p = game_read_path(set);
+            layer(&p, lines(&std::fs::read_to_string(&p).unwrap_or_default()))
         })
     }
 
@@ -939,7 +961,13 @@ impl Settings {
         let own = self.game_layer(set).clone();
         let p = game_path(set);
         if own.is_empty() {
-            let _ = std::fs::remove_file(p);
+            // A variant whose parent has settings keeps an empty file: removing it would
+            // bring the parent's back.
+            if parent_of(set).is_some_and(|q| game_path(q).exists()) {
+                write(&p, &format!("# remodel-play settings for {set}: none of its own (not its parent's either)\n"));
+            } else {
+                let _ = std::fs::remove_file(p);
+            }
             return;
         }
         let mut text = format!("# remodel-play settings for {set} (only where it differs from all games')\n");
@@ -956,9 +984,15 @@ fn bindings_path(game: &romset::Game) -> PathBuf {
     data_dir().join(game.id).join("controls.txt")
 }
 
+/// The file the game's remaps are read from: its own, or while a variant
+/// has none its parent's (read-only; the first change writes the variant's own).
+fn bindings_read_path(game: &romset::Game) -> PathBuf {
+    read_path_in(&data_dir(), game.id, game.parent, "controls.txt")
+}
+
 /// The game's bindings: its manifest's, with the player's changes.
 pub fn load_bindings(game: &'static romset::Game) -> romset::Bindings {
-    let text = std::fs::read_to_string(bindings_path(game)).unwrap_or_default();
+    let text = std::fs::read_to_string(bindings_read_path(game)).unwrap_or_default();
     romset::Bindings::with_overrides(&game.controls, &text, romset::bindings::RESERVED_KEYS)
 }
 
@@ -967,7 +1001,12 @@ pub fn save_bindings(game: &romset::Game, b: &romset::Bindings) {
     let p = bindings_path(game);
     let text = b.overrides();
     if text.is_empty() {
-        let _ = std::fs::remove_file(p);
+        // Keep an empty file for a variant whose parent has remaps, so the parent's don't return.
+        if game.parent.is_some_and(|q| data_dir().join(q).join("controls.txt").exists()) {
+            write(&p, &format!("# remodel-play controls for {}: the defaults (not its parent's remaps)\n", game.id));
+        } else {
+            let _ = std::fs::remove_file(p);
+        }
         return;
     }
     write(&p, &format!("# remodel-play controls for {} (only changes from its defaults)\n{text}", game.id));
@@ -976,6 +1015,29 @@ pub fn save_bindings(game: &romset::Game, b: &romset::Bindings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_variant_reads_its_parents_files_until_it_has_its_own() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../out/scratch/variant-fallback-test");
+        let _ = std::fs::remove_dir_all(&root);
+        write(&root.join("topskatr/settings.txt"), "depth = on\n");
+        // No file of its own: the parent's, for settings and controls alike.
+        assert_eq!(
+            read_path_in(&root, "topskatrj", Some("topskatr"), "settings.txt"),
+            root.join("topskatr/settings.txt")
+        );
+        // A title never reads another's.
+        assert_eq!(read_path_in(&root, "topskatr", None, "settings.txt"), root.join("topskatr/settings.txt"));
+        // Once it writes its own (even an empty one) that is read.
+        write(&root.join("topskatrj/settings.txt"), "# none\n");
+        assert_eq!(
+            read_path_in(&root, "topskatrj", Some("topskatr"), "settings.txt"),
+            root.join("topskatrj/settings.txt")
+        );
+        // The parent's file is as it was.
+        assert_eq!(std::fs::read_to_string(root.join("topskatr/settings.txt")).unwrap(), "depth = on\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// Settings with `set`'s own layer given (not read from disk).
     fn with_game(mut s: Settings, set: &str, own: &[(&str, &str)]) -> Settings {
