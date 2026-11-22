@@ -13,7 +13,7 @@ message is its text), set `version` in the root `Cargo.toml`, commit, then
 creates the annotated tag `vx.y.z` without pushing. Details in
 [docs/usage.md](docs/usage.md), "Versions and releases".
 
-## Unreleased
+## 0.13.1 (2026-11-22): network play over Wi-Fi
 
 - Network play over Wi-Fi: a held frame is tried again every half millisecond
   instead of once per redraw, so a late record runs its frame as soon as it
