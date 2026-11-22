@@ -15,6 +15,14 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- Steering smoothing: a One Euro filter on pad sticks that steer, so a shaky
+  stick no longer twitches the car. The Controls page's Steering block has a
+  Smoothing row (Off, Light, Medium, Strong; Light by default; `steer_smooth`,
+  per game or for all games); keys, scripted input and aiming sticks are
+  untouched. The levels were chosen on a synthetic stick (docs/play.md,
+  "Steering smoothing"). `remodel-play --stick-log FILE` (`make stick-log`)
+  logs what a pad's sticks read, raw, tuned and smoothed, a line a frame, and
+  prints how noisy each is at rest, to measure a real pad.
 - Linked play for three more games: Virtual-On (`von`, with `vonj`) links two
   machines in a one-against-one match, Sega Touring Car Championship (`stcc`,
   with `stcca` and `stccb`) up to seven machines in one race, and Ski Super G

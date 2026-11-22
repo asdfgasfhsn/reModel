@@ -139,3 +139,16 @@ fn tweaks_stay_in_range_and_snap() {
     tune(&mut r, 2, Tweak::Cycle);
     assert_eq!(r.curve, Curve::Linear);
 }
+
+#[test]
+fn smoothing_steps_and_cycles() {
+    use crate::steer::Smoothing;
+    let mut m = Smoothing::default();
+    assert_eq!(m, Smoothing::Light);
+    tune_smoothing(&mut m, Tweak::By(-5));
+    assert_eq!(m, Smoothing::Off);
+    tune_smoothing(&mut m, Tweak::By(5));
+    assert_eq!(m, Smoothing::Strong);
+    tune_smoothing(&mut m, Tweak::Cycle);
+    assert_eq!(m, Smoothing::Off);
+}

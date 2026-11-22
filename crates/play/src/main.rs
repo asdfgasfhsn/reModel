@@ -53,6 +53,8 @@ mod saves;
 mod settings;
 mod sound;
 mod splash;
+mod steer;
+mod sticklog;
 mod sync;
 mod theme;
 
@@ -273,6 +275,10 @@ usage: remodel-play [options]
   --fast             for checking (with --frames, --input, --photo): run
                      the game as fast as it goes, drawing nothing (a
                      hidden window gets about a redraw a second)
+  --stick-log FILE   what the gamepad's sticks read, a CSV line a game
+                     frame (raw, tuned, smoothed), and at exit how noisy
+                     each stick is at rest: hold it still for 5 s, then
+                     steer (docs/play.md, Measuring a pad)
   --sound-log FILE   every byte the game sends its sound boards, a line
                      each: the set, the game frame, the bus cycle and
                      the byte in hex (control-register writes marked
@@ -423,6 +429,8 @@ struct Options {
     pack_fixes: model2::packlog::Fixes,
     /// `--sound-log`: where to log the sound link's bytes.
     sound_log: Option<PathBuf>,
+    /// `--stick-log`: write what the pad's sticks read, a line a frame.
+    stick_log: Option<PathBuf>,
     /// `--photo`: scripted photo mode sessions, in frame order.
     photo: std::collections::VecDeque<photo::Script>,
     /// `--photo-dir`: where photos go.
@@ -529,6 +537,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
         pack_log: None,
         pack_fixes: Default::default(),
         sound_log: None,
+        stick_log: None,
         photo: Default::default(),
         photo_dir: None,
         photo_history: 10.0,
@@ -725,6 +734,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
             "--pack-log" => o.pack_log = Some(PathBuf::from(value()?)),
             "--pack-fixes" => o.pack_fixes = model2::packlog::Fixes::parse(&value()?)?,
             "--sound-log" => o.sound_log = Some(PathBuf::from(value()?)),
+            "--stick-log" => o.stick_log = Some(PathBuf::from(value()?)),
             "--photo" => {
                 let mut v: Vec<photo::Script> = photo::parse_scripts(&value()?)?;
                 v.sort_by_key(|p| p.at);
@@ -1281,6 +1291,14 @@ struct Play {
     frame_log: Option<std::io::BufWriter<std::fs::File>>,
     /// `--sound-log`: the file.
     sound_log: Option<std::io::BufWriter<std::fs::File>>,
+    /// `--stick-log`: the log.
+    stick_log: Option<sticklog::StickLog>,
+    /// The steering smoothing of each player's pad (seat 0 is the
+    /// session's own), stepped once an emulated frame.
+    steer_filters: Vec<steer::SteerFilter>,
+    /// The Controls page's own, stepped as the page is drawn (at 60 a second
+    /// by the clock), and when it was.
+    steer_preview: std::cell::RefCell<(steer::SteerFilter, Instant)>,
     drawing: Option<(u64, bool, bool)>,
     /// For the draw thread to wake the event loop.
     proxy: Option<winit::event_loop::EventLoopProxy<Wake>>,
@@ -1568,6 +1586,7 @@ impl Play {
         net: Option<(linknet::Session, linknet::Params)>,
     ) {
         self.leave_game();
+        self.steer_filters.clear();
         self.previews.cancel_all();
         self.use_values(set);
         let values = self.values.clone();
@@ -1992,6 +2011,7 @@ impl Play {
         if self.session.as_ref().is_some_and(|s| s.net.is_some()) {
             return self.menu.error("Save states are off in a network game".to_string());
         }
+        self.steer_filters.clear();
         let Some(s) = &mut self.session else { return };
         let data = match std::fs::read(path) {
             Ok(d) => d,
@@ -2700,7 +2720,12 @@ impl Play {
                 let pad = gilrs.and_then(|g| seat.pad.map(|id| g.gamepad(id)));
                 let dirs = controls::read_sticks(&mut seat.dirs, pad.as_ref(), tuning);
                 let keys = if i == 0 && l.keyboard { &self.keys } else { &none };
-                let devices = controls::Devices { keys, pad, gate: &seat.gate, tuning, dirs };
+                if self.steer_filters.len() <= i {
+                    self.steer_filters.resize(i + 1, steer::SteerFilter::default());
+                }
+                let raw = pad.as_ref().map(controls::raw_axes);
+                let steer = self.steer_filters[i].step(raw.as_ref(), tuning);
+                let devices = controls::Devices { keys, pad, gate: &seat.gate, tuning, dirs, steer };
                 model2::input::apply_player(&mut m.bus, &[(&s.bindings, &devices)]);
             }
             return;
@@ -2715,7 +2740,19 @@ impl Play {
             None => {
                 let tuning = self.values.tuning;
                 let dirs = controls::read_sticks(&mut self.stick_dirs, pad.as_ref(), tuning);
-                let devices = controls::Devices { keys, pad, gate: &self.gate, tuning, dirs };
+                if self.steer_filters.is_empty() {
+                    self.steer_filters.push(steer::SteerFilter::default());
+                }
+                let raw = pad.as_ref().map(controls::raw_axes);
+                let steer = self.steer_filters[0].step(raw.as_ref(), tuning);
+                if let (Some(log), Some(raw)) = (&mut self.stick_log, &raw) {
+                    let b = &s.bindings;
+                    log.game(|a| {
+                        (0..b.controls().analogs.len()).any(|i| b.controls().analogs[i].steering && b.axis(i).axis == a)
+                    });
+                    log.frame(s.machine.frames, raw, &steer, tuning);
+                }
+                let devices = controls::Devices { keys, pad, gate: &self.gate, tuning, dirs, steer };
                 let bus = &mut s.machine.bus;
                 let b = &s.bindings;
                 model2::input::apply_player(bus, &[(b, &devices)]);
@@ -2740,7 +2777,20 @@ impl Play {
     /// What the pad reads now, for the Controls page.
     fn pad_live(&self) -> controls::PadLive {
         let pad = self.gilrs.as_ref().and_then(|g| self.pad.map(|id| g.gamepad(id)));
-        controls::PadLive::of(pad.as_ref())
+        let mut live = controls::PadLive::of(pad.as_ref());
+        // The page's smoothed reading: the filter stepped for the time since
+        // the last draw, at 60 steps a second (at most a few at once).
+        let mut p = self.steer_preview.borrow_mut();
+        if live.connected {
+            let steps = (p.1.elapsed().as_secs_f32() * 60.0).round().clamp(1.0, 4.0) as u32;
+            p.1 = Instant::now();
+            for _ in 0..steps {
+                live.smoothed = p.0.step(Some(&live.axes), self.values.tuning);
+            }
+        } else {
+            p.0.reset();
+        }
+        live
     }
 
     /// Where the mouse points in the game's view (fractions), None off it.
@@ -4070,6 +4120,7 @@ impl Play {
         // Keys held when the menu opened would stay pressed otherwise; the
         // pad's Start and Select are kept from the game until released.
         self.keys.clear();
+        self.steer_filters.clear();
         self.gate.menu_changed();
         if let Some(l) = self.session.as_mut().and_then(|s| s.link.as_mut()) {
             l.seats.iter_mut().for_each(|seat| seat.gate.menu_changed());
@@ -4185,6 +4236,9 @@ impl Play {
         self.take_report();
         self.previews.cancel_all();
         self.leave_game();
+        if let Some(l) = &mut self.stick_log {
+            print!("{}", l.summary());
+        }
         self.settings.save();
         el.exit();
     }
@@ -4783,6 +4837,9 @@ fn main() {
         emulate_redraw: 0.0,
         frame_log: None,
         sound_log: None,
+        stick_log: None,
+        steer_filters: Vec::new(),
+        steer_preview: std::cell::RefCell::new((steer::SteerFilter::default(), Instant::now())),
         drawing: None,
         proxy: None,
         real_emulate: Duration::ZERO,
@@ -4824,6 +4881,16 @@ fn main() {
     }
     let event_loop = EventLoop::<Wake>::with_user_event().build().expect("event loop");
     play.proxy = Some(event_loop.create_proxy());
+    if let Some(path) = &play.opts.stick_log {
+        match sticklog::StickLog::create(path) {
+            Ok(l) => play.stick_log = Some(l),
+            Err(e) => {
+                eprintln!("--stick-log: {}: {e}", path.display());
+                log::finish();
+                std::process::exit(1)
+            }
+        }
+    }
     if let Some(path) = &play.opts.sound_log {
         match std::fs::File::create(path) {
             Ok(f) => play.sound_log = Some(std::io::BufWriter::new(f)),

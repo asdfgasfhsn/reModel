@@ -2186,10 +2186,56 @@ Linear gives 0.5 and Gentle (`u^2`) 0.25. A stick used as d-pad directions
 (`StickDirs`) still takes the dead zone as a threshold. Tuning follows the
 **This game only / All games** switch, as the Picture page's settings do, and
 is kept with the settings as `steer_dead`, `steer_sens`, `steer_curve`,
-`stick_dead`, `stick_sens`, `stick_curve` and `pedal_dead`, `pedal_sens`,
+`steer_smooth`, `stick_dead`, `stick_sens`, `stick_curve` and `pedal_dead`, `pedal_sens`,
 `pedal_curve`; a settings file without the `steer_` keys gets the steering
 defaults. In a window too narrow for it the card leaves out the raw and tuned
-bars (and the sentence of help). Bindings are always the game's own: a
+bars (and the sentence of help). **Steering smoothing.** A pad stick wanders by a percent or two when held
+still, and a game that points its wheels at the wheel's position every frame
+(`daytona`) turns that into car twitch. The Steering block's fourth row,
+**Smoothing** (Off, Light, Medium, Strong; Light by default; `steer_smooth`,
+per game or for all games like the rest), runs a One Euro filter (Casiez,
+Roussel and Vogel, CHI 2012) on each steering stick past the tuning above: an
+adaptive low-pass whose cutoff is `min_cutoff + beta * speed`, so a still stick
+is smoothed hard and a fast move hardly at all. It runs once per emulated
+frame with a fixed time step of one frame, so the same inputs give the same
+output, and its state is dropped on starting a game, loading a state and
+leaving the menu. It reads pad sticks only: keys and their ramps, scripted
+`--input` (so the bench hashes) and the sticks of games that aim are not
+touched. The Controls page's "Smoothed" bar is its output.
+
+The levels come from a synthetic stick at 60 Hz (`steer::tests`,
+`levels_on_a_synthetic_stick`): holding at 0.5 with uniform +-3% noise (the
+spread 1.75% unfiltered), a flick from 0 to full in 4 frames (90% on the
+third frame unfiltered) and a 5 s sweep. d-cutoff is 1 Hz throughout.
+
+| Level  | min cutoff Hz | beta | jitter left (sd) | jitter cut | flick to 90% | added lag | sweep error (mean) |
+| ------ | ------------- | ---- | ---------------- | ---------- | ------------ | --------- | ------------------ |
+| Off    |               |      | 1.75%            |            | 3 frames     |           | 0.0%               |
+| Light  | 1.5           | 2.0  | 0.54%            | 69%        | 4 frames     | 1 frame   | -1.0%              |
+| Medium | 1.0           | 1.0  | 0.43%            | 75%        | 5 frames     | 2 frames  | -1.5%              |
+| Strong | 0.5           | 0.5  | 0.29%            | 83%        | 6 frames     | 3 frames  | -2.4%              |
+
+Light is chosen to cut the jitter by over half for at most a frame on a
+flick; a lower min cutoff smooths more but trails a slow sweep further
+(the sweep column), and a higher beta gives the lag back on a flick at the
+price of letting more noise through when the stick moves. These are numbers
+for a made-up signal: `--stick-log` below measures a real pad, and the
+levels can be retuned from it.
+
+**Measuring a pad.** `make stick-log` (or `remodel-play --stick-log FILE`, with
+`--game` for a game) writes one CSV line per game frame while a gamepad is
+used: `frame` and, for each of the four sticks (`lx`, `ly`, `rx`, `ry`), the
+raw reading, the tuned one (the steering tuning on an axis that steers in
+this game, else the stick one) and the smoothed one (empty on an axis that
+doesn't steer). **Hold the stick still for 5 seconds, then steer**, then
+quit. The summary printed at exit gives, per stick, the mean and standard
+deviation of the raw reading while it is near rest (|raw| under 15%) and the
+largest offset from zero seen there, and for a steering stick the rms of the
+smoothed reading at those frames. A pad whose rest sd is under about 0.3%
+doesn't need smoothing; 1% or more is shaky. Nothing is written while the menu
+is open or for keys, and frames are counted from the game's start.
+
+Bindings are always the game's own: a
 different game has other actions, so there is nothing for "all games" to
 share.
 

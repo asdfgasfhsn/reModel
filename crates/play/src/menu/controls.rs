@@ -24,6 +24,7 @@ use crate::controls::{is_stick, Curve, PadLive, PadStyle, Response};
 use crate::focus::Focus;
 use crate::launcher::Nav;
 use crate::settings::GameSettings;
+use crate::steer::Smoothing;
 use crate::theme::{self, Chip};
 use egui::{pos2, vec2, Align2, Color32, FontFamily, FontId, Id, Painter, Pos2, Rect, Sense, Shape as Mesh, Stroke};
 use romset::bindings::{Accepts, Bindings, Input, Slot, Value};
@@ -406,7 +407,10 @@ impl Tuned {
     fn help(self) -> &'static str {
         match self {
             Tuned::Stick => "Nothing is read inside the dead zone; past it the reading rises smoothly.",
-            Tuned::Steer => "A small dead zone and a finer curve keep steering steady near the middle.",
+            Tuned::Steer => {
+                "A small dead zone and a finer curve keep steering steady near the middle. \
+                 Smoothing calms a shaky stick; stronger adds a little lag."
+            }
             Tuned::Pedal => "Over 100% reaches full before the trigger is all the way down.",
         }
     }
@@ -969,9 +973,14 @@ impl Menu {
                     let r = response(settings, blk.kind);
                     // Narrow windows give the rows less, to leave the meter room.
                     let rows_w = (inner.width() - 218.0 * s).clamp(300.0 * s, 430.0 * s);
-                    let row_h = 54.0 * s;
+                    // Steering has a fourth row: in a short window the rows
+                    // are closer, to fit the card.
+                    let n_rows = if blk.kind == Tuned::Steer { 4.0 } else { 3.0 };
+                    let row_h = ((inner.bottom() - y) / n_rows).clamp(40.0 * s, 54.0 * s);
                     let mut at_y = y;
-                    for (i, (label, value, frac, can)) in [
+                    let smooth = settings.tuning.smooth;
+                    let at_smooth = Smoothing::ALL.iter().position(|m| *m == smooth).unwrap_or(0);
+                    let mut rows_list = vec![
                         (
                             "Dead zone",
                             format!("{}%", r.dead),
@@ -993,10 +1002,17 @@ impl Menu {
                             None,
                             (r.curve != Curve::ALL[0], r.curve != Curve::ALL[Curve::ALL.len() - 1]),
                         ),
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    {
+                    ];
+                    // Steering only: how much a pad stick's shake is smoothed.
+                    if blk.kind == Tuned::Steer {
+                        rows_list.push((
+                            "Smoothing",
+                            smooth.label().to_string(),
+                            None,
+                            (at_smooth > 0, at_smooth + 1 < Smoothing::ALL.len()),
+                        ));
+                    }
+                    for (i, (label, value, frac, can)) in rows_list.into_iter().enumerate() {
                         let rect = Rect::from_min_size(pos2(inner.left(), at_y), vec2(rows_w, row_h - 4.0 * s));
                         let tw = tune_row(
                             ui,
@@ -1015,7 +1031,7 @@ impl Menu {
                     }
                     // The response and the live meter.
                     let right = Rect::from_min_max(pos2(inner.left() + rows_w + 28.0 * s, y), inner.right_bottom());
-                    live_meter(ui.painter(), right, s, &pad_view, blk, r);
+                    live_meter(ui.painter(), right, s, &pad_view, blk, r, smooth);
                     // One plain sentence on what the tuning is for.
                     let galley = ui.painter().layout(
                         blk.kind.help().to_string(),
@@ -1043,7 +1059,11 @@ impl Menu {
             });
         }
         for (kind, tw, row) in tweaks {
-            tune(response_mut(settings, kind), row, tw);
+            if kind == Tuned::Steer && row == 3 {
+                tune_smoothing(&mut settings.tuning.smooth, tw);
+            } else {
+                tune(response_mut(settings, kind), row, tw);
+            }
         }
     }
 }
@@ -1363,6 +1383,19 @@ pub(super) fn tune(r: &mut Response, row: usize, tw: Tweak) {
     }
 }
 
+/// Apply a change to the steering smoothing row: a choice, so a step moves
+/// to the next level, A cycles round.
+pub(super) fn tune_smoothing(m: &mut Smoothing, tw: Tweak) {
+    let at = Smoothing::ALL.iter().position(|x| x == m).unwrap_or(0) as i32;
+    let last = Smoothing::ALL.len() as i32 - 1;
+    let to = match tw {
+        Tweak::None | Tweak::To(_) => return,
+        Tweak::By(n) => (at + n).clamp(0, last),
+        Tweak::Cycle => (at + 1) % (last + 1),
+    };
+    *m = Smoothing::ALL[to as usize];
+}
+
 /// A tuning row: "label ◂ track ▸ value". Left and right on the pad step it
 /// (`Tweak::By`), A cycles a choice; a click on an arrow steps, on or a drag
 /// along the track sets.
@@ -1444,7 +1477,7 @@ fn tune_row(
 
 /// The response curve (the dead zone shaded, the curve, a dot where the
 /// stick is now) and the raw and tuned readings as bars.
-fn live_meter(p: &Painter, area: Rect, s: f32, pad: &PadLive, block: &Block, resp: Response) {
+fn live_meter(p: &Painter, area: Rect, s: f32, pad: &PadLive, block: &Block, resp: Response, smooth: Smoothing) {
     let graph = Rect::from_min_size(area.min, vec2(104.0 * s, 104.0 * s));
     p.rect_filled(graph, 8.0 * s, Color32::from_rgb(13, 18, 32));
     let at = |x: f32, y: f32| pos2(graph.left() + x * graph.width(), graph.bottom() - y * graph.height());
@@ -1459,6 +1492,11 @@ fn live_meter(p: &Painter, area: Rect, s: f32, pad: &PadLive, block: &Block, res
     p.add(Mesh::line(pts, Stroke::new(2.5 * s, theme::CYAN)));
     let raw = block.axis.read(|a| pad.axis(a));
     let tuned = resp.apply(raw);
+    // Steering's second bar is what the game reads: past the smoothing too.
+    let (read, read_name) = match (block.kind, smooth) {
+        (Tuned::Steer, Smoothing::Off) | (Tuned::Stick | Tuned::Pedal, _) => (tuned, "Tuned"),
+        (Tuned::Steer, _) => (block.axis.read(|a| pad.smoothed(a)), "Smoothed"),
+    };
     if pad.connected {
         let c = at(raw.abs().min(1.0), tuned.abs().min(1.0));
         p.circle_filled(c, 6.0 * s, theme::TEXT);
@@ -1473,7 +1511,7 @@ fn live_meter(p: &Painter, area: Rect, s: f32, pad: &PadLive, block: &Block, res
     }
     let font = plain(s, TEXT_SIZE);
     for (i, (name, v, colour)) in
-        [("Raw", raw, Color32::from_white_alpha(120)), ("Tuned", tuned, theme::CYAN)].into_iter().enumerate()
+        [("Raw", raw, Color32::from_white_alpha(120)), (read_name, read, theme::CYAN)].into_iter().enumerate()
     {
         let y = area.top() + i as f32 * 54.0 * s;
         let pct = match (pad.connected, block.kind.bidirectional()) {

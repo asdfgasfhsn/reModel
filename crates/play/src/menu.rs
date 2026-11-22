@@ -2200,6 +2200,13 @@ mod tests {
         r.run(&[&[], &[Nav::Accept]]);
         assert_eq!(r.s.tuning.steer.curve, crate::controls::Curve::Gentle);
         assert!(r.shows("Dead zone") && r.shows("Sensitivity") && r.shows("Curve"));
+        // Steering has the smoothing row too (Light until changed), stepped like a choice.
+        assert!(r.shows("Smoothing") && r.shows("Light"));
+        r.menu.ctl.focus.focus_to(egui::Id::unique(("remodel-controls-tune", 3)));
+        r.run(&[&[], &[Nav::Right]]);
+        assert_eq!(r.s.tuning.smooth, crate::steer::Smoothing::Medium);
+        r.run(&[&[Nav::Accept], &[Nav::Accept]]);
+        assert_eq!(r.s.tuning.smooth, crate::steer::Smoothing::Off);
         // The pedals are the other block.
         r.menu.ctl.block = 1;
         r.run(&[&[], &[]]);

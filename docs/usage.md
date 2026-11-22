@@ -95,6 +95,7 @@ make play                 # the launcher: pick a game (live attract previews, se
 make play GAME=hotd       # straight into a game (Esc or pad Guide or Start+Select menu, F5/F9 quick save/load, F11 fullscreen)
 make play GAME=srallyc PLAYERS=2   # link play: 2 to 4 linked machines of the game on one split screen, one controller each (keyboard P1, gamepads join with a button press; --players N, the launcher's Link play button; docs/play.md, "Link play")
 make play GAME=srallyc PLAY_ARGS="--host"   # network link play: host (the lobby shows this machine's address; --net-players N starts by itself); PLAY_ARGS="--join HOST:PORT" on the other machines, or the launcher's Link play, Host or Join a network game (docs/play.md, "Network link play")
+make stick-log             # play Daytona with a log of the gamepad's sticks (out/stick-log.csv), and a summary of how noisy each is at rest on quitting (docs/play.md, "Measuring a pad")
 make play PLAY_ARGS=--smooth   # with in-between frames on a display over 60 Hz (a frame more latency)
 make play GAME=sgt24h PLAY_ARGS="--run-ahead 3"   # show the game 3 frames ahead: less input lag, 4x the emulation
 make play PLAY_ARGS="--bloom 50"   # bloom on the 3D layer's bright parts, 1 to 100 percent (off by default; docs/play.md)

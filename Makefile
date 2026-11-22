@@ -369,6 +369,10 @@ play: ## Play in a native window: the launcher (carousel or grid of the games, l
 	$(call release_build,remodel-play)
 	$(CAP) $(PLAY) $(if $(filter command line environment,$(origin GAME)),--game $(GAME)) $(if $(PLAYERS),--players $(PLAYERS)) --rom $(ROM) $(if $(filter 0,$(JIT)),--no-jit) $(PLAY_ARGS)
 
+stick-log: ## Play with a log of the gamepad's sticks, to measure how noisy a pad is: hold the stick still for 5 s, then steer; a CSV line a frame to STICK_LOG (default out/stick-log.csv) and, on quitting, each stick's mean, spread and largest offset at rest (GAME= to pick the game, default daytona; docs/play.md, "Measuring a pad")
+	$(call release_build,remodel-play)
+	$(CAP) $(PLAY) --game $(if $(filter command line environment,$(origin GAME)),$(GAME),daytona) --rom $(ROM) $(if $(filter 0,$(JIT)),--no-jit) --stick-log $(or $(STICK_LOG),out/stick-log.csv) $(PLAY_ARGS)
+
 # The launcher in the desktop's app menu, running this checkout's player
 # (from the repo, so it finds rom/ and keeps its files in out/).
 APPS_DIR ?= $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/applications

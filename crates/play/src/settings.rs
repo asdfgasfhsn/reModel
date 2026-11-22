@@ -270,7 +270,7 @@ impl Default for GameSettings {
 }
 
 /// Every game setting's key, in the order the panels show them.
-pub const KEYS: [&str; 40] = [
+pub const KEYS: [&str; 41] = [
     "preset",
     "wide",
     "bezel",
@@ -311,6 +311,7 @@ pub const KEYS: [&str; 40] = [
     "steer_dead",
     "steer_sens",
     "steer_curve",
+    "steer_smooth",
 ];
 
 /// The anti-aliasing levels (samples a pixel; 0 is off).
@@ -390,6 +391,7 @@ impl GameSettings {
             "steer_dead" => self.tuning.steer.dead.to_string(),
             "steer_sens" => self.tuning.steer.sens.to_string(),
             "steer_curve" => self.tuning.steer.curve.name().to_string(),
+            "steer_smooth" => self.tuning.smooth.name().to_string(),
             _ => String::new(),
         }
     }
@@ -465,6 +467,7 @@ impl GameSettings {
             "steer_dead" => dead(v).map(|n| self.tuning.steer.dead = n).is_some(),
             "steer_sens" => sens(v).map(|n| self.tuning.steer.sens = n).is_some(),
             "steer_curve" => Curve::parse(v).map(|c| self.tuning.steer.curve = c).is_some(),
+            "steer_smooth" => crate::steer::Smoothing::parse(v).map(|c| self.tuning.smooth = c).is_some(),
             "geo" => match model2::geo::GeoMode::parse(v) {
                 Some(model2::geo::GeoMode::Chip) => {
                     self.geo_chip = true;
@@ -1090,6 +1093,31 @@ mod tests {
         let _ = s.apply_edit("daytona", &v);
         assert_eq!(s.defaults.get("steer_dead").map(String::as_str), Some("3"));
         assert!(!s.games["daytona"].contains_key("steer_dead"));
+    }
+
+    /// `steer_smooth` is kept like the other `steer_*` keys; old files and
+    /// bad values get Light.
+    #[test]
+    fn steering_smoothing_key() {
+        use crate::steer::Smoothing;
+        let mut s = Settings::parse("steer_dead = 5\n");
+        assert_eq!(s.resolve("daytona").0.tuning.smooth, Smoothing::Light);
+        let bad = Settings::parse("steer_smooth = silly\n");
+        assert_eq!(with_game(bad, "daytona", &[]).resolve("daytona").0.tuning.smooth, Smoothing::Light);
+        let ok = Settings::parse("steer_smooth = strong\n");
+        assert_eq!(with_game(ok, "daytona", &[]).resolve("daytona").0.tuning.smooth, Smoothing::Strong);
+        let mut v = s.resolve("daytona").0;
+        v.tuning.smooth = Smoothing::Off;
+        s.games.insert("daytona".into(), Layer::new());
+        s.for_all = false;
+        let _ = s.apply_edit("daytona", &v);
+        assert_eq!(s.games["daytona"].get("steer_smooth").map(String::as_str), Some("off"));
+        assert!(!s.defaults.contains_key("steer_smooth"));
+        s.games.insert("daytona".into(), Layer::new());
+        s.for_all = true;
+        let _ = s.apply_edit("daytona", &v);
+        assert_eq!(s.defaults.get("steer_smooth").map(String::as_str), Some("off"));
+        assert!(!s.games["daytona"].contains_key("steer_smooth"));
     }
 
     #[test]

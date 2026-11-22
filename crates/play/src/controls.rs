@@ -3,6 +3,7 @@
 //! buttons and axes, mapped here onto winit and gilrs (and back, for
 //! capturing what a player presses to remap a control).
 
+use crate::steer::Smoothing;
 use gilrs::{Axis, Button};
 use romset::bindings::Capture;
 use romset::{PadAxis, PadButton, StickDirs};
@@ -110,6 +111,8 @@ pub struct Tuning {
     pub stick: Response,
     pub steer: Response,
     pub pedal: Response,
+    /// How much a steering stick is smoothed ([`crate::steer`]).
+    pub smooth: Smoothing,
 }
 
 impl Tuning {
@@ -125,7 +128,7 @@ impl Tuning {
 
 impl Default for Tuning {
     fn default() -> Self {
-        Tuning { stick: Response::STICK, steer: Response::STEER, pedal: Response::PEDAL }
+        Tuning { stick: Response::STICK, steer: Response::STEER, pedal: Response::PEDAL, smooth: Smoothing::default() }
     }
 }
 
@@ -162,22 +165,37 @@ pub struct PadLive {
     pub style: PadStyle,
     /// Each axis' raw deflection (before tuning), in `PadAxis::ALL` order.
     pub axes: [f32; 8],
+    /// Each stick axis' reading past the steering tuning and smoothing
+    /// ([`crate::steer::SteerFilter`], stepped for the page), in the same
+    /// order (0 for the others).
+    pub smoothed: [f32; 8],
 }
 
 impl PadLive {
     /// A pad as gilrs has it (`None`: none connected).
     pub fn of(pad: Option<&gilrs::Gamepad>) -> PadLive {
         let Some(p) = pad else { return PadLive::default() };
-        let mut axes = [0.0; 8];
-        for (v, a) in axes.iter_mut().zip(PadAxis::ALL) {
-            *v = raw_axis(p, a);
-        }
-        PadLive { connected: true, style: pad_style(p.name(), p.vendor_id()), axes }
+        let axes = raw_axes(p);
+        PadLive { connected: true, style: pad_style(p.name(), p.vendor_id()), axes, smoothed: [0.0; 8] }
     }
 
     pub fn axis(&self, a: PadAxis) -> f32 {
         PadAxis::ALL.iter().position(|x| *x == a).map_or(0.0, |i| self.axes[i])
     }
+
+    /// [`Self::axis`] past the steering tuning and smoothing.
+    pub fn smoothed(&self, a: PadAxis) -> f32 {
+        PadAxis::ALL.iter().position(|x| *x == a).map_or(0.0, |i| self.smoothed[i])
+    }
+}
+
+/// Every axis of `p` as the manifest reads it, in `PadAxis::ALL` order.
+pub fn raw_axes(p: &gilrs::Gamepad) -> [f32; 8] {
+    let mut axes = [0.0; 8];
+    for (v, a) in axes.iter_mut().zip(PadAxis::ALL) {
+        *v = raw_axis(p, a);
+    }
+    axes
 }
 
 /// A pad axis as the manifest reads it, before any tuning.
@@ -211,6 +229,9 @@ pub struct Devices<'a> {
     pub tuning: Tuning,
     /// What the sticks hold as directions ([`read_sticks`]).
     pub dirs: StickDirs,
+    /// The sticks past the steering tuning and the smoothing, stepped once
+    /// a frame ([`crate::steer::SteerFilter::step`]): what steering reads.
+    pub steer: [f32; 8],
 }
 
 /// Move `dirs` by one frame of `pad`'s sticks, past the player's dead zone.
@@ -229,6 +250,7 @@ impl Devices<'_> {
         let Some(p) = &self.pad else { return 0.0 };
         match a {
             PadAxis::None => 0.0,
+            a if steering && is_stick(a) => PadAxis::ALL.iter().position(|x| *x == a).map_or(0.0, |i| self.steer[i]),
             a => self.tuning.for_axis(a, steering).apply(raw_axis(p, a)),
         }
     }
