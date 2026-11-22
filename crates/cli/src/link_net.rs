@@ -379,6 +379,10 @@ fn run_session(
         a.ram_trace.then(|| std::io::BufWriter::new(std::fs::File::create(frames_dir.join("ram-trace.txt")).unwrap()));
     let mut end: Option<linknet::End> = None;
     let mut left = false;
+    // Late frames (`--realtime`): this host fell behind its own 60 Hz schedule by its own
+    // work or a late wake-up, not by waiting for another host. On a busy machine these hold
+    // the peers, and the adaptive delay rightly rises (`link-net-test` reads these lines).
+    let (mut late, mut latest) = (0u64, Duration::ZERO);
     'frames: while m.frames < a.frames {
         let f0 = m.frames;
         while m.frames == f0 {
@@ -424,10 +428,28 @@ fn run_session(
         script.apply(m.frames, &mut m.bus);
         if a.realtime {
             next_frame += Duration::from_nanos(16_666_667);
-            match next_frame.checked_duration_since(Instant::now()) {
-                Some(d) => std::thread::sleep(d),
+            // Behind with no wait for another host, or woken late from the sleep: this host's own lateness.
+            let behind = match next_frame.checked_duration_since(Instant::now()) {
+                Some(d) => {
+                    std::thread::sleep(d);
+                    Instant::now().saturating_duration_since(next_frame)
+                }
                 // Behind (a hold): the frames lost are not made up in a sprint.
-                None => next_frame = Instant::now(),
+                None => {
+                    let now = Instant::now();
+                    let by = now - next_frame;
+                    next_frame = now;
+                    if stall_since.is_some() {
+                        Duration::ZERO
+                    } else {
+                        by
+                    }
+                }
+            };
+            if behind > Duration::from_millis(4) {
+                late += 1;
+                latest = latest.max(behind);
+                println!("link-net      late at frame {frame} by {:.1} ms", behind.as_secs_f64() * 1000.0);
             }
         }
         if a.hash_every > 0 && frame.is_multiple_of(a.hash_every) {
@@ -458,6 +480,11 @@ fn run_session(
         st.boundaries,
         st.stall_time.as_secs_f64() * 1000.0,
         st.longest.as_secs_f64() * 1000.0
+    );
+    println!(
+        "link-net      late frames {late} of {} (behind 60 Hz by over 4 ms of its own, longest {:.1} ms)",
+        m.frames,
+        latest.as_secs_f64() * 1000.0
     );
     println!(
         "link-net      sent {} packets {:.1} KB ({:.0} bytes a frame, {:.1} KB/s at 60 frames/s), received {} packets {:.1} KB ({:.0} bytes a frame, {:.1} KB/s at 60 frames/s), duplicate records {}, malformed packets {}, dropped by fault injection {}, state checks passed {}",
