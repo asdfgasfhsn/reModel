@@ -525,7 +525,7 @@ fn crawl(
 /// Parse the texture headers the frame draws, on a copy (the rasteriser's
 /// reads, as `tour run` notes them), every `every`th frame.
 fn sample_textures(m: &mut model2::Machine, tex: &ReadMap, every: u64) {
-    if m.frames % every != 0 {
+    if !m.frames.is_multiple_of(every) {
         return;
     }
     let f = model2::capture::Frame::grab(&mut m.bus);

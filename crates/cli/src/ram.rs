@@ -30,6 +30,9 @@ enum Cond {
     Gt(u32),
 }
 
+/// Work RAM copied at one frame: (base address, bytes) per RAM.
+type Snapshot = Vec<(u32, Vec<u8>)>;
+
 /// One rule: conditions that all hold.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Rule(Vec<Cond>);
@@ -90,14 +93,8 @@ impl Rule {
 /// The addresses of `snaps` (work RAM copies, `(base, bytes)` per RAM) at
 /// `width` bytes that pass `first` on the first snapshot and `rules[i]`
 /// between snapshot i and i+1, within `region`; each with its values.
-fn search(
-    snaps: &[Vec<(u32, Vec<u8>)>],
-    width: usize,
-    first: &Rule,
-    rules: &[Rule],
-    region: (u32, u32),
-) -> Vec<(u32, Vec<u32>)> {
-    let read = |s: &Vec<(u32, Vec<u8>)>, ram: usize, o: usize| -> u32 {
+fn search(snaps: &[Snapshot], width: usize, first: &Rule, rules: &[Rule], region: (u32, u32)) -> Vec<(u32, Vec<u32>)> {
+    let read = |s: &Snapshot, ram: usize, o: usize| -> u32 {
         let b = &s[ram].1;
         (0..width).fold(0u32, |v, i| v | (b[o + i] as u32) << (8 * i))
     };
@@ -122,11 +119,7 @@ fn search(
 
 /// Run `script` from power-on and copy work RAM as each of `at`'s frames
 /// start (frames in ascending order).
-fn snapshots(
-    roms: &RomSet,
-    script: &model2::input::InputScript,
-    at: &[u64],
-) -> Result<Vec<Vec<(u32, Vec<u8>)>>, String> {
+fn snapshots(roms: &RomSet, script: &model2::input::InputScript, at: &[u64]) -> Result<Vec<Snapshot>, String> {
     let mut m = crate::machine(roms);
     if crate::GEO_MODE.get().is_none() {
         m.bus.geo.set_mode(model2::geo::GeoMode::Native);
@@ -396,7 +389,7 @@ fn show(args: &[String], at: &[u64], c: &tour::Common, roms: &RomSet) -> Answer 
 mod tests {
     use super::*;
 
-    fn snap(a: &[u8], b: &[u8]) -> Vec<(u32, Vec<u8>)> {
+    fn snap(a: &[u8], b: &[u8]) -> Snapshot {
         vec![(0x500000, a.to_vec()), (0x200000, b.to_vec())]
     }
 
