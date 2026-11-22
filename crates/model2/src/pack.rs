@@ -33,7 +33,7 @@ pub const FEATURES: [&str; 5] = ["materials", "regions", "artworks", "models", "
 /// `--materials`); with the user's setting off such a pack still shows its
 /// images, without the maps (the setting is the user's choice, not the
 /// pack's).
-pub const SHOWN: [&str; 3] = ["materials", "regions", "artworks"];
+pub const SHOWN: [&str; 4] = ["materials", "regions", "artworks", "selflit"];
 /// What the browser shows: it draws material maps but not regions yet (the
 /// 2D region overrides need the pack's `regions.txt` fetched; docs/
 /// texture-packs.md, "Regions"). A pack that `needs regions` is refused
@@ -83,8 +83,11 @@ pub struct MaterialParams {
     /// `normal=X`, `spec=X`: multiply the pack-wide strengths.
     pub normal: Option<f32>,
     pub spec: Option<f32>,
-    /// Other `k=v` fields, as written: reserved (`spec_base`, `spec_power`,
-    /// `selflit`) or unknown, ignored.
+    /// `selflit`: the image is drawn as painted, not scaled by the game's
+    /// lighting (a `tex_` or `art_` stem).
+    pub selflit: bool,
+    /// Other `k=v` fields, as written: reserved (`spec_base`, `spec_power`)
+    /// or unknown, ignored.
     pub other: Vec<String>,
 }
 
@@ -288,7 +291,7 @@ impl Manifest {
                     let ok = if stem.starts_with("surf_") {
                         !stem.contains('.') && parse_name(&map_stem(stem, MapKind::Normal)).is_ok()
                     } else {
-                        matches!(parse_name(stem), Ok(FileKind::Image { .. }))
+                        matches!(parse_name(stem), Ok(FileKind::Image { .. } | FileKind::Art { .. }))
                     };
                     if !ok {
                         return Err(at(format!(
@@ -298,6 +301,10 @@ impl Manifest {
                     }
                     let mut p = MaterialParams::default();
                     for f in fields {
+                        if f == "selflit" {
+                            p.selflit = true;
+                            continue;
+                        }
                         let (k, v) = f.split_once('=').ok_or_else(|| at(format!("`{f}` isn't key=value")))?;
                         match k {
                             "normal" => p.normal = Some(scale(v).map_err(at)?),
@@ -368,6 +375,9 @@ impl Manifest {
                     let _ = write!(s, "\t{k}={v}");
                 }
             }
+            if p.selflit {
+                s += "\tselflit";
+            }
             for o in &p.other {
                 s += "\t";
                 s += o;
@@ -434,6 +444,14 @@ impl Manifest {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Manifest::NONE),
             Err(e) => Err(format!("{}: {e}", path.display())),
         }
+    }
+
+    /// Whether the image this pack draws for `info` is `selflit`: its own
+    /// (`tex_`) image's `material` line if `own` (the pack has that image),
+    /// else the artwork's (`art_`).
+    pub fn image_selflit(&self, info: &TexInfo, own: bool) -> bool {
+        let stem = if own { info.name() } else { info.art_name() };
+        self.materials.get(&stem).is_some_and(|p| p.selflit)
     }
 
     /// Whether readers load the pack's material maps: only from a pack with
@@ -654,6 +672,24 @@ mod tests {
         let spaced = Manifest::parse("format 2\nuses  materials, selflit\nnormal_y up\n").unwrap();
         assert_eq!(spaced.uses, ["materials", "selflit"]);
         assert_eq!(Manifest::parse(&spaced.to_text()).unwrap(), spaced);
+    }
+
+    #[test]
+    fn selflit_is_a_bare_key_on_a_tex_or_art_stem() {
+        let text = "format 2\nuses selflit\nmaterial\tart_0123456789abcdef_256x128\tselflit\n\
+                    material\ttex_fedcba9876543210_64x64\tselflit\tnormal=0.5\n\
+                    material\ttex_0000000000000001_8x8\tnormal=1\n";
+        let m = Manifest::parse(text).unwrap();
+        assert!(m.materials["art_0123456789abcdef_256x128"].selflit);
+        let t = &m.materials["tex_fedcba9876543210_64x64"];
+        assert!(t.selflit && t.normal == Some(0.5) && t.other.is_empty());
+        assert!(!m.materials["tex_0000000000000001_8x8"].selflit);
+        assert_eq!(Manifest::parse(&m.to_text()).unwrap(), m);
+        // Shown here; a reader that does not draw it (the browser) refuses `needs`.
+        assert!(Manifest::accept(Some("format 2\nuses selflit\nneeds selflit\n")).is_ok());
+        assert!(Manifest::accept_for(Some("format 2\nuses selflit\nneeds selflit\n"), &SHOWN_WEB).is_err());
+        // A stem that names nothing is still refused.
+        assert!(Manifest::parse("format 2\nmaterial\tart_xyz\tselflit\n").is_err());
     }
 
     #[test]

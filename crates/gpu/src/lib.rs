@@ -360,6 +360,9 @@ struct RectLast {
 /// No pack image: a polygon drawn from its own texels.
 const NO_SLOT: u32 = u32::MAX;
 
+/// The `pack_tex` key of the `miss` overlay's one-texel image.
+const MISS_KEY: u64 = u64::MAX;
+
 /// What a polygon binds in group 1: its image's texture key, its material's
 /// id (None: none, a stand-in) and the address modes of a filtered image.
 type SlotKey = (Option<u64>, Option<u64>, usize);
@@ -372,6 +375,9 @@ struct Slots {
     /// scale when one is bound (the material pipelines only).
     slot: Vec<u32>,
     image: Vec<bool>,
+    /// Per placed polygon: its pack image is `selflit` (drawn as painted,
+    /// unlit) or the `miss` overlay's.
+    selflit: Vec<bool>,
     material: Vec<Option<f32>>,
     groups: Vec<wgpu::BindGroup>,
     /// Per slot: a material's (the material pipelines' group 1), else an
@@ -589,6 +595,11 @@ pub struct Renderer {
     keys: TexKeys,
     /// Pack images by texture key (None: not in the pack).
     pack_tex: HashMap<u64, Option<PackTex>>,
+    /// Whether the image the pack gives a texture key is `selflit`
+    /// (`TexturePack::image_selflit`), asked once per key and pack.
+    selflit_keys: HashMap<u64, bool>,
+    /// The `miss` overlay ([`Renderer::set_overlay_miss`]).
+    overlay_miss: bool,
     pack_layout: wgpu::BindGroupLayout,
     pack_pipeline_layout: wgpu::PipelineLayout,
     pack_filtered_layout: wgpu::BindGroupLayout,
@@ -982,6 +993,8 @@ impl Renderer {
             pack: None,
             keys: TexKeys::default(),
             pack_tex: HashMap::new(),
+            selflit_keys: HashMap::new(),
+            overlay_miss: false,
             pack_layout,
             pack_pipeline_layout,
             pack_filtered_layout,
@@ -1253,11 +1266,20 @@ impl Renderer {
     pub fn set_pack(&mut self, pack: Option<Box<dyn TexturePack + Send>>) {
         self.pack = pack;
         self.pack_tex.clear();
+        self.selflit_keys.clear();
         self.materials.clear();
         self.keys.clear();
         self.tiles.reset();
         self.stable = PackMemory::default();
         self.pack_stats = PackStats::default();
+    }
+
+    /// The `miss` overlay (docs/uplift/renderer-controls.md): a textured
+    /// polygon drawn from no pack image is drawn flat in
+    /// `raster::MISS_COLOUR`, as painted. Needs a pack; draw-only, off by
+    /// default and then the picture is the same bit for bit.
+    pub fn set_overlay_miss(&mut self, on: bool) {
+        self.overlay_miss = on;
     }
 
     /// Which stabilisations of the pack's replacements are on (default all;
@@ -1832,6 +1854,7 @@ impl Renderer {
         let mut out = Slots {
             slot: vec![NO_SLOT; n],
             image: vec![false; n],
+            selflit: vec![false; n],
             material: vec![None; n],
             groups: Vec::new(),
             mat_slot: Vec::new(),
@@ -1881,6 +1904,7 @@ impl Renderer {
         // Per polygon: its image's key, its material's id, its address
         // modes (filtered images only).
         let mut picks: Vec<Option<SlotKey>> = vec![None; n];
+        let mut pick_selflit = vec![false; n];
         let mut log_recs: HashMap<u64, model2::packlog::TexRec> = HashMap::new();
         for (i, pl) in placed.iter().enumerate() {
             let p = &polys[pl.poly];
@@ -2045,6 +2069,34 @@ impl Renderer {
                 stats.stood_in += stand_in as u32;
                 Some(k)
             });
+            // `selflit`, asked once per texture key.
+            if !self.selflit_keys.contains_key(&info.key) {
+                self.selflit_keys.insert(info.key, pack.image_selflit(&info) == Some(true));
+            }
+            // The `miss` overlay: what is still without an image is drawn
+            // in the overlay's colour.
+            let (image, miss_drawn) = match image {
+                None if self.overlay_miss => {
+                    let miss = Rgba {
+                        width: 1,
+                        height: 1,
+                        data: model2::raster::MISS_COLOUR.iter().copied().chain([255]).collect(),
+                    };
+                    let pt = self
+                        .pack_tex
+                        .entry(MISS_KEY)
+                        .or_insert_with(|| Some(upload_pack(&self.device, &self.queue, &miss, mip)))
+                        .as_mut()
+                        .expect("the miss image");
+                    pt.used = frame;
+                    (Some(MISS_KEY), true)
+                }
+                other => (other, false),
+            };
+            let selflit = miss_drawn || image.is_some_and(|k| self.selflit_keys.get(&k) == Some(&true));
+            // A `selflit` image is drawn as painted: relief has nothing to light.
+            let material = material.filter(|_| !selflit);
+            pick_selflit[i] = selflit;
             if image.is_some() || material.is_some() {
                 let addr = if mip { t.mirror_x as usize | (t.mirror_y as usize) << 1 } else { 0 };
                 picks[i] = Some((image, material, addr));
@@ -2091,6 +2143,7 @@ impl Renderer {
         for (i, pick) in picks.iter().enumerate() {
             let Some((image, material, addr)) = *pick else { continue };
             out.image[i] = image.is_some();
+            out.selflit[i] = pick_selflit[i];
             out.material[i] = material.and_then(|id| self.materials.tex.get(&id)).map(|t| t.normal_scale);
             if let Some(key) = image {
                 images.insert((key, addr));
@@ -2397,7 +2450,9 @@ impl Renderer {
             // brightness and unlit; a toon override rides in the outline
             // flags (raster.wgsl `poly_px`).
             let lk = if id_pass { None } else { look_polys.get(i) };
-            let emissive = lk.is_some_and(|l| l.emissive);
+            // A `selflit` pack image is drawn the same way (the pack's rule,
+            // which holds with or without a look).
+            let emissive = lk.is_some_and(|l| l.emissive) || (!id_pass && slots.selflit[i]);
             table.extend(le([x0, y0, x1, y1].map(f32::to_le_bytes)));
             let luma = if emissive { 255 } else { p.luma };
             let ints = tex.into_iter().chain([flags, bank, luma_table, luma]).chain(p.colour).chain([pl.rank]);
@@ -3545,3 +3600,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "selflit_tests.rs"]
+mod selflit_tests;

@@ -358,6 +358,11 @@ impl TexturePack for DirPack {
         FoundMaterial::Pending
     }
 
+    fn image_selflit(&mut self, info: &TexInfo) -> Option<bool> {
+        let own = self.names.contains(&info.name());
+        (own || self.names.contains(&info.art_name())).then(|| self.manifest.image_selflit(info, own))
+    }
+
     fn manifest(&self) -> &Manifest {
         &self.manifest
     }

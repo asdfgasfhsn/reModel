@@ -1590,7 +1590,22 @@ struct Light {
     px: PxLuma,
 }
 
+/// The colour of the `miss` overlay: a textured polygon drawn from no pack
+/// image (`Enhance::overlay_miss`).
+pub const MISS_COLOUR: [u8; 3] = [255, 0, 255];
+
+/// The overlay's one-texel image.
+fn miss_image() -> Arc<Rgba> {
+    Arc::new(Rgba { width: 1, height: 1, data: vec![MISS_COLOUR[0], MISS_COLOUR[1], MISS_COLOUR[2], 255] })
+}
+
 impl Light {
+    /// `selflit`: drawn as painted whatever the polygon's brightness.
+    fn selflit(mut self, on: bool) -> Self {
+        self.full |= on;
+        self
+    }
+
     /// For polygon `p` drawn at `px` (its own luma, or a smooth-shaded
     /// pixel's).
     fn new(p: &Poly, px: PxLuma, src: &Sources) -> Self {
@@ -2095,10 +2110,23 @@ fn draw_impl(
             }),
             _ => None,
         };
+        // The `miss` overlay (`Enhance::overlay_miss`): a textured polygon
+        // with no replacement is drawn flat, as painted, in `MISS_COLOUR`.
+        let mut hooked = hooked;
+        let mut selflit = false;
+        if let (Some(hk), Some((info, img))) = (hooks.as_deref_mut(), &mut hooked) {
+            if img.is_some() {
+                selflit = hk.texture_selflit(info);
+            } else if hk.overlay_miss() {
+                *img = Some(Replacement::Image(miss_image()));
+                selflit = true;
+            }
+        }
         // Material maps: asked for only for a polygon with a lamp and a
-        // tangent frame (`light::Options::lamps`).
+        // tangent frame (`light::Options::lamps`); a `selflit` image is
+        // drawn as painted, so relief has nothing to light.
         let material = match (hooks.as_deref_mut(), &hooked, p.lamp.as_deref(), &p.texture) {
-            (Some(hk), Some((info, _)), Some(l), Some(t)) if l.tangent.is_some() => {
+            (Some(hk), Some((info, _)), Some(l), Some(t)) if l.tangent.is_some() && !selflit => {
                 let chain = if filter.mipmapped() {
                     hk.texture_material_mips(info).map(MatLevels::Mips)
                 } else {
@@ -2138,7 +2166,7 @@ fn draw_impl(
             })
         };
         if let (Some((_, Some(Replacement::Mips(chain)))), Some(t)) = (&hooked, &p.texture) {
-            let light0 = Light::new(p, own, src);
+            let light0 = Light::new(p, own, src).selflit(selflit);
             let grad = Gradients::new(points);
             fill(points, clip, w, h, |x, y, iz, uz, vz| {
                 let luma = luma_at();
@@ -2150,7 +2178,7 @@ fn draw_impl(
                 let light = if luma == own {
                     &light0
                 } else {
-                    lit = Light::new(p, luma, src);
+                    lit = Light::new(p, luma, src).selflit(selflit);
                     &lit
                 };
                 let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);
@@ -2164,7 +2192,7 @@ fn draw_impl(
                 }
             });
         } else if let (Some((_, Some(Replacement::Image(img)))), Some(t)) = (&hooked, &p.texture) {
-            let light0 = Light::new(p, own, src);
+            let light0 = Light::new(p, own, src).selflit(selflit);
             fill(points, clip, w, h, |x, y, iz, uz, vz| {
                 let luma = luma_at();
                 let o = y * w + x;
@@ -2175,7 +2203,7 @@ fn draw_impl(
                 let light = if luma == own {
                     &light0
                 } else {
-                    lit = Light::new(p, luma, src);
+                    lit = Light::new(p, luma, src).selflit(selflit);
                     &lit
                 };
                 let (gx, gy) = ((x as f32 / gsx) as usize, (y as f32 / gsy) as usize);

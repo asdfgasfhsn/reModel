@@ -564,7 +564,7 @@ fn lint_report_with(dir: &Path, dump: Option<&Path>, max_side: usize, quiet: boo
             for f in m.uses.iter().chain(&m.needs) {
                 if !pack::FEATURES.contains(&f.as_str()) {
                     r.add(Level::Note, 'a', "feature the format doesn't define (`uses`: ignored)", f.clone());
-                } else if f != "materials" && f != model2::regions::FEATURE && f != "artworks" {
+                } else if f != "materials" && f != model2::regions::FEATURE && f != "artworks" && f != "selflit" {
                     r.add(Level::Note, 'a', "feature reserved by the format, not drawn by any reader", f.clone());
                 }
             }

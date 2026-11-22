@@ -921,7 +921,7 @@ author of the tool. A slice's acceptance test calls for that run, and it
 is still to do.
 
 **Not built yet:** `scene what`, `where`, `sheet` and `clip`; `--asset` and
-`--overlay` on `render`; the per-asset `assets[]` report (which assets the
+the overlays other than `miss` on `render` (`--overlay miss` is built: docs/texture-packs.md, "Draw rules and overlays"); the per-asset `assets[]` report (which assets the
 pack replaced, and why not); `facts.tsv`; the side channel in captures
 (each object's model key); layered packs; the player's `--scene` and the
 server. Scenes use the default (chip) geometrizer; the design's choice of

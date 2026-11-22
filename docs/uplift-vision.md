@@ -148,7 +148,7 @@ agents soonest.
 | | **7. Context bundles** | An agent's whole briefing in one call | M | Low | 1, 5 | `bundle.json`, original, mask, two crops |
 | | **8. Player: `--scene`, pack watch, then a pack page** | The artist's loop, and the first step away from the terminal | S to M, then L | Low, then unknown | 1 | Reload on change by swapping one image, as the look does |
 | | **9. 2D: patterns, anchors, clearing** | HUDs and logos without hand patches | M | Medium | 1 for capturing from scenes | Pattern keys; redo the showcase's 13 regions |
-| | **10. Draw rules and overlays** | Colours as painted; see what a tag did | M | Low | 1 | `selflit`; `--overlay miss` |
+| | **10. Draw rules and overlays** (MVP built 2026-11-23: `selflit` on a pack's `material` line and `--overlay miss`, both renderers agreeing, checked on Top Skater, `vf2` and Daytona; `filter`, `colour`, `@category`, the other overlays, `look calibrate`, `suggest-tags` and `asset set draw=` remain) | Colours as painted; see what a tag did | M | Low | 1 | `selflit`; `--overlay miss` |
 | | **11. Generation adapter** | Size, alpha, seams and colour guaranteed | M | Low | 4, 7 | Normalise, the fit test and the outcome classes around `studio draft` |
 | | **12. Text fields** | Live scores and clocks in a pack font; Japanese HUDs | L | Medium to high | 9 | The score in Top Skater |
 | | **13. Server and clips** | Motion checks; many agents on one GPU | M to L | Medium: GPU sharing untested | 1 | MCP over a local socket, one verb |

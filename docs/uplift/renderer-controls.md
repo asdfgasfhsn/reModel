@@ -1,8 +1,10 @@
 # Renderer controls for packs
 
-Shared words, roles and rules: [README.md](README.md). Nothing here is
-built. What exists is in [../texture-packs.md](../texture-packs.md)
-("Looks") and [../enhancements.md](../enhancements.md).
+Shared words, roles and rules: [README.md](README.md). Built so far: the
+`selflit` key on a `material` line and `--overlay miss`
+([../texture-packs.md](../texture-packs.md), "Draw rules and overlays").
+The rest is a design. Looks are in the same page ("Looks") and
+[../enhancements.md](../enhancements.md).
 
 ## The problem
 
@@ -11,20 +13,19 @@ The showcase agents learned the rules by trial and error.
 
 **Observed in the code and docs.**
 
-- **A replacement is always re-lit.** Its colour is scaled per channel by
+- **A replacement is re-lit unless its pack says `selflit`.** Its colour is scaled per channel by
   what the game's tables give at the polygon's brightness over what they
   give at full brightness; it is drawn as painted only where the polygon
   is at full brightness (`pack_lit`, `crates/gpu/src/raster.wgsl:296-312`;
   `crates/model2/src/raster.rs:1609-1630`).
-- **The one way out is a look tag.** `emissive` means "full brightness,
+- **The look's way out is a tag.** `emissive` means "full brightness,
   ignores the game's lighting" (`docs/texture-packs.md:1224`): the
   renderer draws such a polygon at brightness 255
   (`crates/gpu/src/lib.rs:2368`), where the ratio leaves a replacement
   untouched. It
-  lives in `look.txt`, so a pack with no look cannot use it, and
-  `pack-lint` does not treat `look.txt` as a pack file. The pack manifest
-  reserves a `selflit` key on its `material` line and does not implement
-  it (`docs/texture-packs.md:265`).
+  lives in `look.txt`, so a pack with no look cannot use it. The pack
+  manifest's `material` line now takes `selflit` for the same effect with no
+  look (built).
 - **Tags are per texture, one line each.** They name an image or a surface
   (`docs/texture-packs.md:1218-1224`). Nothing names a category.
 - **The look's ID target knows textures only.** A pixel carries a 23-bit
@@ -58,8 +59,9 @@ The showcase agents learned the rules by trial and error.
 A pack states, per asset or per category, how the renderer treats it.
 These are not look settings: they hold whether a look is on or not.
 
-They go on the manifest's existing per-texture `material` line, using the
-key it already reserves:
+They go on the manifest's per-texture `material` line. Built: `selflit` on
+`tex_` and `art_` stems (the table's other keys and the `@name` forms are
+not):
 
 ```
 material art_<key>_128x128  colour=baked           # re-lit, the default
@@ -69,7 +71,7 @@ material @hud-3d            selflit filter=nearest
 
 | Key | Values | Meaning |
 |---|---|---|
-| `selflit` | present or absent | Drawn as painted at any brightness; absent, re-lit by the game's ratio |
+| `selflit` (built) | present or absent | Drawn as painted at any brightness; absent, re-lit by the game's ratio |
 | `colour` | `baked`, `fixed`, `follow` | How one image meets the colour variants ([asset-identity.md](asset-identity.md)) |
 | `filter` | `linear`, `nearest` | Sampling for this asset; pixel art wants `nearest` |
 
@@ -89,12 +91,14 @@ toon=off`. One line replaces a dozen.
 |---|---|
 | `ids` | Each artwork in its own flat colour, with a legend |
 | `variants` | Colour variants of one artwork, to see where each is used |
-| `miss` | Replaced, original, and stand-in, coloured by the pack log's reason |
+| `miss` (built: textured polygons with no pack image flat magenta; replaced ones as drawn; stand-in classes and per-reason colours are not) | Replaced, original, and stand-in, coloured by the pack log's reason |
 | `tags` | Outline, toon and `selflit` classes as colours: what a tag line did |
 | `light` | The game's lighting layer alone, without textures |
 | `order` | Polygons drawn in the game's order without depth (skies, ground quads), where ink behaves differently |
 
-Each overlay also returns numbers with `--json`: the share of pixels per
+`--overlay` is a global option (so `look-render`, `gpu-check` and `run`
+have it too). Each overlay also returns numbers with `--json` (`miss`:
+`miss_share`, `miss_pixels`; the rest not built): the share of pixels per
 class. An agent can confirm a tag took effect without opening a picture.
 
 ### 3. Calibrating a look per game
@@ -209,8 +213,8 @@ there, and overlays are a tool, not something a player's frame pays for.
 
 ## MVP: a few days
 
-1. `selflit` on the `material` line, in both renderers.
-2. `scene render --overlay ids`, `miss` and `tags`, with class shares.
+1. ~~`selflit` on the `material` line, in both renderers.~~ Built.
+2. `scene render --overlay ids`, `miss` (built) and `tags`, with class shares.
 3. `@category` in tags and `material` lines.
 4. **Spike:** `look calibrate` numbers for the comic look on four games'
    scenes, to see whether one set of target ranges fits them.

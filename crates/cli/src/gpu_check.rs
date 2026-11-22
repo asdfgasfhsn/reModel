@@ -202,6 +202,7 @@ pub fn run(
     let texture_rom = capture::load_texture_rom(root)
         .map_err(|e| format!("{}: {e} (capture with `make capture`)", root.display()))?;
     let mut gpu = gpu::Renderer::new()?;
+    gpu.set_overlay_miss(crate::OVERLAY_MISS.load(std::sync::atomic::Ordering::Relaxed));
     println!("gpu           {}", gpu.adapter());
     let q = gpu.set_quality(gpu::Quality { msaa: aa, depth, bloom, tex_filter, ..super::gpu_light(light) });
     if let Some(o) = light {

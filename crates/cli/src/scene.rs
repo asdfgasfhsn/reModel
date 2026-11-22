@@ -27,7 +27,7 @@ remodel [--game G] scene SUB [NAME] [options]   (docs/uplift-studio.md, \"Scenes
   list [--tag T]                      the game's scenes and whether each has a local copy
   make NAME | --all [--replace]       run a recipe from power-on; keep its capture, state, hash (needs the ROM)
   verify [NAME]                       run recipes again; a different state hash marks the scene stale (needs the ROM)
-  render NAME [--pack DIR] [--crop X,Y,W,H] [--against original] [--view native|H[,A:B]] [--out DIR]
+  render NAME [--pack DIR] [--crop X,Y,W,H] [--against original] [--overlay miss] [--view native|H[,A:B]] [--out DIR]
                                       draw a scene from its capture: no boot, no ROM, no emulator
 common: --json (one object: ok, code, error, data, warnings, next), --project DIR (reads DIR/scenes.txt)
 exit codes: 0 done, 1 a check failed, 2 bad request, 3 something missing, 4 internal error
@@ -678,6 +678,10 @@ pub struct Drawn {
     /// from a pack image: by identity, so a replacement that looks like the
     /// original counts. None without a pack.
     pub drawn_share: Option<f64>,
+    /// With the `miss` overlay: the share of the picture's pixels in the
+    /// overlay's colour (a pixel of the game's own that is exactly that
+    /// magenta counts too). None without the overlay.
+    pub miss_pixels: Option<f64>,
     pub polygons: usize,
     pub warnings: Vec<String>,
     pub millis: f64,
@@ -767,6 +771,7 @@ pub fn draw(game: &Game, scene_dir: &Path, o: &DrawOpts, gpu: &mut gpu::Renderer
         gpu.set_pack(None);
     }
     gpu.set_look(crate::LOOK.get().map(|l| std::sync::Arc::new(l.clone())));
+    gpu.set_overlay_miss(crate::OVERLAY_MISS.load(std::sync::atomic::Ordering::Relaxed));
     // What the pack's lookups gave, by texture: the pack log, in scratch.
     let log_path = packed.then(|| {
         let root = std::env::var("REMODEL_SCRATCH").unwrap_or_else(|_| "out/scratch".into());
@@ -794,6 +799,10 @@ pub fn draw(game: &Game, scene_dir: &Path, o: &DrawOpts, gpu: &mut gpu::Renderer
             "nothing to compare: no --pack (or it was refused) and no --look, so both pictures are the original".into(),
         );
     }
+    let miss_pixels = crate::OVERLAY_MISS.load(std::sync::atomic::Ordering::Relaxed).then(|| {
+        let n = rgb.chunks(3).filter(|p| *p == raster::MISS_COLOUR).count();
+        n as f64 / (w * h) as f64
+    });
     let mut picture = Picture { width: w, height: h, rgb };
     if let Some(c) = o.crop {
         let bad = |e| Answer::fail(Code::BadRequest, e);
@@ -805,6 +814,7 @@ pub fn draw(game: &Game, scene_dir: &Path, o: &DrawOpts, gpu: &mut gpu::Renderer
         original,
         changed_share,
         drawn_share: drawn_share.flatten(),
+        miss_pixels,
         polygons: polys.len(),
         warnings,
         millis: started.elapsed().as_secs_f64() * 1e3,
@@ -925,10 +935,20 @@ fn render_cmd(o: &crate::Opts, game: &'static Game, a: &Args) -> Result<(Answer,
     };
     let crop = a.one("--crop").map(parse_crop).transpose()?;
     let view = parse_view(a.one("--view"))?;
+    // The overlay (the global `--overlay`, which `main` has parsed and
+    // removed from the arguments): only `miss` is built.
+    let overlay = crate::OVERLAY_MISS.load(std::sync::atomic::Ordering::Relaxed).then_some("miss");
     let mut packs: Vec<PathBuf> =
         a.vals.get("--pack").map(|v| v.iter().map(PathBuf::from).collect()).unwrap_or_default();
     if packs.is_empty() {
         packs.extend(o.pack_dir.clone());
+    }
+    if overlay.is_some() && packs.is_empty() {
+        return Err(Answer::fail(
+            Code::BadRequest,
+            "--overlay miss needs a pack: with none, every textured polygon would be a miss",
+        )
+        .next("remodel scene render NAME --pack DIR --overlay miss"));
     }
     let dir = scenes_dir(game).join(&recipe.name);
     if state_of(&dir, Some(recipe)) == State::Missing {
@@ -982,6 +1002,9 @@ fn render_cmd(o: &crate::Opts, game: &'static Game, a: &Args) -> Result<(Answer,
         "width": d.picture.width, "height": d.picture.height, "polygons": d.polygons,
         "changed_share": d.changed_share.map(|c| (c * 1e6).round() / 1e6),
         "drawn_share": d.drawn_share.map(|c| (c * 1e6).round() / 1e6),
+        "overlay": overlay,
+        "miss_share": overlay.and(d.drawn_share).map(|c| ((1.0 - c) * 1e6).round() / 1e6),
+        "miss_pixels": d.miss_pixels.map(|c| (c * 1e6).round() / 1e6),
         "pack": packs.first().map(|p| p.display().to_string()),
         "layers": packs.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
         "crop": crop, "ms": ms.round(), "ms_gpu_init": gpu_ms.round(), "ms_draw": d.millis.round(), "ms_write": write_ms.round(),
@@ -1004,6 +1027,13 @@ fn render_cmd(o: &crate::Opts, game: &'static Game, a: &Args) -> Result<(Answer,
         text += &format!(
             "drawn         {:.2}% of the textured polygon area from pack images (by identity, overlaps counted)\n",
             c * 100.0
+        );
+    }
+    if let (Some(share), Some(px)) = (d.drawn_share.filter(|_| overlay.is_some()), d.miss_pixels) {
+        text += &format!(
+            "overlay miss  {:.2}% of the textured polygon area drew from no pack image ({:.2}% of the pixels are magenta)\n",
+            (1.0 - share) * 100.0,
+            px * 100.0
         );
     }
     text += &format!("time          {:.0} ms (GPU start {gpu_ms:.0}, draw {:.0}, write {write_ms:.0})\n", ms, d.millis);

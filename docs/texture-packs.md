@@ -199,7 +199,7 @@ pack name. File prefix `region_` is region images (below, "Regions"). Reserved, 
 (self-lit) and `.m` (maps packed in one file), file prefixes `mdl_`
 (replacement models) and `img_` (pack-own images), the directory
 `models/`, the manifest keyword `model` and the features `models` and
-`selflit`. Readers only open names they construct, so files of a kind
+`selflit` (the feature is shown now: a `material` line key, below). Readers only open names they construct, so files of a kind
 they don't know are never touched, and an `index.txt` line may name any
 file (`models/...` included); the browser fetches only image names.
 
@@ -265,7 +265,7 @@ material	surf_fedcba9876543210_64x64	normal=0
 | `needs a,b` | features without which the pack must not be shown at all | none |
 | `normal_y up\|down` | green direction of every normal map | `up` |
 | `normal_scale X`, `spec_scale X` | pack-wide strength of normal and specular maps, 0 to 4 | 1 |
-| `material STEM k=v ...` | per material (`tex_..` or `surf_..` stem, no suffix): `normal=X`, `spec=X` multiply the pack-wide strengths; other keys are ignored (reserved: `spec_base`, `spec_power`, `selflit`) | none |
+| `material STEM k=v ...` | per material (`tex_..` or `surf_..` stem, no suffix): `normal=X`, `spec=X` multiply the pack-wide strengths; the bare key `selflit` (on a `tex_` or `art_` stem) draws that image as painted ("Draw rules and overlays"); other keys are ignored (reserved: `spec_base`, `spec_power`) | none |
 | `model ...` | reserved for replacement models | |
 
 A malformed manifest (a missing or misplaced `format`, a keyword given
@@ -438,6 +438,47 @@ non-zero on errors:
 On the 4x ESRGAN pack of `topskatr` (241 images, 5,030 tiles): clean, one
 note (182 MB of images, 242 MB mipmapped: past the browser's budget, so
 the browser re-fetches the least recently drawn).
+
+## Draw rules and overlays
+
+**`selflit`.** A replacement is normally re-lit: each channel is scaled by
+what the game's tables give at the polygon's brightness over what they give
+at full brightness, so a painted image darkens in shade as the original
+would. A pack can opt an image out. On the manifest's `material` line, a
+`tex_` stem (one colouring) or an `art_` stem (the artwork, for every
+colouring that uses it) takes the bare key `selflit`:
+
+```
+format	2
+uses	selflit
+material	art_0123456789abcdef_256x128	selflit
+material	tex_fedcba9876543210_64x64	selflit
+```
+
+The image is then drawn exactly as painted at any polygon brightness, in
+the software renderer, the GPU (and the player), with or without a look,
+and relief from material maps is not applied to it. It is the pack-side
+form of the look's `emissive` tag. A polygon's image is the `tex_` image if
+the pack has one for it, else the `art_` one, and the rule is read from
+that stem's line; in a stack the highest layer with an image says. With no
+`selflit` line the picture is bit for bit what it was. Hand-written for now:
+`asset set draw=selflit` is specified but not built. The browser does not
+draw it: `uses selflit` is ignored there and `needs selflit` refuses the
+pack.
+
+**`--overlay miss`.** With a pack, `remodel --overlay miss ...` draws every
+textured polygon that drew from no pack image flat magenta (255, 0, 255),
+as painted, and leaves replaced ones alone; untextured polygons and the 2D
+layers are untouched. It works in `scene render`, `look-render`, `gpu-check`
+and snapshots (`run`) alike, both renderers drawing the same. "No pack
+image" is what the pack lookup finally gave: a stand-in the renderer used
+for a missing key (`--pack-fixes`) counts as an image. `scene render --json`
+then carries `overlay`, `miss_share` (of the textured polygon area, overlaps
+counted, the complement of `drawn_share`) and `miss_pixels` (the share of
+the picture in the overlay's colour; a pixel that is that magenta in the
+game's own art counts too). Draw only: nothing reaches the machine. Other
+overlays in the spec (`ids`, `variants`, `tags`, `light`, `order`) are not
+built.
 
 ## Artwork images
 

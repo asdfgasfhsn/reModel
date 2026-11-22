@@ -100,6 +100,11 @@ impl TexturePack for LayeredPack {
         FoundMaterial::Missing
     }
 
+    /// The highest layer that has an image for it says.
+    fn image_selflit(&mut self, info: &TexInfo) -> Option<bool> {
+        self.layers.iter_mut().find_map(|l| l.image_selflit(info))
+    }
+
     /// The highest layer's manifest.
     fn manifest(&self) -> &Manifest {
         self.layers.first().map_or(&NO_MANIFEST, |l| l.manifest())

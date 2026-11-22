@@ -93,6 +93,7 @@ pub fn run(root: &Path, out_dir: &Path, o: &Options) -> Result<(), String> {
     let texture_rom = capture::load_texture_rom(root)
         .map_err(|e| format!("{}: {e} (capture with `make capture`)", root.display()))?;
     let mut gpu = gpu::Renderer::new()?;
+    gpu.set_overlay_miss(crate::OVERLAY_MISS.load(std::sync::atomic::Ordering::Relaxed));
     let view = o.view.with_hud_windows(o.windows.0, o.windows.1);
     if let Some(dir) = o.pack {
         gpu.set_pack(Some(Box::new(crate::texpack::Packs::new(None, Some(dir.to_path_buf()))?)));

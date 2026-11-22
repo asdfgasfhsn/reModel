@@ -326,6 +326,14 @@ impl Enhance for Packs {
         Some(self.material_mips.entry(m.id).or_insert_with(|| Arc::new(m.mip_chain())).clone())
     }
 
+    fn overlay_miss(&mut self) -> bool {
+        crate::OVERLAY_MISS.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn texture_selflit(&mut self, info: &TexInfo) -> bool {
+        TexturePack::image_selflit(self, info).unwrap_or(false)
+    }
+
     fn material_drawn(&mut self, _info: &TexInfo, changed: usize) {
         self.material_counts[0] += 1;
         self.material_counts[1] += changed as u64;
@@ -392,6 +400,12 @@ impl TexturePack for Packs {
                 .then(|| Arc::new(Material::assemble(files.each_ref().map(Option::as_deref), &self.manifest, stems)))
         });
         m.clone().map_or(FoundMaterial::Missing, FoundMaterial::Maps)
+    }
+
+    fn image_selflit(&mut self, info: &TexInfo) -> Option<bool> {
+        self.pack.as_ref()?;
+        let own = self.load(&info.name()).is_some();
+        (own || self.load(&info.art_name()).is_some()).then(|| self.manifest.image_selflit(info, own))
     }
 
     fn manifest(&self) -> &Manifest {

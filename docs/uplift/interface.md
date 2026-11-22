@@ -184,7 +184,7 @@ Each writing verb takes a short lock on the project, changes one row of
 so two agents on different assets merge cleanly in git.
 
 `asset set ID KEY=VALUE` changes a row's `category`, `colour`, `draw`
-(`selflit`, `filter=nearest`) or a recipe setting for that asset
+(`selflit`, `filter=nearest`; the renderers read `selflit` from the pack's `material` line today, and `asset set` / `pack build` writing it is not built) or a recipe setting for that asset
 (`recipe.seamless=8`). Nothing is edited by hand, and `pack build` writes
 the pack's `material` lines from those columns.
 

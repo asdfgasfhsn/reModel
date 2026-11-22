@@ -609,6 +609,17 @@ pub trait Enhance {
     /// A polygon with a material was drawn; the material changed the luma
     /// of `changed` of its pixels.
     fn material_drawn(&mut self, _info: &TexInfo, _changed: usize) {}
+    /// The replacement `texture` gave for `info` is `selflit`: drawn as
+    /// painted, not scaled by the game's lighting
+    /// (`TexturePack::image_selflit`).
+    fn texture_selflit(&mut self, _info: &TexInfo) -> bool {
+        false
+    }
+    /// The `miss` overlay is on: a textured polygon `texture` gave no
+    /// replacement for is drawn flat in `raster::MISS_COLOUR`, as painted.
+    fn overlay_miss(&mut self) -> bool {
+        false
+    }
 }
 
 /// What [`TexturePack::preload`] hands out.
@@ -674,6 +685,12 @@ pub trait TexturePack {
     /// pack may load it again.
     fn material(&mut self, _info: &TexInfo) -> FoundMaterial {
         FoundMaterial::Missing
+    }
+    /// Whether the image this pack draws for `info` is `selflit` (the
+    /// manifest's `material STEM selflit`): None if the pack has no image
+    /// for it, so a stack asks the layer that supplies it.
+    fn image_selflit(&mut self, _info: &TexInfo) -> Option<bool> {
+        None
     }
     /// The pack's manifest (`pack::Manifest::NONE`: it has none).
     fn manifest(&self) -> &crate::pack::Manifest {

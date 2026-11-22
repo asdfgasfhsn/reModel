@@ -15,6 +15,17 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- Draw rules and overlays (uplift item 10, first part): a pack can say an
+  image is drawn as painted. `material STEM selflit` on a `tex_` or `art_`
+  stem in `pack.txt` skips the game's lighting for that image in the
+  software renderer and the GPU (the pack-side form of the look's
+  `emissive`; `selflit` is now a shown feature). `--overlay miss` (`scene
+  render`, `look-render`, `gpu-check`, snapshots) draws every textured
+  polygon with no pack image flat magenta; `scene render --json` adds
+  `overlay`, `miss_share` and `miss_pixels`. Draw only; off is the same
+  picture bit for bit. Not built: `filter`, `colour`, `@category`, the
+  other overlays, `asset set draw=`.
+
 - Projects (uplift item 6): a studio workspace is a project that survives
   hand-over. `remodel project init` (`make project-init`) brings a workspace
   up to the manifest, or imports one (`--from-studio DIR`: private binaries,

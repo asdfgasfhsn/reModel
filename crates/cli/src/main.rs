@@ -128,6 +128,10 @@ options:
   --texture-pack DIR   draw snapshots and gpu-check with the replacement PNGs
                        in DIR (same names as a dump; any size); see
                        docs/texture-packs.md
+  --overlay miss       `scene render`, `look-render`, `gpu-check` and snapshots:
+                       with a pack, draw every textured polygon that has no
+                       pack image flat magenta, as painted (docs/texture-packs.md,
+                       \"Draw rules and overlays\")
   --pack-log FILE      `run` with --texture-pack: also draw every frame on the
                        GPU as the player does (its background decoding,
                        uploads and eviction), at the arcade's pace, and write
@@ -681,6 +685,9 @@ static OUT_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 /// `--fresh-eeprom`: `run` starts from a blank EEPROM and keeps none
 /// (`make bench`: a state hash that doesn't depend on an earlier run).
 static FRESH_EEPROM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// `--overlay miss`: textured polygons drawn from no pack image are drawn flat
+/// magenta (docs/uplift/renderer-controls.md), in snapshots and on the GPU.
+pub static OVERLAY_MISS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn parse_opts() -> Result<Opts, ExitCode> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -814,6 +821,18 @@ fn parse_opts() -> Result<Opts, ExitCode> {
             return Err(ExitCode::FAILURE);
         };
         let _ = STIPPLE.set(s);
+    }
+    let Ok(overlay) = opt("--overlay") else {
+        eprint!("{USAGE}");
+        return Err(ExitCode::FAILURE);
+    };
+    match overlay.as_deref() {
+        None => {}
+        Some("miss") => OVERLAY_MISS.store(true, std::sync::atomic::Ordering::Relaxed),
+        Some(o) => {
+            eprintln!("error: --overlay `{o}`: only `miss` exists (docs/uplift/renderer-controls.md)");
+            return Err(ExitCode::FAILURE);
+        }
     }
     let Ok(look) = opt("--look") else {
         eprint!("{USAGE}");
