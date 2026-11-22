@@ -2070,9 +2070,7 @@ impl Renderer {
                 Some(k)
             });
             // `selflit`, asked once per texture key.
-            if !self.selflit_keys.contains_key(&info.key) {
-                self.selflit_keys.insert(info.key, pack.image_selflit(&info) == Some(true));
-            }
+            self.selflit_keys.entry(info.key).or_insert_with(|| pack.image_selflit(&info) == Some(true));
             // The `miss` overlay: what is still without an image is drawn
             // in the overlay's colour.
             let (image, miss_drawn) = match image {
