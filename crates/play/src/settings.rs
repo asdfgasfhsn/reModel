@@ -221,6 +221,10 @@ pub struct GameSettings {
     /// The game's own FREE PLAY coin setting (docs/play.md, "Free play"): applies
     /// when the game starts, for the games that have it.
     pub free_play: crate::link::FreePlay,
+    /// The input delay D of a network game this machine hosts (docs/play.md, "Network link
+    /// play"): 0 follows the network (Automatic), 1 to 6 pins it. Takes effect when the
+    /// host starts the game; a joiner takes the host's.
+    pub net_delay: u8,
     /// The dead zone, sensitivity and curve of the sticks and of the
     /// triggers (the Controls page). The defaults read as they always did.
     pub tuning: Tuning,
@@ -259,13 +263,14 @@ impl Default for GameSettings {
             link_layout: Default::default(),
             link_audio: Default::default(),
             free_play: Default::default(),
+            net_delay: 0,
             tuning: Tuning::default(),
         }
     }
 }
 
 /// Every game setting's key, in the order the panels show them.
-pub const KEYS: [&str; 39] = [
+pub const KEYS: [&str; 40] = [
     "preset",
     "wide",
     "bezel",
@@ -296,6 +301,7 @@ pub const KEYS: [&str; 39] = [
     "link_layout",
     "link_audio",
     "free_play",
+    "net_delay",
     "stick_dead",
     "stick_sens",
     "stick_curve",
@@ -371,6 +377,10 @@ impl GameSettings {
             "link_layout" => self.link_layout.name().to_string(),
             "link_audio" => self.link_audio.name().to_string(),
             "free_play" => self.free_play.name().to_string(),
+            "net_delay" => match self.net_delay {
+                0 => "auto".to_string(),
+                n => n.to_string(),
+            },
             "stick_dead" => self.tuning.stick.dead.to_string(),
             "stick_sens" => self.tuning.stick.sens.to_string(),
             "stick_curve" => self.tuning.stick.curve.name().to_string(),
@@ -424,6 +434,13 @@ impl GameSettings {
             "link_layout" => crate::link::Layout::parse(v).map(|x| self.link_layout = x).is_some(),
             "link_audio" => crate::link::Audio::parse(v).map(|x| self.link_audio = x).is_some(),
             "free_play" => crate::link::FreePlay::parse(v).map(|x| self.free_play = x).is_some(),
+            "net_delay" => match v.trim().to_lowercase().as_str() {
+                "auto" | "automatic" => {
+                    self.net_delay = 0;
+                    true
+                }
+                t => t.parse::<u8>().ok().filter(|n| (1..=6).contains(n)).map(|n| self.net_delay = n).is_some(),
+            },
             "look_tuning" => {
                 // Each `name=value` must be one the look takes (tried on
                 // the default look), so a typo in the file is refused.
@@ -1497,6 +1514,17 @@ mod tests {
         assert_eq!(s.all_games_preset("stcc"), Preset::Crt);
         assert!(s.has_own_picture("topskatr") && !s.has_own_picture("stcc"));
         assert_eq!(Preset::parse("enhanced").map(Preset::label), Some("Smooth modern"));
+    }
+
+    #[test]
+    fn the_input_delay_is_automatic_or_one_to_six() {
+        let mut g = GameSettings::default();
+        assert_eq!((g.net_delay, g.get("net_delay").as_str()), (0, "auto"));
+        assert!(g.set("net_delay", "4") && g.net_delay == 4 && g.get("net_delay") == "4");
+        assert!(g.set("net_delay", "Automatic") && g.net_delay == 0);
+        for bad in ["0", "7", "-1", "fast", ""] {
+            assert!(!g.set("net_delay", bad), "{bad}");
+        }
     }
 
     #[test]

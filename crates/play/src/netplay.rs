@@ -135,6 +135,9 @@ impl NetPlay {
                     println!("net link play: {what}");
                     self.flash = Some((what, Instant::now()));
                 }
+                Notice::DelayChange { from, old, d, announced_at } => {
+                    println!("net link play: delay {old} -> {d} frames from frame {from} (announced with frame {announced_at})");
+                }
                 Notice::Dropped { name, frame, .. } => {
                     println!("net link play: {name} dropped at frame {frame} (agreed by the players left)");
                 }
@@ -149,6 +152,7 @@ impl NetPlay {
                     println!("link          frame {}: {l}", m.frames);
                 }
                 self.pending = false;
+                self.delay = self.link.delay();
                 if let Some(t) = self.waiting_since.take() {
                     self.recent.push((Instant::now(), t.elapsed()));
                 }
@@ -209,10 +213,14 @@ impl NetPlay {
         };
         let players = self.nodes - self.gone.len();
         let head = if players == 1 { "1 player".to_string() } else { format!("{players} players") };
+        // D follows the network unless it was pinned: a change announced and not yet reached shows as the step.
+        let delay = match self.link.delay_next() {
+            Some(n) => format!("{} -> {n}", self.delay),
+            None => self.delay.to_string(),
+        };
         format!(
-            "{notice}Link  {head} ({})  Delay {} frames  round trip {rtt}  {}{}{}",
+            "{notice}Link  {head} ({})  Delay {delay} frames  round trip {rtt}  {}{}{}",
             who,
-            self.delay,
             match self.window.share() {
                 Some(p) => format!("held {:.0}% of frames (last {:.0} s)", p * 100.0, StallWindow::SPAN),
                 None => "held 0% of frames so far".to_string(),

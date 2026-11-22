@@ -14,7 +14,10 @@ pub const MAGIC: &[u8; 4] = b"RMLN";
 /// 4: the ROM hash in the lobby packets and the discovery record covers every chip of
 /// the set and its id, not the program alone (a host with other chips, or another
 /// variant, is refused).
-pub const PROTO: u8 = 4;
+/// 5: the delay D can change mid-session: a record may announce `D becomes D' from frame F`
+/// (flag bit 3 and `F`, `D'` after the start frame), and the data packet carries the sender's
+/// held share of frames.
+pub const PROTO: u8 = 5;
 /// The largest datagram sent (under an Ethernet MTU) and read.
 pub const MAX_PACKET: usize = 1400;
 pub const MAX_HOSTS: usize = 8;
@@ -232,9 +235,12 @@ pub fn header(p: &[u8]) -> Option<(u8, u8, Reader<'_>)> {
 /// unchanged bytes and changed bytes.
 pub fn encode_rec(w: &mut Writer, rec: &NodeRec, base: &[u8], block: usize) {
     let has_tx = rec.started && rec.tx.len() == block;
-    w.u8(rec.started as u8 | (rec.master as u8) << 1 | (has_tx as u8) << 2);
+    w.u8(rec.started as u8 | (rec.master as u8) << 1 | (has_tx as u8) << 2 | (rec.change.is_some() as u8) << 3);
     if rec.started {
         w.u64(rec.start_frame);
+    }
+    if let Some((from, d)) = rec.change {
+        w.u64(from).u8(d);
     }
     if !has_tx {
         return;
@@ -261,11 +267,21 @@ pub fn encode_rec(w: &mut Writer, rec: &NodeRec, base: &[u8], block: usize) {
 /// Decode what [`encode_rec`] wrote; None if it is malformed in any way.
 pub fn decode_rec(r: &mut Reader, base: &[u8], block: usize) -> Option<NodeRec> {
     let flags = r.u8()?;
-    if flags & !7 != 0 || (flags & 4 != 0 && flags & 1 == 0) {
+    if flags & !15 != 0 || (flags & 4 != 0 && flags & 1 == 0) {
         return None;
     }
     let started = flags & 1 != 0;
     let start_frame = if started { r.u64()? } else { 0 };
+    let change = if flags & 8 != 0 {
+        let (from, d) = (r.u64()?, r.u8()?);
+        // A delay of 1 to 60 frames, from a boundary that is not the first.
+        if !(1..=60).contains(&d) || from < 2 {
+            return None;
+        }
+        Some((from, d))
+    } else {
+        None
+    };
     let mut tx = Vec::new();
     if flags & 4 != 0 {
         tx = base.to_vec();
@@ -282,7 +298,7 @@ pub fn decode_rec(r: &mut Reader, base: &[u8], block: usize) -> Option<NodeRec> 
             at += l;
         }
     }
-    Some(NodeRec { started, master: flags & 2 != 0, start_frame, tx })
+    Some(NodeRec { started, master: flags & 2 != 0, start_frame, tx, change })
 }
 
 /// The hash two hosts compare at a checkpoint: every node's record of one frame.
@@ -293,6 +309,10 @@ pub fn hash_recs(recs: &[&NodeRec]) -> u64 {
         h = fnv(h, &r.start_frame.to_le_bytes());
         h = fnv(h, &(r.tx.len() as u32).to_le_bytes());
         h = fnv(h, &r.tx);
+        if let Some((from, d)) = r.change {
+            h = fnv(h, &[0xde, d]);
+            h = fnv(h, &from.to_le_bytes());
+        }
     }
     h
 }
@@ -308,6 +328,7 @@ mod tests {
             master: seed == 1,
             start_frame: if started { 926 } else { 0 },
             tx: if started { tx } else { vec![] },
+            change: None,
         }
     }
 
@@ -322,6 +343,26 @@ mod tests {
                 assert_eq!(decode_rec(&mut rd, &base, 448).as_ref(), Some(&r));
                 assert_eq!(rd.left(), 0);
             }
+        }
+    }
+
+    #[test]
+    fn a_delay_change_rides_in_the_record_and_is_checked() {
+        let mut r = rec(3, true);
+        r.change = Some((1200, 4));
+        let base = rec(1, true).tx;
+        let mut w = Writer::new(kind::DATA);
+        encode_rec(&mut w, &r, &base, 448);
+        let mut rd = Reader::new(&w.0[6..]);
+        assert_eq!(decode_rec(&mut rd, &base, 448).as_ref(), Some(&r));
+        assert_ne!(hash_recs(&[&r]), hash_recs(&[&rec(3, true)]), "the state check sees it");
+        // Out of range delays and a change from the first boundary are refused.
+        for (from, d) in [(1200u64, 0u8), (1200, 61), (1, 3)] {
+            let mut bad = r.clone();
+            bad.change = Some((from, d));
+            let mut w = Writer::new(kind::DATA);
+            encode_rec(&mut w, &bad, &base, 448);
+            assert!(decode_rec(&mut Reader::new(&w.0[6..]), &base, 448).is_none());
         }
     }
 

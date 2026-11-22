@@ -3730,7 +3730,8 @@ impl Play {
             let roms = romset::RomSet::load(game, &self.settings.rom, false).map_err(|e| e.to_string())?;
             let name = self.opts.name.clone().unwrap_or_else(|| self.settings.player_name.clone());
             let cfg = netplay::config(game, &roms, play, name);
-            let free_play = self.settings.resolve(set).0.free_play.on(true);
+            let (values, _) = self.settings.resolve(set);
+            let free_play = values.free_play.on(true);
             let mut page = match (host, join) {
                 (Some(NetMode::Host(port)), _) => {
                     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
@@ -3749,6 +3750,7 @@ impl Play {
                 ),
             };
             page.free_play = free_play;
+            page.net_delay = values.net_delay;
             Ok(page)
         })();
         match result {

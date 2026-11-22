@@ -85,6 +85,8 @@ pub struct Host {
     advert_note: Option<String>,
     /// Names of joiners who left or went silent since the last poll's check.
     gone: Vec<String>,
+    /// Whether D follows the network once the session runs (`set_auto_delay`), and its range.
+    auto: Option<(usize, usize)>,
 }
 
 impl Host {
@@ -108,7 +110,16 @@ impl Host {
             advert: None,
             advert_note: None,
             gone: Vec::new(),
+            auto: None,
         })
+    }
+
+    /// Let D follow the network in the session this host starts: it begins at the round-trip
+    /// suggestion (or the `delay` given to [`Host::start`]) and then moves within `min..=max`
+    /// (`crate::adapt`, docs/hw/link-board.md section 12.7). Only the host decides; the joiners
+    /// follow. `REMODEL_NET_DELAY` fixes D whatever this says.
+    pub fn set_auto_delay(&mut self, range: Option<(usize, usize)>) {
+        self.auto = range;
     }
 
     pub fn local_addr(&self) -> SocketAddr {
@@ -335,7 +346,9 @@ impl Host {
             }
             let sock = self.net.sock.try_clone().expect("socket");
             let net = Net::new(sock, self.cfg.faults.clone()).expect("socket");
-            return HostStatus::Ready(Box::new(Session::new(net, 0, params.clone(), addrs)), params);
+            let mut sess = Session::new(net, 0, params.clone(), addrs);
+            sess.adaptive = self.auto.filter(|_| std::env::var("REMODEL_NET_DELAY").is_err());
+            return HostStatus::Ready(Box::new(sess), params);
         }
         HostStatus::Starting
     }

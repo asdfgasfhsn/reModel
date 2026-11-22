@@ -21,6 +21,7 @@ const USAGE_LINK: &str = "usage: remodel --game G link-run [--nodes N] [--frames
   --eeprom     the settings record to start from (default: the game's defaults); the user's files are never written
   --free-play  set the game's own FREE PLAY coin setting in every node's settings (no coins to start a game; srallyc, daytona)
   --set-byte N:OFF:V   set byte OFF of node N's settings image (before the CRC is fixed)
+  --delay-at F:D[,..]  D becomes D from boundary F (a session's delay changes: what `link-net` logs as `delay D -> D' from frame F`)
   --delay-to N:D[,..]  the other nodes' blocks reach node N D frames late (a test)
   --skew A,B,..        node i starts running A frames late (a test)
   --ids A,B,..         hand out these node IDs in place of master first (a test)
@@ -98,6 +99,7 @@ struct Args {
     fresh_hub: bool,
     layout: u8,
     delay_to: Vec<(usize, usize)>,
+    delay_at: Vec<(u64, usize)>,
     skew: Vec<u64>,
     ids: Option<Vec<u8>>,
     ram_dump: Option<(usize, u32, PathBuf)>,
@@ -135,6 +137,7 @@ fn parse(o: &Opts) -> Result<Args, String> {
         fresh_hub: false,
         layout: 3,
         delay_to: vec![],
+        delay_at: vec![],
         skew: vec![0; 8],
         ids: None,
         ram_dump: None,
@@ -186,6 +189,20 @@ fn parse(o: &Opts) -> Result<Args, String> {
                 let v = it.next().ok_or("--skew wants a list")?;
                 a.skew = v.split(',').filter_map(|x| x.parse().ok()).collect();
                 a.skew.resize(8, 0);
+            }
+            "--delay-at" => {
+                let v = it.next().ok_or("--delay-at wants FRAME:D[,FRAME:D]")?;
+                for part in v.split(',').filter(|p| !p.is_empty()) {
+                    let (f, d) = part.split_once(':').ok_or("--delay-at wants FRAME:D")?;
+                    let (f, d): (u64, usize) = (
+                        f.parse().map_err(|_| "--delay-at: bad frame")?,
+                        d.parse().map_err(|_| "--delay-at: bad delay")?,
+                    );
+                    if !(1..=60).contains(&d) || a.delay_at.last().is_some_and(|l| l.0 >= f) || f < 2 {
+                        return Err("--delay-at: frames in increasing order from 2, delays 1 to 60".into());
+                    }
+                    a.delay_at.push((f, d));
+                }
             }
             "--delay-to" => {
                 let v = it.next().ok_or("--delay-to wants NODE:D[,NODE:D]")?;
@@ -431,6 +448,9 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
         }
     }
     hub.layout = a.layout;
+    for &(f, d) in &a.delay_at {
+        hub.schedule_delay(f, d);
+    }
     for &(n, d) in &a.delay_to {
         if n < a.nodes {
             hub.delays[n] = d.max(1);
@@ -471,6 +491,9 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
         if a.fresh_hub {
             // Only the machines were saved: the board's own state is lost.
             hub = LinkHub::for_game(a.nodes, a.delay, play);
+            for &(f, d) in &a.delay_at {
+                hub.schedule_delay(f, d);
+            }
             for m in ms.iter_mut() {
                 if let Some(l) = m.bus.link.as_mut() {
                     (l.started, l.master) = (false, false);
@@ -499,7 +522,7 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
             a.nodes,
             a.delay,
             &types[..a.nodes]
-        ),
+        ) + &a.delay_at.iter().map(|(f, d)| format!(", D = {d} from frame {f}")).collect::<String>(),
     );
     let mut last_state = vec![u32::MAX; a.nodes];
     let mut last_rx = vec![u32::MAX; a.nodes];

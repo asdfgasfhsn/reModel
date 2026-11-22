@@ -116,6 +116,10 @@ struct Peer {
     /// A record of ours the peer has not been sent yet.
     fresh: bool,
     rtt_ms: Option<f32>,
+    /// The last round trips measured (raw), for the delay decision's percentile.
+    rtts: std::collections::VecDeque<f32>,
+    /// The share of its boundaries (percent, last few seconds) the peer says it held.
+    held_pct: u8,
     last_ping: Instant,
     /// What the peer says it holds of each host's records (frames up to).
     holds: Vec<u64>,
@@ -141,6 +145,11 @@ pub struct Session {
     latest: u64,
     /// The newest frame any peer has reported.
     pub peer_latest: u64,
+    /// The session host's range for an adaptive D (None: D stays as agreed at the start).
+    pub adaptive: Option<(usize, usize)>,
+    /// This host's share of held boundaries (percent over the last few seconds), sent with
+    /// every data packet so the session host can see a stall that only this side suffers.
+    pub held_pct: u8,
     ours: BTreeMap<u64, u64>,
     recent: Vec<(u64, u64)>,
     epoch: Instant,
@@ -185,6 +194,8 @@ impl Session {
                     owe_ack: None,
                     fresh: false,
                     rtt_ms: None,
+                    rtts: Default::default(),
+                    held_pct: 0,
                     last_ping: now,
                     holds: vec![0; 8],
                     last_relay: now,
@@ -207,6 +218,8 @@ impl Session {
             contig: vec![0; n],
             latest: 0,
             peer_latest: 0,
+            held_pct: 0,
+            adaptive: None,
             ours: BTreeMap::new(),
             recent: Vec::new(),
             epoch: now,
@@ -232,6 +245,31 @@ impl Session {
     /// The largest measured round trip.
     pub fn worst_rtt(&self) -> Option<f32> {
         self.rtts().into_iter().flatten().fold(None, |a: Option<f32>, b| Some(a.map_or(b, |a| a.max(b))))
+    }
+
+    /// The 95th percentile of the one-way delay (half the round trip, ms) to the slowest
+    /// live peer over the last 40 pings, if there are at least 8 samples.
+    pub fn one_way_p95(&self) -> Option<f32> {
+        (0..self.peers.len())
+            .filter(|&h| self.dep[h].is_none())
+            .filter_map(|h| self.peers[h].as_ref())
+            .filter(|p| p.rtts.len() >= 8)
+            .map(|p| {
+                let mut v: Vec<f32> = p.rtts.iter().copied().collect();
+                v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                v[((v.len() as f32 * 0.95).ceil() as usize).clamp(1, v.len()) - 1] / 2.0
+            })
+            .fold(None, |a: Option<f32>, b| Some(a.map_or(b, |a| a.max(b))))
+    }
+
+    /// The largest held share any live peer reports (percent).
+    pub fn peer_held_pct(&self) -> u8 {
+        (0..self.peers.len())
+            .filter(|&h| self.dep[h].is_none())
+            .filter_map(|h| self.peers[h].as_ref())
+            .map(|p| p.held_pct)
+            .max()
+            .unwrap_or(0)
     }
 
     pub fn peers(&self) -> usize {
@@ -596,7 +634,7 @@ impl Session {
     fn send_data(&mut self, h: usize) {
         let mut w = Writer::new(kind::DATA);
         let acked = self.peers[h].as_ref().unwrap().acked;
-        w.u32(self.params.session).u8(self.me as u8).u64(self.latest);
+        w.u32(self.params.session).u8(self.me as u8).u64(self.latest).u8(self.held_pct);
         w.u8(self.peers.len() as u8);
         for k in 0..self.peers.len() {
             w.u64(if k == self.me { 0 } else { self.held_of(k) });
@@ -726,6 +764,10 @@ impl Session {
             if rtt < 60_000.0 {
                 let p = self.peers[h].as_mut()?;
                 p.rtt_ms = Some(p.rtt_ms.map_or(rtt, |old| old * 0.8 + rtt * 0.2));
+                p.rtts.push_back(rtt);
+                if p.rtts.len() > 40 {
+                    p.rtts.pop_front();
+                }
             }
         }
         self.peers[h].as_mut()?.last_heard = Instant::now();
@@ -762,6 +804,7 @@ impl Session {
         }
         self.peers[h].as_mut()?.last_heard = Instant::now();
         let latest = r.u64()?;
+        let held_pct = r.u8()?.min(100);
         if r.u8()? as usize != self.peers.len() {
             return None;
         }
@@ -825,6 +868,7 @@ impl Session {
         {
             let p = self.peers[h].as_mut().unwrap();
             p.last_heard = now;
+            p.held_pct = held_pct;
             p.acked = p.acked.max(acks[self.me]);
             for (k, a) in acks.iter().enumerate().take(p.holds.len()) {
                 p.holds[k] = p.holds[k].max(*a);

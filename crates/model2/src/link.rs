@@ -142,6 +142,11 @@ pub struct NodeRec {
     pub start_frame: u64,
     /// The block (`LinkPlay::block` bytes), empty while the node's board is not started.
     pub tx: Vec<u8>,
+    /// A change of the link delay this record announces: `(from, D)`, D becomes `D` from
+    /// the boundary `from` on every node (the session host's records only: `docs/hw/link-board.md`
+    /// section 12.7). It is part of the record, so it reaches every host by the same
+    /// acknowledged, resent path as the block and is covered by the state check.
+    pub change: Option<(u64, u8)>,
 }
 
 /// The link board of a cabinet group, stepped by the host in lockstep
@@ -201,6 +206,17 @@ pub struct LinkHub {
     /// copy of that record, which every later frame's record is a repeat of.
     left: Vec<Option<u64>>,
     last: Vec<Option<NodeRec>>,
+    /// The delay changes (`LinkHub::schedule_delay`), by the boundary they take effect at.
+    sched: Vec<DelayChange>,
+}
+
+/// D becomes `d` from boundary `from`, and `floor` is the frame the others' view had reached
+/// at `from - 1`: a view never goes back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DelayChange {
+    pub from: u64,
+    pub d: usize,
+    pub floor: u64,
 }
 
 type Bus = crate::bus::Model2Bus;
@@ -243,6 +259,7 @@ impl LinkHub {
             recs: vec![Default::default(); nodes],
             left: vec![None; nodes],
             last: vec![None; nodes],
+            sched: Vec::new(),
         }
     }
 
@@ -272,9 +289,40 @@ impl LinkHub {
         self.ready.iter().any(|&r| r)
     }
 
-    /// The largest delay of any node.
+    /// The largest delay of any node, now or scheduled.
     pub fn max_delay(&self) -> usize {
-        self.delays.iter().copied().max().unwrap_or(1)
+        self.delays.iter().copied().chain(self.sched.iter().map(|c| c.d)).max().unwrap_or(1)
+    }
+
+    /// D becomes `d` from boundary `from` (the same for every node: it replaces the per-node
+    /// delays from then on). The others' view of boundary `b >= from` is the frame
+    /// `max(b + 1 - d, v)`, `v` the frame the view had reached at `from - 1`: a raise
+    /// shows the same frame until `b + 1 - d` catches up (nothing new for `d - D` boundaries),
+    /// a lower jumps over `D - d` frames (their records are never shown). Every host of a session
+    /// must schedule the same changes before it passes `from`. Returns false (and changes nothing)
+    /// if `from` is not after the last scheduled change or `d` is out of 1..=60.
+    pub fn schedule_delay(&mut self, from: u64, d: usize) -> bool {
+        if !(1..=60).contains(&d) || from < 2 || self.sched.last().is_some_and(|c| c.from >= from) {
+            return false;
+        }
+        let floor = self.view_frame_for(None, from - 1).unwrap_or(0);
+        self.sched.push(DelayChange { from, d, floor });
+        true
+    }
+
+    /// The scheduled delay changes.
+    pub fn changes(&self) -> &[DelayChange] {
+        &self.sched
+    }
+
+    /// The delay in force at boundary `frame`: the others' records come from `frame + 1 - D`.
+    pub fn delay_at(&self, frame: u64) -> usize {
+        self.sched.iter().rev().find(|c| c.from <= frame).map_or(self.delay, |c| c.d)
+    }
+
+    /// Whether a change takes effect after boundary `frame` (announced, not yet reached).
+    pub fn change_pending(&self, frame: u64) -> bool {
+        self.sched.last().is_some_and(|c| c.from > frame)
     }
 
     /// Node `i`'s record of `frame`, if the hub has it: for a node that has left
@@ -344,7 +392,11 @@ impl LinkHub {
         match self.recs[node].entry(frame) {
             std::collections::btree_map::Entry::Occupied(_) => false,
             std::collections::btree_map::Entry::Vacant(v) => {
+                let change = rec.change;
                 v.insert(rec);
+                if let Some((from, d)) = change {
+                    self.schedule_delay(from, d as usize);
+                }
                 true
             }
         }
@@ -361,15 +413,28 @@ impl LinkHub {
         };
         // The start frame matters only while started (and is what crosses the wire only then).
         let start_frame = if started { start_frame } else { 0 };
-        let rec = NodeRec { started, master, start_frame, tx };
+        let rec = NodeRec { started, master, start_frame, tx, change: None };
         self.put(node, frame, rec.clone());
         rec
     }
 
     /// The frame node `j`'s view takes the others' records from at `frame`.
-    fn view_frame(&self, j: usize, frame: u64) -> Option<u64> {
-        let d = self.delays[j].max(1) as u64;
-        (frame + 1).checked_sub(d)
+    pub fn view_frame(&self, j: usize, frame: u64) -> Option<u64> {
+        self.view_frame_for(Some(j), frame)
+    }
+
+    /// The same with the node's own delay (`None`: the session's base delay) before any change.
+    fn view_frame_for(&self, j: Option<usize>, frame: u64) -> Option<u64> {
+        match self.sched.iter().rev().find(|c| c.from <= frame) {
+            Some(c) => {
+                let v = (frame + 1).saturating_sub(c.d as u64).max(c.floor);
+                Some(v)
+            }
+            None => {
+                let d = j.map_or(self.delay, |j| self.delays[j]).max(1) as u64;
+                (frame + 1).checked_sub(d)
+            }
+        }
     }
 
     /// Whether every record the local nodes' views need at boundary `frame`
@@ -585,7 +650,10 @@ impl LinkHub {
                 let len = u16::from_le_bytes([h[17], h[18]]) as usize;
                 let tx = data.get(at + 19..at + 19 + len).ok_or_else(short)?.to_vec();
                 at += 19 + len;
-                hub.recs[i].insert(frame, NodeRec { started: fl & 1 != 0, master: fl & 2 != 0, start_frame, tx });
+                hub.recs[i].insert(
+                    frame,
+                    NodeRec { started: fl & 1 != 0, master: fl & 2 != 0, start_frame, tx, change: None },
+                );
             }
         }
         // Nodes that have left, if the save has them.
@@ -604,7 +672,8 @@ impl LinkHub {
                 at += 20 + len;
                 hub.left[i] = Some(f);
                 if fl & 4 != 0 {
-                    hub.last[i] = Some(NodeRec { started: fl & 1 != 0, master: fl & 2 != 0, start_frame, tx });
+                    hub.last[i] =
+                        Some(NodeRec { started: fl & 1 != 0, master: fl & 2 != 0, start_frame, tx, change: None });
                 }
             }
         }
@@ -615,6 +684,44 @@ impl LinkHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The frame the others' records are taken from at each boundary `from..=to`.
+    fn views(h: &LinkHub, from: u64, to: u64) -> Vec<u64> {
+        (from..=to).map(|b| h.view_frame(0, b).unwrap()).collect()
+    }
+
+    #[test]
+    fn a_delay_raise_holds_the_view_and_a_lower_skips_a_frame() {
+        let mut h = LinkHub::new(2, 3);
+        assert_eq!(views(&h, 10, 14), [8, 9, 10, 11, 12]);
+        // D 3 -> 5 from boundary 20: the view stays on frame 17 (the one it showed at 19) for the boundaries 20 and 21,
+        // then moves a frame a boundary again; it never goes back.
+        assert!(h.schedule_delay(20, 5));
+        assert_eq!(views(&h, 17, 26), [15, 16, 17, 17, 17, 18, 19, 20, 21, 22]);
+        assert_eq!((h.delay_at(19), h.delay_at(20)), (3, 5));
+        // D 5 -> 4 from 30: one record (frame 26) is never shown.
+        assert!(h.schedule_delay(30, 4));
+        assert_eq!(views(&h, 28, 32), [24, 25, 27, 28, 29]);
+        // D 4 -> 4 is a no-change schedule that still must not move the view; 4 -> 1 from 40 jumps ahead.
+        assert!(h.schedule_delay(40, 1));
+        assert_eq!(views(&h, 38, 41), [35, 36, 40, 41]);
+        assert_eq!(h.max_delay(), 5);
+        // Changes must come in order, within 1..=60, and never from the first boundary.
+        assert!(!h.schedule_delay(40, 2) && !h.schedule_delay(35, 2) && !h.schedule_delay(50, 0));
+        assert!(!LinkHub::new(2, 3).schedule_delay(1, 2));
+    }
+
+    #[test]
+    fn a_change_in_a_record_schedules_it_once_and_the_view_stays_what_lockstep_needs() {
+        let mut h = LinkHub::new(2, 2);
+        let rec = |change| NodeRec { started: true, master: true, start_frame: 2, tx: vec![1], change };
+        assert!(h.put(0, 10, rec(Some((14, 4)))));
+        assert!(!h.put(0, 10, rec(Some((15, 5)))), "the first record of a frame is kept");
+        assert_eq!(h.changes().len(), 1);
+        // The records the hub needs at boundary 14 and 15 (node 1 viewing node 0): frame 12 (what it had reached at 13) on both.
+        assert_eq!(h.missing(14, &[1]), vec![(1, 14), (0, 12)]);
+        assert_eq!(h.missing(15, &[1]), vec![(1, 15), (0, 12)]);
+    }
 
     #[test]
     fn the_scripted_partner_delays_its_blocks_and_goes_silent() {
@@ -632,7 +739,7 @@ mod tests {
         tx[2] = node as u8 + 1;
         tx[10] = frame as u8;
         tx[100] = node as u8;
-        NodeRec { started: true, master: node == 0, start_frame: 3, tx }
+        NodeRec { started: true, master: node == 0, start_frame: 3, tx, change: None }
     }
 
     #[test]

@@ -46,6 +46,8 @@ pub struct NetPage {
     /// The host's session starts on the game's own FREE PLAY setting (`free_play` setting):
     /// carried in the settings the master sends, so every machine runs it.
     pub free_play: bool,
+    /// The host's input delay D (`net_delay` setting): 0 Automatic (follows the network), else fixed.
+    pub net_delay: u8,
 }
 
 fn play_of(game: &romset::Game) -> &'static romset::LinkPlay {
@@ -100,6 +102,7 @@ impl NetPage {
             auto,
             note: None,
             free_play: false,
+            net_delay: 0,
         }
     }
 
@@ -120,6 +123,7 @@ impl NetPage {
             auto: 0,
             note: None,
             free_play: false,
+            net_delay: 0,
         }
     }
 
@@ -220,7 +224,7 @@ impl NetPage {
         };
         let spec = menu::PanelSpec { game: self.game.title, heading, back: true, extra_h: 0.0 };
         let cfg_name = self.cfg.max_hosts;
-        let NetPage { focus, state, note, .. } = self;
+        let NetPage { focus, state, note, net_delay, .. } = self;
         let mut found_pick: Option<String> = None;
         let mut state_back = false;
         back |= menu::side_panel(ctx, &spec, &hints, |ui, reg| {
@@ -256,8 +260,15 @@ impl NetPage {
                         ui.label(
                             egui::RichText::new(format!(
                                 "Needs UDP port {port} reachable from the other machines (a firewall may need it opened). \
-                                 The delay is picked from the measured round trip: D = {} now.",
-                                host.suggest_delay()
+                                 {}",
+                                if *net_delay == 0 {
+                                    format!(
+                                        "The input delay starts from the measured round trip (D = {} now) and follows the network while you play.",
+                                        host.suggest_delay()
+                                    )
+                                } else {
+                                    format!("The input delay is fixed at D = {} frames (a game setting).", net_delay)
+                                }
                             ))
                             .size(13.0 * s)
                             .color(theme::TEXT_DIM),
@@ -348,7 +359,9 @@ impl NetPage {
             if let NetState::Host { host, starting, .. } = &mut self.state {
                 if !*starting {
                     let base = base_for(play, self.game, self.free_play);
-                    match host.start(None, base, &|p, h| {
+                    host.set_auto_delay((self.net_delay == 0).then_some((linknet::AUTO_MIN, linknet::AUTO_MAX)));
+                    let fixed = (self.net_delay > 0).then_some(self.net_delay as usize);
+                    match host.start(fixed, base, &|p, h| {
                         linknet::settings_hash(play, p.base.as_deref(), p.hosts[h].nodes[0] as usize, &[])
                     }) {
                         Ok(()) => *starting = true,

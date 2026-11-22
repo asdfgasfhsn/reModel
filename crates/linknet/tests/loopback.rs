@@ -88,6 +88,7 @@ fn rec(node: usize, frame: u64) -> NodeRec {
         master: node == 0,
         start_frame: if frame > 3 { 3 } else { 0 },
         tx: if frame > 3 { tx } else { vec![] },
+        change: None,
     }
 }
 

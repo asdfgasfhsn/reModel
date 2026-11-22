@@ -1340,20 +1340,37 @@ players with one name are shown "Sam" and "Sam (2)". Names are only shown: they
 are not part of any machine's state or hash, so the same inputs still give the
 same state hashes.
 
-**What must match.** The same game (a variant is its own game: the same version of the title), the same ROM files (a hash over every chip the game loads, not the program alone, so a set with one other data or sound chip is refused), the same reModel version (the crate version) and protocol (4). A joiner
+**What must match.** The same game (a variant is its own game: the same version of the title), the same ROM files (a hash over every chip the game loads, not the program alone, so a set with one other data or sound chip is refused), the same reModel version (the crate version) and protocol (5). A joiner
 that does not match is refused with the reason. The host picks D, the link
 delay, from the measured round trip (about one frame per 17 ms of one-way
-delay, plus one): on a wired LAN 1 or 2, over Wi-Fi 3 to 5. `remodel link-net`
-(below) has `--delay`.
+delay, plus one): on a wired LAN 1 or 2, over Wi-Fi 3 to 5. That is where it
+starts, not where it stays: with the host's **Input delay** setting on
+**Automatic** (the default; the game's settings, More tab, "Input delay
+(hosting)", or the launcher's game settings), the host watches how often frames
+are held, by itself and by the other players (each reports its share), and
+raises D when more than about a tenth of the frames over four seconds are held,
+and lowers it again, one frame at a time, after a long calm spell (25 s, at
+most 0.5% held), never below 2, never above 8, and slower to lower again after a
+lowering that had to be undone. The host announces each change in its own
+record, a few frames ahead; every machine switches at the same frame, so the
+picture and the state stay what they would be anywhere (`docs/hw/link-board.md`
+section 12.7). The cost is felt as a frame later controls and the others' cars a
+frame older for each frame of D; the game is not interrupted. **1 to 6 frames**
+pins D at that value (and `REMODEL_NET_DELAY=N` does, for any value); the joiners
+take whatever the host does. `remodel link-net` (below) has `--delay`,
+`--auto-delay` and `--delay-plan`.
 
 **Playing.** Controls are a single player's: the keyboard and the first
 gamepad, the game's own bindings. A small status line at the top of the window
 gives the players, the delay D in frames, the round trip and how often the frame
 had to wait for another machine ("Delay 3 frames  round trip 12 ms  held 12% of
 frames (last 10 s)"; "WAITING for the other player" when it has been over a
-quarter second). Lockstep never guesses, so a late packet holds *every*
-machine's frame and a slow machine slows everyone; the cure is a larger D or a
-better network. A held frame is tried again every half millisecond (a timer in
+quarter second). D follows the host's changes: from the announcement until the
+frame it takes effect the line reads "Delay 3 -> 5 frames", then "Delay 5
+frames", and the console says "delay 3 -> 5 frames from frame F". Lockstep never
+guesses, so a late packet holds *every* machine's frame and a slow machine slows
+everyone; the cure is a larger D (which Automatic applies by itself) or a better
+network. A held frame is tried again every half millisecond (a timer in
 the player's event loop, nothing spins), so it runs when the record lands
 rather than at the next redraw. The audio is not slowed by a hold shorter than
 about 100 ms (6 frames): the sound queue, kept 80 ms deep in a network game,
@@ -1365,7 +1382,8 @@ slows the pitch as it does in a single-player game
 `remodel link-net`'s faults to what the player sends (a datagram's delay is
 served when this player next polls, so for a realistic network put a UDP
 proxy between the machines instead); `REMODEL_NET_DELAY=N` makes the host's D
-that, whatever the round trip; `REMODEL_NET_LOG=1` prints a line a second with
+that, whatever the round trip (it also turns the Automatic rule off for the session);
+`REMODEL_NET_LOG=1` prints a line a second with
 the frame, the boundaries and holds, the audio step and the queue.
 
 **What is off.** Smooth motion and run-ahead (as in same-screen link play),
@@ -1423,7 +1441,13 @@ remodel --game srallyc --input "coin1@1500-1504,coin1@1560-1564,gas=0xff@3430-99
 remodel --game srallyc --input "..." link-net --join 192.168.1.20:47890 --frames 4400
 ```
 
-`--name NAME` sets the player name, `--no-mdns` turns mDNS off. `remodel link-net --browse [SECS]`
+`--auto-delay [MIN:MAX]` (host) lets D follow the network as in the player (it
+starts at `--delay`, or from the round trip), `--delay-plan F:D,...` (host)
+announces D becoming D at the host's frame F (a test: the change takes effect a
+few frames later on every host). Each host logs `delay D -> D' from frame F` and
+a last line `delay schedule (for link-run --delay-at): F:D,F:D`; `remodel
+link-run --delay-at F:D,...` runs the same schedule in one process, and its
+state hashes equal the hosts'. `--name NAME` sets the player name, `--no-mdns` turns mDNS off. `remodel link-net --browse [SECS]`
 (`make link-browse`) lists the hosts found on the network over mDNS and broadcast
 for SECS seconds (default 3) and exits: one line each with the name, game,
 players, address, version, ROM hash, D, how it was found, and whether this

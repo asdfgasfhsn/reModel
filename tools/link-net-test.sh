@@ -16,6 +16,10 @@
 #   drop3-*     three hosts, one leaves (politely, or killed with its newest records held
 #               back from one survivor so the other must relay them): both survivors run
 #               to the end, agree F, and end on `link-run --nodes 3 --leave NODE:F`'s hashes
+#   delay-*     the delay D changes mid-session (a scripted plan on the host, and the adaptive rule on a paced
+#               link with Wi-Fi-like faults): every host's state hash equals `link-run --delay-at` with the
+#               schedule the hosts logged; on a clean paced link the adaptive D does not move
+#   dropN-change  a player leaves with a change in flight (and the announcer leaves right after announcing)
 #   discover    a named host is found by `link-net --browse` over mDNS (the TXT record: name, game,
 #               players, version, ROM hash, delay), then joined by a named player; the
 #               names are in both logs (skipped with a message where multicast is unavailable)
@@ -34,6 +38,7 @@ n=0
 hashes() { sed -n 's/^node \([0-9]*\) *state hash \([0-9a-f]*\) .*/\1 \2/p' "$1"; }
 ok() { echo "link-net-test $1: ok${2:+ ($2)}"; }
 bad() { echo "link-net-test $1: FAIL ${2:-}"; fail=1; }
+sched_of() { sed -n 's/^link-net      delay schedule (for link-run --delay-at): //p' "$1"; }
 stat() { grep -h "link-net      stalls\|link-net      sent" "$1" | sed 's/^link-net      //'; }
 
 # Run host and joiner; $1 = case tag, $2 = common args, $3 = host extras, $4 = joiner extras
@@ -59,11 +64,13 @@ drop_case() {
 	local names=(Ann Bob Cy) pids=() i port logs=() ex
 	n=$((n + 1)); port=$((base + n))
 	local common="--frames $FRAMES_DROP --delay $dl --timeout 2 --hash-every 100 --shot-at $SHOTS_DROP"
+	local plan=${PLAN:-}
 	for ((i = 0; i < nodes; i++)); do
 		ex=""
 		[ $i = $lv ] && [ $how = quit ] && ex="--leave-at $LEAVE_AT"
 		[ $i = $lv ] && [ $how = kill ] && [ $nodes = 3 ] && ex="--starve 1:$((LEAVE_AT - 3))"
 		if [ $i = 0 ]; then
+			[ -z "$plan" ] || ex="$ex --delay-plan $plan"
 			timeout 900 "${BIN_RUN[@]}" --out "$OUT/$tag-$i" $INPUT_ARGS link-net --host $port --nodes $nodes --name ${names[0]} $common $ex >"$OUT/$tag-$i.log" 2>"$OUT/$tag-$i.err" &
 			sleep 1.5
 		else
@@ -94,8 +101,17 @@ drop_case() {
 			[ "$f" = "$F" ] || ok=0
 		fi
 	done
+	# Every survivor logged the same delay schedule; a case built to have a change in flight must have one.
+	local sched="" lrx=""
+	for i in "${surv[@]}"; do
+		local si; si=$(sched_of "$OUT/$tag-$i.log")
+		[ "$i" = "${surv[0]}" ] && sched=$si
+		[ "$si" = "$sched" ] || ok=0
+	done
+	[ -n "$plan" ] && [ -z "$sched" ] && [ -n "${NEEDCHANGE:-}" ] && ok=0
+	[ -z "$sched" ] || lrx="--delay-at $sched"
 	if [ $ok = 0 ]; then bad "$tag" "survivors exit ${rc[*]}, drop frames:$fs: $(cat "$OUT/$tag-"*.err | head -3)"; return; fi
-	"${BIN_RUN[@]}" --out "$OUT/$tag-lr" $INPUT_ARGS link-run --nodes $nodes --frames $FRAMES_DROP --delay $dl --leave $lv:$F >"$OUT/$tag-lr.log" 2>&1
+	"${BIN_RUN[@]}" --out "$OUT/$tag-lr" $INPUT_ARGS link-run --nodes $nodes --frames $FRAMES_DROP --delay $dl $lrx --leave $lv:$F >"$OUT/$tag-lr.log" 2>&1
 	local good=1 detail=""
 	for i in "${surv[@]}"; do
 		ref=$(hashes "$OUT/$tag-lr.log" | sed -n "$((i + 1))p" | cut -d' ' -f2)
@@ -109,7 +125,7 @@ drop_case() {
 		grep -q "link-net: " "$OUT/$tag-$i.err" && good=0
 	done
 	if [ $good = 1 ]; then
-		ok "$tag" "${names[$lv]} ${how}s, drop frame $F, survivors$detail = link-run --leave $lv:$F"
+		ok "$tag" "${names[$lv]} ${how}s, drop frame $F${sched:+, delay schedule $sched}, survivors$detail = link-run --leave $lv:$F"
 		for i in "${surv[@]}"; do grep -h "relayed\|drop frame\|left\|lost" "$OUT/$tag-$i.log" | sed "s/^link-net      /    node $i: /"; done
 		mkdir -p "$OUT/captures"
 		for i in "${surv[@]}"; do for f in "$OUT/$tag-$i/frames/"*.png; do [ -f "$f" ] && cp "$f" "$OUT/captures/$(echo $tag | tr / -)-n$i-$(basename "$f")"; done; done
@@ -157,6 +173,38 @@ for game in $GAMES; do
 		fi
 	done
 
+	# The delay changes mid-session. A scripted plan crossing the race start, with loss and jitter on
+	# both sides, then the adaptive rule paced at 60 frames a second: on a clean link D must stay, on a
+	# Wi-Fi-like one (10 ms + up to 30 ms jitter, 3% loss) it rises. Each host's hash equals
+	# `link-run --delay-at` with the logged schedule.
+	delay_case() {
+		local tag=$1 d0=$2 common=$3 hx=$4 jx=$5 expect=$6
+		pair "$game/$tag" "--frames $FRAMES --delay $d0 $common" "$hx" "$jx"
+		wait $HPID; local hrc=$?; wait $JPID; local jrc=$?
+		local sh sj; sh=$(sched_of "$OUT/$game/$tag-h.log"); sj=$(sched_of "$OUT/$game/$tag-j.log")
+		local lrx=""; [ -z "$sh" ] || lrx="--delay-at $sh"
+		"${BIN_RUN[@]}" --out "$OUT/$game/$tag-lr" $INPUT_ARGS link-run --nodes 2 --frames $FRAMES --delay $d0 $lrx >"$OUT/$game/$tag-lr.log" 2>&1
+		local r0 r1 g0 g1
+		r0=$(hashes "$OUT/$game/$tag-lr.log" | sed -n 1p | cut -d' ' -f2); r1=$(hashes "$OUT/$game/$tag-lr.log" | sed -n 2p | cut -d' ' -f2)
+		g0=$(hashes "$OUT/$game/$tag-h.log" | cut -d' ' -f2); g1=$(hashes "$OUT/$game/$tag-j.log" | cut -d' ' -f2)
+		local want=1
+		case $expect in some) [ -n "$sh" ] || want=0 ;; none) [ -z "$sh" ] || want=0 ;; esac
+		if [ $hrc = 0 ] && [ $jrc = 0 ] && [ -n "$r0" ] && [ "$g0" = "$r0" ] && [ "$g1" = "$r1" ] && [ "$sh" = "$sj" ] && [ $want = 1 ]; then
+			ok "$game $tag" "D $d0, schedule ${sh:-none}, node 0 $g0, node 1 $g1 = link-run --delay-at"
+			stat "$OUT/$game/$tag-h.log" | sed "s/^/    host:   /"; stat "$OUT/$game/$tag-j.log" | sed "s/^/    joiner: /"
+			grep -h "link-net      delay [0-9]* ->" "$OUT/$game/$tag-h.log" | sed 's/^link-net      /    host:   /'
+			mkdir -p "$OUT/captures"
+			for f in "$OUT/$game/$tag-h/frames/"*.png; do [ -f "$f" ] && cp "$f" "$OUT/captures/$game-$tag-$(basename "$f")"; done
+		else
+			bad "$game $tag" "exit $hrc/$jrc, schedule host '$sh' joiner '$sj' (wanted $expect), hashes host $g0 joiner $g1, link-run $r0 $r1"
+		fi
+	}
+	faultsx="--latency 5 --jitter 50 --loss 5 --dup 5"
+	delay_case delay-plan 3 "--seed 11 --shot-at 2000,3000,3600,4300" "$faultsx --delay-plan 1800:6,2600:4,3300:5,3900:3" "$faultsx --seed 9" some
+	delay_case delay-adaptive-clean 2 "--realtime --auto-delay --seed 12" "--auto-delay" "" none
+	wifi="--latency 10 --jitter 30 --loss 3"
+	delay_case delay-adaptive-wifi 2 "--realtime --seed 13 --shot-at 2000,3000,3600,4300" "--auto-delay $wifi" "$wifi --seed 9" some
+
 	# A host found over mDNS, then joined; names in the logs.
 	if [ "$game" = "${GAMES%% *}" ]; then
 		MID='"${BIN_RUN[@]}" link-net --browse 4 >"$OUT/$game/browse.log" 2>&1'
@@ -181,6 +229,11 @@ for game in $GAMES; do
 	drop_case "$game/drop2-host" 2 0 quit
 	drop_case "$game/drop3-polite" 3 1 quit
 	drop_case "$game/drop3-kill" 3 2 kill 6
+	# With a delay change in flight: announced with the record 3 frames before the player leaves
+	# (D 2: it takes effect at the leaving frame), and the announcer itself leaving right after.
+	PLAN=$((LEAVE_AT - 3)):5 NEEDCHANGE=1 drop_case "$game/drop3-change" 3 2 quit
+	PLAN=$((LEAVE_AT - 1)):4 NEEDCHANGE=1 drop_case "$game/drop3-announcer" 3 0 quit
+	PLAN=$((LEAVE_AT - 400)):6,$((LEAVE_AT - 3)):3 NEEDCHANGE=1 drop_case "$game/drop2-change" 2 1 quit 4
 
 	# A different settings byte on the joiner.
 	pair "$game/settings" "--frames 600 --delay 2" "" "--tamper-byte 0x0c:5"

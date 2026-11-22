@@ -15,8 +15,10 @@
 //! * [`names`]: player user names.
 //! * [`setup`]: the lobby ([`Host`], [`Join`], [`Discovery`]) and the agreement.
 //! * [`session`]: records, acknowledgements, state checks, liveness, the end.
+//! * [`adapt`]: the decision rule of an adaptive D.
 //! * [`driver`]: [`NetLink`], the boundary exchange over a hub.
 
+pub mod adapt;
 pub mod driver;
 pub mod mdns;
 pub mod names;
@@ -25,6 +27,7 @@ pub mod session;
 pub mod setup;
 pub mod wire;
 
+pub use adapt::{Auto, Meter, AUTO_MAX, AUTO_MIN};
 pub use driver::{NetLink, Notice, StallStats, Step};
 pub use mdns::{blocker, merge, Advert, Browser, Lobby, Mine, Txt};
 pub use names::{default_name, display_names, name_or_default, sanitize_name, MAX_NAME};

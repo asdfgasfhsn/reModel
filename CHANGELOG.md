@@ -24,6 +24,19 @@ creates the annotated tag `vx.y.z` without pushing. Details in
   keeps 80 ms deep (the pitch moved up to 45 cents with every cluster of
   holds, now about 5, and the audio ran dry a few times a minute, now not at
   all). Single-player and same-screen link play are unchanged.
+- Network play over Wi-Fi: the input delay D now follows the network. The host
+  raises it when frames are held (over about a tenth of four seconds, by it or by
+  any player) and lowers it one frame at a time after a long calm spell, between 2
+  and 8; it announces each change in its own record and every machine switches at
+  the same frame, so the game sees the same link data everywhere (the data
+  after a raise repeats the last frame's for D' - D boundaries, after a lower it skips
+  frames; `docs/hw/link-board.md` section 12.7). New game setting "Input delay
+  (hosting)": Automatic (default) or 1 to 6 frames fixed; `REMODEL_NET_DELAY` still
+  pins it; the status line follows D. `link-run --delay-at F:D,...` reproduces a
+  session's schedule offline and `link-net` logs it (`--auto-delay`, `--delay-plan`);
+  `make link-net-test` checks that the hosts' hashes equal it, and with a player
+  leaving with a change in flight. Link protocol 5 (a 0.13.0 peer is refused with the
+  version message).
 - The network status line reads "Delay 3 frames ... held 12% of frames (last 10 s)".
   `REMODEL_NET_FAULTS` and `REMODEL_NET_LOG` are test hooks for the player's session.
 

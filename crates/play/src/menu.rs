@@ -1251,6 +1251,26 @@ fn more_rows(ui: &mut egui::Ui, rows: &mut Rows, s: &mut GameSettings, view: &Vi
              in a network game the host's choice is every machine's.",
         );
     }
+    if view.game.is_some_and(|g| crate::link::play_for(g.id).is_some()) {
+        rows.choose(
+            ui,
+            "Input delay (hosting)",
+            &mut s.net_delay,
+            &[
+                (0, "Automatic"),
+                (1, "1 frame"),
+                (2, "2 frames"),
+                (3, "3 frames"),
+                (4, "4 frames"),
+                (5, "5 frames"),
+                (6, "6 frames"),
+            ],
+            "For a network game you host, from the next game. Automatic starts from the measured round trip and \
+             raises the delay when frames are held up (Wi-Fi jitter) and lowers it again after a calm spell, the same \
+             on every machine. A number pins it: more frames ride out a worse network and make the controls a \
+             frame later. Players who join take the host's choice.",
+        );
+    }
     rows.choose(
         ui,
         "Geometrizer",

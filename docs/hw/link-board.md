@@ -898,7 +898,7 @@ from loopback runs of two real processes (`make link-net-test`).
   `link-run`**; this is an automated test (`tools/link-net-test.sh`: two
   processes, each node's state hash equal to `link-run`'s, srallyc and
   daytona, clean and under loss and jitter).
-* **D** is the hub's delay as before (1: the others' blocks of the same
+* **D** (protocol 5: it can change mid-session, 12.7) is the hub's delay as before (1: the others' blocks of the same
   frame, which a network cannot give except by waiting a trip every frame;
   2: of the frame before, and so on). The host picks it at the start from the
   measured round trips: `ceil(one-way / 16.7 ms) + 1`, the one-way time being
@@ -938,7 +938,9 @@ from loopback runs of two real processes (`make link-net-test`).
   (tens of milliseconds); the same value is the `rom` key of the mDNS TXT record,
   so a host is refused as "different ROMs" before joining. The protocol
   version is 4 for this change: a peer of version 3 gets the version refusal
-  and never compares hashes of another meaning.
+  and never compares hashes of another meaning. Protocol 5 (12.7) adds the
+  delay change to the record and the held share to the data packet: a peer of
+  version 4 gets the same refusal.
 
 * **Names and discovery (as built later).** The protocol is version 2: the
   `Lobby` packet carries every player's name (host first) so a joiner sees who
@@ -1200,6 +1202,129 @@ what will never come (a desync or a lost connection still stops at once).
   are the ones their first packets came from).
 * LAN discovery finds hosts on the default port only, and only where the
   network passes broadcast (guest Wi-Fi often does not).
+
+### 12.7 A delay D that follows the network (protocol 5)
+
+D is no longer fixed for the session. The session host (host 0) may change it
+while the game runs, by an announcement that every host applies at the same
+frame, so each machine's link view, and so the game, stays what `link-run
+--delay-at` gives. What was built, and why it is safe:
+
+**What a change is.** A record can carry `D becomes D' from boundary F`
+(`NodeRec::change`; flag bit 3 in the record's wire flags, then `F` as u64 and
+`D'` as u8; D' 1 to 60, F at least 2). It is the host's record of frame h, and
+`F = h + D + 1` with D the delay in force at h. The announcement is *part of
+the record*, so it travels by the same path as the block: acknowledged,
+resent in every packet until the receiver holds it, relayed with the rest of a
+leaver's records, covered by the state check (`hash_recs` hashes it when
+present, so two hosts that disagree on a change differ at the next checkpoint).
+Nothing else was added to the wire for it.
+
+**Why no host reaches F too early.** A host passes boundary b only when it
+holds the others' records of frame `b + 1 - D`. The announcer's record h is
+therefore in every host's hands before it passes `h + D - 1`, and F = h + D + 1
+is two boundaries later: every host learns of the change from the record it
+needs anyway, with no timing assumption and no separate message to lose. The
+hub schedules the change the moment it takes the record in
+(`LinkHub::put`), before the next `has_all` asks what the boundary needs. One
+change is in flight at a time (the host announces the next only once F is
+passed), and F is always beyond the last scheduled one.
+
+**What each node's view gets** (`LinkHub::schedule_delay`, `view_frame`). Before,
+at boundary b the node sees its own record of b and the others' records of frame
+`b + 1 - D`. Across a change at F (D to D'), the others' view frame is
+`max(b + 1 - D', v)` for `b >= F`, with `v` the view frame of boundary F - 1:
+a view never goes back. The ready byte, the node IDs and the started flags
+come from the same view frame as the blocks, so they follow likewise. The
+node's own record is unaffected.
+
+| change | what the others' records do at F and after |
+|---|---|
+| raise by k (D' = D + k) | no new record for k boundaries: the view stays on the frame it had at F - 1 (the same blocks are written again), then moves a frame a boundary as before; the others' data is k frames older than it was, and never goes back in time |
+| lower by k | the view jumps k + 1 frames at F: the k frames in between are never shown to the node (their records are held and checked, not used) |
+| same D | nothing |
+
+For example D 3 to 5 at boundary 20 gives the view frames 15, 16, 17, 17, 17,
+18, 19 for boundaries 17 to 23; D 5 to 4 at 30 gives 24, 25, 27, 28 for 28 to 31
+(frame 26 is skipped). `a_delay_raise_holds_the_view_and_a_lower_skips_a_frame`
+(`crates/model2/src/link.rs`) checks both.
+
+**Why the survivors agree after a player leaves** (the argument of 12.3). A
+survivor that passed F had consumed the announcer's record of at least h, so
+`h <= h_S <= F_drop` for the leaver if the announcer is the one leaving: the
+record is among those every survivor holds (or is relayed one: a relayed
+record carries the announcement) and all of them schedule the change; a record
+beyond the agreed drop frame is held by no survivor, so no survivor applied it
+(`crates/linknet/tests/delay.rs`: the announcer quitting two frames after its
+record, with the next survivor starved of its records so that only a relay
+brings the change; a player leaving between the announcement and F; a player
+vanishing at F, under loss).
+
+**The decision** (`crates/linknet/src/adapt.rs`; the host only, from a rule
+that never touches the game). Every boundary adds to a one-second-bucket meter
+of how many boundaries had to wait. Every host reports its held share of the
+last four seconds in each data packet (a byte), so the host sees a stall that
+only a joiner suffers. Also the round trips of the pings (the last 40, raw)
+give a 95th-percentile one-way delay (half the round trip), asked for in
+frames plus one.
+
+* *Raise* when over 10% of the last four seconds' boundaries (at least 120)
+  were held, by this host or by a peer: D + 1, or D + 2 when over 30% were held,
+  and at least what the pings ask for up to two frames beyond; or when over 3%
+  were held and the pings ask for more than D. Clamped to 8. Held boundaries
+  are the evidence; the pings alone never raise D (a paced loopback link's
+  ping reads one frame because the peer answers once a frame).
+* *Lower* one frame at a time, only after 25 seconds with no change and 20
+  seconds with at most 0.5% held, nothing held by any peer and the pings' D
+  below the current one, never below 2 (a fixed D can be 1).
+* *Hysteresis.* After a change nothing is decided for 4 seconds and the meters
+  start empty. A raise within 60 seconds of a lowering doubles the wait before
+  the next lowering (up to eight times; forgotten after 150 quiet seconds).
+* Pinned: the `net_delay` setting (Input delay 1 to 6, default Automatic) and
+  `REMODEL_NET_DELAY` keep D as it starts; `link-net --delay D` without
+  `--auto-delay` does too.
+
+**Test hooks, logs.** `link-net --delay-plan F:D,...` (host) announces D at the
+host's frame F; `--auto-delay [MIN:MAX]` turns the rule on. Every host logs
+`delay D -> D' from frame F` as it learns it, and at the end a line `delay
+schedule (for link-run --delay-at): F:D,F:D`, which `remodel link-run
+--delay-at F:D,...` takes to reproduce the run. The player prints the same
+changes on its console and the status line shows `Delay 3 -> 5 frames` from the
+announcement until F, then `Delay 5 frames`.
+
+**What the game does across a change.** *Confirmed* (`make link-net-test`, daytona and
+srallyc, two processes): D 3 to 6 to 4 to 5 to 3 at frames 1,804, 2,607, 3,305 and
+3,906, across the boot, the link check and the race start, under 5% loss and 50 ms
+jitter, and the adaptive rule's own raises and lowerings on a link with Wi-Fi-like faults:
+no machine dropped out of the link, nobody was "waiting for the other
+machines", the race clocks and positions kept going (pictures in
+`out/link-net-test/captures`), and each host's state hash equals `link-run
+--delay-at` with the schedule the hosts logged. The unchanged-D run's hash differs, so
+the schedule is part of what the state is. Changes one boundary or six apart (the
+startup of the wifi run raised twice in a row before the decision waited out the
+last change) were fine too. Players leaving with a change in flight (announced three
+frames before the leaving frame, with F at the drop frame; the announcer itself leaving
+two frames after its record): the survivors' hashes equal `link-run --leave NODE:F
+--delay-at`. *Not confirmed:* games other than the two, a human's feel for the
+controls when D moves, and a raise or lower while a track-select or results screen is
+timing the barriers (the changes above came during the boot, the link check and the race,
+not the results and next-race screens).
+
+**Measured** (daytona, two `link-net --realtime` players, 4,600 frames, the joiner behind
+a UDP proxy: 10 ms + up to 30 ms each way, 3% loss, an 80 ms spike for 250 ms about every
+8 s; both start at D 3 from the lobby's round trip):
+
+| | fixed D 3 | `--auto-delay` |
+|---|---|---|
+| D schedule | 3 | 3 to 4 at frame 125, to 5 at 816, to 6 at 2,336 |
+| boundaries held (host / joiner) | 992 / 1,067 (21.6% / 23.2%) | 93 / 128 (2.0% / 2.8%) |
+| time lost to holds | 7.1 / 7.5 s | 1.4 / 1.5 s |
+| longest hold | 95 / 81 ms | 77 / 64 ms |
+
+On a clean loopback link D stays 2 with or without the rule (no boundary held in 4,600, no
+change). The price is the controls: each frame of D is 16.7 ms more between a press and its
+effect on the others' screens; the player's own car is not delayed (its own record is
+immediate; the others' cars are shown D - 1 frames late).
 
 ## 13. Internet play, next (not built)
 

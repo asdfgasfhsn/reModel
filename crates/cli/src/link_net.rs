@@ -24,6 +24,8 @@ const USAGE_NET: &str = "usage: remodel --game G link-net (--host [PORT] | --joi
   --name NAME     the player's user name (default: the login name); at most 16 characters
   --no-mdns       host/browse: broadcast discovery only, no mDNS
   --delay D       host: the link delay D in frames (default: from the measured round trip). D = 1 means no slack
+  --auto-delay [MIN:MAX]  host: let D follow the network (raised when boundaries are held, lowered after a long calm spell; default 2:8); `--delay D` is where it starts
+  --delay-plan F:D[,..]   host, a test: announce D becoming D at the host's frame F (the change takes effect a few frames later, on every host)
   --frames F      end after this many frames (every host should give the same)
   --input S       scripted inputs as `run`'s --input, for this host's machine
   --timeout S     silence that ends the session (default 5)
@@ -46,6 +48,8 @@ struct Args {
     nodes: usize,
     frames: u64,
     delay: Option<usize>,
+    auto: Option<(usize, usize)>,
+    plan: Vec<(u64, usize)>,
     name: String,
     bind: String,
     timeout: f32,
@@ -72,6 +76,8 @@ fn parse(o: &Opts) -> Result<Args, String> {
         nodes: 2,
         frames: 3000,
         delay: None,
+        auto: None,
+        plan: vec![],
         name: String::new(),
         bind: "0.0.0.0".into(),
         timeout: 5.0,
@@ -124,6 +130,29 @@ fn parse(o: &Opts) -> Result<Args, String> {
             "--nodes" => a.nodes = num(next(&mut i, f)?)? as usize,
             "--frames" => a.frames = num(next(&mut i, f)?)?,
             "--delay" => a.delay = Some(num(next(&mut i, f)?)? as usize),
+            "--auto-delay" => {
+                let (lo, hi) = match args.get(i + 1).filter(|s| s.contains(':')) {
+                    Some(v) => {
+                        i += 1;
+                        let (l, h) = v.split_once(':').unwrap();
+                        (
+                            l.parse().map_err(|_| "--auto-delay wants MIN:MAX")?,
+                            h.parse().map_err(|_| "--auto-delay wants MIN:MAX")?,
+                        )
+                    }
+                    None => (linknet::AUTO_MIN, linknet::AUTO_MAX),
+                };
+                a.auto = Some((lo, hi));
+            }
+            "--delay-plan" => {
+                for part in next(&mut i, f)?.split(',').filter(|p| !p.is_empty()) {
+                    let (fr, d) = part.split_once(':').ok_or("--delay-plan wants FRAME:D")?;
+                    a.plan.push((
+                        fr.parse().map_err(|_| "--delay-plan: bad frame")?,
+                        d.parse().map_err(|_| "--delay-plan: bad delay")?,
+                    ));
+                }
+            }
             "--name" => a.name = next(&mut i, f)?,
             "--bind" => a.bind = next(&mut i, f)?,
             "--timeout" => a.timeout = flt(next(&mut i, f)?)?,
@@ -254,6 +283,7 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<ExitCode, String> {
             host.local_addr(),
             host.local_addr().port()
         );
+        host.set_auto_delay(a.auto);
         let t = Instant::now();
         let mut full_at: Option<Instant> = None;
         let mut started = false;
@@ -333,6 +363,9 @@ fn run_session(
         .map_err(|e| format!("input: {e}"))?;
     let hub = LinkHub::for_game(nodes, delay, play);
     let mut net = NetLink::new(hub, sess);
+    if net.decides() {
+        net.plan = a.plan.clone();
+    }
     let names: Vec<String> = net.sess.names().to_vec();
     println!(
         "link-net      {} node {node} of {nodes} (you are {}, player {}), delay D = {delay}, players {names:?}",
@@ -447,6 +480,10 @@ fn run_session(
             ss.relayed_tx, ss.relayed_rx
         );
     }
+    if !net.history.is_empty() {
+        let sched: Vec<String> = net.history.iter().map(|(f, d)| format!("{f}:{d}")).collect();
+        println!("link-net      delay schedule (for link-run --delay-at): {}", sched.join(","));
+    }
     println!("host time     {secs:.1}s for {} frames", m.frames);
     match end {
         Some(e) => {
@@ -466,6 +503,9 @@ fn notices(net: &mut NetLink, frame: u64) {
                     "link-net      {name} {} (at boundary {frame})",
                     if lost { "lost: connection silent" } else { "left" }
                 );
+            }
+            linknet::Notice::DelayChange { from, old, d, announced_at } => {
+                println!("link-net      delay {old} -> {d} from frame {from} (announced with the record of frame {announced_at}, seen at boundary {frame})");
             }
             linknet::Notice::Dropped { name, frame: f, .. } => {
                 println!("link-net      drop frame of {name}: {f} (agreed at boundary {frame}; rerun link-run with --leave NODE:{f})");
