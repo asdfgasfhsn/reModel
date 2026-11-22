@@ -312,7 +312,11 @@ impl Cpu {
                     let c = ((w >> 16) & 0xf) as usize;
                     self.ctrl[c] = w & 0xffff;
                     if c == 4 {
-                        self.repeat = w & 0xffff;
+                        // Bit 15 set: the count is in the register the low bits name (hypothesis:
+                        // `zeroguna`'s bulk-load function writes the count to register 0x34 and
+                        // then repeats `3C04 8034`; the run then takes the words it was sent).
+                        self.repeat =
+                            if w & 0x8000 != 0 { self.read_reg((w & 0x3f) as u8) & 0xffff } else { w & 0xffff };
                         self.repeat_armed = true;
                     }
                 }

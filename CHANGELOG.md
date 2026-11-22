@@ -29,6 +29,18 @@ creates the annotated tag `vx.y.z` without pushing. Details in
   images. The `known` and `selected` gates resolve `art_` files and rows by
   surface, and `scene render` reports the share of textured polygon area
   drawn from pack images. Draw-only: no emulation state or hash changes.
+- Three more ROM variants, the 2A clones of 2B titles: Zero Gunner on the Model 2A
+  board (`zeroguna`, `zerogunaj`) and Pilot Kids on it (`pltkidsa`). They failed
+  on a generated manifest (a black 3D layer in play; a stall after the title)
+  because the MB86234 core did not know a repeat whose count is in a register
+  (`3C04 8034`, bit 15 set), which the TGP programs' bulk-load functions use: the
+  chip waited inside the repeat and every later call went unanswered. With the
+  count taken from the register they play from a blank EEPROM (benched in
+  `make bench-variants`, with idle loops); no other game's hash changed. The
+  other five class C clones (the 2B and 2C `dynamcop` clones, which draw no 3D
+  yet, and the two Daytona hacks) are in the manifest with a new `plays: false`
+  flag: not listed in the launcher or the web build, `--game ID` still takes
+  them (`docs/variants.md`, "Class C").
 - Steering smoothing: a One Euro filter on pad sticks that steer, so a shaky
   stick no longer twitches the car. The Controls page's Steering block has a
   Smoothing row (Off, Light, Medium, Strong; Light by default; `steer_smooth`,

@@ -134,6 +134,30 @@ fn integers_branches_and_calls() {
 }
 
 #[test]
+fn repeat_count_in_a_register() {
+    // `3C04 8034`: bit 15 set, the count is register 0x34 (as the bulk-load function of
+    // zerogun's and pltkids' TGP programs sets it up: acc = 3, r34 = acc, repeat, store three
+    // input words). With the count taken as 0x8034 the chip would wait for input forever
+    // inside the repeat and never reach the output word.
+    let p = vec![
+        0x4300_0205, // ar3 = 0x205
+        0x3b00_0003, // acc = 3
+        0x1c1f_6819, // r34 = acc
+        0x3c04_8034, // repeat (r34)
+        store(IN, 0x181),
+        mov(OUT, ACC),
+        mov(ACC, IN),
+    ];
+    let mut c = Cpu::new(p, Vec::new());
+    for v in [7, 8, 9] {
+        c.fifo_in.push_back(v);
+    }
+    assert_eq!(c.run(&mut NoBus, 100), Stop::Input);
+    assert_eq!(c.ram[0x205..0x208], [7, 8, 9]);
+    assert_eq!(c.fifo_out.drain(..).collect::<Vec<_>>(), [3]);
+}
+
+#[test]
 fn repeat_indirect_and_views() {
     // ar3 = 0x205 (RAM1[5]); repeat 3: [ar3]+1 = in; then read them back
     // through ar3 = 0x205 with step -1 after setting ar3 to 0x207.

@@ -12,8 +12,11 @@ protection device it checks in play.
 `zerogun.zip` also holds the clones: `zerogunj` (the Japanese 2B program,
 `epr-20290.15/.16`) and the 2A versions `zeroguna` (`epr-20437.12/.13`)
 and `zerogunaj` (`epr-20288.12/.13`), with the 2A board's TGP and
-rasteriser ROMs (`opr-14742a`-`14747`, `mpr-16310`-`16312`). Only the
-parent is supported; the clones aren't listed.
+rasteriser ROMs (`opr-14742a`-`14747`, `mpr-16310`-`16312`). The
+Japanese 2B clone `zerogunj` and the two 2A ones are supported as variants
+(`docs/variants.md`); the 2A ones needed the MB86234's repeat with a register
+count (`3C04 8034`, `docs/hw/mb86234.md`) and the board's six `opr-*` chips,
+and play (mission 1 to game over; hashes in `tools/expected-variant-hashes.txt`).
 
 ## What's known
 

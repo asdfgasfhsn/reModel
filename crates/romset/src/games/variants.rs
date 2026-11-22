@@ -619,4 +619,156 @@ pub static VARIANTS: &[Variant] = &[
         idle_loops: Some(&[crate::IdleLoop { start: 0x2800, end: 0x2814 }]),
         ..Variant::BASE
     },
+    // Zero Gunner on the Model 2A board: its program pair (`.12/.13`) and the six 2A `opr-*`
+    // geometry programs; the data, polygon, texture and sound chips are the parent's.
+    Variant {
+        id: "zeroguna",
+        parent: "zerogun",
+        label: "Model 2A",
+        kind: VariantKind::CrossBoard,
+        kind_confirmed: true,
+        swaps: &[
+            swap("epr-20439.15", rom("epr-20437.12", 0x80000, "5c6222e07594b4be59b5095f7cc0a164d5895306", Role::Program)),
+            swap("epr-20440.16", rom("epr-20438.13", 0x80000, "4672ebdd7d9ccab5e107fda9d322b70583246c7a", Role::Program)),
+        ],
+        add: &[
+            rom("opr-14742a.45", 0x20000, "f46429fffcee17d056f56d5fe035a33f1fd6c27e", Role::CoproData),
+            rom("opr-14743a.46", 0x20000, "5b9f1fc47caf21e061e930c0d72804e4ec8c7bca", Role::CoproData),
+            rom("opr-14744.58", 0x20000, "651f1db4089a400d073b19ada299b4b08b08f372", Role::CoproData),
+            rom("opr-14745.59", 0x20000, "e3349ece0e47f684d61ad11bfea4a90602287350", Role::CoproData),
+            rom("opr-14746.62", 0x20000, "34e047a93459406c22acf4c25089d1a4955f94ca", Role::CoproData),
+            rom("opr-14747.63", 0x20000, "7d7ec300eeb9a8de1590011e37108688c092f329", Role::CoproData),
+        ],
+        idle_loops: Some(&[crate::IdleLoop { start: 0x548f80, end: 0x548f94 }]),
+        board: Some(Board::Model2A),
+        ..Variant::BASE
+    },
+    Variant {
+        id: "zerogunaj",
+        parent: "zerogun",
+        label: "Japan, Model 2A",
+        kind: VariantKind::CrossBoard,
+        kind_confirmed: true,
+        swaps: &[
+            swap("epr-20439.15", rom("epr-20288.12", 0x80000, "c0d67fbb8f89daacd32bbc1ad0d55a73b60016d8", Role::Program)),
+            swap("epr-20440.16", rom("epr-20289.13", 0x80000, "e4c66c6bc9d5433b76ea12cf625fc359439144bb", Role::Program)),
+        ],
+        add: &[
+            rom("opr-14742a.45", 0x20000, "f46429fffcee17d056f56d5fe035a33f1fd6c27e", Role::CoproData),
+            rom("opr-14743a.46", 0x20000, "5b9f1fc47caf21e061e930c0d72804e4ec8c7bca", Role::CoproData),
+            rom("opr-14744.58", 0x20000, "651f1db4089a400d073b19ada299b4b08b08f372", Role::CoproData),
+            rom("opr-14745.59", 0x20000, "e3349ece0e47f684d61ad11bfea4a90602287350", Role::CoproData),
+            rom("opr-14746.62", 0x20000, "34e047a93459406c22acf4c25089d1a4955f94ca", Role::CoproData),
+            rom("opr-14747.63", 0x20000, "7d7ec300eeb9a8de1590011e37108688c092f329", Role::CoproData),
+        ],
+        idle_loops: Some(&[crate::IdleLoop { start: 0x548fd0, end: 0x548fe4 }]),
+        board: Some(Board::Model2A),
+        ..Variant::BASE
+    },
+    // The 2B and 2C clones of Dynamite Cop: one program pair each, the 2A `opr-*` chips and
+    // second program pair dropped, the protection answers at their own ROM addresses. They boot,
+    // show their title and reach a stage but draw no 3D world (every object gets the same
+    // matrix from the copro; cause unknown), so `plays: false` (docs/variants.md, Class C).
+    Variant {
+        id: "dynmcopb",
+        parent: "dynamcop",
+        label: "Model 2B",
+        kind: VariantKind::CrossBoard,
+        kind_confirmed: true,
+        swaps: &[
+            swap("epr-20930.12", rom("progrom0.15", 0x80000, "b81d1ee7203b2f5fb6db4ff4185f4071e99aaedf", Role::Program)),
+            swap("epr-20931.13", rom("progrom1.16", 0x80000, "1a45296a5554923cb52b38586e40ceda2517f1bf", Role::Program)),
+        ],
+        protection_rom: &[(0, 0xc9220), (1, 0xc9230)],
+        drop: &["epr-20932.14", "epr-20933.15", "opr-14742a.45", "opr-14743a.46", "opr-14744.58", "opr-14745.59", "opr-14746.62", "opr-14747.63"],
+        board: Some(Board::Model2B),
+        plays: false,
+        ..Variant::BASE
+    },
+    Variant {
+        id: "dyndek2b",
+        parent: "dynamcop",
+        label: "Dynamite Deka 2, Model 2B",
+        kind: VariantKind::CrossBoard,
+        kind_confirmed: true,
+        title: Some("Dynamite Deka 2"),
+        swaps: &[
+            swap("epr-20930.12", rom("epr-20936.15", 0x80000, "0a106125ed4a2569b54924130ca2ffa05acf2322", Role::Program)),
+            swap("epr-20931.13", rom("epr-20937.16", 0x80000, "ebdd21f269fd8a0798306e349d2985eead7e989f", Role::Program)),
+        ],
+        protection_rom: &[(0, 0xc9210), (1, 0xc9220)],
+        drop: &["epr-20932.14", "epr-20933.15", "opr-14742a.45", "opr-14743a.46", "opr-14744.58", "opr-14745.59", "opr-14746.62", "opr-14747.63"],
+        board: Some(Board::Model2B),
+        plays: false,
+        ..Variant::BASE
+    },
+    Variant {
+        id: "dynmcopc",
+        parent: "dynamcop",
+        label: "Model 2C",
+        kind: VariantKind::CrossBoard,
+        kind_confirmed: true,
+        swaps: &[
+            swap("epr-20930.12", rom("epr-20952.15", 0x80000, "85deb1dc1348730a0c9b6ce3679582e7894ff2ed", Role::Program)),
+            swap("epr-20931.13", rom("epr-20953.16", 0x80000, "9bea99c043775c00742c20e2f917d211dca09cc5", Role::Program)),
+        ],
+        protection_rom: &[(0, 0xcd1c0), (1, 0xcd1d0)],
+        drop: &["epr-20932.14", "epr-20933.15", "opr-14742a.45", "opr-14743a.46", "opr-14744.58", "opr-14745.59", "opr-14746.62", "opr-14747.63"],
+        board: Some(Board::Model2C),
+        plays: false,
+        ..Variant::BASE
+    },
+    // Pilot Kids on the Model 2A board: its program pair (`epr-21281.pr0/21282.pr1`) and the six
+    // 2A `opr-*` geometry programs; the other chips are the parent's.
+    Variant {
+        id: "pltkidsa",
+        parent: "pltkids",
+        label: "Model 2A",
+        kind: VariantKind::CrossBoard,
+        kind_confirmed: true,
+        swaps: &[
+            swap("epr-21285a.15", rom("epr-21281.pr0", 0x80000, "5a6295e543d7e68387de0ca4d88e930a0d8ed25c", Role::Program)),
+            swap("epr-21286a.16", rom("epr-21282.pr1", 0x80000, "15f3fab6ac2dd40f32bda55503378ab14f998707", Role::Program)),
+        ],
+        add: &[
+            rom("opr-14742a.45", 0x20000, "f46429fffcee17d056f56d5fe035a33f1fd6c27e", Role::CoproData),
+            rom("opr-14743a.46", 0x20000, "5b9f1fc47caf21e061e930c0d72804e4ec8c7bca", Role::CoproData),
+            rom("opr-14744.58", 0x20000, "651f1db4089a400d073b19ada299b4b08b08f372", Role::CoproData),
+            rom("opr-14745.59", 0x20000, "e3349ece0e47f684d61ad11bfea4a90602287350", Role::CoproData),
+            rom("opr-14746.62", 0x20000, "34e047a93459406c22acf4c25089d1a4955f94ca", Role::CoproData),
+            rom("opr-14747.63", 0x20000, "7d7ec300eeb9a8de1590011e37108688c092f329", Role::CoproData),
+        ],
+        board: Some(Board::Model2A),
+        ..Variant::BASE
+    },
+    // Daytona USA "GTX 2004" and "To The Maxx": hacks (*unconfirmed*: the dat's names and chip
+    // names), a program pair each. Neither plays: `daytonam` waits for a device at 0x240000,
+    // `daytonagtx` halts, and what `bank0.bin`/`bank1.bin` and `maxx.14` are is unknown
+    // (docs/variants.md, Class C), so `plays: false`.
+    Variant {
+        id: "daytonagtx",
+        parent: "daytona",
+        label: "GTX 2004",
+        kind: VariantKind::Hack,
+        kind_confirmed: false,
+        swaps: &[
+            swap("epr-16722a.12", rom("gtx.12", 0x20000, "643110a3ea5fb6092c469b6b49a396084e985a7a", Role::Program)),
+            swap("epr-16723a.13", rom("gtx.13", 0x20000, "ad635540d64e05c7246c9de6439a4e3b3d1cdf08", Role::Program)),
+        ],
+        plays: false,
+        ..Variant::BASE
+    },
+    Variant {
+        id: "daytonam",
+        parent: "daytona",
+        label: "To The Maxx",
+        kind: VariantKind::Hack,
+        kind_confirmed: false,
+        swaps: &[
+            swap("epr-16722a.12", rom("maxx.12", 0x20000, "b1d5f0d41bea2e74fb9346da35a5041f4464265e", Role::Program)),
+            swap("epr-16723a.13", rom("maxx.13", 0x20000, "5bc150a77f20a29f54acdf5043fb1e8e55f6b08b", Role::Program)),
+        ],
+        plays: false,
+        ..Variant::BASE
+    },
 ];

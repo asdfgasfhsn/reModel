@@ -1065,7 +1065,7 @@ pub fn sets_with_clones(root: &Path) -> Vec<String> {
     let sets = sets_in(root);
     for set in &sets {
         out.push(set.clone());
-        let own: Vec<&Variant> = variants::of(set).filter(|v| !sets.iter().any(|s| s == v.id)).collect();
+        let own: Vec<&Variant> = variants::of(set).filter(|v| v.plays && !sets.iter().any(|s| s == v.id)).collect();
         let Some(parent) = games::find(set).ok().filter(|_| !own.is_empty()) else { continue };
         let places = Places::open(root, parent);
         for v in own {

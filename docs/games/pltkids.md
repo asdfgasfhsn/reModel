@@ -131,4 +131,4 @@ parent is supported; the clone isn't listed.
 3. Later stages: the coin-start script stands still and loses to stage 1's
    boss.
 4. What the protection device computes, and what `0x5092D4` spoils.
-5. The 2A clone `pltkidsa`.
+5. (Built as a variant: `pltkidsa`, `docs/variants.md`. Its stall on the survey's manifest was the MB86234's register-count repeat; it plays stage 1 to game over. The brown banding in some frames is not checked against the 2A board.)

@@ -110,15 +110,18 @@ first game here to check the **keyed protection device** (below).
   ALLOCATION ERROR" with a black screen, with these it attracts and plays. Its idle
   loop is the parent's 0x10 lower (0x71184); 82.8% of a 600M coin-start run is
   skipped.
-Not done:
+In the manifest but not playing (`plays: false`, not listed; `docs/variants.md`,
+"Class C"):
 
 - `dynmcopb`: Dynamite Cop (export, 2B), `progrom0.15`/`progrom1.16`.
 - `dyndek2b`: Dynamite Deka 2 (Japan, 2B), `epr-20936.15`/`epr-20937.16`.
 - `dynmcopc`: Dynamite Cop (2C), `epr-20952.15`/`epr-20953.16`.
 
-The data chips are the parent's; on 2B and 2C they will need their own
-layout and the 2B/2C copro programs, and whether the device check is the
-same there is unknown.
+They use the parent's data chips in the parent's roles and order and the same
+keyed protection device (keys 0x1326 and 0x7700) with the replies at other ROM
+addresses (0xC9220, 0xC9210 and 0xCD1C0 on); with those they boot, show their
+title and reach the player select and a stage, but draw no 3D world (every object
+gets the same matrix from the copro). The cause is not known.
 
 ## Next
 

@@ -1583,7 +1583,12 @@ fn cmd_games(_o: &Opts) -> ExitCode {
     }
     for v in romset::variants::all() {
         let Some(g) = romset::variants::resolve(v) else { continue };
-        let kind = format!("{}{}", v.kind.label(), if v.kind_confirmed { "" } else { ", unconfirmed" });
+        let kind = format!(
+            "{}{}{}",
+            v.kind.label(),
+            if v.kind_confirmed { "" } else { ", unconfirmed" },
+            if v.plays { "" } else { ", does not play yet" }
+        );
         println!("{:<10} {:<20} {:<12} {}  ({}; {kind})", g.id, g.title, format!("{:?}", g.board), v.parent, v.label);
     }
     ExitCode::SUCCESS
@@ -2705,7 +2710,9 @@ fn web_index(rom_dir: &Path) -> Vec<&'static romset::Game> {
     games::ALL
         .iter()
         .copied()
-        .chain(variants.filter(|g| romset::rom_folder(g, rom_dir).is_some()))
+        .chain(variants.filter(|g| {
+            romset::variants::get(g.id).is_some_and(|v| v.plays) && romset::rom_folder(g, rom_dir).is_some()
+        }))
         .filter(|g| {
             if romset::rom_folder(g, rom_dir).is_some() {
                 return true;

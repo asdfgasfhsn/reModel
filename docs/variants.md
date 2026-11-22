@@ -1,8 +1,9 @@
 # ROM variants: a survey of every clone of the supported games
 
 The sets table in [roms.md](roms.md) lists which clones each zip holds. Of
-the 35 clones surveyed here, 27 are supported as variants (see
-[Status](#status-what-is-built)); the other 8 (class C) are not. The survey
+the 35 clones surveyed here, 30 are supported as variants (see
+[Status](#status-what-is-built)); the other 5 (class C) are built but do not
+play yet, so the launcher does not list them. The survey
 covers the 32 clones that were not hand-written manifests, of 14 of the 31
 supported titles (14 have no clone in the dat and 3 have only the clones
 already supported): what each is, which
@@ -20,12 +21,15 @@ or the chips are marked *unconfirmed*.
 
 ## Status: what is built
 
-Steps 1 to 4 of the [order](#order) are built, and `doaa` of step 5: the
+Steps 1 to 5 of the [order](#order) are built as far as they play: the
 infrastructure, the three earlier clones re-expressed as variants, the nine
-class A variants and the fifteen class B variants, all booting, attracting and
-reaching play from a blank EEPROM. What is left is the cross-board clones of
-step 5 (the 2A clones of `zerogun` and `pltkids`, the 2B and 2C clones of
-`dynamcop`) and the Daytona hacks of step 6.
+class A variants, the fifteen class B variants and three of the eight class C
+ones (the 2A clones `zeroguna`, `zerogunaj` and `pltkidsa`), all booting,
+attracting and reaching play from a blank EEPROM. The other five class C
+clones (the 2B and 2C clones of `dynamcop` and the two Daytona hacks) are in
+the manifest with `plays: false`: `--game ID` takes them, the launcher and the
+web build do not list them, and [Class C](#class-c-what-each-needed-and-what-is-left)
+says how far each got.
 
 **The model** (`crates/romset/src/variants.rs`, data in
 `crates/romset/src/games/variants.rs`): a `Variant` is a thin manifest that
@@ -43,6 +47,7 @@ title's):
 | `coin_start` | the `coin-start` input script where the parent's does not reach play (`indy500to`) |
 | `own_textures` | its textures are its own chips: texture packs do not fall back to the parent's (`dayton93`) |
 | `scenes` | the variant's own; **never the parent's**, and `games::tours` no longer falls back to the parent's either |
+| `plays` | false for a variant that does not reach play yet (class C): not listed in the launcher (`sets_with_clones`) or the web build, marked "does not play yet" in `remodel games`; `--game ID` still takes it |
 | `link: VariantLink` | `Parent` (its settings record is the parent's: `srallycb`, `srallyp`, `daytonat`, `daytonata`, `manxttc`), `None` (the default: link play off for it), or `Own(&LinkPlay)` |
 
 Chips are looked up as `<variant id>/<chip>` before the bare name in each of
@@ -118,6 +123,10 @@ wherever nothing else changed.
 | `zerogunj` Japan | region | program pair | `171d4f54c4caa140` | plays: mission 1, continue; its loop is in RAM-run code, found by the run's hot spots (0x5490A0) |
 | `dyndeka2` Dynamite Deka 2 | region | program `.12/.13` | `a3b912a344e41ee1` | plays; protection answers 0x10 lower (`protection_rom`); loop 0x71184 (82.8%) |
 | `doaa` Model 2A | other board | program pair, plus the six 2A `opr-*` chips | `c815a2be3623d98d` | plays: Kasumi against Zack; protection answer at 0x2830 (`protection_rom`; 400M-instruction run `3cdae73e2525aa8b`, as the survey); loop 0x2800 (79%) |
+| `zeroguna` Model 2A | other board | program pair `epr-20437.12/20438.13`, plus the six 2A `opr-*` chips | `d38aba8f0c20eba3` | plays: Thai temple stage, helicopter, enemies, game over; loop 0x548F80 (79.3% skipped; the hash is the same with `--no-idle-skip`); no link play |
+| `zerogunaj` Japan, Model 2A | other board | program pair `epr-20288.12/20289.13`, plus the six `opr-*` chips | `8d6c7a05a24189e5` | as `zeroguna`; loop 0x548FD0 (80.7%) |
+| `pltkidsa` Model 2A | other board | program pair `epr-21281.pr0/21282.pr1`, plus the six `opr-*` chips | `62ecc03a3de963df` | plays: stage 1 on the desk, game over; the parent's loop 0x55CF3C is where it was (82.4%; the same hash with `--no-idle-skip`); some brown banding in the pictures (*unconfirmed*: whether the 2A board draws it so); no link play |
+| `dynmcopb`, `dyndek2b`, `dynmcopc`, `daytonagtx`, `daytonam` | other board, hacks | see Class C below | not benched | **do not play yet** (`plays: false`) |
 
 The first nine hashes are the survey's own, measured again on the committed
 implementation: they agree (the survey's temporary patch and the resolver build
@@ -185,6 +194,69 @@ the survey's checks only*.
   a logo); the others show attract at the inherited frame (checked on contact
   sheets of a no-input run for every variant).
 
+### Class C: what each needed, and what is left
+
+**The 2A clones of `zerogun` and `pltkids` needed one fix in the MB86234 core,
+not a manifest.** On the survey's generated manifests `zeroguna` and
+`zerogunaj` drew their attract in 3D but a black 3D layer in play, and `pltkidsa`
+drew its title and then stopped making progress. The cause is the same in
+all three: the TGP program's bulk-load functions (0x39 loads, 0x3A reads back a
+block whose length the host set with 0x37/0x38) write the word count to a register and then
+repeat the load word with `3C04 8034`, a repeat whose **count is in a
+register** (bit 15 of the operand set, the register named by the low bits).
+The core took the operand as an immediate, 32,820 repetitions, so the chip sat
+waiting for input words the game never sent, took the arguments of the next calls as its
+own, and every later call came back empty (`remodel run`'s "empty reads": 299,764
+for `zeroguna`, 0 on `doaa`). With the count taken from the register
+(`mb86234`'s repeat; the JIT leaves such a word to the interpreter) the empty reads
+are 0, the 3D draws, and all three play. The register is a *hypothesis* from this one
+form (the load writes it as register 0x34 and repeats `8034`); it is *confirmed* by running (the
+replies and the pictures are right), not by a chip manual. No other game's hash
+changed (`make bench-all`). Their protection answers are at the parent's
+addresses, as the survey found. `zeroguna` and `zerogunaj` use the 2A board's
+six `opr-*` chips (`add`) and the parent's data, polygon, texture and sound
+chips in the parent's roles; `pltkidsa` likewise.
+
+**The 2B and 2C clones of `dynamcop` (`dynmcopb`, `dyndek2b`, `dynmcopc`) do not
+play yet.** What was found (by running them):
+
+- `dynmcopb` and `dyndek2b` are 2B programs (their program uploads a 4,096-word
+  SHARC image as 12,288 16-bit stores to `0x884000`, which the 2A model took for
+  a TGP upload and panicked on) and `dynmcopc` a 2C one; the 2A `opr-*` chips are
+  not theirs (`drop`) and their program is one pair (`.15/.16`), not two.
+- Their protection answers are the parent's 16-byte replies at other ROM addresses
+  (found by searching for the bytes; the keys are the parent's 0x1326 and
+  0x7700): `dynmcopb` 0xC9220/0xC9230, `dyndek2b` 0xC9210/0xC9220, `dynmcopc`
+  0xCD1C0/0xCD1D0. Without them they stop on "SCROLL ALLOCATION ERROR" (`dynmcopc`)
+  or fault at address 0 (`dynmcopb`); with them they boot, show their title,
+  take the coin and reach the player select and a stage on the parent's data layout
+  (the main data, the polygon and the texture pairs in the parent's roles and order;
+  other orders of the main data pairs crash the game, and the HUD's textures are
+  right only in the parent's texture order).
+- **The 3D world is black in play and in attract.** The geometrizer runs (SHARC or
+  2C TGP, no faults, thousands of raster words a frame, the same model addresses in
+  the display list as the 2A parent's), but every object's matrix the copro
+  returns is the same (the camera's), so the objects are drawn on top of each
+  other and nothing shows; the 2D layers and the textured HUD objects are right.
+  The cause is *unknown*: not the chip roles, packing or order (tried), not the
+  geometrizer (the native and the chip one agree). The next step is the i960's
+  per-object requests to the copro against the 2A parent's `fn 7` calls.
+- `dynmcopc`'s credit price is 2 coins (the coin-start script's one coin shows
+  CREDIT 1/2), so it needs its own `coin_start`.
+
+**The Daytona hacks do not play yet.** *`daytonam` (To The Maxx)*: with the
+program pair swapped it stops on the GAME SYSTEM settings page (whether the parent's
+preset record or none is given) in a loop that reads `0x240000`/`0x240002` and
+waits for the low three bits to read 7. That region (`0x240000`-`0x247FFF`, 8,195
+addresses read) is not on the parent's board map; its third chip, `maxx.14`
+(128 KB, mostly zeros), has no socket in the parent. *Unconfirmed*: that the hack
+fits an added board. *`daytonagtx` (GTX 2004)*: with only the program pair
+swapped, it halts in a branch to itself (i960 0x1EF58) by the third frame; with
+`bank0.bin`/`bank1.bin` (512 KB each; they begin with the same 32 bytes, 25% of
+their bytes agree) in the place of `.6/.7`, in either order, it faults at an
+address of garbage (`0xAAAABBBF`, `0xBBBBAAAE`). What the two banks are, and where
+they sit, is unknown.
+
 ### Link play and free play of the variants
 
 | Variant | Link play | Why |
@@ -196,7 +268,7 @@ the survey's checks only*.
 | `indy500to` | own (up to 4, as the parent) | the parent's layout and checksum (record 36 bytes, copy at 0x2C; NETWORK TYPE 0x1E, CABINET ID 0x1F) with other defaults (byte 0x1C 1 where the parent's is 2). The earlier "the parent's test-menu route changed nothing" was the route's presses, not another menu (*probable*: that script was not kept): a test press held a few frames repeats, moving the value two or three steps, so 15 presses end away from #27; with one frame of press every 100 frames, 8 presses from #12 reach #27 FREE PLAY (the menu pages are the parent's, with ENGINE VOLUME and DEFAULT VIEW rows after CABINET ID). FREE PLAY bytes as the parent's (0x10, 0x11, 0x15; default #12). The game accepts MASTER and SLAVE. *Confirmed (by running it)* |
 | `vonj` | the parent's | the backup SRAM record (`SEGA.AM#3.VRON.`, the checksum, the defaults) is the parent's byte for byte, but for a run counter; a linked match runs (`docs/hw/link-board.md` section 15.4) |
 | `stcca`, `stccb` | their own (`VariantLink::Own`) | the record is `SEGASTCa`, four settings bytes shorter than the parent's and not the same defaults; the checksum rule (CCITT over `0x10`-`0x7F`), the role byte (`0x10` bits 5-7) and the link are the parent's; their free play bytes are at `0x14`-`0x15` (`docs/hw/link-board.md` section 16) |
-| the others (`vf2*`, `vstrikro`, `zerogunj`, `dyndeka2`, `doaa`) | none | their parents have none |
+| the others (`vf2*`, `vstrikro`, `zerogunj`, `zeroguna`, `zerogunaj`, `pltkidsa`, `dyndeka2`, `doaa`) | none | their parents have none |
 
 `make link-free-play-test`, `link-net-test` and `link-record-test` take the four variants
 with link play as well (`GAMES="daytonas daytonase indy500d indy500to"`): a two-machine
@@ -395,13 +467,14 @@ supported (`manxttc` is a parent in the dat, not a clone).
 ## Totals
 
 32 clones of 14 supported titles, plus the 3 already supported. Built: all of
-class A (9) and class B (15); class C (8) is not.
+class A (9), class B (15) and three of class C (8); five of class C are in the manifest
+but do not play (`plays: false`).
 
 | Effort | Count | Variants |
 |---|---|---|
 | A: same as the parent except chips | 9 | `topskatrj`, `topskatru`, `vcopa`, `srallycb`, `srallyp`, `daytonat`, `daytonata`, `lastbrnxj`, `lastbrnxu` |
 | B: chips plus a few addresses or bytes | 15 | `stcca`, `stccb`, `vf2o`, `vf2a`, `vf2b`, `vstrikro`, `vonj`, `indy500d`, `indy500to`, `dayton93`, `daytonas`, `daytonase`, `zerogunj`, `dyndeka2`, `doaa` |
-| C: needs investigation | 8 | `daytonagtx`, `daytonam`, `zeroguna`, `zerogunaj`, `pltkidsa`, `dynmcopb`, `dyndek2b`, `dynmcopc` |
+| C: needs investigation | 8 | built, play: `zeroguna`, `zerogunaj`, `pltkidsa`; built, do not play yet: `daytonagtx`, `daytonam`, `dynmcopb`, `dyndek2b`, `dynmcopc` |
 
 By kind: 13 revisions or official variants (two of them Daytona's
 Saturn-advertising and Special Edition sets), 7 regions, 1 prototype, 4 hacks
@@ -417,7 +490,7 @@ that ran (the 7 cross-board ones ran on generated manifests):
 |---|---|
 | idle loop address | 14 of 25 moved or no longer fit (the others have it where it was); in 13 the new address was found by byte search of the program (`dayton93`'s second loop not), in `zerogunj` it is RAM-run code and was not found |
 | attract frame, scenes, tours (frame counts) | whenever the program differs: intros, warning screens, rev timings (`topskatrj`, `lastbrnxj`, `vf2*`) |
-| protection answers' ROM addresses | of the six clones of protected games, `dyndeka2` -0x10 and `doaa` +0x20; `zerogunj`, `zeroguna`, `zerogunaj` and `pltkidsa` the same address |
+| protection answers' ROM addresses | of the clones of protected games, `dyndeka2` -0x10, `doaa` +0x20 and the three 2B/2C `dynamcop` clones at their own (0xC9220, 0xC9210, 0xCD1C0); `zerogunj`, `zeroguna`, `zerogunaj` and `pltkidsa` the same address |
 | settings record | `daytonas`, `daytonase` (preset record rejected), `indy500d` (other layout), `indy500to` (other layout, same checksum); `srallycb`/`srallyp` identical |
 | input script timing | `indy500to` (the start press did not take) |
 | controls, drive board, hud windows, shading | nothing differed where checked; `hud_windows` and `hud_element_windows` were not verified for `vf2*` or `topskatr*` |
@@ -522,7 +595,7 @@ that is class C stays out of the list until it plays (a manifest flag, as
 
 ### Order
 
-(Steps 1 to 4 and `doaa` of step 5 are built: [Status](#status-what-is-built).)
+(Steps 1 to 4, `doaa` and the three 2A clones of step 5 are built: [Status](#status-what-is-built); the 2B and 2C `dynamcop` clones of step 5 and the Daytona hacks of step 6 are in the manifest, not playing.)
 
 1. The infrastructure on the three existing clones: the `Variant` type and
    resolver, subfolder lookup in zips, listing in the launcher, the program
@@ -548,18 +621,19 @@ that is class C stays out of the list until it plays (a manifest flag, as
   first race, fight or stage of a 600M-instruction coin-start run was looked
   at, no sound was checked, nothing was played.
 - (Since built: `zerogunj`'s and `doaa`'s loops, and `vf2b`'s and the Saturn
-  sets', are found and confirmed by their skips. Still open: the 2A clones'
-  loops, which are not built.)
+  sets', and the 2A clones' (`zeroguna`, `zerogunaj`, `pltkidsa`), are found and
+  confirmed by their skips.)
 - (Since built: the link data of `daytonas`, `daytonase`, `indy500d` and `indy500to`;
   `dayton93` has no link code. See the table in Status.) Whether linked play between
   variants could work is open (not tried).
 - Whether `dayton93` accepts the parent's preset record or only migrates it
   (its program runs stand-alone either way).
-- Why the 2A clones `zeroguna`, `zerogunaj` and `pltkidsa` and the three 2B and
-  2C `dynamcop` clones fail on a generated manifest: the generated manifests'
-  chip roles and packing were guesses, so these are failures of the guess
-  until shown otherwise.
-- What `bank0.bin`/`bank1.bin` (`daytonagtx`) and `maxx.14` (`daytonam`) are.
+- (Since built: why the 2A clones `zeroguna`, `zerogunaj` and `pltkidsa` failed
+  on a generated manifest: the MB86234's repeat with a register count; see
+  Class C in Status.) Still open: why the three 2B and 2C `dynamcop` clones
+  draw no 3D (every object gets the same matrix from the copro).
+- What `bank0.bin`/`bank1.bin` (`daytonagtx`) and `maxx.14` (`daytonam`) are, and
+  what is at `0x240000` that `daytonam` waits for.
 - Whether the kinds are right: they are the dat's names, the chip names and
   the screens, not documentation; "official" does not mean a given revision
   was released in the markets its label suggests.

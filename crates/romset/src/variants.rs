@@ -117,6 +117,10 @@ pub struct Variant {
     /// The variant's own scenes (never the parent's).
     pub scenes: &'static [Scene],
     pub link: VariantLink,
+    /// It boots, attracts and reaches play. False: not listed in the launcher or the web build
+    /// (`--game ID` still takes it, for the work of finishing it), as `games::IN_PROGRESS` does
+    /// for titles (docs/variants.md, class C).
+    pub plays: bool,
 }
 
 impl Variant {
@@ -149,6 +153,7 @@ impl Variant {
         run_ahead_max: None,
         scenes: &[],
         link: VariantLink::None,
+        plays: true,
     };
 
     /// The chips of `game` (this variant resolved) that are the variant's
@@ -350,6 +355,16 @@ mod tests {
         let (pa, pb) = (a.protection.as_ref().unwrap(), b.protection.as_ref().unwrap());
         assert_eq!((pa.replies[0].rom, pb.replies[0].rom), (0x2830, 0x2810));
         assert_eq!((pa.replies[0].command, pa.replies[0].len), (pb.replies[0].command, pb.replies[0].len));
+        // The 2A clones of 2B sets: the other board, the parent's chips in the parent's roles and
+        // the six 2A geometry programs after them.
+        let (z, p) = (games::find("zeroguna").unwrap(), games::find("zerogun").unwrap());
+        assert_eq!(z.board, Board::Model2A);
+        assert_eq!(z.files.len(), p.files.len() + 6);
+        assert_eq!(z.protection.as_ref().unwrap().replies[0].rom, p.protection.as_ref().unwrap().replies[0].rom);
+        // Class C clones that do not play yet resolve (`--game` takes them) but are not listed.
+        let b = get("dynmcopb").unwrap();
+        assert!(!b.plays && resolve(b).is_some());
+        assert!(all().iter().filter(|v| v.plays).count() < all().len());
         // The preset settings record of a clone whose program rejects the parent's.
         let (s, p) = (games::find("daytonas").unwrap(), games::find("daytona").unwrap());
         assert_ne!(s.backup_ram, p.backup_ram);

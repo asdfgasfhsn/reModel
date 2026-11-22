@@ -244,6 +244,10 @@ impl Mb86234Jit {
             if !v.is_empty() && reads_fifo(w) {
                 break;
             }
+            // A repeat whose count is in a register (bit 15 set) is the interpreter's.
+            if repeat(w).is_some_and(|n| n & 0x8000 != 0) {
+                break;
+            }
             if control(w) {
                 v.push(Planned { pc, w, times: 1, repeated: false });
                 break;
