@@ -1348,11 +1348,25 @@ delay, plus one): on a wired LAN 1 or 2, over Wi-Fi 3 to 5. `remodel link-net`
 
 **Playing.** Controls are a single player's: the keyboard and the first
 gamepad, the game's own bindings. A small status line at the top of the window
-gives the players, D, the round trip and how often the picture was held to wait
-for another machine ("held 12x (0.4 s)"; "WAITING for the other player" when
-it has been over a quarter second). Lockstep never guesses, so a late packet
-holds *every* machine's frame (the picture freezes, the sound drops) and a slow
-machine slows everyone; the cure is a larger D or a better network.
+gives the players, the delay D in frames, the round trip and how often the frame
+had to wait for another machine ("Delay 3 frames  round trip 12 ms  held 12% of
+frames (last 10 s)"; "WAITING for the other player" when it has been over a
+quarter second). Lockstep never guesses, so a late packet holds *every*
+machine's frame and a slow machine slows everyone; the cure is a larger D or a
+better network. A held frame is tried again every half millisecond (a timer in
+the player's event loop, nothing spins), so it runs when the record lands
+rather than at the next redraw. The audio is not slowed by a hold shorter than
+about 100 ms (6 frames): the sound queue, kept 80 ms deep in a network game,
+absorbs it, and only a longer hold, or a game that is slow with nothing held,
+slows the pitch as it does in a single-player game
+(`model2::pacing::Pace`, `sound::net_feed`).
+
+*Test hooks.* `REMODEL_NET_FAULTS=latency=5,jitter=10,loss=1,dup=0,seed=7` adds
+`remodel link-net`'s faults to what the player sends (a datagram's delay is
+served when this player next polls, so for a realistic network put a UDP
+proxy between the machines instead); `REMODEL_NET_DELAY=N` makes the host's D
+that, whatever the round trip; `REMODEL_NET_LOG=1` prints a line a second with
+the frame, the boundaries and holds, the audio step and the queue.
 
 **What is off.** Smooth motion and run-ahead (as in same-screen link play),
 texture packs' temporal parts, the bezel and photo mode as there, and

@@ -13,6 +13,20 @@ message is its text), set `version` in the root `Cargo.toml`, commit, then
 creates the annotated tag `vx.y.z` without pushing. Details in
 [docs/usage.md](docs/usage.md), "Versions and releases".
 
+## Unreleased
+
+- Network play over Wi-Fi: a held frame is tried again every half millisecond
+  instead of once per redraw, so a late record runs its frame as soon as it
+  lands, not up to a display refresh later (looping a loopback link through a
+  proxy with 5-15 ms delay and 1% loss, Daytona, D 2: 9-13 s of waiting a
+  minute became 3-5 s). The audio no longer slows with short holds: a hold
+  under about 100 ms (6 frames) is left to the sound queue, which a network game
+  keeps 80 ms deep (the pitch moved up to 45 cents with every cluster of
+  holds, now about 5, and the audio ran dry a few times a minute, now not at
+  all). Single-player and same-screen link play are unchanged.
+- The network status line reads "Delay 3 frames ... held 12% of frames (last 10 s)".
+  `REMODEL_NET_FAULTS` and `REMODEL_NET_LOG` are test hooks for the player's session.
+
 ## 0.13.0 (2026-11-22): every ROM variant, the game page, steering
 
 - Steering with a stick no longer jumps. Past the dead zone a stick's reading now

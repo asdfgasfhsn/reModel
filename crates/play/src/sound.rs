@@ -21,6 +21,29 @@ const GAP_MEMORY: f64 = 8.0;
 const STALL: f64 = 0.1;
 /// Seconds the target takes to follow it.
 const TARGET_TAU: f64 = 0.5;
+/// A network game: the audio's pace ignores a hold shorter than this many
+/// frames (about 100 ms) for the other machines' records. Another player's
+/// Wi-Fi hiccup is a pause in the game, not a slow game: the queue
+/// (`NET_AUDIO_TARGET`) covers it, where following it as `Pace` follows a slow
+/// geometrizer would bend the pitch down at every cluster of them. A hold that
+/// lasts longer, and a game that is behind with nothing held (a slow
+/// computer), are followed as in a single-player game.
+pub const NET_SHORT_HOLD_FRAMES: f64 = 6.0;
+/// The queue a network game's audio holds at the least (seconds): the
+/// time a short hold can run it down by, with the redraw gaps' headroom.
+pub const NET_AUDIO_TARGET: f64 = 0.08;
+
+/// The frames run to give `Sound::set_speed` for a network game that ran
+/// `ran` of `due` frames in a redraw: all of `due` while the machine is
+/// held for the network (`held`: how many frames long the hold has lasted so
+/// far) for less than `NET_SHORT_HOLD_FRAMES`, else what really ran.
+pub fn net_feed(ran: f64, due: f64, held: Option<f64>) -> f64 {
+    match held {
+        Some(h) if h < NET_SHORT_HOLD_FRAMES => ran.max(due),
+        _ => ran,
+    }
+}
+
 /// Most audio queued before the oldest is dropped (seconds).
 const AUDIO_MAX: f64 = 0.25;
 
@@ -74,6 +97,8 @@ pub struct Sound {
     /// queue target it sets.
     gap: f64,
     target: f64,
+    /// The least the target is (`AUDIO_TARGET`; deeper in a network game).
+    floor: f64,
 }
 
 impl Sound {
@@ -182,6 +207,7 @@ impl Sound {
             pace: Default::default(),
             gap: 0.0,
             target: AUDIO_TARGET,
+            floor: AUDIO_TARGET,
         })
     }
 
@@ -191,13 +217,21 @@ impl Sound {
     /// deeper while redraws come unevenly) and
     /// slowed with the game once it persistently can't keep it
     /// (`model2::pacing::Pace`).
+    /// This is a network game's audio: the queue is kept deeper (`NET_AUDIO_TARGET`)
+    /// to ride out short holds for the other machines.
+    pub fn set_net_play(&mut self) {
+        self.floor = NET_AUDIO_TARGET;
+        self.target = self.target.max(self.floor);
+        self.queue.lock().unwrap().target = self.target;
+    }
+
     pub fn set_speed(&mut self, speed: f64, dt: f64, ran: f64, due: f64) {
         // Redraws that come further apart than usual (a slow draw, a frame
         // that takes several refreshes) need a deeper queue; the rate control's
         // patience scales with it.
         if dt > 0.0 && dt <= model2::pacing::Pace::GAP {
             self.gap = (self.gap * (-dt / GAP_MEMORY).exp()).max(dt);
-            let goal = (self.gap * GAP_HEADROOM).clamp(AUDIO_TARGET, AUDIO_TARGET_MAX);
+            let goal = (self.gap * GAP_HEADROOM).clamp(self.floor, AUDIO_TARGET_MAX);
             self.target += (goal - self.target) * (dt / TARGET_TAU).min(1.0);
             self.queue.lock().unwrap().target = self.target;
         }
@@ -210,6 +244,11 @@ impl Sound {
         }
         let step = self.pace.update(dt, speed, ran, due, Some(self.queued()), self.target);
         self.ratio.store(step.to_bits(), Ordering::Relaxed);
+    }
+
+    /// The resampler's step now (1: the game at its own speed).
+    pub fn step(&self) -> f64 {
+        f64::from_bits(self.ratio.load(Ordering::Relaxed))
     }
 
     /// Seconds of audio queued or still being made.
@@ -276,5 +315,55 @@ fn fill<T: Copy>(q: &Mutex<Queue>, out: &mut [T], channels: usize, conv: impl Fn
     if dry {
         q.underruns += 1;
         q.primed = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use model2::pacing::Pace;
+
+    #[test]
+    fn short_holds_are_not_slowness_and_long_ones_are() {
+        assert_eq!(net_feed(0.0, 1.0, Some(2.0)), 1.0);
+        assert_eq!(net_feed(1.0, 2.0, Some(5.9)), 2.0);
+        // Held for 100 ms or more: as it ran.
+        assert_eq!(net_feed(0.0, 1.0, Some(6.0)), 0.0);
+        // Behind with nothing held (a slow computer): as it ran.
+        assert_eq!(net_feed(1.0, 2.0, None), 1.0);
+        // Never less than it ran (a catch-up redraw).
+        assert_eq!(net_feed(2.0, 1.0, Some(1.0)), 2.0);
+    }
+
+    /// 60 redraws a second for `secs`, the game held for the network for the first
+    /// `burst` redraws of every `every`; returns how far below 1 the audio step
+    /// goes (cents).
+    fn spread(secs: f64, burst: usize, every: usize, ruled: bool) -> f64 {
+        let mut pace = Pace::default();
+        let dt = 1.0 / 60.0;
+        let mut lo = f64::MAX;
+        for i in 0..(secs * 60.0) as usize {
+            let held = i % every < burst;
+            let hold_frames = (i % every + 1) as f64;
+            let (ran, due) = (if held { 0.0 } else { 1.0 }, 1.0);
+            let ran = if ruled { net_feed(ran, due, held.then_some(hold_frames)) } else { ran };
+            // The queue is not what is under test: it stays at its target.
+            let step = pace.update(dt, 1.0, ran, due, Some(NET_AUDIO_TARGET), NET_AUDIO_TARGET);
+            lo = lo.min(step);
+        }
+        -1200.0 * lo.log2()
+    }
+
+    #[test]
+    fn short_hold_clusters_leave_the_audio_rate_alone() {
+        // Two redraws held out of every five (40%): the pace as it ran bends the
+        // pitch down; with the rule the rate does not move.
+        let before = spread(60.0, 2, 5, false);
+        let after = spread(60.0, 2, 5, true);
+        assert!(before > 30.0, "{before} cents without the rule");
+        assert!(after < 1.0, "{after} cents with it");
+        // A hold that goes on (a lost connection: a second held of every two) is followed.
+        let long = spread(60.0, 60, 120, true);
+        assert!(long > 30.0, "{long} cents");
     }
 }

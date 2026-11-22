@@ -347,6 +347,18 @@ fn refreshes_gone(part: &mut f64, dt: f64, hz: f64) -> u64 {
     n as u64
 }
 
+/// How often a network game's held frame boundary is tried again between
+/// redraws (the others' records are read from the socket then).
+const NET_POLL: Duration = Duration::from_micros(500);
+
+/// The sooner of the loop's own wake-up times, if it has any.
+fn el_flow_deadline(a: Option<Instant>, b: Option<Instant>) -> Option<Instant> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
 /// Frames run in one redraw to catch up with the game's time (the least
 /// the player's pacing allows; `model2::pacing::MAX_CATCH_UP` bounds it).
 const CATCH_UP: u32 = 2;
@@ -1234,6 +1246,14 @@ struct Play {
     refresh_part: f64,
     /// When `emulate` last ran (for the audio rate control).
     last_emulate: Option<Instant>,
+    /// A network game: what the redraw left due and its catch-up room, the
+    /// frames run between redraws not yet counted for the audio, and the last
+    /// log line (`REMODEL_NET_LOG`).
+    net_due: u64,
+    net_budget: u32,
+    net_credit: u32,
+    net_poll_at: Instant,
+    net_log_at: Option<Instant>,
     /// Host time per game frame (emulating, waiting for the geometrizer and
     /// drawing, not waiting for vsync; with the drawing on the draw thread,
     /// the busier of the two threads), smoothed, in seconds; and whether
@@ -1454,6 +1474,7 @@ impl Play {
         s.save_eeprom();
         s.save_jit_list();
         if let Some(n) = &mut s.net {
+            println!("{}", n.summary());
             // The other players go on without us, at once rather than after their timeout.
             n.link.sess.bye("left");
         }
@@ -1618,6 +1639,12 @@ impl Play {
                 Sound::new(&roms, (values.sfx_db, values.music_db))
                     .inspect_err(|e| eprintln!("{e}; playing without sound"))
                     .ok()
+                    .map(|mut snd| {
+                        if net_play.is_some() {
+                            snd.set_net_play();
+                        }
+                        snd
+                    })
             } else {
                 None
             };
@@ -2737,10 +2764,15 @@ impl Play {
         Some((ox + g.origin.0 as f32, oy + g.origin.1 as f32))
     }
 
-    /// Run the frames that are due (unless paused in the menu).
-    fn emulate(&mut self) -> Result<u32, i960::cpu::Stop> {
+    /// Run the frames that are due (unless paused in the menu). `retry`: a
+    /// network game's held boundary tried again between redraws (`net_retry`):
+    /// the frames the last redraw left due, within the catch-up it had left, and
+    /// none of that redraw's bookkeeping.
+    fn emulate(&mut self, retry: bool) -> Result<u32, i960::cpu::Stop> {
         let now = Instant::now();
-        self.redraws += 1;
+        if !retry {
+            self.redraws += 1;
+        }
         // A network session that ended (a player left, the connection was lost, the
         // states differ): back to the launcher with the reason, unless this is a
         // scripted run, which reports it as it stops.
@@ -2772,6 +2804,7 @@ impl Play {
         let frames = self.session.as_ref().map_or(0, |s| s.machine.frames);
         // Follow the display (one frame per refresh, or per two) or the clock.
         let (due, speed) = match self.per_refresh() {
+            _ if retry => (self.net_due, 1.0),
             // `--fast`: as fast as it goes.
             _ if self.opts.fast => (frames + MAX_CATCH_UP as u64, 1.0),
             // A frame per refresh gone by since the last redraw, not per
@@ -2796,7 +2829,13 @@ impl Play {
         // of the lateness dropped (the clock moves on below), rather than a
         // sprint of several frames in one redraw that shows as the game
         // running fast.
-        let catch_up = if self.opts.fast { MAX_CATCH_UP } else { MAX_CATCH_UP.min(CATCH_UP) };
+        let catch_up = if retry {
+            self.net_budget
+        } else if self.opts.fast {
+            MAX_CATCH_UP
+        } else {
+            MAX_CATCH_UP.min(CATCH_UP)
+        };
         let mut ran = 0;
         let t_real = Instant::now();
         let held = |s: &Session| s.net.as_ref().is_some_and(|n| n.pending);
@@ -2853,6 +2892,15 @@ impl Play {
             }
             ran += 1;
         }
+        if retry {
+            // Between redraws: what ran is counted with the next redraw's, and the
+            // draw shows it then.
+            self.net_credit += ran;
+            self.net_budget -= ran;
+            return Ok(ran);
+        }
+        self.net_due = due;
+        self.net_budget = catch_up - ran;
         self.real_emulate = t_real.elapsed();
         // Run-ahead: from the newest real frame, the frames shown.
         if let Some(s) = self.session.as_mut().filter(|_| ran > 0) {
@@ -2878,11 +2926,21 @@ impl Play {
         if let Some(s) = self.session.as_mut() {
             if dt > 0.0 {
                 let others = s.link.iter_mut().flat_map(|l| l.sounds.iter_mut().flatten());
+                // A network game: frames the retries ran since the last redraw count
+                // as this one's, and a short hold is not slowness (`sound::net_feed`).
+                let credit = std::mem::take(&mut self.net_credit);
+                let held = s.net.as_ref().and_then(|n| n.held_for());
+                let due_f = dt * FPS * speed;
+                let ran_f = match &s.net {
+                    Some(_) => sound::net_feed(ran as f64 + credit as f64, due_f, held.map(|h| h.as_secs_f64() * FPS)),
+                    None => ran as f64,
+                };
                 for snd in s.sound.iter_mut().chain(others) {
-                    snd.set_speed(speed, dt, ran as f64, dt * FPS * speed);
+                    snd.set_speed(speed, dt, ran_f, due_f);
                 }
             }
         }
+        self.net_log(ran, dt);
         // For the log: the audio running dry, as it happens (once a
         // second at most), with what the game was doing.
         if let Some(s) = self.session.as_ref().filter(|s| !s.preview) {
@@ -2912,11 +2970,59 @@ impl Play {
         Ok(ran)
     }
 
+    /// `REMODEL_NET_LOG=1`: a line a second of how a network game keeps
+    /// its speed and its audio (for measuring, docs/play.md).
+    fn net_log(&mut self, ran: u32, dt: f64) {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if !*ON.get_or_init(|| std::env::var_os("REMODEL_NET_LOG").is_some()) {
+            return;
+        }
+        let Some(s) = self.session.as_ref().filter(|s| !s.preview) else { return };
+        let Some(n) = &s.net else { return };
+        let _ = (ran, dt);
+        let at = *self.net_log_at.get_or_insert_with(Instant::now);
+        if at.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        self.net_log_at = Some(Instant::now());
+        let st = &n.link.stalls;
+        let (step, queued) = s.sound.as_ref().map_or((1.0, 0.0), |snd| (snd.step(), snd.queued() * 1000.0));
+        println!(
+            "netlog        frame {} boundaries {} held {} held_ms {:.0} audio_step {step:.4} queued_ms {queued:.0}",
+            s.machine.frames,
+            st.boundaries,
+            st.stalls,
+            st.stall_time.as_secs_f64() * 1000.0
+        );
+    }
+
     /// Emulate what's due and keep the stats; false if the game stopped.
     fn run_due(&mut self) -> (u32, Duration) {
+        self.run_due_as(false)
+    }
+
+    /// A network game is holding its frame boundary for the others' records.
+    fn net_held(&self) -> bool {
+        !self.opts.fast
+            && !self.launcher.open
+            && self.session.as_ref().is_some_and(|s| !s.preview && s.net.as_ref().is_some_and(|n| n.pending))
+    }
+
+    /// A network game's held boundary, tried again between redraws: when the
+    /// others' records have come the frame runs now, not at the next vblank
+    /// (about_to_wait calls this every `NET_POLL` while it is held).
+    fn net_retry(&mut self) {
+        let held = self.session.as_ref().is_some_and(|s| !s.preview && s.net.as_ref().is_some_and(|n| n.pending));
+        if held && !self.launcher.open && self.photo.is_none() {
+            self.net_poll_at = Instant::now();
+            self.run_due_as(true);
+        }
+    }
+
+    fn run_due_as(&mut self, retry: bool) -> (u32, Duration) {
         let t0 = Instant::now();
         let span = perf::spans::begin();
-        let result = self.emulate();
+        let result = self.emulate(retry);
         perf::spans::end(perf::spans::Kind::Emulate, span);
         if let (Ok(1..), Some(s)) = (&result, &self.session) {
             // When the newest frame was due: on the clock, or now when
@@ -2924,7 +3030,7 @@ impl Play {
             self.smooth_at = self.epoch + Duration::from_secs_f64(s.machine.frames as f64 / FPS);
         }
         let emulate_time = t0.elapsed();
-        if let (Ok(ran), Some(s)) = (&result, &mut self.session) {
+        if let (Ok(ran), Some(s), false) = (&result, &mut self.session, retry) {
             if let Some(p) = &mut s.perf {
                 p.redraw(&s.machine, *ran, emulate_time, s.sound.as_ref().map(|snd| snd.queued()));
             }
@@ -2934,7 +3040,7 @@ impl Play {
                 let st = &mut self.stats;
                 st.emulating += emulate_time;
                 st.emulated += ran;
-                if ran == 0 && !self.menu.open && self.photo.is_none() {
+                if ran == 0 && !retry && !self.menu.open && self.photo.is_none() {
                     st.repeats += 1;
                 } else if ran > 0 {
                     st.longest_gap = st.longest_gap.max(st.last_new.elapsed());
@@ -4280,6 +4386,25 @@ impl ApplicationHandler<Wake> for Play {
                 el.set_control_flow(ControlFlow::WaitUntil(at));
             }
         }
+        // A network game's held boundary is tried again every `NET_POLL` rather
+        // than at the next redraw, so a record that lands in between is run
+        // within a millisecond (a timer, not a spin: the loop sleeps between).
+        if self.net_held() {
+            let next = self.net_poll_at + NET_POLL;
+            if Instant::now() >= next {
+                self.net_retry();
+            }
+            if self.net_held() {
+                let at = (self.net_poll_at + NET_POLL).max(Instant::now());
+                match el_flow_deadline(
+                    self.waiting,
+                    self.opts.seconds.map(|s| self.started + Duration::from_secs_f64(s)),
+                ) {
+                    Some(d) if d < at => {}
+                    _ => el.set_control_flow(ControlFlow::WaitUntil(at)),
+                }
+            }
+        }
     }
 
     fn user_event(&mut self, _: &ActiveEventLoop, _: Wake) {
@@ -4644,6 +4769,11 @@ fn main() {
         refreshes: 0,
         refresh_part: 0.0,
         last_emulate: None,
+        net_due: 0,
+        net_budget: 0,
+        net_credit: 0,
+        net_poll_at: Instant::now(),
+        net_log_at: None,
         sync: sync::Sync::default(),
         emulate_cost: 0.0,
         overhead_cost: 0.0,

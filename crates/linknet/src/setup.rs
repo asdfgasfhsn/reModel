@@ -190,6 +190,11 @@ impl Host {
     /// The delay D to start with: frames for half the worst round trip between two
     /// hosts (each joiner's half to the host, two of them in a row), plus one; 1 at least.
     pub fn suggest_delay(&self) -> usize {
+        // A test hook (the player's stall measurements): D fixed whatever the
+        // lobby's round trip, which fault injection also inflates.
+        if let Some(d) = std::env::var("REMODEL_NET_DELAY").ok().and_then(|d| d.parse::<usize>().ok()) {
+            return d.max(1);
+        }
         let mut halves: Vec<f32> = self.joiners.iter().map(|j| j.rtt_ms.unwrap_or(0.0) / 2.0).collect();
         halves.sort_by(|a, b| b.partial_cmp(a).unwrap());
         let one_way = match halves.as_slice() {
