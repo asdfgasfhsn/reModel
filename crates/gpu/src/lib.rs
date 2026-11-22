@@ -598,6 +598,18 @@ pub struct Renderer {
     /// Whether the image the pack gives a texture key is `selflit`
     /// (`TexturePack::image_selflit`), asked once per key and pack.
     selflit_keys: HashMap<u64, bool>,
+    /// Live reload of a pack's images (`Renderer::apply_pack_changes`):
+    /// texture keys whose image changed on disk and is asked for again
+    /// when next drawn (the old one is drawn until the new is ready), the
+    /// changed file and its write time for each, and the surface of every
+    /// key looked up (an `art_` image serves all of a surface's keys).
+    reload: HashMap<u64, (String, std::time::SystemTime)>,
+    key_surface: HashMap<u64, u64>,
+    /// Reloads done: the file and the milliseconds from its write to the
+    /// upload (`take_reloaded`).
+    reloaded: Vec<(String, f32)>,
+    /// The pack asks to be opened again (`take_pack_reopen`).
+    pack_reopen: bool,
     /// The `miss` overlay ([`Renderer::set_overlay_miss`]).
     overlay_miss: bool,
     pack_layout: wgpu::BindGroupLayout,
@@ -994,6 +1006,10 @@ impl Renderer {
             keys: TexKeys::default(),
             pack_tex: HashMap::new(),
             selflit_keys: HashMap::new(),
+            reload: HashMap::new(),
+            key_surface: HashMap::new(),
+            reloaded: Vec::new(),
+            pack_reopen: false,
             overlay_miss: false,
             pack_layout,
             pack_pipeline_layout,
@@ -1267,11 +1283,60 @@ impl Renderer {
         self.pack = pack;
         self.pack_tex.clear();
         self.selflit_keys.clear();
+        self.reload.clear();
+        self.key_surface.clear();
+        self.pack_reopen = false;
         self.materials.clear();
         self.keys.clear();
         self.tiles.reset();
         self.stable = PackMemory::default();
         self.pack_stats = PackStats::default();
+    }
+
+    /// Take what the pack's files changed on disk (`TexturePack::take_changes`)
+    /// into account: an image added, changed or removed is asked for again
+    /// the next time its texture is drawn, the old image staying on screen
+    /// until the new one has decoded; only that image is uploaded. Tile and
+    /// material-map files reset those caches (they are small), and a
+    /// changed manifest or region file is left to the caller
+    /// ([`Renderer::take_pack_reopen`]). Draw-only: the machine never
+    /// sees it.
+    fn apply_pack_changes(&mut self, changes: model2::enhance::PackChanges) {
+        use model2::pack::{parse_name, FileKind};
+        self.pack_reopen |= changes.reopen;
+        if changes.stems.is_empty() {
+            return;
+        }
+        // Whether an image is selflit comes from the manifest and the file.
+        self.selflit_keys.clear();
+        for (stem, at) in changes.stems {
+            match parse_name(&stem) {
+                Ok(FileKind::Image { key, .. }) => {
+                    self.reload.insert(key, (stem, at));
+                }
+                Ok(FileKind::Art { surface, .. }) => {
+                    for (&key, _) in self.key_surface.iter().filter(|(_, s)| **s == surface) {
+                        self.reload.insert(key, (stem.clone(), at));
+                    }
+                }
+                Ok(FileKind::Tile { .. }) => self.tiles.reset(),
+                Ok(FileKind::Map { .. }) => self.materials.clear(),
+                _ => {}
+            }
+        }
+    }
+
+    /// Images reloaded since the last call: the file's stem and the
+    /// milliseconds from the file being written to the new image being
+    /// uploaded (it is on screen with the frame that follows).
+    pub fn take_reloaded(&mut self) -> Vec<(String, f32)> {
+        std::mem::take(&mut self.reloaded)
+    }
+
+    /// Whether the pack's manifest or region files changed on disk: the
+    /// caller opens the pack again (`set_pack`). Cleared by the call.
+    pub fn take_pack_reopen(&mut self) -> bool {
+        std::mem::take(&mut self.pack_reopen)
     }
 
     /// The `miss` overlay (docs/uplift/renderer-controls.md): a textured
@@ -1868,6 +1933,9 @@ impl Renderer {
         if mip && self.samplers.is_none() {
             self.samplers = Some(pack_samplers(&self.device, self.quality.tex_filter));
         }
+        if let Some(changes) = self.pack.as_mut().map(|p| p.take_changes()).filter(|c| !c.is_empty()) {
+            self.apply_pack_changes(changes);
+        }
         let Some(pack) = self.pack.as_mut() else { return out };
         self.keys.begin(render_version);
         self.frame += 1;
@@ -1927,7 +1995,31 @@ impl Renderer {
             let mut miss = None;
             let mut uploaded_now = false;
             match self.pack_tex.entry(info.key) {
-                std::collections::hash_map::Entry::Occupied(e) => {
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    // An image changed on disk: the one held stays until the
+                    // new one has decoded.
+                    if self.reload.contains_key(&info.key) {
+                        match pack.find(&info) {
+                            Found::Pending => {}
+                            found => {
+                                let (stem, at) = self.reload.remove(&info.key).expect("a reload");
+                                let tex = match found {
+                                    Found::Image(img)
+                                        if img.width > 0 && img.height > 0 && img.width <= max && img.height <= max =>
+                                    {
+                                        stats.uploaded += 1;
+                                        uploaded_now = true;
+                                        Some(upload_pack(&self.device, &self.queue, &img, mip))
+                                    }
+                                    _ => None,
+                                };
+                                self.materials.forget_image(info.key);
+                                e.insert(tex);
+                                let ms = at.elapsed().map_or(0.0, |d| d.as_secs_f32() * 1e3);
+                                self.reloaded.push((stem, ms));
+                            }
+                        }
+                    }
                     if e.get().is_none() {
                         miss = Some("not-in-pack");
                     }
@@ -1938,9 +2030,13 @@ impl Renderer {
                     }
                     Found::Missing => {
                         e.insert(None);
+                        self.key_surface.insert(info.key, info.surface);
+                        self.reload.remove(&info.key);
                         miss = Some("not-in-pack");
                     }
                     Found::Image(img) => {
+                        self.key_surface.insert(info.key, info.surface);
+                        self.reload.remove(&info.key);
                         let tex = if img.width == 0 || img.height == 0 || img.width > max || img.height > max {
                             if !self.pack_warned {
                                 self.pack_warned = true;
@@ -3602,3 +3698,7 @@ mod tests {
 #[cfg(test)]
 #[path = "selflit_tests.rs"]
 mod selflit_tests;
+
+#[cfg(test)]
+#[path = "reload_tests.rs"]
+mod reload_tests;

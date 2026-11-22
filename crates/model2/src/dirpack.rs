@@ -13,12 +13,15 @@
 //! assembled on the same threads when the renderer asks for them, and handed
 //! over the same way.
 
-use crate::enhance::{material_id, Found, FoundMaterial, Material, PreloadKind, Rgba, TexInfo, TexturePack, TileInfo};
+use crate::enhance::{
+    material_id, Found, FoundMaterial, Material, PackChanges, PreloadKind, Rgba, TexInfo, TexturePack, TileInfo,
+};
 use crate::pack::{parse_name, resolve_maps, FileKind, Manifest};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Threads decoding images.
 const WORKERS: usize = 2;
@@ -56,6 +59,97 @@ pub struct DirPack {
     ready_materials: HashMap<u64, Option<Arc<Material>>>,
     to_workers: Sender<Job>,
     from_workers: Receiver<Done>,
+    /// The directory watch (`watch`): files changed, as it settles them.
+    from_watch: Receiver<Vec<Change>>,
+    /// The watch thread ends when this is dropped.
+    _alive: Arc<()>,
+}
+
+/// A file of the pack that was added, changed or removed, and when.
+struct Change {
+    /// The file name.
+    file: String,
+    /// Its modification time (the time of the removal if `!exists`).
+    at: SystemTime,
+    exists: bool,
+}
+
+/// How often the directory is looked at: this often, or when slower, eight
+/// times as long as a look takes.
+const WATCH_EVERY: Duration = Duration::from_millis(100);
+
+/// A file's modification time and size.
+type Stamp = (SystemTime, u64);
+type Stamps = HashMap<String, Stamp>;
+
+/// The files the pack reads, by name.
+fn stamps(dir: &Path) -> Stamps {
+    let mut out = Stamps::new();
+    let Ok(rd) = std::fs::read_dir(dir) else { return out };
+    for e in rd.flatten() {
+        let Some(name) = e.file_name().to_str().map(str::to_string) else { continue };
+        if !(name.ends_with(".png") || name == crate::pack::MANIFEST || name == crate::regions::FILE) {
+            continue;
+        }
+        if let Ok(m) = e.metadata() {
+            out.insert(name, (m.modified().unwrap_or(UNIX_EPOCH), m.len()));
+        }
+    }
+    out
+}
+
+/// Watch `dir` from the state `known` on a thread of its own, until `alive`
+/// is gone. A change is reported once its file has stayed the same for a
+/// whole look, so an editor that writes in pieces is not read half way (a
+/// file that then does not decode keeps the old image).
+fn watch(dir: PathBuf, mut known: Stamps, alive: &Arc<()>) -> Receiver<Vec<Change>> {
+    let (tx, rx) = channel();
+    let alive = Arc::downgrade(alive);
+    let shown = dir.display().to_string();
+    let spawned = std::thread::Builder::new().name("texpack watch".into()).spawn(move || {
+        let mut waiting: HashMap<String, Option<Stamp>> = HashMap::new();
+        let mut every = WATCH_EVERY;
+        loop {
+            std::thread::sleep(every);
+            if alive.upgrade().is_none() {
+                return;
+            }
+            let t = Instant::now();
+            let now = stamps(&dir);
+            let mut seen: HashMap<String, Option<Stamp>> = HashMap::new();
+            for (f, s) in &now {
+                if known.get(f) != Some(s) {
+                    seen.insert(f.clone(), Some(*s));
+                }
+            }
+            for f in known.keys().filter(|f| !now.contains_key(*f)) {
+                seen.insert(f.clone(), None);
+            }
+            let mut out = Vec::new();
+            for (f, s) in &seen {
+                if waiting.get(f) == Some(s) {
+                    out.push(Change {
+                        file: f.clone(),
+                        at: s.map_or_else(SystemTime::now, |s| s.0),
+                        exists: s.is_some(),
+                    });
+                    match s {
+                        Some(s) => known.insert(f.clone(), *s),
+                        None => known.remove(f),
+                    };
+                }
+            }
+            waiting = seen.into_iter().filter(|(f, _)| !out.iter().any(|c| &c.file == f)).collect();
+            if !out.is_empty() && tx.send(out).is_err() {
+                return;
+            }
+            every = WATCH_EVERY.max(t.elapsed() * 8);
+        }
+    });
+    if let Err(e) = spawned {
+        eprintln!("texture pack: no watch on {shown}: {e}");
+    }
+    rx
 }
 
 /// Work for the decoding threads.
@@ -180,7 +274,11 @@ impl DirPack {
             });
             spawned.map_err(|e| format!("texture pack: {e}"))?;
         }
+        let alive = Arc::new(());
+        let from_watch = watch(dir.to_path_buf(), stamps(dir), &alive);
         Ok(DirPack {
+            from_watch,
+            _alive: alive,
             names,
             maps,
             manifest,
@@ -259,6 +357,67 @@ impl DirPack {
 }
 
 impl TexturePack for DirPack {
+    /// Changes the watch has settled: the lists are brought up to date and
+    /// what was kept of the changed files is forgotten, so `find` reads
+    /// them again.
+    fn take_changes(&mut self) -> PackChanges {
+        let mut out = PackChanges::default();
+        let reads_maps = self.manifest.reads_maps();
+        for c in self.from_watch.try_iter().flatten().collect::<Vec<_>>() {
+            let Some(stem) = c.file.strip_suffix(".png") else {
+                out.reopen = true;
+                continue;
+            };
+            // Texture and tile images are also on the preload lists.
+            let listed = match parse_name(stem) {
+                Ok(FileKind::Image { key, .. }) => Some((0, key)),
+                Ok(FileKind::Tile { key }) => Some((1, key)),
+                Ok(FileKind::Art { .. }) => None,
+                Ok(FileKind::Map { .. }) if reads_maps => {
+                    if c.exists {
+                        self.maps.insert(stem.to_string());
+                    } else {
+                        self.maps.remove(stem);
+                    }
+                    self.asked_materials.clear();
+                    self.ready_materials.clear();
+                    out.stems.push((stem.to_string(), c.at));
+                    continue;
+                }
+                Ok(FileKind::Region) => {
+                    out.reopen = true;
+                    continue;
+                }
+                _ => continue,
+            };
+            if let Some((k, key)) = listed {
+                let list = &mut self.preload_list[k];
+                match (c.exists, list.iter().position(|e| e.1 == stem)) {
+                    (true, None) => list.push((key, stem.to_string())),
+                    (false, Some(i)) => {
+                        list.remove(i);
+                        if i < self.preload_cursor[k] {
+                            self.preload_cursor[k] -= 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if c.exists {
+                self.names.insert(stem.to_string());
+            } else {
+                self.names.remove(stem);
+            }
+            self.tile_cache.remove(stem);
+            self.ready.remove(stem);
+            self.asked.remove(stem);
+            self.preload_want.remove(stem);
+            self.handed.remove(stem);
+            out.stems.push((stem.to_string(), c.at));
+        }
+        out
+    }
+
     /// The image of this colouring, else the artwork's (`art_`), which
     /// every colouring without an image of its own is drawn with.
     fn find(&mut self, info: &TexInfo) -> Found {
@@ -445,6 +604,76 @@ mod tests {
             assert!(e.contains("can't show") || e.contains("newer reModel"), "{e}");
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The watch reports an image added, rewritten and removed once its file
+    /// has settled, and the pack then answers `find` with the new file.
+    #[test]
+    fn the_watch_reports_changed_files_and_the_pack_reads_them_again() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../out/scratch/dirpack-watch-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let info = TexInfo {
+            key: 0x77,
+            surface: 5,
+            width: 1,
+            height: 1,
+            header: [0; 4],
+            colour: 0,
+            bank: 0,
+            x0: 0,
+            y0: 0,
+            luma_table: 0,
+            translucent: false,
+        };
+        let path = dir.join(format!("{}.png", info.name()));
+        let px = |c: u8| png::encode_rgba(1, 1, &[c, c, c, 255]);
+        let mut pack = DirPack::open(&dir).unwrap();
+        assert!(matches!(pack.find(&info), Found::Missing));
+        let wait = |pack: &mut DirPack| {
+            let start = Instant::now();
+            loop {
+                let c = pack.take_changes();
+                if !c.is_empty() {
+                    return (c, start.elapsed());
+                }
+                assert!(start.elapsed().as_secs() < 10, "no change reported");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        let image = |pack: &mut DirPack| {
+            let start = Instant::now();
+            loop {
+                match pack.find(&info) {
+                    Found::Image(i) => return Some(i.data[0]),
+                    Found::Missing => return None,
+                    Found::Pending => assert!(start.elapsed().as_secs() < 10, "never decoded"),
+                }
+                std::thread::yield_now();
+            }
+        };
+        // Added.
+        std::fs::write(&path, px(10)).unwrap();
+        let (c, took) = wait(&mut pack);
+        assert_eq!(c.stems.iter().map(|s| s.0.as_str()).collect::<Vec<_>>(), [info.name()]);
+        assert!(!c.reopen && took.as_millis() < 1000, "{took:?}");
+        assert_eq!(pack.len(), 1);
+        assert_eq!(image(&mut pack), Some(10));
+        // Rewritten.
+        std::fs::write(&path, px(200)).unwrap();
+        assert_eq!(wait(&mut pack).0.stems.len(), 1);
+        assert_eq!(image(&mut pack), Some(200));
+        // The manifest changed: the pack is to be opened again.
+        std::fs::write(dir.join("pack.txt"), "format 2\n").unwrap();
+        assert!(wait(&mut pack).0.reopen);
+        // Removed.
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(wait(&mut pack).0.stems.len(), 1);
+        assert_eq!(pack.len(), 0);
+        assert_eq!(image(&mut pack), None);
+        // The watch ends with the pack.
+        drop(pack);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

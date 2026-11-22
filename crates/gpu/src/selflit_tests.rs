@@ -45,15 +45,15 @@ impl Enhance for Rule {
     }
 }
 
-struct Scene {
-    render: Vec<u8>,
-    palette: Vec<u8>,
+pub(crate) struct Scene {
+    pub(crate) render: Vec<u8>,
+    pub(crate) palette: Vec<u8>,
 }
 
 impl Scene {
     /// Texel values 0, colour 1 with a translation table that rises with
     /// brightness: the original pipeline darkens at a low luma.
-    fn new() -> Scene {
+    pub(crate) fn new() -> Scene {
         let mut render = vec![0u8; 0x48_0000];
         render[0x40_0000] = 64;
         let mut palette = vec![0u8; 0x2_0000];
@@ -65,7 +65,7 @@ impl Scene {
         Scene { render, palette }
     }
 
-    fn src(&self) -> Sources<'_> {
+    pub(crate) fn src(&self) -> Sources<'_> {
         Sources {
             texture_rom: &[],
             texture_point_ram: &[],
@@ -77,7 +77,7 @@ impl Scene {
     }
 
     /// A textured quad at brightness `luma`.
-    fn poly(&self, luma: u32) -> Poly {
+    pub(crate) fn poly(&self, luma: u32) -> Poly {
         let t = Texture {
             x0: 0,
             y0: 0,

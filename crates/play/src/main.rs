@@ -2438,6 +2438,18 @@ impl Play {
         }
         for (i, wanted) in wants.into_iter().enumerate() {
             let state = if i == 0 { &mut self.pack } else { &mut self.view_packs[i - 1] };
+            // The pack watch: images swap in the renderer by themselves; a
+            // changed manifest or region file opens the pack again.
+            {
+                let r = if i == 0 { &mut core.renderer } else { &mut core.views[i - 1].renderer };
+                for (stem, ms) in r.take_reloaded() {
+                    println!("pack reload   {stem}: {ms:.0} ms from its write to the new image");
+                }
+                if r.take_pack_reopen() && state.dir.is_some() {
+                    println!("pack reload   the manifest or regions changed: opening the pack again");
+                    state.dir = None;
+                }
+            }
             if wanted == state.dir {
                 continue;
             }

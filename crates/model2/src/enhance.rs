@@ -645,7 +645,32 @@ pub enum Found {
 /// A source of replacement textures for renderers that only look textures
 /// up (the GPU renderer), unlike `Enhance`, which also dumps and needs
 /// pixel counts.
+/// What changed in a pack directory since the last look
+/// ([`TexturePack::take_changes`]): the watch behind the player's live
+/// reload.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PackChanges {
+    /// File stems of images (`tex_`, `art_`, `tile_`) and material maps
+    /// added, changed or removed, each with when its file was written.
+    pub stems: Vec<(String, std::time::SystemTime)>,
+    /// The manifest or the region files changed: the pack is opened again
+    /// (a rule, not an image, may have changed).
+    pub reopen: bool,
+}
+
+impl PackChanges {
+    pub fn is_empty(&self) -> bool {
+        self.stems.is_empty() && !self.reopen
+    }
+}
+
 pub trait TexturePack {
+    /// What changed on disk since the last call (a pack that does not
+    /// watch its files returns nothing). The pack already answers `find`
+    /// for the new files; the renderer drops what it kept of the old ones.
+    fn take_changes(&mut self) -> PackChanges {
+        PackChanges::default()
+    }
     fn find(&mut self, info: &TexInfo) -> Found;
     /// Up to `max` images nobody has asked for yet, decoded, by key, for
     /// the renderer to upload before their first draw (`Fixes::preload`);
