@@ -130,6 +130,33 @@ fn wrap_uv(c: f32, size: u32, mirror: bool) -> f32 {
     }
 }
 
+/// A colour ramp (what each texel value 0 to 15 of a texture is drawn in at
+/// full luma, `raster::texture_look`) as 96 hex digits: the catalogue's
+/// record of one colouring (`ramp=` in an entry's detail).
+pub fn ramp_text(ramp: &[[u8; 3]; 16]) -> String {
+    ramp.iter().map(|c| format!("{:02x}{:02x}{:02x}", c[0], c[1], c[2])).collect()
+}
+
+/// [`ramp_text`]'s inverse; None unless exactly 96 hex digits.
+pub fn parse_ramp(s: &str) -> Option<[[u8; 3]; 16]> {
+    if s.len() != 96 || !s.is_ascii() {
+        return None;
+    }
+    let mut out = [[0u8; 3]; 16];
+    for (i, c) in out.iter_mut().enumerate() {
+        for (ch, v) in c.iter_mut().enumerate() {
+            let at = i * 6 + ch * 2;
+            *v = u8::from_str_radix(&s[at..at + 2], 16).ok()?;
+        }
+    }
+    Some(out)
+}
+
+/// The ramp in an entry's detail text (None for tiles and older entries).
+pub fn ramp_of_detail(detail: &str) -> Option<[[u8; 3]; 16]> {
+    detail.split(' ').find_map(|t| t.strip_prefix("ramp=")).and_then(parse_ramp)
+}
+
 /// Name an entry's 3D texture.
 fn tex_entry(info: &TexInfo, src: &Sources) -> Entry {
     Entry {
@@ -139,13 +166,14 @@ fn tex_entry(info: &TexInfo, src: &Sources) -> Entry {
         h: info.height,
         surface: info.surface,
         detail: format!(
-            "bank={} x={} y={} luma={} colour={:04x}{}",
+            "bank={} x={} y={} luma={} colour={:04x}{} ramp={}",
             info.bank,
             info.x0,
             info.y0,
             info.luma_table,
             info.colour,
-            if info.translucent { " translucent" } else { "" }
+            if info.translucent { " translucent" } else { "" },
+            ramp_text(&raster::texture_look(src, info))
         ),
         image: raster::texture_image(src, info),
     }

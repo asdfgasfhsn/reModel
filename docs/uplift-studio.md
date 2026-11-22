@@ -127,7 +127,9 @@ scriptable (below, "Strict, with answers").
 | `pack` | write `pack.txt` and `index.txt` from `pack/`, run pack-lint |
 | `draft` | the batch generator runner (below) |
 | `style` | the local style processor (below) |
-| `variants` | one restyled image for every key of its surface, tinted per key |
+| `artworks` | the artworks (surface keys) of the project's maps with their colourings, ramps and `art_` images (below, "Artworks") |
+| `bake` | the colourings of an `art_` image, written as `tex_` images through the colour ramps, or left to be drawn as it is (below, "Artworks") |
+| `variants` | one restyled image for every key of its surface, tinted per key by one ratio (the older step; `bake` replaces it where the catalogue has ramps) |
 | `text` | text to tiles (below) |
 | `seam` | the seam check (below); the `seam` gate runs the same test |
 | `compare` | before and after sheets (below) |
@@ -284,6 +286,130 @@ changed, mean difference). It needs the ROMs and the `--input` and view
 `eeprom.bin` and the captured programs (default `out/GAME` in the working
 directory, as before; the eeprom is copied there from `out/GAME` first).
 
+## Artworks
+
+A pack key names one **colouring** of some texels (the texture key); the
+texels themselves, at a size, are an **artwork** (the surface key). Top Skater's
+catalogue holds 243 keys over 193 artworks, and the 30 artworks under more
+than one key carry 47% of the pixels it saw. A pack that replaces "the wall
+base" should be one image, not one per colouring.
+
+**The ramp.** What the game does to a texel is small and known: its 4-bit
+value goes through a luma table into a row of the colour table chosen by the
+polygon's colour. The catalogue (and a `make texmap` inventory) records the
+result for each key when it first sees it: `ramp=` in the entry's `detail`,
+96 hex digits, the 16 colours texel values 0 to 15 are drawn in at full luma
+(`raster::texture_look`; `idmap::ramp_text`). Games rewrite their colour
+tables as they run, so a key sighted in a fade is recorded as it looked
+then; a catalogue made before this has no ramps (`with_ramp` in `studio
+artworks` says how many keys have one), and the next observation adds them.
+
+**The file.** `art_<surface>_<w>x<h>.png` in the pack, any size in the
+texture's proportion (docs/texture-packs.md, "Artwork images"). A colouring
+with a `tex_` image of its own draws that; any other draws the artwork's,
+in the software and GPU renderers and the player, so a snapshot and the
+player agree. The manifest says `needs artworks` when some colouring is drawn
+that way (the browser refuses such a pack; it reads no `art_` files yet) and
+`uses artworks` when `tex_` copies cover every colouring.
+
+**Two modes**, set by what the build wrote (`colour=` in the spec):
+
+| Mode | Pack holds | Result |
+|---|---|---|
+| `fixed` | the `art_` image only | one image for every colouring of the texels, as painted; the game's brightness lights it, its colour does not re-tint it. Also covers colours nobody catalogued |
+| `baked` (default) | the `art_` image and a `tex_` copy per catalogued colouring | each colouring has its own picture; any one is replaced by hand and kept on a rebuild |
+
+`follow` (one image re-tinted as it is drawn, for colours nobody has seen)
+is not built: `fixed` is what an unseen colouring gets.
+
+**Baking.** `remodel studio bake PROJECT --all` (or `ART..`: an `art_`
+stem, a surface key or the name of any colouring) reads each `art_` image in
+`pack/` and, for every colouring of that artwork in the project's maps:
+
+1. finds the **reference**, the colouring whose ramp the image lies nearest
+   (the one it was painted over; ties go to the richer ramp);
+2. measures the mean distance of the image's opaque pixels from the nearest
+   colour of that ramp, in levels per channel, and picks a **band**;
+3. writes `tex_<key>_<w>x<h>.png` for each colouring.
+
+| Distance from the ramp | Band | Build does |
+|---|---|---|
+| under 4 | faithful | bakes every colouring, silently |
+| 4 to 12 | review | bakes, and lists the artwork for review |
+| 12 or more | restyle | copies the image to every colouring and lists it as "may want its own art" |
+
+Baking places each pixel on the reference ramp (its nearest colour), takes
+the same place on the target ramp and keeps whatever part of the pixel lay
+off the ramp (its difference from that colour); a pixel as near two entries
+takes the mean of their places. It copies instead where the two ramps differ
+by under 4 levels, and where a colouring has no ramp. The reference gets the
+authored image itself. The thresholds are the design's (E1 to E3 of the
+retired spec, on synthetic art); the first repaint on the game's own art
+is in "Measured" below.
+
+**Which colouring to paint over.** Baking cannot give back what a flatter
+ramp merged, so the author paints over the colouring with the most distinct
+colours, not the one drawn most: `studio artworks` names it in `paint_over`.
+On Daytona's 64x256 artwork of 11 colourings, an image painted over the
+most drawn one bakes with 1.19 levels mean error, over the richest 0.000;
+on its 32x64 one of 21, 2.39 and 0.000. (The build finds the reference
+itself, by measurement, so a wrong guess costs fidelity, not correctness.)
+
+A rebuild replaces only what an earlier bake wrote: `status/baked.tsv`
+holds each written file's hash, so a `tex_` image made by hand, or edited
+after the bake, is kept (`--replace` takes it back). `--mode fixed` removes
+the untouched copies and writes none. `status/artworks.tsv` records each
+artwork's mode, reference, distance and band; `studio pack` reads both and
+writes `uses` or `needs artworks`. `--from DIR` first copies `art_*.png` from
+DIR into `pack/` (not over a different image without `--replace`), and
+`--dry-run` says what would be written.
+
+`studio artworks PROJECT` lists the artworks, biggest first, with their
+colourings, pixels drawn, share, colours in the richest ramp, how many keys
+have a ramp, and the `art_` image's mode (`--min-variants N`, `--tsv`).
+
+**Measured (2026-11-23).** One catalogue session each (`coin-start`), the
+game's own picture of one colouring as the authored image, baked to the
+others and compared with the game's own pictures of them (`img diff`), then
+the captured frames drawn at 1080p on the GPU without a pack, with the
+baked pack, and with a pack of the game's own images of those keys (the
+control: baked must draw exactly as it does):
+
+| | Top Skater (2C) | `vf2` (2A) | `daytona` (original) |
+|---|---|---|---|
+| Keys, artworks | 243, 193 | 383, 291 | 552, 267 |
+| Artworks under several keys; their share of pixels | 30; 47% | 30; 72% | 87; 83% |
+| Artwork baked from one image; colourings; its pixel share | 11; 4.8% | 28; 9.6% | 34; 1.8% |
+| Mean error of the baked colourings | 0.000 | 0.050 (worst pixel 10) | 0.000 |
+| Frames drawn; baked identical to control | 4 of 4 | 3 of 4 (the fourth: 1.3% of pixels, mean 0.015, at most 8 levels) | 3 of 3 |
+| `fixed` against no pack (frame with most change) | 14.3% of pixels, mean 4.6 | 11.2%, mean 3.2 | 4.4%, mean 1.7 |
+
+`fixed` is visibly different where the colourings differ (Top Skater's
+concrete wall goes from warm to cool grey), `baked` is not: that is the
+mode's point. Top Skater's artwork as a 2x Lanczos upscale lies 2.2 levels
+from its ramp, with a mild saturation change and blur 2.7 (both faithful),
+and with a posterised, tinted restyle 11.6 (review); the 12-level band was
+not reached by any real repaint. A pack of images equal to the original
+still draws up to 0.9% to 11% of a frame's pixels slightly differently
+(mean 0.006 to 0.12 levels) from no pack, as `make pack-identity` already
+allows: the control, not the original, is what baked must equal.
+
+**What the gates do with an artwork.** `known` resolves an `art_` file by
+its surface key and size against the project's maps, not by key: a surface
+the maps do not hold is listed. `selected` counts a selected colouring as
+covered when its artwork's `art_` image is in the pack. The asset gates run
+on an `art_` image against its artwork's elected look (the colouring drawn
+most) and take its wrap from that colouring. `scene render` and `pack
+check` report, besides the pixels that differ from the original, the share of
+the textured polygons' area drawn from pack images, which does not need
+the replacement to look different; it counts overlapped polygons whole, so
+it is an estimate until a scene can say per pixel what drew it.
+
+**Not built yet** (roadmap items 6, 7 and 24): names (`wall-base`) and the
+manifest that holds them, `asset show` and bundles, `same-as` links, the
+`flat`, `shared` and `rewritten` flags, the ROM address as a second anchor,
+`pack rekey`, `follow`, and palette packs.
+
 ## Gates
 
 Checks that give a number, a limit and a verdict, so "done" is not a
@@ -327,13 +453,17 @@ assets among those named that have a gate at `error`).
 |---|---|---|
 | `lint` | `pack-lint` finds no errors (its warnings are listed in `report.json`) | error |
 | `budget` | GPU memory of every image and material drawn at once, with mipmaps, is at most 512 MB native; above 192 MB it warns (the browser) | error, warn |
-| `known` | Every `tex_` and `tile_` file is a name of the project's texture map (`map/`); the files that are not are listed | warn |
-| `selected` | Every selected row has an approved image | warn; error with `--release` |
+| `known` | Every `tex_` and `tile_` file is a name of the project's texture map (`map/`), and every `art_` file an artwork of it (by surface key and size); the files that are not are listed | warn |
+| `selected` | Every selected row has an approved image, its own or its artwork's `art_` image | warn; error with `--release` |
 | `coverage` | Per scene with a local copy (`scene make`; a GPU, no ROM): at least 10% of the native view's pixels differ from the original once the pack is drawn | warn; error with `--release` |
 
 `coverage` counts changed pixels (`scene render --against original`'s
 `changed_share`), which is a lower bound of "drawn from replaced
-assets": a replacement that looks like the original is not counted. The
+assets": a replacement that looks like the original is not counted. Its
+rule text also says what share of the textured polygon area was drawn from
+pack images (`drawn_share`, by identity, overlaps counted); the verdict
+still follows the changed pixels, until a scene can say per pixel what
+drew it. The
 default 10% is not calibrated; a project says what each scene needs. The
 `clip` level is the `pack-flicker` gate and needs a run (below), so
 `pack check` lists it under `skipped`.
@@ -412,7 +542,7 @@ what the renderers already read, and the state hash does not change.
 
 | kind | what | key |
 |---|---|---|
-| `tex` | a 3D texture as drawn: size, sheet place, luma table, colour, wrapping (`rr`, `mr`, `rm`, `mm`), and its **surface key** (the artwork whatever colour it is drawn in) | the texture dump's key, so a name is a pack file |
+| `tex` | a 3D texture as drawn: size, sheet place, luma table, colour, colour ramp (`ramp=`: the 16 colours its texel values are drawn in at full luma), wrapping (`rr`, `mr`, `rm`, `mm`), and its **surface key** (the artwork whatever colour it is drawn in; "Artworks") | the texture dump's key, so a name is a pack file |
 | `tile` | an 8x8 2D tile pattern | the tile dump's key |
 | `layout` | a connected arrangement of 4 to 600 tiles on one layer: a logo, a label, a number field, a panel. Its **shape** (cells only, no tile keys) is recorded too: a shape that recurs with different contents is a text or number field | hash of cells and tile keys |
 | `object` | one model's polygon list: its model address when the native geometrizer's side channel knows it (`oba`), else the set of its polygon headers (an approximation: two models with the same headers collide); polygons, textures it shows | the address, or the headers |
@@ -810,7 +940,7 @@ its MVP).
 Built: the design above; named scenes and `scene render` (above); `remodel texmap` and `make texmap` (ID images,
 texel positions, inventory, contact sheets, groups, JSON); the viewer
 (phase 1); the project commands, the batch runner, the style processor,
-text to tiles, surface variants, the seam check, the quality gates (`asset check`, `pack check`) and before and after
+text to tiles, surface variants, artworks (`art_` images, colour ramps, `bake`), the seam check, the quality gates (`asset check`, `pack check`) and before and after
 (phase 1b: render side and tooling only, no emulation or state hash is
 touched). The catalogue (below) is built too: observing while playing and in
 scripted runs, loads, report, viewer, glyph mapping, and the studio reading it.

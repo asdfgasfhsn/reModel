@@ -673,6 +673,10 @@ pub struct Drawn {
     pub original: Option<Picture>,
     /// Share of pixels that differ from the original (0 to 1).
     pub changed_share: Option<f64>,
+    /// Of the textured polygons' area (overlaps counted), the share drawn
+    /// from a pack image: by identity, so a replacement that looks like the
+    /// original counts. None without a pack.
+    pub drawn_share: Option<f64>,
     pub polygons: usize,
     pub warnings: Vec<String>,
     pub millis: f64,
@@ -753,7 +757,24 @@ pub fn draw(game: &Game, scene_dir: &Path, o: &DrawOpts, gpu: &mut gpu::Renderer
         gpu.set_pack(None);
     }
     gpu.set_look(crate::LOOK.get().map(|l| std::sync::Arc::new(l.clone())));
+    // What the pack's lookups gave, by texture: the pack log, in scratch.
+    let log_path = packed.then(|| {
+        let root = std::env::var("REMODEL_SCRATCH").unwrap_or_else(|_| "out/scratch".into());
+        Path::new(&root).join(format!("scene-draw-{}.log", std::process::id()))
+    });
+    if let Some(path) = &log_path {
+        if let Ok(log) = model2::packlog::PackLog::create(path) {
+            gpu.set_pack_log(Some(log));
+            gpu.set_log_frame(0);
+        }
+    }
     let rgb = gpu.frame(&polys, &placed, &src, &view, &layers);
+    let drawn_share = log_path.map(|path| {
+        gpu.set_pack_log(None);
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let _ = std::fs::remove_file(&path);
+        drawn_share_of(&text)
+    });
     let changed_share = original.as_ref().map(|orig| {
         let n = rgb.chunks(3).zip(orig.rgb.chunks(3)).filter(|(a, b)| a != b).count();
         n as f64 / (w * h) as f64
@@ -773,14 +794,31 @@ pub fn draw(game: &Game, scene_dir: &Path, o: &DrawOpts, gpu: &mut gpu::Renderer
         picture,
         original,
         changed_share,
+        drawn_share: drawn_share.flatten(),
         polygons: polys.len(),
         warnings,
         millis: started.elapsed().as_secs_f64() * 1e3,
     })
 }
 
+/// The share of textured polygon area drawn from a pack image in a pack log
+/// (`t` lines: outcome `hit`, `up` or `held` is a replacement). None when
+/// no texture was drawn.
+pub fn drawn_share_of(log: &str) -> Option<f64> {
+    let (mut drawn, mut all) = (0.0f64, 0.0f64);
+    for l in log.lines().filter(|l| l.starts_with("t\t")) {
+        let f: Vec<&str> = l.split('\t').collect();
+        let (Some(outcome), Some(px)) = (f.get(4), f.get(6).and_then(|v| v.parse::<f64>().ok())) else { continue };
+        all += px;
+        if matches!(*outcome, "hit" | "up" | "held") {
+            drawn += px;
+        }
+    }
+    (all > 0.0).then_some(drawn / all)
+}
+
 /// `pack_coverage`'s answer: the share of changed pixels by scene, and the scenes skipped.
-pub type CoverageShares = (Vec<(String, f64)>, Vec<String>);
+pub type CoverageShares = (Vec<(String, f64, Option<f64>)>, Vec<String>);
 
 /// `pack check`'s `coverage` gate: for each scene of `game` that has a local
 /// copy, draw it with `pack` and without at the native view and count the
@@ -805,7 +843,7 @@ pub fn pack_coverage(game: &'static Game, project: Option<&Path>, pack: &Path) -
     for r in ready {
         let o = DrawOpts { pack: Some(pack.to_path_buf()), crop: None, against: true, view: View::native() };
         let d = draw(game, &root.join(&r.name), &o, &mut gpu)?;
-        out.push((r.name.clone(), d.changed_share.unwrap_or(0.0)));
+        out.push((r.name.clone(), d.changed_share.unwrap_or(0.0), d.drawn_share));
     }
     Ok((out, missing))
 }
@@ -936,6 +974,7 @@ fn render_cmd(o: &crate::Opts, game: &'static Game, a: &Args) -> Result<(Answer,
         "scene": recipe.name, "picture": files["picture"], "original": files.get("original"), "sheet": files.get("sheet"),
         "width": d.picture.width, "height": d.picture.height, "polygons": d.polygons,
         "changed_share": d.changed_share.map(|c| (c * 1e6).round() / 1e6),
+        "drawn_share": d.drawn_share.map(|c| (c * 1e6).round() / 1e6),
         "pack": packs.first().map(|p| p.display().to_string()),
         "crop": crop, "ms": ms.round(), "ms_gpu_init": gpu_ms.round(), "ms_draw": d.millis.round(), "ms_write": write_ms.round(),
     });
@@ -953,6 +992,12 @@ fn render_cmd(o: &crate::Opts, game: &'static Game, a: &Args) -> Result<(Answer,
     if let Some(c) = d.changed_share {
         text += &format!("changed       {:.2}% of pixels against the original\n", c * 100.0);
     }
+    if let Some(c) = d.drawn_share {
+        text += &format!(
+            "drawn         {:.2}% of the textured polygon area from pack images (by identity, overlaps counted)\n",
+            c * 100.0
+        );
+    }
     text += &format!("time          {:.0} ms (GPU start {gpu_ms:.0}, draw {:.0}, write {write_ms:.0})\n", ms, d.millis);
     let mut ans = Answer::done(data);
     if let State::Stale(why) = state_of(&dir, Some(recipe)) {
@@ -967,6 +1012,17 @@ fn render_cmd(o: &crate::Opts, game: &'static Game, a: &Args) -> Result<(Answer,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_drawn_share_counts_polygon_area_of_replaced_textures() {
+        let log = "# header\nF\t0\n\
+            t\t0000000000000001\t00000000000000aa\t8x8\thit\t2\t300\t1\t1\t0:0:0\n\
+            t\t0000000000000002\t00000000000000aa\t8x8\tup\t1\t100\t1\t1\t0:0:0\n\
+            t\t0000000000000003\t00000000000000bb\t8x8\tmiss:not-in-pack\t1\t600\t1\t1\t0:0:0\n\
+            k\t00000001\t0000000000000004\thit\t99\t1\t1\n";
+        assert_eq!(drawn_share_of(log), Some(0.4), "tiles do not count");
+        assert_eq!(drawn_share_of("F\t0\n"), None);
+    }
 
     fn game() -> &'static Game {
         romset::games::find("topskatr").unwrap()

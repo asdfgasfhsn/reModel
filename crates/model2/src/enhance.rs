@@ -526,6 +526,13 @@ impl TexInfo {
         format!("tex_{:016x}_{}x{}", self.key, self.width, self.height)
     }
 
+    /// File stem of the image a pack may give the whole artwork
+    /// (`art_<surface>_<w>x<h>`): drawn for this colouring when the pack has
+    /// no `tex_` image of its own for it.
+    pub fn art_name(&self) -> String {
+        format!("art_{:016x}_{}x{}", self.surface, self.width, self.height)
+    }
+
     /// File stem of material maps shared by every colour of these texels
     /// (`surf_<surface>_<w>x<h>`, with a map suffix in a pack).
     pub fn surface_name(&self) -> String {

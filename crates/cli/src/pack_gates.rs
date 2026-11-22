@@ -305,11 +305,15 @@ fn pack_level(
     let sel: BTreeSet<String> = p.selection().into_iter().map(|r| r.name).collect();
     let inv: BTreeSet<String> = p.inventory().map(|v| v.into_iter().map(|i| i.name).collect()).unwrap_or_default();
     let in_pack: Vec<String> = studio::png_names(pack_dir);
-    let is_asset = |n: &str| n.starts_with("tex_") || n.starts_with("tile_");
+    let is_asset = |n: &str| n.starts_with("tex_") || n.starts_with("tile_") || n.starts_with("art_");
+    // An art_ file is known by identity: its surface key and size are an
+    // artwork of the project's maps, whatever colourings they were seen in.
+    let art: BTreeSet<String> = studio::artworks(&p).unwrap_or_default().iter().map(|a| a.stem()).collect();
+    let is_known = |n: &str| if n.starts_with("art_") { art.contains(n) } else { inv.contains(n) };
     if inv.is_empty() {
         out.push(GateResult::info("pack", "known", "no texture map in the project to resolve files against"));
     } else {
-        let unknown: Vec<&String> = in_pack.iter().filter(|n| is_asset(n) && !inv.contains(*n)).collect();
+        let unknown: Vec<&String> = in_pack.iter().filter(|n| is_asset(n) && !is_known(n)).collect();
         let unselected = in_pack.iter().filter(|n| !sel.contains(*n) && !n.starts_with("region_")).count();
         out.push(row(
             "pack",
@@ -325,7 +329,17 @@ fn pack_level(
             "a file whose name is no texture of the game's map draws nowhere: rename it or remove it",
         ));
     }
-    let short: Vec<&String> = sel.iter().filter(|n| !in_pack.contains(*n)).collect();
+    // A selected colouring is covered by its own image or by its artwork's.
+    let covered = |n: &String| {
+        in_pack.contains(n)
+            || p.selection().iter().find(|r| &r.name == n).is_some_and(|r| {
+                let Ok(model2::pack::FileKind::Image { width, height, .. }) = model2::pack::parse_name(n) else {
+                    return false;
+                };
+                r.surface.len() == 16 && in_pack.contains(&format!("art_{}_{width}x{height}", r.surface))
+            })
+    };
+    let short: Vec<&String> = sel.iter().filter(|n| !covered(n)).collect();
     out.push(row(
         "pack",
         "selected",
@@ -373,7 +387,7 @@ fn scene_level(
         ));
     }
     let lim = limits.get("coverage", gates::COVERAGE_MIN_PCT);
-    for (name, share) in shares {
+    for (name, share, drawn) in shares {
         let pct = share * 100.0;
         out.push(row(
             &name,
@@ -385,7 +399,13 @@ fn scene_level(
                 (false, true) => Verdict::Error,
                 (false, false) => Verdict::Warn,
             },
-            format!("pixels differing from the original at least {lim}%: {pct:.1}% (native view; scene `{name}`)"),
+            format!(
+                "pixels differing from the original at least {lim}%: {pct:.1}% (native view; scene `{name}`){}",
+                drawn.map_or(String::new(), |d| format!(
+                    "; of its textured polygon area {:.1}% is drawn from pack images (by identity, overlaps counted), a figure that does not need the image to differ",
+                    d * 100.0
+                ))
+            ),
             "restyle what the scene draws most: `remodel scene render NAME --pack pack/ --against original`",
         ));
     }
@@ -564,6 +584,112 @@ mod tests {
         std::fs::write(dir.join("gates.txt"), "noise\t30\tgrain on purpose\n").unwrap();
         let a = go(&["--release"]);
         assert_eq!(a.to_json()["data"]["overrides"][0]["reason"], "grain on purpose");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Item 5's acceptance test (docs/uplift-studio.md, "Artworks"), without a
+    /// ROM: one authored image stands for an artwork's three colourings.
+    /// `bake` makes each colouring's image through the catalogue's ramps
+    /// (and leaves a hand-made one alone); `known` and `selected` resolve
+    /// the `art_` file by its surface key; in `fixed` mode no colour copies
+    /// exist and the manifest `needs artworks`, in `baked` mode it `uses`
+    /// them.
+    #[test]
+    fn one_art_image_stands_for_an_artworks_colourings() {
+        use model2::idmap::ramp_text;
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../out/scratch/pack-gates-art-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        for d in ["original", "draft", "pack", "status", "map/textures"] {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+        }
+        std::fs::write(dir.join("project.txt"), "name\tt\ngame\ttopskatr\n").unwrap();
+        let ramp = |f: &dyn Fn(usize) -> [u8; 3]| -> [[u8; 3]; 16] { std::array::from_fn(f) };
+        let red = ramp(&|i| [(i * 16) as u8, 20, 0]);
+        let blue = ramp(&|i| [0, 20, (255 - i * 12) as u8]);
+        let green = ramp(&|i| [10, (i * 15) as u8, 30]);
+        let names = ["tex_00000000000000a1_16x16", "tex_00000000000000a2_16x16", "tex_00000000000000a3_16x16"];
+        let surface = "00000000000000aa";
+        let mut inv = String::from("id\tname\tkind\tw\th\tsurface\tframes\tpixels\tbest_frame\tbest_pixels\tpolys\tuv_used_pct\twrap\tspan_u\tspan_v\tgroup\tgroup_size\tdetail\n");
+        let mut sel = String::from("name\tkind\tgroup\tsurface\tpixels\tcategory\treason\n");
+        for (i, (n, r)) in names.iter().zip([&red, &blue, &green]).enumerate() {
+            inv += &format!(
+                "{}\t{n}\ttex\t16\t16\t{surface}\t1\t{}\t1\t1\t1\t100\trr\t2\t2\t0\t1\tbank=0 x=0 y=0 luma=1 colour=000{} ramp={}\n",
+                i + 2,
+                1000 - i * 100,
+                i + 1,
+                ramp_text(r)
+            );
+            sel += &format!("{n}\ttex\t0\t{surface}\t100\twall\tr\n");
+            let im = picture(16, 16, |x, y| {
+                let c = r[(x + y) % 16];
+                [c[0], c[1], c[2], 255]
+            });
+            std::fs::write(dir.join(format!("map/textures/{n}.png")), im).unwrap();
+        }
+        std::fs::write(dir.join("map/inventory.tsv"), inv).unwrap();
+        std::fs::write(dir.join("selection.tsv"), sel).unwrap();
+        // The author paints over the most drawn colouring (red), twice as big.
+        let art_name = format!("art_{surface}_16x16");
+        std::fs::write(
+            dir.join(format!("pack/{art_name}.png")),
+            picture(32, 32, |x, y| {
+                let c = red[(x / 2 + y / 2 + (x % 2)) % 16];
+                [c[0], c[1].saturating_add(1), c[2], 255]
+            }),
+        )
+        .unwrap();
+        let args = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let ctx = studio::Ctx { game: "topskatr".into(), rom: "rom".into(), jit: false, input: None };
+        let d = dir.to_str().unwrap();
+        // The artwork index sees one artwork under three keys.
+        let arts = studio::artworks(&studio::Project { dir: dir.clone() }).unwrap();
+        assert_eq!((arts.len(), arts[0].variants.len(), arts[0].stem()), (1, 3, art_name.clone()));
+        // Baked: a tex_ image per colouring, each through its ramp.
+        studio::main(&args(&["bake", d, "--all"]), &ctx).unwrap();
+        let load = |n: &str| png::decode(&std::fs::read(dir.join(format!("pack/{n}.png"))).unwrap()).unwrap();
+        let art = load(&art_name);
+        assert_eq!(load(names[0]).rgba, art.rgba, "the reference is the authored image");
+        let b = load(names[1]);
+        assert_eq!((b.width, b.height), (32, 32));
+        let near = |p: &[u8], c: [u8; 3]| (0..3).all(|k| (p[k] as i32 - c[k] as i32).abs() <= 1);
+        // Pixel (0,0) sat on red ramp entry 0: it is blue's entry 0 now.
+        assert!(near(&b.rgba[..4], blue[0]), "{:?} vs {:?}", &b.rgba[..4], blue[0]);
+        assert!(std::fs::read_to_string(dir.join("status/artworks.tsv")).unwrap().contains("baked"));
+        studio::main(&args(&["pack", d, "--no-lint"]), &ctx).unwrap();
+        let manifest = std::fs::read_to_string(dir.join("pack/pack.txt")).unwrap();
+        assert!(manifest.contains("uses\tartworks") && !manifest.contains("needs"), "{manifest}");
+        // A hand-made colouring survives a rebuild; the copies are reproduced.
+        std::fs::write(dir.join(format!("pack/{}.png", names[2])), picture(16, 16, |_, _| [1, 2, 3, 255])).unwrap();
+        let before = std::fs::read(dir.join(format!("pack/{}.png", names[1]))).unwrap();
+        studio::main(&args(&["bake", d, &art_name]), &ctx).unwrap();
+        assert_eq!(std::fs::read(dir.join(format!("pack/{}.png", names[1]))).unwrap(), before);
+        assert_eq!(load(names[2]).width, 16, "the hand-made image is kept");
+        // The gates resolve the art_ file by identity.
+        let out = dir.join("report");
+        let go = |extra: &[&str]| {
+            let mut a = args(&["check", "--project", d, "--level", "pack,asset"]);
+            a.extend(extra.iter().map(|s| s.to_string()));
+            run("topskatr", &a, Some(out.clone())).unwrap().0.to_json()
+        };
+        let rows = |j: &Value, g: &str| {
+            j["data"]["gates"].as_array().unwrap().iter().find(|r| r["gate"] == g).cloned().unwrap()
+        };
+        let j = go(&[]);
+        assert_eq!(rows(&j, "known")["warn"], 0, "{j}");
+        assert_eq!(rows(&j, "selected")["warn"], 0);
+        // Fixed: the copies go, the hand-made one stays, the artwork is drawn as it is.
+        studio::main(&args(&["bake", d, "--all", "--mode", "fixed"]), &ctx).unwrap();
+        assert!(!dir.join(format!("pack/{}.png", names[1])).exists());
+        assert!(dir.join(format!("pack/{}.png", names[2])).exists());
+        studio::main(&args(&["pack", d, "--no-lint"]), &ctx).unwrap();
+        assert!(std::fs::read_to_string(dir.join("pack/pack.txt")).unwrap().contains("needs\tartworks"));
+        std::fs::remove_file(dir.join(format!("pack/{}.png", names[2]))).unwrap();
+        let j = go(&["--release"]);
+        assert_eq!(rows(&j, "selected")["error"], 0, "an art_ image covers every colouring selected: {j}");
+        // A file for an artwork the maps do not have is unknown.
+        std::fs::write(dir.join("pack/art_00000000000000bb_16x16.png"), picture(16, 16, |_, _| [0, 0, 0, 255]))
+            .unwrap();
+        assert_eq!(rows(&go(&[]), "known")["warn"], 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

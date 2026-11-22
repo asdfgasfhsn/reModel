@@ -152,6 +152,12 @@ pub fn check_assets(dir: &Path, names: &[String], from: Option<Src>) -> Result<V
         }
     }
     let approved = p.hashes("approved.tsv");
+    // An artwork's wrap is its elected colouring's.
+    let art_row: HashMap<String, String> = super::art::artworks(&p)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|a| Some((a.stem(), a.variants.first()?.name.clone())))
+        .collect();
     // The asset gates are arithmetic on one image each: spread them over the cores.
     let one = |name: &String| -> Result<Checked, Answer> {
         let src = match from {
@@ -173,7 +179,7 @@ pub fn check_assets(dir: &Path, names: &[String], from: Option<Src>) -> Result<V
             image: image.as_ref().map_err(|e| e.clone()),
             bytes: bytes.len() as u64,
             original: original.as_ref(),
-            wrap: wraps(inv.get(name), name),
+            wrap: wraps(inv.get(art_row.get(name).unwrap_or(name)), name),
             hash: gates::hash_bytes(&bytes),
             approved: if src == Src::Pack { approved.get(name).copied() } else { None },
         };

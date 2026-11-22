@@ -6,11 +6,14 @@
 
 #![allow(clippy::needless_range_loop, clippy::chunks_exact_to_as_chunks, clippy::manual_is_multiple_of)]
 
+#[path = "studio_art.rs"]
+mod art;
 #[path = "studio_gates.rs"]
 mod asset_gates;
 #[path = "studio_regions.rs"]
 mod regions;
 
+pub use art::artworks;
 #[allow(unused_imports)] // `refusals`: for `project approve` (item 6)
 pub use asset_gates::{asset_main, check_assets, refusals, Src};
 
@@ -46,6 +49,9 @@ remodel studio SUB PROJECT [options]   (docs/uplift-studio.md)
          [--ref IMG].. [--jobs N] [--retries N] [--timeout SECS] [--scale N] [--keep-size] [--replace] [--dry-run]
   style PROJECT --recipe FILE [NAME..|--group N|--category C|--all] [--from original|draft] [--replace]
   variants PROJECT --of KEY [--also KEY,..] [--base IMG] [--mode luma|ratio|mean] [--strength S] [--dry-run] [--replace]
+  artworks PROJECT [--tsv] [--min-variants N]   the artworks (surface keys) with their colourings, ramps and art_ images
+  bake PROJECT [ART..|--all] [--from DIR] [--mode baked|fixed] [--dry-run] [--replace]
+         the colourings of each art_ image: baked tex_ copies through the colour ramps, or fixed (drawn as it is)
   text PROJECT --frame F --region X,Y,W,H (--image FILE | --text STR --font FILE ..)
          [--box X,Y,W,H] [--pad N] [--bg #rrggbb|auto] [--fit contain|stretch] [--align left|center|right]
          [--alpha original|typeset] [--tile-scale N] [--dry-run] [--replace]
@@ -89,6 +95,8 @@ pub fn main(args: &[String], ctx: &Ctx) -> Result<bool, String> {
         "draft" => draft(&p, &a),
         "style" => style(&p, &a),
         "variants" => variants(&p, &a),
+        "artworks" => art::list(&p, &a),
+        "bake" => art::bake(&p, &a),
         "text" => text_cmd(&p, &a),
         "region-capture" => regions::capture(&p, &a),
         "regions" => regions::list(&p, &a),
@@ -146,6 +154,8 @@ const OPTIONS: &[(&str, &[&str])] = &[
     ),
     ("style", &["--recipe", "--from", "--group", "--category", "--all", "--replace"]),
     ("variants", &["--of", "--also", "--base", "--mode", "--strength", "--ink", "--map", "--dry-run", "--replace"]),
+    ("artworks", &["--tsv", "--min-variants"]),
+    ("bake", &["--all", "--from", "--mode", "--dry-run", "--replace"]),
     (
         "text",
         &[
@@ -339,6 +349,8 @@ pub struct Inv {
     /// How many texture sizes the coordinates run over (above 1: it repeats).
     pub span_u: f32,
     pub span_v: f32,
+    /// The catalogue's detail text (`colour=`, `luma=`, `ramp=`, ...).
+    pub detail: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -480,6 +492,7 @@ impl Project {
                     group: get(&f, "group").parse().unwrap_or(0),
                     span_u: get(&f, "span_u").parse().unwrap_or(2.0),
                     span_v: get(&f, "span_v").parse().unwrap_or(2.0),
+                    detail: get(&f, "detail"),
                 })
             })
             .collect())
@@ -549,6 +562,12 @@ impl Project {
 
     /// The original as dumped: the project's copy, else the map's.
     fn original(&self, name: &str) -> Option<PathBuf> {
+        if name.starts_with("art_") {
+            // An artwork's original is its elected look: the colouring
+            // drawn most.
+            let aw = art::artworks(self).ok()?.into_iter().find(|a| a.stem() == name)?;
+            return self.map_texture(&aw.variants.first()?.name, true);
+        }
         self.map_texture(name, true)
     }
 
@@ -1260,6 +1279,12 @@ fn pack(p: &Project, a: &Args) -> Result<bool, String> {
     }
     if n_regions > 0 {
         manifest += "uses\tregions\n";
+    }
+    // Artwork images: `needs` where a colouring is drawn from one (fixed, or
+    // not baked), else `uses` (the baked copies do the work; the art_ image
+    // only covers colours nobody catalogued).
+    if names.iter().any(|n| n.starts_with("art_")) {
+        manifest += if p.needs_artworks() { "needs\tartworks\n" } else { "uses\tartworks\n" };
     }
     std::fs::write(dir.join("pack.txt"), manifest).map_err(|e| e.to_string())?;
     let mut index = String::from("# one file name a line, for the browser\n");

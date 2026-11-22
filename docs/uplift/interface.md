@@ -15,7 +15,7 @@ use `noun.verb` with the same arguments. Every verb takes `--json` and
 | Noun | Verbs | Spec |
 |---|---|---|
 | `scene` | `list`, `make`, `verify`, `render`, `what`, `where`, `sheet`, `clip` | [scenes-and-server](scenes-and-server.md) |
-| `asset` | `list`, `show`, `bundle`, `name`, `set`, `same`, `make`, `normalise`, `check` | [asset-identity](asset-identity.md), [generation](generation.md), [quality-gates](quality-gates.md) |
+| `asset` | `list`, `show`, `bundle`, `name`, `set`, `same`, `make`, `normalise`, `check` (built: `check`; the artwork index and the colour copies are today `studio artworks` and `studio bake`, [uplift-studio.md](../uplift-studio.md), "Artworks") | [asset-identity](asset-identity.md), [generation](generation.md), [quality-gates](quality-gates.md) |
 | `region` | `capture`, `list`, `check`, `field` | [2d-cells](2d-cells.md) |
 | `glyphs` | `infer`, `show`, `confirm` | [2d-cells](2d-cells.md) |
 | `project` | `init`, `status`, `brief`, `review`, `approve`, `reject` | [pack-project](pack-project.md) |
@@ -195,8 +195,8 @@ Slugs, scenes and numbers below are examples.
 
 The brief gives the asset. It tiles sideways and has six colour variants;
 the pack lead has set `colour=baked`: the build makes the other five
-colourings from the one image
-([asset-identity](asset-identity.md), "Packs can name the artwork").
+colourings from the one image (built today as `remodel studio bake`:
+[uplift-studio.md](../uplift-studio.md), "Artworks").
 
 ```sh
 remodel project brief --json          # my assets, scenes, budgets

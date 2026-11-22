@@ -563,7 +563,7 @@ fn lint_report_with(dir: &Path, dump: Option<&Path>, max_side: usize, quiet: boo
             for f in m.uses.iter().chain(&m.needs) {
                 if !pack::FEATURES.contains(&f.as_str()) {
                     r.add(Level::Note, 'a', "feature the format doesn't define (`uses`: ignored)", f.clone());
-                } else if f != "materials" && f != model2::regions::FEATURE {
+                } else if f != "materials" && f != model2::regions::FEATURE && f != "artworks" {
                     r.add(Level::Note, 'a', "feature reserved by the format, not drawn by any reader", f.clone());
                 }
             }
@@ -658,7 +658,7 @@ fn lint_report_with(dir: &Path, dump: Option<&Path>, max_side: usize, quiet: boo
     for f in &files {
         let Some(size) = f.size else { continue };
         let (w, h) = match f.kind {
-            Ok(FileKind::Image { width, height, .. }) => (width, height),
+            Ok(FileKind::Image { width, height, .. } | FileKind::Art { width, height, .. }) => (width, height),
             Ok(FileKind::Map { width, height, .. }) => {
                 maps_by_base.entry(base(&f.stem)).or_default().push(f);
                 (width, height)
@@ -786,7 +786,9 @@ fn lint_report_with(dir: &Path, dump: Option<&Path>, max_side: usize, quiet: boo
     // k: GPU memory, everything drawn at once.
     let (mut images, mut materials, mut n_mat) = ([0u64; 2], [0u64; 2], 0);
     for f in &files {
-        if let (Ok(FileKind::Image { .. }), Some((w, h))) = (&f.kind, f.size) {
+        // An artwork's image is counted once, though every colouring that
+        // draws it holds its own copy on the GPU.
+        if let (Ok(FileKind::Image { .. } | FileKind::Art { .. }), Some((w, h))) = (&f.kind, f.size) {
             images[0] += gpu_bytes(w, h, false);
             images[1] += gpu_bytes(w, h, true);
         }
@@ -838,10 +840,11 @@ fn lint_report_with(dir: &Path, dump: Option<&Path>, max_side: usize, quiet: boo
     }
     let count = |p: fn(&FileKind) -> bool| files.iter().filter(|f| f.kind.as_ref().is_ok_and(p)).count();
     println!(
-        "pack-lint {}: {} PNGs: {} images, {} tiles, {} material maps; manifest: {}",
+        "pack-lint {}: {} PNGs: {} images, {} artworks, {} tiles, {} material maps; manifest: {}",
         dir.display(),
         files.len(),
         count(|k| matches!(k, FileKind::Image { .. })),
+        count(|k| matches!(k, FileKind::Art { .. })),
         count(|k| matches!(k, FileKind::Tile { .. })),
         count(|k| matches!(k, FileKind::Map { .. })),
         match (&manifest, other.contains(pack::MANIFEST)) {

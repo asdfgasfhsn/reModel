@@ -188,6 +188,7 @@ unchanged). **Format 2** adds, all optional:
 | `regions.txt`, `region_<name>.png` | 2D region overrides (below, "Regions") |
 | `tex_<key>_<w>x<h>.n.png`, `.s.png`, `.g.png` | material maps for that image in that colour: normal, specular scale, gloss |
 | `surf_<skey>_<w>x<h>.n.png`, `.s.png`, `.g.png` | the same maps keyed by surface, serving every colour the texels are drawn in |
+| `art_<skey>_<w>x<h>.png` | one image for the artwork: drawn for every colouring of the texels (every `tex_` key of that surface) that has no `tex_` image of its own (below, "Artwork images") |
 | `materials.txt` | tool record of `make pack-materials` |
 | `materials-exclude.txt` | the author's list of textures `make pack-materials` makes no map for (below, "Material maps") |
 
@@ -281,7 +282,9 @@ twice, a value out of range) refuses the pack, with the line it is on.
    must not be shown without a feature puts it in `needs`, and a reader
    that can't show it refuses the whole pack. Every reader (the CLI, the
    player, the browser) draws material maps, so `needs materials` is
-   accepted everywhere (`model2::pack::SHOWN`). Regions are drawn by the
+   accepted everywhere (`model2::pack::SHOWN`). Artwork images
+   (`art_`) are drawn by the CLI and the player, not the browser: `needs
+   artworks` is refused there and `uses artworks` ignored. Regions are drawn by the
    CLI and the player, not yet the browser (`SHOWN_WEB`), so `needs regions` is
    refused there, `uses regions` ignored; whether the maps are drawn
    stays the user's `materials` setting, and with it off such a pack shows
@@ -415,6 +418,30 @@ non-zero on errors:
 On the 4x ESRGAN pack of `topskatr` (241 images, 5,030 tiles): clean, one
 note (182 MB of images, 242 MB mipmapped: past the browser's budget, so
 the browser re-fetches the least recently drawn).
+
+## Artwork images
+
+A `tex_` key names one colouring of an artwork: the same texels drawn in
+another polygon colour or luma table are another key, and Top Skater has 62
+artworks under up to 12 keys each, which carry half the drawn pixels. An
+`art_<skey>_<w>x<h>.png` names the artwork instead (the surface key, which
+the dump index, the catalogue and the pack log already record as `surf=`).
+
+A reader looks for the colouring's own `tex_` image first and draws the
+artwork's `art_` image when the pack has none, in the CLI's software and GPU
+renderers and in the player, lit as any replacement is (the game's
+brightness for the polygon scales it; its colour does not re-tint it).
+Every colouring then shows the one image: this is mode `fixed`.
+The stand-in the GPU draws for a key without an image (another key of the
+surface) is never needed for such an artwork. A pack whose colourings are
+all drawn from `art_` images says `needs artworks`; `uses artworks` marks
+a pack that only has `art_` files besides complete `tex_` copies.
+
+`remodel studio bake` makes the other mode, `baked`: it writes each
+colouring's `tex_` image from the artwork's, through the colour ramps the
+catalogue recorded (docs/uplift-studio.md, "Artworks"), so any reader draws
+it, the browser too, and any one of them can be replaced by hand. `art_`
+files have no material maps (name those by `tex_` or `surf_`).
 
 ## Regions
 

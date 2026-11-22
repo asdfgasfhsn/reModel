@@ -1,8 +1,37 @@
 # Asset identity and context bundles
 
-Shared words, roles and rules: [README.md](README.md). Nothing here is
-built into reModel; what was tried is in "Evidence" (spike code is on
-unmerged branches, not for merging as it stands).
+Shared words, roles and rules: [README.md](README.md). **Partly built
+(2026-11-23, roadmap item 5):** artworks in packs (`art_` images, the
+colour ramp in the catalogue, `fixed` and `baked`, `studio artworks` and
+`studio bake`, the `known` and `selected` gates by identity) are user
+documentation now: [../uplift-studio.md](../uplift-studio.md), "Artworks",
+and [../texture-packs.md](../texture-packs.md), "Artwork images". What is
+left here is not built: names, links, flags, the ROM anchor, `follow`,
+palette packs, context bundles and `pack rekey`. What was tried is in
+"Evidence" (spike code is on unmerged branches, not for merging as it
+stands).
+
+### Re-grounded on 2026-11-23
+
+Before item 5 was built, the "Observed" claims were checked against the
+code and three catalogues (Top Skater, `vf2`, `daytona`, one `coin-start`
+session each). What held: the key is made as described
+(`raster::tex_info`: one FNV-1a stream, the surface key its state after
+texels and size, the image key after luma table, translucency and colour);
+the renderer scales a replacement by lighting and never re-colours it
+(`raster::Light`); a bare `surf_` name was refused; the GPU stand-in exists
+and the software reader looked up exact names only; the catalogue kept a
+key's first sighting only. What moved or was wrong: line numbers (all of
+them); `art_` needed a feature name too, not only a file kind (`artworks`
+in `pack::FEATURES` and `SHOWN`: a reader refuses a pack that `needs` an
+unknown feature, so the spec's "no change at all" held only for `uses`);
+counts on one session are smaller but of the same shape (Top Skater 243 keys
+over 193 artworks, 30 under several keys carrying 47% of pixels, against
+565, 417, 62 and 49% over three sessions; `vf2` 72% against 70%; `daytona`
+83% against 88%); a ramp is the first sighting's, not the most used look's,
+so a key first seen in a fade records the fade (not yet elected); the
+manifest `material` line for `colour=` was not needed, since the reader's
+order (own `tex_`, then `art_`) is the policy and `baked` is just files.
 
 ## The problem
 
@@ -102,70 +131,23 @@ Around those two levels:
   Test vectors should freeze it. If it ever changes, `pack rekey` maps old
   names to new through the catalogue.
 
-### Packs can name the artwork
+### Packs can name the artwork (built)
 
-A new file kind, `art_<surface>_<w>x<h>.png`. By the pack format's own
-rule it needs no new `format` number: readers ignore unknown kinds of
-file, and a pack that depends on it says `needs artworks`
-(`docs/texture-packs.md:278-281`). The
-loader looks for the variant's own `tex_` image first, then the artwork's
-`art_` image. Each artwork states how its image meets the variants:
-
-| `colour=` | Meaning | When |
-|---|---|---|
-| `baked` | One image per variant, as today | A variant that needs its own art |
-| `fixed` | One image, drawn the same for every variant | Art that should ignore the game's tint. This is today's stand-in, made deliberate |
-| `follow` | One image, made for a reference variant, re-tinted as it is drawn | A colour nobody catalogued, so no image could be baked for it |
-
-The usual case is `baked`, with the copies made by the build. The
-artist or agent makes one image. `pack build` makes the other colourings
-from it, and any one of them can be replaced by hand. This replaces the
-hand-run `studio variants` step. A pack's size is not a reason to avoid
-it: in the showcase the extra colourings are 1.67 MB of 13.26 MB of 3D
-images.
-
-**A colouring is a ramp, not a tint.** The game's translation is small
-and known: a texel value goes through a luma table into a row of the
-palette chosen by the polygon's colour, which gives a ramp of 16 colours
-(`crates/model2/src/raster.rs`). Both tables are in every capture, but
-games rewrite them as they run, so one snapshot reproduces only part of
-what was sighted (E2). The catalogue therefore records each key's
-16-colour ramp (48 bytes) when it sights the key.
-
-A polygon's colour is an index, not a strength: brightness does not rise
-with the number, so any tint worked out from the colour values is wrong
-(E1). The other games checked look the same (inferred, E3). The same artwork also
-differs by luma table on some games, so the luma table is part of a
-variant, and a tint must account for it.
-
-**How the build bakes.** Place each pixel on the first colouring's ramp,
-take the same place on the second's, and keep whatever part of the pixel
-lay off the ramp. On the game's own art this is exact or nearly (E2).
-Two things limit it:
-
-- **Which colouring the author paints matters more than the method.**
-  Baking from the colouring with the most distinct colours is best: a
-  flatter ramp cannot give back detail it never had (E2).
-- **It degrades with distance from the ramp, and it cannot predict a
-  restyle** (E2). So `pack build` measures how far the authored image
-  lies from the original ramp and chooses:
-
-| Mean distance from the ramp | Build does |
-|---|---|
-| Under 4 levels (a faithful repaint or an upscale) | Bakes every colouring, silently |
-| 4 to 12 | Bakes, and puts the result in the review list |
-| 12 or more (a restyle) | Copies the image to every colouring and lists them as "may want its own art" |
-
-It also copies when the two original ramps differ by under 4 levels. The
-thresholds come from synthetic art only: no pack that stays near the
-ramps exists yet to test them on.
+Built as described in [../uplift-studio.md](../uplift-studio.md),
+"Artworks", with these differences from the first design: the colour mode is
+not a manifest line (a pack with `tex_` copies is `baked`, one with only the
+`art_` image `fixed`); the reference colouring is found by measuring which
+ramp the image lies nearest, not assumed; baking from the richest ramp is
+advice (`paint_over`), not a rule. The thresholds held on the game's own
+art and a few synthetic repaints; no real restyle has passed through them.
 
 **`follow` is the fallback for a colour never seen**, in place of
-today's untinted stand-in. Its model: per channel, scale the image by
+today's untinted stand-in. It is not built: an unseen colouring gets the
+`fixed` image. Its model: per channel, scale the image by
 what the game's colour table gives for this variant's colour over what
 it gives for the reference colour, at the original texel under the
 pixel. That is the shape of the lighting ratio the renderer already
-computes (`crates/model2/src/raster.rs:1609-1630`, `pack_lit` in
+computes (`crates/model2/src/raster.rs`, `Light`, and `pack_lit` in
 `crates/gpu/src/raster.wgsl`), with the same fallback where the
 reference channel is zero (it happens: E1). A lookup per texel value is
 nearly exact on the game's own art on all five games tried (E1, E3),
@@ -173,11 +155,6 @@ but on new art it carries the original's texel-by-texel differences
 into the replacement, putting tones back into flat cel art (E1). It has
 not been run on a colour the catalogue has never seen, which is the one
 case it is now for: the real tables were not read (E2).
-
-The policy is set per asset in the project (`asset set ID colour=...`)
-and written to the pack's `material` line for that artwork at build time.
-Both renderers resolve names the same way, so a snapshot and the player
-agree.
 
 **Splitting a shared key** (the sole and the banner) needs the renderer to
 know which model a polygon belongs to. That identity is on the CPU side
@@ -232,9 +209,11 @@ ramp art:<surface>  colour=<n>  from kit-away.ramp
 ### The catalogue becomes the index of artworks
 
 - Record every variant and placement of an artwork, not the first.
+  (Built: each key's ramp at its first sighting; `studio artworks` is the
+  index over the project's maps. Not built: the most-used look's ramp, the
+  placements, and an `artworks.tsv` of the catalogue itself.)
 - Elect each artwork's picture by most-used look, as the dump does.
 - Store the upload's ROM address per artwork, and the flags above.
-- Write `artworks.tsv`, the merged index the tools below read.
 
 ### The context bundle
 
@@ -425,7 +404,8 @@ Not tested: a fighter's second costumes, and text drawn as textures.
   luma table. The build's copies need the tone step as well as the
   colour step; neither was run with the game's real tables.
 - **Do the build's bands hold on real repaints?** The 4 and 12 level
-  thresholds were set on synthetic art.
+  thresholds held on the game's own art, a 2x upscale and two edits of it
+  (2.2, 2.7 and 11.6 levels); no real restyle has been through them.
 - **Is the ROM address safe to keep in shared files?** It is an offset, as
   a key is a hash; it is only needed locally.
 - **How different may two artworks be and still be offered as `same-as`?**
@@ -433,17 +413,18 @@ Not tested: a fighter's second costumes, and text drawn as textures.
 - **Catalogue size.** Recording every placement grows it; by how much is
   not known.
 
-## MVP: a few days
+## MVP: what is left
 
-1. `art_` images with `colour=fixed` and `colour=baked`, in both
-   renderers.
-2. `artworks.tsv` and `asset list` and `asset show` from the existing
-   catalogue.
-3. Bundle v0: `bundle.json`, `original.png`, `uv-mask.png` and two context
-   crops.
-4. Each key's 16-colour ramp recorded in the catalogue.
-5. Variants baked by `pack build` through the ramps, or copied, by the
-   distance rule, replacing the hand-run `studio variants` step; the
-   thresholds checked on a real repaint.
-6. `follow` for unseen colours, after trying both tints on a colour held
-   out of the catalogue, with the game's real tables read.
+Built on 2026-11-23: `art_` images with `fixed` and `baked`, in the CLI's
+renderers and the player (not the browser); each key's ramp in the
+catalogue and texture maps; baking and copying by the distance rule
+(`studio bake`), which replaces the hand-run `studio variants` where ramps
+exist; an artwork list (`studio artworks`). The remaining steps:
+
+1. `asset list` and `asset show` over `artworks.tsv`, with names (item 6).
+2. Bundle v0: `bundle.json`, `original.png`, `uv-mask.png` and two context
+   crops (item 7).
+3. The ramp elected by most-used look, and `follow` for unseen colours,
+   after trying both tints on a colour held out of the catalogue, with the
+   game's real tables read.
+4. `art_` in the browser (its pack index and fetch).

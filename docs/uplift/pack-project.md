@@ -106,7 +106,7 @@ The build treats `baked` as the usual case: from one authored image it
 makes the other colourings, or copies the image, by how far the art lies
 from the game's own colour ramp. So the catalogue records each key's
 16-colour ramp (48 bytes) when it first sees the key
-([asset-identity.md](asset-identity.md), "Packs can name the artwork").
+([uplift-studio.md](../uplift-studio.md), "Artworks").
 `follow` is the fallback for a colour nobody catalogued.
 
 Status is recorded and then verified: if the image's hash is not the

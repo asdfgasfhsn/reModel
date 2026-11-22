@@ -15,6 +15,20 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- Artwork identity in texture packs: a pack can replace an artwork, not one
+  colouring of it. `art_<surface>_<w>x<h>.png` is drawn for every colouring
+  (every `tex_` key) of those texels that has no image of its own, in the
+  software and GPU renderers and the player (`uses`/`needs artworks`; the
+  browser does not read them yet). The catalogue and texture maps record each
+  key's 16-colour ramp (`ramp=` in an entry's detail, from the next
+  observation on). `remodel studio artworks` lists artworks with their
+  colourings and ramps; `studio bake` (`make studio-bake`) writes the other
+  colourings of an `art_` image as `tex_` images through the ramps (baked,
+  measured by how far the image lies from the ramp it was painted over), or
+  leaves them to be drawn as it is (fixed); a rebuild keeps hand-made `tex_`
+  images. The `known` and `selected` gates resolve `art_` files and rows by
+  surface, and `scene render` reports the share of textured polygon area
+  drawn from pack images. Draw-only: no emulation state or hash changes.
 - Steering smoothing: a One Euro filter on pad sticks that steer, so a shaky
   stick no longer twitches the car. The Controls page's Steering block has a
   Smoothing row (Off, Light, Medium, Strong; Light by default; `steer_smooth`,

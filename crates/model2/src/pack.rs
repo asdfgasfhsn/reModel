@@ -23,16 +23,17 @@ pub const FORMAT: u32 = 2;
 /// The highest key scheme (`keys`) this build computes.
 pub const KEYS: u32 = 1;
 /// The feature names the format defines (`uses`, `needs`): `materials`
-/// (material maps), `regions` (2D region overrides, `regions.txt`), and
+/// (material maps), `regions` (2D region overrides, `regions.txt`),
+/// `artworks` (`art_` images, one for every colouring of an artwork), and
 /// reserved `models` and `selflit`.
-pub const FEATURES: [&str; 4] = ["materials", "regions", "models", "selflit"];
+pub const FEATURES: [&str; 5] = ["materials", "regions", "artworks", "models", "selflit"];
 /// The features this build's readers show. A pack that `needs` any other is
 /// refused whole. `materials`: the CLI, the player and the browser draw
 /// material maps (`gpu::Quality::materials`, the software renderer's
 /// `--materials`); with the user's setting off such a pack still shows its
 /// images, without the maps (the setting is the user's choice, not the
 /// pack's).
-pub const SHOWN: [&str; 2] = ["materials", "regions"];
+pub const SHOWN: [&str; 3] = ["materials", "regions", "artworks"];
 /// What the browser shows: it draws material maps but not regions yet (the
 /// 2D region overrides need the pack's `regions.txt` fetched; docs/
 /// texture-packs.md, "Regions"). A pack that `needs regions` is refused
@@ -404,6 +405,10 @@ pub enum FileKind {
     /// `tex_<key>_<w>x<h>.<k>` (one image key, `surface` false) or
     /// `surf_<key>_<w>x<h>.<k>` (a surface key, true): a material map.
     Map { surface: bool, key: u64, width: u32, height: u32, kind: MapKind },
+    /// `art_<surface>_<w>x<h>`: one image for an artwork (a surface key),
+    /// drawn for every colouring of it that has no `tex_` image of its own
+    /// (`artworks` feature, docs/texture-packs.md).
+    Art { surface: u64, width: u32, height: u32 },
     /// `region_<name>`: the image of a 2D region override (`regions.txt`).
     Region,
     /// A name the format reserves (`.e`, `.m`, `mdl_`, `img_`): ignored.
@@ -445,6 +450,16 @@ pub fn parse_name(stem: &str) -> Result<FileKind, String> {
             Err("a region image is region_<name> (lowercase letters, digits, - and _)".into())
         };
     }
+    if let Some(rest) = base.strip_prefix("art_") {
+        if suffix.is_some() {
+            return Err("an art_ image has no material maps yet: name the maps by tex_ or surf_".into());
+        }
+        let bad = || "an art name is art_<16 lowercase hex digits>_<w>x<h>".to_string();
+        let (key, wh) = rest.split_once('_').ok_or_else(bad)?;
+        let surface = hex_key(key).ok_or_else(bad)?;
+        let (w, h) = wh.split_once('x').ok_or_else(bad)?;
+        return Ok(FileKind::Art { surface, width: size(w).ok_or_else(bad)?, height: size(h).ok_or_else(bad)? });
+    }
     let kind = suffix.map(|s| MapKind::from_suffix(s).ok_or_else(|| format!("`.{s}` isn't a map suffix (.n, .s, .g)")));
     if let Some(key) = base.strip_prefix("tile_") {
         let key = hex_key(key).ok_or("a tile name is tile_<16 lowercase hex digits>")?;
@@ -458,7 +473,7 @@ pub fn parse_name(stem: &str) -> Result<FileKind, String> {
     } else if let Some(r) = base.strip_prefix("surf_") {
         (true, "surf", r)
     } else {
-        return Err("not a pack name (tex_, surf_ or tile_)".into());
+        return Err("not a pack name (tex_, art_, surf_ or tile_)".into());
     };
     let bad = || format!("a {prefix}_ name is {prefix}_<16 lowercase hex digits>_<w>x<h>");
     let (key, wh) = rest.split_once('_').ok_or_else(bad)?;
@@ -643,6 +658,44 @@ mod tests {
             let e = parse_name(stem).unwrap_err();
             assert!(e.contains(why), "{stem}: {e}");
         }
+    }
+
+    #[test]
+    fn an_artwork_name_parses_and_the_manifest_may_need_artworks() {
+        assert_eq!(
+            parse_name("art_0123456789abcdef_64x32"),
+            Ok(FileKind::Art { surface: 0x0123_4567_89ab_cdef, width: 64, height: 32 })
+        );
+        for (stem, why) in [
+            ("art_0123456789abcdef_64x32.n", "no material maps"),
+            ("art_0123456789ABCDEF_64x32", "art_<16"),
+            ("art_0123456789abcdef_0x32", "<w>x<h>"),
+            ("art_01234_8x8", "art_<16"),
+        ] {
+            let e = parse_name(stem).unwrap_err();
+            assert!(e.contains(why), "{stem}: {e}");
+        }
+        // Shown here; the browser does not read art_ files, so a pack that
+        // needs them is refused there and one that only uses them is not.
+        assert!(Manifest::accept(Some("format 2\nneeds artworks\n")).is_ok());
+        let e = Manifest::accept_for(Some("format 2\nneeds artworks\n"), &SHOWN_WEB).unwrap_err();
+        assert!(e.contains("artworks"), "{e}");
+        assert!(Manifest::accept_for(Some("format 2\nuses artworks\n"), &SHOWN_WEB).is_ok());
+        let info = TexInfo {
+            key: 1,
+            surface: 0xff,
+            width: 8,
+            height: 4,
+            header: [0; 4],
+            colour: 0,
+            bank: 0,
+            x0: 0,
+            y0: 0,
+            luma_table: 0,
+            translucent: false,
+        };
+        assert_eq!(info.art_name(), "art_00000000000000ff_8x4");
+        assert!(matches!(parse_name(&info.art_name()), Ok(FileKind::Art { surface: 0xff, .. })));
     }
 
     #[test]

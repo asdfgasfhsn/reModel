@@ -272,7 +272,8 @@ impl Packs {
 impl Enhance for Packs {
     fn texture(&mut self, info: &TexInfo) -> Option<Arc<Rgba>> {
         self.pack.as_ref()?;
-        let img = self.load(&info.name());
+        // This colouring's own image, else the artwork's (`art_`).
+        let img = self.load(&info.name()).or_else(|| self.load(&info.art_name()));
         self.looked_up[0] += 1;
         self.replaced[0] += img.is_some() as u64;
         img

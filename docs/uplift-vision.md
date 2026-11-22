@@ -114,7 +114,7 @@ findings change their shape or order.
 |---|---|---|---|
 | **Find** | Every asset, where it shows | [asset-identity](uplift/asset-identity.md) | Catalogue, texmap |
 | | Named scenes | [scenes-and-server](uplift/scenes-and-server.md) | Save states and captures, unnamed |
-| **Understand** | One identity per artwork; context bundle | [asset-identity](uplift/asset-identity.md) | Surface key; no bundle |
+| **Understand** | One identity per artwork; context bundle | [asset-identity](uplift/asset-identity.md) | `art_` images in packs, each key's colour ramp in the catalogue, `studio artworks`/`bake`; no names or bundle |
 | **Make** | Recipes; any image model, with guarantees | [generation](uplift/generation.md) | `studio style`, `studio draft` |
 | | 2D: patterns, regions that fit, text fields | [2d-cells](uplift/2d-cells.md) | Tile images, regions |
 | | Draw rules: as painted, filtering, tags by category | [renderer-controls](uplift/renderer-controls.md) | Look tags per texture |
@@ -143,7 +143,7 @@ agents soonest.
 | ★ | **3. Interface rules on today's tools, and the three defects** | No silent work; output a model can parse | S to M | Low | Nothing | `--json`, exit codes, refuse to reuse or overwrite |
 | ★ | **22. [Content coverage](uplift/content-coverage.md)**: tours, ROM read maps, `coverage` (built 2026-11-21: `make tour-run`, `make coverage`); then the tour recorder, pokes and the crawler | A catalogue that holds the whole game, and a number for how much it holds | S, then M to L | Medium: the crawler covers menus, not play | Nothing; cheats for pokes | Tours and `coverage` against the read map |
 | ★ | **4. Asset gates and `pack check`** (built 2026-11-22: `file`, `alpha`, `seam`, `changed`, `noise`, `stale`; `lint`, `budget`, `known`, `selected`, scene `coverage`; reports; `pack-flicker --limit`; limits checked on `vf2` with a synthetic pack only, so a second real pack is still wanted; `review`, `pack report`, failure sheets and the scene `misses`/`distance`/clip `steady` gates remain) | "Done" is a number | M | Medium: limits were set and reported on the same images | 1 for scene coverage | The first set of six gates, then limits checked on a second pack |
-| | **5. Artwork identity in packs** | A pack replaces "the wall base" | M | Medium | Nothing | Each key's colour ramp in the catalogue; `art_` images, with the build baking or copying the colour copies |
+| | **5. Artwork identity in packs** (built 2026-11-23: the ramp in the catalogue, `art_` images in the CLI's renderers and the player, `studio artworks` and `studio bake` for `fixed` and `baked`, `known` and `selected` by identity; on Top Skater, `vf2` and Daytona one image bakes to 11, 28 and 34 colourings with 0.00 to 0.05 mean error and draws as the game's own images do; names, links, flags, the elected ramp, `follow`, the browser and a per-pixel `coverage` remain) | A pack replaces "the wall base" | M | Medium | Nothing | Each key's colour ramp in the catalogue; `art_` images, with the build baking or copying the colour copies |
 | | **6. Project manifest and provenance** | Work survives hand-over | M | Low | 5 for names | Import the showcase workspace |
 | | **7. Context bundles** | An agent's whole briefing in one call | M | Low | 1, 5 | `bundle.json`, original, mask, two crops |
 | | **8. Player: `--scene`, pack watch, then a pack page** | The artist's loop, and the first step away from the terminal | S to M, then L | Low, then unknown | 1 | Reload on change by swapping one image, as the look does |

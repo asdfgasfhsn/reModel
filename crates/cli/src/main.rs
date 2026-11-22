@@ -1,4 +1,5 @@
 mod answer;
+mod artwork;
 mod camera_scan;
 mod catalogue;
 mod catalogue_viewer;

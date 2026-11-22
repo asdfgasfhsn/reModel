@@ -87,6 +87,10 @@ fn list(dir: &Path, maps: bool) -> std::io::Result<Listing> {
                 names.insert(stem.to_string());
                 by_key[0].push((key, stem.to_string()));
             }
+            Ok(FileKind::Art { .. }) => {
+                // Found by surface, asked for on demand: not preloaded.
+                names.insert(stem.to_string());
+            }
             Ok(FileKind::Tile { key }) => {
                 names.insert(stem.to_string());
                 by_key[1].push((key, stem.to_string()));
@@ -236,7 +240,9 @@ impl DirPack {
         if let Some(img) = self.ready.remove(&name) {
             self.asked.remove(&name);
             self.preload_want.remove(&name);
-            if let (true, Some(i)) = (name.starts_with("tile_"), &img) {
+            // Tiles and artwork images serve many asks (every colouring of an
+            // artwork): keep them.
+            if let (true, Some(i)) = (name.starts_with("tile_") || name.starts_with("art_"), &img) {
                 self.tile_cache.insert(name.clone(), i.clone());
             }
             self.handed.insert(name);
@@ -253,8 +259,14 @@ impl DirPack {
 }
 
 impl TexturePack for DirPack {
+    /// The image of this colouring, else the artwork's (`art_`), which
+    /// every colouring without an image of its own is drawn with.
     fn find(&mut self, info: &TexInfo) -> Found {
-        self.get(info.name())
+        let own = info.name();
+        if self.names.contains(&own) {
+            return self.get(own);
+        }
+        self.get(info.art_name())
     }
 
     /// Images in the order of their file names, decoded a few at a time in
@@ -428,5 +440,51 @@ mod tests {
             assert!(e.contains("can't show") || e.contains("newer reModel"), "{e}");
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_artwork_image_is_drawn_for_every_colouring_without_its_own() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../out/scratch/dirpack-art-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let info = |key| TexInfo {
+            key,
+            surface: 0xaa,
+            width: 2,
+            height: 1,
+            header: [0; 4],
+            colour: 0,
+            bank: 0,
+            x0: 0,
+            y0: 0,
+            luma_table: 0,
+            translucent: false,
+        };
+        let (art, own) = ([1u8, 2, 3, 255, 4, 5, 6, 255], [9u8, 9, 9, 255, 8, 8, 8, 255]);
+        std::fs::write(dir.join(format!("{}.png", info(1).art_name())), png::encode_rgba(2, 1, &art)).unwrap();
+        std::fs::write(dir.join(format!("{}.png", info(2).name())), png::encode_rgba(2, 1, &own)).unwrap();
+        std::fs::write(dir.join("pack.txt"), "format 2\nneeds artworks\n").unwrap();
+        let mut pack = DirPack::open(&dir).unwrap();
+        let mut get = |k| {
+            let start = std::time::Instant::now();
+            loop {
+                match pack.find(&info(k)) {
+                    Found::Image(img) => break img.data.clone(),
+                    Found::Pending => assert!(start.elapsed().as_secs() < 10, "never decoded"),
+                    Found::Missing => panic!("missing"),
+                }
+                std::thread::yield_now();
+            }
+        };
+        // Two colourings with no image of their own both get the artwork's;
+        // a third with its own keeps it.
+        assert_eq!(get(1), art);
+        assert_eq!(get(3), art);
+        assert_eq!(get(2), own);
+        // Another artwork has none.
+        let mut other = info(4);
+        other.surface = 0xbb;
+        assert!(matches!(pack.find(&other), Found::Missing));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
