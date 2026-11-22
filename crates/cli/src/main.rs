@@ -600,11 +600,13 @@ debugging (environment variables for `run`):
   REMODEL_PROBE=X,Y    at each snapshot, list the 3D polygons covering
                        pixel (X, Y) with their texture header and texels
   REMODEL_WATCH=ADDR   log every memory write to ADDR's 32-bit word
-  REMODEL_LINK=idle|fake,ID,TOTAL
+  REMODEL_LINK=idle|latch|fake,ID,TOTAL
                        experimental (docs/hw/link-board.md): fit a link
                        board whatever the game's manifest says, and write
                        every access to 0x1A00000-0x1A1FFFF to
-                       DIR/link-trace.txt. fake: also a partner that
+                       DIR/link-trace.txt. latch: a board whose 0x1A14000
+                       reads back what was written (skisuprg's board check).
+                       fake: also a partner that
                        reports node ID and TOTAL nodes once the game starts
                        the board and mirrors the game's own block;
                        REMODEL_LINK_DELAY=N frames late, REMODEL_LINK_FREEZE=F
@@ -3306,7 +3308,9 @@ fn run(
     // link board whatever the game's manifest says and traces every access
     // to 0x1A00000-0x1A1FFFF into DIR/link-trace.txt. Off by default.
     if let Ok(spec) = std::env::var("REMODEL_LINK") {
-        let mut link = model2::link::Link::new(romset::LinkBoard::Idle);
+        // REMODEL_LINK=latch: a board whose 0x1A14000 reads back what was written (skisuprg's check).
+        let kind = if spec == "latch" { romset::LinkBoard::Latch } else { romset::LinkBoard::Idle };
+        let mut link = model2::link::Link::new(kind);
         // REMODEL_LINK=fake,ID,TOTAL: also answers the start of the board.
         if let Some(rest) = spec.strip_prefix("fake,") {
             let n: Vec<u8> = rest.split(',').filter_map(|x| x.parse().ok()).collect();

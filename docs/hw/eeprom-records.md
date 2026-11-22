@@ -26,7 +26,8 @@ values, the lengths) are in `crates/romset/src/games/link.rs`. Marked
 | **S32A**, byte-sum checksum | `sgt24h` | section 3 |
 | CRC-16 header (`srallyc`'s kind) | `srallyc`, `manxtt`, `manxttc` | `docs/hw/link-board.md` section 2; CCITT, start `0xFFFF`, complemented, over bytes 2 to the record's length |
 | `SEGA` I/O board record | `daytona` | `docs/hw/link-board.md` section 10 (not in the EEPROM) |
-| `SEGASTCb` | `stcc` | checksum not read yet |
+| `SEGASTCb` / `SEGASTCa` | `stcc` / `stcca`, `stccb` | section 4: CCITT CRC-16 at `0x08` over `0x10`-`0x7F` |
+| `SEGA.AM#3.VRON.` (backup SRAM) | `von` | section 5: a table-driven CRC-16, two copies, in the battery-backed SRAM |
 
 ## 2. The S32A record, shifting checksum
 
@@ -116,16 +117,42 @@ against an image the game wrote (both sums). *Not yet built*: `sgt24h` needs the
 `0x380` block layout as well (`docs/hw/link-board.md` section 14.6), and `RecordCrc`
 would need the second copy to be built (marker out) rather than copied.
 
-## 4. Not covered
+## 4. The `SEGASTCb` record (`stcc`, `stcca`, `stccb`)
 
-- `skisuprg`: the checksum is known (section 2), but its start is a
-  different handshake (`docs/hw/link-board.md` section 14.2).
-- `stcc`: `SEGASTCb` record, checksum word at `0x08`, counter at `0x0C`,
-  LINK TYPE in the top three bits of byte `0x10`: the routine has not been
-  read.
-- `von` keeps the setting in its backup SRAM (a third store).
+| Offset | Size | Contents |
+|---|---|---|
+| `0x00` | 8 | the magic `SEGASTCb` (`stcca`, `stccb`: `SEGASTCa`) |
+| `0x08` | 2 | the **checksum**, low byte first |
+| `0x0A` | 2 | `FF FF` |
+| `0x0C` | 4 | a write counter (0 in the game's first-boot record; the test menu's first save makes it 1) |
+| `0x10` | 26 | the settings (`stcca` and `stccb`: 22): LINK TYPE is bits 5-7 of byte `0x10` (0 STAND ALONE, 1-7 CAR 1-7; bit 0 is another setting, 1), the COIN/CREDIT SETTING word at `0x18`-`0x19` (`stcca`, `stccb`: `0x14`-`0x15`) |
+| `0x2A` | | `FF` to the end of the 128 bytes |
 
-## 5. Checking it
+There is **no second copy**. **The checksum**: the CRC-16 of `srallyc`'s record kind (`docs/hw/link-board.md` section 2): CCITT
+polynomial `0x1021` taken high bit first, start value `0xFFFF`, result complemented, over bytes **`0x10` to `0x7F`** (the
+settings and the `FF` fill after them; the checksum word, the padding and the counter are outside it), stored low byte first
+(`RecordCrc::ccitt(8, 0x10, 0x80, 0xffff, true)`).
+
+*How it was found (by running the game, no code read)*: the game's first-boot record and the records it saved after test-menu
+changes were taken from `eeprom.bin`; a search over the checksum algorithms known here (the CCITT CRC with start values 0, `0xFFFF`
+and the S32A seeds, complemented or not, both byte orders; the S32A shifting sum; `von`'s table sum; byte sums) and every
+start and end offset found one hit with a meaning (`0x10`-`0x7F`, CCITT, `0xFFFF`, complemented) and a few at odd ranges (start 17 to 19,
+which no field boundary explains). *Confirmed* against **five records `stcc` wrote itself**: the first-boot defaults (`0xA60F`), LINK TYPE
+CAR 1 (`0x407B`), CAR 3 (`0x9CB2`), CAR 7 (`0x3501`) and FREE PLAY (`0x71DE`, the counter 1); and `stcca` and `stccb` each: first boot and
+FREE PLAY. `make link-record-test GAMES="stcc stcca stccb"` does it again (the game's own save of a changed setting must pass, and
+must be the free play bytes `romset` sets).
+
+## 5. `von`'s backup SRAM record
+
+`von` keeps its settings in the battery-backed SRAM at `0x1D00000`, not in the EEPROM; `docs/hw/link-board.md` section 15.1 has the
+layout (`SEGA.AM#3.VRON.` at 0, the length `0x20C`, the checksum at `0x14`, the settings from `0x16`, the whole record repeated at
+`0x20C`) and the checksum, **read from the game's own routine (ROM `0x3120`) and confirmed against the record it wrote** at first boot and
+after a change: a 32-bit register started at `0xDEBDEB00`; for each byte of the 34 bytes `0x16`-`0x37` the byte is added to it, it is
+shifted left eight bits and the CCITT table entry of its old top byte is exclusive-ored into bits 16-31; the result is the table entry of the
+top byte exclusive-ored with bits 8-23. (The same start value as `overrev`'s and `skisuprg`'s shifting sum, but a different way to fold the
+bytes in: the S32A rule does not give this record's checksum.) `romset::SumKind::Table`.
+
+## 6. Checking it
 
 `remodel --game G link-settings FILE` (and `make link-record-test`) checks
 the checksums of an image a game wrote, from a `run`'s `eeprom.bin` or

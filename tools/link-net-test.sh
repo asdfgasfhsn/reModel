@@ -26,6 +26,7 @@
 #   settings    the joiner's settings differ by a byte: the host refuses to start
 #   desync      a record received for frame 1200 is damaged: both hosts report
 #               the frame and the hashes
+# ONLY="delay-adaptive-clean drop2-kill" (names as in the lines above and the output) runs just those cases.
 # Everything is on 127.0.0.1; scratch output stays under OUT_DIR.
 set -u
 BIN=$1; ROM=$2; OUT=$3; shift 3
@@ -35,6 +36,7 @@ fail=0
 base=$((47100 + RANDOM % 1500))
 n=0
 
+want() { [ -z "${ONLY:-}" ] && return 0; case " $ONLY " in *" ${1##*/} "*) return 0 ;; esac; return 1; }
 hashes() { sed -n 's/^node \([0-9]*\) *state hash \([0-9a-f]*\) .*/\1 \2/p' "$1"; }
 ok() { echo "link-net-test $1: ok${2:+ ($2)}"; }
 bad() { echo "link-net-test $1: FAIL ${2:-}"; fail=1; }
@@ -60,6 +62,7 @@ pair() {
 # leaver's records from LEAVE_AT - 3 back from host 1 (--starve), so host 1 can only go on with
 # what host 0 relays.
 drop_case() {
+	want "$1" || return 0
 	local tag=$1 nodes=$2 lv=$3 how=$4 dl=${5:-2}
 	local names=(Ann Bob Cy) pids=() i port logs=() ex
 	n=$((n + 1)); port=$((base + n))
@@ -135,6 +138,7 @@ drop_case() {
 }
 
 for game in $GAMES; do
+	MAXN=8; JITARG=""; ADAPT_CLEAN=none
 	case $game in
 	srallyc)
 		INPUT="coin1@1500-1504,coin1@1560-1564,gas=0xff@3430-99999"; FRAMES=4400
@@ -148,13 +152,31 @@ for game in $GAMES; do
 	indy500)
 		INPUT="coin1@1100-1104,coin1@1120-1124,start@1250-1254,gas=0xff@1400-1410,gas=0xff@1600-1610,gas=0xff@1800-1810,gas=0xff@2000-99999"; FRAMES=4500
 		LEAVE_AT=5000; FRAMES_DROP=6600; SHOTS_DROP=5300,6000,6600 ;;
+	von)
+		# Two fighters in a match (the game takes two nodes and no more), each pressing its shots.
+		# On the JIT (the same hashes as the interpreter's): von interpreted is little over real time, so the paced adaptive-delay cases would see holds.
+		INPUT="coin1@1000-1004,start@1100-1104,lshot@2700-99999/6,rshot@2703-99999/9,lup@2700-3200"; FRAMES=4000; MAXN=2; JITARG=--jit
+		# von has frames of 36 to 50 ms (the scene loads, five of them in the first 3,100 frames: `run`'s frame times), so on a clean link
+		# the adaptive rule rightly raises D: that case only has to agree with link-run's hashes for the schedule it logged.
+		ADAPT_CLEAN=any
+		LEAVE_AT=3600; FRAMES_DROP=5000; SHOTS_DROP=3900,4500,5000 ;;
+	stcc)
+		# Coin, start and the select screens' start presses, qualifying alone, then round 1 with the others
+		# (the rolling start is at frame 6500); 7 machines at most.
+		INPUT="coin1@1100-1104,start@1250-1254,start@1700-1704,start@2100-2104,start@2500-2504,start@2900-2904,start@3300-3304,gas=0xff@4100-99999"; FRAMES=7200; MAXN=7; JITARG=--jit
+		LEAVE_AT=7600; FRAMES_DROP=8600; SHOTS_DROP=7800,8200,8600 ;;
+	skisuprg)
+		# Coin, the selects' button presses, then the slope with the others (the race is on from about frame 2700); 4 machines at most.
+		INPUT="coin1@1100-1104,coin1@1120-1124,blue@1250-1254,blue@1500-1504,blue@1800-1804,blue@2100-2104,blue@2400-2404,blue@2700-2704"; FRAMES=4000; MAXN=4; JITARG=--jit
+		LEAVE_AT=4400; FRAMES_DROP=5600; SHOTS_DROP=4700,5200,5600 ;;
 	*) echo "no scripted race for $game"; exit 2 ;;
 	esac
-	BIN_RUN=("$(dirname "$0")/capped" "$BIN" --game "$game" --rom "$ROM")
+	BIN_RUN=("$(dirname "$0")/capped" "$BIN" --game "$game" --rom "$ROM" $JITARG)
 	INPUT_ARGS="--input $INPUT"
 	mkdir -p "$OUT/$game"
 
 	for D in 2 6; do
+		want $([ $D = 2 ] && echo clean || echo faults) || continue
 		# The reference: both nodes in one process.
 		"${BIN_RUN[@]}" --out "$OUT/$game/lr$D" $INPUT_ARGS link-run --nodes 2 --frames $FRAMES --delay $D >"$OUT/$game/lr$D.log" 2>&1
 		ref0=$(hashes "$OUT/$game/lr$D.log" | sed -n 1p | cut -d' ' -f2)
@@ -178,6 +200,7 @@ for game in $GAMES; do
 	# Wi-Fi-like one (10 ms + up to 30 ms jitter, 3% loss) it rises. Each host's hash equals
 	# `link-run --delay-at` with the logged schedule.
 	delay_case() {
+		want "$1" || return 0
 		local tag=$1 d0=$2 common=$3 hx=$4 jx=$5 expect=$6
 		pair "$game/$tag" "--frames $FRAMES --delay $d0 $common" "$hx" "$jx"
 		wait $HPID; local hrc=$?; wait $JPID; local jrc=$?
@@ -201,12 +224,12 @@ for game in $GAMES; do
 	}
 	faultsx="--latency 5 --jitter 50 --loss 5 --dup 5"
 	delay_case delay-plan 3 "--seed 11 --shot-at 2000,3000,3600,4300" "$faultsx --delay-plan 1800:6,2600:4,3300:5,3900:3" "$faultsx --seed 9" some
-	delay_case delay-adaptive-clean 2 "--realtime --auto-delay --seed 12" "--auto-delay" "" none
+	delay_case delay-adaptive-clean 2 "--realtime --auto-delay --seed 12" "--auto-delay" "" ${ADAPT_CLEAN:-none}
 	wifi="--latency 10 --jitter 30 --loss 3"
 	delay_case delay-adaptive-wifi 2 "--realtime --seed 13 --shot-at 2000,3000,3600,4300" "--auto-delay $wifi" "$wifi --seed 9" some
 
 	# A host found over mDNS, then joined; names in the logs.
-	if [ "$game" = "${GAMES%% *}" ]; then
+	if [ "$game" = "${GAMES%% *}" ] && want discover; then
 		MID='"${BIN_RUN[@]}" link-net --browse 4 >"$OUT/$game/browse.log" 2>&1'
 		pair "$game/discover" "--frames 600 --delay 2" "" ""
 		MID=
@@ -227,27 +250,33 @@ for game in $GAMES; do
 	drop_case "$game/drop2-polite" 2 1 quit
 	drop_case "$game/drop2-kill" 2 1 kill
 	drop_case "$game/drop2-host" 2 0 quit
+	if [ "${MAXN:-8}" -ge 3 ]; then
 	drop_case "$game/drop3-polite" 3 1 quit
 	drop_case "$game/drop3-kill" 3 2 kill 6
 	# With a delay change in flight: announced with the record 3 frames before the player leaves
 	# (D 2: it takes effect at the leaving frame), and the announcer itself leaving right after.
 	PLAN=$((LEAVE_AT - 3)):5 NEEDCHANGE=1 drop_case "$game/drop3-change" 3 2 quit
 	PLAN=$((LEAVE_AT - 1)):4 NEEDCHANGE=1 drop_case "$game/drop3-announcer" 3 0 quit
+	fi
 	PLAN=$((LEAVE_AT - 400)):6,$((LEAVE_AT - 3)):3 NEEDCHANGE=1 drop_case "$game/drop2-change" 2 1 quit 4
 
-	# A different settings byte on the joiner.
-	pair "$game/settings" "--frames 600 --delay 2" "" "--tamper-byte 0x0c:5"
-	wait $HPID; hrc=$?; wait $JPID; jrc=$?
-	if [ $hrc != 0 ] && grep -q "settings differ" "$OUT/$game/settings-h.err" && [ $jrc != 0 ]; then ok "$game settings" "$(head -1 "$OUT/$game/settings-h.err" | cut -c1-110)"; else bad "$game settings" "exit $hrc/$jrc: $(cat "$OUT/$game/settings-h.err")"; fi
+	if want settings; then
+		# A different settings byte on the joiner.
+		pair "$game/settings" "--frames 600 --delay 2" "" "--tamper-byte 0x0c:5"
+		wait $HPID; hrc=$?; wait $JPID; jrc=$?
+		if [ $hrc != 0 ] && grep -q "settings differ" "$OUT/$game/settings-h.err" && [ $jrc != 0 ]; then ok "$game settings" "$(head -1 "$OUT/$game/settings-h.err" | cut -c1-110)"; else bad "$game settings" "exit $hrc/$jrc: $(cat "$OUT/$game/settings-h.err")"; fi
+	fi
 
-	# A damaged record.
-	pair "$game/desync" "--frames 3000 --delay 2 --check-every 60" "" "--corrupt-rx-at 1200"
-	wait $HPID; hrc=$?; wait $JPID; jrc=$?
-	if [ $jrc = 2 ] && [ $hrc = 2 ] && grep -q "out of sync with [A-Za-z]* at frame 1200: our state hash [0-9a-f]*, theirs [0-9a-f]*" "$OUT/$game/desync-j.err" \
-		&& grep -q "out of sync with [A-Za-z]* at frame 1200" "$OUT/$game/desync-h.err"; then
-		ok "$game desync" "$(head -1 "$OUT/$game/desync-j.err")"
-	else
-		bad "$game desync" "exit $hrc/$jrc: $(cat "$OUT/$game/desync-j.err") / $(cat "$OUT/$game/desync-h.err")"
+	if want desync; then
+		# A damaged record.
+		pair "$game/desync" "--frames 3000 --delay 2 --check-every 60" "" "--corrupt-rx-at 1200"
+		wait $HPID; hrc=$?; wait $JPID; jrc=$?
+		if [ $jrc = 2 ] && [ $hrc = 2 ] && grep -q "out of sync with [A-Za-z]* at frame 1200: our state hash [0-9a-f]*, theirs [0-9a-f]*" "$OUT/$game/desync-j.err" \
+			&& grep -q "out of sync with [A-Za-z]* at frame 1200" "$OUT/$game/desync-h.err"; then
+			ok "$game desync" "$(head -1 "$OUT/$game/desync-j.err")"
+		else
+			bad "$game desync" "exit $hrc/$jrc: $(cat "$OUT/$game/desync-j.err") / $(cat "$OUT/$game/desync-h.err")"
+		fi
 	fi
 done
 exit $fail

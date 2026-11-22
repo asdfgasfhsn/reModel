@@ -6,7 +6,7 @@
 
 use super::*;
 use model2::link::LinkHub;
-use romset::{LinkPlay, SettingsStore};
+use romset::LinkPlay;
 
 const USAGE_LINK: &str = "usage: remodel --game G link-run [--nodes N] [--frames F] [--input0 S --input1 S ...]
         [--delay D] [--link-types 1,2,..] [--eeprom FILE] [--free-play] [--log-words] [--coverage] [--coverage-from F] [--geo-at F] [--beat-until F]
@@ -335,11 +335,9 @@ pub(crate) fn node_machine(
     m.bus.geo.set_threaded(!o.single_thread);
     let set: Vec<(usize, u8)> = play.car_off.map(|o| (o, i as u8)).into_iter().chain(extra.iter().copied()).collect();
     let image = play.settings.image(base, play.role_off, role, &set);
-    match play.settings.store {
-        SettingsStore::Eeprom => m.bus.eeprom.load(&image),
-        SettingsStore::IoBoard => m.bus.io_store_load(&image),
-    }
-    m.bus.link = Some(model2::link::Link::new(romset::LinkBoard::Idle).joined());
+    m.bus.settings_load(play.settings.store, &image);
+    let kind = m.bus.link.as_ref().map_or(romset::LinkBoard::Idle, |l| l.kind());
+    m.bus.link = Some(model2::link::Link::new(kind).joined());
     m
 }
 
@@ -376,8 +374,13 @@ pub(crate) fn settings(o: &Opts, roms: &RomSet) -> ExitCode {
                 String::new()
             };
             let car = play.car_off.map_or(String::new(), |c| format!(", ID byte {:#x} = {}", c, image[c]));
+            // Whether the record is on the game's FREE PLAY setting, as the game's own save wrote it.
+            let free = match play.free_play {
+                Some(fp) if fp.iter().all(|b| image[b.at] == b.on) => ", free play",
+                _ => "",
+            };
             println!(
-                "{}: checksums ok, role byte {:#x} = {}{car}{ctr}",
+                "{}: checksums ok, role byte {:#x} = {}{car}{ctr}{free}",
                 roms.game.id, play.role_off, image[play.role_off]
             );
             ExitCode::SUCCESS
@@ -706,10 +709,7 @@ fn go(o: &Opts, roms: &RomSet, a: &Args) -> Result<(), String> {
             let cov: String = m.coverage.iter().map(|x| format!("{x:08x}\n")).collect();
             let _ = std::fs::write(dir.join(format!("coverage-{i}.txt")), cov);
         }
-        let store = match play.settings.store {
-            SettingsStore::Eeprom => m.bus.eeprom.save(),
-            SettingsStore::IoBoard => m.bus.io_store_dump(play.settings.size),
-        };
+        let store = m.bus.settings_dump(play.settings.store, play.settings.size);
         let _ = std::fs::write(dir.join(format!("eeprom-{i}.bin")), store);
         if let Some(t) = &m.bus.link_trace {
             let text: String = t

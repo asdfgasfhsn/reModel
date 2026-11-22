@@ -20,7 +20,7 @@ pub static SKISUPRG: Game = Game {
     hud_element_windows: &[],
     controls: CONTROLS,
     drive_board: Some(DriveBoard::SkiPlatform),
-    link_board: None,
+    link_board: Some(crate::LinkBoard::Latch),
     parent: None,
     backup_ram: &[],
     protection: None,

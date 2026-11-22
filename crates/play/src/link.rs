@@ -21,7 +21,8 @@ use std::path::PathBuf;
 
 /// The games the player splits the screen for, and the most machines on
 /// one screen (the layout's quadrants).
-const SPLIT_GAMES: &[&str] = &["srallyc", "daytona", "manxtt", "indy500", "motoraid", "waverunr"];
+const SPLIT_GAMES: &[&str] =
+    &["srallyc", "daytona", "manxtt", "indy500", "motoraid", "waverunr", "von", "stcc", "skisuprg"];
 pub const MAX_ON_SCREEN: usize = 4;
 
 /// The link data of `id` if it can be played linked on one screen.
@@ -54,11 +55,9 @@ pub fn load_settings(bus: &mut model2::bus::Model2Bus, play: &romset::LinkPlay, 
     let role = *play.roles.get(i).or(play.roles.last()).unwrap();
     let car: Vec<(usize, u8)> = play.car_off.map(|o| (o, i as u8)).into_iter().collect();
     let image = play.settings.image(base, play.role_off, role, &car);
-    match play.settings.store {
-        romset::SettingsStore::Eeprom => bus.eeprom.load(&image),
-        romset::SettingsStore::IoBoard => bus.io_store_load(&image),
-    }
-    bus.link = Some(model2::link::Link::new(romset::LinkBoard::Idle).joined());
+    bus.settings_load(play.settings.store, &image);
+    let kind = bus.link.as_ref().map_or(romset::LinkBoard::Idle, |l| l.kind());
+    bus.link = Some(model2::link::Link::new(kind).joined());
 }
 
 /// Whether a game starts on free play (the `free_play` setting, `--free-play`): the

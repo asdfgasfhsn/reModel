@@ -103,13 +103,13 @@ wherever nothing else changed.
 | `daytonata` Turbo Rev A | hack (*unconfirmed*) | program pair | `95da2bac42132d58` | as `daytonat` |
 | `lastbrnxj` Japan, Rev A | region | program pair | `af452e8e6839ef0a` | plays; own attract frame 1800 (the parent's 700 is the warning text) |
 | `lastbrnxu` USA, Rev A | region | program pair | `5db58c2199e50ec7` | plays; own attract frame 1500 (700 is the SEGA logo) |
-| `stcca` Rev A | revision | program pair | `969ed016b6b232c8` | plays: name entry, qualifying; idle loop 0x73424 (76.2% skipped) |
-| `stccb` Rev B | revision | program pair | `a50918a0e5333ac8` | as `stcca`; loop 0x73574 |
+| `stcca` Rev A | revision | program pair | `969ed016b6b232c8` | plays: name entry, qualifying; idle loop 0x73424 (76.2% skipped); **link on** (its own settings record) |
+| `stccb` Rev B | revision | program pair | `a50918a0e5333ac8` | as `stcca`; loop 0x73574; **link on** (its own settings record) |
 | `vf2o` Original | revision | four program chips | `be420a1f95e7e0c6` | plays: fights; loop 0x10A74 (60.7%) |
 | `vf2a` Rev A | revision | four program chips | `aa8922832829ebc6` | plays; loop 0x10A98 |
 | `vf2b` Rev B | revision | four program chips | `6790a5d07fdfd8f7` | plays; loop 0x10B3C |
 | `vstrikro` Original | revision | four program chips and the `.7/.8` pair | `940ba002561c05cb` | plays: ranking, a match; loop found by the hot spots of the run |
-| `vonj` Japan | region | program pair | `c3bf3413fbdd155b` | plays; loop 0x28E2C |
+| `vonj` Japan | region | program pair | `c3bf3413fbdd155b` | plays; loop 0x28E2C; **link on** (the parent's data) |
 | `indy500d` Deluxe, Rev A | revision | program pair, `.7/.8` pair, sound program | `db57fdba291b8487` | plays; Japan warning then races; loop 0x345D4; attract frame 2250; **link off** |
 | `indy500to` Twin, older | revision | program pair, `.7/.8` pair, sound program | `56b54eb96991f0a8` | plays from its own `coin_start` (start press at 1900); loop 0x2E1C4; attract frame 2250; **link off** |
 | `dayton93` '93 Edition | revision | ten chips (program pair, main data `.8/.9` and `.6/.7`, polygons `.19/.23`, textures `.26/.27`), other sizes | `2a4707a921d968df` | plays; loop 0x12B0 (the parent's second loop is not in this program); own textures; **link off** |
@@ -194,8 +194,9 @@ the survey's checks only*.
 | `dayton93` | off | its record is version 1 and was not checked against the parent's link and free-play bytes |
 | `indy500d` | off | another layout: the checksum over the parent's range fails, no copy at 0x2C, bytes 0x1E/0x1F hold 18 and 17 |
 | `indy500to` | off | the record has the parent's layout and checksum (valid by the parent's rule, copy at 0x2C, role and cabinet bytes 0 at 0x1E/0x1F), but the test-menu route to FREE PLAY and NETWORK TYPE that works on the parent (docs/games/indy500.md) changed nothing in this release (its menu is not the parent's), so its free-play bytes and the game's acceptance of a role were not found: *not done* |
-| `vonj` | none | `von` has no link play data (an idle link board is fitted) |
-| the others (`stcca`, `stccb`, `vf2*`, `vstrikro`, `zerogunj`, `dyndeka2`, `doaa`) | none | their parents have none |
+| `vonj` | the parent's | the backup SRAM record (`SEGA.AM#3.VRON.`, the checksum, the defaults) is the parent's byte for byte, but for a run counter; a linked match runs (`docs/hw/link-board.md` section 15.4) |
+| `stcca`, `stccb` | their own (`VariantLink::Own`) | the record is `SEGASTCa`, four settings bytes shorter than the parent's and not the same defaults; the checksum rule (CCITT over `0x10`-`0x7F`), the role byte (`0x10` bits 5-7) and the link are the parent's; their free play bytes are at `0x14`-`0x15` (`docs/hw/link-board.md` section 16) |
+| the others (`vf2*`, `vstrikro`, `zerogunj`, `dyndeka2`, `doaa`) | none | their parents have none |
 
 `make link-free-play-test`, `link-state-check` and `link-record-test` run on the
 parents only and are unchanged.

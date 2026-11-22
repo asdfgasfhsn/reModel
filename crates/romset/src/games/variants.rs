@@ -319,6 +319,8 @@ pub static VARIANTS: &[Variant] = &[
         ],
         // The wait for vblank moved with the program: the same loop as the parent's, at 0x73424.
         idle_loops: Some(&[crate::IdleLoop { start: 0x73424, end: 0x7343c }]),
+        // The settings record is `SEGASTCa`, not the parent's (docs/games/stcc.md).
+        link: VariantLink::Own(&super::link::STCCA),
         ..Variant::BASE
     },
     // Sega Touring Car Championship, Rev B (`epr-19272b.15/19273b.16`).
@@ -333,6 +335,7 @@ pub static VARIANTS: &[Variant] = &[
             swap("epr-19571.16", rom("epr-19273b.16", 0x80000, "3f22f13a3baa46f93cb40e8af9534afaa57ead9c", Role::Program)),
         ],
         idle_loops: Some(&[crate::IdleLoop { start: 0x73574, end: 0x7358c }]),
+        link: VariantLink::Own(&super::link::STCCB),
         ..Variant::BASE
     },
     // Virtua Fighter 2, the original release: four program chips (`epr-17568.12`, `17569.13`, `17562.14`, `17563.15`).
@@ -414,6 +417,8 @@ pub static VARIANTS: &[Variant] = &[
             swap("vo-prog1.usa", rom("epr-18665b.16", 0x80000, "73f2a19a519ced8e0a1ab5cf69a4bf9d9841e288", Role::Program)),
         ],
         idle_loops: Some(&[crate::IdleLoop { start: 0x28e2c, end: 0x28e40 }]),
+        // The SRAM settings record (header, checksum and defaults) is the parent's.
+        link: VariantLink::Parent,
         ..Variant::BASE
     },
     // Indianapolis 500, the Deluxe cabinet: the program pair, the `.7/.8` pair and the sound program differ.

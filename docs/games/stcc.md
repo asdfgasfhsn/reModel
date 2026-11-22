@@ -142,13 +142,27 @@ half, above); smooth motion; run-ahead 1.
   a 600M-instruction coin-start run (`make bench`) fast-forwards 74.6%
   of its instructions through it, and the state hash is unchanged.
 
-## Link play (survey)
+## Link play
 
-- *Confirmed (by running it):* GAME ASSIGNMENTS has **LINK TYPE** (STAND ALONE, CAR 1, CAR 2, ... CAR 7 seen in seven
-  presses). Found by driving the test menu with scripted input (`test@1300-1330` held to open it, `service@A-B/20` to step the cursor, `test@F` to select or change a value) and diffing the `eeprom.bin` of runs that changed the value, the menu left through EXIT so the game saved it. The EEPROM record starts `SEGASTCb` (not the `S32A` of the other Sega racers): a checksum at
-  `0x08`, a write counter at `0x0C`, and LINK TYPE in **bits 5-7 of byte `0x10`** (`0x01` stand-alone, `0x21` CAR 1,
-  `0x41` CAR 2: the low bit is another setting). The checksum algorithm was not determined.
-- *Confirmed (by running it):* with LINK TYPE CAR 1 and a board fitted (`REMODEL_LINK=fake,0,2`) the game, after the test menu
-  is left, shows "THIS IS MASTER SITE" (`von`'s wording, not `srallyc`'s "MASTER CONTROLLER") and reads `0x1A14002` every frame, with
-  no further write to `0x1A14000`; neither board answers what it waits for (*inferred*: bit 7 set, as `von`). The Z80 link board ROM
-  `epr-18643a.7` is in this set. See `docs/hw/link-board.md` section 14.
+Two to seven machines of `stcc` race each other: `make link-run GAME=stcc NODES=7`, `make play GAME=stcc PLAYERS=4` (split screen, four
+at most on one screen) and `link-net` over a network. Everything below is *confirmed (by running it)* unless marked; the board doc
+(`docs/hw/link-board.md` section 16) and `docs/hw/eeprom-records.md` section 4 have the detail.
+
+- **The setting**: GAME ASSIGNMENTS has **LINK TYPE** (the fifth row: STAND ALONE, CAR 1 to CAR 7). The EEPROM record starts `SEGASTCb` (`stcca` and
+  `stccb`: `SEGASTCa`, four settings bytes shorter): a **checksum at `0x08`** (low byte first), a write counter at `0x0C`, the settings from `0x10`, LINK TYPE in
+  **bits 5-7 of byte `0x10`** (`0x01` stand-alone, `0x21` CAR 1, `0x41` CAR 2, ... `0xE1` CAR 7; the low bit is another setting).
+  **The checksum is a CRC-16**, CCITT polynomial `0x1021` taken high bit first, start value `0xFFFF`, result complemented, over bytes `0x10`-`0x7F` of the
+  128-byte image, stored low byte first (`srallyc`'s kind with another range). Found by running the game and trying the known algorithms over every range of a
+  first-boot record, then confirmed against five records the game wrote (its defaults, CAR 1, CAR 3, CAR 7 and FREE PLAY).
+- **The handshake** is `von`'s wording ("THIS IS MASTER SITE") on `srallyc`'s start: writes 0, 0 to `0x1A14000`/`0x1A14002`, reads `0x1A14000`, writes 1, waits for the hub's bit 7
+  flip on `0x1A14002`, writes its ID to `0x1A10001` and `0x0E00` and `0x01C0` to `0x1A10012`/`0x1A10014` (*inferred*: the receive area's and a block's sizes), polls
+  `0x1A10000`. It does not write `0x1A14002` as a master, so the hub warns and takes node 0.
+- **The block** is `srallyc`'s geometry (`0x1C0` bytes at `0x2000`, the others' from `0x21C0`).
+- **The race**: coin, start and the select screens' start presses on every machine: each qualifies alone (CAR 1 an Alfa Romeo, CAR 2 an AMG, ...), then
+  Round 1 starts with every machine's car on the grid and on the road (POSITION n of 8). Run with 2, 4 and 7 machines.
+- **Free play**: COIN ASSIGNMENTS has one row, COIN/CREDIT SETTING; #27 is FREE PLAY (26 presses from #1); the game's save changes the word at `0x18`-`0x19`
+  (`02 00` -> `8A 06`).
+- **The clones** `stcca` and `stccb` have their own `LinkPlay` entries (`VariantLink::Own`: the record differs, the checksum rule and the link are the same).
+- **Checks**: `make link-net-test GAMES=stcc`, `make link-free-play-test GAMES=stcc`, `make link-record-test GAMES="stcc stcca stccb"`.
+- *Unconfirmed*: the meaning of the block's fields; an eighth machine (the menu offers CAR 1-7 only); the Z80 link board program
+  `epr-18643a.7`, which nothing here runs.

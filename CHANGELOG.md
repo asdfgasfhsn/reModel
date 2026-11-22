@@ -13,6 +13,25 @@ message is its text), set `version` in the root `Cargo.toml`, commit, then
 creates the annotated tag `vx.y.z` without pushing. Details in
 [docs/usage.md](docs/usage.md), "Versions and releases".
 
+## Unreleased
+
+- Linked play for three more games: Virtual-On (`von`, with `vonj`) links two
+  machines in a one-against-one match, Sega Touring Car Championship (`stcc`,
+  with `stcca` and `stccb`) up to seven machines in one race, and Ski Super G
+  (`skisuprg`) up to four on one slope, in `link-run`, the split-screen
+  player and over the network, with free play from each game's own coin
+  setting. Virtual-On keeps its link setting in the backup SRAM (a third
+  settings store: its record has a table-driven CRC-16 read from the game's
+  code, and its blocks are 1,792 bytes, which `remodel-linknet` now carries:
+  blocks up to 1,792 bytes, datagrams up to 2,000). STCC's `SEGASTCb`
+  record's checksum was found by running the game and trying the known
+  algorithms (CCITT, start `0xFFFF`, complemented, over bytes `0x10`-`0x7F`;
+  confirmed against five records the game wrote), and its clones have their
+  own records. Ski Super G's board check reads `0x1A14000` back (write 1,
+  read bit 0 set; write 0, read it clear): an idle board fails it, which was the
+  survey's "NETWORK BOARD IS NOT EXIST !"; the new `LinkBoard::Latch` answers it
+  (`docs/hw/link-board.md` sections 15 to 17, `docs/hw/eeprom-records.md`).
+
 ## 0.13.1 (2026-11-22): network play over Wi-Fi
 
 - Network play over Wi-Fi: a held frame is tried again every half millisecond

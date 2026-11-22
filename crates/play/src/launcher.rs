@@ -2818,9 +2818,9 @@ mod tests {
 
     #[test]
     fn game_settings_rows_open_the_menu_pages() {
-        let mut r = Rig::new(&SET, &["stcc"]);
+        let mut r = Rig::new(&SET, &["hotd"]);
         r.press(1, Nav::Accept);
-        // (Play, Saves, Game settings: stcc has no versions and does not link.)
+        // (Play, Saves, Game settings: hotd has no versions and does not link.)
         r.press(2, Nav::Down).press(1, Nav::Accept);
         assert_eq!(level(&r), Some(page::Level::Settings));
         for text in ["Picture", "Controls", "Sound", "Speed and latency"] {

@@ -109,12 +109,25 @@ run-ahead 0 (input lag 0).
   a 600M-instruction coin-start run (`make bench`) fast-forwards 86.5%
   of its instructions through it, and the state hash is unchanged.
 
-## Link play (survey)
+## Link play
 
-- *Confirmed (by running it):* GAME ASSIGNMENTS has **NETWORK TYPE** (NO LINK, MASTER, SLAVE) and **CABINET ID** (1 to 4,
-  cycling). Found by driving the test menu with scripted input (`test@1300-1330` held to open it, `service@A-B/20` to step the cursor, `test@F` to select or change a value) and diffing the `eeprom.bin` of runs that changed the value, the menu left through EXIT so the game saved it. The EEPROM record is the `S32A` kind with a longer record (copies at `0x08` and `0x30`): NETWORK TYPE
-  byte `0x20` (copy `0x48`; 0 / 1 / 2), CABINET ID byte `0x21` (copy `0x49`, 0-based).
-- *Confirmed (by running it):* the handshake is **not** the others': with NETWORK TYPE MASTER and a board fitted
-  (`REMODEL_LINK=fake,0,2`) the game writes 0 to `0x1A14000` and `0x1A14002`, **then** 1 to `0x1A14000`, reads it back
-  (0) and shows "NETWORK BOARD IS NOT EXIST !" for about 300 frames before going on to attract. It never writes
-  `0x1A14002` as a master nor reads `0x1A14002` or `0x1A10000`. What the board answers instead is *unknown*. See `docs/hw/link-board.md` section 14.
+Two to four machines of `skisuprg` ski down the slope together: `make link-run GAME=skisuprg NODES=4`, `make play GAME=skisuprg PLAYERS=2` and `link-net`.
+*Confirmed (by running it)* unless marked; the board doc (`docs/hw/link-board.md` section 17) has the detail.
+
+- **The settings** (GAME ASSIGNMENTS): **NETWORK TYPE** (NO LINK, MASTER, SLAVE: `S32A` record byte `0x20`, copy `0x48`) and **CABINET ID** (1 to 4, cycling: byte `0x21`,
+  copy `0x49`; the nodes' IDs must differ, *inferred* from the game's check, below, not tried with equal ones). The record is the `S32A` kind with a 40-byte record at `0x08` (copy at `0x30`); its checksum is the shifting sum with the start
+  value `0xDEBDEB00` (`docs/hw/eeprom-records.md`). Found by driving the test menu with scripted input (`test@1300-1330` held to open it, `service@A-B/20` to step the cursor,
+  `test@F` to select or change a value) and diffing the `eeprom.bin` of runs that changed the value, the menu left through EXIT so the game saved it.
+- **The board check is a read-back** (the survey's "NETWORK BOARD IS NOT EXIST !" was the failure of it): with NETWORK TYPE linked the game writes 0 to `0x1A14000` and
+  `0x1A14002`, then 1 to `0x1A14000`, reads the byte back and wants **bit 0 set**, writes 0 and reads back **bit 0 clear** (code at ROM `0x6D720`). An empty slot (all ones) fails the
+  second half and an idle board (0) the first; a board whose `0x1A14000` holds what was written passes (`romset::LinkBoard::Latch`, now this game's manifest board; its default
+  NO LINK never reads the register, so single-player hashes are unchanged).
+- **After the check** the start is the family's: 0, 0, the master writes 1 to `0x1A14002`, 1 to `0x1A14000`, waits for the hub's bit 7 flip, writes its network type to `0x1A10001` and
+  `0x0380` to `0x1A10014`, polls `0x1A10000` and reads `0x1A10002`/`3`. It then shows "CHECK NETWORK (MASTER/SLAVE)" and its CABINET ID for 60 frames and (*inferred* from its code, ROM `0x6C430`: the screens and the timing were seen) waits up to
+  300 frames for every node's block to carry its CABINET ID at offset 4, all different.
+- **The block** is `0x380` bytes at `0x2000` (the game writes 41 bytes of it per frame in attract), the others' from `0x2380`.
+- **The race**: coin and the selects' button presses on every machine; the skiers start in their own colours (yellow, violet, white, red), **1st/2 and 2nd/2** with two machines and
+  **1st/4 and 4th/4** with four, the others on the slope. Run with 2 and 4 machines.
+- **Free play**: COIN ASSIGNMENTS #27 (the first row, 15 presses from the default #12): record bytes `0x10` 0x0B -> 0x1A, `0x11` 0 -> 1, `0x12` 2 -> 1.
+- **Checks**: `make link-net-test GAMES=skisuprg`, `make link-free-play-test GAMES=skisuprg`, `make link-record-test GAMES=skisuprg`.
+- *Unconfirmed*: the meaning of the block's fields beyond the CABINET ID at offset 4, a MASTER that is not node 0, a CABINET ID other than the node's index.

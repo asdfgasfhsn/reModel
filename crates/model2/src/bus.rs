@@ -1377,6 +1377,7 @@ impl Model2Bus {
             // Joined to a hub: note what the game does, the hub answers.
             match addr {
                 0x01a1_4000 => {
+                    l.latch = v as u8;
                     l.started = v & 0xff == 1;
                     l.start_frame = frame;
                 }
@@ -1384,6 +1385,9 @@ impl Model2Bus {
                 _ => {}
             }
             return;
+        }
+        if let (Some(l), 0x01a1_4000) = (self.link.as_mut(), addr) {
+            l.latch = v as u8;
         }
         let Some((id, total)) = self.link.as_ref().and_then(crate::link::Link::fake) else { return };
         if addr == 0x01a1_4000 && v & 0xff == 1 {
@@ -1469,6 +1473,24 @@ impl Model2Bus {
                     *d = b;
                 }
             }
+        }
+    }
+
+    /// Load a settings image where the game keeps its settings (`store`).
+    pub fn settings_load(&mut self, store: romset::SettingsStore, image: &[u8]) {
+        match store {
+            romset::SettingsStore::Eeprom => self.eeprom.load(image),
+            romset::SettingsStore::IoBoard => self.io_store_load(image),
+            romset::SettingsStore::BackupRam => self.mems[8].data[..image.len()].copy_from_slice(image),
+        }
+    }
+
+    /// The settings store as an image of `n` bytes (what a game saved).
+    pub fn settings_dump(&self, store: romset::SettingsStore, n: usize) -> Vec<u8> {
+        match store {
+            romset::SettingsStore::Eeprom => self.eeprom.save(),
+            romset::SettingsStore::IoBoard => self.io_store_dump(n),
+            romset::SettingsStore::BackupRam => self.mems[8].data[..n].to_vec(),
         }
     }
 

@@ -60,6 +60,10 @@ pub enum LinkBoard {
     /// is all a game set to stand-alone checks for (`von`,
     /// docs/games/von.md).
     Idle,
+    /// A board whose `0x1A14000` register holds what the game last wrote to it (bit 0 at least),
+    /// which `skisuprg`'s board check reads back (write 1: bit 0 reads 1, write 0: it reads 0; an
+    /// empty slot reads all ones, so it fails the second half; docs/hw/link-board.md section 17).
+    Latch,
 }
 
 /// How one game sets up and lays out link play (`docs/hw/link-board.md`): what
@@ -183,6 +187,9 @@ pub enum SettingsStore {
     /// The original Model 2's I/O board buffer at `0x1C00200`, 128 bytes,
     /// byte N at word N (`daytona`).
     IoBoard,
+    /// The battery-backed SRAM at `0x1D00000` (`von`): the image is the start of it, the
+    /// rest keeps its power-on ones.
+    BackupRam,
 }
 
 /// How a record's checksum is computed.
@@ -200,6 +207,12 @@ pub enum SumKind {
     S32a,
     /// The low 16 bits of the sum of the bytes (`sgt24h`'s record).
     ByteSum,
+    /// `von`'s settings in the backup SRAM (`docs/hw/link-board.md` section 15.2): a table-driven
+    /// CRC-16 (the CCITT table) over a 32-bit register started at `init`; each byte is added to
+    /// the register, which is shifted left eight bits and has the table entry of its old top
+    /// byte exclusive-ored into bits 16-31; the result is the table entry of the top byte
+    /// exclusive-ored with the register's bits 8-23.
+    Table,
 }
 
 /// A record's checksum over bytes `from..to`, stored at `at` low byte first
@@ -230,6 +243,12 @@ impl RecordCrc {
         RecordCrc { kind: SumKind::S32a, at, from: at + 2, to: at + 2 + len, init, complement: false, copy: Some(size) }
     }
 
+    /// `von`'s settings checksum ([`SumKind::Table`]): the word at `at` covers `from..to`; the
+    /// record (`copy` bytes, header included) is repeated right after.
+    pub const fn table(at: usize, from: usize, to: usize, init: u32, copy: usize) -> Self {
+        RecordCrc { kind: SumKind::Table, at, from, to, init, complement: false, copy: Some(copy) }
+    }
+
     pub fn compute(&self, image: &[u8]) -> u16 {
         let data = &image[self.from..self.to];
         match self.kind {
@@ -257,6 +276,20 @@ impl RecordCrc {
                 }
                 (r >> 16) as u16
             }
+            SumKind::Table => {
+                let table = |i: u32| -> u32 {
+                    let mut c = (i & 0xff) << 8;
+                    for _ in 0..8 {
+                        c = if c & 0x8000 != 0 { (c << 1) ^ 0x1021 } else { c << 1 };
+                    }
+                    c & 0xffff
+                };
+                let mut r = self.init;
+                for &x in data {
+                    r = (r.wrapping_add(x as u32) << 8) ^ (table(r >> 24) << 16);
+                }
+                (table(r >> 24) ^ (r << 8 >> 16)) as u16
+            }
             SumKind::ByteSum => data.iter().fold(0u16, |a, &x| a.wrapping_add(x as u16)),
         }
     }
@@ -283,7 +316,10 @@ impl RecordCrc {
         image[self.at] = c as u8;
         image[self.at + 1] = (c >> 8) as u8;
         if let Some(n) = self.copy {
-            image.copy_within(self.at..self.at + n, self.at + n);
+            // The copy ends where the image does: a record whose second copy is its last
+            // (`von`'s) is copied up to the image's end.
+            let len = n.min(image.len().saturating_sub(self.at + n));
+            image.copy_within(self.at..self.at + len, self.at + n);
         }
     }
 }

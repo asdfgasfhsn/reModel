@@ -13,8 +13,8 @@ minimal generic stub, `romset::LinkBoard::Idle`, answers it).
 
 `von.zip` also holds its clone `vonj`, the Japanese version: its own
 program pair `epr-18664b.15/epr-18665b.16` (the US pair is `vo-prog0.usa`
-and `vo-prog1.usa`), the rest of the chips shared. Only the parent (US) is
-supported; the clone isn't listed.
+and `vo-prog1.usa`), the rest of the chips shared; it is a variant of this
+title (`docs/variants.md`).
 
 ## What's known
 
@@ -150,20 +150,35 @@ buttons labelled.
 ## Next
 
 1. Play it by hand; the twin-stick controls on a pad (unchecked on a real one).
-2. Head-to-head play: the link board's protocol (shared RAM at
-   `0x1A10000`, the node count at `0x1A10003`) and the Z80 program
-   `epr-18643a.7`, which would let two instances be linked (the plan for
-   linked multiplayer).
+2. Head-to-head play is done (below, "Link play"): two linked machines, in
+   `link-run`, on one screen and over a network. Open: what the block's fields
+   mean, and the Z80 program `epr-18643a.7`, which nothing here runs.
 3. The analogue channels the game reads, and whether anything uses them.
 4. The sound program's version, and the sample order against it.
-5. The Japanese clone `vonj`.
+5. ~~The Japanese clone `vonj`~~ (a variant: `docs/variants.md`).
 
-## Link play (survey)
+## Link play
 
-- *Confirmed (by running it):* GAME ASSIGNMENTS has **NETWORK LINK ATTRIBUTE** (NOLINK, SLAVE, MASTER in the order the TEST
-  button steps it). It is **a byte of the backup SRAM, `0x1D00028`** (a write watch on it saw 0, 1, 2 written by
-  the three presses): 0 SLAVE, 1 MASTER, 2 NOLINK (the default). The game's two-node limit is in its code (any total
-  other than 2 is "Illegal Nodes").
-- *Confirmed (by running it):* with MASTER set and a board fitted (`REMODEL_LINK=idle` or `fake,0,2`) the game shows "THIS IS
-  MASTER SITE" and "MODEL2 BCRX", writes 0, 0 to `0x1A14000`/`0x1A14002`, reads `0x1A14000`, writes 1 to `0x1A14000`, then
-  waits on `0x1A14002` (every frame) for bit 7 to be set, as the code reading said; neither board answers that. See `docs/hw/link-board.md` section 14.
+Two machines of `von` play each other: `make link-run GAME=von`, `make play GAME=von PLAYERS=2` (split screen) and
+`link-net` over a network (`docs/play.md`, "Link play" and "Network link play"). The details, all *confirmed (by running it)* unless marked, are
+in `docs/hw/link-board.md` section 15; in short:
+
+- **The setting** is NETWORK LINK ATTRIBUTE (GAME ASSIGNMENTS: NOLINK, SLAVE, MASTER in the order the TEST button steps it), a byte of the
+  **backup SRAM**, `0x1D00028`: 0 SLAVE, 1 MASTER, 2 NOLINK (the default; a write watch on it saw 0, 1, 2 written by the three presses). The SRAM
+  holds a 0x20C-byte record (`SEGA.AM#3.VRON.`, a length, a checksum at `0x14`, the settings from `0x16`) and a copy of it; the checksum is the game's
+  table-driven CRC-16 (ROM `0x3120`, section 15.1 of the board doc), which a node's record must carry or the game writes its defaults back.
+- **The handshake**: writes 0, 0 to `0x1A14000`/`0x1A14002`, waits for bit 7 of `0x1A14002` (the hub's per-frame flip serves it), writes 1 to
+  `0x1A14000`, writes its ID (1 MASTER, 2 SLAVE) to `0x1A10001`, polls `0x1A10000`, reads the total (it must be 2: "Illegal Nodes" otherwise).
+  It never writes `0x1A14002` as a master, so the hub warns "not exactly one master" and takes node 0.
+- **The block** is 0x700 bytes (1,792) at `0x1A12000` every frame, the other node's block at `0x1A12700` (`tx 0x2000`, `rx 0x2700`).
+- **The match**: coin and start on both machines (the attract says "GO AGAINST OTHER PLAYER"), the machine select, and a fight in which each
+  machine's robot is the other's enemy: the health bars mirror, the robots seen from opposite sides, the countdowns within 0.06 s of each other.
+  To see it: `make link-run GAME=von FRAMES=5000 SHOT_EVERY=500 INPUT=coin1@1000-1004,start@1100-1104,lshot@2700-99999/6` writes both screens side by side to `out/von/frames`.
+- **Free play**: COIN ASSIGNMENTS, COIN/CREDIT SETTING #27 (the third row; 26 presses of TEST from #1), saved when the test menu is left: SRAM byte `0x2A`
+  1 -> `0x1B` and the flags `0x34`, `0x36` 0 -> 1; the player's and `link-run`'s `--free-play` set it (`romset::games::link`).
+- **The Japanese clone `vonj`** has the same SRAM record and the same link (`VariantLink::Parent`); a linked match runs from the same inputs
+  (a prompt "乱入対戦しますか?" comes before it).
+- **Checks**: `make link-net-test GAMES=von` (two processes over loopback: the hashes equal `link-run`'s at D 2 and under 5% loss at D 6, the delay changes, a player
+  leaving mid-fight, settings and desync cases; the strict "adaptive delay does not move on a clean link" case is relaxed for von, whose scene loads take 36 to 50 ms a frame), `make link-free-play-test GAMES=von`, `make link-record-test GAMES=von`.
+- *Unconfirmed*: the meaning of the block's fields (a u16 at `0x02` equal in both nodes and changing every frame, an identity byte at `0x04`, a flag at
+  `0x554`, floats for the positions), and the Z80 link board program `epr-18643a.7`, which nothing here runs.

@@ -38,6 +38,8 @@ pub struct Link {
     pub start_frame: u64,
     /// Bit 7 of `0x1A14002` flips every frame up to this frame (0: for ever): a test.
     pub beat_until: u64,
+    /// The byte last written to `0x1A14000` ([`LinkBoard::Latch`] reads it back).
+    pub latch: u8,
 }
 
 impl Link {
@@ -54,7 +56,18 @@ impl Link {
             master: false,
             start_frame: 0,
             beat_until: 0,
+            latch: 0,
         }
+    }
+
+    /// Whether the board is a [`LinkBoard::Latch`].
+    pub fn is_latch(&self) -> bool {
+        self.kind == LinkBoard::Latch
+    }
+
+    /// The kind of board this is.
+    pub fn kind(&self) -> LinkBoard {
+        self.kind
     }
 
     /// An idle board that, once the game writes 1 to `0x1A14000`, reports
@@ -102,6 +115,7 @@ impl Link {
     pub fn status(&self) -> u32 {
         match self.kind {
             LinkBoard::Idle => 0,
+            LinkBoard::Latch => self.latch as u32,
         }
     }
 }
@@ -829,11 +843,23 @@ mod tests {
 
     #[test]
     fn every_games_blocks_fit_the_link_ram() {
-        for id in ["srallyc", "daytona"] {
+        for id in ["srallyc", "daytona", "von", "stcc", "skisuprg"] {
             let p = romset::games::link_play(id).unwrap();
             assert!(p.rx + p.max_nodes * p.block <= 0x4000, "{id}: {} received blocks fit the 16 KB", p.max_nodes);
             assert_eq!(p.tx + p.block, p.rx, "{id}: the received blocks follow the own block");
         }
+    }
+
+    #[test]
+    fn a_latch_board_reads_back_what_the_game_wrote() {
+        // `skisuprg`'s board check: write 1, read bit 0 set; write 0, read it clear (an empty slot, all ones, fails the second).
+        let mut l = Link::new(LinkBoard::Latch);
+        assert_eq!(l.status() & 1, 0);
+        l.latch = 1;
+        assert_eq!(l.status() & 1, 1);
+        l.latch = 0;
+        assert_eq!(l.status() & 1, 0);
+        assert!(l.is_latch() && !Link::new(LinkBoard::Idle).is_latch());
     }
 
     #[test]

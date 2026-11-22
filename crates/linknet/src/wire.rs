@@ -20,6 +20,16 @@ pub const MAGIC: &[u8; 4] = b"RMLN";
 pub const PROTO: u8 = 5;
 /// The largest datagram sent (under an Ethernet MTU) and read.
 pub const MAX_PACKET: usize = 1400;
+/// The largest block (`LinkPlay::block`): `von`'s is 1,792 bytes. A record of a block that changed
+/// all over is about as large as the block, so a datagram holding one (and only one: more are
+/// only packed while the packet is under [`MAX_PACKET`] - 200) may be larger than a packet
+/// that fits an Ethernet frame (the IP layer fragments it), and is read up to [`MAX_DATAGRAM`].
+pub const MAX_BLOCK: usize = 1792;
+/// The largest datagram read: [`MAX_BLOCK`] and the fields round it.
+pub const MAX_DATAGRAM: usize = 2000;
+/// The largest settings record the host sends the others with the session's parameters (`Params::base`):
+/// `von`'s image of its backup SRAM is 1,048 bytes, the EEPROM games' 128.
+pub const MAX_BASE: usize = 1280;
 pub const MAX_HOSTS: usize = 8;
 pub const MAX_NODES: usize = 8;
 /// The most frames of records in one data packet.
@@ -182,7 +192,7 @@ impl Params {
             0 => None,
             1 => {
                 let n = r.u16()? as usize;
-                if n > 512 {
+                if n > MAX_BASE {
                     return None;
                 }
                 Some(r.bytes(n)?.to_vec())
@@ -195,7 +205,7 @@ impl Params {
         if all.len() > MAX_NODES || !all.iter().enumerate().all(|(i, &n)| n as usize == i) {
             return None;
         }
-        if p.delay == 0 || p.delay > 60 || p.block == 0 || p.block > 1024 || r.left() != 0 {
+        if p.delay == 0 || p.delay > 60 || p.block == 0 || p.block as usize > MAX_BLOCK || r.left() != 0 {
             return None;
         }
         Some(p)
@@ -224,7 +234,7 @@ pub mod kind {
 /// version is checked by the caller (a `Hello` of another version is
 /// answered, not dropped).
 pub fn header(p: &[u8]) -> Option<(u8, u8, Reader<'_>)> {
-    if p.len() < 6 || p.len() > MAX_PACKET || &p[..4] != MAGIC {
+    if p.len() < 6 || p.len() > MAX_DATAGRAM || &p[..4] != MAGIC {
         return None;
     }
     Some((p[4], p[5], Reader::new(&p[6..])))
@@ -343,6 +353,47 @@ mod tests {
                 assert_eq!(decode_rec(&mut rd, &base, 448).as_ref(), Some(&r));
                 assert_eq!(rd.left(), 0);
             }
+        }
+    }
+
+    #[test]
+    fn the_largest_block_changed_all_over_fits_a_datagram_and_params_take_it() {
+        // `von`'s block is 1,792 bytes; a record of one that changed in every byte is the worst case.
+        let tx: Vec<u8> = (0..MAX_BLOCK).map(|i| (i as u8).wrapping_mul(37) | 1).collect();
+        let r = NodeRec { started: true, master: false, start_frame: 519, tx, change: None };
+        let base = vec![0u8; MAX_BLOCK];
+        let mut w = Writer::new(kind::DATA);
+        w.u32(1).u8(0).u64(1000).u8(0).u8(2);
+        encode_rec(&mut w, &r, &base, MAX_BLOCK);
+        assert!(w.0.len() <= MAX_DATAGRAM, "{} bytes", w.0.len());
+        assert!(header(&w.0).is_some(), "a datagram of that size is read");
+        let mut rd = Reader::new(&w.0[6 + 4 + 1 + 8 + 1 + 1..]);
+        assert_eq!(decode_rec(&mut rd, &base, MAX_BLOCK).as_ref(), Some(&r));
+        // Params for it are accepted; one block more is not.
+        let p = Params {
+            session: 1,
+            game: "von".into(),
+            delay: 2,
+            check_every: 60,
+            timeout_ms: 2000,
+            block: MAX_BLOCK as u16,
+            hosts: vec![
+                HostEntry { addr: "a".into(), name: "A".into(), nodes: vec![0] },
+                HostEntry { addr: "b".into(), name: "B".into(), nodes: vec![1] },
+            ],
+            base: None,
+        };
+        for (block, ok) in [(MAX_BLOCK as u16, true), (MAX_BLOCK as u16 + 1, false)] {
+            let mut w = Writer::new(kind::START);
+            Params { block, ..p.clone() }.encode(&mut w);
+            assert_eq!(Params::decode(&mut Reader::new(&w.0[6..])).is_some(), ok, "block {block}");
+        }
+        // The settings record that goes with them (`von`'s is its SRAM image, 1,048 bytes).
+        for (n, ok) in [(0x418usize, true), (MAX_BASE, true), (MAX_BASE + 1, false)] {
+            let mut w = Writer::new(kind::START);
+            Params { base: Some(vec![7; n]), ..p.clone() }.encode(&mut w);
+            assert!(w.0.len() <= MAX_DATAGRAM);
+            assert_eq!(Params::decode(&mut Reader::new(&w.0[6..])).is_some(), ok, "base {n}");
         }
     }
 

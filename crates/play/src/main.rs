@@ -1617,10 +1617,7 @@ impl Play {
                             let base = play.base_with_free_play(mine.as_deref(), true);
                             let role = base.as_ref().map_or(play.settings.record[play.role_off], |b| b[play.role_off]);
                             let image = play.settings.image(base.as_deref(), play.role_off, role, &[]);
-                            match play.settings.store {
-                                romset::SettingsStore::Eeprom => machine.bus.eeprom.load(&image),
-                                romset::SettingsStore::IoBoard => machine.bus.io_store_load(&image),
-                            }
+                            machine.bus.settings_load(play.settings.store, &image);
                         }
                         None => {
                             if let Some(bytes) = &mine {
