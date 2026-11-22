@@ -1141,8 +1141,24 @@ What is off in link play: smooth motion and run-ahead (each would need
 every machine to run its in-betweens or frames ahead, and the exchange
 makes a machine's frame depend on the others), temporal anti-aliasing
 (it needs smooth motion's recording; the setting is ignored, multisampling
-as set applies), texture packs, the bezel, Compare and photo mode (its menu
+as set applies), the bezel, Compare and photo mode (its menu
 row is left out; F8 says so).
+
+**Texture packs.** The texture pack setting applies to the split screen:
+each view's renderer loads the game's pack (or `--texture-pack`) itself, and
+the `link_pack` setting says which views draw it (the menu's Texture pack
+row on the Advanced page, then **Pack in link play**; `--link-pack all|none|N,N..`):
+**Every view** (the default), **View 1 only**, **View 2 only** and so on, or
+`--link-pack 1,3` for any set. With the pack on view 2 only, view 1 is the
+game as it was drawn and view 2 is the pack, live, side by side. A pack is
+draw-only: the machines, the link records and every state hash are the same
+whichever views draw it (`make link-pack-test` checks that against
+`link-run`'s hash). Each packed view keeps its own images in GPU memory, so
+a pack on four views holds four times what one view does. The menu's pack line
+reports the first view that draws the pack; the pack's `look.txt`, with
+the look setting on, applies to every view. Over a network each host draws
+its own machine with its own settings, so the pack is already each
+player's own there.
 
 **Controls.** Player 1 is the keyboard. Gamepads take the other seats in
 the order their first button press comes (that press is the join, not the

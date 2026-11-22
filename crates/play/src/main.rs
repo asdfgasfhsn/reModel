@@ -100,6 +100,9 @@ usage: remodel-play [options]
   --link-layout auto|side|stacked
                      link play: two players side by side or stacked (default
                      auto: whichever gives each picture more room)
+  --link-pack all|none|N,N..
+                     link play: which views draw the texture pack (default all;
+                     2 is the second view only; docs/play.md, \"Link play\")
   --free-play        start with the game's own FREE PLAY coin setting (games that
   --no-free-play     have one; the default is on in link play, off in a single
                      game; docs/play.md, \"Free play\")
@@ -790,6 +793,13 @@ fn options(s: &mut Settings) -> Result<Options, String> {
                 }
                 cli("link_layout", &v);
             }
+            "--link-pack" => {
+                let v = value()?;
+                if link::PackViews::parse(&v).is_none() {
+                    return Err("--link-pack wants all, none, or view numbers such as 2 or 1,3".into());
+                }
+                cli("link_pack", &v);
+            }
             "--link-audio" => {
                 let v = value()?;
                 if link::Audio::parse(&v).is_none() {
@@ -1309,6 +1319,8 @@ struct Play {
     started: Instant,
     /// The texture pack set on the renderer.
     pack: PackState,
+    /// The packs of the views beyond the first in link play (`link_pack`).
+    view_packs: Vec<PackState>,
     look: LookState,
     /// Anisotropic filtering the GPU has (`gpu::max_anisotropy`).
     max_anisotropy: u8,
@@ -2203,7 +2215,8 @@ impl Play {
                 let machines = std::iter::once(&mut s.machine).chain(l.machines.iter_mut());
                 let renderers =
                     std::iter::once(&mut core.renderer).chain(core.views.iter_mut().map(|v| &mut v.renderer));
-                for ((m, r), (view, origin)) in machines.zip(renderers).zip(&lv.views) {
+                let mut pack_stats = None;
+                for (i, ((m, r), (view, origin))) in machines.zip(renderers).zip(&lv.views).enumerate() {
                     r.set_keep_target(true);
                     r.forget_ram();
                     r.reset_history();
@@ -2212,7 +2225,12 @@ impl Play {
                     r.set_look(look_now.clone());
                     m.bus.geo.sync();
                     r.present_bus(&mut m.bus, None, view, &target, format, *origin);
+                    // The menu's pack line reports the first view that draws one.
+                    if pack_stats.is_none() && self.values.pack && self.values.link_pack.has(i) {
+                        pack_stats = Some(r.pack_stats());
+                    }
                 }
+                g.pack_stats = pack_stats.unwrap_or_default();
                 // The next redraw starts these renderers from scratch.
                 core.forget_frame();
                 core.views.iter_mut().for_each(|v| v.frame.forget());
@@ -2335,60 +2353,82 @@ impl Play {
         self.look.built.as_ref().and_then(|b| b.3.clone())
     }
 
-    /// Set the texture pack the settings ask for on the renderer, when
+    /// Set the texture pack the settings ask for on each renderer, when
     /// that changed: the game's (or `--texture-pack`'s) with the setting
-    /// on, none for the launcher's preview.
+    /// on, none for the launcher's preview. In link play each view has a
+    /// renderer of its own, and `link_pack` says which of them draw the
+    /// pack: nothing a pack does reaches the machines (docs/play.md).
     fn sync_pack(&mut self) {
-        let wanted = match &self.session {
-            Some(s) if !s.preview && self.values.pack && s.link.is_none() => {
+        let linked = self.session.as_ref().filter(|s| !s.preview).and_then(|s| s.link.as_ref()).map(|l| l.n());
+        let dir = match &self.session {
+            Some(s) if !s.preview && self.values.pack => {
                 Some(self.opts.texture_pack.clone().unwrap_or_else(|| pack::game_dir(s.game)))
             }
             _ => None,
         };
-        if wanted == self.pack.dir {
-            return;
-        }
+        let n = linked.unwrap_or(1);
+        let wants: Vec<Option<PathBuf>> =
+            (0..n).map(|i| dir.clone().filter(|_| linked.is_none() || self.values.link_pack.has(i))).collect();
+        self.view_packs.resize_with(n - 1, PackState::default);
         let Some(g) = &mut self.gpu else { return };
-        let renderer = &mut g.drawer.core().renderer;
-        self.pack = PackState { dir: wanted.clone(), loaded: None };
-        let Some(dir) = wanted else {
-            renderer.set_pack(None);
-            return;
-        };
-        let opened = if dir.is_dir() {
-            pack::DirPack::open(&dir)
-        } else {
-            Err(format!("no texture pack: {} not found", dir.display()))
-        };
-        match opened {
-            Ok(p) => {
-                renderer.set_pack_fixes(self.opts.pack_fixes);
-                if let Some(path) = &self.opts.pack_log {
-                    match model2::packlog::PackLog::create(path) {
-                        Ok(l) => renderer.set_pack_log(Some(l)),
-                        Err(e) => eprintln!("--pack-log: {}: {e}", path.display()),
-                    }
-                }
-                let maps = if p.maps() > 0 { format!(", {} material maps", p.maps()) } else { String::new() };
-                println!("texture pack  {}: {} images{maps}", dir.display(), p.len());
-                self.pack.loaded = Some(Ok((p.len(), p.maps())));
-                renderer.set_pack(Some(Box::new(p)));
+        let core = g.drawer.core();
+        if n > 1 || !core.views.is_empty() {
+            core.ensure_views(n, self.max_anisotropy, self.temporal_supported);
+        }
+        for (i, wanted) in wants.into_iter().enumerate() {
+            let state = if i == 0 { &mut self.pack } else { &mut self.view_packs[i - 1] };
+            if wanted == state.dir {
+                continue;
             }
-            Err(e) => {
-                eprintln!("{e}");
-                self.menu.warn(format!("{}{}", e[..1].to_uppercase(), &e[1..]));
-                self.pack.loaded = Some(Err(e));
+            let renderer = if i == 0 { &mut core.renderer } else { &mut core.views[i - 1].renderer };
+            *state = PackState { dir: wanted.clone(), loaded: None };
+            let Some(dir) = wanted else {
                 renderer.set_pack(None);
+                continue;
+            };
+            let opened = if dir.is_dir() {
+                pack::DirPack::open(&dir)
+            } else {
+                Err(format!("no texture pack: {} not found", dir.display()))
+            };
+            match opened {
+                Ok(p) => {
+                    renderer.set_pack_fixes(self.opts.pack_fixes);
+                    if let (0, Some(path)) = (i, &self.opts.pack_log) {
+                        match model2::packlog::PackLog::create(path) {
+                            Ok(l) => renderer.set_pack_log(Some(l)),
+                            Err(e) => eprintln!("--pack-log: {}: {e}", path.display()),
+                        }
+                    }
+                    let maps = if p.maps() > 0 { format!(", {} material maps", p.maps()) } else { String::new() };
+                    let view = if linked.is_some() { format!(" (view {})", i + 1) } else { String::new() };
+                    println!("texture pack  {}: {} images{maps}{view}", dir.display(), p.len());
+                    state.loaded = Some(Ok((p.len(), p.maps())));
+                    renderer.set_pack(Some(Box::new(p)));
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    self.menu.warn(format!("{}{}", e[..1].to_uppercase(), &e[1..]));
+                    state.loaded = Some(Err(e));
+                    renderer.set_pack(None);
+                }
             }
         }
+    }
+
+    /// The pack the menu's lines speak of: the first view's, or in link
+    /// play the first view that draws one.
+    fn pack_state(&self) -> Option<&PackState> {
+        std::iter::once(&self.pack).chain(&self.view_packs).find(|p| p.dir.is_some())
     }
 
     /// The menu's line on the texture pack: where it is and what it
     /// replaced in the last frame, or why there is none.
     fn pack_text(&self) -> Option<String> {
         let g = self.gpu.as_ref()?;
-        let dir = self.pack.dir.as_ref()?;
-        Some(match self.pack.loaded.as_ref()? {
+        let ps = self.pack_state()?;
+        let dir = ps.dir.as_ref()?;
+        Some(match ps.loaded.as_ref()? {
             Ok((images, _)) => {
                 let st = g.pack_stats;
                 let tiles = if st.tiles_held > 0 {
@@ -2425,7 +2465,7 @@ impl Play {
             Some(_) => format!("relief {}", v.materials_relief.name()),
             None => "faithful".to_string(),
         };
-        Some(match (&self.pack.loaded, &self.gpu) {
+        Some(match (&self.pack_state().and_then(|p| p.loaded.as_ref()), &self.gpu) {
             _ if !v.pack => "No effect: needs the texture pack on".to_string(),
             (Some(Err(_)), _) | (None, _) => "No effect: no texture pack loaded".to_string(),
             (Some(Ok((_, 0))), _) => "No effect: this texture pack has no material maps".to_string(),
@@ -4846,6 +4886,7 @@ fn main() {
         stats: Stats::new(),
         started: Instant::now(),
         pack: PackState::default(),
+        view_packs: Vec::new(),
         look: LookState::default(),
         max_anisotropy: 16,
         temporal_supported: true,

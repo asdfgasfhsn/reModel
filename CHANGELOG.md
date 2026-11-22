@@ -31,6 +31,14 @@ creates the annotated tag `vx.y.z` without pushing. Details in
   `scene render --pack TOP --pack BELOW` draws the layers (the highest pack
   that has an asset wins) and `remodel pack resolve` says who won what, and
   the stack's memory against the native and browser budgets. Draw-only.
+- Texture packs in link play (split screen): each view's renderer loads the
+  pack, and a new `link_pack` setting (the Advanced page's **Pack in link
+  play**, `--link-pack all|none|N,N..`) chooses which views draw it, so one
+  view can be the game as it was drawn and another the pack, live, side by
+  side. Draw-only: `make link-pack-test` runs the player with a synthetic
+  pack on every view, on one and on none and checks the combined state hash
+  equals `link-run`'s each time, and that the picture shows the pack only in
+  the views asked for. Over a network each host already drew its own pack.
 - Artwork identity in texture packs: a pack can replace an artwork, not one
   colouring of it. `art_<surface>_<w>x<h>.png` is drawn for every colouring
   (every `tex_` key) of those texels that has no image of its own, in the

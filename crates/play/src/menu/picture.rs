@@ -803,6 +803,24 @@ fn advanced_rows(ui: &mut egui::Ui, adv: &mut Adv, s: &mut GameSettings, view: &
         _ => "Replacement textures from this game's texpack folder, if it has one.",
     };
     adv.toggle(ui, "Texture pack", d, &mut s.pack, ("None", "On"), pack_help, "");
+    if let (Some(n), true) = (view.link, s.pack) {
+        let d = adv.differs(s, &["link_pack"]);
+        let mut list = crate::link::PackViews::choices(n);
+        if !list.iter().any(|o| o.0 == s.link_pack) {
+            list.push((s.link_pack, format!("Views {}", s.link_pack.name())));
+        }
+        let list: Vec<(crate::link::PackViews, &str)> = list.iter().map(|(v, t)| (*v, t.as_str())).collect();
+        adv.choose(
+            ui,
+            "Pack in link play",
+            d,
+            &mut s.link_pack,
+            &list,
+            "Which of the split screen's views draw the texture pack. One view with it and one without shows the \
+             game as it was drawn beside the pack, live; the machines and the link are the same either way.",
+            "",
+        );
+    }
     let d = adv.differs(s, &["crt"]);
     let list = with_current(&CRT, s.crt);
     let list: Vec<(u8, &str)> = list.iter().map(|(v, t)| (*v, t.as_str())).collect();

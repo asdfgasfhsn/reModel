@@ -156,6 +156,65 @@ impl Layout {
     }
 }
 
+/// Which views of a linked game draw the texture pack (the `link_pack`
+/// setting; only with the pack on): a bit for each view, the first view's
+/// the lowest. Nothing a pack does reaches the machines, so any choice
+/// leaves the link and its state hashes as they are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PackViews(pub u8);
+
+impl Default for PackViews {
+    fn default() -> Self {
+        PackViews::ALL
+    }
+}
+
+impl PackViews {
+    /// Every view (at most four are on one screen).
+    pub const ALL: PackViews = PackViews(0b1111);
+
+    /// Whether view `i` (0 is the first) draws the pack.
+    pub fn has(self, i: usize) -> bool {
+        i < 8 && self.0 >> i & 1 == 1
+    }
+
+    /// `all`, `none`, or the views' numbers from 1 joined by commas (`2`, `1,3`).
+    pub fn name(self) -> String {
+        match self.0 {
+            0b1111 => "all".to_string(),
+            0 => "none".to_string(),
+            m => (0..8).filter(|i| m >> i & 1 == 1).map(|i| (i + 1).to_string()).collect::<Vec<_>>().join(","),
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<PackViews> {
+        match s.trim().to_lowercase().as_str() {
+            "all" => Some(PackViews::ALL),
+            "none" => Some(PackViews(0)),
+            list => list
+                .split(',')
+                .try_fold(0u8, |m, v| {
+                    let n: u8 = v.trim().parse().ok().filter(|n| (1..=4).contains(n))?;
+                    Some(m | 1 << (n - 1))
+                })
+                .map(PackViews),
+        }
+    }
+
+    /// The menu's choices for `n` views: every view, each view alone, and
+    /// all but the first (for three or four).
+    pub fn choices(n: usize) -> Vec<(PackViews, String)> {
+        let mut v = vec![(PackViews::ALL, "Every view".to_string())];
+        for i in 0..n.min(4) {
+            v.push((PackViews(1 << i), format!("View {} only", i + 1)));
+        }
+        if n > 2 {
+            v.push((PackViews(0b1110), "All but view 1".to_string()));
+        }
+        v
+    }
+}
+
 /// What the machines' sound does (the `link_audio` setting).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Audio {

@@ -160,7 +160,7 @@ agents soonest.
 | | **26. Size tiers and compressed images** ([pack-project](uplift/pack-project.md)) | A big pack fits the browser's budget and loads faster | M | Medium: quality on flat art; formats differ by device | 6 | The showcase built at half size and block-compressed, measured |
 | | **27. A browser for unseen content** ([content-coverage](uplift/content-coverage.md)) | See what the catalogue lacks as shapes; aim tours | S to M | Low | 22's read map | List and draw Top Skater's unread models |
 | | **28. The crawler as an emulator test** ([content-coverage](uplift/content-coverage.md)) | Determinism faults and crashes found with a script that reproduces them | S, once the crawler exists | Low | 22's crawler | Report tours that do not hash the same twice |
-| | **29. Packs in linked play** ([pack-project](uplift/pack-project.md)) | Each linked player their own pack; original beside uplift, live, on the split screen | S | Low: nothing a pack does reaches the link (read from the code) | Linked play (0.12.0) | A pack per view in the player, then the hash test |
+| | **29. Packs in linked play** ([pack-project](uplift/pack-project.md)) (built 2026-11-23: `link_pack` / `--link-pack` choose the views that draw the pack; `make link-pack-test` on Daytona and Sega Rally: the player's combined hash equals `link-run`'s with a synthetic pack on every view, on one and on none, and the picture shows it only where asked; the look is still shared by the views, and nothing was tried by hand at the menu) | Each linked player their own pack; original beside uplift, live, on the split screen | S | Low: nothing a pack does reaches the link (read from the code) | Linked play (0.12.0) | A pack per view in the player, then the hash test |
 
 ### Suggested order
 

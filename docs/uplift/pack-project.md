@@ -58,37 +58,20 @@ The pack file format that exists today is in
 
 ### Packs in linked play
 
-Read from the code at `541d8ac` on 2026-11-20 (linked play, 0.12.0);
-nothing was run. Citations in this section are at that commit, not at
-`7d8f099`.
+Built on 2026-11-23: a pack per view on the split screen (`link_pack`,
+`--link-pack`; [../play.md](../play.md), "Link play", "Texture packs"), with
+`make link-pack-test` for the hash test. What is left:
 
-- **Nothing a pack or a look does reaches the link.** Machines exchange
-  each node's link record and nothing else
-  (`crates/model2/src/link.rs:120-131`). The state hash covers RAM, the
-  geometrizer's command stream and the coprocessor's results
-  (`crates/model2/src/bus.rs:1566-1576`); no renderer or pack state is
-  in it. The settings carried from the master are the game's own
-  (`crates/cli/src/link_net.rs:211-225`).
-- **Over a LAN, each player already has their own pack and look**: each
-  host runs one machine and one renderer.
-- **On the split screen, packs are off.** `sync_pack` loads one pack
-  into one renderer and only when no link is active
-  (`crates/play/src/main.rs:2292`). Each view has a renderer of its own
-  (`crates/play/src/draw.rs:52-63`) and the look is copied to all of
-  them.
-- **The change for a pack per view** is in the player only: pack state
-  per view, `sync_pack` applied per node, and a per-node setting. With
-  it the split screen can show one node as the game drew it and one
-  with a pack, live. The pack budget is per renderer, so each packed
-  view can use up to the full 512 MiB
-  (`crates/gpu/src/lib.rs:330`).
 - **One setting is not draw-only**: the choice of chip or native
   geometrizer changes what produces the command stream, which is in the
-  hash. Whether the two give equal streams was not determined.
-- **The test**: the same linked session, same inputs, with and without
-  a pack, comparing each node's state hash and the combined hash. It
-  needs the player change first, since `link-run` and `link-net` take
-  no pack.
+  state hash. A look or pack never touches it; whether the two geometrizers
+  give equal streams was not determined, and the test runs the default.
+- **The look is shared by the views.** A pack's `look.txt` applies to every
+  view with the look setting on, so the view without the pack is not
+  entirely "as drawn" while the look is on.
+- **Not checked by a person**: the menu row and a split screen drawn live
+  (the test draws one frame at the end of a scripted run); a pack on four
+  views holds four times the GPU memory of one.
 
 ### Size tiers and compressed images
 

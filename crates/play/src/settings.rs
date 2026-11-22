@@ -218,6 +218,8 @@ pub struct GameSettings {
     /// the window, and what the machines' sound does.
     pub link_layout: crate::link::Layout,
     pub link_audio: crate::link::Audio,
+    /// Which views draw the texture pack in link play (needs the pack on).
+    pub link_pack: crate::link::PackViews,
     /// The game's own FREE PLAY coin setting (docs/play.md, "Free play"): applies
     /// when the game starts, for the games that have it.
     pub free_play: crate::link::FreePlay,
@@ -261,6 +263,7 @@ impl Default for GameSettings {
             geo_chip: false,
             catalogue: false,
             link_layout: Default::default(),
+            link_pack: Default::default(),
             link_audio: Default::default(),
             free_play: Default::default(),
             net_delay: 0,
@@ -270,7 +273,7 @@ impl Default for GameSettings {
 }
 
 /// Every game setting's key, in the order the panels show them.
-pub const KEYS: [&str; 41] = [
+pub const KEYS: [&str; 42] = [
     "preset",
     "wide",
     "bezel",
@@ -300,6 +303,7 @@ pub const KEYS: [&str; 41] = [
     "catalogue",
     "link_layout",
     "link_audio",
+    "link_pack",
     "free_play",
     "net_delay",
     "stick_dead",
@@ -377,6 +381,7 @@ impl GameSettings {
             "catalogue" => self.catalogue.to_string(),
             "link_layout" => self.link_layout.name().to_string(),
             "link_audio" => self.link_audio.name().to_string(),
+            "link_pack" => self.link_pack.name(),
             "free_play" => self.free_play.name().to_string(),
             "net_delay" => match self.net_delay {
                 0 => "auto".to_string(),
@@ -435,6 +440,7 @@ impl GameSettings {
             "catalogue" => flag(v).map(|x| self.catalogue = x).is_some(),
             "link_layout" => crate::link::Layout::parse(v).map(|x| self.link_layout = x).is_some(),
             "link_audio" => crate::link::Audio::parse(v).map(|x| self.link_audio = x).is_some(),
+            "link_pack" => crate::link::PackViews::parse(v).map(|x| self.link_pack = x).is_some(),
             "free_play" => crate::link::FreePlay::parse(v).map(|x| self.free_play = x).is_some(),
             "net_delay" => match v.trim().to_lowercase().as_str() {
                 "auto" | "automatic" => {
@@ -1256,6 +1262,22 @@ mod tests {
         assert_eq!(tex_filters(1).iter().map(|f| f.1).collect::<Vec<_>>(), ["off", "mip"]);
         assert_eq!(tex_filters(16).len(), 6);
         assert_eq!(tex_filters(4).last().unwrap().1, "4");
+    }
+
+    #[test]
+    fn link_pack_views() {
+        use crate::link::PackViews;
+        let mut v = GameSettings::default();
+        assert_eq!(v.link_pack, PackViews::ALL);
+        for (text, mask) in [("all", 0b1111), ("none", 0), ("2", 0b10), ("1,3", 0b101), ("2,3,4", 0b1110)] {
+            assert!(v.set("link_pack", text), "{text}");
+            assert_eq!(v.link_pack.0, mask);
+            assert_eq!(v.get("link_pack"), text);
+        }
+        assert!(!v.set("link_pack", "5") && !v.set("link_pack", "0") && !v.set("link_pack", "x"));
+        assert_eq!(v.link_pack.0, 0b1110);
+        assert!(PackViews(0b10).has(1) && !PackViews(0b10).has(0));
+        assert!(PackViews::choices(4).iter().all(|(p, _)| PackViews::parse(&p.name()) == Some(*p)));
     }
 
     #[test]

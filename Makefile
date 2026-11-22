@@ -286,6 +286,10 @@ link-free-play-test: release ## Free play in linked play, srallyc, daytona, manx
 link-record-test: release ## The settings records linked play writes against what the games write, manxtt, indy500, motoraid, waverunr, sgt24h, overrev and overrevb, and von, stcc, stcca, stccb and skisuprg (GAMES; also the variants daytonas, daytonase, indy500d, indy500to): the checksum of each copy of the record the game saves from its test menu, the role bytes of a two-node link-run surviving in the game's own EEPROM, and a changed setting's save (docs/hw/eeprom-records.md; needs the ROMs; about 2 minutes)
 	tools/link-record-test.sh $(CURDIR)/$(REMODEL) $(ROM) out/link-record-test $(GAMES)
 
+link-pack-test: release ## Packs in linked play, daytona by default (GAMES; also srallyc, manxtt, indy500): the split-screen player's combined hash equals link-run's with no pack, a synthetic pack (the game's textures inverted, made here) on both views, on view 1 only, on view 2 only and on none (--link-pack), and the picture shows the pack in just the views asked for (opens a window briefly; needs a GPU and the ROMs; a few minutes a game; docs/play.md, "Link play")
+	$(call release_build,remodel-play)
+	tools/link-pack-test.sh $(CURDIR)/$(REMODEL) $(CURDIR)/$(PLAY) $(ROM) out/link-pack-test $(GAMES)
+
 link-trace: release ## Experimental, off by default: run GAME with a link board fitted (LINK=idle, or LINK=fake,ID,TOTAL: a partner that mirrors the game's own block; LINK_DELAY, LINK_FREEZE, LINK_DROP: frames) and write every access to 0x1A00000-0x1A1FFFF to OUT/link-trace.txt (INPUT, STEPS, SNAP as `run`; docs/hw/link-board.md)
 	REMODEL_LINK=$(or $(LINK),idle) REMODEL_LINK_DELAY=$(LINK_DELAY) REMODEL_LINK_FREEZE=$(LINK_FREEZE) REMODEL_LINK_DROP=$(LINK_DROP) $(RUN) $(if $(INPUT),--input $(INPUT)) run $(STEPS) $(SNAP)
 
