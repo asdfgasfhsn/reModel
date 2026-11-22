@@ -78,6 +78,9 @@ usage: remodel-play [options]
   -V, --version      print the version and exit
   --game ID          start this set straight away (default: the launcher,
                      to choose one)
+  --scene NAME       with --game: start from the saved scene NAME (`remodel
+                     scene make NAME` keeps it; `scene list` names them), as
+                     loading a save state does (docs/play.md, \"Scenes\")
   --rom DIR          ROM folder: MAME sets as zips or folders (default: the
                      last one used; else rom in the reModel source tree,
                      or roms in the data folder anywhere else: see
@@ -413,6 +416,8 @@ struct Options {
     input: Option<String>,
     /// `--game`: start it straight away.
     game: Option<String>,
+    /// `--scene`: then load this scene's saved state.
+    scene: Option<String>,
     splash: bool,
     shot: Option<PathBuf>,
     /// `--shot-size`: pixels and display scaling.
@@ -536,6 +541,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
         frames: None,
         input: None,
         game: None,
+        scene: None,
         splash: true,
         shot: None,
         shot_size: ([1920, 1080], 1.0),
@@ -567,6 +573,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
         let mut value = || args.next().ok_or_else(|| format!("{a} needs a value"));
         match a.as_str() {
             "--game" => o.game = Some(value()?),
+            "--scene" => o.scene = Some(value()?),
             "--rom" => rom = Some(PathBuf::from(value()?)),
             "--mix" => {
                 let v = value()?;
@@ -846,7 +853,32 @@ fn options(s: &mut Settings) -> Result<Options, String> {
     if s.cli.get("materials").is_some_and(|v| v == "true") && s.cli.get("geo").is_some_and(|v| v == "chip") {
         eprintln!("--materials: no effect with --geo chip (the lighting they need comes from the native geometrizer)");
     }
+    if o.scene.is_some() && o.game.is_none() {
+        return Err("--scene needs --game: a scene belongs to one game".into());
+    }
+    if let Some(n) = &o.scene {
+        if n.is_empty() || !n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+            return Err(format!("--scene {n}: a scene name is lower-case letters, digits and `-`"));
+        }
+    }
     Ok(o)
+}
+
+/// Where scene `name` of `game` keeps its saved state: the local copy
+/// `remodel scene make` writes (`<data dir>/<set>/scenes/<name>/state.save`;
+/// `REMODEL_DATA` moves the data dir, as for `remodel scene`).
+fn scene_state(game: &str, name: &str) -> Result<PathBuf, String> {
+    let data = std::env::var_os("REMODEL_DATA").map(PathBuf::from).unwrap_or_else(settings::data_dir);
+    let dir = data.join(game).join("scenes").join(name);
+    let state = dir.join("state.save");
+    if state.is_file() {
+        Ok(state)
+    } else {
+        Err(format!(
+            "scene {name} has no saved state for {game} ({} not found): `remodel --game {game} scene make {name}` keeps it (`scene list` names the scenes)",
+            state.display()
+        ))
+    }
 }
 
 /// The game being played, or previewed in the launcher.
@@ -2028,6 +2060,23 @@ impl Play {
         }
         let done = if slot == 0 { "Quick save loaded".to_string() } else { format!("Loaded slot {slot}") };
         self.load_file(&path, &done);
+    }
+
+    /// `--scene`: load scene `name`'s saved state into the game just
+    /// started, as a save slot is loaded (a scene's state is a save file).
+    /// A scene that isn't kept, or a game that didn't start, says so and
+    /// the game plays from power-on.
+    fn load_scene(&mut self, set: &str, name: &str) {
+        if self.session.is_none() {
+            return;
+        }
+        match scene_state(set, name) {
+            Ok(path) => self.load_file(&path, &format!("Scene {name} loaded")),
+            Err(e) => {
+                eprintln!("--scene: {e}");
+                self.menu.error(format!("Scene {name} isn't kept: run `remodel scene make {name}`"));
+            }
+        }
     }
 
     /// Load the save file at `path` into the game, saying `done` if it did.
@@ -4975,7 +5024,12 @@ fn main() {
                 // Network link play: the lobby (or the connecting page) opens over the launcher.
                 Some(NetMode::Join(addr)) => play.net_lobby_for(&set, None, Some(addr)),
                 Some(host) => play.net_lobby_for(&set, Some(host), None),
-                None => play.start_game_n(&set, library::Start::New, players),
+                None => {
+                    play.start_game_n(&set, library::Start::New, players);
+                    if let Some(name) = play.opts.scene.clone() {
+                        play.load_scene(&set, &name);
+                    }
+                }
             }
         }
         Some(set) => {
