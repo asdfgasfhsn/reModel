@@ -3,7 +3,7 @@
 Shared words, roles and rules: [README.md](README.md). Status: the MVP
 slice at the end is built (2026-11-21) and its user-facing parts are in
 [../uplift-studio.md](../uplift-studio.md), "Scenes". The rest (the
-player's watch, the server, `scene what/where/sheet/clip`, `--asset`,
+server, `scene what/where/sheet/clip`, `--asset`,
 `--overlay`, facts, the side channel) is still a design.
 
 **Re-check of "Observed" before building (2026-11-21, main at `32abfdc`).**
@@ -35,11 +35,9 @@ matters. Today that is slow, and the reason is not the renderer.
   (`crates/cli/src/main.rs:3177-3190`). `remodel shot` boots from power-on,
   and `remodel-play` has no flag to load a state
   (`crates/play/src/main.rs:444-690`).
-- **Packs do not reload in the native player.** The directory is listed
-  once (`crates/model2/src/dirpack.rs:79-104`) and `sync_pack` returns early
-  when the directory is unchanged (`crates/play/src/main.rs:1906-1916`).
-  Only `look.txt` reloads, by a check every 400 ms
-  (`crates/play/src/main.rs:1854-1890`).
+- **Packs reloaded in no player until 2026-11-23**; now `DirPack` watches
+  its folder ([../play.md](../play.md), "Texture packs"). `look.txt` still
+  reloads by its own check every 400 ms.
 - **Scenes have no names.** Frame numbers, input scripts and region
   coordinates travelled between agents as prose.
 - **Old output is reused silently.** `studio compare` keeps the `after`
@@ -141,16 +139,15 @@ Build them in that order. The first removes the build, the boot and the
 lock from art work. The second gives the artist a loop. The third is the
 same verbs, kept warm.
 
-**The player** gains `--scene NAME` (load the scene's state and play from
-there, which is the user loading a state, as from a save slot) and a watch on the pack directory, made the way the look is watched.
-On a change it opens the pack again and calls `Renderer::set_pack`, which
-already clears every pack cache (`crates/gpu/src/lib.rs:1249-1258`).
-Swapping only the saved image, with decoding on a worker, is what
-meets the one-second target; re-opening the whole pack is a cold load
-of about 0.3 s
-([authoring.md](authoring.md), "Evidence"). Live
-reload and picking are already the next two items in
-`docs/uplift-studio.md`.
+**The player** has `--scene NAME` and a watch on the pack directory (built
+2026-11-23: [../play.md](../play.md)). The watch does not reopen the pack: a
+thread in `DirPack` settles file changes, and `Renderer::apply_pack_changes`
+asks again for just the changed images (the old one stays until the new has
+decoded). Measured 0.13 to 0.15 s from a write to the upload, in line with the
+spike's 0.2 to 0.6 s. Picking is the next item in
+`docs/uplift-studio.md`. Still to do: keep the old image when a settled file
+does not decode (today the original is drawn until a good file is written),
+a watch on `look.txt` through the same thread, and the server's use of it.
 
 **The server** cannot be a loop around the CLI: the CLI keeps its options
 in process-wide statics set once (`crates/cli/src/main.rs:806-838`). It is

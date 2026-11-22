@@ -14,7 +14,7 @@ use `noun.verb` with the same arguments. Every verb takes `--json` and
 
 | Noun | Verbs | Spec |
 |---|---|---|
-| `scene` | `list`, `make`, `verify`, `render`, `what`, `where`, `sheet`, `clip` | [scenes-and-server](scenes-and-server.md) |
+| `scene` | `list`, `make`, `verify`, `render`, `what`, `where`, `sheet`, `clip` (and `remodel-play --scene NAME`, built: the player starts at a scene's state, and watches its pack) | [scenes-and-server](scenes-and-server.md) |
 | `asset` | `list`, `show`, `bundle`, `name`, `set`, `same`, `make`, `normalise`, `check` (built: `check`, `bundle`, `show`; the artwork index and the colour copies are today `studio artworks` and `studio bake`, [uplift-studio.md](../uplift-studio.md), "Artworks") | [asset-identity](asset-identity.md), [generation](generation.md), [quality-gates](quality-gates.md) |
 | `region` | `capture`, `list`, `check`, `field` | [2d-cells](2d-cells.md) |
 | `glyphs` | `infer`, `show`, `confirm` | [2d-cells](2d-cells.md) |

@@ -177,6 +177,14 @@ is off. *Unconfirmed:* tried on one NVIDIA
 GPU (Vulkan) on a 60 Hz display (in-betweens forced, not seen on a
 faster display).
 
+**Starting from a scene** (`--game ID --scene NAME`): the game starts as it was kept by
+`remodel scene make NAME` (docs/uplift-studio.md, "Scenes"), the state loaded as a save slot is, so a
+picture can be checked or a pack edited in motion without playing to it; `scene list` names the scenes
+(`out/<set>/scenes/NAME/state.save`; `REMODEL_DATA` moves them). A scene not made is a notice and the game plays
+from power-on. With `--frames N` the game stops at frame N counted from power-on, so a scene at frame 3300
+and `--frames 3400` is 100 frames on. Not in
+network play (save states are off there).
+
 **Texture packs** (settings `pack` and `tex_filter`, below; `--pack on|off`,
 `--texture-pack DIR` and `--tex-filter off|mip|2|4|8|16` for one run; both
 off by default). With `pack` on, replacement textures from the game's pack
@@ -190,7 +198,15 @@ every game that run and turns `pack` on; `--pack` alone means on. PNGs are
 decoded on background threads from the start and uploaded ahead of
 their first draw (a stand-in shows for a texture not ready; docs/texture-packs.md,
 "Flicker", with `--pack-log FILE` and `--pack-fixes none|all|surface,hold,preload`
-to find and compare what makes replacements flicker). The launcher's previews never use packs. The Esc
+to find and compare what makes replacements flicker). **The pack is watched**: write, replace
+or delete a `tex_`, `art_`, `tile_` or map PNG in the folder while the game runs and only that image is
+swapped, with no restart: it shows about 0.15 s after the file is written (measured on Top Skater and
+`vf2`, 128x128 to 512x256 images), the old image staying until the new one has decoded. A change to
+`pack.txt` or the region files opens the pack again, and the console prints `pack reload` for each
+swap. The watch (a thread looking at the folder ten times a second) reports a file once it has stayed the
+same for a look, so an editor that writes in pieces is not read half way. An image that does not decode
+shows the original until a good one is written. Draw only: the game never sees it.
+The launcher's previews never use packs. The Esc
 menu's line under the checkbox shows the folder, how many images it holds and
 how many of the last frame's textured polygons (and tile patterns) were
 replaced, or why there is no pack (a missing folder also gives a notice). `tex_filter` filters pack

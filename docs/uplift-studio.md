@@ -992,8 +992,7 @@ is still to do.
 **Not built yet:** `scene what`, `where`, `sheet` and `clip`; `--asset` and
 the overlays other than `miss` on `render` (`--overlay miss` is built: docs/texture-packs.md, "Draw rules and overlays"); the per-asset `assets[]` report (which assets the
 pack replaced, and why not); `facts.tsv`; the side channel in captures
-(each object's model key); layered packs; the player's `--scene` and the
-server. Scenes use the default (chip) geometrizer; the design's choice of
+(each object's model key); layered packs; the server. The player's `--scene` is built (docs/play.md). Scenes use the default (chip) geometrizer; the design's choice of
 native waits for the side channel.
 ## Tours and coverage
 
@@ -1262,8 +1261,10 @@ Not built, roughly in this order:
 
 1. **Before/after page**: the sheets in the viewer, side by side per frame
    (`studio compare` writes the sheets, from a run or from scenes).
-2. **Live reload**: the player watching the pack directory and swapping
-   textures as files change, so an edit shows in the running game.
+2. **Live reload** (built 2026-11-23): the player watches the pack directory and swaps
+   the changed image alone, about 0.15 s after the write (docs/play.md, "Texture packs";
+   `remodel-play --scene NAME` starts from a scene). The pack page (a list of the pack's
+   assets and their status in the player) is not built: [uplift/authoring.md](uplift/authoring.md).
 3. **Pick in the player**: a mode that names the texture (and group) under
    the cursor in the running game, with the ID image drawn by the same
    renderer, adding it to the selection.

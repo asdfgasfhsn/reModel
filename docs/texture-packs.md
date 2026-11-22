@@ -636,6 +636,16 @@ them (a 1024x1024 PNG takes 10-50 ms) and the page hands over at most one
 image a frame. Without an `index.txt` the original textures stay, with a
 console warning.
 
+**Live reload.** The player (and any renderer given a `DirPack`) watches the pack
+folder: a changed, added or removed `tex_`, `art_`, `tile_` or map file is reported once it has
+stayed the same for a look (the folder is looked at ten times a second, or less often if a look
+is slow), and the renderer asks again for just that image the next time its texture is drawn. An `art_`
+change reloads every colouring of that surface; a tile or map change drops the tile or material
+caches; a `pack.txt` or region file change opens the pack again. The old image stays on screen until
+the new one has decoded, so nothing flickers; a deleted file shows the original (or the artwork's
+image). Measured 0.13 to 0.15 s from a write to the upload, on Top Skater and `vf2`
+(docs/play.md). It reads `selflit` again too, since a changed `pack.txt` reopens the pack.
+
 **GPU memory.** Images are uploaded ahead of their first draw when there is
 room (`preload`, "Flicker") or when first drawn, and kept; over a budget
 (512 MB natively, 192 MB in the browser) the least recently drawn are

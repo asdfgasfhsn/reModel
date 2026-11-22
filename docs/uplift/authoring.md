@@ -33,11 +33,11 @@ specs found the artist the worst-served role for exactly that reason.
   (`docs/uplift-studio.md`, "What is built, what comes later").
 - **The player can be driven by script** for tests: `--nav`, `--input`,
   `--shot` (`docs/play.md`).
-- **The player has no reload today.** It does not watch a pack; a change
-  means switching the pack off and on, a cold load of about 0.3 s for
-  Top Skater's race scene (E1), with original and pack art mixed for a
-  quarter of a second. Reloading a whole pack resets the renderer's
-  caches.
+- **The player reloads one image** (built 2026-11-23, item 8) and starts at
+  a scene with `--scene`. Before that a change meant switching the pack off
+  and on, a cold load of about 0.3 s for Top Skater's race scene (E1), with
+  original and pack art mixed for a quarter of a second. Still to build: the
+  pack page below, and the project watch with normalise.
 - **Opening the image editor exists nowhere in the code.** It needs the
   platform's opener, with its result checked.
 
@@ -232,6 +232,17 @@ on its own, not one end-to-end run).
 
 ## MVP: after slices A and C
 
+0. Built: `--scene`, and the pack watch (the second part of this list's
+   step 3, without normalise or the gate chip). **The pack page, not
+   built; plan:** an egui page beside the Esc menu's pack line (which
+   already has the folder, image count and the last frame's replaced
+   share). It lists the pack's files by the status `project status`
+   gives (read from the project's `assets.tsv`, not recomputed), the
+   `pack reload` events the watch now reports (`take_reloaded`: file and
+   milliseconds), and the textures drawn this frame with no image (the
+   `miss` overlay's data). First step: show the reload events and the
+   miss count; the status column waits for picking (item 8's L part
+   needs the ID target in the player, which runs only under a look).
 1. The Studio page with the scene grid and `--scene` jumps.
 2. Picking with a read-out, "Show folder" and "Edit".
 3. The project watch, with normalise, reload and the gate chip.

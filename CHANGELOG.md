@@ -15,6 +15,15 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- Player: `--scene` and the pack watch (uplift item 8, first two parts).
+  `remodel-play --game G --scene NAME` starts from a scene made by `remodel
+  scene make` (its state, loaded as a save slot is). The player now watches
+  the texture pack folder: a `tex_`, `art_`, `tile_` or material-map PNG that
+  is written, replaced or deleted swaps in alone, about 0.15 s after the write
+  on Top Skater and `vf2` (the old image shows until the new one has
+  decoded); a changed `pack.txt` or region file opens the pack again. Draw
+  only; game state hashes are unchanged. Not built: the pack page.
+
 - Draw rules and overlays (uplift item 10, first part): a pack can say an
   image is drawn as painted. `material STEM selflit` on a `tex_` or `art_`
   stem in `pack.txt` skips the game's lighting for that image in the
