@@ -10,12 +10,14 @@
 mod art;
 #[path = "studio_gates.rs"]
 mod asset_gates;
+#[path = "studio_project.rs"]
+mod project_cmd;
 #[path = "studio_regions.rs"]
 mod regions;
 
 pub use art::artworks;
-#[allow(unused_imports)] // `refusals`: for `project approve` (item 6)
 pub use asset_gates::{asset_main, check_assets, refusals, Src};
+pub use project_cmd::{build_main, project_main};
 
 use crate::studio_answer::unknown;
 use crate::studio_img::{self as img, Image, Wrap};
@@ -2304,7 +2306,7 @@ fn compare_scenes(p: &Project, a: &Args, ctx: &Ctx, names: &str) -> Result<bool,
     let mut sheets = Vec::new();
     for n in &want {
         let dir = root.join(n);
-        let opts = scene::DrawOpts { pack: Some(pack_dir.clone()), crop: None, against: true, view };
+        let opts = scene::DrawOpts { pack: vec![pack_dir.clone()], crop: None, against: true, view };
         let d = scene::draw(game, &dir, &opts, &mut gpu).map_err(|e| {
             format!("{}{}", e.message(), e.next.as_ref().map(|n| format!(" (next: {n})")).unwrap_or_default())
         })?;

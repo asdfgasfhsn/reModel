@@ -22,7 +22,7 @@ wants to keep a list.
   shaders. None of it is code that runs on the CPU.
 - **The showcase pack is 18.8 MB of PNG files on disk** (measured
   2026-11-20) and 197 MB once decoded, which is the figure the memory
-  budget counts ([pack-project.md](pack-project.md)). A download is the
+  budget counts ([pack-project.md](pack-project.md), "Size tiers"). A download is the
   small number.
 - **GitHub's search API** (its documentation, read 2026-11-19) allows
   10 requests a minute without signing in, returns up to 1,000 results
@@ -106,7 +106,7 @@ it waits until it is needed.
 3. Run `pack check` on it. A pack that fails to parse is not enabled.
 4. Bake any recipes from the user's ROM, with a progress bar.
 5. Add it as a layer, switched on, above what is there
-   ([pack-project.md](pack-project.md), "Layers").
+   ([../texture-packs.md](../texture-packs.md), "Layers"; the player loads one pack today).
 
 Updates are offered, never taken silently, and the old version stays
 until the new one has passed step 3.
@@ -150,7 +150,7 @@ page says so the first time.
 ## Data formats
 
 The listing fields come from `pack.txt`
-([pack-project.md](pack-project.md), "The shipped manifest"): `name`,
+([../texture-packs.md](../texture-packs.md), the manifest keywords): `name`,
 `game`, `version`, `author`, `licence`, `ai`, `program`, `needs`,
 `depends`. The index file is a JSON list of the same fields plus the
 repository, stars, update date and the release's address and hash.
@@ -181,8 +181,7 @@ repository, stars, update date and the release's address and hash.
 
 One search, then two small files per pack listed. A list of fifty packs
 is about a hundred requests to plain file hosting and one to the API.
-Baking is the slow step ([pack-project.md](pack-project.md),
-"Performance").
+Baking is the slow step.
 
 ## Evidence
 

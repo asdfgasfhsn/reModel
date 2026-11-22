@@ -5,7 +5,8 @@ improve a game's look. Only the first slice of
 [scenes-and-server.md](scenes-and-server.md) is built (and the shared answer
 every new command uses, `crates/cli/src/answer.rs`), and the first part of
 [quality-gates.md](quality-gates.md) (asset gates and `pack check`), and the first part of
-[asset-identity.md](asset-identity.md) (artworks in packs); parts of the rest were
+[asset-identity.md](asset-identity.md) (artworks in packs), and the project part of
+[pack-project.md](pack-project.md) (manifest, provenance, layers); parts of the rest were
 tried in spikes, on branches that are not for merging. The vision, the roadmap and the
 order of work are in [../uplift-vision.md](../uplift-vision.md); what exists
 today is in [../uplift-studio.md](../uplift-studio.md),

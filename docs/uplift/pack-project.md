@@ -1,157 +1,60 @@
-# The pack as a project
+# The pack as a project: what is not built
 
-Shared words, roles and rules: [README.md](README.md). Nothing here is
-built. The pack file format that exists today is in
+Shared words, roles and rules: [README.md](README.md). The manifest, the
+status and provenance files, `project init/status/approve/reject`,
+`pack build`, layers and `pack resolve` are built (2026-11-23, roadmap item 6)
+and are described in [../uplift-studio.md](../uplift-studio.md), "Projects",
+and [../texture-packs.md](../texture-packs.md), "Layers". This page keeps
+what is not built, and the two other specs that live here (items 26 and 29).
+The pack file format that exists today is in
 [../texture-packs.md](../texture-packs.md).
 
-## The problem
+## What the first slice did differently from the design
 
-A pack today is a folder of PNGs with an optional `pack.txt`. The studio
-workspace around it is loose files. Work on the showcase was carried
-between agents in prose reports and rebuilt by hand-written scripts.
+- **The folder is the studio workspace**, not a new tree: images stay in
+  `draft/` and `pack/` (the design said `art/`), and the manifest is
+  `assets.tsv` beside `selection.tsv`, so every `studio` command keeps
+  working on a project. `project.txt` is tab-separated as it was (the design
+  showed `key = value`).
+- **Status is derived** from the files and rewritten into `assets.tsv`, not
+  set by verbs on the manifest: there is nothing to fall out of step.
+- **`cache/`** is `original/`, `map/` and `catalogue-maps/`, which keep their
+  names because the studio reads them there; `.gitignore` lists them.
+- **`pack build`** builds the approved images; it does not bake recipes
+  (`studio style` and `studio bake` do) and writes no archive.
 
-**Observed in the studio code and the showcase workspace.**
+## Not built
 
-- **No manifest for the work.** State is spread over `selection.tsv`,
-  `status/status.txt`, `prompts/`, `project.txt`, and recipe and brief
-  files kept wherever the author chose, none with a format version
-  (`crates/cli/src/studio.rs:353`, `389-404`).
-- **Status is where a file sits.** An image in `pack/` is approved, in
-  `draft/` drafted, otherwise original (`crates/cli/src/studio.rs:353`).
-  There is no rejected state, no approver, and no hash, so a file edited
-  after approval is still "approved".
-- **Thin provenance.** A draft records the first word of the command, the
-  brief's name, the date and a prompt file. No model or tool version, seed
-  or input hash.
-- **No revisions.** A new draft overwrites the old one. The showcase's
-  history is whole-folder copies (`cel-pack2`, `cel-pack4`, a `cel-pack3`
-  that is gone) with notes in prose.
-- **Not relocatable.** `project.txt` stores the capture folder as an
-  absolute path (`crates/cli/src/studio.rs:539-541`); in the showcase it
-  points into a worktree that no longer exists, and `map` there is a link
-  to a folder outside the workspace.
-- **Heavy.** Of `cel-pack4`'s 806 MB, 291 MB is a private copy of the
-  `remodel` binary, 219 MB is scratch, and the images exist three times.
-- **The look is outside the pack.** `pack-lint` does not know `look.txt`
-  as a pack file (inferred from `crates/cli/src/pack_lint.rs:23-31`).
-- **One pack at a time.** There is no layering.
+- **`project brief`**: one agent's task as data (its assets, scenes, verbs and
+  budgets). **`project review`**: one sheet per category of everything
+  `checked`, original beside new, and the `review` verdict with recorded
+  decisions (`approve --accept "reason"`), which asset gates do not yet use.
+- **A project's list of required scenes** with a coverage target each
+  (`scenes.txt`); `pack check --release` uses the default 10% for every scene.
+  **`pack report`**.
+- **`pack build --archive`**: the file to publish (the project's `cache/`
+  left out), and the player's install and bake steps.
+- **`pack diff REV`**: before and after sheets per scene between two commits;
+  **`pack doctor`**: assets that no longer match anything the catalogue has
+  seen, scenes gone stale, gates that changed verdict; **`pack rekey`** for a
+  new key scheme.
+- **Names and artwork links** ([asset-identity.md](asset-identity.md)): the
+  `name` column of `assets.tsv` is empty until `asset name` exists; no
+  same-as links, flat or shared flags, ROM address anchor; `asset list` and
+  `asset show` over `status/artworks.tsv`; `follow` as a colour mode.
+- **Recipes carried in a pack**: baking on the user's machine from their ROM.
+- **Layers in the player and the browser** (one pack there today), a layer
+  switched off by the user, region sets merged across layers, and the
+  player refusing an order that breaks `depends` or `conflicts` (the CLI does).
+- **`asset set` / `asset make`**, a rejected-to-drafted note in `asset show`,
+  `restyle` or `faithful` recorded in `project.txt` (the style gates apply
+  only to a faithful pack, [quality-gates.md](quality-gates.md)), a signed
+  archive.
+- **A remaining weakness**: `stale` is found from a hash recorded by
+  `studio approve` or `project init`; an approval written by hand into
+  `pack/` before `project init` is trusted as it stands.
 
-What should be kept: the strict names, `select` and `approve` being
-idempotent, the recipe file, and the pack format's `uses` and `needs`,
-which already separate features a reader may skip from ones it must have.
-
-## Design
-
-### Two things, kept apart
-
-- **The pack** is what a player loads: images, `pack.txt`, `look.txt`,
-  `regions.txt`. It is built, never edited by hand.
-- **The project** is what people and agents work in. It is a folder of
-  text and original art that fits in a git repository, and it builds the
-  pack.
-
-Keeping authoring apart from shipping is what the recompilation projects
-do: author in loose files, ship something built.
-
-### The project folder
-
-```
-project.txt        format, name, game, what it was made against
-assets.tsv         one row per asset: the manifest
-scenes.txt         the scenes that matter to this pack
-style.md           the style sheet, for people and prompts
-style.txt          its checkable part: palettes per category, line weights
-gates.txt          gate limits changed from the defaults, with reasons
-recipes.txt        the local style recipes (today's format)
-art/               approved images, named by slug
-draft/             work in progress
-provenance/        one small text file per image
-log.tsv            every status change, appended
-reports/           gate reports per revision
-build/             the built pack (not committed)
-cache/             originals, bundles, sheets (ROM-derived, not committed)
-```
-
-Every path is relative. Nothing links outside the folder. No binaries.
-
-`project.txt`:
-
-```ini
-format     = 1
-name       = Top Skater, cel comic
-game       = topskatr
-program    = <hash>           # program ROM hash, as save states record it
-keys       = 1                # the identity scheme, as pack.txt has it
-approvers  = lead
-made-with  = reModel 0.12.0
-version    = 0.4.0
-licence    = CC-BY-4.0        # optional, free text
-depends    = other-pack >= 1.2  # optional: a pack this one must sit above
-```
-
-`assets.tsv`, one row per asset:
-
-| Column | Holds |
-|---|---|
-| `id`, `name`, `kind`, `category` | Identity ([asset-identity.md](asset-identity.md)) and the recipe group |
-| `status` | `todo`, `drafted`, `checked`, `approved`, `rejected`, `stale` |
-| `colour` | `baked`, `fixed` or `follow` |
-| `draw` | Draw rules: `selflit`, `filter=nearest` ([renderer-controls.md](renderer-controls.md)) |
-| `source` | `hand`, `recipe`, `generated` or `imported` |
-| `hash` | The approved image's hash |
-| `by`, `date` | Who approved it |
-| `note` | A reason, required for `rejected` |
-
-The build treats `baked` as the usual case: from one authored image it
-makes the other colourings, or copies the image, by how far the art lies
-from the game's own colour ramp. So the catalogue records each key's
-16-colour ramp (48 bytes) when it first sees the key
-([uplift-studio.md](../uplift-studio.md), "Artworks").
-`follow` is the fallback for a colour nobody catalogued.
-
-Status is recorded and then verified: if the image's hash is not the
-approved one, the asset is `stale`. The table of which verb moves which
-status is in [interface.md](interface.md). Rows change only through
-verbs (`asset set`, `asset make`, `project approve`), each under a short
-lock, one sorted row per asset, so several agents on different assets
-merge cleanly in git.
-
-`provenance/<slug>.txt` holds the tool, the model and its version, the
-prompt file, the hashes of every input, the post-steps in order, the date,
-the author and, if the author wants them, a licence and an AI label
-(`none`, `assisted` or `generated`, which some mod sites now ask for).
-Neither is required or checked. Prompts and
-seeds are a record, not a recipe: image models do not reproduce reliably
-across machines.
-
-`log.tsv` is append-only: time, actor, verb, asset, from, to, note. It is
-the hand-over between agents, and with git it is the history. A revision
-is a commit of the project folder; nothing else defines one.
-
-### One game per pack
-
-A pack belongs to one game: its keys are that game's texels and tiles, and
-its scenes are that game's moments. Layers stack within a game. The one
-thing that is naturally shared across games is how the finished picture is
-treated: a look without per-texture tags, and the shader packs proposed
-in [shader-packs.md](shader-packs.md).
-
-### What a pack carries
-
-The tools build packs; they do not rule on what may be shared. That is the
-author's business (decided 2026-11-19). A pack can carry its art two ways,
-and may mix them:
-
-| Way | Holds | Good for |
-|---|---|---|
-| **Images** | The finished PNGs | Anything; the simplest |
-| **Recipes** | The recipe and its settings, baked on the user's machine from their ROM | Small downloads; art that is a mechanical restyle of the game's own |
-
-`pack build` writes the pack. `pack build --archive` writes the file to
-publish. The project's `cache/` is left out because it is working files,
-not because of a rule. The rule in `CLAUDE.md` that nothing ROM-derived
-enters reModel's own repository is unchanged, and is about this
-repository only.
+## Packs in linked play and size tiers
 
 ### Packs in linked play
 
@@ -186,6 +89,29 @@ nothing was run. Citations in this section are at that commit, not at
   a pack, comparing each node's state hash and the combined hash. It
   needs the player change first, since `link-run` and `link-net` take
   no pack.
+
+### Size tiers and compressed images
+
+Proposed on 2026-11-20; nothing here is tried. What a pack costs is its
+decoded size, not its download: the showcase is 18.8 MB on disk and 197
+MB decoded, over the browser's 192 MB budget.
+
+- **A half-size tier, made by the build.** `pack build --tier half`
+  writes a second set of images at half the scale. The loader takes the
+  tier that fits the budget it has. A quarter of the pixels is about a
+  quarter of the memory (arithmetic, not measured).
+- **Images compressed for the GPU.** A block format such as BC7 holds a
+  pixel in one byte where a decoded PNG takes four, and is not decoded
+  on load, which is where most of a reload's time went on a large image
+  ([authoring.md](authoring.md), "Evidence"). The build would write
+  them; a pack still ships PNGs as its source.
+- **What is not known.** What flat cel art with hard ink lines looks
+  like after block compression. Which formats the browser's GPU offers,
+  since they differ by device and a transcoding step would be a new
+  dependency. Whether the build should make these on the user's machine
+  or the author's.
+- **First step.** The showcase pack built both ways, with decoded
+  memory, load time and a difference picture for ten images.
 
 ### Size tiers and compressed images
 
@@ -265,59 +191,9 @@ today.
 | `pack diff REV` | Before and after sheets per scene between two revisions |
 | `pack doctor` | What a reModel update broke |
 
-## The roles
-
-- **Pack lead.** `project status --json` is the hand-over. `pack diff` is
-  the review. Nothing has to be re-derived from a report.
-- **Art agent.** Is given asset IDs. It writes `draft/<slug>.png` and its
-  provenance, and the log records it. It cannot approve.
-- **Artist.** Works in `art/` and `draft/`: ordinary images with readable
-  names.
-- **Tester.** Approval is tied to a hash, so "approved" means the file
-  that was checked.
-- **Player.** Installs a small archive, bakes once, stacks packs, and can
-  switch each one off. The install and bake steps have no interface yet:
-  the page that would do it is in [authoring.md](authoring.md), and until
-  then this is a command.
-- **Tool engineer.** A new asset kind is a new `kind` and file kind, with
-  no new manifest.
-
-## Testing
-
-- **Without ROMs:** parsers; the status machine, including `stale`;
-  the archive holding the built pack and nothing from `cache/`; layer resolution; a build
-  from recipes over synthetic originals that gives the same bytes twice.
-- **With ROMs:** import the showcase workspace, build, and compare with
-  the pack it has today.
-
-## Performance
-
-A build bakes recipes: seconds per hundred textures, by the showcase's
-figures of 2 to 5 s per local texture in shell scripts and far less in
-`studio style`. Layer lookup is per asset on first draw, not per frame.
-The built showcase pack is 18.8 MB of PNG files on disk (measured
-2026-11-20) and 197 MB once decoded; a shared archive of recipes and
-original art would be smaller still. Decoded, it is over the browser's
-192 MB budget, so a pack meant for the browser needs smaller images or fewer
-colour copies ("Size tiers and compressed images").
-
 ## Open questions
 
-- **Licence.** Optional free text, shown where a pack is listed. No
-  default and no check is proposed, since the tools only help people
-  make and fetch packs.
+- **Licence.** Optional free text, shown where a pack is listed. No default and no check is proposed.
 - **Signatures** for archives: later, or not at all?
-- **Compressed textures** in the built pack (KTX2) would cut memory and
-  load time, and need a decoder in the browser build.
 - **One repository per pack**, or many packs in one?
-- **Restyle or faithful.** The style gates apply only to a faithful pack
-  ([quality-gates.md](quality-gates.md)), so a project must state which
-  it is. Where that is recorded (`project.txt` or `gates.txt`) is open.
-
-## MVP: a few days
-
-1. `project.txt`, `assets.tsv`, `log.tsv` and provenance files, with
-   hashes and `stale`.
-2. `project init --from-studio` on the showcase.
-3. `pack build` writing the new `pack.txt`, with `look.txt` accepted.
-4. Two packs layered in the CLI renderer, with `pack resolve`.
+- **Restyle or faithful**: where it is recorded (`project.txt` or `gates.txt`).

@@ -47,6 +47,36 @@ pub const SCALE_MAX: f32 = 4.0;
 pub const BUDGET_NATIVE: u64 = 512 << 20;
 pub const BUDGET_WASM: u64 = 192 << 20;
 
+/// The values of the manifest's `ai` label.
+pub const AI_LABELS: [&str; 3] = ["none", "assisted", "generated"];
+
+/// A pack's `depends` line, read: the pack name and the version it must have
+/// at least (`NAME >= 1.2`; a bare `NAME` wants any version).
+pub fn parse_dependency(line: &str) -> (String, Option<String>) {
+    match line.split_once(">=") {
+        Some((n, v)) => (n.trim().to_string(), Some(v.trim().to_string())),
+        None => (line.trim().to_string(), None),
+    }
+}
+
+/// Whether dotted version `have` is at least `want` (numbers by part; a part
+/// that is not a number compares as text).
+pub fn version_at_least(have: &str, want: &str) -> bool {
+    let parts = |v: &str| v.split('.').map(str::to_string).collect::<Vec<_>>();
+    let (h, w) = (parts(have), parts(want));
+    for i in 0..h.len().max(w.len()) {
+        let (a, b) = (h.get(i).map(String::as_str).unwrap_or("0"), w.get(i).map(String::as_str).unwrap_or("0"));
+        let ord = match (a.parse::<u64>(), b.parse::<u64>()) {
+            (Ok(a), Ok(b)) => a.cmp(&b),
+            _ => a.cmp(b),
+        };
+        if ord != std::cmp::Ordering::Equal {
+            return ord == std::cmp::Ordering::Greater;
+        }
+    }
+    true
+}
+
 /// Per-material overrides (`material STEM k=v ...`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MaterialParams {
@@ -81,6 +111,19 @@ pub struct Manifest {
     pub spec_scale: f32,
     /// `material` lines by stem (`tex_..` or `surf_..`, no map suffix).
     pub materials: BTreeMap<String, MaterialParams>,
+    /// `version`, `author`, `licence`, `ai`, `program`: what the pack says
+    /// about itself (free text, never used for lookup; `ai` is `none`,
+    /// `assisted` or `generated`; `program` the ROM hashes it was made
+    /// against). docs/texture-packs.md, "Project metadata".
+    pub version: Option<String>,
+    pub author: Option<String>,
+    pub licence: Option<String>,
+    pub ai: Option<String>,
+    pub program: Option<String>,
+    /// `depends NAME [>= VERSION]` and `conflicts NAME` lines: what must be
+    /// in the layers beneath this pack, and what must not be loaded with it.
+    pub depends: Vec<String>,
+    pub conflicts: Vec<String>,
     /// Lines with a reserved keyword (`model`), as written: ignored.
     pub reserved: Vec<String>,
     /// Lines with a keyword this build doesn't know, as written: ignored.
@@ -129,6 +172,13 @@ impl Manifest {
         normal_scale: 1.0,
         spec_scale: 1.0,
         materials: BTreeMap::new(),
+        version: None,
+        author: None,
+        licence: None,
+        ai: None,
+        program: None,
+        depends: Vec::new(),
+        conflicts: Vec::new(),
         reserved: Vec::new(),
         unknown: Vec::new(),
     };
@@ -153,7 +203,21 @@ impl Manifest {
             if seen.is_empty() && kw != "format" {
                 return Err(at("the first line must be `format N`".into()));
             }
-            let single = matches!(kw, "format" | "keys" | "name" | "game" | "normal_y" | "normal_scale" | "spec_scale");
+            let single = matches!(
+                kw,
+                "format"
+                    | "keys"
+                    | "name"
+                    | "game"
+                    | "normal_y"
+                    | "normal_scale"
+                    | "spec_scale"
+                    | "version"
+                    | "author"
+                    | "licence"
+                    | "ai"
+                    | "program"
+            );
             if single && !seen.insert(kw) {
                 return Err(at(format!("`{kw}` given twice")));
             }
@@ -176,6 +240,34 @@ impl Manifest {
                         m.name = v;
                     } else {
                         m.game = v;
+                    }
+                }
+                "version" | "author" | "licence" | "ai" | "program" => {
+                    if value.is_empty() {
+                        return Err(at(format!("`{kw}` wants a value")));
+                    }
+                    let v = Some(value.to_string());
+                    match kw {
+                        "version" => m.version = v,
+                        "author" => m.author = v,
+                        "licence" => m.licence = v,
+                        "program" => m.program = v,
+                        _ => {
+                            if !AI_LABELS.contains(&value) {
+                                return Err(at(format!("`ai` is none, assisted or generated, not `{value}`")));
+                            }
+                            m.ai = v;
+                        }
+                    }
+                }
+                "depends" | "conflicts" => {
+                    if value.is_empty() {
+                        return Err(at(format!("`{kw}` wants a pack name")));
+                    }
+                    if kw == "depends" {
+                        m.depends.push(value.to_string());
+                    } else {
+                        m.conflicts.push(value.to_string());
                     }
                 }
                 "uses" => m.uses.extend(feature_list(value).map_err(at)?),
@@ -237,6 +329,23 @@ impl Manifest {
             if let Some(v) = v {
                 let _ = writeln!(s, "{k}\t{v}");
             }
+        }
+        for (k, v) in [
+            ("version", &self.version),
+            ("author", &self.author),
+            ("licence", &self.licence),
+            ("ai", &self.ai),
+            ("program", &self.program),
+        ] {
+            if let Some(v) = v {
+                let _ = writeln!(s, "{k}\t{v}");
+            }
+        }
+        for d in &self.depends {
+            let _ = writeln!(s, "depends\t{d}");
+        }
+        for c in &self.conflicts {
+            let _ = writeln!(s, "conflicts\t{c}");
         }
         for (k, v) in [("uses", &self.uses), ("needs", &self.needs)] {
             if !v.is_empty() {

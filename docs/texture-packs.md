@@ -259,6 +259,8 @@ material	surf_fedcba9876543210_64x64	normal=0
 | `format N` | the format's major number; the first line | no manifest: 1 |
 | `keys N` | the key scheme of the file names: 1 is the image, tile and surface keys defined here | 1 |
 | `name`, `game` | free text: what the pack is, the set it was made from; never used for lookup | none |
+| `version`, `author`, `licence`, `ai`, `program` | what the pack says about itself, free text and never used for lookup, except as `depends` reads `version`: `ai` is `none`, `assisted` or `generated` (any other value refuses the manifest); `program` the ROM hashes it was made against, never ROM data | none |
+| `depends NAME [>= VERSION]`, `conflicts NAME` | the pack that must sit below this one in a stack (at least that dotted version), and one that must not be in the stack at all; given any number of times. `NAME` is the other pack's `name` line, else its folder name | none |
 | `uses a,b` | optional features the pack contains (`materials`, `regions`); names a reader doesn't know are ignored | none |
 | `needs a,b` | features without which the pack must not be shown at all | none |
 | `normal_y up\|down` | green direction of every normal map | `up` |
@@ -293,6 +295,24 @@ twice, a value out of range) refuses the pack, with the line it is on.
    can't say; a plain upscaled pack gets none (`make upscale-textures`
    writes none) and stays readable by older builds, which show its images
    and nothing of the rest.
+
+**Layers.** The CLI's `scene render` takes `--pack` several times,
+highest first, and draws the stack (`model2::layered::LayeredPack`; the
+renderer sees one pack). For each texture, tile or material map the highest
+pack that has it wins; an image still decoding holds the answer, so a lower
+layer is never shown for a frame. A pack's region set hides every lower
+pack's (region sets are not merged). `depends` must name a pack beneath, at
+the version asked, and `conflicts` a pack not in the stack: a stack that
+breaks either is refused, with the reason. `remodel pack resolve DIR...`
+(highest first) says which layer won each asset and what it hid, and the
+stack's GPU memory with mipmaps against the 512 MB native and 192 MB browser
+budgets, warning where a layer uses something the browser does not show.
+The player and the browser still load one pack; each layer is a plain pack
+and can be used alone.
+
+**`look.txt`** is a pack file: `pack-lint` knows it (and warns when it does not
+parse), and `pack build` copies the project's. The player already loads
+it with the pack.
 
 Where a refused pack shows: `run` and the checks print the reason and draw
 without the pack; the player's Esc menu shows it as it does a missing

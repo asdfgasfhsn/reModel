@@ -1,6 +1,6 @@
 # The interface in one place
 
-Shared words, roles and rules: [README.md](README.md). Of the verbs, `scene list/make/verify/render`, `coverage`, `tour`, `asset check` and `pack check` are built
+Shared words, roles and rules: [README.md](README.md). Of the verbs, `scene list/make/verify/render`, `coverage`, `tour`, `asset check`, `pack check`, `project init/status/approve/reject`, `pack build` and `pack resolve` are built
 (on a studio project: [../uplift-studio.md](../uplift-studio.md)); the rest is not. This page gathers what the other specs each define a part of: every
 verb, where files live, who needs what, the status of an asset, and three
 tasks written out command by command. Where a spec and this page differ,
@@ -18,8 +18,8 @@ use `noun.verb` with the same arguments. Every verb takes `--json` and
 | `asset` | `list`, `show`, `bundle`, `name`, `set`, `same`, `make`, `normalise`, `check` (built: `check`; the artwork index and the colour copies are today `studio artworks` and `studio bake`, [uplift-studio.md](../uplift-studio.md), "Artworks") | [asset-identity](asset-identity.md), [generation](generation.md), [quality-gates](quality-gates.md) |
 | `region` | `capture`, `list`, `check`, `field` | [2d-cells](2d-cells.md) |
 | `glyphs` | `infer`, `show`, `confirm` | [2d-cells](2d-cells.md) |
-| `project` | `init`, `status`, `brief`, `review`, `approve`, `reject` | [pack-project](pack-project.md) |
-| `pack` | `build`, `check`, `report`, `resolve`, `diff`, `doctor`, `rekey` | [pack-project](pack-project.md), [quality-gates](quality-gates.md) |
+| `project` | `init`, `status`, `approve`, `reject` (built), `brief`, `review` | [../uplift-studio.md](../uplift-studio.md), [pack-project](pack-project.md) |
+| `pack` | `build`, `check`, `resolve` (built), `report`, `diff`, `doctor`, `rekey` | [../uplift-studio.md](../uplift-studio.md), [pack-project](pack-project.md), [quality-gates](quality-gates.md) |
 | `look` | `set`, `calibrate`, `suggest-tags` | [renderer-controls](renderer-controls.md) |
 
 Content coverage adds `tour` and `coverage`, and distribution adds
@@ -90,12 +90,13 @@ listed in the last column.
 | `region capture SCENE X,Y,W,H --name NAME [--replace]` | As in task B |
 | `region list` | `regions[]`: `name`, `cells`, `status` |
 | `region check NAME` | `scenes[]`: `scene`, `matched`, `cells_matched`, `cells` |
-| `project status [--status S,...] [--category C] [--scene NAME]` | `actor`, `approvers[]`, `counts` by status, `assets[]` (as `asset list`), `waiting`: `to_approve` (checked and clean) and `to_review` (checked, with a `review` item to accept), and `log[]`, the last twenty lines |
+| `project status [--status S,...] [--category C] [--limit N]` (**built**) | `actor`, `approvers[]`, `counts` by status, `categories`, `assets[]` (`id`, `name`, `kind`, `category`, `status`, `colour`, `source`, `hash`, `by`, `date`, `note`; `--limit`, default 100), `listed`, `matching`, `waiting`: `to_approve` (checked drafts), `to_approve_count` and `to_draft`; `stale[]`, `rejected[]` (`asset`, `reason`, `by`), `unrecorded_approvals`, `log[]`, the last twenty lines. No `--scene` yet, and no `to_review` (nothing is at `review` yet) |
 | `project brief [--actor NAME]` | `actor`, `assets[]`, `scenes[]`, `verbs[]`, `budget` |
 | `project review [--category C]` | `sheets[]`: `category`, `picture`, `assets[]` |
-| `project approve ID...\|--category C [--accept "REASON"]` | `approved[]`, `skipped[]`: `asset`, `why`. With `--category`, assets not yet `checked`, or with a `review` item and no `--accept`, are skipped with the reason, not errors. A named ID that is not `checked` is exit code 2 |
-| `project reject ID --reason "TEXT"` | The changed row |
-| `pack build [--archive] [--out DIR] [--replace]` | `out` (default `build/` in the project), `files`, `bytes`, and `archive`, the path of the file to publish. It builds whatever is approved and does not need `pack check` first |
+| `project approve ID...\|--category C [--override "REASON"]` (**built**) | `approved[]`: `asset`, `hash`; `skipped[]`: `asset`, `why`; `overridden[]`. Runs the asset gates again (`studio::refusals`): a named asset with a gate at `error` is exit code 1 with `blocked[]`, under `--category` it is skipped; `--override` with a reason approves it and writes the reason and the gates to the log. A named ID that is not `checked` is exit code 2 (`drafted` is allowed under `--override`); `--accept` for `review` items is not built |
+| `project reject ID... --reason "TEXT"` (**built**) | `rejected[]`, `reason`. Needs a draft; an approved copy is removed |
+| `pack build [--out DIR] [--replace]` (**built**; `--archive` is not) | `out` (default `build/` in the project), `files`, `bytes`, `approved`, `regions`, `stale_left_out[]`, `look`. It builds the approved images and the manifest, and does not bake recipes or need `pack check` first |
+| `pack resolve DIR...` (**built**; highest first) | `layers[]`: `order`, `dir`, `name`, `version`, `images`, `won`, `hidden`; `assets`, `hidden_total`, `hides[]`: `asset`, `winner`, `hid[]`; `memory`: `bytes`, `mb`, the limits, `native_ok`, `browser_ok`; `problems[]` (a `depends` or `conflicts` broken: exit code 1); warnings for what the browser does not show |
 | `pack check [--level asset,pack,scene,clip] [--asset ID].. [--release]` (**built** for a studio project: `data.done`, `counts`, `gates[]` per gate, `failures[]`, `lint[]`, `overrides[]`, `skipped[]`, `report`; `--out DIR` for the files) | As in task C. `done` is true when nothing is at `error` (under `--release` an unapproved selected asset and a scene short of its coverage are errors; the project's list of required scenes is not built). With no level it runs every level it can and lists the rest under `skipped` |
 | `tour list`, `tour run NAME\|--all`, `coverage` | [content-coverage](content-coverage.md) |
 | `pack find`, `pack install`, `pack update`, `pack publish --check` | [distribution](distribution.md) |

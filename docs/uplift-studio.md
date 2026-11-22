@@ -410,6 +410,121 @@ manifest that holds them, `asset show` and bundles, `same-as` links, the
 `flat`, `shared` and `rewritten` flags, the ROM address as a second anchor,
 `pack rekey`, `follow`, and palette packs.
 
+## Projects
+
+A studio workspace is the project: the files above stay the truth about
+images, so every `studio` command keeps working on it. Built 2026-11-23
+(roadmap item 6) so that work survives hand-over: what was done, by whom, to
+what, and what is left is in the folder, not in a report. What is not built
+is in [uplift/pack-project.md](uplift/pack-project.md).
+
+```
+remodel project init [--project DIR] [--from-studio WORKSPACE [--with-cache]] [--approver NAME,..] [--pack-version V] [--author A] [--licence L] [--ai none|assisted|generated] [--replace]
+remodel project status [--status S,..] [--category C] [--limit N] [--json]
+remodel project approve ID.. | --category C [--override "REASON"] [--json]
+remodel project reject ID.. --reason "TEXT" [--json]
+remodel pack build [--out DIR] [--replace]          remodel pack resolve DIR..
+make project-init|project-status|project-approve|pack-build|pack-resolve
+```
+
+**What a project adds to the workspace**, all plain text, written by these
+verbs (every verb takes `--project DIR`, default the current folder):
+
+| File | Holds |
+|---|---|
+| `project.txt` | As before (key, tab, value), plus `format` (1), `made-with`, `version`, `approvers` (comma list), and for the built pack `author`, `licence`, `ai`, `program`, `depends`, `conflicts` (the last two `;`-separated) |
+| `assets.tsv` | One sorted row per selected asset: `id`, `name` (a slug; empty until asset names exist), `kind`, `category`, `status`, `colour` (an `art_` image's mode, `baked` or `fixed`), `source` (`hand`, `recipe`, `generated`, `imported`), `hash`, `by`, `date`, `note`. Rewritten by every verb only when it changes, so two agents' work merges in git |
+| `log.tsv` | Appended: time, actor, verb, asset, from, to, note. One line per change; an import is one line (`*`) with the counts |
+| `provenance/ID.txt` | Key, tab, value: `tool`, `source`, `prompt`, `prompt-hash`, `original-hash` (the dumped original, an input), `date`, `draft-hash`, and on approval `approved-hash`, `approved-by`, `approved-date` |
+| `.gitignore` | `original/`, `map/`, `catalogue-maps/`, `cache/`, `work/`, `compare/`, `build/`, the regions' `original.png`: ROM-derived or scratch |
+
+The images stay where they were: `draft/` and `pack/` (the approved
+images), not the `art/` the spec first named.
+
+**Status is derived, then recorded.** It is computed from the files each
+time and `assets.tsv` is rewritten from it, so it cannot drift: `todo` (no
+image), `drafted` (an image in `draft/`), `checked` (`status/checked.tsv`
+holds the draft's hash: `asset check` passed it), `approved` (an image in
+`pack/`), `stale` (the approved image's hash is no longer the one recorded
+in `status/approved.tsv`: it was edited after approval), `rejected` (a draft
+turned down; it returns to `drafted` as soon as a different draft is
+written). `by`, `date` and `note` stay with a row while its status and hash
+do. An approved image with no recorded hash (approved by an older `studio
+approve`) is trusted as it is by `project init`, which records it.
+
+**The actor** is `REMODEL_ACTOR` (the agent set-up writes it); a writing verb
+without it is a wrong request (exit 2). `approve` and `reject` refuse an
+actor not among `approvers` when the project lists any; with none listed
+anyone may, and `init` warns. This is a guard against mistakes, not security.
+Each verb takes `.project.lock` for its writes.
+
+**`project approve`** takes names (a name or its 16-digit key) or
+`--category`. Only `checked` drafts are approved; a named asset in any
+other status is a wrong request (exit 2), and with `--category` it is
+skipped with the reason. It runs the asset gates again on the drafts
+(`studio::refusals`): one with a gate at `error` is refused (exit 1 for a
+named asset, skipped under `--category`) unless `--override "REASON"` is
+given, which approves it, also when it was only `drafted`, and writes the
+reason and the gates overridden to the log, the row's `note` and the
+answer's warnings. It copies the draft to `pack/`, records its hash in
+`status/approved.tsv` and adds the approval to the asset's provenance.
+`project reject` needs a draft and a reason; an approved copy is removed.
+Both are idempotent: an approved asset named again is reported as skipped.
+
+**`project status`** answers with `counts` by status, `categories`, `assets`
+(`--limit`, default 100; filters `--status`, `--category`), `waiting`
+(`to_approve`: checked drafts; `to_draft`: todo and drafted), `stale[]`,
+`rejected[]` with their reasons, `unrecorded_approvals` and the last twenty
+`log[]` lines. It writes nothing.
+
+**`project init --from-studio WORKSPACE --project DIR`** brings a workspace
+over: its `selection.tsv`, `style.md`, `recipes.txt`, notes, `briefs/`,
+`prompts/`, `status/`, `regions/`, `draft/`, `pack/` and `reports/`, then the
+manifest, the hashes of the approved images as they stand and a provenance
+file for every draft with a ledger line. It does not copy private binaries,
+runs, comparison sheets or the runner's scratch (the showcase's `bin/` was
+291 MB of 806 MB, `work/` 219 MB), and, without `--with-cache`, not the
+originals and texture map (`original/`, `map/`), which come from the ROM:
+the gates that compare with the original say `info` and `known` warns
+until they are there. The workspace's absolute `capture` path is dropped, so a
+project holds only relative paths; `--capture-dir` is passed where a command needs it. Run
+without `--from-studio` in a folder that is already a studio project, it
+brings that folder up to date (idempotent).
+
+**Acceptance test** (roadmap item 6: "import the showcase workspace"),
+run 2026-11-23. The Top Skater showcase workspace (`cel-pack4`, 806 MB, 6,500
+selected textures and tiles) imported in 29 s (release build) into a 132 MB
+project (224 MB with `--with-cache`): 6,273 approved, 227 todo, 6,496
+provenance files, 6,273 approved hashes recorded, 19,118 files copied, ten
+folders left out (the private `bin/` of 291 MB, `work/` 219 MB, comparison and
+send folders, and the originals and map). `project status` answers in 0.14 s.
+`pack build` wrote 6,286 images in 0.5 s and every one is byte-identical to the
+workspace's own `pack/` (0 differing in `sha256sum`); `pack-lint` finds 0
+errors and 0 warnings. An edit to an approved image turned it `stale`, was
+left out of the build and named in a warning; `reject` and the exit codes
+behaved as above. A `vf2` project (59 textures and tiles from the `fight-start`
+scene's texture map, styled with `studio style`) went `init`, `asset check`,
+`approve --category`, `pack build` (59 images, lint clean). Layers were drawn
+on `race-course` (Top Skater) and `fight-start` (`vf2`): a pack over another
+with the same files shows the upper one (the stack equals the upper pack
+alone, 0.0% of pixels differ), the lower one over it changes nothing, and a
+half-covering pack over the showcase differs from it in 76.2% of the
+pixels and from itself alone in 17.2%, where the lower layer shows through.
+The unit test `studio::project_cmd::tests::the_project_verbs` runs the import,
+approval, override, stale, reject and build on synthetic files with no ROM.
+
+**`pack build`** writes the pack to ship, to `build/` (`--out DIR`): the
+approved images (a `stale` one is left out and named), the regions, a
+`pack.txt` of `format 2` carrying the project's `name`, `game`, `version`,
+`author`, `licence`, `ai`, `program`, `depends` and `conflicts`, with `uses`
+or `needs` `regions` and `artworks`, `index.txt`, and the project's
+`look.txt`. It builds from nothing each time and gives the same bytes twice.
+`studio pack` still writes the working `pack/` as before.
+
+**Layers.** `remodel scene render NAME --pack TOP --pack BELOW` draws a
+stack and `pack resolve` reports it; the rules are in
+[texture-packs.md](texture-packs.md), "Layers".
+
 ## Gates
 
 Checks that give a number, a limit and a verdict, so "done" is not a
@@ -443,9 +558,9 @@ recorded as `checked` in `status/checked.tsv`.
 | `stale` | The file's hash is the one recorded when it was approved (`status/approved.tsv`, written by `studio approve`). No record: `info` | error | hash |
 
 The gates that compare with the original run only when `file` holds; a
-missing original makes them `info`. Library entry points for item 6's
-`project approve`: `studio::check_assets` and `studio::refusals` (the
-assets among those named that have a gate at `error`).
+missing original makes them `info`. `project approve` calls
+`studio::refusals` (the assets among those named that have a gate at
+`error`) and refuses them unless given `--override` ("Projects").
 
 **Pack gates, scene gates** (`pack check`, a studio project's `pack/`):
 
@@ -940,7 +1055,7 @@ its MVP).
 Built: the design above; named scenes and `scene render` (above); `remodel texmap` and `make texmap` (ID images,
 texel positions, inventory, contact sheets, groups, JSON); the viewer
 (phase 1); the project commands, the batch runner, the style processor,
-text to tiles, surface variants, artworks (`art_` images, colour ramps, `bake`), the seam check, the quality gates (`asset check`, `pack check`) and before and after
+text to tiles, surface variants, artworks (`art_` images, colour ramps, `bake`), the seam check, the quality gates (`asset check`, `pack check`), projects (`project init/status/approve/reject`, `pack build`, `pack resolve`, stacked packs) and before and after
 (phase 1b: render side and tooling only, no emulation or state hash is
 touched). The catalogue (below) is built too: observing while playing and in
 scripted runs, loads, report, viewer, glyph mapping, and the studio reading it.

@@ -554,11 +554,24 @@ studio-compare: release ## Before and after (without and with STUDIO's pack/), w
 	$(RUN) studio compare $(STUDIO) $(if $(SCENES),--scene $(SCENES),--steps $(BENCH_STEPS) --snap 300 --input $(or $(INPUT),$(BENCH_INPUT)) --jobs $(JOBS)) $(STUDIO_ARGS)
 
 GATE_ARGS ?=
+PROJECT_ARGS ?=
+PACKS ?=
 asset-check: release ## Asset gates (docs/uplift-studio.md, "Gates") on images of STUDIO: ASSET="NAME NAME" (a name, 16-digit key or file stem) or ASSET=--all; GATE_ARGS="--from pack|draft --json"; errors (file, alpha, stale) exit 1, warnings (seam, changed, noise) do not; each result states its number and limit; no ROM, no GPU, milliseconds each
 	$(if $(ASSET),,$(error asset-check needs ASSET="NAME ..." or ASSET=--all))
 	$(CAP) $(REMODEL) asset check --project $(STUDIO) $(ASSET) $(GATE_ARGS)
 pack-gates: release ## Every gate level on STUDIO's pack/ and a report in STUDIO/reports/DATE-VERSION (report.json, gates.tsv, report.md): asset gates on each image, lint, budget, known, selected, and scene coverage when the scenes are made (a GPU, no ROM); GATE_ARGS="--level asset|pack|scene --asset NAME --release --json" (--release makes selected and coverage errors); limits are STUDIO/gates.txt; exit 1 when a gate is at error
 	$(LOCK_RENDER) $(RUN) pack check --project $(STUDIO) $(GATE_ARGS)
+project-init: release ## Make STUDIO a project (docs/uplift-studio.md, "Projects"), or import a workspace: PROJECT_ARGS="--from-studio WORKSPACE [--with-cache] --approver NAME --pack-version V"; writes assets.tsv, log.tsv, provenance/ and records the approved images' hashes; needs REMODEL_ACTOR (make agent-setup writes it); no ROM
+	$(CAP) $(REMODEL) project init --project $(STUDIO) $(PROJECT_ARGS)
+project-status: release ## Counts by status, what waits (checked, stale, rejected) and the log of STUDIO as one answer: PROJECT_ARGS="--status checked --category wall --limit 50 --json"; writes nothing
+	$(CAP) $(REMODEL) project status --project $(STUDIO) $(PROJECT_ARGS)
+project-approve: release ## Approve checked drafts of STUDIO after the asset gates: PROJECT_ARGS="NAME.. | --category C [--override 'REASON']"; a gate at error exits 1 unless overridden with a reason; needs REMODEL_ACTOR, in project.txt's approvers if it lists any
+	$(CAP) $(REMODEL) project approve --project $(STUDIO) $(PROJECT_ARGS)
+pack-build: release ## Build STUDIO's shippable pack from its approved images into STUDIO/build (stale images left out): PROJECT_ARGS="--out DIR --replace"; pack.txt carries the project's version, author, licence, ai, depends, conflicts, and its look.txt is copied
+	$(CAP) $(REMODEL) pack build --project $(STUDIO) $(PROJECT_ARGS)
+pack-resolve: release ## Which of several stacked packs wins each asset and the stack's memory against the native and browser budgets: PACKS="TOP BELOW" (highest first); exit 1 when a depends or conflicts is broken
+	$(if $(PACKS),,$(error pack-resolve needs PACKS="TOP BELOW"))
+	$(CAP) $(REMODEL) pack resolve $(PACKS) $(PROJECT_ARGS)
 
 LOOK      ?= comic
 LOOK_OUT  ?= $(OUT)/look-render

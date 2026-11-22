@@ -17,8 +17,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 /// Tool records and the like that readers ignore.
-const RECORDS: [&str; 7] = [
+const RECORDS: [&str; 8] = [
     pack::MANIFEST,
+    model2::look::FILE,
     pack::INDEX,
     "upscale.txt",
     "drift.txt",
@@ -582,6 +583,13 @@ fn lint_report_with(dir: &Path, dump: Option<&Path>, max_side: usize, quiet: boo
                     r.add(Level::Note, 'a', "`material` line for a stem with no files", stem.clone());
                 }
             }
+        }
+    }
+
+    // The pack's look: a pack file (the player loads it with the pack).
+    if other.contains(model2::look::FILE) {
+        if let Err(e) = model2::look::Look::load(&dir.join(model2::look::FILE)) {
+            r.add(Level::Warning, 'a', format!("look.txt isn't readable, readers draw the default look: {e}"), "");
         }
     }
 

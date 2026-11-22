@@ -24,6 +24,7 @@ pub mod idmap;
 pub mod input;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod jit_warm;
+pub mod layered;
 pub mod light;
 pub mod link;
 pub mod look;

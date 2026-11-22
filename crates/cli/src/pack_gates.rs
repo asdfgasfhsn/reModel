@@ -32,6 +32,18 @@ remodel pack check [--project DIR] [--level asset,pack,scene,clip] [--asset ID].
 pub fn main(o: &crate::Opts) -> ExitCode {
     let rest = &o.args[1..];
     let json = rest.iter().any(|a| a == "--json");
+    // The verbs that are not gates: `resolve` (layers) and `build` (the project's pack).
+    match rest.iter().find(|a| !a.starts_with("--")).map(String::as_str) {
+        Some("build") => return crate::studio::build_main(rest, json),
+        Some("resolve") => {
+            let args: Vec<String> = rest.iter().filter(|a| *a != "resolve").cloned().collect();
+            return match crate::pack_layers::resolve(&args) {
+                Ok((a, text)) => a.emit(json, || text),
+                Err(a) => a.emit(json, || crate::pack_layers::usage().to_string()),
+            };
+        }
+        _ => {}
+    }
     match run(&o.game_id, rest, crate::OUT_DIR.get().cloned()) {
         Ok((a, text)) => a.emit(json, || text),
         Err(a) => a.emit(json, || USAGE.to_string()),
@@ -81,7 +93,8 @@ fn row(
 
 fn run(default_game: &str, rest: &[String], out: Option<PathBuf>) -> Result<(Answer, String), Answer> {
     let Some(sub) = rest.iter().find(|a| !a.starts_with("--")) else {
-        return Err(Answer::fail(Code::BadRequest, "pack wants a verb: check").next("remodel pack check --help"));
+        return Err(Answer::fail(Code::BadRequest, "pack wants a verb: check, build, resolve")
+            .next("remodel pack check --help"));
     };
     if sub != "check" {
         return Err(Answer::unknown("pack verb", sub, &["check".to_string()]));

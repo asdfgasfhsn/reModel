@@ -654,7 +654,8 @@ fn verify(o: &crate::Opts, game: &'static Game, a: &Args) -> Result<(Answer, Str
 /// What to draw.
 #[derive(Clone)]
 pub struct DrawOpts {
-    pub pack: Option<PathBuf>,
+    /// Packs stacked, highest first (`model2::layered`); none: the original.
+    pub pack: Vec<PathBuf>,
     /// Game pixels (496x384), whatever the view.
     pub crop: Option<[i64; 4]>,
     /// Also draw the original (no pack, no look).
@@ -742,16 +743,25 @@ pub fn draw(game: &Game, scene_dir: &Path, o: &DrawOpts, gpu: &mut gpu::Renderer
         original = Some(Picture { width: w, height: h, rgb: gpu.frame(&polys, &placed, &src, &view, &layers) });
     }
     let mut packed = false;
-    if let Some(dir) = &o.pack {
-        match crate::texpack::accept(dir) {
-            Ok(_) => match crate::texpack::Packs::new(None, Some(dir.clone())) {
-                Ok(p) => {
-                    gpu.set_pack(Some(Box::new(p)));
-                    packed = true;
-                }
-                Err(e) => return Err(Answer::fail(Code::Missing, e)),
-            },
-            Err(e) => warnings.push(format!("pack {} not drawn: {e}", dir.display())),
+    if !o.pack.is_empty() {
+        if let Err(e) = crate::pack_layers::check_layers(&o.pack) {
+            return Err(Answer::fail(Code::BadRequest, e).next("remodel pack resolve DIR..."));
+        }
+        let mut layers: Vec<Box<dyn model2::enhance::TexturePack + Send>> = Vec::new();
+        for dir in &o.pack {
+            match crate::texpack::accept(dir) {
+                Ok(_) => match crate::texpack::Packs::new(None, Some(dir.clone())) {
+                    Ok(p) => layers.push(Box::new(p)),
+                    Err(e) => return Err(Answer::fail(Code::Missing, e)),
+                },
+                Err(e) => warnings.push(format!("pack {} not drawn: {e}", dir.display())),
+            }
+        }
+        packed = !layers.is_empty();
+        match layers.len() {
+            0 => gpu.set_pack(None),
+            1 => gpu.set_pack(layers.pop()),
+            _ => gpu.set_pack(Some(Box::new(model2::layered::LayeredPack::new(layers)))),
         }
     } else {
         gpu.set_pack(None);
@@ -841,7 +851,7 @@ pub fn pack_coverage(game: &'static Game, project: Option<&Path>, pack: &Path) -
     let mut gpu = gpu::Renderer::new().map_err(|e| Answer::fail(Code::Internal, format!("no GPU: {e}")))?;
     let mut out = Vec::new();
     for r in ready {
-        let o = DrawOpts { pack: Some(pack.to_path_buf()), crop: None, against: true, view: View::native() };
+        let o = DrawOpts { pack: vec![pack.to_path_buf()], crop: None, against: true, view: View::native() };
         let d = draw(game, &root.join(&r.name), &o, &mut gpu)?;
         out.push((r.name.clone(), d.changed_share.unwrap_or(0.0), d.drawn_share));
     }
@@ -920,9 +930,6 @@ fn render_cmd(o: &crate::Opts, game: &'static Game, a: &Args) -> Result<(Answer,
     if packs.is_empty() {
         packs.extend(o.pack_dir.clone());
     }
-    if packs.len() > 1 {
-        return Err(Answer::fail(Code::BadRequest, "layered packs (several --pack) are not built yet: give one"));
-    }
     let dir = scenes_dir(game).join(&recipe.name);
     if state_of(&dir, Some(recipe)) == State::Missing {
         return Err(Answer::fail(Code::Missing, format!("scene `{}` has no local copy", recipe.name))
@@ -934,7 +941,7 @@ fn render_cmd(o: &crate::Opts, game: &'static Game, a: &Args) -> Result<(Answer,
     let t_gpu = Instant::now();
     let mut gpu = gpu::Renderer::new().map_err(|e| Answer::fail(Code::Internal, format!("no GPU: {e}")))?;
     let gpu_ms = t_gpu.elapsed().as_secs_f64() * 1e3;
-    let opts = DrawOpts { pack: packs.first().cloned(), crop, against, view };
+    let opts = DrawOpts { pack: packs.clone(), crop, against, view };
     let d = draw(game, &dir, &opts, &mut gpu)?;
     // Render output is regenerated every time (the same files for the same
     // inputs), so it is replaced in place; drafts and approved images are
@@ -976,6 +983,7 @@ fn render_cmd(o: &crate::Opts, game: &'static Game, a: &Args) -> Result<(Answer,
         "changed_share": d.changed_share.map(|c| (c * 1e6).round() / 1e6),
         "drawn_share": d.drawn_share.map(|c| (c * 1e6).round() / 1e6),
         "pack": packs.first().map(|p| p.display().to_string()),
+        "layers": packs.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
         "crop": crop, "ms": ms.round(), "ms_gpu_init": gpu_ms.round(), "ms_draw": d.millis.round(), "ms_write": write_ms.round(),
     });
     let mut text = format!(

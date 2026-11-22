@@ -18,6 +18,7 @@ mod look_render;
 mod music;
 mod pack_check;
 mod pack_gates;
+mod pack_layers;
 mod pack_lint;
 mod pack_log_run;
 mod recomp_crates;
@@ -553,6 +554,15 @@ commands:
                        reports/DATE-VERSION/ (report.json, gates.tsv,
                        report.md); scene coverage needs the scenes made and a
                        GPU; --out DIR chooses where the report goes
+  project init|status|approve|reject [--project DIR]
+                       a studio workspace as a project that survives hand-over:
+                       assets.tsv, log.tsv, provenance, approval after the asset
+                       gates (--override REASON); init --from-studio DIR imports
+                       a workspace (docs/uplift-studio.md, \"Projects\")
+  pack build [--project DIR] [--out DIR]
+                       the pack to ship from a project's approved images
+  pack resolve DIR..   which of several stacked packs (highest first) wins each
+                       asset, and the stack's GPU memory
   sound-disasm ADDR [COUNT]
                        disassemble the sound board's 68000 program (its own
                        address space: ROM at 0x600000; at 0 on the original
@@ -1102,6 +1112,7 @@ fn dispatch_no_roms(o: &Opts) -> Option<ExitCode> {
         "scene" => scene::main(o),
         "asset" => studio::asset_main(o),
         "pack" => pack_gates::main(o),
+        "project" => studio::project_main(o),
         "img" => cmd_img(o),
         "catalogue" => cmd_catalogue(o),
         "tour" if o.args.get(1).map(String::as_str) != Some("run") => tour::list(o),

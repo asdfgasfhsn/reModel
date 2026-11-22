@@ -15,6 +15,22 @@ creates the annotated tag `vx.y.z` without pushing. Details in
 
 ## Unreleased
 
+- Projects (uplift item 6): a studio workspace is a project that survives
+  hand-over. `remodel project init` (`make project-init`) brings a workspace
+  up to the manifest, or imports one (`--from-studio DIR`: private binaries,
+  runs and scratch are left out, the absolute capture path is dropped, the
+  ROM-derived originals and texture map only with `--with-cache`), writing
+  `assets.tsv` (status derived from the files: todo, drafted, checked,
+  approved, stale when an approved image was edited, rejected), `log.tsv`,
+  `provenance/` and `.gitignore`. `project status`, `project approve` (the
+  asset gates again; a gate at `error` refuses unless `--override "REASON"`,
+  which is logged) and `project reject` use `REMODEL_ACTOR` and the
+  project's `approvers`. `remodel pack build` writes the pack to ship, and
+  the manifest gains `version`, `author`, `licence`, `ai`, `program`,
+  `depends` and `conflicts`; `pack-lint` knows `look.txt`. Packs stack:
+  `scene render --pack TOP --pack BELOW` draws the layers (the highest pack
+  that has an asset wins) and `remodel pack resolve` says who won what, and
+  the stack's memory against the native and browser budgets. Draw-only.
 - Artwork identity in texture packs: a pack can replace an artwork, not one
   colouring of it. `art_<surface>_<w>x<h>.png` is drawn for every colouring
   (every `tex_` key) of those texels that has no image of its own, in the

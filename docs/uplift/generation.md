@@ -137,7 +137,7 @@ set looks at colour (E2). Repeating surfaces are not worth a model:
 ### 5. Record
 
 A provenance file per image, written by the tool and never by hand
-([pack-project.md](pack-project.md)): backend,
+([../uplift-studio.md](../uplift-studio.md), "Projects": `provenance/`): backend,
 model and version where the backend reports it, prompt, input hashes, the
 post-steps applied, the gate numbers, time taken. The raw output is kept
 in the cache so a post-step can be redone without a new call.
