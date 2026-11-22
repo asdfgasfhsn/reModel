@@ -1,0 +1,5 @@
+# Top Skater's pokes: NAME|ADDR:VALUE[:b|:w|:l]|what it does, how it was found
+# (docs/uplift/content-coverage.md, "Pokes"). Work RAM writes found by running
+# the game with `remodel ram search`; held by a tour (`poke=NAME@from-to`),
+# never applied otherwise. Addresses are for the game's one program ROM set.
+hold-clock|0x5830b0:0x0e10:w|The course's remaining time, in frames (60 a second), held at 60 s so TIME UP never comes. Found by search: it read 20 s left (0x4b3) at frame 5000 of a coin start that picks the first skater, 15 s at 5300 and 0x30f at 5420; the only word that fell by exactly 300 then 120.

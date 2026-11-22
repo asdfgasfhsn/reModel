@@ -22,7 +22,7 @@ use `noun.verb` with the same arguments. Every verb takes `--json` and
 | `pack` | `build`, `check`, `resolve` (built), `report`, `diff`, `doctor`, `rekey` | [../uplift-studio.md](../uplift-studio.md), [pack-project](pack-project.md), [quality-gates](quality-gates.md) |
 | `look` | `set`, `calibrate`, `suggest-tags` | [renderer-controls](renderer-controls.md) |
 
-Content coverage adds `tour` and `coverage`, and distribution adds
+Content coverage adds `tour`, `coverage`, `ram` and `crawl`, and distribution adds
 verbs to `pack`. Pass two adds three nouns and a few verbs: `model export/check`
 ([model-interchange](model-interchange.md)), `place check`
 ([added-elements](added-elements.md)), `shader check/list`
@@ -98,7 +98,7 @@ listed in the last column.
 | `pack build [--out DIR] [--replace]` (**built**; `--archive` is not) | `out` (default `build/` in the project), `files`, `bytes`, `approved`, `regions`, `stale_left_out[]`, `look`. It builds the approved images and the manifest, and does not bake recipes or need `pack check` first |
 | `pack resolve DIR...` (**built**; highest first) | `layers[]`: `order`, `dir`, `name`, `version`, `images`, `won`, `hidden`; `assets`, `hidden_total`, `hides[]`: `asset`, `winner`, `hid[]`; `memory`: `bytes`, `mb`, the limits, `native_ok`, `browser_ok`; `problems[]` (a `depends` or `conflicts` broken: exit code 1); warnings for what the browser does not show |
 | `pack check [--level asset,pack,scene,clip] [--asset ID].. [--release]` (**built** for a studio project: `data.done`, `counts`, `gates[]` per gate, `failures[]`, `lint[]`, `overrides[]`, `skipped[]`, `report`; `--out DIR` for the files) | As in task C. `done` is true when nothing is at `error` (under `--release` an unapproved selected asset and a scene short of its coverage are errors; the project's list of required scenes is not built). With no level it runs every level it can and lists the rest under `skipped` |
-| `tour list`, `tour run NAME\|--all`, `coverage` | [content-coverage](content-coverage.md) |
+| `tour list`, `tour run NAME\|--all`, `coverage`, `ram search\|show\|pokes`, `crawl`, `crawl verify` (**built**: tours `from=`, `mark=`, `poke=`; `data.tours[].poked`; `coverage` adds `poked_tours` and `crawl`; `crawl` gives `tries`, `kept`, `coverage.before/after`, `nodes[]` and the paths of `crawl.txt`, `crawl.map`; `ram search` gives `count` and `candidates[]`) | [content-coverage](content-coverage.md), [uplift-studio](../uplift-studio.md), "Tours and coverage" |
 | `pack find`, `pack install`, `pack update`, `pack publish --check` | [distribution](distribution.md) |
 
 Rules the table leans on:

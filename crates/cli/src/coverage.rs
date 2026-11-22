@@ -350,6 +350,15 @@ fn answer_for(o: &crate::Opts, c: &tour::Common, top: Option<&str>, args: &[Stri
             Err(e) => return fail(answer::INTERNAL, e, Some(&run_all)),
         }
     }
+    // What `remodel crawl` read, if it has run: counted beside the tours'.
+    let crawl_map = dir.with_file_name("crawl").join("crawl.map");
+    let crawled = match MapFile::load(&crawl_map) {
+        Ok(m) if m.game == game.id => {
+            maps.push(m);
+            true
+        }
+        _ => false,
+    };
     if maps.is_empty() {
         return fail(
             answer::MISSING,
@@ -363,12 +372,34 @@ fn answer_for(o: &crate::Opts, c: &tour::Common, top: Option<&str>, args: &[Stri
     };
     data["missing_tours"] = json!(missing);
     data["changed_tours"] = json!(changed);
+    data["crawl"] = json!(crawled);
+    // Tours that hold RAM values (cheat runs) are counted, and named.
+    let poked: Vec<String> = tours
+        .iter()
+        .filter(|t| {
+            maps.iter().any(|m| m.tour == t.label) && tour::uses_pokes(&tours, &t.label, game.controls.coin_start)
+        })
+        .map(|t| t.label.clone())
+        .collect();
+    data["poked_tours"] = json!(poked);
     let mut a = Answer::done(data);
     if !missing.is_empty() {
         a = a.warn(format!("tours not run yet, so not counted: {}", missing.join(", ")));
     }
     if !changed.is_empty() {
         a = a.warn(format!("tours changed since their maps were made (counted as they were): {}", changed.join(", ")));
+    }
+    if crawled {
+        a = a.warn(format!(
+            "counts what `remodel crawl` read ({}): its texture count is a floor (headers sampled every few frames)",
+            crawl_map.display()
+        ));
+    }
+    if !poked.is_empty() {
+        a = a.warn(format!(
+            "counted, but they poke RAM (cheat runs, reaching what play would need skill for): {}",
+            poked.join(", ")
+        ));
     }
     for w in warnings {
         a = a.warn(w);

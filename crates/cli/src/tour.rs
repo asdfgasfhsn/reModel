@@ -11,6 +11,11 @@
 //!   then go on with this tour's own.
 //! - `mark=NAME@FRAME`: save the state as frame FRAME starts, to
 //!   `DIR/states/LABEL-NAME.state` (a scene is a tour and a frame).
+//! - `poke=NAME@FROM-TO` (or `poke=ADDR:VALUE[:b|:w|:l]@FROM-TO`): hold a
+//!   RAM value, a cheat, to reach content without skill. NAME is a line of
+//!   the game's table (`romset::games::pokes`). A tour that pokes, or
+//!   branches from one that does, is marked, and so are its states
+//!   (`LABEL-NAME.poked.state`); nothing pokes unless a tour says so.
 //!
 //! A run is always from power-on, in a machine of its own, with the EEPROM
 //! as the board is made (never an `eeprom.bin` left in a folder: that
@@ -229,7 +234,7 @@ fn item_range(item: &str) -> Option<(u64, u64)> {
 
 /// `item` as it applies up to `frame`: unchanged if it ends by then,
 /// ended there if it runs on, dropped if it starts later.
-fn cut(item: &str, frame: u64) -> Option<String> {
+pub fn cut(item: &str, frame: u64) -> Option<String> {
     let (what, frames) = item.rsplit_once('@')?;
     let (range, every) = match frames.split_once('/') {
         Some((r, n)) => (r, Some(n)),
@@ -267,11 +272,69 @@ pub fn inputs(tours: &[Tour], label: &str, coin_start: &str) -> Result<Vec<Strin
     Ok(out)
 }
 
+/// A poke in an input item: `poke=NAME@frames` or `poke=ADDR:VALUE...@frames`.
+fn is_poke(item: &str) -> bool {
+    item.starts_with("poke=")
+}
+
+/// Whether tour `label` pokes RAM: its own inputs, or those it inherits.
+pub fn uses_pokes(tours: &[Tour], label: &str, coin_start: &str) -> bool {
+    inputs(tours, label, coin_start).is_ok_and(|v| v.iter().any(|i| is_poke(i)))
+}
+
+/// The game's pokes (`NAME|ADDR:VALUE[:b|:w|:l]|what it does and how it
+/// was found`, `#` comments), by name.
+pub fn poke_table(text: &str) -> Result<Vec<(String, String, String)>, String> {
+    let mut out: Vec<(String, String, String)> = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut p = line.splitn(3, '|');
+        let (Some(name), Some(spec), note) = (p.next(), p.next(), p.next().unwrap_or("")) else {
+            return Err(format!("pokes:{}: want NAME|ADDR:VALUE[:b|:w|:l]|NOTE", n + 1));
+        };
+        if !name_ok(name.trim()) || out.iter().any(|(k, _, _)| k == name.trim()) {
+            return Err(format!("pokes:{}: poke name {name:?}: letters, digits, - and _, once", n + 1));
+        }
+        out.push((name.trim().to_string(), spec.trim().to_string(), note.trim().to_string()));
+    }
+    Ok(out)
+}
+
+/// `items` with each named poke (`poke=hold-clock@10-20`) replaced by its
+/// table entry (`poke=0x500123:0x63@10-20`); numbers pass through.
+pub fn resolve_pokes(items: Vec<String>, table: &[(String, String, String)]) -> Result<Vec<String>, String> {
+    items
+        .into_iter()
+        .map(|item| {
+            let Some(rest) = item.strip_prefix("poke=") else { return Ok(item) };
+            let (what, frames) = rest.split_once('@').ok_or_else(|| format!("{item}: missing @frames"))?;
+            if what.starts_with(|c: char| c.is_ascii_digit()) {
+                return Ok(item);
+            }
+            match table.iter().find(|(k, _, _)| k == what) {
+                Some((_, spec, _)) => Ok(format!("poke={spec}@{frames}")),
+                None => {
+                    let names: Vec<&str> = table.iter().map(|(k, _, _)| k.as_str()).collect();
+                    Err(format!("{item}: no poke named {what}{}", near(what, &names)))
+                }
+            }
+        })
+        .collect()
+}
+
 /// The game's own tours, then a project's (`--tours FILE`).
 pub fn load(game: &romset::Game, extra: Option<&Path>) -> Result<Vec<Tour>, String> {
+    load_many(game, &extra.into_iter().collect::<Vec<_>>())
+}
+
+/// The game's own tours, then each of `extra`'s files in order.
+pub fn load_many(game: &romset::Game, extra: &[&Path]) -> Result<Vec<Tour>, String> {
     let mut text = romset::games::tours(game).to_string();
     let mut source = format!("{} tours", game.id);
-    if let Some(p) = extra {
+    for p in extra {
         let more = std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?;
         text.push('\n');
         text.push_str(&more);
@@ -341,7 +404,7 @@ pub fn list(o: &crate::Opts) -> ExitCode {
         let mut s = String::new();
         for t in d["tours"].as_array().into_iter().flatten() {
             s.push_str(&format!(
-                "{:<14} {:>8}  {}{}{}\n",
+                "{:<14} {:>8}  {}{}{}{}\n",
                 t["label"].as_str().unwrap_or(""),
                 t["length"].as_str().unwrap_or(""),
                 if t["from"].is_null() {
@@ -355,6 +418,7 @@ pub fn list(o: &crate::Opts) -> ExitCode {
                     format!("{} marks  ", t["marks"].as_array().map_or(0, |m| m.len()))
                 },
                 if t["mapped"] == true { "mapped" } else { "no map yet" },
+                if t["poked"] == true { "  (pokes RAM)" } else { "" },
             ));
         }
         s
@@ -383,6 +447,7 @@ fn list_answer(o: &crate::Opts, c: &Common, args: &[String]) -> Answer {
                 "from": t.from.as_ref().map(|(p, f)| json!({"tour": p, "frame": f})),
                 "marks": t.marks.iter().map(|(n, f)| json!({"name": n, "frame": f})).collect::<Vec<_>>(),
                 "mapped": MapFile::path(&dir, &t.label).exists(),
+                "poked": uses_pokes(&tours, &t.label, game.controls.coin_start),
             })
         })
         .collect();
@@ -419,6 +484,9 @@ pub fn run(o: &crate::Opts, roms: &RomSet) -> ExitCode {
                 s.push_str(&format!("  mark {} at frame {} -> {}\n", m["name"].as_str().unwrap_or(""), m["frame"], m["state"].as_str().unwrap_or("")));
             }
         }
+        if d["tours"].as_array().into_iter().flatten().any(|t| t["poked"] == true) {
+            s.push_str("(a poked tour is a cheat run: its states are named .poked.state, `coverage` says which tours poke)\n");
+        }
         s.push_str("(from power-on, EEPROM as the board is made; `remodel coverage` reports what the tours read)\n");
         s
     })
@@ -454,6 +522,10 @@ fn run_answer(args: &mut Vec<String>, c: &Common, roms: &RomSet) -> Answer {
     if let Err(e) = std::fs::create_dir_all(dir.join("states")) {
         return fail(answer::INTERNAL, format!("{}: {e}", dir.display()), None);
     }
+    let table = match poke_table(romset::games::pokes(game)) {
+        Ok(t) => t,
+        Err(e) => return fail(answer::INTERNAL, format!("{} {e}", game.id), None),
+    };
     let mut rows = Vec::new();
     let mut warnings = Vec::new();
     for t in wanted {
@@ -461,11 +533,15 @@ fn run_answer(args: &mut Vec<String>, c: &Common, roms: &RomSet) -> Answer {
             Ok(i) => i,
             Err(e) => return fail(answer::BAD_REQUEST, e, None),
         };
+        let items = match resolve_pokes(items, &table) {
+            Ok(i) => i,
+            Err(e) => return fail(answer::BAD_REQUEST, format!("tour {}: {e}", t.label), Some("remodel ram pokes")),
+        };
         let script = match model2::input::InputScript::parse(&items.join(","), &game.controls) {
             Ok(s) => s,
             Err(e) => return fail(answer::BAD_REQUEST, format!("tour {}: {e}", t.label), None),
         };
-        match run_one(roms, t, &script, &dir) {
+        match run_one(roms, t, &script, &dir, script.pokes()) {
             Ok((row, w)) => {
                 rows.push(row);
                 warnings.extend(w);
@@ -480,12 +556,28 @@ fn run_answer(args: &mut Vec<String>, c: &Common, roms: &RomSet) -> Answer {
     a.next(format!("remodel coverage --game {}", game.id))
 }
 
+/// Tour `label`'s whole input as a script (named pokes resolved) and
+/// whether it pokes.
+pub fn build_script(
+    game: &romset::Game,
+    tours: &[Tour],
+    label: &str,
+) -> Result<(model2::input::InputScript, bool), String> {
+    let table = poke_table(romset::games::pokes(game)).map_err(|e| format!("{} {e}", game.id))?;
+    let items = resolve_pokes(inputs(tours, label, game.controls.coin_start)?, &table)?;
+    let script = model2::input::InputScript::parse(&items.join(","), &game.controls)
+        .map_err(|e| format!("tour {label}: {e}"))?;
+    let poked = script.pokes();
+    Ok((script, poked))
+}
+
 /// One tour, from power-on: the maps, the marks' states, a row of numbers.
-fn run_one(
+pub fn run_one(
     roms: &RomSet,
     t: &Tour,
     script: &model2::input::InputScript,
     dir: &Path,
+    poked: bool,
 ) -> Result<(Value, Vec<String>), String> {
     let started = std::time::Instant::now();
     // A machine of its own and the EEPROM as the board is made: nothing
@@ -501,6 +593,8 @@ fn run_one(
     m.bus.geo.set_read_map(Some(poly_map.clone()));
     let tex_map = ReadMap::new(m.bus.texture_rom.len());
     let (mut last_frame, mut marks) = (0, Vec::new());
+    // Frame 0's inputs too, as the player applies them before the first frame.
+    script.apply(0, &mut m.bus);
     loop {
         let done = match t.length {
             Length::Steps(n) => m.cpu.icount >= n,
@@ -527,7 +621,8 @@ fn run_one(
             for (name, frame) in t.marks.iter().filter(|(_, f)| *f == now) {
                 // As frame N starts, before its scripted inputs.
                 let data = model2::save_session(&mut m, None);
-                let path = dir.join("states").join(format!("{}-{name}.state", t.label));
+                let path =
+                    dir.join("states").join(format!("{}-{name}{}.state", t.label, if poked { ".poked" } else { "" }));
                 std::fs::write(&path, data).map_err(|e| format!("{}: {e}", path.display()))?;
                 marks.push(json!({"name": name, "frame": frame, "state": path.display().to_string()}));
             }
@@ -566,6 +661,7 @@ fn run_one(
         "label": t.label,
         "frames": m.frames,
         "state_hash": format!("{hash:016x}"),
+        "poked": poked,
         "polygon": poly,
         "texture": tex,
         "marks": marks,
@@ -620,6 +716,24 @@ mod tests {
         assert!(bad("a|10f|from=a@1,from=a@2").contains("one from="));
     }
 
+    /// A named poke becomes the table's write; a number passes; an unknown
+    /// name is refused with the near ones; a branch of a poking tour pokes.
+    #[test]
+    fn named_pokes_resolve_and_mark_their_branches() {
+        let table = poke_table("# c\nhold-clock|0x5830b0:0x0e10:w|a note | with a bar\n").unwrap();
+        assert_eq!(table[0].2, "a note | with a bar");
+        let got =
+            resolve_pokes(vec!["poke=hold-clock@5-9".into(), "poke=0x10:1@2".into(), "left@3".into()], &table).unwrap();
+        assert_eq!(got, ["poke=0x5830b0:0x0e10:w@5-9", "poke=0x10:1@2", "left@3"]);
+        let e = resolve_pokes(vec!["poke=hold-clok@5".into()], &table).unwrap_err();
+        assert!(e.contains("did you mean hold-clock"), "{e}");
+        assert!(poke_table("a|1:2\na|3:4").unwrap_err().contains("once"));
+        assert!(poke_table("x y|1:2").is_err());
+        let t =
+            parse("a|100f|poke=hold-clock@10-50\nb|100f|from=a@40,left@50-60\nc|100f|coin-start\n", "test").unwrap();
+        assert!(uses_pokes(&t, "a", COIN) && uses_pokes(&t, "b", COIN) && !uses_pokes(&t, "c", COIN));
+    }
+
     #[test]
     fn lengths_in_steps_and_frames() {
         assert_eq!(Length::parse("900000000"), Some(Length::Steps(900_000_000)));
@@ -637,6 +751,8 @@ mod tests {
             let tours = load(g, None).unwrap_or_else(|e| panic!("{}: {e}", g.id));
             for t in &tours {
                 let items = inputs(&tours, &t.label, g.controls.coin_start).unwrap();
+                let table = poke_table(romset::games::pokes(g)).unwrap_or_else(|e| panic!("{} {e}", g.id));
+                let items = resolve_pokes(items, &table).unwrap_or_else(|e| panic!("{} {}: {e}", g.id, t.label));
                 model2::input::InputScript::parse(&items.join(","), &g.controls)
                     .unwrap_or_else(|e| panic!("{} {}: {e}", g.id, t.label));
             }

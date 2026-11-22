@@ -278,6 +278,10 @@ usage: remodel-play [options]
   --fast             for checking (with --frames, --input, --photo): run
                      the game as fast as it goes, drawing nothing (a
                      hidden window gets about a redraw a second)
+  --record-tour FILE write the inputs you play as a tour line (LABEL|LENGTH|INPUT,
+                     docs/uplift-studio.md, \"Tours\") when you quit: LABEL is the
+                     file's name; play from power-on (not Continue) so it
+                     replays; with `remodel tour run --tours FILE`
   --stick-log FILE   what the gamepad's sticks read, a CSV line a game
                      frame (raw, tuned, smoothed), and at exit how noisy
                      each stick is at rest: hold it still for 5 s, then
@@ -434,6 +438,8 @@ struct Options {
     sound_log: Option<PathBuf>,
     /// `--stick-log`: write what the pad's sticks read, a line a frame.
     stick_log: Option<PathBuf>,
+    /// `--record-tour`: where to write the played inputs as a tour line.
+    record_tour: Option<PathBuf>,
     /// `--photo`: scripted photo mode sessions, in frame order.
     photo: std::collections::VecDeque<photo::Script>,
     /// `--photo-dir`: where photos go.
@@ -541,6 +547,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
         pack_fixes: Default::default(),
         sound_log: None,
         stick_log: None,
+        record_tour: None,
         photo: Default::default(),
         photo_dir: None,
         photo_history: 10.0,
@@ -738,6 +745,7 @@ fn options(s: &mut Settings) -> Result<Options, String> {
             "--pack-fixes" => o.pack_fixes = model2::packlog::Fixes::parse(&value()?)?,
             "--sound-log" => o.sound_log = Some(PathBuf::from(value()?)),
             "--stick-log" => o.stick_log = Some(PathBuf::from(value()?)),
+            "--record-tour" => o.record_tour = Some(PathBuf::from(value()?)),
             "--photo" => {
                 let mut v: Vec<photo::Script> = photo::parse_scripts(&value()?)?;
                 v.sort_by_key(|p| p.at);
@@ -1303,6 +1311,10 @@ struct Play {
     sound_log: Option<std::io::BufWriter<std::fs::File>>,
     /// `--stick-log`: the log.
     stick_log: Option<sticklog::StickLog>,
+    /// `--record-tour`: the inputs played so far, from power-on.
+    tour_rec: Option<model2::input::Recorder>,
+    /// `--record-tour` ended early (see where it is sampled).
+    tour_rec_stopped: bool,
     /// The steering smoothing of each player's pad (seat 0 is the
     /// session's own), stepped once an emulated frame.
     steer_filters: Vec<steer::SteerFilter>,
@@ -2935,6 +2947,28 @@ impl Play {
                 }
             }
             let s = self.session.as_mut().unwrap();
+            if let Some(r) = &mut self.tour_rec {
+                // The tour recorder: the inputs this frame runs with. A
+                // jump in the frame count (a state loaded, another game)
+                // ends it: the line would not replay from power-on.
+                if !self.tour_rec_stopped
+                    && !s.preview
+                    && s.link.is_none()
+                    && s.net.is_none()
+                    && s.machine.frames >= r.frames()
+                {
+                    if s.machine.frames == r.frames() {
+                        let (c, b) = (s.machine.bus.controls, &s.machine.bus);
+                        r.sample(s.machine.frames, c, &b.inputs, &b.analog);
+                    } else {
+                        eprintln!(
+                            "--record-tour: stopped at frame {}: the game did not run on from there (a state loaded, or not started from power-on)",
+                            r.frames()
+                        );
+                        self.tour_rec_stopped = true;
+                    }
+                }
+            }
             // Photo mode's history: the inputs this frame runs with, and a
             // save state now and then (nothing in the machine changes).
             if let Some(h) = &mut s.history {
@@ -4170,6 +4204,34 @@ impl Play {
         self.menu.pad_used = false;
     }
 
+    /// `--record-tour`: write the tour line the game was played with.
+    fn write_tour(&mut self) {
+        let (Some(path), Some(r)) = (self.opts.record_tour.clone(), self.tour_rec.take()) else { return };
+        if r.frames() == 0 {
+            eprintln!("--record-tour: nothing was played, no tour written");
+            return;
+        }
+        let label: String = path
+            .file_stem()
+            .map_or("recorded".into(), |s| s.to_string_lossy().into_owned())
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+            .collect();
+        let game = self.session.as_ref().map_or(String::new(), |s| s.game.id.to_string());
+        let text = format!(
+            "# Recorded by `remodel-play --record-tour` from power-on ({game}); run with\n# remodel --game {game} tour run {label} --tours {}\n{}\n",
+            path.display(),
+            r.tour(&label)
+        );
+        match std::fs::write(&path, text) {
+            Ok(()) => println!("tour          {} ({} frames, label {label})", path.display(), r.frames()),
+            Err(e) => eprintln!("--record-tour: {}: {e}", path.display()),
+        }
+        if r.missed_gun_aim() {
+            eprintln!("--record-tour: this game has a light gun: its aim is not recorded (the trigger is)");
+        }
+    }
+
     /// Quit if `--seconds` has run out, reporting the run; true if so.
     fn time_up(&mut self, el: &ActiveEventLoop) -> bool {
         let at_frame = self.opts.frames.is_some_and(|n| {
@@ -4275,6 +4337,7 @@ impl Play {
         }
         self.take_report();
         self.previews.cancel_all();
+        self.write_tour();
         self.leave_game();
         if let Some(l) = &mut self.stick_log {
             print!("{}", l.summary());
@@ -4878,6 +4941,8 @@ fn main() {
         frame_log: None,
         sound_log: None,
         stick_log: None,
+        tour_rec: None,
+        tour_rec_stopped: false,
         steer_filters: Vec::new(),
         steer_preview: std::cell::RefCell::new((steer::SteerFilter::default(), Instant::now())),
         drawing: None,
@@ -4922,6 +4987,9 @@ fn main() {
     }
     let event_loop = EventLoop::<Wake>::with_user_event().build().expect("event loop");
     play.proxy = Some(event_loop.create_proxy());
+    if play.opts.record_tour.is_some() {
+        play.tour_rec = Some(Default::default());
+    }
     if let Some(path) = &play.opts.stick_log {
         match sticklog::StickLog::create(path) {
             Ok(l) => play.stick_log = Some(l),

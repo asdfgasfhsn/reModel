@@ -4,6 +4,7 @@ mod camera_scan;
 mod catalogue;
 mod catalogue_viewer;
 mod coverage;
+mod crawl;
 mod depth_check;
 mod gates;
 mod geo_check;
@@ -21,6 +22,7 @@ mod pack_gates;
 mod pack_layers;
 mod pack_lint;
 mod pack_log_run;
+mod ram;
 mod recomp_crates;
 mod run_ahead;
 mod scene;
@@ -1116,6 +1118,7 @@ fn dispatch_no_roms(o: &Opts) -> Option<ExitCode> {
         "img" => cmd_img(o),
         "catalogue" => cmd_catalogue(o),
         "tour" if o.args.get(1).map(String::as_str) != Some("run") => tour::list(o),
+        "ram" if o.args.get(1).map(String::as_str) == Some("pokes") => ram::pokes(o),
         "coverage" => coverage::main(o),
         "sharc-disasm" | "sharc-check" => cmd_sharc(o),
         "temporal-check" => cmd_temporal_check(o),
@@ -1179,6 +1182,8 @@ fn main() -> ExitCode {
         "latency" => cmd_latency(&o, roms),
         "run" => cmd_run(&o, roms),
         "tour" => tour::run(&o, roms),
+        "ram" => ram::run(&o, roms),
+        "crawl" => crawl::run(&o, roms),
         "link-run" => link_run::run(&o, roms),
         "link-net" => link_net::run(&o, roms),
         "link-settings" => link_run::settings(&o, roms),

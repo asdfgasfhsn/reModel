@@ -84,6 +84,19 @@ impl ReadMap {
         Ranges(out)
     }
 
+    /// How many words are read here that `seen` has not (same ROM): what a
+    /// run found that the maps before it lacked.
+    pub fn count_new(&self, seen: &ReadMap) -> u64 {
+        self.bits.iter().zip(&seen.bits).map(|(a, b)| (a.load(Relaxed) & !b.load(Relaxed)).count_ones() as u64).sum()
+    }
+
+    /// Add every word `other` has read (same ROM).
+    pub fn or_in(&self, other: &ReadMap) {
+        for (a, b) in self.bits.iter().zip(&other.bits) {
+            a.fetch_or(b.load(Relaxed), Relaxed);
+        }
+    }
+
     /// Add `r` to the map (a map merged from earlier runs).
     pub fn add(&self, r: &Ranges) {
         for &(s, e) in &r.0 {
@@ -195,6 +208,17 @@ impl Ranges {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_words_are_counted_against_what_was_seen() {
+        let (seen, run) = (ReadMap::new(300), ReadMap::new(300));
+        seen.mark_range(0, 100);
+        run.mark_range(50, 150);
+        assert_eq!(run.count_new(&seen), 50);
+        seen.or_in(&run);
+        assert_eq!(run.count_new(&seen), 0);
+        assert_eq!(seen.ranges(), Ranges(vec![(0, 150)]));
+    }
 
     #[test]
     fn a_map_gives_back_merged_ranges() {

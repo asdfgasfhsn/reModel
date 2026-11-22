@@ -39,6 +39,19 @@ creates the annotated tag `vx.y.z` without pushing. Details in
   pack on every view, on one and on none and checks the combined state hash
   equals `link-run`'s each time, and that the picture shows the pack only in
   the views asked for. Over a network each host already drew its own pack.
+- Content coverage, the rest of it (uplift item 22). `remodel-play --record-tour
+  FILE` (`make tour-record`) writes what you play as a tour line, exact, so it
+  replays to the same state. `remodel ram search | show | pokes` (`make
+  ram-search`, `ram-pokes`) finds a work-RAM variable by running a tour and
+  comparing RAM at frames; a tour holds a value with `poke=ADDR:VALUE[:w]@from-to`
+  or a name from the game's table (`crates/romset/src/games/pokes/`; Top Skater's
+  course clock is the first), and such a tour, its states and `coverage` are
+  marked as cheat runs. Nothing pokes unless a tour says so. `remodel crawl`
+  (`make crawl`, `crawl-verify`) explores menus from a point in a tour and keeps
+  the tries that read polygon or texture ROM no tour had, as branch tours in
+  `out/GAME/crawl/crawl.txt` that replay to the crawler's state hashes; on `vf2`
+  200 tries found 17 branches and 0.8 points more of the polygon ROM. Tours now
+  apply frame 0's inputs, as the player does. No state hash changes.
 - Artwork identity in texture packs: a pack can replace an artwork, not one
   colouring of it. `art_<surface>_<w>x<h>.png` is drawn for every colouring
   (every `tex_` key) of those texels that has no image of its own, in the

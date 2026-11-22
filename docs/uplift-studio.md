@@ -941,11 +941,12 @@ A tour is a named input script from power-on: one line of `LABEL|LENGTH|INPUT`.
 
 - `LENGTH` is CPU steps (as `run`'s STEPS) or frames with an `f` (`6200f`).
 - `INPUT` is the `--input` script (`name@from-to`, `name=value@from-to`,
-  `coin-start`), plus two terms: `from=LABEL@FRAME` starts as another tour
+  `coin-start`), plus three terms: `from=LABEL@FRAME` starts as another tour
   did up to that frame, then goes on with this tour's own inputs (which
   must start after it: a branch cannot rewrite the past), and
   `mark=NAME@FRAME` saves the state as that frame starts, to
   `out/GAME/coverage/states/LABEL-NAME.state`.
+  `poke=NAME@FROM-TO` holds a RAM value, a cheat (see "Pokes").
 
 A game's own tours are in `crates/romset/src/games/tours/GAME.txt`: input
 scripts and frame numbers, nothing taken from a ROM. A project adds its own
@@ -1043,12 +1044,140 @@ were second-run hashes and a fresh folder gave different ones. It now runs
 with `--fresh-eeprom` (no EEPROM loaded or kept), the same start as a tour, so
 a tour's hash and the benchmark's agree (Top Skater `7f0275251269648e`).
 
+### Recording a tour
+
+`remodel-play --record-tour FILE` (`make tour-record`) writes what you play
+as a tour line when you quit. Start a new game from power-on (the launcher's
+Continue loads a state, and the recorder stops with a message when the game
+does not run on from frame 0). Each frame's buttons and analog channels are
+read where the machine takes them, so what is written is what the game
+saw, keys, pad and all, as `name@from-to` and `name=0xVV@from-to` terms; a
+steering stick that moves every frame makes a long line, kept exact so the
+tour replays to the same state hash. The line's label is the file's name:
+
+```sh
+make tour-record GAME=topskatr TOUR_FILE=out/topskatr/tours/mine.txt   # play, quit
+make tour-run GAME=topskatr TOUR=mine TOUR_OPTS="--tours out/topskatr/tours/mine.txt"
+```
+
+Light-gun aim is not recorded (the trigger and reload buttons are). Pokes
+(below) are never recorded: they are a tour's, written by hand. The
+recorder is `model2::input::Recorder`; `--input` scripts in the player
+record too, which is how its round trip is checked (the state hash the
+player prints at `--frames N` equals the recorded tour's).
+
+### Pokes
+
+A **poke** holds a value in work RAM, to reach content without skill: a
+stopped clock, a stage unlocked. A tour says so itself:
+`poke=ADDR:VALUE[:b|:w|:l]@from-to` (a byte by default, a word, a long; the
+value is written at the start of every frame in the range, as the inputs are)
+or `poke=NAME@from-to` with a name from the game's table,
+`crates/romset/src/games/pokes/GAME.txt` (`NAME|ADDR:VALUE[:w]|what it does
+and how it was found`). Nothing pokes unless a tour has a `poke=` term, in
+itself or in a tour it branches from. Such a tour is marked: `tour list` says
+"(pokes RAM)", `tour run` names its states `LABEL-NAME.poked.state`, and
+`coverage` lists the tours that poke, since what they read is not what play
+reaches unaided. Pokes write only writable memory (a bad address does
+nothing); the benchmark and the player never poke.
+
+`remodel ram search` finds an address, as a cheat finder does, but from a
+tour, so a search is reproducible:
+
+```sh
+make ram-search GAME=topskatr TOUR=play TOUR_OPTS="--tours FILE" \
+  RAM_ARGS="--at 5000,5300,5420 --rule dec=300,dec=120 --width w --top 20"
+make ram-pokes GAME=topskatr             # the table
+remodel ram show TOUR --at 5000,5300 0x5830b0:w   # the values at those addresses
+```
+
+`ram search` runs the tour from power-on and copies the two work RAMs
+(`0x200000`, 256 KB; `0x500000`, 1 MB) as each `--at` frame starts. A
+rule between each pair of snapshots keeps the addresses that follow it:
+`same`, `diff`, `inc`, `dec`, `inc=N`, `dec=N`, and conditions on the later
+value `eq=V`, `ne=V`, `lt=V`, `gt=V`, joined with `/` (`inc/lt=100`);
+`--first COND` constrains the first snapshot. Read the value off the
+screen at those frames (a counter, a menu index), then narrow with a rule
+that fits what changed. It only reads: state hashes are a plain tour's.
+
+### The crawler
+
+`remodel crawl --from TOUR@FRAME (--minutes N | --tries N)` (`make crawl`)
+explores menus from a point in a tour. It keeps a set of saved states. A
+try loads one (about 100 ms), presses one or two buttons (sometimes two at
+once, sometimes a stick held over) for 2 to 60 frames, waits 30 to 300
+frames, and counts the ROM words the run read that no map had: polygon ROM
+words the geometrizer fetched, texture headers the rasteriser parsed
+(sampled every 6th frame, `--tex-every`, so the texture count is a floor).
+A try that read something new is kept: its end state is saved to
+`DIR/states/`, and its inputs are written as a branch tour,
+`crawl-0007|LENf|from=PARENT@FRAME,terms`, to `DIR/crawl.txt`, a tours file
+`tour run NAME --tours DIR/crawl.txt` replays from power-on. The next try
+is from the state with the fewest tries for what it has yielded, so a lucky
+branch does not take them all.
+
+What is counted against is the maps the game's tours already left
+(`make tour-run` first, or everything the crawl reads is "new"). `DIR/crawl.map`
+holds everything its tries read, and `coverage` counts it beside the tours'
+and says so. `--poke NAME[,NAME]` holds the named pokes through every
+try (the branches, their states and the map are then marked as cheat runs,
+as above). `--seed N` makes a crawl repeatable; `--keep-max N` bounds the
+set (default 300). `DIR` is `out/GAME/crawl`; a new crawl clears it.
+
+`remodel crawl verify [--n N]` replays the deepest N branches with `tour
+run`'s own code and compares the state hash the crawler saw: a branch is a
+tour that reproduces, or the crawl is wrong. The crawl does not play: random
+holds do not skate a course, and what needs skill is for recorded play or a
+poke. Screens are not compared (a credit counter is not a new screen: the
+signal is ROM read, which a digit does not move), and no agent steers it yet.
+
+### What the pokes and the crawler reached (measured 2026-11-23)
+
+Read, of the polygon ROM's and the texture ROM's non-blank bytes, by the
+shipped tours, then with the new pieces (one machine, interpreter, native
+geometrizer):
+
+| | Top Skater | `vf2` | `daytona` |
+|---|---|---|---|
+| Tours before | 27.9% and 17.4% (`coin-start`, `characters`, `expert`) | 31.5% and 14.2% | 23.9% and 15.2% |
+| A tour with the clock held (`clock-held`, 20,000 frames, 112 s) | 29.1% and 18.1% (marked poked) | none | none |
+| Crawl from a menu, no pokes | none new in 150 tries and in 300 (`coin-start@1300`) | 32.3% and 14.8%: 200 tries, 485 s, 17 kept (`coin-start@1260`) | none new in 300 tries and in 150 (`coin-start@1310`) |
+| Crawl with the clock held, from the course | none new in 200 tries (`expert@3300`) | none | none |
+
+The crawl's figures count what its tries read beside the tours' maps; its
+texture figure is a floor. Tries cost about 0.9 s on Top Skater's menus,
+2.4 s on `vf2` and 2.9 s on `daytona`. On `vf2` it found 83 KB of polygon
+ROM and 89 KB of texture headers no tour had read, from the character
+select on; every kept branch is a tour, and the two deepest (five chained
+states each) replay with `crawl verify` to the state hash the crawler
+saw. It found nothing on Top Skater or `daytona`: their menus are already
+read by the shipped tours, and what is left needs a course picked, a
+countdown waited out and then play, which two or three random presses
+and a wait do not do. A kept state is the only way the crawl gets deeper,
+so it stalls at the first menu that reads nothing new. Where it goes next
+is a better policy (longer plans, an analog wheel held while a menu timer
+runs) or a person's recorded tour to branch from, not more tries.
+
+**Recorder.** A scripted 4,200-frame Top Skater run in the player
+(`--input coin-start,selright@1330-1336,curving=0x50@3000-3400,jumpfront@3500-3510`)
+was recorded as `coin1@1100-1104,start@1250-1254,selright@1330-1336,...`,
+and `tour run` of that line gives the player's state hash in all but its
+first byte. The player's printed hash differs from the CLI's in that byte
+on every run, plain `coin-start` included (the player's reads `1c`; not
+looked into).
+
+**The poke.** On Top Skater a RAM search found the course's time limit
+(`hold-clock`, `docs/games/topskatr.md`, "Pokes"). Held at 60 s it keeps the
+course running past frame 9000, where TIME UP ended the same run, and the
+`clock-held` tour reads 1.2 points more of the polygon ROM and 0.7 more of
+the texture ROM than the three tours before it.
+
 ### What it does not do yet
 
-No tour recorder in the player, no `poke=`, no crawler, no model browser for
-the unread stretches, no map of the data ROM or the tiles
-([uplift/content-coverage.md](uplift/content-coverage.md), items 3 to 5 of
-its MVP).
+No model browser for the unread stretches, no map of the data ROM or the
+tiles, no agent steering the crawler, no menu entry for the recorder (the
+flag only), no screen comparison in the crawler
+([uplift/content-coverage.md](uplift/content-coverage.md), "Open questions").
 
 ## What is built, what comes later
 

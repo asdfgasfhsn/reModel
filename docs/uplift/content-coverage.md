@@ -1,14 +1,16 @@
 # Content coverage: reaching all of a game
 
-Shared words, roles and rules: [README.md](README.md). **Built** (MVP items
-1 and 2, 2026-11-21): the polygon and texture ROM read maps, `tours.txt`'s
-`from=` and `mark=`, `remodel tour list|run` and `remodel coverage`; they
-are described in [../uplift-studio.md](../uplift-studio.md), "Tours and
-coverage", and are marked below. The tour recorder, pokes and the crawler
-are not built; what was tried is in "Evidence" (spike code is on unmerged
-branches, not for merging as it stands). Added on 2026-11-19
-after the user's review: a full uplift cannot be made from a catalogue
-that only holds what somebody happened to play.
+Shared words, roles and rules: [README.md](README.md). **Built**
+(2026-11-21 and 2026-11-23): the polygon and texture ROM read maps,
+`from=`, `mark=` and `poke=` in tours, `remodel tour list|run`,
+`remodel coverage`, the player's tour recorder, `remodel ram search`, the
+poke tables and `remodel crawl`; they are described in
+[../uplift-studio.md](../uplift-studio.md), "Tours and coverage", and are
+marked below. What is left here is the model browser, the pack that copes
+with a short list, an agent steering the crawler, and the evidence (spike
+code is on unmerged branches, not for merging as it stands). Added on
+2026-11-19 after the user's review: a full uplift cannot be made from a
+catalogue that only holds what somebody happened to play.
 
 ## The problem
 
@@ -52,11 +54,10 @@ first time a player picks the course nobody recorded.
   frame ranges, `--save-state FILE@FRAME` and `--load-state`
   (`docs/usage.md`). A headless run is about 2.2 times real time
   interpreted and 4.4 recompiled (`docs/status.md`).
-- **Nothing records a person's inputs.** The player cannot write an input
-  script, and there is no replay format.
-- **Nothing searches or changes RAM.** Cheats are planned, not built
-  (`out/NEXT.md`, local). Manifests do name the `test` and `service`
-  switches.
+- **The player records inputs** (`--record-tour`, built 2026-11-23): what
+  a person plays is written as a tour line that replays to the same state.
+- **RAM can be searched and poked** (`ram search`, `poke=`, built
+  2026-11-23). Manifests also name the `test` and `service` switches.
 - **Which code ran is recorded**, per run, and overwritten by the next:
   every instruction address the interpreter executed
   (`coverage.txt`, written by `remodel run`).
@@ -152,13 +153,14 @@ Two additions to the line format:
 | Way | Reaches | Cost |
 |---|---|---|
 | **Attract soak** | Whatever the demo loop shows | None: run with no input for ten minutes |
-| **Recorded play** | Anything a person can play to | A recorder in the player that writes a tour as the game is played. Small, and missing today |
-| **Pokes** | Late stages, hidden modes, a stopped clock, without skill | The planned cheats work: `ram search` to find an address, then `poke=ADDR:VALUE@from-to` in a tour |
+| **Recorded play** | Anything a person can play to | **Built.** `remodel-play --record-tour FILE` writes a tour as the game is played |
+| **Pokes** | Late stages, hidden modes, a stopped clock, without skill | **Built.** `ram search` to find an address, then `poke=NAME@from-to` in a tour; Top Skater's clock is the one found so far |
 | **The test switch** | Whatever a game's test menu offers | Free where it helps; unverified for any game |
-| **The crawler** | Breadth: every branch of every menu | Below |
+| **The crawler** | Breadth: every branch of every menu | **Built** (below, without an agent) |
 
-**The crawler** explores the way a fuzzer does. It keeps a set of save
-states. From one, it holds a button or a direction for a short while,
+**The crawler** (built 2026-11-23, `remodel crawl`; how it works as
+built is in [../uplift-studio.md](../uplift-studio.md), "The crawler")
+explores the way a fuzzer does. It keeps a set of save states. From one, it holds a button or a direction for a short while,
 then asks whether anything new appeared: a catalogue entry, a newly read
 stretch of ROM, a new screen. If so the new state joins the set and the
 inputs that reached it are kept as a branch tour. Menus are where a
@@ -178,12 +180,15 @@ What it can and cannot do (E4):
 - **Waiting is an input.** Menus advance on timers; "wait six seconds"
   and "hold start" find the most.
 - **The policy must spread tries across branches.** A greedy policy
-  saturates and descends almost wholly from one branch.
+  saturates and descends almost wholly from one branch. Built: the next
+  try is from the state with the fewest tries for what it yielded.
 - **Screens are compared with digits masked.** A credit counter
-  otherwise makes a new screen per digit.
+  otherwise makes a new screen per digit. As built the signal is ROM read,
+  which a digit does not move, so no screen comparison is made.
 - **A try is two passes.** A try costs about 2 seconds, and the catalogue
-  is 60 to 70% of it. So run plainly with the read map first, and run the
-  catalogue only on tries that read something new.
+  is 60 to 70% of it. As built a try has no catalogue: it runs with the
+  polygon map on (free) and samples texture headers every sixth frame, and
+  the catalogue is a later `tour run` of a kept branch.
 - **A branch tour can be checked by state hash.** A state reached by
   chained loads is byte-equal to the same frame reached in one run from
   power-on, as long as that run starts in a fresh folder (E4,
@@ -261,11 +266,11 @@ test.
 
 | Verb | Does |
 |---|---|
-| `tour list`, `tour run NAME` or `--all` | Runs tours with the catalogue and read maps on, and saves a state at each mark |
-| Player: "Record a tour" | Writes inputs as a tour line while a person plays |
-| `coverage [--json]` | The report above, and the largest unread stretches |
-| `crawl --from TOUR@FRAME --minutes N` | Explores; writes branch tours that found something new |
-| `ram search`, `poke=` in a tour | Find and hold a value |
+| `tour list`, `tour run NAME` or `--all` | **Built.** Runs tours with the read maps on, and saves a state at each mark |
+| Player `--record-tour FILE` (a menu entry is not built) | **Built.** Writes inputs as a tour line while a person plays |
+| `coverage [--json]` | **Built.** The report above, and the largest unread stretches |
+| `crawl --from TOUR@FRAME --minutes N` | **Built.** Explores; writes branch tours that found something new |
+| `ram search`, `poke=` in a tour | **Built.** Find and hold a value |
 | `pack check` | Adds coverage against the catalogue, and the catalogue's against the ROM |
 | Player setting "Report gaps" | Writes `gaps.tsv` |
 
@@ -467,7 +472,11 @@ steering the crawler.
    Tours live in `crates/romset/src/games/tours/`; a project's own with
    `--tours FILE`. A length is steps or frames (`6200f`). A mark saves a
    state; `from=` replays the parent's inputs to the branch point.
-3. The player's tour recorder.
-4. `ram search` and `poke=`, with the cheats work.
-5. The crawler: spread policy, masked screens, two-pass tries, then an
-   agent steering it.
+3. **Built (2026-11-23).** The player's tour recorder (`--record-tour`).
+4. **Built (2026-11-23).** `ram search` and `poke=`, with a per-game table
+   of named pokes.
+5. **Built in part (2026-11-23).** The crawler: spread policy and ROM-read
+   novelty, branch tours that replay to the crawler's state hashes. Not
+   built: masked screens (the signal is ROM read, which a digit does not
+   move), two-pass tries (texture headers are sampled every few frames
+   instead), and an agent steering it.

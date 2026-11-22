@@ -10,6 +10,12 @@
 //! frames). `coin-start` stands for the game's own coin-up and start (its
 //! `Controls::coin_start`). Example for topskatr:
 //! `coin1@1100-1105,start@1300-1305,curving=0x40@1400-1500`.
+//!
+//! `poke=ADDR:VALUE[:b|:w|:l]@from-to` writes VALUE (a byte, word or long,
+//! default byte) to work RAM at ADDR each frame in the range: a cheat, for
+//! tours that reach content without skill (`docs/uplift/content-coverage.md`).
+//! It is only ever applied when a script says so; [`InputScript::pokes`]
+//! tells whether one does. [`Recorder`] writes a script back from played inputs.
 
 use crate::bus::Model2Bus;
 use crate::video;
@@ -29,6 +35,12 @@ enum Action {
     Gun {
         player: usize,
         at: Option<(u16, u16)>,
+    },
+    /// Write `value` (`width` bytes) to RAM at `addr`.
+    Poke {
+        addr: u32,
+        value: u32,
+        width: usize,
     },
 }
 
@@ -55,6 +67,26 @@ pub struct InputScript {
     events: Vec<Event>,
 }
 
+/// `ADDR:VALUE[:b|:w|:l]`.
+fn parse_poke(p: &str) -> Result<Action, String> {
+    let mut it = p.split(':');
+    let (Some(a), Some(v)) = (it.next(), it.next()) else { return Err("poke=ADDR:VALUE[:b|:w|:l]".into()) };
+    let width = match it.next() {
+        None | Some("b") => 1,
+        Some("w") => 2,
+        Some("l") => 4,
+        Some(w) => return Err(format!("poke width {w:?}: want b, w or l")),
+    };
+    if it.next().is_some() {
+        return Err("poke=ADDR:VALUE[:b|:w|:l]".into());
+    }
+    let (Some(addr), Some(value)) = (num(a), num(v)) else { return Err("poke: ADDR and VALUE are numbers".into()) };
+    if addr > u32::MAX as u64 || value >= 1u64 << (8 * width) {
+        return Err(format!("poke: the value does not fit {width} byte(s)"));
+    }
+    Ok(Action::Poke { addr: addr as u32, value: value as u32, width })
+}
+
 fn num(s: &str) -> Option<u64> {
     match s.strip_prefix("0x") {
         Some(h) => u64::from_str_radix(h, 16).ok(),
@@ -72,6 +104,8 @@ impl InputScript {
                 continue;
             }
             let (what, frames) = item.split_once('@').ok_or_else(|| format!("{item}: missing @frames"))?;
+            let poke =
+                what.strip_prefix("poke=").map(|p| parse_poke(p).map_err(|e| format!("{item}: {e}"))).transpose()?;
             let (frames, every) = match frames.split_once('/') {
                 Some((f, n)) => match num(n) {
                     Some(n) if n > PULSE => (f, Some(n)),
@@ -84,6 +118,10 @@ impl InputScript {
                 None => (num(frames), num(frames)),
             };
             let (Some(from), Some(to)) = (from, to) else { return Err(format!("{item}: bad frame range")) };
+            if let Some(action) = poke {
+                events.push(Event { action, from, to, every });
+                continue;
+            }
             let action = match what.split_once('=') {
                 Some((name, v)) if controls.gun(name).is_some() => {
                     let player = controls.gun(name).map_or(0, |g| g.0);
@@ -118,6 +156,11 @@ impl InputScript {
         Ok(InputScript { events })
     }
 
+    /// Whether the script writes to RAM (a poke): such a run is a cheat run.
+    pub fn pokes(&self) -> bool {
+        self.events.iter().any(|e| matches!(e.action, Action::Poke { .. }))
+    }
+
     fn analog_names(controls: &Controls) -> String {
         controls.analogs.iter().map(|a| a.name).collect::<Vec<_>>().join(", ")
     }
@@ -130,6 +173,9 @@ impl InputScript {
             match e.action {
                 Action::Button { port, bit } => bus.inputs[port] &= !bit,
                 Action::Analog { channel, value } => bus.analog[channel] = value,
+                Action::Poke { addr, value, width } => {
+                    bus.poke(addr, value, width);
+                }
                 Action::Gun { player, at } => {
                     let at = at.map(|(x, y)| {
                         ((x as f32 + 0.5) / video::WIDTH as f32, (y as f32 + 0.5) / video::HEIGHT as f32)
@@ -138,6 +184,93 @@ impl InputScript {
                 }
             }
         }
+    }
+}
+
+/// Writes an input script back from played inputs: each frame's buttons
+/// and analog channels are sampled as the machine runs them, and held
+/// stretches become `name@from-to` and `name=0xVV@from-to` terms, exact, so
+/// the script replays to the same state hash. It is a tour's input when
+/// recorded from power-on ([`Recorder::tour`]). Light-gun aim is not
+/// recorded (the trigger and reload buttons are).
+#[derive(Debug, Default)]
+pub struct Recorder {
+    /// Runs still open: (name, analog value, first frame, last frame).
+    open: Vec<(String, Option<u8>, u64, u64)>,
+    done: Vec<(String, Option<u8>, u64, u64)>,
+    /// The last frame sampled.
+    last: Option<u64>,
+    guns: bool,
+}
+
+impl Recorder {
+    /// Note the inputs the machine runs frame `frame` with; call once per
+    /// frame, after they are set. A frame already sampled is ignored.
+    pub fn sample(&mut self, frame: u64, controls: &Controls, inputs: &[u8; 4], analog: &[u8; 8]) {
+        if self.last.is_some_and(|l| frame <= l) {
+            return;
+        }
+        self.last = Some(frame);
+        self.guns |= !controls.guns.is_empty();
+        let mut now: Vec<(String, Option<u8>)> = Vec::new();
+        for b in controls.buttons {
+            if inputs[b.port as usize] & b.bit == 0 {
+                now.push((b.name.to_string(), None));
+            }
+        }
+        for a in controls.analogs {
+            let v = analog[a.channel as usize];
+            if v != a.centre {
+                now.push((a.name.to_string(), Some(v)));
+            }
+        }
+        let mut still = Vec::new();
+        for run in self.open.drain(..) {
+            if run.3 + 1 == frame && now.iter().any(|(n, v)| *n == run.0 && *v == run.1) {
+                still.push((run.0, run.1, run.2, frame));
+            } else {
+                self.done.push(run);
+            }
+        }
+        for (n, v) in now {
+            if !still.iter().any(|r| r.0 == n) {
+                still.push((n, v, frame, frame));
+            }
+        }
+        self.open = still;
+    }
+
+    /// Frames a tour of this recording runs: up to and with the last one
+    /// sampled.
+    pub fn frames(&self) -> u64 {
+        self.last.map_or(0, |l| l + 1)
+    }
+
+    /// Whether any gun game's aim went unrecorded.
+    pub fn missed_gun_aim(&self) -> bool {
+        self.guns
+    }
+
+    /// The script's terms, in order of their first frame.
+    pub fn terms(&self) -> Vec<String> {
+        let mut all: Vec<_> = self.done.iter().chain(self.open.iter()).collect();
+        all.sort_by(|a, b| (a.2, &a.0, a.3).cmp(&(b.2, &b.0, b.3)));
+        all.iter()
+            .map(|(n, v, from, to)| {
+                let what = v.map_or(n.clone(), |v| format!("{n}={v:#04x}"));
+                if from == to {
+                    format!("{what}@{from}")
+                } else {
+                    format!("{what}@{from}-{to}")
+                }
+            })
+            .collect()
+    }
+
+    /// A tour line (`LABEL|LENGTH|INPUT`, docs/uplift-studio.md, "Tours"):
+    /// from power-on to the last frame sampled.
+    pub fn tour(&self, label: &str) -> String {
+        format!("{label}|{}f|{}", self.frames().max(1), self.terms().join(","))
     }
 }
 
@@ -465,6 +598,58 @@ mod tests {
         let on: Vec<u64> = (90..150).filter(|&f| s.events[0].active(f)).collect();
         assert_eq!(on, [100, 101, 120, 121, 140, 141]);
         assert!(InputScript::parse("coin1@1-9/1", topskatr()).is_err());
+    }
+
+    /// What a recording writes, a script reads back as the same inputs on
+    /// every frame, buttons and analog values both.
+    #[test]
+    fn a_recording_replays_as_the_inputs_it_saw() {
+        let c = topskatr();
+        let (jump, cur) = (&c.buttons[1], &c.analogs[0]);
+        let mut rec = Recorder::default();
+        let mut want = Vec::new();
+        for f in 0..60u64 {
+            let (mut inputs, mut analog) = ([0xffu8; 4], [0x80u8; 8]);
+            analog[cur.channel as usize] = cur.centre;
+            if (10..20).contains(&f) || f == 33 {
+                inputs[jump.port as usize] &= !jump.bit;
+            }
+            if f > 40 {
+                analog[cur.channel as usize] = cur.centre.wrapping_add((f % 7) as u8 + 1);
+            }
+            rec.sample(f, c, &inputs, &analog);
+            rec.sample(f, c, &[0; 4], &[0; 8]); // a repeat of a frame is ignored
+            want.push((inputs, analog));
+        }
+        let line = rec.tour("t");
+        assert!(line.starts_with("t|60f|"), "{line}");
+        let script = InputScript::parse(&rec.terms().join(","), c).unwrap();
+        for (f, (inputs, analog)) in want.iter().enumerate() {
+            let (mut i, mut a) = ([0xffu8; 4], [0x80u8; 8]);
+            for x in c.analogs {
+                a[x.channel as usize] = x.centre;
+            }
+            for e in script.events.iter().filter(|e| e.active(f as u64)) {
+                match e.action {
+                    Action::Button { port, bit } => i[port] &= !bit,
+                    Action::Analog { channel, value } => a[channel] = value,
+                    _ => {}
+                }
+            }
+            assert_eq!(&i[..], &inputs[..], "buttons at frame {f}");
+            assert_eq!(a[cur.channel as usize], analog[cur.channel as usize], "analog at frame {f}");
+        }
+    }
+
+    #[test]
+    fn pokes_parse_and_are_told() {
+        let c = topskatr();
+        let s = InputScript::parse("poke=0x500010:0x7f@10-20,poke=0x500020:0x1234:w@5", c).unwrap();
+        assert!(s.pokes());
+        assert!(!InputScript::parse("coin-start", c).unwrap().pokes());
+        assert!(InputScript::parse("poke=0x500010:0x100@1", c).unwrap_err().contains("does not fit"));
+        assert!(InputScript::parse("poke=0x500010:1:q@1", c).unwrap_err().contains("width"));
+        assert!(InputScript::parse("poke=zz:1@1", c).is_err());
     }
 
     #[test]

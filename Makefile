@@ -484,6 +484,10 @@ CATALOGUE_STEPS ?= $(BENCH_STEPS)
 # Tours and the ROM read maps (docs/uplift-studio.md, "Tours and coverage").
 TOUR_OPTS ?=
 COVERAGE_OPTS ?=
+RAM_ARGS ?=
+FROM ?=
+CRAWL_OPTS ?=
+TOUR_FILE ?=
 COVERAGE_GAMES ?= topskatr vf2 daytona
 OUT_ROOT ?= out/scratch
 # `make catalogue-runs`: a file of runs, one per line: LABEL|STEPS|INPUT
@@ -505,6 +509,19 @@ tour-list: release ## List GAME's tours (input scripts from power-on, crates/rom
 	$(RUN) tour list $(TOUR_OPTS)
 tour-run: release ## Run GAME's tours (TOUR=name, default all; TOUR_OPTS="--tours FILE --dir DIR --json") from power-on with the ROM read maps on, writing out/GAME/coverage/LABEL.map and a state at each mark; same state hashes as without maps (the default is the native geometrizer; --geo chip runs the game's own)
 	$(RUN) tour run $(or $(TOUR),--all) $(TOUR_OPTS)
+tour-record: ## Play GAME= and write the inputs you play as a tour line to TOUR_FILE (default out/GAME/tours/recorded.txt) when you quit: from power-on, exact, so `make tour-run TOUR=recorded TOUR_OPTS="--tours TOUR_FILE"` replays it to the same state hash; start a new game, not Continue (docs/uplift-studio.md, "Recording a tour")
+	@mkdir -p $(dir $(or $(TOUR_FILE),$(OUT)/tours/recorded.txt))
+	$(call release_build,remodel-play)
+	$(CAP) $(PLAY) --game $(GAME) --rom $(ROM) $(if $(filter 0,$(JIT)),--no-jit) --record-tour $(or $(TOUR_FILE),$(OUT)/tours/recorded.txt) $(PLAY_ARGS)
+ram-search: release ## Find a work-RAM variable by running TOUR= and comparing RAM at frames: RAM_ARGS="--at F1,F2,F3 --rule dec=300,dec=120 [--first eq=V] [--width b|w|l] [--region LO-HI] [--top N]" (rules same, diff, inc[=N], dec[=N], eq/ne/lt/gt=V joined with /); then `make ram-pokes` lists the game's pokes, and a tour holds one with poke=NAME@from-to (docs/uplift-studio.md, "Pokes")
+	$(RUN) ram search $(or $(TOUR),coin-start) $(RAM_ARGS) $(TOUR_OPTS)
+ram-pokes: release ## List GAME's pokes (named RAM writes found by running the game, crates/romset/src/games/pokes/; tours hold them with poke=NAME@from-to, and never apply them otherwise)
+	$(RUN) ram pokes
+crawl: release ## Explore GAME's menus from FROM=TOUR@FRAME for CRAWL_MINUTES (or CRAWL_TRIES=N): tries presses and waits from saved states, keeps the ones that read polygon or texture ROM no tour map had, writes them as branch tours to out/GAME/crawl/crawl.txt and their reads to crawl.map (`make coverage` counts it); CRAWL_OPTS="--seed N --poke NAME --tex-every N --keep-max N --tours FILE --json" (docs/uplift-studio.md, "The crawler"; run `make tour-run` first so what is new is counted against the tours)
+	$(if $(FROM),,$(error crawl needs FROM=TOUR@FRAME, e.g. FROM=coin-start@1300))
+	$(RUN) crawl --from $(FROM) $(if $(CRAWL_TRIES),--tries $(CRAWL_TRIES),--minutes $(or $(CRAWL_MINUTES),10)) $(CRAWL_OPTS)
+crawl-verify: release ## Replay the deepest CRAWL_N (default 3) branches of GAME's last crawl with tour run's own code and compare the state hashes the crawler saw
+	$(RUN) crawl verify --n $(or $(CRAWL_N),3) $(CRAWL_OPTS)
 coverage: release ## How much of GAME's polygon and texture ROM its tours have read, by region, with the largest unread stretches by address (COVERAGE_OPTS="--top N --json"; needs no ROM, run `make tour-run` first)
 	$(RUN) coverage $(COVERAGE_OPTS)
 coverage-check: release ## Acceptance test for tours and coverage on COVERAGE_GAMES (default topskatr vf2 daytona): the bench tour's state hash with the maps on is a plain run's (BENCH_STEPS of coin-start), a tour run twice writes the same map, the answers have the six envelope fields, coverage with no maps exits 3

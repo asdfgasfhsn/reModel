@@ -163,6 +163,32 @@ documentation and hasn't been contradicted yet.
   into it: topskatr uploads none. That page lists the footage that would
   settle it (this scene, about 75 s after power-on).
 
+## Pokes (2026-11-23)
+
+Found by running the game with `remodel ram search` (docs/uplift-studio.md,
+"Pokes"); listed in `crates/romset/src/games/pokes/topskatr.txt`, applied only
+when a tour says `poke=NAME@from-to`.
+
+- *Confirmed (by running it):* **the course's time limit** is a 16-bit word
+  at `0x5830B0`, counting frames (60 a second). In a coin start that picks
+  the first skater (`from=coin-start@1300,selright@1330-1336`) the course is
+  running at frame 5000 with "20 LIMIT" on screen and the word reads `0x4B3`
+  (1203 frames, 20.05 s); at 5300 the screen says 15 and the word reads
+  `0x387` (903); at 5420 it reads `0x30F` (783). Searching those three
+  snapshots for a word that fell by exactly 300 and then 120 leaves two
+  candidates in the two work RAMs, `0x5830B0` and a signed word at
+  `0x5CDDDC` that falls with it; the first is the one the screen follows.
+  Writing `0x0E10` (60 s) to it every frame from frame 3300 keeps the limit
+  on screen at 59 at frame 9500 (1'45" total time), past where the same run
+  ended with TIME UP at about frame 9000. The run still ended: by frame 16000 the
+  game was back in the attract loop, with the skater given no steering (why
+  was not looked into). The
+  elapsed total time is a separate word at `0x509E70` counting frames
+  (`0x73F` at frame 5000, 30"91 on screen).
+- *Unconfirmed:* whether the address holds for the other skaters and
+  courses (the search used one skater on the first course), and what the
+  other word, `0x5CDDDC`, is.
+
 ## Pack gates on the Top Skater showcase pack (2026-11-22)
 
 `remodel pack check` on the showcase's last pack (6,286 files; the gates are

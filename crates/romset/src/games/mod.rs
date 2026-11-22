@@ -91,6 +91,18 @@ pub fn tours(game: &Game) -> &'static str {
     }
 }
 
+/// The set's pokes (`remodel poke`, docs/uplift/content-coverage.md): lines
+/// of `NAME|ADDR:VALUE[:b|:w|:l]|what it does, how it was found`, RAM writes
+/// a tour can hold (`poke=NAME@from-to`) to reach content without skill.
+/// Found by running the game; never applied unless a tour asks. Empty where
+/// there are none.
+pub fn pokes(game: &Game) -> &'static str {
+    match game.id {
+        "topskatr" => include_str!("pokes/topskatr.txt"),
+        _ => "",
+    }
+}
+
 pub static ALL: &[&Game] = &[
     &TOPSKATR, &SKISUPRG, &STCC, &SEGAWSKI, &WAVERUNR, &OVERREV, &HOTD, &BEL, &SGT24H, &DYNABB97, &DOA, &INDY500,
     &FVIPERS, &SCHAMP, &VSTRIKER, &LASTBRNX, &SRALLYC, &VF2, &DAYTONA, &VCOP, &DESERT, &VCOP2, &SKYTARGT, &MANXTT,

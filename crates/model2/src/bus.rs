@@ -1128,6 +1128,29 @@ impl Model2Bus {
         Some(v)
     }
 
+    /// `n` bytes of memory at `addr`, little-endian (RAM or ROM; None where
+    /// nothing is mapped). Reads nothing with side effects: `ram search` and
+    /// tours look at the machine with it.
+    pub fn peek(&self, addr: u32, n: usize) -> Option<u32> {
+        self.mem_read(addr, n)
+    }
+
+    /// The two work RAMs as (address, bytes): 0x200000 (256 KB) and
+    /// 0x500000 (1 MB), where a game keeps its variables.
+    pub fn work_ram(&self) -> [(u32, &[u8]); 2] {
+        [(0x20_0000, &self.mems[CODE_RAMS[0]].data[..]), (0x50_0000, &self.mems[CODE_RAMS[1]].data[..])]
+    }
+
+    /// Write `n` bytes of work RAM at `addr` (a poke: a cheat, only ever
+    /// asked for by a tour or script that names it). False, and nothing
+    /// written, where the address is not writable memory.
+    pub fn poke(&mut self, addr: u32, v: u32, n: usize) -> bool {
+        match self.find(addr) {
+            Some((m, _)) if self.mems[m].writable => self.mem_write(addr, v, n),
+            _ => false,
+        }
+    }
+
     #[inline]
     fn mem_write(&mut self, addr: u32, v: u32, n: usize) -> bool {
         let Some((m, off)) = self.find(addr) else { return false };

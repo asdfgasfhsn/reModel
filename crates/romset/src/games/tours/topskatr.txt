@@ -11,3 +11,6 @@ coin-start|6200f|coin-start
 characters|3300f|from=coin-start@1300,selright@2000-2004,selright@2070-2074,selright@2140-2144,selright@2210-2214,selright@2280-2284,selright@2350-2354,selright@2420-2424,selright@2490-2494,selright@2560-2564,selright@2630-2634,mark=select@2000
 # Pick a skater and steer a course.
 expert|11000f|from=coin-start@1300,selright@1330-1336,curving=0x50@3000-3400,curving=0xb0@3600-3900,curving=0x60@4300-4700,curving=0xa0@5200-5500,curving=0x58@6200-6600,curving=0xa8@7300-7600,mark=course@3000
+# The same course with its clock held (pokes, docs/uplift/content-coverage.md):
+# TIME UP never comes, so the run goes on past where the others end.
+clock-held|20000f|from=coin-start@1300,selright@1330-1336,poke=hold-clock@3300-19999
