@@ -297,7 +297,7 @@ impl RecordCrc {
     /// `von`'s settings checksum ([`SumKind::Table`]): the word at `at` covers `from..to`; the
     /// record (`copy` bytes, header included) is repeated right after.
     pub const fn table(at: usize, from: usize, to: usize, init: u32, copy: usize) -> Self {
-        RecordCrc { kind: SumKind::Table, at, from, to, init, complement: false, copy: Some(copy) }
+        RecordCrc { kind: SumKind::Table, at, from, to, init, complement: false, copy: Some(copy), copy_clear: None }
     }
 
     pub fn compute(&self, image: &[u8]) -> u16 {

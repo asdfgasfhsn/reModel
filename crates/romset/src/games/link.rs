@@ -3,7 +3,7 @@
 //! (`docs/hw/link-board.md`). Used by `model2::link::LinkHub` and `remodel
 //! link-run`; games without an entry have no linked play.
 
-use crate::{EEPROM_BYTES, FreePlayByte, LinkPlay, LinkSettings, RecordCrc, SettingsStore};
+use crate::{FreePlayByte, LinkPlay, LinkSettings, RecordCrc, SettingsStore, EEPROM_BYTES};
 
 /// The linked-play data of game `id`, if it has been looked at.
 pub fn link_play(id: &str) -> Option<&'static LinkPlay> {
@@ -570,7 +570,6 @@ pub static STCCA: LinkPlay = LinkPlay {
     },
     free_play: Some(STCCAB_FREE_PLAY),
     ..STCC
-    node_bytes: None,
 };
 
 /// `stccb`: as [`STCCA`], one settings byte (`0x12`) different.
@@ -585,7 +584,6 @@ pub static STCCB: LinkPlay = LinkPlay {
     },
     free_play: Some(STCCAB_FREE_PLAY),
     ..STCC
-    node_bytes: None,
 };
 
 /// `skisuprg` (docs/games/skisuprg.md, docs/hw/eeprom-records.md, link-board.md section 17): the
@@ -640,8 +638,8 @@ mod tests {
     #[test]
     fn free_play_sets_the_game_bytes_and_comes_out_again() {
         for id in [
-            "srallyc", "daytona", "manxtt", "indy500", "motoraid", "waverunr", "von", "stcc", "stcca", "stccb", "skisuprg", "sgt24h",
-            "overrev",
+            "srallyc", "daytona", "manxtt", "indy500", "motoraid", "waverunr", "von", "stcc", "stcca", "stccb",
+            "skisuprg", "sgt24h", "overrev",
         ] {
             let p = link_play(id).unwrap();
             let Some(fp) = p.free_play else { continue };
@@ -674,7 +672,8 @@ mod tests {
         // Each default record is what the game's own test menu saved; its checksum field is
         // the game's, so the algorithm must reproduce it (both copies, for the S32A records).
         for id in [
-            "daytona", "manxtt", "indy500", "motoraid", "waverunr", "von", "stcc", "stcca", "stccb", "skisuprg", "sgt24h", "overrev",
+            "daytona", "manxtt", "indy500", "motoraid", "waverunr", "von", "stcc", "stcca", "stccb", "skisuprg",
+            "sgt24h", "overrev",
         ] {
             let p = link_play(id).unwrap();
             let n = p.settings.record.len();
