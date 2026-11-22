@@ -244,7 +244,7 @@ lock-test: ## Test tools/lock in a private lock folder: two holders of a one-slo
 agent-env-test: release ## Slice A's acceptance test (docs/uplift/agent-environment.md), no ROM or GPU: with a build and a test run holding their locks, a pinned binary answers img stats, diff and sheet in under 2 s without waiting, make builds nothing for a given REMODEL, and studio and img commands give parseable {ok, code, error, data, warnings, next} answers with the exit codes 0, 1, 2 and 3; AGENT_ENV_BIN=FILE tests another binary
 	@sh tools/agent-env-test.sh $(or $(AGENT_ENV_BIN),$(CURDIR)/$(REMODEL))
 
-agent-setup: ## Set up this checkout or worktree for an agent: link rom/, copy each game's EEPROM from the main checkout, make out/scratch/agent-ACTOR, write out/agent.env (shared target-agents/, REMODEL, a private output folder for run); ART=1 pins a prebuilt binary (agent-bin) so no build is needed; prints what is available as JSON
+agent-setup: ## Set up this checkout or worktree for an agent: link rom/, copy each game's EEPROM from the main checkout, make out/scratch/agent-ACTOR, write out/agent.env (its own target-agents/ACTOR/, REMODEL, a private output folder for run); ART=1 pins a prebuilt binary (agent-bin) so no build is needed; prints what is available as JSON
 	@tools/agent-setup $(if $(ART),--art) $(if $(ACTOR),--actor $(ACTOR))
 
 agent-bin: ## Build the remodel CLI once and keep a read-only copy in out/bin/COMMIT/ (never overwritten; a changed tree adds a hash to the folder name); art agents run it with REMODEL=out/bin/COMMIT/remodel and never build

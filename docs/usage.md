@@ -270,7 +270,7 @@ off, and the day it is not needed this goes.
 copies each game's `out/GAME/eeprom.bin` (a missing one gives false
 benchmark mismatches), makes `out/scratch/agent-NAME` (`ACTOR=NAME`, default
 the folder's name) and writes `out/agent.env`, which the Makefile reads:
-`CARGO_TARGET_DIR` (the shared `target-agents/`), `REMODEL` and `PLAY`
+`CARGO_TARGET_DIR` (the agent's own `target-agents/NAME/`), `REMODEL` and `PLAY`
 pointing into it, `REMODEL_ACTOR`, `REMODEL_SCRATCH` and, where cargo is not
 on the path, where it is. With `REMODEL_SCRATCH` set, `remodel run` with no
 `--out` writes to `$REMODEL_SCRATCH/run/GAME/` instead of `out/GAME/`, with

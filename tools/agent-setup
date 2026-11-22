@@ -11,8 +11,10 @@ setup, idempotent:
     there is none, so a benchmark's state hashes match (a missing one
     gives false mismatches);
   * makes the agent's scratch folder out/scratch/agent-NAME;
-  * writes out/agent.env, which the Makefile reads: CARGO_TARGET_DIR (the
-    shared target-agents/ of the main checkout), REMODEL and PLAY pointing
+  * writes out/agent.env, which the Makefile reads: CARGO_TARGET_DIR (this
+    agent's own target-agents/NAME/ in the main checkout: a shared one let
+    one agent's build replace another's binary between its build and its
+    test run), REMODEL and PLAY pointing
     at that target dir's binaries, REMODEL_ACTOR, REMODEL_SCRATCH (which
     makes `remodel run` write to a private folder in it), CARGO_BIN_DIR when
     cargo is not on PATH;
@@ -123,7 +125,7 @@ def cmd_setup(argv):
     scratch = os.path.join("out", "scratch", f"agent-{actor}")
     os.makedirs(os.path.join(root, scratch), exist_ok=True)
     # env
-    target = os.path.join(main, "target-agents")
+    target = os.path.join(main, "target-agents", actor)
     rel = lambda p: os.path.relpath(p, root)
     env = [("CARGO_TARGET_DIR", target), ("REMODEL_ACTOR", actor), ("REMODEL_SCRATCH", scratch)]
     if not shutil.which("cargo"):

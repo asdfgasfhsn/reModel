@@ -45,13 +45,15 @@
   window also costs the desktop compositor GPU memory, which has crowded
   out the GPU tests. When the GPU is full anyway, `make check GPU_TESTS=0`
   skips the GPU tests with a warning; run them before pushing.
-- Agents in worktrees build into the shared `target-agents/` directory at
-  the repo root (`CARGO_TARGET_DIR=<repo>/target-agents`), never the main
-  checkout's `target/`: cargo judges freshness by file times, so a build of
-  older code from another tree can leave stale crates that the main tree's
-  next build keeps (it broke `make play` once). Before an agent's final
-  `make check`, `touch` the workspace crates' `src/lib.rs`/`src/main.rs` so
-  they rebuild from its own sources.
+- Agents in worktrees build into their own `target-agents/NAME/` at the
+  repo root (`make agent-setup` sets `CARGO_TARGET_DIR`), never the main
+  checkout's `target/` and never a target dir another agent uses: cargo
+  judges freshness by file times, so a build of another tree can leave
+  stale crates (it broke `make play` once), and with one shared dir one
+  agent's build replaced another's release binary between its build and
+  its link tests (2026-11-23). Delete your `target-agents/NAME/` when done.
+  Before an agent's final `make check`, `touch` the workspace crates'
+  `src/lib.rs`/`src/main.rs` so they rebuild from its own sources.
 - Locks are `tools/lock`, not a hand-typed `flock out/heavy.lock`: `make`
   takes them itself (builds, `make test`/`check`: `build`, plus `test` for
   test runs; the GPU render targets: `render`, three at once), so a render
