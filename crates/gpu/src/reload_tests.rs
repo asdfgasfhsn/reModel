@@ -92,7 +92,7 @@ fn a_changed_image_is_swapped_alone() {
     pack.0.lock().unwrap().changed.clear();
     gpu.set_pack(Some(Box::new(pack.clone())));
     gpu.set_quality(Quality::default());
-    let mut draw = |gpu: &mut Renderer| gpu.draw(&polys, &placed, &src, &view);
+    let draw = |gpu: &mut Renderer| gpu.draw(&polys, &placed, &src, &view);
     let first = draw(&mut gpu);
     assert!(first == draw(&mut gpu), "nothing changed: the same picture");
 
